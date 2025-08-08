@@ -696,32 +696,69 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     html += '</tr>\n'
     # Data rows
     for row in rows:
+        # Determine styling based on the time of day.  Rows with times between 6:00 AM
+        # and 7:00 PM (inclusive) are bold with a solid border.  Rows within the
+        # extended range from 5:00 AM up to 8:00 PM (inclusive) but outside the
+        # primary range receive a dashed border and normal font weight.  All
+        # remaining rows retain the default styling.
+        try:
+            # Parse the time string (e.g., "6:00:00 AM").  Use a tolerant format that
+            # handles single digit hours.  Use datetime.strptime to obtain a time
+            # object for comparison.  If parsing fails, fallback to no special
+            # styling.
+            parsed_time = datetime.strptime(row[1], "%I:%M:%S %p").time()
+        except Exception:
+            parsed_time = None
+        # Define time ranges
+        bold_start = datetime.strptime("6:00:00 AM", "%I:%M:%S %p").time()
+        bold_end = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()
+        dashed_start = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
+        dashed_end = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
+        border_style = ""
+        font_weight_row = "normal"
+        if parsed_time is not None:
+            if bold_start <= parsed_time <= bold_end:
+                border_style = "border:1px solid #000;"
+                font_weight_row = "bold"
+            elif dashed_start <= parsed_time <= dashed_end:
+                border_style = "border:1px dashed #999;"
+                font_weight_row = "normal"
+        # Generate the table row.  We add padding to each cell to widen
+        # the columns for readability.  The date cell is always bold,
+        # regardless of the row style.
         html += '<tr>'
-        # Date (bold)
-        html += f'<td style="font-weight:bold;">{row[0]}</td>'
-        # Time
-        html += f'<td>{row[1]}</td>'
+        # Date cell (always bold).  Increase horizontal and vertical padding to
+        # make the columns wider and improve readability.
+        date_style = f'font-weight:bold; {border_style} padding:4px 8px;'
+        html += f'<td style="{date_style}">{row[0]}</td>'
+        # Time cell (row-level font weight) with increased padding
+        time_style = f'font-weight:{font_weight_row}; {border_style} padding:4px 8px;'
+        html += f'<td style="{time_style}">{row[1]}</td>'
         idx = 2
         for col in group_colors:
             # Hs (ft)
             val = row[idx]
             hs_str = "" if val is None else f"{val:.2f}"
-            html += f'<td style="background-color:{col["data"]}; text-align:right;">{hs_str}</td>'
+            cell_style = f'background-color:{col["data"]}; text-align:right; font-weight:{font_weight_row}; {border_style} padding:4px 8px;'
+            html += f'<td style="{cell_style}">{hs_str}</td>'
             idx += 1
             # Tp (s)
             val = row[idx]
             tp_str = "" if val is None else f"{val:.1f}"
-            html += f'<td style="background-color:{col["data"]}; text-align:right;">{tp_str}</td>'
+            cell_style = f'background-color:{col["data"]}; text-align:right; font-weight:{font_weight_row}; {border_style} padding:4px 8px;'
+            html += f'<td style="{cell_style}">{tp_str}</td>'
             idx += 1
             # Direction (d)
             val = row[idx]
             dir_str = "" if val is None else f"{val}"
-            html += f'<td style="background-color:{col["data"]}; text-align:right;">{dir_str}</td>'
+            cell_style = f'background-color:{col["data"]}; text-align:right; font-weight:{font_weight_row}; {border_style} padding:4px 8px;'
+            html += f'<td style="{cell_style}">{dir_str}</td>'
             idx += 1
         # Combined Hs
         val = row[-1]
         comb_str = "" if val is None else f"{val:.2f}"
-        html += f'<td style="background-color:{combined_colors["data"]}; text-align:right;">{comb_str}</td>'
+        cell_style = f'background-color:{combined_colors["data"]}; text-align:right; font-weight:{font_weight_row}; {border_style} padding:4px 8px;'
+        html += f'<td style="{cell_style}">{comb_str}</td>'
         html += '</tr>\n'
     html += '</table>'
     return html
@@ -828,10 +865,55 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
     # Data rows
     for data_row in rows:
         row_idx += 1
-        # Date
-        ws.cell(row=row_idx, column=1, value=data_row[0]).font = Font(bold=True)
-        # Time
-        ws.cell(row=row_idx, column=2, value=data_row[1])
+        # Determine styling based on the time string in the row.  Rows with
+        # times between 06:00 AM and 07:00 PM (inclusive) should appear
+        # bold with a solid border.  Rows within the broader range of
+        # 05:00 AM through 08:00 PM inclusive but outside the primary
+        # range should use a dashed border and normal font weight.  All
+        # remaining rows retain default styling (no additional border and
+        # normal weight).  We parse the time string to a datetime.time
+        # object for comparison.  If parsing fails, the row is treated
+        # as default.
+        parsed_time = None
+        try:
+            parsed_time = datetime.strptime(data_row[1], "%I:%M:%S %p").time()
+        except Exception:
+            parsed_time = None
+        bold_start = datetime.strptime("6:00:00 AM", "%I:%M:%S %p").time()
+        bold_end = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()
+        dashed_start = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
+        dashed_end = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
+        is_bold_row = False
+        border_style_name = None
+        if parsed_time is not None:
+            if bold_start <= parsed_time <= bold_end:
+                is_bold_row = True
+                border_style_name = "thin"  # solid thin border
+            elif dashed_start <= parsed_time <= dashed_end:
+                is_bold_row = False
+                border_style_name = "dashed"
+        # Define a border object if a style is specified.  Use black for the
+        # border colour.  Otherwise, set border to None.
+        if border_style_name:
+            border_obj = Border(
+                left=Side(style=border_style_name, color="000000"),
+                right=Side(style=border_style_name, color="000000"),
+                top=Side(style=border_style_name, color="000000"),
+                bottom=Side(style=border_style_name, color="000000"),
+            )
+        else:
+            border_obj = None
+        # Date cell: always bold, but border depends on row classification
+        date_cell = ws.cell(row=row_idx, column=1, value=data_row[0])
+        date_cell.font = Font(bold=True)
+        if border_obj:
+            date_cell.border = border_obj
+        # Time cell: bold if in bold range, normal otherwise
+        time_cell = ws.cell(row=row_idx, column=2, value=data_row[1])
+        time_cell.font = Font(bold=is_bold_row)
+        if border_obj:
+            time_cell.border = border_obj
+        # Process swell groups and combined values
         col_idx = 3
         data_iter = iter(data_row[2:])
         for colors in group_colors:
@@ -840,30 +922,46 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
             cell = ws.cell(row=row_idx, column=col_idx, value=hs_val if hs_val is not None else "")
             cell.fill = PatternFill(start_color=colors["data"], end_color=colors["data"], fill_type="solid")
             cell.number_format = "0.00"
+            cell.font = Font(bold=is_bold_row)
+            if border_obj:
+                cell.border = border_obj
             col_idx += 1
             # Tp
             tp_val = next(data_iter)
             cell = ws.cell(row=row_idx, column=col_idx, value=tp_val if tp_val is not None else "")
             cell.fill = PatternFill(start_color=colors["data"], end_color=colors["data"], fill_type="solid")
             cell.number_format = "0.0"
+            cell.font = Font(bold=is_bold_row)
+            if border_obj:
+                cell.border = border_obj
             col_idx += 1
             # Dir
             dir_val = next(data_iter)
             cell = ws.cell(row=row_idx, column=col_idx, value=dir_val if dir_val is not None else "")
             cell.fill = PatternFill(start_color=colors["data"], end_color=colors["data"], fill_type="solid")
+            cell.font = Font(bold=is_bold_row)
+            if border_obj:
+                cell.border = border_obj
             col_idx += 1
         # Combined Hs
         combined_val = data_row[-1]
         cell = ws.cell(row=row_idx, column=col_idx, value=combined_val if combined_val is not None else "")
         cell.fill = PatternFill(start_color=combined_colors["data"], end_color=combined_colors["data"], fill_type="solid")
         cell.number_format = "0.00"
-    # Adjust column widths for readability
-    ws.column_dimensions['A'].width = 25
-    ws.column_dimensions['B'].width = 12
+        cell.font = Font(bold=is_bold_row)
+        if border_obj:
+            cell.border = border_obj
+    # Adjust column widths for readability.  Increase the widths slightly to
+    # ensure that all data is visible and the table is easier to read.
+    ws.column_dimensions['A'].width = 30  # Date column
+    ws.column_dimensions['B'].width = 15  # Time column
     col = 3
-    # Each numeric column narrower
+    # Widen numeric columns
     for _ in range(len(group_colors) * 3 + 1):
-        ws.column_dimensions[chr(64 + col)].width = 8
+        # Convert numeric index to column letter.  The ASCII offset 64
+        # corresponds to 'A' for 1, so 64 + col yields the column letter.
+        letter = chr(64 + col)
+        ws.column_dimensions[letter].width = 10
         col += 1
     # Return workbook in-memory
     bio = BytesIO()

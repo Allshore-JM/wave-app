@@ -631,7 +631,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
 # -----------------------------------------------------------------------------
 # Table Formatting and Export Helpers
 # -----------------------------------------------------------------------------
-def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None, rows: list[list], tz_label: str) -> str:
+def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None, rows: list[list], tz_label: str, unit: str) -> str:
     """
     Build an HTML table string that closely follows the appearance of the provided
     Excel "Table View" worksheet.  The table begins with several metadata
@@ -649,6 +649,9 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         rows: Parsed forecast rows.  Each row must be a list with elements
             ``[date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs]``.
         tz_label: The name of the timezone being used for date/time formatting.
+        unit: Unit system for height values.  ``'US'`` displays heights in feet
+            (Hs values remain unchanged) and labels the header ``(ft)``; ``'Metric'``
+            converts heights to metres and labels the header ``(m)``.
 
     Returns:
         A string containing the HTML markup for the complete table.
@@ -685,22 +688,22 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     # Combined column header (do not rowspan; the units row below will align under this column)
     html += f'<th style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
     html += '</tr>\n'
-    # Subheader: units
+    # Subheader: units.  Adjust the Hs unit label based on the selected unit system.
     html += '<tr>'
+    hs_unit_label = '(ft)' if unit == 'US' else '(m)'
     for col in group_colors:
-        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Hs<br>(ft)</th>'
+        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
         html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
         html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Dir<br>(d)</th>'
     # Combined units
-    html += f'<th style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>(ft)</th>'
+    html += f'<th style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
     html += '</tr>\n'
     # Data rows
     for row in rows:
         # Determine styling based on the time of day.  Rows with times between 6:00 AM
-        # and 7:00 PM (inclusive) are bold with a solid border.  Rows within the
-        # extended range from 5:00 AM up to 8:00 PM (inclusive) but outside the
-        # primary range receive a dashed border and normal font weight.  All
-        # remaining rows retain the default styling.
+        # and 7:00 PM (inclusive) are bold with a solid border.  Rows between
+        # 8:00 PM and 5:00 AM (inclusive) receive a dashed border and normal font
+        # weight.  All other rows retain the default styling.
         try:
             # Parse the time string (e.g., "6:00:00 AM").  Use a tolerant format that
             # handles single digit hours.  Use datetime.strptime to obtain a time
@@ -712,15 +715,17 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         # Define time ranges
         bold_start = datetime.strptime("6:00:00 AM", "%I:%M:%S %p").time()
         bold_end = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()
-        dashed_start = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
-        dashed_end = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
+        dashed_start_evening = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
+        dashed_end_morning = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
         border_style = ""
         font_weight_row = "normal"
         if parsed_time is not None:
+            # Bold rows between 6 AM and 7 PM inclusive
             if bold_start <= parsed_time <= bold_end:
                 border_style = "border:1px solid #000;"
                 font_weight_row = "bold"
-            elif dashed_start <= parsed_time <= dashed_end:
+            # Dashed rows if time is >= 8 PM or <= 5 AM (cross‑midnight range)
+            elif parsed_time >= dashed_start_evening or parsed_time <= dashed_end_morning:
                 border_style = "border:1px dashed #999;"
                 font_weight_row = "normal"
         # Generate the table row.  We add padding to each cell to widen
@@ -738,7 +743,12 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         for col in group_colors:
             # Hs (ft)
             val = row[idx]
-            hs_str = "" if val is None else f"{val:.2f}"
+            # Convert height to metres if metric is selected
+            if val is None:
+                hs_str = ""
+            else:
+                display_val = val if unit == 'US' else (val / 3.28084)
+                hs_str = f"{display_val:.2f}"
             cell_style = f'background-color:{col["data"]}; text-align:right; font-weight:{font_weight_row}; {border_style} padding:4px 8px;'
             html += f'<td style="{cell_style}">{hs_str}</td>'
             idx += 1
@@ -756,14 +766,18 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
             idx += 1
         # Combined Hs
         val = row[-1]
-        comb_str = "" if val is None else f"{val:.2f}"
+        if val is None:
+            comb_str = ""
+        else:
+            display_comb = val if unit == 'US' else (val / 3.28084)
+            comb_str = f"{display_comb:.2f}"
         cell_style = f'background-color:{combined_colors["data"]}; text-align:right; font-weight:{font_weight_row}; {border_style} padding:4px 8px;'
         html += f'<td style="{cell_style}">{comb_str}</td>'
         html += '</tr>\n'
     html += '</table>'
     return html
 
-def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str | None, rows: list[list], tz_label: str) -> BytesIO:
+def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str | None, rows: list[list], tz_label: str, unit: str) -> BytesIO:
     """
     Create an Excel workbook that mirrors the formatting of the Excel "Table View"
     worksheet.  This version includes additional rows for the model run time
@@ -772,6 +786,7 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
     header colour, subheader colour and data fill, and the combined column
     uses its own colours.  Date and time occupy the first two columns.
 
+
     Parameters:
         cycle_str: The model cycle description string.
         location_str: The station location description string.
@@ -779,6 +794,9 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
             or ``None`` if unavailable.
         rows: Parsed forecast rows as returned by ``parse_bull()``.
         tz_label: The name of the time zone used for date/time conversions.
+        unit: Unit system for height values.  ``'US'`` leaves heights in feet
+            and labels the units row ``(ft)``; ``'Metric'`` converts heights to
+            metres and labels the units row ``(m)``.
 
     Returns:
         A ``BytesIO`` object containing the generated Excel file.
@@ -838,9 +856,11 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
     # Subheader row
     row_idx += 1
     col_idx = 3
+    # Determine units label for Hs depending on the selected system
+    hs_unit_label = "(ft)" if unit == 'US' else "(m)"
     for colors in group_colors:
         # Hs
-        cell = ws.cell(row=row_idx, column=col_idx, value="Hs (ft)")
+        cell = ws.cell(row=row_idx, column=col_idx, value=f"Hs {hs_unit_label}")
         cell.fill = PatternFill(start_color=colors["subheader"], end_color=colors["subheader"], fill_type="solid")
         cell.alignment = Alignment(horizontal="center")
         cell.font = Font(bold=True)
@@ -858,7 +878,7 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
         cell.font = Font(bold=True)
         col_idx += 1
     # Combined subheader
-    cell = ws.cell(row=row_idx, column=col_idx, value="Hs (ft)")
+    cell = ws.cell(row=row_idx, column=col_idx, value=f"Hs {hs_unit_label}")
     cell.fill = PatternFill(start_color=combined_colors["subheader"], end_color=combined_colors["subheader"], fill_type="solid")
     cell.alignment = Alignment(horizontal="center")
     cell.font = Font(bold=True)
@@ -881,15 +901,15 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
             parsed_time = None
         bold_start = datetime.strptime("6:00:00 AM", "%I:%M:%S %p").time()
         bold_end = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()
-        dashed_start = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
-        dashed_end = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
+        dashed_start_evening = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
+        dashed_end_morning = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
         is_bold_row = False
         border_style_name = None
         if parsed_time is not None:
             if bold_start <= parsed_time <= bold_end:
                 is_bold_row = True
-                border_style_name = "thin"  # solid thin border
-            elif dashed_start <= parsed_time <= dashed_end:
+                border_style_name = "thin"
+            elif parsed_time >= dashed_start_evening or parsed_time <= dashed_end_morning:
                 is_bold_row = False
                 border_style_name = "dashed"
         # Define a border object if a style is specified.  Use black for the
@@ -919,7 +939,11 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
         for colors in group_colors:
             # Hs
             hs_val = next(data_iter)
-            cell = ws.cell(row=row_idx, column=col_idx, value=hs_val if hs_val is not None else "")
+            # Convert Hs values to metres if metric units are requested
+            display_hs = hs_val
+            if hs_val is not None and unit != 'US':
+                display_hs = hs_val / 3.28084
+            cell = ws.cell(row=row_idx, column=col_idx, value=display_hs if display_hs is not None else "")
             cell.fill = PatternFill(start_color=colors["data"], end_color=colors["data"], fill_type="solid")
             cell.number_format = "0.00"
             cell.font = Font(bold=is_bold_row)
@@ -945,7 +969,10 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
             col_idx += 1
         # Combined Hs
         combined_val = data_row[-1]
-        cell = ws.cell(row=row_idx, column=col_idx, value=combined_val if combined_val is not None else "")
+        display_comb = combined_val
+        if combined_val is not None and unit != 'US':
+            display_comb = combined_val / 3.28084
+        cell = ws.cell(row=row_idx, column=col_idx, value=display_comb if display_comb is not None else "")
         cell.fill = PatternFill(start_color=combined_colors["data"], end_color=combined_colors["data"], fill_type="solid")
         cell.number_format = "0.00"
         cell.font = Font(bold=is_bold_row)
@@ -989,18 +1016,26 @@ def index():
     # Build list of common time zones for the timezone dropdown.  Using
     # pytz.common_timezones yields a manageable set of well‑known zones.
     timezones = sorted(pytz.common_timezones)
+    # Unit options for height values.  The default is US units (feet).
+    unit_options = ["US", "Metric"]
 
     # Determine which station and timezone have been selected.  The station
     # can be supplied via a POST form field or a query parameter.  The
     # timezone can similarly be supplied via "tz" in either POST or GET.
-    selected_station = None
-    selected_tz = None
+    selected_station = ""
+    selected_tz = ""
+    selected_unit = "US"
     if request.method == "POST":
         selected_station = request.form.get("station") or ""
         selected_tz = request.form.get("tz") or ""
+        selected_unit = request.form.get("unit") or "US"
     else:
         selected_station = request.args.get("station", "")
         selected_tz = request.args.get("tz", "")
+        selected_unit = request.args.get("unit", "US") or "US"
+    # If no timezone provided, default to Pacific/Honolulu
+    if not selected_tz:
+        selected_tz = "Pacific/Honolulu"
 
     table_html = None
     error = None
@@ -1015,7 +1050,7 @@ def index():
         if rows is not None:
             # Use the effective timezone name (returned by parse_bull) as the label
             tz_label = effective_tz_name
-            table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label)
+            table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
     # Render template with all context variables.  Also pass the timezones
     # list and the currently selected timezone for the dropdown.
     return render_template(
@@ -1024,6 +1059,8 @@ def index():
         selected_station=selected_station,
         timezones=timezones,
         selected_tz=selected_tz or tz_label,
+        units=unit_options,
+        selected_unit=selected_unit,
         table_html=table_html,
         error=error,
     )
@@ -1045,11 +1082,12 @@ def download(station_id: str):
     # empty or invalid.  parse_bull() will handle validation and fall
     # back to the buoy's local timezone if necessary.
     tz_param = request.args.get("tz", "")
+    unit_param = request.args.get("unit", "US") or "US"
     cycle_str, location_str, model_run_str, rows, effective_tz_name, error = parse_bull(station_id, tz_param or None)
     if rows is None:
         return f"Error: {error}", 404
-    # Use the effective timezone name as the label in the Excel file
-    bio = build_excel_workbook(cycle_str, location_str, model_run_str, rows, effective_tz_name)
+    # Use the effective timezone name as the label in the Excel file and convert heights if needed
+    bio = build_excel_workbook(cycle_str, location_str, model_run_str, rows, effective_tz_name, unit_param)
     filename = f"{station_id}_table_view.xlsx"
     return send_file(
         bio,

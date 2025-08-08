@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_file
+from flask import Flask, render_template, request, send_file, jsonify
 import pandas as pd  # still used for fallback Excel generation if needed
 import requests
 from io import BytesIO
@@ -33,6 +33,11 @@ NOAA_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
 HST = pytz.timezone("Pacific/Honolulu")
 UTC = pytz.utc
 
+# Cache for compiled station metadata used by the interactive map.  This list is
+# computed once on demand and reused for subsequent requests.  Each element
+# contains the station ID, name, latitude and longitude.
+stations_data_cache = None
+
 
 def get_station_list():
     """
@@ -60,6 +65,53 @@ def get_station_list():
         return stations
     except Exception:
         return [("51201", "Example Station")]
+
+def get_stations_data():
+    """
+    Build and return a list of station metadata dictionaries: {id, name, lat, lon}.
+    This function caches its results so that the expensive operations to
+    retrieve the bullet station list and station metadata file are only
+    performed once.  The returned list is used by the /stations.json
+    endpoint to provide station data to the front‑end.  Stations with
+    missing or invalid latitude/longitude are excluded from the result.
+
+    Returns:
+        list[dict]: A list of station dictionaries with keys 'id', 'name', 'lat', 'lon'.
+    """
+    global stations_data_cache
+    if stations_data_cache is not None:
+        return stations_data_cache
+    try:
+        bullet_ids = get_bullet_station_ids()
+    except Exception:
+        bullet_ids = set()
+    try:
+        meta = load_station_metadata()
+    except Exception:
+        meta = {}
+    data_list = []
+    for sid in bullet_ids:
+        info = meta.get(sid)
+        if info and info.get('lat') is not None and info.get('lon') is not None:
+            data_list.append({
+                'id': sid,
+                'name': info.get('name', sid),
+                'lat': info['lat'],
+                'lon': info['lon'],
+            })
+    stations_data_cache = data_list
+    return stations_data_cache
+
+@app.route('/stations.json')
+def stations_json():
+    """
+    JSON endpoint returning the list of station metadata dictionaries used by
+    the front‑end map.  This decouples the potentially very large list of
+    stations from the HTML template, preventing the page from exceeding
+    browser size limits and allowing the client to fetch the data
+    asynchronously.
+    """
+    return jsonify(get_stations_data())
 
 
 def load_station_metadata():
@@ -734,19 +786,11 @@ def index():
     "Table View" sheet. If any errors occur during retrieval or parsing, they are displayed to the user.
     """
     stations = get_station_list()
-    # Build a list of station data (id, name, lat, lon) for the map.  We cross reference
-    # the bullet station IDs with the station metadata to get coordinates.  If
-    # metadata is missing for a station, it will be omitted from the map.
-    stations_data = []
-    try:
-        bullet_ids = get_bullet_station_ids()
-        meta = load_station_metadata()
-        for sid in bullet_ids:
-            info = meta.get(sid)
-            if info and 'lat' in info and 'lon' in info:
-                stations_data.append({'id': sid, 'name': info.get('name', sid), 'lat': info['lat'], 'lon': info['lon']})
-    except Exception:
-        stations_data = []
+    # We no longer build the full stations_data list here.  The list of station
+    # metadata used by the map is served asynchronously via the /stations.json
+    # endpoint.  This avoids injecting a very large JSON object directly into
+    # the HTML, which can cause the page to exceed browser size limits.  The
+    # dropdown still uses a list of (id, name) tuples for quick selection.
     selected_station = request.form.get("station") if request.method == "POST" else request.args.get('station', "")
     table_html = None
     error = None
@@ -755,7 +799,7 @@ def index():
         cycle_str, location_str, rows, tz_name, error = parse_bull(selected_station)
         if rows is not None:
             table_html = build_html_table(cycle_str, location_str, rows, tz_name)
-    return render_template("index.html", stations=stations, stations_data=stations_data, selected_station=selected_station,
+    return render_template("index.html", stations=stations, selected_station=selected_station,
                            table_html=table_html, error=error)
 
 

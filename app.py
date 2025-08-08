@@ -6,8 +6,18 @@ from datetime import datetime, timedelta
 import pytz
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
+from timezonefinder import TimezoneFinder
 
 app = Flask(__name__)
+
+# Instantiate a timezone finder object once to avoid repeated initialization.
+tz_finder = TimezoneFinder()
+
+# Caches for station metadata and available bulletin stations. These will be populated
+# on demand to avoid repeated network requests. See load_station_metadata() and
+# get_bullet_station_ids().
+STATION_META = None  # Maps station_id -> { 'name': str, 'lat': float, 'lon': float }
+BULLET_STATIONS = None  # Set of station_ids that currently have a .bull file available
 
 # ===== NOAA Station List URL =====
 # This URL points to the bulls.readme file, which lists the available buoy stations
@@ -26,24 +36,129 @@ UTC = pytz.utc
 
 def get_station_list():
     """
-    Fetch the list of buoy stations from NOAA's bulls.readme file.
+    Build a list of available stations by cross-referencing station metadata with the
+    currently available GFS wave bulletins.  This function first ensures that the
+    station metadata and the list of available bulletin station IDs are loaded, then
+    constructs a list of (station_id, station_name) tuples for display in the UI.
 
-    Returns a list of tuples where each tuple contains the station ID and name. If fetching fails,
-    a fallback station is returned.
+    Returns:
+        list: A list of tuples (id, name) sorted by ID.  If metadata cannot be
+        loaded, a fallback list containing just ('51201', 'Example Station') is returned.
     """
     try:
-        r = requests.get(STATION_LIST_URL, timeout=10)
-        r.raise_for_status()
+        ids = get_bullet_station_ids()
+        meta = load_station_metadata()
         stations = []
-        for line in r.text.splitlines():
-            parts = line.split()
-            # Valid station lines start with a numeric ID followed by station name
-            if len(parts) >= 2 and parts[0].isdigit():
-                stations.append((parts[0], " ".join(parts[1:])))
+        for sid in sorted(ids):
+            info = meta.get(sid)
+            # Use the provided name if available; otherwise just use the ID
+            name = info.get('name', sid) if info else sid
+            stations.append((sid, name))
+        # If no stations found, provide fallback
+        if not stations:
+            return [("51201", "Example Station")]
         return stations
     except Exception:
-        # Fallback if the station list cannot be fetched
         return [("51201", "Example Station")]
+
+
+def load_station_metadata():
+    """
+    Load buoy station metadata including latitude, longitude and station name from the
+    NDBC station table.  The station table is a pipe-delimited text file where each
+    row has the format:
+
+        STATION_ID | OWNER | TTYPE | HULL | NAME | PAYLOAD | LOCATION | TIMEZONE | FORECAST | NOTE
+
+    This function downloads the station table once and parses it into a dictionary
+    mapping station IDs to dictionaries with keys 'name', 'lat' and 'lon'.  Lat/lon
+    values are parsed from the LOCATION column in decimal degrees (e.g., "21.671 N
+    158.118 W ...").  South and west latitudes/longitudes are stored as negative.
+
+    Returns:
+        dict: A dictionary keyed by station ID with values {'name': str, 'lat': float, 'lon': float}.
+    """
+    global STATION_META
+    if STATION_META is not None:
+        return STATION_META
+    station_url = "https://www.ndbc.noaa.gov/data/stations/station_table.txt"
+    meta = {}
+    try:
+        res = requests.get(station_url, timeout=30)
+        res.raise_for_status()
+        for line in res.text.splitlines():
+            # Skip comments and empty lines
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split('|')
+            if len(parts) < 7:
+                continue
+            station_id = parts[0].strip()
+            # Skip non-numeric station ids to focus on buoy-like stations
+            if not station_id:
+                continue
+            name = parts[4].strip() if parts[4].strip() else station_id
+            location_field = parts[6].strip()
+            # Parse the decimal latitude and longitude at the beginning of the location field
+            # Example: "21.671 N 158.118 W (21°40'15" N 158°7'5" W)"
+            tokens = location_field.split()
+            if len(tokens) >= 4:
+                try:
+                    lat_val = float(tokens[0])
+                    lat_dir = tokens[1].upper()
+                    lon_val = float(tokens[2])
+                    lon_dir = tokens[3].upper()
+                    lat = lat_val if lat_dir == 'N' else -lat_val
+                    lon = lon_val if lon_dir == 'E' else -lon_val
+                    meta[station_id] = {'name': name, 'lat': lat, 'lon': lon}
+                except Exception:
+                    # Skip entries with unparseable lat/lon
+                    continue
+        STATION_META = meta
+        return STATION_META
+    except Exception:
+        STATION_META = {}
+        return STATION_META
+
+
+def get_bullet_station_ids():
+    """
+    Retrieve the set of station IDs for which a GFS wave bulletin is currently available.
+    This function inspects the directory listing of the most recent run and extracts
+    station identifiers from the filenames of the .bull files (e.g., gfswave.51201.bull).
+    The result is cached to avoid repeated network calls.
+
+    Returns:
+        set: A set of station ID strings.
+    """
+    global BULLET_STATIONS
+    if BULLET_STATIONS is not None:
+        return BULLET_STATIONS
+    date_str, run_str = get_latest_run()
+    if not date_str:
+        BULLET_STATIONS = set()
+        return BULLET_STATIONS
+    url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/"
+    ids = set()
+    try:
+        res = requests.get(url, timeout=30)
+        res.raise_for_status()
+        # Extract station IDs from anchor hrefs
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(res.text, "html.parser")
+        for link in soup.find_all('a'):
+            href = link.get('href', '')
+            if href.startswith('gfswave.') and href.endswith('.bull'):
+                # Format: gfswave.{station_id}.bull
+                parts = href.split('.')
+                if len(parts) >= 2:
+                    sid = parts[1]
+                    ids.add(sid)
+        BULLET_STATIONS = ids
+        return BULLET_STATIONS
+    except Exception:
+        BULLET_STATIONS = set()
+        return BULLET_STATIONS
 
 
 def get_latest_run():
@@ -85,25 +200,28 @@ def parse_bull(station_id: str):
         station_id (str): The buoy station identifier (e.g., '51201').
 
     Returns:
-        tuple: A tuple of (cycle_str, location_str, rows, error). If successful, error is None and rows is
+        tuple: A tuple of (cycle_str, location_str, rows, tz_name, error). If successful, error is None and rows is
                a list where each entry corresponds to a forecast row with the following order:
                [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs].
-               cycle_str and location_str are strings extracted from the bulletin header.
+               cycle_str and location_str are strings extracted from the bulletin header. tz_name is the
+               IANA timezone name for the buoy location (derived from its latitude/longitude) and is used
+               to label the table. If the timezone cannot be determined, tz_name will be 'UTC'.
     """
     # Determine the latest available run (date and hour)
     date_str, run_str = get_latest_run()
     if not date_str:
-        return None, None, None, "No recent run found."
+        # No recent run available; return with UTC as the default timezone
+        return None, None, None, 'UTC', "No recent run found."
 
     # Download the .bull file for this station and run
     bull_url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
     resp = requests.get(bull_url, timeout=10)
     if resp.status_code != 200:
-        return None, None, None, f"No .bull file found for {station_id}"
+        return None, None, None, 'UTC', f"No .bull file found for {station_id}"
 
     lines = resp.text.splitlines()
     if not lines:
-        return None, None, None, "Downloaded .bull file is empty."
+        return None, None, None, 'UTC', "Downloaded .bull file is empty."
 
     # Attempt to extract the cycle and location lines from the header. The .bull header typically contains
     # lines like "Cycle    : 20250807 12 UTC" and "Location : 51201 (21.67N 158.12W)". We look for
@@ -117,6 +235,33 @@ def parse_bull(station_id: str):
     cycle_str = cycle_line.strip() if cycle_line else ""
     location_str = location_line.strip() if location_line else ""
 
+    # Determine the buoy's latitude and longitude from the location string. Example format:
+    # "Location : 51201      (21.67N 158.12W)". We'll extract the numbers and hemisphere letters
+    # within the parentheses. If parsing fails, lat and lon will remain None.
+    import re
+    lat = lon = None
+    tz_name = 'UTC'
+    if location_str:
+        m = re.search(r"\(([-+]?\d+(?:\.\d+)?)\s*([NS])\s+([-+]?\d+(?:\.\d+)?)\s*([EW])\)", location_str)
+        if m:
+            try:
+                lat_val = float(m.group(1))
+                lat_dir = m.group(2)
+                lon_val = float(m.group(3))
+                lon_dir = m.group(4)
+                lat = lat_val if lat_dir.upper() == 'N' else -lat_val
+                lon = lon_val if lon_dir.upper() == 'E' else -lon_val
+            except Exception:
+                lat = lon = None
+    # Determine the timezone using TimezoneFinder if coordinates were successfully parsed
+    if lat is not None and lon is not None:
+        try:
+            tz_name_candidate = tz_finder.timezone_at(lat=lat, lng=lon)
+            if tz_name_candidate:
+                tz_name = tz_name_candidate
+        except Exception:
+            tz_name = 'UTC'
+
     # Detect file format: newer files contain a 'day & hour' notation near the top
     uses_day_hour_format = any("day &" in line.lower() for line in lines[:10])
 
@@ -124,7 +269,6 @@ def parse_bull(station_id: str):
 
     if uses_day_hour_format:
         # ----- Newer format parser: data rows delineated by '|', containing day, hour, Hst and up to six swells -----
-        import re
         # Attempt to parse the cycle date/time (YYYYMMDD HH) from the cycle_str
         m = re.search(r"(\d{8})\s*(\d{2})", cycle_str)
         cycle_date_str = date_str
@@ -213,17 +357,25 @@ def parse_bull(station_id: str):
                 # Adjust into the future if forecast time is before cycle time
                 while forecast_dt_utc < cycle_dt_utc:
                     forecast_dt_utc += timedelta(days=1)
-            # Convert to HST
-            hst_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(HST)
+            # Convert to the local timezone for this buoy
+            try:
+                local_tz = pytz.timezone(tz_name)
+            except Exception:
+                local_tz = UTC
+            local_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(local_tz)
             # Format date and time strings in the desired presentation
-            date_str_hst = hst_dt.strftime("%A, %B %-d, %Y") if hasattr(hst_dt, 'strftime') else hst_dt.strftime("%A, %B %d, %Y")
-            time_str_hst = hst_dt.strftime("%I:%M:%S %p").lstrip('0')
+            try:
+                date_str_local = local_dt.strftime("%A, %B %-d, %Y")
+            except Exception:
+                # Fallback for platforms without %-d (e.g., Windows)
+                date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
+            time_str_local = local_dt.strftime("%I:%M:%S %p").lstrip('0')
             # Convert combined height to feet
             combined_hs_ft = None
             if combined_hs_m is not None:
                 combined_hs_ft = combined_hs_m * M_TO_FT
             # Assemble row
-            row = [date_str_hst, time_str_hst]
+            row = [date_str_local, time_str_local]
             for hs_m, tp_val, dir_val in swell_groups:
                 if hs_m is None:
                     row.extend([None, None, None])
@@ -240,7 +392,8 @@ def parse_bull(station_id: str):
                 start_idx = idx + 1
                 break
         if start_idx is None:
-            return cycle_str, location_str, None, "Data section not found in .bull file."
+            # If we cannot locate the data section, propagate an error along with the timezone name
+            return cycle_str, location_str, None, tz_name, "Data section not found in .bull file."
         # For each subsequent line, parse the forecast hour and swell data
         for line in lines[start_idx:]:
             parts = line.split()
@@ -251,10 +404,17 @@ def parse_bull(station_id: str):
             except ValueError:
                 continue
             utc_dt = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H") + timedelta(hours=hr_offset)
-            hst_dt = utc_dt.replace(tzinfo=UTC).astimezone(HST)
-            date_str_hst = hst_dt.strftime("%A, %B %-d, %Y") if hasattr(hst_dt, 'strftime') else hst_dt.strftime("%A, %B %d, %Y")
-            time_str_hst = hst_dt.strftime("%I:%M:%S %p").lstrip('0')
-            row = [date_str_hst, time_str_hst]
+            try:
+                local_tz = pytz.timezone(tz_name)
+            except Exception:
+                local_tz = UTC
+            local_dt = utc_dt.replace(tzinfo=UTC).astimezone(local_tz)
+            try:
+                date_str_local = local_dt.strftime("%A, %B %-d, %Y")
+            except Exception:
+                date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
+            time_str_local = local_dt.strftime("%I:%M:%S %p").lstrip('0')
+            row = [date_str_local, time_str_local]
             # Extract 6 swell groups (Hs, Tp, Dir)
             idx_base = 6
             for _swell in range(6):
@@ -337,13 +497,13 @@ def parse_bull(station_id: str):
             r[-1] = round(r[-1], 2)
 
     if not rows:
-        return cycle_str, location_str, None, "No data rows parsed from .bull file."
-    return cycle_str, location_str, rows, None
+        return cycle_str, location_str, None, tz_name, "No data rows parsed from .bull file."
+    return cycle_str, location_str, rows, tz_name, None
 
 # -----------------------------------------------------------------------------
 # Table Formatting and Export Helpers
 # -----------------------------------------------------------------------------
-def build_html_table(cycle_str: str, location_str: str, rows: list[list]):
+def build_html_table(cycle_str: str, location_str: str, rows: list[list], tz_name: str):
     """
     Build an HTML table string to display the parsed data in a format similar to the
     provided Excel "Table View" sheet. This function applies background colors
@@ -376,7 +536,7 @@ def build_html_table(cycle_str: str, location_str: str, rows: list[list]):
     # Location row
     html += f'<tr><td colspan="{total_cols}"><strong>{location_str}</strong></td></tr>\n'
     # Time zone row
-    html += f'<tr><td colspan="{total_cols}"><strong>HST</strong></td></tr>\n'
+    html += f'<tr><td colspan="{total_cols}"><strong>{tz_name}</strong></td></tr>\n'
     # Header: group names
     html += '<tr>'
     html += '<th rowspan="2">Date</th>'
@@ -427,7 +587,7 @@ def build_html_table(cycle_str: str, location_str: str, rows: list[list]):
     html += '</table>'
     return html
 
-def build_excel_workbook(cycle_str: str, location_str: str, rows: list[list]):
+def build_excel_workbook(cycle_str: str, location_str: str, rows: list[list], tz_name: str):
     """
     Create an Excel workbook replicating the "Table View" formatting using openpyxl. Colors and
     layout are approximated from the provided template: group headers, unit rows, and colored
@@ -468,9 +628,9 @@ def build_excel_workbook(cycle_str: str, location_str: str, rows: list[list]):
     cell = ws.cell(row=row_idx, column=1, value=location_str)
     cell.font = Font(bold=True)
     row_idx += 1
-    # HST row
+    # Time zone row
     ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
-    cell = ws.cell(row=row_idx, column=1, value="HST")
+    cell = ws.cell(row=row_idx, column=1, value=tz_name)
     cell.font = Font(bold=True)
     row_idx += 1
     # Header: group names
@@ -574,14 +734,28 @@ def index():
     "Table View" sheet. If any errors occur during retrieval or parsing, they are displayed to the user.
     """
     stations = get_station_list()
-    selected_station = request.form.get("station") if request.method == "POST" else "51201"
+    # Build a list of station data (id, name, lat, lon) for the map.  We cross reference
+    # the bullet station IDs with the station metadata to get coordinates.  If
+    # metadata is missing for a station, it will be omitted from the map.
+    stations_data = []
+    try:
+        bullet_ids = get_bullet_station_ids()
+        meta = load_station_metadata()
+        for sid in bullet_ids:
+            info = meta.get(sid)
+            if info and 'lat' in info and 'lon' in info:
+                stations_data.append({'id': sid, 'name': info.get('name', sid), 'lat': info['lat'], 'lon': info['lon']})
+    except Exception:
+        stations_data = []
+    selected_station = request.form.get("station") if request.method == "POST" else request.args.get('station', "")
     table_html = None
     error = None
-    if request.method == "POST":
-        cycle_str, location_str, rows, error = parse_bull(selected_station)
+    # If a station is selected (via GET or POST), parse its bulletin and build the table
+    if selected_station:
+        cycle_str, location_str, rows, tz_name, error = parse_bull(selected_station)
         if rows is not None:
-            table_html = build_html_table(cycle_str, location_str, rows)
-    return render_template("index.html", stations=stations, selected_station=selected_station,
+            table_html = build_html_table(cycle_str, location_str, rows, tz_name)
+    return render_template("index.html", stations=stations, stations_data=stations_data, selected_station=selected_station,
                            table_html=table_html, error=error)
 
 
@@ -594,10 +768,10 @@ def download(station_id: str):
     cycle information, location, header rows, units and colored columns for each swell and the combined
     height. If parsing fails, an error message is returned to the user.
     """
-    cycle_str, location_str, rows, error = parse_bull(station_id)
+    cycle_str, location_str, rows, tz_name, error = parse_bull(station_id)
     if rows is None:
         return f"Error: {error}", 404
-    bio = build_excel_workbook(cycle_str, location_str, rows)
+    bio = build_excel_workbook(cycle_str, location_str, rows, tz_name)
     filename = f"{station_id}_table_view.xlsx"
     return send_file(bio, as_attachment=True, download_name=filename,
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

@@ -41,6 +41,17 @@
                     {% endfor %}
                 </select>
             </div>
+            <!-- Units dropdown -->
+            <div class="col-auto">
+                <label for="unit" class="col-form-label">Units:</label>
+            </div>
+            <div class="col-auto">
+                <select id="unit" name="unit" class="form-select" style="min-width: 120px;">
+                    {% for u in units %}
+                        <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ "Metric" if u == "Metric" else "US" }}</option>
+                    {% endfor %}
+                </select>
+            </div>
             <div class="col-auto">
                 <button type="submit" class="btn btn-primary">Get Latest Data</button>
             </div>
@@ -98,9 +109,17 @@
                             if (tzSelect) {
                                 tzVal = tzSelect.value;
                             }
+                            var unitSelect = document.getElementById('unit');
+                            var unitVal = '';
+                            if (unitSelect) {
+                                unitVal = unitSelect.value;
+                            }
                             var url = '/?station=' + encodeURIComponent(s.id);
                             if (tzVal) {
                                 url += '&tz=' + encodeURIComponent(tzVal);
+                            }
+                            if (unitVal) {
+                                url += '&unit=' + encodeURIComponent(unitVal);
                             }
                             window.location.href = url;
                         });

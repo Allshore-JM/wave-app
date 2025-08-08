@@ -239,47 +239,65 @@ def get_latest_run():
     return None, None
 
 
-def parse_bull(station_id: str):
+def parse_bull(station_id: str, target_tz_name: str | None = None):
     """
     Fetch and parse the .bull file for a given station.
 
-    The NOAA .bull files contain marine forecast data for buoy stations. This parser supports both the
-    traditional "Hr" style bulletins as well as the newer "day & hour" style bulletins. The returned
-    structure focuses on data relevant to the "Table View" worksheet: local date and time (HST),
-    six swell groups (each with height, period and direction) and the combined sea height.
+    The NOAA .bull files contain marine forecast data for buoy stations.  This parser supports both the
+    traditional ``Hr`` style bulletins as well as the newer ``day & hour`` style bulletins.  The
+    returned structure focuses on data relevant to the "Table View" worksheet: local date and time,
+    six swell groups (each with height, period and direction) and the combined sea height.  In
+    addition to the cycle and location strings, this function returns a formatted description of
+    the model run time in the selected timezone.  You may specify a target timezone using the
+    ``target_tz_name`` parameter; if omitted, the buoy's local timezone (determined from its
+    latitude/longitude) will be used.
 
     Parameters:
-        station_id (str): The buoy station identifier (e.g., '51201').
+        station_id (str): The buoy station identifier (e.g., ``'51201'``).
+        target_tz_name (str, optional): An IANA timezone name indicating which timezone to use
+            when formatting all date/time values.  If ``None`` or invalid, the buoy's local
+            timezone will be used.  Examples include ``'Pacific/Honolulu'`` or ``'UTC'``.
 
     Returns:
-        tuple: A tuple of (cycle_str, location_str, rows, tz_name, error). If successful, error is None and rows is
-               a list where each entry corresponds to a forecast row with the following order:
-               [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs].
-               cycle_str and location_str are strings extracted from the bulletin header. tz_name is the
-               IANA timezone name for the buoy location (derived from its latitude/longitude) and is used
-               to label the table. If the timezone cannot be determined, tz_name will be 'UTC'.
+        tuple: ``(cycle_str, location_str, model_run_str, rows, tz_name, error)``.  If
+        parsing succeeds, ``error`` is ``None`` and ``rows`` is a list where each element
+        corresponds to a forecast row with the following order: ``[date_str, time_str, s1_hs,
+        s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs]``.  ``cycle_str`` and
+        ``location_str`` are the raw header strings extracted from the bulletin.  ``model_run_str``
+        is a human‑readable string describing when the model was run (e.g., ``"Model Run:
+        Thursday, August 7, 2025 12:00 PM"``) in the selected timezone.  ``tz_name`` is the
+        timezone actually used for date/time conversions (either the supplied ``target_tz_name``
+        or the buoy's local timezone).  If an error occurs, ``rows`` will be ``None`` and
+        ``error`` will contain a descriptive message.  ``model_run_str`` may be ``None`` when
+        parsing fails.
     """
     # Determine the latest available run (date and hour)
     date_str, run_str = get_latest_run()
     if not date_str:
         # No recent run available; return with UTC as the default timezone
-        return None, None, None, 'UTC', "No recent run found."
+        # Cycle, location, model_run_str are unknown in this case.
+        return None, None, None, None, 'UTC', "No recent run found."
 
     # Download the .bull file for this station and run
     bull_url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
     resp = requests.get(bull_url, timeout=10)
     if resp.status_code != 200:
-        return None, None, None, 'UTC', f"No .bull file found for {station_id}"
+        # Could not download the .bull file for this station/run.  Return default values.
+        return None, None, None, None, 'UTC', f"No .bull file found for {station_id}"
 
     lines = resp.text.splitlines()
     if not lines:
-        return None, None, None, 'UTC', "Downloaded .bull file is empty."
+        # Downloaded .bull file is empty; nothing to parse.
+        return None, None, None, None, 'UTC', "Downloaded .bull file is empty."
 
     # Attempt to extract the cycle and location lines from the header. The .bull header typically contains
     # lines like "Cycle    : 20250807 12 UTC" and "Location : 51201 (21.67N 158.12W)". We look for
     # these prefixes case-insensitively and fall back to the first lines if not found.
-    cycle_line = next((l for l in lines if l.lower().startswith("cycle")), None)
-    location_line = next((l for l in lines if l.lower().startswith("location")), None)
+    # Normalize whitespace before matching so that leading spaces do not
+    # prevent detection of the cycle and location headers.  Some bulletins
+    # prefix these fields with varying amounts of whitespace.
+    cycle_line = next((l for l in lines if l.lower().strip().startswith("cycle")), None)
+    location_line = next((l for l in lines if l.lower().strip().startswith("location")), None)
     if not cycle_line and len(lines) > 0:
         cycle_line = lines[0]
     if not location_line and len(lines) > 1:
@@ -314,6 +332,19 @@ def parse_bull(station_id: str):
         except Exception:
             tz_name = 'UTC'
 
+    # Determine the effective timezone.  Use the target_tz_name if provided and valid,
+    # otherwise fall back to the buoy's local timezone determined above.  If both are
+    # unavailable, default to UTC.
+    effective_tz_name = tz_name
+    if target_tz_name:
+        try:
+            # Validate the provided timezone name
+            _ = pytz.timezone(target_tz_name)
+            effective_tz_name = target_tz_name
+        except Exception:
+            # Ignore invalid timezone names and keep the buoy's local timezone
+            pass
+
     # Detect file format: newer files contain a 'day & hour' notation near the top
     uses_day_hour_format = any("day &" in line.lower() for line in lines[:10])
 
@@ -332,6 +363,19 @@ def parse_bull(station_id: str):
             cycle_dt_utc = datetime.strptime(f"{cycle_date_str} {cycle_hour_str}", "%Y%m%d %H")
         except Exception:
             cycle_dt_utc = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H")
+
+        # Compute the model run time in the effective timezone.  We compute this once
+        # outside the row loop as it depends only on the cycle date/time.  The formatted
+        # string is returned to the caller so it can be displayed in the table header.
+        try:
+            model_run_local = cycle_dt_utc.replace(tzinfo=UTC).astimezone(pytz.timezone(effective_tz_name))
+        except Exception:
+            model_run_local = cycle_dt_utc
+        try:
+            model_run_str = "Model Run: " + model_run_local.strftime("%A, %B %-d, %Y %I:%M %p")
+        except Exception:
+            model_run_str = "Model Run: " + model_run_local.strftime("%A, %B %d, %Y %I:%M %p").lstrip('0')
+
         # Conversion factor (meters to feet)
         M_TO_FT = 3.28084
         for line in lines:
@@ -445,7 +489,32 @@ def parse_bull(station_id: str):
                 break
         if start_idx is None:
             # If we cannot locate the data section, propagate an error along with the timezone name
-            return cycle_str, location_str, None, tz_name, "Data section not found in .bull file."
+            # Return an error if we cannot locate the data section in the old format.  The
+            # model run string is not available in this branch, so set it to None.
+            return cycle_str, location_str, None, None, effective_tz_name, "Data section not found in .bull file."
+
+        # Before parsing the data rows, compute the model run time using the cycle date/time.
+        # We attempt to extract the cycle date and hour from the header; if not available we
+        # fall back to the latest run information (date_str/run_str).
+        m_old = re.search(r"(\d{8})\s*(\d{2})", cycle_str)
+        cycle_date_str_old = date_str
+        cycle_hour_str_old = run_str
+        if m_old:
+            cycle_date_str_old = m_old.group(1)
+            cycle_hour_str_old = m_old.group(2)
+        try:
+            cycle_dt_utc_old = datetime.strptime(f"{cycle_date_str_old} {cycle_hour_str_old}", "%Y%m%d %H")
+        except Exception:
+            cycle_dt_utc_old = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H")
+        try:
+            model_run_local_old = cycle_dt_utc_old.replace(tzinfo=UTC).astimezone(pytz.timezone(effective_tz_name))
+        except Exception:
+            model_run_local_old = cycle_dt_utc_old
+        try:
+            model_run_str = "Model Run: " + model_run_local_old.strftime("%A, %B %-d, %Y %I:%M %p")
+        except Exception:
+            model_run_str = "Model Run: " + model_run_local_old.strftime("%A, %B %d, %Y %I:%M %p").lstrip('0')
+
         # For each subsequent line, parse the forecast hour and swell data
         for line in lines[start_idx:]:
             parts = line.split()
@@ -455,9 +524,10 @@ def parse_bull(station_id: str):
                 hr_offset = float(parts[0])
             except ValueError:
                 continue
-            utc_dt = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H") + timedelta(hours=hr_offset)
+            # Anchor the forecast time to the cycle date/time and add the hour offset
+            utc_dt = cycle_dt_utc_old + timedelta(hours=hr_offset)
             try:
-                local_tz = pytz.timezone(tz_name)
+                local_tz = pytz.timezone(effective_tz_name)
             except Exception:
                 local_tz = UTC
             local_dt = utc_dt.replace(tzinfo=UTC).astimezone(local_tz)
@@ -549,26 +619,36 @@ def parse_bull(station_id: str):
             r[-1] = round(r[-1], 2)
 
     if not rows:
-        return cycle_str, location_str, None, tz_name, "No data rows parsed from .bull file."
-    return cycle_str, location_str, rows, tz_name, None
+        # No valid data rows were parsed.  Return model_run_str as None and propagate the timezone.
+        return cycle_str, location_str, None, None, effective_tz_name, "No data rows parsed from .bull file."
+    # Successful parse: return the header strings, the computed model run string, the rows,
+    # the effective timezone name, and no error.
+    return cycle_str, location_str, model_run_str if 'model_run_str' in locals() else None, rows, effective_tz_name, None
 
 # -----------------------------------------------------------------------------
 # Table Formatting and Export Helpers
 # -----------------------------------------------------------------------------
-def build_html_table(cycle_str: str, location_str: str, rows: list[list], tz_name: str):
+def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None, rows: list[list], tz_label: str) -> str:
     """
-    Build an HTML table string to display the parsed data in a format similar to the
-    provided Excel "Table View" sheet. This function applies background colors
-    and simple styling for headers, subheaders, and data rows.
+    Build an HTML table string that closely follows the appearance of the provided
+    Excel "Table View" worksheet.  The table begins with several metadata
+    rows, including the cycle description, the station location, the model
+    run time (if available) and the currently selected time zone.  The
+    subsequent header and unit rows are colour coded per swell group, and
+    numeric values are right-aligned.
 
     Parameters:
-        cycle_str (str): Text describing the model cycle (e.g., "Cycle    : 20250807 12 UTC").
-        location_str (str): Text describing the station location (e.g., "Location : 51201 (21.67N 158.12W)").
-        rows (list): A list where each element is a list representing a data row. Each
-                     row entry must be in the order: [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs].
+        cycle_str: Raw cycle description extracted from the bulletin (e.g.,
+            ``"Cycle    : 20250807 12 UTC"``).
+        location_str: Raw location description (e.g., ``"Location : 51201 (21.67N 158.12W)"``).
+        model_run_str: Human‑readable description of the model run time, or
+            ``None`` if unavailable (e.g., ``"Model Run: Thursday, August 7, 2025 12:00 PM"``).
+        rows: Parsed forecast rows.  Each row must be a list with elements
+            ``[date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs]``.
+        tz_label: The name of the timezone being used for date/time formatting.
 
     Returns:
-        str: A complete HTML table ready for embedding in the template.
+        A string containing the HTML markup for the complete table.
     """
     # Define color palette for the six swell groups and the combined column. The palette uses
     # darker colors for headers, lighter shades for subheaders, and very light shades for data.
@@ -587,8 +667,11 @@ def build_html_table(cycle_str: str, location_str: str, rows: list[list], tz_nam
     html += f'<tr><td colspan="{total_cols}"><strong>{cycle_str}</strong></td></tr>\n'
     # Location row
     html += f'<tr><td colspan="{total_cols}"><strong>{location_str}</strong></td></tr>\n'
+    # Model run row (optional)
+    if model_run_str:
+        html += f'<tr><td colspan="{total_cols}"><strong>{model_run_str}</strong></td></tr>\n'
     # Time zone row
-    html += f'<tr><td colspan="{total_cols}"><strong>{tz_name}</strong></td></tr>\n'
+    html += f'<tr><td colspan="{total_cols}"><strong>Time Zone: {tz_label}</strong></td></tr>\n'
     # Header: group names
     html += '<tr>'
     html += '<th rowspan="2">Date</th>'
@@ -639,20 +722,25 @@ def build_html_table(cycle_str: str, location_str: str, rows: list[list], tz_nam
     html += '</table>'
     return html
 
-def build_excel_workbook(cycle_str: str, location_str: str, rows: list[list], tz_name: str):
+def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str | None, rows: list[list], tz_label: str) -> BytesIO:
     """
-    Create an Excel workbook replicating the "Table View" formatting using openpyxl. Colors and
-    layout are approximated from the provided template: group headers, unit rows, and colored
-    columns for each swell and combined height. Date and time are separated into their own
-    columns and formatted accordingly.
+    Create an Excel workbook that mirrors the formatting of the Excel "Table View"
+    worksheet.  This version includes additional rows for the model run time
+    (if available) and the selected time zone.  Colours and layout are
+    approximated from the original template: each swell group has a distinct
+    header colour, subheader colour and data fill, and the combined column
+    uses its own colours.  Date and time occupy the first two columns.
 
     Parameters:
-        cycle_str (str): Cycle description.
-        location_str (str): Location description.
-        rows (list of lists): Parsed data rows as produced by parse_bull().
+        cycle_str: The model cycle description string.
+        location_str: The station location description string.
+        model_run_str: A descriptive string indicating when the model was run,
+            or ``None`` if unavailable.
+        rows: Parsed forecast rows as returned by ``parse_bull()``.
+        tz_label: The name of the time zone used for date/time conversions.
 
     Returns:
-        BytesIO: An in-memory bytes buffer containing the Excel file.
+        A ``BytesIO`` object containing the generated Excel file.
     """
     wb = Workbook()
     ws = wb.active
@@ -670,7 +758,7 @@ def build_excel_workbook(cycle_str: str, location_str: str, rows: list[list], tz
     total_cols = 2 + len(group_colors) * 3 + 1
     # Row counters
     row_idx = 1
-    # Cycle row (merged)
+    # Cycle row
     ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
     cell = ws.cell(row=row_idx, column=1, value=cycle_str)
     cell.font = Font(bold=True)
@@ -680,9 +768,15 @@ def build_excel_workbook(cycle_str: str, location_str: str, rows: list[list], tz
     cell = ws.cell(row=row_idx, column=1, value=location_str)
     cell.font = Font(bold=True)
     row_idx += 1
+    # Model run row (if provided)
+    if model_run_str:
+        ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
+        cell = ws.cell(row=row_idx, column=1, value=model_run_str)
+        cell.font = Font(bold=True)
+        row_idx += 1
     # Time zone row
     ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
-    cell = ws.cell(row=row_idx, column=1, value=tz_name)
+    cell = ws.cell(row=row_idx, column=1, value=f"Time Zone: {tz_label}")
     cell.font = Font(bold=True)
     row_idx += 1
     # Header: group names
@@ -781,26 +875,58 @@ def index():
     """
     Home route for the application.
 
-    Displays a form allowing the user to select a buoy station. Upon submission, the latest wave forecast
-    is fetched and rendered as an HTML table that closely follows the formatting of the provided Excel
-    "Table View" sheet. If any errors occur during retrieval or parsing, they are displayed to the user.
+    The home page presents an interactive map for station selection and a
+    fallback form containing a station dropdown and a timezone dropdown.  When
+    the user selects a station (via form submission or clicking a map
+    marker), the latest wave forecast is retrieved, parsed and displayed in
+    a table that mirrors the provided Excel "Table View" worksheet.  Users
+    can select a time zone from the dropdown; if none is selected, the
+    buoy's local time zone is used.  Any parsing or retrieval errors are
+    surfaced to the user.
     """
+    # Build list of available stations for the dropdown
     stations = get_station_list()
-    # We no longer build the full stations_data list here.  The list of station
-    # metadata used by the map is served asynchronously via the /stations.json
-    # endpoint.  This avoids injecting a very large JSON object directly into
-    # the HTML, which can cause the page to exceed browser size limits.  The
-    # dropdown still uses a list of (id, name) tuples for quick selection.
-    selected_station = request.form.get("station") if request.method == "POST" else request.args.get('station', "")
+    # Build list of common time zones for the timezone dropdown.  Using
+    # pytz.common_timezones yields a manageable set of well‑known zones.
+    timezones = sorted(pytz.common_timezones)
+
+    # Determine which station and timezone have been selected.  The station
+    # can be supplied via a POST form field or a query parameter.  The
+    # timezone can similarly be supplied via "tz" in either POST or GET.
+    selected_station = None
+    selected_tz = None
+    if request.method == "POST":
+        selected_station = request.form.get("station") or ""
+        selected_tz = request.form.get("tz") or ""
+    else:
+        selected_station = request.args.get("station", "")
+        selected_tz = request.args.get("tz", "")
+
     table_html = None
     error = None
-    # If a station is selected (via GET or POST), parse its bulletin and build the table
+    tz_label = ""
+    # If a station is selected, fetch and parse the bulletin using the
+    # selected timezone (if any).  The parse_bull() function returns
+    # cycle/location strings, a model run string, the data rows, the
+    # effective timezone name actually used and any error message.
     if selected_station:
-        cycle_str, location_str, rows, tz_name, error = parse_bull(selected_station)
+        cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(selected_station, selected_tz or None)
+        error = parse_error
         if rows is not None:
-            table_html = build_html_table(cycle_str, location_str, rows, tz_name)
-    return render_template("index.html", stations=stations, selected_station=selected_station,
-                           table_html=table_html, error=error)
+            # Use the effective timezone name (returned by parse_bull) as the label
+            tz_label = effective_tz_name
+            table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label)
+    # Render template with all context variables.  Also pass the timezones
+    # list and the currently selected timezone for the dropdown.
+    return render_template(
+        "index.html",
+        stations=stations,
+        selected_station=selected_station,
+        timezones=timezones,
+        selected_tz=selected_tz or tz_label,
+        table_html=table_html,
+        error=error,
+    )
 
 
 @app.route("/download/<station_id>")
@@ -808,17 +934,29 @@ def download(station_id: str):
     """
     Download endpoint.
 
-    Generates an Excel file that matches the styling of the "Table View" worksheet. The file includes the
-    cycle information, location, header rows, units and colored columns for each swell and the combined
-    height. If parsing fails, an error message is returned to the user.
+    Generates an Excel file formatted like the "Table View" worksheet.  The
+    timezone for date/time formatting can be supplied via a query parameter
+    ``tz``.  The Excel workbook includes the cycle description, station
+    location, model run time (if available), time zone label and all parsed
+    forecast data with coloured columns.  If parsing fails, a plain text
+    error message is returned.
     """
-    cycle_str, location_str, rows, tz_name, error = parse_bull(station_id)
+    # Retrieve the desired timezone from the query string; this may be
+    # empty or invalid.  parse_bull() will handle validation and fall
+    # back to the buoy's local timezone if necessary.
+    tz_param = request.args.get("tz", "")
+    cycle_str, location_str, model_run_str, rows, effective_tz_name, error = parse_bull(station_id, tz_param or None)
     if rows is None:
         return f"Error: {error}", 404
-    bio = build_excel_workbook(cycle_str, location_str, rows, tz_name)
+    # Use the effective timezone name as the label in the Excel file
+    bio = build_excel_workbook(cycle_str, location_str, model_run_str, rows, effective_tz_name)
     filename = f"{station_id}_table_view.xlsx"
-    return send_file(bio, as_attachment=True, download_name=filename,
-                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return send_file(
+        bio,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 if __name__ == "__main__":

@@ -1,9 +1,11 @@
 from flask import Flask, render_template, request, send_file
-import pandas as pd
+import pandas as pd  # still used for fallback Excel generation if needed
 import requests
 from io import BytesIO
 from datetime import datetime, timedelta
 import pytz
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font, Alignment
 
 app = Flask(__name__)
 
@@ -74,64 +76,68 @@ def parse_bull(station_id: str):
     """
     Fetch and parse the .bull file for a given station.
 
-    This function fetches the latest .bull file for the station and extracts the necessary data into a pandas
-    DataFrame. The DataFrame columns are structured to match the Excel 'Table View' with multi-level headers.
+    The NOAA .bull files contain marine forecast data for buoy stations. This parser supports both the
+    traditional "Hr" style bulletins as well as the newer "day & hour" style bulletins. The returned
+    structure focuses on data relevant to the "Table View" worksheet: local date and time (HST),
+    six swell groups (each with height, period and direction) and the combined sea height.
 
     Parameters:
-        station_id (str): The identifier of the buoy station (e.g., '51201').
+        station_id (str): The buoy station identifier (e.g., '51201').
 
     Returns:
-        tuple: A tuple containing the final DataFrame and an optional error message. If successful, the error is None.
+        tuple: A tuple of (cycle_str, location_str, rows, error). If successful, error is None and rows is
+               a list where each entry corresponds to a forecast row with the following order:
+               [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs].
+               cycle_str and location_str are strings extracted from the bulletin header.
     """
+    # Determine the latest available run (date and hour)
     date_str, run_str = get_latest_run()
     if not date_str:
-        return None, "No recent run found."
+        return None, None, None, "No recent run found."
 
-    # Build the URL for the .bull file for the given station and latest run
+    # Download the .bull file for this station and run
     bull_url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
     resp = requests.get(bull_url, timeout=10)
     if resp.status_code != 200:
-        return None, f"No .bull file found for {station_id}"
+        return None, None, None, f"No .bull file found for {station_id}"
 
     lines = resp.text.splitlines()
     if not lines:
-        return None, "Downloaded .bull file is empty."
+        return None, None, None, "Downloaded .bull file is empty."
 
-    # Extract cycle and location information for metadata
-    cycle_info = lines[0].strip()
-    loc_info = lines[1].strip() if len(lines) > 1 else ""
+    # Attempt to extract the cycle and location lines from the header. The .bull header typically contains
+    # lines like "Cycle    : 20250807 12 UTC" and "Location : 51201 (21.67N 158.12W)". We look for
+    # these prefixes case-insensitively and fall back to the first lines if not found.
+    cycle_line = next((l for l in lines if l.lower().startswith("cycle")), None)
+    location_line = next((l for l in lines if l.lower().startswith("location")), None)
+    if not cycle_line and len(lines) > 0:
+        cycle_line = lines[0]
+    if not location_line and len(lines) > 1:
+        location_line = lines[1]
+    cycle_str = cycle_line.strip() if cycle_line else ""
+    location_str = location_line.strip() if location_line else ""
 
-    # Detect which format the .bull file uses. Some files use "day & hour" headers, others use "Hr" column.
-    # If a line containing "day &" appears within the first few lines, treat it as the day/hour format.
+    # Detect file format: newer files contain a 'day & hour' notation near the top
     uses_day_hour_format = any("day &" in line.lower() for line in lines[:10])
 
-    # Prepare lists for storing parsed rows
-    data_rows = []
+    rows = []  # will hold the parsed forecast rows
 
     if uses_day_hour_format:
-        # Parse the "day & hour" style bulletin. Each data row is delineated by '|' and contains day, hour, Hst, and up to 6 swell groups.
-        # Example row: |  7 12 | 0.95  5   |   0.82 10.0 235 |   0.26  9.5 141 | ... |
-        # We convert Hst (combined height) and each swell Hs from meters to feet.
-
-        # First, parse the cycle date/time from the cycle_info line (e.g., "Cycle    : 20250807 12 UTC")
+        # ----- Newer format parser: data rows delineated by '|', containing day, hour, Hst and up to six swells -----
         import re
-        m = re.search(r"(\d{8})\s*(\d{2})", cycle_info)
-        # Fallback to the date_str/run_str if cycle_info cannot be parsed
+        # Attempt to parse the cycle date/time (YYYYMMDD HH) from the cycle_str
+        m = re.search(r"(\d{8})\s*(\d{2})", cycle_str)
         cycle_date_str = date_str
         cycle_hour_str = run_str
         if m:
             cycle_date_str = m.group(1)
             cycle_hour_str = m.group(2)
-        # Convert to datetime
         try:
             cycle_dt_utc = datetime.strptime(f"{cycle_date_str} {cycle_hour_str}", "%Y%m%d %H")
         except Exception:
             cycle_dt_utc = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H")
-
-        # Conversion factor from meters to feet
+        # Conversion factor (meters to feet)
         M_TO_FT = 3.28084
-
-        # Iterate over each line and parse rows that begin with '|'
         for line in lines:
             striped = line.strip()
             if not striped.startswith("|"):
@@ -139,192 +145,390 @@ def parse_bull(station_id: str):
             # Skip header or separator lines
             if "Hst" in striped or "---" in striped:
                 continue
-            # Split the row by '|' and clean each field
-            fields = [f.strip() for f in line.split("|")]
-            # After splitting, fields[0] is an empty string (leading part), so remove empty entries
-            fields = [f for f in fields if f != ""]
-            if not fields:
+            # Split into fields; remove empty segments
+            parts = [p.strip() for p in line.split("|") if p.strip()]
+            if not parts:
                 continue
-            # Expect at least 2 fields: day/hour and Hst
-            # The first field contains day and hour separated by spaces
-            day_hour = fields[0].split()
+            # The first field holds day and hour
+            day_hour = parts[0].split()
             if len(day_hour) < 2:
                 continue
             try:
-                day = int(day_hour[0])
-                hour = int(day_hour[1])
+                day_val = int(day_hour[0])
+                hour_val = int(day_hour[1])
             except ValueError:
                 continue
-
-            # Hst field is second in the list (fields[1]). The first numeric value is combined height in meters.
-            hst_tokens = fields[1].split()
-            if not hst_tokens:
-                continue
-            try:
-                combined_hs_m = float(hst_tokens[0])
-            except ValueError:
-                combined_hs_m = None
-
-            # Parse swell groups. Each subsequent field contains Hs, Tp, and Dir. There should be up to 6 swells.
-            swell_data = []
-            for swell_field in fields[2:]:
-                # Skip empty swell fields
-                if swell_field.strip() == "":
-                    swell_data.append((None, None, None))
+            # Combined height (Hst) is in the second field; take the first numeric token
+            hst_tokens = parts[1].split()
+            combined_hs_m = None
+            if hst_tokens:
+                try:
+                    combined_hs_m = float(hst_tokens[0])
+                except ValueError:
+                    combined_hs_m = None
+            # Swell groups start at parts[2]; each has up to 3 values (hs, tp, dir)
+            swell_groups = []
+            for swell_field in parts[2:]:
+                if not swell_field:
+                    swell_groups.append((None, None, None))
                     continue
-                parts = swell_field.split()
-                if len(parts) < 3:
-                    swell_data.append((None, None, None))
+                tokens = swell_field.split()
+                if len(tokens) < 3:
+                    swell_groups.append((None, None, None))
                 else:
                     try:
-                        hs_m = float(parts[0])
-                        tp = float(parts[1])
-                        direction = int(parts[2])
-                        swell_data.append((hs_m, tp, direction))
+                        hs_val = float(tokens[0])
+                        tp_val = float(tokens[1])
+                        dir_val = int(tokens[2])
+                        swell_groups.append((hs_val, tp_val, dir_val))
                     except ValueError:
-                        swell_data.append((None, None, None))
-            # Ensure exactly 6 swell groups by padding with None if necessary
-            while len(swell_data) < 6:
-                swell_data.append((None, None, None))
-            if len(swell_data) > 6:
-                swell_data = swell_data[:6]
-
-            # Compute the forecast hour difference relative to the cycle
-            # The forecast date/time is constructed from the cycle date and the day/hour fields.
-            forecast_dt_utc = cycle_dt_utc.replace(day=day, hour=hour)
-            # If day/month wrap-around happens, adjust using timedelta
+                        swell_groups.append((None, None, None))
+            # Ensure exactly six swell groups
+            while len(swell_groups) < 6:
+                swell_groups.append((None, None, None))
+            if len(swell_groups) > 6:
+                swell_groups = swell_groups[:6]
+            # Compute forecast UTC datetime by replacing day and hour on the cycle date; adjust forward if earlier than cycle
+            try:
+                forecast_dt_utc = cycle_dt_utc.replace(day=day_val, hour=hour_val)
+            except ValueError:
+                # In case of invalid day (e.g., February 30), skip
+                continue
             if forecast_dt_utc < cycle_dt_utc:
-                # Add 24 hours until forecast time >= cycle time
+                # Adjust into the future if forecast time is before cycle time
                 while forecast_dt_utc < cycle_dt_utc:
                     forecast_dt_utc += timedelta(days=1)
-            hr_offset = (forecast_dt_utc - cycle_dt_utc).total_seconds() / 3600.0
-
-            # Prepare row: forecast hour offset, UTC time, HST time
-            hst_time = forecast_dt_utc.replace(tzinfo=UTC).astimezone(HST)
-            row = [hr_offset, forecast_dt_utc, hst_time]
-
-            # Append swell values converting heights to feet
-            for hs_m, tp_val, dir_val in swell_data:
+            # Convert to HST
+            hst_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(HST)
+            # Format date and time strings in the desired presentation
+            date_str_hst = hst_dt.strftime("%A, %B %-d, %Y") if hasattr(hst_dt, 'strftime') else hst_dt.strftime("%A, %B %d, %Y")
+            time_str_hst = hst_dt.strftime("%I:%M:%S %p").lstrip('0')
+            # Convert combined height to feet
+            combined_hs_ft = None
+            if combined_hs_m is not None:
+                combined_hs_ft = combined_hs_m * M_TO_FT
+            # Assemble row
+            row = [date_str_hst, time_str_hst]
+            for hs_m, tp_val, dir_val in swell_groups:
                 if hs_m is None:
                     row.extend([None, None, None])
                 else:
                     row.extend([hs_m * M_TO_FT, tp_val, dir_val])
-
-            # Append combined height in feet
-            if combined_hs_m is None:
-                row.append(None)
-            else:
-                row.append(combined_hs_m * M_TO_FT)
-
-            data_rows.append(row)
+            row.append(combined_hs_ft)
+            rows.append(row)
     else:
-        # Parse the older style where the header starts with "Hr" (Hr, Hs, Tp, Dir, etc.)
-        # Determine where the data begins by finding the 'Hr' header line
-        data_start = None
+        # ----- Older format parser: header contains "Hr" followed by swell data -----
+        # Locate the line starting with 'Hr' to identify where data begins
+        start_idx = None
         for idx, line in enumerate(lines):
             if line.strip().startswith("Hr"):
-                data_start = idx + 1
+                start_idx = idx + 1
                 break
-        if data_start is None:
-            return None, "Data section not found in .bull file."
-
-        # Define the column names to match the Table View (time and six swells)
-        col_names = ["Time", "UTC Time", "HST Time"]
-        for swell in range(1, 7):
-            col_names.extend([
-                f"Swell {swell} Hs",
-                f"Swell {swell} Tp",
-                f"Swell {swell} Dir",
-            ])
-        col_names.append("Combined Hs")
-
-        for line in lines[data_start:]:
+        if start_idx is None:
+            return cycle_str, location_str, None, "Data section not found in .bull file."
+        # For each subsequent line, parse the forecast hour and swell data
+        for line in lines[start_idx:]:
             parts = line.split()
-            # Expect at least 20 elements (Hr, then 6 * 3 values for swells, plus combined)
             if len(parts) < 20:
                 continue
             try:
-                hr = float(parts[0])
+                hr_offset = float(parts[0])
             except ValueError:
                 continue
-            # Compute absolute times based on the run timestamp plus forecast hour
-            utc_time = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H") + timedelta(hours=hr)
-            hst_time = utc_time.replace(tzinfo=UTC).astimezone(HST)
-            row = [hr, utc_time, hst_time]
-
-            # Extract swell data: 6 swell groups, each with Hs, Tp, Dir
-            for swell_idx in range(1, 7):
-                base = 3 * (swell_idx - 1) + 6
+            utc_dt = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H") + timedelta(hours=hr_offset)
+            hst_dt = utc_dt.replace(tzinfo=UTC).astimezone(HST)
+            date_str_hst = hst_dt.strftime("%A, %B %-d, %Y") if hasattr(hst_dt, 'strftime') else hst_dt.strftime("%A, %B %d, %Y")
+            time_str_hst = hst_dt.strftime("%I:%M:%S %p").lstrip('0')
+            row = [date_str_hst, time_str_hst]
+            # Extract 6 swell groups (Hs, Tp, Dir)
+            idx_base = 6
+            for _swell in range(6):
                 try:
-                    hs = float(parts[base])
-                    tp_val = float(parts[base + 1])
-                    direction = int(parts[base + 2])
-                    # Convert height from meters to feet
-                    row.extend([hs * 3.28084, tp_val, direction])
-                except (IndexError, ValueError):
+                    hs_val = float(parts[idx_base])
+                    tp_val = float(parts[idx_base + 1])
+                    dir_val = int(parts[idx_base + 2])
+                    row.extend([hs_val * 3.28084, tp_val, dir_val])
+                    idx_base += 3
+                except (ValueError, IndexError):
                     row.extend([None, None, None])
-            # Combined Hs is the last field in the line; convert to feet
+                    idx_base += 3
+            # Combined height is last field
             try:
-                row.append(float(parts[-1]) * 3.28084)
-            except (IndexError, ValueError):
-                row.append(None)
+                combined_hs_ft = float(parts[-1]) * 3.28084
+            except (ValueError, IndexError):
+                combined_hs_ft = None
+            row.append(combined_hs_ft)
+            rows.append(row)
 
-            data_rows.append(row)
+    # Round numeric values: Hs and Combined to 2 decimals, Tp to 1 decimal, Direction to int
+    for i, r in enumerate(rows):
+        # Starting index after date and time
+        idx_num = 2
+        for g in range(6):
+            # Hs
+            if r[idx_num] is not None:
+                r[idx_num] = round(r[idx_num], 2)
+            idx_num += 1
+            # Tp
+            if r[idx_num] is not None:
+                r[idx_num] = round(r[idx_num], 1)
+            idx_num += 1
+            # Direction (keep as int)
+            if r[idx_num] is not None:
+                try:
+                    r[idx_num] = int(round(r[idx_num]))
+                except Exception:
+                    pass
+            idx_num += 1
+        # Combined Hs
+        if r[-1] is not None:
+            r[-1] = round(r[-1], 2)
 
-    # If no data rows were parsed, return error
-    if not data_rows:
-        return None, "No data rows parsed from .bull file."
+    if not rows:
+        return cycle_str, location_str, None, "No data rows parsed from .bull file."
+    return cycle_str, location_str, rows, None
 
-    # Build a DataFrame from the parsed rows. The columns correspond to time, UTC/HST, swells, combined Hs.
-    col_names = ["Time", "UTC Time", "HST Time"]
-    for swell in range(1, 7):
-        col_names.extend([
-            f"Swell {swell} Hs",
-            f"Swell {swell} Tp",
-            f"Swell {swell} Dir",
-        ])
-    col_names.append("Combined Hs")
-    df = pd.DataFrame(data_rows, columns=col_names)
+# -----------------------------------------------------------------------------
+# Table Formatting and Export Helpers
+# -----------------------------------------------------------------------------
+def build_html_table(cycle_str: str, location_str: str, rows: list[list]):
+    """
+    Build an HTML table string to display the parsed data in a format similar to the
+    provided Excel "Table View" sheet. This function applies background colors
+    and simple styling for headers, subheaders, and data rows.
 
-    # Construct multi-level headers similar to the Excel Table View
-    header1 = ["Time", "UTC Time", "HST Time"]
-    header2 = ["", "", ""]
-    for swell in range(1, 7):
-        header1.extend([f"Swell {swell}", "", ""])
-        header2.extend(["Hs", "Tp", "Dir"])
-    header1.append("Combined")
-    header2.append("Hs")
-    units = ["", "", ""] + ["(ft)", "(s)", "(d)"] * 6 + ["(ft)"]
+    Parameters:
+        cycle_str (str): Text describing the model cycle (e.g., "Cycle    : 20250807 12 UTC").
+        location_str (str): Text describing the station location (e.g., "Location : 51201 (21.67N 158.12W)").
+        rows (list): A list where each element is a list representing a data row. Each
+                     row entry must be in the order: [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs].
 
-    df.columns = pd.MultiIndex.from_tuples(zip(header1, header2))
+    Returns:
+        str: A complete HTML table ready for embedding in the template.
+    """
+    # Define color palette for the six swell groups and the combined column. The palette uses
+    # darker colors for headers, lighter shades for subheaders, and very light shades for data.
+    group_colors = [
+        {"header": "#C00000", "subheader": "#F8CBAD", "data": "#FDE9D9"},  # Swell 1
+        {"header": "#E46C0A", "subheader": "#F9D5B5", "data": "#FCE9DB"},  # Swell 2
+        {"header": "#FFC000", "subheader": "#FFF2CC", "data": "#FFF9E5"},  # Swell 3
+        {"header": "#00B050", "subheader": "#D5E8D4", "data": "#EAF3E8"},  # Swell 4
+        {"header": "#00B0F0", "subheader": "#D9EAF6", "data": "#ECF5FB"},  # Swell 5
+        {"header": "#92D050", "subheader": "#E2F0D9", "data": "#F2F8EE"},  # Swell 6
+    ]
+    combined_colors = {"header": "#7030A0", "subheader": "#D9D2E9", "data": "#EDE9F4"}
+    total_cols = 2 + len(group_colors) * 3 + 1  # 2 for date/time, 3 per swell, 1 for combined
+    html = '<table class="table table-bordered table-sm">\n'
+    # Cycle row
+    html += f'<tr><td colspan="{total_cols}"><strong>{cycle_str}</strong></td></tr>\n'
+    # Location row
+    html += f'<tr><td colspan="{total_cols}"><strong>{location_str}</strong></td></tr>\n'
+    # Time zone row
+    html += f'<tr><td colspan="{total_cols}"><strong>HST</strong></td></tr>\n'
+    # Header: group names
+    html += '<tr>'
+    html += '<th rowspan="2">Date</th>'
+    html += '<th rowspan="2">Time</th>'
+    for idx, col in enumerate(group_colors, start=1):
+        html += f'<th colspan="3" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {idx}</th>'
+    # Combined column header
+    html += f'<th rowspan="2" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
+    html += '</tr>\n'
+    # Subheader: units
+    html += '<tr>'
+    for col in group_colors:
+        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Hs<br>(ft)</th>'
+        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
+        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Dir<br>(d)</th>'
+    # Combined units
+    html += f'<th style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>(ft)</th>'
+    html += '</tr>\n'
+    # Data rows
+    for row in rows:
+        html += '<tr>'
+        # Date (bold)
+        html += f'<td style="font-weight:bold;">{row[0]}</td>'
+        # Time
+        html += f'<td>{row[1]}</td>'
+        idx = 2
+        for col in group_colors:
+            # Hs (ft)
+            val = row[idx]
+            hs_str = "" if val is None else f"{val:.2f}"
+            html += f'<td style="background-color:{col["data"]}; text-align:right;">{hs_str}</td>'
+            idx += 1
+            # Tp (s)
+            val = row[idx]
+            tp_str = "" if val is None else f"{val:.1f}"
+            html += f'<td style="background-color:{col["data"]}; text-align:right;">{tp_str}</td>'
+            idx += 1
+            # Direction (d)
+            val = row[idx]
+            dir_str = "" if val is None else f"{val}"
+            html += f'<td style="background-color:{col["data"]}; text-align:right;">{dir_str}</td>'
+            idx += 1
+        # Combined Hs
+        val = row[-1]
+        comb_str = "" if val is None else f"{val:.2f}"
+        html += f'<td style="background-color:{combined_colors["data"]}; text-align:right;">{comb_str}</td>'
+        html += '</tr>\n'
+    html += '</table>'
+    return html
 
-    # Create metadata rows for cycle info, units, and blank row
-    meta_row = pd.DataFrame([[cycle_info] + [""] * (df.shape[1] - 1)], columns=df.columns)
-    unit_row = pd.DataFrame([units], columns=df.columns)
-    blank_row = pd.DataFrame([[""] * df.shape[1]], columns=df.columns)
+def build_excel_workbook(cycle_str: str, location_str: str, rows: list[list]):
+    """
+    Create an Excel workbook replicating the "Table View" formatting using openpyxl. Colors and
+    layout are approximated from the provided template: group headers, unit rows, and colored
+    columns for each swell and combined height. Date and time are separated into their own
+    columns and formatted accordingly.
 
-    # Combine metadata and data rows into the final DataFrame
-    final_df = pd.concat([meta_row, unit_row, blank_row, df], ignore_index=True)
-    return final_df, None
+    Parameters:
+        cycle_str (str): Cycle description.
+        location_str (str): Location description.
+        rows (list of lists): Parsed data rows as produced by parse_bull().
+
+    Returns:
+        BytesIO: An in-memory bytes buffer containing the Excel file.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Table View"
+    # Define colors matching the HTML table
+    group_colors = [
+        {"header": "C00000", "subheader": "F8CBAD", "data": "FDE9D9"},
+        {"header": "E46C0A", "subheader": "F9D5B5", "data": "FCE9DB"},
+        {"header": "FFC000", "subheader": "FFF2CC", "data": "FFF9E5"},
+        {"header": "00B050", "subheader": "D5E8D4", "data": "EAF3E8"},
+        {"header": "00B0F0", "subheader": "D9EAF6", "data": "ECF5FB"},
+        {"header": "92D050", "subheader": "E2F0D9", "data": "F2F8EE"},
+    ]
+    combined_colors = {"header": "7030A0", "subheader": "D9D2E9", "data": "EDE9F4"}
+    total_cols = 2 + len(group_colors) * 3 + 1
+    # Row counters
+    row_idx = 1
+    # Cycle row (merged)
+    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
+    cell = ws.cell(row=row_idx, column=1, value=cycle_str)
+    cell.font = Font(bold=True)
+    row_idx += 1
+    # Location row
+    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
+    cell = ws.cell(row=row_idx, column=1, value=location_str)
+    cell.font = Font(bold=True)
+    row_idx += 1
+    # HST row
+    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
+    cell = ws.cell(row=row_idx, column=1, value="HST")
+    cell.font = Font(bold=True)
+    row_idx += 1
+    # Header: group names
+    ws.cell(row=row_idx, column=1, value="Date").font = Font(bold=True)
+    ws.cell(row=row_idx, column=2, value="Time").font = Font(bold=True)
+    col_idx = 3
+    for idx, colors in enumerate(group_colors, start=1):
+        ws.merge_cells(start_row=row_idx, start_column=col_idx, end_row=row_idx, end_column=col_idx + 2)
+        hdr_cell = ws.cell(row=row_idx, column=col_idx, value=f"Swell {idx}")
+        hdr_cell.fill = PatternFill(start_color=colors["header"], end_color=colors["header"], fill_type="solid")
+        hdr_cell.font = Font(bold=True, color="FFFFFF")
+        hdr_cell.alignment = Alignment(horizontal="center")
+        col_idx += 3
+    # Combined header
+    ws.merge_cells(start_row=row_idx, start_column=col_idx, end_row=row_idx, end_column=col_idx)
+    comb_cell = ws.cell(row=row_idx, column=col_idx, value="Combined")
+    comb_cell.fill = PatternFill(start_color=combined_colors["header"], end_color=combined_colors["header"], fill_type="solid")
+    comb_cell.font = Font(bold=True, color="FFFFFF")
+    comb_cell.alignment = Alignment(horizontal="center")
+    # Subheader row
+    row_idx += 1
+    col_idx = 3
+    for colors in group_colors:
+        # Hs
+        cell = ws.cell(row=row_idx, column=col_idx, value="Hs (ft)")
+        cell.fill = PatternFill(start_color=colors["subheader"], end_color=colors["subheader"], fill_type="solid")
+        cell.alignment = Alignment(horizontal="center")
+        cell.font = Font(bold=True)
+        col_idx += 1
+        # Tp
+        cell = ws.cell(row=row_idx, column=col_idx, value="Tp (s)")
+        cell.fill = PatternFill(start_color=colors["subheader"], end_color=colors["subheader"], fill_type="solid")
+        cell.alignment = Alignment(horizontal="center")
+        cell.font = Font(bold=True)
+        col_idx += 1
+        # Dir
+        cell = ws.cell(row=row_idx, column=col_idx, value="Dir (d)")
+        cell.fill = PatternFill(start_color=colors["subheader"], end_color=colors["subheader"], fill_type="solid")
+        cell.alignment = Alignment(horizontal="center")
+        cell.font = Font(bold=True)
+        col_idx += 1
+    # Combined subheader
+    cell = ws.cell(row=row_idx, column=col_idx, value="Hs (ft)")
+    cell.fill = PatternFill(start_color=combined_colors["subheader"], end_color=combined_colors["subheader"], fill_type="solid")
+    cell.alignment = Alignment(horizontal="center")
+    cell.font = Font(bold=True)
+    # Data rows
+    for data_row in rows:
+        row_idx += 1
+        # Date
+        ws.cell(row=row_idx, column=1, value=data_row[0]).font = Font(bold=True)
+        # Time
+        ws.cell(row=row_idx, column=2, value=data_row[1])
+        col_idx = 3
+        data_iter = iter(data_row[2:])
+        for colors in group_colors:
+            # Hs
+            hs_val = next(data_iter)
+            cell = ws.cell(row=row_idx, column=col_idx, value=hs_val if hs_val is not None else "")
+            cell.fill = PatternFill(start_color=colors["data"], end_color=colors["data"], fill_type="solid")
+            cell.number_format = "0.00"
+            col_idx += 1
+            # Tp
+            tp_val = next(data_iter)
+            cell = ws.cell(row=row_idx, column=col_idx, value=tp_val if tp_val is not None else "")
+            cell.fill = PatternFill(start_color=colors["data"], end_color=colors["data"], fill_type="solid")
+            cell.number_format = "0.0"
+            col_idx += 1
+            # Dir
+            dir_val = next(data_iter)
+            cell = ws.cell(row=row_idx, column=col_idx, value=dir_val if dir_val is not None else "")
+            cell.fill = PatternFill(start_color=colors["data"], end_color=colors["data"], fill_type="solid")
+            col_idx += 1
+        # Combined Hs
+        combined_val = data_row[-1]
+        cell = ws.cell(row=row_idx, column=col_idx, value=combined_val if combined_val is not None else "")
+        cell.fill = PatternFill(start_color=combined_colors["data"], end_color=combined_colors["data"], fill_type="solid")
+        cell.number_format = "0.00"
+    # Adjust column widths for readability
+    ws.column_dimensions['A'].width = 25
+    ws.column_dimensions['B'].width = 12
+    col = 3
+    # Each numeric column narrower
+    for _ in range(len(group_colors) * 3 + 1):
+        ws.column_dimensions[chr(64 + col)].width = 8
+        col += 1
+    # Return workbook in-memory
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    return bio
 
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     """
     Home route for the application.
-    Presents a form with a station dropdown and displays the parsed table when submitted.
+
+    Displays a form allowing the user to select a buoy station. Upon submission, the latest wave forecast
+    is fetched and rendered as an HTML table that closely follows the formatting of the provided Excel
+    "Table View" sheet. If any errors occur during retrieval or parsing, they are displayed to the user.
     """
     stations = get_station_list()
     selected_station = request.form.get("station") if request.method == "POST" else "51201"
     table_html = None
     error = None
-    
     if request.method == "POST":
-        df, error = parse_bull(selected_station)
-        if df is not None:
-            # Convert DataFrame to HTML table with Bootstrap classes
-            table_html = df.to_html(classes="table table-bordered table-sm", index=False, escape=False)
-    
+        cycle_str, location_str, rows, error = parse_bull(selected_station)
+        if rows is not None:
+            table_html = build_html_table(cycle_str, location_str, rows)
     return render_template("index.html", stations=stations, selected_station=selected_station,
                            table_html=table_html, error=error)
 
@@ -332,18 +536,18 @@ def index():
 @app.route("/download/<station_id>")
 def download(station_id: str):
     """
-    Endpoint to download the parsed data as an Excel file.
-    Fetches the latest data for the given station and returns an Excel file as a response.
+    Download endpoint.
+
+    Generates an Excel file that matches the styling of the "Table View" worksheet. The file includes the
+    cycle information, location, header rows, units and colored columns for each swell and the combined
+    height. If parsing fails, an error message is returned to the user.
     """
-    df, error = parse_bull(station_id)
-    if df is None:
+    cycle_str, location_str, rows, error = parse_bull(station_id)
+    if rows is None:
         return f"Error: {error}", 404
-    # Write DataFrame to an in-memory Excel file
-    output = BytesIO()
-    df.to_excel(output, index=False)
-    output.seek(0)
+    bio = build_excel_workbook(cycle_str, location_str, rows)
     filename = f"{station_id}_table_view.xlsx"
-    return send_file(output, as_attachment=True, download_name=filename,
+    return send_file(bio, as_attachment=True, download_name=filename,
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 

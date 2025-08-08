@@ -53,36 +53,40 @@
     <!-- Leaflet JS for interactive map -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-o6RZnwF5zYNUG9mhOUGwwhVOeR2A7+2jztmmsmRF6G0=" crossorigin=""></script>
     <script>
-        // Initialize the map once the DOM is ready
-        document.addEventListener('DOMContentLoaded', function() {
-            var map = L.map('map');
-            // Load OpenStreetMap tiles
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                maxZoom: 6,
-                attribution: '© OpenStreetMap contributors'
-            }).addTo(map);
-            // Parse station data passed from Flask into a JavaScript array
-            var stations = {{ stations_data | tojson | safe }};
-            var markers = [];
-            stations.forEach(function(s) {
-                if (!isNaN(s.lat) && !isNaN(s.lon)) {
-                    var marker = L.marker([s.lat, s.lon]).addTo(map);
-                    marker.bindPopup('<strong>' + s.id + '</strong><br/>' + s.name);
-                    marker.on('click', function() {
-                        window.location.href = '/?station=' + encodeURIComponent(s.id);
-                    });
-                    markers.push(marker);
-                }
-            });
-            // Fit the map view to the bounds of all markers if any exist
-            if (markers.length > 0) {
-                var group = new L.featureGroup(markers);
-                map.fitBounds(group.getBounds().pad(0.2));
-            } else {
-                // Default view if no markers
-                map.setView([0, 0], 2);
+        /*
+         * Initialize the Leaflet map immediately.  The script is placed at
+         * the end of the body, so the DOM elements (including #map) are
+         * already available.  Wrapping this code in a DOMContentLoaded handler
+         * prevented execution because the event had already fired by the time
+         * the script loaded, resulting in no map being displayed.
+         */
+        var map = L.map('map');
+        // Load OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 6,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+        // Parse station data passed from Flask into a JavaScript array
+        var stations = {{ stations_data | tojson | safe }};
+        var markers = [];
+        stations.forEach(function(s) {
+            if (!isNaN(s.lat) && !isNaN(s.lon)) {
+                var marker = L.marker([s.lat, s.lon]).addTo(map);
+                marker.bindPopup('<strong>' + s.id + '</strong><br/>' + s.name);
+                marker.on('click', function() {
+                    window.location.href = '/?station=' + encodeURIComponent(s.id);
+                });
+                markers.push(marker);
             }
         });
+        // Fit the map view to the bounds of all markers if any exist
+        if (markers.length > 0) {
+            var group = new L.featureGroup(markers);
+            map.fitBounds(group.getBounds().pad(0.2));
+        } else {
+            // Default view if no markers
+            map.setView([0, 0], 2);
+        }
     </script>
 
     <!-- Bootstrap JS (Optional) -->

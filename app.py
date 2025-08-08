@@ -170,20 +170,29 @@ def parse_bull(station_id: str):
             # Swell groups start at parts[2]; each has up to 3 values (hs, tp, dir)
             swell_groups = []
             for swell_field in parts[2:]:
-                # Each swell field should contain three tokens: Hs, Tp, Dir
-                # We ignore empty fields or fields without enough tokens
+                # Each swell field may contain asterisks as separate tokens marking flagged data.
+                # We ignore any '*' tokens and use the following numeric values.
                 if not swell_field:
                     swell_groups.append((None, None, None))
                     continue
-                tokens = swell_field.split()
-                if len(tokens) < 3:
+                # Split the field into tokens and remove standalone '*' tokens.
+                raw_tokens = swell_field.split()
+                cleaned_tokens = []
+                for tok in raw_tokens:
+                    # Remove any '*' characters attached to numeric values (e.g., '*0.11').
+                    tok_clean = tok.replace('*', '')
+                    # Skip tokens that were just '*' (become empty after removal)
+                    if tok_clean == '':
+                        continue
+                    cleaned_tokens.append(tok_clean)
+                # We need at least three numeric tokens to parse Hs, Tp, Dir.
+                if len(cleaned_tokens) < 3:
                     swell_groups.append((None, None, None))
                 else:
                     try:
-                        # Remove any asterisk (*) markers before conversion
-                        hs_val = float(tokens[0].replace('*', ''))
-                        tp_val = float(tokens[1].replace('*', ''))
-                        dir_raw = int(tokens[2].replace('*', ''))
+                        hs_val = float(cleaned_tokens[0])
+                        tp_val = float(cleaned_tokens[1])
+                        dir_raw = int(float(cleaned_tokens[2]))  # handle floats disguised as ints
                         # Correct direction by 180 degrees (mod 360)
                         dir_val = (dir_raw + 180) % 360
                         swell_groups.append((hs_val, tp_val, dir_val))
@@ -249,27 +258,57 @@ def parse_bull(station_id: str):
             # Extract 6 swell groups (Hs, Tp, Dir)
             idx_base = 6
             for _swell in range(6):
-                try:
-                    # Remove any '*' markers before conversion
-                    hs_token = parts[idx_base].replace('*', '')
-                    tp_token = parts[idx_base + 1].replace('*', '')
-                    dir_token = parts[idx_base + 2].replace('*', '')
-                    hs_val = float(hs_token)
-                    tp_val = float(tp_token)
-                    dir_raw = int(dir_token)
-                    # Correct direction by 180 degrees (mod 360)
-                    dir_val = (dir_raw + 180) % 360
-                    row.extend([hs_val * 3.28084, tp_val, dir_val])
-                    idx_base += 3
-                except (ValueError, IndexError):
+                # Extract up to the next 3 tokens, skipping any standalone '*' tokens.
+                hs_val = tp_val = dir_val = None
+                tokens_collected = 0
+                # We'll accumulate numeric tokens until we have 3 or run out.
+                while tokens_collected < 3 and idx_base < len(parts):
+                    tok = parts[idx_base]
+                    idx_base += 1
+                    # Remove any '*' characters attached to numeric values.
+                    tok_clean = tok.replace('*', '')
+                    # Skip tokens that were just '*' (become empty after removal)
+                    if tok_clean == '':
+                        continue
+                    if tokens_collected == 0:
+                        try:
+                            hs_val = float(tok_clean) * 3.28084  # convert to ft
+                            tokens_collected += 1
+                            continue
+                        except ValueError:
+                            continue
+                    if tokens_collected == 1:
+                        try:
+                            tp_val = float(tok_clean)
+                            tokens_collected += 1
+                            continue
+                        except ValueError:
+                            continue
+                    if tokens_collected == 2:
+                        try:
+                            dir_raw = int(float(tok_clean))
+                            dir_val = (dir_raw + 180) % 360
+                            tokens_collected += 1
+                            continue
+                        except ValueError:
+                            continue
+                # If fewer than 3 numeric values collected, set group as None
+                if tokens_collected < 3:
                     row.extend([None, None, None])
-                    idx_base += 3
-            # Combined height is last field; remove any '*' markers
-            try:
-                combined_token = parts[-1].replace('*', '')
-                combined_hs_ft = float(combined_token) * 3.28084
-            except (ValueError, IndexError):
-                combined_hs_ft = None
+                else:
+                    row.extend([hs_val, tp_val, dir_val])
+            # Combined height is the last numeric field in the line (might include '*' tokens)
+            # We search from the end backwards to find the first numeric token, ignoring '*' markers.
+            combined_hs_ft = None
+            for tok in reversed(parts):
+                tok_clean = tok.replace('*', '')
+                if tok_clean == '':
+                    continue
+                try:
+                    combined_hs_ft = float(tok_clean) * 3.28084
+                    break
+                except ValueError:
+                    continue
             row.append(combined_hs_ft)
             rows.append(row)
 

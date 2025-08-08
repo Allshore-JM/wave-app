@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>NOAA GFS Wave Table View</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+</head>
+<body class="p-4">
+    <h1>NOAA GFS Wave Table View</h1>
+    <form method="POST">
+        <div class="mb-3">
+            <label for="station">Select Buoy:</label>
+            <select id="station" name="station" class="form-select" style="max-width:400px;">
+                {% for sid, name in stations %}
+                    <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>
+                        {{ sid }} - {{ name }}
+                    </option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="btn btn-primary">Get Latest Data</button>
+    </form>
+
+    {% if error %}
+        <div class="alert alert-danger mt-3">{{ error }}</div>
+    {% endif %}
+
+    {% if table_html %}
+        <div class="mt-4">
+            <a href="{{ url_for('download', station_id=selected_station) }}" class="btn btn-success mb-3">Download as Excel</a>
+            {{ table_html | safe }}
+        </div>
+    {% endif %}
+</body>
+</html>

@@ -14,9 +14,10 @@
 
     <!-- Map container for buoy selection -->
     <div id="map" style="height: 500px; margin-bottom: 1rem;"></div>
-    <!-- Fallback buoy selection form (in case the map fails to load) -->
+    <!-- Fallback buoy selection form (in case the map fails to load or for manual selection) -->
     <form method="POST" class="mb-3">
         <div class="row g-3 align-items-center">
+            <!-- Station dropdown -->
             <div class="col-auto">
                 <label for="station" class="col-form-label">Select Buoy:</label>
             </div>
@@ -26,6 +27,17 @@
                         <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>
                             {{ sid }} - {{ name }}
                         </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <!-- Time zone dropdown -->
+            <div class="col-auto">
+                <label for="tz" class="col-form-label">Time Zone:</label>
+            </div>
+            <div class="col-auto">
+                <select id="tz" name="tz" class="form-select" style="min-width: 200px;">
+                    {% for tz in timezones %}
+                        <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -43,7 +55,8 @@
     <!-- Display table and download link if data is available -->
     {% if table_html %}
         <div class="mb-3">
-            <a href="{{ url_for('download', station_id=selected_station) }}" class="btn btn-success">Download as Excel</a>
+            <!-- Include the timezone query parameter in the download URL so the Excel file uses the same timezone -->
+            <a href="{{ url_for('download', station_id=selected_station) }}{% if selected_tz %}?tz={{ selected_tz }}{% endif %}" class="btn btn-success">Download as Excel</a>
         </div>
         <div class="table-responsive">
             {{ table_html | safe }}
@@ -81,7 +94,19 @@
                         var marker = L.marker([s.lat, s.lon]).addTo(map);
                         marker.bindPopup('<strong>' + s.id + '</strong><br/>' + s.name);
                         marker.on('click', function() {
-                            window.location.href = '/?station=' + encodeURIComponent(s.id);
+                            // When a marker is clicked, redirect to the station page with the
+                            // currently selected timezone.  If the timezone dropdown is
+                            // present, use its value; otherwise fall back to the empty string.
+                            var tzSelect = document.getElementById('tz');
+                            var tzVal = '';
+                            if (tzSelect) {
+                                tzVal = tzSelect.value;
+                            }
+                            var url = '/?station=' + encodeURIComponent(s.id);
+                            if (tzVal) {
+                                url += '&tz=' + encodeURIComponent(tzVal);
+                            }
+                            window.location.href = url;
                         });
                         markers.push(marker);
                     }

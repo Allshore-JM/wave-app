@@ -1,34 +1,91 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NOAA GFS Wave Table View</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <!-- Bootstrap CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" integrity="sha384-9ndCyUaKqkl9xnk7h1Jw5mAkFp1ghn0Lffwku0a71uMRt9IyZ9L+9xpoda+Ek5QA" crossorigin="anonymous">
+    <!-- Leaflet CSS for map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-pjM6iBbF2pZGvUL/jBz8ZMCAU8EK6H65bohg4Mkg/m0=" crossorigin="" />
 </head>
 <body class="p-4">
-    <h1>NOAA GFS Wave Table View</h1>
-    <form method="POST">
-        <div class="mb-3">
-            <label for="station">Select Buoy:</label>
-            <select id="station" name="station" class="form-select" style="max-width:400px;">
-                {% for sid, name in stations %}
-                    <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>
-                        {{ sid }} - {{ name }}
-                    </option>
-                {% endfor %}
-            </select>
+    <h1 class="mb-4">NOAA GFS Wave Table View</h1>
+
+    <!-- Map container for buoy selection -->
+    <div id="map" style="height: 500px; margin-bottom: 1rem;"></div>
+    <!-- Fallback buoy selection form (in case the map fails to load) -->
+    <form method="POST" class="mb-3">
+        <div class="row g-3 align-items-center">
+            <div class="col-auto">
+                <label for="station" class="col-form-label">Select Buoy:</label>
+            </div>
+            <div class="col-auto">
+                <select id="station" name="station" class="form-select" style="min-width: 240px;">
+                    {% for sid, name in stations %}
+                        <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>
+                            {{ sid }} - {{ name }}
+                        </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-primary">Get Latest Data</button>
+            </div>
         </div>
-        <button type="submit" class="btn btn-primary">Get Latest Data</button>
     </form>
 
+    <!-- Display error message if one exists -->
     {% if error %}
-        <div class="alert alert-danger mt-3">{{ error }}</div>
+        <div class="alert alert-danger">{{ error }}</div>
     {% endif %}
 
+    <!-- Display table and download link if data is available -->
     {% if table_html %}
-        <div class="mt-4">
-            <a href="{{ url_for('download', station_id=selected_station) }}" class="btn btn-success mb-3">Download as Excel</a>
+        <div class="mb-3">
+            <a href="{{ url_for('download', station_id=selected_station) }}" class="btn btn-success">Download as Excel</a>
+        </div>
+        <div class="table-responsive">
             {{ table_html | safe }}
         </div>
     {% endif %}
+
+    <!-- Leaflet JS for interactive map -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-o6RZnwF5zYNUG9mhOUGwwhVOeR2A7+2jztmmsmRF6G0=" crossorigin=""></script>
+    <script>
+        // Initialize the map once the DOM is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            var map = L.map('map');
+            // Load OpenStreetMap tiles
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 6,
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+            // Parse station data passed from Flask into a JavaScript array
+            var stations = {{ stations_data | tojson | safe }};
+            var markers = [];
+            stations.forEach(function(s) {
+                if (!isNaN(s.lat) && !isNaN(s.lon)) {
+                    var marker = L.marker([s.lat, s.lon]).addTo(map);
+                    marker.bindPopup('<strong>' + s.id + '</strong><br/>' + s.name);
+                    marker.on('click', function() {
+                        window.location.href = '/?station=' + encodeURIComponent(s.id);
+                    });
+                    markers.push(marker);
+                }
+            });
+            // Fit the map view to the bounds of all markers if any exist
+            if (markers.length > 0) {
+                var group = new L.featureGroup(markers);
+                map.fitBounds(group.getBounds().pad(0.2));
+            } else {
+                // Default view if no markers
+                map.setView([0, 0], 2);
+            }
+        });
+    </script>
+
+    <!-- Bootstrap JS (Optional) -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-Q6E9RHvbIyZFJoft+2mJbHaEWldmvZR3f3H3VFv5a5Y5nE1Wh6c5teEYkz1iGQCe" crossorigin="anonymous"></script>
 </body>
 </html>

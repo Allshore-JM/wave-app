@@ -52,12 +52,8 @@
         <div class="alert alert-danger">{{ error }}</div>
     {% endif %}
 
-    <!-- Display table and download link if data is available -->
+    <!-- Display table if data is available -->
     {% if table_html %}
-        <div class="mb-3">
-            <!-- Include the timezone query parameter in the download URL so the Excel file uses the same timezone -->
-            <a href="{{ url_for('download', station_id=selected_station) }}{% if selected_tz %}?tz={{ selected_tz }}{% endif %}" class="btn btn-success">Download as Excel</a>
-        </div>
         <div class="table-responsive">
             {{ table_html | safe }}
         </div>

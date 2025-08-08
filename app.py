@@ -453,11 +453,14 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                 # Adjust into the future if forecast time is before cycle time
                 while forecast_dt_utc < cycle_dt_utc:
                     forecast_dt_utc += timedelta(days=1)
-            # Convert to the local timezone for this buoy
+            # Convert to the effective timezone (either the selected timezone or the buoy's local timezone)
+            # Use effective_tz_name instead of tz_name so that the user-selected timezone is respected.
             try:
-                local_tz = pytz.timezone(tz_name)
+                local_tz = pytz.timezone(effective_tz_name)
             except Exception:
+                # Fallback to UTC if the effective timezone cannot be resolved
                 local_tz = UTC
+            # Convert the forecast UTC time into the effective local timezone
             local_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(local_tz)
             # Format date and time strings in the desired presentation
             try:
@@ -667,9 +670,10 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     html += f'<tr><td colspan="{total_cols}"><strong>{cycle_str}</strong></td></tr>\n'
     # Location row
     html += f'<tr><td colspan="{total_cols}"><strong>{location_str}</strong></td></tr>\n'
-    # Model run row (optional)
-    if model_run_str:
-        html += f'<tr><td colspan="{total_cols}"><strong>{model_run_str}</strong></td></tr>\n'
+    # Model run row is intentionally omitted.  In the original Excel template, this
+    # row shows the model run time, but the current requirements specify that it
+    # should not be displayed in the table view.  Therefore, we do not insert
+    # the model_run_str into the table at all.
     # Time zone row
     html += f'<tr><td colspan="{total_cols}"><strong>Time Zone: {tz_label}</strong></td></tr>\n'
     # Header: group names
@@ -768,12 +772,10 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
     cell = ws.cell(row=row_idx, column=1, value=location_str)
     cell.font = Font(bold=True)
     row_idx += 1
-    # Model run row (if provided)
-    if model_run_str:
-        ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
-        cell = ws.cell(row=row_idx, column=1, value=model_run_str)
-        cell.font = Font(bold=True)
-        row_idx += 1
+    # Omit the model run row entirely.  Although the Excel template originally included
+    # a row displaying the model run time, the current requirements specify that this
+    # information should not appear in the table.  Therefore, we do not insert the
+    # model_run_str into the worksheet and leave this row unused.
     # Time zone row
     ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
     cell = ws.cell(row=row_idx, column=1, value=f"Time Zone: {tz_label}")

@@ -66,27 +66,38 @@
             maxZoom: 6,
             attribution: '© OpenStreetMap contributors'
         }).addTo(map);
-        // Parse station data passed from Flask into a JavaScript array
-        var stations = {{ stations_data | tojson | safe }};
+        // Fetch station metadata asynchronously from the /stations.json endpoint.  This
+        // avoids embedding a very large JSON object directly into the HTML.  Once
+        // the data is loaded, markers are created for each station with valid
+        // coordinates.  The map view is adjusted to encompass all markers.
         var markers = [];
-        stations.forEach(function(s) {
-            if (!isNaN(s.lat) && !isNaN(s.lon)) {
-                var marker = L.marker([s.lat, s.lon]).addTo(map);
-                marker.bindPopup('<strong>' + s.id + '</strong><br/>' + s.name);
-                marker.on('click', function() {
-                    window.location.href = '/?station=' + encodeURIComponent(s.id);
+        fetch('/stations.json')
+            .then(function(response) {
+                return response.json();
+            })
+            .then(function(stations) {
+                stations.forEach(function(s) {
+                    if (!isNaN(s.lat) && !isNaN(s.lon)) {
+                        var marker = L.marker([s.lat, s.lon]).addTo(map);
+                        marker.bindPopup('<strong>' + s.id + '</strong><br/>' + s.name);
+                        marker.on('click', function() {
+                            window.location.href = '/?station=' + encodeURIComponent(s.id);
+                        });
+                        markers.push(marker);
+                    }
                 });
-                markers.push(marker);
-            }
-        });
-        // Fit the map view to the bounds of all markers if any exist
-        if (markers.length > 0) {
-            var group = new L.featureGroup(markers);
-            map.fitBounds(group.getBounds().pad(0.2));
-        } else {
-            // Default view if no markers
-            map.setView([0, 0], 2);
-        }
+                if (markers.length > 0) {
+                    var group = new L.featureGroup(markers);
+                    map.fitBounds(group.getBounds().pad(0.2));
+                } else {
+                    map.setView([0, 0], 2);
+                }
+            })
+            .catch(function(err) {
+                console.error('Failed to load station metadata:', err);
+                // Fallback: show the world view if station data cannot be loaded
+                map.setView([0, 0], 2);
+            });
     </script>
 
     <!-- Bootstrap JS (Optional) -->

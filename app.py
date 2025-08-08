@@ -658,13 +658,42 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     """
     # Define color palette for the six swell groups and the combined column. The palette uses
     # darker colors for headers, lighter shades for subheaders, and very light shades for data.
+    # Define color palette for the six swell groups and the combined column. To improve
+    # contrast between the first two groups, the palette uses a darker red for Swell 1
+    # and a richer orange for Swell 2.  Subsequent groups retain their previous
+    # colours.  Each group specifies colours for the header, subheader and data
+    # rows.  Combined column colours are defined separately below.
     group_colors = [
-        {"header": "#C00000", "subheader": "#F8CBAD", "data": "#FDE9D9"},  # Swell 1
-        {"header": "#E46C0A", "subheader": "#F9D5B5", "data": "#FCE9DB"},  # Swell 2
-        {"header": "#FFC000", "subheader": "#FFF2CC", "data": "#FFF9E5"},  # Swell 3
-        {"header": "#00B050", "subheader": "#D5E8D4", "data": "#EAF3E8"},  # Swell 4
-        {"header": "#00B0F0", "subheader": "#D9EAF6", "data": "#ECF5FB"},  # Swell 5
-        {"header": "#92D050", "subheader": "#E2F0D9", "data": "#F2F8EE"},  # Swell 6
+        {
+            "header": "#C00000",  # dark red for Swell 1
+            "subheader": "#F8CBAD",
+            "data": "#FDE9D9",
+        },
+        {
+            "header": "#ED7D31",  # stronger orange for Swell 2 to contrast with Swell 1
+            "subheader": "#FBE5D6",
+            "data": "#FDE7D4",
+        },
+        {
+            "header": "#FFC000",
+            "subheader": "#FFF2CC",
+            "data": "#FFF9E5",
+        },
+        {
+            "header": "#00B050",
+            "subheader": "#D5E8D4",
+            "data": "#EAF3E8",
+        },
+        {
+            "header": "#00B0F0",
+            "subheader": "#D9EAF6",
+            "data": "#ECF5FB",
+        },
+        {
+            "header": "#92D050",
+            "subheader": "#E2F0D9",
+            "data": "#F2F8EE",
+        },
     ]
     combined_colors = {"header": "#7030A0", "subheader": "#D9D2E9", "data": "#EDE9F4"}
     total_cols = 2 + len(group_colors) * 3 + 1  # 2 for date/time, 3 per swell, 1 for combined
@@ -805,9 +834,13 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
     ws = wb.active
     ws.title = "Table View"
     # Define colors matching the HTML table
+    # Colour palette for the six swell groups.  The second group uses a richer
+    # orange to better contrast with the first group.  Each entry defines
+    # colours for header, subheader and data rows, without the leading '#'
+    # because openpyxl expects hex strings without prefix.
     group_colors = [
         {"header": "C00000", "subheader": "F8CBAD", "data": "FDE9D9"},
-        {"header": "E46C0A", "subheader": "F9D5B5", "data": "FCE9DB"},
+        {"header": "ED7D31", "subheader": "FBE5D6", "data": "FDE7D4"},
         {"header": "FFC000", "subheader": "FFF2CC", "data": "FFF9E5"},
         {"header": "00B050", "subheader": "D5E8D4", "data": "EAF3E8"},
         {"header": "00B0F0", "subheader": "D9EAF6", "data": "ECF5FB"},

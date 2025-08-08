@@ -666,8 +666,14 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     group_colors = [
         {
             "header": "#C00000",  # dark red for Swell 1
-            "subheader": "#F8CBAD",
-            "data": "#FDE9D9",
+            # Use more pronounced red shades for subheader and data to enhance contrast.  The previous
+            # colours (#F4CCCC and #FCE5E5) were very pale and not clearly distinguishable from
+            # Swell 2’s orange.  Switch to deeper shades of red for both the subheader and data
+            # cells so that the entire Swell 1 column reads as red.  These values have been
+            # chosen empirically to provide strong contrast while remaining light enough for
+            # readability.
+            "subheader": "#F8B4B4",
+            "data": "#F9DCDC",
         },
         {
             "header": "#ED7D31",  # stronger orange for Swell 2 to contrast with Swell 1
@@ -839,7 +845,14 @@ def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str |
     # colours for header, subheader and data rows, without the leading '#'
     # because openpyxl expects hex strings without prefix.
     group_colors = [
-        {"header": "C00000", "subheader": "F8CBAD", "data": "FDE9D9"},
+        {
+            "header": "C00000",
+            # Use deeper red shades for Swell 1 subheader and data.  The previous colours were
+            # too pale and blended with the Swell 2 orange.  These new values are more
+            # saturated to ensure the Swell 1 columns are clearly identifiable as red.
+            "subheader": "F8B4B4",
+            "data": "F9DCDC",
+        },
         {"header": "ED7D31", "subheader": "FBE5D6", "data": "FDE7D4"},
         {"header": "FFC000", "subheader": "FFF2CC", "data": "FFF9E5"},
         {"header": "00B050", "subheader": "D5E8D4", "data": "EAF3E8"},
@@ -1066,9 +1079,11 @@ def index():
         selected_station = request.args.get("station", "")
         selected_tz = request.args.get("tz", "")
         selected_unit = request.args.get("unit", "US") or "US"
-    # If no timezone provided, default to Pacific/Honolulu
+    # Set defaults when not provided: use Pacific/Honolulu for timezone and buoy 51201 for station
     if not selected_tz:
         selected_tz = "Pacific/Honolulu"
+    if not selected_station:
+        selected_station = "51201"
 
     table_html = None
     error = None

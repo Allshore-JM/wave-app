@@ -159,16 +159,19 @@ def parse_bull(station_id: str):
             except ValueError:
                 continue
             # Combined height (Hst) is in the second field; take the first numeric token
+            # Remove any asterisk (*) that may precede the value before conversion
             hst_tokens = parts[1].split()
             combined_hs_m = None
             if hst_tokens:
                 try:
-                    combined_hs_m = float(hst_tokens[0])
+                    combined_hs_m = float(hst_tokens[0].replace('*', ''))
                 except ValueError:
                     combined_hs_m = None
             # Swell groups start at parts[2]; each has up to 3 values (hs, tp, dir)
             swell_groups = []
             for swell_field in parts[2:]:
+                # Each swell field should contain three tokens: Hs, Tp, Dir
+                # We ignore empty fields or fields without enough tokens
                 if not swell_field:
                     swell_groups.append((None, None, None))
                     continue
@@ -177,9 +180,12 @@ def parse_bull(station_id: str):
                     swell_groups.append((None, None, None))
                 else:
                     try:
-                        hs_val = float(tokens[0])
-                        tp_val = float(tokens[1])
-                        dir_val = int(tokens[2])
+                        # Remove any asterisk (*) markers before conversion
+                        hs_val = float(tokens[0].replace('*', ''))
+                        tp_val = float(tokens[1].replace('*', ''))
+                        dir_raw = int(tokens[2].replace('*', ''))
+                        # Correct direction by 180 degrees (mod 360)
+                        dir_val = (dir_raw + 180) % 360
                         swell_groups.append((hs_val, tp_val, dir_val))
                     except ValueError:
                         swell_groups.append((None, None, None))
@@ -244,17 +250,24 @@ def parse_bull(station_id: str):
             idx_base = 6
             for _swell in range(6):
                 try:
-                    hs_val = float(parts[idx_base])
-                    tp_val = float(parts[idx_base + 1])
-                    dir_val = int(parts[idx_base + 2])
+                    # Remove any '*' markers before conversion
+                    hs_token = parts[idx_base].replace('*', '')
+                    tp_token = parts[idx_base + 1].replace('*', '')
+                    dir_token = parts[idx_base + 2].replace('*', '')
+                    hs_val = float(hs_token)
+                    tp_val = float(tp_token)
+                    dir_raw = int(dir_token)
+                    # Correct direction by 180 degrees (mod 360)
+                    dir_val = (dir_raw + 180) % 360
                     row.extend([hs_val * 3.28084, tp_val, dir_val])
                     idx_base += 3
                 except (ValueError, IndexError):
                     row.extend([None, None, None])
                     idx_base += 3
-            # Combined height is last field
+            # Combined height is last field; remove any '*' markers
             try:
-                combined_hs_ft = float(parts[-1]) * 3.28084
+                combined_token = parts[-1].replace('*', '')
+                combined_hs_ft = float(combined_token) * 3.28084
             except (ValueError, IndexError):
                 combined_hs_ft = None
             row.append(combined_hs_ft)
@@ -331,8 +344,8 @@ def build_html_table(cycle_str: str, location_str: str, rows: list[list]):
     html += '<th rowspan="2">Time</th>'
     for idx, col in enumerate(group_colors, start=1):
         html += f'<th colspan="3" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {idx}</th>'
-    # Combined column header
-    html += f'<th rowspan="2" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
+    # Combined column header (do not rowspan; the units row below will align under this column)
+    html += f'<th style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
     html += '</tr>\n'
     # Subheader: units
     html += '<tr>'

@@ -66,50 +66,53 @@ UTC = pytz.utc
 stations_data_cache = None
 
 
-def get_station_list():
+def get_station_list() -> list[tuple[str, str]]:
     """
-    Build a list of available stations for the dropdown.  In earlier versions of the
-    application we limited the list to only those buoys for which a GFS wave bulletin
-    was currently available.  However network issues or temporary outages on the
-    NOAA servers can cause the bulletin list to be empty, leaving only the default
-    station in the UI.  To ensure that users can always choose from the full set of
-    buoys, this function now falls back to the station metadata when the bullet
-    station list cannot be retrieved or is empty.
+    Build a list of available stations for the dropdown. In earlier versions of
+    the application we limited the list to only those buoys for which a GFS wave
+    bulletin was currently available. However network issues or temporary outages
+    on the NOAA servers can cause the bulletin list to be empty, leaving only
+    the default station in the UI. To ensure that users can always choose from
+    the full set of buoys, this function now falls back to the station metadata
+    when the bulletin station list cannot be retrieved or is empty.
 
-    The returned list of tuples (station_id, station_name) is sorted by station ID.
-    If neither the bulletin list nor the station metadata can be loaded, a
-    single fallback entry for buoy 51201 is provided.
+    The returned list of tuples (station_id, station_name) is sorted by
+    station ID. If neither the bulletin list nor the station metadata can be
+    loaded, a fallback list derived from DEFAULT_STATIONS is returned.
 
     Returns:
-        list[tuple[str, str]]: A list of (id, name) tuples suitable for display.
+        list[tuple[str, str]]: A list of (station_id, station_name) tuples.
     """
+    # Attempt to load the bulletin station list; if this fails, treat as empty.
     try:
-        # Try to obtain the list of stations with available bulletins
         ids = get_bullet_station_ids()
+    except Exception:
+        ids = set()
+    # Attempt to load station metadata; if this fails, fall back to empty dict.
+    try:
         meta = load_station_metadata()
-        stations: list[tuple[str, str]] = []
-        # If the bulletin list is empty, fall back to all stations from metadata
-        if not ids:
-            if meta:
-                for sid in sorted(meta.keys()):
-                    info = meta.get(sid)
-                    name = info.get('name', sid) if info else sid
-                    stations.append((sid, name))
-                # If meta contained entries but we somehow didn't add any, fall back
-                if stations:
-                    return stations
-            # No metadata available; fall back to our default stations
-            return [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
-        # Otherwise build the list from the bulletin IDs and metadata
+    except Exception:
+        meta = {}
+    stations: list[tuple[str, str]] = []
+    if ids:
+        # Build stations from the bulletin IDs
         for sid in sorted(ids):
             info = meta.get(sid)
             name = info.get('name', sid) if info else sid
             stations.append((sid, name))
-        # If nothing built (shouldn't happen), return fallback
-        return stations if stations else [("51201", "Example Station")]
-        except Exception:
-            # On error, return the default station list
-            return [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
+        # If we built an empty list (unlikely), fall back to DEFAULT_STATIONS
+        return stations if stations else [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
+    else:
+        # No bulletin IDs available; use all metadata entries if available
+        if meta:
+            for sid in sorted(meta.keys()):
+                info = meta[sid]
+                name = info.get('name', sid)
+                stations.append((sid, name))
+            if stations:
+                return stations
+        # Last resort: return the curated default stations
+        return [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
 
 def get_stations_data():
     """

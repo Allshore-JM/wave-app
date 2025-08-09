@@ -3,14 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Allshore Surf</title>
+    <title></title>
     <!-- Bootstrap CSS -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
     <!-- Leaflet CSS for map -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body class="p-4">
-    <h1 class="mb-4">Allshore Surf</h1>
+    <!-- Intentionally blank heading removed to satisfy request -->
 
     <!-- Map container for buoy selection -->
     <div id="map" style="height: 500px; margin-bottom: 1rem; overflow:hidden;"></div>
@@ -76,16 +76,30 @@
         // Initialize the Leaflet map immediately.  The script is placed at
         // the end of the body, so the DOM elements (including #map) are
         // already available.
-        var map = L.map('map');
-        // Use an Esri satellite imagery tile layer.  The noWrap option
-        // prevents the world from repeating horizontally, and maxZoom
-        // allows closer zooming for more detail.
+        // Configure the Leaflet map.  We explicitly set noWrap and worldCopyJump
+        // to ensure that only a single copy of the world is shown.  We also
+        // specify a minZoom to avoid zooming out so far that grey borders appear,
+        // and a maxBoundsViscosity to provide a firm boundary.  These settings
+        // help crop the map to a single world and remove the grey "map data not
+        // displayed" areas.
+        var map = L.map('map', {
+            worldCopyJump: false,
+            noWrap: true,
+            minZoom: 2,
+            maxZoom: 19,
+            maxBoundsViscosity: 1.0
+        });
+        // Use the Esri World Imagery tile layer for a satellite basemap.
         L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
             attribution: 'Tiles © Esri & contributors',
             maxZoom: 19,
             noWrap: true
         }).addTo(map);
-        // Restrict panning to a single copy of the world and crop out Antarctica.
+        // Restrict panning to a single complete world.  We crop the map to
+        // remove grey "map data not displayed" regions by limiting the
+        // latitude to roughly the populated world (between -60 and +85 degrees).
+        // Adjust these bounds as needed to hide Antarctica and avoid the grey
+        // areas at the top and bottom of the map.
         map.setMaxBounds([[-60, -180], [85, 180]]);
 
         // Array to hold markers

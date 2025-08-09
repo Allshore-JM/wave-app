@@ -41,29 +41,45 @@ stations_data_cache = None
 
 def get_station_list():
     """
-    Build a list of available stations by cross-referencing station metadata with the
-    currently available GFS wave bulletins.  This function first ensures that the
-    station metadata and the list of available bulletin station IDs are loaded, then
-    constructs a list of (station_id, station_name) tuples for display in the UI.
+    Build a list of available stations for the dropdown.  In earlier versions of the
+    application we limited the list to only those buoys for which a GFS wave bulletin
+    was currently available.  However network issues or temporary outages on the
+    NOAA servers can cause the bulletin list to be empty, leaving only the default
+    station in the UI.  To ensure that users can always choose from the full set of
+    buoys, this function now falls back to the station metadata when the bullet
+    station list cannot be retrieved or is empty.
+
+    The returned list of tuples (station_id, station_name) is sorted by station ID.
+    If neither the bulletin list nor the station metadata can be loaded, a
+    single fallback entry for buoy 51201 is provided.
 
     Returns:
-        list: A list of tuples (id, name) sorted by ID.  If metadata cannot be
-        loaded, a fallback list containing just ('51201', 'Example Station') is returned.
+        list[tuple[str, str]]: A list of (id, name) tuples suitable for display.
     """
     try:
+        # Try to obtain the list of stations with available bulletins
         ids = get_bullet_station_ids()
         meta = load_station_metadata()
-        stations = []
+        stations: list[tuple[str, str]] = []
+        # If the bulletin list is empty, fall back to all stations from metadata
+        if not ids:
+            if meta:
+                for sid in sorted(meta.keys()):
+                    info = meta.get(sid)
+                    name = info.get('name', sid) if info else sid
+                    stations.append((sid, name))
+                return stations if stations else [("51201", "Example Station")]
+            else:
+                return [("51201", "Example Station")]
+        # Otherwise build the list from the bulletin IDs and metadata
         for sid in sorted(ids):
             info = meta.get(sid)
-            # Use the provided name if available; otherwise just use the ID
             name = info.get('name', sid) if info else sid
             stations.append((sid, name))
-        # If no stations found, provide fallback
-        if not stations:
-            return [("51201", "Example Station")]
-        return stations
+        # If nothing built (shouldn't happen), return fallback
+        return stations if stations else [("51201", "Example Station")]
     except Exception:
+        # If any error occurs, return fallback
         return [("51201", "Example Station")]
 
 def get_stations_data():

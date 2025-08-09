@@ -3,17 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NOAA GFS Wave Table View</title>
+    <title>Allshore Surf</title>
     <!-- Bootstrap CSS -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
     <!-- Leaflet CSS for map -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body class="p-4">
-    <h1 class="mb-4">NOAA GFS Wave Table View</h1>
+    <h1 class="mb-4">Allshore Surf</h1>
 
     <!-- Map container for buoy selection -->
-    <div id="map" style="height: 500px; margin-bottom: 1rem;"></div>
+    <div id="map" style="height: 500px; margin-bottom: 1rem; overflow:hidden;"></div>
     <!-- Fallback buoy selection form (in case the map fails to load or for manual selection) -->
     <form method="POST" class="mb-3">
         <div class="row g-3 align-items-center">
@@ -85,8 +85,8 @@
             maxZoom: 19,
             noWrap: true
         }).addTo(map);
-        // Restrict panning to a single copy of the world
-        map.setMaxBounds([[-90, -180], [90, 180]]);
+        // Restrict panning to a single copy of the world and crop out Antarctica.
+        map.setMaxBounds([[-60, -180], [85, 180]]);
 
         // Array to hold markers
         var markers = [];
@@ -101,7 +101,15 @@
             .then(function(stations) {
                 stations.forEach(function(s) {
                     if (!isNaN(s.lat) && !isNaN(s.lon)) {
-                        var marker = L.marker([s.lat, s.lon]).addTo(map);
+                        // Define a smaller icon for markers to improve presentation when zoomed out.
+                        var smallIcon = L.icon({
+                            iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+                            iconSize: [15, 25],
+                            iconAnchor: [7.5, 25],
+                            popupAnchor: [0, -25],
+                            tooltipAnchor: [0, -20]
+                        });
+                        var marker = L.marker([s.lat, s.lon], {icon: smallIcon}).addTo(map);
                         // Display station ID on hover
                         marker.bindTooltip(s.id, {permanent: false, direction: 'top'});
                         // Show a popup with station ID and name when clicked

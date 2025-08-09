@@ -81,23 +81,67 @@ def get_stations_data():
     global stations_data_cache
     if stations_data_cache is not None:
         return stations_data_cache
+    # Build station data for all stations that appear in the UI dropdown.  We first try
+    # to load the list of station IDs via get_station_list().  If this fails, we fall back
+    # to the set of bullet stations.  For each station ID, we attempt to look up its
+    # latitude/longitude in the station metadata; if not found, we make a best-effort attempt
+    # to parse the location from the station's most recent .bull file.  Stations without
+    # coordinates are omitted.
     try:
-        bullet_ids = get_bullet_station_ids()
+        # get_station_list returns a list of tuples (station_id, name).  Extract the IDs.
+        ids_with_names = get_station_list()
+        id_list = [sid for sid, _ in ids_with_names]
     except Exception:
-        bullet_ids = set()
+        # Fallback to bullet stations if we cannot retrieve the station list
+        try:
+            id_list = list(get_bullet_station_ids())
+        except Exception:
+            id_list = []
     try:
         meta = load_station_metadata()
     except Exception:
         meta = {}
     data_list = []
-    for sid in bullet_ids:
+    for sid in id_list:
+        lat = lon = None
+        name = sid
         info = meta.get(sid)
-        if info and info.get('lat') is not None and info.get('lon') is not None:
+        if info:
+            name = info.get('name', sid)
+            lat = info.get('lat')
+            lon = info.get('lon')
+        # If latitude/longitude are missing, attempt to extract them from the latest .bull file
+        if (lat is None or lon is None) and sid:
+            try:
+                # Determine the latest available model run (YYYYMMDD and HH)
+                date_str, run_str = get_latest_run()
+                if date_str and run_str:
+                    bull_url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{sid}.bull"
+                    resp = requests.get(bull_url, timeout=5)
+                    if resp.status_code == 200:
+                        # Look for a Location line in the header
+                        for line in resp.text.splitlines():
+                            line_strip = line.strip()
+                            if line_strip.lower().startswith("location"):
+                                import re
+                                m = re.search(r"\(([-+]?\d+(?:\.\d+)?)\s*([ns])\s+([-+]?\d+(?:\.\d+)?)\s*([ew])\)", line_strip, re.IGNORECASE)
+                                if m:
+                                    lat_val = float(m.group(1))
+                                    lat_dir = m.group(2).upper()
+                                    lon_val = float(m.group(3))
+                                    lon_dir = m.group(4).upper()
+                                    lat = lat_val if lat_dir == 'N' else -lat_val
+                                    lon = lon_val if lon_dir == 'E' else -lon_val
+                                break
+            except Exception:
+                pass
+        # Only include stations with valid coordinates
+        if lat is not None and lon is not None:
             data_list.append({
                 'id': sid,
-                'name': info.get('name', sid),
-                'lat': info['lat'],
-                'lon': info['lon'],
+                'name': name,
+                'lat': lat,
+                'lon': lon,
             })
     stations_data_cache = data_list
     return stations_data_cache

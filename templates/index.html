@@ -73,24 +73,27 @@
     <!-- Leaflet JS for interactive map -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        /*
-         * Initialize the Leaflet map immediately.  The script is placed at
-         * the end of the body, so the DOM elements (including #map) are
-         * already available.  Wrapping this code in a DOMContentLoaded handler
-         * prevented execution because the event had already fired by the time
-         * the script loaded, resulting in no map being displayed.
-         */
+        // Initialize the Leaflet map immediately.  The script is placed at
+        // the end of the body, so the DOM elements (including #map) are
+        // already available.
         var map = L.map('map');
-        // Load OpenStreetMap tiles
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 6,
-            attribution: '© OpenStreetMap contributors'
+        // Use an Esri satellite imagery tile layer.  The noWrap option
+        // prevents the world from repeating horizontally, and maxZoom
+        // allows closer zooming for more detail.
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles © Esri & contributors',
+            maxZoom: 19,
+            noWrap: true
         }).addTo(map);
-        // Fetch station metadata asynchronously from the /stations.json endpoint.  This
-        // avoids embedding a very large JSON object directly into the HTML.  Once
-        // the data is loaded, markers are created for each station with valid
-        // coordinates.  The map view is adjusted to encompass all markers.
+        // Restrict panning to a single copy of the world
+        map.setMaxBounds([[-90, -180], [90, 180]]);
+
+        // Array to hold markers
         var markers = [];
+        // Fetch station metadata asynchronously from the /stations.json endpoint.  Once
+        // loaded, create a marker for each station.  Tooltips display the station
+        // ID on hover, and clicking a marker redirects to the table view for that
+        // station using the currently selected timezone and unit values.
         fetch('/stations.json')
             .then(function(response) {
                 return response.json();
@@ -99,11 +102,11 @@
                 stations.forEach(function(s) {
                     if (!isNaN(s.lat) && !isNaN(s.lon)) {
                         var marker = L.marker([s.lat, s.lon]).addTo(map);
+                        // Display station ID on hover
+                        marker.bindTooltip(s.id, {permanent: false, direction: 'top'});
+                        // Show a popup with station ID and name when clicked
                         marker.bindPopup('<strong>' + s.id + '</strong><br/>' + s.name);
                         marker.on('click', function() {
-                            // When a marker is clicked, redirect to the station page with the
-                            // currently selected timezone.  If the timezone dropdown is
-                            // present, use its value; otherwise fall back to the empty string.
                             var tzSelect = document.getElementById('tz');
                             var tzVal = '';
                             if (tzSelect) {
@@ -135,7 +138,6 @@
             })
             .catch(function(err) {
                 console.error('Failed to load station metadata:', err);
-                // Fallback: show the world view if station data cannot be loaded
                 map.setView([0, 0], 2);
             });
     </script>

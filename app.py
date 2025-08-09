@@ -68,51 +68,37 @@ stations_data_cache = None
 
 def get_station_list() -> list[tuple[str, str]]:
     """
-    Build a list of available stations for the dropdown. In earlier versions of
-    the application we limited the list to only those buoys for which a GFS wave
-    bulletin was currently available. However network issues or temporary outages
-    on the NOAA servers can cause the bulletin list to be empty, leaving only
-    the default station in the UI. To ensure that users can always choose from
-    the full set of buoys, this function now falls back to the station metadata
-    when the bulletin station list cannot be retrieved or is empty.
+    Build a list of available stations for the dropdown.
 
-    The returned list of tuples (station_id, station_name) is sorted by
-    station ID. If neither the bulletin list nor the station metadata can be
-    loaded, a fallback list derived from DEFAULT_STATIONS is returned.
+    The original implementation attempted to restrict the list to stations
+    currently reporting a GFS wave bulletin. However, connectivity issues
+    or temporary outages can result in an empty bulletin list, which in
+    turn causes the dropdown to show only a single buoy. To ensure the
+    application remains useful even when NOAA servers are unreachable,
+    this function now prioritises using the station metadata (from
+    ``load_station_metadata()``) and falls back to the curated
+    ``DEFAULT_STATIONS``.  The bulletin station list is no longer used
+    to restrict the dropdown; rather, all available metadata entries
+    are returned.
 
     Returns:
         list[tuple[str, str]]: A list of (station_id, station_name) tuples.
     """
-    # Attempt to load the bulletin station list; if this fails, treat as empty.
-    try:
-        ids = get_bullet_station_ids()
-    except Exception:
-        ids = set()
-    # Attempt to load station metadata; if this fails, fall back to empty dict.
+    # Try to load station metadata; if it fails we fall back to DEFAULT_STATIONS
     try:
         meta = load_station_metadata()
     except Exception:
         meta = {}
     stations: list[tuple[str, str]] = []
-    if ids:
-        # Build stations from the bulletin IDs
-        for sid in sorted(ids):
-            info = meta.get(sid)
-            name = info.get('name', sid) if info else sid
+    if meta:
+        for sid in sorted(meta.keys()):
+            info = meta[sid]
+            name = info.get('name', sid)
             stations.append((sid, name))
-        # If we built an empty list (unlikely), fall back to DEFAULT_STATIONS
-        return stations if stations else [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
-    else:
-        # No bulletin IDs available; use all metadata entries if available
-        if meta:
-            for sid in sorted(meta.keys()):
-                info = meta[sid]
-                name = info.get('name', sid)
-                stations.append((sid, name))
-            if stations:
-                return stations
-        # Last resort: return the curated default stations
-        return [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
+        if stations:
+            return stations
+    # Last resort: return the curated default stations
+    return [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
 
 def get_stations_data():
     """
@@ -238,7 +224,7 @@ def load_station_metadata():
             if len(parts) < 7:
                 continue
             station_id = parts[0].strip()
-            # Skip non-numeric station ids to focus on buoy-like stations
+            # Skip empty station ids
             if not station_id:
                 continue
             name = parts[4].strip() if parts[4].strip() else station_id
@@ -258,16 +244,17 @@ def load_station_metadata():
                 except Exception:
                     # Skip entries with unparseable lat/lon
                     continue
+        # On success, cache and return the metadata dictionary
         STATION_META = meta
         return STATION_META
-        except Exception:
-            # If we encounter any exception while downloading or parsing
-            # the station table (for example due to network restrictions),
-            # fall back to the predefined DEFAULT_STATIONS dictionary.  This
-            # ensures that we still have a useful set of buoys to display
-            # even when external resources are unavailable.
-            STATION_META = DEFAULT_STATIONS.copy()
-            return STATION_META
+    except Exception:
+        # If we encounter any exception while downloading or parsing
+        # the station table (for example due to network restrictions),
+        # fall back to the predefined DEFAULT_STATIONS dictionary.  This
+        # ensures that we still have a useful set of buoys to display
+        # even when external resources are unavailable.
+        STATION_META = DEFAULT_STATIONS.copy()
+        return STATION_META
 
 
 def get_bullet_station_ids():

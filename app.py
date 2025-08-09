@@ -17,6 +17,33 @@ tz_finder = TimezoneFinder()
 # on demand to avoid repeated network requests. See load_station_metadata() and
 # get_bullet_station_ids().
 STATION_META = None  # Maps station_id -> { 'name': str, 'lat': float, 'lon': float }
+
+# -----------------------------------------------------------------------------
+# Default station metadata fallback
+#
+# When the application is unable to retrieve the station list or metadata from
+# the NOAA servers (for example due to network restrictions), we fall back to
+# a small curated set of buoy stations.  Each entry provides an approximate
+# latitude/longitude and a human‑readable name.  This ensures that the map
+# displays multiple markers and the dropdown contains more than a single
+# placeholder buoy even when remote resources are unavailable.  You can add
+# additional stations here as desired.  Latitude values are positive for
+# northern hemisphere and negative for southern; longitude values are negative
+# for western hemisphere and positive for eastern.
+DEFAULT_STATIONS = {
+    # Hawaiian region buoys
+    "51201": {"name": "Buoy 51201", "lat": 21.67, "lon": -158.12},
+    "51202": {"name": "Buoy 51202", "lat": 21.45, "lon": -157.90},
+    "51203": {"name": "Buoy 51203", "lat": 21.55, "lon": -157.95},
+    "51211": {"name": "Buoy 51211", "lat": 21.32, "lon": -157.53},
+    "51212": {"name": "Buoy 51212", "lat": 21.27, "lon": -157.47},
+    "51213": {"name": "Buoy 51213", "lat": 21.17, "lon": -157.17},
+    # Other North Pacific buoys
+    "51001": {"name": "Buoy 51001", "lat": 16.87, "lon": -156.47},
+    "51002": {"name": "Buoy 51002", "lat": 12.38, "lon": -157.49},
+    "51003": {"name": "Buoy 51003", "lat": 23.69, "lon": -162.25},
+    "51004": {"name": "Buoy 51004", "lat": 25.84, "lon": -162.09},
+}
 BULLET_STATIONS = None  # Set of station_ids that currently have a .bull file available
 
 # ===== NOAA Station List URL =====
@@ -68,9 +95,11 @@ def get_station_list():
                     info = meta.get(sid)
                     name = info.get('name', sid) if info else sid
                     stations.append((sid, name))
-                return stations if stations else [("51201", "Example Station")]
-            else:
-                return [("51201", "Example Station")]
+                # If meta contained entries but we somehow didn't add any, fall back
+                if stations:
+                    return stations
+            # No metadata available; fall back to our default stations
+            return [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
         # Otherwise build the list from the bulletin IDs and metadata
         for sid in sorted(ids):
             info = meta.get(sid)
@@ -78,9 +107,9 @@ def get_station_list():
             stations.append((sid, name))
         # If nothing built (shouldn't happen), return fallback
         return stations if stations else [("51201", "Example Station")]
-    except Exception:
-        # If any error occurs, return fallback
-        return [("51201", "Example Station")]
+        except Exception:
+            # On error, return the default station list
+            return [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
 
 def get_stations_data():
     """
@@ -228,9 +257,14 @@ def load_station_metadata():
                     continue
         STATION_META = meta
         return STATION_META
-    except Exception:
-        STATION_META = {}
-        return STATION_META
+        except Exception:
+            # If we encounter any exception while downloading or parsing
+            # the station table (for example due to network restrictions),
+            # fall back to the predefined DEFAULT_STATIONS dictionary.  This
+            # ensures that we still have a useful set of buoys to display
+            # even when external resources are unavailable.
+            STATION_META = DEFAULT_STATIONS.copy()
+            return STATION_META
 
 
 def get_bullet_station_ids():

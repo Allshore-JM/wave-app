@@ -552,7 +552,9 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
             except Exception:
                 # Fallback for platforms without %-d (e.g., Windows)
                 date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
-            time_str_local = local_dt.strftime("%I:%M:%S %p").lstrip('0')
+            # Format the local time without seconds.  Use hours and minutes only,
+            # trimming any leading zero to match the desired display (e.g., "8:00 AM").
+            time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
             # Convert combined height to feet
             combined_hs_ft = None
             if combined_hs_m is not None:
@@ -622,7 +624,8 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                 date_str_local = local_dt.strftime("%A, %B %-d, %Y")
             except Exception:
                 date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
-            time_str_local = local_dt.strftime("%I:%M:%S %p").lstrip('0')
+            # Format local time without seconds (hours and minutes only) for older format rows
+            time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
             row = [date_str_local, time_str_local]
             # Extract 6 swell groups (Hs, Tp, Dir)
             idx_base = 6
@@ -824,13 +827,16 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         # 8:00 PM and 5:00 AM (inclusive) receive a dashed border and normal font
         # weight.  All other rows retain the default styling.
         try:
-            # Parse the time string (e.g., "6:00:00 AM").  Use a tolerant format that
-            # handles single digit hours.  Use datetime.strptime to obtain a time
-            # object for comparison.  If parsing fails, fallback to no special
-            # styling.
-            parsed_time = datetime.strptime(row[1], "%I:%M:%S %p").time()
+            # Parse the time string which no longer includes seconds (e.g., "6:00 AM").
+            # Attempt to parse using the hours and minutes format.  If that fails,
+            # fall back to parsing a seconds‑inclusive format.  Should both
+            # attempts fail, we leave parsed_time as None and apply no special styling.
+            parsed_time = datetime.strptime(row[1], "%I:%M %p").time()
         except Exception:
-            parsed_time = None
+            try:
+                parsed_time = datetime.strptime(row[1], "%I:%M:%S %p").time()
+            except Exception:
+                parsed_time = None
         # Define time ranges
         bold_start = datetime.strptime("6:00:00 AM", "%I:%M:%S %p").time()
         bold_end = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()

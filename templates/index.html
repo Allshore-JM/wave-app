@@ -98,10 +98,10 @@
         }).addTo(map);
         // Restrict panning to a single complete world.  We crop the map to
         // remove grey "map data not displayed" regions by limiting the
-        // latitude to roughly the populated world.  Values around –55 and
-        // +80 degrees work well to hide Antarctica and the very top of
+        // latitude to roughly the populated world.  Values around –60 and
+        // +85 degrees work well to hide Antarctica and the very top of
         // the map.  Adjust these bounds as needed.
-        map.setMaxBounds([[-55, -180], [80, 180]]);
+        map.setMaxBounds([[-60, -180], [85, 180]]);
 
         // Array to hold markers
         var markers = [];

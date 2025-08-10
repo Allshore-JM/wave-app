@@ -70,43 +70,29 @@ stations_data_cache = None
 
 def get_station_list() -> list[tuple[str, str]]:
     """
-    Build a list of available stations for the dropdown.
+    Build a list of available stations for the dropdown using the static
+    ``station_list.json`` file.
 
-    The original implementation attempted to restrict the list to stations
-    currently reporting a GFS wave bulletin. However, connectivity issues
-    or temporary outages can result in an empty bulletin list, which in
-    turn causes the dropdown to show only a single buoy. To ensure the
-    application remains useful even when NOAA servers are unreachable,
-    this function now prioritises using the station metadata (from
-    ``load_station_metadata()``) and falls back to the curated
-    ``DEFAULT_STATIONS``.  The bulletin station list is no longer used
-    to restrict the dropdown; rather, all available metadata entries
-    are returned.
+    The application should show *only* those buoys for which a corresponding
+    GFS wave bulletin exists.  To avoid depending on live network queries
+    that may return inconsistent or outdated results, the list of valid
+    station identifiers is stored in a JSON file (`station_list.json`) in
+    the same directory as this module.  Each element of the JSON array
+    contains a buoy station ID (as a string).  This file is generated
+    offline from the user's provided Excel spreadsheet and represents
+    the definitive set of stations that have .bull files.
 
-    Returns:
-        list[tuple[str, str]]: A list of (station_id, station_name) tuples.
-    """
-    """
-    Build a list of available stations for the dropdown using a static station list.
-
-    Rather than querying the NOAA servers for available stations (which can be
-    unreliable due to network restrictions or server outages), this function
-    reads a pre‑generated JSON file containing the complete list of station IDs
-    with available .bull files.  The JSON file must be present in the same
-    directory as this module and is named ``station_list.json``.  Each entry
-    in the JSON array is a station identifier (as a string).
-
-    The returned list pairs each station ID with a human‑readable name.  If
-    station metadata is available via ``load_station_metadata()``, the
-    corresponding station name will be used; otherwise the station ID itself
-    is used as the name.  If the JSON file cannot be read, the function
-    falls back to using any available station metadata, and as a last resort
-    returns the ``DEFAULT_STATIONS`` entries.
+    For each ID in the JSON list, we attempt to retrieve a human‑readable
+    name from the station metadata loaded by ``load_station_metadata()``.
+    If metadata is unavailable or the station isn't present, the ID itself
+    is used as the name.  Should the JSON file be missing or unreadable,
+    the function falls back to the curated ``DEFAULT_STATIONS`` list.  No
+    network lookups to NOAA are performed here so the dropdown reflects
+    exactly the station list from the Excel spreadsheet.
 
     Returns:
         list[tuple[str, str]]: A list of (station_id, station_name) tuples.
     """
-    # Attempt to load the static station list from station_list.json.
     stations: list[tuple[str, str]] = []
     try:
         # Determine the path to station_list.json relative to this file
@@ -120,33 +106,20 @@ def get_station_list() -> list[tuple[str, str]]:
         except Exception:
             meta = {}
         for sid in station_ids:
-            # Ensure station ID is a string and strip whitespace
             sid_str = str(sid).strip()
             if not sid_str:
                 continue
-            name = sid_str
             info = meta.get(sid_str)
-            if info and info.get('name'):
-                name = info['name']
+            name = info['name'] if info and 'name' in info else sid_str
             stations.append((sid_str, name))
         if stations:
             return stations
     except Exception:
-        # If reading the JSON fails, fall back to station metadata
+        # Ignore any exceptions and fall through to default stations
         pass
-    # Fallback to metadata if available
-    try:
-        meta = load_station_metadata()
-    except Exception:
-        meta = {}
-    if meta:
-        for sid in sorted(meta.keys()):
-            info = meta[sid]
-            name = info.get('name', sid)
-            stations.append((sid, name))
-        if stations:
-            return stations
-    # Last resort: return the curated default stations
+    # If the JSON file cannot be read or yielded no stations, fall back to the
+    # curated defaults.  We do not return metadata or bullet station lists to
+    # avoid accidentally including buoys without .bull files.
     return [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
 
 def get_stations_data():
@@ -170,16 +143,17 @@ def get_stations_data():
     # latitude/longitude in the station metadata; if not found, we make a best-effort attempt
     # to parse the location from the station's most recent .bull file.  Stations without
     # coordinates are omitted.
+    # Build the list of station IDs from the static station list.  We do not
+    # fall back to the live bulletin station list here because the user
+    # explicitly provided a complete list of stations with available
+    # bulletins via ``station_list.json``.  If reading this list fails,
+    # get_station_list() will return the curated DEFAULT_STATIONS; in that
+    # case the map and dropdown will reflect only those entries.
     try:
-        # get_station_list returns a list of tuples (station_id, name).  Extract the IDs.
         ids_with_names = get_station_list()
         id_list = [sid for sid, _ in ids_with_names]
     except Exception:
-        # Fallback to bullet stations if we cannot retrieve the station list
-        try:
-            id_list = list(get_bullet_station_ids())
-        except Exception:
-            id_list = []
+        id_list = []
     try:
         meta = load_station_metadata()
     except Exception:

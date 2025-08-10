@@ -1,6 +1,8 @@
 from flask import Flask, render_template, request, send_file, jsonify
 import pandas as pd  # still used for fallback Excel generation if needed
 import requests
+import json
+import os
 from io import BytesIO
 from datetime import datetime, timedelta
 import pytz
@@ -84,12 +86,59 @@ def get_station_list() -> list[tuple[str, str]]:
     Returns:
         list[tuple[str, str]]: A list of (station_id, station_name) tuples.
     """
-    # Try to load station metadata; if it fails we fall back to DEFAULT_STATIONS
+    """
+    Build a list of available stations for the dropdown using a static station list.
+
+    Rather than querying the NOAA servers for available stations (which can be
+    unreliable due to network restrictions or server outages), this function
+    reads a pre‑generated JSON file containing the complete list of station IDs
+    with available .bull files.  The JSON file must be present in the same
+    directory as this module and is named ``station_list.json``.  Each entry
+    in the JSON array is a station identifier (as a string).
+
+    The returned list pairs each station ID with a human‑readable name.  If
+    station metadata is available via ``load_station_metadata()``, the
+    corresponding station name will be used; otherwise the station ID itself
+    is used as the name.  If the JSON file cannot be read, the function
+    falls back to using any available station metadata, and as a last resort
+    returns the ``DEFAULT_STATIONS`` entries.
+
+    Returns:
+        list[tuple[str, str]]: A list of (station_id, station_name) tuples.
+    """
+    # Attempt to load the static station list from station_list.json.
+    stations: list[tuple[str, str]] = []
+    try:
+        # Determine the path to station_list.json relative to this file
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(base_dir, 'station_list.json')
+        with open(json_path, 'r') as f:
+            station_ids = json.load(f)
+        # Load station metadata for names, if available
+        try:
+            meta = load_station_metadata()
+        except Exception:
+            meta = {}
+        for sid in station_ids:
+            # Ensure station ID is a string and strip whitespace
+            sid_str = str(sid).strip()
+            if not sid_str:
+                continue
+            name = sid_str
+            info = meta.get(sid_str)
+            if info and info.get('name'):
+                name = info['name']
+            stations.append((sid_str, name))
+        if stations:
+            return stations
+    except Exception:
+        # If reading the JSON fails, fall back to station metadata
+        pass
+    # Fallback to metadata if available
     try:
         meta = load_station_metadata()
     except Exception:
         meta = {}
-    stations: list[tuple[str, str]] = []
     if meta:
         for sid in sorted(meta.keys()):
             info = meta[sid]

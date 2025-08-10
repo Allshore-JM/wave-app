@@ -163,35 +163,16 @@ def get_stations_data():
         lat = lon = None
         name = sid
         info = meta.get(sid)
+        # Use metadata if available
         if info:
             name = info.get('name', sid)
             lat = info.get('lat')
             lon = info.get('lon')
-        # If latitude/longitude are missing, attempt to extract them from the latest .bull file
-        if (lat is None or lon is None) and sid:
-            try:
-                # Determine the latest available model run (YYYYMMDD and HH)
-                date_str, run_str = get_latest_run()
-                if date_str and run_str:
-                    bull_url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{sid}.bull"
-                    resp = requests.get(bull_url, timeout=5)
-                    if resp.status_code == 200:
-                        # Look for a Location line in the header
-                        for line in resp.text.splitlines():
-                            line_strip = line.strip()
-                            if line_strip.lower().startswith("location"):
-                                import re
-                                m = re.search(r"\(([-+]?\d+(?:\.\d+)?)\s*([ns])\s+([-+]?\d+(?:\.\d+)?)\s*([ew])\)", line_strip, re.IGNORECASE)
-                                if m:
-                                    lat_val = float(m.group(1))
-                                    lat_dir = m.group(2).upper()
-                                    lon_val = float(m.group(3))
-                                    lon_dir = m.group(4).upper()
-                                    lat = lat_val if lat_dir == 'N' else -lat_val
-                                    lon = lon_val if lon_dir == 'E' else -lon_val
-                                break
-            except Exception:
-                pass
+        # If metadata is unavailable, check the predefined default stations
+        if (lat is None or lon is None) and sid in DEFAULT_STATIONS:
+            fallback_info = DEFAULT_STATIONS[sid]
+            lat = fallback_info.get('lat')
+            lon = fallback_info.get('lon')
         # Only include stations with valid coordinates
         if lat is not None and lon is not None:
             data_list.append({
@@ -1201,6 +1182,12 @@ def index():
     table_html = None
     error = None
     tz_label = ""
+    # Latitude and longitude of the currently selected station.  These
+    # values are passed to the template so that the map can display a
+    # marker only for the selected buoy.  They default to ``None`` until
+    # determined below.
+    selected_lat: float | None = None
+    selected_lon: float | None = None
     # If a station is selected, fetch and parse the bulletin using the
     # selected timezone (if any).  The parse_bull() function returns
     # cycle/location strings, a model run string, the data rows, the
@@ -1212,6 +1199,24 @@ def index():
             # Use the effective timezone name (returned by parse_bull) as the label
             tz_label = effective_tz_name
             table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
+            # Attempt to extract latitude and longitude from the location string.  The
+            # pattern searches for numbers and N/E/S/W indicators inside parentheses,
+            # e.g. "Location : 51201 (21.67N 158.12W)".  If the pattern is not
+            # present, selected_lat and selected_lon remain None.
+            if location_str:
+                import re
+                m = re.search(r"\(([-+]?\d+(?:\.\d+)?)\s*([NS])\s+([-+]?\d+(?:\.\d+)?)\s*([EW])\)", location_str)
+                if m:
+                    try:
+                        lat_val = float(m.group(1))
+                        lat_dir = m.group(2).upper()
+                        lon_val = float(m.group(3))
+                        lon_dir = m.group(4).upper()
+                        selected_lat = lat_val if lat_dir == 'N' else -lat_val
+                        selected_lon = lon_val if lon_dir == 'E' else -lon_val
+                    except Exception:
+                        selected_lat = None
+                        selected_lon = None
     # Render template with all context variables.  Also pass the timezones
     # list and the currently selected timezone for the dropdown.
     return render_template(
@@ -1224,6 +1229,8 @@ def index():
         selected_unit=selected_unit,
         table_html=table_html,
         error=error,
+        selected_lat=selected_lat,
+        selected_lon=selected_lon,
     )
 
 

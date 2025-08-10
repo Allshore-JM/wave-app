@@ -77,12 +77,6 @@
         // Initialize the Leaflet map immediately.  The script is placed at
         // the end of the body, so the DOM elements (including #map) are
         // already available.
-        // Configure the Leaflet map.  We explicitly set noWrap and worldCopyJump
-        // to ensure that only a single copy of the world is shown.  We also
-        // specify a minZoom to avoid zooming out so far that grey borders appear,
-        // and a maxBoundsViscosity to provide a firm boundary.  These settings
-        // help crop the map to a single world and remove the grey "map data not
-        // displayed" areas.
         var map = L.map('map', {
             worldCopyJump: false,
             noWrap: true,
@@ -96,73 +90,58 @@
             maxZoom: 19,
             noWrap: true
         }).addTo(map);
-        // Restrict panning to a single complete world.  We crop the map to
-        // remove grey "map data not displayed" regions by limiting the
-        // latitude to roughly the populated world.  Values around –60 and
-        // +85 degrees work well to hide Antarctica and the very top of
-        // the map.  Adjust these bounds as needed.
+        // Restrict panning to a single complete world.  Crop out Antarctica
+        // and the top of the map by limiting latitude to roughly –60 to +85 degrees.
         map.setMaxBounds([[-60, -180], [85, 180]]);
 
-        // Array to hold markers
-        var markers = [];
-        // Fetch station metadata asynchronously from the /stations.json endpoint.  Once
-        // loaded, create a marker for each station.  Tooltips display the station
-        // ID on hover, and clicking a marker redirects to the table view for that
-        // station using the currently selected timezone and unit values.
-        fetch('/stations.json')
-            .then(function(response) {
-                return response.json();
-            })
-            .then(function(stations) {
-                stations.forEach(function(s) {
-                    if (!isNaN(s.lat) && !isNaN(s.lon)) {
-                        // Define a smaller icon for markers to improve presentation when zoomed out.
-                        var smallIcon = L.icon({
-                            iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-                            iconSize: [15, 25],
-                            iconAnchor: [7.5, 25],
-                            popupAnchor: [0, -25],
-                            tooltipAnchor: [0, -20]
-                        });
-                        var marker = L.marker([s.lat, s.lon], {icon: smallIcon}).addTo(map);
-                        // Display station ID on hover
-                        marker.bindTooltip(s.id, {permanent: false, direction: 'top'});
-                        // Show a popup with station ID and name when clicked
-                        marker.bindPopup('<strong>' + s.id + '</strong><br/>' + s.name);
-                        marker.on('click', function() {
-                            var tzSelect = document.getElementById('tz');
-                            var tzVal = '';
-                            if (tzSelect) {
-                                tzVal = tzSelect.value;
-                            }
-                            var unitSelect = document.getElementById('unit');
-                            var unitVal = '';
-                            if (unitSelect) {
-                                unitVal = unitSelect.value;
-                            }
-                            var url = '/?station=' + encodeURIComponent(s.id);
-                            if (tzVal) {
-                                url += '&tz=' + encodeURIComponent(tzVal);
-                            }
-                            if (unitVal) {
-                                url += '&unit=' + encodeURIComponent(unitVal);
-                            }
-                            window.location.href = url;
-                        });
-                        markers.push(marker);
-                    }
-                });
-                if (markers.length > 0) {
-                    var group = new L.featureGroup(markers);
-                    map.fitBounds(group.getBounds().pad(0.2));
-                } else {
-                    map.setView([0, 0], 2);
-                }
-            })
-            .catch(function(err) {
-                console.error('Failed to load station metadata:', err);
-                map.setView([0, 0], 2);
+        // Selected station coordinates and ID passed from the server.  If
+        // ``selected_lat`` or ``selected_lon`` are null, then no marker
+        // will be drawn and the map will remain centered on the default view.
+        var selectedLat = {{ selected_lat if selected_lat is not none else 'null' }};
+        var selectedLon = {{ selected_lon if selected_lon is not none else 'null' }};
+        var selectedStationId = "{{ selected_station }}";
+
+        // Function to add a single marker for the selected station.  When
+        // clicked, the marker will redirect to the same page (refresh) with
+        // the current timezone and unit selections preserved.
+        function addSelectedMarker(lat, lon, stationId) {
+            // Define a smaller icon for markers to improve presentation when zoomed out.
+            var smallIcon = L.icon({
+                iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+                iconSize: [15, 25],
+                iconAnchor: [7.5, 25],
+                popupAnchor: [0, -25],
+                tooltipAnchor: [0, -20]
             });
+            var marker = L.marker([lat, lon], {icon: smallIcon}).addTo(map);
+            marker.bindTooltip(stationId, {permanent: false, direction: 'top'});
+            marker.bindPopup('<strong>' + stationId + '</strong>');
+            marker.on('click', function() {
+                var tzSelect = document.getElementById('tz');
+                var tzVal = tzSelect ? tzSelect.value : '';
+                var unitSelect = document.getElementById('unit');
+                var unitVal = unitSelect ? unitSelect.value : '';
+                var url = '/?station=' + encodeURIComponent(stationId);
+                if (tzVal) {
+                    url += '&tz=' + encodeURIComponent(tzVal);
+                }
+                if (unitVal) {
+                    url += '&unit=' + encodeURIComponent(unitVal);
+                }
+                window.location.href = url;
+            });
+        }
+
+        // If coordinates are provided, center the map on the selected station
+        // and add a marker; otherwise, default to a broad view centered on
+        // the Pacific Ocean.
+        if (selectedLat !== null && selectedLon !== null) {
+            addSelectedMarker(selectedLat, selectedLon, selectedStationId);
+            map.setView([selectedLat, selectedLon], 6);
+        } else {
+            // Default view if no station is selected or coordinates are unknown
+            map.setView([0, 0], 2);
+        }
     </script>
 
     <!-- Bootstrap JS (Optional) -->

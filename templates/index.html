@@ -179,8 +179,11 @@
                 // Restore previous zoom and centre instead of fitting to all markers.
                 map.setView(savedCenter, savedZoom);
               } else {
-                var latLngBounds = L.latLngBounds(bounds);
-                map.fitBounds(latLngBounds);
+                // Instead of fitting to the bounds of all markers (which can
+                // wrap around the dateline and cause duplicated world tiles),
+                // fit the map to the predefined maximum bounds.  This shows
+                // a single world without grey areas.
+                map.fitBounds(map.options.maxBounds);
               }
             } else {
               // If no stations available, set a sensible default view.

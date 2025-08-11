@@ -102,25 +102,26 @@
         // The selectedStationId variable helps us highlight the chosen buoy.
         var selectedStationId = "{{ selected_station }}";
 
-        // Define a small icon for buoys to improve presentation when zoomed out.
-        var buoyIcon = L.icon({
-            iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-            iconSize: [15, 25],
-            iconAnchor: [7.5, 25],
-            popupAnchor: [0, -25],
-            tooltipAnchor: [0, -20]
+        // Define a custom divIcon for buoys: a small yellow dot.  Using
+        // a divIcon allows us to control the colour and size without
+        // relying on external images.  A small circle (8x8 px) is used for
+        // all stations, and a slightly larger dot is used for the
+        // currently selected station.
+        var buoyIcon = L.divIcon({
+            html: '<div style="width:8px;height:8px;background:yellow;border-radius:50%;"></div>',
+            iconSize: [8, 8],
+            className: ''
         });
 
-        // Create a distinct icon for the currently selected buoy (slightly larger
-        // and with a different colour) to make it stand out on the map.
-        var selectedIcon = L.icon({
-            iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-            iconSize: [20, 33],
-            iconAnchor: [10, 33],
-            popupAnchor: [0, -33],
-            tooltipAnchor: [0, -28]
+        // Larger dot for selected station.  This helps highlight the
+        // currently selected buoy while keeping the same colour palette.
+        var selectedIcon = L.divIcon({
+            html: '<div style="width:12px;height:12px;background:yellow;border-radius:50%;border:1px solid #555;"></div>',
+            iconSize: [12, 12],
+            className: ''
         });
 
+        // Fetch station metadata and create markers for all available buoys.
         fetch('/stations.json')
           .then(function(response) { return response.json(); })
           .then(function(stations) {
@@ -128,11 +129,23 @@
             stations.forEach(function(st) {
               var lat = st.lat;
               var lon = st.lon;
+              // Choose icon: larger dot for currently selected station.
               var markerOpts = { icon: (st.id === selectedStationId ? selectedIcon : buoyIcon) };
               var m = L.marker([lat, lon], markerOpts).addTo(map);
               m.bindTooltip(st.id, { permanent: false, direction: 'top' });
               m.bindPopup('<strong>' + st.id + '</strong>');
               m.on('click', function() {
+                // Save current map view so that the zoom level and centre are
+                // preserved after navigating to the selected buoy.  Without
+                // this, the map resets to the full extent on page reload.
+                try {
+                  var centre = map.getCenter();
+                  var zoom = map.getZoom();
+                  sessionStorage.setItem('mapCenter', JSON.stringify([centre.lat, centre.lng]));
+                  sessionStorage.setItem('mapZoom', zoom);
+                } catch (e) {
+                  console.warn('Unable to store map state:', e);
+                }
                 var tzSelect = document.getElementById('tz');
                 var tzVal = tzSelect ? tzSelect.value : '';
                 var unitSelect = document.getElementById('unit');
@@ -148,10 +161,29 @@
               });
               bounds.push([lat, lon]);
             });
+            // Determine whether to restore previous view or fit to all markers.
+            var savedCenter = null;
+            var savedZoom = null;
+            try {
+              var centreStr = sessionStorage.getItem('mapCenter');
+              var zoomStr = sessionStorage.getItem('mapZoom');
+              if (centreStr && zoomStr) {
+                savedCenter = JSON.parse(centreStr);
+                savedZoom = parseFloat(zoomStr);
+              }
+            } catch (e) {
+              console.warn('Unable to restore map state:', e);
+            }
             if (bounds.length > 0) {
-              var latLngBounds = L.latLngBounds(bounds);
-              map.fitBounds(latLngBounds);
+              if (savedCenter && savedZoom) {
+                // Restore previous zoom and centre instead of fitting to all markers.
+                map.setView(savedCenter, savedZoom);
+              } else {
+                var latLngBounds = L.latLngBounds(bounds);
+                map.fitBounds(latLngBounds);
+              }
             } else {
+              // If no stations available, set a sensible default view.
               map.setView([0, 0], 2);
             }
           })

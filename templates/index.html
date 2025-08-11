@@ -94,54 +94,72 @@
         // and the top of the map by limiting latitude to roughly –60 to +85 degrees.
         map.setMaxBounds([[-60, -180], [85, 180]]);
 
-        // Selected station coordinates and ID passed from the server.  If
-        // ``selected_lat`` or ``selected_lon`` are null, then no marker
-        // will be drawn and the map will remain centered on the default view.
-        var selectedLat = {{ selected_lat if selected_lat is not none else 'null' }};
-        var selectedLon = {{ selected_lon if selected_lon is not none else 'null' }};
+        // Build markers for all stations using the /stations.json endpoint.  This
+        // fetches a list of {id, name, lat, lon} objects and places a marker
+        // for each buoy on the map.  Clicking a marker will navigate to the
+        // corresponding station's data page while preserving the selected
+        // timezone and unit values from the dropdowns.
+        // The selectedStationId variable helps us highlight the chosen buoy.
         var selectedStationId = "{{ selected_station }}";
 
-        // Function to add a single marker for the selected station.  When
-        // clicked, the marker will redirect to the same page (refresh) with
-        // the current timezone and unit selections preserved.
-        function addSelectedMarker(lat, lon, stationId) {
-            // Define a smaller icon for markers to improve presentation when zoomed out.
-            var smallIcon = L.icon({
-                iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-                iconSize: [15, 25],
-                iconAnchor: [7.5, 25],
-                popupAnchor: [0, -25],
-                tooltipAnchor: [0, -20]
-            });
-            var marker = L.marker([lat, lon], {icon: smallIcon}).addTo(map);
-            marker.bindTooltip(stationId, {permanent: false, direction: 'top'});
-            marker.bindPopup('<strong>' + stationId + '</strong>');
-            marker.on('click', function() {
+        // Define a small icon for buoys to improve presentation when zoomed out.
+        var buoyIcon = L.icon({
+            iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+            iconSize: [15, 25],
+            iconAnchor: [7.5, 25],
+            popupAnchor: [0, -25],
+            tooltipAnchor: [0, -20]
+        });
+
+        // Create a distinct icon for the currently selected buoy (slightly larger
+        // and with a different colour) to make it stand out on the map.
+        var selectedIcon = L.icon({
+            iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+            iconSize: [20, 33],
+            iconAnchor: [10, 33],
+            popupAnchor: [0, -33],
+            tooltipAnchor: [0, -28]
+        });
+
+        fetch('/stations.json')
+          .then(function(response) { return response.json(); })
+          .then(function(stations) {
+            var bounds = [];
+            stations.forEach(function(st) {
+              var lat = st.lat;
+              var lon = st.lon;
+              var markerOpts = { icon: (st.id === selectedStationId ? selectedIcon : buoyIcon) };
+              var m = L.marker([lat, lon], markerOpts).addTo(map);
+              m.bindTooltip(st.id, { permanent: false, direction: 'top' });
+              m.bindPopup('<strong>' + st.id + '</strong>');
+              m.on('click', function() {
                 var tzSelect = document.getElementById('tz');
                 var tzVal = tzSelect ? tzSelect.value : '';
                 var unitSelect = document.getElementById('unit');
                 var unitVal = unitSelect ? unitSelect.value : '';
-                var url = '/?station=' + encodeURIComponent(stationId);
+                var url = '/?station=' + encodeURIComponent(st.id);
                 if (tzVal) {
-                    url += '&tz=' + encodeURIComponent(tzVal);
+                  url += '&tz=' + encodeURIComponent(tzVal);
                 }
                 if (unitVal) {
-                    url += '&unit=' + encodeURIComponent(unitVal);
+                  url += '&unit=' + encodeURIComponent(unitVal);
                 }
                 window.location.href = url;
+              });
+              bounds.push([lat, lon]);
             });
-        }
-
-        // If coordinates are provided, center the map on the selected station
-        // and add a marker; otherwise, default to a broad view centered on
-        // the Pacific Ocean.
-        if (selectedLat !== null && selectedLon !== null) {
-            addSelectedMarker(selectedLat, selectedLon, selectedStationId);
-            map.setView([selectedLat, selectedLon], 6);
-        } else {
-            // Default view if no station is selected or coordinates are unknown
+            if (bounds.length > 0) {
+              var latLngBounds = L.latLngBounds(bounds);
+              map.fitBounds(latLngBounds);
+            } else {
+              map.setView([0, 0], 2);
+            }
+          })
+          .catch(function(err) {
+            console.error('Error loading station data:', err);
+            // Fallback view if stations cannot be fetched
             map.setView([0, 0], 2);
-        }
+          });
     </script>
 
     <!-- Bootstrap JS (Optional) -->

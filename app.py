@@ -21,6 +21,53 @@ tz_finder = TimezoneFinder()
 STATION_META = None  # Maps station_id -> { 'name': str, 'lat': float, 'lon': float }
 
 # -----------------------------------------------------------------------------
+# Coordinate database
+#
+# To avoid making network requests for every buoy when rendering the map, the
+# application can load precomputed latitude/longitude values for each buoy
+# station from a static JSON file.  The file ``station_coords.json`` is
+# generated offline (for example from the provided Excel spreadsheet) and
+# placed alongside this module.  When present, it contains an object mapping
+# station IDs to ``{"lat": float, "lon": float}``.  This allows the map
+# to display all stations immediately without having to fetch .bull files.
+STATION_COORDS = None  # Maps station_id -> { 'lat': float, 'lon': float }
+
+def load_station_coords() -> dict:
+    """
+    Load the static station coordinates mapping from ``station_coords.json``.
+
+    If the file exists in the same directory as this module, it is parsed
+    once and cached.  The resulting dictionary maps each station ID to a
+    dictionary with ``lat`` and ``lon`` keys.  If the file is missing or
+    unreadable, an empty dictionary is returned.
+
+    Returns:
+        dict: A mapping of station ID strings to dictionaries with keys
+        ``'lat'`` and ``'lon'``.
+    """
+    global STATION_COORDS
+    if STATION_COORDS is not None:
+        return STATION_COORDS
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    coord_path = os.path.join(base_dir, 'station_coords.json')
+    coords = {}
+    try:
+        with open(coord_path, 'r') as f:
+            data = json.load(f)
+            # Ensure values are floats
+            for sid, info in data.items():
+                try:
+                    lat = float(info.get('lat'))
+                    lon = float(info.get('lon'))
+                    coords[str(sid).strip()] = {'lat': lat, 'lon': lon}
+                except Exception:
+                    continue
+    except Exception:
+        coords = {}
+    STATION_COORDS = coords
+    return STATION_COORDS
+
+# -----------------------------------------------------------------------------
 # Default station metadata fallback
 #
 # When the application is unable to retrieve the station list or metadata from
@@ -158,17 +205,23 @@ def get_stations_data():
         meta = load_station_metadata()
     except Exception:
         meta = {}
+    # Load static coordinate mapping if available.  This avoids expensive
+    # network calls to parse each station's .bull file for its location.
+    coords_map = load_station_coords()
     data_list = []
     for sid in id_list:
-        lat = lon = None
+        # Default name is the station ID itself
         name = sid
+        # Prefer metadata name if available
         info = meta.get(sid)
-        # Use metadata if available
-        if info:
-            name = info.get('name', sid)
-            lat = info.get('lat')
-            lon = info.get('lon')
-        # If metadata is unavailable, check the predefined default stations
+        if info and 'name' in info:
+            name = info['name']
+        # Retrieve latitude and longitude from the precomputed coordinates
+        lat = lon = None
+        if sid in coords_map:
+            lat = coords_map[sid]['lat']
+            lon = coords_map[sid]['lon']
+        # Fall back to curated defaults if coordinates missing
         if (lat is None or lon is None) and sid in DEFAULT_STATIONS:
             fallback_info = DEFAULT_STATIONS[sid]
             lat = fallback_info.get('lat')
@@ -1199,24 +1252,33 @@ def index():
             # Use the effective timezone name (returned by parse_bull) as the label
             tz_label = effective_tz_name
             table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
-            # Attempt to extract latitude and longitude from the location string.  The
-            # pattern searches for numbers and N/E/S/W indicators inside parentheses,
-            # e.g. "Location : 51201 (21.67N 158.12W)".  If the pattern is not
-            # present, selected_lat and selected_lon remain None.
-            if location_str:
-                import re
-                m = re.search(r"\(([-+]?\d+(?:\.\d+)?)\s*([NS])\s+([-+]?\d+(?:\.\d+)?)\s*([EW])\)", location_str)
-                if m:
-                    try:
-                        lat_val = float(m.group(1))
-                        lat_dir = m.group(2).upper()
-                        lon_val = float(m.group(3))
-                        lon_dir = m.group(4).upper()
-                        selected_lat = lat_val if lat_dir == 'N' else -lat_val
-                        selected_lon = lon_val if lon_dir == 'E' else -lon_val
-                    except Exception:
-                        selected_lat = None
-                        selected_lon = None
+            # Retrieve latitude and longitude from the precomputed station coordinates if available.
+            coords_map = load_station_coords()
+            sid_str = str(selected_station).strip()
+            if sid_str in coords_map:
+                selected_lat = coords_map[sid_str]['lat']
+                selected_lon = coords_map[sid_str]['lon']
+            else:
+                # Fallback: attempt to parse coordinates from the location string.  This
+                # remains as a backup in case the static coordinates are missing or
+                # the buoy ID is not found in the precomputed mapping.  The pattern
+                # searches for numbers and N/E/S/W indicators inside parentheses,
+                # e.g. "Location : 51201 (21.67N 158.12W)".  Optional whitespace
+                # before the numbers is allowed to support single‑digit latitudes.
+                if location_str:
+                    import re
+                    m = re.search(r"\(\s*([-+]?\d+(?:\.\d+)?)\s*([NS])\s+([-+]?\d+(?:\.\d+)?)\s*([EW])\)", location_str)
+                    if m:
+                        try:
+                            lat_val = float(m.group(1))
+                            lat_dir = m.group(2).upper()
+                            lon_val = float(m.group(3))
+                            lon_dir = m.group(4).upper()
+                            selected_lat = lat_val if lat_dir == 'N' else -lat_val
+                            selected_lon = lon_val if lon_dir == 'E' else -lon_val
+                        except Exception:
+                            selected_lat = None
+                            selected_lon = None
     # Render template with all context variables.  Also pass the timezones
     # list and the currently selected timezone for the dropdown.
     return render_template(

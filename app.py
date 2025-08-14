@@ -1226,9 +1226,9 @@ def index():
         selected_station = request.args.get("station", "")
         selected_tz = request.args.get("tz", "")
         selected_unit = request.args.get("unit", "US") or "US"
-    # Set defaults when not provided: use Pacific/Honolulu for timezone and buoy 51201 for station
-    if not selected_tz:
-        selected_tz = "Pacific/Honolulu"
+# Set default station when not provided; timezone will be determined from the station
+    # if not selected_tz:
+   #      selected_tz = "Pacific/Honolulu"
     if not selected_station:
         selected_station = "51201"
 

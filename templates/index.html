@@ -30,18 +30,8 @@
                     {% endfor %}
                 </select>
             </div>
-            <!-- Time zone dropdown -->
-            <div class="col-auto">
-                <label for="tz" class="col-form-label">Time Zone:</label>
-            </div>
-            <div class="col-auto">
-                <select id="tz" name="tz" class="form-select" style="min-width: 200px;">
-                    {% for tz in timezones %}
-                        <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <!-- Units dropdown -->
+               <!-- Time zone dropdown removed; now automatically determined by selected buoy -->
+       <!-- Units dropdown -->
             <div class="col-auto">
                 <label for="unit" class="col-form-label">Units:</label>
             </div>

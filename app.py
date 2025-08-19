@@ -1267,9 +1267,10 @@ def index():
             # Use the effective timezone name (returned by parse_bull) as the label
         # Sort rows chronologically to ensure month wrap after August 31 continues into September
             try:
-                rows = sorted(rows, key=lambda r: datetime.strptime(r[0], '%A, %B %d, %Y %I:%M %p'))
+                rows = sorted(rows, key=lambda r: datetime.strptime(f"{r[0]} {r[1]}", '%A, %B %d, %Y %I:%M %p'))
             except Exception:
                 pass
+Sort rows chronologically
             tz_label = effective_tz_name
             table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
            

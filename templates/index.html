@@ -30,7 +30,17 @@
                     {% endfor %}
                 </select>
             </div>
-               <!-- Time zone dropdown removed; now automatically determined by selected buoy -->
+                 <!-- Time zone dropdown -->
+            <div class="col-auto">
+                <label for="tz" class="col-form-label">Time Zone:</label>
+            </div>
+            <div class="col-auto">
+                <select id="tz" name="tz" class="form-select" style="min-width: 240px;">
+                    {% for tz in timezones %}
+                        <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
+                    {% endfor %}
+                </select>
+</div>  dropdown -->wn removed; now automatically determined by selected buoy -->
        <!-- Units dropdown -->
             <div class="col-auto">
                 <label for="unit" class="col-form-label">Units:</label>
@@ -132,12 +142,15 @@
                   var centre = map.getCenter();
                   var zoom = map.getZoom();
                   sessionStorage.setItem('mapCenter', JSON.stringify([centre.lat, centre.lng]));
-                  sessionStorage.setItem('mapZoom', zoom);
+                 sessionStorage.setItem('mapZoom', zoom);
                 } catch (e) {
                   console.warn('Unable to store map state:', e);
                 }
                 var tzSelect = document.getElementById('tz');
-                var tzVal = tzSelect ? tzSelect.value : '';
+                
+                            tzVal = '';
+var tzVal = tzSe
+                            tzVal = '';lect ? tzSelect.value : '';
                 var unitSelect = document.getElementById('unit');
                 var unitVal = unitSelect ? unitSelect.value : '';
                 var url = '/?station=' + encodeURIComponent(st.id);

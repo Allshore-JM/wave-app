@@ -958,6 +958,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         html += '</tr>\n'
     html += '</table>'
     return html
+app.py
 
 def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str | None, rows: list[list], tz_label: str, unit: str) -> BytesIO:
     """
@@ -1226,11 +1227,25 @@ def index():
         selected_station = request.args.get("station", "")
         selected_tz = request.args.get("tz", "")
         selected_unit = request.args.get("unit", "US") or "US"
-# Set default station when not provided; timezone will be determined from the station
-    # if not selected_tz:
-   #      selected_tz = "Pacific/Honolulu"
+    # Set defaults when not provided: use Pacific/Honolulu for timezone and buoy 51201 for station
+           if not selected_station:
+            selected_station = "51201"
+            selected_tz ="""Pacific/Honolulu"
     if not selected_station:
         selected_station = "51201"
+            # Determine timezone based on station coordinates, overriding selected_tz if possible
+          try:
+        coords_map = load_station_coords()
+        sid_str = str(selected_station).strip() if selected_station else None
+        if sid_str and sid_str in coords_map:
+            lat = coords_map[sid_str]['lat']
+            lon = coords_map[sid_str]['lon']
+                                                            tz_guess = tz_finder.timezone_at(lat=lat, lng=lon)
+            if tz_guess:
+                selected_tz = tz_guess
+    except Exception:
+        pass
+
 
     table_html = None
     error = None
@@ -1250,8 +1265,16 @@ def index():
         error = parse_error
         if rows is not None:
             # Use the effective timezone name (returned by parse_bull) as the label
+        # Sort rows chronologically to ensure month wrap after August 31 continues into September
+            try:
+                rows = sorted(rows, key=lambda r: datetime.strptime(r[0], '%A, %B %d, %Y %I:%M %p'))
+            except Exception:
+                pass
             tz_label = effective_tz_name
             table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
+           
+
+
             # Retrieve latitude and longitude from the precomputed station coordinates if available.
             coords_map = load_station_coords()
             sid_str = str(selected_station).strip()

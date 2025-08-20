@@ -1250,7 +1250,13 @@ def index():
         error = parse_error
         if rows is not None:
             # Use the effective timezone name (returned by parse_bull) as the label
-            tz_label = effective_tz_name
+                    tz_label = effective_tz_name
+               # Sort rows chronologically by UTC time to ensure continuous ordering across month boundaries
+        try:
+            rows = sorted(rows, key=lambda r: datetime.strptime(f"{r[0]} {r[1]}", "%A, %B %d, %Y %I:%M %p"))
+        except Exception:
+    
+
             table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
             # Retrieve latitude and longitude from the precomputed station coordinates if available.
             coords_map = load_station_coords()

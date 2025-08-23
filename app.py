@@ -606,26 +606,25 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
             forecast_dt_utc += timedelta(days=1)
     else:
         # For subsequent rows, increment the previous timestamp by
+                   # For subsequent rows, increment the previous timestamp by
         # exactly one hour.
-        forecast_dt_utc = last_forecast_dt_utc + timedelta(hours=1)mezone (either the selected timezone or the buoy's local timezone)
-            # Use effective_tz_name instead of tz_name so that the user-selected timezone is respected.
-            try:
-                local_tz = pytz.timezone(effective_tz_name)
-            except Exception:
-                # Fallback to UTC if the effective timezone cannot be resolved
-                local_tz = UTC
-            # Convert the forecast UTC time into the effective local timezone
-            local_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(local_tz)
-            # Format date and time strings in the desired presentation
-            try:
-                date_str_local = local_dt.strftime("%A, %B %-d, %Y")
-            except Exception:
-                # Fallback for platforms without %-d (e.g., Windows)
-                date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
-            # Format the local time without seconds.  Use hours and minutes only,
-            # trimming any leading zero to match the desired display (e.g., "8:00 AM").
-            time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
-            # Convert combined height to feet
+                forecast_dt_utc = last_forecast_dt_utc + timedelta(hours=1)
+            local_tz = pytz.timezone(effective_tz_name)
+                  
+                        # Fallback to UTC if the effective timezone cannot be resolved
+                        local_tz = UTC
+                    # Convert the forecast UTC time into the effective local timezone
+                    local_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(local_tz)
+                    # Format date and time strings in the desired presentation
+                    try:
+                        date_str_local = local_dt.strftime("%A, %B %-d, %Y")
+                    except Exception:
+                        # Fallback for platforms without %-d (e.g., Windows)
+                        date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
+                    # Format the local time without seconds.  Use hours and minutes only,
+                    # trimming any leading zero to match the desired display (e.g., "8:00 AM").
+                    time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
+                    # Convert combined height to feet
             combined_hs_ft = None
             if combined_hs_m is not None:
                 combined_hs_ft = combined_hs_m * M_TO_FT

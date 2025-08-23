@@ -519,6 +519,8 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
 
         # Conversion factor (meters to feet)
         M_TO_FT = 3.28084
+            # Track the last forecast datetime to enforce 1-hour increments
+        last_forecast_dt_utc = None
         for line in lines:
             striped = line.strip()
             if not striped.startswith("|"):
@@ -584,17 +586,28 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                 swell_groups.append((None, None, None))
             if len(swell_groups) > 6:
                 swell_groups = swell_groups[:6]
-            # Compute forecast UTC datetime by replacing day and hour on the cycle date; adjust forward if earlier than cycle
-            try:
-                forecast_dt_utc = cycle_dt_utc.replace(day=day_val, hour=hour_val)
-            except ValueError:
-                # In case of invalid day (e.g., February 30), skip
-                continue
-            if forecast_dt_utc < cycle_dt_utc:
-                # Adjust into the future if forecast time is before cycle time
-                while forecast_dt_utc < cycle_dt_utc:
-                    forecast_dt_utc += timedelta(days=1)
-            # Convert to the effective timezone (either the selected timezone or the buoy's local timezone)
+            
+          # Derive forecast UTC datetime.
+    # Use the first parsed timestamp as an anchor and then add
+    # exactly 1 hour for each subsequent row. This removes the
+    # end‑of‑month “jumping” seen when simply replacing day/hour
+    # fields on the cycle date.
+    if last_forecast_dt_utc is None:
+        # On the first row, build the anchor timestamp by replacing
+        # the day and hour on the cycle date.
+        try:
+            forecast_dt_utc = cycle_dt_utc.replace(day=day_val, hour=hour_val)
+        except ValueError:
+            # Invalid day (e.g., February 30) – skip row.
+            continue
+        # If the anchor is earlier than the cycle time, roll forward
+        # one or more days until it is strictly >= the cycle time.
+        while forecast_dt_utc < cycle_dt_utc:
+            forecast_dt_utc += timedelta(days=1)
+    else:
+        # For subsequent rows, increment the previous timestamp by
+        # exactly one hour.
+        forecast_dt_utc = last_forecast_dt_utc + timedelta(hours=1)mezone (either the selected timezone or the buoy's local timezone)
             # Use effective_tz_name instead of tz_name so that the user-selected timezone is respected.
             try:
                 local_tz = pytz.timezone(effective_tz_name)
@@ -625,6 +638,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                     row.extend([hs_m * M_TO_FT, tp_val, dir_val])
             row.append(combined_hs_ft)
             rows.append(row)
+                last_forecast_dt_utc = forecast_dt_utc
     else:
         # ----- Older format parser: header contains "Hr" followed by swell data -----
         # Locate the line starting with 'Hr' to identify where data begins

@@ -609,10 +609,10 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                    # For subsequent rows, increment the previous timestamp by
         # exactly one hour.
                 forecast_dt_utc = last_forecast_dt_utc + timedelta(hours=1)
-            local_tz = pytz.timezone(effective_tz_name)
+             local_tz = pytz.timezone(effective_tz_name)
                   
-                        # Fallback to UTC if the effective timezone cannot be resolved
-                        local_tz = UTC
+                   # Fallback to UTC if the effective timezone cannot be resolved
+                    local_tz = UTC
                     # Convert the forecast UTC time into the effective local timezone
                     local_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(local_tz)
                     # Format date and time strings in the desired presentation

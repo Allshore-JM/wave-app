@@ -31,7 +31,12 @@ def get_station_list():
             stations = json.load(f)
     except FileNotFoundError:
         stations = {}
-    return [(sid, meta.get('name', sid)) for sid, meta in stations.items()]
+    # If stations is a dict, extract 'name'; otherwise it’s a list of IDs
+    if isinstance(stations, dict):
+        return [(sid, meta.get('name', sid)) for sid, meta in stations.items()]
+    else:
+        return [(sid, sid) for sid in stations]
+
 
 
 @app.route('/stations.json')

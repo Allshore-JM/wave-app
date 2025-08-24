@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wave App</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body class="p-4">
+    <div id="map" style="height: 500px; margin-bottom: 1rem; overflow:hidden;"></div>
+    <form method="POST" class="mb-3">
+        <div class="row g-3 align-items-center">
+            <div class="col-auto">
+                <label for="station" class="col-form-label">Select Buoy:</label>
+            </div>
+            <div class="col-auto">
+                <select id="station" name="station" class="form-select" style="min-width: 240px;">
+                    {% for sid, name in stations %}
+                    <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>
+                        {{ sid }} - {{ name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-auto">
+                <label for="tz" class="col-form-label">Time Zone:</label>
+            </div>
+            <div class="col-auto">
+                <select id="tz" name="tz" class="form-select" style="min-width: 240px;">
+                    {% for tz in timezones %}
+                    <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-auto">
+                <label for="unit" class="col-form-label">Units:</label>
+            </div>
+            <div class="col-auto">
+                <select id="unit" name="unit" class="form-select" style="min-width: 120px;">
+                    {% for u in units %}
+                    <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ "Metric" if u == "Metric" else "US" }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-primary">Update</button>
+            </div>
+        </div>
+    </form>
+    {% if error %}
+    <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+    {% if table_html %}
+    <div class="table-responsive">
+        {{ table_html | safe }}
+    </div>
+    {% endif %}
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        var map = L.map('map', {
+            worldCopyJump: false,
+            noWrap: true,
+            minZoom: 2,
+            maxZoom: 19,
+            maxBoundsViscosity: 1.0
+        });
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles © Esri & contributors',
+            maxZoom: 19,
+            noWrap: true
+        }).addTo(map);
+        map.setMaxBounds([[-60, -180], [85, 180]]);
+        var selectedStationId = "{{ selected_station }}";
+        var buoyIcon = L.divIcon({
+            html: '<div style="width:8px;height:8px;background:yellow;border-radius:50%;"></div>',
+            iconSize: [8, 8],
+            className: ''
+        });
+        var selectedIcon = L.divIcon({
+            html: '<div style="width:12px;height:12px;background:yellow;border-radius:50%;border:1px solid #555;"></div>',
+            iconSize: [12, 12],
+            className: ''
+        });
+        fetch('/stations.json')
+            .then(response => response.json())
+            .then(function(stations) {
+                var bounds = [];
+                stations.forEach(function(st) {
+                    var markerOpts = { icon: (st.id === selectedStationId ? selectedIcon : buoyIcon) };
+                    var m = L.marker([st.lat, st.lon], markerOpts).addTo(map);
+                    m.bindTooltip(st.id, { permanent: false, direction: 'top' });
+                    m.bindPopup('<strong>' + st.id + '</strong>');
+                    m.on('click', function() {
+                        try {
+                            var centre = map.getCenter();
+                            var zoom = map.getZoom();
+                            sessionStorage.setItem('mapCenter', JSON.stringify([centre.lat, centre.lng]));
+                            sessionStorage.setItem('mapZoom', zoom);
+                        } catch (e) {
+                            console.warn('Unable to store map state:', e);
+                        }
+                        var tzSelect = document.getElementById('tz');
+                        var tzVal = tzSelect ? tzSelect.value : '';
+                        var unitSelect = document.getElementById('unit');
+                        var unitVal = unitSelect ? unitSelect.value : '';
+                        var url = '/?station=' + encodeURIComponent(st.id);
+                        if (tzVal) {
+                            url += '&tz=' + encodeURIComponent(tzVal);
+                        }
+                        if (unitVal) {
+                            url += '&unit=' + encodeURIComponent(unitVal);
+                        }
+                        window.location.href = url;
+                    });
+                    bounds.push([st.lat, st.lon]);
+                });
+                var savedCenter = null;
+                var savedZoom = null;
+                try {
+                    var centreStr = sessionStorage.getItem('mapCenter');
+                    var zoomStr = sessionStorage.getItem('mapZoom');
+                    if (centreStr && zoomStr) {
+                        savedCenter = JSON.parse(centreStr);
+                        savedZoom = parseFloat(zoomStr);
+                    }
+                } catch (e) {
+                    console.warn('Unable to restore map state:', e);
+                }
+                if (bounds.length > 0) {
+                    if (savedCenter && savedZoom) {
+                        map.setView(savedCenter, savedZoom);
+                    } else {
+                        map.fitBounds(map.options.maxBounds);
+                    }
+                } else {
+                    map.setView([0, 0], 2);
+                }
+            })
+            .catch(function(err) {
+                console.error('Error loading station data:', err);
+                map.setView([0, 0], 2);
+            });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -518,9 +518,28 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
             model_run_str = "Model Run: " + model_run_local.strftime("%A, %B %d, %Y %I:%M %p").lstrip('0')
 
         # Conversion factor (meters to feet)
+               # Helper: find the earliest datetime >= threshold with the requested (day_of_month, hour)
+        def _first_dt_on_or_after(threshold_dt: datetime, day_val: int, hour_val: int) -> datetime | None:
+            base_year = threshold_dt.year
+            base_month = threshold_dt.month
+            # Search from the threshold month forward (well beyond forecast horizon)
+            for offset in range(0, 14):
+                y = base_year + ((base_month - 1 + offset) // 12)
+                mth = ((base_month - 1 + offset) % 12) + 1
+                try:
+                    cand = datetime(y, mth, day_val, hour_val)
+                except ValueError:
+                    # Day doesn't exist in this month (e.g., 31 in a 30-day month); try next month
+                    continue
+                if cand >= threshold_dt:
+                    return cand
+            return None
+
+
         M_TO_FT = 3.28084
         for line in lines:
-            striped = line.strip()
+           prev_forecast_dt_utc: datetime | None = None
+         striped = line.strip()
             if not striped.startswith("|"):
                 continue
             # Skip header or separator lines
@@ -581,19 +600,14 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                         swell_groups.append((None, None, None))
             # Ensure exactly six swell groups
             while len(swell_groups) < 6:
-                swell_groups.append((None, None, None))
-            if len(swell_groups) > 6:
-                swell_groups = swell_groups[:6]
-            # Compute forecast UTC datetime by replacing day and hour on the cycle date; adjust forward if earlier than cycle
-            try:
-                forecast_dt_utc = cycle_dt_utc.replace(day=day_val, hour=hour_val)
-            except ValueError:
-                # In case of invalid day (e.g., February 30), skip
+             # --- FIXED month-end continuity logic ---
+            # Ensure we never go backward in time: threshold is the later of cycle time and previous row time.
+            threshold_dt = prev_forecast_dt_utc if (prev_forecast_dt_utc and prev_forecast_dt_utc > cycle_dt_utc) else cycle_dt_utc
+            forecast_dt_utc = _first_dt_on_or_after(threshold_dt, day_val, hour_val)
+            if forecast_dt_utc is None:
+                # Could not realize this (day, hour) in any nearby month; skip this row.
                 continue
-            if forecast_dt_utc < cycle_dt_utc:
-                # Adjust into the future if forecast time is before cycle time
-                while forecast_dt_utc < cycle_dt_utc:
-                    forecast_dt_utc += timedelta(days=1)
+            prev_forecast_dt_utc = forecast_dt_utc
             # Convert to the effective timezone (either the selected timezone or the buoy's local timezone)
             # Use effective_tz_name instead of tz_name so that the user-selected timezone is respected.
             try:

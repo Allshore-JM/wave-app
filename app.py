@@ -537,9 +537,9 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
 
 
         M_TO_FT = 3.28084
+            prev_forecast_dt_utc: datetime | None = None
         for line in lines:
-           prev_forecast_dt_utc: datetime | None = None
-         striped = line.strip()
+                striped = line.strip()
             if not striped.startswith("|"):
                 continue
             # Skip header or separator lines

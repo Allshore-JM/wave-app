@@ -115,39 +115,40 @@
 
     <script>
       (function () {
-        // ---------- One-world (no wrap) config ----------
+        // ---------- World config ----------
+        // Used only to compute the minimum zoom that fills the viewport neatly.
         var WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
         var VIEW_KEY = "waveapp:mapView"; // localStorage key for preserving view
 
+        // Base tiles: allow wrap so we can pan seamlessly E<->W.
         var tiles = L.tileLayer(
           "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
           {
             attribution: "Tiles © Esri & contributors",
-            noWrap: true,
+            noWrap: false,  // allow horizontal wrap
             maxZoom: 19
           }
         );
 
         var map = L.map("map", {
           layers: [tiles],
-          noWrap: true,            // single copy of the world
-          worldCopyJump: false,
-          maxBounds: WORLD_BOUNDS, // hard panning limit
-          maxBoundsViscosity: 1.0,
+          noWrap: false,         // allow repeated worlds
+          worldCopyJump: true,   // seamless horizontal pan; overlays remain visible
           zoomControl: true
+          // NOTE: no maxBounds here; we control only the min zoom below.
         });
 
-        // Compute and enforce min zoom (don’t change center/zoom unless below min)
+        // Compute & enforce min zoom that fits a single world to the viewport.
+        // Do not change center/zoom unless we're below the min.
         function enforceMinZoomPreservingView() {
           var minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
           map.setMinZoom(minZ);
           if (map.getZoom() < minZ) {
             map.setZoom(minZ);
           }
-          map.setMaxBounds(WORLD_BOUNDS);
         }
 
-        // Restore saved view (if any); otherwise fit world once
+        // Restore saved view (if any); otherwise fit once to world.
         function restoreViewOrFitWorld() {
           var saved = null;
           try {
@@ -163,6 +164,7 @@
             saved.hasOwnProperty("z") &&
             isFinite(saved.lat) && isFinite(saved.lng) && isFinite(saved.z)
           ) {
+            // clamp to current min zoom
             var clampedZ = Math.max(saved.z, map.getMinZoom());
             map.setView([saved.lat, saved.lng], clampedZ, { animate: false });
           } else {
@@ -178,13 +180,14 @@
         // Recompute min zoom only (no fit) on resize so we don't zoom out
         window.addEventListener("resize", enforceMinZoomPreservingView);
 
-        // Persist view on user interaction
+        // Persist view on user interaction (normalize with wrapLatLng)
         function saveView() {
           var c = map.getCenter();
+          var wc = map.wrapLatLng(c); // keep lon in canonical range
           try {
             localStorage.setItem(
               VIEW_KEY,
-              JSON.stringify({ lat: c.lat, lng: c.lng, z: map.getZoom() })
+              JSON.stringify({ lat: wc.lat, lng: wc.lng, z: map.getZoom() })
             );
           } catch (e) {
             // ignore storage errors (private mode, quota, etc.)
@@ -207,7 +210,7 @@
           });
         }
 
-        // Load stations (no cache) and attach click handlers
+        // Load stations (no cache) and attach click/tooltip
         function addStations(stations) {
           markerLayer.clearLayers();
           for (var i = 0; i < stations.length; i++) {
@@ -220,7 +223,7 @@
             if (!isFinite(lat) || !isFinite(lon) || !sid) continue;
 
             var marker = L.circleMarker([lat, lon], {
-              radius: 2,                 // slightly smaller
+              radius: 2,                 // << smaller marker
               color: "#FFD400",
               weight: 1,                 // lighter stroke
               fillColor: "#FFD400",
@@ -235,7 +238,6 @@
               })
               .addTo(markerLayer);
 
-            // Robustly submit with the correct station id (no regex parsing)
             (function (stationId) {
               marker.on("click", function () {
                 if (stationSel) stationSel.value = stationId;
@@ -260,12 +262,12 @@
             })
             .catch(function (err) {
               console.error("Failed to load stations.json:", err);
-              // Optional: display a banner: alert("Unable to load stations. Please reload.");
+              // Optional: alert("Unable to load stations. Please reload.");
             });
         })();
 
-        // IMPORTANT: Do NOT auto-center to selected buoy on page load.
-        // We intentionally preserve the user's previous zoom/center from localStorage.
+        // NOTE: We intentionally do NOT auto-center to the selected buoy on page load.
+        // Your map view persists via localStorage and wraps seamlessly E<->W.
       })();
     </script>
   </body>

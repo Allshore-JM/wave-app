@@ -1,193 +1,198 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title></title>
-    <!-- Bootstrap CSS -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-    <!-- Leaflet CSS for map -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-</head>
-<body class="p-4">
-    <!-- Intentionally blank heading removed to satisfy request -->
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, shrink-to-fit=no"
+    />
+    <title>Wave App</title>
 
-    <!-- Map container for buoy selection -->
-    <div id="map" style="height: 500px; margin-bottom: 1rem; overflow:hidden;"></div>
-    <!-- Fallback buoy selection form (in case the map fails to load or for manual selection) -->
-    <form method="POST" class="mb-3">
-        <div class="row g-3 align-items-center">
-            <!-- Station dropdown -->
-            <div class="col-auto">
-                <label for="station" class="col-form-label">Select Buoy:</label>
-            </div>
-            <div class="col-auto">
-                <select id="station" name="station" class="form-select" style="min-width: 240px;">
-                    {% for sid, name in stations %}
-                        <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>
-                            {{ sid }} - {{ name }}
-                        </option>
-                    {% endfor %}
-                </select>
-            </div>
-               <!-- Time zone dropdown removed; now automatically determined by selected buoy -->
-       <!-- Units dropdown -->
-            <div class="col-auto">
-                <label for="unit" class="col-form-label">Units:</label>
-            </div>
-            <div class="col-auto">
-                <select id="unit" name="unit" class="form-select" style="min-width: 120px;">
-                    {% for u in units %}
-                        <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ "Metric" if u == "Metric" else "US" }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="col-auto">
-                <!-- Renamed button label from "Get Latest Data" to "Update" as requested -->
-                <button type="submit" class="btn btn-primary">Update</button>
-            </div>
+    <!-- Bootstrap (for simple layout + the table HTML you render) -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+      crossorigin="anonymous"
+    />
+
+    <!-- Leaflet -->
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      /* Make the map fill the width and most of the viewport height */
+      #map {
+        width: 100%;
+        height: 70vh; /* adjust if you want more/less map height */
+      }
+
+      /* Optional: avoid a light gray flash while tiles load */
+      .leaflet-container {
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Controls -->
+    <div class="container-fluid py-2">
+      <form id="controls" method="POST" class="row g-2 align-items-end">
+        <div class="col-sm-3 col-md-2">
+          <label class="form-label" for="station">Station</label>
+          <select class="form-select" name="station" id="station">
+            {% for sid, name in stations %}
+            <option
+              value="{{ sid }}"
+              {% if sid == selected_station %}selected{% endif %}
+            >
+              {{ name }}
+            </option>
+            {% endfor %}
+          </select>
         </div>
-    </form>
 
-    <!-- Display error message if one exists -->
-    {% if error %}
-        <div class="alert alert-danger">{{ error }}</div>
-    {% endif %}
-
-    <!-- Display table if data is available -->
-    {% if table_html %}
-        <div class="table-responsive">
-            {{ table_html | safe }}
+        <div class="col-sm-4 col-md-3">
+          <label class="form-label" for="tz">Time zone</label>
+          <select class="form-select" name="tz" id="tz">
+            <option value="">(Buoy local)</option>
+            {% for tz in timezones %}
+            <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>
+              {{ tz }}
+            </option>
+            {% endfor %}
+          </select>
         </div>
-    {% endif %}
 
-    <!-- Leaflet JS for interactive map -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <div class="col-sm-2 col-md-2">
+          <label class="form-label" for="unit">Units</label>
+          <select class="form-select" name="unit" id="unit">
+            {% for u in units %}
+            <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>
+              {{ u }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-sm-2 col-md-2">
+          <button type="submit" class="btn btn-primary w-100">Update</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Map -->
+    <div id="map"></div>
+
+    <!-- Table / Errors -->
+    <div class="container-fluid py-3">
+      {% if error %}
+      <div class="alert alert-warning">{{ error }}</div>
+      {% endif %}
+      <div id="table-slot">
+        {% if table_html %}
+        {{ table_html|safe }}
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+
     <script>
-        // Initialize the Leaflet map immediately.  The script is placed at
-        // the end of the body, so the DOM elements (including #map) are
-        // already available.
-        var map = L.map('map', {
-            worldCopyJump: false,
+      (function () {
+        // --- Single-world configuration (no wrap) to eliminate gray sidebands ---
+        const WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
+
+        const tiles = L.tileLayer(
+          "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+          {
+            attribution: "Tiles © Esri & contributors",
             noWrap: true,
-            minZoom: 2,
             maxZoom: 19,
-            maxBoundsViscosity: 1.0
-        });
-        // Use the Esri World Imagery tile layer for a satellite basemap.
-        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-            attribution: 'Tiles © Esri & contributors',
-            maxZoom: 19,
-            noWrap: true
-        }).addTo(map);
-        // Restrict panning to a single complete world.  Crop out Antarctica
-        // and the top of the map by limiting latitude to roughly –60 to +85 degrees.
-        map.setMaxBounds([[-60, -180], [85, 180]]);
+          }
+        );
 
-        // Build markers for all stations using the /stations.json endpoint.  This
-        // fetches a list of {id, name, lat, lon} objects and places a marker
-        // for each buoy on the map.  Clicking a marker will navigate to the
-        // corresponding station's data page while preserving the selected
-        // timezone and unit values from the dropdowns.
-        // The selectedStationId variable helps us highlight the chosen buoy.
-        var selectedStationId = "{{ selected_station }}";
-
-        // Define a custom divIcon for buoys: a small yellow dot.  Using
-        // a divIcon allows us to control the colour and size without
-        // relying on external images.  A small circle (8x8 px) is used for
-        // all stations, and a slightly larger dot is used for the
-        // currently selected station.
-        var buoyIcon = L.divIcon({
-            html: '<div style="width:8px;height:8px;background:yellow;border-radius:50%;"></div>',
-            iconSize: [8, 8],
-            className: ''
+        const map = L.map("map", {
+          layers: [tiles],
+          noWrap: true, // one copy of the world only
+          worldCopyJump: false,
+          maxBounds: WORLD_BOUNDS, // hard pan limits
+          maxBoundsViscosity: 1.0,
+          zoomControl: true,
         });
 
-        // Larger dot for selected station.  This helps highlight the
-        // currently selected buoy while keeping the same colour palette.
-        var selectedIcon = L.divIcon({
-            html: '<div style="width:12px;height:12px;background:yellow;border-radius:50%;border:1px solid #555;"></div>',
-            iconSize: [12, 12],
-            className: ''
-        });
+        // Fit exactly one world to the current viewport and lock the min zoom
+        function enforceWorldFit(keepCenter) {
+          const center = keepCenter ? map.getCenter() : null;
+          const minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
+          // fitBounds sets zoom & center so we do it before locking minZoom
+          map.fitBounds(WORLD_BOUNDS, { padding: [0, 0] });
+          map.setMinZoom(minZ);
+          // Ensure we never sit below the computed min
+          if (map.getZoom() < minZ) {
+            map.setZoom(minZ);
+          }
+          if (keepCenter && center) {
+            map.setView(center, Math.max(map.getZoom(), minZ), { animate: false });
+          }
+          map.setMaxBounds(WORLD_BOUNDS);
+        }
 
-        // Fetch station metadata and create markers for all available buoys.
-        fetch('/stations.json')
-          .then(function(response) { return response.json(); })
-          .then(function(stations) {
-            var bounds = [];
-            stations.forEach(function(st) {
-              var lat = st.lat;
-              var lon = st.lon;
-              // Choose icon: larger dot for currently selected station.
-              var markerOpts = { icon: (st.id === selectedStationId ? selectedIcon : buoyIcon) };
-              var m = L.marker([lat, lon], markerOpts).addTo(map);
-              m.bindTooltip(st.id, { permanent: false, direction: 'top' });
-              m.bindPopup('<strong>' + st.id + '</strong>');
-              m.on('click', function() {
-                // Save current map view so that the zoom level and centre are
-                // preserved after navigating to the selected buoy.  Without
-                // this, the map resets to the full extent on page reload.
-                try {
-                  var centre = map.getCenter();
-                  var zoom = map.getZoom();
-                  sessionStorage.setItem('mapCenter', JSON.stringify([centre.lat, centre.lng]));
-                  sessionStorage.setItem('mapZoom', zoom);
-                } catch (e) {
-                  console.warn('Unable to store map state:', e);
-                }
-                var tzSelect = document.getElementById('tz');
-                var tzVal = tzSelect ? tzSelect.value : '';
-                var unitSelect = document.getElementById('unit');
-                var unitVal = unitSelect ? unitSelect.value : '';
-                var url = '/?station=' + encodeURIComponent(st.id);
-                if (tzVal) {
-                  url += '&tz=' + encodeURIComponent(tzVal);
-                }
-                if (unitVal) {
-                  url += '&unit=' + encodeURIComponent(unitVal);
-                }
-                window.location.href = url;
-              });
-              bounds.push([lat, lon]);
+        enforceWorldFit(false);
+        window.addEventListener("resize", () => enforceWorldFit(true));
+
+        // --- Station markers (yellow) ---
+        const markerLayer = L.layerGroup().addTo(map);
+        fetch("/stations.json")
+          .then((r) => r.json())
+          .then((stations) => {
+            stations.forEach((st) => {
+              if (typeof st.lat === "number" && typeof st.lon === "number") {
+                L.circleMarker([st.lat, st.lon], {
+                  radius: 4,
+                  color: "#FFD400",
+                  weight: 2,
+                  fillColor: "#FFD400",
+                  fillOpacity: 1.0,
+                })
+                  .bindPopup(`${st.name} (${st.id})`)
+                  .on("click", () => {
+                    const sel = document.getElementById("station");
+                    if (sel) {
+                      sel.value = st.id;
+                      document.getElementById("controls")?.submit();
+                    }
+                  })
+                  .addTo(markerLayer);
+              }
             });
-            // Determine whether to restore previous view or fit to all markers.
-            var savedCenter = null;
-            var savedZoom = null;
-            try {
-              var centreStr = sessionStorage.getItem('mapCenter');
-              var zoomStr = sessionStorage.getItem('mapZoom');
-              if (centreStr && zoomStr) {
-                savedCenter = JSON.parse(centreStr);
-                savedZoom = parseFloat(zoomStr);
-              }
-            } catch (e) {
-              console.warn('Unable to restore map state:', e);
-            }
-            if (bounds.length > 0) {
-              if (savedCenter && savedZoom) {
-                // Restore previous zoom and centre instead of fitting to all markers.
-                map.setView(savedCenter, savedZoom);
-              } else {
-                // Instead of fitting to the bounds of all markers (which can
-                // wrap around the dateline and cause duplicated world tiles),
-                // fit the map to the predefined maximum bounds.  This shows
-                // a single world without grey areas.
-                map.fitBounds(map.options.maxBounds);
-              }
-            } else {
-              // If no stations available, set a sensible default view.
-              map.setView([0, 0], 2);
-            }
           })
-          .catch(function(err) {
-            console.error('Error loading station data:', err);
-            // Fallback view if stations cannot be fetched
-            map.setView([0, 0], 2);
-          });
-    </script>
+          .catch(() => {});
 
-    <!-- Bootstrap JS (Optional) -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-</body>
+        // If server provided a selected buoy position, center on it without violating min zoom
+        {% if selected_lat is not none and selected_lon is not none %}
+        (function () {
+          const lat = {{ selected_lat|tojson }};
+          const lon = {{ selected_lon|tojson }};
+          const targetZ = Math.max(map.getZoom(), 6); // zoom in a bit while respecting minZoom
+          map.setView([lat, lon], targetZ);
+        })();
+        {% endif %}
+      })();
+    </script>
+  </body>
 </html>

@@ -8,7 +8,7 @@
     />
     <title>Wave App</title>
 
-    <!-- Bootstrap for layout and the rendered table -->
+    <!-- Bootstrap for layout/table -->
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
       rel="stylesheet"
@@ -16,7 +16,7 @@
       crossorigin="anonymous"
     />
 
-    <!-- Leaflet -->
+    <!-- Leaflet CSS -->
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -106,10 +106,10 @@
     <script>
       (function () {
         // ---------- One-world (no wrap) config ----------
-        const WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
-        const VIEW_KEY = "waveapp:mapView"; // localStorage key for preserving view
+        var WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
+        var VIEW_KEY = "waveapp:mapView"; // localStorage key for preserving view
 
-        const tiles = L.tileLayer(
+        var tiles = L.tileLayer(
           "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
           {
             attribution: "Tiles © Esri & contributors",
@@ -118,7 +118,7 @@
           }
         );
 
-        const map = L.map("map", {
+        var map = L.map("map", {
           layers: [tiles],
           noWrap: true,            // single copy of the world
           worldCopyJump: false,
@@ -127,10 +127,9 @@
           zoomControl: true
         });
 
-        // Compute and enforce min zoom for the current viewport,
-        // without changing the current center/zoom unless below min.
+        // Compute and enforce min zoom (don’t change center/zoom unless below min)
         function enforceMinZoomPreservingView() {
-          const minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
+          var minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
           map.setMinZoom(minZ);
           if (map.getZoom() < minZ) {
             map.setZoom(minZ);
@@ -138,21 +137,27 @@
           map.setMaxBounds(WORLD_BOUNDS);
         }
 
-        // Restore saved view (if any); otherwise fit once to world.
+        // Restore saved view (if any); otherwise fit world once
         function restoreViewOrFitWorld() {
-          let saved = null;
+          var saved = null;
           try {
             saved = JSON.parse(localStorage.getItem(VIEW_KEY) || "null");
           } catch (e) {
             saved = null;
           }
           enforceMinZoomPreservingView();
-          if (saved && Number.isFinite(saved.lat) && Number.isFinite(saved.lng) && Number.isFinite(saved.z)) {
-            const clampedZ = Math.max(saved.z, map.getMinZoom());
+          if (
+            saved &&
+            saved.hasOwnProperty("lat") &&
+            saved.hasOwnProperty("lng") &&
+            saved.hasOwnProperty("z") &&
+            isFinite(saved.lat) && isFinite(saved.lng) && isFinite(saved.z)
+          ) {
+            var clampedZ = Math.max(saved.z, map.getMinZoom());
             map.setView([saved.lat, saved.lng], clampedZ, { animate: false });
           } else {
             // First visit: fit world exactly to viewport, then lock min zoom.
-            const minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
+            var minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
             map.fitBounds(WORLD_BOUNDS, { padding: [0, 0] });
             map.setMinZoom(minZ);
             if (map.getZoom() < minZ) map.setZoom(minZ);
@@ -165,59 +170,85 @@
 
         // Persist view on user interaction
         function saveView() {
-          const c = map.getCenter();
-          localStorage.setItem(
-            VIEW_KEY,
-            JSON.stringify({ lat: c.lat, lng: c.lng, z: map.getZoom() })
-          );
+          var c = map.getCenter();
+          try {
+            localStorage.setItem(
+              VIEW_KEY,
+              JSON.stringify({ lat: c.lat, lng: c.lng, z: map.getZoom() })
+            );
+          } catch (e) {
+            // ignore storage errors (private mode, quota, etc.)
+          }
         }
         map.on("moveend", saveView);
         map.on("zoomend", saveView);
 
         // ---------- Station markers ----------
-        const markerLayer = L.layerGroup().addTo(map);
-        const formEl = document.getElementById("controls");
-        const stationSel = document.getElementById("station");
-        const tzSel = document.getElementById("tz");
+        var markerLayer = L.layerGroup().addTo(map);
+        var formEl = document.getElementById("controls");
+        var stationSel = document.getElementById("station");
+        var tzSel = document.getElementById("tz");
 
         // When station is changed via dropdown, clear tz to "buoy local" and submit
         if (stationSel) {
-          stationSel.addEventListener("change", () => {
+          stationSel.addEventListener("change", function () {
             if (tzSel) tzSel.value = ""; // use buoy's local timezone
-            formEl?.submit();
+            if (formEl) formEl.submit();
           });
         }
 
-        // Load stations and attach click handlers
-        fetch("/stations.json")
-          .then((r) => r.json())
-          .then((stations) => {
-            stations.forEach((st) => {
-              if (typeof st.lat === "number" && typeof st.lon === "number") {
-                L.circleMarker([st.lat, st.lon], {
-                  radius: 4,
-                  color: "#FFD400",
-                  weight: 2,
-                  fillColor: "#FFD400",
-                  fillOpacity: 1.0
-                })
-                  .bindPopup(`${st.name} (${st.id})`)
-                  .on("click", () => {
-                    // Do NOT change the map view here—just submit with tz cleared
-                    if (stationSel) stationSel.value = st.id;
-                    if (tzSel) tzSel.value = ""; // buoy local timezone
-                    formEl?.submit();
-                  })
-                  .addTo(markerLayer);
-              }
+        // Load stations (no cache) and attach click handlers
+        function addStations(stations) {
+          markerLayer.clearLayers();
+          for (var i = 0; i < stations.length; i++) {
+            var st = stations[i] || {};
+            var lat = Number(st.lat);
+            var lon = Number(st.lon);
+            if (!isFinite(lat) || !isFinite(lon)) continue;
+
+            L.circleMarker([lat, lon], {
+              radius: 4,
+              color: "#FFD400",
+              weight: 2,
+              fillColor: "#FFD400",
+              fillOpacity: 1.0
+            })
+              .bindPopup((st.name || "Station") + " (" + (st.id || "") + ")")
+              .on("click", function (e) {
+                // Do NOT change the map view—just submit with tz cleared
+                var marker = e.target;
+                var sid = (marker && marker.getPopup())
+                  ? (marker.getPopup().getContent().match(/\(([^)]+)\)$/) || [])[1]
+                  : null;
+                if (stationSel && sid) stationSel.value = sid;
+                if (tzSel) tzSel.value = ""; // buoy local timezone
+                if (formEl) formEl.submit();
+              })
+              .addTo(markerLayer);
+          }
+        }
+
+        // Fetch stations.json with cache-busting + explicit no-store
+        (function fetchStations() {
+          var url = "/stations.json?_ts=" + Date.now();
+          fetch(url, { cache: "no-store" })
+            .then(function (r) {
+              if (!r.ok) throw new Error("HTTP " + r.status);
+              return r.json();
+            })
+            .then(function (data) {
+              if (!Array.isArray(data)) throw new Error("Invalid JSON");
+              addStations(data);
+            })
+            .catch(function (err) {
+              console.error("Failed to load stations.json:", err);
+              // Optional: show a banner to users
+              // alert("Unable to load stations list. Please reload.");
             });
-          })
-          .catch(() => {});
+        })();
 
         // IMPORTANT: Do NOT auto-center to selected buoy on page load.
         // We intentionally preserve the user's previous zoom/center from localStorage.
-        // If you ever want an initial focus on first visit only, you can detect
-        // absence of saved view above and set a default view then.
       })();
     </script>
   </body>

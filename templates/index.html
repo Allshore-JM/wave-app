@@ -8,7 +8,7 @@
     />
     <title>Wave App</title>
 
-    <!-- Bootstrap (for simple layout + the table HTML you render) -->
+    <!-- Bootstrap (for layout + the table HTML) -->
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
       rel="stylesheet"
@@ -16,7 +16,7 @@
       crossorigin="anonymous"
     />
 
-    <!-- Leaflet -->
+    <!-- Leaflet CSS -->
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -31,13 +31,13 @@
         margin: 0;
       }
 
-      /* Make the map fill the width and most of the viewport height */
+      /* Map fills most of the viewport height */
       #map {
         width: 100%;
         height: 70vh; /* adjust if you want more/less map height */
       }
 
-      /* Optional: avoid a light gray flash while tiles load */
+      /* Avoid light gray while tiles load */
       .leaflet-container {
         background: #000;
       }
@@ -64,6 +64,7 @@
         <div class="col-sm-4 col-md-3">
           <label class="form-label" for="tz">Time zone</label>
           <select class="form-select" name="tz" id="tz">
+            <!-- Empty value means "use buoy's local timezone" on the server -->
             <option value="">(Buoy local)</option>
             {% for tz in timezones %}
             <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>
@@ -122,30 +123,26 @@
           {
             attribution: "Tiles © Esri & contributors",
             noWrap: true,
-            maxZoom: 19,
+            maxZoom: 19
           }
         );
 
         const map = L.map("map", {
           layers: [tiles],
-          noWrap: true, // one copy of the world only
+          noWrap: true,            // one copy of the world only
           worldCopyJump: false,
           maxBounds: WORLD_BOUNDS, // hard pan limits
           maxBoundsViscosity: 1.0,
-          zoomControl: true,
+          zoomControl: true
         });
 
         // Fit exactly one world to the current viewport and lock the min zoom
         function enforceWorldFit(keepCenter) {
           const center = keepCenter ? map.getCenter() : null;
           const minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
-          // fitBounds sets zoom & center so we do it before locking minZoom
           map.fitBounds(WORLD_BOUNDS, { padding: [0, 0] });
           map.setMinZoom(minZ);
-          // Ensure we never sit below the computed min
-          if (map.getZoom() < minZ) {
-            map.setZoom(minZ);
-          }
+          if (map.getZoom() < minZ) map.setZoom(minZ);
           if (keepCenter && center) {
             map.setView(center, Math.max(map.getZoom(), minZ), { animate: false });
           }
@@ -157,6 +154,19 @@
 
         // --- Station markers (yellow) ---
         const markerLayer = L.layerGroup().addTo(map);
+        const formEl = document.getElementById("controls");
+        const stationSel = document.getElementById("station");
+        const tzSel = document.getElementById("tz");
+
+        // When user changes the station via dropdown:
+        // Clear tz to "", so the server uses the buoy's local timezone
+        if (stationSel) {
+          stationSel.addEventListener("change", () => {
+            if (tzSel) tzSel.value = ""; // use buoy local
+            formEl?.submit();
+          });
+        }
+
         fetch("/stations.json")
           .then((r) => r.json())
           .then((stations) => {
@@ -167,15 +177,14 @@
                   color: "#FFD400",
                   weight: 2,
                   fillColor: "#FFD400",
-                  fillOpacity: 1.0,
+                  fillOpacity: 1.0
                 })
                   .bindPopup(`${st.name} (${st.id})`)
                   .on("click", () => {
-                    const sel = document.getElementById("station");
-                    if (sel) {
-                      sel.value = st.id;
-                      document.getElementById("controls")?.submit();
-                    }
+                    if (stationSel) stationSel.value = st.id;
+                    // Clear tz to signal "use buoy local" for the selected station
+                    if (tzSel) tzSel.value = "";
+                    formEl?.submit();
                   })
                   .addTo(markerLayer);
               }
@@ -188,7 +197,7 @@
         (function () {
           const lat = {{ selected_lat|tojson }};
           const lon = {{ selected_lon|tojson }};
-          const targetZ = Math.max(map.getZoom(), 6); // zoom in a bit while respecting minZoom
+          const targetZ = Math.max(map.getZoom(), 6); // zoom in while respecting minZoom
           map.setView([lat, lon], targetZ);
         })();
         {% endif %}

@@ -38,6 +38,16 @@
       .leaflet-container {
         background: #000;
       }
+      /* Subtle tooltip styling for station IDs */
+      .leaflet-tooltip.station-tooltip {
+        background: rgba(0,0,0,.75);
+        color: #fff;
+        border: 0;
+        border-radius: 3px;
+        padding: 2px 4px;
+        font-size: 12px;
+        box-shadow: none;
+      }
     </style>
   </head>
   <body>
@@ -204,27 +214,35 @@
             var st = stations[i] || {};
             var lat = Number(st.lat);
             var lon = Number(st.lon);
-            if (!isFinite(lat) || !isFinite(lon)) continue;
+            var sid = st.id != null ? String(st.id) : "";
+            var name = st.name || "Station";
 
-            L.circleMarker([lat, lon], {
-              radius: 4,
+            if (!isFinite(lat) || !isFinite(lon) || !sid) continue;
+
+            var marker = L.circleMarker([lat, lon], {
+              radius: 3,                 // slightly smaller
               color: "#FFD400",
-              weight: 2,
+              weight: 1,                 // lighter stroke
               fillColor: "#FFD400",
               fillOpacity: 1.0
             })
-              .bindPopup((st.name || "Station") + " (" + (st.id || "") + ")")
-              .on("click", function (e) {
-                // Do NOT change the map view—just submit with tz cleared
-                var marker = e.target;
-                var sid = (marker && marker.getPopup())
-                  ? (marker.getPopup().getContent().match(/\(([^)]+)\)$/) || [])[1]
-                  : null;
-                if (stationSel && sid) stationSel.value = sid;
-                if (tzSel) tzSel.value = ""; // buoy local timezone
-                if (formEl) formEl.submit();
+              .bindPopup(name + " (" + sid + ")")
+              .bindTooltip(sid, {
+                className: "station-tooltip",
+                direction: "top",
+                sticky: true,
+                opacity: 0.9
               })
               .addTo(markerLayer);
+
+            // Robustly submit with the correct station id (no regex parsing)
+            (function (stationId) {
+              marker.on("click", function () {
+                if (stationSel) stationSel.value = stationId;
+                if (tzSel) tzSel.value = ""; // buoy local timezone
+                if (formEl) formEl.submit();
+              });
+            })(sid);
           }
         }
 
@@ -242,8 +260,7 @@
             })
             .catch(function (err) {
               console.error("Failed to load stations.json:", err);
-              // Optional: show a banner to users
-              // alert("Unable to load stations list. Please reload.");
+              // Optional: display a banner: alert("Unable to load stations. Please reload.");
             });
         })();
 

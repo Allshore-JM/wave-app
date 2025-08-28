@@ -8,7 +8,7 @@
     />
     <title>Wave App</title>
 
-    <!-- Bootstrap (for layout + the table HTML) -->
+    <!-- Bootstrap for layout and the rendered table -->
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
       rel="stylesheet"
@@ -16,7 +16,7 @@
       crossorigin="anonymous"
     />
 
-    <!-- Leaflet CSS -->
+    <!-- Leaflet -->
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -25,19 +25,16 @@
     />
 
     <style>
-      html,
-      body {
+      html, body {
         height: 100%;
         margin: 0;
       }
-
       /* Map fills most of the viewport height */
       #map {
         width: 100%;
         height: 70vh; /* adjust if you want more/less map height */
       }
-
-      /* Avoid light gray while tiles load */
+      /* Avoid a light gray flash while tiles load */
       .leaflet-container {
         background: #000;
       }
@@ -51,10 +48,7 @@
           <label class="form-label" for="station">Station</label>
           <select class="form-select" name="station" id="station">
             {% for sid, name in stations %}
-            <option
-              value="{{ sid }}"
-              {% if sid == selected_station %}selected{% endif %}
-            >
+            <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>
               {{ name }}
             </option>
             {% endfor %}
@@ -67,9 +61,7 @@
             <!-- Empty value means "use buoy's local timezone" on the server -->
             <option value="">(Buoy local)</option>
             {% for tz in timezones %}
-            <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>
-              {{ tz }}
-            </option>
+            <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
             {% endfor %}
           </select>
         </div>
@@ -78,9 +70,7 @@
           <label class="form-label" for="unit">Units</label>
           <select class="form-select" name="unit" id="unit">
             {% for u in units %}
-            <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>
-              {{ u }}
-            </option>
+            <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ u }}</option>
             {% endfor %}
           </select>
         </div>
@@ -115,8 +105,9 @@
 
     <script>
       (function () {
-        // --- Single-world configuration (no wrap) to eliminate gray sidebands ---
+        // ---------- One-world (no wrap) config ----------
         const WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
+        const VIEW_KEY = "waveapp:mapView"; // localStorage key for preserving view
 
         const tiles = L.tileLayer(
           "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -129,44 +120,75 @@
 
         const map = L.map("map", {
           layers: [tiles],
-          noWrap: true,            // one copy of the world only
+          noWrap: true,            // single copy of the world
           worldCopyJump: false,
-          maxBounds: WORLD_BOUNDS, // hard pan limits
+          maxBounds: WORLD_BOUNDS, // hard panning limit
           maxBoundsViscosity: 1.0,
           zoomControl: true
         });
 
-        // Fit exactly one world to the current viewport and lock the min zoom
-        function enforceWorldFit(keepCenter) {
-          const center = keepCenter ? map.getCenter() : null;
+        // Compute and enforce min zoom for the current viewport,
+        // without changing the current center/zoom unless below min.
+        function enforceMinZoomPreservingView() {
           const minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
-          map.fitBounds(WORLD_BOUNDS, { padding: [0, 0] });
           map.setMinZoom(minZ);
-          if (map.getZoom() < minZ) map.setZoom(minZ);
-          if (keepCenter && center) {
-            map.setView(center, Math.max(map.getZoom(), minZ), { animate: false });
+          if (map.getZoom() < minZ) {
+            map.setZoom(minZ);
           }
           map.setMaxBounds(WORLD_BOUNDS);
         }
 
-        enforceWorldFit(false);
-        window.addEventListener("resize", () => enforceWorldFit(true));
+        // Restore saved view (if any); otherwise fit once to world.
+        function restoreViewOrFitWorld() {
+          let saved = null;
+          try {
+            saved = JSON.parse(localStorage.getItem(VIEW_KEY) || "null");
+          } catch (e) {
+            saved = null;
+          }
+          enforceMinZoomPreservingView();
+          if (saved && Number.isFinite(saved.lat) && Number.isFinite(saved.lng) && Number.isFinite(saved.z)) {
+            const clampedZ = Math.max(saved.z, map.getMinZoom());
+            map.setView([saved.lat, saved.lng], clampedZ, { animate: false });
+          } else {
+            // First visit: fit world exactly to viewport, then lock min zoom.
+            const minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
+            map.fitBounds(WORLD_BOUNDS, { padding: [0, 0] });
+            map.setMinZoom(minZ);
+            if (map.getZoom() < minZ) map.setZoom(minZ);
+          }
+        }
 
-        // --- Station markers (yellow) ---
+        restoreViewOrFitWorld();
+        // Recompute min zoom only (no fit) on resize so we don't zoom out
+        window.addEventListener("resize", enforceMinZoomPreservingView);
+
+        // Persist view on user interaction
+        function saveView() {
+          const c = map.getCenter();
+          localStorage.setItem(
+            VIEW_KEY,
+            JSON.stringify({ lat: c.lat, lng: c.lng, z: map.getZoom() })
+          );
+        }
+        map.on("moveend", saveView);
+        map.on("zoomend", saveView);
+
+        // ---------- Station markers ----------
         const markerLayer = L.layerGroup().addTo(map);
         const formEl = document.getElementById("controls");
         const stationSel = document.getElementById("station");
         const tzSel = document.getElementById("tz");
 
-        // When user changes the station via dropdown:
-        // Clear tz to "", so the server uses the buoy's local timezone
+        // When station is changed via dropdown, clear tz to "buoy local" and submit
         if (stationSel) {
           stationSel.addEventListener("change", () => {
-            if (tzSel) tzSel.value = ""; // use buoy local
+            if (tzSel) tzSel.value = ""; // use buoy's local timezone
             formEl?.submit();
           });
         }
 
+        // Load stations and attach click handlers
         fetch("/stations.json")
           .then((r) => r.json())
           .then((stations) => {
@@ -181,9 +203,9 @@
                 })
                   .bindPopup(`${st.name} (${st.id})`)
                   .on("click", () => {
+                    // Do NOT change the map view here—just submit with tz cleared
                     if (stationSel) stationSel.value = st.id;
-                    // Clear tz to signal "use buoy local" for the selected station
-                    if (tzSel) tzSel.value = "";
+                    if (tzSel) tzSel.value = ""; // buoy local timezone
                     formEl?.submit();
                   })
                   .addTo(markerLayer);
@@ -192,15 +214,10 @@
           })
           .catch(() => {});
 
-        // If server provided a selected buoy position, center on it without violating min zoom
-        {% if selected_lat is not none and selected_lon is not none %}
-        (function () {
-          const lat = {{ selected_lat|tojson }};
-          const lon = {{ selected_lon|tojson }};
-          const targetZ = Math.max(map.getZoom(), 6); // zoom in while respecting minZoom
-          map.setView([lat, lon], targetZ);
-        })();
-        {% endif %}
+        // IMPORTANT: Do NOT auto-center to selected buoy on page load.
+        // We intentionally preserve the user's previous zoom/center from localStorage.
+        // If you ever want an initial focus on first visit only, you can detect
+        // absence of saved view above and set a default view then.
       })();
     </script>
   </body>

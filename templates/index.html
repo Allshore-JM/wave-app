@@ -8,11 +8,10 @@
     />
     <title>Wave App</title>
 
-    <!-- Bootstrap for layout/table -->
+    <!-- Bootstrap (layout + table) -->
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
       rel="stylesheet"
-      integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
       crossorigin="anonymous"
     />
 
@@ -20,24 +19,19 @@
     <link
       rel="stylesheet"
       href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
       crossorigin=""
     />
 
+    <!-- Chart.js (for Graph View) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+
     <style>
-      html, body {
-        height: 100%;
-        margin: 0;
-      }
+      html, body { height: 100%; margin: 0; }
       /* Map fills most of the viewport height */
-      #map {
-        width: 100%;
-        height: 70vh; /* adjust if you want more/less map height */
-      }
-      /* Avoid a light gray flash while tiles load */
-      .leaflet-container {
-        background: #000;
-      }
+      #map { width: 100%; height: 70vh; }
+      /* Avoid light gray flash while tiles load */
+      .leaflet-container { background: #000; }
+
       /* Subtle tooltip styling for station IDs */
       .leaflet-tooltip.station-tooltip {
         background: rgba(0,0,0,.75);
@@ -48,6 +42,10 @@
         font-size: 12px;
         box-shadow: none;
       }
+
+      /* Graph container spacing */
+      #graphs .card { background: #121212; color: #ddd; }
+      #graphs canvas { width: 100%; height: 360px; }
     </style>
   </head>
   <body>
@@ -68,7 +66,6 @@
         <div class="col-sm-4 col-md-3">
           <label class="form-label" for="tz">Time zone</label>
           <select class="form-select" name="tz" id="tz">
-            <!-- Empty value means "use buoy's local timezone" on the server -->
             <option value="">(Buoy local)</option>
             {% for tz in timezones %}
             <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
@@ -85,6 +82,15 @@
           </select>
         </div>
 
+        <!-- NEW: View selector -->
+        <div class="col-sm-2 col-md-2">
+          <label class="form-label" for="view">View</label>
+          <select class="form-select" name="view" id="view">
+            <option value="Table" {% if selected_view == 'Table' %}selected{% endif %}>Table</option>
+            <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
+          </select>
+        </div>
+
         <div class="col-sm-2 col-md-2">
           <button type="submit" class="btn btn-primary w-100">Update</button>
         </div>
@@ -94,46 +100,67 @@
     <!-- Map -->
     <div id="map"></div>
 
-    <!-- Table / Errors -->
+    <!-- Table OR Graphs -->
     <div class="container-fluid py-3">
       {% if error %}
       <div class="alert alert-warning">{{ error }}</div>
       {% endif %}
-      <div id="table-slot">
+
+      <!-- Table slot -->
+      <div id="table-slot" style="{% if selected_view == 'Graph' %}display:none{% endif %}">
         {% if table_html %}
         {{ table_html|safe }}
         {% endif %}
+      </div>
+
+      <!-- Graphs slot -->
+      <div id="graphs" style="{% if selected_view != 'Graph' %}display:none{% endif %}">
+        <!-- three cards for the three charts -->
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6 class="card-title mb-2">Swell Height{% if selected_unit == 'Metric' %} (m){% else %} (ft){% endif %}</h6>
+            <canvas id="heightChart"></canvas>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6 class="card-title mb-2">Swell Period (s)</h6>
+            <canvas id="periodChart"></canvas>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <h6 class="card-title mb-2">Swell Direction (°)</h6>
+            <canvas id="dirChart"></canvas>
+          </div>
+        </div>
       </div>
     </div>
 
     <!-- Leaflet JS -->
     <script
       src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
       crossorigin=""
     ></script>
 
     <script>
       (function () {
-        // ---------- World config ----------
-        // Used only to compute the minimum zoom that fills the viewport neatly.
+        // ---------- World config (seamless wrap E<->W) ----------
         var WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
         var VIEW_KEY = "waveapp:mapView"; // localStorage key for preserving view
 
         // Base tiles: allow wrap so we can pan seamlessly E<->W.
         var tiles = L.tileLayer(
           "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-          {
-            attribution: "Tiles © Esri & contributors",
-            noWrap: false,  // allow horizontal wrap
-            maxZoom: 19
-          }
+          { attribution: "Tiles © Esri & contributors", noWrap: false, maxZoom: 19 }
         );
 
         var map = L.map("map", {
           layers: [tiles],
-          noWrap: false,         // allow repeated worlds
-          worldCopyJump: true,   // seamless horizontal pan; overlays remain visible
+          noWrap: false,
+          worldCopyJump: true,
           zoomControl: true
           // NOTE: no maxBounds here; we control only the min zoom below.
         });
@@ -201,16 +228,21 @@
         var formEl = document.getElementById("controls");
         var stationSel = document.getElementById("station");
         var tzSel = document.getElementById("tz");
+        var viewSel = document.getElementById("view");
 
-        // When station is changed via dropdown, clear tz to "buoy local" and submit
+        // Change handlers: preserve current view, clear tz on station change
         if (stationSel) {
           stationSel.addEventListener("change", function () {
-            if (tzSel) tzSel.value = ""; // use buoy's local timezone
+            if (tzSel) tzSel.value = "";
+            if (formEl) formEl.submit();
+          });
+        }
+        if (viewSel) {
+          viewSel.addEventListener("change", function () {
             if (formEl) formEl.submit();
           });
         }
 
-        // Load stations (no cache) and attach click/tooltip
         function addStations(stations) {
           markerLayer.clearLayers();
           for (var i = 0; i < stations.length; i++) {
@@ -219,55 +251,141 @@
             var lon = Number(st.lon);
             var sid = st.id != null ? String(st.id) : "";
             var name = st.name || "Station";
-
             if (!isFinite(lat) || !isFinite(lon) || !sid) continue;
 
             var marker = L.circleMarker([lat, lon], {
-              radius: 2,                 // << smaller marker
-              color: "#FFD400",
-              weight: 1,                 // lighter stroke
-              fillColor: "#FFD400",
-              fillOpacity: 1.0
+              radius: 2, color: "#FFD400", weight: 1, fillColor: "#FFD400", fillOpacity: 1.0
             })
               .bindPopup(name + " (" + sid + ")")
-              .bindTooltip(sid, {
-                className: "station-tooltip",
-                direction: "top",
-                sticky: true,
-                opacity: 0.9
-              })
+              .bindTooltip(sid, { className: "station-tooltip", direction: "top", sticky: true, opacity: 0.9 })
               .addTo(markerLayer);
 
             (function (stationId) {
               marker.on("click", function () {
                 if (stationSel) stationSel.value = stationId;
-                if (tzSel) tzSel.value = ""; // buoy local timezone
+                if (tzSel) tzSel.value = "";
                 if (formEl) formEl.submit();
               });
             })(sid);
           }
         }
 
-        // Fetch stations.json with cache-busting + explicit no-store
         (function fetchStations() {
           var url = "/stations.json?_ts=" + Date.now();
           fetch(url, { cache: "no-store" })
-            .then(function (r) {
-              if (!r.ok) throw new Error("HTTP " + r.status);
-              return r.json();
-            })
-            .then(function (data) {
-              if (!Array.isArray(data)) throw new Error("Invalid JSON");
-              addStations(data);
-            })
-            .catch(function (err) {
-              console.error("Failed to load stations.json:", err);
-              // Optional: alert("Unable to load stations. Please reload.");
-            });
+            .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+            .then(function (data) { if (!Array.isArray(data)) throw new Error("Invalid JSON"); addStations(data); })
+            .catch(function (err) { console.error("Failed to load stations.json:", err); });
         })();
 
-        // NOTE: We intentionally do NOT auto-center to the selected buoy on page load.
-        // Your map view persists via localStorage and wraps seamlessly E<->W.
+        // ---------- Graph View (Chart.js) ----------
+        (function buildCharts() {
+          if ("{{ selected_view }}" !== "Graph") return;
+          var data = {{ (graph_data or {}) | tojson }};
+          if (!data || !Array.isArray(data.labels)) return;
+
+          var labels = data.labels;
+
+          // Palette: matches Swell 1..6 + Combined
+          var COLORS = ["#C00000","#ED7D31","#FFC000","#00B050","#00B0F0","#92D050"];
+          var COMBINED = "#7030A0";
+
+          // Common options
+          function makeOptions(yCfg) {
+            return {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { position: "bottom", labels: { boxWidth: 12 } },
+                tooltip: { mode: "index", intersect: false }
+              },
+              scales: {
+                x: {
+                  type: "category",
+                  ticks: { maxRotation: 60, minRotation: 60, autoSkip: true },
+                  grid: { color: "rgba(255,255,255,0.07)" }
+                },
+                y: Object.assign({
+                  beginAtZero: true,
+                  grid: { color: "rgba(255,255,255,0.07)" }
+                }, yCfg || {})
+              }
+            };
+          }
+
+          // Height chart datasets (Swell 1..6 + Combined)
+          var heightSets = [];
+          for (var i = 0; i < 6; i++) {
+            heightSets.push({
+              label: "Swell " + (i + 1),
+              data: data.heights[i],
+              borderColor: COLORS[i],
+              backgroundColor: COLORS[i],
+              pointRadius: 2,
+              pointHoverRadius: 3,
+              tension: 0.25,
+              fill: false,
+              spanGaps: true
+            });
+          }
+          heightSets.push({
+            label: "Combined",
+            data: data.combined,
+            borderColor: COMBINED,
+            backgroundColor: COMBINED,
+            pointRadius: 2,
+            pointHoverRadius: 3,
+            tension: 0.25,
+            fill: false,
+            spanGaps: true
+          });
+
+          new Chart(
+            document.getElementById("heightChart").getContext("2d"),
+            { type: "line", data: { labels: labels, datasets: heightSets }, options: makeOptions({}) }
+          );
+
+          // Period chart (Swell 1..6)
+          var periodSets = [];
+          for (var j = 0; j < 6; j++) {
+            periodSets.push({
+              label: "Swell " + (j + 1),
+              data: data.periods[j],
+              borderColor: COLORS[j],
+              backgroundColor: COLORS[j],
+              pointRadius: 2,
+              pointHoverRadius: 3,
+              tension: 0.25,
+              fill: false,
+              spanGaps: true
+            });
+          }
+          new Chart(
+            document.getElementById("periodChart").getContext("2d"),
+            { type: "line", data: { labels: labels, datasets: periodSets }, options: makeOptions({}) }
+          );
+
+          // Direction chart (Swell 1..6), 0..360 with 45° ticks
+          var dirSets = [];
+          for (var k = 0; k < 6; k++) {
+            dirSets.push({
+              label: "Swell " + (k + 1),
+              data: data.dirs[k],
+              borderColor: COLORS[k],
+              backgroundColor: COLORS[k],
+              pointRadius: 2,
+              pointHoverRadius: 3,
+              tension: 0.25,
+              fill: false,
+              spanGaps: true
+            });
+          }
+          new Chart(
+            document.getElementById("dirChart").getContext("2d"),
+            { type: "line", data: { labels: labels, datasets: dirSets },
+              options: makeOptions({ min: 0, max: 360, ticks: { stepSize: 45 } }) }
+          );
+        })();
       })();
     </script>
   </body>

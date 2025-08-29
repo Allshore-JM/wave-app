@@ -23,7 +23,6 @@
 
   <div class="container-fluid py-3">
     <div class="sticky-top-bar pb-2">
-      <!-- Use GET so URL reflects current selections -->
       <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
         <div class="col-auto">
           <label for="station" class="form-label mb-0">Station</label>
@@ -61,7 +60,6 @@
           </select>
         </div>
 
-        <!-- Replaces prior "Download Excel" link -->
         <div class="col-auto">
           <button type="submit" class="btn btn-primary" id="updateBtn">Update</button>
         </div>
@@ -131,7 +129,7 @@
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 8,
       minZoom: 2,
-      noWrap: true   // show exactly one world (no grey margins)
+      noWrap: true   // exact one-world view, no grey margins
     }).addTo(map);
 
     // Plot stations
@@ -157,13 +155,10 @@
         });
       });
 
-    // Remove auto-submit on dropdown change — user clicks Update instead.
-    document.getElementById('controlForm').addEventListener('submit', (e) => {
-      saveMapView(map);
-    });
+    document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
     {% if selected_view == 'Graph' and graph_data %}
-    // ---- Charts ----
+    // ---- Dynamic Y-axis limits per series ----
     const GD = {{ graph_data|tojson|safe }};
 
     const colors = {
@@ -176,12 +171,36 @@
       combined: '#7030A0'
     };
 
+    // Helpers to compute finite min/max across multiple arrays (ignoring nulls)
+    const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
+    const maxAcross = arrays => {
+      let m = -Infinity;
+      arrays.forEach(a => finiteVals(a).forEach(v => { if (v > m) m = v; }));
+      return m;
+    };
+    const minAcross = arrays => {
+      let m = Infinity;
+      arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; }));
+      return m;
+    };
+
+    // Compute axes
+    const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
+    let hMax = maxAcross(heightArrays); if (!Number.isFinite(hMax)) hMax = 1;
+
+    const periodArrays = [GD.period.s1, GD.period.s2, GD.period.s3, GD.period.s4, GD.period.s5, GD.period.s6];
+    let pMax = maxAcross(periodArrays); if (!Number.isFinite(pMax)) pMax = 10;
+
+    const dirArrays = [GD.direction.s1, GD.direction.s2, GD.direction.s3, GD.direction.s4, GD.direction.s5, GD.direction.s6];
+    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
+    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
+
     const commonOpts = {
       responsive: true,
       maintainAspectRatio: false,
       scales: {
         x: { type: 'category', ticks: { maxRotation: 60, minRotation: 60 }, grid: { display: true } },
-        y: { beginAtZero: true, grid: { display: true } }
+        y: { grid: { display: true } }
       },
       plugins: { legend: { position: 'bottom' }, tooltip: { mode: 'nearest', intersect: false } },
       elements: { point: { radius: 2 }, line: { tension: 0.3 } }
@@ -191,7 +210,7 @@
       return { label, data: data[key], borderColor: color, backgroundColor: color, spanGaps: true };
     }
 
-    // HEIGHT (ft/m) — includes Combined
+    // HEIGHT (ft/m) — includes Combined; y: 0..max
     (() => {
       const ds = [
         swellLine('Swell 1', 's1', GD.height, colors.s1),
@@ -205,12 +224,18 @@
       new Chart(document.getElementById('heightChart').getContext('2d'), {
         type: 'line',
         data: { labels: GD.labels, datasets: ds },
-        options: { ...commonOpts, plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
-                   scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: `Height (${GD.units})` } } } }
+        options: {
+          ...commonOpts,
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
+          scales: {
+            x: commonOpts.scales.x,
+            y: { beginAtZero: true, min: 0, max: hMax, grid: { display: true }, title: { display: true, text: `Height (${GD.units})` } }
+          }
+        }
       });
     })();
 
-    // PERIOD (s)
+    // PERIOD (s) — y: 0..max
     (() => {
       const ds = [
         swellLine('Swell 1', 's1', GD.period, colors.s1),
@@ -223,12 +248,18 @@
       new Chart(document.getElementById('periodChart').getContext('2d'), {
         type: 'line',
         data: { labels: GD.labels, datasets: ds },
-        options: { ...commonOpts, plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
-                   scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: 'Period (s)' } } } }
+        options: {
+          ...commonOpts,
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
+          scales: {
+            x: commonOpts.scales.x,
+            y: { beginAtZero: true, min: 0, max: pMax, grid: { display: true }, title: { display: true, text: 'Period (s)' } }
+          }
+        }
       });
     })();
 
-    // DIRECTION (deg)
+    // DIRECTION (deg) — y: min..max of data
     (() => {
       const ds = [
         swellLine('Swell 1', 's1', GD.direction, colors.s1),
@@ -241,8 +272,14 @@
       new Chart(document.getElementById('directionChart').getContext('2d'), {
         type: 'line',
         data: { labels: GD.labels, datasets: ds },
-        options: { ...commonOpts, plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
-                   scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, suggestedMin: 0, suggestedMax: 360, title: { display: true, text: 'Direction (°)' } } } }
+        options: {
+          ...commonOpts,
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
+          scales: {
+            x: commonOpts.scales.x,
+            y: { min: dMin, max: dMax, grid: { display: true }, title: { display: true, text: 'Direction (°)' } }
+          }
+        }
       });
     })();
     {% endif %}

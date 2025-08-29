@@ -1,392 +1,300 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, shrink-to-fit=no"
-    />
-    <title>Wave App</title>
+<head>
+  <meta charset="utf-8" />
+  <title>Wave Forecast</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Bootstrap (for table/controls) -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
 
-    <!-- Bootstrap (layout + table) -->
-    <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-      rel="stylesheet"
-      crossorigin="anonymous"
-    />
+  <style>
+    html, body { height: 100%; }
+    #map { height: 420px; border: 1px solid #ccc; }
+    .leaflet-tooltip { font-weight: 600; }
+    .sticky-top-bar { position: sticky; top: 0; z-index: 1000; background:#fff; border-bottom: 1px solid #eee; }
+    .form-inline .form-select, .form-inline .form-control { width: auto; }
+  </style>
+</head>
+<body class="bg-light">
 
-    <!-- Leaflet CSS -->
-    <link
-      rel="stylesheet"
-      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      crossorigin=""
-    />
-
-    <!-- Chart.js (for Graph View) -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-
-    <style>
-      html, body { height: 100%; margin: 0; }
-      /* Map fills most of the viewport height */
-      #map { width: 100%; height: 70vh; }
-      /* Avoid light gray flash while tiles load */
-      .leaflet-container { background: #000; }
-
-      /* Subtle tooltip styling for station IDs */
-      .leaflet-tooltip.station-tooltip {
-        background: rgba(0,0,0,.75);
-        color: #fff;
-        border: 0;
-        border-radius: 3px;
-        padding: 2px 4px;
-        font-size: 12px;
-        box-shadow: none;
-      }
-
-      /* Graph container spacing */
-      #graphs .card { background: #121212; color: #ddd; }
-      #graphs canvas { width: 100%; height: 360px; }
-    </style>
-  </head>
-  <body>
-    <!-- Controls -->
-    <div class="container-fluid py-2">
-      <form id="controls" method="POST" class="row g-2 align-items-end">
-        <div class="col-sm-3 col-md-2">
-          <label class="form-label" for="station">Station</label>
-          <select class="form-select" name="station" id="station">
+  <div class="container-fluid py-3">
+    <div class="sticky-top-bar pb-2">
+      <form id="controlForm" class="row g-2 align-items-center">
+        <div class="col-auto">
+          <label for="station" class="form-label mb-0">Station</label>
+          <select class="form-select" id="station" name="station">
             {% for sid, name in stations %}
-            <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>
-              {{ name }}
-            </option>
+              <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>{{ sid }} — {{ name }}</option>
             {% endfor %}
           </select>
         </div>
-
-        <div class="col-sm-4 col-md-3">
-          <label class="form-label" for="tz">Time zone</label>
-          <select class="form-select" name="tz" id="tz">
-            <option value="">(Buoy local)</option>
+        <div class="col-auto">
+          <label for="tz" class="form-label mb-0">Time Zone</label>
+          <select class="form-select" id="tz" name="tz">
+            <option value="">(Buoy Local)</option>
             {% for tz in timezones %}
-            <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
+              <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
             {% endfor %}
           </select>
         </div>
-
-        <div class="col-sm-2 col-md-2">
-          <label class="form-label" for="unit">Units</label>
-          <select class="form-select" name="unit" id="unit">
+        <div class="col-auto">
+          <label for="unit" class="form-label mb-0">Units</label>
+          <select class="form-select" id="unit" name="unit">
             {% for u in units %}
-            <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ u }}</option>
+              <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ u }}</option>
             {% endfor %}
           </select>
         </div>
-
-        <!-- NEW: View selector -->
-        <div class="col-sm-2 col-md-2">
-          <label class="form-label" for="view">View</label>
-          <select class="form-select" name="view" id="view">
+        <div class="col-auto">
+          <label for="view" class="form-label mb-0">View</label>
+          <select class="form-select" id="view" name="view">
             <option value="Table" {% if selected_view == 'Table' %}selected{% endif %}>Table</option>
             <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
           </select>
         </div>
-
-        <div class="col-sm-2 col-md-2">
-          <button type="submit" class="btn btn-primary w-100">Update</button>
+        <div class="col-auto">
+          <a id="dlLink" class="btn btn-outline-primary"
+             href="/download/{{ selected_station }}?tz={{ selected_tz }}&unit={{ selected_unit }}">Download Excel</a>
         </div>
       </form>
     </div>
 
-    <!-- Map -->
-    <div id="map"></div>
-
-    <!-- Table OR Graphs -->
-    <div class="container-fluid py-3">
-      {% if error %}
-      <div class="alert alert-warning">{{ error }}</div>
-      {% endif %}
-
-      <!-- Table slot -->
-      <div id="table-slot" style="{% if selected_view == 'Graph' %}display:none{% endif %}">
-        {% if table_html %}
-        {{ table_html|safe }}
-        {% endif %}
-      </div>
-
-      <!-- Graphs slot -->
-      <div id="graphs" style="{% if selected_view != 'Graph' %}display:none{% endif %}">
-        <!-- three cards for the three charts -->
-        <div class="card mb-3">
-          <div class="card-body">
-            <h6 class="card-title mb-2">Swell Height{% if selected_unit == 'Metric' %} (m){% else %} (ft){% endif %}</h6>
-            <canvas id="heightChart"></canvas>
-          </div>
-        </div>
-
-        <div class="card mb-3">
-          <div class="card-body">
-            <h6 class="card-title mb-2">Swell Period (s)</h6>
-            <canvas id="periodChart"></canvas>
-          </div>
-        </div>
-
-        <div class="card mb-3">
-          <div class="card-body">
-            <h6 class="card-title mb-2">Swell Direction (°)</h6>
-            <canvas id="dirChart"></canvas>
-          </div>
-        </div>
+    <div class="row mt-2">
+      <div class="col-12">
+        <div id="map"></div>
       </div>
     </div>
 
-    <!-- Leaflet JS -->
-    <script
-      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-      crossorigin=""
-    ></script>
+    <div class="row mt-3">
+      <div class="col-12">
+        {% if error %}
+          <div class="alert alert-warning">{{ error }}</div>
+        {% endif %}
 
-    <script>
-      (function () {
-        // ---------- World config (seamless wrap E<->W) ----------
-        var WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
-        var VIEW_KEY = "waveapp:mapView"; // localStorage key for preserving view
+        {% if selected_view == 'Graph' %}
+          <!-- Graph View -->
+          <div id="graphs" class="card">
+            <div class="card-body">
+              <h5 class="card-title mb-3">Graphs ({{ graph_data.units }})</h5>
+              <div class="mb-4">
+                <canvas id="heightChart" height="140"></canvas>
+              </div>
+              <div class="mb-4">
+                <canvas id="periodChart" height="140"></canvas>
+              </div>
+              <div>
+                <canvas id="directionChart" height="140"></canvas>
+              </div>
+            </div>
+          </div>
+        {% else %}
+          <!-- Table View -->
+          <div id="tableWrap" class="card">
+            <div class="card-body">
+              {{ table_html|safe }}
+            </div>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
 
-        // Base tiles: allow wrap so we can pan seamlessly E<->W.
-        var tiles = L.tileLayer(
-          "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-          { attribution: "Tiles © Esri & contributors", noWrap: false, maxZoom: 19 }
-        );
+  <script>
+    // ---- Keep map zoom/center between requests ----
+    const mapKey = 'mapView';
+    function saveMapView(map) {
+      const v = {c: map.getCenter(), z: map.getZoom()};
+      sessionStorage.setItem(mapKey, JSON.stringify({lat: v.c.lat, lng: v.c.lng, z: v.z}));
+    }
+    function loadMapView() {
+      try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e) { return null; }
+    }
 
-        var map = L.map("map", {
-          layers: [tiles],
-          noWrap: false,
-          worldCopyJump: true,
-          zoomControl: true
-          // NOTE: no maxBounds here; we control only the min zoom below.
+    // ---- Leaflet Map ----
+    const map = L.map('map', { worldCopyJump: false, zoomControl: true });
+    const saved = loadMapView();
+    if (saved) {
+      map.setView([saved.lat, saved.lng], saved.z);
+    } else {
+      map.setView([20, -160], 2); // initial view
+    }
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 8,
+      minZoom: 2,
+      noWrap: true
+    }).addTo(map);
+
+    // Plot stations
+    fetch('/stations.json')
+      .then(r => r.json())
+      .then(stations => {
+        stations.forEach(s => {
+          const mk = L.circleMarker([s.lat, s.lon], {
+            radius: 2,           // smaller yellow markers
+            color: '#FFD600',
+            fillColor: '#FFD600',
+            fillOpacity: 1,
+            weight: 1
+          }).addTo(map);
+          // Tooltip: station ID on hover
+          mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
+          // Click to select station; keep zoom state
+          mk.on('click', () => {
+            document.getElementById('station').value = s.id;
+            saveMapView(map);
+            document.getElementById('controlForm').submit();
+          });
         });
+      });
 
-        // Compute & enforce min zoom that fits a single world to the viewport.
-        // Do not change center/zoom unless we're below the min.
-        function enforceMinZoomPreservingView() {
-          var minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
-          map.setMinZoom(minZ);
-          if (map.getZoom() < minZ) {
-            map.setZoom(minZ);
+    // Keep map state on any control change
+    ['station','tz','unit','view'].forEach(id => {
+      const el = document.getElementById(id);
+      el.addEventListener('change', () => {
+        saveMapView(map);
+        // Update Excel link on-the-fly too
+        if (id === 'station' || id === 'tz' || id === 'unit') {
+          const st = document.getElementById('station').value;
+          const tz = document.getElementById('tz').value;
+          const un = document.getElementById('unit').value;
+          document.getElementById('dlLink').href = `/download/${st}?tz=${encodeURIComponent(tz)}&unit=${encodeURIComponent(un)}`;
+        }
+        document.getElementById('controlForm').submit();
+      });
+    });
+
+    // ---- Charts ----
+    {% if selected_view == 'Graph' and graph_data %}
+    const GD = {{ graph_data|tojson|safe }};
+
+    // Palette (matches table headers / PDF)
+    const colors = {
+      s1: '#C00000',
+      s2: '#ED7D31',
+      s3: '#FFC000',
+      s4: '#00B050',
+      s5: '#00B0F0',
+      s6: '#92D050',
+      combined: '#7030A0'
+    };
+
+    const commonOpts = {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: 'category',
+          ticks: { maxRotation: 60, minRotation: 60 },
+          grid: { display: true }
+        },
+        y: {
+          beginAtZero: true,
+          grid: { display: true }
+        }
+      },
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: { mode: 'nearest', intersect: false }
+      },
+      elements: { point: { radius: 2 }, line: { tension: 0.3 } }
+    };
+
+    function swellLine(label, key, data, color, showLine=true) {
+      return {
+        label: label,
+        data: data[key],
+        borderColor: color,
+        backgroundColor: color,
+        spanGaps: true,
+        showLine: showLine
+      };
+    }
+
+    // HEIGHT (ft/m) — includes Combined
+    (() => {
+      const ds = [
+        swellLine('Swell 1', 's1', GD.height, colors.s1),
+        swellLine('Swell 2', 's2', GD.height, colors.s2),
+        swellLine('Swell 3', 's3', GD.height, colors.s3),
+        swellLine('Swell 4', 's4', GD.height, colors.s4),
+        swellLine('Swell 5', 's5', GD.height, colors.s5),
+        swellLine('Swell 6', 's6', GD.height, colors.s6),
+        {
+          label: 'Combined',
+          data: GD.height.combined,
+          borderColor: colors.combined,
+          backgroundColor: colors.combined,
+          spanGaps: true,
+          borderWidth: 2,
+          pointRadius: 1.5,
+          tension: 0.25
+        }
+      ];
+      const ctx = document.getElementById('heightChart').getContext('2d');
+      new Chart(ctx, {
+        type: 'line',
+        data: { labels: GD.labels, datasets: ds },
+        options: {
+          ...commonOpts,
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
+          scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: `Height (${GD.units})` } } }
+        }
+      });
+    })();
+
+    // PERIOD (s)
+    (() => {
+      const ds = [
+        swellLine('Swell 1', 's1', GD.period, colors.s1),
+        swellLine('Swell 2', 's2', GD.period, colors.s2),
+        swellLine('Swell 3', 's3', GD.period, colors.s3),
+        swellLine('Swell 4', 's4', GD.period, colors.s4),
+        swellLine('Swell 5', 's5', GD.period, colors.s5),
+        swellLine('Swell 6', 's6', GD.period, colors.s6)
+      ];
+      const ctx = document.getElementById('periodChart').getContext('2d');
+      new Chart(ctx, {
+        type: 'line',
+        data: { labels: GD.labels, datasets: ds },
+        options: {
+          ...commonOpts,
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
+          scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: { display: true, text: 'Period (s)' } } }
+        }
+      });
+    })();
+
+    // DIRECTION (deg)
+    (() => {
+      const ds = [
+        swellLine('Swell 1', 's1', GD.direction, colors.s1),
+        swellLine('Swell 2', 's2', GD.direction, colors.s2),
+        swellLine('Swell 3', 's3', GD.direction, colors.s3),
+        swellLine('Swell 4', 's4', GD.direction, colors.s4),
+        swellLine('Swell 5', 's5', GD.direction, colors.s5),
+        swellLine('Swell 6', 's6', GD.direction, colors.s6),
+      ];
+      const ctx = document.getElementById('directionChart').getContext('2d');
+      new Chart(ctx, {
+        type: 'line',
+        data: { labels: GD.labels, datasets: ds },
+        options: {
+          ...commonOpts,
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
+          scales: {
+            ...commonOpts.scales,
+            y: { ...commonOpts.scales.y, suggestedMin: 0, suggestedMax: 360, title: { display: true, text: 'Direction (°)' } }
           }
         }
-
-        // Restore saved view (if any); otherwise fit once to world.
-        function restoreViewOrFitWorld() {
-          var saved = null;
-          try {
-            saved = JSON.parse(localStorage.getItem(VIEW_KEY) || "null");
-          } catch (e) {
-            saved = null;
-          }
-          enforceMinZoomPreservingView();
-          if (
-            saved &&
-            saved.hasOwnProperty("lat") &&
-            saved.hasOwnProperty("lng") &&
-            saved.hasOwnProperty("z") &&
-            isFinite(saved.lat) && isFinite(saved.lng) && isFinite(saved.z)
-          ) {
-            // clamp to current min zoom
-            var clampedZ = Math.max(saved.z, map.getMinZoom());
-            map.setView([saved.lat, saved.lng], clampedZ, { animate: false });
-          } else {
-            // First visit: fit world exactly to viewport, then lock min zoom.
-            var minZ = map.getBoundsZoom(WORLD_BOUNDS, true);
-            map.fitBounds(WORLD_BOUNDS, { padding: [0, 0] });
-            map.setMinZoom(minZ);
-            if (map.getZoom() < minZ) map.setZoom(minZ);
-          }
-        }
-
-        restoreViewOrFitWorld();
-        // Recompute min zoom only (no fit) on resize so we don't zoom out
-        window.addEventListener("resize", enforceMinZoomPreservingView);
-
-        // Persist view on user interaction (normalize with wrapLatLng)
-        function saveView() {
-          var c = map.getCenter();
-          var wc = map.wrapLatLng(c); // keep lon in canonical range
-          try {
-            localStorage.setItem(
-              VIEW_KEY,
-              JSON.stringify({ lat: wc.lat, lng: wc.lng, z: map.getZoom() })
-            );
-          } catch (e) {
-            // ignore storage errors (private mode, quota, etc.)
-          }
-        }
-        map.on("moveend", saveView);
-        map.on("zoomend", saveView);
-
-        // ---------- Station markers ----------
-        var markerLayer = L.layerGroup().addTo(map);
-        var formEl = document.getElementById("controls");
-        var stationSel = document.getElementById("station");
-        var tzSel = document.getElementById("tz");
-        var viewSel = document.getElementById("view");
-
-        // Change handlers: preserve current view, clear tz on station change
-        if (stationSel) {
-          stationSel.addEventListener("change", function () {
-            if (tzSel) tzSel.value = "";
-            if (formEl) formEl.submit();
-          });
-        }
-        if (viewSel) {
-          viewSel.addEventListener("change", function () {
-            if (formEl) formEl.submit();
-          });
-        }
-
-        function addStations(stations) {
-          markerLayer.clearLayers();
-          for (var i = 0; i < stations.length; i++) {
-            var st = stations[i] || {};
-            var lat = Number(st.lat);
-            var lon = Number(st.lon);
-            var sid = st.id != null ? String(st.id) : "";
-            var name = st.name || "Station";
-            if (!isFinite(lat) || !isFinite(lon) || !sid) continue;
-
-            var marker = L.circleMarker([lat, lon], {
-              radius: 2, color: "#FFD400", weight: 1, fillColor: "#FFD400", fillOpacity: 1.0
-            })
-              .bindPopup(name + " (" + sid + ")")
-              .bindTooltip(sid, { className: "station-tooltip", direction: "top", sticky: true, opacity: 0.9 })
-              .addTo(markerLayer);
-
-            (function (stationId) {
-              marker.on("click", function () {
-                if (stationSel) stationSel.value = stationId;
-                if (tzSel) tzSel.value = "";
-                if (formEl) formEl.submit();
-              });
-            })(sid);
-          }
-        }
-
-        (function fetchStations() {
-          var url = "/stations.json?_ts=" + Date.now();
-          fetch(url, { cache: "no-store" })
-            .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-            .then(function (data) { if (!Array.isArray(data)) throw new Error("Invalid JSON"); addStations(data); })
-            .catch(function (err) { console.error("Failed to load stations.json:", err); });
-        })();
-
-        // ---------- Graph View (Chart.js) ----------
-        (function buildCharts() {
-          if ("{{ selected_view }}" !== "Graph") return;
-          var data = {{ (graph_data or {}) | tojson }};
-          if (!data || !Array.isArray(data.labels)) return;
-
-          var labels = data.labels;
-
-          // Palette: matches Swell 1..6 + Combined
-          var COLORS = ["#C00000","#ED7D31","#FFC000","#00B050","#00B0F0","#92D050"];
-          var COMBINED = "#7030A0";
-
-          // Common options
-          function makeOptions(yCfg) {
-            return {
-              responsive: true,
-              maintainAspectRatio: false,
-              plugins: {
-                legend: { position: "bottom", labels: { boxWidth: 12 } },
-                tooltip: { mode: "index", intersect: false }
-              },
-              scales: {
-                x: {
-                  type: "category",
-                  ticks: { maxRotation: 60, minRotation: 60, autoSkip: true },
-                  grid: { color: "rgba(255,255,255,0.07)" }
-                },
-                y: Object.assign({
-                  beginAtZero: true,
-                  grid: { color: "rgba(255,255,255,0.07)" }
-                }, yCfg || {})
-              }
-            };
-          }
-
-          // Height chart datasets (Swell 1..6 + Combined)
-          var heightSets = [];
-          for (var i = 0; i < 6; i++) {
-            heightSets.push({
-              label: "Swell " + (i + 1),
-              data: data.heights[i],
-              borderColor: COLORS[i],
-              backgroundColor: COLORS[i],
-              pointRadius: 2,
-              pointHoverRadius: 3,
-              tension: 0.25,
-              fill: false,
-              spanGaps: true
-            });
-          }
-          heightSets.push({
-            label: "Combined",
-            data: data.combined,
-            borderColor: COMBINED,
-            backgroundColor: COMBINED,
-            pointRadius: 2,
-            pointHoverRadius: 3,
-            tension: 0.25,
-            fill: false,
-            spanGaps: true
-          });
-
-          new Chart(
-            document.getElementById("heightChart").getContext("2d"),
-            { type: "line", data: { labels: labels, datasets: heightSets }, options: makeOptions({}) }
-          );
-
-          // Period chart (Swell 1..6)
-          var periodSets = [];
-          for (var j = 0; j < 6; j++) {
-            periodSets.push({
-              label: "Swell " + (j + 1),
-              data: data.periods[j],
-              borderColor: COLORS[j],
-              backgroundColor: COLORS[j],
-              pointRadius: 2,
-              pointHoverRadius: 3,
-              tension: 0.25,
-              fill: false,
-              spanGaps: true
-            });
-          }
-          new Chart(
-            document.getElementById("periodChart").getContext("2d"),
-            { type: "line", data: { labels: labels, datasets: periodSets }, options: makeOptions({}) }
-          );
-
-          // Direction chart (Swell 1..6), 0..360 with 45° ticks
-          var dirSets = [];
-          for (var k = 0; k < 6; k++) {
-            dirSets.push({
-              label: "Swell " + (k + 1),
-              data: data.dirs[k],
-              borderColor: COLORS[k],
-              backgroundColor: COLORS[k],
-              pointRadius: 2,
-              pointHoverRadius: 3,
-              tension: 0.25,
-              fill: false,
-              spanGaps: true
-            });
-          }
-          new Chart(
-            document.getElementById("dirChart").getContext("2d"),
-            { type: "line", data: { labels: labels, datasets: dirSets },
-              options: makeOptions({ min: 0, max: 360, ticks: { stepSize: 45 } }) }
-          );
-        })();
-      })();
-    </script>
-  </body>
+      });
+    })();
+    {% endif %}
+  </script>
+</body>
 </html>

@@ -17,6 +17,8 @@
     .leaflet-tooltip { font-weight: 600; }
     .sticky-top-bar { position: sticky; top: 0; z-index: 1000; background:#fff; border-bottom: 1px solid #eee; }
     .form-inline .form-select, .form-inline .form-control { width: auto; }
+    /* Taller charts for readability */
+    canvas.chart-tall { height: 260px !important; }
   </style>
 </head>
 <body class="bg-light">
@@ -84,13 +86,13 @@
             <div class="card-body">
               <h5 class="card-title mb-3">Graphs ({{ graph_data.units }})</h5>
               <div class="mb-4">
-                <canvas id="heightChart" height="140"></canvas>
+                <canvas id="heightChart" class="chart-tall"></canvas>
               </div>
               <div class="mb-4">
-                <canvas id="periodChart" height="140"></canvas>
+                <canvas id="periodChart" class="chart-tall"></canvas>
               </div>
               <div>
-                <canvas id="directionChart" height="140"></canvas>
+                <canvas id="directionChart" class="chart-tall"></canvas>
               </div>
             </div>
           </div>
@@ -129,7 +131,7 @@
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 8,
       minZoom: 2,
-      noWrap: true   // exact one-world view, no grey margins
+      noWrap: true   // exactly one world, no grey margins
     }).addTo(map);
 
     // Plot stations
@@ -158,7 +160,7 @@
     document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
     {% if selected_view == 'Graph' and graph_data %}
-    // ---- Dynamic Y-axis limits per series ----
+    // ---- Readability-focused charting ----
     const GD = {{ graph_data|tojson|safe }};
 
     const colors = {
@@ -171,7 +173,7 @@
       combined: '#7030A0'
     };
 
-    // Helpers to compute finite min/max across multiple arrays (ignoring nulls)
+    // Helpers: finite min/max across arrays; +10% pad; nice steps
     const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
     const maxAcross = arrays => {
       let m = -Infinity;
@@ -183,34 +185,85 @@
       arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; }));
       return m;
     };
+    const padMax = (v, pct = 0.10) => Number.isFinite(v) ? v * (1 + pct) : v;
 
-    // Compute axes
+    // Choose a label interval to show ~8–16 ticks, no rotation
+    function labelEvery(n) {
+      if (n <= 16) return 1;
+      if (n <= 32) return 2;
+      if (n <= 64) return 4;
+      if (n <= 96) return 6;
+      if (n <= 160) return 10;
+      return Math.ceil(n / 16);
+    }
+    const showEvery = labelEvery(GD.labels.length);
+
+    // Nice tick step calculators
+    function heightStep(maxVal) {
+      if (maxVal <= 1) return 0.1;
+      if (maxVal <= 2) return 0.2;
+      if (maxVal <= 4) return 0.5;
+      if (maxVal <= 8) return 1;
+      return 2;
+    }
+    function periodStep(maxVal) {
+      if (maxVal <= 8) return 1;
+      if (maxVal <= 16) return 2;
+      return 5;
+    }
+    const niceCeil = (v, step) => Math.ceil(v / step) * step;
+
+    // Axis ranges (+10% on Height/Period)
     const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
     let hMax = maxAcross(heightArrays); if (!Number.isFinite(hMax)) hMax = 1;
+    hMax = padMax(hMax, 0.10);
+    const hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
 
     const periodArrays = [GD.period.s1, GD.period.s2, GD.period.s3, GD.period.s4, GD.period.s5, GD.period.s6];
     let pMax = maxAcross(periodArrays); if (!Number.isFinite(pMax)) pMax = 10;
+    pMax = padMax(pMax, 0.10);
+    const pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
 
     const dirArrays = [GD.direction.s1, GD.direction.s2, GD.direction.s3, GD.direction.s4, GD.direction.s5, GD.direction.s6];
     let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
     if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
+    const dStep = 45;
 
     const commonOpts = {
       responsive: true,
       maintainAspectRatio: false,
-      scales: {
-        x: { type: 'category', ticks: { maxRotation: 60, minRotation: 60 }, grid: { display: true } },
-        y: { grid: { display: true } }
+      interaction: { mode: 'index', intersect: false, axis: 'x' },
+      layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
+      elements: { point: { radius: 1.5 }, line: { tension: 0.25, borderWidth: 1.5 } },
+      plugins: {
+        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 12, boxHeight: 6 } },
+        tooltip: { mode: 'nearest', intersect: false },
+        decimation: { enabled: true, algorithm: 'lttb', samples: 250 }
       },
-      plugins: { legend: { position: 'bottom' }, tooltip: { mode: 'nearest', intersect: false } },
-      elements: { point: { radius: 2 }, line: { tension: 0.3 } }
+      scales: {
+        x: {
+          type: 'category',
+          grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+          ticks: {
+            autoSkip: false,
+            maxRotation: 0,
+            minRotation: 0,
+            callback: (value, index) => (index % showEvery === 0 ? GD.labels[index] : '')
+          }
+        },
+        y: {
+          grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+          border: { color: 'rgba(0,0,0,0.2)' }
+        }
+      },
+      animation: false
     };
 
     function swellLine(label, key, data, color) {
       return { label, data: data[key], borderColor: color, backgroundColor: color, spanGaps: true };
     }
 
-    // HEIGHT (ft/m) — includes Combined; y: 0..max
+    // HEIGHT — includes Combined; y: 0..max(+10%), nice steps
     (() => {
       const ds = [
         swellLine('Swell 1', 's1', GD.height, colors.s1),
@@ -229,13 +282,18 @@
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
           scales: {
             x: commonOpts.scales.x,
-            y: { beginAtZero: true, min: 0, max: hMax, grid: { display: true }, title: { display: true, text: `Height (${GD.units})` } }
+            y: {
+              ...commonOpts.scales.y,
+              beginAtZero: true, min: 0, max: hMax,
+              ticks: { stepSize: hStep },
+              title: { display: true, text: `Height (${GD.units})` }
+            }
           }
         }
       });
     })();
 
-    // PERIOD (s) — y: 0..max
+    // PERIOD — y: 0..max(+10%), nice steps
     (() => {
       const ds = [
         swellLine('Swell 1', 's1', GD.period, colors.s1),
@@ -253,13 +311,18 @@
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
           scales: {
             x: commonOpts.scales.x,
-            y: { beginAtZero: true, min: 0, max: pMax, grid: { display: true }, title: { display: true, text: 'Period (s)' } }
+            y: {
+              ...commonOpts.scales.y,
+              beginAtZero: true, min: 0, max: pMax,
+              ticks: { stepSize: pStep },
+              title: { display: true, text: 'Period (s)' }
+            }
           }
         }
       });
     })();
 
-    // DIRECTION (deg) — y: min..max of data
+    // DIRECTION — y: min..max, 45° step
     (() => {
       const ds = [
         swellLine('Swell 1', 's1', GD.direction, colors.s1),
@@ -277,7 +340,12 @@
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
           scales: {
             x: commonOpts.scales.x,
-            y: { min: dMin, max: dMax, grid: { display: true }, title: { display: true, text: 'Direction (°)' } }
+            y: {
+              ...commonOpts.scales.y,
+              min: dMin, max: dMax,
+              ticks: { stepSize: dStep },
+              title: { display: true, text: 'Direction (°)' }
+            }
           }
         }
       });

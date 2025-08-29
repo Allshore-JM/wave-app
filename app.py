@@ -1,13 +1,9 @@
-from flask import Flask, render_template, request, send_file, jsonify
-import pandas as pd  # still used for fallback Excel generation if needed
+from flask import Flask, render_template, request, jsonify
 import requests
 import json
 import os
-from io import BytesIO
 from datetime import datetime, timedelta
 import pytz
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from timezonefinder import TimezoneFinder
 
 app = Flask(__name__)
@@ -20,7 +16,7 @@ STATION_META = None  # Maps station_id -> { 'name': str, 'lat': float, 'lon': fl
 STATION_COORDS = None  # Maps station_id -> { 'lat': float, 'lon': float }
 BULLET_STATIONS = None  # Set of station_ids that currently have a .bull file available
 
-# ===== NOAA Station List URL =====
+# ===== NOAA URLs =====
 STATION_LIST_URL = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/wave/station/bulls.readme"
 NOAA_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
 
@@ -29,7 +25,7 @@ HST = pytz.timezone("Pacific/Honolulu")
 UTC = pytz.utc
 
 # ---------------------------------------------------------------------
-# Default station fallback (same as before)
+# Default station fallback
 # ---------------------------------------------------------------------
 DEFAULT_STATIONS = {
     # Hawaiian region buoys
@@ -65,8 +61,7 @@ def load_station_coords() -> dict:
             data = json.load(f)
             for sid, info in data.items():
                 try:
-                    lat = float(info.get('lat'))
-                    lon = float(info.get('lon'))
+                    lat = float(info.get('lat')); lon = float(info.get('lon'))
                     coords[str(sid).strip()] = {'lat': lat, 'lon': lon}
                 except Exception:
                     continue
@@ -130,12 +125,10 @@ def get_stations_data():
             name = info['name']
         lat = lon = None
         if sid in coords_map:
-            lat = coords_map[sid]['lat']
-            lon = coords_map[sid]['lon']
+            lat = coords_map[sid]['lat']; lon = coords_map[sid]['lon']
         if (lat is None or lon is None) and sid in DEFAULT_STATIONS:
             fallback_info = DEFAULT_STATIONS[sid]
-            lat = fallback_info.get('lat')
-            lon = fallback_info.get('lon')
+            lat = fallback_info.get('lat'); lon = fallback_info.get('lon')
         if lat is not None and lon is not None:
             data_list.append({'id': sid, 'name': name, 'lat': lat, 'lon': lon})
     stations_data_cache = data_list
@@ -231,15 +224,15 @@ def get_latest_run():
             test_file = f"{url}gfswave.51201.bull"
             try:
                 resp = requests.head(test_file, timeout=10)
+                if resp.status_code == 200:
+                    return yyyymmdd, run_str
             except Exception:
                 continue
-            if resp.status_code == 200:
-                return yyyymmdd, run_str
     return None, None
 
 
 # ---------------------------------------------------------------------
-# .bull parser (unchanged in structure; trims to table/rows only)
+# .bull parser
 # ---------------------------------------------------------------------
 def parse_bull(station_id: str, target_tz_name: str | None = None):
     date_str, run_str = get_latest_run()
@@ -352,8 +345,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
             swell_groups = []
             for swell_field in parts[2:]:
                 if not swell_field:
-                    swell_groups.append((None, None, None))
-                    continue
+                    swell_groups.append((None, None, None)); continue
                 raw_tokens = swell_field.split()
                 cleaned_tokens = []
                 for tok in raw_tokens:
@@ -401,7 +393,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                 if hs_m is None:
                     row.extend([None, None, None])
                 else:
-                    row.extend([hs_m * M_TO_FT, tp_val, dir_val])
+                    row.extend([hs_m * 3.28084, tp_val, dir_val])
             row.append(combined_hs_ft)
             rows.append(row)
     else:
@@ -409,8 +401,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
         start_idx = None
         for idx, line in enumerate(lines):
             if line.strip().startswith("Hr"):
-                start_idx = idx + 1
-                break
+                start_idx = idx + 1; break
         if start_idx is None:
             return cycle_str, location_str, None, None, effective_tz_name, "Data section not found in .bull file."
 
@@ -458,31 +449,24 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                 hs_val = tp_val = dir_val = None
                 tokens_collected = 0
                 while tokens_collected < 3 and idx_base < len(parts):
-                    tok = parts[idx_base]
-                    idx_base += 1
+                    tok = parts[idx_base]; idx_base += 1
                     tok_clean = tok.replace('*', '')
                     if tok_clean == '':
                         continue
                     if tokens_collected == 0:
                         try:
-                            hs_val = float(tok_clean) * 3.28084
-                            tokens_collected += 1
-                            continue
+                            hs_val = float(tok_clean) * 3.28084; tokens_collected += 1; continue
                         except ValueError:
                             continue
                     if tokens_collected == 1:
                         try:
-                            tp_val = float(tok_clean)
-                            tokens_collected += 1
-                            continue
+                            tp_val = float(tok_clean); tokens_collected += 1; continue
                         except ValueError:
                             continue
                     if tokens_collected == 2:
                         try:
                             dir_raw = int(float(tok_clean))
-                            dir_val = (dir_raw + 180) % 360
-                            tokens_collected += 1
-                            continue
+                            dir_val = (dir_raw + 180) % 360; tokens_collected += 1; continue
                         except ValueError:
                             continue
                 if tokens_collected < 3:
@@ -495,8 +479,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                 if tok_clean == '':
                     continue
                 try:
-                    combined_hs_ft = float(tok_clean) * 3.28084
-                    break
+                    combined_hs_ft = float(tok_clean) * 3.28084; break
                 except ValueError:
                     continue
             row.append(combined_hs_ft)
@@ -505,7 +488,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     # Rounding
     for r in rows:
         idx_num = 2
-        for g in range(6):
+        for _ in range(6):
             if r[idx_num] is not None:
                 r[idx_num] = round(r[idx_num], 2)
             idx_num += 1
@@ -524,11 +507,11 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     if not rows:
         return cycle_str, location_str, None, None, effective_tz_name, "No data rows parsed from .bull file."
 
-    return cycle_str, location_str, model_run_str if 'model_run_str' in locals() else None, rows, effective_tz_name, None
+    return cycle_str, location_str, 'Model Run' if 'model_run_str' in locals() else None, rows, effective_tz_name, None
 
 
 # ---------------------------------------------------------------------
-# HTML Table & Excel (unchanged display-wise)
+# HTML Table (unchanged display-wise) — kept for Table view
 # ---------------------------------------------------------------------
 def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None, rows: list[list], tz_label: str, unit: str) -> str:
     group_colors = [
@@ -572,8 +555,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         bold_end = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()
         dashed_start_evening = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
         dashed_end_morning = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
-        border_style = ""
-        font_weight_row = "normal"
+        border_style = ""; font_weight_row = "normal"
         if parsed_time is not None:
             if bold_start <= parsed_time <= bold_end:
                 border_style = "border:1px solid #000;"; font_weight_row = "bold"
@@ -618,98 +600,6 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     return html
 
 
-def build_excel_workbook(cycle_str: str, location_str: str, model_run_str: str | None, rows: list[list], tz_label: str, unit: str) -> BytesIO:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Table View"
-    group_colors = [
-        {"header": "C00000", "subheader": "F8B4B4", "data": "F9DCDC"},
-        {"header": "ED7D31", "subheader": "FBE5D6", "data": "FDE7D4"},
-        {"header": "FFC000", "subheader": "FFF2CC", "data": "FFF9E5"},
-        {"header": "00B050", "subheader": "D5E8D4", "data": "EAF3E8"},
-        {"header": "00B0F0", "subheader": "D9EAF6", "data": "ECF5FB"},
-        {"header": "92D050", "subheader": "E2F0D9", "data": "F2F8EE"},
-    ]
-    combined_colors = {"header": "7030A0", "subheader": "D9D2E9", "data": "EDE9F4"}
-    total_cols = 2 + len(group_colors) * 3 + 1
-
-    row_idx = 1
-    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
-    cell = ws.cell(row=row_idx, column=1, value=cycle_str); cell.font = Font(bold=True); row_idx += 1
-    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
-    cell = ws.cell(row=row_idx, column=1, value=location_str); cell.font = Font(bold=True); row_idx += 1
-    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
-    cell = ws.cell(row=row_idx, column=1, value=f"Time Zone: {tz_label}"); cell.font = Font(bold=True)
-    row_idx += 1
-
-    ws.cell(row=row_idx, column=1, value="Date").font = Font(bold=True)
-    ws.cell(row=row_idx, column=2, value="Time").font = Font(bold=True)
-    col_idx = 3
-    for idx, colors in enumerate(group_colors, start=1):
-        ws.merge_cells(start_row=row_idx, start_column=col_idx, end_row=row_idx, end_column=col_idx+2)
-        hdr_cell = ws.cell(row=row_idx, column=col_idx, value=f"Swell {idx}")
-        hdr_cell.fill = PatternFill(start_color=colors["header"], end_color=colors["header"], fill_type="solid")
-        hdr_cell.font = Font(bold=True, color="FFFFFF")
-        hdr_cell.alignment = Alignment(horizontal="center")
-        col_idx += 3
-    comb_cell = ws.cell(row=row_idx, column=col_idx, value="Combined")
-    comb_cell.fill = PatternFill(start_color=combined_colors["header"], end_color=combined_colors["header"], fill_type="solid")
-    comb_cell.font = Font(bold=True, color="FFFFFF")
-    comb_cell.alignment = Alignment(horizontal="center")
-
-    row_idx += 1
-    col_idx = 3
-    hs_unit_label = "(ft)" if unit == 'US' else "(m)"
-    for colors in group_colors:
-        cell = ws.cell(row=row_idx, column=col_idx, value=f"Hs {hs_unit_label}")
-        cell.fill = PatternFill(start_color=colors["subheader"], end_color=colors["subheader"], fill_type="solid")
-        cell.alignment = Alignment(horizontal="center"); cell.font = Font(bold=True); col_idx += 1
-        cell = ws.cell(row=row_idx, column=col_idx, value="Tp (s)")
-        cell.fill = PatternFill(start_color=colors["subheader"], end_color=colors["subheader"], fill_type="solid")
-        cell.alignment = Alignment(horizontal="center"); cell.font = Font(bold=True); col_idx += 1
-        cell = ws.cell(row=row_idx, column=col_idx, value="Dir (d)")
-        cell.fill = PatternFill(start_color=colors["subheader"], end_color=colors["subheader"], fill_type="solid")
-        cell.alignment = Alignment(horizontal="center"); cell.font = Font(bold=True); col_idx += 1
-    cell = ws.cell(row=row_idx, column=col_idx, value=f"Hs {hs_unit_label}")
-    cell.fill = PatternFill(start_color=combined_colors["subheader"], end_color=combined_colors["subheader"], fill_type="solid")
-    cell.alignment = Alignment(horizontal="center"); cell.font = Font(bold=True)
-
-    for data_row in rows:
-        row_idx += 1
-        date_cell = ws.cell(row=row_idx, column=1, value=data_row[0]); date_cell.font = Font(bold=True)
-        time_cell = ws.cell(row=row_idx, column=2, value=data_row[1])
-        col_idx = 3
-        data_iter = iter(data_row[2:])
-        for colors in group_colors:
-            hs_val = next(data_iter)
-            display_hs = hs_val
-            if hs_val is not None and unit != 'US':
-                display_hs = hs_val / 3.28084
-            cell = ws.cell(row=row_idx, column=col_idx, value=display_hs if display_hs is not None else ""); cell.number_format = "0.00"; col_idx += 1
-            tp_val = next(data_iter)
-            cell = ws.cell(row=row_idx, column=col_idx, value=tp_val if tp_val is not None else ""); cell.number_format = "0.0"; col_idx += 1
-            dir_val = next(data_iter)
-            ws.cell(row=row_idx, column=col_idx, value=dir_val if dir_val is not None else ""); col_idx += 1
-        combined_val = data_row[-1]
-        display_comb = combined_val
-        if combined_val is not None and unit != 'US':
-            display_comb = combined_val / 3.28084
-        cell = ws.cell(row=row_idx, column=col_idx, value=display_comb if display_comb is not None else ""); cell.number_format = "0.00"
-
-    ws.column_dimensions['A'].width = 30
-    ws.column_dimensions['B'].width = 15
-    col = 3
-    for _ in range(len(group_colors) * 3 + 1):
-        letter = chr(64 + col) if col <= 26 else 'Z'
-        ws.column_dimensions[letter].width = 10
-        col += 1
-
-    bio = BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-    return bio
-
-
 # ---------------------------------------------------------------------
 # Graph payload helper
 # ---------------------------------------------------------------------
@@ -718,7 +608,6 @@ def _fmt_short(dt_obj: datetime) -> str:
     try:
         return dt_obj.strftime("%-m/%-d/%y %I:%M %p").replace(" 0", " ")
     except Exception:
-        # Windows fallback
         s = dt_obj.strftime("%m/%d/%y %I:%M %p")
         m, d, rest = s.split('/', 2)
         return f"{int(m)}/{int(d)}/{rest}"
@@ -729,14 +618,6 @@ def build_graph_payload(rows: list[list], unit: str) -> dict:
     Build JSON-friendly arrays for Chart.js from parsed .bull rows.
 
     rows: [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs]
-    Returns:
-      {
-        "labels": [...],
-        "units": "ft" | "m",
-        "height": {"s1":[...],"s2":[...],"s3":[...],"s4":[...],"s5":[...],"s6":[...],"combined":[...]},
-        "period": {"s1":[...],...,"s6":[...]},
-        "direction": {"s1":[...],...,"s6":[...]}
-      }
     """
     labels = []
     height = {f"s{i}": [] for i in range(1, 7)}
@@ -750,17 +631,15 @@ def build_graph_payload(rows: list[list], unit: str) -> dict:
         d_str, t_str = r[0], r[1]
         # parse local strings into datetime, then format short for x-axis labels
         dt_obj = None
-        for fmt in ("%A, %B %d, %Y", "%A, %B %d, %Y"):  # second kept for portability
+        for fmt in ("%A, %B %d, %Y",):
             try:
                 dt_obj = datetime.strptime(d_str, fmt)
                 break
             except Exception:
                 continue
         if dt_obj is None:
-            # last resort: leave as raw join
             labels.append(f"{d_str} {t_str}")
         else:
-            # add the time to the date to get a single dt for labeling
             try:
                 tm = datetime.strptime(t_str, "%I:%M %p").time()
             except Exception:
@@ -839,14 +718,12 @@ def index():
         if rows is not None:
             tz_label = effective_tz_name
             table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
-            # Build graph JSON regardless of view so switching is instant on the client
             graph_data = build_graph_payload(rows, selected_unit)
 
             coords_map = load_station_coords()
             sid_str = str(selected_station).strip()
             if sid_str in coords_map:
-                selected_lat = coords_map[sid_str]['lat']
-                selected_lon = coords_map[sid_str]['lon']
+                selected_lat = coords_map[sid_str]['lat']; selected_lon = coords_map[sid_str]['lon']
             elif location_str:
                 import re
                 m = re.search(r"\(\s*([-+]?\d+(?:\.\d+)?)\s*([NS])\s+([-+]?\d+(?:\.\d+)?)\s*([EW])\)", location_str)
@@ -867,29 +744,12 @@ def index():
         selected_tz=selected_tz or tz_label,
         units=unit_options,
         selected_unit=selected_unit,
-        selected_view=selected_view,   # NEW
-        graph_data=graph_data,         # NEW
+        selected_view=selected_view,
+        graph_data=graph_data,
         table_html=table_html,
         error=error,
         selected_lat=selected_lat,
         selected_lon=selected_lon,
-    )
-
-
-@app.route("/download/<station_id>")
-def download(station_id: str):
-    tz_param = request.args.get("tz", "")
-    unit_param = request.args.get("unit", "US") or "US"
-    cycle_str, location_str, model_run_str, rows, effective_tz_name, error = parse_bull(station_id, tz_param or None)
-    if rows is None:
-        return f"Error: {error}", 404
-    bio = build_excel_workbook(cycle_str, location_str, model_run_str, rows, effective_tz_name, unit_param)
-    filename = f"{station_id}_table_view.xlsx"
-    return send_file(
-        bio,
-        as_attachment=True,
-        download_name=filename,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 

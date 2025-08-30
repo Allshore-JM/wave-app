@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta
 import pytz
 from timezonefinder import TimezoneFinder
+from calendar import monthrange  # <-- new: for safe month/day handling
 
 app = Flask(__name__)
 
@@ -218,8 +219,9 @@ def get_latest_run():
     for delta_day in [0, 1]:
         check_date = now - timedelta(days=delta_day)
         yyyymmdd = check_date.strftime("%Y%m%d")
-        for hour in run_hours:
-            run_str = f"{hour:02d}"
+        for hour in range(len(run_hours)):
+            run = run_hours[hour]
+            run_str = f"{run:02d}"
             url = f"{NOAA_BASE}/gfs.{yyyymmdd}/{run_str}/wave/station/bulls.t{run_str}z/"
             test_file = f"{url}gfswave.51201.bull"
             try:
@@ -235,6 +237,11 @@ def get_latest_run():
 # .bull parser
 # ---------------------------------------------------------------------
 def parse_bull(station_id: str, target_tz_name: str | None = None):
+    """
+    Parse NOAA GFS .bull for a station. Fixes month-transition by constructing
+    each forecast timestamp at or after the previous one when using the
+    'day & hour' format (see helper _build_dt_ge()).
+    """
     date_str, run_str = get_latest_run()
     if not date_str:
         return None, None, None, None, 'UTC', "No recent run found."
@@ -295,19 +302,51 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
 
     rows = []
 
+    # ---------- helper for month-safe timestamps (fixes month transition) ----------
+    def _next_month(y: int, m: int) -> tuple[int, int]:
+        m += 1
+        if m > 12:
+            m = 1; y += 1
+        return y, m
+
+    def _build_dt_ge(base_year: int, base_month: int, day_val: int, hour_val: int,
+                     floor_dt: datetime) -> datetime:
+        """
+        Build a UTC naive datetime with (day_val, hour_val) in either base_month or
+        a subsequent month such that the result is >= floor_dt. If the day is not
+        valid for a candidate month, advance to the next month until valid.
+        """
+        y, m = base_year, base_month
+        while True:
+            last = monthrange(y, m)[1]
+            if day_val > last or day_val <= 0:
+                y, m = _next_month(y, m)
+                continue
+            try:
+                cand = datetime(y, m, day_val, hour_val)
+            except ValueError:
+                # invalid day/hour -> try next month
+                y, m = _next_month(y, m); continue
+            if cand < floor_dt:
+                # move forward one month and try again
+                y, m = _next_month(y, m); continue
+            return cand
+    # ------------------------------------------------------------------------------
+
     if uses_day_hour_format:
         # Newer format
-        m = re.search(r"(\d{8})\s*(\d{2})", cycle_str)
+        m_cycle = re.search(r"(\d{8})\s*(\d{2})", cycle_str)
         cycle_date_str = date_str
         cycle_hour_str = run_str
-        if m:
-            cycle_date_str = m.group(1)
-            cycle_hour_str = m.group(2)
+        if m_cycle:
+            cycle_date_str = m_cycle.group(1)
+            cycle_hour_str = m_cycle.group(2)
         try:
             cycle_dt_utc = datetime.strptime(f"{cycle_date_str} {cycle_hour_str}", "%Y%m%d %H")
         except Exception:
             cycle_dt_utc = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H")
 
+        # Prepare model run (for completeness)
         try:
             model_run_local = cycle_dt_utc.replace(tzinfo=UTC).astimezone(pytz.timezone(effective_tz_name))
         except Exception:
@@ -317,6 +356,8 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
         except Exception:
             model_run_str = "Model Run: " + model_run_local.strftime("%A, %B %d, %Y %I:%M %p").lstrip('0')
 
+        # Iterate forecast rows and keep time non‑decreasing across month boundaries
+        prev_dt_utc = cycle_dt_utc
         M_TO_FT = 3.28084
         for line in lines:
             striped = line.strip()
@@ -335,6 +376,31 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                 hour_val = int(day_hour[1])
             except ValueError:
                 continue
+
+            # >>> FIXED: build a valid forecast timestamp at/after prev_dt_utc
+            forecast_dt_utc = _build_dt_ge(
+                base_year=cycle_dt_utc.year,
+                base_month=cycle_dt_utc.month,
+                day_val=day_val,
+                hour_val=hour_val,
+                floor_dt=prev_dt_utc
+            )
+            prev_dt_utc = forecast_dt_utc  # advance the floor for the next row
+
+            # Convert to effective timezone
+            try:
+                local_tz = pytz.timezone(effective_tz_name)
+            except Exception:
+                local_tz = UTC
+            local_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(local_tz)
+
+            try:
+                date_str_local = local_dt.strftime("%A, %B %-d, %Y")
+            except Exception:
+                date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
+            time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
+
+            # Combined height
             hst_tokens = parts[1].split()
             combined_hs_m = None
             if hst_tokens:
@@ -342,6 +408,8 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                     combined_hs_m = float(hst_tokens[0].replace('*', ''))
                 except ValueError:
                     combined_hs_m = None
+
+            # Swell groups
             swell_groups = []
             for swell_field in parts[2:]:
                 if not swell_field:
@@ -368,34 +436,17 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
                 swell_groups.append((None, None, None))
             if len(swell_groups) > 6:
                 swell_groups = swell_groups[:6]
-            try:
-                forecast_dt_utc = cycle_dt_utc.replace(day=day_val, hour=hour_val)
-            except ValueError:
-                continue
-            if forecast_dt_utc < cycle_dt_utc:
-                while forecast_dt_utc < cycle_dt_utc:
-                    forecast_dt_utc += timedelta(days=1)
-            try:
-                local_tz = pytz.timezone(effective_tz_name)
-            except Exception:
-                local_tz = UTC
-            local_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(local_tz)
-            try:
-                date_str_local = local_dt.strftime("%A, %B %-d, %Y")
-            except Exception:
-                date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
-            time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
-            combined_hs_ft = None
-            if combined_hs_m is not None:
-                combined_hs_ft = combined_hs_m * M_TO_FT
+
+            # Build row
             row = [date_str_local, time_str_local]
             for hs_m, tp_val, dir_val in swell_groups:
                 if hs_m is None:
                     row.extend([None, None, None])
                 else:
-                    row.extend([hs_m * 3.28084, tp_val, dir_val])
-            row.append(combined_hs_ft)
+                    row.extend([hs_m * M_TO_FT, tp_val, dir_val])
+            row.append((combined_hs_m * M_TO_FT) if combined_hs_m is not None else None)
             rows.append(row)
+
     else:
         # Older format
         start_idx = None
@@ -507,7 +558,8 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     if not rows:
         return cycle_str, location_str, None, None, effective_tz_name, "No data rows parsed from .bull file."
 
-    return cycle_str, location_str, 'Model Run' if 'model_run_str' in locals() else None, rows, effective_tz_name, None
+    # return the real model_run_str when available
+    return cycle_str, location_str, locals().get("model_run_str"), rows, effective_tz_name, None
 
 
 # ---------------------------------------------------------------------

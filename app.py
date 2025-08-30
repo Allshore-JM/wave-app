@@ -511,7 +511,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
 
 
 # ---------------------------------------------------------------------
-# HTML Table (unchanged display-wise) — kept for Table view
+# HTML Table (for Table view)
 # ---------------------------------------------------------------------
 def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None, rows: list[list], tz_label: str, unit: str) -> str:
     group_colors = [
@@ -614,11 +614,6 @@ def _fmt_short(dt_obj: datetime) -> str:
 
 
 def build_graph_payload(rows: list[list], unit: str) -> dict:
-    """
-    Build JSON-friendly arrays for Chart.js from parsed .bull rows.
-
-    rows: [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs]
-    """
     labels = []
     height = {f"s{i}": [] for i in range(1, 7)}
     period = {f"s{i}": [] for i in range(1, 7)}
@@ -629,7 +624,6 @@ def build_graph_payload(rows: list[list], unit: str) -> dict:
 
     for r in rows:
         d_str, t_str = r[0], r[1]
-        # parse local strings into datetime, then format short for x-axis labels
         dt_obj = None
         for fmt in ("%A, %B %d, %Y",):
             try:
@@ -651,7 +645,6 @@ def build_graph_payload(rows: list[list], unit: str) -> dict:
                 dt_obj = datetime.combine(dt_obj.date(), tm)
             labels.append(_fmt_short(dt_obj))
 
-        # 6 swells
         idx = 2
         for i in range(1, 7):
             hs = r[idx]; tp = r[idx+1]; dd = r[idx+2]
@@ -687,7 +680,7 @@ def index():
     selected_station = ""
     selected_tz = ""
     selected_unit = "US"
-    selected_view = "Table"  # NEW
+    selected_view = "Table"
 
     if request.method == "POST":
         selected_station = request.form.get("station") or ""
@@ -709,8 +702,7 @@ def index():
     tz_label = ""
     selected_lat = None
     selected_lon = None
-    cycle_str = ""
-    location_str = ""
+    graph_header = None  # NEW: pass Cycle, Location, Time Zone to Graph view
 
     if selected_station:
         cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
@@ -721,6 +713,11 @@ def index():
             tz_label = effective_tz_name
             table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
             graph_data = build_graph_payload(rows, selected_unit)
+            graph_header = {
+                "cycle": cycle_str or "",
+                "location": location_str or "",
+                "tz": tz_label or "",
+            }
 
             coords_map = load_station_coords()
             sid_str = str(selected_station).strip()
@@ -744,13 +741,11 @@ def index():
         selected_station=selected_station,
         timezones=timezones,
         selected_tz=selected_tz or tz_label,
-        tz_label=tz_label,                 # <-- added
-        cycle_str=cycle_str,               # <-- added
-        location_str=location_str,         # <-- added
         units=unit_options,
         selected_unit=selected_unit,
         selected_view=selected_view,
         graph_data=graph_data,
+        graph_header=graph_header,  # NEW
         table_html=table_html,
         error=error,
         selected_lat=selected_lat,

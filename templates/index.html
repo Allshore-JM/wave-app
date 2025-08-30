@@ -155,6 +155,16 @@
     fitOneWorld(true);
     map.on('resize', () => fitOneWorld(false));
 
+    const form = document.getElementById('controlForm');
+    const stationSel = document.getElementById('station');
+    const tzSel = document.getElementById('tz');
+
+    // When the station changes (dropdown), default tz to "Buoy Local" (empty) so server uses station's zone.
+    stationSel.addEventListener('change', () => {
+      tzSel.value = "";     // clear to let backend resolve station's local TZ
+      // Do not auto-submit here; user may still change other controls and hit Update.
+    });
+
     // Plot stations
     fetch('/stations.json')
       .then(r => r.json())
@@ -169,14 +179,16 @@
           }).addTo(map);
           mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
           mk.on('click', () => {
-            document.getElementById('station').value = s.id;
+            // On map click, switch station and reset tz to "Buoy Local" so the table/graphs render in that station's timezone.
+            stationSel.value = s.id;
+            tzSel.value = "";         // <-- key line: drop the previous override
             saveMapView(map);
-            document.getElementById('controlForm').submit();
+            form.submit();
           });
         });
       });
 
-    document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
+    form.addEventListener('submit', () => saveMapView(map));
 
     {% if selected_view == 'Graph' and graph_data %}
     // ---- Charts (dots only) ----
@@ -254,7 +266,8 @@
           scales:{
             x: commonOpts.scales.x,
             y:{ ...commonOpts.scales.y, beginAtZero:true, min:0, max:hMax,
-                ticks:{ stepSize: hStep }, title:{display:true, text:`Height (${GD.units})`} }
+                ticks:{ stepSize: (hMax<=1?0.1:(hMax<=2?0.2:(hMax<=4?0.5:(hMax<=8?1:2)))) },
+                title:{display:true, text:`Height (${GD.units})`} }
           }
         }
       });
@@ -279,7 +292,7 @@
           scales:{
             x: commonOpts.scales.x,
             y:{ ...commonOpts.scales.y, beginAtZero:true, min:0, max:pMax,
-                ticks:{ stepSize: pStep }, title:{display:true, text:'Period (s)'} }
+                ticks:{ stepSize: (pMax<=8?1:(pMax<=16?2:5)) }, title:{display:true, text:'Period (s)'} }
           }
         }
       });

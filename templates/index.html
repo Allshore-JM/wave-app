@@ -9,10 +9,8 @@
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <!-- Chart.js + time adapter -->
+  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
-
   <style>
     html, body { height: 100%; }
     #map { height: 420px; border: 1px solid #ccc; }
@@ -22,9 +20,8 @@
   </style>
 </head>
 <body class="bg-light">
-  <div class="container-fluid py-3">
 
-    <!-- Top controls -->
+  <div class="container-fluid py-3">
     <div class="sticky-top-bar pb-2">
       <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
         <div class="col-auto">
@@ -69,14 +66,12 @@
       </form>
     </div>
 
-    <!-- Map -->
     <div class="row mt-2">
       <div class="col-12">
         <div id="map"></div>
       </div>
     </div>
 
-    <!-- Table or Graphs -->
     <div class="row mt-3">
       <div class="col-12">
         {% if error %}
@@ -84,15 +79,16 @@
         {% endif %}
 
         {% if selected_view == 'Graph' %}
+          <!-- Graph View -->
           <div id="graphs" class="card">
             <div class="card-body">
-              <!-- Graph header (Cycle • Location • Time Zone) -->
+              {% if graph_header %}
               <div class="mb-2">
                 <div><strong>{{ graph_header.cycle }}</strong></div>
                 <div><strong>{{ graph_header.location }}</strong></div>
                 <div><strong>Time Zone: {{ graph_header.tz }}</strong></div>
               </div>
-
+              {% endif %}
               <div class="mb-4">
                 <canvas id="heightChart" class="chart-tall"></canvas>
               </div>
@@ -105,6 +101,7 @@
             </div>
           </div>
         {% else %}
+          <!-- Table View -->
           <div id="tableWrap" class="card">
             <div class="card-body">
               {{ table_html|safe }}
@@ -116,38 +113,43 @@
   </div>
 
   <script>
-    // ------- Preserve map zoom/center across requests -------
+    // ---------------- Map: single-world satellite, remember view ----------------
     const mapKey = 'mapView';
     function saveMapView(map) {
-      const v = {c: map.getCenter(), z: map.getZoom()};
-      sessionStorage.setItem(mapKey, JSON.stringify({lat: v.c.lat, lng: v.c.lng, z: v.z}));
+      const c = map.getCenter();
+      sessionStorage.setItem(mapKey, JSON.stringify({lat: c.lat, lng: c.lng, z: map.getZoom()}));
     }
     function loadMapView() {
       try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e) { return null; }
     }
 
-    // ------- Leaflet Map: single-world satellite, no grey sides -------
     const map = L.map('map', {
       worldCopyJump: false,
       zoomControl: true,
       minZoom: 2,
-      maxZoom: 8,
-      maxBounds: [[-85, -180],[85, 180]],
-      maxBoundsViscosity: 1.0
+      maxZoom: 8
     });
+
     const saved = loadMapView();
     if (saved) {
       map.setView([saved.lat, saved.lng], saved.z);
     } else {
-      map.fitWorld({ animate: false });
-      map.setZoom(2);
+      map.setView([20, -160], 2);
     }
 
-    // Esri World Imagery (satellite)
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      noWrap: true,
-      attribution: '&copy; Esri'
-    }).addTo(map);
+    // Satellite tiles (Esri World Imagery)
+    L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      {
+        attribution: '&copy; Esri & contributors',
+        maxZoom: 8,
+        minZoom: 2,
+        noWrap: true    // show exactly one world; no grey bars at sides
+      }
+    ).addTo(map);
+
+    // Also restrict panning to world bounds to avoid side gaps
+    map.setMaxBounds([[-85, -180], [85, 180]]);
 
     // Plot stations
     fetch('/stations.json')
@@ -163,124 +165,168 @@
           }).addTo(map);
           mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
           mk.on('click', () => {
+            // default to buoy's local timezone on station change
             document.getElementById('station').value = s.id;
+            document.getElementById('tz').value = '';
             saveMapView(map);
             document.getElementById('controlForm').submit();
           });
         });
       });
+
     document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
+    // ---------------- Graphs ----------------
     {% if selected_view == 'Graph' and graph_data %}
     const GD = {{ graph_data|tojson|safe }};
 
     const colors = {
-      s1: '#C00000', s2: '#ED7D31', s3: '#FFC000',
-      s4: '#00B050', s5: '#00B0F0', s6: '#92D050',
+      s1: '#C00000',
+      s2: '#ED7D31',
+      s3: '#FFC000',
+      s4: '#00B050',
+      s5: '#00B0F0',
+      s6: '#92D050',
       combined: '#7030A0'
     };
 
-    // utility to convert parallel arrays -> array of {x, y}
-    const pts = (x, arr) => x.map((t, i) => (arr[i] == null ? null : { x: t, y: arr[i] })).filter(p => p !== null);
+    const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
+    const maxAcross = arrays => {
+      let m = -Infinity; arrays.forEach(a => finiteVals(a).forEach(v => { if (v > m) m = v; })); return m;
+    };
+    const minAcross = arrays => {
+      let m = Infinity; arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; })); return m;
+    };
+    const padMax = (v, pct = 0.10) => Number.isFinite(v) ? v * (1 + pct) : v;
+
+    // label density
+    function labelEvery(n) {
+      if (n <= 24) return 1;
+      if (n <= 48) return 2;
+      if (n <= 96) return 4;
+      if (n <= 160) return 6;
+      return Math.ceil(n / 24);
+    }
+    const showEvery = labelEvery(GD.labels.length);
+
+    // y ranges (+10%)
+    const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
+    let hMax = maxAcross(heightArrays); if (!Number.isFinite(hMax)) hMax = 1;
+    hMax = Math.ceil(padMax(hMax, 0.10) * 10) / 10;
+
+    const periodArrays = [GD.period.s1, GD.period.s2, GD.period.s3, GD.period.s4, GD.period.s5, GD.period.s6];
+    let pMax = maxAcross(periodArrays); if (!Number.isFinite(pMax)) pMax = 10;
+    pMax = Math.ceil(padMax(pMax, 0.10));
+
+    const dirArrays = [GD.direction.s1, GD.direction.s2, GD.direction.s3, GD.direction.s4, GD.direction.s5, GD.direction.s6];
+    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
+    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
 
     const commonOpts = {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'nearest', intersect: false, axis: 'x' },
-      layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
-      elements: { point: { radius: 1.6 }, line: { borderWidth: 0, tension: 0 } }, // **no connecting lines**
+      layout: { padding: 8 },
+      elements: {
+        point: { radius: 2, hoverRadius: 3 },
+        line: { borderWidth: 0 }   // no connecting lines
+      },
       plugins: {
-        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 12, boxHeight: 6 } },
-        tooltip: { mode: 'nearest', intersect: false }
+        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 10, boxHeight: 6 } },
+        tooltip: { intersect: false }
       },
       scales: {
         x: {
-          type: 'time',
-          time: { tooltipFormat: 'MMM d, yyyy h:mm a' },
+          type: 'category',
+          grid: { color: 'rgba(0,0,0,0.08)' },
           ticks: {
-            major: { enabled: true },
-            source: 'auto',
             autoSkip: false,
             maxRotation: 0,
-            // Major ticks at midnight; minor at 6‑hour steps
-            callback: (value, index, ticks) => {
-              const d = new Date(ticks[index].value);
-              const h = d.getHours(), m = d.getMinutes();
-              if (h === 0 && m === 0) return d.toLocaleDateString();
-              if (m === 0 && (h % 6) === 0) return d.toLocaleTimeString([], {hour:'numeric'});
-              return '';
-            }
-          },
-          grid: { color: 'rgba(0,0,0,0.08)' }
+            minRotation: 0,
+            callback: (val, idx) => (idx % showEvery === 0 ? GD.labels[idx] : '')
+          }
         },
         y: {
           grid: { color: 'rgba(0,0,0,0.08)' },
           border: { color: 'rgba(0,0,0,0.2)' }
         }
       },
-      animation: false
+      animations: false
     };
 
-    // HEIGHT (includes Combined)
+    function swellDots(label, key, data, color) {
+      return { label, data: data[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false };
+    }
+
+    // Height (points only) + Combined dots
     (() => {
       const ds = [
-        { label:'Swell 1', data: pts(GD.x, GD.height.s1), borderColor: colors.s1, backgroundColor: colors.s1, showLine:false },
-        { label:'Swell 2', data: pts(GD.x, GD.height.s2), borderColor: colors.s2, backgroundColor: colors.s2, showLine:false },
-        { label:'Swell 3', data: pts(GD.x, GD.height.s3), borderColor: colors.s3, backgroundColor: colors.s3, showLine:false },
-        { label:'Swell 4', data: pts(GD.x, GD.height.s4), borderColor: colors.s4, backgroundColor: colors.s4, showLine:false },
-        { label:'Swell 5', data: pts(GD.x, GD.height.s5), borderColor: colors.s5, backgroundColor: colors.s5, showLine:false },
-        { label:'Swell 6', data: pts(GD.x, GD.height.s6), borderColor: colors.s6, backgroundColor: colors.s6, showLine:false },
-        { label:'Combined', data: pts(GD.x, GD.height.combined), borderColor: colors.combined, backgroundColor: colors.combined, showLine:false }
+        swellDots('Swell 1', 's1', GD.height, colors.s1),
+        swellDots('Swell 2', 's2', GD.height, colors.s2),
+        swellDots('Swell 3', 's3', GD.height, colors.s3),
+        swellDots('Swell 4', 's4', GD.height, colors.s4),
+        swellDots('Swell 5', 's5', GD.height, colors.s5),
+        swellDots('Swell 6', 's6', GD.height, colors.s6),
+        { label: 'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, showLine: false, spanGaps: false }
       ];
-      new Chart(document.getElementById('heightChart'), {
-        type: 'scatter',
-        data: { datasets: ds },
+      new Chart(document.getElementById('heightChart').getContext('2d'), {
+        type: 'line',
+        data: { labels: GD.labels, datasets: ds },
         options: {
           ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: `Swell Height (${GD.units})` } },
-          scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, beginAtZero:true } }
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
+          scales: {
+            x: commonOpts.scales.x,
+            y: { ...commonOpts.scales.y, beginAtZero: true, min: 0, max: hMax, title: { display: true, text: `Height (${GD.units})` } }
+          }
         }
       });
     })();
 
-    // PERIOD
+    // Period
     (() => {
       const ds = [
-        { label:'Swell 1', data: pts(GD.x, GD.period.s1), borderColor: colors.s1, backgroundColor: colors.s1, showLine:false },
-        { label:'Swell 2', data: pts(GD.x, GD.period.s2), borderColor: colors.s2, backgroundColor: colors.s2, showLine:false },
-        { label:'Swell 3', data: pts(GD.x, GD.period.s3), borderColor: colors.s3, backgroundColor: colors.s3, showLine:false },
-        { label:'Swell 4', data: pts(GD.x, GD.period.s4), borderColor: colors.s4, backgroundColor: colors.s4, showLine:false },
-        { label:'Swell 5', data: pts(GD.x, GD.period.s5), borderColor: colors.s5, backgroundColor: colors.s5, showLine:false },
-        { label:'Swell 6', data: pts(GD.x, GD.period.s6), borderColor: colors.s6, backgroundColor: colors.s6, showLine:false }
+        swellDots('Swell 1', 's1', GD.period, colors.s1),
+        swellDots('Swell 2', 's2', GD.period, colors.s2),
+        swellDots('Swell 3', 's3', GD.period, colors.s3),
+        swellDots('Swell 4', 's4', GD.period, colors.s4),
+        swellDots('Swell 5', 's5', GD.period, colors.s5),
+        swellDots('Swell 6', 's6', GD.period, colors.s6)
       ];
-      new Chart(document.getElementById('periodChart'), {
-        type: 'scatter',
-        data: { datasets: ds },
+      new Chart(document.getElementById('periodChart').getContext('2d'), {
+        type: 'line',
+        data: { labels: GD.labels, datasets: ds },
         options: {
           ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period (s)' } },
-          scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, beginAtZero:true } }
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
+          scales: {
+            x: commonOpts.scales.x,
+            y: { ...commonOpts.scales.y, beginAtZero: true, min: 0, max: pMax, title: { display: true, text: 'Period (s)' } }
+          }
         }
       });
     })();
 
-    // DIRECTION
+    // Direction
     (() => {
       const ds = [
-        { label:'Swell 1', data: pts(GD.x, GD.direction.s1), borderColor: colors.s1, backgroundColor: colors.s1, showLine:false },
-        { label:'Swell 2', data: pts(GD.x, GD.direction.s2), borderColor: colors.s2, backgroundColor: colors.s2, showLine:false },
-        { label:'Swell 3', data: pts(GD.x, GD.direction.s3), borderColor: colors.s3, backgroundColor: colors.s3, showLine:false },
-        { label:'Swell 4', data: pts(GD.x, GD.direction.s4), borderColor: colors.s4, backgroundColor: colors.s4, showLine:false },
-        { label:'Swell 5', data: pts(GD.x, GD.direction.s5), borderColor: colors.s5, backgroundColor: colors.s5, showLine:false },
-        { label:'Swell 6', data: pts(GD.x, GD.direction.s6), borderColor: colors.s6, backgroundColor: colors.s6, showLine:false }
+        swellDots('Swell 1', 's1', GD.direction, colors.s1),
+        swellDots('Swell 2', 's2', GD.direction, colors.s2),
+        swellDots('Swell 3', 's3', GD.direction, colors.s3),
+        swellDots('Swell 4', 's4', GD.direction, colors.s4),
+        swellDots('Swell 5', 's5', GD.direction, colors.s5),
+        swellDots('Swell 6', 's6', GD.direction, colors.s6)
       ];
-      new Chart(document.getElementById('directionChart'), {
-        type: 'scatter',
-        data: { datasets: ds },
+      new Chart(document.getElementById('directionChart').getContext('2d'), {
+        type: 'line',
+        data: { labels: GD.labels, datasets: ds },
         options: {
           ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction (°)' } },
-          scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, suggestedMin:0, suggestedMax:360 } }
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
+          scales: {
+            x: commonOpts.scales.x,
+            y: { ...commonOpts.scales.y, min: dMin, max: dMax, title: { display: true, text: 'Direction (°)' } }
+          }
         }
       });
     })();

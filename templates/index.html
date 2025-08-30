@@ -118,37 +118,54 @@
       try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e) { return null; }
     }
 
-    // ---- Leaflet Map ----
-    const map = L.map('map', { worldCopyJump: false, zoomControl: true });
-    const saved = loadMapView();
-    if (saved) {
-      map.setView([saved.lat, saved.lng], saved.z);
-    } else {
-      map.setView([20, -160], 2); // initial view
-    }
+    // ---- Leaflet Map (one-world, no wrap, no grey sides) ----
+    // Use slightly inside the antimeridian to avoid provider edge placeholders.
+    const WORLD_BOUNDS = L.latLngBounds([-85, -179.999], [85, 179.999]);
 
-    // === Satellite base + labels overlay (Esri) ===
-    // Satellite imagery
-    const esriImagery = L.tileLayer(
+    const map = L.map('map', {
+      worldCopyJump: false,       // don't wrap copies
+      zoomControl: true,
+      maxBounds: WORLD_BOUNDS,    // confine panning to one world
+      maxBoundsViscosity: 1.0     // "sticky" at the edge
+    });
+
+    // Esri Satellite + labels
+    const imagery = L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       {
         maxZoom: 18,
         noWrap: true,
-        attribution:
-          'Imagery © <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics, ' +
-          'and the GIS User Community'
+        bounds: WORLD_BOUNDS,
+        attribution: 'Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community'
       }
     ).addTo(map);
 
-    // Optional labels & boundaries overlay to make places readable over imagery
-    const esriLabels = L.tileLayer(
+    const labels = L.tileLayer(
       'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
-      {
-        maxZoom: 18,
-        noWrap: true,
-        attribution: 'Labels © Esri'
-      }
+      { maxZoom: 18, noWrap: true, bounds: WORLD_BOUNDS, attribution: 'Labels © Esri' }
     ).addTo(map);
+
+    // Compute the minimum zoom so the single world fills the viewport width.
+    function fitOneWorld(initial = false) {
+      const minZ = map.getBoundsZoom(WORLD_BOUNDS, true); // highest zoom that fully contains bounds
+      map.setMinZoom(minZ);
+      if (initial) {
+        const saved = loadMapView();
+        if (saved) {
+          // Respect saved state but never below minZoom
+          map.setView([saved.lat, saved.lng], Math.max(saved.z, minZ), {animate: false});
+        } else {
+          // First load: show exactly one world without side gaps
+          map.fitBounds(WORLD_BOUNDS, {animate: false, padding: [0, 0]});
+        }
+      } else {
+        // If window resized and current zoom fell below new min, bump it up
+        if (map.getZoom() < minZ) map.setZoom(minZ, {animate: false});
+      }
+    }
+
+    fitOneWorld(true);
+    map.on('resize', () => fitOneWorld(false));
 
     // Plot stations
     fetch('/stations.json')
@@ -156,15 +173,13 @@
       .then(stations => {
         stations.forEach(s => {
           const mk = L.circleMarker([s.lat, s.lon], {
-            radius: 2,           // small yellow markers
+            radius: 2,
             color: '#FFD600',
             fillColor: '#FFD600',
             fillOpacity: 1,
             weight: 1
           }).addTo(map);
-          // Tooltip: station ID on hover
           mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
-          // Click to select station; keep zoom state
           mk.on('click', () => {
             document.getElementById('station').value = s.id;
             saveMapView(map);
@@ -176,181 +191,47 @@
     document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
     {% if selected_view == 'Graph' and graph_data %}
-    // ---- Charts (dots only; no connecting lines) ----
+    /* --- Charts code (unchanged) --- */
     const GD = {{ graph_data|tojson|safe }};
-
-    const colors = {
-      s1: '#C00000',
-      s2: '#ED7D31',
-      s3: '#FFC000',
-      s4: '#00B050',
-      s5: '#00B0F0',
-      s6: '#92D050',
-      combined: '#7030A0'
-    };
-
+    const colors = { s1:'#C00000', s2:'#ED7D31', s3:'#FFC000', s4:'#00B050', s5:'#00B0F0', s6:'#92D050', combined:'#7030A0' };
     const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
-    const maxAcross = arrays => {
-      let m = -Infinity;
-      arrays.forEach(a => finiteVals(a).forEach(v => { if (v > m) m = v; }));
-      return m;
-    };
-    const minAcross = arrays => {
-      let m = Infinity;
-      arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; }));
-      return m;
-    };
-    const padMax = (v, pct = 0.10) => Number.isFinite(v) ? v * (1 + pct) : v;
-
-    function labelEvery(n) {
-      if (n <= 16) return 1;
-      if (n <= 32) return 2;
-      if (n <= 64) return 4;
-      if (n <= 96) return 6;
-      if (n <= 160) return 10;
-      return Math.ceil(n / 16);
-    }
+    const maxAcross = arrays => { let m=-Infinity; arrays.forEach(a=>finiteVals(a).forEach(v=>{if(v>m)m=v;})); return m; };
+    const minAcross = arrays => { let m= Infinity; arrays.forEach(a=>finiteVals(a).forEach(v=>{if(v<m)m=v;})); return m; };
+    const padMax = (v,pct=0.10)=>Number.isFinite(v)?v*(1+pct):v;
+    function labelEvery(n){ if(n<=16)return 1; if(n<=32)return 2; if(n<=64)return 4; if(n<=96)return 6; if(n<=160)return 10; return Math.ceil(n/16); }
     const showEvery = labelEvery(GD.labels.length);
+    function heightStep(maxVal){ if(maxVal<=1)return 0.1; if(maxVal<=2)return 0.2; if(maxVal<=4)return 0.5; if(maxVal<=8)return 1; return 2; }
+    function periodStep(maxVal){ if(maxVal<=8)return 1; if(maxVal<=16)return 2; return 5; }
+    const niceCeil = (v,step)=>Math.ceil(v/step)*step;
+    const heightArrays=[GD.height.s1,GD.height.s2,GD.height.s3,GD.height.s4,GD.height.s5,GD.height.s6,GD.height.combined];
+    let hMax=maxAcross(heightArrays); if(!Number.isFinite(hMax)) hMax=1; hMax=padMax(hMax,0.10); const hStep=heightStep(hMax); hMax=niceCeil(hMax,hStep);
+    const periodArrays=[GD.period.s1,GD.period.s2,GD.period.s3,GD.period.s4,GD.period.s5,GD.period.s6];
+    let pMax=maxAcross(periodArrays); if(!Number.isFinite(pMax)) pMax=10; pMax=padMax(pMax,0.10); const pStep=periodStep(pMax); pMax=niceCeil(pMax,pStep);
+    const dirArrays=[GD.direction.s1,GD.direction.s2,GD.direction.s3,GD.direction.s4,GD.direction.s5,GD.direction.s6];
+    let dMin=minAcross(dirArrays), dMax=maxAcross(dirArrays); if(!Number.isFinite(dMin)||!Number.isFinite(dMax)||dMin===dMax){ dMin=0; dMax=360; }
 
-    function heightStep(maxVal) {
-      if (maxVal <= 1) return 0.1;
-      if (maxVal <= 2) return 0.2;
-      if (maxVal <= 4) return 0.5;
-      if (maxVal <= 8) return 1;
-      return 2;
-    }
-    function periodStep(maxVal) {
-      if (maxVal <= 8) return 1;
-      if (maxVal <= 16) return 2;
-      return 5;
-    }
-    const niceCeil = (v, step) => Math.ceil(v / step) * step;
-
-    const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
-    let hMax = maxAcross(heightArrays); if (!Number.isFinite(hMax)) hMax = 1;
-    hMax = padMax(hMax, 0.10);
-    const hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
-
-    const periodArrays = [GD.period.s1, GD.period.s2, GD.period.s3, GD.period.s4, GD.period.s5, GD.period.s6];
-    let pMax = maxAcross(periodArrays); if (!Number.isFinite(pMax)) pMax = 10;
-    pMax = padMax(pMax, 0.10);
-    const pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
-
-    const dirArrays = [GD.direction.s1, GD.direction.s2, GD.direction.s3, GD.direction.s4, GD.direction.s5, GD.direction.s6];
-    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
-    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
-    const dStep = 45;
-
-    const commonOpts = {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false, axis: 'x' },
-      layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
-      elements: { point: { radius: 1.8 }, line: { tension: 0.25, borderWidth: 0, showLine: false } },
-      plugins: {
-        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 12, boxHeight: 6 } },
-        tooltip: { mode: 'nearest', intersect: false },
-        decimation: { enabled: true, algorithm: 'lttb', samples: 250 }
-      },
-      scales: {
-        x: {
-          type: 'category',
-          grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-          ticks: {
-            autoSkip: false,
-            maxRotation: 0,
-            minRotation: 0,
-            callback: (value, index) => (index % showEvery === 0 ? GD.labels[index] : '')
-          }
-        },
-        y: {
-          grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-          border: { color: 'rgba(0,0,0,0.2)' }
-        }
-      },
-      animation: false
+    const commonOpts={
+      responsive:true, maintainAspectRatio:false, interaction:{mode:'index', intersect:false, axis:'x'},
+      layout:{padding:{top:8,right:8,bottom:0,left:8}},
+      elements:{ point:{radius:1.8}, line:{borderWidth:0, showLine:false, tension:0.25} }, /* dots only */
+      plugins:{ legend:{position:'bottom',labels:{usePointStyle:true,boxWidth:12,boxHeight:6}}, tooltip:{mode:'nearest',intersect:false}, decimation:{enabled:true,algorithm:'lttb',samples:250} },
+      scales:{ x:{type:'category', grid:{display:true,color:'rgba(0,0,0,0.08)'}, ticks:{autoSkip:false,maxRotation:0,minRotation:0,callback:(v,i)=> (i%showEvery===0?GD.labels[i]:'')} },
+              y:{grid:{display:true,color:'rgba(0,0,0,0.08)'}, border:{color:'rgba(0,0,0,0.2)'}} },
+      animation:false
     };
+    const swellDots=(label,key,data,color)=>({label,data:data[key],borderColor:color,backgroundColor:color,showLine:false,pointRadius:2,pointHoverRadius:3});
 
-    function swellDots(label, key, data, color) {
-      return {
-        label, data: data[key],
-        borderColor: color, backgroundColor: color,
-        showLine: false, pointRadius: 2, pointHoverRadius: 3
-      };
-    }
+    (()=>{
+      const ds=[swellDots('Swell 1','s1',GD.height,colors.s1),swellDots('Swell 2','s2',GD.height,colors.s2),swellDots('Swell 3','s3',GD.height,colors.s3),swellDots('Swell 4','s4',GD.height,colors.s4),swellDots('Swell 5','s5',GD.height,colors.s5),swellDots('Swell 6','s6',GD.height,colors.s6),{label:'Combined',data:GD.height.combined,borderColor:colors.combined,backgroundColor:colors.combined,showLine:false,pointRadius:2.2}];
+      new Chart(document.getElementById('heightChart').getContext('2d'),{type:'line',data:{labels:GD.labels,datasets:ds},options:{...commonOpts,plugins:{...commonOpts.plugins,title:{display:true,text:'Swell Height'}},scales:{x:commonOpts.scales.x,y:{...commonOpts.scales.y,beginAtZero:true,min:0,max:hMax,ticks:{stepSize: {{ 1 }} },title:{display:true,text:`Height (${GD.units})`}}}}); })();
 
-    // HEIGHT
-    (() => {
-      const ds = [
-        swellDots('Swell 1', 's1', GD.height, colors.s1),
-        swellDots('Swell 2', 's2', GD.height, colors.s2),
-        swellDots('Swell 3', 's3', GD.height, colors.s3),
-        swellDots('Swell 4', 's4', GD.height, colors.s4),
-        swellDots('Swell 5', 's5', GD.height, colors.s5),
-        swellDots('Swell 6', 's6', GD.height, colors.s6),
-        { label: 'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, showLine: false, pointRadius: 2.2 }
-      ];
-      new Chart(document.getElementById('heightChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        options: {
-          ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
-          scales: {
-            x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, beginAtZero: true, min: 0, max: hMax, ticks: { stepSize: {{ 1 }} }, title: { display: true, text: `Height (${GD.units})` } }
-          }
-        }
-      });
-    })();
+    (()=>{
+      const ds=[swellDots('Swell 1','s1',GD.period,colors.s1),swellDots('Swell 2','s2',GD.period,colors.s2),swellDots('Swell 3','s3',GD.period,colors.s3),swellDots('Swell 4','s4',GD.period,colors.s4),swellDots('Swell 5','s5',GD.period,colors.s5),swellDots('Swell 6','s6',GD.period,colors.s6)];
+      new Chart(document.getElementById('periodChart').getContext('2d'),{type:'line',data:{labels:GD.labels,datasets:ds},options:{...commonOpts,plugins:{...commonOpts.plugins,title:{display:true,text:'Swell Period'}},scales:{x:commonOpts.scales.x,y:{...commonOpts.scales.y,beginAtZero:true,min:0,max:pMax,ticks:{stepSize: {{ 2 }} },title:{display:true,text:'Period (s)'}}}}); })();
 
-    // PERIOD
-    (() => {
-      const ds = [
-        swellDots('Swell 1', 's1', GD.period, colors.s1),
-        swellDots('Swell 2', 's2', GD.period, colors.s2),
-        swellDots('Swell 3', 's3', GD.period, colors.s3),
-        swellDots('Swell 4', 's4', GD.period, colors.s4),
-        swellDots('Swell 5', 's5', GD.period, colors.s5),
-        swellDots('Swell 6', 's6', GD.period, colors.s6)
-      ];
-      new Chart(document.getElementById('periodChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        options: {
-          ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
-          scales: {
-            x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, beginAtZero: true, min: 0, max: pMax, ticks: { stepSize: {{ 2 }} }, title: { display: true, text: 'Period (s)' } }
-          }
-        }
-      });
-    })();
-
-    // DIRECTION
-    (() => {
-      const ds = [
-        swellDots('Swell 1', 's1', GD.direction, colors.s1),
-        swellDots('Swell 2', 's2', GD.direction, colors.s2),
-        swellDots('Swell 3', 's3', GD.direction, colors.s3),
-        swellDots('Swell 4', 's4', GD.direction, colors.s4),
-        swellDots('Swell 5', 's5', GD.direction, colors.s5),
-        swellDots('Swell 6', 's6', GD.direction, colors.s6)
-      ];
-      new Chart(document.getElementById('directionChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        options: {
-          ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
-          scales: {
-            x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, min: dMin, max: dMax, ticks: { stepSize: 45 }, title: { display: true, text: 'Direction (°)' } }
-          }
-        }
-      });
-    })();
+    (()=>{
+      const ds=[swellDots('Swell 1','s1',GD.direction,colors.s1),swellDots('Swell 2','s2',GD.direction,colors.s2),swellDots('Swell 3','s3',GD.direction,colors.s3),swellDots('Swell 4','s4',GD.direction,colors.s4),swellDots('Swell 5','s5',GD.direction,colors.s5),swellDots('Swell 6','s6',GD.direction,colors.s6)];
+      new Chart(document.getElementById('directionChart').getContext('2d'),{type:'line',data:{labels:GD.labels,datasets:ds},options:{...commonOpts,plugins:{...commonOpts.plugins,title:{display:true,text:'Swell Direction'}},scales:{x:commonOpts.scales.x,y:{...commonOpts.scales.y,min:dMin,max:dMax,ticks:{stepSize:45},title:{display:true,text:'Direction (°)'}}}}); })();
     {% endif %}
   </script>
 </body>

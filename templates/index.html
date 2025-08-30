@@ -11,14 +11,28 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <!-- date-fns + adapter for Chart.js time scale -->
+  <script src="https://cdn.jsdelivr.net/npm/date-fns@2.30.0/dist/date-fns.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <!-- Chart.js Zoom/Pan plugin -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
+
   <style>
     html, body { height: 100%; }
     #map { height: 420px; border: 1px solid #ccc; }
     .leaflet-tooltip { font-weight: 600; }
     .sticky-top-bar { position: sticky; top: 0; z-index: 1000; background:#fff; border-bottom: 1px solid #eee; }
     .form-inline .form-select, .form-inline .form-control { width: auto; }
+
     /* Taller charts for readability */
-    canvas.chart-tall { height: 260px !important; }
+    canvas.chart-tall { height: 280px !important; }
+
+    /* Mini legend toolbar */
+    .legend-toolbar .btn { margin: 0 .25rem .25rem 0; }
+    .legend-toolbar .color-dot {
+      display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; vertical-align:middle;
+      border:1px solid rgba(0,0,0,.25);
+    }
   </style>
 </head>
 <body class="bg-light">
@@ -84,6 +98,14 @@
           <!-- Graph View -->
           <div id="graphs" class="card">
             <div class="card-body">
+              <div class="d-flex align-items-center flex-wrap mb-3 legend-toolbar" id="legendToolbar">
+                <strong class="me-2">Show:</strong>
+                <!-- Buttons added via JS so colors and labels always match datasets -->
+              </div>
+              <div class="d-flex align-items-center flex-wrap mb-3">
+                <button class="btn btn-sm btn-outline-secondary me-2" id="resetZoomBtn" type="button">Reset Zoom</button>
+                <span class="text-muted small">Tip: scroll to zoom, drag to pan (x‑axis)</span>
+              </div>
               <h5 class="card-title mb-3">Graphs ({{ graph_data.units }})</h5>
               <div class="mb-4">
                 <canvas id="heightChart" class="chart-tall"></canvas>
@@ -109,6 +131,12 @@
   </div>
 
   <script>
+    // Register zoom plugin if available
+    (function() {
+      const zp = window['chartjs-plugin-zoom'];
+      if (zp) { Chart.register(zp); }
+    })();
+
     // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
     function saveMapView(map) {
@@ -140,7 +168,7 @@
       .then(stations => {
         stations.forEach(s => {
           const mk = L.circleMarker([s.lat, s.lon], {
-            radius: 2,           // smaller yellow markers
+            radius: 2,           // small yellow markers
             color: '#FFD600',
             fillColor: '#FFD600',
             fillOpacity: 1,
@@ -160,7 +188,7 @@
     document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
     {% if selected_view == 'Graph' and graph_data %}
-    // ---- Readability-focused charting ----
+    // ---- Graphing (time axis, 6h ticks, midnight majors, pan/zoom, isolate, points-only) ----
     const GD = {{ graph_data|tojson|safe }};
 
     const colors = {
@@ -173,7 +201,38 @@
       combined: '#7030A0'
     };
 
-    // Helpers: finite min/max across arrays; +10% pad; nice steps
+    // Robust label -> Date parser (supports several formats you use)
+    const parse = dateFns.parse, isValid = dateFns.isValid;
+    function parseLabelToDate(lbl) {
+      if (!lbl) return null;
+      const now = new Date();
+      const patterns = [
+        'M/d/yy h:mm a',
+        'M/d/yy hh:mm a',
+        'M/d/yy h:mm:ss a',
+        'EEEE, MMMM d, yyyy h:mm a',
+        'EEEE, MMMM dd, yyyy h:mm a'
+      ];
+      for (const fmt of patterns) {
+        const d = parse(lbl, fmt, now);
+        if (isValid(d)) return d;
+      }
+      const d2 = new Date(lbl);
+      return isValid(d2) ? d2 : null;
+    }
+
+    // Pack Y arrays into [{x:Date, y:Number}] skipping nulls
+    function packXY(yArr) {
+      const pts = [];
+      for (let i=0;i<GD.labels.length;i++){
+        const t = parseLabelToDate(GD.labels[i]);
+        const y = yArr[i];
+        if (t && y !== null && y !== undefined && Number.isFinite(y)) pts.push({x:t, y:y});
+      }
+      return pts;
+    }
+
+    // Helpers for y‑range (+10% pad for height/period)
     const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
     const maxAcross = arrays => {
       let m = -Infinity;
@@ -186,170 +245,224 @@
       return m;
     };
     const padMax = (v, pct = 0.10) => Number.isFinite(v) ? v * (1 + pct) : v;
-
-    // Choose a label interval to show ~8–16 ticks, no rotation
-    function labelEvery(n) {
-      if (n <= 16) return 1;
-      if (n <= 32) return 2;
-      if (n <= 64) return 4;
-      if (n <= 96) return 6;
-      if (n <= 160) return 10;
-      return Math.ceil(n / 16);
-    }
-    const showEvery = labelEvery(GD.labels.length);
-
-    // Nice tick step calculators
-    function heightStep(maxVal) {
-      if (maxVal <= 1) return 0.1;
-      if (maxVal <= 2) return 0.2;
-      if (maxVal <= 4) return 0.5;
-      if (maxVal <= 8) return 1;
-      return 2;
-    }
-    function periodStep(maxVal) {
-      if (maxVal <= 8) return 1;
-      if (maxVal <= 16) return 2;
-      return 5;
-    }
     const niceCeil = (v, step) => Math.ceil(v / step) * step;
 
-    // Axis ranges (+10% on Height/Period)
+    function heightStep(maxVal) { if (maxVal <= 1) return 0.1; if (maxVal <= 2) return 0.2; if (maxVal <= 4) return 0.5; if (maxVal <= 8) return 1; return 2; }
+    function periodStep(maxVal) { if (maxVal <= 8) return 1; if (maxVal <= 16) return 2; return 5; }
+
+    // Axis ranges
     const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
     let hMax = maxAcross(heightArrays); if (!Number.isFinite(hMax)) hMax = 1;
-    hMax = padMax(hMax, 0.10);
-    const hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
+    hMax = padMax(hMax, 0.10); const hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
 
     const periodArrays = [GD.period.s1, GD.period.s2, GD.period.s3, GD.period.s4, GD.period.s5, GD.period.s6];
     let pMax = maxAcross(periodArrays); if (!Number.isFinite(pMax)) pMax = 10;
-    pMax = padMax(pMax, 0.10);
-    const pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
+    pMax = padMax(pMax, 0.10); const pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
 
     const dirArrays = [GD.direction.s1, GD.direction.s2, GD.direction.s3, GD.direction.s4, GD.direction.s5, GD.direction.s6];
     let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
     if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
     const dStep = 45;
 
+    // Common chart options (time axis with 6h ticks, midnight majors)
+    function timeAxisOptions() {
+      return {
+        type: 'time',
+        time: {
+          unit: 'hour',
+          stepSize: 6,
+          displayFormats: { hour: 'M/d h a' } // label format; we override via ticks.callback
+        },
+        adapters: { date: { locale: undefined } },
+        grid: {
+          color: ctx => {
+            const h = new Date(ctx.tick.value).getHours();
+            return h === 0 ? 'rgba(0,0,0,0.18)' : 'rgba(0,0,0,0.08)';
+          },
+          lineWidth: ctx => (new Date(ctx.tick.value).getHours() === 0 ? 1.5 : 0.75)
+        },
+        ticks: {
+          autoSkip: true,
+          maxRotation: 0, minRotation: 0,
+          callback: (value, index, ticks) => {
+            const d = new Date(value);
+            return (d.getHours() === 0)
+              ? dateFns.format(d, 'M/d')
+              : dateFns.format(d, 'ha');
+          }
+        }
+      };
+    }
+
     const commonOpts = {
       responsive: true,
       maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false, axis: 'x' },
       layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
-      elements: { point: { radius: 1.5 }, line: { tension: 0.25, borderWidth: 1.5 } },
-      plugins: {
-        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 12, boxHeight: 6 } },
-        tooltip: { mode: 'nearest', intersect: false },
-        decimation: { enabled: true, algorithm: 'lttb', samples: 250 }
+      interaction: { mode: 'nearest', intersect: true, axis: 'x' },
+      elements: {
+        point: { radius: 2, hoverRadius: 3.5 },
+        line: { borderWidth: 0 } // no connecting lines
       },
-      scales: {
-        x: {
-          type: 'category',
-          grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-          ticks: {
-            autoSkip: false,
-            maxRotation: 0,
-            minRotation: 0,
-            callback: (value, index) => (index % showEvery === 0 ? GD.labels[index] : '')
+      plugins: {
+        legend: { display: false }, // we use our own mini toolbar
+        tooltip: {
+          mode: 'nearest',
+          callbacks: {
+            title: (items) => {
+              const d = items[0].parsed.x;
+              return dateFns.format(new Date(d), 'M/d/yyyy h:mm a');
+            }
           }
         },
-        y: {
-          grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-          border: { color: 'rgba(0,0,0,0.2)' }
+        zoom: {
+          pan: { enabled: true, mode: 'x' },
+          zoom: { wheel: {enabled: true}, pinch: {enabled: true}, mode: 'x' }
         }
       },
       animation: false
     };
 
-    function swellLine(label, key, data, color) {
-      return { label, data: data[key], borderColor: color, backgroundColor: color, spanGaps: true };
+    function pts(labelKey, arr) { return { label: labelKey, data: packXY(arr), showLine: false, spanGaps: false }; }
+    function sDs(label, key, obj, color) {
+      return { ...pts(label, obj[key]), borderColor: color, backgroundColor: color, pointStyle: 'circle' };
     }
 
-    // HEIGHT — includes Combined; y: 0..max(+10%), nice steps
-    (() => {
-      const ds = [
-        swellLine('Swell 1', 's1', GD.height, colors.s1),
-        swellLine('Swell 2', 's2', GD.height, colors.s2),
-        swellLine('Swell 3', 's3', GD.height, colors.s3),
-        swellLine('Swell 4', 's4', GD.height, colors.s4),
-        swellLine('Swell 5', 's5', GD.height, colors.s5),
-        swellLine('Swell 6', 's6', GD.height, colors.s6),
-        { label: 'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, spanGaps: true, borderWidth: 2, pointRadius: 1.5, tension: 0.25 }
-      ];
-      new Chart(document.getElementById('heightChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        options: {
-          ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
-          scales: {
-            x: commonOpts.scales.x,
-            y: {
-              ...commonOpts.scales.y,
-              beginAtZero: true, min: 0, max: hMax,
-              ticks: { stepSize: hStep },
-              title: { display: true, text: `Height (${GD.units})` }
-            }
-          }
-        }
-      });
-    })();
+    const charts = [];
 
-    // PERIOD — y: 0..max(+10%), nice steps
-    (() => {
-      const ds = [
-        swellLine('Swell 1', 's1', GD.period, colors.s1),
-        swellLine('Swell 2', 's2', GD.period, colors.s2),
-        swellLine('Swell 3', 's3', GD.period, colors.s3),
-        swellLine('Swell 4', 's4', GD.period, colors.s4),
-        swellLine('Swell 5', 's5', GD.period, colors.s5),
-        swellLine('Swell 6', 's6', GD.period, colors.s6)
-      ];
-      new Chart(document.getElementById('periodChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        options: {
-          ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
-          scales: {
-            x: commonOpts.scales.x,
-            y: {
-              ...commonOpts.scales.y,
-              beginAtZero: true, min: 0, max: pMax,
-              ticks: { stepSize: pStep },
-              title: { display: true, text: 'Period (s)' }
-            }
+    // HEIGHT (ft/m) — includes Combined; y: 0..max(+10%)
+    const heightCtx = document.getElementById('heightChart').getContext('2d');
+    const heightDatasets = [
+      sDs('Swell 1', 's1', GD.height, '#C00000'),
+      sDs('Swell 2', 's2', GD.height, '#ED7D31'),
+      sDs('Swell 3', 's3', GD.height, '#FFC000'),
+      sDs('Swell 4', 's4', GD.height, '#00B050'),
+      sDs('Swell 5', 's5', GD.height, '#00B0F0'),
+      sDs('Swell 6', 's6', GD.height, '#92D050'),
+      { ...pts('Combined', GD.height.combined), borderColor: '#7030A0', backgroundColor: '#7030A0', pointStyle: 'circle' }
+    ];
+    const heightChart = new Chart(heightCtx, {
+      type: 'scatter',
+      data: { datasets: heightDatasets },
+      options: {
+        ...commonOpts,
+        plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
+        scales: {
+          x: timeAxisOptions(),
+          y: {
+            beginAtZero: true, min: 0, max: hMax,
+            ticks: { stepSize: {{ 0 }} }, /* replaced below */
+            grid: { color: 'rgba(0,0,0,0.08)' },
+            title: { display: true, text: `Height (${GD.units})` }
           }
         }
-      });
-    })();
+      }
+    });
+    // set stepSize after creation (template literal guard above)
+    heightChart.options.scales.y.ticks.stepSize = (function(){ return (hMax <= 1 ? 0.1 : hMax <= 2 ? 0.2 : hMax <= 4 ? 0.5 : hMax <= 8 ? 1 : 2); })();
 
-    // DIRECTION — y: min..max, 45° step
-    (() => {
-      const ds = [
-        swellLine('Swell 1', 's1', GD.direction, colors.s1),
-        swellLine('Swell 2', 's2', GD.direction, colors.s2),
-        swellLine('Swell 3', 's3', GD.direction, colors.s3),
-        swellLine('Swell 4', 's4', GD.direction, colors.s4),
-        swellLine('Swell 5', 's5', GD.direction, colors.s5),
-        swellLine('Swell 6', 's6', GD.direction, colors.s6),
-      ];
-      new Chart(document.getElementById('directionChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        options: {
-          ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
-          scales: {
-            x: commonOpts.scales.x,
-            y: {
-              ...commonOpts.scales.y,
-              min: dMin, max: dMax,
-              ticks: { stepSize: dStep },
-              title: { display: true, text: 'Direction (°)' }
-            }
+    // PERIOD (s) — y: 0..max(+10%)
+    const periodCtx = document.getElementById('periodChart').getContext('2d');
+    const periodDatasets = [
+      sDs('Swell 1', 's1', GD.period, '#C00000'),
+      sDs('Swell 2', 's2', GD.period, '#ED7D31'),
+      sDs('Swell 3', 's3', GD.period, '#FFC000'),
+      sDs('Swell 4', 's4', GD.period, '#00B050'),
+      sDs('Swell 5', 's5', GD.period, '#00B0F0'),
+      sDs('Swell 6', 's6', GD.period, '#92D050')
+    ];
+    const periodChart = new Chart(periodCtx, {
+      type: 'scatter',
+      data: { datasets: periodDatasets },
+      options: {
+        ...commonOpts,
+        plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
+        scales: {
+          x: timeAxisOptions(),
+          y: {
+            beginAtZero: true, min: 0, max: pMax,
+            ticks: { stepSize: {{ 0 }} }, /* replaced below */
+            grid: { color: 'rgba(0,0,0,0.08)' },
+            title: { display: true, text: 'Period (s)' }
           }
         }
+      }
+    });
+    periodChart.options.scales.y.ticks.stepSize = (function(){ return (pMax <= 8 ? 1 : pMax <= 16 ? 2 : 5); })();
+
+    // DIRECTION (deg) — y: min..max, 45° step
+    const directionCtx = document.getElementById('directionChart').getContext('2d');
+    const directionDatasets = [
+      sDs('Swell 1', 's1', GD.direction, '#C00000'),
+      sDs('Swell 2', 's2', GD.direction, '#ED7D31'),
+      sDs('Swell 3', 's3', GD.direction, '#FFC000'),
+      sDs('Swell 4', 's4', GD.direction, '#00B050'),
+      sDs('Swell 5', 's5', GD.direction, '#00B0F0'),
+      sDs('Swell 6', 's6', GD.direction, '#92D050')
+    ];
+    const directionChart = new Chart(directionCtx, {
+      type: 'scatter',
+      data: { datasets: directionDatasets },
+      options: {
+        ...commonOpts,
+        plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
+        scales: {
+          x: timeAxisOptions(),
+          y: {
+            min: dMin, max: dMax,
+            ticks: { stepSize: 45 },
+            grid: { color: 'rgba(0,0,0,0.08)' },
+            title: { display: true, text: 'Direction (°)' }
+          }
+        }
+      }
+    });
+
+    charts.push(heightChart, periodChart, directionChart);
+
+    // --- Mini legend toolbar (isolate one series across all charts) ---
+    const toolbar = document.getElementById('legendToolbar');
+    const buttons = [
+      {key:'All', label:'All'},
+      {key:'Swell 1', label:'Swell 1', color:'#C00000'},
+      {key:'Swell 2', label:'Swell 2', color:'#ED7D31'},
+      {key:'Swell 3', label:'Swell 3', color:'#FFC000'},
+      {key:'Swell 4', label:'Swell 4', color:'#00B050'},
+      {key:'Swell 5', label:'Swell 5', color:'#00B0F0'},
+      {key:'Swell 6', label:'Swell 6', color:'#92D050'},
+      {key:'Combined', label:'Combined', color:'#7030A0'} // affects Height chart only
+    ];
+    buttons.forEach((b, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-sm ' + (b.key === 'All' ? 'btn-primary' : 'btn-outline-secondary');
+      btn.dataset.key = b.key;
+      btn.innerHTML = (b.color ? `<span class="color-dot" style="background:${b.color}"></span>` : '') + b.label;
+      btn.addEventListener('click', () => {
+        // toggle styles
+        toolbar.querySelectorAll('button').forEach(x => x.classList.replace('btn-primary','btn-outline-secondary'));
+        btn.classList.replace('btn-outline-secondary','btn-primary');
+        applyIsolate(b.key);
       });
-    })();
+      toolbar.appendChild(btn);
+    });
+
+    function applyIsolate(label) {
+      charts.forEach(ch => {
+        ch.data.datasets.forEach(ds => {
+          if (label === 'All') {
+            ds.hidden = false;
+          } else {
+            ds.hidden = (ds.label !== label);
+          }
+        });
+        ch.update();
+      });
+    }
+
+    // Reset zoom button
+    document.getElementById('resetZoomBtn').addEventListener('click', () => {
+      charts.forEach(ch => ch.resetZoom && ch.resetZoom());
+    });
     {% endif %}
   </script>
 </body>

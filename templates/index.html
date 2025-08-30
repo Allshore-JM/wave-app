@@ -9,8 +9,10 @@
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <!-- Chart.js -->
+  <!-- Chart.js + time adapter -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+
   <style>
     html, body { height: 100%; }
     #map { height: 420px; border: 1px solid #ccc; }
@@ -74,25 +76,22 @@
       </div>
     </div>
 
-    <!-- Data -->
+    <!-- Table or Graphs -->
     <div class="row mt-3">
       <div class="col-12">
         {% if error %}
           <div class="alert alert-warning">{{ error }}</div>
         {% endif %}
 
-        {% if selected_view == 'Graph' and graph_data %}
+        {% if selected_view == 'Graph' %}
           <div id="graphs" class="card">
             <div class="card-body">
-
-              <!-- Header: Cycle / Location / Time Zone (no "Graphs (ft)" text) -->
-              {% if graph_meta %}
-                <div class="mb-3">
-                  <div><strong>{{ graph_meta.cycle }}</strong></div>
-                  <div><strong>{{ graph_meta.location }}</strong></div>
-                  <div><strong>Time Zone: {{ graph_meta.tz }}</strong></div>
-                </div>
-              {% endif %}
+              <!-- Graph header (Cycle • Location • Time Zone) -->
+              <div class="mb-2">
+                <div><strong>{{ graph_header.cycle }}</strong></div>
+                <div><strong>{{ graph_header.location }}</strong></div>
+                <div><strong>Time Zone: {{ graph_header.tz }}</strong></div>
+              </div>
 
               <div class="mb-4">
                 <canvas id="heightChart" class="chart-tall"></canvas>
@@ -117,7 +116,7 @@
   </div>
 
   <script>
-    // --------- Persist map view between requests ----------
+    // ------- Preserve map zoom/center across requests -------
     const mapKey = 'mapView';
     function saveMapView(map) {
       const v = {c: map.getCenter(), z: map.getZoom()};
@@ -127,35 +126,28 @@
       try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e) { return null; }
     }
 
-    // --------- Leaflet map (satellite, one world, no grey sides) ----------
-    const saved = loadMapView();
+    // ------- Leaflet Map: single-world satellite, no grey sides -------
     const map = L.map('map', {
       worldCopyJump: false,
-      zoomControl: true
+      zoomControl: true,
+      minZoom: 2,
+      maxZoom: 8,
+      maxBounds: [[-85, -180],[85, 180]],
+      maxBoundsViscosity: 1.0
     });
-
-    // World Imagery (Esri)
-    const worldBounds = L.latLngBounds([-85, -179.999], [85, 179.999]);
-    const imagery = L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      {
-        attribution: '&copy; Esri | Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
-        noWrap: true,
-        bounds: worldBounds,
-        maxZoom: 9
-      }
-    ).addTo(map);
-
-    // Min zoom so a single world exactly fills the viewport -> no grey bands
-    const zFit = map.getBoundsZoom(worldBounds, true);
-    map.setMinZoom(zFit);
-    map.setMaxBounds(worldBounds);
-
+    const saved = loadMapView();
     if (saved) {
-      map.setView([saved.lat, saved.lng], Math.max(saved.z, zFit));
+      map.setView([saved.lat, saved.lng], saved.z);
     } else {
-      map.setView([0, 0], zFit);
+      map.fitWorld({ animate: false });
+      map.setZoom(2);
     }
+
+    // Esri World Imagery (satellite)
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      noWrap: true,
+      attribution: '&copy; Esri'
+    }).addTo(map);
 
     // Plot stations
     fetch('/stations.json')
@@ -163,7 +155,7 @@
       .then(stations => {
         stations.forEach(s => {
           const mk = L.circleMarker([s.lat, s.lon], {
-            radius: 2,           // small yellow markers
+            radius: 2,
             color: '#FFD600',
             fillColor: '#FFD600',
             fillOpacity: 1,
@@ -171,181 +163,124 @@
           }).addTo(map);
           mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
           mk.on('click', () => {
-            // Auto-use the buoy's local timezone
             document.getElementById('station').value = s.id;
-            document.getElementById('tz').value = '';   // <-- clears to "(Buoy Local)"
-            saveMapView(map);                           // preserve current zoom/center
+            saveMapView(map);
             document.getElementById('controlForm').submit();
           });
         });
       });
-
     document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
     {% if selected_view == 'Graph' and graph_data %}
-    // --------- Charts (points only, readable axes) ----------
     const GD = {{ graph_data|tojson|safe }};
 
     const colors = {
-      s1: '#C00000',
-      s2: '#ED7D31',
-      s3: '#FFC000',
-      s4: '#00B050',
-      s5: '#00B0F0',
-      s6: '#92D050',
+      s1: '#C00000', s2: '#ED7D31', s3: '#FFC000',
+      s4: '#00B050', s5: '#00B0F0', s6: '#92D050',
       combined: '#7030A0'
     };
 
-    const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
-    const maxAcross = arrays => {
-      let m = -Infinity;
-      arrays.forEach(a => finiteVals(a).forEach(v => { if (v > m) m = v; }));
-      return m;
-    };
-    const minAcross = arrays => {
-      let m = Infinity;
-      arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; }));
-      return m;
-    };
-    const padMax = (v, pct = 0.10) => Number.isFinite(v) ? v * (1 + pct) : v;
-
-    function labelEvery(n) {
-      if (n <= 16) return 1;
-      if (n <= 32) return 2;
-      if (n <= 64) return 4;
-      if (n <= 96) return 6;
-      if (n <= 160) return 10;
-      return Math.ceil(n / 16);
-    }
-    const showEvery = labelEvery(GD.labels.length);
-
-    function heightStep(maxVal) {
-      if (maxVal <= 1) return 0.1;
-      if (maxVal <= 2) return 0.2;
-      if (maxVal <= 4) return 0.5;
-      if (maxVal <= 8) return 1;
-      return 2;
-    }
-    function periodStep(maxVal) {
-      if (maxVal <= 8) return 1;
-      if (maxVal <= 16) return 2;
-      return 5;
-    }
-    const niceCeil = (v, step) => Math.ceil(v / step) * step;
-
-    // Axis ranges
-    const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
-    let hMax = maxAcross(heightArrays); if (!Number.isFinite(hMax)) hMax = 1;
-    hMax = niceCeil(padMax(hMax, 0.10), heightStep(hMax));
-
-    const periodArrays = [GD.period.s1, GD.period.s2, GD.period.s3, GD.period.s4, GD.period.s5, GD.period.s6];
-    let pMax = maxAcross(periodArrays); if (!Number.isFinite(pMax)) pMax = 10;
-    pMax = niceCeil(padMax(pMax, 0.10), periodStep(pMax));
-
-    const dirArrays = [GD.direction.s1, GD.direction.s2, GD.direction.s3, GD.direction.s4, GD.direction.s5, GD.direction.s6];
-    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
-    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
+    // utility to convert parallel arrays -> array of {x, y}
+    const pts = (x, arr) => x.map((t, i) => (arr[i] == null ? null : { x: t, y: arr[i] })).filter(p => p !== null);
 
     const commonOpts = {
       responsive: true,
       maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false, axis: 'x' },
+      interaction: { mode: 'nearest', intersect: false, axis: 'x' },
       layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
-      elements: { point: { radius: 1.8 }, line: { borderWidth: 0 } },  // <-- points only
+      elements: { point: { radius: 1.6 }, line: { borderWidth: 0, tension: 0 } }, // **no connecting lines**
       plugins: {
         legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 12, boxHeight: 6 } },
         tooltip: { mode: 'nearest', intersect: false }
       },
       scales: {
         x: {
-          type: 'category',
-          grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+          type: 'time',
+          time: { tooltipFormat: 'MMM d, yyyy h:mm a' },
           ticks: {
-            autoSkip: false, maxRotation: 0, minRotation: 0,
-            callback: (v, i) => (i % showEvery === 0 ? GD.labels[i] : '')
-          }
+            major: { enabled: true },
+            source: 'auto',
+            autoSkip: false,
+            maxRotation: 0,
+            // Major ticks at midnight; minor at 6‑hour steps
+            callback: (value, index, ticks) => {
+              const d = new Date(ticks[index].value);
+              const h = d.getHours(), m = d.getMinutes();
+              if (h === 0 && m === 0) return d.toLocaleDateString();
+              if (m === 0 && (h % 6) === 0) return d.toLocaleTimeString([], {hour:'numeric'});
+              return '';
+            }
+          },
+          grid: { color: 'rgba(0,0,0,0.08)' }
         },
         y: {
-          grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+          grid: { color: 'rgba(0,0,0,0.08)' },
           border: { color: 'rgba(0,0,0,0.2)' }
         }
       },
       animation: false
     };
 
-    function swellDots(label, key, data, color) {
-      return { label, data: data[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false };
-    }
-
-    // Height
+    // HEIGHT (includes Combined)
     (() => {
       const ds = [
-        swellDots('Swell 1', 's1', GD.height, colors.s1),
-        swellDots('Swell 2', 's2', GD.height, colors.s2),
-        swellDots('Swell 3', 's3', GD.height, colors.s3),
-        swellDots('Swell 4', 's4', GD.height, colors.s4),
-        swellDots('Swell 5', 's5', GD.height, colors.s5),
-        swellDots('Swell 6', 's6', GD.height, colors.s6),
-        { label: 'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, showLine: false, spanGaps: false, pointRadius: 1.8 }
+        { label:'Swell 1', data: pts(GD.x, GD.height.s1), borderColor: colors.s1, backgroundColor: colors.s1, showLine:false },
+        { label:'Swell 2', data: pts(GD.x, GD.height.s2), borderColor: colors.s2, backgroundColor: colors.s2, showLine:false },
+        { label:'Swell 3', data: pts(GD.x, GD.height.s3), borderColor: colors.s3, backgroundColor: colors.s3, showLine:false },
+        { label:'Swell 4', data: pts(GD.x, GD.height.s4), borderColor: colors.s4, backgroundColor: colors.s4, showLine:false },
+        { label:'Swell 5', data: pts(GD.x, GD.height.s5), borderColor: colors.s5, backgroundColor: colors.s5, showLine:false },
+        { label:'Swell 6', data: pts(GD.x, GD.height.s6), borderColor: colors.s6, backgroundColor: colors.s6, showLine:false },
+        { label:'Combined', data: pts(GD.x, GD.height.combined), borderColor: colors.combined, backgroundColor: colors.combined, showLine:false }
       ];
-      new Chart(document.getElementById('heightChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
+      new Chart(document.getElementById('heightChart'), {
+        type: 'scatter',
+        data: { datasets: ds },
         options: {
           ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
-          scales: {
-            x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, beginAtZero: true, min: 0, max: hMax, ticks: { stepSize: {{ 0 }} } }
-          }
+          plugins: { ...commonOpts.plugins, title: { display: true, text: `Swell Height (${GD.units})` } },
+          scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, beginAtZero:true } }
         }
       });
     })();
 
-    // Period
+    // PERIOD
     (() => {
       const ds = [
-        swellDots('Swell 1', 's1', GD.period, colors.s1),
-        swellDots('Swell 2', 's2', GD.period, colors.s2),
-        swellDots('Swell 3', 's3', GD.period, colors.s3),
-        swellDots('Swell 4', 's4', GD.period, colors.s4),
-        swellDots('Swell 5', 's5', GD.period, colors.s5),
-        swellDots('Swell 6', 's6', GD.period, colors.s6)
+        { label:'Swell 1', data: pts(GD.x, GD.period.s1), borderColor: colors.s1, backgroundColor: colors.s1, showLine:false },
+        { label:'Swell 2', data: pts(GD.x, GD.period.s2), borderColor: colors.s2, backgroundColor: colors.s2, showLine:false },
+        { label:'Swell 3', data: pts(GD.x, GD.period.s3), borderColor: colors.s3, backgroundColor: colors.s3, showLine:false },
+        { label:'Swell 4', data: pts(GD.x, GD.period.s4), borderColor: colors.s4, backgroundColor: colors.s4, showLine:false },
+        { label:'Swell 5', data: pts(GD.x, GD.period.s5), borderColor: colors.s5, backgroundColor: colors.s5, showLine:false },
+        { label:'Swell 6', data: pts(GD.x, GD.period.s6), borderColor: colors.s6, backgroundColor: colors.s6, showLine:false }
       ];
-      new Chart(document.getElementById('periodChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
+      new Chart(document.getElementById('periodChart'), {
+        type: 'scatter',
+        data: { datasets: ds },
         options: {
           ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
-          scales: {
-            x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, beginAtZero: true, min: 0, max: pMax }
-          }
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period (s)' } },
+          scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, beginAtZero:true } }
         }
       });
     })();
 
-    // Direction
+    // DIRECTION
     (() => {
       const ds = [
-        swellDots('Swell 1', 's1', GD.direction, colors.s1),
-        swellDots('Swell 2', 's2', GD.direction, colors.s2),
-        swellDots('Swell 3', 's3', GD.direction, colors.s3),
-        swellDots('Swell 4', 's4', GD.direction, colors.s4),
-        swellDots('Swell 5', 's5', GD.direction, colors.s5),
-        swellDots('Swell 6', 's6', GD.direction, colors.s6),
+        { label:'Swell 1', data: pts(GD.x, GD.direction.s1), borderColor: colors.s1, backgroundColor: colors.s1, showLine:false },
+        { label:'Swell 2', data: pts(GD.x, GD.direction.s2), borderColor: colors.s2, backgroundColor: colors.s2, showLine:false },
+        { label:'Swell 3', data: pts(GD.x, GD.direction.s3), borderColor: colors.s3, backgroundColor: colors.s3, showLine:false },
+        { label:'Swell 4', data: pts(GD.x, GD.direction.s4), borderColor: colors.s4, backgroundColor: colors.s4, showLine:false },
+        { label:'Swell 5', data: pts(GD.x, GD.direction.s5), borderColor: colors.s5, backgroundColor: colors.s5, showLine:false },
+        { label:'Swell 6', data: pts(GD.x, GD.direction.s6), borderColor: colors.s6, backgroundColor: colors.s6, showLine:false }
       ];
-      new Chart(document.getElementById('directionChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
+      new Chart(document.getElementById('directionChart'), {
+        type: 'scatter',
+        data: { datasets: ds },
         options: {
           ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
-          scales: {
-            x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, min: dMin, max: dMax, ticks: { stepSize: 45 } }
-          }
+          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction (°)' } },
+          scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, suggestedMin:0, suggestedMax:360 } }
         }
       });
     })();

@@ -20,8 +20,9 @@
   </style>
 </head>
 <body class="bg-light">
-
   <div class="container-fluid py-3">
+
+    <!-- Top controls -->
     <div class="sticky-top-bar pb-2">
       <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
         <div class="col-auto">
@@ -32,6 +33,7 @@
             {% endfor %}
           </select>
         </div>
+
         <div class="col-auto">
           <label for="tz" class="form-label mb-0">Time Zone</label>
           <select class="form-select" id="tz" name="tz">
@@ -41,6 +43,7 @@
             {% endfor %}
           </select>
         </div>
+
         <div class="col-auto">
           <label for="unit" class="form-label mb-0">Units</label>
           <select class="form-select" id="unit" name="unit">
@@ -49,6 +52,7 @@
             {% endfor %}
           </select>
         </div>
+
         <div class="col-auto">
           <label for="view" class="form-label mb-0">View</label>
           <select class="form-select" id="view" name="view">
@@ -56,18 +60,21 @@
             <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
           </select>
         </div>
+
         <div class="col-auto">
           <button type="submit" class="btn btn-primary" id="updateBtn">Update</button>
         </div>
       </form>
     </div>
 
+    <!-- Map -->
     <div class="row mt-2">
       <div class="col-12">
         <div id="map"></div>
       </div>
     </div>
 
+    <!-- Data -->
     <div class="row mt-3">
       <div class="col-12">
         {% if error %}
@@ -77,17 +84,25 @@
         {% if selected_view == 'Graph' and graph_data %}
           <div id="graphs" class="card">
             <div class="card-body">
-              <!-- RESTORED: Graph header -->
-              <div class="mb-2">
-                <div><strong>{{ graph_cycle_str }}</strong></div>
-                <div><strong>{{ graph_location_str }}</strong></div>
-                <div><strong>Time Zone: {{ graph_tz_label }}</strong></div>
-              </div>
-              <h5 class="card-title mb-3">Graphs ({{ graph_data.units }})</h5>
 
-              <div class="mb-4"><canvas id="heightChart" class="chart-tall"></canvas></div>
-              <div class="mb-4"><canvas id="periodChart" class="chart-tall"></canvas></div>
-              <div><canvas id="directionChart" class="chart-tall"></canvas></div>
+              <!-- Header: Cycle / Location / Time Zone (no "Graphs (ft)" text) -->
+              {% if graph_meta %}
+                <div class="mb-3">
+                  <div><strong>{{ graph_meta.cycle }}</strong></div>
+                  <div><strong>{{ graph_meta.location }}</strong></div>
+                  <div><strong>Time Zone: {{ graph_meta.tz }}</strong></div>
+                </div>
+              {% endif %}
+
+              <div class="mb-4">
+                <canvas id="heightChart" class="chart-tall"></canvas>
+              </div>
+              <div class="mb-4">
+                <canvas id="periodChart" class="chart-tall"></canvas>
+              </div>
+              <div>
+                <canvas id="directionChart" class="chart-tall"></canvas>
+              </div>
             </div>
           </div>
         {% else %}
@@ -102,7 +117,7 @@
   </div>
 
   <script>
-    // ---- Preserve map zoom/center between requests ----
+    // --------- Persist map view between requests ----------
     const mapKey = 'mapView';
     function saveMapView(map) {
       const v = {c: map.getCenter(), z: map.getZoom()};
@@ -112,27 +127,35 @@
       try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e) { return null; }
     }
 
-    // ---- Leaflet Map (satellite, single-world, no grey bands) ----
-    const worldBounds = [[-85, -180], [85, 180]];
+    // --------- Leaflet map (satellite, one world, no grey sides) ----------
+    const saved = loadMapView();
     const map = L.map('map', {
       worldCopyJump: false,
-      maxBounds: worldBounds,
-      maxBoundsViscosity: 1.0,
       zoomControl: true
     });
-    const saved = loadMapView();
-    if (saved) {
-      map.setView([saved.lat, saved.lng], saved.z);
-    } else {
-      map.fitBounds(worldBounds);
-      map.setZoom(2);
-    }
 
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 8,
-      minZoom: 2,
-      noWrap: true
-    }).addTo(map);
+    // World Imagery (Esri)
+    const worldBounds = L.latLngBounds([-85, -179.999], [85, 179.999]);
+    const imagery = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      {
+        attribution: '&copy; Esri | Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+        noWrap: true,
+        bounds: worldBounds,
+        maxZoom: 9
+      }
+    ).addTo(map);
+
+    // Min zoom so a single world exactly fills the viewport -> no grey bands
+    const zFit = map.getBoundsZoom(worldBounds, true);
+    map.setMinZoom(zFit);
+    map.setMaxBounds(worldBounds);
+
+    if (saved) {
+      map.setView([saved.lat, saved.lng], Math.max(saved.z, zFit));
+    } else {
+      map.setView([0, 0], zFit);
+    }
 
     // Plot stations
     fetch('/stations.json')
@@ -140,7 +163,7 @@
       .then(stations => {
         stations.forEach(s => {
           const mk = L.circleMarker([s.lat, s.lon], {
-            radius: 2,
+            radius: 2,           // small yellow markers
             color: '#FFD600',
             fillColor: '#FFD600',
             fillOpacity: 1,
@@ -148,8 +171,10 @@
           }).addTo(map);
           mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
           mk.on('click', () => {
+            // Auto-use the buoy's local timezone
             document.getElementById('station').value = s.id;
-            saveMapView(map);
+            document.getElementById('tz').value = '';   // <-- clears to "(Buoy Local)"
+            saveMapView(map);                           // preserve current zoom/center
             document.getElementById('controlForm').submit();
           });
         });
@@ -158,29 +183,39 @@
     document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
     {% if selected_view == 'Graph' and graph_data %}
-    // ---- Charts (same settings you already use) ----
+    // --------- Charts (points only, readable axes) ----------
     const GD = {{ graph_data|tojson|safe }};
 
     const colors = {
-      s1: '#C00000', s2: '#ED7D31', s3: '#FFC000',
-      s4: '#00B050', s5: '#00B0F0', s6: '#92D050',
+      s1: '#C00000',
+      s2: '#ED7D31',
+      s3: '#FFC000',
+      s4: '#00B050',
+      s5: '#00B0F0',
+      s6: '#92D050',
       combined: '#7030A0'
     };
 
     const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
     const maxAcross = arrays => {
-      let m = -Infinity; arrays.forEach(a => finiteVals(a).forEach(v => { if (v > m) m = v; }));
+      let m = -Infinity;
+      arrays.forEach(a => finiteVals(a).forEach(v => { if (v > m) m = v; }));
       return m;
     };
     const minAcross = arrays => {
-      let m = Infinity; arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; }));
+      let m = Infinity;
+      arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; }));
       return m;
     };
     const padMax = (v, pct = 0.10) => Number.isFinite(v) ? v * (1 + pct) : v;
 
     function labelEvery(n) {
-      if (n <= 16) return 1; if (n <= 32) return 2; if (n <= 64) return 4;
-      if (n <= 96) return 6; if (n <= 160) return 10; return Math.ceil(n / 16);
+      if (n <= 16) return 1;
+      if (n <= 32) return 2;
+      if (n <= 64) return 4;
+      if (n <= 96) return 6;
+      if (n <= 160) return 10;
+      return Math.ceil(n / 16);
     }
     const showEvery = labelEvery(GD.labels.length);
 
@@ -198,6 +233,7 @@
     }
     const niceCeil = (v, step) => Math.ceil(v / step) * step;
 
+    // Axis ranges
     const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
     let hMax = maxAcross(heightArrays); if (!Number.isFinite(hMax)) hMax = 1;
     hMax = niceCeil(padMax(hMax, 0.10), heightStep(hMax));
@@ -209,45 +245,48 @@
     const dirArrays = [GD.direction.s1, GD.direction.s2, GD.direction.s3, GD.direction.s4, GD.direction.s5, GD.direction.s6];
     let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
     if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
-    const dStep = 45;
 
     const commonOpts = {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false, axis: 'x' },
-      elements: { point: { radius: 1.5 }, line: { tension: 0.25, borderWidth: 1.5 } },
+      layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
+      elements: { point: { radius: 1.8 }, line: { borderWidth: 0 } },  // <-- points only
       plugins: {
         legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 12, boxHeight: 6 } },
-        tooltip: { mode: 'nearest', intersect: false },
-        decimation: { enabled: true, algorithm: 'lttb', samples: 250 }
+        tooltip: { mode: 'nearest', intersect: false }
       },
       scales: {
         x: {
           type: 'category',
           grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-          ticks: { autoSkip: false, maxRotation: 0, minRotation: 0,
-                   callback: (value, index) => (index % showEvery === 0 ? GD.labels[index] : '') }
+          ticks: {
+            autoSkip: false, maxRotation: 0, minRotation: 0,
+            callback: (v, i) => (i % showEvery === 0 ? GD.labels[i] : '')
+          }
         },
-        y: { grid: { display: true, color: 'rgba(0,0,0,0.08)' }, border: { color: 'rgba(0,0,0,0.2)' } }
+        y: {
+          grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+          border: { color: 'rgba(0,0,0,0.2)' }
+        }
       },
       animation: false
     };
 
-    function swellLine(label, key, data, color) {
-      // dots only (no connecting lines)
-      return { label, data: data[key], borderColor: color, backgroundColor: color, showLine: false, pointRadius: 2, spanGaps: true };
+    function swellDots(label, key, data, color) {
+      return { label, data: data[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false };
     }
 
-    // HEIGHT
+    // Height
     (() => {
       const ds = [
-        swellLine('Swell 1', 's1', GD.height, colors.s1),
-        swellLine('Swell 2', 's2', GD.height, colors.s2),
-        swellLine('Swell 3', 's3', GD.height, colors.s3),
-        swellLine('Swell 4', 's4', GD.height, colors.s4),
-        swellLine('Swell 5', 's5', GD.height, colors.s5),
-        swellLine('Swell 6', 's6', GD.height, colors.s6),
-        { label: 'Combined', data: GD.height.combined, showLine: false, pointRadius: 2, borderColor: colors.combined, backgroundColor: colors.combined, spanGaps: true }
+        swellDots('Swell 1', 's1', GD.height, colors.s1),
+        swellDots('Swell 2', 's2', GD.height, colors.s2),
+        swellDots('Swell 3', 's3', GD.height, colors.s3),
+        swellDots('Swell 4', 's4', GD.height, colors.s4),
+        swellDots('Swell 5', 's5', GD.height, colors.s5),
+        swellDots('Swell 6', 's6', GD.height, colors.s6),
+        { label: 'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, showLine: false, spanGaps: false, pointRadius: 1.8 }
       ];
       new Chart(document.getElementById('heightChart').getContext('2d'), {
         type: 'line',
@@ -257,21 +296,21 @@
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
           scales: {
             x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, beginAtZero: true, min: 0, max: hMax, ticks: { stepSize:  heightStep(hMax) }, title: { display: true, text: `Height (${GD.units})` } }
+            y: { ...commonOpts.scales.y, beginAtZero: true, min: 0, max: hMax, ticks: { stepSize: {{ 0 }} } }
           }
         }
       });
     })();
 
-    // PERIOD
+    // Period
     (() => {
       const ds = [
-        swellLine('Swell 1', 's1', GD.period, colors.s1),
-        swellLine('Swell 2', 's2', GD.period, colors.s2),
-        swellLine('Swell 3', 's3', GD.period, colors.s3),
-        swellLine('Swell 4', 's4', GD.period, colors.s4),
-        swellLine('Swell 5', 's5', GD.period, colors.s5),
-        swellLine('Swell 6', 's6', GD.period, colors.s6)
+        swellDots('Swell 1', 's1', GD.period, colors.s1),
+        swellDots('Swell 2', 's2', GD.period, colors.s2),
+        swellDots('Swell 3', 's3', GD.period, colors.s3),
+        swellDots('Swell 4', 's4', GD.period, colors.s4),
+        swellDots('Swell 5', 's5', GD.period, colors.s5),
+        swellDots('Swell 6', 's6', GD.period, colors.s6)
       ];
       new Chart(document.getElementById('periodChart').getContext('2d'), {
         type: 'line',
@@ -281,21 +320,21 @@
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
           scales: {
             x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, beginAtZero: true, min: 0, max: pMax, ticks: { stepSize:  periodStep(pMax) }, title: { display: true, text: 'Period (s)' } }
+            y: { ...commonOpts.scales.y, beginAtZero: true, min: 0, max: pMax }
           }
         }
       });
     })();
 
-    // DIRECTION
+    // Direction
     (() => {
       const ds = [
-        swellLine('Swell 1', 's1', GD.direction, colors.s1),
-        swellLine('Swell 2', 's2', GD.direction, colors.s2),
-        swellLine('Swell 3', 's3', GD.direction, colors.s3),
-        swellLine('Swell 4', 's4', GD.direction, colors.s4),
-        swellLine('Swell 5', 's5', GD.direction, colors.s5),
-        swellLine('Swell 6', 's6', GD.direction, colors.s6)
+        swellDots('Swell 1', 's1', GD.direction, colors.s1),
+        swellDots('Swell 2', 's2', GD.direction, colors.s2),
+        swellDots('Swell 3', 's3', GD.direction, colors.s3),
+        swellDots('Swell 4', 's4', GD.direction, colors.s4),
+        swellDots('Swell 5', 's5', GD.direction, colors.s5),
+        swellDots('Swell 6', 's6', GD.direction, colors.s6),
       ];
       new Chart(document.getElementById('directionChart').getContext('2d'), {
         type: 'line',
@@ -305,7 +344,7 @@
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
           scales: {
             x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, min: dMin, max: dMax, ticks: { stepSize: 45 }, title: { display: true, text: 'Direction (°)' } }
+            y: { ...commonOpts.scales.y, min: dMin, max: dMax, ticks: { stepSize: 45 } }
           }
         }
       });

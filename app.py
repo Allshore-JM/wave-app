@@ -8,20 +8,21 @@ from timezonefinder import TimezoneFinder
 
 app = Flask(__name__)
 
-# ---- Timezone helper ----
+# Instantiate once
 tz_finder = TimezoneFinder()
-UTC = pytz.utc
 
-# ---- Caches ----
+# Caches
 STATION_META = None          # station_id -> {name, lat, lon}
 STATION_COORDS = None        # station_id -> {lat, lon}
-BULLET_STATIONS = None       # set of station_ids
-stations_data_cache = None   # list of {id,name,lat,lon}
+BULLET_STATIONS = None
 
-# ---- NOAA endpoints ----
+# NOAA
 NOAA_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
 
-# ---- Fallback stations (for offline/partial data) ----
+# Timezones
+UTC = pytz.utc
+
+# Fallback stations
 DEFAULT_STATIONS = {
     "51201": {"name": "Buoy 51201", "lat": 21.67, "lon": -158.12},
     "51202": {"name": "Buoy 51202", "lat": 21.45, "lon": -157.90},
@@ -35,10 +36,9 @@ DEFAULT_STATIONS = {
     "51004": {"name": "Buoy 51004", "lat": 25.84, "lon": -162.09},
 }
 
+stations_data_cache = None
 
-# =========================
-# Station/metadata helpers
-# =========================
+
 def load_station_coords() -> dict:
     """Load static station coordinates from station_coords.json if present."""
     global STATION_COORDS
@@ -50,91 +50,20 @@ def load_station_coords() -> dict:
     try:
         with open(coord_path, 'r') as f:
             data = json.load(f)
-        for sid, info in data.items():
-            try:
-                coords[str(sid).strip()] = {
-                    'lat': float(info.get('lat')),
-                    'lon': float(info.get('lon'))
-                }
-            except Exception:
-                continue
+            for sid, info in data.items():
+                try:
+                    lat = float(info.get('lat')); lon = float(info.get('lon'))
+                    coords[str(sid).strip()] = {'lat': lat, 'lon': lon}
+                except Exception:
+                    continue
     except Exception:
         coords = {}
     STATION_COORDS = coords
     return STATION_COORDS
 
 
-def get_station_list() -> list[tuple[str, str]]:
-    """Read station_list.json if present; otherwise fall back to DEFAULT_STATIONS."""
-    stations: list[tuple[str, str]] = []
-    try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        json_path = os.path.join(base_dir, 'station_list.json')
-        with open(json_path, 'r') as f:
-            station_ids = json.load(f)
-        meta = {}
-        try:
-            meta = load_station_metadata()
-        except Exception:
-            pass
-        for sid in station_ids:
-            sid_str = str(sid).strip()
-            if not sid_str:
-                continue
-            info = meta.get(sid_str)
-            name = info['name'] if info and 'name' in info else sid_str
-            stations.append((sid_str, name))
-        if stations:
-            return stations
-    except Exception:
-        pass
-    # fallback list
-    return [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
-
-
-def get_stations_data():
-    """Build [{id,name,lat,lon}] once for /stations.json."""
-    global stations_data_cache
-    if stations_data_cache is not None:
-        return stations_data_cache
-
-    try:
-        ids_with_names = get_station_list()
-        id_list = [sid for sid, _ in ids_with_names]
-    except Exception:
-        id_list = []
-
-    try:
-        meta = load_station_metadata()
-    except Exception:
-        meta = {}
-
-    coords_map = load_station_coords()
-    data_list = []
-    for sid in id_list:
-        name = sid
-        if sid in meta and 'name' in meta[sid]:
-            name = meta[sid]['name']
-        lat = lon = None
-        if sid in coords_map:
-            lat = coords_map[sid]['lat']; lon = coords_map[sid]['lon']
-        if (lat is None or lon is None) and sid in DEFAULT_STATIONS:
-            lat = DEFAULT_STATIONS[sid].get('lat')
-            lon = DEFAULT_STATIONS[sid].get('lon')
-        if lat is not None and lon is not None:
-            data_list.append({'id': sid, 'name': name, 'lat': lat, 'lon': lon})
-
-    stations_data_cache = data_list
-    return stations_data_cache
-
-
-@app.route('/stations.json')
-def stations_json():
-    return jsonify(get_stations_data())
-
-
 def load_station_metadata():
-    """Fetch NDBC station table; fall back to DEFAULT_STATIONS on failure."""
+    """Fetch NDBC station table; fallback to DEFAULT_STATIONS on error."""
     global STATION_META
     if STATION_META is not None:
         return STATION_META
@@ -152,12 +81,12 @@ def load_station_metadata():
             station_id = parts[0].strip()
             if not station_id:
                 continue
-            name = parts[4].strip() if parts[4].strip() else station_id
+            name = parts[4].strip() or station_id
             loc = parts[6].strip().split()
             if len(loc) >= 4:
                 try:
-                    lat_val, lat_dir = float(loc[0]), loc[1].upper()
-                    lon_val, lon_dir = float(loc[2]), loc[3].upper()
+                    lat_val = float(loc[0]); lat_dir = loc[1].upper()
+                    lon_val = float(loc[2]); lon_dir = loc[3].upper()
                     lat = lat_val if lat_dir == 'N' else -lat_val
                     lon = lon_val if lon_dir == 'E' else -lon_val
                     meta[station_id] = {'name': name, 'lat': lat, 'lon': lon}
@@ -169,47 +98,93 @@ def load_station_metadata():
     return STATION_META
 
 
-# =========================
-# Run discovery
-# =========================
+def get_station_list() -> list[tuple[str, str]]:
+    """Use station_list.json if available; else fall back to DEFAULT_STATIONS."""
+    stations: list[tuple[str, str]] = []
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(base_dir, 'station_list.json')
+        with open(json_path, 'r') as f:
+            station_ids = json.load(f)
+        meta = load_station_metadata()
+        for sid in station_ids:
+            sid = str(sid).strip()
+            if not sid:
+                continue
+            name = meta.get(sid, {}).get('name', sid)
+            stations.append((sid, name))
+        if stations:
+            return stations
+    except Exception:
+        pass
+    return [(sid, info.get('name', sid)) for sid, info in DEFAULT_STATIONS.items()]
+
+
+def get_stations_data():
+    """Return [{id,name,lat,lon}] for /stations.json (cached)."""
+    global stations_data_cache
+    if stations_data_cache is not None:
+        return stations_data_cache
+
+    ids_with_names = get_station_list()
+    id_list = [sid for sid, _ in ids_with_names]
+    meta = load_station_metadata()
+    coords_map = load_station_coords()
+
+    data_list = []
+    for sid in id_list:
+        name = meta.get(sid, {}).get('name', sid)
+        lat = lon = None
+        if sid in coords_map:
+            lat = coords_map[sid]['lat']; lon = coords_map[sid]['lon']
+        if (lat is None or lon is None) and sid in DEFAULT_STATIONS:
+            lat = DEFAULT_STATIONS[sid]['lat']; lon = DEFAULT_STATIONS[sid]['lon']
+        if lat is not None and lon is not None:
+            data_list.append({'id': sid, 'name': name, 'lat': lat, 'lon': lon})
+    stations_data_cache = data_list
+    return stations_data_cache
+
+
+@app.route('/stations.json')
+def stations_json():
+    return jsonify(get_stations_data())
+
+
 def get_latest_run():
-    """
-    Find the most recent GFS wave run by testing for a known file.
-    Checks today then yesterday for 18z,12z,06z,00z.
-    """
+    """Discover latest available GFS wave run by probing last two days."""
     now = datetime.utcnow()
+    run_hours = [18, 12, 6, 0]
     for delta_day in [0, 1]:
-        yyyymmdd = (now - timedelta(days=delta_day)).strftime("%Y%m%d")
-        for hour in [18, 12, 6, 0]:
-            run = f"{hour:02d}"
-            test = (f"{NOAA_BASE}/gfs.{yyyymmdd}/{run}/wave/station/"
-                    f"bulls.t{run}z/gfswave.51201.bull")
+        check_date = now - timedelta(days=delta_day)
+        yyyymmdd = check_date.strftime("%Y%m%d")
+        for hour in run_hours:
+            run_str = f"{hour:02d}"
+            url = f"{NOAA_BASE}/gfs.{yyyymmdd}/{run_str}/wave/station/bulls.t{run_str}z/"
+            test_file = f"{url}gfswave.51201.bull"
             try:
-                r = requests.head(test, timeout=10)
-                if r.status_code == 200:
-                    return yyyymmdd, run
+                resp = requests.head(test_file, timeout=10)
+                if resp.status_code == 200:
+                    return yyyymmdd, run_str
             except Exception:
                 continue
     return None, None
 
 
-# =========================
-# .bull parser
-# =========================
 def parse_bull(station_id: str, target_tz_name: str | None = None):
     """
-    Parse a station's .bull and return:
-    (cycle_str, location_str, model_run_str, rows, effective_tz, error)
-    rows: [date_str, time_str, s1_hs, s1_tp, s1_dir, ... s6_dir, combined_hs]
+    Fetch & parse a .bull file; return:
+      (cycle_str, location_str, model_run_str, rows, tz_name, error)
+    with rows in table order.
     """
+    import re
+
     date_str, run_str = get_latest_run()
     if not date_str:
         return None, None, None, None, 'UTC', "No recent run found."
 
-    url = (f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/"
-           f"bulls.t{run_str}z/gfswave.{station_id}.bull")
+    bull_url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
     try:
-        resp = requests.get(url, timeout=15)
+        resp = requests.get(bull_url, timeout=15)
     except Exception:
         return None, None, None, None, 'UTC', f"Network error retrieving {station_id}"
     if resp.status_code != 200:
@@ -219,7 +194,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     if not lines:
         return None, None, None, None, 'UTC', "Downloaded .bull file is empty."
 
-    # Header fields
+    # Pull header lines
     cycle_line = next((l for l in lines if l.lower().strip().startswith("cycle")), None)
     location_line = next((l for l in lines if l.lower().strip().startswith("location")), None)
     if not cycle_line and len(lines) > 0:
@@ -229,29 +204,27 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     cycle_str = cycle_line.strip() if cycle_line else ""
     location_str = location_line.strip() if location_line else ""
 
-    # Lat/Lon -> timezone
-    import re
+    # Determine buoy TZ from coords in the Location line
     lat = lon = None
     tz_name = 'UTC'
     if location_str:
         m = re.search(r"\(([-+]?\d+(?:\.\d+)?)\s*([NS])\s+([-+]?\d+(?:\.\d+)?)\s*([EW])\)", location_str)
         if m:
             try:
-                lat_val, lat_dir = float(m.group(1)), m.group(2).upper()
-                lon_val, lon_dir = float(m.group(3)), m.group(4).upper()
+                lat_val = float(m.group(1)); lat_dir = m.group(2).upper()
+                lon_val = float(m.group(3)); lon_dir = m.group(4).upper()
                 lat = lat_val if lat_dir == 'N' else -lat_val
                 lon = lon_val if lon_dir == 'E' else -lon_val
             except Exception:
                 lat = lon = None
     if lat is not None and lon is not None:
         try:
-            tz_guess = tz_finder.timezone_at(lat=lat, lng=lon)
-            if tz_guess:
-                tz_name = tz_guess
+            tz_name_candidate = tz_finder.timezone_at(lat=lat, lng=lon)
+            if tz_name_candidate:
+                tz_name = tz_name_candidate
         except Exception:
             tz_name = 'UTC'
 
-    # Effective timezone (user override if valid)
     effective_tz_name = tz_name
     if target_tz_name:
         try:
@@ -260,40 +233,23 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
         except Exception:
             pass
 
-    # Detect new vs old format
     uses_day_hour_format = any("day &" in line.lower() for line in lines[:10])
     rows = []
 
-    # Parse cycle timestamp
-    m_cycle = re.search(r"(\d{8})\s*(\d{2})", cycle_str or "")
-    cycle_date_str = date_str
-    cycle_hour_str = run_str
-    if m_cycle:
-        cycle_date_str = m_cycle.group(1)
-        cycle_hour_str = m_cycle.group(2)
-    try:
-        cycle_dt_utc = datetime.strptime(f"{cycle_date_str} {cycle_hour_str}", "%Y%m%d %H")
-    except Exception:
-        cycle_dt_utc = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H")
-
-    # Utility: monotonic builder for Day/Hour rows
-    def build_monotonic_dt(last_dt_utc: datetime, day_val: int, hour_val: int) -> datetime:
-        """
-        Create a candidate datetime in UTC for the given (day, hour) relative to
-        the cycle's month, then add whole days until it is > last_dt_utc.
-        This guarantees strictly increasing datetimes across month wraps.
-        """
-        # Start from the first of the cycle month at requested hour
-        base = datetime(cycle_dt_utc.year, cycle_dt_utc.month, 1, hour_val)
-        # Move forward (day_val - 1) days; this auto-rolls into next month if needed
-        candidate = base + timedelta(days=max(0, day_val - 1))
-        # Ensure strictly increasing sequence
-        while candidate <= last_dt_utc:
-            candidate += timedelta(days=1)
-        return candidate
-
     if uses_day_hour_format:
-        # Model run (formatted in effective timezone)
+        # Newer "day & hour" format
+        m = re.search(r"(\d{8})\s*(\d{2})", cycle_str)
+        cycle_date_str = date_str
+        cycle_hour_str = run_str
+        if m:
+            cycle_date_str = m.group(1)
+            cycle_hour_str = m.group(2)
+        try:
+            cycle_dt_utc = datetime.strptime(f"{cycle_date_str} {cycle_hour_str}", "%Y%m%d %H")
+        except Exception:
+            cycle_dt_utc = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H")
+
+        # Friendly model run text (unused in table, but returned)
         try:
             model_run_local = cycle_dt_utc.replace(tzinfo=UTC).astimezone(pytz.timezone(effective_tz_name))
         except Exception:
@@ -304,94 +260,111 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
             model_run_str = "Model Run: " + model_run_local.strftime("%A, %B %d, %Y %I:%M %p").lstrip('0')
 
         M_TO_FT = 3.28084
-        # Set last_dt to just before the model run so the first row may equal or exceed it
-        last_dt_utc = cycle_dt_utc - timedelta(hours=1)
-
         for line in lines:
-            raw = line.strip()
-            if not raw.startswith("|"):
+            striped = line.strip()
+            if not striped.startswith("|"):
                 continue
-            if "Hst" in raw or "---" in raw:
+            if "Hst" in striped or "---" in striped:
                 continue
-
             parts = [p.strip() for p in line.split("|") if p.strip()]
             if not parts:
                 continue
-
-            dh = parts[0].split()
-            if len(dh) < 2:
+            day_hour = parts[0].split()
+            if len(day_hour) < 2:
                 continue
             try:
-                day_val = int(dh[0])
-                hour_val = int(dh[1])
+                day_val = int(day_hour[0])
+                hour_val = int(day_hour[1])
             except ValueError:
                 continue
 
-            # Build a strictly increasing UTC forecast time
-            forecast_dt_utc = build_monotonic_dt(last_dt_utc, day_val, hour_val)
-            last_dt_utc = forecast_dt_utc  # advance cursor
-
-            # Combined height (meters)
-            combined_hs_m = None
+            # Combined height
             hst_tokens = parts[1].split()
+            combined_hs_m = None
             if hst_tokens:
                 try:
                     combined_hs_m = float(hst_tokens[0].replace('*', ''))
                 except ValueError:
                     combined_hs_m = None
 
-            # Parse swell groups
+            # Swell groups
             swell_groups = []
-            for field in parts[2:]:
-                if not field:
+            for swell_field in parts[2:]:
+                if not swell_field:
                     swell_groups.append((None, None, None)); continue
-                toks = [t.replace('*', '') for t in field.split() if t.replace('*', '') != ""]
-                if len(toks) < 3:
+                raw_tokens = swell_field.split()
+                cleaned = [tok.replace('*', '') for tok in raw_tokens if tok.replace('*', '') != ""]
+                if len(cleaned) < 3:
                     swell_groups.append((None, None, None))
                 else:
                     try:
-                        hs_m = float(toks[0]); tp = float(toks[1]); dir_raw = int(float(toks[2]))
-                        swell_groups.append((hs_m, tp, (dir_raw + 180) % 360))
+                        hs_val = float(cleaned[0])
+                        tp_val = float(cleaned[1])
+                        dir_raw = int(float(cleaned[2]))
+                        dir_val = (dir_raw + 180) % 360
+                        swell_groups.append((hs_val, tp_val, dir_val))
                     except ValueError:
                         swell_groups.append((None, None, None))
-
             while len(swell_groups) < 6:
                 swell_groups.append((None, None, None))
             if len(swell_groups) > 6:
                 swell_groups = swell_groups[:6]
 
-            # Convert UTC -> effective local
+            # **Month-safe** forecast timestamp construction
+            try:
+                forecast_dt_utc = cycle_dt_utc.replace(day=day_val, hour=hour_val)
+            except ValueError:
+                # skip impossible day for the month
+                continue
+            if forecast_dt_utc < cycle_dt_utc:
+                # roll forward day-by-day until >= cycle (handles month/year rollover)
+                while forecast_dt_utc < cycle_dt_utc:
+                    forecast_dt_utc += timedelta(days=1)
+
+            # Convert to selected/effective TZ
             try:
                 local_tz = pytz.timezone(effective_tz_name)
             except Exception:
                 local_tz = UTC
             local_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(local_tz)
+
             try:
                 date_str_local = local_dt.strftime("%A, %B %-d, %Y")
             except Exception:
                 date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
             time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
 
-            # Assemble row (convert Hs from m->ft)
+            combined_hs_ft = combined_hs_m * M_TO_FT if combined_hs_m is not None else None
+
             row = [date_str_local, time_str_local]
-            for hs_m, tp, ddir in swell_groups:
+            for hs_m, tp_val, dir_val in swell_groups:
                 if hs_m is None:
                     row.extend([None, None, None])
                 else:
-                    row.extend([hs_m * M_TO_FT, tp, ddir])
-            row.append((combined_hs_m * M_TO_FT) if combined_hs_m is not None else None)
+                    row.extend([hs_m * 3.28084, tp_val, dir_val])
+            row.append(combined_hs_ft)
             rows.append(row)
 
     else:
-        # Older "Hr" format (already monotonic by definition)
-        # Locate data start
+        # Older "Hr" + offsets format
         start_idx = None
-        for i, line in enumerate(lines):
+        for idx, line in enumerate(lines):
             if line.strip().startswith("Hr"):
-                start_idx = i + 1
+                start_idx = idx + 1
                 break
         if start_idx is None:
             return cycle_str, location_str, None, None, effective_tz_name, "Data section not found in .bull file."
+
+        m = __import__("re").search(r"(\d{8})\s*(\d{2})", cycle_str)
+        cycle_date_str = date_str
+        cycle_hour_str = run_str
+        if m:
+            cycle_date_str = m.group(1)
+            cycle_hour_str = m.group(2)
+        try:
+            cycle_dt_utc = datetime.strptime(f"{cycle_date_str} {cycle_hour_str}", "%Y%m%d %H")
+        except Exception:
+            cycle_dt_utc = datetime.strptime(f"{date_str} {run_str}", "%Y%m%d %H")
 
         try:
             model_run_local = cycle_dt_utc.replace(tzinfo=UTC).astimezone(pytz.timezone(effective_tz_name))
@@ -417,6 +390,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
             except Exception:
                 local_tz = UTC
             local_dt = utc_dt.replace(tzinfo=UTC).astimezone(local_tz)
+
             try:
                 date_str_local = local_dt.strftime("%A, %B %-d, %Y")
             except Exception:
@@ -424,167 +398,75 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
             time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
 
             row = [date_str_local, time_str_local]
-            idx = 6
+            idx_base = 6
             for _ in range(6):
-                hs = tp = ddir = None
-                got = 0
-                while got < 3 and idx < len(parts):
-                    tok = parts[idx].replace('*', '')
-                    idx += 1
-                    if not tok:
+                hs_val = tp_val = dir_val = None
+                tokens_collected = 0
+                while tokens_collected < 3 and idx_base < len(parts):
+                    tok = parts[idx_base]; idx_base += 1
+                    tok_clean = tok.replace('*', '')
+                    if tok_clean == '':
                         continue
-                    if got == 0:
+                    if tokens_collected == 0:
                         try:
-                            hs = float(tok) * 3.28084; got += 1; continue
+                            hs_val = float(tok_clean) * 3.28084; tokens_collected += 1; continue
                         except ValueError:
                             continue
-                    if got == 1:
+                    if tokens_collected == 1:
                         try:
-                            tp = float(tok); got += 1; continue
+                            tp_val = float(tok_clean); tokens_collected += 1; continue
                         except ValueError:
                             continue
-                    if got == 2:
+                    if tokens_collected == 2:
                         try:
-                            ddir = (int(float(tok)) + 180) % 360; got += 1; continue
+                            dir_raw = int(float(tok_clean))
+                            dir_val = (dir_raw + 180) % 360; tokens_collected += 1; continue
                         except ValueError:
                             continue
-                row.extend([hs if got == 3 else None,
-                            tp if got == 3 else None,
-                            ddir if got == 3 else None])
-            # combined Hs
-            comb = None
+                if tokens_collected < 3:
+                    row.extend([None, None, None])
+                else:
+                    row.extend([hs_val, tp_val, dir_val])
+
+            combined_hs_ft = None
             for tok in reversed(parts):
-                t = tok.replace('*', '')
-                if not t:
+                tok_clean = tok.replace('*', '')
+                if tok_clean == '':
                     continue
                 try:
-                    comb = float(t) * 3.28084
-                    break
+                    combined_hs_ft = float(tok_clean) * 3.28084; break
                 except ValueError:
                     continue
-            row.append(comb)
+            row.append(combined_hs_ft)
             rows.append(row)
 
-    # ---- Round numeric values for presentation ----
+    # Round numbers
     for r in rows:
-        j = 2
+        idx_num = 2
         for _ in range(6):
-            if r[j] is not None:        # Hs
-                r[j] = round(r[j], 2)
-            j += 1
-            if r[j] is not None:        # Tp
-                r[j] = round(r[j], 1)
-            j += 1
-            if r[j] is not None:        # Dir
+            if r[idx_num] is not None:
+                r[idx_num] = round(r[idx_num], 2)
+            idx_num += 1
+            if r[idx_num] is not None:
+                r[idx_num] = round(r[idx_num], 1)
+            idx_num += 1
+            if r[idx_num] is not None:
                 try:
-                    r[j] = int(round(r[j]))
+                    r[idx_num] = int(round(r[idx_num]))
                 except Exception:
                     pass
-            j += 1
-        if r[-1] is not None:           # Combined
+            idx_num += 1
+        if r[-1] is not None:
             r[-1] = round(r[-1], 2)
 
     if not rows:
         return cycle_str, location_str, None, None, effective_tz_name, "No data rows parsed from .bull file."
 
-    # SUCCESS
-    return cycle_str, location_str, model_run_str if 'model_run_str' in locals() else None, rows, effective_tz_name, None
+    return cycle_str, location_str, 'Model Run' if 'model_run_str' in locals() else None, rows, effective_tz_name, None
 
 
-# =========================
-# Table builder (unchanged)
-# =========================
-def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None,
-                     rows: list[list], tz_label: str, unit: str) -> str:
-    group_colors = [
-        {"header": "#C00000", "subheader": "#F8B4B4", "data": "#F9DCDC"},
-        {"header": "#ED7D31", "subheader": "#FBE5D6", "data": "#FDE7D4"},
-        {"header": "#FFC000", "subheader": "#FFF2CC", "data": "#FFF9E5"},
-        {"header": "#00B050", "subheader": "#D5E8D4", "data": "#EAF3E8"},
-        {"header": "#00B0F0", "subheader": "#D9EAF6", "data": "#ECF5FB"},
-        {"header": "#92D050", "subheader": "#E2F0D9", "data": "#F2F8EE"},
-    ]
-    combined_colors = {"header": "#7030A0", "subheader": "#D9D2E9", "data": "#EDE9F4"}
-    total_cols = 2 + len(group_colors) * 3 + 1
-
-    html = '<table class="table table-bordered table-sm">\n'
-    html += f'<tr><td colspan="{total_cols}"><strong>{cycle_str}</strong></td></tr>\n'
-    html += f'<tr><td colspan="{total_cols}"><strong>{location_str}</strong></td></tr>\n'
-    html += f'<tr><td colspan="{total_cols}"><strong>Time Zone: {tz_label}</strong></td></tr>\n'
-
-    html += '<tr>'
-    html += '<th rowspan="2">Date</th><th rowspan="2">Time</th>'
-    for i, col in enumerate(group_colors, 1):
-        html += (f'<th colspan="3" style="background-color:{col["header"]}; color:white; '
-                 f'text-align:center;">Swell {i}</th>')
-    html += f'<th style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
-    html += '</tr>\n<tr>'
-    hs_unit = '(ft)' if unit == 'US' else '(m)'
-    for col in group_colors:
-        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit}</th>'
-        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
-        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Dir<br>(d)</th>'
-    html += f'<th style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit}</th>'
-    html += '</tr>\n'
-
-    for row in rows:
-        # Day vs night styling (kept as in prior working version)
-        try:
-            t = datetime.strptime(row[1], "%I:%M %p").time()
-        except Exception:
-            try:
-                t = datetime.strptime(row[1], "%I:%M:%S %p").time()
-            except Exception:
-                t = None
-        bold_start = datetime.strptime("6:00:00 AM", "%I:%M:%S %p").time()
-        bold_end   = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()
-        dashed_eve = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
-        dashed_mrn = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
-
-        border = ""; weight = "normal"
-        if t is not None:
-            if bold_start <= t <= bold_end:
-                border = "border:1px solid #000;"; weight = "bold"
-            elif t >= dashed_eve or t <= dashed_mrn:
-                border = "border:1px dashed #999;"
-
-        html += '<tr>'
-        html += f'<td style="font-weight:bold; {border} padding:4px 8px;">{row[0]}</td>'
-        html += f'<td style="font-weight:{weight}; {border} padding:4px 8px;">{row[1]}</td>'
-
-        idx = 2
-        for col in group_colors:
-            # Hs
-            v = row[idx]; idx += 1
-            hs = "" if v is None else (f"{v:.2f}" if unit == 'US' else f"{(v/3.28084):.2f}")
-            html += (f'<td style="background-color:{col["data"]}; text-align:right; '
-                     f'font-weight:{weight}; {border} padding:4px 8px;">{hs}</td>')
-            # Tp
-            v = row[idx]; idx += 1
-            tp = "" if v is None else f"{v:.1f}"
-            html += (f'<td style="background-color:{col["data"]}; text-align:right; '
-                     f'font-weight:{weight}; {border} padding:4px 8px;">{tp}</td>')
-            # Dir
-            v = row[idx]; idx += 1
-            dd = "" if v is None else f"{v}"
-            html += (f'<td style="background-color:{col["data"]}; text-align:right; '
-                     f'font-weight:{weight}; {border} padding:4px 8px;">{dd}</td>')
-
-        # Combined
-        v = row[-1]
-        comb = "" if v is None else (f"{v:.2f}" if unit == 'US' else f"{(v/3.28084):.2f}")
-        html += (f'<td style="background-color:{combined_colors["data"]}; text-align:right; '
-                 f'font-weight:{weight}; {border} padding:4px 8px;">{comb}</td>')
-        html += '</tr>\n'
-
-    html += '</table>'
-    return html
-
-
-# =========================
-# Graph helper (unchanged)
-# =========================
 def _fmt_short(dt_obj: datetime) -> str:
+    """Return M/D/YY h:mm AM/PM without leading zeros on month/day."""
     try:
         return dt_obj.strftime("%-m/%-d/%y %I:%M %p").replace(" 0", " ")
     except Exception:
@@ -594,21 +476,29 @@ def _fmt_short(dt_obj: datetime) -> str:
 
 
 def build_graph_payload(rows: list[list], unit: str) -> dict:
+    """
+    Convert parsed rows into arrays for Chart.js.
+    rows: [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs]
+    """
     labels = []
     height = {f"s{i}": [] for i in range(1, 7)}
     period = {f"s{i}": [] for i in range(1, 7)}
     direction = {f"s{i}": [] for i in range(1, 7)}
     combined = []
+
     to_m = (unit != 'US')
 
     for r in rows:
         d_str, t_str = r[0], r[1]
-        dt = None
+        # parse local strings into datetime, then format short label
+        dt_obj = None
         try:
-            d = datetime.strptime(d_str, "%A, %B %d, %Y")
+            dt_obj = datetime.strptime(d_str, "%A, %B %d, %Y")
         except Exception:
-            d = None
-        if d:
+            dt_obj = None
+        if dt_obj is None:
+            labels.append(f"{d_str} {t_str}")
+        else:
             try:
                 tm = datetime.strptime(t_str, "%I:%M %p").time()
             except Exception:
@@ -617,9 +507,10 @@ def build_graph_payload(rows: list[list], unit: str) -> dict:
                 except Exception:
                     tm = None
             if tm:
-                dt = datetime.combine(d.date(), tm)
-        labels.append(_fmt_short(dt) if dt else f"{d_str} {t_str}")
+                dt_obj = datetime.combine(dt_obj.date(), tm)
+            labels.append(_fmt_short(dt_obj))
 
+        # 6 swells
         idx = 2
         for i in range(1, 7):
             hs = r[idx]; tp = r[idx+1]; dd = r[idx+2]
@@ -644,9 +535,97 @@ def build_graph_payload(rows: list[list], unit: str) -> dict:
     }
 
 
-# =========================
-# Routes
-# =========================
+def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None,
+                     rows: list[list], tz_label: str, unit: str) -> str:
+    """Build the table HTML (unchanged)."""
+    group_colors = [
+        {"header": "#C00000", "subheader": "#F8B4B4", "data": "#F9DCDC"},
+        {"header": "#ED7D31", "subheader": "#FBE5D6", "data": "#FDE7D4"},
+        {"header": "#FFC000", "subheader": "#FFF2CC", "data": "#FFF9E5"},
+        {"header": "#00B050", "subheader": "#D5E8D4", "data": "#EAF3E8"},
+        {"header": "#00B0F0", "subheader": "#D9EAF6", "data": "#ECF5FB"},
+        {"header": "#92D050", "subheader": "#E2F0D9", "data": "#F2F8EE"},
+    ]
+    combined_colors = {"header": "#7030A0", "subheader": "#D9D2E9", "data": "#EDE9F4"}
+    total_cols = 2 + len(group_colors) * 3 + 1
+
+    html = '<table class="table table-bordered table-sm">\n'
+    html += f'<tr><td colspan="{total_cols}"><strong>{cycle_str}</strong></td></tr>\n'
+    html += f'<tr><td colspan="{total_cols}"><strong>{location_str}</strong></td></tr>\n'
+    html += f'<tr><td colspan="{total_cols}"><strong>Time Zone: {tz_label}</strong></td></tr>\n'
+    html += '<tr>'
+    html += '<th rowspan="2">Date</th><th rowspan="2">Time</th>'
+    for idx, col in enumerate(group_colors, start=1):
+        html += f'<th colspan="3" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {idx}</th>'
+    html += f'<th style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
+    html += '</tr>\n<tr>'
+    hs_unit_label = '(ft)' if unit == 'US' else '(m)'
+    for col in group_colors:
+        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
+        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
+        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Dir<br>(d)</th>'
+    html += f'<th style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
+    html += '</tr>\n'
+
+    for row in rows:
+        # styling by time block (unchanged)
+        try:
+            parsed_time = datetime.strptime(row[1], "%I:%M %p").time()
+        except Exception:
+            try:
+                parsed_time = datetime.strptime(row[1], "%I:%M:%S %p").time()
+            except Exception:
+                parsed_time = None
+        bold_start = datetime.strptime("6:00:00 AM", "%I:%M:%S %p").time()
+        bold_end = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()
+        dashed_start_evening = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
+        dashed_end_morning = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
+        border_style = ""; font_weight_row = "normal"
+        if parsed_time is not None:
+            if bold_start <= parsed_time <= bold_end:
+                border_style = "border:1px solid #000;"; font_weight_row = "bold"
+            elif parsed_time >= dashed_start_evening or parsed_time <= dashed_end_morning:
+                border_style = "border:1px dashed #999;"; font_weight_row = "normal"
+
+        html += '<tr>'
+        html += f'<td style="font-weight:bold; {border_style} padding:4px 8px;">{row[0]}</td>'
+        html += f'<td style="font-weight:{font_weight_row}; {border_style} padding:4px 8px;">{row[1]}</td>'
+
+        idx = 2
+        for col in group_colors:
+            # Hs
+            val = row[idx]
+            if val is None:
+                hs_str = ""
+            else:
+                display_val = val if unit == 'US' else (val / 3.28084)
+                hs_str = f"{display_val:.2f}"
+            html += f'<td style="background-color:{col["data"]}; text-align:right; font-weight:{font_weight_row}; {border_style} padding:4px 8px;">{hs_str}</td>'
+            idx += 1
+            # Tp
+            val = row[idx]; tp_str = "" if val is None else f"{val:.1f}"
+            html += f'<td style="background-color:{col["data"]}; text-align:right; font-weight:{font_weight_row}; {border_style} padding:4px 8px;">{tp_str}</td>'
+            idx += 1
+            # Dir
+            val = row[idx]; dir_str = "" if val is None else f"{val}"
+            html += f'<td style="background-color:{col["data"]}; text-align:right; font-weight:{font_weight_row}; {border_style} padding:4px 8px;">{dir_str}</td>'
+            idx += 1
+
+        # Combined
+        val = row[-1]
+        if val is None:
+            comb_str = ""
+        else:
+            display_comb = val if unit == 'US' else (val / 3.28084)
+            comb_str = f"{display_comb:.2f}"
+        html += f'<td style="background-color:{combined_colors["data"]}; text-align:right; font-weight:{font_weight_row}; {border_style} padding:4px 8px;">{comb_str}</td>'
+
+        html += '</tr>\n'
+
+    html += '</table>'
+    return html
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     stations = get_station_list()
@@ -676,7 +655,10 @@ def index():
     graph_data = None
     error = None
     tz_label = ""
-    selected_lat = selected_lon = None
+    graph_cycle_str = ""
+    graph_location_str = ""
+    selected_lat = None
+    selected_lon = None
 
     if selected_station:
         cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
@@ -684,25 +666,31 @@ def index():
         )
         error = parse_error
         if rows is not None:
+            # Labels for both views
             tz_label = effective_tz_name
+            graph_cycle_str = cycle_str or ""
+            graph_location_str = location_str or ""
+
+            # Build views
             table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
             graph_data = build_graph_payload(rows, selected_unit)
 
+            # Selected marker coord (for map marker display)
             coords_map = load_station_coords()
-            sid = str(selected_station).strip()
-            if sid in coords_map:
-                selected_lat = coords_map[sid]['lat']; selected_lon = coords_map[sid]['lon']
+            sid_str = str(selected_station).strip()
+            if sid_str in coords_map:
+                selected_lat = coords_map[sid_str]['lat']; selected_lon = coords_map[sid_str]['lon']
             elif location_str:
                 import re
                 m = re.search(r"\(\s*([-+]?\d+(?:\.\d+)?)\s*([NS])\s+([-+]?\d+(?:\.\d+)?)\s*([EW])\)", location_str)
                 if m:
                     try:
-                        lat = float(m.group(1)); lat_dir = m.group(2).upper()
-                        lon = float(m.group(3)); lon_dir = m.group(4).upper()
-                        selected_lat = lat if lat_dir == 'N' else -lat
-                        selected_lon = lon if lon_dir == 'E' else -lon
+                        lat_val = float(m.group(1)); lat_dir = m.group(2).upper()
+                        lon_val = float(m.group(3)); lon_dir = m.group(4).upper()
+                        selected_lat = lat_val if lat_dir == 'N' else -lat_val
+                        selected_lon = lon_val if lon_dir == 'E' else -lon_val
                     except Exception:
-                        selected_lat = selected_lon = None
+                        selected_lat = None; selected_lon = None
 
     return render_template(
         "index.html",
@@ -713,6 +701,10 @@ def index():
         units=unit_options,
         selected_unit=selected_unit,
         selected_view=selected_view,
+        # Graph header strings restored:
+        graph_cycle_str=graph_cycle_str,
+        graph_location_str=graph_location_str,
+        graph_tz_label=tz_label,
         graph_data=graph_data,
         table_html=table_html,
         error=error,

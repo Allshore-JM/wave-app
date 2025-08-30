@@ -132,10 +132,7 @@
 
   <script>
     // Register zoom plugin if available
-    (function() {
-      const zp = window['chartjs-plugin-zoom'];
-      if (zp) { Chart.register(zp); }
-    })();
+    (() => { const zp = window['chartjs-plugin-zoom']; if (zp) Chart.register(zp); })();
 
     // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
@@ -150,16 +147,13 @@
     // ---- Leaflet Map ----
     const map = L.map('map', { worldCopyJump: false, zoomControl: true });
     const saved = loadMapView();
-    if (saved) {
-      map.setView([saved.lat, saved.lng], saved.z);
-    } else {
-      map.setView([20, -160], 2); // initial view
-    }
+    if (saved) map.setView([saved.lat, saved.lng], saved.z);
+    else map.setView([20, -160], 2);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 8,
       minZoom: 2,
-      noWrap: true   // exactly one world, no grey margins
+      noWrap: true
     }).addTo(map);
 
     // Plot stations
@@ -168,15 +162,9 @@
       .then(stations => {
         stations.forEach(s => {
           const mk = L.circleMarker([s.lat, s.lon], {
-            radius: 2,           // small yellow markers
-            color: '#FFD600',
-            fillColor: '#FFD600',
-            fillOpacity: 1,
-            weight: 1
+            radius: 2, color: '#FFD600', fillColor: '#FFD600', fillOpacity: 1, weight: 1
           }).addTo(map);
-          // Tooltip: station ID on hover
           mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
-          // Click to select station; keep zoom state
           mk.on('click', () => {
             document.getElementById('station').value = s.id;
             saveMapView(map);
@@ -191,17 +179,7 @@
     // ---- Graphing (time axis, 6h ticks, midnight majors, pan/zoom, isolate, points-only) ----
     const GD = {{ graph_data|tojson|safe }};
 
-    const colors = {
-      s1: '#C00000',
-      s2: '#ED7D31',
-      s3: '#FFC000',
-      s4: '#00B050',
-      s5: '#00B0F0',
-      s6: '#92D050',
-      combined: '#7030A0'
-    };
-
-    // Robust label -> Date parser (supports several formats you use)
+    // Robust label -> Date parser (supports the formats we render)
     const parse = dateFns.parse, isValid = dateFns.isValid;
     function parseLabelToDate(lbl) {
       if (!lbl) return null;
@@ -234,21 +212,12 @@
 
     // Helpers for y‑range (+10% pad for height/period)
     const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
-    const maxAcross = arrays => {
-      let m = -Infinity;
-      arrays.forEach(a => finiteVals(a).forEach(v => { if (v > m) m = v; }));
-      return m;
-    };
-    const minAcross = arrays => {
-      let m = Infinity;
-      arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; }));
-      return m;
-    };
-    const padMax = (v, pct = 0.10) => Number.isFinite(v) ? v * (1 + pct) : v;
-    const niceCeil = (v, step) => Math.ceil(v / step) * step;
-
-    function heightStep(maxVal) { if (maxVal <= 1) return 0.1; if (maxVal <= 2) return 0.2; if (maxVal <= 4) return 0.5; if (maxVal <= 8) return 1; return 2; }
-    function periodStep(maxVal) { if (maxVal <= 8) return 1; if (maxVal <= 16) return 2; return 5; }
+    const maxAcross = arrays => { let m=-Infinity; arrays.forEach(a => finiteVals(a).forEach(v => { if (v>m) m=v; })); return m; };
+    const minAcross = arrays => { let m= Infinity; arrays.forEach(a => finiteVals(a).forEach(v => { if (v<m) m=v; })); return m; };
+    const padMax = (v, pct=0.10) => Number.isFinite(v) ? v*(1+pct) : v;
+    const niceCeil = (v, step) => Math.ceil(v/step)*step;
+    function heightStep(maxVal){ if (maxVal<=1) return 0.1; if (maxVal<=2) return 0.2; if (maxVal<=4) return 0.5; if (maxVal<=8) return 1; return 2; }
+    function periodStep(maxVal){ if (maxVal<=8) return 1; if (maxVal<=16) return 2; return 5; }
 
     // Axis ranges
     const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
@@ -264,31 +233,23 @@
     if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
     const dStep = 45;
 
+    // Colors
+    const colors = { s1:'#C00000', s2:'#ED7D31', s3:'#FFC000', s4:'#00B050', s5:'#00B0F0', s6:'#92D050', combined:'#7030A0' };
+
     // Common chart options (time axis with 6h ticks, midnight majors)
     function timeAxisOptions() {
       return {
         type: 'time',
-        time: {
-          unit: 'hour',
-          stepSize: 6,
-          displayFormats: { hour: 'M/d h a' } // label format; we override via ticks.callback
-        },
-        adapters: { date: { locale: undefined } },
+        time: { unit: 'hour', stepSize: 6, displayFormats: { hour: 'M/d h a' } },
         grid: {
-          color: ctx => {
-            const h = new Date(ctx.tick.value).getHours();
-            return h === 0 ? 'rgba(0,0,0,0.18)' : 'rgba(0,0,0,0.08)';
-          },
+          color: ctx => (new Date(ctx.tick.value).getHours() === 0 ? 'rgba(0,0,0,0.18)' : 'rgba(0,0,0,0.08)'),
           lineWidth: ctx => (new Date(ctx.tick.value).getHours() === 0 ? 1.5 : 0.75)
         },
         ticks: {
-          autoSkip: true,
-          maxRotation: 0, minRotation: 0,
-          callback: (value, index, ticks) => {
+          autoSkip: true, maxRotation: 0, minRotation: 0,
+          callback: (value) => {
             const d = new Date(value);
-            return (d.getHours() === 0)
-              ? dateFns.format(d, 'M/d')
-              : dateFns.format(d, 'ha');
+            return (d.getHours() === 0) ? dateFns.format(d, 'M/d') : dateFns.format(d, 'ha');
           }
         }
       };
@@ -301,44 +262,36 @@
       interaction: { mode: 'nearest', intersect: true, axis: 'x' },
       elements: {
         point: { radius: 2, hoverRadius: 3.5 },
-        line: { borderWidth: 0 } // no connecting lines
+        line:  { borderWidth: 0 } // no connecting lines
       },
       plugins: {
-        legend: { display: false }, // we use our own mini toolbar
+        legend: { display: false }, // custom toolbar below
         tooltip: {
           mode: 'nearest',
           callbacks: {
-            title: (items) => {
-              const d = items[0].parsed.x;
-              return dateFns.format(new Date(d), 'M/d/yyyy h:mm a');
-            }
+            title: (items) => dateFns.format(new Date(items[0].parsed.x), 'M/d/yyyy h:mm a')
           }
         },
-        zoom: {
-          pan: { enabled: true, mode: 'x' },
-          zoom: { wheel: {enabled: true}, pinch: {enabled: true}, mode: 'x' }
-        }
+        zoom: { pan: { enabled: true, mode: 'x' }, zoom: { wheel:{enabled:true}, pinch:{enabled:true}, mode:'x' } }
       },
       animation: false
     };
 
     function pts(labelKey, arr) { return { label: labelKey, data: packXY(arr), showLine: false, spanGaps: false }; }
-    function sDs(label, key, obj, color) {
-      return { ...pts(label, obj[key]), borderColor: color, backgroundColor: color, pointStyle: 'circle' };
-    }
+    function sDs(label, key, obj, color) { return { ...pts(label, obj[key]), borderColor: color, backgroundColor: color, pointStyle: 'circle' }; }
 
     const charts = [];
 
-    // HEIGHT (ft/m) — includes Combined; y: 0..max(+10%)
+    // HEIGHT (ft/m) — includes Combined; y: 0..max(+10%) with proper step
     const heightCtx = document.getElementById('heightChart').getContext('2d');
     const heightDatasets = [
-      sDs('Swell 1', 's1', GD.height, '#C00000'),
-      sDs('Swell 2', 's2', GD.height, '#ED7D31'),
-      sDs('Swell 3', 's3', GD.height, '#FFC000'),
-      sDs('Swell 4', 's4', GD.height, '#00B050'),
-      sDs('Swell 5', 's5', GD.height, '#00B0F0'),
-      sDs('Swell 6', 's6', GD.height, '#92D050'),
-      { ...pts('Combined', GD.height.combined), borderColor: '#7030A0', backgroundColor: '#7030A0', pointStyle: 'circle' }
+      sDs('Swell 1', 's1', GD.height, colors.s1),
+      sDs('Swell 2', 's2', GD.height, colors.s2),
+      sDs('Swell 3', 's3', GD.height, colors.s3),
+      sDs('Swell 4', 's4', GD.height, colors.s4),
+      sDs('Swell 5', 's5', GD.height, colors.s5),
+      sDs('Swell 6', 's6', GD.height, colors.s6),
+      { ...pts('Combined', GD.height.combined), borderColor: colors.combined, backgroundColor: colors.combined, pointStyle: 'circle' }
     ];
     const heightChart = new Chart(heightCtx, {
       type: 'scatter',
@@ -350,25 +303,23 @@
           x: timeAxisOptions(),
           y: {
             beginAtZero: true, min: 0, max: hMax,
-            ticks: { stepSize: {{ 0 }} }, /* replaced below */
+            ticks: { stepSize: hStep },   /* <-- set at creation (no zero) */
             grid: { color: 'rgba(0,0,0,0.08)' },
             title: { display: true, text: `Height (${GD.units})` }
           }
         }
       }
     });
-    // set stepSize after creation (template literal guard above)
-    heightChart.options.scales.y.ticks.stepSize = (function(){ return (hMax <= 1 ? 0.1 : hMax <= 2 ? 0.2 : hMax <= 4 ? 0.5 : hMax <= 8 ? 1 : 2); })();
 
-    // PERIOD (s) — y: 0..max(+10%)
+    // PERIOD (s) — y: 0..max(+10%) with proper step
     const periodCtx = document.getElementById('periodChart').getContext('2d');
     const periodDatasets = [
-      sDs('Swell 1', 's1', GD.period, '#C00000'),
-      sDs('Swell 2', 's2', GD.period, '#ED7D31'),
-      sDs('Swell 3', 's3', GD.period, '#FFC000'),
-      sDs('Swell 4', 's4', GD.period, '#00B050'),
-      sDs('Swell 5', 's5', GD.period, '#00B0F0'),
-      sDs('Swell 6', 's6', GD.period, '#92D050')
+      sDs('Swell 1', 's1', GD.period, colors.s1),
+      sDs('Swell 2', 's2', GD.period, colors.s2),
+      sDs('Swell 3', 's3', GD.period, colors.s3),
+      sDs('Swell 4', 's4', GD.period, colors.s4),
+      sDs('Swell 5', 's5', GD.period, colors.s5),
+      sDs('Swell 6', 's6', GD.period, colors.s6)
     ];
     const periodChart = new Chart(periodCtx, {
       type: 'scatter',
@@ -380,24 +331,23 @@
           x: timeAxisOptions(),
           y: {
             beginAtZero: true, min: 0, max: pMax,
-            ticks: { stepSize: {{ 0 }} }, /* replaced below */
+            ticks: { stepSize: pStep },   /* <-- set at creation (no zero) */
             grid: { color: 'rgba(0,0,0,0.08)' },
             title: { display: true, text: 'Period (s)' }
           }
         }
       }
     });
-    periodChart.options.scales.y.ticks.stepSize = (function(){ return (pMax <= 8 ? 1 : pMax <= 16 ? 2 : 5); })();
 
     // DIRECTION (deg) — y: min..max, 45° step
     const directionCtx = document.getElementById('directionChart').getContext('2d');
     const directionDatasets = [
-      sDs('Swell 1', 's1', GD.direction, '#C00000'),
-      sDs('Swell 2', 's2', GD.direction, '#ED7D31'),
-      sDs('Swell 3', 's3', GD.direction, '#FFC000'),
-      sDs('Swell 4', 's4', GD.direction, '#00B050'),
-      sDs('Swell 5', 's5', GD.direction, '#00B0F0'),
-      sDs('Swell 6', 's6', GD.direction, '#92D050')
+      sDs('Swell 1', 's1', GD.direction, colors.s1),
+      sDs('Swell 2', 's2', GD.direction, colors.s2),
+      sDs('Swell 3', 's3', GD.direction, colors.s3),
+      sDs('Swell 4', 's4', GD.direction, colors.s4),
+      sDs('Swell 5', 's5', GD.direction, colors.s5),
+      sDs('Swell 6', 's6', GD.direction, colors.s6)
     ];
     const directionChart = new Chart(directionCtx, {
       type: 'scatter',
@@ -409,7 +359,7 @@
           x: timeAxisOptions(),
           y: {
             min: dMin, max: dMax,
-            ticks: { stepSize: 45 },
+            ticks: { stepSize: dStep },
             grid: { color: 'rgba(0,0,0,0.08)' },
             title: { display: true, text: 'Direction (°)' }
           }
@@ -419,26 +369,25 @@
 
     charts.push(heightChart, periodChart, directionChart);
 
-    // --- Mini legend toolbar (isolate one series across all charts) ---
+    // --- Mini legend toolbar (isolate one series) ---
     const toolbar = document.getElementById('legendToolbar');
     const buttons = [
       {key:'All', label:'All'},
-      {key:'Swell 1', label:'Swell 1', color:'#C00000'},
-      {key:'Swell 2', label:'Swell 2', color:'#ED7D31'},
-      {key:'Swell 3', label:'Swell 3', color:'#FFC000'},
-      {key:'Swell 4', label:'Swell 4', color:'#00B050'},
-      {key:'Swell 5', label:'Swell 5', color:'#00B0F0'},
-      {key:'Swell 6', label:'Swell 6', color:'#92D050'},
-      {key:'Combined', label:'Combined', color:'#7030A0'} // affects Height chart only
+      {key:'Swell 1', label:'Swell 1', color:colors.s1},
+      {key:'Swell 2', label:'Swell 2', color:colors.s2},
+      {key:'Swell 3', label:'Swell 3', color:colors.s3},
+      {key:'Swell 4', label:'Swell 4', color:colors.s4},
+      {key:'Swell 5', label:'Swell 5', color:colors.s5},
+      {key:'Swell 6', label:'Swell 6', color:colors.s6},
+      {key:'Combined', label:'Combined', color:colors.combined}
     ];
-    buttons.forEach((b, i) => {
+    buttons.forEach(b => {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn btn-sm ' + (b.key === 'All' ? 'btn-primary' : 'btn-outline-secondary');
       btn.dataset.key = b.key;
       btn.innerHTML = (b.color ? `<span class="color-dot" style="background:${b.color}"></span>` : '') + b.label;
       btn.addEventListener('click', () => {
-        // toggle styles
         toolbar.querySelectorAll('button').forEach(x => x.classList.replace('btn-primary','btn-outline-secondary'));
         btn.classList.replace('btn-outline-secondary','btn-primary');
         applyIsolate(b.key);
@@ -448,12 +397,11 @@
 
     function applyIsolate(label) {
       charts.forEach(ch => {
+        const hasLabel = ch.data.datasets.some(ds => ds.label === label);
         ch.data.datasets.forEach(ds => {
-          if (label === 'All') {
-            ds.hidden = false;
-          } else {
-            ds.hidden = (ds.label !== label);
-          }
+          if (label === 'All') ds.hidden = false;
+          else if (hasLabel) ds.hidden = (ds.label !== label);
+          else ds.hidden = false; // e.g., 'Combined' on Period/Direction → keep all visible
         });
         ch.update();
       });

@@ -11,14 +11,14 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+
   <style>
     html, body { height: 100%; }
     #map { height: 420px; border: 1px solid #ccc; }
     .leaflet-tooltip { font-weight: 600; }
     .sticky-top-bar { position: sticky; top: 0; z-index: 1000; background:#fff; border-bottom: 1px solid #eee; }
+    .form-inline .form-select, .form-inline .form-control { width: auto; }
     canvas.chart-tall { height: 260px !important; }
-    .meta-header { font-size: .95rem; margin: 0 0 .5rem 0; color:#333; }
-    .meta-header strong { font-weight: 600; }
   </style>
 </head>
 <body class="bg-light">
@@ -84,12 +84,12 @@
           <!-- Graph View -->
           <div id="graphs" class="card">
             <div class="card-body">
-              <!-- Graph header: Cycle / Location / TZ -->
-              <p class="meta-header mb-3">
-                <strong>{{ graph_header.cycle }}</strong> &nbsp;|&nbsp;
-                <strong>{{ graph_header.location }}</strong> &nbsp;|&nbsp;
-                <strong>Time Zone:</strong> {{ graph_header.timezone }}
-              </p>
+              <!-- Header line (no “Graphs (ft)” label) -->
+              <h6 class="mb-3 text-muted">
+                <strong>Cycle :</strong> {{ graph_data.header.cycle }}
+                &nbsp; | &nbsp; <strong>Location :</strong> {{ graph_data.header.location }}
+                &nbsp; | &nbsp; <strong>Time Zone:</strong> {{ graph_data.header.tz }}
+              </h6>
 
               <div class="mb-4">
                 <canvas id="heightChart" class="chart-tall"></canvas>
@@ -115,7 +115,7 @@
   </div>
 
   <script>
-    // ---- Preserve map zoom/center between requests ----
+    // ---------- Preserve map zoom/center between requests ----------
     const mapKey = 'mapView';
     function saveMapView(map) {
       const v = {c: map.getCenter(), z: map.getZoom()};
@@ -125,25 +125,21 @@
       try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e) { return null; }
     }
 
-    // ---- Leaflet Map (satellite, one world, no grey) ----
-    const map = L.map('map', {
-      worldCopyJump: false,
-      zoomControl: true
-    });
+    // ---------- Leaflet Map (Satellite, one world, no grey) ----------
+    const map = L.map('map', { worldCopyJump: false, zoomControl: true, inertia: true });
     const saved = loadMapView();
     if (saved) {
       map.setView([saved.lat, saved.lng], saved.z);
     } else {
-      map.setView([20, -160], 2);
+      map.setView([20, -160], 2); // Initial view
     }
 
-    // Esri World Imagery
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 8,
-      minZoom: 2,
-      noWrap: true,        // prevent wrap & grey pads
-      bounds: [[-85, -180], [85, 180]]
-    }).addTo(map);
+    const worldBounds = [[-85, -179.999], [85, 179.999]];
+    L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 8, minZoom: 2, noWrap: true, bounds: worldBounds, attribution: '&copy; Esri' }
+    ).addTo(map);
+    map.setMaxBounds(worldBounds);
 
     // Plot stations
     fetch('/stations.json')
@@ -169,107 +165,88 @@
     document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
     {% if selected_view == 'Graph' and graph_data %}
-    // -------------------- Graphs --------------------
+    // ---------- Charts ----------
     const GD = {{ graph_data|tojson|safe }};
 
-    // Colors
     const colors = {
-      s1: '#C00000',
-      s2: '#ED7D31',
-      s3: '#FFC000',
-      s4: '#00B050',
-      s5: '#00B0F0',
-      s6: '#92D050',
+      s1: '#C00000', s2: '#ED7D31', s3: '#FFC000',
+      s4: '#00B050', s5: '#00B0F0', s6: '#92D050',
       combined: '#7030A0'
     };
 
     // Helpers
-    const vals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
-    const maxAcross = arrays => arrays.reduce((m,a)=>Math.max(m,...vals(a)), -Infinity);
-    const minAcross = arrays => arrays.reduce((m,a)=>Math.min(m,...vals(a)),  Infinity);
-    const padMax = (v, pct=0.10) => Number.isFinite(v) ? v*(1+pct) : v;
+    const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
+    const maxAcross = arrays => arrays.reduce((m,a)=>Math.max(m, ...finiteVals(a)), -Infinity);
+    const minAcross = arrays => arrays.reduce((m,a)=>Math.min(m, ...finiteVals(a)), +Infinity);
+    const padMax = (v, pct=0.10) => Number.isFinite(v) ? v * (1+pct) : v;
     const niceCeil = (v, step) => Math.ceil(v/step)*step;
 
-    function heightStep(mx){ if(mx<=1) return 0.1; if(mx<=2) return 0.2; if(mx<=4) return 0.5; if(mx<=8) return 1; return 2; }
-    function periodStep(mx){ if(mx<=8) return 1; if(mx<=16) return 2; return 5; }
+    // Height axis
+    const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
+    let hMax = maxAcross(heightArrays); if (!Number.isFinite(hMax)) hMax = 1;
+    hMax = niceCeil(padMax(hMax, 0.10), (hMax <= 2 ? 0.2 : hMax <= 4 ? 0.5 : 1));
 
-    // ---- Axis ranges (+10% pad for Height/Period)
-    const hArrays = [GD.height.s1,GD.height.s2,GD.height.s3,GD.height.s4,GD.height.s5,GD.height.s6,GD.height.combined];
-    let hMax = maxAcross(hArrays); if(!Number.isFinite(hMax)) hMax = 1; hMax = niceCeil(padMax(hMax,0.10), heightStep(hMax));
-    const pArrays = [GD.period.s1,GD.period.s2,GD.period.s3,GD.period.s4,GD.period.s5,GD.period.s6];
-    let pMax = maxAcross(pArrays); if(!Number.isFinite(pMax)) pMax = 10; pMax = niceCeil(padMax(pMax,0.10), periodStep(pMax));
-    const dArrays = [GD.direction.s1,GD.direction.s2,GD.direction.s3,GD.direction.s4,GD.direction.s5,GD.direction.s6];
-    let dMin = minAcross(dArrays), dMax = maxAcross(dArrays);
-    if(!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin===dMax){ dMin=0; dMax=360; }
+    // Period axis
+    const periodArrays = [GD.period.s1, GD.period.s2, GD.period.s3, GD.period.s4, GD.period.s5, GD.period.s6];
+    let pMax = maxAcross(periodArrays); if (!Number.isFinite(pMax)) pMax = 10;
+    pMax = niceCeil(padMax(pMax, 0.10), (pMax <= 8 ? 1 : pMax <= 16 ? 2 : 5));
 
-    // -------- Date label utilities (exact format "M/D/YY 12:00 AM") --------
-    function parseToDate(x){
-      if (x instanceof Date) return x;
-      if (typeof x === 'number') return new Date(x);
-      if (typeof x === 'string') {
-        // Prefer ISO strings from server
-        const d1 = new Date(x);
-        if (!isNaN(d1)) return d1;
+    // Direction axis
+    const dirArrays = [GD.direction.s1, GD.direction.s2, GD.direction.s3, GD.direction.s4, GD.direction.s5, GD.direction.s6];
+    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
+    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
+
+    // Determine which labels are 12:00 AM or 12:00 PM (for labels & darker gridlines)
+    const noonMidnightIdx = GD.labels.map((lab, i) =>
+      typeof lab === 'string' && (lab.includes('12:00 AM') || lab.includes('12:00 PM')) ? i : -1
+    ).filter(i => i >= 0);
+
+    // Plugin to darken vertical gridlines at 12 AM / 12 PM
+    const highlightPlugin = {
+      id: 'noonMidnightGrid',
+      beforeDraw(chart, args, opts) {
+        const {ctx, chartArea, scales} = chart;
+        if (!scales.x) return;
+        const xScale = scales.x;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(0,0,0,0.30)';
+        ctx.lineWidth = 1;
+        noonMidnightIdx.forEach(idx => {
+          const x = xScale.getPixelForValue(idx);
+          ctx.beginPath();
+          ctx.moveTo(x, chartArea.top);
+          ctx.lineTo(x, chartArea.bottom);
+          ctx.stroke();
+        });
+        ctx.restore();
       }
-      return null;
-    }
-    function formatLabel(dt){
-      // M/D/YY 12:00 AM
-      const dPart = dt.toLocaleDateString('en-US', {month:'numeric', day:'numeric', year:'2-digit'});
-      const tPart = dt.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', hour12:true});
-      // ensure exactly one space before AM/PM (most browsers already do this)
-      return `${dPart} ${tPart}`;
-    }
-    function isMidnightOrNoon(dt){
-      return dt.getMinutes()===0 && (dt.getHours()===0 || dt.getHours()===12);
-    }
-    function isSixHour(dt){
-      return dt.getMinutes()===0 && dt.getHours()%6===0;
-    }
+    };
 
-    // Common chart options
+    // Reusable common options (with 90° rotation on X)
     const commonOpts = {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false, axis: 'x' },
-      layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
-      elements: { 
-        point: { radius: 1.5 },              // dots only
-        line: { borderWidth: 0, tension: 0 } // NO connecting lines
-      },
+      layout: { padding: { top: 8, right: 8, bottom: 32, left: 8 } }, /* extra bottom for rotated ticks */
+      elements: { point: { radius: 2, hoverRadius: 4 }, line: { borderWidth: 0, tension: 0, showLine: false } },
       plugins: {
         legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 12, boxHeight: 6 } },
-        tooltip: { mode: 'nearest', intersect: false }
+        tooltip: { mode: 'nearest', intersect: false },
+        decimation: { enabled: false },
+        noonMidnightGrid: {}
       },
       scales: {
         x: {
           type: 'category',
-          grid: {
-            display: true,
-            color: (ctx) => {
-              const i = ctx.index; const dt = parseToDate(GD.labels[i]);
-              if(!dt) return 'rgba(0,0,0,0.06)';
-              if (isMidnightOrNoon(dt)) return 'rgba(0,0,0,0.28)';     // dark major
-              if (isSixHour(dt))       return 'rgba(0,0,0,0.12)';     // lighter minor (6h)
-              return 'rgba(0,0,0,0.06)';                              // faint others
-            },
-            lineWidth: (ctx) => {
-              const dt = parseToDate(GD.labels[ctx.index]);
-              if(!dt) return 0.5;
-              if (isMidnightOrNoon(dt)) return 1.2;
-              if (isSixHour(dt)) return 0.8;
-              return 0.5;
-            }
-          },
+          grid: { display: true, color: 'rgba(0,0,0,0.08)' },
           ticks: {
             autoSkip: false,
-            maxRotation: 0,
-            minRotation: 0,
+            maxRotation: 90,   /* <<< rotate */
+            minRotation: 90,   /* <<< rotate */
+            padding: 6,
             callback: (value, index) => {
-              const dt = parseToDate(GD.labels[index]);
-              if (!dt) return '';
-              // Label ONLY 12:00 AM and 12:00 PM
-              return isMidnightOrNoon(dt) ? formatLabel(dt) : '';
+              const lab = GD.labels[index] || '';
+              return (lab.includes('12:00 AM') || lab.includes('12:00 PM')) ? lab : '';
             }
           }
         },
@@ -281,20 +258,20 @@
       animation: false
     };
 
-    function swellPoints(label, key, data, color) {
-      return { label, data: data[key], pointBackgroundColor: color, pointBorderColor: color, showLine: false };
+    function swellDots(label, key, data, color) {
+      return { label, data: data[key], borderColor: color, backgroundColor: color, pointStyle:'circle', showLine:false };
     }
 
-    // HEIGHT — includes Combined
+    // HEIGHT (with Combined)
     (() => {
       const ds = [
-        swellPoints('Swell 1','s1',GD.height,colors.s1),
-        swellPoints('Swell 2','s2',GD.height,colors.s2),
-        swellPoints('Swell 3','s3',GD.height,colors.s3),
-        swellPoints('Swell 4','s4',GD.height,colors.s4),
-        swellPoints('Swell 5','s5',GD.height,colors.s5),
-        swellPoints('Swell 6','s6',GD.height,colors.s6),
-        { label:'Combined', data: GD.height.combined, pointBackgroundColor: colors.combined, pointBorderColor: colors.combined, showLine:false }
+        swellDots('Swell 1', 's1', GD.height, colors.s1),
+        swellDots('Swell 2', 's2', GD.height, colors.s2),
+        swellDots('Swell 3', 's3', GD.height, colors.s3),
+        swellDots('Swell 4', 's4', GD.height, colors.s4),
+        swellDots('Swell 5', 's5', GD.height, colors.s5),
+        swellDots('Swell 6', 's6', GD.height, colors.s6),
+        { label: 'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, pointRadius: 2.5, showLine:false }
       ];
       new Chart(document.getElementById('heightChart').getContext('2d'), {
         type: 'scatter',
@@ -304,21 +281,26 @@
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
           scales: {
             x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, beginAtZero:true, min:0, max:hMax, ticks:{ stepSize: (hMax<=2?0.2: hMax<=8?1:2) }, title:{ display:true, text:`Height (${GD.units})` } }
+            y: {
+              ...commonOpts.scales.y,
+              beginAtZero: true, min: 0, max: hMax,
+              title: { display: true, text: `Height (${GD.units})` }
+            }
           }
-        }
+        },
+        plugins: [highlightPlugin]
       });
     })();
 
     // PERIOD
     (() => {
       const ds = [
-        swellPoints('Swell 1','s1',GD.period,colors.s1),
-        swellPoints('Swell 2','s2',GD.period,colors.s2),
-        swellPoints('Swell 3','s3',GD.period,colors.s3),
-        swellPoints('Swell 4','s4',GD.period,colors.s4),
-        swellPoints('Swell 5','s5',GD.period,colors.s5),
-        swellPoints('Swell 6','s6',GD.period,colors.s6)
+        swellDots('Swell 1', 's1', GD.period, colors.s1),
+        swellDots('Swell 2', 's2', GD.period, colors.s2),
+        swellDots('Swell 3', 's3', GD.period, colors.s3),
+        swellDots('Swell 4', 's4', GD.period, colors.s4),
+        swellDots('Swell 5', 's5', GD.period, colors.s5),
+        swellDots('Swell 6', 's6', GD.period, colors.s6)
       ];
       new Chart(document.getElementById('periodChart').getContext('2d'), {
         type: 'scatter',
@@ -328,21 +310,26 @@
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
           scales: {
             x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, beginAtZero:true, min:0, max:pMax, ticks:{ stepSize: (pMax<=8?1: pMax<=16?2:5) }, title:{ display:true, text:'Period (s)' } }
+            y: {
+              ...commonOpts.scales.y,
+              beginAtZero: true, min: 0, max: pMax,
+              title: { display: true, text: 'Period (s)' }
+            }
           }
-        }
+        },
+        plugins: [highlightPlugin]
       });
     })();
 
     // DIRECTION
     (() => {
       const ds = [
-        swellPoints('Swell 1','s1',GD.direction,colors.s1),
-        swellPoints('Swell 2','s2',GD.direction,colors.s2),
-        swellPoints('Swell 3','s3',GD.direction,colors.s3),
-        swellPoints('Swell 4','s4',GD.direction,colors.s4),
-        swellPoints('Swell 5','s5',GD.direction,colors.s5),
-        swellPoints('Swell 6','s6',GD.direction,colors.s6)
+        swellDots('Swell 1', 's1', GD.direction, colors.s1),
+        swellDots('Swell 2', 's2', GD.direction, colors.s2),
+        swellDots('Swell 3', 's3', GD.direction, colors.s3),
+        swellDots('Swell 4', 's4', GD.direction, colors.s4),
+        swellDots('Swell 5', 's5', GD.direction, colors.s5),
+        swellDots('Swell 6', 's6', GD.direction, colors.s6),
       ];
       new Chart(document.getElementById('directionChart').getContext('2d'), {
         type: 'scatter',
@@ -352,11 +339,18 @@
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
           scales: {
             x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, min:dMin, max:dMax, ticks:{ stepSize:45 }, title:{ display:true, text:'Direction (°)' } }
+            y: {
+              ...commonOpts.scales.y,
+              min: dMin, max: dMax,
+              ticks: { stepSize: 45 },
+              title: { display: true, text: 'Direction (°)' }
+            }
           }
-        }
+        },
+        plugins: [highlightPlugin]
       });
     })();
+
     {% endif %}
   </script>
 </body>

@@ -17,7 +17,6 @@
     .leaflet-tooltip { font-weight: 600; }
     .sticky-top-bar { position: sticky; top: 0; z-index: 1000; background:#fff; border-bottom: 1px solid #eee; }
     .form-inline .form-select, .form-inline .form-control { width: auto; }
-    /* Taller charts for readability */
     canvas.chart-tall { height: 260px !important; }
   </style>
 </head>
@@ -84,14 +83,13 @@
           <!-- Graph View -->
           <div id="graphs" class="card">
             <div class="card-body">
-              <!-- Compact header line with cycle / location / tz -->
-              {% if graph_meta %}
-                <div class="mb-2 small text-muted">
-                  <strong>{{ graph_meta.cycle }}</strong> &nbsp;&middot;&nbsp;
-                  <strong>{{ graph_meta.location }}</strong> &nbsp;&middot;&nbsp;
-                  <strong>Time Zone: {{ graph_meta.tz }}</strong>
-                </div>
-              {% endif %}
+              <!-- Graph header: Cycle, Location, Time Zone -->
+              <div class="mb-2">
+                <div class="fw-bold">{{ graph_data.cycle }}</div>
+                <div class="fw-bold">{{ graph_data.location }}</div>
+                <div class="fw-bold">Time Zone: {{ graph_data.timezone }}</div>
+              </div>
+
               <div class="mb-4">
                 <canvas id="heightChart" class="chart-tall"></canvas>
               </div>
@@ -116,7 +114,7 @@
   </div>
 
   <script>
-    // ---- Preserve map zoom/center between requests ----
+    // ---------------- Map (satellite, one-world, no grey sides) ----------------
     const mapKey = 'mapView';
     function saveMapView(map) {
       const v = {c: map.getCenter(), z: map.getZoom()};
@@ -126,20 +124,29 @@
       try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e) { return null; }
     }
 
-    // ---- Leaflet Map ----
-    const map = L.map('map', { worldCopyJump: false, zoomControl: true });
+    // One-world bounds (avoid wrap & side gaps)
+    const worldBounds = L.latLngBounds(L.latLng(-85, -180), L.latLng(85, 180));
+    const map = L.map('map', {
+      worldCopyJump: false,
+      zoomControl: true,
+      maxBounds: worldBounds,
+      maxBoundsViscosity: 1.0
+    });
+
     const saved = loadMapView();
     if (saved) {
       map.setView([saved.lat, saved.lng], saved.z);
     } else {
-      map.setView([20, -160], 2); // initial view
+      map.fitBounds(worldBounds);
+      map.setView([20, -160], 2);
     }
 
     // Esri World Imagery (satellite)
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
       maxZoom: 8,
       minZoom: 2,
-      noWrap: true   // single world, no grey margins
+      noWrap: true,
+      attribution: 'Tiles © Esri & contributors'
     }).addTo(map);
 
     // Plot stations
@@ -165,16 +172,9 @@
 
     document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
+    // ---------------- Graphs ----------------
     {% if selected_view == 'Graph' and graph_data %}
-    // ---- Charts ----
     const GD = {{ graph_data|tojson|safe }};
-
-    // Normalize labels to numeric format and remove the space before AM/PM
-    // (If backend already supplies numeric labels, this is a no-op.)
-    const rawLabels = GD.labels.slice();
-    const labels = rawLabels.map(lbl =>
-      String(lbl).replace(' AM','AM').replace(' PM','PM')
-    );
 
     const colors = {
       s1: '#C00000',
@@ -186,78 +186,98 @@
       combined: '#7030A0'
     };
 
-    // Helpers: finite min/max across arrays; +10% pad; nice steps
+    // --- Label parse & format helpers (robust to multiple string shapes) ---
+    const monthIdx = (mName) => {
+      if (!mName) return NaN;
+      const k = mName.slice(0,3).toLowerCase();
+      const map = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+      return map[k];
+    };
+
+    function parseLabelToDate(str) {
+      if (!str) return new Date(NaN);
+      let s = String(str).trim();
+      // Drop leading day name like "Saturday, "
+      s = s.replace(/^[A-Za-z]+,\s+/, '');
+
+      // First try native parser
+      let d = new Date(s);
+      if (!isNaN(d)) return d;
+
+      // "Month DD, YYYY h:mm AM"
+      let m = s.match(/^([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (m) {
+        const mo = monthIdx(m[1]);
+        const day = +m[2], yr = +m[3];
+        let hr = +m[4], mn = +m[5], ap = m[6].toUpperCase();
+        hr = (hr % 12) + (ap === 'PM' ? 12 : 0);
+        return new Date(yr, mo, day, hr, mn);
+      }
+
+      // "M/D/YY h:mm AM"
+      m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (m) {
+        const mo = +m[1]-1, day = +m[2];
+        let yr = +m[3]; if (yr < 100) yr += 2000;
+        let hr = +m[4], mn = +m[5], ap = m[6].toUpperCase();
+        hr = (hr % 12) + (ap === 'PM' ? 12 : 0);
+        return new Date(yr, mo, day, hr, mn);
+      }
+
+      return new Date(NaN);
+    }
+
+    function formatMDYHM(d) {
+      if (!(d instanceof Date) || isNaN(d)) return '';
+      const mm = d.getMonth() + 1;
+      const dd = d.getDate();
+      const yy = (d.getFullYear() % 100).toString().padStart(2,'0');
+      let h = d.getHours();
+      const ap = h >= 12 ? 'PM' : 'AM';
+      h = h % 12; if (h === 0) h = 12;
+      const m = d.getMinutes().toString().padStart(2,'0');
+      return `${mm}/${dd}/${yy} ${h}:${m}${ap}`;
+    }
+
+    // grid helpers (12-hr majors)
+    function isMajorHour(label, scale, value) {
+      try {
+        const real = scale.getLabelForValue(value);
+        const d = parseLabelToDate(real);
+        const hr = d.getHours();
+        return hr === 0 || hr === 12;
+      } catch { return false; }
+    }
+
+    // finite helpers
     const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
     const maxAcross = arrays => {
-      let m = -Infinity;
-      arrays.forEach(a => finiteVals(a).forEach(v => { if (v > m) m = v; }));
+      let m = -Infinity; arrays.forEach(a => finiteVals(a).forEach(v => { if (v > m) m = v; }));
       return m;
     };
     const minAcross = arrays => {
-      let m = Infinity;
-      arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; }));
+      let m = Infinity; arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; }));
       return m;
     };
     const padMax = (v, pct = 0.10) => Number.isFinite(v) ? v * (1 + pct) : v;
-
-    // Choose label interval to keep 8–16 labels visible
-    function labelEvery(n) {
-      if (n <= 16) return 1;
-      if (n <= 32) return 2;
-      if (n <= 64) return 4;
-      if (n <= 96) return 6;
-      if (n <= 160) return 10;
-      return Math.ceil(n / 16);
-    }
-    const showEvery = labelEvery(labels.length);
-
-    // Determine if a given label is 12:00AM or 12:00PM
-    function isNoonOrMidnight(lbl) {
-      // Match M/D/YY h:mmAM (or PM), with/without space before AM/PM
-      // We only care that it ends with 12:00AM or 12:00PM
-      return /(?:^|\s)12:00\s?(?:AM|PM)$/i.test(lbl);
-    }
-
-    // Axis grid styling callbacks (dark line at midnight & noon)
-    function gridColorForIndex(ctx) {
-      const lbl = labels[ctx.index] || '';
-      return isNoonOrMidnight(lbl) ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.08)';
-    }
-    function gridWidthForIndex(ctx) {
-      const lbl = labels[ctx.index] || '';
-      return isNoonOrMidnight(lbl) ? 1.2 : 0.6;
-    }
-
-    // Y axis step helpers
-    function heightStep(maxVal) {
-      if (maxVal <= 1) return 0.1;
-      if (maxVal <= 2) return 0.2;
-      if (maxVal <= 4) return 0.5;
-      if (maxVal <= 8) return 1;
-      return 2;
-    }
-    function periodStep(maxVal) {
-      if (maxVal <= 8) return 1;
-      if (maxVal <= 16) return 2;
-      return 5;
-    }
     const niceCeil = (v, step) => Math.ceil(v / step) * step;
 
-    // Axis ranges (+10% on Height/Period)
-    const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
-    let hMax = maxAcross(heightArrays); if (!Number.isFinite(hMax)) hMax = 1;
-    hMax = padMax(hMax, 0.10);
-    const hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
+    // label density
+    function labelEvery(n) { if (n<=16) return 1; if (n<=32) return 2; if (n<=64) return 4; if (n<=96) return 6; if (n<=160) return 10; return Math.ceil(n/16); }
+    const showEvery = labelEvery(GD.labels.length);
 
-    const periodArrays = [GD.period.s1, GD.period.s2, GD.period.s3, GD.period.s4, GD.period.s5, GD.period.s6];
-    let pMax = maxAcross(periodArrays); if (!Number.isFinite(pMax)) pMax = 10;
-    pMax = padMax(pMax, 0.10);
-    const pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
+    // y-steps
+    function heightStep(mx){ if(mx<=1)return .1; if(mx<=2)return .2; if(mx<=4)return .5; if(mx<=8)return 1; return 2;}
+    function periodStep(mx){ if(mx<=8)return 1; if(mx<=16)return 2; return 5;}
 
-    const dirArrays = [GD.direction.s1, GD.direction.s2, GD.direction.s3, GD.direction.s4, GD.direction.s5, GD.direction.s6];
-    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
-    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
-    const dStep = 45;
+    // ranges
+    const hArrs = [GD.height.s1,GD.height.s2,GD.height.s3,GD.height.s4,GD.height.s5,GD.height.s6,GD.height.combined];
+    let hMax = maxAcross(hArrs); if (!Number.isFinite(hMax)) hMax = 1; hMax = niceCeil(padMax(hMax,0.10), heightStep(hMax));
+    const pArrs = [GD.period.s1,GD.period.s2,GD.period.s3,GD.period.s4,GD.period.s5,GD.period.s6];
+    let pMax = maxAcross(pArrs); if (!Number.isFinite(pMax)) pMax = 10; pMax = niceCeil(padMax(pMax,0.10), periodStep(pMax));
+    const dArrs = [GD.direction.s1,GD.direction.s2,GD.direction.s3,GD.direction.s4,GD.direction.s5,GD.direction.s6];
+    let dMin = minAcross(dArrs), dMax = maxAcross(dArrs);
+    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin===dMax) { dMin = 0; dMax = 360; }
 
     const commonOpts = {
       responsive: true,
@@ -265,30 +285,42 @@
       interaction: { mode: 'index', intersect: false, axis: 'x' },
       layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
       elements: {
-        point: { radius: 1.6 },          // dots only
-        line: { tension: 0, borderWidth: 0 }  // no connecting lines
+        point: { radius: 2, hoverRadius: 4 },
+        line: { borderWidth: 0, tension: 0, fill: false } // dots only (no connecting lines)
       },
       plugins: {
         legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 12, boxHeight: 6 } },
-        tooltip: { mode: 'nearest', intersect: false }
+        tooltip: {
+          mode: 'nearest',
+          intersect: false,
+          callbacks: {
+            // Title shows compact numeric timestamp
+            title: (items) => {
+              const i = items[0].dataIndex;
+              const d = parseLabelToDate(GD.labels[i]);
+              return formatMDYHM(d);
+            }
+          }
+        },
+        decimation: { enabled: true, algorithm: 'lttb', samples: 250 }
       },
       scales: {
         x: {
           type: 'category',
           grid: {
             display: true,
-            color: gridColorForIndex,
-            lineWidth: gridWidthForIndex
+            color: (ctx) => isMajorHour(null, ctx.scale, ctx.tick.value) ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.08)',
+            lineWidth: (ctx) => isMajorHour(null, ctx.scale, ctx.tick.value) ? 1.2 : 0.5
           },
           ticks: {
             autoSkip: false,
             maxRotation: 0,
             minRotation: 0,
-            // showEvery plus always show midnight/noon labels
-            callback: (val, index) => {
-              const lbl = labels[index];
-              if (index % showEvery === 0 || isNoonOrMidnight(lbl)) return lbl;
-              return '';
+            callback: function(value, index, ticks) {
+              if (index % showEvery !== 0) return '';
+              const raw = this.getLabelForValue ? this.getLabelForValue(value) : (ticks[index]?.label ?? GD.labels[index]);
+              const d = parseLabelToDate(raw);
+              return formatMDYHM(d);
             }
           }
         },
@@ -300,102 +332,90 @@
       animation: false
     };
 
-    function swellDots(label, key, data, color) {
+    function dotSeries(label, key, group, color) {
       return {
         label,
-        data: data[key],
+        data: group[key],
         borderColor: color,
         backgroundColor: color,
-        showLine: false,      // dots only
-        pointRadius: 2.2,
-        pointHoverRadius: 4
+        showLine: false,         // ensure dots-only
+        pointRadius: 2,
+        pointHitRadius: 8
       };
     }
 
-    // HEIGHT — includes Combined; y: 0..max(+10%), nice steps
+    // Height (with Combined)
     (() => {
       const ds = [
-        swellDots('Swell 1', 's1', GD.height, colors.s1),
-        swellDots('Swell 2', 's2', GD.height, colors.s2),
-        swellDots('Swell 3', 's3', GD.height, colors.s3),
-        swellDots('Swell 4', 's4', GD.height, colors.s4),
-        swellDots('Swell 5', 's5', GD.height, colors.s5),
-        swellDots('Swell 6', 's6', GD.height, colors.s6),
-        // Combined as a dotted series too (if you prefer a line, set showLine:true and borderWidth>0)
-        swellDots('Combined', 'combined', GD.height, colors.combined)
+        dotSeries('Swell 1','s1',GD.height,colors.s1),
+        dotSeries('Swell 2','s2',GD.height,colors.s2),
+        dotSeries('Swell 3','s3',GD.height,colors.s3),
+        dotSeries('Swell 4','s4',GD.height,colors.s4),
+        dotSeries('Swell 5','s5',GD.height,colors.s5),
+        dotSeries('Swell 6','s6',GD.height,colors.s6),
+        {
+          label:'Combined', data: GD.height.combined,
+          borderColor: colors.combined, backgroundColor: colors.combined,
+          showLine:false, pointRadius:2, pointHitRadius:8
+        }
       ];
       new Chart(document.getElementById('heightChart').getContext('2d'), {
         type: 'line',
-        data: { labels, datasets: ds },
+        data: { labels: GD.labels, datasets: ds },
         options: {
           ...commonOpts,
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
           scales: {
             x: commonOpts.scales.x,
-            y: {
-              ...commonOpts.scales.y,
-              beginAtZero: true, min: 0, max: hMax,
-              ticks: { stepSize: hStep },
-              title: { display: true, text: `Height (${GD.units})` }
-            }
+            y: { ...commonOpts.scales.y, beginAtZero:true, min:0, max:hMax, ticks:{ stepSize: heightStep(hMax) }, title:{ display:true, text:`Height (${GD.units})` } }
           }
         }
       });
     })();
 
-    // PERIOD — y: 0..max(+10%), nice steps
+    // Period
     (() => {
       const ds = [
-        swellDots('Swell 1', 's1', GD.period, colors.s1),
-        swellDots('Swell 2', 's2', GD.period, colors.s2),
-        swellDots('Swell 3', 's3', GD.period, colors.s3),
-        swellDots('Swell 4', 's4', GD.period, colors.s4),
-        swellDots('Swell 5', 's5', GD.period, colors.s5),
-        swellDots('Swell 6', 's6', GD.period, colors.s6)
+        dotSeries('Swell 1','s1',GD.period,colors.s1),
+        dotSeries('Swell 2','s2',GD.period,colors.s2),
+        dotSeries('Swell 3','s3',GD.period,colors.s3),
+        dotSeries('Swell 4','s4',GD.period,colors.s4),
+        dotSeries('Swell 5','s5',GD.period,colors.s5),
+        dotSeries('Swell 6','s6',GD.period,colors.s6)
       ];
       new Chart(document.getElementById('periodChart').getContext('2d'), {
         type: 'line',
-        data: { labels, datasets: ds },
+        data: { labels: GD.labels, datasets: ds },
         options: {
           ...commonOpts,
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
           scales: {
             x: commonOpts.scales.x,
-            y: {
-              ...commonOpts.scales.y,
-              beginAtZero: true, min: 0, max: pMax,
-              ticks: { stepSize: pStep },
-              title: { display: true, text: 'Period (s)' }
-            }
+            y: { ...commonOpts.scales.y, beginAtZero:true, min:0, max:pMax, ticks:{ stepSize: periodStep(pMax) }, title:{ display:true, text:'Period (s)' } }
           }
         }
       });
     })();
 
-    // DIRECTION — y: min..max, 45° step
+    // Direction
     (() => {
       const ds = [
-        swellDots('Swell 1', 's1', GD.direction, colors.s1),
-        swellDots('Swell 2', 's2', GD.direction, colors.s2),
-        swellDots('Swell 3', 's3', GD.direction, colors.s3),
-        swellDots('Swell 4', 's4', GD.direction, colors.s4),
-        swellDots('Swell 5', 's5', GD.direction, colors.s5),
-        swellDots('Swell 6', 's6', GD.direction, colors.s6)
+        dotSeries('Swell 1','s1',GD.direction,colors.s1),
+        dotSeries('Swell 2','s2',GD.direction,colors.s2),
+        dotSeries('Swell 3','s3',GD.direction,colors.s3),
+        dotSeries('Swell 4','s4',GD.direction,colors.s4),
+        dotSeries('Swell 5','s5',GD.direction,colors.s5),
+        dotSeries('Swell 6','s6',GD.direction,colors.s6)
       ];
       new Chart(document.getElementById('directionChart').getContext('2d'), {
         type: 'line',
-        data: { labels, datasets: ds },
+        data: { labels: GD.labels, datasets: ds },
         options: {
           ...commonOpts,
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
           scales: {
             x: commonOpts.scales.x,
-            y: {
-              ...commonOpts.scales.y,
-              min: dMin, max: dMax,
-              ticks: { stepSize: dStep },
-              title: { display: true, text: 'Direction (°)' }
-            }
+            y: { ...commonOpts.scales.y, min:dMin, max:dMax, ticks:{ stepSize:45 }, title:{ display:true, text:'Direction (°)' } }
           }
         }
       });

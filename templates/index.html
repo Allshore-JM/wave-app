@@ -4,37 +4,28 @@
   <meta charset="utf-8" />
   <title>Wave Forecast</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-
   <!-- Bootstrap -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-
   <style>
     html, body { height: 100%; }
     #map { height: 420px; border: 1px solid #ccc; }
     .leaflet-tooltip { font-weight: 600; }
-
     .sticky-top-bar { position: sticky; top: 0; z-index: 1000; background:#fff; border-bottom: 1px solid #eee; }
     .form-inline .form-select, .form-inline .form-control { width: auto; }
-
-    /* Taller charts for readability */
     canvas.chart-tall { height: 260px !important; }
 
-    /* Ensure the map never shows side grey by clamping world bounds */
-    .leaflet-container { background: #000; } /* hides any tile edge seams; imagery fills */
+    /* smaller axis labels so 90° rotation stays readable */
+    .chartjs-size-monitor, .chartjs-render-monitor { font-size: 10px; }
   </style>
 </head>
 <body class="bg-light">
 
   <div class="container-fluid py-3">
-
-    <!-- Controls -->
     <div class="sticky-top-bar pb-2">
       <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
         <div class="col-auto">
@@ -79,14 +70,12 @@
       </form>
     </div>
 
-    <!-- Map -->
     <div class="row mt-2">
       <div class="col-12">
         <div id="map"></div>
       </div>
     </div>
 
-    <!-- Data -->
     <div class="row mt-3">
       <div class="col-12">
         {% if error %}
@@ -94,20 +83,19 @@
         {% endif %}
 
         {% if selected_view == 'Graph' %}
-          <!-- Graph header (no 'Graphs (ft)' string) -->
-          {% if graph_header %}
-          <div class="mb-2 small text-muted">
-            <strong>Cycle :</strong> {{ graph_header.cycle }}
-            &nbsp; | &nbsp;
-            <strong>Location :</strong> {{ graph_header.location }}
-            &nbsp; | &nbsp;
-            <strong>Time Zone:</strong> {{ graph_header.tz }}
-          </div>
-          {% endif %}
-
           <!-- Graph View -->
           <div id="graphs" class="card">
             <div class="card-body">
+              <!-- Graph header (uses graph_header when available; falls back to graph_data.header) -->
+              {% set hdr = graph_header if graph_header is defined and graph_header else (graph_data.header if graph_data is defined and graph_data.header is defined else None) %}
+              {% if hdr %}
+              <div class="mb-2 small text-muted">
+                <strong>Cycle :</strong> {{ hdr.cycle }}
+                &nbsp; | &nbsp; <strong>Location :</strong> {{ hdr.location }}
+                &nbsp; | &nbsp; <strong>Time Zone:</strong> {{ hdr.timezone }}
+              </div>
+              {% endif %}
+
               <div class="mb-4">
                 <canvas id="heightChart" class="chart-tall"></canvas>
               </div>
@@ -132,7 +120,7 @@
   </div>
 
   <script>
-    // ---- Persist map zoom/center between requests ----
+    // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
     function saveMapView(map) {
       const v = {c: map.getCenter(), z: map.getZoom()};
@@ -142,51 +130,43 @@
       try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e) { return null; }
     }
 
-    // ---- Leaflet map (Esri World Imagery, single-world, no grey sides) ----
-    const worldBounds = L.latLngBounds([[-85, -180], [85, 180]]);
+    // ---- Leaflet Map (satellite, one-world, no gray sides) ----
     const map = L.map('map', {
       worldCopyJump: false,
-      maxBounds: worldBounds,
-      maxBoundsViscosity: 1.0,
-      zoomControl: true
+      zoomControl: true,
+      maxBounds: [[-89.9, -180], [89.9, 180]], // keep within world
+      maxBoundsViscosity: 1.0
     });
-
-    // Satellite imagery tiles
-    const esriWorldImagery = L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 8, minZoom: 2, noWrap: true }
-    ).addTo(map);
-
-    // Fit exactly one world to the viewport and restore previous view if present
     const saved = loadMapView();
     if (saved) {
       map.setView([saved.lat, saved.lng], saved.z);
     } else {
-      map.fitBounds(worldBounds, { padding: [0,0] });
+      map.setView([20, -160], 2);
     }
 
-    // Stations layer
+    L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 8, minZoom: 2, noWrap: true, attribution: '&copy; Esri & contributors' }
+    ).addTo(map);
+
+    // Plot stations
     fetch('/stations.json')
       .then(r => r.json())
       .then(stations => {
         stations.forEach(s => {
           const mk = L.circleMarker([s.lat, s.lon], {
-            radius: 2,           // smaller yellow markers
+            radius: 2,
             color: '#FFD600',
             fillColor: '#FFD600',
             fillOpacity: 1,
             weight: 1
           }).addTo(map);
-
-          // Tooltip with Station ID on hover
           mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
-
-          // Click: select station, set its TZ, keep zoom state
           mk.on('click', () => {
             document.getElementById('station').value = s.id;
-            // Default the dropdown to the station's TZ when a marker is clicked.
+            // adopt station's timezone if provided
             const tzSel = document.getElementById('tz');
-            if (s.tz) tzSel.value = s.tz;
+            if (s.tz) { tzSel.value = s.tz; }
             saveMapView(map);
             document.getElementById('controlForm').submit();
           });
@@ -196,7 +176,7 @@
     document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
     {% if selected_view == 'Graph' and graph_data %}
-    // ---- Chart.js: readable, dots only, 12-hour major gridlines, rotated labels ----
+    // ---- Charting ----
     const GD = {{ graph_data|tojson|safe }};
 
     const colors = {
@@ -209,86 +189,122 @@
       combined: '#7030A0'
     };
 
+    // Helpers
     const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
-    function maxAcross(arrays) {
-      let m = -Infinity;
-      arrays.forEach(a => finiteVals(a).forEach(v => { if (v > m) m = v; }));
-      return (m === -Infinity) ? 1 : m;
+    const maxAcross = arrays => arrays.reduce((m,a)=>Math.max(m, ...finiteVals(a), -Infinity), -Infinity);
+    const minAcross = arrays => arrays.reduce((m,a)=>Math.min(m, ...finiteVals(a), Infinity), Infinity);
+    const padMax = (v, p=0.10) => Number.isFinite(v) ? v * (1+p) : v;
+    const niceCeil = (v, step) => Math.ceil(v/step)*step;
+
+    function heightStep(maxVal){ if(maxVal<=1) return 0.1; if(maxVal<=2) return 0.2; if(maxVal<=4) return 0.5; if(maxVal<=8) return 1; return 2; }
+    function periodStep(maxVal){ if(maxVal<=8) return 1; if(maxVal<=16) return 2; return 5; }
+
+    // --- Parse label strings -> Date objects ---
+    // Accepts forms like "8/30/25 6:00 AM" (current app labels)
+    const parsedDates = GD.labels.map(lbl => {
+      const re = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})\s*([APap][Mm])$/;
+      const m = (lbl||'').match(re);
+      if (m){
+        let [_, M, D, Y, h, min, ap] = m;
+        M = +M; D = +D; h = +h; min = +min; ap = ap.toLowerCase();
+        let year = (Y.length===2 ? 2000 + +Y : +Y);
+        if (ap==='pm' && h < 12) h += 12;
+        if (ap==='am' && h === 12) h = 0;
+        return new Date(year, M-1, D, h, min, 0);
+      }
+      const d = new Date(lbl);
+      return isNaN(d) ? new Date() : d;
+    });
+
+    // Indices for midnight / noon
+    const majorIdx = new Set(); // midnight
+    const minorIdx = new Set(); // noon
+    parsedDates.forEach((d, i) => {
+      const h = d.getHours();
+      if (h === 0) majorIdx.add(i);
+      else if (h === 12) minorIdx.add(i);
+    });
+
+    // Tick label formatter -> "M/D 12am|12pm" only at 12‑hour marks
+    function formatMDHour(d){
+      const M = d.getMonth()+1;
+      const D = d.getDate();
+      const h = d.getHours();
+      if (h === 0) return `${M}/${D} 12am`;
+      if (h === 12) return `${M}/${D} 12pm`;
+      return '';
     }
-    function minAcross(arrays) {
-      let m = Infinity;
-      arrays.forEach(a => finiteVals(a).forEach(v => { if (v < m) m = v; }));
-      return (m === Infinity) ? 0 : m;
-    }
-    function padMax(v, pct=0.10) { return Number.isFinite(v) ? v*(1+pct) : v; }
-    function niceCeil(v, step) { return Math.ceil(v/step)*step; }
-    function heightStep(maxVal) { if (maxVal<=1) return 0.1; if (maxVal<=2) return 0.2; if (maxVal<=4) return 0.5; if (maxVal<=8) return 1; return 2; }
-    function periodStep(maxVal) { if (maxVal<=8) return 1; if (maxVal<=16) return 2; return 5; }
 
-    // Build major index mask (12:00 AM / 12:00 PM); GD.major_idx is preferred if provided
-    const majorIdx = GD.major_idx || GD.labels.map(l => /12:00 (AM|PM)$/.test(l));
-    const idxIsMajor = (i) => Boolean(majorIdx[i]);
+    // shared x‑axis config (category scale using our string labels)
+    const xAxis = {
+      type: 'category',
+      grid: {
+        color: ctx => {
+          const i = ctx.tick && typeof ctx.tick.index === 'number' ? ctx.tick.index : ctx.index;
+          if (majorIdx.has(i)) return 'rgba(0,0,0,0.25)';   // midnight
+          if (minorIdx.has(i)) return 'rgba(0,0,0,0.15)';   // noon
+          return 'rgba(0,0,0,0.08)';                        // others
+        },
+        lineWidth: ctx => {
+          const i = ctx.tick && typeof ctx.tick.index === 'number' ? ctx.tick.index : ctx.index;
+          if (majorIdx.has(i)) return 1.4;
+          if (minorIdx.has(i)) return 1.0;
+          return 0.5;
+        }
+      },
+      ticks: {
+        autoSkip: false,
+        maxRotation: 90,
+        minRotation: 90,
+        callback: (value, index) => formatMDHour(parsedDates[index]),
+        font: { size: 10 }
+      }
+    };
 
-    // Axis helpers
-    const heightArrays = [GD.height.s1, GD.height.s2, GD.height.s3, GD.height.s4, GD.height.s5, GD.height.s6, GD.height.combined];
-    const periodArrays = [GD.period.s1, GD.period.s2, GD.period.s3, GD.period.s4, GD.period.s5, GD.period.s6];
-    const dirArrays    = [GD.direction.s1, GD.direction.s2, GD.direction.s3, GD.direction.s4, GD.direction.s5, GD.direction.s6];
+    // Y ranges (+10% for height/period)
+    const heightArrays = [GD.height.s1,GD.height.s2,GD.height.s3,GD.height.s4,GD.height.s5,GD.height.s6,GD.height.combined];
+    let hMax = padMax(maxAcross(heightArrays), 0.10); if (!Number.isFinite(hMax)) hMax = 1;
+    const hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
 
-    let hMax = padMax(maxAcross(heightArrays), 0.10); const hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
-    let pMax = padMax(maxAcross(periodArrays), 0.10); const pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
-    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays); if (!Number.isFinite(dMin)||!Number.isFinite(dMax)||dMin===dMax){ dMin=0; dMax=360; }
+    const periodArrays = [GD.period.s1,GD.period.s2,GD.period.s3,GD.period.s4,GD.period.s5,GD.period.s6];
+    let pMax = padMax(maxAcross(periodArrays), 0.10); if (!Number.isFinite(pMax)) pMax = 10;
+    const pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
+
+    const dirArrays = [GD.direction.s1,GD.direction.s2,GD.direction.s3,GD.direction.s4,GD.direction.s5,GD.direction.s6];
+    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
+    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
 
     const commonOpts = {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false, axis: 'x' },
-      elements: {
-        point: { radius: 1.8 },
-        line: { borderWidth: 0 },  // no connecting lines
+      layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
+      elements: { 
+        point: { radius: 1.6 }, 
+        line: { tension: 0.25, borderWidth: 0 } // lines hidden; dots only
       },
       plugins: {
-        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 12, boxHeight: 6 } },
+        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 10, boxHeight: 6 } },
         tooltip: { mode: 'nearest', intersect: false },
-        decimation: { enabled: true, algorithm: 'lttb', samples: 300 }
-      },
-      scales: {
-        x: {
-          type: 'category',
-          grid: {
-            display: true,
-            color: (ctx) => idxIsMajor(ctx.index) ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.12)',
-            lineWidth: (ctx) => idxIsMajor(ctx.index) ? 1.2 : 0.5
-          },
-          ticks: {
-            autoSkip: false,
-            maxRotation: 90,
-            minRotation: 90,
-            // Labels already blank for non-major; still guard:
-            callback: (val, i) => idxIsMajor(i) ? GD.labels[i] : ''
-          }
-        },
-        y: {
-          grid: { display: true, color: 'rgba(0,0,0,0.10)' },
-          border: { color: 'rgba(0,0,0,0.2)' }
-        }
+        decimation: { enabled: false }
       },
       animation: false
     };
 
-    const dotSeries = (label, key, data, color) => ({
-      label, data: data[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: true
-    });
+    function swellDots(label, key, data, color) {
+      return { label, data: data[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false };
+    }
 
     // HEIGHT (includes Combined)
     (() => {
       const ds = [
-        dotSeries('Swell 1','s1',GD.height, colors.s1),
-        dotSeries('Swell 2','s2',GD.height, colors.s2),
-        dotSeries('Swell 3','s3',GD.height, colors.s3),
-        dotSeries('Swell 4','s4',GD.height, colors.s4),
-        dotSeries('Swell 5','s5',GD.height, colors.s5),
-        dotSeries('Swell 6','s6',GD.height, colors.s6),
-        { label:'Combined', data: GD.height.combined, backgroundColor: colors.combined, borderColor: colors.combined, showLine:false, spanGaps:true, pointRadius:1.8 }
+        swellDots('Swell 1','s1',GD.height,colors.s1),
+        swellDots('Swell 2','s2',GD.height,colors.s2),
+        swellDots('Swell 3','s3',GD.height,colors.s3),
+        swellDots('Swell 4','s4',GD.height,colors.s4),
+        swellDots('Swell 5','s5',GD.height,colors.s5),
+        swellDots('Swell 6','s6',GD.height,colors.s6),
+        { label:'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, showLine:false, spanGaps:false, pointRadius:1.6 }
       ];
       new Chart(document.getElementById('heightChart').getContext('2d'), {
         type: 'line',
@@ -297,8 +313,14 @@
           ...commonOpts,
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
           scales: {
-            x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, beginAtZero:true, min:0, max:hMax, ticks:{ stepSize:hStep }, title:{ display:true, text:`Height (${GD.units})` } }
+            x: xAxis,
+            y: {
+              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+              border: { color: 'rgba(0,0,0,0.2)' },
+              beginAtZero: true, min: 0, max: hMax,
+              ticks: { stepSize: hStep },
+              title: { display: true, text: `Height (${GD.units})` }
+            }
           }
         }
       });
@@ -307,12 +329,12 @@
     // PERIOD
     (() => {
       const ds = [
-        dotSeries('Swell 1','s1',GD.period, colors.s1),
-        dotSeries('Swell 2','s2',GD.period, colors.s2),
-        dotSeries('Swell 3','s3',GD.period, colors.s3),
-        dotSeries('Swell 4','s4',GD.period, colors.s4),
-        dotSeries('Swell 5','s5',GD.period, colors.s5),
-        dotSeries('Swell 6','s6',GD.period, colors.s6)
+        swellDots('Swell 1','s1',GD.period,colors.s1),
+        swellDots('Swell 2','s2',GD.period,colors.s2),
+        swellDots('Swell 3','s3',GD.period,colors.s3),
+        swellDots('Swell 4','s4',GD.period,colors.s4),
+        swellDots('Swell 5','s5',GD.period,colors.s5),
+        swellDots('Swell 6','s6',GD.period,colors.s6)
       ];
       new Chart(document.getElementById('periodChart').getContext('2d'), {
         type: 'line',
@@ -321,8 +343,14 @@
           ...commonOpts,
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
           scales: {
-            x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, beginAtZero:true, min:0, max:pMax, ticks:{ stepSize:pStep }, title:{ display:true, text:'Period (s)' } }
+            x: xAxis,
+            y: {
+              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+              border: { color: 'rgba(0,0,0,0.2)' },
+              beginAtZero: true, min: 0, max: pMax,
+              ticks: { stepSize: pStep },
+              title: { display: true, text: 'Period (s)' }
+            }
           }
         }
       });
@@ -331,12 +359,12 @@
     // DIRECTION
     (() => {
       const ds = [
-        dotSeries('Swell 1','s1',GD.direction, colors.s1),
-        dotSeries('Swell 2','s2',GD.direction, colors.s2),
-        dotSeries('Swell 3','s3',GD.direction, colors.s3),
-        dotSeries('Swell 4','s4',GD.direction, colors.s4),
-        dotSeries('Swell 5','s5',GD.direction, colors.s5),
-        dotSeries('Swell 6','s6',GD.direction, colors.s6)
+        swellDots('Swell 1','s1',GD.direction,colors.s1),
+        swellDots('Swell 2','s2',GD.direction,colors.s2),
+        swellDots('Swell 3','s3',GD.direction,colors.s3),
+        swellDots('Swell 4','s4',GD.direction,colors.s4),
+        swellDots('Swell 5','s5',GD.direction,colors.s5),
+        swellDots('Swell 6','s6',GD.direction,colors.s6),
       ];
       new Chart(document.getElementById('directionChart').getContext('2d'), {
         type: 'line',
@@ -345,8 +373,14 @@
           ...commonOpts,
           plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
           scales: {
-            x: commonOpts.scales.x,
-            y: { ...commonOpts.scales.y, min:dMin, max:dMax, ticks:{ stepSize:45 }, title:{ display:true, text:'Direction (°)' } }
+            x: xAxis,
+            y: {
+              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+              border: { color: 'rgba(0,0,0,0.2)' },
+              min: dMin, max: dMax,
+              ticks: { stepSize: 45 },
+              title: { display: true, text: 'Direction (°)' }
+            }
           }
         }
       });

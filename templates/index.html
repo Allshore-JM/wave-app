@@ -16,376 +16,233 @@
     #map { height: 420px; border: 1px solid #ccc; }
     .leaflet-tooltip { font-weight: 600; }
     .sticky-top-bar { position: sticky; top: 0; z-index: 1000; background:#fff; border-bottom: 1px solid #eee; }
-    .form-inline .form-select, .form-inline .form-control { width: auto; }
     canvas.chart-tall { height: 260px !important; }
-
-    /* smaller axis labels so 90° rotation stays readable */
-    .chartjs-size-monitor, .chartjs-render-monitor { font-size: 10px; }
   </style>
 </head>
 <body class="bg-light">
 
-  <div class="container-fluid py-3">
-    <div class="sticky-top-bar pb-2">
-      <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
-        <div class="col-auto">
-          <label for="station" class="form-label mb-0">Station</label>
-          <select class="form-select" id="station" name="station">
-            {% for sid, name in stations %}
-              <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>{{ sid }} — {{ name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <div class="col-auto">
-          <label for="tz" class="form-label mb-0">Time Zone</label>
-          <select class="form-select" id="tz" name="tz">
-            <option value="">(Buoy Local)</option>
-            {% for tz in timezones %}
-              <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <div class="col-auto">
-          <label for="unit" class="form-label mb-0">Units</label>
-          <select class="form-select" id="unit" name="unit">
-            {% for u in units %}
-              <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ u }}</option>
-            {% endfor %}
-          </select>
-        </div>
-
-        <div class="col-auto">
-          <label for="view" class="form-label mb-0">View</label>
-          <select class="form-select" id="view" name="view">
-            <option value="Table" {% if selected_view == 'Table' %}selected{% endif %}>Table</option>
-            <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
-          </select>
-        </div>
-
-        <div class="col-auto">
-          <button type="submit" class="btn btn-primary" id="updateBtn">Update</button>
-        </div>
-      </form>
-    </div>
-
-    <div class="row mt-2">
-      <div class="col-12">
-        <div id="map"></div>
+<div class="container-fluid py-3">
+  <div class="sticky-top-bar pb-2">
+    <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
+      <div class="col-auto">
+        <label for="station" class="form-label mb-0">Station</label>
+        <select class="form-select" id="station" name="station">
+          {% for sid, name in stations %}
+            <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>{{ sid }} — {{ name }}</option>
+          {% endfor %}
+        </select>
       </div>
-    </div>
 
-    <div class="row mt-3">
-      <div class="col-12">
-        {% if error %}
-          <div class="alert alert-warning">{{ error }}</div>
-        {% endif %}
-
-        {% if selected_view == 'Graph' %}
-          <!-- Graph View -->
-          <div id="graphs" class="card">
-            <div class="card-body">
-              <!-- Graph header (uses graph_header when available; falls back to graph_data.header) -->
-              {% set hdr = graph_header if graph_header is defined and graph_header else (graph_data.header if graph_data is defined and graph_data.header is defined else None) %}
-              {% if hdr %}
-              <div class="mb-2 small text-muted">
-                <strong>Cycle :</strong> {{ hdr.cycle }}
-                &nbsp; | &nbsp; <strong>Location :</strong> {{ hdr.location }}
-                &nbsp; | &nbsp; <strong>Time Zone:</strong> {{ hdr.timezone }}
-              </div>
-              {% endif %}
-
-              <div class="mb-4">
-                <canvas id="heightChart" class="chart-tall"></canvas>
-              </div>
-              <div class="mb-4">
-                <canvas id="periodChart" class="chart-tall"></canvas>
-              </div>
-              <div>
-                <canvas id="directionChart" class="chart-tall"></canvas>
-              </div>
-            </div>
-          </div>
-        {% else %}
-          <!-- Table View -->
-          <div id="tableWrap" class="card">
-            <div class="card-body">
-              {{ table_html|safe }}
-            </div>
-          </div>
-        {% endif %}
+      <div class="col-auto">
+        <label for="tz" class="form-label mb-0">Time Zone</label>
+        <select class="form-select" id="tz" name="tz">
+          <option value="">(Buoy Local)</option>
+          {% for tz in timezones %}
+            <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
+          {% endfor %}
+        </select>
       </div>
+
+      <div class="col-auto">
+        <label for="unit" class="form-label mb-0">Units</label>
+        <select class="form-select" id="unit" name="unit">
+          <option value="US" {% if selected_unit == 'US' %}selected{% endif %}>US</option>
+          <option value="SI" {% if selected_unit == 'SI' %}selected{% endif %}>SI</option>
+        </select>
+      </div>
+
+      <div class="col-auto">
+        <label for="view" class="form-label mb-0">View</label>
+        <select class="form-select" id="view" name="view">
+          <option value="Table" {% if selected_view == 'Table' %}selected{% endif %}>Table</option>
+          <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
+        </select>
+      </div>
+
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary" id="updateBtn">Update</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="row mt-2">
+    <div class="col-12">
+      <div id="map"></div>
     </div>
   </div>
 
-  <script>
-    // ---- Preserve map zoom/center between requests ----
-    const mapKey = 'mapView';
-    function saveMapView(map) {
-      const v = {c: map.getCenter(), z: map.getZoom()};
-      sessionStorage.setItem(mapKey, JSON.stringify({lat: v.c.lat, lng: v.c.lng, z: v.z}));
-    }
-    function loadMapView() {
-      try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e) { return null; }
-    }
+  <div class="row mt-3">
+    <div class="col-12">
+      {% if error %}
+        <div class="alert alert-warning">{{ error }}</div>
+      {% endif %}
 
-    // ---- Leaflet Map (satellite, one-world, no gray sides) ----
-    const map = L.map('map', {
-      worldCopyJump: false,
-      zoomControl: true,
-      maxBounds: [[-89.9, -180], [89.9, 180]], // keep within world
-      maxBoundsViscosity: 1.0
-    });
-    const saved = loadMapView();
-    if (saved) {
-      map.setView([saved.lat, saved.lng], saved.z);
-    } else {
-      map.setView([20, -160], 2);
-    }
+      {% if selected_view == 'Graph' and graph_data %}
+        <div class="card">
+          <div class="card-body">
+            <!-- Graph header line -->
+            <div class="mb-2 small text-muted">
+              <strong>Cycle :</strong> {{ graph_header.cycle or '' }}
+              <span class="mx-2">|</span>
+              <strong>Location :</strong> {{ graph_header.location or '' }}
+              <span class="mx-2">|</span>
+              <strong>Time Zone:</strong> {{ graph_header.timezone or selected_tz }}
+            </div>
 
-    L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 8, minZoom: 2, noWrap: true, attribution: '&copy; Esri & contributors' }
-    ).addTo(map);
+            <div class="mb-4">
+              <canvas id="heightChart" class="chart-tall"></canvas>
+            </div>
+            <div class="mb-4">
+              <canvas id="periodChart" class="chart-tall"></canvas>
+            </div>
+            <div>
+              <canvas id="directionChart" class="chart-tall"></canvas>
+            </div>
+          </div>
+        </div>
+      {% else %}
+        <div class="card"><div class="card-body">{{ table_html|safe }}</div></div>
+      {% endif %}
+    </div>
+  </div>
+</div>
 
-    // Plot stations
-    fetch('/stations.json')
-      .then(r => r.json())
-      .then(stations => {
-        stations.forEach(s => {
-          const mk = L.circleMarker([s.lat, s.lon], {
-            radius: 2,
-            color: '#FFD600',
-            fillColor: '#FFD600',
-            fillOpacity: 1,
-            weight: 1
-          }).addTo(map);
-          mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
-          mk.on('click', () => {
-            document.getElementById('station').value = s.id;
-            // adopt station's timezone if provided
-            const tzSel = document.getElementById('tz');
-            if (s.tz) { tzSel.value = s.tz; }
-            saveMapView(map);
-            document.getElementById('controlForm').submit();
-          });
+<script>
+  // Persist map view between requests
+  const mapKey = 'mapView';
+  const saveMapView = (map) => {
+    const c = map.getCenter();
+    sessionStorage.setItem(mapKey, JSON.stringify({lat: c.lat, lng: c.lng, z: map.getZoom()}));
+  };
+  const loadMapView = () => {
+    try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e){ return null; }
+  };
+
+  // Leaflet map (ESRI satellite; single world, no grey sides)
+  const map = L.map('map', { worldCopyJump: false, zoomControl: true });
+  const saved = loadMapView();
+  if (saved) map.setView([saved.lat, saved.lng], saved.z);
+  else map.setView([20, -160], 2);
+
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 8, minZoom: 2, noWrap: true, attribution: '&copy; Esri'
+  }).addTo(map);
+
+  // Reset tz to "(Buoy Local)" when station changed via dropdown
+  const tzSelect = document.getElementById('tz');
+  const stationSelect = document.getElementById('station');
+  stationSelect.addEventListener('change', () => {
+    tzSelect.value = ""; // force server to derive the station's local tz
+  });
+
+  // Plot stations and set tz from the clicked station
+  fetch('/stations.json')
+    .then(r => r.json())
+    .then(stations => {
+      stations.forEach(s => {
+        const marker = L.circleMarker([s.lat, s.lon], {
+          radius: 2, color: '#FFD600', fillColor: '#FFD600', fillOpacity: 1, weight: 1
+        }).addTo(map);
+        marker.bindTooltip(s.id, {direction: 'top', offset: [0,-2]});
+        marker.on('click', () => {
+          // set station + station tz, keep zoom state
+          stationSelect.value = s.id;
+          tzSelect.value = s.tz || ""; // if tz is missing, server will still derive it
+          saveMapView(map);
+          document.getElementById('controlForm').submit();
         });
       });
-
-    document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
-
-    {% if selected_view == 'Graph' and graph_data %}
-    // ---- Charting ----
-    const GD = {{ graph_data|tojson|safe }};
-
-    const colors = {
-      s1: '#C00000',
-      s2: '#ED7D31',
-      s3: '#FFC000',
-      s4: '#00B050',
-      s5: '#00B0F0',
-      s6: '#92D050',
-      combined: '#7030A0'
-    };
-
-    // Helpers
-    const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
-    const maxAcross = arrays => arrays.reduce((m,a)=>Math.max(m, ...finiteVals(a), -Infinity), -Infinity);
-    const minAcross = arrays => arrays.reduce((m,a)=>Math.min(m, ...finiteVals(a), Infinity), Infinity);
-    const padMax = (v, p=0.10) => Number.isFinite(v) ? v * (1+p) : v;
-    const niceCeil = (v, step) => Math.ceil(v/step)*step;
-
-    function heightStep(maxVal){ if(maxVal<=1) return 0.1; if(maxVal<=2) return 0.2; if(maxVal<=4) return 0.5; if(maxVal<=8) return 1; return 2; }
-    function periodStep(maxVal){ if(maxVal<=8) return 1; if(maxVal<=16) return 2; return 5; }
-
-    // --- Parse label strings -> Date objects ---
-    // Accepts forms like "8/30/25 6:00 AM" (current app labels)
-    const parsedDates = GD.labels.map(lbl => {
-      const re = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})\s*([APap][Mm])$/;
-      const m = (lbl||'').match(re);
-      if (m){
-        let [_, M, D, Y, h, min, ap] = m;
-        M = +M; D = +D; h = +h; min = +min; ap = ap.toLowerCase();
-        let year = (Y.length===2 ? 2000 + +Y : +Y);
-        if (ap==='pm' && h < 12) h += 12;
-        if (ap==='am' && h === 12) h = 0;
-        return new Date(year, M-1, D, h, min, 0);
-      }
-      const d = new Date(lbl);
-      return isNaN(d) ? new Date() : d;
     });
 
-    // Indices for midnight / noon
-    const majorIdx = new Set(); // midnight
-    const minorIdx = new Set(); // noon
-    parsedDates.forEach((d, i) => {
-      const h = d.getHours();
-      if (h === 0) majorIdx.add(i);
-      else if (h === 12) minorIdx.add(i);
-    });
+  document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
-    // Tick label formatter -> "M/D 12am|12pm" only at 12‑hour marks
-    function formatMDHour(d){
-      const M = d.getMonth()+1;
-      const D = d.getDate();
-      const h = d.getHours();
-      if (h === 0) return `${M}/${D} 12am`;
-      if (h === 12) return `${M}/${D} 12pm`;
-      return '';
+  // ---------------- Charts (if Graph view) ----------------
+  {% if selected_view == 'Graph' and graph_data %}
+  const GD = {{ graph_data|tojson|safe }};
+  const colors = {
+    s1: '#C00000', s2: '#ED7D31', s3: '#FFC000',
+    s4: '#00B050', s5: '#00B0F0', s6: '#92D050', combined:'#7030A0'
+  };
+
+  // Basic common options
+  const commonOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false, axis: 'x' },
+    elements: { point: { radius: 2 }, line: { tension: 0, borderWidth: 0 } }, /* dots only */
+    plugins: { legend: { position: 'bottom' } },
+    scales: {
+      x: {
+        type: 'category',
+        grid: { color: 'rgba(0,0,0,.08)' },
+        ticks: { autoSkip: false, maxRotation: 90, minRotation: 90 } /* 90° labels */
+      },
+      y: { grid: { color: 'rgba(0,0,0,.08)' } }
     }
+  };
 
-    // shared x‑axis config (category scale using our string labels)
-    const xAxis = {
-      type: 'category',
-      grid: {
-        color: ctx => {
-          const i = ctx.tick && typeof ctx.tick.index === 'number' ? ctx.tick.index : ctx.index;
-          if (majorIdx.has(i)) return 'rgba(0,0,0,0.25)';   // midnight
-          if (minorIdx.has(i)) return 'rgba(0,0,0,0.15)';   // noon
-          return 'rgba(0,0,0,0.08)';                        // others
-        },
-        lineWidth: ctx => {
-          const i = ctx.tick && typeof ctx.tick.index === 'number' ? ctx.tick.index : ctx.index;
-          if (majorIdx.has(i)) return 1.4;
-          if (minorIdx.has(i)) return 1.0;
-          return 0.5;
-        }
-      },
-      ticks: {
-        autoSkip: false,
-        maxRotation: 90,
-        minRotation: 90,
-        callback: (value, index) => formatMDHour(parsedDates[index]),
-        font: { size: 10 }
-      }
-    };
+  function ds(label, arr, color) {
+    return { label, data: arr, borderColor: color, backgroundColor: color, showLine: false, spanGaps: true };
+  }
 
-    // Y ranges (+10% for height/period)
-    const heightArrays = [GD.height.s1,GD.height.s2,GD.height.s3,GD.height.s4,GD.height.s5,GD.height.s6,GD.height.combined];
-    let hMax = padMax(maxAcross(heightArrays), 0.10); if (!Number.isFinite(hMax)) hMax = 1;
-    const hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
-
-    const periodArrays = [GD.period.s1,GD.period.s2,GD.period.s3,GD.period.s4,GD.period.s5,GD.period.s6];
-    let pMax = padMax(maxAcross(periodArrays), 0.10); if (!Number.isFinite(pMax)) pMax = 10;
-    const pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
-
-    const dirArrays = [GD.direction.s1,GD.direction.s2,GD.direction.s3,GD.direction.s4,GD.direction.s5,GD.direction.s6];
-    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
-    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
-
-    const commonOpts = {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false, axis: 'x' },
-      layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
-      elements: { 
-        point: { radius: 1.6 }, 
-        line: { tension: 0.25, borderWidth: 0 } // lines hidden; dots only
-      },
-      plugins: {
-        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 10, boxHeight: 6 } },
-        tooltip: { mode: 'nearest', intersect: false },
-        decimation: { enabled: false }
-      },
-      animation: false
-    };
-
-    function swellDots(label, key, data, color) {
-      return { label, data: data[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false };
+  // Height
+  new Chart(document.getElementById('heightChart').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: GD.labels,
+      datasets: [
+        ds('Swell 1', GD.height.s1, colors.s1),
+        ds('Swell 2', GD.height.s2, colors.s2),
+        ds('Swell 3', GD.height.s3, colors.s3),
+        ds('Swell 4', GD.height.s4, colors.s4),
+        ds('Swell 5', GD.height.s5, colors.s5),
+        ds('Swell 6', GD.height.s6, colors.s6),
+        ds('Combined', GD.height.combined, colors.combined)
+      ]
+    },
+    options: { ...commonOpts, plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
+      scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: {display: true, text: `Height (${GD.units})`} } }
     }
+  });
 
-    // HEIGHT (includes Combined)
-    (() => {
-      const ds = [
-        swellDots('Swell 1','s1',GD.height,colors.s1),
-        swellDots('Swell 2','s2',GD.height,colors.s2),
-        swellDots('Swell 3','s3',GD.height,colors.s3),
-        swellDots('Swell 4','s4',GD.height,colors.s4),
-        swellDots('Swell 5','s5',GD.height,colors.s5),
-        swellDots('Swell 6','s6',GD.height,colors.s6),
-        { label:'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, showLine:false, spanGaps:false, pointRadius:1.6 }
-      ];
-      new Chart(document.getElementById('heightChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        options: {
-          ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
-          scales: {
-            x: xAxis,
-            y: {
-              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-              border: { color: 'rgba(0,0,0,0.2)' },
-              beginAtZero: true, min: 0, max: hMax,
-              ticks: { stepSize: hStep },
-              title: { display: true, text: `Height (${GD.units})` }
-            }
-          }
-        }
-      });
-    })();
+  // Period
+  new Chart(document.getElementById('periodChart').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: GD.labels,
+      datasets: [
+        ds('Swell 1', GD.period.s1, colors.s1),
+        ds('Swell 2', GD.period.s2, colors.s2),
+        ds('Swell 3', GD.period.s3, colors.s3),
+        ds('Swell 4', GD.period.s4, colors.s4),
+        ds('Swell 5', GD.period.s5, colors.s5),
+        ds('Swell 6', GD.period.s6, colors.s6)
+      ]
+    },
+    options: { ...commonOpts, plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
+      scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: {display: true, text: 'Period (s)'} } }
+    }
+  });
 
-    // PERIOD
-    (() => {
-      const ds = [
-        swellDots('Swell 1','s1',GD.period,colors.s1),
-        swellDots('Swell 2','s2',GD.period,colors.s2),
-        swellDots('Swell 3','s3',GD.period,colors.s3),
-        swellDots('Swell 4','s4',GD.period,colors.s4),
-        swellDots('Swell 5','s5',GD.period,colors.s5),
-        swellDots('Swell 6','s6',GD.period,colors.s6)
-      ];
-      new Chart(document.getElementById('periodChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        options: {
-          ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
-          scales: {
-            x: xAxis,
-            y: {
-              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-              border: { color: 'rgba(0,0,0,0.2)' },
-              beginAtZero: true, min: 0, max: pMax,
-              ticks: { stepSize: pStep },
-              title: { display: true, text: 'Period (s)' }
-            }
-          }
-        }
-      });
-    })();
-
-    // DIRECTION
-    (() => {
-      const ds = [
-        swellDots('Swell 1','s1',GD.direction,colors.s1),
-        swellDots('Swell 2','s2',GD.direction,colors.s2),
-        swellDots('Swell 3','s3',GD.direction,colors.s3),
-        swellDots('Swell 4','s4',GD.direction,colors.s4),
-        swellDots('Swell 5','s5',GD.direction,colors.s5),
-        swellDots('Swell 6','s6',GD.direction,colors.s6),
-      ];
-      new Chart(document.getElementById('directionChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        options: {
-          ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
-          scales: {
-            x: xAxis,
-            y: {
-              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-              border: { color: 'rgba(0,0,0,0.2)' },
-              min: dMin, max: dMax,
-              ticks: { stepSize: 45 },
-              title: { display: true, text: 'Direction (°)' }
-            }
-          }
-        }
-      });
-    })();
-    {% endif %}
-  </script>
+  // Direction
+  new Chart(document.getElementById('directionChart').getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: GD.labels,
+      datasets: [
+        ds('Swell 1', GD.direction.s1, colors.s1),
+        ds('Swell 2', GD.direction.s2, colors.s2),
+        ds('Swell 3', GD.direction.s3, colors.s3),
+        ds('Swell 4', GD.direction.s4, colors.s4),
+        ds('Swell 5', GD.direction.s5, colors.s5),
+        ds('Swell 6', GD.direction.s6, colors.s6)
+      ]
+    },
+    options: { ...commonOpts, plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
+      scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, title: {display: true, text: 'Direction (°)'} } }
+    }
+  });
+  {% endif %}
+</script>
 </body>
 </html>

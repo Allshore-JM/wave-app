@@ -13,6 +13,50 @@ from calendar import monthrange
 
 app = Flask(__name__)
 
+# --- Jinja filter: format a datetime in a given IANA time zone ---
+from datetime import datetime, timezone
+import pytz  # keeping your existing library
+
+@app.template_filter("in_tz")
+def jinja_in_tz(dt, tz_name, fmt="%b %d, %Y %I:%M %p"):
+    """
+    Format dt (aware/naive/ISO string) in tz_name. Naive is treated as UTC.
+    tz_name should be an IANA name like 'Pacific/Honolulu'.
+    """
+    # Accept strings (prefer ISO 8601, fallback to "YYYYMMDD HH" seen in Cycle lines)
+    if isinstance(dt, str):
+        # Try ISO first
+        try:
+            if dt.endswith("Z"):
+                dt = datetime.fromisoformat(dt[:-1] + "+00:00")
+            else:
+                dt = datetime.fromisoformat(dt)
+        except Exception:
+            # Try a Cycle-like "YYYYMMDD HH" pattern
+            try:
+                import re
+                m = re.search(r"(\d{8})\s+(\d{2})", dt)
+                if m:
+                    dt = datetime.strptime(m.group(1) + " " + m.group(2), "%Y%m%d %H")
+                    dt = dt.replace(tzinfo=timezone.utc)
+                else:
+                    return dt  # give up; return as-is
+            except Exception:
+                return dt  # return as-is if unparseable
+
+    # Treat naive as UTC
+    if getattr(dt, "tzinfo", None) is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    # Resolve target tz
+    try:
+        tz = pytz.timezone(tz_name or "UTC")
+    except Exception:
+        tz = pytz.utc
+
+    return dt.astimezone(tz).strftime(fmt)
+
+
 # Instantiate once
 tz_finder = TimezoneFinder()
 
@@ -684,8 +728,10 @@ def index():
             graph_header = {
                 "cycle": cycle_str or "",
                 "location": location_str or "",
-                "tz": tz_label or ""
+                "tz": tz_label or "",
+                "cycle_utc": cycle_dt_utc.replace(tzinfo=UTC) if 'cycle_dt_utc' in locals() else None
             }
+
 
     return render_template(
         "index.html",

@@ -131,23 +131,51 @@
     }
 
     // ---- Leaflet Map (satellite, one-world, no gray sides) ----
-    const map = L.map('map', {
-      worldCopyJump: false,
-      zoomControl: true,
-      maxBounds: [[-89.9, -180], [89.9, 180]], // keep within world
-      maxBoundsViscosity: 1.0
-    });
-    const saved = loadMapView();
-    if (saved) {
-      map.setView([saved.lat, saved.lng], saved.z);
-    } else {
-      map.setView([20, -160], 2);
-    }
+    // ---- Global bounds for a single-world Mercator view (avoid polar cutoffs) ----
+const WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
 
-    L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 8, minZoom: 2, noWrap: true, attribution: '&copy; Esri & contributors' }
-    ).addTo(map);
+// Create the map with non-wrapping tiles and hard bounds
+const map = L.map('map', {
+  worldCopyJump: false,
+  zoomControl: true,
+  maxBounds: WORLD_BOUNDS,
+  maxBoundsViscosity: 1.0
+});
+
+// Esri imagery (already in your file); keep noWrap:true so there is only one world
+L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom: 8, minZoom: 1, noWrap: true, attribution: '&copy; Esri & contributors' }
+).addTo(map);
+
+// --- Dynamically size the map to avoid gray sides for a single-world view ---
+function enforceSingleWorld() {
+  const el = document.getElementById('map');
+  // Aim for ~2:1 aspect ratio (world-friendly), but cap by viewport height
+  const w = el.clientWidth || 800;
+  const targetH = Math.min(Math.floor(w / 2), Math.floor(window.innerHeight * 0.7));
+  if (targetH > 0) {
+    el.style.height = targetH + 'px';
+  }
+  map.invalidateSize();
+
+  // Compute the maximum zoom at which the whole world fits inside current size
+  const fitZoom = map.getBoundsZoom(WORLD_BOUNDS, true);
+  map.setMinZoom(fitZoom);
+
+  // If we have a saved view, clamp its zoom; else fit the whole world
+  const saved = loadMapView && loadMapView();
+  if (saved) {
+    const z = Math.max(saved.z ?? fitZoom, fitZoom);
+    map.setView([saved.lat, saved.lng], z, {animate: false});
+  } else {
+    map.fitBounds(WORLD_BOUNDS, { animate: false, padding: [0, 0] });
+  }
+}
+
+// Call once and re-apply on resize
+window.addEventListener('resize', enforceSingleWorld);
+enforceSingleWorld();
 
     // Plot stations
     fetch('/stations.json')

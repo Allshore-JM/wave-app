@@ -40,7 +40,7 @@
         <div class="col-auto">
           <label for="tz" class="form-label mb-0">Time Zone</label>
           <select class="form-select" id="tz" name="tz">
-            <option value="">(Buoy Local)</option>
+            <option value="" {% if (selected_tz or '') == '' %}selected{% endif %}>(Buoy Local)</option>
             {% for tz in timezones %}
               <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
             {% endfor %}
@@ -192,9 +192,9 @@ enforceSingleWorld();
           mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
           mk.on('click', () => {
             document.getElementById('station').value = s.id;
-            // adopt station's timezone if provided
+            // default to (Buoy Local) on station pick so we use that buoy's own timezone
             const tzSel = document.getElementById('tz');
-            if (s.tz) { tzSel.value = s.tz; }
+            if (tzSel) { tzSel.value = ''; }
             saveMapView(map);
             document.getElementById('controlForm').submit();
           });

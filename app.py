@@ -741,21 +741,21 @@ def index():
                 "tz": tz_label or ""
             }
             
-# ---- NEW: cleaned values for the header line only ----
-cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
-lat, lon = _parse_header_coords(location_str)
-loc_display = _strip_header_prefix(location_str, "Location")
-latlon_fmt = _fmt_latlon(lat, lon)
-if latlon_fmt:
-    # show station id with coords, matching your example
-    loc_display = f"{selected_station} ({latlon_fmt})"
+          # ---- NEW: cleaned values for the header line only ----
+          cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
+          lat, lon = _parse_header_coords(location_str)
+          loc_display = _strip_header_prefix(location_str, "Location")
+          latlon_fmt = _fmt_latlon(lat, lon)
+          if latlon_fmt:
+          # show station id with coords, matching your example
+          loc_display = f"{selected_station} ({latlon_fmt})"
 
-graph_header = {
-    "cycle": cycle_clean,
-    "location": loc_display,
-    "tz": tz_label or ""
-    # you can drop cycle_utc; it wasn’t populated here
-}
+          graph_header = {
+              "cycle": cycle_clean,
+              "location": loc_display,
+              "tz": tz_label or ""
+              # you can drop cycle_utc; it wasn’t populated here
+            }
 
 
     return render_template(

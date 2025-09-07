@@ -261,6 +261,21 @@ def _parse_header_coords(location_str: str):
             lat = lon = None
     return lat, lon
 
+def _strip_header_prefix(line: str, key: str) -> str:
+    """Remove leading 'Cycle :' or 'Location :' (case/space tolerant)."""
+    import re
+    if not line:
+        return ""
+    m = re.match(rf"^\s*{re.escape(key)}\s*:?\s*(.*)$", line, flags=re.IGNORECASE)
+    return (m.group(1) if m else line).strip()
+
+def _fmt_latlon(lat: float | None, lon: float | None) -> str | None:
+    if lat is None or lon is None:
+        return None
+    lat_hemi = "N" if lat >= 0 else "S"
+    lon_hemi = "E" if lon >= 0 else "W"
+    return f"{abs(lat):.2f}{lat_hemi} {abs(lon):.2f}{lon_hemi}"
+
 def _resolve_day_hour_ts(cycle_dt_utc: datetime, day_val: int, hour_val: int, last_dt_utc: datetime | None) -> datetime:
     """
     Build a *correct* UTC datetime for 'day & hour' rows.
@@ -725,12 +740,22 @@ def index():
                 "location": location_str or "",
                 "tz": tz_label or ""
             }
-            graph_header = {
-                "cycle": cycle_str or "",
-                "location": location_str or "",
-                "tz": tz_label or "",
-                "cycle_utc": cycle_dt_utc.replace(tzinfo=UTC) if 'cycle_dt_utc' in locals() else None
-            }
+            
+# ---- NEW: cleaned values for the header line only ----
+cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
+lat, lon = _parse_header_coords(location_str)
+loc_display = _strip_header_prefix(location_str, "Location")
+latlon_fmt = _fmt_latlon(lat, lon)
+if latlon_fmt:
+    # show station id with coords, matching your example
+    loc_display = f"{selected_station} ({latlon_fmt})"
+
+graph_header = {
+    "cycle": cycle_clean,
+    "location": loc_display,
+    "tz": tz_label or ""
+    # you can drop cycle_utc; it wasn’t populated here
+}
 
 
     return render_template(

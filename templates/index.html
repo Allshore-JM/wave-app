@@ -271,6 +271,51 @@ enforceSingleWorld();
       else if (h === 12) minorIdx.add(i);
     });
 
+    // --- Night-time shading plugin: shades 6pm..6am using the chart's current x-window ---
+    const nightShadePlugin = {
+      id: 'nightShade',
+      // draw behind datasets so it sits under points/lines
+      beforeDraw(chart, args, pluginOptions) {
+        const {ctx, chartArea, scales} = chart;
+        if (!chartArea || !scales?.x) return;
+
+        const x = scales.x;
+        const areaTop = chartArea.top;
+        const areaH = chartArea.bottom - areaTop;
+
+        // options (with defaults)
+        const startH = Number.isFinite(pluginOptions?.nightStart) ? pluginOptions.nightStart : 18; // 6pm
+        const endH   = Number.isFinite(pluginOptions?.nightEnd)   ? pluginOptions.nightEnd   : 6;  // 6am
+        const fill   = pluginOptions?.fill || 'rgba(0,0,0,0.06)';
+
+        // utility: does hour fall within [startH..24) U [0..endH)?
+        const isNightHour = (h) => (startH <= endH) ? (h >= startH && h < endH) : (h >= startH || h < endH);
+
+        const N = parsedDates.length;
+        // respect current window (e.g., Full / 7d / 3d)
+        const minIdx = Math.max(0, Math.floor(x.min ?? 0));
+        const maxIdx = Math.min(N - 1, Math.ceil(x.max ?? (N - 1)));
+
+        ctx.save();
+        ctx.fillStyle = fill;
+
+        // shade one "hour cell" at a time between i and i+1
+        for (let i = minIdx; i < maxIdx; i++) {
+          const hour = parsedDates[i]?.getHours?.() ?? NaN;
+          if (!Number.isFinite(hour) || !isNightHour(hour)) continue;
+
+          const x0 = x.getPixelForValue(i);
+          const x1 = x.getPixelForValue(i + 1);
+          const w  = x1 - x0;
+          if (Number.isFinite(w) && w > 0) {
+            ctx.fillRect(x0, areaTop, w, areaH);
+          }
+        }
+        ctx.restore();
+      }
+    };
+
+    
     // Tick label formatter -> "M/D 12am|12pm" only at 12‑hour marks
     function formatMDHour(d){
       const M = d.getMonth()+1;
@@ -355,9 +400,15 @@ enforceSingleWorld();
       heightChart = new Chart(document.getElementById('heightChart').getContext('2d'), {
         type: 'line',
         data: { labels: GD.labels, datasets: ds },
+        plugins: [nightShadePlugin],
         options: {
           ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Height' } },
+          plugins: {
+            ...commonOpts.plugins,
+            title: { display: true, text: 'Swell Height' },
+            // Configure night-time shading (6pm..6am)
+            nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' }
+          },
           scales: {
             x: xAxis,
             y: {
@@ -385,9 +436,15 @@ enforceSingleWorld();
       periodChart = new Chart(document.getElementById('periodChart').getContext('2d'), {
         type: 'line',
         data: { labels: GD.labels, datasets: ds },
+        plugins: [nightShadePlugin],
         options: {
           ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Period' } },
+          plugins: {
+            ...commonOpts.plugins,
+            title: { display: true, text: 'Swell Period' },
+            // Configure night-time shading (6pm..6am)
+            nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' }
+          },
           scales: {
             x: xAxis,
             y: {
@@ -415,9 +472,15 @@ enforceSingleWorld();
       directionChart = new Chart(document.getElementById('directionChart').getContext('2d'), {
         type: 'line',
         data: { labels: GD.labels, datasets: ds },
+        plugins: [nightShadePlugin],
         options: {
           ...commonOpts,
-          plugins: { ...commonOpts.plugins, title: { display: true, text: 'Swell Direction' } },
+          plugins: {
+            ...commonOpts.plugins,
+            title: { display: true, text: 'Swell Direction' },
+            // Configure night-time shading (6pm..6am)
+            nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' }
+          },
           scales: {
             x: xAxis,
             y: {

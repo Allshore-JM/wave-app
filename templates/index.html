@@ -222,6 +222,9 @@ enforceSingleWorld();
     // ---- Charting ----
     const GD = {{ graph_data|tojson|safe }};
 
+    let heightChart, periodChart, directionChart;
+    const chartRangeKey = 'chartRange';
+
     const colors = {
       s1: '#C00000',
       s2: '#ED7D31',
@@ -349,7 +352,7 @@ enforceSingleWorld();
         swellDots('Swell 6','s6',GD.height,colors.s6),
         { label:'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, showLine:false, spanGaps:false, pointRadius:1.6 }
       ];
-      new Chart(document.getElementById('heightChart').getContext('2d'), {
+      heightChart = new Chart(document.getElementById('heightChart').getContext('2d'), {
         type: 'line',
         data: { labels: GD.labels, datasets: ds },
         options: {
@@ -379,7 +382,7 @@ enforceSingleWorld();
         swellDots('Swell 5','s5',GD.period,colors.s5),
         swellDots('Swell 6','s6',GD.period,colors.s6)
       ];
-      new Chart(document.getElementById('periodChart').getContext('2d'), {
+      periodChart = new Chart(document.getElementById('periodChart').getContext('2d'), {
         type: 'line',
         data: { labels: GD.labels, datasets: ds },
         options: {
@@ -409,7 +412,7 @@ enforceSingleWorld();
         swellDots('Swell 5','s5',GD.direction,colors.s5),
         swellDots('Swell 6','s6',GD.direction,colors.s6),
       ];
-      new Chart(document.getElementById('directionChart').getContext('2d'), {
+      directionChart = new Chart(document.getElementById('directionChart').getContext('2d'), {
         type: 'line',
         data: { labels: GD.labels, datasets: ds },
         options: {
@@ -428,6 +431,61 @@ enforceSingleWorld();
         }
       });
     })();
+
+    // ---- Range controls (Full / 7d / 3d) ----
+    // Use index windowing: last N*24 points for N days, or full length.
+    function setWindowByDays(days) {
+      const N = GD.labels.length;
+      const end = N - 1;
+      let start = 0;
+      if (Number.isFinite(days) && days > 0) {
+        const hours = days * 24;
+        start = Math.max(0, N - hours);
+      }
+      [heightChart, periodChart, directionChart].forEach(ch => {
+        if (!ch) return;
+        ch.options.scales.x.min = start;
+        ch.options.scales.x.max = end;
+        ch.update('none');
+      });
+    }
+
+    // Enforce "single selection" behavior for our 3 checkboxes
+    function exclusiveCheck(id) {
+      ['rangeFull','range7d','range3d'].forEach(k => {
+        const el = document.getElementById(k);
+        if (el) el.checked = (k === id);
+      });
+    }
+
+    function initRangeControls() {
+      const saved = sessionStorage.getItem(chartRangeKey) || 'full';
+      if (saved === '7') { exclusiveCheck('range7d'); setWindowByDays(7); }
+      else if (saved === '3') { exclusiveCheck('range3d'); setWindowByDays(3); }
+      else { exclusiveCheck('rangeFull'); setWindowByDays(null); }
+    }
+
+    function wireRangeControls() {
+      const full = document.getElementById('rangeFull');
+      const d7   = document.getElementById('range7d');
+      const d3   = document.getElementById('range3d');
+      if (!full || !d7 || !d3) return;
+
+      full.addEventListener('change', e => {
+        if (e.target.checked) { exclusiveCheck('rangeFull'); setWindowByDays(null); sessionStorage.setItem(chartRangeKey,'full'); }
+      });
+      d7.addEventListener('change', e => {
+        if (e.target.checked) { exclusiveCheck('range7d'); setWindowByDays(7); sessionStorage.setItem(chartRangeKey,'7'); }
+      });
+      d3.addEventListener('change', e => {
+        if (e.target.checked) { exclusiveCheck('range3d'); setWindowByDays(3); sessionStorage.setItem(chartRangeKey,'3'); }
+      });
+    }
+
+    // Activate
+    wireRangeControls();
+    initRangeControls();
+  
     {% endif %}
   </script>
 </body>

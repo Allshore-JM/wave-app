@@ -495,6 +495,65 @@ enforceSingleWorld();
       });
     })();
 
+      // ---- Cross‑graph hover/tooltip synchronization ----
+      // When you hover/touch on any one chart, show the same index on the other two.
+      (function syncTooltips() {
+        const charts = [heightChart, periodChart, directionChart];
+
+        function setActiveAtIndex(ch, idx) {
+          if (!ch || !ch.data || !ch.data.labels) return;
+          const max = ch.data.labels.length - 1;
+          const i = Math.max(0, Math.min(idx, max));
+          const active = ch.data.datasets.map((_, di) => ({ datasetIndex: di, index: i }));
+
+          ch.setActiveElements(active);
+          // Position the tooltip at this x pixel so it’s consistent across charts
+          const xScale = ch.scales?.x;
+          const x = xScale ? xScale.getPixelForValue(i) : undefined;
+          ch.tooltip?.setActiveElements(active, { x });
+          ch.update('none');
+        }
+
+        function clearActive(ch) {
+          if (!ch) return;
+          ch.setActiveElements([]);
+          ch.tooltip?.setActiveElements([], {});
+          ch.update('none');
+        }
+
+        function broadcastFrom(sourceChart, evt) {
+          // Find the hovered index on the source chart
+          const points = sourceChart.getElementsAtEventForMode(
+            evt,
+            'index',
+            { intersect: false, axis: 'x' },
+            true
+          );
+          if (!points || points.length === 0) return;
+          const idx = points[0].index;
+
+          // Apply same index to the other charts
+          charts.forEach(ch => {
+            if (ch !== sourceChart) setActiveAtIndex(ch, idx);
+          });
+        }
+
+        charts.forEach(ch => {
+          if (!ch || !ch.canvas) return;
+          const el = ch.canvas;
+
+          // Mouse
+          el.addEventListener('mousemove', e => broadcastFrom(ch, e));
+          el.addEventListener('mouseleave', () => charts.forEach(clearActive));
+
+          // Touch
+          el.addEventListener('touchstart', e => broadcastFrom(ch, e), { passive: true });
+          el.addEventListener('touchmove',  e => broadcastFrom(ch, e), { passive: true });
+          el.addEventListener('touchend',   () => charts.forEach(clearActive));
+          el.addEventListener('touchcancel',() => charts.forEach(clearActive));
+        });
+      })();
+      
     // ---- Range controls (Full / 7d / 3d) ----
     // Use index windowing: FIRST N*24 points from the START of the series.
     function setWindowByDays(days) {

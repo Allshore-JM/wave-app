@@ -89,11 +89,26 @@
               <!-- Graph header (uses graph_header when available; falls back to graph_data.header) -->
               {% set hdr = graph_header if graph_header is defined and graph_header else (graph_data.header if graph_data is defined and graph_data.header is defined else None) %}
               {% if hdr %}
-              <div class="mb-2 small text-muted">
-                <strong>Cycle :</strong> {{ hdr.cycle }}
-                &nbsp; | &nbsp; <strong>Location :</strong> {{ hdr.location }}
-                &nbsp; | &nbsp; <strong>Time Zone:</strong> {{ hdr.tz }}
+              <div class="mb-2 small text-muted d-flex flex-wrap align-items-center">
+                <div>
+                  <strong>Cycle :</strong> {{ hdr.cycle }}
+                  &nbsp; | &nbsp; <strong>Location :</strong> {{ hdr.location }}
+                  &nbsp; | &nbsp; <strong>Time Zone:</strong> {{ hdr.tz }}
+                </div>
+                <div class="ms-auto">
+                  <span class="me-2 text-body">Range:</span>
+                  <label class="form-check form-check-inline small mb-0">
+                    <input class="form-check-input" type="checkbox" id="rangeFull"> <span class="form-check-label">Full</span>
+                  </label>
+                  <label class="form-check form-check-inline small mb-0">
+                    <input class="form-check-input" type="checkbox" id="range7d"> <span class="form-check-label">7 days</span>
+                  </label>
+                  <label class="form-check form-check-inline small mb-0">
+                    <input class="form-check-input" type="checkbox" id="range3d"> <span class="form-check-label">3 days</span>
+                  </label>
+                </div>
               </div>
+
               {% endif %}
 
               <div class="mb-4">

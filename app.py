@@ -717,7 +717,8 @@ def index():
             def tp_idx(g): return 3 + g*3
             def dr_idx(g): return 4 + g*3
 
-            height = {
+            # Feet from the parsed table rows (rows are feet already)
+            height_ft = {
                 "s1": pick(hs_idx(0)), "s2": pick(hs_idx(1)), "s3": pick(hs_idx(2)),
                 "s4": pick(hs_idx(3)), "s5": pick(hs_idx(4)), "s6": pick(hs_idx(5)),
                 "combined": [r[-1] for r in rows],
@@ -730,17 +731,30 @@ def index():
                 "s1": pick(dr_idx(0)), "s2": pick(dr_idx(1)), "s3": pick(dr_idx(2)),
                 "s4": pick(dr_idx(3)), "s5": pick(dr_idx(4)), "s6": pick(dr_idx(5)),
             }
+
+            # NEW: convert graph heights to meters when Metric is selected
+            if selected_unit == "Metric":
+                FT_TO_M = 0.3048
+                height = {
+                    k: [None if v is None else round(v * FT_TO_M, 2) for v in arr]
+                    for k, arr in height_ft.items()
+                }
+                graph_units = "m"
+            else:
+                height = height_ft
+                graph_units = "ft"
+
             graph_data = {
                 "labels": labels,
                 "height": height,
                 "period": period,
                 "direction": direction,
-                "units": "ft" if selected_unit == "US" else "m",
+                "units": graph_units,  # now matches the numeric units
                 "cycle": cycle_str or "",
                 "location": location_str or "",
                 "tz": tz_label or ""
             }
-            
+
             # Graph header should NOT include the leading words; clean them.
             cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
             loc_clean   = _strip_header_prefix(location_str, "Location")

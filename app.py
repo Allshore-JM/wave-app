@@ -818,7 +818,7 @@ def index():
     selected_station = ""
     selected_tz = ""
     selected_unit = "US"
-    selected_model = (request.values.get("model") or "GFS").upper()
+    selected_model = request.values.get("model", "GFS")
     selected_view = (request.values.get("view") or "Table")
     if request.method == "POST":
         selected_station = request.form.get("station") or ""

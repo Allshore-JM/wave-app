@@ -57,6 +57,15 @@
         </div>
 
         <div class="col-auto">
+          <label for="model" class="form-label mb-0">Model</label>
+          <select class="form-select" id="model" name="model">
+            {% for m in models %}
+              <option value="{{ m }}" {% if m == selected_model %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </div>        
+        
+        <div class="col-auto">
           <label for="view" class="form-label mb-0">View</label>
           <select class="form-select" id="view" name="view">
             <option value="Table" {% if selected_view == 'Table' %}selected{% endif %}>Table</option>
@@ -94,6 +103,7 @@
                   <strong>Cycle :</strong> {{ hdr.cycle }}
                   &nbsp; | &nbsp; <strong>Location :</strong> {{ hdr.location }}
                   &nbsp; | &nbsp; <strong>Time Zone:</strong> {{ hdr.tz }}
+                  {% if hdr.model %}&nbsp; | &nbsp; <strong>Model:</strong> {{ hdr.model }}{% endif %}
                 </div>
                 <div class="ms-auto">
                   <span class="me-2 text-body">Range:</span>

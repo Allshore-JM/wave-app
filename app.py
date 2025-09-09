@@ -905,11 +905,11 @@ def index():
                 "height": height,
                 "period": period,
                 "direction": direction,
-                "units": graph_units,  # now matches the numeric units
+                "units": "ft" if selected_unit == "US" else "m",
                 "cycle": cycle_str or "",
                 "location": location_str or "",
                 "tz": tz_label or "",
-                "model": selected_model""
+                "model": selected_model
             }
 
             # Graph header should NOT include the leading words; clean them.

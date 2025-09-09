@@ -6,3 +6,5 @@ gunicorn
 pytz
 timezonefinder
 beautifulsoup4
+copernicusmarine>=2.2.0
+numpy>=1.23

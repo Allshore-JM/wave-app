@@ -10,6 +10,13 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from timezonefinder import TimezoneFinder
 from calendar import monthrange
+import numpy as np
+try:
+    import copernicusmarine  # Copernicus Marine Toolbox API
+    HAVE_CMEMS = True
+except Exception:
+    copernicusmarine = None
+    HAVE_CMEMS = False
 
 app = Flask(__name__)
 
@@ -68,6 +75,12 @@ stations_data_cache = None
 
 # NOAA URLs
 NOAA_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
+# CMEMS constants (can be overridden by environment var)
+CMEMS_WAVE_DATASET_ID = os.environ.get(
+    "CMEMS_WAVE_DATASET_ID",
+    "cmems_mod_glo_wav_anfc_0.083deg_PT3H-i"
+)
+M_TO_FT = 3.28084
 
 # Timezones
 HST = pytz.timezone("Pacific/Honolulu")
@@ -86,6 +99,141 @@ DEFAULT_STATIONS = {
     "51003": {"name": "Buoy 51003", "lat": 23.69, "lon": -162.25},
     "51004": {"name": "Buoy 51004", "lat": 25.84, "lon": -162.09},
 }
+
+# ----------------------------- Model selector -----------------------------
+MODEL_OPTIONS = ["GFS", "CMEMS"]
+
+# Small in-memory cache for CMEMS queries (per station/per day)
+CMEMS_CACHE = {}
+
+def _ns_ew(lat, lon) -> str:
+    ns = "N" if lat >= 0 else "S"
+    ew = "E" if lon >= 0 else "W"
+    return f"{abs(lat):.2f}{ns} {abs(lon):.2f}{ew}"
+
+def fetch_cmems_timeseries(station_id: str, target_tz_name: str | None = None):
+    """
+    Return (cycle_str, location_str, model_run_str, rows, tz_name, error) for CMEMS.
+    rows layout matches parse_bull(): [date, time, (s1 hs,tp,dir)*6, combined_hs]
+    S1=primary swell, S2=secondary swell, S3=wind wave; S4–S6 empty.
+    Heights are stored in FEET to match existing table/graph code.
+    """
+    if not HAVE_CMEMS:
+        return None, None, None, None, 'UTC', ("Copernicus Marine Toolbox not installed. "
+                                               "Add 'copernicusmarine' to requirements and set credentials.")
+    coords_map = load_station_coords()
+    sid = str(station_id).strip()
+    if sid not in coords_map:
+        return None, None, None, None, 'UTC', f"No lat/lon for station {sid}."
+    lat = float(coords_map[sid]['lat']); lon = float(coords_map[sid]['lon'])
+    tz_name = target_tz_name or _safe_tzname_for_latlon(lat, lon)
+
+    # Use now -> now +10d (dataset is 3‑hourly analysis/forecast)
+    now_utc = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+    start_dt = now_utc
+    end_dt = now_utc + timedelta(days=10)
+
+    # Cache per station/day to avoid repeated remote reads
+    ck = (sid, start_dt.strftime("%Y%m%d"))
+    if ck in CMEMS_CACHE:
+        return CMEMS_CACHE[ck]
+
+    pad = 0.05  # ~ small bbox around point; we’ll select 'nearest'
+    variables = [
+        "VHM0", "VMDR", "VTM10", "VTPK",
+        "VHM0_SW1", "VMDR_SW1", "VTM01_SW1",
+        "VHM0_SW2", "VMDR_SW2", "VTM01_SW2",
+        "VHM0_WW",  "VMDR_WW",  "VTM01_WW",
+    ]
+    try:
+        ds = copernicusmarine.open_dataset(
+            dataset_id=CMEMS_WAVE_DATASET_ID,
+            variables=variables,
+            minimum_longitude=lon - pad, maximum_longitude=lon + pad,
+            minimum_latitude=lat - pad,  maximum_latitude=lat + pad,
+            start_datetime=start_dt.isoformat() + "Z",
+            end_datetime=end_dt.isoformat() + "Z",
+            coordinates_selection_method="nearest",
+        )
+        # Collapse to 1 grid point
+        def one(var):
+            if var not in ds:
+                return None
+            v = ds[var]
+            if v.ndim == 3:
+                return v.isel(latitude=0, longitude=0).values
+            if v.ndim == 1:
+                return v.values
+            return None
+        t_vals = one("time")
+        if t_vals is None or len(t_vals) == 0:
+            return None, None, None, None, tz_name, "CMEMS returned no times."
+        times_utc = [pd.to_datetime(t).to_pydatetime().replace(tzinfo=UTC) for t in t_vals]
+
+        def arr_m_to_ft(name):
+            a = one(name)
+            if a is None: return None
+            return np.array(a, dtype=float) * M_TO_FT
+        def arr(name):
+            a = one(name)
+            if a is None: return None
+            return np.array(a, dtype=float)
+
+        # Arrays
+        hs_tot_ft = arr_m_to_ft("VHM0")
+        hs_sw1_ft = arr_m_to_ft("VHM0_SW1")
+        hs_sw2_ft = arr_m_to_ft("VHM0_SW2")
+        hs_ww_ft  = arr_m_to_ft("VHM0_WW")
+        tp_sw1    = arr("VTM01_SW1")  # CMEMS gives Tm01 for partitions (no Tp per partition)
+        tp_sw2    = arr("VTM01_SW2")
+        tp_ww     = arr("VTM01_WW")
+        dr_sw1    = arr("VMDR_SW1")
+        dr_sw2    = arr("VMDR_SW2")
+        dr_ww     = arr("VMDR_WW")
+
+        # Build rows
+        rows = []
+        local_tz = pytz.timezone(tz_name) if tz_name else UTC
+        for i, t_utc in enumerate(times_utc):
+            local_dt = t_utc.astimezone(local_tz)
+            try:
+                date_str_local = local_dt.strftime("%A, %B %-d, %Y")
+            except Exception:
+                date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
+            time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
+            # s1: primary swell
+            s1 = [
+                None if hs_sw1_ft is None or np.isnan(hs_sw1_ft[i]) else float(hs_sw1_ft[i]),
+                None if tp_sw1    is None or np.isnan(tp_sw1[i])    else float(tp_sw1[i]),
+                None if dr_sw1    is None or np.isnan(dr_sw1[i])    else int(round(dr_sw1[i]))
+            ]
+            # s2: secondary swell
+            s2 = [
+                None if hs_sw2_ft is None or np.isnan(hs_sw2_ft[i]) else float(hs_sw2_ft[i]),
+                None if tp_sw2    is None or np.isnan(tp_sw2[i])    else float(tp_sw2[i]),
+                None if dr_sw2    is None or np.isnan(dr_sw2[i])    else int(round(dr_sw2[i]))
+            ]
+            # s3: wind wave
+            s3 = [
+                None if hs_ww_ft  is None or np.isnan(hs_ww_ft[i])  else float(hs_ww_ft[i]),
+                None if tp_ww     is None or np.isnan(tp_ww[i])     else float(tp_ww[i]),
+                None if dr_ww     is None or np.isnan(dr_ww[i])     else int(round(dr_ww[i]))
+            ]
+            empties = [None, None, None] * 3  # s4–s6
+            combined_ft = None if hs_tot_ft is None or np.isnan(hs_tot_ft[i]) else float(hs_tot_ft[i])
+            row = [date_str_local, time_str_local] + s1 + s2 + s3 + empties + [combined_ft]
+            rows.append(row)
+
+        # CMEMS has no single "bulletin" cycle; use first UTC step as a pseudo‑cycle marker
+        first_utc = times_utc[0]
+        cycle_str = f"Cycle : {first_utc.strftime('%Y%m%d %H')} UTC"
+        location_str = f"Location : {sid} ({_ns_ew(lat, lon)})"
+        out = (cycle_str, location_str, None, rows, tz_name, None)
+        CMEMS_CACHE[ck] = out
+        return out
+    except Exception as e:
+        return None, None, None, None, tz_name, f"CMEMS error: {e}"
+
 
 # ----------------------------- Static station files -----------------------------
 
@@ -670,15 +818,18 @@ def index():
     selected_station = ""
     selected_tz = ""
     selected_unit = "US"
+    selected_model = (request.values.get("model") or "GFS").upper()
     selected_view = (request.values.get("view") or "Table")
     if request.method == "POST":
         selected_station = request.form.get("station") or ""
         selected_tz = request.form.get("tz") or ""
         selected_unit = request.form.get("unit") or "US"
+        selected_model = (request.form.get("model") or "GFS").upper()
     else:
         selected_station = request.args.get("station", "")
         selected_tz = request.args.get("tz", "")
         selected_unit = request.args.get("unit", "US") or "US"
+        selected_model = (request.args.get("model", "GFS") or "GFS").upper()
 
     if not selected_station:
         selected_station = "51201"
@@ -692,9 +843,14 @@ def index():
     graph_header = None  # (cycle, location, tz)
 
     if selected_station:
-        cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
-            selected_station, selected_tz or None
-        )
+        if selected_model == "CMEMS":
+            cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = fetch_cmems_timeseries(
+                selected_station, selected_tz or None
+            )
+        else:
+            cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
+                selected_station, selected_tz or None
+            )
         error = parse_error
         if rows is not None:
             tz_label = effective_tz_name
@@ -752,7 +908,8 @@ def index():
                 "units": graph_units,  # now matches the numeric units
                 "cycle": cycle_str or "",
                 "location": location_str or "",
-                "tz": tz_label or ""
+                "tz": tz_label or "",
+                "model": selected_model""
             }
 
             # Graph header should NOT include the leading words; clean them.
@@ -766,7 +923,8 @@ def index():
             graph_header = {
                 "cycle": cycle_clean,
                 "location": loc_display,
-                "tz": tz_label or ""
+                "tz": tz_label or "",
+                "model": selected_model
             }
 
     return render_template(
@@ -778,6 +936,8 @@ def index():
         tz_label=tz_label,
         units=unit_options,
         selected_unit=selected_unit,
+        models=MODEL_OPTIONS,
+        selected_model=selected_model,        
         table_html=table_html,
         error=error,
         selected_lat=selected_lat,

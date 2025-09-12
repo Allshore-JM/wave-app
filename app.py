@@ -10,6 +10,7 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from timezonefinder import TimezoneFinder
 from calendar import monthrange
+import xarray as xr 
 
 app = Flask(__name__)
 
@@ -86,6 +87,101 @@ DEFAULT_STATIONS = {
     "51003": {"name": "Buoy 51003", "lat": 23.69, "lon": -162.25},
     "51004": {"name": "Buoy 51004", "lat": 25.84, "lon": -162.09},
 }
+
+# ---- PacIOOS SWAN integration ----
+# Minimal starter list. Expand freely (IDs & coords are yours to define).
+SWAN_STATIONS_DEFAULT = {
+    # Oʻahu (North, East, South, West examples)
+    "SWAN_HALEIWA":  {"name": "Haleʻiwa (Oʻahu)",        "lat": 21.593, "lon": -158.103, "tz": "Pacific/Honolulu"},
+    "SWAN_MAKAPUU":  {"name": "Makapuʻu (Oʻahu)",        "lat": 21.306, "lon": -157.652, "tz": "Pacific/Honolulu"},
+    "SWAN_WAIKIKI":  {"name": "Waikīkī (Oʻahu)",         "lat": 21.273, "lon": -157.825, "tz": "Pacific/Honolulu"},
+    "SWAN_MAKAHA":   {"name": "Mākaha (Oʻahu)",          "lat": 21.474, "lon": -158.216, "tz": "Pacific/Honolulu"},
+    # Maui Nui
+    "SWAN_KIHEI":    {"name": "Kīhei (Maui)",            "lat": 20.747, "lon": -156.451, "tz": "Pacific/Honolulu"},
+    "SWAN_HONOLUA":  {"name": "Honolua (Maui)",          "lat": 21.016, "lon": -156.638, "tz": "Pacific/Honolulu"},
+    # Kauaʻi
+    "SWAN_HANALEI":  {"name": "Hanalei (Kauaʻi)",        "lat": 22.215, "lon": -159.497, "tz": "Pacific/Honolulu"},
+    "SWAN_POIPU":    {"name": "Poʻipū (Kauaʻi)",         "lat": 21.875, "lon": -159.453, "tz": "Pacific/Honolulu"},
+    # Hawaiʻi Island
+    "SWAN_KONA":     {"name": "Kona (Hawaiʻi Island)",   "lat": 19.640, "lon": -156.000, "tz": "Pacific/Honolulu"},
+    "SWAN_HILO":     {"name": "Hilo (Hawaiʻi Island)",   "lat": 19.729, "lon": -155.056, "tz": "Pacific/Honolulu"},
+}
+
+def load_swan_station_map() -> dict:
+    """
+    If you later add swan_stations.json (same shape as DEFAULT_STATIONS),
+    read it here and fall back to SWAN_STATIONS_DEFAULT if not present.
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    json_path = os.path.join(base_dir, 'swan_stations.json')
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            # normalize
+            out = {}
+            for sid, info in data.items():
+                out[str(sid).strip()] = {
+                    "name": info.get("name", str(sid)),
+                    "lat": float(info["lat"]),
+                    "lon": float(info["lon"]),
+                    "tz": info.get("tz", "Pacific/Honolulu"),
+                }
+            return out
+        except Exception:
+            pass
+    return SWAN_STATIONS_DEFAULT.copy()
+
+def _lon_to_east(lon_deg):
+    """Convert [-180..180] to [0..360] range for SWAN (ERDDAP/THREDDS use degrees_east)."""
+    return lon_deg if lon_deg >= 0 else lon_deg + 360.0
+
+# Choose the SWAN island dataset by nearest island center (simple and robust).
+_SWAN_ISLANDS = [
+    {
+        "id": "swan_oahu",
+        "label": "Oahu",
+        "center": (21.45, -157.95),
+        "best_url": "https://pae-paha.pacioos.hawaii.edu/thredds/dodsC/swan_oahu/SWAN_Oahu_Regional_Wave_Model_best.ncd",
+        # variables: shgt(m), pper(s), pdir(deg-from). :contentReference[oaicite:1]{index=1}
+    },
+    {
+        "id": "swan_kauai",
+        "label": "Kauai",
+        "center": (22.05, -159.50),
+        "best_url": "https://pae-paha.pacioos.hawaii.edu/thredds/dodsC/swan_kauai/SWAN_Kauai_Regional_Wave_Model_best.ncd",
+        # variables as above. :contentReference[oaicite:2]{index=2}
+    },
+    {
+        "id": "swan_maui",
+        "label": "Maui",
+        "center": (20.90, -156.50),
+        "best_url": "https://pae-paha.pacioos.hawaii.edu/thredds/dodsC/swan_maui/SWAN_Maui_Regional_Wave_Model_best.ncd",
+        # variables as above. :contentReference[oaicite:3]{index=3}
+    },
+    {
+        "id": "swan_bigi",
+        "label": "Big Island",
+        "center": (19.70, -155.60),
+        "best_url": "https://pae-paha.pacioos.hawaii.edu/thredds/dodsC/swan_bigi/SWAN_Big_Island_Regional_Wave_Model_best.ncd",
+        # variables as above. :contentReference[oaicite:4]{index=4}
+    },
+]
+
+def _nearest_island_for(lat, lon):
+    from math import radians, cos, sin, asin, sqrt
+    def hav(a,b,c,d):
+        # haversine distance in km
+        R=6371.0
+        dlat=radians(c-a); dlon=radians(d-b)
+        a_=sin(dlat/2)**2 + cos(radians(a))*cos(radians(c))*sin(dlon/2)**2
+        return 2*R*asin(sqrt(a_))
+    best = None
+    for isl in _SWAN_ISLANDS:
+        d = hav(lat, lon, isl["center"][0], isl["center"][1])
+        if best is None or d < best[0]:
+            best = (d, isl)
+    return best[1]
 
 # ----------------------------- Static station files -----------------------------
 
@@ -208,9 +304,32 @@ def get_stations_data():
     stations_data_cache = data_list
     return stations_data_cache
 
+def get_station_list_for_model(model: str) -> list[tuple[str, str]]:
+    if (model or "").upper() == "SWAN":
+        mp = load_swan_station_map()
+        return [(sid, info["name"]) for sid, info in mp.items()]
+    # default GFS
+    return get_station_list()
+
+def get_stations_data_for_model(model: str):
+    if (model or "").upper() == "SWAN":
+        mp = load_swan_station_map()
+        out = []
+        for sid, info in mp.items():
+            out.append({
+                "id": sid,
+                "name": info["name"],
+                "lat": info["lat"],
+                "lon": info["lon"],
+                "tz": info.get("tz", "Pacific/Honolulu"),
+            })
+        return out
+    return get_stations_data()
+
 @app.route('/stations.json')
 def stations_json():
-    return jsonify(get_stations_data())
+    model = (request.args.get("model") or "GFS").upper()
+    return jsonify(get_stations_data_for_model(model))
 
 # ----------------------------- NOAA run detection ------------------------------
 
@@ -325,6 +444,104 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     if resp.status_code != 200 or not resp.text:
         return None, None, None, None, 'UTC', f"No .bull file found for {station_id}"
 
+def parse_swan(station_id: str, target_tz_name: str | None = None):
+    """
+    Return data in the same shape as parse_bull:
+      (cycle_str, location_str, model_run_str, rows, effective_tz_name, error)
+    We fill 'Swell 1' and 'Combined' with SWAN's total sea state; others = None.
+    """
+    swan_map = load_swan_station_map()
+    st = swan_map.get(str(station_id))
+    if not st:
+        return None, None, None, None, "Pacific/Honolulu", f"Unknown SWAN station {station_id}"
+
+    lat = float(st["lat"]); lon = float(st["lon"])
+    island = _nearest_island_for(lat, lon)
+    url = island["best_url"]
+
+    try:
+        ds = xr.open_dataset(url)  # THREDDS OPeNDAP
+    except Exception as e:
+        return None, None, None, None, "Pacific/Honolulu", f"Could not open SWAN dataset: {e}"
+
+    # Convert lon to degrees_east for the grid and pick nearest (z is 0)
+    lon_e = _lon_to_east(lon)
+    try:
+        pt = ds.sel(lat=lat, lon=lon_e, method="nearest").sel(z=0, method="nearest")
+    except Exception as e:
+        return None, None, None, None, "Pacific/Honolulu", f"SWAN selection failed: {e}"
+
+    # Pull variables; names per PacIOOS SWAN (shgt[m], pper[s], pdir[deg-from])
+    try:
+        hs_m   = pt["shgt"].to_series()
+        tp_s   = pt["pper"].to_series()
+        dirdeg = pt["pdir"].to_series()
+        times  = hs_m.index.to_pydatetime()  # pandas->datetime array
+    except Exception as e:
+        return None, None, None, None, "Pacific/Honolulu", f"SWAN variable read failed: {e}"
+
+    # Time zone logic
+    tz_name = st.get("tz", "Pacific/Honolulu")
+    if target_tz_name:
+        try:
+            _ = pytz.timezone(target_tz_name)
+            tz_name = target_tz_name
+        except Exception:
+            pass
+    tz = pytz.timezone(tz_name)
+
+    # Compose rows in *feet* like parse_bull (your table handles US/Metric display)
+    M_TO_FT = 3.28084
+    rows = []
+    for i, t_utc in enumerate(times):
+        if t_utc.tzinfo is None:
+            t_utc = t_utc.replace(tzinfo=pytz.utc)
+        t_loc = t_utc.astimezone(tz)
+        date_str_local = t_loc.strftime("%A, %B %-d, %Y") if "%" in "%-" else t_loc.strftime("%A, %B %d, %Y").lstrip('0')
+        time_str_local = t_loc.strftime("%I:%M %p").lstrip('0')
+
+        hs_ft = None if pd.isna(hs_m.iloc[i]) else float(hs_m.iloc[i]) * M_TO_FT
+        tp    = None if pd.isna(tp_s.iloc[i]) else float(tp_s.iloc[i])
+        direc = None if pd.isna(dirdeg.iloc[i]) else int(round(float(dirdeg.iloc[i])))
+
+        # Fill: Swell1 = SWAN total; Swell2..6 = None; Combined = SWAN total
+        row = [date_str_local, time_str_local]
+        # Swell 1
+        row.extend([hs_ft, tp, direc])
+        # Swell 2..6
+        for _ in range(5):
+            row.extend([None, None, None])
+        # Combined
+        row.append(hs_ft)
+        rows.append(row)
+
+    if not rows:
+        return None, None, None, None, tz_name, "No SWAN data rows."
+
+    # Cycle and Location header strings (match your table header format)
+    t0_utc = times[0]
+    if t0_utc.tzinfo is None:
+        t0_utc = t0_utc.replace(tzinfo=pytz.utc)
+    cycle_str    = f"Cycle : {t0_utc.astimezone(pytz.utc).strftime('%Y%m%d %H')} UTC"
+    ns = "N" if lat >= 0 else "S"
+    ew = "E" if lon >= 0 else "W"
+    location_str = f"Location : {station_id} ({abs(lat):.2f}{ns} {abs(lon):.2f}{ew})"
+    model_run_str = None  # optional
+
+    # round like parse_bull
+    for r in rows:
+        idx = 2
+        for _ in range(6):
+            if r[idx] is not None:   r[idx] = round(r[idx], 2)  # Hs
+            idx += 1
+            if r[idx] is not None:   r[idx] = round(r[idx], 1)  # Tp
+            idx += 1
+            if r[idx] is not None:   r[idx] = int(round(r[idx]))  # Dir
+            idx += 1
+        if r[-1] is not None:       r[-1] = round(r[-1], 2)    # Combined
+
+    return cycle_str, location_str, model_run_str, rows, tz_name, None
+    
     lines = resp.text.splitlines()
     # Headers
     cycle_line = next((l for l in lines if l.lower().strip().startswith("cycle")), lines[0] if lines else "")
@@ -663,25 +880,23 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    stations = get_station_list()
     timezones = sorted(pytz.common_timezones)
     unit_options = ["US", "Metric"]
+    model_options = ["GFS", "SWAN"]
 
-    selected_station = ""
-    selected_tz = ""
-    selected_unit = "US"
-    selected_view = (request.values.get("view") or "Table")
-    if request.method == "POST":
-        selected_station = request.form.get("station") or ""
-        selected_tz = request.form.get("tz") or ""
-        selected_unit = request.form.get("unit") or "US"
-    else:
-        selected_station = request.args.get("station", "")
-        selected_tz = request.args.get("tz", "")
-        selected_unit = request.args.get("unit", "US") or "US"
+    # pull selections (GET or POST)
+    selected_view  = (request.values.get("view")  or "Table")
+    selected_unit  = (request.values.get("unit")  or "US")
+    selected_tz    = (request.values.get("tz")    or "")
+    selected_model = (request.values.get("model") or "GFS").upper()
+    selected_station = (request.values.get("station") or "")
 
+    # default station (keep your old default for GFS; pick one for SWAN)
     if not selected_station:
-        selected_station = "51201"
+        selected_station = "51201" if selected_model == "GFS" else "SWAN_HALEIWA"
+
+    # Get the correct station list for the dropdown
+    stations = get_station_list_for_model(selected_model)
 
     table_html = None
     error = None
@@ -692,33 +907,43 @@ def index():
     graph_header = None  # (cycle, location, tz)
 
     if selected_station:
-        cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
-            selected_station, selected_tz or None
-        )
+        if selected_model == "SWAN":
+            cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_swan(
+                selected_station, selected_tz or None
+            )
+        else:
+            cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
+                selected_station, selected_tz or None
+            )
+
         error = parse_error
         if rows is not None:
             tz_label = effective_tz_name
             table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
 
-            # for map single marker if coords JSON has it
-            coords_map = load_station_coords()
-            sid_str = str(selected_station).strip()
-            if sid_str in coords_map:
-                selected_lat = coords_map[sid_str]['lat']
-                selected_lon = coords_map[sid_str]['lon']
+            # for single marker focus: look up lat/lon in the right list
+            coords = None
+            if selected_model == "SWAN":
+                mp = load_swan_station_map()
+                st = mp.get(str(selected_station))
+                if st: selected_lat, selected_lon = st["lat"], st["lon"]
+            else:
+                coords_map = load_station_coords()
+                sid_str = str(selected_station).strip()
+                if sid_str in coords_map:
+                    selected_lat = coords_map[sid_str]['lat']
+                    selected_lon = coords_map[sid_str]['lon']
 
-            # ----- pack graph data -----
+            # ----- pack graph data (unchanged) -----
             labels = [f"{r[0]} {r[1]}" for r in rows]
             def pick(array_index):
                 return [r[array_index] for r in rows]
 
-            # indices per swell
             def hs_idx(g): return 2 + g*3
             def tp_idx(g): return 3 + g*3
             def dr_idx(g): return 4 + g*3
 
-            # Feet from the parsed table rows (rows are feet already)
-            height_ft = {
+            height = {
                 "s1": pick(hs_idx(0)), "s2": pick(hs_idx(1)), "s3": pick(hs_idx(2)),
                 "s4": pick(hs_idx(3)), "s5": pick(hs_idx(4)), "s6": pick(hs_idx(5)),
                 "combined": [r[-1] for r in rows],
@@ -732,60 +957,38 @@ def index():
                 "s4": pick(dr_idx(3)), "s5": pick(dr_idx(4)), "s6": pick(dr_idx(5)),
             }
 
-            # NEW: convert graph heights to meters when Metric is selected
-            if selected_unit == "Metric":
-                FT_TO_M = 0.3048
-                height = {
-                    k: [None if v is None else round(v * FT_TO_M, 2) for v in arr]
-                    for k, arr in height_ft.items()
-                }
-                graph_units = "m"
-            else:
-                height = height_ft
-                graph_units = "ft"
-
             graph_data = {
                 "labels": labels,
                 "height": height,
                 "period": period,
                 "direction": direction,
-                "units": graph_units,  # now matches the numeric units
-                "cycle": cycle_str or "",
-                "location": location_str or "",
-                "tz": tz_label or ""
+                "units": "ft" if selected_unit == "US" else "m",
+                "header": {
+                    "cycle": cycle_str.replace("Cycle :", "").strip(),
+                    "location": location_str.replace("Location :", "").strip(),
+                    "tz": tz_label
+                }
             }
+            graph_header = graph_data["header"]
 
-            # Graph header should NOT include the leading words; clean them.
-            cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
-            loc_clean   = _strip_header_prefix(location_str, "Location")
-            lat, lon = _parse_header_coords(location_str)
-            latlon_fmt = _fmt_latlon(lat, lon)
-            # Prefer "station_id (lat lon)" like "51201 (21.67N 158.12W)" when coords exist
-            loc_display = f"{selected_station} ({latlon_fmt})" if latlon_fmt else loc_clean
 
-            graph_header = {
-                "cycle": cycle_clean,
-                "location": loc_display,
-                "tz": tz_label or ""
-            }
+return render_template(
+    "index.html",
+    stations=stations,
+    timezones=timezones,
+    units=unit_options,
+    models=model_options,          # <-- ADD
+    selected_station=selected_station,
+    selected_tz=selected_tz,
+    selected_unit=selected_unit,
+    selected_view=selected_view,
+    selected_model=selected_model, # <-- ADD
+    table_html=table_html,
+    graph_data=graph_data,
+    graph_header=graph_header,
+    error=error
+)
 
-    return render_template(
-        "index.html",
-        stations=stations,
-        selected_station=selected_station,
-        timezones=timezones,
-        selected_tz=selected_tz,
-        tz_label=tz_label,
-        units=unit_options,
-        selected_unit=selected_unit,
-        table_html=table_html,
-        error=error,
-        selected_lat=selected_lat,
-        selected_lon=selected_lon,
-        selected_view=request.values.get("view") or "Table",
-        graph_data=graph_data,
-        graph_header=graph_header
-    )
 
 
 if __name__ == "__main__":

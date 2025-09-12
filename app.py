@@ -972,22 +972,22 @@ def index():
             graph_header = graph_data["header"]
 
 
-return render_template(
-    "index.html",
-    stations=stations,
-    timezones=timezones,
-    units=unit_options,
-    models=model_options,          # <-- ADD
-    selected_station=selected_station,
-    selected_tz=selected_tz,
-    selected_unit=selected_unit,
-    selected_view=selected_view,
-    selected_model=selected_model, # <-- ADD
-    table_html=table_html,
-    graph_data=graph_data,
-    graph_header=graph_header,
-    error=error
-)
+    return render_template(
+        "index.html",
+        stations=stations,
+        timezones=timezones,
+        units=unit_options,
+        models=model_options,          # <-- stays; template needs this
+        selected_station=selected_station,
+        selected_tz=selected_tz,
+        selected_unit=selected_unit,
+        selected_view=selected_view,
+        selected_model=selected_model, # <-- stays; template needs this
+        table_html=table_html,
+        graph_data=graph_data,
+        graph_header=graph_header,
+        error=error
+    )
 
 
 

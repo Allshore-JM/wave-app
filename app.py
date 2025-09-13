@@ -1366,7 +1366,6 @@ def index():
     graph_header = None  # (cycle, location, tz)
 
     if selected_station:
-    if selected_station:
         if selected_model == "SWAN":
             # Use the SWAN parser to produce rows in the SAME shape as GFS, then
             # flow through the same table/graph pipeline (no early return).

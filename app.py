@@ -696,19 +696,18 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
 
 def parse_swan(station_id: str, target_tz_name: str | None = None):
     """
+    Return data in the same shape as parse_bull:
+      (cycle_str, location_str, model_run_str, rows, effective_tz_name, error)
+    We fill 'Swell 1' and 'Combined' with SWAN's total sea state; others = None.
+    """
     # Lazy import so GFS-only runs don't break if SWAN dependencies aren't installed
     try:
         import xarray as xr
     except Exception:
         return None, None, None, None, "Pacific/Honolulu", (
-            "SWAN backend not installed. Add 'xarray', 'pydap' (and optionally 'netCDF4') "
+            "SWAN backend not installed. Add 'xarray' and 'pydap' (and optionally 'netCDF4') "
             "to requirements.txt to use SWAN."
         )
-
-    Return data in the same shape as parse_bull:
-      (cycle_str, location_str, model_run_str, rows, effective_tz_name, error)
-    We fill 'Swell 1' and 'Combined' with SWAN's total sea state; others = None.
-    """
     swan_map = load_swan_station_map()
     st = swan_map.get(str(station_id))
     if not st:

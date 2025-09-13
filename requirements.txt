@@ -13,3 +13,5 @@ xarray>=2024.10
 pydap>=3.4.1
 # optional but helpful local readers:
 netCDF4>=1.7.0
+h5netcdf
+numpy

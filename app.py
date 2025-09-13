@@ -1366,51 +1366,13 @@ def index():
     graph_header = None  # (cycle, location, tz)
 
     if selected_station:
+    if selected_station:
         if selected_model == "SWAN":
-            # only SWAN stations should be offered in the Station dropdown in your GET params;
-            # here we just use the selected station's coords to extract the series
-            try:
-                coord = STATION_COORDS.get(selected_station)  # or SWAN_STATIONS.get(...)
-                if not coord:
-                    raise RuntimeError(f"No coordinates for SWAN station {selected_station}")
-
-                cycle_str, model_run_str, rows = fetch_swan_rows(
-                    lat=coord["lat"],
-                    lon=coord["lon"],
-                    unit_system=selected_unit  # "US" or "Metric"
-                )
-
-                # keep your existing rendering call/signature
-                return render_template(
-                    "index.html",
-                    # --- your existing context ---
-                    cycle_str=cycle_str,
-                    location_str=f"Location : {selected_station} ({coord['lat']:.2f}, {coord['lon']:.2f})",
-                    model_run_str=model_run_str,
-                    rows=rows,
-                    selected_station=selected_station,
-                    selected_tz=selected_tz,
-                    selected_unit=selected_unit,
-                    selected_model=selected_model,
-                    # plus whatever else you already pass…
-                )
-
-            except Exception as e:
-                # fall back to an error message in the template using your existing pattern
-                error_msg = f"Could not open SWAN dataset: {e}"
-                return render_template(
-                    "index.html",
-                    rows=[],
-                    cycle_str="Cycle : —",
-                    location_str=f"Location : {selected_station}",
-                    model_run_str="SWAN",
-                    error_msg=error_msg,
-                    selected_station=selected_station,
-                    selected_tz=selected_tz,
-                    selected_unit=selected_unit,
-                    selected_model=selected_model,
-                )
-
+            # Use the SWAN parser to produce rows in the SAME shape as GFS, then
+            # flow through the same table/graph pipeline (no early return).
+            cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_swan(
+                selected_station, selected_tz or None
+            )
         else:
             cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
                 selected_station, selected_tz or None
@@ -1422,11 +1384,11 @@ def index():
             table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
 
             # for single marker focus: look up lat/lon in the right list
-            coords = None
             if selected_model == "SWAN":
                 mp = load_swan_station_map()
                 st = mp.get(str(selected_station))
-                if st: selected_lat, selected_lon = st["lat"], st["lon"]
+                if st:
+                    selected_lat, selected_lon = st["lat"], st["lon"]
             else:
                 coords_map = load_station_coords()
                 sid_str = str(selected_station).strip()

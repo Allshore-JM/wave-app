@@ -353,6 +353,107 @@ def get_latest_run():
                 continue
     return None, None
 
+# --- SWAN via PacIOOS ERDDAP (robust point time series) ---
+SWAN_ERDDAP_JSON = "https://pae-paha.pacioos.hawaii.edu/erddap/griddap/swan_oahu_lon180.json"
+
+def _erddap_time_sel(days_back: int | None = None,
+                     start_dt_utc: datetime | None = None,
+                     end_dt_utc: datetime | None = None) -> str:
+    """
+    Build the griddap [time] selector. If start/end are given, use them.
+    Else use 'last-N' hours to avoid out-of-range requests.
+    """
+    def iso(dt: datetime) -> str:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=pytz.utc)
+        return dt.astimezone(pytz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if start_dt_utc and end_dt_utc:
+        return f'[("{iso(start_dt_utc)}"):1:("{iso(end_dt_utc)}")]'
+    hours = int((days_back or 10) * 24)  # default ~10 days
+    return f"[last-{hours}:1:last]"
+
+def fetch_swan_point_timeseries(lat: float,
+                                lon: float,
+                                tz_name: str | None,
+                                unit: str,
+                                days_back: int | None = None,
+                                start_dt_utc: datetime | None = None,
+                                end_dt_utc: datetime | None = None):
+    """
+    Get SWAN shgt/mper/mdir at nearest grid point to (lat, lon) using ERDDAP.
+    Returns a graph_data dict compatible with your Chart.js view and an optional message.
+    """
+    # Build selectors
+    tsel = _erddap_time_sel(days_back, start_dt_utc, end_dt_utc)
+    # ERDDAP will snap to nearest grid cell when you pass a single value in brackets.
+    lat_sel = f"[({lat:.4f}):1:({lat:.4f})]"
+    lon_sel = f"[({lon:.4f}):1:({lon:.4f})]"
+
+    query = (
+        "time,"
+        f"shgt{tsel}{lat_sel}{lon_sel},"
+        f"mper{tsel}{lat_sel}{lon_sel},"
+        f"mdir{tsel}{lat_sel}{lon_sel}"
+    )
+    url = f"{SWAN_ERDDAP_JSON}?{query}"
+
+    resp = requests.get(url, timeout=30)
+    resp.raise_for_status()
+    js = resp.json()
+    rows = js.get("table", {}).get("rows", [])
+    if not rows:
+        return None, "No SWAN data was returned for that point."
+
+    # Parse rows -> arrays
+    times_utc, hs_m, tp_s, dir_deg = [], [], [], []
+    for t_iso, hs, mper, mdir in rows:
+        times_utc.append(pd.to_datetime(t_iso, utc=True))
+        hs_m.append(float(hs) if hs is not None else None)
+        tp_s.append(float(mper) if mper is not None else None)
+        dir_deg.append(float(mdir) if mdir is not None else None)
+
+    # Labels in target time zone (buoy-local or selected)
+    try:
+        target_tz = pytz.timezone(tz_name or "UTC")
+    except Exception:
+        target_tz = pytz.utc
+    labels = [dt.astimezone(target_tz).strftime("%-m/%-d/%y %I:%M %p") for dt in times_utc]
+
+    # Units
+    if unit.upper() == "US":
+        M2FT = 3.28084
+        hs_vals = [v * M2FT if v is not None else None for v in hs_m]
+        height_units = "ft"
+    else:
+        hs_vals = hs_m
+        height_units = "m"
+
+    # Build graph_data in the same shape your front-end expects
+    nulls = [None] * len(labels)
+    graph_data = {
+        "header": {
+            "cycle": "SWAN (last available)",
+            "location": f"{lat:.2f}N {abs(lon):.2f}{'W' if lon < 0 else 'E'}",
+            "tz": tz_name or "UTC",
+        },
+        "labels": labels,
+        "height": {
+            "s1": nulls, "s2": nulls, "s3": nulls, "s4": nulls, "s5": nulls, "s6": nulls,
+            "combined": hs_vals, "units": height_units,
+        },
+        "period": {
+            "s1": nulls, "s2": nulls, "s3": nulls, "s4": nulls, "s5": nulls, "s6": nulls,
+            "combined": tp_s, "units": "s",
+        },
+        "direction": {
+            "s1": nulls, "s2": nulls, "s3": nulls, "s4": nulls, "s5": nulls, "s6": nulls,
+            "combined": dir_deg, "units": "deg",
+        },
+    }
+    return graph_data, None
+
+
 # ----------------------------- Bulletin parser ---------------------------------
 
 def _safe_tzname_for_latlon(lat, lon):

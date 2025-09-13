@@ -10,7 +10,6 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from timezonefinder import TimezoneFinder
 from calendar import monthrange
-import xarray as xr 
 
 app = Flask(__name__)
 
@@ -446,6 +445,15 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
 
 def parse_swan(station_id: str, target_tz_name: str | None = None):
     """
+    # Lazy import so GFS-only runs don't break if SWAN dependencies aren't installed
+    try:
+        import xarray as xr
+    except Exception:
+        return None, None, None, None, "Pacific/Honolulu", (
+            "SWAN backend not installed. Add 'xarray', 'pydap' (and optionally 'netCDF4') "
+            "to requirements.txt to use SWAN."
+        )
+
     Return data in the same shape as parse_bull:
       (cycle_str, location_str, model_run_str, rows, effective_tz_name, error)
     We fill 'Swell 1' and 'Combined' with SWAN's total sea state; others = None.
@@ -459,10 +467,20 @@ def parse_swan(station_id: str, target_tz_name: str | None = None):
     island = _nearest_island_for(lat, lon)
     url = island["best_url"]
 
+    # Prefer the pydap engine for THREDDS /dodsC OPeNDAP endpoints
+    engine = None
     try:
-        ds = xr.open_dataset(url)  # THREDDS OPeNDAP
+        import pydap  # noqa: F401
+        engine = "pydap"
+    except Exception:
+        # If pydap isn't present, xr will try other engines, which may fail on OPeNDAP.
+        engine = None
+
+    try:
+        ds = xr.open_dataset(url, engine=engine)
     except Exception as e:
         return None, None, None, None, "Pacific/Honolulu", f"Could not open SWAN dataset: {e}"
+
 
     # Convert lon to degrees_east for the grid and pick nearest (z is 0)
     lon_e = _lon_to_east(lon)

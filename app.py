@@ -427,9 +427,13 @@ def _resolve_day_hour_ts(cycle_dt_utc: datetime, day_val: int, hour_val: int, la
 
 def parse_bull(station_id: str, target_tz_name: str | None = None):
     """
-    Fetch and parse .bull for station. Returns:
-    (cycle_str, location_str, model_run_str, rows, tz_name, error)
-    rows: [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs]
+    Fetch and parse NOAA GFS .bull for a station.
+    Returns a 6‑tuple:
+      (cycle_str, location_str, model_run_str, rows, tz_name, error)
+    rows schema per row:
+      [date_str, time_str,
+       s1_hs_ft, s1_tp_s, s1_dir_deg,  s2_hs_ft, s2_tp_s, s2_dir_deg,  ... s6_* ...,
+       combined_hs_ft]
     """
     date_str, run_str = get_latest_run()
     if not date_str:
@@ -438,10 +442,257 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     bull_url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
     try:
         resp = requests.get(bull_url, timeout=15)
-    except Exception:
-        return None, None, None, None, 'UTC', f"Could not download .bull for {station_id}"
+    except Exception as e:
+        return None, None, None, None, 'UTC', f"Could not download .bull for {station_id}: {e}"
     if resp.status_code != 200 or not resp.text:
         return None, None, None, None, 'UTC', f"No .bull file found for {station_id}"
+
+    lines = resp.text.splitlines()
+
+    # --- Headers ---
+    cycle_line = next((l for l in lines if l.lower().strip().startswith("cycle")), lines[0] if lines else "")
+    location_line = next((l for l in lines if l.lower().strip().startswith("location")), lines[1] if len(lines) > 1 else "")
+    cycle_str = cycle_line.strip()
+    location_str = location_line.strip()
+
+    # --- Resolve time zone from location (fallback to requested tz, then UTC) ---
+    lat, lon = _parse_header_coords(location_str)
+    tz_name_from_loc = _safe_tzname_for_latlon(lat, lon) if (lat is not None and lon is not None) else 'UTC'
+    effective_tz_name = tz_name_from_loc
+    if target_tz_name:
+        try:
+            _ = pytz.timezone(target_tz_name)
+            effective_tz_name = target_tz_name
+        except Exception:
+            pass
+
+    # --- Decide format: new "day & hour" vs old "Hr" table ---
+    uses_day_hour_format = any("day &" in line.lower() for line in lines[:10])
+
+    rows: list[list] = []
+    model_run_str = None
+
+    if uses_day_hour_format:
+        # Cycle datetime (UTC) for this run
+        import re
+        m = re.search(r"(\d{8})\s*(\d{2})", cycle_str)
+        cycle_date_str = date_str
+        cycle_hour_str = run_str
+        if m:
+            cycle_date_str = m.group(1)
+            cycle_hour_str = m.group(2)
+        cycle_dt_utc = datetime.strptime(f"{cycle_date_str} {cycle_hour_str}", "%Y%m%d %H")
+
+        # Pretty model run string in the *effective* time zone
+        model_run_local = cycle_dt_utc.replace(tzinfo=UTC).astimezone(pytz.timezone(effective_tz_name))
+        try:
+            model_run_str = "Model Run: " + model_run_local.strftime("%A, %B %-d, %Y %I:%M %p")
+        except Exception:
+            model_run_str = "Model Run: " + model_run_local.strftime("%A, %B %d, %Y %I:%M %p").lstrip('0')
+
+        M_TO_FT = 3.28084
+        last_dt_utc = None
+
+        for line in lines:
+            s = line.strip()
+            if not s.startswith("|"):
+                continue
+            if "Hst" in s or "---" in s:
+                continue
+
+            parts = [p.strip() for p in line.split("|") if p.strip()]
+            if not parts:
+                continue
+
+            # first cell -> "day hour"
+            day_hour = parts[0].split()
+            if len(day_hour) < 2:
+                continue
+            try:
+                day_val = int(day_hour[0])
+                hour_val = int(day_hour[1])
+            except ValueError:
+                continue
+
+            # Combined sea Hs (m) is second cell, first token
+            combined_hs_m = None
+            first = parts[1].split()
+            if first:
+                tok = first[0].replace('*', '')
+                try:
+                    combined_hs_m = float(tok)
+                except ValueError:
+                    combined_hs_m = None
+
+            # 6 swell groups (hs[m], tp[s], dir[deg]), may be missing
+            swell_groups = []
+            for f in parts[2:]:
+                if not f:
+                    swell_groups.append((None, None, None))
+                    continue
+                toks = [t.replace('*', '') for t in f.split() if t.replace('*', '') != ""]
+                if len(toks) < 3:
+                    swell_groups.append((None, None, None))
+                else:
+                    try:
+                        hs_m = float(toks[0])
+                        tp   = float(toks[1])
+                        dr   = int(round((float(toks[2]) + 180) % 360))  # convert "to" vs "from"
+                        swell_groups.append((hs_m, tp, dr))
+                    except Exception:
+                        swell_groups.append((None, None, None))
+
+            while len(swell_groups) < 6:
+                swell_groups.append((None, None, None))
+            swell_groups = swell_groups[:6]
+
+            # Build an increasing UTC timestamp for each row
+            forecast_dt_utc = _resolve_day_hour_ts(cycle_dt_utc, day_val, hour_val, last_dt_utc)
+            last_dt_utc = forecast_dt_utc
+
+            # Local strings
+            try:
+                local_tz = pytz.timezone(effective_tz_name)
+            except Exception:
+                local_tz = UTC
+            local_dt = forecast_dt_utc.replace(tzinfo=UTC).astimezone(local_tz)
+            try:
+                date_str_local = local_dt.strftime("%A, %B %-d, %Y")
+            except Exception:
+                date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
+            time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
+
+            # Assemble row
+            row = [date_str_local, time_str_local]
+            for hs_m, tp_val, dir_val in swell_groups:
+                if hs_m is None:
+                    row.extend([None, None, None])
+                else:
+                    row.extend([hs_m * M_TO_FT, tp_val, dir_val])
+
+            combined_hs_ft = None if combined_hs_m is None else combined_hs_m * M_TO_FT
+            row.append(combined_hs_ft)
+            rows.append(row)
+
+    else:
+        # Old "Hr" format
+        start_idx = None
+        for idx, line in enumerate(lines):
+            if line.strip().startswith("Hr"):
+                start_idx = idx + 1
+                break
+        if start_idx is None:
+            return cycle_str, location_str, None, None, effective_tz_name, "Data section not found in .bull file."
+
+        import re
+        m_old = re.search(r"(\d{8})\s*(\d{2})", cycle_str)
+        cycle_date_str_old = date_str
+        cycle_hour_str_old = run_str
+        if m_old:
+            cycle_date_str_old = m_old.group(1)
+            cycle_hour_str_old = m_old.group(2)
+        cycle_dt_utc_old = datetime.strptime(f"{cycle_date_str_old} {cycle_hour_str_old}", "%Y%m%d %H")
+
+        model_run_local_old = cycle_dt_utc_old.replace(tzinfo=UTC).astimezone(pytz.timezone(effective_tz_name))
+        try:
+            model_run_str = "Model Run: " + model_run_local_old.strftime("%A, %B %-d, %Y %I:%M %p")
+        except Exception:
+            model_run_str = "Model Run: " + model_run_local_old.strftime("%A, %B %d, %Y %I:%M %p").lstrip('0')
+
+        for line in lines[start_idx:]:
+            parts = line.split()
+            if len(parts) < 20:
+                continue
+            try:
+                hr_offset = float(parts[0])
+            except ValueError:
+                continue
+
+            utc_dt = cycle_dt_utc_old + timedelta(hours=hr_offset)
+            try:
+                local_tz = pytz.timezone(effective_tz_name)
+            except Exception:
+                local_tz = UTC
+            local_dt = utc_dt.replace(tzinfo=UTC).astimezone(local_tz)
+            try:
+                date_str_local = local_dt.strftime("%A, %B %-d, %Y")
+            except Exception:
+                date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
+            time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
+
+            row = [date_str_local, time_str_local]
+
+            # 6 groups, but data columns may include blanks; walk tokens defensively
+            idx_base = 6
+            for _ in range(6):
+                hs_val = tp_val = dir_val = None
+                tokens_collected = 0
+                while tokens_collected < 3 and idx_base < len(parts):
+                    tok_clean = parts[idx_base].replace('*', '')
+                    idx_base += 1
+                    if tok_clean == '':
+                        continue
+                    if tokens_collected == 0:
+                        try:
+                            hs_val = float(tok_clean) * 3.28084
+                            tokens_collected += 1
+                            continue
+                        except ValueError:
+                            continue
+                    if tokens_collected == 1:
+                        try:
+                            tp_val = float(tok_clean)
+                            tokens_collected += 1
+                            continue
+                        except ValueError:
+                            continue
+                    if tokens_collected == 2:
+                        try:
+                            dir_val = int(round((float(tok_clean) + 180) % 360))
+                            tokens_collected += 1
+                            continue
+                        except ValueError:
+                            continue
+                if tokens_collected < 3:
+                    row.extend([None, None, None])
+                else:
+                    row.extend([hs_val, tp_val, dir_val])
+
+            combined_hs_ft = None
+            for tok in reversed(parts):
+                tok_clean = tok.replace('*', '')
+                if tok_clean == '':
+                    continue
+                try:
+                    combined_hs_ft = float(tok_clean) * 3.28084
+                    break
+                except ValueError:
+                    continue
+            row.append(combined_hs_ft)
+            rows.append(row)
+
+    # --- Round data consistently ---
+    for r in rows:
+        idx_num = 2
+        for _ in range(6):
+            if r[idx_num] is not None:       # Hs
+                r[idx_num] = round(r[idx_num], 2)
+            idx_num += 1
+            if r[idx_num] is not None:       # Tp
+                r[idx_num] = round(r[idx_num], 1)
+            idx_num += 1
+            if r[idx_num] is not None:       # Dir
+                try:
+                    r[idx_num] = int(round(r[idx_num]))
+                except Exception:
+                    pass
+            idx_num += 1
+        if r[-1] is not None:                # Combined
+            r[-1] = round(r[-1], 2)
+
+    # --- Done ---
+    return cycle_str, location_str, model_run_str, rows, effective_tz_name, None
+
 
 def parse_swan(station_id: str, target_tz_name: str | None = None):
     """

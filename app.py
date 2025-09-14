@@ -107,13 +107,16 @@ def fetch_swan_point_timeseries_erddap(lat: float, lon: float, tz_name: str | No
     """
     # ERDDAP lon is -180..180 (lon180 dataset), so pass lon directly
     tsel = _erddap_time_sel(days_back)
+    depth_sel = "[(0.0)]"  # SWAN has a single surface level
     lat_sel = f"[({lat:.4f}):1:({lat:.4f})]"
     lon_sel = f"[({lon:.4f}):1:({lon:.4f})]"
+
+    # Order of dims: time, depth, latitude, longitude
     query = (
         "time,"
-        f"shgt{tsel}{lat_sel}{lon_sel},"
-        f"mper{tsel}{lat_sel}{lon_sel},"
-        f"mdir{tsel}{lat_sel}{lon_sel}"
+        f"shgt{tsel}{depth_sel}{lat_sel}{lon_sel},"
+        f"mper{tsel}{depth_sel}{lat_sel}{lon_sel},"
+        f"mdir{tsel}{depth_sel}{lat_sel}{lon_sel}"
     )
     url = f"{SWAN_ERDDAP_JSON}?{query}"
 

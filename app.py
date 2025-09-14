@@ -439,6 +439,7 @@ def fetch_swan_point_timeseries(lat: float,
     """
     # Build selectors
     tsel = _erddap_time_sel(days_back, start_dt_utc, end_dt_utc)
+    depth_sel = "[(0.0)]"
     # ERDDAP will snap to nearest grid cell when you pass a single value in brackets.
     lat_sel = f"[({lat:.4f}):1:({lat:.4f})]"
     lon_sel = f"[({lon:.4f}):1:({lon:.4f})]"

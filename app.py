@@ -149,20 +149,11 @@ def fetch_swan_point_timeseries_erddap(lat: float, lon: float, tz_name: str | No
 
 # Minimal starter list. Expand freely (IDs & coords are yours to define).
 SWAN_STATIONS_DEFAULT = {
-    # Oʻahu (North, East, South, West examples)
-    "SWAN_HALEIWA":  {"name": "Haleʻiwa (Oʻahu)",        "lat": 21.671, "lon": -158.118, "tz": "Pacific/Honolulu"},
-    "SWAN_MAKAPUU":  {"name": "Makapuʻu (Oʻahu)",        "lat": 21.306, "lon": -157.652, "tz": "Pacific/Honolulu"},
-    "SWAN_WAIKIKI":  {"name": "Waikīkī (Oʻahu)",         "lat": 21.273, "lon": -157.825, "tz": "Pacific/Honolulu"},
-    "SWAN_MAKAHA":   {"name": "Mākaha (Oʻahu)",          "lat": 21.474, "lon": -158.216, "tz": "Pacific/Honolulu"},
-    # Maui Nui
-    "SWAN_KIHEI":    {"name": "Kīhei (Maui)",            "lat": 20.747, "lon": -156.451, "tz": "Pacific/Honolulu"},
-    "SWAN_HONOLUA":  {"name": "Honolua (Maui)",          "lat": 21.016, "lon": -156.638, "tz": "Pacific/Honolulu"},
-    # Kauaʻi
-    "SWAN_HANALEI":  {"name": "Hanalei (Kauaʻi)",        "lat": 22.215, "lon": -159.497, "tz": "Pacific/Honolulu"},
-    "SWAN_POIPU":    {"name": "Poʻipū (Kauaʻi)",         "lat": 21.875, "lon": -159.453, "tz": "Pacific/Honolulu"},
-    # Hawaiʻi Island
-    "SWAN_KONA":     {"name": "Kona (Hawaiʻi Island)",   "lat": 19.640, "lon": -156.000, "tz": "Pacific/Honolulu"},
-    "SWAN_HILO":     {"name": "Hilo (Hawaiʻi Island)",   "lat": 19.729, "lon": -155.056, "tz": "Pacific/Honolulu"},
+    # Oʻahu (examples around the island)
+    "SWAN_HALEIWA":  {"name": "Haleʻiwa (Oʻahu)",  "lat": 21.671, "lon": -158.118, "tz": "Pacific/Honolulu"},
+    "SWAN_MAKAPUU":  {"name": "Makapuʻu (Oʻahu)",  "lat": 21.306, "lon": -157.652, "tz": "Pacific/Honolulu"},
+    "SWAN_WAIKIKI":  {"name": "Waikīkī (Oʻahu)",   "lat": 21.273, "lon": -157.825, "tz": "Pacific/Honolulu"},
+    "SWAN_MAKAHA":   {"name": "Mākaha (Oʻahu)",    "lat": 21.474, "lon": -158.216, "tz": "Pacific/Honolulu"}
 }
 
 def load_swan_station_map() -> dict:
@@ -1305,96 +1296,6 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     return html
 
 # ------------------------------ Flask routes -----------------------------------
-# >>> ADD: robust SWAN reader + row builder
-import xarray as xr
-import numpy as np
-
-# THREDDS fileServer (NetCDF over HTTP). Avoid OPeNDAP ".dods" to prevent
-# decode issues on the 'time' variable.
-_SWAN_URL = (
-    "https://pae-paha.pacioos.hawaii.edu/thredds/fileServer/"
-    "swan_oahu/SWAN_Oahu_Regional_Wave_Model_best.ncd"
-)
-
-def _pick(ds, *candidates):
-    """Return the first existing variable/coord name from candidates."""
-    for name in candidates:
-        if name in ds:
-            return name
-        if name in getattr(ds, "coords", {}):
-            return name
-    return None
-
-def _nearest_sel(ds, lat0, lon0):
-    """Select nearest grid point; handles typical coord name variants."""
-    lat_name = _pick(ds, "lat", "latitude", "y")
-    lon_name = _pick(ds, "lon", "longitude", "x")
-    if lat_name is None or lon_name is None:
-        raise ValueError("Could not find lat/lon coordinates in SWAN dataset.")
-
-    # SWAN longitudes are usually 0..360; normalize lon0 accordingly
-    lon_vals = ds[lon_name]
-    if float(lon_vals.min()) >= 0 and lon0 < 0:
-        lon0 = lon0 % 360.0
-
-    return ds.sel({lat_name: lat0, lon_name: lon0}, method="nearest")
-
-def fetch_swan_rows(lat, lon, unit_system="US"):
-    """
-    Open PacIOOS SWAN 'best' file via fileServer (h5netcdf),
-    extract nearest-point series, and return rows compatible with your template.
-    """
-    try:
-        ds = xr.open_dataset(_SWAN_URL, engine="h5netcdf", decode_times=True)
-    except Exception as e:
-        raise RuntimeError(f"Could not open SWAN dataset: {e}")
-
-    # Variable name candidates (dataset-dependent)
-    time_name = _pick(ds, "time")
-    hs_name   = _pick(ds,
-                      "hs", "Hs", "significant_wave_height",
-                      "Significant_height_of_combined_wind_waves_and_swell_surface")
-    tp_name   = _pick(ds, "tpeak", "tp", "Tm01", "tm01", "peak_wave_period")
-    dp_name   = _pick(ds, "dp", "dir", "mean_wave_direction")
-
-    if time_name is None or hs_name is None:
-        raise RuntimeError("SWAN dataset missing required variables (time/hs).")
-
-    # Subset nearest grid point
-    sp = _nearest_sel(ds[[v for v in [time_name, hs_name, tp_name, dp_name] if v]], lat, lon)
-
-    # Pull arrays
-    times = sp[time_name].values  # numpy datetime64
-    hs    = sp[hs_name].values if hs_name in sp else None
-    tp    = sp[tp_name].values if tp_name and tp_name in sp else None
-    dp    = sp[dp_name].values if dp_name and dp_name in sp else None
-
-    # Convert units if needed (SWAN hs is meters)
-    if unit_system.upper() == "US":
-        hs_vals = (hs * 3.28084).tolist() if hs is not None else None  # ft
-        hs_unit = "ft"
-    else:
-        hs_vals = hs.tolist() if hs is not None else None               # m
-        hs_unit = "m"
-
-    # Build rows compatible with your Jinja/JS (time ISO, hs, tp, dp)
-    rows = []
-    for i in range(len(times)):
-        t = np.datetime_as_string(times[i], unit="s")
-        rows.append({
-            "time": t,                           # ISO string
-            "hs": None if hs_vals is None else float(hs_vals[i]) if np.isfinite(hs_vals[i]) else None,
-            "tp": None if tp is None else float(tp[i]) if np.isfinite(tp[i]) else None,
-            "dp": None if dp is None else float(dp[i]) if np.isfinite(dp[i]) else None,
-            "hs_unit": hs_unit
-        })
-
-    # Simple headers (you already format Cycle/Run in template)
-    cycle_str = f"Cycle : {np.datetime_as_string(times[0], unit='h')} UTC"
-    model_run_str = "PacIOOS SWAN (best)"
-
-    return cycle_str, model_run_str, rows
-
 
 @app.route("/", methods=["GET", "POST"])
 def index():

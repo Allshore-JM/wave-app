@@ -88,10 +88,69 @@ DEFAULT_STATIONS = {
 }
 
 # ---- PacIOOS SWAN integration ----
+import requests
+import pytz
+import pandas as pd
+from datetime import datetime
+
+SWAN_ERDDAP_JSON = "https://pae-paha.pacioos.hawaii.edu/erddap/griddap/swan_oahu_lon180.json"
+
+def _erddap_time_sel(days_back: int = 10) -> str:
+    # 10 days by default; change to suit
+    hours = days_back * 24
+    return f"[last-{hours}:1:last]"
+
+def fetch_swan_point_timeseries_erddap(lat: float, lon: float, tz_name: str | None, unit: str, days_back: int = 10):
+    """
+    Pull SWAN (Oʻahu) point time series via ERDDAP JSON at nearest grid point.
+    Returns (labels, hs_vals, tp_vals, dir_vals, tz_label, cycle_str, location_str)
+    """
+    # ERDDAP lon is -180..180 (lon180 dataset), so pass lon directly
+    tsel = _erddap_time_sel(days_back)
+    lat_sel = f"[({lat:.4f}):1:({lat:.4f})]"
+    lon_sel = f"[({lon:.4f}):1:({lon:.4f})]"
+    query = (
+        "time,"
+        f"shgt{tsel}{lat_sel}{lon_sel},"
+        f"mper{tsel}{lat_sel}{lon_sel},"
+        f"mdir{tsel}{lat_sel}{lon_sel}"
+    )
+    url = f"{SWAN_ERDDAP_JSON}?{query}"
+
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    js = r.json()
+    rows = js.get("table", {}).get("rows", [])
+    if not rows:
+        return None, None, None, None, None, None, None
+
+    # time to labels in target tz
+    target_tz = pytz.timezone(tz_name or "Pacific/Honolulu")
+    times_utc = [pd.to_datetime(t, utc=True) for t, *_ in rows]
+    labels = [t.astimezone(target_tz).strftime("%-m/%-d/%y %I:%M %p") for t in times_utc]
+
+    # variables
+    hs_m   = [float(x) if x is not None else None for _, x, *_ in rows]
+    tp_s   = [float(x) if x is not None else None for *_, x, _ in rows]
+    dirdeg = [float(x) if x is not None else None for *_, x in rows]
+
+    # units
+    if unit.upper() == "US":
+        hs_vals = [v * 3.28084 if v is not None else None for v in hs_m]
+    else:
+        hs_vals = hs_m
+
+    # header strings
+    cycle_str = f"Cycle : {times_utc[0].strftime('%Y%m%d %H')} UTC"
+    location_str = f"Location : {lat:.2f}N {abs(lon):.2f}{'W' if lon < 0 else 'E'}"
+
+    return labels, hs_vals, tp_s, dirdeg, (tz_name or "Pacific/Honolulu"), cycle_str, location_str
+
+
 # Minimal starter list. Expand freely (IDs & coords are yours to define).
 SWAN_STATIONS_DEFAULT = {
     # Oʻahu (North, East, South, West examples)
-    "SWAN_HALEIWA":  {"name": "Haleʻiwa (Oʻahu)",        "lat": 21.593, "lon": -158.103, "tz": "Pacific/Honolulu"},
+    "SWAN_HALEIWA":  {"name": "Haleʻiwa (Oʻahu)",        "lat": 21.671, "lon": -158.118, "tz": "Pacific/Honolulu"},
     "SWAN_MAKAPUU":  {"name": "Makapuʻu (Oʻahu)",        "lat": 21.306, "lon": -157.652, "tz": "Pacific/Honolulu"},
     "SWAN_WAIKIKI":  {"name": "Waikīkī (Oʻahu)",         "lat": 21.273, "lon": -157.825, "tz": "Pacific/Honolulu"},
     "SWAN_MAKAHA":   {"name": "Mākaha (Oʻahu)",          "lat": 21.474, "lon": -158.216, "tz": "Pacific/Honolulu"},

@@ -788,5 +788,310 @@ def index():
     )
 
 
+# -------------------------- NDBC live buoy overlay ------------------------------
+import re
+import math
+import time
+import xml.etree.ElementTree as ET
+
+NDBC_ACTIVE_XML = "https://www.ndbc.noaa.gov/activestations.xml"
+NDBC_REALTIME_DIR = "https://www.ndbc.noaa.gov/data/realtime2/"
+NDBC_CACHE_TTL_SECONDS = 15 * 60
+
+NDBC_STATIONS_CACHE = {
+    "timestamp": 0,
+    "data": []
+}
+
+NDBC_COMPONENT_CACHE = {}
+
+def _cache_valid(cache_timestamp: float, ttl: int = NDBC_CACHE_TTL_SECONDS) -> bool:
+    return (time.time() - cache_timestamp) < ttl
+
+def _fetch_text(url: str, timeout: int = 25) -> str:
+    resp = requests.get(url, timeout=timeout)
+    resp.raise_for_status()
+    return resp.text
+
+def _parse_active_ndbc_stations() -> dict:
+    xml_text = _fetch_text(NDBC_ACTIVE_XML)
+    root = ET.fromstring(xml_text)
+    stations = {}
+    for st in root.iter("station"):
+        sid = st.attrib.get("id")
+        if not sid:
+            continue
+        try:
+            lat = float(st.attrib.get("lat"))
+            lon = float(st.attrib.get("lon"))
+        except Exception:
+            continue
+        stations[sid] = {
+            "id": sid,
+            "name": st.attrib.get("name", sid),
+            "lat": lat,
+            "lon": lon,
+            "owner": st.attrib.get("owner", ""),
+            "pgm": st.attrib.get("pgm", ""),
+            "type": st.attrib.get("type", ""),
+        }
+    return stations
+
+def _stations_with_live_spectral_wave_data() -> set:
+    html = _fetch_text(NDBC_REALTIME_DIR)
+    return set(re.findall(r'href="([A-Za-z0-9]+)\.data_spec"', html))
+
+def get_live_ndbc_wave_stations() -> list:
+    if NDBC_STATIONS_CACHE["data"] and _cache_valid(NDBC_STATIONS_CACHE["timestamp"]):
+        return NDBC_STATIONS_CACHE["data"]
+    active = _parse_active_ndbc_stations()
+    live_ids = _stations_with_live_spectral_wave_data()
+    stations = []
+    for sid in sorted(live_ids):
+        info = active.get(sid)
+        if not info:
+            continue
+        stations.append({
+            **info,
+            "has_live_wave_components": True,
+            "source": "NDBC realtime spectral wave data"
+        })
+    NDBC_STATIONS_CACHE["timestamp"] = time.time()
+    NDBC_STATIONS_CACHE["data"] = stations
+    return stations
+
+@app.route("/api/ndbc/live-wave-stations")
+def api_ndbc_live_wave_stations():
+    return jsonify(get_live_ndbc_wave_stations())
+
+# ----------------------- NDBC spectral component parser -------------------------
+
+def _parse_ndbc_spectral_file(text: str) -> list:
+    rows = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 7:
+            continue
+        try:
+            yy = int(parts[0])
+            mm = int(parts[1])
+            dd = int(parts[2])
+            hh = int(parts[3])
+            minute = int(parts[4])
+        except Exception:
+            continue
+        year = 2000 + yy if yy < 100 else yy
+        timestamp = datetime(year, mm, dd, hh, minute, tzinfo=pytz.utc)
+        pairs = re.findall(r"([-+]?\d+(?:\.\d+)?|MM)\s*\(([-+]?\d+(?:\.\d+)?)\)", line)
+        freqs = []
+        vals = []
+        for value, freq in pairs:
+            if value == "MM":
+                continue
+            try:
+                vals.append(float(value))
+                freqs.append(float(freq))
+            except Exception:
+                continue
+        if freqs and vals:
+            rows.append({
+                "timestamp_utc": timestamp,
+                "freqs": freqs,
+                "values": vals
+            })
+    return rows
+
+def _latest_spectral_row(rows: list) -> dict | None:
+    return max(rows, key=lambda r: r["timestamp_utc"]) if rows else None
+
+def _bin_widths(freqs: list) -> list:
+    if len(freqs) == 1:
+        return [0.01]
+    edges = []
+    for i, f in enumerate(freqs):
+        if i == 0:
+            first_mid = (freqs[0] + freqs[1]) / 2.0
+            edges.append(freqs[0] - (first_mid - freqs[0]))
+        else:
+            edges.append((freqs[i - 1] + freqs[i]) / 2.0)
+    last_mid = (freqs[-2] + freqs[-1]) / 2.0
+    edges.append(freqs[-1] + (freqs[-1] - last_mid))
+    return [max(edges[i + 1] - edges[i], 0.0) for i in range(len(freqs))]
+
+def _smooth3(values: list) -> list:
+    if len(values) < 3:
+        return values[:]
+    out = []
+    for i in range(len(values)):
+        left = values[i - 1] if i > 0 else values[i]
+        mid = values[i]
+        right = values[i + 1] if i < len(values) - 1 else values[i]
+        out.append((left + mid + right) / 3.0)
+    return out
+
+def _circular_mean_deg(degrees: list, weights: list) -> float | None:
+    x = 0.0
+    y = 0.0
+    for deg, w in zip(degrees, weights):
+        if deg is None or not (math.isfinite(deg) and math.isfinite(w)):
+            continue
+        rad = math.radians(deg)
+        x += w * math.cos(rad)
+        y += w * math.sin(rad)
+    if abs(x) < 1e-12 and abs(y) < 1e-12:
+        return None
+    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+def _compass_from_degrees(deg: float | None) -> str | None:
+    if deg is None:
+        return None
+    points = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
+    return points[int((deg + 11.25) / 22.5) % 16]
+
+def _find_spectral_peaks(freqs: list, density: list) -> list:
+    smooth = _smooth3(density)
+    max_val = max(smooth) if smooth else 0.0
+    if max_val <= 0.0:
+        return []
+    min_prominence = max_val * 0.06
+    peaks = []
+    for i in range(1, len(smooth) - 1):
+        if smooth[i] > smooth[i - 1] and smooth[i] >= smooth[i + 1]:
+            left_min = min(smooth[max(0, i - 4): i + 1])
+            right_min = min(smooth[i : min(len(smooth), i + 5)])
+            prominence = smooth[i] - max(left_min, right_min)
+            if prominence >= min_prominence:
+                peaks.append(i)
+    if not peaks:
+        peaks = [smooth.index(max(smooth))]
+    filtered = []
+    min_spacing = 2
+    for p in sorted(peaks, key=lambda idx: smooth[idx], reverse=True):
+        if all(abs(p - existing) >= min_spacing for existing in filtered):
+            filtered.append(p)
+    return sorted(filtered)
+
+def _partition_spectrum(freqs: list, density: list, directions: list | None = None) -> list:
+    paired = []
+    for i, (f, e) in enumerate(zip(freqs, density)):
+        if f and math.isfinite(f) and e is not None and math.isfinite(e) and e >= 0.0:
+            d = directions[i] if directions and i < len(directions) else None
+            paired.append((f, e, d))
+    paired.sort(key=lambda x: x[0])
+    if len(paired) < 5:
+        return []
+    freqs = [p[0] for p in paired]
+    density = [p[1] for p in paired]
+    dirs = [p[2] for p in paired]
+    smooth = _smooth3(density)
+    peaks = _find_spectral_peaks(freqs, density)
+    boundaries = [0]
+    for p1, p2 in zip(peaks[:-1], peaks[1:]):
+        valley = min(range(p1, p2 + 1), key=lambda i: smooth[i])
+        boundaries.append(valley)
+    boundaries.append(len(freqs) - 1)
+    df = _bin_widths(freqs)
+    components = []
+    for i, peak_idx in enumerate(peaks):
+        start = boundaries[i]
+        end = boundaries[i + 1]
+        f_part = freqs[start: end + 1]
+        e_part = density[start: end + 1]
+        df_part = df[start: end + 1]
+        dir_part = dirs[start: end + 1]
+        m0 = sum(e * w for e, w in zip(e_part, df_part))
+        hs_m = 4.0 * math.sqrt(max(m0, 0.0))
+        hs_ft = hs_m * 3.28084
+        if hs_ft < 0.25:
+            continue
+        peak_f = freqs[peak_idx]
+        peak_period = 1.0 / peak_f if peak_f else None
+        weights = [e * w for e, w in zip(e_part, df_part)]
+        mean_dir = _circular_mean_deg(dir_part, weights) if directions else None
+        components.append({
+            "component": len(components) + 1,
+            "type": "swell" if (peak_period and peak_period >= 8.0) else "wind sea",
+            "height_ft": round(hs_ft, 1),
+            "height_m": round(hs_m, 2),
+            "peak_period_sec": round(peak_period, 1) if peak_period else None,
+            "peak_frequency_hz": round(peak_f, 4),
+            "direction_deg": round(mean_dir) if mean_dir is not None else None,
+            "direction_compass": _compass_from_degrees(mean_dir),
+            "energy_m0": round(m0, 4),
+            "frequency_min_hz": round(min(f_part), 4),
+            "frequency_max_hz": round(max(f_part), 4),
+        })
+    components.sort(key=lambda c: (0 if c["type"] == "swell" else 1, -(c["peak_period_sec"] or 0), -c["height_ft"]))
+    for idx, c in enumerate(components, start=1):
+        c["component"] = idx
+    return components
+
+def _match_direction_row(density_row: dict, direction_rows: list) -> dict | None:
+    for row in direction_rows:
+        if row["timestamp_utc"] == density_row["timestamp_utc"]:
+            return row
+    return _latest_spectral_row(direction_rows)
+
+@app.route("/api/ndbc/station/<station_id>/components")
+def api_ndbc_station_components(station_id):
+    station_id = station_id.strip().upper()
+    cached = NDBC_COMPONENT_CACHE.get(station_id)
+    if cached and _cache_valid(cached["timestamp"], ttl=10 * 60):
+        return jsonify(cached["data"])
+    station_meta = {s["id"]: s for s in get_live_ndbc_wave_stations()}.get(station_id, {"id": station_id, "name": station_id})
+    try:
+        density_text = _fetch_text(f"{NDBC_REALTIME_DIR}{station_id}.data_spec")
+    except Exception as exc:
+        return jsonify({"station": station_id, "error": f"NDBC file not available: {exc}"}), 404
+    try:
+        direction_text = _fetch_text(f"{NDBC_REALTIME_DIR}{station_id}.swdir")
+    except Exception:
+        direction_text = None
+    density_rows = _parse_ndbc_spectral_file(density_text)
+    if not density_rows:
+        return jsonify({"station": station_id, "error": "No spectral rows parsed"}), 404
+    density_row = _latest_spectral_row(density_rows)
+    direction_rows = _parse_ndbc_spectral_file(direction_text) if direction_text else []
+    direction_row = _match_direction_row(density_row, direction_rows) if direction_rows else None
+    freqs = density_row["freqs"]
+    density_vals = density_row["values"]
+    directions = None
+    if direction_row:
+        direction_by_freq = {round(f, 5): v for f, v in zip(direction_row["freqs"], direction_row["values"])}
+        directions = [direction_by_freq.get(round(f, 5)) for f in freqs]
+    components = _partition_spectrum(freqs, density_vals, directions)
+    df = _bin_widths(freqs)
+    total_m0 = sum(e * w for e, w in zip(density_vals, df))
+    total_hs_m = 4.0 * math.sqrt(max(total_m0, 0.0))
+    try:
+        HST = pytz.timezone("Pacific/Honolulu")
+        timestamp_hst = density_row["timestamp_utc"].astimezone(HST).strftime("%Y-%m-%d %I:%M %p HST")
+    except Exception:
+        timestamp_hst = None
+    result = {
+        "station": station_id,
+        "name": station_meta.get("name", station_id),
+        "lat": station_meta.get("lat"),
+        "lon": station_meta.get("lon"),
+        "timestamp_utc": density_row["timestamp_utc"].isoformat().replace("+00:00", "Z"),
+        "timestamp_hst": timestamp_hst,
+        "total_height_ft": round(total_hs_m * 3.28084, 1),
+        "total_height_m": round(total_hs_m, 2),
+        "components": components,
+        "spectrum": [
+            {
+                "frequency_hz": round(f, 4),
+                "period_sec": round(1.0 / f, 2) if f else None,
+                "density_m2_per_hz": round(e, 5)
+            }
+            for f, e in zip(freqs, density_vals)
+        ]
+    }
+    NDBC_COMPONENT_CACHE[station_id] = {"timestamp": time.time(), "data": result}
+    return jsonify(result)
+
 if __name__ == "__main__":
     app.run(debug=True)

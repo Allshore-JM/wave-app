@@ -1,14 +1,10 @@
 from flask import Flask, render_template, request, send_file, jsonify
-import pandas as pd  # still used elsewhere if you keep Excel features
 import requests
 import json
 import os
-from io import BytesIO
 from datetime import datetime, timedelta
 import pytz
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font, Alignment
-from timezonefinder import TimezoneFinder
+# TimezoneFinder is imported lazily to avoid heavy startup cost on Render.
 from calendar import monthrange
 import re
 import math
@@ -61,8 +57,16 @@ def jinja_in_tz(dt, tz_name, fmt="%b %d, %Y %I:%M %p"):
     return dt.astimezone(tz).strftime(fmt)
 
 
-# Instantiate once
-tz_finder = TimezoneFinder()
+# Lazy TimezoneFinder instance
+tz_finder = None
+
+
+def get_tz_finder():
+    global tz_finder
+    if tz_finder is None:
+        from timezonefinder import TimezoneFinder
+        tz_finder = TimezoneFinder()
+    return tz_finder
 
 # Caches
 STATION_META = None          # station_id -> {name, lat, lon}
@@ -243,7 +247,8 @@ def get_latest_run():
 
 def _safe_tzname_for_latlon(lat, lon):
     try:
-        name = tz_finder.timezone_at(lat=lat, lng=lon)
+        finder = get_tz_finder()
+        name = finder.timezone_at(lat=lat, lng=lon)
         return name or 'UTC'
     except Exception:
         return 'UTC'

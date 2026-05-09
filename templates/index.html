@@ -241,6 +241,71 @@
     </div>
   </div>
 
+  <!-- Live NDBC buoy detail panel -->
+  <div id="liveBuoyPanel" class="card">
+    <div class="card-header d-flex align-items-start">
+      <div>
+        <strong id="liveBuoyTitle">Live Buoy</strong>
+        <div id="liveBuoySubtitle" class="small text-muted"></div>
+      </div>
+      <button type="button" class="btn-close ms-auto" aria-label="Close"
+              onclick="document.getElementById('liveBuoyPanel').style.display='none'"></button>
+    </div>
+
+    <div class="card-body">
+      <div id="liveBuoyLoading" class="text-muted">
+        Loading live buoy data...
+      </div>
+
+      <div id="liveBuoyError" class="alert alert-warning d-none"></div>
+
+      <div id="liveBuoyContent" class="d-none">
+        <div class="live-buoy-summary">
+          <div class="live-buoy-metric">
+            <div class="label">Total Hs</div>
+            <div class="value" id="liveBuoyTotal">—</div>
+          </div>
+          <div class="live-buoy-metric">
+            <div class="label">Observation</div>
+            <div class="value fs-6" id="liveBuoyTime">—</div>
+          </div>
+          <div class="live-buoy-metric">
+            <div class="label">Detected Components</div>
+            <div class="value" id="liveBuoyComponentCount">—</div>
+          </div>
+        </div>
+
+        <h6 class="mb-2">Detected Wave Components</h6>
+        <div id="liveBuoyComponentCards" class="component-card-wrap"></div>
+
+        <div class="table-responsive mb-3">
+          <table class="table table-sm table-bordered component-table">
+            <thead class="table-light">
+              <tr>
+                <th>#</th>
+                <th>Type</th>
+                <th>Height</th>
+                <th>Peak Period</th>
+                <th>Direction</th>
+                <th>Frequency Range</th>
+              </tr>
+            </thead>
+            <tbody id="liveBuoyComponents"></tbody>
+          </table>
+        </div>
+
+        <h6 class="mb-2">Spectral Density</h6>
+        <canvas id="liveSpectrumChart" height="180"></canvas>
+
+        <div class="small text-muted mt-2">
+          This is an experimental partition derived from NDBC realtime spectral-density data.
+          Components are split at spectral valleys between energy peaks. It is intended to reveal
+          multiple swell trains that may be hidden in a simplified wave summary.
+        </div>
+      </div>
+    </div>
+  </div>
+  
   <script>
     // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
@@ -325,6 +390,277 @@ enforceSingleWorld();
 
     document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
 
+        // ---------------- Live NDBC buoy layer ----------------
+
+    let liveSpectrumChart = null;
+    let activeLiveBuoyMarker = null;
+
+    function getSelectedUnit() {
+      return document.getElementById('unit')?.value || 'US';
+    }
+
+    function formatHeight(data, useMetric) {
+      if (!data) return '—';
+      return useMetric ? `${data.height_m} m` : `${data.height_ft} ft`;
+    }
+
+    function formatTotalHeight(data, useMetric) {
+      return useMetric ? `${data.total_height_m} m` : `${data.total_height_ft} ft`;
+    }
+
+    function showLiveBuoyPanelLoading(station) {
+      const panel = document.getElementById('liveBuoyPanel');
+
+      document.getElementById('liveBuoyTitle').textContent =
+        `${station.id} — ${station.name || station.id}`;
+
+      document.getElementById('liveBuoySubtitle').textContent =
+        `Live NDBC buoy observation | ${Number(station.lat).toFixed(3)}, ${Number(station.lon).toFixed(3)}`;
+
+      document.getElementById('liveBuoyLoading').style.display = 'block';
+      document.getElementById('liveBuoyError').classList.add('d-none');
+      document.getElementById('liveBuoyContent').classList.add('d-none');
+
+      panel.style.display = 'block';
+    }
+
+    function showLiveBuoyError(message) {
+      document.getElementById('liveBuoyLoading').style.display = 'none';
+      document.getElementById('liveBuoyContent').classList.add('d-none');
+
+      const errorBox = document.getElementById('liveBuoyError');
+      errorBox.textContent = message;
+      errorBox.classList.remove('d-none');
+    }
+
+    function componentTypeLabel(type) {
+      if (!type) return '';
+      return type === 'wind sea' ? 'Wind Sea' : 'Swell';
+    }
+
+    function renderLiveBuoyComponentCards(data, useMetric) {
+      const wrap = document.getElementById('liveBuoyComponentCards');
+      wrap.innerHTML = '';
+
+      const components = data.components || [];
+
+      if (!components.length) {
+        wrap.innerHTML = '<div class="text-muted small">No separate components detected.</div>';
+        return;
+      }
+
+      components.forEach(c => {
+        const dir = c.direction_deg == null
+          ? 'Direction unavailable'
+          : `${c.direction_deg}° ${c.direction_compass || ''}`;
+
+        const height = useMetric ? `${c.height_m} m` : `${c.height_ft} ft`;
+
+        const card = document.createElement('div');
+        card.className = 'component-card';
+
+        card.innerHTML = `
+          <div class="component-title">Component ${c.component}</div>
+          <div class="component-type">${componentTypeLabel(c.type)}</div>
+          <div class="component-main">${height} @ ${c.peak_period_sec ?? '—'} s</div>
+          <div class="component-detail">${dir}</div>
+          <div class="component-detail">${c.frequency_min_hz ?? '—'}–${c.frequency_max_hz ?? '—'} Hz</div>
+        `;
+
+        wrap.appendChild(card);
+      });
+    }
+
+    function renderLiveBuoyComponentTable(data, useMetric) {
+      const tbody = document.getElementById('liveBuoyComponents');
+      tbody.innerHTML = '';
+
+      const components = data.components || [];
+
+      if (!components.length) {
+        tbody.innerHTML =
+          '<tr><td colspan="6" class="text-muted">No separate components detected.</td></tr>';
+        return;
+      }
+
+      components.forEach(c => {
+        const height = useMetric ? `${c.height_m} m` : `${c.height_ft} ft`;
+
+        const dir = c.direction_deg == null
+          ? '—'
+          : `${c.direction_deg}° ${c.direction_compass || ''}`;
+
+        const tr = document.createElement('tr');
+
+        tr.innerHTML = `
+          <td>${c.component}</td>
+          <td>${componentTypeLabel(c.type)}</td>
+          <td>${height}</td>
+          <td>${c.peak_period_sec ?? '—'} s</td>
+          <td>${dir}</td>
+          <td>${c.frequency_min_hz ?? '—'}–${c.frequency_max_hz ?? '—'} Hz</td>
+        `;
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    function renderLiveSpectrumChart(data) {
+      const canvas = document.getElementById('liveSpectrumChart');
+
+      if (!canvas) return;
+
+      const ctx = canvas.getContext('2d');
+
+      if (liveSpectrumChart) {
+        liveSpectrumChart.destroy();
+      }
+
+      const spectrum = data.spectrum || [];
+
+      liveSpectrumChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: spectrum.map(p => p.period_sec),
+          datasets: [{
+            label: 'Spectral density',
+            data: spectrum.map(p => p.density_m2_per_hz),
+            showLine: true,
+            pointRadius: 2,
+            borderWidth: 2,
+            tension: 0.25
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: {
+            legend: {
+              display: false
+            },
+            tooltip: {
+              callbacks: {
+                title: items => {
+                  const i = items[0].dataIndex;
+                  const p = spectrum[i];
+                  return `${p.period_sec} sec / ${p.frequency_hz} Hz`;
+                },
+                label: item => `Density: ${item.formattedValue} m²/Hz`
+              }
+            }
+          },
+          scales: {
+            x: {
+              reverse: true,
+              title: {
+                display: true,
+                text: 'Period, seconds'
+              }
+            },
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: 'Energy density, m²/Hz'
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function renderLiveBuoyDetails(data) {
+      const useMetric = getSelectedUnit() === 'Metric';
+
+      document.getElementById('liveBuoyTotal').textContent =
+        formatTotalHeight(data, useMetric);
+
+      document.getElementById('liveBuoyTime').textContent =
+        data.timestamp_hst || data.timestamp_utc || '—';
+
+      document.getElementById('liveBuoyComponentCount').textContent =
+        (data.components || []).length;
+
+      renderLiveBuoyComponentCards(data, useMetric);
+      renderLiveBuoyComponentTable(data, useMetric);
+      renderLiveSpectrumChart(data);
+
+      document.getElementById('liveBuoyLoading').style.display = 'none';
+      document.getElementById('liveBuoyError').classList.add('d-none');
+      document.getElementById('liveBuoyContent').classList.remove('d-none');
+    }
+
+    async function loadLiveBuoyDetails(station) {
+      showLiveBuoyPanelLoading(station);
+
+      try {
+        const response = await fetch(
+          '/api/ndbc/station/' + encodeURIComponent(station.id) + '/components'
+        );
+
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+          throw new Error(data.error || `Unable to load live buoy data for ${station.id}`);
+        }
+
+        renderLiveBuoyDetails(data);
+
+      } catch (err) {
+        showLiveBuoyError(err.message);
+      }
+    }
+
+    function addLiveNdbcBuoyLayer() {
+      fetch('/api/ndbc/live-wave-stations')
+        .then(r => r.json())
+        .then(stations => {
+          stations.forEach(s => {
+            const marker = L.circleMarker([s.lat, s.lon], {
+              radius: 5,
+              color: '#00E5FF',
+              fillColor: '#00E5FF',
+              fillOpacity: 0.95,
+              weight: 2,
+              className: 'live-buoy-marker'
+            }).addTo(map);
+
+            marker.bindTooltip(`Live ${s.id}`, {
+              permanent: false,
+              direction: 'top',
+              offset: [0, -2]
+            });
+
+            marker.on('click', () => {
+              if (activeLiveBuoyMarker) {
+                activeLiveBuoyMarker.setStyle({
+                  radius: 5,
+                  color: '#00E5FF',
+                  fillColor: '#00E5FF'
+                });
+              }
+
+              marker.setStyle({
+                radius: 7,
+                color: '#ffffff',
+                fillColor: '#00E5FF'
+              });
+
+              activeLiveBuoyMarker = marker;
+
+              saveMapView(map);
+              loadLiveBuoyDetails(s);
+            });
+          });
+        })
+        .catch(err => {
+          console.warn('Could not load live NDBC buoy layer:', err);
+        });
+    }
+
+    addLiveNdbcBuoyLayer();
+    
     {% if selected_view == 'Graph' and graph_data %}
     // ---- Charting ----
     const GD = {{ graph_data|tojson|safe }};

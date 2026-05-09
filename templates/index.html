@@ -128,6 +128,27 @@
         grid-template-columns: 1fr;
       }
     }
+
+    /* Forecast/live buoy marker distinction */
+    .live-buoy-div-icon {
+      background: transparent;
+      border: none;
+    }
+
+    .live-buoy-dot {
+      display: block;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background: #00E5FF;
+      border: 2px solid #ffffff;
+      box-shadow: 0 0 7px rgba(0, 229, 255, 0.95);
+    }
+
+    .forecast-buoy-dot {
+      background: #FFD600;
+    }
+    
   </style>
 </head>
 <body class="bg-light">
@@ -329,6 +350,20 @@ const map = L.map('map', {
   maxBoundsViscosity: 1.0
 });
 
+const forecastLayer = L.layerGroup().addTo(map);
+const liveBuoyLayer = L.layerGroup().addTo(map);
+
+L.control.layers(
+  null,
+  {
+    'Forecast points': forecastLayer,
+    'Live NDBC buoys': liveBuoyLayer
+  },
+  {
+    collapsed: false
+  }
+).addTo(map);    
+    
 // Esri imagery (already in your file); keep noWrap:true so there is only one world
 L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -375,7 +410,7 @@ enforceSingleWorld();
             fillColor: '#FFD600',
             fillOpacity: 1,
             weight: 1
-          }).addTo(map);
+          }).addTo(forecastLayer);
           mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
           mk.on('click', () => {
             document.getElementById('station').value = s.id;
@@ -612,52 +647,61 @@ enforceSingleWorld();
       }
     }
 
-    function addLiveNdbcBuoyLayer() {
-      fetch('/api/ndbc/live-wave-stations')
-        .then(r => r.json())
-        .then(stations => {
-          stations.forEach(s => {
-            const marker = L.circleMarker([s.lat, s.lon], {
-              radius: 5,
-              color: '#00E5FF',
-              fillColor: '#00E5FF',
-              fillOpacity: 0.95,
-              weight: 2,
-              className: 'live-buoy-marker'
-            }).addTo(map);
+function createLiveBuoyIcon(isActive = false) {
+  const size = isActive ? 19 : 15;
 
-            marker.bindTooltip(`Live ${s.id}`, {
-              permanent: false,
-              direction: 'top',
-              offset: [0, -2]
-            });
+  return L.divIcon({
+    className: 'live-buoy-div-icon',
+    html: `
+      <span class="live-buoy-dot" style="
+        width:${size}px;
+        height:${size}px;
+        background:${isActive ? '#00E5FF' : '#00E5FF'};
+        border:${isActive ? '3px solid #ffffff' : '2px solid #ffffff'};
+        box-shadow:${isActive ? '0 0 10px rgba(0, 229, 255, 1)' : '0 0 7px rgba(0, 229, 255, 0.95)'};
+      "></span>
+    `,
+    iconSize: [size, size],
 
-            marker.on('click', () => {
-              if (activeLiveBuoyMarker) {
-                activeLiveBuoyMarker.setStyle({
-                  radius: 5,
-                  color: '#00E5FF',
-                  fillColor: '#00E5FF'
-                });
-              }
+    // Negative x-anchor shifts the visible cyan icon to the RIGHT
+    // of the actual buoy coordinate so the yellow forecast marker remains clickable.
+    iconAnchor: [-10, Math.round(size / 2)]
+  });
+}
 
-              marker.setStyle({
-                radius: 7,
-                color: '#ffffff',
-                fillColor: '#00E5FF'
-              });
+function addLiveNdbcBuoyLayer() {
+  fetch('/api/ndbc/live-wave-stations')
+    .then(r => r.json())
+    .then(stations => {
+      stations.forEach(s => {
+        const marker = L.marker([s.lat, s.lon], {
+          icon: createLiveBuoyIcon(false),
+          title: 'Live ' + s.id
+        }).addTo(liveBuoyLayer);
 
-              activeLiveBuoyMarker = marker;
-
-              saveMapView(map);
-              loadLiveBuoyDetails(s);
-            });
-          });
-        })
-        .catch(err => {
-          console.warn('Could not load live NDBC buoy layer:', err);
+        marker.bindTooltip('Live ' + s.id, {
+          permanent: false,
+          direction: 'top',
+          offset: [12, -2]
         });
-    }
+
+        marker.on('click', () => {
+          if (activeLiveBuoyMarker) {
+            activeLiveBuoyMarker.setIcon(createLiveBuoyIcon(false));
+          }
+
+          marker.setIcon(createLiveBuoyIcon(true));
+          activeLiveBuoyMarker = marker;
+
+          saveMapView(map);
+          loadLiveBuoyDetails(s);
+        });
+      });
+    })
+    .catch(err => {
+      console.warn('Could not load live NDBC buoy layer:', err);
+    });
+}
 
     addLiveNdbcBuoyLayer();
     

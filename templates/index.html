@@ -281,47 +281,94 @@
       <div id="liveBuoyError" class="alert alert-warning d-none"></div>
 
       <div id="liveBuoyContent" class="d-none">
-        <div class="live-buoy-summary">
-          <div class="live-buoy-metric">
-            <div class="label">Total Hs</div>
-            <div class="value" id="liveBuoyTotal">—</div>
+
+        <!-- NOAA-matching live wave summary -->
+        <div class="mb-4">
+          <h6 class="mb-2">NOAA 24-Hour Wave Summary</h6>
+
+          <div class="live-buoy-summary">
+            <div class="live-buoy-metric">
+              <div class="label">WVHT</div>
+              <div class="value" id="noaaWvht">—</div>
+            </div>
+            <div class="live-buoy-metric">
+              <div class="label">Swell</div>
+              <div class="value fs-6" id="noaaSwell">—</div>
+            </div>
+            <div class="live-buoy-metric">
+              <div class="label">Wind Wave</div>
+              <div class="value fs-6" id="noaaWindWave">—</div>
+            </div>
           </div>
-          <div class="live-buoy-metric">
-            <div class="label">Observation</div>
-            <div class="value fs-6" id="liveBuoyTime">—</div>
-          </div>
-          <div class="live-buoy-metric">
-            <div class="label">Detected Components</div>
-            <div class="value" id="liveBuoyComponentCount">—</div>
+
+          <div class="small text-muted mb-2" id="noaaWaveSummaryAsOf"></div>
+
+          <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle">
+              <thead class="table-light">
+                <tr>
+                  <th>Date</th>
+                  <th>Time</th>
+                  <th>WVHT<br><span class="small">ft</span></th>
+                  <th>SwH<br><span class="small">ft</span></th>
+                  <th>SwP<br><span class="small">sec</span></th>
+                  <th>SwD</th>
+                  <th>WWH<br><span class="small">ft</span></th>
+                  <th>WWP<br><span class="small">sec</span></th>
+                  <th>WWD</th>
+                  <th>Steepness</th>
+                  <th>APD<br><span class="small">sec</span></th>
+                </tr>
+              </thead>
+              <tbody id="noaaWaveSummaryRows"></tbody>
+            </table>
           </div>
         </div>
 
-        <h6 class="mb-2">Detected Wave Components</h6>
-        <div id="liveBuoyComponentCards" class="component-card-wrap"></div>
+        <!-- Experimental spectral partition -->
+        <div class="border-top pt-3">
+          <h6 class="mb-2">Experimental Spectral Components</h6>
 
-        <div class="table-responsive mb-3">
-          <table class="table table-sm table-bordered component-table">
-            <thead class="table-light">
-              <tr>
-                <th>#</th>
-                <th>Type</th>
-                <th>Height</th>
-                <th>Peak Period</th>
-                <th>Direction</th>
-                <th>Frequency Range</th>
-              </tr>
-            </thead>
-            <tbody id="liveBuoyComponents"></tbody>
-          </table>
-        </div>
+          <div class="live-buoy-summary">
+            <div class="live-buoy-metric">
+              <div class="label">Total Hs</div>
+              <div class="value" id="liveBuoyTotal">—</div>
+            </div>
+            <div class="live-buoy-metric">
+              <div class="label">Observation</div>
+              <div class="value fs-6" id="liveBuoyTime">—</div>
+            </div>
+            <div class="live-buoy-metric">
+              <div class="label">Detected Components</div>
+              <div class="value" id="liveBuoyComponentCount">—</div>
+            </div>
+          </div>
 
-        <h6 class="mb-2">Spectral Density</h6>
-        <canvas id="liveSpectrumChart" height="180"></canvas>
+          <div id="liveBuoyComponentCards" class="component-card-wrap"></div>
 
-        <div class="small text-muted mt-2">
-          This is an experimental partition derived from NDBC realtime spectral-density data.
-          Components are split at spectral valleys between energy peaks. It is intended to reveal
-          multiple swell trains that may be hidden in a simplified wave summary.
+          <div class="table-responsive mb-3">
+            <table class="table table-sm table-bordered component-table">
+              <thead class="table-light">
+                <tr>
+                  <th>#</th>
+                  <th>Type</th>
+                  <th>Height</th>
+                  <th>Peak Period</th>
+                  <th>Direction</th>
+                  <th>Frequency Range</th>
+                </tr>
+              </thead>
+              <tbody id="liveBuoyComponents"></tbody>
+            </table>
+          </div>
+
+          <h6 class="mb-2">Spectral Density</h6>
+          <canvas id="liveSpectrumChart" height="180"></canvas>
+
+          <div class="small text-muted mt-2">
+            Experimental partition derived from NDBC realtime spectral-density data.
+            This section may show extra swell components that are not listed in NOAA’s simplified summary.
+          </div>
         </div>
       </div>
     </div>
@@ -626,22 +673,87 @@ enforceSingleWorld();
       document.getElementById('liveBuoyContent').classList.remove('d-none');
     }
 
+    function renderNoaaWaveSummary(data) {
+      const latest = data.latest || {};
+    
+      document.getElementById('noaaWvht').textContent =
+        latest.wvht || '—';
+    
+      document.getElementById('noaaSwell').textContent =
+        (latest.swh || '—') + ' @ ' + (latest.swp || '—') + ' ' + (latest.swd || '');
+    
+      document.getElementById('noaaWindWave').textContent =
+        (latest.wwh || '—') + ' @ ' + (latest.wwp || '—') + ' ' + (latest.wwd || '');
+    
+      document.getElementById('noaaWaveSummaryAsOf').textContent =
+        (data.title || data.station || '') + ' | ' + (data.as_of_local || '') + ' ' + (data.as_of_gmt || '');
+    
+      const tbody = document.getElementById('noaaWaveSummaryRows');
+      tbody.innerHTML = '';
+    
+      const rows = data.rows || [];
+    
+      if (!rows.length) {
+        tbody.innerHTML =
+          '<tr><td colspan="11" class="text-muted">No NOAA wave summary rows parsed.</td></tr>';
+        return;
+      }
+    
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+    
+        tr.innerHTML = `
+          <td>${r.date || ''}</td>
+          <td>${r.time || ''}</td>
+          <td>${r.wvht || ''}</td>
+          <td>${r.swh || ''}</td>
+          <td>${r.swp || ''}</td>
+          <td>${r.swd || ''}</td>
+          <td>${r.wwh || ''}</td>
+          <td>${r.wwp || ''}</td>
+          <td>${r.wwd || ''}</td>
+          <td>${r.steepness || ''}</td>
+          <td>${r.apd || ''}</td>
+        `;
+    
+        tbody.appendChild(tr);
+      });
+    }
+    
     async function loadLiveBuoyDetails(station) {
       showLiveBuoyPanelLoading(station);
-
+    
       try {
-        const response = await fetch(
-          '/api/ndbc/station/' + encodeURIComponent(station.id) + '/components'
+        const summaryResponse = await fetch(
+          '/api/ndbc/station/' + encodeURIComponent(station.id) + '/wave-summary'
         );
-
-        const data = await response.json();
-
-        if (!response.ok || data.error) {
-          throw new Error(data.error || `Unable to load live buoy data for ${station.id}`);
+    
+        const summaryData = await summaryResponse.json();
+    
+        if (!summaryResponse.ok || summaryData.error) {
+          throw new Error(summaryData.error || 'Unable to load NOAA wave summary.');
         }
-
-        renderLiveBuoyDetails(data);
-
+    
+        renderNoaaWaveSummary(summaryData);
+    
+        try {
+          const componentResponse = await fetch(
+            '/api/ndbc/station/' + encodeURIComponent(station.id) + '/components'
+          );
+    
+          const componentData = await componentResponse.json();
+    
+          if (componentResponse.ok && !componentData.error) {
+            renderLiveBuoyDetails(componentData);
+          }
+        } catch (componentErr) {
+          console.warn('Experimental spectral component load failed:', componentErr);
+        }
+    
+        document.getElementById('liveBuoyLoading').style.display = 'none';
+        document.getElementById('liveBuoyError').classList.add('d-none');
+        document.getElementById('liveBuoyContent').classList.remove('d-none');
+    
       } catch (err) {
         showLiveBuoyError(err.message);
       }

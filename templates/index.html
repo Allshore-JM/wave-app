@@ -21,6 +21,113 @@
 
     /* smaller axis labels so 90° rotation stays readable */
     .chartjs-size-monitor, .chartjs-render-monitor { font-size: 10px; }
+    /* ---------------- Live NDBC buoy panel ---------------- */
+
+    .live-buoy-marker {
+      filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.9));
+    }
+
+    #liveBuoyPanel {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      width: min(820px, calc(100vw - 36px));
+      max-height: 76vh;
+      overflow: auto;
+      z-index: 2000;
+      display: none;
+      border: 1px solid rgba(0,0,0,0.18);
+      box-shadow: 0 12px 36px rgba(0,0,0,0.32);
+    }
+
+    #liveBuoyPanel .card-header {
+      background: #f8fbff;
+    }
+
+    .live-buoy-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .live-buoy-metric {
+      border: 1px solid #e4e9f0;
+      border-radius: 10px;
+      padding: 10px;
+      background: #ffffff;
+    }
+
+    .live-buoy-metric .label {
+      font-size: 0.76rem;
+      color: #6c757d;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .live-buoy-metric .value {
+      font-size: 1.28rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .component-card-wrap {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .component-card {
+      border: 1px solid #dfe6ee;
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+    }
+
+    .component-card .component-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .component-card .component-type {
+      font-size: 0.78rem;
+      color: #6c757d;
+      text-transform: uppercase;
+    }
+
+    .component-card .component-main {
+      font-size: 1.3rem;
+      font-weight: 700;
+    }
+
+    .component-card .component-detail {
+      font-size: 0.88rem;
+      color: #495057;
+    }
+
+    .component-table td,
+    .component-table th {
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+
+    #liveSpectrumChart {
+      max-height: 260px;
+    }
+
+    @media (max-width: 700px) {
+      #liveBuoyPanel {
+        right: 8px;
+        bottom: 8px;
+        width: calc(100vw - 16px);
+        max-height: 82vh;
+      }
+
+      .live-buoy-summary {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 <body class="bg-light">

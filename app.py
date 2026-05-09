@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import pytz
 # TimezoneFinder is imported lazily to avoid heavy startup cost on Render.
 from calendar import monthrange
+from bs4 import BeautifulSoup
 import re
 import math
 import time
@@ -1102,7 +1103,163 @@ def api_ndbc_station_components(station_id):
     NDBC_COMPONENT_CACHE[station_id] = {"timestamp": time.time(), "data": result}
     return jsonify(result)
 
+NDBC_STATION_PAGE = "https://www.ndbc.noaa.gov/station_page.php?station={station_id}"
 
+
+def _parse_noaa_station_wave_summary(station_id: str, hours: int = 24) -> dict:
+    """
+    Scrapes the NDBC station page Wave Summary table so displayed values
+    match the NDBC website instead of custom spectral calculations.
+    """
+    station_id = station_id.strip().upper()
+    url = NDBC_STATION_PAGE.format(station_id=station_id)
+
+    html = _fetch_text(url, timeout=30)
+    soup = BeautifulSoup(html, "html.parser")
+
+    text = soup.get_text("\n")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+
+    station_title = station_id
+    for line in lines:
+      if line.startswith(f"Station {station_id}"):
+          station_title = line
+          break
+
+    # Extract "as of" information around the Wave Summary section.
+    wave_idx = None
+    for i, line in enumerate(lines):
+        if line == "Wave Summary" or line.startswith("Wave Summary"):
+            wave_idx = i
+            break
+
+    as_of_local = None
+    as_of_gmt = None
+
+    if wave_idx is not None:
+        for line in lines[wave_idx: wave_idx + 10]:
+            if "as of" in line.lower():
+                as_of_local = line
+            if "GMT" in line and station_id not in line:
+                as_of_gmt = line
+
+    def find_value(label: str) -> str | None:
+        for line in lines:
+            if label in line:
+                parts = line.split(":", 1)
+                if len(parts) == 2:
+                    return parts[1].strip()
+        return None
+
+    latest = {
+        "wvht": find_value("Significant Wave Height (WVHT)"),
+        "swh": find_value("Swell Height (SwH)"),
+        "swp": find_value("Swell Period (SwP)"),
+        "swd": find_value("Swell Direction (SwD)"),
+        "wwh": find_value("Wind Wave Height (WWH)"),
+        "wwp": find_value("Wind Wave Period (WWP)"),
+        "wwd": find_value("Wind Wave Direction (WWD)"),
+        "steepness": find_value("Wave Steepness (STEEPNESS)"),
+        "apd": find_value("Average Wave Period (APD)"),
+    }
+
+    # Previous observation rows in the Wave Summary section look like:
+    # 2026-05-09 07:56 am 5.2 3.0 10.5 NW 4.6 9.9 NNW AVERAGE 6.5
+    row_re = re.compile(
+        r"^(\d{4}-\d{2}-\d{2})\s+"
+        r"(\d{2}:\d{2})\s+"
+        r"(am|pm)\s+"
+        r"(.+)$",
+        re.IGNORECASE
+    )
+
+    rows = []
+
+    for line in lines:
+        m = row_re.match(line)
+        if not m:
+            continue
+
+        date_part = m.group(1)
+        time_part = m.group(2)
+        ampm = m.group(3).lower()
+        rest = m.group(4).split()
+
+        # Need at least:
+        # WVHT SwH SwP SwD WWH WWP WWD STEEPNESS APD
+        if len(rest) < 9:
+            continue
+
+        try:
+            row_dt = datetime.strptime(
+                f"{date_part} {time_part} {ampm}",
+                "%Y-%m-%d %I:%M %p"
+            )
+        except Exception:
+            row_dt = None
+
+        rows.append({
+            "_dt": row_dt,
+            "date": date_part,
+            "time": f"{time_part} {ampm}",
+            "wvht": rest[0],
+            "swh": rest[1],
+            "swp": rest[2],
+            "swd": rest[3],
+            "wwh": rest[4],
+            "wwp": rest[5],
+            "wwd": rest[6],
+            "steepness": rest[7],
+            "apd": rest[8],
+        })
+
+    # Keep last 24 hours from latest parsed row.
+    if rows and rows[0].get("_dt") is not None:
+        latest_dt = rows[0]["_dt"]
+        cutoff = latest_dt - timedelta(hours=hours)
+        rows = [
+            r for r in rows
+            if r.get("_dt") is not None and r["_dt"] >= cutoff
+        ]
+
+    # Remove internal datetime object before jsonify.
+    for r in rows:
+        r.pop("_dt", None)
+
+    return {
+        "station": station_id,
+        "title": station_title,
+        "source_url": url,
+        "as_of_local": as_of_local,
+        "as_of_gmt": as_of_gmt,
+        "unit_system": "Imperial",
+        "latest": latest,
+        "rows": rows,
+        "columns": [
+            {"key": "date", "label": "Date"},
+            {"key": "time", "label": "Time"},
+            {"key": "wvht", "label": "WVHT", "unit": "ft"},
+            {"key": "swh", "label": "SwH", "unit": "ft"},
+            {"key": "swp", "label": "SwP", "unit": "sec"},
+            {"key": "swd", "label": "SwD"},
+            {"key": "wwh", "label": "WWH", "unit": "ft"},
+            {"key": "wwp", "label": "WWP", "unit": "sec"},
+            {"key": "wwd", "label": "WWD"},
+            {"key": "steepness", "label": "Steepness"},
+            {"key": "apd", "label": "APD", "unit": "sec"},
+        ]
+    }
+
+
+@app.route("/api/ndbc/station/<station_id>/wave-summary")
+def api_ndbc_station_wave_summary(station_id):
+    try:
+        return jsonify(_parse_noaa_station_wave_summary(station_id, hours=24))
+    except Exception as exc:
+        return jsonify({
+            "station": station_id,
+            "error": str(exc)
+        }), 500
 
 if __name__ == "__main__":
     app.run(debug=True)

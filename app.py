@@ -1104,137 +1104,178 @@ def api_ndbc_station_components(station_id):
     return jsonify(result)
 
 NDBC_STATION_PAGE = "https://www.ndbc.noaa.gov/station_page.php?station={station_id}"
+NDBC_SPEC_SUMMARY_URL = "https://www.ndbc.noaa.gov/data/realtime2/{station_id}.spec"
 
 
 def _parse_noaa_station_wave_summary(station_id: str, hours: int = 24) -> dict:
     """
-    Scrapes the NDBC station page Wave Summary table so displayed values
-    match the NDBC website instead of custom spectral calculations.
+    Read the NDBC realtime .spec wave-summary file and return the same basic
+    Wave Summary values shown on the NDBC station page.
+
+    NDBC .spec heights are in meters. The NDBC station page displays English
+    units, so heights are converted to feet and rounded to 1 decimal place.
     """
     station_id = station_id.strip().upper()
-    url = NDBC_STATION_PAGE.format(station_id=station_id)
 
-    html = _fetch_text(url, timeout=30)
-    soup = BeautifulSoup(html, "html.parser")
+    station_page_url = NDBC_STATION_PAGE.format(station_id=station_id)
+    spec_url = NDBC_SPEC_SUMMARY_URL.format(station_id=station_id)
 
-    text = soup.get_text("\n")
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    spec_text = _fetch_text(spec_url, timeout=30)
 
-    station_title = station_id
-    for line in lines:
-      if line.startswith(f"Station {station_id}"):
-          station_title = line
-          break
+    # Try to get station name/coordinates for title and local time conversion.
+    station_name = station_id
+    lat = None
+    lon = None
 
-    # Extract "as of" information around the Wave Summary section.
-    wave_idx = None
-    for i, line in enumerate(lines):
-        if line == "Wave Summary" or line.startswith("Wave Summary"):
-            wave_idx = i
-            break
+    try:
+        meta = load_station_metadata().get(station_id, {})
+        station_name = meta.get("name", station_id)
+        lat = meta.get("lat")
+        lon = meta.get("lon")
+    except Exception:
+        pass
 
-    as_of_local = None
-    as_of_gmt = None
+    if (lat is None or lon is None) and station_id in DEFAULT_STATIONS:
+        fallback = DEFAULT_STATIONS[station_id]
+        station_name = fallback.get("name", station_name)
+        lat = fallback.get("lat")
+        lon = fallback.get("lon")
 
-    if wave_idx is not None:
-        for line in lines[wave_idx: wave_idx + 10]:
-            if "as of" in line.lower():
-                as_of_local = line
-            if "GMT" in line and station_id not in line:
-                as_of_gmt = line
+    tz_name = "UTC"
+    if lat is not None and lon is not None:
+        tz_name = _safe_tzname_for_latlon(lat, lon)
 
-    def find_value(label: str) -> str | None:
-        for line in lines:
-            if label in line:
-                parts = line.split(":", 1)
-                if len(parts) == 2:
-                    return parts[1].strip()
-        return None
+    try:
+        local_tz = pytz.timezone(tz_name)
+    except Exception:
+        local_tz = pytz.utc
 
-    latest = {
-        "wvht": find_value("Significant Wave Height (WVHT)"),
-        "swh": find_value("Swell Height (SwH)"),
-        "swp": find_value("Swell Period (SwP)"),
-        "swd": find_value("Swell Direction (SwD)"),
-        "wwh": find_value("Wind Wave Height (WWH)"),
-        "wwp": find_value("Wind Wave Period (WWP)"),
-        "wwd": find_value("Wind Wave Direction (WWD)"),
-        "steepness": find_value("Wave Steepness (STEEPNESS)"),
-        "apd": find_value("Average Wave Period (APD)"),
-    }
+    def height_m_to_ft_str(value: str) -> str:
+        value = str(value).strip()
+        if value in {"MM", "-", "--", "---", ""}:
+            return ""
+        try:
+            return f"{float(value) * 3.28084:.1f}"
+        except Exception:
+            return ""
 
-    # Previous observation rows in the Wave Summary section look like:
-    # 2026-05-09 07:56 am 5.2 3.0 10.5 NW 4.6 9.9 NNW AVERAGE 6.5
-    row_re = re.compile(
-        r"^(\d{4}-\d{2}-\d{2})\s+"
-        r"(\d{2}:\d{2})\s+"
-        r"(am|pm)\s+"
-        r"(.+)$",
-        re.IGNORECASE
-    )
+    def passthrough(value: str) -> str:
+        value = str(value).strip()
+        if value in {"MM", "-", "--", "---"}:
+            return ""
+        return value
 
     rows = []
 
-    for line in lines:
-        m = row_re.match(line)
-        if not m:
+    for raw_line in spec_text.splitlines():
+        line = raw_line.strip()
+
+        if not line or line.startswith("#"):
             continue
 
-        date_part = m.group(1)
-        time_part = m.group(2)
-        ampm = m.group(3).lower()
-        rest = m.group(4).split()
+        parts = line.split()
 
-        # Need at least:
-        # WVHT SwH SwP SwD WWH WWP WWD STEEPNESS APD
-        if len(rest) < 9:
+        # Expected .spec columns:
+        # YY MM DD hh mm WVHT SwH SwP WWH WWP SwD WWD STEEPNESS APD MWD
+        if len(parts) < 14:
             continue
 
         try:
-            row_dt = datetime.strptime(
-                f"{date_part} {time_part} {ampm}",
-                "%Y-%m-%d %I:%M %p"
-            )
+            yy = int(parts[0])
+            month = int(parts[1])
+            day = int(parts[2])
+            hour = int(parts[3])
+            minute = int(parts[4])
         except Exception:
-            row_dt = None
+            continue
 
-        rows.append({
-            "_dt": row_dt,
-            "date": date_part,
-            "time": f"{time_part} {ampm}",
-            "wvht": rest[0],
-            "swh": rest[1],
-            "swp": rest[2],
-            "swd": rest[3],
-            "wwh": rest[4],
-            "wwp": rest[5],
-            "wwd": rest[6],
-            "steepness": rest[7],
-            "apd": rest[8],
-        })
+        year = 2000 + yy if yy < 100 else yy
 
-    # Keep last 24 hours from latest parsed row.
-    if rows and rows[0].get("_dt") is not None:
-        latest_dt = rows[0]["_dt"]
+        try:
+            dt_utc = datetime(year, month, day, hour, minute, tzinfo=pytz.utc)
+        except Exception:
+            continue
+
+        dt_local = dt_utc.astimezone(local_tz)
+
+        date_local = dt_local.strftime("%Y-%m-%d")
+        time_local = dt_local.strftime("%I:%M %p").lower()
+
+        row = {
+            "_dt_utc": dt_utc,
+            "_dt_local": dt_local,
+            "date": date_local,
+            "time": time_local,
+
+            # Convert meter heights to ft to match the NDBC station-page display.
+            "wvht": height_m_to_ft_str(parts[5]),
+            "swh": height_m_to_ft_str(parts[6]),
+            "swp": passthrough(parts[7]),
+            "wwh": height_m_to_ft_str(parts[8]),
+            "wwp": passthrough(parts[9]),
+            "swd": passthrough(parts[10]),
+            "wwd": passthrough(parts[11]),
+            "steepness": passthrough(parts[12]),
+            "apd": passthrough(parts[13]),
+        }
+
+        rows.append(row)
+
+    # NDBC realtime files are usually newest-first, but sort just to be safe.
+    rows.sort(key=lambda r: r["_dt_utc"], reverse=True)
+
+    if rows:
+        latest_dt = rows[0]["_dt_utc"]
         cutoff = latest_dt - timedelta(hours=hours)
+
         rows = [
             r for r in rows
-            if r.get("_dt") is not None and r["_dt"] >= cutoff
+            if r["_dt_utc"] >= cutoff
         ]
 
-    # Remove internal datetime object before jsonify.
+    latest = {}
+
+    if rows:
+        latest_row = rows[0]
+        latest = {
+            "wvht": latest_row.get("wvht"),
+            "swh": latest_row.get("swh"),
+            "swp": latest_row.get("swp"),
+            "swd": latest_row.get("swd"),
+            "wwh": latest_row.get("wwh"),
+            "wwp": latest_row.get("wwp"),
+            "wwd": latest_row.get("wwd"),
+            "steepness": latest_row.get("steepness"),
+            "apd": latest_row.get("apd"),
+        }
+
+        latest_local = latest_row["_dt_local"]
+        latest_utc = latest_row["_dt_utc"]
+
+        local_time = latest_local.strftime("%I:%M %p").lstrip("0").lower()
+        local_tz_abbr = latest_local.tzname() or tz_name
+        as_of_local = f"as of ({local_time} {local_tz_abbr})"
+        as_of_gmt = latest_utc.strftime("%H%M GMT on %m/%d/%Y")
+    else:
+        as_of_local = None
+        as_of_gmt = None
+
+    # Remove internal datetime objects before jsonify.
     for r in rows:
-        r.pop("_dt", None)
+        r.pop("_dt_utc", None)
+        r.pop("_dt_local", None)
 
     return {
         "station": station_id,
-        "title": station_title,
-        "source_url": url,
+        "title": f"Station {station_id} - {station_name}",
+        "source_url": station_page_url,
+        "data_source_url": spec_url,
         "as_of_local": as_of_local,
         "as_of_gmt": as_of_gmt,
         "unit_system": "Imperial",
         "latest": latest,
         "rows": rows,
+        "row_count": len(rows),
         "columns": [
             {"key": "date", "label": "Date"},
             {"key": "time", "label": "Time"},
@@ -1249,7 +1290,6 @@ def _parse_noaa_station_wave_summary(station_id: str, hours: int = 24) -> dict:
             {"key": "apd", "label": "APD", "unit": "sec"},
         ]
     }
-
 
 @app.route("/api/ndbc/station/<station_id>/wave-summary")
 def api_ndbc_station_wave_summary(station_id):

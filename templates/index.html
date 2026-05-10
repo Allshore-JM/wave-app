@@ -377,68 +377,100 @@
   <script>
     // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
+
+    // Web Mercator practical latitude limits.
+    // Longitude is intentionally NOT bounded so the map can scroll continuously east/west.
+    const WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
+    const LATITUDE_LIMIT = 82;
+
+    const DEFAULT_MAP_CENTER = [21.3, -157.9];
+    const DEFAULT_MAP_ZOOM = 6;
+
+    // Allows approximately 3 zoom levels closer than your previous maxZoom of 8.
+    const MAX_MAP_ZOOM = 11;
+
+    // This is calculated after the map container size is known.
+    let MIN_MAP_ZOOM = 1;
+
     function saveMapView(map) {
-      const v = {c: map.getCenter(), z: map.getZoom()};
-      sessionStorage.setItem(mapKey, JSON.stringify({lat: v.c.lat, lng: v.c.lng, z: v.z}));
+      const v = { c: map.getCenter(), z: map.getZoom() };
+
+      const safeLat = Math.max(
+        -LATITUDE_LIMIT,
+        Math.min(LATITUDE_LIMIT, v.c.lat)
+      );
+
+      sessionStorage.setItem(
+        mapKey,
+        JSON.stringify({
+          lat: safeLat,
+          lng: v.c.lng, // do not clamp longitude; allow continuous wrap
+          z: Math.min(MAX_MAP_ZOOM, Math.max(v.z, MIN_MAP_ZOOM || 1))
+        })
+      );
     }
+
     function loadMapView() {
-      try { return JSON.parse(sessionStorage.getItem(mapKey)); } catch(e) { return null; }
+      try {
+        return JSON.parse(sessionStorage.getItem(mapKey));
+      } catch(e) {
+        return null;
+      }
     }
 
-    // ---- Leaflet Map (satellite, one-world, no gray sides) ----
-// ---- Map bounds and zoom settings ----
-// Use wrapped world imagery horizontally so the map never shows grey side areas.
-const WORLD_BOUNDS = L.latLngBounds([[-82, -180], [82, 180]]);
-const DEFAULT_MAP_CENTER = [21.3, -157.9];
-const DEFAULT_MAP_ZOOM = 6;
-const MIN_MAP_ZOOM = 2;
-const MAX_MAP_ZOOM = 11; // was effectively 8; allows about 3 more zoom levels
+    // ---- Leaflet Map ----
+    // No maxBounds here. We clamp latitude manually but allow unlimited east/west movement.
+    const map = L.map('map', {
+      worldCopyJump: true,
+      zoomControl: true,
+      minZoom: MIN_MAP_ZOOM,
+      maxZoom: MAX_MAP_ZOOM
+    });
 
-const map = L.map('map', {
-  worldCopyJump: true,
-  zoomControl: true,
-  minZoom: MIN_MAP_ZOOM,
-  maxZoom: MAX_MAP_ZOOM,
-  maxBounds: WORLD_BOUNDS,
-  maxBoundsViscosity: 0.75
-});
+    const forecastLayer = L.layerGroup().addTo(map);
+    const liveBuoyLayer = L.layerGroup().addTo(map);
 
-const forecastLayer = L.layerGroup().addTo(map);
-const liveBuoyLayer = L.layerGroup().addTo(map);
-
-L.control.layers(
-  null,
-  {
-    'Forecast points': forecastLayer,
-    'Live NDBC buoys': liveBuoyLayer
-  },
-  {
-    collapsed: false
-  }
-).addTo(map);    
+    L.control.layers(
+      null,
+      {
+        'Forecast points': forecastLayer,
+        'Live NDBC buoys': liveBuoyLayer
+      },
+      {
+        collapsed: false
+      }
+    ).addTo(map);  
     
-// Esri imagery. noWrap:false lets the world repeat horizontally,
-// which prevents grey side areas when zoomed out.
+// Esri imagery.
+// noWrap:false allows horizontal world wrapping, which prevents grey side areas
+// when panning east/west across the dateline.
 L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
   {
     maxZoom: MAX_MAP_ZOOM,
-    minZoom: MIN_MAP_ZOOM,
+    minZoom: 1,
     noWrap: false,
     keepBuffer: 4,
     attribution: '&copy; Esri & contributors'
   }
 ).addTo(map);
 
-// --- Stable map sizing and saved view handling ---
+// --- Stable map sizing, single-world zoom floor, and continuous east/west wrap ---
 function enforceSingleWorld() {
   const el = document.getElementById('map');
 
-  // Keep a stable ocean-map height. The wrapped tile layer handles width.
+  // Keep a stable usable map height.
   const targetH = Math.min(460, Math.floor(window.innerHeight * 0.48));
   el.style.height = targetH + 'px';
 
   map.invalidateSize();
+
+  // Maximum zoomed-out extent = one full world view.
+  // User cannot zoom out farther than this.
+  const fullWorldZoom = map.getBoundsZoom(WORLD_BOUNDS, false);
+  MIN_MAP_ZOOM = Math.max(1, fullWorldZoom);
+
+  map.setMinZoom(MIN_MAP_ZOOM);
 
   const saved = loadMapView && loadMapView();
 
@@ -448,18 +480,40 @@ function enforceSingleWorld() {
     Number.isFinite(saved.lng) &&
     Number.isFinite(saved.z)
   ) {
-    const z = Math.min(MAX_MAP_ZOOM, Math.max(saved.z, MIN_MAP_ZOOM));
-    map.setView([saved.lat, saved.lng], z, { animate: false });
+    const safeLat = Math.max(
+      -LATITUDE_LIMIT,
+      Math.min(LATITUDE_LIMIT, saved.lat)
+    );
+
+    const safeZoom = Math.min(
+      MAX_MAP_ZOOM,
+      Math.max(saved.z, MIN_MAP_ZOOM)
+    );
+
+    map.setView([safeLat, saved.lng], safeZoom, { animate: false });
   } else {
     map.setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, { animate: false });
   }
 }
 
-// Call once and re-apply on resize
-window.addEventListener('resize', enforceSingleWorld);
-enforceSingleWorld();
+// Prevent north/south dragging into grey polar tile areas,
+// while still allowing continuous east/west movement.
+function clampMapLatitude() {
+  const center = map.getCenter();
 
-// Call once and re-apply on resize
+  if (center.lat > LATITUDE_LIMIT || center.lat < -LATITUDE_LIMIT) {
+    const safeLat = Math.max(
+      -LATITUDE_LIMIT,
+      Math.min(LATITUDE_LIMIT, center.lat)
+    );
+
+    map.panTo([safeLat, center.lng], { animate: false });
+  }
+}
+
+map.on('moveend', clampMapLatitude);
+map.on('zoomend', clampMapLatitude);
+
 window.addEventListener('resize', enforceSingleWorld);
 enforceSingleWorld();
 

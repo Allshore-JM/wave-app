@@ -13,7 +13,7 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
   <style>
     html, body { height: 100%; }
-    #map { height: 420px; border: 1px solid #ccc; }
+    #map { height: 460px; border: 1px solid #ccc; background: #0b2536; }
     .leaflet-tooltip { font-weight: 600; }
     .sticky-top-bar { position: sticky; top: 0; z-index: 1000; background:#fff; border-bottom: 1px solid #eee; }
     .form-inline .form-select, .form-inline .form-control { width: auto; }
@@ -417,28 +417,24 @@ L.tileLayer(
   { maxZoom: 8, minZoom: 1, noWrap: true, attribution: '&copy; Esri & contributors' }
 ).addTo(map);
 
-// --- Dynamically size the map to avoid gray sides for a single-world view ---
+// --- Stable map sizing: prevent grey tile area below map imagery ---
 function enforceSingleWorld() {
   const el = document.getElementById('map');
-  // Aim for ~2:1 aspect ratio (world-friendly), but cap by viewport height
-  const w = el.clientWidth || 800;
-  const targetH = Math.min(Math.floor(w / 2), Math.floor(window.innerHeight * 0.7));
-  if (targetH > 0) {
-    el.style.height = targetH + 'px';
-  }
+
+  // Keep the map from becoming taller than the satellite tile coverage.
+  // This avoids the grey Leaflet background at the bottom of the map.
+  const targetH = Math.min(460, Math.floor(window.innerHeight * 0.48));
+  el.style.height = targetH + 'px';
+
   map.invalidateSize();
 
-  // Compute the maximum zoom at which the whole world fits inside current size
-  const fitZoom = map.getBoundsZoom(WORLD_BOUNDS, true);
-  map.setMinZoom(fitZoom);
-
-  // If we have a saved view, clamp its zoom; else fit the whole world
   const saved = loadMapView && loadMapView();
-  if (saved) {
-    const z = Math.max(saved.z ?? fitZoom, fitZoom);
-    map.setView([saved.lat, saved.lng], z, {animate: false});
+
+  if (saved && Number.isFinite(saved.lat) && Number.isFinite(saved.lng) && Number.isFinite(saved.z)) {
+    map.setView([saved.lat, saved.lng], saved.z, { animate: false });
   } else {
-    map.fitBounds(WORLD_BOUNDS, { animate: false, padding: [0, 0] });
+    // Default view centered on Hawaii instead of forcing the whole world to fit.
+    map.setView([21.3, -157.9], 6, { animate: false });
   }
 }
 

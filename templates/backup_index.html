@@ -1,0 +1,1392 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Wave Forecast</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Bootstrap -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  <style>
+    html, body { height: 100%; }
+    #map { height: 460px; border: 1px solid #ccc; background: #0b2536; }
+    .leaflet-tooltip { font-weight: 600; }
+    .sticky-top-bar { position: sticky; top: 0; z-index: 1000; background:#fff; border-bottom: 1px solid #eee; }
+    .form-inline .form-select, .form-inline .form-control { width: auto; }
+    canvas.chart-tall { height: 260px !important; }
+
+    /* smaller axis labels so 90° rotation stays readable */
+    .chartjs-size-monitor, .chartjs-render-monitor { font-size: 10px; }
+    /* ---------------- Live NDBC buoy panel ---------------- */
+
+    .live-buoy-marker {
+      filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.9));
+    }
+
+    #liveBuoyPanel {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      width: min(820px, calc(100vw - 36px));
+      max-height: 76vh;
+      overflow: auto;
+      z-index: 2000;
+      display: none;
+      border: 1px solid rgba(0,0,0,0.18);
+      box-shadow: 0 12px 36px rgba(0,0,0,0.32);
+    }
+
+    #liveBuoyPanel .card-header {
+      background: #f8fbff;
+    }
+
+    .live-buoy-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .live-buoy-metric {
+      border: 1px solid #e4e9f0;
+      border-radius: 10px;
+      padding: 10px;
+      background: #ffffff;
+    }
+
+    .live-buoy-metric .label {
+      font-size: 0.76rem;
+      color: #6c757d;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .live-buoy-metric .value {
+      font-size: 1.28rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .component-card-wrap {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .component-card {
+      border: 1px solid #dfe6ee;
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+    }
+
+    .component-card .component-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .component-card .component-type {
+      font-size: 0.78rem;
+      color: #6c757d;
+      text-transform: uppercase;
+    }
+
+    .component-card .component-main {
+      font-size: 1.3rem;
+      font-weight: 700;
+    }
+
+    .component-card .component-detail {
+      font-size: 0.88rem;
+      color: #495057;
+    }
+
+    .component-table td,
+    .component-table th {
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+
+    #liveSpectrumChart {
+      max-height: 260px;
+    }
+
+    @media (max-width: 700px) {
+      #liveBuoyPanel {
+        right: 8px;
+        bottom: 8px;
+        width: calc(100vw - 16px);
+        max-height: 82vh;
+      }
+
+      .live-buoy-summary {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Forecast/live buoy marker distinction */
+    .live-buoy-div-icon {
+      background: transparent;
+      border: none;
+    }
+
+    .live-buoy-dot {
+      display: block;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #00E5FF;
+      border: 2px solid #ffffff;
+      box-shadow: 0 0 6px rgba(0, 229, 255, 0.9);
+    }
+
+    .forecast-buoy-dot {
+      background: #FFD600;
+    }
+    
+  </style>
+</head>
+<body class="bg-light">
+
+  <div class="container-fluid py-3">
+    <div class="sticky-top-bar pb-2">
+      <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
+        <div class="col-auto">
+          <label for="station" class="form-label mb-0">Station</label>
+          <select class="form-select" id="station" name="station">
+            {% for sid, name in stations %}
+              <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>{{ sid }} — {{ name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-auto">
+          <label for="tz" class="form-label mb-0">Time Zone</label>
+          <select class="form-select" id="tz" name="tz">
+            <option value="" {% if (selected_tz or '') == '' %}selected{% endif %}>(Buoy Local)</option>
+            {% for tz in timezones %}
+              <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-auto">
+          <label for="unit" class="form-label mb-0">Units</label>
+          <select class="form-select" id="unit" name="unit">
+            {% for u in units %}
+              <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ u }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-auto">
+          <label for="view" class="form-label mb-0">View</label>
+          <select class="form-select" id="view" name="view">
+            <option value="Table" {% if selected_view == 'Table' %}selected{% endif %}>Table</option>
+            <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
+          </select>
+        </div>
+
+        <div class="col-auto">
+          <button type="submit" class="btn btn-primary" id="updateBtn">Update</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="row mt-2">
+      <div class="col-12">
+        <div id="map"></div>
+      </div>
+    </div>
+
+    <div class="row mt-3">
+      <div class="col-12">
+        {% if error %}
+          <div class="alert alert-warning">{{ error }}</div>
+        {% endif %}
+
+        {% if selected_view == 'Graph' %}
+          <!-- Graph View -->
+          <div id="graphs" class="card">
+            <div class="card-body">
+              <!-- Graph header (uses graph_header when available; falls back to graph_data.header) -->
+              {% set hdr = graph_header if graph_header is defined and graph_header else (graph_data.header if graph_data is defined and graph_data.header is defined else None) %}
+              {% if hdr %}
+              <div class="mb-2 small text-muted d-flex flex-wrap align-items-center">
+                <div>
+                  <strong>Cycle :</strong> {{ hdr.cycle }}
+                  &nbsp; | &nbsp; <strong>Location :</strong> {{ hdr.location }}
+                  &nbsp; | &nbsp; <strong>Time Zone:</strong> {{ hdr.tz }}
+                </div>
+                <div class="ms-auto">
+                  <span class="me-2 text-body">Range:</span>
+                  <label class="form-check form-check-inline small mb-0">
+                    <input class="form-check-input" type="checkbox" id="rangeFull"> <span class="form-check-label">Full</span>
+                  </label>
+                  <label class="form-check form-check-inline small mb-0">
+                    <input class="form-check-input" type="checkbox" id="range7d"> <span class="form-check-label">7 days</span>
+                  </label>
+                  <label class="form-check form-check-inline small mb-0">
+                    <input class="form-check-input" type="checkbox" id="range3d"> <span class="form-check-label">3 days</span>
+                  </label>
+                </div>
+              </div>
+
+              {% endif %}
+
+              <div class="mb-4">
+                <canvas id="heightChart" class="chart-tall"></canvas>
+              </div>
+              <div class="mb-4">
+                <canvas id="periodChart" class="chart-tall"></canvas>
+              </div>
+              <div>
+                <canvas id="directionChart" class="chart-tall"></canvas>
+              </div>
+            </div>
+          </div>
+        {% else %}
+          <!-- Table View -->
+          <div id="tableWrap" class="card">
+            <div class="card-body">
+              {{ table_html|safe }}
+            </div>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Live NDBC buoy detail panel -->
+  <div id="liveBuoyPanel" class="card">
+    <div class="card-header d-flex align-items-start">
+      <div>
+        <strong id="liveBuoyTitle">Live Buoy</strong>
+        <div id="liveBuoySubtitle" class="small text-muted"></div>
+      </div>
+      <button type="button" class="btn-close ms-auto" aria-label="Close"
+              onclick="document.getElementById('liveBuoyPanel').style.display='none'"></button>
+    </div>
+
+    <div class="card-body">
+      <div id="liveBuoyLoading" class="text-muted">
+        Loading live buoy data...
+      </div>
+
+      <div id="liveBuoyError" class="alert alert-warning d-none"></div>
+
+      <div id="liveBuoyContent" class="d-none">
+
+        <!-- NOAA-matching live wave summary -->
+        <div class="mb-4">
+          <h6 class="mb-2">NOAA 24-Hour Wave Summary</h6>
+
+          <div class="live-buoy-summary">
+            <div class="live-buoy-metric">
+              <div class="label">WVHT</div>
+              <div class="value" id="noaaWvht">—</div>
+            </div>
+            <div class="live-buoy-metric">
+              <div class="label">Swell</div>
+              <div class="value fs-6" id="noaaSwell">—</div>
+            </div>
+            <div class="live-buoy-metric">
+              <div class="label">Wind Wave</div>
+              <div class="value fs-6" id="noaaWindWave">—</div>
+            </div>
+          </div>
+
+          <div class="small text-muted mb-2" id="noaaWaveSummaryAsOf"></div>
+
+          <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle">
+              <thead class="table-light">
+                <tr>
+                  <th>Date</th>
+                  <th>Time</th>
+                  <th>WVHT<br><span class="small" id="noaaWvhtUnit">ft</span></th>
+                  <th>SwH<br><span class="small" id="noaaSwhUnit">ft</span></th>
+                  <th>SwP<br><span class="small">sec</span></th>
+                  <th>SwD</th>
+                  <th>WWH<br><span class="small" id="noaaWwhUnit">ft</span></th>
+                  <th>WWP<br><span class="small">sec</span></th>
+                  <th>WWD</th>
+                  <th>Steepness</th>
+                  <th>APD<br><span class="small">sec</span></th>
+                </tr>
+              </thead>
+              <tbody id="noaaWaveSummaryRows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Experimental spectral partition -->
+        <div class="border-top pt-3">
+          <h6 class="mb-2">Experimental Spectral Components</h6>
+
+          <div class="live-buoy-summary">
+            <div class="live-buoy-metric">
+              <div class="label">Total Hs</div>
+              <div class="value" id="liveBuoyTotal">—</div>
+            </div>
+            <div class="live-buoy-metric">
+              <div class="label">Observation</div>
+              <div class="value fs-6" id="liveBuoyTime">—</div>
+            </div>
+            <div class="live-buoy-metric">
+              <div class="label">Detected Components</div>
+              <div class="value" id="liveBuoyComponentCount">—</div>
+            </div>
+          </div>
+
+          <div id="liveBuoyComponentCards" class="component-card-wrap"></div>
+
+          <div class="table-responsive mb-3">
+            <table class="table table-sm table-bordered component-table">
+              <thead class="table-light">
+                <tr>
+                  <th>#</th>
+                  <th>Type</th>
+                  <th>Height</th>
+                  <th>Peak Period</th>
+                  <th>Direction</th>
+                  <th>Frequency Range</th>
+                </tr>
+              </thead>
+              <tbody id="liveBuoyComponents"></tbody>
+            </table>
+          </div>
+
+          <h6 class="mb-2">Spectral Density</h6>
+          <canvas id="liveSpectrumChart" height="180"></canvas>
+
+          <div class="small text-muted mt-2">
+            Experimental partition derived from NDBC realtime spectral-density data.
+            This section may show extra swell components that are not listed in NOAA’s simplified summary.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+    // ---- Preserve map zoom/center between requests ----
+    const mapKey = 'mapView';
+
+    // Web Mercator practical latitude limits.
+    // Longitude is intentionally not bounded so the map can scroll continuously east/west.
+    const WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
+    const LATITUDE_LIMIT = 85;
+
+    const DEFAULT_MAP_CENTER = [21.3, -157.9];
+    const DEFAULT_MAP_ZOOM = 6;
+
+    // Approximately 3 zoom levels closer than the earlier maxZoom of 8.
+    const MAX_MAP_ZOOM = 11;
+
+    // Leaflet world width is 256 px at zoom 0.
+    // MIN_MAP_ZOOM is calculated after the map container size is known so that
+    // the fully zoomed-out map shows no more than one repeated world.
+    const WORLD_TILE_SIZE = 256;
+    const MIN_ZOOM_PADDING_PX = 2;
+    let MIN_MAP_ZOOM = 1;
+
+    function saveMapView(map) {
+      const v = { c: map.getCenter(), z: map.getZoom() };
+
+      const safeLat = Math.max(
+        -LATITUDE_LIMIT,
+        Math.min(LATITUDE_LIMIT, v.c.lat)
+      );
+
+      sessionStorage.setItem(
+        mapKey,
+        JSON.stringify({
+          lat: safeLat,
+          lng: v.c.lng,
+          z: Math.min(MAX_MAP_ZOOM, Math.max(v.z, MIN_MAP_ZOOM || 1))
+        })
+      );
+    }
+
+    function loadMapView() {
+      try {
+        return JSON.parse(sessionStorage.getItem(mapKey));
+      } catch(e) {
+        return null;
+      }
+    }
+
+    // ---- Leaflet Map ----
+    // No maxBounds here. Latitude is clamped manually; longitude wraps continuously.
+    const map = L.map('map', {
+      worldCopyJump: true,
+      zoomControl: true,
+      minZoom: 1,
+      maxZoom: MAX_MAP_ZOOM,
+
+      // Fractional zoom lets the minimum zoom match the viewport width,
+      // preventing multiple world copies at the fully zoomed-out extent.
+      zoomSnap: 0.1,
+      zoomDelta: 0.5,
+      wheelPxPerZoomLevel: 80
+    });
+
+    const forecastLayer = L.layerGroup().addTo(map);
+    const liveBuoyLayer = L.layerGroup().addTo(map);
+
+    L.control.layers(
+      null,
+      {
+        'Forecast points': forecastLayer,
+        'Live NDBC buoys': liveBuoyLayer
+      },
+      {
+        collapsed: false
+      }
+    ).addTo(map);
+
+    // Esri imagery.
+    // noWrap:false allows horizontal world wrapping, which prevents grey side areas
+    // when panning east/west across the dateline.
+    L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      {
+        maxZoom: MAX_MAP_ZOOM,
+        minZoom: 1,
+        noWrap: false,
+        keepBuffer: 4,
+        attribution: '&copy; Esri & contributors'
+      }
+    ).addTo(map);
+
+    // --- Stable map sizing, single-world zoom floor, and continuous east/west wrap ---
+    function calculateSingleWorldMinZoom() {
+      const mapWidth = map.getSize().x || document.getElementById('map').clientWidth || 1024;
+
+      // At zoom 0 the world is 256 px wide. Require the world pixel width to be
+      // at least the viewport width so no second world is visible at minimum zoom.
+      return Math.log2((mapWidth + MIN_ZOOM_PADDING_PX) / WORLD_TILE_SIZE);
+    }
+
+    function enforceSingleWorld() {
+      const el = document.getElementById('map');
+
+      // Keep a stable usable map height.
+      const targetH = Math.min(460, Math.floor(window.innerHeight * 0.48));
+      el.style.height = targetH + 'px';
+
+      map.invalidateSize();
+
+      // Maximum zoomed-out extent = one non-repeated world width.
+      MIN_MAP_ZOOM = Math.max(1, calculateSingleWorldMinZoom());
+      map.setMinZoom(MIN_MAP_ZOOM);
+
+      const saved = loadMapView && loadMapView();
+
+      if (
+        saved &&
+        Number.isFinite(saved.lat) &&
+        Number.isFinite(saved.lng) &&
+        Number.isFinite(saved.z)
+      ) {
+        const safeZoom = Math.min(
+          MAX_MAP_ZOOM,
+          Math.max(saved.z, MIN_MAP_ZOOM)
+        );
+
+        const safeLat = Math.max(
+          -LATITUDE_LIMIT,
+          Math.min(LATITUDE_LIMIT, saved.lat)
+        );
+
+        map.setView([safeLat, saved.lng], safeZoom, { animate: false });
+      } else {
+        map.setView(
+          DEFAULT_MAP_CENTER,
+          Math.max(DEFAULT_MAP_ZOOM, MIN_MAP_ZOOM),
+          { animate: false }
+        );
+      }
+
+      clampMapLatitude();
+    }
+
+    // Prevent north/south dragging into grey polar tile areas,
+    // while still allowing continuous east/west movement.
+    function clampMapLatitude() {
+      const bounds = map.getBounds();
+      const center = map.getCenter();
+
+      const northLimit = WORLD_BOUNDS.getNorth();
+      const southLimit = WORLD_BOUNDS.getSouth();
+
+      let correctedLat = center.lat;
+
+      if (bounds.getNorth() > northLimit) {
+        correctedLat -= (bounds.getNorth() - northLimit);
+      }
+
+      if (bounds.getSouth() < southLimit) {
+        correctedLat += (southLimit - bounds.getSouth());
+      }
+
+      correctedLat = Math.max(
+        southLimit,
+        Math.min(northLimit, correctedLat)
+      );
+
+      if (Math.abs(correctedLat - center.lat) > 0.000001) {
+        map.setView([correctedLat, center.lng], map.getZoom(), { animate: false });
+      }
+    }
+
+    map.on('moveend', clampMapLatitude);
+    map.on('zoomend', clampMapLatitude);
+
+    window.addEventListener('resize', enforceSingleWorld);
+    enforceSingleWorld();
+
+    // Plot stations
+    fetch('/stations.json')
+      .then(r => r.json())
+      .then(stations => {
+        stations.forEach(s => {
+          const mk = L.circleMarker([s.lat, s.lon], {
+            radius: 3,
+            color: '#FFD600',
+            fillColor: '#FFD600',
+            fillOpacity: 1,
+            weight: 1
+          }).addTo(forecastLayer);
+          mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
+          mk.on('click', () => {
+            document.getElementById('station').value = s.id;
+            // default to (Buoy Local) on station pick so we use that buoy's own timezone
+            const tzSel = document.getElementById('tz');
+            if (tzSel) { tzSel.value = ''; }
+            saveMapView(map);
+            document.getElementById('controlForm').submit();
+          });
+        });
+      });
+
+    document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
+
+        // ---------------- Live NDBC buoy layer ----------------
+
+    let liveSpectrumChart = null;
+    let activeLiveBuoyMarker = null;
+    let lastNoaaWaveSummaryData = null;
+    let lastLiveComponentData = null;
+
+    function getSelectedUnit() {
+      return document.getElementById('unit')?.value || 'US';
+    }
+
+    function formatHeight(data, useMetric) {
+      if (!data) return '—';
+      return useMetric ? `${data.height_m} m` : `${data.height_ft} ft`;
+    }
+
+    function formatTotalHeight(data, useMetric) {
+      return useMetric ? `${data.total_height_m} m` : `${data.total_height_ft} ft`;
+    }
+
+    function showLiveBuoyPanelLoading(station) {
+      const panel = document.getElementById('liveBuoyPanel');
+
+      document.getElementById('liveBuoyTitle').textContent =
+        `${station.id} — ${station.name || station.id}`;
+
+      document.getElementById('liveBuoySubtitle').textContent =
+        `Live NDBC buoy observation | ${Number(station.lat).toFixed(3)}, ${Number(station.lon).toFixed(3)}`;
+
+      document.getElementById('liveBuoyLoading').style.display = 'block';
+      document.getElementById('liveBuoyError').classList.add('d-none');
+      document.getElementById('liveBuoyContent').classList.add('d-none');
+
+      panel.style.display = 'block';
+    }
+
+    function showLiveBuoyError(message) {
+      document.getElementById('liveBuoyLoading').style.display = 'none';
+      document.getElementById('liveBuoyContent').classList.add('d-none');
+
+      const errorBox = document.getElementById('liveBuoyError');
+      errorBox.textContent = message;
+      errorBox.classList.remove('d-none');
+    }
+
+    function componentTypeLabel(type) {
+      if (!type) return '';
+      return type === 'wind sea' ? 'Wind Sea' : 'Swell';
+    }
+
+    function renderLiveBuoyComponentCards(data, useMetric) {
+      const wrap = document.getElementById('liveBuoyComponentCards');
+      wrap.innerHTML = '';
+
+      const components = data.components || [];
+
+      if (!components.length) {
+        wrap.innerHTML = '<div class="text-muted small">No separate components detected.</div>';
+        return;
+      }
+
+      components.forEach(c => {
+        const dir = c.direction_deg == null
+          ? 'Direction unavailable'
+          : `${c.direction_deg}° ${c.direction_compass || ''}`;
+
+        const height = useMetric ? `${c.height_m} m` : `${c.height_ft} ft`;
+
+        const card = document.createElement('div');
+        card.className = 'component-card';
+
+        card.innerHTML = `
+          <div class="component-title">Component ${c.component}</div>
+          <div class="component-type">${componentTypeLabel(c.type)}</div>
+          <div class="component-main">${height} @ ${c.peak_period_sec ?? '—'} s</div>
+          <div class="component-detail">${dir}</div>
+          <div class="component-detail">${c.frequency_min_hz ?? '—'}–${c.frequency_max_hz ?? '—'} Hz</div>
+        `;
+
+        wrap.appendChild(card);
+      });
+    }
+
+    function renderLiveBuoyComponentTable(data, useMetric) {
+      const tbody = document.getElementById('liveBuoyComponents');
+      tbody.innerHTML = '';
+
+      const components = data.components || [];
+
+      if (!components.length) {
+        tbody.innerHTML =
+          '<tr><td colspan="6" class="text-muted">No separate components detected.</td></tr>';
+        return;
+      }
+
+      components.forEach(c => {
+        const height = useMetric ? `${c.height_m} m` : `${c.height_ft} ft`;
+
+        const dir = c.direction_deg == null
+          ? '—'
+          : `${c.direction_deg}° ${c.direction_compass || ''}`;
+
+        const tr = document.createElement('tr');
+
+        tr.innerHTML = `
+          <td>${c.component}</td>
+          <td>${componentTypeLabel(c.type)}</td>
+          <td>${height}</td>
+          <td>${c.peak_period_sec ?? '—'} s</td>
+          <td>${dir}</td>
+          <td>${c.frequency_min_hz ?? '—'}–${c.frequency_max_hz ?? '—'} Hz</td>
+        `;
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    function renderLiveSpectrumChart(data) {
+      const canvas = document.getElementById('liveSpectrumChart');
+
+      if (!canvas) return;
+
+      const ctx = canvas.getContext('2d');
+
+      if (liveSpectrumChart) {
+        liveSpectrumChart.destroy();
+      }
+
+      const spectrum = data.spectrum || [];
+
+      liveSpectrumChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: spectrum.map(p => p.period_sec),
+          datasets: [{
+            label: 'Spectral density',
+            data: spectrum.map(p => p.density_m2_per_hz),
+            showLine: true,
+            pointRadius: 2,
+            borderWidth: 2,
+            tension: 0.25
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: {
+            legend: {
+              display: false
+            },
+            tooltip: {
+              callbacks: {
+                title: items => {
+                  const i = items[0].dataIndex;
+                  const p = spectrum[i];
+                  return `${p.period_sec} sec / ${p.frequency_hz} Hz`;
+                },
+                label: item => `Density: ${item.formattedValue} m²/Hz`
+              }
+            }
+          },
+          scales: {
+            x: {
+              reverse: true,
+              title: {
+                display: true,
+                text: 'Period, seconds'
+              }
+            },
+            y: {
+              beginAtZero: true,
+              title: {
+                display: true,
+                text: 'Energy density, m²/Hz'
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function renderLiveBuoyDetails(data) {
+      lastLiveComponentData = data;
+
+      const useMetric = getSelectedUnit() === 'Metric';
+
+      document.getElementById('liveBuoyTotal').textContent =
+        formatTotalHeight(data, useMetric);
+
+      document.getElementById('liveBuoyTime').textContent =
+        data.timestamp_hst || data.timestamp_utc || '—';
+
+      document.getElementById('liveBuoyComponentCount').textContent =
+        (data.components || []).length;
+
+      renderLiveBuoyComponentCards(data, useMetric);
+      renderLiveBuoyComponentTable(data, useMetric);
+      renderLiveSpectrumChart(data);
+
+      document.getElementById('liveBuoyLoading').style.display = 'none';
+      document.getElementById('liveBuoyError').classList.add('d-none');
+      document.getElementById('liveBuoyContent').classList.remove('d-none');
+    }
+
+    function noaaHeight(value, useMetric) {
+      if (value === null || value === undefined || value === '') {
+        return '';
+      }
+
+      const n = parseFloat(value);
+
+      if (!Number.isFinite(n)) {
+        return value;
+      }
+
+      return useMetric
+        ? (n * 0.3048).toFixed(2)
+        : n.toFixed(1);
+    }
+
+    function noaaHeightWithUnit(value, useMetric) {
+      const formatted = noaaHeight(value, useMetric);
+
+      if (!formatted) {
+        return '—';
+      }
+
+      return formatted + ' ' + (useMetric ? 'm' : 'ft');
+    }
+
+    function renderNoaaWaveSummary(data) {
+      lastNoaaWaveSummaryData = data;
+
+      const latest = data.latest || {};
+      const useMetric = getSelectedUnit() === 'Metric';
+      const heightUnit = useMetric ? 'm' : 'ft';
+
+      const wvhtUnit = document.getElementById('noaaWvhtUnit');
+      const swhUnit = document.getElementById('noaaSwhUnit');
+      const wwhUnit = document.getElementById('noaaWwhUnit');
+
+      if (wvhtUnit) wvhtUnit.textContent = heightUnit;
+      if (swhUnit) swhUnit.textContent = heightUnit;
+      if (wwhUnit) wwhUnit.textContent = heightUnit;
+
+      document.getElementById('noaaWvht').textContent =
+        noaaHeightWithUnit(latest.wvht, useMetric);
+
+      document.getElementById('noaaSwell').textContent =
+        noaaHeightWithUnit(latest.swh, useMetric) +
+        ' @ ' +
+        (latest.swp || '—') +
+        ' s ' +
+        (latest.swd || '');
+
+      document.getElementById('noaaWindWave').textContent =
+        noaaHeightWithUnit(latest.wwh, useMetric) +
+        ' @ ' +
+        (latest.wwp || '—') +
+        ' s ' +
+        (latest.wwd || '');
+
+      document.getElementById('noaaWaveSummaryAsOf').textContent =
+        (data.title || data.station || '') +
+        ' | ' +
+        (data.as_of_local || '') +
+        ' ' +
+        (data.as_of_gmt || '');
+
+      const tbody = document.getElementById('noaaWaveSummaryRows');
+      tbody.innerHTML = '';
+
+      const rows = data.rows || [];
+
+      if (!rows.length) {
+        tbody.innerHTML =
+          '<tr><td colspan="11" class="text-muted">No NOAA wave summary rows parsed.</td></tr>';
+        return;
+      }
+
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+
+        tr.innerHTML = `
+          <td>${r.date || ''}</td>
+          <td>${r.time || ''}</td>
+          <td>${noaaHeight(r.wvht, useMetric)}</td>
+          <td>${noaaHeight(r.swh, useMetric)}</td>
+          <td>${r.swp || ''}</td>
+          <td>${r.swd || ''}</td>
+          <td>${noaaHeight(r.wwh, useMetric)}</td>
+          <td>${r.wwp || ''}</td>
+          <td>${r.wwd || ''}</td>
+          <td>${r.steepness || ''}</td>
+          <td>${r.apd || ''}</td>
+        `;
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function loadLiveBuoyDetails(station) {
+      showLiveBuoyPanelLoading(station);
+    
+      try {
+        const summaryResponse = await fetch(
+          '/api/ndbc/station/' + encodeURIComponent(station.id) + '/wave-summary'
+        );
+    
+        const summaryData = await summaryResponse.json();
+    
+        if (!summaryResponse.ok || summaryData.error) {
+          throw new Error(summaryData.error || 'Unable to load NOAA wave summary.');
+        }
+    
+        renderNoaaWaveSummary(summaryData);
+    
+        try {
+          const componentResponse = await fetch(
+            '/api/ndbc/station/' + encodeURIComponent(station.id) + '/components'
+          );
+    
+          const componentData = await componentResponse.json();
+    
+          if (componentResponse.ok && !componentData.error) {
+            renderLiveBuoyDetails(componentData);
+          }
+        } catch (componentErr) {
+          console.warn('Experimental spectral component load failed:', componentErr);
+        }
+    
+        document.getElementById('liveBuoyLoading').style.display = 'none';
+        document.getElementById('liveBuoyError').classList.add('d-none');
+        document.getElementById('liveBuoyContent').classList.remove('d-none');
+    
+      } catch (err) {
+        showLiveBuoyError(err.message);
+      }
+    }
+
+
+    const unitSelect = document.getElementById('unit');
+
+    if (unitSelect) {
+      unitSelect.addEventListener('change', () => {
+        if (lastNoaaWaveSummaryData) {
+          renderNoaaWaveSummary(lastNoaaWaveSummaryData);
+        }
+
+        if (lastLiveComponentData) {
+          renderLiveBuoyDetails(lastLiveComponentData);
+        }
+      });
+    }
+
+    function createLiveBuoyIcon(isActive = false) {
+      const size = isActive ? 13 : 9;
+      const centerOffsetPx = isActive ? 5 : 4;
+      const anchorX = Math.round((size / 2) - centerOffsetPx);
+
+      return L.divIcon({
+        className: 'live-buoy-div-icon',
+        html: `
+          <span class="live-buoy-dot" style="
+            width:${size}px;
+            height:${size}px;
+            background:#00E5FF;
+            border:${isActive ? '3px solid #ffffff' : '2px solid #ffffff'};
+            box-shadow:${isActive ? '0 0 10px rgba(0, 229, 255, 1)' : '0 0 6px rgba(0, 229, 255, 0.9)'};
+          "></span>
+        `,
+        iconSize: [size, size],
+
+        // Places the live buoy about 4–5 px right of the actual coordinate.
+        // Close enough to visually pair with the forecast buoy, but still selectable.
+        iconAnchor: [anchorX, Math.round(size / 2)]
+      });
+    }
+
+function addLiveNdbcBuoyLayer() {
+  fetch('/api/ndbc/live-wave-stations')
+    .then(r => r.json())
+    .then(stations => {
+      stations.forEach(s => {
+        const marker = L.marker([s.lat, s.lon], {
+          icon: createLiveBuoyIcon(false),
+          title: 'Live ' + s.id,
+          zIndexOffset: 500
+        }).addTo(liveBuoyLayer);
+
+        marker.bindTooltip('Live ' + s.id, {
+          permanent: false,
+          direction: 'top',
+          offset: [10, -2]
+        });
+
+        marker.on('click', () => {
+          if (activeLiveBuoyMarker) {
+            activeLiveBuoyMarker.setIcon(createLiveBuoyIcon(false));
+          }
+
+          marker.setIcon(createLiveBuoyIcon(true));
+          activeLiveBuoyMarker = marker;
+
+          saveMapView(map);
+          loadLiveBuoyDetails(s);
+        });
+      });
+    })
+    .catch(err => {
+      console.warn('Could not load live NDBC buoy layer:', err);
+    });
+}
+
+    addLiveNdbcBuoyLayer();
+    
+    {% if selected_view == 'Graph' and graph_data %}
+    // ---- Charting ----
+    const GD = {{ graph_data|tojson|safe }};
+
+    let heightChart, periodChart, directionChart;
+    const chartRangeKey = 'chartRange';
+
+    const colors = {
+      s1: '#C00000',
+      s2: '#ED7D31',
+      s3: '#FFC000',
+      s4: '#00B050',
+      s5: '#00B0F0',
+      s6: '#92D050',
+      combined: '#7030A0'
+    };
+
+    // Helpers
+    const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
+    const maxAcross = arrays => arrays.reduce((m,a)=>Math.max(m, ...finiteVals(a), -Infinity), -Infinity);
+    const minAcross = arrays => arrays.reduce((m,a)=>Math.min(m, ...finiteVals(a), Infinity), Infinity);
+    const padMax = (v, p=0.10) => Number.isFinite(v) ? v * (1+p) : v;
+    const niceCeil = (v, step) => Math.ceil(v/step)*step;
+
+    function heightStep(maxVal){ if(maxVal<=1) return 0.1; if(maxVal<=2) return 0.2; if(maxVal<=4) return 0.5; if(maxVal<=8) return 1; return 2; }
+    function periodStep(maxVal){ if(maxVal<=8) return 1; if(maxVal<=16) return 2; return 5; }
+
+    // --- Parse label strings -> Date objects ---
+    // Accepts forms like "8/30/25 6:00 AM" (current app labels)
+    const parsedDates = GD.labels.map(lbl => {
+      const re = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})\s*([APap][Mm])$/;
+      const m = (lbl||'').match(re);
+      if (m){
+        let [_, M, D, Y, h, min, ap] = m;
+        M = +M; D = +D; h = +h; min = +min; ap = ap.toLowerCase();
+        let year = (Y.length===2 ? 2000 + +Y : +Y);
+        if (ap==='pm' && h < 12) h += 12;
+        if (ap==='am' && h === 12) h = 0;
+        return new Date(year, M-1, D, h, min, 0);
+      }
+      const d = new Date(lbl);
+      return isNaN(d) ? new Date() : d;
+    });
+
+    // Indices for midnight / noon
+    const majorIdx = new Set(); // midnight
+    const minorIdx = new Set(); // noon
+    parsedDates.forEach((d, i) => {
+      const h = d.getHours();
+      if (h === 0) majorIdx.add(i);
+      else if (h === 12) minorIdx.add(i);
+    });
+
+    // --- Night-time shading plugin: shades 6pm..6am using the chart's current x-window ---
+    const nightShadePlugin = {
+      id: 'nightShade',
+      // draw behind datasets so it sits under points/lines
+      beforeDraw(chart, args, pluginOptions) {
+        const {ctx, chartArea, scales} = chart;
+        if (!chartArea || !scales?.x) return;
+
+        const x = scales.x;
+        const areaTop = chartArea.top;
+        const areaH = chartArea.bottom - areaTop;
+
+        // options (with defaults)
+        const startH = Number.isFinite(pluginOptions?.nightStart) ? pluginOptions.nightStart : 18; // 6pm
+        const endH   = Number.isFinite(pluginOptions?.nightEnd)   ? pluginOptions.nightEnd   : 6;  // 6am
+        const fill   = pluginOptions?.fill || 'rgba(0,0,0,0.06)';
+
+        // utility: does hour fall within [startH..24) U [0..endH)?
+        const isNightHour = (h) => (startH <= endH) ? (h >= startH && h < endH) : (h >= startH || h < endH);
+
+        const N = parsedDates.length;
+        // respect current window (e.g., Full / 7d / 3d)
+        const minIdx = Math.max(0, Math.floor(x.min ?? 0));
+        const maxIdx = Math.min(N - 1, Math.ceil(x.max ?? (N - 1)));
+
+        ctx.save();
+        ctx.fillStyle = fill;
+
+        // shade one "hour cell" at a time between i and i+1
+        for (let i = minIdx; i < maxIdx; i++) {
+          const hour = parsedDates[i]?.getHours?.() ?? NaN;
+          if (!Number.isFinite(hour) || !isNightHour(hour)) continue;
+
+          const x0 = x.getPixelForValue(i);
+          const x1 = x.getPixelForValue(i + 1);
+          const w  = x1 - x0;
+          if (Number.isFinite(w) && w > 0) {
+            ctx.fillRect(x0, areaTop, w, areaH);
+          }
+        }
+        ctx.restore();
+      }
+    };
+
+    
+    // Tick label formatter -> "M/D 12am|12pm" only at 12‑hour marks
+    function formatMDHour(d){
+      const M = d.getMonth()+1;
+      const D = d.getDate();
+      const h = d.getHours();
+      if (h === 0) return `${M}/${D} 12am`;
+      if (h === 12) return `${M}/${D} 12pm`;
+      return '';
+    }
+
+    // shared x‑axis config (category scale using our string labels)
+    const xAxis = {
+      type: 'category',
+      grid: {
+        color: ctx => {
+          const i = ctx.tick && typeof ctx.tick.index === 'number' ? ctx.tick.index : ctx.index;
+          if (majorIdx.has(i)) return 'rgba(0,0,0,0.25)';   // midnight
+          if (minorIdx.has(i)) return 'rgba(0,0,0,0.15)';   // noon
+          return 'rgba(0,0,0,0.08)';                        // others
+        },
+        lineWidth: ctx => {
+          const i = ctx.tick && typeof ctx.tick.index === 'number' ? ctx.tick.index : ctx.index;
+          if (majorIdx.has(i)) return 1.4;
+          if (minorIdx.has(i)) return 1.0;
+          return 0.5;
+        }
+      },
+      ticks: {
+        autoSkip: false,
+        maxRotation: 90,
+        minRotation: 90,
+        callback: (value, index) => formatMDHour(parsedDates[index]),
+        font: { size: 10 }
+      }
+    };
+
+    // Y ranges (+10% for height/period)
+    const heightArrays = [GD.height.s1,GD.height.s2,GD.height.s3,GD.height.s4,GD.height.s5,GD.height.s6,GD.height.combined];
+    let hMax = padMax(maxAcross(heightArrays), 0.10); if (!Number.isFinite(hMax)) hMax = 1;
+    const hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
+
+    const periodArrays = [GD.period.s1,GD.period.s2,GD.period.s3,GD.period.s4,GD.period.s5,GD.period.s6];
+    let pMax = padMax(maxAcross(periodArrays), 0.10); if (!Number.isFinite(pMax)) pMax = 10;
+    const pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
+
+    const dirArrays = [GD.direction.s1,GD.direction.s2,GD.direction.s3,GD.direction.s4,GD.direction.s5,GD.direction.s6];
+    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
+    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
+
+    const commonOpts = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false, axis: 'x' },
+      layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
+      elements: { 
+        point: { radius: 1.6 }, 
+        line: { tension: 0.25, borderWidth: 0 } // lines hidden; dots only
+      },
+      plugins: {
+        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 10, boxHeight: 6 } },
+        tooltip: { mode: 'nearest', intersect: false },
+        decimation: { enabled: false }
+      },
+      animation: false
+    };
+
+    function swellDots(label, key, data, color) {
+      return { label, data: data[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false };
+    }
+
+    // HEIGHT (includes Combined)
+    (() => {
+      const ds = [
+        swellDots('Swell 1','s1',GD.height,colors.s1),
+        swellDots('Swell 2','s2',GD.height,colors.s2),
+        swellDots('Swell 3','s3',GD.height,colors.s3),
+        swellDots('Swell 4','s4',GD.height,colors.s4),
+        swellDots('Swell 5','s5',GD.height,colors.s5),
+        swellDots('Swell 6','s6',GD.height,colors.s6),
+        { label:'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, showLine:false, spanGaps:false, pointRadius:1.6 }
+      ];
+      heightChart = new Chart(document.getElementById('heightChart').getContext('2d'), {
+        type: 'line',
+        data: { labels: GD.labels, datasets: ds },
+        plugins: [nightShadePlugin],
+        options: {
+          ...commonOpts,
+          plugins: {
+            ...commonOpts.plugins,
+            title: { display: true, text: 'Swell Height' },
+            // Configure night-time shading (6pm..6am)
+            nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' }
+          },
+          scales: {
+            x: xAxis,
+            y: {
+              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+              border: { color: 'rgba(0,0,0,0.2)' },
+              beginAtZero: true, min: 0, max: hMax,
+              ticks: { stepSize: hStep },
+              title: { display: true, text: `Height (${GD.units})` }
+            }
+          }
+        }
+      });
+    })();
+
+    // PERIOD
+    (() => {
+      const ds = [
+        swellDots('Swell 1','s1',GD.period,colors.s1),
+        swellDots('Swell 2','s2',GD.period,colors.s2),
+        swellDots('Swell 3','s3',GD.period,colors.s3),
+        swellDots('Swell 4','s4',GD.period,colors.s4),
+        swellDots('Swell 5','s5',GD.period,colors.s5),
+        swellDots('Swell 6','s6',GD.period,colors.s6)
+      ];
+      periodChart = new Chart(document.getElementById('periodChart').getContext('2d'), {
+        type: 'line',
+        data: { labels: GD.labels, datasets: ds },
+        plugins: [nightShadePlugin],
+        options: {
+          ...commonOpts,
+          plugins: {
+            ...commonOpts.plugins,
+            title: { display: true, text: 'Swell Period' },
+            // Configure night-time shading (6pm..6am)
+            nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' }
+          },
+          scales: {
+            x: xAxis,
+            y: {
+              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+              border: { color: 'rgba(0,0,0,0.2)' },
+              beginAtZero: true, min: 0, max: pMax,
+              ticks: { stepSize: pStep },
+              title: { display: true, text: 'Period (s)' }
+            }
+          }
+        }
+      });
+    })();
+
+    // DIRECTION
+    (() => {
+      const ds = [
+        swellDots('Swell 1','s1',GD.direction,colors.s1),
+        swellDots('Swell 2','s2',GD.direction,colors.s2),
+        swellDots('Swell 3','s3',GD.direction,colors.s3),
+        swellDots('Swell 4','s4',GD.direction,colors.s4),
+        swellDots('Swell 5','s5',GD.direction,colors.s5),
+        swellDots('Swell 6','s6',GD.direction,colors.s6),
+      ];
+      directionChart = new Chart(document.getElementById('directionChart').getContext('2d'), {
+        type: 'line',
+        data: { labels: GD.labels, datasets: ds },
+        plugins: [nightShadePlugin],
+        options: {
+          ...commonOpts,
+          plugins: {
+            ...commonOpts.plugins,
+            title: { display: true, text: 'Swell Direction' },
+            // Configure night-time shading (6pm..6am)
+            nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' }
+          },
+          scales: {
+            x: xAxis,
+            y: {
+              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
+              border: { color: 'rgba(0,0,0,0.2)' },
+              min: dMin, max: dMax,
+              ticks: { stepSize: 45 },
+              title: { display: true, text: 'Direction (°)' }
+            }
+          }
+        }
+      });
+    })();
+
+      // ---- Cross‑graph hover/tooltip synchronization ----
+      // When you hover/touch on any one chart, show the same index on the other two.
+      (function syncTooltips() {
+        const charts = [heightChart, periodChart, directionChart];
+
+        function setActiveAtIndex(ch, idx) {
+          if (!ch || !ch.data || !ch.data.labels) return;
+          const max = ch.data.labels.length - 1;
+          const i = Math.max(0, Math.min(idx, max));
+          const active = ch.data.datasets.map((_, di) => ({ datasetIndex: di, index: i }));
+
+          ch.setActiveElements(active);
+          // Position the tooltip at this x pixel so it’s consistent across charts
+          const xScale = ch.scales?.x;
+          const x = xScale ? xScale.getPixelForValue(i) : undefined;
+          ch.tooltip?.setActiveElements(active, { x });
+          ch.update('none');
+        }
+
+        function clearActive(ch) {
+          if (!ch) return;
+          ch.setActiveElements([]);
+          ch.tooltip?.setActiveElements([], {});
+          ch.update('none');
+        }
+
+        function broadcastFrom(sourceChart, evt) {
+          // Find the hovered index on the source chart
+          const points = sourceChart.getElementsAtEventForMode(
+            evt,
+            'index',
+            { intersect: false, axis: 'x' },
+            true
+          );
+          if (!points || points.length === 0) return;
+          const idx = points[0].index;
+
+          // Apply same index to the other charts
+          charts.forEach(ch => {
+            if (ch !== sourceChart) setActiveAtIndex(ch, idx);
+          });
+        }
+
+        charts.forEach(ch => {
+          if (!ch || !ch.canvas) return;
+          const el = ch.canvas;
+
+          // Mouse
+          el.addEventListener('mousemove', e => broadcastFrom(ch, e));
+          el.addEventListener('mouseleave', () => charts.forEach(clearActive));
+
+          // Touch
+          el.addEventListener('touchstart', e => broadcastFrom(ch, e), { passive: true });
+          el.addEventListener('touchmove',  e => broadcastFrom(ch, e), { passive: true });
+          el.addEventListener('touchend',   () => charts.forEach(clearActive));
+          el.addEventListener('touchcancel',() => charts.forEach(clearActive));
+        });
+      })();
+      
+    // ---- Range controls (Full / 7d / 3d) ----
+    // Use index windowing: FIRST N*24 points from the START of the series.
+    function setWindowByDays(days) {
+      const N = GD.labels.length;
+      let start = 0;
+      let end = N - 1;
+      if (Number.isFinite(days) && days > 0) {
+        const hours = Math.round(days * 24);
+        end = Math.min(N - 1, hours - 1); // window from START
+      }
+      [heightChart, periodChart, directionChart].forEach(ch => {
+        if (!ch) return;
+        ch.options.scales.x.min = start;
+        ch.options.scales.x.max = end;
+        ch.update('none');
+      });
+    }
+
+
+    // Enforce "single selection" behavior for our 3 checkboxes
+    function exclusiveCheck(id) {
+      ['rangeFull','range7d','range3d'].forEach(k => {
+        const el = document.getElementById(k);
+        if (el) el.checked = (k === id);
+      });
+    }
+
+    function initRangeControls() {
+      const saved = sessionStorage.getItem(chartRangeKey) || 'full';
+      if (saved === '7') { exclusiveCheck('range7d'); setWindowByDays(7); }
+      else if (saved === '3') { exclusiveCheck('range3d'); setWindowByDays(3); }
+      else { exclusiveCheck('rangeFull'); setWindowByDays(null); }
+    }
+
+    function wireRangeControls() {
+      const full = document.getElementById('rangeFull');
+      const d7   = document.getElementById('range7d');
+      const d3   = document.getElementById('range3d');
+      if (!full || !d7 || !d3) return;
+
+      full.addEventListener('change', e => {
+        if (e.target.checked) { exclusiveCheck('rangeFull'); setWindowByDays(null); sessionStorage.setItem(chartRangeKey,'full'); }
+      });
+      d7.addEventListener('change', e => {
+        if (e.target.checked) { exclusiveCheck('range7d'); setWindowByDays(7); sessionStorage.setItem(chartRangeKey,'7'); }
+      });
+      d3.addEventListener('change', e => {
+        if (e.target.checked) { exclusiveCheck('range3d'); setWindowByDays(3); sessionStorage.setItem(chartRangeKey,'3'); }
+      });
+    }
+
+    // Activate
+    wireRangeControls();
+    initRangeControls();
+  
+    {% endif %}
+  </script>
+</body>
+</html>

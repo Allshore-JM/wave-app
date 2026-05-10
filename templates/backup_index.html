@@ -137,8 +137,8 @@
 
     .live-buoy-dot {
       display: block;
-      width: 9px;
-      height: 9px;
+      width: 11px;
+      height: 11px;
       border-radius: 50%;
       background: #00E5FF;
       border: 2px solid #ffffff;
@@ -309,11 +309,11 @@
                 <tr>
                   <th>Date</th>
                   <th>Time</th>
-                  <th>WVHT<br><span class="small" id="noaaWvhtUnit">ft</span></th>
-                  <th>SwH<br><span class="small" id="noaaSwhUnit">ft</span></th>
+                  <th>WVHT<br><span class="small">ft</span></th>
+                  <th>SwH<br><span class="small">ft</span></th>
                   <th>SwP<br><span class="small">sec</span></th>
                   <th>SwD</th>
-                  <th>WWH<br><span class="small" id="noaaWwhUnit">ft</span></th>
+                  <th>WWH<br><span class="small">ft</span></th>
                   <th>WWP<br><span class="small">sec</span></th>
                   <th>WWD</th>
                   <th>Steepness</th>
@@ -379,21 +379,17 @@
     const mapKey = 'mapView';
 
     // Web Mercator practical latitude limits.
-    // Longitude is intentionally not bounded so the map can scroll continuously east/west.
+    // Longitude is intentionally NOT bounded so the map can scroll continuously east/west.
     const WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
-    const LATITUDE_LIMIT = 85;
+    const LATITUDE_LIMIT = 82;
 
     const DEFAULT_MAP_CENTER = [21.3, -157.9];
     const DEFAULT_MAP_ZOOM = 6;
 
-    // Approximately 3 zoom levels closer than the earlier maxZoom of 8.
+    // Allows approximately 3 zoom levels closer than your previous maxZoom of 8.
     const MAX_MAP_ZOOM = 11;
 
-    // Leaflet world width is 256 px at zoom 0.
-    // MIN_MAP_ZOOM is calculated after the map container size is known so that
-    // the fully zoomed-out map shows no more than one repeated world.
-    const WORLD_TILE_SIZE = 256;
-    const MIN_ZOOM_PADDING_PX = 2;
+    // This is calculated after the map container size is known.
     let MIN_MAP_ZOOM = 1;
 
     function saveMapView(map) {
@@ -408,7 +404,7 @@
         mapKey,
         JSON.stringify({
           lat: safeLat,
-          lng: v.c.lng,
+          lng: v.c.lng, // do not clamp longitude; allow continuous wrap
           z: Math.min(MAX_MAP_ZOOM, Math.max(v.z, MIN_MAP_ZOOM || 1))
         })
       );
@@ -423,18 +419,12 @@
     }
 
     // ---- Leaflet Map ----
-    // No maxBounds here. Latitude is clamped manually; longitude wraps continuously.
+    // No maxBounds here. We clamp latitude manually but allow unlimited east/west movement.
     const map = L.map('map', {
       worldCopyJump: true,
       zoomControl: true,
-      minZoom: 1,
-      maxZoom: MAX_MAP_ZOOM,
-
-      // Fractional zoom lets the minimum zoom match the viewport width,
-      // preventing multiple world copies at the fully zoomed-out extent.
-      zoomSnap: 0.1,
-      zoomDelta: 0.5,
-      wheelPxPerZoomLevel: 80
+      minZoom: MIN_MAP_ZOOM,
+      maxZoom: MAX_MAP_ZOOM
     });
 
     const forecastLayer = L.layerGroup().addTo(map);
@@ -449,108 +439,83 @@
       {
         collapsed: false
       }
-    ).addTo(map);
+    ).addTo(map);  
+    
+// Esri imagery.
+// noWrap:false allows horizontal world wrapping, which prevents grey side areas
+// when panning east/west across the dateline.
+L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  {
+    maxZoom: MAX_MAP_ZOOM,
+    minZoom: 1,
+    noWrap: false,
+    keepBuffer: 4,
+    attribution: '&copy; Esri & contributors'
+  }
+).addTo(map);
 
-    // Esri imagery.
-    // noWrap:false allows horizontal world wrapping, which prevents grey side areas
-    // when panning east/west across the dateline.
-    L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      {
-        maxZoom: MAX_MAP_ZOOM,
-        minZoom: 1,
-        noWrap: false,
-        keepBuffer: 4,
-        attribution: '&copy; Esri & contributors'
-      }
-    ).addTo(map);
+// --- Stable map sizing, single-world zoom floor, and continuous east/west wrap ---
+function enforceSingleWorld() {
+  const el = document.getElementById('map');
 
-    // --- Stable map sizing, single-world zoom floor, and continuous east/west wrap ---
-    function calculateSingleWorldMinZoom() {
-      const mapWidth = map.getSize().x || document.getElementById('map').clientWidth || 1024;
+  // Keep a stable usable map height.
+  const targetH = Math.min(460, Math.floor(window.innerHeight * 0.48));
+  el.style.height = targetH + 'px';
 
-      // At zoom 0 the world is 256 px wide. Require the world pixel width to be
-      // at least the viewport width so no second world is visible at minimum zoom.
-      return Math.log2((mapWidth + MIN_ZOOM_PADDING_PX) / WORLD_TILE_SIZE);
-    }
+  map.invalidateSize();
 
-    function enforceSingleWorld() {
-      const el = document.getElementById('map');
+  // Maximum zoomed-out extent = one full world view.
+  // User cannot zoom out farther than this.
+  const fullWorldZoom = map.getBoundsZoom(WORLD_BOUNDS, false);
+  MIN_MAP_ZOOM = Math.max(1, fullWorldZoom);
 
-      // Keep a stable usable map height.
-      const targetH = Math.min(460, Math.floor(window.innerHeight * 0.48));
-      el.style.height = targetH + 'px';
+  map.setMinZoom(MIN_MAP_ZOOM);
 
-      map.invalidateSize();
+  const saved = loadMapView && loadMapView();
 
-      // Maximum zoomed-out extent = one non-repeated world width.
-      MIN_MAP_ZOOM = Math.max(1, calculateSingleWorldMinZoom());
-      map.setMinZoom(MIN_MAP_ZOOM);
+  if (
+    saved &&
+    Number.isFinite(saved.lat) &&
+    Number.isFinite(saved.lng) &&
+    Number.isFinite(saved.z)
+  ) {
+    const safeLat = Math.max(
+      -LATITUDE_LIMIT,
+      Math.min(LATITUDE_LIMIT, saved.lat)
+    );
 
-      const saved = loadMapView && loadMapView();
+    const safeZoom = Math.min(
+      MAX_MAP_ZOOM,
+      Math.max(saved.z, MIN_MAP_ZOOM)
+    );
 
-      if (
-        saved &&
-        Number.isFinite(saved.lat) &&
-        Number.isFinite(saved.lng) &&
-        Number.isFinite(saved.z)
-      ) {
-        const safeZoom = Math.min(
-          MAX_MAP_ZOOM,
-          Math.max(saved.z, MIN_MAP_ZOOM)
-        );
+    map.setView([safeLat, saved.lng], safeZoom, { animate: false });
+  } else {
+    map.setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, { animate: false });
+  }
+}
 
-        const safeLat = Math.max(
-          -LATITUDE_LIMIT,
-          Math.min(LATITUDE_LIMIT, saved.lat)
-        );
+// Prevent north/south dragging into grey polar tile areas,
+// while still allowing continuous east/west movement.
+function clampMapLatitude() {
+  const center = map.getCenter();
 
-        map.setView([safeLat, saved.lng], safeZoom, { animate: false });
-      } else {
-        map.setView(
-          DEFAULT_MAP_CENTER,
-          Math.max(DEFAULT_MAP_ZOOM, MIN_MAP_ZOOM),
-          { animate: false }
-        );
-      }
+  if (center.lat > LATITUDE_LIMIT || center.lat < -LATITUDE_LIMIT) {
+    const safeLat = Math.max(
+      -LATITUDE_LIMIT,
+      Math.min(LATITUDE_LIMIT, center.lat)
+    );
 
-      clampMapLatitude();
-    }
+    map.panTo([safeLat, center.lng], { animate: false });
+  }
+}
 
-    // Prevent north/south dragging into grey polar tile areas,
-    // while still allowing continuous east/west movement.
-    function clampMapLatitude() {
-      const bounds = map.getBounds();
-      const center = map.getCenter();
+map.on('moveend', clampMapLatitude);
+map.on('zoomend', clampMapLatitude);
 
-      const northLimit = WORLD_BOUNDS.getNorth();
-      const southLimit = WORLD_BOUNDS.getSouth();
-
-      let correctedLat = center.lat;
-
-      if (bounds.getNorth() > northLimit) {
-        correctedLat -= (bounds.getNorth() - northLimit);
-      }
-
-      if (bounds.getSouth() < southLimit) {
-        correctedLat += (southLimit - bounds.getSouth());
-      }
-
-      correctedLat = Math.max(
-        southLimit,
-        Math.min(northLimit, correctedLat)
-      );
-
-      if (Math.abs(correctedLat - center.lat) > 0.000001) {
-        map.setView([correctedLat, center.lng], map.getZoom(), { animate: false });
-      }
-    }
-
-    map.on('moveend', clampMapLatitude);
-    map.on('zoomend', clampMapLatitude);
-
-    window.addEventListener('resize', enforceSingleWorld);
-    enforceSingleWorld();
+window.addEventListener('resize', enforceSingleWorld);
+enforceSingleWorld();
 
     // Plot stations
     fetch('/stations.json')
@@ -582,8 +547,6 @@
 
     let liveSpectrumChart = null;
     let activeLiveBuoyMarker = null;
-    let lastNoaaWaveSummaryData = null;
-    let lastLiveComponentData = null;
 
     function getSelectedUnit() {
       return document.getElementById('unit')?.value || 'US';
@@ -761,8 +724,6 @@
     }
 
     function renderLiveBuoyDetails(data) {
-      lastLiveComponentData = data;
-
       const useMetric = getSelectedUnit() === 'Metric';
 
       document.getElementById('liveBuoyTotal').textContent =
@@ -783,103 +744,53 @@
       document.getElementById('liveBuoyContent').classList.remove('d-none');
     }
 
-    function noaaHeight(value, useMetric) {
-      if (value === null || value === undefined || value === '') {
-        return '';
-      }
-
-      const n = parseFloat(value);
-
-      if (!Number.isFinite(n)) {
-        return value;
-      }
-
-      return useMetric
-        ? (n * 0.3048).toFixed(2)
-        : n.toFixed(1);
-    }
-
-    function noaaHeightWithUnit(value, useMetric) {
-      const formatted = noaaHeight(value, useMetric);
-
-      if (!formatted) {
-        return '—';
-      }
-
-      return formatted + ' ' + (useMetric ? 'm' : 'ft');
-    }
-
     function renderNoaaWaveSummary(data) {
-      lastNoaaWaveSummaryData = data;
-
       const latest = data.latest || {};
-      const useMetric = getSelectedUnit() === 'Metric';
-      const heightUnit = useMetric ? 'm' : 'ft';
-
-      const wvhtUnit = document.getElementById('noaaWvhtUnit');
-      const swhUnit = document.getElementById('noaaSwhUnit');
-      const wwhUnit = document.getElementById('noaaWwhUnit');
-
-      if (wvhtUnit) wvhtUnit.textContent = heightUnit;
-      if (swhUnit) swhUnit.textContent = heightUnit;
-      if (wwhUnit) wwhUnit.textContent = heightUnit;
-
+    
       document.getElementById('noaaWvht').textContent =
-        noaaHeightWithUnit(latest.wvht, useMetric);
-
+        latest.wvht || '—';
+    
       document.getElementById('noaaSwell').textContent =
-        noaaHeightWithUnit(latest.swh, useMetric) +
-        ' @ ' +
-        (latest.swp || '—') +
-        ' s ' +
-        (latest.swd || '');
-
+        (latest.swh || '—') + ' @ ' + (latest.swp || '—') + ' ' + (latest.swd || '');
+    
       document.getElementById('noaaWindWave').textContent =
-        noaaHeightWithUnit(latest.wwh, useMetric) +
-        ' @ ' +
-        (latest.wwp || '—') +
-        ' s ' +
-        (latest.wwd || '');
-
+        (latest.wwh || '—') + ' @ ' + (latest.wwp || '—') + ' ' + (latest.wwd || '');
+    
       document.getElementById('noaaWaveSummaryAsOf').textContent =
-        (data.title || data.station || '') +
-        ' | ' +
-        (data.as_of_local || '') +
-        ' ' +
-        (data.as_of_gmt || '');
-
+        (data.title || data.station || '') + ' | ' + (data.as_of_local || '') + ' ' + (data.as_of_gmt || '');
+    
       const tbody = document.getElementById('noaaWaveSummaryRows');
       tbody.innerHTML = '';
-
+    
       const rows = data.rows || [];
-
+    
       if (!rows.length) {
         tbody.innerHTML =
           '<tr><td colspan="11" class="text-muted">No NOAA wave summary rows parsed.</td></tr>';
         return;
       }
-
+    
       rows.forEach(r => {
         const tr = document.createElement('tr');
-
+    
         tr.innerHTML = `
           <td>${r.date || ''}</td>
           <td>${r.time || ''}</td>
-          <td>${noaaHeight(r.wvht, useMetric)}</td>
-          <td>${noaaHeight(r.swh, useMetric)}</td>
+          <td>${r.wvht || ''}</td>
+          <td>${r.swh || ''}</td>
           <td>${r.swp || ''}</td>
           <td>${r.swd || ''}</td>
-          <td>${noaaHeight(r.wwh, useMetric)}</td>
+          <td>${r.wwh || ''}</td>
           <td>${r.wwp || ''}</td>
           <td>${r.wwd || ''}</td>
           <td>${r.steepness || ''}</td>
           <td>${r.apd || ''}</td>
         `;
-
+    
         tbody.appendChild(tr);
       });
     }
-
+    
     async function loadLiveBuoyDetails(station) {
       showLiveBuoyPanelLoading(station);
     
@@ -919,45 +830,77 @@
       }
     }
 
+function createLiveBuoyIcon(isActive = false) {
+  const size = isActive ? 15 : 11;
+  const centerOffsetPx = isActive ? 7 : 6;
+  const anchorX = Math.round((size / 2) - centerOffsetPx);
 
-    const unitSelect = document.getElementById('unit');
+  return L.divIcon({
+    className: 'live-buoy-div-icon',
+    html: `
+      <span class="live-buoy-dot" style="
+        width:${size}px;
+        height:${size}px;
+        background:#00E5FF;
+        border:${isActive ? '3px solid #ffffff' : '2px solid #ffffff'};
+        box-shadow:${isActive ? '0 0 10px rgba(0, 229, 255, 1)' : '0 0 6px rgba(0, 229, 255, 0.9)'};
+      "></span>
+    `,
+    iconSize: [size, size],
 
-    if (unitSelect) {
-      unitSelect.addEventListener('change', () => {
-        if (lastNoaaWaveSummaryData) {
-          renderNoaaWaveSummary(lastNoaaWaveSummaryData);
-        }
+    // Places the cyan live marker about 6–7 px to the right of the actual point.
+    // This keeps it close to the forecast buoy while leaving both selectable.
+    iconAnchor: [anchorX, Math.round(size / 2)]
+  });
+}
 
-        if (lastLiveComponentData) {
-          renderLiveBuoyDetails(lastLiveComponentData);
-        }
-      });
-    }
+function renderNoaaWaveSummary(data) {
+  const latest = data.latest || {};
 
-    function createLiveBuoyIcon(isActive = false) {
-      const size = isActive ? 13 : 9;
-      const centerOffsetPx = isActive ? 5 : 4;
-      const anchorX = Math.round((size / 2) - centerOffsetPx);
+  document.getElementById('noaaWvht').textContent =
+    latest.wvht || '—';
 
-      return L.divIcon({
-        className: 'live-buoy-div-icon',
-        html: `
-          <span class="live-buoy-dot" style="
-            width:${size}px;
-            height:${size}px;
-            background:#00E5FF;
-            border:${isActive ? '3px solid #ffffff' : '2px solid #ffffff'};
-            box-shadow:${isActive ? '0 0 10px rgba(0, 229, 255, 1)' : '0 0 6px rgba(0, 229, 255, 0.9)'};
-          "></span>
-        `,
-        iconSize: [size, size],
+  document.getElementById('noaaSwell').textContent =
+    `${latest.swh || '—'} @ ${latest.swp || '—'} ${latest.swd || ''}`;
 
-        // Places the live buoy about 4–5 px right of the actual coordinate.
-        // Close enough to visually pair with the forecast buoy, but still selectable.
-        iconAnchor: [anchorX, Math.round(size / 2)]
-      });
-    }
+  document.getElementById('noaaWindWave').textContent =
+    `${latest.wwh || '—'} @ ${latest.wwp || '—'} ${latest.wwd || ''}`;
 
+  document.getElementById('noaaWaveSummaryAsOf').textContent =
+    `${data.title || data.station} | ${data.as_of_local || ''} ${data.as_of_gmt || ''}`;
+
+  const tbody = document.getElementById('noaaWaveSummaryRows');
+  tbody.innerHTML = '';
+
+  const rows = data.rows || [];
+
+  if (!rows.length) {
+    tbody.innerHTML =
+      '<tr><td colspan="11" class="text-muted">No NOAA wave summary rows parsed.</td></tr>';
+    return;
+  }
+
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+
+    tr.innerHTML = `
+      <td>${r.date || ''}</td>
+      <td>${r.time || ''}</td>
+      <td>${r.wvht || ''}</td>
+      <td>${r.swh || ''}</td>
+      <td>${r.swp || ''}</td>
+      <td>${r.swd || ''}</td>
+      <td>${r.wwh || ''}</td>
+      <td>${r.wwp || ''}</td>
+      <td>${r.wwd || ''}</td>
+      <td>${r.steepness || ''}</td>
+      <td>${r.apd || ''}</td>
+    `;
+
+    tbody.appendChild(tr);
+  });
+}
+    
 function addLiveNdbcBuoyLayer() {
   fetch('/api/ndbc/live-wave-stations')
     .then(r => r.json())
@@ -972,7 +915,7 @@ function addLiveNdbcBuoyLayer() {
         marker.bindTooltip('Live ' + s.id, {
           permanent: false,
           direction: 'top',
-          offset: [10, -2]
+          offset: [12, -2]
         });
 
         marker.on('click', () => {

@@ -137,12 +137,12 @@
 
     .live-buoy-dot {
       display: block;
-      width: 15px;
-      height: 15px;
+      width: 11px;
+      height: 11px;
       border-radius: 50%;
       background: #00E5FF;
       border: 2px solid #ffffff;
-      box-shadow: 0 0 7px rgba(0, 229, 255, 0.95);
+      box-shadow: 0 0 6px rgba(0, 229, 255, 0.9);
     }
 
     .forecast-buoy-dot {
@@ -386,15 +386,21 @@
     }
 
     // ---- Leaflet Map (satellite, one-world, no gray sides) ----
-    // ---- Global bounds for a single-world Mercator view (avoid polar cutoffs) ----
-const WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
+// ---- Map bounds and zoom settings ----
+// Use wrapped world imagery horizontally so the map never shows grey side areas.
+const WORLD_BOUNDS = L.latLngBounds([[-82, -180], [82, 180]]);
+const DEFAULT_MAP_CENTER = [21.3, -157.9];
+const DEFAULT_MAP_ZOOM = 6;
+const MIN_MAP_ZOOM = 2;
+const MAX_MAP_ZOOM = 11; // was effectively 8; allows about 3 more zoom levels
 
-// Create the map with non-wrapping tiles and hard bounds
 const map = L.map('map', {
-  worldCopyJump: false,
+  worldCopyJump: true,
   zoomControl: true,
+  minZoom: MIN_MAP_ZOOM,
+  maxZoom: MAX_MAP_ZOOM,
   maxBounds: WORLD_BOUNDS,
-  maxBoundsViscosity: 1.0
+  maxBoundsViscosity: 0.75
 });
 
 const forecastLayer = L.layerGroup().addTo(map);
@@ -411,18 +417,24 @@ L.control.layers(
   }
 ).addTo(map);    
     
-// Esri imagery (already in your file); keep noWrap:true so there is only one world
+// Esri imagery. noWrap:false lets the world repeat horizontally,
+// which prevents grey side areas when zoomed out.
 L.tileLayer(
   'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-  { maxZoom: 8, minZoom: 1, noWrap: true, attribution: '&copy; Esri & contributors' }
+  {
+    maxZoom: MAX_MAP_ZOOM,
+    minZoom: MIN_MAP_ZOOM,
+    noWrap: false,
+    keepBuffer: 4,
+    attribution: '&copy; Esri & contributors'
+  }
 ).addTo(map);
 
-// --- Stable map sizing: prevent grey tile area below map imagery ---
+// --- Stable map sizing and saved view handling ---
 function enforceSingleWorld() {
   const el = document.getElementById('map');
 
-  // Keep the map from becoming taller than the satellite tile coverage.
-  // This avoids the grey Leaflet background at the bottom of the map.
+  // Keep a stable ocean-map height. The wrapped tile layer handles width.
   const targetH = Math.min(460, Math.floor(window.innerHeight * 0.48));
   el.style.height = targetH + 'px';
 
@@ -430,13 +442,22 @@ function enforceSingleWorld() {
 
   const saved = loadMapView && loadMapView();
 
-  if (saved && Number.isFinite(saved.lat) && Number.isFinite(saved.lng) && Number.isFinite(saved.z)) {
-    map.setView([saved.lat, saved.lng], saved.z, { animate: false });
+  if (
+    saved &&
+    Number.isFinite(saved.lat) &&
+    Number.isFinite(saved.lng) &&
+    Number.isFinite(saved.z)
+  ) {
+    const z = Math.min(MAX_MAP_ZOOM, Math.max(saved.z, MIN_MAP_ZOOM));
+    map.setView([saved.lat, saved.lng], z, { animate: false });
   } else {
-    // Default view centered on Hawaii instead of forcing the whole world to fit.
-    map.setView([21.3, -157.9], 6, { animate: false });
+    map.setView(DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, { animate: false });
   }
 }
+
+// Call once and re-apply on resize
+window.addEventListener('resize', enforceSingleWorld);
+enforceSingleWorld();
 
 // Call once and re-apply on resize
 window.addEventListener('resize', enforceSingleWorld);
@@ -756,7 +777,9 @@ enforceSingleWorld();
     }
 
 function createLiveBuoyIcon(isActive = false) {
-  const size = isActive ? 19 : 15;
+  const size = isActive ? 15 : 11;
+  const centerOffsetPx = isActive ? 7 : 6;
+  const anchorX = Math.round((size / 2) - centerOffsetPx);
 
   return L.divIcon({
     className: 'live-buoy-div-icon',
@@ -764,16 +787,16 @@ function createLiveBuoyIcon(isActive = false) {
       <span class="live-buoy-dot" style="
         width:${size}px;
         height:${size}px;
-        background:${isActive ? '#00E5FF' : '#00E5FF'};
+        background:#00E5FF;
         border:${isActive ? '3px solid #ffffff' : '2px solid #ffffff'};
-        box-shadow:${isActive ? '0 0 10px rgba(0, 229, 255, 1)' : '0 0 7px rgba(0, 229, 255, 0.95)'};
+        box-shadow:${isActive ? '0 0 10px rgba(0, 229, 255, 1)' : '0 0 6px rgba(0, 229, 255, 0.9)'};
       "></span>
     `,
     iconSize: [size, size],
 
-    // Negative x-anchor shifts the visible cyan icon to the RIGHT
-    // of the actual buoy coordinate so the yellow forecast marker remains clickable.
-    iconAnchor: [-10, Math.round(size / 2)]
+    // Places the cyan live marker about 6–7 px to the right of the actual point.
+    // This keeps it close to the forecast buoy while leaving both selectable.
+    iconAnchor: [anchorX, Math.round(size / 2)]
   });
 }
 
@@ -832,6 +855,7 @@ function addLiveNdbcBuoyLayer() {
         const marker = L.marker([s.lat, s.lon], {
           icon: createLiveBuoyIcon(false),
           title: 'Live ' + s.id
+          zIndexOffset: 500
         }).addTo(liveBuoyLayer);
 
         marker.bindTooltip('Live ' + s.id, {

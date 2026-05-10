@@ -372,15 +372,6 @@
         <!-- Direction-assisted experimental spectral partition -->
         <div class="border-top pt-3">
           <h6 class="mb-2">Additional Directional Spectrum Partitions</h6>
-
-          <div class="small text-muted algorithm-note">
-            <div id="liveAlgorithmName" class="fw-semibold">Experimental direction-assisted spectral partition</div>
-            <div id="liveAlgorithmNote">
-              These components are derived from NDBC spectral density and directional-moment files.
-            </div>
-            <div id="liveSeparationInfo" class="mt-1"></div>
-          </div>
-
           <div class="live-buoy-summary">
             <div class="live-buoy-metric">
               <div class="label">Total Hs</div>
@@ -408,8 +399,6 @@
                   <th>Peak Period</th>
                   <th>Direction</th>
                   <th>Energy</th>
-                  <th>Confidence</th>
-                  <th>Method</th>
                   <th>Frequency Range</th>
                   <th>Spread</th>
                 </tr>
@@ -422,8 +411,8 @@
           <canvas id="liveSpectrumChart" height="180"></canvas>
 
           <div class="small text-muted mt-2">
-            These partitions are experimental. They may show additional wave systems beyond NOAA’s simplified
-            swell/wind-wave summary and are not intended to exactly duplicate NOAA SwH/SwP/WWH/WWP.
+            These partitions show additional wave systems beyond NOAA’s simplified swell/wind-wave summary
+            and are not intended to exactly duplicate NOAA SwH/SwP/WWH/WWP.
           </div>
         </div>
       </div>
@@ -783,16 +772,6 @@
       return type === 'wind sea' ? 'Wind Sea' : 'Swell';
     }
 
-    function confidenceClass(confidence) {
-      const value = String(confidence || '').toLowerCase();
-
-      if (value === 'high') return 'high';
-      if (value === 'medium') return 'medium';
-      if (value === 'low') return 'low';
-
-      return '';
-    }
-
     function renderLiveBuoyComponentCards(data, useMetric) {
       const wrap = document.getElementById('liveBuoyComponentCards');
       wrap.innerHTML = '';
@@ -811,8 +790,6 @@
 
         const height = useMetric ? `${c.height_m} m` : `${c.height_ft} ft`;
         const energy = c.energy_percent == null ? '—' : `${c.energy_percent}% energy`;
-        const confidence = c.confidence || '—';
-        const method = c.method || '—';
         const spread = c.directional_spread_deg == null ? '' : `Spread: ${c.directional_spread_deg}°`;
 
         const card = document.createElement('div');
@@ -824,10 +801,8 @@
           <div class="component-main">${height} @ ${c.peak_period_sec ?? '—'} s</div>
           <div class="component-detail">${dir}</div>
           <div class="component-detail">${c.frequency_min_hz ?? '—'}–${c.frequency_max_hz ?? '—'} Hz</div>
-          <div class="component-detail">${method}</div>
           <div class="component-meta">
             <span class="component-badge">${energy}</span>
-            <span class="component-badge ${confidenceClass(confidence)}">${confidence}</span>
             ${spread ? `<span class="component-badge">${spread}</span>` : ''}
           </div>
         `;
@@ -844,7 +819,7 @@
 
       if (!components.length) {
         tbody.innerHTML =
-          '<tr><td colspan="10" class="text-muted">No separate components detected.</td></tr>';
+          '<tr><td colspan="8" class="text-muted">No separate components detected.</td></tr>';
         return;
       }
 
@@ -856,8 +831,6 @@
           : `${c.direction_deg}° ${c.direction_compass || ''}`;
 
         const energy = c.energy_percent == null ? '—' : `${c.energy_percent}%`;
-        const confidence = c.confidence || '—';
-        const method = c.method || '—';
         const spread = c.directional_spread_deg == null ? '—' : `${c.directional_spread_deg}°`;
 
         const tr = document.createElement('tr');
@@ -869,8 +842,6 @@
           <td>${c.peak_period_sec ?? '—'} s</td>
           <td>${dir}</td>
           <td>${energy}</td>
-          <td><span class="component-badge ${confidenceClass(confidence)}">${confidence}</span></td>
-          <td>${method}</td>
           <td>${c.frequency_min_hz ?? '—'}–${c.frequency_max_hz ?? '—'} Hz</td>
           <td>${spread}</td>
         `;
@@ -974,29 +945,6 @@
 
       document.getElementById('liveBuoyComponentCount').textContent =
         (data.components || []).length;
-
-      const algorithmName = document.getElementById('liveAlgorithmName');
-      const algorithmNote = document.getElementById('liveAlgorithmNote');
-      const separationInfo = document.getElementById('liveSeparationInfo');
-
-      if (algorithmName) {
-        algorithmName.textContent = data.algorithm || 'Experimental direction-assisted spectral partition';
-      }
-
-      if (algorithmNote) {
-        algorithmNote.textContent =
-          data.algorithm_note ||
-          'Experimental components are derived from NDBC spectral density and directional-moment files.';
-      }
-
-      if (separationInfo) {
-        if (data.sep_frequency_hz && data.sep_period_sec) {
-          separationInfo.textContent =
-            `Swell/wind separation: ${data.sep_frequency_hz} Hz (${data.sep_period_sec} s), ${data.separation_source || 'estimated'}.`;
-        } else {
-          separationInfo.textContent = '';
-        }
-      }
 
       renderLiveBuoyComponentCards(data, useMetric);
       renderLiveBuoyComponentTable(data, useMetric);

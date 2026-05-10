@@ -854,7 +854,7 @@ function addLiveNdbcBuoyLayer() {
       stations.forEach(s => {
         const marker = L.marker([s.lat, s.lon], {
           icon: createLiveBuoyIcon(false),
-          title: 'Live ' + s.id
+          title: 'Live ' + s.id,
           zIndexOffset: 500
         }).addTo(liveBuoyLayer);
 

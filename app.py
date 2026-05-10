@@ -961,82 +961,586 @@ def _compass_from_degrees(deg: float | None) -> str | None:
     points = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
     return points[int((deg + 11.25) / 22.5) % 16]
 
-def _find_spectral_peaks(freqs: list, density: list) -> list:
-    smooth = _smooth3(density)
-    max_val = max(smooth) if smooth else 0.0
-    if max_val <= 0.0:
+
+def _smooth5(values: list) -> list:
+    """Five-point weighted smoothing that preserves broad shoulders better than a 3-point average."""
+    if len(values) < 5:
+        return _smooth3(values)
+    out = []
+    weights = [1, 2, 3, 2, 1]
+    half = 2
+    for i in range(len(values)):
+        num = 0.0
+        den = 0.0
+        for offset, w in zip(range(-half, half + 1), weights):
+            j = min(max(i + offset, 0), len(values) - 1)
+            num += values[j] * w
+            den += w
+        out.append(num / den if den else values[i])
+    return out
+
+def _angular_diff_deg(a: float | None, b: float | None) -> float | None:
+    """Smallest absolute angular difference between two directions."""
+    if a is None or b is None:
+        return None
+    try:
+        if not (math.isfinite(float(a)) and math.isfinite(float(b))):
+            return None
+        return abs((float(a) - float(b) + 180.0) % 360.0 - 180.0)
+    except Exception:
+        return None
+
+def _weighted_mean(values: list, weights: list) -> float | None:
+    num = 0.0
+    den = 0.0
+    for v, w in zip(values, weights):
+        try:
+            if v is None:
+                continue
+            v = float(v)
+            w = float(w)
+            if not (math.isfinite(v) and math.isfinite(w)):
+                continue
+            num += v * w
+            den += w
+        except Exception:
+            continue
+    return None if den <= 0 else num / den
+
+def _directional_spread_deg(degrees: list, weights: list) -> float | None:
+    """
+    Approximate circular directional spread from weighted resultant length.
+    Smaller values mean a cleaner/directionally consistent component.
+    """
+    x = 0.0
+    y = 0.0
+    total = 0.0
+    for deg, w in zip(degrees, weights):
+        if deg is None:
+            continue
+        try:
+            deg = float(deg)
+            w = float(w)
+            if not (math.isfinite(deg) and math.isfinite(w)) or w <= 0:
+                continue
+        except Exception:
+            continue
+        rad = math.radians(deg)
+        x += w * math.cos(rad)
+        y += w * math.sin(rad)
+        total += w
+    if total <= 0:
+        return None
+    r = min(1.0, max(0.0, math.hypot(x, y) / total))
+    if r <= 0:
+        return 180.0
+    try:
+        return math.degrees(math.sqrt(max(0.0, -2.0 * math.log(r))))
+    except Exception:
+        return None
+
+def _align_spectral_values(source_row: dict | None, target_freqs: list, tolerance: float = 0.00075) -> list:
+    """
+    Align values from a directional/realtime file onto the density frequencies.
+    Most NDBC files use matching frequency bins, but this tolerates small differences.
+    """
+    if not source_row:
+        return [None] * len(target_freqs)
+
+    src_freqs = source_row.get("freqs") or []
+    src_vals = source_row.get("values") or []
+    if not src_freqs or not src_vals:
+        return [None] * len(target_freqs)
+
+    exact = {round(float(f), 5): v for f, v in zip(src_freqs, src_vals)}
+    aligned = []
+
+    for f in target_freqs:
+        key = round(float(f), 5)
+        if key in exact:
+            aligned.append(exact[key])
+            continue
+
+        nearest_i = min(range(len(src_freqs)), key=lambda i: abs(float(src_freqs[i]) - float(f)))
+        if abs(float(src_freqs[nearest_i]) - float(f)) <= tolerance:
+            aligned.append(src_vals[nearest_i])
+        else:
+            aligned.append(None)
+
+    return aligned
+
+def _parse_ndbc_spec_summary_rows(text: str) -> list:
+    """
+    Parse NDBC realtime .spec rows.
+
+    Expected columns commonly include:
+    YY MM DD hh mm WVHT SwH SwP WWH WWP SwD WWD STEEPNESS APD MWD
+
+    Heights in this file are meters. Periods are seconds.
+    """
+    rows = []
+    if not text:
+        return rows
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        parts = line.split()
+        if len(parts) < 14:
+            continue
+
+        try:
+            yy = int(parts[0])
+            month = int(parts[1])
+            day = int(parts[2])
+            hour = int(parts[3])
+            minute = int(parts[4])
+            year = 2000 + yy if yy < 100 else yy
+            dt_utc = datetime(year, month, day, hour, minute, tzinfo=pytz.utc)
+        except Exception:
+            continue
+
+        def num_or_none(idx):
+            try:
+                val = parts[idx]
+                if val in {"MM", "-", "--", "---"}:
+                    return None
+                return float(val)
+            except Exception:
+                return None
+
+        def str_or_none(idx):
+            try:
+                val = parts[idx]
+                if val in {"MM", "-", "--", "---"}:
+                    return None
+                return val
+            except Exception:
+                return None
+
+        rows.append({
+            "timestamp_utc": dt_utc,
+            "wvht_m": num_or_none(5),
+            "swh_m": num_or_none(6),
+            "swp_sec": num_or_none(7),
+            "wwh_m": num_or_none(8),
+            "wwp_sec": num_or_none(9),
+            "swd": str_or_none(10),
+            "wwd": str_or_none(11),
+            "steepness": str_or_none(12),
+            "apd_sec": num_or_none(13),
+            "mwd": str_or_none(14) if len(parts) > 14 else None,
+        })
+
+    rows.sort(key=lambda r: r["timestamp_utc"], reverse=True)
+    return rows
+
+def _estimate_separation_frequency(summary_row: dict | None) -> tuple[float, str]:
+    """
+    Estimate the swell/wind-wave separation frequency.
+
+    NDBC's station-page Wave Summary is a simplified swell/wind-wave product.
+    The public realtime .spec rows do not consistently expose Sep_Freq, so we
+    use the midpoint between NOAA SwP and WWP when available, otherwise 0.125 Hz
+    (8 seconds) as a practical default.
+    """
+    default_sep = 1.0 / 8.0
+
+    if summary_row:
+        swp = summary_row.get("swp_sec")
+        wwp = summary_row.get("wwp_sec")
+        try:
+            if swp and wwp and float(swp) > 0 and float(wwp) > 0:
+                swell_f = 1.0 / float(swp)
+                wind_f = 1.0 / float(wwp)
+                if wind_f > swell_f:
+                    return ((swell_f + wind_f) / 2.0, "midpoint of NOAA SwP and WWP")
+        except Exception:
+            pass
+
+    return (default_sep, "default 8-second separation")
+
+def _find_spectral_peaks_v2(freqs: list, density: list, sep_freq: float | None = None) -> list:
+    """
+    More sensitive peak finder:
+    - uses 5-point smoothing,
+    - allows lower prominence for smaller shoulder peaks,
+    - forces a representative peak on each side of the swell/wind-sea separation when energy exists.
+    """
+    smooth = _smooth5(density)
+    if not smooth:
         return []
-    min_prominence = max_val * 0.06
+
+    max_val = max(smooth)
+    if max_val <= 0:
+        return []
+
     peaks = []
+    min_density = max_val * 0.018
+    min_prominence = max_val * 0.018
+
     for i in range(1, len(smooth) - 1):
-        if smooth[i] > smooth[i - 1] and smooth[i] >= smooth[i + 1]:
-            left_min = min(smooth[max(0, i - 4): i + 1])
-            right_min = min(smooth[i : min(len(smooth), i + 5)])
-            prominence = smooth[i] - max(left_min, right_min)
-            if prominence >= min_prominence:
-                peaks.append(i)
+        is_peak = smooth[i] >= smooth[i - 1] and smooth[i] >= smooth[i + 1]
+        if not is_peak or smooth[i] < min_density:
+            continue
+
+        left_window = smooth[max(0, i - 5): i + 1]
+        right_window = smooth[i: min(len(smooth), i + 6)]
+        left_min = min(left_window) if left_window else smooth[i]
+        right_min = min(right_window) if right_window else smooth[i]
+        prominence = smooth[i] - max(left_min, right_min)
+
+        if prominence >= min_prominence or smooth[i] >= max_val * 0.12:
+            peaks.append(i)
+
+    # If there are no local peaks, use the dominant bin.
     if not peaks:
-        peaks = [smooth.index(max(smooth))]
+        peaks = [smooth.index(max_val)]
+
+    # Force sub-band peaks so wind sea and swell are both represented if they have meaningful energy.
+    if sep_freq is not None:
+        df = _bin_widths(freqs)
+        total_m0 = sum(e * w for e, w in zip(density, df))
+        for selector in [
+            lambda f: f <= sep_freq,
+            lambda f: f > sep_freq,
+        ]:
+            idxs = [i for i, f in enumerate(freqs) if selector(f)]
+            if not idxs:
+                continue
+            band_m0 = sum(density[i] * df[i] for i in idxs)
+            if total_m0 > 0 and band_m0 / total_m0 >= 0.035:
+                best = max(idxs, key=lambda i: smooth[i])
+                peaks.append(best)
+
+    # De-duplicate and keep close peaks only if the valley between them is meaningful.
+    peaks = sorted(set(peaks))
     filtered = []
-    min_spacing = 2
+
     for p in sorted(peaks, key=lambda idx: smooth[idx], reverse=True):
-        if all(abs(p - existing) >= min_spacing for existing in filtered):
+        keep = True
+        for existing in filtered:
+            lo = min(p, existing)
+            hi = max(p, existing)
+            if hi - lo <= 2:
+                keep = False
+                break
+            valley = min(smooth[lo: hi + 1])
+            smaller_peak = min(smooth[p], smooth[existing])
+            if smaller_peak > 0 and valley / smaller_peak > 0.82 and abs(hi - lo) <= 4:
+                keep = False
+                break
+        if keep:
             filtered.append(p)
+
     return sorted(filtered)
 
-def _partition_spectrum(freqs: list, density: list, directions: list | None = None) -> list:
+def _candidate_direction_splits(freqs: list, density: list, dirs: list | None, total_m0: float) -> dict:
+    """
+    Identify split points where adjacent or neighboring frequency bins have a large directional change.
+    The return dict maps split index -> reason.
+    """
+    if not dirs or total_m0 <= 0:
+        return {}
+
+    df = _bin_widths(freqs)
+    splits = {}
+    max_density = max(density) if density else 0.0
+
+    for i in range(1, len(freqs) - 2):
+        left_dir = dirs[i]
+        right_dir = dirs[i + 1]
+        diff = _angular_diff_deg(left_dir, right_dir)
+
+        if diff is None or diff < 48:
+            continue
+
+        local_energy = (density[i] * df[i]) + (density[i + 1] * df[i + 1])
+        if max_density > 0 and max(density[i], density[i + 1]) < max_density * 0.025:
+            continue
+        if local_energy / total_m0 < 0.006:
+            continue
+
+        # Check that there is at least some energy on both sides of the split.
+        left_start = max(0, i - 3)
+        right_end = min(len(freqs), i + 5)
+        left_m0 = sum(density[j] * df[j] for j in range(left_start, i + 1))
+        right_m0 = sum(density[j] * df[j] for j in range(i + 1, right_end))
+        if left_m0 / total_m0 < 0.006 or right_m0 / total_m0 < 0.006:
+            continue
+
+        splits[i] = "direction shift"
+
+    return splits
+
+def _broad_band_directional_split(start: int, end: int, freqs: list, density: list,
+                                  dirs: list | None, total_m0: float) -> tuple[int, str] | None:
+    """
+    Split a broad spectral band if its two halves have enough energy and clearly different directions.
+    This catches cases where two swell trains overlap in period and do not form a strong valley.
+    """
+    if not dirs or end - start < 5 or total_m0 <= 0:
+        return None
+
+    df = _bin_widths(freqs)
+    best = None
+
+    for split in range(start + 2, end - 2):
+        left_idxs = list(range(start, split + 1))
+        right_idxs = list(range(split + 1, end + 1))
+
+        left_w = [density[i] * df[i] for i in left_idxs]
+        right_w = [density[i] * df[i] for i in right_idxs]
+
+        left_m0 = sum(left_w)
+        right_m0 = sum(right_w)
+
+        if left_m0 / total_m0 < 0.025 or right_m0 / total_m0 < 0.025:
+            continue
+
+        left_dir = _circular_mean_deg([dirs[i] for i in left_idxs], left_w)
+        right_dir = _circular_mean_deg([dirs[i] for i in right_idxs], right_w)
+        diff = _angular_diff_deg(left_dir, right_dir)
+
+        if diff is None or diff < 42:
+            continue
+
+        balance = min(left_m0, right_m0) / max(left_m0, right_m0)
+        score = diff * balance
+
+        if best is None or score > best[0]:
+            best = (score, split, diff)
+
+    if best:
+        return (best[1], f"broad-band directional split ({best[2]:.0f}°)")
+
+    return None
+
+def _make_segments_from_splits(n: int, split_reasons: dict) -> list:
+    split_points = sorted(i for i in split_reasons.keys() if 0 <= i < n - 1)
+    segments = []
+    start = 0
+    for split in split_points:
+        if split >= start:
+            segments.append((start, split))
+            start = split + 1
+    if start <= n - 1:
+        segments.append((start, n - 1))
+    return [(s, e) for s, e in segments if e >= s]
+
+def _partition_spectrum_v2(freqs: list, density: list,
+                           directions: list | None = None,
+                           directions2: list | None = None,
+                           r1_values: list | None = None,
+                           r2_values: list | None = None,
+                           sep_freq: float | None = None) -> list:
+    """
+    Direction-assisted spectral partitioning.
+
+    Improvements over the original frequency-only partition:
+    - lower-threshold peak/shoulder detection,
+    - forced swell/wind-sea separation when energy exists on both sides,
+    - extra split points where wave direction changes strongly across the spectrum,
+    - broad-band directional splits where two systems overlap in period,
+    - confidence/method/energy fields for frontend display.
+    """
     paired = []
     for i, (f, e) in enumerate(zip(freqs, density)):
-        if f and math.isfinite(f) and e is not None and math.isfinite(e) and e >= 0.0:
-            d = directions[i] if directions and i < len(directions) else None
-            paired.append((f, e, d))
+        try:
+            f = float(f)
+            e = float(e)
+            if not (math.isfinite(f) and math.isfinite(e)) or f <= 0 or e < 0:
+                continue
+        except Exception:
+            continue
+
+        d1 = directions[i] if directions and i < len(directions) else None
+        d2 = directions2[i] if directions2 and i < len(directions2) else None
+        r1 = r1_values[i] if r1_values and i < len(r1_values) else None
+        r2 = r2_values[i] if r2_values and i < len(r2_values) else None
+        paired.append((f, e, d1, d2, r1, r2))
+
     paired.sort(key=lambda x: x[0])
+
     if len(paired) < 5:
         return []
+
     freqs = [p[0] for p in paired]
     density = [p[1] for p in paired]
     dirs = [p[2] for p in paired]
-    smooth = _smooth3(density)
-    peaks = _find_spectral_peaks(freqs, density)
-    boundaries = [0]
+    dirs2 = [p[3] for p in paired]
+    r1s = [p[4] for p in paired]
+    r2s = [p[5] for p in paired]
+
+    # Prefer alpha1/mean direction; fall back to alpha2 where alpha1 is missing.
+    effective_dirs = [
+        d1 if d1 is not None else d2
+        for d1, d2 in zip(dirs, dirs2)
+    ]
+
+    df = _bin_widths(freqs)
+    total_m0 = sum(e * w for e, w in zip(density, df))
+    if total_m0 <= 0:
+        return []
+
+    smooth = _smooth5(density)
+    peaks = _find_spectral_peaks_v2(freqs, density, sep_freq)
+
+    split_reasons = {}
+
+    # Split at valleys between spectral peaks.
     for p1, p2 in zip(peaks[:-1], peaks[1:]):
         valley = min(range(p1, p2 + 1), key=lambda i: smooth[i])
-        boundaries.append(valley)
-    boundaries.append(len(freqs) - 1)
-    df = _bin_widths(freqs)
+        if 0 <= valley < len(freqs) - 1:
+            split_reasons[valley] = "peak-valley split"
+
+    # Split at swell/wind-sea separation if both sides contain meaningful energy.
+    if sep_freq is not None:
+        sep_candidates = [i for i, f in enumerate(freqs[:-1]) if f <= sep_freq < freqs[i + 1]]
+        if sep_candidates:
+            sep_i = sep_candidates[0]
+            left_m0 = sum(density[i] * df[i] for i in range(0, sep_i + 1))
+            right_m0 = sum(density[i] * df[i] for i in range(sep_i + 1, len(freqs)))
+            if left_m0 / total_m0 >= 0.025 and right_m0 / total_m0 >= 0.025:
+                split_reasons[sep_i] = "NOAA swell/wind separation"
+
+    # Add strong adjacent direction shifts.
+    for split_i, reason in _candidate_direction_splits(freqs, density, effective_dirs, total_m0).items():
+        # Do not overcrowd split points.
+        if all(abs(split_i - existing) > 1 for existing in split_reasons):
+            split_reasons[split_i] = reason
+
+    # Add broad-band direction splits iteratively.
+    for _ in range(2):
+        added = False
+        for start, end in _make_segments_from_splits(len(freqs), split_reasons):
+            candidate = _broad_band_directional_split(start, end, freqs, density, effective_dirs, total_m0)
+            if candidate:
+                split_i, reason = candidate
+                if all(abs(split_i - existing) > 1 for existing in split_reasons):
+                    split_reasons[split_i] = reason
+                    added = True
+        if not added:
+            break
+
+    segments = _make_segments_from_splits(len(freqs), split_reasons)
+
     components = []
-    for i, peak_idx in enumerate(peaks):
-        start = boundaries[i]
-        end = boundaries[i + 1]
+
+    for start, end in segments:
         f_part = freqs[start: end + 1]
         e_part = density[start: end + 1]
         df_part = df[start: end + 1]
-        dir_part = dirs[start: end + 1]
+        dir_part = effective_dirs[start: end + 1]
+        r1_part = r1s[start: end + 1]
+        r2_part = r2s[start: end + 1]
+
         m0 = sum(e * w for e, w in zip(e_part, df_part))
+        energy_pct = (m0 / total_m0) * 100.0 if total_m0 > 0 else 0.0
         hs_m = 4.0 * math.sqrt(max(m0, 0.0))
         hs_ft = hs_m * 3.28084
-        if hs_ft < 0.25:
+
+        # Keep smaller components than before, but screen out tiny/noisy partitions.
+        if hs_ft < 0.20 and energy_pct < 1.0:
             continue
+
+        local_peak_rel = max(range(len(e_part)), key=lambda i: smooth[start + i])
+        peak_idx = start + local_peak_rel
         peak_f = freqs[peak_idx]
         peak_period = 1.0 / peak_f if peak_f else None
+
         weights = [e * w for e, w in zip(e_part, df_part)]
-        mean_dir = _circular_mean_deg(dir_part, weights) if directions else None
+        mean_dir = _circular_mean_deg(dir_part, weights)
+        spread = _directional_spread_deg(dir_part, weights)
+        mean_r1 = _weighted_mean(r1_part, weights)
+        mean_r2 = _weighted_mean(r2_part, weights)
+
+        if sep_freq is not None:
+            comp_type = "swell" if peak_f <= sep_freq else "wind sea"
+        else:
+            comp_type = "swell" if (peak_period and peak_period >= 8.0) else "wind sea"
+
+        boundary_methods = []
+        if start > 0 and (start - 1) in split_reasons:
+            boundary_methods.append(split_reasons[start - 1])
+        if end in split_reasons:
+            boundary_methods.append(split_reasons[end])
+
+        if any("direction" in m.lower() for m in boundary_methods):
+            method = "Direction-assisted split"
+        elif any("NOAA" in m for m in boundary_methods):
+            method = "Swell/wind separation"
+        elif any("peak-valley" in m for m in boundary_methods):
+            method = "Peak + valley"
+        else:
+            method = "Dominant spectral peak"
+
+        # Confidence score based on energy share, direction consistency, and directional moment quality.
+        confidence_score = 0
+        if energy_pct >= 8:
+            confidence_score += 2
+        elif energy_pct >= 2.5:
+            confidence_score += 1
+
+        if spread is not None:
+            if spread <= 35:
+                confidence_score += 2
+            elif spread <= 60:
+                confidence_score += 1
+
+        if mean_r1 is not None:
+            if mean_r1 >= 0.45:
+                confidence_score += 2
+            elif mean_r1 >= 0.25:
+                confidence_score += 1
+
+        if method == "Direction-assisted split":
+            confidence_score += 1
+
+        if confidence_score >= 5:
+            confidence = "High"
+        elif confidence_score >= 3:
+            confidence = "Medium"
+        else:
+            confidence = "Low"
+
         components.append({
             "component": len(components) + 1,
-            "type": "swell" if (peak_period and peak_period >= 8.0) else "wind sea",
+            "type": comp_type,
             "height_ft": round(hs_ft, 1),
             "height_m": round(hs_m, 2),
             "peak_period_sec": round(peak_period, 1) if peak_period else None,
             "peak_frequency_hz": round(peak_f, 4),
             "direction_deg": round(mean_dir) if mean_dir is not None else None,
             "direction_compass": _compass_from_degrees(mean_dir),
-            "energy_m0": round(m0, 4),
+            "energy_m0": round(m0, 5),
+            "energy_percent": round(energy_pct, 1),
             "frequency_min_hz": round(min(f_part), 4),
             "frequency_max_hz": round(max(f_part), 4),
+            "confidence": confidence,
+            "method": method,
+            "directional_spread_deg": round(spread, 1) if spread is not None else None,
+            "mean_r1": round(mean_r1, 2) if mean_r1 is not None else None,
+            "mean_r2": round(mean_r2, 2) if mean_r2 is not None else None,
         })
-    components.sort(key=lambda c: (0 if c["type"] == "swell" else 1, -(c["peak_period_sec"] or 0), -c["height_ft"]))
+
+    # Sort surf-relevant components by swell/wind type, then longer period, then height.
+    components.sort(
+        key=lambda c: (
+            0 if c["type"] == "swell" else 1,
+            -(c["peak_period_sec"] or 0),
+            -c["height_ft"]
+        )
+    )
+
+    # Keep the list readable, but allow more than the old algorithm.
+    components = components[:8]
+
     for idx, c in enumerate(components, start=1):
         c["component"] = idx
+
     return components
 
 def _match_direction_row(density_row: dict, direction_rows: list) -> dict | None:
@@ -1048,39 +1552,109 @@ def _match_direction_row(density_row: dict, direction_rows: list) -> dict | None
 @app.route("/api/ndbc/station/<station_id>/components")
 def api_ndbc_station_components(station_id):
     station_id = station_id.strip().upper()
+
     cached = NDBC_COMPONENT_CACHE.get(station_id)
     if cached and _cache_valid(cached["timestamp"], ttl=10 * 60):
         return jsonify(cached["data"])
-    station_meta = {s["id"]: s for s in get_live_ndbc_wave_stations()}.get(station_id, {"id": station_id, "name": station_id})
+
+    station_meta = {
+        s["id"]: s for s in get_live_ndbc_wave_stations()
+    }.get(station_id, {"id": station_id, "name": station_id})
+
     try:
         density_text = _fetch_text(f"{NDBC_REALTIME_DIR}{station_id}.data_spec")
     except Exception as exc:
         return jsonify({"station": station_id, "error": f"NDBC file not available: {exc}"}), 404
-    try:
-        direction_text = _fetch_text(f"{NDBC_REALTIME_DIR}{station_id}.swdir")
-    except Exception:
-        direction_text = None
+
+    # Directional moments. These are optional because not every station has every file.
+    optional_files = {}
+    for key, suffix in {
+        "swdir": "swdir",
+        "swdir2": "swdir2",
+        "swr1": "swr1",
+        "swr2": "swr2",
+        "spec": "spec",
+    }.items():
+        try:
+            optional_files[key] = _fetch_text(f"{NDBC_REALTIME_DIR}{station_id}.{suffix}", timeout=20)
+        except Exception:
+            optional_files[key] = None
+
     density_rows = _parse_ndbc_spectral_file(density_text)
+
     if not density_rows:
         return jsonify({"station": station_id, "error": "No spectral rows parsed"}), 404
+
     density_row = _latest_spectral_row(density_rows)
-    direction_rows = _parse_ndbc_spectral_file(direction_text) if direction_text else []
-    direction_row = _match_direction_row(density_row, direction_rows) if direction_rows else None
+
+    def latest_matching_row(file_key: str) -> dict | None:
+        rows = _parse_ndbc_spectral_file(optional_files.get(file_key)) if optional_files.get(file_key) else []
+        return _match_direction_row(density_row, rows) if rows else None
+
+    swdir_row = latest_matching_row("swdir")
+    swdir2_row = latest_matching_row("swdir2")
+    swr1_row = latest_matching_row("swr1")
+    swr2_row = latest_matching_row("swr2")
+
+    summary_rows = _parse_ndbc_spec_summary_rows(optional_files.get("spec") or "")
+    summary_row = None
+
+    for row in summary_rows:
+        if row["timestamp_utc"] == density_row["timestamp_utc"]:
+            summary_row = row
+            break
+
+    if summary_row is None and summary_rows:
+        summary_row = summary_rows[0]
+
+    sep_freq, sep_source = _estimate_separation_frequency(summary_row)
+
     freqs = density_row["freqs"]
     density_vals = density_row["values"]
-    directions = None
-    if direction_row:
-        direction_by_freq = {round(f, 5): v for f, v in zip(direction_row["freqs"], direction_row["values"])}
-        directions = [direction_by_freq.get(round(f, 5)) for f in freqs]
-    components = _partition_spectrum(freqs, density_vals, directions)
+
+    directions = _align_spectral_values(swdir_row, freqs)
+    directions2 = _align_spectral_values(swdir2_row, freqs)
+    r1_values = _align_spectral_values(swr1_row, freqs)
+    r2_values = _align_spectral_values(swr2_row, freqs)
+
+    # If the main direction file is missing, fall back to the second direction file.
+    if not any(v is not None for v in directions):
+        directions = directions2
+
+    components = _partition_spectrum_v2(
+        freqs,
+        density_vals,
+        directions=directions,
+        directions2=directions2,
+        r1_values=r1_values,
+        r2_values=r2_values,
+        sep_freq=sep_freq,
+    )
+
     df = _bin_widths(freqs)
     total_m0 = sum(e * w for e, w in zip(density_vals, df))
     total_hs_m = 4.0 * math.sqrt(max(total_m0, 0.0))
+
     try:
-        HST = pytz.timezone("Pacific/Honolulu")
-        timestamp_hst = density_row["timestamp_utc"].astimezone(HST).strftime("%Y-%m-%d %I:%M %p HST")
+        hst = pytz.timezone("Pacific/Honolulu")
+        timestamp_hst = density_row["timestamp_utc"].astimezone(hst).strftime("%Y-%m-%d %I:%M %p HST")
     except Exception:
         timestamp_hst = None
+
+    noaa_summary = None
+    if summary_row:
+        noaa_summary = {
+            "wvht_ft": round(summary_row["wvht_m"] * 3.28084, 1) if summary_row.get("wvht_m") is not None else None,
+            "swh_ft": round(summary_row["swh_m"] * 3.28084, 1) if summary_row.get("swh_m") is not None else None,
+            "swp_sec": summary_row.get("swp_sec"),
+            "swd": summary_row.get("swd"),
+            "wwh_ft": round(summary_row["wwh_m"] * 3.28084, 1) if summary_row.get("wwh_m") is not None else None,
+            "wwp_sec": summary_row.get("wwp_sec"),
+            "wwd": summary_row.get("wwd"),
+            "steepness": summary_row.get("steepness"),
+            "apd_sec": summary_row.get("apd_sec"),
+        }
+
     result = {
         "station": station_id,
         "name": station_meta.get("name", station_id),
@@ -1090,16 +1664,31 @@ def api_ndbc_station_components(station_id):
         "timestamp_hst": timestamp_hst,
         "total_height_ft": round(total_hs_m * 3.28084, 1),
         "total_height_m": round(total_hs_m, 2),
+        "sep_frequency_hz": round(sep_freq, 4) if sep_freq else None,
+        "sep_period_sec": round(1.0 / sep_freq, 1) if sep_freq else None,
+        "separation_source": sep_source,
+        "algorithm": "direction-assisted spectral partition v2",
+        "algorithm_note": (
+            "Experimental components are derived from NDBC spectral density plus directional moment files "
+            "(.swdir, .swdir2, .swr1, .swr2). They may reveal additional wave systems beyond NOAA's simplified "
+            "swell/wind-wave summary and are not intended to exactly duplicate NOAA SwH/SwP/WWH/WWP."
+        ),
+        "noaa_summary": noaa_summary,
         "components": components,
         "spectrum": [
             {
                 "frequency_hz": round(f, 4),
                 "period_sec": round(1.0 / f, 2) if f else None,
-                "density_m2_per_hz": round(e, 5)
+                "density_m2_per_hz": round(e, 5),
+                "direction_deg": round(directions[i]) if i < len(directions) and directions[i] is not None else None,
+                "direction2_deg": round(directions2[i]) if i < len(directions2) and directions2[i] is not None else None,
+                "r1": round(r1_values[i], 3) if i < len(r1_values) and r1_values[i] is not None else None,
+                "r2": round(r2_values[i], 3) if i < len(r2_values) and r2_values[i] is not None else None,
             }
-            for f, e in zip(freqs, density_vals)
+            for i, (f, e) in enumerate(zip(freqs, density_vals))
         ]
     }
+
     NDBC_COMPONENT_CACHE[station_id] = {"timestamp": time.time(), "data": result}
     return jsonify(result)
 

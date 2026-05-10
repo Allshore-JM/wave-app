@@ -590,11 +590,9 @@
       refreshWrappedMarkerCopies(false);
     }
 
-    map.on('moveend', handleMapMoveEnd);
-    map.on('zoomend', clampMapLatitude);
-
-    window.addEventListener('resize', enforceSingleWorld);
-    enforceSingleWorld();
+    // Map movement, resize handling, and initial view are wired up after
+    // wrapped marker helpers are defined. This avoids calling marker-copy
+    // functions before their state variables are initialized.
 
     // ---------------- Wrapped marker handling ----------------
     // Leaflet tiles wrap horizontally, but markers do not. These helpers rebuild
@@ -1084,6 +1082,13 @@
         });
       });
     }
+
+    // Wire map movement after all wrapped-marker state and rebuild functions exist.
+    map.on('moveend', handleMapMoveEnd);
+    map.on('zoomend', clampMapLatitude);
+
+    window.addEventListener('resize', enforceSingleWorld);
+    enforceSingleWorld();
 
     function addLiveNdbcBuoyLayer() {
       fetch('/api/ndbc/live-wave-stations')

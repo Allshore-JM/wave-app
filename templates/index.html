@@ -781,6 +781,53 @@ function createLiveBuoyIcon(isActive = false) {
   });
 }
 
+function renderNoaaWaveSummary(data) {
+  const latest = data.latest || {};
+
+  document.getElementById('noaaWvht').textContent =
+    latest.wvht || '—';
+
+  document.getElementById('noaaSwell').textContent =
+    `${latest.swh || '—'} @ ${latest.swp || '—'} ${latest.swd || ''}`;
+
+  document.getElementById('noaaWindWave').textContent =
+    `${latest.wwh || '—'} @ ${latest.wwp || '—'} ${latest.wwd || ''}`;
+
+  document.getElementById('noaaWaveSummaryAsOf').textContent =
+    `${data.title || data.station} | ${data.as_of_local || ''} ${data.as_of_gmt || ''}`;
+
+  const tbody = document.getElementById('noaaWaveSummaryRows');
+  tbody.innerHTML = '';
+
+  const rows = data.rows || [];
+
+  if (!rows.length) {
+    tbody.innerHTML =
+      '<tr><td colspan="11" class="text-muted">No NOAA wave summary rows parsed.</td></tr>';
+    return;
+  }
+
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+
+    tr.innerHTML = `
+      <td>${r.date || ''}</td>
+      <td>${r.time || ''}</td>
+      <td>${r.wvht || ''}</td>
+      <td>${r.swh || ''}</td>
+      <td>${r.swp || ''}</td>
+      <td>${r.swd || ''}</td>
+      <td>${r.wwh || ''}</td>
+      <td>${r.wwp || ''}</td>
+      <td>${r.wwd || ''}</td>
+      <td>${r.steepness || ''}</td>
+      <td>${r.apd || ''}</td>
+    `;
+
+    tbody.appendChild(tr);
+  });
+}
+    
 function addLiveNdbcBuoyLayer() {
   fetch('/api/ndbc/live-wave-stations')
     .then(r => r.json())

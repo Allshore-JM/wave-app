@@ -137,8 +137,8 @@
 
     .live-buoy-dot {
       display: block;
-      width: 9px;
-      height: 9px;
+      width: 11px;
+      height: 11px;
       border-radius: 50%;
       background: #00E5FF;
       border: 2px solid #ffffff;
@@ -377,6 +377,7 @@
   <script>
     // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
+    const layerVisibilityKey = 'mapLayerVisibility';
 
     // Web Mercator practical latitude limits.
     // Longitude is intentionally not bounded so the map can scroll continuously east/west.
@@ -395,6 +396,31 @@
     const WORLD_TILE_SIZE = 256;
     const MIN_ZOOM_PADDING_PX = 2;
     let MIN_MAP_ZOOM = 1;
+
+    function loadLayerVisibility() {
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(layerVisibilityKey));
+
+        if (saved && typeof saved === 'object') {
+          return {
+            forecast: saved.forecast !== false,
+            live: saved.live !== false
+          };
+        }
+      } catch(e) {}
+
+      return { forecast: true, live: true };
+    }
+
+    function saveLayerVisibility() {
+      sessionStorage.setItem(
+        layerVisibilityKey,
+        JSON.stringify({
+          forecast: map.hasLayer(forecastLayer),
+          live: map.hasLayer(liveBuoyLayer)
+        })
+      );
+    }
 
     function saveMapView(map) {
       const v = { c: map.getCenter(), z: map.getZoom() };
@@ -425,7 +451,7 @@
     // ---- Leaflet Map ----
     // No maxBounds here. Latitude is clamped manually; longitude wraps continuously.
     const map = L.map('map', {
-      worldCopyJump: true,
+      worldCopyJump: false,
       zoomControl: true,
       minZoom: 1,
       maxZoom: MAX_MAP_ZOOM,
@@ -437,8 +463,17 @@
       wheelPxPerZoomLevel: 80
     });
 
-    const forecastLayer = L.layerGroup().addTo(map);
-    const liveBuoyLayer = L.layerGroup().addTo(map);
+    const initialLayerVisibility = loadLayerVisibility();
+    const forecastLayer = L.layerGroup();
+    const liveBuoyLayer = L.layerGroup();
+
+    if (initialLayerVisibility.forecast) {
+      forecastLayer.addTo(map);
+    }
+
+    if (initialLayerVisibility.live) {
+      liveBuoyLayer.addTo(map);
+    }
 
     L.control.layers(
       null,
@@ -450,6 +485,9 @@
         collapsed: false
       }
     ).addTo(map);
+
+    map.on('overlayadd', saveLayerVisibility);
+    map.on('overlayremove', saveLayerVisibility);
 
     // Esri imagery.
     // noWrap:false allows horizontal world wrapping, which prevents grey side areas
@@ -515,6 +553,7 @@
       }
 
       clampMapLatitude();
+      refreshWrappedMarkerCopies(true);
     }
 
     // Prevent north/south dragging into grey polar tile areas,
@@ -546,42 +585,104 @@
       }
     }
 
-    map.on('moveend', clampMapLatitude);
+    function handleMapMoveEnd() {
+      clampMapLatitude();
+      refreshWrappedMarkerCopies(false);
+    }
+
+    map.on('moveend', handleMapMoveEnd);
     map.on('zoomend', clampMapLatitude);
 
     window.addEventListener('resize', enforceSingleWorld);
     enforceSingleWorld();
 
-    // Plot stations
-    fetch('/stations.json')
-      .then(r => r.json())
-      .then(stations => {
-        stations.forEach(s => {
-          const mk = L.circleMarker([s.lat, s.lon], {
+    // ---------------- Wrapped marker handling ----------------
+    // Leaflet tiles wrap horizontally, but markers do not. These helpers rebuild
+    // marker copies around the currently viewed world so forecast and live buoys
+    // remain visible while scrolling continuously east/west.
+
+    let forecastStationsData = [];
+    let liveStationsData = [];
+    let markerWorldOffset = 0;
+
+    function currentWorldOffset() {
+      return Math.round(map.getCenter().lng / 360) * 360;
+    }
+
+    function wrappedLongitudes(baseLon) {
+      const lon = Number(baseLon);
+      const offset = currentWorldOffset();
+
+      if (!Number.isFinite(lon)) {
+        return [];
+      }
+
+      return [lon + offset - 360, lon + offset, lon + offset + 360];
+    }
+
+    function refreshWrappedMarkerCopies(force = false) {
+      const newOffset = currentWorldOffset();
+
+      if (!force && newOffset === markerWorldOffset) {
+        return;
+      }
+
+      markerWorldOffset = newOffset;
+      rebuildForecastMarkers();
+      rebuildLiveBuoyMarkers();
+    }
+
+    function rebuildForecastMarkers() {
+      forecastLayer.clearLayers();
+
+      forecastStationsData.forEach(s => {
+        wrappedLongitudes(s.lon).forEach(lng => {
+          const mk = L.circleMarker([s.lat, lng], {
             radius: 3,
             color: '#FFD600',
             fillColor: '#FFD600',
             fillOpacity: 1,
             weight: 1
           }).addTo(forecastLayer);
-          mk.bindTooltip(s.id, {permanent: false, direction: 'top', offset: [0, -2]});
+
+          mk.bindTooltip(s.id, {
+            permanent: false,
+            direction: 'top',
+            offset: [0, -2]
+          });
+
           mk.on('click', () => {
             document.getElementById('station').value = s.id;
-            // default to (Buoy Local) on station pick so we use that buoy's own timezone
+
+            // Default to (Buoy Local) on station pick so we use that buoy's own timezone.
             const tzSel = document.getElementById('tz');
             if (tzSel) { tzSel.value = ''; }
+
             saveMapView(map);
+            saveLayerVisibility();
             document.getElementById('controlForm').submit();
           });
         });
       });
+    }
 
-    document.getElementById('controlForm').addEventListener('submit', () => saveMapView(map));
+    // Plot forecast stations
+    fetch('/stations.json')
+      .then(r => r.json())
+      .then(stations => {
+        forecastStationsData = stations || [];
+        rebuildForecastMarkers();
+      });
 
-        // ---------------- Live NDBC buoy layer ----------------
+    document.getElementById('controlForm').addEventListener('submit', () => {
+      saveMapView(map);
+      saveLayerVisibility();
+    });
+
+    // ---------------- Live NDBC buoy layer ----------------
 
     let liveSpectrumChart = null;
-    let activeLiveBuoyMarker = null;
+    let activeLiveBuoyId = null;
     let lastNoaaWaveSummaryData = null;
     let lastLiveComponentData = null;
 
@@ -697,7 +798,6 @@
 
     function renderLiveSpectrumChart(data) {
       const canvas = document.getElementById('liveSpectrumChart');
-
       if (!canvas) return;
 
       const ctx = canvas.getContext('2d');
@@ -882,43 +982,42 @@
 
     async function loadLiveBuoyDetails(station) {
       showLiveBuoyPanelLoading(station);
-    
+
       try {
         const summaryResponse = await fetch(
           '/api/ndbc/station/' + encodeURIComponent(station.id) + '/wave-summary'
         );
-    
+
         const summaryData = await summaryResponse.json();
-    
+
         if (!summaryResponse.ok || summaryData.error) {
           throw new Error(summaryData.error || 'Unable to load NOAA wave summary.');
         }
-    
+
         renderNoaaWaveSummary(summaryData);
-    
+
         try {
           const componentResponse = await fetch(
             '/api/ndbc/station/' + encodeURIComponent(station.id) + '/components'
           );
-    
+
           const componentData = await componentResponse.json();
-    
+
           if (componentResponse.ok && !componentData.error) {
             renderLiveBuoyDetails(componentData);
           }
         } catch (componentErr) {
           console.warn('Experimental spectral component load failed:', componentErr);
         }
-    
+
         document.getElementById('liveBuoyLoading').style.display = 'none';
         document.getElementById('liveBuoyError').classList.add('d-none');
         document.getElementById('liveBuoyContent').classList.remove('d-none');
-    
+
       } catch (err) {
         showLiveBuoyError(err.message);
       }
     }
-
 
     const unitSelect = document.getElementById('unit');
 
@@ -935,8 +1034,8 @@
     }
 
     function createLiveBuoyIcon(isActive = false) {
-      const size = isActive ? 13 : 9;
-      const centerOffsetPx = isActive ? 5 : 4;
+      const size = isActive ? 15 : 11;
+      const centerOffsetPx = isActive ? 8 : 7;
       const anchorX = Math.round((size / 2) - centerOffsetPx);
 
       return L.divIcon({
@@ -952,49 +1051,54 @@
         `,
         iconSize: [size, size],
 
-        // Places the live buoy about 4–5 px right of the actual coordinate.
-        // Close enough to visually pair with the forecast buoy, but still selectable.
+        // Places the live buoy about 7–8 px right of the actual coordinate.
+        // Close enough to visually pair with the forecast buoy, but separated enough to click.
         iconAnchor: [anchorX, Math.round(size / 2)]
       });
     }
 
-function addLiveNdbcBuoyLayer() {
-  fetch('/api/ndbc/live-wave-stations')
-    .then(r => r.json())
-    .then(stations => {
-      stations.forEach(s => {
-        const marker = L.marker([s.lat, s.lon], {
-          icon: createLiveBuoyIcon(false),
-          title: 'Live ' + s.id,
-          zIndexOffset: 500
-        }).addTo(liveBuoyLayer);
+    function rebuildLiveBuoyMarkers() {
+      liveBuoyLayer.clearLayers();
 
-        marker.bindTooltip('Live ' + s.id, {
-          permanent: false,
-          direction: 'top',
-          offset: [10, -2]
-        });
+      liveStationsData.forEach(s => {
+        wrappedLongitudes(s.lon).forEach(lng => {
+          const marker = L.marker([s.lat, lng], {
+            icon: createLiveBuoyIcon(s.id === activeLiveBuoyId),
+            title: 'Live ' + s.id,
+            zIndexOffset: 500
+          }).addTo(liveBuoyLayer);
 
-        marker.on('click', () => {
-          if (activeLiveBuoyMarker) {
-            activeLiveBuoyMarker.setIcon(createLiveBuoyIcon(false));
-          }
+          marker.bindTooltip('Live ' + s.id, {
+            permanent: false,
+            direction: 'top',
+            offset: [12, -2]
+          });
 
-          marker.setIcon(createLiveBuoyIcon(true));
-          activeLiveBuoyMarker = marker;
-
-          saveMapView(map);
-          loadLiveBuoyDetails(s);
+          marker.on('click', () => {
+            activeLiveBuoyId = s.id;
+            rebuildLiveBuoyMarkers();
+            saveMapView(map);
+            saveLayerVisibility();
+            loadLiveBuoyDetails(s);
+          });
         });
       });
-    })
-    .catch(err => {
-      console.warn('Could not load live NDBC buoy layer:', err);
-    });
-}
+    }
+
+    function addLiveNdbcBuoyLayer() {
+      fetch('/api/ndbc/live-wave-stations')
+        .then(r => r.json())
+        .then(stations => {
+          liveStationsData = stations || [];
+          rebuildLiveBuoyMarkers();
+        })
+        .catch(err => {
+          console.warn('Could not load live NDBC buoy layer:', err);
+        });
+    }
 
     addLiveNdbcBuoyLayer();
-    
+
     {% if selected_view == 'Graph' and graph_data %}
     // ---- Charting ----
     const GD = {{ graph_data|tojson|safe }};

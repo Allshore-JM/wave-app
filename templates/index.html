@@ -782,6 +782,23 @@
       return Math.round(n).toString();
     }
 
+    function formatComponentPeriodValue(value) {
+      const n = Number(value);
+
+      if (!Number.isFinite(n)) {
+        return '—';
+      }
+
+      // Keep actual spectrum bin values, but avoid unnecessary trailing zeros.
+      const rounded = Math.round(n * 10) / 10;
+
+      if (Math.abs(rounded - Math.round(rounded)) < 0.05) {
+        return Math.round(rounded).toString();
+      }
+
+      return rounded.toFixed(1);
+    }
+
     function periodFromFrequencyHz(freq) {
       const f = Number(freq);
 
@@ -792,7 +809,7 @@
       return 1 / f;
     }
 
-    function componentPeriodRange(c) {
+    function componentPeriodRange(c, spectrum) {
       const fMin = Number(c.frequency_min_hz);
       const fMax = Number(c.frequency_max_hz);
 
@@ -800,11 +817,35 @@
         return '—';
       }
 
-      // Low frequency = long period. Display high period to low period.
-      const highPeriod = periodFromFrequencyHz(Math.min(fMin, fMax));
-      const lowPeriod = periodFromFrequencyHz(Math.max(fMin, fMax));
+      const lowFreq = Math.min(fMin, fMax);
+      const highFreq = Math.max(fMin, fMax);
+      const tolerance = 0.0008;
 
-      return `${formatWholePeriod(highPeriod)}–${formatWholePeriod(lowPeriod)} s`;
+      // Use only actual spectrum bins inside the component frequency range.
+      // This avoids displaying period values that are not present in the spectrum.
+      const periods = (spectrum || [])
+        .filter(p => {
+          const f = Number(p.frequency_hz);
+          return Number.isFinite(f) && f >= (lowFreq - tolerance) && f <= (highFreq + tolerance);
+        })
+        .map(p => Number(p.period_sec))
+        .filter(p => Number.isFinite(p) && p > 0);
+
+      if (!periods.length) {
+        const highPeriodFallback = periodFromFrequencyHz(lowFreq);
+        const lowPeriodFallback = periodFromFrequencyHz(highFreq);
+
+        if (!highPeriodFallback || !lowPeriodFallback) {
+          return '—';
+        }
+
+        return `${formatComponentPeriodValue(highPeriodFallback)}–${formatComponentPeriodValue(lowPeriodFallback)} s`;
+      }
+
+      const highPeriod = Math.max(...periods);
+      const lowPeriod = Math.min(...periods);
+
+      return `${formatComponentPeriodValue(highPeriod)}–${formatComponentPeriodValue(lowPeriod)} s`;
     }
 
     function renderLiveBuoyComponentCards(data, useMetric) {
@@ -835,7 +876,7 @@
           <div class="component-type">${componentTypeLabel(c.type)}</div>
           <div class="component-main">${height} @ ${c.peak_period_sec ?? '—'} s</div>
           <div class="component-detail">${dir}</div>
-          <div class="component-detail">${componentPeriodRange(c)}</div>
+          <div class="component-detail">${componentPeriodRange(c, data.spectrum)}</div>
           <div class="component-meta">
             <span class="component-badge">${energy}</span>
             ${spread ? `<span class="component-badge">${spread}</span>` : ''}
@@ -877,7 +918,7 @@
           <td>${c.peak_period_sec ?? '—'} s</td>
           <td>${dir}</td>
           <td>${energy}</td>
-          <td>${componentPeriodRange(c)}</td>
+          <td>${componentPeriodRange(c, data.spectrum)}</td>
           <td>${spread}</td>
         `;
 
@@ -895,17 +936,31 @@
         liveSpectrumChart.destroy();
       }
 
+      // Plot using frequency as the actual x-value so the curve spacing matches the NOAA spectral plot.
+      // The axis labels are converted to period-only labels.
       const spectrum = (data.spectrum || [])
-        .filter(p => Number.isFinite(Number(p.period_sec)) && Number.isFinite(Number(p.density_m2_per_hz)))
-        .sort((a, b) => Number(b.period_sec) - Number(a.period_sec)); // high period at left, low period at right
+        .filter(p => Number.isFinite(Number(p.frequency_hz)) && Number.isFinite(Number(p.density_m2_per_hz)))
+        .sort((a, b) => Number(a.frequency_hz) - Number(b.frequency_hz)); // low frequency/high period on the left
+
+      const periodAxisTicks = [40, 20, 15, 10, 9, 8, 7, 6, 5, 4, 3, 2];
+      const periodTickValues = periodAxisTicks.map(period => ({
+        period,
+        value: 1 / period
+      }));
+
+      const xValues = spectrum.map(p => Number(p.frequency_hz));
+      const xMin = xValues.length ? Math.min(...xValues) : 0.025;
+      const xMax = xValues.length ? Math.max(...xValues) : 0.58;
 
       liveSpectrumChart = new Chart(ctx, {
         type: 'line',
         data: {
-          labels: spectrum.map(p => formatWholePeriod(p.period_sec)),
           datasets: [{
             label: 'Spectral density',
-            data: spectrum.map(p => Number(p.density_m2_per_hz)),
+            data: spectrum.map(p => ({
+              x: Number(p.frequency_hz),
+              y: Number(p.density_m2_per_hz)
+            })),
             showLine: true,
             pointRadius: 2,
             borderWidth: 2,
@@ -916,6 +971,7 @@
           responsive: true,
           maintainAspectRatio: false,
           animation: false,
+          parsing: false,
           plugins: {
             legend: {
               display: false
@@ -925,8 +981,7 @@
                 title: items => {
                   const i = items[0].dataIndex;
                   const p = spectrum[i] || {};
-                  const period = formatWholePeriod(p.period_sec);
-                  return `${period} sec / ${p.frequency_hz} Hz`;
+                  return `${formatComponentPeriodValue(p.period_sec)} sec`;
                 },
                 label: item => {
                   const i = item.dataIndex;
@@ -952,10 +1007,27 @@
           },
           scales: {
             x: {
-              reverse: false,
+              type: 'linear',
+              min: xMin,
+              max: xMax,
+              afterBuildTicks: scale => {
+                scale.ticks = periodTickValues
+                  .filter(t => t.value >= scale.min && t.value <= scale.max)
+                  .map(t => ({
+                    value: t.value,
+                    period: t.period
+                  }));
+              },
+              grid: {
+                display: true
+              },
               ticks: {
-                autoSkip: true,
-                maxTicksLimit: 18
+                autoSkip: false,
+                maxRotation: 0,
+                minRotation: 0,
+                callback: function(value, index, ticks) {
+                  return ticks[index]?.period?.toString() || '';
+                }
               },
               title: {
                 display: true,

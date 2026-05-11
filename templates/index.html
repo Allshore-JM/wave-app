@@ -399,7 +399,7 @@
                   <th>Peak Period</th>
                   <th>Direction</th>
                   <th>Energy</th>
-                  <th>Frequency Range</th>
+                  <th>Period Range</th>
                   <th>Spread</th>
                 </tr>
               </thead>
@@ -772,6 +772,41 @@
       return type === 'wind sea' ? 'Wind Sea' : 'Swell';
     }
 
+    function formatWholePeriod(value) {
+      const n = Number(value);
+
+      if (!Number.isFinite(n)) {
+        return '—';
+      }
+
+      return Math.round(n).toString();
+    }
+
+    function periodFromFrequencyHz(freq) {
+      const f = Number(freq);
+
+      if (!Number.isFinite(f) || f <= 0) {
+        return null;
+      }
+
+      return 1 / f;
+    }
+
+    function componentPeriodRange(c) {
+      const fMin = Number(c.frequency_min_hz);
+      const fMax = Number(c.frequency_max_hz);
+
+      if (!Number.isFinite(fMin) || !Number.isFinite(fMax) || fMin <= 0 || fMax <= 0) {
+        return '—';
+      }
+
+      // Low frequency = long period. Display high period to low period.
+      const highPeriod = periodFromFrequencyHz(Math.min(fMin, fMax));
+      const lowPeriod = periodFromFrequencyHz(Math.max(fMin, fMax));
+
+      return `${formatWholePeriod(highPeriod)}–${formatWholePeriod(lowPeriod)} s`;
+    }
+
     function renderLiveBuoyComponentCards(data, useMetric) {
       const wrap = document.getElementById('liveBuoyComponentCards');
       wrap.innerHTML = '';
@@ -800,7 +835,7 @@
           <div class="component-type">${componentTypeLabel(c.type)}</div>
           <div class="component-main">${height} @ ${c.peak_period_sec ?? '—'} s</div>
           <div class="component-detail">${dir}</div>
-          <div class="component-detail">${c.frequency_min_hz ?? '—'}–${c.frequency_max_hz ?? '—'} Hz</div>
+          <div class="component-detail">${componentPeriodRange(c)}</div>
           <div class="component-meta">
             <span class="component-badge">${energy}</span>
             ${spread ? `<span class="component-badge">${spread}</span>` : ''}
@@ -842,7 +877,7 @@
           <td>${c.peak_period_sec ?? '—'} s</td>
           <td>${dir}</td>
           <td>${energy}</td>
-          <td>${c.frequency_min_hz ?? '—'}–${c.frequency_max_hz ?? '—'} Hz</td>
+          <td>${componentPeriodRange(c)}</td>
           <td>${spread}</td>
         `;
 
@@ -860,15 +895,17 @@
         liveSpectrumChart.destroy();
       }
 
-      const spectrum = data.spectrum || [];
+      const spectrum = (data.spectrum || [])
+        .filter(p => Number.isFinite(Number(p.period_sec)) && Number.isFinite(Number(p.density_m2_per_hz)))
+        .sort((a, b) => Number(b.period_sec) - Number(a.period_sec)); // high period at left, low period at right
 
       liveSpectrumChart = new Chart(ctx, {
         type: 'line',
         data: {
-          labels: spectrum.map(p => p.period_sec),
+          labels: spectrum.map(p => formatWholePeriod(p.period_sec)),
           datasets: [{
             label: 'Spectral density',
-            data: spectrum.map(p => p.density_m2_per_hz),
+            data: spectrum.map(p => Number(p.density_m2_per_hz)),
             showLine: true,
             pointRadius: 2,
             borderWidth: 2,
@@ -887,8 +924,9 @@
               callbacks: {
                 title: items => {
                   const i = items[0].dataIndex;
-                  const p = spectrum[i];
-                  return `${p.period_sec} sec / ${p.frequency_hz} Hz`;
+                  const p = spectrum[i] || {};
+                  const period = formatWholePeriod(p.period_sec);
+                  return `${period} sec / ${p.frequency_hz} Hz`;
                 },
                 label: item => {
                   const i = item.dataIndex;
@@ -914,7 +952,11 @@
           },
           scales: {
             x: {
-              reverse: true,
+              reverse: false,
+              ticks: {
+                autoSkip: true,
+                maxTicksLimit: 18
+              },
               title: {
                 display: true,
                 text: 'Period, seconds'

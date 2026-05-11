@@ -822,24 +822,50 @@
       const tolerance = 0.0008;
 
       // Use only actual spectrum bins inside the component frequency range.
-      // This avoids displaying period values that are not present in the spectrum.
-      const periods = (spectrum || [])
+      const binsInComponent = (spectrum || [])
         .filter(p => {
           const f = Number(p.frequency_hz);
-          return Number.isFinite(f) && f >= (lowFreq - tolerance) && f <= (highFreq + tolerance);
-        })
+          const e = Number(p.density_m2_per_hz);
+          return (
+            Number.isFinite(f) &&
+            Number.isFinite(e) &&
+            f >= (lowFreq - tolerance) &&
+            f <= (highFreq + tolerance)
+          );
+        });
+
+      if (!binsInComponent.length) {
+        return '—';
+      }
+
+      const maxDensity = Math.max(...binsInComponent.map(p => Number(p.density_m2_per_hz)));
+
+      if (!Number.isFinite(maxDensity) || maxDensity <= 0) {
+        return '—';
+      }
+
+      // Trim near-zero tails. NDBC spectral files often contain tiny nonzero values
+      // at very long/short periods that are not meaningful for a component range.
+      // The displayed range should cover bins with real detectable energy.
+      const densityThreshold = Math.max(maxDensity * 0.02, 0.01);
+
+      let activeBins = binsInComponent.filter(p => Number(p.density_m2_per_hz) >= densityThreshold);
+
+      // If a very weak component would be over-trimmed, fall back to strictly positive bins.
+      if (!activeBins.length) {
+        activeBins = binsInComponent.filter(p => Number(p.density_m2_per_hz) > 0);
+      }
+
+      if (!activeBins.length) {
+        return '—';
+      }
+
+      const periods = activeBins
         .map(p => Number(p.period_sec))
         .filter(p => Number.isFinite(p) && p > 0);
 
       if (!periods.length) {
-        const highPeriodFallback = periodFromFrequencyHz(lowFreq);
-        const lowPeriodFallback = periodFromFrequencyHz(highFreq);
-
-        if (!highPeriodFallback || !lowPeriodFallback) {
-          return '—';
-        }
-
-        return `${formatComponentPeriodValue(highPeriodFallback)}–${formatComponentPeriodValue(lowPeriodFallback)} s`;
+        return '—';
       }
 
       const highPeriod = Math.max(...periods);

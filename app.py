@@ -3,6 +3,9 @@ import requests
 import json
 import os
 from datetime import datetime, timedelta
+from buoy_sources.routes import register_live_buoy_routes
+app = Flask(__name__)
+register_live_buoy_routes(app)
 import pytz
 # TimezoneFinder is imported lazily to avoid heavy startup cost on Render.
 from calendar import monthrange

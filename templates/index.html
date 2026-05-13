@@ -508,6 +508,8 @@
       wheelPxPerZoomLevel: 80
     });
 
+    window.allshoreMap = map;
+    
     const initialLayerVisibility = loadLayerVisibility();
     const forecastLayer = L.layerGroup();
     const liveBuoyLayer = L.layerGroup();
@@ -1711,5 +1713,6 @@
   
     {% endif %}
   </script>
+  <script src="{{ url_for('static', filename='global_live_buoys.js') }}"></script>
 </body>
 </html>

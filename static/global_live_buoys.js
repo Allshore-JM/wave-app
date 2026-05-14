@@ -2,7 +2,7 @@
   "use strict";
 
   const FT_PER_M = 3.280839895;
-  const API_URL = "/api/live-buoys/global?max_age_hours=120";
+  const API_URL = "/api/live-buoys/global?sources=ndbc,ireland,canada&max_age_hours=120";
 
   let allBuoys = [];
   let enabledSources = new Set();
@@ -283,23 +283,47 @@
 
   async function loadGlobalBuoys() {
     setStatus("Loading global live buoys...");
-
+  
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+  
     try {
-      const response = await fetch(API_URL, { cache: "no-store" });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
+      const response = await fetch(API_URL, {
+        cache: "no-store",
+        signal: controller.signal
+      });
+  
+      clearTimeout(timeoutId);
+  
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+  
       const payload = await response.json();
-
+  
       allBuoys = Array.isArray(payload.buoys) ? payload.buoys : [];
-
+  
       renderSourceFilters();
       rebuildMarkers();
-
+  
       const errorCount = Array.isArray(payload.errors) ? payload.errors.length : 0;
-      const msg = `${allBuoys.length} public buoys loaded${errorCount ? ` · ${errorCount} source issue(s)` : ""}`;
+      const loadedSources = Array.isArray(payload.sources_loaded)
+        ? payload.sources_loaded.join(", ")
+        : "unknown sources";
+  
+      const msg =
+        `${allBuoys.length} public buoys loaded from ${loadedSources}` +
+        (errorCount ? ` · ${errorCount} source issue(s)` : "");
+  
       setStatus(msg);
     } catch (err) {
-      setStatus(`Global buoy load failed: ${err.message || err}`);
+      clearTimeout(timeoutId);
+  
+      if (err.name === "AbortError") {
+        setStatus("Global buoy request timed out after 25 seconds.");
+      } else {
+        setStatus(`Global buoy load failed: ${err.message || err}`);
+      }
     }
   }
 

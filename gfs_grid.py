@@ -96,8 +96,13 @@ def _cache_get(key: str) -> Any | None:
         return entry["value"]
 
 
+MAX_CACHE_ENTRIES = 30
+
 def _cache_set(key: str, value: Any) -> None:
     with _CACHE_LOCK:
+        if len(_CACHE) >= MAX_CACHE_ENTRIES:
+            oldest_key = min(_CACHE, key=lambda k: _CACHE[k]["ts"])
+            del _CACHE[oldest_key]
         _CACHE[key] = {"ts": time.time(), "value": value}
 
 

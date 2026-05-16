@@ -1,13 +1,13 @@
 /**
- * gfs_overlay.js  v5.2
+ * gfs_overlay.js  v5.3
  *
- * GFS wave-height / swell-period / wind overlays with land mask
- * and particle animation on all three layers.
+ * GFS wave-height / swell-period / wind overlays with particle animation.
+ * No explicit land mask — semi-transparent rendering lets the satellite
+ * base map show coastlines naturally (Windy-style approach).
  *
- * v5.2: Particle animation on waves and period (from DIRPW).
- *       Strict null masking — no bleed past model coastline.
- *       Custom panes:  gfsData(420) < gfsParticles(440) < landMask(450)
- *                                                       < forecastPoints(460)
+ * v5.3: Memory-safe 1° resolution for Render 512MB free tier.
+ *       Strict null masking prevents data bleeding past model coastline.
+ *       Particles on all three layers (waves/period use DIRPW).
  */
 (function initGfsOverlays() {
   'use strict';
@@ -15,14 +15,12 @@
   const STEPS = [];
   for (let h = 0; h <= 120; h += 6) STEPS.push(h);
 
-  const RESOLUTION       = 0.5;
+  const RESOLUTION       = 1.0;
   const UPSCALE          = 4;
   const PARALLEL_FETCHES = 4;
   const AUTOPLAY_MIN_READY = 2;
   const DEFAULT_SPEED_MS = 500;
-
-  const LAND_TOPO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/land-50m.json';
-  const LAND_FILL     = '#0a1e2e';
+  const DATA_ALPHA        = 170;
 
   // leaflet-velocity tuning per layer
   const VEL_TUNING = {
@@ -119,7 +117,7 @@
         }
         const val = v00*(1-tx)*(1-ty) + v10*tx*(1-ty) + v01*(1-tx)*ty + v11*tx*ty;
         const c = colorAt(pal, val);
-        px[base] = c[0]; px[base+1] = c[1]; px[base+2] = c[2]; px[base+3] = 210;
+        px[base] = c[0]; px[base+1] = c[1]; px[base+2] = c[2]; px[base+3] = DATA_ALPHA;
       }
     }
     ctx.putImageData(img, 0, 0);
@@ -175,54 +173,8 @@
     ];
   }
 
-  // == Land mask ============================================================
-  let _landLayer = null;
-  let _landLoaded = false;
-  let _landLoading = false;
-
-  async function _ensureLandMask() {
-    if (_landLoaded) return;
-    if (_landLoading) {
-      while (_landLoading) await new Promise(r => setTimeout(r, 100));
-      return;
-    }
-    _landLoading = true;
-    try {
-      if (!map.getPane('landMask')) {
-        map.createPane('landMask');
-        map.getPane('landMask').style.zIndex = 450;
-        map.getPane('landMask').style.pointerEvents = 'none';
-      }
-      const resp = await fetch(LAND_TOPO_URL);
-      const topo = await resp.json();
-      const geojson = topojson.feature(topo, topo.objects.land);
-      _landLayer = L.geoJSON(geojson, {
-        pane: 'landMask',
-        style: {
-          fillColor: LAND_FILL,
-          fillOpacity: 1,
-          stroke: true,
-          color: LAND_FILL,
-          weight: 2.0,
-          opacity: 1,
-          lineJoin: 'round',
-        },
-        interactive: false,
-      });
-      _landLoaded = true;
-    } catch (err) {
-      console.warn('Land mask load failed:', err);
-    }
-    _landLoading = false;
-  }
-
-  function _showLandMask() {
-    if (_landLayer && !map.hasLayer(_landLayer)) _landLayer.addTo(map);
-  }
-
-  function _hideLandMask() {
-    if (_landLayer && map.hasLayer(_landLayer)) map.removeLayer(_landLayer);
-  }
+  // No explicit land mask — semi-transparent data + strict null masking
+  // lets the satellite base map show natural coastlines.
 
   // == Overlay factories ====================================================
   function _ensurePanes() {
@@ -297,7 +249,7 @@
     _shown = [];
   }
   function _fullReset() {
-    _clearShown(); _stopAnim(); _hideLandMask();
+    _clearShown(); _stopAnim();
     _payloads.length = _urls.length = _overlays.length =
       _velLyrs.length = _status.length = 0;
     _fi = 0;
@@ -342,28 +294,8 @@
     // Particle animation — all three layer types
     const vel = _velLyrs[idx];
     if (vel) {
-      try {
-        vel.addTo(map);
-        _shown.push(vel);
-        // Safety net: re-parent the velocity canvas into gfsParticles
-        // pane in case the library doesn't honour `paneName`.
-        setTimeout(() => _reparentVelocityCanvas(), 0);
-      } catch(_){}
+      try { vel.addTo(map); _shown.push(vel); } catch(_){}
     }
-
-    _showLandMask();
-  }
-
-  function _reparentVelocityCanvas() {
-    const target = map.getPane('gfsParticles');
-    if (!target) return;
-    // leaflet-velocity creates a canvas with class 'velocity-overlay' inside
-    // overlayPane. Move it into gfsParticles so it stacks correctly.
-    const overlayPane = map.getPane('overlayPane');
-    if (!overlayPane) return;
-    overlayPane.querySelectorAll('canvas.velocity-overlay').forEach(c => {
-      if (c.parentElement !== target) target.appendChild(c);
-    });
   }
 
   // == UI ====================================================================
@@ -470,8 +402,6 @@
         'linear-gradient(to right,#002864,#0050a0,#00a0c0,#00c8a0,#a0e000,#ffff00,#ff8000,#ff0000,#b4005a)');
     }
 
-    // Load land mask in parallel with data
-    _ensureLandMask();
     _runFetchPool(type);
   }
 

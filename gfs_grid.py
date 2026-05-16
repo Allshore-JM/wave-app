@@ -39,9 +39,6 @@ logger = logging.getLogger(__name__)
 # ----------------------------------------------------------------------------
 # Optional GRIB stack
 # ----------------------------------------------------------------------------
-# cfgrib + xarray + numpy are heavy and may not be installed in every
-# environment yet. We import them lazily and fall back to a clear error so
-# the rest of the app keeps running.
 
 try:
     import cfgrib  # type: ignore
@@ -61,38 +58,22 @@ except Exception as exc:  # pragma: no cover - env dependent
 # Constants and configuration
 # ----------------------------------------------------------------------------
 
-# NOMADS gribfilter endpoints
 GFS_ATMOS_FILTER = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
 GFS_WAVE_FILTER = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfswave.pl"
 
-# Native resolutions on NOMADS:
-#   gfs_0p25  : 0.25 deg atmospheric grid (1440 x 721)
-#   gfswave   : 0.25 deg wave grid (global file is gfswave.tCCz.global.0p25.fFFF.grib2)
-#
-# 0.25 deg over the whole globe would be ~1 million cells per layer. That's
-# too much to ship to a browser. We downsample to a coarser display grid.
-#
-# 1.0 deg → 360 x 181 = 65,160 cells. ~250 KB JSON, fast and plenty for the
-# Windy-style global view. Higher zooms can be added later via region-specific
-# subsets if we need more detail.
+# Default downsample is 1 deg; the frontend explicitly requests 0.25 deg native
+# resolution via the ?resolution= query argument for the Windy-style overlay.
 DEFAULT_DOWNSAMPLE_DEG = 1.0
-
-# Each forecast cycle is run 4x/day at 00, 06, 12, 18 UTC. The wave model
-# publishes hourly steps out to ~120 h, then 3-hourly. The atmos GFS publishes
-# hourly to f120 in gfs_0p25_1hr or 3-hourly in gfs_0p25. We default to f000
-# (analysis) for the first version and add forecast stepping later.
 DEFAULT_FORECAST_HOUR = 0
 
-# How long to cache decoded layers in memory (seconds). GFS publishes every
-# 6 hours, so 90 minutes is comfortably under that.
 CACHE_TTL_SECONDS = 90 * 60
 
-# Cap how large a frontend-facing payload can be. Even at 1 degree we are well
-# under this, but a defensive guard avoids OOMing a render dyno if someone
-# requests a finer grid.
-MAX_CELLS = 200_000
+# Cap how large a frontend-facing payload can be.
+# Native 0.25 deg global = 1,440 x 721 = 1,038,240 cells.
+# Bumped from 200,000 -> 1,200,000 so the frontend can request the full-
+# resolution grid for crisp wave-height contours.
+MAX_CELLS = 1_200_000
 
-# Network timeouts
 NOMADS_TIMEOUT = 60
 
 # ----------------------------------------------------------------------------
@@ -124,10 +105,6 @@ def _cache_set(key: str, value: Any) -> None:
 # ----------------------------------------------------------------------------
 
 def _latest_atmos_run() -> tuple[str, str] | tuple[None, None]:
-    """Find the most recent GFS atmos run that has f000 published.
-
-    Returns (yyyymmdd, hh) or (None, None) if nothing is available.
-    """
     now = datetime.utcnow()
     for delta_day in (0, 1):
         check = now - timedelta(days=delta_day)
@@ -147,10 +124,6 @@ def _latest_atmos_run() -> tuple[str, str] | tuple[None, None]:
 
 
 def _latest_wave_run() -> tuple[str, str] | tuple[None, None]:
-    """Find the most recent GFS-Wave run that has the global f000 file published.
-
-    Returns (yyyymmdd, hh) or (None, None) if nothing is available.
-    """
     now = datetime.utcnow()
     for delta_day in (0, 1):
         check = now - timedelta(days=delta_day)
@@ -175,7 +148,6 @@ def _latest_wave_run() -> tuple[str, str] | tuple[None, None]:
 # ----------------------------------------------------------------------------
 
 def _build_atmos_wind_url(yyyymmdd: str, hh: str, fhr: int) -> str:
-    """Subsetted URL for 10 m U/V wind at a single forecast hour."""
     file_name = f"gfs.t{hh}z.pgrb2.0p25.f{fhr:03d}"
     params = {
         "dir": f"/gfs.{yyyymmdd}/{hh}/atmos",
@@ -188,10 +160,6 @@ def _build_atmos_wind_url(yyyymmdd: str, hh: str, fhr: int) -> str:
 
 
 def _build_wave_url(yyyymmdd: str, hh: str, fhr: int, variables: list[str]) -> str:
-    """Subsetted URL for one or more wave variables at a single forecast hour.
-
-    variables is a list like ["HTSGW"] or ["PERPW"].
-    """
     file_name = f"gfswave.t{hh}z.global.0p25.f{fhr:03d}.grib2"
     params: dict[str, str] = {
         "dir": f"/gfs.{yyyymmdd}/{hh}/wave/gridded",
@@ -213,12 +181,10 @@ def _build_url(base: str, params: dict[str, str]) -> str:
 # ----------------------------------------------------------------------------
 
 def _fetch_grib(url: str) -> bytes:
-    """Download GRIB2 bytes from NOMADS. Returns raw bytes or raises."""
     resp = requests.get(url, timeout=NOMADS_TIMEOUT)
     resp.raise_for_status()
     body = resp.content
     if not body or len(body) < 200:
-        # NOMADS sometimes returns an HTML error page with 200 OK
         raise RuntimeError(
             f"NOMADS returned a suspiciously small response ({len(body)} bytes). "
             "The requested file or variable may not be available yet."
@@ -227,13 +193,6 @@ def _fetch_grib(url: str) -> bytes:
 
 
 def _open_grib_bytes(grib_bytes: bytes) -> "list[xr.Dataset]":
-    """Write bytes to a temp file and open ALL messages with cfgrib.open_datasets.
-
-    cfgrib.open_datasets returns one Dataset per compatible group of GRIB
-    messages. This is more robust than xr.open_dataset which tries (and
-    sometimes fails) to merge everything. Returns a list (always at least 1
-    element or raises).
-    """
     tmp = tempfile.NamedTemporaryFile(
         prefix="gfs_", suffix=".grib2", delete=False
     )
@@ -245,7 +204,7 @@ def _open_grib_bytes(grib_bytes: bytes) -> "list[xr.Dataset]":
         if not datasets:
             raise RuntimeError("cfgrib.open_datasets returned no datasets")
         for ds in datasets:
-            ds.load()  # force lazy data into memory BEFORE we delete the temp file
+            ds.load()
         return datasets
     finally:
         try:
@@ -259,14 +218,11 @@ def _open_grib_bytes(grib_bytes: bytes) -> "list[xr.Dataset]":
 # ----------------------------------------------------------------------------
 
 def _stride_for_resolution(da_shape: tuple[int, int], target_deg: float, native_deg: float = 0.25) -> int:
-    """Compute an integer stride that gets us close to target_deg resolution."""
     stride = max(1, int(round(target_deg / native_deg)))
     return stride
 
 
 def _downsample(da: "xr.DataArray", stride: int) -> "xr.DataArray":
-    """Coarsen by simple striding. Uses .isel which is fast and preserves coords."""
-    # The grid has dims (latitude, longitude). Stride both.
     lat_name = "latitude" if "latitude" in da.dims else "lat"
     lon_name = "longitude" if "longitude" in da.dims else "lon"
     return da.isel({lat_name: slice(None, None, stride), lon_name: slice(None, None, stride)})
@@ -278,36 +234,17 @@ def _downsample(da: "xr.DataArray", stride: int) -> "xr.DataArray":
 
 def _build_wind_payload(u_da: "xr.DataArray", v_da: "xr.DataArray", *,
                         yyyymmdd: str, hh: str, fhr: int) -> list[dict[str, Any]]:
-    """Build the wind-js / leaflet-velocity JSON payload.
-
-    The format expects two records (one for U, one for V), each with a
-    header describing the grid and a flat data array of values row-major
-    starting at the top-left (north-west) corner.
-    """
-    # Coordinate names
     lat_name = "latitude" if "latitude" in u_da.dims else "lat"
     lon_name = "longitude" if "longitude" in u_da.dims else "lon"
 
     lats = u_da[lat_name].values.astype(float)
     lons = u_da[lon_name].values.astype(float)
 
-    # The wind-js format expects:
-    #   lo1 = west edge longitude (degrees, 0..360 or -180..180; we use 0..360)
-    #   la1 = north edge latitude
-    #   dx, dy = grid spacing in degrees
-    #   nx, ny = grid width/height
-    #
-    # NOAA GFS publishes longitudes 0..360 ascending and latitudes 90..-90
-    # descending. We normalise to that layout: rows top-to-bottom = north-to-south.
-
-    # Ensure latitudes are descending (north -> south)
     if lats[0] < lats[-1]:
         u_da = u_da.reindex({lat_name: lats[::-1]})
         v_da = v_da.reindex({lat_name: lats[::-1]})
         lats = u_da[lat_name].values.astype(float)
 
-    # Ensure longitudes are ascending starting near 0
-    # GFS already gives us 0..359.75; just normalise if needed.
     if lons[0] > lons[-1]:
         u_da = u_da.reindex({lon_name: lons[::-1]})
         v_da = v_da.reindex({lon_name: lons[::-1]})
@@ -329,46 +266,29 @@ def _build_wind_payload(u_da: "xr.DataArray", v_da: "xr.DataArray", *,
     lo2 = float(lons[-1])
     la2 = float(lats[-1])
 
-    # Replace NaNs with 0.0 so the frontend doesn't have to handle them.
     u_flat = np.where(np.isnan(u_vals), 0.0, u_vals).ravel().tolist()
     v_flat = np.where(np.isnan(v_vals), 0.0, v_vals).ravel().tolist()
 
-    # Reference time (model run) and valid time
     ref_time = f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:8]}T{hh}:00:00Z"
     valid_dt = datetime.strptime(f"{yyyymmdd}{hh}", "%Y%m%d%H") + timedelta(hours=fhr)
     valid_time = valid_dt.strftime("%Y-%m-%dT%H:00:00Z")
 
     base_header = {
-        "parameterCategory": 2,        # Momentum
-        "lo1": lo1,
-        "la1": la1,
-        "lo2": lo2,
-        "la2": la2,
-        "nx": int(nx),
-        "ny": int(ny),
-        "dx": dx,
-        "dy": dy,
-        "refTime": ref_time,
-        "forecastTime": int(fhr),
-        "validTime": valid_time,
+        "parameterCategory": 2,
+        "lo1": lo1, "la1": la1, "lo2": lo2, "la2": la2,
+        "nx": int(nx), "ny": int(ny),
+        "dx": dx, "dy": dy,
+        "refTime": ref_time, "forecastTime": int(fhr), "validTime": valid_time,
     }
 
     u_record = {
-        "header": {
-            **base_header,
-            "parameterNumber": 2,
-            "parameterNumberName": "eastward_wind",
-            "parameterUnit": "m s-1",
-        },
+        "header": {**base_header, "parameterNumber": 2,
+                   "parameterNumberName": "eastward_wind", "parameterUnit": "m s-1"},
         "data": u_flat,
     }
     v_record = {
-        "header": {
-            **base_header,
-            "parameterNumber": 3,
-            "parameterNumberName": "northward_wind",
-            "parameterUnit": "m s-1",
-        },
+        "header": {**base_header, "parameterNumber": 3,
+                   "parameterNumberName": "northward_wind", "parameterUnit": "m s-1"},
         "data": v_flat,
     }
     return [u_record, v_record]
@@ -376,7 +296,6 @@ def _build_wind_payload(u_da: "xr.DataArray", v_da: "xr.DataArray", *,
 
 def _build_scalar_payload(da: "xr.DataArray", *, name: str, units: str,
                           yyyymmdd: str, hh: str, fhr: int) -> dict[str, Any]:
-    """Build a scalar grid payload (one value per cell) for raster overlays."""
     lat_name = "latitude" if "latitude" in da.dims else "lat"
     lon_name = "longitude" if "longitude" in da.dims else "lon"
 
@@ -398,13 +317,10 @@ def _build_scalar_payload(da: "xr.DataArray", *, name: str, units: str,
             f"Scalar payload would be {nx*ny} cells, exceeds MAX_CELLS={MAX_CELLS}"
         )
 
-    # Compute statistics ignoring NaNs (land masked)
     finite = vals[np.isfinite(vals)]
     vmin = float(finite.min()) if finite.size else 0.0
     vmax = float(finite.max()) if finite.size else 0.0
 
-    # Round to 2 decimals to slim down the JSON. Replace NaN with null
-    # via JSON serialization (json.dumps handles None).
     cleaned: list[float | None] = []
     for row in vals:
         for v in row:
@@ -418,22 +334,15 @@ def _build_scalar_payload(da: "xr.DataArray", *, name: str, units: str,
     valid_time = valid_dt.strftime("%Y-%m-%dT%H:00:00Z")
 
     return {
-        "name": name,
-        "units": units,
-        "refTime": ref_time,
-        "forecastTime": int(fhr),
-        "validTime": valid_time,
+        "name": name, "units": units,
+        "refTime": ref_time, "forecastTime": int(fhr), "validTime": valid_time,
         "header": {
-            "lo1": float(lons[0]),
-            "la1": float(lats[0]),
-            "lo2": float(lons[-1]),
-            "la2": float(lats[-1]),
-            "nx": int(nx),
-            "ny": int(ny),
+            "lo1": float(lons[0]), "la1": float(lats[0]),
+            "lo2": float(lons[-1]), "la2": float(lats[-1]),
+            "nx": int(nx), "ny": int(ny),
             "dx": float(abs(lons[1] - lons[0])) if nx > 1 else 1.0,
             "dy": float(abs(lats[0] - lats[1])) if ny > 1 else 1.0,
-            "min": vmin,
-            "max": vmax,
+            "min": vmin, "max": vmax,
         },
         "data": cleaned,
     }
@@ -446,15 +355,13 @@ def _build_scalar_payload(da: "xr.DataArray", *, name: str, units: str,
 def _require_grib_stack() -> None:
     if not _GRIB_OK:
         raise RuntimeError(
-            "GRIB stack unavailable. "
-            "Install cfgrib + xarray + eccodes. "
+            "GRIB stack unavailable. Install cfgrib + xarray + eccodes. "
             f"Import error: {_GRIB_IMPORT_ERROR}"
         )
 
 
 def get_wind_layer(fhr: int = DEFAULT_FORECAST_HOUR,
                    resolution_deg: float = DEFAULT_DOWNSAMPLE_DEG) -> dict[str, Any]:
-    """Return the wind layer payload for the requested forecast hour."""
     _require_grib_stack()
 
     cache_key = f"wind:{fhr}:{resolution_deg}"
@@ -513,13 +420,11 @@ def get_wind_layer(fhr: int = DEFAULT_FORECAST_HOUR,
 
 def get_wave_height_layer(fhr: int = DEFAULT_FORECAST_HOUR,
                           resolution_deg: float = DEFAULT_DOWNSAMPLE_DEG) -> dict[str, Any]:
-    """Return the significant wave height (HTSGW) layer."""
     return _get_wave_scalar_layer("HTSGW", "htsgw", "m", fhr, resolution_deg, "waves")
 
 
 def get_swell_period_layer(fhr: int = DEFAULT_FORECAST_HOUR,
                            resolution_deg: float = DEFAULT_DOWNSAMPLE_DEG) -> dict[str, Any]:
-    """Return the primary peak wave period (PERPW) layer."""
     return _get_wave_scalar_layer("PERPW", "perpw", "s", fhr, resolution_deg, "period")
 
 
@@ -555,13 +460,11 @@ def _get_wave_scalar_layer(grib_var: str, name: str, units: str,
             all_vars.append(ds_vars)
             if da is not None:
                 continue
-            # Try known candidate names first
             for c in candidates:
                 if c in ds.data_vars:
                     da = ds[c]
                     logger.info("Found %s as '%s' in dataset with vars %s", grib_var, c, ds_vars)
                     break
-            # If nothing matched yet and this dataset has exactly 1 variable, use it
             if da is None and len(ds_vars) == 1:
                 da = ds[ds_vars[0]]
                 logger.info("Fallback: using only var '%s' for %s", ds_vars[0], grib_var)
@@ -575,16 +478,14 @@ def _get_wave_scalar_layer(grib_var: str, name: str, units: str,
     if da is None:
         raise RuntimeError(
             f"Could not identify {grib_var} in wave GRIB. "
-            f"All dataset vars: {all_vars}. "
-            f"Candidates tried: {candidates}"
+            f"All dataset vars: {all_vars}. Candidates tried: {candidates}"
         )
 
     try:
         stride = _stride_for_resolution(da.shape, resolution_deg, native_deg=0.25)
         da = _downsample(da, stride)
         payload_grid = _build_scalar_payload(
-            da, name=name, units=units,
-            yyyymmdd=yyyymmdd, hh=hh, fhr=fhr,
+            da, name=name, units=units, yyyymmdd=yyyymmdd, hh=hh, fhr=fhr,
         )
     except Exception:
         raise
@@ -600,10 +501,6 @@ def _get_wave_scalar_layer(grib_var: str, name: str, units: str,
 
 
 def get_debug_info(fhr: int = 0) -> dict[str, Any]:
-    """Download the HTSGW wave GRIB and dump raw cfgrib internals.
-
-    Hit /api/gfs/debug to diagnose variable-name / null-data issues.
-    """
     _require_grib_stack()
 
     yyyymmdd, hh = _latest_wave_run()
@@ -616,16 +513,12 @@ def get_debug_info(fhr: int = 0) -> dict[str, Any]:
     tmp = tempfile.NamedTemporaryFile(prefix="gfs_dbg_", suffix=".grib2", delete=False)
     result: dict[str, Any] = {
         "run": {"date": yyyymmdd, "hour": hh},
-        "fhr": fhr,
-        "url": url,
-        "grib_size_bytes": len(grib_bytes),
+        "fhr": fhr, "url": url, "grib_size_bytes": len(grib_bytes),
     }
     try:
         tmp.write(grib_bytes)
         tmp.flush()
         tmp.close()
-
-        # Use cfgrib.open_datasets (multi-message aware)
         try:
             dsets = cfgrib.open_datasets(tmp.name, indexpath="")
             ds_summaries = []
@@ -651,31 +544,22 @@ def get_debug_info(fhr: int = 0) -> dict[str, Any]:
                         ],
                     }
                 ds_summaries.append({
-                    "dataset_index": i,
-                    "data_vars": vars_info,
+                    "dataset_index": i, "data_vars": vars_info,
                     "coords": list(ds.coords.keys()),
                 })
                 ds.close()
             result["cfgrib_open_datasets"] = ds_summaries
         except Exception as e:
             result["cfgrib_open_datasets_error"] = str(e)
-
     finally:
         try:
             os.unlink(tmp.name)
         except Exception:
             pass
-
     return result
 
 
-# ----------------------------------------------------------------------------
-# Lightweight status / probe endpoint
-# ----------------------------------------------------------------------------
-
 def get_status() -> dict[str, Any]:
-    """Quickly report whether the GRIB stack is importable and what the latest
-    GFS runs look like. Cheap, safe to hit without doing a full GRIB fetch."""
     info: dict[str, Any] = {
         "grib_stack_available": _GRIB_OK,
         "grib_import_error": _GRIB_IMPORT_ERROR,
@@ -693,11 +577,8 @@ def get_status() -> dict[str, Any]:
 # ----------------------------------------------------------------------------
 # Flask route registration
 # ----------------------------------------------------------------------------
-# Exposed as a single register_routes(app) helper so app.py only needs to
-# import this module and call it. This keeps app.py changes minimal.
 
 def register_routes(app) -> None:
-    """Register /api/gfs/* endpoints on the provided Flask app."""
     from flask import jsonify, request
 
     def _parse_query_args():
@@ -705,13 +586,11 @@ def register_routes(app) -> None:
             fhr = int(request.args.get("fhr", "0"))
         except Exception:
             fhr = 0
-        # GFS-Wave publishes hourly to ~120 h, 3-hourly beyond. Cap at 384.
         fhr = max(0, min(fhr, 384))
         try:
             resolution_deg = float(request.args.get("resolution", "1.0"))
         except Exception:
             resolution_deg = 1.0
-        # Clamp resolution: 0.25 = native, 5.0 = very coarse.
         resolution_deg = max(0.25, min(resolution_deg, 5.0))
         return fhr, resolution_deg
 

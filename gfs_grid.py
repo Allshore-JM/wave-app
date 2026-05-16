@@ -44,11 +44,13 @@ logger = logging.getLogger(__name__)
 # the rest of the app keeps running.
 
 try:
+    import cfgrib  # type: ignore
     import numpy as np  # type: ignore
     import xarray as xr  # type: ignore
     _GRIB_OK = True
     _GRIB_IMPORT_ERROR: str | None = None
 except Exception as exc:  # pragma: no cover - env dependent
+    cfgrib = None  # type: ignore
     np = None  # type: ignore
     xr = None  # type: ignore
     _GRIB_OK = False
@@ -224,10 +226,13 @@ def _fetch_grib(url: str) -> bytes:
     return body
 
 
-def _open_grib_bytes(grib_bytes: bytes) -> "xr.Dataset":
-    """Write bytes to a temp file and open with cfgrib via xarray.
+def _open_grib_bytes(grib_bytes: bytes) -> "list[xr.Dataset]":
+    """Write bytes to a temp file and open ALL messages with cfgrib.open_datasets.
 
-    cfgrib needs a file path. We write to a temp file in /tmp and clean up.
+    cfgrib.open_datasets returns one Dataset per compatible group of GRIB
+    messages. This is more robust than xr.open_dataset which tries (and
+    sometimes fails) to merge everything. Returns a list (always at least 1
+    element or raises).
     """
     tmp = tempfile.NamedTemporaryFile(
         prefix="gfs_", suffix=".grib2", delete=False
@@ -236,13 +241,12 @@ def _open_grib_bytes(grib_bytes: bytes) -> "xr.Dataset":
         tmp.write(grib_bytes)
         tmp.flush()
         tmp.close()
-        ds = xr.open_dataset(
-            tmp.name,
-            engine="cfgrib",
-            backend_kwargs={"indexpath": ""},  # skip writing a .idx sidecar
-        )
-        ds.load()  # force lazy data into memory BEFORE we delete the temp file
-        return ds
+        datasets = cfgrib.open_datasets(tmp.name, indexpath="")
+        if not datasets:
+            raise RuntimeError("cfgrib.open_datasets returned no datasets")
+        for ds in datasets:
+            ds.load()  # force lazy data into memory BEFORE we delete the temp file
+        return datasets
     finally:
         try:
             os.unlink(tmp.name)
@@ -466,29 +470,36 @@ def get_wind_layer(fhr: int = DEFAULT_FORECAST_HOUR,
     logger.info("Fetching GFS wind GRIB: %s", url)
     grib_bytes = _fetch_grib(url)
 
-    ds = _open_grib_bytes(grib_bytes)
-    try:
-        # Variable names from cfgrib for GFS U/V at 10 m: u10, v10
-        u_var = "u10" if "u10" in ds.data_vars else "10u"
-        v_var = "v10" if "v10" in ds.data_vars else "10v"
-        if u_var not in ds.data_vars or v_var not in ds.data_vars:
-            raise RuntimeError(
-                f"GFS wind GRIB did not contain expected U/V variables. "
-                f"Got: {list(ds.data_vars)}"
-            )
-        u_da = ds[u_var]
-        v_da = ds[v_var]
+    datasets = _open_grib_bytes(grib_bytes)
+    u_da = v_da = None
+    for ds in datasets:
+        try:
+            u_var = next((v for v in ("u10", "10u") if v in ds.data_vars), None)
+            v_var = next((v for v in ("v10", "10v") if v in ds.data_vars), None)
+            if u_var and v_var:
+                u_da = ds[u_var]
+                v_da = ds[v_var]
+                break
+        finally:
+            try:
+                ds.close()
+            except Exception:
+                pass
 
+    if u_da is None or v_da is None:
+        all_vars = [list(ds.data_vars) for ds in datasets]
+        raise RuntimeError(
+            f"GFS wind GRIB did not contain expected U/V variables. "
+            f"All datasets vars: {all_vars}"
+        )
+
+    try:
         stride = _stride_for_resolution(u_da.shape, resolution_deg, native_deg=0.25)
         u_da = _downsample(u_da, stride)
         v_da = _downsample(v_da, stride)
-
         records = _build_wind_payload(u_da, v_da, yyyymmdd=yyyymmdd, hh=hh, fhr=fhr)
-    finally:
-        try:
-            ds.close()
-        except Exception:
-            pass
+    except Exception:
+        raise
 
     payload = {
         "layer": "wind",
@@ -530,43 +541,53 @@ def _get_wave_scalar_layer(grib_var: str, name: str, units: str,
     logger.info("Fetching GFS-Wave GRIB (%s): %s", grib_var, url)
     grib_bytes = _fetch_grib(url)
 
-    ds = _open_grib_bytes(grib_bytes)
-    try:
-        # cfgrib short names for these GRIB vars:
-        #   HTSGW -> 'swh' (significant wave height) in newer eccodes,
-        #            sometimes 'htsgw' depending on tables.
-        #   PERPW -> 'perpw' or 'pp1d' depending on tables.
-        candidates = {
-            "HTSGW": ("swh", "htsgw"),
-            "PERPW": ("perpw", "pp1d"),
-        }.get(grib_var, ())
-        da = None
-        for c in candidates:
-            if c in ds.data_vars:
-                da = ds[c]
-                break
-        if da is None:
-            # Fall back to whatever single variable came back
-            data_vars = list(ds.data_vars)
-            if len(data_vars) == 1:
-                da = ds[data_vars[0]]
-            else:
-                raise RuntimeError(
-                    f"Could not identify {grib_var} in wave GRIB. "
-                    f"Got data_vars: {data_vars}"
-                )
+    datasets = _open_grib_bytes(grib_bytes)
+    candidates = {
+        "HTSGW": ("swh", "htsgw", "Significant_height_of_combined_wind_waves_and_swell_surface"),
+        "PERPW": ("perpw", "pp1d", "Primary_wave_mean_period_surface"),
+    }.get(grib_var, ())
 
+    da = None
+    all_vars: list[list[str]] = []
+    for ds in datasets:
+        try:
+            ds_vars = list(ds.data_vars)
+            all_vars.append(ds_vars)
+            if da is not None:
+                continue
+            # Try known candidate names first
+            for c in candidates:
+                if c in ds.data_vars:
+                    da = ds[c]
+                    logger.info("Found %s as '%s' in dataset with vars %s", grib_var, c, ds_vars)
+                    break
+            # If nothing matched yet and this dataset has exactly 1 variable, use it
+            if da is None and len(ds_vars) == 1:
+                da = ds[ds_vars[0]]
+                logger.info("Fallback: using only var '%s' for %s", ds_vars[0], grib_var)
+        finally:
+            if da is None:
+                try:
+                    ds.close()
+                except Exception:
+                    pass
+
+    if da is None:
+        raise RuntimeError(
+            f"Could not identify {grib_var} in wave GRIB. "
+            f"All dataset vars: {all_vars}. "
+            f"Candidates tried: {candidates}"
+        )
+
+    try:
         stride = _stride_for_resolution(da.shape, resolution_deg, native_deg=0.25)
         da = _downsample(da, stride)
         payload_grid = _build_scalar_payload(
             da, name=name, units=units,
             yyyymmdd=yyyymmdd, hh=hh, fhr=fhr,
         )
-    finally:
-        try:
-            ds.close()
-        except Exception:
-            pass
+    except Exception:
+        raise
 
     payload = {
         "layer": layer_label,
@@ -576,6 +597,76 @@ def _get_wave_scalar_layer(grib_var: str, name: str, units: str,
     }
     _cache_set(cache_key, payload)
     return payload
+
+
+def get_debug_info(fhr: int = 0) -> dict[str, Any]:
+    """Download the HTSGW wave GRIB and dump raw cfgrib internals.
+
+    Hit /api/gfs/debug to diagnose variable-name / null-data issues.
+    """
+    _require_grib_stack()
+
+    yyyymmdd, hh = _latest_wave_run()
+    if not yyyymmdd:
+        return {"error": "No recent wave run found on NOMADS"}
+
+    url = _build_wave_url(yyyymmdd, hh, fhr, ["HTSGW"])
+    grib_bytes = _fetch_grib(url)
+
+    tmp = tempfile.NamedTemporaryFile(prefix="gfs_dbg_", suffix=".grib2", delete=False)
+    result: dict[str, Any] = {
+        "run": {"date": yyyymmdd, "hour": hh},
+        "fhr": fhr,
+        "url": url,
+        "grib_size_bytes": len(grib_bytes),
+    }
+    try:
+        tmp.write(grib_bytes)
+        tmp.flush()
+        tmp.close()
+
+        # Use cfgrib.open_datasets (multi-message aware)
+        try:
+            dsets = cfgrib.open_datasets(tmp.name, indexpath="")
+            ds_summaries = []
+            for i, ds in enumerate(dsets):
+                ds.load()
+                vars_info = {}
+                for vname in ds.data_vars:
+                    da = ds[vname]
+                    vals = da.values.ravel()
+                    finite = vals[np.isfinite(vals)]
+                    vars_info[vname] = {
+                        "dims": list(da.dims),
+                        "shape": list(da.shape),
+                        "attrs": {k: str(v) for k, v in da.attrs.items()},
+                        "n_total": int(vals.size),
+                        "n_finite": int(finite.size),
+                        "n_nan": int(vals.size - finite.size),
+                        "min": round(float(finite.min()), 3) if finite.size else None,
+                        "max": round(float(finite.max()), 3) if finite.size else None,
+                        "sample_first5": [
+                            (round(float(v), 3) if np.isfinite(v) else None)
+                            for v in vals[:5]
+                        ],
+                    }
+                ds_summaries.append({
+                    "dataset_index": i,
+                    "data_vars": vars_info,
+                    "coords": list(ds.coords.keys()),
+                })
+                ds.close()
+            result["cfgrib_open_datasets"] = ds_summaries
+        except Exception as e:
+            result["cfgrib_open_datasets_error"] = str(e)
+
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+    return result
 
 
 # ----------------------------------------------------------------------------
@@ -623,6 +714,18 @@ def register_routes(app) -> None:
         # Clamp resolution: 0.25 = native, 5.0 = very coarse.
         resolution_deg = max(0.25, min(resolution_deg, 5.0))
         return fhr, resolution_deg
+
+    @app.route("/api/gfs/debug")
+    def api_gfs_debug():
+        if not _GRIB_OK:
+            return jsonify({"error": "GRIB stack unavailable",
+                            "detail": _GRIB_IMPORT_ERROR}), 503
+        fhr, _ = _parse_query_args()
+        try:
+            return jsonify(get_debug_info(fhr=fhr))
+        except Exception as exc:
+            logger.exception("Debug endpoint failed")
+            return jsonify({"error": str(exc)}), 500
 
     @app.route("/api/gfs/status")
     def api_gfs_status():

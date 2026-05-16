@@ -1,18 +1,17 @@
 /**
- * gfs_overlay.js  v3.0
+ * gfs_overlay.js  v4.0
  *
- * Animated GFS wave-height / swell-period / wind overlays at NATIVE 0.25° resolution.
+ * Animated GFS wave-height / swell-period / wind overlays with smooth
+ * bilinear colour interpolation for Windy-style gradient rendering.
  *
- * v3 changes from v2:
- *  • Native 0.25° resolution requested from API  (16× the cells of v2)
- *  • 3-hourly frame interval, 41 frames over 5 days (was 24-hourly, 6 frames)
- *  • Parallel fetch pool (3 workers) with priority-ordered queue
- *  • Animation only cycles through frames that are actually loaded
- *    (no more "Loading…" stalls during playback)
- *  • Canvas rendered at the GRID's native pixel resolution — no upscale
- *    stretching, contour bands look crisp
- *  • Overlay objects built lazily on demand (memory saving)
- *  • Progress bar replaces the v2 frame dots (41 dots was too cramped)
+ * v4 changes from v3:
+ *  - 1.0 degree resolution (65K cells vs 1M) for dramatically faster loads
+ *  - 6-hourly frame interval, 21 frames over 5 days (was 3-hourly, 41 frames)
+ *  - Phased loading: 6 daily key frames first, then backfill intermediate hours
+ *  - Continuous bilinear colour interpolation replaces stepped colour bands
+ *  - Contour lines removed; browser bilinear upscaling on the small grid-res
+ *    canvas produces smooth Windy-style gradients automatically
+ *  - Parallel fetch pool (3 workers) with priority-ordered queue retained
  *
  * Requires: Leaflet global `map`, optional leaflet-velocity for wind.
  * Include AFTER the map is initialised.
@@ -20,21 +19,19 @@
 (function initGfsOverlays() {
   'use strict';
 
-  // ══ Animation frames ═══════════════════════════════════════════════════
-  // 3-hour intervals from analysis (f000) to day 5 (f120).
-  // Hourly (121 frames) would be ~180 MB of data which is impractical to
-  // first-load; 3-hourly matches the cadence used by Stormsurf/Surfline.
+  // == Animation frames =====================================================
+  // 6-hour intervals from analysis (f000) to day 5 (f120).
   const STEPS = [];
-  for (let h = 0; h <= 120; h += 3) STEPS.push(h);
-  // → [0, 3, 6, 9, ..., 120]  (41 frames)
+  for (let h = 0; h <= 120; h += 6) STEPS.push(h);
+  // -> [0, 6, 12, 18, 24, 30, 36, ..., 120]  (21 frames)
 
-  const RESOLUTION   = 0.25;   // request native 0.25° grid from /api/gfs/*
-  const PARALLEL_FETCHES = 3;  // concurrent fetch workers
+  const RESOLUTION       = 1.0;   // request 1.0 deg grid from /api/gfs/*
+  const PARALLEL_FETCHES = 3;     // concurrent fetch workers
   const AUTOPLAY_MIN_READY = 2;
   const DEFAULT_SPEED_MS = 500;
 
-  // ══ Stepped colour palettes ════════════════════════════════════════════
-  // Wave height (m) – surf-focused blue→green→yellow→red
+  // == Colour palettes (value stops for interpolation) ======================
+  // Wave height (m) - surf-focused blue->green->yellow->red
   const WAVE_PAL = [
     [ 0.00, [  0,  22,  92]],
     [ 0.50, [  0,  68, 172]],
@@ -49,7 +46,7 @@
     [10.00, [148,   0, 112]],
   ];
 
-  // Peak period (s) – blue (short/chop) → red/purple (long groundswell)
+  // Peak period (s) - blue (short/chop) -> red/purple (long groundswell)
   const PERIOD_PAL = [
     [ 0,  [ 50,  50, 158]],
     [ 5,  [  0,  88, 215]],
@@ -66,34 +63,37 @@
     '#a0e000','#ffff00','#ff8000','#ff0000',
   ];
 
-  function getBand(pal, val) {
-    for (let k = pal.length - 1; k >= 0; k--)
-      if (val >= pal[k][0]) return k;
-    return 0;
+  // == Smooth colour interpolation ==========================================
+  // Returns [r, g, b] by linearly interpolating between the two nearest
+  // palette stops. Values below the first stop clamp to that colour;
+  // values above the last stop clamp to the last colour.
+  function colorAt(pal, val) {
+    if (val <= pal[0][0]) return pal[0][1];
+    if (val >= pal[pal.length - 1][0]) return pal[pal.length - 1][1];
+    for (let k = 1; k < pal.length; k++) {
+      if (val <= pal[k][0]) {
+        const lo = pal[k - 1], hi = pal[k];
+        const t = (val - lo[0]) / (hi[0] - lo[0]);
+        return [
+          Math.round(lo[1][0] + t * (hi[1][0] - lo[1][0])),
+          Math.round(lo[1][1] + t * (hi[1][1] - lo[1][1])),
+          Math.round(lo[1][2] + t * (hi[1][2] - lo[1][2])),
+        ];
+      }
+    }
+    return pal[pal.length - 1][1];
   }
 
-  // ══ Canvas renderer ════════════════════════════════════════════════════
-  // Native-resolution canvas with stepped band colours + 1-pixel contour
-  // lines at every band boundary. At 0.25° → 1440×721 px canvas.
+  // == Canvas renderer ======================================================
+  // Renders a small grid-resolution canvas (e.g. 360x181 at 1 deg) with
+  // smoothly interpolated colours. The browser's default bilinear upscaling
+  // (image-rendering: auto) produces Windy-style smooth gradients when
+  // displayed as an L.imageOverlay stretched to the full map extent.
   function buildDataURL(gridPayload, pal) {
     const { header: h, data } = gridPayload;
     const nx = h.nx, ny = h.ny;
-    const half = Math.round(nx / 2);          // shift to re-centre on –180°
+    const half = Math.round(nx / 2);  // shift to re-centre on -180 deg
 
-    // Pass 1 – band map in output (-180→+180°) column order
-    const bands = new Int16Array(nx * ny).fill(-1);
-    for (let j = 0; j < ny; j++) {
-      const rowOffOut = j * nx;
-      const rowOffSrc = j * nx;
-      for (let i = 0; i < nx; i++) {
-        const srcCol = (i + half) % nx;
-        const v = data[rowOffSrc + srcCol];
-        if (v !== null && v !== undefined && isFinite(v))
-          bands[rowOffOut + i] = getBand(pal, v);
-      }
-    }
-
-    // Pass 2 – fill cells, then draw 1-px contour lines at band boundaries
     const canvas = document.createElement('canvas');
     canvas.width  = nx;
     canvas.height = ny;
@@ -102,31 +102,30 @@
     const px  = img.data;
 
     for (let j = 0; j < ny; j++) {
+      const rowOff = j * nx;
       for (let i = 0; i < nx; i++) {
-        const b = bands[j * nx + i];
+        const srcCol = (i + half) % nx;
+        const v = data[rowOff + srcCol];
         const base = (j * nx + i) * 4;
-        if (b < 0) { px[base + 3] = 0; continue; }
 
-        // Check right + down neighbours; if either is in a different band,
-        // paint this pixel as a contour edge instead of the fill colour.
-        const rb = (i < nx - 1) ? bands[j * nx + i + 1]     : b;
-        const db = (j < ny - 1) ? bands[(j + 1) * nx + i]   : b;
-        const isEdge = (rb >= 0 && rb !== b) || (db >= 0 && db !== b);
-
-        if (isEdge) {
-          // dark hairline contour
-          px[base] = 25; px[base + 1] = 25; px[base + 2] = 25; px[base + 3] = 165;
-        } else {
-          const c = pal[b][1];
-          px[base] = c[0]; px[base + 1] = c[1]; px[base + 2] = c[2]; px[base + 3] = 190;
+        if (v === null || v === undefined || !isFinite(v)) {
+          // Transparent for ocean/land gaps and missing data
+          px[base + 3] = 0;
+          continue;
         }
+
+        const c = colorAt(pal, v);
+        px[base]     = c[0];
+        px[base + 1] = c[1];
+        px[base + 2] = c[2];
+        px[base + 3] = 180;  // semi-transparent overlay
       }
     }
     ctx.putImageData(img, 0, 0);
     return canvas.toDataURL('image/png');
   }
 
-  // ══ Dateline-safe overlay set (3 copies: west / centre / east) ════════
+  // == Dateline-safe overlay set (3 copies: west / centre / east) ===========
   function makeOverlays(dataURL) {
     const opts = { opacity: 1, zIndex: 200, interactive: false };
     return [
@@ -152,7 +151,7 @@
     });
   }
 
-  // ══ Valid-time label parser ════════════════════════════════════════════
+  // == Valid-time label parser ===============================================
   const WDAY  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const MON   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -167,7 +166,7 @@
     } catch (_) { return null; }
   }
 
-  // ══ State ══════════════════════════════════════════════════════════════
+  // == State ================================================================
   let _type    = null;
   let _fi      = 0;
   let _playing = false;
@@ -176,7 +175,7 @@
 
   const _payloads = [];   // raw API JSON per frame
   const _urls     = [];   // built data URL per frame (scalar layers)
-  const _overlays = [];   // lazily-built [L.ImageOverlay × 3] per frame
+  const _overlays = [];   // lazily-built [L.ImageOverlay x 3] per frame
   const _windLyrs = [];   // L.VelocityLayer per frame (wind only)
   const _status   = [];   // 'pending' | 'loading' | 'ok' | 'err'
   let   _shown    = [];   // currently added layers
@@ -194,7 +193,7 @@
     _fi = 0;
   }
 
-  // ══ Animation ══════════════════════════════════════════════════════════
+  // == Animation ============================================================
   // Skip-unloaded: only cycle through frames whose status is 'ok'.
   function _nextReadyIdx(from) {
     const n = STEPS.length;
@@ -223,7 +222,7 @@
     if (btn) btn.textContent = '⏸';
   }
 
-  // ══ Display a specific frame ═══════════════════════════════════════════
+  // == Display a specific frame =============================================
   function _go(idx) {
     _fi = idx;
     const slider = document.getElementById('gfsSlider');
@@ -255,7 +254,7 @@
     }
   }
 
-  // ══ UI helpers ═════════════════════════════════════════════════════════
+  // == UI helpers ===========================================================
   function _updateLabel() {
     const el = document.getElementById('gfsTimeLabel');
     if (!el) return;
@@ -289,7 +288,7 @@
     document.getElementById('gfsLegend').style.display = 'block';
   }
 
-  // ══ Fetch one forecast frame ═══════════════════════════════════════════
+  // == Fetch one forecast frame =============================================
   async function _fetchFrame(idx, type) {
     _status[idx] = 'loading';
     _updateProgress();
@@ -324,17 +323,19 @@
     }
   }
 
-  // ══ Parallel worker pool with priority-ordered queue ═══════════════════
+  // == Parallel worker pool with priority-ordered queue =====================
+  // Phase 1: Daily key frames [0, 24, 48, 72, 96, 120] load first so
+  //          the user sees data within seconds.
+  // Phase 2: 12-hourly intermediates [12, 36, 60, 84, 108] fill the gaps.
+  // Phase 3: Remaining 6-hourly frames [6, 18, 30, 42, ...] complete the set.
   function _buildPriorityQueue() {
-    // Priority order:
-    //   1) f000 (analysis)
-    //   2) Daily milestones: 24, 48, 72, 96, 120
-    //   3) Half-day:          12, 36, 60, 84, 108
-    //   4) Remaining 3-hour intermediates
-    const priorityHours = [0, 24, 48, 72, 96, 120, 12, 36, 60, 84, 108];
-    for (let h = 3; h <= 120; h += 3) {
-      if (!priorityHours.includes(h)) priorityHours.push(h);
+    const phase1 = [0, 24, 48, 72, 96, 120];
+    const phase2 = [12, 36, 60, 84, 108];
+    const phase3 = [];
+    for (let h = 6; h <= 120; h += 6) {
+      if (!phase1.includes(h) && !phase2.includes(h)) phase3.push(h);
     }
+    const priorityHours = [...phase1, ...phase2, ...phase3];
     return priorityHours.map(h => STEPS.indexOf(h)).filter(i => i >= 0);
   }
 
@@ -352,7 +353,7 @@
     await Promise.all(workers);
   }
 
-  // ══ Activate / deactivate a layer ══════════════════════════════════════
+  // == Activate / deactivate a layer ========================================
   async function gfsActivate(type) {
     const legendEl = document.getElementById('gfsLegend');
     const timeEl   = document.getElementById('gfsTimeCtrl');
@@ -398,15 +399,15 @@
       );
     }
 
-    // Kick off the parallel fetch pool (don't await — let it run async)
+    // Kick off the parallel fetch pool (don't await - let it run async)
     _runFetchPool(type);
   }
 
-  // ══ Build the control panel ════════════════════════════════════════════
+  // == Build the control panel ==============================================
   const panel = document.createElement('div');
   panel.id = 'gfsPanel';
   panel.innerHTML = `
-    <div class="gfs-title">GFS Overlays · 0.25° · 3h</div>
+    <div class="gfs-title">GFS Overlays · 6h</div>
     <div class="gfs-layer-btns">
       <button class="gfs-btn" data-layer="waves">Wave Ht</button>
       <button class="gfs-btn" data-layer="period">Period</button>

@@ -23,6 +23,7 @@ limitation, instead of crashing the whole Flask app on startup.
 
 from __future__ import annotations
 
+import gzip
 import io
 import logging
 import os
@@ -101,45 +102,122 @@ def _cache_set(key: str, value: Any) -> None:
 
 
 # ----------------------------------------------------------------------------
-# Run detection
+# Run detection cache (separate from data cache, shorter TTL)
 # ----------------------------------------------------------------------------
 
-def _latest_atmos_run() -> tuple[str, str] | tuple[None, None]:
-    now = datetime.utcnow()
+_RUN_CACHE_TTL_SECONDS = 10 * 60  # 10 minutes
+
+_RUN_CACHE: dict[str, dict[str, Any]] = {}
+_RUN_CACHE_LOCK = threading.Lock()
+
+
+def _run_cache_get(key: str) -> Any | None:
+    with _RUN_CACHE_LOCK:
+        entry = _RUN_CACHE.get(key)
+        if not entry:
+            return None
+        if (time.time() - entry["ts"]) > _RUN_CACHE_TTL_SECONDS:
+            _RUN_CACHE.pop(key, None)
+            return None
+        return entry["value"]
+
+
+def _run_cache_set(key: str, value: Any) -> None:
+    with _RUN_CACHE_LOCK:
+        _RUN_CACHE[key] = {"ts": time.time(), "value": value}
+
+
+# ----------------------------------------------------------------------------
+# Run detection (smart probe ordering)
+# ----------------------------------------------------------------------------
+
+def _smart_run_order(now: datetime) -> list[tuple[str, str]]:
+    """Return (yyyymmdd, hh) pairs in most-likely-available order.
+
+    GFS runs are published roughly 5.5 hours after the cycle start.  Given
+    the current UTC hour we can predict which cycle is most likely online
+    and try it first, falling back to earlier cycles / yesterday.
+
+    Publication estimates:
+        00z -> ~05:30 UTC    06z -> ~11:30 UTC
+        12z -> ~17:30 UTC    18z -> ~23:30 UTC
+    """
+    cycles = [18, 12, 6, 0]
+    pub_delay_hours = 5.5
+
+    result: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    # Walk backwards from the most recent cycle that should be published.
     for delta_day in (0, 1):
         check = now - timedelta(days=delta_day)
         yyyymmdd = check.strftime("%Y%m%d")
-        for hh in ("18", "12", "06", "00"):
-            test_url = (
-                "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"
-                f"gfs.{yyyymmdd}/{hh}/atmos/gfs.t{hh}z.pgrb2.0p25.f000"
-            )
-            try:
-                resp = requests.head(test_url, timeout=10, allow_redirects=True)
-                if resp.status_code == 200:
-                    return yyyymmdd, hh
-            except Exception:
-                continue
+        for cycle_hour in cycles:
+            # Estimate when this cycle becomes available.
+            pub_time = check.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=cycle_hour + pub_delay_hours)
+            if pub_time <= now:
+                pair = (yyyymmdd, f"{cycle_hour:02d}")
+                if pair not in seen:
+                    seen.add(pair)
+                    result.append(pair)
+
+    # Ensure we always have fallback candidates (at least yesterday's cycles)
+    # even if the time math produces an empty list.
+    if not result:
+        for delta_day in (0, 1):
+            check = now - timedelta(days=delta_day)
+            yyyymmdd = check.strftime("%Y%m%d")
+            for cycle_hour in cycles:
+                pair = (yyyymmdd, f"{cycle_hour:02d}")
+                if pair not in seen:
+                    seen.add(pair)
+                    result.append(pair)
+
+    return result
+
+
+def _latest_atmos_run() -> tuple[str, str] | tuple[None, None]:
+    cached = _run_cache_get("run:atmos")
+    if cached is not None:
+        return cached
+
+    now = datetime.utcnow()
+    for yyyymmdd, hh in _smart_run_order(now):
+        test_url = (
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"
+            f"gfs.{yyyymmdd}/{hh}/atmos/gfs.t{hh}z.pgrb2.0p25.f000"
+        )
+        try:
+            resp = requests.head(test_url, timeout=10, allow_redirects=True)
+            if resp.status_code == 200:
+                result = (yyyymmdd, hh)
+                _run_cache_set("run:atmos", result)
+                return result
+        except Exception:
+            continue
     return None, None
 
 
 def _latest_wave_run() -> tuple[str, str] | tuple[None, None]:
+    cached = _run_cache_get("run:wave")
+    if cached is not None:
+        return cached
+
     now = datetime.utcnow()
-    for delta_day in (0, 1):
-        check = now - timedelta(days=delta_day)
-        yyyymmdd = check.strftime("%Y%m%d")
-        for hh in ("18", "12", "06", "00"):
-            test_url = (
-                "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"
-                f"gfs.{yyyymmdd}/{hh}/wave/gridded/"
-                f"gfswave.t{hh}z.global.0p25.f000.grib2"
-            )
-            try:
-                resp = requests.head(test_url, timeout=10, allow_redirects=True)
-                if resp.status_code == 200:
-                    return yyyymmdd, hh
-            except Exception:
-                continue
+    for yyyymmdd, hh in _smart_run_order(now):
+        test_url = (
+            "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"
+            f"gfs.{yyyymmdd}/{hh}/wave/gridded/"
+            f"gfswave.t{hh}z.global.0p25.f000.grib2"
+        )
+        try:
+            resp = requests.head(test_url, timeout=10, allow_redirects=True)
+            if resp.status_code == 200:
+                result = (yyyymmdd, hh)
+                _run_cache_set("run:wave", result)
+                return result
+        except Exception:
+            continue
     return None, None
 
 
@@ -571,6 +649,8 @@ def get_status() -> dict[str, Any]:
         info["latest_wave_run"] = {"date": wave[0], "hour": wave[1]} if wave[0] else None
     info["cache_keys"] = list(_CACHE.keys())
     info["cache_ttl_seconds"] = CACHE_TTL_SECONDS
+    info["run_cache_keys"] = list(_RUN_CACHE.keys())
+    info["run_cache_ttl_seconds"] = _RUN_CACHE_TTL_SECONDS
     return info
 
 
@@ -580,6 +660,25 @@ def get_status() -> dict[str, Any]:
 
 def register_routes(app) -> None:
     from flask import jsonify, request
+
+    @app.after_request
+    def _gzip_response(response):
+        """Gzip JSON responses over 1 KB when the client supports it."""
+        if (
+            response.status_code == 200
+            and "gzip" in request.headers.get("Accept-Encoding", "")
+            and response.content_type
+            and "application/json" in response.content_type
+            and response.content_length
+            and response.content_length > 1024
+        ):
+            data = response.get_data()
+            compressed = gzip.compress(data, compresslevel=6)
+            response.set_data(compressed)
+            response.headers["Content-Encoding"] = "gzip"
+            response.headers["Content-Length"] = len(compressed)
+            response.headers["Vary"] = "Accept-Encoding"
+        return response
 
     def _parse_query_args():
         try:

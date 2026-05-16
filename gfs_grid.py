@@ -241,6 +241,7 @@ def _open_grib_bytes(grib_bytes: bytes) -> "xr.Dataset":
             engine="cfgrib",
             backend_kwargs={"indexpath": ""},  # skip writing a .idx sidecar
         )
+        ds.load()  # force lazy data into memory BEFORE we delete the temp file
         return ds
     finally:
         try:

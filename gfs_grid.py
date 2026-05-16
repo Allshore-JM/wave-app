@@ -373,7 +373,8 @@ def _build_wind_payload(u_da: "xr.DataArray", v_da: "xr.DataArray", *,
 
 
 def _build_scalar_payload(da: "xr.DataArray", *, name: str, units: str,
-                          yyyymmdd: str, hh: str, fhr: int) -> dict[str, Any]:
+                          yyyymmdd: str, hh: str, fhr: int,
+                          direction_da: "xr.DataArray | None" = None) -> dict[str, Any]:
     lat_name = "latitude" if "latitude" in da.dims else "lat"
     lon_name = "longitude" if "longitude" in da.dims else "lon"
 
@@ -382,9 +383,13 @@ def _build_scalar_payload(da: "xr.DataArray", *, name: str, units: str,
 
     if lats[0] < lats[-1]:
         da = da.reindex({lat_name: lats[::-1]})
+        if direction_da is not None:
+            direction_da = direction_da.reindex({lat_name: lats[::-1]})
         lats = da[lat_name].values.astype(float)
     if lons[0] > lons[-1]:
         da = da.reindex({lon_name: lons[::-1]})
+        if direction_da is not None:
+            direction_da = direction_da.reindex({lon_name: lons[::-1]})
         lons = da[lon_name].values.astype(float)
 
     vals = da.values.astype("float32")
@@ -407,11 +412,27 @@ def _build_scalar_payload(da: "xr.DataArray", *, name: str, units: str,
             else:
                 cleaned.append(round(float(v), 2))
 
+    dir_data: list[float | None] | None = None
+    if direction_da is not None:
+        try:
+            dir_vals = direction_da.values.astype("float32")
+            if dir_vals.shape == vals.shape:
+                dir_data = []
+                for row in dir_vals:
+                    for v in row:
+                        if np.isnan(v):
+                            dir_data.append(None)
+                        else:
+                            dir_data.append(round(float(v) % 360.0, 1))
+        except Exception as exc:
+            logger.warning("Failed to encode direction grid: %r", exc)
+            dir_data = None
+
     ref_time = f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:8]}T{hh}:00:00Z"
     valid_dt = datetime.strptime(f"{yyyymmdd}{hh}", "%Y%m%d%H") + timedelta(hours=fhr)
     valid_time = valid_dt.strftime("%Y-%m-%dT%H:00:00Z")
 
-    return {
+    out: dict[str, Any] = {
         "name": name, "units": units,
         "refTime": ref_time, "forecastTime": int(fhr), "validTime": valid_time,
         "header": {
@@ -424,6 +445,9 @@ def _build_scalar_payload(da: "xr.DataArray", *, name: str, units: str,
         },
         "data": cleaned,
     }
+    if dir_data is not None:
+        out["dirData"] = dir_data
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -511,7 +535,7 @@ def _get_wave_scalar_layer(grib_var: str, name: str, units: str,
                            layer_label: str) -> dict[str, Any]:
     _require_grib_stack()
 
-    cache_key = f"{layer_label}:{fhr}:{resolution_deg}"
+    cache_key = f"{layer_label}:v2:{fhr}:{resolution_deg}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -520,53 +544,55 @@ def _get_wave_scalar_layer(grib_var: str, name: str, units: str,
     if not yyyymmdd:
         raise RuntimeError("No recent GFS-Wave run found on NOMADS.")
 
-    url = _build_wave_url(yyyymmdd, hh, fhr, [grib_var])
-    logger.info("Fetching GFS-Wave GRIB (%s): %s", grib_var, url)
+    url = _build_wave_url(yyyymmdd, hh, fhr, [grib_var, "DIRPW"])
+    logger.info("Fetching GFS-Wave GRIB (%s+DIRPW): %s", grib_var, url)
     grib_bytes = _fetch_grib(url)
 
     datasets = _open_grib_bytes(grib_bytes)
-    candidates = {
+    main_candidates = {
         "HTSGW": ("swh", "htsgw", "Significant_height_of_combined_wind_waves_and_swell_surface"),
         "PERPW": ("perpw", "pp1d", "Primary_wave_mean_period_surface"),
     }.get(grib_var, ())
+    dir_candidates = ("dirpw", "mwd", "Primary_wave_direction_surface", "direction")
 
-    da = None
+    da_main = None
+    da_dir = None
     all_vars: list[list[str]] = []
     for ds in datasets:
-        try:
-            ds_vars = list(ds.data_vars)
-            all_vars.append(ds_vars)
-            if da is not None:
-                continue
-            for c in candidates:
+        ds_vars = list(ds.data_vars)
+        all_vars.append(ds_vars)
+        if da_main is None:
+            for c in main_candidates:
                 if c in ds.data_vars:
-                    da = ds[c]
+                    da_main = ds[c]
                     logger.info("Found %s as '%s' in dataset with vars %s", grib_var, c, ds_vars)
                     break
-            if da is None and len(ds_vars) == 1:
-                da = ds[ds_vars[0]]
-                logger.info("Fallback: using only var '%s' for %s", ds_vars[0], grib_var)
-        finally:
-            if da is None:
-                try:
-                    ds.close()
-                except Exception:
-                    pass
+        if da_dir is None:
+            for c in dir_candidates:
+                if c in ds.data_vars:
+                    da_dir = ds[c]
+                    logger.info("Found DIRPW as '%s' in dataset with vars %s", c, ds_vars)
+                    break
 
-    if da is None:
+    if da_main is None and len(datasets) == 1 and len(list(datasets[0].data_vars)) == 1:
+        only_var = list(datasets[0].data_vars)[0]
+        da_main = datasets[0][only_var]
+        logger.info("Fallback: using only var '%s' for %s", only_var, grib_var)
+
+    if da_main is None:
         raise RuntimeError(
             f"Could not identify {grib_var} in wave GRIB. "
-            f"All dataset vars: {all_vars}. Candidates tried: {candidates}"
+            f"All dataset vars: {all_vars}. Candidates tried: {main_candidates}"
         )
 
-    try:
-        stride = _stride_for_resolution(da.shape, resolution_deg, native_deg=0.25)
-        da = _downsample(da, stride)
-        payload_grid = _build_scalar_payload(
-            da, name=name, units=units, yyyymmdd=yyyymmdd, hh=hh, fhr=fhr,
-        )
-    except Exception:
-        raise
+    stride = _stride_for_resolution(da_main.shape, resolution_deg, native_deg=0.25)
+    da_main = _downsample(da_main, stride)
+    if da_dir is not None:
+        da_dir = _downsample(da_dir, stride)
+    payload_grid = _build_scalar_payload(
+        da_main, name=name, units=units, yyyymmdd=yyyymmdd, hh=hh, fhr=fhr,
+        direction_da=da_dir,
+    )
 
     payload = {
         "layer": layer_label,

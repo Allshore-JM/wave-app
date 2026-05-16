@@ -1,10 +1,13 @@
 /**
- * gfs_overlay.js  v5.1
+ * gfs_overlay.js  v5.2
  *
- * GFS wave-height / swell-period / wind overlays with land mask.
+ * GFS wave-height / swell-period / wind overlays with land mask
+ * and particle animation on all three layers.
  *
- * v5.1: HD resolution (0.5° grid, 4x bilinear upscale).
- *       50m Natural Earth coastlines for crisp land mask.
+ * v5.2: Particle animation on waves and period (from DIRPW).
+ *       Strict null masking — no bleed past model coastline.
+ *       Custom panes:  gfsData(420) < gfsParticles(440) < landMask(450)
+ *                                                       < forecastPoints(460)
  */
 (function initGfsOverlays() {
   'use strict';
@@ -20,6 +23,16 @@
 
   const LAND_TOPO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/land-50m.json';
   const LAND_FILL     = '#0a1e2e';
+
+  // leaflet-velocity tuning per layer
+  const VEL_TUNING = {
+    wind:   { maxVelocity: 25, velocityScale: 0.010, lineWidth: 1.5, opacity: 0.85,
+              speedUnit: 'kt', label: 'GFS Wind' },
+    waves:  { maxVelocity:  8, velocityScale: 0.014, lineWidth: 1.8, opacity: 0.95,
+              speedUnit: 'm',  label: 'Wave Direction' },
+    period: { maxVelocity: 20, velocityScale: 0.006, lineWidth: 1.8, opacity: 0.95,
+              speedUnit: 's',  label: 'Wave Direction' },
+  };
 
   // == Colour palettes ======================================================
   const WAVE_PAL = [
@@ -65,7 +78,9 @@
     return pal[pal.length - 1][1];
   }
 
-  // == Canvas renderer: 4x upscale ==========================================
+  // == Canvas renderer: 4x upscale, strict null mask =========================
+  // Any null neighbour → transparent. Stops data bleeding past the model's
+  // own coastline so the colour fill aligns with where GFS-Wave has data.
   function buildDataURL(gridPayload, pal) {
     const { header: h, data } = gridPayload;
     const nx = h.nx, ny = h.ny;
@@ -98,17 +113,13 @@
         const v01 = _gv(reordered, nx, ny, i0, j1);
         const v11 = _gv(reordered, nx, ny, i1, j1);
 
-        let val;
-        if (v00 !== null && v10 !== null && v01 !== null && v11 !== null) {
-          val = v00*(1-tx)*(1-ty) + v10*tx*(1-ty) + v01*(1-tx)*ty + v11*tx*ty;
-        } else {
-          const nearI = tx < 0.5 ? i0 : i1, nearJ = ty < 0.5 ? j0 : j1;
-          val = _gv(reordered, nx, ny, nearI, nearJ);
-          if (val === null) { px[base+3] = 0; continue; }
+        // Strict: if ANY corner is null (land), this pixel is transparent.
+        if (v00 === null || v10 === null || v01 === null || v11 === null) {
+          px[base+3] = 0; continue;
         }
-
+        const val = v00*(1-tx)*(1-ty) + v10*tx*(1-ty) + v01*(1-tx)*ty + v11*tx*ty;
         const c = colorAt(pal, val);
-        px[base] = c[0]; px[base+1] = c[1]; px[base+2] = c[2]; px[base+3] = 200;
+        px[base] = c[0]; px[base+1] = c[1]; px[base+2] = c[2]; px[base+3] = 210;
       }
     }
     ctx.putImageData(img, 0, 0);
@@ -132,6 +143,36 @@
       speedData[i] = Math.sqrt(u*u + v*v);
     }
     return { header: uRec.header, data: speedData };
+  }
+
+  // Build leaflet-velocity U/V records from a scalar grid + direction grid.
+  // DIRPW convention: "direction FROM which waves are coming" (degrees true).
+  // Propagation = (FROM + 180) mod 360. Particles flow in propagation direction.
+  function buildVelocityRecordsFromScalarDir(grid) {
+    if (!grid || !grid.data || !grid.dirData) return null;
+    const h = grid.header;
+    const nx = h.nx, ny = h.ny, n = nx * ny;
+    const u = new Array(n), v = new Array(n);
+    const DEG = Math.PI / 180;
+    for (let i = 0; i < n; i++) {
+      const mag = grid.data[i], dir = grid.dirData[i];
+      if (mag === null || mag === undefined || dir === null || dir === undefined) {
+        u[i] = 0; v[i] = 0; continue;
+      }
+      const propRad = (dir + 180) * DEG;
+      u[i] = mag * Math.sin(propRad);
+      v[i] = mag * Math.cos(propRad);
+    }
+    const base = {
+      lo1: h.lo1, la1: h.la1, lo2: h.lo2, la2: h.la2,
+      nx: h.nx, ny: h.ny, dx: h.dx, dy: h.dy,
+      refTime: grid.refTime, forecastTime: grid.forecastTime,
+      validTime: grid.validTime, parameterCategory: 2,
+    };
+    return [
+      { header: { ...base, parameterNumber: 2 }, data: u },
+      { header: { ...base, parameterNumber: 3 }, data: v },
+    ];
   }
 
   // == Land mask ============================================================
@@ -161,9 +202,10 @@
           fillColor: LAND_FILL,
           fillOpacity: 1,
           stroke: true,
-          color: '#14364a',
-          weight: 0.5,
-          opacity: 0.7,
+          color: LAND_FILL,
+          weight: 2.0,
+          opacity: 1,
+          lineJoin: 'round',
         },
         interactive: false,
       });
@@ -183,11 +225,20 @@
   }
 
   // == Overlay factories ====================================================
-  function makeOverlays(dataURL) {
+  function _ensurePanes() {
     if (!map.getPane('gfsData')) {
       map.createPane('gfsData');
       map.getPane('gfsData').style.zIndex = 420;
     }
+    if (!map.getPane('gfsParticles')) {
+      map.createPane('gfsParticles');
+      map.getPane('gfsParticles').style.zIndex = 440;
+      map.getPane('gfsParticles').style.pointerEvents = 'none';
+    }
+  }
+
+  function makeOverlays(dataURL) {
+    _ensurePanes();
     const opts = { opacity: 1, interactive: false, pane: 'gfsData', className: 'gfs-img' };
     return [
       L.imageOverlay(dataURL, [[-90, -540], [90, -180]], opts),
@@ -196,17 +247,24 @@
     ];
   }
 
-  function makeVelocityLayer(records) {
+  function makeVelocityLayer(records, layerType) {
     if (typeof L.velocityLayer !== 'function') return null;
+    _ensurePanes();
+    const tune = VEL_TUNING[layerType] || VEL_TUNING.wind;
     try {
       return L.velocityLayer({
         displayValues: true,
         displayOptions: {
-          velocityType: 'GFS Wind', position: 'bottomright',
-          emptyString: 'No wind data', angleConvention: 'bearingCW', speedUnit: 'kt',
+          velocityType: tune.label, position: 'bottomright',
+          emptyString: 'No data', angleConvention: 'bearingCW', speedUnit: tune.speedUnit,
         },
-        data: records, maxVelocity: 25, velocityScale: 0.01, opacity: 0.85,
-        colorScale: WIND_COLOR_SCALE, lineWidth: 1.5,
+        data: records,
+        maxVelocity: tune.maxVelocity,
+        velocityScale: tune.velocityScale,
+        opacity: tune.opacity,
+        colorScale: WIND_COLOR_SCALE,
+        lineWidth: tune.lineWidth,
+        paneName: 'gfsParticles',
       });
     } catch (err) {
       console.warn('leaflet-velocity failed:', err);
@@ -230,7 +288,7 @@
   let _type = null, _fi = 0, _playing = false, _timer = null;
   let _speed = DEFAULT_SPEED_MS;
   const _payloads = [], _urls = [], _overlays = [];
-  const _windImgUrls = [], _windVelLyrs = [];
+  const _velLyrs = [];
   const _status = [];
   let _shown = [];
 
@@ -241,7 +299,7 @@
   function _fullReset() {
     _clearShown(); _stopAnim(); _hideLandMask();
     _payloads.length = _urls.length = _overlays.length =
-      _windImgUrls.length = _windVelLyrs.length = _status.length = 0;
+      _velLyrs.length = _status.length = 0;
     _fi = 0;
   }
 
@@ -276,23 +334,36 @@
     }
     _setLoad(''); _clearShown();
 
-    if (_type === 'wind') {
-      const imgUrl = _windImgUrls[idx];
-      if (imgUrl) {
-        let trio = _overlays[idx];
-        if (!trio) { trio = makeOverlays(imgUrl); _overlays[idx] = trio; }
-        trio.forEach(l => l.addTo(map));
-        _shown = [...trio];
-      }
-      const vel = _windVelLyrs[idx];
-      if (vel) { try { vel.addTo(map); _shown.push(vel); } catch(_){} }
-    } else {
-      let trio = _overlays[idx];
-      if (!trio && _urls[idx]) { trio = makeOverlays(_urls[idx]); _overlays[idx] = trio; }
-      if (trio) { trio.forEach(l => l.addTo(map)); _shown = trio; }
+    // Colour fill (image overlay trio for east/west wrapping)
+    let trio = _overlays[idx];
+    if (!trio && _urls[idx]) { trio = makeOverlays(_urls[idx]); _overlays[idx] = trio; }
+    if (trio) { trio.forEach(l => l.addTo(map)); _shown = [...trio]; }
+
+    // Particle animation — all three layer types
+    const vel = _velLyrs[idx];
+    if (vel) {
+      try {
+        vel.addTo(map);
+        _shown.push(vel);
+        // Safety net: re-parent the velocity canvas into gfsParticles
+        // pane in case the library doesn't honour `paneName`.
+        setTimeout(() => _reparentVelocityCanvas(), 0);
+      } catch(_){}
     }
 
     _showLandMask();
+  }
+
+  function _reparentVelocityCanvas() {
+    const target = map.getPane('gfsParticles');
+    if (!target) return;
+    // leaflet-velocity creates a canvas with class 'velocity-overlay' inside
+    // overlayPane. Move it into gfsParticles so it stacks correctly.
+    const overlayPane = map.getPane('overlayPane');
+    if (!overlayPane) return;
+    overlayPane.querySelectorAll('canvas.velocity-overlay').forEach(c => {
+      if (c.parentElement !== target) target.appendChild(c);
+    });
   }
 
   // == UI ====================================================================
@@ -333,11 +404,16 @@
       _payloads[idx] = p;
 
       if (type === 'wind') {
+        // Wind: U/V records come straight from the backend.
         const sg = buildWindSpeedPayload(p.records);
-        if (sg) _windImgUrls[idx] = buildDataURL(sg, WIND_PAL);
-        _windVelLyrs[idx] = makeVelocityLayer(p.records);
+        if (sg) _urls[idx] = buildDataURL(sg, WIND_PAL);
+        _velLyrs[idx] = makeVelocityLayer(p.records, 'wind');
       } else {
-        _urls[idx] = buildDataURL(p.grid, type==='waves' ? WAVE_PAL : PERIOD_PAL);
+        // Waves / period: colour by scalar, particles from DIRPW.
+        const pal = type === 'waves' ? WAVE_PAL : PERIOD_PAL;
+        _urls[idx] = buildDataURL(p.grid, pal);
+        const velRecs = buildVelocityRecordsFromScalarDir(p.grid);
+        if (velRecs) _velLyrs[idx] = makeVelocityLayer(velRecs, type);
       }
       _status[idx] = 'ok';
     } catch (err) {

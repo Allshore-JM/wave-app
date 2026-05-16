@@ -515,6 +515,11 @@
       wheelPxPerZoomLevel: 80
     });
 
+    // Custom pane so forecast points render ABOVE GFS overlays + land mask.
+    // gfsData=420, gfsParticles=440, landMask=450, forecastPoints=460.
+    map.createPane('forecastPoints');
+    map.getPane('forecastPoints').style.zIndex = 460;
+
     const initialLayerVisibility = loadLayerVisibility();
     const forecastLayer = L.layerGroup();
     const liveBuoyLayer = L.layerGroup();
@@ -688,6 +693,7 @@
       forecastStationsData.forEach(s => {
         wrappedLongitudes(s.lon).forEach(lng => {
           const mk = L.circleMarker([s.lat, lng], {
+            pane: 'forecastPoints',
             radius: 3,
             color: '#FFD600',
             fillColor: '#FFD600',

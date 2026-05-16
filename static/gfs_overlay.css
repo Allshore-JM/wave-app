@@ -1,5 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════
-   GFS Overlay Panel  –  bottom-left, v2
+   GFS Overlay Panel  –  v3
+   Bottom-left, with progress bar (41 frames -> dots replaced by bar)
    ═══════════════════════════════════════════════════════════════════ */
 
 #gfsPanel {
@@ -7,13 +8,13 @@
   bottom: 30px;
   left: 10px;
   z-index: 1000;
-  background: rgba(8, 18, 34, 0.92);
+  background: rgba(8, 18, 34, 0.93);
   border-radius: 10px;
   padding: 10px 12px;
   color: #fff;
   font-size: 13px;
-  min-width: 188px;
-  max-width: 228px;
+  min-width: 210px;
+  max-width: 260px;
   box-shadow: 0 4px 20px rgba(0,0,0,0.55);
   backdrop-filter: blur(7px);
   -webkit-backdrop-filter: blur(7px);
@@ -63,12 +64,15 @@
 }
 
 .gfs-time-label {
-  font-size: 12px;
+  font-size: 11.5px;
   color: #c4dde8;
   font-weight: 600;
   text-align: center;
-  letter-spacing: 0.035em;
+  letter-spacing: 0.02em;
   margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .gfs-anim-row {
@@ -85,9 +89,7 @@
   border-radius: 50%;
   cursor: pointer;
   font-size: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   padding: 0; flex-shrink: 0;
   transition: background 0.12s;
 }
@@ -130,29 +132,41 @@
 }
 .gfs-speed-sel option { background: #0e1828; }
 
-/* Frame-load progress dots */
-.gfs-frame-status {
-  display: flex;
-  gap: 3px;
-  justify-content: center;
-  margin-top: 5px;
+/* Progress bar (replaces v2's dot row) */
+.gfs-progress-wrap {
+  margin-top: 7px;
 }
-.gfs-frame-dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: rgba(255,255,255,0.18);
-  transition: background 0.3s;
+
+.gfs-progress-bg {
+  width: 100%;
+  height: 3px;
+  background: rgba(255,255,255,0.10);
+  border-radius: 2px;
+  overflow: hidden;
 }
-.gfs-frame-dot.ready  { background: #4094ff; }
-.gfs-frame-dot.active { background: #fff; box-shadow: 0 0 4px rgba(255,255,255,0.7); }
-.gfs-frame-dot.error  { background: rgba(255,80,80,0.5); }
+
+.gfs-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(to right, #4094ff, #64c8ff);
+  border-radius: 2px;
+  transition: width 0.3s ease-out;
+}
+
+.gfs-progress-label {
+  font-size: 9.5px;
+  color: #608aaa;
+  margin-top: 3px;
+  text-align: center;
+}
 
 #gfsLoading {
   font-size: 11px;
-  color: #608aaa;
+  color: #d4a020;
   margin-top: 5px;
   display: none;
   text-align: center;
+  font-style: italic;
 }
 
 #gfsLegend {

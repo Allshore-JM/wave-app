@@ -1,0 +1,74 @@
+/* ── GFS Overlay Panel ─────────────────────────────────────────────────── */
+#gfsPanel {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1000;
+  background: rgba(10, 22, 40, 0.90);
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: #fff;
+  font-size: 13px;
+  min-width: 148px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.5);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  user-select: none;
+  pointer-events: auto;
+}
+
+#gfsPanel .gfs-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: #6e99b8;
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+#gfsPanel .gfs-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #a4c2d8;
+  padding: 4px 2px;
+  cursor: pointer;
+  font-size: 13px;
+  border-radius: 4px;
+  transition: color 0.12s;
+  line-height: 1.6;
+}
+
+#gfsPanel .gfs-btn:hover  { color: #ddeeff; }
+#gfsPanel .gfs-btn.active { color: #ffffff; font-weight: 700; }
+#gfsPanel .gfs-btn::before        { content: "○ "; font-size: 10px; }
+#gfsPanel .gfs-btn.active::before { content: "● "; }
+
+#gfsLoading {
+  font-size: 11px;
+  color: #6e99b8;
+  margin-top: 5px;
+  display: none;
+}
+
+#gfsLegend {
+  display: none;
+  margin-top: 8px;
+  border-top: 1px solid rgba(255,255,255,0.12);
+  padding-top: 8px;
+}
+
+#gfsLegendBar {
+  height: 10px;
+  border-radius: 4px;
+  margin-bottom: 3px;
+}
+
+#gfsLegendLabels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #6e99b8;
+}

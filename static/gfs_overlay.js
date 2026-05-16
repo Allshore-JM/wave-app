@@ -1,11 +1,10 @@
 /**
- * gfs_overlay.js  v5.0
+ * gfs_overlay.js  v5.1
  *
  * GFS wave-height / swell-period / wind overlays with land mask.
  *
- * v5.0: Land mask from Natural Earth 110m TopoJSON hides data over land.
- *       Wind always shows colour fill + optional velocity particles.
- *       4x canvas upscale with smooth bilinear colour interpolation.
+ * v5.1: HD resolution (0.5° grid, 4x bilinear upscale).
+ *       50m Natural Earth coastlines for crisp land mask.
  */
 (function initGfsOverlays() {
   'use strict';
@@ -13,13 +12,13 @@
   const STEPS = [];
   for (let h = 0; h <= 120; h += 6) STEPS.push(h);
 
-  const RESOLUTION       = 1.0;
+  const RESOLUTION       = 0.5;
   const UPSCALE          = 4;
-  const PARALLEL_FETCHES = 3;
+  const PARALLEL_FETCHES = 4;
   const AUTOPLAY_MIN_READY = 2;
   const DEFAULT_SPEED_MS = 500;
 
-  const LAND_TOPO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/land-110m.json';
+  const LAND_TOPO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/land-50m.json';
   const LAND_FILL     = '#0a1e2e';
 
   // == Colour palettes ======================================================

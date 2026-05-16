@@ -2,11 +2,9 @@
    GFS Overlay Panel  –  v4.2
    ═══════════════════════════════════════════════════════════════════ */
 
-/* Prevent browser bilinear interpolation from bleeding colour into land */
+/* Smooth browser scaling — land mask hides coastline bleed */
 .gfs-img {
-  image-rendering: pixelated;
-  image-rendering: -moz-crisp-edges;
-  image-rendering: crisp-edges;
+  image-rendering: auto;
 }
 
 #gfsPanel {

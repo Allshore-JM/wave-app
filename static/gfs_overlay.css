@@ -1,7 +1,13 @@
 /* ═══════════════════════════════════════════════════════════════════
-   GFS Overlay Panel  –  v3
-   Bottom-left, with progress bar (41 frames -> dots replaced by bar)
+   GFS Overlay Panel  –  v4.2
    ═══════════════════════════════════════════════════════════════════ */
+
+/* Prevent browser bilinear interpolation from bleeding colour into land */
+.gfs-img {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
 
 #gfsPanel {
   position: absolute;

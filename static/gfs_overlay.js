@@ -1,32 +1,27 @@
 /**
- * gfs_overlay.js  v4.1
+ * gfs_overlay.js  v4.2
  *
- * Animated GFS wave-height / swell-period / wind overlays with smooth
- * bilinear colour interpolation and land-boundary-aware rendering.
+ * Animated GFS wave-height / swell-period / wind overlays.
  *
- * v4.1 fixes from v4.0:
- *  - 4x canvas upscaling with land-aware interpolation (no bleed over land)
- *  - Wind fallback: renders wind speed as coloured overlay when leaflet-velocity fails
- *  - Sharp coastlines: only interpolates between valid ocean cells
- *
- * Requires: Leaflet global `map`, optional leaflet-velocity for wind particles.
- * Include AFTER the map is initialised.
+ * v4.2 fixes:
+ *  - Land masking: pixels only coloured when NEAREST grid cell is valid ocean
+ *  - image-rendering: pixelated prevents browser bilinear bleed at coastlines
+ *  - Wind always renders colour fill; velocity particles added on top if available
+ *  - 4x canvas upscale for smooth ocean gradients with crisp coast boundaries
  */
 (function initGfsOverlays() {
   'use strict';
 
-  // == Animation frames =====================================================
   const STEPS = [];
   for (let h = 0; h <= 120; h += 6) STEPS.push(h);
-  // -> [0, 6, 12, 18, ..., 120]  (21 frames)
 
   const RESOLUTION       = 1.0;
-  const UPSCALE          = 4;     // render canvas at 4x grid resolution
+  const UPSCALE          = 4;
   const PARALLEL_FETCHES = 3;
   const AUTOPLAY_MIN_READY = 2;
   const DEFAULT_SPEED_MS = 500;
 
-  // == Colour palettes (value stops for smooth interpolation) ===============
+  // == Colour palettes ======================================================
   const WAVE_PAL = [
     [ 0.00, [  0,  22,  92]],
     [ 0.50, [  0,  68, 172]],
@@ -52,7 +47,6 @@
     [25,  [208,   0,  58]],
   ];
 
-  // Wind speed (m/s) palette
   const WIND_PAL = [
     [ 0,  [  0,  40, 100]],
     [ 2,  [  0,  80, 160]],
@@ -88,7 +82,7 @@
     return pal[pal.length - 1][1];
   }
 
-  // == Grid value accessor (handles longitude shift) ========================
+  // == Grid helpers =========================================================
   function gridVal(data, nx, ny, col, row) {
     if (col < 0 || col >= nx || row < 0 || row >= ny) return null;
     const v = data[row * nx + col];
@@ -96,18 +90,19 @@
     return v;
   }
 
-  // == Canvas renderer with 4x upscale and land-aware interpolation =========
-  function buildDataURL(gridPayload, pal) {
+  // == Canvas renderer: 4x upscale, land-aware ==============================
+  // Pixels are only coloured when the NEAREST grid cell is valid (ocean).
+  // Between valid cells, bilinear interpolation produces smooth gradients.
+  // image-rendering: pixelated on the overlay prevents browser bleed at edges.
+  function buildDataURL(gridPayload, pal, skipLandMask) {
     const { header: h, data } = gridPayload;
     const nx = h.nx, ny = h.ny;
     const half = Math.round(nx / 2);
 
-    // Re-order data to centre on -180° longitude
     const reordered = new Array(nx * ny);
     for (let j = 0; j < ny; j++) {
       for (let i = 0; i < nx; i++) {
-        const srcCol = (i + half) % nx;
-        reordered[j * nx + i] = data[j * nx + srcCol];
+        reordered[j * nx + i] = data[j * nx + ((i + half) % nx)];
       }
     }
 
@@ -131,39 +126,37 @@
         const i0 = Math.floor(gx);
         const i1 = Math.min(i0 + 1, nx - 1);
         const tx = gx - i0;
-
         const base = (oy * outW + ox) * 4;
 
-        // Get 4 surrounding grid values
+        // Nearest grid cell for this output pixel
+        const nearI = tx < 0.5 ? i0 : i1;
+        const nearJ = ty < 0.5 ? j0 : j1;
+        const nearVal = gridVal(reordered, nx, ny, nearI, nearJ);
+
+        // If nearest cell is null (land), pixel is transparent — no bleed
+        if (nearVal === null && !skipLandMask) {
+          px[base + 3] = 0;
+          continue;
+        }
+
+        // Get 4 surrounding values for interpolation
         const v00 = gridVal(reordered, nx, ny, i0, j0);
         const v10 = gridVal(reordered, nx, ny, i1, j0);
         const v01 = gridVal(reordered, nx, ny, i0, j1);
         const v11 = gridVal(reordered, nx, ny, i1, j1);
 
-        // Count valid cells
-        const valid = [v00, v10, v01, v11].filter(v => v !== null);
-
-        if (valid.length === 0) {
-          // All land/missing -> transparent
-          px[base + 3] = 0;
-          continue;
-        }
-
         let val;
-        if (valid.length === 4) {
-          // Full bilinear interpolation (smooth ocean)
+        if (v00 !== null && v10 !== null && v01 !== null && v11 !== null) {
           val = v00 * (1 - tx) * (1 - ty)
               + v10 * tx * (1 - ty)
               + v01 * (1 - tx) * ty
               + v11 * tx * ty;
         } else {
-          // Near coastline: use nearest valid cell (sharp boundary)
-          const nearX = tx < 0.5 ? i0 : i1;
-          const nearY = ty < 0.5 ? j0 : j1;
-          val = gridVal(reordered, nx, ny, nearX, nearY);
+          val = nearVal;
           if (val === null) {
-            // Try the closest valid one
-            val = valid[0];
+            // skipLandMask path: all neighbours null
+            px[base + 3] = 0;
+            continue;
           }
         }
 
@@ -178,31 +171,25 @@
     return canvas.toDataURL('image/png');
   }
 
-  // == Build wind speed grid from U/V records ===============================
+  // == Wind speed from U/V ==================================================
   function buildWindSpeedPayload(records) {
     if (!records || records.length < 2) return null;
     const uRec = records.find(r => r.header.parameterNumber === 2);
     const vRec = records.find(r => r.header.parameterNumber === 3);
     if (!uRec || !vRec) return null;
 
-    const h = uRec.header;
     const n = uRec.data.length;
     const speedData = new Array(n);
     for (let i = 0; i < n; i++) {
-      const u = uRec.data[i];
-      const v = vRec.data[i];
-      if (u === 0 && v === 0) {
-        speedData[i] = 0;
-      } else {
-        speedData[i] = Math.sqrt(u * u + v * v);
-      }
+      const u = uRec.data[i], v = vRec.data[i];
+      speedData[i] = Math.sqrt(u * u + v * v);
     }
-    return { header: h, data: speedData };
+    return { header: uRec.header, data: speedData };
   }
 
-  // == Dateline-safe overlay set (3 copies) =================================
+  // == Overlay factories ====================================================
   function makeOverlays(dataURL) {
-    const opts = { opacity: 1, zIndex: 200, interactive: false };
+    const opts = { opacity: 1, zIndex: 200, interactive: false, className: 'gfs-img' };
     return [
       L.imageOverlay(dataURL, [[-90, -540], [90, -180]], opts),
       L.imageOverlay(dataURL, [[-90, -180], [90,  180]], opts),
@@ -211,10 +198,7 @@
   }
 
   function makeVelocityLayer(records) {
-    if (typeof L.velocityLayer !== 'function') {
-      console.warn('leaflet-velocity not available, using wind speed fallback');
-      return null;
-    }
+    if (typeof L.velocityLayer !== 'function') return null;
     try {
       return L.velocityLayer({
         displayValues: true,
@@ -225,18 +209,19 @@
           angleConvention: 'bearingCW',
           speedUnit:       'kt',
         },
-        data: records, maxVelocity: 15, velocityScale: 0.007, opacity: 0.9,
+        data: records, maxVelocity: 25, velocityScale: 0.01, opacity: 0.85,
         colorScale: WIND_COLOR_SCALE,
+        lineWidth: 1.5,
       });
     } catch (err) {
-      console.warn('leaflet-velocity failed:', err);
+      console.warn('leaflet-velocity layer creation failed:', err);
       return null;
     }
   }
 
-  // == Valid-time label parser ===============================================
-  const WDAY  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const MON   = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  // == Valid-time label ======================================================
+  const WDAY = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const MON  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
   function validTimeLabel(payload) {
     try {
@@ -249,19 +234,15 @@
     } catch (_) { return null; }
   }
 
-  // == State ================================================================
-  let _type    = null;
-  let _fi      = 0;
-  let _playing = false;
-  let _timer   = null;
-  let _speed   = DEFAULT_SPEED_MS;
+  // == State =================================================================
+  let _type = null, _fi = 0, _playing = false, _timer = null;
+  let _speed = DEFAULT_SPEED_MS;
 
-  const _payloads = [];
-  const _urls     = [];
-  const _overlays = [];
-  const _windLyrs = [];
-  const _status   = [];
-  let   _shown    = [];
+  const _payloads = [], _urls = [], _overlays = [];
+  const _windImgUrls = [];   // wind colour overlay data URLs
+  const _windVelLyrs = [];   // optional velocity particle layers
+  const _status = [];
+  let _shown = [];
 
   function _clearShown() {
     _shown.forEach(l => { try { map.removeLayer(l); } catch (_) {} });
@@ -272,11 +253,11 @@
     _clearShown();
     _stopAnim();
     _payloads.length = _urls.length = _overlays.length =
-      _windLyrs.length = _status.length = 0;
+      _windImgUrls.length = _windVelLyrs.length = _status.length = 0;
     _fi = 0;
   }
 
-  // == Animation ============================================================
+  // == Animation =============================================================
   function _nextReadyIdx(from) {
     const n = STEPS.length;
     for (let step = 1; step <= n; step++) {
@@ -304,7 +285,7 @@
     if (btn) btn.textContent = '⏸';
   }
 
-  // == Display a specific frame =============================================
+  // == Display a frame ======================================================
   function _go(idx) {
     _fi = idx;
     const slider = document.getElementById('gfsSlider');
@@ -320,19 +301,21 @@
     _clearShown();
 
     if (_type === 'wind') {
-      // Try velocity layer first, fall back to image overlay
-      const w = _windLyrs[idx];
-      if (w && w._type === 'velocity') {
-        w.layer.addTo(map);
-        _shown = [w.layer];
-      } else if (w && w._type === 'image') {
+      // Always show wind speed colour fill
+      const imgUrl = _windImgUrls[idx];
+      if (imgUrl) {
         let trio = _overlays[idx];
         if (!trio) {
-          trio = makeOverlays(w.url);
+          trio = makeOverlays(imgUrl);
           _overlays[idx] = trio;
         }
         trio.forEach(l => l.addTo(map));
-        _shown = trio;
+        _shown = [...trio];
+      }
+      // Add velocity particles on top if available
+      const vel = _windVelLyrs[idx];
+      if (vel) {
+        try { vel.addTo(map); _shown.push(vel); } catch (_) {}
       }
     } else {
       let trio = _overlays[idx];
@@ -347,7 +330,7 @@
     }
   }
 
-  // == UI helpers ===========================================================
+  // == UI ===================================================================
   function _updateLabel() {
     const el = document.getElementById('gfsTimeLabel');
     if (!el) return;
@@ -370,7 +353,7 @@
   function _setLoad(msg) {
     const el = document.getElementById('gfsLoading');
     if (!el) return;
-    el.textContent   = msg;
+    el.textContent = msg;
     el.style.display = msg ? 'block' : 'none';
   }
 
@@ -381,7 +364,7 @@
     document.getElementById('gfsLegend').style.display = 'block';
   }
 
-  // == Fetch one forecast frame =============================================
+  // == Fetch a frame ========================================================
   async function _fetchFrame(idx, type) {
     _status[idx] = 'loading';
     _updateProgress();
@@ -394,21 +377,16 @@
       _payloads[idx] = p;
 
       if (type === 'wind') {
-        // Try leaflet-velocity first
-        const velLayer = makeVelocityLayer(p.records);
-        if (velLayer) {
-          _windLyrs[idx] = { _type: 'velocity', layer: velLayer };
-        } else {
-          // Fallback: render wind speed as coloured overlay
-          const speedGrid = buildWindSpeedPayload(p.records);
-          if (speedGrid) {
-            const dataURL = buildDataURL(speedGrid, WIND_PAL);
-            _windLyrs[idx] = { _type: 'image', url: dataURL };
-          }
+        // Always build a wind speed colour overlay
+        const speedGrid = buildWindSpeedPayload(p.records);
+        if (speedGrid) {
+          _windImgUrls[idx] = buildDataURL(speedGrid, WIND_PAL, true);
         }
+        // Also try velocity particles (rendered on top)
+        _windVelLyrs[idx] = makeVelocityLayer(p.records);
       } else {
         const pal = type === 'waves' ? WAVE_PAL : PERIOD_PAL;
-        _urls[idx] = buildDataURL(p.grid, pal);
+        _urls[idx] = buildDataURL(p.grid, pal, false);
       }
       _status[idx] = 'ok';
 
@@ -426,7 +404,7 @@
     }
   }
 
-  // == Parallel worker pool with priority-ordered queue =====================
+  // == Priority fetch pool ==================================================
   function _buildPriorityQueue() {
     const phase1 = [0, 24, 48, 72, 96, 120];
     const phase2 = [12, 36, 60, 84, 108];
@@ -434,8 +412,8 @@
     for (let h = 6; h <= 120; h += 6) {
       if (!phase1.includes(h) && !phase2.includes(h)) phase3.push(h);
     }
-    const priorityHours = [...phase1, ...phase2, ...phase3];
-    return priorityHours.map(h => STEPS.indexOf(h)).filter(i => i >= 0);
+    return [...phase1, ...phase2, ...phase3]
+      .map(h => STEPS.indexOf(h)).filter(i => i >= 0);
   }
 
   async function _runFetchPool(type) {
@@ -452,7 +430,7 @@
     await Promise.all(workers);
   }
 
-  // == Activate / deactivate a layer ========================================
+  // == Activate / deactivate ================================================
   async function gfsActivate(type) {
     const legendEl = document.getElementById('gfsLegend');
     const timeEl   = document.getElementById('gfsTimeCtrl');
@@ -500,7 +478,7 @@
     _runFetchPool(type);
   }
 
-  // == Build the control panel ==============================================
+  // == Control panel ========================================================
   const panel = document.createElement('div');
   panel.id = 'gfsPanel';
   panel.innerHTML = `
@@ -510,7 +488,6 @@
       <button class="gfs-btn" data-layer="period">Period</button>
       <button class="gfs-btn" data-layer="wind">Wind</button>
     </div>
-
     <div id="gfsTimeCtrl" style="display:none">
       <div id="gfsTimeLabel" class="gfs-time-label">&mdash;</div>
       <div class="gfs-anim-row">
@@ -530,9 +507,7 @@
         <div id="gfsProgressLabel" class="gfs-progress-label">0 / ${STEPS.length} frames loaded</div>
       </div>
     </div>
-
     <div id="gfsLoading"></div>
-
     <div id="gfsLegend" style="display:none">
       <div id="gfsLegendBar"></div>
       <div id="gfsLegendLabels"></div>
@@ -543,16 +518,13 @@
   panel.querySelectorAll('.gfs-btn').forEach(b =>
     b.addEventListener('click', () => gfsActivate(b.dataset.layer))
   );
-
   document.getElementById('gfsPlay').addEventListener('click', () =>
     _playing ? _stopAnim() : _startAnim()
   );
-
   document.getElementById('gfsSlider').addEventListener('input', e => {
     _stopAnim();
     _go(parseInt(e.target.value, 10));
   });
-
   document.getElementById('gfsSpeed').addEventListener('change', e => {
     _speed = parseInt(e.target.value, 10);
     if (_playing) { _stopAnim(); _startAnim(); }

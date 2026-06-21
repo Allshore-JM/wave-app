@@ -835,113 +835,159 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
 
 # ------------------------------ Flask routes -----------------------------------
 
+# NDBC / GFS station ids are short and alphanumeric, with hyphens/underscores
+# for some grid points (e.g. "NW-HFO60"). Validate before the value is ever
+# interpolated into an outbound NOAA URL, to block path-traversal characters.
+_STATION_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
+
+
+def compute_forecast_payload(station: str, tz: str | None, unit: str) -> dict:
+    """Shared, cached forecast computation for both the homepage and /api/forecast.
+
+    parse_bull() underneath is cached (Phase 2a), so on a warm cache this only
+    re-runs the cheap HTML/graph packing. Returns a JSON-serializable dict.
+    """
+    out = {
+        "station": station,
+        "error": None,
+        "table_html": None,
+        "tz_label": "",
+        "lat": None,
+        "lon": None,
+        "graph_data": None,
+        "graph_header": None,
+    }
+    if not station:
+        return out
+    if not _STATION_RE.fullmatch(station):
+        out["error"] = "Invalid station id"
+        return out
+
+    cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
+        station, tz or None
+    )
+    out["error"] = parse_error
+    if rows is None:
+        return out
+
+    tz_label = effective_tz_name
+    out["tz_label"] = tz_label
+    out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit)
+
+    # single map marker if coords JSON has it
+    coords_map = load_station_coords()
+    sid_str = str(station).strip()
+    if sid_str in coords_map:
+        out["lat"] = coords_map[sid_str]['lat']
+        out["lon"] = coords_map[sid_str]['lon']
+
+    # ----- pack graph data -----
+    labels = [f"{r[0]} {r[1]}" for r in rows]
+    def pick(array_index):
+        return [r[array_index] for r in rows]
+    def hs_idx(g): return 2 + g*3
+    def tp_idx(g): return 3 + g*3
+    def dr_idx(g): return 4 + g*3
+
+    # Feet from the parsed table rows (rows are feet already)
+    height_ft = {
+        "s1": pick(hs_idx(0)), "s2": pick(hs_idx(1)), "s3": pick(hs_idx(2)),
+        "s4": pick(hs_idx(3)), "s5": pick(hs_idx(4)), "s6": pick(hs_idx(5)),
+        "combined": [r[-1] for r in rows],
+    }
+    period = {
+        "s1": pick(tp_idx(0)), "s2": pick(tp_idx(1)), "s3": pick(tp_idx(2)),
+        "s4": pick(tp_idx(3)), "s5": pick(tp_idx(4)), "s6": pick(tp_idx(5)),
+    }
+    direction = {
+        "s1": pick(dr_idx(0)), "s2": pick(dr_idx(1)), "s3": pick(dr_idx(2)),
+        "s4": pick(dr_idx(3)), "s5": pick(dr_idx(4)), "s6": pick(dr_idx(5)),
+    }
+
+    if unit == "Metric":
+        FT_TO_M = 0.3048
+        height = {
+            k: [None if v is None else round(v * FT_TO_M, 2) for v in arr]
+            for k, arr in height_ft.items()
+        }
+        graph_units = "m"
+    else:
+        height = height_ft
+        graph_units = "ft"
+
+    out["graph_data"] = {
+        "labels": labels, "height": height, "period": period, "direction": direction,
+        "units": graph_units,
+        "cycle": cycle_str or "", "location": location_str or "", "tz": tz_label or "",
+    }
+
+    cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
+    loc_clean   = _strip_header_prefix(location_str, "Location")
+    lat, lon = _parse_header_coords(location_str)
+    latlon_fmt = _fmt_latlon(lat, lon)
+    loc_display = f"{station} ({latlon_fmt})" if latlon_fmt else loc_clean
+    out["graph_header"] = {"cycle": cycle_clean, "location": loc_display, "tz": tz_label or ""}
+    return out
+
+
+def _forecast_is_cached(station: str, tz: str | None) -> bool:
+    """True if parse_bull already has this (station, tz) cached and fresh."""
+    key = (station, tz or "")
+    with _CACHE_LOCK:
+        entry = _FORECAST_CACHE.get(key)
+        return bool(entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL))
+
+
+@app.route("/api/forecast")
+def api_forecast():
+    """JSON forecast for one station — same cached path the homepage uses."""
+    station = (request.args.get("station") or "51201").strip()
+    tz = request.args.get("tz", "")
+    unit = request.args.get("unit", "US") or "US"
+    try:
+        return jsonify(compute_forecast_payload(station, tz or None, unit))
+    except Exception as exc:  # always return JSON the client can render
+        logger.warning("forecast payload failed for %s: %r", station, exc)
+        return jsonify({
+            "station": station, "error": "Forecast temporarily unavailable",
+            "table_html": None, "tz_label": "", "lat": None, "lon": None,
+            "graph_data": None, "graph_header": None,
+        })
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     stations = get_station_list()
     timezones = sorted(pytz.common_timezones)
     unit_options = ["US", "Metric"]
 
-    selected_station = ""
-    selected_tz = ""
-    selected_unit = "US"
     selected_view = (request.values.get("view") or "Table")
     if request.method == "POST":
-        selected_station = request.form.get("station") or ""
+        selected_station = (request.form.get("station") or "").strip()
         selected_tz = request.form.get("tz") or ""
         selected_unit = request.form.get("unit") or "US"
     else:
-        selected_station = request.args.get("station", "")
+        selected_station = (request.args.get("station", "") or "").strip()
         selected_tz = request.args.get("tz", "")
         selected_unit = request.args.get("unit", "US") or "US"
 
     if not selected_station:
         selected_station = "51201"
 
-    table_html = None
-    error = None
-    tz_label = ""
-    selected_lat = None
-    selected_lon = None
-    graph_data = None
-    graph_header = None  # (cycle, location, tz)
+    # Shell-first: defer ONLY the Table view on a cold cache so the page never
+    # blocks on NOAA. The browser then pulls /api/forecast and injects the table.
+    # Graph view, already-cached forecasts, and ?render=full all render inline.
+    force_render = request.values.get("render") == "full"
+    defer_forecast = (
+        selected_view == "Table"
+        and not force_render
+        and bool(selected_station)
+        and not _forecast_is_cached(selected_station, selected_tz or None)
+    )
 
-    if selected_station:
-        cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
-            selected_station, selected_tz or None
-        )
-        error = parse_error
-        if rows is not None:
-            tz_label = effective_tz_name
-            table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
-
-            # for map single marker if coords JSON has it
-            coords_map = load_station_coords()
-            sid_str = str(selected_station).strip()
-            if sid_str in coords_map:
-                selected_lat = coords_map[sid_str]['lat']
-                selected_lon = coords_map[sid_str]['lon']
-
-            # ----- pack graph data -----
-            labels = [f"{r[0]} {r[1]}" for r in rows]
-            def pick(array_index):
-                return [r[array_index] for r in rows]
-
-            # indices per swell
-            def hs_idx(g): return 2 + g*3
-            def tp_idx(g): return 3 + g*3
-            def dr_idx(g): return 4 + g*3
-
-            # Feet from the parsed table rows (rows are feet already)
-            height_ft = {
-                "s1": pick(hs_idx(0)), "s2": pick(hs_idx(1)), "s3": pick(hs_idx(2)),
-                "s4": pick(hs_idx(3)), "s5": pick(hs_idx(4)), "s6": pick(hs_idx(5)),
-                "combined": [r[-1] for r in rows],
-            }
-            period = {
-                "s1": pick(tp_idx(0)), "s2": pick(tp_idx(1)), "s3": pick(tp_idx(2)),
-                "s4": pick(tp_idx(3)), "s5": pick(tp_idx(4)), "s6": pick(tp_idx(5)),
-            }
-            direction = {
-                "s1": pick(dr_idx(0)), "s2": pick(dr_idx(1)), "s3": pick(dr_idx(2)),
-                "s4": pick(dr_idx(3)), "s5": pick(dr_idx(4)), "s6": pick(dr_idx(5)),
-            }
-
-            # NEW: convert graph heights to meters when Metric is selected
-            if selected_unit == "Metric":
-                FT_TO_M = 0.3048
-                height = {
-                    k: [None if v is None else round(v * FT_TO_M, 2) for v in arr]
-                    for k, arr in height_ft.items()
-                }
-                graph_units = "m"
-            else:
-                height = height_ft
-                graph_units = "ft"
-
-            graph_data = {
-                "labels": labels,
-                "height": height,
-                "period": period,
-                "direction": direction,
-                "units": graph_units,  # now matches the numeric units
-                "cycle": cycle_str or "",
-                "location": location_str or "",
-                "tz": tz_label or ""
-            }
-
-            # Graph header should NOT include the leading words; clean them.
-            cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
-            loc_clean   = _strip_header_prefix(location_str, "Location")
-            lat, lon = _parse_header_coords(location_str)
-            latlon_fmt = _fmt_latlon(lat, lon)
-            # Prefer "station_id (lat lon)" like "51201 (21.67N 158.12W)" when coords exist
-            loc_display = f"{selected_station} ({latlon_fmt})" if latlon_fmt else loc_clean
-
-            graph_header = {
-                "cycle": cycle_clean,
-                "location": loc_display,
-                "tz": tz_label or ""
-            }
+    payload = None
+    if selected_station and not defer_forecast:
+        payload = compute_forecast_payload(selected_station, selected_tz or None, selected_unit)
 
     return render_template(
         "index.html",
@@ -949,16 +995,17 @@ def index():
         selected_station=selected_station,
         timezones=timezones,
         selected_tz=selected_tz,
-        tz_label=tz_label,
+        tz_label=(payload["tz_label"] if payload else ""),
         units=unit_options,
         selected_unit=selected_unit,
-        table_html=table_html,
-        error=error,
-        selected_lat=selected_lat,
-        selected_lon=selected_lon,
-        selected_view=request.values.get("view") or "Table",
-        graph_data=graph_data,
-        graph_header=graph_header
+        table_html=(payload["table_html"] if payload else None),
+        error=(payload["error"] if payload else None),
+        selected_lat=(payload["lat"] if payload else None),
+        selected_lon=(payload["lon"] if payload else None),
+        selected_view=selected_view,
+        graph_data=(payload["graph_data"] if payload else None),
+        graph_header=(payload["graph_header"] if payload else None),
+        defer_forecast=defer_forecast,
     )
 
 

@@ -752,18 +752,14 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     combined_colors = {"header": "#7030A0", "subheader": "#D9D2E9", "data": "#EDE9F4"}
 
     html = '<table class="table table-bordered table-sm">\n'
-    # Cycle/Location/TZ as a caption so it sits above the table and scrolls
-    # away, leaving the column headers (thead) frozen during vertical scroll.
-    html += (
-        '<caption class="forecast-caption">'
-        f'<div><strong>{cycle_str}</strong></div>'
-        f'<div><strong>{location_str}</strong></div>'
-        f'<div><strong>Time Zone: {tz_label}</strong></div>'
-        '</caption>\n'
-    )
-
-    # headers (in <thead> so they can be frozen via position: sticky)
+    # Everything that should stay locked while the body scrolls lives in <thead>
+    # (position: sticky): the Cycle/Location/TZ info rows first, then the two
+    # column-header rows.
+    n_cols = 2 + len(group_colors) * 3 + 1
     html += '<thead>\n'
+    html += f'<tr><td colspan="{n_cols}" class="forecast-info">{cycle_str}</td></tr>\n'
+    html += f'<tr><td colspan="{n_cols}" class="forecast-info">{location_str}</td></tr>\n'
+    html += f'<tr><td colspan="{n_cols}" class="forecast-info">Time Zone: {tz_label}</td></tr>\n'
     html += '<tr>'
     html += '<th rowspan="2" scope="col">Date</th><th rowspan="2" scope="col">Time</th>'
     for idx, col in enumerate(group_colors, start=1):

@@ -245,19 +245,16 @@
     }
     #forecastTable table { margin-bottom: 0; }
     #forecastTable thead { position: sticky; top: 0; z-index: 2; }
-    #forecastTable thead th {
+    #forecastTable thead th,
+    #forecastTable thead td {
       background-color: #fff;  /* opaque default; colored headers keep their inline bg */
       /* All four inset edges so the frozen header keeps its column dividers on
          Chromium, where collapsed borders drop out under position: sticky. */
       box-shadow: inset 1px 0 0 #dee2e6, inset -1px 0 0 #dee2e6,
                   inset 0 1px 0 #dee2e6, inset 0 -1px 0 #dee2e6;
     }
-    .forecast-caption {
-      caption-side: top;
-      text-align: left;
-      color: inherit;
-      padding: 2px 0 6px;
-    }
+    /* Cycle/Location/TZ info rows — left-aligned, locked with the header */
+    .forecast-info { text-align: left; font-weight: 700; }
 
     /* Sticky bar depth + button polish */
     .sticky-top-bar { box-shadow: 0 2px 8px rgba(0,0,0,0.06); transition: transform 0.25s ease; }

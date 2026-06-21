@@ -228,25 +228,19 @@
       font-size: 1.15rem; font-weight: 800; color: #0b2536;
       line-height: 1.05; letter-spacing: -0.01em;
     }
-    .app-header .app-tagline { font-size: 0.76rem; color: #5b7b91; font-weight: 600; }
-
-    /* Marker legend under the map */
-    .map-legend {
-      display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
-      font-size: 0.8rem; color: #41566a; padding: 6px 2px 0;
-    }
-    .map-legend .swatch {
+    /* Colored dot next to each layer-control label (doubles as the legend) */
+    .lc-dot {
       display: inline-block; width: 11px; height: 11px; border-radius: 50%;
-      margin-right: 5px; vertical-align: middle; border: 1px solid rgba(0,0,0,0.25);
+      margin: 0 6px 0 2px; vertical-align: middle; border: 1px solid rgba(0,0,0,0.25);
     }
-    .map-legend .sw-forecast { background: #FFD600; }
-    .map-legend .sw-live { background: #00E5FF; }
+    .lc-forecast { background: #FFD600; }
+    .lc-live { background: #00E5FF; }
 
     /* Forecast table scrolls inside its own container (prevents body overflow) */
     #forecastTable { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
     /* Sticky bar depth + button polish */
-    .sticky-top-bar { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+    .sticky-top-bar { box-shadow: 0 2px 8px rgba(0,0,0,0.06); transition: transform 0.25s ease; }
     #updateBtn { transition: transform 0.1s ease, box-shadow 0.1s ease; }
     #updateBtn:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(13,110,253,0.3); }
 
@@ -273,13 +267,17 @@
       }
       #controlForm .form-label { margin-bottom: 2px; font-weight: 600; }
       .app-header .app-title { font-size: 1.05rem; }
+      /* Tuck the control bar away while scrolling down the table (JS toggles). */
+      .sticky-top-bar.nav-hidden { transform: translateY(-115%); }
     }
 
     /* Live-buoy panel: full-screen sheet on narrow phones (after the 700px rule so this wins) */
     @media (max-width: 500px) {
       #liveBuoyPanel {
         right: 0; left: 0; top: 0; bottom: 0;
-        width: 100vw; height: 100vh; max-height: 100vh;
+        width: 100vw;
+        height: 100vh; height: 100dvh;          /* dvh handles mobile browser bars */
+        max-height: 100vh; max-height: 100dvh;
         border-radius: 0; border: none;
       }
     }
@@ -297,7 +295,6 @@
       </svg>
       <div>
         <div class="app-title">Allshore Surf</div>
-        <div class="app-tagline">Live wave forecasts &amp; NDBC buoys</div>
       </div>
     </div>
     <div class="sticky-top-bar pb-2">
@@ -347,10 +344,6 @@
     <div class="row mt-2">
       <div class="col-12">
         <div id="map"></div>
-        <div class="map-legend" aria-hidden="true">
-          <span><span class="swatch sw-forecast"></span>Forecast points</span>
-          <span><span class="swatch sw-live"></span>Live NDBC buoys</span>
-        </div>
       </div>
     </div>
 
@@ -644,8 +637,10 @@
     L.control.layers(
       null,
       {
-        'Forecast points': forecastLayer,
-        'Live NDBC buoys': liveBuoyLayer
+        // Leaflet renders layer names as HTML, so the colored dot doubles as
+        // the legend (yellow = forecast point, cyan = live NDBC buoy).
+        '<span class="lc-dot lc-forecast"></span>Forecast points': forecastLayer,
+        '<span class="lc-dot lc-live"></span>Live NDBC buoys': liveBuoyLayer
       },
       {
         collapsed: false
@@ -1952,6 +1947,26 @@
         if (p && p.style.display !== 'none') p.style.display = 'none';
       }
     });
+
+    // Phase 3a: on phones, tuck the control bar away when scrolling down the
+    // table and bring it back when scrolling up (it's tall when stacked).
+    (function () {
+      var bar = document.querySelector('.sticky-top-bar');
+      if (!bar) return;
+      var lastY = window.scrollY || 0;
+      var ticking = false;
+      function update() {
+        ticking = false;
+        if (window.innerWidth > 576) { bar.classList.remove('nav-hidden'); lastY = window.scrollY; return; }
+        var y = window.scrollY;
+        if (y > lastY && y > 90) bar.classList.add('nav-hidden');     // scrolling down
+        else if (y < lastY - 4) bar.classList.remove('nav-hidden');   // scrolling up
+        lastY = y;
+      }
+      window.addEventListener('scroll', function () {
+        if (!ticking) { window.requestAnimationFrame(update); ticking = true; }
+      }, { passive: true });
+    })();
   </script>
 </body>
 </html>

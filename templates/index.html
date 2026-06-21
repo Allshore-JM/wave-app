@@ -192,7 +192,28 @@
     .forecast-buoy-dot {
       background: #FFD600;
     }
-    
+
+    /* Async forecast loading (Phase 2b) */
+    .forecast-loading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 1.25rem 0.5rem;
+      color: #6c757d;
+      font-size: 0.95rem;
+    }
+    .spinner {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      border: 3px solid #e0e6ee;
+      border-top-color: #0d6efd;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
   </style>
 </head>
 <body class="bg-light">
@@ -298,7 +319,17 @@
           <!-- Table View -->
           <div id="tableWrap" class="card">
             <div class="card-body">
-              {{ table_html|safe }}
+              <div id="forecastTable">
+                {% if table_html %}{{ table_html|safe }}{% endif %}
+                {% if defer_forecast %}
+                <div id="forecastLoading" class="forecast-loading">
+                  <span class="spinner"></span> Loading forecast&hellip;
+                </div>
+                <noscript>
+                  <meta http-equiv="refresh" content="0;url=?station={{ selected_station|urlencode }}&amp;tz={{ selected_tz|urlencode }}&amp;unit={{ selected_unit|urlencode }}&amp;view=Table&amp;render=full">
+                </noscript>
+                {% endif %}
+              </div>
             </div>
           </div>
         {% endif %}
@@ -1710,6 +1741,55 @@
     initRangeControls();
   
     {% endif %}
+  </script>
+
+  <script>
+    // Phase 2b: shell-first forecast loading. When the server deferred the
+    // Table view (cold cache), fetch /api/forecast and inject the table so the
+    // page paints instantly instead of blocking on the NOAA fetch.
+    (function () {
+      var defer = {{ 'true' if defer_forecast else 'false' }};
+      if (!defer) return;
+      var box = document.getElementById('forecastTable');
+      if (!box) return;
+      var station = {{ selected_station|tojson }};
+      var params = new URLSearchParams({
+        station: station,
+        tz: {{ (selected_tz or '')|tojson }},
+        unit: {{ (selected_unit or 'US')|tojson }}
+      });
+      function showMessage(cls, text) {
+        // textContent, not innerHTML — d.error embeds the user-supplied station.
+        var div = document.createElement('div');
+        div.className = cls;
+        div.textContent = text;
+        box.innerHTML = '';
+        box.appendChild(div);
+      }
+      fetch('/api/forecast?' + params.toString())
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (d) {
+          if (d && d.table_html) {
+            box.innerHTML = d.table_html;  // trusted server HTML (build_html_table)
+          } else if (d && d.error) {
+            showMessage('alert alert-warning', d.error);
+          } else {
+            showMessage('text-muted', 'No forecast available.');
+          }
+        })
+        .catch(function () {
+          var div = document.createElement('div');
+          div.className = 'alert alert-warning';
+          div.textContent = 'Could not load forecast. ';
+          var a = document.createElement('a');
+          // Preserve the user's tz/unit/view on retry (params already holds them).
+          a.href = '?' + params.toString() + '&view=Table&render=full';
+          a.textContent = 'Retry';
+          div.appendChild(a);
+          box.innerHTML = '';
+          box.appendChild(div);
+        });
+    })();
   </script>
 </body>
 </html>

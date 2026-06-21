@@ -236,8 +236,28 @@
     .lc-forecast { background: #FFD600; }
     .lc-live { background: #00E5FF; }
 
-    /* Forecast table scrolls inside its own container (prevents body overflow) */
-    #forecastTable { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    /* Forecast table: scroll inside its own box (x + y) with a frozen header,
+       so the column headers stay put and you don't scroll the whole page. */
+    #forecastTable {
+      overflow: auto;
+      max-height: 70vh;
+      -webkit-overflow-scrolling: touch;
+    }
+    #forecastTable table { margin-bottom: 0; }
+    #forecastTable thead { position: sticky; top: 0; z-index: 2; }
+    #forecastTable thead th {
+      background-color: #fff;  /* opaque default; colored headers keep their inline bg */
+      /* All four inset edges so the frozen header keeps its column dividers on
+         Chromium, where collapsed borders drop out under position: sticky. */
+      box-shadow: inset 1px 0 0 #dee2e6, inset -1px 0 0 #dee2e6,
+                  inset 0 1px 0 #dee2e6, inset 0 -1px 0 #dee2e6;
+    }
+    .forecast-caption {
+      caption-side: top;
+      text-align: left;
+      color: inherit;
+      padding: 2px 0 6px;
+    }
 
     /* Sticky bar depth + button polish */
     .sticky-top-bar { box-shadow: 0 2px 8px rgba(0,0,0,0.06); transition: transform 0.25s ease; }

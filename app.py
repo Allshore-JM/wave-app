@@ -751,31 +751,39 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     ]
     combined_colors = {"header": "#7030A0", "subheader": "#D9D2E9", "data": "#EDE9F4"}
 
-    total_cols = 2 + len(group_colors) * 3 + 1
     html = '<table class="table table-bordered table-sm">\n'
-    html += f'<tr><td colspan="{total_cols}"><strong>{cycle_str}</strong></td></tr>\n'
-    html += f'<tr><td colspan="{total_cols}"><strong>{location_str}</strong></td></tr>\n'
-    html += f'<tr><td colspan="{total_cols}"><strong>Time Zone: {tz_label}</strong></td></tr>\n'
+    # Cycle/Location/TZ as a caption so it sits above the table and scrolls
+    # away, leaving the column headers (thead) frozen during vertical scroll.
+    html += (
+        '<caption class="forecast-caption">'
+        f'<div><strong>{cycle_str}</strong></div>'
+        f'<div><strong>{location_str}</strong></div>'
+        f'<div><strong>Time Zone: {tz_label}</strong></div>'
+        '</caption>\n'
+    )
 
-    # headers
+    # headers (in <thead> so they can be frozen via position: sticky)
+    html += '<thead>\n'
     html += '<tr>'
-    html += '<th rowspan="2">Date</th><th rowspan="2">Time</th>'
+    html += '<th rowspan="2" scope="col">Date</th><th rowspan="2" scope="col">Time</th>'
     for idx, col in enumerate(group_colors, start=1):
-        html += f'<th colspan="3" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {idx}</th>'
-    html += f'<th style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
+        html += f'<th colspan="3" scope="colgroup" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {idx}</th>'
+    html += f'<th scope="colgroup" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
     html += '</tr>\n'
 
     # subheaders
     hs_unit_label = '(ft)' if unit == 'US' else '(m)'
     html += '<tr>'
     for col in group_colors:
-        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
-        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
-        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Dir<br>(d)</th>'
-    html += f'<th style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
+        html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
+        html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
+        html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Dir<br>(d)</th>'
+    html += f'<th scope="col" style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
     html += '</tr>\n'
+    html += '</thead>\n'
 
     # rows
+    html += '<tbody>\n'
     for row in rows:
         # style rules
         try:
@@ -830,6 +838,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         html += f'<td style="{comb_style}">{comb_str}</td>'
         html += '</tr>\n'
 
+    html += '</tbody>\n'
     html += '</table>'
     return html
 

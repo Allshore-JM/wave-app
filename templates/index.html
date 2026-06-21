@@ -214,11 +214,92 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* ===== Phase 3a: mobile + visual polish ===== */
+
+    /* App header / branding */
+    .app-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 2px 8px;
+    }
+    .app-header .app-logo { width: 30px; height: 30px; flex-shrink: 0; display: block; }
+    .app-header .app-title {
+      font-size: 1.15rem; font-weight: 800; color: #0b2536;
+      line-height: 1.05; letter-spacing: -0.01em;
+    }
+    .app-header .app-tagline { font-size: 0.76rem; color: #5b7b91; font-weight: 600; }
+
+    /* Marker legend under the map */
+    .map-legend {
+      display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+      font-size: 0.8rem; color: #41566a; padding: 6px 2px 0;
+    }
+    .map-legend .swatch {
+      display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+      margin-right: 5px; vertical-align: middle; border: 1px solid rgba(0,0,0,0.25);
+    }
+    .map-legend .sw-forecast { background: #FFD600; }
+    .map-legend .sw-live { background: #00E5FF; }
+
+    /* Forecast table scrolls inside its own container (prevents body overflow) */
+    #forecastTable { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+    /* Sticky bar depth + button polish */
+    .sticky-top-bar { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+    #updateBtn { transition: transform 0.1s ease, box-shadow 0.1s ease; }
+    #updateBtn:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(13,110,253,0.3); }
+
+    /* Visible keyboard focus (a11y) */
+    a:focus-visible, button:focus-visible, select:focus-visible,
+    input:focus-visible, .form-select:focus-visible {
+      outline: 2px solid #0d6efd; outline-offset: 2px;
+    }
+
+    /* Tablet */
+    @media (max-width: 768px) {
+      canvas.chart-tall { height: 200px !important; }
+    }
+
+    /* Phones: stack controls, large tap targets */
+    @media (max-width: 576px) {
+      #controlForm > .col-auto { width: 100%; }
+      #controlForm .form-select,
+      #controlForm .form-control,
+      #controlForm .btn {
+        width: 100%;
+        min-height: 44px;
+        font-size: 16px; /* avoids iOS zoom-on-focus */
+      }
+      #controlForm .form-label { margin-bottom: 2px; font-weight: 600; }
+      .app-header .app-title { font-size: 1.05rem; }
+    }
+
+    /* Live-buoy panel: full-screen sheet on narrow phones (after the 700px rule so this wins) */
+    @media (max-width: 500px) {
+      #liveBuoyPanel {
+        right: 0; left: 0; top: 0; bottom: 0;
+        width: 100vw; height: 100vh; max-height: 100vh;
+        border-radius: 0; border: none;
+      }
+    }
+
   </style>
 </head>
 <body class="bg-light">
 
   <div class="container-fluid py-3">
+    <div class="app-header">
+      <svg class="app-logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="32" height="32" rx="6" fill="#0b2536"/>
+        <path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+      <div>
+        <div class="app-title">Allshore Surf</div>
+        <div class="app-tagline">Live wave forecasts &amp; NDBC buoys</div>
+      </div>
+    </div>
     <div class="sticky-top-bar pb-2">
       <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
         <div class="col-auto">
@@ -266,6 +347,10 @@
     <div class="row mt-2">
       <div class="col-12">
         <div id="map"></div>
+        <div class="map-legend" aria-hidden="true">
+          <span><span class="swatch sw-forecast"></span>Forecast points</span>
+          <span><span class="swatch sw-live"></span>Live NDBC buoys</span>
+        </div>
       </div>
     </div>
 
@@ -350,7 +435,8 @@
 
     <div class="card-body">
       <div id="liveBuoyLoading" class="text-muted">
-        Loading live buoy data...
+        <span class="spinner" style="vertical-align:middle;"></span>
+        Loading live buoy data&hellip;
       </div>
 
       <div id="liveBuoyError" class="alert alert-warning d-none"></div>
@@ -591,8 +677,11 @@
     function enforceSingleWorld() {
       const el = document.getElementById('map');
 
-      // Keep a stable usable map height.
-      const targetH = Math.min(460, Math.floor(window.innerHeight * 0.48));
+      // Keep a stable usable map height; cap lower on phones/tablets so the
+      // map doesn't dominate the viewport (the forecast is the point).
+      const w = window.innerWidth;
+      const cap = w <= 576 ? 260 : (w <= 768 ? 300 : 460);
+      const targetH = Math.min(cap, Math.floor(window.innerHeight * 0.48));
       el.style.height = targetH + 'px';
 
       map.invalidateSize();
@@ -1790,6 +1879,14 @@
           box.appendChild(div);
         });
     })();
+
+    // Phase 3a: Escape closes the live-buoy panel (keyboard a11y).
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        var p = document.getElementById('liveBuoyPanel');
+        if (p && p.style.display !== 'none') p.style.display = 'none';
+      }
+    });
   </script>
 </body>
 </html>

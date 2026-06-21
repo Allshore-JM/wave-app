@@ -78,6 +78,105 @@ stations_data_cache = None
 # NOAA URLs
 NOAA_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
 
+# ---------------------- HTTP session, logging, caches (Phase 2a) ----------------
+import time
+import logging
+import threading
+import hashlib
+from requests.adapters import HTTPAdapter
+try:
+    from urllib3.util.retry import Retry
+except Exception:  # pragma: no cover - urllib3 always present with requests
+    Retry = None
+
+# Configure only our own logger (don't call basicConfig, which mutates the root
+# logger and can interfere with gunicorn's logging depending on import order).
+logger = logging.getLogger("waveapp")
+if not logger.handlers:
+    _log_handler = logging.StreamHandler()
+    _log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_log_handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+
+
+def _build_http_session() -> requests.Session:
+    """A shared session with connection pooling + automatic retries/backoff."""
+    s = requests.Session()
+    if Retry is not None:
+        retry = Retry(
+            total=2, connect=2, read=2, backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset(["GET", "HEAD"]),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
+    return s
+
+
+HTTP = _build_http_session()
+
+# Single lock guarding the in-memory caches (gunicorn serves multiple threads).
+_CACHE_LOCK = threading.Lock()
+
+
+def _fresh(ts: float, ttl: int) -> bool:
+    return (time.time() - ts) < ttl
+
+
+def _evict_oldest(cache: dict, max_entries: int) -> None:
+    """Drop oldest entries until len <= max_entries. Caller must hold _CACHE_LOCK.
+
+    Works for caches keyed by dicts carrying either a 'ts' or 'timestamp' field.
+    """
+    while len(cache) > max_entries:
+        oldest = min(cache, key=lambda k: cache[k].get("ts", cache[k].get("timestamp", 0)))
+        cache.pop(oldest, None)
+
+
+def _json_cached(data, max_age: int):
+    """JSON response with ETag + Cache-Control; honors If-None-Match -> 304.
+
+    If-None-Match is matched per RFC 7232: tolerates the ``W/`` weak prefix, a
+    comma-separated list of tags, and the ``*`` wildcard, so a CDN in front
+    (Render fronts requests with Cloudflare) that rewrites the validator still
+    revalidates to 304 instead of re-sending the full body.
+    """
+    payload = json.dumps(data, separators=(",", ":"), sort_keys=True)
+    etag = hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+    inm = request.headers.get("If-None-Match", "")
+    supplied = []
+    for tok in inm.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok.startswith("W/"):
+            tok = tok[2:]
+        supplied.append(tok.strip().strip('"'))
+    matched = inm.strip() == "*" or etag in supplied
+
+    # Keep Content-Type identical across 200 and 304 (RFC 7232).
+    if matched:
+        resp = app.response_class(status=304, mimetype="application/json")
+    else:
+        resp = app.response_class(payload, mimetype="application/json")
+    resp.headers["Cache-Control"] = f"public, max-age={max_age}"
+    resp.headers["ETag"] = f'"{etag}"'
+    return resp
+
+
+# Latest GFS-wave run detection cache (runs publish ~4x/day).
+_RUN_CACHE = {"ts": 0.0, "value": (None, None)}
+_RUN_CACHE_TTL = 30 * 60
+
+# Parsed .bull forecast cache: (station_id, tz_name) -> {"ts", "data"}.
+_FORECAST_CACHE = {}
+_FORECAST_CACHE_TTL = 30 * 60
+_FORECAST_CACHE_MAX = 64
+
 # Timezones
 HST = pytz.timezone("Pacific/Honolulu")
 UTC = pytz.utc
@@ -129,7 +228,7 @@ def load_station_metadata():
     station_url = "https://www.ndbc.noaa.gov/data/stations/station_table.txt"
     meta = {}
     try:
-        res = requests.get(station_url, timeout=30)
+        res = HTTP.get(station_url, timeout=30)
         res.raise_for_status()
         for line in res.text.splitlines():
             if not line or line.startswith('#'):
@@ -219,13 +318,34 @@ def get_stations_data():
 
 @app.route('/stations.json')
 def stations_json():
-    return jsonify(get_stations_data())
+    # Station geometry is effectively static; allow client/CDN caching + 304s.
+    return _json_cached(get_stations_data(), max_age=3600)
+
+
+# Small inline wave icon so /favicon.ico stops 404-ing (and adds light branding).
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="6" fill="#0b2536"/>'
+    '<path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" '
+    'fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>'
+    '<path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" '
+    'fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>'
+    '</svg>'
+)
+
+
+@app.route('/favicon.ico')
+def favicon():
+    resp = app.response_class(_FAVICON_SVG, mimetype="image/svg+xml")
+    resp.headers["Cache-Control"] = "public, max-age=604800"
+    return resp
 
 # ----------------------------- NOAA run detection ------------------------------
 
-def get_latest_run():
+def _detect_latest_run():
     """
     Find the most recent available GFS wave run by probing 18/12/06/00 of today and yesterday.
+    Up to 8 serial HEAD requests; wrapped by the cached get_latest_run() below.
     """
     now = datetime.utcnow()
     run_hours = [18, 12, 6, 0]
@@ -237,12 +357,34 @@ def get_latest_run():
             url = f"{NOAA_BASE}/gfs.{yyyymmdd}/{run_str}/wave/station/bulls.t{run_str}z/"
             test_file = f"{url}gfswave.51201.bull"
             try:
-                resp = requests.head(test_file, timeout=10)
+                resp = HTTP.head(test_file, timeout=10)
                 if resp.status_code == 200:
                     return yyyymmdd, run_str
-            except Exception:
+            except Exception as exc:
+                logger.debug("run probe failed for %s: %r", test_file, exc)
                 continue
     return None, None
+
+
+def get_latest_run():
+    """Cached wrapper around _detect_latest_run() — probe at most once per TTL.
+
+    The previous code re-probed NOAA (up to 8 serial HEADs) on *every* page load,
+    which dominated cold-start latency. Runs only publish ~4x/day, so a 30-minute
+    cache is safe and removes that cost from nearly all requests.
+    """
+    with _CACHE_LOCK:
+        cached = _RUN_CACHE["value"]
+        if cached[0] and _fresh(_RUN_CACHE["ts"], _RUN_CACHE_TTL):
+            return cached
+    result = _detect_latest_run()
+    if result and result[0]:
+        with _CACHE_LOCK:
+            _RUN_CACHE["ts"] = time.time()
+            _RUN_CACHE["value"] = result
+    else:
+        logger.warning("get_latest_run: no recent GFS-wave run detected")
+    return result
 
 # ----------------------------- Bulletin parser ---------------------------------
 
@@ -318,6 +460,27 @@ def _resolve_day_hour_ts(cycle_dt_utc: datetime, day_val: int, hour_val: int, la
     return dt
 
 def parse_bull(station_id: str, target_tz_name: str | None = None):
+    """Cached forecast retrieval (bounded, TTL'd) wrapping _parse_bull_uncached().
+
+    Keyed by (station_id, tz). Only successful parses are cached. This is the
+    single cached forecast path; a future JSON endpoint should call this too so
+    both share one cache rather than re-fetching/parsing NOAA per request.
+    """
+    key = (station_id, target_tz_name or "")
+    with _CACHE_LOCK:
+        entry = _FORECAST_CACHE.get(key)
+        if entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL):
+            return entry["data"]
+    data = _parse_bull_uncached(station_id, target_tz_name)
+    # data[-1] is the error field; only cache clean results.
+    if data and not data[-1]:
+        with _CACHE_LOCK:
+            _FORECAST_CACHE[key] = {"ts": time.time(), "data": data}
+            _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
+    return data
+
+
+def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
     """
     Fetch and parse .bull for station. Returns:
     (cycle_str, location_str, model_run_str, rows, tz_name, error)
@@ -329,8 +492,9 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
 
     bull_url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
     try:
-        resp = requests.get(bull_url, timeout=15)
-    except Exception:
+        resp = HTTP.get(bull_url, timeout=15)
+    except Exception as exc:
+        logger.warning("could not download .bull for %s: %r", station_id, exc)
         return None, None, None, None, 'UTC', f"Could not download .bull for {station_id}"
     if resp.status_code != 200 or not resp.text:
         return None, None, None, None, 'UTC', f"No .bull file found for {station_id}"
@@ -587,31 +751,35 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     ]
     combined_colors = {"header": "#7030A0", "subheader": "#D9D2E9", "data": "#EDE9F4"}
 
-    total_cols = 2 + len(group_colors) * 3 + 1
     html = '<table class="table table-bordered table-sm">\n'
-    html += f'<tr><td colspan="{total_cols}"><strong>{cycle_str}</strong></td></tr>\n'
-    html += f'<tr><td colspan="{total_cols}"><strong>{location_str}</strong></td></tr>\n'
-    html += f'<tr><td colspan="{total_cols}"><strong>Time Zone: {tz_label}</strong></td></tr>\n'
-
-    # headers
+    # Everything that should stay locked while the body scrolls lives in <thead>
+    # (position: sticky): the Cycle/Location/TZ info rows first, then the two
+    # column-header rows.
+    n_cols = 2 + len(group_colors) * 3 + 1
+    html += '<thead>\n'
+    html += f'<tr><td colspan="{n_cols}" class="forecast-info">{cycle_str}</td></tr>\n'
+    html += f'<tr><td colspan="{n_cols}" class="forecast-info">{location_str}</td></tr>\n'
+    html += f'<tr><td colspan="{n_cols}" class="forecast-info">Time Zone: {tz_label}</td></tr>\n'
     html += '<tr>'
-    html += '<th rowspan="2">Date</th><th rowspan="2">Time</th>'
+    html += '<th rowspan="2" scope="col">Date</th><th rowspan="2" scope="col">Time</th>'
     for idx, col in enumerate(group_colors, start=1):
-        html += f'<th colspan="3" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {idx}</th>'
-    html += f'<th style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
+        html += f'<th colspan="3" scope="colgroup" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {idx}</th>'
+    html += f'<th scope="colgroup" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
     html += '</tr>\n'
 
     # subheaders
     hs_unit_label = '(ft)' if unit == 'US' else '(m)'
     html += '<tr>'
     for col in group_colors:
-        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
-        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
-        html += f'<th style="background-color:{col["subheader"]}; text-align:center;">Dir<br>(d)</th>'
-    html += f'<th style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
+        html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
+        html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
+        html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Dir<br>(d)</th>'
+    html += f'<th scope="col" style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
     html += '</tr>\n'
+    html += '</thead>\n'
 
     # rows
+    html += '<tbody>\n'
     for row in rows:
         # style rules
         try:
@@ -666,10 +834,131 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         html += f'<td style="{comb_style}">{comb_str}</td>'
         html += '</tr>\n'
 
+    html += '</tbody>\n'
     html += '</table>'
     return html
 
 # ------------------------------ Flask routes -----------------------------------
+
+# NDBC / GFS station ids are short and alphanumeric, with hyphens/underscores
+# for some grid points (e.g. "NW-HFO60"). Validate before the value is ever
+# interpolated into an outbound NOAA URL, to block path-traversal characters.
+_STATION_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
+
+
+def compute_forecast_payload(station: str, tz: str | None, unit: str) -> dict:
+    """Shared, cached forecast computation for both the homepage and /api/forecast.
+
+    parse_bull() underneath is cached (Phase 2a), so on a warm cache this only
+    re-runs the cheap HTML/graph packing. Returns a JSON-serializable dict.
+    """
+    out = {
+        "station": station,
+        "error": None,
+        "table_html": None,
+        "tz_label": "",
+        "lat": None,
+        "lon": None,
+        "graph_data": None,
+        "graph_header": None,
+    }
+    if not station:
+        return out
+    if not _STATION_RE.fullmatch(station):
+        out["error"] = "Invalid station id"
+        return out
+
+    cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
+        station, tz or None
+    )
+    out["error"] = parse_error
+    if rows is None:
+        return out
+
+    tz_label = effective_tz_name
+    out["tz_label"] = tz_label
+    out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit)
+
+    # single map marker if coords JSON has it
+    coords_map = load_station_coords()
+    sid_str = str(station).strip()
+    if sid_str in coords_map:
+        out["lat"] = coords_map[sid_str]['lat']
+        out["lon"] = coords_map[sid_str]['lon']
+
+    # ----- pack graph data -----
+    labels = [f"{r[0]} {r[1]}" for r in rows]
+    def pick(array_index):
+        return [r[array_index] for r in rows]
+    def hs_idx(g): return 2 + g*3
+    def tp_idx(g): return 3 + g*3
+    def dr_idx(g): return 4 + g*3
+
+    # Feet from the parsed table rows (rows are feet already)
+    height_ft = {
+        "s1": pick(hs_idx(0)), "s2": pick(hs_idx(1)), "s3": pick(hs_idx(2)),
+        "s4": pick(hs_idx(3)), "s5": pick(hs_idx(4)), "s6": pick(hs_idx(5)),
+        "combined": [r[-1] for r in rows],
+    }
+    period = {
+        "s1": pick(tp_idx(0)), "s2": pick(tp_idx(1)), "s3": pick(tp_idx(2)),
+        "s4": pick(tp_idx(3)), "s5": pick(tp_idx(4)), "s6": pick(tp_idx(5)),
+    }
+    direction = {
+        "s1": pick(dr_idx(0)), "s2": pick(dr_idx(1)), "s3": pick(dr_idx(2)),
+        "s4": pick(dr_idx(3)), "s5": pick(dr_idx(4)), "s6": pick(dr_idx(5)),
+    }
+
+    if unit == "Metric":
+        FT_TO_M = 0.3048
+        height = {
+            k: [None if v is None else round(v * FT_TO_M, 2) for v in arr]
+            for k, arr in height_ft.items()
+        }
+        graph_units = "m"
+    else:
+        height = height_ft
+        graph_units = "ft"
+
+    out["graph_data"] = {
+        "labels": labels, "height": height, "period": period, "direction": direction,
+        "units": graph_units,
+        "cycle": cycle_str or "", "location": location_str or "", "tz": tz_label or "",
+    }
+
+    cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
+    loc_clean   = _strip_header_prefix(location_str, "Location")
+    lat, lon = _parse_header_coords(location_str)
+    latlon_fmt = _fmt_latlon(lat, lon)
+    loc_display = f"{station} ({latlon_fmt})" if latlon_fmt else loc_clean
+    out["graph_header"] = {"cycle": cycle_clean, "location": loc_display, "tz": tz_label or ""}
+    return out
+
+
+def _forecast_is_cached(station: str, tz: str | None) -> bool:
+    """True if parse_bull already has this (station, tz) cached and fresh."""
+    key = (station, tz or "")
+    with _CACHE_LOCK:
+        entry = _FORECAST_CACHE.get(key)
+        return bool(entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL))
+
+
+@app.route("/api/forecast")
+def api_forecast():
+    """JSON forecast for one station — same cached path the homepage uses."""
+    station = (request.args.get("station") or "51201").strip()
+    tz = request.args.get("tz", "")
+    unit = request.args.get("unit", "US") or "US"
+    try:
+        return jsonify(compute_forecast_payload(station, tz or None, unit))
+    except Exception as exc:  # always return JSON the client can render
+        logger.warning("forecast payload failed for %s: %r", station, exc)
+        return jsonify({
+            "station": station, "error": "Forecast temporarily unavailable",
+            "table_html": None, "tz_label": "", "lat": None, "lon": None,
+            "graph_data": None, "graph_header": None,
+        })
+
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -677,107 +966,33 @@ def index():
     timezones = sorted(pytz.common_timezones)
     unit_options = ["US", "Metric"]
 
-    selected_station = ""
-    selected_tz = ""
-    selected_unit = "US"
     selected_view = (request.values.get("view") or "Table")
     if request.method == "POST":
-        selected_station = request.form.get("station") or ""
+        selected_station = (request.form.get("station") or "").strip()
         selected_tz = request.form.get("tz") or ""
         selected_unit = request.form.get("unit") or "US"
     else:
-        selected_station = request.args.get("station", "")
+        selected_station = (request.args.get("station", "") or "").strip()
         selected_tz = request.args.get("tz", "")
         selected_unit = request.args.get("unit", "US") or "US"
 
     if not selected_station:
         selected_station = "51201"
 
-    table_html = None
-    error = None
-    tz_label = ""
-    selected_lat = None
-    selected_lon = None
-    graph_data = None
-    graph_header = None  # (cycle, location, tz)
+    # Shell-first: defer ONLY the Table view on a cold cache so the page never
+    # blocks on NOAA. The browser then pulls /api/forecast and injects the table.
+    # Graph view, already-cached forecasts, and ?render=full all render inline.
+    force_render = request.values.get("render") == "full"
+    defer_forecast = (
+        selected_view == "Table"
+        and not force_render
+        and bool(selected_station)
+        and not _forecast_is_cached(selected_station, selected_tz or None)
+    )
 
-    if selected_station:
-        cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
-            selected_station, selected_tz or None
-        )
-        error = parse_error
-        if rows is not None:
-            tz_label = effective_tz_name
-            table_html = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, selected_unit)
-
-            # for map single marker if coords JSON has it
-            coords_map = load_station_coords()
-            sid_str = str(selected_station).strip()
-            if sid_str in coords_map:
-                selected_lat = coords_map[sid_str]['lat']
-                selected_lon = coords_map[sid_str]['lon']
-
-            # ----- pack graph data -----
-            labels = [f"{r[0]} {r[1]}" for r in rows]
-            def pick(array_index):
-                return [r[array_index] for r in rows]
-
-            # indices per swell
-            def hs_idx(g): return 2 + g*3
-            def tp_idx(g): return 3 + g*3
-            def dr_idx(g): return 4 + g*3
-
-            # Feet from the parsed table rows (rows are feet already)
-            height_ft = {
-                "s1": pick(hs_idx(0)), "s2": pick(hs_idx(1)), "s3": pick(hs_idx(2)),
-                "s4": pick(hs_idx(3)), "s5": pick(hs_idx(4)), "s6": pick(hs_idx(5)),
-                "combined": [r[-1] for r in rows],
-            }
-            period = {
-                "s1": pick(tp_idx(0)), "s2": pick(tp_idx(1)), "s3": pick(tp_idx(2)),
-                "s4": pick(tp_idx(3)), "s5": pick(tp_idx(4)), "s6": pick(tp_idx(5)),
-            }
-            direction = {
-                "s1": pick(dr_idx(0)), "s2": pick(dr_idx(1)), "s3": pick(dr_idx(2)),
-                "s4": pick(dr_idx(3)), "s5": pick(dr_idx(4)), "s6": pick(dr_idx(5)),
-            }
-
-            # NEW: convert graph heights to meters when Metric is selected
-            if selected_unit == "Metric":
-                FT_TO_M = 0.3048
-                height = {
-                    k: [None if v is None else round(v * FT_TO_M, 2) for v in arr]
-                    for k, arr in height_ft.items()
-                }
-                graph_units = "m"
-            else:
-                height = height_ft
-                graph_units = "ft"
-
-            graph_data = {
-                "labels": labels,
-                "height": height,
-                "period": period,
-                "direction": direction,
-                "units": graph_units,  # now matches the numeric units
-                "cycle": cycle_str or "",
-                "location": location_str or "",
-                "tz": tz_label or ""
-            }
-
-            # Graph header should NOT include the leading words; clean them.
-            cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
-            loc_clean   = _strip_header_prefix(location_str, "Location")
-            lat, lon = _parse_header_coords(location_str)
-            latlon_fmt = _fmt_latlon(lat, lon)
-            # Prefer "station_id (lat lon)" like "51201 (21.67N 158.12W)" when coords exist
-            loc_display = f"{selected_station} ({latlon_fmt})" if latlon_fmt else loc_clean
-
-            graph_header = {
-                "cycle": cycle_clean,
-                "location": loc_display,
-                "tz": tz_label or ""
-            }
+    payload = None
+    if selected_station and not defer_forecast:
+        payload = compute_forecast_payload(selected_station, selected_tz or None, selected_unit)
 
     return render_template(
         "index.html",
@@ -785,16 +1000,17 @@ def index():
         selected_station=selected_station,
         timezones=timezones,
         selected_tz=selected_tz,
-        tz_label=tz_label,
+        tz_label=(payload["tz_label"] if payload else ""),
         units=unit_options,
         selected_unit=selected_unit,
-        table_html=table_html,
-        error=error,
-        selected_lat=selected_lat,
-        selected_lon=selected_lon,
-        selected_view=request.values.get("view") or "Table",
-        graph_data=graph_data,
-        graph_header=graph_header
+        table_html=(payload["table_html"] if payload else None),
+        error=(payload["error"] if payload else None),
+        selected_lat=(payload["lat"] if payload else None),
+        selected_lon=(payload["lon"] if payload else None),
+        selected_view=selected_view,
+        graph_data=(payload["graph_data"] if payload else None),
+        graph_header=(payload["graph_header"] if payload else None),
+        defer_forecast=defer_forecast,
     )
 
 
@@ -806,7 +1022,9 @@ import xml.etree.ElementTree as ET
 
 NDBC_ACTIVE_XML = "https://www.ndbc.noaa.gov/activestations.xml"
 NDBC_REALTIME_DIR = "https://www.ndbc.noaa.gov/data/realtime2/"
-NDBC_CACHE_TTL_SECONDS = 15 * 60
+NDBC_CACHE_TTL_SECONDS = 30 * 60
+NDBC_COMPONENT_TTL_SECONDS = 30 * 60
+NDBC_COMPONENT_CACHE_MAX = 100
 
 NDBC_STATIONS_CACHE = {
     "timestamp": 0,
@@ -819,7 +1037,7 @@ def _cache_valid(cache_timestamp: float, ttl: int = NDBC_CACHE_TTL_SECONDS) -> b
     return (time.time() - cache_timestamp) < ttl
 
 def _fetch_text(url: str, timeout: int = 25) -> str:
-    resp = requests.get(url, timeout=timeout)
+    resp = HTTP.get(url, timeout=timeout)
     resp.raise_for_status()
     return resp.text
 
@@ -852,8 +1070,10 @@ def _stations_with_live_spectral_wave_data() -> set:
     return set(re.findall(r'href="([A-Za-z0-9]+)\.data_spec"', html))
 
 def get_live_ndbc_wave_stations() -> list:
-    if NDBC_STATIONS_CACHE["data"] and _cache_valid(NDBC_STATIONS_CACHE["timestamp"]):
-        return NDBC_STATIONS_CACHE["data"]
+    with _CACHE_LOCK:
+        if NDBC_STATIONS_CACHE["data"] and _cache_valid(NDBC_STATIONS_CACHE["timestamp"]):
+            return NDBC_STATIONS_CACHE["data"]
+    # Fetch/parse outside the lock so concurrent requests don't serialize on NOAA.
     active = _parse_active_ndbc_stations()
     live_ids = _stations_with_live_spectral_wave_data()
     stations = []
@@ -866,13 +1086,14 @@ def get_live_ndbc_wave_stations() -> list:
             "has_live_wave_components": True,
             "source": "NDBC realtime spectral wave data"
         })
-    NDBC_STATIONS_CACHE["timestamp"] = time.time()
-    NDBC_STATIONS_CACHE["data"] = stations
+    with _CACHE_LOCK:
+        NDBC_STATIONS_CACHE["timestamp"] = time.time()
+        NDBC_STATIONS_CACHE["data"] = stations
     return stations
 
 @app.route("/api/ndbc/live-wave-stations")
 def api_ndbc_live_wave_stations():
-    return jsonify(get_live_ndbc_wave_stations())
+    return _json_cached(get_live_ndbc_wave_stations(), max_age=900)
 
 # ----------------------- NDBC spectral component parser -------------------------
 
@@ -1553,8 +1774,9 @@ def _match_direction_row(density_row: dict, direction_rows: list) -> dict | None
 def api_ndbc_station_components(station_id):
     station_id = station_id.strip().upper()
 
-    cached = NDBC_COMPONENT_CACHE.get(station_id)
-    if cached and _cache_valid(cached["timestamp"], ttl=10 * 60):
+    with _CACHE_LOCK:
+        cached = NDBC_COMPONENT_CACHE.get(station_id)
+    if cached and _cache_valid(cached["timestamp"], ttl=NDBC_COMPONENT_TTL_SECONDS):
         return jsonify(cached["data"])
 
     station_meta = {
@@ -1689,7 +1911,9 @@ def api_ndbc_station_components(station_id):
         ]
     }
 
-    NDBC_COMPONENT_CACHE[station_id] = {"timestamp": time.time(), "data": result}
+    with _CACHE_LOCK:
+        NDBC_COMPONENT_CACHE[station_id] = {"timestamp": time.time(), "data": result}
+        _evict_oldest(NDBC_COMPONENT_CACHE, NDBC_COMPONENT_CACHE_MAX)
     return jsonify(result)
 
 NDBC_STATION_PAGE = "https://www.ndbc.noaa.gov/station_page.php?station={station_id}"

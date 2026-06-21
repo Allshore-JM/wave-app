@@ -192,12 +192,130 @@
     .forecast-buoy-dot {
       background: #FFD600;
     }
-    
+
+    /* Async forecast loading (Phase 2b) */
+    .forecast-loading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 1.25rem 0.5rem;
+      color: #6c757d;
+      font-size: 0.95rem;
+    }
+    .spinner {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      border: 3px solid #e0e6ee;
+      border-top-color: #0d6efd;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ===== Phase 3a: mobile + visual polish ===== */
+
+    /* App header / branding */
+    .app-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 2px 8px;
+    }
+    .app-header .app-logo { width: 30px; height: 30px; flex-shrink: 0; display: block; }
+    .app-header .app-title {
+      font-size: 1.15rem; font-weight: 800; color: #0b2536;
+      line-height: 1.05; letter-spacing: -0.01em;
+    }
+    /* Colored dot next to each layer-control label (doubles as the legend) */
+    .lc-dot {
+      display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+      margin: 0 6px 0 2px; vertical-align: middle; border: 1px solid rgba(0,0,0,0.25);
+    }
+    .lc-forecast { background: #FFD600; }
+    .lc-live { background: #00E5FF; }
+
+    /* Forecast table: scroll inside its own box (x + y) with a frozen header,
+       so the column headers stay put and you don't scroll the whole page. */
+    #forecastTable {
+      overflow: auto;
+      /* Tall enough to show ~24 hourly rows under the frozen header
+         (~189px header + 24 x ~33px rows); scrolls internally past that. */
+      max-height: 1000px;
+      -webkit-overflow-scrolling: touch;
+    }
+    #forecastTable table { margin-bottom: 0; }
+    #forecastTable thead { position: sticky; top: 0; z-index: 2; }
+    #forecastTable thead th,
+    #forecastTable thead td {
+      background-color: #fff;  /* opaque default; colored headers keep their inline bg */
+      /* All four inset edges so the frozen header keeps its column dividers on
+         Chromium, where collapsed borders drop out under position: sticky. */
+      box-shadow: inset 1px 0 0 #dee2e6, inset -1px 0 0 #dee2e6,
+                  inset 0 1px 0 #dee2e6, inset 0 -1px 0 #dee2e6;
+    }
+    /* Cycle/Location/TZ info rows — left-aligned, locked with the header */
+    .forecast-info { text-align: left; font-weight: 700; }
+
+    /* Sticky bar depth + button polish */
+    .sticky-top-bar { box-shadow: 0 2px 8px rgba(0,0,0,0.06); transition: transform 0.25s ease; }
+    #updateBtn { transition: transform 0.1s ease, box-shadow 0.1s ease; }
+    #updateBtn:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(13,110,253,0.3); }
+
+    /* Visible keyboard focus (a11y) */
+    a:focus-visible, button:focus-visible, select:focus-visible,
+    input:focus-visible, .form-select:focus-visible {
+      outline: 2px solid #0d6efd; outline-offset: 2px;
+    }
+
+    /* Tablet */
+    @media (max-width: 768px) {
+      canvas.chart-tall { height: 200px !important; }
+    }
+
+    /* Phones: stack controls, large tap targets */
+    @media (max-width: 576px) {
+      #controlForm > .col-auto { width: 100%; }
+      #controlForm .form-select,
+      #controlForm .form-control,
+      #controlForm .btn {
+        width: 100%;
+        min-height: 44px;
+        font-size: 16px; /* avoids iOS zoom-on-focus */
+      }
+      #controlForm .form-label { margin-bottom: 2px; font-weight: 600; }
+      .app-header .app-title { font-size: 1.05rem; }
+      /* Tuck the control bar away while scrolling down the table (JS toggles). */
+      .sticky-top-bar.nav-hidden { transform: translateY(-115%); }
+    }
+
+    /* Live-buoy panel: full-screen sheet on narrow phones (after the 700px rule so this wins) */
+    @media (max-width: 500px) {
+      #liveBuoyPanel {
+        right: 0; left: 0; top: 0; bottom: 0;
+        width: 100vw;
+        height: 100vh; height: 100dvh;          /* dvh handles mobile browser bars */
+        max-height: 100vh; max-height: 100dvh;
+        border-radius: 0; border: none;
+      }
+    }
+
   </style>
 </head>
 <body class="bg-light">
 
   <div class="container-fluid py-3">
+    <div class="app-header">
+      <svg class="app-logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="32" height="32" rx="6" fill="#0b2536"/>
+        <path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+      <div>
+        <div class="app-title">Allshore Surf</div>
+      </div>
+    </div>
     <div class="sticky-top-bar pb-2">
       <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
         <div class="col-auto">
@@ -298,7 +416,17 @@
           <!-- Table View -->
           <div id="tableWrap" class="card">
             <div class="card-body">
-              {{ table_html|safe }}
+              <div id="forecastTable">
+                {% if table_html %}{{ table_html|safe }}{% endif %}
+                {% if defer_forecast %}
+                <div id="forecastLoading" class="forecast-loading">
+                  <span class="spinner"></span> Loading forecast&hellip;
+                </div>
+                <noscript>
+                  <meta http-equiv="refresh" content="0;url=?station={{ selected_station|urlencode }}&amp;tz={{ selected_tz|urlencode }}&amp;unit={{ selected_unit|urlencode }}&amp;view=Table&amp;render=full">
+                </noscript>
+                {% endif %}
+              </div>
             </div>
           </div>
         {% endif %}
@@ -319,7 +447,8 @@
 
     <div class="card-body">
       <div id="liveBuoyLoading" class="text-muted">
-        Loading live buoy data...
+        <span class="spinner" style="vertical-align:middle;"></span>
+        Loading live buoy data&hellip;
       </div>
 
       <div id="liveBuoyError" class="alert alert-warning d-none"></div>
@@ -527,8 +656,10 @@
     L.control.layers(
       null,
       {
-        'Forecast points': forecastLayer,
-        'Live NDBC buoys': liveBuoyLayer
+        // Leaflet renders layer names as HTML, so the colored dot doubles as
+        // the legend (yellow = forecast point, cyan = live NDBC buoy).
+        '<span class="lc-dot lc-forecast"></span>Forecast points': forecastLayer,
+        '<span class="lc-dot lc-live"></span>Live NDBC buoys': liveBuoyLayer
       },
       {
         collapsed: false
@@ -564,8 +695,11 @@
     function enforceSingleWorld() {
       const el = document.getElementById('map');
 
-      // Keep a stable usable map height.
-      const targetH = Math.min(460, Math.floor(window.innerHeight * 0.48));
+      // Keep a stable usable map height; cap lower on phones/tablets so the
+      // map doesn't dominate the viewport (the forecast is the point).
+      const w = window.innerWidth;
+      const cap = w <= 576 ? 260 : (w <= 768 ? 300 : 460);
+      const targetH = Math.min(cap, Math.floor(window.innerHeight * 0.48));
       el.style.height = targetH + 'px';
 
       map.invalidateSize();
@@ -1775,6 +1909,83 @@
     initRangeControls();
   
     {% endif %}
+  </script>
+
+  <script>
+    // Phase 2b: shell-first forecast loading. When the server deferred the
+    // Table view (cold cache), fetch /api/forecast and inject the table so the
+    // page paints instantly instead of blocking on the NOAA fetch.
+    (function () {
+      var defer = {{ 'true' if defer_forecast else 'false' }};
+      if (!defer) return;
+      var box = document.getElementById('forecastTable');
+      if (!box) return;
+      var station = {{ selected_station|tojson }};
+      var params = new URLSearchParams({
+        station: station,
+        tz: {{ (selected_tz or '')|tojson }},
+        unit: {{ (selected_unit or 'US')|tojson }}
+      });
+      function showMessage(cls, text) {
+        // textContent, not innerHTML — d.error embeds the user-supplied station.
+        var div = document.createElement('div');
+        div.className = cls;
+        div.textContent = text;
+        box.innerHTML = '';
+        box.appendChild(div);
+      }
+      fetch('/api/forecast?' + params.toString())
+        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(function (d) {
+          if (d && d.table_html) {
+            box.innerHTML = d.table_html;  // trusted server HTML (build_html_table)
+          } else if (d && d.error) {
+            showMessage('alert alert-warning', d.error);
+          } else {
+            showMessage('text-muted', 'No forecast available.');
+          }
+        })
+        .catch(function () {
+          var div = document.createElement('div');
+          div.className = 'alert alert-warning';
+          div.textContent = 'Could not load forecast. ';
+          var a = document.createElement('a');
+          // Preserve the user's tz/unit/view on retry (params already holds them).
+          a.href = '?' + params.toString() + '&view=Table&render=full';
+          a.textContent = 'Retry';
+          div.appendChild(a);
+          box.innerHTML = '';
+          box.appendChild(div);
+        });
+    })();
+
+    // Phase 3a: Escape closes the live-buoy panel (keyboard a11y).
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        var p = document.getElementById('liveBuoyPanel');
+        if (p && p.style.display !== 'none') p.style.display = 'none';
+      }
+    });
+
+    // Phase 3a: on phones, tuck the control bar away when scrolling down the
+    // table and bring it back when scrolling up (it's tall when stacked).
+    (function () {
+      var bar = document.querySelector('.sticky-top-bar');
+      if (!bar) return;
+      var lastY = window.scrollY || 0;
+      var ticking = false;
+      function update() {
+        ticking = false;
+        if (window.innerWidth > 576) { bar.classList.remove('nav-hidden'); lastY = window.scrollY; return; }
+        var y = window.scrollY;
+        if (y > lastY && y > 90) bar.classList.add('nav-hidden');     // scrolling down
+        else if (y < lastY - 4) bar.classList.remove('nav-hidden');   // scrolling up
+        lastY = y;
+      }
+      window.addEventListener('scroll', function () {
+        if (!ticking) { window.requestAnimationFrame(update); ticking = true; }
+      }, { passive: true });
+    })();
   </script>
 </body>
 </html>

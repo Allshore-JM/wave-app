@@ -6,7 +6,3 @@ gunicorn
 pytz
 timezonefinder
 beautifulsoup4
-numpy
-xarray
-cfgrib
-eccodes

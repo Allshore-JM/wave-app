@@ -11,12 +11,6 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-  <!-- Leaflet-Velocity (GFS wind animation) -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-velocity@2.1.0/dist/leaflet-velocity.min.css" />
-  <script src="https://unpkg.com/leaflet-velocity@2.1.0/dist/leaflet-velocity.min.js"></script>
-  <!-- TopoJSON client for land mask decoding -->
-  <!-- GFS Overlays -->
-  <link rel="stylesheet" href="/static/gfs_overlay.css" />
   <style>
     html, body { height: 100%; }
     #map { height: 460px; border: 1px solid #ccc; background: #0b2536; }
@@ -502,6 +496,10 @@
     // ---- Leaflet Map ----
     // No maxBounds here. Latitude is clamped manually; longitude wraps continuously.
     const map = L.map('map', {
+      // Canvas renderer: draws all forecast circle markers onto one canvas
+      // instead of thousands of individual SVG <path> nodes, which sharply
+      // reduces layout/repaint overhead during pan/zoom.
+      preferCanvas: true,
       worldCopyJump: false,
       zoomControl: true,
       minZoom: 1,
@@ -513,11 +511,6 @@
       zoomDelta: 0.5,
       wheelPxPerZoomLevel: 80
     });
-
-    // Custom pane so forecast points render ABOVE GFS overlays + land mask.
-    // gfsData=420, gfsParticles=440, landMask=450, forecastPoints=460.
-    map.createPane('forecastPoints');
-    map.getPane('forecastPoints').style.zIndex = 460;
 
     const initialLayerVisibility = loadLayerVisibility();
     const forecastLayer = L.layerGroup();
@@ -554,7 +547,7 @@
         maxZoom: MAX_MAP_ZOOM,
         minZoom: 1,
         noWrap: false,
-        keepBuffer: 4,
+        keepBuffer: 2,
         attribution: '&copy; Esri & contributors'
       }
     ).addTo(map);
@@ -663,60 +656,110 @@
       return Math.round(map.getCenter().lng / 360) * 360;
     }
 
-    function wrappedLongitudes(baseLon) {
-      const lon = Number(baseLon);
+    // Viewport-aware rendering. The full global station list stays in memory;
+    // we only draw the wrapped marker copies whose position lands inside a
+    // padded view box. Panning/zooming to any region reveals that region's
+    // points on demand, so global access is fully preserved while we avoid
+    // painting thousands of off-screen markers every frame.
+    const VIEW_PAD = 0.25;            // over-render this fraction past the edges
+    const REFRESH_DEBOUNCE_MS = 150;
+
+    function visibleCopies(stations) {
+      if (!stations || !stations.length) return [];
+
+      const b = map.getBounds().pad(VIEW_PAD);
+      const west = b.getWest(), east = b.getEast();
+      const south = b.getSouth(), north = b.getNorth();
       const offset = currentWorldOffset();
+      const offsets = [offset - 360, offset, offset + 360];
+      const out = [];
 
-      if (!Number.isFinite(lon)) {
-        return [];
+      for (let i = 0; i < stations.length; i++) {
+        const s = stations[i];
+        const lat = Number(s.lat);
+        if (!Number.isFinite(lat) || lat < south || lat > north) continue;
+        const baseLon = Number(s.lon);
+        if (!Number.isFinite(baseLon)) continue;
+
+        for (let k = 0; k < offsets.length; k++) {
+          const lng = baseLon + offsets[k];
+          if (lng >= west && lng <= east) {
+            out.push({ s: s, lng: lng, o: offsets[k] });
+          }
+        }
       }
-
-      return [lon + offset - 360, lon + offset, lon + offset + 360];
+      return out;
     }
 
-    function refreshWrappedMarkerCopies(force = false) {
-      const newOffset = currentWorldOffset();
+    function renderSignature(copies) {
+      // Stable key per visible marker copy (station id + world offset). If the
+      // set is unchanged we skip the destroy/rebuild entirely.
+      const keys = new Array(copies.length);
+      for (let i = 0; i < copies.length; i++) {
+        keys[i] = copies[i].s.id + '#' + copies[i].o;
+      }
+      keys.sort();
+      return keys.join(',');
+    }
 
-      if (!force && newOffset === markerWorldOffset) {
+    let lastForecastSig = null;
+    let lastLiveSig = null;
+    let refreshTimer = null;
+
+    // `force` rebuilds immediately (init, resize, data load); otherwise the
+    // request is debounced so rapid pan/zoom doesn't thrash the marker layers.
+    function refreshWrappedMarkerCopies(force = false) {
+      markerWorldOffset = currentWorldOffset();
+
+      if (force) {
+        if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+        rebuildForecastMarkers(true);
+        rebuildLiveBuoyMarkers(true);
         return;
       }
 
-      markerWorldOffset = newOffset;
-      rebuildForecastMarkers();
-      rebuildLiveBuoyMarkers();
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(function () {
+        refreshTimer = null;
+        rebuildForecastMarkers(false);
+        rebuildLiveBuoyMarkers(false);
+      }, REFRESH_DEBOUNCE_MS);
     }
 
-    function rebuildForecastMarkers() {
+    function rebuildForecastMarkers(force = false) {
+      const vis = visibleCopies(forecastStationsData);
+      const sig = renderSignature(vis);
+      if (!force && sig === lastForecastSig) return;
+      lastForecastSig = sig;
+
       forecastLayer.clearLayers();
 
-      forecastStationsData.forEach(s => {
-        wrappedLongitudes(s.lon).forEach(lng => {
-          const mk = L.circleMarker([s.lat, lng], {
-            pane: 'forecastPoints',
-            radius: 3,
-            color: '#FFD600',
-            fillColor: '#FFD600',
-            fillOpacity: 1,
-            weight: 1
-          }).addTo(forecastLayer);
+      vis.forEach(function (c) {
+        const s = c.s;
+        const mk = L.circleMarker([s.lat, c.lng], {
+          radius: 3,
+          color: '#FFD600',
+          fillColor: '#FFD600',
+          fillOpacity: 1,
+          weight: 1
+        }).addTo(forecastLayer);
 
-          mk.bindTooltip(s.id, {
-            permanent: false,
-            direction: 'top',
-            offset: [0, -2]
-          });
+        mk.bindTooltip(s.id, {
+          permanent: false,
+          direction: 'top',
+          offset: [0, -2]
+        });
 
-          mk.on('click', () => {
-            document.getElementById('station').value = s.id;
+        mk.on('click', function () {
+          document.getElementById('station').value = s.id;
 
-            // Default to (Buoy Local) on station pick so we use that buoy's own timezone.
-            const tzSel = document.getElementById('tz');
-            if (tzSel) { tzSel.value = ''; }
+          // Default to (Buoy Local) on station pick so we use that buoy's own timezone.
+          const tzSel = document.getElementById('tz');
+          if (tzSel) { tzSel.value = ''; }
 
-            saveMapView(map);
-            saveLayerVisibility();
-            document.getElementById('controlForm').submit();
-          });
+          saveMapView(map);
+          saveLayerVisibility();
+          document.getElementById('controlForm').submit();
         });
       });
     }
@@ -726,7 +769,7 @@
       .then(r => r.json())
       .then(stations => {
         forecastStationsData = stations || [];
-        rebuildForecastMarkers();
+        rebuildForecastMarkers(true);
       });
 
     document.getElementById('controlForm').addEventListener('submit', () => {
@@ -1281,30 +1324,40 @@
       });
     }
 
-    function rebuildLiveBuoyMarkers() {
+    // Build the two icon variants once and reuse them, instead of allocating a
+    // fresh divIcon (with a box-shadow) for every marker on every rebuild.
+    const liveBuoyIconInactive = createLiveBuoyIcon(false);
+    const liveBuoyIconActive = createLiveBuoyIcon(true);
+
+    function rebuildLiveBuoyMarkers(force = false) {
+      const vis = visibleCopies(liveStationsData);
+      // The active-buoy highlight changes the icon, so fold it into the signature.
+      const sig = (activeLiveBuoyId || '') + '|' + renderSignature(vis);
+      if (!force && sig === lastLiveSig) return;
+      lastLiveSig = sig;
+
       liveBuoyLayer.clearLayers();
 
-      liveStationsData.forEach(s => {
-        wrappedLongitudes(s.lon).forEach(lng => {
-          const marker = L.marker([s.lat, lng], {
-            icon: createLiveBuoyIcon(s.id === activeLiveBuoyId),
-            title: 'Live ' + s.id,
-            zIndexOffset: 500
-          }).addTo(liveBuoyLayer);
+      vis.forEach(function (c) {
+        const s = c.s;
+        const marker = L.marker([s.lat, c.lng], {
+          icon: s.id === activeLiveBuoyId ? liveBuoyIconActive : liveBuoyIconInactive,
+          title: 'Live ' + s.id,
+          zIndexOffset: 500
+        }).addTo(liveBuoyLayer);
 
-          marker.bindTooltip('Live ' + s.id, {
-            permanent: false,
-            direction: 'top',
-            offset: [12, -2]
-          });
+        marker.bindTooltip('Live ' + s.id, {
+          permanent: false,
+          direction: 'top',
+          offset: [12, -2]
+        });
 
-          marker.on('click', () => {
-            activeLiveBuoyId = s.id;
-            rebuildLiveBuoyMarkers();
-            saveMapView(map);
-            saveLayerVisibility();
-            loadLiveBuoyDetails(s);
-          });
+        marker.on('click', function () {
+          activeLiveBuoyId = s.id;
+          rebuildLiveBuoyMarkers(true);
+          saveMapView(map);
+          saveLayerVisibility();
+          loadLiveBuoyDetails(s);
         });
       });
     }
@@ -1321,7 +1374,7 @@
         .then(r => r.json())
         .then(stations => {
           liveStationsData = stations || [];
-          rebuildLiveBuoyMarkers();
+          rebuildLiveBuoyMarkers(true);
         })
         .catch(err => {
           console.warn('Could not load live NDBC buoy layer:', err);
@@ -1329,8 +1382,6 @@
     }
 
     addLiveNdbcBuoyLayer();
-    // GFS map overlays (wave height / swell period / wind)
-    if (document.getElementById('map')) { var s=document.createElement('script'); s.src='/static/gfs_overlay.js'; document.body.appendChild(s); }
 
     {% if selected_view == 'Graph' and graph_data %}
     // ---- Charting ----

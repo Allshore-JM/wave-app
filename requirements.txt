@@ -1,6 +1,4 @@
 Flask
-pandas
-openpyxl
 requests
 gunicorn
 pytz

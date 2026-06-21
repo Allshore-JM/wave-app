@@ -78,6 +78,105 @@ stations_data_cache = None
 # NOAA URLs
 NOAA_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
 
+# ---------------------- HTTP session, logging, caches (Phase 2a) ----------------
+import time
+import logging
+import threading
+import hashlib
+from requests.adapters import HTTPAdapter
+try:
+    from urllib3.util.retry import Retry
+except Exception:  # pragma: no cover - urllib3 always present with requests
+    Retry = None
+
+# Configure only our own logger (don't call basicConfig, which mutates the root
+# logger and can interfere with gunicorn's logging depending on import order).
+logger = logging.getLogger("waveapp")
+if not logger.handlers:
+    _log_handler = logging.StreamHandler()
+    _log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_log_handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
+
+
+def _build_http_session() -> requests.Session:
+    """A shared session with connection pooling + automatic retries/backoff."""
+    s = requests.Session()
+    if Retry is not None:
+        retry = Retry(
+            total=2, connect=2, read=2, backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset(["GET", "HEAD"]),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+        s.mount("https://", adapter)
+        s.mount("http://", adapter)
+    return s
+
+
+HTTP = _build_http_session()
+
+# Single lock guarding the in-memory caches (gunicorn serves multiple threads).
+_CACHE_LOCK = threading.Lock()
+
+
+def _fresh(ts: float, ttl: int) -> bool:
+    return (time.time() - ts) < ttl
+
+
+def _evict_oldest(cache: dict, max_entries: int) -> None:
+    """Drop oldest entries until len <= max_entries. Caller must hold _CACHE_LOCK.
+
+    Works for caches keyed by dicts carrying either a 'ts' or 'timestamp' field.
+    """
+    while len(cache) > max_entries:
+        oldest = min(cache, key=lambda k: cache[k].get("ts", cache[k].get("timestamp", 0)))
+        cache.pop(oldest, None)
+
+
+def _json_cached(data, max_age: int):
+    """JSON response with ETag + Cache-Control; honors If-None-Match -> 304.
+
+    If-None-Match is matched per RFC 7232: tolerates the ``W/`` weak prefix, a
+    comma-separated list of tags, and the ``*`` wildcard, so a CDN in front
+    (Render fronts requests with Cloudflare) that rewrites the validator still
+    revalidates to 304 instead of re-sending the full body.
+    """
+    payload = json.dumps(data, separators=(",", ":"), sort_keys=True)
+    etag = hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+    inm = request.headers.get("If-None-Match", "")
+    supplied = []
+    for tok in inm.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok.startswith("W/"):
+            tok = tok[2:]
+        supplied.append(tok.strip().strip('"'))
+    matched = inm.strip() == "*" or etag in supplied
+
+    # Keep Content-Type identical across 200 and 304 (RFC 7232).
+    if matched:
+        resp = app.response_class(status=304, mimetype="application/json")
+    else:
+        resp = app.response_class(payload, mimetype="application/json")
+    resp.headers["Cache-Control"] = f"public, max-age={max_age}"
+    resp.headers["ETag"] = f'"{etag}"'
+    return resp
+
+
+# Latest GFS-wave run detection cache (runs publish ~4x/day).
+_RUN_CACHE = {"ts": 0.0, "value": (None, None)}
+_RUN_CACHE_TTL = 30 * 60
+
+# Parsed .bull forecast cache: (station_id, tz_name) -> {"ts", "data"}.
+_FORECAST_CACHE = {}
+_FORECAST_CACHE_TTL = 30 * 60
+_FORECAST_CACHE_MAX = 64
+
 # Timezones
 HST = pytz.timezone("Pacific/Honolulu")
 UTC = pytz.utc
@@ -129,7 +228,7 @@ def load_station_metadata():
     station_url = "https://www.ndbc.noaa.gov/data/stations/station_table.txt"
     meta = {}
     try:
-        res = requests.get(station_url, timeout=30)
+        res = HTTP.get(station_url, timeout=30)
         res.raise_for_status()
         for line in res.text.splitlines():
             if not line or line.startswith('#'):
@@ -219,13 +318,34 @@ def get_stations_data():
 
 @app.route('/stations.json')
 def stations_json():
-    return jsonify(get_stations_data())
+    # Station geometry is effectively static; allow client/CDN caching + 304s.
+    return _json_cached(get_stations_data(), max_age=3600)
+
+
+# Small inline wave icon so /favicon.ico stops 404-ing (and adds light branding).
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="6" fill="#0b2536"/>'
+    '<path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" '
+    'fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>'
+    '<path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" '
+    'fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>'
+    '</svg>'
+)
+
+
+@app.route('/favicon.ico')
+def favicon():
+    resp = app.response_class(_FAVICON_SVG, mimetype="image/svg+xml")
+    resp.headers["Cache-Control"] = "public, max-age=604800"
+    return resp
 
 # ----------------------------- NOAA run detection ------------------------------
 
-def get_latest_run():
+def _detect_latest_run():
     """
     Find the most recent available GFS wave run by probing 18/12/06/00 of today and yesterday.
+    Up to 8 serial HEAD requests; wrapped by the cached get_latest_run() below.
     """
     now = datetime.utcnow()
     run_hours = [18, 12, 6, 0]
@@ -237,12 +357,34 @@ def get_latest_run():
             url = f"{NOAA_BASE}/gfs.{yyyymmdd}/{run_str}/wave/station/bulls.t{run_str}z/"
             test_file = f"{url}gfswave.51201.bull"
             try:
-                resp = requests.head(test_file, timeout=10)
+                resp = HTTP.head(test_file, timeout=10)
                 if resp.status_code == 200:
                     return yyyymmdd, run_str
-            except Exception:
+            except Exception as exc:
+                logger.debug("run probe failed for %s: %r", test_file, exc)
                 continue
     return None, None
+
+
+def get_latest_run():
+    """Cached wrapper around _detect_latest_run() — probe at most once per TTL.
+
+    The previous code re-probed NOAA (up to 8 serial HEADs) on *every* page load,
+    which dominated cold-start latency. Runs only publish ~4x/day, so a 30-minute
+    cache is safe and removes that cost from nearly all requests.
+    """
+    with _CACHE_LOCK:
+        cached = _RUN_CACHE["value"]
+        if cached[0] and _fresh(_RUN_CACHE["ts"], _RUN_CACHE_TTL):
+            return cached
+    result = _detect_latest_run()
+    if result and result[0]:
+        with _CACHE_LOCK:
+            _RUN_CACHE["ts"] = time.time()
+            _RUN_CACHE["value"] = result
+    else:
+        logger.warning("get_latest_run: no recent GFS-wave run detected")
+    return result
 
 # ----------------------------- Bulletin parser ---------------------------------
 
@@ -318,6 +460,27 @@ def _resolve_day_hour_ts(cycle_dt_utc: datetime, day_val: int, hour_val: int, la
     return dt
 
 def parse_bull(station_id: str, target_tz_name: str | None = None):
+    """Cached forecast retrieval (bounded, TTL'd) wrapping _parse_bull_uncached().
+
+    Keyed by (station_id, tz). Only successful parses are cached. This is the
+    single cached forecast path; a future JSON endpoint should call this too so
+    both share one cache rather than re-fetching/parsing NOAA per request.
+    """
+    key = (station_id, target_tz_name or "")
+    with _CACHE_LOCK:
+        entry = _FORECAST_CACHE.get(key)
+        if entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL):
+            return entry["data"]
+    data = _parse_bull_uncached(station_id, target_tz_name)
+    # data[-1] is the error field; only cache clean results.
+    if data and not data[-1]:
+        with _CACHE_LOCK:
+            _FORECAST_CACHE[key] = {"ts": time.time(), "data": data}
+            _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
+    return data
+
+
+def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
     """
     Fetch and parse .bull for station. Returns:
     (cycle_str, location_str, model_run_str, rows, tz_name, error)
@@ -329,8 +492,9 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
 
     bull_url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
     try:
-        resp = requests.get(bull_url, timeout=15)
-    except Exception:
+        resp = HTTP.get(bull_url, timeout=15)
+    except Exception as exc:
+        logger.warning("could not download .bull for %s: %r", station_id, exc)
         return None, None, None, None, 'UTC', f"Could not download .bull for {station_id}"
     if resp.status_code != 200 or not resp.text:
         return None, None, None, None, 'UTC', f"No .bull file found for {station_id}"
@@ -806,7 +970,9 @@ import xml.etree.ElementTree as ET
 
 NDBC_ACTIVE_XML = "https://www.ndbc.noaa.gov/activestations.xml"
 NDBC_REALTIME_DIR = "https://www.ndbc.noaa.gov/data/realtime2/"
-NDBC_CACHE_TTL_SECONDS = 15 * 60
+NDBC_CACHE_TTL_SECONDS = 30 * 60
+NDBC_COMPONENT_TTL_SECONDS = 30 * 60
+NDBC_COMPONENT_CACHE_MAX = 100
 
 NDBC_STATIONS_CACHE = {
     "timestamp": 0,
@@ -819,7 +985,7 @@ def _cache_valid(cache_timestamp: float, ttl: int = NDBC_CACHE_TTL_SECONDS) -> b
     return (time.time() - cache_timestamp) < ttl
 
 def _fetch_text(url: str, timeout: int = 25) -> str:
-    resp = requests.get(url, timeout=timeout)
+    resp = HTTP.get(url, timeout=timeout)
     resp.raise_for_status()
     return resp.text
 
@@ -852,8 +1018,10 @@ def _stations_with_live_spectral_wave_data() -> set:
     return set(re.findall(r'href="([A-Za-z0-9]+)\.data_spec"', html))
 
 def get_live_ndbc_wave_stations() -> list:
-    if NDBC_STATIONS_CACHE["data"] and _cache_valid(NDBC_STATIONS_CACHE["timestamp"]):
-        return NDBC_STATIONS_CACHE["data"]
+    with _CACHE_LOCK:
+        if NDBC_STATIONS_CACHE["data"] and _cache_valid(NDBC_STATIONS_CACHE["timestamp"]):
+            return NDBC_STATIONS_CACHE["data"]
+    # Fetch/parse outside the lock so concurrent requests don't serialize on NOAA.
     active = _parse_active_ndbc_stations()
     live_ids = _stations_with_live_spectral_wave_data()
     stations = []
@@ -866,13 +1034,14 @@ def get_live_ndbc_wave_stations() -> list:
             "has_live_wave_components": True,
             "source": "NDBC realtime spectral wave data"
         })
-    NDBC_STATIONS_CACHE["timestamp"] = time.time()
-    NDBC_STATIONS_CACHE["data"] = stations
+    with _CACHE_LOCK:
+        NDBC_STATIONS_CACHE["timestamp"] = time.time()
+        NDBC_STATIONS_CACHE["data"] = stations
     return stations
 
 @app.route("/api/ndbc/live-wave-stations")
 def api_ndbc_live_wave_stations():
-    return jsonify(get_live_ndbc_wave_stations())
+    return _json_cached(get_live_ndbc_wave_stations(), max_age=900)
 
 # ----------------------- NDBC spectral component parser -------------------------
 
@@ -1553,8 +1722,9 @@ def _match_direction_row(density_row: dict, direction_rows: list) -> dict | None
 def api_ndbc_station_components(station_id):
     station_id = station_id.strip().upper()
 
-    cached = NDBC_COMPONENT_CACHE.get(station_id)
-    if cached and _cache_valid(cached["timestamp"], ttl=10 * 60):
+    with _CACHE_LOCK:
+        cached = NDBC_COMPONENT_CACHE.get(station_id)
+    if cached and _cache_valid(cached["timestamp"], ttl=NDBC_COMPONENT_TTL_SECONDS):
         return jsonify(cached["data"])
 
     station_meta = {
@@ -1689,7 +1859,9 @@ def api_ndbc_station_components(station_id):
         ]
     }
 
-    NDBC_COMPONENT_CACHE[station_id] = {"timestamp": time.time(), "data": result}
+    with _CACHE_LOCK:
+        NDBC_COMPONENT_CACHE[station_id] = {"timestamp": time.time(), "data": result}
+        _evict_oldest(NDBC_COMPONENT_CACHE, NDBC_COMPONENT_CACHE_MAX)
     return jsonify(result)
 
 NDBC_STATION_PAGE = "https://www.ndbc.noaa.gov/station_page.php?station={station_id}"

@@ -84,6 +84,20 @@ def nearest_civil(lat, lon):
 
 
 def main():
+    # timezonefinder 8.0.0 ships CORRUPTED land data for several regions (e.g. Western
+    # Australia -> Asia/Manila, the Solomons -> Asia/Sakhalin). requirements.txt pins a
+    # known-good version; refuse to regenerate with a bad one so we don't reintroduce it.
+    try:
+        from importlib.metadata import version
+        tzf_ver = version("timezonefinder")
+    except Exception:
+        tzf_ver = "?"
+    if tzf_ver.startswith("8."):
+        raise SystemExit(
+            "timezonefinder %s has corrupted land data (e.g. Western Australia). "
+            "Install the pinned version (pip install -r requirements.txt) and re-run." % tzf_ver
+        )
+    print("using timezonefinder", tzf_ver)
     coords = json.load(open(COORDS_PATH))
     out = {}
     kept_nautical = 0

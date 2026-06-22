@@ -182,6 +182,33 @@ _FORECAST_CACHE_MAX = 64
 HST = pytz.timezone("Pacific/Honolulu")
 UTC = pytz.utc
 
+# Curated list of major global timezones for the override dropdown (value, label),
+# one representative per major UTC offset. The default is "(Buoy Local)" (value "");
+# the backend still accepts any valid IANA tz via ?tz=, so old links keep working.
+MAJOR_TIMEZONES = [
+    ("UTC", "UTC (Coordinated Universal Time)"),
+    ("Pacific/Honolulu", "Hawaii (UTC-10)"),
+    ("America/Anchorage", "Alaska (UTC-9)"),
+    ("America/Los_Angeles", "US Pacific (UTC-8)"),
+    ("America/Denver", "US Mountain (UTC-7)"),
+    ("America/Chicago", "US Central (UTC-6)"),
+    ("America/New_York", "US Eastern (UTC-5)"),
+    ("America/Halifax", "Atlantic (UTC-4)"),
+    ("America/Sao_Paulo", "Brazil - Sao Paulo (UTC-3)"),
+    ("Europe/London", "UK - London (UTC+0)"),
+    ("Europe/Paris", "Central Europe (UTC+1)"),
+    ("Europe/Athens", "Eastern Europe (UTC+2)"),
+    ("Europe/Moscow", "Moscow / East Africa (UTC+3)"),
+    ("Asia/Dubai", "Gulf - Dubai (UTC+4)"),
+    ("Asia/Kolkata", "India (UTC+5:30)"),
+    ("Asia/Bangkok", "Southeast Asia (UTC+7)"),
+    ("Asia/Shanghai", "China / Singapore / W Australia (UTC+8)"),
+    ("Asia/Tokyo", "Japan / Korea (UTC+9)"),
+    ("Australia/Adelaide", "Central Australia (UTC+9:30)"),
+    ("Australia/Sydney", "Eastern Australia (UTC+10)"),
+    ("Pacific/Auckland", "New Zealand (UTC+12)"),
+]
+
 # Curated fallback stations
 DEFAULT_STATIONS = {
     "51201": {"name": "Buoy 51201", "lat": 21.67, "lon": -158.12},
@@ -1004,7 +1031,7 @@ def api_forecast():
 @app.route("/", methods=["GET", "POST"])
 def index():
     stations = get_station_list()
-    timezones = sorted(pytz.common_timezones)
+    timezones = list(MAJOR_TIMEZONES)
     unit_options = ["US", "Metric"]
 
     selected_view = (request.values.get("view") or "Table")
@@ -1019,6 +1046,11 @@ def index():
 
     if not selected_station:
         selected_station = "51201"
+
+    # If an active override (?tz=) isn't one of the curated majors, keep it in the
+    # dropdown so it still shows as selected (back-compat with older links).
+    if selected_tz and selected_tz not in {tzv for tzv, _ in timezones}:
+        timezones.append((selected_tz, selected_tz))
 
     # Shell-first: defer ONLY the Table view on a cold cache so the page never
     # blocks on NOAA. The browser then pulls /api/forecast and injects the table.

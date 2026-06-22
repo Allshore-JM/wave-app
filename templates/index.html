@@ -412,8 +412,8 @@
           <label for="tz" class="form-label mb-0">Time Zone</label>
           <select class="form-select" id="tz" name="tz">
             <option value="" {% if (selected_tz or '') == '' %}selected{% endif %}>(Buoy Local)</option>
-            {% for tz in timezones %}
-              <option value="{{ tz }}" {% if tz == selected_tz %}selected{% endif %}>{{ tz }}</option>
+            {% for tzv, tzname in timezones %}
+              <option value="{{ tzv }}" {% if tzv == selected_tz %}selected{% endif %}>{{ tzname }}</option>
             {% endfor %}
           </select>
         </div>

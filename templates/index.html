@@ -1049,12 +1049,39 @@
       });
     }
 
+    // After a favorite is picked (which reloads the page via the form), recenter the
+    // map on that buoy. One-shot: the flag is set by the picker's selectStation() and
+    // cleared here. Only fires when the loaded station matches the flagged one.
+    const FORECAST_FOCUS_ZOOM = 7;
+    function focusSelectedStationIfRequested() {
+      let sid;
+      try { sid = sessionStorage.getItem('allshore.focusStation'); } catch (e) { return; }
+      if (!sid) return;
+      try { sessionStorage.removeItem('allshore.focusStation'); } catch (e) {}
+      const sel = document.getElementById('station');
+      if (!sel || sel.value !== sid) return;
+      let st = null;
+      for (let i = 0; i < forecastStationsData.length; i++) {
+        if (String(forecastStationsData[i].id) === sid) { st = forecastStationsData[i]; break; }
+      }
+      if (!st) return;
+      const lat = Number(st.lat), lon = Number(st.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      const z = Math.min(MAX_MAP_ZOOM, Math.max(FORECAST_FOCUS_ZOOM, MIN_MAP_ZOOM));
+      const safeLat = Math.max(-LATITUDE_LIMIT, Math.min(LATITUDE_LIMIT, lat));
+      map.setView([safeLat, normLng(lon)], z, { animate: true });
+      clampMapLatitude();
+      refreshWrappedMarkerCopies(true);
+      saveMapView(map);   // persist so subsequent reloads stay on the buoy
+    }
+
     // Plot forecast stations
     fetch('/stations.json')
       .then(r => r.json())
       .then(stations => {
         forecastStationsData = stations || [];
         rebuildForecastMarkers(true);
+        focusSelectedStationIfRequested();
       });
 
     document.getElementById('controlForm').addEventListener('submit', () => {
@@ -1706,6 +1733,8 @@
       function selectStation(sid) {
         if (!bySid.has(sid)) return;
         select.value = sid;
+        // One-shot: ask the map to recenter on this buoy after the reload.
+        try { sessionStorage.setItem('allshore.focusStation', sid); } catch (e) {}
         close();
         const f = document.getElementById('controlForm');
         // requestSubmit() fires the 'submit' event (plain .submit() does not), so the

@@ -1052,7 +1052,7 @@
     // After a favorite is picked (which reloads the page via the form), recenter the
     // map on that buoy. One-shot: the flag is set by the picker's selectStation() and
     // cleared here. Only fires when the loaded station matches the flagged one.
-    const FORECAST_FOCUS_ZOOM = 7;
+    const FORECAST_FOCUS_ZOOM = 8;
     function focusSelectedStationIfRequested() {
       let sid;
       try { sid = sessionStorage.getItem('allshore.focusStation'); } catch (e) { return; }

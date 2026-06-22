@@ -2115,4 +2115,7 @@ def api_ndbc_station_wave_summary(station_id):
         }), 500
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Honor $PORT when set (dev tooling / managed runners); default to 5000 locally.
+    # Production uses gunicorn, so this block is dev-only.
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=True, port=port, use_reloader=False)

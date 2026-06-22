@@ -265,7 +265,7 @@
       font-weight: 700; color: #0b2536; cursor: pointer;
     }
     .home-menu {
-      position: absolute; top: 0; left: 34px;
+      position: absolute; bottom: 0; left: 34px;
       background: #fff; border: 1px solid rgba(0,0,0,0.2); border-radius: 6px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.28); padding: 6px; min-width: 190px; z-index: 1000;
       /* Never exceed the (short, overflow:hidden) map — scroll instead. */
@@ -325,6 +325,52 @@
       }
     }
 
+    /* Favorites station picker (progressive enhancement; native <select> is the no-JS fallback) */
+    .station-picker { position: relative; display: none; }
+    .js-picker .station-picker { display: block; }
+    .js-picker select#station { display: none; }
+    /* Trigger box: favorite star + current-station label + caret, styled like a form-select */
+    .station-trigger {
+      display: inline-flex; align-items: stretch; min-width: 240px; max-width: 320px;
+      background: #fff; border: 1px solid #ced4da; border-radius: .375rem; overflow: hidden;
+    }
+    .station-trigger:focus-within { border-color: #86b7fe; box-shadow: 0 0 0 .25rem rgba(13,110,253,.25); }
+    .station-open {
+      flex: 1 1 auto; display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+      border: 0; background: none; padding: .375rem .5rem; cursor: pointer; font: inherit; color: #212529; text-align: left;
+    }
+    .station-current { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .station-caret { flex: 0 0 auto; color: #6c757d; }
+    .station-results {
+      position: absolute; z-index: 2000; top: 100%; left: 0;
+      margin: 2px 0 0; padding: 4px 0; list-style: none;
+      background: #fff; border: 1px solid #ced4da; border-radius: .375rem;
+      box-shadow: 0 6px 18px rgba(0,0,0,.18);
+      max-height: 340px; overflow-y: auto; min-width: 260px; max-width: 360px;
+    }
+    .station-results li { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .station-results .fav-select {
+      flex: 1 1 auto; min-width: 0; border: 0; background: none; padding: 8px 10px;
+      font: inherit; color: #212529; text-align: left; cursor: pointer;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .station-results li:hover .fav-select, .station-results .fav-select:focus-visible { background: #e7f1ff; }
+    .sr-star {
+      flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+      min-width: 32px; min-height: 32px; border: 0; background: none; padding: 0 2px;
+      font-size: 1.05rem; line-height: 1; color: #f0ad00; cursor: pointer;
+    }
+    .sr-star:focus-visible { outline: 2px solid #0d6efd; outline-offset: -2px; border-radius: 3px; }
+    .sr-star:disabled { color: #ced4da; cursor: default; }
+    .station-results li.sr-empty { display: block; padding: 8px 10px; color: #6c757d; cursor: default; white-space: normal; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    @media (max-width: 576px) {
+      .station-trigger { min-width: 0; width: 100%; max-width: none; }
+      .station-results { max-height: 50vh; left: 0; right: 0; max-width: none; }
+      .station-results .fav-select { min-height: 44px; }
+      .sr-star { min-width: 44px; min-height: 44px; }
+    }
+
   </style>
 </head>
 <body class="bg-light">
@@ -342,8 +388,19 @@
     </div>
     <div class="sticky-top-bar pb-2">
       <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
-        <div class="col-auto">
+        <div class="col-auto station-field">
           <label for="station" class="form-label mb-0">Station</label>
+          <div class="station-picker">
+            <div class="station-trigger">
+              <button type="button" id="stationFavToggle" class="sr-star" aria-label="Favorite the current station">☆</button>
+              <button type="button" id="stationTrigger" class="station-open" aria-expanded="false" aria-controls="stationResults">
+                <span id="stationCurrent" class="station-current">Select a station</span>
+                <span class="station-caret" aria-hidden="true">▾</span>
+              </button>
+            </div>
+            <ul id="stationResults" class="station-results" aria-label="Favorite stations" hidden></ul>
+            <span id="stationStatus" class="sr-only" role="status" aria-live="polite"></span>
+          </div>
           <select class="form-select" id="station" name="station">
             {% for sid, name in stations %}
               <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>{{ sid }} — {{ name }}</option>
@@ -732,7 +789,7 @@
 
     // --- Home View control: set/jump/reset the default map focus ---
     const HomeControl = L.Control.extend({
-      options: { position: 'topleft' },
+      options: { position: 'bottomleft' },
       onAdd: function () {
         const container = L.DomUtil.create('div', 'leaflet-bar home-control');
         const btn = L.DomUtil.create('a', 'home-btn', container);
@@ -778,6 +835,7 @@
         return container;
       }
     });
+    map.zoomControl.setPosition('bottomleft');
     map.addControl(new HomeControl());
     // Dismiss the Home menu when interacting with the map (outside-click UX).
     map.on('movestart click', function () {
@@ -991,12 +1049,39 @@
       });
     }
 
+    // After a favorite is picked (which reloads the page via the form), recenter the
+    // map on that buoy. One-shot: the flag is set by the picker's selectStation() and
+    // cleared here. Only fires when the loaded station matches the flagged one.
+    const FORECAST_FOCUS_ZOOM = 8;
+    function focusSelectedStationIfRequested() {
+      let sid;
+      try { sid = sessionStorage.getItem('allshore.focusStation'); } catch (e) { return; }
+      if (!sid) return;
+      try { sessionStorage.removeItem('allshore.focusStation'); } catch (e) {}
+      const sel = document.getElementById('station');
+      if (!sel || sel.value !== sid) return;
+      let st = null;
+      for (let i = 0; i < forecastStationsData.length; i++) {
+        if (String(forecastStationsData[i].id) === sid) { st = forecastStationsData[i]; break; }
+      }
+      if (!st) return;
+      const lat = Number(st.lat), lon = Number(st.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      const z = Math.min(MAX_MAP_ZOOM, Math.max(FORECAST_FOCUS_ZOOM, MIN_MAP_ZOOM));
+      const safeLat = Math.max(-LATITUDE_LIMIT, Math.min(LATITUDE_LIMIT, lat));
+      map.setView([safeLat, normLng(lon)], z, { animate: true });
+      clampMapLatitude();
+      refreshWrappedMarkerCopies(true);
+      saveMapView(map);   // persist so subsequent reloads stay on the buoy
+    }
+
     // Plot forecast stations
     fetch('/stations.json')
       .then(r => r.json())
       .then(stations => {
         forecastStationsData = stations || [];
         rebuildForecastMarkers(true);
+        focusSelectedStationIfRequested();
       });
 
     document.getElementById('controlForm').addEventListener('submit', () => {
@@ -1595,6 +1680,141 @@
 
     window.addEventListener('resize', enforceSingleWorld);
     enforceSingleWorld();
+
+    // ---------------- Favorite-station picker ----------------
+    // Progressive enhancement over the native <select id="station">: the trigger
+    // shows the current station (+ a ★ to favorite it) and opens a panel listing
+    // saved favorites for one-tap selection. Most buoys are picked on the map; this
+    // box is for quick re-access. The native select stays the real form field
+    // (no-JS fallback) and ?station=... deep links are unaffected.
+    (function initStationPicker() {
+      const field = document.querySelector('.station-field');
+      const select = document.getElementById('station');
+      const trigger = document.getElementById('stationTrigger');
+      const favToggle = document.getElementById('stationFavToggle');
+      const currentEl = document.getElementById('stationCurrent');
+      const results = document.getElementById('stationResults');
+      const status = document.getElementById('stationStatus');
+      if (!field || !select || !trigger || !favToggle || !currentEl || !results || !select.options.length) return;
+
+      const bySid = new Map(Array.from(select.options).map(function (o) {
+        return [o.value, { sid: o.value, label: (o.textContent || '').trim() }];
+      }));
+
+      const FAV_KEY = 'allshore.favStations.v1';
+      function readFavs() {
+        try { const a = JSON.parse(localStorage.getItem(FAV_KEY)); return Array.isArray(a) ? a.filter(function (x) { return typeof x === 'string'; }) : []; }
+        catch (e) { return []; }
+      }
+      function writeFavs(arr) { try { localStorage.setItem(FAV_KEY, JSON.stringify(arr.slice(0, 100))); } catch (e) {} }
+      function isFav(sid) { return readFavs().indexOf(sid) !== -1; }
+      function toggleFav(sid) { let f = readFavs(); if (f.indexOf(sid) !== -1) f = f.filter(function (x) { return x !== sid; }); else f.unshift(sid); writeFavs(f); }
+
+      // Enhance: reveal the favorites box, hide the native select, point the label at the trigger.
+      field.classList.add('js-picker');
+      const label = field.querySelector('label.form-label');
+      if (label) label.setAttribute('for', 'stationTrigger');
+      function announce(msg) { if (status) status.textContent = msg; }
+
+      function refreshCurrent() {
+        const sid = select.value;
+        const c = bySid.get(sid);
+        currentEl.textContent = c ? c.label : 'Select a station';
+        const fav = !!c && isFav(sid);
+        favToggle.textContent = fav ? '★' : '☆';
+        favToggle.disabled = !c;
+        favToggle.setAttribute('aria-label', !c ? 'No station selected'
+          : (fav ? 'Remove current station from favorites: ' : 'Add current station to favorites: ') + c.label);
+      }
+
+      function open() { renderFavs(); results.hidden = false; trigger.setAttribute('aria-expanded', 'true'); }
+      function close() { results.hidden = true; trigger.setAttribute('aria-expanded', 'false'); }
+
+      function selectStation(sid) {
+        if (!bySid.has(sid)) return;
+        select.value = sid;
+        // One-shot: ask the map to recenter on this buoy after the reload.
+        try { sessionStorage.setItem('allshore.focusStation', sid); } catch (e) {}
+        close();
+        const f = document.getElementById('controlForm');
+        // requestSubmit() fires the 'submit' event (plain .submit() does not), so the
+        // existing controlForm listener still persists map view + layer state.
+        if (f) { if (f.requestSubmit) f.requestSubmit(); else f.submit(); }
+      }
+
+      function renderFavs() {
+        results.textContent = '';
+        const favs = readFavs().map(function (s) { return bySid.get(s); }).filter(Boolean);
+        if (!favs.length) {
+          const li = document.createElement('li');
+          li.className = 'sr-empty';
+          li.textContent = 'No favorites yet — pick a buoy on the map, then tap ★ to save it here.';
+          results.appendChild(li);
+          return;
+        }
+        favs.forEach(function (c) {
+          const li = document.createElement('li');
+          const pick = document.createElement('button');
+          pick.type = 'button';
+          pick.className = 'fav-select';
+          pick.dataset.sid = c.sid;
+          pick.textContent = c.label;
+          pick.addEventListener('click', function () { selectStation(c.sid); });
+          const star = document.createElement('button');
+          star.type = 'button';
+          star.className = 'sr-star';
+          star.textContent = '★';
+          star.setAttribute('aria-label', 'Remove favorite: ' + c.label);
+          star.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const rows = Array.prototype.slice.call(results.querySelectorAll('.fav-select'));
+            const idx = rows.indexOf(pick);
+            toggleFav(c.sid); refreshCurrent(); renderFavs();
+            announce('Removed favorite ' + c.sid);
+            // Keep keyboard focus in the panel: move it to the next favorite (or close if none left).
+            const next = results.querySelectorAll('.fav-select');
+            if (next.length) { (next[idx] || next[next.length - 1]).focus(); }
+            else { close(); trigger.focus(); }
+          });
+          li.appendChild(pick); li.appendChild(star);
+          results.appendChild(li);
+        });
+      }
+
+      favToggle.addEventListener('click', function (e) {
+        e.preventDefault();
+        const sid = select.value;
+        if (!bySid.has(sid)) return;
+        const wasFav = isFav(sid);
+        if (!wasFav && readFavs().length >= 100) { announce('Favorites are full (100). Remove one to add more.'); return; }
+        toggleFav(sid); refreshCurrent();
+        if (!results.hidden) renderFavs();
+        announce((wasFav ? 'Removed favorite ' : 'Added favorite ') + sid);
+      });
+
+      // The trigger button toggles the panel; native button activation handles Enter/Space/click.
+      trigger.addEventListener('click', function (e) { e.preventDefault(); if (results.hidden) open(); else close(); });
+      trigger.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (results.hidden) open();
+          const first = results.querySelector('.fav-select, .sr-star');
+          if (first) first.focus();
+        } else if (e.key === 'Escape' && !results.hidden) { e.stopPropagation(); close(); }
+      });
+      results.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { e.stopPropagation(); close(); trigger.focus(); }
+      });
+
+      // Close when focus or a click leaves the picker. Guard relatedTarget: removing a favorite
+      // re-renders the panel and detaches the focused button, firing focusout with relatedTarget=null
+      // — that is our own churn, not the user leaving, so don't close on it (a real click outside is
+      // still handled by the document click listener below).
+      field.addEventListener('focusout', function (e) { if (e.relatedTarget && !field.contains(e.relatedTarget)) close(); });
+      document.addEventListener('click', function (e) { if (!field.contains(e.target)) close(); });
+
+      refreshCurrent();
+    })();
 
     function addLiveNdbcBuoyLayer() {
       fetch('/api/ndbc/live-wave-stations')

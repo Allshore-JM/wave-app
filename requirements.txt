@@ -2,5 +2,5 @@ Flask
 requests
 gunicorn
 pytz
-timezonefinder
+timezonefinder==6.5.9
 beautifulsoup4

@@ -72,6 +72,7 @@ def get_tz_finder():
 # Caches
 STATION_META = None          # station_id -> {name, lat, lon}
 STATION_COORDS = None        # station_id -> {lat, lon}
+STATION_TZ = None            # station_id -> IANA tz name (precomputed nearest-civil)
 BULLET_STATIONS = None
 stations_data_cache = None
 
@@ -219,6 +220,44 @@ def load_station_coords() -> dict:
         coords = {}
     STATION_COORDS = coords
     return STATION_COORDS
+
+def load_station_timezones() -> dict:
+    """Load precomputed per-buoy IANA timezone names from station_timezones.json.
+
+    These are each buoy's *nearest civil (DST-aware) timezone* (computed offline from
+    station_coords.json), which is more accurate for coastal forecasts than the
+    longitude-banded nautical Etc/GMT zones TimezoneFinder returns for open water.
+    Open-ocean buoys with no land nearby keep their nautical zone. Missing/invalid
+    file -> empty map -> the app falls back to live TimezoneFinder lookup.
+    """
+    global STATION_TZ
+    if STATION_TZ is not None:
+        return STATION_TZ
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    tz_path = os.path.join(base_dir, 'station_timezones.json')
+    tzs = {}
+    try:
+        with open(tz_path, 'r') as f:
+            data = json.load(f)
+        for sid, name in data.items():
+            if isinstance(name, str) and name:
+                tzs[str(sid).strip()] = name
+    except Exception:
+        tzs = {}
+    STATION_TZ = tzs
+    return STATION_TZ
+
+def get_station_tz(station_id: str):
+    """Return the precomputed timezone for a station id, or None if not mapped.
+
+    Case-robust: some callers upper-case the id before lookup, so try the exact id
+    first then its upper-cased form (no key collisions exist between the two).
+    """
+    if not station_id:
+        return None
+    m = load_station_timezones()
+    k = str(station_id).strip()
+    return m.get(k) or m.get(k.upper())
 
 def load_station_metadata():
     """Fetch NDBC station_table for names and coarse lat/lon; fallback to defaults."""
@@ -506,9 +545,11 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
     cycle_str = cycle_line.strip()
     location_str = location_line.strip()
 
-    # coords -> timezone
+    # coords -> timezone. Prefer the precomputed nearest-civil timezone for this buoy
+    # (station_timezones.json); fall back to a live coordinate lookup if unmapped.
     lat, lon = _parse_header_coords(location_str)
-    tz_name_from_loc = _safe_tzname_for_latlon(lat, lon) if (lat is not None and lon is not None) else 'UTC'
+    tz_name_from_loc = get_station_tz(station_id) or (
+        _safe_tzname_for_latlon(lat, lon) if (lat is not None and lon is not None) else 'UTC')
     effective_tz_name = tz_name_from_loc
     if target_tz_name:
         try:
@@ -1857,11 +1898,17 @@ def api_ndbc_station_components(station_id):
     total_m0 = sum(e * w for e, w in zip(density_vals, df))
     total_hs_m = 4.0 * math.sqrt(max(total_m0, 0.0))
 
+    # Buoy-local observation time using the SAME per-buoy timezone as the forecast
+    # (was previously hard-coded to Honolulu/"HST" for every buoy).
     try:
-        hst = pytz.timezone("Pacific/Honolulu")
-        timestamp_hst = density_row["timestamp_utc"].astimezone(hst).strftime("%Y-%m-%d %I:%M %p HST")
+        tz_name = get_station_tz(station_id)
+        if not tz_name:
+            _lat = station_meta.get("lat"); _lon = station_meta.get("lon")
+            tz_name = _safe_tzname_for_latlon(_lat, _lon) if (_lat is not None and _lon is not None) else "UTC"
+        local_dt = density_row["timestamp_utc"].astimezone(pytz.timezone(tz_name))
+        timestamp_local = local_dt.strftime("%Y-%m-%d %I:%M %p ") + (local_dt.tzname() or tz_name)
     except Exception:
-        timestamp_hst = None
+        timestamp_local = None
 
     noaa_summary = None
     if summary_row:
@@ -1883,7 +1930,7 @@ def api_ndbc_station_components(station_id):
         "lat": station_meta.get("lat"),
         "lon": station_meta.get("lon"),
         "timestamp_utc": density_row["timestamp_utc"].isoformat().replace("+00:00", "Z"),
-        "timestamp_hst": timestamp_hst,
+        "timestamp_local": timestamp_local,
         "total_height_ft": round(total_hs_m * 3.28084, 1),
         "total_height_m": round(total_hs_m, 2),
         "sep_frequency_hz": round(sep_freq, 4) if sep_freq else None,
@@ -1954,9 +2001,11 @@ def _parse_noaa_station_wave_summary(station_id: str, hours: int = 24) -> dict:
         lat = fallback.get("lat")
         lon = fallback.get("lon")
 
-    tz_name = "UTC"
-    if lat is not None and lon is not None:
-        tz_name = _safe_tzname_for_latlon(lat, lon)
+    # Same corrected nearest-civil timezone as the forecast table (keeps the live-buoy
+    # observation panel consistent); fall back to a live lookup for NDBC-only ids.
+    tz_name = get_station_tz(station_id)
+    if not tz_name:
+        tz_name = _safe_tzname_for_latlon(lat, lon) if (lat is not None and lon is not None) else "UTC"
 
     try:
         local_tz = pytz.timezone(tz_name)

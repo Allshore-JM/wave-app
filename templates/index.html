@@ -1448,7 +1448,7 @@
         formatTotalHeight(data, useMetric);
 
       document.getElementById('liveBuoyTime').textContent =
-        data.timestamp_hst || data.timestamp_utc || '—';
+        data.timestamp_local || data.timestamp_utc || '—';
 
       document.getElementById('liveBuoyComponentCount').textContent =
         (data.components || []).length;

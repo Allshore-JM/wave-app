@@ -258,6 +258,30 @@
     /* Cycle/Location/TZ info rows — left-aligned, locked with the header */
     .forecast-info { text-align: left; font-weight: 700; }
 
+    /* Home View map control (Phase 3b) */
+    .home-control { position: relative; }
+    .home-btn {
+      font-size: 18px; line-height: 26px; text-align: center;
+      font-weight: 700; color: #0b2536; cursor: pointer;
+    }
+    .home-menu {
+      position: absolute; top: 0; left: 34px;
+      background: #fff; border: 1px solid rgba(0,0,0,0.2); border-radius: 6px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.28); padding: 6px; min-width: 190px; z-index: 1000;
+      /* Never exceed the (short, overflow:hidden) map — scroll instead. */
+      max-height: 300px; overflow-y: auto;
+    }
+    @media (max-width: 576px) { .home-menu { max-height: 170px; } }
+    .home-menu-title {
+      font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
+      color: #607d92; font-weight: 700; padding: 2px 8px 6px;
+    }
+    .home-menu button {
+      display: block; width: 100%; text-align: left; background: none; border: none;
+      padding: 7px 8px; border-radius: 4px; font-size: 0.85rem; color: #1d2b36; cursor: pointer;
+    }
+    .home-menu button:hover { background: #eef3f8; }
+
     /* Sticky bar depth + button polish */
     .sticky-top-bar { box-shadow: 0 2px 8px rgba(0,0,0,0.06); transition: transform 0.25s ease; }
     #updateBtn { transition: transform 0.1s ease, box-shadow 0.1s ease; }
@@ -561,6 +585,29 @@
     const DEFAULT_MAP_CENTER = [21.3, -157.9];
     const DEFAULT_MAP_ZOOM = 6;
 
+    // ---- Home View (Phase 3b): the user's saved default map focus ----
+    const homeViewKey = 'allshore.mapHome.v1';
+    const HOME_PRESETS = {
+      Hawaii:     { lat: 21.3, lng: -157.9, z: 6 },
+      California: { lat: 36.0, lng: -122.0, z: 6 },
+      Florida:    { lat: 27.5, lng: -80.0,  z: 6 },
+      Europe:     { lat: 46.0, lng: -8.0,   z: 5 },
+    };
+    function loadHomeView() {
+      try {
+        const v = JSON.parse(localStorage.getItem(homeViewKey));
+        if (v && Number.isFinite(v.lat) && Number.isFinite(v.lng) && Number.isFinite(v.z)) return v;
+      } catch (e) {}
+      return null;
+    }
+    function saveHomeView(v) { try { localStorage.setItem(homeViewKey, JSON.stringify(v)); } catch (e) {} }
+    function clearHomeView() { try { localStorage.removeItem(homeViewKey); } catch (e) {} }
+    function normLng(lng) { return ((lng + 540) % 360) - 180; }
+    // Explicit Home actions also align the in-session view (sessionStorage has
+    // higher precedence), so the choice persists within the tab AND on reload.
+    function writeSessionView(v) { try { sessionStorage.setItem(mapKey, JSON.stringify(v)); } catch (e) {} }
+    function clearSessionView() { try { sessionStorage.removeItem(mapKey); } catch (e) {} }
+
     // Approximately 3 zoom levels closer than the earlier maxZoom of 8.
     const MAX_MAP_ZOOM = 11;
 
@@ -683,6 +730,60 @@
       }
     ).addTo(map);
 
+    // --- Home View control: set/jump/reset the default map focus ---
+    const HomeControl = L.Control.extend({
+      options: { position: 'topleft' },
+      onAdd: function () {
+        const container = L.DomUtil.create('div', 'leaflet-bar home-control');
+        const btn = L.DomUtil.create('a', 'home-btn', container);
+        btn.href = '#';
+        btn.title = 'Home view';
+        btn.setAttribute('role', 'button');
+        btn.setAttribute('aria-label', 'Home view menu');
+        btn.innerHTML = '⌂';
+        const menu = L.DomUtil.create('div', 'home-menu', container);
+        menu.style.display = 'none';
+        menu.innerHTML =
+          '<div class="home-menu-title">Home view</div>' +
+          '<button type="button" data-home="set">Set current view as home</button>' +
+          '<button type="button" data-preset="Hawaii">Hawaii</button>' +
+          '<button type="button" data-preset="California">California</button>' +
+          '<button type="button" data-preset="Florida">Florida</button>' +
+          '<button type="button" data-preset="Europe">Europe</button>' +
+          '<button type="button" data-home="reset">Reset to default</button>';
+        L.DomEvent.disableClickPropagation(container);
+        L.DomEvent.disableScrollPropagation(container);
+        L.DomEvent.on(btn, 'click', function (e) {
+          L.DomEvent.preventDefault(e);
+          menu.style.display = (menu.style.display === 'none') ? 'block' : 'none';
+        });
+        L.DomEvent.on(menu, 'click', function (e) {
+          const t = e.target.closest('button');
+          if (!t) return;
+          L.DomEvent.preventDefault(e);
+          if (t.dataset.preset && HOME_PRESETS[t.dataset.preset]) {
+            const p = HOME_PRESETS[t.dataset.preset];
+            saveHomeView(p); writeSessionView(p);
+            map.setView([p.lat, p.lng], Math.min(MAX_MAP_ZOOM, Math.max(p.z, MIN_MAP_ZOOM)), { animate: true });
+          } else if (t.dataset.home === 'set') {
+            const c = map.getCenter();
+            const v = { lat: c.lat, lng: normLng(c.lng), z: map.getZoom() };
+            saveHomeView(v); writeSessionView(v);
+          } else if (t.dataset.home === 'reset') {
+            clearHomeView(); clearSessionView();
+            map.setView(DEFAULT_MAP_CENTER, Math.max(DEFAULT_MAP_ZOOM, MIN_MAP_ZOOM), { animate: true });
+          }
+          menu.style.display = 'none';
+        });
+        return container;
+      }
+    });
+    map.addControl(new HomeControl());
+    // Dismiss the Home menu when interacting with the map (outside-click UX).
+    map.on('movestart click', function () {
+      document.querySelectorAll('.home-menu').forEach(function (m) { m.style.display = 'none'; });
+    });
+
     // --- Stable map sizing, single-world zoom floor, and continuous east/west wrap ---
     function calculateSingleWorldMinZoom() {
       const mapWidth = map.getSize().x || document.getElementById('map').clientWidth || 1024;
@@ -708,25 +809,17 @@
       MIN_MAP_ZOOM = Math.max(1, calculateSingleWorldMinZoom());
       map.setMinZoom(MIN_MAP_ZOOM);
 
+      // Precedence: in-session view (sessionStorage) > saved Home View
+      // (localStorage) > hard default. Lets each user open to their region.
       const saved = loadMapView && loadMapView();
+      const validSaved =
+        saved && Number.isFinite(saved.lat) && Number.isFinite(saved.lng) && Number.isFinite(saved.z);
+      const view = validSaved ? saved : loadHomeView();
 
-      if (
-        saved &&
-        Number.isFinite(saved.lat) &&
-        Number.isFinite(saved.lng) &&
-        Number.isFinite(saved.z)
-      ) {
-        const safeZoom = Math.min(
-          MAX_MAP_ZOOM,
-          Math.max(saved.z, MIN_MAP_ZOOM)
-        );
-
-        const safeLat = Math.max(
-          -LATITUDE_LIMIT,
-          Math.min(LATITUDE_LIMIT, saved.lat)
-        );
-
-        map.setView([safeLat, saved.lng], safeZoom, { animate: false });
+      if (view) {
+        const safeZoom = Math.min(MAX_MAP_ZOOM, Math.max(view.z, MIN_MAP_ZOOM));
+        const safeLat = Math.max(-LATITUDE_LIMIT, Math.min(LATITUDE_LIMIT, view.lat));
+        map.setView([safeLat, view.lng], safeZoom, { animate: false });
       } else {
         map.setView(
           DEFAULT_MAP_CENTER,

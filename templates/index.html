@@ -360,7 +360,7 @@
       min-width: 32px; min-height: 32px; border: 0; background: none; padding: 0 2px;
       font-size: 1.05rem; line-height: 1; color: #f0ad00; cursor: pointer;
     }
-    .sr-star:focus-visible { outline: 2px solid #0d6efd; border-radius: 3px; }
+    .sr-star:focus-visible { outline: 2px solid #0d6efd; outline-offset: -2px; border-radius: 3px; }
     .sr-star:disabled { color: #ced4da; cursor: default; }
     .station-results li.sr-empty { display: block; padding: 8px 10px; color: #6c757d; cursor: default; white-space: normal; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
@@ -393,7 +393,7 @@
           <div class="station-picker">
             <div class="station-trigger">
               <button type="button" id="stationFavToggle" class="sr-star" aria-label="Favorite the current station">☆</button>
-              <button type="button" id="stationTrigger" class="station-open" aria-haspopup="true" aria-expanded="false" aria-controls="stationResults">
+              <button type="button" id="stationTrigger" class="station-open" aria-expanded="false" aria-controls="stationResults">
                 <span id="stationCurrent" class="station-current">Select a station</span>
                 <span class="station-caret" aria-hidden="true">▾</span>
               </button>
@@ -1738,8 +1738,14 @@
           star.setAttribute('aria-label', 'Remove favorite: ' + c.label);
           star.addEventListener('click', function (e) {
             e.stopPropagation();
+            const rows = Array.prototype.slice.call(results.querySelectorAll('.fav-select'));
+            const idx = rows.indexOf(pick);
             toggleFav(c.sid); refreshCurrent(); renderFavs();
             announce('Removed favorite ' + c.sid);
+            // Keep keyboard focus in the panel: move it to the next favorite (or close if none left).
+            const next = results.querySelectorAll('.fav-select');
+            if (next.length) { (next[idx] || next[next.length - 1]).focus(); }
+            else { close(); trigger.focus(); }
           });
           li.appendChild(pick); li.appendChild(star);
           results.appendChild(li);
@@ -1751,6 +1757,7 @@
         const sid = select.value;
         if (!bySid.has(sid)) return;
         const wasFav = isFav(sid);
+        if (!wasFav && readFavs().length >= 100) { announce('Favorites are full (100). Remove one to add more.'); return; }
         toggleFav(sid); refreshCurrent();
         if (!results.hidden) renderFavs();
         announce((wasFav ? 'Removed favorite ' : 'Added favorite ') + sid);
@@ -1770,8 +1777,11 @@
         if (e.key === 'Escape') { e.stopPropagation(); close(); trigger.focus(); }
       });
 
-      // Close when focus or a click leaves the picker.
-      field.addEventListener('focusout', function (e) { if (!field.contains(e.relatedTarget)) close(); });
+      // Close when focus or a click leaves the picker. Guard relatedTarget: removing a favorite
+      // re-renders the panel and detaches the focused button, firing focusout with relatedTarget=null
+      // — that is our own churn, not the user leaving, so don't close on it (a real click outside is
+      // still handled by the document click listener below).
+      field.addEventListener('focusout', function (e) { if (e.relatedTarget && !field.contains(e.relatedTarget)) close(); });
       document.addEventListener('click', function (e) { if (!field.contains(e.target)) close(); });
 
       refreshCurrent();

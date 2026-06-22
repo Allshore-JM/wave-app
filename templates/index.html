@@ -216,14 +216,9 @@
 
     /* ===== Phase 3a: mobile + visual polish ===== */
 
-    /* App header / branding */
-    .app-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 6px 2px 8px;
-    }
-    .app-header .app-logo-img { height: 52px; width: auto; flex-shrink: 0; display: block; }
+    /* Logo sits inline in the control bar (first column), small and unobtrusive. */
+    .app-logo-col { display: flex; align-items: center; }
+    .app-logo-img { height: 38px; width: auto; flex-shrink: 0; display: block; }
     /* Colored dot next to each layer-control label (doubles as the legend) */
     .lc-dot {
       display: inline-block; width: 11px; height: 11px; border-radius: 50%;
@@ -305,7 +300,9 @@
         font-size: 16px; /* avoids iOS zoom-on-focus */
       }
       #controlForm .form-label { margin-bottom: 2px; font-weight: 600; }
-      .app-header .app-logo-img { height: 42px; }
+      /* Keep the logo small + inline (not a full-width row) on phones. */
+      #controlForm > .app-logo-col { width: auto; }
+      .app-logo-img { height: 32px; }
       /* Tuck the control bar away while scrolling down the table (JS toggles). */
       .sticky-top-bar.nav-hidden { transform: translateY(-115%); }
     }
@@ -372,12 +369,12 @@
 <body class="bg-light">
 
   <div class="container-fluid py-3">
-    <div class="app-header">
-      <img class="app-logo-img" src="{{ url_for('static', filename='allshore-logo.png') }}"
-           width="211" height="200" alt="Allshore Surf">
-    </div>
     <div class="sticky-top-bar pb-2">
       <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
+        <div class="col-auto app-logo-col">
+          <img class="app-logo-img" src="{{ url_for('static', filename='allshore-logo.png') }}"
+               width="211" height="200" alt="Allshore Surf">
+        </div>
         <div class="col-auto station-field">
           <label for="station" class="form-label mb-0">Station</label>
           <div class="station-picker">

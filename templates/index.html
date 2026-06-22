@@ -265,7 +265,7 @@
       font-weight: 700; color: #0b2536; cursor: pointer;
     }
     .home-menu {
-      position: absolute; top: 0; left: 34px;
+      position: absolute; bottom: 0; left: 34px;
       background: #fff; border: 1px solid rgba(0,0,0,0.2); border-radius: 6px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.28); padding: 6px; min-width: 190px; z-index: 1000;
       /* Never exceed the (short, overflow:hidden) map — scroll instead. */
@@ -325,37 +325,50 @@
       }
     }
 
-    /* Searchable station picker (progressive enhancement; native <select> is the no-JS fallback) */
+    /* Favorites station picker (progressive enhancement; native <select> is the no-JS fallback) */
     .station-picker { position: relative; display: none; }
     .js-picker .station-picker { display: block; }
     .js-picker select#station { display: none; }
-    #stationSearch { min-width: 240px; }
+    /* Trigger box: favorite star + current-station label + caret, styled like a form-select */
+    .station-trigger {
+      display: inline-flex; align-items: stretch; min-width: 240px; max-width: 320px;
+      background: #fff; border: 1px solid #ced4da; border-radius: .375rem; overflow: hidden;
+    }
+    .station-trigger:focus-within { border-color: #86b7fe; box-shadow: 0 0 0 .25rem rgba(13,110,253,.25); }
+    .station-open {
+      flex: 1 1 auto; display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+      border: 0; background: none; padding: .375rem .5rem; cursor: pointer; font: inherit; color: #212529; text-align: left;
+    }
+    .station-current { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .station-caret { flex: 0 0 auto; color: #6c757d; }
     .station-results {
-      position: absolute; z-index: 2000; top: 100%; left: 0; right: 0;
+      position: absolute; z-index: 2000; top: 100%; left: 0;
       margin: 2px 0 0; padding: 4px 0; list-style: none;
       background: #fff; border: 1px solid #ced4da; border-radius: .375rem;
       box-shadow: 0 6px 18px rgba(0,0,0,.18);
-      max-height: 340px; overflow-y: auto; min-width: 260px;
+      max-height: 340px; overflow-y: auto; min-width: 260px; max-width: 360px;
     }
-    .station-results li { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
-    .station-results li.active, .station-results li:hover { background: #e7f1ff; }
-    .station-results .sr-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
-    .station-results .sr-star {
+    .station-results li { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .station-results .fav-select {
+      flex: 1 1 auto; min-width: 0; border: 0; background: none; padding: 8px 10px;
+      font: inherit; color: #212529; text-align: left; cursor: pointer;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .station-results li:hover .fav-select, .station-results .fav-select:focus-visible { background: #e7f1ff; }
+    .sr-star {
       flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
       min-width: 32px; min-height: 32px; border: 0; background: none; padding: 0 2px;
       font-size: 1.05rem; line-height: 1; color: #f0ad00; cursor: pointer;
     }
-    .station-results .sr-star:focus-visible { outline: 2px solid #0d6efd; border-radius: 3px; }
-    .station-results .sr-section { padding: 6px 10px 2px; font-size: .72rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: #6c757d; cursor: default; }
-    .station-results .sr-section:hover { background: none; }
-    .station-results li.sr-empty { color: #6c757d; cursor: default; }
-    .station-results li.sr-empty:hover { background: none; }
+    .sr-star:focus-visible { outline: 2px solid #0d6efd; outline-offset: -2px; border-radius: 3px; }
+    .sr-star:disabled { color: #ced4da; cursor: default; }
+    .station-results li.sr-empty { display: block; padding: 8px 10px; color: #6c757d; cursor: default; white-space: normal; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
     @media (max-width: 576px) {
-      #stationSearch { min-width: 0; width: 100%; }
-      .station-results { max-height: 50vh; }
-      .station-results li { min-height: 44px; padding-top: 10px; padding-bottom: 10px; }
-      .station-results .sr-star { min-width: 44px; min-height: 44px; }
+      .station-trigger { min-width: 0; width: 100%; max-width: none; }
+      .station-results { max-height: 50vh; left: 0; right: 0; max-width: none; }
+      .station-results .fav-select { min-height: 44px; }
+      .sr-star { min-width: 44px; min-height: 44px; }
     }
 
   </style>
@@ -378,11 +391,14 @@
         <div class="col-auto station-field">
           <label for="station" class="form-label mb-0">Station</label>
           <div class="station-picker">
-            <input type="text" id="stationSearch" class="form-control" role="combobox"
-                   aria-expanded="false" aria-autocomplete="list" aria-controls="stationResults"
-                   aria-label="Search stations" autocomplete="off" spellcheck="false"
-                   placeholder="Search stations…">
-            <ul id="stationResults" class="station-results" role="listbox" aria-label="Station results" hidden></ul>
+            <div class="station-trigger">
+              <button type="button" id="stationFavToggle" class="sr-star" aria-label="Favorite the current station">☆</button>
+              <button type="button" id="stationTrigger" class="station-open" aria-expanded="false" aria-controls="stationResults">
+                <span id="stationCurrent" class="station-current">Select a station</span>
+                <span class="station-caret" aria-hidden="true">▾</span>
+              </button>
+            </div>
+            <ul id="stationResults" class="station-results" aria-label="Favorite stations" hidden></ul>
             <span id="stationStatus" class="sr-only" role="status" aria-live="polite"></span>
           </div>
           <select class="form-select" id="station" name="station">
@@ -773,7 +789,7 @@
 
     // --- Home View control: set/jump/reset the default map focus ---
     const HomeControl = L.Control.extend({
-      options: { position: 'topleft' },
+      options: { position: 'bottomleft' },
       onAdd: function () {
         const container = L.DomUtil.create('div', 'leaflet-bar home-control');
         const btn = L.DomUtil.create('a', 'home-btn', container);
@@ -819,6 +835,7 @@
         return container;
       }
     });
+    map.zoomControl.setPosition('bottomleft');
     map.addControl(new HomeControl());
     // Dismiss the Home menu when interacting with the map (outside-click UX).
     map.on('movestart click', function () {
@@ -1637,119 +1654,58 @@
     window.addEventListener('resize', enforceSingleWorld);
     enforceSingleWorld();
 
-    // ---------------- Searchable station picker ----------------
-    // Progressive enhancement over the native <select id="station">: reads the
-    // server-rendered options as its corpus, so the native select stays the real
-    // form field (no-JS fallback) and ?station=... URLs are unaffected.
+    // ---------------- Favorite-station picker ----------------
+    // Progressive enhancement over the native <select id="station">: the trigger
+    // shows the current station (+ a ★ to favorite it) and opens a panel listing
+    // saved favorites for one-tap selection. Most buoys are picked on the map; this
+    // box is for quick re-access. The native select stays the real form field
+    // (no-JS fallback) and ?station=... deep links are unaffected.
     (function initStationPicker() {
       const field = document.querySelector('.station-field');
       const select = document.getElementById('station');
-      const input = document.getElementById('stationSearch');
+      const trigger = document.getElementById('stationTrigger');
+      const favToggle = document.getElementById('stationFavToggle');
+      const currentEl = document.getElementById('stationCurrent');
       const results = document.getElementById('stationResults');
       const status = document.getElementById('stationStatus');
-      if (!field || !select || !input || !results || !select.options.length) return;
+      if (!field || !select || !trigger || !favToggle || !currentEl || !results || !select.options.length) return;
 
-      const corpus = Array.from(select.options).map(function (o) {
-        const label = (o.textContent || '').trim();
-        return { sid: o.value, label: label, lc: label.toLowerCase() };
-      });
-      const bySid = new Map(corpus.map(function (c) { return [c.sid, c]; }));
+      const bySid = new Map(Array.from(select.options).map(function (o) {
+        return [o.value, { sid: o.value, label: (o.textContent || '').trim() }];
+      }));
 
-      const RECENT_KEY = 'allshore.recentStations.v1';
       const FAV_KEY = 'allshore.favStations.v1';
-      function readList(key) {
-        try { const a = JSON.parse(localStorage.getItem(key)); return Array.isArray(a) ? a.filter(function (x) { return typeof x === 'string'; }) : []; }
+      function readFavs() {
+        try { const a = JSON.parse(localStorage.getItem(FAV_KEY)); return Array.isArray(a) ? a.filter(function (x) { return typeof x === 'string'; }) : []; }
         catch (e) { return []; }
       }
-      function writeList(key, arr) { try { localStorage.setItem(key, JSON.stringify(arr.slice(0, 50))); } catch (e) {} }
-      function pushRecent(sid) { const r = readList(RECENT_KEY).filter(function (x) { return x !== sid; }); r.unshift(sid); writeList(RECENT_KEY, r.slice(0, 8)); }
-      function isFav(sid) { return readList(FAV_KEY).indexOf(sid) !== -1; }
-      function toggleFav(sid) { let f = readList(FAV_KEY); if (f.indexOf(sid) !== -1) f = f.filter(function (x) { return x !== sid; }); else f.unshift(sid); writeList(FAV_KEY, f); }
+      function writeFavs(arr) { try { localStorage.setItem(FAV_KEY, JSON.stringify(arr.slice(0, 100))); } catch (e) {} }
+      function isFav(sid) { return readFavs().indexOf(sid) !== -1; }
+      function toggleFav(sid) { let f = readFavs(); if (f.indexOf(sid) !== -1) f = f.filter(function (x) { return x !== sid; }); else f.unshift(sid); writeFavs(f); }
 
-      // Enhance: reveal the combobox, hide the native select, point the label at it.
+      // Enhance: reveal the favorites box, hide the native select, point the label at the trigger.
       field.classList.add('js-picker');
       const label = field.querySelector('label.form-label');
-      if (label) label.setAttribute('for', 'stationSearch');
-      function syncInput() { const c = bySid.get(select.value); if (c) input.value = c.label; }
-      syncInput();
+      if (label) label.setAttribute('for', 'stationTrigger');
+      function announce(msg) { if (status) status.textContent = msg; }
 
-      let rendered = [], activeIndex = -1;
-      function open() { results.hidden = false; input.setAttribute('aria-expanded', 'true'); }
-      function close() { results.hidden = true; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); activeIndex = -1; }
+      function refreshCurrent() {
+        const sid = select.value;
+        const c = bySid.get(sid);
+        currentEl.textContent = c ? c.label : 'Select a station';
+        const fav = !!c && isFav(sid);
+        favToggle.textContent = fav ? '★' : '☆';
+        favToggle.disabled = !c;
+        favToggle.setAttribute('aria-label', !c ? 'No station selected'
+          : (fav ? 'Remove current station from favorites: ' : 'Add current station to favorites: ') + c.label);
+      }
 
-      function matchQuery(q) {
-        q = q.trim().toLowerCase();
-        if (!q) return null; // empty -> favorites/recents view
-        const out = [];
-        for (let i = 0; i < corpus.length && out.length < 50; i++) { if (corpus[i].lc.indexOf(q) !== -1) out.push(corpus[i]); }
-        return out;
-      }
-      function addSection(text) { const li = document.createElement('li'); li.className = 'sr-section'; li.textContent = text; li.setAttribute('aria-hidden', 'true'); results.appendChild(li); }
-      function addEmpty(text) { const li = document.createElement('li'); li.className = 'sr-empty'; li.setAttribute('role', 'option'); li.setAttribute('aria-disabled', 'true'); li.textContent = text; results.appendChild(li); }
-      function addRow(c) {
-        const li = document.createElement('li');
-        li.setAttribute('role', 'option');
-        li.dataset.sid = c.sid;
-        li.id = 'sr-' + rendered.length;
-        li.setAttribute('aria-label', c.label + (isFav(c.sid) ? ', favorite' : ''));
-        const star = document.createElement('button');
-        star.type = 'button';
-        star.className = 'sr-star';
-        star.textContent = isFav(c.sid) ? '★' : '☆';
-        star.setAttribute('aria-hidden', 'true');
-        star.tabIndex = -1;
-        star.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); });
-        star.addEventListener('click', function (e) { e.stopPropagation(); toggleFav(c.sid); render(); input.focus(); });
-        const lab = document.createElement('span');
-        lab.className = 'sr-label';
-        lab.textContent = c.label;
-        li.appendChild(star); li.appendChild(lab);
-        li.addEventListener('mousedown', function (e) {
-          if (e.target.closest && e.target.closest('.sr-star')) return;
-          e.preventDefault(); choose(c.sid);
-        });
-        results.appendChild(li);
-        rendered.push(li);
-      }
-      function render() {
-        results.textContent = '';
-        rendered = [];
-        const m = matchQuery(input.value);
-        if (m === null) {
-          const favs = readList(FAV_KEY).map(function (s) { return bySid.get(s); }).filter(Boolean);
-          const favSet = new Set(favs.map(function (c) { return c.sid; }));
-          const recents = readList(RECENT_KEY).map(function (s) { return bySid.get(s); }).filter(Boolean).filter(function (c) { return !favSet.has(c.sid); });
-          if (favs.length) { addSection('Favorites'); favs.forEach(addRow); }
-          if (recents.length) { addSection('Recent'); recents.forEach(addRow); }
-          if (!favs.length && !recents.length) { addEmpty('Type to search ' + corpus.length.toLocaleString() + ' stations'); }
-        } else if (m.length === 0) {
-          addEmpty('No matching stations');
-        } else {
-          m.forEach(addRow);
-        }
-        if (status) status.textContent = (m === null) ? '' : (m.length ? (m.length + ' station' + (m.length === 1 ? '' : 's') + ' found') : 'No matching stations');
-        activeIndex = rendered.length ? 0 : -1;
-        highlight();
-        open();
-      }
-      function highlight() {
-        for (let i = 0; i < rendered.length; i++) {
-          const on = i === activeIndex;
-          rendered[i].classList.toggle('active', on);
-          if (on) input.setAttribute('aria-activedescendant', rendered[i].id);
-        }
-        if (activeIndex < 0) input.removeAttribute('aria-activedescendant');
-      }
-      function move(d) {
-        if (!rendered.length) return;
-        activeIndex = (activeIndex + d + rendered.length) % rendered.length;
-        highlight();
-        rendered[activeIndex].scrollIntoView({ block: 'nearest' });
-      }
-      function choose(sid) {
+      function open() { renderFavs(); results.hidden = false; trigger.setAttribute('aria-expanded', 'true'); }
+      function close() { results.hidden = true; trigger.setAttribute('aria-expanded', 'false'); }
+
+      function selectStation(sid) {
         if (!bySid.has(sid)) return;
         select.value = sid;
-        pushRecent(sid);
         close();
         const f = document.getElementById('controlForm');
         // requestSubmit() fires the 'submit' event (plain .submit() does not), so the
@@ -1757,27 +1713,78 @@
         if (f) { if (f.requestSubmit) f.requestSubmit(); else f.submit(); }
       }
 
-      input.addEventListener('focus', render);
-      input.addEventListener('input', render);
-      input.addEventListener('keydown', function (e) {
-        if (results.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { render(); return; }
-        if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
-        else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
-        else if (e.key === 'Enter') { e.preventDefault(); if (!results.hidden && activeIndex >= 0) choose(rendered[activeIndex].dataset.sid); }
-        else if (e.key === '*') {
-          // Toggle the active row's favorite from the keyboard (Space can't be used — it types into the search box).
-          if (!results.hidden && activeIndex >= 0) {
-            e.preventDefault();
-            const idx = activeIndex, sid = rendered[activeIndex].dataset.sid, wasFav = isFav(sid);
-            toggleFav(sid); render();
-            activeIndex = Math.min(idx, rendered.length - 1); highlight();
-            if (status) status.textContent = (wasFav ? 'Removed favorite ' : 'Added favorite ') + sid;
-          }
+      function renderFavs() {
+        results.textContent = '';
+        const favs = readFavs().map(function (s) { return bySid.get(s); }).filter(Boolean);
+        if (!favs.length) {
+          const li = document.createElement('li');
+          li.className = 'sr-empty';
+          li.textContent = 'No favorites yet — pick a buoy on the map, then tap ★ to save it here.';
+          results.appendChild(li);
+          return;
         }
-        else if (e.key === 'Escape') { if (!results.hidden) { e.stopPropagation(); close(); } syncInput(); }
+        favs.forEach(function (c) {
+          const li = document.createElement('li');
+          const pick = document.createElement('button');
+          pick.type = 'button';
+          pick.className = 'fav-select';
+          pick.dataset.sid = c.sid;
+          pick.textContent = c.label;
+          pick.addEventListener('click', function () { selectStation(c.sid); });
+          const star = document.createElement('button');
+          star.type = 'button';
+          star.className = 'sr-star';
+          star.textContent = '★';
+          star.setAttribute('aria-label', 'Remove favorite: ' + c.label);
+          star.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const rows = Array.prototype.slice.call(results.querySelectorAll('.fav-select'));
+            const idx = rows.indexOf(pick);
+            toggleFav(c.sid); refreshCurrent(); renderFavs();
+            announce('Removed favorite ' + c.sid);
+            // Keep keyboard focus in the panel: move it to the next favorite (or close if none left).
+            const next = results.querySelectorAll('.fav-select');
+            if (next.length) { (next[idx] || next[next.length - 1]).focus(); }
+            else { close(); trigger.focus(); }
+          });
+          li.appendChild(pick); li.appendChild(star);
+          results.appendChild(li);
+        });
+      }
+
+      favToggle.addEventListener('click', function (e) {
+        e.preventDefault();
+        const sid = select.value;
+        if (!bySid.has(sid)) return;
+        const wasFav = isFav(sid);
+        if (!wasFav && readFavs().length >= 100) { announce('Favorites are full (100). Remove one to add more.'); return; }
+        toggleFav(sid); refreshCurrent();
+        if (!results.hidden) renderFavs();
+        announce((wasFav ? 'Removed favorite ' : 'Added favorite ') + sid);
       });
-      input.addEventListener('blur', function () { setTimeout(function () { close(); syncInput(); }, 120); });
+
+      // The trigger button toggles the panel; native button activation handles Enter/Space/click.
+      trigger.addEventListener('click', function (e) { e.preventDefault(); if (results.hidden) open(); else close(); });
+      trigger.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (results.hidden) open();
+          const first = results.querySelector('.fav-select, .sr-star');
+          if (first) first.focus();
+        } else if (e.key === 'Escape' && !results.hidden) { e.stopPropagation(); close(); }
+      });
+      results.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { e.stopPropagation(); close(); trigger.focus(); }
+      });
+
+      // Close when focus or a click leaves the picker. Guard relatedTarget: removing a favorite
+      // re-renders the panel and detaches the focused button, firing focusout with relatedTarget=null
+      // — that is our own churn, not the user leaving, so don't close on it (a real click outside is
+      // still handled by the document click listener below).
+      field.addEventListener('focusout', function (e) { if (e.relatedTarget && !field.contains(e.relatedTarget)) close(); });
       document.addEventListener('click', function (e) { if (!field.contains(e.target)) close(); });
+
+      refreshCurrent();
     })();
 
     function addLiveNdbcBuoyLayer() {

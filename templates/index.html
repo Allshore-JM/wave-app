@@ -216,9 +216,9 @@
 
     /* ===== Phase 3a: mobile + visual polish ===== */
 
-    /* Logo sits inline in the control bar (first column), small and unobtrusive. */
+    /* Logo sits inline in the control bar (first column), ~full row height, centered. */
     .app-logo-col { display: flex; align-items: center; }
-    .app-logo-img { height: 38px; width: auto; flex-shrink: 0; display: block; }
+    .app-logo-img { height: 58px; width: auto; flex-shrink: 0; display: block; }
     /* Colored dot next to each layer-control label (doubles as the legend) */
     .lc-dot {
       display: inline-block; width: 11px; height: 11px; border-radius: 50%;
@@ -300,9 +300,9 @@
         font-size: 16px; /* avoids iOS zoom-on-focus */
       }
       #controlForm .form-label { margin-bottom: 2px; font-weight: 600; }
-      /* Keep the logo small + inline (not a full-width row) on phones. */
+      /* Keep the logo inline (not a full-width row) on phones. */
       #controlForm > .app-logo-col { width: auto; }
-      .app-logo-img { height: 32px; }
+      .app-logo-img { height: 44px; }
       /* Tuck the control bar away while scrolling down the table (JS toggles). */
       .sticky-top-bar.nav-hidden { transform: translateY(-115%); }
     }

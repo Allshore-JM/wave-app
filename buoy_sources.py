@@ -855,7 +855,11 @@ def _station_priority(st):
         return 70
     if src == "MI-IE":                 # Ireland ERDDAP (bulk + 24h history)
         return 65
+    if src == "RWS":                   # Netherlands Waterinfo (bulk + history)
+        return 62
     if src == "QLD":                   # clean 30-min agency JSON (+ SST)
+        return 60
+    if src == "SMHI":                  # Sweden (bulk + history)
         return 60
     if src == "CEFAS":                 # UK WaveNet aggregate (latest-only)
         return 58
@@ -864,6 +868,166 @@ def _station_priority(st):
     if src == "AODN":                  # bulk only
         return 50
     return 40
+
+
+class SmhiProvider(BuoyProvider):
+    """SMHI (Sweden) open oceanographic API -- Skagerrak/Kattegat/Baltic wave buoys. Station
+    list from the Hs-parameter endpoint; per-station detail merges several per-parameter
+    'latest-day' time series (the API is one call per parameter per station). SI, 'from'."""
+    source = "SMHI"
+    source_name = "SMHI (Sweden)"
+    source_url = "https://www.smhi.se"
+    license_label = "CC BY 4.0"
+    attribution_text = "Source: SMHI (Swedish Meteorological and Hydrological Institute)"
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 3600
+    timeout = 40
+    BASE = "https://opendata-download-ocobs.smhi.se/api/version/latest"
+    PARAMS = (("hs_m", 1), ("tp_s", 9), ("mean_period_s", 10), ("dir_deg", 7), ("hmax_m", 11))
+
+    def _fetch_stations(self):
+        try:
+            d = self.http.get(self.BASE + "/parameter/1.json", timeout=self.timeout).json()
+        except (ValueError, requests.RequestException):
+            return []
+        out = []
+        for s in d.get("station", []):
+            if not s.get("active"):
+                continue
+            try:
+                out.append({"local_id": str(s["key"]), "name": s.get("name") or str(s["key"]),
+                            "lat": float(s["latitude"]), "lon": float(s["longitude"])})
+            except (KeyError, ValueError, TypeError):
+                continue
+        return out
+
+    def _series(self, key, param):
+        try:
+            r = self.http.get(self.BASE + "/parameter/%d/station/%s/period/latest-day/data.json"
+                              % (param, key), timeout=self.timeout)
+            if r.status_code != 200:
+                return {}
+            vals = r.json().get("value") or []
+        except (ValueError, requests.RequestException):
+            return {}
+        out = {}
+        for v in vals:
+            try:
+                out[int(v["date"])] = float(v["value"])
+            except (KeyError, TypeError, ValueError):
+                pass
+        return out
+
+    def detail(self, local_id):
+        series = {key: self._series(local_id, p) for key, p in self.PARAMS}
+        times = sorted(series["hs_m"].keys())
+        if not times:
+            return {"latest": None, "recent": []}
+        obs = []
+        for t in times:
+            row = {"time_utc": _unix_to_z(t // 1000), "dir_kind": "from"}
+            for key, _ in self.PARAMS:
+                row[key] = series[key].get(t)
+            obs.append(row)
+        return {"latest": obs[-1], "recent": _recent_window(obs)}
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
+
+
+class RwsProvider(BuoyProvider):
+    """Rijkswaterstaat (Netherlands) Waterinfo -- North Sea offshore wave stations. Open POST
+    JSON API on the new ddapi20 host. Heights are in CENTIMETRES (->/100=m). Hm0/Tm02/Th0.
+    Per-station detail merges per-grootheid series by timestamp (one POST per parameter)."""
+    source = "RWS"
+    source_name = "Rijkswaterstaat (Netherlands)"
+    source_url = "https://waterinfo.rws.nl"
+    license_label = "Public domain (CC0)"
+    attribution_text = "Source: Rijkswaterstaat (Netherlands), Waterinfo"
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 6 * 3600
+    timeout = 40
+    URL = ("https://ddapi20-waterwebservices.rijkswaterstaat.nl/"
+           "ONLINEWAARNEMINGENSERVICES/OphalenWaarnemingen")
+    SITES = [
+        # (code, name, lat, lon) -- fixed offshore platforms/buoys
+        ("europlatform", "Europlatform", 51.99781, 3.275071),
+        ("goeree.lichteiland", "Goeree Lichteiland", 51.925034, 3.668416),
+        ("eurogeul.e13", "Eurogeul E13", 52.009184, 3.741804),
+        ("ijgeul", "IJgeul", 52.462272, 4.482472),
+        ("hollandsekust.zuid.alpha", "Hollandse Kust Zuid Alpha", 52.232547, 4.19569),
+        ("f3", "F3", 54.853199, 4.726133),
+        ("j6", "J6", 53.816632, 2.95001),
+        ("l9", "L9", 53.616667, 4.966667),
+    ]
+    GROOTHEDEN = (("Hm0", "hs_m", 0.01), ("Tm02", "mean_period_s", 1.0), ("Th0", "dir_deg", 1.0))
+
+    def _fetch_stations(self):
+        return [{"local_id": code, "name": name, "lat": lat, "lon": lon}
+                for (code, name, lat, lon) in self.SITES]
+
+    def _series(self, code, grootheid):
+        now = datetime.now(timezone.utc)
+        body = {
+            "AquoPlusWaarnemingMetadata": {"AquoMetadata": {
+                "Compartiment": {"Code": "OW"}, "Grootheid": {"Code": grootheid}}},
+            "Locatie": {"Code": code, "Coordinatenstelsel": "ETRS89"},
+            "Periode": {
+                "Begindatumtijd": (now - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000+00:00"),
+                "Einddatumtijd": now.strftime("%Y-%m-%dT%H:%M:%S.000+00:00")},
+        }
+        try:
+            r = self.http.post(self.URL, json=body, timeout=self.timeout)
+            if r.status_code != 200:
+                return {}
+            d = r.json()
+        except (ValueError, requests.RequestException):
+            return {}
+        out = {}
+        for w in (d.get("WaarnemingenLijst") or []):
+            for m in (w.get("MetingenLijst") or []):
+                t = m.get("Tijdstip")
+                v = (m.get("Meetwaarde") or {}).get("Waarde_Numeriek")
+                if t is None or v is None:
+                    continue
+                try:
+                    fv = float(v)
+                    if fv < 1e5:                       # RWS missing-value sentinel is huge
+                        out[t] = fv
+                except (TypeError, ValueError):
+                    pass
+        return out
+
+    def detail(self, local_id):
+        series = {}                            # key -> {timestamp: scaled value}
+        for i, (g, key, sc) in enumerate(self.GROOTHEDEN):
+            if i:
+                time.sleep(0.4)                # RWS load-sheds rapid POSTs -> pace them out
+            series[key] = {t: v * sc for t, v in self._series(local_id, g).items()}
+        hs = series.get("hs_m") or {}
+        if not hs:
+            return {"latest": None, "recent": []}
+
+        def newest(s):
+            return s[max(s)] if s else None
+        # 24h history on the Hs timeline; other params filled where their timestamp aligns.
+        obs = []
+        for t in sorted(hs.keys()):
+            row = {"time_utc": _iso_to_z(t), "dir_kind": "from"}
+            for g, key, sc in self.GROOTHEDEN:
+                row[key] = series[key].get(t)
+            obs.append(row)
+        # Latest reading: each parameter's OWN most-recent value (they can lag each other a
+        # step, and some gauges report no direction), so the current cards aren't left blank.
+        latest = {"time_utc": _iso_to_z(max(hs.keys())), "dir_kind": "from"}
+        for g, key, sc in self.GROOTHEDEN:
+            latest[key] = newest(series.get(key))
+        return {"latest": latest, "recent": _recent_window(obs)}
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
 
 
 def _name_key(name):

@@ -11,6 +11,7 @@ import re
 import math
 import time
 import xml.etree.ElementTree as ET
+import buoy_sources
 
 app = Flask(__name__)
 
@@ -2194,6 +2195,171 @@ def api_ndbc_station_wave_summary(station_id):
             "station": station_id,
             "error": str(exc)
         }), 500
+
+# ----------------------- Multi-source live-buoy layer -------------------------
+# Generalizes the NDBC live-buoy layer into a provider registry so the map can show
+# worldwide buoys (the merged "Live buoys" layer). The NDBC provider wraps the existing
+# NDBC code; other providers (CDIP, ...) live in buoy_sources.py. Legacy /api/ndbc/*
+# routes are kept (the rich NDBC detail panel still uses them).
+
+class NDBCBuoyProvider(buoy_sources.BuoyProvider):
+    source = "NDBC"
+    source_name = "NOAA NDBC"
+    source_url = "https://www.ndbc.noaa.gov"
+    license_label = "Public domain (US Govt)"
+    attribution_text = "Source: NOAA National Data Buoy Center"
+    stale_after_sec = 6 * 3600
+    capabilities = buoy_sources._caps(bulk=True, recent_history=True, directional=True,
+                                      spectra=True, partitions=True)
+
+    def _fetch_stations(self):
+        out = []
+        for s in get_live_ndbc_wave_stations():
+            out.append({"local_id": s["id"], "name": s.get("name") or s["id"],
+                        "lat": s.get("lat"), "lon": s.get("lon")})
+        return out
+
+    def latest(self, local_id):
+        # NDBC buoys use their rich /api/ndbc/* detail routes in the UI; bulk latest not needed here.
+        return None
+
+
+_BUOY_PROVIDERS = None
+
+def get_buoy_providers():
+    """Ordered RICHEST/most-authoritative first so dedup keeps the better marker:
+    NDBC (spectra) > CDIP (US) > QLD (clean 30-min agency feed) > AODN (IMOS national)
+    > AusWaves (broad Spotter net, fills gaps). Co-located cross-source buoys merge to
+    the earlier one; AU sources never collide with US ones."""
+    global _BUOY_PROVIDERS
+    if _BUOY_PROVIDERS is None:
+        _BUOY_PROVIDERS = [
+            NDBCBuoyProvider(http=HTTP),
+            buoy_sources.CDIPProvider(http=HTTP),
+            buoy_sources.QLDProvider(http=HTTP),
+            buoy_sources.AODNProvider(http=HTTP),
+            buoy_sources.AusWavesProvider(http=HTTP),
+        ]
+    return _BUOY_PROVIDERS
+
+
+_BUOY_TZ_CACHE = {}
+
+def _buoy_tz_cached(lat, lon):
+    """IANA tz for a buoy position (memoized by rounded lat/lon). Used so the non-NDBC
+    'Live buoys' panel can show observation times in the buoy's own local zone."""
+    if lat is None or lon is None:
+        return "UTC"
+    key = (round(float(lat), 2), round(float(lon), 2))
+    tz = _BUOY_TZ_CACHE.get(key)
+    if tz is None:
+        tz = _safe_tzname_for_latlon(float(lat), float(lon))
+        _BUOY_TZ_CACHE[key] = tz
+    return tz
+
+
+@app.route("/api/buoys/live-stations")
+def api_buoys_live_stations():
+    lists = [p.list_stations() for p in get_buoy_providers()]   # each cached + fail-soft
+    merged = buoy_sources.merge_stations(lists, radius_km=1.0)
+    for s in merged:
+        # NDBC keeps its own tz handling; tag the rest with their buoy-local zone.
+        if s.get("source") != "NDBC" and not s.get("tz"):
+            s["tz"] = _buoy_tz_cached(s.get("lat"), s.get("lon"))
+    return _json_cached(merged, max_age=900)
+
+
+@app.route("/api/buoys/<path:bid>/latest")
+def api_buoys_latest(bid):
+    src = (bid.split(":", 1)[0] or "").lower() if ":" in bid else ""
+    local = bid.split(":", 1)[1] if ":" in bid else bid
+    for p in get_buoy_providers():
+        if p.source.lower() == src:
+            try:
+                d = p.detail(local)
+            except Exception:
+                d = {"latest": None, "recent": []}
+            return jsonify({"id": bid, "source": p.source,
+                            "attribution_text": p.attribution_text,
+                            "capabilities": dict(p.capabilities),
+                            "latest": d.get("latest"),
+                            "recent": d.get("recent", [])})
+    return jsonify({"id": bid, "error": "unknown source"}), 404
+
+
+@app.route("/api/buoys/<path:bid>/components")
+def api_buoys_components(bid):
+    """Directional-spectrum partitions + spectrum for spectra-capable buoys (AODN).
+    Reuses the NDBC partition algorithm so the frontend can render it identically."""
+    src = (bid.split(":", 1)[0] or "").lower() if ":" in bid else ""
+    local = bid.split(":", 1)[1] if ":" in bid else bid
+    for p in get_buoy_providers():
+        if p.source.lower() == src:
+            spec = None
+            if hasattr(p, "spectrum"):
+                try:
+                    spec = p.spectrum(local)
+                except Exception:
+                    spec = None
+            if not spec or not spec.get("steps"):
+                return jsonify({"id": bid, "error": "no spectra for this buoy"}), 404
+            freqs = spec["freqs"]
+            steps = spec["steps"]
+            df = _bin_widths(freqs)
+
+            def partition(step):
+                return _partition_spectrum_v2(
+                    freqs, step["energy"],
+                    directions=step["alpha1"], directions2=step["alpha2"],
+                    r1_values=step["r1"], r2_values=step["r2"], sep_freq=None,
+                )
+
+            def part_obj(c):
+                return {"hs_m": c["height_m"], "period_s": c["peak_period_sec"],
+                        "dir_deg": c["direction_deg"]} if c else None
+
+            # Over-time NDBC-style summary: dominant swell + dominant wind-sea per step.
+            summary = []
+            for step in steps:
+                comps = partition(step)
+                sw = next((c for c in comps if c["type"] == "swell"), None)
+                ws = next((c for c in comps if c["type"] == "wind sea"), None)
+                m0 = sum(e * w for e, w in zip(step["energy"], df))
+                summary.append({
+                    "time_utc": step["time_utc"],
+                    "hs_m": round(4.0 * math.sqrt(max(m0, 0.0)), 2),
+                    "swell": part_obj(sw),
+                    "windsea": part_obj(ws),
+                })
+
+            latest = steps[-1]
+            a1 = latest["alpha1"]
+            density = latest["energy"]
+            components = partition(latest)
+            total_m0 = sum(e * w for e, w in zip(density, df))
+            total_hs_m = 4.0 * math.sqrt(max(total_m0, 0.0))
+            result = {
+                "id": bid,
+                "source": p.source,
+                "attribution_text": p.attribution_text,
+                "timestamp_utc": latest["time_utc"],
+                "total_height_ft": round(total_hs_m * 3.28084, 1),
+                "total_height_m": round(total_hs_m, 2),
+                "components": components,
+                "summary": list(reversed(summary)),         # newest first
+                "spectrum": [
+                    {
+                        "frequency_hz": round(f, 4),
+                        "period_sec": round(1.0 / f, 2) if f else None,
+                        "density_m2_per_hz": round(e, 5),
+                        "direction_deg": (round(a1[i]) if i < len(a1) and a1[i] is not None else None),
+                    }
+                    for i, (f, e) in enumerate(zip(freqs, density))
+                ],
+            }
+            return _json_cached(result, max_age=900)
+    return jsonify({"id": bid, "error": "unknown source"}), 404
+
 
 if __name__ == "__main__":
     # Honor $PORT when set (dev tooling / managed runners); default to 5000 locally.

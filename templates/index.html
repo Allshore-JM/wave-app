@@ -613,9 +613,12 @@
           </div>
         </div>
       </div>
+
+      <!-- Adaptive bulk panel for non-NDBC live buoys (CDIP / AODN / QLD / AusWaves) -->
+      <div id="liveBuoyGeneric" class="d-none"></div>
     </div>
   </div>
-  
+
   <script>
     // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
@@ -750,7 +753,7 @@
         // Leaflet renders layer names as HTML, so the colored dot doubles as
         // the legend (yellow = forecast point, cyan = live NDBC buoy).
         '<span class="lc-dot lc-forecast"></span>Forecast points': forecastLayer,
-        '<span class="lc-dot lc-live"></span>Live NDBC buoys': liveBuoyLayer
+        '<span class="lc-dot lc-live"></span>Live buoys': liveBuoyLayer
       },
       {
         collapsed: false
@@ -1082,6 +1085,7 @@
     let activeLiveBuoyId = null;
     let lastNoaaWaveSummaryData = null;
     let lastLiveComponentData = null;
+    let lastGenericBuoy = null;
 
     function getSelectedUnit() {
       return document.getElementById('unit')?.value || 'US';
@@ -1096,18 +1100,35 @@
       return useMetric ? `${data.total_height_m} m` : `${data.total_height_ft} ft`;
     }
 
+    // Friendly marker/panel label: strip the source namespace from the id
+    // (e.g. "ndbc:46221" -> "46221") and prefer the station name for other sources.
+    function buoyDisplayLabel(s) {
+      const id = s.id || '';
+      if (/^ndbc:/i.test(id)) return id.replace(/^ndbc:/i, '');
+      return s.name || id.replace(/^[a-z]+:/i, '');
+    }
+
+    function compassPoint(deg) {
+      const n = Number(deg);
+      if (!Number.isFinite(n)) return '';
+      const dirs = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+                    'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+      return dirs[Math.round(((n % 360) + 360) % 360 / 22.5) % 16];
+    }
+
     function showLiveBuoyPanelLoading(station) {
       const panel = document.getElementById('liveBuoyPanel');
 
-      document.getElementById('liveBuoyTitle').textContent =
-        `${station.id} — ${station.name || station.id}`;
+      document.getElementById('liveBuoyTitle').textContent = buoyDisplayLabel(station);
 
+      const srcName = station.source_name || station.source || 'Live buoy';
       document.getElementById('liveBuoySubtitle').textContent =
-        `Live NDBC buoy observation | ${Number(station.lat).toFixed(3)}, ${Number(station.lon).toFixed(3)}`;
+        `${srcName} | ${Number(station.lat).toFixed(3)}, ${Number(station.lon).toFixed(3)}`;
 
       document.getElementById('liveBuoyLoading').style.display = 'block';
       document.getElementById('liveBuoyError').classList.add('d-none');
       document.getElementById('liveBuoyContent').classList.add('d-none');
+      document.getElementById('liveBuoyGeneric').classList.add('d-none');
 
       panel.style.display = 'block';
     }
@@ -1546,12 +1567,25 @@
       });
     }
 
-    async function loadLiveBuoyDetails(station) {
+    // Dispatch on source: NDBC keeps the rich NOAA summary + spectral-partition panel;
+    // every other source (CDIP / AODN / QLD / AusWaves) gets the adaptive bulk panel.
+    function loadLiveBuoyDetails(station) {
+      const src = (station.source || '').toUpperCase();
+      if (src === 'NDBC' || /^ndbc:/i.test(station.id || '')) {
+        return loadNdbcBuoyDetails(station);
+      }
+      return loadGenericBuoyDetails(station);
+    }
+
+    async function loadNdbcBuoyDetails(station) {
       showLiveBuoyPanelLoading(station);
+
+      // Merged-feed ids are namespaced ("ndbc:46221"); the NDBC routes want the raw id.
+      const rawId = (station.id || '').replace(/^ndbc:/i, '');
 
       try {
         const summaryResponse = await fetch(
-          '/api/ndbc/station/' + encodeURIComponent(station.id) + '/wave-summary'
+          '/api/ndbc/station/' + encodeURIComponent(rawId) + '/wave-summary'
         );
 
         const summaryData = await summaryResponse.json();
@@ -1564,7 +1598,7 @@
 
         try {
           const componentResponse = await fetch(
-            '/api/ndbc/station/' + encodeURIComponent(station.id) + '/components'
+            '/api/ndbc/station/' + encodeURIComponent(rawId) + '/components'
           );
 
           const componentData = await componentResponse.json();
@@ -1578,8 +1612,309 @@
 
         document.getElementById('liveBuoyLoading').style.display = 'none';
         document.getElementById('liveBuoyError').classList.add('d-none');
+        document.getElementById('liveBuoyGeneric').classList.add('d-none');
         document.getElementById('liveBuoyContent').classList.remove('d-none');
 
+      } catch (err) {
+        showLiveBuoyError(err.message);
+      }
+    }
+
+    // ---- Adaptive bulk panel (non-NDBC sources) ----
+    function fmtHeightM(m, useMetric) {
+      const n = Number(m);
+      if (m === null || m === undefined || !Number.isFinite(n)) return '—';
+      return useMetric ? n.toFixed(2) + ' m' : (n * 3.28084).toFixed(1) + ' ft';
+    }
+    function fmtPeriod(s) {
+      const n = Number(s);
+      return Number.isFinite(n) ? n.toFixed(1) + ' s' : '—';
+    }
+    function fmtDir(d) {
+      const n = Number(d);
+      if (d === null || d === undefined || !Number.isFinite(n)) return '—';
+      return Math.round(((n % 360) + 360) % 360) + '° ' + compassPoint(n);
+    }
+    function fmtTemp(c, useMetric) {
+      const n = Number(c);
+      if (c === null || c === undefined || !Number.isFinite(n)) return '—';
+      return useMetric ? n.toFixed(1) + ' °C' : (n * 9 / 5 + 32).toFixed(1) + ' °F';
+    }
+    function relativeAge(iso) {
+      const t = Date.parse(iso);
+      if (!Number.isFinite(t)) return iso || '—';
+      const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+      if (mins < 60) return mins + ' min ago';
+      const hrs = Math.round(mins / 60);
+      if (hrs < 48) return hrs + ' h ago';
+      return Math.round(hrs / 24) + ' d ago';
+    }
+
+    // Format a UTC ISO time in a specific IANA zone (the buoy's own zone); falls back
+    // to the viewer's local zone when tz is missing.
+    function fmtTimeInTz(iso, tz) {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '—';
+      const opts = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+      if (tz) opts.timeZone = tz;
+      try { return d.toLocaleString([], opts); }
+      catch (e) { delete opts.timeZone; return d.toLocaleString([], opts); }
+    }
+    // Short zone abbreviation (e.g. "AEST", "AWST", "GMT+10") for a given time + zone.
+    function tzAbbr(iso, tz) {
+      try {
+        const parts = new Intl.DateTimeFormat('en-US',
+          { timeZone: tz || undefined, timeZoneName: 'short' }).formatToParts(new Date(iso));
+        return (parts.find(p => p.type === 'timeZoneName') || {}).value || '';
+      } catch (e) { return ''; }
+    }
+
+    function buildRecentTable(recent, useMetric, tz) {
+      if (!recent || !recent.length) return '';
+      const hasPeriod = recent.some(o => o.mean_period_s != null || o.tz_s != null);
+      const hasSST = recent.some(o => o.sst_c != null);
+      const heightUnit = useMetric ? 'm' : 'ft';
+      const tempUnit = useMetric ? '°C' : '°F';
+      const abbr = tzAbbr(recent[0].time_utc, tz);
+
+      const head =
+        '<tr><th>Time' + (abbr ? '<br><span class="small">' + abbr + '</span>' : '') + '</th>' +
+        '<th>Hs<br><span class="small">' + heightUnit + '</span></th>' +
+        '<th>Tp<br><span class="small">sec</span></th>' +
+        (hasPeriod ? '<th>Avg&nbsp;Pd<br><span class="small">sec</span></th>' : '') +
+        '<th>Dir</th>' +
+        (hasSST ? '<th>SST<br><span class="small">' + tempUnit + '</span></th>' : '') + '</tr>';
+
+      const body = recent.map(o => {
+        const pd = (o.tz_s != null) ? o.tz_s : o.mean_period_s;
+        return '<tr>' +
+          '<td class="text-nowrap">' + (o.time_utc ? fmtTimeInTz(o.time_utc, tz) : '—') + '</td>' +
+          '<td>' + fmtHeightM(o.hs_m, useMetric).replace(' ' + heightUnit, '') + '</td>' +
+          '<td>' + (Number.isFinite(Number(o.tp_s)) ? Number(o.tp_s).toFixed(1) : '—') + '</td>' +
+          (hasPeriod ? '<td>' + (Number.isFinite(Number(pd)) ? Number(pd).toFixed(1) : '—') + '</td>' : '') +
+          '<td class="text-nowrap">' + fmtDir(o.dir_deg) + '</td>' +
+          (hasSST ? '<td>' + (Number.isFinite(Number(o.sst_c)) ? fmtTemp(o.sst_c, useMetric).replace(' ' + tempUnit, '') : '—') + '</td>' : '') +
+          '</tr>';
+      }).join('');
+
+      return '<h6 class="mt-3 mb-2">Recent observations (last 24 h)</h6>' +
+        '<div class="table-responsive" style="max-height:260px;overflow-y:auto;">' +
+        '<table class="table table-sm table-bordered align-middle mb-0">' +
+        '<thead class="table-light">' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+    }
+
+    // Swell / wind-sea component table (a 2-way sea/swell split, or NDBC-style
+    // multi-partition components — same shape either way: [{label,hs_m,period_s,dir_deg,spread_deg}]).
+    function buildPartitionTable(partitions, useMetric, title) {
+      if (!partitions || !partitions.length) return '';
+      const hasSpread = partitions.some(p => p.spread_deg != null);
+      const hasEnergy = partitions.some(p => p.energy_pct != null);
+      const rows = partitions.map(p =>
+        '<tr><td class="text-nowrap"><strong>' + p.label + '</strong></td>' +
+        '<td>' + fmtHeightM(p.hs_m, useMetric) + '</td>' +
+        '<td>' + fmtPeriod(p.period_s) + '</td>' +
+        '<td class="text-nowrap">' + fmtDir(p.dir_deg) + '</td>' +
+        (hasSpread ? '<td>' + (Number.isFinite(Number(p.spread_deg)) ? Math.round(p.spread_deg) + '°' : '—') + '</td>' : '') +
+        (hasEnergy ? '<td>' + (Number.isFinite(Number(p.energy_pct)) ? Math.round(p.energy_pct) + '%' : '—') + '</td>' : '') +
+        '</tr>'
+      ).join('');
+      return '<h6 class="mt-3 mb-2">' + (title || 'Wave components') + '</h6>' +
+        '<table class="table table-sm table-bordered align-middle mb-2" style="max-width:600px;">' +
+        '<thead class="table-light"><tr><th>Component</th><th>Height</th><th>Period</th><th>Direction</th>' +
+        (hasSpread ? '<th>Spread</th>' : '') + (hasEnergy ? '<th>Energy</th>' : '') +
+        '</tr></thead><tbody>' + rows + '</tbody></table>';
+    }
+
+    // NDBC-style swell + wind-sea components OVER TIME. rows: [{time_utc, hs_m,
+    // swell:{hs_m,period_s,dir_deg}, windsea:{hs_m,period_s,dir_deg}}], newest first.
+    function buildSwellTable(rows, useMetric, tz) {
+      rows = (rows || []).filter(r => r && (r.swell || r.windsea));
+      if (!rows.length) return '';
+      const hu = useMetric ? 'm' : 'ft';
+      const abbr = tzAbbr(rows[0].time_utc, tz);
+      const H = v => Number.isFinite(Number(v)) ? fmtHeightM(v, useMetric).replace(' ' + hu, '') : '—';
+      const P = v => Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '—';
+      const D = v => Number.isFinite(Number(v)) ? (Math.round(v) + '° ' + compassPoint(v)) : '—';
+      const body = rows.map(r => {
+        const sw = r.swell || {}, ws = r.windsea || {};
+        return '<tr><td class="text-nowrap">' + (r.time_utc ? fmtTimeInTz(r.time_utc, tz) : '—') + '</td>' +
+          '<td>' + H(r.hs_m) + '</td>' +
+          '<td>' + H(sw.hs_m) + '</td><td>' + P(sw.period_s) + '</td><td class="text-nowrap">' + D(sw.dir_deg) + '</td>' +
+          '<td>' + H(ws.hs_m) + '</td><td>' + P(ws.period_s) + '</td><td class="text-nowrap">' + D(ws.dir_deg) + '</td></tr>';
+      }).join('');
+      return '<h6 class="mt-3 mb-2">Swell &amp; wind-sea (last 24 h)</h6>' +
+        '<div class="table-responsive" style="max-height:280px;overflow-y:auto;">' +
+        '<table class="table table-sm table-bordered align-middle mb-0">' +
+        '<thead class="table-light"><tr>' +
+        '<th rowspan="2" class="align-middle">Time' + (abbr ? '<br><span class="small">' + abbr + '</span>' : '') + '</th>' +
+        '<th rowspan="2" class="align-middle">Hs<br><span class="small">' + hu + '</span></th>' +
+        '<th colspan="3" class="text-center">Swell</th><th colspan="3" class="text-center">Wind sea</th></tr>' +
+        '<tr><th>H<br><span class="small">' + hu + '</span></th><th>P<br><span class="small">s</span></th><th>Dir</th>' +
+        '<th>H<br><span class="small">' + hu + '</span></th><th>P<br><span class="small">s</span></th><th>Dir</th></tr>' +
+        '</thead><tbody>' + body + '</tbody></table></div>';
+    }
+
+    // AusWaves carries the 2-way split in every recent obs row -> build the over-time table.
+    function recentToSummary(recent) {
+      const out = [];
+      (recent || []).forEach(o => {
+        if (!o.partitions) return;
+        const sw = o.partitions.find(p => p.label === 'Swell');
+        const ws = o.partitions.find(p => p.label === 'Wind sea');
+        if (!sw && !ws) return;
+        out.push({
+          time_utc: o.time_utc, hs_m: o.hs_m,
+          swell: sw ? { hs_m: sw.hs_m, period_s: sw.period_s, dir_deg: sw.dir_deg } : null,
+          windsea: ws ? { hs_m: ws.hs_m, period_s: ws.period_s, dir_deg: ws.dir_deg } : null
+        });
+      });
+      return out;
+    }
+
+    // ---- AODN directional-spectrum rendering (partitions + spectral-density chart) ----
+    let genericSpectrumChart = null;
+    let lastGenericSpectra = null;
+
+    function renderGenericSpectrumChart(spectrum) {
+      const canvas = document.getElementById('genericSpectrumCanvas');
+      if (!canvas || typeof Chart === 'undefined') return;
+      if (genericSpectrumChart) { genericSpectrumChart.destroy(); genericSpectrumChart = null; }
+      const spec = (spectrum || [])
+        .filter(p => Number.isFinite(Number(p.frequency_hz)) && Number.isFinite(Number(p.density_m2_per_hz)))
+        .sort((a, b) => Number(a.frequency_hz) - Number(b.frequency_hz));
+      if (!spec.length) return;
+      const periodTicks = [40, 20, 15, 10, 9, 8, 7, 6, 5, 4, 3, 2].map(period => ({ period, value: 1 / period }));
+      const xv = spec.map(p => Number(p.frequency_hz));
+      const xMin = Math.min(...xv), xMax = Math.max(...xv);
+      genericSpectrumChart = new Chart(canvas.getContext('2d'), {
+        type: 'line',
+        data: { datasets: [{ label: 'Spectral density', tension: 0.25, showLine: true, pointRadius: 2, borderWidth: 2,
+          data: spec.map(p => ({ x: Number(p.frequency_hz), y: Number(p.density_m2_per_hz) })) }] },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false, parsing: false,
+          plugins: { legend: { display: false }, tooltip: { callbacks: {
+            title: items => `${formatComponentPeriodValue((spec[items[0].dataIndex] || {}).period_sec)} sec`,
+            label: item => {
+              const p = spec[item.dataIndex] || {};
+              const l = ['Density: ' + item.formattedValue + ' m²/Hz'];
+              if (p.direction_deg != null) l.push('Direction: ' + p.direction_deg + '°');
+              return l;
+            } } } },
+          scales: {
+            x: { type: 'linear', min: xMin, max: xMax,
+              afterBuildTicks: scale => { scale.ticks = periodTicks.filter(t => t.value >= scale.min && t.value <= scale.max).map(t => ({ value: t.value, period: t.period })); },
+              ticks: { autoSkip: false, maxRotation: 0, minRotation: 0, callback: (v, i, ticks) => (ticks[i] && ticks[i].period != null ? ticks[i].period.toString() : '') },
+              title: { display: true, text: 'Period, seconds' } },
+            y: { beginAtZero: true, title: { display: true, text: 'Energy density, m²/Hz' } }
+          }
+        }
+      });
+    }
+
+    function renderGenericSpectra(data, useMetric, tz) {
+      lastGenericSpectra = data;
+      const host = document.getElementById('genericSpectra');
+      if (!host || !data) return;
+      const parts = (data.components || []).map(c => ({
+        label: c.type === 'wind sea' ? 'Wind sea'
+          : (c.type ? c.type.charAt(0).toUpperCase() + c.type.slice(1) : 'Component'),
+        hs_m: c.height_m, period_s: c.peak_period_sec, dir_deg: c.direction_deg,
+        spread_deg: c.directional_spread_deg, energy_pct: c.energy_percent
+      }));
+      host.innerHTML =
+        buildSwellTable(data.summary, useMetric, tz) +
+        buildPartitionTable(parts, useMetric, 'Current components (directional spectrum)') +
+        '<h6 class="mt-3 mb-2">Spectral density (latest)</h6>' +
+        '<div style="position:relative;height:200px;"><canvas id="genericSpectrumCanvas"></canvas></div>';
+      renderGenericSpectrumChart(data.spectrum);
+    }
+
+    function renderGenericBuoy(payload, station) {
+      lastGenericBuoy = { payload: payload, station: station };
+
+      const useMetric = getSelectedUnit() === 'Metric';
+      const o = (payload && payload.latest) || null;
+      // Prefer the per-station capabilities (the /latest route only carries the
+      // provider's class-level defaults, which don't know which buoys have spectra).
+      const caps = (station && station.capabilities) || (payload && payload.capabilities) || {};
+      const el = document.getElementById('liveBuoyGeneric');
+
+      // innerHTML below replaces the spectra canvas; drop the stale chart instance.
+      if (genericSpectrumChart) { genericSpectrumChart.destroy(); genericSpectrumChart = null; }
+
+      if (!o) {
+        el.innerHTML = '<div class="text-muted">No recent observation is available for this buoy.</div>';
+      } else {
+        const metrics = [['Sig. Height', fmtHeightM(o.hs_m, useMetric)]];
+        if (o.hmax_m != null) metrics.push(['Max Height', fmtHeightM(o.hmax_m, useMetric)]);
+        metrics.push(['Peak Period', fmtPeriod(o.tp_s)]);
+        if (o.mean_period_s != null) metrics.push(['Mean Period', fmtPeriod(o.mean_period_s)]);
+        if (o.tz_s != null) metrics.push(['Zero-cross Tz', fmtPeriod(o.tz_s)]);
+        metrics.push(['Direction', fmtDir(o.dir_deg)]);
+        if (o.sst_c != null) metrics.push(['Sea Temp', fmtTemp(o.sst_c, useMetric)]);
+
+        const cards = metrics.map(m =>
+          `<div class="live-buoy-metric"><div class="label">${m[0]}</div><div class="value fs-6">${m[1]}</div></div>`
+        ).join('');
+
+        const tz = (station && station.tz) || null;
+        const abbr = o.time_utc ? tzAbbr(o.time_utc, tz) : '';
+        const obs = o.time_utc
+          ? `${relativeAge(o.time_utc)} &middot; ${fmtTimeInTz(o.time_utc, tz)}${abbr ? ' ' + abbr : ''}`
+          : '—';
+        const tzNote = (tz && o.time_utc)
+          ? `<div class="small text-muted mb-2">Times shown in buoy-local zone: ${tz}${abbr ? ' (' + abbr + ')' : ''}</div>`
+          : '';
+
+        const swellRows = recentToSummary(payload.recent);
+        const hasParts = swellRows.length > 0;
+        el.innerHTML =
+          `<div class="live-buoy-summary mb-2">${cards}</div>` +
+          `<div class="small text-muted mb-1">Observed: ${obs}</div>` +
+          tzNote +
+          buildSwellTable(swellRows, useMetric, tz) +
+          buildRecentTable(payload.recent, useMetric, tz) +
+          (caps.spectra ? '' :
+            (hasParts
+              ? '<div class="small text-muted mt-2">Swell / wind-sea split from the buoy (2 components). Full directional spectra are not published for this buoy.</div>'
+              : '<div class="small text-muted mt-2">Spectral / directional-partition data is not published for this buoy — bulk wave parameters only.</div>')) +
+          (payload.attribution_text
+            ? `<div class="small text-muted mt-2">${payload.attribution_text}</div>` : '');
+      }
+
+      // Placeholder filled later by renderGenericSpectra() for spectra-capable buoys.
+      el.innerHTML += '<div id="genericSpectra"></div>';
+
+      document.getElementById('liveBuoyLoading').style.display = 'none';
+      document.getElementById('liveBuoyError').classList.add('d-none');
+      document.getElementById('liveBuoyContent').classList.add('d-none');
+      el.classList.remove('d-none');
+    }
+
+    async function loadGenericBuoyDetails(station) {
+      showLiveBuoyPanelLoading(station);
+      lastGenericSpectra = null;
+      try {
+        const resp = await fetch('/api/buoys/' + encodeURIComponent(station.id) + '/latest');
+        const payload = await resp.json();
+        if (!resp.ok || payload.error) {
+          throw new Error(payload.error || 'Unable to load buoy observation.');
+        }
+        renderGenericBuoy(payload, station);
+
+        // Spectra-capable buoys (AODN): pull the directional spectrum -> NDBC-style
+        // partitions + spectral-density chart. Optional/lazy — never blocks the bulk view.
+        if (station.capabilities && station.capabilities.spectra) {
+          try {
+            const cr = await fetch('/api/buoys/' + encodeURIComponent(station.id) + '/components');
+            if (cr.ok) {
+              const cdata = await cr.json();
+              if (!cdata.error) renderGenericSpectra(cdata, getSelectedUnit() === 'Metric', station.tz);
+            }
+          } catch (specErr) {
+            console.warn('Spectral partition load failed:', specErr);
+          }
+        }
       } catch (err) {
         showLiveBuoyError(err.message);
       }
@@ -1595,6 +1930,13 @@
 
         if (lastLiveComponentData) {
           renderLiveBuoyDetails(lastLiveComponentData);
+        }
+
+        if (lastGenericBuoy) {
+          const keepSpectra = lastGenericSpectra;
+          const stTz = lastGenericBuoy.station && lastGenericBuoy.station.tz;
+          renderGenericBuoy(lastGenericBuoy.payload, lastGenericBuoy.station);
+          if (keepSpectra) renderGenericSpectra(keepSpectra, getSelectedUnit() === 'Metric', stTz);
         }
       });
     }
@@ -1639,13 +1981,14 @@
 
       vis.forEach(function (c) {
         const s = c.s;
+        const label = 'Live ' + buoyDisplayLabel(s) + (s.source ? ' (' + s.source + ')' : '');
         const marker = L.marker([s.lat, c.lng], {
           icon: s.id === activeLiveBuoyId ? liveBuoyIconActive : liveBuoyIconInactive,
-          title: 'Live ' + s.id,
+          title: label,
           zIndexOffset: 500
         }).addTo(liveBuoyLayer);
 
-        marker.bindTooltip('Live ' + s.id, {
+        marker.bindTooltip(label, {
           permanent: false,
           direction: 'top',
           offset: [12, -2]
@@ -1803,19 +2146,20 @@
       refreshCurrent();
     })();
 
-    function addLiveNdbcBuoyLayer() {
-      fetch('/api/ndbc/live-wave-stations')
+    function addLiveBuoyLayer() {
+      // Merged worldwide live-buoy feed (NDBC + CDIP + AODN + QLD + AusWaves), deduped.
+      fetch('/api/buoys/live-stations')
         .then(r => r.json())
         .then(stations => {
           liveStationsData = stations || [];
           rebuildLiveBuoyMarkers(true);
         })
         .catch(err => {
-          console.warn('Could not load live NDBC buoy layer:', err);
+          console.warn('Could not load live buoy layer:', err);
         });
     }
 
-    addLiveNdbcBuoyLayer();
+    addLiveBuoyLayer();
 
     {% if selected_view == 'Graph' and graph_data %}
     // ---- Charting ----

@@ -2240,6 +2240,8 @@ def get_buoy_providers():
             buoy_sources.AusWavesProvider(http=HTTP),
             buoy_sources.IrishMarineProvider(http=HTTP),     # Europe
             buoy_sources.CefasWaveNetProvider(http=HTTP),
+            buoy_sources.SmhiProvider(http=HTTP),
+            buoy_sources.RwsProvider(http=HTTP),
         ]
     return _BUOY_PROVIDERS
 

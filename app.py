@@ -2324,11 +2324,11 @@ def api_buoys_latest(bid):
                 d = p.detail(local)
             except Exception:
                 d = {"latest": None, "recent": []}
-            return jsonify({"id": bid, "source": p.source,
-                            "attribution_text": p.attribution_text,
-                            "capabilities": dict(p.capabilities),
-                            "latest": d.get("latest"),
-                            "recent": d.get("recent", [])})
+            return _json_cached({"id": bid, "source": p.source,
+                                 "attribution_text": p.attribution_text,
+                                 "capabilities": dict(p.capabilities),
+                                 "latest": d.get("latest"),
+                                 "recent": d.get("recent", [])}, max_age=300)
     return jsonify({"id": bid, "error": "unknown source"}), 404
 
 

@@ -21,7 +21,7 @@
 
     /* smaller axis labels so 90° rotation stays readable */
     .chartjs-size-monitor, .chartjs-render-monitor { font-size: 10px; }
-    /* ---------------- Live NDBC buoy panel ---------------- */
+    /* ---------------- Live buoy panel (NDBC + worldwide sources) ---------------- */
 
     .live-buoy-marker {
       filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.9));
@@ -515,7 +515,7 @@
     </div>
   </div>
 
-  <!-- Live NDBC buoy detail panel -->
+  <!-- Live buoy detail panel (NDBC rich panel + adaptive panel for other sources) -->
   <div id="liveBuoyPanel" class="card">
     <div class="card-header d-flex align-items-start">
       <div>
@@ -1092,7 +1092,7 @@
       saveLayerVisibility();
     });
 
-    // ---------------- Live NDBC buoy layer ----------------
+    // ---------------- Live buoy layer (NDBC + CDIP + AU + Europe, merged + deduped) ----------------
 
     let liveSpectrumChart = null;
     let activeLiveBuoyId = null;
@@ -1864,6 +1864,8 @@
         if (o.mean_period_s != null) metrics.push(['Mean Period', fmtPeriod(o.mean_period_s)]);
         if (o.tz_s != null) metrics.push(['Zero-cross Tz', fmtPeriod(o.tz_s)]);
         metrics.push(['Direction', fmtDir(o.dir_deg)]);
+        if (o.dir_spread_deg != null && Number.isFinite(Number(o.dir_spread_deg)))
+          metrics.push(['Dir. Spread', Math.round(o.dir_spread_deg) + '°']);
         if (o.sst_c != null) metrics.push(['Sea Temp', fmtTemp(o.sst_c, useMetric)]);
 
         const cards = metrics.map(m =>
@@ -1881,12 +1883,16 @@
 
         const swellRows = recentToSummary(payload.recent);
         const hasParts = swellRows.length > 0;
+        const hasHistory = payload.recent && payload.recent.length;
         el.innerHTML =
           `<div class="live-buoy-summary mb-2">${cards}</div>` +
           `<div class="small text-muted mb-1">Observed: ${obs}</div>` +
           tzNote +
           buildSwellTable(swellRows, useMetric, tz) +
           buildRecentTable(payload.recent, useMetric, tz) +
+          (!hasHistory
+            ? '<div class="small text-muted mt-2">Latest reading shown — this source does not publish recent history openly.</div>'
+            : '') +
           (caps.spectra ? '' :
             (hasParts
               ? '<div class="small text-muted mt-2">Swell / wind-sea split from the buoy (2 components). Full directional spectra are not published for this buoy.</div>'

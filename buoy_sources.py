@@ -671,8 +671,8 @@ class AusWavesProvider(BuoyProvider):
 class IrishMarineProvider(BuoyProvider):
     """Marine Institute Ireland -- Irish Weather Buoy Network (IWBNetwork) realtime ERDDAP.
     Combined met+wave buoys (M2/M3/M5/M6). NOTE: the 'IWaveBNetwork*' datasets are stale;
-    the live data is in 'IWBNetwork'. orderByMax(station_id,time) -> latest per buoy in one
-    call; per-station orderBy(time) -> 24h history. SI units, degrees-true 'from'."""
+    the live data is in 'IWBNetwork'. One call (last 2 days, orderBy station_id,time) ->
+    station list + latest + 24h history per buoy. SI units, degrees-true 'from'."""
     source = "MI-IE"
     source_name = "Marine Institute (Ireland)"
     source_url = "https://www.marine.ie"
@@ -684,11 +684,12 @@ class IrishMarineProvider(BuoyProvider):
     timeout = 40
     BASE = "https://erddap.marine.ie/erddap/tabledap/IWBNetwork"
     COLS = ("station_id,time,latitude,longitude,WaveHeight,WavePeriod,Tp,"
-            "MeanWaveDirection,Hmax,SeaTemperature")
+            "MeanWaveDirection,Hmax,SeaTemperature,SprTp")
 
     def __init__(self, http=None):
         super().__init__(http)
         self._latest_by_id = {}
+        self._recent_by_id = {}
 
     @staticmethod
     def _obs(row, ix):
@@ -706,41 +707,50 @@ class IrishMarineProvider(BuoyProvider):
             "tp_s": num("Tp"),
             "mean_period_s": num("WavePeriod"),
             "dir_deg": num("MeanWaveDirection"),
+            "dir_spread_deg": num("SprTp"),
             "hmax_m": num("Hmax"),
             "sst_c": num("SeaTemperature"),
             "dir_kind": "from",
         }
 
     def _fetch_stations(self):
+        # ONE call -> station list + latest + 24h history per buoy (only 4 buoys). Robust
+        # vs per-click ERDDAP timeouts that previously could leave a buoy history-less.
         url = (self.BASE + ".csv?" + self.COLS +
-               "&time%3E=now-3days&orderByMax(%22station_id,time%22)")
+               "&time%3E=now-2days&orderBy(%22station_id,time%22)")
         hdr, rows = _erddap_rows(self.http, url, self.timeout)
         if not hdr:
             return []
         ix = {c: i for i, c in enumerate(hdr)}
-        out, latest = [], {}
+        bysite = {}
         for row in rows:
             try:
-                sid = row[ix["station_id"]]
-                lat = float(row[ix["latitude"]])
-                lon = float(row[ix["longitude"]])
+                bysite.setdefault(row[ix["station_id"]], []).append(row)
+            except (KeyError, IndexError):
+                continue
+        out, latest, recent = [], {}, {}
+        for sid, srows in bysite.items():
+            obs = [self._obs(r, ix) for r in srows]      # chronological per station
+            if not obs:
+                continue
+            try:
+                lat = float(srows[-1][ix["latitude"]])
+                lon = float(srows[-1][ix["longitude"]])
             except (KeyError, ValueError, IndexError):
                 continue
-            latest[sid] = self._obs(row, ix)
+            latest[sid] = obs[-1]
+            recent[sid] = _recent_window(obs)
             out.append({"local_id": sid, "name": "Ireland %s" % sid, "lat": lat, "lon": lon,
-                        "latest_time": latest[sid].get("time_utc")})
+                        "latest_time": obs[-1].get("time_utc")})
         self._latest_by_id = latest
+        self._recent_by_id = recent
         return out
 
     def detail(self, local_id):
-        url = (self.BASE + ".csv?" + self.COLS + "&station_id=%22" + str(local_id) +
-               "%22&time%3E=now-2days&orderBy(%22time%22)")
-        hdr, rows = _erddap_rows(self.http, url, self.timeout)
-        if not hdr or not rows:
-            return {"latest": self.latest(local_id), "recent": []}
-        ix = {c: i for i, c in enumerate(hdr)}
-        obs = [self._obs(r, ix) for r in rows]
-        return {"latest": obs[-1], "recent": _recent_window(obs)}
+        if local_id not in self._latest_by_id:
+            self.list_stations()
+        return {"latest": self._latest_by_id.get(local_id),
+                "recent": self._recent_by_id.get(local_id, [])}
 
     def latest(self, local_id):
         if local_id not in self._latest_by_id:
@@ -801,6 +811,7 @@ class CefasWaveNetProvider(BuoyProvider):
                 "tp_s": res.get("Tpeak"),
                 "mean_period_s": res.get("Tz"),
                 "dir_deg": res.get("W_PDIR"),
+                "dir_spread_deg": res.get("W_SPR"),
                 "sst_c": res.get("TEMP"),
                 "dir_kind": "from",
             }

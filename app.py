@@ -2227,10 +2227,9 @@ class NDBCBuoyProvider(buoy_sources.BuoyProvider):
 _BUOY_PROVIDERS = None
 
 def get_buoy_providers():
-    """Ordered RICHEST/most-authoritative first so dedup keeps the better marker:
-    NDBC (spectra) > CDIP (US) > QLD (clean 30-min agency feed) > AODN (IMOS national)
-    > AusWaves (broad Spotter net, fills gaps). Co-located cross-source buoys merge to
-    the earlier one; AU sources never collide with US ones."""
+    """All live-buoy sources. Cross-source dedup is by buoy_sources._station_priority
+    (richest wins), NOT list order, so order here is not significant. US: NDBC, CDIP.
+    Australia: QLD, AODN, AusWaves. Europe: Marine Institute (Ireland), CEFAS WaveNet."""
     global _BUOY_PROVIDERS
     if _BUOY_PROVIDERS is None:
         _BUOY_PROVIDERS = [
@@ -2239,11 +2238,38 @@ def get_buoy_providers():
             buoy_sources.QLDProvider(http=HTTP),
             buoy_sources.AODNProvider(http=HTTP),
             buoy_sources.AusWavesProvider(http=HTTP),
+            buoy_sources.IrishMarineProvider(http=HTTP),     # Europe
+            buoy_sources.CefasWaveNetProvider(http=HTTP),
         ]
     return _BUOY_PROVIDERS
 
 
 _BUOY_TZ_CACHE = {}
+
+def _nearest_civil_tz(lat, lon):
+    """timezonefinder returns nautical 'Etc/GMT+-N' zones (DST-unaware, off by the DST hour)
+    for open-water points, which is confusing for an offshore buoy near a coast. When the
+    direct lookup yields such a zone, snap to the nearest CIVIL (land) timezone via a small
+    expanding ring search so e.g. an Irish offshore buoy shows Europe/Dublin, not Etc/GMT+1."""
+    tz = _safe_tzname_for_latlon(lat, lon)
+    if tz and not tz.startswith("Etc/"):
+        return tz
+    try:
+        finder = get_tz_finder()
+    except Exception:
+        return tz or "UTC"
+    coslat = max(0.2, math.cos(math.radians(lat)))
+    for radius in (0.4, 0.8, 1.2, 1.8, 2.5, 3.5):
+        for ang in range(0, 360, 45):
+            try:
+                cand = finder.timezone_at(
+                    lat=lat + radius * math.cos(math.radians(ang)),
+                    lng=lon + radius * math.sin(math.radians(ang)) / coslat)
+            except Exception:
+                cand = None
+            if cand and not cand.startswith("Etc/"):
+                return cand
+    return tz or "UTC"
 
 def _buoy_tz_cached(lat, lon):
     """IANA tz for a buoy position (memoized by rounded lat/lon). Used so the non-NDBC
@@ -2253,14 +2279,33 @@ def _buoy_tz_cached(lat, lon):
     key = (round(float(lat), 2), round(float(lon), 2))
     tz = _BUOY_TZ_CACHE.get(key)
     if tz is None:
-        tz = _safe_tzname_for_latlon(float(lat), float(lon))
+        tz = _nearest_civil_tz(float(lat), float(lon))
         _BUOY_TZ_CACHE[key] = tz
     return tz
 
 
 @app.route("/api/buoys/live-stations")
 def api_buoys_live_stations():
-    lists = [p.list_stations() for p in get_buoy_providers()]   # each cached + fail-soft
+    # Fetch every provider's station list CONCURRENTLY (each is cached + fail-soft), so one
+    # slow/down agency can't stall the layer as the source list grows (US + AU + Europe).
+    from concurrent.futures import ThreadPoolExecutor
+    providers = get_buoy_providers()
+    lists = [[] for _ in providers]
+
+    def _fetch(i):
+        p = providers[i]
+        try:
+            lst = p.list_stations()
+            if not lst:                       # surface silent feed outages (provider failed soft)
+                app.logger.warning("buoy provider %s returned 0 stations", p.source)
+            return i, lst
+        except Exception as exc:
+            app.logger.warning("buoy provider %s failed in live-stations: %s", p.source, exc)
+            return i, []
+    with ThreadPoolExecutor(max_workers=min(8, len(providers))) as ex:
+        for i, lst in ex.map(_fetch, range(len(providers))):
+            lists[i] = lst
+
     merged = buoy_sources.merge_stations(lists, radius_km=1.0)
     for s in merged:
         # NDBC keeps its own tz handling; tag the rest with their buoy-local zone.

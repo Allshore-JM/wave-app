@@ -14,6 +14,7 @@ markers and never raises out of list_stations()/latest().
 """
 import csv
 import io
+import logging
 import math
 import re
 import time
@@ -21,6 +22,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 
 import requests
+
+_log = logging.getLogger(__name__)
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -72,12 +75,13 @@ class BuoyProvider:
             if self._list_cache is not None and (time.time() - self._list_ts) < self.list_ttl_sec:
                 return self._list_cache
         out = []
+        now = time.time()
         try:
             for s in self._fetch_stations():
                 lat, lon = s.get("lat"), s.get("lon")
                 if lat is None or lon is None:
                     continue
-                out.append({
+                entry = {
                     "id": "%s:%s" % (self.source.lower(), s["local_id"]),
                     "source": self.source,
                     "source_name": self.source_name,
@@ -90,10 +94,20 @@ class BuoyProvider:
                     # a provider may set per-station capabilities (e.g. only some AODN
                     # buoys publish spectra); otherwise use the provider default.
                     "capabilities": dict(s.get("capabilities") or self.capabilities),
-                    "is_stale": False,        # refined lazily; list sources here are realtime aggregates
+                    "is_stale": False,
                     "dup_of": None,
-                })
-        except Exception:
+                }
+                # Providers that fetch the latest obs at list-build time pass 'latest_time';
+                # mark the marker stale if that obs is older than stale_after_sec.
+                lt = s.get("latest_time")
+                if lt:
+                    entry["latest_time"] = lt
+                    ep = _z_epoch({"time_utc": lt})
+                    if ep is not None and (now - ep) > self.stale_after_sec:
+                        entry["is_stale"] = True
+                out.append(entry)
+        except Exception as e:
+            _log.warning("buoy provider %s: station-list fetch failed (%s)", self.source, e)
             out = []                          # fail soft: no markers rather than a broken map
         with self._lock:
             self._list_cache = out
@@ -280,7 +294,7 @@ class AODNProvider(BuoyProvider):
     license_label = "CC BY 4.0"
     attribution_text = ("Source: Australia's Integrated Marine Observing System (IMOS), "
                         "a NCRIS facility, via AODN")
-    stale_after_sec = 6 * 3600
+    stale_after_sec = 15 * 3600          # NRT aggregator: dispatch normally lags several hours
     capabilities = _caps(bulk=True, recent_history=True, directional=True)
     list_ttl_sec = 1800
     timeout = 90
@@ -378,6 +392,7 @@ class AODNProvider(BuoyProvider):
                 "local_id": s,
                 "name": ("%s - %s" % (s, inst)) if inst else s,
                 "lat": lat, "lon": lon,
+                "latest_time": obs[-1]["time_utc"],
             }
             if self._spectra_code(s):     # this buoy publishes full directional spectra
                 st["capabilities"] = _caps(bulk=True, recent_history=True,
@@ -583,7 +598,8 @@ class AusWavesProvider(BuoyProvider):
                 lat = float(s["lat"])
                 lon = float(s["lng"])
                 name = s.get("web_display_name") or s.get("label") or str(s["id"])
-                out.append({"local_id": str(s["id"]), "name": name, "lat": lat, "lon": lon})
+                out.append({"local_id": str(s["id"]), "name": name, "lat": lat, "lon": lon,
+                            "latest_time": _unix_to_z(lu)})
             except (KeyError, ValueError, TypeError):
                 continue
         return out
@@ -652,6 +668,156 @@ class AusWavesProvider(BuoyProvider):
         return self.detail(local_id)["latest"]
 
 
+class IrishMarineProvider(BuoyProvider):
+    """Marine Institute Ireland -- Irish Weather Buoy Network (IWBNetwork) realtime ERDDAP.
+    Combined met+wave buoys (M2/M3/M5/M6). NOTE: the 'IWaveBNetwork*' datasets are stale;
+    the live data is in 'IWBNetwork'. orderByMax(station_id,time) -> latest per buoy in one
+    call; per-station orderBy(time) -> 24h history. SI units, degrees-true 'from'."""
+    source = "MI-IE"
+    source_name = "Marine Institute (Ireland)"
+    source_url = "https://www.marine.ie"
+    license_label = "CC BY 4.0"
+    attribution_text = "Source: Marine Institute Ireland, Irish Weather Buoy Network"
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 1800
+    timeout = 40
+    BASE = "https://erddap.marine.ie/erddap/tabledap/IWBNetwork"
+    COLS = ("station_id,time,latitude,longitude,WaveHeight,WavePeriod,Tp,"
+            "MeanWaveDirection,Hmax,SeaTemperature")
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._latest_by_id = {}
+
+    @staticmethod
+    def _obs(row, ix):
+        def num(c):
+            if c not in ix or ix[c] >= len(row):
+                return None
+            v = row[ix[c]]
+            try:
+                return float(v) if v not in ("", "NaN") else None
+            except ValueError:
+                return None
+        return {
+            "time_utc": _z(row[ix["time"]]) if "time" in ix and ix["time"] < len(row) else None,
+            "hs_m": num("WaveHeight"),
+            "tp_s": num("Tp"),
+            "mean_period_s": num("WavePeriod"),
+            "dir_deg": num("MeanWaveDirection"),
+            "hmax_m": num("Hmax"),
+            "sst_c": num("SeaTemperature"),
+            "dir_kind": "from",
+        }
+
+    def _fetch_stations(self):
+        url = (self.BASE + ".csv?" + self.COLS +
+               "&time%3E=now-3days&orderByMax(%22station_id,time%22)")
+        hdr, rows = _erddap_rows(self.http, url, self.timeout)
+        if not hdr:
+            return []
+        ix = {c: i for i, c in enumerate(hdr)}
+        out, latest = [], {}
+        for row in rows:
+            try:
+                sid = row[ix["station_id"]]
+                lat = float(row[ix["latitude"]])
+                lon = float(row[ix["longitude"]])
+            except (KeyError, ValueError, IndexError):
+                continue
+            latest[sid] = self._obs(row, ix)
+            out.append({"local_id": sid, "name": "Ireland %s" % sid, "lat": lat, "lon": lon,
+                        "latest_time": latest[sid].get("time_utc")})
+        self._latest_by_id = latest
+        return out
+
+    def detail(self, local_id):
+        url = (self.BASE + ".csv?" + self.COLS + "&station_id=%22" + str(local_id) +
+               "%22&time%3E=now-2days&orderBy(%22time%22)")
+        hdr, rows = _erddap_rows(self.http, url, self.timeout)
+        if not hdr or not rows:
+            return {"latest": self.latest(local_id), "recent": []}
+        ix = {c: i for i, c in enumerate(hdr)}
+        obs = [self._obs(r, ix) for r in rows]
+        return {"latest": obs[-1], "recent": _recent_window(obs)}
+
+    def latest(self, local_id):
+        if local_id not in self._latest_by_id:
+            self.list_stations()
+        return self._latest_by_id.get(local_id)
+
+
+class CefasWaveNetProvider(BuoyProvider):
+    """CEFAS WaveNet (UK) -- one open JSON Summary call returns every platform with its
+    LATEST values. Aggregates Cefas + Met Office + Channel Coastal Observatory + Marine
+    Institute buoys (~86 platforms). Latest-only (open history needs registration)."""
+    source = "CEFAS"
+    source_name = "CEFAS WaveNet (UK)"
+    source_url = "https://wavenet.cefas.co.uk"
+    license_label = "Open Government Licence"
+    attribution_text = ("Source: Cefas WaveNet (incl. Met Office, Channel Coastal "
+                        "Observatory, Marine Institute partner buoys)")
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, directional=True)     # latest-only, no recent history
+    list_ttl_sec = 1800
+    timeout = 40
+    URL = "https://wavenet-api.cefas.co.uk/api/Summary"
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._latest_by_id = {}
+
+    def _fetch_stations(self):
+        try:
+            r = self.http.get(self.URL, timeout=self.timeout)
+            if r.status_code != 200:
+                return []
+            data = r.json()
+        except (ValueError, requests.RequestException):
+            return []
+        out, latest = [], {}
+        for p in data:
+            try:
+                lat = float(p["latitude"])
+                lon = float(p["longitude"])
+                pid = p["platformId"]
+            except (KeyError, ValueError, TypeError):
+                continue
+            res = {}
+            for item in (p.get("results") or []):
+                k = item.get("identifier")
+                if not k:
+                    continue
+                try:
+                    res[k] = float(item.get("value"))
+                except (TypeError, ValueError):
+                    res[k] = None
+            if res.get("Hm0") is None:        # only platforms reporting a live wave height
+                continue
+            latest[pid] = {
+                "time_utc": _z(p.get("timestamp")),
+                "hs_m": res.get("Hm0"),
+                "tp_s": res.get("Tpeak"),
+                "mean_period_s": res.get("Tz"),
+                "dir_deg": res.get("W_PDIR"),
+                "sst_c": res.get("TEMP"),
+                "dir_kind": "from",
+            }
+            out.append({"local_id": pid, "name": p.get("description") or pid,
+                        "lat": lat, "lon": lon, "latest_time": latest[pid].get("time_utc")})
+        self._latest_by_id = latest
+        return out
+
+    def detail(self, local_id):
+        if local_id not in self._latest_by_id:
+            self.list_stations()
+        return {"latest": self._latest_by_id.get(local_id), "recent": []}
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
+
+
 def _station_priority(st):
     """Higher = preferred when two sources report the same physical buoy. Richness-first
     so the kept marker carries the best data: NDBC spectra > AODN spectra > AusWaves
@@ -664,8 +830,12 @@ def _station_priority(st):
         return 90
     if src == "AusWaves":              # precomputed sea/swell split (where populated)
         return 70
+    if src == "MI-IE":                 # Ireland ERDDAP (bulk + 24h history)
+        return 65
     if src == "QLD":                   # clean 30-min agency JSON (+ SST)
         return 60
+    if src == "CEFAS":                 # UK WaveNet aggregate (latest-only)
+        return 58
     if src == "CDIP":
         return 55
     if src == "AODN":                  # bulk only

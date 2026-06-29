@@ -2242,6 +2242,7 @@ def get_buoy_providers():
             buoy_sources.CefasWaveNetProvider(http=HTTP),
             buoy_sources.SmhiProvider(http=HTTP),
             buoy_sources.RwsProvider(http=HTTP),
+            buoy_sources.CopernicusProvider(http=HTTP),      # pan-EU/global open aggregator
         ]
     return _BUOY_PROVIDERS
 

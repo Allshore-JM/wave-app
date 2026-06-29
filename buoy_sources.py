@@ -867,6 +867,8 @@ def _station_priority(st):
         return 55
     if src == "AODN":                  # bulk only
         return 50
+    if src == "CMEMS":                 # pan-EU/global aggregator -> fills gaps, national wins
+        return 30
     return 40
 
 
@@ -1025,6 +1027,123 @@ class RwsProvider(BuoyProvider):
         for g, key, sc in self.GROOTHEDEN:
             latest[key] = newest(series.get(key))
         return {"latest": latest, "recent": _recent_window(obs)}
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
+
+
+class CopernicusProvider(BuoyProvider):
+    """Copernicus Marine in-situ NRT -- the open, anonymous-S3 pan-EU/global aggregator.
+    The index CSV yields the station list + positions + latest-obs time (no NetCDF needed);
+    per-platform values + history come from the platform's daily NetCDF on demand (h5netcdf).
+    It re-bundles the national/EuroGOOS feeds -> LOWEST dedup priority. ~6-30h NRT latency.
+    Scoped to a European bounding box for now (widen BBOX for worldwide coverage)."""
+    source = "CMEMS"
+    source_name = "Copernicus Marine in-situ"
+    source_url = "https://marine.copernicus.eu"
+    license_label = "Copernicus Marine Service (free)"
+    attribution_text = ("Source: Copernicus Marine Service in-situ TAC "
+                        "(E.U. Copernicus Marine Service Information)")
+    stale_after_sec = 36 * 3600          # NRT dispatch lag ~6-30h
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 3 * 3600
+    timeout = 60
+    S3 = "https://s3.waw3-1.cloudferro.com/mdl-native-01/native/"
+    DATASET = ("INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/"
+               "cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/")
+    BBOX = (30.0, 73.0, -30.0, 42.0)     # (lat_min, lat_max, lon_min, lon_max): Europe
+    LIVE_MAX_AGE = 4 * 86400             # only platforms whose latest file is this fresh
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._file_by_id = {}            # local_id -> relative .nc path (latest per platform)
+
+    def _fetch_stations(self):
+        try:
+            idx = self.http.get(self.S3 + self.DATASET + "index_latest.txt",
+                                timeout=self.timeout).text
+        except requests.RequestException:
+            return []
+        latmin, latmax, lonmin, lonmax = self.BBOX
+        now = time.time()
+        best = {}
+        for r in csv.reader(io.StringIO(idx)):
+            if not r or r[0].startswith("#") or len(r) < 8:
+                continue
+            if "VHM0" not in r[-1] and "VAVH" not in r[-1]:    # parameters column
+                continue
+            try:
+                la = (float(r[2]) + float(r[3])) / 2.0
+                lo = (float(r[4]) + float(r[5])) / 2.0
+            except (ValueError, IndexError):
+                continue
+            if not (latmin <= la <= latmax and lonmin <= lo <= lonmax):
+                continue
+            tend = r[7].strip()
+            tz = tend if tend.endswith("Z") else tend + "Z"
+            ep = _z_epoch({"time_utc": tz})
+            if ep is None or (now - ep) > self.LIVE_MAX_AGE:   # skip long-inactive platforms
+                continue
+            fn = r[1]
+            pid = fn.split("/")[-1].rsplit("_", 1)[0]          # GL_TS_MO_6200064_DATE.nc -> GL_TS_MO_6200064
+            if pid not in best or tend > best[pid][0]:
+                best[pid] = (tend, fn, la, lo, tz)
+        out = []
+        self._file_by_id = {}
+        for pid, (tend, fn, la, lo, tz) in best.items():
+            self._file_by_id[pid] = fn
+            name = pid.split("_")[-1].replace("-", " ") if "_" in pid else pid
+            out.append({"local_id": pid, "name": name, "lat": la, "lon": lo, "latest_time": tz})
+        return out
+
+    def detail(self, local_id):
+        fn = self._file_by_id.get(local_id)
+        if not fn:
+            self.list_stations()
+            fn = self._file_by_id.get(local_id)
+        if not fn:
+            return {"latest": None, "recent": []}
+        try:
+            import h5netcdf
+            import numpy as np
+            data = self.http.get(self.S3 + fn, timeout=self.timeout).content
+            ds = h5netcdf.File(io.BytesIO(data), "r")
+        except Exception:
+            return {"latest": None, "recent": []}
+        try:
+            tvar = np.asarray(ds["TIME"][:]).astype("float64").ravel()
+
+            def col(*names):
+                for nm in names:
+                    if nm in ds.variables:
+                        a = np.asarray(ds[nm][:]).astype("float64")
+                        if a.ndim > 1:
+                            a = a[:, 0]                 # surface (DEPTH=0)
+                        a = a.ravel()
+                        a[a > 1e30] = np.nan            # _FillValue ~9.97e36
+                        return a
+                return None
+            hs, tp = col("VHM0", "VAVH"), col("VTPK")
+            mp, dr = col("VTZA", "VTZM", "VTM02"), col("VMDR", "VPED")
+        except Exception:
+            return {"latest": None, "recent": []}
+
+        def val(a, i):
+            if a is None or i >= len(a):
+                return None
+            return float(a[i]) if np.isfinite(a[i]) else None
+        obs = []
+        for i in range(len(tvar)):
+            t = datetime(1950, 1, 1) + timedelta(days=float(tvar[i]))
+            h = val(hs, i)
+            if h is None:
+                continue                                # keep only rows with a real Hs
+            obs.append({"time_utc": t.strftime("%Y-%m-%dT%H:%M:%SZ"), "hs_m": h,
+                        "tp_s": val(tp, i), "mean_period_s": val(mp, i),
+                        "dir_deg": val(dr, i), "dir_kind": "from"})
+        if not obs:
+            return {"latest": None, "recent": []}
+        return {"latest": obs[-1], "recent": _recent_window(obs)}
 
     def latest(self, local_id):
         return self.detail(local_id)["latest"]

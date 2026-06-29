@@ -749,8 +749,20 @@ class IrishMarineProvider(BuoyProvider):
     def detail(self, local_id):
         if local_id not in self._latest_by_id:
             self.list_stations()
-        return {"latest": self._latest_by_id.get(local_id),
-                "recent": self._recent_by_id.get(local_id, [])}
+        rec = self._recent_by_id.get(local_id)
+        if rec:
+            return {"latest": self._latest_by_id.get(local_id), "recent": rec}
+        # Cache empty (the shared list-build failed/was slow) -> direct per-station history
+        # fetch so a buoy is never left history-less. Belt-and-braces vs the prior single-row bug.
+        url = (self.BASE + ".csv?" + self.COLS + "&station_id=%22" + str(local_id) +
+               "%22&time%3E=now-2days&orderBy(%22time%22)")
+        hdr, rows = _erddap_rows(self.http, url, self.timeout)
+        if hdr and rows:
+            ix = {c: i for i, c in enumerate(hdr)}
+            obs = [self._obs(r, ix) for r in rows]
+            if obs:
+                return {"latest": obs[-1], "recent": _recent_window(obs)}
+        return {"latest": self._latest_by_id.get(local_id), "recent": []}
 
     def latest(self, local_id):
         if local_id not in self._latest_by_id:
@@ -854,21 +866,40 @@ def _station_priority(st):
     return 40
 
 
-def merge_stations(provider_lists, radius_km=1.0):
+def _name_key(name):
+    """Normalized buoy designation for cross-source matching: strip generic descriptors +
+    source words + punctuation so 'Ireland M6' and 'M6 Buoy' both reduce to 'M6'. Used as a
+    SECONDARY dedup signal (with a looser radius) for the same physical buoy relayed by two
+    networks at slightly different reported positions. Keeps distinguishing words like
+    INNER/OUTER/NORTH so 'Newcastle Inner' != 'Newcastle Outer'."""
+    if not name:
+        return ""
+    n = name.upper()
+    for w in ("WAVENET", "BUOY", "SITE", "STATION", "IRELAND", "WAVE", "OFFSHORE", "INSHORE"):
+        n = n.replace(w, " ")
+    return re.sub(r"[^A-Z0-9]", "", n)
+
+
+def merge_stations(provider_lists, radius_km=1.0, name_radius_km=10.0):
     """Flatten provider station lists and physically dedup co-located buoys, keeping the
     RICHEST source per cluster (see _station_priority: spectra > sea/swell split > bulk).
+    Two cross-source markers merge when within radius_km, OR within the looser name_radius_km
+    if their normalized names match (catches the SAME buoy relayed by two networks at slightly
+    different reported positions, e.g. Marine Institute M6 vs CEFAS 'M6 Buoy' ~3.6 km apart).
     A hidden duplicate is marked dup_of the kept one; the kept marker lists the extra
-    source(s) in 'also_sources'. (Many Sofar buoys appear in both AODN and AusWaves; this
-    keeps whichever exposes more -- AODN where it has spectra, else AusWaves for the split.)
+    source(s) in 'also_sources'.
     """
     allst = [st for lst in provider_lists for st in lst]
     allst.sort(key=_station_priority, reverse=True)   # stable: ties keep provider order
-    kept = []
+    kept, keptkey = [], []
     for st in allst:
+        nk = _name_key(st.get("name"))
         dup = None
-        for k in kept:
-            if k["source"] != st["source"] and haversine_km(
-                    k["lat"], k["lon"], st["lat"], st["lon"]) <= radius_km:
+        for idx, k in enumerate(kept):
+            if k["source"] == st["source"]:
+                continue
+            dist = haversine_km(k["lat"], k["lon"], st["lat"], st["lon"])
+            if dist <= radius_km or (len(nk) >= 2 and nk == keptkey[idx] and dist <= name_radius_km):
                 dup = k
                 break
         if dup is not None:
@@ -878,4 +909,5 @@ def merge_stations(provider_lists, radius_km=1.0):
                 dup["also_sources"].append(st["source"])
         else:
             kept.append(st)
+            keptkey.append(nk)
     return kept

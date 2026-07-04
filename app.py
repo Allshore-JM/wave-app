@@ -173,12 +173,26 @@ def _json_cached(data, max_age: int):
 # Latest GFS-wave run detection cache (runs publish ~4x/day).
 _RUN_CACHE = {"ts": 0.0, "value": (None, None)}
 _RUN_CACHE_TTL = 30 * 60
+_RUN_NEG_TTL = 2 * 60  # bound probe cost during a NOAA outage (SWAN wind now probes too)
 
-# Parsed forecast cache: (station_id, tz_name, model) -> {"ts", "data"}.
+# Parsed forecast cache: (station_id, tz_name, model) -> {"ts", "data", "ttl"}.
 # Shared by GFS (.bull) and SWAN (PacIOOS bulletin) parses.
 _FORECAST_CACHE = {}
 _FORECAST_CACHE_TTL = 30 * 60
 _FORECAST_CACHE_MAX = 64
+
+
+def _forecast_entry_ttl(data) -> int:
+    """Cache lifetime for a clean forecast. Short (=_WIND_NEG_TTL) when the Wind
+    column came back entirely blank -- i.e. the .spec lagged the .bull at a cycle
+    rollover -- so wind re-joins within minutes instead of being pinned blank for
+    the full 30 min. (SWAN's early hindcast rows are always blank, but its
+    forward rows carry wind when the fetch worked, so all-blank still uniquely
+    means the wind fetch failed.)"""
+    rows = data[3] if data and len(data) > 3 else None
+    if rows and all(len(r) > 20 and r[20] is None for r in rows):
+        return _WIND_NEG_TTL
+    return _FORECAST_CACHE_TTL
 
 # ---------------------- PacIOOS SWAN forecast bulletins -------------------------
 # PacIOOS runs SWAN nearshore wave models for the main Hawaiian islands and
@@ -486,16 +500,220 @@ def get_latest_run():
     """
     with _CACHE_LOCK:
         cached = _RUN_CACHE["value"]
-        if cached[0] and _fresh(_RUN_CACHE["ts"], _RUN_CACHE_TTL):
+        # Serve a fresh success for the full TTL; serve a fresh FAILURE only for
+        # the short negative TTL so an outage costs at most one probe (up to 8
+        # serial HEADs) per ~2 min per worker instead of one per request -- now
+        # that the SWAN wind path also calls this.
+        ttl = _RUN_CACHE_TTL if cached[0] else _RUN_NEG_TTL
+        if _RUN_CACHE["ts"] > 0 and _fresh(_RUN_CACHE["ts"], ttl):
             return cached
     result = _detect_latest_run()
-    if result and result[0]:
-        with _CACHE_LOCK:
-            _RUN_CACHE["ts"] = time.time()
+    with _CACHE_LOCK:
+        _RUN_CACHE["ts"] = time.time()
+        if result and result[0]:
             _RUN_CACHE["value"] = result
-    else:
-        logger.warning("get_latest_run: no recent GFS-wave run detected")
-    return result
+        else:
+            _RUN_CACHE["value"] = (None, None)
+            logger.warning("get_latest_run: no recent GFS-wave run detected")
+    return _RUN_CACHE["value"]
+
+
+# ---------------------- GFS station wind (.spec bulletins) ----------------------
+# NOAA publishes a gfswave.{id}.spec file alongside each .bull (same directory,
+# same cycle, same 385 hourly timesteps). Each timestep carries ONE quoted
+# station line whose 4th/5th floats are the GFS forcing wind at that point:
+#   20260704 120000
+#   '51201     '  21.67-158.12     472.7   8.09  71.6   0.05 139.8
+#    name          lat lon         depth   U10    Udir   cur  curdir
+# U10 is m/s; Udir is degrees FROM true north (verified vs live buoy obs) -- the
+# same FROM convention as the wave directions, so NO flip is applied anywhere.
+# The file is ~7.75MB (mostly spectra we skip); it is streamed and cached per
+# (station, cycle), shared across tz/unit/model variants.
+_WIND_CACHE = {}            # (station_id, date_str, run_str) -> {"ts", "data", "ttl"}
+_WIND_CACHE_TTL = 30 * 60   # aligned with _FORECAST_CACHE / _RUN_CACHE
+_WIND_NEG_TTL = 5 * 60      # failed/empty fetches retry sooner (spec can publish after bulls)
+_WIND_CACHE_MAX = 64
+_WIND_INFLIGHT = {}         # key -> Lock: collapse concurrent cold misses (singleflight)
+
+# Bounds on the streaming .spec download so a stuck/corrupt/huge NOMADS response
+# can never hold a worker indefinitely or exhaust memory. Real spec ~7.75MB.
+_WIND_FETCH_MAX_S = 45              # total wall-clock for the whole download
+_SPEC_MAX_BYTES = 32 * 1024 * 1024  # ~4x the real file; abort runaway bodies
+_SPEC_MAX_LINE = 1 * 1024 * 1024    # no legit spec line approaches this
+
+_SPEC_DT_RE = re.compile(r"^(\d{8})\s+(\d{6})\s*$")
+_SPEC_FLOAT_RE = re.compile(r"-?\d+\.\d+")
+
+
+def _bounded_spec_lines(resp, max_bytes=_SPEC_MAX_BYTES, max_line=_SPEC_MAX_LINE,
+                        chunk_size=65536):
+    """Yield decoded text lines from a streaming response under a hard byte
+    budget, splitting on newlines ourselves.
+
+    requests' iter_lines buffers a newline-free body entirely in RAM before
+    yielding anything; iterating iter_content and splitting here caps both total
+    bytes and per-line length, raising (-> caller's fail-soft {}) on breach.
+    """
+    total = 0
+    buf = b""
+    for chunk in resp.iter_content(chunk_size=chunk_size):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError("spec exceeded byte budget")
+        buf += chunk
+        start = 0
+        nl = buf.find(b"\n", start)
+        while nl >= 0:
+            yield buf[start:nl].decode("ascii", "replace")
+            start = nl + 1
+            nl = buf.find(b"\n", start)
+        buf = buf[start:]
+        if len(buf) > max_line:
+            raise ValueError("spec line exceeded budget")
+    if buf:
+        yield buf.decode("ascii", "replace")
+
+
+def _parse_spec_wind_text(lines):
+    """Extract per-timestep wind from WW3 .spec lines (pure, no I/O).
+
+    lines: iterable of str. Returns {naive UTC datetime: (u10_ms, udir_from_deg)}.
+    Only the datetime line and the FIRST quoted station line of each block are
+    read; the file header's own quoted title line is ignored (no datetime is
+    pending yet) and spectra lines can match neither pattern.
+    """
+    out = {}
+    pending_dt = None
+    for raw in lines:
+        # iter_lines can yield bytes even with decode_unicode=True when the
+        # server (NOMADS) sends no charset -- normalize here so the parser
+        # accepts either.
+        if isinstance(raw, bytes):
+            raw = raw.decode("ascii", "replace")
+        s = (raw or "").strip()
+        if not s:
+            continue
+        if pending_dt is not None and s[0] == "'":
+            # '51201     '  21.67-158.12  472.7  8.09  71.6 ... -- lat/lon can
+            # RUN TOGETHER when lon is negative, so split off the quoted name
+            # and pull floats by regex instead of str.split().
+            parts = s.split("'")
+            rest = parts[2] if len(parts) >= 3 else ""
+            vals = _SPEC_FLOAT_RE.findall(rest)
+            if len(vals) >= 5:  # [lat, lon, depth, U10, Udir, ...]
+                try:
+                    u10, udir = float(vals[3]), float(vals[4])
+                    # float() of a 300+-digit token returns inf (not an error);
+                    # store only finite pairs so a corrupt line degrades to a
+                    # blank cell instead of reaching int(round(inf)) downstream.
+                    if math.isfinite(u10) and math.isfinite(udir):
+                        out[pending_dt] = (u10, udir)
+                except ValueError:
+                    pass
+            pending_dt = None
+            continue
+        if s[0].isdigit() and len(s) <= 20:  # cheap pre-filter before the regex
+            m = _SPEC_DT_RE.match(s)
+            if m:
+                try:
+                    pending_dt = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+                except ValueError:
+                    pending_dt = None
+    return out
+
+
+def get_station_wind(station_id: str, date_str: str | None = None,
+                     run_str: str | None = None) -> dict:
+    """Cached GFS wind time series for a station, from its gfswave .spec file.
+
+    Pass (date_str, run_str) to pin the exact cycle (the GFS parser does, so
+    bull and spec always come from the same run); omitted -> latest cycle.
+    Returns {} on ANY failure -- the wave table must never break because wind
+    failed; blank wind cells are the worst case. Empty results are cached with
+    the shorter _WIND_NEG_TTL so a transient miss recovers quickly without
+    re-attempting a 7.75MB download on every click.
+    """
+    try:
+        if not date_str or not run_str:
+            date_str, run_str = get_latest_run()
+        if not date_str or not run_str:
+            return {}
+        key = (station_id, date_str, run_str)
+
+        def _read_cache():
+            with _CACHE_LOCK:
+                e = _WIND_CACHE.get(key)
+                if e and _fresh(e["ts"], e.get("ttl", _WIND_CACHE_TTL)):
+                    return e["data"]
+            return None
+
+        cached = _read_cache()
+        if cached is not None:
+            return cached
+
+        # Singleflight: collapse concurrent cold misses for the same station so
+        # a burst can't each download the 7.75MB spec.
+        with _CACHE_LOCK:
+            flock = _WIND_INFLIGHT.setdefault(key, threading.Lock())
+        with flock:
+            cached = _read_cache()  # double-checked: a peer may have filled it
+            if cached is not None:
+                return cached
+
+            url = (f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/"
+                   f"bulls.t{run_str}z/gfswave.{station_id}.spec")
+            wind = {}
+            try:
+                with HTTP.get(url, stream=True, timeout=(10, 30)) as resp:
+                    if resp.status_code == 200:
+                        # Total wall-clock cap: read timeout is per-recv, so a
+                        # slow drip could otherwise hold a worker forever. The
+                        # timer force-closes the socket -> iter_content raises ->
+                        # fail-soft below.
+                        killer = threading.Timer(_WIND_FETCH_MAX_S, resp.close)
+                        killer.daemon = True
+                        killer.start()
+                        try:
+                            wind = _parse_spec_wind_text(_bounded_spec_lines(resp))
+                        finally:
+                            killer.cancel()
+            except Exception as exc:
+                logger.warning("wind spec fetch failed for %s: %r", station_id, exc)
+                wind = {}
+
+            ttl = _WIND_CACHE_TTL if wind else _WIND_NEG_TTL
+            with _CACHE_LOCK:
+                _WIND_CACHE[key] = {"ts": time.time(), "data": wind, "ttl": ttl}
+                _evict_oldest(_WIND_CACHE, _WIND_CACHE_MAX)
+                _WIND_INFLIGHT.pop(key, None)
+            return wind
+    except Exception as exc:
+        logger.warning("get_station_wind failed for %s: %r", station_id, exc)
+        return {}
+
+
+def _wind_row_cells(wind_map: dict, dt_utc: datetime) -> list:
+    """[u10_ms|None, dir_deg_int|None] for a forecast row, joined on the UTC hour."""
+    if not wind_map or dt_utc is None:
+        return [None, None]
+    hit = wind_map.get(dt_utc.replace(minute=0, second=0, microsecond=0))
+    if not hit:
+        return [None, None]
+    u10, udir = hit
+    try:
+        if u10 is None or not math.isfinite(float(u10)):
+            return [None, None]
+        # int(round(inf)) raises OverflowError (not ValueError) -- catch it so a
+        # non-finite direction blanks the cell rather than breaking the table.
+        d = None
+        if udir is not None and math.isfinite(float(udir)):
+            d = int(round(float(udir))) % 360
+        return [float(u10), d]
+    except (TypeError, ValueError, OverflowError):
+        return [None, None]
+
 
 # ----------------------------- Bulletin parser ---------------------------------
 
@@ -539,6 +757,13 @@ def _fmt_latlon(lat: float | None, lon: float | None) -> str | None:
     lon_hemi = "E" if lon >= 0 else "W"
     return f"{abs(lat):.2f}{lat_hemi} {abs(lon):.2f}{lon_hemi}"
 
+_COMPASS16 = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+              "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+
+def _compass16(deg) -> str:
+    """16-point compass label; each sector spans 22.5 deg, N spans 348.75-11.25."""
+    return _COMPASS16[int(((float(deg) % 360) + 11.25) // 22.5) % 16]
+
 def _resolve_day_hour_ts(cycle_dt_utc: datetime, day_val: int, hour_val: int, last_dt_utc: datetime | None) -> datetime:
     """
     Build a *correct* UTC datetime for 'day & hour' rows.
@@ -580,13 +805,14 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     key = (station_id, target_tz_name or "", "GFS")
     with _CACHE_LOCK:
         entry = _FORECAST_CACHE.get(key)
-        if entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL):
+        if entry and _fresh(entry["ts"], entry.get("ttl", _FORECAST_CACHE_TTL)):
             return entry["data"]
     data = _parse_bull_uncached(station_id, target_tz_name)
     # data[-1] is the error field; only cache clean results.
     if data and not data[-1]:
         with _CACHE_LOCK:
-            _FORECAST_CACHE[key] = {"ts": time.time(), "data": data}
+            _FORECAST_CACHE[key] = {"ts": time.time(), "data": data,
+                                    "ttl": _forecast_entry_ttl(data)}
             _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
     return data
 
@@ -595,7 +821,9 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
     """
     Fetch and parse .bull for station. Returns:
     (cycle_str, location_str, model_run_str, rows, tz_name, error)
-    rows: [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp, s6_dir, combined_hs]
+    rows (23 cols): [date_str, time_str, s1_hs, s1_tp, s1_dir, ..., s6_hs, s6_tp,
+    s6_dir, wind_u10_ms, wind_dir_deg, combined_hs] -- wind at indices 20-21
+    (raw m/s / deg-FROM or None); combined stays row[-1].
     """
     date_str, run_str = get_latest_run()
     if not date_str:
@@ -609,6 +837,10 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
         return None, None, None, None, 'UTC', f"Could not download .bull for {station_id}"
     if resp.status_code != 200 or not resp.text:
         return None, None, None, None, 'UTC', f"No .bull file found for {station_id}"
+
+    # GFS wind for the Wind table columns -- pinned to the SAME cycle as this
+    # bull so the two can never skew across a run rollover. {} on failure.
+    wind_map = get_station_wind(station_id, date_str, run_str)
 
     lines = resp.text.splitlines()
     # Headers
@@ -731,6 +963,9 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
                     row.extend([None, None, None])
                 else:
                     row.extend([hs_m * M_TO_FT, tp_val, dir_val])
+            # Wind sits at indices 20-21 so combined STAYS row[-1] for its
+            # three pre-existing consumers (rounding pass, table cell, graph).
+            row.extend(_wind_row_cells(wind_map, forecast_dt_utc))
             row.append(combined_hs_ft)
             rows.append(row)
 
@@ -823,6 +1058,9 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
                     break
                 except ValueError:
                     continue
+            # Wind at indices 20-21; combined stays row[-1] (see modern-format
+            # comment above).
+            row.extend(_wind_row_cells(wind_map, utc_dt))
             row.append(combined_hs_ft)
             rows.append(row)
 
@@ -861,12 +1099,13 @@ def parse_swan(station_id: str, target_tz_name: str | None = None):
     key = (station_id, target_tz_name or "", "SWAN")
     with _CACHE_LOCK:
         entry = _FORECAST_CACHE.get(key)
-        if entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL):
+        if entry and _fresh(entry["ts"], entry.get("ttl", _FORECAST_CACHE_TTL)):
             return entry["data"]
     data = _parse_swan_uncached(station_id, target_tz_name)
     if data and not data[-1]:
         with _CACHE_LOCK:
-            _FORECAST_CACHE[key] = {"ts": time.time(), "data": data}
+            _FORECAST_CACHE[key] = {"ts": time.time(), "data": data,
+                                    "ttl": _forecast_entry_ttl(data)}
             _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
     return data
 
@@ -901,19 +1140,28 @@ def _parse_swan_uncached(station_id: str, target_tz_name: str | None = None):
         except Exception:
             updated_utc = None
 
-    return _parse_swan_table_text(resp.text, station_id, target_tz_name, updated_utc)
+    # GFS wind for the Wind columns (latest cycle; SWAN's early hindcast hours
+    # predate it and simply render blank). {} on failure -- never blocks waves.
+    wind_map = get_station_wind(station_id)
+
+    return _parse_swan_table_text(resp.text, station_id, target_tz_name, updated_utc,
+                                  wind=wind_map)
 
 
 def _parse_swan_table_text(text: str, station_id: str,
                            target_tz_name: str | None = None,
-                           updated_utc: datetime | None = None):
+                           updated_utc: datetime | None = None,
+                           wind: dict | None = None):
     """Parse SWAN bulletin text into the parse_bull() row contract (pure, no I/O).
 
     Input columns (whitespace-separated; '%' lines are comments):
       Time(YYYYMMDD.HHMMSS, UTC)  Hsig[m]  Period[s]  Dir[deg]  RTpeak[s]  PkDir[deg]
       HsPT01..06[m]  TpPT01..06[s]  DrPT01..06[deg]
-    Output rows (21 cols, heights in FEET -- identical to the GFS shape):
-      [date_str, time_str, s1_hs_ft, s1_tp, s1_dir, ..., s6_hs_ft, s6_tp, s6_dir, combined_hs_ft]
+    Output rows (23 cols, heights in FEET -- identical to the GFS shape):
+      [date_str, time_str, s1_hs_ft..s6_dir, wind_u10_ms, wind_dir_deg, combined_hs_ft]
+    wind: optional {utc datetime: (u10_ms, udir_deg)} from get_station_wind();
+    SWAN rows predating the GFS cycle (early hindcast hours) simply miss the
+    dict and render blank wind cells.
     """
     M_TO_FT = 3.28084
 
@@ -1027,6 +1275,9 @@ def _parse_swan_table_text(text: str, station_id: str,
         row = [date_str_local, time_str_local]
         for g in groups:
             row.extend(g)
+        # Wind at indices 20-21 so combined (Hsig) stays row[-1] for its
+        # pre-existing consumers (table cell + graph packing).
+        row.extend(_wind_row_cells(wind or {}, ts_utc))
         hsig_m = _num(parts[ix["Hsig"]])
         row.append(None if hsig_m is None else round(hsig_m * M_TO_FT, 2))
         rows.append(row)
@@ -1061,12 +1312,15 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         {"header": "#92D050", "subheader": "#E2F0D9", "data": "#F2F8EE"},
     ]
     combined_colors = {"header": "#7030A0", "subheader": "#D9D2E9", "data": "#EDE9F4"}
+    # Material blue-gray for the Wind group: neutral "atmosphere" tones, clearly
+    # distinct from the six saturated swell hues and the purple Combined.
+    wind_colors = {"header": "#546E7A", "subheader": "#CFD8DC", "data": "#ECEFF1"}
 
     html = '<table class="table table-bordered table-sm">\n'
     # Everything that should stay locked while the body scrolls lives in <thead>
     # (position: sticky): the Cycle/Location/TZ info rows first, then the two
     # column-header rows.
-    n_cols = 2 + len(group_colors) * 3 + 1
+    n_cols = 2 + len(group_colors) * 3 + 1 + 2  # + Combined + Wind (Spd, Dir)
     html += '<thead>\n'
     html += f'<tr><td colspan="{n_cols}" class="forecast-info">{cycle_str}</td></tr>\n'
     html += f'<tr><td colspan="{n_cols}" class="forecast-info">{location_str}</td></tr>\n'
@@ -1076,16 +1330,20 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     for idx, col in enumerate(group_colors, start=1):
         html += f'<th colspan="3" scope="colgroup" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {idx}</th>'
     html += f'<th scope="colgroup" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
+    html += f'<th colspan="2" scope="colgroup" style="background-color:{wind_colors["header"]}; color:white; text-align:center;">Wind</th>'
     html += '</tr>\n'
 
     # subheaders
     hs_unit_label = '(ft)' if unit == 'US' else '(m)'
+    wind_spd_label = '(mph)' if unit == 'US' else '(km/h)'
     html += '<tr>'
     for col in group_colors:
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Dir<br>(d)</th>'
     html += f'<th scope="col" style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
+    html += f'<th scope="col" style="background-color:{wind_colors["subheader"]}; text-align:center;">Spd<br>{wind_spd_label}</th>'
+    html += f'<th scope="col" style="background-color:{wind_colors["subheader"]}; text-align:center;">Dir</th>'
     html += '</tr>\n'
     html += '</thead>\n'
 
@@ -1143,6 +1401,24 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         comb_str = "" if display_comb is None else f"{display_comb:.2f}"
         comb_style = f'background-color:{combined_colors["data"]}; text-align:right; font-weight:{fw}; {border_style} padding:4px 8px;'
         html += f'<td style="{comb_style}">{comb_str}</td>'
+
+        # Wind. Storage order differs from display order ON PURPOSE: wind lives
+        # at row[20]/row[21] so combined stayed row[-1] and its three
+        # pre-existing consumers (rounding pass, the cell above, graph packing)
+        # were untouched. Speed is stored raw m/s (cache keys carry no unit)
+        # and converted here, like heights' /3.28084 above.
+        wind_style = f'background-color:{wind_colors["data"]}; text-align:right; font-weight:{fw}; {border_style} padding:4px 8px;'
+        wspd = row[20]
+        if wspd is None:
+            spd_str = ""
+        elif unit == 'US':
+            spd_str = f"{int(round(wspd * 2.23694))}"
+        else:
+            spd_str = f"{int(round(wspd * 3.6))}"
+        html += f'<td style="{wind_style}">{spd_str}</td>'
+        wdir = row[21]
+        dir_str = "" if wdir is None else f"{wdir}&deg; {_compass16(wdir)}"
+        html += f'<td style="{wind_style} white-space:nowrap;">{dir_str}</td>'
         html += '</tr>\n'
 
     html += '</tbody>\n'
@@ -1254,7 +1530,7 @@ def _forecast_is_cached(station: str, tz: str | None, model: str = "GFS") -> boo
     key = (station, tz or "", model)
     with _CACHE_LOCK:
         entry = _FORECAST_CACHE.get(key)
-        return bool(entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL))
+        return bool(entry and _fresh(entry["ts"], entry.get("ttl", _FORECAST_CACHE_TTL)))
 
 
 @app.route("/api/forecast")

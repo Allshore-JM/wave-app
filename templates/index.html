@@ -427,12 +427,13 @@
           </select>
         </div>
 
-        {% if swan_available %}
+        {% if available_models|length > 1 %}
         <div class="col-auto">
           <label for="model" class="form-label mb-0">Model</label>
           <select class="form-select" id="model" name="model">
-            <option value="GFS" {% if selected_model != 'SWAN' %}selected{% endif %}>GFS</option>
-            <option value="SWAN" {% if selected_model == 'SWAN' %}selected{% endif %}>SWAN</option>
+            {% for mval, mlabel in available_models %}
+              <option value="{{ mval }}" {% if mval == selected_model %}selected{% endif %}>{{ mlabel }}</option>
+            {% endfor %}
           </select>
         </div>
         {% endif %}
@@ -520,6 +521,14 @@
               </div>
             </div>
           </div>
+        {% endif %}
+        {% if selected_model == 'MFWAM' %}
+        <!-- CC-BY attribution for the Open-Meteo free tier. Lives OUTSIDE
+             #forecastTable so the deferred-fetch innerHTML swap never wipes it;
+             shows under both Table and Graph views. -->
+        <div class="small text-muted mt-1">
+          Wave forecast data by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a> (CC BY 4.0)
+        </div>
         {% endif %}
       </div>
     </div>

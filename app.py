@@ -174,10 +174,54 @@ def _json_cached(data, max_age: int):
 _RUN_CACHE = {"ts": 0.0, "value": (None, None)}
 _RUN_CACHE_TTL = 30 * 60
 
-# Parsed .bull forecast cache: (station_id, tz_name) -> {"ts", "data"}.
+# Parsed forecast cache: (station_id, tz_name, model) -> {"ts", "data"}.
+# Shared by GFS (.bull) and SWAN (PacIOOS bulletin) parses.
 _FORECAST_CACHE = {}
 _FORECAST_CACHE_TTL = 30 * 60
 _FORECAST_CACHE_MAX = 64
+
+# ---------------------- PacIOOS SWAN forecast bulletins -------------------------
+# PacIOOS runs SWAN nearshore wave models for the main Hawaiian islands and
+# publishes per-buoy swell-partition bulletins (same spirit as NOAA .bull files):
+# 6 energy-sorted partitions (Hs/Tp/Dir) + bulk Hsig, hourly, ~7.5-day horizon,
+# updated once daily ~13:00 HST. Use the "buoy.*" flavor (energy-sorted), NOT
+# "P1_buoy.*" (event-tracked, 10 sparse slots).
+SWAN_TABLE_BASE = "https://www.pacioos.hawaii.edu/ssi/wavebuoy/swan_bull/tables"
+
+# NDBC station id -> PacIOOS CDIP table id (mapping from pacioos wavebuoy.js).
+# Only these 12 Hawaii buoy stations have SWAN partition bulletins; every other
+# forecast point stays GFS-only.
+SWAN_STATIONS = {
+    "51201": "cdip106",  # Waimea Bay, Oahu
+    "51202": "cdip098",  # Mokapu, Oahu
+    "51203": "cdip146",  # Kaumalapau, Lanai
+    "51204": "cdip165",  # Kalaeloa (Barbers Point), Oahu
+    "51205": "cdip187",  # Pauwela, Maui
+    "51206": "cdip188",  # Hilo, Big Island
+    "51207": "cdip198",  # Kaneohe Bay, Oahu
+    "51208": "cdip202",  # Hanalei, Kauai
+    "51210": "cdip225",  # Kaneohe Bay South, Oahu
+    "51211": "cdip233",  # Pearl Harbor, Oahu
+    "51212": "cdip238",  # Barbers Point Nearshore, Oahu
+    "51213": "cdip239",  # Kaumalapau Southwest, Lanai
+}
+
+VALID_MODELS = ("GFS", "SWAN")
+
+
+def resolve_model(station_id: str, requested: str | None) -> str:
+    """Validate a requested forecast model for a station.
+
+    "SWAN" is honored only for stations with a PacIOOS bulletin; anything else
+    (unknown values, uncovered stations, absent param) silently resolves to
+    "GFS" so stale ?model=SWAN URLs degrade gracefully.
+    """
+    model = (requested or "GFS").strip().upper()
+    if model not in VALID_MODELS:
+        return "GFS"
+    if model == "SWAN" and station_id not in SWAN_STATIONS:
+        return "GFS"
+    return model
 
 # Timezones
 HST = pytz.timezone("Pacific/Honolulu")
@@ -529,11 +573,11 @@ def _resolve_day_hour_ts(cycle_dt_utc: datetime, day_val: int, hour_val: int, la
 def parse_bull(station_id: str, target_tz_name: str | None = None):
     """Cached forecast retrieval (bounded, TTL'd) wrapping _parse_bull_uncached().
 
-    Keyed by (station_id, tz). Only successful parses are cached. This is the
-    single cached forecast path; a future JSON endpoint should call this too so
-    both share one cache rather than re-fetching/parsing NOAA per request.
+    Keyed by (station_id, tz, model). Only successful parses are cached. This is
+    the single cached forecast path; a future JSON endpoint should call this too
+    so both share one cache rather than re-fetching/parsing NOAA per request.
     """
-    key = (station_id, target_tz_name or "")
+    key = (station_id, target_tz_name or "", "GFS")
     with _CACHE_LOCK:
         entry = _FORECAST_CACHE.get(key)
         if entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL):
@@ -806,6 +850,204 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
 
     return cycle_str, location_str, model_run_str, rows, effective_tz_name, None
 
+# --------------------------- PacIOOS SWAN parser --------------------------------
+
+def parse_swan(station_id: str, target_tz_name: str | None = None):
+    """Cached SWAN bulletin retrieval, mirroring parse_bull()'s contract.
+
+    Same 6-tuple result and same _FORECAST_CACHE (keyed with model="SWAN").
+    Only successful parses are cached.
+    """
+    key = (station_id, target_tz_name or "", "SWAN")
+    with _CACHE_LOCK:
+        entry = _FORECAST_CACHE.get(key)
+        if entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL):
+            return entry["data"]
+    data = _parse_swan_uncached(station_id, target_tz_name)
+    if data and not data[-1]:
+        with _CACHE_LOCK:
+            _FORECAST_CACHE[key] = {"ts": time.time(), "data": data}
+            _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
+    return data
+
+
+def _parse_swan_uncached(station_id: str, target_tz_name: str | None = None):
+    """Fetch a PacIOOS SWAN partition bulletin and parse it.
+
+    Fetch-only wrapper: all parsing lives in _parse_swan_table_text() (pure,
+    fixture-testable). Returns the parse_bull() 6-tuple:
+    (cycle_str, location_str, model_run_str, rows, tz_name, error)
+    """
+    cdip_id = SWAN_STATIONS.get(station_id)
+    if not cdip_id:
+        return None, None, None, None, 'UTC', f"No SWAN forecast available for {station_id}"
+
+    swan_url = f"{SWAN_TABLE_BASE}/buoy.{cdip_id}.table"
+    try:
+        resp = HTTP.get(swan_url, timeout=15)
+    except Exception as exc:
+        logger.warning("could not download SWAN table for %s: %r", station_id, exc)
+        return None, None, None, None, 'UTC', f"Could not download SWAN forecast for {station_id}"
+    if resp.status_code != 200 or not resp.text:
+        return None, None, None, None, 'UTC', f"No SWAN forecast found for {station_id}"
+
+    # Publication time (the run posts once daily ~13:00 HST). This is when the
+    # file was updated, not a formal model cycle -- the label says "updated".
+    updated_utc = None
+    lm = resp.headers.get("Last-Modified")
+    if lm:
+        try:
+            updated_utc = datetime.strptime(lm, "%a, %d %b %Y %H:%M:%S %Z")
+        except Exception:
+            updated_utc = None
+
+    return _parse_swan_table_text(resp.text, station_id, target_tz_name, updated_utc)
+
+
+def _parse_swan_table_text(text: str, station_id: str,
+                           target_tz_name: str | None = None,
+                           updated_utc: datetime | None = None):
+    """Parse SWAN bulletin text into the parse_bull() row contract (pure, no I/O).
+
+    Input columns (whitespace-separated; '%' lines are comments):
+      Time(YYYYMMDD.HHMMSS, UTC)  Hsig[m]  Period[s]  Dir[deg]  RTpeak[s]  PkDir[deg]
+      HsPT01..06[m]  TpPT01..06[s]  DrPT01..06[deg]
+    Output rows (21 cols, heights in FEET -- identical to the GFS shape):
+      [date_str, time_str, s1_hs_ft, s1_tp, s1_dir, ..., s6_hs_ft, s6_tp, s6_dir, combined_hs_ft]
+    """
+    M_TO_FT = 3.28084
+
+    lines = text.splitlines()
+    # Resolve column indices from the header line (tolerant to spacing drift).
+    header_cols = None
+    for line in lines:
+        s = line.strip()
+        if s.startswith("%") and "Hsig" in s and "HsPT01" in s:
+            header_cols = s.lstrip("%").split()
+            break
+    data_lines = [l for l in lines if l.strip() and not l.strip().startswith("%")]
+    if header_cols is None or not data_lines:
+        return None, None, None, None, 'UTC', f"SWAN table for {station_id} has an unexpected format"
+
+    ix = {name: i for i, name in enumerate(header_cols)}
+    needed = ["Time", "Hsig"] + [f"{p}PT{n:02d}" for p in ("Hs", "Tp", "Dr") for n in range(1, 7)]
+    if any(c not in ix for c in needed):
+        return None, None, None, None, 'UTC', f"SWAN table for {station_id} is missing expected columns"
+
+    # Buoy-local timezone: same resolution order as the GFS path.
+    coords_map = load_station_coords()
+    coords = coords_map.get(str(station_id).strip())
+    lat = coords['lat'] if coords else None
+    lon = coords['lon'] if coords else None
+    tz_name_from_loc = get_station_tz(station_id) or (
+        _safe_tzname_for_latlon(lat, lon) if (lat is not None and lon is not None) else 'UTC')
+    effective_tz_name = tz_name_from_loc
+    if target_tz_name:
+        try:
+            _ = pytz.timezone(target_tz_name)
+            effective_tz_name = target_tz_name
+        except Exception:
+            pass
+    try:
+        local_tz = pytz.timezone(effective_tz_name)
+    except Exception:
+        local_tz = UTC
+
+    def _num(tok):
+        """Finite float, or None for NaN/inf/garbage.
+
+        Rejecting non-finite values (not just NaN) keeps a malformed 'inf'
+        token from reaching int(round()) below (which raises OverflowError) or
+        leaking Infinity into the JSON payload -- a corrupt row degrades to a
+        blank cell, exactly like NaN.
+        """
+        try:
+            v = float(tok)
+        except (TypeError, ValueError):
+            return None
+        return v if math.isfinite(v) else None
+
+    # Parse (timestamp, values) pairs first so the spin-up skip is by TIMESTAMP,
+    # not row count (robust to gaps/duplicated rows). PacIOOS README: "Ignore
+    # first 6 hours of these table files to avoid forecast spin-up."
+    parsed = []
+    first_ts = None
+    for line in data_lines:
+        parts = line.split()
+        if len(parts) < len(header_cols):
+            continue
+        try:
+            ts_utc = datetime.strptime(parts[ix["Time"]], "%Y%m%d.%H%M%S")
+        except (ValueError, IndexError):
+            continue
+        if first_ts is None:
+            first_ts = ts_utc
+        parsed.append((ts_utc, parts))
+
+    rows = []
+    for ts_utc, parts in parsed:
+        if first_ts is not None and ts_utc < first_ts + timedelta(hours=6):
+            continue  # model spin-up window
+
+        local_dt = ts_utc.replace(tzinfo=UTC).astimezone(local_tz)
+        try:
+            date_str_local = local_dt.strftime("%A, %B %-d, %Y")
+        except Exception:
+            date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
+        time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
+
+        groups = []
+        for n in range(1, 7):
+            hs_m = _num(parts[ix[f"HsPT{n:02d}"]])
+            tp = _num(parts[ix[f"TpPT{n:02d}"]])
+            # SWAN bulletins report direction FROM true north (verified against
+            # the PacIOOS gridded product's standard_name
+            # sea_surface_wave_from_direction). GFS .bull reports direction TO
+            # and gets (x+180)%360 at parse -- DO NOT "fix" SWAN by adding that
+            # flip; it would silently reverse every arrow on the site.
+            dr = _num(parts[ix[f"DrPT{n:02d}"]])
+            # Empty partition slots come through as NaN, or as 0.0/0.0 for the
+            # unused wind-sea slot (PT01) -- both are blanks, like absent GFS
+            # swells.
+            if hs_m is None or tp is None or (hs_m == 0.0 and tp == 0.0):
+                groups.append((None, None, None))
+            else:
+                groups.append((
+                    round(hs_m * M_TO_FT, 2),
+                    round(tp, 1),
+                    int(round(dr)) if dr is not None else None,
+                ))
+        # Compact non-empty partitions left so "Swell 1" is the dominant one
+        # (PT01 is a reserved wind-sea slot that is usually empty; without
+        # compaction the Swell 1 column would render permanently blank, unlike
+        # the GFS .bull convention of energy-ordered groups from column 1).
+        groups = [g for g in groups if g[0] is not None]
+        groups += [(None, None, None)] * (6 - len(groups))
+
+        row = [date_str_local, time_str_local]
+        for g in groups:
+            row.extend(g)
+        hsig_m = _num(parts[ix["Hsig"]])
+        row.append(None if hsig_m is None else round(hsig_m * M_TO_FT, 2))
+        rows.append(row)
+
+    if not rows:
+        return None, None, None, None, effective_tz_name, f"No data rows parsed from SWAN table for {station_id}"
+
+    # Headers in the .bull style so _strip_header_prefix/_parse_header_coords
+    # and the graph header path work unchanged. Hemisphere from the SIGN of the
+    # stored coords (never print "-158.12W").
+    if lat is not None and lon is not None:
+        location_str = f"Location : {station_id} ({_fmt_latlon(lat, lon)})"
+    else:
+        location_str = f"Location : {station_id}"
+    if updated_utc is not None:
+        cycle_str = f"Cycle : PacIOOS SWAN updated {updated_utc:%Y%m%d %H} UTC"
+    else:
+        cycle_str = "Cycle : PacIOOS SWAN (latest run)"
+
+    return cycle_str, location_str, None, rows, effective_tz_name, None
+
 # -------------------------- Table HTML builder (safe) ---------------------------
 
 def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None,
@@ -915,11 +1157,12 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
 _STATION_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 
 
-def compute_forecast_payload(station: str, tz: str | None, unit: str) -> dict:
+def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str = "GFS") -> dict:
     """Shared, cached forecast computation for both the homepage and /api/forecast.
 
-    parse_bull() underneath is cached (Phase 2a), so on a warm cache this only
-    re-runs the cheap HTML/graph packing. Returns a JSON-serializable dict.
+    The parser underneath (parse_bull for GFS, parse_swan for the PacIOOS SWAN
+    bulletins) is cached, so on a warm cache this only re-runs the cheap
+    HTML/graph packing. Returns a JSON-serializable dict.
     """
     out = {
         "station": station,
@@ -937,7 +1180,9 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str) -> dict:
         out["error"] = "Invalid station id"
         return out
 
-    cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
+    model = resolve_model(station, model)
+    parser = parse_swan if model == "SWAN" else parse_bull
+    cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parser(
         station, tz or None
     )
     out["error"] = parse_error
@@ -1004,9 +1249,9 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str) -> dict:
     return out
 
 
-def _forecast_is_cached(station: str, tz: str | None) -> bool:
-    """True if parse_bull already has this (station, tz) cached and fresh."""
-    key = (station, tz or "")
+def _forecast_is_cached(station: str, tz: str | None, model: str = "GFS") -> bool:
+    """True if the parser already has this (station, tz, model) cached and fresh."""
+    key = (station, tz or "", model)
     with _CACHE_LOCK:
         entry = _FORECAST_CACHE.get(key)
         return bool(entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL))
@@ -1018,8 +1263,9 @@ def api_forecast():
     station = (request.args.get("station") or "51201").strip()
     tz = request.args.get("tz", "")
     unit = request.args.get("unit", "US") or "US"
+    model = request.args.get("model", "")
     try:
-        return jsonify(compute_forecast_payload(station, tz or None, unit))
+        return jsonify(compute_forecast_payload(station, tz or None, unit, model))
     except Exception as exc:  # always return JSON the client can render
         logger.warning("forecast payload failed for %s: %r", station, exc)
         return jsonify({
@@ -1040,13 +1286,20 @@ def index():
         selected_station = (request.form.get("station") or "").strip()
         selected_tz = request.form.get("tz") or ""
         selected_unit = request.form.get("unit") or "US"
+        selected_model = request.form.get("model") or ""
     else:
         selected_station = (request.args.get("station", "") or "").strip()
         selected_tz = request.args.get("tz", "")
         selected_unit = request.args.get("unit", "US") or "US"
+        selected_model = request.args.get("model", "")
 
     if not selected_station:
         selected_station = "51201"
+
+    # Model dropdown only exists for the stations with SWAN bulletins; a stale
+    # ?model=SWAN on any other station silently resolves back to GFS.
+    swan_available = selected_station in SWAN_STATIONS
+    selected_model = resolve_model(selected_station, selected_model)
 
     # If an active override (?tz=) isn't one of the curated majors, keep it in the
     # dropdown so it still shows as selected (back-compat with older links).
@@ -1061,12 +1314,13 @@ def index():
         selected_view == "Table"
         and not force_render
         and bool(selected_station)
-        and not _forecast_is_cached(selected_station, selected_tz or None)
+        and not _forecast_is_cached(selected_station, selected_tz or None, selected_model)
     )
 
     payload = None
     if selected_station and not defer_forecast:
-        payload = compute_forecast_payload(selected_station, selected_tz or None, selected_unit)
+        payload = compute_forecast_payload(selected_station, selected_tz or None, selected_unit,
+                                           selected_model)
 
     return render_template(
         "index.html",
@@ -1085,6 +1339,8 @@ def index():
         graph_data=(payload["graph_data"] if payload else None),
         graph_header=(payload["graph_header"] if payload else None),
         defer_forecast=defer_forecast,
+        swan_available=swan_available,
+        selected_model=selected_model,
     )
 
 

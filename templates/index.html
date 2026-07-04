@@ -414,6 +414,16 @@
           </select>
         </div>
 
+        {% if swan_available %}
+        <div class="col-auto">
+          <label for="model" class="form-label mb-0">Model</label>
+          <select class="form-select" id="model" name="model">
+            <option value="GFS" {% if selected_model != 'SWAN' %}selected{% endif %}>GFS</option>
+            <option value="SWAN" {% if selected_model == 'SWAN' %}selected{% endif %}>SWAN</option>
+          </select>
+        </div>
+        {% endif %}
+
         <div class="col-auto">
           <label for="view" class="form-label mb-0">View</label>
           <select class="form-select" id="view" name="view">
@@ -491,7 +501,7 @@
                   <span class="spinner"></span> Loading forecast&hellip;
                 </div>
                 <noscript>
-                  <meta http-equiv="refresh" content="0;url=?station={{ selected_station|urlencode }}&amp;tz={{ selected_tz|urlencode }}&amp;unit={{ selected_unit|urlencode }}&amp;view=Table&amp;render=full">
+                  <meta http-equiv="refresh" content="0;url=?station={{ selected_station|urlencode }}&amp;tz={{ selected_tz|urlencode }}&amp;unit={{ selected_unit|urlencode }}&amp;model={{ (selected_model or 'GFS')|urlencode }}&amp;view=Table&amp;render=full">
                 </noscript>
                 {% endif %}
               </div>
@@ -2574,7 +2584,8 @@
       var params = new URLSearchParams({
         station: station,
         tz: {{ (selected_tz or '')|tojson }},
-        unit: {{ (selected_unit or 'US')|tojson }}
+        unit: {{ (selected_unit or 'US')|tojson }},
+        model: {{ (selected_model or 'GFS')|tojson }}
       });
       function showMessage(cls, text) {
         // textContent, not innerHTML — d.error embeds the user-supplied station.

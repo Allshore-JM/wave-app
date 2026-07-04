@@ -115,6 +115,19 @@ def _build_http_session() -> requests.Session:
         adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
         s.mount("https://", adapter)
         s.mount("http://", adapter)
+
+        # Open-Meteo (MFWAM) is a quota-limited free API: retrying a 429 just
+        # burns more of the daily quota and holds a worker through the backoff.
+        # This host-specific adapter (longest-prefix match wins) fails fast on
+        # 429 while still retrying transient 5xx.
+        om_retry = Retry(
+            total=2, connect=2, read=2, backoff_factor=0.5,
+            status_forcelist=(500, 502, 503, 504),
+            allowed_methods=frozenset(["GET", "HEAD"]),
+            raise_on_status=False,
+        )
+        s.mount("https://marine-api.open-meteo.com",
+                HTTPAdapter(max_retries=om_retry, pool_connections=10, pool_maxsize=10))
     return s
 
 
@@ -126,6 +139,23 @@ _CACHE_LOCK = threading.Lock()
 
 def _fresh(ts: float, ttl: int) -> bool:
     return (time.time() - ts) < ttl
+
+
+# Short TTL for cached FAILURES (used by the quota-limited MFWAM path). A down or
+# over-quota upstream is then re-probed at most once per this window per key,
+# instead of on every page view.
+_FORECAST_NEG_TTL = 90
+
+
+def _tz_key(tz):
+    """Timezone component for a forecast cache key: a valid IANA name, else "".
+
+    Junk/invalid ?tz= values already fall back to the station's own timezone
+    inside every parser, so collapsing them to "" here keeps a crafted
+    ?tz=junk{n} flood from exploding the shared cache's key cardinality (and,
+    for MFWAM, from firing one Open-Meteo call per distinct junk value).
+    """
+    return tz if (tz and tz in pytz.all_timezones_set) else ""
 
 
 def _evict_oldest(cache: dict, max_entries: int) -> None:
@@ -175,7 +205,7 @@ _RUN_CACHE = {"ts": 0.0, "value": (None, None)}
 _RUN_CACHE_TTL = 30 * 60
 
 # Parsed forecast cache: (station_id, tz_name, model) -> {"ts", "data"}.
-# Shared by GFS (.bull) and SWAN (PacIOOS bulletin) parses.
+# Shared by GFS (.bull), SWAN (PacIOOS bulletin) and MFWAM (Open-Meteo) parses.
 _FORECAST_CACHE = {}
 _FORECAST_CACHE_TTL = 30 * 60
 _FORECAST_CACHE_MAX = 64
@@ -206,22 +236,50 @@ SWAN_STATIONS = {
     "51213": "cdip239",  # Kaumalapau Southwest, Lanai
 }
 
-VALID_MODELS = ("GFS", "SWAN")
+# ------------------ Meteo-France MFWAM (Open-Meteo Marine API) ------------------
+# Open-Meteo serves Meteo-France's global MFWAM wave model (ECMWF-IFS-wind-forced,
+# 0.08 deg grid) as per-point JSON: primary swell + secondary swell + wind wave
+# (each Hs/Tp/Dir) + combined wave_height, hourly out to ~10 days. The tail of a
+# forecast_days=10 request MAY be all-null depending on run age -- trim by value,
+# never by assuming a tail exists. tertiary_swell_* is always null for this
+# model -- do not request it. Free tier is non-commercial with CC-BY attribution
+# (rendered in the template when MFWAM is selected).
+MFWAM_API_BASE = "https://marine-api.open-meteo.com/v1/marine"
+MFWAM_HOURLY_VARS = ",".join([
+    "wave_height",
+    "swell_wave_height", "swell_wave_period", "swell_wave_direction",
+    "secondary_swell_wave_height", "secondary_swell_wave_period",
+    "secondary_swell_wave_direction",
+    "wind_wave_height", "wind_wave_period", "wind_wave_direction",
+])
+
+# Dropdown labels (ASCII only -- avoids mojibake across editors/terminals).
+MODEL_LABELS = {"GFS": "GFS", "SWAN": "SWAN", "MFWAM": "MFWAM (Meteo-France)"}
+
+
+def available_models(station_id: str) -> list:
+    """Forecast models valid for this station, GFS (the default) first.
+
+    SWAN needs a PacIOOS bulletin (12 Hawaii buoys); MFWAM needs coordinates
+    (every plotted forecast point has them). A future model = one more branch.
+    """
+    models = ["GFS"]
+    if station_id in SWAN_STATIONS:
+        models.append("SWAN")
+    if str(station_id).strip() in load_station_coords():
+        models.append("MFWAM")
+    return models
 
 
 def resolve_model(station_id: str, requested: str | None) -> str:
     """Validate a requested forecast model for a station.
 
-    "SWAN" is honored only for stations with a PacIOOS bulletin; anything else
-    (unknown values, uncovered stations, absent param) silently resolves to
-    "GFS" so stale ?model=SWAN URLs degrade gracefully.
+    A model is honored only if available_models() lists it for this station;
+    anything else (unknown values, uncovered stations, absent param) silently
+    resolves to "GFS" so stale ?model=... URLs degrade gracefully.
     """
     model = (requested or "GFS").strip().upper()
-    if model not in VALID_MODELS:
-        return "GFS"
-    if model == "SWAN" and station_id not in SWAN_STATIONS:
-        return "GFS"
-    return model
+    return model if model in available_models(station_id) else "GFS"
 
 # Timezones
 HST = pytz.timezone("Pacific/Honolulu")
@@ -577,7 +635,7 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     the single cached forecast path; a future JSON endpoint should call this too
     so both share one cache rather than re-fetching/parsing NOAA per request.
     """
-    key = (station_id, target_tz_name or "", "GFS")
+    key = (station_id, _tz_key(target_tz_name), "GFS")
     with _CACHE_LOCK:
         entry = _FORECAST_CACHE.get(key)
         if entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL):
@@ -858,7 +916,7 @@ def parse_swan(station_id: str, target_tz_name: str | None = None):
     Same 6-tuple result and same _FORECAST_CACHE (keyed with model="SWAN").
     Only successful parses are cached.
     """
-    key = (station_id, target_tz_name or "", "SWAN")
+    key = (station_id, _tz_key(target_tz_name), "SWAN")
     with _CACHE_LOCK:
         entry = _FORECAST_CACHE.get(key)
         if entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL):
@@ -1048,6 +1106,213 @@ def _parse_swan_table_text(text: str, station_id: str,
 
     return cycle_str, location_str, None, rows, effective_tz_name, None
 
+
+def parse_mfwam(station_id: str, target_tz_name: str | None = None):
+    """Cached MFWAM (Open-Meteo) retrieval, mirroring parse_bull()'s contract.
+
+    Same 6-tuple result and same _FORECAST_CACHE (keyed with model="MFWAM").
+    Unlike the no-quota GFS/SWAN paths, FAILURES are also cached -- for a short
+    _FORECAST_NEG_TTL -- so a down or over-quota Open-Meteo is re-probed at most
+    once per that window per key instead of firing a fresh call on every view.
+    """
+    key = (station_id, _tz_key(target_tz_name), "MFWAM")
+    with _CACHE_LOCK:
+        entry = _FORECAST_CACHE.get(key)
+        if entry and _fresh(entry["ts"], entry.get("ttl", _FORECAST_CACHE_TTL)):
+            return entry["data"]
+    data = _parse_mfwam_uncached(station_id, target_tz_name)
+    ttl = _FORECAST_CACHE_TTL if (data and not data[-1]) else _FORECAST_NEG_TTL
+    with _CACHE_LOCK:
+        _FORECAST_CACHE[key] = {"ts": time.time(), "data": data, "ttl": ttl}
+        _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
+    return data
+
+
+def _parse_mfwam_uncached(station_id: str, target_tz_name: str | None = None):
+    """Fetch a Meteo-France MFWAM point forecast from Open-Meteo and parse it.
+
+    Fetch-only wrapper: all parsing lives in _parse_mfwam_json() (pure,
+    fixture-testable). Returns the parse_bull() 6-tuple:
+    (cycle_str, location_str, model_run_str, rows, tz_name, error)
+    """
+    coords = load_station_coords().get(str(station_id).strip())
+    if not coords:
+        return None, None, None, None, 'UTC', f"No MFWAM forecast available for {station_id}"
+
+    params = {
+        "latitude": coords["lat"],
+        "longitude": coords["lon"],
+        "hourly": MFWAM_HOURLY_VARS,
+        "models": "meteofrance_wave",
+        "forecast_days": 10,
+        "timezone": "UTC",
+        "cell_selection": "sea",
+    }
+    try:
+        resp = HTTP.get(MFWAM_API_BASE, params=params, timeout=15)
+    except Exception as exc:
+        logger.warning("could not download MFWAM forecast for %s: %r", station_id, exc)
+        return None, None, None, None, 'UTC', f"Could not download MFWAM forecast for {station_id}"
+    if resp.status_code != 200:
+        return None, None, None, None, 'UTC', f"No MFWAM forecast found for {station_id}"
+    try:
+        data = resp.json()
+    except ValueError:
+        return None, None, None, None, 'UTC', f"MFWAM response for {station_id} is not valid JSON"
+
+    # Open-Meteo exposes NO true MFWAM model-run/init time, so the only honest
+    # timestamp is when we fetched it; the label says "retrieved", never "run".
+    retrieved_utc = None
+    dh = resp.headers.get("Date")
+    if dh:
+        try:
+            retrieved_utc = datetime.strptime(dh, "%a, %d %b %Y %H:%M:%S %Z")
+        except Exception:
+            retrieved_utc = None
+
+    return _parse_mfwam_json(data, station_id, target_tz_name, retrieved_utc)
+
+
+def _parse_mfwam_json(data, station_id: str,
+                      target_tz_name: str | None = None,
+                      retrieved_utc: datetime | None = None):
+    """Parse an Open-Meteo marine JSON dict into the parse_bull() row contract
+    (pure, no I/O).
+
+    Input: {"hourly": {"time": [ISO-no-Z, UTC...], "<var>": [floats/nulls...]}}
+    with up to 3 wave components per step (primary swell, secondary swell, wind
+    wave) plus combined wave_height. Output rows (21 cols, heights in FEET --
+    identical to the GFS shape):
+      [date_str, time_str, s1_hs_ft, s1_tp, s1_dir, ..., s6_hs_ft, s6_tp, s6_dir, combined_hs_ft]
+    """
+    M_TO_FT = 3.28084
+
+    if not isinstance(data, dict) or data.get("error"):
+        return None, None, None, None, 'UTC', f"MFWAM response for {station_id} has an unexpected format"
+    hourly = data.get("hourly")
+    if not isinstance(hourly, dict):
+        return None, None, None, None, 'UTC', f"MFWAM response for {station_id} has an unexpected format"
+    times = hourly.get("time")
+    if not isinstance(times, list) or not times:
+        return None, None, None, None, 'UTC', f"MFWAM response for {station_id} has an unexpected format"
+
+    # Buoy-local timezone: same resolution order as the GFS/SWAN paths.
+    coords_map = load_station_coords()
+    coords = coords_map.get(str(station_id).strip())
+    lat = coords['lat'] if coords else None
+    lon = coords['lon'] if coords else None
+    tz_name_from_loc = get_station_tz(station_id) or (
+        _safe_tzname_for_latlon(lat, lon) if (lat is not None and lon is not None) else 'UTC')
+    effective_tz_name = tz_name_from_loc
+    if target_tz_name:
+        try:
+            _ = pytz.timezone(target_tz_name)
+            effective_tz_name = target_tz_name
+        except Exception:
+            pass
+    try:
+        local_tz = pytz.timezone(effective_tz_name)
+    except Exception:
+        local_tz = UTC
+
+    def _num(v):
+        """Finite float, or None for null/NaN/inf/garbage (see SWAN's _num)."""
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if math.isfinite(f) else None
+
+    def _at(name, i):
+        """Index-guarded array read: short/missing arrays degrade to blanks."""
+        arr = hourly.get(name)
+        if not isinstance(arr, list) or i >= len(arr):
+            return None
+        return _num(arr[i])
+
+    # (hs, tp, dir) variable-name triplets for the 3 MFWAM components.
+    COMPONENTS = (
+        ("swell_wave_height", "swell_wave_period", "swell_wave_direction"),
+        ("secondary_swell_wave_height", "secondary_swell_wave_period",
+         "secondary_swell_wave_direction"),
+        ("wind_wave_height", "wind_wave_period", "wind_wave_direction"),
+    )
+
+    rows = []
+    for i, t in enumerate(times):
+        try:
+            # Open-Meteo returns ISO WITHOUT a Z suffix; it is UTC because the
+            # request pins timezone=UTC.
+            ts_utc = datetime.strptime(str(t), "%Y-%m-%dT%H:%M")
+        except (ValueError, TypeError):
+            continue
+
+        groups = []
+        for hs_var, tp_var, dir_var in COMPONENTS:
+            hs_m = _at(hs_var, i)
+            tp = _at(tp_var, i)
+            # Open-Meteo marine directions are FROM true north (doc: "direction
+            # the waves come from"; verified empirically at Waimea 2026-07-03:
+            # primary 1.24m @ 6.15s from 39 deg NE + secondary 0.6m @ 12.8s from
+            # 190 deg S, matching our SWAN/GFS). GFS .bull reports direction TO
+            # and gets (x+180)%360 at parse -- DO NOT "fix" MFWAM by adding that
+            # flip; it would silently reverse every arrow on the site.
+            dr = _at(dir_var, i)
+            if hs_m is None or tp is None or (hs_m == 0.0 and tp == 0.0):
+                groups.append((None, None, None))
+            else:
+                groups.append((
+                    round(hs_m * M_TO_FT, 2),
+                    round(tp, 1),
+                    int(round(dr)) if dr is not None else None,
+                ))
+
+        combined_m = _at("wave_height", i)
+        combined_ft = None if combined_m is None else round(combined_m * M_TO_FT, 2)
+
+        # Skip rows with no data at all -- handles the sometimes-present
+        # all-null tail (and any mid-series gaps) without assuming either.
+        groups_live = [g for g in groups if g[0] is not None]
+        if combined_ft is None and not groups_live:
+            continue
+
+        # Sort components by Hs DESC so "Swell 1" is the dominant one -- the
+        # site-wide convention (GFS .bull groups are energy-ordered; SWAN
+        # compacts left). A named component (e.g. "secondary swell") can swap
+        # series when heights cross mid-forecast; GFS/SWAN behave the same way.
+        groups_live.sort(key=lambda g: g[0], reverse=True)
+        groups_live += [(None, None, None)] * (6 - len(groups_live))
+
+        local_dt = ts_utc.replace(tzinfo=UTC).astimezone(local_tz)
+        try:
+            date_str_local = local_dt.strftime("%A, %B %-d, %Y")
+        except Exception:
+            date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
+        time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
+
+        row = [date_str_local, time_str_local]
+        for g in groups_live:
+            row.extend(g)
+        row.append(combined_ft)
+        rows.append(row)
+
+    if not rows:
+        return None, None, None, None, effective_tz_name, f"No data rows parsed from MFWAM response for {station_id}"
+
+    # Headers in the .bull style so _strip_header_prefix/_parse_header_coords
+    # and the graph header path work unchanged. Location shows the STATION's
+    # stored coords (matching its map marker), not Open-Meteo's snapped cell.
+    if lat is not None and lon is not None:
+        location_str = f"Location : {station_id} ({_fmt_latlon(lat, lon)})"
+    else:
+        location_str = f"Location : {station_id}"
+    if retrieved_utc is not None:
+        cycle_str = f"Cycle : Meteo-France MFWAM via Open-Meteo, retrieved {retrieved_utc:%Y%m%d %H} UTC"
+    else:
+        cycle_str = "Cycle : Meteo-France MFWAM via Open-Meteo"
+
+    return cycle_str, location_str, None, rows, effective_tz_name, None
+
 # -------------------------- Table HTML builder (safe) ---------------------------
 
 def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None,
@@ -1181,7 +1446,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         return out
 
     model = resolve_model(station, model)
-    parser = parse_swan if model == "SWAN" else parse_bull
+    parser = {"SWAN": parse_swan, "MFWAM": parse_mfwam}.get(model, parse_bull)
     cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parser(
         station, tz or None
     )
@@ -1251,10 +1516,11 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
 
 def _forecast_is_cached(station: str, tz: str | None, model: str = "GFS") -> bool:
     """True if the parser already has this (station, tz, model) cached and fresh."""
-    key = (station, tz or "", model)
+    key = (station, _tz_key(tz), model)
     with _CACHE_LOCK:
         entry = _FORECAST_CACHE.get(key)
-        return bool(entry and _fresh(entry["ts"], _FORECAST_CACHE_TTL))
+        return bool(entry and entry["data"] and not entry["data"][-1]
+                    and _fresh(entry["ts"], entry.get("ttl", _FORECAST_CACHE_TTL)))
 
 
 @app.route("/api/forecast")
@@ -1296,9 +1562,10 @@ def index():
     if not selected_station:
         selected_station = "51201"
 
-    # Model dropdown only exists for the stations with SWAN bulletins; a stale
-    # ?model=SWAN on any other station silently resolves back to GFS.
-    swan_available = selected_station in SWAN_STATIONS
+    # Models valid for this station drive the dropdown (GFS everywhere, SWAN on
+    # the 12 Hawaii buoys, MFWAM wherever coords exist); a stale ?model= on an
+    # uncovered station silently resolves back to GFS.
+    station_models = [(m, MODEL_LABELS[m]) for m in available_models(selected_station)]
     selected_model = resolve_model(selected_station, selected_model)
 
     # If an active override (?tz=) isn't one of the curated majors, keep it in the
@@ -1339,7 +1606,7 @@ def index():
         graph_data=(payload["graph_data"] if payload else None),
         graph_header=(payload["graph_header"] if payload else None),
         defer_forecast=defer_forecast,
-        swan_available=swan_available,
+        available_models=station_models,
         selected_model=selected_model,
     )
 

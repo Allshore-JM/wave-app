@@ -46,9 +46,10 @@ def test_spinup_skipped_by_timestamp():
 
 
 def test_row_shape_matches_gfs_contract():
-    # [date, time, 6 x (hs, tp, dir), combined] == 21 columns, like parse_bull.
+    # [date, time, 6 x (hs, tp, dir), wind_spd, wind_dir, combined] == 23
+    # columns, like parse_bull. Wind sits at 20-21 so combined stays row[-1].
     _, _, _, rows, _, _ = _parse()
-    assert all(len(r) == 21 for r in rows)
+    assert all(len(r) == 23 for r in rows)
     assert all(isinstance(r[0], str) and isinstance(r[1], str) for r in rows)
 
 
@@ -192,3 +193,31 @@ def test_truncated_row_skipped_silently():
     _, _, _, rows, _, err = _parse_swan_table_text(text, "51201", TZ, None)
     assert err is None
     assert len(rows) == 9  # truncated row skipped; the 9 well-formed rows unaffected
+
+
+def test_wind_join_populates_swan_cells():
+    # A wind dict covering some fixture hours populates row[20]/row[21] for
+    # those rows; uncovered hours stay blank. Fixture rows are 12:00-20:00 UTC
+    # July 3 2026 (after the 6h spin-up skip).
+    from datetime import datetime
+    wind = {
+        datetime(2026, 7, 3, 12): (8.09, 71.6),
+        datetime(2026, 7, 3, 13): (8.03, 68.8),
+    }
+    with open(FIXTURE) as f:
+        text = f.read()
+    _, _, _, rows, _, err = _parse_swan_table_text(text, "51201", TZ, None, wind=wind)
+    assert err is None
+    assert rows[0][20] == 8.09 and rows[0][21] == 72   # 12:00 UTC covered
+    assert rows[1][20] == 8.03 and rows[1][21] == 69   # 13:00 UTC covered
+    assert rows[2][20] is None and rows[2][21] is None  # 14:00 UTC uncovered
+    # combined unaffected by the join
+    assert rows[0][-1] == round(1.31091 * M_TO_FT, 2)
+
+
+def test_no_wind_blank_cells():
+    # Default wind=None -> every row has blank wind cells (models the
+    # pre-cycle SWAN hindcast hours and a total spec-fetch failure).
+    _, _, _, rows, _, err = _parse()
+    assert err is None
+    assert all(r[20] is None and r[21] is None for r in rows)

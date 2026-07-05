@@ -15,6 +15,10 @@ import buoy_sources
 
 app = Flask(__name__)
 
+# Unlinked reef bathymetry assessment page (key-gated, noindex; see bigwave_reef.py)
+from bigwave_reef import bp as reef_bp
+app.register_blueprint(reef_bp)
+
 # --- Jinja filter: format a datetime in a given IANA time zone ---
 from datetime import datetime, timezone
 import pytz  # keeping your existing library

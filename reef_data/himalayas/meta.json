@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "spot_id": "himalayas",
+  "name": "Himalayas",
+  "reference_fix": {
+    "lat": 21.62377,
+    "lon": -158.09721
+  },
+  "vertical_datum": "LMSL",
+  "generated_at": "2026-07-05T19:06:23.284339+00:00",
+  "artifact_version": 1,
+  "verification": {
+    "verdict": "PASS",
+    "meaning": "bathymetry appears sufficiently constrained for first-order modeling (NOT 'every reef feature is resolved')",
+    "coverage_frac": 1.0,
+    "density_frac": 1.0,
+    "band_cells": 3682,
+    "dem_tile": "ncei19_n21x75_w158x25_2021v1.tif",
+    "generated_at": "2026-07-05T18:15:14.158461+00:00"
+  },
+  "features": {
+    "shallowest_point": {
+      "depth_m": 6.54,
+      "lat": 21.62015744682378,
+      "lon": -158.09576117686942,
+      "distance_from_fix_m": 427.2,
+      "bearing_from_fix_deg": 159.4
+    },
+    "crest": {
+      "fix_line_min_depth_m": 8.74,
+      "fix_at_reference_m": 18.2
+    }
+  },
+  "calibration": {
+    "kr0": 1.9552938378436815,
+    "kr1": 0.0,
+    "kr_cap": 2.145,
+    "gamma_lo": 0.8,
+    "gamma_hi": 1.0,
+    "s_dir_m_per_deg": 0.0,
+    "dir_ref_deg": 315,
+    "c_units": 1.0,
+    "kr0_source": "pinned_prior"
+  },
+  "caveats": [
+    "MODELED ESTIMATE with known uncertainty -- not a safety device.",
+    "kr0 is a PINNED PRIOR (onset matches the surfer's observation), NOT an independent fit; reproducing the onset depth is prior calibration, not validation.",
+    "The '10 ft @ 17 s' onset is interpreted as buoy significant Hs (c_units=1.0); if it is Hawaiian scale the whole ladder shifts (~2x lever) -- unresolved.",
+    "Direction-shift s_dir=0 (prior): the peak is assumed on the fix line; off-315deg bins carry lower confidence until observations exist.",
+    "Modeled guidance radius ~35-80 m; the 30 ft target is display precision, not accuracy.",
+    "impact_zone_seaward_line is the SEAWARD boundary of the biggest sets' impact zone; danger is being SHOREWARD of it (danger_side). It is NOT a precise shoreward warning line -- that is deferred to the watch-app phase."
+  ],
+  "hillshade": {
+    "png": "hillshade.png",
+    "bounds": [
+      [
+        21.61743827160717,
+        -158.1039814814877
+      ],
+      [
+        21.630092592591087,
+        -158.09046296297316
+      ]
+    ]
+  },
+  "bin_axes": {
+    "hs_swell_ft": {
+      "edges": [
+        8,
+        10,
+        12,
+        16,
+        20,
+        25
+      ],
+      "below_range": "null",
+      "source": "swell-band Hs, f<=0.067 Hz, buoy feet"
+    },
+    "tp_s": {
+      "edges": [
+        14,
+        17,
+        20
+      ],
+      "below_range": "null"
+    },
+    "dir_deg": {
+      "edges": [
+        280,
+        305,
+        325,
+        350
+      ],
+      "below_range": "null",
+      "source": "energy-weighted a1/b1 over swell band"
+    },
+    "tide_m": {
+      "edges": [
+        -0.4,
+        0.0,
+        0.4
+      ],
+      "below_range": "clamp",
+      "datum": "LMSL"
+    }
+  },
+  "axes_order": [
+    "hs_swell_ft",
+    "tp_s",
+    "dir_deg",
+    "tide_m"
+  ],
+  "selector_options": {
+    "hs_swell_ft": [
+      "8-10 ft",
+      "10-12 ft",
+      "12-16 ft",
+      "16-20 ft",
+      "20-25 ft"
+    ],
+    "tp_s": [
+      "14-17 s",
+      "17-20 s"
+    ],
+    "dir_deg": [
+      "WNW (280-305 deg)",
+      "NW (305-325 deg)",
+      "NNW (325-350 deg)"
+    ],
+    "tide_m": [
+      "lower (-0.4..0 m)",
+      "higher (0..0.4 m)"
+    ]
+  },
+  "transect_azimuth_deg": 135,
+  "files": {
+    "zones": "zones.json",
+    "contours": "contours.geojson",
+    "profiles": "profiles.json"
+  },
+  "disclaimer": "Modeled estimate with known uncertainty (~35-80 m). Prior-pinned, uncalibrated. NOT a safety device."
+}

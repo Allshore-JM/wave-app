@@ -7,7 +7,7 @@
     "lon": -158.09721
   },
   "vertical_datum": "LMSL",
-  "generated_at": "2026-07-05T19:06:23.284339+00:00",
+  "generated_at": "2026-07-05T22:15:11.070966+00:00",
   "artifact_version": 1,
   "verification": {
     "verdict": "PASS",
@@ -133,6 +133,7 @@
     ]
   },
   "transect_azimuth_deg": 135,
+  "inside_margin_m": 50,
   "files": {
     "zones": "zones.json",
     "contours": "contours.geojson",

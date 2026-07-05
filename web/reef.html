@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Reef Assessment</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{--ink:#12222f;--panel:#f6f9fc;--line:#d6e2ec;--warn:#b23b16}
+  *{box-sizing:border-box}
+  body{margin:0;font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:var(--ink)}
+  #banner{background:#fff4e5;border-bottom:1px solid #ffcf8f;padding:7px 14px;font-size:13px;text-align:center}
+  #banner b{color:var(--warn)}
+  #wrap{display:flex;height:calc(100vh - 34px)}
+  #map{flex:1;min-width:0}
+  #side{width:340px;background:var(--panel);border-left:1px solid var(--line);overflow-y:auto;padding:14px}
+  h1{font-size:18px;margin:0 0 2px}
+  .sub{color:#5a6b7a;font-size:12px;margin-bottom:12px}
+  .ctl{margin:10px 0}
+  .ctl label{display:block;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:#42576b;margin-bottom:3px}
+  select{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#fff;font-size:14px}
+  .info{background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:12px;font-size:13px}
+  .info b{font-size:15px}
+  .row{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px dotted #e3edf5}
+  .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600}
+  .tag.mod{background:#e3edf5;color:#345}.tag.low{background:#ffe6cc;color:#83440a}
+  .danger{color:var(--warn);font-weight:600}
+  .toggles{margin-top:12px;font-size:13px}
+  .toggles label{display:block;margin:3px 0;font-weight:400;text-transform:none}
+  canvas{margin-top:8px}
+  a{color:#1668b8}
+  .legend{font-size:11px;color:#5a6b7a;margin-top:6px}
+  .legend i{width:22px;height:0;display:inline-block;vertical-align:middle;margin-right:4px}
+  @media(max-width:720px){#wrap{flex-direction:column;height:auto}#side{width:100%;border-left:none;border-top:1px solid var(--line)}#map{height:52vh}}
+</style>
+</head>
+<body>
+<div id="banner">Modeled estimate with known uncertainty (~35&ndash;80&nbsp;m), prior-pinned &mdash; <b>NOT a safety device</b>. Absence of a warning never implies safety.</div>
+<div id="wrap">
+  <div id="map"></div>
+  <div id="side">
+    <h1 id="title">Reef Assessment</h1>
+    <div class="sub" id="subtitle"></div>
+
+    <div class="ctl"><label>Swell height</label><select id="sel-hs"></select></div>
+    <div class="ctl"><label>Period</label><select id="sel-tp"></select></div>
+    <div class="ctl"><label>Direction</label><select id="sel-dir"></select></div>
+    <div class="ctl"><label>Tide</label><select id="sel-tide"></select></div>
+
+    <div class="info" id="info"></div>
+    <canvas id="chart" height="150"></canvas>
+    <div class="toggles">
+      <label><input type="checkbox" id="t-hill" checked> Shaded relief</label>
+      <label><input type="checkbox" id="t-cont" checked> Depth contours</label>
+      <label><input type="checkbox" id="t-impact" checked> Big-set impact line</label>
+    </div>
+    <div class="legend">
+      <div><i style="border-top:3px solid #12b886"></i>takeoff zone &nbsp; <i style="border-top:3px dashed #12b886"></i>low-confidence</div>
+      <div><i style="border-top:3px solid #b23b16"></i>impact line (danger is <b>shoreward</b> of it)</div>
+    </div>
+    <p class="sub" style="margin-top:12px"><a id="report-link" href="#" target="_blank">Full written assessment &rarr;</a></p>
+  </div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<script>
+const DATA = location.pathname.replace(/\/+$/,'') + '/data/';
+const Q = location.search;   // carry the access key (?k=...) onto every artifact request
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+Promise.all(['meta.json','zones.json','contours.geojson','profiles.json']
+  .map(f => fetch(DATA+f+Q).then(r=>r.json())))
+  .then(([meta,zones,contours,profiles]) => init(meta,zones,contours,profiles))
+  .catch(e => { $('#info').innerHTML = 'Failed to load artifacts: '+e; });
+
+function init(meta, zonesDoc, contours, profDoc){
+  const zones = zonesDoc.zones;
+  const axes = meta.axes_order;                 // [hs,tp,dir,tide]
+  const opts = meta.selector_options;
+  const fix = meta.reference_fix;
+  $('#title').textContent = meta.name + ' Reef';
+  $('#subtitle').innerHTML = `${fix.lat.toFixed(5)} N, ${Math.abs(fix.lon).toFixed(5)} W `
+    + `&middot; DEM verified <b>${(meta.verification.verdict||'')}</b> `
+    + `(${Math.round((meta.verification.coverage_frac||0)*100)}% lidar) &middot; artifact v${meta.artifact_version}`;
+  $('#report-link').href = DATA+'report.html'+Q;
+
+  // ---- map ----
+  const map = L.map('map', {preferCanvas:true});
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    {maxZoom:20, attribution:'Esri World Imagery'}).addTo(map);
+  const hb = meta.hillshade.bounds;
+  const hill = L.imageOverlay(DATA+meta.hillshade.png+Q, hb, {opacity:0.35});
+  hill.addTo(map);
+  const contLayer = L.geoJSON(contours, {style:f=>({color:'#2b6cb0',weight:f.properties.depth_m%10===0?1.4:0.5,opacity:0.6})}).addTo(map);
+  map.fitBounds(hb);
+
+  L.circleMarker([fix.lat,fix.lon],{radius:6,color:'#fff',weight:2,fillColor:'#111',fillOpacity:1})
+    .addTo(map).bindTooltip('reference fix (~18 m)');
+  const shoal = meta.features && meta.features.shallowest_point;
+  if(shoal) L.circleMarker([shoal.lat,shoal.lon],{radius:5,color:'#b23b16',weight:2,fillColor:'#ffd7c2',fillOpacity:1})
+    .addTo(map).bindTooltip(`shoal/inside hazard (~${shoal.depth_m} m)`);
+
+  let dyn = L.layerGroup().addTo(map);
+  let impactVisible = true;
+  window.__reefmap = map;   // exposed for preview/debug only
+
+  // ---- selectors ----
+  function fill(sel, arr){ sel.innerHTML = arr.map((t,i)=>`<option value="${i}">${t}</option>`).join(''); }
+  fill($('#sel-hs'), opts.hs_swell_ft);
+  fill($('#sel-tp'), opts.tp_s);
+  fill($('#sel-dir'), opts.dir_deg);
+  fill($('#sel-tide'), opts.tide_m);
+  // default: 12-16 ft, 17-20 s, NW, higher tide (a representative "works" bin)
+  $('#sel-hs').value = Math.min(2, opts.hs_swell_ft.length-1);
+  $('#sel-tp').value = opts.tp_s.length-1;
+  $('#sel-dir').value = 1;
+  $('#sel-tide').value = opts.tide_m.length-1;
+
+  const zmap = {};
+  zones.forEach(z => zmap[z.bin.join(',')] = z);
+
+  // ---- cross-section chart (fix line profile) ----
+  const fixProf = profDoc.profiles.find(p=>p.dv===0);
+  const chart = new Chart($('#chart'), {
+    type:'line',
+    data:{labels:fixProf.s, datasets:[
+      {label:'reef (fix line)', data:fixProf.depth, borderColor:'#345', borderWidth:1.6, pointRadius:0, tension:.2},
+    ]},
+    options:{responsive:true, animation:false, plugins:{legend:{display:false}},
+      scales:{x:{title:{display:true,text:'seaward  ←  m from fix  →  shoreward'},ticks:{maxTicksLimit:6}},
+              y:{reverse:true, title:{display:true,text:'depth (m)'}}}}
+  });
+
+  function drawChartBand(z){
+    const d = z.depths_m;
+    const band = {label:'band', data:fixProf.s.map(()=>d.zone_shoreward), borderColor:'rgba(18,184,134,.0)',
+      backgroundColor:'rgba(18,184,134,.18)', fill:{value:d.zone_seaward}, pointRadius:0};
+    const anchor = {label:'anchor', data:fixProf.s.map(()=>d.anchor), borderColor:'#0b8f5f', borderWidth:1.2, borderDash:[5,4], pointRadius:0};
+    const impact = {label:'impact', data:fixProf.s.map(()=>d.impact_seaward), borderColor:'#b23b16', borderWidth:1.2, borderDash:[2,3], pointRadius:0};
+    chart.data.datasets = [chart.data.datasets[0], band, anchor, impact];
+    chart.update();
+  }
+
+  function style(z, low){
+    return {color: low?'#0b8f5f':'#12b886', weight:2, dashArray: low?'6 5':null, fillColor:'#12b886', fillOpacity:0.18};
+  }
+
+  function update(){
+    const idx = [ +$('#sel-hs').value, +$('#sel-tp').value, +$('#sel-dir').value, +$('#sel-tide').value ];
+    const z = zmap[idx.join(',')];
+    dyn.clearLayers();
+    if(!z){ $('#info').innerHTML='No modeled zone for this bin.'; return; }
+    const low = z.direction_confidence==='low';
+    if(z.takeoff_zone){ L.geoJSON(z.takeoff_zone,{style:()=>style(z,low)}).addTo(dyn); }
+    if(z.anchor){
+      L.marker([z.anchor.lat,z.anchor.lon]).addTo(dyn)
+        .bindTooltip('takeoff anchor',{permanent:false});
+      L.circle([z.anchor.lat,z.anchor.lon],{radius:z.confidence_radius_m,color:'#12b886',weight:1,fill:false,dashArray:'3 4'}).addTo(dyn);
+    }
+    if(z.impact_zone_seaward_line && impactVisible){
+      L.geoJSON(z.impact_zone_seaward_line,{style:()=>({color:'#b23b16',weight:2.5})}).addTo(dyn)
+        .bindTooltip('big-set impact line — danger is SHOREWARD of this');
+    }
+    drawChartBand(z);
+    const d = z.depths_m;
+    $('#info').innerHTML =
+      `<div class="row"><span>Source</span><span class="tag mod">${esc(z.source)}${z.prior_pinned?' (prior)':''}</span></div>`
+      + `<div class="row"><span>Anchor depth</span><b>${d.anchor} m</b></div>`
+      + `<div class="row"><span>Takeoff band</span><span>${d.zone_shoreward}&ndash;${d.zone_seaward} m</span></div>`
+      + `<div class="row"><span>Anchor via</span><span>${esc(z.anchor_source||'—')}</span></div>`
+      + `<div class="row"><span>Confidence radius</span><span>&plusmn;${z.confidence_radius_m} m</span></div>`
+      + (z.direction_confidence==='low'?`<div class="row"><span>Direction</span><span class="tag low">low confidence</span></div>`:'')
+      + (z.breaks_on_platform?`<div class="row"><span class="danger">Threshold swell</span><span>breaks on the crest &mdash; no band</span></div>`:'')
+      + `<div class="row"><span class="danger">Caught-inside</span><span>shoreward of the red line + ${meta.calibration?50:50} m</span></div>`;
+  }
+
+  ['#sel-hs','#sel-tp','#sel-dir','#sel-tide'].forEach(s=>$(s).addEventListener('change',update));
+  $('#t-hill').addEventListener('change',e=>{ e.target.checked?hill.addTo(map):hill.remove(); });
+  $('#t-cont').addEventListener('change',e=>{ e.target.checked?contLayer.addTo(map):contLayer.remove(); });
+  $('#t-impact').addEventListener('change',e=>{ impactVisible=e.target.checked; update(); });
+  update();
+}
+</script>
+</body>
+</html>

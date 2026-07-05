@@ -73,7 +73,7 @@ const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'
 Promise.all(['meta.json','zones.json','contours.geojson','profiles.json']
   .map(f => fetch(DATA+f+Q).then(r=>r.json())))
   .then(([meta,zones,contours,profiles]) => init(meta,zones,contours,profiles))
-  .catch(e => { $('#info').innerHTML = 'Failed to load artifacts: '+e; });
+  .catch(e => { $('#info').textContent = 'Failed to load artifacts: '+e; });
 
 function init(meta, zonesDoc, contours, profDoc){
   const zones = zonesDoc.zones;
@@ -81,7 +81,7 @@ function init(meta, zonesDoc, contours, profDoc){
   const opts = meta.selector_options;
   const fix = meta.reference_fix;
   $('#title').textContent = meta.name + ' Reef';
-  $('#subtitle').innerHTML = `${fix.lat.toFixed(5)} N, ${Math.abs(fix.lon).toFixed(5)} W `
+  $('#subtitle').innerHTML = `${Math.abs(fix.lat).toFixed(5)} ${fix.lat>=0?'N':'S'}, ${Math.abs(fix.lon).toFixed(5)} ${fix.lon>=0?'E':'W'} `
     + `&middot; DEM verified <b>${(meta.verification.verdict||'')}</b> `
     + `(${Math.round((meta.verification.coverage_frac||0)*100)}% lidar) &middot; artifact v${meta.artifact_version}`;
   $('#report-link').href = DATA+'report.html'+Q;
@@ -90,11 +90,14 @@ function init(meta, zonesDoc, contours, profDoc){
   const map = L.map('map', {preferCanvas:true});
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     {maxZoom:20, attribution:'Esri World Imagery'}).addTo(map);
-  const hb = meta.hillshade.bounds;
-  const hill = L.imageOverlay(DATA+meta.hillshade.png+Q, hb, {opacity:0.35});
-  hill.addTo(map);
+  let hill = null;
+  if(meta.hillshade && meta.hillshade.bounds){
+    hill = L.imageOverlay(DATA+meta.hillshade.png+Q, meta.hillshade.bounds, {opacity:0.35}).addTo(map);
+  }
   const contLayer = L.geoJSON(contours, {style:f=>({color:'#2b6cb0',weight:f.properties.depth_m%10===0?1.4:0.5,opacity:0.6})}).addTo(map);
-  map.fitBounds(hb);
+  if(meta.hillshade && meta.hillshade.bounds) map.fitBounds(meta.hillshade.bounds);
+  else if(contLayer.getBounds().isValid()) map.fitBounds(contLayer.getBounds());
+  else map.setView([fix.lat, fix.lon], 15);
 
   L.circleMarker([fix.lat,fix.lon],{radius:6,color:'#fff',weight:2,fillColor:'#111',fillOpacity:1})
     .addTo(map).bindTooltip('reference fix (~18 m)');
@@ -107,7 +110,7 @@ function init(meta, zonesDoc, contours, profDoc){
   window.__reefmap = map;   // exposed for preview/debug only
 
   // ---- selectors ----
-  function fill(sel, arr){ sel.innerHTML = arr.map((t,i)=>`<option value="${i}">${t}</option>`).join(''); }
+  function fill(sel, arr){ sel.innerHTML = arr.map((t,i)=>`<option value="${i}">${esc(t)}</option>`).join(''); }
   fill($('#sel-hs'), opts.hs_swell_ft);
   fill($('#sel-tp'), opts.tp_s);
   fill($('#sel-dir'), opts.dir_deg);
@@ -115,15 +118,16 @@ function init(meta, zonesDoc, contours, profDoc){
   // default: 12-16 ft, 17-20 s, NW, higher tide (a representative "works" bin)
   $('#sel-hs').value = Math.min(2, opts.hs_swell_ft.length-1);
   $('#sel-tp').value = opts.tp_s.length-1;
-  $('#sel-dir').value = 1;
+  $('#sel-dir').value = Math.min(1, opts.dir_deg.length-1);
   $('#sel-tide').value = opts.tide_m.length-1;
 
   const zmap = {};
   zones.forEach(z => zmap[z.bin.join(',')] = z);
 
-  // ---- cross-section chart (fix line profile) ----
-  const fixProf = profDoc.profiles.find(p=>p.dv===0);
-  const chart = new Chart($('#chart'), {
+  // ---- cross-section chart (fix line profile; fall back to nearest-to-zero transect) ----
+  const fixProf = profDoc.profiles.find(p=>p.dv===0)
+    || (profDoc.profiles||[]).slice().sort((a,b)=>Math.abs(a.dv)-Math.abs(b.dv))[0];
+  const chart = fixProf ? new Chart($('#chart'), {
     type:'line',
     data:{labels:fixProf.s, datasets:[
       {label:'reef (fix line)', data:fixProf.depth, borderColor:'#345', borderWidth:1.6, pointRadius:0, tension:.2},
@@ -131,9 +135,10 @@ function init(meta, zonesDoc, contours, profDoc){
     options:{responsive:true, animation:false, plugins:{legend:{display:false}},
       scales:{x:{title:{display:true,text:'seaward  ←  m from fix  →  shoreward'},ticks:{maxTicksLimit:6}},
               y:{reverse:true, title:{display:true,text:'depth (m)'}}}}
-  });
+  }) : null;
 
   function drawChartBand(z){
+    if(!fixProf || !chart) return;
     const d = z.depths_m;
     const band = {label:'band', data:fixProf.s.map(()=>d.zone_shoreward), borderColor:'rgba(18,184,134,.0)',
       backgroundColor:'rgba(18,184,134,.18)', fill:{value:d.zone_seaward}, pointRadius:0};
@@ -173,11 +178,11 @@ function init(meta, zonesDoc, contours, profDoc){
       + `<div class="row"><span>Confidence radius</span><span>&plusmn;${z.confidence_radius_m} m</span></div>`
       + (z.direction_confidence==='low'?`<div class="row"><span>Direction</span><span class="tag low">low confidence</span></div>`:'')
       + (z.breaks_on_platform?`<div class="row"><span class="danger">Threshold swell</span><span>breaks on the crest &mdash; no band</span></div>`:'')
-      + `<div class="row"><span class="danger">Caught-inside</span><span>shoreward of the red line + ${meta.calibration?50:50} m</span></div>`;
+      + `<div class="row"><span class="danger">Caught-inside</span><span>shoreward of the red line + ${meta.inside_margin_m ?? 50} m</span></div>`;
   }
 
   ['#sel-hs','#sel-tp','#sel-dir','#sel-tide'].forEach(s=>$(s).addEventListener('change',update));
-  $('#t-hill').addEventListener('change',e=>{ e.target.checked?hill.addTo(map):hill.remove(); });
+  $('#t-hill').addEventListener('change',e=>{ if(hill){ e.target.checked?hill.addTo(map):hill.remove(); } });
   $('#t-cont').addEventListener('change',e=>{ e.target.checked?contLayer.addTo(map):contLayer.remove(); });
   $('#t-impact').addEventListener('change',e=>{ impactVisible=e.target.checked; update(); });
   update();

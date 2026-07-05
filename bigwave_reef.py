@@ -62,5 +62,5 @@ def reef_data(spot, name):
     if not target.is_file() or REEF_ROOT not in target.parents:
         abort(404)
     resp = send_file(target, mimetype=_MIME.get(target.suffix))
-    resp.headers["Cache-Control"] = "public, max-age=3600"
+    resp.headers["Cache-Control"] = "private, max-age=3600"   # auth-gated: never shared-cacheable
     return _noindex(resp)

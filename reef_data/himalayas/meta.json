@@ -7,7 +7,7 @@
     "lon": -158.09721
   },
   "vertical_datum": "LMSL",
-  "generated_at": "2026-07-05T22:15:11.070966+00:00",
+  "generated_at": "2026-07-07T04:36:36.004308+00:00",
   "artifact_version": 1,
   "verification": {
     "verdict": "PASS",
@@ -46,7 +46,7 @@
     "MODELED ESTIMATE with known uncertainty -- not a safety device.",
     "kr0 is a PINNED PRIOR (onset matches the surfer's observation), NOT an independent fit; reproducing the onset depth is prior calibration, not validation.",
     "The '10 ft @ 17 s' onset is interpreted as buoy significant Hs (c_units=1.0); if it is Hawaiian scale the whole ladder shifts (~2x lever) -- unresolved.",
-    "Direction-shift s_dir=0 (prior): the peak is assumed on the fix line; off-315deg bins carry lower confidence until observations exist.",
+    "Direction-shift s_dir=0 (prior): the peak is assumed on the fix line; bins far off the reference direction (315 deg) carry lower confidence until observations exist.",
     "Modeled guidance radius ~35-80 m; the 30 ft target is display precision, not accuracy.",
     "impact_zone_seaward_line is the SEAWARD boundary of the biggest sets' impact zone; danger is being SHOREWARD of it (danger_side). It is NOT a precise shoreward warning line -- that is deferred to the watch-app phase."
   ],

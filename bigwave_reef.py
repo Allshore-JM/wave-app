@@ -27,7 +27,7 @@ REEF_HTML = _HERE / "web" / "reef.html"
 
 ALLOWED = {"meta.json", "zones.json", "contours.geojson", "profiles.json",
            "hillshade.png", "report.html"}
-SPOTS = {"himalayas"}
+SPOTS = {"himalayas", "laniakea"}
 _MIME = {".geojson": "application/geo+json", ".json": "application/json",
          ".png": "image/png", ".html": "text/html"}
 

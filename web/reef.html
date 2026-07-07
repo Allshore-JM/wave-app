@@ -99,8 +99,9 @@ function init(meta, zonesDoc, contours, profDoc){
   else if(contLayer.getBounds().isValid()) map.fitBounds(contLayer.getBounds());
   else map.setView([fix.lat, fix.lon], 15);
 
+  const fixDepth = meta.features && meta.features.crest && meta.features.crest.fix_at_reference_m;
   L.circleMarker([fix.lat,fix.lon],{radius:6,color:'#fff',weight:2,fillColor:'#111',fillOpacity:1})
-    .addTo(map).bindTooltip('reference fix (~18 m)');
+    .addTo(map).bindTooltip('reference marker' + (fixDepth!=null ? ` (~${fixDepth} m)` : ''));
   const shoal = meta.features && meta.features.shallowest_point;
   if(shoal) L.circleMarker([shoal.lat,shoal.lon],{radius:5,color:'#b23b16',weight:2,fillColor:'#ffd7c2',fillOpacity:1})
     .addTo(map).bindTooltip(`shoal/inside hazard (~${shoal.depth_m} m)`);
@@ -177,6 +178,8 @@ function init(meta, zonesDoc, contours, profDoc){
       + `<div class="row"><span>Anchor via</span><span>${esc(z.anchor_source||'—')}</span></div>`
       + `<div class="row"><span>Confidence radius</span><span>&plusmn;${z.confidence_radius_m} m</span></div>`
       + (z.direction_confidence==='low'?`<div class="row"><span>Direction</span><span class="tag low">low confidence</span></div>`:'')
+      + (z.outer_reef_shadow?`<div class="row"><span class="danger">Shadowed</span><span class="tag low">outer reef breaks first &mdash; position unreliable</span></div>`:'')
+      + (z.closeout?`<div class="row"><span>Wave quality</span><span class="tag low">closes out / sections on this direction</span></div>`:'')
       + (z.breaks_on_platform?`<div class="row"><span class="danger">Threshold swell</span><span>breaks on the crest &mdash; no band</span></div>`:'')
       + `<div class="row"><span class="danger">Caught-inside</span><span>shoreward of the red line + ${meta.inside_margin_m ?? 50} m</span></div>`;
   }

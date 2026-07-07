@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "spot_id": "laniakea",
+  "name": "Laniakea",
+  "reference_fix": {
+    "lat": 21.61935,
+    "lon": -158.08804,
+    "role": "spot_marker"
+  },
+  "vertical_datum": "LMSL",
+  "generated_at": "2026-07-07T04:36:31.823796+00:00",
+  "artifact_version": 1,
+  "verification": {
+    "verdict": "PASS",
+    "meaning": "bathymetry appears sufficiently constrained for first-order modeling (NOT 'every reef feature is resolved')",
+    "coverage_frac": 1.0,
+    "density_frac": 0.999,
+    "band_cells": 4159,
+    "dem_tile": "ncei19_n21x75_w158x25_2021v1.tif",
+    "generated_at": "2026-07-07T03:57:25.973849+00:00"
+  },
+  "features": {
+    "shallowest_point": {
+      "depth_m": 0.01,
+      "lat": 21.615737449421864,
+      "lon": -158.0888126821799,
+      "distance_from_fix_m": 407.9,
+      "bearing_from_fix_deg": 191.3
+    },
+    "crest": {
+      "fix_line_min_depth_m": 1.41,
+      "fix_at_reference_m": 1.41
+    }
+  },
+  "calibration": {
+    "kr0": 1.1656195791607877,
+    "kr1": 0.0,
+    "kr_cap": 2.145,
+    "gamma_lo": 0.8,
+    "gamma_hi": 1.0,
+    "s_dir_m_per_deg": 0.0,
+    "dir_ref_deg": 372,
+    "c_units": 1.0,
+    "kr0_source": "pinned_prior"
+  },
+  "caveats": [
+    "MODELED ESTIMATE with known uncertainty -- not a safety device.",
+    "kr0 is a PINNED PRIOR (onset matches the surfer's observation), NOT an independent fit; reproducing the onset depth is prior calibration, not validation.",
+    "The '1.5 ft @ 10 s' onset is interpreted as buoy significant Hs (c_units=1.0); if it is Hawaiian scale the whole ladder shifts (~2x lever) -- unresolved.",
+    "Direction-shift s_dir=0 (prior): the peak is assumed on the fix line; bins far off the reference direction (12 deg) carry lower confidence until observations exist.",
+    "Modeled guidance radius ~35-80 m; the 30 ft target is display precision, not accuracy.",
+    "impact_zone_seaward_line is the SEAWARD boundary of the biggest sets' impact zone; danger is being SHOREWARD of it (danger_side). It is NOT a precise shoreward warning line -- that is deferred to the watch-app phase.",
+    "The reference marker sits on the 1.4 m inner flat and is NOT a takeoff position; modeled zones sit seaward of it for most conditions.",
+    "Tide is FIRST-ORDER at this reef (+-0.4 m on a 1-2.5 m flat moves breakpoints tens of meters); tide bins matter more here than at any outer reef.",
+    "Above ~10 ft buoy swell the outer reef outside Laniakea breaks first -- shadowed bins are flagged and position-unreliable.",
+    "W-WNW bins: waves break but close out / section (quality caveat, owner-observed)."
+  ],
+  "hillshade": {
+    "png": "hillshade.png",
+    "bounds": [
+      [
+        21.613024691361563,
+        -158.09481481482374
+      ],
+      [
+        21.62567901234548,
+        -158.0812962963092
+      ]
+    ]
+  },
+  "bin_axes": {
+    "hs_swell_ft": {
+      "edges": [
+        1,
+        2,
+        4,
+        6,
+        8,
+        12
+      ],
+      "below_range": "null",
+      "source": "swell-band Hs, f<=0.067 Hz, buoy feet"
+    },
+    "tp_s": {
+      "edges": [
+        8,
+        11,
+        14,
+        17,
+        20
+      ],
+      "below_range": "null"
+    },
+    "dir_deg": {
+      "edges": [
+        270,
+        305,
+        340,
+        375,
+        405
+      ],
+      "below_range": "null",
+      "wrap": true,
+      "source": "energy-weighted a1/b1 over swell band; edges monotonic-in-wrapped-space (375=15, 405=45)"
+    },
+    "tide_m": {
+      "edges": [
+        -0.6,
+        -0.2,
+        0.2,
+        0.6
+      ],
+      "below_range": "clamp",
+      "datum": "LMSL"
+    }
+  },
+  "axes_order": [
+    "hs_swell_ft",
+    "tp_s",
+    "dir_deg",
+    "tide_m"
+  ],
+  "selector_options": {
+    "hs_swell_ft": [
+      "1-2 ft",
+      "2-4 ft",
+      "4-6 ft",
+      "6-8 ft",
+      "8-12 ft"
+    ],
+    "tp_s": [
+      "8-11 s",
+      "11-14 s",
+      "14-17 s",
+      "17-20 s"
+    ],
+    "dir_deg": [
+      "WNW (270-305 deg)",
+      "NW (305-340 deg)",
+      "N (340-15 deg)",
+      "NNE (15-45 deg)"
+    ],
+    "tide_m": [
+      "lower (-0.6..-0.2 m)",
+      "mid (-0.2..0.2 m)",
+      "higher (0.2..0.6 m)"
+    ]
+  },
+  "transect_azimuth_deg": 135,
+  "inside_margin_m": 50,
+  "files": {
+    "zones": "zones.json",
+    "contours": "contours.geojson",
+    "profiles": "profiles.json"
+  },
+  "disclaimer": "Modeled estimate with known uncertainty (~35-80 m). Prior-pinned, uncalibrated. NOT a safety device."
+}

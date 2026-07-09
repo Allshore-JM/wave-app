@@ -8,7 +8,7 @@
     "role": "spot_marker"
   },
   "vertical_datum": "LMSL",
-  "generated_at": "2026-07-09T05:23:24.898009+00:00",
+  "generated_at": "2026-07-09T17:33:26.928154+00:00",
   "artifact_version": 1,
   "verification": {
     "verdict": "PASS",
@@ -99,11 +99,12 @@
         305,
         340,
         375,
-        405
+        405,
+        430
       ],
       "below_range": "null",
       "wrap": true,
-      "source": "energy-weighted a1/b1 over swell band; edges monotonic-in-wrapped-space (375=15, 405=45)"
+      "source": "energy-weighted a1/b1 over swell band; edges monotonic-in-wrapped-space (375=15, 405=45, 430=70)"
     },
     "tide_m": {
       "edges": [
@@ -140,7 +141,8 @@
       "WNW (270-305 deg)",
       "NW (305-340 deg)",
       "N (340-15 deg)",
-      "NNE (15-45 deg)"
+      "NNE (15-45 deg)",
+      "ENE (45-70 deg)"
     ],
     "tide_m": [
       "lower (-0.6..-0.2 m)",

@@ -24,7 +24,8 @@
   .info b{font-size:15px}
   .row{display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px dotted #e3edf5}
   .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600}
-  .tag.mod{background:#e3edf5;color:#345}.tag.low{background:#ffe6cc;color:#83440a}
+  .tag.mod{background:#e3edf5;color:#345}.tag.low{background:#ffe6cc;color:#83440a}.tag.bad{background:#f8d7da;color:#842029}
+  #live{margin-top:12px}#live .tag{margin:0 4px 4px 0}
   .danger{color:var(--warn);font-weight:600}
   .toggles{margin-top:12px;font-size:13px}
   .toggles label{display:block;margin:3px 0;font-weight:400;text-transform:none}
@@ -48,9 +49,11 @@
     <div class="ctl"><label>Direction</label><select id="sel-dir"></select></div>
     <div class="ctl"><label>Tide</label><select id="sel-tide"></select></div>
 
+    <div class="info" id="live"></div>
     <div class="info" id="info"></div>
     <canvas id="chart" height="150"></canvas>
     <div class="toggles">
+      <label><input type="checkbox" id="t-live" checked> Live conditions (buoy + tide)</label>
       <label><input type="checkbox" id="t-hill" checked> Shaded relief</label>
       <label><input type="checkbox" id="t-cont" checked> Depth contours</label>
       <label><input type="checkbox" id="t-impact" checked> Big-set impact line</label>
@@ -190,6 +193,65 @@ function init(meta, zonesDoc, contours, profDoc){
   $('#t-impact').addEventListener('change',e=>{ impactVisible=e.target.checked; update(); });
   update();
 }
+
+// ---- Live conditions panel (increment 1: DISPLAY ONLY; does not drive the map). -----------
+// Nowcast SELECTOR context, never a warning. Auto-bin-select is a later increment.
+(function(){
+  const LIVE = location.pathname.replace(/\/+$/,'') + '/live';
+  let liveData = null;
+  const fmtAge = s => { const m = Math.round(s/60); return m<60 ? m+' min' : Math.floor(m/60)+' h '+(m%60)+' m'; };
+  const tag = (c,t) => `<span class="tag ${c}">${esc(t)}</span>`;
+
+  function renderLive(){
+    const el = $('#live'); if(!el) return;
+    if(!($('#t-live')&&$('#t-live').checked)){ el.innerHTML = '<span class="sub">Live conditions off</span>'; return; }
+    const d = liveData;
+    if(!d){ el.innerHTML = '<b>Live conditions</b><br>'+tag('mod','connecting to buoy…'); return; }
+    // recompute age from observed_utc against the local clock so it NEVER freezes, and flip to
+    // STALE locally even if the (possibly wedged) server said otherwise.
+    let ageS = d.age_s, stale = d.state === 'stale';
+    if(d.observed_utc){ const local = Math.round((Date.now()-Date.parse(d.observed_utc))/1000);
+      if(Number.isFinite(local)){ ageS = Math.max(0, local);
+        if(ageS > (d.staleness_max_s||5400)) stale = true; }
+      else { ageS = null; }   // unparseable -> never render a frozen/NaN age
+    }
+    let chips = '';
+    if(d.state==='disabled') chips = tag('mod','live disabled');
+    else if(d.state==='no_data') chips = tag('bad','NO BUOY DATA — trust your eyes');
+    else {
+      if(stale) chips += tag('bad','STALE — '+fmtAge(ageS)+' old. No live bin.');
+      else if(ageS>=3600) chips += tag('low','AGING — buoy '+fmtAge(ageS)+' ago');
+      else if(d.conditions) chips += tag('mod','buoy '+fmtAge(ageS)+' ago');
+      if(!stale && d.state==='ambiguous') chips += tag('low','two swells — mean direction not meaningful');
+      if(d.state==='below_threshold') chips += tag('mod','below breaking threshold');
+      if(d.state==='outside_window') chips += tag('low','direction outside the modeled arc');
+      if(d.quality && d.quality.degraded) chips += tag('low','degraded reading');
+      if(d.extrapolated) chips += tag('low','outside modeled range');
+      if((d.near_bin_edge||[]).length) chips += tag('low','near a bin edge');
+    }
+    const c = d.conditions; let rows = '';
+    if(c){ const r=(a,b)=>`<div class="row"><span>${a}</span><span>${esc(b)}</span></div>`;
+      rows = r('Swell','≈'+c.hs_swell_ft+' ft') + r('Period', c.tp_s+' s')
+           + r('Direction', c.dir_deg+'° ±'+c.dir_uncertainty_deg+'°')
+           + r('Tide', c.tide_m+' m ±'+c.tide_uncertainty_m); }
+    el.innerHTML = '<b>Live conditions</b><div style="margin:4px 0">'+chips+'</div>'+rows
+      + '<div class="legend" style="margin-top:4px">Nowcast selector, not a warning — the reading is ~45 min old; waves in it already broke.</div>';
+  }
+
+  async function pollLive(){
+    if(!($('#t-live')&&$('#t-live').checked)){ renderLive(); return; }
+    try{ const ac = new AbortController(); const to = setTimeout(()=>ac.abort(), 10000);
+      liveData = await fetch(LIVE+Q, {cache:'no-store', signal:ac.signal}).then(r=>r.json());
+      clearTimeout(to);
+    }catch(e){ liveData = {state:'no_data'}; }
+    renderLive();
+  }
+  renderLive(); pollLive();
+  setInterval(pollLive, 300000);          // buoy cadence is 30 min; poll every 5
+  setInterval(renderLive, 15000);         // tick the age locally so it never freezes
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) pollLive(); });
+  document.addEventListener('change', e=>{ if(e.target && e.target.id==='t-live') (e.target.checked?pollLive():renderLive()); });
+})();
 </script>
 </body>
 </html>

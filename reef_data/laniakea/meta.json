@@ -8,7 +8,7 @@
     "role": "spot_marker"
   },
   "vertical_datum": "LMSL",
-  "generated_at": "2026-07-07T04:36:31.823796+00:00",
+  "generated_at": "2026-07-09T05:23:24.898009+00:00",
   "artifact_version": 1,
   "verification": {
     "verdict": "PASS",
@@ -38,10 +38,12 @@
     "kr_cap": 2.145,
     "gamma_lo": 0.8,
     "gamma_hi": 1.0,
+    "gamma_anchor": 0.9,
     "s_dir_m_per_deg": 0.0,
     "dir_ref_deg": 372,
     "c_units": 1.0,
-    "kr0_source": "pinned_prior"
+    "kr0_source": "pinned_prior",
+    "c_units_source": "declared"
   },
   "caveats": [
     "MODELED ESTIMATE with known uncertainty -- not a safety device.",
@@ -79,7 +81,7 @@
         12
       ],
       "below_range": "null",
-      "source": "swell-band Hs, f<=0.067 Hz, buoy feet"
+      "source": "swell-band Hs integrated over swell_band_hz, buoy feet"
     },
     "tp_s": {
       "edges": [
@@ -148,6 +150,22 @@
   },
   "transect_azimuth_deg": 135,
   "inside_margin_m": 50,
+  "live": {
+    "swell_band_hz": [
+      0.035,
+      0.125
+    ],
+    "staleness_max_s": 5400,
+    "tide_station": "1612668",
+    "buoys": {
+      "primary": "cdip_106",
+      "fallback": "ndbc_51201",
+      "lead": [
+        "ndbc_51208",
+        "ndbc_51001"
+      ]
+    }
+  },
   "files": {
     "zones": "zones.json",
     "contours": "contours.geojson",

@@ -187,6 +187,18 @@ function init(meta, zonesDoc, contours, profDoc){
       + `<div class="row"><span class="danger">Caught-inside</span><span>shoreward of the red line + ${meta.inside_margin_m ?? 50} m</span></div>`;
   }
 
+  // inc.2: the live panel drives the map. Sets the four selectors to the live bin and redraws;
+  // a null bin (non-ok live state) clears the zone rather than leaving a stale one on the map.
+  window.__reefApplyLiveBin = function(bin){
+    if(bin){
+      ['#sel-hs','#sel-tp','#sel-dir','#sel-tide'].forEach((s,i)=>$(s).value = String(bin[i]));
+      update();
+    } else {
+      dyn.clearLayers();
+      $('#info').innerHTML = '<span class="sub">No modeled zone for the live conditions — uncheck “Live” or use the selectors to explore.</span>';
+    }
+  };
+
   ['#sel-hs','#sel-tp','#sel-dir','#sel-tide'].forEach(s=>$(s).addEventListener('change',update));
   $('#t-hill').addEventListener('change',e=>{ if(hill){ e.target.checked?hill.addTo(map):hill.remove(); } });
   $('#t-cont').addEventListener('change',e=>{ e.target.checked?contLayer.addTo(map):contLayer.remove(); });
@@ -194,32 +206,38 @@ function init(meta, zonesDoc, contours, profDoc){
   update();
 }
 
-// ---- Live conditions panel (increment 1: DISPLAY ONLY; does not drive the map). -----------
-// Nowcast SELECTOR context, never a warning. Auto-bin-select is a later increment.
+// ---- Live conditions panel (increment 2: DRIVES the map when Live is on). ------------------
+// Nowcast SELECTOR, never a warning. Live on -> the buoy+tide pick the bin and draw its zone;
+// non-ok states draw NO zone (honest). Any manual selector change drops to manual mode.
 (function(){
   const LIVE = location.pathname.replace(/\/+$/,'') + '/live';
-  let liveData = null;
-  const fmtAge = s => { const m = Math.round(s/60); return m<60 ? m+' min' : Math.floor(m/60)+' h '+(m%60)+' m'; };
+  let liveData = null, liveOn = true, lastKey = null;
+  const fmtAge = s => (s==null) ? '—' : (s<3600 ? Math.round(s/60)+' min' : Math.floor(s/3600)+' h '+Math.round((s%3600)/60)+' m');
   const tag = (c,t) => `<span class="tag ${c}">${esc(t)}</span>`;
+  const liveEl = () => $('#live');
+  const toggle = () => $('#t-live');
 
-  function renderLive(){
-    const el = $('#live'); if(!el) return;
-    if(!($('#t-live')&&$('#t-live').checked)){ el.innerHTML = '<span class="sub">Live conditions off</span>'; return; }
-    const d = liveData;
-    if(!d){ el.innerHTML = '<b>Live conditions</b><br>'+tag('mod','connecting to buoy…'); return; }
-    // recompute age from observed_utc against the local clock so it NEVER freezes, and flip to
-    // STALE locally even if the (possibly wedged) server said otherwise.
+  // effective age (local clock vs observed_utc, so it never freezes) + a local STALE flip
+  function ageAndStale(d){
     let ageS = d.age_s, stale = d.state === 'stale';
     if(d.observed_utc){ const local = Math.round((Date.now()-Date.parse(d.observed_utc))/1000);
-      if(Number.isFinite(local)){ ageS = Math.max(0, local);
-        if(ageS > (d.staleness_max_s||5400)) stale = true; }
-      else { ageS = null; }   // unparseable -> never render a frozen/NaN age
-    }
+      if(Number.isFinite(local)){ ageS = Math.max(0, local); if(ageS > (d.staleness_max_s||5400)) stale = true; }
+      else ageS = null; }
+    return {ageS, stale};
+  }
+
+  function renderLive(){
+    const el = liveEl(); if(!el) return;
+    if(!liveOn){ el.innerHTML = '<b>Live conditions</b> '+tag('mod','off — manual selection')
+        + '<div class="legend" style="margin-top:4px">Re-check “Live” to follow the buoy.</div>'; return; }
+    const d = liveData;
+    if(!d){ el.innerHTML = '<b>Live conditions</b><br>'+tag('mod','connecting to buoy…'); return; }
+    const {ageS, stale} = ageAndStale(d);
     let chips = '';
     if(d.state==='disabled') chips = tag('mod','live disabled');
     else if(d.state==='no_data') chips = tag('bad','NO BUOY DATA — trust your eyes');
     else {
-      if(stale) chips += tag('bad','STALE — '+fmtAge(ageS)+' old. No live bin.');
+      if(stale) chips += tag('bad','STALE — '+fmtAge(ageS)+' old. No live zone.');
       else if(ageS>=3600) chips += tag('low','AGING — buoy '+fmtAge(ageS)+' ago');
       else if(d.conditions) chips += tag('mod','buoy '+fmtAge(ageS)+' ago');
       if(!stale && d.state==='ambiguous') chips += tag('low','two swells — mean direction not meaningful');
@@ -238,19 +256,38 @@ function init(meta, zonesDoc, contours, profDoc){
       + '<div class="legend" style="margin-top:4px">Nowcast selector, not a warning — the reading is ~45 min old; waves in it already broke.</div>';
   }
 
+  // render chips + drive the map, but only redraw when the effective bin CHANGES (no flicker).
+  function tick(){
+    renderLive();
+    if(!liveOn || !window.__reefApplyLiveBin) return;
+    const d = liveData; let bin = (d && d.state==='ok' && d.bin) ? d.bin : null;
+    if(bin){ const {stale} = ageAndStale(d); if(stale) bin = null; }   // locally stale -> clear the zone
+    const key = bin ? bin.join(',') : 'none';
+    if(key !== lastKey){ lastKey = key; window.__reefApplyLiveBin(bin); }
+  }
+
   async function pollLive(){
-    if(!($('#t-live')&&$('#t-live').checked)){ renderLive(); return; }
+    if(!liveOn){ renderLive(); return; }
     try{ const ac = new AbortController(); const to = setTimeout(()=>ac.abort(), 10000);
       liveData = await fetch(LIVE+Q, {cache:'no-store', signal:ac.signal}).then(r=>r.json());
       clearTimeout(to);
     }catch(e){ liveData = {state:'no_data'}; }
-    renderLive();
+    tick();
   }
+
+  // a manual selector change drops to manual mode (so the next poll won't yank the map back).
+  ['#sel-hs','#sel-tp','#sel-dir','#sel-tide'].forEach(s=>{
+    const el = $(s); if(el) el.addEventListener('change', ()=>{ liveOn=false; lastKey=null; if(toggle()) toggle().checked=false; renderLive(); });
+  });
+  if(toggle()) toggle().addEventListener('change', e=>{
+    liveOn = e.target.checked; lastKey = null;
+    if(liveOn) pollLive(); else renderLive();
+  });
+
   renderLive(); pollLive();
   setInterval(pollLive, 300000);          // buoy cadence is 30 min; poll every 5
-  setInterval(renderLive, 15000);         // tick the age locally so it never freezes
+  setInterval(tick, 15000);               // tick the age locally + flip to STALE without a poll
   document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) pollLive(); });
-  document.addEventListener('change', e=>{ if(e.target && e.target.id==='t-live') (e.target.checked?pollLive():renderLive()); });
 })();
 </script>
 </body>

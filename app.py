@@ -1636,6 +1636,20 @@ NDBC_CACHE_TTL_SECONDS = 30 * 60
 NDBC_COMPONENT_TTL_SECONDS = 30 * 60
 NDBC_COMPONENT_CACHE_MAX = 100
 
+# Observations older than this are NOT shown as current readings. A buoy that stops
+# reporting keeps its last rows in the NDBC realtime file for weeks, so any window
+# anchored to "the newest row in the file" happily renders days-old data as if it
+# were live. Every NDBC observation window is therefore anchored to NOW.
+NDBC_MAX_AGE_HOURS = 24
+
+
+def _ndbc_row_is_recent(dt_utc, now_utc=None, max_age_hours: int = NDBC_MAX_AGE_HOURS) -> bool:
+    """True if an observation timestamp falls inside the trailing max_age window."""
+    if dt_utc is None:
+        return False
+    now_utc = now_utc or datetime.now(pytz.utc)
+    return dt_utc >= now_utc - timedelta(hours=max_age_hours)
+
 NDBC_STATIONS_CACHE = {
     "timestamp": 0,
     "data": []
@@ -2419,6 +2433,23 @@ def api_ndbc_station_components(station_id):
 
     density_row = _latest_spectral_row(density_rows)
 
+    # Same now-anchored freshness gate as the wave summary: never render a spectral
+    # snapshot from a buoy that stopped reporting. Cached like any other result so a
+    # dead buoy doesn't re-fetch the NDBC files on every click.
+    if not _ndbc_row_is_recent(density_row["timestamp_utc"]):
+        stale_result = {
+            "station": station_id,
+            "name": station_meta.get("name", station_id),
+            "no_recent_reports": True,
+            "max_age_hours": NDBC_MAX_AGE_HOURS,
+            "last_report_gmt": density_row["timestamp_utc"].strftime("%H%M GMT on %m/%d/%Y"),
+            "components": [],
+        }
+        with _CACHE_LOCK:
+            NDBC_COMPONENT_CACHE[station_id] = {"timestamp": time.time(), "data": stale_result}
+            _evict_oldest(NDBC_COMPONENT_CACHE, NDBC_COMPONENT_CACHE_MAX)
+        return jsonify(stale_result)
+
     def latest_matching_row(file_key: str) -> dict | None:
         rows = _parse_ndbc_spectral_file(optional_files.get(file_key)) if optional_files.get(file_key) else []
         return _match_direction_row(density_row, rows) if rows else None
@@ -2536,7 +2567,7 @@ NDBC_STATION_PAGE = "https://www.ndbc.noaa.gov/station_page.php?station={station
 NDBC_SPEC_SUMMARY_URL = "https://www.ndbc.noaa.gov/data/realtime2/{station_id}.spec"
 
 
-def _parse_noaa_station_wave_summary(station_id: str, hours: int = 24) -> dict:
+def _parse_noaa_station_wave_summary(station_id: str, hours: int = 24, now_utc=None) -> dict:
     """
     Read the NDBC realtime .spec wave-summary file and return the same basic
     Wave Summary values shown on the NDBC station page.
@@ -2655,14 +2686,24 @@ def _parse_noaa_station_wave_summary(station_id: str, hours: int = 24) -> dict:
     # NDBC realtime files are usually newest-first, but sort just to be safe.
     rows.sort(key=lambda r: r["_dt_utc"], reverse=True)
 
-    if rows:
-        latest_dt = rows[0]["_dt_utc"]
-        cutoff = latest_dt - timedelta(hours=hours)
+    # Freshness gate. The window is anchored to NOW -- NOT to the newest row in the
+    # file. NDBC keeps a dead buoy's last observations in realtime2 for weeks, so
+    # anchoring to rows[0] returned a full 24h of stale readings that looked current
+    # (e.g. 51213 served 2026-07-13 data on 2026-07-25).
+    now_utc = now_utc or datetime.now(pytz.utc)   # injectable so tests are deterministic
+    last_report_utc = rows[0]["_dt_utc"] if rows else None
 
-        rows = [
-            r for r in rows
-            if r["_dt_utc"] >= cutoff
-        ]
+    cutoff = now_utc - timedelta(hours=hours)
+    rows = [r for r in rows if r["_dt_utc"] >= cutoff]
+
+    no_recent_reports = not rows
+    last_report_age_hours = (
+        round((now_utc - last_report_utc).total_seconds() / 3600.0, 1)
+        if last_report_utc else None
+    )
+    last_report_gmt = (
+        last_report_utc.strftime("%H%M GMT on %m/%d/%Y") if last_report_utc else None
+    )
 
     latest = {}
 
@@ -2704,6 +2745,12 @@ def _parse_noaa_station_wave_summary(station_id: str, hours: int = 24) -> dict:
         "as_of_local": as_of_local,
         "as_of_gmt": as_of_gmt,
         "unit_system": "Imperial",
+        # True when the buoy has published nothing within max_age_hours -> the UI
+        # shows "No Recent Reports" instead of stale values. latest/rows are empty.
+        "no_recent_reports": no_recent_reports,
+        "max_age_hours": hours,
+        "last_report_gmt": last_report_gmt,
+        "last_report_age_hours": last_report_age_hours,
         "latest": latest,
         "rows": rows,
         "row_count": len(rows),

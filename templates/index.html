@@ -544,6 +544,16 @@
 
       <div id="liveBuoyError" class="alert alert-warning d-none"></div>
 
+      <!-- Shown when an NDBC buoy has published nothing in the last 24h, so that a
+           long-offline buoy can never present old readings as current. -->
+      <div id="liveBuoyNoRecent" class="d-none">
+        <div class="fw-semibold mb-2" id="liveBuoyNoRecentTitle"></div>
+        <div class="alert alert-secondary mb-0">
+          <div class="fw-bold">No Recent Reports</div>
+          <div class="small mt-1" id="liveBuoyNoRecentDetail"></div>
+        </div>
+      </div>
+
       <div id="liveBuoyContent" class="d-none">
 
         <!-- NOAA-matching live wave summary -->
@@ -1108,6 +1118,9 @@
     let activeLiveBuoyId = null;
     let lastNoaaWaveSummaryData = null;
     let lastLiveComponentData = null;
+    // Set while the panel is showing "No Recent Reports" so a unit change re-renders
+    // that state instead of falling back to the (empty) summary/component views.
+    let lastNoRecentStation = null;
     let lastGenericBuoy = null;
 
     function getSelectedUnit() {
@@ -1152,13 +1165,37 @@
       document.getElementById('liveBuoyError').classList.add('d-none');
       document.getElementById('liveBuoyContent').classList.add('d-none');
       document.getElementById('liveBuoyGeneric').classList.add('d-none');
+      document.getElementById('liveBuoyNoRecent').classList.add('d-none');
 
       panel.style.display = 'block';
+    }
+
+    // NDBC buoy with no observation inside the freshness window: show only the
+    // "No Recent Reports" state -- never stale cards/table/spectra.
+    function showLiveBuoyNoRecent(data, station) {
+      data = data || {};
+
+      document.getElementById('liveBuoyNoRecentTitle').textContent =
+        data.title || buoyDisplayLabel(station || {}) || '';
+
+      const maxAge = data.max_age_hours || 24;
+      let detail = 'This buoy has not reported in the last ' + maxAge + ' hours.';
+      if (data.last_report_gmt) {
+        detail += ' Last report: ' + data.last_report_gmt + '.';
+      }
+      document.getElementById('liveBuoyNoRecentDetail').textContent = detail;
+
+      document.getElementById('liveBuoyLoading').style.display = 'none';
+      document.getElementById('liveBuoyError').classList.add('d-none');
+      document.getElementById('liveBuoyContent').classList.add('d-none');
+      document.getElementById('liveBuoyGeneric').classList.add('d-none');
+      document.getElementById('liveBuoyNoRecent').classList.remove('d-none');
     }
 
     function showLiveBuoyError(message) {
       document.getElementById('liveBuoyLoading').style.display = 'none';
       document.getElementById('liveBuoyContent').classList.add('d-none');
+      document.getElementById('liveBuoyNoRecent').classList.add('d-none');
 
       const errorBox = document.getElementById('liveBuoyError');
       errorBox.textContent = message;
@@ -1617,6 +1654,17 @@
           throw new Error(summaryData.error || 'Unable to load NOAA wave summary.');
         }
 
+        // Nothing within the freshness window -> show "No Recent Reports" only.
+        // Skip the spectral fetch too: those files are just as stale.
+        if (summaryData.no_recent_reports) {
+          lastNoaaWaveSummaryData = summaryData;
+          lastLiveComponentData = null;
+          lastNoRecentStation = station;
+          showLiveBuoyNoRecent(summaryData, station);
+          return;
+        }
+        lastNoRecentStation = null;
+
         renderNoaaWaveSummary(summaryData);
 
         try {
@@ -1626,7 +1674,9 @@
 
           const componentData = await componentResponse.json();
 
-          if (componentResponse.ok && !componentData.error) {
+          // The spectral files can lag the .spec summary; don't render a stale
+          // snapshot next to fresh summary values.
+          if (componentResponse.ok && !componentData.error && !componentData.no_recent_reports) {
             renderLiveBuoyDetails(componentData);
           }
         } catch (componentErr) {
@@ -1953,6 +2003,12 @@
 
     if (unitSelect) {
       unitSelect.addEventListener('change', () => {
+        // A "No Recent Reports" panel has no values to convert -- keep it as-is.
+        if (lastNoRecentStation) {
+          showLiveBuoyNoRecent(lastNoaaWaveSummaryData, lastNoRecentStation);
+          return;
+        }
+
         if (lastNoaaWaveSummaryData) {
           renderNoaaWaveSummary(lastNoaaWaveSummaryData);
         }

@@ -58,6 +58,12 @@ class BuoyProvider:
         self._lock = threading.Lock()
         self._list_cache = None
         self._list_ts = 0.0
+        # Monotonic publish counter: every (re)fetch -- successful, empty, or failed -- bumps it,
+        # so a snapshot's (list, version) pair identifies exactly which publish it came from.
+        self._list_version = 0
+        # Singleflight for the refresh itself: concurrent callers that find the list expired
+        # wait here and then return the ONE freshly published list instead of each fetching.
+        self._refresh_lock = threading.Lock()
 
     # --- interface ---
     def _fetch_stations(self):
@@ -71,9 +77,38 @@ class BuoyProvider:
     # --- shared ---
     def list_stations(self):
         """Cached, fail-soft lean station list with namespaced ids + capabilities + attribution."""
+        return self.list_stations_versioned()[0]
+
+    def _snapshot_if_fresh(self):
+        """(list, version, published_ts) under the lock, or None when expired/never fetched."""
         with self._lock:
             if self._list_cache is not None and (time.time() - self._list_ts) < self.list_ttl_sec:
-                return self._list_cache
+                return self._list_cache, self._list_version, self._list_ts
+        return None
+
+    def list_stations_versioned(self):
+        """Same as list_stations() but returns (list, version, published_ts) read together under
+        one lock, so a caller can key derived work on the exact publish it saw. Refresh timing
+        is unchanged: the first call after list_ttl_sec fetches inline; concurrent expired
+        callers wait for that fetch and get its result (the same list they would have obtained
+        from their own duplicate fetch today, minus the duplicate upstream hit)."""
+        snap = self._snapshot_if_fresh()
+        if snap is not None:
+            return snap
+        with self._refresh_lock:
+            snap = self._snapshot_if_fresh()        # published while we waited?
+            if snap is not None:
+                return snap
+            out = self._build_station_list()
+            with self._lock:
+                self._list_cache = out
+                self._list_ts = time.time()
+                self._list_version += 1
+                return out, self._list_version, self._list_ts
+
+    def _build_station_list(self):
+        """One upstream fetch -> lean entries. Fail-soft: any error -> [] (no markers rather
+        than a broken map)."""
         out = []
         now = time.time()
         try:
@@ -109,9 +144,6 @@ class BuoyProvider:
         except Exception as e:
             _log.warning("buoy provider %s: station-list fetch failed (%s)", self.source, e)
             out = []                          # fail soft: no markers rather than a broken map
-        with self._lock:
-            self._list_cache = out
-            self._list_ts = time.time()
         return out
 
     def detail(self, local_id):

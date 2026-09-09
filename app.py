@@ -162,8 +162,10 @@ def _json_payload_and_etag(data):
     return payload, hashlib.md5(payload.encode("utf-8")).hexdigest()
 
 
-def _json_cached_bytes(payload: str, etag: str, max_age: int):
-    """Response for an already-serialized JSON payload + ETag (If-None-Match -> 304)."""
+def _json_cached_bytes(payload: str, etag: str, max_age: int, extra_headers=None):
+    """Response for an already-serialized JSON payload + ETag (If-None-Match -> 304).
+    `extra_headers` (e.g. CDN-Cache-Control) are set on BOTH the 200 and the 304, so a
+    revalidation can never hand a shared cache a longer lifetime than the full response."""
     inm = request.headers.get("If-None-Match", "")
     supplied = []
     for tok in inm.split(","):
@@ -182,7 +184,59 @@ def _json_cached_bytes(payload: str, etag: str, max_age: int):
         resp = app.response_class(payload, mimetype="application/json")
     resp.headers["Cache-Control"] = f"public, max-age={max_age}"
     resp.headers["ETag"] = f'"{etag}"'
+    for k, v in (extra_headers or {}).items():
+        resp.headers[k] = v
     return resp
+
+
+# ---------------------------------------------------------------------------------------------
+# Response cache policy. Render's edge cache ("All files" mode) stores any header-less 200 for
+# 120 min and 404s for 3 min, so EVERY response must say what it is. Default: not shareable.
+# Routes that are safe to share opt in explicitly with public max-age (+ CDN-Cache-Control).
+# ---------------------------------------------------------------------------------------------
+_DEFAULT_CACHE_CONTROL = "private, max-age=0, no-transform"   # Render's documented "don't cache"
+
+
+@app.after_request
+def _default_cache_policy(resp):
+    if "Cache-Control" not in resp.headers:
+        resp.headers["Cache-Control"] = _DEFAULT_CACHE_CONTROL
+    return resp
+
+
+# /api/buoys/live-stations at the edge: BYPASS unless explicitly enabled. An edge HIT never
+# reaches the app, so a fixed lifetime would let visitors sail past a provider refresh that
+# an origin request would have triggered. With LIVE_STATIONS_EDGE_TTL=1 the edge lifetime is
+# derived from the SAME provider snapshots the response was built from: it expires exactly
+# when the earliest provider becomes due (capped at the browser max-age), never later.
+LIVE_STATIONS_BROWSER_MAX_AGE = 900
+
+
+def _live_stations_edge_enabled() -> bool:
+    return os.environ.get("LIVE_STATIONS_EDGE_TTL", "0") == "1"
+
+
+def _live_stations_edge_ttl(providers, snaps, now=None) -> int:
+    """Whole seconds the edge may keep this exact response: min over providers of
+    (list_ttl_sec - age of the snapshot it was built from), capped at the browser max-age.
+    <= 0 means "do not store". A provider whose snapshot has no timestamp (fetch raised in
+    the route) counts as due now."""
+    now = time.time() if now is None else now
+    ttl = LIVE_STATIONS_BROWSER_MAX_AGE
+    for p, snap in zip(providers, snaps):
+        ts = snap[2] if len(snap) > 2 else None
+        if ts is None:
+            return 0
+        ttl = min(ttl, int(math.floor(p.list_ttl_sec - (now - ts))))
+    return ttl
+
+
+def _live_stations_cdn_headers(providers, snaps) -> dict:
+    if _live_stations_edge_enabled():
+        ttl = _live_stations_edge_ttl(providers, snaps)
+        if ttl > 0:
+            return {"CDN-Cache-Control": f"max-age={ttl}"}
+    return {"CDN-Cache-Control": "no-store"}
 
 
 # Latest GFS-wave run detection cache (runs publish ~4x/day).
@@ -459,7 +513,8 @@ def get_stations_data():
 @app.route('/stations.json')
 def stations_json():
     # Station geometry is effectively static; allow client/CDN caching + 304s.
-    return _json_cached(get_stations_data(), max_age=3600)
+    payload, etag = _json_payload_and_etag(get_stations_data())
+    return _json_cached_bytes(payload, etag, 3600, {"CDN-Cache-Control": "max-age=3600"})
 
 
 # Small inline wave icon so /favicon.ico stops 404-ing (and adds light branding).
@@ -2925,34 +2980,36 @@ def api_buoys_live_stations():
     # Refresh timing is unchanged: an expired provider refreshes inline, right here.
     from concurrent.futures import ThreadPoolExecutor
     providers = get_buoy_providers()
-    snaps = [([], None) for _ in providers]   # (list, version) per provider
+    snaps = [([], None, None) for _ in providers]   # (list, version, published_ts) per provider
 
     def _fetch(i):
         p = providers[i]
         try:
-            lst, version, _ts = p.list_stations_versioned()
+            lst, version, ts = p.list_stations_versioned()
             if not lst:                       # surface silent feed outages (provider failed soft)
                 app.logger.warning("buoy provider %s returned 0 stations", p.source)
-            return i, (lst, version)
+            return i, (lst, version, ts)
         except Exception as exc:
             app.logger.warning("buoy provider %s failed in live-stations: %s", p.source, exc)
-            return i, ([], None)
+            return i, ([], None, None)
     with ThreadPoolExecutor(max_workers=min(8, len(providers))) as ex:
         for i, snap in ex.map(_fetch, range(len(providers))):
             snaps[i] = snap
 
     key = tuple((p.source, snap[1]) for p, snap in zip(providers, snaps))
+    cdn = _live_stations_cdn_headers(providers, snaps)      # from THESE snapshots, 200 and 304 alike
+    max_age = LIVE_STATIONS_BROWSER_MAX_AGE
     with _CACHE_LOCK:
         if _LIVE_STATIONS_MEMO["key"] == key:
-            return _json_cached_bytes(_LIVE_STATIONS_MEMO["payload"], _LIVE_STATIONS_MEMO["etag"], 900)
+            return _json_cached_bytes(_LIVE_STATIONS_MEMO["payload"], _LIVE_STATIONS_MEMO["etag"], max_age, cdn)
     with _LIVE_BUILD_LOCK:
         with _CACHE_LOCK:                     # built by the caller we waited on?
             if _LIVE_STATIONS_MEMO["key"] == key:
-                return _json_cached_bytes(_LIVE_STATIONS_MEMO["payload"], _LIVE_STATIONS_MEMO["etag"], 900)
+                return _json_cached_bytes(_LIVE_STATIONS_MEMO["payload"], _LIVE_STATIONS_MEMO["etag"], max_age, cdn)
         payload, etag = _build_live_stations_payload([snap[0] for snap in snaps])
         with _CACHE_LOCK:
             _LIVE_STATIONS_MEMO.update(key=key, payload=payload, etag=etag)
-    return _json_cached_bytes(payload, etag, 900)
+    return _json_cached_bytes(payload, etag, max_age, cdn)
 
 
 @app.route("/api/buoys/<path:bid>/latest")

@@ -117,7 +117,7 @@ def _build_http_session() -> requests.Session:
             allowed_methods=frozenset(["GET", "HEAD"]),
             raise_on_status=False,
         )
-        adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=16)  # 3 concurrent buoy taps x 5 files
         s.mount("https://", adapter)
         s.mount("http://", adapter)
     return s
@@ -2405,6 +2405,30 @@ def _match_direction_row(density_row: dict, direction_rows: list) -> dict | None
             return row
     return _latest_spectral_row(direction_rows)
 
+_NDBC_OPTIONAL_SUFFIXES = ("swdir", "swdir2", "swr1", "swr2", "spec")
+
+
+def _fetch_ndbc_optional_files(station_id: str) -> dict:
+    """The five optional NDBC files, downloaded CONCURRENTLY instead of one after another.
+
+    Semantics are exactly the serial loop's: each file keeps its own timeout=20 and maps any
+    exception to None; the caller waits for all five (no overall deadline, so a download that
+    would have succeeded serially still succeeds). A per-request executor inside `with` means
+    the threads end with the request -- nothing is abandoned and no shared queue can make one
+    buoy tap wait behind another's slow files."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(suffix):
+        try:
+            return _fetch_text(f"{NDBC_REALTIME_DIR}{station_id}.{suffix}", timeout=20)
+        except Exception:
+            return None
+    with ThreadPoolExecutor(max_workers=len(_NDBC_OPTIONAL_SUFFIXES),
+                            thread_name_prefix="ndbc-opt") as ex:
+        texts = list(ex.map(_one, _NDBC_OPTIONAL_SUFFIXES))
+    return dict(zip(_NDBC_OPTIONAL_SUFFIXES, texts))
+
+
 @app.route("/api/ndbc/station/<station_id>/components")
 def api_ndbc_station_components(station_id):
     station_id = station_id.strip().upper()
@@ -2424,18 +2448,7 @@ def api_ndbc_station_components(station_id):
         return jsonify({"station": station_id, "error": f"NDBC file not available: {exc}"}), 404
 
     # Directional moments. These are optional because not every station has every file.
-    optional_files = {}
-    for key, suffix in {
-        "swdir": "swdir",
-        "swdir2": "swdir2",
-        "swr1": "swr1",
-        "swr2": "swr2",
-        "spec": "spec",
-    }.items():
-        try:
-            optional_files[key] = _fetch_text(f"{NDBC_REALTIME_DIR}{station_id}.{suffix}", timeout=20)
-        except Exception:
-            optional_files[key] = None
+    optional_files = _fetch_ndbc_optional_files(station_id)
 
     density_rows = _parse_ndbc_spectral_file(density_text)
 

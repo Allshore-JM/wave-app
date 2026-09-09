@@ -1,0 +1,12 @@
+#YY  MM DD hh mm WVHT  SwH  SwP  WWH  WWP SwD WWD  STEEPNESS  APD MWD
+#yr  mo dy hr mn    m    m  sec    m  sec  -  degT     -      sec degT
+2026 09 09 21 26  1.4  0.7 11.8  1.2  9.9 NNW NNE    AVERAGE  8.3  23
+2026 09 09 20 56  1.2  0.6 11.1  1.1  9.9   N   N    AVERAGE  8.1   9
+2026 09 09 20 26  1.3  0.6 11.1  1.2  8.3   N NNE    AVERAGE  7.9  12
+2026 09 09 19 56  1.4  0.7 10.5  1.2  9.9 NNE NNE    AVERAGE  8.2  19
+2026 09 09 19 26  1.4  0.7 10.5  1.2  9.9   N   N    AVERAGE  8.2 355
+2026 09 09 18 56  1.5  0.7 10.5  1.3  9.9   N NNW    AVERAGE  8.2 341
+2026 09 09 18 26  1.6  0.8 10.5  1.3  9.9   N NNE    AVERAGE  8.3  24
+2026 09 09 17 56  1.5  0.8 10.5  1.3  9.9   N NNW    AVERAGE  7.9   2
+2026 09 09 17 26  1.5  0.7 11.1  1.3  9.9 NNW   N    AVERAGE  7.8 349
+2026 09 09 16 56  1.6  0.8 10.5  1.4  9.9 NNW NNW    AVERAGE  7.9 330

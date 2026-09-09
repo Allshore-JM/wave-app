@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, send_file, jsonify
 import requests
 import json
+import copy
 import os
 from datetime import datetime, timedelta
 import pytz
@@ -150,9 +151,19 @@ def _json_cached(data, max_age: int):
     (Render fronts requests with Cloudflare) that rewrites the validator still
     revalidates to 304 instead of re-sending the full body.
     """
-    payload = json.dumps(data, separators=(",", ":"), sort_keys=True)
-    etag = hashlib.md5(payload.encode("utf-8")).hexdigest()
+    payload, etag = _json_payload_and_etag(data)
+    return _json_cached_bytes(payload, etag, max_age)
 
+
+def _json_payload_and_etag(data):
+    """The one serialization used for every cached JSON route (compact, sorted keys) and its
+    strong ETag. Kept separate so a caller can serialize once and reuse the bytes."""
+    payload = json.dumps(data, separators=(",", ":"), sort_keys=True)
+    return payload, hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def _json_cached_bytes(payload: str, etag: str, max_age: int):
+    """Response for an already-serialized JSON payload + ETag (If-None-Match -> 304)."""
     inm = request.headers.get("If-None-Match", "")
     supplied = []
     for tok in inm.split(","):
@@ -2870,34 +2881,65 @@ def _buoy_tz_cached(lat, lon):
     return tz
 
 
-@app.route("/api/buoys/live-stations")
-def api_buoys_live_stations():
-    # Fetch every provider's station list CONCURRENTLY (each is cached + fail-soft), so one
-    # slow/down agency can't stall the layer as the source list grows (US + AU + Europe).
-    from concurrent.futures import ThreadPoolExecutor
-    providers = get_buoy_providers()
-    lists = [[] for _ in providers]
+# Memo of the last serialized /api/buoys/live-stations response, keyed on the exact provider
+# publishes it was built from. Valid precisely as long as no provider has re-published (no
+# time-based TTL of its own), so the served bytes are identical to a fresh build. Guarded by
+# _CACHE_LOCK; _LIVE_BUILD_LOCK makes a burst of same-key misses build once.
+_LIVE_STATIONS_MEMO = {"key": None, "payload": None, "etag": None}
+_LIVE_BUILD_LOCK = threading.Lock()
 
-    def _fetch(i):
-        p = providers[i]
-        try:
-            lst = p.list_stations()
-            if not lst:                       # surface silent feed outages (provider failed soft)
-                app.logger.warning("buoy provider %s returned 0 stations", p.source)
-            return i, lst
-        except Exception as exc:
-            app.logger.warning("buoy provider %s failed in live-stations: %s", p.source, exc)
-            return i, []
-    with ThreadPoolExecutor(max_workers=min(8, len(providers))) as ex:
-        for i, lst in ex.map(_fetch, range(len(providers))):
-            lists[i] = lst
 
+def _build_live_stations_payload(lists):
+    """Merge + tz-tag + serialize provider snapshots -> (payload, etag).
+
+    Works on DEEP copies: merge_stations appends to the kept marker's `also_sources` list and
+    the tz pass writes `tz` into the marker, both of which would otherwise land in the provider
+    caches (idempotently, but the snapshots must stay pristine so a memo key can stand for
+    exactly one output)."""
+    lists = [[copy.deepcopy(s) for s in lst] for lst in lists]
     merged = buoy_sources.merge_stations(lists, radius_km=1.0)
     for s in merged:
         # NDBC keeps its own tz handling; tag the rest with their buoy-local zone.
         if s.get("source") != "NDBC" and not s.get("tz"):
             s["tz"] = _buoy_tz_cached(s.get("lat"), s.get("lon"))
-    return _json_cached(merged, max_age=900)
+    return _json_payload_and_etag(merged)
+
+
+@app.route("/api/buoys/live-stations")
+def api_buoys_live_stations():
+    # Fetch every provider's station list CONCURRENTLY (each is cached + fail-soft), so one
+    # slow/down agency can't stall the layer as the source list grows (US + AU + Europe).
+    # Refresh timing is unchanged: an expired provider refreshes inline, right here.
+    from concurrent.futures import ThreadPoolExecutor
+    providers = get_buoy_providers()
+    snaps = [([], None) for _ in providers]   # (list, version) per provider
+
+    def _fetch(i):
+        p = providers[i]
+        try:
+            lst, version, _ts = p.list_stations_versioned()
+            if not lst:                       # surface silent feed outages (provider failed soft)
+                app.logger.warning("buoy provider %s returned 0 stations", p.source)
+            return i, (lst, version)
+        except Exception as exc:
+            app.logger.warning("buoy provider %s failed in live-stations: %s", p.source, exc)
+            return i, ([], None)
+    with ThreadPoolExecutor(max_workers=min(8, len(providers))) as ex:
+        for i, snap in ex.map(_fetch, range(len(providers))):
+            snaps[i] = snap
+
+    key = tuple((p.source, snap[1]) for p, snap in zip(providers, snaps))
+    with _CACHE_LOCK:
+        if _LIVE_STATIONS_MEMO["key"] == key:
+            return _json_cached_bytes(_LIVE_STATIONS_MEMO["payload"], _LIVE_STATIONS_MEMO["etag"], 900)
+    with _LIVE_BUILD_LOCK:
+        with _CACHE_LOCK:                     # built by the caller we waited on?
+            if _LIVE_STATIONS_MEMO["key"] == key:
+                return _json_cached_bytes(_LIVE_STATIONS_MEMO["payload"], _LIVE_STATIONS_MEMO["etag"], 900)
+        payload, etag = _build_live_stations_payload([snap[0] for snap in snaps])
+        with _CACHE_LOCK:
+            _LIVE_STATIONS_MEMO.update(key=key, payload=payload, etag=etag)
+    return _json_cached_bytes(payload, etag, 900)
 
 
 @app.route("/api/buoys/<path:bid>/latest")

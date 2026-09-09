@@ -1,0 +1,586 @@
+{
+ "provider_caches_after": {
+  "AODN": [
+   {
+    "also_sources": [
+     "AusWaves"
+    ],
+    "attribution_text": "Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)",
+    "capabilities": {
+     "bulk": true,
+     "directional": true,
+     "partitions": true,
+     "recent_history": true,
+     "spectra": true
+    },
+    "dup_of": null,
+    "id": "aodn:SYD",
+    "is_stale": false,
+    "lat": -33.77,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "CC-BY 4.0",
+    "lon": 151.41,
+    "name": "Sydney",
+    "source": "AODN",
+    "source_name": "AODN",
+    "source_url": "https://aodn",
+    "tz": "Etc/GMT-10"
+   },
+   {
+    "attribution_text": "Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": true,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "aodn:PER",
+    "is_stale": true,
+    "lat": -31.97,
+    "latest_time": "2026-09-07T10:00:00Z",
+    "license_label": "CC-BY 4.0",
+    "lon": 115.73,
+    "name": "Perth",
+    "source": "AODN",
+    "source_name": "AODN",
+    "source_url": "https://aodn",
+    "tz": "Etc/GMT-8"
+   },
+   {
+    "attribution_text": "Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": true,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "aodn:HOB",
+    "is_stale": false,
+    "lat": -42.9,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "CC-BY 4.0",
+    "lon": 147.4,
+    "name": "Hobart",
+    "source": "AODN",
+    "source_name": "AODN",
+    "source_url": "https://aodn",
+    "tz": "Etc/GMT-10"
+   }
+  ],
+  "AusWaves": [
+   {
+    "attribution_text": "Source: AusWaves",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": true,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "auswaves:sydney",
+    "is_stale": false,
+    "lat": -33.771,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "Open",
+    "lon": 151.412,
+    "name": "Sydney",
+    "source": "AusWaves",
+    "source_name": "AusWaves",
+    "source_url": "https://auswaves"
+   },
+   {
+    "attribution_text": "Source: AusWaves",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": true,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "auswaves:brisbane",
+    "is_stale": false,
+    "lat": -27.49,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "Open",
+    "lon": 153.63,
+    "name": "Brisbane",
+    "source": "AusWaves",
+    "source_name": "AusWaves",
+    "source_url": "https://auswaves",
+    "tz": "Etc/GMT-10"
+   }
+  ],
+  "CDIP": [
+   {
+    "attribution_text": "Source: CDIP / Scripps",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": true,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "cdip:106",
+    "is_stale": false,
+    "lat": 21.672,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "Open",
+    "lon": -158.118,
+    "name": "Waimea Bay",
+    "source": "CDIP",
+    "source_name": "CDIP",
+    "source_url": "https://cdip.ucsd.edu"
+   },
+   {
+    "attribution_text": "Source: CDIP / Scripps",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": true,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "cdip:201",
+    "is_stale": false,
+    "lat": 32.87,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "Open",
+    "lon": -117.27,
+    "name": "Scripps Nearshore",
+    "source": "CDIP",
+    "source_name": "CDIP",
+    "source_url": "https://cdip.ucsd.edu",
+    "tz": "Etc/GMT+8"
+   }
+  ],
+  "CEFAS": [
+   {
+    "attribution_text": "Source: CEFAS WaveNet",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": false,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "cefas:M6B",
+    "is_stale": false,
+    "lat": 53.1,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "OGL",
+    "lon": -15.9,
+    "name": "M6 Buoy",
+    "source": "CEFAS",
+    "source_name": "CEFAS WaveNet",
+    "source_url": "https://wavenet"
+   },
+   {
+    "attribution_text": "Source: CEFAS WaveNet",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": false,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "cefas:PERR",
+    "is_stale": false,
+    "lat": 50.35,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "OGL",
+    "lon": -5.17,
+    "name": "Perranporth",
+    "source": "CEFAS",
+    "source_name": "CEFAS WaveNet",
+    "source_url": "https://wavenet",
+    "tz": "Etc/GMT+0"
+   }
+  ],
+  "CMEMS": [
+   {
+    "attribution_text": "Source: Copernicus Marine Service in situ NRT",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": false,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "cmems:6200001",
+    "is_stale": false,
+    "lat": 45.2,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "CMEMS",
+    "lon": -5.0,
+    "name": "Biscay",
+    "source": "CMEMS",
+    "source_name": "Copernicus Marine",
+    "source_url": "https://marine.copernicus.eu",
+    "tz": "Etc/GMT+0"
+   },
+   {
+    "attribution_text": "Source: Copernicus Marine Service in situ NRT",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": false,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "cmems:K13X",
+    "is_stale": false,
+    "lat": 53.2205,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "CMEMS",
+    "lon": 3.2205,
+    "name": "K13",
+    "source": "CMEMS",
+    "source_name": "Copernicus Marine",
+    "source_url": "https://marine.copernicus.eu"
+   }
+  ],
+  "MI-IE": [
+   {
+    "also_sources": [
+     "CEFAS"
+    ],
+    "attribution_text": "Source: Marine Institute (Ireland)",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": true,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "mi-ie:M6",
+    "is_stale": false,
+    "lat": 53.07,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "CC-BY",
+    "lon": -15.88,
+    "name": "M6",
+    "source": "MI-IE",
+    "source_name": "Marine Institute",
+    "source_url": "https://marine.ie",
+    "tz": "Etc/GMT+1"
+   }
+  ],
+  "NDBC": [
+   {
+    "also_sources": [
+     "CDIP"
+    ],
+    "attribution_text": "Source: NOAA National Data Buoy Center",
+    "capabilities": {
+     "bulk": true,
+     "directional": true,
+     "partitions": true,
+     "recent_history": true,
+     "spectra": true
+    },
+    "dup_of": null,
+    "id": "ndbc:51201",
+    "is_stale": false,
+    "lat": 21.671,
+    "license_label": "Public domain (US Govt)",
+    "lon": -158.117,
+    "name": "Waimea Bay, HI",
+    "source": "NDBC",
+    "source_name": "NOAA NDBC",
+    "source_url": "https://www.ndbc.noaa.gov"
+   },
+   {
+    "attribution_text": "Source: NOAA National Data Buoy Center",
+    "capabilities": {
+     "bulk": true,
+     "directional": true,
+     "partitions": true,
+     "recent_history": true,
+     "spectra": true
+    },
+    "dup_of": null,
+    "id": "ndbc:51001",
+    "is_stale": false,
+    "lat": 24.4,
+    "license_label": "Public domain (US Govt)",
+    "lon": -162.0,
+    "name": "NW Hawaii",
+    "source": "NDBC",
+    "source_name": "NOAA NDBC",
+    "source_url": "https://www.ndbc.noaa.gov"
+   },
+   {
+    "attribution_text": "Source: NOAA National Data Buoy Center",
+    "capabilities": {
+     "bulk": true,
+     "directional": true,
+     "partitions": true,
+     "recent_history": true,
+     "spectra": true
+    },
+    "dup_of": null,
+    "id": "ndbc:46001",
+    "is_stale": false,
+    "lat": 56.3,
+    "license_label": "Public domain (US Govt)",
+    "lon": -148.0,
+    "name": "Gulf of Alaska",
+    "source": "NDBC",
+    "source_name": "NOAA NDBC",
+    "source_url": "https://www.ndbc.noaa.gov"
+   }
+  ],
+  "QLD": [],
+  "RWS": [
+   {
+    "also_sources": [
+     "CMEMS"
+    ],
+    "attribution_text": "Source: RWS",
+    "capabilities": {
+     "bulk": true,
+     "directional": false,
+     "partitions": false,
+     "recent_history": true,
+     "spectra": false
+    },
+    "dup_of": null,
+    "id": "rws:K13",
+    "is_stale": false,
+    "lat": 53.22,
+    "latest_time": "2026-09-09T10:00:00Z",
+    "license_label": "Open",
+    "lon": 3.22,
+    "name": "K13",
+    "source": "RWS",
+    "source_name": "Rijkswaterstaat",
+    "source_url": "https://rws",
+    "tz": "Etc/GMT+0"
+   }
+  ],
+  "SMHI": []
+ },
+ "steps": [
+  {
+   "body": "[{\"also_sources\":[\"CDIP\"],\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51201\",\"is_stale\":false,\"lat\":21.671,\"license_label\":\"Public domain (US Govt)\",\"lon\":-158.117,\"name\":\"Waimea Bay, HI\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51001\",\"is_stale\":false,\"lat\":24.4,\"license_label\":\"Public domain (US Govt)\",\"lon\":-162.0,\"name\":\"NW Hawaii\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:46001\",\"is_stale\":false,\"lat\":56.3,\"license_label\":\"Public domain (US Govt)\",\"lon\":-148.0,\"name\":\"Gulf of Alaska\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"also_sources\":[\"AusWaves\"],\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"aodn:SYD\",\"is_stale\":false,\"lat\":-33.77,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":151.41,\"name\":\"Sydney\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: AusWaves\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"auswaves:brisbane\",\"is_stale\":false,\"lat\":-27.49,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":153.63,\"name\":\"Brisbane\",\"source\":\"AusWaves\",\"source_name\":\"AusWaves\",\"source_url\":\"https://auswaves\",\"tz\":\"Etc/GMT-10\"},{\"also_sources\":[\"CEFAS\"],\"attribution_text\":\"Source: Marine Institute (Ireland)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"mi-ie:M6\",\"is_stale\":false,\"lat\":53.07,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY\",\"lon\":-15.88,\"name\":\"M6\",\"source\":\"MI-IE\",\"source_name\":\"Marine Institute\",\"source_url\":\"https://marine.ie\",\"tz\":\"Etc/GMT+1\"},{\"also_sources\":[\"CMEMS\"],\"attribution_text\":\"Source: RWS\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"rws:K13\",\"is_stale\":false,\"lat\":53.22,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":3.22,\"name\":\"K13\",\"source\":\"RWS\",\"source_name\":\"Rijkswaterstaat\",\"source_url\":\"https://rws\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CEFAS WaveNet\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cefas:PERR\",\"is_stale\":false,\"lat\":50.35,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"OGL\",\"lon\":-5.17,\"name\":\"Perranporth\",\"source\":\"CEFAS\",\"source_name\":\"CEFAS WaveNet\",\"source_url\":\"https://wavenet\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CDIP / Scripps\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"cdip:201\",\"is_stale\":false,\"lat\":32.87,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":-117.27,\"name\":\"Scripps Nearshore\",\"source\":\"CDIP\",\"source_name\":\"CDIP\",\"source_url\":\"https://cdip.ucsd.edu\",\"tz\":\"Etc/GMT+8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:PER\",\"is_stale\":true,\"lat\":-31.97,\"latest_time\":\"2026-09-07T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":115.73,\"name\":\"Perth\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-8\"},{\"attribution_text\":\"Source: Copernicus Marine Service in situ NRT\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cmems:6200001\",\"is_stale\":false,\"lat\":45.2,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CMEMS\",\"lon\":-5.0,\"name\":\"Biscay\",\"source\":\"CMEMS\",\"source_name\":\"Copernicus Marine\",\"source_url\":\"https://marine.copernicus.eu\",\"tz\":\"Etc/GMT+0\"}]",
+   "cache_control": "public, max-age=900",
+   "content_type": "application/json",
+   "etag": "\"2cd6af7d91d9dfc46518d4743b2943b3\"",
+   "fetch_calls": {
+    "AODN": 1,
+    "AusWaves": 1,
+    "CDIP": 1,
+    "CEFAS": 1,
+    "CMEMS": 1,
+    "MI-IE": 1,
+    "NDBC": 1,
+    "QLD": 1,
+    "RWS": 1,
+    "SMHI": 1
+   },
+   "status": 200,
+   "step": 1
+  },
+  {
+   "body": "[{\"also_sources\":[\"CDIP\"],\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51201\",\"is_stale\":false,\"lat\":21.671,\"license_label\":\"Public domain (US Govt)\",\"lon\":-158.117,\"name\":\"Waimea Bay, HI\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51001\",\"is_stale\":false,\"lat\":24.4,\"license_label\":\"Public domain (US Govt)\",\"lon\":-162.0,\"name\":\"NW Hawaii\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:46001\",\"is_stale\":false,\"lat\":56.3,\"license_label\":\"Public domain (US Govt)\",\"lon\":-148.0,\"name\":\"Gulf of Alaska\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"also_sources\":[\"AusWaves\"],\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"aodn:SYD\",\"is_stale\":false,\"lat\":-33.77,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":151.41,\"name\":\"Sydney\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: AusWaves\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"auswaves:brisbane\",\"is_stale\":false,\"lat\":-27.49,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":153.63,\"name\":\"Brisbane\",\"source\":\"AusWaves\",\"source_name\":\"AusWaves\",\"source_url\":\"https://auswaves\",\"tz\":\"Etc/GMT-10\"},{\"also_sources\":[\"CEFAS\"],\"attribution_text\":\"Source: Marine Institute (Ireland)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"mi-ie:M6\",\"is_stale\":false,\"lat\":53.07,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY\",\"lon\":-15.88,\"name\":\"M6\",\"source\":\"MI-IE\",\"source_name\":\"Marine Institute\",\"source_url\":\"https://marine.ie\",\"tz\":\"Etc/GMT+1\"},{\"also_sources\":[\"CMEMS\"],\"attribution_text\":\"Source: RWS\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"rws:K13\",\"is_stale\":false,\"lat\":53.22,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":3.22,\"name\":\"K13\",\"source\":\"RWS\",\"source_name\":\"Rijkswaterstaat\",\"source_url\":\"https://rws\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CEFAS WaveNet\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cefas:PERR\",\"is_stale\":false,\"lat\":50.35,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"OGL\",\"lon\":-5.17,\"name\":\"Perranporth\",\"source\":\"CEFAS\",\"source_name\":\"CEFAS WaveNet\",\"source_url\":\"https://wavenet\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CDIP / Scripps\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"cdip:201\",\"is_stale\":false,\"lat\":32.87,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":-117.27,\"name\":\"Scripps Nearshore\",\"source\":\"CDIP\",\"source_name\":\"CDIP\",\"source_url\":\"https://cdip.ucsd.edu\",\"tz\":\"Etc/GMT+8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:PER\",\"is_stale\":true,\"lat\":-31.97,\"latest_time\":\"2026-09-07T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":115.73,\"name\":\"Perth\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-8\"},{\"attribution_text\":\"Source: Copernicus Marine Service in situ NRT\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cmems:6200001\",\"is_stale\":false,\"lat\":45.2,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CMEMS\",\"lon\":-5.0,\"name\":\"Biscay\",\"source\":\"CMEMS\",\"source_name\":\"Copernicus Marine\",\"source_url\":\"https://marine.copernicus.eu\",\"tz\":\"Etc/GMT+0\"}]",
+   "cache_control": "public, max-age=900",
+   "content_type": "application/json",
+   "etag": "\"2cd6af7d91d9dfc46518d4743b2943b3\"",
+   "fetch_calls": {
+    "AODN": 1,
+    "AusWaves": 1,
+    "CDIP": 1,
+    "CEFAS": 1,
+    "CMEMS": 1,
+    "MI-IE": 1,
+    "NDBC": 1,
+    "QLD": 1,
+    "RWS": 1,
+    "SMHI": 1
+   },
+   "status": 200,
+   "step": 2
+  },
+  {
+   "body": "[{\"also_sources\":[\"CDIP\"],\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51201\",\"is_stale\":false,\"lat\":21.671,\"license_label\":\"Public domain (US Govt)\",\"lon\":-158.117,\"name\":\"Waimea Bay, HI\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51001\",\"is_stale\":false,\"lat\":24.4,\"license_label\":\"Public domain (US Govt)\",\"lon\":-162.0,\"name\":\"NW Hawaii\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:46001\",\"is_stale\":false,\"lat\":56.3,\"license_label\":\"Public domain (US Govt)\",\"lon\":-148.0,\"name\":\"Gulf of Alaska\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"also_sources\":[\"AusWaves\"],\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"aodn:SYD\",\"is_stale\":false,\"lat\":-33.77,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":151.41,\"name\":\"Sydney\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: AusWaves\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"auswaves:brisbane\",\"is_stale\":false,\"lat\":-27.49,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":153.63,\"name\":\"Brisbane\",\"source\":\"AusWaves\",\"source_name\":\"AusWaves\",\"source_url\":\"https://auswaves\",\"tz\":\"Etc/GMT-10\"},{\"also_sources\":[\"CEFAS\"],\"attribution_text\":\"Source: Marine Institute (Ireland)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"mi-ie:M6\",\"is_stale\":false,\"lat\":53.07,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY\",\"lon\":-15.88,\"name\":\"M6\",\"source\":\"MI-IE\",\"source_name\":\"Marine Institute\",\"source_url\":\"https://marine.ie\",\"tz\":\"Etc/GMT+1\"},{\"also_sources\":[\"CMEMS\"],\"attribution_text\":\"Source: RWS\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"rws:K13\",\"is_stale\":false,\"lat\":53.22,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":3.22,\"name\":\"K13\",\"source\":\"RWS\",\"source_name\":\"Rijkswaterstaat\",\"source_url\":\"https://rws\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CEFAS WaveNet\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cefas:PERR\",\"is_stale\":false,\"lat\":50.35,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"OGL\",\"lon\":-5.17,\"name\":\"Perranporth\",\"source\":\"CEFAS\",\"source_name\":\"CEFAS WaveNet\",\"source_url\":\"https://wavenet\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CDIP / Scripps\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"cdip:201\",\"is_stale\":false,\"lat\":32.87,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":-117.27,\"name\":\"Scripps Nearshore\",\"source\":\"CDIP\",\"source_name\":\"CDIP\",\"source_url\":\"https://cdip.ucsd.edu\",\"tz\":\"Etc/GMT+8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:PER\",\"is_stale\":true,\"lat\":-31.97,\"latest_time\":\"2026-09-07T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":115.73,\"name\":\"Perth\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-8\"},{\"attribution_text\":\"Source: Copernicus Marine Service in situ NRT\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cmems:6200001\",\"is_stale\":false,\"lat\":45.2,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CMEMS\",\"lon\":-5.0,\"name\":\"Biscay\",\"source\":\"CMEMS\",\"source_name\":\"Copernicus Marine\",\"source_url\":\"https://marine.copernicus.eu\",\"tz\":\"Etc/GMT+0\"}]",
+   "cache_control": "public, max-age=900",
+   "content_type": "application/json",
+   "etag": "\"2cd6af7d91d9dfc46518d4743b2943b3\"",
+   "fetch_calls": {
+    "AODN": 1,
+    "AusWaves": 1,
+    "CDIP": 1,
+    "CEFAS": 1,
+    "CMEMS": 1,
+    "MI-IE": 1,
+    "NDBC": 1,
+    "QLD": 1,
+    "RWS": 1,
+    "SMHI": 1
+   },
+   "status": 200,
+   "step": 3
+  },
+  {
+   "body": "",
+   "cache_control": "public, max-age=900",
+   "content_type": null,
+   "etag": "\"2cd6af7d91d9dfc46518d4743b2943b3\"",
+   "fetch_calls": {
+    "AODN": 1,
+    "AusWaves": 1,
+    "CDIP": 1,
+    "CEFAS": 1,
+    "CMEMS": 1,
+    "MI-IE": 1,
+    "NDBC": 1,
+    "QLD": 1,
+    "RWS": 1,
+    "SMHI": 1
+   },
+   "status": 304,
+   "step": 4
+  },
+  {
+   "body": "[{\"also_sources\":[\"CDIP\"],\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51201\",\"is_stale\":false,\"lat\":21.671,\"license_label\":\"Public domain (US Govt)\",\"lon\":-158.117,\"name\":\"Waimea Bay, HI\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51001\",\"is_stale\":false,\"lat\":24.4,\"license_label\":\"Public domain (US Govt)\",\"lon\":-162.0,\"name\":\"NW Hawaii\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:46001\",\"is_stale\":false,\"lat\":56.3,\"license_label\":\"Public domain (US Govt)\",\"lon\":-148.0,\"name\":\"Gulf of Alaska\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"also_sources\":[\"AusWaves\"],\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"aodn:SYD\",\"is_stale\":false,\"lat\":-33.77,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":151.41,\"name\":\"Sydney\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: AusWaves\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"auswaves:brisbane\",\"is_stale\":false,\"lat\":-27.49,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":153.63,\"name\":\"Brisbane\",\"source\":\"AusWaves\",\"source_name\":\"AusWaves\",\"source_url\":\"https://auswaves\",\"tz\":\"Etc/GMT-10\"},{\"also_sources\":[\"CEFAS\"],\"attribution_text\":\"Source: Marine Institute (Ireland)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"mi-ie:M6\",\"is_stale\":false,\"lat\":53.07,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY\",\"lon\":-15.88,\"name\":\"M6\",\"source\":\"MI-IE\",\"source_name\":\"Marine Institute\",\"source_url\":\"https://marine.ie\",\"tz\":\"Etc/GMT+1\"},{\"also_sources\":[\"CMEMS\"],\"attribution_text\":\"Source: RWS\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"rws:K13\",\"is_stale\":false,\"lat\":53.22,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":3.22,\"name\":\"K13\",\"source\":\"RWS\",\"source_name\":\"Rijkswaterstaat\",\"source_url\":\"https://rws\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CEFAS WaveNet\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cefas:PERR\",\"is_stale\":false,\"lat\":50.35,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"OGL\",\"lon\":-5.17,\"name\":\"Perranporth\",\"source\":\"CEFAS\",\"source_name\":\"CEFAS WaveNet\",\"source_url\":\"https://wavenet\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CDIP / Scripps\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"cdip:201\",\"is_stale\":false,\"lat\":32.87,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":-117.27,\"name\":\"Scripps Nearshore\",\"source\":\"CDIP\",\"source_name\":\"CDIP\",\"source_url\":\"https://cdip.ucsd.edu\",\"tz\":\"Etc/GMT+8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:PER\",\"is_stale\":true,\"lat\":-31.97,\"latest_time\":\"2026-09-07T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":115.73,\"name\":\"Perth\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-8\"},{\"attribution_text\":\"Source: Copernicus Marine Service in situ NRT\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cmems:6200001\",\"is_stale\":false,\"lat\":45.2,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CMEMS\",\"lon\":-5.0,\"name\":\"Biscay\",\"source\":\"CMEMS\",\"source_name\":\"Copernicus Marine\",\"source_url\":\"https://marine.copernicus.eu\",\"tz\":\"Etc/GMT+0\"}]",
+   "cache_control": "public, max-age=900",
+   "content_type": "application/json",
+   "etag": "\"2cd6af7d91d9dfc46518d4743b2943b3\"",
+   "fetch_calls": {
+    "AODN": 2,
+    "AusWaves": 1,
+    "CDIP": 1,
+    "CEFAS": 1,
+    "CMEMS": 1,
+    "MI-IE": 1,
+    "NDBC": 1,
+    "QLD": 1,
+    "RWS": 1,
+    "SMHI": 1
+   },
+   "status": 200,
+   "step": 5
+  },
+  {
+   "body": "[{\"also_sources\":[\"CDIP\"],\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51201\",\"is_stale\":false,\"lat\":21.671,\"license_label\":\"Public domain (US Govt)\",\"lon\":-158.117,\"name\":\"Waimea Bay, HI\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51001\",\"is_stale\":false,\"lat\":24.4,\"license_label\":\"Public domain (US Govt)\",\"lon\":-162.0,\"name\":\"NW Hawaii\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:46001\",\"is_stale\":false,\"lat\":56.3,\"license_label\":\"Public domain (US Govt)\",\"lon\":-148.0,\"name\":\"Gulf of Alaska\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"also_sources\":[\"AusWaves\"],\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"aodn:SYD\",\"is_stale\":false,\"lat\":-33.77,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":151.41,\"name\":\"Sydney\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: AusWaves\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"auswaves:brisbane\",\"is_stale\":false,\"lat\":-27.49,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":153.63,\"name\":\"Brisbane\",\"source\":\"AusWaves\",\"source_name\":\"AusWaves\",\"source_url\":\"https://auswaves\",\"tz\":\"Etc/GMT-10\"},{\"also_sources\":[\"CEFAS\"],\"attribution_text\":\"Source: Marine Institute (Ireland)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"mi-ie:M6\",\"is_stale\":false,\"lat\":53.07,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY\",\"lon\":-15.88,\"name\":\"M6\",\"source\":\"MI-IE\",\"source_name\":\"Marine Institute\",\"source_url\":\"https://marine.ie\",\"tz\":\"Etc/GMT+1\"},{\"also_sources\":[\"CMEMS\"],\"attribution_text\":\"Source: RWS\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"rws:K13\",\"is_stale\":false,\"lat\":53.22,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":3.22,\"name\":\"K13\",\"source\":\"RWS\",\"source_name\":\"Rijkswaterstaat\",\"source_url\":\"https://rws\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CEFAS WaveNet\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cefas:PERR\",\"is_stale\":false,\"lat\":50.35,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"OGL\",\"lon\":-5.17,\"name\":\"Perranporth\",\"source\":\"CEFAS\",\"source_name\":\"CEFAS WaveNet\",\"source_url\":\"https://wavenet\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CDIP / Scripps\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"cdip:201\",\"is_stale\":false,\"lat\":32.87,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":-117.27,\"name\":\"Scripps Nearshore\",\"source\":\"CDIP\",\"source_name\":\"CDIP\",\"source_url\":\"https://cdip.ucsd.edu\",\"tz\":\"Etc/GMT+8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:PER\",\"is_stale\":true,\"lat\":-31.97,\"latest_time\":\"2026-09-07T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":115.73,\"name\":\"Perth\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-8\"},{\"attribution_text\":\"Source: Copernicus Marine Service in situ NRT\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cmems:6200001\",\"is_stale\":false,\"lat\":45.2,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CMEMS\",\"lon\":-5.0,\"name\":\"Biscay\",\"source\":\"CMEMS\",\"source_name\":\"Copernicus Marine\",\"source_url\":\"https://marine.copernicus.eu\",\"tz\":\"Etc/GMT+0\"}]",
+   "cache_control": "public, max-age=900",
+   "content_type": "application/json",
+   "etag": "\"2cd6af7d91d9dfc46518d4743b2943b3\"",
+   "fetch_calls": {
+    "AODN": 2,
+    "AusWaves": 1,
+    "CDIP": 1,
+    "CEFAS": 1,
+    "CMEMS": 1,
+    "MI-IE": 1,
+    "NDBC": 1,
+    "QLD": 1,
+    "RWS": 1,
+    "SMHI": 1
+   },
+   "status": 200,
+   "step": 6
+  },
+  {
+   "body": "[{\"also_sources\":[\"CDIP\"],\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51201\",\"is_stale\":false,\"lat\":21.671,\"license_label\":\"Public domain (US Govt)\",\"lon\":-158.117,\"name\":\"Waimea Bay, HI\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51001\",\"is_stale\":false,\"lat\":24.4,\"license_label\":\"Public domain (US Govt)\",\"lon\":-162.0,\"name\":\"NW Hawaii\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:46001\",\"is_stale\":false,\"lat\":56.3,\"license_label\":\"Public domain (US Govt)\",\"lon\":-148.0,\"name\":\"Gulf of Alaska\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"also_sources\":[\"AusWaves\"],\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"aodn:SYD\",\"is_stale\":false,\"lat\":-33.77,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":151.41,\"name\":\"Sydney\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: AusWaves\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"auswaves:brisbane\",\"is_stale\":false,\"lat\":-27.49,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":153.63,\"name\":\"Brisbane\",\"source\":\"AusWaves\",\"source_name\":\"AusWaves\",\"source_url\":\"https://auswaves\",\"tz\":\"Etc/GMT-10\"},{\"also_sources\":[\"CEFAS\"],\"attribution_text\":\"Source: Marine Institute (Ireland)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"mi-ie:M6\",\"is_stale\":false,\"lat\":53.07,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY\",\"lon\":-15.88,\"name\":\"M6\",\"source\":\"MI-IE\",\"source_name\":\"Marine Institute\",\"source_url\":\"https://marine.ie\",\"tz\":\"Etc/GMT+1\"},{\"also_sources\":[\"CMEMS\"],\"attribution_text\":\"Source: RWS\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"rws:K13\",\"is_stale\":false,\"lat\":53.22,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":3.22,\"name\":\"K13\",\"source\":\"RWS\",\"source_name\":\"Rijkswaterstaat\",\"source_url\":\"https://rws\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CEFAS WaveNet\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cefas:PERR\",\"is_stale\":false,\"lat\":50.35,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"OGL\",\"lon\":-5.17,\"name\":\"Perranporth\",\"source\":\"CEFAS\",\"source_name\":\"CEFAS WaveNet\",\"source_url\":\"https://wavenet\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CDIP / Scripps\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"cdip:201\",\"is_stale\":false,\"lat\":32.87,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":-117.27,\"name\":\"Scripps Nearshore\",\"source\":\"CDIP\",\"source_name\":\"CDIP\",\"source_url\":\"https://cdip.ucsd.edu\",\"tz\":\"Etc/GMT+8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:PER\",\"is_stale\":true,\"lat\":-31.97,\"latest_time\":\"2026-09-07T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":115.73,\"name\":\"Perth\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-8\"},{\"attribution_text\":\"Source: Copernicus Marine Service in situ NRT\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cmems:6200001\",\"is_stale\":false,\"lat\":45.2,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CMEMS\",\"lon\":-5.0,\"name\":\"Biscay\",\"source\":\"CMEMS\",\"source_name\":\"Copernicus Marine\",\"source_url\":\"https://marine.copernicus.eu\",\"tz\":\"Etc/GMT+0\"}]",
+   "cache_control": "public, max-age=900",
+   "content_type": "application/json",
+   "etag": "\"2cd6af7d91d9dfc46518d4743b2943b3\"",
+   "fetch_calls": {
+    "AODN": 2,
+    "AusWaves": 1,
+    "CDIP": 1,
+    "CEFAS": 1,
+    "CMEMS": 1,
+    "MI-IE": 1,
+    "NDBC": 1,
+    "QLD": 1,
+    "RWS": 1,
+    "SMHI": 1
+   },
+   "status": 200,
+   "step": 7
+  },
+  {
+   "body": "[{\"also_sources\":[\"CDIP\"],\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51201\",\"is_stale\":false,\"lat\":21.671,\"license_label\":\"Public domain (US Govt)\",\"lon\":-158.117,\"name\":\"Waimea Bay, HI\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51001\",\"is_stale\":false,\"lat\":24.4,\"license_label\":\"Public domain (US Govt)\",\"lon\":-162.0,\"name\":\"NW Hawaii\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:46001\",\"is_stale\":false,\"lat\":56.3,\"license_label\":\"Public domain (US Govt)\",\"lon\":-148.0,\"name\":\"Gulf of Alaska\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"also_sources\":[\"AusWaves\"],\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"aodn:SYD\",\"is_stale\":false,\"lat\":-33.77,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":151.41,\"name\":\"Sydney\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: AusWaves\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"auswaves:brisbane\",\"is_stale\":false,\"lat\":-27.49,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":153.63,\"name\":\"Brisbane\",\"source\":\"AusWaves\",\"source_name\":\"AusWaves\",\"source_url\":\"https://auswaves\",\"tz\":\"Etc/GMT-10\"},{\"also_sources\":[\"CEFAS\"],\"attribution_text\":\"Source: Marine Institute (Ireland)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"mi-ie:M6\",\"is_stale\":false,\"lat\":53.07,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY\",\"lon\":-15.88,\"name\":\"M6\",\"source\":\"MI-IE\",\"source_name\":\"Marine Institute\",\"source_url\":\"https://marine.ie\",\"tz\":\"Etc/GMT+1\"},{\"also_sources\":[\"CMEMS\"],\"attribution_text\":\"Source: RWS\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"rws:K13\",\"is_stale\":false,\"lat\":53.22,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":3.22,\"name\":\"K13\",\"source\":\"RWS\",\"source_name\":\"Rijkswaterstaat\",\"source_url\":\"https://rws\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CEFAS WaveNet\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cefas:PERR\",\"is_stale\":false,\"lat\":50.35,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"OGL\",\"lon\":-5.17,\"name\":\"Perranporth\",\"source\":\"CEFAS\",\"source_name\":\"CEFAS WaveNet\",\"source_url\":\"https://wavenet\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CDIP / Scripps\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"cdip:201\",\"is_stale\":false,\"lat\":32.87,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":-117.27,\"name\":\"Scripps Nearshore\",\"source\":\"CDIP\",\"source_name\":\"CDIP\",\"source_url\":\"https://cdip.ucsd.edu\",\"tz\":\"Etc/GMT+8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:PER\",\"is_stale\":true,\"lat\":-31.97,\"latest_time\":\"2026-09-07T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":115.73,\"name\":\"Perth\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:HOB\",\"is_stale\":false,\"lat\":-42.9,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":147.4,\"name\":\"Hobart\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: Copernicus Marine Service in situ NRT\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cmems:6200001\",\"is_stale\":false,\"lat\":45.2,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CMEMS\",\"lon\":-5.0,\"name\":\"Biscay\",\"source\":\"CMEMS\",\"source_name\":\"Copernicus Marine\",\"source_url\":\"https://marine.copernicus.eu\",\"tz\":\"Etc/GMT+0\"}]",
+   "cache_control": "public, max-age=900",
+   "content_type": "application/json",
+   "etag": "\"33d48429f0b293303bc702cf7ee77f6b\"",
+   "fetch_calls": {
+    "AODN": 3,
+    "AusWaves": 1,
+    "CDIP": 1,
+    "CEFAS": 1,
+    "CMEMS": 1,
+    "MI-IE": 1,
+    "NDBC": 1,
+    "QLD": 1,
+    "RWS": 1,
+    "SMHI": 1
+   },
+   "status": 200,
+   "step": 8
+  },
+  {
+   "body": "[{\"also_sources\":[\"CDIP\"],\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51201\",\"is_stale\":false,\"lat\":21.671,\"license_label\":\"Public domain (US Govt)\",\"lon\":-158.117,\"name\":\"Waimea Bay, HI\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51001\",\"is_stale\":false,\"lat\":24.4,\"license_label\":\"Public domain (US Govt)\",\"lon\":-162.0,\"name\":\"NW Hawaii\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:46001\",\"is_stale\":false,\"lat\":56.3,\"license_label\":\"Public domain (US Govt)\",\"lon\":-148.0,\"name\":\"Gulf of Alaska\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"also_sources\":[\"AusWaves\"],\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"aodn:SYD\",\"is_stale\":false,\"lat\":-33.77,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":151.41,\"name\":\"Sydney\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: AusWaves\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"auswaves:brisbane\",\"is_stale\":false,\"lat\":-27.49,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":153.63,\"name\":\"Brisbane\",\"source\":\"AusWaves\",\"source_name\":\"AusWaves\",\"source_url\":\"https://auswaves\",\"tz\":\"Etc/GMT-10\"},{\"also_sources\":[\"CEFAS\"],\"attribution_text\":\"Source: Marine Institute (Ireland)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"mi-ie:M6\",\"is_stale\":false,\"lat\":53.07,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY\",\"lon\":-15.88,\"name\":\"M6\",\"source\":\"MI-IE\",\"source_name\":\"Marine Institute\",\"source_url\":\"https://marine.ie\",\"tz\":\"Etc/GMT+1\"},{\"also_sources\":[\"CMEMS\"],\"attribution_text\":\"Source: RWS\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"rws:K13\",\"is_stale\":false,\"lat\":53.22,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":3.22,\"name\":\"K13\",\"source\":\"RWS\",\"source_name\":\"Rijkswaterstaat\",\"source_url\":\"https://rws\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CEFAS WaveNet\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cefas:PERR\",\"is_stale\":false,\"lat\":50.35,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"OGL\",\"lon\":-5.17,\"name\":\"Perranporth\",\"source\":\"CEFAS\",\"source_name\":\"CEFAS WaveNet\",\"source_url\":\"https://wavenet\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CDIP / Scripps\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"cdip:201\",\"is_stale\":false,\"lat\":32.87,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":-117.27,\"name\":\"Scripps Nearshore\",\"source\":\"CDIP\",\"source_name\":\"CDIP\",\"source_url\":\"https://cdip.ucsd.edu\",\"tz\":\"Etc/GMT+8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:PER\",\"is_stale\":true,\"lat\":-31.97,\"latest_time\":\"2026-09-07T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":115.73,\"name\":\"Perth\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:HOB\",\"is_stale\":false,\"lat\":-42.9,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":147.4,\"name\":\"Hobart\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: Copernicus Marine Service in situ NRT\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cmems:6200001\",\"is_stale\":false,\"lat\":45.2,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CMEMS\",\"lon\":-5.0,\"name\":\"Biscay\",\"source\":\"CMEMS\",\"source_name\":\"Copernicus Marine\",\"source_url\":\"https://marine.copernicus.eu\",\"tz\":\"Etc/GMT+0\"}]",
+   "cache_control": "public, max-age=900",
+   "content_type": "application/json",
+   "etag": "\"33d48429f0b293303bc702cf7ee77f6b\"",
+   "fetch_calls": {
+    "AODN": 3,
+    "AusWaves": 1,
+    "CDIP": 1,
+    "CEFAS": 1,
+    "CMEMS": 1,
+    "MI-IE": 1,
+    "NDBC": 1,
+    "QLD": 1,
+    "RWS": 1,
+    "SMHI": 1
+   },
+   "status": 200,
+   "step": 9
+  },
+  {
+   "body": "[{\"also_sources\":[\"CDIP\"],\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51201\",\"is_stale\":false,\"lat\":21.671,\"license_label\":\"Public domain (US Govt)\",\"lon\":-158.117,\"name\":\"Waimea Bay, HI\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:51001\",\"is_stale\":false,\"lat\":24.4,\"license_label\":\"Public domain (US Govt)\",\"lon\":-162.0,\"name\":\"NW Hawaii\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"attribution_text\":\"Source: NOAA National Data Buoy Center\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"ndbc:46001\",\"is_stale\":false,\"lat\":56.3,\"license_label\":\"Public domain (US Govt)\",\"lon\":-148.0,\"name\":\"Gulf of Alaska\",\"source\":\"NDBC\",\"source_name\":\"NOAA NDBC\",\"source_url\":\"https://www.ndbc.noaa.gov\"},{\"also_sources\":[\"AusWaves\"],\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":true,\"partitions\":true,\"recent_history\":true,\"spectra\":true},\"dup_of\":null,\"id\":\"aodn:SYD\",\"is_stale\":false,\"lat\":-33.77,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":151.41,\"name\":\"Sydney\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: AusWaves\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"auswaves:brisbane\",\"is_stale\":false,\"lat\":-27.49,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":153.63,\"name\":\"Brisbane\",\"source\":\"AusWaves\",\"source_name\":\"AusWaves\",\"source_url\":\"https://auswaves\",\"tz\":\"Etc/GMT-10\"},{\"also_sources\":[\"CEFAS\"],\"attribution_text\":\"Source: Marine Institute (Ireland)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"mi-ie:M6\",\"is_stale\":false,\"lat\":53.07,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY\",\"lon\":-15.88,\"name\":\"M6\",\"source\":\"MI-IE\",\"source_name\":\"Marine Institute\",\"source_url\":\"https://marine.ie\",\"tz\":\"Etc/GMT+1\"},{\"also_sources\":[\"CMEMS\"],\"attribution_text\":\"Source: RWS\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"rws:K13\",\"is_stale\":false,\"lat\":53.22,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":3.22,\"name\":\"K13\",\"source\":\"RWS\",\"source_name\":\"Rijkswaterstaat\",\"source_url\":\"https://rws\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CEFAS WaveNet\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cefas:PERR\",\"is_stale\":false,\"lat\":50.35,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"OGL\",\"lon\":-5.17,\"name\":\"Perranporth\",\"source\":\"CEFAS\",\"source_name\":\"CEFAS WaveNet\",\"source_url\":\"https://wavenet\",\"tz\":\"Etc/GMT+0\"},{\"attribution_text\":\"Source: CDIP / Scripps\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"cdip:201\",\"is_stale\":false,\"lat\":32.87,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"Open\",\"lon\":-117.27,\"name\":\"Scripps Nearshore\",\"source\":\"CDIP\",\"source_name\":\"CDIP\",\"source_url\":\"https://cdip.ucsd.edu\",\"tz\":\"Etc/GMT+8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:PER\",\"is_stale\":true,\"lat\":-31.97,\"latest_time\":\"2026-09-07T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":115.73,\"name\":\"Perth\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-8\"},{\"attribution_text\":\"Source: IMOS/AODN NRT wave buoys (CC-BY 4.0)\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"dup_of\":null,\"id\":\"aodn:HOB\",\"is_stale\":false,\"lat\":-42.9,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CC-BY 4.0\",\"lon\":147.4,\"name\":\"Hobart\",\"source\":\"AODN\",\"source_name\":\"AODN\",\"source_url\":\"https://aodn\",\"tz\":\"Etc/GMT-10\"},{\"attribution_text\":\"Source: Copernicus Marine Service in situ NRT\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":false,\"spectra\":false},\"dup_of\":null,\"id\":\"cmems:6200001\",\"is_stale\":false,\"lat\":45.2,\"latest_time\":\"2026-09-09T10:00:00Z\",\"license_label\":\"CMEMS\",\"lon\":-5.0,\"name\":\"Biscay\",\"source\":\"CMEMS\",\"source_name\":\"Copernicus Marine\",\"source_url\":\"https://marine.copernicus.eu\",\"tz\":\"Etc/GMT+0\"}]",
+   "cache_control": "public, max-age=900",
+   "content_type": "application/json",
+   "etag": "\"33d48429f0b293303bc702cf7ee77f6b\"",
+   "fetch_calls": {
+    "AODN": 3,
+    "AusWaves": 1,
+    "CDIP": 1,
+    "CEFAS": 1,
+    "CMEMS": 1,
+    "MI-IE": 1,
+    "NDBC": 1,
+    "QLD": 1,
+    "RWS": 1,
+    "SMHI": 1
+   },
+   "status": 200,
+   "step": 10
+  },
+  {
+   "body": "{\"attribution_text\":\"Source: CDIP / Scripps\",\"capabilities\":{\"bulk\":true,\"directional\":false,\"partitions\":false,\"recent_history\":true,\"spectra\":false},\"id\":\"cdip:106\",\"latest\":{\"dir_deg\":315,\"hs_m\":1.5,\"time_utc\":\"2026-09-09T10:00:00Z\",\"tp_s\":12.0},\"recent\":[],\"source\":\"CDIP\"}",
+   "cache_control": "public, max-age=300",
+   "content_type": "application/json",
+   "etag": "\"11369d94eb72356f92e49e1c6ab8726f\"",
+   "status": 200,
+   "step": 11
+  }
+ ]
+}

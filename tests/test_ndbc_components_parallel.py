@@ -43,7 +43,10 @@ def test_golden_scenarios_byte_identical(monkeypatch):
         assert new["status"] == old["status"], name
         assert new["body"] == old["body"], "raw body differs in scenario %s" % name
         assert new["content_type"] == old["content_type"], name
-        assert new["cache_control"] == old["cache_control"], name
+        # Explicit cache headers must be unchanged; a header-less golden (None) now receives the
+        # site-wide default policy from Release D (tests/test_cache_policy.py owns that).
+        if old["cache_control"] is not None:
+            assert new["cache_control"] == old["cache_control"], name
         assert sorted(new["fetched"]) == sorted(old["fetched"]), name   # same SET of upstream files
 
 

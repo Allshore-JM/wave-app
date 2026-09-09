@@ -552,7 +552,7 @@
         <div id="liveBuoySubtitle" class="small text-muted"></div>
       </div>
       <button type="button" class="btn-close ms-auto" aria-label="Close"
-              onclick="document.getElementById('liveBuoyPanel').style.display='none'"></button>
+              onclick="closeLiveBuoyPanel()"></button>
     </div>
 
     <div class="card-body">
@@ -1161,6 +1161,15 @@
       return chartJsPromise;
     }
     let activeLiveBuoyId = null;
+    // Monotonic id of the latest detail-panel request. Every loader captures it on entry
+    // and stops (no DOM writes) once a newer request or a panel close has bumped it, so an
+    // older buoy's response can never overwrite the buoy currently shown.
+    let liveDetailSeq = 0;
+
+    function closeLiveBuoyPanel() {
+      liveDetailSeq++;                          // discard any in-flight detail work
+      document.getElementById('liveBuoyPanel').style.display = 'none';
+    }
     let lastNoaaWaveSummaryData = null;
     let lastLiveComponentData = null;
     // Set while the panel is showing "No Recent Reports" so a unit change re-renders
@@ -1675,25 +1684,33 @@
     // Dispatch on source: NDBC keeps the rich NOAA summary + spectral-partition panel;
     // every other source (CDIP / AODN / QLD / AusWaves) gets the adaptive bulk panel.
     function loadLiveBuoyDetails(station) {
+      const seq = ++liveDetailSeq;
       const src = (station.source || '').toUpperCase();
       if (src === 'NDBC' || /^ndbc:/i.test(station.id || '')) {
-        return loadNdbcBuoyDetails(station);
+        return loadNdbcBuoyDetails(station, seq);
       }
-      return loadGenericBuoyDetails(station);
+      return loadGenericBuoyDetails(station, seq);
     }
 
-    async function loadNdbcBuoyDetails(station) {
+    async function loadNdbcBuoyDetails(station, seq) {
       showLiveBuoyPanelLoading(station);
+      const stale = () => seq !== liveDetailSeq;   // superseded or panel closed
 
       // Merged-feed ids are namespaced ("ndbc:46221"); the NDBC routes want the raw id.
       const rawId = (station.id || '').replace(/^ndbc:/i, '');
 
+      // Both requests start together (they were sequential); the summary still decides what
+      // is shown first. The noop catch keeps an unused/failed components request quiet --
+      // the real failure handling happens where it is awaited below.
+      const summaryRequest = fetch('/api/ndbc/station/' + encodeURIComponent(rawId) + '/wave-summary');
+      const componentRequest = fetch('/api/ndbc/station/' + encodeURIComponent(rawId) + '/components');
+      componentRequest.catch(function () {});
+
       try {
-        const summaryResponse = await fetch(
-          '/api/ndbc/station/' + encodeURIComponent(rawId) + '/wave-summary'
-        );
+        const summaryResponse = await summaryRequest;
 
         const summaryData = await summaryResponse.json();
+        if (stale()) return;
 
         if (!summaryResponse.ok || summaryData.error) {
           throw new Error(summaryData.error || 'Unable to load NOAA wave summary.');
@@ -1713,11 +1730,10 @@
         renderNoaaWaveSummary(summaryData);
 
         try {
-          const componentResponse = await fetch(
-            '/api/ndbc/station/' + encodeURIComponent(rawId) + '/components'
-          );
+          const componentResponse = await componentRequest;
 
           const componentData = await componentResponse.json();
+          if (stale()) return;
 
           // The spectral files can lag the .spec summary; don't render a stale
           // snapshot next to fresh summary values.
@@ -1725,11 +1741,13 @@
             // Make sure Chart.js is present for the spectrum plot; if the load fails the
             // render throws exactly as it would have with the CDN down before.
             try { await loadChartJs(); } catch (chartErr) {}
+            if (stale()) return;
             renderLiveBuoyDetails(componentData);
           }
         } catch (componentErr) {
           console.warn('Experimental spectral component load failed:', componentErr);
         }
+        if (stale()) return;
 
         document.getElementById('liveBuoyLoading').style.display = 'none';
         document.getElementById('liveBuoyError').classList.add('d-none');
@@ -1737,6 +1755,7 @@
         document.getElementById('liveBuoyContent').classList.remove('d-none');
 
       } catch (err) {
+        if (stale()) return;
         showLiveBuoyError(err.message);
       }
     }
@@ -2018,12 +2037,14 @@
       el.classList.remove('d-none');
     }
 
-    async function loadGenericBuoyDetails(station) {
+    async function loadGenericBuoyDetails(station, seq) {
       showLiveBuoyPanelLoading(station);
+      const stale = () => seq !== liveDetailSeq;   // superseded or panel closed
       lastGenericSpectra = null;
       try {
         const resp = await fetch('/api/buoys/' + encodeURIComponent(station.id) + '/latest');
         const payload = await resp.json();
+        if (stale()) return;
         if (!resp.ok || payload.error) {
           throw new Error(payload.error || 'Unable to load buoy observation.');
         }
@@ -2036,8 +2057,10 @@
             const cr = await fetch('/api/buoys/' + encodeURIComponent(station.id) + '/components');
             if (cr.ok) {
               const cdata = await cr.json();
+              if (stale()) return;
               if (!cdata.error) {
                 try { await loadChartJs(); } catch (chartErr) {}
+                if (stale()) return;
                 renderGenericSpectra(cdata, getSelectedUnit() === 'Metric', station.tz);
               }
             }
@@ -2046,6 +2069,7 @@
           }
         }
       } catch (err) {
+        if (stale()) return;
         showLiveBuoyError(err.message);
       }
     }
@@ -2752,7 +2776,7 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
         var p = document.getElementById('liveBuoyPanel');
-        if (p && p.style.display !== 'none') p.style.display = 'none';
+        if (p && p.style.display !== 'none') closeLiveBuoyPanel();
       }
     });
 

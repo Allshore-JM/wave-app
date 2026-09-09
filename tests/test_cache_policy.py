@@ -52,7 +52,8 @@ def test_headerless_routes_get_the_private_default(monkeypatch, method, path):
     r = c.open(path, method=method, data={"station": "51201"} if method == "POST" else None)
     cc = r.headers.get("Cache-Control")
     if path == "/api/buoys/cdip:106/latest":
-        assert cc == "public, max-age=300"                 # explicit opt-in kept exactly
+        assert cc == "public, max-age=300"                 # browser policy kept exactly ...
+        assert r.headers["CDN-Cache-Control"] == "no-store"  # ... but never shared at the edge
     else:
         assert cc == A._DEFAULT_CACHE_CONTROL, (path, r.status_code, cc)
     assert "Set-Cookie" not in r.headers
@@ -67,6 +68,8 @@ def test_explicit_public_headers_are_unchanged(monkeypatch):
     assert c.get("/favicon.ico").headers["Cache-Control"] == "public, max-age=604800"
     r = c.get(LIVE)
     assert r.headers["Cache-Control"] == "public, max-age=900"
+    r = c.get("/api/ndbc/live-wave-stations")
+    assert r.headers["CDN-Cache-Control"] == "no-store"      # legacy list route: live data too
 
 
 # ------------------------------ live-stations: BYPASS by default ---------------------------

@@ -143,8 +143,13 @@ def _evict_oldest(cache: dict, max_entries: int) -> None:
         cache.pop(oldest, None)
 
 
-def _json_cached(data, max_age: int):
+def _json_cached(data, max_age: int, cdn_cache_control: str = "no-store"):
     """JSON response with ETag + Cache-Control; honors If-None-Match -> 304.
+
+    The browser policy is `public, max-age`; the EDGE policy defaults to no-store, because a
+    shared cache would serve one visitor's copy to everyone for the full max-age and skip the
+    origin call that keeps live buoy data current. Routes whose data is static opt in by
+    passing an explicit CDN-Cache-Control value.
 
     If-None-Match is matched per RFC 7232: tolerates the ``W/`` weak prefix, a
     comma-separated list of tags, and the ``*`` wildcard, so a CDN in front
@@ -152,7 +157,7 @@ def _json_cached(data, max_age: int):
     revalidates to 304 instead of re-sending the full body.
     """
     payload, etag = _json_payload_and_etag(data)
-    return _json_cached_bytes(payload, etag, max_age)
+    return _json_cached_bytes(payload, etag, max_age, {"CDN-Cache-Control": cdn_cache_control})
 
 
 def _json_payload_and_etag(data):

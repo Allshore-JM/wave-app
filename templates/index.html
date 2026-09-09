@@ -4,6 +4,18 @@
   <meta charset="utf-8" />
   <title>Wave Forecast</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script>
+    // Start the two map-data requests NOW, before the browser parses the (large) forecast
+    // table and station list below; the map script picks the responses up when it runs.
+    // A rejection here is handled by the consumer's own .catch (the noop keeps it from
+    // surfacing as "unhandled" in the meantime).
+    window.__early = {
+      live: fetch('/api/buoys/live-stations'),
+      stations: fetch('/stations.json')
+    };
+    window.__early.live.catch(function () {});
+    window.__early.stations.catch(function () {});
+  </script>
   <!-- Open the CDN + tile-server connections while the HTML is still streaming (DNS+TLS is
        most of the cost of the first request on a cellular link). -->
   <link rel="preconnect" href="https://cdn.jsdelivr.net">
@@ -1090,8 +1102,15 @@
       saveMapView(map);   // persist so subsequent reloads stay on the buoy
     }
 
+    // Take the request started in <head> (once); any later call fetches afresh, so retries work.
+    function earlyFetch(name, url) {
+      const early = window.__early && window.__early[name];
+      if (window.__early) window.__early[name] = null;
+      return early || fetch(url);
+    }
+
     // Plot forecast stations
-    fetch('/stations.json')
+    earlyFetch('stations', '/stations.json')
       .then(r => r.json())
       .then(stations => {
         forecastStationsData = stations || [];
@@ -2225,7 +2244,7 @@
 
     function addLiveBuoyLayer() {
       // Merged worldwide live-buoy feed (NDBC + CDIP + AODN + QLD + AusWaves), deduped.
-      fetch('/api/buoys/live-stations')
+      earlyFetch('live', '/api/buoys/live-stations')
         .then(r => r.json())
         .then(stations => {
           liveStationsData = stations || [];

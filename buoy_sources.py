@@ -52,6 +52,13 @@ class BuoyProvider:
     capabilities = _caps()
     list_ttl_sec = 3600                  # station-list cache TTL
     timeout = 30
+    # A refresh that FAILS (network/HTTP/parse error) keeps the last good list instead of
+    # publishing an empty one for a whole TTL: the layer used to lose an entire agency's
+    # markers for up to list_ttl_sec after one upstream hiccup. The failed provider is
+    # retried after retry_after_sec; a good list is kept through failures for at most
+    # keep_on_failure_sec after it was fetched (then the old fail-soft [] applies again).
+    retry_after_sec = 300
+    keep_on_failure_sec = 6 * 3600
 
     def __init__(self, http=None):
         self.http = http or requests.Session()
@@ -61,6 +68,7 @@ class BuoyProvider:
         # Monotonic publish counter: every (re)fetch -- successful, empty, or failed -- bumps it,
         # so a snapshot's (list, version) pair identifies exactly which publish it came from.
         self._list_version = 0
+        self._list_ok_ts = 0.0           # when the current list was last fetched SUCCESSFULLY
         # Singleflight for the refresh itself: concurrent callers that find the list expired
         # wait here and then return the ONE freshly published list instead of each fetching.
         self._refresh_lock = threading.Lock()
@@ -99,17 +107,32 @@ class BuoyProvider:
             snap = self._snapshot_if_fresh()        # published while we waited?
             if snap is not None:
                 return snap
-            out = self._build_station_list()
+            out, ok = self._build_station_list()
             with self._lock:
+                now = time.time()
+                if (not ok and self._list_cache
+                        and (now - self._list_ok_ts) < self.keep_on_failure_sec):
+                    # Keep the last good list (same version -> identical bytes downstream);
+                    # come back sooner than a full TTL.
+                    self._list_ts = now - self.list_ttl_sec + min(self.retry_after_sec, self.list_ttl_sec)
+                    _log.warning("buoy provider %s: refresh failed, keeping the previous list "
+                                 "(%d stations, fetched %ds ago); retry in %ds", self.source,
+                                 len(self._list_cache), int(now - self._list_ok_ts),
+                                 min(self.retry_after_sec, self.list_ttl_sec))
+                    return self._list_cache, self._list_version, self._list_ts
                 self._list_cache = out
-                self._list_ts = time.time()
+                self._list_ts = now
                 self._list_version += 1
+                if ok:
+                    self._list_ok_ts = now
                 return out, self._list_version, self._list_ts
 
     def _build_station_list(self):
-        """One upstream fetch -> lean entries. Fail-soft: any error -> [] (no markers rather
-        than a broken map)."""
+        """One upstream fetch -> (lean entries, ok). ok=False means the fetch FAILED (as
+        opposed to a legitimately empty list); the caller decides whether to keep the last
+        good list. Fail-soft: a failure yields [] (no markers rather than a broken map)."""
         out = []
+        ok = True
         now = time.time()
         try:
             for s in self._fetch_stations():
@@ -144,7 +167,8 @@ class BuoyProvider:
         except Exception as e:
             _log.warning("buoy provider %s: station-list fetch failed (%s)", self.source, e)
             out = []                          # fail soft: no markers rather than a broken map
-        return out
+            ok = False
+        return out, ok
 
     def detail(self, local_id):
         """Return {latest, recent}. Base: latest obs only (no history). Sources with

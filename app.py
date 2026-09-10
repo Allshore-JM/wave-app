@@ -878,18 +878,50 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     so both share one cache rather than re-fetching/parsing NOAA per request.
     """
     key = (station_id, target_tz_name or "", "GFS")
+    return _forecast_singleflight(key, lambda: _parse_bull_uncached(station_id, target_tz_name))
+
+
+_FORECAST_INFLIGHT = {}     # key -> Lock: collapse concurrent cold misses (singleflight)
+
+
+def _cached_forecast(key):
     with _CACHE_LOCK:
         entry = _FORECAST_CACHE.get(key)
         if entry and _fresh(entry["ts"], entry.get("ttl", _FORECAST_CACHE_TTL)):
             return entry["data"]
-    data = _parse_bull_uncached(station_id, target_tz_name)
-    # data[-1] is the error field; only cache clean results.
-    if data and not data[-1]:
-        with _CACHE_LOCK:
-            _FORECAST_CACHE[key] = {"ts": time.time(), "data": data,
-                                    "ttl": _forecast_entry_ttl(data)}
-            _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
-    return data
+    return None
+
+
+def _forecast_singleflight(key, build):
+    """Cached forecast lookup with one build per key at a time.
+
+    Two identical cold requests (a reload while the first is still fetching NOAA) used to
+    run two full builds side by side -- two .bull fetches, two 7.75 MB .spec reads and two
+    parses, ~40 MB of heap each. The second caller now waits for the first and reuses its
+    cached result. Failed builds are not cached (as before), so a waiter that finds nothing
+    cached simply builds itself, exactly as it would have -- just not simultaneously.
+    Results are the same objects the cache holds; nothing about parsing changes."""
+    data = _cached_forecast(key)
+    if data is not None:
+        return data
+    with _CACHE_LOCK:
+        flock = _FORECAST_INFLIGHT.setdefault(key, threading.Lock())
+    with flock:
+        data = _cached_forecast(key)          # built by the caller we waited on?
+        if data is not None:
+            return data
+        try:
+            data = build()
+            # data[-1] is the error field; only cache clean results.
+            if data and not data[-1]:
+                with _CACHE_LOCK:
+                    _FORECAST_CACHE[key] = {"ts": time.time(), "data": data,
+                                            "ttl": _forecast_entry_ttl(data)}
+                    _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
+            return data
+        finally:
+            with _CACHE_LOCK:
+                _FORECAST_INFLIGHT.pop(key, None)
 
 
 def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
@@ -1172,17 +1204,7 @@ def parse_swan(station_id: str, target_tz_name: str | None = None):
     Only successful parses are cached.
     """
     key = (station_id, target_tz_name or "", "SWAN")
-    with _CACHE_LOCK:
-        entry = _FORECAST_CACHE.get(key)
-        if entry and _fresh(entry["ts"], entry.get("ttl", _FORECAST_CACHE_TTL)):
-            return entry["data"]
-    data = _parse_swan_uncached(station_id, target_tz_name)
-    if data and not data[-1]:
-        with _CACHE_LOCK:
-            _FORECAST_CACHE[key] = {"ts": time.time(), "data": data,
-                                    "ttl": _forecast_entry_ttl(data)}
-            _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
-    return data
+    return _forecast_singleflight(key, lambda: _parse_swan_uncached(station_id, target_tz_name))
 
 
 def _parse_swan_uncached(station_id: str, target_tz_name: str | None = None):

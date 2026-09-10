@@ -1833,6 +1833,75 @@ def _parse_ndbc_spectral_file(text: str) -> list:
 def _latest_spectral_row(rows: list) -> dict | None:
     return max(rows, key=lambda r: r["timestamp_utc"]) if rows else None
 
+
+# ---- newest-row access without parsing the whole file -------------------------------------
+# The realtime spectral files are ~1.4 MB / ~2,000 rows each and the components route needs one
+# row from each of six of them. Parsing every row into floats cost ~45 MB of heap per buoy tap
+# (and stacked under concurrent taps). These helpers reproduce EXACTLY what
+# _parse_ndbc_spectral_file + _latest_spectral_row / _match_direction_row return, but only fully
+# parse the candidate line(s): timestamps are read from the first five fields, and "valid row"
+# (a line that yields at least one numeric pair) is checked lazily, newest first.
+
+def _spectral_line_timestamp(line: str):
+    """Timestamp of one spectral line under _parse_ndbc_spectral_file's own rejection rules
+    (blank / '#' header / fewer than 7 fields / non-integer date fields -> None). A calendar-
+    invalid date raises ValueError exactly as the full parser does."""
+    s = line.strip()
+    if not s or s.startswith("#"):
+        return None
+    parts = s.split(None, 7)
+    if len(parts) < 7:
+        return None
+    try:
+        yy = int(parts[0]); mm = int(parts[1]); dd = int(parts[2])
+        hh = int(parts[3]); minute = int(parts[4])
+    except Exception:
+        return None
+    year = 2000 + yy if yy < 100 else yy
+    return datetime(year, mm, dd, hh, minute, tzinfo=pytz.utc)
+
+
+def _stamped_spectral_lines(text: str) -> list:
+    """[(timestamp, file_index, line)] for every line that carries a parseable timestamp."""
+    out = []
+    for i, line in enumerate(text.splitlines()):
+        ts = _spectral_line_timestamp(line)
+        if ts is not None:
+            out.append((ts, i, line))
+    return out
+
+
+def _parse_one_spectral_line(line: str) -> dict | None:
+    rows = _parse_ndbc_spectral_file(line)
+    return rows[0] if rows else None
+
+
+def _latest_valid_from_stamped(stamped: list) -> dict | None:
+    # max() over the full row list returns the FIRST row holding the maximum timestamp, so ties
+    # are broken by file order: newest timestamp first, then lowest file index.
+    for _ts, _i, line in sorted(stamped, key=lambda t: (-t[0].timestamp(), t[1])):
+        row = _parse_one_spectral_line(line)
+        if row is not None:
+            return row
+    return None
+
+
+def _latest_spectral_row_from_text(text: str) -> dict | None:
+    """== _latest_spectral_row(_parse_ndbc_spectral_file(text)) without parsing every row."""
+    return _latest_valid_from_stamped(_stamped_spectral_lines(text or ""))
+
+
+def _match_direction_row_from_text(text: str, timestamp_utc) -> dict | None:
+    """== _match_direction_row(density_row, _parse_ndbc_spectral_file(text)): the first VALID row
+    in file order with the same timestamp, else the latest valid row, else None."""
+    stamped = _stamped_spectral_lines(text or "")
+    for ts, _i, line in stamped:
+        if ts == timestamp_utc:
+            row = _parse_one_spectral_line(line)
+            if row is not None:
+                return row
+    return _latest_valid_from_stamped(stamped)
+
 def _bin_widths(freqs: list) -> list:
     if len(freqs) == 1:
         return [0.01]
@@ -2510,12 +2579,11 @@ def api_ndbc_station_components(station_id):
     # Directional moments. These are optional because not every station has every file.
     optional_files = _fetch_ndbc_optional_files(station_id)
 
-    density_rows = _parse_ndbc_spectral_file(density_text)
+    # Only the newest valid row is used; parse just that (see _latest_spectral_row_from_text).
+    density_row = _latest_spectral_row_from_text(density_text)
 
-    if not density_rows:
+    if density_row is None:
         return jsonify({"station": station_id, "error": "No spectral rows parsed"}), 404
-
-    density_row = _latest_spectral_row(density_rows)
 
     # Same now-anchored freshness gate as the wave summary: never render a spectral
     # snapshot from a buoy that stopped reporting. Cached like any other result so a
@@ -2535,8 +2603,10 @@ def api_ndbc_station_components(station_id):
         return jsonify(stale_result)
 
     def latest_matching_row(file_key: str) -> dict | None:
-        rows = _parse_ndbc_spectral_file(optional_files.get(file_key)) if optional_files.get(file_key) else []
-        return _match_direction_row(density_row, rows) if rows else None
+        txt = optional_files.get(file_key)
+        if not txt:
+            return None
+        return _match_direction_row_from_text(txt, density_row["timestamp_utc"])
 
     swdir_row = latest_matching_row("swdir")
     swdir2_row = latest_matching_row("swdir2")

@@ -251,12 +251,50 @@ class CDIPProvider(BuoyProvider):
             return None
 
 
+def _wfs_row_stream(http, url, timeout, headers=None):
+    """GET a GeoServer WFS .csv and yield its rows straight off the socket (header first).
+    Unlike ERDDAP there is NO units row. An XML ServiceException body (first non-blank
+    character '<') or a non-200 yields nothing -- the same "treat as empty" as before, but
+    without ever holding the whole body (the AODN map layer is ~4 MB) as one string."""
+    r = http.get(url, timeout=timeout, headers=headers, stream=True)
+    try:
+        if r.status_code != 200:
+            return
+        lines = r.iter_lines(decode_unicode=True)
+
+        def _text(line):
+            return line.decode("utf-8", "replace") if isinstance(line, bytes) else line
+
+        def _all():
+            first = None
+            for raw in lines:                    # find the first non-blank line = what
+                line = _text(raw)                #   .lstrip().startswith("<") looked at
+                if line.strip():
+                    first = line
+                    break
+                yield line
+            if first is None:
+                return
+            if first.lstrip().startswith("<"):
+                raise _WfsXmlError()
+            yield first
+            for raw in lines:
+                yield _text(raw)
+        try:
+            yield from csv.reader(_all())
+        except _WfsXmlError:
+            return
+    finally:
+        r.close()
+
+
+class _WfsXmlError(Exception):
+    pass
+
+
 def _wfs_rows(http, url, timeout, headers=None):
-    """GET a GeoServer WFS .csv. Unlike ERDDAP there is NO units row -> rows[1:] are data."""
-    r = http.get(url, timeout=timeout, headers=headers)
-    if r.status_code != 200 or r.text.lstrip().startswith("<"):   # XML ServiceException -> treat as empty
-        return [], []
-    rows = list(csv.reader(io.StringIO(r.text)))
+    """(header, data rows) of a GeoServer WFS .csv; kept for callers that need the whole thing."""
+    rows = list(_wfs_row_stream(http, url, timeout, headers))
     if len(rows) < 2:
         return (rows[0] if rows else []), []
     return rows[0], rows[1:]
@@ -371,6 +409,8 @@ class AODNProvider(BuoyProvider):
         "TANTABIDDI", "TATHRA", "TORBAY-WEST", "WILSONS-PROM", "WOOLI",
     })
     spectra_ttl_sec = 1200
+    PRUNE_KEEP = timedelta(hours=25)     # > the 24 h _recent_window, so nothing in-window goes
+    PRUNE_EVERY = 64                     # rows per site between prune passes
 
     def __init__(self, http=None):
         super().__init__(http)
@@ -406,19 +446,41 @@ class AODNProvider(BuoyProvider):
     def _fetch_stations(self):
         url = (self.BASE + "?service=WFS&version=1.0.0&request=GetFeature&typeName="
                + self.LAYER + "&outputFormat=csv&propertyName=" + self.PROPS)
-        hdr, rows = _wfs_rows(self.http, url, self.timeout)
+        stream = _wfs_row_stream(self.http, url, self.timeout)
+        hdr = next(stream, None)
         if not hdr:
             return []
         ix = {c: i for i, c in enumerate(hdr)}
         if any(c not in ix for c in ("site_name", "time_end", "TIME", "geom")):
             return []
         bysite = {}                        # the map layer carries each site's full series
-        for row in rows:
+        # Only the newest row and the last 24 h of each site's series end up in the output
+        # (_recent_window), yet the layer ships ~7 days per site. Rows are pruned WHILE
+        # streaming to those inside PRUNE_KEEP of the site's newest TIME, which cannot change
+        # the result: TIME strings in this feed share one fixed format, so string order (the
+        # sort below) equals chronological order, the newest row is always kept, and pruned
+        # rows lie outside the 24 h window. A site with ANY unparseable TIME is never pruned
+        # (its fallback path can put every row inside the window).
+        prunable = {}                      # site -> True while every TIME parsed
+        maxtl = {}                         # site -> newest parsed TIME
+        for row in stream:
             if len(row) <= ix["geom"]:
                 continue
             s = row[ix["site_name"]]
-            if s:
-                bysite.setdefault(s, []).append(row)
+            if not s:
+                continue
+            srows = bysite.setdefault(s, [])
+            srows.append(row)
+            tl = _parse_naive(row[ix["TIME"]])
+            if tl is None:
+                prunable[s] = False
+            elif prunable.get(s, True):
+                prunable[s] = True
+                if s not in maxtl or tl > maxtl[s]:
+                    maxtl[s] = tl
+                if len(srows) >= self.PRUNE_EVERY:
+                    cut = maxtl[s] - self.PRUNE_KEEP
+                    bysite[s] = [r for r in srows if _parse_naive(r[ix["TIME"]]) >= cut]
         out, latest_by, recent_by = [], {}, {}
         for s, srows in bysite.items():
             srows.sort(key=lambda r: r[ix["TIME"]])       # TIME is the per-obs timestamp

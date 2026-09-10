@@ -2927,6 +2927,16 @@ def _parse_noaa_station_wave_summary(station_id: str, hours: int = 24, now_utc=N
 def api_ndbc_station_wave_summary(station_id):
     try:
         return jsonify(_parse_noaa_station_wave_summary(station_id, hours=24))
+    except requests.HTTPError as exc:
+        # NDBC has no realtime .spec for this station (buoy retired / not a wave buoy /
+        # dropped out of the realtime set since the layer was built). That is a normal
+        # "not available" answer, like the components route's, not a server fault.
+        if exc.response is not None and exc.response.status_code == 404:
+            return jsonify({
+                "station": station_id,
+                "error": f"NDBC wave summary not available: {exc}"
+            }), 404
+        return jsonify({"station": station_id, "error": str(exc)}), 500
     except Exception as exc:
         return jsonify({
             "station": station_id,

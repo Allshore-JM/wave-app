@@ -1090,36 +1090,52 @@ class CopernicusProvider(BuoyProvider):
         super().__init__(http)
         self._file_by_id = {}            # local_id -> relative .nc path (latest per platform)
 
+    @staticmethod
+    def _decoded_lines(resp):
+        """Yield the index as text lines straight off the socket. The index is ~43 MB; holding
+        it as one string (plus the StringIO copy the csv module used to read from) peaked at
+        ~260 MB of heap on every 3-hourly refresh and after every restart -- the single largest
+        allocation in the process. Streaming keeps the peak at one chunk."""
+        for line in resp.iter_lines(decode_unicode=True):
+            if isinstance(line, bytes):            # no charset on the response -> bytes
+                line = line.decode("utf-8", "replace")
+            yield line
+
     def _fetch_stations(self):
         try:
-            idx = self.http.get(self.S3 + self.DATASET + "index_latest.txt",
-                                timeout=self.timeout).text
+            resp = self.http.get(self.S3 + self.DATASET + "index_latest.txt",
+                                 timeout=self.timeout, stream=True)
         except requests.RequestException:
             return []
         latmin, latmax, lonmin, lonmax = self.BBOX
         now = time.time()
         best = {}
-        for r in csv.reader(io.StringIO(idx)):
-            if not r or r[0].startswith("#") or len(r) < 8:
-                continue
-            if "VHM0" not in r[-1] and "VAVH" not in r[-1]:    # parameters column
-                continue
-            try:
-                la = (float(r[2]) + float(r[3])) / 2.0
-                lo = (float(r[4]) + float(r[5])) / 2.0
-            except (ValueError, IndexError):
-                continue
-            if not (latmin <= la <= latmax and lonmin <= lo <= lonmax):
-                continue
-            tend = r[7].strip()
-            tz = tend if tend.endswith("Z") else tend + "Z"
-            ep = _z_epoch({"time_utc": tz})
-            if ep is None or (now - ep) > self.LIVE_MAX_AGE:   # skip long-inactive platforms
-                continue
-            fn = r[1]
-            pid = fn.split("/")[-1].rsplit("_", 1)[0]          # GL_TS_MO_6200064_DATE.nc -> GL_TS_MO_6200064
-            if pid not in best or tend > best[pid][0]:
-                best[pid] = (tend, fn, la, lo, tz)
+        try:
+            for r in csv.reader(self._decoded_lines(resp)):
+                if not r or r[0].startswith("#") or len(r) < 8:
+                    continue
+                if "VHM0" not in r[-1] and "VAVH" not in r[-1]:    # parameters column
+                    continue
+                try:
+                    la = (float(r[2]) + float(r[3])) / 2.0
+                    lo = (float(r[4]) + float(r[5])) / 2.0
+                except (ValueError, IndexError):
+                    continue
+                if not (latmin <= la <= latmax and lonmin <= lo <= lonmax):
+                    continue
+                tend = r[7].strip()
+                tz = tend if tend.endswith("Z") else tend + "Z"
+                ep = _z_epoch({"time_utc": tz})
+                if ep is None or (now - ep) > self.LIVE_MAX_AGE:   # skip long-inactive platforms
+                    continue
+                fn = r[1]
+                pid = fn.split("/")[-1].rsplit("_", 1)[0]          # GL_TS_MO_6200064_DATE.nc -> GL_TS_MO_6200064
+                if pid not in best or tend > best[pid][0]:
+                    best[pid] = (tend, fn, la, lo, tz)
+        except requests.RequestException:      # body failed mid-stream: same fail-soft as before
+            return []
+        finally:
+            resp.close()
         out = []
         self._file_by_id = {}
         for pid, (tend, fn, la, lo, tz) in best.items():

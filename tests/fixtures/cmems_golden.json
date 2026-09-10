@@ -1,0 +1,239 @@
+{
+ "file_by_id": {
+  "AR_TS_MO_Blakksnes": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/AR_TS_MO_Blakksnes_20260908.nc",
+  "AR_TS_MO_Drangsnes": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260906/AR_TS_MO_Drangsnes_20260906.nc",
+  "AR_TS_MO_Ekofisk": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/AR_TS_MO_Ekofisk_20260908.nc",
+  "AR_TS_MO_Granefeltet": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/AR_TS_MO_Granefeltet_20260908.nc",
+  "AR_TS_MO_Gullfaks-C": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/AR_TS_MO_Gullfaks-C_20260908.nc",
+  "AR_TS_MO_Norne": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/AR_TS_MO_Norne_20260908.nc",
+  "AR_TS_MO_Sleipner-A": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260909/AR_TS_MO_Sleipner-A_20260909.nc",
+  "AR_TS_MO_Snorre-A": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260906/AR_TS_MO_Snorre-A_20260906.nc",
+  "AR_TS_MO_Snorre-B": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260910/AR_TS_MO_Snorre-B_20260910.nc",
+  "AR_TS_MO_Straumnesdufl": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260907/AR_TS_MO_Straumnesdufl_20260907.nc",
+  "AR_TS_MO_Troll-A": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/AR_TS_MO_Troll-A_20260908.nc",
+  "AR_TS_MO_Visundfeltet": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260909/AR_TS_MO_Visundfeltet_20260909.nc",
+  "BO_TS_MO_BothnianBay": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260906/BO_TS_MO_BothnianBay_20260906.nc",
+  "BO_TS_MO_BothnianSea": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260910/BO_TS_MO_BothnianSea_20260910.nc",
+  "BO_TS_MO_BrofjordenWR": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260907/BO_TS_MO_BrofjordenWR_20260907.nc",
+  "BO_TS_MO_HelsinkiBuoy": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/BO_TS_MO_HelsinkiBuoy_20260908.nc",
+  "BO_TS_MO_KemiBuoy": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/BO_TS_MO_KemiBuoy_20260908.nc",
+  "BO_TS_MO_LoviisaOrrengrund": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260909/BO_TS_MO_LoviisaOrrengrund_20260909.nc",
+  "BO_TS_MO_NorthernBaltic": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260907/BO_TS_MO_NorthernBaltic_20260907.nc",
+  "BO_TS_MO_Uto": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/BO_TS_MO_Uto_20260908.nc",
+  "BO_TS_TG_Kuivastu": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260909/BO_TS_TG_Kuivastu_20260909.nc",
+  "BO_TS_TG_Soru": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260906/BO_TS_TG_Soru_20260906.nc",
+  "BO_TS_TG_Tallinnamadal": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260910/BO_TS_TG_Tallinnamadal_20260910.nc",
+  "BS_TS_MO_SPOT31672C": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260907/BS_TS_MO_SPOT31672C_20260907.nc",
+  "BS_TS_MO_WAVEB01": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260909/BS_TS_MO_WAVEB01_20260909.nc",
+  "BS_TS_MO_WAVEB03": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260910/BS_TS_MO_WAVEB03_20260910.nc",
+  "BS_TS_MO_WAVEB04": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/BS_TS_MO_WAVEB04_20260908.nc",
+  "GL_TS_MO_6100190": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/GL_TS_MO_6100190_20260908.nc",
+  "GL_TS_MO_6200059": "INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/latest/20260908/GL_TS_MO_6200059_20260908.nc"
+ },
+ "http_calls": 1,
+ "stations": [
+  {
+   "lat": 65.6983,
+   "latest_time": "2026-09-08T23:32:00Z",
+   "local_id": "AR_TS_MO_Blakksnes",
+   "lon": -24.77841,
+   "name": "Blakksnes"
+  },
+  {
+   "lat": 65.76983,
+   "latest_time": "2026-09-06T23:32:00Z",
+   "local_id": "AR_TS_MO_Drangsnes",
+   "lon": -21.13767,
+   "name": "Drangsnes"
+  },
+  {
+   "lat": 56.5433,
+   "latest_time": "2026-09-08T23:50:00Z",
+   "local_id": "AR_TS_MO_Ekofisk",
+   "lon": 3.2243,
+   "name": "Ekofisk"
+  },
+  {
+   "lat": 59.1652,
+   "latest_time": "2026-09-08T23:50:00Z",
+   "local_id": "AR_TS_MO_Granefeltet",
+   "lon": 2.4873,
+   "name": "Granefeltet"
+  },
+  {
+   "lat": 61.2144,
+   "latest_time": "2026-09-08T23:50:00Z",
+   "local_id": "AR_TS_MO_Gullfaks-C",
+   "lon": 2.2721,
+   "name": "Gullfaks C"
+  },
+  {
+   "lat": 66.0256,
+   "latest_time": "2026-09-08T23:50:00Z",
+   "local_id": "AR_TS_MO_Norne",
+   "lon": 8.085,
+   "name": "Norne"
+  },
+  {
+   "lat": 58.3711,
+   "latest_time": "2026-09-09T23:50:00Z",
+   "local_id": "AR_TS_MO_Sleipner-A",
+   "lon": 1.9091,
+   "name": "Sleipner A"
+  },
+  {
+   "lat": 61.4489,
+   "latest_time": "2026-09-06T23:50:00Z",
+   "local_id": "AR_TS_MO_Snorre-A",
+   "lon": 2.1425,
+   "name": "Snorre A"
+  },
+  {
+   "lat": 61.525,
+   "latest_time": "2026-09-10T15:10:00Z",
+   "local_id": "AR_TS_MO_Snorre-B",
+   "lon": 2.2097,
+   "name": "Snorre B"
+  },
+  {
+   "lat": 66.43774,
+   "latest_time": "2026-09-07T23:32:00Z",
+   "local_id": "AR_TS_MO_Straumnesdufl",
+   "lon": -23.36592,
+   "name": "Straumnesdufl"
+  },
+  {
+   "lat": 60.6435,
+   "latest_time": "2026-09-08T23:50:00Z",
+   "local_id": "AR_TS_MO_Troll-A",
+   "lon": 3.7193,
+   "name": "Troll A"
+  },
+  {
+   "lat": 61.3648,
+   "latest_time": "2026-09-09T23:50:00Z",
+   "local_id": "AR_TS_MO_Visundfeltet",
+   "lon": 2.4327,
+   "name": "Visundfeltet"
+  },
+  {
+   "lat": 64.6842,
+   "latest_time": "2026-09-06T23:30:00Z",
+   "local_id": "BO_TS_MO_BothnianBay",
+   "lon": 23.2392,
+   "name": "BothnianBay"
+  },
+  {
+   "lat": 61.8,
+   "latest_time": "2026-09-10T12:00:00Z",
+   "local_id": "BO_TS_MO_BothnianSea",
+   "lon": 20.2333,
+   "name": "BothnianSea"
+  },
+  {
+   "lat": 58.25205,
+   "latest_time": "2026-09-07T23:50:00Z",
+   "local_id": "BO_TS_MO_BrofjordenWR",
+   "lon": 11.2231,
+   "name": "BrofjordenWR"
+  },
+  {
+   "lat": 59.965,
+   "latest_time": "2026-09-08T23:30:00Z",
+   "local_id": "BO_TS_MO_HelsinkiBuoy",
+   "lon": 25.235,
+   "name": "HelsinkiBuoy"
+  },
+  {
+   "lat": 65.5,
+   "latest_time": "2026-09-08T23:30:00Z",
+   "local_id": "BO_TS_MO_KemiBuoy",
+   "lon": 24.3,
+   "name": "KemiBuoy"
+  },
+  {
+   "lat": 60.2,
+   "latest_time": "2026-09-09T23:30:00Z",
+   "local_id": "BO_TS_MO_LoviisaOrrengrund",
+   "lon": 26.4,
+   "name": "LoviisaOrrengrund"
+  },
+  {
+   "lat": 59.25,
+   "latest_time": "2026-09-07T23:30:00Z",
+   "local_id": "BO_TS_MO_NorthernBaltic",
+   "lon": 21.0,
+   "name": "NorthernBaltic"
+  },
+  {
+   "lat": 59.78,
+   "latest_time": "2026-09-08T23:50:00Z",
+   "local_id": "BO_TS_MO_Uto",
+   "lon": 21.355,
+   "name": "Uto"
+  },
+  {
+   "lat": 58.5742,
+   "latest_time": "2026-09-09T23:00:00Z",
+   "local_id": "BO_TS_TG_Kuivastu",
+   "lon": 23.3935,
+   "name": "Kuivastu"
+  },
+  {
+   "lat": 58.6938,
+   "latest_time": "2026-09-06T23:00:00Z",
+   "local_id": "BO_TS_TG_Soru",
+   "lon": 22.5229,
+   "name": "Soru"
+  },
+  {
+   "lat": 59.7119,
+   "latest_time": "2026-09-10T13:00:00Z",
+   "local_id": "BO_TS_TG_Tallinnamadal",
+   "lon": 24.7314,
+   "name": "Tallinnamadal"
+  },
+  {
+   "lat": 42.2537,
+   "latest_time": "2026-09-07T23:35:00Z",
+   "local_id": "BS_TS_MO_SPOT31672C",
+   "lon": 27.7655,
+   "name": "SPOT31672C"
+  },
+  {
+   "lat": 43.1942,
+   "latest_time": "2026-09-09T17:30:00Z",
+   "local_id": "BS_TS_MO_WAVEB01",
+   "lon": 27.9415,
+   "name": "WAVEB01"
+  },
+  {
+   "lat": 42.1144,
+   "latest_time": "2026-09-10T14:32:01Z",
+   "local_id": "BS_TS_MO_WAVEB03",
+   "lon": 27.9277,
+   "name": "WAVEB03"
+  },
+  {
+   "lat": 43.5392,
+   "latest_time": "2026-09-08T18:00:00Z",
+   "local_id": "BS_TS_MO_WAVEB04",
+   "lon": 28.6116,
+   "name": "WAVEB04"
+  },
+  {
+   "lat": 43.37125,
+   "latest_time": "2026-09-08T12:10:00Z",
+   "local_id": "GL_TS_MO_6100190",
+   "lon": 3.77965,
+   "name": "6100190"
+  },
+  {
+   "lat": 49.695,
+   "latest_time": "2026-09-08T11:40:00Z",
+   "local_id": "GL_TS_MO_6200059",
+   "lon": -1.62,
+   "name": "6200059"
+  }
+ ]
+}

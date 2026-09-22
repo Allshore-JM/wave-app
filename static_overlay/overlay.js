@@ -254,10 +254,23 @@
     if (st.state === 'error') { div('ov-err', 'Overlay unavailable: ' + st.message); return; }
     var f = m.fields[this.field], fdesc = m.model.fields[this.field];
     var runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z');
-    div('ov-title', fdesc.label + ' — ' + m.model.name.split(' + ')[0]);
-    var meta = div('ov-meta');
     var hours = Math.round((Date.parse(st.frame.valid_utc) - Date.parse(m.run_utc)) / 3.6e6);
     var validLocal = this.opts.fmtTime(st.frame.valid_utc, this.opts.tz) + ' ' + this.opts.tzAbbr(st.frame.valid_utc, this.opts.tz);
+    // Short maps (phones: ~260 px) get a one-line summary with a toggle; the expanded panel is
+    // capped at 40 % of the map height so zoom/Home and the buoy panel stay reachable.
+    var mapH = this.map.getSize().y, compact = mapH < 400;
+    if (this.collapsed === undefined) this.collapsed = compact;
+    var head = div('ov-row');
+    var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'ov-toggle';
+    btn.textContent = this.collapsed ? '▸' : '▾'; btn.setAttribute('aria-label', this.collapsed ? 'Show overlay details' : 'Hide overlay details');
+    btn.addEventListener('click', function () { self.collapsed = !self.collapsed; self.render(st); });
+    head.appendChild(btn);
+    var t = document.createElement('span'); t.className = 'ov-title';
+    t.textContent = this.collapsed ? fdesc.label + ' · ' + validLocal + ' (+' + hours + ' h)' : fdesc.label + ' — ' + m.model.name.split(' + ')[0];
+    head.appendChild(t);
+    if (this.collapsed) { p.style.maxHeight = ''; p.style.overflowY = ''; return; }
+    p.style.maxHeight = Math.max(90, Math.floor(mapH * 0.4)) + 'px'; p.style.overflowY = 'auto';
+    var meta = div('ov-meta');
     meta.innerHTML = '<b>Valid:</b> ' + escapeHtml(validLocal) + ' (+' + hours + ' h)<br><b>Run:</b> ' + escapeHtml(runLabel) + ' (UTC)' +
       (this.opts.pageCycle && this.opts.pageCycle !== m.run ? ' — forecast table is on ' + escapeHtml(this.opts.pageCycle) : '');
     var age = (Date.now() - Date.parse(this.pointer.published_utc)) / 1000;

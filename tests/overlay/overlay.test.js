@@ -222,6 +222,40 @@ test('buildRamp endpoints match the stops', () => {
   assert.deepEqual([lut[255 * 3], lut[255 * 3 + 1], lut[255 * 3 + 2]], [0xa3, 0x12, 0x9e]);
 });
 
+test('ringPlan: current, two ahead in the play direction, two behind, wrapping, no duplicates', () => {
+  assert.deepEqual(Array.from(I.ringPlan(10, 81, 1)), [10, 11, 12, 9, 8]);
+  assert.deepEqual(Array.from(I.ringPlan(80, 81, 1)), [80, 0, 1, 79, 78]);
+  assert.deepEqual(Array.from(I.ringPlan(0, 81, -1)), [0, 80, 79, 1, 2]);
+  assert.deepEqual(Array.from(I.ringPlan(0, 3, 1)), [0, 1, 2]);
+  assert.deepEqual(Array.from(I.ringPlan(0, 1, 1)), [0]);
+});
+
+test('nextAvailable skips unavailable frames, wraps, and reports when nothing is left', () => {
+  const un = set => j => set.has(j);
+  assert.equal(I.nextAvailable(5, 1, 81, un(new Set())), 6);
+  assert.equal(I.nextAvailable(80, 1, 81, un(new Set())), 0);
+  assert.equal(I.nextAvailable(0, -1, 81, un(new Set())), 80);
+  assert.equal(I.nextAvailable(5, 1, 81, un(new Set([6, 7]))), 8);
+  assert.equal(I.nextAvailable(5, -1, 81, un(new Set([4]))), 3);
+  assert.equal(I.nextAvailable(5, 1, 81, un(new Set(Array.from({ length: 81 }, (_, i) => i)))), null);
+  assert.equal(I.nextAvailable(5, 1, 81, un(new Set(Array.from({ length: 81 }, (_, i) => i).filter(i => i !== 5)))), 5);
+});
+
+test('FrameCache: LRU with a cap, never evicts the frame on the map', () => {
+  const c = new I.FrameCache(3);
+  c.set('a', 1); c.set('b', 2); c.set('c', 3);
+  assert.equal(c.size(), 3);
+  c.get('a');                                     // a is now most recently used
+  c.set('d', 4, 'b');                             // over the cap: b is protected, so c (least recent) goes
+  assert.deepEqual(['a', 'b', 'c', 'd'].map(k => c.has(k)), [true, true, false, true]);
+  c.set('e', 5, 'b');                             // a is the least recent now
+  assert.deepEqual(['a', 'b', 'd', 'e'].map(k => c.has(k)), [false, true, true, true]);
+  assert.equal(c.get('zz'), null);
+  c.clear(); assert.equal(c.size(), 0);
+  assert.equal(I.MAX_DECODED, 5); assert.equal(I.MAX_INFLIGHT, 2);
+  assert.deepEqual(Array.from(I.SPEEDS), [0.5, 1, 2, 4]); assert.equal(I.BASE_FPS, 2);
+});
+
 test('tileCodes performance smoke (full grid, bilinear)', () => {
   const l = layer(frame(1440, 721, (r, c) => 1 + ((r + c) % 254)), GRID, 'hs', HS);
   const out = new Float64Array(65536);

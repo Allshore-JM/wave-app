@@ -1,4 +1,4 @@
-/* Allshore Surf model overlay (Phase 2: one static frame per field). Loaded on demand; never on page load.
+/* Allshore Surf model overlay (Phase 3: animated frames per field). Loaded on demand; never on page load.
  *
  * Data contract (manifest schema 2 or 3 from tools/model_frames): 8-bit greyscale PNG frames,
  * q = 0 missing, value = lo + (q - 1) / 254 * (hi - lo), q = 1 means "<= lo", q = 255 ">= hi";
@@ -255,6 +255,36 @@
     }
   });
 
+  // ---- playback helpers (pure; tested in Node) ----
+  var SPEEDS = [0.5, 1, 2, 4], BASE_FPS = 2;                 // 1x = 2 frames/s (owner default)
+  var RING_AHEAD = 2, RING_BEHIND = 2, MAX_DECODED = 5, MAX_INFLIGHT = 2;
+  var RUN_CHECK_MS = 30 * 60 * 1000;                         // newer run -> banner only, never an automatic switch
+  // Indices worth having decoded around i: i itself, then ahead in the play direction, then behind (wrapping).
+  function ringPlan(i, n, dir) {
+    var out = [i], seen = {}, uniq = [], k;
+    for (k = 1; k <= RING_AHEAD; k++) out.push(((i + k * dir) % n + n) % n);
+    for (k = 1; k <= RING_BEHIND; k++) out.push(((i - k * dir) % n + n) % n);
+    for (k = 0; k < out.length; k++) if (!seen[out[k]]) { seen[out[k]] = true; uniq.push(out[k]); }
+    return uniq;
+  }
+  // Next index from i in direction dir that is not unavailable (wrapping); null when nothing is left.
+  function nextAvailable(i, dir, n, unavailable) {
+    for (var k = 1; k <= n; k++) { var j = ((i + k * dir) % n + n) % n; if (!unavailable(j)) return j; }
+    return null;
+  }
+  // Decoded frames, least recently used first out; the frame on the map is never evicted.
+  function FrameCache(max) { this.max = max; this.map = new Map(); }
+  FrameCache.prototype.get = function (key) { var v = this.map.get(key); if (v) { this.map.delete(key); this.map.set(key, v); } return v || null; };
+  FrameCache.prototype.has = function (key) { return this.map.has(key); };
+  FrameCache.prototype.clear = function () { this.map.clear(); };
+  FrameCache.prototype.size = function () { return this.map.size; };
+  FrameCache.prototype.set = function (key, frame, keep) {
+    this.map.delete(key); this.map.set(key, frame);
+    if (this.map.size <= this.max) return;
+    var keys = Array.from(this.map.keys());
+    for (var i = 0; i < keys.length && this.map.size > this.max; i++) if (keys[i] !== key && keys[i] !== keep) this.map.delete(keys[i]);
+  };
+
   // ---- controller ----
   function Overlay(map, opts) {
     this.map = map; this.opts = opts;
@@ -264,9 +294,12 @@
     this.root = this.base.replace(/\/gfswave\/0p25\/v1$/, '');
     this.field = null; this.layer = null; this.manifest = null; this.pointer = null; this.pointerAt = 0; this.newerRun = null;
     this.abort = null; this.readout = null; this.frameIndex = null; this.res = null; this.sheet = null; this.last = null;
-    this._listeners = []; this._attributed = false; this.collapsed = undefined; this._touch = null;
+    this._listeners = []; this._attributed = false; this.collapsed = undefined; this._touch = null; this._onVis = null;
+    this.cache = new FrameCache(MAX_DECODED); this.inflight = {}; this.unavailable = {}; this.target = null; this.dir = 1; this.n = 0;
+    this.playing = false; this.wasPlaying = false; this.timer = null; this.runTimer = null; this.ui = null; this._lutFor = null;
     var s = saved();
     this.opacity = typeof s.opacity === 'number' && s.opacity >= 0.2 && s.opacity <= 1 ? s.opacity : 0.65;
+    this.speed = SPEEDS.indexOf(s.speed) >= 0 ? s.speed : 1;
   }
   Overlay.prototype.mount = function (fieldName) {
     var self = this;
@@ -281,30 +314,80 @@
       this.layer = new ModelGridLayer({ opacity: this.opacity }).addTo(this.map);
       this._bindReadout();
       this._bindMap();
+      this._bindDocument();
     } else if (this.layer.field !== fieldName) {
       this.layer.clear();                                  // never one field's picture under another's label
     }
     this.render({ state: 'loading' });
     this._loadManifest(sig).then(function (m) {
       if (!m.fields[fieldName] || !RAMPS[fieldName]) throw new Error('layer "' + fieldName + '" is not in this run');
-      self.frameIndex = pickFrame(m);
+      self.n = m.frames.length;
+      var idx = self.frameIndex === null ? pickFrame(m) : Math.min(self.frameIndex, self.n - 1);   // keep the time position across fields
       self.res = wantHalf(self.map.getZoom(), self._dims().w) ? 'half' : 'full';
-      return self._loadCurrent(sig);
+      if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
+      return self._goto(idx, sig);
     }).catch(function (err) { self._fail(sig, err); });
   };
-  // Fetch + draw the current (field, frame, resolution). Whatever is drawn stays until the new frame lands.
-  Overlay.prototype._loadCurrent = function (sig) {
-    var self = this, m = this.manifest, field = this.field, fr = m.frames[this.frameIndex], half = this.res === 'half';
-    var url = this.root + '/' + frameKey(m, fr, field, half);
-    return decodeFrame(url, sig).then(function (frame) {
-      if (sig.aborted) return;
-      self.layer.setFrame(frame, half ? m.grid_half : m.grid, field, m.fields[field], buildRamp(RAMPS[field]), fr);
-      self._attribute();
-      self.render({ state: 'ready', frame: fr });
+  Overlay.prototype._key = function (idx) { return this.res + '/' + this.field + '/' + this.manifest.frames[idx].step; };
+  Overlay.prototype._isUnavailable = function (idx) { return !!this.unavailable[this._key(idx)]; };
+  Overlay.prototype._lut = function () {
+    if (this._lutFor !== this.field) { this._lutCache = buildRamp(RAMPS[this.field]); this._lutFor = this.field; }
+    return this._lutCache;
+  };
+  // The decoded frame for index idx: cache, then an in-flight fetch, then a new one. A 404 or a decode
+  // failure marks the frame unavailable for this session (err.unavailable); an abort does not.
+  Overlay.prototype._ensure = function (idx) {
+    var self = this, key = this._key(idx), hit = this.cache.get(key);
+    if (hit) return Promise.resolve(hit);
+    if (this.inflight[key]) return this.inflight[key].promise;
+    if (this.unavailable[key]) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
+    var m = this.manifest, ctrl = new AbortController();
+    var url = this.root + '/' + frameKey(m, m.frames[idx], this.field, this.res === 'half');
+    var p = decodeFrame(url, ctrl.signal).then(function (frame) {
+      delete self.inflight[key];
+      self.cache.set(key, frame, self.frameIndex !== null && self.manifest === m ? self._key(self.frameIndex) : null);
+      return frame;
+    }, function (err) {
+      delete self.inflight[key];
+      if (ctrl.signal.aborted) throw err;
+      self.unavailable[key] = true; err.unavailable = true;
+      throw err;
     });
+    this.inflight[key] = { promise: p, abort: ctrl };
+    return p;
+  };
+  // Show frame idx: the label/timeline move to the target at once, the picture and the valid time only
+  // when the frame has landed (never an old picture under a new time). Rejects for an unavailable frame.
+  Overlay.prototype._goto = function (idx, sig) {
+    var self = this;
+    this.target = idx; this._syncUI();
+    return this._ensure(idx).then(function (frame) {
+      if ((sig && sig.aborted) || self.target !== idx || !self.layer || !self.manifest) return;
+      if (self.layer._frame === frame) { self._syncUI(); return; }
+      var m = self.manifest, half = self.res === 'half';
+      self.layer.setFrame(frame, half ? m.grid_half : m.grid, self.field, m.fields[self.field], self._lut(), m.frames[idx]);
+      self.frameIndex = idx;
+      self._attribute();
+      if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
+      self._prefetch();
+    });
+  };
+  // Keep the ring (current, two ahead, two behind) decoded with at most MAX_INFLIGHT fetches; drop
+  // fetches the ring no longer wants (direction, field or resolution changed).
+  Overlay.prototype._prefetch = function () {
+    if (this.frameIndex === null || !this.manifest) return;
+    var plan = ringPlan(this.frameIndex, this.n, this.dir), want = {}, i, k;
+    for (i = 0; i < plan.length; i++) want[this._key(plan[i])] = true;
+    for (k in this.inflight) if (!want[k]) { this.inflight[k].abort.abort(); delete this.inflight[k]; }
+    for (i = 1; i < plan.length && Object.keys(this.inflight).length < MAX_INFLIGHT; i++) {
+      var key = this._key(plan[i]);
+      if (!this.cache.has(key) && !this.inflight[key] && !this.unavailable[key]) this._ensure(plan[i]).catch(function () {});
+    }
   };
   Overlay.prototype._fail = function (sig, err) {
     if (sig && sig.aborted) return;
+    if (err && err.name === 'AbortError') return;
+    this.pause();
     try { this.render({ state: 'error', message: err && err.message ? err.message : String(err) }); } catch (e) { /* host gone */ }
   };
   // latest.json -> manifest. A pointer older than POINTER_RECHECK_MS is re-read; while a frame is on
@@ -325,18 +408,109 @@
       if (!ptr || !ptr.complete || !ptr.run || !ptr.manifest || isNaN(Date.parse(ptr.published_utc))) throw new Error('published run is not complete');
       self.pointerAt = Date.now();
       if (self.manifest && self.manifest.run === ptr.run) { self.pointer = ptr; return self.manifest; }
-      if (self.manifest && self.layer && self.layer.hasFrame()) { self.newerRun = ptr.run; return self.manifest; }
-      return fetch(self.root + '/' + ptr.manifest, { signal: sig }).then(function (r) {
-        if (!r.ok) throw new Error('manifest ' + r.status);
-        return r.json();
-      }).then(function (m) {
-        validateManifest(m);
-        if (m.run !== ptr.run) throw new Error('manifest/pointer run mismatch');
-        self.manifest = m; self.pointer = ptr; self.newerRun = null;
-        return m;
-      });
+      if (self.manifest && self.layer && self.layer.hasFrame()) { self.newerRun = ptr; return self.manifest; }
+      return self._fetchManifest(ptr, sig).then(function (m) { self._adopt(m, ptr); return m; });
     });
   };
+  Overlay.prototype._fetchManifest = function (ptr, sig) {
+    return fetch(this.root + '/' + ptr.manifest, { signal: sig }).then(function (r) {
+      if (!r.ok) throw new Error('manifest ' + r.status);
+      return r.json();
+    }).then(function (m) {
+      validateManifest(m);
+      if (m.run !== ptr.run) throw new Error('manifest/pointer run mismatch');
+      return m;
+    });
+  };
+  Overlay.prototype._adopt = function (m, ptr) {
+    this.manifest = m; this.pointer = ptr; this.newerRun = null; this.n = m.frames.length;
+    this.cache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
+  };
+  // Every RUN_CHECK_MS while mounted: a newer complete run only raises the "Update" banner.
+  Overlay.prototype._checkRun = function () {
+    var self = this;
+    if (!this.manifest) return;
+    fetch(this.base + '/latest.json', { cache: 'no-cache' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (ptr) {
+      if (!ptr || !ptr.complete || !ptr.run || !ptr.manifest || !self.manifest) return;
+      self.pointerAt = Date.now();
+      if (ptr.run > self.manifest.run) { self.newerRun = ptr; if (self.last && self.last.state === 'ready') self.render(self.last); }
+      else if (ptr.run === self.manifest.run) self.pointer = ptr;
+    }).catch(function () {});
+  };
+  // "Update" on the banner: switch to the announced run at the nearest valid time, keep the play state.
+  Overlay.prototype.update = function () {
+    var self = this, ptr = this.newerRun;
+    if (!ptr || !this.field) return;
+    var wasPlaying = this.playing; this.pause();
+    var prevValid = this.frameIndex !== null ? Date.parse(this.manifest.frames[this.frameIndex].valid_utc) : Date.now();
+    this.abortAll(); this.abort = new AbortController();
+    var sig = this.abort.signal;
+    this.render({ state: 'loading' });
+    this._fetchManifest(ptr, sig).then(function (m) {
+      if (!m.fields[self.field]) throw new Error('layer "' + self.field + '" is not in run ' + m.run);
+      self._adopt(m, ptr); self.pointerAt = Date.now();
+      var idx = 0, best = Infinity;
+      for (var i = 0; i < m.frames.length; i++) { var d = Math.abs(Date.parse(m.frames[i].valid_utc) - prevValid); if (d < best) { best = d; idx = i; } }
+      return self._goto(idx, sig).then(function () { if (wasPlaying) self.play(); });
+    }).catch(function (err) { self._fail(sig, err); });
+  };
+
+  // ---- playback ----
+  Overlay.prototype._interval = function () { return 1000 / (BASE_FPS * this.speed); };
+  Overlay.prototype.play = function () {
+    if (this.playing || !this.manifest || this.frameIndex === null) return;
+    this.playing = true; this.dir = 1; this._syncUI(); this._tick();
+  };
+  Overlay.prototype.pause = function () {
+    this.playing = false;
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    this._syncUI();
+  };
+  Overlay.prototype._tick = function () {
+    var self = this;
+    if (!this.playing) return;
+    var un = function (j) { return self._isUnavailable(j); };
+    var pending = this.target !== null && this.target !== this.frameIndex;
+    var next = pending && !un(this.target) ? this.target                      // a seek or a slow frame: wait for it
+      : nextAvailable(pending ? this.target : this.frameIndex, 1, this.n, un);
+    if (next === null) { this.pause(); return; }
+    var t0 = Date.now();
+    this._goto(next).then(function () { self._after(t0); }, function (err) {
+      if (err && err.unavailable) self._after(t0);                          // skipped; the next tick moves on
+      else if (!(err && err.name === 'AbortError')) self._fail(null, err);
+    });
+  };
+  Overlay.prototype._after = function (t0) {
+    var self = this;
+    if (!this.playing) return;
+    var wait = Math.max(0, this._interval() - (Date.now() - t0));
+    this.timer = setTimeout(function () { self.timer = null; self._tick(); }, wait);
+  };
+  Overlay.prototype.step = function (dir) {
+    var self = this;
+    this.pause();
+    if (!this.manifest || this.frameIndex === null) return;
+    var base = this.target !== null ? this.target : this.frameIndex;
+    var next = nextAvailable(base, dir, this.n, function (j) { return self._isUnavailable(j); });
+    if (next !== null) { this.dir = dir; this._goto(next).catch(function () { self._syncUI(); }); }
+  };
+  Overlay.prototype.seek = function (idx) {
+    var self = this;
+    if (!this.manifest || this.frameIndex === null) return;
+    idx = Math.max(0, Math.min(this.n - 1, idx | 0));
+    this._goto(idx).catch(function () { self._syncUI(); });                 // unavailable: the drawn frame stays, the hint says so
+  };
+  Overlay.prototype.setSpeed = function (v) { if (SPEEDS.indexOf(v) < 0) return; this.speed = v; save({ speed: v }); this._syncUI(); };
+  Overlay.prototype._bindDocument = function () {
+    var self = this;
+    this._onVis = function () {
+      if (document.hidden) { self.wasPlaying = self.playing; if (self.playing) self.pause(); }
+      else if (self.wasPlaying) { self.wasPlaying = false; self.play(); }
+    };
+    document.addEventListener('visibilitychange', this._onVis);
+  };
+
+  // ---- attribution, map events, resolution ----
   // The container's real size: the site resizes #map by script and Leaflet's cached getSize() can lag.
   Overlay.prototype._dims = function () {
     var c = this.map.getContainer(), s = this.map.getSize();
@@ -372,19 +546,27 @@
     else if (this.res === 'half' && wantFull(z, w)) want = 'full';
     if (want === this.res) return;
     this.res = want;
-    this.abortAll(); this.abort = new AbortController();
-    var sig = this.abort.signal, self = this;
-    this._loadCurrent(sig).catch(function (err) { self._fail(sig, err); });
+    var self = this, idx = this.target !== null ? this.target : this.frameIndex;
+    this._prefetch();                                                        // drops the other resolution's fetches
+    this._goto(idx).catch(function () { self._syncUI(); });
   };
-  Overlay.prototype.abortAll = function () { if (this.abort) { this.abort.abort(); this.abort = null; } };
+  Overlay.prototype.abortAll = function () {
+    if (this.abort) { this.abort.abort(); this.abort = null; }
+    for (var k in this.inflight) this.inflight[k].abort.abort();
+    this.inflight = {};
+  };
   Overlay.prototype.unmount = function () {
     var self = this;
+    this.pause();
     this.abortAll();
+    if (this.runTimer) { clearInterval(this.runTimer); this.runTimer = null; }
+    if (this._onVis) { document.removeEventListener('visibilitychange', this._onVis); this._onVis = null; }
     if (this.layer) { this.map.removeLayer(this.layer); this.layer = null; }
     this._unattribute();
     this._unbindReadout();
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
     this._removeSheet();
+    this.cache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null;
     this.field = null; this.frameIndex = null; this.res = null; this.last = null; this.collapsed = undefined;
     clear(this.opts.panel);
   };
@@ -445,8 +627,8 @@
   };
 
   // ---- panel: inside the top-left control on desktops; a sheet on the map's bottom edge on phones ----
-  // Compact = the site's mobile breakpoint, or a short map on a touch device (desktop windows are
-  // often short too: the site caps the map at 48 % of the viewport height).
+  // Compact = the site's mobile breakpoint, or a short map (desktop windows are often short too: the
+  // site caps the map at 48 % of the viewport height).
   Overlay.prototype.isCompact = function () {
     var d = this._dims(), coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
     return d.w < 576 || d.h < 260 || (d.h < 400 && coarse);   // < 260 px: even a one-line panel would reach the zoom stack
@@ -486,8 +668,15 @@
     return el && el.offsetHeight ? el.offsetHeight : 120;
   };
   Overlay.prototype.refresh = function () { if (this.last && this.layer) this.render(this.last); };
+  Overlay.prototype._hours = function (entry) { return Math.round((Date.parse(entry.valid_utc) - Date.parse(this.manifest.run_utc)) / 3.6e6); };
+  Overlay.prototype._validLocal = function (entry) { return this.opts.fmtTime(entry.valid_utc, this.opts.tz) + ' ' + this.opts.tzAbbr(entry.valid_utc, this.opts.tz); };
+  function button(cls, text, label, onClick) {
+    var b = mk('button', 'ov-btn ' + cls, text); b.type = 'button'; b.setAttribute('aria-label', label);
+    b.addEventListener('click', onClick); return b;
+  }
+  // Builds the panel for a state; frame-by-frame changes only touch the live parts through _syncUI().
   Overlay.prototype.render = function (st) {
-    this.last = st;
+    this.last = st; this.ui = null;
     var self = this, host = this._host(), compact = host === this.sheet, m = this.manifest, unit = this.opts.getUnit();
     var mapH = this._dims().h;
     clear(host);
@@ -495,17 +684,11 @@
     if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._layoutSheet(); return; }
     if (st.state === 'error') {
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
-      var rb = mk('button', 'ov-retry', 'Retry'); rb.type = 'button';
-      rb.addEventListener('click', function () { if (self.field) self.mount(self.field); });
-      e.appendChild(rb); host.appendChild(e); this._layoutSheet(); return;
+      e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.mount(self.field); } }));
+      host.appendChild(e); this._layoutSheet(); return;
     }
     var field = this.layer.field, f = m.fields[field], fdesc = (m.model && m.model.fields && m.model.fields[field]) || {};
-    var label = fdesc.label || field;
-    var runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z');
-    var hours = Math.round((Date.parse(st.frame.valid_utc) - Date.parse(m.run_utc)) / 3.6e6);
-    var validLocal = this.opts.fmtTime(st.frame.valid_utc, this.opts.tz) + ' ' + this.opts.tzAbbr(st.frame.valid_utc, this.opts.tz);
-    // Expanded: the whole sheet <= 40 % of the map (the desktop panel's details likewise); the details
-    // scroll inside that. Too little room (short landscape maps) -> the one-line summary only.
+    var label = fdesc.label || field, modelName = String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0];
     var cap = Math.floor(mapH * 0.4);
     if (this.collapsed === undefined) this.collapsed = compact;
     var collapsed = !!this.collapsed;
@@ -515,29 +698,50 @@
     btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
     btn.addEventListener('click', function () { self.collapsed = !self.collapsed; self.render(st); });
     head.appendChild(btn);
-    var title = mk('span', 'ov-title', label + ' · ' + validLocal + ' (+' + hours + ' h)');
+    var playHead = button('ov-play', '▶', 'Play', function () { if (self.playing) self.pause(); else self.play(); });
+    head.appendChild(playHead);
+    var title = mk('span', 'ov-title');
     head.appendChild(title);
     host.appendChild(head);
-    // Room for the details = the cap minus everything else in the host (head, paddings, margins),
-    // measured from the real layout once the body is in place (see the clamp at the end).
-    if (compact && cap - host.offsetHeight - 8 < 40) { head.removeChild(btn); collapsed = true; }
-    if (collapsed) { this._layoutSheet(); return; }
-    if (!compact) title.textContent = label + ' — ' + String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0];
-    else title.textContent = label;                      // phones: the model name wraps; it is in the note anyway
+    var ui = this.ui = { title: title, play: [playHead], slider: null, valid: null, unavail: null, label: label, modelName: modelName, collapsed: collapsed, compact: compact };
+    if (compact && cap - host.offsetHeight - 8 < 40) { head.removeChild(btn); collapsed = ui.collapsed = true; }
+    if (collapsed) { this._syncUI(); this._layoutSheet(); return; }
     var body = mk('div', 'ov-details'); body.id = 'ovDetails'; body.style.maxHeight = cap + 'px'; host.appendChild(body);
-    var meta = mk('div', 'ov-meta');
-    meta.appendChild(mk('b', null, 'Valid: ')); meta.appendChild(document.createTextNode(validLocal + ' (+' + hours + ' h)'));
-    meta.appendChild(mk('br')); meta.appendChild(mk('b', null, 'Run: ')); meta.appendChild(document.createTextNode(runLabel + ' (UTC)'));
-    var pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
-    if (pc && pc.model === 'SWAN') meta.appendChild(document.createTextNode(' — the forecast table is a PacIOOS SWAN run'));
-    else if (pc && pc.run && pc.run !== m.run) meta.appendChild(document.createTextNode(' — the forecast table is on run ' + pc.run));
-    body.appendChild(meta);
+    // transport + timeline
+    var tr = mk('div', 'ov-row ov-transport');
+    tr.appendChild(button('', '⏮', 'First frame', function () { self.pause(); self.seek(0); }));
+    tr.appendChild(button('', '◀', 'Previous frame', function () { self.step(-1); }));
+    var playMain = button('ov-play', '▶', 'Play', function () { if (self.playing) self.pause(); else self.play(); });
+    ui.play.push(playMain); tr.appendChild(playMain);
+    tr.appendChild(button('', '▶▶', 'Next frame', function () { self.step(1); }));
+    tr.appendChild(button('', '⏭', 'Last frame', function () { self.pause(); self.seek(self.n - 1); }));
+    var speed = mk('select', 'ov-speed'); speed.setAttribute('aria-label', 'Playback speed');
+    SPEEDS.forEach(function (v) { var o = mk('option', null, v + '×'); o.value = String(v); speed.appendChild(o); });
+    speed.value = String(this.speed);
+    speed.addEventListener('change', function () { self.setSpeed(parseFloat(speed.value)); });
+    tr.appendChild(speed);
+    body.appendChild(tr);
+    var slider = mk('input', 'ov-timeline'); slider.type = 'range'; slider.min = '0'; slider.max = String(this.n - 1); slider.step = '1';
+    slider.setAttribute('aria-label', 'Forecast hour');
+    slider.addEventListener('input', function () { self.seek(parseInt(slider.value, 10)); });
+    body.appendChild(slider); ui.slider = slider;
+    var valid = mk('div', 'ov-meta'); body.appendChild(valid); ui.valid = valid;
+    var runLine = mk('div', 'ov-meta'); runLine.appendChild(mk('b', null, 'Run: '));
+    var runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z'), pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
+    runLine.appendChild(document.createTextNode(runLabel + ' (UTC), ' + this.n + ' frames to +' + this._hours(m.frames[this.n - 1]) + ' h' +
+      (pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run' : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '')));
+    body.appendChild(runLine);
     var age = (Date.now() - Date.parse(this.pointer.published_utc)) / 1000;
     if (age > STALE_AFTER_S) body.appendChild(mk('div', 'ov-warn', 'Model overlay data is stale (published ' + Math.round(age / 3600) + ' h ago).'));
-    if (this.newerRun) body.appendChild(mk('div', 'ov-warn', 'A newer run (' + this.newerRun + ') is available: switch the overlay Off and back On to load it.'));
+    if (this.newerRun) {
+      var banner = mk('div', 'ov-warn', 'A newer run (' + String(this.newerRun.run).replace(/^(\d{8})(\d{2})$/, '$1 $2Z') + ') is available. ');
+      banner.appendChild(button('ov-update', 'Update', 'Switch to the newer run', function () { self.update(); }));
+      body.appendChild(banner);
+    }
+    var unavail = mk('div', 'ov-warn'); unavail.hidden = true; body.appendChild(unavail); ui.unavail = unavail;
     // legend over the LEGEND range in the site's units (the encoding range is wider; extremes clamp)
     var leg = mk('div', 'ov-legend'), cv = mk('canvas'); cv.width = 256; cv.height = 1; leg.appendChild(cv);
-    var lut = buildRamp(RAMPS[field]), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);
+    var lut = this._lut(), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);
     for (var i = 0; i < 256; i++) { im.data[i * 4] = lut[i * 3]; im.data[i * 4 + 1] = lut[i * 3 + 1]; im.data[i * 4 + 2] = lut[i * 3 + 2]; im.data[i * 4 + 3] = 255; }
     ctx.putImageData(im, 0, 0);
     var ticks = mk('div', 'ov-ticks'), tk = legendTicks(field, f, unit);
@@ -552,9 +756,10 @@
     rng.addEventListener('input', function () { self.setOpacity(parseFloat(rng.value)); });
     lab.appendChild(rng); row.appendChild(lab); body.appendChild(row);
     body.appendChild(mk('div', 'ov-note',
-      (field === 'tp' ? 'Peak period Tp (GRIB PERPW = 1/fp). ' : field === 'wind' ? 'GFS wind at 10 m; legend top 60 kt. ' : '') +
+      (field === 'tp' ? 'Peak period Tp (GRIB PERPW = 1/fp). ' : field === 'wind' ? 'GFS wind at 10 m over land and sea; legend top 60 kt. ' : '') +
       'GFS-Wave 0.25° (~28 km) grid — display smoothing is not extra detail. Hover or long-press the map for values. ' +
       String(m.model && m.model.attribution || '')));
+    this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND
     // the top-left control must end above the zoom/Home stack (short windows: the site caps the map at
     // 48 % of the viewport). Not enough room for a scroll box -> back to the one-line summary.
@@ -566,12 +771,41 @@
       room = Math.min(cap, mapH - this._stackHeight() - 10 - 10 - chrome - 8);
     }
     if (room < 40) {
-      host.removeChild(body); head.removeChild(btn); this.collapsed = true;
-      title.textContent = label + ' · ' + validLocal + ' (+' + hours + ' h)';
+      host.removeChild(body); head.removeChild(btn); this.collapsed = true; ui.collapsed = true;
+      ui.slider = null; ui.valid = null; ui.unavail = null; ui.play = [playHead];
+      this._syncUI();
     } else {
       body.style.maxHeight = room + 'px';
     }
     this._layoutSheet();
+  };
+  // The live parts: play/pause glyphs, the title, the valid-time line (from the DRAWN frame; a pending
+  // target is announced as loading), the timeline thumb (at the target) and the unavailable-frame note.
+  Overlay.prototype._syncUI = function () {
+    var ui = this.ui, self = this;
+    if (!ui || !this.manifest || !this.layer) return;
+    var drawn = this.layer.entry, pending = this.target !== null && this.target !== this.frameIndex;
+    var validLocal = drawn ? this._validLocal(drawn) : '…', hours = drawn ? this._hours(drawn) : null;
+    var glyph = this.playing ? '❚❚' : '▶', name = this.playing ? 'Pause' : 'Play';
+    ui.play.forEach(function (b) { b.textContent = glyph; b.setAttribute('aria-label', name); });
+    ui.title.textContent = ui.collapsed ? ui.label + ' · ' + validLocal + (hours === null ? '' : ' (+' + hours + ' h)')
+      : ui.compact ? ui.label : ui.label + ' — ' + ui.modelName;
+    if (ui.valid) {
+      clear(ui.valid);
+      ui.valid.appendChild(mk('b', null, 'Valid: '));
+      ui.valid.appendChild(document.createTextNode(validLocal + (hours === null ? '' : ' (+' + hours + ' h)')));
+      if (pending) {
+        var t = this.manifest.frames[this.target], hint = this._isUnavailable(this.target) ? ' — frame +' + this._hours(t) + ' h is unavailable' : ' — loading +' + this._hours(t) + ' h…';
+        ui.valid.appendChild(mk('span', 'ov-hint', hint));
+      }
+    }
+    if (ui.slider && document.activeElement !== ui.slider) ui.slider.value = String(this.target !== null ? this.target : this.frameIndex);
+    if (ui.unavail) {
+      var missing = [];
+      for (var i = 0; i < this.n; i++) if (this._isUnavailable(i)) missing.push('+' + this._hours(this.manifest.frames[i]) + ' h');
+      ui.unavail.hidden = missing.length === 0;
+      ui.unavail.textContent = missing.length ? 'Unavailable frames are skipped: ' + missing.join(', ') : '';
+    }
   };
 
   window.AllshoreOverlay = {
@@ -579,6 +813,8 @@
     _internals: { buildRamp: buildRamp, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
-      forwardPixel: forwardPixel, snapToPixel: snapToPixel, pad3: pad3 }
+      forwardPixel: forwardPixel, snapToPixel: snapToPixel, pad3: pad3,
+      ringPlan: ringPlan, nextAvailable: nextAvailable, FrameCache: FrameCache, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
+      MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT }
   };
 })();

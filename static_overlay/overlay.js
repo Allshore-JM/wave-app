@@ -267,7 +267,7 @@
     this._loadManifest(sig).then(function (m) {
       if (!m.fields[fieldName] || !RAMPS[fieldName]) throw new Error('layer "' + fieldName + '" is not in this run');
       self.frameIndex = pickFrame(m);
-      self.res = wantHalf(self.map.getZoom(), self.map.getSize().x) ? 'half' : 'full';
+      self.res = wantHalf(self.map.getZoom(), self._dims().w) ? 'half' : 'full';
       return self._loadCurrent(sig);
     }).catch(function (err) { self._fail(sig, err); });
   };
@@ -310,27 +310,37 @@
       });
     });
   };
+  // The container's real size: the site resizes #map by script and Leaflet's cached getSize() can lag.
+  Overlay.prototype._dims = function () {
+    var c = this.map.getContainer(), s = this.map.getSize();
+    return { w: c.clientWidth || s.x, h: c.clientHeight || s.y };
+  };
   Overlay.prototype._attribute = function () {
     if (this._attributed) return;
     this._attributed = true;
     if (this.map.attributionControl) this.map.attributionControl.addAttribution(ATTRIBUTION);
     this.map.getContainer().classList.add('ov-on');
+    this._sizeAttribution();
+  };
+  // While On the attribution may wrap, but only inside its own box: never over the zoom control.
+  Overlay.prototype._sizeAttribution = function () {
+    if (this._attributed) this.map.getContainer().style.setProperty('--ov-attr-max', Math.max(120, this._dims().w - 60) + 'px');
   };
   Overlay.prototype._unattribute = function () {
     if (!this._attributed) return;
     this._attributed = false;
     if (this.map.attributionControl) this.map.attributionControl.removeAttribution(ATTRIBUTION);
-    this.map.getContainer().classList.remove('ov-on');
+    var c = this.map.getContainer(); c.classList.remove('ov-on'); c.style.removeProperty('--ov-attr-max');
   };
   Overlay.prototype._on = function (ev, fn) { this.map.on(ev, fn); this._listeners.push([ev, fn]); };
   Overlay.prototype._bindMap = function () {
     var self = this;
     this._on('zoomend', function () { self._checkRes(); });
-    this._on('resize', function () { self._checkRes(); if (self.last) self.render(self.last); });
+    this._on('resize', function () { self._sizeAttribution(); self._checkRes(); if (self.last) self.render(self.last); });
   };
   Overlay.prototype._checkRes = function () {
     if (!this.layer || !this.layer.hasFrame() || !this.manifest || this.frameIndex === null || !this.field) return;
-    var z = this.map.getZoom(), w = this.map.getSize().x, want = this.res;
+    var z = this.map.getZoom(), w = this._dims().w, want = this.res;
     if (this.res === 'full' && wantHalf(z, w)) want = 'half';
     else if (this.res === 'half' && wantFull(z, w)) want = 'full';
     if (want === this.res) return;
@@ -403,7 +413,12 @@
   };
 
   // ---- panel: inside the top-left control on desktops; a sheet on the map's bottom edge on phones ----
-  Overlay.prototype.isCompact = function () { var s = this.map.getSize(); return s.x < 576 || s.y < 400; };   // the site's mobile breakpoint
+  // Compact = the site's mobile breakpoint, or a short map on a touch device (desktop windows are
+  // often short too: the site caps the map at 48 % of the viewport height).
+  Overlay.prototype.isCompact = function () {
+    var d = this._dims(), coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+    return d.w < 576 || (d.h < 400 && coarse);
+  };
   Overlay.prototype._host = function () {
     if (this.isCompact()) {
       if (!this.sheet) {
@@ -419,24 +434,26 @@
   };
   Overlay.prototype._removeSheet = function () {
     if (this.sheet) { this.sheet.remove(); this.sheet = null; }
-    var c = this.map.getContainer(); c.classList.remove('ov-sheet-open'); c.style.removeProperty('--ov-sheet-h');
+    var c = this.map.getContainer(); c.classList.remove('ov-sheet-open');
+    c.style.removeProperty('--ov-sheet-h'); c.style.removeProperty('--ov-sheet-left');
   };
-  // The sheet takes the bottom edge; CSS lifts the bottom control corners (zoom, Home, attribution)
-  // above it by --ov-sheet-h, so nothing existing is covered.
+  // The sheet sits on the bottom edge to the RIGHT of the zoom/Home column (that column is never
+  // covered or moved); CSS lifts only the attribution corner above it by --ov-sheet-h.
   Overlay.prototype._layoutSheet = function () {
     if (!this.sheet) return;
     var c = this.map.getContainer(); c.classList.add('ov-sheet-open');
+    c.style.setProperty('--ov-sheet-left', (this._stackWidth() + 6) + 'px');
     c.style.setProperty('--ov-sheet-h', this.sheet.offsetHeight + 'px');
   };
-  Overlay.prototype._stackHeight = function () {
+  Overlay.prototype._stackWidth = function () {
     var corners = this.map._controlCorners, el = corners && corners.bottomleft;
-    return el && el.offsetHeight ? el.offsetHeight : 120;
+    return el && el.offsetWidth ? el.offsetWidth : 45;
   };
   Overlay.prototype.refresh = function () { if (this.last && this.layer) this.render(this.last); };
   Overlay.prototype.render = function (st) {
     this.last = st;
     var self = this, host = this._host(), compact = host === this.sheet, m = this.manifest, unit = this.opts.getUnit();
-    var mapH = this.map.getSize().y;
+    var mapH = this._dims().h;
     clear(host);
     host.setAttribute('aria-live', 'polite');
     if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._layoutSheet(); return; }
@@ -451,25 +468,25 @@
     var runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z');
     var hours = Math.round((Date.parse(st.frame.valid_utc) - Date.parse(m.run_utc)) / 3.6e6);
     var validLocal = this.opts.fmtTime(st.frame.valid_utc, this.opts.tz) + ' ' + this.opts.tzAbbr(st.frame.valid_utc, this.opts.tz);
-    // Expanded details: <= 40 % of the map; on the sheet also no taller than what is left above the zoom/Home stack.
+    // Expanded: the whole sheet <= 40 % of the map (the desktop panel's details likewise); the details
+    // scroll inside that. Too little room (short landscape maps) -> the one-line summary only.
     var cap = Math.floor(mapH * 0.4);
-    if (compact) cap = Math.min(cap, mapH - this._stackHeight() - 16);
-    var canExpand = cap >= 60;
     if (this.collapsed === undefined) this.collapsed = compact;
-    var collapsed = this.collapsed || !canExpand;
+    var collapsed = !!this.collapsed;
     var head = mk('div', 'ov-row ov-head');
-    if (canExpand) {
-      var btn = mk('button', 'ov-toggle', collapsed ? '▸' : '▾'); btn.type = 'button';
-      btn.setAttribute('aria-label', collapsed ? 'Show overlay details' : 'Hide overlay details');
-      btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
-      btn.addEventListener('click', function () { self.collapsed = !self.collapsed; self.render(st); });
-      head.appendChild(btn);
-    }
-    head.appendChild(mk('span', 'ov-title', collapsed ? label + ' · ' + validLocal + ' (+' + hours + ' h)'
-      : label + ' — ' + String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0]));
+    var btn = mk('button', 'ov-toggle', collapsed ? '▸' : '▾'); btn.type = 'button';
+    btn.setAttribute('aria-label', collapsed ? 'Show overlay details' : 'Hide overlay details');
+    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
+    btn.addEventListener('click', function () { self.collapsed = !self.collapsed; self.render(st); });
+    head.appendChild(btn);
+    var title = mk('span', 'ov-title', label + ' · ' + validLocal + ' (+' + hours + ' h)');
+    head.appendChild(title);
     host.appendChild(head);
+    var room = compact ? cap - head.offsetHeight - 8 : cap;
+    if (room < 40) { head.removeChild(btn); collapsed = true; }
     if (collapsed) { this._layoutSheet(); return; }
-    var body = mk('div', 'ov-details'); body.id = 'ovDetails'; body.style.maxHeight = cap + 'px'; host.appendChild(body);
+    title.textContent = label + ' — ' + String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0];
+    var body = mk('div', 'ov-details'); body.id = 'ovDetails'; body.style.maxHeight = room + 'px'; host.appendChild(body);
     var meta = mk('div', 'ov-meta');
     meta.appendChild(mk('b', null, 'Valid: ')); meta.appendChild(document.createTextNode(validLocal + ' (+' + hours + ' h)'));
     meta.appendChild(mk('br')); meta.appendChild(mk('b', null, 'Run: ')); meta.appendChild(document.createTextNode(runLabel + ' (UTC)'));

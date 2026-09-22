@@ -119,7 +119,8 @@ def test_overlay_js_syntax_and_contract_strings():
     js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
     for needle in ("'modelPane'", "pointerEvents", "createImageBitmap", "valueAt", "unmount", "AllshoreOverlay",
                    "_code", "tileCodes", "validateGrid", "validateManifest", "u8-linear-v2", "{step:03d}",
-                   "(hover: hover) and (pointer: fine)", "ov-sheet-open", "removeAttribution"):
+                   "(hover: hover) and (pointer: fine)", "(pointer: coarse)", "ov-sheet-open", "--ov-sheet-left",
+                   "--ov-attr-max", "removeAttribution", "clientHeight"):
         assert needle in js, needle
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:

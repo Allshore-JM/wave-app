@@ -54,11 +54,12 @@
       var c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
       var ctx = c.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(bmp, 0, 0);
-      var d = ctx.getImageData(0, 0, bmp.width, bmp.height).data;
-      var q = new Uint8Array(bmp.width * bmp.height);
+      var w = bmp.width, h = bmp.height;                     // read BEFORE close(): a closed bitmap reports 0x0
+      var d = ctx.getImageData(0, 0, w, h).data;
+      var q = new Uint8Array(w * h);
       for (var i = 0, j = 0; i < q.length; i++, j += 4) q[i] = d[j];
       if (bmp.close) bmp.close();
-      return { q: q, cols: bmp.width, rows: bmp.height };
+      return { q: q, cols: w, rows: h };
     });
   }
 

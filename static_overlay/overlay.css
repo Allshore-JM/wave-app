@@ -1,6 +1,6 @@
 /* Model overlay control (Allshore Surf). Loaded only after the user picks a layer. */
-.leaflet-modelPane { pointer-events: none; }
-.leaflet-modelPane canvas { image-rendering: auto; }
+.leaflet-model-pane { pointer-events: none; }
+.leaflet-model-pane canvas { image-rendering: auto; }
 
 .ov-ctl { background: rgba(255,255,255,0.94); border-radius: 6px; box-shadow: 0 1px 5px rgba(0,0,0,0.4);
   padding: 6px 8px; font: 12px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a1a1a;

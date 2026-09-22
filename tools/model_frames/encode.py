@@ -1,27 +1,44 @@
 """Quantise a float grid to the 8-bit frame format the browser decodes.
 
-Frame format (documented in manifest.json as encoding "u8-linear-v1"):
-  value 0          -> missing (land / no data); rendered transparent
-  value q in 1..255 -> lo + (q - 1) / 254 * (hi - lo)   (values above hi clamp to 255)
-Stored as 8-bit greyscale PNG. Half-resolution variant = nearest-neighbour 720x361.
+Frame format, encoding "u8-linear-v2" (machine-readable copy in the manifest's encoding_spec):
+  q = 0            -> missing (land / no data); rendered transparent; a bilinear sampler must
+                      treat it as an ABSENT neighbour, never as lo
+  q in 1..255      -> value = lo + (q - 1) / 254 * (hi - lo)
+  q = 1  also means "<= lo" (clamped low), q = 255 also means ">= hi" (clamped high); the
+  manifest carries clamped_low/high counts per frame and the readout must print "<= lo" / ">= hi".
+Encoding ranges are WIDER than the legend ranges the owner chose, so no ocean value is silently
+rewritten (G1: 5.5 % of ocean points have Tp below the 4 s legend floor). Legends stay
+Hs 0-12 m, Tp 4-22 s, wind 0-60 kt on the client.
+
+Stored as 8-bit greyscale PNG (1440x721). Half-resolution variant = exact subsample q[::2, ::2]
+(361x720): half pixel (i, j) IS full pixel (2i, 2j) -> lat 90 - 0.5 i, lon -180 + 0.5 j.
 """
 import io
 
 import numpy as np
 from PIL import Image
 
+KT = 1852.0 / 3600.0                    # 1 knot in m/s
+
 FIELDS = {
-    # name: (range lo, hi, units, interpolation hint for the client)
-    "hs":   (0.0, 12.0, "m", "bilinear"),
-    "tp":   (4.0, 22.0, "s", "nearest"),
-    "wind": (0.0, 30.868, "m/s", "bilinear"),   # 60 kt
+    # name: dict(lo, hi = ENCODING range; legend = display range; units; interpolation hint)
+    "hs":   {"lo": 0.0, "hi": 15.0,     "legend": [0.0, 12.0],    "units": "m",   "interpolation": "bilinear"},
+    "tp":   {"lo": 1.0, "hi": 30.0,     "legend": [4.0, 22.0],    "units": "s",   "interpolation": "nearest"},
+    "wind": {"lo": 0.0, "hi": 80 * KT,  "legend": [0.0, 60 * KT], "units": "m/s", "interpolation": "bilinear"},
 }
-ENCODING = "u8-linear-v1"
+ENCODING = "u8-linear-v2"
+ENCODING_SPEC = {
+    "missing": 0, "min_code": 1, "max_code": 255,
+    "formula": "value = lo + (q - 1) / 254 * (hi - lo)",
+    "clamp": "both", "low_code_means": "<= lo", "high_code_means": ">= hi",
+    "bilinear_missing": "treat q=0 as absent neighbour",
+}
 
 
 def quantize(grid, lo, hi):
-    q = np.clip(np.round((grid - lo) / (hi - lo) * 254.0) + 1.0, 1, 255)
-    return np.where(np.isnan(grid), 0, q).astype(np.uint8)
+    g = np.asarray(grid, dtype=np.float64)
+    q = np.clip(np.round((g - lo) / (hi - lo) * 254.0) + 1.0, 1, 255)
+    return np.where(np.isnan(g), 0, q).astype(np.uint8)
 
 
 def dequantize(q, lo, hi):
@@ -33,10 +50,13 @@ def quantum(lo, hi):
     return (hi - lo) / 254.0
 
 
-def to_png(q, size=None):
+def half_res(q):
+    """Exact 2x subsample keeping the (+90 N, -180 E) origin: shape (361, 720)."""
+    return np.ascontiguousarray(q[::2, ::2])
+
+
+def to_png(q):
     im = Image.fromarray(q, "L")
-    if size:
-        im = im.resize(size, Image.NEAREST)
     buf = io.BytesIO()
     im.save(buf, "PNG", optimize=True)
     return buf.getvalue()
@@ -44,16 +64,19 @@ def to_png(q, size=None):
 
 def encode_frame(grid, name):
     """-> {'full': png bytes, 'half': png bytes, 'stats': {...}} for one field."""
-    lo, hi, units, _ = FIELDS[name]
-    q = quantize(grid, lo, hi)
-    valid = ~np.isnan(grid)
+    f = FIELDS[name]
+    lo, hi = f["lo"], f["hi"]
+    g = np.asarray(grid, dtype=np.float64)
+    q = quantize(g, lo, hi)
+    valid = ~np.isnan(g)
     return {
         "full": to_png(q),
-        "half": to_png(q, (720, 361)),
+        "half": to_png(half_res(q)),
         "stats": {
-            "min": float(np.nanmin(grid)) if valid.any() else None,
-            "max": float(np.nanmax(grid)) if valid.any() else None,
+            "min": round(float(np.nanmin(g)), 4) if valid.any() else None,
+            "max": round(float(np.nanmax(g)), 4) if valid.any() else None,
             "valid_points": int(valid.sum()),
-            "clamped_points": int(np.count_nonzero(grid > hi)),
+            "clamped_low": int(np.count_nonzero(g < lo)),
+            "clamped_high": int(np.count_nonzero(g > hi)),
         },
     }

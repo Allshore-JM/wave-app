@@ -1,20 +1,25 @@
 # Renders + publishes the newest COMPLETE NOAA GFS-Wave/GFS run as overlay frames to R2.
-# Schedules only fire on the repository's default branch; on feature branches use the push
-# trigger below or "Run workflow". Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+# Schedules fire only on the repository's default branch. The job short-circuits in ~1 min when
+# the live run is already current, so it runs twice an hour: NOAA completes a cycle between
+# +4:36 and +4:52 h (8 cycles measured) and GitHub cron may slip, so fixed offsets miss runs.
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: model-frames
 on:
   schedule:
-    - cron: "30 4,10,16,22 * * *"       # ~4.5 h after each 00/06/12/18Z cycle (NOAA lag ~3.6-5.2 h)
+    - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
       steps:
-        description: "comma list of forecast hours (blank = all 81)"
+        description: "comma list of forecast hours (blank = all 81). A subset is never published live."
         default: ""
+      dry_run:
+        description: "no uploads (true/false)"
+        default: "false"
       force:
         description: "re-publish even if the run is current (true/false)"
         default: "false"
   push:
-    branches: [feat/overlays-1]
+    branches: [feat/overlays-1]          # Phase 1 branch testing only; removed at merge
     paths: [".github/workflows/model-frames.yml", "tools/model_frames/**"]
 concurrency:
   group: model-frames
@@ -26,8 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462   # v2
         with:
           environment-name: frames
           create-args: >-
@@ -46,12 +51,17 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           STEPS: ${{ github.event.inputs.steps }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
           FORCE: ${{ github.event.inputs.force }}
         run: |
-          ARGS=""
-          [ -n "$STEPS" ] && ARGS="$ARGS --steps $STEPS"
-          [ "$FORCE" = "true" ] && ARGS="$ARGS --force"
-          /usr/bin/time -v python tools/model_frames/run.py $ARGS 2> time.txt; rc=$?
-          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ $rc -eq 3 ]; then echo "no complete run yet" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
-          exit $rc
+          if [ -n "$STEPS" ] && ! [[ "$STEPS" =~ ^[0-9,]+$ ]]; then echo "bad steps input"; exit 2; fi
+          ARGS=()
+          [ -n "$STEPS" ] && ARGS+=(--steps "$STEPS" --dry-run)      # a subset is only ever a dry run
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          [ "$FORCE" = "true" ] && ARGS+=(--force)
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/run.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          if [ "$rc" -eq 3 ]; then echo "no complete run yet" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          exit "$rc"
+

@@ -65,16 +65,46 @@ test('pickFrame: first frame valid at or after now, else the last', () => {
   assert.equal(I.pickFrame(m, Date.parse('2026-09-23T00:00:00Z')), 3);         // all past -> last
 });
 
-test('validateManifest accepts schema 2 and 3 with the known encoding only', () => {
+test('validateManifest accepts schema 2 and 3 with the known encoding and file shapes only', () => {
+  const files3 = { template: 'x/{res}{field}/f{step:03d}.png', res: { full: '', half: 'half/' } };
   const base = { run: '2026092212', run_utc: '2026-09-22T12:00:00Z', encoding: 'u8-linear-v2', complete: true,
     fields: { hs: HS }, grid: GRID, grid_half: HALF, frames: [{ step: 0, valid_utc: '2026-09-22T12:00:00Z' }] };
-  assert.equal(I.validateManifest({ ...base, schema: 2 }).run, '2026092212');
-  assert.equal(I.validateManifest({ ...base, schema: 3 }).run, '2026092212');
-  assert.throws(() => I.validateManifest({ ...base, schema: 4 }), /schema/);
-  assert.throws(() => I.validateManifest({ ...base, schema: 3, encoding: 'u8-linear-v3' }), /encoding/);
-  assert.throws(() => I.validateManifest({ ...base, schema: 3, complete: false }), /complete/);
-  assert.throws(() => I.validateManifest({ ...base, schema: 3, frames: [] }), /incomplete/);
-  assert.throws(() => I.validateManifest({ ...base, schema: 3, frames: [{ step: '0', valid_utc: 'x' }] }), /bad frame/);
+  const m3 = { ...base, schema: 3, files: files3 };
+  const m2 = { ...base, schema: 2, frames: [{ step: 0, valid_utc: '2026-09-22T12:00:00Z', files: { hs: { full: 'a/hs/f000.png', half: 'a/half/hs/f000.png' } } }] };
+  assert.equal(I.validateManifest(m3).run, '2026092212');
+  assert.equal(I.validateManifest(m2).run, '2026092212');
+  assert.throws(() => I.validateManifest({ ...m3, schema: 4 }), /schema/);
+  assert.throws(() => I.validateManifest({ ...m3, encoding: 'u8-linear-v3' }), /encoding/);
+  assert.throws(() => I.validateManifest({ ...m3, complete: false }), /complete/);
+  assert.throws(() => I.validateManifest({ ...m3, frames: [] }), /incomplete/);
+  assert.throws(() => I.validateManifest({ ...m3, frames: [{ step: '0', valid_utc: 'x' }] }), /bad frame/);
+  assert.throws(() => I.validateManifest({ ...base, schema: 3 }), /incomplete/);                       // no file template
+  assert.throws(() => I.validateManifest({ ...m3, files: { template: 'x', res: { full: '' } } }), /incomplete/);
+  assert.throws(() => I.validateManifest({ ...base, schema: 2 }), /bad frame/);                        // no per-frame files
+  assert.throws(() => I.validateManifest({ ...m2, frames: [{ step: 0, valid_utc: '2026-09-22T12:00:00Z', files: { hs: { full: 'a' } } }] }), /bad frame/);
+});
+
+test('snapToPixel maps any point to the centre of the drawn pixel, so the readout reads what the tile shows', () => {
+  const l = layer(frame(1440, 721, PATTERN), GRID, 'hs', HS);
+  for (const coords of [{ z: 1, x: 0, y: 0 }, { z: 3, x: 7, y: 2 }, { z: 5, x: 2, y: 14 }, { z: 6, x: 33, y: 27 }]) {
+    const codes = l.tileCodes(coords, new Float64Array(65536));
+    let checked = 0;
+    for (let py = 3; py < 256; py += 29) for (let px = 5; px < 256; px += 31) {
+      const centre = I.tilePixelLatLng(coords, px, py);
+      for (const [dx, dy] of [[0, 0], [0.49, 0.49], [-0.49, -0.49], [0.3, -0.45], [-0.2, 0.44]]) {
+        const off = I.tilePixelLatLng(coords, px + dx, py + dy);                  // an arbitrary point inside the pixel
+        const s = I.snapToPixel(off.lat, off.lng, coords.z);
+        assert.ok(Math.abs(s.lat - centre.lat) < 1e-9 && Math.abs(s.lng - centre.lng) < 1e-9, `${JSON.stringify(coords)} ${px},${py} +${dx},${dy}`);
+        const code = codes[py * 256 + px], v = l.valueAt(s.lat, s.lng);
+        if (!code) assert.equal(v, null); else assert.ok(Math.abs(v - l._value(code)) < 1e-9);
+        checked++;
+      }
+    }
+    assert.ok(checked > 300);
+  }
+  const a = I.snapToPixel(20.3, 200.7, 4), b = I.snapToPixel(20.3, -159.3, 4);                // a world copy snaps the same
+  assert.ok(Math.abs(a.lat - b.lat) < 1e-9 && Math.abs(a.lng - 360 - b.lng) < 1e-9);
+  assert.ok(Math.abs(l.valueAt(a.lat, a.lng) - l.valueAt(b.lat, b.lng)) < 1e-9);
 });
 
 test('validateGrid rejects a frame or grid that does not match the contract', () => {
@@ -166,13 +196,14 @@ test('legend ticks are nice numbers in the site unit with the legend top as N+',
   const labels = (f, d, u) => Array.from(I.legendTicks(f, d, u), t => t.label);   // main-realm array (vm arrays differ by prototype)
   assert.deepEqual(labels('hs', HS, 'US'), ['0', '10', '20', '30', '39+ ft']);
   assert.deepEqual(labels('hs', HS, 'Metric'), ['0', '3', '6', '9', '12+ m']);
-  assert.deepEqual(labels('tp', TP, 'US'), ['≤4', '8', '12', '16', '20', '22+ s']);
-  assert.deepEqual(labels('wind', WIND, 'US'), ['0', '20', '40', '60', '69+ mph']);
-  assert.deepEqual(labels('wind', WIND, 'Metric'), ['0', '25', '50', '75', '100', '111+ km/h']);
-  for (const [f, d, u] of [['hs', HS, 'US'], ['tp', TP, 'US'], ['wind', WIND, 'Metric']]) {
-    const pos = I.legendTicks(f, d, u).map(t => t.pos);
+  assert.deepEqual(labels('tp', TP, 'US'), ['≤4', '8', '12', '16', '22+ s']);
+  assert.deepEqual(labels('wind', WIND, 'US'), ['0', '20', '40', '69+ mph']);
+  assert.deepEqual(labels('wind', WIND, 'Metric'), ['0', '25', '50', '75', '111+ km/h']);
+  for (const [f, d, u] of [['hs', HS, 'US'], ['hs', HS, 'Metric'], ['tp', TP, 'US'], ['wind', WIND, 'US'], ['wind', WIND, 'Metric']]) {
+    const pos = Array.from(I.legendTicks(f, d, u), t => t.pos);
     assert.equal(pos[0], 0); assert.equal(pos[pos.length - 1], 1);
     for (let i = 1; i < pos.length; i++) assert.ok(pos[i] > pos[i - 1] && pos[i] <= 1, `${f} ${u} ${pos}`);
+    assert.ok(pos[pos.length - 2] <= 0.8, `${f} ${u}: last numeric tick ${pos[pos.length - 2]} would collide with the top label`);
   }
 });
 

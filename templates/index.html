@@ -2746,13 +2746,18 @@
         if (window.AllshoreOverlay) return Promise.resolve();
         if (loading) return loading;
         loading = new Promise(function (resolve, reject) {
-          var href = '/overlay/overlay.css?v=' + VERSION;
-          if (!document.querySelector('link[href="' + href + '"]')) {
-            var css = document.createElement('link'); css.rel = 'stylesheet'; css.href = href;
-            document.head.appendChild(css);
+          // Resolve once BOTH files are in (the sheet is measured on the first render); a blocked
+          // stylesheet must not hang the feature, so the CSS wait has a timeout.
+          var pending = 2, done = function () { if (--pending === 0) resolve(); };
+          var href = '/overlay/overlay.css?v=' + VERSION, css = document.querySelector('link[href="' + href + '"]');
+          if (css && css.sheet) { done(); } else {
+            if (!css) { css = document.createElement('link'); css.rel = 'stylesheet'; css.href = href; document.head.appendChild(css); }
+            var cssDone = false, finishCss = function () { if (!cssDone) { cssDone = true; done(); } };
+            css.addEventListener('load', finishCss); css.addEventListener('error', finishCss);
+            setTimeout(finishCss, 3000);
           }
           var s = document.createElement('script'); s.src = '/overlay/overlay.js?v=' + VERSION;
-          s.onload = function () { resolve(); };
+          s.onload = function () { done(); };
           s.onerror = function () { loading = null; s.remove(); reject(new Error('overlay module failed to load')); };
           document.head.appendChild(s);
         });

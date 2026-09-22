@@ -256,6 +256,18 @@ test('FrameCache: LRU with a cap, never evicts the frame on the map', () => {
   assert.deepEqual(Array.from(I.SPEEDS), [0.5, 1, 2, 4]); assert.equal(I.BASE_FPS, 2);
 });
 
+test('failureKind: missing or undecodable frames are permanent, everything else is retried', () => {
+  assert.equal(I.failureKind(new Error('frame 404')), 'permanent');
+  assert.equal(I.failureKind(new Error('frame 410')), 'permanent');
+  assert.equal(I.failureKind(new Error('frame 403')), 'permanent');
+  assert.equal(I.failureKind(new Error('frame decode failed')), 'permanent');
+  assert.equal(I.failureKind(new Error('frame decoded to 0x0')), 'permanent');
+  assert.equal(I.failureKind(new Error('frame 503')), 'transient');
+  assert.equal(I.failureKind(new Error('frame 500')), 'transient');
+  assert.equal(I.failureKind(new TypeError('Failed to fetch')), 'transient');
+  assert.equal(I.failureKind(null), 'transient');
+});
+
 test('tileCodes performance smoke (full grid, bilinear)', () => {
   const l = layer(frame(1440, 721, (r, c) => 1 + ((r + c) % 254)), GRID, 'hs', HS);
   const out = new Float64Array(65536);

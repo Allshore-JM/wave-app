@@ -259,6 +259,14 @@
   var SPEEDS = [0.5, 1, 2, 4], BASE_FPS = 2;                 // 1x = 2 frames/s (owner default)
   var RING_AHEAD = 2, RING_BEHIND = 2, MAX_DECODED = 5, MAX_INFLIGHT = 2;
   var RUN_CHECK_MS = 30 * 60 * 1000;                         // newer run -> banner only, never an automatic switch
+  var RETRY_AFTER_MS = 60 * 1000;                            // a transient fetch failure keeps a frame out for this long
+  // A frame that does not exist (or cannot be decoded) is gone for the session; anything else (network
+  // error, 5xx, browser out of resources) is retried after a cooldown.
+  function failureKind(err) {
+    var msg = String(err && err.message || ''), m = /^frame (\d{3})$/.exec(msg);
+    if (m) return (m[1] === '404' || m[1] === '410' || m[1] === '403') ? 'permanent' : 'transient';
+    return /decode/.test(msg) ? 'permanent' : 'transient';
+  }
   // Indices worth having decoded around i: i itself, then ahead in the play direction, then behind (wrapping).
   function ringPlan(i, n, dir) {
     var out = [i], seen = {}, uniq = [], k;
@@ -329,7 +337,11 @@
     }).catch(function (err) { self._fail(sig, err); });
   };
   Overlay.prototype._key = function (idx) { return this.res + '/' + this.field + '/' + this.manifest.frames[idx].step; };
-  Overlay.prototype._isUnavailable = function (idx) { return !!this.unavailable[this._key(idx)]; };
+  // unavailable[key] is true (permanent) or a timestamp until which the frame is left alone (transient).
+  Overlay.prototype._isUnavailable = function (idx) {
+    var u = this.unavailable[this._key(idx)];
+    return u === true || (typeof u === 'number' && u > Date.now());
+  };
   Overlay.prototype._lut = function () {
     if (this._lutFor !== this.field) { this._lutCache = buildRamp(RAMPS[this.field]); this._lutFor = this.field; }
     return this._lutCache;
@@ -340,7 +352,8 @@
     var self = this, key = this._key(idx), hit = this.cache.get(key);
     if (hit) return Promise.resolve(hit);
     if (this.inflight[key]) return this.inflight[key].promise;
-    if (this.unavailable[key]) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
+    if (this._isUnavailable(idx)) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
+    delete this.unavailable[key];                                            // an expired cooldown: try again
     var m = this.manifest, ctrl = new AbortController();
     var url = this.root + '/' + frameKey(m, m.frames[idx], this.field, this.res === 'half');
     var p = decodeFrame(url, ctrl.signal).then(function (frame) {
@@ -350,7 +363,8 @@
     }, function (err) {
       delete self.inflight[key];
       if (ctrl.signal.aborted) throw err;
-      self.unavailable[key] = true; err.unavailable = true;
+      self.unavailable[key] = failureKind(err) === 'permanent' ? true : Date.now() + RETRY_AFTER_MS;
+      err.unavailable = true;
       throw err;
     });
     this.inflight[key] = { promise: p, abort: ctrl };
@@ -814,7 +828,7 @@
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
       forwardPixel: forwardPixel, snapToPixel: snapToPixel, pad3: pad3,
-      ringPlan: ringPlan, nextAvailable: nextAvailable, FrameCache: FrameCache, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
+      ringPlan: ringPlan, nextAvailable: nextAvailable, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT }
   };
 })();

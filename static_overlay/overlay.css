@@ -23,7 +23,12 @@
 .ov-ticks span.ov-last { transform: translateX(-100%); }
 .ov-readout { position: absolute; z-index: 700; pointer-events: none; background: rgba(0,0,0,0.75); color: #fff;
   font: 12px system-ui, sans-serif; padding: 2px 6px; border-radius: 4px; transform: translate(12px, -28px); white-space: nowrap; }
-.ov-toggle, .ov-retry { font-size: 12px; border: 1px solid #bbb; background: #fff; border-radius: 3px; line-height: 1.2; padding: 1px 6px; cursor: pointer; color: #1a1a1a; }
+.ov-toggle, .ov-btn { font-size: 12px; border: 1px solid #bbb; background: #fff; border-radius: 3px; line-height: 1.2; padding: 1px 6px; cursor: pointer; color: #1a1a1a; }
+.ov-btn { min-width: 26px; min-height: 22px; }
+.ov-transport { gap: 4px; }
+.ov-transport .ov-speed { font-size: 11px; padding: 1px 2px; margin-left: auto; }
+.ov-timeline { display: block; width: 100%; margin: 4px 0 2px; }
+.ov-hint { color: #8a5300; }
 #ovPanel { margin-top: 2px; }
 
 /* Phones / short maps: the details live in a sheet on the map's bottom edge (<= 40 % of the map),

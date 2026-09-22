@@ -226,7 +226,7 @@ def _live_stations_edge_enabled() -> bool:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.0.4"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.1.0"           # bump on every change to static_overlay/* (immutable URLs)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css"}
 
@@ -241,15 +241,21 @@ def _model_frames_base() -> str:
 
 @app.route("/overlay/<name>")
 def overlay_asset(name):
-    """The overlay's two static files, immutable at a versioned URL (?v=)."""
-    if name not in _OVERLAY_ASSETS:
+    """The overlay's two static files, immutable at a versioned URL (?v=): only while the feature is
+    on, and only for the version this build ships (any other ?v is a 404 nothing may cache)."""
+    if not _model_overlays_enabled() or name not in _OVERLAY_ASSETS:
         return jsonify({"error": "not found"}), 404
+    if request.args.get("v") != OVERLAY_ASSET_VERSION:
+        resp = jsonify({"error": "not found"})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 404
     target = os.path.realpath(os.path.join(_OVERLAY_DIR, name))
     if not target.startswith(os.path.realpath(_OVERLAY_DIR) + os.sep) or not os.path.isfile(target):
         return jsonify({"error": "not found"}), 404
-    resp = send_file(target, mimetype=_OVERLAY_ASSETS[name])
+    resp = send_file(target, mimetype=_OVERLAY_ASSETS[name], conditional=True)
     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     resp.headers["CDN-Cache-Control"] = "max-age=31536000"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 
 
@@ -1750,12 +1756,32 @@ def index():
     )
 
 
+def _effective_tz_name(station_id: str, requested_tz: str | None) -> str:
+    """The zone the forecast table will use, by the parsers' rule (parse_bull / parse_swan): a valid
+    explicit ?tz wins, else the station's precomputed zone, else a coordinate lookup, else UTC."""
+    if requested_tz:
+        try:
+            pytz.timezone(requested_tz)
+            return requested_tz
+        except Exception:
+            pass
+    tz_name = get_station_tz(station_id)
+    if tz_name:
+        return tz_name
+    coords = load_station_coords().get(str(station_id).strip())
+    if coords:
+        return _safe_tzname_for_latlon(coords["lat"], coords["lon"]) or "UTC"
+    return "UTC"
+
+
 def _overlay_context(selected_station, selected_tz, payload):
-    """Template variables for the optional overlays; empty (and no work) when the flag is off."""
-    if not _model_overlays_enabled():
+    """Template variables for the optional overlays; empty (and no work) when the feature is off.
+    Off means the flag unset OR no frames base configured (nothing to point the browser at)."""
+    base = _model_frames_base()
+    if not _model_overlays_enabled() or not base:
         return {"model_overlays": False}
-    tz_name = (payload["tz_label"] if payload and payload.get("tz_label") else None)         or selected_tz or get_station_tz(selected_station) or "UTC"
-    return {"model_overlays": True, "model_frames_base": _model_frames_base(),
+    tz_name = (payload.get("tz_label") if payload else None) or _effective_tz_name(selected_station, selected_tz)
+    return {"model_overlays": True, "model_frames_base": base,
             "overlay_asset_version": OVERLAY_ASSET_VERSION, "forecast_tz_name": tz_name}
 
 

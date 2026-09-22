@@ -2,6 +2,9 @@
 # Manual only. No secrets, no publishing, no site code. Output = step summary + artifact.
 name: model-frames-spike
 on:
+  push:
+    branches: [feat/overlays-0]        # spike branch only; never the site branches
+    paths: [".github/workflows/model-frames-spike.yml", "tools/model_frames/**"]
   workflow_dispatch:
     inputs:
       step:
@@ -31,7 +34,7 @@ jobs:
       - name: Spike
         shell: bash -l {0}
         run: |
-          /usr/bin/time -v python tools/model_frames/spike.py --step "${{ github.event.inputs.step }}" --out spike_out 2> time.txt
+          /usr/bin/time -v python tools/model_frames/spike.py --step "${{ github.event.inputs.step || 24 }}" --out spike_out 2> time.txt
           grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:

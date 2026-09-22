@@ -417,7 +417,7 @@
   // often short too: the site caps the map at 48 % of the viewport height).
   Overlay.prototype.isCompact = function () {
     var d = this._dims(), coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
-    return d.w < 576 || (d.h < 400 && coarse);
+    return d.w < 576 || d.h < 260 || (d.h < 400 && coarse);   // < 260 px: even a one-line panel would reach the zoom stack
   };
   Overlay.prototype._host = function () {
     if (this.isCompact()) {
@@ -448,6 +448,10 @@
   Overlay.prototype._stackWidth = function () {
     var corners = this.map._controlCorners, el = corners && corners.bottomleft;
     return el && el.offsetWidth ? el.offsetWidth : 45;
+  };
+  Overlay.prototype._stackHeight = function () {
+    var corners = this.map._controlCorners, el = corners && corners.bottomleft;
+    return el && el.offsetHeight ? el.offsetHeight : 120;
   };
   Overlay.prototype.refresh = function () { if (this.last && this.layer) this.render(this.last); };
   Overlay.prototype.render = function (st) {
@@ -486,7 +490,8 @@
     // measured from the real layout once the body is in place (see the clamp at the end).
     if (compact && cap - host.offsetHeight - 8 < 40) { head.removeChild(btn); collapsed = true; }
     if (collapsed) { this._layoutSheet(); return; }
-    title.textContent = label + ' — ' + String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0];
+    if (!compact) title.textContent = label + ' — ' + String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0];
+    else title.textContent = label;                      // phones: the model name wraps; it is in the note anyway
     var body = mk('div', 'ov-details'); body.id = 'ovDetails'; body.style.maxHeight = cap + 'px'; host.appendChild(body);
     var meta = mk('div', 'ov-meta');
     meta.appendChild(mk('b', null, 'Valid: ')); meta.appendChild(document.createTextNode(validLocal + ' (+' + hours + ' h)'));
@@ -518,9 +523,21 @@
       (field === 'tp' ? 'Peak period Tp (GRIB PERPW = 1/fp). ' : field === 'wind' ? 'GFS wind at 10 m; legend top 60 kt. ' : '') +
       'GFS-Wave 0.25° (~28 km) grid — display smoothing is not extra detail. Hover or long-press the map for values. ' +
       String(m.model && m.model.attribution || '')));
-    if (compact) {                                       // the WHOLE sheet <= cap: clamp the details to what is left
-      var chrome = host.offsetHeight - body.offsetHeight;
-      body.style.maxHeight = Math.max(40, cap - chrome - 2) + 'px';
+    // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND
+    // the top-left control must end above the zoom/Home stack (short windows: the site caps the map at
+    // 48 % of the viewport). Not enough room for a scroll box -> back to the one-line summary.
+    var room;
+    if (compact) {
+      room = cap - (host.offsetHeight - body.offsetHeight) - 2;
+    } else {
+      var ctl = (host.closest && host.closest('.ov-ctl')) || host, chrome = ctl.offsetHeight - body.offsetHeight;
+      room = Math.min(cap, mapH - this._stackHeight() - 10 - 10 - chrome - 8);
+    }
+    if (room < 40) {
+      host.removeChild(body); head.removeChild(btn); this.collapsed = true;
+      title.textContent = label + ' · ' + validLocal + ' (+' + hours + ' h)';
+    } else {
+      body.style.maxHeight = room + 'px';
     }
     this._layoutSheet();
   };

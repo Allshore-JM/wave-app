@@ -2732,7 +2732,8 @@
         onAdd: function () {
           var box = L.DomUtil.create('div', 'ov-ctl leaflet-bar');
           box.innerHTML = '<label>Model overlay <select id="ovField" autocomplete="off" aria-label="Model overlay">' +
-            '<option value="">Off</option><option value="hs">Wave height</option></select></label>' +
+            '<option value="">Off</option><option value="hs">Wave height</option>' +
+            '<option value="tp">Peak period</option><option value="wind">Wind speed</option></select></label>' +
             '<div id="ovPanel"></div>';
           L.DomEvent.disableClickPropagation(box);
           L.DomEvent.disableScrollPropagation(box);

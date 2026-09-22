@@ -190,6 +190,12 @@ test('resolution hysteresis', () => {
   assert.equal(I.wantFull(4, 1200), true);
   assert.equal(I.wantHalf(5, 375), true); assert.equal(I.wantFull(5.7, 375), false); assert.equal(I.wantFull(6, 375), true);
   assert.equal(I.wantHalf(5, 800), false);
+  // wind: half until zoom 6 (frames are ~2.7x larger), dead band 6..6.5
+  assert.equal(I.wantHalf(5.9, 1200, 'wind'), true); assert.equal(I.wantFull(5.9, 1200, 'wind'), false);
+  assert.equal(I.wantHalf(6.2, 1200, 'wind'), false); assert.equal(I.wantFull(6.2, 1200, 'wind'), false);
+  assert.equal(I.wantFull(6.5, 1200, 'wind'), true);
+  assert.equal(I.wantHalf(6.5, 375, 'wind'), true); assert.equal(I.wantFull(7.5, 375, 'wind'), true);
+  assert.equal(I.wantHalf(5.9, 1200, 'hs'), false);
 });
 
 test('legend ticks are nice numbers in the site unit with the legend top as N+', () => {

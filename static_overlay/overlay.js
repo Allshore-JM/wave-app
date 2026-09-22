@@ -258,7 +258,7 @@
     var validLocal = this.opts.fmtTime(st.frame.valid_utc, this.opts.tz) + ' ' + this.opts.tzAbbr(st.frame.valid_utc, this.opts.tz);
     // Short maps (phones: ~260 px) get a one-line summary with a toggle; the expanded panel is
     // capped at 40 % of the map height so zoom/Home and the buoy panel stay reachable.
-    var mapH = this.map.getSize().y, compact = mapH < 400;
+    var mapH = this.map.getSize().y, compact = mapH < 400 || this.map.getSize().x < 576;   // same breakpoint as the site's mobile layout
     if (this.collapsed === undefined) this.collapsed = compact;
     var head = div('ov-row');
     var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'ov-toggle';
@@ -269,7 +269,7 @@
     t.textContent = this.collapsed ? fdesc.label + ' · ' + validLocal + ' (+' + hours + ' h)' : fdesc.label + ' — ' + m.model.name.split(' + ')[0];
     head.appendChild(t);
     if (this.collapsed) { p.style.maxHeight = ''; p.style.overflowY = ''; return; }
-    p.style.maxHeight = Math.max(90, Math.floor(mapH * 0.4)) + 'px'; p.style.overflowY = 'auto';
+    p.style.maxHeight = Math.max(90, Math.floor(mapH * 0.35)) + 'px'; p.style.overflowY = 'auto';
     var meta = div('ov-meta');
     meta.innerHTML = '<b>Valid:</b> ' + escapeHtml(validLocal) + ' (+' + hours + ' h)<br><b>Run:</b> ' + escapeHtml(runLabel) + ' (UTC)' +
       (this.opts.pageCycle && this.opts.pageCycle !== m.run ? ' — forecast table is on ' + escapeHtml(this.opts.pageCycle) : '');

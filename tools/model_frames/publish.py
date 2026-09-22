@@ -32,6 +32,16 @@ def manifest_key(run, published_utc, complete=True):
     return f"{PREFIX}/{run}/{'manifest' if complete else 'partial'}-{stamp}.json"
 
 
+def stats_key(run, published_utc):
+    stamp = published_utc.replace("-", "").replace(":", "")
+    return f"{PREFIX}/{run}/stats-{stamp}.json"
+
+
+def files_template(run):
+    """Client builds frame URLs from this: {res} is "" (full) or "half/", {field}, {step:03d}."""
+    return f"{PREFIX}/{run}/{{res}}{{field}}/f{{step:03d}}.png"
+
+
 def failed_key(run):
     return f"{PREFIX}/failed/{run}.json"
 
@@ -100,8 +110,15 @@ def publish_frame(store, run, field, step, encoded):
     store.put(frame_key(run, field, step, half=True), encoded["half"], "image/png", IMMUTABLE)
 
 
-def publish_manifest(store, run, manifest):
-    """Write the manifest under a fresh immutable key; flip the pointer ONLY for a complete run."""
+def publish_manifest(store, run, manifest, stats=None):
+    """Write the (slim) manifest under a fresh immutable key, its stats sidecar first; flip the
+    pointer ONLY for a complete run. The manifest must stay small (r2.dev serves it uncompressed):
+    per-frame byte sizes and statistics live in the sidecar."""
+    if stats is not None:
+        skey = stats_key(run, manifest["published_utc"])
+        store.put(skey, json.dumps(stats, separators=(",", ":"), sort_keys=True, allow_nan=False).encode(),
+                  "application/json", IMMUTABLE)
+        manifest = dict(manifest, stats=skey)
     body = json.dumps(manifest, separators=(",", ":"), sort_keys=True, allow_nan=False).encode()
     mkey = manifest_key(run, manifest["published_utc"], complete=manifest["complete"])
     store.put(mkey, body, "application/json", IMMUTABLE)

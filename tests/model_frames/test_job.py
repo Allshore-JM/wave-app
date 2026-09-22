@@ -267,12 +267,19 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     m = R.build_and_publish(store, RUN, F.STEPS, log=lambda *a: None)
     puts = [k for op, k in c.log if op == "put"]
     assert puts[-1] == P.LATEST_KEY and puts[-2].startswith(f"{P.PREFIX}/2026092212/manifest-")
-    assert all(k.endswith(".png") for k in puts[:-2]) and len(puts) == 81 * 3 * 2 + 2
+    assert puts[-3].startswith(f"{P.PREFIX}/2026092212/stats-")           # sidecar BEFORE the manifest
+    assert all(k.endswith(".png") for k in puts[:-3]) and len(puts) == 81 * 3 * 2 + 3
     latest = json.loads(c.objects[P.LATEST_KEY]["body"])
     assert latest == {"run": "2026092212", "manifest": puts[-2], "complete": True, "encoding": E.ENCODING,
                       "published_utc": m["published_utc"], "frames": 81}
     man = json.loads(c.objects[latest["manifest"]]["body"], parse_constant=lambda s: (_ for _ in ()).throw(ValueError(s)))
     assert man["complete"] and man["frames"][80]["valid_utc"] == "2026-10-02T12:00:00Z"
+    assert man["schema"] == 3 and man["files"]["template"] == f"{P.PREFIX}/2026092212/{{res}}{{field}}/f{{step:03d}}.png"
+    assert man["stats"] == puts[-3] and "_stats" not in man and set(man["frames"][0]) == {"step", "valid_utc"}
+    assert len(c.objects[latest["manifest"]]["body"]) < 12_000                 # slim: r2.dev serves it uncompressed
+    stats = json.loads(c.objects[man["stats"]]["body"])
+    assert len(stats["frames"]) == 81 and set(stats["frames"][0]["fields"]) == {"hs", "tp", "wind"}
+    assert stats["frames"][0]["fields"]["hs"]["bytes_full"] > 0
     assert man["grid"]["registration"] == "center" and man["grid_half"]["rows"] == 361 and man["grid_half"]["dlat"] == -0.5
     assert man["encoding_spec"]["missing"] == 0 and man["fields"]["tp"]["legend"] == [4.0, 22.0]
     assert man["frame_hours"] == 3 and man["expected_frames"] == 81

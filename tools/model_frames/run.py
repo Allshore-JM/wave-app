@@ -48,7 +48,7 @@ GRID_HALF = {"cols": 720, "rows": 361, "lon0": -180.0, "lat0": 90.0, "dlon": 0.5
 
 def build_and_publish(store, run_dt, steps, upload=True, log=print):
     run = P.run_key(run_dt)
-    frames = []
+    frames, stats_frames = [], []
     t0 = time.time()
     for step in steps:
         t = time.time()
@@ -58,20 +58,19 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
         u, _ = D.decode(atmos[ATMOS_KEYS[0]], ATMOS_KEYS[0], run_dt, step)
         v, _ = D.decode(atmos[ATMOS_KEYS[1]], ATMOS_KEYS[1], run_dt, step)
         grids["wind"] = D.wind_speed(u, v)
-        entry = {"step": step, "valid_utc": (run_dt + timedelta(hours=step)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                 "files": {}, "stats": {}}
+        entry = {"step": step, "valid_utc": (run_dt + timedelta(hours=step)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        stat = {"step": step, "fields": {}}
         for name, grid in grids.items():
             enc = E.encode_frame(grid, name)
-            entry["files"][name] = {"full": P.frame_key(run, name, step), "half": P.frame_key(run, name, step, half=True),
-                                    "bytes_full": len(enc["full"]), "bytes_half": len(enc["half"])}
-            entry["stats"][name] = enc["stats"]
+            stat["fields"][name] = dict(enc["stats"], bytes_full=len(enc["full"]), bytes_half=len(enc["half"]))
             if upload:
                 P.publish_frame(store, run, name, step, enc)
         frames.append(entry)
+        stats_frames.append(stat)
         log(f"f{step:03d} done in {time.time() - t:.1f}s")
     complete = steps == F.STEPS and len(frames) == len(F.STEPS)
     manifest = {
-        "schema": 2, "run": run, "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": MODEL,
+        "schema": 3, "run": run, "files": {"template": P.files_template(run), "res": {"full": "", "half": "half/"}}, "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": MODEL,
         "encoding": E.ENCODING, "encoding_spec": E.ENCODING_SPEC,
         "grid": GRID_FULL, "grid_half": GRID_HALF,
         "fields": {n: {"lo": f["lo"], "hi": f["hi"], "legend": f["legend"], "units": f["units"],
@@ -81,8 +80,10 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
         "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "build_seconds": round(time.time() - t0, 1),
     }
+    stats = {"run": run, "frames": stats_frames}
     if upload:
-        P.publish_manifest(store, run, manifest)
+        P.publish_manifest(store, run, manifest, stats)
+    manifest["_stats"] = stats                      # in-memory only (never serialized to the bucket)
     return manifest
 
 
@@ -162,7 +163,7 @@ def main(argv=None):
         print("pruned:", P.prune(store, keep=a.keep))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
-        tot = sum(f["files"][n]["bytes_full"] + f["files"][n]["bytes_half"] for f in manifest["frames"] for n in f["files"])
+        tot = sum(v["bytes_full"] + v["bytes_half"] for f in manifest["_stats"]["frames"] for v in f["fields"].values())
         with open(summary, "a") as fh:
             fh.write(f"### run {run}: {len(manifest['frames'])} frames, complete={manifest['complete']}, "
                      f"{tot/1e6:.1f} MB stored, {manifest['build_seconds']} s\n")

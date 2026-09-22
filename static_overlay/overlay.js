@@ -144,7 +144,10 @@
 
   // ---- controller ----
   function Overlay(map, opts) {
-    this.map = map; this.opts = opts; this.field = null; this.layer = null; this.manifest = null; this.pointer = null;
+    this.map = map; this.opts = opts;
+    // Keys inside latest.json / the manifest are bucket-absolute (gfswave/0p25/v1/...); the
+    // configured base is the v1 prefix URL, so resolve keys against the bucket root.
+    this.root = String(opts.base).replace(/\/+$/, '').replace(/\/gfswave\/0p25\/v1$/, ''); this.field = null; this.layer = null; this.manifest = null; this.pointer = null;
     this.abort = null; this.readout = null; this.frameIndex = null; this._listeners = [];
     var s = saved();
     this.opacity = typeof s.opacity === 'number' ? s.opacity : 0.65;
@@ -168,13 +171,13 @@
         .then(function (ptr) {
           if (!ptr.complete) throw new Error('published run is not complete');
           self.pointer = ptr;
-          return fetch(base + '/' + ptr.manifest, { signal: sig }).then(function (r) { if (!r.ok) throw new Error('manifest ' + r.status); return r.json(); });
+          return fetch(self.root + '/' + ptr.manifest, { signal: sig }).then(function (r) { if (!r.ok) throw new Error('manifest ' + r.status); return r.json(); });
         }).then(function (m) { self.manifest = m; return m; });
     p.then(function (m) {
       var idx = self.pickFrame(m);
       self.frameIndex = idx;
       var fr = m.frames[idx], half = self.useHalf();
-      var url = base + '/' + fr.files[fieldName][half ? 'half' : 'full'].replace(/^gfswave\/0p25\/v1\//, '');
+      var url = self.root + '/' + fr.files[fieldName][half ? 'half' : 'full'];
       return decodeFrame(url, sig).then(function (frame) { return { m: m, fr: fr, frame: frame, half: half }; });
     }).then(function (r) {
       if (sig.aborted) return;

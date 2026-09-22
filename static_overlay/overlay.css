@@ -26,13 +26,13 @@
 .ov-toggle, .ov-retry { font-size: 12px; border: 1px solid #bbb; background: #fff; border-radius: 3px; line-height: 1.2; padding: 1px 6px; cursor: pointer; color: #1a1a1a; }
 #ovPanel { margin-top: 2px; }
 
-/* Phones / short maps: the details live in a sheet on the map's bottom edge (<= 40 % of the map);
-   the bottom control corners (zoom, Home, attribution) are lifted above it by --ov-sheet-h. */
-.ov-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 900; background: rgba(255,255,255,0.96);
+/* Phones / short maps: the details live in a sheet on the map's bottom edge (<= 40 % of the map),
+   to the right of the zoom/Home column; only the attribution corner is lifted above it. */
+.ov-sheet { position: absolute; left: var(--ov-sheet-left, 0px); right: 0; bottom: 0; z-index: 900; background: rgba(255,255,255,0.96);
   border-top: 1px solid rgba(0,0,0,0.25); box-shadow: 0 -2px 8px rgba(0,0,0,0.25); padding: 4px 8px 6px; }
-.leaflet-container.ov-sheet-open .leaflet-bottom { bottom: var(--ov-sheet-h, 0px); }
-/* Attribution while the overlay is On: wrap inside its own box rather than over the zoom control. */
-.leaflet-container.ov-on .leaflet-control-attribution { max-width: calc(100% - 60px); }
+.leaflet-container.ov-sheet-open .leaflet-bottom.leaflet-right { bottom: var(--ov-sheet-h, 0px); }
+/* Attribution while the overlay is On: may wrap, but inside its own box (map width - 60 px), never over the zoom control. */
+.leaflet-container.ov-on .leaflet-control-attribution { max-width: var(--ov-attr-max, none); }
 
 @media (max-width: 576px) {
   .ov-ctl { max-width: 210px; font-size: 11px; }

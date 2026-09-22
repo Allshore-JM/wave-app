@@ -110,9 +110,16 @@
     return m.frames.length - 1;
   }
   // Half-resolution (0.5 deg) frames where a 0.25 deg cell is only a few pixels anyway; hysteresis so a
-  // zoom hovering around the threshold does not re-fetch on every step.
-  function wantHalf(zoom, width) { return zoom < 3.5 || (width < 700 && zoom < 5.5); }
-  function wantFull(zoom, width) { return zoom >= 4 && (width >= 700 || zoom >= 6); }
+  // zoom hovering around the threshold does not re-fetch on every step. Wind frames are ~2.7x larger
+  // (land included), so wind stays at half resolution until zoom 6 (a 0.25 deg cell is 11 px there).
+  function wantHalf(zoom, width, field) {
+    if (field === 'wind') return zoom < 6 || (width < 700 && zoom < 7);
+    return zoom < 3.5 || (width < 700 && zoom < 5.5);
+  }
+  function wantFull(zoom, width, field) {
+    if (field === 'wind') return zoom >= 6.5 && (width >= 700 || zoom >= 7.5);
+    return zoom >= 4 && (width >= 700 || zoom >= 6);
+  }
   // Pixel centre of a Web-Mercator tile pixel (the same expressions tileCodes uses).
   function tilePixelLatLng(coords, px, py) {
     var n = TILE * Math.pow(2, coords.z);
@@ -331,7 +338,7 @@
       if (!m.fields[fieldName] || !RAMPS[fieldName]) throw new Error('layer "' + fieldName + '" is not in this run');
       self.n = m.frames.length;
       var idx = self.frameIndex === null ? pickFrame(m) : Math.min(self.frameIndex, self.n - 1);   // keep the time position across fields
-      self.res = wantHalf(self.map.getZoom(), self._dims().w) ? 'half' : 'full';
+      self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
       return self._goto(idx, sig);
     }).catch(function (err) { self._fail(sig, err); });
@@ -556,8 +563,8 @@
   Overlay.prototype._checkRes = function () {
     if (!this.layer || !this.layer.hasFrame() || !this.manifest || this.frameIndex === null || !this.field) return;
     var z = this.map.getZoom(), w = this._dims().w, want = this.res;
-    if (this.res === 'full' && wantHalf(z, w)) want = 'half';
-    else if (this.res === 'half' && wantFull(z, w)) want = 'full';
+    if (this.res === 'full' && wantHalf(z, w, this.field)) want = 'half';
+    else if (this.res === 'half' && wantFull(z, w, this.field)) want = 'full';
     if (want === this.res) return;
     this.res = want;
     var self = this, idx = this.target !== null ? this.target : this.frameIndex;
@@ -770,7 +777,7 @@
     rng.addEventListener('input', function () { self.setOpacity(parseFloat(rng.value)); });
     lab.appendChild(rng); row.appendChild(lab); body.appendChild(row);
     body.appendChild(mk('div', 'ov-note',
-      (field === 'tp' ? 'Peak period Tp (GRIB PERPW = 1/fp). ' : field === 'wind' ? 'GFS wind at 10 m over land and sea; legend top 60 kt. ' : '') +
+      (field === 'tp' ? 'Peak period Tp (GRIB PERPW = 1/fp), nearest grid cell (no smoothing). ' : field === 'wind' ? 'GFS wind at 10 m over land and sea; legend top 60 kt; 0.5° frames below zoom 6. ' : '') +
       'GFS-Wave 0.25° (~28 km) grid — display smoothing is not extra detail. Hover or long-press the map for values. ' +
       String(m.model && m.model.attribution || '')));
     this._syncUI();

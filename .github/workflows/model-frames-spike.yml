@@ -1,0 +1,40 @@
+# Phase 0 spike for the forecast overlays: decode + encode one GFS-Wave / GFS step on Linux.
+# Manual only. No secrets, no publishing, no site code. Output = step summary + artifact.
+name: model-frames-spike
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: "forecast hour to sample"
+        default: "24"
+jobs:
+  spike:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11
+            eccodes
+            python-eccodes
+            numpy
+            pillow
+          cache-environment: true
+      - name: Toolchain check
+        shell: bash -l {0}
+        run: |
+          python -c "import eccodes; print('eccodes', eccodes.codes_get_api_version())"
+          /usr/bin/time -v python -c "import numpy, PIL; print('ok')" 2>&1 | grep -E "Maximum resident" || true
+      - name: Spike
+        shell: bash -l {0}
+        run: |
+          /usr/bin/time -v python tools/model_frames/spike.py --step "${{ github.event.inputs.step }}" --out spike_out 2> time.txt
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spike-output
+          path: spike_out/
+          retention-days: 7

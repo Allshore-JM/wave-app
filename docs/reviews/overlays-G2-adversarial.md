@@ -60,3 +60,24 @@ flag-on page +3.2 KB raw HTML · wind full-res loop 33.6 MB (half 10.4 MB) — P
   readout, no sheet); asset route: `?v` exact → 200 immutable + nosniff, 304 keeps both cache headers, wrong/missing
   `?v` → 404 `no-store`; production page has no overlay markup (count 0). pytest 344 passed.
 - Final v2.1.3 numbers are recorded in the plan file §13.
+
+## Re-review of the fix batch (fresh context, 2026-09-22, against adb11eb / asset v2.1.3)
+A separate reviewer with no access to the author's reasoning re-read the diffs, ran the suites and measured a local
+harness of the template's map at 375×812, 667×375, 1000×500, 1000×560 and 1300×900. **No P0.** Findings and their
+disposition (fixed in asset v2.1.4 unless noted):
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| R1 | P1 | The readout sampled the raw cursor point while the pixel colour comes from the pixel centre at the layer's tile zoom: same sampler, different sample. Measured: 0.57 % of points null over a drawn pixel (or a value over a transparent one) at coast edges; value deltas up to ~0.35 m across fronts at zoom 3 | `snapToPixel` (forward Mercator → floor → the same inverse `tileCodes` uses) snaps the cursor to the drawn pixel's centre at `layer._tileZoom`; the Node test asserts that off-centre points snap to the centre and read the tile's code, including world copies |
+| R2 | P2 | The top numeric legend tick ("60", "100", "20") overprinted the right-aligned "N+ unit" label | No numeric tick above 80 % of the bar (wind US 0·20·40·69+ mph, Metric 0·25·50·75·111+ km/h, Tp ≤4·8·12·16·22+ s); Node test asserts every numeric tick ≤ 0.8 |
+| R3 | P3 | A failed `latest.json` re-read after 30 min rejected the mount although a validated manifest was cached | The cached manifest is kept and the re-read backs off |
+| R4 | P3 | `published_utc` unvalidated: a NaN age would never show the stale banner | The pointer check requires a parseable `published_utc` |
+| R5 | P3 | `loadAssets` resolved on the script alone; the first render could measure an unstyled sheet | Resolves after both the stylesheet and the script (3 s CSS timeout) |
+| R6 | P3 | The run-mismatch note is not re-rendered when a deferred table lands | Accepted as is (informational; re-rendered on the next toggle, unit change or resize) |
+| R7 | P3 | Schema-3 file template / schema-2 per-frame keys not validated up front (generic error instead of "manifest incomplete") | `validateManifest` checks both shapes |
+
+Verified OK by the re-reviewer: sampler identity at pixel centres; the phone/landscape/desktop layouts (all clear of the
+zoom/Home column, ≤ 40 %); `validateGrid` → error state with Retry; asset route headers incl. 304; attribution
+idempotence and field keying; resolution hysteresis; the seven `var TZ` cases; touch guards; schema 2/3; Off teardown;
+the byte-identity proof of the template test; no `innerHTML` in the module. Suites: 13 Node, 23 overlay/cache pytest,
+312 remaining pytest.

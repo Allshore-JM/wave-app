@@ -24,10 +24,11 @@
     wind: [[0,'#e8f1ff'],[0.2,'#8cc4ff'],[0.4,'#3aa35a'],[0.6,'#f0d433'],[0.8,'#f0731f'],[1,'#b00f3a']]
   };
   // Legend tick values in DISPLAY units per field and site unit; the legend top is added as "N+".
+  // No numeric tick above ~80 % of the bar: it would collide with the right-aligned top label.
   var TICKS = {
     'hs|US': [0, 10, 20, 30], 'hs|Metric': [0, 3, 6, 9],
-    'tp|US': [4, 8, 12, 16, 20], 'tp|Metric': [4, 8, 12, 16, 20],
-    'wind|US': [0, 20, 40, 60], 'wind|Metric': [0, 25, 50, 75, 100]
+    'tp|US': [4, 8, 12, 16], 'tp|Metric': [4, 8, 12, 16],
+    'wind|US': [0, 20, 40], 'wind|Metric': [0, 25, 50, 75]
   };
 
   function saved() { try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || '{}'); } catch (e) { return {}; } }
@@ -79,9 +80,17 @@
     if (m.encoding !== ENCODING) throw new Error('unsupported frame encoding ' + m.encoding);
     if (!m.complete) throw new Error('published run is not complete');
     if (!m.run || !m.run_utc || !m.fields || !m.grid || !m.grid_half || !Array.isArray(m.frames) || !m.frames.length) throw new Error('manifest incomplete');
+    var tpl = m.schema === 3 && m.files && m.files.res;
+    if (m.schema === 3 && !(tpl && typeof m.files.template === 'string' && typeof tpl.full === 'string' && typeof tpl.half === 'string')) throw new Error('manifest incomplete');
     for (var i = 0; i < m.frames.length; i++) {
       var fr = m.frames[i];
       if (!fr || typeof fr.step !== 'number' || !fr.valid_utc || isNaN(Date.parse(fr.valid_utc))) throw new Error('bad frame entry ' + i);
+      if (m.schema === 2) {
+        for (var name in m.fields) {
+          var f = fr.files && fr.files[name];
+          if (!f || typeof f.full !== 'string' || typeof f.half !== 'string') throw new Error('bad frame entry ' + i);
+        }
+      }
     }
     return m;
   }
@@ -110,6 +119,18 @@
     var lon = (coords.x * TILE + px + 0.5) / n * 360 - 180;
     var lat = Math.atan(Math.sinh(Math.PI - 2 * Math.PI * (coords.y * TILE + py + 0.5) / n)) * 180 / Math.PI;
     return { lat: lat, lng: lon };
+  }
+  // World pixel coordinates of a point at integer zoom z (the inverse of tilePixelLatLng's convention).
+  function forwardPixel(lat, lng, z) {
+    var n = TILE * Math.pow(2, z), s = Math.sin(Math.max(-89.9, Math.min(89.9, lat)) * Math.PI / 180);
+    return { x: (lng + 180) / 360 * n, y: (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n };
+  }
+  // The centre of the drawn pixel that contains (lat, lng) at tile zoom z: the readout samples THIS
+  // point, so it reports exactly the value the tile shows under the cursor (same sampler, same sample).
+  function snapToPixel(lat, lng, z) {
+    var p = forwardPixel(lat, lng, z), px = Math.floor(p.x), py = Math.floor(p.y);
+    var cx = Math.floor(px / TILE), cy = Math.floor(py / TILE);
+    return tilePixelLatLng({ z: z, x: cx, y: cy }, px - cx * TILE, py - cy * TILE);
   }
 
   // ---- frame decoding ----
@@ -291,11 +312,17 @@
   Overlay.prototype._loadManifest = function (sig) {
     var self = this;
     if (this.manifest && Date.now() - this.pointerAt < POINTER_RECHECK_MS) return Promise.resolve(this.manifest);
+    var cached = this.manifest;
     return fetch(this.base + '/latest.json', { signal: sig, cache: 'no-cache' }).then(function (r) {
       if (!r.ok) throw new Error('latest ' + r.status);
       return r.json();
+    }).catch(function (err) {
+      // A failed re-read must not take away a validated run the session already holds: keep it and back off.
+      if (cached && !(sig && sig.aborted)) { self.pointerAt = Date.now(); return null; }
+      throw err;
     }).then(function (ptr) {
-      if (!ptr || !ptr.complete || !ptr.run || !ptr.manifest) throw new Error('published run is not complete');
+      if (ptr === null) return cached;
+      if (!ptr || !ptr.complete || !ptr.run || !ptr.manifest || isNaN(Date.parse(ptr.published_utc))) throw new Error('published run is not complete');
       self.pointerAt = Date.now();
       if (self.manifest && self.manifest.run === ptr.run) { self.pointer = ptr; return self.manifest; }
       if (self.manifest && self.layer && self.layer.hasFrame()) { self.newerRun = ptr.run; return self.manifest; }
@@ -375,7 +402,12 @@
     var pressTimer = null, lastTouch = 0;
     function overControl(ev) { var t = ev && ev.target; return !!(t && t.closest && t.closest('.leaflet-control, .ov-sheet')); }
     function show(latlng, pt) {
-      var layer = self.layer, v = layer && layer.fdef ? layer.valueAt(latlng.lat, latlng.lng) : null;
+      var layer = self.layer, v = null;
+      if (layer && layer.fdef) {
+        var z = typeof layer._tileZoom === 'number' ? layer._tileZoom : Math.round(map.getZoom());
+        var ll = snapToPixel(latlng.lat, latlng.lng, z);          // the drawn pixel's centre, not the raw cursor point
+        v = layer.valueAt(ll.lat, ll.lng);
+      }
       if (v === null || v === undefined) { el.hidden = true; return; }
       var u = unitOf(layer.field, self.opts.getUnit()), f = layer.fdef;
       var txt = u.f(v).toFixed(u.d) + ' ' + u.label;
@@ -546,6 +578,7 @@
     create: function (map, opts) { return new Overlay(map, opts); },
     _internals: { buildRamp: buildRamp, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
-      wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng, pad3: pad3 }
+      wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
+      forwardPixel: forwardPixel, snapToPixel: snapToPixel, pad3: pad3 }
   };
 })();

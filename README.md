@@ -48,3 +48,29 @@ Once deployed, navigate to the provided URL to access the app. The site will all
 ## Contributing
 
 Contributions are welcome! If you want to add new features, improve the parsing logic, or update the UI, please submit a pull request. For major changes, please open an issue first to discuss what you would like to change.
+
+## Model overlays (optional)
+
+Animated NOAA GFS-Wave / GFS frames drawn under the forecast and live-buoy points. Off unless BOTH
+environment variables are set on the web service:
+
+- `MODEL_OVERLAYS=1` - renders the selector control. With it unset (the production default) the page is
+  byte-identical to the pre-feature page (`tests/test_overlay_flag.py` replays a golden capture).
+- `MODEL_FRAMES_BASE` - public URL of the frame bucket prefix, e.g. `https://<host>/gfswave/0p25/v1`.
+
+The browser talks to the bucket directly; the Flask worker only serves two immutable assets
+(`/overlay/overlay.js?v=...` and `/overlay/overlay.css?v=...`). Bump `OVERLAY_ASSET_VERSION` in `app.py`
+on every change under `static_overlay/` (any other `?v` is a 404 that is never cached).
+
+Frames come from `tools/model_frames` (GitHub Actions `model-frames.yml`, cron `7,37 * * * *`, plus manual
+dispatch with `steps` / `dry_run` / `force`): NOAA open S3 byte-range GRIB records -> eccodes -> 8-bit PNG
+(`u8-linear-v2`) -> Cloudflare R2. Bucket layout `gfswave/0p25/v1/<RUN>/{half/}<field>/fNNN.png`,
+`manifest-<ts>.json`, `stats-<ts>.json`, `latest.json` (written last, only for a complete run) and
+`failed/<RUN>.json`. The 0.25 degree grid (~28 km) is sampled per map pixel; smoothing between grid points
+is not extra detail.
+
+Runbook: rotate the R2 token in the repository secrets; roll back by unsetting `MODEL_OVERLAYS` (env only,
+no deploy) or by disabling the workflow (the last complete run stays live and the panel shows a stale
+banner after 9 h). Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full
+sentence ("Source: NOAA/NCEP GFS-Wave (WAVEWATCH III) and GFS via NOAA Open Data Dissemination; rendered by
+Allshore Surf. Not an official NWS product.").

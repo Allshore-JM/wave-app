@@ -2,28 +2,40 @@
 .leaflet-model-pane { pointer-events: none; }
 .leaflet-model-pane canvas { image-rendering: auto; }
 
-.ov-ctl { background: rgba(255,255,255,0.94); border-radius: 6px; box-shadow: 0 1px 5px rgba(0,0,0,0.4);
-  padding: 6px 8px; font: 12px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a1a1a;
-  max-width: 300px; }
+.ov-ctl, .ov-sheet { font: 12px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; }
+.ov-ctl { background: rgba(255,255,255,0.94); border-radius: 6px; box-shadow: 0 1px 5px rgba(0,0,0,0.4); padding: 6px 8px; max-width: 300px; }
 .ov-ctl select { font-size: 12px; padding: 2px 4px; }
-.ov-ctl .ov-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
-.ov-ctl .ov-title { font-weight: 600; }
-.ov-ctl .ov-meta { color: #333; }
-.ov-ctl .ov-meta b { font-weight: 600; }
-.ov-ctl .ov-warn { background: #fff3cd; color: #664d03; border: 1px solid #ffe69c; border-radius: 4px; padding: 3px 6px; margin-top: 4px; }
-.ov-ctl .ov-err { background: #f8d7da; color: #58151c; border: 1px solid #f1aeb5; border-radius: 4px; padding: 3px 6px; margin-top: 4px; }
-.ov-ctl .ov-note { color: #555; font-size: 11px; margin-top: 4px; }
-.ov-ctl input[type=range] { width: 110px; }
+.ov-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+.ov-head { margin-top: 2px; }
+.ov-title { font-weight: 600; }
+.ov-meta { color: #333; }
+.ov-warn { color: #8a5300; background: #fff4d6; border-radius: 4px; padding: 2px 6px; margin-top: 4px; }
+.ov-err { color: #a30000; }
+.ov-note { color: #555; font-size: 11px; margin-top: 4px; }
+.ov-details { overflow-y: auto; padding-right: 2px; }
+.ov-row input[type=range] { width: 110px; vertical-align: middle; margin: 0 0 0 4px; }
+.ov-row label { margin: 0; font-weight: normal; }
 .ov-legend { margin-top: 4px; }
 .ov-legend canvas { display: block; width: 100%; height: 12px; border-radius: 2px; }
-.ov-legend .ov-ticks { display: flex; justify-content: space-between; font-size: 11px; color: #333; }
+.ov-ticks { position: relative; height: 15px; font-size: 11px; color: #333; }
+.ov-ticks span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.ov-ticks span.ov-first { transform: none; }
+.ov-ticks span.ov-last { transform: translateX(-100%); }
 .ov-readout { position: absolute; z-index: 700; pointer-events: none; background: rgba(0,0,0,0.75); color: #fff;
   font: 12px system-ui, sans-serif; padding: 2px 6px; border-radius: 4px; transform: translate(12px, -28px); white-space: nowrap; }
-.ov-ctl button { font-size: 12px; padding: 1px 6px; }
-.ov-ctl .ov-toggle { border: 1px solid #bbb; background: #fff; border-radius: 3px; line-height: 1; padding: 0 5px; cursor: pointer; }
+.ov-toggle, .ov-retry { font-size: 12px; border: 1px solid #bbb; background: #fff; border-radius: 3px; line-height: 1.2; padding: 1px 6px; cursor: pointer; color: #1a1a1a; }
 #ovPanel { margin-top: 2px; }
+
+/* Phones / short maps: the details live in a sheet on the map's bottom edge (<= 40 % of the map);
+   the bottom control corners (zoom, Home, attribution) are lifted above it by --ov-sheet-h. */
+.ov-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 900; background: rgba(255,255,255,0.96);
+  border-top: 1px solid rgba(0,0,0,0.25); box-shadow: 0 -2px 8px rgba(0,0,0,0.25); padding: 4px 8px 6px; }
+.leaflet-container.ov-sheet-open .leaflet-bottom { bottom: var(--ov-sheet-h, 0px); }
+/* Attribution while the overlay is On: wrap inside its own box rather than over the zoom control. */
+.leaflet-container.ov-on .leaflet-control-attribution { max-width: calc(100% - 60px); }
 
 @media (max-width: 576px) {
   .ov-ctl { max-width: 210px; font-size: 11px; }
-  .ov-ctl input[type=range] { width: 80px; }
+  .ov-ctl select { font-size: 11px; }
+  .ov-sheet { font-size: 11px; }
 }

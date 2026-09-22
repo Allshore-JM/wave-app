@@ -21,8 +21,8 @@ P3s are fixed unless marked deferred.
 |---|---|---|---|---|
 | 1 | P1 | 1 | Readout sampled the nearest cell while the drawn pixel is bilinear: disagreement up to 1.585 m (Hs) / 6.9 m/s (wind); 1.93 % of coastal pixels drawn but readout null | One sampler `ModelGridLayer._code(r, cpos)` feeds both `tileCodes` (drawing) and `valueAt` (readout); Node tests assert per-pixel equality on full and half grids, wrapped tiles, pole tiles and missing cells |
 | 2 | P1 | 2 | Bucket served from `r2.dev` (rate-limited, dev-only per Cloudflare) | Not a code fix: custom domain before G4 (plan §9 item 1, owner decision pending) |
-| 3 | P1 | 3 | Mobile placement deviated from the owner decision (top-left folded panel instead of a bottom-edge sheet); the expanded panel overlapped zoom/Home on a 180 px landscape map (78 px) | Phones/short maps (map < 576 px wide or < 400 px tall) render the details as a sheet on the map's bottom edge, one line by default, expanded ≤ 40 % of the map AND ≤ the room above the measured zoom/Home stack (`_controlCorners.bottomleft`); CSS lifts the bottom control corners above the sheet (`--ov-sheet-h`) so zoom, Home and the attribution are never covered; under 60 px of room the sheet stays single-row (no toggle) |
-| 4 | P1 | 3 | Attribution suffix wrapped over the zoom "−" button on phones | Suffix shortened to "Overlay: NOAA GFS-Wave/GFS" (26 chars); `.ov-on .leaflet-control-attribution { max-width: calc(100% − 60px) }` while On; the full NOAA sentence (from the manifest) is in the panel note |
+| 3 | P1 | 3 | Mobile placement deviated from the owner decision (top-left folded panel instead of a bottom-edge sheet); the expanded panel overlapped zoom/Home on a 180 px landscape map (78 px) | Phones/short maps (container width < 576 px, height < 260 px, or height < 400 px on a coarse pointer) render the details as a sheet on the map's bottom edge to the RIGHT of the zoom/Home column (`--ov-sheet-left` = that corner's width + 6 px; the column never moves), one line by default; only the attribution corner is lifted above it (`--ov-sheet-h`); the WHOLE sheet is clamped to 40 % of the map's real height (container clientHeight — Leaflet's cached getSize() lags the site's script resize) with the details scrolling inside, and under 40 px of room it stays single-row. The desktop panel's details are ≤ 40 % AND the control ends above the measured zoom/Home stack. Verified on the test site: 375 px phone (258 px map) collapsed 31 px / expanded ≤ 40 %, no rect intersections with the stack, selector or attribution; 812×375 landscape (178 px map) single-row sheet; 1200×800 desktop panel, one-line attribution |
+| 4 | P1 | 3 | Attribution suffix wrapped over the zoom "−" button on phones | Suffix shortened to "Overlay: NOAA GFS-Wave/GFS" (26 chars); while On the attribution box is capped at map width − 60 px via `--ov-attr-max` (a percentage max-width resolved against its own shrink-to-fit corner and forced wraps on desktop); the full NOAA sentence (from the manifest) is in the panel note |
 | 5 | P2 | 1 | `setFrame` trusted the frame/grid pair | `validateGrid`: cols/rows/q length, centre registration, dlat < 0, periodic, cols·dlon = 360, lat/lon extent, lo < hi, legend inside [lo, hi] → error state with Retry |
 | 6 | P2 | 2 | `/overlay/<name>` served any `?v` (a wrong or missing version could be edge-cached for a year) | 404 + `Cache-Control: no-store` unless `?v` equals `OVERLAY_ASSET_VERSION`; the route 404s while the flag is off; `X-Content-Type-Options: nosniff`; conditional responses so 304s carry both cache headers (tested) |
 | 7 | P2 | 2 | `addAttribution` not idempotent (Hs→Tp→Off left it); `this.field` set before the frame landed (readout mislabelled) | Attribution added once (`_attributed`) and removed on unmount; the layer carries the drawn field/frame (`layer.field/fdef/entry`) and the readout/panel read from the layer; a field change clears the layer first |
@@ -46,5 +46,17 @@ P3s are fixed unless marked deferred.
 latest.json 184 B · manifest 64.6 KB (schema 2) · frame full 154 KB / half 56 KB · overlay.js 18.7 KB (6.8 KB gz) ·
 flag-on page +3.2 KB raw HTML · wind full-res loop 33.6 MB (half 10.4 MB) — Phase 4 half-res policy.
 
-## Re-verification after the batch
-See the "G2 fix batch" entry in `docs/reviews/overlays-G2-adversarial.md` history / the plan file §13.
+## Re-verification after the batch (test site, asset v2.1.0 → v2.1.3, 2026-09-22)
+- v2.1.0: desktop 1200×800 → the map is 382 px tall (the site caps it at 48 % of the viewport) and my height-only
+  compact rule put the phone sheet on a desktop; the attribution wrapped at 300 px (percentage max-width against its
+  own corner); on the phone Leaflet reported 458 px for a 260 px map, so the sheet grew to 73 % and the lifted zoom
+  stack reached the selector. → v2.1.1 (container dimensions, sheet beside the zoom column, only the attribution
+  corner lifted, `--ov-attr-max`).
+- v2.1.1/2.1.2: phone expanded sheet 56 % then 41 % (details-only cap; 40 px floor + wrapping title); 812×375 mouse
+  window (178 px map) expanded the desktop panel over the zoom stack. → v2.1.3 (whole-sheet clamp from the measured
+  layout, short title on phones, desktop details limited by the stack, maps < 260 px use the sheet).
+- Verified on v2.1.x: readout equals the drawn value (Node tests, 13 pass; long-press on the phone shows 6.0 ft =
+  `valueAt` at the touch point); Off tears everything down (0 tiles, 0 layers, attribution and panel restored, no
+  readout, no sheet); asset route: `?v` exact → 200 immutable + nosniff, 304 keeps both cache headers, wrong/missing
+  `?v` → 404 `no-store`; production page has no overlay markup (count 0). pytest 344 passed.
+- Final v2.1.3 numbers are recorded in the plan file §13.

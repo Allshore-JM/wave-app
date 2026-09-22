@@ -1,0 +1,57 @@
+# Renders + publishes the newest COMPLETE NOAA GFS-Wave/GFS run as overlay frames to R2.
+# Schedules only fire on the repository's default branch; on feature branches use the push
+# trigger below or "Run workflow". Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: model-frames
+on:
+  schedule:
+    - cron: "30 4,10,16,22 * * *"       # ~4.5 h after each 00/06/12/18Z cycle (NOAA lag ~3.6-5.2 h)
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: "comma list of forecast hours (blank = all 81)"
+        default: ""
+      force:
+        description: "re-publish even if the run is current (true/false)"
+        default: "false"
+  push:
+    branches: [feat/overlays-1]
+    paths: [".github/workflows/model-frames.yml", "tools/model_frames/**"]
+concurrency:
+  group: model-frames
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11
+            eccodes
+            python-eccodes
+            numpy
+            pillow
+            boto3
+          cache-environment: true
+      - name: Publish frames
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          STEPS: ${{ github.event.inputs.steps }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          ARGS=""
+          [ -n "$STEPS" ] && ARGS="$ARGS --steps $STEPS"
+          [ "$FORCE" = "true" ] && ARGS="$ARGS --force"
+          /usr/bin/time -v python tools/model_frames/run.py $ARGS 2> time.txt; rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ $rc -eq 3 ]; then echo "no complete run yet" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          exit $rc

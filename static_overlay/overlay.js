@@ -482,11 +482,12 @@
     var title = mk('span', 'ov-title', label + ' · ' + validLocal + ' (+' + hours + ' h)');
     head.appendChild(title);
     host.appendChild(head);
-    var room = compact ? cap - head.offsetHeight - 8 : cap;
-    if (room < 40) { head.removeChild(btn); collapsed = true; }
+    // Room for the details = the cap minus everything else in the host (head, paddings, margins),
+    // measured from the real layout once the body is in place (see the clamp at the end).
+    if (compact && cap - host.offsetHeight - 8 < 40) { head.removeChild(btn); collapsed = true; }
     if (collapsed) { this._layoutSheet(); return; }
     title.textContent = label + ' — ' + String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0];
-    var body = mk('div', 'ov-details'); body.id = 'ovDetails'; body.style.maxHeight = room + 'px'; host.appendChild(body);
+    var body = mk('div', 'ov-details'); body.id = 'ovDetails'; body.style.maxHeight = cap + 'px'; host.appendChild(body);
     var meta = mk('div', 'ov-meta');
     meta.appendChild(mk('b', null, 'Valid: ')); meta.appendChild(document.createTextNode(validLocal + ' (+' + hours + ' h)'));
     meta.appendChild(mk('br')); meta.appendChild(mk('b', null, 'Run: ')); meta.appendChild(document.createTextNode(runLabel + ' (UTC)'));
@@ -517,6 +518,10 @@
       (field === 'tp' ? 'Peak period Tp (GRIB PERPW = 1/fp). ' : field === 'wind' ? 'GFS wind at 10 m; legend top 60 kt. ' : '') +
       'GFS-Wave 0.25° (~28 km) grid — display smoothing is not extra detail. Hover or long-press the map for values. ' +
       String(m.model && m.model.attribution || '')));
+    if (compact) {                                       // the WHOLE sheet <= cap: clamp the details to what is left
+      var chrome = host.offsetHeight - body.offsetHeight;
+      body.style.maxHeight = Math.max(40, cap - chrome - 2) + 'px';
+    }
     this._layoutSheet();
   };
 

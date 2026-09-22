@@ -2721,7 +2721,76 @@
     initRangeControls();
   
     {% endif %}
+  </script>{%- if model_overlays %}
+
+  <script>
+    // Optional model overlays (NOAA GFS-Wave frames). Everything here is inert until the user
+    // picks a layer: no model data is requested and the overlay module is not loaded before then.
+    (function () {
+      var BASE = {{ model_frames_base|tojson }};
+      var VERSION = {{ overlay_asset_version|tojson }};
+      var TZ = {{ forecast_tz_name|tojson }};
+      var pane = map.createPane('modelPane');
+      pane.style.zIndex = 250;
+      pane.style.pointerEvents = 'none';
+
+      var Ctl = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd: function () {
+          var box = L.DomUtil.create('div', 'ov-ctl leaflet-bar');
+          box.style.background = 'rgba(255,255,255,0.94)';
+          box.style.padding = '6px 8px';
+          box.style.font = '12px system-ui, sans-serif';
+          box.innerHTML = '<label style="font-weight:600">Model overlay <select id="ovField" aria-label="Model overlay">' +
+            '<option value="">Off</option><option value="hs">Wave height</option></select></label>' +
+            '<div id="ovPanel"></div>';
+          L.DomEvent.disableClickPropagation(box);
+          L.DomEvent.disableScrollPropagation(box);
+          return box;
+        }
+      });
+      map.addControl(new Ctl());
+
+      var overlay = null, loading = null;
+      function loadAssets() {
+        if (window.AllshoreOverlay) return Promise.resolve();
+        if (loading) return loading;
+        loading = new Promise(function (resolve, reject) {
+          var css = document.createElement('link'); css.rel = 'stylesheet'; css.href = '/overlay/overlay.css?v=' + VERSION;
+          document.head.appendChild(css);
+          var s = document.createElement('script'); s.src = '/overlay/overlay.js?v=' + VERSION;
+          s.onload = function () { resolve(); };
+          s.onerror = function () { loading = null; s.remove(); reject(new Error('overlay module failed to load')); };
+          document.head.appendChild(s);
+        });
+        return loading;
+      }
+      function pageCycle() {
+        var t = document.getElementById('forecastTable');
+        var m = t && /Cycle\s*:\s*(\d{8})\s+(\d{2})\s+UTC/.exec(t.textContent || '');
+        return m ? m[1] + m[2] : null;
+      }
+      var sel = document.getElementById('ovField'), panel = document.getElementById('ovPanel');
+      sel.addEventListener('change', function () {
+        var field = sel.value;
+        if (!field) { if (overlay) overlay.unmount(); return; }
+        panel.textContent = 'Loading…';
+        loadAssets().then(function () {
+          if (sel.value !== field) return;
+          if (!overlay) overlay = window.AllshoreOverlay.create(map, {
+            base: BASE, panel: panel, tz: TZ, getUnit: getSelectedUnit,
+            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle()
+          });
+          overlay.mount(field);
+        }).catch(function (err) {
+          panel.textContent = 'Overlay unavailable: ' + err.message;
+        });
+      });
+      var unitEl = document.getElementById('unit');
+      if (unitEl) unitEl.addEventListener('change', function () { if (overlay) overlay.refresh(); });
+    })();
   </script>
+  {%- endif %}
 
   <script>
     // Phase 2b: shell-first forecast loading. When the server deferred the

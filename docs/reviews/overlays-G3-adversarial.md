@@ -63,9 +63,20 @@ v2.4.0; P3s are fixed unless marked. Job-side items are collected at the end for
   remembered in the session, legend ranges and units, valid time in the table's zone with the run in UTC, attribution
   while On, the "not extra detail" caption, wind over land present (C).
 
-## Budgets after the batch (to be re-measured on v2.4.0)
-Desktop full loops: Hs 11.9 MB, Tp 12.5 MB, wind 9.9 MB (half until zoom 7; 32.1 MB full above 7.5). Phone loops at
-the default zoom: Hs 4.3 MB, Tp ≈ 4.6 MB, wind 9.9 MB — wind still 2× the 5 MB phone line (owner decision, #6).
+## Re-verification on v2.4.0 (test site, 2026-09-23 ~04:00 UTC)
+- Desktop 1200×800: keys carry the run (`2026092218/full/hs/9`); the map has 7 panes with the layer Off (the model pane
+  appears on the first selection); 1× cadence 500–517 ms, cache ≤ 5, in-flight ≤ 2; a 30-seek storm leaves 1 fetch in
+  flight; pause/play/pause/play while loading keeps one chain (10 frames in 5 s at 1×, min gap 482 ms); a blocked bucket
+  reaches "Overlay unavailable: frames cannot be loaded right now" with Retry after 3 transient failures and playback is
+  paused; Retry recovers without a reload (0 marks left); wind at zoom 6 is half-res (720 cols); Off leaves 0 tiles, an
+  empty cache, no fetches and no timers. Console: only the pane's own blocked Cloudflare beacon.
+- Phone 375×812: Hs at zoom 6 now half-res (720 cols, loop ≈ 4.3 MB); playback trough 15 MB / peak 32 MB from an 11 MB
+  baseline; collapsed sheet carries its own pause button.
+- Heap on desktop: trough +12 MB (live set) but GC peaks reached 82 MB during 8 s of playback — the remaining garbage is the
+  4.15 MB `getImageData` copy per decoded frame plus the bitmap; Phase 5 replaces the canvas decode with a direct PNG
+  inflate (`DecompressionStream`) that produces the 1 MB code array without the RGBA expansion.
+- Budgets: desktop full loops Hs 11.9 MB, Tp 12.5 MB, wind 9.9 MB (half until zoom 7; 32.1 MB full above 7.5); phone loops
+  at the default zoom Hs 4.3 MB, Tp ≈ 4.6 MB, wind 9.9 MB — wind still 2× the 5 MB phone line (owner decision, #6).
 
 ## Job-side follow-ups (separate job-only push, owner go-ahead required)
 1. Cron every 10 minutes (a short-circuit run costs ≈ 20 s; public-repo minutes are free) and `published_utc − run_utc`

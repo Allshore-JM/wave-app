@@ -62,7 +62,7 @@ The browser talks to the bucket directly; the Flask worker only serves two immut
 (`/overlay/overlay.js?v=...` and `/overlay/overlay.css?v=...`). Bump `OVERLAY_ASSET_VERSION` in `app.py`
 on every change under `static_overlay/` (any other `?v` is a 404 that is never cached).
 
-Frames come from `tools/model_frames` (GitHub Actions `model-frames.yml`, cron `7,37 * * * *`, plus manual
+Frames come from `tools/model_frames` (GitHub Actions `model-frames.yml`, cron every 10 minutes, plus manual
 dispatch with `steps` / `dry_run` / `force`): NOAA open S3 byte-range GRIB records -> eccodes -> 8-bit PNG
 (`u8-linear-v2`) -> Cloudflare R2. Bucket layout `gfswave/0p25/v1/<RUN>/{half/}<field>/fNNN.png`,
 `manifest-<ts>.json`, `stats-<ts>.json`, `latest.json` (written last, only for a complete run) and
@@ -71,6 +71,11 @@ is not extra detail.
 
 Runbook: rotate the R2 token in the repository secrets; roll back by unsetting `MODEL_OVERLAYS` (env only,
 no deploy) or by disabling the workflow (the last complete run stays live and the panel shows a stale
-banner after 9 h). Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full
+banner after 9 h). The workflow step summary states how long after the cycle each publish happened;
+`failed/<RUN>.json` and `notready/<RUN>.json` in the bucket record build failures and listed-but-missing
+objects. Data policy in the browser: the 0.5 degree frames are used below zoom 3.5 on desktops, below zoom 7
+on narrow (phone) maps and for wind everywhere, so an 81-frame loop is about 4-12 MB (32 MB only for wind
+zoomed past 7.5); frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
+where the browser has DecompressionStream. Review records: `docs/reviews/overlays-G*-adversarial.md`. Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full
 sentence ("Source: NOAA/NCEP GFS-Wave (WAVEWATCH III) and GFS via NOAA Open Data Dissemination; rendered by
 Allshore Surf. Not an official NWS product.").

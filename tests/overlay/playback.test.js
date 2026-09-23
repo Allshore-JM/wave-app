@@ -51,8 +51,9 @@ function world(opts) {
   // timers never keep the test process alive (the module keeps a 30-min run-check interval while mounted)
   const st = (f, ms) => { const t = setTimeout(f, ms); if (t.unref) t.unref(); return t; };
   const si = (f, ms) => { const t = setInterval(f, ms); if (t.unref) t.unref(); return t; };
-  const fn = new Function('L', 'document', 'sessionStorage', 'createImageBitmap', 'fetch', 'window', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'AbortController', src);
-  fn(g.L, g.document, g.sessionStorage, g.createImageBitmap, g.fetch, g.window, st, clearTimeout, si, clearInterval, AbortController);
+  // DecompressionStream is shadowed so the module takes the canvas path, whose stages the harness can hold
+  const fn = new Function('L', 'document', 'sessionStorage', 'createImageBitmap', 'fetch', 'window', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'AbortController', 'DecompressionStream', src);
+  fn(g.L, g.document, g.sessionStorage, g.createImageBitmap, g.fetch, g.window, st, clearTimeout, si, clearInterval, AbortController, undefined);
   const I = g.AllshoreOverlay._internals, Overlay = I.Overlay;
   for (const k of ['render', '_syncUI', '_attribute', '_bindReadout', '_bindMap', '_bindDocument', '_unbindReadout', '_unattribute', '_removeSheet']) {
     Overlay.prototype[k] = function (st) { if (k === 'render') { this.last = st; this.ui = null; } };

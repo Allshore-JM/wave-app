@@ -281,6 +281,50 @@ test('failureKind: missing or undecodable frames are permanent, everything else 
   assert.equal(I.failureKind(null), 'transient');
 });
 
+test('decodePngGrey reproduces the reference decode of real frames byte for byte (PIL sha256)', async () => {
+  const crypto = require('node:crypto');
+  const cases = [
+    ['frame_hs_half.png', 720, 361, 112653, '5b70e09d7174f3b5940e5f30f9f04f6ed505f302e656a152288658ef599d0f7b'],
+    ['frame_tp_full.png', 1440, 721, 449759, '50fa030639ad712dcd69d577c17061f5cca1b10b4c687653047d4b701c9984d5'],
+  ];
+  for (const [name, cols, rows, zeros, sha] of cases) {
+    const buf = fs.readFileSync(path.join(__dirname, '..', 'fixtures', name));
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    const t0 = process.hrtime.bigint();
+    const f = await I.decodePngGrey(ab);
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    assert.equal(f.cols, cols); assert.equal(f.rows, rows); assert.equal(f.q.length, cols * rows);
+    let z = 0; for (let i = 0; i < f.q.length; i++) if (!f.q[i]) z++;
+    assert.equal(z, zeros, name + ' land cells');
+    assert.equal(crypto.createHash('sha256').update(f.q).digest('hex'), sha, name);
+    console.log(`decodePngGrey ${name}: ${ms.toFixed(1)} ms`);
+  }
+  // a PNG that is not our format (RGB) is handed back as null for the canvas path; garbage is rejected
+  const rgb = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'),
+    Buffer.from([0, 0, 0, 2, 0, 0, 0, 2, 8, 2, 0, 0, 0]), Buffer.alloc(4), Buffer.from([0, 0, 0, 0]), Buffer.from('IEND'), Buffer.alloc(4)]);
+  assert.equal(await I.decodePngGrey(rgb.buffer.slice(rgb.byteOffset, rgb.byteOffset + rgb.byteLength)), null);
+  await assert.rejects(() => I.decodePngGrey(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]).buffer), /decode failed/);
+});
+
+test('unfilter handles every PNG filter type on a synthetic image', () => {
+  const w = 4, h = 5, img = new Uint8Array(w * h);
+  for (let i = 0; i < img.length; i++) img[i] = (i * 37 + 11) & 255;
+  // filter each row with a different type and check the round trip
+  const raw = new Uint8Array((w + 1) * h);
+  for (let y = 0; y < h; y++) {
+    const f = y % 5; raw[y * (w + 1)] = f;
+    for (let x = 0; x < w; x++) {
+      const cur = img[y * w + x], a = x ? img[y * w + x - 1] : 0, b = y ? img[(y - 1) * w + x] : 0, c = (x && y) ? img[(y - 1) * w + x - 1] : 0;
+      let pred = 0;
+      if (f === 1) pred = a; else if (f === 2) pred = b; else if (f === 3) pred = (a + b) >> 1;
+      else if (f === 4) { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c; }
+      raw[y * (w + 1) + 1 + x] = (cur - pred) & 255;
+    }
+  }
+  assert.deepEqual(Array.from(I.unfilter(raw, w, h)), Array.from(img));
+  raw[0] = 7; assert.throws(() => I.unfilter(raw, w, h), /decode failed/);
+});
+
 test('tileCodes performance smoke (full grid, bilinear)', () => {
   const l = layer(frame(1440, 721, (r, c) => 1 + ((r + c) % 254)), GRID, 'hs', HS);
   const out = new Float64Array(65536);

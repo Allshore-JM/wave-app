@@ -306,6 +306,30 @@ test('decodePngGrey reproduces the reference decode of real frames byte for byte
   await assert.rejects(() => I.decodePngGrey(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]).buffer), /decode failed/);
 });
 
+test('decodePngGrey refuses a picture of another size before inflating it (hostile bucket)', async () => {
+  const buf = fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'frame_hs_half.png'));
+  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  const ok = await I.decodePngGrey(ab, { cols: 720, rows: 361 });
+  assert.equal(ok.cols, 720);
+  await assert.rejects(() => I.decodePngGrey(ab, { cols: 1440, rows: 721 }), /decode failed/);
+  assert.throws(() => I.parsePng(ab, { cols: 1440, rows: 721 }), /decode failed/);      // rejected at IHDR, no inflate
+});
+
+test('validateManifest rejects mistyped fields and absurd frame counts', () => {
+  const files3 = { template: 'x/{res}{field}/f{step:03d}.png', res: { full: '', half: 'half/' } };
+  const base = { schema: 3, run: '2026092212', run_utc: '2026-09-22T12:00:00Z', encoding: 'u8-linear-v2', complete: true,
+    fields: { hs: HS }, grid: GRID, grid_half: HALF, frames: [{ step: 0, valid_utc: '2026-09-22T12:00:00Z' }], files: files3, model: {} };
+  assert.equal(I.validateManifest(base).run, '2026092212');
+  assert.throws(() => I.validateManifest({ ...base, complete: 'yes' }), /complete/);
+  assert.throws(() => I.validateManifest({ ...base, run_utc: 12345 }), /incomplete/);
+  assert.throws(() => I.validateManifest({ ...base, run_utc: 'not a date' }), /incomplete/);
+  assert.throws(() => I.validateManifest({ ...base, model: 'string' }), /incomplete/);
+  assert.throws(() => I.validateManifest({ ...base, run: 2026092212 }), /incomplete/);
+  const many = Array.from({ length: 513 }, (_, i) => ({ step: i * 3, valid_utc: new Date(Date.parse('2026-09-22T12:00:00Z') + i * 3 * 3.6e6).toISOString().replace('.000Z', 'Z') }));
+  assert.throws(() => I.validateManifest({ ...base, frames: many }), /incomplete/);
+  assert.equal(I.validateManifest({ ...base, frames: many.slice(0, 512) }).frames.length, 512);
+});
+
 test('unfilter handles every PNG filter type on a synthetic image', () => {
   const w = 4, h = 5, img = new Uint8Array(w * h);
   for (let i = 0; i < img.length; i++) img[i] = (i * 37 + 11) & 255;

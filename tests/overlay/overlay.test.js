@@ -184,18 +184,20 @@ test('valueAt is null outside the grid rows and on absent cells', () => {
   assert.ok(l.valueAt(-89.999, 0) !== null);
 });
 
-test('resolution hysteresis', () => {
-  assert.equal(I.wantHalf(3, 1200), true); assert.equal(I.wantFull(3, 1200), false);
-  assert.equal(I.wantHalf(3.7, 1200), false); assert.equal(I.wantFull(3.7, 1200), false);   // dead band keeps the current choice
-  assert.equal(I.wantFull(4, 1200), true);
-  assert.equal(I.wantHalf(5, 375), true); assert.equal(I.wantFull(5.7, 375), false); assert.equal(I.wantFull(6, 375), true);
-  assert.equal(I.wantHalf(5, 800), false);
-  // wind: half until zoom 6 (frames are ~2.7x larger), dead band 6..6.5
-  assert.equal(I.wantHalf(5.9, 1200, 'wind'), true); assert.equal(I.wantFull(5.9, 1200, 'wind'), false);
-  assert.equal(I.wantHalf(6.2, 1200, 'wind'), false); assert.equal(I.wantFull(6.2, 1200, 'wind'), false);
-  assert.equal(I.wantFull(6.5, 1200, 'wind'), true);
-  assert.equal(I.wantHalf(6.5, 375, 'wind'), true); assert.equal(I.wantFull(7.5, 375, 'wind'), true);
-  assert.equal(I.wantHalf(5.9, 1200, 'hs'), false);
+test('resolution hysteresis: desktop waves 3.5/4, phones and wind 7/7.5 (data budgets)', () => {
+  assert.equal(I.wantHalf(3, 1200, 'hs'), true); assert.equal(I.wantFull(3, 1200, 'hs'), false);
+  assert.equal(I.wantHalf(3.7, 1200, 'hs'), false); assert.equal(I.wantFull(3.7, 1200, 'hs'), false);   // dead band keeps the current choice
+  assert.equal(I.wantFull(4, 1200, 'tp'), true);
+  assert.equal(I.wantHalf(5, 800, 'hs'), false);
+  // narrow maps (phones): half until zoom 7 for every field (<= 5 MB per loop), full from 7.5
+  assert.equal(I.wantHalf(6, 375, 'hs'), true); assert.equal(I.wantFull(6.9, 375, 'hs'), false);
+  assert.equal(I.wantHalf(7.2, 375, 'hs'), false); assert.equal(I.wantFull(7.2, 375, 'hs'), false);
+  assert.equal(I.wantFull(7.5, 375, 'tp'), true);
+  // wind: half until zoom 7 everywhere (frames ~2.7x larger: 32 MB vs 10 MB per loop)
+  assert.equal(I.wantHalf(6.9, 1200, 'wind'), true); assert.equal(I.wantFull(6.9, 1200, 'wind'), false);
+  assert.equal(I.wantHalf(7.2, 1200, 'wind'), false); assert.equal(I.wantFull(7.2, 1200, 'wind'), false);
+  assert.equal(I.wantFull(7.5, 1200, 'wind'), true);
+  assert.equal(I.wantHalf(6.9, 1200, 'hs'), false);
 });
 
 test('legend ticks are nice numbers in the site unit with the legend top as N+', () => {
@@ -244,7 +246,12 @@ test('nextAvailable skips unavailable frames, wraps, and reports when nothing is
   assert.equal(I.nextAvailable(5, 1, 81, un(new Set([6, 7]))), 8);
   assert.equal(I.nextAvailable(5, -1, 81, un(new Set([4]))), 3);
   assert.equal(I.nextAvailable(5, 1, 81, un(new Set(Array.from({ length: 81 }, (_, i) => i)))), null);
-  assert.equal(I.nextAvailable(5, 1, 81, un(new Set(Array.from({ length: 81 }, (_, i) => i).filter(i => i !== 5)))), 5);
+  assert.equal(I.nextAvailable(5, 1, 81, un(new Set(Array.from({ length: 81 }, (_, i) => i).filter(i => i !== 5)))), null);   // never i itself
+  const m = { frames: [0, 3, 6, 9].map(h => ({ step: h, valid_utc: `2026-09-22T${String(12 + h).padStart(2, '0')}:00:00Z` })) };
+  assert.equal(I.nearestIndex(m, Date.parse('2026-09-22T16:20:00Z')), 1);
+  assert.equal(I.nearestIndex(m, Date.parse('2026-09-22T16:40:00Z')), 2);
+  assert.equal(I.nearestIndex(m, Date.parse('2026-09-30T00:00:00Z')), 3);
+  assert.equal(I.nearestIndex(m, 0), 0);
 });
 
 test('FrameCache: LRU with a cap, never evicts the frame on the map', () => {
@@ -265,7 +272,7 @@ test('FrameCache: LRU with a cap, never evicts the frame on the map', () => {
 test('failureKind: missing or undecodable frames are permanent, everything else is retried', () => {
   assert.equal(I.failureKind(new Error('frame 404')), 'permanent');
   assert.equal(I.failureKind(new Error('frame 410')), 'permanent');
-  assert.equal(I.failureKind(new Error('frame 403')), 'permanent');
+  assert.equal(I.failureKind(new Error('frame 403')), 'transient');           // r2.dev bot checks answer 403, absent keys 404
   assert.equal(I.failureKind(new Error('frame decode failed')), 'permanent');
   assert.equal(I.failureKind(new Error('frame decoded to 0x0')), 'permanent');
   assert.equal(I.failureKind(new Error('frame 503')), 'transient');

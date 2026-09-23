@@ -2723,9 +2723,7 @@
       var BASE = {{ model_frames_base|tojson }};
       var VERSION = {{ overlay_asset_version|tojson }};
       var TZ = {{ forecast_tz_name|tojson }};
-      var pane = map.createPane('modelPane');
-      pane.style.zIndex = 250;
-      pane.style.pointerEvents = 'none';
+      // (the model pane is created by the module on the first selection, so Off leaves the map's panes untouched)
 
       var Ctl = L.Control.extend({
         options: { position: 'topleft' },
@@ -2758,7 +2756,7 @@
             setTimeout(finishCss, 3000);
           }
           var s = document.createElement('script'); s.src = '/overlay/overlay.js?v=' + VERSION;
-          s.onload = function () { done(); };
+          s.onload = function () { if (window.AllshoreOverlay) done(); else { loading = null; s.remove(); reject(new Error('overlay module did not initialise')); } };
           s.onerror = function () { loading = null; s.remove(); reject(new Error('overlay module failed to load')); };
           document.head.appendChild(s);
         });

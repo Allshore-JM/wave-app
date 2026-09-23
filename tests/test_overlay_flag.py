@@ -57,7 +57,8 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
     rec = G.run_scenarios(A)
     for name, old in GOLDEN.items():
         body = rec[name]["body"]
-        assert 'id="ovField"' in body and "modelPane" in body and "/overlay/overlay.js?v=" in body
+        assert 'id="ovField"' in body and "AllshoreOverlay" in body and "/overlay/overlay.js?v=" in body
+        assert "createPane" not in body                                      # the pane is created by the module on first use
         assert 'autocomplete="off"' in body
         assert '"https://frames.example/gfswave/0p25/v1"' in body           # trailing slash stripped
         assert "var VERSION = %s;" % json.dumps(A.OVERLAY_ASSET_VERSION) in body

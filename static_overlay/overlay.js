@@ -145,13 +145,73 @@
   }
 
   // ---- frame decoding ----
+  // Frames are 8-bit greyscale, non-interlaced PNGs. The direct path parses the chunks, lets the
+  // browser inflate the zlib stream (DecompressionStream) and unfilters the rows into the 1 MB code
+  // array: no bitmap, no 4 MB RGBA copy per frame (the canvas path is kept for older browsers).
+  function parsePng(buf) {
+    var u8 = new Uint8Array(buf), dv = new DataView(buf);
+    if (u8.length < 8 || u8[0] !== 137 || u8[1] !== 80 || u8[2] !== 78 || u8[3] !== 71) throw new Error('frame decode failed');
+    var pos = 8, w = 0, h = 0, depth = 0, ctype = 0, interlace = 0, idat = [], total = 0;
+    while (pos + 8 <= u8.length) {
+      var len = dv.getUint32(pos), type = String.fromCharCode(u8[pos + 4], u8[pos + 5], u8[pos + 6], u8[pos + 7]), start = pos + 8;
+      if (start + len > u8.length) throw new Error('frame decode failed');
+      if (type === 'IHDR') { w = dv.getUint32(start); h = dv.getUint32(start + 4); depth = u8[start + 8]; ctype = u8[start + 9]; interlace = u8[start + 12]; }
+      else if (type === 'IDAT') { idat.push(u8.subarray(start, start + len)); total += len; }
+      else if (type === 'IEND') break;
+      pos = start + len + 4;
+    }
+    if (!w || !h || depth !== 8 || ctype !== 0 || interlace !== 0) return null;   // not our format: the canvas path handles it
+    var z = new Uint8Array(total), o = 0;
+    for (var i = 0; i < idat.length; i++) { z.set(idat[i], o); o += idat[i].length; }
+    return { w: w, h: h, z: z };
+  }
+  function inflate(z) {
+    var ds = new DecompressionStream('deflate'), writer = ds.writable.getWriter();
+    writer.write(z).catch(function () {}); writer.close().catch(function () {});
+    return new Response(ds.readable).arrayBuffer().then(function (b) { return new Uint8Array(b); });
+  }
+  // PNG scanline filters 0..4 for one byte per pixel.
+  function unfilter(raw, w, h) {
+    var out = new Uint8Array(w * h), stride = w + 1, x, a, b, c, p, pa, pb, pc;
+    for (var y = 0; y < h; y++) {
+      var f = raw[y * stride], src = y * stride + 1, dst = y * w, up = dst - w;
+      if (f === 0) out.set(raw.subarray(src, src + w), dst);
+      else if (f === 1) for (x = 0; x < w; x++) out[dst + x] = (raw[src + x] + (x ? out[dst + x - 1] : 0)) & 255;
+      else if (f === 2) for (x = 0; x < w; x++) out[dst + x] = (raw[src + x] + (y ? out[up + x] : 0)) & 255;
+      else if (f === 3) for (x = 0; x < w; x++) out[dst + x] = (raw[src + x] + (((x ? out[dst + x - 1] : 0) + (y ? out[up + x] : 0)) >> 1)) & 255;
+      else if (f === 4) for (x = 0; x < w; x++) {
+        a = x ? out[dst + x - 1] : 0; b = y ? out[up + x] : 0; c = (x && y) ? out[up + x - 1] : 0;
+        p = a + b - c; pa = Math.abs(p - a); pb = Math.abs(p - b); pc = Math.abs(p - c);
+        out[dst + x] = (raw[src + x] + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 255;
+      }
+      else throw new Error('frame decode failed');
+    }
+    return out;
+  }
+  function decodePngGrey(buf) {
+    var p;
+    try { p = parsePng(buf); } catch (e) { return Promise.reject(e); }
+    if (!p) return Promise.resolve(null);
+    return inflate(p.z).then(function (raw) {
+      if (raw.length !== (p.w + 1) * p.h) throw new Error('frame decode failed');
+      return { q: unfilter(raw, p.w, p.h), cols: p.w, rows: p.h };
+    });
+  }
   var decodeCanvas = null;
   function decodeFrame(url, signal) {
-    // PNG -> Uint8Array of codes (R channel). Needs CORS (bucket policy) for getImageData.
+    // PNG -> Uint8Array of codes. Direct inflate where the browser has DecompressionStream, else the
+    // canvas path (needs CORS on the bucket for getImageData).
+    var direct = typeof DecompressionStream === 'function' && typeof Response === 'function';
     return fetch(url, { signal: signal, mode: 'cors' }).then(function (r) {
       if (!r.ok) throw new Error('frame ' + r.status);
-      return r.blob();
-    }).then(function (blob) {
+      return direct ? r.arrayBuffer() : r.blob();
+    }).then(function (body) {
+      if (!direct) return decodeCanvas_(body);
+      return decodePngGrey(body).then(function (frame) { return frame || decodeCanvas_(new Blob([body])); });
+    });
+  }
+  function decodeCanvas_(blob) {
+    return Promise.resolve(blob).then(function (blob) {
       if (typeof createImageBitmap === 'function') return createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
       return new Promise(function (resolve, reject) {                  // older Safari: <img> from a same-origin blob URL
         var img = new Image(), u = URL.createObjectURL(blob);
@@ -907,6 +967,7 @@
     _internals: { buildRamp: buildRamp, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
+      parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,
       forwardPixel: forwardPixel, snapToPixel: snapToPixel, pad3: pad3,
       ringPlan: ringPlan, nextAvailable: nextAvailable, nearestIndex: nearestIndex, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT }

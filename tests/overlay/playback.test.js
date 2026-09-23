@@ -127,6 +127,23 @@ test('never more than MAX_INFLIGHT fetches during rapid seeks; unmount during pe
   assert.equal(o.cache.size(), 0); assert.equal(o.layer, null);
 });
 
+test('outage then Retry with the drawn frame still cached ends in the ready state, not "Loading" (G4 B1)', async () => {
+  const w = world();
+  const o = await mounted(w, A);
+  await w.releaseAll();
+  const i0 = o.frameIndex, key = (i) => `gfswave/0p25/v1/${A.run}/hs/f${String(A.frames[i].step).padStart(3, '0')}.png`;
+  for (const i of [i0 + 10, i0 + 11, i0 + 12]) w.failNext['https://x/' + key(i)] = 'network';   // beyond the ring: an outage
+  o.seek(i0 + 10); await settle(); o.seek(i0 + 11); await settle(); o.seek(i0 + 12); await settle();
+  assert.equal(o.transientFails, 3);
+  assert.equal(o.last && o.last.state, 'error');
+  // the panel's Retry button does exactly this
+  o.unavailable = {}; o.transientFails = 0; o.mount('hs'); await settle();
+  assert.equal(o.last && o.last.state, 'ready', 'Retry with the cached frame must render ready');
+  assert.equal(o.frameIndex, i0); assert.equal(o.target, i0);
+  assert.ok(Object.keys(o.inflight).length >= 1, 'prefetch resumed');
+  o.unmount();
+});
+
 test('unavailable frames: 404 is permanent and skipped, a network error is a cooldown, and the drawn frame never advances early', async () => {
   const w = world();
   const o = await mounted(w, A);

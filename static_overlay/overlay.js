@@ -348,6 +348,7 @@
   var RUN_CHECK_MS = 30 * 60 * 1000;                         // newer run -> banner only, never an automatic switch
   var RETRY_AFTER_MS = 60 * 1000;                            // a transient fetch failure keeps a frame out for this long
   var MAX_TRANSIENT = 3;                                     // consecutive transient failures -> "unavailable" + Retry
+  var STALL_MS = 5000;                                       // a frame download slower than this (or 4 intervals) is skipped
   // A frame that does not exist (or cannot be decoded) is gone for the session; anything else (network
   // error, 403 from a bot check, 5xx, browser out of resources) is retried after a cooldown.
   function failureKind(err) {
@@ -462,20 +463,25 @@
     if (this.inflight[key]) return this.inflight[key].promise;
     if (this._isUnavailable(idx)) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
     delete this.unavailable[key];                                            // an expired cooldown: try again
-    var m = this.manifest, ctrl = new AbortController(), rec, half = this.res === 'half';
+    var m = this.manifest, ctrl = new AbortController(), rec, half = this.res === 'half', stalled = false;
     var url = this.root + '/' + frameKey(m, m.frames[idx], this.field, half);
     function mine() { return self.inflight[key] === rec; }
+    // a download that stalls (one frame in a loop took 6.5 s at G4) is dropped like a transient failure
+    var watchdog = setTimeout(function () { stalled = true; ctrl.abort(); }, Math.max(STALL_MS, 4 * self._interval()));
     var p = decodeFrame(url, ctrl.signal, half ? m.grid_half : m.grid).then(function (frame) {
+      clearTimeout(watchdog);
       if (mine()) delete self.inflight[key];
       // A decode cannot be cancelled: one that outlives its abort (Update, Off, field or resolution
       // change) must neither be cached nor delivered.
-      if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
+      if ((ctrl.signal.aborted && !stalled) || self.manifest !== m) throw abortError();
       self.transientFails = 0;
       self.cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex) : null);
       return frame;
     }, function (err) {
+      clearTimeout(watchdog);
       if (mine()) delete self.inflight[key];
-      if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
+      if ((ctrl.signal.aborted && !stalled) || self.manifest !== m) throw abortError();
+      if (stalled) err = new Error('frame stalled');
       var kind = failureKind(err);
       self.unavailable[key] = kind === 'permanent' ? true : Date.now() + RETRY_AFTER_MS;
       err.unavailable = true;
@@ -503,9 +509,12 @@
     this._trimInflight(idx);
     return this._ensure(idx).then(function (frame) {
       if ((sig && sig.aborted) || self.target !== idx || !self.layer || self.manifest !== m || self.field !== field || self.res !== res) throw abortError();
-      if (self.layer._frame === frame) { self._syncUI(); return; }
-      var half = res === 'half';
-      self.layer.setFrame(frame, half ? m.grid_half : m.grid, field, m.fields[field], self._lut(), m.frames[idx]);
+      // the frame already on the map (Retry after an outage, a repeated seek): no redraw, but the same
+      // state transition as a fresh landing, or the panel would stay on "Loading"
+      if (self.layer._frame !== frame) {
+        var half = res === 'half';
+        self.layer.setFrame(frame, half ? m.grid_half : m.grid, field, m.fields[field], self._lut(), m.frames[idx]);
+      }
       self.frameIndex = idx;
       self._attribute();
       if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
@@ -651,14 +660,17 @@
     if (!this.manifest || this.frameIndex === null) return;
     var base = this.target !== null ? this.target : this.frameIndex;
     var next = nextAvailable(base, dir, this.n, function (j) { return self._isUnavailable(j); });
-    if (next !== null) { this.dir = dir; this._goto(next).catch(function () { self._syncUI(); }); }
+    if (next !== null) { this.dir = dir; this._goto(next).catch(function (err) { self._afterMiss(err); }); }
   };
   Overlay.prototype.seek = function (idx) {
     var self = this;
     if (!this.manifest || this.frameIndex === null) return;
     idx = Math.max(0, Math.min(this.n - 1, idx | 0));
-    this._goto(idx).catch(function () { self._syncUI(); });                 // unavailable: the drawn frame stays, the hint says so
+    this._goto(idx).catch(function (err) { self._afterMiss(err); });        // unavailable: the drawn frame stays, the hint says so
   };
+  // A seek or step that did not land: an outage (3 transient failures in a row) shows the Retry state
+  // like playback does; a single missing frame just leaves the hint in the valid-time line.
+  Overlay.prototype._afterMiss = function (err) { if (err && err.outage) this._fail(null, err); else this._syncUI(); };
   Overlay.prototype.setSpeed = function (v) { if (SPEEDS.indexOf(v) < 0) return; this.speed = v; save({ speed: v }); this._syncUI(); };
   Overlay.prototype._bindDocument = function () {
     var self = this;
@@ -796,7 +808,7 @@
   // site caps the map at 48 % of the viewport height).
   Overlay.prototype.isCompact = function () {
     var d = this._dims(), coarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
-    return d.w < 576 || d.h < 260 || (d.h < 400 && coarse);   // < 260 px: even a one-line panel would reach the zoom stack
+    return d.w < 576 || d.h < 330 || (d.h < 400 && coarse);   // < 330 px: the top-left panel's details would be a slit above the zoom stack
   };
   Overlay.prototype._host = function () {
     if (this.isCompact()) {
@@ -849,7 +861,7 @@
     if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._layoutSheet(); return; }
     if (st.state === 'error') {
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
-      e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.mount(self.field); } }));
+      e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.transientFails = 0; self.mount(self.field); } }));
       host.appendChild(e); this._layoutSheet(); return;
     }
     var field = this.layer.field, f = m.fields[field], fdesc = (m.model && m.model.fields && m.model.fields[field]) || {};

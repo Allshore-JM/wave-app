@@ -279,6 +279,7 @@ test('failureKind: missing or undecodable frames are permanent, everything else 
   assert.equal(I.failureKind(new Error('frame 500')), 'transient');
   assert.equal(I.failureKind(new TypeError('Failed to fetch')), 'transient');
   assert.equal(I.failureKind(null), 'transient');
+  assert.equal(I.failureKind(new Error('frame stalled')), 'transient');
 });
 
 test('decodePngGrey reproduces the reference decode of real frames byte for byte (PIL sha256)', async () => {

@@ -30,6 +30,14 @@ ATMOS_KEYS = ("UGRD:10 m above ground", "VGRD:10 m above ground")
 FRAME_HOURS = 3
 FAILED_RETRY_AFTER_S = 3 * 3600         # a cycle that failed to build is retried after 3 h, max 3 times
 FAILED_MAX_ATTEMPTS = 3
+NOTREADY_WARN = 6                       # NotReady exits in a row for one cycle before the summary warns
+
+
+def _summary(line):
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a") as fh:
+            fh.write(line + "\n")
 MODEL = {
     "name": "NOAA/NCEP GFS-Wave (WAVEWATCH III) + GFS", "grid": "global 0.25 deg (1440x721)",
     "attribution": ("Source: NOAA/NCEP GFS-Wave (WAVEWATCH III) and GFS via NOAA Open Data "
@@ -152,6 +160,11 @@ def main(argv=None):
         manifest = build_and_publish(store, run_dt, steps, upload=not a.dry_run)
     except F.NotReady as exc:
         print(f"object vanished/not ready mid-run: {exc}")
+        if store is not None and not partial:
+            rec = P.record_notready(store, run, exc)
+            print(f"not-ready count for {run}: {rec['count']}")
+            if rec["count"] >= NOTREADY_WARN:
+                _summary(f"WARNING: run {run} not ready {rec['count']} times in a row: {exc}")
         return 3
     except Exception as exc:                                  # noqa: BLE001
         if store is not None and not partial:
@@ -161,12 +174,12 @@ def main(argv=None):
     print(json.dumps({k: manifest[k] for k in ("run", "complete", "build_seconds")}))
     if store is not None and manifest["complete"]:
         print("pruned:", P.prune(store, keep=a.keep))
-    summary = os.environ.get("GITHUB_STEP_SUMMARY")
-    if summary:
-        tot = sum(v["bytes_full"] + v["bytes_half"] for f in manifest["_stats"]["frames"] for v in f["fields"].values())
-        with open(summary, "a") as fh:
-            fh.write(f"### run {run}: {len(manifest['frames'])} frames, complete={manifest['complete']}, "
-                     f"{tot/1e6:.1f} MB stored, {manifest['build_seconds']} s\n")
+        print("legacy objects removed:", P.prune_legacy(store))
+    tot = sum(v["bytes_full"] + v["bytes_half"] for f in manifest["_stats"]["frames"] for v in f["fields"].values())
+    published = datetime.strptime(manifest["published_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    lag_h = (published - run_dt).total_seconds() / 3600
+    _summary(f"### run {run}: {len(manifest['frames'])} frames, complete={manifest['complete']}, "
+             f"{tot/1e6:.1f} MB stored, {manifest['build_seconds']} s, published {lag_h:.1f} h after the cycle")
     return 0
 
 

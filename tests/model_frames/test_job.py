@@ -336,6 +336,36 @@ def test_prune_keeps_newest_complete_protects_latest_and_drops_old_orphans():
         P.prune(store, keep=0)
 
 
+def test_prune_legacy_removes_only_pre_v1_objects():
+    c = FakeClient()
+    store = P.Store(c, "b")
+    _seed_run(c, "2026092212")
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
+    for k in ("gfswave/0p25/latest.json", "gfswave/0p25/2026092212/hs/f000.png", "gfswave/0p25/2026092212/manifest.json"):
+        c.objects[k] = {"body": b"", "ct": "", "cc": ""}
+    c.objects["other/x.json"] = {"body": b"", "ct": "", "cc": ""}
+    assert P.prune_legacy(store) == 3
+    assert "gfswave/0p25/latest.json" not in c.objects and "gfswave/0p25/2026092212/hs/f000.png" not in c.objects
+    assert P.LATEST_KEY in c.objects and f"{P.PREFIX}/2026092212/manifest-x.json" in c.objects and "other/x.json" in c.objects
+    assert P.prune_legacy(store) == 0
+
+
+def test_main_counts_not_ready_without_backoff(monkeypatch, capsys):
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    c = FakeClient()
+    _env(monkeypatch, c)
+
+    def gone(url, keys):
+        raise R.F.NotReady("gfs.x f201 vanished")
+    monkeypatch.setattr(R.F, "fetch_records", gone)
+    for i in range(1, 3):
+        assert R.main([]) == 3
+        rec = json.loads(c.objects[P.notready_key("2026092212")]["body"])
+        assert rec["count"] == i and "vanished" in rec["last_error"]
+    assert P.failed_key("2026092212") not in c.objects            # not a build failure: no backoff, no pointer change
+    assert P.LATEST_KEY not in c.objects
+
+
 def test_delete_prefix_batches_and_reports_errors():
     c = FakeClient()
     store = P.Store(c, "b")

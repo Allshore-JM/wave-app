@@ -95,14 +95,16 @@ class Store:
                     runs[name] = True
         return runs
 
-    def delete_prefix(self, prefix):
-        keys = self.list_keys(prefix)
+    def delete_keys(self, keys, what="keys"):
         for i in range(0, len(keys), 1000):                 # DeleteObjects hard limit
             batch = [{"Key": k} for k in keys[i:i + 1000]]
             r = self.client.delete_objects(Bucket=self.bucket, Delete={"Objects": batch, "Quiet": True})
             if r.get("Errors"):
-                raise RuntimeError(f"delete errors under {prefix}: {r['Errors'][:3]}")
+                raise RuntimeError(f"delete errors under {what}: {r['Errors'][:3]}")
         return len(keys)
+
+    def delete_prefix(self, prefix):
+        return self.delete_keys(self.list_keys(prefix), prefix)
 
 
 def publish_frame(store, run, field, step, encoded):
@@ -151,6 +153,31 @@ def prune(store, keep=4):
         store.delete_prefix(f"{PREFIX}/{run}/")
         deleted.append(run)
     return deleted
+
+
+LEGACY_ROOT = PREFIX.rsplit("/", 1)[0] + "/"        # gfswave/0p25/: the pre-v1 layout lived directly here
+
+
+def prune_legacy(store):
+    """Delete objects of the pre-v1 layout (directly under gfswave/0p25/, outside the versioned
+    prefix): a stale public pointer and one run of frames were left there. Returns the count."""
+    keys = [k for k in store.list_keys(LEGACY_ROOT) if not k.startswith(PREFIX + "/")]
+    return store.delete_keys(keys, LEGACY_ROOT) if keys else 0
+
+
+def notready_key(run):
+    return f"{PREFIX}/notready/{run}.json"
+
+
+def record_notready(store, run, message):
+    """Count NotReady exits for a run the listing called complete (an object that is listed but
+    never served, or that vanished); the workflow summary warns once the count is high."""
+    prev = store.get_json(notready_key(run)) or {"run": run, "count": 0}
+    prev["count"] += 1
+    prev["last_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    prev["last_error"] = str(message)[:500]
+    store.put(notready_key(run), json.dumps(prev, sort_keys=True).encode(), "application/json", POINTER)
+    return prev
 
 
 def record_failure(store, run, message):

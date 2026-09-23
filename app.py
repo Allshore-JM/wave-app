@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, send_file, jsonify
+from flask import Flask, render_template, request, send_file, jsonify, abort
 import requests
 import json
 import copy
@@ -226,7 +226,7 @@ def _live_stations_edge_enabled() -> bool:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.5.0"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.5.1"           # bump on every change to static_overlay/* (immutable URLs)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css"}
 
@@ -244,7 +244,7 @@ def overlay_asset(name):
     """The overlay's two static files, immutable at a versioned URL (?v=): only while the feature is
     on, and only for the version this build ships (any other ?v is a 404 nothing may cache)."""
     if not _model_overlays_enabled() or name not in _OVERLAY_ASSETS:
-        return jsonify({"error": "not found"}), 404
+        abort(404)                                            # the same default 404 the site gives any unknown path
     if request.args.get("v") != OVERLAY_ASSET_VERSION:
         resp = jsonify({"error": "not found"})
         resp.headers["Cache-Control"] = "no-store"
@@ -1761,8 +1761,7 @@ def _effective_tz_name(station_id: str, requested_tz: str | None) -> str:
     explicit ?tz wins, else the station's precomputed zone, else a coordinate lookup, else UTC."""
     if requested_tz:
         try:
-            pytz.timezone(requested_tz)
-            return requested_tz
+            return pytz.timezone(requested_tz).zone            # the canonical IANA name (pytz accepts legacy spellings)
         except Exception:
             pass
     tz_name = get_station_tz(station_id)

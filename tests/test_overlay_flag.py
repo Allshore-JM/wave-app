@@ -81,6 +81,7 @@ def test_forecast_tz_follows_the_table_rule(monkeypatch):
         page = lambda q: c.get("/?station=51201" + q).get_data(as_text=True)  # noqa: E731
         assert 'var TZ = "Europe/Lisbon";' in page("&tz=Europe/Lisbon")       # valid explicit zone wins
         assert 'var TZ = "Pacific/Honolulu";' in page("&tz=Nowhere/Land")     # invalid one falls back to the station
+        assert 'var TZ = "Europe/Lisbon";' in page("&tz=europe/lisbon")       # canonical IANA spelling (pytz is lenient)
         monkeypatch.setattr(A, "get_station_tz", lambda sid: None)
         monkeypatch.setattr(A, "load_station_coords", lambda: {"51201": {"lat": 21.67, "lon": -158.12}})
         monkeypatch.setattr(A, "_safe_tzname_for_latlon", lambda lat, lon: "Pacific/Honolulu")
@@ -98,6 +99,8 @@ def test_asset_route_versioning_headers_and_containment(monkeypatch):
     monkeypatch.delenv("MODEL_OVERLAYS", raising=False)
     r = c.get("/overlay/overlay.js?v=" + v)                                  # feature off: nothing served
     assert r.status_code == 404 and r.headers["Cache-Control"] == A._DEFAULT_CACHE_CONTROL
+    assert r.headers["Content-Type"].startswith("text/html")                # the site's default 404, not a JSON one
+    assert r.get_data() == c.get("/no/such/path").get_data()
     _on(monkeypatch)
     for name, ct in (("overlay.js", "application/javascript"), ("overlay.css", "text/css")):
         r = c.get("/overlay/%s?v=%s" % (name, v))
@@ -114,6 +117,19 @@ def test_asset_route_versioning_headers_and_containment(monkeypatch):
         assert r.status_code == 404 and r.headers["Cache-Control"] == "no-store", bad_v
     for bad in ("../app.py", "app.py", "overlay.js/../../app.py", "nope.js"):
         assert c.get("/overlay/" + bad + "?v=" + v).status_code == 404
+
+
+def test_asset_version_bumped_with_the_assets():
+    """The assets are served immutable for a year under ?v=OVERLAY_ASSET_VERSION: any change to them
+    must come with a new version. tests/fixtures/overlay_assets.json pins version -> sha256."""
+    import hashlib
+    h = hashlib.sha256()
+    for name in ("overlay.js", "overlay.css"):
+        h.update(open(os.path.join(STATIC, name), "rb").read().replace(b"\r\n", b"\n"))
+    pinned = json.load(open(os.path.join(HERE, "fixtures", "overlay_assets.json"), encoding="utf-8"))
+    assert pinned["version"] == A.OVERLAY_ASSET_VERSION, "OVERLAY_ASSET_VERSION changed: update tests/fixtures/overlay_assets.json"
+    assert pinned["sha256"] == h.hexdigest(), ("static_overlay/* changed: bump OVERLAY_ASSET_VERSION in app.py and "
+                                              "update tests/fixtures/overlay_assets.json (version + sha256)")
 
 
 def test_overlay_js_syntax_and_contract_strings():

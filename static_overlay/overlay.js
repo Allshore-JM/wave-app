@@ -78,8 +78,10 @@
   function validateManifest(m) {
     if (!m || (m.schema !== 2 && m.schema !== 3)) throw new Error('unsupported manifest schema');
     if (m.encoding !== ENCODING) throw new Error('unsupported frame encoding ' + m.encoding);
-    if (!m.complete) throw new Error('published run is not complete');
-    if (!m.run || !m.run_utc || !m.fields || !m.grid || !m.grid_half || !Array.isArray(m.frames) || !m.frames.length) throw new Error('manifest incomplete');
+    if (m.complete !== true) throw new Error('published run is not complete');
+    if (typeof m.run !== 'string' || typeof m.run_utc !== 'string' || isNaN(Date.parse(m.run_utc)) || !m.fields || typeof m.fields !== 'object' ||
+      !m.grid || typeof m.grid !== 'object' || !m.grid_half || typeof m.grid_half !== 'object' || (m.model !== undefined && (typeof m.model !== 'object' || m.model === null)) ||
+      !Array.isArray(m.frames) || !m.frames.length || m.frames.length > 512) throw new Error('manifest incomplete');
     var tpl = m.schema === 3 && m.files && m.files.res, t = m.schema === 3 && m.files && m.files.template;
     if (m.schema === 3 && !(tpl && typeof t === 'string' && t.indexOf('{res}') >= 0 && t.indexOf('{field}') >= 0 && t.indexOf('{step:03d}') >= 0 &&
       typeof tpl.full === 'string' && typeof tpl.half === 'string')) throw new Error('manifest incomplete');
@@ -148,14 +150,19 @@
   // Frames are 8-bit greyscale, non-interlaced PNGs. The direct path parses the chunks, lets the
   // browser inflate the zlib stream (DecompressionStream) and unfilters the rows into the 1 MB code
   // array: no bitmap, no 4 MB RGBA copy per frame (the canvas path is kept for older browsers).
-  function parsePng(buf) {
+  var MAX_FRAME_BYTES = 2 * 1024 * 1024;                   // live frames are <= 0.5 MB; nothing bigger is decoded
+  function parsePng(buf, expect) {
     var u8 = new Uint8Array(buf), dv = new DataView(buf);
     if (u8.length < 8 || u8[0] !== 137 || u8[1] !== 80 || u8[2] !== 78 || u8[3] !== 71) throw new Error('frame decode failed');
     var pos = 8, w = 0, h = 0, depth = 0, ctype = 0, interlace = 0, idat = [], total = 0;
     while (pos + 8 <= u8.length) {
       var len = dv.getUint32(pos), type = String.fromCharCode(u8[pos + 4], u8[pos + 5], u8[pos + 6], u8[pos + 7]), start = pos + 8;
       if (start + len > u8.length) throw new Error('frame decode failed');
-      if (type === 'IHDR') { w = dv.getUint32(start); h = dv.getUint32(start + 4); depth = u8[start + 8]; ctype = u8[start + 9]; interlace = u8[start + 12]; }
+      if (type === 'IHDR') {
+        w = dv.getUint32(start); h = dv.getUint32(start + 4); depth = u8[start + 8]; ctype = u8[start + 9]; interlace = u8[start + 12];
+        // the manifest says how big a frame is: anything else is refused BEFORE it is inflated
+        if (expect && (w !== expect.cols || h !== expect.rows)) throw new Error('frame decode failed');
+      }
       else if (type === 'IDAT') { idat.push(u8.subarray(start, start + len)); total += len; }
       else if (type === 'IEND') break;
       pos = start + len + 4;
@@ -188,9 +195,9 @@
     }
     return out;
   }
-  function decodePngGrey(buf) {
+  function decodePngGrey(buf, expect) {
     var p;
-    try { p = parsePng(buf); } catch (e) { return Promise.reject(e); }
+    try { p = parsePng(buf, expect); } catch (e) { return Promise.reject(e); }
     if (!p) return Promise.resolve(null);
     return inflate(p.z).then(function (raw) {
       if (raw.length !== (p.w + 1) * p.h) throw new Error('frame decode failed');
@@ -198,19 +205,24 @@
     });
   }
   var decodeCanvas = null;
-  function decodeFrame(url, signal) {
-    // PNG -> Uint8Array of codes. Direct inflate where the browser has DecompressionStream, else the
-    // canvas path (needs CORS on the bucket for getImageData).
+  // PNG -> Uint8Array of codes. Direct inflate where the browser has DecompressionStream, else the
+  // canvas path (needs CORS on the bucket for getImageData). `expect` = the manifest grid the frame
+  // must have: a body that is too large or a picture of another size is refused before decoding.
+  function decodeFrame(url, signal, expect) {
     var direct = typeof DecompressionStream === 'function' && typeof Response === 'function';
     return fetch(url, { signal: signal, mode: 'cors' }).then(function (r) {
       if (!r.ok) throw new Error('frame ' + r.status);
+      var len = Number(r.headers.get('content-length') || 0);
+      if (len > MAX_FRAME_BYTES) throw new Error('frame decode failed');
       return direct ? r.arrayBuffer() : r.blob();
     }).then(function (body) {
-      if (!direct) return decodeCanvas_(body);
-      return decodePngGrey(body).then(function (frame) { return frame || decodeCanvas_(new Blob([body])); });
+      var size = direct ? body.byteLength : body.size;
+      if (size > MAX_FRAME_BYTES) throw new Error('frame decode failed');
+      if (!direct) return decodeCanvas_(body, expect);
+      return decodePngGrey(body, expect).then(function (frame) { return frame || decodeCanvas_(new Blob([body]), expect); });
     });
   }
-  function decodeCanvas_(blob) {
+  function decodeCanvas_(blob, expect) {
     return Promise.resolve(blob).then(function (blob) {
       if (typeof createImageBitmap === 'function') return createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
       return new Promise(function (resolve, reject) {                  // older Safari: <img> from a same-origin blob URL
@@ -222,6 +234,7 @@
     }).then(function (bmp) {
       var w = bmp.width, h = bmp.height;                               // read BEFORE close(): a closed bitmap reports 0x0
       if (!w || !h) throw new Error('frame decoded to 0x0');
+      if (expect && (w !== expect.cols || h !== expect.rows)) { if (bmp.close) bmp.close(); throw new Error('frame decode failed'); }
       var c = decodeCanvas || (decodeCanvas = document.createElement('canvas'));   // one scratch canvas, not one per frame
       if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
       var ctx = c.getContext('2d', { willReadFrequently: true });
@@ -449,10 +462,10 @@
     if (this.inflight[key]) return this.inflight[key].promise;
     if (this._isUnavailable(idx)) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
     delete this.unavailable[key];                                            // an expired cooldown: try again
-    var m = this.manifest, ctrl = new AbortController(), rec;
-    var url = this.root + '/' + frameKey(m, m.frames[idx], this.field, this.res === 'half');
+    var m = this.manifest, ctrl = new AbortController(), rec, half = this.res === 'half';
+    var url = this.root + '/' + frameKey(m, m.frames[idx], this.field, half);
     function mine() { return self.inflight[key] === rec; }
-    var p = decodeFrame(url, ctrl.signal).then(function (frame) {
+    var p = decodeFrame(url, ctrl.signal, half ? m.grid_half : m.grid).then(function (frame) {
       if (mine()) delete self.inflight[key];
       // A decode cannot be cancelled: one that outlives its abort (Update, Off, field or resolution
       // change) must neither be cached nor delivered.

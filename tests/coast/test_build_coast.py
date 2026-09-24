@@ -257,6 +257,7 @@ def test_normalize_ring_real_pole_storage_and_near_dateline_vertices():
     assert 179.9999999999 in set(rx.tolist()) and -179.9999999999 in set(rx.tolist())    # kept as stored
     qx, qy = B.quantize_ring(rx, ry)
     assert qx.max() == 180 * Q and qx.min() == -180 * Q
+    assert not np.any(np.abs(qx) == 180 * Q - 1) and np.count_nonzero(qx == 180 * Q) >= 2 and np.count_nonzero(qx == -180 * Q) >= 2   # the noise vertices sit ON the dateline
     # a 0..360 ring with several Greenwich jump edges (Eurasia-like): one ring, area kept, no split
     x = np.array([350.0, 5.0, 10.0, 355.0, 359.0, 2.0, 4.0, 352.0]); y = np.array([50.0, 50.0, 55.0, 55.0, 58.0, 58.0, 62.0, 62.0])
     r = B.normalize_ring(x, y)
@@ -351,7 +352,7 @@ def test_upload_publishes_licence_first_index_last_and_refuses_a_different_build
     assert B.upload(out, "static/coast/v1", log=msgs.append, s3=s3, bucket="b") is False     # refused on the content hash alone
     assert len(s3.log) == n
     legacy = dict(idx); legacy["tier1"] = {k: v for k, v in idx["tier1"].items() if k != "sha256"}
-    assert B.same_build(legacy, idx) and B.same_build(idx, legacy)                            # an index published before the hash: cell map only
+    assert B.same_build(legacy, idx) and not B.same_build(idx, legacy)                        # a published index from before the hash: cell map only; a hash-less LOCAL index never passes
     idx["tier0"]["sha256"] = "0" * 64
     json.dump(idx, open(os.path.join(out, "index.json"), "w"))
     n = len(s3.log)

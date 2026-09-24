@@ -109,8 +109,6 @@ def normalize_ring(x, y):
     dx = np.diff(x)
     dx -= 360.0 * np.round(dx / 360.0)
     x = np.concatenate([[x[0]], x[0] + np.cumsum(dx)])
-    near = np.abs(np.abs(x) - 180.0) < 1e-9             # vertices on the dateline land exactly on it
-    x[near] = np.sign(x[near]) * 180.0
     if abs(x[0] - x[-1]) > 180.0:                      # the closing edge would jump: winds around a pole
         pole = -90.0 if float(np.mean(y)) < 0 else 90.0
         x = np.concatenate([x, [x[-1], x[0]]])
@@ -395,9 +393,10 @@ def point_in_pieces(lon, lat, pieces, q=Q):
 
 
 # Sanity probes for a finished build: (lon, lat, land?) — a level filter that dropped a continent,
-# a broken pole closure or a wrong orientation would fail one of these.
+# a broken pole closure or a wrong orientation would fail one of these. Land probes sit well inside the
+# coast (Ulriken above Bergen, not the fjord city itself: 5.3 E 60.39 N is water in GSHHG).
 PROBES = [(-158.281, 21.575, False), (-157.86, 21.31, True), (-158.0, 21.45, True), (0.0, -89.9, True),
-          (-169.65, 66.083, True), (180.0, -74.0, False), (0.0, -80.0, True), (139.7, 35.7, True), (5.3, 60.39, True),
+          (-169.65, 66.083, True), (180.0, -74.0, False), (0.0, -80.0, True), (139.7, 35.7, True), (5.386, 60.377, True),
           (-40.0, -70.0, False), (-90.0, 0.0, False)]
 WORLD_LAND_SQDEG = 22100.0                              # tier-1 land area from GSHHG levels 1 + 5
 WORLD_MIN_CELLS = 1000                                  # a real build has ~1,470 tier-1 cells; a synthetic test world far fewer

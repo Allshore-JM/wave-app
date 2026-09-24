@@ -207,6 +207,7 @@
         var x = minx, y = miny;
         for (var i = 0; i < n; i++) {
           x += zz(); y += zz();
+          if (x < -180 * q - 1 || x > 180 * q + 1 || y < -90 * q - 1 || y > 90 * q + 1) throw new Error('coast decode failed');
           var w = worldXY(x * inv, y * inv);
           xy[v * 2] = w[0]; xy[v * 2 + 1] = w[1]; v++;
           if (w[0] < bx0) bx0 = w[0]; if (w[0] > bx1) bx1 = w[0]; if (w[1] < by0) by0 = w[1]; if (w[1] > by1) by1 = w[1];
@@ -243,11 +244,14 @@
         var k = p * 4;
         if (box[k + 2] < b.x0 || box[k] > b.x1 || box[k + 3] < b.y0 || box[k + 1] > b.y1) continue;
         if ((box[k + 2] - box[k]) * scale < MIN_PIECE_PX && (box[k + 3] - box[k + 1]) * scale < MIN_PIECE_PX) continue;
+        var bx0 = box[k], by0 = box[k + 1], bx1 = box[k + 2], by1 = box[k + 3];
         for (var r = c.ringStart[p]; r < c.ringStart[p + 1]; r++) {
           var v0 = c.vertStart[r], v1 = c.vertStart[r + 1], ring = new Float32Array((v1 - v0) * 2), m = 0, lx = NaN, ly = NaN;
           for (var v = v0; v < v1; v++) {
-            var x = c.xy[v * 2] * scale - ox, y = c.xy[v * 2 + 1] * scale - oy;
-            if (m && Math.abs(x - lx) < 0.5 && Math.abs(y - ly) < 0.5) continue;
+            var wx = c.xy[v * 2], wy = c.xy[v * 2 + 1], x = wx * scale - ox, y = wy * scale - oy;
+            // same-pixel vertices are dropped, except on the piece's own bbox edges: those are the clip
+            // points shared with the neighbouring cell's piece, and the nonzero union needs them exact
+            if (m && Math.abs(x - lx) < 0.5 && Math.abs(y - ly) < 0.5 && wx !== bx0 && wx !== bx1 && wy !== by0 && wy !== by1) continue;
             ring[m * 2] = x; ring[m * 2 + 1] = y; m++; lx = x; ly = y;
           }
           if (m >= 3) out.push(m * 2 === ring.length ? ring : ring.subarray(0, m * 2));
@@ -351,18 +355,27 @@
   var COAST_STORES = {};
   function coastStore(url) { return COAST_STORES[url] || (COAST_STORES[url] = new CoastStore(url)); }
   function CoastStore(url) {
-    this.url = url; this.status = 'idle'; this.index = null; this.tier0 = null; this.loading = null;
+    this.url = url; this.status = 'idle'; this.index = null; this.tier0 = null; this.loading = null; this.failedAt = 0;
     this.chunks = new Map(); this.bytes = 0; this.inflight = {}; this.queue = []; this.failed = {};
-    this.rev = 0; this.onChange = null; this.abort = null;
+    this.rev = 0; this.onChange = null; this.onNeeded = null; this.abort = null; this.retryTimer = null;
   }
-  // Resolves to the store when tier 0 is usable, to null otherwise (never rejects); a failed load is
-  // retried on the next call. The load has its own abort (Off), so a field change while it runs
-  // simply keeps waiting for it.
+  // The index the client can act on: a cell size that tiles the world, a directory name, a cells map.
+  function validCoastIndex(idx) {
+    return !!(idx && idx.format === 'coast-v1' && idx.tier0 && typeof idx.tier0.max_zoom === 'number' && idx.tier1 &&
+      typeof idx.tier1.cell === 'number' && idx.tier1.cell > 0 && idx.tier1.cell <= 90 && 180 % idx.tier1.cell === 0 &&
+      typeof idx.tier1.dir === 'string' && /^[A-Za-z0-9_-]+$/.test(idx.tier1.dir) &&
+      idx.tier1.cells && typeof idx.tier1.cells === 'object' && !Array.isArray(idx.tier1.cells));
+  }
+  // Resolves to the store when tier 0 is usable, to null otherwise (never rejects). The load has its
+  // own abort (Off), so a field change while it runs simply keeps waiting for it; after a failure the
+  // next loads answer null at once for retryMs (no second 15 s wait on the first frame), then retry.
   CoastStore.prototype.timeoutMs = 15000;                  // a coast download slower than this fails (unclipped + warning), like a stalled frame
+  CoastStore.prototype.retryMs = COAST_RETRY_MS;
   CoastStore.prototype.load = function () {
     var self = this;
     if (this.status === 'ok') return Promise.resolve(this);
     if (this.loading) return this.loading;
+    if (this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
     this.status = 'loading';
     var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false;
     var watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, this.timeoutMs);
@@ -377,58 +390,73 @@
       clearTimeout(watchdog);
       if (self.loadAbort !== ctrl || sig.aborted) throw abortError();     // aborted or superseded: this load owns nothing any more
       var idx = res[0];
-      if (!idx || idx.format !== 'coast-v1' || !idx.tier0 || !idx.tier1 || typeof idx.tier1.cell !== 'number' || typeof idx.tier0.max_zoom !== 'number' ||
-        !idx.tier1.cells || typeof idx.tier1.cells !== 'object') throw new Error('unsupported coast index');
-      self.tier0 = decodeCoast(res[1]); self.index = idx; self.status = 'ok'; self.loading = null; self.loadAbort = null;
+      if (!validCoastIndex(idx)) throw new Error('unsupported coast index');
+      self.tier0 = decodeCoast(res[1]); self.index = idx; self.hasTier1 = Object.keys(idx.tier1.cells).length > 0;
+      self.status = 'ok'; self.loading = null; self.loadAbort = null;
       return self;
     }).catch(function () {
       clearTimeout(watchdog);
-      if (self.loadAbort === ctrl) { self.loading = null; self.loadAbort = null; self.status = sig.aborted && !timedOut ? 'idle' : 'failed'; }
+      if (self.loadAbort === ctrl) {
+        self.loading = null; self.loadAbort = null;
+        self.status = sig.aborted && !timedOut ? 'idle' : 'failed';
+        if (self.status === 'failed') self.failedAt = Date.now();
+      }
       return null;
     });
     return this.loading;
   };
-  CoastStore.prototype.tier1Zoom = function (z) { return this.status === 'ok' && z > this.index.tier0.max_zoom; };
+  CoastStore.prototype.tier1Zoom = function (z) { return this.status === 'ok' && this.hasTier1 && z > this.index.tier0.max_zoom; };
   // The decoded sets a tile should be rasterised from, and whether they are the final ones. Missing
-  // tier-1 chunks are requested; until they land the tile uses tier 0 (complete: false).
+  // tier-1 chunks are requested; until they land the tile uses tier 0 (complete: false). A cell the
+  // index lists but the bucket cannot serve (404, corrupt) keeps tier 0 for good: the same land at
+  // ~1 km, never an open sea where the index says there is land.
   CoastStore.prototype.setsFor = function (coords) {
     if (this.status !== 'ok') return { sets: [], complete: true };
     if (!this.tier1Zoom(coords.z)) return { sets: [this.tier0], complete: true };
-    var names = coastCellsForTile(coords, this.index.tier1.cell), sets = [], missing = [];
+    var names = coastCellsForTile(coords, this.index.tier1.cell), sets = [], missing = [], standIn = false;
     for (var i = 0; i < names.length; i++) {
       var nm = names[i];
-      if (!this.index.tier1.cells[nm]) continue;                          // no land in that cell
+      if (!Object.prototype.hasOwnProperty.call(this.index.tier1.cells, nm)) continue;   // no land in that cell
       var c = this.chunks.get(nm);
       if (c) { this.chunks.delete(nm); this.chunks.set(nm, c); sets.push(c); }   // LRU touch
-      else if (this.failed[nm] === true) continue;                         // permanently absent: treated as no land
+      else if (this.failed[nm] === true) standIn = true;
       else missing.push(nm);
     }
-    if (!missing.length) return { sets: sets, complete: true };
-    this.request(missing);
-    return { sets: [this.tier0], complete: false };
+    if (missing.length) { this.request(missing); return { sets: [this.tier0], complete: false }; }
+    return { sets: standIn ? [this.tier0] : sets, complete: true };
   };
   CoastStore.prototype.request = function (names) {
     for (var i = 0; i < names.length; i++) {
       var nm = names[i], f = this.failed[nm];
-      if (!this.index.tier1.cells[nm] || this.inflight[nm] || this.queue.indexOf(nm) >= 0 || this.chunks.has(nm) || f === true || (typeof f === 'number' && f > Date.now())) continue;
+      if (!Object.prototype.hasOwnProperty.call(this.index.tier1.cells, nm) || this.inflight[nm] || this.queue.indexOf(nm) >= 0 ||
+        this.chunks.has(nm) || f === true) continue;
+      if (typeof f === 'number' && f > Date.now()) { this._armRetry(f); continue; }         // in cooldown: asked again when it ends
       this.queue.push(nm);
     }
     this._pump();
   };
-  CoastStore.prototype._pump = function () {
+  // One timer per store: when a cooldown ends the revision moves, so tiles still on the stand-in ask again.
+  CoastStore.prototype._armRetry = function (until) {
     var self = this;
+    if (this.retryTimer) return;
+    this.retryTimer = setTimeout(function () { self.retryTimer = null; self.rev++; if (self.onChange) self.onChange(); }, Math.max(0, until - Date.now()) + 50);
+  };
+  CoastStore.prototype._pump = function () {
+    var self = this, need = this.onNeeded ? this.onNeeded() : null;
     while (this.queue.length && Object.keys(this.inflight).length < MAX_COAST_INFLIGHT) {
       var nm = this.queue.shift();
+      if (need && !need[nm]) continue;                                       // the tiles that wanted it are gone
       if (!this.abort) this.abort = new AbortController();
       (function (name, ctrl) {
-        self.inflight[name] = true;
+        self.inflight[name] = ctrl;
+        function mine() { return self.inflight[name] === ctrl; }
         fetch(self.url + '/' + self.index.tier1.dir + '/' + name + '.bin', { signal: ctrl.signal, mode: 'cors' }).then(function (r) {
           if (!r.ok) throw new Error('coast ' + r.status);
           if (Number(r.headers.get('content-length') || 0) > MAX_COAST_BYTES) throw new Error('coast decode failed');
           return r.arrayBuffer();
         }).then(function (buf) {
+          if (ctrl.signal.aborted || !mine()) return;                       // Off, or a newer request owns this cell
           delete self.inflight[name];
-          if (ctrl.signal.aborted) return;
           var c = decodeCoast(buf);
           self.chunks.set(name, c); self.bytes += c.bytes; delete self.failed[name];
           self._evict();
@@ -436,10 +464,11 @@
           if (self.onChange) self.onChange();
           self._pump();
         }).catch(function (err) {
+          if (ctrl.signal.aborted || (err && err.name === 'AbortError') || !mine()) return;
           delete self.inflight[name];
-          if (ctrl.signal.aborted || (err && err.name === 'AbortError')) return;
           var m = /^coast (\d{3})$/.exec(String(err && err.message || ''));
-          self.failed[name] = (m && (m[1] === '404' || m[1] === '410')) || /decode/.test(String(err && err.message)) ? true : Date.now() + COAST_RETRY_MS;
+          if ((m && (m[1] === '404' || m[1] === '410')) || /decode/.test(String(err && err.message))) self.failed[name] = true;
+          else { self.failed[name] = Date.now() + self.retryMs; self._armRetry(self.failed[name]); }
           self.rev++;
           if (self.onChange) self.onChange();                                // a tile waiting on this cell falls back for good / for now
           self._pump();
@@ -454,11 +483,14 @@
       this.chunks.delete(k); this.bytes -= c.bytes;
     }
   };
+  // Off: stop everything and drop the chunks (cheap to re-fetch from the edge cache); tier 0 stays.
   CoastStore.prototype.abortAll = function () {
     if (this.abort) { this.abort.abort(); this.abort = null; }
     if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; }
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     if (this.status === 'loading') { this.status = 'idle'; this.loading = null; }
-    this.inflight = {}; this.queue = []; this.onChange = null;
+    this.inflight = {}; this.queue = []; this.failed = {}; this.onChange = null; this.onNeeded = null;
+    this.chunks.clear(); this.bytes = 0;
   };
 
   // ---- frame decoding ----
@@ -586,22 +618,48 @@
     hasFrame: function () { return !!this._frame; },
     // A loaded CoastStore (or null): from now on hs/tp tiles are clipped to its polygons.
     setCoast: function (store) {
-      var self = this;
+      var self = this, prev = this._coast;
+      if (prev && prev.onChange === this._onCoast) { prev.onChange = null; prev.onNeeded = null; }
       this._coast = store && store.status === 'ok' ? store : null;
       this._clip = !!(this._coast && CLIP_FIELDS[this.field]);
-      if (this._coast) this._coast.onChange = function () { self._redrawIncomplete(); };
+      if (this._coast) {
+        this._onCoast = function () { self._redrawIncomplete(); };
+        this._coast.onChange = this._onCoast;
+        this._coast.onNeeded = function () { return self._cellsNeeded(); };
+      }
       this._redraw();
     },
     _redraw: function () { for (var k in this._tiles) { var t = this._tiles[k]; if (t.el && t.coords) this._draw(t.el, t.coords); } },
-    // A tier-1 chunk landed (or failed): only the tiles drawn from the tier-0 stand-in are redrawn.
-    _redrawIncomplete: function () {
-      for (var k in this._tiles) { var t = this._tiles[k]; if (t.el && t.coords && t.el._ovLandFinal === false) this._draw(t.el, t.coords); }
+    // The tier-1 cells the tiles on the map need right now (the store drops queued downloads for others).
+    _cellsNeeded: function () {
+      var st = this._coast, need = {};
+      if (!st || !this._clip) return need;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.coords || !st.tier1Zoom(t.coords.z)) continue;
+        var names = coastCellsForTile(t.coords, st.index.tier1.cell);
+        for (var i = 0; i < names.length; i++) need[names[i]] = true;
+      }
+      return need;
     },
-    // The tile's land alpha, computed once per tile element (per zoom) and kept on it like _ovImg.
+    // A tier-1 chunk landed, failed, or a cooldown ended: the tiles drawn from the tier-0 stand-in are
+    // re-evaluated and redrawn only when their mask actually changed.
+    _redrawIncomplete: function () {
+      if (!this._coast || !this._clip) return;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.el || !t.coords || t.el._ovLandFinal !== false) continue;
+        var before = t.el._ovLand, after = this._landFor(t.el, t.coords);
+        if (after !== before) this._draw(t.el, t.coords);
+      }
+    },
+    // The tile's land alpha, computed once per tile element (per zoom) and kept on it like _ovImg. A
+    // stand-in that is still a stand-in after the store moved on is reused, not re-rasterised.
     _landFor: function (el, coords) {
       var st = this._coast, key = coords.z + '/' + tileBox(coords).xw + '/' + coords.y;
       if (el._ovLandKey === key && (el._ovLandFinal || el._ovLandRev === st.rev)) return el._ovLand;
       var got = st.setsFor(coords);
+      if (!got.complete && el._ovLandKey === key && el._ovLandFinal === false) { el._ovLandRev = st.rev; return el._ovLand; }
       el._ovLand = got.sets.length ? maskState(rasterise(landPathsForTile(coords, got.sets), TILE)) : null;
       el._ovLandKey = key; el._ovLandFinal = got.complete; el._ovLandRev = st.rev;
       return el._ovLand;
@@ -1287,12 +1345,18 @@
     rng.setAttribute('aria-label', 'Overlay opacity');
     rng.addEventListener('input', function () { self.setOpacity(parseFloat(rng.value)); });
     lab.appendChild(rng); row.appendChild(lab); body.appendChild(row);
-    body.appendChild(mk('div', 'ov-note',
+    var note = mk('div', 'ov-note',
       (field === 'tp' ? 'Peak period Tp (GRIB PERPW = 1/fp), nearest grid cell (no smoothing). ' : field === 'wind' ? 'GFS wind at 10 m over land and sea; legend top 60 kt; 0.5° frames below zoom 6. ' : '') +
       'GFS-Wave 0.25° (~28 km) grid — display smoothing is not extra detail. ' +
-      (clipped ? (m.fill ? 'Nearshore values are extrapolated from the nearest model cells; ' : '') + 'coastlines from GSHHG (Wessel & Smith). Hover or long-press the map for values (none over land). '
-        : 'Hover or long-press the map for values. ') +
-      String(m.model && m.model.attribution || '')));
+      (clipped ? (m.fill ? 'Nearshore values are extrapolated from the nearest model cells; ' : '') + 'coastlines from ' : 'Hover or long-press the map for values. '));
+    if (clipped) {
+      // the credit and licence LGPL section 4 asks for: a link to the notice published beside the data
+      var lic = mk('a', null, 'GSHHG (Wessel & Smith), LGPL'); lic.href = this.coast.url + '/LICENSE.txt'; lic.target = '_blank'; lic.rel = 'noopener license';
+      note.appendChild(lic);
+      note.appendChild(document.createTextNode('. Hover or long-press the map for values (none over land). '));
+    }
+    note.appendChild(document.createTextNode(String(m.model && m.model.attribution || '')));
+    body.appendChild(note);
     this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND
     // the top-left control must end above the zoom/Home stack (short windows: the site caps the map at
@@ -1354,6 +1418,7 @@
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
-      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT }
+      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
+      validCoastIndex: validCoastIndex }
   };
 })();

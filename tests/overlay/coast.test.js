@@ -251,6 +251,7 @@ test('CoastStore: tier 0 up front, tier-1 cells on demand with <= 2 in flight, f
   };
   try {
     const s = new I.CoastStore('https://x/static/coast/v1');
+    s.retryMs = 0;                                                                                // no cooldowns in this test
     fails['https://x/static/coast/v1/world-i.bin'] = 503;
     assert.equal(await s.load(), null); assert.equal(s.status, 'failed');
     assert.equal(await s.load(), s); assert.equal(s.status, 'ok');                               // a failed load is retried
@@ -270,30 +271,130 @@ test('CoastStore: tier 0 up front, tier-1 cells on demand with <= 2 in flight, f
     got = s.setsFor(t);
     assert.equal(got.complete, true); assert.equal(got.sets.length, 2);
     assert.ok(got.sets.indexOf(s.chunks.get('20_-160')) >= 0);
-    // failures: 404 = no land there for good (the tile is complete without it); a network error = cooldown
+    // an indexed cell the bucket cannot serve (404): tier 0 stands in for that tile, final, no re-request (A1);
+    // a network error: cooldown, the tile stays on the stand-in and is asked again when the cooldown ends (A2)
     s.chunks.clear(); s.bytes = 0;
     fails['https://x/static/coast/v1/f/20_-165.bin'] = 404; fails['https://x/static/coast/v1/f/20_-160.bin'] = 'network';
+    s.retryMs = 40;
     assert.equal(s.setsFor(t).complete, false);
     pending.shift()(); pending.shift()(); await settle();
     assert.equal(s.failed['20_-165'], true); assert.equal(typeof s.failed['20_-160'], 'number');
     got = s.setsFor(t);
-    assert.equal(got.complete, false); assert.equal(Object.keys(s.inflight).length, 0);         // in cooldown: nothing re-requested
-    s.failed['20_-160'] = 1;
-    assert.equal(s.setsFor(t).complete, false); assert.equal(Object.keys(s.inflight).length, 1);   // cooldown over: asked again
+    assert.equal(got.complete, false); assert.equal(Object.keys(s.inflight).length, 0);         // in cooldown: nothing re-requested yet
+    assert.ok(s.retryTimer, 'a retry timer is armed for the cooldown');
+    const revBefore = s.rev, changesBefore = changes;
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(s.rev, revBefore + 1); assert.equal(changes, changesBefore + 1);               // the cooldown ended: revision moved, listeners told
+    assert.equal(s.setsFor(t).complete, false); assert.equal(Object.keys(s.inflight).length, 1);   // asked again
     pending.shift()(); await settle();
-    assert.equal(s.setsFor(t).complete, true); assert.equal(s.setsFor(t).sets.length, 1);
+    got = s.setsFor(t);
+    assert.equal(got.complete, true); assert.deepEqual(got.sets, [s.tier0]);                    // 20_-165 is still the 404: the tile keeps the 1-km stand-in, for good
+    assert.equal(Object.keys(s.inflight).length, 0);
     // LRU by decoded bytes
     s.chunks.clear(); s.bytes = 0;
     s.chunks.set('a', { bytes: 20e6 }); s.chunks.set('b', { bytes: 20e6 }); s.bytes = 40e6; s._evict();
     assert.deepEqual(Array.from(s.chunks.keys()), ['b']); assert.equal(s.bytes, 20e6);
-    // abort: pending requests are dropped and their late answers ignored
-    s.request(['60_20']); assert.equal(Object.keys(s.inflight).length, 1);
-    s.abortAll(); assert.equal(Object.keys(s.inflight).length, 0); assert.equal(s.onChange, null);
+    // the queue is trimmed to what the tiles need (A10)
+    s.onNeeded = () => ({ '60_20': true });
+    s.chunks.clear(); s.bytes = 0; delete s.failed['20_-165'];
+    s.request(['20_-165', '60_20']);
+    assert.deepEqual(Object.keys(s.inflight), ['60_20']);
     pending.shift()(); await settle();
-    assert.equal(s.chunks.has('60_20'), false);
+    // abort: pending requests are dropped, their late answers ignored, chunks and failures forgotten (A5, A9)
+    s.chunks.clear(); s.bytes = 0; s.onNeeded = null;
+    s.request(['60_20']); assert.equal(Object.keys(s.inflight).length, 1);
+    s.abortAll(); assert.equal(Object.keys(s.inflight).length, 0); assert.equal(s.onChange, null); assert.equal(s.chunks.size, 0);
+    s.request(['60_20']); assert.equal(Object.keys(s.inflight).length, 1);                     // a new request for the same cell right after Off
+    pending.shift()(); await settle();                                                          // the OLD fetch answers (aborted): the new record survives
+    assert.equal(Object.keys(s.inflight).length, 1); assert.equal(s.chunks.has('60_20'), false);
+    pending.shift()(); await settle();
+    assert.equal(s.chunks.has('60_20'), true); assert.equal(s.bytes, s.chunks.get('60_20').bytes);
+    s.abortAll();
   } finally {
     delete global.fetch;
   }
+});
+
+test('CoastStore: a failed load is not retried within retryMs (no second wait on the first frame); index validation', async () => {
+  const idx = { format: 'coast-v1', q: 10000, tier0: { file: 'world-i.bin', cell: 30, max_zoom: 6 }, tier1: { dir: 'f', cell: 5, min_zoom: 7, cells: { '20_-160': [1, 1] } } };
+  let indexAnswer = idx, worldStatus = 200, fetches = 0;
+  global.fetch = (url) => {
+    fetches++;
+    if (url.endsWith('index.json')) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(indexAnswer) });
+    const body = encodeCoast([[ISLAND]], 30);
+    return Promise.resolve(worldStatus === 200 ? { ok: true, status: 200, headers: { get: () => String(body.byteLength) }, arrayBuffer: () => Promise.resolve(body) } : { ok: false, status: worldStatus });
+  };
+  try {
+    const s = new I.CoastStore('https://x/static/coast/v1');
+    worldStatus = 503;
+    assert.equal(await s.load(), null); assert.equal(s.status, 'failed'); assert.equal(fetches, 2);
+    worldStatus = 200;
+    assert.equal(await s.load(), null); assert.equal(fetches, 2);                               // within the cooldown: answered at once, no fetch
+    s.failedAt = 0;
+    assert.equal(await s.load(), s); assert.equal(fetches, 4);
+    for (const bad of [{ ...idx, tier1: { ...idx.tier1, cell: 0 } }, { ...idx, tier1: { ...idx.tier1, cell: 7 } }, { ...idx, tier1: { ...idx.tier1, cell: -5 } },
+      { ...idx, tier1: { ...idx.tier1, dir: undefined } }, { ...idx, tier1: { ...idx.tier1, dir: '../x' } }, { ...idx, tier1: { ...idx.tier1, cells: [] } }, { ...idx, format: 'coast-v2' }]) {
+      const b = new I.CoastStore('https://y/static/coast/v1');
+      indexAnswer = bad;
+      assert.equal(await b.load(), null, JSON.stringify(bad.tier1)); assert.equal(b.status, 'failed');
+    }
+    indexAnswer = { ...idx, tier1: { ...idx.tier1, cells: {} } };                               // no tier-1 cells at all: tier 0 everywhere, no requests
+    const c = new I.CoastStore('https://z/static/coast/v1');
+    assert.equal(await c.load(), c);
+    assert.equal(c.tier1Zoom(9), false);
+    assert.deepEqual(c.setsFor({ z: 9, x: 60, y: 450 }), { sets: [c.tier0], complete: true });
+    assert.ok(I.validCoastIndex(idx) && !I.validCoastIndex({ ...idx, tier1: { ...idx.tier1, cells: { __proto__: null } } }) === false);
+  } finally {
+    delete global.fetch;
+  }
+});
+
+test('decodeCoast rejects coordinates outside the world; landPathsForTile keeps the clip points on a piece\'s bbox edges', () => {
+  const far = [D(-100000), D(10), D(-99999), D(10), D(-99999), D(11)];
+  assert.throws(() => I.decodeCoast(encodeCoast([[far]], 30)), /decode failed/);
+  assert.throws(() => I.decodeCoast(encodeCoast([[[D(10), D(91), D(11), D(91), D(11), D(92)]]], 30)), /decode failed/);
+  assert.doesNotThrow(() => I.decodeCoast(encodeCoast([[[D(-180), D(-90), D(180), D(-90), D(180), D(90)]]], 30)));
+  // two pieces of one coast split by the builder at lon 20: the shared boundary vertices lie within 0.5 px of
+  // coastline vertices at zoom 7; they must survive decimation so the nonzero union has no seam on the line
+  const west = [D(19.5), D(60.0), D(20.0), D(60.0), D(20.0), D(60.5), D(19.9999), D(60.5001), D(19.5), D(60.5)];
+  const east = [D(20.0), D(60.0), D(20.5), D(60.0), D(20.5), D(60.5), D(20.0), D(60.5)];
+  const c = I.decodeCoast(encodeCoast([[west], [east]], 5));
+  const coords = { z: 7, x: 71, y: 36 };                                                       // 19.7-22.5 E, 60-61.9 N
+  const paths = I.landPathsForTile(coords, [c]);
+  assert.equal(paths.length, 2);
+  const bx = I.forwardPixel(60.25, 20.0, 7).x - 71 * 256;                                       // the cell line in tile pixels
+  for (const p of paths) {
+    let onLine = 0;
+    for (let i = 0; i < p.length; i += 2) if (Math.abs(p[i] - bx) < 1e-3) onLine++;
+    assert.equal(onLine, 2, 'both clip points kept on the line');
+  }
+  const m = I.rasteriseScanline(paths, 256);
+  const row = Math.floor(I.forwardPixel(60.25, 20.0, 7).y - 36 * 256), col = Math.floor(bx);
+  assert.equal(m[row * 256 + col], 255, 'no seam on the cell line');
+  assert.equal(m[row * 256 + col - 1], 255); assert.equal(m[row * 256 + col + 1], 255);
+});
+
+test('layer: a stand-in that is still a stand-in is not re-rasterised or redrawn; setCoast(null) detaches the store', () => {
+  const coast = I.decodeCoast(encodeCoast([[ANTARCTICA]], 30));
+  const l = layer(frame(1440, 721, () => 7), GRID, 'hs', HS);
+  let sets = { sets: [coast], complete: false }, calls = 0;
+  const st = { status: 'ok', rev: 0, onChange: null, onNeeded: null, tier1Zoom: () => false, setsFor: () => { calls++; return sets; } };
+  l.setCoast(st);
+  assert.equal(typeof st.onChange, 'function'); assert.equal(typeof st.onNeeded, 'function');
+  const el = { getContext: () => ({ clearRect() {}, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData() {} }) }, c = { z: 3, x: 5, y: 5 };
+  l._tiles['5:5:3'] = { el, coords: c };
+  const m1 = l._landFor(el, c);
+  assert.equal(calls, 1); assert.equal(el._ovLandFinal, false);
+  let draws = 0; const origDraw = l._draw; l._draw = function (e, cc) { draws++; return origDraw.call(this, e, cc); };
+  st.rev = 1; st.onChange();                                                                    // an unrelated chunk landed
+  assert.equal(calls, 2); assert.equal(l._landFor(el, c), m1); assert.equal(draws, 0);        // asked again, same stand-in object, no redraw
+  sets = { sets: [coast], complete: true }; st.rev = 2; st.onChange();
+  assert.equal(calls, 3); assert.ok(el._ovLandFinal); assert.equal(draws, 1);                   // final now: one redraw
+  st.rev = 3; st.onChange();
+  assert.equal(calls, 3); assert.equal(draws, 1);                                               // final tiles never recompute
+  assert.deepEqual(Object.keys(l._cellsNeeded()), []);                                          // the fake store has no index at z3 -> tier1Zoom false
+  l.setCoast(null);
+  assert.equal(st.onChange, null); assert.equal(st.onNeeded, null); assert.equal(l._clip, false);
 });
 
 test('coast performance smoke: a 300k-vertex coastline rasterised at z1 and z6', () => {

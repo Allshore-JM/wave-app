@@ -265,7 +265,10 @@ test('coast: a download that hangs past the watchdog fails the coast load; the f
   o.unmount();
   o.coast.timeoutMs = 15000;
   o.mount('hs'); await settle();
-  assert.equal(o.coast.status, 'loading');                                                     // the next On retries
+  assert.equal(o.coast.status, 'failed');                                                      // within the cooldown: no second wait, still unclipped
+  o.unmount(); o.coast.retryMs = 0;
+  o.mount('hs'); await settle();
+  assert.equal(o.coast.status, 'loading');                                                     // after the cooldown the next On retries
   while (w.pendingCoast.length) w.pendingCoast.shift()();
   await settle();
   assert.equal(o.coast.status, 'ok');

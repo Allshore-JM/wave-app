@@ -71,6 +71,11 @@ const D = (deg) => Math.round(deg * 10000);
 const sq = (x0, y0, x1, y1) => [D(x0), D(y0), D(x1), D(y0), D(x1), D(y1), D(x0), D(y1)];          // CCW in (lon, lat)
 const ISLAND = sq(10, 10, 11, 11), ANTARCTICA = [D(-180), D(-90), D(180), D(-90), D(180), D(-63), D(-180), D(-63)];
 const OAHU = sq(-158.28, 21.26, -157.65, 21.71);
+function cellBody(url) {                                          // a valid coast-v1 body for the cell named in the URL
+  const m = /\/f\/(-?\d+)_(-?\d+)\.bin$/.exec(url); if (!m) return null;
+  const lat0 = +m[1], lon0 = +m[2];
+  return (lat0 === 20 && lon0 === -160) ? encodeCoast([[OAHU]], 5) : encodeCoast([[sq(lon0 + 1, lat0 + 1, lon0 + 2, lat0 + 2)]], 5);
+}
 function fakeStore(sets, complete) { return { status: 'ok', rev: 0, onChange: null, setsFor: () => ({ sets, complete: complete !== false }) }; }
 const settle = async () => { for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r)); };
 
@@ -243,7 +248,7 @@ test('CoastStore: tier 0 up front, tier-1 cells on demand with <= 2 in flight, f
         if (o && o.signal && o.signal.aborted) return reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
         if (fails[url]) { const f = fails[url]; delete fails[url]; return f === 'network' ? reject(new TypeError('Failed to fetch')) : resolve({ ok: false, status: f }); }
         if (url.endsWith('index.json')) return resolve({ ok: true, status: 200, json: () => Promise.resolve(idx) });
-        const body = url.endsWith('world-i.bin') ? world : cellBuf;
+        const body = url.endsWith('world-i.bin') ? world : cellBody(url);
         resolve({ ok: true, status: 200, headers: { get: () => String(body.byteLength) }, arrayBuffer: () => Promise.resolve(body.slice(0)) });
       };
       if (url.indexOf('/f/') >= 0) pending.push(go); else go();
@@ -350,6 +355,15 @@ test('CoastStore: a failed load is not retried within retryMs (no second wait on
     assert.equal(c.tier1Zoom(9), false);
     assert.deepEqual(c.setsFor({ z: 9, x: 60, y: 450 }), { sets: [c.tier0], complete: true });
     assert.ok(I.validCoastIndex(idx) && !I.validCoastIndex({ ...idx, tier1: { ...idx.tier1, cells: { __proto__: null } } }) === false);
+    indexAnswer = { ...idx, tier0: { ...idx.tier0, max_zoom: 0 }, tier1: { ...idx.tier1, cell: 1 } };   // a valid but hostile index: 1-degree cells from zoom 1
+    const d = new I.CoastStore('https://w/static/coast/v1');
+    assert.equal(await d.load(), d);
+    assert.deepEqual(d.setsFor({ z: 1, x: 0, y: 0 }), { sets: [d.tier0], complete: true });            // > MAX_CELLS_PER_TILE names: tier 0 for that tile, no requests
+    assert.deepEqual(Object.keys(d.inflight), []); assert.deepEqual(d.queue, []);
+    indexAnswer = idx;
+    const e = new I.CoastStore('https://v/static/coast/v1');
+    global.fetch = ((orig) => (url) => url.endsWith('index.json') ? Promise.resolve({ ok: true, status: 200, headers: { get: () => String(2 * 1024 * 1024) }, json: () => Promise.resolve(idx) }) : orig(url))(global.fetch);
+    assert.equal(await e.load(), null); assert.equal(e.status, 'failed');                                // an index over MAX_INDEX_BYTES is not even parsed
   } finally {
     delete global.fetch;
   }
@@ -431,7 +445,7 @@ test('CoastStore: a chunk whose body is not coast-v1 is failed for good, fetched
   const pending = []; let fetches = 0;
   global.fetch = (url) => { fetches++; return new Promise((resolve) => {
     const go = () => resolve(url.endsWith('index.json') ? { ok: true, status: 200, json: () => Promise.resolve(idx) }
-      : { ok: true, status: 200, headers: { get: () => '64' }, arrayBuffer: () => Promise.resolve((url.indexOf('20_-160') >= 0 ? bad : url.endsWith('world-i.bin') ? world : good).slice(0)) });
+      : { ok: true, status: 200, headers: { get: () => '64' }, arrayBuffer: () => Promise.resolve((url.indexOf('20_-160') >= 0 ? bad : url.endsWith('world-i.bin') ? world : cellBody(url)).slice(0)) });
     if (url.indexOf('/f/') >= 0) pending.push(go); else go();
   }); };
   try {
@@ -463,7 +477,7 @@ test('layer: a tile asks for its cells while Leaflet has not registered it yet (
   const pending = [];
   global.fetch = (url) => new Promise((resolve) => {
     const go = () => resolve(url.endsWith('index.json') ? { ok: true, status: 200, json: () => Promise.resolve(idx) }
-      : { ok: true, status: 200, headers: { get: () => '1' }, arrayBuffer: () => Promise.resolve((url.endsWith('world-i.bin') ? world : cellBuf).slice(0)) });
+      : { ok: true, status: 200, headers: { get: () => '1' }, arrayBuffer: () => Promise.resolve((url.endsWith('world-i.bin') ? world : cellBody(url)).slice(0)) });
     if (url.indexOf('/f/') >= 0) pending.push(go); else go();
   });
   const ctx = { clearRect() {}, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData() {} };
@@ -484,6 +498,30 @@ test('layer: a tile asks for its cells while Leaflet has not registered it yet (
     s.abortAll();
   } finally {
     delete global.fetch; delete global.document;
+  }
+});
+
+test('CoastStore: a valid body for another cell, or a tier-0 file, under a cell name is refused and the tile keeps the stand-in', async () => {
+  const idx = { format: 'coast-v1', q: 10000, tier0: { file: 'world-i.bin', cell: 30, max_zoom: 6 }, tier1: { dir: 'f', cell: 5, min_zoom: 7, cells: { '20_-160': [1, 1], '20_-165': [1, 1] } } };
+  const world = encodeCoast([[ISLAND], [ANTARCTICA]], 30);
+  const answers = { '20_-160': encodeCoast([[sq(21, 61, 22, 62)]], 5), '20_-165': encodeCoast([[sq(-164, 21, -163, 22)]], 30) };   // 60_20's land under 20_-160; a tier-0 header under 20_-165
+  global.fetch = (url) => Promise.resolve(url.endsWith('index.json') ? { ok: true, status: 200, json: () => Promise.resolve(idx) }
+    : { ok: true, status: 200, headers: { get: () => '1' }, arrayBuffer: () => Promise.resolve((url.endsWith('world-i.bin') ? world : answers[/\/f\/(.+)\.bin$/.exec(url)[1]]).slice(0)) });
+  try {
+    const s = new I.CoastStore('https://x/static/coast/v1');
+    assert.equal(await s.load(), s);
+    const t = { z: 7, x: 7, y: 56 };                                                              // touches 20_-165 and 20_-160
+    assert.equal(s.setsFor(t).complete, false); await settle();
+    assert.equal(s.failed['20_-160'], true); assert.equal(s.failed['20_-165'], true); assert.equal(s.chunks.size, 0);
+    assert.deepEqual(s.setsFor(t), { sets: [s.tier0], complete: true });                       // never "no land here"
+    const oahu = I.decodeCoast(encodeCoast([[OAHU]], 5));
+    assert.ok(I.withinCell(oahu, '20_-160') && !I.withinCell(oahu, '20_-165') && !I.withinCell(oahu, '25_-160'));
+    assert.ok(I.withinCell(I.decodeCoast(encodeCoast([[sq(-180, -90, -175, -85)]], 5)), '-90_-180'));   // the pole cell: Float32 slack at y = 256
+    assert.ok(I.withinCell(I.decodeCoast(encodeCoast([[sq(175, 85, 180, 90)]], 5)), '85_175'));         // and at y = 0
+    assert.ok(!I.withinCell(oahu, 'x') && !I.withinCell(oahu, '20_-160_1'));
+    s.abortAll();
+  } finally {
+    delete global.fetch;
   }
 });
 

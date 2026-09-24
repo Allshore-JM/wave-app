@@ -174,12 +174,15 @@
     var s = Math.sin(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat)) * Math.PI / 180);
     return [(lon + 180) / 360 * TILE, (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * TILE];
   }
-  // A decoded tier-1 file may only hold pieces inside the cell it was fetched as (half a world pixel of
-  // Float32 slack): another cell's bytes under this name must not become "no land here".
+  // A decoded tier-1 file may only hold pieces inside the cell it was fetched as: another cell's bytes
+  // under this name must not become "no land here". The slack covers Float32 rounding of the boxes
+  // (<= 2e-5 world px) and stays below the height of the polar rows (0.43 px), so even the two rows
+  // nearest a pole cannot be swapped.
+  var CELL_SLACK_PX = 0.01;
   function withinCell(c, name) {
-    var p = name.split('_'), lat0 = +p[0], lon0 = +p[1], cell = c.cell;
+    var p = name.split('_'), lat0 = +p[0], lon0 = +p[1], cell = c.cell, e = CELL_SLACK_PX;
     if (p.length !== 2 || !isFinite(lat0) || !isFinite(lon0) || !(cell > 0)) return false;
-    var a = worldXY(lon0, lat0 + cell), b = worldXY(lon0 + cell, lat0), x0 = a[0] - 0.5, y0 = a[1] - 0.5, x1 = b[0] + 0.5, y1 = b[1] + 0.5;
+    var a = worldXY(lon0, lat0 + cell), b = worldXY(lon0 + cell, lat0), x0 = a[0] - e, y0 = a[1] - e, x1 = b[0] + e, y1 = b[1] + e;
     for (var i = 0; i < c.n; i++) {
       var k = i * 4;
       if (c.box[k] < x0 || c.box[k + 1] < y0 || c.box[k + 2] > x1 || c.box[k + 3] > y1) return false;

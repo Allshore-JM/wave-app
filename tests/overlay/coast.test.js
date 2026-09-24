@@ -397,6 +397,28 @@ test('layer: a stand-in that is still a stand-in is not re-rasterised or redrawn
   assert.equal(st.onChange, null); assert.equal(st.onNeeded, null); assert.equal(l._clip, false);
 });
 
+test('landPathsForTile collapses vertex runs beyond one side of the tile without changing the mask', () => {
+  const n = 20000, ring = new Array(n * 2);
+  for (let i = 0; i < n; i++) { const a = i / n * 2 * Math.PI, r = 30 + 6 * Math.sin(23 * a) + Math.sin(301 * a); ring[i * 2] = D(r * Math.cos(a)); ring[i * 2 + 1] = D(r * Math.sin(a) * 0.7); }
+  const c = I.decodeCoast(encodeCoast([[ring]], 30));
+  for (const coords of [{ z: 5, x: 18, y: 14 }, { z: 4, x: 8, y: 7 }, { z: 6, x: 33, y: 31 }, { z: 3, x: 4, y: 3 }]) {
+    const fast = I.landPathsForTile(coords, [c]);
+    // reference: the same ring projected with the same-pixel decimation only (no run collapsing)
+    const b = I.tileBox(coords), scale = b.n, ox = b.xw * 256, oy = coords.y * 256, ref = [];
+    const [bx0, by0, bx1, by1] = c.box;
+    let lx = NaN, ly = NaN;
+    for (let v = 0; v < n; v++) {
+      const wx = c.xy[v * 2], wy = c.xy[v * 2 + 1], x = wx * scale - ox, y = wy * scale - oy;
+      if (ref.length && Math.abs(x - lx) < 0.5 && Math.abs(y - ly) < 0.5 && wx !== bx0 && wx !== bx1 && wy !== by0 && wy !== by1) continue;
+      ref.push(x, y); lx = x; ly = y;
+    }
+    const mFast = I.rasteriseScanline(fast, 256), mRef = I.rasteriseScanline([Float32Array.from(ref)], 256);
+    assert.deepEqual(Array.from(mFast), Array.from(mRef), JSON.stringify(coords));
+    const kept = fast.reduce((a, p) => a + p.length / 2, 0);
+    assert.ok(kept < ref.length / 2, JSON.stringify(coords) + ': ' + kept + ' vs ' + ref.length / 2);
+  }
+});
+
 test('coast performance smoke: a 300k-vertex coastline rasterised at z1 and z6', () => {
   const n = 300000, ring = new Array(n * 2);
   for (let i = 0; i < n; i++) { const a = i / n * 2 * Math.PI, r = 40 + 8 * Math.sin(37 * a) + 2 * Math.sin(211 * a); ring[i * 2] = D(r * Math.cos(a)); ring[i * 2 + 1] = D(r * Math.sin(a) * 0.8); }

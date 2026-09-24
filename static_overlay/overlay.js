@@ -235,7 +235,11 @@
     return out;
   }
   // Rings of every piece that reaches the tile, in tile pixel space (Float32Array x,y pairs), from the
-  // given decoded sets; sub-pixel pieces and same-pixel vertices are dropped.
+  // given decoded sets; sub-pixel pieces and same-pixel vertices are dropped, and a run of vertices
+  // that all lie beyond the same side of the tile is collapsed to its ends (a segment between two
+  // points in one half-plane never enters the tile, so the coverage inside it is unchanged).
+  // Which sides of the tile (0..TILE) a point lies beyond, as bits.
+  function outside(x, y) { return (x < 0 ? 1 : x > TILE ? 2 : 0) | (y < 0 ? 4 : y > TILE ? 8 : 0); }
   function landPathsForTile(coords, sets) {
     var b = tileBox(coords), scale = b.n, ox = b.xw * TILE, oy = coords.y * TILE, out = [];
     for (var s = 0; s < sets.length; s++) {
@@ -247,13 +251,20 @@
         var bx0 = box[k], by0 = box[k + 1], bx1 = box[k + 2], by1 = box[k + 3];
         for (var r = c.ringStart[p]; r < c.ringStart[p + 1]; r++) {
           var v0 = c.vertStart[r], v1 = c.vertStart[r + 1], ring = new Float32Array((v1 - v0) * 2), m = 0, lx = NaN, ly = NaN;
+          var run = 0, px = 0, py = 0, pending = false;             // the outside run being collapsed: its side bits and its last point
           for (var v = v0; v < v1; v++) {
             var wx = c.xy[v * 2], wy = c.xy[v * 2 + 1], x = wx * scale - ox, y = wy * scale - oy;
-            // same-pixel vertices are dropped, except on the piece's own bbox edges: those are the clip
-            // points shared with the neighbouring cell's piece, and the nonzero union needs them exact
-            if (m && Math.abs(x - lx) < 0.5 && Math.abs(y - ly) < 0.5 && wx !== bx0 && wx !== bx1 && wy !== by0 && wy !== by1) continue;
-            ring[m * 2] = x; ring[m * 2 + 1] = y; m++; lx = x; ly = y;
+            // same-pixel vertices are dropped, judged against the last vertex that survived this test (so
+            // the run collapsing below never changes which ones go), except on the piece's own bbox edges:
+            // those are the clip points shared with the neighbouring cell's piece, and the nonzero union needs them exact
+            if (v > v0 && Math.abs(x - lx) < 0.5 && Math.abs(y - ly) < 0.5 && wx !== bx0 && wx !== bx1 && wy !== by0 && wy !== by1) continue;
+            lx = x; ly = y;
+            var side = outside(x, y);
+            if (m && (run & side)) { run &= side; px = x; py = y; pending = true; continue; }   // still beyond the same side: keep only the run's end
+            if (pending) { ring[m * 2] = px; ring[m * 2 + 1] = py; m++; pending = false; }
+            ring[m * 2] = x; ring[m * 2 + 1] = y; m++; run = side;
           }
+          if (pending) { ring[m * 2] = px; ring[m * 2 + 1] = py; m++; }
           if (m >= 3) out.push(m * 2 === ring.length ? ring : ring.subarray(0, m * 2));
         }
       }

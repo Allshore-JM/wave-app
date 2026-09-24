@@ -323,7 +323,7 @@ def build(zip_path, out_dir, log=print):
     del polys
     polys = list(read_gshhg(z.read("gshhs_%s.b" % TIER1["res"])))
     cells1 = build_tier(polys, TIER1["cell"], TIER1["min_area_km2"])
-    listing, total_bytes, total_verts = {}, 0, 0
+    listing, digests, total_bytes, total_verts = {}, {}, 0, 0
     for (lat0, lon0) in sorted(cells1):
         pieces = cells1[(lat0, lon0)]
         body = encode_file(pieces, TIER1["cell"])
@@ -331,15 +331,25 @@ def build(zip_path, out_dir, log=print):
         open(os.path.join(out_dir, TIER1["dir"], name + ".bin"), "wb").write(body)
         nv = sum(len(r[0]) for pc in pieces for r in pc)
         listing[name] = [len(body), nv]
+        digests[name] = hashlib.sha256(body).hexdigest()
         total_bytes += len(body); total_verts += nv
     index["tier1"] = {"dir": TIER1["dir"], "res": TIER1["res"], "cell": TIER1["cell"], "min_zoom": TIER1["min_zoom"],
-                      "cells": listing, "bytes": total_bytes, "vertices": total_verts}
+                      "cells": listing, "bytes": total_bytes, "vertices": total_verts, "sha256": cells_digest(digests)}
     big = sorted(listing.items(), key=lambda kv: -kv[1][0])[:5]
     log("tier 1: %d polygons -> %d cells, %d vertices, %d bytes; largest %s (%.1fs)" % (
         len(polys), len(listing), total_verts, total_bytes, big, time.time() - t0))
     with open(os.path.join(out_dir, "index.json"), "w") as fh:
         json.dump(index, fh, separators=(",", ":"), sort_keys=True)
     return index
+
+
+def cells_digest(digests):
+    """One hash over every tier-1 file's sha256 (by name): the index's tier1.sha256, so a content
+    change that keeps every file's length is still a different build."""
+    h = hashlib.sha256()
+    for name in sorted(digests):
+        h.update(("%s:%s\n" % (name, digests[name])).encode("ascii"))
+    return h.hexdigest()
 
 
 # ---------------------------------------------------------------- check
@@ -396,7 +406,7 @@ def point_in_pieces(lon, lat, pieces, q=Q):
 # a broken pole closure or a wrong orientation would fail one of these. Land probes sit well inside the
 # coast (Ulriken above Bergen, not the fjord city itself: 5.3 E 60.39 N is water in GSHHG).
 PROBES = [(-158.281, 21.575, False), (-157.86, 21.31, True), (-158.0, 21.45, True), (0.0, -89.9, True),
-          (-169.65, 66.083, True), (180.0, -74.0, False), (0.0, -80.0, True), (139.7, 35.7, True), (5.386, 60.377, True),
+          (-169.65, 66.083, True), (179.9999, -74.0, False), (-179.9999, -74.0, False), (0.0, -80.0, True), (139.7, 35.7, True), (5.386, 60.377, True),
           (-40.0, -70.0, False), (-90.0, 0.0, False)]
 WORLD_LAND_SQDEG = 22100.0                              # tier-1 land area from GSHHG levels 1 + 5
 WORLD_MIN_CELLS = 1000                                  # a real build has ~1,470 tier-1 cells; a synthetic test world far fewer
@@ -430,9 +440,10 @@ def check(out_dir, log=print):
     present = set(n[:-4] for n in os.listdir(os.path.join(out_dir, t1["dir"])) if n.endswith(".bin"))
     if present != set(t1["cells"]):
         problems.append("tier 1: files %d vs index %d" % (len(present), len(t1["cells"])))
-    area1 = 0.0
+    area1, digests = 0.0, {}
     for name, (nbytes, nverts) in t1["cells"].items():
         buf = open(os.path.join(out_dir, t1["dir"], name + ".bin"), "rb").read()
+        digests[name] = hashlib.sha256(buf).hexdigest()
         if len(buf) != nbytes:
             problems.append("tier 1 %s: size mismatch" % name)
         lat0, lon0 = (int(v) for v in name.split("_"))
@@ -453,6 +464,8 @@ def check(out_dir, log=print):
             break
     if world and abs(area1 - WORLD_LAND_SQDEG) > 0.02 * WORLD_LAND_SQDEG:
         problems.append("tier 1: land area %.0f sq deg, expected ~%.0f" % (area1, WORLD_LAND_SQDEG))
+    if present == set(t1["cells"]) and t1.get("sha256") != cells_digest(digests):
+        problems.append("tier 1: content hash != index (tier1.sha256)")
     log("check: tier 0 %d pieces / %d vertices / %d B; tier 1 %d cells / %d vertices / %d B; %d problems" % (
         t0["pieces"], t0["vertices"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"], len(problems)))
     for p in problems[:50]:
@@ -495,9 +508,15 @@ def published_index(s3, bucket, prefix):
 
 
 def same_build(a, b):
-    """Two indexes describe the same bytes: same tier-0 hash and the same tier-1 cell map."""
-    return bool(a and b and a.get("tier0", {}).get("sha256") == b.get("tier0", {}).get("sha256") and
-                a.get("tier1", {}).get("cells") == b.get("tier1", {}).get("cells"))
+    """Two indexes describe the same bytes: same tier-0 hash, the same tier-1 cell map and, when both
+    carry it, the same tier-1 content hash (an index published before the hash existed is compared
+    on the cell map alone; its refresh then adds the hash)."""
+    if not (a and b) or a.get("tier0", {}).get("sha256") != b.get("tier0", {}).get("sha256"):
+        return False
+    ta, tb = a.get("tier1", {}), b.get("tier1", {})
+    if ta.get("cells") != tb.get("cells"):
+        return False
+    return ta.get("sha256") is None or tb.get("sha256") is None or ta["sha256"] == tb["sha256"]
 
 
 def upload(out_dir, prefix, replace=False, log=print, s3=None, bucket=None):

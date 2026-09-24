@@ -243,16 +243,20 @@ def test_coast_workflow_is_pinned():
 
 # ---------------------------------------------------------------- G5 additions
 
-def test_normalize_ring_real_pole_storage_and_exact_dateline_vertices():
+def test_normalize_ring_real_pole_storage_and_near_dateline_vertices():
     """GSHHG stores the Antarctic ice front -180..180 from (180, y) to (-180, y) with a closing edge
-    360 degrees long; vertices within rounding of the dateline must land exactly on it."""
+    360 degrees long. Vertices within rounding noise of the dateline are NOT snapped (the builder must
+    reproduce the published v1 bytes; a snap belongs to a new prefix) but quantise onto it, so the
+    dateline seam is exact."""
     lon = np.linspace(180.0, -180.0, 201); lat = -70.0 + np.cos(np.radians(lon))
     lon[1] = 179.9999999999; lon[-2] = -179.9999999999                                   # rounding noise
     rings = B.normalize_ring(lon, lat)
     assert len(rings) == 1
     rx, ry = rings[0]
     assert rx.max() == 180.0 and rx.min() == -180.0 and ry.min() == -90.0 and B.signed_area(rx, ry) > 0
-    assert 180.0 in set(rx.tolist()) and -180.0 in set(rx.tolist())
+    assert 179.9999999999 in set(rx.tolist()) and -179.9999999999 in set(rx.tolist())    # kept as stored
+    qx, qy = B.quantize_ring(rx, ry)
+    assert qx.max() == 180 * Q and qx.min() == -180 * Q
     # a 0..360 ring with several Greenwich jump edges (Eurasia-like): one ring, area kept, no split
     x = np.array([350.0, 5.0, 10.0, 355.0, 359.0, 2.0, 4.0, 352.0]); y = np.array([50.0, 50.0, 55.0, 55.0, 58.0, 58.0, 62.0, 62.0])
     r = B.normalize_ring(x, y)
@@ -340,6 +344,14 @@ def test_upload_publishes_licence_first_index_last_and_refuses_a_different_build
     assert B.upload(out, "static/coast/v1", log=msgs.append, s3=s3, bucket="b") is True      # the same build again
     assert s3.log[n_first:] == ["static/coast/v1/LICENSE.txt", "static/coast/v1/index.json"]
     idx = json.load(open(os.path.join(out, "index.json")))
+    assert len(idx["tier1"]["sha256"]) == 64
+    same_len = dict(idx); same_len["tier1"] = dict(idx["tier1"], sha256="1" * 64)             # a content change that keeps every file length
+    json.dump(same_len, open(os.path.join(out, "index.json"), "w"))
+    n = len(s3.log)
+    assert B.upload(out, "static/coast/v1", log=msgs.append, s3=s3, bucket="b") is False     # refused on the content hash alone
+    assert len(s3.log) == n
+    legacy = dict(idx); legacy["tier1"] = {k: v for k, v in idx["tier1"].items() if k != "sha256"}
+    assert B.same_build(legacy, idx) and B.same_build(idx, legacy)                            # an index published before the hash: cell map only
     idx["tier0"]["sha256"] = "0" * 64
     json.dump(idx, open(os.path.join(out, "index.json"), "w"))
     n = len(s3.log)

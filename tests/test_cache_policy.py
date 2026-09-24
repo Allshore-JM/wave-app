@@ -24,6 +24,7 @@ def _isolate(monkeypatch):
     monkeypatch.setattr(A, "_LIVE_STATIONS_MEMO", {"key": None, "payload": None, "etag": None})
     monkeypatch.setattr(A, "_buoy_tz_cached", F.fake_tz)
     monkeypatch.delenv("LIVE_STATIONS_EDGE_TTL", raising=False)
+    monkeypatch.delenv("MODEL_OVERLAYS", raising=False)
     yield
 
 
@@ -41,7 +42,7 @@ def _client(monkeypatch, provs=None, frozen=None):
     ("GET", "/api/forecast?station=51201"),
     ("GET", "/api/ndbc/station/51201/wave-summary"), ("GET", "/api/ndbc/station/51201/components"),
     ("GET", "/api/buoys/cdip:106/latest"), ("GET", "/api/buoys/nosuch:1/latest"),
-    ("GET", "/no/such/path"),
+    ("GET", "/no/such/path"), ("GET", "/overlay/overlay.js"),
 ])
 def test_headerless_routes_get_the_private_default(monkeypatch, method, path):
     c, _ = _client(monkeypatch)

@@ -48,3 +48,37 @@ Once deployed, navigate to the provided URL to access the app. The site will all
 ## Contributing
 
 Contributions are welcome! If you want to add new features, improve the parsing logic, or update the UI, please submit a pull request. For major changes, please open an issue first to discuss what you would like to change.
+
+## Model overlays (optional)
+
+Animated NOAA GFS-Wave / GFS frames drawn under the forecast and live-buoy points. Off unless BOTH
+environment variables are set on the web service:
+
+- `MODEL_OVERLAYS=1` - renders the selector control. With it unset (the production default) the page is
+  byte-identical to the pre-feature page (`tests/test_overlay_flag.py` replays a golden capture).
+- `MODEL_FRAMES_BASE` - public URL of the frame bucket prefix, e.g. `https://<host>/gfswave/0p25/v1`.
+
+The browser talks to the bucket directly; the Flask worker only serves two immutable assets
+(`/overlay/overlay.js?v=...` and `/overlay/overlay.css?v=...`). Bump `OVERLAY_ASSET_VERSION` in `app.py`
+on every change under `static_overlay/` (any other `?v` is a 404 that is never cached).
+
+Frames come from `tools/model_frames` (GitHub Actions `model-frames.yml`, cron every 10 minutes, plus manual
+dispatch with `steps` / `dry_run` / `force`): NOAA open S3 byte-range GRIB records -> eccodes -> 8-bit PNG
+(`u8-linear-v2`) -> Cloudflare R2. Bucket layout `gfswave/0p25/v1/<RUN>/{half/}<field>/fNNN.png`,
+`manifest-<ts>.json`, `stats-<ts>.json`, `latest.json` (written last, only for a complete run) and
+`failed/<RUN>.json`. The 0.25 degree grid (~28 km) is sampled per map pixel; smoothing between grid points
+is not extra detail.
+
+Runbook: rotate the R2 token in the repository secrets; roll back by unsetting `MODEL_OVERLAYS` (env only,
+no deploy), by re-pushing the `prod-pre-overlays` tag, or by disabling BOTH workflows (`model-frames.yml`
+and `model-frames-keepalive.yml`, which would otherwise re-enable the job on the 1st and 15th; the last
+complete run stays live and the panel shows a stale banner after 9 h). Integrate site changes into
+`Live-Buoy-Update` by MERGE, never by pushing a feature branch over it: the job-only merges live on the
+production branch alone. The workflow step summary states how long after the cycle each publish happened;
+`failed/<RUN>.json` and `notready/<RUN>.json` in the bucket record build failures and listed-but-missing
+objects. Data policy in the browser: the 0.5 degree frames are used below zoom 3.5 on desktops, below zoom 7
+on narrow (phone) maps and for wind everywhere, so an 81-frame loop is about 4-13 MB (32 MB only for wind
+zoomed past 7.5); frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
+where the browser has DecompressionStream. Review records: `docs/reviews/overlays-G*-adversarial.md`. Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full
+sentence ("Source: NOAA/NCEP GFS-Wave (WAVEWATCH III) and GFS via NOAA Open Data Dissemination; rendered by
+Allshore Surf. Not an official NWS product.").

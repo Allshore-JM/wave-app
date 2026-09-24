@@ -1,0 +1,57 @@
+# Coastline data for the overlay's land clip (tools/coast). On push: unit tests only. On manual
+# dispatch: tests, then download GSHHG 2.3.7 (the GMT project's release asset, pinned by sha256),
+# build both tiers, run --check, and (only when `upload` is true) publish to the frames bucket
+# under static/coast/v1/ with immutable caching, index.json written last.
+# Secrets for the upload: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: coast-build
+on:
+  push:
+    paths: ["tools/coast/**", "tests/coast/**", ".github/workflows/coast-build.yml"]
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "publish to R2 under static/coast/v1 (true/false)"
+        default: "false"
+concurrency:
+  group: coast-build
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065   # v5.6.0
+        with:
+          python-version: "3.11"
+      - run: pip install numpy==2.2.6 pytest==9.1.1
+      - run: python -m pytest -q tests/coast
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065   # v5.6.0
+        with:
+          python-version: "3.11"
+      - run: pip install numpy==2.2.6 boto3==1.43.98
+      - name: Download GSHHG 2.3.7
+        run: |
+          curl -sSfL -o gshhg-bin-2.3.7.zip https://github.com/GenericMappingTools/gshhg-gmt/releases/download/2.3.7/gshhg-bin-2.3.7.zip
+          echo "28600e8f7a08645aab43079326df6504212ec5ccb2b4bcf3b5f4f12ed60e82bc  gshhg-bin-2.3.7.zip" | sha256sum -c -
+      - name: Build and check
+        run: |
+          /usr/bin/time -v -o time.txt python tools/coast/build_coast.py --zip gshhg-bin-2.3.7.zip --out build/coast/v1 | tee build.log
+          { echo '```'; cat build.log; grep -E "Maximum resident|Elapsed" time.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload to R2
+        if: github.event.inputs.upload == 'true'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: python tools/coast/build_coast.py --out build/coast/v1 --upload static/coast/v1 | tail -3 | tee -a "$GITHUB_STEP_SUMMARY"

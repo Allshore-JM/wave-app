@@ -79,6 +79,7 @@
     if (!m || (m.schema !== 2 && m.schema !== 3)) throw new Error('unsupported manifest schema');
     if (m.encoding !== ENCODING) throw new Error('unsupported frame encoding ' + m.encoding);
     if (m.complete !== true) throw new Error('published run is not complete');
+    if (m.fill !== undefined && (typeof m.fill !== 'object' || m.fill === null || Array.isArray(m.fill))) throw new Error('manifest incomplete');
     if (typeof m.run !== 'string' || typeof m.run_utc !== 'string' || isNaN(Date.parse(m.run_utc)) || !m.fields || typeof m.fields !== 'object' ||
       !m.grid || typeof m.grid !== 'object' || !m.grid_half || typeof m.grid_half !== 'object' || (m.model !== undefined && (typeof m.model !== 'object' || m.model === null)) ||
       !Array.isArray(m.frames) || !m.frames.length || m.frames.length > 512) throw new Error('manifest incomplete');
@@ -140,11 +141,321 @@
   }
   // The centre of the drawn pixel that contains (lat, lng) at tile zoom z: the readout samples THIS
   // point, so it reports exactly the value the tile shows under the cursor (same sampler, same sample).
-  function snapToPixel(lat, lng, z) {
+  function pixelOf(lat, lng, z) {
     var p = forwardPixel(lat, lng, z), px = Math.floor(p.x), py = Math.floor(p.y);
     var cx = Math.floor(px / TILE), cy = Math.floor(py / TILE);
-    return tilePixelLatLng({ z: z, x: cx, y: cy }, px - cx * TILE, py - cy * TILE);
+    return { z: z, x: cx, y: cy, px: px - cx * TILE, py: py - cy * TILE };   // unwrapped tile coords, like Leaflet's _tiles keys
   }
+  function snapToPixel(lat, lng, z) {
+    var p = pixelOf(lat, lng, z);
+    return tilePixelLatLng(p, p.px, p.py);
+  }
+
+  // ---- coastlines (the land clip) ----
+  // Wave height and peak period are clipped to the ocean: every tile's land alpha is rasterised once
+  // per tile per zoom from GSHHG polygons (tools/coast, format coast-v1) and multiplied into the pixel
+  // alpha on every frame; the readout consults the same mask, so it still reports the drawn pixel.
+  // Tier 0 (~1 km, one file) serves tile zooms up to index.tier0.max_zoom; tier 1 (full resolution,
+  // 5-degree cells) is fetched per cell in view for higher zooms, tier 0 standing in until it lands.
+  // Wind is never clipped (owner decision: the full field over land).
+  var CLIP_FIELDS = { hs: true, tp: true, wind: false };
+  var LAND_ALL = new Uint8Array(0);                        // sentinel: the tile is entirely land
+  var LAND_READOUT = 128;                                  // composed alpha below this = "over land" for the readout
+  var MAX_LAT = 85.0511287798;                             // Web-Mercator limit; the Antarctic ring closes through the pole
+  var MAX_COAST_BYTES = 8 * 1024 * 1024;                  // one coast file is <= 1.4 MB; nothing bigger is decoded
+  var MAX_CHUNK_BYTES = 32 * 1024 * 1024;                 // decoded tier-1 chunks kept (LRU), in vertex bytes
+  var MAX_COAST_INFLIGHT = 2;
+  var MIN_PIECE_PX = 0.5;                                  // a piece smaller than this in both directions is not drawn
+  var COAST_RETRY_MS = 60 * 1000;
+  // World pixel coordinates at zoom 0 (0..256), lat clamped to the Mercator limit.
+  function worldXY(lon, lat) {
+    var s = Math.sin(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat)) * Math.PI / 180);
+    return [(lon + 180) / 360 * TILE, (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * TILE];
+  }
+  // coast-v1: 40-byte header (magic "CST1", u16 cell, u16 0, u32 q, u32 pieces, u32 rings, u32 vertices,
+  // i32 bbox[4]) then one LEB128 varint stream; per piece zz(minx) zz(miny) w h nrings, per ring n then
+  // n zigzag delta pairs (first relative to the piece corner). Decoded once into zoom-0 world pixels.
+  function decodeCoast(buf) {
+    if (!(buf instanceof ArrayBuffer) || buf.byteLength < 40 || buf.byteLength > MAX_COAST_BYTES) throw new Error('coast decode failed');
+    var u8 = new Uint8Array(buf), dv = new DataView(buf);
+    if (u8[0] !== 67 || u8[1] !== 83 || u8[2] !== 84 || u8[3] !== 49) throw new Error('coast decode failed');
+    var cell = dv.getUint16(4, true), q = dv.getUint32(8, true), nP = dv.getUint32(12, true), nR = dv.getUint32(16, true), nV = dv.getUint32(20, true);
+    if (!q || nP > 200000 || nR > 400000 || nV > 4000000 || nR < nP || nV < 3 * nR) throw new Error('coast decode failed');
+    var pos = 40, end = u8.length;
+    function varint() {                                    // up to 35 bits; the fifth byte via a multiply (no 32-bit overflow)
+      var v = 0, shift = 1, b;
+      do {
+        if (pos >= end) throw new Error('coast decode failed');
+        b = u8[pos++]; v += (b & 127) * shift; shift *= 128;
+        if (shift > 34359738368) throw new Error('coast decode failed');
+      } while (b & 128);
+      return v;
+    }
+    function zz() { var v = varint(); return v % 2 ? -(v + 1) / 2 : v / 2; }
+    var box = new Float32Array(nP * 4), ringStart = new Int32Array(nP + 1), vertStart = new Int32Array(nR + 1), xy = new Float32Array(nV * 2);
+    var r = 0, v = 0, inv = 1 / q;
+    for (var p = 0; p < nP; p++) {
+      var minx = zz(), miny = zz(); varint(); varint();                     // the integer bbox is recomputed from the projected vertices
+      var nr = varint();
+      if (r + nr > nR) throw new Error('coast decode failed');
+      var bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+      ringStart[p] = r;
+      for (var k = 0; k < nr; k++) {
+        var n = varint();
+        if (n < 3 || v + n > nV) throw new Error('coast decode failed');
+        vertStart[r++] = v;
+        var x = minx, y = miny;
+        for (var i = 0; i < n; i++) {
+          x += zz(); y += zz();
+          var w = worldXY(x * inv, y * inv);
+          xy[v * 2] = w[0]; xy[v * 2 + 1] = w[1]; v++;
+          if (w[0] < bx0) bx0 = w[0]; if (w[0] > bx1) bx1 = w[0]; if (w[1] < by0) by0 = w[1]; if (w[1] > by1) by1 = w[1];
+        }
+      }
+      box[p * 4] = bx0; box[p * 4 + 1] = by0; box[p * 4 + 2] = bx1; box[p * 4 + 3] = by1;
+    }
+    ringStart[nP] = r; vertStart[nR] = v;
+    if (r !== nR || v !== nV || pos !== end) throw new Error('coast decode failed');
+    return { cell: cell, n: nP, box: box, ringStart: ringStart, vertStart: vertStart, xy: xy, bytes: xy.byteLength };
+  }
+  // Tile coords wrapped into the single world (x may be a world copy); the tile's box in zoom-0 units.
+  function tileBox(coords) {
+    var n = Math.pow(2, coords.z), xw = ((coords.x % n) + n) % n, s = TILE / n;
+    return { z: coords.z, xw: xw, y: coords.y, n: n, x0: xw * s, y0: coords.y * s, x1: (xw + 1) * s, y1: (coords.y + 1) * s };
+  }
+  // The 5-degree (cellDeg) tier-1 cells a tile touches, as "lat0_lon0" names (south-west corners).
+  function coastCellsForTile(coords, cellDeg) {
+    var b = tileBox(coords), lonW = b.x0 / TILE * 360 - 180, lonE = b.x1 / TILE * 360 - 180;
+    function lat(y) { return Math.atan(Math.sinh(Math.PI - 2 * Math.PI * y / TILE)) * 180 / Math.PI; }
+    var latN = lat(b.y0), latS = lat(b.y1), eps = 1e-9, out = [];
+    var i0 = Math.max(-Math.round(90 / cellDeg), Math.floor(latS / cellDeg)), i1 = Math.min(Math.round(90 / cellDeg) - 1, Math.floor((latN - eps) / cellDeg));
+    var j0 = Math.max(-Math.round(180 / cellDeg), Math.floor(lonW / cellDeg)), j1 = Math.min(Math.round(180 / cellDeg) - 1, Math.floor((lonE - eps) / cellDeg));
+    for (var i = i0; i <= i1; i++) for (var j = j0; j <= j1; j++) out.push((i * cellDeg) + '_' + (j * cellDeg));
+    return out;
+  }
+  // Rings of every piece that reaches the tile, in tile pixel space (Float32Array x,y pairs), from the
+  // given decoded sets; sub-pixel pieces and same-pixel vertices are dropped.
+  function landPathsForTile(coords, sets) {
+    var b = tileBox(coords), scale = b.n, ox = b.xw * TILE, oy = coords.y * TILE, out = [];
+    for (var s = 0; s < sets.length; s++) {
+      var c = sets[s], box = c.box;
+      for (var p = 0; p < c.n; p++) {
+        var k = p * 4;
+        if (box[k + 2] < b.x0 || box[k] > b.x1 || box[k + 3] < b.y0 || box[k + 1] > b.y1) continue;
+        if ((box[k + 2] - box[k]) * scale < MIN_PIECE_PX && (box[k + 3] - box[k + 1]) * scale < MIN_PIECE_PX) continue;
+        for (var r = c.ringStart[p]; r < c.ringStart[p + 1]; r++) {
+          var v0 = c.vertStart[r], v1 = c.vertStart[r + 1], ring = new Float32Array((v1 - v0) * 2), m = 0, lx = NaN, ly = NaN;
+          for (var v = v0; v < v1; v++) {
+            var x = c.xy[v * 2] * scale - ox, y = c.xy[v * 2 + 1] * scale - oy;
+            if (m && Math.abs(x - lx) < 0.5 && Math.abs(y - ly) < 0.5) continue;
+            ring[m * 2] = x; ring[m * 2 + 1] = y; m++; lx = x; ly = y;
+          }
+          if (m >= 3) out.push(m * 2 === ring.length ? ring : ring.subarray(0, m * 2));
+        }
+      }
+    }
+    return out;
+  }
+  // Pure nonzero-winding scanline rasteriser (4 sub-rows, exact horizontal coverage): the reference for
+  // tests and the fallback where a canvas is not available. -> Uint8Array(size*size) coverage 0..255.
+  function rasteriseScanline(paths, size) {
+    var SUB = 4, rows = size * SUB, buckets = new Array(rows), out = new Uint8Array(size * size), i, j;
+    for (i = 0; i < rows; i++) buckets[i] = null;
+    for (i = 0; i < paths.length; i++) {
+      var ring = paths[i], n = ring.length / 2;
+      for (j = 0; j < n; j++) {
+        var x0 = ring[j * 2], y0 = ring[j * 2 + 1], x1 = ring[((j + 1) % n) * 2], y1 = ring[((j + 1) % n) * 2 + 1];
+        if (y0 === y1) continue;
+        var dir = y1 > y0 ? 1 : -1, ya = Math.min(y0, y1), yb = Math.max(y0, y1);
+        var r0 = Math.max(0, Math.ceil(ya * SUB - 0.5)), r1 = Math.min(rows - 1, Math.ceil(yb * SUB - 0.5) - 1);
+        for (var rr = r0; rr <= r1; rr++) {
+          var sy = (rr + 0.5) / SUB, x = x0 + (sy - y0) * (x1 - x0) / (y1 - y0);
+          (buckets[rr] || (buckets[rr] = [])).push(x, dir);
+        }
+      }
+    }
+    var cov = new Float32Array(size);
+    for (var row = 0; row < size; row++) {
+      cov.fill(0);
+      var any = false;
+      for (var sub = 0; sub < SUB; sub++) {
+        var xs = buckets[row * SUB + sub];
+        if (!xs) continue;
+        var pairs = [];
+        for (i = 0; i < xs.length; i += 2) pairs.push([xs[i], xs[i + 1]]);
+        pairs.sort(function (a, b) { return a[0] - b[0]; });
+        var wnd = 0;
+        for (i = 0; i < pairs.length - 1; i++) {
+          wnd += pairs[i][1];
+          if (!wnd) continue;
+          var xa = Math.max(0, pairs[i][0]), xb = Math.min(size, pairs[i + 1][0]);
+          if (xb <= xa) continue;
+          any = true;
+          var pa = Math.floor(xa), pb = Math.min(size - 1, Math.ceil(xb) - 1);
+          for (var px = pa; px <= pb; px++) cov[px] += Math.min(xb, px + 1) - Math.max(xa, px);
+        }
+      }
+      if (!any) continue;
+      for (i = 0; i < size; i++) if (cov[i] > 0) out[row * size + i] = Math.min(255, Math.round(cov[i] * 255 / SUB));
+    }
+    return out;
+  }
+  var maskCanvas = null;
+  // Canvas rasteriser (anti-aliased, one nonzero fill for all pieces so shared cell edges never seam);
+  // falls back to the scanline version where a 2D context is not available.
+  function rasterise(paths, size) {
+    try {
+      var c = maskCanvas || (maskCanvas = document.createElement('canvas'));
+      if (c.width !== size || c.height !== size) { c.width = size; c.height = size; }
+      var ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.clearRect(0, 0, size, size);
+      ctx.beginPath();
+      for (var i = 0; i < paths.length; i++) {
+        var ring = paths[i];
+        ctx.moveTo(ring[0], ring[1]);
+        for (var j = 2; j < ring.length; j += 2) ctx.lineTo(ring[j], ring[j + 1]);
+        ctx.closePath();
+      }
+      ctx.fillStyle = '#000';
+      ctx.fill('nonzero');
+      var d = ctx.getImageData(0, 0, size, size).data, out = new Uint8Array(size * size);
+      for (var k = 0, a = 3; k < out.length; k++, a += 4) out[k] = d[a];
+      return out;
+    } catch (e) {
+      return rasteriseScanline(paths, size);
+    }
+  }
+  // null = no land in the tile, LAND_ALL = nothing but land, else the mask itself.
+  function maskState(mask) {
+    var lo = 255, hi = 0;
+    for (var i = 0; i < mask.length && (lo || hi < 255); i++) { var m = mask[i]; if (m < lo) lo = m; if (m > hi) hi = m; }
+    if (hi === 0) return null;
+    if (lo === 255) return LAND_ALL;
+    return mask;
+  }
+  // Codes -> RGBA for one tile: colour from the ramp over the legend range, alpha 255 (no data: 0)
+  // times the ocean fraction (255 - land).
+  function composeTile(codes, land, lut, lo, hi, L0, L1, d) {
+    var scale = 255 / (L1 - L0);
+    for (var i = 0, k = 0; i < codes.length; i++, k += 4) {
+      var code = codes[i], a = land ? 255 - land[i] : 255;
+      if (!code || !a) { d[k + 3] = 0; continue; }
+      var t = Math.round((lo + (code - 1) / 254 * (hi - lo) - L0) * scale);
+      t = t < 0 ? 0 : t > 255 ? 255 : t;
+      d[k] = lut[t * 3]; d[k + 1] = lut[t * 3 + 1]; d[k + 2] = lut[t * 3 + 2]; d[k + 3] = a;
+    }
+    return d;
+  }
+  // Coast data for one base URL (index.json + tier 0 up front, tier-1 chunks on demand). One per URL
+  // per page: the decoded tier 0 (~3 MB) and the chunk LRU survive Off/On.
+  var COAST_STORES = {};
+  function coastStore(url) { return COAST_STORES[url] || (COAST_STORES[url] = new CoastStore(url)); }
+  function CoastStore(url) {
+    this.url = url; this.status = 'idle'; this.index = null; this.tier0 = null; this.loading = null;
+    this.chunks = new Map(); this.bytes = 0; this.inflight = {}; this.queue = []; this.failed = {};
+    this.rev = 0; this.onChange = null; this.abort = null;
+  }
+  // Resolves to the store when tier 0 is usable, to null otherwise (never rejects); a failed load is
+  // retried on the next call. The load has its own abort (Off), so a field change while it runs
+  // simply keeps waiting for it.
+  CoastStore.prototype.load = function () {
+    var self = this;
+    if (this.status === 'ok') return Promise.resolve(this);
+    if (this.loading) return this.loading;
+    this.status = 'loading';
+    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal;
+    this.loading = Promise.all([
+      fetch(base + '/index.json', { signal: sig, mode: 'cors' }).then(function (r) { if (!r.ok) throw new Error('coast ' + r.status); return r.json(); }),
+      fetch(base + '/world-i.bin', { signal: sig, mode: 'cors' }).then(function (r) {
+        if (!r.ok) throw new Error('coast ' + r.status);
+        if (Number(r.headers.get('content-length') || 0) > MAX_COAST_BYTES) throw new Error('coast decode failed');
+        return r.arrayBuffer();
+      })
+    ]).then(function (res) {
+      if (self.loadAbort !== ctrl || sig.aborted) throw abortError();     // aborted or superseded: this load owns nothing any more
+      var idx = res[0];
+      if (!idx || idx.format !== 'coast-v1' || !idx.tier0 || !idx.tier1 || typeof idx.tier1.cell !== 'number' || typeof idx.tier0.max_zoom !== 'number' ||
+        !idx.tier1.cells || typeof idx.tier1.cells !== 'object') throw new Error('unsupported coast index');
+      self.tier0 = decodeCoast(res[1]); self.index = idx; self.status = 'ok'; self.loading = null; self.loadAbort = null;
+      return self;
+    }).catch(function () {
+      if (self.loadAbort === ctrl) { self.loading = null; self.loadAbort = null; self.status = sig.aborted ? 'idle' : 'failed'; }
+      return null;
+    });
+    return this.loading;
+  };
+  CoastStore.prototype.tier1Zoom = function (z) { return this.status === 'ok' && z > this.index.tier0.max_zoom; };
+  // The decoded sets a tile should be rasterised from, and whether they are the final ones. Missing
+  // tier-1 chunks are requested; until they land the tile uses tier 0 (complete: false).
+  CoastStore.prototype.setsFor = function (coords) {
+    if (this.status !== 'ok') return { sets: [], complete: true };
+    if (!this.tier1Zoom(coords.z)) return { sets: [this.tier0], complete: true };
+    var names = coastCellsForTile(coords, this.index.tier1.cell), sets = [], missing = [];
+    for (var i = 0; i < names.length; i++) {
+      var nm = names[i];
+      if (!this.index.tier1.cells[nm]) continue;                          // no land in that cell
+      var c = this.chunks.get(nm);
+      if (c) { this.chunks.delete(nm); this.chunks.set(nm, c); sets.push(c); }   // LRU touch
+      else if (this.failed[nm] === true) continue;                         // permanently absent: treated as no land
+      else missing.push(nm);
+    }
+    if (!missing.length) return { sets: sets, complete: true };
+    this.request(missing);
+    return { sets: [this.tier0], complete: false };
+  };
+  CoastStore.prototype.request = function (names) {
+    for (var i = 0; i < names.length; i++) {
+      var nm = names[i], f = this.failed[nm];
+      if (!this.index.tier1.cells[nm] || this.inflight[nm] || this.queue.indexOf(nm) >= 0 || this.chunks.has(nm) || f === true || (typeof f === 'number' && f > Date.now())) continue;
+      this.queue.push(nm);
+    }
+    this._pump();
+  };
+  CoastStore.prototype._pump = function () {
+    var self = this;
+    while (this.queue.length && Object.keys(this.inflight).length < MAX_COAST_INFLIGHT) {
+      var nm = this.queue.shift();
+      if (!this.abort) this.abort = new AbortController();
+      (function (name, ctrl) {
+        self.inflight[name] = true;
+        fetch(self.url + '/' + self.index.tier1.dir + '/' + name + '.bin', { signal: ctrl.signal, mode: 'cors' }).then(function (r) {
+          if (!r.ok) throw new Error('coast ' + r.status);
+          if (Number(r.headers.get('content-length') || 0) > MAX_COAST_BYTES) throw new Error('coast decode failed');
+          return r.arrayBuffer();
+        }).then(function (buf) {
+          delete self.inflight[name];
+          if (ctrl.signal.aborted) return;
+          var c = decodeCoast(buf);
+          self.chunks.set(name, c); self.bytes += c.bytes; delete self.failed[name];
+          self._evict();
+          self.rev++;
+          if (self.onChange) self.onChange();
+          self._pump();
+        }).catch(function (err) {
+          delete self.inflight[name];
+          if (ctrl.signal.aborted || (err && err.name === 'AbortError')) return;
+          var m = /^coast (\d{3})$/.exec(String(err && err.message || ''));
+          self.failed[name] = (m && (m[1] === '404' || m[1] === '410')) || /decode/.test(String(err && err.message)) ? true : Date.now() + COAST_RETRY_MS;
+          self.rev++;
+          if (self.onChange) self.onChange();                                // a tile waiting on this cell falls back for good / for now
+          self._pump();
+        });
+      })(nm, this.abort);
+    }
+  };
+  CoastStore.prototype._evict = function () {
+    var it = this.chunks.keys();
+    while (this.bytes > MAX_CHUNK_BYTES && this.chunks.size > 1) {
+      var k = it.next().value, c = this.chunks.get(k);
+      this.chunks.delete(k); this.bytes -= c.bytes;
+    }
+  };
+  CoastStore.prototype.abortAll = function () {
+    if (this.abort) { this.abort.abort(); this.abort = null; }
+    if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; }
+    if (this.status === 'loading') { this.status = 'idle'; this.loading = null; }
+    this.inflight = {}; this.queue = []; this.onChange = null;
+  };
 
   // ---- frame decoding ----
   // Frames are 8-bit greyscale, non-interlaced PNGs. The direct path parses the chunks, lets the
@@ -257,17 +568,49 @@
       this._legend = [0, 1]; this.field = null; this.fdef = null; this.entry = null;
       this._codes = new Float64Array(TILE * TILE); this._colPos = new Float64Array(TILE);
       this._one = new Float64Array(1); this._oneOut = new Float64Array(1);
+      this._coast = null; this._clip = false;
     },
     // frame {q, cols, rows}; grid = the manifest grid for that resolution; fdef = the manifest field
     setFrame: function (frame, grid, fieldName, fdef, lut, entry) {
       validateGrid(grid, frame, fdef);
       this._frame = frame; this._grid = grid; this._lut = lut; this.field = fieldName; this.fdef = fdef; this.entry = entry || null;
       this._nearest = fdef.interpolation === 'nearest'; this._lo = fdef.lo; this._hi = fdef.hi; this._legend = fdef.legend;
+      this._clip = !!(this._coast && CLIP_FIELDS[fieldName]);
       this._redraw();
     },
-    clear: function () { this._frame = null; this.field = null; this.fdef = null; this.entry = null; this._redraw(); },
+    clear: function () { this._frame = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._redraw(); },
     hasFrame: function () { return !!this._frame; },
+    // A loaded CoastStore (or null): from now on hs/tp tiles are clipped to its polygons.
+    setCoast: function (store) {
+      var self = this;
+      this._coast = store && store.status === 'ok' ? store : null;
+      this._clip = !!(this._coast && CLIP_FIELDS[this.field]);
+      if (this._coast) this._coast.onChange = function () { self._redrawIncomplete(); };
+      this._redraw();
+    },
     _redraw: function () { for (var k in this._tiles) { var t = this._tiles[k]; if (t.el && t.coords) this._draw(t.el, t.coords); } },
+    // A tier-1 chunk landed (or failed): only the tiles drawn from the tier-0 stand-in are redrawn.
+    _redrawIncomplete: function () {
+      for (var k in this._tiles) { var t = this._tiles[k]; if (t.el && t.coords && t.el._ovLandFinal === false) this._draw(t.el, t.coords); }
+    },
+    // The tile's land alpha, computed once per tile element (per zoom) and kept on it like _ovImg.
+    _landFor: function (el, coords) {
+      var st = this._coast, key = coords.z + '/' + tileBox(coords).xw + '/' + coords.y;
+      if (el._ovLandKey === key && (el._ovLandFinal || el._ovLandRev === st.rev)) return el._ovLand;
+      var got = st.setsFor(coords);
+      el._ovLand = got.sets.length ? maskState(rasterise(landPathsForTile(coords, got.sets), TILE)) : null;
+      el._ovLandKey = key; el._ovLandFinal = got.complete; el._ovLandRev = st.rev;
+      return el._ovLand;
+    },
+    // The readout's value for the drawn pixel that contains (lat, lng) at tile zoom z: null where the
+    // tile shows nothing (no data, land, or a tile that is not on the map yet).
+    readoutAt: function (lat, lng, z) {
+      var p = pixelOf(lat, lng, z), ll = tilePixelLatLng(p, p.px, p.py), v = this.valueAt(ll.lat, ll.lng);
+      if (v === null || !this._clip) return v;
+      var t = this._tiles[p.x + ':' + p.y + ':' + p.z], land = t && t.el ? t.el._ovLand : undefined;
+      if (land === undefined || land === LAND_ALL) return null;
+      return land === null || 255 - land[p.py * TILE + p.px] >= LAND_READOUT ? v : null;
+    },
     createTile: function (coords, done) {
       var el = document.createElement('canvas'); el.width = TILE; el.height = TILE;
       this._draw(el, coords);
@@ -328,16 +671,11 @@
     _draw: function (el, coords) {
       var ctx = el.getContext('2d');
       if (!this._frame) { ctx.clearRect(0, 0, TILE, TILE); return; }
-      var codes = this.tileCodes(coords, this._codes), lut = this._lut;
-      var lo = this._lo, hi = this._hi, L0 = this._legend[0], scale = 255 / (this._legend[1] - L0);
-      var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE)), d = img.data;   // reused per tile: no 256 KB per frame
-      for (var i = 0, k = 0; i < codes.length; i++, k += 4) {
-        var code = codes[i];
-        if (!code) { d[k + 3] = 0; continue; }
-        var t = Math.round((lo + (code - 1) / 254 * (hi - lo) - L0) * scale);
-        t = t < 0 ? 0 : t > 255 ? 255 : t;
-        d[k] = lut[t * 3]; d[k + 1] = lut[t * 3 + 1]; d[k + 2] = lut[t * 3 + 2]; d[k + 3] = 255;
-      }
+      var land = this._clip ? this._landFor(el, coords) : null;
+      if (land === LAND_ALL) { ctx.clearRect(0, 0, TILE, TILE); return; }         // nothing but land: no sampling at all
+      var codes = this.tileCodes(coords, this._codes);
+      var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
+      composeTile(codes, land, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data);
       ctx.putImageData(img, 0, 0);
     }
   });
@@ -403,6 +741,8 @@
     this.cache = new FrameCache(MAX_DECODED); this.inflight = {}; this.unavailable = {}; this.target = null; this.dir = 1; this.n = 0;
     this.playing = false; this.wasPlaying = false; this.timer = null; this.runTimer = null; this.ui = null; this._lutFor = null;
     this.playGen = 0; this.transientFails = 0; this._staleShown = false;
+    // opts.coast: clip wave height / peak period to the coastlines published beside the frames
+    this.coast = opts.coast ? coastStore(this.root + '/static/coast/v1') : null;
     var s = saved();
     this.opacity = typeof s.opacity === 'number' && s.opacity >= 0.2 && s.opacity <= 1 ? s.opacity : 0.65;
     this.speed = SPEEDS.indexOf(s.speed) >= 0 ? s.speed : 1;
@@ -428,8 +768,16 @@
     // The time position survives a field change and even a run change (nearest valid time), like Update.
     var prevValid = this.manifest && this.frameIndex !== null ? Date.parse(this.manifest.frames[this.frameIndex].valid_utc) : null;
     var prevRun = this.manifest ? this.manifest.run : null;
+    // The coastlines load beside the pointer/manifest/frame; the FIRST DRAW waits for them (a filled
+    // field spilling onto land and then snapping back is the wrong picture), later draws never do.
+    var coastP = this.coast && CLIP_FIELDS[fieldName] ? this.coast.load() : Promise.resolve(null);
     this._loadManifest(sig).then(function (m) {
       if (!m.fields[fieldName] || !RAMPS[fieldName]) throw new Error('layer "' + fieldName + '" is not in this run');
+      return coastP.then(function (store) { return [m, store]; });
+    }).then(function (ms) {
+      var m = ms[0], store = ms[1];
+      if (sig.aborted || !self.layer) throw abortError();
+      if (self.layer._coast !== (store || null)) self.layer.setCoast(store);
       self.n = m.frames.length;
       var idx = prevValid === null ? pickFrame(m) : m.run === prevRun ? Math.min(self.frameIndex, self.n - 1) : nearestIndex(m, prevValid);
       self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
@@ -739,6 +1087,7 @@
     if (this.runTimer) { clearInterval(this.runTimer); this.runTimer = null; }
     if (this._onVis) { document.removeEventListener('visibilitychange', this._onVis); this._onVis = null; }
     if (this.layer) { this.map.removeLayer(this.layer); this.layer = null; }
+    if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
     this._unattribute();
     this._unbindReadout();
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
@@ -764,8 +1113,7 @@
       var layer = self.layer, v = null;
       if (layer && layer.fdef) {
         var z = typeof layer._tileZoom === 'number' ? layer._tileZoom : Math.round(map.getZoom());
-        var ll = snapToPixel(latlng.lat, latlng.lng, z);          // the drawn pixel's centre, not the raw cursor point
-        v = layer.valueAt(ll.lat, ll.lng);
+        v = layer.readoutAt(latlng.lat, latlng.lng, z);            // the drawn pixel (its centre, its land mask), not the raw cursor point
       }
       if (v === null || v === undefined) { el.hidden = true; return; }
       var u = unitOf(layer.field, self.opts.getUnit()), f = layer.fdef;
@@ -917,6 +1265,8 @@
       body.appendChild(banner);
     }
     var unavail = mk('div', 'ov-warn'); unavail.hidden = true; body.appendChild(unavail); ui.unavail = unavail;
+    var clipped = !!this.layer._clip;
+    if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
     // legend over the LEGEND range in the site's units (the encoding range is wider; extremes clamp)
     var leg = mk('div', 'ov-legend'), cv = mk('canvas'); cv.width = 256; cv.height = 1; leg.appendChild(cv);
     var lut = this._lut(), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);
@@ -935,7 +1285,9 @@
     lab.appendChild(rng); row.appendChild(lab); body.appendChild(row);
     body.appendChild(mk('div', 'ov-note',
       (field === 'tp' ? 'Peak period Tp (GRIB PERPW = 1/fp), nearest grid cell (no smoothing). ' : field === 'wind' ? 'GFS wind at 10 m over land and sea; legend top 60 kt; 0.5° frames below zoom 6. ' : '') +
-      'GFS-Wave 0.25° (~28 km) grid — display smoothing is not extra detail. Hover or long-press the map for values. ' +
+      'GFS-Wave 0.25° (~28 km) grid — display smoothing is not extra detail. ' +
+      (clipped ? (m.fill ? 'Nearshore values are extrapolated from the nearest model cells; ' : '') + 'coastlines from GSHHG (Wessel & Smith). Hover or long-press the map for values (none over land). '
+        : 'Hover or long-press the map for values. ') +
       String(m.model && m.model.attribution || '')));
     this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND
@@ -993,8 +1345,11 @@
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
       parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,
-      forwardPixel: forwardPixel, snapToPixel: snapToPixel, pad3: pad3,
+      forwardPixel: forwardPixel, snapToPixel: snapToPixel, pixelOf: pixelOf, pad3: pad3,
       ringPlan: ringPlan, nextAvailable: nextAvailable, nearestIndex: nearestIndex, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
-      MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT }
+      MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT,
+      worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, landPathsForTile: landPathsForTile,
+      rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
+      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT }
   };
 })();

@@ -137,7 +137,8 @@ def test_overlay_js_syntax_and_contract_strings():
     for needle in ("'modelPane'", "pointerEvents", "createImageBitmap", "valueAt", "unmount", "AllshoreOverlay",
                    "_code", "tileCodes", "validateGrid", "validateManifest", "u8-linear-v2", "{step:03d}",
                    "(hover: hover) and (pointer: fine)", "(pointer: coarse)", "ov-sheet-open", "--ov-sheet-left",
-                   "--ov-attr-max", "removeAttribution", "clientHeight", "snapToPixel"):
+                   "--ov-attr-max", "removeAttribution", "clientHeight", "snapToPixel",
+                   "decodeCoast", "composeTile", "readoutAt", "GSHHG", "static/coast/v1"):
         assert needle in js, needle
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:

@@ -11,6 +11,7 @@ layout changes, so an immutable key is never rewritten with different bytes):
 RUN = YYYYMMDDHH (UTC cycle). The pointer only ever names a COMPLETE run.
 """
 import json
+import re
 import time
 
 PREFIX = "gfswave/0p25/v1"
@@ -155,14 +156,35 @@ def prune(store, keep=4):
     return deleted
 
 
-LEGACY_ROOT = PREFIX.rsplit("/", 1)[0] + "/"        # gfswave/0p25/: the pre-v1 layout lived directly here
+LEGACY_KEYS = ("gfswave/0p25/latest.json",)            # the pre-v1 public pointer
+LEGACY_PREFIXES = ("gfswave/0p25/2026092212/",)        # the one run published under the pre-v1 layout
 
 
 def prune_legacy(store):
-    """Delete objects of the pre-v1 layout (directly under gfswave/0p25/, outside the versioned
-    prefix): a stale public pointer and one run of frames were left there. Returns the count."""
-    keys = [k for k in store.list_keys(LEGACY_ROOT) if not k.startswith(PREFIX + "/")]
-    return store.delete_keys(keys, LEGACY_ROOT) if keys else 0
+    """One-time cleanup of the pre-v1 layout, restricted to the objects that were actually left
+    there (a stale pointer and one run of frames). Nothing else outside the versioned prefix is
+    ever touched -- a future gfswave/0p25/v2/ in particular. A no-op once they are gone."""
+    keys = []
+    for prefix in LEGACY_PREFIXES:
+        keys += store.list_keys(prefix)
+    for key in LEGACY_KEYS:
+        keys += [k for k in store.list_keys(key) if k == key]
+    return store.delete_keys(keys, "legacy") if keys else 0
+
+
+_ENDPOINT_RE = re.compile(r"""https?://[^ \t"'<>]*[.]r2[.]cloudflarestorage[.]com[^ \t"'<>]*""")
+_HEX32_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-f]{32}(?![0-9a-fA-F])")
+
+
+def redact(message, bucket=None, limit=500):
+    """Error text destined for the PUBLIC bucket: botocore messages can embed the R2 endpoint URL
+    (which carries the account id), the bucket name and the key; strip the URL, any bare 32-hex
+    token (account id, access key id) and the bucket name, then cap the length."""
+    s = _ENDPOINT_RE.sub("<r2-endpoint>", str(message))
+    s = _HEX32_RE.sub("<redacted>", s)
+    if bucket:
+        s = s.replace(bucket, "<bucket>")
+    return s[:limit]
 
 
 def notready_key(run):
@@ -175,7 +197,7 @@ def record_notready(store, run, message):
     prev = store.get_json(notready_key(run)) or {"run": run, "count": 0}
     prev["count"] += 1
     prev["last_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    prev["last_error"] = str(message)[:500]
+    prev["last_error"] = redact(message, store.bucket)
     store.put(notready_key(run), json.dumps(prev, sort_keys=True).encode(), "application/json", POINTER)
     return prev
 
@@ -184,7 +206,7 @@ def record_failure(store, run, message):
     prev = store.get_json(failed_key(run)) or {"run": run, "attempts": 0}
     prev["attempts"] += 1
     prev["last_attempt_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    prev["last_error"] = str(message)[:500]
+    prev["last_error"] = redact(message, store.bucket)
     store.put(failed_key(run), json.dumps(prev, sort_keys=True).encode(), "application/json", POINTER)
     return prev
 

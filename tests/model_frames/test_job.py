@@ -336,18 +336,59 @@ def test_prune_keeps_newest_complete_protects_latest_and_drops_old_orphans():
         P.prune(store, keep=0)
 
 
-def test_prune_legacy_removes_only_pre_v1_objects():
+def test_prune_legacy_removes_only_the_two_legacy_objects():
     c = FakeClient()
     store = P.Store(c, "b")
     _seed_run(c, "2026092212")
     c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
     for k in ("gfswave/0p25/latest.json", "gfswave/0p25/2026092212/hs/f000.png", "gfswave/0p25/2026092212/manifest.json"):
         c.objects[k] = {"body": b"", "ct": "", "cc": ""}
-    c.objects["other/x.json"] = {"body": b"", "ct": "", "cc": ""}
+    survivors = ("other/x.json", "gfswave/0p25/v2/latest.json", "gfswave/0p25/v2/2026092212/hs/f000.png",
+                 "gfswave/0p25/2026092300/hs/f000.png", "gfswave/0p25/latest.json.bak", "gfswave/0p25/manifest.json")
+    for k in survivors:
+        c.objects[k] = {"body": b"", "ct": "", "cc": ""}
     assert P.prune_legacy(store) == 3
     assert "gfswave/0p25/latest.json" not in c.objects and "gfswave/0p25/2026092212/hs/f000.png" not in c.objects
-    assert P.LATEST_KEY in c.objects and f"{P.PREFIX}/2026092212/manifest-x.json" in c.objects and "other/x.json" in c.objects
+    assert P.LATEST_KEY in c.objects and f"{P.PREFIX}/2026092212/manifest-x.json" in c.objects
+    for k in survivors:                                   # anything outside the two legacy objects is never touched
+        assert k in c.objects, k
     assert P.prune_legacy(store) == 0
+
+
+def test_redact_strips_endpoint_account_key_and_bucket():
+    acct, keyid, bucket = "0123456789abcdef0123456789abcdef", "fedcba9876543210fedcba9876543210", "allshore-model-frames"
+    msg = (f'Could not connect to the endpoint URL: "https://{acct}.r2.cloudflarestorage.com/{bucket}/x.png" '
+           f"(key id {keyid}, bucket {bucket}, request id 7f3a)")
+    out = P.redact(msg, bucket)
+    assert acct not in out and keyid not in out and bucket not in out and "cloudflarestorage" not in out
+    assert "<r2-endpoint>" in out and "<redacted>" in out and "<bucket>" in out and "request id 7f3a" in out
+    assert P.redact("plain " + "x" * 600) == "plain " + "x" * 494          # capped at 500 characters
+    assert P.redact(RuntimeError("boom"), None) == "boom"
+    c = FakeClient()
+    store = P.Store(c, bucket)
+    P.record_failure(store, "2026092212", msg)
+    P.record_notready(store, "2026092212", msg)
+    for key in (P.failed_key("2026092212"), P.notready_key("2026092212")):
+        rec = json.loads(c.objects[key]["body"])
+        assert acct not in rec["last_error"] and bucket not in rec["last_error"] and "<r2-endpoint>" in rec["last_error"]
+
+
+def test_workflows_pin_actions_and_packages():
+    """Every action by commit SHA; every conda package in the publisher and every pip package in the
+    test workflow by exact version (G4 item 15)."""
+    import re
+    wf = os.path.join(ROOT, ".github", "workflows")
+    for name in ("model-frames.yml", "model-frames-tests.yml", "model-frames-keepalive.yml"):
+        text = open(os.path.join(wf, name), encoding="utf-8").read()
+        uses = re.findall(r"uses:[ ]*([^ \n]+)", text)
+        assert all(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}", u) for u in uses), (name, uses)
+    text = open(os.path.join(wf, "model-frames.yml"), encoding="utf-8").read()
+    block = text.split("create-args: >-", 1)[1].split("cache-environment", 1)[0]
+    pkgs = block.split()
+    assert len(pkgs) >= 6 and all(re.fullmatch(r"[a-z0-9-]+=[0-9][0-9A-Za-z.]*", p) for p in pkgs), pkgs
+    text = open(os.path.join(wf, "model-frames-tests.yml"), encoding="utf-8").read()
+    pip = re.search(r"pip install ([^\n]+)", text).group(1).split()
+    assert all(re.fullmatch(r"[a-z0-9-]+==[0-9][0-9A-Za-z.]*", p) for p in pip), pip
 
 
 def test_main_counts_not_ready_without_backoff(monkeypatch, capsys):

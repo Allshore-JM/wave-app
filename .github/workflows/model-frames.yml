@@ -4,6 +4,8 @@
 # +4:36 and +4:52 h (8 cycles measured) and GitHub drops or delays scheduled ticks (four of the
 # first six were dropped after the merge), so a sparse schedule publishes hours late.
 # Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+# The environment is pinned to the versions that produced the reviewed frames (solved 2026-09-22;
+# the installed versions are listed in every step summary). Bump the pins deliberately, together.
 name: model-frames
 on:
   schedule:
@@ -34,13 +36,17 @@ jobs:
         with:
           environment-name: frames
           create-args: >-
-            python=3.11
-            eccodes
-            python-eccodes
-            numpy
-            pillow
-            boto3
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
           cache-environment: true
+      - name: Record environment
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|eccodes|python-eccodes|numpy|pillow|boto3)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Publish frames
         shell: bash -l {0}
         env:

@@ -76,7 +76,14 @@ complete run stays live and the panel shows a stale banner after 9 h). Integrate
 `Live-Buoy-Update` by MERGE, never by pushing a feature branch over it: the job-only merges live on the
 production branch alone. The workflow step summary states how long after the cycle each publish happened;
 `failed/<RUN>.json` and `notready/<RUN>.json` in the bucket record build failures and listed-but-missing
-objects. Data policy in the browser: the 0.5 degree frames are used below zoom 3.5 on desktops, below zoom 7
+objects (error text is redacted: no endpoint URL, account id or bucket name reaches the public bucket).
+The frames are public only through the bucket's custom domain (`models.allshoresurf.com`, Cloudflare-proxied,
+edge-cached, nosniff + sandbox CSP); the r2.dev development URL is disabled -- re-enable it in the bucket's
+Settings and point `MODEL_FRAMES_BASE` at it only as an emergency fallback. `--force` re-uploads a run under
+its EXISTING immutable keys: the edge cache and browsers keep the old bytes for up to a year, so use it only
+to re-send identical bytes (e.g. after an interrupted upload); any change to the encoding or layout goes under
+a new `PREFIX` version instead. The publisher pins its conda packages and action commits and lists the
+installed versions in the step summary; bump the pins deliberately. Data policy in the browser: the 0.5 degree frames are used below zoom 3.5 on desktops, below zoom 7
 on narrow (phone) maps and for wind everywhere, so an 81-frame loop is about 4-13 MB (32 MB only for wind
 zoomed past 7.5); frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
 where the browser has DecompressionStream. Review records: `docs/reviews/overlays-G*-adversarial.md`. Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full

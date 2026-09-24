@@ -406,7 +406,8 @@ def point_in_pieces(lon, lat, pieces, q=Q):
 # a broken pole closure or a wrong orientation would fail one of these. Land probes sit well inside the
 # coast (Ulriken above Bergen, not the fjord city itself: 5.3 E 60.39 N is water in GSHHG).
 PROBES = [(-158.281, 21.575, False), (-157.86, 21.31, True), (-158.0, 21.45, True), (0.0, -89.9, True),
-          (-169.65, 66.083, True), (179.9999, -74.0, False), (-179.9999, -74.0, False), (0.0, -80.0, True), (139.7, 35.7, True), (5.386, 60.377, True),
+          (-169.65, 66.083, True), (179.9999, -76.0, False), (-179.9999, -76.0, False),
+          (179.9999, -79.0, True), (-179.9999, -79.0, True), (0.0, -80.0, True), (139.7, 35.7, True), (5.386, 60.377, True),
           (-40.0, -70.0, False), (-90.0, 0.0, False)]
 WORLD_LAND_SQDEG = 22100.0                              # tier-1 land area from GSHHG levels 1 + 5
 WORLD_MIN_CELLS = 1000                                  # a real build has ~1,470 tier-1 cells; a synthetic test world far fewer
@@ -508,15 +509,16 @@ def published_index(s3, bucket, prefix):
 
 
 def same_build(a, b):
-    """Two indexes describe the same bytes: same tier-0 hash, the same tier-1 cell map and, when both
-    carry it, the same tier-1 content hash (an index published before the hash existed is compared
-    on the cell map alone; its refresh then adds the hash)."""
+    """The published index `a` and the local index `b` describe the same bytes: same tier-0 hash, the
+    same tier-1 cell map and the same tier-1 content hash, which the local index must carry (a
+    published index from before the hash existed is compared on the cell map alone; its refresh
+    then adds the hash — never the other way round)."""
     if not (a and b) or a.get("tier0", {}).get("sha256") != b.get("tier0", {}).get("sha256"):
         return False
     ta, tb = a.get("tier1", {}), b.get("tier1", {})
-    if ta.get("cells") != tb.get("cells"):
+    if ta.get("cells") != tb.get("cells") or tb.get("sha256") is None:
         return False
-    return ta.get("sha256") is None or tb.get("sha256") is None or ta["sha256"] == tb["sha256"]
+    return ta.get("sha256") is None or ta["sha256"] == tb["sha256"]
 
 
 def upload(out_dir, prefix, replace=False, log=print, s3=None, bucket=None):

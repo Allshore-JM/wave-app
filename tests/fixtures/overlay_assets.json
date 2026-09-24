@@ -1,5 +1,4 @@
 {
- "version": "2.5.2",
- "sha256": "b2cde9d3eaf5e571f6bb3b215de603b254b7b7a3964559b4864e2057a9476432",
- "note": "bump OVERLAY_ASSET_VERSION in app.py and regenerate this pin whenever static_overlay/* changes"
+  "version": "2.6.6",
+  "sha256": "0a714d6c3af84305d5fd99162075e2a43c252145fd2e98ae05a613aebe09cc8e"
 }

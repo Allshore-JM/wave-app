@@ -239,3 +239,143 @@ def test_coast_workflow_is_pinned():
     assert pip and all(re.fullmatch(r"[a-z0-9-]+==[0-9][0-9A-Za-z.]*", p) for line in pip for p in line.split()), pip
     assert "28600e8f7a08645aab43079326df6504212ec5ccb2b4bcf3b5f4f12ed60e82bc" in text      # source archive pinned by hash
     assert "workflow_dispatch" in text and "--upload static/coast/v1" in text
+
+
+# ---------------------------------------------------------------- G5 additions
+
+def test_normalize_ring_real_pole_storage_and_near_dateline_vertices():
+    """GSHHG stores the Antarctic ice front -180..180 from (180, y) to (-180, y) with a closing edge
+    360 degrees long. Vertices within rounding noise of the dateline are NOT snapped (the builder must
+    reproduce the published v1 bytes; a snap belongs to a new prefix) but quantise onto it, so the
+    dateline seam is exact."""
+    lon = np.linspace(180.0, -180.0, 201); lat = -70.0 + np.cos(np.radians(lon))
+    lon[1] = 179.9999999999; lon[-2] = -179.9999999999                                   # rounding noise
+    rings = B.normalize_ring(lon, lat)
+    assert len(rings) == 1
+    rx, ry = rings[0]
+    assert rx.max() == 180.0 and rx.min() == -180.0 and ry.min() == -90.0 and B.signed_area(rx, ry) > 0
+    assert 179.9999999999 in set(rx.tolist()) and -179.9999999999 in set(rx.tolist())    # kept as stored
+    qx, qy = B.quantize_ring(rx, ry)
+    assert qx.max() == 180 * Q and qx.min() == -180 * Q
+    assert not np.any(np.abs(qx) == 180 * Q - 1) and np.count_nonzero(qx == 180 * Q) >= 2 and np.count_nonzero(qx == -180 * Q) >= 2   # the noise vertices sit ON the dateline
+    # a 0..360 ring with several Greenwich jump edges (Eurasia-like): one ring, area kept, no split
+    x = np.array([350.0, 5.0, 10.0, 355.0, 359.0, 2.0, 4.0, 352.0]); y = np.array([50.0, 50.0, 55.0, 55.0, 58.0, 58.0, 62.0, 62.0])
+    r = B.normalize_ring(x, y)
+    assert len(r) == 1 and r[0][0].min() >= -10.0 and r[0][0].max() <= 10.0
+    assert np.isclose(B.signed_area(*r[0]), abs(B.signed_area(x - 360.0 * (x > 180), y)))
+
+
+def test_split_cells_seam_invariant_survives_quantisation():
+    """The two pieces of a ring split by a cell line cover identical intervals of that line
+    (what the client's nonzero union relies on), before and after quantisation."""
+    x, y = star(20.0, 60.0, 1.0, 2.5, n=48, seed=11)
+    if B.signed_area(x, y) < 0:
+        x, y = x[::-1], y[::-1]
+    pieces = B.split_cells(x, y, 5)
+    assert len(pieces) >= 2
+
+    def line_cover(rings, xline):
+        spans = []
+        for ix, iy in rings:
+            n = len(ix)
+            for i in range(n):
+                a, b = (ix[i], iy[i]), (ix[(i + 1) % n], iy[(i + 1) % n])
+                if a[0] == xline and b[0] == xline and a[1] != b[1]:
+                    spans.append((min(a[1], b[1]), max(a[1], b[1])))
+        return sorted(spans)
+    west = [B.quantize_ring(px, py) for lat0, lon0, px, py in pieces if lon0 == 15]
+    east = [B.quantize_ring(px, py) for lat0, lon0, px, py in pieces if lon0 == 20]
+    assert west and east
+    lw, le = line_cover(west, 20 * Q), line_cover(east, 20 * Q)
+    assert lw and lw == le                                                           # exact same spans on the line
+
+
+def test_check_catches_bad_cells_counts_and_format_key(tmp_path):
+    zp = fixture_zip(str(tmp_path / "g.zip"))
+    out = str(tmp_path / "v1")
+    B.build(zp, out, log=lambda *a: None)
+    assert B.check(out, log=lambda *a: None) == []
+    idx = json.load(open(os.path.join(out, "index.json")))
+    name = "20_-160"
+    d = B.decode_file(open(os.path.join(out, "f", name + ".bin"), "rb").read())
+    ix, iy = d["pieces"][0]["rings"][0]
+    bad = B.encode_file([[(ix[::-1].copy(), iy[::-1].copy())]], 5)                          # clockwise
+    open(os.path.join(out, "f", name + ".bin"), "wb").write(bad)
+    probs = B.check(out, log=lambda *a: None)
+    assert any("not counter-clockwise" in p for p in probs)
+    thinned = B.encode_file([[(ix[::2].copy(), iy[::2].copy())]], 5)                       # every other vertex: count != index
+    open(os.path.join(out, "f", name + ".bin"), "wb").write(thinned)
+    probs = B.check(out, log=lambda *a: None)
+    assert any("vertex count != index" in p for p in probs) and any("size mismatch" in p for p in probs)
+    shifted = B.encode_file([[(ix + 10 * Q, iy)]], 5)                                    # moved a cell east
+    open(os.path.join(out, "f", name + ".bin"), "wb").write(shifted)
+    assert any("outside its cell" in p for p in B.check(out, log=lambda *a: None))
+    idx2 = dict(idx, format_key="coast-v1|something-else")
+    json.dump(idx2, open(os.path.join(out, "index.json"), "w"))
+    assert any("format_key" in p for p in B.check(out, log=lambda *a: None))
+
+
+class FakeS3:
+    def __init__(self):
+        self.objects = {}
+        self.log = []
+
+    def put_object(self, Bucket, Key, Body, ContentType, CacheControl):
+        self.objects[Key] = {"body": Body, "ct": ContentType, "cc": CacheControl}
+        self.log.append(Key)
+
+    def get_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise KeyError(Key)
+        return {"Body": io.BytesIO(self.objects[Key]["body"])}
+
+
+def test_upload_publishes_licence_first_index_last_and_refuses_a_different_build(tmp_path):
+    zp = fixture_zip(str(tmp_path / "g.zip"))
+    out = str(tmp_path / "v1")
+    B.build(zp, out, log=lambda *a: None)
+    s3 = FakeS3()
+    msgs = []
+    assert B.upload(out, "static/coast/v1", log=msgs.append, s3=s3, bucket="b") is True
+    assert s3.log[0] == "static/coast/v1/LICENSE.txt" and s3.log[-1] == "static/coast/v1/index.json"
+    assert all(o["cc"] == "public, max-age=31536000, immutable" for o in s3.objects.values())
+    assert b"GNU LESSER GENERAL PUBLIC LICENSE" in s3.objects["static/coast/v1/LICENSE.txt"]["body"]
+    assert s3.objects["static/coast/v1/LICENSE.txt"]["ct"].startswith("text/plain")
+    n_first = len(s3.log)
+    assert B.upload(out, "static/coast/v1", log=msgs.append, s3=s3, bucket="b") is True      # the same build again
+    assert s3.log[n_first:] == ["static/coast/v1/LICENSE.txt", "static/coast/v1/index.json"]
+    idx = json.load(open(os.path.join(out, "index.json")))
+    assert len(idx["tier1"]["sha256"]) == 64
+    same_len = dict(idx); same_len["tier1"] = dict(idx["tier1"], sha256="1" * 64)             # a content change that keeps every file length
+    json.dump(same_len, open(os.path.join(out, "index.json"), "w"))
+    n = len(s3.log)
+    assert B.upload(out, "static/coast/v1", log=msgs.append, s3=s3, bucket="b") is False     # refused on the content hash alone
+    assert len(s3.log) == n
+    legacy = dict(idx); legacy["tier1"] = {k: v for k, v in idx["tier1"].items() if k != "sha256"}
+    assert B.same_build(legacy, idx) and not B.same_build(idx, legacy)                        # a published index from before the hash: cell map only; a hash-less LOCAL index never passes
+    idx["tier0"]["sha256"] = "0" * 64
+    json.dump(idx, open(os.path.join(out, "index.json"), "w"))
+    n = len(s3.log)
+    assert B.upload(out, "static/coast/v1", log=msgs.append, s3=s3, bucket="b") is False     # a different build: refused
+    assert len(s3.log) == n and any("refusing" in m for m in msgs)
+    assert B.upload(out, "static/coast/v1", replace=True, log=msgs.append, s3=s3, bucket="b") is True   # --replace: every data file again
+    assert s3.log[n:].count("static/coast/v1/world-i.bin") == 1 and s3.log[-1] == "static/coast/v1/index.json"
+    assert B.main(["--out", out, "--upload", "static/coast/v1"]) == 1                          # --check fails on the tampered index
+
+
+def test_redact_and_reader_guards():
+    os.environ["R2_BUCKET"] = "allshore-model-frames"
+    try:
+        msg = B.redact("Could not connect to https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/allshore-model-frames/x key fedcba9876543210fedcba9876543210 bucket allshore-model-frames")
+    finally:
+        del os.environ["R2_BUCKET"]
+    assert "cloudflarestorage" not in msg and "0123456789abcdef" not in msg and "allshore-model-frames" not in msg
+    assert "<r2-endpoint>" in msg and "<redacted>" in msg and "<bucket>" in msg
+    good = gshhg_record(0, 1, [(10, 10), (11, 10), (11, 11)])
+    with pytest.raises(ValueError):
+        list(B.read_gshhg(bytes([255]) * 68))                                            # garbage: an absurd point count
+    other_version = bytearray(gshhg_record(1, 1, [(10, 10), (11, 10), (11, 11)]))
+    other_version[10] ^= 1                                                               # the version byte of the big-endian flag
+    with pytest.raises(ValueError):
+        list(B.read_gshhg(good + bytes(other_version)))                                   # version changes between records
+    assert list(B.read_gshhg(gshhg_record(2, 1, [(10, 10), (11, 10), (11, 11)]) + good)) != []

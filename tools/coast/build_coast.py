@@ -28,7 +28,10 @@ Usage:
   python tools/coast/build_coast.py --zip gshhg-bin-2.3.7.zip --out build/coast/v1
   python tools/coast/build_coast.py --check build/coast/v1
   python tools/coast/build_coast.py --out build/coast/v1 --upload static/coast/v1   (after a build;
-         env R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET)
+         env R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET). The upload refuses a
+         prefix that already holds a DIFFERENT build (objects are immutable for a year in browsers
+         and at the edge): a changed build goes under a new prefix, or --replace says so explicitly.
+         LICENSE.txt (tools/coast/LICENSE-GSHHG.txt) is published beside the data.
 
 GSHHG: Wessel, P., and W. H. F. Smith (1996), A global, self-consistent, hierarchical,
 high-resolution shoreline database, J. Geophys. Res., 101(B4), 8741-8743. LGPL-3.0; the derived
@@ -46,7 +49,8 @@ import zipfile
 import numpy as np
 
 SOURCE = "GSHHG 2.3.7"
-LICENSE = "LGPL-3.0-or-later; Wessel & Smith (1996), J. Geophys. Res. 101(B4) 8741-8743"
+LICENSE = "LGPL-3.0-or-later; Wessel & Smith (1996), J. Geophys. Res. 101(B4) 8741-8743; notice in LICENSE.txt beside this index"
+LICENSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "LICENSE-GSHHG.txt")
 GSHHG_HEADER = struct.Struct(">IIIiiiiIIii")          # id n flag west east south north area area_full container ancestor
 FILE_HEADER = struct.Struct("<4sHHIIIIiiii")          # magic cell_deg 0 q pieces rings vertices bbox[4]
 MAGIC = b"CST1"
@@ -55,6 +59,10 @@ LAND_LEVELS = (1, 5)                                  # land, Antarctic ice fron
 TIER0 = {"res": "i", "cell": 30, "file": "world-i.bin", "max_zoom": 6, "min_area_km2": 0.1}
 TIER1 = {"res": "f", "cell": 5, "dir": "f", "min_zoom": 7, "min_area_km2": 0.0}
 MIN_RING_AREA = 1e-12                                 # square degrees; below this a clipped piece is a sliver
+# Everything that changes the bytes of a build: a different key means a different prefix version.
+FORMAT_KEY = "coast-v1|q=%d|levels=%s|min_area=%g|tier0=%s/%d/%g|tier1=%s/%d/%g" % (
+    Q, ",".join(map(str, LAND_LEVELS)), MIN_RING_AREA, TIER0["res"], TIER0["cell"], TIER0["min_area_km2"],
+    TIER1["res"], TIER1["cell"], TIER1["min_area_km2"])
 
 
 # ---------------------------------------------------------------- GSHHG reader
@@ -299,7 +307,7 @@ def build(zip_path, out_dir, log=print):
     t0 = time.time()
     z = zipfile.ZipFile(zip_path)
     os.makedirs(os.path.join(out_dir, TIER1["dir"]), exist_ok=True)
-    index = {"format": "coast-v1", "source": SOURCE, "license": LICENSE, "q": Q,
+    index = {"format": "coast-v1", "format_key": FORMAT_KEY, "source": SOURCE, "license": LICENSE, "q": Q,
              "land_levels": list(LAND_LEVELS), "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
              "source_sha256": hashlib.sha256(open(zip_path, "rb").read()).hexdigest()}
     polys = list(read_gshhg(z.read("gshhs_%s.b" % TIER0["res"])))
@@ -315,7 +323,7 @@ def build(zip_path, out_dir, log=print):
     del polys
     polys = list(read_gshhg(z.read("gshhs_%s.b" % TIER1["res"])))
     cells1 = build_tier(polys, TIER1["cell"], TIER1["min_area_km2"])
-    listing, total_bytes, total_verts = {}, 0, 0
+    listing, digests, total_bytes, total_verts = {}, {}, 0, 0
     for (lat0, lon0) in sorted(cells1):
         pieces = cells1[(lat0, lon0)]
         body = encode_file(pieces, TIER1["cell"])
@@ -323,15 +331,25 @@ def build(zip_path, out_dir, log=print):
         open(os.path.join(out_dir, TIER1["dir"], name + ".bin"), "wb").write(body)
         nv = sum(len(r[0]) for pc in pieces for r in pc)
         listing[name] = [len(body), nv]
+        digests[name] = hashlib.sha256(body).hexdigest()
         total_bytes += len(body); total_verts += nv
     index["tier1"] = {"dir": TIER1["dir"], "res": TIER1["res"], "cell": TIER1["cell"], "min_zoom": TIER1["min_zoom"],
-                      "cells": listing, "bytes": total_bytes, "vertices": total_verts}
+                      "cells": listing, "bytes": total_bytes, "vertices": total_verts, "sha256": cells_digest(digests)}
     big = sorted(listing.items(), key=lambda kv: -kv[1][0])[:5]
     log("tier 1: %d polygons -> %d cells, %d vertices, %d bytes; largest %s (%.1fs)" % (
         len(polys), len(listing), total_verts, total_bytes, big, time.time() - t0))
     with open(os.path.join(out_dir, "index.json"), "w") as fh:
         json.dump(index, fh, separators=(",", ":"), sort_keys=True)
     return index
+
+
+def cells_digest(digests):
+    """One hash over every tier-1 file's sha256 (by name): the index's tier1.sha256, so a content
+    change that keeps every file's length is still a different build."""
+    h = hashlib.sha256()
+    for name in sorted(digests):
+        h.update(("%s:%s\n" % (name, digests[name])).encode("ascii"))
+    return h.hexdigest()
 
 
 # ---------------------------------------------------------------- check
@@ -367,29 +385,88 @@ def check_file(buf, cell_expected=None, cell_box=None):
     return problems
 
 
+def point_in_pieces(lon, lat, pieces, q=Q):
+    """Nonzero winding of (lon, lat) over decoded pieces (integer rings): True = land."""
+    px, py = lon * q, lat * q
+    w = 0
+    for pc in pieces:
+        b = pc["b"]
+        if px < b[0] or px > b[2] or py < b[1] or py > b[3]:
+            continue
+        for ix, iy in pc["rings"]:
+            x = ix.astype(np.float64); y = iy.astype(np.float64)
+            xn, yn = np.roll(x, -1), np.roll(y, -1)
+            up = (y <= py) & (yn > py); down = (y > py) & (yn <= py)
+            cross = (xn - x) * (py - y) - (px - x) * (yn - y)
+            w += int(np.count_nonzero(up & (cross > 0))) - int(np.count_nonzero(down & (cross < 0)))
+    return w != 0
+
+
+# Sanity probes for a finished build: (lon, lat, land?) — a level filter that dropped a continent,
+# a broken pole closure or a wrong orientation would fail one of these. Land probes sit well inside the
+# coast (Ulriken above Bergen, not the fjord city itself: 5.3 E 60.39 N is water in GSHHG).
+PROBES = [(-158.281, 21.575, False), (-157.86, 21.31, True), (-158.0, 21.45, True), (0.0, -89.9, True),
+          (-169.65, 66.083, True), (179.9999, -76.0, False), (-179.9999, -76.0, False),
+          (179.9999, -79.0, True), (-179.9999, -79.0, True), (0.0, -80.0, True), (139.7, 35.7, True), (5.386, 60.377, True),
+          (-40.0, -70.0, False), (-90.0, 0.0, False)]
+WORLD_LAND_SQDEG = 22100.0                              # tier-1 land area from GSHHG levels 1 + 5
+WORLD_MIN_CELLS = 1000                                  # a real build has ~1,470 tier-1 cells; a synthetic test world far fewer
+
+
 def check(out_dir, log=print):
     index = json.load(open(os.path.join(out_dir, "index.json")))
     problems = []
     if index.get("format") != "coast-v1" or index.get("q") != Q:
         problems.append("index format/q")
+    if index.get("format_key") != FORMAT_KEY:
+        problems.append("index format_key %r != this builder's %r" % (index.get("format_key"), FORMAT_KEY))
     t0 = index["tier0"]
     buf = open(os.path.join(out_dir, t0["file"]), "rb").read()
     if len(buf) != t0["bytes"] or hashlib.sha256(buf).hexdigest() != t0["sha256"]:
         problems.append("tier 0 size/hash mismatch")
     problems += ["tier 0: " + p for p in check_file(buf, t0["cell"])]
     d0 = decode_file(buf)
+    if sum(len(r[0]) for pc in d0["pieces"] for r in pc["rings"]) != t0["vertices"]:
+        problems.append("tier 0: vertex count != index")
     if not any(pc["b"][1] == -90 * Q for pc in d0["pieces"]):
         problems.append("tier 0: no piece reaches the South Pole (Antarctica missing?)")
     t1 = index["tier1"]
+    world = len(t1["cells"]) >= WORLD_MIN_CELLS       # a real build; the area/landmark checks mean nothing for a synthetic test world
+    area0 = sum(signed_area(ix / Q, iy / Q) for pc in d0["pieces"] for ix, iy in pc["rings"])
+    if world and abs(area0 - WORLD_LAND_SQDEG) > 0.02 * WORLD_LAND_SQDEG:
+        problems.append("tier 0: land area %.0f sq deg, expected ~%.0f" % (area0, WORLD_LAND_SQDEG))
+    for lon, lat, land in (PROBES if world else []):
+        if point_in_pieces(lon, lat, d0["pieces"]) != land:
+            problems.append("tier 0: probe %s,%s should be %s" % (lon, lat, "land" if land else "water"))
     present = set(n[:-4] for n in os.listdir(os.path.join(out_dir, t1["dir"])) if n.endswith(".bin"))
     if present != set(t1["cells"]):
         problems.append("tier 1: files %d vs index %d" % (len(present), len(t1["cells"])))
-    for name, (nbytes, _nv) in t1["cells"].items():
+    area1, digests = 0.0, {}
+    for name, (nbytes, nverts) in t1["cells"].items():
         buf = open(os.path.join(out_dir, t1["dir"], name + ".bin"), "rb").read()
+        digests[name] = hashlib.sha256(buf).hexdigest()
         if len(buf) != nbytes:
             problems.append("tier 1 %s: size mismatch" % name)
         lat0, lon0 = (int(v) for v in name.split("_"))
         problems += ["tier 1 %s: %s" % (name, p) for p in check_file(buf, t1["cell"], (lat0, lon0, t1["cell"]))]
+        try:
+            d = decode_file(buf)
+        except Exception:                             # noqa: BLE001  (already reported by check_file)
+            continue
+        if not d["pieces"]:
+            problems.append("tier 1 %s: empty cell file" % name)
+        if sum(len(r[0]) for pc in d["pieces"] for r in pc["rings"]) != nverts:
+            problems.append("tier 1 %s: vertex count != index" % name)
+        area1 += sum(signed_area(ix / Q, iy / Q) for pc in d["pieces"] for ix, iy in pc["rings"])
+        for lon, lat, land in (PROBES if world else []):
+            if lat0 <= lat < lat0 + t1["cell"] and lon0 <= lon < lon0 + t1["cell"] and point_in_pieces(lon, lat, d["pieces"]) != land:
+                problems.append("tier 1 %s: probe %s,%s should be %s" % (name, lon, lat, "land" if land else "water"))
+        if len(problems) > 60:
+            break
+    if world and abs(area1 - WORLD_LAND_SQDEG) > 0.02 * WORLD_LAND_SQDEG:
+        problems.append("tier 1: land area %.0f sq deg, expected ~%.0f" % (area1, WORLD_LAND_SQDEG))
+    if present == set(t1["cells"]) and t1.get("sha256") != cells_digest(digests):
+        problems.append("tier 1: content hash != index (tier1.sha256)")
     log("check: tier 0 %d pieces / %d vertices / %d B; tier 1 %d cells / %d vertices / %d B; %d problems" % (
         t0["pieces"], t0["vertices"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"], len(problems)))
     for p in problems[:50]:
@@ -399,28 +476,89 @@ def check(out_dir, log=print):
 
 # ---------------------------------------------------------------- upload
 
-def upload(out_dir, prefix, log=print):
-    """Upload index.json + tier files under <prefix>/ with immutable caching; index last."""
+def redact(message):
+    """No account id (the R2 endpoint host), key id or bucket name in a public workflow log."""
+    import re
+    s = re.sub(r"https?://[^ \t\"'<>]*[.]r2[.]cloudflarestorage[.]com[^ \t\"'<>]*", "<r2-endpoint>", str(message))
+    s = re.sub(r"(?<![0-9a-fA-F])[0-9a-f]{32}(?![0-9a-fA-F])", "<redacted>", s)
+    b = os.environ.get("R2_BUCKET")
+    return s.replace(b, "<bucket>") if b else s
+
+
+def r2_client():
     import boto3
     from botocore.config import Config
-    s3 = boto3.client("s3", endpoint_url="https://%s.r2.cloudflarestorage.com" % os.environ["R2_ACCOUNT_ID"],
-                      aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-                      aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"], region_name="auto",
-                      config=Config(retries={"max_attempts": 5, "mode": "standard"},
-                                    request_checksum_calculation="when_required",
-                                    response_checksum_validation="when_required"))
-    bucket = os.environ["R2_BUCKET"]
+    return boto3.client("s3", endpoint_url="https://%s.r2.cloudflarestorage.com" % os.environ["R2_ACCOUNT_ID"],
+                        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"], region_name="auto",
+                        config=Config(retries={"max_attempts": 5, "mode": "standard"},
+                                      request_checksum_calculation="when_required",
+                                      response_checksum_validation="when_required"))
+
+
+def published_index(s3, bucket, prefix):
+    """The index.json already under <prefix>/, or None."""
+    try:
+        r = s3.get_object(Bucket=bucket, Key="%s/index.json" % prefix)
+    except Exception as exc:                          # noqa: BLE001
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code", "") if hasattr(exc, "response") else ""
+        if code in ("NoSuchKey", "404", "NotFound") or exc.__class__.__name__ in ("NoSuchKey", "KeyError"):
+            return None
+        raise
+    return json.loads(r["Body"].read().decode("utf-8"))
+
+
+def same_build(a, b):
+    """The published index `a` and the local index `b` describe the same bytes: same tier-0 hash, the
+    same tier-1 cell map and the same tier-1 content hash, which the local index must carry (a
+    published index from before the hash existed is compared on the cell map alone; its refresh
+    then adds the hash — never the other way round)."""
+    if not (a and b) or a.get("tier0", {}).get("sha256") != b.get("tier0", {}).get("sha256"):
+        return False
+    ta, tb = a.get("tier1", {}), b.get("tier1", {})
+    if ta.get("cells") != tb.get("cells") or tb.get("sha256") is None:
+        return False
+    return ta.get("sha256") is None or ta["sha256"] == tb["sha256"]
+
+
+def upload(out_dir, prefix, replace=False, log=print, s3=None, bucket=None):
+    """Upload LICENSE.txt + the tier files + index.json (last) under <prefix>/ with immutable
+    caching. A prefix that already holds the same build gets only LICENSE.txt and index.json
+    refreshed; one that holds a different build is refused unless replace=True (the objects are
+    immutable for a year in browsers and at the edge: a changed build belongs under a new prefix)."""
+    s3 = s3 or r2_client()
+    bucket = bucket or os.environ["R2_BUCKET"]
     immutable = "public, max-age=31536000, immutable"
     index = json.load(open(os.path.join(out_dir, "index.json")))
-    files = [index["tier0"]["file"]] + ["%s/%s.bin" % (index["tier1"]["dir"], n) for n in sorted(index["tier1"]["cells"])]
-    for i, rel in enumerate(files):
-        s3.put_object(Bucket=bucket, Key="%s/%s" % (prefix, rel), Body=open(os.path.join(out_dir, rel), "rb").read(),
-                      ContentType="application/octet-stream", CacheControl=immutable)
-        if i % 200 == 0:
-            log("uploaded %d/%d" % (i + 1, len(files)))
-    s3.put_object(Bucket=bucket, Key="%s/index.json" % prefix, Body=open(os.path.join(out_dir, "index.json"), "rb").read(),
-                  ContentType="application/json", CacheControl=immutable)
-    log("uploaded %d files + index.json under %s/" % (len(files), prefix))
+    try:
+        existing = published_index(s3, bucket, prefix)
+        if existing is not None and not same_build(existing, index):
+            if not replace:
+                log("refusing: %s/ already holds a different build (tier0 %s vs %s); use a new prefix, or --replace" % (
+                    prefix, str(existing.get("tier0", {}).get("sha256"))[:12], index["tier0"]["sha256"][:12]))
+                return False
+            log("REPLACING a different build under %s/ (--replace)" % prefix)
+        data_files = [] if (existing is not None and same_build(existing, index)) else \
+            [index["tier0"]["file"]] + ["%s/%s.bin" % (index["tier1"]["dir"], n) for n in sorted(index["tier1"]["cells"])]
+        if not data_files:
+            log("%s/ already holds this build: refreshing LICENSE.txt and index.json only" % prefix)
+        s3.put_object(Bucket=bucket, Key="%s/LICENSE.txt" % prefix, Body=open(LICENSE_FILE, "rb").read(),
+                      ContentType="text/plain; charset=utf-8", CacheControl=immutable)
+        for i, rel in enumerate(data_files):
+            s3.put_object(Bucket=bucket, Key="%s/%s" % (prefix, rel), Body=open(os.path.join(out_dir, rel), "rb").read(),
+                          ContentType="application/octet-stream", CacheControl=immutable)
+            if i % 200 == 0:
+                log("uploaded %d/%d" % (i + 1, len(data_files)))
+        s3.put_object(Bucket=bucket, Key="%s/index.json" % prefix, Body=open(os.path.join(out_dir, "index.json"), "rb").read(),
+                      ContentType="application/json", CacheControl=immutable)
+        back = published_index(s3, bucket, prefix)
+        if not same_build(back, index):
+            raise RuntimeError("index.json read back does not match the upload")
+        log("published %d data files + LICENSE.txt + index.json under %s/ (index read back: tier0 %s, %d cells)" % (
+            len(data_files), prefix, back["tier0"]["sha256"][:12], len(back["tier1"]["cells"])))
+        return True
+    except Exception as exc:                          # noqa: BLE001
+        raise RuntimeError("upload failed: %s: %s" % (exc.__class__.__name__, redact(exc))) from None
 
 
 def main(argv=None):
@@ -429,6 +567,7 @@ def main(argv=None):
     ap.add_argument("--out", help="output directory (build) or directory to upload")
     ap.add_argument("--check", metavar="DIR", help="validate a built directory")
     ap.add_argument("--upload", metavar="PREFIX", help="upload --out to the R2 bucket under PREFIX")
+    ap.add_argument("--replace", action="store_true", help="allow overwriting a different build under PREFIX (immutable objects!)")
     a = ap.parse_args(argv)
     if a.check:
         return 1 if check(a.check) else 0
@@ -438,8 +577,7 @@ def main(argv=None):
         if check(a.out):
             print("refusing to upload a directory that fails --check")
             return 1
-        upload(a.out, a.upload.strip("/"))
-        return 0
+        return 0 if upload(a.out, a.upload.strip("/"), replace=a.replace) else 1
     if not (a.zip and a.out):
         ap.error("--zip and --out are required to build")
     build(a.zip, a.out)

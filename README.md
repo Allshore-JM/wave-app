@@ -94,6 +94,13 @@ as actor. To stop it, disable the cron under the Worker's Settings > Triggers (o
 also disables both workflows as above. Data policy in the browser: the 0.5 degree frames are used below zoom 3.5 on desktops, below zoom 7
 on narrow (phone) maps and for wind everywhere, so an 81-frame loop is about 4-13 MB (32 MB only for wind
 zoomed past 7.5); frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
-where the browser has DecompressionStream. Review records: `docs/reviews/overlays-G*-adversarial.md`. Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full
+where the browser has DecompressionStream.
+Coastline clip (asset 2.6.6): wave height and peak period are clipped to the ocean in the browser, so the field
+stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
+zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for
+tile zoom <= 6; tier 1 `f/<lat>_<lon>.bin`, full resolution, one 5-degree cell per file, fetched for the cells in
+view at zoom >= 7, <= 32 MB of decoded chunks kept). The hover/long-press readout consults the same mask and shows
+nothing over land. If the coast data cannot be loaded the field is drawn unclipped with a warning in the panel.
+See tools/coast/README.md for the builder, the publish workflow and the LGPL notice. Review records: `docs/reviews/overlays-G*-adversarial.md`. Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full
 sentence ("Source: NOAA/NCEP GFS-Wave (WAVEWATCH III) and GFS via NOAA Open Data Dissemination; rendered by
 Allshore Surf. Not an official NWS product.").

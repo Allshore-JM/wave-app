@@ -98,15 +98,108 @@ def test_encode_frame_png_roundtrip_and_stats():
     g[:, 700:] = 3.0
     g[0, 700] = 99.0                                                     # clamps high
     g[1, 700] = -1.0                                                     # clamps low (hs lo = 0)
-    out = E.encode_frame(g, "hs")
+    out = E.encode_frame(g, "hs", fill=False)
     full = np.array(Image.open(io.BytesIO(out["full"])))
     half = np.array(Image.open(io.BytesIO(out["half"])))
     assert full.shape == (721, 1440) and half.shape == (361, 720) and full.dtype == np.uint8
     assert np.array_equal(full, E.quantize(g, 0.0, 15.0)) and np.array_equal(half, E.half_res(full))
     s = out["stats"]
     assert s["valid_points"] == 721 * 740 and s["clamped_high"] == 1 and s["clamped_low"] == 1
-    assert s["min"] == -1.0 and s["max"] == 99.0
+    assert s["min"] == -1.0 and s["max"] == 99.0 and s["filled_points"] == 0
     assert b"gAMA" not in out["full"] and b"sRGB" not in out["full"] and b"iCCP" not in out["full"]
+
+
+# ------------------------------- coastal fill ---------------------------------------
+
+def _dilate(mask):
+    """One 8-neighbour dilation, longitude periodic, nothing beyond the poles."""
+    out = mask.copy()
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            sh = np.roll(mask, dx, axis=1)
+            if dy == 1:
+                sh = np.vstack([np.zeros((1, mask.shape[1]), bool), sh[:-1]])
+            elif dy == -1:
+                sh = np.vstack([sh[1:], np.zeros((1, mask.shape[1]), bool)])
+            out |= sh
+    return out
+
+
+def test_fill_coast_only_touches_nan_and_uses_neighbour_mean():
+    g = np.full((5, 6), np.nan, np.float32)
+    g[2, 2], g[2, 3] = 2.0, 4.0
+    before = g.copy()
+    out, added = E.fill_coast(g, cells=1)
+    assert np.array_equal(np.isnan(g), np.isnan(before)) and np.nanmax(np.abs(g - before)) == 0      # input untouched
+    assert out.dtype == np.float64 and out[2, 2] == 2.0 and out[2, 3] == 4.0                      # model values kept
+    assert out[1, 1] == 2.0 and out[1, 4] == 4.0 and out[1, 2] == 3.0 and out[3, 3] == 3.0       # means of present neighbours
+    assert added.sum() == 10 and not added[2, 2] and np.isnan(out[0, 0])                         # one ring only
+    out2, added2 = E.fill_coast(g, cells=2)
+    assert added2.sum() == 28                                                                     # the whole 5x6 minus the two model cells
+    assert out2[1, 1] == 2.0 and abs(out2[0, 0] - 2.0) < 1e-12                                   # pass 2 uses pass-1 values (Jacobi)
+    assert abs(out2[0, 1] - np.mean([2.0, 3.0])) < 1e-12                                         # (1,1)=2 and (1,2)=3
+
+
+def test_fill_coast_depth_and_periodic_columns():
+    g = np.full((9, 20), np.nan)
+    g[4, 0] = 5.0                                                                                # a model cell on the first column
+    out, added = E.fill_coast(g, cells=4)
+    assert out[4, 19] == 5.0 and out[4, 16] == 5.0 and out[4, 4] == 5.0                           # reaches 4 cells both ways across the seam
+    assert np.isnan(out[4, 5]) and np.isnan(out[4, 15])                                         # and no further
+    assert added.sum() == 9 * 9 - 1                                                              # rows 0..8 (the whole height), 9 columns
+    g2 = np.full((3, 4), np.nan)
+    g2[0, :] = 1.0                                                                               # a pole row: nothing wraps over the pole
+    out2, _ = E.fill_coast(g2, cells=1)
+    assert np.all(out2[1] == 1.0) and np.all(np.isnan(out2[2]))
+
+
+def test_fill_coast_leaves_far_inland_nan_and_covers_the_half_grid():
+    g = np.full((721, 1440), 1.5)
+    g[200:400, 300:700] = np.nan                                                                 # a continent
+    g[500:503, 1000:1004] = np.nan                                                               # an island
+    g[:, 1436:] = np.nan
+    g[:, :4] = np.nan                                                                            # land across the dateline
+    g[0, :] = np.nan                                                                             # the pole row
+    real = ~np.isnan(g)
+    out, added = E.fill_coast(g)
+    reach = real.copy()
+    for _ in range(E.FILL_CELLS):
+        reach = _dilate(reach)
+    assert np.array_equal(~np.isnan(out), reach)                                                # exactly the cells within 4 of model data
+    assert added.sum() == int(reach.sum() - real.sum())
+    assert np.isnan(out[300, 500]) and not np.isnan(out[203, 500])                             # continent interior stays empty
+    assert np.all(out[500:503, 1000:1004] == 1.5) and np.all(out[1:, 1436:] == 1.5) and np.all(out[1:, :4] == 1.5)              # island and dateline land fully covered
+    # every cell within 3 of model data (where a coastline can lie) has its nearest half-grid node present,
+    # so the half-resolution frame (full[::2, ::2]) draws it too
+    near = real.copy()
+    for _ in range(3):
+        near = _dilate(near)
+    rows, cols = np.nonzero(near)
+    hr = np.minimum(np.round(rows / 2).astype(int) * 2, 720)
+    hc = (np.round(cols / 2).astype(int) * 2) % 1440
+    assert not np.isnan(out[hr, hc]).any()
+
+
+def test_encode_frame_fill_before_half_and_stats():
+    g = np.full((721, 1440), np.nan, np.float32)
+    g[:, 700:710] = 3.0
+    for name in ("hs", "tp"):
+        out = E.encode_frame(g, name)
+        full = np.array(Image.open(io.BytesIO(out["full"])))
+        half = np.array(Image.open(io.BytesIO(out["half"])))
+        s = out["stats"]
+        assert s["valid_points"] == 721 * 10 and s["filled_points"] == 721 * 8                   # 4 columns each side
+        assert np.count_nonzero(full) == s["valid_points"] + s["filled_points"]
+        assert np.array_equal(half, E.half_res(full)) and np.count_nonzero(half[:, 348:357]) == 361 * 9
+        assert s["min"] == 3.0 and s["max"] == 3.0                                                # stats describe the model values
+    w = E.encode_frame(g, "wind")
+    assert w["stats"]["filled_points"] == 0                                                       # wind is never filled
+
+
+def test_fill_info_pins_fields_and_cells():
+    assert E.FILL_INFO["fields"] == ["hs", "tp"] and E.FILL_INFO["cells"] == E.FILL_CELLS == 4
+    assert json.loads(json.dumps(E.FILL_INFO)) == E.FILL_INFO                                   # manifest-safe, compares equal after a round trip
+    assert [n for n, f in E.FIELDS.items() if f["fill"]] == ["hs", "tp"]
 
 
 def test_encoding_ranges_cover_legend_and_tp_floor():
@@ -245,8 +338,11 @@ class FakeClient:
 def offline_build(monkeypatch):
     rng = np.random.default_rng(0)
     monkeypatch.setattr(R.F, "fetch_records", lambda url, keys: {k: b"x" for k in keys})
-    monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None:
-                        (rng.uniform(0, 10, size=(721, 1440)).astype(np.float32), {}))
+    def grid():
+        g = rng.uniform(0, 10, size=(721, 1440)).astype(np.float32)
+        g[:, 100:120] = np.nan                                           # a strip of "land": the fill has work to do
+        return g
+    monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None: (grid(), {}))
     return None
 
 
@@ -283,6 +379,9 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     assert man["grid"]["registration"] == "center" and man["grid_half"]["rows"] == 361 and man["grid_half"]["dlat"] == -0.5
     assert man["encoding_spec"]["missing"] == 0 and man["fields"]["tp"]["legend"] == [4.0, 22.0]
     assert man["frame_hours"] == 3 and man["expected_frames"] == 81
+    assert man["fill"] == E.FILL_INFO
+    f0 = stats["frames"][0]["fields"]
+    assert f0["hs"]["filled_points"] == f0["tp"]["filled_points"] == 721 * 8 and f0["wind"]["filled_points"] == 0
     assert c.objects[puts[0]]["cc"] == P.IMMUTABLE and c.objects[P.LATEST_KEY]["cc"] == P.POINTER
 
 
@@ -512,3 +611,22 @@ def test_main_records_failure_and_backs_off(monkeypatch, capsys):
     rec = json.loads(c.objects[P.failed_key("2026092212")]["body"])
     assert rec["attempts"] == 1 and "corrupt" in rec["last_error"]
     assert R.main([]) == 0 and "failed recently" in capsys.readouterr().out       # backs off
+
+
+def test_main_refuses_to_republish_a_run_built_without_the_fill(monkeypatch, capsys, offline_build):
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    c = FakeClient()
+    old = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": []}            # published before the fill existed
+    c.objects[f"{P.PREFIX}/2026092212/manifest-20260922T180000Z.json"] = {"body": json.dumps(old).encode(), "ct": "", "cc": ""}
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
+    _env(monkeypatch, c)
+    n = len(c.log)
+    assert R.main(["--force"]) == 2 and "refusing to re-publish" in capsys.readouterr().out
+    assert len(c.log) == n                                                                        # not one frame written
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092206","complete":true}', "ct": "", "cc": ""}
+    assert R.main([]) == 2                                                                        # nor without --force
+    newer = dict(old, fill=E.FILL_INFO)                                                           # a later manifest built with the fill
+    c.objects[f"{P.PREFIX}/2026092212/manifest-20260922T190000Z.json"] = {"body": json.dumps(newer).encode(), "ct": "", "cc": ""}
+    assert R.published_fill(P.Store(c, "b"), "2026092212") == (True, E.FILL_INFO)
+    assert R.published_fill(P.Store(c, "b"), "2026092218") == (False, None)
+    assert R.main(["--dry-run", "--steps", "0,3"]) == 0                                           # a dry run never touches the bucket

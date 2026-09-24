@@ -75,7 +75,8 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
                 P.publish_frame(store, run, name, step, enc)
         frames.append(entry)
         stats_frames.append(stat)
-        log(f"f{step:03d} done in {time.time() - t:.1f}s")
+        filled = " ".join(f"{n}={stat['fields'][n]['filled_points']}" for n in E.FILL_INFO["fields"])
+        log(f"f{step:03d} done in {time.time() - t:.1f}s (filled {filled})")
     complete = steps == F.STEPS and len(frames) == len(F.STEPS)
     manifest = {
         "schema": 3, "run": run, "files": {"template": P.files_template(run), "res": {"full": "", "half": "half/"}}, "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": MODEL,
@@ -83,6 +84,7 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
         "grid": GRID_FULL, "grid_half": GRID_HALF,
         "fields": {n: {"lo": f["lo"], "hi": f["hi"], "legend": f["legend"], "units": f["units"],
                        "interpolation": f["interpolation"]} for n, f in E.FIELDS.items()},
+        "fill": E.FILL_INFO,
         "frame_hours": FRAME_HOURS, "expected_frames": len(F.STEPS),
         "frames": frames, "complete": complete,
         "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -98,6 +100,14 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
 def _store_from_env():
     return P.Store(P.r2_client(os.environ["R2_ACCOUNT_ID"], os.environ["R2_ACCESS_KEY_ID"],
                                os.environ["R2_SECRET_ACCESS_KEY"]), os.environ["R2_BUCKET"])
+
+
+def published_fill(store, run):
+    """(True, fill block) of the newest COMPLETE manifest already published for `run`, else (False, None)."""
+    keys = sorted(k for k in store.list_keys(f"{P.PREFIX}/{run}/manifest-"))
+    if not keys:
+        return False, None
+    return True, (store.get_json(keys[-1]) or {}).get("fill")
 
 
 def _skip_failed(store, run):
@@ -154,6 +164,12 @@ def main(argv=None):
         if not partial and not a.force and _skip_failed(store, run):
             print(f"run {run} failed recently; waiting before retrying")
             return 0
+        done, fill = published_fill(store, run)
+        if done and fill != E.FILL_INFO:
+            # frame keys are immutable and cached for a year: never rewrite a published run's frames
+            # with differently built bytes (browsers would mix filled and unfilled frames)
+            print(f"run {run} was published with fill {fill!r}; refusing to re-publish it with {E.FILL_INFO!r}")
+            return 2
     print(f"publishing run {run} ({len(steps)} steps){' [dry-run]' if a.dry_run else ''}{' [partial]' if partial else ''}")
 
     try:

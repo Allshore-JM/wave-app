@@ -9,7 +9,8 @@ antimeridian, clipped to 30-degree (tier 0, intermediate resolution) and 5-degre
 (tier 1, full resolution) cells, quantised to 1e-4 degree and encoded in the compact
 coast-v1 format by tools/coast/build_coast.py in the public repository
 https://github.com/Allshore-JM/wave-app (the corresponding source). Modification
-date: see built_utc in index.json.
+date: 2026-09-24 (the build published under static/coast/v1; the exact build time of
+the files is built_utc in index.json).
 
 The data are redistributed under the same licence as GSHHG: the GNU Lesser General
 Public License, version 3 or later. The original GSHHG licence notice and the LGPL

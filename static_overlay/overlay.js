@@ -372,8 +372,8 @@
   }
   // The index the client can act on: a cell size that tiles the world, a directory name, a cells map.
   function validCoastIndex(idx) {
-    return !!(idx && idx.format === 'coast-v1' && idx.tier0 && typeof idx.tier0.max_zoom === 'number' && idx.tier1 &&
-      typeof idx.tier1.cell === 'number' && idx.tier1.cell > 0 && idx.tier1.cell <= 90 && 180 % idx.tier1.cell === 0 &&
+    return !!(idx && idx.format === 'coast-v1' && idx.tier0 && Number.isInteger(idx.tier0.max_zoom) && idx.tier0.max_zoom >= 0 && idx.tier1 &&
+      Number.isInteger(idx.tier1.cell) && idx.tier1.cell >= 1 && idx.tier1.cell <= 90 && 180 % idx.tier1.cell === 0 &&
       typeof idx.tier1.dir === 'string' && /^[A-Za-z0-9_-]+$/.test(idx.tier1.dir) &&
       idx.tier1.cells && typeof idx.tier1.cells === 'object' && !Array.isArray(idx.tier1.cells));
   }
@@ -436,15 +436,19 @@
     if (missing.length) { this.request(missing); return { sets: [this.tier0], complete: false }; }
     return { sets: standIn ? [this.tier0] : sets, complete: true };
   };
+  // The cells asked for by this call are fetched even when no registered tile needs them: Leaflet
+  // registers a tile in _tiles only after createTile returns, so the tile being drawn is invisible to
+  // onNeeded (the trim below is for entries left in the queue by tiles that have since been pruned).
   CoastStore.prototype.request = function (names) {
+    var fresh = {};
     for (var i = 0; i < names.length; i++) {
       var nm = names[i], f = this.failed[nm];
-      if (!Object.prototype.hasOwnProperty.call(this.index.tier1.cells, nm) || this.inflight[nm] || this.queue.indexOf(nm) >= 0 ||
-        this.chunks.has(nm) || f === true) continue;
+      if (!Object.prototype.hasOwnProperty.call(this.index.tier1.cells, nm) || this.inflight[nm] || this.chunks.has(nm) || f === true) continue;
       if (typeof f === 'number' && f > Date.now()) { this._armRetry(f); continue; }         // in cooldown: asked again when it ends
-      this.queue.push(nm);
+      if (this.queue.indexOf(nm) < 0) this.queue.push(nm);
+      fresh[nm] = true;
     }
-    this._pump();
+    this._pump(fresh);
   };
   // One timer per store: when a cooldown ends the revision moves, so tiles still on the stand-in ask again.
   CoastStore.prototype._armRetry = function (until) {
@@ -452,11 +456,11 @@
     if (this.retryTimer) return;
     this.retryTimer = setTimeout(function () { self.retryTimer = null; self.rev++; if (self.onChange) self.onChange(); }, Math.max(0, until - Date.now()) + 50);
   };
-  CoastStore.prototype._pump = function () {
+  CoastStore.prototype._pump = function (fresh) {
     var self = this, need = this.onNeeded ? this.onNeeded() : null;
     while (this.queue.length && Object.keys(this.inflight).length < MAX_COAST_INFLIGHT) {
       var nm = this.queue.shift();
-      if (need && !need[nm]) continue;                                       // the tiles that wanted it are gone
+      if (need && !need[nm] && !(fresh && fresh[nm])) continue;              // the tiles that wanted it are gone
       if (!this.abort) this.abort = new AbortController();
       (function (name, ctrl) {
         self.inflight[name] = ctrl;
@@ -467,8 +471,9 @@
           return r.arrayBuffer();
         }).then(function (buf) {
           if (ctrl.signal.aborted || !mine()) return;                       // Off, or a newer request owns this cell
+          var c;
+          try { c = decodeCoast(buf); } catch (e) { throw new Error('coast decode failed'); }   // the record is still ours: the catch below marks the cell failed for good
           delete self.inflight[name];
-          var c = decodeCoast(buf);
           self.chunks.set(name, c); self.bytes += c.bytes; delete self.failed[name];
           self._evict();
           self.rev++;

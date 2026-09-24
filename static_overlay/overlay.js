@@ -163,6 +163,8 @@
   var LAND_READOUT = 128;                                  // composed alpha below this = "over land" for the readout
   var MAX_LAT = 85.0511287798;                             // Web-Mercator limit; the Antarctic ring closes through the pole
   var MAX_COAST_BYTES = 8 * 1024 * 1024;                  // one coast file is <= 1.4 MB; nothing bigger is decoded
+  var MAX_INDEX_BYTES = 1024 * 1024;                      // index.json is 29 KB; every 5-degree cell listed would be ~60 KB
+  var MAX_CELLS_PER_TILE = 16;                            // a tile touches <= 4 cells at tier-1 zooms; more = tier 0 for that tile
   var MAX_CHUNK_BYTES = 32 * 1024 * 1024;                 // decoded tier-1 chunks kept (LRU), in vertex bytes
   var MAX_COAST_INFLIGHT = 2;
   var MIN_PIECE_PX = 0.5;                                  // a piece smaller than this in both directions is not drawn
@@ -171,6 +173,18 @@
   function worldXY(lon, lat) {
     var s = Math.sin(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat)) * Math.PI / 180);
     return [(lon + 180) / 360 * TILE, (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * TILE];
+  }
+  // A decoded tier-1 file may only hold pieces inside the cell it was fetched as (half a world pixel of
+  // Float32 slack): another cell's bytes under this name must not become "no land here".
+  function withinCell(c, name) {
+    var p = name.split('_'), lat0 = +p[0], lon0 = +p[1], cell = c.cell;
+    if (p.length !== 2 || !isFinite(lat0) || !isFinite(lon0) || !(cell > 0)) return false;
+    var a = worldXY(lon0, lat0 + cell), b = worldXY(lon0 + cell, lat0), x0 = a[0] - 0.5, y0 = a[1] - 0.5, x1 = b[0] + 0.5, y1 = b[1] + 0.5;
+    for (var i = 0; i < c.n; i++) {
+      var k = i * 4;
+      if (c.box[k] < x0 || c.box[k + 1] < y0 || c.box[k + 2] > x1 || c.box[k + 3] > y1) return false;
+    }
+    return true;
   }
   // coast-v1: 40-byte header (magic "CST1", u16 cell, u16 0, u32 q, u32 pieces, u32 rings, u32 vertices,
   // i32 bbox[4]) then one LEB128 varint stream; per piece zz(minx) zz(miny) w h nrings, per ring n then
@@ -367,7 +381,7 @@
   function coastStore(url) { return COAST_STORES[url] || (COAST_STORES[url] = new CoastStore(url)); }
   function CoastStore(url) {
     this.url = url; this.status = 'idle'; this.index = null; this.tier0 = null; this.loading = null; this.failedAt = 0;
-    this.chunks = new Map(); this.bytes = 0; this.inflight = {}; this.queue = []; this.failed = {};
+    this.chunks = new Map(); this.bytes = 0; this.inflight = {}; this.queue = []; this.queued = {}; this.failed = {};
     this.rev = 0; this.onChange = null; this.onNeeded = null; this.abort = null; this.retryTimer = null;
   }
   // The index the client can act on: a cell size that tiles the world, a directory name, a cells map.
@@ -391,7 +405,11 @@
     var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false;
     var watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, this.timeoutMs);
     this.loading = Promise.all([
-      fetch(base + '/index.json', { signal: sig, mode: 'cors' }).then(function (r) { if (!r.ok) throw new Error('coast ' + r.status); return r.json(); }),
+      fetch(base + '/index.json', { signal: sig, mode: 'cors' }).then(function (r) {
+        if (!r.ok) throw new Error('coast ' + r.status);
+        if (r.headers && r.headers.get && Number(r.headers.get('content-length') || 0) > MAX_INDEX_BYTES) throw new Error('unsupported coast index');
+        return r.json();
+      }),
       fetch(base + '/world-i.bin', { signal: sig, mode: 'cors' }).then(function (r) {
         if (!r.ok) throw new Error('coast ' + r.status);
         if (Number(r.headers.get('content-length') || 0) > MAX_COAST_BYTES) throw new Error('coast decode failed');
@@ -425,6 +443,7 @@
     if (this.status !== 'ok') return { sets: [], complete: true };
     if (!this.tier1Zoom(coords.z)) return { sets: [this.tier0], complete: true };
     var names = coastCellsForTile(coords, this.index.tier1.cell), sets = [], missing = [], standIn = false;
+    if (names.length > MAX_CELLS_PER_TILE) return { sets: [this.tier0], complete: true };   // only a hostile index gets here
     for (var i = 0; i < names.length; i++) {
       var nm = names[i];
       if (!Object.prototype.hasOwnProperty.call(this.index.tier1.cells, nm)) continue;   // no land in that cell
@@ -445,7 +464,7 @@
       var nm = names[i], f = this.failed[nm];
       if (!Object.prototype.hasOwnProperty.call(this.index.tier1.cells, nm) || this.inflight[nm] || this.chunks.has(nm) || f === true) continue;
       if (typeof f === 'number' && f > Date.now()) { this._armRetry(f); continue; }         // in cooldown: asked again when it ends
-      if (this.queue.indexOf(nm) < 0) this.queue.push(nm);
+      if (!this.queued[nm]) { this.queue.push(nm); this.queued[nm] = true; }
       fresh[nm] = true;
     }
     this._pump(fresh);
@@ -460,6 +479,7 @@
     var self = this, need = this.onNeeded ? this.onNeeded() : null;
     while (this.queue.length && Object.keys(this.inflight).length < MAX_COAST_INFLIGHT) {
       var nm = this.queue.shift();
+      delete this.queued[nm];
       if (need && !need[nm] && !(fresh && fresh[nm])) continue;              // the tiles that wanted it are gone
       if (!this.abort) this.abort = new AbortController();
       (function (name, ctrl) {
@@ -473,6 +493,7 @@
           if (ctrl.signal.aborted || !mine()) return;                       // Off, or a newer request owns this cell
           var c;
           try { c = decodeCoast(buf); } catch (e) { throw new Error('coast decode failed'); }   // the record is still ours: the catch below marks the cell failed for good
+          if (c.cell !== self.index.tier1.cell || !withinCell(c, name)) throw new Error('coast decode failed');   // another cell's bytes under this name
           delete self.inflight[name];
           self.chunks.set(name, c); self.bytes += c.bytes; delete self.failed[name];
           self._evict();
@@ -505,7 +526,7 @@
     if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; }
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     if (this.status === 'loading') { this.status = 'idle'; this.loading = null; }
-    this.inflight = {}; this.queue = []; this.failed = {}; this.onChange = null; this.onNeeded = null;
+    this.inflight = {}; this.queue = []; this.queued = {}; this.failed = {}; this.onChange = null; this.onNeeded = null;
     this.chunks.clear(); this.bytes = 0;
   };
 
@@ -654,6 +675,7 @@
         var t = this._tiles[k];
         if (!t.coords || !st.tier1Zoom(t.coords.z)) continue;
         var names = coastCellsForTile(t.coords, st.index.tier1.cell);
+        if (names.length > MAX_CELLS_PER_TILE) continue;
         for (var i = 0; i < names.length; i++) need[names[i]] = true;
       }
       return need;
@@ -1432,7 +1454,7 @@
       forwardPixel: forwardPixel, snapToPixel: snapToPixel, pixelOf: pixelOf, pad3: pad3,
       ringPlan: ringPlan, nextAvailable: nextAvailable, nearestIndex: nearestIndex, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT,
-      worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, landPathsForTile: landPathsForTile,
+      worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
       validCoastIndex: validCoastIndex }

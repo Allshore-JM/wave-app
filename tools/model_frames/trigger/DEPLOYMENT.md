@@ -9,7 +9,7 @@ Workers & Pages -> allshore-model-frames-trigger -> Settings -> Builds.
 | Root directory | `tools/model_frames/trigger` |
 | Build command | `npm run build` (syntax check + the fetch-stubbed unit tests; must not be empty) |
 | Deploy command | `npx wrangler deploy` (reads `wrangler.jsonc`: name, cron, vars, no workers.dev URL) |
-| Production branch | `feat/overlays-trigger` until the directory is folded into `Live-Buoy-Update`, then that |
+| Production branch | `Live-Buoy-Update` (the production branch; the job and this trigger live there together) |
 | Build watch paths | include `tools/model_frames/trigger/*` (pushes elsewhere in the repo do not build) |
 | Preview builds | off |
 | API token | `allshore-model-frames-trigger build token`, created for this Worker alone (Settings -> Builds -> API token -> Create new token); no other project depends on it and it depends on no other project's token |

@@ -23,7 +23,7 @@ async function settle(n) { for (let i = 0; i < (n || 6); i++) await tick(); }
 
 // One world per test: stubs, a fresh module evaluation, and a controller with the DOM parts neutralised.
 function world(opts) {
-  const w = { pendingBitmaps: [], fetches: [], failNext: {}, pointer: null, manifests: {} };
+  const w = { pendingBitmaps: [], fetches: [], failNext: {}, pointer: null, manifests: {}, pendingCoast: [], coastAnswer: () => ({ ok: false, status: 500 }) };
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.js'), 'utf8');
   const g = {
     L: { GridLayer: { prototype: { initialize(o) { this.options = o; this._tiles = {}; } },
@@ -41,6 +41,7 @@ function world(opts) {
       const mm = /gfswave\/0p25\/v1\/(\d{10})\/manifest-x\.json$/.exec(url);
       if (mm) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(w.manifests[mm[1]]) });
       const fail = w.failNext[url]; if (fail) { delete w.failNext[url]; if (fail === 'network') return Promise.reject(new TypeError('Failed to fetch')); return Promise.resolve({ ok: false, status: fail }); }
+      if (url.indexOf('/static/coast/') >= 0) return new Promise((res) => { w.pendingCoast.push(() => res(w.coastAnswer(url))); });   // released by hand, like decodes
       const run = /\/v1\/(\d{10})\//.exec(url)[1];
       return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: 1440, h: 721, tag: Number(run.slice(-2)) }) });
     },
@@ -62,7 +63,7 @@ function world(opts) {
   const map = { getPane: () => ({}), getZoom: () => 7, getSize: () => ({ x: 1200, y: 800 }), on() {}, off() {}, removeLayer() {},
     getContainer: () => ({ clientWidth: 1200, clientHeight: 800, classList: { add() {}, remove() {} }, style: { setProperty() {}, removeProperty() {} } }) };
   w.I = I;
-  w.create = () => g.AllshoreOverlay.create(map, { base: 'https://x/gfswave/0p25/v1', panel: {}, tz: 'UTC', getUnit: () => 'US', fmtTime: () => '', tzAbbr: () => '', pageCycle: () => null });
+  w.create = (extra) => g.AllshoreOverlay.create(map, Object.assign({ base: 'https://x/gfswave/0p25/v1', panel: {}, tz: 'UTC', getUnit: () => 'US', fmtTime: () => '', tzAbbr: () => '', pageCycle: () => null }, extra || {}));
   w.release = async (n) => { for (let i = 0; i < (n === undefined ? 1 : n) && w.pendingBitmaps.length; i++) w.pendingBitmaps.shift()(); await settle(); };
   w.releaseAll = async () => { while (w.pendingBitmaps.length) { w.pendingBitmaps.shift()(); await settle(); } };
   return w;
@@ -162,4 +163,81 @@ test('unavailable frames: 404 is permanent and skipped, a network error is a coo
   const u = o.unavailable[o._key(i0 + 9)];
   assert.equal(typeof u, 'number'); assert.ok(u > Date.now(), 'cooldown timestamp');
   o.unmount();
+});
+
+// ---- coastlines ----
+// A tiny coast-v1 file: one 1x1-degree island at 10 N 10 E (see tests/overlay/coast.test.js for the encoder).
+function coastBytes() {
+  const leb = (v) => { const out = []; do { const b = v % 128; v = Math.floor(v / 128); out.push(v ? b | 128 : b); } while (v); return out; };
+  const zz = (v) => (v < 0 ? -2 * v - 1 : 2 * v), ring = [100000, 100000, 110000, 100000, 110000, 110000, 100000, 110000];
+  const body = [...leb(zz(100000)), ...leb(zz(100000)), ...leb(10000), ...leb(10000), ...leb(1), ...leb(4)];
+  let px = 100000, py = 100000;
+  for (let i = 0; i < 8; i += 2) { body.push(...leb(zz(ring[i] - px)), ...leb(zz(ring[i + 1] - py))); px = ring[i]; py = ring[i + 1]; }
+  const buf = new ArrayBuffer(40 + body.length), dv = new DataView(buf), u8 = new Uint8Array(buf);
+  u8.set([67, 83, 84, 49], 0); dv.setUint16(4, 30, true); dv.setUint32(8, 10000, true); dv.setUint32(12, 1, true); dv.setUint32(16, 1, true); dv.setUint32(20, 4, true);
+  [100000, 100000, 110000, 110000].forEach((v, i) => dv.setInt32(24 + i * 4, v, true));
+  u8.set(body, 40);
+  return buf;
+}
+const COAST_INDEX = { format: 'coast-v1', q: 10000, tier0: { file: 'world-i.bin', cell: 30, max_zoom: 6 }, tier1: { dir: 'f', cell: 5, min_zoom: 7, cells: {} } };
+function coastOk(url) {
+  if (url.endsWith('index.json')) return { ok: true, status: 200, json: () => Promise.resolve(COAST_INDEX) };
+  const b = coastBytes();
+  return { ok: true, status: 200, headers: { get: () => String(b.byteLength) }, arrayBuffer: () => Promise.resolve(b) };
+}
+
+test('coast: the first draw waits for the coastlines, a failed coast load draws unclipped, Off aborts a pending load', async () => {
+  const w = world();
+  w.coastAnswer = coastOk;
+  const A3 = { ...A, fields: { hs: HS, tp: { lo: 1, hi: 30, legend: [4, 22], units: 's', interpolation: 'nearest' }, wind: { lo: 0, hi: 41.2, legend: [0, 30.9], units: 'm/s', interpolation: 'bilinear' } } };
+  w.pointer = ptr(A3); w.manifests[A3.run] = A3;
+  const o = w.create({ coast: true });
+  o.mount('hs'); await settle();
+  assert.equal(o.coast.status, 'loading');
+  assert.equal(w.fetches.filter((u) => u.indexOf('/static/coast/') >= 0).length, 2);        // index + tier 0, beside latest.json/manifest/frame
+  await w.release(1);                                                                          // the frame is decoded...
+  assert.equal(o.layer._frame, null);                                                          // ...but not drawn: the coastlines are still loading
+  while (w.pendingCoast.length) w.pendingCoast.shift()();
+  await settle();
+  assert.equal(o.coast.status, 'ok');
+  assert.equal(o.layer._coast, o.coast); assert.equal(o.layer._clip, false);                 // clipping is decided per drawn field
+  assert.equal(o.layer._frame, null);                                                          // the frame fetch starts only now
+  for (let i = 0; i < 4 && !w.pendingBitmaps.length; i++) await settle();
+  await w.release(1);
+  assert.ok(o.layer._frame && o.last.state === 'ready', JSON.stringify([!!o.layer._frame, o.last]));
+  assert.equal(o.layer._clip, true);
+  o.mount('wind'); await settle(); await w.releaseAll(); await settle();                     // wind: never clipped, no coast wait (ring prefetches are released too)
+  assert.equal(o.layer._clip, false); assert.ok(o.layer._frame, JSON.stringify(o.last));
+  o.mount('tp'); await settle(); await w.releaseAll(); await settle();                       // back to a clipped field: the store is already there
+  assert.equal(o.layer._clip, true);
+  assert.equal(w.fetches.filter((u) => u.indexOf('/static/coast/') >= 0).length, 2);        // never fetched again
+  o.unmount();
+  assert.equal(o.coast.status, 'ok');                                                          // the decoded coastlines survive Off
+  // a fresh page whose coast data is unreachable: the frame still lands, unclipped
+  const w2 = world();
+  w2.coastAnswer = () => ({ ok: false, status: 503 });
+  w2.pointer = ptr(A); w2.manifests[A.run] = A;
+  const o2 = w2.create({ coast: true });
+  o2.mount('hs'); await settle();
+  while (w2.pendingCoast.length) w2.pendingCoast.shift()();
+  await settle();
+  for (let i = 0; i < 4 && !w2.pendingBitmaps.length; i++) await settle();
+  await w2.release(1);
+  assert.equal(o2.coast.status, 'failed'); assert.equal(o2.layer._coast, null); assert.equal(o2.layer._clip, false);
+  assert.ok(o2.layer._frame && o2.last.state === 'ready');
+  // Off while the coast load is pending: the load is abandoned and the next On starts it again
+  const w3 = world();
+  w3.coastAnswer = coastOk;
+  w3.pointer = ptr(A); w3.manifests[A.run] = A;
+  const o3 = w3.create({ coast: true });
+  o3.mount('hs'); await settle();
+  o3.unmount(); await settle();
+  assert.equal(o3.coast.status, 'idle');
+  while (w3.pendingCoast.length) w3.pendingCoast.shift()();
+  await settle();
+  assert.equal(o3.coast.status, 'idle');                                                       // the late answer is ignored
+  o3.mount('hs'); await settle();
+  assert.equal(o3.coast.status, 'loading');
+  assert.equal(w3.fetches.filter((u) => u.indexOf('/static/coast/') >= 0).length, 4);
+  o3.unmount();
 });

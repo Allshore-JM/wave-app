@@ -358,12 +358,14 @@
   // Resolves to the store when tier 0 is usable, to null otherwise (never rejects); a failed load is
   // retried on the next call. The load has its own abort (Off), so a field change while it runs
   // simply keeps waiting for it.
+  CoastStore.prototype.timeoutMs = 15000;                  // a coast download slower than this fails (unclipped + warning), like a stalled frame
   CoastStore.prototype.load = function () {
     var self = this;
     if (this.status === 'ok') return Promise.resolve(this);
     if (this.loading) return this.loading;
     this.status = 'loading';
-    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal;
+    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false;
+    var watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, this.timeoutMs);
     this.loading = Promise.all([
       fetch(base + '/index.json', { signal: sig, mode: 'cors' }).then(function (r) { if (!r.ok) throw new Error('coast ' + r.status); return r.json(); }),
       fetch(base + '/world-i.bin', { signal: sig, mode: 'cors' }).then(function (r) {
@@ -372,6 +374,7 @@
         return r.arrayBuffer();
       })
     ]).then(function (res) {
+      clearTimeout(watchdog);
       if (self.loadAbort !== ctrl || sig.aborted) throw abortError();     // aborted or superseded: this load owns nothing any more
       var idx = res[0];
       if (!idx || idx.format !== 'coast-v1' || !idx.tier0 || !idx.tier1 || typeof idx.tier1.cell !== 'number' || typeof idx.tier0.max_zoom !== 'number' ||
@@ -379,7 +382,8 @@
       self.tier0 = decodeCoast(res[1]); self.index = idx; self.status = 'ok'; self.loading = null; self.loadAbort = null;
       return self;
     }).catch(function () {
-      if (self.loadAbort === ctrl) { self.loading = null; self.loadAbort = null; self.status = sig.aborted ? 'idle' : 'failed'; }
+      clearTimeout(watchdog);
+      if (self.loadAbort === ctrl) { self.loading = null; self.loadAbort = null; self.status = sig.aborted && !timedOut ? 'idle' : 'failed'; }
       return null;
     });
     return this.loading;

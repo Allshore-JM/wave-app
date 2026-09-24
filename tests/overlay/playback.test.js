@@ -41,7 +41,10 @@ function world(opts) {
       const mm = /gfswave\/0p25\/v1\/(\d{10})\/manifest-x\.json$/.exec(url);
       if (mm) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(w.manifests[mm[1]]) });
       const fail = w.failNext[url]; if (fail) { delete w.failNext[url]; if (fail === 'network') return Promise.reject(new TypeError('Failed to fetch')); return Promise.resolve({ ok: false, status: fail }); }
-      if (url.indexOf('/static/coast/') >= 0) return new Promise((res) => { w.pendingCoast.push(() => res(w.coastAnswer(url))); });   // released by hand, like decodes
+      if (url.indexOf('/static/coast/') >= 0) return new Promise((res, rej) => {                  // released by hand, like decodes; aborts reject like a real fetch
+        w.pendingCoast.push(() => res(w.coastAnswer(url)));
+        if (o && o.signal) o.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+      });
       const run = /\/v1\/(\d{10})\//.exec(url)[1];
       return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: 1440, h: 721, tag: Number(run.slice(-2)) }) });
     },
@@ -240,4 +243,31 @@ test('coast: the first draw waits for the coastlines, a failed coast load draws 
   assert.equal(o3.coast.status, 'loading');
   assert.equal(w3.fetches.filter((u) => u.indexOf('/static/coast/') >= 0).length, 4);
   o3.unmount();
+});
+
+test('coast: a download that hangs past the watchdog fails the coast load; the frame draws unclipped with the store failed', async () => {
+  const w = world();
+  w.coastAnswer = coastOk;
+  w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create({ coast: true });
+  o.coast.timeoutMs = 40;                                                                      // the harness never answers coast fetches by itself
+  o.mount('hs'); await settle();
+  assert.equal(o.coast.status, 'loading');
+  await new Promise((r) => setTimeout(r, 120));
+  await settle();
+  assert.equal(o.coast.status, 'failed');
+  for (let i = 0; i < 4 && !w.pendingBitmaps.length; i++) await settle();
+  await w.release(1);
+  assert.ok(o.layer._frame && o.last.state === 'ready' && o.layer._clip === false, JSON.stringify(o.last));
+  while (w.pendingCoast.length) w.pendingCoast.shift()();                                      // the late answers change nothing
+  await settle();
+  assert.equal(o.coast.status, 'failed');
+  o.unmount();
+  o.coast.timeoutMs = 15000;
+  o.mount('hs'); await settle();
+  assert.equal(o.coast.status, 'loading');                                                     // the next On retries
+  while (w.pendingCoast.length) w.pendingCoast.shift()();
+  await settle();
+  assert.equal(o.coast.status, 'ok');
+  o.unmount();
 });

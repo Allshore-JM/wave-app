@@ -12,7 +12,7 @@ Workers & Pages -> allshore-model-frames-trigger -> Settings -> Builds.
 | Production branch | `feat/overlays-trigger` until the directory is folded into `Live-Buoy-Update`, then that |
 | Build watch paths | include `tools/model_frames/trigger/*` (pushes elsewhere in the repo do not build) |
 | Preview builds | off |
-| API token | an existing Workers Builds token of the account (any token with Workers Scripts: Edit) |
+| API token | `allshore-model-frames-trigger build token`, created for this Worker alone (Settings -> Builds -> API token -> Create new token); no other project depends on it and it depends on no other project's token |
 
 Runtime configuration (Settings -> Variables and secrets, Production):
 

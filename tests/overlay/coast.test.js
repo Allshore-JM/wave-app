@@ -294,12 +294,16 @@ test('CoastStore: tier 0 up front, tier-1 cells on demand with <= 2 in flight, f
     s.chunks.clear(); s.bytes = 0;
     s.chunks.set('a', { bytes: 20e6 }); s.chunks.set('b', { bytes: 20e6 }); s.bytes = 40e6; s._evict();
     assert.deepEqual(Array.from(s.chunks.keys()), ['b']); assert.equal(s.bytes, 20e6);
-    // the queue is trimmed to what the tiles need (A10)
+    // the queue is trimmed to what the tiles need (A10), but never the cells asked for right now (R1: Leaflet
+    // registers a tile only after createTile returns, so the tile being drawn is not in _tiles yet)
     s.onNeeded = () => ({ '60_20': true });
     s.chunks.clear(); s.bytes = 0; delete s.failed['20_-165'];
-    s.request(['20_-165', '60_20']);
-    assert.deepEqual(Object.keys(s.inflight), ['60_20']);
+    s.request(['20_-165', '60_20', '20_-160']);
+    assert.deepEqual(Object.keys(s.inflight).sort(), ['20_-165', '60_20']); assert.deepEqual(s.queue, ['20_-160']);
+    pending.shift()(); await settle();                                                          // a handler's pump: the stale entry no tile needs is dropped
+    assert.deepEqual(s.queue, []); assert.equal(Object.keys(s.inflight).length, 1);
     pending.shift()(); await settle();
+    assert.equal(Object.keys(s.inflight).length, 0);
     // abort: pending requests are dropped, their late answers ignored, chunks and failures forgotten (A5, A9)
     s.chunks.clear(); s.bytes = 0; s.onNeeded = null;
     s.request(['60_20']); assert.equal(Object.keys(s.inflight).length, 1);
@@ -333,6 +337,8 @@ test('CoastStore: a failed load is not retried within retryMs (no second wait on
     s.failedAt = 0;
     assert.equal(await s.load(), s); assert.equal(fetches, 4);
     for (const bad of [{ ...idx, tier1: { ...idx.tier1, cell: 0 } }, { ...idx, tier1: { ...idx.tier1, cell: 7 } }, { ...idx, tier1: { ...idx.tier1, cell: -5 } },
+      { ...idx, tier1: { ...idx.tier1, cell: 0.5 } }, { ...idx, tier1: { ...idx.tier1, cell: Math.pow(2, -10) } },
+      { ...idx, tier0: { ...idx.tier0, max_zoom: -1 } }, { ...idx, tier0: { ...idx.tier0, max_zoom: 6.5 } },
       { ...idx, tier1: { ...idx.tier1, dir: undefined } }, { ...idx, tier1: { ...idx.tier1, dir: '../x' } }, { ...idx, tier1: { ...idx.tier1, cells: [] } }, { ...idx, format: 'coast-v2' }]) {
       const b = new I.CoastStore('https://y/static/coast/v1');
       indexAnswer = bad;
@@ -416,6 +422,68 @@ test('landPathsForTile collapses vertex runs beyond one side of the tile without
     assert.deepEqual(Array.from(mFast), Array.from(mRef), JSON.stringify(coords));
     const kept = fast.reduce((a, p) => a + p.length / 2, 0);
     assert.ok(kept < ref.length / 2, JSON.stringify(coords) + ': ' + kept + ' vs ' + ref.length / 2);
+  }
+});
+
+test('CoastStore: a chunk whose body is not coast-v1 is failed for good, fetched once, and the queue keeps moving', async () => {
+  const idx = { format: 'coast-v1', q: 10000, tier0: { file: 'world-i.bin', cell: 30, max_zoom: 6 }, tier1: { dir: 'f', cell: 5, min_zoom: 7, cells: { '20_-160': [1, 1], '20_-165': [1, 1], '60_20': [1, 1] } } };
+  const world = encodeCoast([[ISLAND], [ANTARCTICA]], 30), good = encodeCoast([[OAHU]], 5), bad = new ArrayBuffer(64);
+  const pending = []; let fetches = 0;
+  global.fetch = (url) => { fetches++; return new Promise((resolve) => {
+    const go = () => resolve(url.endsWith('index.json') ? { ok: true, status: 200, json: () => Promise.resolve(idx) }
+      : { ok: true, status: 200, headers: { get: () => '64' }, arrayBuffer: () => Promise.resolve((url.indexOf('20_-160') >= 0 ? bad : url.endsWith('world-i.bin') ? world : good).slice(0)) });
+    if (url.indexOf('/f/') >= 0) pending.push(go); else go();
+  }); };
+  try {
+    const s = new I.CoastStore('https://x/static/coast/v1');
+    s.retryMs = 0;
+    assert.equal(await s.load(), s);
+    let changes = 0; s.onChange = () => { changes++; };
+    s.request(['20_-160', '20_-165', '60_20']);
+    assert.deepEqual(Object.keys(s.inflight), ['20_-160', '20_-165']); assert.deepEqual(s.queue, ['60_20']);
+    const before = fetches;
+    pending.shift()(); await settle();                                                          // the 64 zero bytes land for 20_-160
+    assert.equal(s.failed['20_-160'], true); assert.equal(s.rev, 1); assert.equal(changes, 1);
+    assert.deepEqual(Object.keys(s.inflight).sort(), ['20_-165', '60_20']);                     // the queue was pumped
+    assert.equal(s.chunks.has('20_-160'), false); assert.equal(fetches, before + 1);
+    s.request(['20_-160']);
+    assert.equal(fetches, before + 1); assert.deepEqual(s.queue, []);                           // never fetched again
+    pending.shift()(); pending.shift()(); await settle();
+    assert.equal(s.chunks.size, 2);
+    assert.deepEqual(s.setsFor({ z: 7, x: 7, y: 56 }), { sets: [s.tier0], complete: true });   // the tile touching 20_-160 keeps the 1-km stand-in for good
+    s.abortAll();
+  } finally {
+    delete global.fetch;
+  }
+});
+
+test('layer: a tile asks for its cells while Leaflet has not registered it yet (createTile runs before _tiles is set)', async () => {
+  const idx = { format: 'coast-v1', q: 10000, tier0: { file: 'world-i.bin', cell: 30, max_zoom: 6 }, tier1: { dir: 'f', cell: 5, min_zoom: 7, cells: { '20_-160': [1, 1], '20_-165': [1, 1] } } };
+  const world = encodeCoast([[ISLAND], [ANTARCTICA]], 30), cellBuf = encodeCoast([[OAHU]], 5);
+  const pending = [];
+  global.fetch = (url) => new Promise((resolve) => {
+    const go = () => resolve(url.endsWith('index.json') ? { ok: true, status: 200, json: () => Promise.resolve(idx) }
+      : { ok: true, status: 200, headers: { get: () => '1' }, arrayBuffer: () => Promise.resolve((url.endsWith('world-i.bin') ? world : cellBuf).slice(0)) });
+    if (url.indexOf('/f/') >= 0) pending.push(go); else go();
+  });
+  const ctx = { clearRect() {}, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData() {} };
+  global.document = { createElement: () => ({ getContext: () => ctx }) };
+  try {
+    const s = new I.CoastStore('https://x/static/coast/v1');
+    assert.equal(await s.load(), s);
+    const l = layer(frame(1440, 721, PATTERN), GRID, 'hs', HS);
+    l.setCoast(s);
+    assert.deepEqual(l._tiles, {});
+    const coords = { z: 9, x: 28, y: 224 };                                                      // Niihau: crosses 160 W, needs 20_-165 and 20_-160
+    const el = l.createTile(coords, () => {});                                                   // Leaflet registers the tile only after this returns
+    assert.equal(el._ovLandFinal, false);
+    assert.deepEqual(Object.keys(s.inflight).sort(), ['20_-160', '20_-165']);                   // both cells requested although no tile is registered yet
+    l._tiles['28:224:9'] = { el, coords };
+    pending.shift()(); pending.shift()(); await settle();
+    assert.equal(el._ovLandFinal, true); assert.equal(s.chunks.size, 2);
+    s.abortAll();
+  } finally {
+    delete global.fetch; delete global.document;
   }
 });
 

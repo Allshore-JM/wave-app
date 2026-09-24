@@ -1,0 +1,21 @@
+{
+  // Cloudflare Worker that dispatches the model-frames workflow on a cron (see worker.js).
+  // Deployed by Cloudflare Workers Builds from this repository (root directory
+  // tools/model_frames/trigger, build command `npm run build`, deploy command `npx wrangler deploy`).
+  // The GITHUB_TOKEN secret is set in the dashboard and survives every deploy.
+  "name": "allshore-model-frames-trigger",
+  "main": "worker.js",
+  "compatibility_date": "2025-07-01",
+  "workers_dev": false,
+  "triggers": {
+    // :05, :15, ... UTC -- interleaved with GitHub's own */10 schedule, which fires at :00, :10, ...
+    // when it fires at all. A tick that finds the run already live costs one ~20 s workflow run.
+    "crons": ["5,15,25,35,45,55 * * * *"]
+  },
+  "vars": {
+    "GH_REPO": "Allshore-JM/wave-app",
+    "GH_WORKFLOW": "model-frames.yml",
+    "GH_REF": "Live-Buoy-Update"
+  },
+  "observability": { "enabled": true }
+}

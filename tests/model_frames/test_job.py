@@ -373,6 +373,26 @@ def test_redact_strips_endpoint_account_key_and_bucket():
         assert acct not in rec["last_error"] and bucket not in rec["last_error"] and "<r2-endpoint>" in rec["last_error"]
 
 
+def test_trigger_worker_config_and_unit_tests():
+    """The cron Worker that dispatches the workflow (tools/model_frames/trigger): cron-only, no public
+    URL, aimed at this repository's workflow on the production branch; its Node tests stub fetch."""
+    import re
+    import shutil
+    import subprocess
+    trigger = os.path.join(ROOT, "tools", "model_frames", "trigger")
+    cfg = open(os.path.join(trigger, "wrangler.jsonc"), encoding="utf-8").read()
+    assert '"workers_dev": false' in cfg
+    assert re.search(r'"crons":\s*\["5,15,25,35,45,55 \* \* \* \*"\]', cfg)
+    for k, v in (("GH_REPO", "Allshore-JM/wave-app"), ("GH_WORKFLOW", "model-frames.yml"), ("GH_REF", "Live-Buoy-Update")):
+        assert f'"{k}": "{v}"' in cfg, k
+    js = open(os.path.join(trigger, "worker.js"), encoding="utf-8").read()
+    assert "async fetch" not in js and "GITHUB_TOKEN" in js and "/dispatches" in js
+    if not shutil.which("node"):
+        pytest.skip("node not available")
+    r = subprocess.run(["node", "--test", "worker.test.js"], cwd=trigger, capture_output=True, text=True)
+    assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])
+
+
 def test_workflows_pin_actions_and_packages():
     """Every action by commit SHA; every conda package in the publisher and every pip package in the
     test workflow by exact version (G4 item 15)."""

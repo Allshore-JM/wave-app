@@ -83,7 +83,15 @@ Settings and point `MODEL_FRAMES_BASE` at it only as an emergency fallback. `--f
 its EXISTING immutable keys: the edge cache and browsers keep the old bytes for up to a year, so use it only
 to re-send identical bytes (e.g. after an interrupted upload); any change to the encoding or layout goes under
 a new `PREFIX` version instead. The publisher pins its conda packages and action commits and lists the
-installed versions in the step summary; bump the pins deliberately. Data policy in the browser: the 0.5 degree frames are used below zoom 3.5 on desktops, below zoom 7
+installed versions in the step summary; bump the pins deliberately. External cron trigger: GitHub drops or delays
+most `schedule` ticks, so a Cloudflare Worker (`tools/model_frames/trigger/`, deployed by Cloudflare Workers Builds
+from this repository -- root directory `tools/model_frames/trigger`, build command `npm run build`, deploy command
+`npx wrangler deploy`) calls the workflow-dispatch API at :05, :15, ... UTC; GitHub's own schedule stays on as a
+fallback and a duplicate run short-circuits. The Worker needs the secret `GITHUB_TOKEN`, a fine-grained token for
+this repository with "Actions: read and write", entered under the Worker's Settings > Variables and Secrets (rotate
+it there; it is never in the repository). Runs it starts show the event `workflow_dispatch` with the token's owner
+as actor. To stop it, disable the cron under the Worker's Settings > Triggers (or delete the Worker); a full stop
+also disables both workflows as above. Data policy in the browser: the 0.5 degree frames are used below zoom 3.5 on desktops, below zoom 7
 on narrow (phone) maps and for wind everywhere, so an 81-frame loop is about 4-13 MB (32 MB only for wind
 zoomed past 7.5); frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
 where the browser has DecompressionStream. Review records: `docs/reviews/overlays-G*-adversarial.md`. Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full

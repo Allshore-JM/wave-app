@@ -1,0 +1,10 @@
+{
+  "name": "allshore-model-frames-trigger",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker cron that dispatches the model-frames GitHub workflow",
+  "scripts": {
+    "build": "node --check worker.js && node --test worker.test.js",
+    "deploy": "wrangler deploy"
+  }
+}

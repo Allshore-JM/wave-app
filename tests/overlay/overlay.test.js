@@ -202,8 +202,8 @@ test('resolution hysteresis: desktop waves 3.5/4, phones and wind 7/7.5 (data bu
 
 test('legend ticks are nice numbers in the site unit with the legend top as N+', () => {
   const labels = (f, d, u) => Array.from(I.legendTicks(f, d, u), t => t.label);   // main-realm array (vm arrays differ by prototype)
-  assert.deepEqual(labels('hs', HS, 'US'), ['0', '10', '20', '30', '39+ ft']);
-  assert.deepEqual(labels('hs', HS, 'Metric'), ['0', '3', '6', '9', '12+ m']);
+  assert.deepEqual(labels('hs', HS, 'US'), ['0', '3', '6', '10', '15', '20', '39+ ft']);
+  assert.deepEqual(labels('hs', HS, 'Metric'), ['0', '1', '2', '3', '4', '6', '12+ m']);
   assert.deepEqual(labels('tp', TP, 'US'), ['≤4', '8', '12', '16', '22+ s']);
   assert.deepEqual(labels('wind', WIND, 'US'), ['0', '20', '40', '69+ mph']);
   assert.deepEqual(labels('wind', WIND, 'Metric'), ['0', '25', '50', '75', '111+ km/h']);
@@ -225,9 +225,36 @@ test('unitOf conversions', () => {
 });
 
 test('buildRamp endpoints match the stops', () => {
-  const lut = I.buildRamp(I.RAMPS.hs);
-  assert.deepEqual([lut[0], lut[1], lut[2]], [0x0b, 0x2c, 0x6b]);
-  assert.deepEqual([lut[255 * 3], lut[255 * 3 + 1], lut[255 * 3 + 2]], [0xa3, 0x12, 0x9e]);
+  const rgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  for (const f of ['hs', 'tp', 'wind']) {
+    const lut = I.buildRamp(I.RAMPS[f]), st = I.RAMPS[f];
+    assert.deepEqual([lut[0], lut[1], lut[2]], rgb(st[0][1]), f);
+    assert.deepEqual([lut[765], lut[766], lut[767]], rgb(st[st.length - 1][1]), f);
+  }
+});
+
+test('wave-height knots: legend position and its inverse, the LUT follows them, linear fields are unchanged', () => {
+  const L = HS.legend;
+  for (const [v, p] of [[0, 0], [0.5, 0.08], [1, 0.17], [3, 0.47], [12, 1], [15, 1], [-1, 0]]) assert.ok(Math.abs(I.legendPos('hs', L, v) - p) < 1e-12, `${v}`);
+  for (let v = 0; v <= 12; v += 0.37) assert.ok(Math.abs(I.legendInv('hs', L, I.legendPos('hs', L, v)) - v) < 1e-9, `${v}`);
+  assert.ok(I.legendPos('hs', L, 3) > 0.45, '0-3 m fills about half of the legend');
+  // the LUT is linear in value over the legend (what composeTile indexes); entry i gets the colour of its legend position
+  const lut = I.buildLut('hs', L), bar = I.buildRamp(I.RAMPS.hs);
+  for (const v of [0, 1, 2, 3, 6, 12]) {
+    const i = Math.round(v / 12 * 255), j = Math.round(I.legendPos('hs', L, i / 255 * 12) * 255);
+    for (let c = 0; c < 3; c++) assert.ok(Math.abs(lut[i * 3 + c] - bar[j * 3 + c]) <= 2, `hs ${v} m channel ${c}`);
+  }
+  // contrast at the low end: 0, 1, 2 and 3 m are clearly different colours (the old ramp was navy to blue)
+  const col = (v) => { const i = Math.round(v / 12 * 255) * 3; return [lut[i], lut[i + 1], lut[i + 2]]; };
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  for (const [a, b, min] of [[0, 1, 90], [1, 2, 90], [2, 3, 90], [3, 4, 60]]) assert.ok(dist(col(a), col(b)) > min, `${a} m vs ${b} m: ${dist(col(a), col(b)).toFixed(0)}`);
+  // fields without knots: the LUT is exactly today's ramp, byte for byte
+  assert.deepEqual(Array.from(I.buildLut('tp', TP.legend)), Array.from(I.buildRamp(I.RAMPS.tp)));
+  assert.deepEqual(Array.from(I.buildLut('wind', WIND.legend)), Array.from(I.buildRamp(I.RAMPS.wind)));
+  // tick positions sit where their values are drawn
+  for (const t of I.legendTicks('hs', HS, 'Metric').slice(0, -1)) assert.ok(Math.abs(t.pos - I.legendPos('hs', L, Number(t.label))) < 1e-9, t.label);
+  const us = I.legendTicks('hs', HS, 'US');
+  assert.ok(Math.abs(us[3].pos - I.legendPos('hs', L, 10 / 3.28084)) < 1e-9);
 });
 
 test('ringPlan: current, two ahead in the play direction, two behind, wrapping, no duplicates', () => {

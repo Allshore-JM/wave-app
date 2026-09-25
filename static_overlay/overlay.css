@@ -11,7 +11,6 @@
 .ov-meta { color: #333; }
 .ov-warn { color: #8a5300; background: #fff4d6; border-radius: 4px; padding: 2px 6px; margin-top: 4px; }
 .ov-err { color: #a30000; }
-.ov-note { color: #555; font-size: 11px; margin-top: 4px; }
 .ov-details { overflow-y: auto; padding-right: 2px; }
 .ov-row input[type=range] { width: 110px; vertical-align: middle; margin: 0 0 0 4px; }
 .ov-row label { margin: 0; font-weight: normal; }

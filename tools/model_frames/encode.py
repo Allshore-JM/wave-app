@@ -40,15 +40,24 @@ from PIL import Image
 
 KT = 1852.0 / 3600.0                    # 1 knot in m/s
 
+FULL_HALF = ("full", "half")
 FIELDS = {
-    # name: dict(lo, hi = ENCODING range; legend = display range; units; interpolation hint)
-    "hs":   {"lo": 0.0, "hi": 15.0,     "legend": [0.0, 12.0],    "units": "m",   "interpolation": "bilinear", "fill": True},
-    "tp":   {"lo": 1.0, "hi": 30.0,     "legend": [4.0, 22.0],    "units": "s",   "interpolation": "bilinear", "fill": True},
-    "wind": {"lo": 0.0, "hi": 80 * KT,  "legend": [0.0, 60 * KT], "units": "m/s", "interpolation": "bilinear", "fill": False},
+    # name: dict(lo, hi = ENCODING range; legend = display range; units; interpolation hint; resolutions
+    # published). Direction fields (circular: degrees true, the direction waves / wind come FROM) are
+    # data for the animation, not drawn as colour: they are coded circularly (see quantize_circular),
+    # interpolated as angles by the client, and filled only by nearest (never a mean of angles).
+    "hs":   {"lo": 0.0, "hi": 15.0,     "legend": [0.0, 12.0],    "units": "m",   "interpolation": "bilinear", "fill": True,  "resolutions": FULL_HALF},
+    "tp":   {"lo": 1.0, "hi": 30.0,     "legend": [4.0, 22.0],    "units": "s",   "interpolation": "bilinear", "fill": True,  "resolutions": FULL_HALF},
+    "wind": {"lo": 0.0, "hi": 80 * KT,  "legend": [0.0, 60 * KT], "units": "m/s", "interpolation": "bilinear", "fill": False, "resolutions": FULL_HALF},
+    "pdir": {"lo": 0.0, "hi": 360.0,    "legend": [0.0, 360.0],   "units": "deg", "interpolation": "circular", "fill": True,  "resolutions": FULL_HALF,
+             "circular": True, "convention": "from"},
+    "wdir": {"lo": 0.0, "hi": 360.0,    "legend": [0.0, 360.0],   "units": "deg", "interpolation": "circular", "fill": False, "resolutions": ("half",),
+             "circular": True, "convention": "from"},
 }
 FILL_CELLS = 4
 FILL_VERSION = 2                          # bump whenever the fill's output changes for the same input
-FILL_METHODS = {"hs": "mean", "tp": "nearest"}
+FILL_METHODS = {"hs": "mean", "tp": "nearest", "pdir": "nearest"}
+assert all(FILL_METHODS[n] == "nearest" for n, f in FIELDS.items() if f.get("circular") and f["fill"]), "angles are never averaged"
 FILL_ALLOW_PNG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fill_allow.png")
 FILL_ALLOW_SHA256 = "35c4e29f2122794b9d17ab491920aaac7f55cb76aa703c9eaa08ca5baf7e8c7d"
 _FILLED = sorted(n for n, f in FIELDS.items() if f["fill"])
@@ -95,6 +104,15 @@ def quantize(grid, lo, hi):
     g = np.asarray(grid, dtype=np.float64)
     q = np.clip(np.round((g - lo) / (hi - lo) * 254.0) + 1.0, 1, 255)
     return np.where(np.isnan(g), 0, q).astype(np.uint8)
+
+
+def quantize_circular(grid):
+    """Degrees -> codes on a circle of 254 steps: q = 1 + (round(v * 254 / 360) mod 254), so 0 and 360
+    (and anything wrapping) share code 1 and code 255 is never used. Decoding is the ordinary
+    u8-linear-v2 formula over lo = 0, hi = 360: value = (q - 1) * 360 / 254; error <= 360 / 508 deg."""
+    g = np.asarray(grid, dtype=np.float64)
+    k = np.mod(np.round(np.mod(g, 360.0) * 254.0 / 360.0), 254.0)
+    return np.where(np.isnan(g), 0, k + 1.0).astype(np.uint8)
 
 
 def dequantize(q, lo, hi):
@@ -180,10 +198,10 @@ def to_png(q):
 
 
 def encode_frame(grid, name, fill=None, allow=None):
-    """-> {'full': png bytes, 'half': png bytes, 'stats': {...}} for one field. The coastal fill
-    (default: FIELDS[name]["fill"]) runs before quantisation and before the half subsample; the
-    stats describe the MODEL values only, plus how many cells the fill added. `allow` defaults to
-    fill_allow()."""
+    """-> {'full': png bytes, 'half': png bytes, 'stats': {...}} for one field ('full' / 'half' only for
+    the field's resolutions). The coastal fill (default: FIELDS[name]["fill"]) runs before
+    quantisation and before the half subsample; the stats describe the MODEL values only, plus how
+    many cells the fill added. `allow` defaults to fill_allow()."""
     f = FIELDS[name]
     lo, hi = f["lo"], f["hi"]
     g = np.asarray(grid, dtype=np.float64)
@@ -191,11 +209,14 @@ def encode_frame(grid, name, fill=None, allow=None):
         filled, added = fill_coast(g, allow=fill_allow() if allow is None else allow, method=FILL_METHODS[name])
     else:
         filled, added = g, np.zeros(g.shape, bool)
-    q = quantize(filled, lo, hi)
+    q = quantize_circular(filled) if f.get("circular") else quantize(filled, lo, hi)
     valid = ~np.isnan(g)
-    return {
-        "full": to_png(q),
-        "half": to_png(half_res(q)),
+    out = {}
+    if "full" in f["resolutions"]:
+        out["full"] = to_png(q)
+    if "half" in f["resolutions"]:
+        out["half"] = to_png(half_res(q))
+    return dict(out, **{
         "stats": {
             "min": round(float(np.nanmin(g)), 4) if valid.any() else None,
             "max": round(float(np.nanmax(g)), 4) if valid.any() else None,
@@ -204,4 +225,4 @@ def encode_frame(grid, name, fill=None, allow=None):
             "clamped_high": int(np.count_nonzero(g > hi)),
             "filled_points": int(added.sum()),
         },
-    }
+    })

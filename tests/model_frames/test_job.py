@@ -199,12 +199,15 @@ def test_encode_frame_fill_before_half_and_stats():
 
 
 def test_fill_info_pins_fields_cells_version_and_key():
-    assert E.FILL_INFO["fields"] == ["hs", "tp"] and E.FILL_INFO["cells"] == E.FILL_CELLS == 4
-    assert E.FILL_INFO["version"] == E.FILL_VERSION == 2 and E.FILL_INFO["methods"] == {"hs": "mean", "tp": "nearest"}
+    assert E.FILL_INFO["fields"] == ["hs", "pdir", "tp"] and E.FILL_INFO["cells"] == E.FILL_CELLS == 4
+    assert E.FILL_INFO["version"] == E.FILL_VERSION == 2
+    assert E.FILL_INFO["methods"] == {"hs": "mean", "pdir": "nearest", "tp": "nearest"}          # angles: nearest, never a mean
     assert json.loads(json.dumps(E.FILL_INFO)) == E.FILL_INFO                                   # manifest-safe
-    assert [n for n, f in E.FIELDS.items() if f["fill"]] == ["hs", "tp"]
+    assert [n for n, f in E.FIELDS.items() if f["fill"]] == ["hs", "tp", "pdir"]
+    before = dict(E.FILL_INFO, fields=["hs", "tp"], methods={"hs": "mean", "tp": "nearest"})    # the runs published before Phase B
+    assert E.fill_key(before) != E.fill_key(E.FILL_INFO)                                        # the guard never rebuilds them with pdir
     assert E.FILL_INFO["mask"] == E.FILL_ALLOW_SHA256[:16]
-    reworded = dict(E.FILL_INFO, note="other words", limit="x", methods={"tp": "nearest", "hs": "mean"})
+    reworded = dict(E.FILL_INFO, note="other words", limit="x", methods={"tp": "nearest", "pdir": "nearest", "hs": "mean"})
     assert E.fill_key(reworded) == E.fill_key(E.FILL_INFO)                                      # wording and key order are not a different fill
     assert E.fill_key(dict(E.FILL_INFO, methods={"hs": "mean", "tp": "mean"})) != E.fill_key(E.FILL_INFO)   # a method change is
     assert E.fill_key(dict(E.FILL_INFO, mask="0" * 16)) != E.fill_key(E.FILL_INFO)             # a re-pinned mask is
@@ -277,7 +280,13 @@ def test_encoding_ranges_cover_legend_and_tp_floor():
     for f in E.FIELDS.values():
         assert f["lo"] <= f["legend"][0] and f["hi"] >= f["legend"][1]
     assert E.FIELDS["tp"]["lo"] <= 1.09                                 # WW3 physical floor
-    assert {n: f["interpolation"] for n, f in E.FIELDS.items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear"}
+    assert {n: f["interpolation"] for n, f in E.FIELDS.items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear",
+                                                                   "pdir": "circular", "wdir": "circular"}
+    assert {n: tuple(f["resolutions"]) for n, f in E.FIELDS.items()} == {"hs": ("full", "half"), "tp": ("full", "half"),
+                                                                        "wind": ("full", "half"), "pdir": ("full", "half"), "wdir": ("half",)}
+    for n in ("pdir", "wdir"):
+        f = E.FIELDS[n]
+        assert f["circular"] is True and f["convention"] == "from" and (f["lo"], f["hi"], f["units"]) == (0.0, 360.0, "deg")
     assert abs(E.FIELDS["wind"]["legend"][1] - 30.8667) < 1e-3          # 60 kt
 
 
@@ -437,7 +446,9 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     puts = [k for op, k in c.log if op == "put"]
     assert puts[-1] == P.LATEST_KEY and puts[-2].startswith(f"{P.PREFIX}/2026092212/manifest-")
     assert puts[-3].startswith(f"{P.PREFIX}/2026092212/stats-")           # sidecar BEFORE the manifest
-    assert all(k.endswith(".png") for k in puts[:-3]) and len(puts) == 81 * 3 * 2 + 3
+    assert all(k.endswith(".png") for k in puts[:-3]) and len(puts) == 81 * (4 * 2 + 1) + 3   # hs tp wind pdir full+half, wdir half
+    assert f"{P.PREFIX}/2026092212/half/wdir/f000.png" in puts and f"{P.PREFIX}/2026092212/wdir/f000.png" not in puts
+    assert f"{P.PREFIX}/2026092212/pdir/f240.png" in puts and f"{P.PREFIX}/2026092212/half/pdir/f240.png" in puts
     latest = json.loads(c.objects[P.LATEST_KEY]["body"])
     assert latest == {"run": "2026092212", "manifest": puts[-2], "complete": True, "encoding": E.ENCODING,
                       "published_utc": m["published_utc"], "frames": 81}
@@ -447,15 +458,23 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     assert man["stats"] == puts[-3] and "_stats" not in man and set(man["frames"][0]) == {"step", "valid_utc"}
     assert len(c.objects[latest["manifest"]]["body"]) < 12_000                 # slim: r2.dev serves it uncompressed
     stats = json.loads(c.objects[man["stats"]]["body"])
-    assert len(stats["frames"]) == 81 and set(stats["frames"][0]["fields"]) == {"hs", "tp", "wind"}
+    assert len(stats["frames"]) == 81 and set(stats["frames"][0]["fields"]) == {"hs", "tp", "wind", "pdir", "wdir"}
+    assert all(f["pdir_mask_mismatch"] == 0 for f in stats["frames"])
+    assert stats["frames"][0]["fields"]["wdir"]["bytes_full"] == 0 and stats["frames"][0]["fields"]["wdir"]["bytes_half"] > 0
     assert stats["frames"][0]["fields"]["hs"]["bytes_full"] > 0
     assert man["grid"]["registration"] == "center" and man["grid_half"]["rows"] == 361 and man["grid_half"]["dlat"] == -0.5
     assert man["encoding_spec"]["missing"] == 0 and man["fields"]["tp"]["legend"] == [4.0, 22.0]
     assert man["frame_hours"] == 3 and man["expected_frames"] == 81
-    assert {n: f["interpolation"] for n, f in man["fields"].items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear"}
+    assert {n: f["interpolation"] for n, f in man["fields"].items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear",
+                                                                       "pdir": "circular", "wdir": "circular"}
+    assert man["fields"]["pdir"] == {"lo": 0.0, "hi": 360.0, "legend": [0.0, 360.0], "units": "deg", "interpolation": "circular",
+                                     "resolutions": ["full", "half"], "circular": True, "convention": "from"}
+    assert man["fields"]["wdir"]["resolutions"] == ["half"] and man["fields"]["hs"]["resolutions"] == ["full", "half"]
+    assert "circular" not in man["fields"]["hs"] and set(man["model"]["fields"]) == {"hs", "tp", "wind", "pdir", "wdir"}
     assert man["fill"] == E.FILL_INFO
     f0 = stats["frames"][0]["fields"]
-    assert f0["hs"]["filled_points"] == f0["tp"]["filled_points"] == 721 * 8 and f0["wind"]["filled_points"] == 0
+    assert f0["hs"]["filled_points"] == f0["tp"]["filled_points"] == f0["pdir"]["filled_points"] == 721 * 8
+    assert f0["wind"]["filled_points"] == f0["wdir"]["filled_points"] == 0
     assert c.objects[puts[0]]["cc"] == P.IMMUTABLE and c.objects[P.LATEST_KEY]["cc"] == P.POINTER
 
 
@@ -769,3 +788,66 @@ def test_rollback_without_fill_omits_the_block_and_keeps_the_guard(monkeypatch, 
     _manifest(c, "2026092212", "20260922T180000Z", filled)
     c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
     assert R.main(["--force"]) == 2 and "refusing to rewrite" in capsys.readouterr().out          # filled runs stay protected
+
+
+# ------------------------------- Phase B: direction fields -------------------------
+
+def test_wind_dir_from_conventions():
+    u = np.array([5.0, 0.0, -5.0, 0.0, 3.0, np.nan, 0.0], np.float32)
+    v = np.array([0.0, 5.0, 0.0, -5.0, 3.0, 1.0, np.nan], np.float32)
+    d = D.wind_dir_from(u, v)
+    assert d.dtype == np.float32
+    assert np.allclose(d[:5], [270.0, 180.0, 90.0, 0.0, 225.0])      # blowing east = from the west; north = from the south; NE-ward = from the SW
+    assert np.isnan(d[5]) and np.isnan(d[6])
+    assert np.all((d[:5] >= 0) & (d[:5] < 360))
+
+
+def test_quantize_circular_wraps_and_round_trips():
+    v = np.array([0.0, 360.0, 359.9, 0.7, 180.0, -10.0, 725.0, np.nan])
+    q = E.quantize_circular(v)
+    assert q[0] == q[1] == q[2] == 1                                   # 0, 360 and 359.9 share a code
+    assert q[7] == 0 and q.max() <= 254                                # missing stays 0; code 255 is never used
+    back = E.dequantize(q, 0.0, 360.0)
+    ang = lambda a, b: np.abs((a - b + 180.0) % 360.0 - 180.0)
+    assert ang(back[5], 350.0) < 0.71 and ang(back[6], 5.0) < 0.71     # negative and > 360 inputs wrap
+    x = np.linspace(0, 360, 100001)
+    assert ang(E.dequantize(E.quantize_circular(x), 0.0, 360.0), x).max() <= 360.0 / 508 + 1e-9
+
+
+def test_direction_frames_fill_by_nearest_and_publish_their_resolutions():
+    g = np.full((721, 1440), np.nan)
+    g[:, 700:710] = 350.0
+    g[:, 710:720] = 10.0                                              # across north: a mean would say 180
+    enc = E.encode_frame(g, "pdir", allow=np.ones((721, 1440), bool))
+    q = np.array(Image.open(io.BytesIO(enc["full"])))
+    codes = set(np.unique(q[q > 0]).tolist())
+    assert codes == set(np.unique(E.quantize_circular(np.array([350.0, 10.0]))).tolist())   # every filled node carries a model angle
+    assert enc["stats"]["filled_points"] == 721 * 8 and "half" in enc
+    w = E.encode_frame(np.full((721, 1440), 90.0), "wdir")
+    assert "full" not in w and np.array(Image.open(io.BytesIO(w["half"]))).shape == (361, 720)
+    c = FakeClient()
+    P.publish_frame(P.Store(c, "b"), "2026092212", "wdir", 3, w)
+    assert [k for op, k in c.log if op == "put"] == [f"{P.PREFIX}/2026092212/half/wdir/f003.png"]
+
+
+def test_dirpw_identity_is_enforced():
+    meta = {"shortName": "dirpw", "typeOfLevel": "surface", "level": 1, "stepRange": "24", "dataDate": 20260922, "dataTime": 1200}
+    D.check_identity(meta, "DIRPW:surface", RUN, 24)
+    with pytest.raises(ValueError):
+        D.check_identity(dict(meta, shortName="mwd"), "DIRPW:surface", RUN, 24)
+    assert R.WAVE_KEYS["pdir"] == "DIRPW:surface"
+
+
+def test_pdir_coverage_mismatch_is_counted_and_reported(offline_build, monkeypatch, tmp_path):
+    real = R.D.decode
+    def decode(blob, key=None, run_dt=None, step=None):
+        g, meta = real(blob, key, run_dt, step)
+        if key == "HTSGW:surface":
+            g = g.copy(); g[1, :5] = 0.0; g[2, :4] = np.nan                # a flat calm, and cells without a height
+        if key == "DIRPW:surface":
+            g = g.copy(); g[0, :7] = np.nan; g[1, :5] = np.nan              # 7 cells with waves but no direction; the calm has none either
+        return g, meta
+    monkeypatch.setattr(R.D, "decode", decode)
+    m = R.build_and_publish(None, RUN, [0, 3], upload=False, log=lambda *a: None)
+    assert [f["pdir_mask_mismatch"] for f in m["_stats"]["frames"]] == [7 + 4, 7 + 4]        # (a direction without a height counts too)
+    assert [f["pdir_missing_calm"] for f in m["_stats"]["frames"]] == [5, 5]

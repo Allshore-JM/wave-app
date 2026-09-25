@@ -109,8 +109,11 @@ class Store:
 
 
 def publish_frame(store, run, field, step, encoded):
-    store.put(frame_key(run, field, step), encoded["full"], "image/png", IMMUTABLE)
-    store.put(frame_key(run, field, step, half=True), encoded["half"], "image/png", IMMUTABLE)
+    """The frame's PNGs, one per resolution the field publishes (encode.FIELDS[...]["resolutions"])."""
+    if "full" in encoded:
+        store.put(frame_key(run, field, step), encoded["full"], "image/png", IMMUTABLE)
+    if "half" in encoded:
+        store.put(frame_key(run, field, step, half=True), encoded["half"], "image/png", IMMUTABLE)
 
 
 def publish_manifest(store, run, manifest, stats=None):

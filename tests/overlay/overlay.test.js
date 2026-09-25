@@ -84,6 +84,19 @@ test('validateManifest accepts schema 2 and 3 with the known encoding and file s
   assert.throws(() => I.validateManifest({ ...m2, frames: [{ step: 0, valid_utc: '2026-09-22T12:00:00Z', files: { hs: { full: 'a' } } }] }), /bad frame/);
 });
 
+test('the client accepts a manifest carrying the direction fields of plan section 21 phase B (wave and wind direction)', () => {
+  const dir = (res) => ({ lo: 0, hi: 360, legend: [0, 360], units: 'deg', interpolation: 'circular', resolutions: res, circular: true, convention: 'from' });
+  const m = { schema: 3, run: '2026092512', run_utc: '2026-09-25T12:00:00Z', encoding: 'u8-linear-v2', complete: true,
+    files: { template: 'gfswave/0p25/v1/2026092512/{res}{field}/f{step:03d}.png', res: { full: '', half: 'half/' } },
+    fields: { hs: Object.assign({ resolutions: ['full', 'half'] }, HS), tp: Object.assign({ resolutions: ['full', 'half'] }, TP),
+      wind: Object.assign({ resolutions: ['full', 'half'] }, WIND), pdir: dir(['full', 'half']), wdir: dir(['half']) },
+    grid: GRID, grid_half: HALF, frames: [{ step: 0, valid_utc: '2026-09-25T12:00:00Z' }, { step: 3, valid_utc: '2026-09-25T15:00:00Z' }],
+    fill: { version: 2, fields: ['hs', 'pdir', 'tp'], cells: 4, methods: { hs: 'mean', pdir: 'nearest', tp: 'nearest' } } };
+  assert.equal(I.validateManifest(m).run, '2026092512');
+  assert.equal(I.frameKey(m, m.frames[1], 'hs', true), 'gfswave/0p25/v1/2026092512/half/hs/f003.png');
+  assert.equal(I.frameKey(m, m.frames[1], 'wdir', true), 'gfswave/0p25/v1/2026092512/half/wdir/f003.png');
+});
+
 test('snapToPixel maps any point to the centre of the drawn pixel, so the readout reads what the tile shows', () => {
   const l = layer(frame(1440, 721, PATTERN), GRID, 'hs', HS);
   for (const coords of [{ z: 1, x: 0, y: 0 }, { z: 3, x: 7, y: 2 }, { z: 5, x: 2, y: 14 }, { z: 6, x: 33, y: 27 }]) {

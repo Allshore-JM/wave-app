@@ -13,6 +13,7 @@ NI, NJ = 1440, 721
 EXPECT = {
     "HTSGW:surface":          ("swh",   "surface",           1),
     "PERPW:surface":          ("perpw", "surface",           1),
+    "DIRPW:surface":          ("dirpw", "surface",           1),   # primary (peak) wave direction, degrees true, FROM
     "UGRD:10 m above ground": ("10u",   "heightAboveGround", 10),
     "VGRD:10 m above ground": ("10v",   "heightAboveGround", 10),
 }
@@ -79,3 +80,11 @@ def decode(blob, key=None, run_dt=None, step=None):
 
 def wind_speed(u, v):
     return np.sqrt(u.astype(np.float64) ** 2 + v.astype(np.float64) ** 2).astype(np.float32)
+
+
+def wind_dir_from(u, v):
+    """Meteorological wind direction: degrees true (clockwise from north) the wind blows FROM, in
+    [0, 360). u, v are the earth-relative eastward / northward components (GFS 0.25 deg lat/lon:
+    uvRelativeToGrid = 0). u > 0 (blowing east) -> 270; v > 0 (blowing north) -> 180; NaN propagates."""
+    d = np.degrees(np.arctan2(-u.astype(np.float64), -v.astype(np.float64))) % 360.0
+    return d.astype(np.float32)

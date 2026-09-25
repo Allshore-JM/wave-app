@@ -67,7 +67,14 @@ dispatch with `steps` / `dry_run` / `force`): NOAA open S3 byte-range GRIB recor
 (`u8-linear-v2`) -> Cloudflare R2. Bucket layout `gfswave/0p25/v1/<RUN>/{half/}<field>/fNNN.png`,
 `manifest-<ts>.json`, `stats-<ts>.json`, `latest.json` (written last, only for a complete run) and
 `failed/<RUN>.json`. The 0.25 degree grid (~28 km) is sampled per map pixel; smoothing between grid points
-is not extra detail.
+is not extra detail. Fields: `hs` (HTSGW), `tp` (PERPW, the peak period), `wind` (10 m speed from GFS u/v), and
+for the animation `pdir` (DIRPW, the peak / dominant wave direction) and `wdir` (10 m wind direction from u/v),
+both in degrees true the waves / wind come FROM, coded circularly (`q = 1 + round(deg * 254 / 360) mod 254`,
+the ordinary `u8-linear-v2` decode over 0-360, error <= 0.71 deg; the manifest marks them `circular`,
+`convention: from`, `interpolation: circular`). `pdir` is published full + half and takes the coastal fill
+by nearest model cell (never a mean of angles); `wdir` only at half resolution (`resolutions` per field in the
+manifest). The job records per step how many cells have waves but no direction (`pdir_mask_mismatch` in the
+stats sidecar; a flat calm, hs = 0, has none by nature and is counted apart) and warns in the summary.
 
 Runbook: rotate the R2 token in the repository secrets; roll back by unsetting `MODEL_OVERLAYS` (env only,
 no deploy), by re-pushing the `prod-pre-overlays` tag, or by disabling BOTH workflows (`model-frames.yml`

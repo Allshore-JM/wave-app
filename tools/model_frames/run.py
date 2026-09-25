@@ -24,6 +24,8 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -32,7 +34,7 @@ import decode as D       # noqa: E402
 import encode as E       # noqa: E402
 import publish as P      # noqa: E402
 
-WAVE_KEYS = {"hs": "HTSGW:surface", "tp": "PERPW:surface"}
+WAVE_KEYS = {"hs": "HTSGW:surface", "tp": "PERPW:surface", "pdir": "DIRPW:surface"}
 ATMOS_KEYS = ("UGRD:10 m above ground", "VGRD:10 m above ground")
 FRAME_HOURS = 3
 FAILED_RETRY_AFTER_S = 3 * 3600         # a cycle that failed to build is retried after 3 h, max 3 times
@@ -53,8 +55,13 @@ MODEL = {
         "hs":   {"label": "Wave height", "grib": "HTSGW", "definition": "Significant height of combined wind waves and swell"},
         "tp":   {"label": "Peak period", "grib": "PERPW", "definition": "Peak wave period Tp = 1/fp from WAVEWATCH III (GRIB table name 'Primary wave mean period')"},
         "wind": {"label": "Wind speed", "grib": "UGRD/VGRD 10 m above ground", "definition": "GFS 10 m wind speed (sqrt(u^2+v^2))"},
+        "pdir": {"label": "Wave direction", "grib": "DIRPW",
+                 "definition": "Primary (peak) wave direction from WAVEWATCH III: degrees true, the direction the dominant waves come FROM"},
+        "wdir": {"label": "Wind direction", "grib": "UGRD/VGRD 10 m above ground",
+                 "definition": "GFS 10 m wind direction: degrees true, the direction the wind blows FROM (atan2(-u, -v))"},
     },
 }
+FIELD_KEYS = ("lo", "hi", "legend", "units", "interpolation", "resolutions", "circular", "convention")
 GRID_FULL = {"cols": D.NI, "rows": D.NJ, "lon0": -180.0, "lat0": 90.0, "dlon": 0.25, "dlat": -0.25,
              "registration": "center", "lon_periodic": True}
 GRID_HALF = {"cols": 720, "rows": 361, "lon0": -180.0, "lat0": 90.0, "dlon": 0.5, "dlat": -0.5,
@@ -73,24 +80,31 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
         u, _ = D.decode(atmos[ATMOS_KEYS[0]], ATMOS_KEYS[0], run_dt, step)
         v, _ = D.decode(atmos[ATMOS_KEYS[1]], ATMOS_KEYS[1], run_dt, step)
         grids["wind"] = D.wind_speed(u, v)
+        grids["wdir"] = D.wind_dir_from(u, v)
         entry = {"step": step, "valid_utc": (run_dt + timedelta(hours=step)).strftime("%Y-%m-%dT%H:%M:%SZ")}
-        stat = {"step": step, "fields": {}}
+        # the direction must exist wherever there are waves, and nowhere without a height (the client draws
+        # arrows only on drawn water); a flat calm (hs == 0, 19 cells at f024 of 2026092512) has no direction
+        hs_, pd_ = grids["hs"], grids["pdir"]
+        mismatch = int(np.count_nonzero((np.isnan(pd_) & (hs_ > 0)) | (np.isnan(hs_) & ~np.isnan(pd_))))
+        calm = int(np.count_nonzero(np.isnan(pd_) & (hs_ == 0)))
+        stat = {"step": step, "fields": {}, "pdir_mask_mismatch": mismatch, "pdir_missing_calm": calm}
         for name, grid in grids.items():
             enc = E.encode_frame(grid, name)
-            stat["fields"][name] = dict(enc["stats"], bytes_full=len(enc["full"]), bytes_half=len(enc["half"]))
+            stat["fields"][name] = dict(enc["stats"], bytes_full=len(enc.get("full", b"")), bytes_half=len(enc.get("half", b"")))
             if upload:
                 P.publish_frame(store, run, name, step, enc)
         frames.append(entry)
         stats_frames.append(stat)
         filled = " ".join(f"{n}={stat['fields'][n]['filled_points']}" for n in (E.FILL_INFO or {}).get("fields", []))
-        log(f"f{step:03d} done in {time.time() - t:.1f}s" + (f" (filled {filled})" if filled else ""))
+        log(f"f{step:03d} done in {time.time() - t:.1f}s" + (f" (filled {filled})" if filled else "")
+            + (f" WARNING pdir/hs mask mismatch {mismatch}" if mismatch else ""))
     complete = steps == F.STEPS and len(frames) == len(F.STEPS)
     manifest = {
         "schema": 3, "run": run, "files": {"template": P.files_template(run), "res": {"full": "", "half": "half/"}}, "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": MODEL,
         "encoding": E.ENCODING, "encoding_spec": E.ENCODING_SPEC,
         "grid": GRID_FULL, "grid_half": GRID_HALF,
-        "fields": {n: {"lo": f["lo"], "hi": f["hi"], "legend": f["legend"], "units": f["units"],
-                       "interpolation": f["interpolation"]} for n, f in E.FIELDS.items()},
+        "fields": {n: {k: (list(f[k]) if isinstance(f[k], tuple) else f[k]) for k in FIELD_KEYS if k in f}
+                   for n, f in E.FIELDS.items()},
         "frame_hours": FRAME_HOURS, "expected_frames": len(F.STEPS),
         "frames": frames, "complete": complete,
         "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -231,6 +245,9 @@ def main(argv=None):
         f0 = manifest["_stats"]["frames"][0]
         _summary(f"coastal fill (v{E.FILL_VERSION}, {E.FILL_CELLS} cells) at f{f0['step']:03d}: " +
                  ", ".join(f"{n} {f0['fields'][n]['filled_points']} cells" for n in E.FILL_INFO["fields"]))
+    bad = [f["step"] for f in manifest["_stats"]["frames"] if f.get("pdir_mask_mismatch")]
+    if bad:
+        _summary(f"WARNING: wave direction and wave height cover different cells at {len(bad)} steps (first f{bad[0]:03d})")
     return 0
 
 

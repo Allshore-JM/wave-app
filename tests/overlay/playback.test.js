@@ -574,3 +574,135 @@ test('Update: the direction cache goes with the run and a late old-run direction
   for (const k of o.dcache.map.keys()) assert.ok(k.startsWith(B.run + '/'));
   clearInterval(o.runTimer); o.unmount();
 });
+
+// ---- G10-A: a pending seek / step survives every new caller of _prefetch / _startDir; delivery follows the layer ----
+
+test('G10-A S1: a far seek is loading, then the direction resolution changes (zoom 7 -> 7.6): the seek still lands', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+  const i0 = o.frameIndex;
+  assert.equal(o.res, 'full'); assert.equal(o.dres, 'half');
+  o.seek(i0 + 30); await settle();                                            // far target: outside the ring of i0
+  assert.equal(o.target, i0 + 30); assert.ok(o.inflight[o._key(i0 + 30)], 'the target field is in flight');
+  w.map.getZoom = () => 7.6; o._checkRes(); await settle();                   // desktop hs: res stays full, dres half -> full
+  assert.equal(o.res, 'full'); assert.equal(o.dres, 'full');
+  assert.ok(o.inflight[o._key(i0 + 30)], 'the pending target fetch survives the direction resolution change');
+  assert.ok(Object.keys(o.inflight).length <= w.I.MAX_INFLIGHT);
+  await w.releaseAll(); await settle();
+  assert.equal(o.frameIndex, i0 + 30, 'the seek landed'); assert.equal(o.target, i0 + 30);
+  assert.ok(o.flow.dir && o.flow.dir.cols === 1440, 'the full-resolution direction of the landed step is shown');
+  o.unmount();
+});
+
+test('G10-A S2 / S5: Animation ticked while a step is loading (outside the ring, and with _startDir eviction): the step still lands', async () => {
+  for (const ahead of [3, 2]) {
+    const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+    const o = w.create(); o.anim = false; o.mount('hs'); await settle();
+    if (ahead === 3) await w.releaseAll(); else await w.release(1);            // S2: all cached, seek past the ring; S5: ring {i0+1, i0+2} in flight
+    const i0 = o.frameIndex;
+    o.seek(i0 + ahead); await settle();
+    assert.equal(o.target, i0 + ahead); assert.ok(o.inflight[o._key(i0 + ahead)], 'target in flight');
+    o.setAnim(true); await settle();
+    assert.ok(o.inflight[o._key(i0 + ahead)], 'the pending target survives ticking Animation (ahead ' + ahead + ')');
+    assert.ok(Object.keys(o.inflight).length <= w.I.MAX_INFLIGHT);
+    await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, i0 + ahead, 'landed (ahead ' + ahead + ')');
+    assert.ok(o.flow.dir, 'its direction followed');
+    o.unmount();
+  }
+});
+
+test('G10-A: unticking Animation while a step is loading keeps the step; the shown step gets no direction fetch while another target is pending', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+  const i0 = o.frameIndex;
+  o.seek(i0 + 30); await settle();
+  o.setAnim(false); await settle();
+  assert.ok(o.inflight[o._key(i0 + 30)], 'the target survives unticking'); assert.ok(!Object.keys(o.inflight).some(isDir));
+  o.setAnim(true); await settle();
+  assert.ok(!o.inflight[o._key(i0, 'dir')], 'no direction fetch for the shown frame while the seek is pending');
+  assert.ok(o.inflight[o._key(i0 + 30)] && (o.inflight[o._key(i0 + 30, 'dir')] || Object.keys(o.inflight).length <= 2), 'the target and its direction come first');
+  await w.releaseAll(); await settle();
+  assert.equal(o.frameIndex, i0 + 30); assert.ok(o.flow.dir);
+  o.unmount();
+});
+
+test('G10-A M26: a SHOWN direction is cleared by a step until the new step direction lands (never an old direction under a new time)', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+  const shown = o.flow.dir; assert.ok(shown, 'a direction is on the map');
+  o.step(1); await settle(); await w.releaseField();
+  assert.equal(o.frameIndex, o.target);
+  assert.equal(o.flow.dir, null, 'cleared: the old step direction never sits under the new step');
+  await w.releaseDir(); assert.ok(o.flow.dir && o.flow.dir !== shown);
+  o.unmount();
+});
+
+test('G10-A M11/M12: _trimInflight keeps no survivor beside a target whose direction is in flight, exactly one otherwise', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.release(1);
+  // constructed sets: the record shape is what the scheduler looks at
+  const rec = (k, kind) => ({ promise: Promise.resolve(), abort: new AbortController(), key: k, kind });
+  const i = o.frameIndex, t = i + 1;
+  o.inflight = {}; o.inflight[o._key(t)] = rec(o._key(t), 'field'); o.inflight[o._key(t, 'dir')] = rec(o._key(t, 'dir'), 'dir'); o.inflight[o._key(i + 2)] = rec(o._key(i + 2), 'field');
+  o.dir = 1; o._trimInflight(t);
+  assert.deepEqual(Object.keys(o.inflight).sort(), [o._key(t), o._key(t, 'dir')].sort(), 'direction target in flight: no other survivor');
+  o.inflight = {}; o.inflight[o._key(t)] = rec(o._key(t), 'field'); o.inflight[o._key(i + 2)] = rec(o._key(i + 2), 'field'); o.inflight[o._key(i + 3)] = rec(o._key(i + 3), 'field');
+  o._trimInflight(t);
+  assert.equal(Object.keys(o.inflight).length, 2, 'exactly one survivor beside the target'); assert.ok(o.inflight[o._key(t)]);
+  o.inflight = {}; o.unmount();
+});
+
+test('G10-A M60 / P3-5 / P3-4: a cached direction is not fetched again; untick before the first frame aborts the direction fetch; direction successes do not mask field failures', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle();
+  assert.ok(Object.keys(o.inflight).some(isDir));
+  o.setAnim(false); await settle();                                           // before the first frame landed
+  assert.ok(!Object.keys(o.inflight).some(isDir), 'direction fetch aborted before the first landing'); assert.equal(o.dcache.size(), 0);
+  o.setAnim(true); await settle(); await w.releaseAll();
+  const before = w.fetches.length; const key = o._key(o.frameIndex, 'dir'); assert.ok(o.dcache.has(key));
+  o._startDir(o.frameIndex); o._syncFlow(o.frameIndex); await settle();
+  assert.equal(w.fetches.length, before, 'a cached direction is never downloaded again');
+  // three field failures with direction successes in between still trip the outage
+  const i0 = o.frameIndex, fkey = (i) => `gfswave/0p25/v1/${A.run}/hs/f${String(A.frames[i].step).padStart(3, '0')}.png`;
+  for (const i of [i0 + 10, i0 + 20, i0 + 30]) w.failNext['https://x/' + fkey(i)] = 'network';
+  o.seek(i0 + 10); await settle(); await w.releaseAll(); o.seek(i0 + 20); await settle(); await w.releaseAll(); o.seek(i0 + 30); await settle(); await w.releaseAll();
+  assert.equal(o.transientFails, 3, 'the counter follows the field frames only'); assert.equal(o.last && o.last.state, 'error');
+  o.unmount();
+});
+
+test('G10-A D1 / M52: on a field switch a direction that lands before the field frame is not delivered; the animator is told the new field', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+  assert.ok(o.flow.dir); assert.equal(o.flow.field, 'hs');
+  o.mount('wind'); await settle();
+  assert.equal(o.flow.field, 'wind'); assert.equal(o.flow.dir, null); assert.equal(o.layer.hasFrame(), false);
+  await w.releaseDir();                                                       // the wind direction lands first (it is smaller)
+  assert.equal(o.flow.dir, null, 'not delivered: the layer has no frame yet'); assert.ok(o.dcache.has(o._key(o.frameIndex, 'dir')), 'but cached');
+  o.flow.resume(true);                                                        // a tab show in that window
+  await w.releaseField();
+  assert.ok(o.flow.dir && o.flow.dir.cols === 720, 'delivered with the field frame'); assert.equal(o.flow.entry, A.frames[o.frameIndex]);
+  o.unmount();
+});
+
+test('G10-A P3-8: a phone crossing zoom 7.5 changes both resolutions; the same step direction stays until the new one lands', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  w.I.Overlay.prototype._dims = () => ({ w: 400, h: 700 }); w.map.getZoom = () => 6.5;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.res, 'half'); assert.equal(o.dres, 'half');
+  const shown = o.flow.dir; assert.ok(shown);
+  w.map.getZoom = () => 7.6; o._checkRes(); await settle();
+  assert.equal(o.res, 'full'); assert.equal(o.dres, 'full');
+  assert.equal(o.flow.dir, shown, 'the same step direction is kept across the resolution change');
+  await w.releaseAll(); await settle();
+  assert.ok(o.flow.dir !== shown && o.flow.dir.cols === 1440, 'then replaced by the full-resolution one');
+  o.unmount();
+});
+
+test('G10-A P3-2: a manifest whose direction grid fails validation gives no animation for that run', async () => {
+  const w = world(); const bad = manifest(A.run, A.run_utc, 12); bad.grid_half = Object.assign({}, HALF, { dlon: 1 });
+  w.pointer = ptr(bad); w.manifests[bad.run] = bad;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.animAvailable(), false); assert.equal(o.flow, null); assert.ok(!w.fetches.some(isDir));
+  o.unmount();
+});

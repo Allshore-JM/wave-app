@@ -145,8 +145,8 @@ test('windField: a 10 m/s wind from the west moves particles right at 30 px/s ti
 
 // ---- the animator with a recording canvas ----
 function fakeCtx() {
-  const c = { ops: [], globalCompositeOperation: 'source-over' };
-  for (const m of ['clearRect', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'fillRect', 'setTransform']) c[m] = function () { c.ops.push(m); };
+  const c = { ops: [], fills: [], globalCompositeOperation: 'source-over', fillStyle: '' };
+  for (const m of ['clearRect', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'fillRect', 'setTransform']) c[m] = function () { c.ops.push(m); if (m === 'fillRect') { const a = /,([0-9.]+)\)$/.exec(c.fillStyle); c.fills.push(a ? Number(a[1]) : 1); } };
   return c;
 }
 function animator(field, l, dframe, dgrid, zoom) {
@@ -219,4 +219,66 @@ test('suspend / resume count nested moves and zooms; a hidden document stops the
   const w = animator('wind', layer(frame(720, 361, () => codeOf(10, WIND)), HALF, 'wind', WIND), frame(720, 361, () => code(270)), HALF);
   assert.equal(w.fa.mode, 'static'); assert.ok(w.fa.anchors.length > 100, 'wind gets static arrows, no particles');
   delete global.matchMedia;
+});
+
+// ---- G10-A ----
+
+test('G10-A A1: a zoom that ends while the tab is hidden still rebuilds when the tab is shown (nested suspends remember the request)', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(90));
+  const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+  const { fa, events, canvas, map } = animator('hs', l, pdir, HALF);
+  const a0 = fa.anchors, v0 = fa.v;
+  events.zoomstart[0](); events.movestart[0](); fa.suspend();                 // zoom + the tab hidden
+  map.getZoom = () => 8; l._tileZoom = 8; map.getPixelBounds = () => ({ min: { x: 40000, y: 36000 } });
+  events.zoomend[0](); events.moveend[0]();                                   // the zoom ends while hidden
+  assert.equal(fa.suspended, 1); assert.equal(fa.anchors, a0, 'nothing rebuilt while hidden');
+  fa.resume();                                                                // shown (the Overlay passes true, but even a bare resume must rebuild)
+  assert.equal(fa.suspended, 0); assert.notEqual(fa.anchors, a0); assert.equal(fa.v.z, 8); assert.equal(canvas.style.visibility, '');
+});
+
+test('G10-A A2 / A3: reduced motion never starts the loop after hide / show; a direction delivered without a field frame cannot crash a frame', () => {
+  global.matchMedia = () => ({ matches: true });
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(90));
+  const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+  const s = animator('hs', l, pdir, HALF);
+  s.fa.suspend(); s.fa.resume(); assert.equal(s.fa.active, false); assert.equal(s.fa.scheduled, 0, 'static: no loop');
+  delete global.matchMedia;
+  const l2 = layer(hs, GRID, 'hs', HS); l2._tileZoom = 6;
+  const { fa } = animator('hs', l2, null, null);
+  l2.clear(); fa.setData(pdir, HALF);
+  assert.equal(fa.dir, pdir); assert.equal(fa.anchors, null); assert.equal(fa.active, false);
+  assert.doesNotThrow(() => { fa.resume(); if (fa.pending) fa.pending(100); fa._render(16); });
+  assert.equal(fa.active, false, 'no loop without anchors');
+});
+
+test('G10-A M22 / M33 / P3-6 / P3-7: the fade alpha is below 1, a south wind moves particles up, a new step keeps the trails, the particle target follows the view', () => {
+  const wind = frame(720, 361, () => codeOf(10, WIND)), wdirS = frame(720, 361, () => code(180)), wdirS2 = frame(720, 361, () => code(180));
+  const l = layer(wind, HALF, 'wind', WIND); l._tileZoom = 6;
+  const { fa, ctx, map } = animator('wind', l, wdirS, HALF);
+  const k = Math.round(fa.vf.rows / 2) * fa.vf.cols + 10;
+  assert.ok(fa.vf.v[k] < -10 && Math.abs(fa.vf.u[k]) < 0.5, 'from the south: screen v negative (up)');
+  fa.pending(100); fa.pending(133);
+  const alphas = ctx.fills; assert.ok(alphas.length >= 2 && alphas.every((a) => a > 0 && a < 1), 'fade alpha in (0, 1): ' + alphas.join());
+  const clears = ctx.ops.filter((o) => o === 'clearRect').length;
+  fa.setData(wdirS2, HALF, { step: 3 });                                       // the next playback step, same view
+  assert.equal(ctx.ops.filter((o) => o === 'clearRect').length, clears, 'a new step does not wipe the trails');
+  map.getSize = () => ({ x: 1600, y: 1200 }); fa._rebuild();
+  assert.equal(fa.target, Math.round(1600 * 1200 / 900), 'the target follows the view'); assert.ok(fa.count <= fa.target);
+  assert.equal(ctx.ops.filter((o) => o === 'clearRect').length, clears + 1, 'a moved view starts clean');
+});
+
+test('G10-A M59 / P3-3: no arrow over a tile that is all land or whose mask says land; code 255 is absent, not north', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(90));
+  const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6; l._clip = true;      // clipped like a real wave layer
+  const { fa } = animator('hs', l, pdir, HALF);
+  assert.equal(fa.anchors.length, 0, 'clipped and no tiles on the map: readoutAt gives null everywhere');
+  const all = I.arrowAnchors(fa.v, 6);
+  for (const a of all) { const p = I.pixelOf(a.lat, a.lng, 6); l._tiles[p.x + ':' + p.y + ':' + p.z] = { el: { _ovLand: null }, coords: { x: p.x, y: p.y, z: p.z } }; }
+  fa._rebuild(); assert.ok(fa.anchors.length > 100, 'all-ocean masks: arrows');
+  for (const kk in l._tiles) l._tiles[kk].el._ovLand = I.LAND_ALL;
+  fa._rebuild(); assert.equal(fa.anchors.length, 0, 'all-land tiles: no arrows');
+  const p255 = frame(720, 361, () => 255);
+  assert.equal(I.dirAt(p255, HALF, 20, -158), null, 'code 255 is absent');
+  const mixed = frame(720, 361, (r, c) => (c % 2 ? 255 : code(90)));
+  assert.ok(angDiff(I.dirAt(mixed, HALF, 90 - 100 * 0.5, -180 + 100.5 * 0.5), 90) < 0.75, 'beside a 255 node the present node rules');
 });

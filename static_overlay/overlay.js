@@ -1319,6 +1319,9 @@
     this._on('zoomend', function () { if (self.canvas) self.canvas.style.visibility = ''; self.resume(true); });
     this._on('movestart', function () { self.suspend(); });
     this._on('moveend', function () { self.resume(true); });
+    // a view reset (setView without animation, a jump of a screen or more, the site's single-world
+    // clamp on a resize) recreates the tiles AFTER moveend: the arrows are rebuilt once they exist
+    this._on('viewreset', function () { if (!self.suspended) self._rebuild(); });
     this._on('resize', function () { self._rebuild(); });
   };
   FlowAnimator.prototype.detach = function () {
@@ -1350,10 +1353,13 @@
   };
   // The layer changed under the animation (opacity, a coast store): rebuild.
   FlowAnimator.prototype.refresh = function () { if (this.dir && !this.suspended && this.canvas) this._rebuild(); };
-  // The map's geometry: Leaflet's own size and pixel bounds (what its tiles are laid out with).
+  // The map's geometry: the world pixel of the container's top-left from Leaflet's pixel bounds (exact
+  // whatever Leaflet's cached size says) and the container's REAL size (the site sets the map height by
+  // script after Leaflet measured it; Leaflet's getSize() lags until the first resize).
   FlowAnimator.prototype.view = function () {
-    var map = this.map, size = map.getSize(), pb = map.getPixelBounds(), z = map.getZoom();
-    return { z: z, w: size.x, h: size.y, ox: pb.min.x, oy: pb.min.y, zt: typeof this.layer._tileZoom === 'number' ? this.layer._tileZoom : Math.round(z) };
+    var map = this.map, size = map.getSize(), c = map.getContainer && map.getContainer(), pb = map.getPixelBounds(), z = map.getZoom();
+    var w = (c && c.clientWidth) || size.x, h = (c && c.clientHeight) || size.y;
+    return { z: z, w: w, h: h, ox: pb.min.x, oy: pb.min.y, zt: typeof this.layer._tileZoom === 'number' ? this.layer._tileZoom : Math.round(z) };
   };
   FlowAnimator.prototype._place = function (v) {
     var cv = this.canvas, dpr = Math.min(2, (window.devicePixelRatio || 1)), W = Math.round(v.w * dpr), H = Math.round(v.h * dpr);
@@ -1644,8 +1650,10 @@
     this.target = idx; this._syncUI();
     this._trimInflight(idx);
     var p = this._ensure(idx);
-    if (this._wantDir() && !this._isUnavailable(idx)) this._startDir(idx);   // its direction frame rides beside it
-    return p.then(function (frame) {
+    // With Animation on, the picture and its arrows change together: the step waits for its direction
+    // frame as well (fetched beside the field frame); a missing or failed direction never holds it.
+    var pd = this._wantDir() && !this._isUnavailable(idx) ? this._dirReady(idx) : null;
+    return (pd ? Promise.all([p, pd]).then(function (both) { return both[0]; }) : p).then(function (frame) {
       if ((sig && sig.aborted) || self.target !== idx || !self.layer || self.manifest !== m || self.field !== field || self.res !== res) throw abortError();
       // the frame already on the map (Retry after an outage, a repeated seek): no redraw, but the same
       // state transition as a fresh landing, or the panel would stay on "Loading"
@@ -1881,7 +1889,7 @@
       if (!self.last) return;
       // the panel is rebuilt only when it has to move between the control and the sheet
       var compactNow = self.isCompact(), wasCompact = !!self.sheet;
-      if (compactNow !== wasCompact) self.render(self.last); else { self._syncUI(); self._layoutSheet(); }
+      if (compactNow !== wasCompact || self.sheet) self.render(self.last); else { self._syncUI(); self._layoutSheet(); }   // the sheet's cap follows the map height
     });
   };
   Overlay.prototype._checkRes = function () {
@@ -1969,6 +1977,21 @@
       }
     }).catch(function (err) {                                                // a missing direction frame: the field plays on without arrows
       if (err && !err.unavailable && err.name !== 'AbortError' && typeof console !== 'undefined' && console.warn) console.warn('overlay animation', err);
+    });
+  };
+  // Settles when the direction frame of idx is decoded, unavailable, or its fetch has failed or been
+  // aborted (at the abort itself: a decode that cannot be cancelled must not hold the step); never
+  // rejects. What a step waits for beside its field frame.
+  Overlay.prototype._dirReady = function (idx) {
+    var key = this._key(idx, 'dir');
+    if (this.dcache.has(key) || this._isUnavailable(idx, 'dir')) return Promise.resolve();
+    if (!this.inflight[key]) this._startDir(idx);
+    var rec = this.inflight[key];
+    if (!rec) return Promise.resolve();
+    return new Promise(function (resolve) {
+      var done = function () { resolve(); };
+      rec.promise.then(done, done);
+      if (rec.abort.signal.aborted) done(); else rec.abort.signal.addEventListener('abort', done);
     });
   };
   // Start the direction frame of idx unless it is cached, in flight or unavailable. Ranked by the plan

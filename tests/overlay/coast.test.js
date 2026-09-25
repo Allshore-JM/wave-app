@@ -609,21 +609,25 @@ test('contourTile: never along the foot or the top of a steep ramp, where the le
 
 test('smoothBlock: masked [1,2,1] mean, missing stays missing, periodic columns, rows not wrapped; jumps kept apart, marked alike both ways', () => {
   const cols = 6, rows = 5, q = new Uint8Array(cols * rows), at = (r, c) => r * cols + c;
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) q[at(r, c)] = 100 + 10 * c + r;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) q[at(r, c)] = 100 + (r === 4 ? 1 : 0) + (c === 5 ? 1 : 0);
   q[at(2, 3)] = 0;                                                            // one missing node
+  q[at(0, 2)] = 150;                                                          // a big step: the mean would move its neighbours by several codes
   const S = new Float32Array(cols * rows);
   I.smoothBlock(q, cols, rows, S, null, 0, 0, rows, 0, cols);
   assert.equal(S[at(2, 3)], 0, 'missing stays missing');
-  const mean = (r, c) => {                                                    // the reference: masked weighted mean, cols periodic, rows clipped
-    let acc = 0, w = 0;
+  const mean = (r, c) => {                                                    // the reference: masked weighted mean, cols periodic, rows clipped,
+    let acc = 0, w = 0;                                                       // held within half a code of the node's own value
     for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
       const rr = r + dr, cc = (c + dc + cols) % cols; if (rr < 0 || rr >= rows) continue;
       const v = q[at(rr, cc)]; if (!v) continue; const wt = (2 - Math.abs(dr)) * (2 - Math.abs(dc)); acc += v * wt; w += wt;
     }
-    return acc / w;
+    const v0 = q[at(r, c)]; return Math.max(v0 - 0.5, Math.min(v0 + 0.5, acc / w));
   };
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (q[at(r, c)]) assert.ok(Math.abs(S[at(r, c)] - mean(r, c)) < 1e-4, `${r},${c}`);
-  assert.ok(S[at(2, 0)] > q[at(2, 0)] + 5, 'column 0 averages with column 5 (periodic)');
+  assert.equal(S[at(0, 1)], q[at(0, 1)] + 0.5, 'next to the big step: half a code, no more');
+  assert.equal(S[at(0, 2)], q[at(0, 2)] - 0.5, 'the step itself: half a code, no more');
+  assert.ok(S[at(2, 0)] > S[at(2, 2)] + 0.2, 'column 0 averages with column 5 (periodic), column 2 does not reach it');
+  assert.ok(Math.abs(S[at(0, 4)] - mean(0, 4)) < 1e-4 && S[at(0, 4)] < 100.4, 'row 0 never averages with row 4 (rows do not wrap; wrapping gives 100.5)');
   // a peak-period jump (2 s = 17.5 codes on 1..30 s) between columns 2|3 and between rows 1|2: never blended, cells marked
   const jump = 2 * 254 / 29, qt = new Uint8Array(cols * rows);
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) qt[at(r, c)] = 80 + (c >= 3 ? 25 : 0) + (r >= 2 && c < 3 ? 25 : 0) + c;
@@ -825,5 +829,152 @@ test('real frames: no peak-period line inside a cell that jumps more than 2 s, a
     }
     assert.ok(lines > 1000, `${cols} cols: ${lines} line px`);
     assert.equal(near, 0, `${cols} cols: ${near} of ${lines} line px inside a jump cell`);
+  }
+});
+
+// ---- G8 re-review (R1): the smoothing stays within one code, follows the frame, fills lazily without gaps ----
+const around = (lat, lng, z, w, h) => {
+  const n = 256 * Math.pow(2, z), s = Math.sin(lat * Math.PI / 180), cx = Math.floor((lng + 180) / 360 * n / 256);
+  const cy = Math.floor((0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n / 256), out = [];
+  for (let dy = 0; dy < h; dy++) for (let dx = 0; dx < w; dx++) out.push({ z, x: cx - (w >> 1) + dx, y: cy - (h >> 1) + dy });
+  return out;
+};
+
+test('a patch one code above its surroundings keeps its closed contour when the level lies within that code (G8 R2 P2-1)', () => {
+  // hs nodes of code 100 everywhere and one of 101 (0.059 m higher); the only level sits 0.3 code above 100. The model
+  // value at the bump may be anywhere in its code's bin, so smoothing may lower it by half a code, never by one.
+  const span = (HS.hi - HS.lo) / 254, level = HS.lo + (99 + 0.3) * span;
+  const fr = frame(1440, 721, (r, c) => (r === 300 && c === 700 ? 101 : 100));
+  const l = layer(fr, GRID, 'hs', HS); l.setContours({ step: level, per: 1 }, true);
+  const c = around(15, -5, 8, 1, 1)[0], a = composed(l, c), b = a.slice();
+  l._contours(c, b);
+  assert.ok(inkOf(a, b) > 50, `the bump's closed contour (${inkOf(a, b)} px)`);
+});
+
+test('real frames: every line core sits within 0.3 interval of the value drawn at its pixel around the islands (G8 R1 P2-1)', async () => {
+  const hsHalf = await realFrame('frame_hs_half.png'), tpFull = await realFrame('frame_tp_full.png');
+  const TPB = Object.assign({}, TP, { interpolation: 'bilinear' });
+  let cores = 0;
+  for (const [fr, grid, field, fdef, cfg] of [[hsHalf, HALF, 'hs', HS, { step: 2, per: 3.28084 }], [hsHalf, HALF, 'hs', HS, { step: 0.5, per: 1 }],
+    [tpFull, GRID, 'tp', TPB, { step: 2, per: 1 }]]) {
+    const l = layer(fr, grid, field, fdef); l.setContours(cfg, true);
+    for (const z of [6, 7, 8, 9]) {
+      for (const c of [...around(20.8, -156.9, z, 3, 3), ...around(21.5, -158.2, z, 3, 3), ...around(22.0, -159.6, z, 2, 2)]) {
+        const codes = l.tileCodes(c, new Float64Array(65536)), a = composed(l, c), b = a.slice();
+        l._contours(c, b, true);
+        const F = l._F, S = 258;
+        for (let py = 0; py < 256; py++) for (let px = 0; px < 256; px++) {
+          const k = (py * 256 + px) * 4;
+          if (!a[k + 3] || (a[k] === b[k] && a[k + 1] === b[k + 1] && a[k + 2] === b[k + 2])) continue;
+          const i = (py + 1) * S + px + 1, fv = F[i], lv = Math.round(fv), df = fv - lv;
+          const sx = Math.max(0, df > 0 ? Math.max(fv - F[i - 1], fv - F[i + 1]) : Math.max(F[i - 1] - fv, F[i + 1] - fv));
+          const sy = Math.max(0, df > 0 ? Math.max(fv - F[i - S], fv - F[i + S]) : Math.max(F[i - S] - fv, F[i + S] - fv));
+          if (!(Math.abs(df) / Math.hypot(sx, sy) <= 0.75)) continue;                 // the line's core (full coverage)
+          const step = cfg.step * (z < 4 ? 2 : 1), drawn = l._value(codes[py * 256 + px]) * cfg.per;
+          const off = Math.abs(drawn - lv * step) / step;
+          if (off > 0.3) assert.fail(`${field} ${cfg.step} z${z} ${c.x},${c.y} px ${px},${py}: line at ${lv * step}, drawn value ${drawn.toFixed(2)} (${off.toFixed(2)} interval)`);
+          cores++;
+        }
+      }
+    }
+  }
+  assert.ok(cores > 50000, `${cores} line cores`);
+});
+
+test('one layer through frames, resolutions and fields draws exactly what fresh layers draw (the smoothed copy follows the frame)', () => {
+  const TPB = Object.assign({}, TP, { interpolation: 'bilinear' });
+  const JUMPY = (r, c) => 1 + Math.round(90 + 60 * Math.sin(c / 7) * Math.cos(r / 5)) + ((Math.floor(c / 40) % 2) ? 25 : 0);
+  const SHIFT = (r, c) => SMOOTH(r + 3, c + 5);
+  const F = { a: frame(1440, 721, SMOOTH), b: frame(1440, 721, SHIFT), h: frame(720, 361, SMOOTH), t: frame(1440, 721, JUMPY), th: frame(720, 361, JUMPY) };
+  const cfg = { hs: { step: 2, per: 3.28084 }, tp: { step: 2, per: 1 } };
+  const seq = [['a', GRID, 'hs', HS], ['b', GRID, 'hs', HS], ['h', HALF, 'hs', HS], ['a', GRID, 'hs', HS], ['t', GRID, 'tp', TPB], ['th', HALF, 'tp', TPB], ['b', GRID, 'hs', HS]];
+  const tiles = [{ z: 6, x: 3, y: 27 }, { z: 6, x: 4, y: 27 }, { z: 4, x: 1, y: 6 }, { z: 5, x: 31, y: 12 }, { z: 5, x: 0, y: 12 }];
+  const one = new I.ModelGridLayer({ opacity: 1 });
+  let draws = 0;
+  for (const [f, grid, field, fdef] of seq) {
+    if (one.field !== field) one.clear();                                         // what mount() does on a field switch
+    one.setContours(cfg[field], true);
+    one.setFrame(F[f], grid, field, fdef, I.buildRamp(I.RAMPS[field]), { step: 0, valid_utc: '2026-09-22T12:00:00Z' });
+    const fresh = layer(F[f], grid, field, fdef); fresh.setContours(cfg[field], true);
+    for (const c of tiles) {
+      const a = composed(one, c), b = composed(fresh, c);
+      one._contours(c, a); fresh._contours(c, b);
+      assert.deepEqual(Array.from(a), Array.from(b), `${f} ${field} z${c.z} ${c.x},${c.y}`);
+      draws++;
+    }
+  }
+  assert.equal(draws, seq.length * tiles.length);
+});
+
+test('smoothing filled lazily, block by block, equals the whole frame smoothed up front, across node-block seams', () => {
+  const TPB = Object.assign({}, TP, { interpolation: 'bilinear' });
+  const JUMPY = (r, c) => 1 + Math.round(90 + 60 * Math.sin(c / 7) * Math.cos(r / 5)) + ((Math.floor(c / 40) % 2) ? 25 : 0);
+  for (const [fr, grid, field, fdef, cfg, tiles] of [
+    [frame(1440, 721, SMOOTH), GRID, 'hs', HS, { step: 0.5, per: 1 }, [...around(30, -120, 6, 4, 4), ...around(0, 179.5, 5, 2, 2)]],
+    [frame(1440, 721, JUMPY), GRID, 'tp', TPB, { step: 2, per: 1 }, [...around(30, -120, 6, 4, 4), ...around(-40, 10, 4, 3, 3)]],
+    [frame(720, 361, JUMPY), HALF, 'tp', TPB, { step: 2, per: 1 }, [...around(20, -160, 2, 3, 3), ...around(0, 0, 1, 2, 2)]]]) {
+    const lazy = layer(fr, grid, field, fdef), up = layer(fr, grid, field, fdef);
+    lazy.setContours(cfg, true); up.setContours(cfg, true);
+    up._contours({ z: 3, x: 0, y: 0 }, new Uint8ClampedArray(65536 * 4));            // allocate its smoothed copy, then fill all of it
+    const sm = up._sm;
+    I.smoothBlock(fr.q, fr.cols, fr.rows, sm.S, sm.jump ? sm.J : null, sm.jump, 0, fr.rows, 0, fr.cols);
+    sm.done.fill(1);
+    for (const c of tiles) {
+      const a = composed(lazy, c), b = composed(up, c);
+      lazy._contours(c, a); up._contours(c, b);
+      assert.deepEqual(Array.from(a), Array.from(b), `${field} ${fr.cols} z${c.z} ${c.x},${c.y}`);
+    }
+  }
+});
+
+test('the layer treats exactly 2 s as the peak-period jump: a 17-code step (1.94 s) is smoothed, an 18-code step (2.06 s) is a jump', () => {
+  const TPB = Object.assign({}, TP, { interpolation: 'bilinear' });
+  for (const [step, isJump] of [[17, false], [18, true]]) {
+    const fr = frame(1440, 721, (r, c) => (c < 720 ? 100 : 100 + step));          // one step, between columns 719 and 720
+    const l = layer(fr, GRID, 'tp', TPB); l.setContours({ step: 2, per: 1 }, true);
+    const c = { z: 6, x: 32, y: 31 };                                               // a tile on the step (0 E, near the equator)
+    l._contours(c, composed(l, c));
+    const r = 360 * 1440;                                                           // row 360 (the equator)
+    assert.equal(l._sm.J[r + 719], isJump ? 1 : 0, `${step} codes: the cell across the step`);
+    assert.equal(l._sm.J[r + 700], 0, `${step} codes: a cell away from it`);
+    assert.equal(l._sm.S[r + 719] > 100, !isJump, `${step} codes: blended across the step or not`);
+  }
+});
+
+test('every node a tile\'s samples read has been smoothed for this frame, also when they end at a node-block seam', () => {
+  const TPB = Object.assign({}, TP, { interpolation: 'bilinear' });
+  const JUMPY = (r, c) => 1 + Math.round(90 + 60 * Math.sin(c / 7) * Math.cos(r / 5)) + ((Math.floor(c / 40) % 2) ? 25 : 0);
+  const fr = frame(1440, 721, JUMPY), cols = 1440, rows = 721;
+  const z = 10, n = 256 * Math.pow(2, z), latOf = (Y) => Math.atan(Math.sinh(Math.PI - 2 * Math.PI * Y / n)) * 180 / Math.PI;
+  // tiles whose last sample column / row is the last node of a smoothing block (64 columns, 32 rows), so the next node
+  // (read with the bilinear weight) lies in a block no sample of the tile falls in
+  let colTile = null, rowTile = null;
+  for (let x = 0; x < 1024 && !colTile; x++) { const c = ((x * 256 + 256.5) / n * 360) / 0.25; if (Math.floor(c) % 64 === 63 && c - Math.floor(c) > 0.1) colTile = { z, x, y: 400 }; }
+  for (let y = 40; y < 900 && !rowTile; y++) { const r = (90 - latOf(y * 256 + 256.5)) / 0.25; if (Math.floor(r) % 32 === 31 && r - Math.floor(r) > 0.1) rowTile = { z, x: 30, y }; }
+  assert.ok(colTile && rowTile, 'seam tiles found');
+  for (const c of [colTile, rowTile, { z: 2, x: 1, y: 1 }, { z: 6, x: 11, y: 20 }]) {
+    const lazy = layer(fr, GRID, 'tp', TPB), up = layer(fr, GRID, 'tp', TPB);
+    lazy.setContours({ step: 2, per: 1 }, true); up.setContours({ step: 2, per: 1 }, true);
+    up._contours(c, composed(up, c));
+    I.smoothBlock(fr.q, cols, rows, up._sm.S, up._sm.J, up._sm.jump, 0, rows, 0, cols); up._sm.done.fill(1);
+    lazy._contours(c, composed(lazy, c));                                          // a fresh layer: only this tile's blocks are filled
+    const cellPx = 256 * Math.pow(2, c.z) * 0.25 / 360, sp = cellPx >= 6 ? 4 : 2, m = 256 / sp + 2, wide = cellPx < sp;
+    let read = 0;
+    for (let j = 0; j < m; j++) {
+      const rr = lazy._sr[j]; if (!(rr >= 0 && rr <= rows - 1)) continue;
+      const r0 = Math.floor(rr), r1 = Math.min(rows - 1, r0 + 1);
+      for (let i = 0; i < m; i++) {
+        const c0 = Math.floor(lazy._sc[i]), c1 = (c0 + 1) % cols;
+        for (const k of [r0 * cols + c0, r0 * cols + c1, r1 * cols + c0, r1 * cols + c1]) {
+          assert.equal(lazy._sm.S[k], up._sm.S[k], `z${c.z} ${c.x},${c.y}: S at node ${k}`); read++;
+        }
+        for (let dr = wide ? -1 : 0; dr <= (wide ? 1 : 0); dr++) for (let dc = wide ? -1 : 0; dc <= (wide ? 1 : 0); dc++) {
+          const rj = r0 + dr; if (rj < 0 || rj >= rows) continue;
+          const k = rj * cols + (c0 + dc + cols) % cols;
+          assert.equal(lazy._sm.J[k], up._sm.J[k], `z${c.z} ${c.x},${c.y}: J at node ${k}`);
+        }
+      }
+    }
+    assert.ok(read > 1000, `${read} node reads`);
   }
 });

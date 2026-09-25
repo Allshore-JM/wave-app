@@ -63,7 +63,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         # the chosen layer survives a reload in this tab (A1): read back from the module's session key and
         # restored after load, only while visible; a user's pick mounts without the saved time
         assert "'allshore.overlay.v1'" in body and "choose(again, true)" in body and "overlay.mount(field, restore)" in body
-        assert "choose(sel.value, false); remember(sel.value, fresh)" in body and "document.hidden" in body
+        assert "choose(v, pending && v !== ''); remember(v, fresh)" in body and "document.hidden" in body
         # G8: the back/forward cache re-syncs the save; the restore waits for a deferred table (3 s at most)
         assert "'pageshow'" in body and "'forecastLoading'" in body and "setTimeout(start, 5000)" in body
         assert '"https://frames.example/gfswave/0p25/v1"' in body           # trailing slash stripped

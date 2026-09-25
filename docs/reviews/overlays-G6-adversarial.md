@@ -89,3 +89,28 @@ rollback behaviour. Fixed in the final commit:
 | R-P3-6 | P3 | Test gaps (no brute-force nearest test, no manifest-without-`fill` test, no mask-regeneration test). | The first two added; the mask regeneration needs the 22 MB coast data and stays a manual step (`make_fill_mask.py`, verified independently by this re-review). |
 
 Final state: 380 tests (49 job). **G6 closed**; the job-only merge waits for the owner's go-ahead.
+
+## Owner-requested check before the merge (2026-09-25)
+
+The owner saw the old gaps on the test site; expected, since no filled run has been published (the test
+site reads the production bucket, and the branch has only run as dry runs). To verify the fill end to end
+with the real client, the site (client 2.6.6) was run locally twice against two local copies of the bucket
+for run 2026092418: the published hs/tp frames as-is, and the same frames passed through the branch's
+`fill_coast` (model codes unchanged; 66,661 cells filled per frame). Per view, every current-zoom tile was
+read back and each water pixel of the coastline mask checked for colour:
+
+| View | Wave height: uncoloured water px, published / filled | Peak period: published / filled |
+|---|---|---|
+| Oahu z9 | 16,855 / 0 | 50,862 / 0 |
+| Oahu z11 (Kaena Pt) | 49,118 / 0 | 170,277 / 0 |
+| Kauai z9 | 10,655 / 0 | 33,539 / 0 |
+| Maui Nui z9 | 10,477 / 0 | 38,004 / 0 |
+| Big Island z8 | 3,151 / 0 | 13,636 / 0 |
+| Hawaii z6 | 269 / 0 | 972 / 0 |
+| San Francisco Bay z9 | 16,816 / 0 | 22,620 / 0 |
+| Bergen z8 | 33,004 / 4,406 | 36,441 / 6,468 (inner fjords > 1 degree from model water) |
+| Tokyo Bay z8 | 10,950 / 0 | 26,233 / 0 |
+
+No land pixel was coloured in any view; readout = drawn pixel at 73,728 samples (Tp, Oahu z9); the caption
+carries the "extrapolated" sentence. A before/after sheet on the site's imagery (Oahu to Maui, zoom 9) was
+sent to the owner.

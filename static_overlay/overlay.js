@@ -1227,6 +1227,7 @@
   };
   Overlay.prototype.unmount = function () {
     var self = this;
+    this.field = null;                                     // first: the pause below must not save the layer as still on
     this.pause();
     this.abortAll();
     if (this.runTimer) { clearInterval(this.runTimer); this.runTimer = null; }

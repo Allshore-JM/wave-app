@@ -308,7 +308,11 @@ test('a reload restores the valid time and keeps playing; the state is written o
   assert.equal(st.field, 'hs'); assert.equal(st.t, t5); assert.equal(st.playing, true); assert.ok(Date.now() - st.at < 5000);
   o.pause(); st = storage.read();
   assert.equal(st.playing, false); assert.equal(st.t, t5);
-  done(o);
+  // Off while playing: the page saves field '' and unmounts; the unmount's own pause must not save the layer as on again
+  o.play();
+  storage.setItem('allshore.overlay.v1', JSON.stringify(Object.assign(storage.read(), { field: '', playing: false })));
+  clearInterval(o.runTimer); o.unmount();
+  assert.equal(storage.read().field, ''); assert.equal(storage.read().playing, false);
 });
 
 test('no resume under reduced motion or in a hidden tab (it resumes when shown); stale saves give the usual first frame', async () => {

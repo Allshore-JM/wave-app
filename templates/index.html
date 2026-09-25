@@ -2811,7 +2811,7 @@
       }
       var again = stored().field;
       sel.value = FIELDS.hasOwnProperty(again) ? again : '';    // (autocomplete="off": never the browser's form restore)
-      sel.addEventListener('change', function () { remember(sel.value); choose(sel.value, false); });
+      sel.addEventListener('change', function () { choose(sel.value, false); remember(sel.value); });
       if (sel.value) {
         // after the page has loaded and gone idle, and only while it is visible: the forecast comes first
         var restoreNow = function () {

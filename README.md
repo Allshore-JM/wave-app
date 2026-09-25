@@ -95,11 +95,11 @@ also disables both workflows as above. Data policy in the browser: the 0.5 degre
 on narrow (phone) maps and for wind everywhere, so an 81-frame loop is about 4-13 MB (32 MB only for wind
 zoomed past 7.5); frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
 where the browser has DecompressionStream.
-Overlay state (asset 2.7.0): the chosen layer, its valid time and whether it was playing are kept in the tab's
+Overlay state (asset 2.7.1): the chosen layer, its valid time and whether it was playing are kept in the tab's
 sessionStorage (`allshore.overlay.v1`, with opacity and speed), so picking another forecast point (a page reload)
 brings the overlay back where it was; the time and play state only from a save under 30 minutes old, never under
 the viewer's reduced-motion setting, and a hidden tab resumes when shown. Off, or a new tab, starts Off.
-Coastline clip (asset 2.7.0): wave height and peak period are clipped to the ocean in the browser, so the field
+Coastline clip (asset 2.7.1): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for
 tile zoom <= 6; tier 1 `f/<lat>_<lon>.bin`, full resolution, one 5-degree cell per file, fetched for the cells in

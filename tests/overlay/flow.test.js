@@ -41,7 +41,7 @@ function layer(fr, grid, field, fdef, opacity) {
 }
 const angDiff = (a, b) => Math.abs(((a - b) % 360 + 540) % 360 - 180);
 
-test('dirAt: 350 and 10 degrees average to north, opposite neighbours have no direction, one present node is its direction', () => {
+test('dirAt: 350 and 10 degrees average to north, across a regime edge the nearest node rules (no blend), one present node is its direction', () => {
   const f = frame(1440, 721, (r, c) => (c % 2 ? code(10) : code(350)));
   // exactly between two columns on a node row: 350 / 10 -> 0 (within the 0.71-degree coding error)
   const lat = 90 - 300 * 0.25, lonMid = -180 + 100.5 * 0.25;
@@ -49,8 +49,13 @@ test('dirAt: 350 and 10 degrees average to north, opposite neighbours have no di
   assert.ok(angDiff(I.dirAt(f, GRID, lat - 0.125, lonMid), 0) < 0.75, 'four nodes 350/10/350/10');
   assert.ok(angDiff(I.dirAt(f, GRID, lat, -180 + 100 * 0.25), 350) < 0.75, 'on a node: that node');
   const opp = frame(1440, 721, (r, c) => (c % 2 ? code(180) : code(0)));
-  assert.equal(I.dirAt(opp, GRID, lat, lonMid), null, 'opposite neighbours: no direction');
-  assert.ok(angDiff(I.dirAt(opp, GRID, lat, lonMid - 0.1), 0) < 2, '80/20 towards the 0 node: still defined');
+  assert.ok(angDiff(I.dirAt(opp, GRID, lat, lonMid - 0.01), 0) < 0.75 && angDiff(I.dirAt(opp, GRID, lat, lonMid + 0.01), 180) < 0.75, 'opposite neighbours: the nearest node, no blend');
+  const edge = frame(1440, 721, (r, c) => (c % 2 ? code(300) : code(80)));                   // a NW swell beside an E wind sea (220 deg apart... 140 the short way)
+  assert.ok(angDiff(I.dirAt(edge, GRID, lat, lonMid - 0.02), 80) < 0.75 && angDiff(I.dirAt(edge, GRID, lat, lonMid + 0.02), 300) < 0.75, 'regime edge: nearest');
+  const near = frame(1440, 721, (r, c) => (c % 2 ? code(100) : code(50)));                   // 50 deg apart: one regime, blended
+  assert.ok(angDiff(I.dirAt(near, GRID, lat, lonMid), 75) < 1.5, 'within 60 deg: the circular mean');
+  const four = frame(1440, 721, (r, c) => ((r + c) % 4 === 0 ? code(300) : code(85)));        // reviewer B's 2x2: three ENE nodes and one NW
+  assert.ok([85, 300].some((d) => angDiff(I.dirAt(four, GRID, lat - 0.125, lonMid), d) < 0.75), 'a 2x2 across regimes shows one of its nodes');
   const one = frame(1440, 721, (r, c) => (c === 100 ? code(270) : 0));
   assert.ok(angDiff(I.dirAt(one, GRID, lat, lonMid), 270) < 0.75, 'one present node beside an absent one (weight 0.5)');
   assert.equal(I.dirAt(one, GRID, lat, -180 + 100.8 * 0.25), null, 'mostly absent (weight 0.2): nothing');
@@ -122,7 +127,7 @@ test('arrowAnchors: tile-pixel centres every 64 px, the same world anchors after
   assert.ok(west.length > 0 && west.every((a) => a.lng < -180 && I.pixelOf(a.lat, a.lng, zt).x < 0));
 });
 
-test('windField: a 10 m/s wind from the west moves particles right at 30 px/s times the latitude stretch (capped at 3); calm is drawn dark', () => {
+test('windField: a 10 m/s wind from the west moves particles right at 30 px/s times the latitude stretch (capped at 3); a calm has no vector', () => {
   const wind = frame(720, 361, () => codeOf(10, WIND)), wdir = frame(720, 361, () => code(270));
   const l = layer(wind, HALF, 'wind', WIND);
   const view = { z: 5, w: 400, h: 4400, ox: 4096, oy: 0 };                  // a tall view from the pole down past the equator (n = 8192)
@@ -136,9 +141,6 @@ test('windField: a 10 m/s wind from the west moves particles right at 30 px/s ti
   assert.ok(Math.abs(vf.u[row45 * vf.cols + 50] - 30 * Math.SQRT2) < 1.5, '45 N: sec = sqrt 2');
   const calm = layer(frame(720, 361, () => codeOf(0, WIND)), HALF, 'wind', WIND), vfc = I.windField(view, 4, calm, wdir, HALF);
   assert.equal(vfc.u[k], 0, 'no velocity in a calm');
-  const strong = layer(frame(720, 361, () => codeOf(25, WIND)), HALF, 'wind', WIND), vfs = I.windField(view, 4, strong, wdir, HALF);
-  const light = layer(frame(720, 361, () => codeOf(2, WIND)), HALF, 'wind', WIND), vfl = I.windField(view, 4, light, wdir, HALF);
-  assert.equal(vfl.dark[k], 1, 'a light field colour (2 m/s) gets dark particles'); assert.equal(vfs.dark[k], 0, 'orange/red at 25 m/s: light particles');
   const none = I.windField(view, 4, l, frame(720, 361, () => 0), HALF);
   assert.equal(none.u[k], 0, 'no direction: no vector');
 });
@@ -176,8 +178,11 @@ test('arrows: a wave-height frame with a direction draws tracks and gliding chev
   fa.stop(); assert.equal(fa.pending, null); assert.equal(fa.active, false);
   const flat = layer(frame(1440, 721, () => codeOf(0.05, HS)), GRID, 'hs', HS); flat._tileZoom = 6;
   const q = animator('hs', flat, pdir, HALF); assert.equal(q.fa.anchors.length, 0, 'no arrow under a flat sea'); assert.equal(q.fa.scheduled, 1);
-  const tp = layer(frame(1440, 721, () => 1 + Math.round((16 - 1) / 29 * 254)), GRID, 'tp', { lo: 1, hi: 30, legend: [4, 22], units: 's', interpolation: 'bilinear' }); tp._tileZoom = 6;
+  const TPDEF = { lo: 1, hi: 30, legend: [4, 22], units: 's', interpolation: 'bilinear' };
+  const tp = layer(frame(1440, 721, () => 1 + Math.round((16 - 1) / 29 * 254)), GRID, 'tp', TPDEF); tp._tileZoom = 6;
   const t = animator('tp', tp, pdir, HALF); assert.ok(t.fa.anchors.length > 100); assert.ok(Math.abs(t.fa.anchors[0].rate - 1.6) < 0.05, 'a 16 s swell glides at 1.6x');
+  const floor = layer(frame(1440, 721, () => 1 + Math.round((1.6 - 1) / 29 * 254)), GRID, 'tp', TPDEF); floor._tileZoom = 6;
+  assert.equal(animator('tp', floor, pdir, HALF).fa.anchors.length, 0, 'the model no-wave floor (Tp 1.6 s) gets no arrow on the period layer (G10-B P2-1)');
 });
 
 test('particles: the wind field seeds particles that move with the wind, fade the trails and adapt their count to the frame budget', () => {
@@ -187,7 +192,8 @@ test('particles: the wind field seeds particles that move with the wind, fade th
   assert.equal(fa.mode, 'particles'); assert.ok(fa.vf && fa.vf.s === 8 && fa.vf.cols === 101, 'a 22-px cell at zoom 6: an 8-px lattice'); assert.equal(fa.count, Math.round(800 * 600 / 900));
   const x0 = fa.particles[0], y0 = fa.particles[1];
   fa.pending(100); fa.pending(150);                                          // dt 16 then 50 ms
-  assert.ok(ctx.ops.includes('fillRect'), 'the trails fade'); assert.ok(strokes(ctx) >= 2);
+  assert.ok(ctx.ops.includes('fillRect'), 'the trails fade'); assert.equal(strokes(ctx), 4, 'halo + core per frame, two frames');
+  assert.ok(fa.particles[2] >= 66 && fa.particles[3] >= I.PARTICLE_LIFE_MS[0], 'age and life in ms');
   assert.ok(fa.particles[0] > x0 && Math.abs(fa.particles[1] - y0) < 0.1, 'a particle moved east');
   fa._render(50); fa._render(50);
   fa.ema = 20; fa.adaptAt = 0; fa._adapt(20, 5000); assert.ok(fa.count < Math.round(800 * 600 / 900), 'over budget: fewer particles');

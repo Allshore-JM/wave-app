@@ -10,11 +10,16 @@ const path = require('node:path');
 const GRID = { cols: 1440, rows: 721, lon0: -180, lat0: 90, dlon: 0.25, dlat: -0.25, registration: 'center', lon_periodic: true };
 const HALF = { cols: 720, rows: 361, lon0: -180, lat0: 90, dlon: 0.5, dlat: -0.5, registration: 'center', lon_periodic: true };
 const HS = { lo: 0, hi: 15, legend: [0, 12], units: 'm', interpolation: 'bilinear' };
+const WIND = { lo: 0, hi: 41.15555555555556, legend: [0, 30.866666666666667], units: 'm/s', interpolation: 'bilinear' };
+const PDIR = { lo: 0, hi: 360, legend: [0, 360], units: 'deg', interpolation: 'circular', resolutions: ['full', 'half'], circular: true, convention: 'from' };
+const WDIR = Object.assign({}, PDIR, { resolutions: ['half'] });
 
-function manifest(run, runUtc, tag) {
+// Every manifest carries the direction fields of phase B (the animation is off unless a test ticks it).
+function manifest(run, runUtc, tag, nodirs) {
   const frames = [];
   for (let s = 0; s <= 240; s += 3) frames.push({ step: s, valid_utc: new Date(Date.parse(runUtc) + s * 3.6e6).toISOString().replace('.000Z', 'Z') });
-  return { schema: 3, run, run_utc: runUtc, encoding: 'u8-linear-v2', complete: true, fields: { hs: HS }, grid: GRID, grid_half: HALF, frames,
+  const fields = nodirs ? { hs: HS, wind: WIND } : { hs: HS, wind: WIND, pdir: PDIR, wdir: WDIR };
+  return { schema: 3, run, run_utc: runUtc, encoding: 'u8-linear-v2', complete: true, fields, grid: GRID, grid_half: HALF, frames,
     files: { template: `gfswave/0p25/v1/${run}/{res}{field}/f{step:03d}.png`, res: { full: '', half: 'half/' } }, model: {}, tag };
 }
 const ptr = (m) => ({ run: m.run, manifest: `gfswave/0p25/v1/${m.run}/manifest-x.json`, complete: true, published_utc: new Date().toISOString().replace(/\.\d+Z$/, 'Z') });
@@ -36,7 +41,7 @@ function world(opts) {
       createElement() { return { width: 0, height: 0, getContext() { let bmp = null; return {
         clearRect() {}, drawImage(b) { bmp = b; }, getImageData(x, y, wd, h) { const d = new Uint8ClampedArray(wd * h * 4).fill(1); d[0] = bmp.tag; return { data: d }; } }; } }; } },
     sessionStorage: (opts && opts.storage) || { getItem() { return null; }, setItem() {} },
-    createImageBitmap: (blob) => new Promise((res) => w.pendingBitmaps.push(() => res({ width: blob.w, height: blob.h, tag: blob.tag, close() {} }))),
+    createImageBitmap: (blob) => new Promise((res) => { const f = () => res({ width: blob.w, height: blob.h, tag: blob.tag, close() {} }); f.blob = blob; w.pendingBitmaps.push(f); }),
     fetch: (url, o) => {
       w.fetches.push(url);
       if (o && o.signal && o.signal.aborted) return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
@@ -48,8 +53,8 @@ function world(opts) {
         w.pendingCoast.push(() => res(w.coastAnswer(url)));
         if (o && o.signal) o.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })));
       });
-      const run = /\/v1\/(\d{10})\//.exec(url)[1];
-      return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: 1440, h: 721, tag: Number(run.slice(-2)) }) });
+      const run = /\/v1\/(\d{10})\//.exec(url)[1], half = url.indexOf('/half/') >= 0;
+      return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: half ? 720 : 1440, h: half ? 361 : 721, tag: Number(run.slice(-2)), url }) });
     },
     setTimeout, clearTimeout, setInterval, clearInterval, Date, Math, console, Promise, Map, Array, Object, Number, String, Error, TypeError, JSON, isNaN, parseInt, parseFloat, AbortController,
     Uint8Array, Uint8ClampedArray, Float32Array, Float64Array, Symbol, matchMedia: undefined,
@@ -71,9 +76,15 @@ function world(opts) {
     Overlay.prototype[k] = function (st) { if (k === 'render') { this.last = st; this.ui = null; } };
   }
   Overlay.prototype._dims = () => ({ w: 1200, h: 800 });
+  // the animator's DOM and drawing are neutralised (flow.test.js exercises them); its data flow stays real
+  for (const k of ['attach', 'detach', '_rebuild', '_clear', 'stop', '_start']) I.FlowAnimator.prototype[k] = function () { (this.calls = this.calls || []).push(k); };
   const map = { getPane: () => ({}), getZoom: () => 7, getSize: () => ({ x: 1200, y: 800 }), on() {}, off() {}, removeLayer() {},
     getContainer: () => ({ clientWidth: 1200, clientHeight: 800, classList: { add() {}, remove() {} }, style: { setProperty() {}, removeProperty() {} } }) };
-  w.I = I;
+  w.I = I; w.map = map;
+  // release one pending decode by kind: the direction frames are the half-size ones in these tests
+  w.releaseDir = async () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 720); assert.ok(i >= 0, 'a direction decode is pending'); w.pendingBitmaps.splice(i, 1)[0](); await settle(); };
+  w.releaseField = async () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 1440); assert.ok(i >= 0, 'a field decode is pending'); w.pendingBitmaps.splice(i, 1)[0](); await settle(); };
+  w.holdDir = () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 720); assert.ok(i >= 0); return w.pendingBitmaps.splice(i, 1)[0]; };
   w.create = (extra) => g.AllshoreOverlay.create(map, Object.assign({ base: 'https://x/gfswave/0p25/v1', panel: {}, tz: 'UTC', getUnit: () => 'US', fmtTime: () => '', tzAbbr: () => '', pageCycle: () => null }, extra || {}));
   w.release = async (n) => { for (let i = 0; i < (n === undefined ? 1 : n) && w.pendingBitmaps.length; i++) w.pendingBitmaps.shift()(); await settle(); };
   w.releaseAll = async () => { while (w.pendingBitmaps.length) { w.pendingBitmaps.shift()(); await settle(); } };
@@ -460,4 +471,106 @@ test('hiding the tab pauses playback and saves it as playing; showing it resumes
   w.doc.hidden = false; w.fire('doc', 'visibilitychange');
   assert.equal(o.playing, true); assert.equal(o.wasPlaying, false);
   done(o);
+});
+
+
+// ---- direction frames and the animation (plan section 21 phase C) ----
+const isDir = (k) => k.indexOf('/pdir/') >= 0 || k.indexOf('/wdir/') >= 0;
+
+test('animation on: the direction frame rides beside the field frame, never more than MAX_INFLIGHT, keys and caches by kind, delivered only once the step is on the map', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true;                                       // the saved checkbox
+  o.mount('hs'); await settle();
+  assert.ok(o.flow, 'animator attached'); assert.equal(o.animAvailable(), true); assert.equal(o.dres, 'half', 'zoom 7: half-resolution direction');
+  const keys = Object.keys(o.inflight);
+  assert.equal(keys.length, 2, keys.join()); assert.ok(keys.some((k) => k.includes('/half/pdir/')) && keys.some((k) => k.includes('/full/hs/')));
+  await w.releaseDir();                                                      // the direction lands first: cached, not shown (no frame on the map yet)
+  assert.equal(o.flow.dir, null); assert.equal(o.dcache.size(), 1); assert.equal(o.cache.size(), 0);
+  await w.releaseField();                                                    // the field lands: the cached direction is delivered with it
+  assert.ok(o.flow.dir, 'direction delivered'); assert.equal(o.flow.dir, o.dcache.get(o._key(o.frameIndex, 'dir')));
+  assert.ok(o.flow.calls.includes('_rebuild'));
+  for (let i = 0; i < 12; i++) { o.seek((i * 7) % 81); await tick(); assert.ok(Object.keys(o.inflight).length <= w.I.MAX_INFLIGHT, 'inflight ' + Object.keys(o.inflight).length); }
+  for (const k of o.cache.map.keys()) assert.ok(!isDir(k), 'field cache: ' + k);
+  for (const k of o.dcache.map.keys()) assert.ok(k.includes('/half/pdir/'), 'direction cache: ' + k);
+  assert.ok(o.dcache.size() <= w.I.MAX_DECODED);
+  const flow = o.flow;
+  o.unmount();
+  assert.equal(o.flow, null); assert.equal(o.dcache.size(), 0); assert.equal(o.dres, null); assert.equal(Object.keys(o.inflight).length, 0);
+  assert.ok(flow.calls.includes('detach'));
+  await w.releaseAll(); assert.equal(o.dcache.size(), 0, 'late decodes resolve into the void');
+});
+
+test('a direction frame that lands after the map moved on is never shown under the new step (the new target direction outranks it)', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle();
+  await w.releaseField();                                                    // frame i0 on the map; its direction still pending
+  const i0 = o.frameIndex;
+  assert.equal(o.flow.dir, null);
+  const late = w.holdDir();                                                  // hold step i0's direction decode
+  o.step(1); await settle(); await w.releaseField();                        // step i0 + 1 lands: the canvas is cleared, its direction is fetched
+  assert.equal(o.frameIndex, i0 + 1); assert.equal(o.flow.dir, null); assert.ok(o.flow.calls.includes('_clear'));
+  assert.ok(o.inflight[o._key(i0 + 1, 'dir')], 'the new step direction is in flight'); assert.equal(o.inflight[o._key(i0, 'dir')], undefined, 'the old one was evicted for it');
+  late(); await settle();
+  assert.equal(o.flow.dir, null, 'the old step direction must not be shown');
+  assert.equal(o.dcache.has(o._key(i0, 'dir')), false, 'evicted for the new target direction: a late decode of an aborted fetch is dropped');
+  await w.releaseDir();
+  assert.ok(o.flow.dir, 'the new step direction shows'); assert.equal(o.flow.dir, o.dcache.get(o._key(i0 + 1, 'dir')));
+  o.unmount();
+});
+
+test('a run without direction fields: the animation is unavailable and no direction frame is ever requested', async () => {
+  const w = world(); const A0 = manifest(A.run, A.run_utc, 12, true); w.pointer = ptr(A0); w.manifests[A0.run] = A0;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.animAvailable(), false); assert.equal(o.flow, null); assert.equal(o.dres, null);
+  o.step(1); await settle(); await w.releaseAll();
+  assert.ok(!w.fetches.some(isDir), 'no direction fetch'); assert.equal(o.dcache.size(), 0);
+  o.unmount();
+});
+
+test('unticking Animation drops the direction fetches and cache; ticking it again fetches the direction of the frame on the map', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseField();
+  assert.ok(Object.keys(o.inflight).some(isDir));
+  o.setAnim(false); await settle();
+  assert.equal(o.flow, null); assert.ok(!Object.keys(o.inflight).some(isDir), 'direction fetches aborted'); assert.equal(o.dcache.size(), 0);
+  const before = w.fetches.length;
+  o.setAnim(true); await settle();
+  assert.ok(o.flow); assert.ok(w.fetches.slice(before).some((u) => u.includes('/half/pdir/f' + String(A.frames[o.frameIndex].step).padStart(3, '0'))), 'the shown step direction is fetched first');
+  assert.ok(Object.keys(o.inflight).length <= w.I.MAX_INFLIGHT);
+  await w.releaseAll(); assert.ok(o.flow.dir);
+  o.unmount();
+});
+
+test('wind takes the half-resolution wind direction at every zoom; pdir follows the zoom with hysteresis and a change refetches without clearing', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  w.map.getZoom = () => 9;
+  const o = w.create(); o.anim = true; o.mount('wind'); await settle();
+  assert.equal(o.dres, 'half'); assert.ok(Object.keys(o.inflight).some((k) => k.includes('/half/wdir/')));
+  await w.releaseAll(); assert.ok(o.flow.dir);
+  o.mount('hs'); await settle();                                             // a field change at zoom 9: full-resolution pdir
+  assert.equal(o.dres, 'full'); assert.equal(o.flow.dir, null, 'the wind direction is not shown under wave height');
+  const fetches = w.fetches.filter((u) => u.includes('/pdir/'));
+  assert.ok(fetches.length && fetches.every((u) => !u.includes('/half/')), 'full-resolution pdir at zoom 9');
+  w.pendingBitmaps.forEach((f) => { if (f.blob.w === 1440) f(); }); w.pendingBitmaps = w.pendingBitmaps.filter((f) => f.blob.w !== 1440); await settle();
+  assert.ok(o.flow.dir, 'full pdir delivered'); const shown = o.flow.dir;
+  w.map.getZoom = () => 6.5; o._checkRes(); await settle();                  // zoom out: half-resolution pdir, the shown one stays meanwhile
+  assert.equal(o.dres, 'half'); assert.equal(o.flow.dir, shown, 'kept until the half frame lands');
+  await w.releaseDir();
+  assert.notEqual(o.flow.dir, shown); assert.equal(o.flow.dir.cols, 720);
+  o.unmount();
+});
+
+test('Update: the direction cache goes with the run and a late old-run direction decode never reaches the animator', async () => {
+  const w = world(); w.manifests[B.run] = B; w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseField();
+  assert.ok(w.pendingBitmaps.some((f) => f.blob.w === 720), 'run A direction pending');
+  w.pointer = ptr(B); o.newerRun = w.pointer; o.update(); await settle();
+  assert.equal(o.manifest.run, B.run); assert.equal(o.dcache.size(), 0); assert.equal(o.flow.dir, null);
+  const old = w.pendingBitmaps.filter((f) => f.blob.url.includes(A.run)); w.pendingBitmaps = w.pendingBitmaps.filter((f) => !f.blob.url.includes(A.run));
+  old.forEach((f) => f()); await settle();
+  assert.equal(o.dcache.size(), 0, 'no run-A direction in the cache'); assert.equal(o.flow.dir, null);
+  await w.releaseAll();
+  assert.ok(o.flow.dir && o.flow.dir.q[0] === 18, 'run B direction shown'); assert.equal(drawnRun(o), B.run);
+  for (const k of o.dcache.map.keys()) assert.ok(k.startsWith(B.run + '/'));
+  clearInterval(o.runTimer); o.unmount();
 });

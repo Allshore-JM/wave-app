@@ -1,4 +1,4 @@
-/* Allshore Surf model overlay (Phase 3: animated frames per field). Loaded on demand; never on page load.
+/* Allshore Surf model overlay (animated frames per field; swell arrows and wind particles). Loaded on demand; never on page load.
  *
  * Data contract (manifest schema 2 or 3 from tools/model_frames): 8-bit greyscale PNG frames,
  * q = 0 missing, value = lo + (q - 1) / 254 * (hi - lo), q = 1 means "<= lo", q = 255 ">= hi";
@@ -885,29 +885,9 @@
       return el;
     },
     _value: function (code) { return this._lo + (code - 1) / 254 * (this._hi - this._lo); },
-    // THE sampler: codes along one fractional grid row r (0..rows-1, caller-checked) at the periodic
-    // column positions colPos[0..n) (each 0 <= cpos < cols), written to out[off..off+n). Bilinear over
-    // the present neighbours (q 0 = absent; mostly absent -> 0), nearest for discontinuous fields (Tp).
-    // 0 means "no value". Both the tile drawing and the readout go through here.
-    _codeRow: function (r, colPos, n, out, off) {
-      var f = this._frame, cols = f.cols, q = f.q, i;
-      if (this._nearest) {
-        var base = Math.round(r) * cols;
-        for (i = 0; i < n; i++) out[off + i] = q[base + (Math.round(colPos[i]) % cols)];
-        return;
-      }
-      var r0 = Math.floor(r), r1 = r0 + 1 < f.rows ? r0 + 1 : r0, fr = r - r0, w0 = 1 - fr, b0 = r0 * cols, b1 = r1 * cols;
-      for (i = 0; i < n; i++) {
-        var cpos = colPos[i], c0 = Math.floor(cpos), c1 = c0 + 1 === cols ? 0 : c0 + 1, fc = cpos - c0;
-        var a = q[b0 + c0], b = q[b0 + c1], c = q[b1 + c0], d = q[b1 + c1];
-        var w = 0, acc = 0, wt;
-        if (a) { wt = w0 * (1 - fc); acc += a * wt; w += wt; }
-        if (b) { wt = w0 * fc; acc += b * wt; w += wt; }
-        if (c) { wt = fr * (1 - fc); acc += c * wt; w += wt; }
-        if (d) { wt = fr * fc; acc += d * wt; w += wt; }
-        out[off + i] = w < 0.25 ? 0 : acc / w;
-      }
-    },
+    // THE sampler (sampleRow): both the tile drawing and the readout go through here, and so do the
+    // arrow anchors and the particle field.
+    _codeRow: function (r, colPos, n, out, off) { sampleRow(this._frame, this._nearest, r, colPos, n, out, off); },
     _code: function (r, cpos) { this._one[0] = cpos; this._codeRow(r, this._one, 1, this._oneOut, 0); return this._oneOut[0]; },
     valueAt: function (lat, lon) {
       if (!this._frame) return null;
@@ -1128,6 +1108,336 @@
     for (var i = 0; i < keys.length && this.map.size > this.max; i++) if (keys[i] !== key && keys[i] !== keep) this.map.delete(keys[i]);
   };
 
+  // ---- direction fields and the animation (plan section 21 phase C) ----
+  // Beside the field frame, the animation reads a second frame per step: pdir (the peak / dominant wave
+  // direction) under wave height and peak period, wdir (the 10 m wind direction) under wind speed; both
+  // are degrees true the waves / wind come FROM, coded circularly by the job (code 1 = 0 = 360 deg, code
+  // 255 unused; the manifest marks them circular, convention "from"). They are never drawn as colour:
+  // sampled as unit vectors (circular bilinear over the present nodes; no direction where the
+  // neighbours disagree) they steer the chevrons and particles drawn on one canvas in the ovAnimPane
+  // (z 300, under the forecast points, no pointer events). A direction is shown only for the step on
+  // the map, never an older one under a newer time: a step change clears the canvas until that step's
+  // direction frame has landed (the frames load through the same scheduler, target field first, then
+  // the target direction, then the ring interleaved, never more than MAX_INFLIGHT fetches in all).
+  var DIR_FIELDS = { hs: 'pdir', tp: 'pdir', wind: 'wdir' };
+  var DIR_AGREE = 0.5;                                     // resultant below this fraction of the weight = the neighbours disagree
+  var ARROW_PX = 64;                                       // one arrow every 64 tile pixels (4 x 4 per tile), anchored to tile pixels
+  var ARROW_MIN = { hs: 0.1, wind: 1 };                    // no arrow under a flat sea (m) or a calm (m/s)
+  var ARROW_CYCLE_S = 1.5;                                 // a chevron runs its track in this time at rate 1 (wave height)
+  var ANIM_BUDGET_MS = { desktop: 4, phone: 8 };           // animation time per animation frame (plan section 21)
+  var PARTICLE_PX2 = 900, PARTICLE_MIN = 150, PARTICLE_MAX = 3000;
+  var PARTICLE_PX_PER_S = 3;                               // screen px/s per m/s of wind, before the latitude stretch
+  var PARTICLE_CLEAR_MS = 4000;                            // hard clear of the trails now and then (8-bit fades leave a floor)
+  var CODE_SIN = new Float64Array(256), CODE_COS = new Float64Array(256);
+  (function () { for (var q = 1; q < 256; q++) { var a = (q - 1) / 254 * 2 * Math.PI; CODE_SIN[q] = Math.sin(a); CODE_COS[q] = Math.cos(a); } })();
+  // A manifest field usable as a direction: circular over 0-360, the FROM convention, published resolutions.
+  function dirFieldOk(f) {
+    return !!(f && f.circular === true && f.convention === 'from' && f.lo === 0 && f.hi === 360 && Array.isArray(f.resolutions) &&
+      (f.resolutions.indexOf('half') >= 0 || f.resolutions.indexOf('full') >= 0));
+  }
+  // Resolution of the direction frame: the 0.5-degree frames below zoom 7, the 0.25-degree ones from 7.5
+  // (hysteresis like wind), among the resolutions the field publishes (wind direction: half only).
+  function dirRes(f, zoom, current) {
+    var full = f.resolutions.indexOf('full') >= 0, half = f.resolutions.indexOf('half') >= 0;
+    if (!full) return 'half';
+    if (!half) return 'full';
+    if (current === 'full') return zoom < 7 ? 'half' : 'full';
+    return zoom >= 7.5 ? 'full' : 'half';
+  }
+  // THE scalar sampler (ModelGridLayer._codeRow delegates here): codes along one fractional grid row r
+  // (0..rows-1, caller-checked) at the periodic column positions colPos[0..n) (each 0 <= cpos < cols),
+  // written to out[off..off+n). Bilinear over the present neighbours (q 0 = absent; mostly absent -> 0),
+  // nearest for discontinuous fields. 0 means "no value".
+  function sampleRow(f, nearest, r, colPos, n, out, off) {
+    var cols = f.cols, q = f.q, i;
+    if (nearest) {
+      var base = Math.round(r) * cols;
+      for (i = 0; i < n; i++) out[off + i] = q[base + (Math.round(colPos[i]) % cols)];
+      return;
+    }
+    var r0 = Math.floor(r), r1 = r0 + 1 < f.rows ? r0 + 1 : r0, fr = r - r0, w0 = 1 - fr, b0 = r0 * cols, b1 = r1 * cols;
+    for (i = 0; i < n; i++) {
+      var cpos = colPos[i], c0 = Math.floor(cpos), c1 = c0 + 1 === cols ? 0 : c0 + 1, fc = cpos - c0;
+      var a = q[b0 + c0], b = q[b0 + c1], c = q[b1 + c0], d = q[b1 + c1];
+      var w = 0, acc = 0, wt;
+      if (a) { wt = w0 * (1 - fc); acc += a * wt; w += wt; }
+      if (b) { wt = w0 * fc; acc += b * wt; w += wt; }
+      if (c) { wt = fr * (1 - fc); acc += c * wt; w += wt; }
+      if (d) { wt = fr * fc; acc += d * wt; w += wt; }
+      out[off + i] = w < 0.25 ? 0 : acc / w;
+    }
+  }
+  // The direction sampler: at the same positions, the unit vector of the direction the waves / wind
+  // move TOWARD as (east, north) components, from a circular bilinear average of the present nodes'
+  // FROM directions: outE[off+i] = outN[off+i] = 0 where nothing is present (weight < 0.25) or the
+  // neighbours disagree (the resultant is shorter than DIR_AGREE of the weight: e.g. two opposite nodes).
+  function sampleDirRow(f, r, colPos, n, outE, outN, off) {
+    var cols = f.cols, q = f.q, r0 = Math.floor(r), r1 = r0 + 1 < f.rows ? r0 + 1 : r0, fr = r - r0, w0 = 1 - fr, b0 = r0 * cols, b1 = r1 * cols;
+    for (var i = 0; i < n; i++) {
+      var cpos = colPos[i], c0 = Math.floor(cpos), c1 = c0 + 1 === cols ? 0 : c0 + 1, fc = cpos - c0;
+      var a = q[b0 + c0], b = q[b0 + c1], c = q[b1 + c0], d = q[b1 + c1], w = 0, x = 0, y = 0, wt;
+      if (a) { wt = w0 * (1 - fc); x += CODE_SIN[a] * wt; y += CODE_COS[a] * wt; w += wt; }
+      if (b) { wt = w0 * fc; x += CODE_SIN[b] * wt; y += CODE_COS[b] * wt; w += wt; }
+      if (c) { wt = fr * (1 - fc); x += CODE_SIN[c] * wt; y += CODE_COS[c] * wt; w += wt; }
+      if (d) { wt = fr * fc; x += CODE_SIN[d] * wt; y += CODE_COS[d] * wt; w += wt; }
+      var len = Math.sqrt(x * x + y * y);
+      if (w < 0.25 || len < DIR_AGREE * w) { outE[off + i] = 0; outN[off + i] = 0; }
+      else { outE[off + i] = -x / len; outN[off + i] = -y / len; }         // FROM -> TOWARD: the opposite vector
+    }
+  }
+  var dirOne = { c: new Float64Array(1), e: new Float64Array(1), n: new Float64Array(1) };
+  // Degrees true the waves / wind come FROM at (lat, lon) of direction frame f on grid g, or null (no
+  // data there, or disagreeing neighbours).
+  function dirAt(f, g, lat, lon) {
+    var r = (g.lat0 - lat) / -g.dlat;
+    if (!(r >= 0 && r <= f.rows - 1)) return null;
+    var c = (lon - g.lon0) / g.dlon; dirOne.c[0] = ((c % f.cols) + f.cols) % f.cols;
+    sampleDirRow(f, r, dirOne.c, 1, dirOne.e, dirOne.n, 0);
+    if (!dirOne.e[0] && !dirOne.n[0]) return null;
+    return (Math.atan2(-dirOne.e[0], -dirOne.n[0]) * 180 / Math.PI + 360) % 360;
+  }
+  // Screen-space unit vector (x right, y down) of the direction something moves, from its FROM degrees:
+  // from the south (180) -> up, from the west (270) -> right.
+  function screenVec(fromDeg) { var a = fromDeg * Math.PI / 180; return [-Math.sin(a), Math.cos(a)]; }
+  // Latitude / longitude of a world pixel (n = world width in px at that zoom; longitude wraps).
+  function latOfWorldY(wy, n) { return Math.atan(Math.sinh(Math.PI - 2 * Math.PI * wy / n)) * 180 / Math.PI; }
+  function lngOfWorldX(wx, n) { var t = wx / n; t -= Math.floor(t); return t * 360 - 180; }
+  // Arrow anchors: the centre of every 64th tile pixel at tile zoom zt (pixel 32, 96, 160, 224 of each
+  // tile, both ways) inside the view plus a margin, as screen px. The lattice is a property of the world,
+  // so panning, world copies and the dateline never move an arrow relative to the water. view = {z:
+  // the map zoom (fractional), w, h: the map size, ox, oy: the world pixel of its top-left at zoom z}.
+  function arrowAnchors(view, zt) {
+    var scale = Math.pow(2, view.z - zt), nt = TILE * Math.pow(2, zt), out = [];
+    var i0 = Math.floor((view.ox / scale - 32.5) / ARROW_PX) - 1, i1 = Math.ceil(((view.ox + view.w) / scale - 32.5) / ARROW_PX) + 1;
+    var j0 = Math.max(0, Math.floor((view.oy / scale - 32.5) / ARROW_PX) - 1);
+    var j1 = Math.min(Math.ceil(((view.oy + view.h) / scale - 32.5) / ARROW_PX) + 1, Math.floor((nt - 32.5) / ARROW_PX));
+    for (var j = j0; j <= j1; j++) {
+      var Y = j * ARROW_PX + 32.5, sy = Y * scale - view.oy, lat = latOfWorldY(Y, nt);
+      for (var i = i0; i <= i1; i++) {
+        var X = i * ARROW_PX + 32.5;
+        out.push({ i: i, j: j, lat: lat, lng: lngOfWorldX(X, nt), sx: X * scale - view.ox, sy: sy });
+      }
+    }
+    return out;
+  }
+  // The wind vector field for the particles: the speed (the drawn frame, through the scalar sampler) and
+  // the direction (wdir) sampled on a screen lattice every s px, as screen velocities in px/s:
+  // PARTICLE_PX_PER_S * speed * (east, -north) * min(sec lat, 3) (the Mercator stretch: the same wind
+  // covers more pixels towards the poles). dark[k] = 1 where the field colour under the particle is
+  // light (the tile's LUT at the layer's opacity over a dark basemap), so the particle is drawn dark.
+  function windField(view, s, layer, dframe, dgrid) {
+    var cols = Math.ceil(view.w / s) + 1, rows = Math.ceil(view.h / s) + 1, n = TILE * Math.pow(2, view.z);
+    var f = layer._frame, g = layer._grid, u = new Float32Array(cols * rows), v = new Float32Array(cols * rows), dark = new Uint8Array(cols * rows);
+    var cpS = new Float64Array(cols), cpD = new Float64Array(cols), codes = new Float64Array(cols), e = new Float64Array(cols), nn = new Float64Array(cols), i;
+    for (i = 0; i < cols; i++) {
+      var lng = lngOfWorldX(view.ox + i * s, n);
+      cpS[i] = ((((lng - g.lon0) / g.dlon) % f.cols) + f.cols) % f.cols;
+      cpD[i] = ((((lng - dgrid.lon0) / dgrid.dlon) % dframe.cols) + dframe.cols) % dframe.cols;
+    }
+    var lut = layer._lut, L0 = layer._legend[0], L1 = layer._legend[1], lo = layer._lo, hi = layer._hi, op = layer.options.opacity;
+    for (var j = 0; j < rows; j++) {
+      var lat = latOfWorldY(view.oy + j * s, n), rS = (g.lat0 - lat) / -g.dlat, rD = (dgrid.lat0 - lat) / -dgrid.dlat, base = j * cols;
+      if (!(rS >= 0 && rS <= f.rows - 1 && rD >= 0 && rD <= dframe.rows - 1)) continue;
+      sampleRow(f, layer._nearest, rS, cpS, cols, codes, 0);
+      sampleDirRow(dframe, rD, cpD, cols, e, nn, 0);
+      var k = PARTICLE_PX_PER_S * Math.min(3, 1 / Math.max(1e-6, Math.cos(lat * Math.PI / 180)));
+      for (i = 0; i < cols; i++) {
+        var code = codes[i];
+        if (!code || (!e[i] && !nn[i])) continue;
+        var val = lo + (code - 1) / 254 * (hi - lo);
+        u[base + i] = k * val * e[i]; v[base + i] = -k * val * nn[i];
+        var t = Math.round((val - L0) * 255 / (L1 - L0)); t = t < 0 ? 0 : t > 255 ? 255 : t;
+        var lum = 0.299 * lut[t * 3] + 0.587 * lut[t * 3 + 1] + 0.114 * lut[t * 3 + 2];
+        dark[base + i] = op * lum + (1 - op) * 60 > 140 ? 1 : 0;
+      }
+    }
+    return { s: s, cols: cols, rows: rows, u: u, v: v, dark: dark };
+  }
+  function nowMs() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
+
+  // The animation: gliding chevrons along the swell direction (wave height, peak period) or wind
+  // particles with fading trails (wind speed) on one devicePixelRatio canvas in the ovAnimPane. A plain
+  // object (no L.Layer): the controller attaches it while the Animation box is ticked and a direction
+  // frame is on the map. It stops on Off, when unticked, in a hidden tab and while the map moves or
+  // zooms (the canvas is hidden during a zoom and rebuilt on zoomend / moveend); under reduced motion
+  // it draws static arrows once (wind too) and never animates.
+  function FlowAnimator(map, layer) {
+    this.map = map; this.layer = layer;
+    this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
+    this.field = null; this.dir = null; this.dgrid = null; this.mode = null;            // 'arrows' | 'particles' | 'static'
+    this.anchors = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0; this.darkBuf = null;
+    this.active = false; this.suspended = 0; this.rafId = null; this.lastT = 0; this.clock = 0; this.sinceClear = 0;
+    this.ema = 0; this.adaptAt = 0; this._listeners = [];
+  }
+  // The scheduler (rAF in browsers; a timer where there is none, e.g. the Node tests).
+  FlowAnimator.prototype.raf = function (fn) { return typeof requestAnimationFrame === 'function' ? requestAnimationFrame(fn) : setTimeout(function () { fn(nowMs()); }, 16); };
+  FlowAnimator.prototype.caf = function (id) { if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id); else clearTimeout(id); };
+  FlowAnimator.prototype._on = function (ev, fn) { this.map.on(ev, fn); this._listeners.push([ev, fn]); };
+  FlowAnimator.prototype.attach = function () {
+    if (this.canvas) return;
+    var self = this, map = this.map, pane = map.getPane('ovAnimPane');
+    if (!pane) { pane = map.createPane('ovAnimPane'); pane.style.zIndex = 300; pane.style.pointerEvents = 'none'; }
+    var cv = document.createElement('canvas'); cv.className = 'ov-anim leaflet-zoom-hide';
+    pane.appendChild(cv); this.canvas = cv; this.ctx = cv.getContext('2d');
+    // a zoom fires zoomstart + movestart, then zoomend + moveend: the counter rebuilds once, at the end
+    this._on('zoomstart', function () { self.suspend(); if (self.canvas) self.canvas.style.visibility = 'hidden'; });
+    this._on('zoomend', function () { if (self.canvas) self.canvas.style.visibility = ''; self.resume(true); });
+    this._on('movestart', function () { self.suspend(); });
+    this._on('moveend', function () { self.resume(true); });
+    this._on('resize', function () { self._rebuild(); });
+  };
+  FlowAnimator.prototype.detach = function () {
+    var self = this;
+    this.stop();
+    this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
+    if (this.canvas) { if (this.canvas.remove) this.canvas.remove(); this.canvas = null; this.ctx = null; }
+    this.dir = null; this.dgrid = null; this.anchors = null; this.vf = null; this.particles = null; this.v = null;
+  };
+  FlowAnimator.prototype.setField = function (field) { if (this.field !== field) { this.field = field; this.particles = null; this.clearData(); } };
+  // The direction frame of the step on the map (the caller checks it is that step's). A new frame keeps
+  // the particles and the chevron clock, so playback flows on.
+  FlowAnimator.prototype.setData = function (frame, grid) { if (this.dir === frame) return; this.dir = frame; this.dgrid = grid; this._rebuild(); };
+  FlowAnimator.prototype.clearData = function () { this.dir = null; this.dgrid = null; this.anchors = null; this.vf = null; this.stop(); this._clear(); };
+  FlowAnimator.prototype.suspend = function () { this.suspended++; this.stop(); };
+  FlowAnimator.prototype.resume = function (rebuild) {
+    if (this.suspended > 0) this.suspended--;
+    if (this.suspended) return;
+    if (rebuild) this._rebuild(); else this._start();
+  };
+  // The map's geometry: Leaflet's own size and pixel bounds (what its tiles are laid out with).
+  FlowAnimator.prototype.view = function () {
+    var map = this.map, size = map.getSize(), pb = map.getPixelBounds(), z = map.getZoom();
+    return { z: z, w: size.x, h: size.y, ox: pb.min.x, oy: pb.min.y, zt: typeof this.layer._tileZoom === 'number' ? this.layer._tileZoom : Math.round(z) };
+  };
+  FlowAnimator.prototype._place = function (v) {
+    var cv = this.canvas, dpr = Math.min(2, (window.devicePixelRatio || 1)), W = Math.round(v.w * dpr), H = Math.round(v.h * dpr);
+    this.dpr = dpr;
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; cv.style.width = v.w + 'px'; cv.style.height = v.h + 'px'; }
+    var p = this.map.containerPointToLayerPoint([0, 0]);
+    cv.style.transform = 'translate3d(' + p.x + 'px,' + p.y + 'px,0)';
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+  FlowAnimator.prototype._clear = function () { if (this.ctx && this.v) { this.ctx.globalCompositeOperation = 'source-over'; this.ctx.clearRect(0, 0, this.v.w, this.v.h); } };
+  // Everything that depends on the view or the data: the canvas placement, the arrow anchors or the
+  // wind field, then one drawn frame (and the loop, unless static).
+  FlowAnimator.prototype._rebuild = function () {
+    if (!this.canvas || !this.dir || !this.layer.hasFrame()) { this.stop(); this._clear(); return; }
+    var v = this.view(); this.v = v; this._place(v);
+    this.mode = reducedMotion() ? 'static' : this.field === 'wind' ? 'particles' : 'arrows';
+    if (this.mode === 'particles') {
+      var cellPx = TILE * Math.pow(2, v.z) * this.dgrid.dlon / 360;
+      this.vf = windField(v, cellPx >= 16 ? 8 : 4, this.layer, this.dir, this.dgrid); this.anchors = null;
+      if (!this.particles) this._seed(v);
+    } else { this.anchors = this._arrows(v); this.vf = null; }
+    this._clear(); this.sinceClear = 0;
+    if (this.mode === 'static') { this._render(0); this.stop(); } else this._start();
+  };
+  // The arrows in view: an anchor is drawn where the field is drawn (the readout's own rule: data, not
+  // land, not a flat sea) and the direction is defined; the chevron rate follows the peak period.
+  FlowAnimator.prototype._arrows = function (v) {
+    var layer = this.layer, dir = this.dir, dg = this.dgrid, anchors = arrowAnchors(v, v.zt), out = [], nx = TILE * Math.pow(2, v.zt) / ARROW_PX;
+    var min = ARROW_MIN[this.field] !== undefined ? ARROW_MIN[this.field] : -Infinity;
+    for (var k = 0; k < anchors.length; k++) {
+      var a = anchors[k], val = layer.readoutAt(a.lat, a.lng, v.zt);
+      if (val === null || val === undefined || val < min) continue;
+      var from = dirAt(dir, dg, a.lat, a.lng);
+      if (from === null) continue;
+      var d = screenVec(from), iw = ((a.i % nx) + nx) % nx;
+      out.push({ sx: a.sx, sy: a.sy, dx: d[0], dy: d[1], rate: this.field === 'tp' ? Math.max(0.6, Math.min(2, val / 10)) : 1, off: ((iw * 7 + a.j * 13) % 8) / 8 });
+    }
+    return out;
+  };
+  FlowAnimator.prototype._seed = function (v) {
+    this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));
+    this.count = this.target;
+    this.particles = new Float32Array(PARTICLE_MAX * 4); this.darkBuf = new Float32Array(PARTICLE_MAX * 4);
+    for (var i = 0; i < PARTICLE_MAX; i++) { this._respawn(i * 4, v); this.particles[i * 4 + 2] = Math.random() * 60; }
+  };
+  FlowAnimator.prototype._respawn = function (k, v) {
+    var P = this.particles; P[k] = Math.random() * v.w; P[k + 1] = Math.random() * v.h; P[k + 2] = 0; P[k + 3] = 60 + Math.random() * 90;
+  };
+  FlowAnimator.prototype._start = function () {
+    if (this.rafId !== null || !this.dir || !this.canvas) return;
+    var self = this; this.active = true; this.lastT = 0;
+    this.rafId = this.raf(function (t) { self._frame(t); });
+  };
+  FlowAnimator.prototype.stop = function () { this.active = false; if (this.rafId !== null) { this.caf(this.rafId); this.rafId = null; } };
+  FlowAnimator.prototype._frame = function (t) {
+    this.rafId = null;
+    if (!this.active || this.suspended || !this.dir || !this.canvas || (typeof document !== 'undefined' && document.hidden)) { this.active = false; return; }
+    var dt = this.lastT ? Math.min(50, Math.max(0, t - this.lastT)) : 16; this.lastT = t;
+    var t0 = nowMs(); this._render(dt); this._adapt(nowMs() - t0, t);
+    var self = this; this.rafId = this.raf(function (tt) { self._frame(tt); });
+  };
+  // Frame-time adaptation (particles): fewer when a frame runs over the budget, back up when there is room.
+  FlowAnimator.prototype._adapt = function (ms, t) {
+    this.ema = this.ema ? this.ema * 0.9 + ms * 0.1 : ms;
+    if (t - this.adaptAt < 1000) return;
+    this.adaptAt = t;
+    if (this.mode !== 'particles' || !this.v) return;
+    var budget = this.v.w < 700 ? ANIM_BUDGET_MS.phone : ANIM_BUDGET_MS.desktop;
+    if (this.ema > budget) this.count = Math.max(PARTICLE_MIN, Math.round(this.count * 0.85));
+    else if (this.ema < budget * 0.6 && this.count < this.target) this.count = Math.min(this.target, Math.round(this.count * 1.1) + 1);
+  };
+  FlowAnimator.prototype._render = function (dt) {
+    if (this.mode === 'particles') this._renderParticles(dt); else this._renderArrows(dt);
+  };
+  // Every arrow: a faint track through its anchor and two chevrons half a cycle apart gliding along it
+  // (one chevron, at the head, when static); dark halo under a light core, four strokes per frame in all.
+  FlowAnimator.prototype._renderArrows = function (dt) {
+    var ctx = this.ctx, v = this.v, A = this.anchors, n = A.length, i, a, m;
+    ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(0, 0, v.w, v.h);
+    if (!n) return;
+    var stat = this.mode === 'static';
+    if (!stat) this.clock += dt / 1000;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (i = 0; i < n; i++) { a = A[i]; ctx.moveTo(a.sx - 9 * a.dx, a.sy - 9 * a.dy); ctx.lineTo(a.sx + 9 * a.dx, a.sy + 9 * a.dy); }
+    ctx.lineWidth = 2.6; ctx.strokeStyle = 'rgba(0,0,0,0.28)'; ctx.stroke();
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.stroke();
+    var cs = Math.cos(0.56), sn = Math.sin(0.56), base = this.clock / ARROW_CYCLE_S;   // wings 32 degrees back from the tip
+    ctx.beginPath();
+    for (i = 0; i < n; i++) {
+      a = A[i];
+      for (m = 0; m < (stat ? 1 : 2); m++) {
+        var p = stat ? 1 : (base * a.rate + a.off + m * 0.5) % 1, t = p * 20 - 10;
+        var tx = a.sx + t * a.dx, ty = a.sy + t * a.dy;
+        var lx = a.dx * cs - a.dy * sn, ly = a.dx * sn + a.dy * cs, rx = a.dx * cs + a.dy * sn, ry = -a.dx * sn + a.dy * cs;
+        ctx.moveTo(tx - 5.5 * lx, ty - 5.5 * ly); ctx.lineTo(tx, ty); ctx.lineTo(tx - 5.5 * rx, ty - 5.5 * ry);
+      }
+    }
+    ctx.lineWidth = 3.2; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.stroke();
+  };
+  // Particles: the last frame fades (destination-in), every live particle moves by its cell's velocity
+  // and draws the segment it moved along (white, or dark over a light field colour); one that ages out,
+  // leaves the map or sits in a cell without a vector is respawned somewhere in the view.
+  FlowAnimator.prototype._renderParticles = function (dt) {
+    var ctx = this.ctx, v = this.v, w = v.w, h = v.h, vf = this.vf, P = this.particles, n = this.count, s = vf.s, cols = vf.cols;
+    this.sinceClear += dt;
+    ctx.globalCompositeOperation = 'source-over';
+    if (this.sinceClear > PARTICLE_CLEAR_MS) { ctx.clearRect(0, 0, w, h); this.sinceClear = 0; }
+    else { ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = 'rgba(0,0,0,0.9)'; ctx.fillRect(0, 0, w, h); ctx.globalCompositeOperation = 'source-over'; }
+    var D = this.darkBuf, nd = 0, dts = dt / 1000, i, k;
+    ctx.lineWidth = 1.2; ctx.lineCap = 'round'; ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath();
+    for (i = 0, k = 0; i < n; i++, k += 4) {
+      var x = P[k], y = P[k + 1], age = P[k + 2];
+      var c = ((y / s) | 0) * cols + ((x / s) | 0), u = vf.u[c], vy = vf.v[c];
+      if (age >= P[k + 3] || (u === 0 && vy === 0)) { this._respawn(k, v); continue; }
+      var nx = x + u * dts, ny = y + vy * dts;
+      if (!(nx >= 0 && ny >= 0 && nx < w && ny < h)) { this._respawn(k, v); continue; }
+      if (vf.dark[c]) { D[nd++] = x; D[nd++] = y; D[nd++] = nx; D[nd++] = ny; } else { ctx.moveTo(x, y); ctx.lineTo(nx, ny); }
+      P[k] = nx; P[k + 1] = ny; P[k + 2] = age + 1;
+    }
+    ctx.stroke();
+    if (nd) {
+      ctx.strokeStyle = 'rgba(20,24,48,0.8)'; ctx.beginPath();
+      for (i = 0; i < nd; i += 4) { ctx.moveTo(D[i], D[i + 1]); ctx.lineTo(D[i + 2], D[i + 3]); }
+      ctx.stroke();
+    }
+  };
+
   // ---- controller ----
   function Overlay(map, opts) {
     this.map = map; this.opts = opts;
@@ -1147,6 +1457,8 @@
     this.opacity = typeof s.opacity === 'number' && s.opacity >= 0.2 && s.opacity <= 1 ? s.opacity : 0.65;
     this.speed = SPEEDS.indexOf(s.speed) >= 0 ? s.speed : 1;
     this.contours = s.contours === true;                   // off until ticked, then remembered for the tab
+    this.anim = s.anim === true;                           // the Animation box, likewise
+    this.dcache = new FrameCache(MAX_DECODED); this.flow = null; this.dres = null;   // direction frames and their animator
   }
   // restore: true on the mount the page makes after a reload (the field was saved in this tab); the
   // saved valid time and play state are then reused when they are recent (restoreIndex), by this mount
@@ -1168,6 +1480,7 @@
       this._bindDocument();
     } else if (this.layer.field !== fieldName) {
       this.layer.clear();                                  // never one field's picture under another's label
+      if (this.flow) this.flow.clearData();
     }
     this.render({ state: 'loading' });
     // The time position survives a field change and even a run change (nearest valid time), like Update.
@@ -1188,6 +1501,7 @@
       var idx = prevValid === null ? (rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(self.frameIndex, self.n - 1) : nearestIndex(m, prevValid);
       var resume = rIdx !== null && st.playing === true;
       self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
+      self._ensureFlow();
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
       return self._goto(idx, sig).catch(function (err) {
         // the chosen first frame is missing: show the next one that exists rather than nothing
@@ -1205,10 +1519,14 @@
   };
   // Cache / in-flight / unavailable keys carry the run: a decode that outlives an Update can never be
   // taken for a frame of the new run.
-  Overlay.prototype._key = function (idx) { return this.manifest.run + '/' + this.res + '/' + this.field + '/' + this.manifest.frames[idx].step; };
+  // kind 'dir': the direction frame (pdir / wdir at its own resolution) of the same step.
+  Overlay.prototype._key = function (idx, kind) {
+    var dir = kind === 'dir';
+    return this.manifest.run + '/' + (dir ? this.dres : this.res) + '/' + (dir ? DIR_FIELDS[this.field] : this.field) + '/' + this.manifest.frames[idx].step;
+  };
   // unavailable[key] is true (permanent) or a timestamp until which the frame is left alone (transient).
-  Overlay.prototype._isUnavailable = function (idx) {
-    var u = this.unavailable[this._key(idx)];
+  Overlay.prototype._isUnavailable = function (idx, kind) {
+    var u = this.unavailable[this._key(idx, kind)];
     return u === true || (typeof u === 'number' && u > Date.now());
   };
   Overlay.prototype._lut = function () {
@@ -1216,16 +1534,18 @@
     if (this._lutFor !== key) { this._lutCache = buildLut(this.field, legend); this._lutFor = key; }
     return this._lutCache;
   };
-  // The decoded frame for index idx: cache, then an in-flight fetch, then a new one. A 404 or a decode
-  // failure marks the frame unavailable for this session (err.unavailable); an abort does not.
-  Overlay.prototype._ensure = function (idx) {
-    var self = this, key = this._key(idx), hit = this.cache.get(key);
+  // The decoded frame for index idx (kind 'dir': its direction frame): cache, then an in-flight fetch,
+  // then a new one. A 404 or a decode failure marks the frame unavailable for this session
+  // (err.unavailable); an abort does not.
+  Overlay.prototype._ensure = function (idx, kind) {
+    var dir = kind === 'dir', cache = dir ? this.dcache : this.cache;
+    var self = this, key = this._key(idx, kind), hit = cache.get(key);
     if (hit) return Promise.resolve(hit);
     if (this.inflight[key]) return this.inflight[key].promise;
-    if (this._isUnavailable(idx)) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
+    if (this._isUnavailable(idx, kind)) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
     delete this.unavailable[key];                                            // an expired cooldown: try again
-    var m = this.manifest, ctrl = new AbortController(), rec, half = this.res === 'half', stalled = false;
-    var url = this.root + '/' + frameKey(m, m.frames[idx], this.field, half);
+    var m = this.manifest, ctrl = new AbortController(), rec, half = (dir ? this.dres : this.res) === 'half', stalled = false;
+    var url = this.root + '/' + frameKey(m, m.frames[idx], dir ? DIR_FIELDS[this.field] : this.field, half);
     function mine() { return self.inflight[key] === rec; }
     // a download that stalls (one frame in a loop took 6.5 s at G4) is dropped like a transient failure
     var watchdog = setTimeout(function () { stalled = true; ctrl.abort(); }, Math.max(STALL_MS, 4 * self._interval()));
@@ -1236,30 +1556,38 @@
       // change) must neither be cached nor delivered.
       if ((ctrl.signal.aborted && !stalled) || self.manifest !== m) throw abortError();
       self.transientFails = 0;
-      self.cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex) : null);
+      cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null);
       return frame;
     }, function (err) {
       clearTimeout(watchdog);
       if (mine()) delete self.inflight[key];
       if ((ctrl.signal.aborted && !stalled) || self.manifest !== m) throw abortError();
       if (stalled) err = new Error('frame stalled');
-      var kind = failureKind(err);
-      self.unavailable[key] = kind === 'permanent' ? true : Date.now() + RETRY_AFTER_MS;
+      var kind_ = failureKind(err);
+      self.unavailable[key] = kind_ === 'permanent' ? true : Date.now() + RETRY_AFTER_MS;
       err.unavailable = true;
-      if (kind === 'transient' && ++self.transientFails >= MAX_TRANSIENT) err.outage = true;   // the bucket, not one frame
+      if (kind_ === 'transient' && ++self.transientFails >= MAX_TRANSIENT) err.outage = true;   // the bucket, not one frame
       throw err;
     });
     rec = this.inflight[key] = { promise: p, abort: ctrl, key: key };
     return p;
   };
+  // What the ring wants, in priority order: the target's field frame, its direction frame (Animation
+  // on), then the ring ahead and behind, field and direction interleaved.
+  Overlay.prototype._plan = function (idx) {
+    var plan = ringPlan(idx, this.n, this.dir), want = this._wantDir(), out = [];
+    for (var i = 0; i < plan.length; i++) { out.push([plan[i], 'field']); if (want) out.push([plan[i], 'dir']); }
+    return out;
+  };
   // Keep the in-flight set to what the target needs: everything outside the new ring is dropped, and
-  // at most MAX_INFLIGHT - 1 older fetches survive beside the target (timeline drags fire many seeks).
+  // at most MAX_INFLIGHT - 1 older fetches survive beside the target (timeline drags fire many seeks),
+  // the target's direction frame first among them.
   Overlay.prototype._trimInflight = function (idx) {
-    var keep = {}, plan = ringPlan(idx, this.n, this.dir), i, k;
-    for (i = 0; i < plan.length; i++) keep[this._key(plan[i])] = true;
-    var target = this._key(idx), survivors = [];
-    for (k in this.inflight) if (!keep[k]) { this.inflight[k].abort.abort(); delete this.inflight[k]; } else if (k !== target) survivors.push(k);
-    while (survivors.length > MAX_INFLIGHT - 1) { k = survivors.shift(); this.inflight[k].abort.abort(); delete this.inflight[k]; }
+    var keep = {}, plan = this._plan(idx), i, k;
+    for (i = 0; i < plan.length; i++) keep[this._key(plan[i][0], plan[i][1])] = true;
+    var target = this._key(idx), dtarget = this._wantDir() ? this._key(idx, 'dir') : null, survivors = [], room = MAX_INFLIGHT - 1;
+    for (k in this.inflight) if (!keep[k]) { this.inflight[k].abort.abort(); delete this.inflight[k]; } else if (k === dtarget) room--; else if (k !== target) survivors.push(k);
+    while (survivors.length > Math.max(0, room)) { k = survivors.shift(); this.inflight[k].abort.abort(); delete this.inflight[k]; }
   };
   // Show frame idx: the label/timeline move to the target at once, the picture and the valid time only
   // when the frame has landed (never an old picture under a new time). Rejects for an unavailable frame
@@ -1268,7 +1596,9 @@
     var self = this, m = this.manifest, field = this.field, res = this.res;
     this.target = idx; this._syncUI();
     this._trimInflight(idx);
-    return this._ensure(idx).then(function (frame) {
+    var p = this._ensure(idx);
+    if (this._wantDir()) this._startDir(idx);                                // its direction frame rides beside it
+    return p.then(function (frame) {
       if ((sig && sig.aborted) || self.target !== idx || !self.layer || self.manifest !== m || self.field !== field || self.res !== res) throw abortError();
       // the frame already on the map (Retry after an outage, a repeated seek): no redraw, but the same
       // state transition as a fresh landing, or the panel would stay on "Loading"
@@ -1281,19 +1611,22 @@
       self._persist();
       self._attribute();
       if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
+      self._syncFlow(idx);
       self._prefetch();
     });
   };
-  // Keep the ring (current, two ahead, two behind) decoded with at most MAX_INFLIGHT fetches; drop
-  // fetches the ring no longer wants (direction, field or resolution changed).
+  // Keep the ring (current, two ahead, two behind; with the direction frames interleaved while the
+  // Animation is on) decoded with at most MAX_INFLIGHT fetches; drop fetches the ring no longer wants
+  // (direction, field, resolution or Animation changed).
   Overlay.prototype._prefetch = function () {
     if (this.frameIndex === null || !this.manifest) return;
-    var plan = ringPlan(this.frameIndex, this.n, this.dir), want = {}, i, k;
-    for (i = 0; i < plan.length; i++) want[this._key(plan[i])] = true;
+    var plan = this._plan(this.frameIndex), want = {}, i, k;
+    for (i = 0; i < plan.length; i++) want[this._key(plan[i][0], plan[i][1])] = true;
     for (k in this.inflight) if (!want[k]) { this.inflight[k].abort.abort(); delete this.inflight[k]; }
     for (i = 1; i < plan.length && Object.keys(this.inflight).length < MAX_INFLIGHT; i++) {
-      var key = this._key(plan[i]);
-      if (!this.cache.has(key) && !this.inflight[key] && !this._isUnavailable(plan[i])) this._ensure(plan[i]).catch(function () {});
+      var idx = plan[i][0], kind = plan[i][1], key = this._key(idx, kind);
+      if (this.inflight[key] || this._isUnavailable(idx, kind) || (kind === 'dir' ? this.dcache : this.cache).has(key)) continue;
+      if (kind === 'dir') this._ensureDir(idx); else this._ensure(idx).catch(function () {});
     }
   };
   Overlay.prototype._fail = function (sig, err) {
@@ -1349,7 +1682,8 @@
   };
   Overlay.prototype._adopt = function (m, ptr) {
     this.manifest = m; this.pointer = ptr; this.newerRun = null; this.n = m.frames.length;
-    this.cache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
+    this.cache.clear(); this.dcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
+    if (this.flow) this.flow.clearData();
   };
   // Every RUN_CHECK_MS while mounted: a newer complete run only raises the "Update" banner.
   Overlay.prototype._checkRun = function () {
@@ -1378,6 +1712,7 @@
     this._fetchManifest(ptr, sig).then(function (m) {
       if (!m.fields[self.field]) throw new Error('layer "' + self.field + '" is not in run ' + m.run);
       self._adopt(m, ptr); self.pointerAt = Date.now();
+      self._ensureFlow();                                  // the new run may or may not carry direction data
       return self._goto(nearestIndex(m, prevValid), sig).then(function () { if (wasPlaying) self.play(); });
     }).catch(function (err) { self._fail(sig, err); });
   };
@@ -1449,6 +1784,7 @@
     this._onVis = function () {
       if (document.hidden) { self.wasPlaying = self.playing; if (self.playing) self.pause(); else self._persist(); }
       else if (self.wasPlaying) { self.wasPlaying = false; self.play(); }
+      if (self.flow) { if (document.hidden) self.flow.suspend(); else self.flow.resume(); }
     };
     this._onHide = function () { self._persist(); };
     document.addEventListener('visibilitychange', this._onVis);
@@ -1500,12 +1836,18 @@
   };
   Overlay.prototype._checkRes = function () {
     if (!this.layer || !this.layer.hasFrame() || !this.manifest || this.frameIndex === null || !this.field) return;
-    var z = this.map.getZoom(), w = this._dims().w, want = this.res;
+    var z = this.map.getZoom(), w = this._dims().w, want = this.res, d = this._dirDef(), dwant = d && this.flow ? dirRes(d, z, this.dres) : this.dres;
     if (this.res === 'full' && wantHalf(z, w, this.field)) want = 'half';
     else if (this.res === 'half' && wantFull(z, w, this.field)) want = 'full';
-    if (want === this.res) return;
-    this.res = want;
+    if (want === this.res && dwant === this.dres) return;
     var self = this, idx = this.target !== null ? this.target : this.frameIndex;
+    this.dres = dwant;
+    if (want === this.res) {                                                 // only the direction's resolution changed
+      this._prefetch();                                                      // drops the other resolution's direction fetches
+      this._syncFlow(this.frameIndex, true);                                 // the old resolution stays until the new one lands
+      return;
+    }
+    this.res = want;
     this._prefetch();                                                        // drops the other resolution's fetches
     this._goto(idx).catch(function () { self._syncUI(); });
   };
@@ -1525,12 +1867,13 @@
     this._pendingRestore = null;
     if (this.layer) { this.map.removeLayer(this.layer); this.layer = null; }
     if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
+    if (this.flow) { this.flow.detach(); this.flow = null; }
     this._unattribute();
     this._unbindReadout();
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
     this._removeSheet();
-    this.cache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null;
-    this.field = null; this.frameIndex = null; this.res = null; this.last = null; this.collapsed = undefined;
+    this.cache.clear(); this.dcache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null;
+    this.field = null; this.frameIndex = null; this.res = null; this.dres = null; this.last = null; this.collapsed = undefined;
     clear(this.opts.panel);
   };
   Overlay.prototype.setOpacity = function (v) {
@@ -1544,6 +1887,65 @@
     if (!this.contours || !c) return null;
     var unit = this.opts.getUnit() === 'Metric' ? 'Metric' : 'US';
     return { step: c[unit], per: unitOf(this.field, unit).f(1) };
+  };
+  // The manifest field carrying this layer's direction (pdir under the wave fields, wdir under wind)
+  // when the run publishes it as a circular FROM field; null otherwise (the Animation box is disabled).
+  Overlay.prototype._dirDef = function () {
+    var name = this.field && DIR_FIELDS[this.field], f = this.manifest && name ? this.manifest.fields[name] : null;
+    return dirFieldOk(f) ? f : null;
+  };
+  Overlay.prototype.animAvailable = function () { return !!this._dirDef(); };
+  Overlay.prototype._wantDir = function () { return !!(this.anim && this.layer && this._dirDef()); };
+  // The animator exists exactly while the box is ticked and the run has this field's direction; it
+  // follows the layer and the field, and its direction resolution follows the zoom.
+  Overlay.prototype._ensureFlow = function () {
+    if (!this._wantDir()) { if (this.flow) { this.flow.detach(); this.flow = null; } return; }
+    if (!this.flow) { this.flow = new FlowAnimator(this.map, this.layer); this.flow.attach(); }
+    this.flow.layer = this.layer;
+    this.flow.setField(this.field);
+    this.dres = dirRes(this._dirDef(), this.map.getZoom(), this.dres);
+  };
+  // The direction frame for idx, delivered to the animator only if idx is still the step on the map (same
+  // run, field and resolution); a failure is swallowed: the field plays on without its arrows.
+  Overlay.prototype._ensureDir = function (idx) {
+    var self = this, m = this.manifest, field = this.field, dres = this.dres;
+    return this._ensure(idx, 'dir').then(function (frame) {
+      if (self.flow && self.frameIndex === idx && self.manifest === m && self.field === field && self.dres === dres && self._wantDir()) {
+        self.flow.setData(frame, dres === 'half' ? m.grid_half : m.grid);
+      }
+    }, function () {});
+  };
+  // Start the direction frame of idx (the target) unless it is cached, in flight or unavailable: it
+  // outranks every ring fetch, so a full in-flight set gives up its lowest-ranked fetch for it.
+  Overlay.prototype._startDir = function (idx) {
+    var key = this._key(idx, 'dir');
+    if (this.dcache.has(key) || this.inflight[key] || this._isUnavailable(idx, 'dir')) return;
+    if (Object.keys(this.inflight).length >= MAX_INFLIGHT) {
+      var plan = this._plan(idx), rank = {}, i, k, worst = null, worstRank = -1;
+      for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
+      for (k in this.inflight) { var r = rank[k] === undefined ? 1e9 : rank[k]; if (r > worstRank) { worstRank = r; worst = k; } }
+      if (worst === null || worstRank < 2) return;                          // only the target itself is in flight (never evicted)
+      this.inflight[worst].abort.abort(); delete this.inflight[worst];
+    }
+    this._ensureDir(idx);
+  };
+  // The frame idx is on the map: the animator shows its direction if decoded, else nothing until it lands
+  // (keep: the direction already shown stays meanwhile, for a resolution change at the same time).
+  Overlay.prototype._syncFlow = function (idx, keep) {
+    if (!this.flow) return;
+    if (!this._wantDir()) { this.flow.clearData(); return; }
+    var hit = this.dcache.get(this._key(idx, 'dir'));
+    if (hit) { this.flow.setData(hit, this.dres === 'half' ? this.manifest.grid_half : this.manifest.grid); return; }
+    if (!keep) this.flow.clearData();
+    this._startDir(idx);
+  };
+  Overlay.prototype.setAnim = function (on) {
+    this.anim = !!on; save({ anim: this.anim });
+    if (!this.manifest || !this.field || !this.layer) return;
+    this._ensureFlow();
+    if (this.flow && this.frameIndex !== null) this._syncFlow(this.frameIndex);
+    if (!this.anim) this.dcache.clear();
+    this._prefetch();                                      // starts or drops the direction fetches
   };
   Overlay.prototype.setContours = function (on) {
     this.contours = !!on; save({ contours: this.contours });
@@ -1742,6 +2144,13 @@
       cb.addEventListener('change', function () { self.setContours(cb.checked); });
       cl.appendChild(cb); cl.appendChild(document.createTextNode(' Contours')); row.appendChild(cl);
     }
+    // Animation: swell arrows (wave height, period) or wind particles; disabled on a run without direction data
+    var avail = this.animAvailable(), al = mk('label', 'ov-check'), ab = mk('input'); ab.type = 'checkbox';
+    ab.checked = this.anim && avail; ab.disabled = !avail;
+    ab.setAttribute('aria-label', 'Animation: ' + (field === 'wind' ? 'wind particles' : 'swell direction arrows'));
+    if (!avail) al.title = 'This run has no direction data';
+    ab.addEventListener('change', function () { self.setAnim(ab.checked); });
+    al.appendChild(ab); al.appendChild(document.createTextNode(' Animation')); row.appendChild(al);
     body.appendChild(row);
     this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND
@@ -1806,6 +2215,9 @@
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
-      validCoastIndex: validCoastIndex }
+      validCoastIndex: validCoastIndex,
+      FlowAnimator: FlowAnimator, dirAt: dirAt, sampleRow: sampleRow, sampleDirRow: sampleDirRow, screenVec: screenVec, arrowAnchors: arrowAnchors,
+      windField: windField, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, DIR_AGREE: DIR_AGREE, ARROW_PX: ARROW_PX, ARROW_MIN: ARROW_MIN,
+      latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX, ANIM_BUDGET_MS: ANIM_BUDGET_MS }
   };
 })();

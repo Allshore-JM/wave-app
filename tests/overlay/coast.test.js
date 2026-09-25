@@ -538,61 +538,292 @@ test('coast performance smoke: a 300k-vertex coastline rasterised at z1 and z6',
   assert.ok(ms < 8000, ms + ' ms');
 });
 
-// ---- A3: contour lines ----
+// ---- A3: contour lines (G8 fix round: smoothed field, one-sided slopes, node-space jumps, block skipping) ----
 function rampF(W, fn) {                                     // (W+2)^2 level coordinates from fn(x, y), x/y from -1 to W
   const S = W + 2, F = new Float64Array(S * S);
   for (let y = -1; y <= W; y++) for (let x = -1; x <= W; x++) F[(y + 1) * S + x + 1] = fn(x, y);
   return F;
 }
 function solid(W, rgb) { const d = new Uint8ClampedArray(W * W * 4); for (let i = 0; i < W * W; i++) { d[i * 4] = rgb[0]; d[i * 4 + 1] = rgb[1]; d[i * 4 + 2] = rgb[2]; d[i * 4 + 3] = 200; } return d; }
+const grabEl = () => { const el = { out: null, getContext: () => ({ clearRect() { el.out = null; }, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData(img) { el.out = img.data.slice(); } }) }; return el; };
+const drawTile = (l, c) => { const el = grabEl(); l._draw(el, c); return el.out; };
+const composed = (l, c) => { const codes = l.tileCodes(c, new Float64Array(65536)), d = new Uint8ClampedArray(65536 * 4); I.composeTile(codes, null, l._lut, l._lo, l._hi, l._legend[0], l._legend[1], d); return d; };
+const inkOf = (a, b) => { let n = 0; for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) n++; return n; };
 
-test('contourTile: ~1.5 px anti-aliased lines at whole levels, alpha untouched, level 0 / dense / missing / jumps skipped', () => {
+test('contourTile: ~2 px anti-aliased lines at whole levels at every angle, alpha untouched, level 0 / dense / missing skipped, ink per level', () => {
   const W = 32, px = (d, x, y) => Array.from(d.slice((y * W + x) * 4, (y * W + x) * 4 + 4));
   let d = solid(W, [30, 60, 160]);
-  const n = I.contourTile(rampF(W, (x) => x / 10), W, d, 3, 0);            // levels at x = 10, 20, 30; level 0 at x = 0 skipped
+  const n = I.contourTile(rampF(W, (x) => x / 10), W, d, 3);                  // levels at x = 10, 20, 30; level 0 at x = 0 skipped
   assert.ok(n > 0);
   for (const x of [10, 20, 30]) assert.notDeepEqual(px(d, x, 5).slice(0, 3), [30, 60, 160], `line at x=${x}`);
   for (const x of [0, 5, 15, 25]) assert.deepEqual(px(d, x, 5), [30, 60, 160, 200], `no line at x=${x}`);
   assert.ok(px(d, 10, 5)[0] > 150, 'light ink on a dark colour');
   for (let i = 3; i < d.length; i += 4) assert.equal(d[i], 200, 'alpha never changes');
-  d = solid(W, [250, 203, 21]); I.contourTile(rampF(W, (x) => x / 10), W, d, 3, 0);
+  d = solid(W, [250, 203, 21]); I.contourTile(rampF(W, (x) => x / 10), W, d, 3);
   assert.ok(px(d, 10, 5)[0] < 250 && px(d, 10, 5)[1] < 203, 'dark ink on a light (yellow) colour');
-  d = solid(W, [30, 60, 160]); assert.equal(I.contourTile(rampF(W, (x) => x / 2), W, d, 3, 0), 0, 'levels 2 px apart would merge: none drawn');
+  d = solid(W, [30, 60, 160]); I.contourTile(rampF(W, (x) => x / 10), W, d, 3, (lv) => (lv === 1 ? 30 : 255));
+  assert.ok(px(d, 10, 5)[1] < 60 && px(d, 20, 5)[0] > 150, 'ink(level) decides per level, not per pixel');
+  d = solid(W, [30, 60, 160]); assert.equal(I.contourTile(rampF(W, (x) => x / 2), W, d, 3), 0, 'levels 2 px apart would merge: none drawn');
   d = solid(W, [30, 60, 160]);
-  I.contourTile(rampF(W, (x) => (x >= 8 && x <= 12 ? NaN : x / 10)), W, d, 3, 0);
+  I.contourTile(rampF(W, (x) => (x >= 8 && x <= 12 ? NaN : x / 10)), W, d, 3);
   assert.deepEqual(px(d, 13, 5), [30, 60, 160, 200], 'nothing beside missing data');
-  d = solid(W, [30, 60, 160]);
-  assert.equal(I.contourTile(rampF(W, (x) => (x < 16 ? 1.4 : 6.4)), W, d, 3, 0.5), 0, 'a jump steeper than maxJump draws nothing');
   d = solid(W, [30, 60, 160]); d[(5 * W + 10) * 4 + 3] = 0;
-  I.contourTile(rampF(W, (x) => x / 10), W, d, 3, 0);
+  I.contourTile(rampF(W, (x) => x / 10), W, d, 3);
   assert.deepEqual(px(d, 10, 5), [30, 60, 160, 0], 'transparent pixels stay untouched');
+  d = solid(W, [30, 60, 160]); I.contourTile(rampF(W, (x) => x / 10), W, d, 3, null, 0, 0, 16, 16);
+  assert.notDeepEqual(px(d, 10, 5).slice(0, 3), [30, 60, 160]); assert.deepEqual(px(d, 20, 5), [30, 60, 160, 200], 'only the given rect is drawn');
+  assert.deepEqual(px(d, 10, 20), [30, 60, 160, 200]);
+  // integrated width of single straight lines over 24 angles x 5 sub-pixel offsets (the docs say ~2 px)
+  const Wb = 96, Sb = Wb + 2, widths = [];
+  for (let a = 0; a < 24; a++) for (let o = 0; o < 5; o++) {
+    const th = a * Math.PI / 24 + 0.013, cs = Math.cos(th), sn = Math.sin(th), F = new Float64Array(Sb * Sb);
+    for (let y = -1; y <= Wb; y++) for (let x = -1; x <= Wb; x++) F[(y + 1) * Sb + x + 1] = 3.5 + ((x - 48) * cs + (y - 48) * sn + o / 5) / 20;
+    const b = new Uint8ClampedArray(Wb * Wb * 4); for (let i = 3; i < b.length; i += 4) b[i] = 200;
+    I.contourTile(F, Wb, b, 3, () => 255);
+    let area = 0, len = 0;
+    for (let y = 24; y < 72; y++) for (let x = 24; x < 72; x++) area += b[(y * Wb + x) * 4] / (255 * 0.55);
+    for (let lv = 1; lv <= 7; lv++) {
+      const c = (lv - 3.5) * 20 - o / 5, pts = [];
+      for (const [x0, y0, x1, y1] of [[24, 24, 72, 24], [72, 24, 72, 72], [72, 72, 24, 72], [24, 72, 24, 24]]) {
+        const f0 = (x0 - 48) * cs + (y0 - 48) * sn - c, f1 = (x1 - 48) * cs + (y1 - 48) * sn - c;
+        if ((f0 <= 0 && f1 > 0) || (f0 > 0 && f1 <= 0)) { const t = f0 / (f0 - f1); pts.push([x0 + (x1 - x0) * t, y0 + (y1 - y0) * t]); }
+      }
+      if (pts.length >= 2) len += Math.hypot(pts[0][0] - pts[1][0], pts[0][1] - pts[1][1]);
+    }
+    if (len > 20) widths.push(area / len);
+  }
+  assert.ok(widths.length > 100 && Math.min(...widths) > 2.0 && Math.max(...widths) < 2.5, `widths ${Math.min(...widths).toFixed(2)}..${Math.max(...widths).toFixed(2)}`);
 });
 
-test('contours on the layer: RGB only, never on nearest-drawn runs, and the apron joins the neighbouring tile', () => {
-  const smooth = (r, c) => 1 + Math.round(120 + 90 * Math.sin(c / 9) * Math.cos(r / 7));
-  const grab = (l, coords) => { let out = null; const el = { getContext: () => ({ clearRect() {}, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData(img) { out = img.data.slice(); } }) }; l._draw(el, coords); return out; };
+test('contourTile: never along the foot or the top of a steep ramp, where the level is not reached (G8 B-P2-2)', () => {
+  const W = 32, blank = () => { const d = new Uint8ClampedArray(W * W * 4); for (let i = 3; i < d.length; i += 4) d[i] = 200; return d; };
+  const onPlateau = (d, x0, x1) => { let k = 0; for (let y = 0; y < W; y++) for (let x = x0; x <= x1; x++) if (d[(y * W + x) * 4]) k++; return k; };
+  // flat at 10.10 (level 10 is never reached) up to x = 10, then a ramp of 0.3 levels per px
+  let d = blank(); I.contourTile(rampF(W, (x) => (x <= 10 ? 10.10 : 10.10 + (x - 10) * 0.3)), W, d, 3, () => 255);
+  assert.equal(onPlateau(d, 0, 10), 0, 'nothing on the flat side of the foot');
+  assert.ok(onPlateau(d, 12, 31) > 0, 'the ramp itself still carries its lines');
+  // the mirror: a ramp that tops out at 9.90 (level 10 above it, never reached)
+  d = blank(); I.contourTile(rampF(W, (x) => (x >= 21 ? 9.90 : 9.90 - (21 - x) * 0.3)), W, d, 3, () => 255);
+  assert.equal(onPlateau(d, 21, 31), 0, 'nothing on the flat top');
+});
+
+test('smoothBlock: masked [1,2,1] mean, missing stays missing, periodic columns, rows not wrapped; jumps kept apart, marked alike both ways', () => {
+  const cols = 6, rows = 5, q = new Uint8Array(cols * rows), at = (r, c) => r * cols + c;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) q[at(r, c)] = 100 + 10 * c + r;
+  q[at(2, 3)] = 0;                                                            // one missing node
+  const S = new Float32Array(cols * rows);
+  I.smoothBlock(q, cols, rows, S, null, 0, 0, rows, 0, cols);
+  assert.equal(S[at(2, 3)], 0, 'missing stays missing');
+  const mean = (r, c) => {                                                    // the reference: masked weighted mean, cols periodic, rows clipped
+    let acc = 0, w = 0;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      const rr = r + dr, cc = (c + dc + cols) % cols; if (rr < 0 || rr >= rows) continue;
+      const v = q[at(rr, cc)]; if (!v) continue; const wt = (2 - Math.abs(dr)) * (2 - Math.abs(dc)); acc += v * wt; w += wt;
+    }
+    return acc / w;
+  };
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (q[at(r, c)]) assert.ok(Math.abs(S[at(r, c)] - mean(r, c)) < 1e-4, `${r},${c}`);
+  assert.ok(S[at(2, 0)] > q[at(2, 0)] + 5, 'column 0 averages with column 5 (periodic)');
+  // a peak-period jump (2 s = 17.5 codes on 1..30 s) between columns 2|3 and between rows 1|2: never blended, cells marked
+  const jump = 2 * 254 / 29, qt = new Uint8Array(cols * rows);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) qt[at(r, c)] = 80 + (c >= 3 ? 25 : 0) + (r >= 2 && c < 3 ? 25 : 0) + c;
+  const St = new Float32Array(cols * rows), J = new Uint8Array(cols * rows);
+  I.smoothBlock(qt, cols, rows, St, J, jump, 0, rows, 0, cols);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    let lo = Infinity, hi = -Infinity;                                        // the smoothed value stays inside its own regime's range
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      const rr = r + dr, cc = (c + dc + cols) % cols; if (rr < 0 || rr >= rows) continue;
+      const v = qt[at(rr, cc)]; if (Math.abs(v - qt[at(r, c)]) > jump) continue; lo = Math.min(lo, v); hi = Math.max(hi, v);
+    }
+    assert.ok(St[at(r, c)] >= lo - 1e-4 && St[at(r, c)] <= hi + 1e-4, `regime kept at ${r},${c}`);
+  }
+  assert.equal(J[at(0, 2)], 1, 'east-west jump: the cell between columns 2 and 3 is marked');
+  assert.equal(J[at(1, 1)], 1, 'north-south jump: the cell between rows 1 and 2 is marked');
+  assert.equal(J[at(0, 0)], 0); assert.equal(J[at(3, 0)], 0); assert.equal(J[at(3, 4)], 0);
+  assert.equal(J[at(0, 5)], 1, 'the periodic cell between columns 5 and 0 jumps too');
+  assert.equal(I.jumpAt(J, cols, rows, 2, 0, false), false); assert.equal(I.jumpAt(J, cols, rows, 2, 0, true), true, 'wide: the jump cell above counts');
+  assert.equal(I.jumpAt(J, cols, rows, 3, 3, true), false, 'wide: nothing within one cell');
+});
+
+const SMOOTH = (r, c) => 1 + Math.round(120 + 90 * Math.sin(c / 9) * Math.cos(r / 7));
+
+test('contours on the layer: RGB only, never on nearest runs or for wind; skipping blocks changes nothing; world copies identical', () => {
   const c = { z: 6, x: 3, y: 27 }, cfg = { step: 2, per: 3.28084 };
-  const hs = layer(frame(1440, 721, smooth), GRID, 'hs', HS);
-  const plain = grab(hs, c);
-  hs._contour = cfg; const lined = grab(hs, c);
-  let changed = 0;
-  for (let i = 0; i < plain.length; i += 4) { assert.equal(lined[i + 3], plain[i + 3]); if (lined[i] !== plain[i] || lined[i + 1] !== plain[i + 1]) changed++; }
+  const hs = layer(frame(1440, 721, SMOOTH), GRID, 'hs', HS);
+  const plain = drawTile(hs, c);
+  hs.setContours(cfg, true); const lined = drawTile(hs, c);
+  for (let i = 3; i < plain.length; i += 4) assert.equal(lined[i], plain[i]);
+  const changed = inkOf(plain, lined);
   assert.ok(changed > 200 && changed < 20000, `${changed} line pixels`);
-  const tp = layer(frame(1440, 721, smooth), GRID, 'tp', TP);                     // TP here is drawn nearest (an old run's hint)
-  const tpPlain = grab(tp, c); tp._contour = cfg; assert.deepEqual(Array.from(grab(tp, c)), Array.from(tpPlain));
-  const tpb = layer(frame(1440, 721, smooth), GRID, 'tp', Object.assign({}, TP, { interpolation: 'bilinear' }));   // runs since 2026-09-25
-  const tpbPlain = grab(tpb, c); tpb._contour = { step: 2, per: 1 };
-  const tpbLined = grab(tpb, c); let tpChanged = 0;
-  for (let i = 0; i < tpbPlain.length; i += 4) { assert.equal(tpbLined[i + 3], tpbPlain[i + 3]); if (tpbLined[i] !== tpbPlain[i]) tpChanged++; }
-  assert.ok(tpChanged > 100, `tp bilinear: ${tpChanged} line pixels`);
-  const wind = layer(frame(1440, 721, smooth), GRID, 'wind', WIND);
-  const wPlain = grab(wind, c); wind._contour = cfg; assert.deepEqual(Array.from(grab(wind, c)), Array.from(wPlain), 'wind: no contours');
-  // the right apron of one tile is the left edge of the next (same pixel-centre samples), and vice versa
-  const S = 258, Fa = (hs._contours(c, hs.tileCodes(c, new Float64Array(65536)), new Uint8ClampedArray(65536 * 4)), hs._F.slice());
-  const c2 = { z: 6, x: 4, y: 27 }, Fb = (hs._contours(c2, hs.tileCodes(c2, new Float64Array(65536)), new Uint8ClampedArray(65536 * 4)), hs._F.slice());
-  for (let y = 1; y < S - 1; y++) {
-    const a1 = Fa[y * S + S - 1], b1 = Fb[y * S + 1], a0 = Fa[y * S + S - 2], b0 = Fb[y * S];
-    assert.ok((a1 !== a1 && b1 !== b1) || Math.abs(a1 - b1) < 1e-9, `row ${y}: right apron`);
-    assert.ok((a0 !== a0 && b0 !== b0) || Math.abs(a0 - b0) < 1e-9, `row ${y}: left apron`);
+  const tp = layer(frame(1440, 721, SMOOTH), GRID, 'tp', TP);                     // TP here is drawn nearest (an old run's hint)
+  const tpPlain = drawTile(tp, c); tp.setContours(cfg, true); assert.deepEqual(Array.from(drawTile(tp, c)), Array.from(tpPlain));
+  const wind = layer(frame(1440, 721, SMOOTH), GRID, 'wind', WIND);
+  const wPlain = drawTile(wind, c); wind.setContours(cfg, true); assert.deepEqual(Array.from(drawTile(wind, c)), Array.from(wPlain), 'wind: no contours');
+  // the skipped blocks never hold a line pixel: drawing every block gives the same tile, at several zooms and resolutions
+  const tpb = layer(frame(1440, 721, SMOOTH), GRID, 'tp', Object.assign({}, TP, { interpolation: 'bilinear' }));
+  tpb.setContours({ step: 2, per: 1 }, true);
+  const half = layer(frame(720, 361, SMOOTH), HALF, 'hs', HS); half.setContours(cfg, true);
+  for (const [l, cs] of [[hs, [c, { z: 8, x: 15, y: 111 }, { z: 4, x: 1, y: 6 }]], [tpb, [c, { z: 5, x: 31, y: 12 }]], [half, [{ z: 2, x: 1, y: 1 }, { z: 1, x: 0, y: 0 }, { z: 3, x: 7, y: 3 }]]]) {
+    for (const cc of cs) {
+      const a = composed(l, cc), b = a.slice();
+      l._contours(cc, a); l._contours(cc, b, true);
+      assert.deepEqual(Array.from(a), Array.from(b), `blocks z${cc.z}`);
+      assert.ok(inkOf(composed(l, cc), a) > 0, `lines at z${cc.z}`);
+      const N = Math.pow(2, cc.z), base = drawTile(l, cc);
+      for (const xx of [cc.x + N, cc.x - N]) assert.deepEqual(Array.from(drawTile(l, { z: cc.z, x: xx, y: cc.y })), Array.from(base), `world copy z${cc.z}`);
+    }
+  }
+  hs.setContours(null, true); assert.equal(hs._sm, null, 'switching contours off drops the smoothed copy');
+});
+
+test('contours: neighbouring tiles agree on every shared value, and four tiles equal one 512-px computation', () => {
+  const cfg = { step: 2, per: 3.28084 };
+  for (const [fr, grid, z, x, y] of [[frame(1440, 721, SMOOTH), GRID, 6, 3, 27], [frame(1440, 721, SMOOTH), GRID, 5, 31, 12], [frame(720, 361, SMOOTH), HALF, 3, 0, 2]]) {
+    const l = layer(fr, grid, 'hs', HS); l.setContours(cfg, true);
+    const W = 512, S = W + 2, big = new Float64Array(S * S).fill(NaN), seen = new Uint8Array(S * S), plain = new Uint8ClampedArray(W * W * 4), lined = {};
+    for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+      const c = { z, x: x + dx, y: y + dy }, a = composed(l, c);
+      for (let py = 0; py < 256; py++) plain.set(a.subarray(py * 1024, py * 1024 + 1024), ((dy * 256 + py) * W + dx * 256) * 4);
+      const b = a.slice(); l._contours(c, b, true); lined[dx + ',' + dy] = b;
+      for (let py = -1; py <= 256; py++) for (let px = -1; px <= 256; px++) {
+        const gx = dx * 256 + px, gy = dy * 256 + py; if (gx > W || gy > W) continue;
+        const v = l._F[(py + 1) * 258 + px + 1], j = (gy + 1) * S + gx + 1;
+        if (seen[j]) assert.ok((v !== v && big[j] !== big[j]) || v === big[j], `z${z} shared value at ${gx},${gy}`);
+        big[j] = v; seen[j] = 1;
+      }
+    }
+    const ref = plain.slice(), k = cfg.per / (cfg.step * (z < 4 ? 2 : 1)), lut = l._lut, sc = 255 / (l._legend[1] - l._legend[0]);
+    I.contourTile(big, W, ref, 3, (lv) => { let t = Math.round((lv / k - l._legend[0]) * sc); t = Math.max(0, Math.min(255, t)); return (0.299 * lut[t * 3] + 0.587 * lut[t * 3 + 1] + 0.114 * lut[t * 3 + 2]) > 170 ? 30 : 255; });
+    for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+      const q = lined[dx + ',' + dy];
+      for (let py = 0; py < 256; py++) for (let px = 0; px < 256; px++) {
+        const a = (py * 256 + px) * 4, b = ((dy * 256 + py) * W + dx * 256 + px) * 4;
+        for (let ch = 0; ch < 4; ch++) if (q[a + ch] !== ref[b + ch]) assert.fail(`z${z} tile ${dx},${dy} pixel ${px},${py}`);
+      }
+    }
+  }
+});
+
+test('contours: no peak-period line in a cell that jumps more than 2 s, north-south as east-west, at 60 N as at the equator (G8 A-P2-2)', () => {
+  const TPB = Object.assign({}, TP, { interpolation: 'bilinear' }), code = (s) => Math.round(1 + (s - 1) / 29 * 254);
+  // 10 s rising gently (0.12 s per cell) with a step of `jump` seconds across one row or one column; the 12 s level sits inside the step
+  function run(jump, axis, lat) {
+    const r0 = Math.round((90 - lat) / 0.25), c0 = Math.round((-150 + 180) / 0.25);
+    const fr = frame(1440, 721, (r, c) => code(10.6 + 0.12 * (axis === 'ew' ? c - c0 : r0 - r) + ((axis === 'ew' ? c > c0 : r < r0) ? jump : 0)));
+    const l = layer(fr, GRID, 'tp', TPB); l.setContours({ step: 2, per: 1 }, true);
+    const z = 7, n = 256 * 128, X = (-150 + 180) / 360 * n, s = Math.sin(lat * Math.PI / 180), Y = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n;
+    let inJump = 0, lines = 0;
+    for (const [dx, dy] of [[-1, -1], [0, -1], [-1, 0], [0, 0]]) {
+      const c = { z, x: Math.floor(X / 256) + dx, y: Math.floor(Y / 256) + dy }, a = composed(l, c), b = a.slice();
+      l._contours(c, b);
+      for (let py = 0; py < 256; py++) for (let px = 0; px < 256; px++) {
+        const i = (py * 256 + px) * 4; if (a[i] === b[i] && a[i + 1] === b[i + 1] && a[i + 2] === b[i + 2]) continue;
+        lines++;
+        const ll = I.tilePixelLatLng(c, px, py), rr = (90 - ll.lat) / 0.25, cc = (ll.lng + 180) / 0.25;
+        if (axis === 'ew' ? Math.abs(Math.floor(cc) - c0) <= 1 : Math.abs(Math.floor(rr) - (r0 - 1)) <= 1) inJump++;   // the step's cell or its neighbours
+      }
+    }
+    return { lines, inJump };
+  }
+  for (const lat of [0, 60]) for (const axis of ['ew', 'ns']) {
+    const big = run(2.5, axis, lat), small = run(1.5, axis, lat);
+    assert.equal(big.inJump, 0, `${axis} at ${lat}: a 2.5 s step carries no line, in its cell or beside it`);
+    assert.ok(small.inJump > 0, `${axis} at ${lat}: a 1.5 s step is an ordinary slope and keeps its line (${small.lines})`);
+  }
+});
+
+test('contours: the interval doubles below tile zoom 4 (2 ft lines at z4, none at z3 on a 1-3.5 ft sea)', () => {
+  const ft = (c) => 1.0 + 2.5 * c / 1439;                                     // 1.0 ft in the west to 3.5 ft in the east
+  const fr = frame(1440, 721, (r, c) => Math.round(1 + ft(c) / 3.28084 / 15 * 254));
+  const l = layer(fr, GRID, 'hs', HS); l.setContours({ step: 2, per: 3.28084 }, true);
+  let z4 = 0, z3 = 0;
+  for (let x = 0; x < 16; x++) { const c = { z: 4, x, y: 6 }, a = composed(l, c), b = a.slice(); l._contours(c, b); z4 += inkOf(a, b); }
+  for (let x = 0; x < 8; x++) { const c = { z: 3, x, y: 3 }, a = composed(l, c), b = a.slice(); l._contours(c, b); z3 += inkOf(a, b); }
+  assert.ok(z4 > 100, `z4: the 2 ft line (${z4} px)`);
+  assert.equal(z3, 0, 'z3: every 4 ft, and 4 ft is never reached');
+});
+
+test('readout equals the drawn pixel with contours on (clipped hs and tp), and the lines never change alpha', () => {
+  const coast = I.decodeCoast(encodeCoast([[OAHU], [sq(-158.1, 21.0, -157.8, 21.2)]], 5));
+  const coords = { z: 8, x: 15, y: 112 }, key = '15:112:8';
+  for (const [field, fdef, cfg] of [['hs', HS, { step: 2, per: 3.28084 }], ['tp', Object.assign({}, TP, { interpolation: 'bilinear' }), { step: 2, per: 1 }]]) {
+    const l = layer(frame(1440, 721, SMOOTH), GRID, field, fdef);
+    l.setCoast(fakeStore([coast]));
+    const el = grabEl(); l._tiles[key] = { el, coords };
+    l._draw(el, coords); const off = el.out;
+    l.setContours(cfg, true); l._draw(el, coords); const on = el.out;
+    assert.ok(inkOf(off, on) > 100, field + ': lines drawn');
+    for (let i = 3; i < on.length; i += 4) assert.equal(on[i], off[i], field + ': alpha');
+    const codes = l.tileCodes(coords, new Float64Array(65536));
+    for (let py = 0; py < 256; py += 3) for (let px = 0; px < 256; px += 5) {
+      const ll = I.tilePixelLatLng(coords, px, py), v = l.readoutAt(ll.lat + 1e-7, ll.lng - 1e-7, 8), a = on[(py * 256 + px) * 4 + 3];
+      if (a >= I.LAND_READOUT) assert.ok(v !== null && Math.abs(v - l._value(codes[py * 256 + px])) < 1e-9, field + ' ' + px + ',' + py);
+      else assert.equal(v, null, field + ' ' + px + ',' + py);
+    }
+  }
+});
+
+test('contourTile: the distance is measured along the slope that leads to the level, not the central difference', () => {
+  // one pixel: the level 5 lies 0.1 below it; the way down (left) falls 0.1 per px, the other side rises 0.4
+  const F = new Float64Array(9); F.fill(NaN);
+  F[1] = 5.1; F[3] = 5.0; F[4] = 5.1; F[5] = 5.5; F[7] = 5.1;                // u, l, f, r, d (W = 1, S = 3)
+  const d = new Uint8ClampedArray([30, 60, 160, 200]);
+  assert.equal(I.contourTile(F, 1, d, 3, () => 255), 1);
+  const a = ((1.5 - 1.0) / 0.75) * 0.55;                                      // 1.0 px away (0.1 / 0.1): partial coverage
+  for (const [ch, base] of [[0, 30], [1, 60], [2, 160]]) assert.ok(Math.abs(d[ch] - (base + (255 - base) * a)) <= 1, `channel ${ch}: ${d[ch]}`);
+  assert.equal(d[3], 200);
+});
+
+async function realFrame(name) {
+  const buf = fs.readFileSync(path.join(__dirname, '..', 'fixtures', name));
+  return I.decodePngGrey(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+}
+const tilesOf = (z, x0, x1, y0, y1) => { const t = []; for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) t.push({ z, x, y }); return t; };
+
+test('real frames: skipping blocks draws exactly what drawing every block draws, at zooms 1 to 8', async () => {
+  const hsHalf = await realFrame('frame_hs_half.png'), tpFull = await realFrame('frame_tp_full.png');
+  const TPB = Object.assign({}, TP, { interpolation: 'bilinear' });
+  const cases = [
+    [hsHalf, HALF, 'hs', HS, { step: 2, per: 3.28084 }, [...tilesOf(1, 0, 1, 0, 1), ...tilesOf(2, 0, 3, 1, 2), ...tilesOf(3, 0, 7, 2, 4)]],
+    [hsHalf, HALF, 'hs', HS, { step: 0.5, per: 1 }, tilesOf(3, 0, 7, 2, 4)],
+    [tpFull, GRID, 'tp', TPB, { step: 2, per: 1 }, [...tilesOf(4, 0, 15, 5, 8), ...tilesOf(6, 26, 33, 19, 21), ...tilesOf(8, 10, 18, 108, 112)]]];
+  let tiles = 0, lines = 0;
+  for (const [fr, grid, field, fdef, cfg, list] of cases) {
+    const l = layer(fr, grid, field, fdef); l.setContours(cfg, true);
+    for (const c of list) {
+      const a = composed(l, c), b = a.slice(), plain = a.slice();
+      l._contours(c, a); l._contours(c, b, true);
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) assert.fail(`${field} z${c.z} ${c.x},${c.y}: byte ${i} ${a[i]} vs ${b[i]}`);
+      tiles++; lines += inkOf(plain, a);
+    }
+  }
+  assert.equal(tiles, 193); assert.ok(lines > 20000, `${lines} line px`);
+});
+
+test('real frames: no peak-period line inside a cell that jumps more than 2 s, also where cells are narrower than the sampling (z1-z2)', async () => {
+  const full = await realFrame('frame_tp_full.png'), half = { cols: 720, rows: 361, q: new Uint8Array(720 * 361) };
+  for (let r = 0; r < 361; r++) for (let c = 0; c < 720; c++) half.q[r * 720 + c] = full.q[(2 * r) * 1440 + 2 * c];   // the job's half = full[::2, ::2]
+  const TPB = Object.assign({}, TP, { interpolation: 'bilinear' }), jump = 2 * 254 / (TP.hi - TP.lo);
+  for (const [fr, grid, list] of [[half, HALF, [...tilesOf(1, 0, 1, 0, 1), ...tilesOf(2, 0, 3, 0, 3)]], [full, GRID, [...tilesOf(4, 0, 15, 5, 8), ...tilesOf(8, 10, 18, 108, 112)]]]) {
+    const l = layer(fr, grid, 'tp', TPB); l.setContours({ step: 2, per: 1 }, true);
+    const cols = fr.cols, rows = fr.rows, q = fr.q;
+    const jumps = (r0, c0) => {                                                // a > 2 s edge in the cell (nodes r0..r0+1, c0..c0+1)
+      const r1 = Math.min(rows - 1, r0 + 1), c1 = (c0 + 1) % cols;
+      const A = q[r0 * cols + c0], B = q[r0 * cols + c1], C = q[r1 * cols + c0], D = q[r1 * cols + c1];
+      const j = (x, y) => x && y && Math.abs(x - y) > jump;
+      return j(A, B) || j(C, D) || j(A, C) || j(B, D);
+    };
+    let lines = 0, near = 0;
+    for (const c of list) {
+      const a = composed(l, c), b = a.slice(); l._contours(c, b);
+      for (let py = 0; py < 256; py++) for (let px = 0; px < 256; px++) {
+        const i = (py * 256 + px) * 4; if (a[i] === b[i] && a[i + 1] === b[i + 1] && a[i + 2] === b[i + 2]) continue;
+        lines++;
+        const ll = I.tilePixelLatLng(c, px, py), rr = (grid.lat0 - ll.lat) / -grid.dlat, cc = (((ll.lng - grid.lon0) / grid.dlon) % cols + cols) % cols;
+        if (rr >= 0 && rr <= rows - 1 && jumps(Math.floor(rr), Math.floor(cc))) near++;
+      }
+    }
+    assert.ok(lines > 1000, `${cols} cols: ${lines} line px`);
+    assert.equal(near, 0, `${cols} cols: ${near} of ${lines} line px inside a jump cell`);
   }
 });

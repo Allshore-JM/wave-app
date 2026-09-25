@@ -32,9 +32,10 @@
     tp:   [[0,'#2a1f7a'],[0.25,'#2e7ed8'],[0.5,'#38c9a8'],[0.7,'#c8e63c'],[0.85,'#f7a52b'],[1,'#e8321f']],
     wind: [[0,'#e8f1ff'],[0.2,'#8cc4ff'],[0.4,'#3aa35a'],[0.6,'#f0d433'],[0.8,'#f0731f'],[1,'#b00f3a']]
   };
-  // Value (SI units) -> legend position knots, piecewise linear; fields without knots are linear over
-  // the legend range. The tiles stay linear in value (composeTile indexes a 256-entry LUT over the
-  // legend range); only the colour each value gets, and where it sits on the legend, follow the knots.
+  // Value (SI units) -> legend position knots, piecewise linear, written for a legend from 0 to the last
+  // knot (12 m; legendPos stretches them to any other legend); fields without knots are linear over the
+  // legend range. The tiles stay linear in value (composeTile indexes a 256-entry LUT over the legend
+  // range); only the colour each value gets, and where it sits on the legend, follow the knots.
   var KNOTS = {
     hs: [[0, 0], [0.5, 0.08], [1, 0.17], [2, 0.33], [3, 0.47], [4, 0.58], [6, 0.72], [9, 0.87], [12, 1]]
   };
@@ -46,7 +47,11 @@
     'wind|US': [0, 20, 40], 'wind|Metric': [0, 25, 50, 75]
   };
 
-  function saved() { try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || '{}'); } catch (e) { return {}; } }
+  // The tab's saved state; anything but a plain object (a corrupted or foreign value) counts as empty,
+  // so the next write replaces it instead of failing on it for the rest of the tab's life.
+  function saved() {
+    try { var o = JSON.parse(sessionStorage.getItem(SESSION_KEY) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
+  }
   function save(patch) { try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(Object.assign(saved(), patch))); } catch (e) {} }
   function hexToRgb(h) { var n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
   function rampAt(stops, t, out, o) {
@@ -72,15 +77,17 @@
     }
     return knots[knots.length - 1][to];
   }
-  // Legend position (0..1) of a value in SI units, and back.
+  // Legend position (0..1) of a value in SI units, and back. A manifest whose legend is not 0..last knot
+  // stretches the knots to it, so the bar, its ticks and the tiles agree and the legend top is the top colour.
+  function knotsFit(k, legend) { return legend[0] === 0 && legend[1] === k[k.length - 1][0]; }
   function legendPos(field, legend, v) {
     var k = KNOTS[field];
-    if (k) return through(k, v, 0, 1);
+    if (k) return through(k, knotsFit(k, legend) ? v : (v - legend[0]) / (legend[1] - legend[0]) * k[k.length - 1][0], 0, 1);
     return Math.max(0, Math.min(1, (v - legend[0]) / (legend[1] - legend[0])));
   }
   function legendInv(field, legend, p) {
     var k = KNOTS[field];
-    if (k) return through(k, p, 1, 0);
+    if (k) { var x = through(k, p, 1, 0); return knotsFit(k, legend) ? x : legend[0] + x / k[k.length - 1][0] * (legend[1] - legend[0]); }
     return legend[0] + Math.max(0, Math.min(1, p)) * (legend[1] - legend[0]);
   }
   // The tiles' lookup: 256 entries LINEAR IN VALUE over the legend range (what composeTile indexes),
@@ -90,6 +97,8 @@
     for (var i = 0; i < 256; i++) rampAt(stops, KNOTS[field] ? legendPos(field, legend, legend[0] + i / 255 * (legend[1] - legend[0])) : i / 255, out, i * 3);
     return out;
   }
+  // The legend bar: 256 colours by LEGEND POSITION (buildLut is by value; for knotted fields they differ).
+  function legendBar(field) { return buildRamp(RAMPS[field]); }
   function pad3(n) { return (n < 10 ? '00' : n < 100 ? '0' : '') + n; }
   function clear(el) { if (el) while (el.firstChild) el.removeChild(el.firstChild); }
   function mk(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
@@ -427,36 +436,90 @@
   // wave height every 2 ft / 0.5 m, peak period every 2 s; doubled below tile zoom 4.
   var CONTOURS = { hs: { US: 2, Metric: 0.5 }, tp: { US: 2, Metric: 2 } };
   var CONTOUR_INK = 0.55;                                  // line opacity over the field colour ("light" lines)
-  // Anti-aliased isolines drawn into an already composed tile. F: (W+2)^2 level coordinates (display
-  // value / interval) with a 1-px apron from the neighbouring tiles, NaN = no value; rgba: the tile
-  // (W*W*4). A line sits where F crosses an integer; its width in pixels comes from the local gradient
-  // (distance to the level over |grad F|), so every line is ~1.5 px at any zoom. Only RGB changes, never
-  // alpha (the readout's drawn-pixel rule and the coast clip stay exactly as composed). No line next to
-  // missing data, at level 0, where levels would be under minGapPx apart (they would merge into a band),
-  // or where F jumps more than maxJump levels per pixel (e.g. peak period switching swell regimes).
-  function contourTile(F, W, rgba, minGapPx, maxJump) {
+  var CONTOUR_JUMP = 2;                                    // peak period: no lines where it jumps more than 2 s between neighbouring nodes
+  var CONTOUR_BLOCK = 16;                                  // tiles are drawn in 16-px blocks; a block no level crosses is skipped
+  var SMOOTH_ROWS = 32, SMOOTH_COLS = 64;                  // the smoothed copy of a frame is filled in blocks of nodes this size
+  // Anti-aliased isolines drawn into an already composed tile, over the pixels x0..x1-1, y0..y1-1 (the
+  // whole tile by default). F: (W+2)^2 level coordinates (display value / interval) with a 1-px apron,
+  // NaN = no line there (no data, or a peak-period jump); only the pixels in the rect and their four
+  // neighbours are read. rgba: the tile (W*W*4). A line sits where F crosses a whole level; a pixel's
+  // coverage comes from its distance to the nearest level measured along the slope that LEADS to that
+  // level (one-sided differences: a flat side never counts, so the foot of a steep ramp is not outlined
+  // at a level the field does not reach there), giving ~2 px anti-aliased lines at any zoom and angle.
+  // Only RGB changes, never alpha (the readout's drawn-pixel rule and the coast clip stay exactly as
+  // composed). No line beside NaN, at level 0, or where levels would be under minGapPx apart (they would
+  // merge into a band). ink(level): 30 (dark) or 255 (light) for that level; else by the pixel's colour.
+  function contourTile(F, W, rgba, minGapPx, ink, x0, y0, x1, y1) {
     var S = W + 2, n = 0;
-    for (var y = 0; y < W; y++) {
-      for (var x = 0; x < W; x++) {
+    if (x0 === undefined) { x0 = 0; y0 = 0; x1 = W; y1 = W; }
+    for (var y = y0; y < y1; y++) {
+      for (var x = x0; x < x1; x++) {
         var i = (y + 1) * S + x + 1, k = (y * W + x) * 4;
         if (!rgba[k + 3]) continue;
         var f = F[i], l = F[i - 1], r = F[i + 1], u = F[i - S], d = F[i + S];
-        if (f !== f || l !== l || r !== r || u !== u || d !== d) continue;       // NaN anywhere: no line beside missing data
-        var gx = (r - l) / 2, gy = (d - u) / 2, g = Math.sqrt(gx * gx + gy * gy);
-        if (g < 1e-9 || 1 / g < minGapPx || (maxJump && g > maxJump)) continue;
-        var lv = Math.round(f);
+        if (f !== f || l !== l || r !== r || u !== u || d !== d) continue;       // NaN anywhere: no line
+        var lv = Math.round(f), df = f - lv;
         if (lv === 0) continue;
-        var dpx = Math.abs(f - lv) / g;                                             // distance to the level in pixels
+        var sx = df > 0 ? Math.max(f - l, f - r) : Math.max(l - f, r - f);          // slope toward the level, per axis
+        var sy = df > 0 ? Math.max(f - u, f - d) : Math.max(u - f, d - f);
+        if (sx < 0) sx = 0;
+        if (sy < 0) sy = 0;
+        if (Math.abs(df) >= 1.5 * (sx + sy)) continue;                              // >= 1.5 px from the level (or no way to it)
+        var gx = (r - l) / 2, gy = (d - u) / 2, g = Math.sqrt(gx * gx + gy * gy);
+        if (g < 1e-9 || 1 / g < minGapPx) continue;
+        var dpx = Math.abs(df) / Math.sqrt(sx * sx + sy * sy);                      // distance to the level in pixels
         var cov = dpx <= 0.75 ? 1 : dpx >= 1.5 ? 0 : (1.5 - dpx) / 0.75;
         if (!cov) continue;
         var R = rgba[k], G = rgba[k + 1], B = rgba[k + 2];
-        var ink = (0.299 * R + 0.587 * G + 0.114 * B) > 170 ? 30 : 255;           // dark ink on light colours, light ink elsewhere
+        var c = ink ? ink(lv) : (0.299 * R + 0.587 * G + 0.114 * B) > 170 ? 30 : 255;   // dark ink on light colours, light ink elsewhere
         var a = cov * CONTOUR_INK;
-        rgba[k] = R + (ink - R) * a; rgba[k + 1] = G + (ink - G) * a; rgba[k + 2] = B + (ink - B) * a;
+        rgba[k] = R + (c - R) * a; rgba[k + 1] = G + (c - G) * a; rgba[k + 2] = B + (c - B) * a;
         n++;
       }
     }
     return n;
+  }
+  // The smoothed copy of a frame the contours are traced on (colours, readout and clip keep the raw
+  // codes): the 8-bit codes step in terraces that a flat sea crosses only every cell or two, so lines
+  // on the raw codes follow the model grid in staircases. S = a masked [1,2,1]x[1,2,1] mean over the
+  // present nodes (columns periodic, rows not wrapped); missing nodes stay 0. jump > 0 (peak period, in
+  // codes): a neighbour across a larger jump is left out, so swell regimes are never blended, and J marks
+  // the cells (nodes r..r+1, c..c+1) with such a jump on an edge: no line is drawn in them. The jump is
+  // counted between model nodes, so it is the same north-south and east-west at every latitude.
+  // Fills nodes r0..r1-1, c0..c1-1 of S (and of J when given).
+  function smoothBlock(q, cols, rows, S, J, jump, r0, r1, c0, c1) {
+    var acc = 0, w = 0, v = 0;
+    function add(x, wt) { if (x && !(jump && (x - v > jump || v - x > jump))) { acc += x * wt; w += wt; } }
+    for (var r = r0; r < r1; r++) {
+      var up = r > 0 ? (r - 1) * cols : -1, mid = r * cols, dn = r + 1 < rows ? (r + 1) * cols : -1;
+      for (var c = c0; c < c1; c++) {
+        var cl = c ? c - 1 : cols - 1, cr = c + 1 < cols ? c + 1 : 0;
+        v = q[mid + c];
+        if (J) {
+          var b = q[mid + cr], e = dn >= 0 ? q[dn + c] : 0, h = dn >= 0 ? q[dn + cr] : 0;
+          J[mid + c] = (v && b && Math.abs(v - b) > jump) || (e && h && Math.abs(e - h) > jump) ||
+            (v && e && Math.abs(v - e) > jump) || (b && h && Math.abs(b - h) > jump) ? 1 : 0;
+        }
+        if (!v) { S[mid + c] = 0; continue; }
+        acc = 4 * v; w = 4;
+        add(q[mid + cl], 2); add(q[mid + cr], 2);
+        if (up >= 0) { add(q[up + c], 2); add(q[up + cl], 1); add(q[up + cr], 1); }
+        if (dn >= 0) { add(q[dn + c], 2); add(q[dn + cl], 1); add(q[dn + cr], 1); }
+        S[mid + c] = acc / w;
+      }
+    }
+  }
+  // A peak-period jump in the cell (r, c), or with wide in any of the 3x3 cells around it (cells
+  // narrower than the contour sample spacing, where a jump cell can fall between two samples).
+  function jumpAt(J, cols, rows, r, c, wide) {
+    if (J[r * cols + c]) return true;
+    if (!wide) return false;
+    for (var dr = -1; dr <= 1; dr++) {
+      var rr = r + dr;
+      if (rr < 0 || rr >= rows) continue;
+      for (var dc = -1; dc <= 1; dc++) if (J[rr * cols + (c + dc + cols) % cols]) return true;
+    }
+    return false;
   }
   // Coast data for one base URL (index.json + tier 0 up front, tier-1 chunks on demand). One per URL
   // per page: the decoded tier 0 (~3 MB) and the chunk LRU survive Off/On.
@@ -725,10 +788,13 @@
       this._codes = new Float64Array(TILE * TILE); this._colPos = new Float64Array(TILE);
       this._one = new Float64Array(1); this._oneOut = new Float64Array(1);
       this._coast = null; this._clip = false;
-      this._contour = null; this._F = null; this._strip = new Float64Array(TILE + 2); this._cp2 = new Float64Array(TILE + 2);
+      this._contour = null; this._F = null; this._sm = null; this._sv = null;
+      this._sc = new Float64Array(TILE / 2 + 2); this._sr = new Float64Array(TILE / 2 + 2); this._srow = new Float64Array(TILE / 2 + 2);
+      this._pi = new Int32Array(TILE + 2); this._pt = new Float64Array(TILE + 2);
     },
-    // cfg {step: interval in display units, per: SI -> display factor} or null (no contours)
-    setContours: function (cfg) { this._contour = cfg; this._redraw(); },
+    // cfg {step: interval in display units, per: SI -> display factor} or null (no contours; the smoothed
+    // copy of the frame is dropped). quiet: only set it, for the draw that follows.
+    setContours: function (cfg, quiet) { this._contour = cfg; if (!cfg) this._sm = null; if (!quiet) this._redraw(); },
     // frame {q, cols, rows}; grid = the manifest grid for that resolution; fdef = the manifest field
     setFrame: function (frame, grid, fieldName, fdef, lut, entry) {
       validateGrid(grid, frame, fdef);
@@ -737,7 +803,7 @@
       this._clip = !!(this._coast && CLIP_FIELDS[fieldName]);
       this._redraw();
     },
-    clear: function () { this._frame = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._redraw(); },
+    clear: function () { this._frame = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._sm = null; this._redraw(); },
     hasFrame: function () { return !!this._frame; },
     // A loaded CoastStore (or null): from now on hs/tp tiles are clipped to its polygons.
     setCoast: function (store) {
@@ -862,41 +928,128 @@
       var codes = this.tileCodes(coords, this._codes);
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
       composeTile(codes, land, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data);
-      if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, codes, img.data);
+      if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, img.data);
       ctx.putImageData(img, 0, 0);
     },
-    // Level coordinates for the tile plus a 1-px apron sampled exactly as the neighbouring tiles sample
-    // their edge pixels (same pixel-centre formulas), so lines join across tile edges.
-    _contours: function (coords, codes, rgba) {
-      var S = TILE + 2, F = this._F || (this._F = new Float64Array(S * S)), cfg = this._contour;
+    // Contours on the smoothed copy of the frame (smoothBlock), sampled at world pixels every s px (the
+    // same pixels for every tile, so neighbouring tiles agree on their shared edges and world copies
+    // match) and interpolated in between; a 16-px block is drawn only if its samples span a whole level.
+    // all: draw every block (the tests compare it with the skipping).
+    _contours: function (coords, rgba, all) {
+      var cfg = this._contour, fr = this._frame, g = this._grid, cols = fr.cols, rows = fr.rows, i, j;
       var step = cfg.step * (coords.z < 4 ? 2 : 1), k = cfg.per / step, lo = this._lo, span = (this._hi - lo) / 254;
-      var f = this._frame, g = this._grid, cols = f.cols, rows = f.rows;
-      var n = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE, y0 = coords.y * TILE, cp = this._cp2, st = this._strip;
-      var lev = function (code) { return code ? (lo + (code - 1) * span) * k : NaN; };
-      for (var px = -1; px <= TILE; px++) {
-        var c = ((x0 + px + 0.5) / n * 360 - 180 - g.lon0) / g.dlon;
-        cp[px + 1] = ((c % cols) + cols) % cols;
+      var n = TILE * Math.pow(2, coords.z), cellPx = n * g.dlon / 360, s = cellPx >= 6 ? 4 : 2, m = TILE / s + 2;
+      var x0 = coords.x * TILE, y0 = coords.y * TILE, cp = this._sc, rp = this._sr, row = this._srow, pi = this._pi, pt = this._pt;
+      var V = this._sv || (this._sv = new Float64Array((TILE / 2 + 2) * (TILE / 2 + 2)));
+      for (i = 0; i < m; i++) {
+        var c = ((x0 + (i - 1) * s + 0.5) / n * 360 - 180 - g.lon0) / g.dlon;
+        cp[i] = ((c % cols) + cols) % cols;
       }
-      var rowAt = function (py) {
-        var lat = Math.atan(Math.sinh(Math.PI - 2 * Math.PI * (y0 + py + 0.5) / n)) * 180 / Math.PI;
-        return (g.lat0 - lat) / -g.dlat;
+      for (j = 0; j < m; j++) {
+        var lat = Math.atan(Math.sinh(Math.PI - 2 * Math.PI * (y0 + (j - 1) * s + 0.5) / n)) * 180 / Math.PI;
+        rp[j] = (g.lat0 - lat) / -g.dlat;
+      }
+      var sm = this._smooth(cp, rp, m), J = sm.jump ? sm.J : null, wide = cellPx < s;
+      for (j = 0; j < m; j++) {
+        var r = rp[j], o = j * m;
+        if (!(r >= 0 && r <= rows - 1)) { for (i = 0; i < m; i++) V[o + i] = NaN; continue; }
+        this._smoothRow(r, cp, m, row, sm.S);
+        var r0 = Math.floor(r);
+        for (i = 0; i < m; i++) V[o + i] = row[i] && !(J && jumpAt(J, cols, rows, r0, Math.floor(cp[i]), wide)) ? (lo + (row[i] - 1) * span) * k : NaN;
+      }
+      var W2 = TILE + 2, F = this._F || (this._F = new Float64Array(W2 * W2)), B = CONTOUR_BLOCK;
+      for (i = 0; i < W2; i++) { var fi = (i - 1) / s + 1; pi[i] = Math.floor(fi); pt[i] = fi - pi[i]; }   // pixel column i - 1 between samples pi, pi + 1
+      var lut = this._lut, L0 = this._legend[0], sc = 255 / (this._legend[1] - L0);
+      var ink = function (lv) {                                  // one ink per level, from the colour of the level's own value
+        var t = Math.round((lv / k - L0) * sc);
+        t = t < 0 ? 0 : t > 255 ? 255 : t;
+        return (0.299 * lut[t * 3] + 0.587 * lut[t * 3 + 1] + 0.114 * lut[t * 3 + 2]) > 170 ? 30 : 255;
       };
-      for (var py = -1; py <= TILE; py++) {
-        var o = (py + 1) * S, r = rowAt(py);
-        if (!(r >= 0 && r <= rows - 1)) { for (var j = 0; j < S; j++) F[o + j] = NaN; continue; }
-        if (py < 0 || py === TILE) {                                               // apron rows: sample the full width
-          this._codeRow(r, cp, S, st, 0);
-          for (j = 0; j < S; j++) F[o + j] = lev(st[j]);
-        } else {                                                                  // tile rows: the codes already drawn + two apron pixels
-          var b = py * TILE;
-          for (j = 0; j < TILE; j++) F[o + 1 + j] = lev(codes[b + j]);
-          this._codeRow(r, cp, 1, st, 0); F[o] = lev(st[0]);
-          this._one[0] = cp[S - 1]; this._codeRow(r, this._one, 1, st, 0); F[o + S - 1] = lev(st[0]);
+      for (var by = 0; by < TILE; by += B) {
+        for (var bx = 0; bx < TILE; bx += B) {
+          if (!all) {
+            // F over the block and its ring lies within [mn, mx] of the samples it is interpolated from, and
+            // changes by at most gxm / s (gym / s) per pixel across (down); a pixel is inked only within
+            // 1.5 px of a level along those slopes: no whole level within reach of [mn, mx], no line pixel
+            var i0 = Math.floor((bx - 1) / s) + 1, i1 = Math.min(m - 1, Math.floor((bx + B) / s) + 2);
+            var j0 = Math.floor((by - 1) / s) + 1, j1 = Math.min(m - 1, Math.floor((by + B) / s) + 2);
+            var mn = Infinity, mx = -Infinity, gxm = 0, gym = 0;
+            for (j = j0; j <= j1; j++) {
+              for (i = i0; i <= i1; i++) {
+                var v = V[j * m + i], dv;
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+                if (i < i1 && (dv = Math.abs(V[j * m + i + 1] - v)) > gxm) gxm = dv;
+                if (j < j1 && (dv = Math.abs(V[(j + 1) * m + i] - v)) > gym) gym = dv;
+              }
+            }
+            var reach = 1.5 * (gxm + gym) / s;
+            if (!(Math.floor(mx + reach) >= Math.ceil(mn - reach))) continue;
+          }
+          for (var py = by - 1; py <= by + B; py++) {             // F over the block and its 1-px ring, between the samples
+            var jj = pi[py + 1], u = pt[py + 1], orow = (py + 1) * W2, ra = jj * m;
+            for (var px = bx - 1; px <= bx + B; px++) {
+              var t = pt[px + 1], a = ra + pi[px + 1];
+              var val = t ? V[a] + (V[a + 1] - V[a]) * t : V[a];
+              if (u) { var e = a + m, bot = t ? V[e] + (V[e + 1] - V[e]) * t : V[e]; val += (bot - val) * u; }
+              F[orow + px + 1] = val;
+            }
+          }
+          contourTile(F, TILE, rgba, 3, ink, bx, by, bx + B, by + B);
         }
       }
-      // peak period: no lines across a swell-regime jump (> 2 s within one model cell)
-      var cellPx = n * g.dlon / 360, maxJump = this.field === 'tp' ? (2 * k) / Math.max(1, cellPx) : 0;
-      contourTile(F, TILE, rgba, 3, maxJump);
+    },
+    // The smoothed copy of the frame on the map, filled in blocks of nodes as the tiles need them: once
+    // per frame, and only while contours are on (setContours(null) drops it; ~5 MB at full resolution).
+    _smooth: function (cp, rp, m) {
+      var fr = this._frame, cols = fr.cols, rows = fr.rows, sm = this._sm, i, j, b;
+      var jump = this.field === 'tp' ? CONTOUR_JUMP * 254 / (this._hi - this._lo) : 0;
+      if (!sm || sm.cols !== cols || sm.rows !== rows) {
+        var nbr = Math.ceil(rows / SMOOTH_ROWS), nbc = Math.ceil(cols / SMOOTH_COLS);
+        sm = this._sm = { frame: null, jump: -1, cols: cols, rows: rows, S: new Float32Array(cols * rows), J: null,
+          nbr: nbr, nbc: nbc, done: new Uint8Array(nbr * nbc), wr: new Uint8Array(nbr), wc: new Uint8Array(nbc) };
+      }
+      if (sm.frame !== fr || sm.jump !== jump) {
+        sm.frame = fr; sm.jump = jump; sm.done.fill(0);
+        if (jump && !sm.J) sm.J = new Uint8Array(cols * rows);
+      }
+      var wr = sm.wr, wc = sm.wc;
+      wr.fill(0); wc.fill(0);
+      for (j = 0; j < m; j++) {                                   // the rows the samples read, and one around them (jumpAt)
+        if (!(rp[j] >= 0 && rp[j] <= rows - 1)) continue;
+        var r0 = Math.floor(rp[j]);
+        for (b = Math.max(0, r0 - 1); b <= Math.min(rows - 1, r0 + 1); b++) wr[(b / SMOOTH_ROWS) | 0] = 1;
+      }
+      for (i = 0; i < m; i++) {
+        var c0 = Math.floor(cp[i]);
+        for (b = -1; b <= 1; b++) wc[(((c0 + b + cols) % cols) / SMOOTH_COLS) | 0] = 1;
+      }
+      for (var br = 0; br < sm.nbr; br++) {
+        if (!wr[br]) continue;
+        for (var bc = 0; bc < sm.nbc; bc++) {
+          if (!wc[bc] || sm.done[br * sm.nbc + bc]) continue;
+          smoothBlock(fr.q, cols, rows, sm.S, jump ? sm.J : null, jump, br * SMOOTH_ROWS, Math.min(rows, (br + 1) * SMOOTH_ROWS),
+            bc * SMOOTH_COLS, Math.min(cols, (bc + 1) * SMOOTH_COLS));
+          sm.done[br * sm.nbc + bc] = 1;
+        }
+      }
+      return sm;
+    },
+    // The contours' sampler: _codeRow's bilinear rule (same cells, same absent rule) over the smoothed
+    // copy; a separate function keeps the tiles' sampler monomorphic on its Uint8Array.
+    _smoothRow: function (r, colPos, n, out, S) {
+      var cols = this._frame.cols, rows = this._frame.rows;
+      var r0 = Math.floor(r), r1 = r0 + 1 < rows ? r0 + 1 : r0, fr = r - r0, w0 = 1 - fr, b0 = r0 * cols, b1 = r1 * cols;
+      for (var i = 0; i < n; i++) {
+        var cpos = colPos[i], c0 = Math.floor(cpos), c1 = c0 + 1 === cols ? 0 : c0 + 1, fc = cpos - c0;
+        var a = S[b0 + c0], b = S[b0 + c1], c = S[b1 + c0], d = S[b1 + c1];
+        var w = 0, acc = 0, wt;
+        if (a) { wt = w0 * (1 - fc); acc += a * wt; w += wt; }
+        if (b) { wt = w0 * fc; acc += b * wt; w += wt; }
+        if (c) { wt = fr * (1 - fc); acc += c * wt; w += wt; }
+        if (d) { wt = fr * fc; acc += d * wt; w += wt; }
+        out[i] = w < 0.25 ? 0 : acc / w;
+      }
     }
   });
 
@@ -971,7 +1124,7 @@
     this._listeners = []; this._attributed = false; this.collapsed = undefined; this._touch = null; this._onVis = null;
     this.cache = new FrameCache(MAX_DECODED); this.inflight = {}; this.unavailable = {}; this.target = null; this.dir = 1; this.n = 0;
     this.playing = false; this.wasPlaying = false; this.timer = null; this.runTimer = null; this.ui = null; this._lutFor = null;
-    this.playGen = 0; this.transientFails = 0; this._staleShown = false;
+    this.playGen = 0; this.transientFails = 0; this._staleShown = false; this._pendingRestore = null; this._onHide = null;
     // opts.coast: clip wave height / peak period to the coastlines published beside the frames
     this.coast = opts.coast ? coastStore(this.root + '/static/coast/v1') : null;
     var s = saved();
@@ -980,9 +1133,11 @@
     this.contours = s.contours === true;                   // off until ticked, then remembered for the tab
   }
   // restore: true on the mount the page makes after a reload (the field was saved in this tab); the
-  // saved valid time and play state are then reused when they are recent (restoreIndex).
+  // saved valid time and play state are then reused when they are recent (restoreIndex), by this mount
+  // or, if it never lands a frame, by the next one (another field picked meanwhile, Retry) until Off.
   Overlay.prototype.mount = function (fieldName, restore) {
-    var self = this, st = restore ? saved() : null;
+    if (restore) this._pendingRestore = saved();
+    var self = this, st = this._pendingRestore;
     if (!this.map.getPane('modelPane')) {
       var pane = this.map.createPane('modelPane'); pane.style.zIndex = 250; pane.style.pointerEvents = 'none';
     }
@@ -1103,10 +1258,10 @@
       // state transition as a fresh landing, or the panel would stay on "Loading"
       if (self.layer._frame !== frame) {
         var half = res === 'half';
-        self.layer._contour = self._contourCfg();                                 // (setFrame redraws with it)
+        self.layer.setContours(self._contourCfg(), true);                        // (setFrame redraws with it)
         self.layer.setFrame(frame, half ? m.grid_half : m.grid, field, m.fields[field], self._lut(), m.frames[idx]);
       }
-      self.frameIndex = idx;
+      self.frameIndex = idx; self._pendingRestore = null;                     // a frame is on the map: the saved state is spent
       self._persist();
       self._attribute();
       if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
@@ -1271,13 +1426,17 @@
   // like playback does; a single missing frame just leaves the hint in the valid-time line.
   Overlay.prototype._afterMiss = function (err) { if (err && err.outage) this._fail(null, err); else this._syncUI(); };
   Overlay.prototype.setSpeed = function (v) { if (SPEEDS.indexOf(v) < 0) return; this.speed = v; save({ speed: v }); this._syncUI(); };
+  // Leaving the tab or the page refreshes the save, paused or not: a reload restores what was on the map
+  // when the page was left (the 30-min rule counts from then, not from the last frame change).
   Overlay.prototype._bindDocument = function () {
     var self = this;
     this._onVis = function () {
-      if (document.hidden) { self.wasPlaying = self.playing; if (self.playing) self.pause(); }
+      if (document.hidden) { self.wasPlaying = self.playing; if (self.playing) self.pause(); else self._persist(); }
       else if (self.wasPlaying) { self.wasPlaying = false; self.play(); }
     };
+    this._onHide = function () { self._persist(); };
     document.addEventListener('visibilitychange', this._onVis);
+    if (window.addEventListener) window.addEventListener('pagehide', this._onHide);
   };
 
   // ---- attribution, map events, resolution ----
@@ -1346,6 +1505,8 @@
     this.abortAll();
     if (this.runTimer) { clearInterval(this.runTimer); this.runTimer = null; }
     if (this._onVis) { document.removeEventListener('visibilitychange', this._onVis); this._onVis = null; }
+    if (this._onHide) { if (window.removeEventListener) window.removeEventListener('pagehide', this._onHide); this._onHide = null; }
+    this._pendingRestore = null;
     if (this.layer) { this.map.removeLayer(this.layer); this.layer = null; }
     if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
     this._unattribute();
@@ -1544,7 +1705,7 @@
     if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
     // legend over the LEGEND range in the site's units (the encoding range is wider; extremes clamp)
     var leg = mk('div', 'ov-legend'), cv = mk('canvas'); cv.width = 256; cv.height = 1; leg.appendChild(cv);
-    var lut = buildRamp(RAMPS[field]), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);   // the bar is laid out by legend position
+    var lut = legendBar(field), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);        // the bar is laid out by legend position
     for (var i = 0; i < 256; i++) { im.data[i * 4] = lut[i * 3]; im.data[i * 4 + 1] = lut[i * 3 + 1]; im.data[i * 4 + 2] = lut[i * 3 + 2]; im.data[i * 4 + 3] = 255; }
     ctx.putImageData(im, 0, 0);
     var ticks = mk('div', 'ov-ticks'), tk = legendTicks(field, f, unit);
@@ -1560,7 +1721,8 @@
     lab.appendChild(rng); row.appendChild(lab);
     if (CONTOURS[field]) {
       var cl = mk('label', 'ov-check'), cb = mk('input'); cb.type = 'checkbox'; cb.checked = this.contours;
-      cb.setAttribute('aria-label', 'Contour lines every ' + CONTOURS[field][unit === 'Metric' ? 'Metric' : 'US'] + ' ' + unitOf(field, unit).label);
+      var every = CONTOURS[field][unit === 'Metric' ? 'Metric' : 'US'], ul = unitOf(field, unit).label;
+      cb.setAttribute('aria-label', 'Contours, every ' + fmtTick(every) + ' ' + ul + ' (' + fmtTick(2 * every) + ' ' + ul + ' below zoom 4)');
       cb.addEventListener('change', function () { self.setContours(cb.checked); });
       cl.appendChild(cb); cl.appendChild(document.createTextNode(' Contours')); row.appendChild(cl);
     }
@@ -1617,7 +1779,8 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { contourTile: contourTile, CONTOURS: CONTOURS, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
+    _internals: { contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
+      CONTOUR_BLOCK: CONTOUR_BLOCK, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
       parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,

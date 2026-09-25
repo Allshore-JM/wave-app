@@ -2776,11 +2776,18 @@
       var sel = document.getElementById('ovField'), panel = document.getElementById('ovPanel');
       // The chosen layer is remembered for this tab, so a reload (another forecast point, Update)
       // brings it back; the module restores the time and play state from the same key. A new tab,
-      // or a layer switched Off, starts Off.
-      var KEY = 'allshore.overlay.v1', FIELDS = { hs: 1, tp: 1, wind: 1 };
-      function stored() { try { return JSON.parse(sessionStorage.getItem(KEY) || '{}') || {}; } catch (e) { return {}; } }
-      function remember(field) {
-        try { var o = stored(); o.field = field; if (!field) o.playing = false; sessionStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {}
+      // or a layer switched Off, starts Off; a layer picked from Off starts fresh (no saved time).
+      var KEY = 'allshore.overlay.v1', FIELDS = { hs: 1, tp: 1, wind: 1 }, picked = false;
+      function stored() {
+        try { var o = JSON.parse(sessionStorage.getItem(KEY) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
+      }
+      function remember(field, fresh) {
+        try {
+          var o = stored(); o.field = field;
+          if (!field || fresh) o.playing = false;
+          if (fresh) { delete o.t; delete o.at; }
+          sessionStorage.setItem(KEY, JSON.stringify(o));
+        } catch (e) {}
       }
       function choose(field, restore) {
         if (!field) { panel.textContent = ''; if (overlay) overlay.unmount(); return; }
@@ -2797,16 +2804,35 @@
         });
       }
       var again = stored().field;
-      sel.value = FIELDS.hasOwnProperty(again) ? again : '';    // (autocomplete="off": never the browser's form restore)
-      sel.addEventListener('change', function () { choose(sel.value, false); remember(sel.value); });
+      sel.value = typeof again === 'string' && FIELDS.hasOwnProperty(again) ? again : '';    // (autocomplete="off": never the browser's form restore)
+      sel.addEventListener('change', function () {
+        var fresh = !(overlay && overlay.field);                 // from Off, or before the restore ran: no saved time
+        picked = true;
+        choose(sel.value, false); remember(sel.value, fresh);
+      });
+      // A page shown again from the back/forward cache keeps its own overlay: the tab's save follows it.
+      window.addEventListener('pageshow', function (e) {
+        if (!e.persisted) return;
+        remember(sel.value, false);
+        if (overlay && sel.value) overlay._persist();
+      });
       if (sel.value) {
-        // after the page has loaded and gone idle, and only while it is visible: the forecast comes first
+        // After the load event (5 s at most), the deferred forecast table (3 s more at most) and an idle
+        // moment, and only while the page is visible: the forecast comes first. The panel says so meanwhile.
+        panel.textContent = 'Loading…';
+        var started = false;
         var restoreNow = function () {
           if (document.hidden) { document.addEventListener('visibilitychange', restoreNow, { once: true }); return; }
-          if (sel.value === again && !overlay) choose(again, true);
+          if (!picked && sel.value === again && !overlay) choose(again, true);
         };
         var idle = function () { (window.requestIdleCallback || function (f) { return setTimeout(f, 200); })(restoreNow, { timeout: 1500 }); };
-        if (document.readyState === 'complete') idle(); else window.addEventListener('load', idle, { once: true });
+        var afterTable = function (left) {
+          if (left > 0 && document.getElementById('forecastLoading')) { setTimeout(function () { afterTable(left - 100); }, 100); return; }
+          idle();
+        };
+        var start = function () { if (!started) { started = true; afterTable(3000); } };
+        if (document.readyState === 'complete') start();
+        else { window.addEventListener('load', start, { once: true }); setTimeout(start, 5000); }
       }
       var unitEl = document.getElementById('unit');
       if (unitEl) unitEl.addEventListener('change', function () { if (overlay) overlay.refresh(); });

@@ -24,12 +24,15 @@ async function settle(n) { for (let i = 0; i < (n || 6); i++) await tick(); }
 // One world per test: stubs, a fresh module evaluation, and a controller with the DOM parts neutralised.
 function world(opts) {
   const w = { pendingBitmaps: [], fetches: [], failNext: {}, pointer: null, manifests: {}, pendingCoast: [], coastAnswer: () => ({ ok: false, status: 500 }) };
+  const reg = { doc: {}, win: {} };
+  const on = (t) => (ev, fn) => { (reg[t][ev] = reg[t][ev] || []).push(fn); };
+  const off = (t) => (ev, fn) => { reg[t][ev] = (reg[t][ev] || []).filter((f) => f !== fn); };
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.js'), 'utf8');
   const g = {
     L: { GridLayer: { prototype: { initialize(o) { this.options = o; this._tiles = {}; } },
       extend(p) { function C(o) { p.initialize.call(this, o); } C.prototype = Object.assign({ setOpacity() {}, addTo() { return this; } }, p); return C; } },
       DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} } },
-    document: { hidden: !!(opts && opts.hidden), addEventListener() {}, removeEventListener() {},
+    document: { hidden: !!(opts && opts.hidden), addEventListener: on('doc'), removeEventListener: off('doc'),
       createElement() { return { width: 0, height: 0, getContext() { let bmp = null; return {
         clearRect() {}, drawImage(b) { bmp = b; }, getImageData(x, y, wd, h) { const d = new Uint8ClampedArray(wd * h * 4).fill(1); d[0] = bmp.tag; return { data: d }; } }; } }; } },
     sessionStorage: (opts && opts.storage) || { getItem() { return null; }, setItem() {} },
@@ -51,7 +54,10 @@ function world(opts) {
     setTimeout, clearTimeout, setInterval, clearInterval, Date, Math, console, Promise, Map, Array, Object, Number, String, Error, TypeError, JSON, isNaN, parseInt, parseFloat, AbortController,
     Uint8Array, Uint8ClampedArray, Float32Array, Float64Array, Symbol, matchMedia: undefined,
   };
-  g.window = g;
+  g.window = g; g.addEventListener = on('win'); g.removeEventListener = off('win');
+  w.fire = (t, ev) => (reg[t][ev] || []).slice().forEach((f) => f({}));
+  w.listeners = (t, ev) => (reg[t][ev] || []).length;
+  w.doc = g.document;
   if (opts && opts.reduced) g.matchMedia = (q) => ({ matches: /reduced-motion/.test(q) });
   // timers never keep the test process alive (the module keeps a 30-min run-check interval while mounted)
   const st = (f, ms) => { const t = setTimeout(f, ms); if (t.unref) t.unref(); return t; };
@@ -61,6 +67,7 @@ function world(opts) {
   fn(g.L, g.document, g.sessionStorage, g.createImageBitmap, g.fetch, g.window, st, clearTimeout, si, clearInterval, AbortController, undefined);
   const I = g.AllshoreOverlay._internals, Overlay = I.Overlay;
   for (const k of ['render', '_syncUI', '_attribute', '_bindReadout', '_bindMap', '_bindDocument', '_unbindReadout', '_unattribute', '_removeSheet']) {
+    if (k === '_bindDocument' && opts && opts.realDocument) continue;
     Overlay.prototype[k] = function (st) { if (k === 'render') { this.last = st; this.ui = null; } };
   }
   Overlay.prototype._dims = () => ({ w: 1200, h: 800 });
@@ -330,4 +337,101 @@ test('no resume under reduced motion or in a hidden tab (it resumes when shown);
   w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.mount('hs'); await settle(); await w.release(1);
   assert.equal(o.frameIndex, w.I.pickFrame(A)); assert.equal(o.playing, false); done(o);
+});
+
+// ---- G8 fix round ----
+const TPB = { lo: 1, hi: 30, legend: [4, 22], units: 's', interpolation: 'bilinear' };
+function withTp(run, runUtc, tag) { const m = manifest(run, runUtc, tag); m.fields.tp = TPB; return m; }
+
+test('the first landed frame is saved at once: field, valid time, not playing (no play or pause needed)', async () => {
+  const storage = memStore(), w = world({ storage });
+  const o = await mounted(w, A);
+  const st = storage.read();
+  assert.equal(st.field, 'hs'); assert.equal(st.t, Date.parse(A.frames[o.frameIndex].valid_utc)); assert.equal(st.playing, false);
+  assert.ok(Date.now() - st.at < 5000);
+  done(o);
+});
+
+test('leaving the page refreshes the save, paused or not: 31 min paused on the page, then another point keeps the time (G8 A-P2-1)', async () => {
+  const storage = memStore(), w = world({ storage, realDocument: true }), realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const o = await mounted(w, A);
+    assert.equal(w.listeners('win', 'pagehide'), 1); assert.equal(w.listeners('doc', 'visibilitychange'), 1);
+    o.seek(16); await settle(); await w.releaseAll();
+    assert.equal(o.frameIndex, 16);
+    o.pause();
+    const t16 = Date.parse(A.frames[16].valid_utc);
+    assert.equal(storage.read().t, t16);
+    clock += 31 * 60000;                                                     // half an hour reading the table, overlay paused
+    w.doc.hidden = true; w.fire('doc', 'visibilitychange');                   // navigating away hides the page first
+    assert.equal(storage.read().at, clock); assert.equal(storage.read().playing, false); assert.equal(storage.read().t, t16);
+    clock += 60000; w.fire('win', 'pagehide');                               // and pagehide alone does the same
+    assert.equal(storage.read().at, clock);
+    const w2 = world({ storage }); w2.pointer = ptr(A); w2.manifests[A.run] = A;
+    const o2 = w2.create(); o2.mount('hs', true); await settle(); await w2.release(1);
+    assert.equal(o2.frameIndex, 16, 'the next forecast point restores +48 h');
+    done(o2);
+    o.unmount();
+    assert.equal(w.listeners('win', 'pagehide'), 0); assert.equal(w.listeners('doc', 'visibilitychange'), 0);
+    w.fire('win', 'pagehide'); assert.equal(storage.read().field, 'hs', 'nothing is written after Off by a stale listener');
+  } finally { Date.now = realNow; }
+});
+
+test('the saved time survives a field switch before the first restored frame and a Retry after a failed restore (G8 A-P3-5)', async () => {
+  const M = withTp('2026092306', '2026-09-23T06:00:00Z', 6), t5 = Date.parse(M.frames[5].valid_utc);
+  const st = { field: 'hs', t: t5, playing: false, at: Date.now() };
+  let storage = memStore(st), w = world({ storage });
+  w.pointer = ptr(M); w.manifests[M.run] = M;
+  let o = w.create();
+  o.mount('hs', true); o.mount('tp', false); await settle(); await w.releaseAll();
+  assert.equal(o.field, 'tp'); assert.equal(o.frameIndex, 5); assert.equal(o._pendingRestore, null, 'spent once a frame is on the map');
+  o.unmount(); o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.frameIndex, w.I.pickFrame(M), 'after Off a pick starts at the usual first frame');
+  done(o);
+  storage = memStore(st); w = world({ storage }); w.manifests[M.run] = M;
+  w.pointer = null;                                                          // the bucket answers nonsense: the restore fails
+  o = w.create(); o.mount('hs', true); await settle();
+  assert.equal(o.last.state, 'error');
+  w.pointer = ptr(M);
+  o.unavailable = {}; o.transientFails = 0; o.mount(o.field); await settle(); await w.releaseAll();   // what Retry does
+  assert.equal(o.frameIndex, 5, 'Retry lands on the saved time');
+  done(o);
+});
+
+test('contours: off by default, remembered for the tab, the interval follows the site unit, a new layer gets them on its first frame', async () => {
+  let unit = 'US';
+  const storage = memStore(), w = world({ storage });
+  w.pointer = ptr(A); w.manifests[A.run] = A;
+  let o = w.create({ getUnit: () => unit });
+  assert.equal(o.contours, false);
+  o.mount('hs'); await settle(); await w.release(1);
+  assert.equal(o.layer._contour, null);
+  o.setContours(true);
+  assert.equal(storage.read().contours, true);
+  assert.deepEqual(o.layer._contour, { step: 2, per: 3.28084 });
+  unit = 'Metric'; o.refresh();
+  assert.deepEqual(o.layer._contour, { step: 0.5, per: 1 });
+  done(o);
+  const w2 = world({ storage }); w2.pointer = ptr(A); w2.manifests[A.run] = A;
+  o = w2.create({ getUnit: () => 'US' });
+  assert.equal(o.contours, true, 'remembered for the tab');
+  o.mount('hs'); await settle(); await w2.release(1);
+  assert.deepEqual(o.layer._contour, { step: 2, per: 3.28084 }, 'the new layer draws its first frame with them');
+  o.setContours(false);
+  assert.equal(o.layer._contour, null); assert.equal(storage.read().contours, false);
+  done(o);
+});
+
+test('a corrupted session value counts as empty and the next write replaces it (G8 A-P3-3)', () => {
+  for (const raw of ['5', '"hs"', '[1,2]', 'null', 'garbage', '{"opacity":0.4}']) {
+    const m = new Map([['allshore.overlay.v1', raw]]);
+    const storage = { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); } };
+    const o = world({ storage }).create();
+    assert.equal(o.opacity, raw === '{"opacity":0.4}' ? 0.4 : 0.65, raw);
+    o.setOpacity(0.5);
+    const back = JSON.parse(m.get('allshore.overlay.v1'));
+    assert.ok(back && typeof back === 'object' && !Array.isArray(back) && back.opacity === 0.5, raw + ' -> ' + m.get('allshore.overlay.v1'));
+  }
 });

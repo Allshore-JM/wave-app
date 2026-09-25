@@ -15,8 +15,9 @@
   var POINTER_RECHECK_MS = 30 * 60 * 1000;    // re-read latest.json on mount when the cached pointer is older
   var ENCODING = 'u8-linear-v2';
   var TILE = 256;
-  // <= 29 visible characters incl. the separator so it never wraps over the zoom control; the full
-  // sentence (manifest attribution) is in the panel note.
+  // <= 29 visible characters incl. the separator so it never wraps over the zoom control. While a
+  // coastline-clipped field is shown, " · GSHHG" follows, linking the LGPL notice published beside the
+  // coast data (the only credit on the page: the panel carries no caption).
   var ATTRIBUTION = 'Overlay: <a href="https://polar.ncep.noaa.gov/waves/" target="_blank" rel="noopener">NOAA GFS-Wave</a>/GFS';
   var RAMPS = {
     hs:   [[0,'#0b2c6b'],[0.15,'#1f6fd6'],[0.3,'#19c3e6'],[0.45,'#3fd96b'],[0.6,'#f2e33a'],[0.75,'#f5901f'],[0.9,'#e02020'],[1,'#a3129e']],
@@ -1138,10 +1139,18 @@
     var c = this.map.getContainer(), s = this.map.getSize();
     return { w: c.clientWidth || s.x, h: c.clientHeight || s.y };
   };
+  Overlay.prototype._attribution = function () {
+    if (!(this.layer && this.layer._clip && this.coast)) return ATTRIBUTION;
+    var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
+    return ATTRIBUTION + ' · <a href="' + url + '" target="_blank" rel="noopener license">GSHHG</a>';
+  };
   Overlay.prototype._attribute = function () {
-    if (this._attributed) return;
-    this._attributed = true;
-    if (this.map.attributionControl) this.map.attributionControl.addAttribution(ATTRIBUTION);
+    var text = this._attribution();
+    if (this._attributed === text) return;
+    var ctl = this.map.attributionControl;
+    if (ctl && this._attributed) ctl.removeAttribution(this._attributed);
+    this._attributed = text;
+    if (ctl) ctl.addAttribution(text);
     this.map.getContainer().classList.add('ov-on');
     this._sizeAttribution();
   };
@@ -1151,8 +1160,8 @@
   };
   Overlay.prototype._unattribute = function () {
     if (!this._attributed) return;
+    if (this.map.attributionControl) this.map.attributionControl.removeAttribution(this._attributed);
     this._attributed = false;
-    if (this.map.attributionControl) this.map.attributionControl.removeAttribution(ATTRIBUTION);
     var c = this.map.getContainer(); c.classList.remove('ov-on'); c.style.removeProperty('--ov-attr-max');
   };
   Overlay.prototype._on = function (ev, fn) { this.map.on(ev, fn); this._listeners.push([ev, fn]); };
@@ -1386,18 +1395,6 @@
     rng.setAttribute('aria-label', 'Overlay opacity');
     rng.addEventListener('input', function () { self.setOpacity(parseFloat(rng.value)); });
     lab.appendChild(rng); row.appendChild(lab); body.appendChild(row);
-    var note = mk('div', 'ov-note',
-      (field === 'tp' ? 'Peak period Tp (GRIB PERPW = 1/fp), nearest grid cell (no smoothing). ' : field === 'wind' ? 'GFS wind at 10 m over land and sea; legend top 60 kt; 0.5° frames below zoom 6. ' : '') +
-      'GFS-Wave 0.25° (~28 km) grid — display smoothing is not extra detail. ' +
-      (clipped ? (m.fill ? 'Nearshore values are extrapolated from the nearest model cells; ' : '') + 'coastlines from ' : 'Hover or long-press the map for values. '));
-    if (clipped) {
-      // the credit and licence LGPL section 4 asks for: a link to the notice published beside the data
-      var lic = mk('a', null, 'GSHHG (Wessel & Smith), LGPL'); lic.href = this.coast.url + '/LICENSE.txt'; lic.target = '_blank'; lic.rel = 'noopener license';
-      note.appendChild(lic);
-      note.appendChild(document.createTextNode('. Hover or long-press the map for values (none over land). '));
-    }
-    note.appendChild(document.createTextNode(String(m.model && m.model.attribution || '')));
-    body.appendChild(note);
     this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND
     // the top-left control must end above the zoom/Home stack (short windows: the site caps the map at

@@ -52,7 +52,7 @@ permission notice reproduced in `LICENSE-GSHHG.txt` beside this file (the archiv
 followed by the LGPL text; the GPL, which the LGPL incorporates by reference, is at
 https://www.gnu.org/licenses/gpl-3.0.txt). The files built here are a modified, reformatted subset of
 GSHHG and are redistributed under the same licence: the notice is published with the data as
-`static/coast/v1/LICENSE.txt`, `index.json` names the licence, and the map panel credits
-"coastlines from GSHHG (Wessel & Smith), LGPL" with a link to that notice. The builder in this public
+`static/coast/v1/LICENSE.txt`, `index.json` names the licence, and the map's attribution line
+carries "GSHHG", linking to that notice, whenever a coastline-clipped field is shown. The builder in this public
 repository is the corresponding source. Cite: Wessel, P., and W. H. F. Smith (1996), A global,
 self-consistent, hierarchical, high-resolution shoreline database, J. Geophys. Res., 101(B4), 8741-8743.

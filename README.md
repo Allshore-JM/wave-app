@@ -106,7 +106,8 @@ wave-height and peak-period cells within 4 cells (1 degree) of model data, and o
 (`tools/model_frames/fill_allow.png`, built from the published coast data by `make_fill_mask.py` and pinned by hash),
 so open water and the sea-ice pack the model masks are never filled (along ice-bound coasts the fill can still
 reach up to one cell, ~28 km, over coastal sea ice). Wave height takes the mean of its present
-neighbours; peak period takes the value of the nearest model cell (never a blend of two swell regimes). Model values
+neighbours; peak period takes the value of the nearest model cell (a filled node is never a blend of two swell
+regimes; since 2026-09-25 the browser draws peak period bilinearly between nodes, like wave height). Model values
 are never changed; the manifest carries a `fill` block and the stats sidecar `filled_points`; the browser's coastline
 clip hides the fill over land. Bays more than 1 degree from model water stay empty. A run published with a different
 fill is never rebuilt (`run.py` refuses, even with `--force`; frame keys are immutable), and a complete run whose

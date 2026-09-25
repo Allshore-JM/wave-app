@@ -277,6 +277,7 @@ def test_encoding_ranges_cover_legend_and_tp_floor():
     for f in E.FIELDS.values():
         assert f["lo"] <= f["legend"][0] and f["hi"] >= f["legend"][1]
     assert E.FIELDS["tp"]["lo"] <= 1.09                                 # WW3 physical floor
+    assert {n: f["interpolation"] for n, f in E.FIELDS.items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear"}
     assert abs(E.FIELDS["wind"]["legend"][1] - 30.8667) < 1e-3          # 60 kt
 
 
@@ -451,6 +452,7 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     assert man["grid"]["registration"] == "center" and man["grid_half"]["rows"] == 361 and man["grid_half"]["dlat"] == -0.5
     assert man["encoding_spec"]["missing"] == 0 and man["fields"]["tp"]["legend"] == [4.0, 22.0]
     assert man["frame_hours"] == 3 and man["expected_frames"] == 81
+    assert {n: f["interpolation"] for n, f in man["fields"].items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear"}
     assert man["fill"] == E.FILL_INFO
     f0 = stats["frames"][0]["fields"]
     assert f0["hs"]["filled_points"] == f0["tp"]["filled_points"] == 721 * 8 and f0["wind"]["filled_points"] == 0

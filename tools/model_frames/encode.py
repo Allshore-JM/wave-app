@@ -19,8 +19,9 @@ of many coasts. Before quantisation, empty cells that are within FILL_CELLS cell
 allowed by fill_allow.png (the node's 0.25-degree box, or a neighbour's, holds GSHHG land; built by
 make_fill_mask.py) are filled, ring by ring (longitude periodic, nothing beyond the poles):
   hs  the mean of the present 8-neighbours of the previous ring (smooth; the client is bilinear)
-  tp  the value of the nearest model cell (Euclidean in grid cells; the client samples Tp by
-      nearest node and a mean would invent periods between two swell regimes)
+  tp  the value of the nearest model cell (Euclidean in grid cells), so every filled node carries a
+      period the model really has, never a mean of two swell regimes; the browser then
+      interpolates between nodes bilinearly, like hs
 Model values never change; wind is never filled; open water more than one cell from land (in
 practice the sea-ice pack the model masks) is never filled -- along ice-bound coasts the fill can
 still reach up to one cell (about 28 km) over coastal sea ice. The browser clips the result to the same GSHHG coast, so the fill is
@@ -42,7 +43,7 @@ KT = 1852.0 / 3600.0                    # 1 knot in m/s
 FIELDS = {
     # name: dict(lo, hi = ENCODING range; legend = display range; units; interpolation hint)
     "hs":   {"lo": 0.0, "hi": 15.0,     "legend": [0.0, 12.0],    "units": "m",   "interpolation": "bilinear", "fill": True},
-    "tp":   {"lo": 1.0, "hi": 30.0,     "legend": [4.0, 22.0],    "units": "s",   "interpolation": "nearest",  "fill": True},
+    "tp":   {"lo": 1.0, "hi": 30.0,     "legend": [4.0, 22.0],    "units": "s",   "interpolation": "bilinear", "fill": True},
     "wind": {"lo": 0.0, "hi": 80 * KT,  "legend": [0.0, 60 * KT], "units": "m/s", "interpolation": "bilinear", "fill": False},
 }
 FILL_CELLS = 4

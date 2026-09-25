@@ -125,17 +125,22 @@ values. No line beside missing data,
 where lines would crowd under 3 px apart, along the flat foot of a steep ramp, or in a model cell where the peak
 period jumps more than 2 s between neighbouring nodes (the smoothing never blends two swell regimes).
 Animation (asset 2.8.0): an Animation checkbox on the Opacity row (off by default, remembered for the tab) draws small
-chevrons gliding along the dominant (peak) swell direction under wave height and peak period, and wind particles with
+chevrons gliding along the dominant swell direction under wave height and peak period, and wind particles with
 fading trails under wind speed, on a canvas of their own under the forecast points (no pointer events; markers keep
 their taps). The directions come from the `pdir` / `wdir` frames of the same step, loaded through the frame scheduler
 beside the field frame (the target's field frame first, then its direction, then the ring of frames around it, never more
 than two downloads at once; `pdir` at the 0.5 degree frames below zoom 7 and the 0.25 degree ones from 7.5, `wdir` at 0.5
 degrees only). A direction is shown only for the step on the map: a step change clears the animation until that step's
 direction frame has landed, so an older direction is never drawn under a newer time. Arrows sit on a fixed lattice of the
-world (every 64th tile pixel) only where the field is drawn (data, not land, at least 0.1 m of wave height), with no
-arrow where neighbouring model cells disagree; the chevrons run faster with a longer peak period. Particles (about one per
-900 screen pixels squared, 150-3,000, fewer when a frame runs past 4 ms on desktops / 8 ms on phones) move at 3 px/s per
-m/s times the Mercator stretch (capped at 3), drawn dark over light field colours. The animation stops on Off, when
+world (every 64th tile pixel) only where the field is drawn (data, not land, at least 0.1 m of wave height on the
+wave-height layer and a 3 s period on the period layer: the model's no-wave floor along the ice margins carries a
+direction under 2 s). The direction is the spectral peak's (NOAA DIRPW: the partition carrying the peak period, which is
+not always the forecast table's first swell). Between neighbouring model cells it is blended only within one regime;
+where the cells differ by more than 60 degrees (a swell next to a wind sea) the nearest cell's direction is shown, never
+a blend no cell has. The chevrons run faster with a longer peak period. Particles (about one per 900 screen pixels
+squared, 150-3,000, fewer when a frame runs past 4 ms on desktops / 8 ms on phones) move at 3 px/s per m/s times the
+Mercator stretch (capped at 3), each a dark halo under a light core so they read over the dark ocean and the light
+desert or ice imagery alike, and live 1-2.5 s. The animation stops on Off, when
 unticked, in a hidden tab, and while the map moves or zooms (rebuilt at the end); under the viewer's reduced-motion
 setting it draws static arrows once (wind too). Runs published before the direction fields existed disable the checkbox
 ("This run has no direction data").

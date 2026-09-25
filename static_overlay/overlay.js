@@ -1123,14 +1123,16 @@
   // direction frame has landed (the frames load through the same scheduler, target field first, then
   // the target direction, then the ring interleaved, never more than MAX_INFLIGHT fetches in all).
   var DIR_FIELDS = { hs: 'pdir', tp: 'pdir', wind: 'wdir' };
-  var DIR_AGREE = 0.5;                                     // resultant below this fraction of the weight = the neighbours disagree
+  var DIR_SPREAD = 60;                                     // degrees: present nodes further apart than this are two regimes -> the nearest node, never a blend
+  var DIR_SPREAD_COS = Math.cos(DIR_SPREAD * Math.PI / 180);
   var ARROW_PX = 64;                                       // one arrow every 64 tile pixels (4 x 4 per tile), anchored to tile pixels
-  var ARROW_MIN = { hs: 0.1, wind: 1 };                    // no arrow under a flat sea (m) or a calm (m/s)
+  var ARROW_MIN = { hs: 0.1, tp: 3, wind: 1 };             // no arrow under a flat sea (m; on the period layer: the model's no-wave floor, s) or a calm (m/s)
   var ARROW_CYCLE_S = 1.5;                                 // a chevron runs its track in this time at rate 1 (wave height)
   var ANIM_BUDGET_MS = { desktop: 4, phone: 8 };           // animation time per animation frame (plan section 21)
   var PARTICLE_PX2 = 900, PARTICLE_MIN = 150, PARTICLE_MAX = 3000;
   var PARTICLE_PX_PER_S = 3;                               // screen px/s per m/s of wind, before the latitude stretch
   var TRAIL_KEEP = 0.9;                                    // trail alpha kept per 16.7 ms (frame-rate independent fade)
+  var PARTICLE_LIFE_MS = [1000, 2500];                     // a particle lives this long (uniform), then respawns
   var CODE_SIN = new Float64Array(256), CODE_COS = new Float64Array(256);
   (function () { for (var q = 1; q < 255; q++) { var a = (q - 1) / 254 * 2 * Math.PI; CODE_SIN[q] = Math.sin(a); CODE_COS[q] = Math.cos(a); } })();
   // A manifest field usable as a direction: circular over 0-360, the FROM convention, published resolutions.
@@ -1182,28 +1184,36 @@
     }
   }
   // The direction sampler: at the same positions, the unit vector of the direction the waves / wind
-  // move TOWARD as (east, north) components, from a circular bilinear average of the present nodes'
-  // FROM directions: outE[off+i] = outN[off+i] = 0 where nothing is present (weight < 0.25) or the
-  // neighbours disagree (the resultant is shorter than DIR_AGREE of the weight: e.g. two opposite nodes).
-  // Code 255 (never written by the circular coder) counts as absent, not as north.
+  // move TOWARD as (east, north) components. Within one regime (every pair of present nodes within
+  // DIR_SPREAD of each other) it is the circular bilinear mean of the nodes' FROM directions; across a
+  // regime edge (any pair further apart: a swell next to a wind sea, a front) it is the NEAREST present
+  // node's direction, never a blend no node has. outE[off+i] = outN[off+i] = 0 where nothing is present
+  // (weight < 0.25). Code 255 (never written by the circular coder) counts as absent, not as north.
+  var dirQ = new Int32Array(4), dirW = new Float64Array(4);
   function sampleDirRow(f, r, colPos, n, outE, outN, off) {
     var cols = f.cols, q = f.q, r0 = Math.floor(r), r1 = r0 + 1 < f.rows ? r0 + 1 : r0, fr = r - r0, w0 = 1 - fr, b0 = r0 * cols, b1 = r1 * cols;
     for (var i = 0; i < n; i++) {
       var cpos = colPos[i], c0 = Math.floor(cpos), c1 = c0 + 1 === cols ? 0 : c0 + 1, fc = cpos - c0;
-      var a = q[b0 + c0], b = q[b0 + c1], c = q[b1 + c0], d = q[b1 + c1], w = 0, x = 0, y = 0, wt;
-      if (a === 255) a = 0; if (b === 255) b = 0; if (c === 255) c = 0; if (d === 255) d = 0;
-      if (a) { wt = w0 * (1 - fc); x += CODE_SIN[a] * wt; y += CODE_COS[a] * wt; w += wt; }
-      if (b) { wt = w0 * fc; x += CODE_SIN[b] * wt; y += CODE_COS[b] * wt; w += wt; }
-      if (c) { wt = fr * (1 - fc); x += CODE_SIN[c] * wt; y += CODE_COS[c] * wt; w += wt; }
-      if (d) { wt = fr * fc; x += CODE_SIN[d] * wt; y += CODE_COS[d] * wt; w += wt; }
+      dirQ[0] = q[b0 + c0]; dirQ[1] = q[b0 + c1]; dirQ[2] = q[b1 + c0]; dirQ[3] = q[b1 + c1];
+      dirW[0] = w0 * (1 - fc); dirW[1] = w0 * fc; dirW[2] = fr * (1 - fc); dirW[3] = fr * fc;
+      var w = 0, x = 0, y = 0, m = 0, best = -1, bestW = 0, minDot = 1, j, k, qj;
+      for (j = 0; j < 4; j++) {
+        qj = dirQ[j];
+        if (!qj || qj === 255) { dirW[j] = 0; continue; }
+        w += dirW[j]; m++;
+        if (dirW[j] > bestW) { bestW = dirW[j]; best = qj; }
+        x += CODE_SIN[qj] * dirW[j]; y += CODE_COS[qj] * dirW[j];
+        for (k = 0; k < j; k++) if (dirW[k] > 0) { var dot = CODE_SIN[qj] * CODE_SIN[dirQ[k]] + CODE_COS[qj] * CODE_COS[dirQ[k]]; if (dot < minDot) minDot = dot; }
+      }
+      if (w < 0.25) { outE[off + i] = 0; outN[off + i] = 0; continue; }
+      if (m > 1 && minDot < DIR_SPREAD_COS) { x = CODE_SIN[best]; y = CODE_COS[best]; }   // two regimes: the nearest node
       var len = Math.sqrt(x * x + y * y);
-      if (w < 0.25 || len < DIR_AGREE * w) { outE[off + i] = 0; outN[off + i] = 0; }
-      else { outE[off + i] = -x / len; outN[off + i] = -y / len; }         // FROM -> TOWARD: the opposite vector
+      outE[off + i] = -x / len; outN[off + i] = -y / len;                   // FROM -> TOWARD: the opposite vector
     }
   }
   var dirOne = { c: new Float64Array(1), e: new Float64Array(1), n: new Float64Array(1) };
   // Degrees true the waves / wind come FROM at (lat, lon) of direction frame f on grid g, or null (no
-  // data there, or disagreeing neighbours).
+  // data there).
   function dirAt(f, g, lat, lon) {
     var r = (g.lat0 - lat) / -g.dlat;
     if (!(r >= 0 && r <= f.rows - 1)) return null;
@@ -1241,19 +1251,18 @@
   // The wind vector field for the particles: the speed (the drawn frame, through the scalar sampler) and
   // the direction (wdir) sampled on a screen lattice every s px, as screen velocities in px/s:
   // PARTICLE_PX_PER_S * speed * (east, -north) * min(sec lat, 3) (the Mercator stretch: the same wind
-  // covers more pixels towards the poles). dark[k] = 1 where the field colour under the particle is
-  // light (the tile's LUT at the layer's opacity over a dark basemap), so the particle is drawn dark.
+  // covers more pixels towards the poles).
   function windField(view, s, layer, dframe, dgrid, prev) {
     var cols = Math.ceil(view.w / s) + 1, rows = Math.ceil(view.h / s) + 1, n = TILE * Math.pow(2, view.z), reuse = prev && prev.cols === cols && prev.rows === rows;
-    var f = layer._frame, g = layer._grid, u = reuse ? prev.u : new Float32Array(cols * rows), v = reuse ? prev.v : new Float32Array(cols * rows), dark = reuse ? prev.dark : new Uint8Array(cols * rows);
-    if (reuse) { u.fill(0); v.fill(0); dark.fill(0); }
+    var f = layer._frame, g = layer._grid, u = reuse ? prev.u : new Float32Array(cols * rows), v = reuse ? prev.v : new Float32Array(cols * rows);
+    if (reuse) { u.fill(0); v.fill(0); }
     var cpS = new Float64Array(cols), cpD = new Float64Array(cols), codes = new Float64Array(cols), e = new Float64Array(cols), nn = new Float64Array(cols), i;
     for (i = 0; i < cols; i++) {
       var lng = lngOfWorldX(view.ox + i * s, n);
       cpS[i] = ((((lng - g.lon0) / g.dlon) % f.cols) + f.cols) % f.cols;
       cpD[i] = ((((lng - dgrid.lon0) / dgrid.dlon) % dframe.cols) + dframe.cols) % dframe.cols;
     }
-    var lut = layer._lut, L0 = layer._legend[0], L1 = layer._legend[1], lo = layer._lo, hi = layer._hi, op = layer.options.opacity;
+    var lo = layer._lo, hi = layer._hi;
     for (var j = 0; j < rows; j++) {
       var lat = latOfWorldY(view.oy + j * s, n), rS = (g.lat0 - lat) / -g.dlat, rD = (dgrid.lat0 - lat) / -dgrid.dlat, base = j * cols;
       if (!(rS >= 0 && rS <= f.rows - 1 && rD >= 0 && rD <= dframe.rows - 1)) continue;
@@ -1265,12 +1274,9 @@
         if (!code || (!e[i] && !nn[i])) continue;
         var val = lo + (code - 1) / 254 * (hi - lo);
         u[base + i] = k * val * e[i]; v[base + i] = -k * val * nn[i];
-        var t = Math.round((val - L0) * 255 / (L1 - L0)); t = t < 0 ? 0 : t > 255 ? 255 : t;
-        var lum = 0.299 * lut[t * 3] + 0.587 * lut[t * 3 + 1] + 0.114 * lut[t * 3 + 2];
-        dark[base + i] = op * lum + (1 - op) * 60 > 140 ? 1 : 0;
       }
     }
-    return { s: s, cols: cols, rows: rows, u: u, v: v, dark: dark };
+    return { s: s, cols: cols, rows: rows, u: u, v: v };
   }
   function nowMs() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
 
@@ -1284,7 +1290,7 @@
     this.map = map; this.layer = null; this._onLayerRedraw = null;
     this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
     this.field = null; this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.mode = null;   // 'arrows' | 'particles' | 'static'
-    this.anchors = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0; this.darkBuf = null;
+    this.anchors = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0;
     this.active = false; this.suspended = 0; this.dirty = false; this.rafId = null; this.lastT = 0; this.clock = 0;
     this.ema = 0; this.adaptAt = 0; this._listeners = [];
     this.setLayer(layer);
@@ -1342,7 +1348,7 @@
     if (this.suspended) return;
     if (this.dirty) { this.dirty = false; this._rebuild(); } else this._start();
   };
-  // The layer's colours changed (opacity): the particle contrast follows.
+  // The layer changed under the animation (opacity, a coast store): rebuild.
   FlowAnimator.prototype.refresh = function () { if (this.dir && !this.suspended && this.canvas) this._rebuild(); };
   // The map's geometry: Leaflet's own size and pixel bounds (what its tiles are laid out with).
   FlowAnimator.prototype.view = function () {
@@ -1391,11 +1397,12 @@
   };
   FlowAnimator.prototype._seed = function (v) {
     this.count = this.target;
-    this.particles = new Float32Array(PARTICLE_MAX * 4); this.darkBuf = new Float32Array(PARTICLE_MAX * 4);
-    for (var i = 0; i < PARTICLE_MAX; i++) { this._respawn(i * 4, v); this.particles[i * 4 + 2] = Math.random() * 60; }
+    this.particles = new Float32Array(PARTICLE_MAX * 4);                     // x, y, age (ms), life (ms) per particle
+    for (var i = 0; i < PARTICLE_MAX; i++) { this._respawn(i * 4, v); this.particles[i * 4 + 2] = Math.random() * PARTICLE_LIFE_MS[0]; }
   };
   FlowAnimator.prototype._respawn = function (k, v) {
-    var P = this.particles; P[k] = Math.random() * v.w; P[k + 1] = Math.random() * v.h; P[k + 2] = 0; P[k + 3] = 60 + Math.random() * 90;
+    var P = this.particles; P[k] = Math.random() * v.w; P[k + 1] = Math.random() * v.h; P[k + 2] = 0;
+    P[k + 3] = PARTICLE_LIFE_MS[0] + Math.random() * (PARTICLE_LIFE_MS[1] - PARTICLE_LIFE_MS[0]);
   };
   FlowAnimator.prototype._start = function () {
     if (this.rafId !== null || !this.dir || !this.canvas || this.mode === 'static' || !(this.anchors || this.vf)) return;
@@ -1453,17 +1460,17 @@
     ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.stroke();
   };
   // Particles: the last frame fades (destination-in, TRAIL_KEEP per 16.7 ms whatever the frame rate; the
-  // 8-bit floor it leaves is at most 1/255 alpha, invisible), every live particle moves by its cell's
-  // velocity and draws the segment it moved along (white, or dark over a light field colour); one that
-  // ages out, leaves the map or sits in a cell without a vector is respawned somewhere in the view.
+  // 8-bit floor it leaves is a few /255 of alpha, invisible), every live particle moves by its cell's
+  // velocity and draws the segment it moved along, a dark halo under a light core (visible over the dark
+  // ocean and the light desert / ice imagery alike; two strokes a frame); one that ages out (1-2.5 s),
+  // leaves the map or sits in a cell without a vector is respawned somewhere in the view.
   FlowAnimator.prototype._renderParticles = function (dt) {
     var ctx = this.ctx, v = this.v, vf = this.vf, P = this.particles;
     if (!ctx || !v || !vf || !P) return;
-    var w = v.w, h = v.h, n = this.count, s = vf.s, cols = vf.cols;
+    var w = v.w, h = v.h, n = this.count, s = vf.s, cols = vf.cols, dts = dt / 1000, i, k;
     ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = 'rgba(0,0,0,' + Math.pow(TRAIL_KEEP, dt / 16.7).toFixed(4) + ')'; ctx.fillRect(0, 0, w, h);
     ctx.globalCompositeOperation = 'source-over';
-    var D = this.darkBuf, nd = 0, dts = dt / 1000, i, k;
-    ctx.lineWidth = 1.2; ctx.lineCap = 'round'; ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineCap = 'round';
     ctx.beginPath();
     for (i = 0, k = 0; i < n; i++, k += 4) {
       var x = P[k], y = P[k + 1], age = P[k + 2];
@@ -1471,15 +1478,11 @@
       if (age >= P[k + 3] || (u === 0 && vy === 0)) { this._respawn(k, v); continue; }
       var nx = x + u * dts, ny = y + vy * dts;
       if (!(nx >= 0 && ny >= 0 && nx < w && ny < h)) { this._respawn(k, v); continue; }
-      if (vf.dark[c]) { D[nd++] = x; D[nd++] = y; D[nd++] = nx; D[nd++] = ny; } else { ctx.moveTo(x, y); ctx.lineTo(nx, ny); }
-      P[k] = nx; P[k + 1] = ny; P[k + 2] = age + 1;
+      ctx.moveTo(x, y); ctx.lineTo(nx, ny);
+      P[k] = nx; P[k + 1] = ny; P[k + 2] = age + dt;
     }
-    ctx.stroke();
-    if (nd) {
-      ctx.strokeStyle = 'rgba(20,24,48,0.8)'; ctx.beginPath();
-      for (i = 0; i < nd; i += 4) { ctx.moveTo(D[i], D[i + 1]); ctx.lineTo(D[i + 2], D[i + 3]); }
-      ctx.stroke();
-    }
+    ctx.lineWidth = 2.6; ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.stroke();
+    ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.stroke();
   };
 
   // ---- controller ----
@@ -2277,7 +2280,7 @@
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
       validCoastIndex: validCoastIndex,
       FlowAnimator: FlowAnimator, dirAt: dirAt, sampleRow: sampleRow, sampleDirRow: sampleDirRow, screenVec: screenVec, arrowAnchors: arrowAnchors,
-      windField: windField, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, DIR_AGREE: DIR_AGREE, ARROW_PX: ARROW_PX, ARROW_MIN: ARROW_MIN,
+      windField: windField, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, DIR_SPREAD: DIR_SPREAD, ARROW_PX: ARROW_PX, ARROW_MIN: ARROW_MIN, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
       ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_KEEP: TRAIL_KEEP, dirGridsOk: dirGridsOk }
   };

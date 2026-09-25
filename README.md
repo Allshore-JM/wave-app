@@ -80,11 +80,16 @@ objects. Data policy in the browser: the 0.5 degree frames are used below zoom 3
 on narrow (phone) maps and for wind everywhere, so an 81-frame loop is about 4-13 MB (32 MB only for wind
 zoomed past 7.5); frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
 where the browser has DecompressionStream.
-Overlay state (asset 2.7.2): the chosen layer, its valid time and whether it was playing are kept in the tab's
+Overlay state (asset 2.7.3): the chosen layer, its valid time and whether it was playing are kept in the tab's
 sessionStorage (`allshore.overlay.v1`, with opacity and speed), so picking another forecast point (a page reload)
 brings the overlay back where it was; the time and play state only from a save under 30 minutes old, never under
 the viewer's reduced-motion setting, and a hidden tab resumes when shown. Off, or a new tab, starts Off.
-Coastline clip (asset 2.7.2): wave height and peak period are clipped to the ocean in the browser, so the field
+Wave-height colours and contours (asset 2.7.3): wave height uses value knots so 0-3 m fills about half of the
+legend (owner-picked spectral palette); tp and wind keep linear scales. A Contours checkbox (wave height and period,
+off by default, remembered for the tab) draws light anti-aliased lines every 2 ft / 0.5 m and every 2 s (doubled below
+zoom 4), in colour only (transparency, the coast clip and the hover readout are unchanged), never beside missing data,
+where lines would crowd under 3 px apart, or across a peak-period jump of more than 2 s within one model cell.
+Coastline clip (asset 2.7.3): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for
 tile zoom <= 6; tier 1 `f/<lat>_<lon>.bin`, full resolution, one 5-degree cell per file, fetched for the cells in

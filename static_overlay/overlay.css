@@ -14,6 +14,8 @@
 .ov-details { overflow-y: auto; padding-right: 2px; }
 .ov-row input[type=range] { width: 110px; vertical-align: middle; margin: 0 0 0 4px; }
 .ov-row label { margin: 0; font-weight: normal; }
+.ov-row .ov-check { margin-left: 10px; white-space: nowrap; }
+.ov-row .ov-check input { vertical-align: middle; margin: 0 2px 0 0; }
 .ov-legend { margin-top: 4px; }
 .ov-legend canvas { display: block; width: 100%; height: 12px; border-radius: 2px; }
 .ov-ticks { position: relative; height: 15px; font-size: 11px; color: #333; }

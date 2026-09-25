@@ -12,6 +12,11 @@
 
   var SESSION_KEY = 'allshore.overlay.v1';
   var STALE_AFTER_S = 9 * 3600;               // pointer older than this -> "stale" banner
+  // A reload (e.g. another forecast point) restores the valid time and play state only from a recent
+  // save, and only when the run still has a frame close to that time; the field itself is restored by
+  // the page's bootstrap from the same session key.
+  var RESTORE_MAX_AGE_MS = 30 * 60 * 1000;
+  var RESTORE_MAX_SHIFT_MS = 90 * 60 * 1000;
   var POINTER_RECHECK_MS = 30 * 60 * 1000;    // re-read latest.json on mount when the cached pointer is older
   var ENCODING = 'u8-linear-v2';
   var TILE = 256;
@@ -819,6 +824,17 @@
     for (var i = 0; i < m.frames.length; i++) { var d = Math.abs(Date.parse(m.frames[i].valid_utc) - t); if (d < best) { best = d; idx = i; } }
     return idx;
   }
+  // The frame to resume on after a reload, or null (then the usual first frame): the save must be
+  // recent and the run must have a frame within RESTORE_MAX_SHIFT_MS of the saved valid time.
+  function restoreIndex(m, st, now) {
+    if (!st || typeof st.t !== 'number' || typeof st.at !== 'number' || !isFinite(st.t) || !isFinite(st.at)) return null;
+    if (now - st.at > RESTORE_MAX_AGE_MS || st.at - now > 60000) return null;
+    var idx = nearestIndex(m, st.t);
+    return Math.abs(Date.parse(m.frames[idx].valid_utc) - st.t) <= RESTORE_MAX_SHIFT_MS ? idx : null;
+  }
+  function reducedMotion() {
+    try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; }
+  }
   // Decoded frames, least recently used first out; the frame on the map is never evicted.
   function FrameCache(max) { this.max = max; this.map = new Map(); }
   FrameCache.prototype.get = function (key) { var v = this.map.get(key); if (v) { this.map.delete(key); this.map.set(key, v); } return v || null; };
@@ -851,8 +867,10 @@
     this.opacity = typeof s.opacity === 'number' && s.opacity >= 0.2 && s.opacity <= 1 ? s.opacity : 0.65;
     this.speed = SPEEDS.indexOf(s.speed) >= 0 ? s.speed : 1;
   }
-  Overlay.prototype.mount = function (fieldName) {
-    var self = this;
+  // restore: true on the mount the page makes after a reload (the field was saved in this tab); the
+  // saved valid time and play state are then reused when they are recent (restoreIndex).
+  Overlay.prototype.mount = function (fieldName, restore) {
+    var self = this, st = restore ? saved() : null;
     if (!this.map.getPane('modelPane')) {
       var pane = this.map.createPane('modelPane'); pane.style.zIndex = 250; pane.style.pointerEvents = 'none';
     }
@@ -883,7 +901,9 @@
       if (sig.aborted || !self.layer) throw abortError();
       if (self.layer._coast !== (store || null)) self.layer.setCoast(store);
       self.n = m.frames.length;
-      var idx = prevValid === null ? pickFrame(m) : m.run === prevRun ? Math.min(self.frameIndex, self.n - 1) : nearestIndex(m, prevValid);
+      var rIdx = prevValid === null && st ? restoreIndex(m, st, Date.now()) : null;
+      var idx = prevValid === null ? (rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(self.frameIndex, self.n - 1) : nearestIndex(m, prevValid);
+      var resume = rIdx !== null && st.playing === true;
       self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
       return self._goto(idx, sig).catch(function (err) {
@@ -892,6 +912,11 @@
         var next = nextAvailable(idx, 1, self.n, function (j) { return self._isUnavailable(j); });
         if (next === null) throw err;
         return self._goto(next, sig);
+      }).then(function () {
+        // it was playing before the reload: keep playing, unless the viewer asks for reduced motion;
+        // in a hidden tab it resumes when the tab is shown (the same path as the visibility pause)
+        if (!resume || sig.aborted || reducedMotion()) return;
+        if (document.hidden) { self.wasPlaying = true; self._persist(); } else self.play();
       });
     }).catch(function (err) { self._fail(sig, err); });
   };
@@ -968,6 +993,7 @@
         self.layer.setFrame(frame, half ? m.grid_half : m.grid, field, m.fields[field], self._lut(), m.frames[idx]);
       }
       self.frameIndex = idx;
+      self._persist();
       self._attribute();
       if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
       self._prefetch();
@@ -1077,12 +1103,19 @@
   // (a frame that was loading when the user paused and played again) never schedules anything.
   Overlay.prototype.play = function () {
     if (this.playing || !this.manifest || this.frameIndex === null) return;
-    this.playing = true; this.dir = 1; this.playGen++; this._syncUI(); this._tick(this.playGen);
+    this.playing = true; this.dir = 1; this.playGen++; this._syncUI(); this._tick(this.playGen); this._persist();
   };
   Overlay.prototype.pause = function () {
     this.playing = false; this.playGen++;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    this._syncUI();
+    this._syncUI(); this._persist();
+  };
+  // The state a reload restores (with the field the page saved): the valid time on the map, whether it
+  // is playing (a visibility pause still counts as playing), and when this was written.
+  Overlay.prototype._persist = function () {
+    if (!this.field || !this.manifest || this.frameIndex === null || !this.manifest.frames[this.frameIndex]) return;
+    save({ field: this.field, t: Date.parse(this.manifest.frames[this.frameIndex].valid_utc),
+      playing: !!(this.playing || this.wasPlaying), at: Date.now() });
   };
   Overlay.prototype._tick = function (gen) {
     var self = this;
@@ -1452,7 +1485,7 @@
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
       parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,
       forwardPixel: forwardPixel, snapToPixel: snapToPixel, pixelOf: pixelOf, pad3: pad3,
-      ringPlan: ringPlan, nextAvailable: nextAvailable, nearestIndex: nearestIndex, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
+      ringPlan: ringPlan, nextAvailable: nextAvailable, nearestIndex: nearestIndex, restoreIndex: restoreIndex, SESSION_KEY: SESSION_KEY, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,

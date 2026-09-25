@@ -24,15 +24,24 @@
   // coastline-clipped field is shown, " · GSHHG" follows, linking the LGPL notice published beside the
   // coast data (the only credit on the page: the panel carries no caption).
   var ATTRIBUTION = 'Overlay: <a href="https://polar.ncep.noaa.gov/waves/" target="_blank" rel="noopener">NOAA GFS-Wave</a>/GFS';
+  // Colour stops over the LEGEND POSITION (0..1). For wave height the position is not linear in the
+  // value (KNOTS below): 0-3 m takes about half of the scale, with a hue change every 0.5-1 m.
   var RAMPS = {
-    hs:   [[0,'#0b2c6b'],[0.15,'#1f6fd6'],[0.3,'#19c3e6'],[0.45,'#3fd96b'],[0.6,'#f2e33a'],[0.75,'#f5901f'],[0.9,'#e02020'],[1,'#a3129e']],
+    hs:   [[0,'#1d3a8a'],[0.08,'#2563eb'],[0.17,'#0ea5e9'],[0.25,'#22d3ee'],[0.33,'#34d399'],[0.40,'#a3e635'],[0.47,'#facc15'],
+           [0.58,'#fb923c'],[0.72,'#ef4444'],[0.87,'#c026d3'],[1,'#f5d0fe']],
     tp:   [[0,'#2a1f7a'],[0.25,'#2e7ed8'],[0.5,'#38c9a8'],[0.7,'#c8e63c'],[0.85,'#f7a52b'],[1,'#e8321f']],
     wind: [[0,'#e8f1ff'],[0.2,'#8cc4ff'],[0.4,'#3aa35a'],[0.6,'#f0d433'],[0.8,'#f0731f'],[1,'#b00f3a']]
+  };
+  // Value (SI units) -> legend position knots, piecewise linear; fields without knots are linear over
+  // the legend range. The tiles stay linear in value (composeTile indexes a 256-entry LUT over the
+  // legend range); only the colour each value gets, and where it sits on the legend, follow the knots.
+  var KNOTS = {
+    hs: [[0, 0], [0.5, 0.08], [1, 0.17], [2, 0.33], [3, 0.47], [4, 0.58], [6, 0.72], [9, 0.87], [12, 1]]
   };
   // Legend tick values in DISPLAY units per field and site unit; the legend top is added as "N+".
   // No numeric tick above ~80 % of the bar: it would collide with the right-aligned top label.
   var TICKS = {
-    'hs|US': [0, 10, 20, 30], 'hs|Metric': [0, 3, 6, 9],
+    'hs|US': [0, 3, 6, 10, 15, 20], 'hs|Metric': [0, 1, 2, 3, 4, 6],
     'tp|US': [4, 8, 12, 16], 'tp|Metric': [4, 8, 12, 16],
     'wind|US': [0, 20, 40], 'wind|Metric': [0, 25, 50, 75]
   };
@@ -40,17 +49,45 @@
   function saved() { try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || '{}'); } catch (e) { return {}; } }
   function save(patch) { try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(Object.assign(saved(), patch))); } catch (e) {} }
   function hexToRgb(h) { var n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+  function rampAt(stops, t, out, o) {
+    var k = 0;
+    while (k < stops.length - 2 && t > stops[k + 1][0]) k++;
+    var a = stops[k], b = stops[k + 1], f = (t - a[0]) / Math.max(1e-9, b[0] - a[0]);
+    f = Math.max(0, Math.min(1, f));
+    var ca = hexToRgb(a[1]), cb = hexToRgb(b[1]);
+    out[o] = ca[0] + (cb[0] - ca[0]) * f; out[o + 1] = ca[1] + (cb[1] - ca[1]) * f; out[o + 2] = ca[2] + (cb[2] - ca[2]) * f;
+  }
   function buildRamp(stops) {
-    // 256-entry RGB lookup over t in [0,1]
+    // 256-entry RGB lookup over the legend position t in [0,1] (the legend bar)
     var out = new Uint8ClampedArray(256 * 3);
-    for (var i = 0; i < 256; i++) {
-      var t = i / 255, k = 0;
-      while (k < stops.length - 2 && t > stops[k + 1][0]) k++;
-      var a = stops[k], b = stops[k + 1], f = (t - a[0]) / Math.max(1e-9, b[0] - a[0]);
-      f = Math.max(0, Math.min(1, f));
-      var ca = hexToRgb(a[1]), cb = hexToRgb(b[1]);
-      out[i * 3] = ca[0] + (cb[0] - ca[0]) * f; out[i * 3 + 1] = ca[1] + (cb[1] - ca[1]) * f; out[i * 3 + 2] = ca[2] + (cb[2] - ca[2]) * f;
+    for (var i = 0; i < 256; i++) rampAt(stops, i / 255, out, i * 3);
+    return out;
+  }
+  // Piecewise-linear map through knots [[x, y], ...] (x ascending), clamped at both ends.
+  function through(knots, x, from, to) {
+    if (x <= knots[0][from]) return knots[0][to];
+    for (var i = 1; i < knots.length; i++) {
+      var a = knots[i - 1], b = knots[i];
+      if (x <= b[from]) return a[to] + (b[to] - a[to]) * (x - a[from]) / Math.max(1e-12, b[from] - a[from]);
     }
+    return knots[knots.length - 1][to];
+  }
+  // Legend position (0..1) of a value in SI units, and back.
+  function legendPos(field, legend, v) {
+    var k = KNOTS[field];
+    if (k) return through(k, v, 0, 1);
+    return Math.max(0, Math.min(1, (v - legend[0]) / (legend[1] - legend[0])));
+  }
+  function legendInv(field, legend, p) {
+    var k = KNOTS[field];
+    if (k) return through(k, p, 1, 0);
+    return legend[0] + Math.max(0, Math.min(1, p)) * (legend[1] - legend[0]);
+  }
+  // The tiles' lookup: 256 entries LINEAR IN VALUE over the legend range (what composeTile indexes),
+  // each coloured at that value's legend position. Linear fields give exactly buildRamp(stops).
+  function buildLut(field, legend) {
+    var stops = RAMPS[field], out = new Uint8ClampedArray(256 * 3);
+    for (var i = 0; i < 256; i++) rampAt(stops, KNOTS[field] ? legendPos(field, legend, legend[0] + i / 255 * (legend[1] - legend[0])) : i / 255, out, i * 3);
     return out;
   }
   function pad3(n) { return (n < 10 ? '00' : n < 100 ? '0' : '') + n; }
@@ -63,12 +100,13 @@
     if (field === 'tp') return { label: 's', f: function (v) { return v; }, d: 1 };
     return unit === 'Metric' ? { label: 'km/h', f: function (v) { return v * 3.6; }, d: 0 } : { label: 'mph', f: function (v) { return v * 2.23694; }, d: 0 };
   }
+  function fmtTick(v) { var r = Math.round(v * 10) / 10; return String(Math.abs(r - Math.round(r)) < 1e-9 ? Math.round(r) : r); }
   function legendTicks(field, fdef, unit) {
-    var u = unitOf(field, unit), lo = u.f(fdef.legend[0]), hi = u.f(fdef.legend[1]);
+    var u = unitOf(field, unit), hi = u.f(fdef.legend[1]), per = u.f(1);          // display = SI * per
     var vals = TICKS[field + '|' + (unit === 'Metric' ? 'Metric' : 'US')] || [fdef.legend[0]];
     var out = vals.map(function (v, i) {
       var below = i === 0 && fdef.lo < fdef.legend[0] - 1e-9;          // values under the legend floor exist (Tp)
-      return { pos: Math.max(0, Math.min(1, (v - lo) / (hi - lo))), label: (below ? '≤' : '') + Math.round(v) };
+      return { pos: legendPos(field, fdef.legend, v / per), label: (below ? '≤' : '') + fmtTick(v) };
     });
     out.push({ pos: 1, label: Math.round(hi) + '+ ' + u.label });
     return out;
@@ -929,7 +967,8 @@
     return u === true || (typeof u === 'number' && u > Date.now());
   };
   Overlay.prototype._lut = function () {
-    if (this._lutFor !== this.field) { this._lutCache = buildRamp(RAMPS[this.field]); this._lutFor = this.field; }
+    var f = this.manifest && this.manifest.fields[this.field], legend = f ? f.legend : [0, 1], key = this.field + '|' + legend.join(',');
+    if (this._lutFor !== key) { this._lutCache = buildLut(this.field, legend); this._lutFor = key; }
     return this._lutCache;
   };
   // The decoded frame for index idx: cache, then an in-flight fetch, then a new one. A 404 or a decode
@@ -1415,7 +1454,7 @@
     if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
     // legend over the LEGEND range in the site's units (the encoding range is wider; extremes clamp)
     var leg = mk('div', 'ov-legend'), cv = mk('canvas'); cv.width = 256; cv.height = 1; leg.appendChild(cv);
-    var lut = this._lut(), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);
+    var lut = buildRamp(RAMPS[field]), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);   // the bar is laid out by legend position
     for (var i = 0; i < 256; i++) { im.data[i * 4] = lut[i * 3]; im.data[i * 4 + 1] = lut[i * 3 + 1]; im.data[i * 4 + 2] = lut[i * 3 + 2]; im.data[i * 4 + 3] = 255; }
     ctx.putImageData(im, 0, 0);
     var ticks = mk('div', 'ov-ticks'), tk = legendTicks(field, f, unit);
@@ -1481,7 +1520,7 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { buildRamp: buildRamp, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
+    _internals: { buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
       parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,

@@ -74,7 +74,9 @@ the ordinary `u8-linear-v2` decode over 0-360, error <= 0.71 deg; the manifest m
 `convention: from`, `interpolation: circular`). `pdir` is published full + half and takes the coastal fill
 by nearest model cell (never a mean of angles); `wdir` only at half resolution (`resolutions` per field in the
 manifest). The job records per step how many cells have waves but no direction (`pdir_mask_mismatch` in the
-stats sidecar; a flat calm, hs = 0, has none by nature and is counted apart) and warns in the summary.
+stats sidecar, on the model grids; a flat calm, hs = 0, has none by nature and is counted apart) and warns in
+the summary. For `pdir`/`wdir` the `encoding_spec` clamp does not apply: code 1 is north (0 = 360 degrees) and code
+255 is never used; a reader must branch on the field's `circular` flag.
 
 Runbook: rotate the R2 token in the repository secrets; roll back by unsetting `MODEL_OVERLAYS` (env only,
 no deploy), by re-pushing the `prod-pre-overlays` tag, or by disabling BOTH workflows (`model-frames.yml`
@@ -139,7 +141,7 @@ wave height; older runs keep `nearest` until they age out of retention, about a 
 are never changed; the manifest carries a `fill` block and the stats sidecar `filled_points`; the browser's coastline
 clip hides the fill over land. Bays more than 1 degree from model water stay empty. A run published with a different
 fill is never rebuilt (`run.py` refuses, even with `--force`; frame keys are immutable), and a complete run whose
-pointer write failed is re-pointed instead. Rollback: set `"fill": False` for hs and tp in `encode.FIELDS` and adjust
+pointer write failed is re-pointed instead. Rollback: set `"fill": False` for hs, tp and pdir in `encode.FIELDS` and adjust
 the fill tests in the same commit (keeps the guard); the filled live run stays live until the next cycle (up to ~6 h)
 unless `latest.json` is pointed at an older unfilled run by hand -- never `git revert` the fill commit, which would
 drop the guard as well.

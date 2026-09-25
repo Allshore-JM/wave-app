@@ -13,7 +13,7 @@ Hs 0-12 m, Tp 4-22 s, wind 0-60 kt on the client.
 Stored as 8-bit greyscale PNG (1440x721). Half-resolution variant = exact subsample q[::2, ::2]
 (361x720): half pixel (i, j) IS full pixel (2i, 2j) -> lat 90 - 0.5 i, lon -180 + 0.5 j.
 
-Coastal fill (wave height and peak period only; manifest "fill" = FILL_INFO): GFS-Wave leaves cells
+Coastal fill (wave height, peak period and wave direction; manifest "fill" = FILL_INFO): GFS-Wave leaves cells
 with enough land in them empty (a land-fraction threshold), so without help the field stops short
 of many coasts. Before quantisation, empty cells that are within FILL_CELLS cells of model data AND
 allowed by fill_allow.png (the node's 0.25-degree box, or a neighbour's, holds GSHHG land; built by
@@ -97,6 +97,7 @@ ENCODING_SPEC = {
     "formula": "value = lo + (q - 1) / 254 * (hi - lo)",
     "clamp": "both", "low_code_means": "<= lo", "high_code_means": ">= hi",
     "bilinear_missing": "treat q=0 as absent neighbour",
+    "circular_fields": "fields with circular: true are not clamped: q = 1 + (round(v * 254 / 360) mod 254), code 1 = 0 = 360 deg, 255 unused",
 }
 
 

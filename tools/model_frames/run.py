@@ -11,7 +11,7 @@ Exit codes: 0 published / already current / newer run live / pointer repaired; 3
 available or a needed object vanished mid-run (not an error for the schedule); 1 build/publish
 failure; 2 bad arguments, or a refusal to rewrite a published run's immutable frames with a
 different coastal fill (see fill_guard).
-Rollback of the coastal fill: set "fill": False for hs and tp in encode.FIELDS (the manifest then
+Rollback of the coastal fill: set "fill": False for hs, tp and pdir in encode.FIELDS (the manifest then
 carries no fill block and the guard keeps protecting the filled runs) and adjust the fill tests in
 tests/model_frames/test_job.py in the same commit. The filled live run stays live until the next
 cycle (up to ~6 h); to drop it at once, point latest.json at an older unfilled run by hand. Never
@@ -82,8 +82,10 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
         grids["wind"] = D.wind_speed(u, v)
         grids["wdir"] = D.wind_dir_from(u, v)
         entry = {"step": step, "valid_utc": (run_dt + timedelta(hours=step)).strftime("%Y-%m-%dT%H:%M:%SZ")}
-        # the direction must exist wherever there are waves, and nowhere without a height (the client draws
-        # arrows only on drawn water); a flat calm (hs == 0, 19 cells at f024 of 2026092512) has no direction
+        # on the MODEL grids the direction must exist wherever there are waves, and nowhere without a height
+        # (the client draws arrows only on drawn water); a flat calm (hs == 0, 19 cells at f024 of 2026092512)
+        # has no direction. After the coastal fill the published frames can differ by a few calm-seeded
+        # cells (hs code 1 = 0 m, Arctic pack), where no arrow is drawn.
         hs_, pd_ = grids["hs"], grids["pdir"]
         mismatch = int(np.count_nonzero((np.isnan(pd_) & (hs_ > 0)) | (np.isnan(hs_) & ~np.isnan(pd_))))
         calm = int(np.count_nonzero(np.isnan(pd_) & (hs_ == 0)))

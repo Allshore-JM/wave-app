@@ -776,7 +776,7 @@ def test_fill_guard_lets_the_same_fill_through_and_ignores_partials(monkeypatch,
 
 
 def test_rollback_without_fill_omits_the_block_and_keeps_the_guard(monkeypatch, capsys, offline_build):
-    monkeypatch.setattr(R.E, "FILL_INFO", None)                                                   # what "fill": False for hs and tp produces
+    monkeypatch.setattr(R.E, "FILL_INFO", None)                                                   # what "fill": False for hs, tp and pdir produces
     c = FakeClient()
     store = P.Store(c, "b")
     m = R.build_and_publish(store, RUN, [0], log=lambda *a: None)
@@ -818,10 +818,12 @@ def test_direction_frames_fill_by_nearest_and_publish_their_resolutions():
     g = np.full((721, 1440), np.nan)
     g[:, 700:710] = 350.0
     g[:, 710:720] = 10.0                                              # across north: a mean would say 180
+    g[:, 715], g[:, 716] = 359.5, 360.0                               # the linear coder would give these 255
     enc = E.encode_frame(g, "pdir", allow=np.ones((721, 1440), bool))
     q = np.array(Image.open(io.BytesIO(enc["full"])))
     codes = set(np.unique(q[q > 0]).tolist())
-    assert codes == set(np.unique(E.quantize_circular(np.array([350.0, 10.0]))).tolist())   # every filled node carries a model angle
+    assert codes == set(np.unique(E.quantize_circular(np.array([350.0, 10.0, 359.5]))).tolist())   # every filled node carries a model angle
+    assert q.max() <= 254 and q[0, 715] == q[0, 716] == 1                                   # through encode_frame: circular, 360 = north
     assert enc["stats"]["filled_points"] == 721 * 8 and "half" in enc
     w = E.encode_frame(np.full((721, 1440), 90.0), "wdir")
     assert "full" not in w and np.array(Image.open(io.BytesIO(w["half"]))).shape == (361, 720)
@@ -843,11 +845,57 @@ def test_pdir_coverage_mismatch_is_counted_and_reported(offline_build, monkeypat
     def decode(blob, key=None, run_dt=None, step=None):
         g, meta = real(blob, key, run_dt, step)
         if key == "HTSGW:surface":
-            g = g.copy(); g[1, :5] = 0.0; g[2, :4] = np.nan                # a flat calm, and cells without a height
+            g = g.copy(); g[1, :5] = 0.0; g[2, :4] = np.nan; g[3, :3] = 0.05   # a flat calm, cells without a height, ripples
         if key == "DIRPW:surface":
-            g = g.copy(); g[0, :7] = np.nan; g[1, :5] = np.nan              # 7 cells with waves but no direction; the calm has none either
+            g = g.copy(); g[0, :7] = np.nan; g[1, :5] = np.nan; g[3, :3] = np.nan   # 7 + 3 cells with waves but no direction; the calm has none either
         return g, meta
     monkeypatch.setattr(R.D, "decode", decode)
     m = R.build_and_publish(None, RUN, [0, 3], upload=False, log=lambda *a: None)
-    assert [f["pdir_mask_mismatch"] for f in m["_stats"]["frames"]] == [7 + 4, 7 + 4]        # (a direction without a height counts too)
+    assert [f["pdir_mask_mismatch"] for f in m["_stats"]["frames"]] == [7 + 3 + 4] * 2      # (a direction without a height counts too)
     assert [f["pdir_missing_calm"] for f in m["_stats"]["frames"]] == [5, 5]
+
+
+def test_pdir_mismatch_warns_in_the_step_summary(offline_build, monkeypatch, tmp_path):
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    assert R.main(["--dry-run", "--steps", "0"]) == 0
+    assert "### run 2026092212" in summary.read_text() and "WARNING" not in summary.read_text()
+    real = R.D.decode
+    def decode(blob, key=None, run_dt=None, step=None):
+        g, meta = real(blob, key, run_dt, step)
+        return (np.where(np.arange(1440) < 3, np.nan, g).astype(np.float32) if key == "DIRPW:surface" else g), meta
+    monkeypatch.setattr(R.D, "decode", decode)
+    summary.write_text("")
+    assert R.main(["--dry-run", "--steps", "0"]) == 0
+    assert "WARNING: wave direction and wave height cover different cells at 1 steps (first f000)" in summary.read_text()
+
+
+def test_each_published_field_decodes_to_its_own_grib_record(offline_build, monkeypatch):
+    """Per-key constants end to end: a swapped key, a sign slip in the wind direction or a field
+    published under another field's name shows up as a wrong decoded value in the bucket."""
+    const = {"HTSGW:surface": 2.0, "PERPW:surface": 12.0, "DIRPW:surface": 45.0,
+             "UGRD:10 m above ground": 5.0, "VGRD:10 m above ground": 0.0}
+    assert set(const) == set(R.WAVE_KEYS.values()) | {"UGRD:10 m above ground", "VGRD:10 m above ground"}
+    monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None:
+                        (np.full((721, 1440), const[key], np.float32), {}))
+    c = FakeClient()
+    m = R.build_and_publish(P.Store(c, "b"), RUN, [0], log=lambda *a: None)
+    def values(field, half):
+        q = np.array(Image.open(io.BytesIO(c.objects[P.frame_key("2026092212", field, 0, half=half)]["body"])))
+        f = m["fields"][field]
+        assert q.min() > 0                                                     # no missing cells in a constant field
+        return E.dequantize(q, f["lo"], f["hi"])
+    ang = lambda a, b: np.abs((a - b + 180.0) % 360.0 - 180.0)
+    assert ang(values("wdir", True), 270.0).max() <= 360.0 / 508 + 1e-9       # u = +5 blows east: FROM the west
+    for half in (False, True):
+        assert ang(values("pdir", half), 45.0).max() <= 360.0 / 508 + 1e-9
+        assert np.abs(values("hs", half) - 2.0).max() <= 15.0 / 508 + 1e-9
+        assert np.abs(values("tp", half) - 12.0).max() <= 29.0 / 508 + 1e-9
+        assert np.abs(values("wind", half) - 5.0).max() <= 80 * E.KT / 508 + 1e-9
+
+
+def test_wind_dir_from_never_returns_360():
+    tiny = np.float32(1e-7)                                                    # atan2 -> just under 360, rounds up in float32
+    d = D.wind_dir_from(np.array([tiny, 0.0, np.nan], np.float32), np.array([-1.0, -1.0, 1.0], np.float32))
+    assert d[0] == 0.0 and d[1] == 0.0 and np.isnan(d[2])

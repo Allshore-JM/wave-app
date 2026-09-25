@@ -85,6 +85,7 @@ def wind_speed(u, v):
 def wind_dir_from(u, v):
     """Meteorological wind direction: degrees true (clockwise from north) the wind blows FROM, in
     [0, 360). u, v are the earth-relative eastward / northward components (GFS 0.25 deg lat/lon:
-    uvRelativeToGrid = 0). u > 0 (blowing east) -> 270; v > 0 (blowing north) -> 180; NaN propagates."""
-    d = np.degrees(np.arctan2(-u.astype(np.float64), -v.astype(np.float64))) % 360.0
-    return d.astype(np.float32)
+    uvRelativeToGrid = 0). u > 0 (blowing east) -> 270; v > 0 (blowing north) -> 180; NaN propagates;
+    an exact calm (u = v = 0, speed 0) reads 180."""
+    d = (np.degrees(np.arctan2(-u.astype(np.float64), -v.astype(np.float64))) % 360.0).astype(np.float32)
+    return np.where(d >= 360.0, np.float32(0.0), d)                   # 359.99999... rounds up to 360 in float32

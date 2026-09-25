@@ -170,3 +170,17 @@ the saved +48 h; Off and reload clean; no console messages from the page.
 owner: B-P3-1 tile seams, B-P3-2 terraces in the fill, B-P3-4 phone controls below the fold, the palette under
 colour-vision deficiency, and R2's P3-3/P3-4/P3-5 above. Next: the owner's go-ahead for the client production merge
 (tag `prod-pre-restore` @ 78b54de first).
+
+## Owner follow-up: thinner lines (asset 2.7.6)
+
+2026-09-25, owner: "slightly thinner, at wider zooms in particular the thickness of the lines is somewhat
+distracting". The line width now follows the tile zoom (full coverage up to `core` px from the level, fading to none at
+`edge` px; width = core + edge): **1.05 px at zoom 3 and below, 1.25 px at 4-5, 1.5 px at 6-7, 1.8 px at 8 and closer**
+(2.25 px at every zoom before). The block-skip bound and the early cut use the zoom's fading edge, so skipping stays
+exact for any profile. `feat/overlays-restore` @ 8f21f8b, test @ 55a2ad8 (`overlay.js` served immutable, sha256
+510b4c0e…, equal to the commit). Tests: the width of every profile over 24 angles × 5 offsets, each zoom drawing with
+its own profile, exact coverage on the fading edge; Node 87, pytest 381. Mutants killed: the profile not passed, the
+early cut at the core, one profile for every zoom, the old width; the bound computed from the core instead of the edge
+is equivalent for these profiles (it could only differ if edge − core exceeded 1 px). Test site: zoom 4 and zoom 8 draw
+with their profiles, readout = drawn pixel at 28,800 samples, no console errors. Preview (2.7.5 vs 2.7.6 at zooms 3-8):
+scratch `g8fix/g8_contour_width_275_vs_276.png`.

@@ -100,7 +100,7 @@ level (next to islands as in open water); the colours, transparency, the coast c
 values. No line beside missing data,
 where lines would crowd under 3 px apart, along the flat foot of a steep ramp, or in a model cell where the peak
 period jumps more than 2 s between neighbouring nodes (the smoothing never blends two swell regimes).
-Animation (asset 2.8.0): an Animation checkbox on the Opacity row (off by default, remembered for the tab) draws small
+Animation (asset 2.8.1): an Animation checkbox on the Opacity row (off by default, remembered for the tab) draws small
 chevrons gliding along the dominant swell direction under wave height and peak period, and wind particles with
 fading trails under wind speed, on a canvas of their own under the forecast points (no pointer events; markers keep
 their taps). The directions come from the `pdir` / `wdir` frames of the same step, loaded through the frame scheduler

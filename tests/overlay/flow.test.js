@@ -154,7 +154,7 @@ function fakeCtx() {
 function animator(field, l, dframe, dgrid, zoom) {
   const ctx = fakeCtx(), events = {};
   const map = { on(ev, fn) { (events[ev] = events[ev] || []).push(fn); }, off(ev, fn) { events[ev] = (events[ev] || []).filter((f) => f !== fn); },
-    getPane: () => null, createPane: () => ({ style: {}, appendChild() {} }), getSize: () => ({ x: 800, y: 600 }),
+    getPane: () => null, createPane: () => ({ style: {}, appendChild() {} }), getSize: () => ({ x: 800, y: 900 }), getContainer: () => ({ clientWidth: 800, clientHeight: 600 }),
     getPixelBounds: () => ({ min: { x: 10000, y: 9000 } }), getZoom: () => zoom || 6, containerPointToLayerPoint: () => ({ x: -3, y: 7 }) };
   const canvas = { style: {}, width: 0, height: 0, getContext: () => ctx, remove() { canvas.removed = true; } };
   global.document = { createElement: () => canvas, hidden: false };
@@ -170,7 +170,7 @@ test('arrows: a wave-height frame with a direction draws tracks and gliding chev
   const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
   const { fa, ctx, canvas } = animator('hs', l, pdir, HALF);
   assert.equal(fa.mode, 'arrows'); assert.ok(fa.anchors.length > 100, 'anchors ' + fa.anchors.length);
-  assert.equal(canvas.width, 800); assert.equal(canvas.style.transform, 'translate3d(-3px,7px,0)');
+  assert.equal(canvas.width, 800); assert.equal(canvas.height, 600, 'the container size, not Leaflet stale getSize (G10-C P2-2)'); assert.equal(canvas.style.transform, 'translate3d(-3px,7px,0)');
   for (const a of fa.anchors) { assert.ok(Math.abs(a.dx - I.screenVec(350)[0]) < 0.02 && Math.abs(a.dy - I.screenVec(350)[1]) < 0.02); assert.equal(a.rate, 1); }
   assert.equal(fa.scheduled, 1, 'one animation frame scheduled after the rebuild');
   const before = strokes(ctx); fa.pending(100); assert.equal(strokes(ctx) - before, 4); assert.equal(fa.scheduled, 2);
@@ -207,6 +207,7 @@ test('suspend / resume count nested moves and zooms; a hidden document stops the
   const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(90));
   const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
   const { fa, events, canvas } = animator('hs', l, pdir, HALF);
+  const aV = fa.anchors; events.viewreset[0](); assert.notEqual(fa.anchors, aV, 'a view reset (tiles recreated after moveend) rebuilds (G10-C P1-1)');
   events.zoomstart[0](); events.movestart[0]();                              // a zoom fires both
   assert.equal(fa.suspended, 2); assert.equal(fa.active, false); assert.equal(canvas.style.visibility, 'hidden');
   events.zoomend[0](); assert.equal(fa.suspended, 1); assert.equal(fa.active, false, 'still moving');
@@ -268,7 +269,7 @@ test('G10-A M22 / M33 / P3-6 / P3-7: the fade alpha is below 1, a south wind mov
   const clears = ctx.ops.filter((o) => o === 'clearRect').length;
   fa.setData(wdirS2, HALF, { step: 3 });                                       // the next playback step, same view
   assert.equal(ctx.ops.filter((o) => o === 'clearRect').length, clears, 'a new step does not wipe the trails');
-  map.getSize = () => ({ x: 1600, y: 1200 }); fa._rebuild();
+  map.getContainer = () => ({ clientWidth: 1600, clientHeight: 1200 }); fa._rebuild();
   assert.equal(fa.target, Math.round(1600 * 1200 / 900), 'the target follows the view'); assert.ok(fa.count <= fa.target);
   assert.equal(ctx.ops.filter((o) => o === 'clearRect').length, clears + 1, 'a moved view starts clean');
 });

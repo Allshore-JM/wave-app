@@ -500,21 +500,21 @@ test('animation on: the direction frame rides beside the field frame, never more
   await w.releaseAll(); assert.equal(o.dcache.size(), 0, 'late decodes resolve into the void');
 });
 
-test('a direction frame that lands after the map moved on is never shown under the new step (the new target direction outranks it)', async () => {
+test('a direction frame that lands after the map moved on is never shown under the new step (a newer target drops it)', async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
-  const o = w.create(); o.anim = true; o.mount('hs'); await settle();
-  await w.releaseField();                                                    // frame i0 on the map; its direction still pending
-  const i0 = o.frameIndex;
-  assert.equal(o.flow.dir, null);
-  const late = w.holdDir();                                                  // hold step i0's direction decode
-  o.step(1); await settle(); await w.releaseField();                        // step i0 + 1 lands: the canvas is cleared, its direction is fetched
-  assert.equal(o.frameIndex, i0 + 1); assert.equal(o.flow.dir, null); assert.ok(o.flow.calls.includes('_clear'));
-  assert.ok(o.inflight[o._key(i0 + 1, 'dir')], 'the new step direction is in flight'); assert.equal(o.inflight[o._key(i0, 'dir')], undefined, 'the old one was evicted for it');
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+  const i0 = o.frameIndex; assert.ok(o.flow.dir);
+  o.seek(i0 + 5); await settle();                                            // outside the ring: field + direction fetched
+  await w.releaseField();                                                    // its field decoded: the step waits for its direction
+  assert.equal(o.frameIndex, i0, 'waiting for the direction of i0 + 5'); assert.ok(o.inflight[o._key(i0 + 5, 'dir')]);
+  const late = w.holdDir();                                                  // hold that direction decode
+  o.seek(i0 + 9); await settle();                                            // a newer target: the old one's direction is dropped
+  assert.equal(o.inflight[o._key(i0 + 5, 'dir')], undefined, 'aborted');
   late(); await settle();
-  assert.equal(o.flow.dir, null, 'the old step direction must not be shown');
-  assert.equal(o.dcache.has(o._key(i0, 'dir')), false, 'evicted for the new target direction: a late decode of an aborted fetch is dropped');
-  await w.releaseDir();
-  assert.ok(o.flow.dir, 'the new step direction shows'); assert.equal(o.flow.dir, o.dcache.get(o._key(i0 + 1, 'dir')));
+  assert.equal(o.dcache.has(o._key(i0 + 5, 'dir')), false, 'a late decode of an aborted fetch is dropped');
+  assert.equal(o.frameIndex, i0, 'the picture never moved to i0 + 5'); assert.equal(o.flow.entry, A.frames[i0], 'the direction on the map is still that of i0');
+  await w.releaseAll(); await settle();
+  assert.equal(o.frameIndex, i0 + 9); assert.equal(o.flow.entry, A.frames[i0 + 9], 'the new step shows its own direction'); assert.equal(o.flow.dir, o.dcache.get(o._key(i0 + 9, 'dir')));
   o.unmount();
 });
 
@@ -627,14 +627,21 @@ test('G10-A: unticking Animation while a step is loading keeps the step; the sho
   o.unmount();
 });
 
-test('G10-A M26: a SHOWN direction is cleared by a step until the new step direction lands (never an old direction under a new time)', async () => {
+test('G10-A M26 / G10-C P2-1: a step shows its picture and its direction together; the old direction never sits under the new step', async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
-  const shown = o.flow.dir; assert.ok(shown, 'a direction is on the map');
-  o.step(1); await settle(); await w.releaseField();
-  assert.equal(o.frameIndex, o.target);
-  assert.equal(o.flow.dir, null, 'cleared: the old step direction never sits under the new step');
-  await w.releaseDir(); assert.ok(o.flow.dir && o.flow.dir !== shown);
+  const shown = o.flow.dir, i0 = o.frameIndex; assert.ok(shown, 'a direction is on the map');
+  const dirUrl = (i) => 'https://x/' + `gfswave/0p25/v1/${A.run}/half/pdir/f${String(A.frames[i].step).padStart(3, '0')}.png`;
+  w.failNext[dirUrl(i0 + 4)] = 404; w.failNext[dirUrl(i0 + 5)] = 'network';   // beyond the ring: not fetched yet
+  o.seek(i0 + 3); await settle(); await w.releaseField();                    // outside the ring: its field decoded, it waits for its direction
+  assert.equal(o.frameIndex, i0, 'the picture waits for its direction'); assert.equal(o.flow.dir, shown, 'the old picture keeps its own direction meanwhile');
+  await w.releaseDir();
+  assert.equal(o.frameIndex, i0 + 3); assert.ok(o.flow.dir && o.flow.dir !== shown, 'both changed together'); assert.equal(o.flow.entry, A.frames[i0 + 3]);
+  await w.releaseAll();                                                       // the ring: i0 + 4's direction 404s
+  o.step(1); await settle(); await w.releaseAll();
+  assert.equal(o.frameIndex, i0 + 4, 'a step whose direction is missing lands without it'); assert.equal(o.flow.dir, null); assert.equal(o._isUnavailable(i0 + 4, 'dir'), true);
+  o.step(1); await settle(); await w.releaseAll();
+  assert.equal(o.frameIndex, i0 + 5, 'a transient direction failure does not hold the step either'); assert.equal(o.flow.dir, null);
   o.unmount();
 });
 

@@ -35,4 +35,5 @@ fill guard and `fill_key` unaffected; a `--force` rebuild writes only a new mani
 
 ## Owner decision
 
-PENDING.
+2026-09-25 ~02:30 UTC, after seeing the reviewer's regime-edge sheet: **merge as is** — peak period smooth everywhere
+like wave height, thin outlines at swell-regime edges accepted. **G7 closed.**

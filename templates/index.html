@@ -2818,10 +2818,14 @@
       }
       var again = stored().field;
       sel.value = typeof again === 'string' && FIELDS.hasOwnProperty(again) ? again : '';    // (autocomplete="off": never the browser's form restore)
+      var shown = sel.value;                                     // what the select showed before a change
       sel.addEventListener('change', function () {
-        var fresh = !(overlay && overlay.field);                 // from Off, or before the restore ran: no saved time
-        picked = true;
-        choose(sel.value, false); remember(sel.value, fresh);
+        // Switching layers while the saved one waits to be restored is a field switch like any other: the
+        // saved time comes along. A layer picked from Off starts fresh (no saved time).
+        var v = sel.value, pending = !picked && !overlay && shown !== '' && shown === again;
+        var fresh = !pending && !(overlay && overlay.field);
+        picked = true; shown = v;
+        choose(v, pending && v !== ''); remember(v, fresh);
       });
       // A page shown again from the back/forward cache keeps its own overlay: the tab's save follows it.
       window.addEventListener('pageshow', function (e) {

@@ -102,17 +102,21 @@ test('a reload restores the saved layer after load and idle, with "Loading" show
   p.unitChange(); assert.equal(p.log[p.log.length - 1], 'refresh');
 });
 
-test('Off or another layer picked before the restore wins; a pick from Off starts fresh (no saved time)', async () => {
+test('Off before the restore wins; another layer picked while the restore waits keeps the saved time (G8 R1 P3-2)', async () => {
   let p = page({ init: { field: 'hs', t: 1, at: 2, playing: true } });
   p.sel.userPick(''); assert.equal(p.panel.textContent, '');
   await loadedAndIdle(p);
   assert.deepEqual(p.log, []); assert.equal(p.read().field, ''); assert.equal(p.read().playing, false);
+  p.sel.userPick('hs'); await settle();                                          // then a pick from Off: fresh
+  assert.deepEqual(p.log, ['create', 'mount hs false']); assert.equal(p.read().t, undefined); assert.equal(p.read().at, undefined);
   p = page({ init: { field: 'hs', t: 1, at: 2, playing: true } });
-  p.sel.userPick('tp'); await settle();
-  assert.deepEqual(p.log, ['create', 'mount tp false']);
-  const st = p.read(); assert.equal(st.field, 'tp'); assert.equal(st.playing, false); assert.equal(st.t, undefined); assert.equal(st.at, undefined);
+  p.sel.userPick('tp'); await settle();                                          // a switch while "Wave height" waits to be restored
+  assert.deepEqual(p.log, ['create', 'mount tp true']);
+  const st = p.read(); assert.equal(st.field, 'tp'); assert.equal(st.t, 1); assert.equal(st.at, 2); assert.equal(st.playing, true);
   await loadedAndIdle(p);
-  assert.deepEqual(p.log, ['create', 'mount tp false'], 'the queued restore stands down');
+  assert.deepEqual(p.log, ['create', 'mount tp true'], 'the queued restore stands down');
+  p.sel.userPick('wind'); await settle();                                        // later switches: an ordinary switch (the module keeps the time)
+  assert.deepEqual(p.overlays[0].mounts, [['tp', true], ['wind', false]]); assert.equal(p.read().t, 1);
   // Off after the load but before the idle callback: nothing mounts
   p = page({ init: { field: 'hs' } }); p.load(); p.advance(0); p.sel.userPick(''); p.idle(); await settle();
   assert.deepEqual(p.log, []); assert.equal(p.read().field, '');

@@ -482,11 +482,14 @@
   // The smoothed copy of a frame the contours are traced on (colours, readout and clip keep the raw
   // codes): the 8-bit codes step in terraces that a flat sea crosses only every cell or two, so lines
   // on the raw codes follow the model grid in staircases. S = a masked [1,2,1]x[1,2,1] mean over the
-  // present nodes (columns periodic, rows not wrapped); missing nodes stay 0. jump > 0 (peak period, in
-  // codes): a neighbour across a larger jump is left out, so swell regimes are never blended, and J marks
-  // the cells (nodes r..r+1, c..c+1) with such a jump on an edge: no line is drawn in them. The jump is
-  // counted between model nodes, so it is the same north-south and east-west at every latitude.
-  // Fills nodes r0..r1-1, c0..c1-1 of S (and of J when given).
+  // present nodes (columns periodic, rows not wrapped), held within HALF a code of the node's own value
+  // (its quantisation bin: the model value the code stands for lies within it): enough to dissolve the
+  // terraces, never enough to move a line past what the colours and the readout show at the nodes (next
+  // to islands the field changes by many codes per node). Missing nodes stay 0.
+  // jump > 0 (peak period, in codes): a neighbour across a larger jump is left out, so swell regimes are
+  // never blended, and J marks the cells (nodes r..r+1, c..c+1) with such a jump on an edge: no line is
+  // drawn in them. The jump is counted between model nodes, so it is the same north-south and east-west
+  // at every latitude. Fills nodes r0..r1-1, c0..c1-1 of S (and of J when given).
   function smoothBlock(q, cols, rows, S, J, jump, r0, r1, c0, c1) {
     var acc = 0, w = 0, v = 0;
     function add(x, wt) { if (x && !(jump && (x - v > jump || v - x > jump))) { acc += x * wt; w += wt; } }
@@ -505,7 +508,8 @@
         add(q[mid + cl], 2); add(q[mid + cr], 2);
         if (up >= 0) { add(q[up + c], 2); add(q[up + cl], 1); add(q[up + cr], 1); }
         if (dn >= 0) { add(q[dn + c], 2); add(q[dn + cl], 1); add(q[dn + cr], 1); }
-        S[mid + c] = acc / w;
+        var sv = acc / w;
+        S[mid + c] = sv < v - 0.5 ? v - 0.5 : sv > v + 0.5 ? v + 0.5 : sv;     // (v >= 1: S stays >= 0.5, never 0 = missing)
       }
     }
   }

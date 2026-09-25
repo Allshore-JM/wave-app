@@ -435,3 +435,29 @@ test('a corrupted session value counts as empty and the next write replaces it (
     assert.ok(back && typeof back === 'object' && !Array.isArray(back) && back.opacity === 0.5, raw + ' -> ' + m.get('allshore.overlay.v1'));
   }
 });
+
+test('restore pending, then Off, then a pick: the usual first frame, not the saved time (the saved state ends at Off)', async () => {
+  const w0 = world(), first = w0.I.pickFrame(A), k = (first + 40) % A.frames.length;
+  const st = { field: 'hs', t: Date.parse(A.frames[k].valid_utc), playing: true, at: Date.now() };
+  const storage = memStore(st), w = world({ storage });
+  w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create();
+  o.mount('hs', true); await settle();                                           // the restored frame is still decoding
+  o.unmount();                                                                     // Off before it lands
+  const s2 = storage.read(); s2.field = 'hs'; s2.playing = false; delete s2.t; delete s2.at;   // what the page's pick from Off writes
+  storage.setItem('allshore.overlay.v1', JSON.stringify(s2));
+  o.mount('hs', false); await settle(); await w.releaseAll();
+  assert.equal(o.frameIndex, first); assert.notEqual(o.frameIndex, k); assert.equal(o.playing, false);
+  done(o);
+});
+
+test('hiding the tab pauses playback and saves it as playing; showing it resumes', async () => {
+  const storage = memStore(), w = world({ storage, realDocument: true });
+  const o = await mounted(w, A);
+  o.play(); assert.equal(o.playing, true);
+  w.doc.hidden = true; w.fire('doc', 'visibilitychange');
+  assert.equal(o.playing, false); assert.equal(o.wasPlaying, true); assert.equal(storage.read().playing, true);
+  w.doc.hidden = false; w.fire('doc', 'visibilitychange');
+  assert.equal(o.playing, true); assert.equal(o.wasPlaying, false);
+  done(o);
+});

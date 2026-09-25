@@ -6,7 +6,7 @@
 name: coast-build
 on:
   push:
-    paths: ["tools/coast/**", "tests/coast/**", "static_overlay/**", "tests/overlay/**", ".github/workflows/coast-build.yml"]
+    paths: ["tools/coast/**", "tests/coast/**", "static_overlay/**", "tests/overlay/**", "templates/index.html", ".github/workflows/coast-build.yml"]
   workflow_dispatch:
     inputs:
       upload:

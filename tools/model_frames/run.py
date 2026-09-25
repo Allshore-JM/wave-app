@@ -7,8 +7,13 @@ Options:
                      --allow-partial; the pointer is never flipped for a subset.
   --force            re-publish even if the run is current or older than the live run
   --keep N           complete runs to retain (default 4)
-Exit codes: 0 published / already current / newer run live; 3 no complete run available or a
-needed object vanished mid-run (not an error for the schedule); 1 build/publish failure.
+Exit codes: 0 published / already current / newer run live / pointer repaired; 3 no complete run
+available or a needed object vanished mid-run (not an error for the schedule); 1 build/publish
+failure; 2 bad arguments, or a refusal to rewrite a published run's immutable frames with a
+different coastal fill (see fill_guard).
+Rollback of the coastal fill: set "fill": False for hs and tp in encode.FIELDS (one-line commit; the
+manifest then carries no fill block and the guard keeps protecting the filled runs). Never `git
+revert` the fill commit: that removes the guard too.
 """
 import argparse
 import json
@@ -75,8 +80,8 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
                 P.publish_frame(store, run, name, step, enc)
         frames.append(entry)
         stats_frames.append(stat)
-        filled = " ".join(f"{n}={stat['fields'][n]['filled_points']}" for n in E.FILL_INFO["fields"])
-        log(f"f{step:03d} done in {time.time() - t:.1f}s (filled {filled})")
+        filled = " ".join(f"{n}={stat['fields'][n]['filled_points']}" for n in (E.FILL_INFO or {}).get("fields", []))
+        log(f"f{step:03d} done in {time.time() - t:.1f}s" + (f" (filled {filled})" if filled else ""))
     complete = steps == F.STEPS and len(frames) == len(F.STEPS)
     manifest = {
         "schema": 3, "run": run, "files": {"template": P.files_template(run), "res": {"full": "", "half": "half/"}}, "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": MODEL,
@@ -84,12 +89,13 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
         "grid": GRID_FULL, "grid_half": GRID_HALF,
         "fields": {n: {"lo": f["lo"], "hi": f["hi"], "legend": f["legend"], "units": f["units"],
                        "interpolation": f["interpolation"]} for n, f in E.FIELDS.items()},
-        "fill": E.FILL_INFO,
         "frame_hours": FRAME_HOURS, "expected_frames": len(F.STEPS),
         "frames": frames, "complete": complete,
         "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "build_seconds": round(time.time() - t0, 1),
     }
+    if E.FILL_INFO:
+        manifest["fill"] = E.FILL_INFO
     stats = {"run": run, "frames": stats_frames}
     if upload:
         P.publish_manifest(store, run, manifest, stats)
@@ -102,12 +108,32 @@ def _store_from_env():
                                os.environ["R2_SECRET_ACCESS_KEY"]), os.environ["R2_BUCKET"])
 
 
-def published_fill(store, run):
-    """(True, fill block) of the newest COMPLETE manifest already published for `run`, else (False, None)."""
-    keys = sorted(k for k in store.list_keys(f"{P.PREFIX}/{run}/manifest-"))
-    if not keys:
-        return False, None
-    return True, (store.get_json(keys[-1]) or {}).get("fill")
+def fill_guard(store, run, live, partial):
+    """None to go ahead, else the exit code. A run already published (complete manifest) with a
+    different fill is never rebuilt: its frame keys are immutable and cached for a year, so browsers
+    would mix differently built frames. If that run is simply not pointed to (the pointer write
+    failed, or latest.json was lost) and it is newer than the live run, the pointer is repaired to
+    its existing manifest instead of failing on every tick."""
+    try:
+        mkey, man = P.newest_manifest(store, run)
+    except Exception as exc:                                  # noqa: BLE001
+        msg = f"run {run}: its published manifest cannot be read ({exc.__class__.__name__}); not rewriting its frames"
+        print(msg)
+        _summary("WARNING: " + msg)
+        return 2
+    if mkey is None or E.fill_key(man.get("fill")) == E.fill_key(E.FILL_INFO):
+        return None
+    if not partial and man.get("complete") and (not live or run > live):
+        P.point_to(store, run, mkey, man)
+        msg = f"run {run} already has a complete manifest built with fill {E.fill_key(man.get('fill'))}; pointer repaired to {mkey}"
+        print(msg)
+        _summary(msg)
+        return 0
+    msg = (f"run {run} was published with fill {E.fill_key(man.get('fill'))}; refusing to rewrite its frames "
+           f"with fill {E.fill_key(E.FILL_INFO)}")
+    print(msg)
+    _summary("WARNING: " + msg)
+    return 2
 
 
 def _skip_failed(store, run):
@@ -164,12 +190,9 @@ def main(argv=None):
         if not partial and not a.force and _skip_failed(store, run):
             print(f"run {run} failed recently; waiting before retrying")
             return 0
-        done, fill = published_fill(store, run)
-        if done and fill != E.FILL_INFO:
-            # frame keys are immutable and cached for a year: never rewrite a published run's frames
-            # with differently built bytes (browsers would mix filled and unfilled frames)
-            print(f"run {run} was published with fill {fill!r}; refusing to re-publish it with {E.FILL_INFO!r}")
-            return 2
+        rc = fill_guard(store, run, live, partial)
+        if rc is not None:
+            return rc
     print(f"publishing run {run} ({len(steps)} steps){' [dry-run]' if a.dry_run else ''}{' [partial]' if partial else ''}")
 
     try:
@@ -196,6 +219,10 @@ def main(argv=None):
     lag_h = (published - run_dt).total_seconds() / 3600
     _summary(f"### run {run}: {len(manifest['frames'])} frames, complete={manifest['complete']}, "
              f"{tot/1e6:.1f} MB stored, {manifest['build_seconds']} s, published {lag_h:.1f} h after the cycle")
+    if E.FILL_INFO and manifest["_stats"]["frames"]:
+        f0 = manifest["_stats"]["frames"][0]
+        _summary(f"coastal fill (v{E.FILL_VERSION}, {E.FILL_CELLS} cells) at f{f0['step']:03d}: " +
+                 ", ".join(f"{n} {f0['fields'][n]['filled_points']} cells" for n in E.FILL_INFO["fields"]))
     return 0
 
 

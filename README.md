@@ -101,12 +101,16 @@ zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier
 tile zoom <= 6; tier 1 `f/<lat>_<lon>.bin`, full resolution, one 5-degree cell per file, fetched for the cells in
 view at zoom >= 7, <= 32 MB of decoded chunks kept). The hover/long-press readout consults the same mask and shows
 nothing over land. If the coast data cannot be loaded the field is drawn unclipped with a warning in the panel.
-Coastal fill (job): GFS-Wave leaves every 0.25-degree cell that touches land empty, so before quantisation the job
-fills empty wave-height and peak-period cells within 4 cells (1 degree) of model data with the mean of their present
-neighbours (`tools/model_frames/encode.py` `fill_coast`); model values are never changed, the manifest carries a `fill`
-block and the stats sidecar `filled_points`, and the browser's coastline clip hides the fill over land. Bays more than
-1 degree from open model water stay empty. A run published without the fill is never re-published with it (`run.py`
-refuses, even with `--force`): frame keys are immutable, so filled and unfilled runs simply coexist until pruned.
+Coastal fill (job): GFS-Wave leaves cells with enough land in them empty, so before quantisation the job fills empty
+wave-height and peak-period cells within 4 cells (1 degree) of model data, and only within one cell of GSHHG land
+(`tools/model_frames/fill_allow.png`, built from the published coast data by `make_fill_mask.py` and pinned by hash),
+so open water and the sea-ice pack the model masks are never filled. Wave height takes the mean of its present
+neighbours; peak period takes the value of the nearest model cell (never a blend of two swell regimes). Model values
+are never changed; the manifest carries a `fill` block and the stats sidecar `filled_points`; the browser's coastline
+clip hides the fill over land. Bays more than 1 degree from model water stay empty. A run published with a different
+fill is never rebuilt (`run.py` refuses, even with `--force`; frame keys are immutable), and a complete run whose
+pointer write failed is re-pointed instead. Rollback: set `"fill": False` for hs and tp in `encode.FIELDS` (one-line
+commit; keeps the guard) -- never `git revert` the fill commit, which would drop the guard as well.
 See tools/coast/README.md for the builder, the publish workflow and the LGPL notice. Review records: `docs/reviews/overlays-G*-adversarial.md`. Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full
 sentence ("Source: NOAA/NCEP GFS-Wave (WAVEWATCH III) and GFS via NOAA Open Data Dissemination; rendered by
 Allshore Surf. Not an official NWS product.").

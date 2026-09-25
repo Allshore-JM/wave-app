@@ -13,15 +13,25 @@ Hs 0-12 m, Tp 4-22 s, wind 0-60 kt on the client.
 Stored as 8-bit greyscale PNG (1440x721). Half-resolution variant = exact subsample q[::2, ::2]
 (361x720): half pixel (i, j) IS full pixel (2i, 2j) -> lat 90 - 0.5 i, lon -180 + 0.5 j.
 
-Coastal fill (wave height and peak period only; manifest "fill" = FILL_INFO): GFS-Wave marks every
-0.25-degree cell that touches land as missing, so the field would stop ~20 km short of the coast.
-Before quantisation, missing cells within FILL_CELLS cells of real data get the mean of their
-present 8-neighbours, one Jacobi pass per ring (longitude periodic, nothing beyond the poles);
-real values are never changed and deep inland stays missing. The browser clips the result to the
-GSHHG coastline, so the fill is only ever seen over water. 4 passes is the smallest count for
-which the half-resolution grid (every 2nd cell) still reaches every coastline pixel.
+Coastal fill (wave height and peak period only; manifest "fill" = FILL_INFO): GFS-Wave leaves cells
+with enough land in them empty (a land-fraction threshold), so without help the field stops short
+of many coasts. Before quantisation, empty cells that are within FILL_CELLS cells of model data AND
+allowed by fill_allow.png (the node's 0.25-degree box, or a neighbour's, holds GSHHG land; built by
+make_fill_mask.py) are filled, ring by ring (longitude periodic, nothing beyond the poles):
+  hs  the mean of the present 8-neighbours of the previous ring (smooth; the client is bilinear)
+  tp  the value of the nearest model cell (Euclidean in grid cells; the client samples Tp by
+      nearest node and a mean would invent periods between two swell regimes)
+Model values never change; wind is never filled; open water far from land (the sea-ice pack the
+model masks) is never filled. The browser clips the result to the same GSHHG coast, so the fill is
+only seen over water. Coverage: after k rings a coastline point is drawn on full frames when its
+nearest grid node is within k cells of model data, on half frames within k - 1 (the nearest half
+node is within one cell of the nearest full node, and a present nearest node always carries the
+bilinear weight >= 0.25 the client needs). k = 4 trades reach into bays against extrapolation
+distance; no k reaches everything (the model has no cells at all in the Black Sea, for example).
 """
+import functools
 import io
+import os
 
 import numpy as np
 from PIL import Image
@@ -35,11 +45,38 @@ FIELDS = {
     "wind": {"lo": 0.0, "hi": 80 * KT,  "legend": [0.0, 60 * KT], "units": "m/s", "interpolation": "bilinear", "fill": False},
 }
 FILL_CELLS = 4
-FILL_INFO = {
-    "fields": sorted(n for n, f in FIELDS.items() if f["fill"]), "cells": FILL_CELLS,
-    "method": "mean of present 8-neighbours, one Jacobi pass per ring, longitude periodic",
+FILL_VERSION = 2                          # bump whenever the fill's output changes for the same input
+FILL_METHODS = {"hs": "mean", "tp": "nearest"}
+FILL_ALLOW_PNG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fill_allow.png")
+FILL_ALLOW_SHA256 = "35c4e29f2122794b9d17ab491920aaac7f55cb76aa703c9eaa08ca5baf7e8c7d"
+_FILLED = sorted(n for n, f in FIELDS.items() if f["fill"])
+FILL_INFO = None if not _FILLED else {
+    "version": FILL_VERSION, "fields": _FILLED, "cells": FILL_CELLS,
+    "methods": {n: FILL_METHODS[n] for n in _FILLED},
+    "limit": "only within one cell of GSHHG land (never over open water or sea ice)",
     "note": "nearshore values are extrapolated from the nearest model cells; clipped to the coastline in the browser",
 }
+
+
+def fill_key(block):
+    """What identifies a fill for the re-publish guard (wording changes are not a different fill)."""
+    if not block:
+        return None
+    return (block.get("version", 1), tuple(block.get("fields", ())), block.get("cells"))
+
+
+@functools.lru_cache(maxsize=1)
+def fill_allow():
+    """The static (721, 1440) bool mask of nodes the fill may write, verified against its pinned hash."""
+    raw = open(FILL_ALLOW_PNG, "rb").read()
+    import hashlib
+    if hashlib.sha256(raw).hexdigest() != FILL_ALLOW_SHA256:
+        raise RuntimeError("fill_allow.png does not match FILL_ALLOW_SHA256 (rebuild with make_fill_mask.py and re-pin)")
+    a = np.array(Image.open(io.BytesIO(raw)).convert("L")) > 0
+    if a.shape != (721, 1440):
+        raise RuntimeError("fill_allow.png must be 1440x721")
+    a.setflags(write=False)
+    return a
 ENCODING = "u8-linear-v2"
 ENCODING_SPEC = {
     "missing": 0, "min_code": 1, "max_code": 255,
@@ -64,11 +101,16 @@ def quantum(lo, hi):
     return (hi - lo) / 254.0
 
 
-def fill_coast(grid, cells=FILL_CELLS):
-    """-> (filled float64 copy, bool mask of the cells that were filled). Only NaN cells change."""
+def fill_coast(grid, cells=FILL_CELLS, allow=None, method="mean"):
+    """-> (filled float64 copy, bool mask of the cells that were filled). Only NaN cells change, and
+    only where `allow` (bool, same shape; None = everywhere) is true. The filled SET is the same for
+    both methods: the cells reached ring by ring through allowed cells. method "mean" gives each the
+    mean of its present 8-neighbours of the previous ring (Jacobi); "nearest" gives it the value of
+    the nearest model cell (Euclidean in grid cells, ties by a fixed offset order)."""
     g = np.array(grid, dtype=np.float64)                    # a copy: the caller's grid is untouched
     missing0 = np.isnan(g)
     rows, cols = g.shape
+    ok_to_fill = np.ones(g.shape, bool) if allow is None else np.asarray(allow, bool)
     p = np.full((rows + 2, cols + 2), np.nan)
     for _ in range(cells):
         p[1:-1, 1:-1] = g
@@ -84,11 +126,38 @@ def fill_coast(grid, cells=FILL_CELLS):
                 ok = ~np.isnan(s)
                 tot += np.where(ok, s, 0.0)
                 n += ok
-        target = np.isnan(g) & (n > 0)
+        target = np.isnan(g) & (n > 0) & ok_to_fill
         if not target.any():
             break
         g[target] = tot[target] / n[target]                 # Jacobi: every mean uses the previous pass
-    return g, missing0 & ~np.isnan(g)
+    added = missing0 & ~np.isnan(g)
+    if method == "nearest" and added.any():
+        g = _nearest_values(np.asarray(grid, dtype=np.float64), added, cells)
+    elif method not in ("mean", "nearest"):
+        raise ValueError(method)
+    return g, added
+
+
+def _nearest_values(model, targets, cells):
+    """`model` with every target cell set to the value of its nearest model cell within `cells`
+    (Chebyshev window; every target has one, since it was reached in <= cells rings)."""
+    rows, cols = model.shape
+    out = model.copy()
+    todo = targets.copy()
+    offs = sorted(((dy, dx) for dy in range(-cells, cells + 1) for dx in range(-cells, cells + 1) if dy or dx),
+                  key=lambda o: (o[0] ** 2 + o[1] ** 2, abs(o[0]), o[0], o[1]))
+    pad = np.full((rows + 2 * cells, cols), np.nan)
+    pad[cells:-cells] = model
+    for dy, dx in offs:
+        src = np.roll(pad[cells + dy:cells + dy + rows], -dx, axis=1)       # src[i, j] = model[i + dy, j + dx]
+        hit = todo & ~np.isnan(src)
+        out[hit] = src[hit]
+        todo &= ~hit
+        if not todo.any():
+            break
+    if todo.any():
+        raise AssertionError("a filled cell has no model cell within the window")
+    return out
 
 
 def half_res(q):
@@ -103,15 +172,16 @@ def to_png(q):
     return buf.getvalue()
 
 
-def encode_frame(grid, name, fill=None):
+def encode_frame(grid, name, fill=None, allow=None):
     """-> {'full': png bytes, 'half': png bytes, 'stats': {...}} for one field. The coastal fill
     (default: FIELDS[name]["fill"]) runs before quantisation and before the half subsample; the
-    stats describe the MODEL values only, plus how many cells the fill added."""
+    stats describe the MODEL values only, plus how many cells the fill added. `allow` defaults to
+    fill_allow()."""
     f = FIELDS[name]
     lo, hi = f["lo"], f["hi"]
     g = np.asarray(grid, dtype=np.float64)
     if f["fill"] if fill is None else fill:
-        filled, added = fill_coast(g)
+        filled, added = fill_coast(g, allow=fill_allow() if allow is None else allow, method=FILL_METHODS[name])
     else:
         filled, added = g, np.zeros(g.shape, bool)
     q = quantize(filled, lo, hi)

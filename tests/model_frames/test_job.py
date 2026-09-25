@@ -184,7 +184,7 @@ def test_encode_frame_fill_before_half_and_stats():
     g = np.full((721, 1440), np.nan, np.float32)
     g[:, 700:710] = 3.0
     for name in ("hs", "tp"):
-        out = E.encode_frame(g, name)
+        out = E.encode_frame(g, name, allow=np.ones((721, 1440), bool))
         full = np.array(Image.open(io.BytesIO(out["full"])))
         half = np.array(Image.open(io.BytesIO(out["half"])))
         s = out["stats"]
@@ -194,12 +194,53 @@ def test_encode_frame_fill_before_half_and_stats():
         assert s["min"] == 3.0 and s["max"] == 3.0                                                # stats describe the model values
     w = E.encode_frame(g, "wind")
     assert w["stats"]["filled_points"] == 0                                                       # wind is never filled
+    d = E.encode_frame(g, "hs")                                                                   # default: the real fill_allow mask
+    assert 0 < d["stats"]["filled_points"] < 721 * 8
 
 
-def test_fill_info_pins_fields_and_cells():
+def test_fill_info_pins_fields_cells_version_and_key():
     assert E.FILL_INFO["fields"] == ["hs", "tp"] and E.FILL_INFO["cells"] == E.FILL_CELLS == 4
-    assert json.loads(json.dumps(E.FILL_INFO)) == E.FILL_INFO                                   # manifest-safe, compares equal after a round trip
+    assert E.FILL_INFO["version"] == E.FILL_VERSION == 2 and E.FILL_INFO["methods"] == {"hs": "mean", "tp": "nearest"}
+    assert json.loads(json.dumps(E.FILL_INFO)) == E.FILL_INFO                                   # manifest-safe
     assert [n for n, f in E.FIELDS.items() if f["fill"]] == ["hs", "tp"]
+    reworded = dict(E.FILL_INFO, note="other words", limit="x", methods={"tp": "nearest", "hs": "mean"})
+    assert E.fill_key(reworded) == E.fill_key(E.FILL_INFO) == (2, ("hs", "tp"), 4)             # wording is not a different fill
+    assert E.fill_key(None) is None and E.fill_key({}) is None
+    assert E.fill_key({"fields": ["hs", "tp"], "cells": 4}) == (1, ("hs", "tp"), 4) != E.fill_key(E.FILL_INFO)   # a v1 block
+
+
+def test_fill_allow_mask_is_pinned_and_excludes_open_water_and_ice():
+    import hashlib
+    raw = open(E.FILL_ALLOW_PNG, "rb").read()
+    assert hashlib.sha256(raw).hexdigest() == E.FILL_ALLOW_SHA256 and len(raw) < 20_000
+    a = E.fill_allow()
+    assert a.shape == (721, 1440) and a.dtype == bool and not a.flags.writeable
+    assert "tier1.sha256=a4b97403aac09c0a" in Image.open(E.FILL_ALLOW_PNG).info["coast"]         # built from the published coast v1
+    node = lambda lat, lon: a[int(round((90 - lat) / 0.25)), int(round((lon + 180) / 0.25)) % 1440]
+    assert node(21.5, -158.0) and node(21.0, -157.9) and node(9.0, -79.5)                      # Oahu, 30 km off Honolulu, Panama
+    assert not node(10.0, -150.0) and not node(-65.0, -30.0) and not node(85.0, 0.0)            # open Pacific, Weddell ice, Arctic pack
+    assert node(-80.0, 179.75) and node(-80.0, -180.0)                                          # the Ross Ice Shelf front, both sides of the dateline
+
+
+def test_fill_coast_allow_limits_the_set_and_nearest_never_blends():
+    g = np.full((9, 12), np.nan)
+    g[:, :3] = 6.9                                                                                # a Caribbean
+    g[:, 9:] = 14.4                                                                               # a Pacific, 6 cells away
+    allow = np.ones(g.shape, bool)
+    allow[:, 5] = False                                                                           # a strip the fill may not write
+    mean, am = E.fill_coast(g, allow=allow)
+    near, an = E.fill_coast(g, allow=allow, method="nearest")
+    assert np.array_equal(am, an)                                                                 # the same filled set for both methods
+    assert not am[:, 5].any() and am[:, 3:5].all() and am[:, 6:9].all()
+    assert set(np.unique(near[an]).tolist()) == {6.9, 14.4}                                     # nearest: only model values, never a blend
+    assert np.all(near[:, 3:5] == 6.9) and np.all(near[:, 6:9] == 14.4)
+    g2 = np.full((5, 7), np.nan)
+    g2[2, 0], g2[2, 6] = 6.9, 14.4
+    mid, _ = E.fill_coast(g2, cells=3)
+    nr, _ = E.fill_coast(g2, cells=3, method="nearest")
+    assert 6.9 < mid[2, 3] < 14.4 and nr[2, 3] in (6.9, 14.4)                                   # the mean blends two regimes; nearest does not
+    with pytest.raises(ValueError):
+        E.fill_coast(g2, method="median")
 
 
 def test_encoding_ranges_cover_legend_and_tp_floor():
@@ -343,6 +384,7 @@ def offline_build(monkeypatch):
         g[:, 100:120] = np.nan                                           # a strip of "land": the fill has work to do
         return g
     monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None: (grid(), {}))
+    monkeypatch.setattr(R.E, "fill_allow", lambda: np.ones((721, 1440), bool))
     return None
 
 
@@ -613,20 +655,57 @@ def test_main_records_failure_and_backs_off(monkeypatch, capsys):
     assert R.main([]) == 0 and "failed recently" in capsys.readouterr().out       # backs off
 
 
-def test_main_refuses_to_republish_a_run_built_without_the_fill(monkeypatch, capsys, offline_build):
+def _manifest(c, run, stamp, body, prefix="manifest"):
+    c.objects[f"{P.PREFIX}/{run}/{prefix}-{stamp}.json"] = {"body": body if isinstance(body, bytes) else json.dumps(body).encode(), "ct": "", "cc": ""}
+    return f"{P.PREFIX}/{run}/{prefix}-{stamp}.json"
+
+
+def test_fill_guard_refuses_to_rewrite_a_run_built_with_a_different_fill(monkeypatch, capsys, offline_build):
     monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
     c = FakeClient()
-    old = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": []}            # published before the fill existed
-    c.objects[f"{P.PREFIX}/2026092212/manifest-20260922T180000Z.json"] = {"body": json.dumps(old).encode(), "ct": "", "cc": ""}
-    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
     _env(monkeypatch, c)
+    old = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": [{"step": 0}], "published_utc": "2026-09-22T18:00:00Z"}
+    _manifest(c, "2026092212", "20260922T180000Z", old)                                           # published before the fill existed
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
     n = len(c.log)
-    assert R.main(["--force"]) == 2 and "refusing to re-publish" in capsys.readouterr().out
-    assert len(c.log) == n                                                                        # not one frame written
+    assert R.main(["--force"]) == 2 and "refusing to rewrite" in capsys.readouterr().out          # forced on the live run: refused
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092218","complete":true}', "ct": "", "cc": ""}
+    assert R.main(["--force"]) == 2                                                               # forced on an OLDER run: refused, never a regression
+    assert R.main(["--steps", "0,3", "--allow-partial"]) == 0                                     # (a newer run is live: nothing to do)
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
+    assert R.main(["--steps", "0,3", "--allow-partial", "--force"]) == 2                          # a partial build would rewrite the same frame keys
+    assert len(c.log) == n                                                                        # not one object written
+    assert R.main(["--dry-run", "--steps", "0,3"]) == 0 and len(c.log) == n                       # a dry run never touches the bucket
+
+
+def test_fill_guard_repairs_the_pointer_to_an_existing_complete_manifest(monkeypatch, capsys, offline_build):
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    c = FakeClient()
+    _env(monkeypatch, c)
+    old = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": [{"step": 0}] * 81, "published_utc": "2026-09-22T18:00:00Z"}
+    mkey = _manifest(c, "2026092212", "20260922T180000Z", old)                                   # the pointer write after it failed
     c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092206","complete":true}', "ct": "", "cc": ""}
-    assert R.main([]) == 2                                                                        # nor without --force
-    newer = dict(old, fill=E.FILL_INFO)                                                           # a later manifest built with the fill
-    c.objects[f"{P.PREFIX}/2026092212/manifest-20260922T190000Z.json"] = {"body": json.dumps(newer).encode(), "ct": "", "cc": ""}
-    assert R.published_fill(P.Store(c, "b"), "2026092212") == (True, E.FILL_INFO)
-    assert R.published_fill(P.Store(c, "b"), "2026092218") == (False, None)
-    assert R.main(["--dry-run", "--steps", "0,3"]) == 0                                           # a dry run never touches the bucket
+    assert R.main([]) == 0 and "pointer repaired" in capsys.readouterr().out
+    assert [k for op, k in c.log] == [P.LATEST_KEY]                                              # only the pointer was written
+    assert json.loads(c.objects[P.LATEST_KEY]["body"]) == {"run": "2026092212", "manifest": mkey, "complete": True, "encoding": E.ENCODING,
+                                                          "published_utc": "2026-09-22T18:00:00Z", "frames": 81}
+    del c.objects[P.LATEST_KEY]                                                                   # latest.json lost altogether
+    assert R.main([]) == 0 and json.loads(c.objects[P.LATEST_KEY]["body"])["manifest"] == mkey
+
+
+def test_fill_guard_lets_the_same_fill_through_and_ignores_partials(monkeypatch, capsys, offline_build):
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    c = FakeClient()
+    _env(monkeypatch, c)
+    _manifest(c, "2026092212", "20260922T170000Z", {"complete": False, "fill": None}, prefix="partial")   # partials never count
+    assert R.fill_guard(P.Store(c, "b"), "2026092212", None, False) is None
+    same = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": [], "published_utc": "2026-09-22T18:00:00Z",
+            "fill": dict(reversed(list(E.FILL_INFO.items())), note="reworded")}                  # same fill, other key order and wording
+    _manifest(c, "2026092212", "20260922T180000Z", same)
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
+    assert R.main(["--force", "--steps", "0,3", "--allow-partial"]) == 0                          # allowed: the frames would be the same build
+    assert any(k.startswith(f"{P.PREFIX}/2026092212/partial-") for k in c.objects)
+    _manifest(c, "2026092212", "20260922T190000Z", b"<html>not json")                            # the newest manifest is unreadable
+    assert R.fill_guard(P.Store(c, "b"), "2026092212", "2026092212", False) == 2
+    assert "cannot be read" in capsys.readouterr().out
+    assert P.newest_manifest(P.Store(c, "b"), "2026092218") == (None, None)

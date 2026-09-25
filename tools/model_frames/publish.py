@@ -127,11 +127,31 @@ def publish_manifest(store, run, manifest, stats=None):
     store.put(mkey, body, "application/json", IMMUTABLE)
     if not manifest["complete"]:
         return mkey, False
+    point_to(store, run, mkey, manifest)
+    return mkey, True
+
+
+def point_to(store, run, mkey, manifest):
+    """Flip latest.json to a COMPLETE manifest already stored under `mkey`."""
+    if not manifest.get("complete"):
+        raise ValueError("the pointer only ever names a complete run")
     pointer = {"run": run, "manifest": mkey, "complete": True, "encoding": manifest["encoding"],
                "published_utc": manifest["published_utc"], "frames": len(manifest["frames"])}
     store.put(LATEST_KEY, json.dumps(pointer, separators=(",", ":"), sort_keys=True).encode(),
               "application/json", POINTER)
-    return mkey, True
+    return pointer
+
+
+def newest_manifest(store, run):
+    """(key, parsed JSON) of the newest COMPLETE manifest published for `run`, or (None, None).
+    Partial manifests (partial-*) never count. A manifest that cannot be read raises."""
+    keys = sorted(store.list_keys(f"{PREFIX}/{run}/manifest-"))
+    if not keys:
+        return None, None
+    body = store.get_json(keys[-1])
+    if not isinstance(body, dict):
+        raise ValueError(f"{keys[-1]} is not a manifest object")
+    return keys[-1], body
 
 
 def prune(store, keep=4):

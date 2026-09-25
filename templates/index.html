@@ -2787,9 +2787,15 @@
         return r ? { run: r[1] + r[2] } : null;
       }
       var sel = document.getElementById('ovField'), panel = document.getElementById('ovPanel');
-      sel.value = '';                                    // the layer always starts Off (form restore on reload)
-      sel.addEventListener('change', function () {
-        var field = sel.value;
+      // The chosen layer is remembered for this tab, so a reload (another forecast point, Update)
+      // brings it back; the module restores the time and play state from the same key. A new tab,
+      // or a layer switched Off, starts Off.
+      var KEY = 'allshore.overlay.v1', FIELDS = { hs: 1, tp: 1, wind: 1 };
+      function stored() { try { return JSON.parse(sessionStorage.getItem(KEY) || '{}') || {}; } catch (e) { return {}; } }
+      function remember(field) {
+        try { var o = stored(); o.field = field; if (!field) o.playing = false; sessionStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {}
+      }
+      function choose(field, restore) {
         if (!field) { panel.textContent = ''; if (overlay) overlay.unmount(); return; }
         panel.textContent = 'Loading…';
         loadAssets().then(function () {
@@ -2798,11 +2804,23 @@
             base: BASE, panel: panel, tz: TZ, getUnit: getSelectedUnit,
             fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true
           });
-          overlay.mount(field);
+          overlay.mount(field, restore);
         }).catch(function (err) {
           if (sel.value === field) panel.textContent = 'Overlay unavailable: ' + err.message;
         });
-      });
+      }
+      var again = stored().field;
+      sel.value = FIELDS.hasOwnProperty(again) ? again : '';    // (autocomplete="off": never the browser's form restore)
+      sel.addEventListener('change', function () { remember(sel.value); choose(sel.value, false); });
+      if (sel.value) {
+        // after the page has loaded and gone idle, and only while it is visible: the forecast comes first
+        var restoreNow = function () {
+          if (document.hidden) { document.addEventListener('visibilitychange', restoreNow, { once: true }); return; }
+          if (sel.value === again && !overlay) choose(again, true);
+        };
+        var idle = function () { (window.requestIdleCallback || function (f) { return setTimeout(f, 200); })(restoreNow, { timeout: 1500 }); };
+        if (document.readyState === 'complete') idle(); else window.addEventListener('load', idle, { once: true });
+      }
       var unitEl = document.getElementById('unit');
       if (unitEl) unitEl.addEventListener('change', function () { if (overlay) overlay.refresh(); });
     })();

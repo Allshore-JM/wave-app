@@ -60,6 +60,10 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert 'id="ovField"' in body and "AllshoreOverlay" in body and "/overlay/overlay.js?v=" in body
         assert "createPane" not in body                                      # the pane is created by the module on first use
         assert 'autocomplete="off"' in body
+        # the chosen layer survives a reload in this tab (A1): read back from the module's session key and
+        # restored after load, only while visible; a user's pick mounts without the saved time
+        assert "'allshore.overlay.v1'" in body and "choose(again, true)" in body and "overlay.mount(field, restore)" in body
+        assert "remember(sel.value); choose(sel.value, false)" in body and "document.hidden" in body
         assert '"https://frames.example/gfswave/0p25/v1"' in body           # trailing slash stripped
         assert "var VERSION = %s;" % json.dumps(A.OVERLAY_ASSET_VERSION) in body
         assert GATED.search(body) is not None, name

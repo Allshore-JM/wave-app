@@ -29,10 +29,10 @@ function world(opts) {
     L: { GridLayer: { prototype: { initialize(o) { this.options = o; this._tiles = {}; } },
       extend(p) { function C(o) { p.initialize.call(this, o); } C.prototype = Object.assign({ setOpacity() {}, addTo() { return this; } }, p); return C; } },
       DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} } },
-    document: { hidden: false, addEventListener() {}, removeEventListener() {},
+    document: { hidden: !!(opts && opts.hidden), addEventListener() {}, removeEventListener() {},
       createElement() { return { width: 0, height: 0, getContext() { let bmp = null; return {
         clearRect() {}, drawImage(b) { bmp = b; }, getImageData(x, y, wd, h) { const d = new Uint8ClampedArray(wd * h * 4).fill(1); d[0] = bmp.tag; return { data: d }; } }; } }; } },
-    sessionStorage: { getItem() { return null; }, setItem() {} },
+    sessionStorage: (opts && opts.storage) || { getItem() { return null; }, setItem() {} },
     createImageBitmap: (blob) => new Promise((res) => w.pendingBitmaps.push(() => res({ width: blob.w, height: blob.h, tag: blob.tag, close() {} }))),
     fetch: (url, o) => {
       w.fetches.push(url);
@@ -52,6 +52,7 @@ function world(opts) {
     Uint8Array, Uint8ClampedArray, Float32Array, Float64Array, Symbol, matchMedia: undefined,
   };
   g.window = g;
+  if (opts && opts.reduced) g.matchMedia = (q) => ({ matches: /reduced-motion/.test(q) });
   // timers never keep the test process alive (the module keeps a 30-min run-check interval while mounted)
   const st = (f, ms) => { const t = setTimeout(f, ms); if (t.unref) t.unref(); return t; };
   const si = (f, ms) => { const t = setInterval(f, ms); if (t.unref) t.unref(); return t; };
@@ -273,4 +274,56 @@ test('coast: a download that hangs past the watchdog fails the coast load; the f
   await settle();
   assert.equal(o.coast.status, 'ok');
   o.unmount();
+});
+
+// ---- A1: the overlay's state survives a reload (another forecast point) ----
+function memStore(init) {
+  const m = new Map(init ? [['allshore.overlay.v1', JSON.stringify(init)]] : []);
+  return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, read: () => JSON.parse(m.get('allshore.overlay.v1') || '{}') };
+}
+async function restored(opts, st) {
+  const storage = memStore(st), w = world(Object.assign({ storage }, opts));
+  w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create();
+  o.mount('hs', true); await settle(); await w.release(1);
+  return { w, o, storage };
+}
+function done(o) { o.pause(); clearInterval(o.runTimer); o.unmount(); }
+
+test('restoreIndex: a recent save within reach of the run resumes there; stale, far or malformed saves do not', () => {
+  const w = world(), R = w.I.restoreIndex, now = Date.parse('2026-09-23T00:00:00Z'), t5 = Date.parse(A.frames[5].valid_utc);
+  assert.equal(R(A, { t: t5, at: now - 60000 }, now), 5);
+  assert.equal(R(A, { t: t5 + 80 * 60000, at: now }, now), 5);                                   // nearest frame, 80 min away: still fine
+  assert.equal(R(A, { t: t5, at: now - 31 * 60000 }, now), null);                               // older than 30 min
+  assert.equal(R(A, { t: t5, at: now + 5 * 60000 }, now), null);                                // written in the future
+  assert.equal(R(A, { t: Date.parse(A.frames[80].valid_utc) + 3 * 3.6e6, at: now }, now), null); // 3 h beyond the run's last frame
+  for (const bad of [null, {}, { t: 'x', at: now }, { t: t5 }, { t: NaN, at: now }]) assert.equal(R(A, bad, now), null, JSON.stringify(bad));
+});
+
+test('a reload restores the valid time and keeps playing; the state is written on landing, play and pause', async () => {
+  const t5 = Date.parse(A.frames[5].valid_utc);
+  const { o, storage } = await restored({}, { field: 'hs', t: t5, playing: true, at: Date.now() });
+  assert.equal(o.frameIndex, 5); assert.equal(o.playing, true);
+  let st = storage.read();
+  assert.equal(st.field, 'hs'); assert.equal(st.t, t5); assert.equal(st.playing, true); assert.ok(Date.now() - st.at < 5000);
+  o.pause(); st = storage.read();
+  assert.equal(st.playing, false); assert.equal(st.t, t5);
+  done(o);
+});
+
+test('no resume under reduced motion or in a hidden tab (it resumes when shown); stale saves give the usual first frame', async () => {
+  const t5 = Date.parse(A.frames[5].valid_utc), fresh = { field: 'hs', t: t5, playing: true, at: Date.now() };
+  let r = await restored({ reduced: true }, fresh);
+  assert.equal(r.o.frameIndex, 5); assert.equal(r.o.playing, false); done(r.o);
+  r = await restored({ hidden: true }, fresh);
+  assert.equal(r.o.frameIndex, 5); assert.equal(r.o.playing, false); assert.equal(r.o.wasPlaying, true);
+  assert.equal(r.storage.read().playing, true);                                                   // still counts as playing for the next reload
+  done(r.o);
+  r = await restored({}, Object.assign({}, fresh, { at: Date.now() - 31 * 60000 }));
+  assert.equal(r.o.frameIndex, r.w.I.pickFrame(A)); assert.equal(r.o.playing, false); done(r.o);
+  // a mount the user makes (not a reload) never reuses the saved time
+  const storage = memStore(fresh), w = world({ storage });
+  w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.mount('hs'); await settle(); await w.release(1);
+  assert.equal(o.frameIndex, w.I.pickFrame(A)); assert.equal(o.playing, false); done(o);
 });

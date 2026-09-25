@@ -142,7 +142,7 @@ def test_overlay_js_syntax_and_contract_strings():
                    "_code", "tileCodes", "validateGrid", "validateManifest", "u8-linear-v2", "{step:03d}",
                    "(hover: hover) and (pointer: fine)", "(pointer: coarse)", "ov-sheet-open", "--ov-sheet-left",
                    "--ov-attr-max", "removeAttribution", "clientHeight", "snapToPixel",
-                   "decodeCoast", "composeTile", "readoutAt", "GSHHG", "static/coast/v1", "LICENSE.txt"):
+                   "decodeCoast", "composeTile", "readoutAt", "contourTile", "legendPos", "GSHHG", "static/coast/v1", "LICENSE.txt"):
         assert needle in js, needle
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:

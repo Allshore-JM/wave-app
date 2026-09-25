@@ -422,6 +422,42 @@
     }
     return d;
   }
+  // ---- contour lines (pure; tested in Node) ----
+  // Fields that can carry contours, and the interval in DISPLAY units per site unit (owner, 2026-09-25):
+  // wave height every 2 ft / 0.5 m, peak period every 2 s; doubled below tile zoom 4.
+  var CONTOURS = { hs: { US: 2, Metric: 0.5 }, tp: { US: 2, Metric: 2 } };
+  var CONTOUR_INK = 0.55;                                  // line opacity over the field colour ("light" lines)
+  // Anti-aliased isolines drawn into an already composed tile. F: (W+2)^2 level coordinates (display
+  // value / interval) with a 1-px apron from the neighbouring tiles, NaN = no value; rgba: the tile
+  // (W*W*4). A line sits where F crosses an integer; its width in pixels comes from the local gradient
+  // (distance to the level over |grad F|), so every line is ~1.5 px at any zoom. Only RGB changes, never
+  // alpha (the readout's drawn-pixel rule and the coast clip stay exactly as composed). No line next to
+  // missing data, at level 0, where levels would be under minGapPx apart (they would merge into a band),
+  // or where F jumps more than maxJump levels per pixel (e.g. peak period switching swell regimes).
+  function contourTile(F, W, rgba, minGapPx, maxJump) {
+    var S = W + 2, n = 0;
+    for (var y = 0; y < W; y++) {
+      for (var x = 0; x < W; x++) {
+        var i = (y + 1) * S + x + 1, k = (y * W + x) * 4;
+        if (!rgba[k + 3]) continue;
+        var f = F[i], l = F[i - 1], r = F[i + 1], u = F[i - S], d = F[i + S];
+        if (f !== f || l !== l || r !== r || u !== u || d !== d) continue;       // NaN anywhere: no line beside missing data
+        var gx = (r - l) / 2, gy = (d - u) / 2, g = Math.sqrt(gx * gx + gy * gy);
+        if (g < 1e-9 || 1 / g < minGapPx || (maxJump && g > maxJump)) continue;
+        var lv = Math.round(f);
+        if (lv === 0) continue;
+        var dpx = Math.abs(f - lv) / g;                                             // distance to the level in pixels
+        var cov = dpx <= 0.75 ? 1 : dpx >= 1.5 ? 0 : (1.5 - dpx) / 0.75;
+        if (!cov) continue;
+        var R = rgba[k], G = rgba[k + 1], B = rgba[k + 2];
+        var ink = (0.299 * R + 0.587 * G + 0.114 * B) > 170 ? 30 : 255;           // dark ink on light colours, light ink elsewhere
+        var a = cov * CONTOUR_INK;
+        rgba[k] = R + (ink - R) * a; rgba[k + 1] = G + (ink - G) * a; rgba[k + 2] = B + (ink - B) * a;
+        n++;
+      }
+    }
+    return n;
+  }
   // Coast data for one base URL (index.json + tier 0 up front, tier-1 chunks on demand). One per URL
   // per page: the decoded tier 0 (~3 MB) and the chunk LRU survive Off/On.
   var COAST_STORES = {};
@@ -689,7 +725,10 @@
       this._codes = new Float64Array(TILE * TILE); this._colPos = new Float64Array(TILE);
       this._one = new Float64Array(1); this._oneOut = new Float64Array(1);
       this._coast = null; this._clip = false;
+      this._contour = null; this._F = null; this._strip = new Float64Array(TILE + 2); this._cp2 = new Float64Array(TILE + 2);
     },
+    // cfg {step: interval in display units, per: SI -> display factor} or null (no contours)
+    setContours: function (cfg) { this._contour = cfg; this._redraw(); },
     // frame {q, cols, rows}; grid = the manifest grid for that resolution; fdef = the manifest field
     setFrame: function (frame, grid, fieldName, fdef, lut, entry) {
       validateGrid(grid, frame, fdef);
@@ -823,7 +862,41 @@
       var codes = this.tileCodes(coords, this._codes);
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
       composeTile(codes, land, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data);
+      if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, codes, img.data);
       ctx.putImageData(img, 0, 0);
+    },
+    // Level coordinates for the tile plus a 1-px apron sampled exactly as the neighbouring tiles sample
+    // their edge pixels (same pixel-centre formulas), so lines join across tile edges.
+    _contours: function (coords, codes, rgba) {
+      var S = TILE + 2, F = this._F || (this._F = new Float64Array(S * S)), cfg = this._contour;
+      var step = cfg.step * (coords.z < 4 ? 2 : 1), k = cfg.per / step, lo = this._lo, span = (this._hi - lo) / 254;
+      var f = this._frame, g = this._grid, cols = f.cols, rows = f.rows;
+      var n = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE, y0 = coords.y * TILE, cp = this._cp2, st = this._strip;
+      var lev = function (code) { return code ? (lo + (code - 1) * span) * k : NaN; };
+      for (var px = -1; px <= TILE; px++) {
+        var c = ((x0 + px + 0.5) / n * 360 - 180 - g.lon0) / g.dlon;
+        cp[px + 1] = ((c % cols) + cols) % cols;
+      }
+      var rowAt = function (py) {
+        var lat = Math.atan(Math.sinh(Math.PI - 2 * Math.PI * (y0 + py + 0.5) / n)) * 180 / Math.PI;
+        return (g.lat0 - lat) / -g.dlat;
+      };
+      for (var py = -1; py <= TILE; py++) {
+        var o = (py + 1) * S, r = rowAt(py);
+        if (!(r >= 0 && r <= rows - 1)) { for (var j = 0; j < S; j++) F[o + j] = NaN; continue; }
+        if (py < 0 || py === TILE) {                                               // apron rows: sample the full width
+          this._codeRow(r, cp, S, st, 0);
+          for (j = 0; j < S; j++) F[o + j] = lev(st[j]);
+        } else {                                                                  // tile rows: the codes already drawn + two apron pixels
+          var b = py * TILE;
+          for (j = 0; j < TILE; j++) F[o + 1 + j] = lev(codes[b + j]);
+          this._codeRow(r, cp, 1, st, 0); F[o] = lev(st[0]);
+          this._one[0] = cp[S - 1]; this._codeRow(r, this._one, 1, st, 0); F[o + S - 1] = lev(st[0]);
+        }
+      }
+      // peak period: no lines across a swell-regime jump (> 2 s within one model cell)
+      var cellPx = n * g.dlon / 360, maxJump = this.field === 'tp' ? (2 * k) / Math.max(1, cellPx) : 0;
+      contourTile(F, TILE, rgba, 3, maxJump);
     }
   });
 
@@ -904,6 +977,7 @@
     var s = saved();
     this.opacity = typeof s.opacity === 'number' && s.opacity >= 0.2 && s.opacity <= 1 ? s.opacity : 0.65;
     this.speed = SPEEDS.indexOf(s.speed) >= 0 ? s.speed : 1;
+    this.contours = s.contours === true;                   // off until ticked, then remembered for the tab
   }
   // restore: true on the mount the page makes after a reload (the field was saved in this tab); the
   // saved valid time and play state are then reused when they are recent (restoreIndex).
@@ -1029,6 +1103,7 @@
       // state transition as a fresh landing, or the panel would stay on "Loading"
       if (self.layer._frame !== frame) {
         var half = res === 'half';
+        self.layer._contour = self._contourCfg();                                 // (setFrame redraws with it)
         self.layer.setFrame(frame, half ? m.grid_half : m.grid, field, m.fields[field], self._lut(), m.frames[idx]);
       }
       self.frameIndex = idx;
@@ -1286,6 +1361,17 @@
     this.opacity = v; save({ opacity: v });
     if (this.layer) this.layer.setOpacity(v);
   };
+  // The contour settings for the current field and site unit, or null.
+  Overlay.prototype._contourCfg = function () {
+    var c = CONTOURS[this.field];
+    if (!this.contours || !c) return null;
+    var unit = this.opts.getUnit() === 'Metric' ? 'Metric' : 'US';
+    return { step: c[unit], per: unitOf(this.field, unit).f(1) };
+  };
+  Overlay.prototype.setContours = function (on) {
+    this.contours = !!on; save({ contours: this.contours });
+    if (this.layer) this.layer.setContours(this._contourCfg());
+  };
 
   // Readout: hover only on hover-capable pointers, long-press (450 ms) on touch; a plain tap shows
   // nothing. Marker events are unaffected (the pane has no pointer events); controls are ignored.
@@ -1377,7 +1463,11 @@
     var corners = this.map._controlCorners, el = corners && corners.bottomleft;
     return el && el.offsetHeight ? el.offsetHeight : 120;
   };
-  Overlay.prototype.refresh = function () { if (this.readout) this.readout.hidden = true; if (this.last && this.layer) this.render(this.last); };
+  Overlay.prototype.refresh = function () {
+    if (this.readout) this.readout.hidden = true;
+    if (this.last && this.layer) this.render(this.last);
+    if (this.layer && this.contours) this.layer.setContours(this._contourCfg());   // the interval follows the site unit
+  };
   Overlay.prototype._hours = function (entry) { return Math.round((Date.parse(entry.valid_utc) - Date.parse(this.manifest.run_utc)) / 3.6e6); };
   Overlay.prototype._validLocal = function (entry) { return this.opts.fmtTime(entry.valid_utc, this.opts.tz) + ' ' + this.opts.tzAbbr(entry.valid_utc, this.opts.tz); };
   function button(cls, text, label, onClick) {
@@ -1467,7 +1557,14 @@
     var rng = mk('input'); rng.type = 'range'; rng.min = '0.2'; rng.max = '1'; rng.step = '0.05'; rng.value = String(this.opacity);
     rng.setAttribute('aria-label', 'Overlay opacity');
     rng.addEventListener('input', function () { self.setOpacity(parseFloat(rng.value)); });
-    lab.appendChild(rng); row.appendChild(lab); body.appendChild(row);
+    lab.appendChild(rng); row.appendChild(lab);
+    if (CONTOURS[field]) {
+      var cl = mk('label', 'ov-check'), cb = mk('input'); cb.type = 'checkbox'; cb.checked = this.contours;
+      cb.setAttribute('aria-label', 'Contour lines every ' + CONTOURS[field][unit === 'Metric' ? 'Metric' : 'US'] + ' ' + unitOf(field, unit).label);
+      cb.addEventListener('change', function () { self.setContours(cb.checked); });
+      cl.appendChild(cb); cl.appendChild(document.createTextNode(' Contours')); row.appendChild(cl);
+    }
+    body.appendChild(row);
     this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND
     // the top-left control must end above the zoom/Home stack (short windows: the site caps the map at
@@ -1520,7 +1617,7 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
+    _internals: { contourTile: contourTile, CONTOURS: CONTOURS, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
       parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,

@@ -537,3 +537,62 @@ test('coast performance smoke: a 300k-vertex coastline rasterised at z1 and z6',
   assert.ok(m1 && m1 !== I.LAND_ALL && m6 !== undefined);
   assert.ok(ms < 8000, ms + ' ms');
 });
+
+// ---- A3: contour lines ----
+function rampF(W, fn) {                                     // (W+2)^2 level coordinates from fn(x, y), x/y from -1 to W
+  const S = W + 2, F = new Float64Array(S * S);
+  for (let y = -1; y <= W; y++) for (let x = -1; x <= W; x++) F[(y + 1) * S + x + 1] = fn(x, y);
+  return F;
+}
+function solid(W, rgb) { const d = new Uint8ClampedArray(W * W * 4); for (let i = 0; i < W * W; i++) { d[i * 4] = rgb[0]; d[i * 4 + 1] = rgb[1]; d[i * 4 + 2] = rgb[2]; d[i * 4 + 3] = 200; } return d; }
+
+test('contourTile: ~1.5 px anti-aliased lines at whole levels, alpha untouched, level 0 / dense / missing / jumps skipped', () => {
+  const W = 32, px = (d, x, y) => Array.from(d.slice((y * W + x) * 4, (y * W + x) * 4 + 4));
+  let d = solid(W, [30, 60, 160]);
+  const n = I.contourTile(rampF(W, (x) => x / 10), W, d, 3, 0);            // levels at x = 10, 20, 30; level 0 at x = 0 skipped
+  assert.ok(n > 0);
+  for (const x of [10, 20, 30]) assert.notDeepEqual(px(d, x, 5).slice(0, 3), [30, 60, 160], `line at x=${x}`);
+  for (const x of [0, 5, 15, 25]) assert.deepEqual(px(d, x, 5), [30, 60, 160, 200], `no line at x=${x}`);
+  assert.ok(px(d, 10, 5)[0] > 150, 'light ink on a dark colour');
+  for (let i = 3; i < d.length; i += 4) assert.equal(d[i], 200, 'alpha never changes');
+  d = solid(W, [250, 203, 21]); I.contourTile(rampF(W, (x) => x / 10), W, d, 3, 0);
+  assert.ok(px(d, 10, 5)[0] < 250 && px(d, 10, 5)[1] < 203, 'dark ink on a light (yellow) colour');
+  d = solid(W, [30, 60, 160]); assert.equal(I.contourTile(rampF(W, (x) => x / 2), W, d, 3, 0), 0, 'levels 2 px apart would merge: none drawn');
+  d = solid(W, [30, 60, 160]);
+  I.contourTile(rampF(W, (x) => (x >= 8 && x <= 12 ? NaN : x / 10)), W, d, 3, 0);
+  assert.deepEqual(px(d, 13, 5), [30, 60, 160, 200], 'nothing beside missing data');
+  d = solid(W, [30, 60, 160]);
+  assert.equal(I.contourTile(rampF(W, (x) => (x < 16 ? 1.4 : 6.4)), W, d, 3, 0.5), 0, 'a jump steeper than maxJump draws nothing');
+  d = solid(W, [30, 60, 160]); d[(5 * W + 10) * 4 + 3] = 0;
+  I.contourTile(rampF(W, (x) => x / 10), W, d, 3, 0);
+  assert.deepEqual(px(d, 10, 5), [30, 60, 160, 0], 'transparent pixels stay untouched');
+});
+
+test('contours on the layer: RGB only, never on nearest-drawn runs, and the apron joins the neighbouring tile', () => {
+  const smooth = (r, c) => 1 + Math.round(120 + 90 * Math.sin(c / 9) * Math.cos(r / 7));
+  const grab = (l, coords) => { let out = null; const el = { getContext: () => ({ clearRect() {}, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData(img) { out = img.data.slice(); } }) }; l._draw(el, coords); return out; };
+  const c = { z: 6, x: 3, y: 27 }, cfg = { step: 2, per: 3.28084 };
+  const hs = layer(frame(1440, 721, smooth), GRID, 'hs', HS);
+  const plain = grab(hs, c);
+  hs._contour = cfg; const lined = grab(hs, c);
+  let changed = 0;
+  for (let i = 0; i < plain.length; i += 4) { assert.equal(lined[i + 3], plain[i + 3]); if (lined[i] !== plain[i] || lined[i + 1] !== plain[i + 1]) changed++; }
+  assert.ok(changed > 200 && changed < 20000, `${changed} line pixels`);
+  const tp = layer(frame(1440, 721, smooth), GRID, 'tp', TP);                     // TP here is drawn nearest (an old run's hint)
+  const tpPlain = grab(tp, c); tp._contour = cfg; assert.deepEqual(Array.from(grab(tp, c)), Array.from(tpPlain));
+  const tpb = layer(frame(1440, 721, smooth), GRID, 'tp', Object.assign({}, TP, { interpolation: 'bilinear' }));   // runs since 2026-09-25
+  const tpbPlain = grab(tpb, c); tpb._contour = { step: 2, per: 1 };
+  const tpbLined = grab(tpb, c); let tpChanged = 0;
+  for (let i = 0; i < tpbPlain.length; i += 4) { assert.equal(tpbLined[i + 3], tpbPlain[i + 3]); if (tpbLined[i] !== tpbPlain[i]) tpChanged++; }
+  assert.ok(tpChanged > 100, `tp bilinear: ${tpChanged} line pixels`);
+  const wind = layer(frame(1440, 721, smooth), GRID, 'wind', WIND);
+  const wPlain = grab(wind, c); wind._contour = cfg; assert.deepEqual(Array.from(grab(wind, c)), Array.from(wPlain), 'wind: no contours');
+  // the right apron of one tile is the left edge of the next (same pixel-centre samples), and vice versa
+  const S = 258, Fa = (hs._contours(c, hs.tileCodes(c, new Float64Array(65536)), new Uint8ClampedArray(65536 * 4)), hs._F.slice());
+  const c2 = { z: 6, x: 4, y: 27 }, Fb = (hs._contours(c2, hs.tileCodes(c2, new Float64Array(65536)), new Uint8ClampedArray(65536 * 4)), hs._F.slice());
+  for (let y = 1; y < S - 1; y++) {
+    const a1 = Fa[y * S + S - 1], b1 = Fb[y * S + 1], a0 = Fa[y * S + S - 2], b0 = Fb[y * S];
+    assert.ok((a1 !== a1 && b1 !== b1) || Math.abs(a1 - b1) < 1e-9, `row ${y}: right apron`);
+    assert.ok((a0 !== a0 && b0 !== b0) || Math.abs(a0 - b0) < 1e-9, `row ${y}: left apron`);
+  }
+});

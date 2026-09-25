@@ -802,7 +802,7 @@
       this._legend = [0, 1]; this.field = null; this.fdef = null; this.entry = null;
       this._codes = new Float64Array(TILE * TILE); this._colPos = new Float64Array(TILE);
       this._one = new Float64Array(1); this._oneOut = new Float64Array(1);
-      this._coast = null; this._clip = false;
+      this._coast = null; this._clip = false; this.onRedraw = null;
       this._contour = null; this._F = null; this._sm = null; this._sv = null;
       this._sc = new Float64Array(TILE / 2 + 2); this._sr = new Float64Array(TILE / 2 + 2); this._srow = new Float64Array(TILE / 2 + 2);
       this._pi = new Int32Array(TILE + 2); this._pt = new Float64Array(TILE + 2);
@@ -851,12 +851,14 @@
     // re-evaluated and redrawn only when their mask actually changed.
     _redrawIncomplete: function () {
       if (!this._coast || !this._clip) return;
+      var changed = false;
       for (var k in this._tiles) {
         var t = this._tiles[k];
         if (!t.el || !t.coords || t.el._ovLandFinal !== false) continue;
         var before = t.el._ovLand, after = this._landFor(t.el, t.coords);
-        if (after !== before) this._draw(t.el, t.coords);
+        if (after !== before) { this._draw(t.el, t.coords); changed = true; }
       }
+      if (changed && this.onRedraw) this.onRedraw();                        // the animation's arrows are gated by the masks
     },
     // The tile's land alpha, computed once per tile element (per zoom) and kept on it like _ovImg. A
     // stand-in that is still a stand-in after the store moved on is reused, not re-rasterised.
@@ -1127,7 +1129,7 @@
   var ANIM_BUDGET_MS = { desktop: 4, phone: 8 };           // animation time per animation frame (plan section 21)
   var PARTICLE_PX2 = 900, PARTICLE_MIN = 150, PARTICLE_MAX = 3000;
   var PARTICLE_PX_PER_S = 3;                               // screen px/s per m/s of wind, before the latitude stretch
-  var PARTICLE_CLEAR_MS = 4000;                            // hard clear of the trails now and then (8-bit fades leave a floor)
+  var TRAIL_KEEP = 0.9;                                    // trail alpha kept per 16.7 ms (frame-rate independent fade)
   var CODE_SIN = new Float64Array(256), CODE_COS = new Float64Array(256);
   (function () { for (var q = 1; q < 256; q++) { var a = (q - 1) / 254 * 2 * Math.PI; CODE_SIN[q] = Math.sin(a); CODE_COS[q] = Math.cos(a); } })();
   // A manifest field usable as a direction: circular over 0-360, the FROM convention, published resolutions.
@@ -1199,9 +1201,11 @@
   // Screen-space unit vector (x right, y down) of the direction something moves, from its FROM degrees:
   // from the south (180) -> up, from the west (270) -> right.
   function screenVec(fromDeg) { var a = fromDeg * Math.PI / 180; return [-Math.sin(a), Math.cos(a)]; }
-  // Latitude / longitude of a world pixel (n = world width in px at that zoom; longitude wraps).
+  // Latitude / longitude of a world pixel (n = world width in px at that zoom). lngOfWorldX is UNWRAPPED
+  // (a world copy west of the dateline gives longitudes below -180): the samplers wrap columns themselves,
+  // and Leaflet keys its tiles by unwrapped coordinates, which the readout gate looks up.
   function latOfWorldY(wy, n) { return Math.atan(Math.sinh(Math.PI - 2 * Math.PI * wy / n)) * 180 / Math.PI; }
-  function lngOfWorldX(wx, n) { var t = wx / n; t -= Math.floor(t); return t * 360 - 180; }
+  function lngOfWorldX(wx, n) { return wx / n * 360 - 180; }
   // Arrow anchors: the centre of every 64th tile pixel at tile zoom zt (pixel 32, 96, 160, 224 of each
   // tile, both ways) inside the view plus a margin, as screen px. The lattice is a property of the world,
   // so panning, world copies and the dateline never move an arrow relative to the water. view = {z:
@@ -1225,9 +1229,10 @@
   // PARTICLE_PX_PER_S * speed * (east, -north) * min(sec lat, 3) (the Mercator stretch: the same wind
   // covers more pixels towards the poles). dark[k] = 1 where the field colour under the particle is
   // light (the tile's LUT at the layer's opacity over a dark basemap), so the particle is drawn dark.
-  function windField(view, s, layer, dframe, dgrid) {
-    var cols = Math.ceil(view.w / s) + 1, rows = Math.ceil(view.h / s) + 1, n = TILE * Math.pow(2, view.z);
-    var f = layer._frame, g = layer._grid, u = new Float32Array(cols * rows), v = new Float32Array(cols * rows), dark = new Uint8Array(cols * rows);
+  function windField(view, s, layer, dframe, dgrid, prev) {
+    var cols = Math.ceil(view.w / s) + 1, rows = Math.ceil(view.h / s) + 1, n = TILE * Math.pow(2, view.z), reuse = prev && prev.cols === cols && prev.rows === rows;
+    var f = layer._frame, g = layer._grid, u = reuse ? prev.u : new Float32Array(cols * rows), v = reuse ? prev.v : new Float32Array(cols * rows), dark = reuse ? prev.dark : new Uint8Array(cols * rows);
+    if (reuse) { u.fill(0); v.fill(0); dark.fill(0); }
     var cpS = new Float64Array(cols), cpD = new Float64Array(cols), codes = new Float64Array(cols), e = new Float64Array(cols), nn = new Float64Array(cols), i;
     for (i = 0; i < cols; i++) {
       var lng = lngOfWorldX(view.ox + i * s, n);
@@ -1262,13 +1267,23 @@
   // zooms (the canvas is hidden during a zoom and rebuilt on zoomend / moveend); under reduced motion
   // it draws static arrows once (wind too) and never animates.
   function FlowAnimator(map, layer) {
-    this.map = map; this.layer = layer;
+    this.map = map; this.layer = null; this._onLayerRedraw = null;
     this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
-    this.field = null; this.dir = null; this.dgrid = null; this.mode = null;            // 'arrows' | 'particles' | 'static'
+    this.field = null; this.dir = null; this.dgrid = null; this.fframe = null; this.mode = null;   // 'arrows' | 'particles' | 'static'
     this.anchors = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0; this.darkBuf = null;
-    this.active = false; this.suspended = 0; this.rafId = null; this.lastT = 0; this.clock = 0; this.sinceClear = 0;
+    this.active = false; this.suspended = 0; this.rafId = null; this.lastT = 0; this.clock = 0;
     this.ema = 0; this.adaptAt = 0; this._listeners = [];
+    this.setLayer(layer);
   }
+  // The field layer the arrows are gated by; when its tiles are redrawn for a coastline chunk that landed
+  // (the land mask changed under the anchors) the arrows are rebuilt.
+  FlowAnimator.prototype.setLayer = function (layer) {
+    var self = this;
+    if (this.layer === layer) return;
+    if (this.layer && this.layer.onRedraw === this._onLayerRedraw) this.layer.onRedraw = null;
+    this.layer = layer;
+    if (layer) { this._onLayerRedraw = function () { if (self.dir && !self.suspended) self._rebuild(); }; layer.onRedraw = this._onLayerRedraw; }
+  };
   // The scheduler (rAF in browsers; a timer where there is none, e.g. the Node tests).
   FlowAnimator.prototype.raf = function (fn) { return typeof requestAnimationFrame === 'function' ? requestAnimationFrame(fn) : setTimeout(function () { fn(nowMs()); }, 16); };
   FlowAnimator.prototype.caf = function (id) { if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(id); else clearTimeout(id); };
@@ -1291,13 +1306,17 @@
     this.stop();
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
     if (this.canvas) { if (this.canvas.remove) this.canvas.remove(); this.canvas = null; this.ctx = null; }
-    this.dir = null; this.dgrid = null; this.anchors = null; this.vf = null; this.particles = null; this.v = null;
+    this.setLayer(null);
+    this.dir = null; this.dgrid = null; this.fframe = null; this.anchors = null; this.vf = null; this.particles = null; this.v = null;
   };
   FlowAnimator.prototype.setField = function (field) { if (this.field !== field) { this.field = field; this.particles = null; this.clearData(); } };
   // The direction frame of the step on the map (the caller checks it is that step's). A new frame keeps
   // the particles and the chevron clock, so playback flows on.
-  FlowAnimator.prototype.setData = function (frame, grid) { if (this.dir === frame) return; this.dir = frame; this.dgrid = grid; this._rebuild(); };
-  FlowAnimator.prototype.clearData = function () { this.dir = null; this.dgrid = null; this.anchors = null; this.vf = null; this.stop(); this._clear(); };
+  FlowAnimator.prototype.setData = function (frame, grid) {
+    if (this.dir === frame && this.fframe === (this.layer && this.layer._frame)) return;
+    this.dir = frame; this.dgrid = grid; this._rebuild();
+  };
+  FlowAnimator.prototype.clearData = function () { this.dir = null; this.dgrid = null; this.fframe = null; this.anchors = null; this.vf = null; this.stop(); this._clear(); };
   FlowAnimator.prototype.suspend = function () { this.suspended++; this.stop(); };
   FlowAnimator.prototype.resume = function (rebuild) {
     if (this.suspended > 0) this.suspended--;
@@ -1322,14 +1341,14 @@
   // wind field, then one drawn frame (and the loop, unless static).
   FlowAnimator.prototype._rebuild = function () {
     if (!this.canvas || !this.dir || !this.layer.hasFrame()) { this.stop(); this._clear(); return; }
-    var v = this.view(); this.v = v; this._place(v);
+    var v = this.view(); this.v = v; this._place(v); this.fframe = this.layer._frame;
     this.mode = reducedMotion() ? 'static' : this.field === 'wind' ? 'particles' : 'arrows';
     if (this.mode === 'particles') {
       var cellPx = TILE * Math.pow(2, v.z) * this.dgrid.dlon / 360;
-      this.vf = windField(v, cellPx >= 16 ? 8 : 4, this.layer, this.dir, this.dgrid); this.anchors = null;
+      this.vf = windField(v, cellPx >= 16 ? 8 : 4, this.layer, this.dir, this.dgrid, this.vf); this.anchors = null;
       if (!this.particles) this._seed(v);
     } else { this.anchors = this._arrows(v); this.vf = null; }
-    this._clear(); this.sinceClear = 0;
+    this._clear();
     if (this.mode === 'static') { this._render(0); this.stop(); } else this._start();
   };
   // The arrows in view: an anchor is drawn where the field is drawn (the readout's own rule: data, not
@@ -1409,15 +1428,14 @@
     ctx.lineWidth = 3.2; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
     ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.stroke();
   };
-  // Particles: the last frame fades (destination-in), every live particle moves by its cell's velocity
-  // and draws the segment it moved along (white, or dark over a light field colour); one that ages out,
-  // leaves the map or sits in a cell without a vector is respawned somewhere in the view.
+  // Particles: the last frame fades (destination-in, TRAIL_KEEP per 16.7 ms whatever the frame rate; the
+  // 8-bit floor it leaves is at most 1/255 alpha, invisible), every live particle moves by its cell's
+  // velocity and draws the segment it moved along (white, or dark over a light field colour); one that
+  // ages out, leaves the map or sits in a cell without a vector is respawned somewhere in the view.
   FlowAnimator.prototype._renderParticles = function (dt) {
     var ctx = this.ctx, v = this.v, w = v.w, h = v.h, vf = this.vf, P = this.particles, n = this.count, s = vf.s, cols = vf.cols;
-    this.sinceClear += dt;
+    ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = 'rgba(0,0,0,' + Math.pow(TRAIL_KEEP, dt / 16.7).toFixed(4) + ')'; ctx.fillRect(0, 0, w, h);
     ctx.globalCompositeOperation = 'source-over';
-    if (this.sinceClear > PARTICLE_CLEAR_MS) { ctx.clearRect(0, 0, w, h); this.sinceClear = 0; }
-    else { ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = 'rgba(0,0,0,0.9)'; ctx.fillRect(0, 0, w, h); ctx.globalCompositeOperation = 'source-over'; }
     var D = this.darkBuf, nd = 0, dts = dt / 1000, i, k;
     ctx.lineWidth = 1.2; ctx.lineCap = 'round'; ctx.strokeStyle = 'rgba(255,255,255,0.85)';
     ctx.beginPath();
@@ -1901,7 +1919,7 @@
   Overlay.prototype._ensureFlow = function () {
     if (!this._wantDir()) { if (this.flow) { this.flow.detach(); this.flow = null; } return; }
     if (!this.flow) { this.flow = new FlowAnimator(this.map, this.layer); this.flow.attach(); }
-    this.flow.layer = this.layer;
+    this.flow.setLayer(this.layer);
     this.flow.setField(this.field);
     this.dres = dirRes(this._dirDef(), this.map.getZoom(), this.dres);
   };
@@ -1913,7 +1931,9 @@
       if (self.flow && self.frameIndex === idx && self.manifest === m && self.field === field && self.dres === dres && self._wantDir()) {
         self.flow.setData(frame, dres === 'half' ? m.grid_half : m.grid);
       }
-    }, function () {});
+    }).catch(function (err) {                                                // a missing direction frame: the field plays on without arrows
+      if (err && !err.unavailable && err.name !== 'AbortError' && typeof console !== 'undefined' && console.warn) console.warn('overlay animation', err);
+    });
   };
   // Start the direction frame of idx (the target) unless it is cached, in flight or unavailable: it
   // outranks every ring fetch, so a full in-flight set gives up its lowest-ranked fetch for it.
@@ -2218,6 +2238,7 @@
       validCoastIndex: validCoastIndex,
       FlowAnimator: FlowAnimator, dirAt: dirAt, sampleRow: sampleRow, sampleDirRow: sampleDirRow, screenVec: screenVec, arrowAnchors: arrowAnchors,
       windField: windField, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, DIR_AGREE: DIR_AGREE, ARROW_PX: ARROW_PX, ARROW_MIN: ARROW_MIN,
-      latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX, ANIM_BUDGET_MS: ANIM_BUDGET_MS }
+      latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
+      ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_KEEP: TRAIL_KEEP }
   };
 })();

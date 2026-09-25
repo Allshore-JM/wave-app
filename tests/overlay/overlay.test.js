@@ -257,6 +257,33 @@ test('wave-height knots: legend position and its inverse, the LUT follows them, 
   assert.ok(Math.abs(us[3].pos - I.legendPos('hs', L, 10 / 3.28084)) < 1e-9);
 });
 
+test('wave-height knots stretch to any legend the manifest carries: the top colour is the legend top (G8 A-P3-7)', () => {
+  const col = (lut, i) => [lut[i * 3], lut[i * 3 + 1], lut[i * 3 + 2]];
+  const at = (legend, v) => col(I.buildLut('hs', legend), Math.max(0, Math.min(255, Math.round((v - legend[0]) / (legend[1] - legend[0]) * 255))));
+  const top = I.legendBar('hs').slice(255 * 3, 256 * 3);
+  // today's legend is unchanged (the colours the owner approved on the test site)
+  assert.deepEqual(at([0, 12], 1), [15, 163, 233]); assert.deepEqual(at([0, 12], 3), [250, 203, 21]);
+  assert.deepEqual(at([0, 12], 12), Array.from(top));
+  for (const legend of [[0, 14], [0, 10], [0, 20]]) {
+    assert.equal(I.legendPos('hs', legend, legend[1]), 1, `${legend}: top`);
+    assert.deepEqual(at(legend, legend[1]), Array.from(top), `${legend}: the legend top draws the top colour`);
+    assert.ok(I.legendPos('hs', legend, legend[1] * 0.9) < 1, `${legend}: below the top is below the top colour`);
+    for (let v = 0; v <= legend[1]; v += legend[1] / 17) assert.ok(Math.abs(I.legendInv('hs', legend, I.legendPos('hs', legend, v)) - v) < 1e-9, `${legend}: ${v}`);
+    for (const t of I.legendTicks('hs', { lo: 0, hi: 15, legend }, 'Metric').slice(0, -1)) assert.ok(Math.abs(t.pos - I.legendPos('hs', legend, Number(t.label))) < 1e-9, `${legend}: tick ${t.label}`);
+  }
+  assert.notDeepEqual(at([0, 14], 12), Array.from(top), '12 m is no longer the top on a 14 m legend');
+});
+
+test('the legend bar shows, under each tick, the colour the tiles draw for that value', () => {
+  const bar = I.legendBar('hs'), lut = I.buildLut('hs', HS.legend);
+  assert.notDeepEqual(Array.from(bar), Array.from(lut), 'the bar is laid out by legend position, the tiles by value');
+  for (const v of [0.5, 1, 2, 3, 4, 6, 9]) {
+    const b = Math.round(I.legendPos('hs', HS.legend, v) * 255), t = Math.round(v / 12 * 255);
+    for (let c = 0; c < 3; c++) assert.ok(Math.abs(bar[b * 3 + c] - lut[t * 3 + c]) <= 8, `${v} m channel ${c}: bar ${bar[b * 3 + c]} tile ${lut[t * 3 + c]}`);
+  }
+  assert.deepEqual(Array.from(I.legendBar('tp')), Array.from(I.buildLut('tp', TP.legend)), 'linear fields: bar = tiles');
+});
+
 test('ringPlan: current, two ahead in the play direction, two behind, wrapping, no duplicates', () => {
   assert.deepEqual(Array.from(I.ringPlan(10, 81, 1)), [10, 11, 12, 9, 8]);
   assert.deepEqual(Array.from(I.ringPlan(80, 81, 1)), [80, 0, 1, 79, 78]);

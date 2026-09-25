@@ -63,7 +63,9 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         # the chosen layer survives a reload in this tab (A1): read back from the module's session key and
         # restored after load, only while visible; a user's pick mounts without the saved time
         assert "'allshore.overlay.v1'" in body and "choose(again, true)" in body and "overlay.mount(field, restore)" in body
-        assert "choose(sel.value, false); remember(sel.value)" in body and "document.hidden" in body
+        assert "choose(sel.value, false); remember(sel.value, fresh)" in body and "document.hidden" in body
+        # G8: the back/forward cache re-syncs the save; the restore waits for a deferred table (3 s at most)
+        assert "'pageshow'" in body and "'forecastLoading'" in body and "setTimeout(start, 5000)" in body
         assert '"https://frames.example/gfswave/0p25/v1"' in body           # trailing slash stripped
         assert "var VERSION = %s;" % json.dumps(A.OVERLAY_ASSET_VERSION) in body
         assert GATED.search(body) is not None, name
@@ -142,7 +144,8 @@ def test_overlay_js_syntax_and_contract_strings():
                    "_code", "tileCodes", "validateGrid", "validateManifest", "u8-linear-v2", "{step:03d}",
                    "(hover: hover) and (pointer: fine)", "(pointer: coarse)", "ov-sheet-open", "--ov-sheet-left",
                    "--ov-attr-max", "removeAttribution", "clientHeight", "snapToPixel",
-                   "decodeCoast", "composeTile", "readoutAt", "contourTile", "legendPos", "GSHHG", "static/coast/v1", "LICENSE.txt"):
+                   "decodeCoast", "composeTile", "readoutAt", "contourTile", "legendPos", "GSHHG", "static/coast/v1", "LICENSE.txt",
+                   "smoothBlock", "'pagehide'", "_pendingRestore", "'Contours, every '", "below zoom 4"):
         assert needle in js, needle
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:
@@ -157,6 +160,28 @@ def test_overlay_module_unit_tests():
     assert files
     r = subprocess.run(["node", "--test"] + files, capture_output=True, text=True, cwd=os.path.dirname(HERE))
     assert r.returncode == 0, (r.stdout[-3000:], r.stderr[-3000:])
+
+
+def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
+    """tests/overlay/bootstrap.test.js runs the gated <script> taken from the template with its three
+    {{ ...|tojson }} expressions substituted; this pins that to exactly what Flask renders."""
+    base = "https://frames.example/gfswave/0p25/v1"
+    _on(monkeypatch, base + "/")
+    rec = G.run_scenarios(A)
+    tpl = open(os.path.join(os.path.dirname(HERE), "templates", "index.html"), encoding="utf-8").read().replace("\r\n", "\n")
+    a = tpl.index("{%- if model_overlays %}")
+    block = tpl[a:tpl.index("{%- endif %}", a)]
+    src = block[block.index("<script>") + len("<script>"):block.index("</script>")]
+    for name, tz in (("table_inline", "HST"), ("table_deferred", "Pacific/Honolulu")):
+        body = rec[name]["body"].replace("\r\n", "\n")
+        got = [b for b in re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", body, flags=re.S) if "Optional model overlays" in b]
+        assert len(got) == 1, name
+        want = (src.replace("{{ model_frames_base|tojson }}", json.dumps(base))
+                   .replace("{{ overlay_asset_version|tojson }}", json.dumps(A.OVERLAY_ASSET_VERSION))
+                   .replace("{{ forecast_tz_name|tojson }}", json.dumps(tz)))
+        assert got[0] == want, name
+    node_src = open(os.path.join(HERE, "overlay", "bootstrap.test.js"), encoding="utf-8").read()
+    assert "{%- if model_overlays %}" in node_src and "|tojson }}" in node_src          # the same extraction
 
 
 def test_rendered_inline_scripts_parse_with_flag_on(monkeypatch):

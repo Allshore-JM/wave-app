@@ -91,7 +91,7 @@ test('dirFieldOk and dirRes: only circular FROM fields; wind direction half only
   assert.equal(I.DIR_FIELDS.hs, 'pdir'); assert.equal(I.DIR_FIELDS.tp, 'pdir'); assert.equal(I.DIR_FIELDS.wind, 'wdir');
 });
 
-test('arrowAnchors: tile-pixel centres every 64 px, the same world anchors after a pan and on a world copy, longitude wraps', () => {
+test('arrowAnchors: tile-pixel centres every 64 px, the same world anchors after a pan and on a world copy, unwrapped longitude for the tile lookup', () => {
   const zt = 6, nt = 256 * 64, view = { z: 6.3, w: 800, h: 600, ox: 10000.3, oy: 6000.7 };
   const A = I.arrowAnchors(view, zt);
   assert.ok(A.length > 100);
@@ -99,7 +99,7 @@ test('arrowAnchors: tile-pixel centres every 64 px, the same world anchors after
   for (const a of A) {                                                     // every anchor is the centre of tile pixel 32 + 64k, both ways
     const p = I.pixelOf(a.lat, a.lng, zt);
     assert.equal(p.px % 64, 32, 'px ' + p.px); assert.equal(p.py % 64, 32, 'py ' + p.py);
-    assert.ok(a.lng >= -180 && a.lng < 180);
+    assert.equal(p.x, Math.floor((a.i * 64 + 32.5) / 256), 'the unwrapped tile x Leaflet keys the tile by');
     assert.ok(a.sx > -200 && a.sx < view.w + 200 && a.sy > -200 && a.sy < view.h + 200);
   }
   const B = I.arrowAnchors({ z: 6.3, w: 800, h: 600, ox: 10000.3 + 137, oy: 6000.7 - 55 }, zt), mapB = new Map(B.map((b) => [key(b), b]));
@@ -110,10 +110,16 @@ test('arrowAnchors: tile-pixel centres every 64 px, the same world anchors after
   const bottom = I.arrowAnchors({ z: 6.3, w: 800, h: 600, ox: 10000.3, oy: 20000.7 }, zt);                 // the world's bottom edge
   assert.ok(bottom.length > 0 && bottom.every((a) => a.lat > -85.1) && bottom.length < A.length, 'no anchors beyond the pole');
   assert.equal(C.length, A.length);
-  for (let k = 0; k < A.length; k++) { assert.ok(Math.abs(C[k].lng - A[k].lng) < 1e-9 && Math.abs(C[k].sx - A[k].sx) < 1e-6, 'world copy anchors coincide'); }
+  for (let k = 0; k < A.length; k++) { assert.ok(Math.abs(C[k].lng - 360 - A[k].lng) < 1e-9 && Math.abs(C[k].sx - A[k].sx) < 1e-6, 'world copy anchors coincide, one world east'); }
   const D = I.arrowAnchors({ z: 6, w: 400, h: 300, ox: nt - 200, oy: 8000 }, zt);          // across the dateline
-  assert.ok(D.some((a) => a.lng > 170) && D.some((a) => a.lng < -170) && D.every((a) => a.lng >= -180 && a.lng < 180));
+  assert.ok(D.some((a) => a.lng > 170 && a.lng < 180) && D.some((a) => a.lng >= 180), 'east of the dateline the longitude runs past 180 (Leaflet tile x >= 2^z)');
   assert.ok(D.filter((a) => a.sx >= 0 && a.sx < 400).length >= 4 * 4);
+  // the samplers wrap: a direction frame read at lng 190 equals lng -170
+  const pd = frame(720, 361, (r, c) => code((c * 37) % 360));
+  assert.equal(I.dirAt(pd, HALF, 20, 190), I.dirAt(pd, HALF, 20, -170));
+  // the readout gate finds the tile by its unwrapped coordinates (a tile west of the dateline has x < 0)
+  const west = I.arrowAnchors({ z: 6, w: 300, h: 300, ox: -150, oy: 8000 }, zt).filter((a) => a.sx >= 0 && a.sx < 150);
+  assert.ok(west.length > 0 && west.every((a) => a.lng < -180 && I.pixelOf(a.lat, a.lng, zt).x < 0));
 });
 
 test('windField: a 10 m/s wind from the west moves particles right at 30 px/s times the latitude stretch (capped at 3); calm is drawn dark', () => {
@@ -186,7 +192,9 @@ test('particles: the wind field seeds particles that move with the wind, fade th
   fa._render(50); fa._render(50);
   fa.ema = 20; fa.adaptAt = 0; fa._adapt(20, 5000); assert.ok(fa.count < Math.round(800 * 600 / 900), 'over budget: fewer particles');
   fa.ema = 0.5; fa.adaptAt = 0; fa._adapt(0.5, 9000); assert.ok(fa.count > I.PARTICLE_MIN, 'room: back up');
-  fa.sinceClear = 5000; const c = ctx.ops.length; fa._render(16); assert.equal(ctx.ops.slice(c).filter((o) => o === 'clearRect').length, 1, 'the periodic hard clear');
+  const c = ctx.ops.length; fa._render(16); assert.equal(ctx.ops.slice(c).filter((o) => o === 'clearRect').length, 0, 'no periodic hard clear (no blink): the fade is the only erase');
+  assert.ok(Math.abs(Math.pow(I.TRAIL_KEEP, 33.4 / 16.7) - I.TRAIL_KEEP * I.TRAIL_KEEP) < 1e-12, 'the fade is frame-rate independent');
+  const vf0 = fa.vf; fa._rebuild(); assert.equal(fa.vf.u, vf0.u, 'the wind field buffers are reused across rebuilds');
 });
 
 test('suspend / resume count nested moves and zooms; a hidden document stops the loop; static under reduced motion; detach leaves nothing', () => {
@@ -201,7 +209,10 @@ test('suspend / resume count nested moves and zooms; a hidden document stops the
   global.document.hidden = false; fa.resume(); assert.equal(fa.active, true);
   fa.clearData(); assert.equal(fa.active, false); assert.equal(fa.dir, null);
   fa.setData(pdir, HALF); assert.equal(fa.active, true);
+  assert.equal(typeof l.onRedraw, 'function', 'the animator follows the layer');
+  const a0 = fa.anchors; l.onRedraw(); assert.notEqual(fa.anchors, a0, 'a coast chunk landing (tiles redrawn) rebuilds the arrows'); assert.equal(fa.anchors.length, a0.length);
   fa.detach(); assert.equal(fa.active, false); assert.equal(fa.canvas, null); assert.equal(canvas.removed, true); assert.equal(Object.values(events).flat().length, 0, 'map listeners removed');
+  assert.equal(l.onRedraw, null, 'detached from the layer');
   global.matchMedia = () => ({ matches: true });                              // prefers-reduced-motion
   const s = animator('hs', l, pdir, HALF);
   assert.equal(s.fa.mode, 'static'); assert.equal(s.fa.active, false); assert.equal(s.fa.scheduled, 0); assert.equal(strokes(s.ctx), 4, 'drawn once');

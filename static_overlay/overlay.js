@@ -438,6 +438,14 @@
   var CONTOUR_INK = 0.55;                                  // line opacity over the field colour ("light" lines)
   var CONTOUR_JUMP = 2;                                    // peak period: no lines where it jumps more than 2 s between neighbouring nodes
   var CONTOUR_BLOCK = 16;                                  // tiles are drawn in 16-px blocks; a block no level crosses is skipped
+  // Line profile by tile zoom, [up to zoom, core, edge]: full coverage up to `core` px from the level, fading to
+  // none at `edge` px, so a line is core + edge px wide. Thinner at wide zooms, where the lines are densest
+  // (owner, 2026-09-25: "slightly thinner, at wider zooms in particular").
+  var CONTOUR_PROFILE = [[3, 0.2, 0.85], [5, 0.3, 0.95], [7, 0.4, 1.1], [99, 0.55, 1.25]];
+  function contourProfile(z) {
+    for (var i = 0; i < CONTOUR_PROFILE.length - 1; i++) if (z <= CONTOUR_PROFILE[i][0]) return CONTOUR_PROFILE[i];
+    return CONTOUR_PROFILE[CONTOUR_PROFILE.length - 1];
+  }
   var SMOOTH_ROWS = 32, SMOOTH_COLS = 64;                  // the smoothed copy of a frame is filled in blocks of nodes this size
   // Anti-aliased isolines drawn into an already composed tile, over the pixels x0..x1-1, y0..y1-1 (the
   // whole tile by default). F: (W+2)^2 level coordinates (display value / interval) with a 1-px apron,
@@ -445,13 +453,16 @@
   // neighbours are read. rgba: the tile (W*W*4). A line sits where F crosses a whole level; a pixel's
   // coverage comes from its distance to the nearest level measured along the slope that LEADS to that
   // level (one-sided differences: a flat side never counts, so the foot of a steep ramp is not outlined
-  // at a level the field does not reach there), giving ~2 px anti-aliased lines at any zoom and angle.
+  // at a level the field does not reach there), giving anti-aliased lines core + edge px wide at any angle
+  // (core, edge: the zoom's CONTOUR_PROFILE entry; the closest zooms' by default).
   // Only RGB changes, never alpha (the readout's drawn-pixel rule and the coast clip stay exactly as
   // composed). No line beside NaN, at level 0, or where levels would be under minGapPx apart (they would
   // merge into a band). ink(level): 30 (dark) or 255 (light) for that level; else by the pixel's colour.
-  function contourTile(F, W, rgba, minGapPx, ink, x0, y0, x1, y1) {
+  function contourTile(F, W, rgba, minGapPx, ink, x0, y0, x1, y1, core, edge) {
     var S = W + 2, n = 0;
     if (x0 === undefined) { x0 = 0; y0 = 0; x1 = W; y1 = W; }
+    if (core === undefined) { var last = CONTOUR_PROFILE[CONTOUR_PROFILE.length - 1]; core = last[1]; edge = last[2]; }
+    var ramp = edge - core;
     for (var y = y0; y < y1; y++) {
       for (var x = x0; x < x1; x++) {
         var i = (y + 1) * S + x + 1, k = (y * W + x) * 4;
@@ -464,11 +475,11 @@
         var sy = df > 0 ? Math.max(f - u, f - d) : Math.max(u - f, d - f);
         if (sx < 0) sx = 0;
         if (sy < 0) sy = 0;
-        if (Math.abs(df) >= 1.5 * (sx + sy)) continue;                              // >= 1.5 px from the level (or no way to it)
+        if (Math.abs(df) >= edge * (sx + sy)) continue;                             // edge px or more from the level (or no way to it)
         var gx = (r - l) / 2, gy = (d - u) / 2, g = Math.sqrt(gx * gx + gy * gy);
         if (g < 1e-9 || 1 / g < minGapPx) continue;
         var dpx = Math.abs(df) / Math.sqrt(sx * sx + sy * sy);                      // distance to the level in pixels
-        var cov = dpx <= 0.75 ? 1 : dpx >= 1.5 ? 0 : (1.5 - dpx) / 0.75;
+        var cov = dpx <= core ? 1 : dpx >= edge ? 0 : (edge - dpx) / ramp;
         if (!cov) continue;
         var R = rgba[k], G = rgba[k + 1], B = rgba[k + 2];
         var c = ink ? ink(lv) : (0.299 * R + 0.587 * G + 0.114 * B) > 170 ? 30 : 255;   // dark ink on light colours, light ink elsewhere
@@ -943,6 +954,7 @@
       var cfg = this._contour, fr = this._frame, g = this._grid, cols = fr.cols, rows = fr.rows, i, j;
       var step = cfg.step * (coords.z < 4 ? 2 : 1), k = cfg.per / step, lo = this._lo, span = (this._hi - lo) / 254;
       var n = TILE * Math.pow(2, coords.z), cellPx = n * g.dlon / 360, s = cellPx >= 6 ? 4 : 2, m = TILE / s + 2;
+      var prof = contourProfile(coords.z), core = prof[1], edge = prof[2];
       var x0 = coords.x * TILE, y0 = coords.y * TILE, cp = this._sc, rp = this._sr, row = this._srow, pi = this._pi, pt = this._pt;
       var V = this._sv || (this._sv = new Float64Array((TILE / 2 + 2) * (TILE / 2 + 2)));
       for (i = 0; i < m; i++) {
@@ -974,7 +986,7 @@
           if (!all) {
             // F over the block and its ring lies within [mn, mx] of the samples it is interpolated from, and
             // changes by at most gxm / s (gym / s) per pixel across (down); a pixel is inked only within
-            // 1.5 px of a level along those slopes: no whole level within reach of [mn, mx], no line pixel
+            // `edge` px of a level along those slopes: no whole level within reach of [mn, mx], no line pixel
             var i0 = Math.floor((bx - 1) / s) + 1, i1 = Math.min(m - 1, Math.floor((bx + B) / s) + 2);
             var j0 = Math.floor((by - 1) / s) + 1, j1 = Math.min(m - 1, Math.floor((by + B) / s) + 2);
             var mn = Infinity, mx = -Infinity, gxm = 0, gym = 0;
@@ -987,7 +999,7 @@
                 if (j < j1 && (dv = Math.abs(V[(j + 1) * m + i] - v)) > gym) gym = dv;
               }
             }
-            var reach = 1.5 * (gxm + gym) / s;
+            var reach = edge * (gxm + gym) / s;
             if (!(Math.floor(mx + reach) >= Math.ceil(mn - reach))) continue;
           }
           for (var py = by - 1; py <= by + B; py++) {             // F over the block and its 1-px ring, between the samples
@@ -999,7 +1011,7 @@
               F[orow + px + 1] = val;
             }
           }
-          contourTile(F, TILE, rgba, 3, ink, bx, by, bx + B, by + B);
+          contourTile(F, TILE, rgba, 3, ink, bx, by, bx + B, by + B, core, edge);
         }
       }
     },
@@ -1784,7 +1796,7 @@
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
     _internals: { contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
-      CONTOUR_BLOCK: CONTOUR_BLOCK, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
+      CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
       parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,

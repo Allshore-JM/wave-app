@@ -550,7 +550,7 @@ const drawTile = (l, c) => { const el = grabEl(); l._draw(el, c); return el.out;
 const composed = (l, c) => { const codes = l.tileCodes(c, new Float64Array(65536)), d = new Uint8ClampedArray(65536 * 4); I.composeTile(codes, null, l._lut, l._lo, l._hi, l._legend[0], l._legend[1], d); return d; };
 const inkOf = (a, b) => { let n = 0; for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) n++; return n; };
 
-test('contourTile: ~2 px anti-aliased lines at whole levels at every angle, alpha untouched, level 0 / dense / missing skipped, ink per level', () => {
+test('contourTile: anti-aliased lines at whole levels, as wide as the zoom profile at every angle, alpha untouched, level 0 / dense / missing skipped, ink per level', () => {
   const W = 32, px = (d, x, y) => Array.from(d.slice((y * W + x) * 4, (y * W + x) * 4 + 4));
   let d = solid(W, [30, 60, 160]);
   const n = I.contourTile(rampF(W, (x) => x / 10), W, d, 3);                  // levels at x = 10, 20, 30; level 0 at x = 0 skipped
@@ -573,26 +573,49 @@ test('contourTile: ~2 px anti-aliased lines at whole levels at every angle, alph
   d = solid(W, [30, 60, 160]); I.contourTile(rampF(W, (x) => x / 10), W, d, 3, null, 0, 0, 16, 16);
   assert.notDeepEqual(px(d, 10, 5).slice(0, 3), [30, 60, 160]); assert.deepEqual(px(d, 20, 5), [30, 60, 160, 200], 'only the given rect is drawn');
   assert.deepEqual(px(d, 10, 20), [30, 60, 160, 200]);
-  // integrated width of single straight lines over 24 angles x 5 sub-pixel offsets (the docs say ~2 px)
-  const Wb = 96, Sb = Wb + 2, widths = [];
-  for (let a = 0; a < 24; a++) for (let o = 0; o < 5; o++) {
-    const th = a * Math.PI / 24 + 0.013, cs = Math.cos(th), sn = Math.sin(th), F = new Float64Array(Sb * Sb);
-    for (let y = -1; y <= Wb; y++) for (let x = -1; x <= Wb; x++) F[(y + 1) * Sb + x + 1] = 3.5 + ((x - 48) * cs + (y - 48) * sn + o / 5) / 20;
-    const b = new Uint8ClampedArray(Wb * Wb * 4); for (let i = 3; i < b.length; i += 4) b[i] = 200;
-    I.contourTile(F, Wb, b, 3, () => 255);
-    let area = 0, len = 0;
-    for (let y = 24; y < 72; y++) for (let x = 24; x < 72; x++) area += b[(y * Wb + x) * 4] / (255 * 0.55);
-    for (let lv = 1; lv <= 7; lv++) {
-      const c = (lv - 3.5) * 20 - o / 5, pts = [];
-      for (const [x0, y0, x1, y1] of [[24, 24, 72, 24], [72, 24, 72, 72], [72, 72, 24, 72], [24, 72, 24, 24]]) {
-        const f0 = (x0 - 48) * cs + (y0 - 48) * sn - c, f1 = (x1 - 48) * cs + (y1 - 48) * sn - c;
-        if ((f0 <= 0 && f1 > 0) || (f0 > 0 && f1 <= 0)) { const t = f0 / (f0 - f1); pts.push([x0 + (x1 - x0) * t, y0 + (y1 - y0) * t]); }
+  // integrated width of single straight lines over 24 angles x 5 sub-pixel offsets, for every zoom's profile: core + edge px
+  const Wb = 96, Sb = Wb + 2;
+  let prev = Infinity;
+  for (const [upTo, core, edge] of I.CONTOUR_PROFILE.slice().reverse()) {
+    const widths = [];
+    for (let a = 0; a < 24; a++) for (let o = 0; o < 5; o++) {
+      const th = a * Math.PI / 24 + 0.013, cs = Math.cos(th), sn = Math.sin(th), F = new Float64Array(Sb * Sb);
+      for (let y = -1; y <= Wb; y++) for (let x = -1; x <= Wb; x++) F[(y + 1) * Sb + x + 1] = 3.5 + ((x - 48) * cs + (y - 48) * sn + o / 5) / 20;
+      const b = new Uint8ClampedArray(Wb * Wb * 4); for (let i = 3; i < b.length; i += 4) b[i] = 200;
+      I.contourTile(F, Wb, b, 3, () => 255, 0, 0, Wb, Wb, core, edge);
+      let area = 0, len = 0;
+      for (let y = 24; y < 72; y++) for (let x = 24; x < 72; x++) area += b[(y * Wb + x) * 4] / (255 * 0.55);
+      for (let lv = 1; lv <= 7; lv++) {
+        const c = (lv - 3.5) * 20 - o / 5, pts = [];
+        for (const [x0, y0, x1, y1] of [[24, 24, 72, 24], [72, 24, 72, 72], [72, 72, 24, 72], [24, 72, 24, 24]]) {
+          const f0 = (x0 - 48) * cs + (y0 - 48) * sn - c, f1 = (x1 - 48) * cs + (y1 - 48) * sn - c;
+          if ((f0 <= 0 && f1 > 0) || (f0 > 0 && f1 <= 0)) { const t = f0 / (f0 - f1); pts.push([x0 + (x1 - x0) * t, y0 + (y1 - y0) * t]); }
+        }
+        if (pts.length >= 2) len += Math.hypot(pts[0][0] - pts[1][0], pts[0][1] - pts[1][1]);
       }
-      if (pts.length >= 2) len += Math.hypot(pts[0][0] - pts[1][0], pts[0][1] - pts[1][1]);
+      if (len > 20) widths.push(area / len);
     }
-    if (len > 20) widths.push(area / len);
+    const lo = Math.min(...widths), hi = Math.max(...widths);
+    assert.ok(widths.length > 100 && lo > core + edge - 0.15 && hi < core + edge + 0.15, `zoom <= ${upTo}: widths ${lo.toFixed(2)}..${hi.toFixed(2)} for ${core + edge} px`);
+    assert.ok(hi < prev + 1e-9, 'wider zooms draw thinner lines'); prev = hi;
   }
-  assert.ok(widths.length > 100 && Math.min(...widths) > 2.0 && Math.max(...widths) < 2.5, `widths ${Math.min(...widths).toFixed(2)}..${Math.max(...widths).toFixed(2)}`);
+  assert.ok(I.contourProfile(3)[1] + I.contourProfile(3)[2] < 1.2 && I.contourProfile(8)[1] + I.contourProfile(8)[2] < 2, 'thinner than 2.7.5 (2.25 px) at every zoom');
+});
+
+test('each tile zoom draws with its own line profile', () => {
+  const fr = frame(1440, 721, SMOOTH), l = layer(fr, GRID, 'hs', HS), cfg = { step: 2, per: 3.28084 };
+  l.setContours(cfg, true);
+  for (const c of [{ z: 3, x: 0, y: 3 }, { z: 5, x: 2, y: 13 }, { z: 6, x: 3, y: 27 }, { z: 9, x: 30, y: 222 }]) {
+    const drawn = composed(l, c); l._contours(c, drawn, true);                     // every block, so F is complete
+    const k = cfg.per / (cfg.step * (c.z < 4 ? 2 : 1)), lut = l._lut, sc = 255 / (l._legend[1] - l._legend[0]);
+    const ink = (lv) => { let t = Math.round((lv / k - l._legend[0]) * sc); t = Math.max(0, Math.min(255, t)); return (0.299 * lut[t * 3] + 0.587 * lut[t * 3 + 1] + 0.114 * lut[t * 3 + 2]) > 170 ? 30 : 255; };
+    const [, core, edge] = I.contourProfile(c.z), own = composed(l, c), other = composed(l, c);
+    I.contourTile(l._F, 256, own, 3, ink, 0, 0, 256, 256, core, edge);
+    const alt = I.contourProfile(c.z <= 5 ? 99 : 3);
+    I.contourTile(l._F, 256, other, 3, ink, 0, 0, 256, 256, alt[1], alt[2]);
+    assert.deepEqual(Array.from(drawn), Array.from(own), `z${c.z}: the zoom's own profile`);
+    assert.notDeepEqual(Array.from(drawn), Array.from(other), `z${c.z}: not another zoom's`);
+  }
 });
 
 test('contourTile: never along the foot or the top of a steep ramp, where the level is not reached (G8 B-P2-2)', () => {
@@ -697,7 +720,8 @@ test('contours: neighbouring tiles agree on every shared value, and four tiles e
       }
     }
     const ref = plain.slice(), k = cfg.per / (cfg.step * (z < 4 ? 2 : 1)), lut = l._lut, sc = 255 / (l._legend[1] - l._legend[0]);
-    I.contourTile(big, W, ref, 3, (lv) => { let t = Math.round((lv / k - l._legend[0]) * sc); t = Math.max(0, Math.min(255, t)); return (0.299 * lut[t * 3] + 0.587 * lut[t * 3 + 1] + 0.114 * lut[t * 3 + 2]) > 170 ? 30 : 255; });
+    const [, core, edge] = I.contourProfile(z);
+    I.contourTile(big, W, ref, 3, (lv) => { let t = Math.round((lv / k - l._legend[0]) * sc); t = Math.max(0, Math.min(255, t)); return (0.299 * lut[t * 3] + 0.587 * lut[t * 3 + 1] + 0.114 * lut[t * 3 + 2]) > 170 ? 30 : 255; }, 0, 0, W, W, core, edge);
     for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
       const q = lined[dx + ',' + dy];
       for (let py = 0; py < 256; py++) for (let px = 0; px < 256; px++) {
@@ -773,7 +797,9 @@ test('contourTile: the distance is measured along the slope that leads to the le
   F[1] = 5.1; F[3] = 5.0; F[4] = 5.1; F[5] = 5.5; F[7] = 5.1;                // u, l, f, r, d (W = 1, S = 3)
   const d = new Uint8ClampedArray([30, 60, 160, 200]);
   assert.equal(I.contourTile(F, 1, d, 3, () => 255), 1);
-  const a = ((1.5 - 1.0) / 0.75) * 0.55;                                      // 1.0 px away (0.1 / 0.1): partial coverage
+  const [, core, edge] = I.CONTOUR_PROFILE[I.CONTOUR_PROFILE.length - 1];      // the default: the closest zooms' profile
+  assert.ok(core < 1.0 && edge > 1.0, 'the case sits on the fading edge');
+  const a = ((edge - 1.0) / (edge - core)) * 0.55;                             // 1.0 px away (0.1 / 0.1): partial coverage
   for (const [ch, base] of [[0, 30], [1, 60], [2, 160]]) assert.ok(Math.abs(d[ch] - (base + (255 - base) * a)) <= 1, `channel ${ch}: ${d[ch]}`);
   assert.equal(d[3], 200);
 });

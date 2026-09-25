@@ -203,10 +203,13 @@ def test_fill_info_pins_fields_cells_version_and_key():
     assert E.FILL_INFO["version"] == E.FILL_VERSION == 2 and E.FILL_INFO["methods"] == {"hs": "mean", "tp": "nearest"}
     assert json.loads(json.dumps(E.FILL_INFO)) == E.FILL_INFO                                   # manifest-safe
     assert [n for n, f in E.FIELDS.items() if f["fill"]] == ["hs", "tp"]
+    assert E.FILL_INFO["mask"] == E.FILL_ALLOW_SHA256[:16]
     reworded = dict(E.FILL_INFO, note="other words", limit="x", methods={"tp": "nearest", "hs": "mean"})
-    assert E.fill_key(reworded) == E.fill_key(E.FILL_INFO) == (2, ("hs", "tp"), 4)             # wording is not a different fill
+    assert E.fill_key(reworded) == E.fill_key(E.FILL_INFO)                                      # wording and key order are not a different fill
+    assert E.fill_key(dict(E.FILL_INFO, methods={"hs": "mean", "tp": "mean"})) != E.fill_key(E.FILL_INFO)   # a method change is
+    assert E.fill_key(dict(E.FILL_INFO, mask="0" * 16)) != E.fill_key(E.FILL_INFO)             # a re-pinned mask is
     assert E.fill_key(None) is None and E.fill_key({}) is None
-    assert E.fill_key({"fields": ["hs", "tp"], "cells": 4}) == (1, ("hs", "tp"), 4) != E.fill_key(E.FILL_INFO)   # a v1 block
+    assert E.fill_key({"fields": ["hs", "tp"], "cells": 4}) != E.fill_key(E.FILL_INFO)          # a v1 block
 
 
 def test_fill_allow_mask_is_pinned_and_excludes_open_water_and_ice():
@@ -241,6 +244,33 @@ def test_fill_coast_allow_limits_the_set_and_nearest_never_blends():
     assert 6.9 < mid[2, 3] < 14.4 and nr[2, 3] in (6.9, 14.4)                                   # the mean blends two regimes; nearest does not
     with pytest.raises(ValueError):
         E.fill_coast(g2, method="median")
+
+
+def test_fill_nearest_is_the_euclidean_nearest_model_cell():
+    rng = np.random.default_rng(7)
+    rows, cols, W = 40, 64, 9
+    g = np.where(rng.random((rows, cols)) < 0.04, rng.uniform(1, 20, (rows, cols)), np.nan)
+    g[:, :6] = 3.0                                                                                # a coast, and sparse islands of model cells
+    out, added = E.fill_coast(g, method="nearest")
+    offs = sorted(((dy, dx) for dy in range(-W, W + 1) for dx in range(-W, W + 1) if dy or dx),
+                  key=lambda o: (o[0] ** 2 + o[1] ** 2, abs(o[0]), o[0], o[1]))
+    checked = 0
+    for i, j in zip(*np.nonzero(added)):                                                          # brute force, wide window, same tie order
+        for dy, dx in offs:
+            ii, jj = i + dy, (j + dx) % cols
+            if 0 <= ii < rows and not np.isnan(g[ii, jj]):
+                assert out[i, j] == g[ii, jj], (i, j, dy, dx)
+                checked += 1
+                break
+    assert checked == added.sum() > 500
+    far = np.full((12, 12), np.nan)
+    far[0, 0], far[5, 5] = 1.0, 2.0                                                               # (4,4) is Chebyshev 4 but Euclidean 5.66 from (0,0) ...
+    far[9, 4] = 9.0                                                                               # ... while (9,4) sits at Euclidean 5.0 from (4,4)
+    o2, a2 = E.fill_coast(far, cells=4, method="nearest")
+    assert o2[4, 4] == 2.0                                                                        # (5,5) is nearer still: d = 1.41
+    far[5, 5] = np.nan
+    o3, _ = E.fill_coast(far, cells=4, method="nearest")
+    assert o3[4, 4] == 9.0                                                                        # beyond the Chebyshev-4 window, found by the sqrt(2) window
 
 
 def test_encoding_ranges_cover_legend_and_tp_floor():
@@ -676,6 +706,12 @@ def test_fill_guard_refuses_to_rewrite_a_run_built_with_a_different_fill(monkeyp
     assert R.main(["--steps", "0,3", "--allow-partial", "--force"]) == 2                          # a partial build would rewrite the same frame keys
     assert len(c.log) == n                                                                        # not one object written
     assert R.main(["--dry-run", "--steps", "0,3"]) == 0 and len(c.log) == n                       # a dry run never touches the bucket
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092206","complete":true}', "ct": "", "cc": ""}
+    foreign = dict(old, run="2026092200", frames=[{"step": 0}] * 81)                             # would be repairable, but names another run
+    _manifest(c, "2026092212", "20260922T190000Z", foreign)
+    assert R.main([]) == 2 and len(c.log) == n                                                    # never point latest.json at a foreign manifest
+    _manifest(c, "2026092212", "20260922T200000Z", {k: v for k, v in dict(old, frames=[{"step": 0}] * 81).items() if k != "encoding"})
+    assert R.main([]) == 2 and len(c.log) == n                                                    # nor at one without an encoding
 
 
 def test_fill_guard_repairs_the_pointer_to_an_existing_complete_manifest(monkeypatch, capsys, offline_build):
@@ -707,5 +743,27 @@ def test_fill_guard_lets_the_same_fill_through_and_ignores_partials(monkeypatch,
     assert any(k.startswith(f"{P.PREFIX}/2026092212/partial-") for k in c.objects)
     _manifest(c, "2026092212", "20260922T190000Z", b"<html>not json")                            # the newest manifest is unreadable
     assert R.fill_guard(P.Store(c, "b"), "2026092212", "2026092212", False) == 2
-    assert "cannot be read" in capsys.readouterr().out
+    assert "not a valid manifest" in capsys.readouterr().out
+
+    class Flaky(FakeClient):
+        def get_object(self, Bucket, Key):
+            raise RuntimeError("503 Service Unavailable")
+    f = Flaky()
+    f.objects = c.objects
+    assert R.fill_guard(P.Store(f, "b"), "2026092212", "2026092212", False) == 1                  # transport: exit 1, retried next tick
     assert P.newest_manifest(P.Store(c, "b"), "2026092218") == (None, None)
+
+
+def test_rollback_without_fill_omits_the_block_and_keeps_the_guard(monkeypatch, capsys, offline_build):
+    monkeypatch.setattr(R.E, "FILL_INFO", None)                                                   # what "fill": False for hs and tp produces
+    c = FakeClient()
+    store = P.Store(c, "b")
+    m = R.build_and_publish(store, RUN, [0], log=lambda *a: None)
+    assert "fill" not in m                                                                        # the client then drops the "extrapolated" sentence
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    _env(monkeypatch, c)
+    filled = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": [{"step": 0}] * 81,
+              "published_utc": "2026-09-22T18:00:00Z", "fill": {"version": 2, "fields": ["hs", "tp"], "cells": 4}}
+    _manifest(c, "2026092212", "20260922T180000Z", filled)
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
+    assert R.main(["--force"]) == 2 and "refusing to rewrite" in capsys.readouterr().out          # filled runs stay protected

@@ -21,8 +21,9 @@ make_fill_mask.py) are filled, ring by ring (longitude periodic, nothing beyond 
   hs  the mean of the present 8-neighbours of the previous ring (smooth; the client is bilinear)
   tp  the value of the nearest model cell (Euclidean in grid cells; the client samples Tp by
       nearest node and a mean would invent periods between two swell regimes)
-Model values never change; wind is never filled; open water far from land (the sea-ice pack the
-model masks) is never filled. The browser clips the result to the same GSHHG coast, so the fill is
+Model values never change; wind is never filled; open water more than one cell from land (in
+practice the sea-ice pack the model masks) is never filled -- along ice-bound coasts the fill can
+still reach up to one cell (about 28 km) over coastal sea ice. The browser clips the result to the same GSHHG coast, so the fill is
 only seen over water. Coverage: after k rings a coastline point is drawn on full frames when its
 nearest grid node is within k cells of model data, on half frames within k - 1 (the nearest half
 node is within one cell of the nearest full node, and a present nearest node always carries the
@@ -53,16 +54,19 @@ _FILLED = sorted(n for n, f in FIELDS.items() if f["fill"])
 FILL_INFO = None if not _FILLED else {
     "version": FILL_VERSION, "fields": _FILLED, "cells": FILL_CELLS,
     "methods": {n: FILL_METHODS[n] for n in _FILLED},
-    "limit": "only within one cell of GSHHG land (never over open water or sea ice)",
+    "limit": "only within one cell of GSHHG land; may extend up to one cell over coastal sea ice",
+    "mask": FILL_ALLOW_SHA256[:16],
     "note": "nearshore values are extrapolated from the nearest model cells; clipped to the coastline in the browser",
 }
 
 
 def fill_key(block):
-    """What identifies a fill for the re-publish guard (wording changes are not a different fill)."""
+    """What identifies a fill for the re-publish guard: everything that changes the pixels (version,
+    fields, rings, per-field method, the allow mask) -- wording (note, limit) is not a different fill."""
     if not block:
         return None
-    return (block.get("version", 1), tuple(block.get("fields", ())), block.get("cells"))
+    return (block.get("version", 1), tuple(block.get("fields", ())), block.get("cells"),
+            tuple(sorted((block.get("methods") or {}).items())), block.get("mask"))
 
 
 @functools.lru_cache(maxsize=1)
@@ -106,7 +110,9 @@ def fill_coast(grid, cells=FILL_CELLS, allow=None, method="mean"):
     only where `allow` (bool, same shape; None = everywhere) is true. The filled SET is the same for
     both methods: the cells reached ring by ring through allowed cells. method "mean" gives each the
     mean of its present 8-neighbours of the previous ring (Jacobi); "nearest" gives it the value of
-    the nearest model cell (Euclidean in grid cells, ties by a fixed offset order)."""
+    the Euclidean-nearest model cell (in grid cells, ties by a fixed offset order). A cell reached in
+    <= cells rings has a model cell at Chebyshev distance <= cells, i.e. Euclidean <= cells * sqrt(2),
+    so searching a Chebyshev window of floor(cells * sqrt(2)) finds the true nearest."""
     g = np.array(grid, dtype=np.float64)                    # a copy: the caller's grid is untouched
     missing0 = np.isnan(g)
     rows, cols = g.shape
@@ -132,7 +138,7 @@ def fill_coast(grid, cells=FILL_CELLS, allow=None, method="mean"):
         g[target] = tot[target] / n[target]                 # Jacobi: every mean uses the previous pass
     added = missing0 & ~np.isnan(g)
     if method == "nearest" and added.any():
-        g = _nearest_values(np.asarray(grid, dtype=np.float64), added, cells)
+        g = _nearest_values(np.asarray(grid, dtype=np.float64), added, int(cells * 2 ** 0.5))
     elif method not in ("mean", "nearest"):
         raise ValueError(method)
     return g, added

@@ -11,9 +11,11 @@ Exit codes: 0 published / already current / newer run live / pointer repaired; 3
 available or a needed object vanished mid-run (not an error for the schedule); 1 build/publish
 failure; 2 bad arguments, or a refusal to rewrite a published run's immutable frames with a
 different coastal fill (see fill_guard).
-Rollback of the coastal fill: set "fill": False for hs and tp in encode.FIELDS (one-line commit; the
-manifest then carries no fill block and the guard keeps protecting the filled runs). Never `git
-revert` the fill commit: that removes the guard too.
+Rollback of the coastal fill: set "fill": False for hs and tp in encode.FIELDS (the manifest then
+carries no fill block and the guard keeps protecting the filled runs) and adjust the fill tests in
+tests/model_frames/test_job.py in the same commit. The filled live run stays live until the next
+cycle (up to ~6 h); to drop it at once, point latest.json at an older unfilled run by hand. Never
+`git revert` the fill commit: that removes the guard too.
 """
 import argparse
 import json
@@ -116,14 +118,20 @@ def fill_guard(store, run, live, partial):
     its existing manifest instead of failing on every tick."""
     try:
         mkey, man = P.newest_manifest(store, run)
-    except Exception as exc:                                  # noqa: BLE001
-        msg = f"run {run}: its published manifest cannot be read ({exc.__class__.__name__}); not rewriting its frames"
+    except ValueError as exc:                                 # the content (json.JSONDecodeError is a ValueError)
+        msg = f"run {run}: its published manifest is not a valid manifest ({exc.__class__.__name__}); not rewriting its frames"
         print(msg)
         _summary("WARNING: " + msg)
         return 2
+    except Exception as exc:                                  # noqa: BLE001  transport: the next tick retries
+        print(f"run {run}: could not read its published manifest ({exc.__class__.__name__}); retrying next tick")
+        return 1
     if mkey is None or E.fill_key(man.get("fill")) == E.fill_key(E.FILL_INFO):
         return None
-    if not partial and man.get("complete") and (not live or run > live):
+    usable = (man.get("run") == run and man.get("encoding") == E.ENCODING and man.get("complete") is True
+              and isinstance(man.get("frames"), list) and len(man["frames"]) == len(F.STEPS)
+              and isinstance(man.get("published_utc"), str))
+    if not partial and usable and (not live or run > live):
         P.point_to(store, run, mkey, man)
         msg = f"run {run} already has a complete manifest built with fill {E.fill_key(man.get('fill'))}; pointer repaired to {mkey}"
         print(msg)

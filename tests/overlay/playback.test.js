@@ -87,7 +87,9 @@ function world(opts) {
   w.releaseDir = async () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 720); assert.ok(i >= 0, 'a direction decode is pending'); w.pendingBitmaps.splice(i, 1)[0](); await settle(); };
   w.releaseField = async () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 1440); assert.ok(i >= 0, 'a field decode is pending'); w.pendingBitmaps.splice(i, 1)[0](); await settle(); };
   w.holdDir = () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 720); assert.ok(i >= 0); return w.pendingBitmaps.splice(i, 1)[0]; };
-  w.create = (extra) => g.AllshoreOverlay.create(map, Object.assign({ base: 'https://x/gfswave/0p25/v1', panel: {}, tz: 'UTC', getUnit: () => 'US', fmtTime: () => '', tzAbbr: () => '', pageCycle: () => null }, extra || {}));
+  // The scheduler tests keep their original baseline (animation and contours off unless a test turns them on); the
+  // page's defaults (both on) are pinned by their own test.
+  w.create = (extra) => { const o = g.AllshoreOverlay.create(map, Object.assign({ base: 'https://x/gfswave/0p25/v1', panel: {}, tz: 'UTC', getUnit: () => 'US', fmtTime: () => '', tzAbbr: () => '', pageCycle: () => null }, extra || {})); o.anim = false; o.contours = false; return o; };
   w.release = async (n) => { for (let i = 0; i < (n === undefined ? 1 : n) && w.pendingBitmaps.length; i++) w.pendingBitmaps.shift()(); await settle(); };
   w.releaseAll = async () => { while (w.pendingBitmaps.length) { w.pendingBitmaps.shift()(); await settle(); } };
   return w;
@@ -413,39 +415,32 @@ test('the saved time survives a field switch before the first restored frame and
   done(o);
 });
 
-test('contours: off by default, remembered for the tab, the interval follows the site unit, a new layer gets them on its first frame', async () => {
+test('contours and the animation are always on (no checkboxes; a tab\'s old "off" saves are ignored and nothing is saved); the contour interval follows the site unit on the first frame', async () => {
   let unit = 'US';
-  const storage = memStore(), w = world({ storage });
+  const storage = memStore({ contours: false, anim: false, opacity: 0.3, opacityWind: 0.4 }), w = world({ storage });
   w.pointer = ptr(A); w.manifests[A.run] = A;
-  let o = w.create({ getUnit: () => unit });
-  assert.equal(o.contours, false);
-  o.mount('hs'); await settle(); await w.release(1);
-  assert.equal(o.layer._contour, null);
-  o.setContours(true);
-  assert.equal(storage.read().contours, true);
-  assert.deepEqual(o.layer._contour, { step: 2, per: 3.28084 });
+  const o = new w.I.Overlay(w.map, { base: 'https://x/gfswave/0p25/v1', panel: {}, tz: 'UTC', getUnit: () => unit, fmtTime: () => '', tzAbbr: () => '', pageCycle: () => null });   // the page's defaults
+  assert.equal(o.contours, true); assert.equal(o.anim, true);
+  assert.deepEqual([o._opacityFor('hs'), o._opacityFor('tp'), o._opacityFor('wind')], [0.65, 0.65, 1], 'fixed opacity; old slider saves ignored');
+  assert.equal(o.setOpacity, undefined, 'no opacity setter');
+  o.mount('hs'); await settle(); await w.releaseAll();
+  assert.deepEqual(o.layer._contour, { step: 2, per: 3.28084 }, 'the first frame is drawn with them');
+  assert.ok(o._wantDir(), 'the direction (particles) is wanted from the start');
   unit = 'Metric'; o.refresh();
   assert.deepEqual(o.layer._contour, { step: 0.5, per: 1 });
-  done(o);
-  const w2 = world({ storage }); w2.pointer = ptr(A); w2.manifests[A.run] = A;
-  o = w2.create({ getUnit: () => 'US' });
-  assert.equal(o.contours, true, 'remembered for the tab');
-  o.mount('hs'); await settle(); await w2.release(1);
-  assert.deepEqual(o.layer._contour, { step: 2, per: 3.28084 }, 'the new layer draws its first frame with them');
-  o.setContours(false);
-  assert.equal(o.layer._contour, null); assert.equal(storage.read().contours, false);
+  o.setContours(false); o.setAnim(false);
+  const st = storage.read(); assert.equal(st.contours, false); assert.equal(st.anim, false, 'the old values are left as they were, not written');
   done(o);
 });
 
 test('a corrupted session value counts as empty and the next write replaces it (G8 A-P3-3)', () => {
-  for (const raw of ['5', '"hs"', '[1,2]', 'null', 'garbage', '{"opacity":0.4}']) {
+  for (const raw of ['5', '"hs"', '[1,2]', 'null', 'garbage', '{"field":"hs"}']) {
     const m = new Map([['allshore.overlay.v1', raw]]);
     const storage = { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); } };
     const o = world({ storage }).create();
-    assert.equal(o.opacity, raw === '{"opacity":0.4}' ? 0.4 : 0.65, raw);
-    o.setOpacity(0.5);
+    o.field = 'tp'; o.manifest = A; o.frameIndex = 3; o._persist();
     const back = JSON.parse(m.get('allshore.overlay.v1'));
-    assert.ok(back && typeof back === 'object' && !Array.isArray(back) && back.opacity === 0.5, raw + ' -> ' + m.get('allshore.overlay.v1'));
+    assert.ok(back && typeof back === 'object' && !Array.isArray(back) && back.field === 'tp' && back.t === Date.parse(A.frames[3].valid_utc), raw + ' -> ' + m.get('allshore.overlay.v1'));
   }
 });
 
@@ -717,7 +712,7 @@ test('G10-A P3-2: a manifest whose direction grid fails validation gives no anim
   o.unmount();
 });
 
-test('G11 P1-1: under reduced motion nothing animates and no direction frame is fetched; the checkbox reports it', async () => {
+test('G11 P1-1: under reduced motion nothing animates and no direction frame is fetched (the animation is otherwise always on)', async () => {
   const w = world({ reduced: true }); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
   assert.equal(o.animAvailable(), true, 'the run has direction data'); assert.equal(o._wantDir(), false); assert.equal(o.flow, null);
@@ -820,7 +815,7 @@ test('wind look: the relief goes on top and the imagery leaves once the relief h
   assert.equal(relief.url, w.I.WIND_LOOK.base); assert.equal(relief.options.maxZoom, 11); assert.equal(relief.options.attribution, w.I.WIND_LOOK.attribution);
   assert.ok(!('noWrap' in relief.options), 'options the page did not set are left to Leaflet');
   assert.deepEqual(both(), [true, true], 'the imagery stays until the relief is in');
-  assert.equal(map.pane.style.mixBlendMode, '', 'no blend onto the imagery'); assert.equal(o.layer.op, 0.9);
+  assert.equal(map.pane.style.mixBlendMode, '', 'no blend onto the imagery'); assert.equal(o.layer.op, 1);
   relief.fire('tileload'); relief.fire('load');
   assert.deepEqual(both(), [true, true], 'the relief tiles are still fading in: the imagery stays');
   await fade();
@@ -862,29 +857,22 @@ test('wind look: a relief that loads no tile is given up for a cooldown (imagery
   map = lookMap();
   o = new w.I.Overlay(map, { base: 'https://x/gfswave/0p25/v1' });
   o.layer = drawn('wind'); o._syncLook();
-  assert.equal(map.layers.size, 0); assert.equal(o.relief, null); assert.equal(map.pane.style.mixBlendMode, ''); assert.equal(o.layer.op, 0.9);
+  assert.equal(map.layers.size, 0); assert.equal(o.relief, null); assert.equal(map.pane.style.mixBlendMode, ''); assert.equal(o.layer.op, 1);
   map = lookMap(); img = fakeTile('World_Imagery');                           // handed over but not on the map
   o = new w.I.Overlay(map, { base: 'https://x/gfswave/0p25/v1', baseLayer: img });
   o.layer = drawn('wind'); o._syncLook();
   assert.equal(map.layers.size, 0); assert.equal(map.pane.style.mixBlendMode, '');
 });
 
-test('opacity per field: the waves keep the saved "opacity" (0.65 default), wind its own "opacityWind" (0.9 default), each remembered', async () => {
-  const storage = memStore({ opacity: 0.4, opacityWind: 5 });
-  let o = world({ storage }).create();
-  assert.equal(o.opacity, 0.4); assert.equal(o.opacityWind, 0.9, 'an invalid saved value falls back to the default');
-  o.field = 'wind'; o.setOpacity(0.7);
-  o.field = 'hs'; o.setOpacity(0.5);
-  assert.deepEqual([storage.read().opacity, storage.read().opacityWind], [0.5, 0.7]);
-  o = world({ storage }).create();
-  assert.deepEqual([o._opacityFor('hs'), o._opacityFor('tp'), o._opacityFor('wind')], [0.5, 0.5, 0.7]);
-  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;             // mounts: the layer takes each field's opacity
+test('fixed opacity per field: the layer takes 0.65 for wave height / period and 1 for wind at each field change', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const seen = [];
-  o = w.create(); o.mount('hs'); await settle(); await w.release(1);
+  const o = w.create(); o.mount('hs'); await settle(); await w.release(1);
   assert.equal(o.layer.options.opacity, 0.65);
   o.layer.setOpacity = (v) => { seen.push(v); o.layer.options.opacity = v; };
   o.mount('wind'); await settle(); await w.releaseAll();
-  assert.deepEqual(seen, [0.9], 'switched to the wind opacity once');
+  o.mount('tp'); await settle(); await w.releaseAll();
+  assert.deepEqual(seen, [1, 0.65], 'switched once per field change');
   done(o);
 });
 

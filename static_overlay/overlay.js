@@ -43,9 +43,10 @@
     base: 'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
     attribution: '&copy; Esri & contributors',
     blend: 'multiply',                                       // the model pane over the relief (the particle pane is not blended)
-    opacity: 0.9,                                            // the wind's default opacity (the waves keep 0.65); each remembered for the tab
     ink: [34, 38, 46], gain: 1.4                             // the coastline's colour and strength (coastEdges)
   };
+  // Fixed opacity per field (owner, 2026-09-26: no slider): the waves over the imagery, the wind multiplied into the relief.
+  var FIXED_OPACITY = { hs: 0.65, tp: 0.65, wind: 1 };
   // Leaflet fires a tile layer's 'load' when its last tile STARTS its 200-ms fade-in (G14 P1-1: removing the old
   // basemap then showed the bare map for ~200 ms): the old one leaves this long after.
   var BASE_FADE_MS = 300;
@@ -1568,12 +1569,12 @@
     // opts.coast: clip wave height / peak period to the coastlines published beside the frames
     this.coast = opts.coast ? coastStore(this.root + '/static/coast/v1') : null;
     var s = saved();
-    this.opacity = typeof s.opacity === 'number' && s.opacity >= 0.2 && s.opacity <= 1 ? s.opacity : 0.65;             // wave height, peak period
-    this.opacityWind = typeof s.opacityWind === 'number' && s.opacityWind >= 0.2 && s.opacityWind <= 1 ? s.opacityWind : WIND_LOOK.opacity;
     this.relief = null; this._base = 'imagery'; this._reliefFailed = 0;   // opts.baseLayer: the page's imagery (the wind swaps it)
     this.speed = SPEEDS.indexOf(s.speed) >= 0 ? s.speed : 1;
-    this.contours = s.contours === true;                   // off until ticked, then remembered for the tab
-    this.anim = s.anim === true;                           // the Animation box, likewise
+    // Contours (wave height, period) and the particle animation (every field) are always on (owner, 2026-09-26: no
+    // checkboxes); the animation stays off under a reduced-motion setting and on runs without direction data.
+    this.contours = true;
+    this.anim = true;
     this.dcache = new FrameCache(MAX_DECODED); this.flow = null; this.dres = null;   // direction frames and their animator
   }
   // restore: true on the mount the page makes after a reload (the field was saved in this tab); the
@@ -2007,7 +2008,7 @@
     this.field = null; this.frameIndex = null; this.res = null; this.dres = null; this.last = null; this.collapsed = undefined;
     clear(this.opts.panel);
   };
-  Overlay.prototype._opacityFor = function (field) { return field === 'wind' ? this.opacityWind : this.opacity; };
+  Overlay.prototype._opacityFor = function (field) { return FIXED_OPACITY[field] || FIXED_OPACITY.hs; };
   // The basemap and the model pane's blend follow what is DRAWN: a wind frame on the map -> the relief
   // (WIND_LOOK), multiplied; anything else (another field, a field still loading, Off) -> the page's
   // imagery, no blend. The new basemap goes on top and the old one leaves once the new one's tiles have
@@ -2056,12 +2057,6 @@
     r._ovTiles = 0;
     r.on('tileload', function () { r._ovTiles++; });
     return r;
-  };
-  Overlay.prototype.setOpacity = function (v) {
-    v = Math.max(0.2, Math.min(1, v));
-    if (this.field === 'wind') { this.opacityWind = v; save({ opacityWind: v }); } else { this.opacity = v; save({ opacity: v }); }
-    if (this.layer) this.layer.setOpacity(v);
-    if (this.flow) this.flow.refresh();                    // the particle contrast reads the layer's opacity
   };
   // The contour settings for the current field and site unit, or null.
   Overlay.prototype._contourCfg = function () {
@@ -2145,8 +2140,9 @@
     if (this.flow.entry !== entry) this.flow.clearData();
     if (this.target === null || this.target === idx) this._startDir(idx);
   };
+  // Animation / contours on or off (no checkbox any more: both are on; kept for the scheduler's own transitions and tests).
   Overlay.prototype.setAnim = function (on) {
-    this.anim = !!on; save({ anim: this.anim });
+    this.anim = !!on;
     if (!this.manifest || !this.field || !this.layer) return;
     this._ensureFlow();
     if (!this.anim) {                                      // the direction downloads stop at once, before or after the first frame
@@ -2157,7 +2153,7 @@
     this._prefetch();                                      // starts or drops the direction fetches (planned around a pending target)
   };
   Overlay.prototype.setContours = function (on) {
-    this.contours = !!on; save({ contours: this.contours });
+    this.contours = !!on;
     if (this.layer) this.layer.setContours(this._contourCfg());
   };
 
@@ -2364,29 +2360,7 @@
       s.style.left = (t.pos * 100).toFixed(2) + '%'; ticks.appendChild(s);
     });
     leg.appendChild(ticks); body.appendChild(leg);
-    var row = mk('div', 'ov-row'), lab = mk('label', null, 'Opacity ');
-    var rng = mk('input'); rng.type = 'range'; rng.min = '0.2'; rng.max = '1'; rng.step = '0.05'; rng.value = String(this._opacityFor(field));
-    rng.setAttribute('aria-label', 'Overlay opacity');
-    rng.addEventListener('input', function () { self.setOpacity(parseFloat(rng.value)); });
-    lab.appendChild(rng); row.appendChild(lab);
-    if (CONTOURS[field]) {
-      var cl = mk('label', 'ov-check'), cb = mk('input'); cb.type = 'checkbox'; cb.checked = this.contours;
-      var every = CONTOURS[field][unit === 'Metric' ? 'Metric' : 'US'], ul = unitOf(field, unit).label;
-      cb.setAttribute('aria-label', 'Contours, every ' + fmtTick(every) + ' ' + ul + ' (' + fmtTick(2 * every) + ' ' + ul + ' below zoom 4)');
-      cb.addEventListener('change', function () { self.setContours(cb.checked); });
-      cl.appendChild(cb); cl.appendChild(document.createTextNode(' Contours')); row.appendChild(cl);
-    }
-    // Animation: swell arrows (wave height, period) or wind particles; disabled on a run without direction data
-    var avail = this.animAvailable(), reduced = reducedMotion(), al = mk('label', 'ov-check'), ab = mk('input'); ab.type = 'checkbox';
-    ab.checked = this.anim && avail && !reduced; ab.disabled = !avail || reduced;
-    ab.setAttribute('aria-label', 'Animation: ' + (field === 'wind' ? 'wind particles' : 'swell particles'));
-    if (!avail) al.title = 'This run has no direction data'; else if (reduced) al.title = 'Off under your reduced-motion setting';
-    ab.addEventListener('change', function () { self.setAnim(ab.checked); });
-    al.appendChild(ab); al.appendChild(document.createTextNode(' Animation')); row.appendChild(al);
-    body.appendChild(row);
-    // On phones the settings row sits right under the timeline, inside the short details box (it was below
-    // the fold under the run line and the legend); the valid time is in the header line there.
-    if (compact) body.insertBefore(row, ui.valid);
+    // (no settings row: fixed opacity, contours and the animation always on; owner, 2026-09-26)
     this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND
     // the top-left control must end above the zoom/Home stack (short windows: the site caps the map at
@@ -2464,7 +2438,7 @@
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
-      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
+      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
       validCoastIndex: validCoastIndex,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,

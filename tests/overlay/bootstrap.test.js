@@ -66,10 +66,11 @@ function page(opt) {
     DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} }, TileLayer: opt.TileLayer };
   const map = { addControl: (c) => c.onAdd() };
   if (opt.layers) map.eachLayer = (fn) => opt.layers.forEach(fn);
+  if (opt.zoom) { map.zoomControl = { tag: 'zoom' }; map.removed = []; map.removeControl = (c) => map.removed.push(c); }
   new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', SRC)(
     window, document, sessionStorage, L, map, () => 'US', () => '', () => '', setTimeout);
   return {
-    log, store, sel, panel, overlays, listeners,
+    log, store, sel, panel, overlays, listeners, map,
     read: () => { try { return JSON.parse(store.get(KEY) || 'null'); } catch (e) { return store.get(KEY); } },
     load() { document.readyState = 'complete'; fire('win', 'load'); },
     idle() { idleQ.splice(0).forEach((f) => f({})); },
@@ -212,4 +213,11 @@ test('the page hands its satellite imagery layer to the module (the wind overlay
   assert.equal(q.overlays[0].opts.baseLayer, null);
   const r = page({ complete: true }); r.sel.userPick('hs'); await settle();                     // no eachLayer / TileLayer: harmless
   assert.equal(r.overlays[0].opts.baseLayer, null);
+});
+
+test('the page drops the +/- zoom buttons (the Home button and every other way to zoom stay); a map without them is left alone', () => {
+  const p = page({ zoom: true });
+  assert.deepEqual(p.map.removed, [{ tag: 'zoom' }]);
+  const q = page();                                                            // no zoomControl on the map: nothing to do, no error
+  assert.equal(q.map.removed, undefined);
 });

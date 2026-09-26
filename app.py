@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, send_file, jsonify, abort
+from html import escape as html_escape
 import requests
 import json
 import copy
@@ -1458,8 +1459,21 @@ def _parse_swan_table_text(text: str, station_id: str,
 
 # -------------------------- Table HTML builder (safe) ---------------------------
 
+def _short_date(s: str) -> str:
+    """'Friday, September 26, 2026' -> 'Fri 9/26' for the compact table (display only: the rows, the graph
+    labels and the parse cache keep the long form); anything else passes through unchanged."""
+    try:
+        d = datetime.strptime(s, "%A, %B %d, %Y")
+    except (TypeError, ValueError):
+        return s
+    return f"{d:%a} {d.month}/{d.day}"
+
+
 def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None,
-                     rows: list[list], tz_label: str, unit: str) -> str:
+                     rows: list[list], tz_label: str, unit: str, *, compact: bool = False) -> str:
+    """The forecast table. compact (the forecast window, plan section 25): no Cycle/Location/Time Zone
+    rows (the window shows them in one line above the table), no inline padding (the page CSS sets it),
+    short dates ('Fri 9/26', the full date in the cell's title), 'Dir (deg)' headers."""
     group_colors = [
         {"header": "#C00000", "subheader": "#F8B4B4", "data": "#F9DCDC"},
         {"header": "#ED7D31", "subheader": "#FBE5D6", "data": "#FDE7D4"},
@@ -1473,15 +1487,18 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     # distinct from the six saturated swell hues and the purple Combined.
     wind_colors = {"header": "#546E7A", "subheader": "#CFD8DC", "data": "#ECEFF1"}
 
-    html = '<table class="table table-bordered table-sm">\n'
+    pad = '' if compact else ' padding:4px 8px;'
+    html = ('<table class="table table-bordered table-sm forecast-compact">\n' if compact
+            else '<table class="table table-bordered table-sm">\n')
     # Everything that should stay locked while the body scrolls lives in <thead>
-    # (position: sticky): the Cycle/Location/TZ info rows first, then the two
-    # column-header rows.
+    # (position: sticky): the Cycle/Location/TZ info rows first (not in the compact
+    # table), then the two column-header rows.
     n_cols = 2 + len(group_colors) * 3 + 1 + 2  # + Combined + Wind (Spd, Dir)
     html += '<thead>\n'
-    html += f'<tr><td colspan="{n_cols}" class="forecast-info">{cycle_str}</td></tr>\n'
-    html += f'<tr><td colspan="{n_cols}" class="forecast-info">{location_str}</td></tr>\n'
-    html += f'<tr><td colspan="{n_cols}" class="forecast-info">Time Zone: {tz_label}</td></tr>\n'
+    if not compact:
+        html += f'<tr><td colspan="{n_cols}" class="forecast-info">{cycle_str}</td></tr>\n'
+        html += f'<tr><td colspan="{n_cols}" class="forecast-info">{location_str}</td></tr>\n'
+        html += f'<tr><td colspan="{n_cols}" class="forecast-info">Time Zone: {tz_label}</td></tr>\n'
     html += '<tr>'
     html += '<th rowspan="2" scope="col">Date</th><th rowspan="2" scope="col">Time</th>'
     for idx, col in enumerate(group_colors, start=1):
@@ -1493,11 +1510,12 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     # subheaders
     hs_unit_label = '(ft)' if unit == 'US' else '(m)'
     wind_spd_label = '(mph)' if unit == 'US' else '(km/h)'
+    dir_label = '(&deg;)' if compact else '(d)'
     html += '<tr>'
     for col in group_colors:
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
-        html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Dir<br>(d)</th>'
+        html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Dir<br>{dir_label}</th>'
     html += f'<th scope="col" style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
     html += f'<th scope="col" style="background-color:{wind_colors["subheader"]}; text-align:center;">Spd<br>{wind_spd_label}</th>'
     html += f'<th scope="col" style="background-color:{wind_colors["subheader"]}; text-align:center;">Dir</th>'
@@ -1527,9 +1545,12 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
                 fw = "normal"
 
         html += '<tr>'
-        date_style = f'font-weight:bold; {border_style} padding:4px 8px;'
-        html += f'<td style="{date_style}">{row[0]}</td>'
-        time_style = f'font-weight:{fw}; {border_style} padding:4px 8px;'
+        date_style = f'font-weight:bold; {border_style}{pad}'
+        if compact:
+            html += f'<td style="{date_style}" title="{html_escape(str(row[0]))}">{html_escape(str(_short_date(row[0])))}</td>'
+        else:
+            html += f'<td style="{date_style}">{row[0]}</td>'
+        time_style = f'font-weight:{fw}; {border_style}{pad}'
         html += f'<td style="{time_style}">{row[1]}</td>'
 
         idx = 2
@@ -1538,7 +1559,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
             val = row[idx]
             display_val = None if val is None else (val if unit == 'US' else (val / 3.28084))
             hs_str = "" if display_val is None else f"{display_val:.2f}"
-            cell_style = f'background-color:{col["data"]}; text-align:right; font-weight:{fw}; {border_style} padding:4px 8px;'
+            cell_style = f'background-color:{col["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}'
             html += f'<td style="{cell_style}">{hs_str}</td>'
             idx += 1
             # Tp
@@ -1556,7 +1577,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         val = row[-1]
         display_comb = None if val is None else (val if unit == 'US' else (val / 3.28084))
         comb_str = "" if display_comb is None else f"{display_comb:.2f}"
-        comb_style = f'background-color:{combined_colors["data"]}; text-align:right; font-weight:{fw}; {border_style} padding:4px 8px;'
+        comb_style = f'background-color:{combined_colors["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}'
         html += f'<td style="{comb_style}">{comb_str}</td>'
 
         # Wind. Storage order differs from display order ON PURPOSE: wind lives
@@ -1564,7 +1585,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         # pre-existing consumers (rounding pass, the cell above, graph packing)
         # were untouched. Speed is stored raw m/s (cache keys carry no unit)
         # and converted here, like heights' /3.28084 above.
-        wind_style = f'background-color:{wind_colors["data"]}; text-align:right; font-weight:{fw}; {border_style} padding:4px 8px;'
+        wind_style = f'background-color:{wind_colors["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}'
         wspd = row[20]
         if wspd is None:
             spd_str = ""
@@ -1590,7 +1611,8 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
 _STATION_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 
 
-def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str = "GFS") -> dict:
+def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str = "GFS", *,
+                             compact: bool = False) -> dict:
     """Shared, cached forecast computation for both the homepage and /api/forecast.
 
     The parser underneath (parse_bull for GFS, parse_swan for the PacIOOS SWAN
@@ -1626,7 +1648,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
 
     tz_label = effective_tz_name
     out["tz_label"] = tz_label
-    out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit)
+    out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit, compact=compact)
 
     # single map marker if coords JSON has it
     coords_map = load_station_coords()
@@ -1699,8 +1721,9 @@ def api_forecast():
     tz = request.args.get("tz", "")
     unit = request.args.get("unit", "US") or "US"
     model = request.args.get("model", "")
+    compact = request.args.get("compact") == "1"              # the forecast window's table (plan section 25)
     try:
-        return jsonify(compute_forecast_payload(station, tz or None, unit, model))
+        return jsonify(compute_forecast_payload(station, tz or None, unit, model, compact=compact))
     except Exception as exc:  # always return JSON the client can render
         logger.warning("forecast payload failed for %s: %r", station, exc)
         return jsonify({
@@ -1758,25 +1781,31 @@ def index():
         payload = compute_forecast_payload(selected_station, selected_tz or None, selected_unit,
                                            selected_model)
 
+    # The forecast window's starting state (plan section 25): what this request asked for, resolved.
+    initial_state = {
+        "station": selected_station, "tz": selected_tz, "unit": selected_unit if selected_unit in unit_options else "US",
+        "model": selected_model, "view": "Graph" if selected_view == "Graph" else "Table",
+        "swan_available": swan_available, "swan_stations": sorted(SWAN_STATIONS),
+    }
+
     return render_template(
         "index.html",
         stations=stations,
         selected_station=selected_station,
         timezones=timezones,
         selected_tz=selected_tz,
-        tz_label=(payload["tz_label"] if payload else ""),
         units=unit_options,
         selected_unit=selected_unit,
         table_html=(payload["table_html"] if payload else None),
         error=(payload["error"] if payload else None),
-        selected_lat=(payload["lat"] if payload else None),
-        selected_lon=(payload["lon"] if payload else None),
         selected_view=selected_view,
         graph_data=(payload["graph_data"] if payload else None),
         graph_header=(payload["graph_header"] if payload else None),
         defer_forecast=defer_forecast,
         swan_available=swan_available,
         selected_model=selected_model,
+        initial_state=initial_state,
+        ui_asset_version=UI_ASSET_VERSION,
         **_overlay_context(selected_station, selected_tz, payload),
     )
 

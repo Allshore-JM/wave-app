@@ -802,9 +802,10 @@ function fakeTile(url, options) {
     addTo(m) { m.layers.add(this); return this; },
     fire(e) { const fs = this.ev[e] || []; this.ev[e] = []; (this.ons[e] || []).forEach((f) => f()); fs.forEach((f) => f()); } };
 }
-function drawn(field) { return { field, op: null, frame: !!field, hasFrame() { return this.frame; }, setOpacity(v) { this.op = v; } }; }
+function drawn(field, frame) { return { field, op: null, options: {}, frame: frame === undefined ? !!field : frame, hasFrame() { return this.frame; }, setOpacity(v) { this.op = v; this.options.opacity = v; } }; }
+const fade = () => new Promise((r) => setTimeout(r, 330));
 
-test('wind look: the relief goes on top and the imagery leaves once the relief has loaded; any other field brings the imagery back; quick switches never leave the map without a basemap', () => {
+test('wind look: the relief goes on top and the imagery leaves once the relief has loaded AND faded in; any other field brings the imagery back; quick switches never leave the map without a basemap', async () => {
   const w = world(), map = lookMap(), img = fakeTile('World_Imagery', { maxZoom: 11, minZoom: 1, keepBuffer: 2 });
   w.L.tileLayer = (url, o) => fakeTile(url, o);
   img.addTo(map);
@@ -812,37 +813,52 @@ test('wind look: the relief goes on top and the imagery leaves once the relief h
   const both = () => [map.hasLayer(img), !!o.relief && map.hasLayer(o.relief)];
   o.layer = drawn('hs'); o._syncLook();
   assert.deepEqual(both(), [true, false]); assert.equal(map.pane.style.mixBlendMode, ''); assert.equal(o.layer.op, 0.65);
+  o.layer = drawn('wind', false); o._syncLook();                             // wind picked but no frame drawn yet: nothing changes
+  assert.deepEqual(both(), [true, false]); assert.equal(o.relief, null);
   o.layer = drawn('wind'); o._syncLook();
   const relief = o.relief;
   assert.equal(relief.url, w.I.WIND_LOOK.base); assert.equal(relief.options.maxZoom, 11); assert.equal(relief.options.attribution, w.I.WIND_LOOK.attribution);
+  assert.ok(!('noWrap' in relief.options), 'options the page did not set are left to Leaflet');
   assert.deepEqual(both(), [true, true], 'the imagery stays until the relief is in');
-  assert.equal(map.pane.style.mixBlendMode, 'multiply'); assert.equal(o.layer.op, 0.9);
+  assert.equal(map.pane.style.mixBlendMode, '', 'no blend onto the imagery'); assert.equal(o.layer.op, 0.9);
   relief.fire('tileload'); relief.fire('load');
-  assert.deepEqual(both(), [false, true]);
+  assert.deepEqual(both(), [true, true], 'the relief tiles are still fading in: the imagery stays');
+  await fade();
+  assert.deepEqual(both(), [false, true]); assert.equal(map.pane.style.mixBlendMode, 'multiply');
+  o.layer.op = null; o._syncLook(); assert.equal(o.layer.op, null, 'opacity set only on a change (every landing calls this)');
   o.layer = drawn('tp'); o._syncLook();                                      // back to a wave field: the imagery on top, loading
   assert.deepEqual(both(), [true, true]); assert.equal(map.pane.style.mixBlendMode, ''); assert.equal(o.layer.op, 0.65);
   o.layer = drawn('wind'); o._syncLook();                                    // wind again before the imagery loaded: the relief is still there
-  assert.deepEqual(both(), [false, true]);
-  img.fire('load');                                                          // the stale landing changes nothing
+  assert.deepEqual(both(), [false, true]); assert.equal(map.pane.style.mixBlendMode, 'multiply');
+  img.fire('load'); await fade();                                            // the stale landing changes nothing
   assert.deepEqual(both(), [false, true]);
   o.layer = drawn(null); o._syncLook();                                      // a field loading (nothing drawn): the imagery
-  assert.deepEqual(both(), [true, true]); img.fire('load');
+  assert.deepEqual(both(), [true, true]); img.fire('load'); assert.deepEqual(both(), [true, true]); await fade();
   assert.deepEqual(both(), [true, false]);
   o.layer = drawn('wind'); o._syncLook(); assert.equal(o.relief, relief, 'one relief layer for the session'); relief.fire('tileload'); relief.fire('load');
+  o.layer = drawn('hs'); o._syncLook();                                      // switched away inside the fade: the pending removal is dropped
+  assert.deepEqual(both(), [true, false], 'the imagery was still there: the relief leaves at once'); await fade(); assert.deepEqual(both(), [true, false], 'the pending removal is dropped');
+  o.layer = drawn('wind'); o._syncLook(); o.layer = drawn('hs'); o._syncLook();   // away before the relief loaded...
+  relief.fire('load'); await fade();                                         // ...its late 'load' (no tile yet) is not a failure
+  assert.equal(o._reliefFailed, 0); assert.deepEqual(both(), [true, false]);
+  o.layer = drawn('wind'); o._syncLook(); relief.fire('tileload'); relief.fire('load'); await fade();
   o.layer = null; o._syncLook();                                             // Off / unmount
-  assert.deepEqual(both(), [true, true]); assert.equal(map.pane.style.mixBlendMode, ''); img.fire('load');
+  assert.deepEqual(both(), [true, true]); assert.equal(map.pane.style.mixBlendMode, ''); img.fire('load'); await fade();
   assert.deepEqual(both(), [true, false]);
 });
 
-test('wind look: a relief that loads no tile is given up (imagery kept); no imagery handed over or not on the map -> the basemap is left alone', () => {
+test('wind look: a relief that loads no tile is given up for a cooldown (imagery kept); no imagery handed over or not on the map -> the basemap is left alone', async () => {
   const w = world(); w.L.tileLayer = (url, o) => fakeTile(url, o);
   let map = lookMap(), img = fakeTile('World_Imagery'); img.addTo(map);
   let o = new w.I.Overlay(map, { base: 'https://x/gfswave/0p25/v1', baseLayer: img });
   o.layer = drawn('wind'); o._syncLook();
   o.relief.fire('tileerror'); o.relief.fire('load');
-  assert.equal(o._reliefFailed, true);
+  assert.ok(o._reliefFailed > 0);
   assert.deepEqual([map.hasLayer(img), map.hasLayer(o.relief)], [true, false]); assert.equal(map.pane.style.mixBlendMode, '');
-  o._syncLook(); assert.deepEqual([map.hasLayer(img), map.hasLayer(o.relief)], [true, false], 'not retried');
+  o._syncLook(); assert.deepEqual([map.hasLayer(img), map.hasLayer(o.relief)], [true, false], 'not retried during the cooldown');
+  o._reliefFailed = Date.now() - w.I.RELIEF_RETRY_MS - 1; o._base = 'imagery'; o._syncLook();
+  assert.equal(map.hasLayer(o.relief), true, 'retried after the cooldown'); o.relief.fire('tileload'); o.relief.fire('load'); await fade();
+  assert.deepEqual([map.hasLayer(img), map.hasLayer(o.relief)], [false, true]);
   map = lookMap();
   o = new w.I.Overlay(map, { base: 'https://x/gfswave/0p25/v1' });
   o.layer = drawn('wind'); o._syncLook();
@@ -862,11 +878,49 @@ test('opacity per field: the waves keep the saved "opacity" (0.65 default), wind
   assert.deepEqual([storage.read().opacity, storage.read().opacityWind], [0.5, 0.7]);
   o = world({ storage }).create();
   assert.deepEqual([o._opacityFor('hs'), o._opacityFor('tp'), o._opacityFor('wind')], [0.5, 0.5, 0.7]);
-  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;             // a mount: the layer takes the field's opacity on landing
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;             // mounts: the layer takes each field's opacity
   const seen = [];
-  o = w.create(); o.mount('wind'); await settle();
-  o.layer.setOpacity = (v) => seen.push(v);
-  await w.release(1);
-  assert.equal(seen[seen.length - 1], 0.9);
+  o = w.create(); o.mount('hs'); await settle(); await w.release(1);
+  assert.equal(o.layer.options.opacity, 0.65);
+  o.layer.setOpacity = (v) => { seen.push(v); o.layer.options.opacity = v; };
+  o.mount('wind'); await settle(); await w.releaseAll();
+  assert.deepEqual(seen, [0.9], 'switched to the wind opacity once');
+  done(o);
+});
+
+test('wind look through mount/unmount: the relief after the wind lands, the imagery back at a field change (before its frame) and at Off; the wind coastlines join without holding the frame and survive an Update', async () => {
+  const w = world(); w.coastAnswer = coastOk; w.L.tileLayer = (url, o) => fakeTile(url, o);
+  const map = w.map, on = new Set(), pane = { style: {} };
+  Object.assign(map, { hasLayer: (l) => on.has(l), removeLayer(l) { on.delete(l); }, getPane: () => pane, layers: on });
+  const img = fakeTile('World_Imagery'); img.addTo(map);
+  w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create({ coast: true, baseLayer: img });
+  o.mount('wind'); await settle();
+  for (let i = 0; i < 4 && !w.pendingBitmaps.length; i++) await settle();
+  await w.release(1);                                                         // the wind frame lands while the coast is still loading
+  assert.ok(o.layer.hasFrame(), 'wind does not wait for the coastlines'); assert.equal(o.layer._coast, null);
+  assert.ok(o.relief && on.has(o.relief)); o.relief.fire('tileload'); o.relief.fire('load'); await fade();
+  assert.deepEqual([on.has(img), on.has(o.relief), pane.style.mixBlendMode], [false, true, 'multiply']);
+  o.newerRun = null; o.abortAll();                                            // what an Update does to the mount's signal
+  while (w.pendingCoast.length) w.pendingCoast.shift()();
+  await settle();
+  assert.equal(o.layer._coast, o.coast, 'the coastlines joined'); assert.equal(o.layer._masked(), true); assert.equal(o.layer._clip, false);
+  assert.ok(/GSHHG/.test(o._attribution()), 'the GSHHG credit for wind');
+  o.layer._tiles = { a: { el: {}, coords: { z: 8, x: 15, y: 112 } } };
+  o.coast.index = o.coast.index || { tier1: { cell: 5, cells: {} } };
+  const tz = o.coast.tier1Zoom; o.coast.tier1Zoom = (z) => z >= 7;
+  assert.ok(Object.keys(o.layer._cellsNeeded()).length > 0, 'wind asks for the tier-1 cells of its tiles');
+  o.coast.tier1Zoom = tz; o.layer._tiles = {};
+  o.mount('hs'); await settle();                                              // a field change: nothing drawn -> the imagery at once
+  assert.deepEqual([on.has(img), pane.style.mixBlendMode], [true, '']);
+  await w.releaseAll();
+  o.mount('wind'); await settle(); await w.releaseAll(); await fade();
+  assert.deepEqual([on.has(img), on.has(o.relief), pane.style.mixBlendMode], [false, true, 'multiply'], 'the relief again (still loaded beneath)');
+  o.unmount();
+  assert.deepEqual([on.has(img), pane.style.mixBlendMode], [true, '']);
+  img.fire('load'); await fade();
+  assert.deepEqual([on.has(img), on.has(o.relief)], [true, false]);
+  o.mount('wind'); await settle(); await w.releaseAll();                      // a new layer with the store already loaded: it keeps it
+  assert.ok(o.layer.hasFrame()); assert.equal(o.layer._coast, o.coast);
   done(o);
 });

@@ -107,6 +107,39 @@ playback continuing; readout units follow the unit switch; Home preset, zoom cla
 console clean apart from one Render cold-start 503. Not verifiable in the pane: pinch, a real tab switch, a run without
 direction data (simulated).
 
+## Owner feedback after G10, and G11 (asset 2.9.x)
+
+On the test site the owner asked for particle animation on every overlay (no arrows), and pointed at jerky, straight
+particle streaks around a low-pressure centre on the wind layer. Cause of the streaks: the nearest-cell rule of G10-B
+P2-2 (right at a swell-regime edge) snapped the direction wherever neighbouring cells differ by more than 60°, which is
+everywhere around a cyclone; plus per-cell velocity reads and an Euler step. Asset **2.9.0–2.9.2**: the chevrons are
+gone from every layer (under reduced motion nothing animates and no direction frame is fetched; the checkbox is
+disabled and says so); the flow is built as VECTORS on the model nodes (`vectorNodes`: the field value under the node
+times its FROM direction, once per step) and interpolated between nodes as vectors on the screen lattice (`flowField`,
+per view; the land gate through the tile masks for the wave fields), so a cyclone turns smoothly and slows to nothing at
+its eye; the particles read the lattice bilinearly and advance with a midpoint step; swell particles at 8 + 3 px/s per
+metre (wave height) or 1.5 px/s per second (period), 2–4.5 s lives; `arrowAnchors`, `screenVec`, `dirAt`,
+`sampleDirRow` and the ARROW constants were removed.
+
+### G11 (one fresh reviewer at MAX, asset 2.9.1 @ edfd0ec, live run 2026092518): 0 P0, 1 P1, 3 P2, 2 P3 — fixed @ 73daf40 (2.9.2)
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| P1-1 | P1 | Reduced motion: the checkbox was neither disabled nor annotated (the README claimed it), and every step still fetched its direction frame and waited for it, for an animation that never draws. | Fixed: `_wantDir` is false under reduced motion (no flow, no fetches); the checkbox is disabled with "Off under your reduced-motion setting" (test). |
+| P2-1 | P2 | The compositing fade (`destination-in` at 0.9 per frame) never reaches zero in 8 bits: after minutes on a static view 28 % of the canvas kept alpha 5/255 — a permanent 2 % veil with ghost paths. | Fixed: no compositing fade; each particle keeps a short history (ten positions, one every 66 ms) and is drawn fresh over a cleared canvas as a dim tail plus a bright head (four strokes a frame); nothing accumulates (test). |
+| P2-2 | P2 | Swell particles ran up to one lattice cell onto the land mask (0.21 % of segments ended over the coast mask at Hawaii z6.6): the respawn check read only the cell's top-left node. | Fixed: a particle respawns when any of its four surrounding lattice nodes has no flow (test). |
+| P2-3 | P2 | 18 of 39 single mutants survived: node vectors never recomputed for a new step, nearest instead of bilinear lattice reads, absent nodes blended, the 0.25 rule, the column wrap, fractional-zoom tile keys, node buffer reuse across a resolution change, ageing, the fade exponent. | Tests added for each (113 Node). |
+| P3-1 | P3 | README wording "the readout's own rule" overstates the gate (the land part only; data presence is approximated on the direction grid). | Wording left; noted. |
+| P3-2 | P3 | Vector averaging across a 180° reversal gives a stationary line at the eye (by design; nothing visible on the live run). | Accepted. |
+
+Verified correct by the reviewer: `vectorNodes` on live frames against an independent decode — 0 mismatches over
+1.24 M nodes for all four field/direction pairings; FROM→TOWARD and the speeds match the readout (the storm's 32.9 m/s
+cell); the land-gate tile keys match Leaflet's `_tiles` at fractional zooms 7.3 / 6.6 and across the dateline; costs:
+node vectors 5–17 ms per step, the lattice 0.2–2 ms per view, the render 0.28 ms at 526 particles (1.0 ms at 3,000) on
+desktop and 0.04 / 0.28 ms on the phone preset; heap 14.2 → 17.4 MB; in-flight ≤ 2; the layer's step equals the flow's
+step in every sample over 8 steps at 4×; untick removes the canvas, all listeners, the hook, the cache and the fetches;
+the step delay with Animation 372 vs 312 ms.
+
 ## Outcome
 
 G10: **0 P0, 2 P1, 8 P2, 20 P3** across the three reviewers; every P0/P1/P2 fixed (b4e20fc, 718f41d, b984c8d) and the

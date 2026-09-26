@@ -140,7 +140,7 @@ function animator(field, l, dframe, dgrid, zoom, size) {
 }
 const strokes = (ctx) => ctx.ops.filter((o) => o === 'stroke').length;
 
-test('swell particles on wave height: seeded from the container size, two strokes a frame (halo + core), moving along the swell, longer-lived than wind', () => {
+test('swell particles on wave height: seeded from the container size, four strokes a frame (head and tail, halo + core) over a cleared canvas, moving along the swell, longer-lived than wind', () => {
   const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(180));   // from the south: up the screen
   const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
   const { fa, ctx, canvas } = animator('hs', l, pdir, HALF);
@@ -149,7 +149,8 @@ test('swell particles on wave height: seeded from the container size, two stroke
   assert.equal(fa.scheduled, 1, 'one animation frame scheduled after the rebuild');
   const y0 = fa.particles[1], x0 = fa.particles[0];
   fa.pending(100); fa.pending(150);
-  assert.equal(strokes(ctx), 4, 'halo + core per frame, two frames'); assert.ok(ctx.fills.every((a) => a > 0 && a < 1), 'fade alpha in (0, 1)');
+  assert.equal(strokes(ctx), 8, 'head + tail, halo + core, two frames'); assert.equal(ctx.ops.filter((o) => o === 'fillRect').length, 0, 'no compositing fade');
+  assert.equal(ctx.ops.filter((o) => o === 'clearRect').length, 3, 'the canvas is cleared every frame (and once at the rebuild)');
   assert.ok(fa.particles[1] < y0 && Math.abs(fa.particles[0] - x0) < 0.2, 'a particle moved up the screen (from the south)');
   assert.ok(fa.particles[3] >= I.PARTICLE_LIFE_MS.hs[0] && fa.particles[3] <= I.PARTICLE_LIFE_MS.hs[1], 'swell life 2-4.5 s');
   fa.stop(); assert.equal(fa.pending, null); assert.equal(fa.active, false);
@@ -168,8 +169,11 @@ test('wind particles: adapt their count to the frame budget, keep the trails acr
   fa.pending(100); fa.pending(150); assert.ok(fa.particles[0] > x0, 'moved east');
   fa.ema = 20; fa.adaptAt = 0; fa._adapt(20, 5000); assert.ok(fa.count < Math.round(800 * 600 / 900), 'over budget: fewer particles');
   fa.ema = 0.5; fa.adaptAt = 0; fa._adapt(0.5, 9000); assert.ok(fa.count > I.PARTICLE_MIN, 'room: back up');
-  const clears = ctx.ops.filter((o) => o === 'clearRect').length;
-  fa.setData(wdir2, HALF, { step: 3 }); assert.equal(ctx.ops.filter((o) => o === 'clearRect').length, clears, 'a new step does not wipe the trails');
+  const clears = ctx.ops.filter((o) => o === 'clearRect').length, nodes0 = fa.nodes;
+  fa.setData(wdir2, HALF, { step: 3 }); assert.equal(ctx.ops.filter((o) => o === 'clearRect').length, clears, 'a new step does not wipe the tails');
+  assert.ok(fa.nodesFor === wdir2 && fa.nodes.U === nodes0.U, 'the node vectors are recomputed for the new step, in the same buffers (G11 m32 / m05)');
+  const full = frame(1440, 721, () => code(270)); fa.setData(full, GRID, { step: 6 }); assert.equal(fa.nodes.cols, 1440, 'a resolution change reallocates the node buffers');
+  fa.setData(wdir, HALF, { step: 9 });
   const vf0 = fa.vf; fa._rebuild(); assert.equal(fa.vf.u, vf0.u, 'the lattice buffers are reused');
   map.getContainer = () => ({ clientWidth: 1600, clientHeight: 1200 }); fa._rebuild();
   assert.equal(fa.target, Math.round(1600 * 1200 / 900), 'the target follows the view'); assert.ok(fa.count <= fa.target);
@@ -213,4 +217,42 @@ test('suspend / resume count nested moves and zooms with a dirty flag, a view re
   assert.equal(s.fa.mode, null); assert.equal(s.fa.active, false); assert.equal(s.fa.scheduled, 0); assert.equal(strokes(s.ctx), 0, 'nothing drawn');
   s.fa.suspend(); s.fa.resume(); assert.equal(s.fa.active, false); assert.equal(s.fa.scheduled, 0, 'no loop after hide / show either');
   delete global.matchMedia;
+});
+
+// ---- G11 ----
+
+test('G11 P2-1 / P2-2: tails come from a per-particle history (cleared on respawn), a particle next to a cell without flow respawns before drifting onto it', () => {
+  const wind = frame(720, 361, () => codeOf(10, WIND)), wdir = frame(720, 361, () => code(270));
+  const l = layer(wind, HALF, 'wind', WIND); l._tileZoom = 6;
+  const { fa, ctx } = animator('wind', l, wdir, HALF);
+  const P = fa.particles; P[0] = 100; P[1] = 300; P[2] = 0; P[3] = 1e9; fa.count = 1; fa.histN[0] = 0;
+  for (let k = 0; k < 30; k++) fa._renderParticles(33);                                   // ~1 s: history points every 66 ms
+  assert.ok(fa.histN[0] >= I.TRAIL_POINTS, 'history filled: ' + fa.histN[0]);
+  const tailOps = ctx.ops.slice(-6); assert.ok(tailOps.includes('lineTo') && tailOps.includes('stroke'), 'the tail is drawn');
+  const before = fa.histN[0]; fa._respawn(0, fa.v); assert.equal(fa.histN[0], 0, 'a respawn clears the history'); assert.ok(before > 0);
+  // a wall of no-flow cells east of x = 400: a particle at x = 396 (its right nodes without flow) respawns at once
+  const vf = fa.vf; for (let j = 0; j < vf.rows; j++) for (let i = 0; i < vf.cols; i++) { const wall = i * vf.s >= 400; vf.u[j * vf.cols + i] = wall ? 0 : 30; vf.v[j * vf.cols + i] = 0; }
+  P[0] = 396; P[1] = 300; P[2] = 0; const gone = () => !(Math.abs(P[0] - 396) < 8 && Math.abs(P[1] - 300) < 8);
+  assert.equal(fa._flowing(396, 300), false); fa._renderParticles(16); assert.ok(gone(), 'respawned instead of moving onto the wall');
+  P[0] = 380; P[1] = 300; assert.equal(fa._flowing(380, 300), true); fa._renderParticles(16); assert.ok(Math.abs(P[0] - 380.5) < 0.2, 'a particle with flow on all four nodes moves');
+});
+
+test('G11 P2-3: bilinear reads between lattice cells (m35), absent nodes excluded and the 0.25 rule (m36 / m07), the column wrap at the last column (m08 / m30), fractional-zoom tile keys (m13 / m14), ageing (m21 / m23)', () => {
+  const wind = frame(720, 361, () => codeOf(10, WIND)), l = layer(wind, HALF, 'wind', WIND); l._tileZoom = 6;
+  const { fa } = animator('wind', l, frame(720, 361, () => code(270)), HALF);
+  const vf = fa.vf; vf.u.fill(0); vf.v.fill(0); vf.u[0] = 10; vf.u[1] = 30;                 // cells (0,0) and (1,0)
+  const out = new Float64Array(2); fa._velocity(vf.s * 0.5, 0, out); assert.ok(Math.abs(out[0] - 20) < 1e-9, 'halfway: the mean, not a snap');
+  const one = frame(720, 361, (r, c) => (r === 100 && c === 100 ? code(270) : 0)), N = I.vectorNodes('wind', l, one, HALF);
+  const v = (lat, lng) => { const f = I.flowField(viewAt(lat, lng, 6, 40, 40), 4, N, HALF, l, false); return at(f, 20, 20); };
+  const lat = 90 - 100 * 0.5, lon = -180 + 100 * 0.5, sec = 1 / Math.cos(lat * Math.PI / 180);
+  assert.ok(Math.abs(v(lat, lon + 0.25)[0] - 30 * sec) < 1, 'one node at weight 0.5: its vector (not blended with absent ones), times the Mercator stretch'); assert.equal(v(lat, lon + 0.4)[0], 0, 'weight 0.2: nothing');
+  const wrap = frame(720, 361, (r, c) => (c === 719 || c === 0 ? code(270) : 0)), NW = I.vectorNodes('wind', l, wrap, HALF);
+  const fw = I.flowField(viewAt(lat, 179.9, 6, 40, 40), 4, NW, HALF, l, false); assert.ok(Math.abs(at(fw, 20, 20)[0] - 30 * sec) < 1, 'between column 719 and column 0 the flow is defined');
+  const hs = frame(1440, 721, () => codeOf(3, HS)), lh = layer(hs, GRID, 'hs', HS); lh._tileZoom = 6; lh._clip = true;
+  const NH = I.vectorNodes('hs', lh, frame(720, 361, () => code(300)), HALF), view = viewAt(21.5, -158, 6.4, 200, 200);
+  const scale = Math.pow(2, 0.4); for (let y = -256; y <= 456; y += 64) for (let x = -256; x <= 456; x += 64) { const tx = Math.floor((view.ox + x) / scale / 256), ty = Math.floor((view.oy + y) / scale / 256); lh._tiles[tx + ':' + ty + ':6'] = { el: { _ovLand: null }, coords: { x: tx, y: ty, z: 6 } }; }
+  assert.ok(I.flowField(view, 4, NH, HALF, lh, true).u.some((x) => x !== 0), 'tiles found at zoom 6.4 through the tile zoom 6 keys');
+  for (const k in lh._tiles) delete lh._tiles[k]; assert.equal(I.flowField(view, 4, NH, HALF, lh, true).u.some((x) => x !== 0), false, 'no tiles: nothing');
+  const P = fa.particles; vf.u.fill(30); vf.v.fill(0); P[0] = 100; P[1] = 100; P[2] = 0; P[3] = 100; fa.count = 1;
+  fa._renderParticles(40); assert.equal(P[2], 40); fa._renderParticles(40); assert.equal(P[2], 80); fa._renderParticles(40); assert.equal(P[2], 120, 'still alive at the check'); fa._renderParticles(40); assert.ok(P[2] < 80 && P[3] >= I.PARTICLE_LIFE_MS.wind[0], 'aged out at 120 > 100 ms: respawned with a wind life');
 });

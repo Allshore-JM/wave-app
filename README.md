@@ -100,7 +100,7 @@ level (next to islands as in open water); the colours, transparency, the coast c
 values. No line beside missing data,
 where lines would crowd under 3 px apart, along the flat foot of a steep ramp, or in a model cell where the peak
 period jumps more than 2 s between neighbouring nodes (the smoothing never blends two swell regimes).
-Animation (asset 2.9.1): an Animation checkbox on the Opacity row (off by default, remembered for the tab) draws
+Animation (asset 2.9.2): an Animation checkbox on the Opacity row (off by default, remembered for the tab) draws
 particles with fading trails that flow along the dominant swell direction under wave height and peak period, and along
 the wind under wind speed, on a canvas of their own under the forecast points (no pointer events; markers keep their
 taps). The directions come from the `pdir` / `wdir` frames of the same step, loaded through the frame scheduler
@@ -116,9 +116,10 @@ masks, the readout's own rule; nothing under 0.1 m of wave height on the wave-he
 layer, the model's no-wave floor along the ice margins). Speeds in screen px/s times the Mercator stretch (capped at 3):
 wind 3 per m/s; wave height 8 + 3 per metre; period 1.5 per second (the group speed grows with the period). About one
 particle per 900 screen pixels squared (150-3,000, fewer when a frame runs past 4 ms on desktops / 8 ms on phones), each
-a dark halo under a light core so they read over the dark ocean and the light desert or ice imagery alike; wind particles
-live 1-2.5 s, swell particles 2-4.5 s. Under the viewer's reduced-motion setting nothing animates (the checkbox is
-disabled and says so). The animation stops on Off, when
+a bright head with a dim tail of its last ~0.6 s of positions, a dark halo under a light core so they read over the dark
+ocean and the light desert or ice imagery alike, drawn fresh over a cleared canvas every frame (no compositing fade, so
+nothing accumulates); wind particles live 1-2.5 s, swell particles 2-4.5 s. Under the viewer's reduced-motion setting
+nothing animates and no direction frames are fetched (the checkbox is disabled and says so). The animation stops on Off, when
 unticked, in a hidden tab, and while the map moves or zooms (rebuilt at the end). Runs published before the direction
 fields existed disable the checkbox
 ("This run has no direction data").

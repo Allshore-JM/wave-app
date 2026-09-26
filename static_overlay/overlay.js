@@ -1134,7 +1134,7 @@
     tp: function (v) { return v < 3 ? 0 : 1.5 * v; }
   };
   var FLOW_STYLE = { wind: { width: 1.2, halo: 2.6 }, hs: { width: 1.5, halo: 3.2 }, tp: { width: 1.5, halo: 3.2 } };
-  var TRAIL_KEEP = 0.9;                                    // trail alpha kept per 16.7 ms (frame-rate independent fade)
+  var TRAIL_POINTS = 10, TRAIL_EVERY_MS = 66;              // a particle's tail: its last 10 positions, one every 66 ms (~0.6 s), drawn fresh each frame
   var PARTICLE_LIFE_MS = { wind: [1000, 2500], hs: [2000, 4500], tp: [2000, 4500] };   // a particle lives this long (uniform), then respawns
   var CODE_SIN = new Float64Array(256), CODE_COS = new Float64Array(256);
   (function () { for (var q = 1; q < 255; q++) { var a = (q - 1) / 254 * 2 * Math.PI; CODE_SIN[q] = Math.sin(a); CODE_COS[q] = Math.cos(a); } })();
@@ -1263,7 +1263,7 @@
     this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
     this.field = null; this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.mode = null;   // 'particles' while animating
     this.nodes = null; this.nodesFor = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0;
-    this.vel = new Float64Array(2); this.vel2 = new Float64Array(2);
+    this.vel = new Float64Array(2); this.vel2 = new Float64Array(2); this.hist = null; this.histN = null; this.histT = null;
     this.active = false; this.suspended = 0; this.dirty = false; this.rafId = null; this.lastT = 0;
     this.ema = 0; this.adaptAt = 0; this._listeners = [];
     this.setLayer(layer);
@@ -1358,18 +1358,27 @@
     this.vf = flowField(v, cellPx >= 16 ? 8 : 4, this.nodes, this.dgrid, this.layer, !!this.layer._clip, this.vf);
     this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));   // follows the view
     if (!this.particles) this._seed(v); else if (this.count > this.target) this.count = this.target;
-    if (!same) this._clear();                                                    // a new step keeps the trails; a moved view starts clean
+    if (!same) this._clear();                                                    // a moved view starts clean (a new step keeps the tails)
     this._start();
   };
   FlowAnimator.prototype._life = function () { return PARTICLE_LIFE_MS[this.field] || PARTICLE_LIFE_MS.wind; };
   FlowAnimator.prototype._seed = function (v) {
     this.count = this.target;
     this.particles = new Float32Array(PARTICLE_MAX * 4);                     // x, y, age (ms), life (ms) per particle
+    this.hist = new Float32Array(PARTICLE_MAX * TRAIL_POINTS * 2); this.histN = new Uint8Array(PARTICLE_MAX); this.histT = new Float32Array(PARTICLE_MAX);
     for (var i = 0; i < PARTICLE_MAX; i++) { this._respawn(i * 4, v); this.particles[i * 4 + 2] = Math.random() * this._life()[0]; }
   };
   FlowAnimator.prototype._respawn = function (k, v) {
     var P = this.particles, life = this._life(); P[k] = Math.random() * v.w; P[k + 1] = Math.random() * v.h; P[k + 2] = 0;
     P[k + 3] = life[0] + Math.random() * (life[1] - life[0]);
+    this.histN[k >> 2] = 0; this.histT[k >> 2] = 0;                             // a fresh particle has no tail
+  };
+  // Does the flow run at every lattice node around (x, y)? (A particle at a coast or a data edge respawns
+  // before it can drift onto the undrawn side.)
+  FlowAnimator.prototype._flowing = function (x, y) {
+    var vf = this.vf, s = vf.s, cols = vf.cols, rows = vf.rows, i0 = (x / s) | 0, j0 = (y / s) | 0, i1 = i0 + 1 < cols ? i0 + 1 : i0, j1 = j0 + 1 < rows ? j0 + 1 : j0;
+    var u = vf.u, v = vf.v, a = j0 * cols + i0, b = j0 * cols + i1, c = j1 * cols + i0, d = j1 * cols + i1;
+    return (u[a] !== 0 || v[a] !== 0) && (u[b] !== 0 || v[b] !== 0) && (u[c] !== 0 || v[c] !== 0) && (u[d] !== 0 || v[d] !== 0);
   };
   // The lattice velocity at a screen point, bilinear over the four cells around it (out[0], out[1] px/s).
   FlowAnimator.prototype._velocity = function (x, y, out) {
@@ -1401,28 +1410,48 @@
     if (this.ema > budget) this.count = Math.max(PARTICLE_MIN, Math.round(this.count * 0.85));
     else if (this.ema < budget * 0.6 && this.count < this.target) this.count = Math.min(this.target, Math.round(this.count * 1.1) + 1);
   };
+  // Particles over a CLEARED canvas each frame (no compositing fade: an 8-bit fade never reaches zero and
+  // leaves a veil): every live particle moves by the flow (a midpoint step, smooth around a turning
+  // flow), keeps a short history of positions (one every TRAIL_EVERY_MS) and is drawn as a dim tail
+  // through them plus a bright head segment, each a dark halo under a light core (four strokes a frame).
+  // One that ages out, leaves the map, or reaches a lattice cell where the flow stops (a coast, a data
+  // edge, a flat sea) is respawned somewhere in the view.
   FlowAnimator.prototype._renderParticles = function (dt) {
-    var ctx = this.ctx, v = this.v, vf = this.vf, P = this.particles;
+    var ctx = this.ctx, v = this.v, vf = this.vf, P = this.particles, H = this.hist, HN = this.histN, HT = this.histT;
     if (!ctx || !v || !vf || !P) return;
-    var w = v.w, h = v.h, n = this.count, s = vf.s, cols = vf.cols, dts = dt / 1000, half = dts / 2, V1 = this.vel, V2 = this.vel2, i, k;
+    var w = v.w, h = v.h, n = this.count, dts = dt / 1000, half = dts / 2, V1 = this.vel, V2 = this.vel2, i, k, q, m;
     var style = FLOW_STYLE[this.field] || FLOW_STYLE.wind;
-    ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = 'rgba(0,0,0,' + Math.pow(TRAIL_KEEP, dt / 16.7).toFixed(4) + ')'; ctx.fillRect(0, 0, w, h);
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.lineCap = 'round';
+    ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(0, 0, w, h);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // move, then the head segments (moveTo the old position, lineTo the new one) in one path
     ctx.beginPath();
     for (i = 0, k = 0; i < n; i++, k += 4) {
-      var x = P[k], y = P[k + 1], age = P[k + 2], c = ((y / s) | 0) * cols + ((x / s) | 0);
-      if (age >= P[k + 3] || (vf.u[c] === 0 && vf.v[c] === 0)) { this._respawn(k, v); continue; }   // aged out, or not drawn here
-      this._velocity(x, y, V1);                                                 // midpoint step: smooth around a turning flow
+      var x = P[k], y = P[k + 1], age = P[k + 2];
+      if (age >= P[k + 3] || !this._flowing(x, y)) { this._respawn(k, v); continue; }
+      this._velocity(x, y, V1);
       var xm = x + V1[0] * half, ym = y + V1[1] * half;
       if (xm >= 0 && ym >= 0 && xm < w && ym < h) this._velocity(xm, ym, V2); else { V2[0] = V1[0]; V2[1] = V1[1]; }
       var nx = x + V2[0] * dts, ny = y + V2[1] * dts;
       if (!(nx >= 0 && ny >= 0 && nx < w && ny < h)) { this._respawn(k, v); continue; }
+      HT[i] += dt;
+      if (HT[i] >= TRAIL_EVERY_MS || HN[i] === 0) {                             // record the position the head leaves behind
+        HT[i] = 0; m = HN[i]; q = (i * TRAIL_POINTS + (m % TRAIL_POINTS)) * 2; H[q] = x; H[q + 1] = y; HN[i] = m + 1 > 255 ? 255 - TRAIL_POINTS + ((m + 1) % TRAIL_POINTS) : m + 1;
+      }
       ctx.moveTo(x, y); ctx.lineTo(nx, ny);
       P[k] = nx; P[k + 1] = ny; P[k + 2] = age + dt;
     }
     ctx.lineWidth = style.halo; ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.stroke();
-    ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.stroke();
+    ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.stroke();
+    // the tails: the recorded positions, oldest first, up to the current position
+    ctx.beginPath();
+    for (i = 0, k = 0; i < n; i++, k += 4) {
+      m = HN[i]; if (m < 2 && !(m === 1)) continue;
+      var cnt = m < TRAIL_POINTS ? m : TRAIL_POINTS, start = m - cnt, first = true;
+      for (q = start; q < m; q++) { var idx = (i * TRAIL_POINTS + (q % TRAIL_POINTS)) * 2; if (first) { ctx.moveTo(H[idx], H[idx + 1]); first = false; } else ctx.lineTo(H[idx], H[idx + 1]); }
+      ctx.lineTo(P[k], P[k + 1]);
+    }
+    ctx.lineWidth = style.halo; ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.stroke();
+    ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.stroke();
   };
 
   // ---- controller ----
@@ -1890,7 +1919,7 @@
     return this._dirGridsOk ? f : null;
   };
   Overlay.prototype.animAvailable = function () { return !!this._dirDef(); };
-  Overlay.prototype._wantDir = function () { return !!(this.anim && this.layer && this._dirDef()); };
+  Overlay.prototype._wantDir = function () { return !!(this.anim && this.layer && this._dirDef() && !reducedMotion()); };   // reduced motion: nothing animates, nothing is fetched
   // The animator exists exactly while the box is ticked and the run has this field's direction; it
   // follows the layer and the field, and its direction resolution follows the zoom.
   Overlay.prototype._ensureFlow = function () {
@@ -2165,10 +2194,10 @@
       cl.appendChild(cb); cl.appendChild(document.createTextNode(' Contours')); row.appendChild(cl);
     }
     // Animation: swell arrows (wave height, period) or wind particles; disabled on a run without direction data
-    var avail = this.animAvailable(), al = mk('label', 'ov-check'), ab = mk('input'); ab.type = 'checkbox';
-    ab.checked = this.anim && avail; ab.disabled = !avail;
+    var avail = this.animAvailable(), reduced = reducedMotion(), al = mk('label', 'ov-check'), ab = mk('input'); ab.type = 'checkbox';
+    ab.checked = this.anim && avail && !reduced; ab.disabled = !avail || reduced;
     ab.setAttribute('aria-label', 'Animation: ' + (field === 'wind' ? 'wind particles' : 'swell particles'));
-    if (!avail) al.title = 'This run has no direction data';
+    if (!avail) al.title = 'This run has no direction data'; else if (reduced) al.title = 'Off under your reduced-motion setting';
     ab.addEventListener('change', function () { self.setAnim(ab.checked); });
     al.appendChild(ab); al.appendChild(document.createTextNode(' Animation')); row.appendChild(al);
     body.appendChild(row);
@@ -2239,6 +2268,6 @@
       FlowAnimator: FlowAnimator, sampleRow: sampleRow,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
-      ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_KEEP: TRAIL_KEEP, dirGridsOk: dirGridsOk }
+      ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk }
   };
 })();

@@ -43,7 +43,7 @@ function layer(fr, grid, field, fdef, opacity) {
 function viewAt(lat, lng, z, w, h) { const p = I.forwardPixel(lat, lng, z); return { z, w, h, ox: p.x - w / 2, oy: p.y - h / 2, zt: Math.round(z) }; }
 const at = (vf, x, y) => { const c = ((y / vf.s) | 0) * vf.cols + ((x / vf.s) | 0); return [vf.u[c], vf.v[c]]; };
 
-test('sampleRow is the layer sampler; dirFieldOk and dirRes: only circular FROM fields, wind direction half only, pdir half below 7, full from 7.5 with hysteresis', () => {
+test('sampleRow is the layer sampler; dirFieldOk and dirRes: only circular FROM fields, wind direction half only, pdir half at the default zoom 6, full from 6.5 with hysteresis', () => {
   const hs = frame(720, 361, (r, c) => 1 + ((r * 7 + c * 3) % 254)), l = layer(hs, HALF, 'hs', HS);
   const colPos = new Float64Array([10.3, 400.75, 719.5]), out = new Float64Array(3), viaLayer = new Float64Array(3);
   I.sampleRow(hs, false, 100.4, colPos, 3, out, 0); l._codeRow(100.4, colPos, 3, viaLayer, 0);
@@ -52,8 +52,9 @@ test('sampleRow is the layer sampler; dirFieldOk and dirRes: only circular FROM 
   assert.equal(I.dirFieldOk(HS), false); assert.equal(I.dirFieldOk(Object.assign({}, PDIR, { convention: 'to' })), false);
   assert.equal(I.dirFieldOk(Object.assign({}, PDIR, { resolutions: [] })), false); assert.equal(I.dirFieldOk(undefined), false);
   for (const z of [3, 7, 9, 11]) assert.equal(I.dirRes(WDIR, z, null), 'half');
-  assert.equal(I.dirRes(PDIR, 6.9, null), 'half'); assert.equal(I.dirRes(PDIR, 7.5, null), 'full'); assert.equal(I.dirRes(PDIR, 7.2, null), 'half');
-  assert.equal(I.dirRes(PDIR, 7.2, 'full'), 'full'); assert.equal(I.dirRes(PDIR, 6.9, 'full'), 'half'); assert.equal(I.dirRes(PDIR, 7.2, 'half'), 'half');
+  assert.equal(I.dirRes(PDIR, 6, null), 'half', 'the default zoom: half'); assert.equal(I.dirRes(PDIR, 6.5, null), 'full', 'zoomed in: full'); assert.equal(I.dirRes(PDIR, 6.3, null), 'half');
+  assert.equal(I.dirRes(PDIR, 6.2, 'full'), 'full', 'hysteresis'); assert.equal(I.dirRes(PDIR, 5.9, 'full'), 'half'); assert.equal(I.dirRes(PDIR, 6.3, 'half'), 'half');
+  assert.equal(I.dirRes(PDIR, 3, null), 'half'); assert.equal(I.dirRes(PDIR, 11, 'half'), 'full');
   assert.equal(I.DIR_FIELDS.hs, 'pdir'); assert.equal(I.DIR_FIELDS.tp, 'pdir'); assert.equal(I.DIR_FIELDS.wind, 'wdir');
 });
 

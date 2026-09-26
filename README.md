@@ -127,13 +127,16 @@ level (next to islands as in open water); the colours, transparency, the coast c
 values. No line beside missing data,
 where lines would crowd under 3 px apart, along the flat foot of a steep ramp, or in a model cell where the peak
 period jumps more than 2 s between neighbouring nodes (the smoothing never blends two swell regimes).
-Animation (asset 2.9.2): an Animation checkbox on the Opacity row (off by default, remembered for the tab) draws
+Animation (asset 2.9.3): an Animation checkbox on the Opacity row (off by default, remembered for the tab) draws
 particles with fading trails that flow along the dominant swell direction under wave height and peak period, and along
 the wind under wind speed, on a canvas of their own under the forecast points (no pointer events; markers keep their
 taps). The directions come from the `pdir` / `wdir` frames of the same step, loaded through the frame scheduler
 beside the field frame (the target's field frame first, then its direction, then the ring of frames around it, never more
-than two downloads at once; `pdir` at the 0.5 degree frames below zoom 7 and the 0.25 degree ones from 7.5, `wdir` at 0.5
-degrees only). A direction is shown only for the step on the map: a step change clears the animation until that step's
+than two downloads at once; `pdir` at the 0.5 degree frames at the default zoom 6 and wider and the 0.25 degree ones as
+soon as the map is zoomed in, from 6.5 (back below 6), so near coasts the direction comes from the finer grid; `wdir` at
+0.5 degrees only). Data per 81-frame loop with Animation on: about 20 MB on desktops at the default zoom (wave height +
+direction), 31 MB zoomed in, 11 MB on phones at the default zoom, 23 MB zoomed in; wind + wind direction about 22 MB. On
+phones the Opacity / Contours / Animation row sits right under the timeline and the valid time in the sheet's header. A direction is shown only for the step on the map: a step change clears the animation until that step's
 direction frame has landed, so an older direction is never drawn under a newer time. The flow is built as vectors on
 the model's nodes (the field value under the node times its FROM direction; the direction is the spectral peak's, NOAA
 DIRPW: the partition carrying the peak period, which is not always the forecast table's first swell) and interpolated

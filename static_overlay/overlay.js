@@ -2167,7 +2167,7 @@
     // Animation: swell arrows (wave height, period) or wind particles; disabled on a run without direction data
     var avail = this.animAvailable(), al = mk('label', 'ov-check'), ab = mk('input'); ab.type = 'checkbox';
     ab.checked = this.anim && avail; ab.disabled = !avail;
-    ab.setAttribute('aria-label', 'Animation: ' + (field === 'wind' ? 'wind particles' : 'swell direction arrows'));
+    ab.setAttribute('aria-label', 'Animation: ' + (field === 'wind' ? 'wind particles' : 'swell particles'));
     if (!avail) al.title = 'This run has no direction data';
     ab.addEventListener('change', function () { self.setAnim(ab.checked); });
     al.appendChild(ab); al.appendChild(document.createTextNode(' Animation')); row.appendChild(al);

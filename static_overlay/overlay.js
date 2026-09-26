@@ -46,6 +46,10 @@
     opacity: 0.9,                                            // the wind's default opacity (the waves keep 0.65); each remembered for the tab
     ink: [34, 38, 46], gain: 1.4                             // the coastline's colour and strength (coastEdges)
   };
+  // Leaflet fires a tile layer's 'load' when its last tile STARTS its 200-ms fade-in (G14 P1-1: removing the old
+  // basemap then showed the bare map for ~200 ms): the old one leaves this long after.
+  var BASE_FADE_MS = 300;
+  var RELIEF_RETRY_MS = 10 * 60 * 1000;                     // a relief that loaded no tile is tried again after this
   // Value (SI units) -> legend position knots, piecewise linear, written for a legend from 0 to the last
   // knot (12 m; legendPos stretches them to any other legend); fields without knots are linear over the
   // legend range. The tiles stay linear in value (composeTile indexes a 256-entry LUT over the legend
@@ -1566,7 +1570,7 @@
     var s = saved();
     this.opacity = typeof s.opacity === 'number' && s.opacity >= 0.2 && s.opacity <= 1 ? s.opacity : 0.65;             // wave height, peak period
     this.opacityWind = typeof s.opacityWind === 'number' && s.opacityWind >= 0.2 && s.opacityWind <= 1 ? s.opacityWind : WIND_LOOK.opacity;
-    this.relief = null; this._base = 'imagery'; this._reliefFailed = false;   // opts.baseLayer: the page's imagery (the wind swaps it)
+    this.relief = null; this._base = 'imagery'; this._reliefFailed = 0;   // opts.baseLayer: the page's imagery (the wind swaps it)
     this.speed = SPEEDS.indexOf(s.speed) >= 0 ? s.speed : 1;
     this.contours = s.contours === true;                   // off until ticked, then remembered for the tab
     this.anim = s.anim === true;                           // the Animation box, likewise
@@ -1603,8 +1607,8 @@
     // field spilling onto land and then snapping back is the wrong picture), later draws never do.
     // Wind draws the coastlines as lines only: it never waits for them, they join when loaded.
     var waitCoast = !!CLIP_FIELDS[fieldName], coastP = this.coast && (waitCoast || OUTLINE_FIELDS[fieldName]) ? this.coast.load() : Promise.resolve(null);
-    if (!waitCoast) coastP.then(function (store) {
-      if (sig.aborted || !self.layer || !store || self.layer._coast === store) return;
+    if (!waitCoast) coastP.then(function (store) {                           // (not tied to this mount's signal: an Update meanwhile keeps them)
+      if (!self.layer || !store || self.layer._coast === store) return;
       self.layer.setCoast(store);
       if (self.layer.hasFrame()) self._attribute();
     }, function () {});
@@ -2006,31 +2010,49 @@
   Overlay.prototype._opacityFor = function (field) { return field === 'wind' ? this.opacityWind : this.opacity; };
   // The basemap and the model pane's blend follow what is DRAWN: a wind frame on the map -> the relief
   // (WIND_LOOK), multiplied; anything else (another field, a field still loading, Off) -> the page's
-  // imagery, no blend. The new basemap goes on top and the old one leaves once the new one's tiles are in
-  // (never a map without a basemap); a relief that loads no tile at all is given up for the session.
+  // imagery, no blend. The new basemap goes on top and the old one leaves once the new one's tiles have
+  // faded in (never a map without a basemap); the blend is on only while the relief is the sole basemap
+  // (never the wind multiplied into the dark imagery). A relief that loads no tile is retried after a cooldown.
   Overlay.prototype._syncLook = function () {
     var map = this.map, img = this.opts.baseLayer, layer = this.layer, self = this;
-    if (layer) layer.setOpacity(this._opacityFor(layer.field || this.field));
+    if (layer) {
+      var op = this._opacityFor(layer.field || this.field);
+      if (!layer.options || layer.options.opacity !== op) layer.setOpacity(op);   // (called on every landing: only on a change)
+    }
     var wind = !!(layer && layer.hasFrame() && layer.field === 'wind');
-    var want = wind && img && WIND_LOOK.base && !this._reliefFailed ? 'relief' : 'imagery';
+    var failed = this._reliefFailed && Date.now() - this._reliefFailed < RELIEF_RETRY_MS;
+    var want = wind && img && WIND_LOOK.base && !failed ? 'relief' : 'imagery';
     if (want === 'relief' && this._base !== 'relief' && !map.hasLayer(img)) want = 'imagery';   // the page's imagery is not on the map: leave the basemap alone
-    var pane = map.getPane && map.getPane('modelPane');
-    if (pane && pane.style) pane.style.mixBlendMode = want === 'relief' ? WIND_LOOK.blend : '';
-    if (want === this._base || !img) return;
-    this._base = want;
-    var relief = this._reliefLayer(img), show = want === 'relief' ? relief : img, hide = want === 'relief' ? img : relief;
-    if (map.hasLayer(show)) { if (map.hasLayer(hide)) map.removeLayer(hide); return; }   // still loaded beneath the other (a quick switch back)
-    show.once('load', function () {
-      if (self._base !== want) return;                                        // switched again meanwhile
-      if (show === relief && !relief._ovTiles) { self._reliefFailed = true; self._syncLook(); return; }
-      if (map.hasLayer(hide)) map.removeLayer(hide);
-    });
-    show.addTo(map);
+    if (want !== this._base && img) {
+      this._base = want;
+      var relief = this._reliefLayer(img), show = want === 'relief' ? relief : img, hide = want === 'relief' ? img : relief;
+      if (map.hasLayer(show)) { if (map.hasLayer(hide)) map.removeLayer(hide); }  // still loaded beneath the other (a quick switch back)
+      else {
+        if (show === relief) relief._ovTiles = 0;
+        show.once('load', function () {
+          if (self._base !== want) return;                                    // switched again meanwhile
+          if (show === relief && !relief._ovTiles) { self._reliefFailed = Date.now(); self._syncLook(); return; }
+          setTimeout(function () {
+            if (self._base !== want || !map.hasLayer(show)) return;
+            if (map.hasLayer(hide)) map.removeLayer(hide);
+            self._blend();
+          }, BASE_FADE_MS);
+        });
+        show.addTo(map);
+      }
+    }
+    this._blend();
+  };
+  Overlay.prototype._blend = function () {
+    var map = this.map, pane = map.getPane && map.getPane('modelPane'), r = this.relief, img = this.opts.baseLayer;
+    var on = this._base === 'relief' && !!r && map.hasLayer(r) && !(img && map.hasLayer(img));
+    if (pane && pane.style) pane.style.mixBlendMode = on ? WIND_LOOK.blend : '';
   };
   Overlay.prototype._reliefLayer = function (img) {
     if (this.relief) return this.relief;
-    var o = img.options || {}, r = this.relief = L.tileLayer(WIND_LOOK.base, { maxZoom: o.maxZoom, minZoom: o.minZoom, noWrap: o.noWrap,
-      keepBuffer: o.keepBuffer, attribution: WIND_LOOK.attribution, className: 'ov-relief' });
+    var o = img.options || {}, ro = { attribution: WIND_LOOK.attribution, className: 'ov-relief' };
+    ['maxZoom', 'minZoom', 'noWrap', 'keepBuffer'].forEach(function (k) { if (o[k] !== undefined) ro[k] = o[k]; });
+    var r = this.relief = L.tileLayer(WIND_LOOK.base, ro);
     r._ovTiles = 0;
     r.on('tileload', function () { r._ovTiles++; });
     return r;
@@ -2442,7 +2464,7 @@
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
-      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
+      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
       validCoastIndex: validCoastIndex,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,

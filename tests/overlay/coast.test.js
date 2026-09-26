@@ -1031,6 +1031,14 @@ test('coastEdges: ink only where the mask crosses sea/land, the same in every ro
     assert.ok(r[1][1] > r[0][1] && r[1][1] > r[2][1], 'darkest on the crossing');
     assert.ok(Math.abs(r.reduce((s, v) => s + v[1], 0) - g) < 0.01, 'total ink = gain');
   }
+  const hz = new Uint8Array(S * S);                                            // an east-west coast: land below row 60.5
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) hz[y * S + x] = y > 60 ? 255 : y === 60 ? 128 : 0;
+  const eh = I.coastEdges(hz, g), ys = new Set(); let tot = 0;
+  for (let j = 0; j < eh.n; j++) { ys.add(Math.floor(eh.idx[j] / S)); tot += eh.a[j]; }
+  assert.deepEqual([...ys].sort((p, q) => p - q), [59, 60, 61]); assert.ok(Math.abs(tot / S - g) < 0.01);
+  const faint = (v) => { const f = new Uint8Array(S * S); for (let x = 0; x < S; x++) f[128 * S + x] = v; return I.coastEdges(f, g).n; };
+  assert.equal(faint(4), 0, 'a trace of mask (a sliver far below a pixel) draws nothing');
+  assert.equal(faint(20), 2 * S, 'a thin sliver of land still gets its line');
   const b = new Uint8Array(S * S);                                             // land from column 1: the border column uses a one-sided step
   for (let y = 0; y < S; y++) for (let x = 1; x < S; x++) b[y * S + x] = 255;
   const eb = I.coastEdges(b, g), cols = new Set(); for (let j = 0; j < eb.n; j++) cols.add(eb.idx[j] % S);
@@ -1077,4 +1085,30 @@ test('wind with a coast store: coastlines drawn only along the coast, nothing cl
   const hd = drawTile(h, coords); let clipped = 0;
   for (let i = 0; i < 65536; i++) if (hd[i * 4 + 3] < 255) clipped++;
   assert.ok(clipped > 1000, 'hs still clipped');
+});
+
+test('wind coastlines follow the mask: the tier-0 stand-in lines are replaced when the tier-1 chunk lands (edge cache keyed by the mask)', () => {
+  const coarse = I.decodeCoast(encodeCoast([[sq(-158.3, 21.2, -157.6, 21.7)]], 5));
+  const fine = I.decodeCoast(encodeCoast([[OAHU], [sq(-158.1, 21.0, -157.8, 21.2)]], 5));
+  const coords = { z: 8, x: 15, y: 112 };
+  const store = { status: 'ok', rev: 0, onChange: null, sets: [coarse], complete: false, setsFor() { return { sets: this.sets, complete: this.complete }; } };
+  const w = layer(frame(1440, 721, () => 90), GRID, 'wind', WIND); w.setCoast(store);
+  const el = grabEl(); w._draw(el, coords); const first = el.out, e1 = el._ovEdges;
+  w._tiles = { t: { el, coords } };
+  store.sets = [fine]; store.complete = true; store.rev++;
+  w._redrawIncomplete();                                                       // what the store's onChange does when the chunk lands
+  assert.notEqual(el._ovEdges, e1, 'edges recomputed for the new mask');
+  const ref = layer(frame(1440, 721, () => 90), GRID, 'wind', WIND); ref.setCoast(fakeStore([fine]));
+  assert.deepEqual(Array.from(el.out), Array.from(drawTile(ref, coords)), 'the same picture as a tile drawn from the final mask');
+  assert.notDeepEqual(Array.from(first), Array.from(el.out));
+});
+
+test('the GSHHG credit follows the masks: wind with coastlines, hs/tp clipped; none without a store', () => {
+  const coast = I.decodeCoast(encodeCoast([[OAHU]], 5)), ctl = (l) => I.Overlay.prototype._attribution.call({ layer: l, coast: { url: 'https://x/static/coast/v1' } });
+  const w = layer(frame(1440, 721, () => 90), GRID, 'wind', WIND);
+  assert.ok(!/GSHHG/.test(ctl(w)));
+  w.setCoast(fakeStore([coast])); assert.ok(/GSHHG/.test(ctl(w)));
+  I.OUTLINE_FIELDS.wind = false;
+  try { assert.ok(!/GSHHG/.test(ctl(w)), 'no lines drawn: no credit'); } finally { I.OUTLINE_FIELDS.wind = true; }
+  const h = layer(frame(1440, 721, () => 90), GRID, 'hs', HS); h.setCoast(fakeStore([coast])); assert.ok(/GSHHG/.test(ctl(h)));
 });

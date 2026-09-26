@@ -153,8 +153,6 @@ def test_overlay_js_syntax_and_contract_strings():
         assert needle in js, needle
     for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind"):   # owner 2026-09-26: no settings row
         assert gone not in js, gone
-    for needle in ():
-        assert needle in js, needle
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:
         r = subprocess.run(["node", "--check", os.path.join(STATIC, "overlay.js")], capture_output=True, text=True)

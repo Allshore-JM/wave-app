@@ -428,8 +428,8 @@ test('contours and the animation are always on (no checkboxes; a tab\'s old "off
   assert.ok(o._wantDir(), 'the direction (particles) is wanted from the start');
   unit = 'Metric'; o.refresh();
   assert.deepEqual(o.layer._contour, { step: 0.5, per: 1 });
-  o.setContours(false); o.setAnim(false);
-  const st = storage.read(); assert.equal(st.contours, false); assert.equal(st.anim, false, 'the old values are left as they were, not written');
+  o.setContours(true); o.setAnim(true); o.setContours(false); o.setAnim(false); o.setContours(true); o.setAnim(true);
+  const st = storage.read(); assert.equal(st.contours, false); assert.equal(st.anim, false, 'the setters write nothing (the old values stay as they were)');
   done(o);
 });
 
@@ -480,10 +480,11 @@ test('animation on: the direction frame rides beside the field frame, never more
   o.mount('hs'); await settle();
   assert.ok(o.flow, 'animator attached'); assert.equal(o.animAvailable(), true); assert.equal(o.dres, 'half', 'the default zoom 6: half-resolution direction');
   const keys = Object.keys(o.inflight);
-  assert.equal(keys.length, 2, keys.join()); assert.ok(keys.some((k) => k.includes('/half/pdir/')) && keys.some((k) => k.includes('/full/hs/')));
-  await w.releaseDir();                                                      // the direction lands first: cached, not shown (no frame on the map yet)
-  assert.equal(o.flow.dir, null); assert.equal(o.dcache.size(), 1); assert.equal(o.cache.size(), 0);
-  await w.releaseField();                                                    // the field lands: the cached direction is delivered with it
+  assert.deepEqual(keys.length, 1, keys.join()); assert.ok(keys[0].includes('/full/hs/'), 'the first picture is fetched alone (G15 P2-1)');
+  await w.releaseField();                                                    // drawn at once, without waiting for its direction
+  assert.ok(o.layer.hasFrame()); assert.equal(o.flow.dir, null);
+  assert.ok(Object.keys(o.inflight).some((k) => k.includes('/half/pdir/')), 'then its direction');
+  await w.releaseDir();                                                      // the direction joins the frame on the map
   assert.ok(o.flow.dir, 'direction delivered'); assert.equal(o.flow.dir, o.dcache.get(o._key(o.frameIndex, 'dir')));
   assert.ok(o.flow.calls.includes('_rebuild'));
   for (let i = 0; i < 12; i++) { o.seek((i * 7) % 81); await tick(); assert.ok(Object.keys(o.inflight).length <= w.I.MAX_INFLIGHT, 'inflight ' + Object.keys(o.inflight).length); }
@@ -542,14 +543,14 @@ test('wind takes the half-resolution wind direction at every zoom; pdir follows 
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   w.map.getZoom = () => 9;
   const o = w.create(); o.anim = true; o.mount('wind'); await settle();
-  assert.equal(o.dres, 'half'); assert.ok(Object.keys(o.inflight).some((k) => k.includes('/half/wdir/')));
-  await w.releaseAll(); assert.ok(o.flow.dir);
+  assert.equal(o.dres, 'half');
+  await w.releaseAll(); assert.ok(o.flow.dir); assert.ok(w.fetches.some((u) => u.includes('/half/wdir/')));
   o.mount('hs'); await settle();                                             // a field change at zoom 9: full-resolution pdir
   assert.equal(o.dres, 'full'); assert.equal(o.flow.dir, null, 'the wind direction is not shown under wave height');
+  await w.releaseAll();
   const fetches = w.fetches.filter((u) => u.includes('/pdir/'));
   assert.ok(fetches.length && fetches.every((u) => !u.includes('/half/')), 'full-resolution pdir at zoom 9');
-  w.pendingBitmaps.forEach((f) => { if (f.blob.w === 1440) f(); }); w.pendingBitmaps = w.pendingBitmaps.filter((f) => f.blob.w !== 1440); await settle();
-  assert.ok(o.flow.dir, 'full pdir delivered'); const shown = o.flow.dir;
+  assert.ok(o.flow.dir && o.flow.dir.cols === 1440, 'full pdir delivered'); const shown = o.flow.dir;
   w.map.getZoom = () => 5.8; o._checkRes(); await settle();                  // zoom out below 6: half-resolution pdir, the shown one stays meanwhile
   assert.equal(o.dres, 'half'); assert.equal(o.flow.dir, shown, 'kept until the half frame lands');
   await w.releaseDir();
@@ -660,7 +661,7 @@ test('G10-A M11/M12: _trimInflight keeps no survivor beside a target whose direc
 test('G10-A M60 / P3-5 / P3-4: a cached direction is not fetched again; untick before the first frame aborts the direction fetch; direction successes do not mask field failures', async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle();
-  assert.ok(Object.keys(o.inflight).some(isDir));
+  assert.ok(!Object.keys(o.inflight).some(isDir), 'no direction before the first picture (G15 P2-1)');
   o.setAnim(false); await settle();                                           // before the first frame landed
   assert.ok(!Object.keys(o.inflight).some(isDir), 'direction fetch aborted before the first landing'); assert.equal(o.dcache.size(), 0);
   o.setAnim(true); await settle(); await w.releaseAll();
@@ -682,11 +683,12 @@ test('G10-A D1 / M52: on a field switch a direction that lands before the field 
   assert.ok(o.flow.dir); assert.equal(o.flow.field, 'hs');
   o.mount('wind'); await settle();
   assert.equal(o.flow.field, 'wind'); assert.equal(o.flow.dir, null); assert.equal(o.layer.hasFrame(), false);
-  await w.releaseDir();                                                       // the wind direction lands first (it is smaller)
-  assert.equal(o.flow.dir, null, 'not delivered: the layer has no frame yet'); assert.ok(o.dcache.has(o._key(o.frameIndex, 'dir')), 'but cached');
+  assert.ok(!Object.keys(o.inflight).some(isDir), 'the first picture of the new field is fetched alone (G15 P2-1)');
   o.flow.resume(true);                                                        // a tab show in that window
   await w.releaseField();
-  assert.ok(o.flow.dir && o.flow.dir.cols === 720, 'delivered with the field frame'); assert.equal(o.flow.entry, A.frames[o.frameIndex]);
+  assert.ok(o.layer.hasFrame()); assert.equal(o.flow.dir, null, 'no hs direction under the wind');
+  await w.releaseDir();
+  assert.ok(o.flow.dir && o.flow.dir.cols === 720, 'the wind direction joins'); assert.equal(o.flow.entry, A.frames[o.frameIndex]);
   o.unmount();
 });
 
@@ -726,8 +728,8 @@ test('G12: a phone zoomed in to 6.6 keeps the half-resolution field and fetches 
   w.I.Overlay.prototype._dims = () => ({ w: 400, h: 700 }); w.map.getZoom = () => 6.6;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle();
   assert.equal(o.res, 'half'); assert.equal(o.dres, 'full');
-  assert.ok(Object.keys(o.inflight).some((k) => k.includes('/full/pdir/')) && Object.keys(o.inflight).some((k) => k.includes('/half/hs/')));
-  await w.releaseAll();
+  assert.ok(Object.keys(o.inflight).some((k) => k.includes('/half/hs/')));
+  await w.releaseAll(); assert.ok(w.fetches.some((u) => /\/\d{10}\/pdir\//.test(u)), 'the full-resolution pdir (no res prefix in its URL)');
   assert.ok(o.flow.dir && o.flow.dir.cols === 1440, 'the full-resolution direction on the map'); assert.equal(o.layer._frame.cols, 720);
   o.unmount();
 });

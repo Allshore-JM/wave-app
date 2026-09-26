@@ -128,6 +128,15 @@ nothing animates and no direction frames are fetched (the checkbox is disabled a
 unticked, in a hidden tab, and while the map moves or zooms (rebuilt at the end). Runs published before the direction
 fields existed disable the checkbox
 ("This run has no direction data").
+Wind look (asset 2.11.0): under the wind overlay only, the page's satellite imagery gives way to Esri's World_Hillshade
+relief map (a flat light sea, grey terrain). The wind colours (blue at the calm end, a hue change about every 2 m/s) are
+multiplied into it, so the sea shows the colour itself and land the colour shaded by the terrain, and the GSHHG coastlines
+are drawn into the wind tiles as thin dark lines (from the same per-tile land masks that clip wave height and period; the
+wind is never clipped). The imagery is back for wave height, peak period, a field still loading and Off; the new basemap is
+added on top and the old one removed once the new one's tiles are in, and a relief that loads no tile is given up for the
+session. Wind opens at 90 % opacity, the waves at 65 %; each slider value is remembered for the tab (`opacityWind`,
+`opacity`). The page hands its imagery layer to the module (`baseLayer`, found by its World_Imagery URL inside the gated
+block); without it the basemap is left alone.
 Coastline clip (asset 2.7.6): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for

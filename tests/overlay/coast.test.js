@@ -1004,3 +1004,77 @@ test('every node a tile\'s samples read has been smoothed for this frame, also w
     assert.ok(read > 1000, `${read} node reads`);
   }
 });
+
+// ---- plan section 23: the wind look (blue low end, coastlines drawn into the unclipped wind tiles) ----
+test('W1 wind palette: blue at the calm end (never near-white), the legend top pale mauve; the LUT spans it', () => {
+  const lut = I.buildLut('wind', WIND.legend), px = (i) => [lut[i * 3], lut[i * 3 + 1], lut[i * 3 + 2]];
+  assert.deepEqual(px(0), [0x62, 0x71, 0xb7]);
+  assert.deepEqual(px(255), [0xd9, 0xc2, 0xd9]);
+  const lum = (c) => (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+  for (let i = 0; i < 128; i++) assert.ok(lum(px(i)) < 0.65, 'entry ' + i + ' too light: ' + px(i));
+  const stops = I.RAMPS.wind;
+  for (let k = 1; k < stops.length; k++) assert.ok(stops[k][0] > stops[k - 1][0], 'stops ascending');
+  assert.equal(stops[0][0], 0); assert.equal(stops[stops.length - 1][0], 1);
+});
+
+test('coastEdges: ink only where the mask crosses sea/land, the same in every row of a straight edge, gain in all; one-sided on the tile border', () => {
+  const S = 256, g = I.WIND_LOOK.gain;
+  assert.equal(I.coastEdges(new Uint8Array(S * S), g).n, 0, 'all sea');
+  assert.equal(I.coastEdges(new Uint8Array(S * S).fill(255), g).n, 0, 'all land');
+  const m = new Uint8Array(S * S);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) m[y * S + x] = x > 100 ? 255 : x === 100 ? 128 : 0;
+  const e = I.coastEdges(m, g), rows = new Map();
+  for (let j = 0; j < e.n; j++) { const y = Math.floor(e.idx[j] / S), x = e.idx[j] % S; (rows.get(y) || rows.set(y, []).get(y)).push([x, e.a[j]]); }
+  assert.equal(rows.size, S);
+  for (const [, r] of rows) {
+    assert.deepEqual(r.map((v) => v[0]), [99, 100, 101]);
+    assert.ok(r[1][1] > r[0][1] && r[1][1] > r[2][1], 'darkest on the crossing');
+    assert.ok(Math.abs(r.reduce((s, v) => s + v[1], 0) - g) < 0.01, 'total ink = gain');
+  }
+  const b = new Uint8Array(S * S);                                             // land from column 1: the border column uses a one-sided step
+  for (let y = 0; y < S; y++) for (let x = 1; x < S; x++) b[y * S + x] = 255;
+  const eb = I.coastEdges(b, g), cols = new Set(); for (let j = 0; j < eb.n; j++) cols.add(eb.idx[j] % S);
+  assert.deepEqual([...cols].sort((p, q) => p - q), [0, 1]);
+});
+
+test('applyEdges: ink mixed into the colour by its strength, alpha raised, a pixel without data takes the ink', () => {
+  const d = new Uint8ClampedArray([200, 100, 50, 255, 9, 9, 9, 0, 10, 20, 30, 40]);
+  const e = { n: 3, idx: Int32Array.from([0, 1, 2]), a: Float32Array.from([0.5, 0.25, 1]) };
+  I.applyEdges(e, d, [0, 0, 0]);
+  assert.deepEqual(Array.from(d), [100, 50, 25, 255, 0, 0, 0, 64, 0, 0, 0, 255]);
+});
+
+test('wind with a coast store: coastlines drawn only along the coast, nothing clipped, the readout untouched; hs keeps its clip; no store = no lines', () => {
+  const coast = I.decodeCoast(encodeCoast([[OAHU], [sq(-158.1, 21.0, -157.8, 21.2)]], 5));
+  const coords = { z: 8, x: 15, y: 112 };
+  const plain = drawTile(layer(frame(1440, 721, () => 90), GRID, 'wind', WIND), coords);
+  const w = layer(frame(1440, 721, () => 90), GRID, 'wind', WIND);
+  w.setCoast(fakeStore([coast]));
+  assert.equal(w._clip, false); assert.equal(w._masked(), true);
+  const out = drawTile(w, coords), el = grabEl(), mask = w._landFor(el, coords);
+  let inked = 0, off = 0;
+  for (let i = 0; i < 65536; i++) {
+    assert.equal(out[i * 4 + 3], 255, 'wind is never clipped');
+    const diff = out[i * 4] !== plain[i * 4] || out[i * 4 + 1] !== plain[i * 4 + 1] || out[i * 4 + 2] !== plain[i * 4 + 2];
+    if (!diff) continue;
+    inked++;
+    const x = i % 256, y = Math.floor(i / 256);
+    let near = false;                                                          // a mask change within one pixel
+    for (let dy = -1; dy <= 1 && !near; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const xx = Math.min(255, Math.max(0, x + dx)), yy = Math.min(255, Math.max(0, y + dy));
+      if (mask[yy * 256 + xx] !== mask[i]) { near = true; break; }
+    }
+    if (!near) off++;
+  }
+  assert.ok(inked > 200, 'a coastline is drawn: ' + inked);
+  assert.equal(off, 0, 'ink away from the coast');
+  const inside = I.tilePixelLatLng(coords, 128, 120);
+  assert.equal(w.readoutAt(inside.lat, inside.lng, 8), w.valueAt(inside.lat, inside.lng));
+  I.OUTLINE_FIELDS.wind = false;
+  try { assert.equal(w._masked(), false); assert.deepEqual(Array.from(drawTile(w, coords)), Array.from(plain), 'outlines off: the plain field'); }
+  finally { I.OUTLINE_FIELDS.wind = true; }
+  const h = layer(frame(1440, 721, () => 90), GRID, 'hs', HS); h.setCoast(fakeStore([coast]));
+  const hd = drawTile(h, coords); let clipped = 0;
+  for (let i = 0; i < 65536; i++) if (hd[i * 4 + 3] < 255) clipped++;
+  assert.ok(clipped > 1000, 'hs still clipped');
+});

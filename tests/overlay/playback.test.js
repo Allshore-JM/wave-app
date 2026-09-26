@@ -713,3 +713,12 @@ test('G10-A P3-2: a manifest whose direction grid fails validation gives no anim
   assert.equal(o.animAvailable(), false); assert.equal(o.flow, null); assert.ok(!w.fetches.some(isDir));
   o.unmount();
 });
+
+test('G11 P1-1: under reduced motion nothing animates and no direction frame is fetched; the checkbox reports it', async () => {
+  const w = world({ reduced: true }); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.animAvailable(), true, 'the run has direction data'); assert.equal(o._wantDir(), false); assert.equal(o.flow, null);
+  assert.ok(!w.fetches.some(isDir), 'no direction fetch'); assert.equal(o.dcache.size(), 0);
+  o.step(1); await settle(); await w.releaseAll(); assert.ok(!w.fetches.some(isDir));
+  o.unmount();
+});

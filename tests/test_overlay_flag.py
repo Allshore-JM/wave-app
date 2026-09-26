@@ -145,10 +145,15 @@ def test_overlay_js_syntax_and_contract_strings():
                    "(hover: hover) and (pointer: fine)", "(pointer: coarse)", "ov-sheet-open", "--ov-sheet-left",
                    "--ov-attr-max", "removeAttribution", "clientHeight", "snapToPixel",
                    "decodeCoast", "composeTile", "readoutAt", "contourTile", "legendPos", "GSHHG", "static/coast/v1", "LICENSE.txt",
-                   "smoothBlock", "'pagehide'", "_pendingRestore", "'Contours, every '", "below zoom 4",
-                   "FlowAnimator", "'ovAnimPane'", "flowField", "' Animation'", "no direction data", "leaflet-zoom-hide",
+                   "smoothBlock", "'pagehide'", "_pendingRestore",
+                   "FlowAnimator", "'ovAnimPane'", "flowField", "leaflet-zoom-hide",
+                   "FIXED_OPACITY",
                    "frameAtHour", "'live since '", "next update about ",
-                   "World_Hillshade", "mixBlendMode", "coastEdges", "opacityWind", "_syncLook"):
+                   "World_Hillshade", "mixBlendMode", "coastEdges", "_syncLook"):
+        assert needle in js, needle
+    for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind"):   # owner 2026-09-26: no settings row
+        assert gone not in js, gone
+    for needle in ():
         assert needle in js, needle
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:

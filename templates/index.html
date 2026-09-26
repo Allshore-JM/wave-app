@@ -2752,6 +2752,8 @@
         }
       });
       map.addControl(new Ctl());
+      // The +/- zoom buttons are never used (owner, 2026-09-26): the wheel, pinch, double-click and the keyboard still zoom.
+      if (map.zoomControl) map.removeControl(map.zoomControl);
 
       var overlay = null, loading = null;
       function loadAssets() {

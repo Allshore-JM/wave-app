@@ -111,7 +111,7 @@ on narrow (phone) maps and for wind everywhere, so a full 209-frame loop is abou
 zoomed past 7.5); frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
 where the browser has DecompressionStream.
 Overlay state (asset 2.7.6): the chosen layer, its valid time and whether it was playing are kept in the tab's
-sessionStorage (`allshore.overlay.v1`, with opacity, speed and the contours setting), so picking another forecast
+sessionStorage (`allshore.overlay.v1`, with the playback speed), so picking another forecast
 point (a page reload) brings the overlay back where it was. The time and play state come only from a save under 30
 minutes old, counted from when the page was left (hiding or leaving the page refreshes the save, paused or not), never
 under the viewer's reduced-motion setting, and a hidden tab resumes when shown. The restore starts after the load
@@ -121,7 +121,7 @@ one waits to be restored keeps the time; a page shown again from the back/forwar
 the tab.
 Wave-height colours and contours (asset 2.7.6): wave height uses value knots so 0-3 m fills about half of the
 legend (owner-picked spectral palette; the knots stretch to whatever legend the manifest carries); tp and wind keep
-linear scales. A Contours checkbox (wave height and period, off by default, remembered for the tab) draws light
+linear scales. Contours (wave height and period, always on since asset 2.12.0; no checkbox) are light
 anti-aliased lines every 2 ft / 0.5 m and every 2 s (doubled below zoom 4), about 1.8 px wide at zoom 8 and closer,
 thinning to about 1 px at zoom 3 and below where they are densest. The lines are traced on a lightly
 smoothed copy of the frame ([1,2,1] over the model nodes, each node held within half an 8-bit step of its own value), so
@@ -130,7 +130,7 @@ level (next to islands as in open water); the colours, transparency, the coast c
 values. No line beside missing data,
 where lines would crowd under 3 px apart, along the flat foot of a steep ramp, or in a model cell where the peak
 period jumps more than 2 s between neighbouring nodes (the smoothing never blends two swell regimes).
-Animation (asset 2.9.5): an Animation checkbox on the Opacity row (off by default, remembered for the tab) draws
+Animation (asset 2.9.5; always on since asset 2.12.0, no checkbox): the overlay draws
 particles with fading trails that flow along the dominant swell direction under wave height and peak period, and along
 the wind under wind speed, on a canvas of their own under the forecast points (no pointer events; markers keep their
 taps). The directions come from the `pdir` / `wdir` frames of the same step, loaded through the frame scheduler
@@ -143,8 +143,7 @@ in to 7.5 and 85 MB beyond; wind + wind direction 59 MB (119 MB past zoom 7.5). 
 first five days at 2 h/s, then 6 h/s). The timeline is laid out by time (+120 h at 31 % of the track) and snaps to a frame
 in the direction of travel. The panel's run line says when the run went live and when the next is expected ("live since
 1:07 PM HST · next update about 7:10 PM HST": one cycle after this run's own publish time), in the computer's own time
-zone (asset 2.10.1). On phones the Opacity / Contours / Animation
-row sits right under the timeline, and the sheet's header line leads with the forecast hour, then the valid time, and
+zone (asset 2.10.1). On phones the sheet's header line leads with the forecast hour, then the valid time, and
 shows a pending seek ("+213 h → +9 h loading…"). A direction is shown only for the step on the map: a step change clears the animation until that step's
 direction frame has landed, so an older direction is never drawn under a newer time. The flow is built as vectors on
 the model's nodes (the field value under the node times its FROM direction; the direction is the spectral peak's, NOAA
@@ -158,19 +157,19 @@ particle per 900 screen pixels squared (150-3,000, fewer when a frame runs past 
 a bright head with a dim tail of its last ~0.6 s of positions, a dark halo under a light core so they read over the dark
 ocean and the light desert or ice imagery alike, drawn fresh over a cleared canvas every frame (no compositing fade, so
 nothing accumulates); wind particles live 1-2.5 s, swell particles 2-4.5 s. Under the viewer's reduced-motion setting
-nothing animates and no direction frames are fetched (the checkbox is disabled and says so). The animation stops on Off, when
-unticked, in a hidden tab, and while the map moves or zooms (rebuilt at the end). Runs published before the direction
-fields existed disable the checkbox
-("This run has no direction data").
+nothing animates and no direction frames are fetched. The animation stops on Off, in a hidden tab, and while the map moves
+or zooms (rebuilt at the end). Runs published before the direction fields existed show no particles.
 Wind look (asset 2.11.1): under the wind overlay only, the page's satellite imagery gives way to Esri's World_Hillshade
 relief map (a flat light sea, grey terrain). The wind colours (blue at the calm end, a hue change about every 2 m/s) are
 multiplied into it, so the sea shows the colour itself and land the colour shaded by the terrain, and the GSHHG coastlines
 are drawn into the wind tiles as thin dark lines (from the same per-tile land masks that clip wave height and period; the
 wind is never clipped). The imagery is back for wave height, peak period, a field still loading and Off; the new basemap is
 added on top and the old one removed once the new one's tiles have faded in (the blend is on only while the relief is the
-sole basemap), and a relief that loads no tile is retried after 10 minutes. Wind opens at 90 % opacity, the waves at 65 %; each slider value is remembered for the tab (`opacityWind`,
-`opacity`). The page hands its imagery layer to the module (`baseLayer`, found by its World_Imagery URL inside the gated
+sole basemap), and a relief that loads no tile is retried after 10 minutes. Fixed opacity since asset 2.12.0 (no slider; `FIXED_OPACITY`): wind 100 %, wave height and period 65 %. The page hands its imagery layer to the module (`baseLayer`, found by its World_Imagery URL inside the gated
 block); without it the basemap is left alone.
+Simpler panel (asset 2.12.0, owner 2026-09-26): no Opacity / Contours / Animation row, and the page's +/- zoom buttons are
+removed by the gated overlay block (`map.removeControl(map.zoomControl)`; the wheel, pinch, double-click and keyboard still
+zoom, the Home button stays); with the overlay flag unset the page is unchanged.
 Coastline clip (asset 2.7.6): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for

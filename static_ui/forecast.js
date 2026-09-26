@@ -419,7 +419,7 @@
     var fw = new FloatingWindow({ el: els.win, header: els.header, handle: els.handle, storage: session, win: win,
       topBarHeight: function () { return els.topBar ? els.topBar.offsetHeight : 0; },
       onMode: function (m) {
-        if (els.min) { els.min.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); els.min.setAttribute('aria-label', m === 'min' ? 'Expand forecast' : 'Minimise forecast'); }
+        if (els.min) { els.min.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); els.min.setAttribute('aria-label', m === 'min' ? 'Expand forecast' : 'Minimise forecast'); els.min.textContent = m === 'min' ? '▴' : '–'; }
         if (els.max) els.max.setAttribute('aria-pressed', m === 'max' ? 'true' : 'false');
         if (opts.onMode) opts.onMode(m);
       },

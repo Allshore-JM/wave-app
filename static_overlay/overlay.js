@@ -1155,10 +1155,10 @@
     } catch (e) { return false; }
   }
   // Resolution of the direction frame: the 0.5-degree frames at the site's default zoom (6) and wider,
-  // the 0.25-degree ones as soon as the map is zoomed in (from 6.5; back below 6: hysteresis), among the
+  // the 0.25-degree ones as soon as the map is zoomed in (from 6.5; back below 6.25: hysteresis), among the
   // resolutions the field publishes (wind direction: half only). Near coasts a 0.5-degree node can sit
   // across land from the water it steers (G10-B P3-1), which the finer grid avoids once zoomed in.
-  var DIR_FULL_AT = 6.5, DIR_HALF_BELOW = 6;
+  var DIR_FULL_AT = 6.5, DIR_HALF_BELOW = 6.25;             // the zoom buttons step 0.5: 6 -> 6.5 -> 6 returns to half
   function dirRes(f, zoom, current) {
     var full = f.resolutions.indexOf('full') >= 0, half = f.resolutions.indexOf('half') >= 0;
     if (!full) return 'half';
@@ -2236,9 +2236,18 @@
     var validLocal = drawn ? this._validLocal(drawn) : '…', hours = drawn ? this._hours(drawn) : null;
     var glyph = this.playing ? '❚❚' : '▶', name = this.playing ? 'Pause' : 'Play';
     ui.play.forEach(function (b) { b.textContent = glyph; b.setAttribute('aria-label', name); });
-    // the sheet (phones) always carries the valid time in its header line: its details box is short
-    ui.title.textContent = ui.collapsed || ui.compact ? ui.label + ' · ' + validLocal + (hours === null ? '' : ' (+' + hours + ' h)')
-      : ui.label + ' — ' + ui.modelName;
+    // The sheet (phones): its header line carries the forecast hour FIRST (a narrow screen clips the end, never
+    // the hour), then the valid time, and a pending seek's hint ("loading", "unavailable"), which the short
+    // details box cannot show; the field's name is in the select above the map.
+    if (ui.compact) {
+      var th = pending ? this._hours(this.manifest.frames[this.target]) : null;
+      ui.title.textContent = hours === null ? '…' : pending
+        ? '+' + hours + ' h → +' + th + ' h ' + (this._isUnavailable(this.target) ? 'unavailable' : 'loading…')
+        : '+' + hours + ' h · ' + validLocal;
+    } else {
+      ui.title.textContent = ui.collapsed ? ui.label + ' · ' + validLocal + (hours === null ? '' : ' (+' + hours + ' h)')
+        : ui.label + ' — ' + ui.modelName;
+    }
     if (ui.valid) {
       clear(ui.valid);
       ui.valid.appendChild(mk('b', null, 'Valid: '));

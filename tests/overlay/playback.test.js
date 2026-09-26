@@ -693,7 +693,7 @@ test('G10-A D1 / M52: on a field switch a direction that lands before the field 
   o.unmount();
 });
 
-test('G10-A P3-8: a phone crossing zoom 7.5 changes both resolutions; the same step direction stays until the new one lands', async () => {
+test('G10-A P3-8: a phone zooming from 5.8 to 7.6 changes both resolutions; the same step direction stays until the new one lands', async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   w.I.Overlay.prototype._dims = () => ({ w: 400, h: 700 }); w.map.getZoom = () => 5.8;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
@@ -721,5 +721,16 @@ test('G11 P1-1: under reduced motion nothing animates and no direction frame is 
   assert.equal(o.animAvailable(), true, 'the run has direction data'); assert.equal(o._wantDir(), false); assert.equal(o.flow, null);
   assert.ok(!w.fetches.some(isDir), 'no direction fetch'); assert.equal(o.dcache.size(), 0);
   o.step(1); await settle(); await w.releaseAll(); assert.ok(!w.fetches.some(isDir));
+  o.unmount();
+});
+
+test('G12: a phone zoomed in to 6.6 keeps the half-resolution field and fetches the full-resolution direction', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  w.I.Overlay.prototype._dims = () => ({ w: 400, h: 700 }); w.map.getZoom = () => 6.6;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle();
+  assert.equal(o.res, 'half'); assert.equal(o.dres, 'full');
+  assert.ok(Object.keys(o.inflight).some((k) => k.includes('/full/pdir/')) && Object.keys(o.inflight).some((k) => k.includes('/half/hs/')));
+  await w.releaseAll();
+  assert.ok(o.flow.dir && o.flow.dir.cols === 1440, 'the full-resolution direction on the map'); assert.equal(o.layer._frame.cols, 720);
   o.unmount();
 });

@@ -56,6 +56,7 @@
 .ov-sheet .ov-head { flex-wrap: nowrap; }
 .ov-sheet .ov-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 340px) {
-  .ov-sheet .ov-row input[type=range] { width: 40px; margin-left: 2px; }
-  .ov-sheet .ov-row .ov-check { margin-left: 4px; }
+  .ov-sheet .ov-row { gap: 3px; }
+  .ov-sheet .ov-row input[type=range] { width: 36px; margin-left: 2px; }
+  .ov-sheet .ov-row .ov-check { margin-left: 2px; }
 }

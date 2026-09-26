@@ -237,6 +237,9 @@
     }
     .brand { display: flex; align-items: center; gap: 8px; text-decoration: none; flex: 0 0 auto; }
     .brand .app-logo { width: 30px; height: 30px; flex-shrink: 0; display: block; }
+    /* test site only: the logo image in the brand slot (~the bar's height) */
+    .app-logo-img { height: 44px; width: auto; flex-shrink: 0; display: block; }
+    @media (max-width: 576px) { .app-logo-img { height: 38px; } }
     .brand .app-title {
       font-size: 1.15rem; font-weight: 800; color: #0b2536;
       line-height: 1.05; letter-spacing: -0.01em;
@@ -453,12 +456,7 @@
     <form id="controlForm" method="GET" action="/">
       <header id="topBar" class="top-bar">
         <a class="brand" href="/" aria-label="Allshore Surf home">
-          <svg class="app-logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <rect width="32" height="32" rx="6" fill="#0b2536"/>
-            <path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>
-            <path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>
-          </svg>
-          <span class="app-title">Allshore Surf</span>
+          <img class="app-logo-img" src="{{ url_for('static', filename='allshore-logo.png') }}" width="211" height="200" alt="Allshore Surf">
         </a>
         <div class="station-field">
           <label for="station" class="form-label sr-only">Station</label>

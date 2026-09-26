@@ -49,6 +49,15 @@ Once deployed, navigate to the provided URL to access the app. The site will all
 
 Contributions are welcome! If you want to add new features, improve the parsing logic, or update the UI, please submit a pull request. For major changes, please open an issue first to discuss what you would like to change.
 
+## Forecast window client (static_ui)
+
+`static_ui/forecast.js` is the page's own client module for the forecast window (plan section 25). It is served at
+`/ui/<name>?v=UI_ASSET_VERSION` (app.py), always (not behind the overlay flag, never under `/overlay/`), immutable for a year
+like the overlay assets: any other `?v` is a 404 with `no-store`. Bump `UI_ASSET_VERSION` on every change to `static_ui/*`
+and update `tests/fixtures/ui_assets.json` (version + sha256); `tests/test_ui_module.py` checks the route, the pin, and runs
+the Node tests in `tests/ui/`. `/api/forecast` also reports `model` (the model actually used: SWAN falls back to GFS off the
+12 SWAN stations) and `swan_available`.
+
 ## Model overlays (optional)
 
 Animated NOAA GFS-Wave / GFS frames drawn under the forecast and live-buoy points. Off unless BOTH

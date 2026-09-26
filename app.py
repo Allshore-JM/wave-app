@@ -239,24 +239,46 @@ def _model_frames_base() -> str:
     return os.environ.get("MODEL_FRAMES_BASE", "").rstrip("/")
 
 
+def _versioned_asset(directory: str, assets: dict, name: str, version: str):
+    """A whitelisted static file, immutable at a versioned URL (?v=): only the version this build
+    ships is served (any other ?v is a 404 nothing may cache); the path must stay inside `directory`."""
+    if request.args.get("v") != version:
+        resp = jsonify({"error": "not found"})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 404
+    target = os.path.realpath(os.path.join(directory, name))
+    if not target.startswith(os.path.realpath(directory) + os.sep) or not os.path.isfile(target):
+        return jsonify({"error": "not found"}), 404
+    resp = send_file(target, mimetype=assets[name], conditional=True)
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    resp.headers["CDN-Cache-Control"] = "max-age=31536000"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
 @app.route("/overlay/<name>")
 def overlay_asset(name):
     """The overlay's two static files, immutable at a versioned URL (?v=): only while the feature is
     on, and only for the version this build ships (any other ?v is a 404 nothing may cache)."""
     if not _model_overlays_enabled() or name not in _OVERLAY_ASSETS:
         abort(404)                                            # the same default 404 the site gives any unknown path
-    if request.args.get("v") != OVERLAY_ASSET_VERSION:
-        resp = jsonify({"error": "not found"})
-        resp.headers["Cache-Control"] = "no-store"
-        return resp, 404
-    target = os.path.realpath(os.path.join(_OVERLAY_DIR, name))
-    if not target.startswith(os.path.realpath(_OVERLAY_DIR) + os.sep) or not os.path.isfile(target):
-        return jsonify({"error": "not found"}), 404
-    resp = send_file(target, mimetype=_OVERLAY_ASSETS[name], conditional=True)
-    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-    resp.headers["CDN-Cache-Control"] = "max-age=31536000"
-    resp.headers["X-Content-Type-Options"] = "nosniff"
-    return resp
+    return _versioned_asset(_OVERLAY_DIR, _OVERLAY_ASSETS, name, OVERLAY_ASSET_VERSION)
+
+
+# ---------------------------------------------------------------------------------------------
+# The page's own client module (the forecast window, plan section 25): always served (not behind
+# the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
+# ---------------------------------------------------------------------------------------------
+UI_ASSET_VERSION = "1.0.0"                 # bump on every change to static_ui/* (immutable URLs)
+_UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
+_UI_ASSETS = {"forecast.js": "application/javascript"}
+
+
+@app.route("/ui/<name>")
+def ui_asset(name):
+    if name not in _UI_ASSETS:
+        abort(404)
+    return _versioned_asset(_UI_DIR, _UI_ASSETS, name, UI_ASSET_VERSION)
 
 
 def _live_stations_edge_ttl(providers, snaps, now=None) -> int:
@@ -1584,6 +1606,8 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         "lon": None,
         "graph_data": None,
         "graph_header": None,
+        "model": resolve_model(station, model),               # the model actually used (SWAN falls back to GFS)
+        "swan_available": station in SWAN_STATIONS,
     }
     if not station:
         return out
@@ -1683,6 +1707,7 @@ def api_forecast():
             "station": station, "error": "Forecast temporarily unavailable",
             "table_html": None, "tz_label": "", "lat": None, "lon": None,
             "graph_data": None, "graph_header": None,
+            "model": resolve_model(station, model), "swan_available": station in SWAN_STATIONS,
         })
 
 

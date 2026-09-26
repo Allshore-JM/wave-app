@@ -1,10 +1,12 @@
-"""Capture the rendered home page from the UNCHANGED code with fixed inputs (no network).
+"""Capture the rendered home page with fixed inputs (no network).
 
-Run ONCE before the overlay site changes:  python tests/capture_index_golden.py
-Writes tests/fixtures/index_golden.json: raw HTML for the Table view (deferred + inline),
-the Graph view and a POST, keyed by scenario. tests/test_overlay_flag.py replays the same
-scenarios with MODEL_OVERLAYS unset and asserts byte-equality, so the flag-off page is proven
-untouched by every later overlay commit.
+Run ONCE on a commit that changes the flag-off page ON PURPOSE (a UI restructure), never after an
+overlay-only commit:  python tests/capture_index_golden.py
+Writes tests/fixtures/index_golden.json: raw HTML for the default shell, the render=full page (the
+no-JS path), the Graph view, a POST and a SWAN station, keyed by scenario. tests/test_overlay_flag.py
+replays the same scenarios with MODEL_OVERLAYS unset and asserts byte-equality, so the flag-off page
+is proven untouched by every later overlay commit.
+Baseline: feat/forecast-window (the forecast window, plan section 25), 2026-09-26.
 """
 import json
 import os
@@ -17,13 +19,15 @@ PAYLOAD = {
     "station": "51201", "error": None,
     "table_html": "<table id='golden'><tr><td>fixed</td></tr></table>",
     "tz_label": "HST", "lat": 21.67, "lon": -158.12,
-    "graph_data": {"labels": ["9/23/26 2:00 AM"], "s1_hs": [1.0], "combined": [1.2]},
-    "graph_header": {"cycle": "20260922 12 UTC"},
+    "graph_data": {"labels": ["Wednesday, September 23, 2026 2:00 AM"], "height": {"s1": [1.0], "combined": [1.2]},
+                   "period": {"s1": [12.0]}, "direction": {"s1": [300]}, "units": "ft"},
+    "graph_header": {"cycle": "20260922 12 UTC", "location": "51201 (21.67N 158.12W)", "tz": "HST"},
+    "model": "GFS", "swan_available": True,
 }
 STATIONS = [("51201", "Waimea Bay, HI"), ("51001", "NW Hawaii"), ("46001", "Gulf of Alaska")]
 SCENARIOS = [
-    ("table_deferred", "GET", "/?station=51201", None, False),
-    ("table_inline", "GET", "/?station=51201&unit=Metric&tz=Pacific/Honolulu", None, True),
+    ("default", "GET", "/?station=51201", None, False),
+    ("render_full", "GET", "/?station=51201&unit=Metric&tz=Pacific/Honolulu&render=full", None, True),
     ("graph", "GET", "/?station=51201&view=Graph", None, True),
     ("post", "POST", "/", {"station": "46001", "unit": "US", "tz": "", "model": "GFS", "view": "Table"}, True),
     ("swan_station_model", "GET", "/?station=51201&model=SWAN", None, True),

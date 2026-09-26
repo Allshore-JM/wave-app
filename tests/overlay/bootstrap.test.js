@@ -53,8 +53,8 @@ function page(opt) {
   };
   const overlays = [];
   function makeAO() {
-    return { create: () => {
-      const ov = { field: null, mounts: [],
+    return { create: (m, o) => {
+      const ov = { field: null, mounts: [], opts: o,
         mount(f, r) { this.field = f; this.mounts.push([f, r]); log.push('mount ' + f + ' ' + r); },
         unmount() { this.field = null; log.push('unmount'); }, refresh() { log.push('refresh'); }, _persist() { log.push('persist'); } };
       overlays.push(ov); log.push('create'); return ov;
@@ -63,8 +63,9 @@ function page(opt) {
   const window = { addEventListener: on('win'), requestIdleCallback: opt.noRIC ? undefined : (fn) => { idleQ.push(fn); },
     AllshoreOverlay: opt.assetsLoaded === false ? undefined : makeAO() };
   const L = { Control: { extend: (p) => function () { this.onAdd = p.onAdd; } }, DomUtil: { create: () => ({ innerHTML: '' }) },
-    DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} } };
+    DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} }, TileLayer: opt.TileLayer };
   const map = { addControl: (c) => c.onAdd() };
+  if (opt.layers) map.eachLayer = (fn) => opt.layers.forEach(fn);
   new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', SRC)(
     window, document, sessionStorage, L, map, () => 'US', () => '', () => '', setTimeout);
   return {
@@ -198,4 +199,17 @@ test('back/forward cache: a page shown again writes its own state back to the ta
   p.store.set(KEY, JSON.stringify({ field: 'hs', playing: true, t: 5, at: 6 }));
   p.pageshow(true);
   assert.equal(p.read().field, ''); assert.equal(p.read().playing, false); assert.deepEqual(p.log, []);
+});
+
+test('the page hands its satellite imagery layer to the module (the wind overlay swaps it); none found -> null', async () => {
+  function TL(url) { this._url = url; }
+  const img = new TL('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}');
+  const other = new TL('https://tiles.example/{z}/{x}/{y}.png');
+  const p = page({ complete: true, TileLayer: TL, layers: [{ _url: 'World_Imagery (not a tile layer)' }, other, img] });
+  p.sel.userPick('wind'); await settle();
+  assert.equal(p.overlays[0].opts.baseLayer, img);
+  const q = page({ complete: true, TileLayer: TL, layers: [other] }); q.sel.userPick('wind'); await settle();
+  assert.equal(q.overlays[0].opts.baseLayer, null);
+  const r = page({ complete: true }); r.sel.userPick('hs'); await settle();                     // no eachLayer / TileLayer: harmless
+  assert.equal(r.overlays[0].opts.baseLayer, null);
 });

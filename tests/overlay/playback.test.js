@@ -82,7 +82,7 @@ function world(opts) {
   for (const k of ['attach', 'detach', '_rebuild', '_clear', 'stop', '_start']) I.FlowAnimator.prototype[k] = function () { (this.calls = this.calls || []).push(k); };
   const map = { getPane: () => ({}), getZoom: () => 6, getSize: () => ({ x: 1200, y: 800 }), on() {}, off() {}, removeLayer() {},
     getContainer: () => ({ clientWidth: 1200, clientHeight: 800, classList: { add() {}, remove() {} }, style: { setProperty() {}, removeProperty() {} } }) };
-  w.I = I; w.map = map;
+  w.I = I; w.map = map; w.L = g.L;
   // release one pending decode by kind: the direction frames are the half-size ones in these tests
   w.releaseDir = async () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 720); assert.ok(i >= 0, 'a direction decode is pending'); w.pendingBitmaps.splice(i, 1)[0](); await settle(); };
   w.releaseField = async () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 1440); assert.ok(i >= 0, 'a field decode is pending'); w.pendingBitmaps.splice(i, 1)[0](); await settle(); };
@@ -789,4 +789,84 @@ test('section 22: a reload restores a saved time past +120 h on a 209-frame run 
   assert.equal(w.I.restoreIndex(F, { t: at(300), playing: false, at: now - 60000 }, now), FULL_HORIZON.indexOf(300));
   assert.equal(w.I.restoreIndex(F, { t: at(301), playing: false, at: now - 60000 }, now), FULL_HORIZON.indexOf(300), 'within 90 min: the nearest frame');
   assert.equal(w.I.restoreIndex(F, { t: at(37), playing: false, at: now - 60000 }, now), 37, 'hourly frames before +120 h');
+});
+
+// ---- plan section 23: the basemap follows what is drawn; per-field opacity ----
+function lookMap() {
+  const on = new Set(), pane = { style: {} };
+  return { layers: on, pane, hasLayer: (l) => on.has(l), removeLayer(l) { on.delete(l); }, getPane: (n) => (n === 'modelPane' ? pane : undefined) };
+}
+function fakeTile(url, options) {
+  return { url, options: options || {}, ev: {}, ons: {},
+    once(e, f) { (this.ev[e] = this.ev[e] || []).push(f); return this; }, on(e, f) { (this.ons[e] = this.ons[e] || []).push(f); return this; },
+    addTo(m) { m.layers.add(this); return this; },
+    fire(e) { const fs = this.ev[e] || []; this.ev[e] = []; (this.ons[e] || []).forEach((f) => f()); fs.forEach((f) => f()); } };
+}
+function drawn(field) { return { field, op: null, frame: !!field, hasFrame() { return this.frame; }, setOpacity(v) { this.op = v; } }; }
+
+test('wind look: the relief goes on top and the imagery leaves once the relief has loaded; any other field brings the imagery back; quick switches never leave the map without a basemap', () => {
+  const w = world(), map = lookMap(), img = fakeTile('World_Imagery', { maxZoom: 11, minZoom: 1, keepBuffer: 2 });
+  w.L.tileLayer = (url, o) => fakeTile(url, o);
+  img.addTo(map);
+  const o = new w.I.Overlay(map, { base: 'https://x/gfswave/0p25/v1', baseLayer: img });
+  const both = () => [map.hasLayer(img), !!o.relief && map.hasLayer(o.relief)];
+  o.layer = drawn('hs'); o._syncLook();
+  assert.deepEqual(both(), [true, false]); assert.equal(map.pane.style.mixBlendMode, ''); assert.equal(o.layer.op, 0.65);
+  o.layer = drawn('wind'); o._syncLook();
+  const relief = o.relief;
+  assert.equal(relief.url, w.I.WIND_LOOK.base); assert.equal(relief.options.maxZoom, 11); assert.equal(relief.options.attribution, w.I.WIND_LOOK.attribution);
+  assert.deepEqual(both(), [true, true], 'the imagery stays until the relief is in');
+  assert.equal(map.pane.style.mixBlendMode, 'multiply'); assert.equal(o.layer.op, 0.9);
+  relief.fire('tileload'); relief.fire('load');
+  assert.deepEqual(both(), [false, true]);
+  o.layer = drawn('tp'); o._syncLook();                                      // back to a wave field: the imagery on top, loading
+  assert.deepEqual(both(), [true, true]); assert.equal(map.pane.style.mixBlendMode, ''); assert.equal(o.layer.op, 0.65);
+  o.layer = drawn('wind'); o._syncLook();                                    // wind again before the imagery loaded: the relief is still there
+  assert.deepEqual(both(), [false, true]);
+  img.fire('load');                                                          // the stale landing changes nothing
+  assert.deepEqual(both(), [false, true]);
+  o.layer = drawn(null); o._syncLook();                                      // a field loading (nothing drawn): the imagery
+  assert.deepEqual(both(), [true, true]); img.fire('load');
+  assert.deepEqual(both(), [true, false]);
+  o.layer = drawn('wind'); o._syncLook(); assert.equal(o.relief, relief, 'one relief layer for the session'); relief.fire('tileload'); relief.fire('load');
+  o.layer = null; o._syncLook();                                             // Off / unmount
+  assert.deepEqual(both(), [true, true]); assert.equal(map.pane.style.mixBlendMode, ''); img.fire('load');
+  assert.deepEqual(both(), [true, false]);
+});
+
+test('wind look: a relief that loads no tile is given up (imagery kept); no imagery handed over or not on the map -> the basemap is left alone', () => {
+  const w = world(); w.L.tileLayer = (url, o) => fakeTile(url, o);
+  let map = lookMap(), img = fakeTile('World_Imagery'); img.addTo(map);
+  let o = new w.I.Overlay(map, { base: 'https://x/gfswave/0p25/v1', baseLayer: img });
+  o.layer = drawn('wind'); o._syncLook();
+  o.relief.fire('tileerror'); o.relief.fire('load');
+  assert.equal(o._reliefFailed, true);
+  assert.deepEqual([map.hasLayer(img), map.hasLayer(o.relief)], [true, false]); assert.equal(map.pane.style.mixBlendMode, '');
+  o._syncLook(); assert.deepEqual([map.hasLayer(img), map.hasLayer(o.relief)], [true, false], 'not retried');
+  map = lookMap();
+  o = new w.I.Overlay(map, { base: 'https://x/gfswave/0p25/v1' });
+  o.layer = drawn('wind'); o._syncLook();
+  assert.equal(map.layers.size, 0); assert.equal(o.relief, null); assert.equal(map.pane.style.mixBlendMode, ''); assert.equal(o.layer.op, 0.9);
+  map = lookMap(); img = fakeTile('World_Imagery');                           // handed over but not on the map
+  o = new w.I.Overlay(map, { base: 'https://x/gfswave/0p25/v1', baseLayer: img });
+  o.layer = drawn('wind'); o._syncLook();
+  assert.equal(map.layers.size, 0); assert.equal(map.pane.style.mixBlendMode, '');
+});
+
+test('opacity per field: the waves keep the saved "opacity" (0.65 default), wind its own "opacityWind" (0.9 default), each remembered', async () => {
+  const storage = memStore({ opacity: 0.4, opacityWind: 5 });
+  let o = world({ storage }).create();
+  assert.equal(o.opacity, 0.4); assert.equal(o.opacityWind, 0.9, 'an invalid saved value falls back to the default');
+  o.field = 'wind'; o.setOpacity(0.7);
+  o.field = 'hs'; o.setOpacity(0.5);
+  assert.deepEqual([storage.read().opacity, storage.read().opacityWind], [0.5, 0.7]);
+  o = world({ storage }).create();
+  assert.deepEqual([o._opacityFor('hs'), o._opacityFor('tp'), o._opacityFor('wind')], [0.5, 0.5, 0.7]);
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;             // a mount: the layer takes the field's opacity on landing
+  const seen = [];
+  o = w.create(); o.mount('wind'); await settle();
+  o.layer.setOpacity = (v) => seen.push(v);
+  await w.release(1);
+  assert.equal(seen[seen.length - 1], 0.9);
+  done(o);
 });

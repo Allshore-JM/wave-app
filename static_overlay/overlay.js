@@ -30,7 +30,21 @@
     hs:   [[0,'#1d3a8a'],[0.08,'#2563eb'],[0.17,'#0ea5e9'],[0.25,'#22d3ee'],[0.33,'#34d399'],[0.40,'#a3e635'],[0.47,'#facc15'],
            [0.58,'#fb923c'],[0.72,'#ef4444'],[0.87,'#c026d3'],[1,'#f5d0fe']],
     tp:   [[0,'#2a1f7a'],[0.25,'#2e7ed8'],[0.5,'#38c9a8'],[0.7,'#c8e63c'],[0.85,'#f7a52b'],[1,'#e8321f']],
-    wind: [[0,'#e8f1ff'],[0.2,'#8cc4ff'],[0.4,'#3aa35a'],[0.6,'#f0d433'],[0.8,'#f0731f'],[1,'#b00f3a']]
+    // wind: blue at the calm end (never white: it covers land), a hue change every ~2 m/s up to ~20 m/s
+    // (0 2 4 6 8 10 12 14 16 18 21 25 m/s over the 0-30.9 m/s legend), purple then pale mauve at the top
+    wind: [[0,'#6271b7'],[0.0648,'#3961a0'],[0.1296,'#4a94a9'],[0.1944,'#4d8d7b'],[0.2592,'#53a553'],[0.324,'#359f35'],
+           [0.3888,'#a79d51'],[0.4536,'#9f7f3a'],[0.5184,'#a16c5c'],[0.5832,'#813a4e'],[0.6804,'#af5088'],[0.81,'#754a93'],[1,'#d9c2d9']]
+  };
+  // Under the wind overlay the site's satellite imagery (earth tones) gives way to a neutral relief map
+  // with a flat light sea; the field is multiplied into it (the sea shows the colour itself, land the
+  // colour shaded by the terrain) and the coastlines are drawn into the wind tiles. The imagery stays for
+  // no overlay, wave height and peak period (owner, 2026-09-26).
+  var WIND_LOOK = {
+    base: 'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
+    attribution: '&copy; Esri & contributors',
+    blend: 'multiply',                                       // the model pane over the relief (the particle pane is not blended)
+    opacity: 0.9,                                            // the wind's default opacity (the waves keep 0.65); each remembered for the tab
+    ink: [34, 38, 46], gain: 1.4                             // the coastline's colour and strength (coastEdges)
   };
   // Value (SI units) -> legend position knots, piecewise linear, written for a legend from 0 to the last
   // knot (12 m; legendPos stretches them to any other legend); fields without knots are linear over the
@@ -428,6 +442,37 @@
       var t = Math.round((lo + (code - 1) / 254 * (hi - lo) - L0) * scale);
       t = t < 0 ? 0 : t > 255 ? 255 : t;
       d[k] = lut[t * 3]; d[k + 1] = lut[t * 3 + 1]; d[k + 2] = lut[t * 3 + 2]; d[k + 3] = a;
+    }
+    return d;
+  }
+  // Fields drawn over land whose tiles carry the coastline as a thin line (no clipping).
+  var OUTLINE_FIELDS = { wind: true };
+  // The coastline of a tile's land mask (anti-aliased, 0..255): the mask's gradient (central differences,
+  // one-sided on the tile's border) is large only where the mask crosses from sea to land, so its magnitude
+  // times gain / 255 is the line's ink (about 1.5 px wide in all). Computed once per mask; a sparse list.
+  function coastEdges(mask, gain) {
+    var S = TILE, n = 0, idx = new Int32Array(S * S), a = new Float32Array(S * S), k = gain / 255;
+    for (var y = 0; y < S; y++) {
+      var ym = y > 0 ? y - 1 : y, yp = y < S - 1 ? y + 1 : y, o = y * S, om = ym * S, op = yp * S, dy = yp - ym;
+      for (var x = 0; x < S; x++) {
+        var xm = x > 0 ? x - 1 : x, xp = x < S - 1 ? x + 1 : x;
+        var gx = (mask[o + xp] - mask[o + xm]) / (xp - xm), gy = (mask[op + x] - mask[om + x]) / dy;
+        if (!gx && !gy) continue;
+        var e = Math.sqrt(gx * gx + gy * gy) * k;
+        if (e < 0.03) continue;
+        idx[n] = o + x; a[n] = e > 1 ? 1 : e; n++;
+      }
+    }
+    return { n: n, idx: idx.slice(0, n), a: a.slice(0, n) };
+  }
+  // The coastline into a composed tile: ink over the field's colour (a pixel without data takes the ink).
+  function applyEdges(edges, d, ink) {
+    for (var j = 0; j < edges.n; j++) {
+      var k = edges.idx[j] * 4, e = edges.a[j], al = e * 255;
+      if (!d[k + 3]) { d[k] = ink[0]; d[k + 1] = ink[1]; d[k + 2] = ink[2]; d[k + 3] = al; continue; }
+      var f = 1 - e;
+      d[k] = d[k] * f + ink[0] * e; d[k + 1] = d[k + 1] * f + ink[1] * e; d[k + 2] = d[k + 2] * f + ink[2] * e;
+      if (d[k + 3] < al) d[k + 3] = al;
     }
     return d;
   }
@@ -835,10 +880,12 @@
       if (this.onRedraw) this.onRedraw();
     },
     _redraw: function () { for (var k in this._tiles) { var t = this._tiles[k]; if (t.el && t.coords) this._draw(t.el, t.coords); } },
+    // The tiles need land masks: clipped fields (hs, tp) and outlined ones (wind) once a coast store is set.
+    _masked: function () { return !!(this._coast && (CLIP_FIELDS[this.field] || OUTLINE_FIELDS[this.field])); },
     // The tier-1 cells the tiles on the map need right now (the store drops queued downloads for others).
     _cellsNeeded: function () {
       var st = this._coast, need = {};
-      if (!st || !this._clip) return need;
+      if (!st || !this._masked()) return need;
       for (var k in this._tiles) {
         var t = this._tiles[k];
         if (!t.coords || !st.tier1Zoom(t.coords.z)) continue;
@@ -851,7 +898,7 @@
     // A tier-1 chunk landed, failed, or a cooldown ended: the tiles drawn from the tier-0 stand-in are
     // re-evaluated and redrawn only when their mask actually changed.
     _redrawIncomplete: function () {
-      if (!this._coast || !this._clip) return;
+      if (!this._coast || !this._masked()) return;
       var changed = false;
       for (var k in this._tiles) {
         var t = this._tiles[k];
@@ -921,12 +968,16 @@
     _draw: function (el, coords) {
       var ctx = el.getContext('2d');
       if (!this._frame) { ctx.clearRect(0, 0, TILE, TILE); return; }
-      var land = this._clip ? this._landFor(el, coords) : null;
-      if (land === LAND_ALL) { ctx.clearRect(0, 0, TILE, TILE); return; }         // nothing but land: no sampling at all
+      var land = this._masked() ? this._landFor(el, coords) : null;
+      if (this._clip && land === LAND_ALL) { ctx.clearRect(0, 0, TILE, TILE); return; }   // nothing but land: no sampling at all
       var codes = this.tileCodes(coords, this._codes);
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
-      composeTile(codes, land, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data);
+      composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data);
       if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, img.data);
+      if (!this._clip && land && land !== LAND_ALL) {                          // the coastline under an unclipped field
+        if (el._ovEdgesOf !== land) { el._ovEdges = coastEdges(land, WIND_LOOK.gain); el._ovEdgesOf = land; }
+        applyEdges(el._ovEdges, img.data, WIND_LOOK.ink);
+      }
       ctx.putImageData(img, 0, 0);
     },
     // Contours on the smoothed copy of the frame (smoothBlock), sampled at world pixels every s px (the
@@ -1513,7 +1564,9 @@
     // opts.coast: clip wave height / peak period to the coastlines published beside the frames
     this.coast = opts.coast ? coastStore(this.root + '/static/coast/v1') : null;
     var s = saved();
-    this.opacity = typeof s.opacity === 'number' && s.opacity >= 0.2 && s.opacity <= 1 ? s.opacity : 0.65;
+    this.opacity = typeof s.opacity === 'number' && s.opacity >= 0.2 && s.opacity <= 1 ? s.opacity : 0.65;             // wave height, peak period
+    this.opacityWind = typeof s.opacityWind === 'number' && s.opacityWind >= 0.2 && s.opacityWind <= 1 ? s.opacityWind : WIND_LOOK.opacity;
+    this.relief = null; this._base = 'imagery'; this._reliefFailed = false;   // opts.baseLayer: the page's imagery (the wind swaps it)
     this.speed = SPEEDS.indexOf(s.speed) >= 0 ? s.speed : 1;
     this.contours = s.contours === true;                   // off until ticked, then remembered for the tab
     this.anim = s.anim === true;                           // the Animation box, likewise
@@ -1533,13 +1586,14 @@
     this.abort = new AbortController();
     var sig = this.abort.signal;
     if (!this.layer) {
-      this.layer = new ModelGridLayer({ opacity: this.opacity }).addTo(this.map);
+      this.layer = new ModelGridLayer({ opacity: this._opacityFor(fieldName) }).addTo(this.map);
       this._bindReadout();
       this._bindMap();
       this._bindDocument();
     } else if (this.layer.field !== fieldName) {
       this.layer.clear();                                  // never one field's picture under another's label
       if (this.flow) this.flow.clearData();
+      this._syncLook();                                    // nothing drawn: the imagery, the waves' opacity
     }
     this.render({ state: 'loading' });
     // The time position survives a field change and even a run change (nearest valid time), like Update.
@@ -1547,14 +1601,20 @@
     var prevRun = this.manifest ? this.manifest.run : null;
     // The coastlines load beside the pointer/manifest/frame; the FIRST DRAW waits for them (a filled
     // field spilling onto land and then snapping back is the wrong picture), later draws never do.
-    var coastP = this.coast && CLIP_FIELDS[fieldName] ? this.coast.load() : Promise.resolve(null);
+    // Wind draws the coastlines as lines only: it never waits for them, they join when loaded.
+    var waitCoast = !!CLIP_FIELDS[fieldName], coastP = this.coast && (waitCoast || OUTLINE_FIELDS[fieldName]) ? this.coast.load() : Promise.resolve(null);
+    if (!waitCoast) coastP.then(function (store) {
+      if (sig.aborted || !self.layer || !store || self.layer._coast === store) return;
+      self.layer.setCoast(store);
+      if (self.layer.hasFrame()) self._attribute();
+    }, function () {});
     this._loadManifest(sig).then(function (m) {
       if (!m.fields[fieldName] || !RAMPS[fieldName]) throw new Error('layer "' + fieldName + '" is not in this run');
-      return coastP.then(function (store) { return [m, store]; });
+      return (waitCoast ? coastP : Promise.resolve(undefined)).then(function (store) { return [m, store]; });
     }).then(function (ms) {
       var m = ms[0], store = ms[1];
       if (sig.aborted || !self.layer) throw abortError();
-      if (self.layer._coast !== (store || null)) self.layer.setCoast(store);
+      if (store !== undefined && self.layer._coast !== (store || null)) self.layer.setCoast(store);
       self.n = m.frames.length;
       var rIdx = prevValid === null && st ? restoreIndex(m, st, Date.now()) : null;
       var idx = prevValid === null ? (rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(self.frameIndex, self.n - 1) : nearestIndex(m, prevValid);
@@ -1670,6 +1730,7 @@
       }
       self.frameIndex = idx; self._pendingRestore = null;                     // a frame is on the map: the saved state is spent
       self._persist();
+      self._syncLook();
       self._attribute();
       if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
       self._syncFlow(idx);
@@ -1863,7 +1924,7 @@
     return { w: c.clientWidth || s.x, h: c.clientHeight || s.y };
   };
   Overlay.prototype._attribution = function () {
-    if (!(this.layer && this.layer._clip && this.coast)) return ATTRIBUTION;
+    if (!(this.layer && this.layer._masked() && this.coast)) return ATTRIBUTION;
     var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
     return ATTRIBUTION + ' · <a href="' + url + '" target="_blank" rel="noopener license">GSHHG</a>';
   };
@@ -1931,6 +1992,7 @@
     if (this._onHide) { if (window.removeEventListener) window.removeEventListener('pagehide', this._onHide); this._onHide = null; }
     this._pendingRestore = null;
     if (this.layer) { this.map.removeLayer(this.layer); this.layer = null; }
+    this._syncLook();                                      // the page's imagery back, no blend
     if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
     if (this.flow) { this.flow.detach(); this.flow = null; }
     this._unattribute();
@@ -1941,9 +2003,41 @@
     this.field = null; this.frameIndex = null; this.res = null; this.dres = null; this.last = null; this.collapsed = undefined;
     clear(this.opts.panel);
   };
+  Overlay.prototype._opacityFor = function (field) { return field === 'wind' ? this.opacityWind : this.opacity; };
+  // The basemap and the model pane's blend follow what is DRAWN: a wind frame on the map -> the relief
+  // (WIND_LOOK), multiplied; anything else (another field, a field still loading, Off) -> the page's
+  // imagery, no blend. The new basemap goes on top and the old one leaves once the new one's tiles are in
+  // (never a map without a basemap); a relief that loads no tile at all is given up for the session.
+  Overlay.prototype._syncLook = function () {
+    var map = this.map, img = this.opts.baseLayer, layer = this.layer, self = this;
+    if (layer) layer.setOpacity(this._opacityFor(layer.field || this.field));
+    var wind = !!(layer && layer.hasFrame() && layer.field === 'wind');
+    var want = wind && img && WIND_LOOK.base && !this._reliefFailed ? 'relief' : 'imagery';
+    if (want === 'relief' && this._base !== 'relief' && !map.hasLayer(img)) want = 'imagery';   // the page's imagery is not on the map: leave the basemap alone
+    var pane = map.getPane && map.getPane('modelPane');
+    if (pane && pane.style) pane.style.mixBlendMode = want === 'relief' ? WIND_LOOK.blend : '';
+    if (want === this._base || !img) return;
+    this._base = want;
+    var relief = this._reliefLayer(img), show = want === 'relief' ? relief : img, hide = want === 'relief' ? img : relief;
+    if (map.hasLayer(show)) { if (map.hasLayer(hide)) map.removeLayer(hide); return; }   // still loaded beneath the other (a quick switch back)
+    show.once('load', function () {
+      if (self._base !== want) return;                                        // switched again meanwhile
+      if (show === relief && !relief._ovTiles) { self._reliefFailed = true; self._syncLook(); return; }
+      if (map.hasLayer(hide)) map.removeLayer(hide);
+    });
+    show.addTo(map);
+  };
+  Overlay.prototype._reliefLayer = function (img) {
+    if (this.relief) return this.relief;
+    var o = img.options || {}, r = this.relief = L.tileLayer(WIND_LOOK.base, { maxZoom: o.maxZoom, minZoom: o.minZoom, noWrap: o.noWrap,
+      keepBuffer: o.keepBuffer, attribution: WIND_LOOK.attribution, className: 'ov-relief' });
+    r._ovTiles = 0;
+    r.on('tileload', function () { r._ovTiles++; });
+    return r;
+  };
   Overlay.prototype.setOpacity = function (v) {
     v = Math.max(0.2, Math.min(1, v));
-    this.opacity = v; save({ opacity: v });
+    if (this.field === 'wind') { this.opacityWind = v; save({ opacityWind: v }); } else { this.opacity = v; save({ opacity: v }); }
     if (this.layer) this.layer.setOpacity(v);
     if (this.flow) this.flow.refresh();                    // the particle contrast reads the layer's opacity
   };
@@ -2249,7 +2343,7 @@
     });
     leg.appendChild(ticks); body.appendChild(leg);
     var row = mk('div', 'ov-row'), lab = mk('label', null, 'Opacity ');
-    var rng = mk('input'); rng.type = 'range'; rng.min = '0.2'; rng.max = '1'; rng.step = '0.05'; rng.value = String(this.opacity);
+    var rng = mk('input'); rng.type = 'range'; rng.min = '0.2'; rng.max = '1'; rng.step = '0.05'; rng.value = String(this._opacityFor(field));
     rng.setAttribute('aria-label', 'Overlay opacity');
     rng.addEventListener('input', function () { self.setOpacity(parseFloat(rng.value)); });
     lab.appendChild(rng); row.appendChild(lab);
@@ -2348,7 +2442,7 @@
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
-      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
+      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
       validCoastIndex: validCoastIndex,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,

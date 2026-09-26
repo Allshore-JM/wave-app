@@ -2787,6 +2787,12 @@
         return r ? { run: r[1] + r[2] } : null;
       }
       var sel = document.getElementById('ovField'), panel = document.getElementById('ovPanel');
+      // The page's satellite imagery (made outside this block): the wind overlay swaps it for a relief map while shown.
+      function imageryLayer() {
+        var found = null;
+        if (map.eachLayer) map.eachLayer(function (l) { if (!found && L.TileLayer && l instanceof L.TileLayer && /World_Imagery/.test(l._url || '')) found = l; });
+        return found;
+      }
       // The chosen layer is remembered for this tab, so a reload (another forecast point, Update)
       // brings it back; the module restores the time and play state from the same key. A new tab,
       // or a layer switched Off, starts Off; a layer picked from Off starts fresh (no saved time).
@@ -2809,7 +2815,7 @@
           if (sel.value !== field) return;
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
             base: BASE, panel: panel, tz: TZ, getUnit: getSelectedUnit,
-            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true
+            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer()
           });
           overlay.mount(field, restore);
         }).catch(function (err) {

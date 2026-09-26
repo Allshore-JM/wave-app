@@ -1,4 +1,4 @@
-/* Allshore Surf model overlay (animated frames per field; swell arrows and wind particles). Loaded on demand; never on page load.
+/* Allshore Surf model overlay (animated frames per field; swell and wind particle animation). Loaded on demand; never on page load.
  *
  * Data contract (manifest schema 2 or 3 from tools/model_frames): 8-bit greyscale PNG frames,
  * q = 0 missing, value = lo + (q - 1) / 254 * (hi - lo), q = 1 means "<= lo", q = 255 ">= hi";
@@ -859,7 +859,7 @@
         var before = t.el._ovLand, after = this._landFor(t.el, t.coords);
         if (after !== before) { this._draw(t.el, t.coords); changed = true; }
       }
-      if (changed && this.onRedraw) this.onRedraw();                        // the animation's arrows are gated by the masks
+      if (changed && this.onRedraw) this.onRedraw();                        // the animation's particles are gated by the masks
     },
     // The tile's land alpha, computed once per tile element (per zoom) and kept on it like _ovImg. A
     // stand-in that is still a stand-in after the store moved on is reused, not re-rasterised.
@@ -889,7 +889,7 @@
     },
     _value: function (code) { return this._lo + (code - 1) / 254 * (this._hi - this._lo); },
     // THE sampler (sampleRow): both the tile drawing and the readout go through here, and so do the
-    // arrow anchors and the particle field.
+    // particle flow's node values.
     _codeRow: function (r, colPos, n, out, off) { sampleRow(this._frame, this._nearest, r, colPos, n, out, off); },
     _code: function (r, cpos) { this._one[0] = cpos; this._codeRow(r, this._one, 1, this._oneOut, 0); return this._oneOut[0]; },
     valueAt: function (lat, lon) {
@@ -1116,23 +1116,26 @@
   // direction) under wave height and peak period, wdir (the 10 m wind direction) under wind speed; both
   // are degrees true the waves / wind come FROM, coded circularly by the job (code 1 = 0 = 360 deg, code
   // 255 unused; the manifest marks them circular, convention "from"). They are never drawn as colour:
-  // sampled as unit vectors (circular bilinear over the present nodes; no direction where the
-  // neighbours disagree) they steer the chevrons and particles drawn on one canvas in the ovAnimPane
+  // combined with the field into vectors they steer the particles drawn on one canvas in the ovAnimPane
   // (z 300, under the forecast points, no pointer events). A direction is shown only for the step on
   // the map, never an older one under a newer time: a step change clears the canvas until that step's
   // direction frame has landed (the frames load through the same scheduler, target field first, then
   // the target direction, then the ring interleaved, never more than MAX_INFLIGHT fetches in all).
   var DIR_FIELDS = { hs: 'pdir', tp: 'pdir', wind: 'wdir' };
-  var DIR_SPREAD = 60;                                     // degrees: present nodes further apart than this are two regimes -> the nearest node, never a blend
-  var DIR_SPREAD_COS = Math.cos(DIR_SPREAD * Math.PI / 180);
-  var ARROW_PX = 64;                                       // one arrow every 64 tile pixels (4 x 4 per tile), anchored to tile pixels
-  var ARROW_MIN = { hs: 0.1, tp: 3, wind: 1 };             // no arrow under a flat sea (m; on the period layer: the model's no-wave floor, s) or a calm (m/s)
-  var ARROW_CYCLE_S = 1.5;                                 // a chevron runs its track in this time at rate 1 (wave height)
   var ANIM_BUDGET_MS = { desktop: 4, phone: 8 };           // animation time per animation frame (plan section 21)
   var PARTICLE_PX2 = 900, PARTICLE_MIN = 150, PARTICLE_MAX = 3000;
   var PARTICLE_PX_PER_S = 3;                               // screen px/s per m/s of wind, before the latitude stretch
+  // Particle speed in screen px/s (before the Mercator stretch) from the field value under it: wind by
+  // its speed; swell lines by the wave height (nothing under the 0.1 m floor) or by the peak period (the
+  // deep-water group speed grows with the period; nothing under the model's 3 s no-wave floor).
+  var FLOW_SPEED = {
+    wind: function (v) { return PARTICLE_PX_PER_S * v; },
+    hs: function (v) { return v < 0.1 ? 0 : 8 + 3 * v; },
+    tp: function (v) { return v < 3 ? 0 : 1.5 * v; }
+  };
+  var FLOW_STYLE = { wind: { width: 1.2, halo: 2.6 }, hs: { width: 1.5, halo: 3.2 }, tp: { width: 1.5, halo: 3.2 } };
   var TRAIL_KEEP = 0.9;                                    // trail alpha kept per 16.7 ms (frame-rate independent fade)
-  var PARTICLE_LIFE_MS = [1000, 2500];                     // a particle lives this long (uniform), then respawns
+  var PARTICLE_LIFE_MS = { wind: [1000, 2500], hs: [2000, 4500], tp: [2000, 4500] };   // a particle lives this long (uniform), then respawns
   var CODE_SIN = new Float64Array(256), CODE_COS = new Float64Array(256);
   (function () { for (var q = 1; q < 255; q++) { var a = (q - 1) / 254 * 2 * Math.PI; CODE_SIN[q] = Math.sin(a); CODE_COS[q] = Math.cos(a); } })();
   // A manifest field usable as a direction: circular over 0-360, the FROM convention, published resolutions.
@@ -1183,120 +1186,90 @@
       out[off + i] = w < 0.25 ? 0 : acc / w;
     }
   }
-  // The direction sampler: at the same positions, the unit vector of the direction the waves / wind
-  // move TOWARD as (east, north) components. Within one regime (every pair of present nodes within
-  // DIR_SPREAD of each other) it is the circular bilinear mean of the nodes' FROM directions; across a
-  // regime edge (any pair further apart: a swell next to a wind sea, a front) it is the NEAREST present
-  // node's direction, never a blend no node has. outE[off+i] = outN[off+i] = 0 where nothing is present
-  // (weight < 0.25). Code 255 (never written by the circular coder) counts as absent, not as north.
-  var dirQ = new Int32Array(4), dirW = new Float64Array(4);
-  function sampleDirRow(f, r, colPos, n, outE, outN, off) {
-    var cols = f.cols, q = f.q, r0 = Math.floor(r), r1 = r0 + 1 < f.rows ? r0 + 1 : r0, fr = r - r0, w0 = 1 - fr, b0 = r0 * cols, b1 = r1 * cols;
-    for (var i = 0; i < n; i++) {
-      var cpos = colPos[i], c0 = Math.floor(cpos), c1 = c0 + 1 === cols ? 0 : c0 + 1, fc = cpos - c0;
-      dirQ[0] = q[b0 + c0]; dirQ[1] = q[b0 + c1]; dirQ[2] = q[b1 + c0]; dirQ[3] = q[b1 + c1];
-      dirW[0] = w0 * (1 - fc); dirW[1] = w0 * fc; dirW[2] = fr * (1 - fc); dirW[3] = fr * fc;
-      var w = 0, x = 0, y = 0, m = 0, best = -1, bestW = 0, minDot = 1, j, k, qj;
-      for (j = 0; j < 4; j++) {
-        qj = dirQ[j];
-        if (!qj || qj === 255) { dirW[j] = 0; continue; }
-        w += dirW[j]; m++;
-        if (dirW[j] > bestW) { bestW = dirW[j]; best = qj; }
-        x += CODE_SIN[qj] * dirW[j]; y += CODE_COS[qj] * dirW[j];
-        for (k = 0; k < j; k++) if (dirW[k] > 0) { var dot = CODE_SIN[qj] * CODE_SIN[dirQ[k]] + CODE_COS[qj] * CODE_COS[dirQ[k]]; if (dot < minDot) minDot = dot; }
-      }
-      if (w < 0.25) { outE[off + i] = 0; outN[off + i] = 0; continue; }
-      if (m > 1 && minDot < DIR_SPREAD_COS) { x = CODE_SIN[best]; y = CODE_COS[best]; }   // two regimes: the nearest node
-      var len = Math.sqrt(x * x + y * y);
-      outE[off + i] = -x / len; outN[off + i] = -y / len;                   // FROM -> TOWARD: the opposite vector
-    }
-  }
-  var dirOne = { c: new Float64Array(1), e: new Float64Array(1), n: new Float64Array(1) };
-  // Degrees true the waves / wind come FROM at (lat, lon) of direction frame f on grid g, or null (no
-  // data there).
-  function dirAt(f, g, lat, lon) {
-    var r = (g.lat0 - lat) / -g.dlat;
-    if (!(r >= 0 && r <= f.rows - 1)) return null;
-    var c = (lon - g.lon0) / g.dlon; dirOne.c[0] = ((c % f.cols) + f.cols) % f.cols;
-    sampleDirRow(f, r, dirOne.c, 1, dirOne.e, dirOne.n, 0);
-    if (!dirOne.e[0] && !dirOne.n[0]) return null;
-    return (Math.atan2(-dirOne.e[0], -dirOne.n[0]) * 180 / Math.PI + 360) % 360;
-  }
-  // Screen-space unit vector (x right, y down) of the direction something moves, from its FROM degrees:
-  // from the south (180) -> up, from the west (270) -> right.
-  function screenVec(fromDeg) { var a = fromDeg * Math.PI / 180; return [-Math.sin(a), Math.cos(a)]; }
   // Latitude / longitude of a world pixel (n = world width in px at that zoom). lngOfWorldX is UNWRAPPED
   // (a world copy west of the dateline gives longitudes below -180): the samplers wrap columns themselves,
   // and Leaflet keys its tiles by unwrapped coordinates, which the readout gate looks up.
   function latOfWorldY(wy, n) { return Math.atan(Math.sinh(Math.PI - 2 * Math.PI * wy / n)) * 180 / Math.PI; }
   function lngOfWorldX(wx, n) { return wx / n * 360 - 180; }
-  // Arrow anchors: the centre of every 64th tile pixel at tile zoom zt (pixel 32, 96, 160, 224 of each
-  // tile, both ways) inside the view plus a margin, as screen px. The lattice is a property of the world,
-  // so panning, world copies and the dateline never move an arrow relative to the water. view = {z:
-  // the map zoom (fractional), w, h: the map size, ox, oy: the world pixel of its top-left at zoom z}.
-  function arrowAnchors(view, zt) {
-    var scale = Math.pow(2, view.z - zt), nt = TILE * Math.pow(2, zt), out = [];
-    var i0 = Math.floor((view.ox / scale - 32.5) / ARROW_PX) - 1, i1 = Math.ceil(((view.ox + view.w) / scale - 32.5) / ARROW_PX) + 1;
-    var j0 = Math.max(0, Math.floor((view.oy / scale - 32.5) / ARROW_PX) - 1);
-    var j1 = Math.min(Math.ceil(((view.oy + view.h) / scale - 32.5) / ARROW_PX) + 1, Math.floor((nt - 32.5) / ARROW_PX));
-    for (var j = j0; j <= j1; j++) {
-      var Y = j * ARROW_PX + 32.5, sy = Y * scale - view.oy, lat = latOfWorldY(Y, nt);
-      for (var i = i0; i <= i1; i++) {
-        var X = i * ARROW_PX + 32.5;
-        out.push({ i: i, j: j, lat: lat, lng: lngOfWorldX(X, nt), sx: X * scale - view.ox, sy: sy });
+  // The flow as VECTORS on the direction grid's nodes: U (east) / V (north) in screen px/s from the
+  // field value under the node (the drawn frame, sampled at the node: exact where the field grid is the
+  // direction grid or its parent) and the node's FROM direction; M marks the nodes that have both. The
+  // lattice below interpolates these vectors, so a cyclone turns smoothly and slows to nothing at its eye
+  // (blending directions alone snaps between neighbours there).
+  function vectorNodes(field, layer, dframe, dgrid, prev) {
+    var cols = dframe.cols, rows = dframe.rows, n = cols * rows, reuse = prev && prev.cols === cols && prev.rows === rows;
+    var U = reuse ? prev.U : new Float32Array(n), V = reuse ? prev.V : new Float32Array(n), M = reuse ? prev.M : new Uint8Array(n);
+    var f = layer._frame, g = layer._grid, spd = FLOW_SPEED[field] || FLOW_SPEED.wind, lo = layer._lo, hi = layer._hi, q = dframe.q;
+    var colPos = new Float64Array(cols), codes = new Float64Array(cols), i, j;
+    for (i = 0; i < cols; i++) { var lng = dgrid.lon0 + i * dgrid.dlon; colPos[i] = ((((lng - g.lon0) / g.dlon) % f.cols) + f.cols) % f.cols; }
+    for (j = 0; j < rows; j++) {
+      var lat = dgrid.lat0 + j * dgrid.dlat, r = (g.lat0 - lat) / -g.dlat, base = j * cols;
+      if (r >= 0 && r <= f.rows - 1) sampleRow(f, layer._nearest, r, colPos, cols, codes, 0); else codes.fill(0);
+      for (i = 0; i < cols; i++) {
+        var d = q[base + i], c = codes[i];
+        if (!d || d === 255 || !c) { M[base + i] = 0; U[base + i] = 0; V[base + i] = 0; continue; }
+        var sp = spd(lo + (c - 1) / 254 * (hi - lo));
+        M[base + i] = sp > 0 ? 1 : 0; U[base + i] = -sp * CODE_SIN[d]; V[base + i] = -sp * CODE_COS[d];   // FROM -> TOWARD
       }
     }
-    return out;
+    return { cols: cols, rows: rows, U: U, V: V, M: M };
   }
-  // The wind vector field for the particles: the speed (the drawn frame, through the scalar sampler) and
-  // the direction (wdir) sampled on a screen lattice every s px, as screen velocities in px/s:
-  // PARTICLE_PX_PER_S * speed * (east, -north) * min(sec lat, 3) (the Mercator stretch: the same wind
-  // covers more pixels towards the poles).
-  function windField(view, s, layer, dframe, dgrid, prev) {
+  // The particles' screen lattice, every s px over the view: the node vectors interpolated bilinearly over
+  // the present nodes (weight < 0.25: nothing), as screen velocities (x right, y down) times the Mercator
+  // stretch min(sec lat, 3); nothing where the field is not drawn (clipped fields: the layer's tile land
+  // masks, the readout's own rule, so swell particles never run over land).
+  function flowField(view, s, nodes, dgrid, layer, clip, prev) {
     var cols = Math.ceil(view.w / s) + 1, rows = Math.ceil(view.h / s) + 1, n = TILE * Math.pow(2, view.z), reuse = prev && prev.cols === cols && prev.rows === rows;
-    var f = layer._frame, g = layer._grid, u = reuse ? prev.u : new Float32Array(cols * rows), v = reuse ? prev.v : new Float32Array(cols * rows);
+    var u = reuse ? prev.u : new Float32Array(cols * rows), v = reuse ? prev.v : new Float32Array(cols * rows);
     if (reuse) { u.fill(0); v.fill(0); }
-    var cpS = new Float64Array(cols), cpD = new Float64Array(cols), codes = new Float64Array(cols), e = new Float64Array(cols), nn = new Float64Array(cols), i;
-    for (i = 0; i < cols; i++) {
-      var lng = lngOfWorldX(view.ox + i * s, n);
-      cpS[i] = ((((lng - g.lon0) / g.dlon) % f.cols) + f.cols) % f.cols;
-      cpD[i] = ((((lng - dgrid.lon0) / dgrid.dlon) % dframe.cols) + dframe.cols) % dframe.cols;
-    }
-    var lo = layer._lo, hi = layer._hi;
-    for (var j = 0; j < rows; j++) {
-      var lat = latOfWorldY(view.oy + j * s, n), rS = (g.lat0 - lat) / -g.dlat, rD = (dgrid.lat0 - lat) / -dgrid.dlat, base = j * cols;
-      if (!(rS >= 0 && rS <= f.rows - 1 && rD >= 0 && rD <= dframe.rows - 1)) continue;
-      sampleRow(f, layer._nearest, rS, cpS, cols, codes, 0);
-      sampleDirRow(dframe, rD, cpD, cols, e, nn, 0);
-      var k = PARTICLE_PX_PER_S * Math.min(3, 1 / Math.max(1e-6, Math.cos(lat * Math.PI / 180)));
+    var nc = nodes.cols, nr = nodes.rows, U = nodes.U, V = nodes.V, M = nodes.M, cp = new Float64Array(cols), i, j;
+    for (i = 0; i < cols; i++) cp[i] = ((((lngOfWorldX(view.ox + i * s, n) - dgrid.lon0) / dgrid.dlon) % nc) + nc) % nc;
+    var scale = Math.pow(2, view.z - view.zt), tiles = clip ? layer._tiles : null, lastKey = null, lastMask;
+    for (j = 0; j < rows; j++) {
+      var lat = latOfWorldY(view.oy + j * s, n), r = (dgrid.lat0 - lat) / -dgrid.dlat, base = j * cols;
+      if (!(r >= 0 && r <= nr - 1)) continue;
+      var k = Math.min(3, 1 / Math.max(1e-6, Math.cos(lat * Math.PI / 180)));
+      var r0 = Math.floor(r), r1 = r0 + 1 < nr ? r0 + 1 : r0, fr = r - r0, w0 = 1 - fr, b0 = r0 * nc, b1 = r1 * nc;
+      var Y = (view.oy + j * s) / scale, ty = Math.floor(Y / TILE), py = Math.floor(Y - ty * TILE);
       for (i = 0; i < cols; i++) {
-        var code = codes[i];
-        if (!code || (!e[i] && !nn[i])) continue;
-        var val = lo + (code - 1) / 254 * (hi - lo);
-        u[base + i] = k * val * e[i]; v[base + i] = -k * val * nn[i];
+        if (tiles) {                                                            // drawn water only (alpha >= LAND_READOUT)
+          var X = (view.ox + i * s) / scale, tx = Math.floor(X / TILE), px = Math.floor(X - tx * TILE), key = tx + ':' + ty + ':' + view.zt;
+          if (key !== lastKey) { var t = tiles[key]; lastKey = key; lastMask = t && t.el ? t.el._ovLand : undefined; }
+          if (lastMask === undefined || lastMask === LAND_ALL) continue;
+          if (lastMask !== null && 255 - lastMask[py * TILE + px] < LAND_READOUT) continue;
+        }
+        var cpos = cp[i], c0 = Math.floor(cpos), c1 = c0 + 1 === nc ? 0 : c0 + 1, fc = cpos - c0;
+        var a = b0 + c0, b = b0 + c1, c = b1 + c0, d = b1 + c1, w = 0, x = 0, y = 0, wt;
+        if (M[a]) { wt = w0 * (1 - fc); x += U[a] * wt; y += V[a] * wt; w += wt; }
+        if (M[b]) { wt = w0 * fc; x += U[b] * wt; y += V[b] * wt; w += wt; }
+        if (M[c]) { wt = fr * (1 - fc); x += U[c] * wt; y += V[c] * wt; w += wt; }
+        if (M[d]) { wt = fr * fc; x += U[d] * wt; y += V[d] * wt; w += wt; }
+        if (w < 0.25) continue;
+        u[base + i] = k * x / w; v[base + i] = -k * y / w;
       }
     }
     return { s: s, cols: cols, rows: rows, u: u, v: v };
   }
   function nowMs() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
 
-  // The animation: gliding chevrons along the swell direction (wave height, peak period) or wind
-  // particles with fading trails (wind speed) on one devicePixelRatio canvas in the ovAnimPane. A plain
+  // The animation: particles with fading trails along the swell (wave height, peak period) or the wind
+  // (wind speed) on one devicePixelRatio canvas in the ovAnimPane (owner: particles only). A plain
   // object (no L.Layer): the controller attaches it while the Animation box is ticked and a direction
   // frame is on the map. It stops on Off, when unticked, in a hidden tab and while the map moves or
   // zooms (the canvas is hidden during a zoom and rebuilt on zoomend / moveend); under reduced motion
-  // it draws static arrows once (wind too) and never animates.
+  // nothing animates at all (the checkbox says so).
   function FlowAnimator(map, layer) {
     this.map = map; this.layer = null; this._onLayerRedraw = null;
     this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
-    this.field = null; this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.mode = null;   // 'arrows' | 'particles' | 'static'
-    this.anchors = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0;
-    this.active = false; this.suspended = 0; this.dirty = false; this.rafId = null; this.lastT = 0; this.clock = 0;
+    this.field = null; this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.mode = null;   // 'particles' while animating
+    this.nodes = null; this.nodesFor = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0;
+    this.vel = new Float64Array(2); this.vel2 = new Float64Array(2);
+    this.active = false; this.suspended = 0; this.dirty = false; this.rafId = null; this.lastT = 0;
     this.ema = 0; this.adaptAt = 0; this._listeners = [];
     this.setLayer(layer);
   }
-  // The field layer the arrows are gated by; when its tiles are redrawn for a coastline chunk that landed
-  // (the land mask changed under the anchors) the arrows are rebuilt.
+  // The field layer the particles are gated by; when its tiles are redrawn for a coastline chunk that landed
+  // (the land mask changed under the particles) the flow is rebuilt.
   FlowAnimator.prototype.setLayer = function (layer) {
     var self = this;
     if (this.layer === layer) return;
@@ -1320,7 +1293,7 @@
     this._on('movestart', function () { self.suspend(); });
     this._on('moveend', function () { self.resume(true); });
     // a view reset (setView without animation, a jump of a screen or more, the site's single-world
-    // clamp on a resize) recreates the tiles AFTER moveend: the arrows are rebuilt once they exist
+    // clamp on a resize) recreates the tiles AFTER moveend: the flow is rebuilt once they exist
     this._on('viewreset', function () { if (!self.suspended) self._rebuild(); });
     this._on('resize', function () { self._rebuild(); });
   };
@@ -1330,17 +1303,17 @@
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
     if (this.canvas) { if (this.canvas.remove) this.canvas.remove(); this.canvas = null; this.ctx = null; }
     this.setLayer(null);
-    this.dir = null; this.dgrid = null; this.fframe = null; this.anchors = null; this.vf = null; this.particles = null; this.v = null;
+    this.dir = null; this.dgrid = null; this.fframe = null; this.vf = null; this.nodes = null; this.nodesFor = null; this.particles = null; this.v = null;
   };
   FlowAnimator.prototype.setField = function (field) { if (this.field !== field) { this.field = field; this.particles = null; this.clearData(); } };
   // The direction frame of the step on the map (the caller checks it is that step's; entry = the
-  // manifest frame entry). A new frame keeps the particles and the chevron clock, so playback flows on.
+  // manifest frame entry). A new frame keeps the particles, so playback flows on.
   FlowAnimator.prototype.setData = function (frame, grid, entry) {
     if (this.dir === frame && this.fframe === (this.layer && this.layer._frame)) { this.entry = entry || null; return; }
     this.dir = frame; this.dgrid = grid; this.entry = entry || null; this._rebuild();
   };
   FlowAnimator.prototype.clearData = function () {
-    this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.anchors = null; this.vf = null; this.stop(); this._clear();
+    this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.vf = null; this.nodes = null; this.nodesFor = null; this.stop(); this._clear();
   };
   // Nested suspends (a zoom fires zoomstart + movestart; a hidden tab adds one): the last resume runs the
   // rebuild any of them asked for, so a zoom that ended while the tab was hidden is not drawn stale.
@@ -1370,48 +1343,43 @@
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   };
   FlowAnimator.prototype._clear = function () { if (this.ctx && this.v) { this.ctx.globalCompositeOperation = 'source-over'; this.ctx.clearRect(0, 0, this.v.w, this.v.h); } };
-  // Everything that depends on the view or the data: the canvas placement, the arrow anchors or the
-  // wind field, then one drawn frame (and the loop, unless static).
+  // Everything that depends on the view or the data: the canvas placement, the node vectors (per step)
+  // and the screen lattice (per view), then the loop.
   FlowAnimator.prototype._rebuild = function () {
-    if (!this.canvas || !this.dir || !this.layer || !this.layer.hasFrame()) { this.stop(); this.anchors = null; this.vf = null; this._clear(); return; }
+    if (!this.canvas || !this.dir || !this.layer || !this.layer.hasFrame()) { this.stop(); this.vf = null; this._clear(); return; }
     var v = this.view(), prev = this.v, same = !!(prev && prev.w === v.w && prev.h === v.h && prev.ox === v.ox && prev.oy === v.oy && prev.z === v.z);
     this.v = v; this._place(v); this.fframe = this.layer._frame;
-    this.mode = reducedMotion() ? 'static' : this.field === 'wind' ? 'particles' : 'arrows';
-    if (this.mode === 'particles') {
-      var cellPx = TILE * Math.pow(2, v.z) * this.dgrid.dlon / 360;
-      this.vf = windField(v, cellPx >= 16 ? 8 : 4, this.layer, this.dir, this.dgrid, this.vf); this.anchors = null;
-      this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));   // follows the view
-      if (!this.particles) this._seed(v); else if (this.count > this.target) this.count = this.target;
-      if (!same) this._clear();                                                // a new step keeps the trails; a moved view starts clean
-    } else { this.anchors = this._arrows(v); this.vf = null; this._clear(); }
-    if (this.mode === 'static') { this._render(0); this.stop(); } else this._start();
-  };
-  // The arrows in view: an anchor is drawn where the field is drawn (the readout's own rule: data, not
-  // land, not a flat sea) and the direction is defined; the chevron rate follows the peak period.
-  FlowAnimator.prototype._arrows = function (v) {
-    var layer = this.layer, dir = this.dir, dg = this.dgrid, anchors = arrowAnchors(v, v.zt), out = [], nx = TILE * Math.pow(2, v.zt) / ARROW_PX;
-    var min = ARROW_MIN[this.field] !== undefined ? ARROW_MIN[this.field] : -Infinity;
-    for (var k = 0; k < anchors.length; k++) {
-      var a = anchors[k], val = layer.readoutAt(a.lat, a.lng, v.zt);
-      if (val === null || val === undefined || val < min) continue;
-      var from = dirAt(dir, dg, a.lat, a.lng);
-      if (from === null) continue;
-      var d = screenVec(from), iw = ((a.i % nx) + nx) % nx;
-      out.push({ sx: a.sx, sy: a.sy, dx: d[0], dy: d[1], rate: this.field === 'tp' ? Math.max(0.6, Math.min(2, val / 10)) : 1, off: ((iw * 7 + a.j * 13) % 8) / 8 });
+    if (reducedMotion()) { this.mode = null; this.stop(); this.vf = null; this._clear(); return; }   // no animation at all
+    this.mode = 'particles';
+    var cellPx = TILE * Math.pow(2, v.z) * this.dgrid.dlon / 360;
+    if (!this.nodes || this.nodesFor !== this.dir || this.nodesFrame !== this.fframe) {       // once per step, not per pan
+      this.nodes = vectorNodes(this.field, this.layer, this.dir, this.dgrid, this.nodes); this.nodesFor = this.dir; this.nodesFrame = this.fframe;
     }
-    return out;
+    this.vf = flowField(v, cellPx >= 16 ? 8 : 4, this.nodes, this.dgrid, this.layer, !!this.layer._clip, this.vf);
+    this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));   // follows the view
+    if (!this.particles) this._seed(v); else if (this.count > this.target) this.count = this.target;
+    if (!same) this._clear();                                                    // a new step keeps the trails; a moved view starts clean
+    this._start();
   };
+  FlowAnimator.prototype._life = function () { return PARTICLE_LIFE_MS[this.field] || PARTICLE_LIFE_MS.wind; };
   FlowAnimator.prototype._seed = function (v) {
     this.count = this.target;
     this.particles = new Float32Array(PARTICLE_MAX * 4);                     // x, y, age (ms), life (ms) per particle
-    for (var i = 0; i < PARTICLE_MAX; i++) { this._respawn(i * 4, v); this.particles[i * 4 + 2] = Math.random() * PARTICLE_LIFE_MS[0]; }
+    for (var i = 0; i < PARTICLE_MAX; i++) { this._respawn(i * 4, v); this.particles[i * 4 + 2] = Math.random() * this._life()[0]; }
   };
   FlowAnimator.prototype._respawn = function (k, v) {
-    var P = this.particles; P[k] = Math.random() * v.w; P[k + 1] = Math.random() * v.h; P[k + 2] = 0;
-    P[k + 3] = PARTICLE_LIFE_MS[0] + Math.random() * (PARTICLE_LIFE_MS[1] - PARTICLE_LIFE_MS[0]);
+    var P = this.particles, life = this._life(); P[k] = Math.random() * v.w; P[k + 1] = Math.random() * v.h; P[k + 2] = 0;
+    P[k + 3] = life[0] + Math.random() * (life[1] - life[0]);
+  };
+  // The lattice velocity at a screen point, bilinear over the four cells around it (out[0], out[1] px/s).
+  FlowAnimator.prototype._velocity = function (x, y, out) {
+    var vf = this.vf, s = vf.s, cols = vf.cols, rows = vf.rows, gx = x / s, gy = y / s, i0 = gx | 0, j0 = gy | 0, fx = gx - i0, fy = gy - j0;
+    var i1 = i0 + 1 < cols ? i0 + 1 : i0, j1 = j0 + 1 < rows ? j0 + 1 : j0, a = j0 * cols + i0, b = j0 * cols + i1, c = j1 * cols + i0, d = j1 * cols + i1, u = vf.u, v = vf.v;
+    out[0] = (u[a] * (1 - fx) + u[b] * fx) * (1 - fy) + (u[c] * (1 - fx) + u[d] * fx) * fy;
+    out[1] = (v[a] * (1 - fx) + v[b] * fx) * (1 - fy) + (v[c] * (1 - fx) + v[d] * fx) * fy;
   };
   FlowAnimator.prototype._start = function () {
-    if (this.rafId !== null || !this.dir || !this.canvas || this.mode === 'static' || !(this.anchors || this.vf)) return;
+    if (this.rafId !== null || !this.dir || !this.canvas || !this.vf) return;
     var self = this; this.active = true; this.lastT = 0;
     this.rafId = this.raf(function (t) { self._frame(t); });
   };
@@ -1420,7 +1388,7 @@
     this.rafId = null;
     if (!this.active || this.suspended || !this.dir || !this.canvas || (typeof document !== 'undefined' && document.hidden)) { this.active = false; return; }
     var dt = this.lastT ? Math.min(50, Math.max(0, t - this.lastT)) : 16; this.lastT = t;
-    var t0 = nowMs(); this._render(dt); this._adapt(nowMs() - t0, t);
+    var t0 = nowMs(); this._renderParticles(dt); this._adapt(nowMs() - t0, t);
     var self = this; this.rafId = this.raf(function (tt) { self._frame(tt); });
   };
   // Frame-time adaptation (particles): fewer when a frame runs over the budget, back up when there is room.
@@ -1433,62 +1401,28 @@
     if (this.ema > budget) this.count = Math.max(PARTICLE_MIN, Math.round(this.count * 0.85));
     else if (this.ema < budget * 0.6 && this.count < this.target) this.count = Math.min(this.target, Math.round(this.count * 1.1) + 1);
   };
-  FlowAnimator.prototype._render = function (dt) {
-    if (this.mode === 'particles') this._renderParticles(dt); else this._renderArrows(dt);
-  };
-  // Every arrow: a faint track through its anchor and two chevrons half a cycle apart gliding along it
-  // (one chevron, at the head, when static); dark halo under a light core, four strokes per frame in all.
-  FlowAnimator.prototype._renderArrows = function (dt) {
-    var ctx = this.ctx, v = this.v, A = this.anchors, i, a, m;
-    if (!ctx || !v || !A) return;
-    var n = A.length;
-    ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(0, 0, v.w, v.h);
-    if (!n) return;
-    var stat = this.mode === 'static';
-    if (!stat) this.clock += dt / 1000;
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    ctx.beginPath();
-    for (i = 0; i < n; i++) { a = A[i]; ctx.moveTo(a.sx - 9 * a.dx, a.sy - 9 * a.dy); ctx.lineTo(a.sx + 9 * a.dx, a.sy + 9 * a.dy); }
-    ctx.lineWidth = 2.6; ctx.strokeStyle = 'rgba(0,0,0,0.28)'; ctx.stroke();
-    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.stroke();
-    var cs = Math.cos(0.56), sn = Math.sin(0.56), base = this.clock / ARROW_CYCLE_S;   // wings 32 degrees back from the tip
-    ctx.beginPath();
-    for (i = 0; i < n; i++) {
-      a = A[i];
-      for (m = 0; m < (stat ? 1 : 2); m++) {
-        var p = stat ? 1 : (base * a.rate + a.off + m * 0.5) % 1, t = p * 20 - 10;
-        var tx = a.sx + t * a.dx, ty = a.sy + t * a.dy;
-        var lx = a.dx * cs - a.dy * sn, ly = a.dx * sn + a.dy * cs, rx = a.dx * cs + a.dy * sn, ry = -a.dx * sn + a.dy * cs;
-        ctx.moveTo(tx - 5.5 * lx, ty - 5.5 * ly); ctx.lineTo(tx, ty); ctx.lineTo(tx - 5.5 * rx, ty - 5.5 * ry);
-      }
-    }
-    ctx.lineWidth = 3.2; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
-    ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.stroke();
-  };
-  // Particles: the last frame fades (destination-in, TRAIL_KEEP per 16.7 ms whatever the frame rate; the
-  // 8-bit floor it leaves is a few /255 of alpha, invisible), every live particle moves by its cell's
-  // velocity and draws the segment it moved along, a dark halo under a light core (visible over the dark
-  // ocean and the light desert / ice imagery alike; two strokes a frame); one that ages out (1-2.5 s),
-  // leaves the map or sits in a cell without a vector is respawned somewhere in the view.
   FlowAnimator.prototype._renderParticles = function (dt) {
     var ctx = this.ctx, v = this.v, vf = this.vf, P = this.particles;
     if (!ctx || !v || !vf || !P) return;
-    var w = v.w, h = v.h, n = this.count, s = vf.s, cols = vf.cols, dts = dt / 1000, i, k;
+    var w = v.w, h = v.h, n = this.count, s = vf.s, cols = vf.cols, dts = dt / 1000, half = dts / 2, V1 = this.vel, V2 = this.vel2, i, k;
+    var style = FLOW_STYLE[this.field] || FLOW_STYLE.wind;
     ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = 'rgba(0,0,0,' + Math.pow(TRAIL_KEEP, dt / 16.7).toFixed(4) + ')'; ctx.fillRect(0, 0, w, h);
     ctx.globalCompositeOperation = 'source-over';
     ctx.lineCap = 'round';
     ctx.beginPath();
     for (i = 0, k = 0; i < n; i++, k += 4) {
-      var x = P[k], y = P[k + 1], age = P[k + 2];
-      var c = ((y / s) | 0) * cols + ((x / s) | 0), u = vf.u[c], vy = vf.v[c];
-      if (age >= P[k + 3] || (u === 0 && vy === 0)) { this._respawn(k, v); continue; }
-      var nx = x + u * dts, ny = y + vy * dts;
+      var x = P[k], y = P[k + 1], age = P[k + 2], c = ((y / s) | 0) * cols + ((x / s) | 0);
+      if (age >= P[k + 3] || (vf.u[c] === 0 && vf.v[c] === 0)) { this._respawn(k, v); continue; }   // aged out, or not drawn here
+      this._velocity(x, y, V1);                                                 // midpoint step: smooth around a turning flow
+      var xm = x + V1[0] * half, ym = y + V1[1] * half;
+      if (xm >= 0 && ym >= 0 && xm < w && ym < h) this._velocity(xm, ym, V2); else { V2[0] = V1[0]; V2[1] = V1[1]; }
+      var nx = x + V2[0] * dts, ny = y + V2[1] * dts;
       if (!(nx >= 0 && ny >= 0 && nx < w && ny < h)) { this._respawn(k, v); continue; }
       ctx.moveTo(x, y); ctx.lineTo(nx, ny);
       P[k] = nx; P[k + 1] = ny; P[k + 2] = age + dt;
     }
-    ctx.lineWidth = 2.6; ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.stroke();
-    ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.stroke();
+    ctx.lineWidth = style.halo; ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.stroke();
+    ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.stroke();
   };
 
   // ---- controller ----
@@ -1650,7 +1584,7 @@
     this.target = idx; this._syncUI();
     this._trimInflight(idx);
     var p = this._ensure(idx);
-    // With Animation on, the picture and its arrows change together: the step waits for its direction
+    // With Animation on, the picture and its particles change together: the step waits for its direction
     // frame as well (fetched beside the field frame); a missing or failed direction never holds it.
     var pd = this._wantDir() && !this._isUnavailable(idx) ? this._dirReady(idx) : null;
     return (pd ? Promise.all([p, pd]).then(function (both) { return both[0]; }) : p).then(function (frame) {
@@ -1968,7 +1902,7 @@
   };
   // The direction frame for idx, delivered to the animator only if the LAYER shows that step of that run
   // (its frame entry; a field switch keeps frameIndex while the layer is empty), at this field and
-  // resolution; a failure is swallowed: the field plays on without its arrows.
+  // resolution; a failure is swallowed: the field plays on without its particles.
   Overlay.prototype._ensureDir = function (idx) {
     var self = this, m = this.manifest, field = this.field, dres = this.dres;
     return this._ensure(idx, 'dir').then(function (frame) {
@@ -2302,8 +2236,8 @@
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
       validCoastIndex: validCoastIndex,
-      FlowAnimator: FlowAnimator, dirAt: dirAt, sampleRow: sampleRow, sampleDirRow: sampleDirRow, screenVec: screenVec, arrowAnchors: arrowAnchors,
-      windField: windField, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, DIR_SPREAD: DIR_SPREAD, ARROW_PX: ARROW_PX, ARROW_MIN: ARROW_MIN, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
+      FlowAnimator: FlowAnimator, sampleRow: sampleRow,
+      vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
       ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_KEEP: TRAIL_KEEP, dirGridsOk: dirGridsOk }
   };

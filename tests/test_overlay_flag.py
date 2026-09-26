@@ -146,7 +146,7 @@ def test_overlay_js_syntax_and_contract_strings():
                    "--ov-attr-max", "removeAttribution", "clientHeight", "snapToPixel",
                    "decodeCoast", "composeTile", "readoutAt", "contourTile", "legendPos", "GSHHG", "static/coast/v1", "LICENSE.txt",
                    "smoothBlock", "'pagehide'", "_pendingRestore", "'Contours, every '", "below zoom 4",
-                   "FlowAnimator", "'ovAnimPane'", "dirAt", "' Animation'", "no direction data", "leaflet-zoom-hide"):
+                   "FlowAnimator", "'ovAnimPane'", "flowField", "' Animation'", "no direction data", "leaflet-zoom-hide"):
         assert needle in js, needle
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:

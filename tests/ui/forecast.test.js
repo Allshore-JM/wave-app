@@ -38,7 +38,7 @@ test('urlFor writes the station always and the rest only when not the default; q
   assert.equal(I.urlFor(base), '?station=51201');
   assert.equal(I.urlFor({ ...base, tz: 'Pacific/Honolulu', unit: 'Metric', model: 'SWAN', view: 'Graph' }),
     '?station=51201&tz=Pacific%2FHonolulu&unit=Metric&model=SWAN&view=Graph');
-  assert.equal(I.queryFor({ ...base, view: 'Graph' }), 'station=51201&tz=&unit=US&model=GFS');
+  assert.equal(I.queryFor({ ...base, view: 'Graph' }), 'station=51201&tz=&unit=US&model=GFS&compact=1');
   assert.deepEqual(I.resolveInitialState(I.urlFor({ ...base, unit: 'Metric', view: 'Graph' }), {}, {}),
     { ...base, unit: 'Metric', view: 'Graph' }, 'urlFor round-trips through resolveInitialState');
 });

@@ -47,6 +47,10 @@
 /* The sheet: a tighter rhythm, the header line never wraps. */
 .ov-sheet .ov-row { margin-top: 2px; }
 .ov-sheet .ov-timeline { margin: 2px 0 0; }
+/* the legend right under the timeline, bar and labels inside the short details box */
+.ov-sheet .ov-legend { margin-top: 1px; }
+.ov-sheet .ov-legend canvas { height: 8px; }
+.ov-sheet .ov-ticks { height: 13px; }
 .ov-sheet .ov-head { flex-wrap: nowrap; }
 .ov-sheet .ov-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 340px) {

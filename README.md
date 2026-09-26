@@ -170,7 +170,8 @@ wind is never clipped). The imagery is back for wave height, peak period, a fiel
 added on top and the old one removed once the new one's tiles have faded in (the blend is on only while the relief is the
 sole basemap), and a relief that loads no tile is retried after 10 minutes. Fixed opacity since asset 2.12.0 (no slider; `FIXED_OPACITY`): wind 100 %, wave height and period 65 %. The page hands its imagery layer to the module (`baseLayer`, found by its World_Imagery URL inside the gated
 block); without it the basemap is left alone.
-Simpler panel (asset 2.12.0, owner 2026-09-26): no Opacity / Contours / Animation row, and the page's +/- zoom buttons are
+Simpler panel (asset 2.12.2, owner 2026-09-26): no Opacity / Contours / Animation row (on phones the legend sits right
+under the timeline), and the page's +/- zoom buttons are
 removed by the gated overlay block (`map.removeControl(map.zoomControl)`; the wheel, pinch, double-click and keyboard still
 zoom, the Home button stays); with the overlay flag unset the page is unchanged.
 Coastline clip (asset 2.7.6): wave height and peak period are clipped to the ocean in the browser, so the field

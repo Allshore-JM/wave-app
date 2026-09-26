@@ -73,9 +73,12 @@ both in degrees true the waves / wind come FROM, coded circularly (`q = 1 + roun
 the ordinary `u8-linear-v2` decode over 0-360, error <= 0.71 deg; the manifest marks them `circular`,
 `convention: from`, `interpolation: circular`). `pdir` is published full + half and takes the coastal fill
 by nearest model cell (never a mean of angles); `wdir` only at half resolution (`resolutions` per field in the
-manifest). The job records per step how many cells have waves but no direction (`pdir_mask_mismatch` in the
-stats sidecar, on the model grids; a flat calm, hs = 0, has none by nature and is counted apart) and warns in
-the summary. For `pdir`/`wdir` the `encoding_spec` clamp does not apply: code 1 is north (0 = 360 degrees) and code
+manifest). The job records per step how many cells have at least 0.1 m of waves but no direction, or a direction
+without a height (`pdir_mask_mismatch` in the stats sidecar, on the model grids; a calm under 0.1 m, where no
+particle is drawn, is counted apart as `pdir_missing_calm`) and warns in the summary. The build is a pipeline with
+unchanged output bytes: the next step's records download while a step is decoded and encoded, the fields encode in
+parallel, the PNGs upload in a pool behind the build (every frame is stored before the manifest and the pointer), and
+GRIB decoding stays on one thread (eccodes is not thread-safe). For `pdir`/`wdir` the `encoding_spec` clamp does not apply: code 1 is north (0 = 360 degrees) and code
 255 is never used; a reader must branch on the field's `circular` flag.
 
 Runbook: rotate the R2 token in the repository secrets; roll back by unsetting `MODEL_OVERLAYS` (env only,

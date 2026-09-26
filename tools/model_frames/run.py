@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -40,6 +41,13 @@ FRAME_HOURS = 3
 FAILED_RETRY_AFTER_S = 3 * 3600         # a cycle that failed to build is retried after 3 h, max 3 times
 FAILED_MAX_ATTEMPTS = 3
 NOTREADY_WARN = 6                       # NotReady exits in a row for one cycle before the summary warns
+# The build is a pipeline (output bytes are unchanged): the next step's records download while this step is
+# decoded and encoded, the fields encode in parallel (numpy / zlib release the GIL), and the PNGs upload in a
+# pool that runs behind the build. GRIB decoding stays on this thread: eccodes is not thread-safe.
+ENCODE_WORKERS = 5
+UPLOAD_WORKERS = 8
+UPLOAD_BACKLOG = 20                     # field uploads (2 PUTs each) allowed to trail the build: bounds memory
+PDIR_WAVES_M = 0.1                      # below this height a missing wave direction is a calm, not a mismatch (no particle is drawn there)
 
 
 def _summary(line):
@@ -72,34 +80,71 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
     run = P.run_key(run_dt)
     frames, stats_frames = [], []
     t0 = time.time()
-    for step in steps:
-        t = time.time()
-        wave = F.fetch_records(F.wave_url(run_dt, step), list(WAVE_KEYS.values()))
-        atmos = F.fetch_records(F.atmos_url(run_dt, step), list(ATMOS_KEYS))
-        grids = {name: D.decode(wave[key], key, run_dt, step)[0] for name, key in WAVE_KEYS.items()}
-        u, _ = D.decode(atmos[ATMOS_KEYS[0]], ATMOS_KEYS[0], run_dt, step)
-        v, _ = D.decode(atmos[ATMOS_KEYS[1]], ATMOS_KEYS[1], run_dt, step)
-        grids["wind"] = D.wind_speed(u, v)
-        grids["wdir"] = D.wind_dir_from(u, v)
-        entry = {"step": step, "valid_utc": (run_dt + timedelta(hours=step)).strftime("%Y-%m-%dT%H:%M:%SZ")}
-        # on the MODEL grids the direction must exist wherever there are waves, and nowhere without a height
-        # (the client draws arrows only on drawn water); a flat calm (hs == 0, 19 cells at f024 of 2026092512)
-        # has no direction. After the coastal fill the published frames can differ by a few calm-seeded
-        # cells (hs code 1 = 0 m, Arctic pack), where no arrow is drawn.
-        hs_, pd_ = grids["hs"], grids["pdir"]
-        mismatch = int(np.count_nonzero((np.isnan(pd_) & (hs_ > 0)) | (np.isnan(hs_) & ~np.isnan(pd_))))
-        calm = int(np.count_nonzero(np.isnan(pd_) & (hs_ == 0)))
-        stat = {"step": step, "fields": {}, "pdir_mask_mismatch": mismatch, "pdir_missing_calm": calm}
-        for name, grid in grids.items():
-            enc = E.encode_frame(grid, name)
-            stat["fields"][name] = dict(enc["stats"], bytes_full=len(enc.get("full", b"")), bytes_half=len(enc.get("half", b"")))
+    if E.FILL_INFO:
+        E.fill_allow()                              # load + verify the mask once, before the encode threads
+    fetch_pool, encode_pool = ThreadPoolExecutor(1), ThreadPoolExecutor(ENCODE_WORKERS)
+    upload_pool = ThreadPoolExecutor(UPLOAD_WORKERS) if upload else None
+    pending, nxt = [], None
+
+    def fetch(step):
+        return (F.fetch_records(F.wave_url(run_dt, step), list(WAVE_KEYS.values())),
+                F.fetch_records(F.atmos_url(run_dt, step), list(ATMOS_KEYS)))
+
+    def drain(limit):
+        # the first upload failure is raised here (the build stops); at most `limit` uploads trail it
+        for f in [f for f in pending if f.done()]:
+            f.result()
+        pending[:] = [f for f in pending if not f.done()]
+        while len(pending) > limit:
+            pending.pop(0).result()
+
+    try:
+        nxt = fetch_pool.submit(fetch, steps[0]) if steps else None
+        for n, step in enumerate(steps):
+            t = time.time()
+            wave, atmos = nxt.result()
+            nxt = fetch_pool.submit(fetch, steps[n + 1]) if n + 1 < len(steps) else None
+            grids = {name: D.decode(wave[key], key, run_dt, step)[0] for name, key in WAVE_KEYS.items()}
+            u, _ = D.decode(atmos[ATMOS_KEYS[0]], ATMOS_KEYS[0], run_dt, step)
+            v, _ = D.decode(atmos[ATMOS_KEYS[1]], ATMOS_KEYS[1], run_dt, step)
+            grids["wind"] = D.wind_speed(u, v)
+            grids["wdir"] = D.wind_dir_from(u, v)
+            entry = {"step": step, "valid_utc": (run_dt + timedelta(hours=step)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+            # on the MODEL grids the direction must exist wherever there are waves, and nowhere without a height
+            # (the client draws particles only on drawn water with at least PDIR_WAVES_M of wave height); a calm
+            # below that (hs == 0 is NaN in DIRPW; a 0.01 m cell on the ice edge set the warning off at f120 of
+            # 2026092518) is counted apart. After the coastal fill the published frames can differ by a few
+            # calm-seeded cells (hs code 1 = 0 m, Arctic pack), where nothing is drawn.
+            hs_, pd_ = grids["hs"], grids["pdir"]
+            mismatch = int(np.count_nonzero((np.isnan(pd_) & (hs_ >= PDIR_WAVES_M)) | (np.isnan(hs_) & ~np.isnan(pd_))))
+            calm = int(np.count_nonzero(np.isnan(pd_) & (hs_ < PDIR_WAVES_M)))
+            stat = {"step": step, "fields": {}, "pdir_mask_mismatch": mismatch, "pdir_missing_calm": calm}
+            names = list(grids)
+            encoded = list(encode_pool.map(lambda name: E.encode_frame(grids[name], name), names))
+            for name, enc in zip(names, encoded):
+                stat["fields"][name] = dict(enc["stats"], bytes_full=len(enc.get("full", b"")), bytes_half=len(enc.get("half", b"")))
+                if upload:
+                    pending.append(upload_pool.submit(P.publish_frame, store, run, name, step, enc))
             if upload:
-                P.publish_frame(store, run, name, step, enc)
-        frames.append(entry)
-        stats_frames.append(stat)
-        filled = " ".join(f"{n}={stat['fields'][n]['filled_points']}" for n in (E.FILL_INFO or {}).get("fields", []))
-        log(f"f{step:03d} done in {time.time() - t:.1f}s" + (f" (filled {filled})" if filled else "")
-            + (f" WARNING pdir/hs mask mismatch {mismatch}" if mismatch else ""))
+                drain(UPLOAD_BACKLOG)
+            frames.append(entry)
+            stats_frames.append(stat)
+            filled = " ".join(f"{n}={stat['fields'][n]['filled_points']}" for n in (E.FILL_INFO or {}).get("fields", []))
+            log(f"f{step:03d} done in {time.time() - t:.1f}s" + (f" (filled {filled})" if filled else "")
+                + (f" WARNING pdir/hs mask mismatch {mismatch}" if mismatch else ""))
+        if upload:
+            drain(0)                                # every frame is stored before the manifest and the pointer
+    except BaseException:
+        for f in pending:
+            f.cancel()
+        if nxt is not None:
+            nxt.cancel()
+        raise
+    finally:
+        fetch_pool.shutdown(wait=False, cancel_futures=True)
+        encode_pool.shutdown(wait=False, cancel_futures=True)
+        if upload_pool is not None:
+            upload_pool.shutdown(wait=False, cancel_futures=True)
     complete = steps == F.STEPS and len(frames) == len(F.STEPS)
     manifest = {
         "schema": 3, "run": run, "files": {"template": P.files_template(run), "res": {"full": "", "half": "half/"}}, "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": MODEL,

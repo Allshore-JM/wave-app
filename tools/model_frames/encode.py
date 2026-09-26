@@ -166,23 +166,29 @@ def fill_coast(grid, cells=FILL_CELLS, allow=None, method="mean"):
 
 def _nearest_values(model, targets, cells):
     """`model` with every target cell set to the value of its nearest model cell within `cells`
-    (Chebyshev window; every target has one, since it was reached in <= cells rings)."""
+    (Chebyshev window; every target has one, since it was reached in <= cells rings). Offsets are
+    tried nearest first (ties by a fixed order); the first model cell found wins. Works on the target
+    cells only (a few percent of the grid), not on whole shifted copies of it."""
     rows, cols = model.shape
     out = model.copy()
-    todo = targets.copy()
+    ti, tj = np.nonzero(targets)
+    val = np.full(ti.shape, np.nan)
+    left = np.arange(ti.size)                               # targets still without a value
     offs = sorted(((dy, dx) for dy in range(-cells, cells + 1) for dx in range(-cells, cells + 1) if dy or dx),
                   key=lambda o: (o[0] ** 2 + o[1] ** 2, abs(o[0]), o[0], o[1]))
-    pad = np.full((rows + 2 * cells, cols), np.nan)
-    pad[cells:-cells] = model
     for dy, dx in offs:
-        src = np.roll(pad[cells + dy:cells + dy + rows], -dx, axis=1)       # src[i, j] = model[i + dy, j + dx]
-        hit = todo & ~np.isnan(src)
-        out[hit] = src[hit]
-        todo &= ~hit
-        if not todo.any():
+        r = ti[left] + dy                                   # model[i + dy, (j + dx) mod cols]; nothing beyond the poles
+        inside = (r >= 0) & (r < rows)
+        src = np.full(left.size, np.nan)
+        src[inside] = model[r[inside], (tj[left][inside] + dx) % cols]
+        hit = ~np.isnan(src)
+        val[left[hit]] = src[hit]
+        left = left[~hit]
+        if not left.size:
             break
-    if todo.any():
+    if left.size:
         raise AssertionError("a filled cell has no model cell within the window")
+    out[ti, tj] = val
     return out
 
 

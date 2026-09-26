@@ -845,14 +845,16 @@ def test_pdir_coverage_mismatch_is_counted_and_reported(offline_build, monkeypat
     def decode(blob, key=None, run_dt=None, step=None):
         g, meta = real(blob, key, run_dt, step)
         if key == "HTSGW:surface":
-            g = g.copy(); g[1, :5] = 0.0; g[2, :4] = np.nan; g[3, :3] = 0.05   # a flat calm, cells without a height, ripples
+            g = g.copy(); g[1, :5] = 0.0; g[2, :4] = np.nan; g[3, :3] = 0.05; g[4, :2] = 0.1   # calm, no height, ripples, the threshold
         if key == "DIRPW:surface":
-            g = g.copy(); g[0, :7] = np.nan; g[1, :5] = np.nan; g[3, :3] = np.nan   # 7 + 3 cells with waves but no direction; the calm has none either
+            g = g.copy(); g[0, :7] = np.nan; g[1, :5] = np.nan; g[3, :3] = np.nan; g[4, :2] = np.nan
         return g, meta
     monkeypatch.setattr(R.D, "decode", decode)
     m = R.build_and_publish(None, RUN, [0, 3], upload=False, log=lambda *a: None)
-    assert [f["pdir_mask_mismatch"] for f in m["_stats"]["frames"]] == [7 + 3 + 4] * 2      # (a direction without a height counts too)
-    assert [f["pdir_missing_calm"] for f in m["_stats"]["frames"]] == [5, 5]
+    # waves of at least PDIR_WAVES_M without a direction (7 + the 2 at exactly 0.1 m) and a direction without a height (4)
+    assert R.PDIR_WAVES_M == 0.1
+    assert [f["pdir_mask_mismatch"] for f in m["_stats"]["frames"]] == [7 + 2 + 4] * 2
+    assert [f["pdir_missing_calm"] for f in m["_stats"]["frames"]] == [5 + 3] * 2            # flat calm and ripples under 0.1 m: no particle is drawn there
 
 
 def test_pdir_mismatch_warns_in_the_step_summary(offline_build, monkeypatch, tmp_path):
@@ -899,3 +901,84 @@ def test_wind_dir_from_never_returns_360():
     tiny = np.float32(1e-7)                                                    # atan2 -> just under 360, rounds up in float32
     d = D.wind_dir_from(np.array([tiny, 0.0, np.nan], np.float32), np.array([-1.0, -1.0, 1.0], np.float32))
     assert d[0] == 0.0 and d[1] == 0.0 and np.isnan(d[2])
+
+
+# ------------------------------- follow-ups: the pipelined build and the fast nearest fill -------------------------
+
+def _nearest_reference(model, targets, cells):
+    """The whole-grid implementation published runs were built with (2026-09-25): the new one must equal it."""
+    rows, cols = model.shape
+    out, todo = model.copy(), targets.copy()
+    offs = sorted(((dy, dx) for dy in range(-cells, cells + 1) for dx in range(-cells, cells + 1) if dy or dx),
+                  key=lambda o: (o[0] ** 2 + o[1] ** 2, abs(o[0]), o[0], o[1]))
+    pad = np.full((rows + 2 * cells, cols), np.nan)
+    pad[cells:-cells] = model
+    for dy, dx in offs:
+        src = np.roll(pad[cells + dy:cells + dy + rows], -dx, axis=1)
+        hit = todo & ~np.isnan(src)
+        out[hit] = src[hit]
+        todo &= ~hit
+        if not todo.any():
+            break
+    return out
+
+
+def test_nearest_fill_equals_the_whole_grid_reference():
+    rng = np.random.default_rng(11)
+    cells = int(E.FILL_CELLS * 2 ** 0.5)
+    for trial in range(30):
+        rows, cols = int(rng.integers(12, 70)), int(rng.integers(12, 90))
+        m = rng.uniform(0, 30, (rows, cols))
+        m[rng.uniform(size=(rows, cols)) < rng.uniform(0.2, 0.85)] = np.nan
+        m[:2][rng.uniform(size=(2, cols)) < 0.8] = np.nan                  # the poles
+        m[:, -2:][rng.uniform(size=(rows, 2)) < 0.8] = np.nan              # the dateline columns
+        _, added = E.fill_coast(m, method="mean")
+        assert np.array_equal(E._nearest_values(m, added, cells), _nearest_reference(m, added, cells), equal_nan=True), trial
+
+
+def test_pipelined_build_publishes_the_same_bytes_with_any_number_of_encode_threads(monkeypatch):
+    def build(workers):
+        rng = np.random.default_rng(3)
+        monkeypatch.setattr(R.F, "fetch_records", lambda url, keys: {k: b"x" for k in keys})
+        def grid():
+            g = rng.uniform(0, 10, size=(721, 1440)).astype(np.float32)
+            g[:, 100:120] = np.nan
+            return g
+        monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None: (grid(), {}))
+        monkeypatch.setattr(R.E, "fill_allow", lambda: np.ones((721, 1440), bool))
+        monkeypatch.setattr(R, "ENCODE_WORKERS", workers)
+        c = FakeClient()
+        R.build_and_publish(P.Store(c, "b"), RUN, [0, 3, 6], log=lambda *a: None)
+        return {k: v["body"] for k, v in c.objects.items() if k.endswith(".png")}, [k for op, k in c.log if op == "put"]
+    one, puts1 = build(1)
+    five, puts5 = build(5)
+    assert one == five and len(one) == 3 * 9                                                   # identical frames, all of them
+    for puts in (puts1, puts5):
+        assert all(k.endswith(".png") for k in puts[:-2]) and puts[-2].startswith(f"{P.PREFIX}/2026092212/stats-")       # every frame first,
+        assert puts[-1].startswith(f"{P.PREFIX}/2026092212/partial-")                                                  # then the sidecar and the manifest
+
+
+def test_an_upload_failure_stops_the_build_before_any_manifest_or_pointer(offline_build):
+    class Flaky(FakeClient):
+        def put_object(self, Bucket, Key, Body, ContentType, CacheControl):
+            if "/f006.png" in Key:
+                raise RuntimeError("R2 500")
+            super().put_object(Bucket, Key, Body, ContentType, CacheControl)
+    c = Flaky()
+    with pytest.raises(RuntimeError, match="R2 500"):
+        R.build_and_publish(P.Store(c, "b"), RUN, F.STEPS, log=lambda *a: None)
+    assert not any("/manifest-" in k or "/stats-" in k or k == P.LATEST_KEY for k in c.objects), "nothing but frames"
+    assert len(c.objects) < 81 * 9                                                              # the build stopped early
+
+
+def test_a_step_that_is_not_ready_propagates_from_the_prefetch(offline_build, monkeypatch):
+    real = R.F.fetch_records
+    def fetch(url, keys):
+        if "f009" in url:
+            raise F.NotReady("404 " + url)
+        return real(url, keys)
+    monkeypatch.setattr(R.F, "fetch_records", fetch)
+    done = []
+    with pytest.raises(F.NotReady):
+        R.build_and_publish(None, RUN, [0, 3, 6, 9, 12], upload=False, log=done.append)
+    assert [d.split()[0] for d in done] == ["f000", "f003", "f006"]                              # the steps before it were built

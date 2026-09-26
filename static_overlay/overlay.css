@@ -48,3 +48,10 @@
   .ov-ctl select { font-size: 11px; }
   .ov-sheet { font-size: 11px; }
 }
+/* The sheet: the settings row on one line under the timeline, a tighter rhythm, the header line never wraps. */
+.ov-sheet .ov-row { margin-top: 2px; }
+.ov-sheet .ov-timeline { margin: 2px 0 0; }
+.ov-sheet .ov-row input[type=range] { width: 60px; }
+.ov-sheet .ov-row .ov-check { margin-left: 6px; }
+.ov-sheet .ov-head { flex-wrap: nowrap; }
+.ov-sheet .ov-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

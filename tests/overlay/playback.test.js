@@ -78,7 +78,7 @@ function world(opts) {
   Overlay.prototype._dims = () => ({ w: 1200, h: 800 });
   // the animator's DOM and drawing are neutralised (flow.test.js exercises them); its data flow stays real
   for (const k of ['attach', 'detach', '_rebuild', '_clear', 'stop', '_start']) I.FlowAnimator.prototype[k] = function () { (this.calls = this.calls || []).push(k); };
-  const map = { getPane: () => ({}), getZoom: () => 7, getSize: () => ({ x: 1200, y: 800 }), on() {}, off() {}, removeLayer() {},
+  const map = { getPane: () => ({}), getZoom: () => 6, getSize: () => ({ x: 1200, y: 800 }), on() {}, off() {}, removeLayer() {},
     getContainer: () => ({ clientWidth: 1200, clientHeight: 800, classList: { add() {}, remove() {} }, style: { setProperty() {}, removeProperty() {} } }) };
   w.I = I; w.map = map;
   // release one pending decode by kind: the direction frames are the half-size ones in these tests
@@ -481,7 +481,7 @@ test('animation on: the direction frame rides beside the field frame, never more
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true;                                       // the saved checkbox
   o.mount('hs'); await settle();
-  assert.ok(o.flow, 'animator attached'); assert.equal(o.animAvailable(), true); assert.equal(o.dres, 'half', 'zoom 7: half-resolution direction');
+  assert.ok(o.flow, 'animator attached'); assert.equal(o.animAvailable(), true); assert.equal(o.dres, 'half', 'the default zoom 6: half-resolution direction');
   const keys = Object.keys(o.inflight);
   assert.equal(keys.length, 2, keys.join()); assert.ok(keys.some((k) => k.includes('/half/pdir/')) && keys.some((k) => k.includes('/full/hs/')));
   await w.releaseDir();                                                      // the direction lands first: cached, not shown (no frame on the map yet)
@@ -553,7 +553,7 @@ test('wind takes the half-resolution wind direction at every zoom; pdir follows 
   assert.ok(fetches.length && fetches.every((u) => !u.includes('/half/')), 'full-resolution pdir at zoom 9');
   w.pendingBitmaps.forEach((f) => { if (f.blob.w === 1440) f(); }); w.pendingBitmaps = w.pendingBitmaps.filter((f) => f.blob.w !== 1440); await settle();
   assert.ok(o.flow.dir, 'full pdir delivered'); const shown = o.flow.dir;
-  w.map.getZoom = () => 6.5; o._checkRes(); await settle();                  // zoom out: half-resolution pdir, the shown one stays meanwhile
+  w.map.getZoom = () => 5.8; o._checkRes(); await settle();                  // zoom out below 6: half-resolution pdir, the shown one stays meanwhile
   assert.equal(o.dres, 'half'); assert.equal(o.flow.dir, shown, 'kept until the half frame lands');
   await w.releaseDir();
   assert.notEqual(o.flow.dir, shown); assert.equal(o.flow.dir.cols, 720);
@@ -577,7 +577,7 @@ test('Update: the direction cache goes with the run and a late old-run direction
 
 // ---- G10-A: a pending seek / step survives every new caller of _prefetch / _startDir; delivery follows the layer ----
 
-test('G10-A S1: a far seek is loading, then the direction resolution changes (zoom 7 -> 7.6): the seek still lands', async () => {
+test('G10-A S1: a far seek is loading, then the direction resolution changes (zoom 6 -> 7.6): the seek still lands', async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
   const i0 = o.frameIndex;
@@ -680,6 +680,7 @@ test('G10-A M60 / P3-5 / P3-4: a cached direction is not fetched again; untick b
 
 test('G10-A D1 / M52: on a field switch a direction that lands before the field frame is not delivered; the animator is told the new field', async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  w.map.getZoom = () => 7;                                                    // the wind field full (1440), its direction half (720): told apart by size
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
   assert.ok(o.flow.dir); assert.equal(o.flow.field, 'hs');
   o.mount('wind'); await settle();
@@ -694,7 +695,7 @@ test('G10-A D1 / M52: on a field switch a direction that lands before the field 
 
 test('G10-A P3-8: a phone crossing zoom 7.5 changes both resolutions; the same step direction stays until the new one lands', async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
-  w.I.Overlay.prototype._dims = () => ({ w: 400, h: 700 }); w.map.getZoom = () => 6.5;
+  w.I.Overlay.prototype._dims = () => ({ w: 400, h: 700 }); w.map.getZoom = () => 5.8;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
   assert.equal(o.res, 'half'); assert.equal(o.dres, 'half');
   const shown = o.flow.dir; assert.ok(shown);

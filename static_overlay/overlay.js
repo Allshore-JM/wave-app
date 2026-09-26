@@ -1154,14 +1154,17 @@
       return true;
     } catch (e) { return false; }
   }
-  // Resolution of the direction frame: the 0.5-degree frames below zoom 7, the 0.25-degree ones from 7.5
-  // (hysteresis like wind), among the resolutions the field publishes (wind direction: half only).
+  // Resolution of the direction frame: the 0.5-degree frames at the site's default zoom (6) and wider,
+  // the 0.25-degree ones as soon as the map is zoomed in (from 6.5; back below 6: hysteresis), among the
+  // resolutions the field publishes (wind direction: half only). Near coasts a 0.5-degree node can sit
+  // across land from the water it steers (G10-B P3-1), which the finer grid avoids once zoomed in.
+  var DIR_FULL_AT = 6.5, DIR_HALF_BELOW = 6;
   function dirRes(f, zoom, current) {
     var full = f.resolutions.indexOf('full') >= 0, half = f.resolutions.indexOf('half') >= 0;
     if (!full) return 'half';
     if (!half) return 'full';
-    if (current === 'full') return zoom < 7 ? 'half' : 'full';
-    return zoom >= 7.5 ? 'full' : 'half';
+    if (current === 'full') return zoom < DIR_HALF_BELOW ? 'half' : 'full';
+    return zoom >= DIR_FULL_AT ? 'full' : 'half';
   }
   // THE scalar sampler (ModelGridLayer._codeRow delegates here): codes along one fractional grid row r
   // (0..rows-1, caller-checked) at the periodic column positions colPos[0..n) (each 0 <= cpos < cols),
@@ -2201,6 +2204,9 @@
     ab.addEventListener('change', function () { self.setAnim(ab.checked); });
     al.appendChild(ab); al.appendChild(document.createTextNode(' Animation')); row.appendChild(al);
     body.appendChild(row);
+    // On phones the settings row sits right under the timeline, inside the short details box (it was below
+    // the fold under the run line and the legend); the valid time is in the header line there.
+    if (compact) body.insertBefore(row, ui.valid);
     this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND
     // the top-left control must end above the zoom/Home stack (short windows: the site caps the map at
@@ -2230,8 +2236,9 @@
     var validLocal = drawn ? this._validLocal(drawn) : '…', hours = drawn ? this._hours(drawn) : null;
     var glyph = this.playing ? '❚❚' : '▶', name = this.playing ? 'Pause' : 'Play';
     ui.play.forEach(function (b) { b.textContent = glyph; b.setAttribute('aria-label', name); });
-    ui.title.textContent = ui.collapsed ? ui.label + ' · ' + validLocal + (hours === null ? '' : ' (+' + hours + ' h)')
-      : ui.compact ? ui.label : ui.label + ' — ' + ui.modelName;
+    // the sheet (phones) always carries the valid time in its header line: its details box is short
+    ui.title.textContent = ui.collapsed || ui.compact ? ui.label + ' · ' + validLocal + (hours === null ? '' : ' (+' + hours + ' h)')
+      : ui.label + ' — ' + ui.modelName;
     if (ui.valid) {
       clear(ui.valid);
       ui.valid.appendChild(mk('b', null, 'Valid: '));

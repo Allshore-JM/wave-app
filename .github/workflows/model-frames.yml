@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       steps:
-        description: "comma list of forecast hours (blank = all 81). A subset is never published live."
+        description: "comma list of forecast hours (blank = all 209: hourly to 120, 3-hourly to 384). A subset is never published live."
         default: ""
       dry_run:
         description: "no uploads (true/false)"

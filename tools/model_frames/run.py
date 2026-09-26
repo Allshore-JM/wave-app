@@ -37,7 +37,6 @@ import publish as P      # noqa: E402
 
 WAVE_KEYS = {"hs": "HTSGW:surface", "tp": "PERPW:surface", "pdir": "DIRPW:surface"}
 ATMOS_KEYS = ("UGRD:10 m above ground", "VGRD:10 m above ground")
-FRAME_HOURS = 3
 FAILED_RETRY_AFTER_S = 3 * 3600         # a cycle that failed to build is retried after 3 h, max 3 times
 FAILED_MAX_ATTEMPTS = 3
 NOTREADY_WARN = 6                       # NotReady exits in a row for one cycle before the summary warns
@@ -158,7 +157,7 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
         "grid": GRID_FULL, "grid_half": GRID_HALF,
         "fields": {n: {k: (list(f[k]) if isinstance(f[k], tuple) else f[k]) for k in FIELD_KEYS if k in f}
                    for n, f in E.FIELDS.items()},
-        "frame_hours": FRAME_HOURS, "expected_frames": len(F.STEPS),
+        "frame_schedule": F.STEP_SCHEDULE, "expected_frames": len(F.STEPS),
         "frames": frames, "complete": complete,
         "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "build_seconds": round(time.time() - t0, 1),
@@ -224,7 +223,7 @@ def _skip_failed(store, run):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--steps", default=None, help="comma list, default all 81")
+    ap.add_argument("--steps", default=None, help=f"comma list of forecast hours, default all {len(F.STEPS)}")
     ap.add_argument("--allow-partial", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--keep", type=int, default=4)
@@ -234,7 +233,8 @@ def main(argv=None):
         return 2
     steps = [int(s) for s in a.steps.split(",")] if a.steps else F.STEPS
     if any(s not in F.STEPS for s in steps):
-        print(f"--steps must be a subset of {F.STEPS[0]}..{F.STEPS[-1]} step 3")
+        print(f"--steps must be forecast hours of the model output: hourly {F.STEP_SCHEDULE[0][0]}..{F.STEP_SCHEDULE[0][1]}, "
+              f"then every {F.STEP_SCHEDULE[1][2]} h to {F.STEP_SCHEDULE[1][1]}")
         return 2
     partial = steps != F.STEPS
     if partial and not a.dry_run and not a.allow_partial:

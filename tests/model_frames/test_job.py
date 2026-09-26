@@ -293,11 +293,17 @@ def test_encoding_ranges_cover_legend_and_tp_floor():
 # ------------------------------- fetch helpers -------------------------------------
 
 def test_steps_urls_and_needed_keys():
-    assert F.STEPS[0] == 0 and F.STEPS[-1] == 240 and len(F.STEPS) == 81
+    # the models' full output: hourly to +120 h, then every 3 h to +384 h (209 frames)
+    assert F.STEPS[:3] == [0, 1, 2] and F.STEPS[120] == 120 and F.STEPS[121:123] == [123, 126] and F.STEPS[-1] == 384
+    assert len(F.STEPS) == 121 + 88 == 209 and F.STEPS == sorted(set(F.STEPS))
+    assert F.STEP_SCHEDULE == [[0, 120, 1], [123, 384, 3]]
+    assert [s for a, b, e in F.STEP_SCHEDULE for s in range(a, b + 1, e)] == F.STEPS
     assert F.wave_url(RUN, 3).endswith("gfs.20260922/12/wave/gridded/gfswave.t12z.global.0p25.f003.grib2")
-    assert F.atmos_url(RUN, 240).endswith("gfs.20260922/12/atmos/gfs.t12z.pgrb2.0p25.f240")
+    assert F.atmos_url(RUN, 384).endswith("gfs.20260922/12/atmos/gfs.t12z.pgrb2.0p25.f384")
     keys = F.needed_keys(RUN)
-    assert len(keys) == 81 * 4 and "gfs.20260922/12/atmos/gfs.t12z.pgrb2.0p25.f000.idx" in keys
+    assert len(keys) == 209 * 4 and "gfs.20260922/12/atmos/gfs.t12z.pgrb2.0p25.f000.idx" in keys
+    assert "gfs.20260922/12/wave/gridded/gfswave.t12z.global.0p25.f001.grib2.idx" in keys
+    assert not any(".f121" in k or ".f385" in k for k in keys)
 
 
 def _listing_xml(keys, truncated=False, token=None):
@@ -440,31 +446,40 @@ def test_partial_build_never_flips_pointer(offline_build):
 
 
 def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch):
+    # 209 steps x 5 fields through the real fill / quantisation / PNG / upload / manifest path, on a small grid with the fixture's
+    # 20-column missing strip: this test checks the order, counts and manifest, not pixel values (full-size frames took 4 min,
+    # near the CI timeout)
+    rows, cols = 73, 144
+    small = np.tile(np.linspace(0.5, 9.5, cols, dtype=np.float32), (rows, 1))
+    small[:, 100:120] = np.nan
+    monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None: (small, {}))
+    monkeypatch.setattr(R.E, "fill_allow", lambda: np.ones((rows, cols), bool))
     c = FakeClient()
     store = P.Store(c, "b")
     m = R.build_and_publish(store, RUN, F.STEPS, log=lambda *a: None)
     puts = [k for op, k in c.log if op == "put"]
     assert puts[-1] == P.LATEST_KEY and puts[-2].startswith(f"{P.PREFIX}/2026092212/manifest-")
     assert puts[-3].startswith(f"{P.PREFIX}/2026092212/stats-")           # sidecar BEFORE the manifest
-    assert all(k.endswith(".png") for k in puts[:-3]) and len(puts) == 81 * (4 * 2 + 1) + 3   # hs tp wind pdir full+half, wdir half
+    assert all(k.endswith(".png") for k in puts[:-3]) and len(puts) == 209 * (4 * 2 + 1) + 3   # hs tp wind pdir full+half, wdir half
     assert f"{P.PREFIX}/2026092212/half/wdir/f000.png" in puts and f"{P.PREFIX}/2026092212/wdir/f000.png" not in puts
-    assert f"{P.PREFIX}/2026092212/pdir/f240.png" in puts and f"{P.PREFIX}/2026092212/half/pdir/f240.png" in puts
+    assert f"{P.PREFIX}/2026092212/pdir/f384.png" in puts and f"{P.PREFIX}/2026092212/half/pdir/f384.png" in puts
+    assert f"{P.PREFIX}/2026092212/hs/f001.png" in puts and f"{P.PREFIX}/2026092212/hs/f121.png" not in puts
     latest = json.loads(c.objects[P.LATEST_KEY]["body"])
     assert latest == {"run": "2026092212", "manifest": puts[-2], "complete": True, "encoding": E.ENCODING,
-                      "published_utc": m["published_utc"], "frames": 81}
+                      "published_utc": m["published_utc"], "frames": 209}
     man = json.loads(c.objects[latest["manifest"]]["body"], parse_constant=lambda s: (_ for _ in ()).throw(ValueError(s)))
-    assert man["complete"] and man["frames"][80]["valid_utc"] == "2026-10-02T12:00:00Z"
+    assert man["complete"] and man["frames"][208]["valid_utc"] == "2026-10-08T12:00:00Z" and man["frames"][1]["valid_utc"] == "2026-09-22T13:00:00Z"
     assert man["schema"] == 3 and man["files"]["template"] == f"{P.PREFIX}/2026092212/{{res}}{{field}}/f{{step:03d}}.png"
     assert man["stats"] == puts[-3] and "_stats" not in man and set(man["frames"][0]) == {"step", "valid_utc"}
-    assert len(c.objects[latest["manifest"]]["body"]) < 12_000                 # slim: r2.dev serves it uncompressed
+    assert len(c.objects[latest["manifest"]]["body"]) < 20_000                 # the custom domain serves it compressed (was < 12 KB for r2.dev)
     stats = json.loads(c.objects[man["stats"]]["body"])
-    assert len(stats["frames"]) == 81 and set(stats["frames"][0]["fields"]) == {"hs", "tp", "wind", "pdir", "wdir"}
+    assert len(stats["frames"]) == 209 and set(stats["frames"][0]["fields"]) == {"hs", "tp", "wind", "pdir", "wdir"}
     assert all(f["pdir_mask_mismatch"] == 0 for f in stats["frames"])
     assert stats["frames"][0]["fields"]["wdir"]["bytes_full"] == 0 and stats["frames"][0]["fields"]["wdir"]["bytes_half"] > 0
     assert stats["frames"][0]["fields"]["hs"]["bytes_full"] > 0
     assert man["grid"]["registration"] == "center" and man["grid_half"]["rows"] == 361 and man["grid_half"]["dlat"] == -0.5
     assert man["encoding_spec"]["missing"] == 0 and man["fields"]["tp"]["legend"] == [4.0, 22.0]
-    assert man["frame_hours"] == 3 and man["expected_frames"] == 81
+    assert man["frame_schedule"] == [[0, 120, 1], [123, 384, 3]] and man["expected_frames"] == 209 and "frame_hours" not in man
     assert {n: f["interpolation"] for n, f in man["fields"].items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear",
                                                                        "pdir": "circular", "wdir": "circular"}
     assert man["fields"]["pdir"] == {"lo": 0.0, "hi": 360.0, "legend": [0.0, 360.0], "units": "deg", "interpolation": "circular",
@@ -473,7 +488,7 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     assert "circular" not in man["fields"]["hs"] and set(man["model"]["fields"]) == {"hs", "tp", "wind", "pdir", "wdir"}
     assert man["fill"] == E.FILL_INFO
     f0 = stats["frames"][0]["fields"]
-    assert f0["hs"]["filled_points"] == f0["tp"]["filled_points"] == f0["pdir"]["filled_points"] == 721 * 8
+    assert f0["hs"]["filled_points"] == f0["tp"]["filled_points"] == f0["pdir"]["filled_points"] == rows * 8
     assert f0["wind"]["filled_points"] == f0["wdir"]["filled_points"] == 0
     assert c.objects[puts[0]]["cc"] == P.IMMUTABLE and c.objects[P.LATEST_KEY]["cc"] == P.POINTER
 
@@ -676,7 +691,8 @@ def test_main_never_regresses_pointer(monkeypatch, capsys):
 
 def test_main_subset_requires_dry_run_or_allow_partial(monkeypatch, capsys):
     assert R.main(["--steps", "0,3"]) == 2
-    assert R.main(["--steps", "1"]) == 2                                  # not a 3-hourly step
+    assert R.main(["--steps", "121"]) == 2                                # not a model output hour (3-hourly after +120 h)
+    assert R.main(["--steps", "385"]) == 2                                # beyond the model's +384 h
     assert R.main(["--keep", "0"]) == 2
 
 
@@ -728,10 +744,10 @@ def test_fill_guard_refuses_to_rewrite_a_run_built_with_a_different_fill(monkeyp
     assert len(c.log) == n                                                                        # not one object written
     assert R.main(["--dry-run", "--steps", "0,3"]) == 0 and len(c.log) == n                       # a dry run never touches the bucket
     c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092206","complete":true}', "ct": "", "cc": ""}
-    foreign = dict(old, run="2026092200", frames=[{"step": 0}] * 81)                             # would be repairable, but names another run
+    foreign = dict(old, run="2026092200", frames=[{"step": 0}] * len(F.STEPS))                   # would be repairable, but names another run
     _manifest(c, "2026092212", "20260922T190000Z", foreign)
     assert R.main([]) == 2 and len(c.log) == n                                                    # never point latest.json at a foreign manifest
-    _manifest(c, "2026092212", "20260922T200000Z", {k: v for k, v in dict(old, frames=[{"step": 0}] * 81).items() if k != "encoding"})
+    _manifest(c, "2026092212", "20260922T200000Z", {k: v for k, v in dict(old, frames=[{"step": 0}] * len(F.STEPS)).items() if k != "encoding"})
     assert R.main([]) == 2 and len(c.log) == n                                                    # nor at one without an encoding
 
 
@@ -739,13 +755,13 @@ def test_fill_guard_repairs_the_pointer_to_an_existing_complete_manifest(monkeyp
     monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
     c = FakeClient()
     _env(monkeypatch, c)
-    old = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": [{"step": 0}] * 81, "published_utc": "2026-09-22T18:00:00Z"}
+    old = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": [{"step": 0}] * len(F.STEPS), "published_utc": "2026-09-22T18:00:00Z"}
     mkey = _manifest(c, "2026092212", "20260922T180000Z", old)                                   # the pointer write after it failed
     c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092206","complete":true}', "ct": "", "cc": ""}
     assert R.main([]) == 0 and "pointer repaired" in capsys.readouterr().out
     assert [k for op, k in c.log] == [P.LATEST_KEY]                                              # only the pointer was written
     assert json.loads(c.objects[P.LATEST_KEY]["body"]) == {"run": "2026092212", "manifest": mkey, "complete": True, "encoding": E.ENCODING,
-                                                          "published_utc": "2026-09-22T18:00:00Z", "frames": 81}
+                                                          "published_utc": "2026-09-22T18:00:00Z", "frames": len(F.STEPS)}
     del c.objects[P.LATEST_KEY]                                                                   # latest.json lost altogether
     assert R.main([]) == 0 and json.loads(c.objects[P.LATEST_KEY]["body"])["manifest"] == mkey
 
@@ -783,7 +799,7 @@ def test_rollback_without_fill_omits_the_block_and_keeps_the_guard(monkeypatch, 
     assert "fill" not in m                                                                        # the client then drops the "extrapolated" sentence
     monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
     _env(monkeypatch, c)
-    filled = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": [{"step": 0}] * 81,
+    filled = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": [{"step": 0}] * len(F.STEPS),
               "published_utc": "2026-09-22T18:00:00Z", "fill": {"version": 2, "fields": ["hs", "tp"], "cells": 4}}
     _manifest(c, "2026092212", "20260922T180000Z", filled)
     c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
@@ -968,7 +984,7 @@ def test_an_upload_failure_stops_the_build_before_any_manifest_or_pointer(offlin
     with pytest.raises(RuntimeError, match="R2 500"):
         R.build_and_publish(P.Store(c, "b"), RUN, F.STEPS, log=lambda *a: None)
     assert not any("/manifest-" in k or "/stats-" in k or k == P.LATEST_KEY for k in c.objects), "nothing but frames"
-    assert len(c.objects) < 81 * 9                                                              # the build stopped early
+    assert len(c.objects) < len(F.STEPS) * 9                                                    # the build stopped early
 
 
 def test_a_step_that_is_not_ready_propagates_from_the_prefetch(offline_build, monkeypatch):

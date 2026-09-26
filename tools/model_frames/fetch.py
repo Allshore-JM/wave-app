@@ -2,10 +2,11 @@
 
 Only the anonymous S3 bucket is used (never NOMADS, which rate-limits at 120 hits/min).
 
-Completeness rule (G1 review): NOAA does not publish steps in order -- 0-10 of the 81 steps
-routinely land 13-16 minutes after their neighbours -- so a run counts as complete only when
-EVERY needed .idx AND .grib2 object is present for BOTH products (one ListObjectsV2 per
-product, verified from the listing, not from HEADs on the last step).
+Completeness rule (G1 review): NOAA does not publish steps in order -- the first steps routinely
+land 13-16 minutes after their neighbours -- so a run counts as complete only when EVERY needed
+.idx AND .grib2 object is present for BOTH products (one ListObjectsV2 per product, verified from
+the listing, not from HEADs on the last step). The full horizon (f384) is complete ~40 min after
+f240 (27-47 min over five cycles measured 2026-09-26); a run goes live only when all of it is.
 """
 import time
 import urllib.error
@@ -14,7 +15,10 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
 S3 = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
-STEPS = list(range(0, 241, 3))          # 81 frames, 0..+240 h every 3 h
+# The models' full output (plan section 22): GFS-Wave 0.25 and GFS pgrb2 0.25 are hourly to +120 h, then every
+# 3 h to +384 h (16 days). 209 frames.
+STEPS = list(range(0, 121)) + list(range(123, 385, 3))
+STEP_SCHEDULE = [[0, 120, 1], [123, 384, 3]]    # [first, last, every] in hours, for the manifest
 MAX_STEP = STEPS[-1]
 _NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 

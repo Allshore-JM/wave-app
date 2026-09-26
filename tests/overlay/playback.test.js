@@ -15,9 +15,11 @@ const PDIR = { lo: 0, hi: 360, legend: [0, 360], units: 'deg', interpolation: 'c
 const WDIR = Object.assign({}, PDIR, { resolutions: ['half'] });
 
 // Every manifest carries the direction fields of phase B (the animation is off unless a test ticks it).
-function manifest(run, runUtc, tag, nodirs) {
+// steps: the frame hours (default 0..240 every 3 h, the 81-frame runs published before plan section 22)
+const FULL_HORIZON = [...Array(121).keys()].concat([...Array(88).keys()].map((i) => 123 + 3 * i));   // hourly to 120, 3-hourly to 384
+function manifest(run, runUtc, tag, nodirs, steps) {
   const frames = [];
-  for (let s = 0; s <= 240; s += 3) frames.push({ step: s, valid_utc: new Date(Date.parse(runUtc) + s * 3.6e6).toISOString().replace('.000Z', 'Z') });
+  for (const s of steps || [...Array(81).keys()].map((i) => 3 * i)) frames.push({ step: s, valid_utc: new Date(Date.parse(runUtc) + s * 3.6e6).toISOString().replace('.000Z', 'Z') });
   const fields = nodirs ? { hs: HS, wind: WIND } : { hs: HS, wind: WIND, pdir: PDIR, wdir: WDIR };
   return { schema: 3, run, run_utc: runUtc, encoding: 'u8-linear-v2', complete: true, fields, grid: GRID, grid_half: HALF, frames,
     files: { template: `gfswave/0p25/v1/${run}/{res}{field}/f{step:03d}.png`, res: { full: '', half: 'half/' } }, model: {}, tag };
@@ -733,4 +735,58 @@ test('G12: a phone zoomed in to 6.6 keeps the half-resolution field and fetches 
   await w.releaseAll();
   assert.ok(o.flow.dir && o.flow.dir.cols === 1440, 'the full-resolution direction on the map'); assert.equal(o.layer._frame.cols, 720);
   o.unmount();
+});
+
+
+// ---- plan section 22: the full model horizon (hourly to +120 h, 3-hourly to +384 h, 209 frames) with the LIVE client ----
+
+test('section 22: the live client plays a 209-frame run: every frame, seek to +384 h, a loop wraps, in-flight <= 2', async () => {
+  assert.equal(FULL_HORIZON.length, 209); assert.equal(FULL_HORIZON[120], 120); assert.equal(FULL_HORIZON[121], 123); assert.equal(FULL_HORIZON[208], 384);
+  const w = world(); const F = manifest('2026092606', '2026-09-26T06:00:00Z', 6, false, FULL_HORIZON);
+  assert.doesNotThrow(() => w.I.validateManifest(F));
+  w.pointer = ptr(F); w.manifests[F.run] = F;
+  const o = w.create(); o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.n, 209); assert.equal(o.last.state, 'ready');
+  o.seek(208); await settle(); await w.releaseAll();
+  assert.equal(o.frameIndex, 208); assert.equal(o._hours(o.layer.entry), 384, 'the last frame is +384 h');
+  o.seek(119); await settle(); await w.releaseAll(); o.step(1); await settle(); await w.releaseAll();
+  assert.equal(o._hours(o.layer.entry), 120, 'hourly to +120 h'); o.step(1); await settle(); await w.releaseAll();
+  assert.equal(o._hours(o.layer.entry), 123, 'then 3-hourly');
+  o.seek(206); await settle(); await w.releaseAll();
+  o.setSpeed(4); o.play();
+  let wrapped = false;
+  for (let k = 0; k < 12 && !wrapped; k++) {
+    await new Promise((r) => setTimeout(r, 140)); await w.releaseAll(); await settle();
+    assert.ok(Object.keys(o.inflight).length <= w.I.MAX_INFLIGHT);
+    if (o.frameIndex !== null && o.frameIndex < 5) wrapped = true;
+  }
+  o.pause();
+  assert.ok(wrapped, 'the loop wrapped from +384 h to the start');
+  o.unmount();
+});
+
+test('section 22: Update between an 81-frame run and a 209-frame run keeps the valid time (and clamps to +240 h the other way)', async () => {
+  const w = world();
+  const OLD = manifest('2026092600', '2026-09-26T00:00:00Z', 0);                               // 81 frames to +240 h
+  const NEW = manifest('2026092606', '2026-09-26T06:00:00Z', 6, false, FULL_HORIZON);          // 209 frames to +384 h
+  w.manifests[OLD.run] = OLD; w.manifests[NEW.run] = NEW; w.pointer = ptr(OLD);
+  const o = w.create(); o.mount('hs'); await settle(); await w.releaseAll();
+  o.seek(40); await settle(); await w.releaseAll();                                              // +120 h of OLD = 2026-10-01T00Z
+  const t = Date.parse(o.layer.entry.valid_utc);
+  w.pointer = ptr(NEW); o.newerRun = w.pointer; o.update(); await settle(); await w.releaseAll();
+  assert.equal(o.manifest.run, NEW.run); assert.equal(Date.parse(o.layer.entry.valid_utc), t, 'the same valid time on the hourly run');
+  assert.equal(o._hours(o.layer.entry), 114);
+  o.seek(o.n - 30); await settle(); await w.releaseAll();                                       // +297 h of NEW, beyond OLD's +240 h
+  const later = manifest('2026092612', '2026-09-26T12:00:00Z', 12);                             // an 81-frame run again (a rollback)
+  w.manifests[later.run] = later; w.pointer = ptr(later); o.newerRun = w.pointer; o.update(); await settle(); await w.releaseAll();
+  assert.equal(o.manifest.run, later.run); assert.equal(o.frameIndex, 80, 'the nearest valid time is its last frame (+240 h)');
+  clearInterval(o.runTimer); o.unmount();
+});
+
+test('section 22: a reload restores a saved time past +120 h on a 209-frame run (and an hourly one before it)', () => {
+  const w = world(); const F = manifest('2026092606', '2026-09-26T06:00:00Z', 6, false, FULL_HORIZON), now = Date.parse('2026-09-26T12:00:00Z');
+  const at = (h) => Date.parse(F.run_utc) + h * 3.6e6;
+  assert.equal(w.I.restoreIndex(F, { t: at(300), playing: false, at: now - 60000 }, now), FULL_HORIZON.indexOf(300));
+  assert.equal(w.I.restoreIndex(F, { t: at(301), playing: false, at: now - 60000 }, now), FULL_HORIZON.indexOf(300), 'within 90 min: the nearest frame');
+  assert.equal(w.I.restoreIndex(F, { t: at(37), playing: false, at: now - 60000 }, now), 37, 'hourly frames before +120 h');
 });

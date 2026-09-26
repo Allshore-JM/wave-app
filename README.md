@@ -64,7 +64,10 @@ on every change under `static_overlay/` (any other `?v` is a 404 that is never c
 
 Frames come from `tools/model_frames` (GitHub Actions `model-frames.yml`, cron every 10 minutes, plus manual
 dispatch with `steps` / `dry_run` / `force`): NOAA open S3 byte-range GRIB records -> eccodes -> 8-bit PNG
-(`u8-linear-v2`) -> Cloudflare R2. Bucket layout `gfswave/0p25/v1/<RUN>/{half/}<field>/fNNN.png`,
+(`u8-linear-v2`) -> Cloudflare R2. The frames cover the models' full output: hourly to +120 h, then every 3 h to +384 h
+(209 frames; the manifest's `frame_schedule`). A run goes live only when all of it is on NOAA's bucket, about 40 minutes
+after +240 h (27-47 minutes over five cycles measured 2026-09-26), so about 5.5-6 h after the cycle including the build;
+runs published before 2026-09-26 have 81 frames to +240 h, and the client plays any number of frames. Bucket layout `gfswave/0p25/v1/<RUN>/{half/}<field>/fNNN.png`,
 `manifest-<ts>.json`, `stats-<ts>.json`, `latest.json` (written last, only for a complete run) and
 `failed/<RUN>.json`. The 0.25 degree grid (~28 km) is sampled per map pixel; smoothing between grid points
 is not extra detail. Fields: `hs` (HTSGW), `tp` (PERPW, the peak period), `wind` (10 m speed from GFS u/v), and
@@ -104,7 +107,7 @@ this repository with "Actions: read and write", entered under the Worker's Setti
 it there; it is never in the repository). Runs it starts show the event `workflow_dispatch` with the token's owner
 as actor. To stop it, disable the cron under the Worker's Settings > Triggers (or delete the Worker); a full stop
 also disables both workflows as above. Data policy in the browser: the 0.5 degree frames are used below zoom 3.5 on desktops, below zoom 7
-on narrow (phone) maps and for wind everywhere, so an 81-frame loop is about 4-13 MB (32 MB only for wind
+on narrow (phone) maps and for wind everywhere, so a full 209-frame loop is about 10-34 MB (83 MB only for wind
 zoomed past 7.5); frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
 where the browser has DecompressionStream.
 Overlay state (asset 2.7.6): the chosen layer, its valid time and whether it was playing are kept in the tab's
@@ -134,9 +137,10 @@ taps). The directions come from the `pdir` / `wdir` frames of the same step, loa
 beside the field frame (the target's field frame first, then its direction, then the ring of frames around it, never more
 than two downloads at once; `pdir` at the 0.5 degree frames at the default zoom 6 and wider and the 0.25 degree ones as
 soon as the map is zoomed in, from 6.5 (back below 6.25), so near coasts the direction comes from the finer grid; `wdir`
-at 0.5 degrees only). Data per 81-frame loop with Animation on (run 2026092518): wave height or period + direction about
-20.5 MB on desktops at the default zoom, 32.8 MB zoomed in; 11.6 MB on phones at the default zoom, 24.0 MB zoomed in to
-7.5 and 32.8 MB beyond; wind + wind direction 22.9 MB (46 MB past zoom 7.5). On phones the Opacity / Contours / Animation
+at 0.5 degrees only). Data per full 209-frame loop with Animation on (scaled from run 2026092518): wave height or period
++ direction about 53 MB on desktops at the default zoom, 85 MB zoomed in; 30 MB on phones at the default zoom, 62 MB zoomed
+in to 7.5 and 85 MB beyond; wind + wind direction 59 MB (119 MB past zoom 7.5). A 1x loop takes about 105 s (the hourly
+first five days at 2 h/s, then 6 h/s). On phones the Opacity / Contours / Animation
 row sits right under the timeline, and the sheet's header line leads with the forecast hour, then the valid time, and
 shows a pending seek ("+213 h → +9 h loading…"). A direction is shown only for the step on the map: a step change clears the animation until that step's
 direction frame has landed, so an older direction is never drawn under a newer time. The flow is built as vectors on

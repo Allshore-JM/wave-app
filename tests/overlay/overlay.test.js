@@ -414,3 +414,41 @@ test('tileCodes performance smoke (full grid, bilinear)', () => {
   console.log(`tileCodes: ${(ms / 20).toFixed(2)} ms per 256x256 tile`);
   assert.ok(ms < 4000, `${ms} ms for 20 tiles`);
 });
+
+// ---- plan section 22: the timeline by time, the run's times in the computer's time zone ----
+
+test('frameAtHour: the frame for a timeline hour snaps in the direction of travel (hourly to +120 h, then every 3 h)', () => {
+  const hours = [...Array(121).keys()].concat([...Array(88).keys()].map((i) => 123 + 3 * i));
+  const at = (h, later) => hours[I.frameAtHour(hours, h, later)];
+  assert.equal(at(37, true), 37); assert.equal(at(37, false), 37);                 // hourly: exact
+  assert.equal(at(121, true), 123); assert.equal(at(122, true), 123);              // later: the next frame
+  assert.equal(at(122, false), 120); assert.equal(at(124, false), 123);            // earlier: the previous one
+  assert.equal(at(124, true), 126); assert.equal(at(125, false), 123);             // an arrow key from 123 or 126 moves one frame
+  assert.equal(at(384, true), 384); assert.equal(at(400, true), 384); assert.equal(at(-5, false), 0);
+  const old = [...Array(81).keys()].map((i) => 3 * i);                             // an 81-frame run (0..240 every 3 h)
+  assert.equal(old[I.frameAtHour(old, 7, true)], 9); assert.equal(old[I.frameAtHour(old, 7, false)], 6);
+});
+
+test('runTimes / localClock: live since and the next update in the computer time zone (weekday only when not today; rounded up to 5 min)', () => {
+  const tz0 = process.env.TZ;
+  const m = { run_utc: '2026-09-25T18:00:00Z', published_utc: '2026-09-25T23:07:18Z' };        // live 23:07Z; next ~05:10Z
+  try {
+    process.env.TZ = 'Pacific/Honolulu';                                                     // 1:07 PM HST on Sep 25
+    let now = Date.parse('2026-09-26T00:00:00Z');                                           // 2 PM HST, same day
+    let t = I.runTimes(m, now, false);
+    assert.equal(t.status, 'about'); assert.equal(t.next, Date.parse('2026-09-26T05:10:00Z'));
+    assert.match(t.text, /^live since 1:07\sPM HST · next update about 7:10\sPM HST$/);
+    process.env.TZ = 'America/New_York';                                                     // 7:07 PM EDT; next 1:10 AM EDT tomorrow
+    t = I.runTimes(m, now, false);
+    assert.match(t.text, /^live since 7:07\sPM EDT · next update about Sat,? 1:10\sAM EDT$/);
+    process.env.TZ = 'Asia/Kolkata';                                                         // a half-hour zone: 4:37 AM on the same local day as now (5:30 AM)
+    assert.match(I.runTimes(m, now, false).text, /^live since 4:37\sAM (GMT\+5:30|IST) · next update about 10:40\sAM (GMT\+5:30|IST)$/);
+    process.env.TZ = 'UTC';
+    assert.match(I.runTimes(m, now, false).text, /live since Fri,? 11:07\sPM UTC · next update about 5:10\sAM UTC/);
+    now = Date.parse('2026-09-26T05:30:00Z');
+    assert.equal(I.runTimes(m, now, false).status, 'shortly'); assert.match(I.runTimes(m, now, false).text, /next update expected shortly$/);
+    assert.equal(I.runTimes(m, now, true).status, 'newer'); assert.match(I.runTimes(m, now, true).text, /a newer run is available$/);
+    assert.equal(I.runTimes({ run_utc: m.run_utc }, now, false), null, 'no publish time: no line');
+    assert.equal(I.runTimes({ run_utc: m.run_utc, published_utc: '2026-09-25T17:00:00Z' }, now, false), null, 'published before its cycle: no line');
+  } finally { if (tz0 === undefined) delete process.env.TZ; else process.env.TZ = tz0; }
+});

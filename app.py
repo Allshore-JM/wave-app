@@ -270,7 +270,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.1.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.2.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript"}
 
@@ -1765,28 +1765,27 @@ def index():
     if selected_tz and selected_tz not in {tzv for tzv, _ in timezones}:
         timezones.append((selected_tz, selected_tz))
 
-    # Shell-first: defer ONLY the Table view on a cold cache so the page never
-    # blocks on NOAA. The browser then pulls /api/forecast and injects the table.
-    # Graph view, already-cached forecasts, and ?render=full all render inline.
+    # The forecast window (plan section 25) fetches /api/forecast itself, so the page is a shell that
+    # never blocks on NOAA; only ?render=full (the no-JS path, reached by the <noscript> meta refresh)
+    # renders the forecast inline, in the window's compact form.
     force_render = request.values.get("render") == "full"
-    defer_forecast = (
-        selected_view == "Table"
-        and not force_render
-        and bool(selected_station)
-        and not _forecast_is_cached(selected_station, selected_tz or None, selected_model)
-    )
+    defer_forecast = not force_render
 
     payload = None
-    if selected_station and not defer_forecast:
+    if force_render:
         payload = compute_forecast_payload(selected_station, selected_tz or None, selected_unit,
-                                           selected_model)
+                                           selected_model, compact=True)
 
     # The forecast window's starting state (plan section 25): what this request asked for, resolved.
     initial_state = {
         "station": selected_station, "tz": selected_tz, "unit": selected_unit if selected_unit in unit_options else "US",
         "model": selected_model, "view": "Graph" if selected_view == "Graph" else "Table",
         "swan_available": swan_available, "swan_stations": sorted(SWAN_STATIONS),
+        "inline": bool(payload),
     }
+    if payload:                                                # render=full: the window shows this without a fetch
+        initial_state.update({"graph_data": payload["graph_data"], "graph_header": payload["graph_header"],
+                              "error": payload["error"], "model": payload["model"]})
 
     return render_template(
         "index.html",
@@ -1799,7 +1798,6 @@ def index():
         table_html=(payload["table_html"] if payload else None),
         error=(payload["error"] if payload else None),
         selected_view=selected_view,
-        graph_data=(payload["graph_data"] if payload else None),
         graph_header=(payload["graph_header"] if payload else None),
         defer_forecast=defer_forecast,
         swan_available=swan_available,

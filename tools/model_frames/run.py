@@ -91,10 +91,16 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
                 F.fetch_records(F.atmos_url(run_dt, step), list(ATMOS_KEYS)))
 
     def drain(limit):
-        # the first upload failure is raised here (the build stops); at most `limit` uploads trail it
-        for f in [f for f in pending if f.done()]:
-            f.result()
-        pending[:] = [f for f in pending if not f.done()]
+        # the first upload failure is raised here (the build stops); at most `limit` uploads trail it. Each
+        # future is asked done() ONCE and then either checked or kept: asking twice would drop a failure that
+        # completed between the two questions, unseen (G12 P0-1), and the pointer would flip over a hole.
+        keep = []
+        for f in pending:
+            if f.done():
+                f.result()
+            else:
+                keep.append(f)
+        pending[:] = keep
         while len(pending) > limit:
             pending.pop(0).result()
 

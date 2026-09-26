@@ -982,3 +982,51 @@ def test_a_step_that_is_not_ready_propagates_from_the_prefetch(offline_build, mo
     with pytest.raises(F.NotReady):
         R.build_and_publish(None, RUN, [0, 3, 6, 9, 12], upload=False, log=done.append)
     assert [d.split()[0] for d in done] == ["f000", "f003", "f006"]                              # the steps before it were built
+
+def test_an_upload_failure_that_completes_between_two_checks_is_never_lost(offline_build, monkeypatch):
+    """G12 P0-1: a failed upload whose future reports "not done" once and "done" afterwards must still raise, and the
+    stats, manifest and pointer must never be written over the missing frame."""
+    class Done:
+        def __init__(self, value=None, exc=None):
+            self.value, self.exc = value, exc
+        def done(self):
+            return True
+        def result(self):
+            if self.exc:
+                raise self.exc
+            return self.value
+        def cancel(self):
+            return False
+
+    class FlipFlop(Done):                                   # not done at the first question, done (with its error) afterwards
+        calls = 0
+        def done(self):
+            self.calls += 1
+            return self.calls > 1
+
+    class Inline:
+        def __init__(self, *a, **k):
+            pass
+        def submit(self, fn, *args):
+            try:
+                v = fn(*args)
+            except Exception as exc:                        # noqa: BLE001
+                return FlipFlop(exc=exc) if fn is P.publish_frame else Done(exc=exc)
+            return Done(v)
+        def map(self, fn, it):
+            return [fn(x) for x in it]
+        def shutdown(self, **k):
+            pass
+
+    monkeypatch.setattr(R, "ThreadPoolExecutor", Inline)
+
+    class Flaky(FakeClient):
+        def put_object(self, Bucket, Key, Body, ContentType, CacheControl):
+            if "/pdir/f006.png" in Key:
+                raise RuntimeError("R2 500")
+            super().put_object(Bucket, Key, Body, ContentType, CacheControl)
+    for steps in ([0, 3, 6, 9, 12], F.STEPS):              # the failure found by a later drain, or by the final drain(0)
+        c = Flaky()
+        with pytest.raises(RuntimeError, match="R2 500"):
+            R.build_and_publish(P.Store(c, "b"), RUN, steps, log=lambda *a: None)
+        assert not any("/manifest-" in k or "/partial-" in k or "/stats-" in k or k == P.LATEST_KEY for k in c.objects)

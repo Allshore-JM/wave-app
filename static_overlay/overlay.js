@@ -169,7 +169,7 @@
   }
   // Half-resolution (0.5 deg) frames where a 0.25 deg cell is only a few pixels anyway, with hysteresis
   // so a zoom hovering around the threshold does not re-fetch on every step. Data budgets (plan section 6:
-  // a full 81-frame loop <= 16 MB on desktops, <= 5 MB on phones): narrow maps (phones) stay on the half
+  // a full loop <= 16 MB on desktops, <= 5 MB on phones, for the 81 frames of the time): narrow maps (phones) stay on the half
   // frames until zoom 7 (a 0.25 deg cell is 22 px there); wind frames are ~2.7x larger (land included), so
   // wind stays at half resolution until zoom 7 everywhere (full loop 32 MB vs 10 MB).
   function wantHalf(zoom, width, field) {
@@ -1457,6 +1457,33 @@
     ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.stroke();
   };
 
+  // ---- the timeline by time and the run's times (plan section 22) ----
+  // The frame for a timeline value of `hour` (hours after the run; `hours` = every frame's hour, ascending): moving
+  // later, the first frame at or after it; moving earlier, the last frame at or before it. Frames are hourly to +120 h
+  // and 3-hourly after, so an arrow key never sticks between two frames.
+  function frameAtHour(hours, hour, later) {
+    var i;
+    if (later) { for (i = 0; i < hours.length; i++) if (hours[i] >= hour) return i; return hours.length - 1; }
+    for (i = hours.length - 1; i >= 0; i--) if (hours[i] <= hour) return i;
+    return 0;
+  }
+  // "1:07 PM HST" in the computer's own time zone (not the forecast table's), with the weekday when it is not today there.
+  function localClock(ms, now) {
+    var d = new Date(ms), opts = { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' };
+    if (new Date(now).toDateString() !== d.toDateString()) opts.weekday = 'short';
+    try { return new Intl.DateTimeFormat(undefined, opts).format(d); } catch (e) { return d.toISOString().slice(11, 16) + ' UTC'; }
+  }
+  var CYCLE_MS = 6 * 3.6e6;                                // a new model cycle every 6 h
+  // When this run went live, and when the next one is expected: one cycle later with this run's own publish lag
+  // (published_utc + 6 h), rounded up to 5 minutes; null without a usable publish time.
+  function runTimes(m, now, newer) {
+    var run = Date.parse(m.run_utc), pub = Date.parse(m.published_utc);
+    if (!isFinite(run) || !isFinite(pub) || pub < run) return null;
+    var next = Math.ceil((pub + CYCLE_MS) / 3e5) * 3e5, status = newer ? 'newer' : next <= now ? 'shortly' : 'about';
+    return { status: status, next: next, text: 'live since ' + localClock(pub, now) + ' · ' +
+      (status === 'newer' ? 'a newer run is available' : status === 'shortly' ? 'next update expected shortly' : 'next update about ' + localClock(next, now)) };
+  }
+
   // ---- controller ----
   function Overlay(map, opts) {
     this.map = map; this.opts = opts;
@@ -1720,6 +1747,8 @@
       if (ptr.run > self.manifest.run) { self.newerRun = ptr; rerender = true; }
       else if (ptr.run === self.manifest.run) self.pointer = ptr;
       if (self._isStale() !== self._staleShown) rerender = true;              // the 9 h banner appears without a user action
+      var rt = runTimes(self.manifest, Date.now(), !!self.newerRun);
+      if ((rt && rt.status) !== self._runStatus) rerender = true;            // "next update expected shortly" without a user action
       if (rerender && self.last && self.last.state === 'ready') self.render(self.last);
     }).catch(function () {});
   };
@@ -2152,14 +2181,23 @@
     speed.addEventListener('change', function () { self.setSpeed(parseFloat(speed.value)); });
     tr.appendChild(speed);
     body.appendChild(tr);
-    var slider = mk('input', 'ov-timeline'); slider.type = 'range'; slider.min = '0'; slider.max = String(this.n - 1); slider.step = '1';
+    // The timeline runs in hours (hourly frames to +120 h, then 3-hourly), so its thumb sits where the hour is; a value
+    // between two frames snaps in the direction of travel (frameAtHour).
+    var hrs = ui.hours = m.frames.map(function (fr) { return self._hours(fr); });
+    var slider = mk('input', 'ov-timeline'); slider.type = 'range'; slider.min = String(hrs[0]); slider.max = String(hrs[hrs.length - 1]); slider.step = '1';
     slider.setAttribute('aria-label', 'Forecast hour');
-    slider.addEventListener('input', function () { self.seek(parseInt(slider.value, 10)); });
+    slider.addEventListener('input', function () {
+      var v = parseInt(slider.value, 10), ref = self.target !== null ? self.target : self.frameIndex;
+      var idx = frameAtHour(hrs, v, ref === null || v >= hrs[ref]);
+      slider.value = String(hrs[idx]); slider.setAttribute('aria-valuetext', '+' + hrs[idx] + ' h');
+      self.seek(idx);
+    });
     body.appendChild(slider); ui.slider = slider;
     var valid = mk('div', 'ov-meta'); body.appendChild(valid); ui.valid = valid;
     var runLine = mk('div', 'ov-meta'); runLine.appendChild(mk('b', null, 'Run: '));
     var runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z'), pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
-    runLine.appendChild(document.createTextNode(runLabel + ' (UTC), ' + this.n + ' frames to +' + this._hours(m.frames[this.n - 1]) + ' h' +
+    var times = runTimes(m, Date.now(), !!this.newerRun); this._runStatus = times && times.status;
+    runLine.appendChild(document.createTextNode(runLabel + ' (UTC)' + (times ? ' · ' + times.text : '') +
       (pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run' : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '')));
     body.appendChild(runLine);
     var age = (Date.now() - Date.parse(this.pointer.published_utc)) / 1000;
@@ -2257,7 +2295,10 @@
         ui.valid.appendChild(mk('span', 'ov-hint', hint));
       }
     }
-    if (ui.slider && document.activeElement !== ui.slider) ui.slider.value = String(this.target !== null ? this.target : this.frameIndex);
+    var si = this.target !== null ? this.target : this.frameIndex;
+    if (ui.slider && ui.hours && si !== null && document.activeElement !== ui.slider) {
+      ui.slider.value = String(ui.hours[si]); ui.slider.setAttribute('aria-valuetext', '+' + ui.hours[si] + ' h');
+    }
     if (ui.unavail) {
       var missing = [];
       for (var i = 0; i < this.n; i++) if (this._isUnavailable(i)) missing.push('+' + this._hours(this.manifest.frames[i]) + ' h');
@@ -2284,6 +2325,7 @@
       FlowAnimator: FlowAnimator, sampleRow: sampleRow,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
-      ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk }
+      ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk,
+      frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes }
   };
 })();

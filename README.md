@@ -140,7 +140,10 @@ soon as the map is zoomed in, from 6.5 (back below 6.25), so near coasts the dir
 at 0.5 degrees only). Data per full 209-frame loop with Animation on (scaled from run 2026092518): wave height or period
 + direction about 53 MB on desktops at the default zoom, 85 MB zoomed in; 30 MB on phones at the default zoom, 62 MB zoomed
 in to 7.5 and 85 MB beyond; wind + wind direction 59 MB (119 MB past zoom 7.5). A 1x loop takes about 105 s (the hourly
-first five days at 2 h/s, then 6 h/s). On phones the Opacity / Contours / Animation
+first five days at 2 h/s, then 6 h/s). The timeline is laid out by time (+120 h at 31 % of the track) and snaps to a frame
+in the direction of travel. The panel's run line says when the run went live and when the next is expected ("live since
+1:07 PM HST · next update about 7:10 PM HST": one cycle after this run's own publish time), in the computer's own time
+zone (asset 2.10.0). On phones the Opacity / Contours / Animation
 row sits right under the timeline, and the sheet's header line leads with the forecast hour, then the valid time, and
 shows a pending seek ("+213 h → +9 h loading…"). A direction is shown only for the step on the map: a step change clears the animation until that step's
 direction frame has landed, so an older direction is never drawn under a newer time. The flow is built as vectors on

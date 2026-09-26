@@ -1467,6 +1467,19 @@
     for (i = hours.length - 1; i >= 0; i--) if (hours[i] <= hour) return i;
     return 0;
   }
+  // The timeline's direction of travel. During a pointer drag each input is compared with the pointer's PREVIOUS raw value
+  // (comparing with the frame just snapped to made a slow forward drag read as backward: 120 -> 123 -> 120 ..., G13b P1-1);
+  // otherwise (keys, a click) with the value the thumb showed. pick() returns the frame index and records what is shown.
+  function TimelineState() { this.dragging = false; this.lastRaw = null; this.shown = null; }
+  TimelineState.prototype.pick = function (hours, v) {
+    var ref = this.dragging && this.lastRaw !== null ? this.lastRaw : this.shown;
+    var idx = frameAtHour(hours, v, ref === null || v >= ref);
+    if (this.dragging) this.lastRaw = v;
+    this.shown = hours[idx];
+    return idx;
+  };
+  TimelineState.prototype.start = function () { this.dragging = true; this.lastRaw = null; };
+  TimelineState.prototype.end = function () { this.dragging = false; this.lastRaw = null; };
   // "1:07 PM HST" in the computer's own time zone (not the forecast table's), with the weekday when it is not today there.
   function localClock(ms, now) {
     var d = new Date(ms), opts = { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' };
@@ -1747,9 +1760,8 @@
       if (ptr.run > self.manifest.run) { self.newerRun = ptr; rerender = true; }
       else if (ptr.run === self.manifest.run) self.pointer = ptr;
       if (self._isStale() !== self._staleShown) rerender = true;              // the 9 h banner appears without a user action
-      var rt = runTimes(self.manifest, Date.now(), !!self.newerRun);
-      if ((rt && rt.status) !== self._runStatus) rerender = true;            // "next update expected shortly" without a user action
       if (rerender && self.last && self.last.state === 'ready') self.render(self.last);
+      else self._refreshRunLine();                                             // "expected shortly", the weekday after midnight: in place
     }).catch(function () {});
   };
   Overlay.prototype._isStale = function () { return !!this.pointer && (Date.now() - Date.parse(this.pointer.published_utc)) / 1000 > STALE_AFTER_S; };
@@ -2128,6 +2140,15 @@
     if (this.last && this.layer) this.render(this.last);
     if (this.layer && this.contours) this.layer.setContours(this._contourCfg());   // the interval follows the site unit
   };
+  // The run line's text, in place (no panel rebuild: focus and the sheet's scroll stay).
+  Overlay.prototype._refreshRunLine = function () {
+    var ui = this.ui;
+    this._runLineAt = Date.now();
+    if (!ui || !ui.runText || !this.manifest) return;
+    var t = runTimes(this.manifest, Date.now(), !!this.newerRun);
+    this._runStatus = t && t.status;
+    ui.runText.nodeValue = ui.runLabel + ' (UTC)' + (t ? ' · ' + t.text : '') + ui.runTail;
+  };
   Overlay.prototype._hours = function (entry) { return Math.round((Date.parse(entry.valid_utc) - Date.parse(this.manifest.run_utc)) / 3.6e6); };
   Overlay.prototype._validLocal = function (entry) { return this.opts.fmtTime(entry.valid_utc, this.opts.tz) + ' ' + this.opts.tzAbbr(entry.valid_utc, this.opts.tz); };
   function button(cls, text, label, onClick) {
@@ -2165,6 +2186,7 @@
     host.appendChild(head);
     var ui = this.ui = { title: title, play: [playHead], slider: null, valid: null, unavail: null, label: label, modelName: modelName, collapsed: collapsed, compact: compact };
     if (compact && cap - host.offsetHeight - 8 < 40) { head.removeChild(btn); collapsed = ui.collapsed = true; }
+    var rt0 = runTimes(m, Date.now(), !!this.newerRun); this._runStatus = rt0 && rt0.status;
     if (collapsed) { this._syncUI(); this._layoutSheet(); return; }
     var body = mk('div', 'ov-details'); body.id = 'ovDetails'; body.style.maxHeight = cap + 'px'; host.appendChild(body);
     // transport + timeline
@@ -2186,9 +2208,12 @@
     var hrs = ui.hours = m.frames.map(function (fr) { return self._hours(fr); });
     var slider = mk('input', 'ov-timeline'); slider.type = 'range'; slider.min = String(hrs[0]); slider.max = String(hrs[hrs.length - 1]); slider.step = '1';
     slider.setAttribute('aria-label', 'Forecast hour');
+    var tl = ui.timeline = new TimelineState(), shownIdx = this.target !== null ? this.target : this.frameIndex;
+    tl.shown = shownIdx !== null ? hrs[shownIdx] : null;
+    slider.addEventListener('pointerdown', function () { tl.start(); });
+    ['pointerup', 'pointercancel', 'lostpointercapture', 'change', 'keydown', 'blur'].forEach(function (ev) { slider.addEventListener(ev, function () { tl.end(); }); });
     slider.addEventListener('input', function () {
-      var v = parseInt(slider.value, 10), ref = self.target !== null ? self.target : self.frameIndex;
-      var idx = frameAtHour(hrs, v, ref === null || v >= hrs[ref]);
+      var idx = tl.pick(hrs, parseInt(slider.value, 10));
       slider.value = String(hrs[idx]); slider.setAttribute('aria-valuetext', '+' + hrs[idx] + ' h');
       self.seek(idx);
     });
@@ -2196,9 +2221,10 @@
     var valid = mk('div', 'ov-meta'); body.appendChild(valid); ui.valid = valid;
     var runLine = mk('div', 'ov-meta'); runLine.appendChild(mk('b', null, 'Run: '));
     var runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z'), pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
-    var times = runTimes(m, Date.now(), !!this.newerRun); this._runStatus = times && times.status;
-    runLine.appendChild(document.createTextNode(runLabel + ' (UTC)' + (times ? ' · ' + times.text : '') +
-      (pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run' : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '')));
+    ui.runTail = pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run' : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '';
+    ui.runLabel = runLabel;
+    ui.runText = runLine.appendChild(document.createTextNode(''));
+    this._refreshRunLine();
     body.appendChild(runLine);
     var age = (Date.now() - Date.parse(this.pointer.published_utc)) / 1000;
     this._staleShown = age > STALE_AFTER_S;
@@ -2296,9 +2322,11 @@
       }
     }
     var si = this.target !== null ? this.target : this.frameIndex;
-    if (ui.slider && ui.hours && si !== null && document.activeElement !== ui.slider) {
+    if (ui.slider && ui.hours && si !== null && !(ui.timeline && ui.timeline.dragging)) {
       ui.slider.value = String(ui.hours[si]); ui.slider.setAttribute('aria-valuetext', '+' + ui.hours[si] + ' h');
+      if (ui.timeline) ui.timeline.shown = ui.hours[si];
     }
+    if (ui.runText && Date.now() - (this._runLineAt || 0) > 60000) this._refreshRunLine();
     if (ui.unavail) {
       var missing = [];
       for (var i = 0; i < this.n; i++) if (this._isUnavailable(i)) missing.push('+' + this._hours(this.manifest.frames[i]) + ' h');
@@ -2326,6 +2354,6 @@
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
       ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk,
-      frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes }
+      frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes, TimelineState: TimelineState }
   };
 })();

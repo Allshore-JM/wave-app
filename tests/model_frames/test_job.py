@@ -984,7 +984,7 @@ def test_an_upload_failure_stops_the_build_before_any_manifest_or_pointer(offlin
     with pytest.raises(RuntimeError, match="R2 500"):
         R.build_and_publish(P.Store(c, "b"), RUN, F.STEPS, log=lambda *a: None)
     assert not any("/manifest-" in k or "/stats-" in k or k == P.LATEST_KEY for k in c.objects), "nothing but frames"
-    assert len(c.objects) < len(F.STEPS) * 9                                                    # the build stopped early
+    assert len(c.objects) < 30 * 9                                                              # stopped early: a failure at f006 never reaches f030
 
 
 def test_a_step_that_is_not_ready_propagates_from_the_prefetch(offline_build, monkeypatch):
@@ -1046,3 +1046,52 @@ def test_an_upload_failure_that_completes_between_two_checks_is_never_lost(offli
         with pytest.raises(RuntimeError, match="R2 500"):
             R.build_and_publish(P.Store(c, "b"), RUN, steps, log=lambda *a: None)
         assert not any("/manifest-" in k or "/partial-" in k or "/stats-" in k or k == P.LATEST_KEY for k in c.objects)
+
+# ------------------------------- plan section 22: the transition from 81-frame runs (G13a probes) -------------------------
+
+OLD81 = [{"step": s, "valid_utc": "x"} for s in range(0, 241, 3)]
+
+
+def _small_build(monkeypatch):
+    rows, cols = 73, 144
+    small = np.tile(np.linspace(0.5, 9.5, cols, dtype=np.float32), (rows, 1))
+    monkeypatch.setattr(R.F, "fetch_records", lambda url, keys: {k: b"x" for k in keys})
+    monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None: (small, {}))
+    monkeypatch.setattr(R.E, "fill_allow", lambda: np.ones((rows, cols), bool))
+
+
+def test_transition_a_live_81_frame_run_of_the_same_cycle_is_left_alone(monkeypatch, capsys):
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    c = FakeClient(); _env(monkeypatch, c)
+    man = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": OLD81, "published_utc": "2026-09-22T17:00:00Z", "fill": E.FILL_INFO}
+    mkey = _manifest(c, "2026092212", "20260922T170000Z", man)
+    c.objects[P.LATEST_KEY] = {"body": json.dumps({"run": "2026092212", "complete": True, "manifest": mkey, "frames": 81}).encode(), "ct": "", "cc": ""}
+    n = len(c.log)
+    assert R.main([]) == 0 and "already live" in capsys.readouterr().out and len(c.log) == n         # no writes: the next cycle brings 209 frames
+
+
+def test_transition_a_lost_pointer_over_an_81_frame_run_of_the_same_fill_is_rebuilt_at_209(monkeypatch):
+    _small_build(monkeypatch)
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    c = FakeClient(); _env(monkeypatch, c)
+    man = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": OLD81, "published_utc": "2026-09-22T17:00:00Z", "fill": E.FILL_INFO}
+    _manifest(c, "2026092212", "20260922T170000Z", man)
+    assert R.main([]) == 0 and json.loads(c.objects[P.LATEST_KEY]["body"])["frames"] == 209
+
+
+def test_transition_a_lost_pointer_over_an_81_frame_run_of_another_fill_is_refused(monkeypatch, capsys):
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    c = FakeClient(); _env(monkeypatch, c)
+    man = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": OLD81, "published_utc": "2026-09-22T17:00:00Z"}   # no fill
+    _manifest(c, "2026092212", "20260922T170000Z", man)
+    assert R.main([]) == 2 and "refusing" in capsys.readouterr().out and P.LATEST_KEY not in c.objects   # (G13a P3-3: narrow; the next cycle publishes)
+
+
+def test_transition_force_on_a_live_81_frame_run_rebuilds_all_209(monkeypatch):
+    _small_build(monkeypatch)
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    c = FakeClient(); _env(monkeypatch, c)
+    man = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": OLD81, "published_utc": "2026-09-22T17:00:00Z", "fill": E.FILL_INFO}
+    _manifest(c, "2026092212", "20260922T170000Z", man)
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
+    assert R.main(["--force"]) == 0 and json.loads(c.objects[P.LATEST_KEY]["body"])["frames"] == 209

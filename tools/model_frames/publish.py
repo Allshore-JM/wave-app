@@ -118,7 +118,7 @@ def publish_frame(store, run, field, step, encoded):
 
 def publish_manifest(store, run, manifest, stats=None):
     """Write the (slim) manifest under a fresh immutable key, its stats sidecar first; flip the
-    pointer ONLY for a complete run. The manifest must stay small (r2.dev serves it uncompressed):
+    pointer ONLY for a complete run. The manifest stays slim (the custom domain serves it brotli-compressed):
     per-frame byte sizes and statistics live in the sidecar."""
     if stats is not None:
         skey = stats_key(run, manifest["published_utc"])

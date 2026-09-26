@@ -1,8 +1,8 @@
 # Renders + publishes the newest COMPLETE NOAA GFS-Wave/GFS run as overlay frames to R2.
 # Schedules fire only on the repository's default branch. The job short-circuits in ~20 s when
-# the live run is already current, so it runs every 10 minutes: NOAA completes a cycle between
-# +4:36 and +4:52 h (8 cycles measured) and GitHub drops or delays scheduled ticks (four of the
-# first six were dropped after the merge), so a sparse schedule publishes hours late.
+# the live run is already current, so it runs every 10 minutes: NOAA completes a cycle's full output
+# (+384 h) between +5:17 and +5:31 h (27-47 min after +240 h; measured 2026-09-26) and GitHub drops or
+# delays scheduled ticks, so a sparse schedule publishes hours late.
 # Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 # The environment is pinned to the versions that produced the reviewed frames (solved 2026-09-22;
 # the installed versions are listed in every step summary). Bump the pins deliberately, together.
@@ -29,7 +29,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120                   # a 209-step build takes ~10-15 min; a killed build leaves no failure record (G13a P3-1)
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
       - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462   # v2

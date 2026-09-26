@@ -53,7 +53,8 @@ test('sampleRow is the layer sampler; dirFieldOk and dirRes: only circular FROM 
   assert.equal(I.dirFieldOk(Object.assign({}, PDIR, { resolutions: [] })), false); assert.equal(I.dirFieldOk(undefined), false);
   for (const z of [3, 7, 9, 11]) assert.equal(I.dirRes(WDIR, z, null), 'half');
   assert.equal(I.dirRes(PDIR, 6, null), 'half', 'the default zoom: half'); assert.equal(I.dirRes(PDIR, 6.5, null), 'full', 'zoomed in: full'); assert.equal(I.dirRes(PDIR, 6.3, null), 'half');
-  assert.equal(I.dirRes(PDIR, 6.2, 'full'), 'full', 'hysteresis'); assert.equal(I.dirRes(PDIR, 5.9, 'full'), 'half'); assert.equal(I.dirRes(PDIR, 6.3, 'half'), 'half');
+  assert.equal(I.dirRes(PDIR, 6.3, 'full'), 'full', 'hysteresis'); assert.equal(I.dirRes(PDIR, 6, 'full'), 'half', 'zoom buttons: 6 -> 6.5 -> 6 returns to half');
+  assert.equal(I.dirRes(PDIR, 6.2, 'full'), 'half'); assert.equal(I.dirRes(PDIR, 6.3, 'half'), 'half');
   assert.equal(I.dirRes(PDIR, 3, null), 'half'); assert.equal(I.dirRes(PDIR, 11, 'half'), 'full');
   assert.equal(I.DIR_FIELDS.hs, 'pdir'); assert.equal(I.DIR_FIELDS.tp, 'pdir'); assert.equal(I.DIR_FIELDS.wind, 'wdir');
 });
@@ -256,4 +257,14 @@ test('G11 P2-3: bilinear reads between lattice cells (m35), absent nodes exclude
   for (const k in lh._tiles) delete lh._tiles[k]; assert.equal(I.flowField(view, 4, NH, HALF, lh, true).u.some((x) => x !== 0), false, 'no tiles: nothing');
   const P = fa.particles; vf.u.fill(30); vf.v.fill(0); P[0] = 100; P[1] = 100; P[2] = 0; P[3] = 100; fa.count = 1;
   fa._renderParticles(40); assert.equal(P[2], 40); fa._renderParticles(40); assert.equal(P[2], 80); fa._renderParticles(40); assert.equal(P[2], 120, 'still alive at the check'); fa._renderParticles(40); assert.ok(P[2] < 80 && P[3] >= I.PARTICLE_LIFE_MS.wind[0], 'aged out at 120 > 100 ms: respawned with a wind life');
+});
+
+test('G12: a half-resolution field under a full-resolution direction (a phone zoomed in to 6.5-7.5): each direction node reads the field between the half nodes', () => {
+  const half = frame(720, 361, (r, c) => codeOf(c % 2 ? 4 : 2, HS));                     // 2 m and 4 m alternating half columns
+  const l = layer(half, HALF, 'hs', HS), pdir = frame(1440, 721, () => code(180));
+  const N = I.vectorNodes('hs', l, pdir, GRID), row = 200 * 1440;                          // full row 200 = half row 100
+  const speed = (m) => 8 + 3 * m;
+  assert.ok(Math.abs(N.V[row + 20] - speed(2)) < 0.2, 'on a half node (2 m): ' + N.V[row + 20]);
+  assert.ok(Math.abs(N.V[row + 21] - speed(3)) < 0.2, 'between the half nodes: the mean height (3 m): ' + N.V[row + 21]);
+  assert.ok(Math.abs(N.V[row + 22] - speed(4)) < 0.2, 'on the next half node (4 m)');
 });

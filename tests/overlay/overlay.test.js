@@ -452,3 +452,19 @@ test('runTimes / localClock: live since and the next update in the computer time
     assert.equal(I.runTimes({ run_utc: m.run_utc, published_utc: '2026-09-25T17:00:00Z' }, now, false), null, 'published before its cycle: no line');
   } finally { if (tz0 === undefined) delete process.env.TZ; else process.env.TZ = tz0; }
 });
+
+test('G13b P1-1: a slow drag in either direction never picks a frame against its direction; keys compare with the shown thumb', () => {
+  const hours = [...Array(121).keys()].concat([...Array(88).keys()].map((i) => 123 + 3 * i));
+  const tl = new I.TimelineState(); tl.shown = 118;
+  tl.start();
+  let prev = -1;
+  for (let v = 118; v <= 140; v++) { const h = hours[tl.pick(hours, v)]; assert.ok(h >= prev, 'forward drag stepped back to +' + h + ' at ' + v); prev = h; }
+  assert.equal(prev, 141, 'a forward drag ending at 140 lands on the next frame, +141');
+  tl.end(); tl.shown = 141; tl.start(); prev = 1e9;
+  for (let v = 141; v >= 110; v--) { const h = hours[tl.pick(hours, v)]; assert.ok(h <= prev, 'backward drag jumped forward to +' + h + ' at ' + v); prev = h; }
+  assert.equal(prev, 110); tl.end();
+  tl.shown = 123; assert.equal(hours[tl.pick(hours, 124)], 126, 'ArrowRight from +123'); assert.equal(hours[tl.pick(hours, 125)], 123, 'ArrowLeft from +126');
+  tl.shown = 150; assert.equal(hours[tl.pick(hours, 151)], 153, 'keys go from the thumb as shown');
+  const old = [...Array(81).keys()].map((i) => 3 * i); const t2 = new I.TimelineState(); t2.shown = 117; t2.start(); prev = -1;
+  for (let v = 117; v <= 130; v++) { const h = old[t2.pick(old, v)]; assert.ok(h >= prev); prev = h; }
+});

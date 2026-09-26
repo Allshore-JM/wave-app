@@ -107,8 +107,11 @@ this repository with "Actions: read and write", entered under the Worker's Setti
 it there; it is never in the repository). Runs it starts show the event `workflow_dispatch` with the token's owner
 as actor. To stop it, disable the cron under the Worker's Settings > Triggers (or delete the Worker); a full stop
 also disables both workflows as above. Data policy in the browser: the 0.5 degree frames are used below zoom 3.5 on desktops, below zoom 7
-on narrow (phone) maps and for wind everywhere, so a full 209-frame loop is about 10-34 MB (83 MB only for wind
-zoomed past 7.5); frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
+on narrow (phone) maps and for wind everywhere, so a full 209-frame loop of the field frames is about 10-34 MB (83 MB only
+for wind zoomed past 7.5); with the particle animation (always on since asset 2.12.0) the direction frames add to that (see
+the Animation paragraph: about 53 / 85 MB on desktops, 30-62 MB on phones, 59 / 119 MB for wind). The FIRST picture of a
+field never waits for its direction frame (the particles join when it lands); later steps change picture and particles
+together. Frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
 where the browser has DecompressionStream.
 Overlay state (asset 2.7.6): the chosen layer, its valid time and whether it was playing are kept in the tab's
 sessionStorage (`allshore.overlay.v1`, with the playback speed), so picking another forecast

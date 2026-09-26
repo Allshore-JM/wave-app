@@ -1383,7 +1383,7 @@
     if (this.suspended) return;
     if (this.dirty) { this.dirty = false; this._rebuild(); } else this._start();
   };
-  // The layer changed under the animation (opacity, a coast store): rebuild.
+  // The layer changed under the animation (a coast store): rebuild.
   FlowAnimator.prototype.refresh = function () { if (this.dir && !this.suspended && this.canvas) this._rebuild(); };
   // The map's geometry: the world pixel of the container's top-left from Leaflet's pixel bounds (exact
   // whatever Leaflet's cached size says) and the container's REAL size (the site sets the map height by
@@ -1723,7 +1723,9 @@
     var p = this._ensure(idx);
     // With Animation on, the picture and its particles change together: the step waits for its direction
     // frame as well (fetched beside the field frame); a missing or failed direction never holds it.
-    var pd = this._wantDir() && !this._isUnavailable(idx) ? this._dirReady(idx) : null;
+    // The FIRST picture of a field (after a mount or a field switch) never waits for it: the particles join when
+    // their frame lands (G15 P2-1: with the animation always on, waiting made every first wind frame ~2x slower).
+    var pd = this._wantDir() && this.layer && this.layer.hasFrame() && !this._isUnavailable(idx) ? this._dirReady(idx) : null;
     return (pd ? Promise.all([p, pd]).then(function (both) { return both[0]; }) : p).then(function (frame) {
       if ((sig && sig.aborted) || self.target !== idx || !self.layer || self.manifest !== m || self.field !== field || self.res !== res) throw abortError();
       // the frame already on the map (Retry after an outage, a repeated seek): no redraw, but the same
@@ -2360,6 +2362,7 @@
       s.style.left = (t.pos * 100).toFixed(2) + '%'; ticks.appendChild(s);
     });
     leg.appendChild(ticks); body.appendChild(leg);
+    if (compact) body.insertBefore(leg, valid);             // phones: the legend right under the timeline, inside the short details box
     // (no settings row: fixed opacity, contours and the animation always on; owner, 2026-09-26)
     this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND

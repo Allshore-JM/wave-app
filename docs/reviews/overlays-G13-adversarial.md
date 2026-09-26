@@ -42,6 +42,23 @@ the pipelined build time on the runner (the first pipelined run had not publishe
 
 After the fixes: job tests 66.
 
-## G13b — the client on the test site with a real 209-frame run
+## G13b — the client on the test site with the first 209-frame run (2026092600): 0 P0, 1 P1, 2 P2, 5 P3
 
-Pending (after the Part 1 merge publishes the first 209-frame run).
+One fresh-context reviewer at high effort (Opus 5.5) on asset 2.10.0 (test site = 32eae6f byte for byte).
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| P1-1 | P1 | A slow drag snapped backwards: each input was compared with the frame just snapped to, so a forward drag read as backward (thumb 120 123 120 123 126 123 …; a drag ending at 140 left the map on +138); dragging left jumped forward the same way; also on 81-frame runs. Keyboard fine. | Fixed @ 9dabe76 (asset 2.10.1): `TimelineState` compares a drag's input with the pointer's previous raw value, keys and clicks with the shown thumb (test: steady drags never go against their direction). Verified on the test site: 118 → 140 gives 118 119 120 123 … 141, monotonic, ends on +141. |
+| P2-1 | P2 | After a drag the slider keeps focus, the thumb stopped following playback, and arrow keys then compared with the playing frame instead of the frozen thumb (the map jumped back). | The thumb follows playback unless a drag is in progress; keys start from what is shown. Verified. |
+| P2-2 | P2 | The 30-min run check rebuilt the whole panel: on collapsed panels every time (the status was only set when expanded), on expanded ones at the switch to "expected shortly" (focus lost; the phone sheet's scroll reset). | The run line is a text node updated in place; its status is known when collapsed; no rebuild for it. Verified in place. |
+| P3 | P3 | No weekday after local midnight until a re-render; "expected shortly" up to 30 min late; the estimate (publish + 6 h) shifts with a late or repaired run; zone names / 12-24 h follow the browser locale; no handler / run-check tests. | The run line refreshes at most once a minute while the panel is used and on every run check; the estimate and the locale behaviour accepted (00Z went live at +5.55 h → the 06Z estimate 11:35 UTC against ~11:25–11:55); the handler test added via `TimelineState`. |
+
+Verified by the reviewer: the slider 0–384 on the 209-frame run (+120 h at 31 % of the track); playback across +120 h
+plays frames 116…120 then +123…+144 at ~500 ms per frame with no skip or repeat, the thumb, label and frame always
+agreeing; mouse drags keep in-flight ≤ 2 and end on the thumb's frame; seeking while loading snaps the thumb at once with
+the loading hint; an 81-frame run and Update (+180 h kept); the run line "live since 7:32 PM HST · next update about Sat,
+1:35 AM HST" for the live run; zones in Node (Honolulu, New York across the November DST change, London, Kolkata, UTC,
+Lord Howe, Chatham, St Johns) incl. the weekday rule, "shortly", "newer", a missing publish time; the phone sheet (G12
+layout kept); no hot path (hours map 0.17 ms, `_syncUI` 0.8 ms); Node 120, flag 10.
+
+After the fixes: Node 121, flag 10; asset 2.10.1 verified on the test site.

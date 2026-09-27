@@ -190,7 +190,7 @@ def test_graph_data_has_no_wind_keys(monkeypatch):
     payload = app.compute_forecast_payload("51201", None, "US", "GFS")
     gd = payload["graph_data"]
     assert set(gd.keys()) == {"labels", "height", "period", "direction",
-                              "units", "cycle", "location", "tz"}
+                              "units", "cycle", "location", "tz", "swells"}   # swells: plan section 26
     assert "wind" not in gd and "wind_speed" not in gd
     # combined read from row[-1], not the wind column
     assert gd["height"]["combined"] == [4.17, 5.25]

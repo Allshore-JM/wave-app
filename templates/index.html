@@ -334,8 +334,8 @@
     .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body, .forecast-win.fw-min .fw-resize { display: none; }
     /* maximised: the viewport under the top bar */
     .forecast-win.fw-max {
-      left: 8px !important; top: calc(var(--topbar-h, 56px) + 8px) !important; right: 8px !important; bottom: 8px !important;
-      width: auto !important; height: auto !important;
+      left: 8px !important; top: calc(var(--topbar-h, 56px) + 8px) !important; right: auto !important; bottom: 8px !important;
+      width: calc(100vw - 16px) !important; height: auto !important;   /* capped by the inline max-width (the table's width) */
     }
     .forecast-win.fw-max .fw-resize { display: none; }
     /* the compact table inside the window: the body is the scroll box, the header stays frozen */
@@ -856,6 +856,8 @@
       zoomDelta: 0.5,
       wheelPxPerZoomLevel: 80
     });
+    // The credits stay (Esri's terms, the overlay's NOAA / GSHHG line); the "Leaflet" prefix goes (plan section 26).
+    if (map.attributionControl) map.attributionControl.setPrefix(false);
 
     const initialLayerVisibility = loadLayerVisibility();
     const forecastLayer = L.layerGroup();
@@ -2519,7 +2521,10 @@
           if (sel.value === field) panel.textContent = 'Overlay unavailable: ' + err.message;
         });
       }
-      var again = stored().field;
+      // First open of a tab (nothing saved yet): Wave Height at "now", not playing (plan section 26); a saved
+      // '' (the viewer chose Off in this tab) or a corrupted value stays Off.
+      var saved0 = null; try { saved0 = sessionStorage.getItem(KEY); } catch (e) {}
+      var again = saved0 === null ? 'hs' : stored().field;
       sel.value = typeof again === 'string' && FIELDS.hasOwnProperty(again) ? again : '';    // (autocomplete="off": never the browser's form restore)
       var shown = sel.value;                                     // what the select showed before a change
       sel.addEventListener('change', function () {

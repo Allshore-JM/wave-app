@@ -159,3 +159,12 @@ def test_pr_c_polish_markup(client):
     assert 'swan = ["' in head, "the head knows the SWAN stations (a SWAN link elsewhere is fetched as GFS, like the loader)"
     assert body.index(".forecast-win.fw-front { z-index: 2100; }") < body.index(".forecast-win:not(.fw-min) { z-index: 3500; }")
     assert "new CustomEvent('allshore:livepanel')" in body and "document.addEventListener('allshore:livepanel', function () { front(false); });" in body
+
+def test_plan_26_d1_page_rules(client):
+    """The maximised window is capped by the table width (inline max-width): it must not be pinned to both edges;
+    the Leaflet prefix goes, the credits stay."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    mx = body[body.index(".forecast-win.fw-max {"):]
+    mx = mx[:mx.index("}")]
+    assert "right: auto !important" in mx and "width: calc(100vw - 16px) !important" in mx
+    assert "map.attributionControl.setPrefix(false)" in body and "Esri &amp; contributors" in body.replace("Esri & contributors", "Esri &amp; contributors")

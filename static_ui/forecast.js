@@ -25,6 +25,7 @@
   var MIN_SIZE = { w: 360, h: 220 };
   var PHONE_QUERY = '(max-width: 500px), (max-height: 500px)';   // "phone mode": a bar + full screen, no drag / resize
   var API = '/api/forecast';
+  var TABLE_CHROME = 20 + 2 + 18;                                  // #fwBody padding + the window border + a scrollbar
 
   // ---- pure state helpers ----
   // The state a page starts from: the URL wins, then the viewer's saved settings (tz, unit only),
@@ -60,9 +61,10 @@
   function keyOf(s) { return [s.station, s.tz || '', s.unit, s.model].join('|'); }
   // A window geometry kept inside a viewport of vw x vh below a top edge: the size shrinks to fit (never
   // below min), the position is pulled back so the whole window (and so its header) stays on screen.
-  function clampGeometry(g, vw, vh, top, min) {
+  function clampGeometry(g, vw, vh, top, min, maxW) {
     var m = min || MIN_SIZE, t = top || 0, pad = 8;
-    var w = Math.max(Math.min(m.w, vw - 2 * pad), Math.min(g.w, vw - 2 * pad));
+    var cap = maxW > 0 ? Math.min(vw - 2 * pad, maxW) : vw - 2 * pad;          // maxW: the window's content width (the table)
+    var w = Math.max(Math.min(m.w, vw - 2 * pad), Math.min(g.w, cap));
     var h = Math.max(Math.min(m.h, vh - t - 2 * pad), Math.min(g.h, vh - t - 2 * pad));
     var x = Math.min(Math.max(g.x, pad), Math.max(pad, vw - pad - w));
     var y = Math.min(Math.max(g.y, t + pad), Math.max(t + pad, vh - pad - h));
@@ -161,6 +163,15 @@
   function niceCeil(v, step) { return Math.ceil(v / step) * step; }
   function heightStep(m) { if (m <= 1) return 0.1; if (m <= 2) return 0.2; if (m <= 4) return 0.5; if (m <= 8) return 1; return 2; }
   function periodStep(m) { if (m <= 8) return 1; if (m <= 16) return 2; return 5; }
+  // the period axis starts one step under the shortest period (never below 0): 8-16 s swells fill the plot
+  function periodFloor(min, step) { return Number.isFinite(min) ? Math.max(0, Math.floor((min - step) / step) * step) : 0; }
+  // the swell series worth drawing: graph_data.swells from the server (plan section 26), else all six
+  var ALL_SWELLS = ['s1', 's2', 's3', 's4', 's5', 's6'];
+  function swellKeys(gd) {
+    var s = gd && Array.isArray(gd.swells) ? gd.swells.filter(function (k) { return ALL_SWELLS.indexOf(k) >= 0; }) : null;
+    return s && s.length ? s : ALL_SWELLS.slice();
+  }
+  var BOX_MIN = 300;                                        // px per chart (was 180-360: the plots were 60-80 px tall)
   function formatMDHour(d) {
     var M = d.getMonth() + 1, D = d.getDate(), h = d.getHours();
     return h === 0 ? M + '/' + D + ' 12am' : h === 12 ? M + '/' + D + ' 12pm' : '';
@@ -192,11 +203,11 @@
       return { type: 'category',
         grid: { color: function (c) { var i = idx(c); return major.has(i) ? 'rgba(0,0,0,0.25)' : minor.has(i) ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.08)'; },
                 lineWidth: function (c) { var i = idx(c); return major.has(i) ? 1.4 : minor.has(i) ? 1.0 : 0.5; } },
-        ticks: { autoSkip: false, maxRotation: 90, minRotation: 90, callback: function (v, i) { return formatMDHour(parsed[i] || new Date(NaN)); }, font: { size: 10 } } };
+        ticks: { autoSkip: false, maxRotation: 60, minRotation: 60, callback: function (v, i) { return formatMDHour(parsed[i] || new Date(NaN)); }, font: { size: 10 } } };
     }
     function dots(label, key, src, color) { return { label: label, data: src[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false }; }
-    function series(src, combined) {
-      var ds = ['s1', 's2', 's3', 's4', 's5', 's6'].map(function (k, i) { return dots('Swell ' + (i + 1), k, src, COLORS[k]); });
+    function series(src, combined, keys) {
+      var ds = keys.map(function (k) { return dots('Swell ' + k.slice(1), k, src, COLORS[k]); });
       if (combined) ds.push({ label: 'Combined', data: src.combined, borderColor: COLORS.combined, backgroundColor: COLORS.combined, showLine: false, spanGaps: false, pointRadius: 1.6 });
       return ds;
     }
@@ -204,13 +215,16 @@
       var shade = makeNightShade(parsed), xAxis = makeXAxis(parsed);
       var common = { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false, axis: 'x' },
         layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } }, elements: { point: { radius: 1.6 }, line: { tension: 0.25, borderWidth: 0 } },
-        plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 10, boxHeight: 6 } }, tooltip: { mode: 'nearest', intersect: false }, decimation: { enabled: false } },
+        // one line of legend above the plot (it used to wrap under it and eat the plot height)
+        plugins: { legend: { position: 'top', align: 'end', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 6, padding: 8, font: { size: 11 } } }, tooltip: { mode: 'nearest', intersect: false }, decimation: { enabled: false } },
         animation: false };
-      var hArr = ['s1', 's2', 's3', 's4', 's5', 's6', 'combined'].map(function (k) { return gd.height[k]; });
-      var hMax = padMax(maxAcross(hArr)); if (!Number.isFinite(hMax)) hMax = 1; var hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
-      var pArr = ['s1', 's2', 's3', 's4', 's5', 's6'].map(function (k) { return gd.period[k]; });
-      var pMax = padMax(maxAcross(pArr)); if (!Number.isFinite(pMax)) pMax = 10; var pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
-      var dArr = ['s1', 's2', 's3', 's4', 's5', 's6'].map(function (k) { return gd.direction[k]; });
+      var keys = swellKeys(gd);
+      var hArr = keys.concat(['combined']).map(function (k) { return gd.height[k]; });
+      var hMax = padMax(maxAcross(hArr), 0.05); if (!Number.isFinite(hMax)) hMax = 1; var hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
+      var pArr = keys.map(function (k) { return gd.period[k]; });
+      var pMax = padMax(maxAcross(pArr), 0.05); if (!Number.isFinite(pMax)) pMax = 10; var pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
+      var pMin = periodFloor(minAcross(pArr), pStep);
+      var dArr = keys.map(function (k) { return gd.direction[k]; });
       var dMin = minAcross(dArr), dMax = maxAcross(dArr);
       if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
       function opts(title, y) {
@@ -218,9 +232,9 @@
           scales: { x: xAxis, y: Object.assign({ grid: { display: true, color: 'rgba(0,0,0,0.08)' }, border: { color: 'rgba(0,0,0,0.2)' } }, y) } });
       }
       var specs = [
-        ['Swell Height', series(gd.height, true), { beginAtZero: true, min: 0, max: hMax, ticks: { stepSize: hStep }, title: { display: true, text: 'Height (' + gd.units + ')' } }],
-        ['Swell Period', series(gd.period, false), { beginAtZero: true, min: 0, max: pMax, ticks: { stepSize: pStep }, title: { display: true, text: 'Period (s)' } }],
-        ['Swell Direction', series(gd.direction, false), { min: dMin, max: dMax, ticks: { stepSize: 45 }, title: { display: true, text: 'Direction (°)' } }]
+        ['Swell Height', series(gd.height, true, keys), { beginAtZero: true, min: 0, max: hMax, ticks: { stepSize: hStep }, title: { display: true, text: 'Height (' + gd.units + ')' } }],
+        ['Swell Period', series(gd.period, false, keys), { min: pMin, max: pMax, ticks: { stepSize: pStep }, title: { display: true, text: 'Period (s)' } }],
+        ['Swell Direction', series(gd.direction, false, keys), { min: dMin, max: dMax, ticks: { stepSize: 45 }, title: { display: true, text: 'Direction (°)' } }]
       ];
       return specs.map(function (sp, i) {
         return new Chart(deps.canvases[i].getContext('2d'), { type: 'line', data: { labels: gd.labels, datasets: sp[1] }, plugins: [shade], options: opts(sp[0], sp[2]) });
@@ -268,7 +282,7 @@
       });
     }
     function fit() {
-      var h = Math.max(180, Math.min(360, Math.floor((deps.bodyHeight() - 60) / 3)));
+      var h = Math.max(BOX_MIN, Math.floor((deps.bodyHeight() - 40) / 3));
       deps.boxes.forEach(function (b) { b.style.height = h + 'px'; });
       charts.forEach(function (c) { try { c.resize(); } catch (e) {} });
     }
@@ -314,9 +328,9 @@
     this.geom = typeof saved.w === 'number' && typeof saved.h === 'number' && typeof saved.x === 'number' && typeof saved.y === 'number' ? { x: saved.x, y: saved.y, w: saved.w, h: saved.h } : null;
     this.mode = saved.mode === 'normal' || saved.mode === 'max' ? saved.mode : 'min';   // a new tab starts minimised
     this.prev = saved.prev === 'max' ? 'max' : 'normal';
-    this.opener = null;
+    this.opener = null; this.maxW = 0;
     this._applyMode();
-    if (this.geom) this._place(clampGeometry(this.geom, deps.win.innerWidth, deps.win.innerHeight, deps.topBarHeight()));
+    if (this.geom) this._place(clampGeometry(this.geom, deps.win.innerWidth, deps.win.innerHeight, deps.topBarHeight(), null, this.maxW));
     this._bind();
   }
   FloatingWindow.prototype.isPhone = function () { var mm = this.d.win.matchMedia; return !!(mm && mm.call(this.d.win, PHONE_QUERY).matches); };
@@ -333,6 +347,7 @@
     var cl = this.el.classList;
     cl.toggle('fw-min', this.mode === 'min'); cl.toggle('fw-max', this.mode === 'max');
     this.el.style.setProperty('--topbar-h', this.d.topBarHeight() + 'px');
+    if (this.el.style) this.el.style.maxWidth = this.maxW && this.mode !== 'min' ? this.maxW + 'px' : '';
     if (this.d.onMode) this.d.onMode(this.mode);
   };
   FloatingWindow.prototype.setMode = function (mode) {
@@ -351,15 +366,22 @@
     var r = this.el.getBoundingClientRect();
     return { x: r.left, y: r.top, w: r.width, h: r.height };
   };
+  // The widest the window may be (0 = the viewport): the table's own width in Table view, so neither a drag,
+  // a key nor maximising shows white space beside it. Not applied to the minimised chip (its own CSS width).
+  FloatingWindow.prototype.setMaxWidth = function (w) {
+    this.maxW = w > 0 ? Math.round(w) : 0;
+    this.el.style.maxWidth = this.maxW && this.mode !== 'min' ? this.maxW + 'px' : '';
+    if (this.geom && this.maxW && this.geom.w > this.maxW) this.clamp();
+  };
   FloatingWindow.prototype.resizeBy = function (dw, dh) {
     var r = this._rect(), d = this.d;
-    this._place(clampGeometry({ x: r.x, y: r.y, w: r.w + dw, h: r.h + dh }, d.win.innerWidth, d.win.innerHeight, d.topBarHeight()));
+    this._place(clampGeometry({ x: r.x, y: r.y, w: r.w + dw, h: r.h + dh }, d.win.innerWidth, d.win.innerHeight, d.topBarHeight(), null, this.maxW));
     this._save();
     if (d.onResize) d.onResize();
   };
   FloatingWindow.prototype.clamp = function () {
     if (!this.geom || this.isPhone()) return;
-    this._place(clampGeometry(this.geom, this.d.win.innerWidth, this.d.win.innerHeight, this.d.topBarHeight()));
+    this._place(clampGeometry(this.geom, this.d.win.innerWidth, this.d.win.innerHeight, this.d.topBarHeight(), null, this.maxW));
     this._save();
   };
   FloatingWindow.prototype._bind = function () {
@@ -374,7 +396,7 @@
         if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return;
         moved = true;
         var g = kind === 'move' ? { x: r.x + dx, y: r.y + dy, w: r.w, h: r.h } : { x: r.x, y: r.y, w: r.w + dx, h: r.h + dy };
-        self._place(clampGeometry(g, d.win.innerWidth, d.win.innerHeight, d.topBarHeight()));
+        self._place(clampGeometry(g, d.win.innerWidth, d.win.innerHeight, d.topBarHeight(), null, self.maxW));
       }
       function onUp() {
         target.removeEventListener('pointermove', onMove); target.removeEventListener('pointerup', onUp); target.removeEventListener('pointercancel', onUp);
@@ -451,8 +473,9 @@
         if (els.min) { els.min.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); els.min.setAttribute('aria-label', m === 'min' ? 'Expand forecast' : 'Minimise forecast'); els.min.textContent = m === 'min' ? '▴' : '–'; }
         if (els.max) els.max.setAttribute('aria-pressed', m === 'max' ? 'true' : 'false');
         if (opts.onMode) opts.onMode(m);
+        if (m !== 'min') fitWidth();
       },
-      onResize: function () { if (state.view === 'Graph') graphs.resize(); } });
+      onResize: function () { if (state.view === 'Graph') graphs.resize(); else fitWidth(); } });
     var canvases = ['heightChart', 'periodChart', 'directionChart'].map($);
     var graphs = createForecastGraphs({ host: els.graphs, boxes: canvases.map(function (c) { return c.parentNode; }), canvases: canvases, rangeBar: els.rangeBar,
       loadChartJs: opts.loadChartJs || function () { return win.Chart ? Promise.resolve() : Promise.reject(new Error('Chart.js unavailable')); },
@@ -513,6 +536,7 @@
               else if (d.error) showError(String(d.error), null);
               else showError(null, null);
               graphs.setData(d.graph_data);
+              fitWidth();                                                     // the window follows the new table's width
               syncSelects();
               // the page's other parts (the model overlay's valid-time zone and run line) follow the forecast on screen
               try { doc.dispatchEvent(new CustomEvent('allshore:forecast', { detail: { station: st.station, tz: d.tz_label || '', model: st.model, view: state.view } })); } catch (e) {}
@@ -525,11 +549,20 @@
       }
       if (els.unit && els.unit.value !== state.unit) els.unit.value = state.unit;
     }
+    // Table view: the window is no wider than its table (+ the body's padding, border and a scrollbar); Graph view
+    // and phones: the full width. Measured only while the table is on screen (a minimised body measures 0).
+    function fitWidth() {
+      if (!fw) return;
+      if (state.view !== 'Table' || fw.isPhone()) { fw.setMaxWidth(0); return; }
+      var t = els.table.querySelector ? els.table.querySelector('table') : null, w = t ? t.scrollWidth : 0;
+      if (w > 0) fw.setMaxWidth(w + TABLE_CHROME);
+    }
     function setView(v) {
       state.view = v === 'Graph' ? 'Graph' : 'Table';
       pressed(els.viewBar, 'data-view', state.view);
       var g = state.view === 'Graph';
       els.table.hidden = g; if (els.graphs) els.graphs.hidden = !g; if (els.rangeBar) els.rangeBar.hidden = !g;
+      fitWidth();
       loader.sync();
       return g ? graphs.show() : Promise.resolve();
     }
@@ -592,7 +625,7 @@
     _internals: {
       SETTINGS_KEY: SETTINGS_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
-      clampGeometry: clampGeometry, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
+      clampGeometry: clampGeometry, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       createLoader: createLoader, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       app: function () { return app; }
     }

@@ -154,9 +154,10 @@ test('corrupted or foreign storage values give Off, and the next pick writes a p
     const st = p.read();
     assert.ok(st && typeof st === 'object' && !Array.isArray(st) && st.field === 'tp', raw + ' -> ' + JSON.stringify(st));
   }
-  const p = page({ throwingStorage: true });
-  await loadedAndIdle(p); p.sel.userPick('hs'); await settle();
-  assert.deepEqual(p.log, ['create', 'mount hs false'], 'storage that throws never breaks the control');
+  const p = page({ throwingStorage: true });                                  // nothing readable: a first open -> Wave Height
+  await loadedAndIdle(p); assert.deepEqual(p.log, ['create', 'mount hs true']);
+  p.sel.userPick(''); p.sel.userPick('tp'); await settle();
+  assert.deepEqual(p.log, ['create', 'mount hs true', 'unmount', 'mount tp false'], 'storage that throws never breaks the control');
 });
 
 test('assets still loading when the restore comes due after Off then the same layer: one mount, the user\'s', async () => {
@@ -195,7 +196,7 @@ test('back/forward cache: a page shown again writes its own state back to the ta
   p.pageshow(false); assert.equal(p.read().field, '', 'an ordinary load does nothing');
   p.pageshow(true);
   assert.equal(p.read().field, 'hs'); assert.equal(p.log[p.log.length - 1], 'persist');
-  p = page({});                                                                          // this page is Off; another turned hs on
+  p = page({ init: { field: '' } });                                                    // this page is Off; another turned hs on
   await loadedAndIdle(p);
   p.store.set(KEY, JSON.stringify({ field: 'hs', playing: true, t: 5, at: 6 }));
   p.pageshow(true);
@@ -238,4 +239,16 @@ test('G16 re-review N-P2-1: a forecast that lands BEFORE the overlay exists sets
   p.listeners.doc['allshore:forecast'].forEach((l) => l.fn({ detail: { station: '51201', tz: 'UTC', model: 'GFS', view: 'Table' } }));
   p.sel.userPick('hs'); await settle();
   assert.equal(p.overlays[0].opts.tz, 'UTC', 'created with the zone of the forecast on screen, not the server one');
+});
+
+test('plan section 26: a new tab first opens shows Wave Height at "now", not playing; Off chosen there is remembered for the tab', async () => {
+  const p = page({});
+  assert.equal(p.sel.value, 'hs'); assert.equal(p.panel.textContent, 'Loading…'); assert.deepEqual(p.log, []);
+  await loadedAndIdle(p);
+  assert.deepEqual(p.log, ['create', 'mount hs true'], 'through the ordinary restore: nothing saved -> the frame at now, no playback');
+  assert.equal(p.overlays[0].opts.tz !== undefined, true);
+  p.sel.userPick(''); await settle();
+  assert.equal(p.read().field, ''); assert.equal(p.read().playing, false);
+  const q = page({ raw: p.store.get(KEY) });
+  assert.equal(q.sel.value, ''); await loadedAndIdle(q); assert.deepEqual(q.log, [], 'the next page of the tab stays Off');
 });

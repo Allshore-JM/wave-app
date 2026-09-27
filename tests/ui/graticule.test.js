@@ -122,7 +122,7 @@ function harness(opts) {
   const doc = { createElement: el };
   const container = el('div');
   const ctl = { getBoundingClientRect: () => ({ left: 1300, top: 0, right: 1500, bottom: 60 }) };
-  container.querySelectorAll = (sel) => (sel === '.leaflet-control' ? (opts && opts.controls === false ? [] : [ctl]) : []);
+  container.querySelectorAll = (sel) => (sel.split(', ').includes('.leaflet-control') ? (opts && opts.controls === false ? [] : [ctl]) : []);
   container.getBoundingClientRect = () => ({ left: 0, top: 0, right: 1500, bottom: 800 });
   const fm = fakeMap({ z: 3, lat: 20, lng: -170, w: 1500, h: 800 });
   const map = Object.assign(fm, {
@@ -145,8 +145,8 @@ test('create(): its own pane under the markers, on by default, labels hidden und
   assert.equal(h.G.layer.options.pane, 'graticulePane');
   const spans = h.G.labels.children;
   assert.ok(spans.length > 10);
-  const under = spans.filter((s) => s.className.includes('graticule-lon') && parseFloat(s.style.left) > 1296 && !s.hidden);
-  assert.equal(under.length, 0, 'no longitude label under the top-right control');
+  const under = spans.filter((s) => s.className.includes('graticule-lon') && parseFloat(s.style.left) > 1290 && !s.hidden);
+  assert.ok(under.length > 0 && under.every((s) => parseFloat(s.style.top) >= 66), 'longitudes under the short top-right control drop just below it');
   assert.ok(spans.some((s) => s.className.includes('graticule-lon') && !s.hidden));
   h.G.set(false);
   assert.equal(h.layers.has(h.G.layer), false); assert.equal(h.mem.get(I.KEY), '0'); assert.equal(h.G.labels.hidden, true);
@@ -154,4 +154,13 @@ test('create(): its own pane under the markers, on by default, labels hidden und
   const off = harness({ stored: '0' });
   assert.equal(off.G.on(), false); assert.equal(off.layers.has(off.G.layer), false); assert.equal(off.G.labels.hidden, true);
   const n = h.G.labels.children.length; h.map.fire('move'); assert.equal(h.G.labels.children.length, n, 'labels are pooled, not re-created');
+});
+
+test('G18a: lines snap to the middle of a device pixel at any scaling; longitudes drop below short top controls, stay hidden under tall ones', () => {
+  assert.equal(I.snapPx(10.2, 1), 10.5); assert.equal(I.snapPx(10.2, 2), 10.25); assert.equal(I.snapPx(10.2, 1.5), (15 + 0.5) / 1.5);
+  for (const dpr of [1, 1.25, 1.5, 2]) for (const px of [0, 3.3, 127.9, 255.4]) { const d = I.snapPx(px, dpr) * dpr; assert.equal(d - Math.floor(d), 0.5, dpr + '/' + px); }
+  const short = [{ left: 0, right: 200, top: -4, bottom: 44 }], tall = [{ left: 0, right: 300, top: -4, bottom: 240 }];
+  assert.equal(I.lonTop(50, 40, short), 46); assert.equal(I.lonTop(250, 40, short), 4, 'beside the control: the edge');
+  assert.equal(I.lonTop(50, 40, tall), 4, 'under the desktop overlay panel: stays at the edge (and is hidden)');
+  assert.equal(I.lonTop(50, 40, [{ left: 0, right: 100, top: 300, bottom: 340 }]), 4, 'a bottom control never moves a top label');
 });

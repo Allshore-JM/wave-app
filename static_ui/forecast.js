@@ -24,6 +24,7 @@
   var RANGE_KEY = 'chartRange';                // sessionStorage 'full' | '7' | '3' (unchanged from the old page)
   function isUnit(u) { return u === 'US' || u === 'Metric'; }   // (an object lookup matched 'constructor' and the like)
   var CACHE_MAX = 16, CACHE_TTL_MS = 10 * 60 * 1000;
+  var GAP_TTL_MS = 60 * 1000;                     // a forecast with wind gaps (a transient NOAA miss): kept a minute only
   var MIN_SIZE = { w: 360, h: 220 };
   var PHONE_QUERY = '(max-width: 500px), (max-height: 500px)';   // "phone mode": a bar + full screen, no drag / resize
   var API = '/api/forecast';
@@ -111,6 +112,7 @@
   // ---- the loader ----
   // deps: fetch(url, {signal}) -> Response-like {ok, status, json()}; now(); replaceState(url);
   //       swanStations (array); ui.apply(d, state), ui.busy(bool), ui.error(message | null, retry | null).
+  function ttlOf(d) { return d && d.wind_complete === false ? GAP_TTL_MS : CACHE_TTL_MS; }
   function createLoader(deps, state) {
     var cache = new Map(), seq = 0, ctrl = null;
     function trim() { while (cache.size > CACHE_MAX) { var k = cache.keys().next().value; cache.delete(k); } }
@@ -129,7 +131,7 @@
       normalise(state);
       sync();
       var key = keyOf(state), hit = cache.get(key), now = deps.now();
-      if (hit && now - hit.ts < CACHE_TTL_MS) { if (ctrl) { ctrl.abort(); ctrl = null; } seq++; deps.ui.busy(false); deps.ui.error(null, null); apply(hit.d); return Promise.resolve(hit.d); }
+      if (hit && now - hit.ts < (hit.ttl || CACHE_TTL_MS)) { if (ctrl) { ctrl.abort(); ctrl = null; } seq++; deps.ui.busy(false); deps.ui.error(null, null); apply(hit.d); return Promise.resolve(hit.d); }
       var my = ++seq;
       if (ctrl) ctrl.abort();
       var c = ctrl = new AbortController();
@@ -141,7 +143,7 @@
       }).then(function (d) {
         if (my !== seq) return null;                                           // superseded: no DOM writes
         if (!d || typeof d !== 'object') throw new Error('bad forecast');
-        if (!(d.error && !d.table_html)) { cache.set(key, { d: d, ts: deps.now() }); trim(); }   // a failed build is not kept (the server does not keep it either)
+        if (!(d.error && !d.table_html)) { cache.set(key, { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim(); }   // a failed build is not kept (the server does not keep it either)
         deps.ui.busy(false);
         apply(d);
         return d;
@@ -153,7 +155,7 @@
       });
     }
     // A forecast the page already rendered (render=full): cached and shown, no fetch.
-    function seed(d) { if (!(d.error && !d.table_html)) { cache.set(keyOf(state), { d: d, ts: deps.now() }); trim(); } apply(d); }
+    function seed(d) { if (!(d.error && !d.table_html)) { cache.set(keyOf(state), { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim(); } apply(d); }
     return { load: load, seed: seed, state: state, cache: cache, sync: sync };
   }
 
@@ -688,7 +690,7 @@
       SETTINGS_KEY: SETTINGS_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, dateTick: dateTick, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
-      createLoader: createLoader, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
+      createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY,
       app: function () { return app; }
     }

@@ -216,8 +216,8 @@ def test_wind_join_populates_swan_cells():
 
 
 def test_no_wind_blank_cells():
-    # Default wind=None -> every row has blank wind cells (models the
-    # pre-cycle SWAN hindcast hours and a total spec-fetch failure).
+    # Default wind=None -> every row has blank wind cells (models a total spec-fetch failure; since plan section 27
+    # the early rows are normally filled from the earlier GFS run -- tests/test_wind_integration.py).
     _, _, _, rows, _, err = _parse()
     assert err is None
     assert all(r[20] is None and r[21] is None for r in rows)

@@ -58,6 +58,23 @@
   var KNOTS = {
     hs: [[0, 0], [0.5, 0.08], [1, 0.17], [2, 0.33], [3, 0.47], [4, 0.58], [6, 0.72], [9, 0.87], [12, 1]]
   };
+  // Wider scales chosen by the manifest's legend (plan section 27): a run whose legend is exactly [0, top] uses
+  // these knots, colours and ticks; any other legend uses KNOTS / RAMPS / TICKS (stretched to it). The wave-height
+  // scale to 60 ft (18.288 m) keeps the 0-30 ft colours at the same values as the 40-ft scale and spends the top
+  // on 40 / 50 / 60 ft; the frames themselves store up to 75 ft (the job's encode range).
+  var SCALES = {
+    hs: { top: 18.288,
+          knots: [[0, 0], [0.5, 0.075], [1, 0.155], [2, 0.30], [3, 0.43], [4, 0.53], [6, 0.655], [9, 0.77], [12, 0.86], [15.24, 0.93], [18.288, 1]],
+          ramp: [[0,'#1d3a8a'],[0.075,'#2563eb'],[0.155,'#0ea5e9'],[0.2275,'#22d3ee'],[0.30,'#34d399'],[0.365,'#a3e635'],[0.43,'#facc15'],
+                 [0.53,'#fb923c'],[0.655,'#ef4444'],[0.77,'#c026d3'],[0.86,'#f5d0fe'],[0.93,'#be185d'],[1,'#4c1d95']],   // owner's pick C3: 40 ft pale pink, 50 ft rose, 60 ft deep purple
+          ticks: { US: [0, 3, 6, 10, 15, 20, 30], Metric: [0, 1, 2, 3, 4, 6, 9] } }
+  };
+  function scaleFor(field, legend) {
+    var s = SCALES[field];
+    return s && legend && legend[0] === 0 && legend[1] === s.top ? s : null;
+  }
+  function knotsOf(field, legend) { var s = scaleFor(field, legend); return s ? s.knots : KNOTS[field]; }
+  function rampOf(field, legend) { var s = scaleFor(field, legend); return s ? s.ramp : RAMPS[field]; }
   // Legend tick values in DISPLAY units per field and site unit; the legend top is added as "N+".
   // No numeric tick above ~80 % of the bar: it would collide with the right-aligned top label.
   var TICKS = {
@@ -100,24 +117,24 @@
   // stretches the knots to it, so the bar, its ticks and the tiles agree and the legend top is the top colour.
   function knotsFit(k, legend) { return legend[0] === 0 && legend[1] === k[k.length - 1][0]; }
   function legendPos(field, legend, v) {
-    var k = KNOTS[field];
+    var k = knotsOf(field, legend);
     if (k) return through(k, knotsFit(k, legend) ? v : (v - legend[0]) / (legend[1] - legend[0]) * k[k.length - 1][0], 0, 1);
     return Math.max(0, Math.min(1, (v - legend[0]) / (legend[1] - legend[0])));
   }
   function legendInv(field, legend, p) {
-    var k = KNOTS[field];
+    var k = knotsOf(field, legend);
     if (k) { var x = through(k, p, 1, 0); return knotsFit(k, legend) ? x : legend[0] + x / k[k.length - 1][0] * (legend[1] - legend[0]); }
     return legend[0] + Math.max(0, Math.min(1, p)) * (legend[1] - legend[0]);
   }
   // The tiles' lookup: 256 entries LINEAR IN VALUE over the legend range (what composeTile indexes),
   // each coloured at that value's legend position. Linear fields give exactly buildRamp(stops).
   function buildLut(field, legend) {
-    var stops = RAMPS[field], out = new Uint8ClampedArray(256 * 3);
-    for (var i = 0; i < 256; i++) rampAt(stops, KNOTS[field] ? legendPos(field, legend, legend[0] + i / 255 * (legend[1] - legend[0])) : i / 255, out, i * 3);
+    var stops = rampOf(field, legend), out = new Uint8ClampedArray(256 * 3);
+    for (var i = 0; i < 256; i++) rampAt(stops, knotsOf(field, legend) ? legendPos(field, legend, legend[0] + i / 255 * (legend[1] - legend[0])) : i / 255, out, i * 3);
     return out;
   }
   // The legend bar: 256 colours by LEGEND POSITION (buildLut is by value; for knotted fields they differ).
-  function legendBar(field) { return buildRamp(RAMPS[field]); }
+  function legendBar(field, legend) { return buildRamp(rampOf(field, legend)); }
   function pad3(n) { return (n < 10 ? '00' : n < 100 ? '0' : '') + n; }
   function clear(el) { if (el) while (el.firstChild) el.removeChild(el.firstChild); }
   function mk(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
@@ -131,7 +148,8 @@
   function fmtTick(v) { var r = Math.round(v * 10) / 10; return String(Math.abs(r - Math.round(r)) < 1e-9 ? Math.round(r) : r); }
   function legendTicks(field, fdef, unit) {
     var u = unitOf(field, unit), hi = u.f(fdef.legend[1]), per = u.f(1);          // display = SI * per
-    var vals = TICKS[field + '|' + (unit === 'Metric' ? 'Metric' : 'US')] || [fdef.legend[0]];
+    var sc = scaleFor(field, fdef.legend), um = unit === 'Metric' ? 'Metric' : 'US';
+    var vals = (sc && sc.ticks && sc.ticks[um]) || TICKS[field + '|' + um] || [fdef.legend[0]];
     var out = vals.map(function (v, i) {
       var below = i === 0 && fdef.lo < fdef.legend[0] - 1e-9;          // values under the legend floor exist (Tp)
       return { pos: legendPos(field, fdef.legend, v / per), label: (below ? '≤' : '') + fmtTick(v) };
@@ -2353,7 +2371,7 @@
     if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
     // legend over the LEGEND range in the site's units (the encoding range is wider; extremes clamp)
     var leg = mk('div', 'ov-legend'), cv = mk('canvas'); cv.width = 256; cv.height = 1; leg.appendChild(cv);
-    var lut = legendBar(field), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);        // the bar is laid out by legend position
+    var lut = legendBar(field, f.legend), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);        // the bar is laid out by legend position
     for (var i = 0; i < 256; i++) { im.data[i * 4] = lut[i * 3]; im.data[i * 4 + 1] = lut[i * 3 + 1]; im.data[i * 4 + 2] = lut[i * 3 + 2]; im.data[i * 4 + 3] = 255; }
     ctx.putImageData(im, 0, 0);
     var ticks = mk('div', 'ov-ticks'), tk = legendTicks(field, f, unit);
@@ -2432,7 +2450,7 @@
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
     _internals: { contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
-      CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
+      CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, SCALES: SCALES, scaleFor: scaleFor, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
       parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,

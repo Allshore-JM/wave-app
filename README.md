@@ -160,7 +160,7 @@ meanwhile. Off, a new tab, or a layer picked from Off starts without a saved tim
 one waits to be restored keeps the time; a page shown again from the back/forward cache writes its own state back to
 the tab.
 Wave-height colours and contours (asset 2.7.6): wave height uses value knots so 0-3 m fills about half of the
-legend (owner-picked spectral palette; the knots stretch to whatever legend the manifest carries); tp and wind keep
+legend (owner-picked spectral palette; the knots stretch to whatever legend the manifest carries; a run whose legend is exactly 0-60 ft = 0-18.288 m uses the wider scale in `SCALES`: 0-30 ft unchanged, 40 ft pale pink, 50 ft rose, 60 ft deep purple, plan section 27); tp and wind keep
 linear scales. Contours (wave height and period, always on since asset 2.12.0; no checkbox) are light
 anti-aliased lines every 2 ft / 0.5 m and every 2 s (doubled below zoom 4), about 1.8 px wide at zoom 8 and closer,
 thinning to about 1 px at zoom 3 and below where they are densest. The lines are traced on a lightly

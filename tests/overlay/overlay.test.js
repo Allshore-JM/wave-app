@@ -481,3 +481,33 @@ test('G13b P1-1: a slow drag in either direction never picks a frame against its
   const old = [...Array(81).keys()].map((i) => 3 * i); const t2 = new I.TimelineState(); t2.shown = 117; t2.start(); prev = -1;
   for (let v = 117; v <= 130; v++) { const h = old[t2.pick(old, v)]; assert.ok(h >= prev); prev = h; }
 });
+
+test('plan section 27: a run whose legend is 0-60 ft (18.288 m) gets the wider scale; any other legend keeps the 40-ft scale', () => {
+  const L60 = [0, 18.288], L12 = [0, 12];
+  const col = (lut, i) => [lut[i * 3], lut[i * 3 + 1], lut[i * 3 + 2]];
+  const at = (legend, v) => col(I.buildLut('hs', legend), Math.max(0, Math.min(255, Math.round(v / legend[1] * 255))));
+  assert.ok(I.scaleFor('hs', L60)); assert.equal(I.scaleFor('hs', L12), null); assert.equal(I.scaleFor('hs', [0, 20]), null); assert.equal(I.scaleFor('tp', L60), null);
+  // the knots: 0-30 ft keep their colours, the top goes to 40 / 50 / 60 ft
+  assert.equal(I.legendPos('hs', L60, 18.288), 1); assert.equal(I.legendPos('hs', L60, 12), 0.86); assert.equal(I.legendPos('hs', L60, 15.24), 0.93);
+  assert.equal(I.legendPos('hs', L12, 12), 1, 'a 40-ft run is unchanged');
+  for (const v of [1, 3, 6, 9]) {
+    const a = at(L60, v), b = at(L12, v);
+    for (let c = 0; c < 3; c++) assert.ok(Math.abs(a[c] - b[c]) <= 10, `${v} m keeps its colour on the wider scale (channel ${c}: ${a[c]} vs ${b[c]})`);
+  }
+  assert.deepEqual(at(L60, 18.288), [76, 29, 149], '60 ft: deep purple (C3)');
+  const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  const near = (a, b, tol) => a.every((x, i) => Math.abs(x - b[i]) <= tol);
+  assert.ok(near(at(L60, 15.24), hex('#be185d'), 12), '50 ft: rose ' + at(L60, 15.24));
+  assert.ok(near(at(L60, 12), hex('#f5d0fe'), 12), '40 ft: pale pink ' + at(L60, 12));
+  const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  assert.ok(d(at(L60, 12), at(L60, 15.24)) > 120 && d(at(L60, 15.24), at(L60, 18.288)) > 80, '40, 50 and 60 ft are clearly different colours');
+  // the bar and the ticks
+  assert.deepEqual(I.legendBar('hs', L60).slice(255 * 3), new Uint8ClampedArray([76, 29, 149]));
+  assert.deepEqual(Array.from(I.legendBar('hs', L12)), Array.from(I.legendBar('hs')), 'the 40-ft bar is today\'s');
+  const fdef = { lo: 0, hi: 22.86, legend: L60 };
+  const us = I.legendTicks('hs', fdef, 'US'), mt = I.legendTicks('hs', fdef, 'Metric');
+  assert.deepEqual(us.map((t) => t.label), ['0', '3', '6', '10', '15', '20', '30', '60+ ft']);
+  assert.deepEqual(mt.map((t) => t.label), ['0', '1', '2', '3', '4', '6', '9', '18+ m']);
+  assert.ok(us[us.length - 2].pos <= 0.8 && mt[mt.length - 2].pos <= 0.8, 'no numeric tick under the top label');
+  for (const v of [0, 5, 10, 15, 18.288]) assert.ok(Math.abs(I.legendInv('hs', L60, I.legendPos('hs', L60, v)) - v) < 1e-9);
+});

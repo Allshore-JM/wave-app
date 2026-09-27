@@ -746,6 +746,7 @@
     // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
     const layerVisibilityKey = 'mapLayerVisibility';
+    let liveWin = null;                         // the live-buoy floating window (static_ui/forecast.js), set by the last script
 
     // Web Mercator practical latitude limits.
     // Longitude is intentionally not bounded so the map can scroll continuously east/west.
@@ -978,7 +979,6 @@
         return container;
       }
     });
-    map.zoomControl.setPosition('bottomleft');
     map.addControl(new HomeControl());
 
     // The map credits behind an (i) beside Home (bottom-left): Leaflet's attribution control moves to that corner
@@ -1302,7 +1302,6 @@
     // older buoy's response can never overwrite the buoy currently shown.
     let liveDetailSeq = 0;
 
-    let liveWin = null;                         // the live-buoy floating window (static_ui/forecast.js), set once the module is up
     function closeLiveBuoyPanel() {
       liveDetailSeq++;                          // discard any in-flight detail work
       if (liveWin) liveWin.close(); else document.getElementById('liveBuoyPanel').hidden = true;

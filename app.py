@@ -270,9 +270,9 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.9.6"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.9.7"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
-_UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript"}
+_UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png"}
 
 
 @app.route("/ui/<name>")

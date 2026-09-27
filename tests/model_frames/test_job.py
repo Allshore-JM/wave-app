@@ -102,7 +102,7 @@ def test_encode_frame_png_roundtrip_and_stats():
     full = np.array(Image.open(io.BytesIO(out["full"])))
     half = np.array(Image.open(io.BytesIO(out["half"])))
     assert full.shape == (721, 1440) and half.shape == (361, 720) and full.dtype == np.uint8
-    assert np.array_equal(full, E.quantize(g, 0.0, 15.0)) and np.array_equal(half, E.half_res(full))
+    assert np.array_equal(full, E.quantize(g, 0.0, E.FIELDS["hs"]["hi"])) and np.array_equal(half, E.half_res(full))
     s = out["stats"]
     assert s["valid_points"] == 721 * 740 and s["clamped_high"] == 1 and s["clamped_low"] == 1
     assert s["min"] == -1.0 and s["max"] == 99.0 and s["filled_points"] == 0
@@ -908,9 +908,9 @@ def test_each_published_field_decodes_to_its_own_grib_record(offline_build, monk
     assert ang(values("wdir", True), 270.0).max() <= 360.0 / 508 + 1e-9       # u = +5 blows east: FROM the west
     for half in (False, True):
         assert ang(values("pdir", half), 45.0).max() <= 360.0 / 508 + 1e-9
-        assert np.abs(values("hs", half) - 2.0).max() <= 15.0 / 508 + 1e-9
+        assert np.abs(values("hs", half) - 2.0).max() <= E.FIELDS["hs"]["hi"] / 508 + 1e-9
         assert np.abs(values("tp", half) - 12.0).max() <= 29.0 / 508 + 1e-9
-        assert np.abs(values("wind", half) - 5.0).max() <= 80 * E.KT / 508 + 1e-9
+        assert np.abs(values("wind", half) - 5.0).max() <= E.FIELDS["wind"]["hi"] / 508 + 1e-9
 
 
 def test_wind_dir_from_never_returns_360():
@@ -1095,3 +1095,19 @@ def test_transition_force_on_a_live_81_frame_run_rebuilds_all_209(monkeypatch):
     _manifest(c, "2026092212", "20260922T170000Z", man)
     c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
     assert R.main(["--force"]) == 0 and json.loads(c.objects[P.LATEST_KEY]["body"])["frames"] == 209
+
+def test_plan_27_ranges_wave_height_to_75_ft_legend_60_ft_wind_to_120_kt():
+    """Owner (2026-09-27): the readout must show real storm seas (run 2026092712 reached 62.6 ft / 105 kt); the colour
+    scale runs to 60 ft. The legend top must equal the client's wider scale EXACTLY (overlay.js SCALES.hs.top)."""
+    hs, wind = E.FIELDS["hs"], E.FIELDS["wind"]
+    assert abs(hs["hi"] - 75 * 0.3048) < 1e-9 and hs["legend"] == [0.0, 18.288] and hs["lo"] == 0.0
+    assert abs(wind["hi"] - 120 * E.KT) < 1e-9 and abs(wind["legend"][1] - 60 * E.KT) < 1e-9
+    assert E.ENCODING == "u8-linear-v2", "the live client accepts only this encoding name: a range change keeps it"
+    client = open(os.path.join(os.path.dirname(__file__), "..", "..", "static_overlay", "overlay.js"), encoding="utf-8").read()
+    assert "hs: { top: 18.288," in client, "the client's wider scale matches the legend top"
+    # quantisation: 62.6 ft is stored, not clamped; the step stays under a third of a foot
+    q = E.quantize(np.array([[19.09, 22.86, 25.0]]), hs["lo"], hs["hi"])
+    assert q[0, 0] < 255 and q[0, 1] == 255 and q[0, 2] == 255
+    assert abs(E.dequantize(q, hs["lo"], hs["hi"])[0, 0] - 19.09) <= E.quantum(hs["lo"], hs["hi"]) / 2 + 1e-9
+    assert E.quantum(hs["lo"], hs["hi"]) / 0.3048 < 0.30
+    assert E.quantize(np.array([[54.2]]), wind["lo"], wind["hi"])[0, 0] < 255, "105 kt is stored, not clamped"

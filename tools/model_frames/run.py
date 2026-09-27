@@ -298,6 +298,10 @@ def main(argv=None):
         f0 = manifest["_stats"]["frames"][0]
         _summary(f"coastal fill (v{E.FILL_VERSION}, {E.FILL_CELLS} cells) at f{f0['step']:03d}: " +
                  ", ".join(f"{n} {f0['fields'][n]['filled_points']} cells" for n in E.FILL_INFO["fields"]))
+    # how often a field reached its encode top (the readout then says ">= top"): the ranges are chosen to make this rare
+    tops = {n: sum(f["fields"].get(n, {}).get("clamped_high", 0) or 0 for f in manifest["_stats"]["frames"]) for n in ("hs", "tp", "wind")}
+    peaks = {n: max((f["fields"].get(n, {}).get("max") or 0) for f in manifest["_stats"]["frames"]) for n in ("hs", "tp", "wind")}
+    _summary("field peaks: " + ", ".join(f"{n} {peaks[n]:.2f} (top {E.FIELDS[n]['hi']:.2f}, {tops[n]} clamped cell-frames)" for n in tops))
     bad = [f["step"] for f in manifest["_stats"]["frames"] if f.get("pdir_mask_mismatch")]
     if bad:
         _summary(f"WARNING: wave direction and wave height cover different cells at {len(bad)} steps (first f{bad[0]:03d})")

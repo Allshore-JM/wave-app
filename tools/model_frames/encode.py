@@ -7,8 +7,12 @@ Frame format, encoding "u8-linear-v2" (machine-readable copy in the manifest's e
   q = 1  also means "<= lo" (clamped low), q = 255 also means ">= hi" (clamped high); the
   manifest carries clamped_low/high counts per frame and the readout must print "<= lo" / ">= hi".
 Encoding ranges are WIDER than the legend ranges the owner chose, so no ocean value is silently
-rewritten (G1: 5.5 % of ocean points have Tp below the 4 s legend floor). Legends stay
-Hs 0-12 m, Tp 4-22 s, wind 0-60 kt on the client.
+rewritten (G1: 5.5 % of ocean points have Tp below the 4 s legend floor). Legends: Hs 0-60 ft (18.288 m; the
+client's wider scale, plan section 27), Tp 4-22 s, wind 0-60 kt. Encode tops (plan section 27, owner): Hs 75 ft
+(22.86 m; run 2026092712 reached 62.6 ft where the old 15 m top clamped the readout at 49.2 ft), wind 120 kt (the
+same run reached 105 kt against the old 80 kt). The client decodes each run with its own manifest lo/hi, so runs
+built before and after a range change coexist; never --force-rebuild a run published under another range (its
+frames are cached as immutable for a year and would decode with the new range).
 
 Stored as 8-bit greyscale PNG (1440x721). Half-resolution variant = exact subsample q[::2, ::2]
 (361x720): half pixel (i, j) IS full pixel (2i, 2j) -> lat 90 - 0.5 i, lon -180 + 0.5 j.
@@ -39,6 +43,9 @@ import numpy as np
 from PIL import Image
 
 KT = 1852.0 / 3600.0                    # 1 knot in m/s
+FT = 0.3048                             # 1 foot in m
+HS_TOP = 75 * FT                        # 22.86 m: the wave-height encode top (the readout shows real values below it)
+HS_LEGEND_TOP = 18.288                  # 60 ft: the client's wider scale matches this legend top EXACTLY (overlay.js SCALES)
 
 FULL_HALF = ("full", "half")
 FIELDS = {
@@ -46,9 +53,9 @@ FIELDS = {
     # published). Direction fields (circular: degrees true, the direction waves / wind come FROM) are
     # data for the animation, not drawn as colour: they are coded circularly (see quantize_circular),
     # interpolated as angles by the client, and filled only by nearest (never a mean of angles).
-    "hs":   {"lo": 0.0, "hi": 15.0,     "legend": [0.0, 12.0],    "units": "m",   "interpolation": "bilinear", "fill": True,  "resolutions": FULL_HALF},
+    "hs":   {"lo": 0.0, "hi": HS_TOP,   "legend": [0.0, HS_LEGEND_TOP], "units": "m", "interpolation": "bilinear", "fill": True,  "resolutions": FULL_HALF},
     "tp":   {"lo": 1.0, "hi": 30.0,     "legend": [4.0, 22.0],    "units": "s",   "interpolation": "bilinear", "fill": True,  "resolutions": FULL_HALF},
-    "wind": {"lo": 0.0, "hi": 80 * KT,  "legend": [0.0, 60 * KT], "units": "m/s", "interpolation": "bilinear", "fill": False, "resolutions": FULL_HALF},
+    "wind": {"lo": 0.0, "hi": 120 * KT, "legend": [0.0, 60 * KT], "units": "m/s", "interpolation": "bilinear", "fill": False, "resolutions": FULL_HALF},
     "pdir": {"lo": 0.0, "hi": 360.0,    "legend": [0.0, 360.0],   "units": "deg", "interpolation": "circular", "fill": True,  "resolutions": FULL_HALF,
              "circular": True, "convention": "from"},
     "wdir": {"lo": 0.0, "hi": 360.0,    "legend": [0.0, 360.0],   "units": "deg", "interpolation": "circular", "fill": False, "resolutions": ("half",),

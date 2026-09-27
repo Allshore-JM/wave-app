@@ -254,8 +254,10 @@
     .leaflet-control-brand { margin: 10px 0 0 10px; }
     .leaflet-control-brand .brand { background: rgba(255,255,255,.92); border-radius: 8px; padding: 4px 9px 4px 6px; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
     .settings-host { position: relative; }
-    /* the top-right corner (layer legend + gear) paints over both windows, so the gear's panel is never covered */
-    .leaflet-container .leaflet-top.leaflet-right { z-index: 2600; }
+    /* the top-right corner (layer legend + gear) outranks the windows only while the gear's panel is open (so the
+       panel is never covered); otherwise a window is always above the map's controls, so its own buttons can never
+       land under them (owner). The maximised forecast window starts below that corner (--map-topright-h). */
+    .leaflet-container.settings-open .leaflet-top.leaflet-right { z-index: 2600; }
     .icon-btn {
       width: 38px; height: 38px; border: 1px solid #ced4da; border-radius: .375rem; background: #fff;
       font-size: 1.15rem; line-height: 1; color: #0b2536; cursor: pointer;
@@ -338,7 +340,7 @@
     .fwin.fw-min .fw-toolbar, .fwin.fw-min .fw-body, .fwin.fw-min .fw-resize { display: none; }
     /* maximised: the viewport (the table window is capped by its inline max-width, the table's width) */
     .fwin.fw-max {
-      left: 8px !important; top: 8px !important; right: auto !important; bottom: 8px !important;
+      left: 8px !important; top: calc(var(--map-topright-h, 120px) + 8px) !important; right: auto !important; bottom: 8px !important;
       width: calc(100vw - 16px) !important; height: auto !important;
     }
     .fwin.fw-max .fw-resize { display: none; }
@@ -620,7 +622,6 @@
         <span id="liveBuoySubtitle" class="fw-cycle"></span>
       </div>
       <button type="button" id="lwMin" class="fw-btn" aria-label="Minimise live buoy" aria-expanded="true">&#8211;</button>
-      <button type="button" id="lwMax" class="fw-btn fw-maxbtn" aria-label="Maximise live buoy" aria-pressed="false">&#9633;</button>
       <button type="button" id="lwClose" class="fw-btn" aria-label="Close live buoy">&times;</button>
     </div>
 
@@ -919,6 +920,25 @@
       }
     });
     map.addControl(new SettingsControl());
+    // While the gear's panel is open the corner outranks the windows (CSS .settings-open); the module toggles the
+    // panel's hidden attribute, so an observer follows it.
+    (function () {
+      const panel = document.getElementById('settingsPanel');
+      if (!panel || typeof MutationObserver !== 'function') return;
+      const sync = () => map.getContainer().classList.toggle('settings-open', !panel.hidden);
+      new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+      sync();
+    })();
+    // The height of that corner (legend + gear): the maximised forecast window starts below it, so its header buttons
+    // never land under the legend (owner). Measured at load and on every resize (enforceSingleWorld).
+    function measureTopRight() {
+      const box = map.getContainer(), base = box.getBoundingClientRect();
+      let h = 0;
+      box.querySelectorAll('.leaflet-top.leaflet-right .leaflet-control').forEach(function (c) {
+        const r = c.getBoundingClientRect(); if (r.height > 0) h = Math.max(h, r.bottom - base.top);
+      });
+      document.documentElement.style.setProperty('--map-topright-h', Math.round(h) + 'px');
+    }
 
     // Esri imagery.
     // noWrap:false allows horizontal world wrapping, which prevents grey side areas
@@ -1078,6 +1098,7 @@
       const reserve = phone ? phoneBarH + liveBar : 0;
       const targetH = Math.max(phone ? 180 : 280, window.innerHeight - reserve);
       el.style.height = targetH + 'px';
+      measureTopRight();
 
       // Leaflet measured the container at its CSS height when the map was created and ignores
       // invalidateSize() until the first view is set: force a fresh measurement (the map is much

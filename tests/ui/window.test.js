@@ -669,7 +669,10 @@ test('D2: the live-buoy window opens expanded on a pick, minimises to a chip, cl
   page.lwMin.dispatch('click'); page.lwClose.dispatch('click');
   assert.equal(page.live.hidden, true); assert.equal(closes.length, 1); assert.deepEqual(events[events.length - 1], [false, 'min'], 'closed from the chip');
   lw.open(); assert.equal(lw.window.mode, 'normal');
-  page.lwMax.dispatch('click'); assert.equal(lw.window.mode, 'max'); page.lwMax.dispatch('click'); assert.equal(lw.window.mode, 'normal');
+  lw.window.setMode('max'); assert.equal(lw.window.mode, 'normal', 'no maximised state (owner: no gain)');
+  lw.window._expandedAt = 0; page.lwHeader.dispatch('dblclick', { target: page.lwHeader }); assert.equal(lw.window.mode, 'normal', 'a double-click does not maximise it either');
+  win.sessionStorage.setItem(F._internals.LIVE_WINDOW_KEY, JSON.stringify({ mode: 'max', prev: 'max' }));
+  assert.equal(F.createLiveWindow({ window: win }).window.mode, 'normal', 'a saved max (an older build) opens as a window'); lw.window._save();   // (that probe instance never saves; put the live one's state back)
   lw.close(); assert.equal(closes.length, 2);
   assert.equal(JSON.parse(win.sessionStorage.getItem(F._internals.LIVE_WINDOW_KEY)).mode, 'normal');
   assert.equal(F.createLiveWindow({ window: fakeWindow() }), null, 'no live markup: nothing');

@@ -346,6 +346,7 @@
     var dflt = deps.defaultMode === 'normal' || deps.defaultMode === 'max' ? deps.defaultMode : 'min';
     this.mode = saved.mode === 'normal' || saved.mode === 'max' || saved.mode === 'min' ? saved.mode : dflt;
     this.prev = saved.prev === 'max' ? 'max' : 'normal';
+    if (deps.canMax === false) { if (this.mode === 'max') this.mode = 'normal'; this.prev = 'normal'; }
     this.opener = null; this.maxW = 0;
     this._applyMode();
     if (this.geom) this._place(clampGeometry(this.geom, deps.win.innerWidth, deps.win.innerHeight, this._top(), null, this.maxW));
@@ -370,6 +371,7 @@
   };
   FloatingWindow.prototype.setMode = function (mode) {
     if (mode !== 'min' && mode !== 'max' && mode !== 'normal') return;
+    if (mode === 'max' && this.d.canMax === false) mode = 'normal';           // a window without a maximised state
     if (mode === 'min' && this.mode !== 'min') this.prev = this.mode;
     if (mode !== 'min' && this.mode === 'min') this._expandedAt = Date.now();
     this.mode = mode; this._applyMode(); this._save();
@@ -437,7 +439,7 @@
       if (self.isPhone()) return;
       if (self.mode === 'min') { self.expand(); return; }
       if (Date.now() - (self._expandedAt || 0) < 600) return;                   // the first click of this double-click expanded the chip
-      self.toggleMax();
+      if (d.canMax !== false) self.toggleMax();
     });
     if (d.handle) d.handle.addEventListener('pointerdown', function (e) { if (self.mode === 'normal') drag(e, 'resize'); });
     // the arrow keys on the focused handle: 16 px a press, 64 with Shift (right/down grow, left/up shrink)
@@ -468,8 +470,8 @@
   }
 
   // ---- the live-buoy window (plan section 26) ----
-  // A FloatingWindow over the page's live-buoy markup (#liveBuoyPanel with #lwHeader, #lwMin, #lwMax, #lwClose,
-  // #lwResize), opened and closed by the map script; a new tab opens it as a window (never minimised at first);
+  // A FloatingWindow over the page's live-buoy markup (#liveBuoyPanel with #lwHeader, #lwMin, #lwClose, #lwResize),
+  // opened and closed by the map script; no maximised state (owner: no gain); a new tab opens it as a window;
   // minimised it is a chip at the bottom-right (a bar above the forecast bar on phones) with the close button still
   // there. Dispatches 'allshore:livewin' {open, mode} on every change (the page sizes the map around the phone bars).
   // opts: window, document, storage, onClose() (the map script's own close work, e.g. abandoning a fetch).
@@ -477,13 +479,12 @@
     opts = opts || {};
     var win = opts.window || window, doc = opts.document || win.document;
     var $ = function (id) { return doc.getElementById(id); };
-    var el = $('liveBuoyPanel'), header = $('lwHeader'), minBtn = $('lwMin'), maxBtn = $('lwMax'), closeBtn = $('lwClose');
+    var el = $('liveBuoyPanel'), header = $('lwHeader'), minBtn = $('lwMin'), closeBtn = $('lwClose');
     if (!el || !header) return null;
     var storage = opts.storage || (function () { try { var st = win.sessionStorage; if (st && typeof st.getItem === 'function') return st; } catch (e) {} return { getItem: function () { return null; }, setItem: function () {} }; })();
-    var fw = new FloatingWindow({ el: el, header: header, handle: $('lwResize'), storage: storage, win: win, key: LIVE_WINDOW_KEY, defaultMode: 'normal',
+    var fw = new FloatingWindow({ el: el, header: header, handle: $('lwResize'), storage: storage, win: win, key: LIVE_WINDOW_KEY, defaultMode: 'normal', canMax: false,
       onMode: function (m) {
         if (minBtn) { minBtn.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); minBtn.setAttribute('aria-label', m === 'min' ? 'Expand live buoy' : 'Minimise live buoy'); minBtn.textContent = m === 'min' ? '\u25B4' : '\u2013'; }
-        if (maxBtn) maxBtn.setAttribute('aria-pressed', m === 'max' ? 'true' : 'false');
         notify();
       } });
     function notify() { try { doc.dispatchEvent(new CustomEvent('allshore:livewin', { detail: { open: !el.hidden, mode: fw.mode } })); } catch (e) {} }
@@ -495,7 +496,6 @@
     }
     function close() { el.hidden = true; if (opts.onClose) opts.onClose(); notify(); }
     if (minBtn) minBtn.addEventListener('click', function () { if (fw.mode === 'min') { fw.expand(); if (header.focus) header.focus({ preventScroll: true }); } else fw.minimise(); });
-    if (maxBtn) maxBtn.addEventListener('click', function () { if (fw.mode === 'min') { fw.prev = 'max'; fw.expand(); } else fw.toggleMax(); });
     if (closeBtn) closeBtn.addEventListener('click', function () { close(); });
     header.addEventListener('click', function (e) {
       if (fw.mode === 'min' && !(e.target && e.target.closest && e.target.closest('button'))) { fw.expand(); }

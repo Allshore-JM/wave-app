@@ -27,7 +27,7 @@ def test_top_bar_and_window_markup(client):
     for needle in ('id="pageHead"', 'id="brand" class="brand"', 'id="settingsHost"', 'id="stationTrigger"', 'id="settingsBtn"', 'id="settingsPanel"',
                    'id="tz" name="tz"', 'id="unit" name="unit"', 'id="forecastWin" class="fwin forecast-win fw-min"',
                    'id="fwTitle" class="station-field"', 'id="station" name="station" form="controlForm"',
-                   'id="liveBuoyPanel" class="fwin live-win" hidden', 'id="lwHeader"', 'id="lwMin"', 'id="lwMax"', 'id="lwClose"', 'id="lwBody"', 'id="lwResize"',
+                   'id="liveBuoyPanel" class="fwin live-win" hidden', 'id="lwHeader"', 'id="lwMin"', 'id="lwClose"', 'id="lwBody"', 'id="lwResize"',
                    "map.addControl(new BrandControl())", "map.addControl(new SettingsControl())", "map.addControl(new AttrToggle())",
                    "map.attributionControl.setPosition('bottomleft')", "zoomControl: false,", "AllshoreForecast.createLiveWindow(",
                    "liveWin.close()", "liveWin.open()", "document.addEventListener('allshore:livewin'",
@@ -36,7 +36,7 @@ def test_top_bar_and_window_markup(client):
                    'id="graphs"', 'id="heightChart"', 'id="periodChart"', 'id="directionChart"', 'id="fwResize"',
                    '/ui/forecast.js?v=%s' % A.UI_ASSET_VERSION, "window.AllshoreForecast.init(", "document.documentElement.classList.add('js')"):
         assert needle in body, needle
-    for gone in ('id="updateBtn"', 'id="model" name="model"', 'id="view" name="view"', "sticky-top-bar", "nav-hidden", 'id="topBar"',
+    for gone in ('id="updateBtn"', 'id="model" name="model"', 'id="view" name="view"', "sticky-top-bar", "nav-hidden", 'id="topBar"', 'id="lwMax"',
                  "container-fluid", ".top-bar", "--topbar-h", 'class="card-header', "onclick=\"closeLiveBuoyPanel()\"", "panel.style.display = 'block'",
                  '<script src="https://cdn.jsdelivr.net/npm/chart.js', "allshore.focusStation", "controlForm').submit()"):
         assert gone not in body, gone
@@ -131,7 +131,10 @@ def test_phone_sheets_sit_above_the_map_controls_and_the_no_js_page_shows_its_co
     no-JS layout shows the head row, the settings and the table whatever the [hidden] attributes say; the refresh is
     to the Table view."""
     body = client.get("/?station=51201&view=Graph").get_data(as_text=True)
-    corner = re.search(r"\.leaflet-container \.leaflet-top\.leaflet-right \{ z-index: (\d+); \}", body).group(1)
+    corner = re.search(r"\.leaflet-container\.settings-open \.leaflet-top\.leaflet-right \{ z-index: (\d+); \}", body).group(1)
+    assert ".leaflet-container .leaflet-top.leaflet-right {" not in body, "the corner outranks the windows ONLY while the gear panel is open (owner: window buttons never under the legend)"
+    assert "top: calc(var(--map-topright-h, 120px) + 8px) !important" in body[body.index(".fwin.fw-max {"):], "the maximised window starts below the legend corner"
+    assert "function measureTopRight()" in body and "classList.toggle('settings-open', !panel.hidden)" in body
     phone = body[body.index("@media (max-width: 500px), (max-height: 500px) {"):]
     sheet = re.search(r"\.fwin:not\(\.fw-min\) \{ z-index: (\d+); \}", phone).group(1)
     assert int(sheet) > int(corner) > 2100 and int(corner) == 2600

@@ -69,7 +69,7 @@
     }
 
     /* the live-buoy window's box (the shared window rules are .fwin below) */
-    .live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 36px)); height: min(76vh, 720px); z-index: 2000; }
+    .fwin.live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 36px)); height: min(76vh, 720px); z-index: 2000; }   /* (.fwin's z is 1500) */
     .live-win .fw-body { padding: 12px 14px; }
 
     .live-buoy-summary {
@@ -434,7 +434,7 @@
         border-radius: 0; border: none;
       }
       .fwin.fw-min { left: 0 !important; right: 0 !important; bottom: 0 !important; top: auto !important; width: 100vw !important; max-width: none; border-radius: 10px 10px 0 0; }
-      .live-win.fw-min { bottom: 48px !important; }     /* stacked above the forecast bar */
+      .live-win.fw-min { bottom: var(--fw-bar-h, 48px) !important; }     /* stacked above the forecast bar (its measured height) */
       .fw-resize { display: none; }
       .fw-header { cursor: default; }
       .fw-btn { width: 36px; height: 36px; }
@@ -1063,16 +1063,19 @@
     }
     // ---- end map extent ----
 
-    let lastEnforcedWidth = null;
+    let lastEnforcedWidth = null, phoneBarH = 48;
     function enforceSingleWorld() {
       const el = document.getElementById('map');
 
-      // The map is the page (plan section 26); in phone mode each minimised window is a 48 px bar along the
-      // bottom edge (the forecast bar always, the live-buoy bar while one is parked) and the map stops above them.
+      // The map is the page (plan section 26); in phone mode each minimised window is a bar along the bottom
+      // edge (the forecast bar always: its height is measured while it is a bar and kept while it is expanded,
+      // so the map never jumps; the live-buoy bar while one is parked) and the map stops above them.
       const w = window.innerWidth, phone = w <= 500 || window.innerHeight <= 500;
-      const lw = document.getElementById('liveBuoyPanel');
-      const bars = phone ? 1 + (lw && !lw.hidden && lw.classList.contains('fw-min') ? 1 : 0) : 0;
-      const reserve = bars * 48;
+      const fwEl = document.getElementById('forecastWin'), lw = document.getElementById('liveBuoyPanel');
+      if (fwEl && fwEl.classList.contains('fw-min') && fwEl.offsetHeight > 0) phoneBarH = fwEl.offsetHeight;
+      document.documentElement.style.setProperty('--fw-bar-h', phoneBarH + 'px');
+      const liveBar = lw && !lw.hidden && lw.classList.contains('fw-min') ? lw.offsetHeight : 0;
+      const reserve = phone ? phoneBarH + liveBar : 0;
       const targetH = Math.max(phone ? 180 : 280, window.innerHeight - reserve);
       el.style.height = targetH + 'px';
 

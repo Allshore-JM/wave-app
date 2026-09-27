@@ -110,7 +110,7 @@ def test_the_pages_own_script_keeps_its_bridges_and_rules(client):
     and the favourites pick go through 'allshore:station', the form never submits with JS."""
     body = client.get("/?station=51201").get_data(as_text=True)
     assert "if (lastEnforcedWidth === w) {" in body and "lastEnforcedWidth = w;" in body
-    assert re.search(r"function handleMapMoveEnd\(\) \{[^}]*saveMapView\(map\)", body, re.S)
+    assert re.search(r"function handleMapMoveEnd\(\) \{.*?saveMapView\(map\)", body, re.S)   # (the body has its own try blocks now)
     assert "new CustomEvent('allshore:station', { detail: { sid: String(s.id), source: 'map' } })" in body
     assert "new CustomEvent('allshore:station', { detail: { sid: sid, source: 'picker' } })" in body
     assert "if (d.source === 'picker' && d.sid) focusStation(String(d.sid));" in body
@@ -133,3 +133,15 @@ def test_phone_sheets_sit_above_the_top_bar_and_the_no_js_page_shows_its_control
     live = re.search(r"@media \(max-width: 500px\) \{\s*#liveBuoyPanel \{\s*z-index: (\d+);", body).group(1)
     assert int(live) > int(bar), "the full-screen live panel outranks the bar (only where it is full screen)"
     assert "#forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }" in body[body.index("@media print"):]
+
+def test_the_map_extent_block_pans_by_whole_pixels_and_the_load_sequence_is_wired_before_the_first_view(client):
+    """The latitude clamp pans by whole pixels and ignores its own moveend: the old degree-based clamp called setView
+    with a sub-pixel correction, which Leaflet truncated to nothing, fired moveend again and recursed until the stack
+    overflowed. With a saved view near a pole that happened inside the map's first view, so every layer waiting for
+    'load', the station picker and the live buoys never came. tests/ui/mapclamp.test.js runs the block itself."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    block = body[body.index("// ---- map extent"):body.index("// ---- end map extent ----")]
+    assert "map.panBy([0, dy], { animate: false })" in block and "setView" not in block
+    assert "if (clampingLatitude) return;" in block and "catch (e) { console.error('latitude clamp', e); }" in block
+    assert "map.project([-LATITUDE_LIMIT, 0], 0).y - map.project([LATITUDE_LIMIT, 0], 0).y" in block   # the poles are the farthest extent
+    assert body.index("map.on('moveend', handleMapMoveEnd)") < body.index("enforceSingleWorld();")

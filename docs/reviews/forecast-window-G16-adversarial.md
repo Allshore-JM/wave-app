@@ -69,3 +69,13 @@ Design notes from the re-review, accepted: after a gear choice the address is mi
 the zone to another viewer (the old page's URL always did); a units change refreshes the overlay panel twice (harmless).
 
 After the re-review fixes: pytest 424, Node 173; UI asset 1.5.0; the golden re-baselined once more.
+
+## Owner's test-site report (2026-09-26, after the re-review)
+
+The owner found the test site slow, cut off, then without a basemap, markers, picker or particles, and pannable past
+the poles. Two page defects, both fixed on `feat/forecast-window` and re-verified on the test site:
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| O-1 | P1 | Leaflet measured `#map` at its 460 px CSS height when created, and `enforceSingleWorld`'s `invalidateSize()` ran before the first view (ignored until the map is loaded): the map kept 458 px while the container was 817, so the lower part had no tiles and the overlay stopped short. | The container is re-measured before and after the first view. |
+| O-2 | P0 | The latitude clamp corrected in degrees and called `setView`: near a pole the correction converges geometrically, and once it fell under one pixel Leaflet truncated it to nothing, fired `moveend` again and the handler recursed until the stack overflowed. Pre-existing on production (a polar pan throws there too) but harmless with a 460 px map; with the viewport-filling map a saved view near a pole put the overflow INSIDE the map's first view: Leaflet's `load` never fired, so the imagery and the marker groups (added before the view) never attached, the picker and the live layer (wired after `enforceSingleWorld()`) never ran, and the animator's later `moveend` listener never resumed after a pan. Reproduced on the test site with `sessionStorage.mapView = {lat: 78, z: 3}`. | Pixel-space clamp by whole pixels with a re-entrancy guard (`tests/ui/mapclamp.test.js` runs the page's own block against Mercator maths); the minimum zoom also fits the polar band to the map height, so the poles are the farthest extent on portrait maps; the handler reports instead of dying. |

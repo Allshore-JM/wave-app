@@ -13,7 +13,7 @@
   'use strict';
 
   var KEY = 'allshore.gridlines.v1';
-  var STEPS = [60, 30, 15, 10, 5, 2, 1, 0.5, 0.25];   // every one divides 360 (meridians repeat exactly per world)
+  var STEPS = [60, 30, 15, 10, 5];                   // every one divides 360; never finer than 5 degrees (owner)
   var MIN_PX = 70;                                   // the closest two lines may be on screen at the tile zoom
   var TILE = 256;
   var LAT_MAX = 85.05112878;                         // Web Mercator's edge
@@ -101,23 +101,25 @@
       if (!ctx) return;
       var lines = tileLines(coords, stepFor(coords.z), 3);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      function path(list, vertical, pick) {
+      function path(list, vertical, pick, px) {
         ctx.beginPath();
         list.forEach(function (l) {
           if (!pick(l)) return;
-          var p = Math.floor(l.px) + 0.5;                       // the pixel the line falls in (crisp 1-px core)
+          var p = Math.floor(l.px) + px / 2;                    // centred in the first device pixel of its CSS pixel (crisp)
           if (vertical) { ctx.moveTo(p, 0); ctx.lineTo(p, TILE); } else { ctx.moveTo(0, p); ctx.lineTo(TILE, p); }
         });
         ctx.stroke();
       }
       function all(minor) { return function (l) { return minor ? !l.major : l.major; }; }
-      // a dark halo under a light core: legible on the imagery, the relief and the colour fields alike
-      ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.22)';
-      path(lines.xs, true, function () { return true; }); path(lines.ys, false, function () { return true; });
-      ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,0.45)';
-      path(lines.xs, true, all(true)); path(lines.ys, false, all(true));
-      ctx.strokeStyle = 'rgba(255,255,255,0.8)';                  // the equator and the prime meridian
-      path(lines.xs, true, all(false)); path(lines.ys, false, all(false));
+      // very fine (owner): a one-DEVICE-pixel light core over a faint dark edge of the same width either side, so
+      // the line still reads on the light relief under the wind layer; the equator and prime meridian a little brighter
+      var px = 1 / dpr;
+      ctx.lineWidth = 3 * px; ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+      path(lines.xs, true, function () { return true; }, px); path(lines.ys, false, function () { return true; }, px);
+      ctx.lineWidth = px; ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+      path(lines.xs, true, all(true), px); path(lines.ys, false, all(true), px);
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+      path(lines.xs, true, all(false), px); path(lines.ys, false, all(false), px);
     }
     var layer = new Layer({ pane: 'graticulePane', tileSize: TILE, updateWhenZooming: false, keepBuffer: 1, noWrap: false });
 

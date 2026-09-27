@@ -105,3 +105,20 @@ def test_the_payload_names_the_swells_present_for_the_window_only(monkeypatch):
     assert len(re.findall(r">Swell (\d)</th>", classic["table_html"])) == 6
     monkeypatch.setattr(A, "parse_bull", lambda station, tz: ("Cycle : x", "Location : y", "", [_sparse_row(set())], "UTC", None))
     assert A.compute_forecast_payload("46001", None, "US", "GFS", compact=True)["graph_data"]["swells"] == ["s1"]   # never none at all
+
+def test_the_table_takes_the_swell_groups_of_the_first_7_days_the_graphs_every_group(monkeypatch):
+    from datetime import datetime, timedelta
+    t0 = datetime(2026, 9, 26, 14, 0)
+    def row(h, present):
+        t = t0 + timedelta(hours=h)
+        r = _sparse_row(present)
+        r[0] = t.strftime("%A, %B %d, %Y").replace(" 0", " "); r[1] = t.strftime("%I:%M %p").lstrip("0")
+        return r
+    rows = [row(h, {0, 1}) for h in range(0, 168)] + [row(h, {0, 1, 2, 3, 4, 5}) for h in range(168, 385, 3)]
+    monkeypatch.setattr(A, "parse_bull", lambda station, tz: ("Cycle : x", "Location : y", "", rows, "UTC", None))
+    d = A.compute_forecast_payload("46001", None, "US", "GFS", compact=True)
+    assert re.findall(r">Swell (\d)</th>", d["table_html"]) == ["1", "2"], "components only after day 7 earn no column"
+    assert d["graph_data"]["swells"] == ["s1", "s2", "s3", "s4", "s5", "s6"], "the graphs keep every component"
+    rows[167] = row(167, {0, 1, 2})                                   # the last hour of day 7 counts
+    assert re.findall(r">Swell (\d)</th>", A.compute_forecast_payload("46001", None, "US", "GFS", compact=True)["table_html"]) == ["1", "2", "3"]
+    assert A._swell_groups([["?", "?"] + [1.0, 2, 3] + [None] * 15 + [0, 0, 1]] * 3, days=7) == [0]   # unreadable times: by position

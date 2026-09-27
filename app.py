@@ -270,7 +270,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.8.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.8.1"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript"}
 
@@ -1619,6 +1619,27 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
 _STATION_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 
 
+def _row_datetime(row):
+    """The local datetime of a parsed row ('Saturday, September 26, 2026', '2:00 PM'), or None."""
+    try:
+        return datetime.strptime(f"{row[0]} {row[1]}", "%A, %B %d, %Y %I:%M %p")
+    except Exception:
+        return None
+
+
+def _swell_groups(rows, days=None):
+    """The swell groups (0-5) with a height in any row; with days, only rows within that many days of the first
+    row (by the rows' own date and time; rows whose time cannot be read count by position, hourly)."""
+    if days is not None and rows:
+        t0 = _row_datetime(rows[0])
+        limit = days * 24
+        def inside(i, r):
+            t = _row_datetime(r) if t0 is not None else None
+            return (t - t0).total_seconds() < limit * 3600 if t is not None else i < limit
+        rows = [r for i, r in enumerate(rows) if inside(i, r)]
+    return [g for g in range(6) if any(len(r) > 4 + 3 * g and r[2 + 3 * g] is not None for r in rows)]
+
+
 def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str = "GFS", *,
                              compact: bool = False) -> dict:
     """Shared, cached forecast computation for both the homepage and /api/forecast.
@@ -1656,12 +1677,13 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
 
     tz_label = effective_tz_name
     out["tz_label"] = tz_label
-    # The swell groups this forecast actually contains (any row): the window's table and graphs show only those
-    # (plan section 26). GFS can leave a middle group empty; SWAN compacts partitions to the left. The classic
-    # (non-compact) table keeps all six columns for old clients.
-    present = [g for g in range(6) if any(len(r) > 4 + 3 * g and r[2 + 3 * g] is not None for r in rows)] or [0]
+    # The swell groups worth a column or a series (plan section 26): the window's TABLE shows the groups present in
+    # the first 7 days (owner: later components alone do not earn a column); the GRAPHS draw every group present
+    # anywhere in the run (a series costs no width). The classic (non-compact) table keeps all six for old clients.
+    present = _swell_groups(rows) or [0]
+    week = _swell_groups(rows, days=7) or present
     out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit, compact=compact,
-                                         groups=present if compact else None)
+                                         groups=week if compact else None)
 
     # single map marker if coords JSON has it
     coords_map = load_station_coords()

@@ -12,8 +12,8 @@ const I = load({})._internals;
 
 test('the interval: the finest step whose lines stay at least MIN_PX apart at the tile zoom', () => {
   const got = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map(I.stepFor);
-  assert.deepEqual(got, [60, 30, 15, 10, 5, 2, 1, 0.5, 0.25, 0.25, 0.25]);
-  for (let z = 1; z <= 9; z++) {
+  assert.deepEqual(got, [60, 30, 15, 10, 5, 5, 5, 5, 5, 5, 5], 'never finer than 5 degrees (owner)');
+  for (let z = 1; z <= 5; z++) {
     const px = I.stepFor(z) / 360 * 256 * 2 ** z;
     assert.ok(px >= I.MIN_PX && px < I.MIN_PX * 2, 'z' + z + ': ' + px);
   }
@@ -69,7 +69,7 @@ test('parallels: at their Mercator row, the equator major, nothing beyond the Me
   north.ys.concat(south.ys).forEach((l) => { assert.ok(Math.abs(l.lat) < 85.06, String(l.lat)); assert.ok(l.px > -4 && l.px < 260); });
   assert.ok(north.ys.some((l) => l.lat === 80) && south.ys.some((l) => l.lat === -80));
   const deep = I.tileLines({ x: 3, y: 900, z: 11 }, I.stepFor(11), 3);
-  deep.ys.forEach((l) => assert.equal((l.lat / 0.25) % 1, 0, 'quarter-degree parallels land exactly: ' + l.lat));
+  deep.ys.forEach((l) => assert.equal((l.lat / 5) % 1, 0, 'zoomed in: still 5-degree parallels only: ' + l.lat));
 });
 
 test('labels read like a chart: W/E/N/S, 0° and 180°, quarter degrees trimmed, any world copy normalised', () => {

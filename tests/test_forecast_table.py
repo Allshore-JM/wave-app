@@ -68,3 +68,9 @@ def test_api_forecast_compact_is_opt_in(monkeypatch):
     assert compact["graph_header"] == classic["graph_header"] and compact["graph_header"]["cycle"] == "20260926 12 UTC"
     assert compact["graph_data"]["labels"] == classic["graph_data"]["labels"]      # graph labels keep the long form
     assert compact["graph_data"]["labels"][0].startswith("Saturday, September 26, 2026")
+
+def test_compact_table_abbreviates_the_combined_header_only():
+    compact = A.build_html_table("c", "l", "", [], "Pacific/Honolulu", "US", compact=True)
+    full = A.build_html_table("c", "l", "", [], "Pacific/Honolulu", "US")
+    assert '<abbr title="Combined sea">Comb.</abbr>' in compact and ">Combined</th>" not in compact
+    assert ">Combined</th>" in full and "Comb." not in full

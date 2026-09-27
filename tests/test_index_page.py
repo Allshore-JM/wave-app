@@ -146,3 +146,15 @@ def test_the_map_extent_block_pans_by_whole_pixels_and_the_load_sequence_is_wire
     assert "map.project([LAT_LIMIT_SOUTH, 0], 0).y - map.project([LAT_LIMIT_NORTH, 0], 0).y" in block   # the limits are the farthest extent
     assert "const LAT_LIMIT_NORTH = 84;" in body and "const LAT_LIMIT_SOUTH = -79;" in body   # just past Greenland's tip / Antarctica's ice fronts (owner)
     assert body.index("map.on('moveend', handleMapMoveEnd)") < body.index("enforceSingleWorld();")
+
+def test_pr_c_polish_markup(client):
+    """PR C: the <head> starts the forecast request (tests/ui/early.test.js proves it asks for the module's own first
+    query); the resize handle is keyboard-operable; the panel touched last is on top (the rule sits before the phone
+    rules, which keep their own full-screen order); the live panel announces that it opened."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    head = body[:body.index("</head>")]
+    assert "// ---- early forecast" in head and "fetch('/api/forecast?' + q)" in head and "window.__early.forecast = { q: q, p: f };" in head
+    assert "early: window.__early" in body
+    assert re.search(r'id="fwResize" class="fw-resize" tabindex="0" role="button" aria-label="[^"]+"', body)
+    assert body.index(".forecast-win.fw-front { z-index: 2100; }") < body.index(".forecast-win:not(.fw-min) { z-index: 3500; }")
+    assert "new CustomEvent('allshore:livepanel')" in body and "document.addEventListener('allshore:livepanel', function () { front(false); });" in body

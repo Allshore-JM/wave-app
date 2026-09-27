@@ -126,7 +126,8 @@
       if (ctrl) ctrl.abort();
       var c = ctrl = new AbortController();
       deps.ui.busy(true); deps.ui.error(null, null);
-      return deps.fetch(API + '?' + queryFor(state), { signal: c.signal }).then(function (r) {
+      var q = queryFor(state), early = deps.takeEarly ? deps.takeEarly(q) : null;   // the page's <head> may have started this very request
+      return (early || deps.fetch(API + '?' + q, { signal: c.signal })).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function (d) {
@@ -350,6 +351,12 @@
     var r = this.el.getBoundingClientRect();
     return { x: r.left, y: r.top, w: r.width, h: r.height };
   };
+  FloatingWindow.prototype.resizeBy = function (dw, dh) {
+    var r = this._rect(), d = this.d;
+    this._place(clampGeometry({ x: r.x, y: r.y, w: r.w + dw, h: r.h + dh }, d.win.innerWidth, d.win.innerHeight, d.topBarHeight()));
+    this._save();
+    if (d.onResize) d.onResize();
+  };
   FloatingWindow.prototype.clamp = function () {
     if (!this.geom || this.isPhone()) return;
     this._place(clampGeometry(this.geom, this.d.win.innerWidth, this.d.win.innerHeight, this.d.topBarHeight()));
@@ -390,6 +397,13 @@
       self.toggleMax();
     });
     if (d.handle) d.handle.addEventListener('pointerdown', function (e) { if (self.mode === 'normal') drag(e, 'resize'); });
+    // the arrow keys on the focused handle: 16 px a press, 64 with Shift (right/down grow, left/up shrink)
+    if (d.handle) d.handle.addEventListener('keydown', function (e) {
+      var k = { ArrowRight: [1, 0], ArrowLeft: [-1, 0], ArrowDown: [0, 1], ArrowUp: [0, -1] }[e.key];
+      if (!k || self.mode !== 'normal' || self.isPhone()) return;
+      if (e.preventDefault) e.preventDefault();
+      self.resizeBy(k[0] * (e.shiftKey ? 64 : 16), k[1] * (e.shiftKey ? 64 : 16));
+    });
     d.win.addEventListener('resize', function () {
       self.el.style.setProperty('--topbar-h', d.topBarHeight() + 'px');          // the bar's height changes with the width (the title hides on phones)
       self.clamp();
@@ -475,7 +489,14 @@
         m.appendChild(doc.createTextNode(String(pair[1] == null ? '' : pair[1])));
       });
     }
-    var loader = createLoader({ fetch: opts.fetch || function (u, o) { return win.fetch(u, o); }, now: function () { return Date.now(); },
+    // the <head>'s early request (window.__early.forecast = {q, p}): taken once, by the first load, and only
+    // for exactly the same query; any other first query fetches as usual (the early response is dropped)
+    var earlyBox = opts.early || null;
+    function takeEarly(q) {
+      var e = earlyBox && earlyBox.forecast; if (earlyBox) earlyBox.forecast = null; earlyBox = null;
+      return e && e.q === q && e.p && typeof e.p.then === 'function' ? e.p : null;
+    }
+    var loader = createLoader({ fetch: opts.fetch || function (u, o) { return win.fetch(u, o); }, takeEarly: takeEarly, now: function () { return Date.now(); },
       replaceState: function (url) { try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,

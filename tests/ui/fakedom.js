@@ -120,7 +120,7 @@ function buildPage(win) {
   // the live-buoy window (plan section 26): a FloatingWindow like the forecast one, hidden until a buoy is picked
   const live = el('section', 'liveBuoyPanel', doc.body); live.hidden = true; live.rect = { left: 400, top: 200, width: 820, height: 600 };
   const lwHeader = el('div', 'lwHeader', live); el('strong', 'liveBuoyTitle', lwHeader); el('span', 'liveBuoySubtitle', lwHeader);
-  const lwMin = el('button', 'lwMin', lwHeader); const lwMax = el('button', 'lwMax', lwHeader); const lwClose = el('button', 'lwClose', lwHeader);
+  const lwMin = el('button', 'lwMin', lwHeader); const lwClose = el('button', 'lwClose', lwHeader);
   el('div', 'lwBody', live); el('div', 'lwResize', live);
   const w = el('section', 'forecastWin', doc.body); w.rect = { left: 84, top: 300, width: 1180, height: 480 };
   const header = el('div', 'fwHeader', w);
@@ -143,7 +143,7 @@ function buildPage(win) {
   const graphs = el('div', 'graphs', body); graphs.hidden = true;
   ['heightChart', 'periodChart', 'directionChart'].forEach((id) => { const box = el('div', null, graphs); box.classList.add('chart-box'); el('canvas', id, box); });
   el('div', 'fwResize', w);
-  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwMax, lwClose, w, header, viewBar, modelBar, rangeBar, body, table, graphs };
+  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwClose, w, header, viewBar, modelBar, rangeBar, body, table, graphs };
 }
 
 // A Chart.js stand-in that records instances.

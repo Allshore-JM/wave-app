@@ -294,5 +294,3 @@ def test_the_site_icon_is_the_wordmark_a(client):
         im = Image.open(_io.BytesIO(r.get_data()))
         assert (im.info.get("sizes") or {im.size}) == sizes, path
         assert b"<svg" not in r.get_data(), "not the old inline wave mark"
-    # Google: a square icon whose size is a multiple of 48 px
-    assert 192 % 48 == 0

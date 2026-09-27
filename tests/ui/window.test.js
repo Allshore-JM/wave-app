@@ -781,3 +781,15 @@ test('plan section 27: every edge and corner of both windows stretches them by p
   west.dispatch('pointerdown', ptr(600, 400)); west.dispatch('pointermove', ptr(500, 400)); west.dispatch('pointerup', ptr(500, 400));
   assert.deepEqual(lw.window.geom, { x: 500, y: 150, w: 920, h: 600 }, 'the live window stretches from its left side');
 });
+
+test('G19-A: the keyboard grip stops at the viewport like the pointer grip (the left edge never moves); a render=full seed keeps its wind_complete', async () => {
+  const win = fakeWindow({ width: 1280, height: 800 }), page = buildPage(win), { fw } = makeWindow(win, page);
+  fw.setMode('normal'); fw._place({ x: 600, y: 100, w: 600, h: 400 });
+  const h = win.document.getElementById('fwResize');
+  for (let i = 0; i < 10; i++) h.dispatch('keydown', { key: 'ArrowRight', shiftKey: true, preventDefault: () => {} });
+  assert.deepEqual([fw.geom.x, fw.geom.x + fw.geom.w], [600, 1272], 'grows to the viewport pad, the left edge stays');
+  let now = 0; const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), u = ui();
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => now, replaceState: () => {}, swanStations: [], ui: u.ui }, { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' });
+  L.seed(payload({ wind_complete: false })); now += 61 * 1000; L.load({}); await settle();
+  assert.equal(fs_.calls.length, 1, 'a gappy page-rendered forecast is fetched again after a minute');
+});

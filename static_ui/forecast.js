@@ -423,7 +423,7 @@
   FloatingWindow.prototype._resized = function (w) { return this.maxW ? Math.min(w, this.maxW) : w; };
   FloatingWindow.prototype.resizeBy = function (dw, dh) {
     var r = this._rect(), d = this.d;
-    this._place(clampGeometry({ x: r.x, y: r.y, w: this._resized(this._shown(r.w) + dw), h: r.h + dh }, d.win.innerWidth, d.win.innerHeight, this._top(), null, this.maxW));
+    this._place(resizeGeometry(r, 'se', dw, dh, d.win.innerWidth, d.win.innerHeight, this._top(), null, this.maxW));   // like the pointer grip (G19-A P3-2)
     this._save();
     if (d.onResize) d.onResize();
   };
@@ -704,7 +704,7 @@
     setView(state.view);
     if (initial.inline) {
       loader.seed({ table_html: initial.error ? null : (els.table.innerHTML.trim() || null), graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
-        error: initial.error || null, model: initial.model, swan_available: initial.swan_available });
+        error: initial.error || null, model: initial.model, swan_available: initial.swan_available, wind_complete: initial.wind_complete });
     } else loader.load({});
     app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, setView: setView, expand: expand, minimise: minimise, els: els };
     return app;

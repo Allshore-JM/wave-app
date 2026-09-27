@@ -254,6 +254,6 @@ def test_both_windows_stretch_from_every_side(client):
         assert body.count('<div class="fw-edge fw-edge-%s" data-edge="%s" aria-hidden="true"></div>' % (k, k)) == 2, k
     for rule in (".fwin.fw-min .fw-resize, .fwin.fw-min .fw-edge { display: none; }", ".fwin.fw-max .fw-resize, .fwin.fw-max .fw-edge { display: none; }",
                  "html:not(.js) .fw-edge,", ".fw-resize, .fw-edge { display: none; }",
-                 "@media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-max):not(.fw-min) .fw-body { margin: 0 5px 5px; } }"):
+                 "@media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-min) .fw-body { margin: 0 5px 5px; } }"):
         assert rule in body, rule
     assert body.index('data-edge="sw"') < body.index('id="fwResize"')

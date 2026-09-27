@@ -332,7 +332,7 @@
     .fw-edge-ne { top: 0; right: 0; width: 10px; height: 10px; cursor: nesw-resize; }
     .fw-edge-nw { top: 0; left: 0; width: 10px; height: 10px; cursor: nwse-resize; }
     .fw-edge-sw { bottom: 0; left: 0; width: 10px; height: 10px; cursor: nesw-resize; }
-    @media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-max):not(.fw-min) .fw-body { margin: 0 5px 5px; } }
+    @media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-min) .fw-body { margin: 0 5px 5px; } }   /* kept when maximised: the table cap includes it */
     .fw-resize {
       position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; z-index: 6;
       background: linear-gradient(135deg, transparent 50%, #b0bac4 50%, #b0bac4 60%, transparent 60%, transparent 75%, #b0bac4 75%);

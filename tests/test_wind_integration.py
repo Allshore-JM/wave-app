@@ -150,10 +150,17 @@ def test_forecast_cache_short_ttl_when_wind_blank(monkeypatch):
     monkeypatch.setattr(app, "get_station_wind", lambda *a, **k: {})  # blank wind
     app.parse_bull("51201", None)
     assert app._FORECAST_CACHE[("51201", "", "GFS")]["ttl"] == app._WIND_NEG_TTL
-    # with wind present -> full TTL
+    # wind for some rows only -> still the short TTL (G19-A P2-1: a gap heals within minutes)
     with app._CACHE_LOCK:
         app._FORECAST_CACHE.clear()
     monkeypatch.setattr(app, "get_station_wind", lambda *a, **k: dict(WIND))
+    app.parse_bull("51201", None)
+    assert app._FORECAST_CACHE[("51201", "", "GFS")]["ttl"] == app._WIND_NEG_TTL
+    # wind for every row -> full TTL
+    with app._CACHE_LOCK:
+        app._FORECAST_CACHE.clear()
+    full = {datetime(2026, 7, 4, h): (8.09, 71.6) for h in (12, 13, 14)}
+    monkeypatch.setattr(app, "get_station_wind", lambda *a, **k: dict(full))
     app.parse_bull("51201", None)
     assert app._FORECAST_CACHE[("51201", "", "GFS")]["ttl"] == app._FORECAST_CACHE_TTL
 

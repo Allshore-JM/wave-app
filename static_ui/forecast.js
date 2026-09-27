@@ -172,6 +172,7 @@
     return s && s.length ? s : ALL_SWELLS.slice();
   }
   var BOX_MIN = 300;                                        // px per chart (was 180-360: the plots were 60-80 px tall)
+  function formatMD(d) { return d.getHours() === 0 && !isNaN(d) ? (d.getMonth() + 1) + '/' + d.getDate() : ''; }
   function formatMDHour(d) {
     var M = d.getMonth() + 1, D = d.getDate(), h = d.getHours();
     return h === 0 ? M + '/' + D + ' 12am' : h === 12 ? M + '/' + D + ' 12pm' : '';
@@ -203,7 +204,7 @@
       return { type: 'category',
         grid: { color: function (c) { var i = idx(c); return major.has(i) ? 'rgba(0,0,0,0.25)' : minor.has(i) ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.08)'; },
                 lineWidth: function (c) { var i = idx(c); return major.has(i) ? 1.4 : minor.has(i) ? 1.0 : 0.5; } },
-        ticks: { autoSkip: false, maxRotation: 60, minRotation: 60, callback: function (v, i) { return formatMDHour(parsed[i] || new Date(NaN)); }, font: { size: 10 } } };
+        ticks: { autoSkip: false, maxRotation: 0, minRotation: 0, callback: function (v, i) { return formatMD(parsed[i] || new Date(NaN)); }, font: { size: 10 } } };   // flat date labels at midnight (the noon lines stay)
     }
     function dots(label, key, src, color) { return { label: label, data: src[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false }; }
     function series(src, combined, keys) {
@@ -216,7 +217,7 @@
       var common = { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false, axis: 'x' },
         layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } }, elements: { point: { radius: 1.6 }, line: { tension: 0.25, borderWidth: 0 } },
         // one line of legend above the plot (it used to wrap under it and eat the plot height)
-        plugins: { legend: { position: 'top', align: 'end', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 6, padding: 8, font: { size: 11 } } }, tooltip: { mode: 'nearest', intersect: false }, decimation: { enabled: false } },
+        plugins: { legend: { position: 'top', align: 'start', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 6, padding: 8, font: { size: 11 } } }, tooltip: { mode: 'nearest', intersect: false }, decimation: { enabled: false } },
         animation: false };
       var keys = swellKeys(gd);
       var hArr = keys.concat(['combined']).map(function (k) { return gd.height[k]; });
@@ -228,7 +229,7 @@
       var dMin = minAcross(dArr), dMax = maxAcross(dArr);
       if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
       function opts(title, y) {
-        return Object.assign({}, common, { plugins: Object.assign({}, common.plugins, { title: { display: true, text: title }, nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' } }),
+        return Object.assign({}, common, { plugins: Object.assign({}, common.plugins, { title: { display: false, text: title }, nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' } }),
           scales: { x: xAxis, y: Object.assign({ grid: { display: true, color: 'rgba(0,0,0,0.08)' }, border: { color: 'rgba(0,0,0,0.2)' } }, y) } });
       }
       var specs = [

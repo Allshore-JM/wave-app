@@ -134,7 +134,9 @@ edge-cached, nosniff + sandbox CSP); the r2.dev development URL is disabled -- r
 Settings and point `MODEL_FRAMES_BASE` at it only as an emergency fallback. `--force` re-uploads a run under
 its EXISTING immutable keys: the edge cache and browsers keep the old bytes for up to a year, so use it only
 to re-send identical bytes (e.g. after an interrupted upload); any change to the encoding or layout goes under
-a new `PREFIX` version instead. The publisher pins its conda packages and action commits and lists the
+a new `PREFIX` version instead. A change of a field's encode RANGE (lo/hi in `encode.FIELDS`) needs neither: the
+client decodes each run with its own manifest lo/hi, so old and new runs coexist -- but never `--force` a run
+published under the old range (plan section 27: hs 0-75 ft with a 0-60 ft legend, wind to 120 kt). The publisher pins its conda packages and action commits and lists the
 installed versions in the step summary; bump the pins deliberately. External cron trigger: GitHub drops or delays
 most `schedule` ticks, so a Cloudflare Worker (`tools/model_frames/trigger/`, deployed by Cloudflare Workers Builds
 from this repository -- root directory `tools/model_frames/trigger`, build command `npm run build`, deploy command

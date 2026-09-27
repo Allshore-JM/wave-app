@@ -257,3 +257,19 @@ def test_both_windows_stretch_from_every_side(client):
                  "@media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-min) .fw-body { margin: 0 5px 5px; } }"):
         assert rule in body, rule
     assert body.index('data-edge="sw"') < body.index('id="fwResize"')
+
+def test_the_new_wordmark_is_the_brand_with_no_box_around_it(client):
+    """Owner (2026-09-27): the Allshore Surf wordmark replaces the mark and the title, overlaid on the map at the same
+    place (top-left, above the overlay selector) with no border or white space; served immutable from /ui/."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert '<img class="brand-logo" src="/ui/logo.png?v=%s" alt="Allshore Surf" width="194" height="60">' % A.UI_ASSET_VERSION in body
+    assert 'class="app-logo"' not in body and 'class="app-title"' not in body
+    assert ".leaflet-control-brand .brand { background: none; border: 0; padding: 0; box-shadow: none; line-height: 0; }" in body
+    assert "rgba(255,255,255,.92)" not in body
+    r = A.app.test_client().get("/ui/logo.png?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and r.headers["Content-Type"] == "image/png" and r.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+    from PIL import Image
+    import io as _io
+    im = Image.open(_io.BytesIO(r.get_data()))
+    assert im.size == (387, 120), "2x the 60 px display height"
+    assert im.convert("RGBA").getpixel((0, 0))[3] == 0, "transparent around the lettering"

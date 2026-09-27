@@ -243,13 +243,10 @@
     .js #pageHead { display: none; }
     html:not(.js) #pageHead { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: #fff; border-bottom: 1px solid #eee; }
     .brand { display: flex; align-items: center; gap: 8px; text-decoration: none; flex: 0 0 auto; }
-    .brand .app-logo { width: 30px; height: 30px; flex-shrink: 0; display: block; }
-    .brand .app-title {
-      font-size: 1.15rem; font-weight: 800; color: #0b2536;
-      line-height: 1.05; letter-spacing: -0.01em;
-    }
-    .leaflet-control-brand { margin: 10px 0 0 10px; }
-    .leaflet-control-brand .brand { background: rgba(255,255,255,.92); border-radius: 8px; padding: 4px 9px 4px 6px; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+    /* the wordmark alone over the map: no box, border or padding (owner, plan section 27) */
+    .brand .brand-logo { display: block; height: 60px; width: auto; }
+    .leaflet-control-brand { margin: 8px 0 0 10px; background: none; border: 0; box-shadow: none; }
+    .leaflet-control-brand .brand { background: none; border: 0; padding: 0; box-shadow: none; line-height: 0; }
     .settings-host { position: relative; }
     /* the top-right corner (layer legend + gear) outranks the windows only while the gear's panel is open (so the
        panel is never covered); otherwise a window is always above the map's controls, so its own buttons can never
@@ -432,8 +429,7 @@
 
     /* Phones: the brand is its mark alone, large tap targets */
     @media (max-width: 576px) {
-      .brand .app-title { display: none; }
-      .leaflet-control-brand .brand { padding: 3px 4px; }
+      .brand .brand-logo { height: 40px; }
       .settings-panel { width: min(300px, calc(100vw - 16px)); }
       .settings-panel .form-select { min-height: 44px; font-size: 16px; /* avoids iOS zoom-on-focus */ }
       .icon-btn { width: 44px; height: 44px; }
@@ -515,12 +511,7 @@
        JS; the station select in the forecast window and the view / model selects point at it with form="controlForm"). -->
   <div id="pageHead">
     <a id="brand" class="brand" href="/" aria-label="Allshore Surf home">
-      <svg class="app-logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <rect width="32" height="32" rx="6" fill="#0b2536"/>
-        <path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>
-        <path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>
-      </svg>
-      <span class="app-title">Allshore Surf</span>
+      <img class="brand-logo" src="/ui/logo.png?v={{ ui_asset_version }}" alt="Allshore Surf" width="194" height="60">
     </a>
     <form id="controlForm" method="GET" action="/">
       <div id="settingsHost" class="settings-host">

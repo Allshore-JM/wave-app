@@ -56,7 +56,7 @@ def test_ui_asset_version_bumped_with_the_assets():
 def test_ui_module_syntax_and_unit_tests():
     if not NODE:
         pytest.skip("node not available")
-    for name in A._UI_ASSETS:
+    for name in [n for n in A._UI_ASSETS if n.endswith(".js")]:   # the logo is an image
         r = subprocess.run(["node", "--check", os.path.join(UI, name)], capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
     files = sorted(glob.glob(os.path.join(HERE, "ui", "*.test.js")))

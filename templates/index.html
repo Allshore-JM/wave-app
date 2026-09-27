@@ -946,7 +946,11 @@
       const targetH = Math.max(w <= 500 || window.innerHeight <= 500 ? 180 : 280, window.innerHeight - reserve);
       el.style.height = targetH + 'px';
 
-      map.invalidateSize();
+      // Leaflet measured the container at its CSS height when the map was created and ignores
+      // invalidateSize() until the first view is set: force a fresh measurement (the map is much
+      // taller than the 460 px CSS default now; a stale size left the lower part without tiles).
+      map._sizeChanged = true;
+      map.invalidateSize({ animate: false });
 
       // Maximum zoomed-out extent = one non-repeated world width.
       MIN_MAP_ZOOM = Math.max(1, calculateSingleWorldMinZoom());
@@ -975,6 +979,7 @@
           { animate: false }
         );
       }
+      map.invalidateSize({ animate: false });      // now that the map has a view, the size is really re-read
 
       clampMapLatitude();
       refreshWrappedMarkerCopies(true);

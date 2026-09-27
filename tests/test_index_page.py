@@ -213,4 +213,6 @@ def test_the_map_is_the_page_and_the_windows_stack_by_touch(client):
     assert "function place() {" in body and "window.addEventListener('resize', close);" in body
     assert "liveOpen: function () { return !!(liveWin && liveWin.isOpen() && liveWin.window.mode !== 'min'); }" in body
     assert "map.zoomControl." not in body, "no zoom control exists any more (zoomControl: false): nothing may touch it"
+    assert ".fw-titles .station-field .station-picker { flex: 1 1 auto; min-width: 0; }" in body, "the picker box shrinks: it never covers the run text (owner)"
+    assert "max-width: min(800px, calc(60vw - 40px));" in body and "max-width: min(420px, calc(40vw - 40px));" in body, "the chips never meet"
     assert body.index("let liveWin = null;") < body.index("const map = L.map("), "declared before anything that can throw (a later script assigns it)"

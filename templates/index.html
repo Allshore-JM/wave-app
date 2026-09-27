@@ -278,7 +278,7 @@
     .fw-header:focus { outline: none; }
     .fw-titles { flex: 1 1 auto; min-width: 0; display: flex; gap: 10px; align-items: baseline; white-space: nowrap; overflow: hidden; }
     .fw-titles strong { overflow: hidden; text-overflow: ellipsis; }
-    .fw-titles .fw-cycle { color: #5a6b7a; font-size: .85rem; overflow: hidden; text-overflow: ellipsis; }
+    .fw-titles .fw-cycle { color: #5a6b7a; font-size: .85rem; flex: 0 0 auto; }
     .fw-btn {
       width: 30px; height: 30px; border: 1px solid #ced4da; border-radius: 6px; background: #fff;
       line-height: 1; font-size: 1rem; color: #0b2536; cursor: pointer; flex: 0 0 auto;
@@ -293,11 +293,13 @@
     /* minimised: the header bar alone; on desktops a chip parked at the bottom-left beside the Home
        button, so the map's attribution (bottom-right) stays visible */
     .forecast-win.fw-min { height: auto !important; min-height: 0; }
-    @media (min-width: 501px) {
+    @media (min-width: 501px) and (min-height: 501px) {
       .forecast-win.fw-min {
         left: 60px !important; right: auto !important; top: auto !important; bottom: 12px !important;
         width: auto !important; max-width: min(560px, calc(100vw - 76px));
       }
+      /* the Home-view menu opens above the chip */
+      .home-menu { bottom: 52px; }
     }
     .forecast-win.fw-min .fw-header { cursor: pointer; }
     .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body, .forecast-win.fw-min .fw-resize { display: none; }
@@ -325,14 +327,17 @@
     #graphs .chart-box { position: relative; height: 260px; margin-bottom: 12px; }
     #graphs .chart-box:last-child { margin-bottom: 0; }
     /* no JS: the window is a plain card in the page flow (render=full) */
-    html:not(.js) .forecast-win { position: static; width: auto; height: auto; box-shadow: none; margin-top: 12px; }
+    html:not(.js) .forecast-win { position: static !important; width: auto !important; max-width: none; height: auto !important; box-shadow: none; margin-top: 12px; }
     html:not(.js) .forecast-win.fw-min .fw-toolbar, html:not(.js) .forecast-win.fw-min .fw-body { display: block; }
     html:not(.js) .fw-btn, html:not(.js) .fw-resize, html:not(.js) #settingsBtn { display: none; }
     html:not(.js) .settings-panel { position: static; width: auto; box-shadow: none; border: 0; padding: 0; display: flex; gap: 10px; }
-    html:not(.js) .settings-panel[hidden] { display: flex; }
+    html:not(.js) .settings-panel[hidden] { display: flex !important; }         /* Bootstrap's [hidden] is !important */
+    html:not(.js) #forecastTable[hidden] { display: block !important; }        /* without JS only the table can show */
+    html:not(.js) #graphs { display: none !important; }
     @media print {
       #map, #topBar, .fw-btn, .fw-resize, #liveBuoyPanel { display: none !important; }
       .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
+      .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
       .fw-body { overflow: visible; }
     }
 
@@ -373,8 +378,12 @@
       .settings-panel .form-select { min-height: 44px; font-size: 16px; /* avoids iOS zoom-on-focus */ }
       .icon-btn { width: 44px; height: 44px; }
     }
-    /* Phones: the window fills the screen like the live-buoy panel; minimised, a bar along the bottom edge */
-    @media (max-width: 500px) {
+    /* Phones (and short windows): the window fills the screen like the live-buoy panel; minimised, a bar
+       along the bottom edge; no maximise button (expanded is already full screen) */
+    @media (max-width: 500px), (max-height: 500px) {
+      #fwMax { display: none; }
+      /* a full-screen sheet covers the top bar (z 3000): its own header buttons must stay reachable */
+      .forecast-win:not(.fw-min), #liveBuoyPanel { z-index: 3500; }
       .forecast-win:not(.fw-min) {
         left: 0 !important; top: 0 !important; right: 0 !important; bottom: 0 !important;
         width: 100vw !important; height: 100vh !important; height: 100dvh !important;
@@ -558,7 +567,7 @@
             <span class="spinner"></span> Loading forecast&hellip;
           </div>
           <noscript>
-            <meta http-equiv="refresh" content="0;url=?station={{ selected_station|urlencode }}&amp;tz={{ selected_tz|urlencode }}&amp;unit={{ selected_unit|urlencode }}&amp;model={{ (selected_model or 'GFS')|urlencode }}&amp;view={{ 'Graph' if selected_view == 'Graph' else 'Table' }}&amp;render=full">
+            <meta http-equiv="refresh" content="0;url=?station={{ selected_station|urlencode }}&amp;tz={{ selected_tz|urlencode }}&amp;unit={{ selected_unit|urlencode }}&amp;model={{ (selected_model or 'GFS')|urlencode }}&amp;view=Table&amp;render=full">
           </noscript>
           {% endif %}
         </div>
@@ -932,7 +941,7 @@
       // phones the minimised forecast bar along the bottom edge gets its 48 px.
       const w = window.innerWidth;
       const bar = document.getElementById('topBar');
-      const reserve = (bar ? bar.offsetHeight : 0) + 24 + (w <= 500 ? 48 : 0);
+      const reserve = (bar ? bar.offsetHeight : 0) + 24 + (w <= 500 || window.innerHeight <= 500 ? 48 : 0);   // phone mode: the minimised bar's row
       const targetH = Math.max(280, window.innerHeight - reserve);
       el.style.height = targetH + 'px';
 
@@ -942,8 +951,8 @@
       MIN_MAP_ZOOM = Math.max(1, calculateSingleWorldMinZoom());
       map.setMinZoom(MIN_MAP_ZOOM);
 
-      // The stored view is (re)applied at load and when the width changes; a height-only resize (a
-      // phone keyboard opening for the station search) must not snap the map back.
+      // The stored view is (re)applied at load and when the width changes; a height-only resize (a phone's
+      // browser bar collapsing, a soft keyboard for the settings) must not snap the map back.
       if (lastEnforcedWidth === w) { clampMapLatitude(); refreshWrappedMarkerCopies(true); return; }
       lastEnforcedWidth = w;
 
@@ -1002,7 +1011,7 @@
     function handleMapMoveEnd() {
       clampMapLatitude();
       refreshWrappedMarkerCopies(false);
-      saveMapView(map);                 // the page no longer reloads on a pick: keep the view for a real reload
+      try { saveMapView(map); } catch (e) {}   // the page no longer reloads on a pick: keep the view for a real reload (storage may be blocked)
     }
 
     // Map movement, resize handling, and initial view are wired up after
@@ -2305,6 +2314,9 @@
         });
       }
 
+      favToggle.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !results.hidden) { e.stopPropagation(); close(); trigger.focus(); }
+      });
       favToggle.addEventListener('click', function (e) {
         e.preventDefault();
         const sid = select.value;
@@ -2497,6 +2509,14 @@
       }
       var unitEl = document.getElementById('unit');
       if (unitEl) unitEl.addEventListener('change', function () { if (overlay) overlay.refresh(); });
+      // The forecast window changes station, zone and model in place (no reload): the overlay's valid times
+      // follow the table's zone and its run line the table's run.
+      document.addEventListener('allshore:forecast', function (e) {
+        if (!overlay) return;
+        var tz = e && e.detail && e.detail.tz;
+        if (typeof tz === 'string' && tz) overlay.opts.tz = tz;
+        overlay.refresh();
+      });
     })();
   </script>
   {%- endif %}

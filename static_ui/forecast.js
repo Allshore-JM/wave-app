@@ -23,7 +23,7 @@
   var UNITS = { US: 1, Metric: 1 };
   var CACHE_MAX = 16, CACHE_TTL_MS = 10 * 60 * 1000;
   var MIN_SIZE = { w: 360, h: 220 };
-  var PHONE_QUERY = '(max-width: 500px)';
+  var PHONE_QUERY = '(max-width: 500px), (max-height: 500px)';   // "phone mode": a bar + full screen, no drag / resize
   var API = '/api/forecast';
 
   // ---- pure state helpers ----
@@ -44,11 +44,14 @@
   function queryFor(s) {
     return new URLSearchParams({ station: s.station, tz: s.tz || '', unit: s.unit, model: s.model, compact: '1' }).toString();
   }
-  // The address bar for a state: the station always, the rest only when not the default.
-  function urlFor(s) {
+  // The address bar for a state: the station always; tz and unit whenever they differ from what a reload
+  // would assume (the viewer's saved settings, else Buoy Local / US: resolveInitialState's rule, so the
+  // address always reloads to the view on screen); model and view when not the default.
+  function urlFor(s, saved) {
+    var st = saved || {}, tz0 = typeof st.tz === 'string' ? st.tz : '', unit0 = UNITS[st.unit] ? st.unit : 'US';
     var p = new URLSearchParams({ station: s.station });
-    if (s.tz) p.set('tz', s.tz);
-    if (s.unit !== 'US') p.set('unit', s.unit);
+    if ((s.tz || '') !== tz0) p.set('tz', s.tz || '');
+    if (s.unit !== unit0) p.set('unit', s.unit);
     if (s.model !== 'GFS') p.set('model', s.model);
     if (s.view !== 'Table') p.set('view', s.view);
     return '?' + p.toString();
@@ -79,15 +82,15 @@
     return (model || 'GFS') + ' · run ' + c;
   }
   // The graph's label strings -> Date (the old page's rule: "8/30/25 6:00 AM", else the browser's parser).
+  var MONTHS = { january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7, september: 8, october: 9, november: 10, december: 11 };
+  function hm(h, mi, ap) { h = +h; if (ap === 'pm' && h < 12) h += 12; if (ap === 'am' && h === 12) h = 0; return [h, +mi]; }
   function parseLabel(lbl) {
-    var m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})\s*([APap][Mm])$/.exec(lbl || '');
-    if (m) {
-      var M = +m[1], D = +m[2], Y = m[3].length === 2 ? 2000 + +m[3] : +m[3], h = +m[4], mi = +m[5], ap = m[6].toLowerCase();
-      if (ap === 'pm' && h < 12) h += 12;
-      if (ap === 'am' && h === 12) h = 0;
-      return new Date(Y, M - 1, D, h, mi, 0);
-    }
-    var d = new Date(lbl);
+    var s = lbl || '', m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})\s*([APap][Mm])$/.exec(s), t;
+    if (m) { t = hm(m[4], m[5], m[6].toLowerCase()); return new Date(m[3].length === 2 ? 2000 + +m[3] : +m[3], +m[1] - 1, +m[2], t[0], t[1], 0); }
+    // the server's own form, "Saturday, September 26, 2026 2:00 PM" (the browser's Date parser is not trusted with it)
+    m = /^[A-Za-z]+,\s+([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*([APap][Mm])$/.exec(s);
+    if (m && MONTHS.hasOwnProperty(m[1].toLowerCase())) { t = hm(m[4], m[5], m[6].toLowerCase()); return new Date(+m[3], MONTHS[m[1].toLowerCase()], +m[2], t[0], t[1], 0); }
+    var d = new Date(s);
     return isNaN(d) ? new Date() : d;
   }
   // The x window for a range of days from the START of the series (the old page's rule).
@@ -107,11 +110,11 @@
       if (s.model === 'SWAN' && deps.swanStations && deps.swanStations.indexOf(s.station) < 0) s.model = 'GFS';
       return s;
     }
-    function sync() { if (deps.replaceState) deps.replaceState(urlFor(state)); }
+    function sync() { if (deps.replaceState) deps.replaceState(urlFor(state, deps.saved ? deps.saved() : null)); }
     function apply(d) {
       if (d && typeof d.model === 'string') state.model = d.model.toUpperCase() === 'SWAN' ? 'SWAN' : 'GFS';   // the server's echo is authoritative
       sync();
-      deps.ui.apply(d, state);
+      deps.ui.apply(d, state, function () { return load({}); });
     }
     function load(next) {
       Object.assign(state, next || {});
@@ -129,7 +132,7 @@
       }).then(function (d) {
         if (my !== seq) return null;                                           // superseded: no DOM writes
         if (!d || typeof d !== 'object') throw new Error('bad forecast');
-        cache.set(key, { d: d, ts: deps.now() }); trim();
+        if (!(d.error && !d.table_html)) { cache.set(key, { d: d, ts: deps.now() }); trim(); }   // a failed build is not kept (the server does not keep it either)
         deps.ui.busy(false);
         apply(d);
         return d;
@@ -274,7 +277,8 @@
       var gd = data;
       rendering = deps.loadChartJs().then(function () {
         rendering = null;
-        if (data !== gd || !deps.visible()) return;                            // moved on, or hidden while Chart.js loaded
+        if (data !== gd) { if (!data) destroy(); else if (deps.visible()) return render(); return; }   // newer data landed meanwhile: draw that
+        if (!deps.visible()) return;                                            // hidden while Chart.js loaded: show() draws it later
         destroy();
         var parsed = gd.labels.map(parseLabel);
         charts = build(deps.getChart(), gd, parsed);
@@ -333,6 +337,7 @@
   FloatingWindow.prototype.setMode = function (mode) {
     if (mode !== 'min' && mode !== 'max' && mode !== 'normal') return;
     if (mode === 'min' && this.mode !== 'min') this.prev = this.mode;
+    if (mode !== 'min' && this.mode === 'min') this._expandedAt = Date.now();
     this.mode = mode; this._applyMode(); this._save();
     if (mode !== 'min' && this.d.onResize) this.d.onResize();
   };
@@ -380,10 +385,16 @@
     d.header.addEventListener('dblclick', function (e) {
       if (e.target && e.target.closest && e.target.closest('button, a, input, select')) return;
       if (self.isPhone()) return;
-      if (self.mode === 'min') self.expand(); else self.toggleMax();
+      if (self.mode === 'min') { self.expand(); return; }
+      if (Date.now() - (self._expandedAt || 0) < 600) return;                   // the first click of this double-click expanded the chip
+      self.toggleMax();
     });
     if (d.handle) d.handle.addEventListener('pointerdown', function (e) { if (self.mode === 'normal') drag(e, 'resize'); });
-    d.win.addEventListener('resize', function () { self.clamp(); if (self.mode !== 'min' && d.onResize) d.onResize(); });
+    d.win.addEventListener('resize', function () {
+      self.el.style.setProperty('--topbar-h', d.topBarHeight() + 'px');          // the bar's height changes with the width (the title hides on phones)
+      self.clamp();
+      if (self.mode !== 'min' && d.onResize) d.onResize();
+    });
   };
 
   // ---- the settings panel (Time Zone, Units under the gear) ----
@@ -413,7 +424,11 @@
       viewBar: $('viewBar'), modelBar: $('modelBar'), rangeBar: $('rangeBar'), body: $('fwBody'), error: $('fwError'), meta: $('forecastMeta'),
       table: $('forecastTable'), graphs: $('graphs'), handle: $('fwResize'), topBar: $('topBar'), tz: $('tz'), unit: $('unit'), station: $('station'), trigger: $('stationTrigger') };
     if (!els.win || !els.body || !els.table) return null;
-    var session = opts.storage || win.sessionStorage, local = opts.settings || win.localStorage;
+    function safeStorage(name) {
+      try { var st = win[name]; if (st && typeof st.getItem === 'function' && typeof st.setItem === 'function') return st; } catch (e) {}
+      return { getItem: function () { return null; }, setItem: function () {} };   // nothing remembered, nothing broken
+    }
+    var session = opts.storage || safeStorage('sessionStorage'), local = opts.settings || safeStorage('localStorage');
     var initial = opts.initial || {}, swanStations = initial.swan_stations || [];
     var state = resolveInitialState((win.location && win.location.search) || '', readJson(local, SETTINGS_KEY), initial);
     var fw = new FloatingWindow({ el: els.win, header: els.header, handle: els.handle, storage: session, win: win,
@@ -443,6 +458,9 @@
       var box = els.error; if (!box) return;
       clearNode(box);
       if (!msg) { box.hidden = true; return; }
+      var ld = $('forecastLoading'); if (ld && ld.parentNode) ld.parentNode.removeChild(ld);   // no spinner beside an error
+      var lbl = opts.stationLabel ? opts.stationLabel(state.station) : state.station;        // the header names the station the address bar shows
+      text(els.title, lbl); if (els.title) els.title.title = lbl;
       box.appendChild(doc.createTextNode(msg + ' '));
       if (retry) { var b = doc.createElement('button'); b.type = 'button'; b.className = 'btn btn-sm btn-outline-secondary'; b.textContent = 'Retry'; b.addEventListener('click', function () { retry(); }); box.appendChild(b); }
       box.hidden = false;
@@ -461,18 +479,23 @@
       replaceState: function (url) { try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
-            apply: function (d, st) {
+            apply: function (d, st, retry) {
               var avail = typeof d.swan_available === 'boolean' ? d.swan_available : swanStations.indexOf(st.station) >= 0;
               if (els.modelBar) { els.modelBar.hidden = !avail; pressed(els.modelBar, 'data-model', st.model); }
-              text(els.title, opts.stationLabel ? opts.stationLabel(st.station) : st.station);
-              text(els.cycle, shortCycle(st.model, d.graph_header));
+              var label = opts.stationLabel ? opts.stationLabel(st.station) : st.station, cyc = shortCycle(st.model, d.graph_header);
+              text(els.title, label); text(els.cycle, cyc);
+              if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = cyc;
               setMeta(d.graph_header);
               if (d.table_html) els.table.innerHTML = d.table_html;           // the server's own table (build_html_table)
               else { clearNode(els.table); var p = doc.createElement('div'); p.className = 'text-muted'; p.textContent = d.error || 'No forecast available.'; els.table.appendChild(p); }
-              if (d.error && d.table_html) showError(String(d.error), null); else if (d.error) showError(null, null);
+              if (d.error && !d.table_html) showError(String(d.error), retry || null);   // visible in both views, with Retry (a failed build is not cached)
+              else if (d.error) showError(String(d.error), null);
+              else showError(null, null);
               graphs.setData(d.graph_data);
               syncSelects();
-            } } }, state);
+              // the page's other parts (the model overlay's valid-time zone and run line) follow the forecast on screen
+              try { doc.dispatchEvent(new CustomEvent('allshore:forecast', { detail: { station: st.station, tz: d.tz_label || '', model: st.model, view: state.view } })); } catch (e) {}
+            } }, saved: function () { return readJson(local, SETTINGS_KEY); } }, state);
     function syncSelects() {
       if (els.station && els.station.value !== state.station) els.station.value = state.station;
       if (els.tz) {
@@ -489,13 +512,15 @@
       loader.sync();
       return g ? graphs.show() : Promise.resolve();
     }
+    // the element to give the focus back to: on screen, or none (a favourites button is hidden with its list)
+    function visible(el) { return !!el && el.isConnected !== false && el.offsetParent !== null && el !== doc.body; }
     function expand() {
-      if (fw.mode === 'min') { fw.opener = doc.activeElement; fw.expand(); }
+      if (fw.mode === 'min') { fw.opener = visible(doc.activeElement) ? doc.activeElement : null; fw.expand(); }
       if (state.view === 'Graph') graphs.show();
       if (els.header && els.header.focus) els.header.focus({ preventScroll: true });
     }
     function minimise() {
-      var back = fw.opener && fw.opener.isConnected ? fw.opener : els.trigger;
+      var back = visible(fw.opener) ? fw.opener : els.trigger;
       fw.minimise();
       if (back && back.focus) try { back.focus({ preventScroll: true }); } catch (e) {}
       fw.opener = null;

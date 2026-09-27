@@ -61,14 +61,16 @@ the Node tests in `tests/ui/`. `/api/forecast` also reports `model` (the model a
 
 The page (2026-09-26, plan section 25): the top bar is one row (brand, the station search with favourites, a settings
 gear whose panel holds Time Zone and Units); the forecast is a floating window (`#forecastWin`) that starts minimised in
-a new tab (a chip at the bottom-left on desktops, a bar along the bottom edge on phones; expanded it is a window on
-desktops and full-screen on phones), holds the View (Table / Graph) and Model (GFS / SWAN, only on SWAN stations) controls
+a new tab (a chip at the bottom-left on desktops, a bar along the bottom edge in phone mode = a viewport 500 px or
+less wide OR tall; expanded it is a window on desktops and full-screen in phone mode), holds the View (Table / Graph) and Model (GFS / SWAN, only on SWAN stations) controls
 in its toolbar, and is dragged by its header, resized by its corner handle, maximised under the top bar and minimised;
 Escape closes the live-buoy panel first, then minimises the window. Every change (a marker or favourites pick, model, view,
 time zone, units) applies in place: the module fetches `/api/forecast?compact=1` (one request per change, older responses
-dropped, a 10-minute client cache of 16 forecasts) and rewrites the address bar with `?station=` (and tz / unit / model /
-view when not the default), so links and bookmarks keep working and the page never reloads (the map, the overlay and the
-live panel stay as they are). A marker pick goes back to Buoy Local, a favourites pick keeps the zone, as before. State
+dropped, a 10-minute client cache of 16 forecasts; a failed build is never cached) and rewrites the address bar with
+`?station=` (tz and unit whenever they differ from the viewer's saved settings, so the address always reloads to the view on
+screen; model / view when not the default), so links and bookmarks keep working and the page never reloads (the map, the
+overlay and the live panel stay as they are; every landed forecast is announced as `allshore:forecast`, which the overlay
+uses to follow the table's zone and run). A marker pick goes back to Buoy Local, a favourites pick keeps the zone, as before. State
 precedence on load: the URL, then the viewer's saved settings (`localStorage 'allshore.settings.v1'` {tz, unit}), then the
 server's defaults; the window's geometry and mode live in `sessionStorage 'allshore.forecastWin.v1'`; the charts' range in
 `sessionStorage 'chartRange'` as before. The table is the compact form (short dates with the full date on hover, no info

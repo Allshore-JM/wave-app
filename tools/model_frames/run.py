@@ -176,10 +176,26 @@ def _store_from_env():
                                os.environ["R2_SECRET_ACCESS_KEY"]), os.environ["R2_BUCKET"])
 
 
+def ranges_key(fields):
+    """The encode ranges a run's frames were built with: ((name, lo, hi, circular), ...) from a manifest's
+    "fields" block (or encode.FIELDS); None when the block is missing (then only the fill is compared)."""
+    if not isinstance(fields, dict):
+        return None
+    out = []
+    for name in sorted(fields):
+        f = fields[name] if isinstance(fields[name], dict) else {}
+        try:
+            out.append((name, round(float(f.get("lo")), 9), round(float(f.get("hi")), 9), bool(f.get("circular"))))
+        except (TypeError, ValueError):
+            out.append((name, None, None, bool(f.get("circular"))))
+    return tuple(out)
+
+
 def fill_guard(store, run, live, partial):
     """None to go ahead, else the exit code. A run already published (complete manifest) with a
-    different fill is never rebuilt: its frame keys are immutable and cached for a year, so browsers
-    would mix differently built frames. If that run is simply not pointed to (the pointer write
+    different fill OR different encode ranges (plan section 27, G19-B P1: frames decoded with the other
+    range read 1.5x too high or too low) is never rebuilt: its frame keys are immutable and cached for a
+    year, so browsers would mix differently built frames. If that run is simply not pointed to (the pointer write
     failed, or latest.json was lost) and it is newer than the live run, the pointer is repaired to
     its existing manifest instead of failing on every tick."""
     try:
@@ -192,19 +208,23 @@ def fill_guard(store, run, live, partial):
     except Exception as exc:                                  # noqa: BLE001  transport: the next tick retries
         print(f"run {run}: could not read its published manifest ({exc.__class__.__name__}); retrying next tick")
         return 1
-    if mkey is None or E.fill_key(man.get("fill")) == E.fill_key(E.FILL_INFO):
+    same_fill = E.fill_key(man.get("fill")) == E.fill_key(E.FILL_INFO) if mkey is not None else True
+    old_ranges = ranges_key(man.get("fields")) if mkey is not None else None
+    same_ranges = old_ranges is None or old_ranges == ranges_key(E.FIELDS)
+    if mkey is None or (same_fill and same_ranges):
         return None
+    what = ("fill " + str(E.fill_key(man.get("fill")))) if not same_fill else "other encode ranges"
     usable = (man.get("run") == run and man.get("encoding") == E.ENCODING and man.get("complete") is True
               and isinstance(man.get("frames"), list) and len(man["frames"]) == len(F.STEPS)
               and isinstance(man.get("published_utc"), str))
     if not partial and usable and (not live or run > live):
         P.point_to(store, run, mkey, man)
-        msg = f"run {run} already has a complete manifest built with fill {E.fill_key(man.get('fill'))}; pointer repaired to {mkey}"
+        msg = f"run {run} already has a complete manifest built with {what}; pointer repaired to {mkey}"
         print(msg)
         _summary(msg)
         return 0
-    msg = (f"run {run} was published with fill {E.fill_key(man.get('fill'))}; refusing to rewrite its frames "
-           f"with fill {E.fill_key(E.FILL_INFO)}")
+    msg = (f"run {run} was published with {what}; refusing to rewrite its frames "
+           f"with fill {E.fill_key(E.FILL_INFO)} and the current encode ranges")
     print(msg)
     _summary("WARNING: " + msg)
     return 2
@@ -301,7 +321,10 @@ def main(argv=None):
     # how often a field reached its encode top (the readout then says ">= top"): the ranges are chosen to make this rare
     tops = {n: sum(f["fields"].get(n, {}).get("clamped_high", 0) or 0 for f in manifest["_stats"]["frames"]) for n in ("hs", "tp", "wind")}
     peaks = {n: max((f["fields"].get(n, {}).get("max") or 0) for f in manifest["_stats"]["frames"]) for n in ("hs", "tp", "wind")}
-    _summary("field peaks: " + ", ".join(f"{n} {peaks[n]:.2f} (top {E.FIELDS[n]['hi']:.2f}, {tops[n]} clamped cell-frames)" for n in tops))
+    site = {"hs": (1 / 0.3048, "ft"), "tp": (1.0, "s"), "wind": (1 / E.KT, "kt")}
+    _summary("field peaks: " + ", ".join(
+        f"{n} {peaks[n] * site[n][0]:.1f} {site[n][1]} (top {E.FIELDS[n]['hi'] * site[n][0]:.1f} {site[n][1]}, {tops[n]} clamped cell-frames)"
+        for n in tops))
     bad = [f["step"] for f in manifest["_stats"]["frames"] if f.get("pdir_mask_mismatch")]
     if bad:
         _summary(f"WARNING: wave direction and wave height cover different cells at {len(bad)} steps (first f{bad[0]:03d})")

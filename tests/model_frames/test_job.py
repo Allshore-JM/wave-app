@@ -1111,3 +1111,23 @@ def test_plan_27_ranges_wave_height_to_75_ft_legend_60_ft_wind_to_120_kt():
     assert abs(E.dequantize(q, hs["lo"], hs["hi"])[0, 0] - 19.09) <= E.quantum(hs["lo"], hs["hi"]) / 2 + 1e-9
     assert E.quantum(hs["lo"], hs["hi"]) / 0.3048 < 0.30
     assert E.quantize(np.array([[54.2]]), wind["lo"], wind["hi"])[0, 0] < 255, "105 kt is stored, not clamped"
+
+def test_g19_b_a_run_built_under_other_encode_ranges_is_never_rewritten(monkeypatch, capsys):
+    """Plan section 27 (G19-B P1): same fill, other hs range -> the pointer is repaired when the old manifest is
+    usable, otherwise nothing is rewritten, --force included; a manifest without a fields block keeps today's rule."""
+    c = FakeClient()
+    _env(monkeypatch, c)
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    old_fields = {n: dict(f) for n, f in E.FIELDS.items()}
+    old_fields["hs"] = dict(old_fields["hs"], hi=15.0, legend=[0.0, 12.0])
+    old = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": [{"step": 0}] * len(F.STEPS),
+           "published_utc": "2026-09-22T18:00:00Z", "fill": E.FILL_INFO, "fields": old_fields}
+    _manifest(c, "2026092212", "20260922T180000Z", old)
+    c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026092212","complete":true}', "ct": "", "cc": ""}
+    assert R.main(["--force"]) == 2 and "other encode ranges" in capsys.readouterr().out
+    assert not [k for op, k in c.log if op == "put" and k.endswith(".png")], "no frame rewritten"
+    assert R.ranges_key(old_fields) != R.ranges_key(E.FIELDS)
+    assert R.ranges_key({n: dict(f) for n, f in E.FIELDS.items()}) == R.ranges_key(E.FIELDS), "a manifest round trip compares equal"
+    import json as _json
+    assert R.ranges_key(_json.loads(_json.dumps({n: {k: (list(v) if isinstance(v, tuple) else v) for k, v in f.items()} for n, f in E.FIELDS.items()}))) == R.ranges_key(E.FIELDS)
+    assert R.ranges_key(None) is None

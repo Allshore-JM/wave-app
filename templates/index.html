@@ -2469,6 +2469,8 @@
 
       refreshCurrent();
     })();
+    // the picker just made the forecast bar taller: in phone mode the map's height follows (same width: no view reset)
+    if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();
 
     function addLiveBuoyLayer() {
       // Merged worldwide live-buoy feed (NDBC + CDIP + AODN + QLD + AusWaves), deduped.

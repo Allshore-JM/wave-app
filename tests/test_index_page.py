@@ -135,7 +135,7 @@ def test_phone_sheets_sit_above_the_map_controls_and_the_no_js_page_shows_its_co
     phone = body[body.index("@media (max-width: 500px), (max-height: 500px) {"):]
     sheet = re.search(r"\.fwin:not\(\.fw-min\) \{ z-index: (\d+); \}", phone).group(1)
     assert int(sheet) > int(corner) > 2100 and int(corner) == 2600
-    assert ".live-win.fw-min { bottom: 48px !important; }" in phone
+    assert ".live-win.fw-min { bottom: var(--fw-bar-h, 48px) !important; }" in phone
     assert "html:not(.js) .settings-panel[hidden] { display: flex !important; }" in body
     assert "html:not(.js) #pageHead { display: flex;" in body and ".js #pageHead { display: none; }" in body
     assert "html:not(.js) #forecastTable[hidden] { display: block !important; }" in body

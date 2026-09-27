@@ -13,7 +13,8 @@
   'use strict';
 
   var KEY = 'allshore.gridlines.v1';
-  var STEPS = [60, 30, 15, 10, 5];                   // every one divides 360; never finer than 5 degrees (owner)
+  var STEPS = [60, 30, 15, 10, 5, 2];                // every one divides 360
+  var CLOSE_ZOOM = 7;                                // 2-degree lines only from this tile zoom in (owner: 5 degrees before)
   var MIN_PX = 70;                                   // the closest two lines may be on screen at the tile zoom
   var TILE = 256;
   var LAT_MAX = 85.05112878;                         // Web Mercator's edge
@@ -22,7 +23,10 @@
   function worldSize(z) { return TILE * Math.pow(2, z); }
   function stepFor(z) {
     var size = worldSize(z);
-    for (var i = STEPS.length - 1; i >= 0; i--) if (STEPS[i] / 360 * size >= MIN_PX) return STEPS[i];   // the finest that is not crowded
+    for (var i = STEPS.length - 1; i >= 0; i--) {
+      if (STEPS[i] < 5 && z < CLOSE_ZOOM) continue;
+      if (STEPS[i] / 360 * size >= MIN_PX) return STEPS[i];                                          // the finest that is not crowded
+    }
     return STEPS[0];
   }
   // latitude -> world pixel y at zoom z (spherical Mercator, as Leaflet's EPSG:3857)
@@ -172,7 +176,7 @@
 
   root.AllshoreGraticule = {
     create: create,
-    _internals: { KEY: KEY, STEPS: STEPS, MIN_PX: MIN_PX, stepFor: stepFor, latToY: latToY, yToLat: yToLat, lonToX: lonToX, xToLon: xToLon,
+    _internals: { KEY: KEY, STEPS: STEPS, MIN_PX: MIN_PX, CLOSE_ZOOM: CLOSE_ZOOM, stepFor: stepFor, latToY: latToY, yToLat: yToLat, lonToX: lonToX, xToLon: xToLon,
                   tileLines: tileLines, lonLabel: lonLabel, latLabel: latLabel, labelsFor: labelsFor, readOn: readOn, writeOn: writeOn, overlaps: overlaps }
   };
 })(typeof window !== 'undefined' ? window : this);

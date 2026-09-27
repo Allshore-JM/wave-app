@@ -72,5 +72,5 @@ def test_api_forecast_compact_is_opt_in(monkeypatch):
 def test_compact_table_abbreviates_the_combined_header_only():
     compact = A.build_html_table("c", "l", "", [], "Pacific/Honolulu", "US", compact=True)
     full = A.build_html_table("c", "l", "", [], "Pacific/Honolulu", "US")
-    assert '<abbr title="Combined sea">Comb.</abbr>' in compact and ">Combined</th>" not in compact
+    assert '<abbr title="Combined sea" aria-label="Combined">Comb.</abbr>' in compact and ">Combined</th>" not in compact
     assert ">Combined</th>" in full and "Comb." not in full

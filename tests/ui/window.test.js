@@ -550,3 +550,19 @@ test('PR C: the arrow keys on the focused resize handle resize the normal window
   assert.equal(key('Enter'), false, 'other keys pass through');
   fw.setMode('max'); const w0 = fw.geom.w; key('ArrowRight'); assert.equal(fw.geom.w, w0, 'maximised: no resize');
 });
+
+test('G17: the keyboard resize resizes the charts too and does nothing minimised or in phone mode; an early HTTP error shows Retry, which fetches afresh', async () => {
+  const b = boot({}); await settle(); b.fs_.last().release(payload()); await settle();
+  const fw = b.app.window; fw.setMode('normal'); fw._place({ x: 100, y: 100, w: 600, h: 400 });
+  let resized = 0; const orig = b.app.graphs.resize; b.app.graphs.resize = () => { resized++; return orig(); };
+  b.app.setView('Graph'); await settle(); resized = 0;
+  const h = b.doc.getElementById('fwResize'), key = (k) => h.dispatch('keydown', { key: k, preventDefault: () => {} });
+  key('ArrowRight'); assert.equal(resized, 1, 'the charts follow a keyboard resize');
+  fw.setMode('min'); const g = { ...fw.geom }; key('ArrowRight'); assert.deepEqual(fw.geom, g, 'minimised: nothing');
+  fw.setMode('normal'); b.win.matchMedia = () => ({ matches: true }); key('ArrowRight'); assert.deepEqual(fw.geom, g, 'phone mode: nothing');
+  const c = boot({ search: '?station=51201', early: { forecast: { q: 'station=51201&tz=&unit=US&model=GFS&compact=1', p: Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) }) } } });
+  await settle(); assert.equal(c.fs_.calls.length, 0);
+  const box = c.doc.getElementById('fwError'); assert.equal(box.hidden, false);
+  box.querySelectorAll('button')[0].dispatch('click'); await settle();
+  assert.equal(c.fs_.calls.length, 1, 'Retry fetches afresh (the early response is spent)');
+});

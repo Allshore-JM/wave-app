@@ -22,15 +22,16 @@
     // a wrong forecast. Not for ?render=full (the table is in the page).
     (function () {
       try {
-        var p = new URLSearchParams(location.search), st = {};
+        var p = new URLSearchParams(location.search), st = {}, swan = {{ initial_state.swan_stations|tojson }};
         if (p.get('render') === 'full') return;
         try { var o = JSON.parse(localStorage.getItem('allshore.settings.v1') || '{}'); if (o && typeof o === 'object') st = o; } catch (e) {}
         var unit = p.has('unit') ? p.get('unit') : (typeof st.unit === 'string' ? st.unit : 'US');
+        var station = p.get('station') || '51201';
         var q = new URLSearchParams({
-          station: p.get('station') || '51201',
+          station: station,
           tz: p.has('tz') ? p.get('tz') : (typeof st.tz === 'string' ? st.tz : ''),
           unit: unit === 'Metric' ? 'Metric' : 'US',
-          model: (p.get('model') || 'GFS').toUpperCase() === 'SWAN' ? 'SWAN' : 'GFS',
+          model: (p.get('model') || 'GFS').toUpperCase() === 'SWAN' && swan.indexOf(station) >= 0 ? 'SWAN' : 'GFS',   // the loader's normalise()
           compact: '1'
         }).toString();
         var f = fetch('/api/forecast?' + q);
@@ -605,7 +606,7 @@
           <div class="chart-box"><canvas id="directionChart"></canvas></div>
         </div>
       </div>
-      <div id="fwResize" class="fw-resize" tabindex="0" role="button" aria-label="Resize the forecast window (arrow keys)" title="Drag or use the arrow keys to resize"></div>
+      <div id="fwResize" class="fw-resize" tabindex="0" role="img" aria-label="Resize the forecast window with the arrow keys" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" title="Drag or use the arrow keys to resize"></div>
     </section>
   </div>
 

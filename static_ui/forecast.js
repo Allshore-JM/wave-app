@@ -20,7 +20,7 @@
   var SETTINGS_KEY = 'allshore.settings.v1';   // localStorage {tz, unit}
   var WINDOW_KEY = 'allshore.forecastWin.v1';  // sessionStorage {x, y, w, h, mode, prev}
   var RANGE_KEY = 'chartRange';                // sessionStorage 'full' | '7' | '3' (unchanged from the old page)
-  var UNITS = { US: 1, Metric: 1 };
+  function isUnit(u) { return u === 'US' || u === 'Metric'; }   // (an object lookup matched 'constructor' and the like)
   var CACHE_MAX = 16, CACHE_TTL_MS = 10 * 60 * 1000;
   var MIN_SIZE = { w: 360, h: 220 };
   var PHONE_QUERY = '(max-width: 500px), (max-height: 500px)';   // "phone mode": a bar + full screen, no drag / resize
@@ -35,7 +35,7 @@
     return {
       station: p.get('station') || sv.station || '51201',
       tz: p.has('tz') ? p.get('tz') : (typeof st.tz === 'string' ? st.tz : (sv.tz || '')),
-      unit: UNITS[unit] ? unit : 'US',
+      unit: isUnit(unit) ? unit : 'US',
       model: (p.get('model') || sv.model || 'GFS').toUpperCase() === 'SWAN' ? 'SWAN' : 'GFS',
       view: (p.get('view') || sv.view) === 'Graph' ? 'Graph' : 'Table'
     };
@@ -48,7 +48,7 @@
   // would assume (the viewer's saved settings, else Buoy Local / US: resolveInitialState's rule, so the
   // address always reloads to the view on screen); model and view when not the default.
   function urlFor(s, saved) {
-    var st = saved || {}, tz0 = typeof st.tz === 'string' ? st.tz : '', unit0 = UNITS[st.unit] ? st.unit : 'US';
+    var st = saved || {}, tz0 = typeof st.tz === 'string' ? st.tz : '', unit0 = isUnit(st.unit) ? st.unit : 'US';
     var p = new URLSearchParams({ station: s.station });
     if ((s.tz || '') !== tz0) p.set('tz', s.tz || '');
     if (s.unit !== unit0) p.set('unit', s.unit);
@@ -557,7 +557,7 @@
     function saveSettings() { writeJson(local, SETTINGS_KEY, { tz: state.tz, unit: state.unit }); }
     // the settings are saved BEFORE the load, so the address bar names nothing a reload would not assume anyway
     if (els.tz) els.tz.addEventListener('change', function () { state.tz = els.tz.value || ''; saveSettings(); loader.load({}); });
-    if (els.unit) els.unit.addEventListener('change', function () { state.unit = UNITS[els.unit.value] ? els.unit.value : 'US'; saveSettings(); loader.load({}); });
+    if (els.unit) els.unit.addEventListener('change', function () { state.unit = isUnit(els.unit.value) ? els.unit.value : 'US'; saveSettings(); loader.load({}); });
     doc.addEventListener('allshore:station', function (e) {
       var det = e.detail || {}, sid = String(det.sid || ''); if (!sid) return;
       var next = { station: sid }; if (det.source === 'map') next.tz = '';    // a map pick goes back to Buoy Local, as before

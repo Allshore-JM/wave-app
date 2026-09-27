@@ -155,6 +155,7 @@ def test_pr_c_polish_markup(client):
     head = body[:body.index("</head>")]
     assert "// ---- early forecast" in head and "fetch('/api/forecast?' + q)" in head and "window.__early.forecast = { q: q, p: f };" in head
     assert "early: window.__early" in body
-    assert re.search(r'id="fwResize" class="fw-resize" tabindex="0" role="button" aria-label="[^"]+"', body)
+    assert re.search(r'id="fwResize" class="fw-resize" tabindex="0" role="img" aria-label="[^"]+" aria-keyshortcuts="', body)
+    assert 'swan = ["' in head, "the head knows the SWAN stations (a SWAN link elsewhere is fetched as GFS, like the loader)"
     assert body.index(".forecast-win.fw-front { z-index: 2100; }") < body.index(".forecast-win:not(.fw-min) { z-index: 3500; }")
     assert "new CustomEvent('allshore:livepanel')" in body and "document.addEventListener('allshore:livepanel', function () { front(false); });" in body

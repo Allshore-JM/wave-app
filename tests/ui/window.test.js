@@ -715,3 +715,16 @@ test('G18b-A: a pointerdown or a double-click on the favourites list never drags
   fw._expandedAt = 0; b.page.header.dispatch('dblclick', { target: item }); assert.equal(fw.mode, 'normal', 'no maximise from the list');
   fw.setMode('min'); b.page.header.dispatch('click', { target: item }); assert.equal(fw.mode, 'min', 'a click inside the list does not expand the chip');
 });
+
+test('plan section 27: a forecast with wind gaps is kept a minute, not ten (a transient NOAA miss heals on the next pick)', async () => {
+  let now = 1000;
+  const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), u = ui();
+  const st = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => now, replaceState: () => {}, swanStations: ['51201'], ui: u.ui }, st);
+  L.load({}); await settle(); fs_.last().release(payload({ wind_complete: false })); await settle();
+  assert.equal(I.ttlOf({ wind_complete: false }), 60 * 1000); assert.equal(I.ttlOf({ wind_complete: true }), 10 * 60 * 1000); assert.equal(I.ttlOf({}), 10 * 60 * 1000);
+  now += 30 * 1000; L.load({}); await settle(); assert.equal(fs_.calls.length, 1, 'within the minute: cached');
+  now += 31 * 1000; L.load({}); await settle(); assert.equal(fs_.calls.length, 2, 'after the minute: fetched again');
+  fs_.last().release(payload({ wind_complete: true })); await settle();
+  now += 5 * 60 * 1000; L.load({}); await settle(); assert.equal(fs_.calls.length, 2, 'a complete forecast keeps the 10-minute cache');
+});

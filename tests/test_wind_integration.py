@@ -194,3 +194,75 @@ def test_graph_data_has_no_wind_keys(monkeypatch):
     assert "wind" not in gd and "wind_speed" not in gd
     # combined read from row[-1], not the wind column
     assert gd["height"]["combined"] == [4.17, 5.25]
+
+# --------------------------- SWAN back-fill (plan section 27) ------------------
+
+SWAN_FIX = os.path.join(FIX, "swan_buoy_sample.table")   # shown rows 12Z-20Z July 3 2026 (after the 6 h spin-up)
+
+
+def _swan(monkeypatch, latest, older, station="51201"):
+    """parse_swan with the latest GFS run covering 18Z onward and the pinned 12Z run (if given) covering 12Z-20Z."""
+    text = open(SWAN_FIX).read()
+    calls = []
+    monkeypatch.setattr(app.HTTP, "get", lambda *a, **k: _Resp(text))
+
+    def fake_wind(sid, date_str=None, run_str=None, keep_s=None):
+        calls.append((sid, date_str, run_str, keep_s))
+        return dict(latest) if date_str is None else dict(older)
+    monkeypatch.setattr(app, "get_station_wind", fake_wind)
+    return app.parse_swan(station, None), calls
+
+
+LATEST = {datetime(2026, 7, 3, h): (9.5, 45.0) for h in range(18, 24)}
+OLDER = {datetime(2026, 7, 3, h): (6.0, 90.0) for h in range(12, 24)}
+
+
+@pytest.mark.parametrize("station", sorted(app.SWAN_STATIONS))
+def test_swan_rows_before_the_latest_gfs_run_get_wind_from_the_earlier_run(monkeypatch, station):
+    (_, _, _, rows, _, err), calls = _swan(monkeypatch, LATEST, OLDER, station)
+    assert err is None and rows
+    assert all(r[20] is not None and r[21] is not None for r in rows), "every SWAN row has wind"
+    assert rows[0][20] == 6.0 and rows[0][21] == 90, "12Z: the earlier run"
+    assert rows[-1][20] == 9.5 and rows[-1][21] == 45, "20Z: the latest run wins where both cover it"
+    assert (station, "20260703", "12", app._WIND_PAST_RUN_TTL) in calls, "the cycle containing the first shown row, kept for hours"
+
+
+def test_swan_back_fill_fails_soft_and_is_skipped_when_not_needed(monkeypatch):
+    (_, _, _, rows, _, err), calls = _swan(monkeypatch, LATEST, {})
+    assert err is None
+    assert rows[0][20] is None and rows[-1][20] == 9.5, "no earlier run: the early rows stay blank as before"
+    with app._CACHE_LOCK:
+        app._FORECAST_CACHE.clear()
+    covering = {datetime(2026, 7, 3, h): (7.0, 10.0) for h in range(12, 24)}
+    (_, _, _, rows, _, _), calls = _swan(monkeypatch, covering, OLDER)
+    assert len(calls) == 1 and rows[0][20] == 7.0, "the latest run already covers the first row: no second fetch"
+    with app._CACHE_LOCK:
+        app._FORECAST_CACHE.clear()
+    (_, _, _, rows, _, _), calls = _swan(monkeypatch, {}, OLDER)
+    assert len(calls) == 1 and all(r[20] is None for r in rows), "the latest run failed: no back-fill attempt (fail soft)"
+    assert app._swan_first_row_utc("% header\n\n20260703.060000 1 2\n") == datetime(2026, 7, 3, 12)
+    assert app._swan_first_row_utc("% only comments\n") is None
+
+
+def test_wind_keep_s_sets_the_positive_ttl_and_non_200_is_logged(monkeypatch, caplog):
+    spec = open(os.path.join(FIX, "gfswave_spec_sample.spec"), "rb").read()
+    monkeypatch.setattr(app.HTTP, "get", lambda *a, **k: _spec_resp(200, spec))
+    app.get_station_wind("51201", "20260703", "12", keep_s=app._WIND_PAST_RUN_TTL)
+    assert app._WIND_CACHE[("51201", "20260703", "12")]["ttl"] == app._WIND_PAST_RUN_TTL
+    monkeypatch.setattr(app.HTTP, "get", lambda *a, **k: _spec_resp(404, b""))
+    with caplog.at_level("WARNING"):
+        assert app.get_station_wind("51202", "20260703", "12", keep_s=app._WIND_PAST_RUN_TTL) == {}
+    assert app._WIND_CACHE[("51202", "20260703", "12")]["ttl"] == app._WIND_NEG_TTL, "a failure is never kept for hours"
+    assert any("wind spec HTTP 404 for 51202" in r.getMessage() for r in caplog.records)
+
+
+def test_payload_reports_whether_every_row_has_wind(monkeypatch):
+    text = open(SWAN_FIX).read()
+    monkeypatch.setattr(app.HTTP, "get", lambda *a, **k: _Resp(text))
+    monkeypatch.setattr(app, "get_station_wind", lambda sid, d=None, r=None, keep_s=None: dict(LATEST if d is None else OLDER))
+    monkeypatch.setattr(app, "resolve_model", lambda s, m: "SWAN")
+    assert app.compute_forecast_payload("51201", None, "US", "SWAN", compact=True)["wind_complete"] is True
+    with app._CACHE_LOCK:
+        app._FORECAST_CACHE.clear()
+    monkeypatch.setattr(app, "get_station_wind", lambda sid, d=None, r=None, keep_s=None: dict(LATEST if d is None else {}))
+    assert app.compute_forecast_payload("51201", None, "US", "SWAN", compact=True)["wind_complete"] is False

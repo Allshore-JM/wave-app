@@ -270,7 +270,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.9.3"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.9.4"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript"}
 
@@ -321,9 +321,9 @@ def _forecast_entry_ttl(data) -> int:
     """Cache lifetime for a clean forecast. Short (=_WIND_NEG_TTL) when the Wind
     column came back entirely blank -- i.e. the .spec lagged the .bull at a cycle
     rollover -- so wind re-joins within minutes instead of being pinned blank for
-    the full 30 min. (SWAN's early hindcast rows are always blank, but its
-    forward rows carry wind when the fetch worked, so all-blank still uniquely
-    means the wind fetch failed.)"""
+    the full 30 min. (SWAN's early rows carry wind from the earlier GFS cycle since
+    plan section 27, and its forward rows from the latest one, so all-blank still
+    uniquely means the wind fetch failed.)"""
     rows = data[3] if data and len(data) > 3 else None
     if rows and all(len(r) > 20 and r[20] is None for r in rows):
         return _WIND_NEG_TTL
@@ -669,6 +669,7 @@ _WIND_CACHE = {}            # (station_id, date_str, run_str) -> {"ts", "data", 
 _WIND_CACHE_TTL = 30 * 60   # aligned with _FORECAST_CACHE / _RUN_CACHE
 _WIND_NEG_TTL = 5 * 60      # failed/empty fetches retry sooner (spec can publish after bulls)
 _WIND_CACHE_MAX = 64
+_WIND_PAST_RUN_TTL = 6 * 3600  # a past cycle's spec never changes (the SWAN back-fill, plan section 27)
 _WIND_INFLIGHT = {}         # key -> Lock: collapse concurrent cold misses (singleflight)
 
 # Bounds on the streaming .spec download so a stuck/corrupt/huge NOMADS response
@@ -761,7 +762,7 @@ def _parse_spec_wind_text(lines):
 
 
 def get_station_wind(station_id: str, date_str: str | None = None,
-                     run_str: str | None = None) -> dict:
+                     run_str: str | None = None, keep_s: int | None = None) -> dict:
     """Cached GFS wind time series for a station, from its gfswave .spec file.
 
     Pass (date_str, run_str) to pin the exact cycle (the GFS parser does, so
@@ -770,6 +771,8 @@ def get_station_wind(station_id: str, date_str: str | None = None,
     failed; blank wind cells are the worst case. Empty results are cached with
     the shorter _WIND_NEG_TTL so a transient miss recovers quickly without
     re-attempting a 7.75MB download on every click.
+    keep_s: how long a successful fetch stays cached (default _WIND_CACHE_TTL); a past run's spec never
+    changes, so the SWAN back-fill keeps it for hours (plan section 27).
     """
     try:
         if not date_str or not run_str:
@@ -815,11 +818,15 @@ def get_station_wind(station_id: str, date_str: str | None = None,
                             wind = _parse_spec_wind_text(_bounded_spec_lines(resp))
                         finally:
                             killer.cancel()
+                    else:
+                        # logged so a blank Wind column can be traced afterwards (plan section 27)
+                        logger.warning("wind spec HTTP %s for %s (run %s %sZ)", resp.status_code,
+                                       station_id, date_str, run_str)
             except Exception as exc:
                 logger.warning("wind spec fetch failed for %s: %r", station_id, exc)
                 wind = {}
 
-            ttl = _WIND_CACHE_TTL if wind else _WIND_NEG_TTL
+            ttl = (keep_s or _WIND_CACHE_TTL) if wind else _WIND_NEG_TTL
             with _CACHE_LOCK:
                 _WIND_CACHE[key] = {"ts": time.time(), "data": wind, "ttl": ttl}
                 _evict_oldest(_WIND_CACHE, _WIND_CACHE_MAX)
@@ -1298,12 +1305,34 @@ def _parse_swan_uncached(station_id: str, target_tz_name: str | None = None):
         except Exception:
             updated_utc = None
 
-    # GFS wind for the Wind columns (latest cycle; SWAN's early hindcast hours
-    # predate it and simply render blank). {} on failure -- never blocks waves.
+    # GFS wind for the Wind columns: the latest cycle, plus (plan section 27) the earlier cycle that covers the
+    # SWAN rows predating it -- the PacIOOS table starts at 06Z of its publish day, up to ~30 h before the latest
+    # GFS run, and those rows used to render blank. The newest run wins where both cover an hour. {} on any
+    # failure -- never blocks waves; a failed back-fill leaves those early rows blank as before.
     wind_map = get_station_wind(station_id)
+    first_utc = _swan_first_row_utc(resp.text)
+    if wind_map and first_utc is not None and first_utc < min(wind_map):
+        cycle = first_utc - timedelta(hours=first_utc.hour % 6)
+        older = get_station_wind(station_id, cycle.strftime("%Y%m%d"), cycle.strftime("%H"),
+                                 keep_s=_WIND_PAST_RUN_TTL)
+        if older:
+            wind_map = {**older, **wind_map}
 
     return _parse_swan_table_text(resp.text, station_id, target_tz_name, updated_utc,
                                   wind=wind_map)
+
+
+def _swan_first_row_utc(text: str):
+    """UTC time of the first row the SWAN table shows (its first data time + the 6 h spin-up it drops), or None."""
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("%"):
+            continue
+        try:
+            return datetime.strptime(s.split()[0], "%Y%m%d.%H%M%S") + timedelta(hours=6)
+        except (ValueError, IndexError):
+            continue
+    return None
 
 
 def _parse_swan_table_text(text: str, station_id: str,
@@ -1317,9 +1346,8 @@ def _parse_swan_table_text(text: str, station_id: str,
       HsPT01..06[m]  TpPT01..06[s]  DrPT01..06[deg]
     Output rows (23 cols, heights in FEET -- identical to the GFS shape):
       [date_str, time_str, s1_hs_ft..s6_dir, wind_u10_ms, wind_dir_deg, combined_hs_ft]
-    wind: optional {utc datetime: (u10_ms, udir_deg)} from get_station_wind();
-    SWAN rows predating the GFS cycle (early hindcast hours) simply miss the
-    dict and render blank wind cells.
+    wind: optional {utc datetime: (u10_ms, udir_deg)} from get_station_wind() (the latest GFS cycle merged with
+    the earlier one covering the first rows); an hour the dict does not cover renders blank wind cells.
     """
     M_TO_FT = 3.28084
 
@@ -1682,6 +1710,8 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     # anywhere in the run (a series costs no width). The classic (non-compact) table keeps all six for old clients.
     present = _swell_groups(rows) or [0]
     week = _swell_groups(rows, days=7) or present
+    # every row has wind (a transient NOAA miss leaves gaps: the page keeps such a forecast for a minute only)
+    out["wind_complete"] = all(len(r) > 21 and r[20] is not None for r in rows)
     out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit, compact=compact,
                                          groups=week if compact else None)
 

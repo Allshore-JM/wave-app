@@ -270,7 +270,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.9.5"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.9.6"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript"}
 
@@ -318,14 +318,13 @@ _FORECAST_CACHE_MAX = 64
 
 
 def _forecast_entry_ttl(data) -> int:
-    """Cache lifetime for a clean forecast. Short (=_WIND_NEG_TTL) when the Wind
-    column came back entirely blank -- i.e. the .spec lagged the .bull at a cycle
-    rollover -- so wind re-joins within minutes instead of being pinned blank for
-    the full 30 min. (SWAN's early rows carry wind from the earlier GFS cycle since
-    plan section 27, and its forward rows from the latest one, so all-blank still
-    uniquely means the wind fetch failed.)"""
+    """Cache lifetime for a clean forecast. Short (=_WIND_NEG_TTL) when any row of the
+    Wind column came back blank -- the .spec lagged the .bull at a cycle rollover, or
+    the SWAN back-fill from the earlier GFS cycle failed (plan section 27, G19-A P2-1)
+    -- so wind re-joins within minutes instead of being pinned incomplete for the full
+    30 min (the page asks again after a minute: wind_complete false)."""
     rows = data[3] if data and len(data) > 3 else None
-    if rows and all(len(r) > 20 and r[20] is None for r in rows):
+    if rows and any(len(r) <= 20 or r[20] is None for r in rows):
         return _WIND_NEG_TTL
     return _FORECAST_CACHE_TTL
 
@@ -668,7 +667,7 @@ def get_latest_run():
 _WIND_CACHE = {}            # (station_id, date_str, run_str) -> {"ts", "data", "ttl"}
 _WIND_CACHE_TTL = 30 * 60   # aligned with _FORECAST_CACHE / _RUN_CACHE
 _WIND_NEG_TTL = 5 * 60      # failed/empty fetches retry sooner (spec can publish after bulls)
-_WIND_CACHE_MAX = 64
+_WIND_CACHE_MAX = 128          # the 12 SWAN points hold two runs each (the back-fill, plan section 27)
 _WIND_PAST_RUN_TTL = 6 * 3600  # a past cycle's spec never changes (the SWAN back-fill, plan section 27)
 _WIND_INFLIGHT = {}         # key -> Lock: collapse concurrent cold misses (singleflight)
 
@@ -1851,7 +1850,8 @@ def index():
     }
     if payload:                                                # render=full: the window shows this without a fetch
         initial_state.update({"graph_data": payload["graph_data"], "graph_header": payload["graph_header"],
-                              "error": payload["error"], "model": payload["model"]})
+                              "error": payload["error"], "model": payload["model"],
+                              "wind_complete": payload.get("wind_complete", True)})
 
     return render_template(
         "index.html",

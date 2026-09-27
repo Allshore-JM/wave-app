@@ -124,9 +124,12 @@ def test_phone_sheets_sit_above_the_top_bar_and_the_no_js_page_shows_its_control
     body = client.get("/?station=51201&view=Graph").get_data(as_text=True)
     bar = re.search(r"\.top-bar \{[^}]*z-index: (\d+)", body).group(1)
     phone = body[body.index("@media (max-width: 500px), (max-height: 500px) {"):]
-    sheet = re.search(r"\.forecast-win:not\(\.fw-min\), #liveBuoyPanel \{ z-index: (\d+); \}", phone).group(1)
+    sheet = re.search(r"\.forecast-win:not\(\.fw-min\) \{ z-index: (\d+); \}", phone).group(1)
     assert int(sheet) > int(bar) == 3000
     assert "html:not(.js) .settings-panel[hidden] { display: flex !important; }" in body
     assert "html:not(.js) #forecastTable[hidden] { display: block !important; }" in body
     assert "html:not(.js) .forecast-win { position: static !important; width: auto !important; max-width: none;" in body
     assert "view=Table&amp;render=full" in body and "view=Graph&amp;render=full" not in body
+    live = re.search(r"@media \(max-width: 500px\) \{\s*#liveBuoyPanel \{\s*z-index: (\d+);", body).group(1)
+    assert int(live) > int(bar), "the full-screen live panel outranks the bar (only where it is full screen)"
+    assert "#forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }" in body[body.index("@media print"):]

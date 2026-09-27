@@ -144,7 +144,7 @@
       });
     }
     // A forecast the page already rendered (render=full): cached and shown, no fetch.
-    function seed(d) { cache.set(keyOf(state), { d: d, ts: deps.now() }); trim(); apply(d); }
+    function seed(d) { if (!(d.error && !d.table_html)) { cache.set(keyOf(state), { d: d, ts: deps.now() }); trim(); } apply(d); }
     return { load: load, seed: seed, state: state, cache: cache, sync: sync };
   }
 
@@ -554,7 +554,7 @@
     syncSelects();
     setView(state.view);
     if (initial.inline) {
-      loader.seed({ table_html: els.table.innerHTML, graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
+      loader.seed({ table_html: initial.error ? null : (els.table.innerHTML.trim() || null), graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
         error: initial.error || null, model: initial.model, swan_available: initial.swan_available });
     } else loader.load({});
     app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, setView: setView, expand: expand, minimise: minimise, els: els };

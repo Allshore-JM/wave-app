@@ -489,3 +489,20 @@ test('G16-A P3-5: throwing storage accessors do not stop the window; P3-6: the l
   assert.equal(b.app.window.mode, 'normal', 'a double-click on the chip expands, never maximises');
   b.page.topBar.offsetHeight = 40; b.win.fire('resize'); assert.equal(b.page.w.style['--topbar-h'], '40px');
 });
+
+test('G16 re-review: a transport failure removes the loading placeholder and names the station of the address bar; a page-rendered error is not cached and gets Retry; settings are saved before the load (the address stays minimal)', async () => {
+  const b = boot({ search: '?station=46001' });
+  await settle(); assert.ok(b.doc.getElementById('forecastLoading').parentNode);
+  b.fs_.last().fail(); await settle();
+  assert.equal(b.doc.getElementById('forecastLoading').parentNode, null, 'placeholder gone on a transport failure');
+  assert.equal(b.doc.getElementById('fwTitle').textContent, '46001 — Gulf of Alaska', 'the header names the station the address bar shows');
+  const c = boot({ initial: { inline: true, error: 'No .bull file found for 51201', model: 'GFS', swan_available: true } });
+  c.page.table.innerHTML = '\n   \n';
+  await settle();
+  assert.equal(c.fs_.calls.length, 0); assert.equal(c.app.loader.cache.size, 0, 'a page-rendered error is not cached');
+  assert.equal(c.doc.getElementById('fwError').hidden, false); assert.equal(c.doc.getElementById('fwError').querySelectorAll('button').length, 1, 'with Retry');
+  const d = boot({}); await settle(); d.fs_.last().release(payload()); await settle();
+  d.page.unit.value = 'Metric'; d.page.unit.dispatch('change');
+  assert.equal(d.win.history.urls[d.win.history.urls.length - 1], '?station=51201', 'saved before the load: the address names nothing');
+  assert.deepEqual(d.win.localStorage.read('allshore.settings.v1'), { tz: '', unit: 'Metric' });
+});

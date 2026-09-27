@@ -232,3 +232,10 @@ test('G16-B P2-1: the page hands every landed forecast to the overlay: its zone 
   p.listeners.doc['allshore:forecast'].forEach((l) => l.fn({ detail: { station: '51201', tz: '', model: 'GFS', view: 'Table' } }));
   assert.equal(ov.opts.tz, 'UTC', 'an empty zone leaves the last one');
 });
+
+test('G16 re-review N-P2-1: a forecast that lands BEFORE the overlay exists sets the zone the overlay is created with', async () => {
+  const p = page({ complete: true });
+  p.listeners.doc['allshore:forecast'].forEach((l) => l.fn({ detail: { station: '51201', tz: 'UTC', model: 'GFS', view: 'Table' } }));
+  p.sel.userPick('hs'); await settle();
+  assert.equal(p.overlays[0].opts.tz, 'UTC', 'created with the zone of the forecast on screen, not the server one');
+});

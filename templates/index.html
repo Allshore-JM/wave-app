@@ -336,6 +336,7 @@
       #map, #topBar, .fw-btn, .fw-resize, #liveBuoyPanel { display: none !important; }
       .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
       .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
+      #forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }   /* the charts are not printable: the table is */
       .fw-body { overflow: visible; }
     }
 
@@ -382,8 +383,8 @@
        along the bottom edge; no maximise button (expanded is already full screen) */
     @media (max-width: 500px), (max-height: 500px) {
       #fwMax { display: none; }
-      /* a full-screen sheet covers the top bar (z 3000): its own header buttons must stay reachable */
-      .forecast-win:not(.fw-min), #liveBuoyPanel { z-index: 3500; }
+      /* the full-screen window covers the top bar (z 3000): its own header buttons must stay reachable */
+      .forecast-win:not(.fw-min) { z-index: 3500; }
       .forecast-win:not(.fw-min) {
         left: 0 !important; top: 0 !important; right: 0 !important; bottom: 0 !important;
         width: 100vw !important; height: 100vh !important; height: 100dvh !important;
@@ -395,9 +396,11 @@
       .fw-btn { width: 36px; height: 36px; }
     }
 
-    /* Live-buoy panel: full-screen sheet on narrow phones (after the 700px rule so this wins) */
+    /* Live-buoy panel: full-screen sheet on narrow phones (after the 700px rule so this wins); full screen it
+       covers the top bar (z 3000), so its own close button stays reachable */
     @media (max-width: 500px) {
       #liveBuoyPanel {
+        z-index: 3500;
         right: 0; left: 0; top: 0; bottom: 0;
         width: 100vw;
         height: 100vh; height: 100dvh;          /* dvh handles mobile browser bars */
@@ -942,7 +945,7 @@
       const w = window.innerWidth;
       const bar = document.getElementById('topBar');
       const reserve = (bar ? bar.offsetHeight : 0) + 24 + (w <= 500 || window.innerHeight <= 500 ? 48 : 0);   // phone mode: the minimised bar's row
-      const targetH = Math.max(280, window.innerHeight - reserve);
+      const targetH = Math.max(w <= 500 || window.innerHeight <= 500 ? 180 : 280, window.innerHeight - reserve);
       el.style.height = targetH + 'px';
 
       map.invalidateSize();
@@ -2384,6 +2387,7 @@
       var BASE = {{ model_frames_base|tojson }};
       var VERSION = {{ overlay_asset_version|tojson }};
       var TZ = {{ forecast_tz_name|tojson }};
+      var lastTz = TZ;                                          // the zone of the forecast on screen (the window announces each one)
       // (the model pane is created by the module on the first selection, so Off leaves the map's panes untouched)
 
       var Ctl = L.Control.extend({
@@ -2464,7 +2468,7 @@
         loadAssets().then(function () {
           if (sel.value !== field) return;
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
-            base: BASE, panel: panel, tz: TZ, getUnit: getSelectedUnit,
+            base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
             fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer()
           });
           overlay.mount(field, restore);
@@ -2512,9 +2516,10 @@
       // The forecast window changes station, zone and model in place (no reload): the overlay's valid times
       // follow the table's zone and its run line the table's run.
       document.addEventListener('allshore:forecast', function (e) {
-        if (!overlay) return;
         var tz = e && e.detail && e.detail.tz;
-        if (typeof tz === 'string' && tz) overlay.opts.tz = tz;
+        if (typeof tz === 'string' && tz) lastTz = tz;                          // remembered for the first mount too (the forecast lands before it)
+        if (!overlay) return;
+        overlay.opts.tz = lastTz;
         overlay.refresh();
       });
     })();

@@ -239,7 +239,8 @@ function boot(opts) {
   const closes = [];
   const app = F.init({ window: win, initial: Object.assign({ station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: true, swan_stations: ['51201', '51202'] }, (opts && opts.initial) || {}),
     stationLabel: (sid) => { const o = page.sel.options.find((x) => x.value === sid); return o ? o.textContent : sid; },
-    loadChartJs: () => Promise.resolve(), fetch: fs_.fetch, closeLivePanel: () => { closes.push(1); page.live.style.display = 'none'; }, liveOpen: () => page.live.style.display !== 'none' });
+    loadChartJs: () => Promise.resolve(), fetch: fs_.fetch, closeLivePanel: () => { closes.push(1); page.live.style.display = 'none'; }, liveOpen: () => page.live.style.display !== 'none',
+    early: opts && opts.early });
   return { win, page, F, fs_, Chart, app, closes, doc: win.document };
 }
 
@@ -505,4 +506,47 @@ test('G16 re-review: a transport failure removes the loading placeholder and nam
   d.page.unit.value = 'Metric'; d.page.unit.dispatch('change');
   assert.equal(d.win.history.urls[d.win.history.urls.length - 1], '?station=51201', 'saved before the load: the address names nothing');
   assert.deepEqual(d.win.localStorage.read('allshore.settings.v1'), { tz: '', unit: 'Metric' });
+});
+
+test('PR C: the first load takes the <head>\'s early response when the query matches (no second request), only once', async () => {
+  let release; const p = new Promise((res) => { release = res; });
+  const q = 'station=51201&tz=&unit=US&model=GFS&compact=1';
+  const b = boot({ search: '?station=51201', early: { forecast: { q, p } } });
+  await settle();
+  assert.equal(b.fs_.calls.length, 0, 'no fetch: the early request is used');
+  release({ ok: true, status: 200, json: () => Promise.resolve(payload()) }); await settle();
+  assert.equal(b.doc.getElementById('fwTitle').textContent, '51201 — Waimea Bay, HI');
+  b.app.loader.cache.clear(); b.app.loader.load({}); await settle();
+  assert.equal(b.fs_.calls.length, 1, 'a later load fetches as usual (the early response is taken once)');
+});
+
+test('PR C: an early request for another query is ignored (the first load fetches its own); a newer pick supersedes a slow early answer', async () => {
+  let release; const p = new Promise((res) => { release = res; });
+  const b = boot({ search: '?station=51201&unit=Metric', early: { forecast: { q: 'station=51201&tz=&unit=US&model=GFS&compact=1', p } } });
+  await settle();
+  assert.equal(b.fs_.calls.length, 1); assert.equal(b.fs_.param(b.fs_.last(), 'unit'), 'Metric');
+  let r2; const p2 = new Promise((res) => { r2 = res; });
+  const c = boot({ search: '?station=51201', early: { forecast: { q: 'station=51201&tz=&unit=US&model=GFS&compact=1', p: p2 } } });
+  await settle(); assert.equal(c.fs_.calls.length, 0);
+  c.app.loader.load({ station: '46001', tz: '' }); await settle();
+  c.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
+  r2({ ok: true, status: 200, json: () => Promise.resolve(payload()) }); await settle();
+  assert.equal(c.app.state.station, '46001');
+  assert.equal(c.doc.getElementById('fwTitle').textContent, '46001 — Gulf of Alaska', 'the slow early answer never overwrites the newer pick');
+  release({ ok: true, status: 200, json: () => Promise.resolve(payload()) });
+});
+
+test('PR C: the arrow keys on the focused resize handle resize the normal window (16 px, 64 with Shift), clamped, saved; not when maximised', async () => {
+  const b = boot({}); await settle(); b.fs_.last().release(payload()); await settle();
+  const fw = b.app.window; fw.setMode('normal'); fw._place({ x: 100, y: 100, w: 600, h: 400 });
+  const h = b.doc.getElementById('fwResize');
+  const key = (k, shift) => { let prevented = false; h.dispatch('keydown', { key: k, shiftKey: !!shift, preventDefault: () => { prevented = true; } }); return prevented; };
+  assert.equal(key('ArrowRight'), true); assert.deepEqual([fw.geom.w, fw.geom.h], [616, 400]);
+  key('ArrowDown', true); assert.deepEqual([fw.geom.w, fw.geom.h], [616, 464]);
+  key('ArrowLeft'); key('ArrowUp'); assert.deepEqual([fw.geom.w, fw.geom.h], [600, 448]);
+  for (let i = 0; i < 100; i++) key('ArrowLeft', true);
+  assert.equal(fw.geom.w, 360, 'never below the minimum width');
+  assert.equal(JSON.parse(b.win.sessionStorage.getItem('allshore.forecastWin.v1')).w, 360, 'saved');
+  assert.equal(key('Enter'), false, 'other keys pass through');
+  fw.setMode('max'); const w0 = fw.geom.w; key('ArrowRight'); assert.equal(fw.geom.w, w0, 'maximised: no resize');
 });

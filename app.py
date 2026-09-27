@@ -270,7 +270,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.5.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.6.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript"}
 
@@ -1503,7 +1503,8 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     html += '<th rowspan="2" scope="col">Date</th><th rowspan="2" scope="col">Time</th>'
     for idx, col in enumerate(group_colors, start=1):
         html += f'<th colspan="3" scope="colgroup" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {idx}</th>'
-    html += f'<th scope="colgroup" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">Combined</th>'
+    comb = '<abbr title="Combined sea">Comb.</abbr>' if compact else 'Combined'   # the window's narrower table
+    html += f'<th scope="colgroup" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">{comb}</th>'
     html += f'<th colspan="2" scope="colgroup" style="background-color:{wind_colors["header"]}; color:white; text-align:center;">Wind</th>'
     html += '</tr>\n'
 

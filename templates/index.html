@@ -1304,7 +1304,6 @@
       document.getElementById('liveBuoyNoRecent').classList.add('d-none');
 
       panel.style.display = 'block';
-      try { document.dispatchEvent(new CustomEvent('allshore:livepanel')); } catch (e) {}   // the panel opened for a buoy: bring it forward
     }
 
     // NDBC buoy with no observation inside the freshness window: show only the
@@ -1768,6 +1767,7 @@
     // every other source (CDIP / AODN / QLD / AusWaves) gets the adaptive bulk panel.
     function loadLiveBuoyDetails(station) {
       const seq = ++liveDetailSeq;
+      try { document.dispatchEvent(new CustomEvent('allshore:livepanel')); } catch (e) {}   // the panel opens for a buoy (every source): bring it forward
       const src = (station.source || '').toUpperCase();
       if (src === 'NDBC' || /^ndbc:/i.test(station.id || '')) {
         return loadNdbcBuoyDetails(station, seq);

@@ -273,3 +273,26 @@ def test_the_new_wordmark_is_the_brand_with_no_box_around_it(client):
     im = Image.open(_io.BytesIO(r.get_data()))
     assert im.size == (387, 120), "2x the 60 px display height"
     assert im.convert("RGBA").getpixel((0, 0))[3] == 0, "transparent around the lettering"
+
+
+def test_the_site_icon_is_the_wordmark_a(client):
+    """Owner (2026-09-27): the browser tab and Google's result show the new logo's "A", not the old wave mark.
+    Stable icon URLs (Google), linked with ?v= so browsers drop the cached old icon; a week in the cache."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    v = A.ICON_VERSION
+    assert '<link rel="icon" href="/favicon.ico?v=%s" sizes="16x16 32x32 48x48">' % v in body
+    assert '<link rel="icon" type="image/png" href="/icon-192.png?v=%s" sizes="192x192">' % v in body
+    assert '<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=%s">' % v in body
+    from PIL import Image
+    import io as _io
+    for path, ctype, sizes in (("/favicon.ico", "image/x-icon", {(16, 16), (32, 32), (48, 48)}),
+                               ("/icon-192.png", "image/png", {(192, 192)}),
+                               ("/apple-touch-icon.png", "image/png", {(180, 180)})):
+        r = A.app.test_client().get(path + "?v=" + v)
+        assert r.status_code == 200 and r.headers["Content-Type"] == ctype, path
+        assert r.headers["Cache-Control"] == "public, max-age=604800" and r.headers["X-Content-Type-Options"] == "nosniff"
+        im = Image.open(_io.BytesIO(r.get_data()))
+        assert (im.info.get("sizes") or {im.size}) == sizes, path
+        assert b"<svg" not in r.get_data(), "not the old inline wave mark"
+    # Google: a square icon whose size is a multiple of 48 px
+    assert 192 % 48 == 0

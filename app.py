@@ -582,23 +582,35 @@ def stations_json():
     return _json_cached_bytes(payload, etag, 3600, {"CDN-Cache-Control": "max-age=3600"})
 
 
-# Small inline wave icon so /favicon.ico stops 404-ing (and adds light branding).
-_FAVICON_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-    '<rect width="32" height="32" rx="6" fill="#0b2536"/>'
-    '<path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" '
-    'fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>'
-    '<path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" '
-    'fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>'
-    '</svg>'
-)
+# The site icon (owner 2026-09-27): the "A" of the Allshore Surf wordmark, cut from the logo with its own navy
+# outline closing the cut (static_icons/, built from the owner's logo file). Stable URLs, because Google reads the
+# icon from <link rel="icon"> and wants it to stay put; the page links them with ?v=ICON_VERSION only so browsers
+# drop the old cached mark. A week in the cache, as before.
+_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_icons")
+_ICONS = {"favicon.ico": "image/x-icon", "icon-192.png": "image/png", "apple-touch-icon.png": "image/png"}
+ICON_VERSION = "2"
+
+
+def _site_icon(name):
+    resp = send_file(os.path.join(_ICON_DIR, name), mimetype=_ICONS[name], conditional=True)
+    resp.headers["Cache-Control"] = "public, max-age=604800"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
 
 
 @app.route('/favicon.ico')
 def favicon():
-    resp = app.response_class(_FAVICON_SVG, mimetype="image/svg+xml")
-    resp.headers["Cache-Control"] = "public, max-age=604800"
-    return resp
+    return _site_icon("favicon.ico")
+
+
+@app.route('/icon-192.png')
+def icon_192():
+    return _site_icon("icon-192.png")
+
+
+@app.route('/apple-touch-icon.png')
+def apple_touch_icon():
+    return _site_icon("apple-touch-icon.png")
 
 # ----------------------------- NOAA run detection ------------------------------
 
@@ -1870,6 +1882,7 @@ def index():
         selected_model=selected_model,
         initial_state=initial_state,
         ui_asset_version=UI_ASSET_VERSION,
+        icon_version=ICON_VERSION,
         **_overlay_context(selected_station, selected_tz, payload),
     )
 

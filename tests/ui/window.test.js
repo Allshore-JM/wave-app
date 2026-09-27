@@ -132,7 +132,7 @@ test('graphs: rendered twice for different data -> three fresh charts each time,
   assert.equal(cv.listenerCount('mousemove') + cv.listenerCount('touchstart'), n1, 'listeners replaced, not stacked');
   assert.equal(Chart.made[3].options.scales.y.title.text, 'Height (m)');
   assert.equal(Chart.made[3].options.plugins.title.text, 'Swell Height');
-  assert.deepEqual([page.graphs.children[0].style.height, page.graphs.children[1].style.height], ['180px', '180px'], 'boxes fitted to the body');
+  assert.deepEqual([page.graphs.children[0].style.height, page.graphs.children[1].style.height], ['300px', '300px'], 'boxes at least 300 px (a 400 px body scrolls)');
   G.destroy(); assert.ok(Chart.made.slice(3).every((c) => c.destroyed)); assert.equal(cv.listenerCount('mousemove'), 0);
 });
 
@@ -565,4 +565,46 @@ test('G17: the keyboard resize resizes the charts too and does nothing minimised
   const box = c.doc.getElementById('fwError'); assert.equal(box.hidden, false);
   box.querySelectorAll('button')[0].dispatch('click'); await settle();
   assert.equal(c.fs_.calls.length, 1, 'Retry fetches afresh (the early response is spent)');
+});
+
+test('plan section 26: the charts draw only the swells present (legend on top), boxes at least 300 px, the period axis from a data floor', async () => {
+  const Chart = fakeChart(), page = buildPage(fakeWindow()), F = load(fakeWindow()), I = F._internals;
+  const labels = ['9/26/26 1:00 AM', '9/26/26 2:00 AM', '9/26/26 3:00 AM'];
+  const gd = { labels, units: 'ft', swells: ['s1', 's3'],
+    height: { s1: [2, 3, 4], s2: [null, null, null], s3: [1, 1, 1], s4: [], s5: [], s6: [], combined: [3, 4, 5] },
+    period: { s1: [11, 12, 13], s2: [], s3: [15, 16, 14], s4: [], s5: [], s6: [] },
+    direction: { s1: [300, 310, 320], s2: [], s3: [180, 190, 200], s4: [], s5: [], s6: [] } };
+  const G = I.createForecastGraphs({ host: page.graphs, boxes: page.graphs.children, canvases: page.graphs.children.map((b) => b.children[0]), rangeBar: null,
+    loadChartJs: () => Promise.resolve(), getChart: () => Chart, storage: fakeWindow().sessionStorage, bodyHeight: () => 1300, visible: () => true });
+  await G.setData(gd); await settle();
+  const [h, p, d] = Chart.made;
+  assert.deepEqual(h.data.datasets.map((x) => x.label), ['Swell 1', 'Swell 3', 'Combined']);
+  assert.deepEqual(p.data.datasets.map((x) => x.label), ['Swell 1', 'Swell 3']);
+  assert.equal(h.options.plugins.legend.position, 'top');
+  assert.equal(page.graphs.children[0].style.height, '420px', 'three boxes share a tall body');
+  assert.equal(p.options.scales.y.min, 5, 'one step (5 s for a 16.8 s top) under the shortest period (11 s), rounded down'); assert.equal(p.options.scales.y.max, 20);
+  assert.equal(I.periodFloor(3, 1), 2); assert.equal(I.periodFloor(0.5, 1), 0); assert.equal(I.periodFloor(NaN, 2), 0);
+  assert.deepEqual(I.swellKeys({}), ['s1', 's2', 's3', 's4', 's5', 's6'], 'an old payload: all six');
+  assert.deepEqual(I.swellKeys({ swells: ['s2', 'bogus'] }), ['s2']); assert.deepEqual(I.swellKeys({ swells: [] }).length, 6);
+});
+
+test('plan section 26: in Table view the window is no wider than its table (drag, keys and maximise included); Graph view and the chip are not capped', async () => {
+  const b = boot({}); await settle();
+  const t = { scrollWidth: 900 };
+  const orig = b.page.table.querySelector.bind(b.page.table);
+  b.page.table.querySelector = (sel) => (sel === 'table' ? t : orig(sel));
+  b.fs_.last().release(payload()); await settle();
+  const fw = b.app.window;
+  assert.equal(fw.maxW, 900 + 40); assert.equal(b.page.w.style.maxWidth, '', 'minimised: the chip keeps its CSS width');
+  fw.setMode('normal'); await settle();
+  assert.equal(b.page.w.style.maxWidth, '940px');
+  fw._place({ x: 100, y: 100, w: 600, h: 400 });
+  const h = b.doc.getElementById('fwResize');
+  for (let i = 0; i < 20; i++) h.dispatch('keydown', { key: 'ArrowRight', shiftKey: true, preventDefault: () => {} });
+  assert.equal(fw.geom.w, 940, 'the keyboard never grows it past the table');
+  fw.setMode('max'); assert.equal(b.page.w.style.maxWidth, '940px', 'maximised: full height, the table width');
+  fw.setMode('min'); assert.equal(b.page.w.style.maxWidth, '', 'the chip keeps its own CSS width');
+  fw.setMode('normal'); b.app.setView('Graph'); await settle();
+  assert.equal(fw.maxW, 0); assert.equal(b.page.w.style.maxWidth, '', 'Graph view uses the full width');
+  assert.equal(b.F._internals.clampGeometry({ x: 0, y: 0, w: 2000, h: 300 }, 1500, 900, 0, null, 700).w, 700);
 });

@@ -270,7 +270,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.6.1"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.7.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript"}
 
@@ -1470,10 +1470,13 @@ def _short_date(s: str) -> str:
 
 
 def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None,
-                     rows: list[list], tz_label: str, unit: str, *, compact: bool = False) -> str:
+                     rows: list[list], tz_label: str, unit: str, *, compact: bool = False,
+                     groups: list[int] | None = None) -> str:
     """The forecast table. compact (the forecast window, plan section 25): no Cycle/Location/Time Zone
     rows (the window shows them in one line above the table), no inline padding (the page CSS sets it),
-    short dates ('Fri 9/26', the full date in the cell's title), 'Dir (deg)' headers."""
+    short dates ('Fri 9/26', the full date in the cell's title), 'Dir (deg)' headers.
+    groups: the swell groups (0-5) to show, each keeping its own colour and "Swell n" label (plan section 26:
+    only the components the forecast contains); None = all six."""
     group_colors = [
         {"header": "#C00000", "subheader": "#F8B4B4", "data": "#F9DCDC"},
         {"header": "#ED7D31", "subheader": "#FBE5D6", "data": "#FDE7D4"},
@@ -1493,7 +1496,8 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     # Everything that should stay locked while the body scrolls lives in <thead>
     # (position: sticky): the Cycle/Location/TZ info rows first (not in the compact
     # table), then the two column-header rows.
-    n_cols = 2 + len(group_colors) * 3 + 1 + 2  # + Combined + Wind (Spd, Dir)
+    gs = list(range(len(group_colors))) if groups is None else [g for g in groups if 0 <= g < len(group_colors)]
+    n_cols = 2 + len(gs) * 3 + 1 + 2  # + Combined + Wind (Spd, Dir)
     html += '<thead>\n'
     if not compact:
         html += f'<tr><td colspan="{n_cols}" class="forecast-info">{cycle_str}</td></tr>\n'
@@ -1501,8 +1505,9 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         html += f'<tr><td colspan="{n_cols}" class="forecast-info">Time Zone: {tz_label}</td></tr>\n'
     html += '<tr>'
     html += '<th rowspan="2" scope="col">Date</th><th rowspan="2" scope="col">Time</th>'
-    for idx, col in enumerate(group_colors, start=1):
-        html += f'<th colspan="3" scope="colgroup" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {idx}</th>'
+    for g in gs:
+        col = group_colors[g]
+        html += f'<th colspan="3" scope="colgroup" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {g + 1}</th>'
     comb = '<abbr title="Combined sea" aria-label="Combined">Comb.</abbr>' if compact else 'Combined'   # the window's narrower table
     html += f'<th scope="colgroup" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">{comb}</th>'
     html += f'<th colspan="2" scope="colgroup" style="background-color:{wind_colors["header"]}; color:white; text-align:center;">Wind</th>'
@@ -1513,7 +1518,8 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     wind_spd_label = '(mph)' if unit == 'US' else '(km/h)'
     dir_label = '(&deg;)' if compact else '(d)'
     html += '<tr>'
-    for col in group_colors:
+    for g in gs:
+        col = group_colors[g]
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Dir<br>{dir_label}</th>'
@@ -1554,8 +1560,9 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         time_style = f'font-weight:{fw}; {border_style}{pad}'
         html += f'<td style="{time_style}">{row[1]}</td>'
 
-        idx = 2
-        for col in group_colors:
+        for g in gs:
+            col = group_colors[g]
+            idx = 2 + 3 * g
             # Hs
             val = row[idx]
             display_val = None if val is None else (val if unit == 'US' else (val / 3.28084))
@@ -1649,7 +1656,12 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
 
     tz_label = effective_tz_name
     out["tz_label"] = tz_label
-    out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit, compact=compact)
+    # The swell groups this forecast actually contains (any row): the window's table and graphs show only those
+    # (plan section 26). GFS can leave a middle group empty; SWAN compacts partitions to the left. The classic
+    # (non-compact) table keeps all six columns for old clients.
+    present = [g for g in range(6) if any(len(r) > 4 + 3 * g and r[2 + 3 * g] is not None for r in rows)] or [0]
+    out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit, compact=compact,
+                                         groups=present if compact else None)
 
     # single map marker if coords JSON has it
     coords_map = load_station_coords()
@@ -1696,6 +1708,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         "labels": labels, "height": height, "period": period, "direction": direction,
         "units": graph_units,
         "cycle": cycle_str or "", "location": location_str or "", "tz": tz_label or "",
+        "swells": ["s%d" % (g + 1) for g in present],          # the series worth drawing (plan section 26)
     }
 
     cycle_clean = _strip_header_prefix(cycle_str, "Cycle")

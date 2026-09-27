@@ -74,3 +74,34 @@ def test_compact_table_abbreviates_the_combined_header_only():
     full = A.build_html_table("c", "l", "", [], "Pacific/Honolulu", "US")
     assert '<abbr title="Combined sea" aria-label="Combined">Comb.</abbr>' in compact and ">Combined</th>" not in compact
     assert ">Combined</th>" in full and "Comb." not in full
+
+def _sparse_row(present, hs=2.5):
+    """A 23-column row with swell groups only at the given indices (0-5)."""
+    r = ["Saturday, September 26, 2026", "2:00 PM"]
+    for g in range(6):
+        r += [hs, 11.0 + g, 300 - g] if g in present else [None, None, None]
+    return r + [6.0, 80, 3.9]
+
+
+def test_groups_limit_the_compact_table_to_the_swells_present_keeping_their_colours_and_numbers():
+    rows = [_sparse_row({0, 2}), _sparse_row({0})]
+    html = A.build_html_table("c", "l", "", rows, "Pacific/Honolulu", "US", compact=True, groups=[0, 2])
+    assert re.findall(r">Swell (\d)</th>", html) == ["1", "3"]           # bulletin partition numbers kept
+    assert "#C00000" in html and "#FFC000" in html and "#ED7D31" not in html  # each group keeps its own colour
+    body = html.split("<tbody>")[1].split("</tr>")[0]
+    assert body.count("<td") == 2 + 3 * 2 + 1 + 2                        # date, time, 2 groups, combined, wind
+    assert ">13.0<" in body and ">2.50<" in body                         # group 3's Tp read from its own columns
+    full = A.build_html_table("c", "l", "", rows, "Pacific/Honolulu", "US")   # the classic table keeps all six
+    assert re.findall(r">Swell (\d)</th>", full) == ["1", "2", "3", "4", "5", "6"]
+
+
+def test_the_payload_names_the_swells_present_for_the_window_only(monkeypatch):
+    rows = [_sparse_row({0, 1}), _sparse_row({0, 3})]
+    monkeypatch.setattr(A, "parse_bull", lambda station, tz: ("Cycle : 20260926 06 UTC", "Location : 21.67N 158.12W", "", rows, "Pacific/Honolulu", None))
+    d = A.compute_forecast_payload("46001", None, "US", "GFS", compact=True)
+    assert d["graph_data"]["swells"] == ["s1", "s2", "s4"]
+    assert re.findall(r">Swell (\d)</th>", d["table_html"]) == ["1", "2", "4"]
+    classic = A.compute_forecast_payload("46001", None, "US", "GFS")
+    assert len(re.findall(r">Swell (\d)</th>", classic["table_html"])) == 6
+    monkeypatch.setattr(A, "parse_bull", lambda station, tz: ("Cycle : x", "Location : y", "", [_sparse_row(set())], "UTC", None))
+    assert A.compute_forecast_payload("46001", None, "US", "GFS", compact=True)["graph_data"]["swells"] == ["s1"]   # never none at all

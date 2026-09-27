@@ -298,8 +298,6 @@
         left: 60px !important; right: auto !important; top: auto !important; bottom: 12px !important;
         width: auto !important; max-width: min(560px, calc(100vw - 76px));
       }
-      /* the Home-view menu opens above the chip */
-      .home-menu { bottom: 52px; }
     }
     .forecast-win.fw-min .fw-header { cursor: pointer; }
     .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body, .forecast-win.fw-min .fw-resize { display: none; }
@@ -355,6 +353,8 @@
       max-height: 300px; overflow-y: auto;
     }
     @media (max-width: 576px) { .home-menu { max-height: 170px; } }
+    /* the menu opens above the minimised forecast chip parked beside the Home button (desktops) */
+    @media (min-width: 501px) and (min-height: 501px) { .home-menu { bottom: 52px; } }
     .home-menu-title {
       font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
       color: #607d92; font-weight: 700; padding: 2px 8px 6px;

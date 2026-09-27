@@ -534,8 +534,9 @@
     if (els.viewBar) els.viewBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-view]') : null; if (b) setView(b.getAttribute('data-view')); });
     if (els.modelBar) els.modelBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-model]') : null; if (b) loader.load({ model: b.getAttribute('data-model') === 'SWAN' ? 'SWAN' : 'GFS' }); });
     function saveSettings() { writeJson(local, SETTINGS_KEY, { tz: state.tz, unit: state.unit }); }
-    if (els.tz) els.tz.addEventListener('change', function () { loader.load({ tz: els.tz.value || '' }); saveSettings(); });
-    if (els.unit) els.unit.addEventListener('change', function () { loader.load({ unit: UNITS[els.unit.value] ? els.unit.value : 'US' }); saveSettings(); });
+    // the settings are saved BEFORE the load, so the address bar names nothing a reload would not assume anyway
+    if (els.tz) els.tz.addEventListener('change', function () { state.tz = els.tz.value || ''; saveSettings(); loader.load({}); });
+    if (els.unit) els.unit.addEventListener('change', function () { state.unit = UNITS[els.unit.value] ? els.unit.value : 'US'; saveSettings(); loader.load({}); });
     doc.addEventListener('allshore:station', function (e) {
       var det = e.detail || {}, sid = String(det.sid || ''); if (!sid) return;
       var next = { station: sid }; if (det.source === 'map') next.tz = '';    // a map pick goes back to Buoy Local, as before

@@ -51,3 +51,21 @@ the table, the live panel and the overlay, SWAN 175 rows / GFS fallback, drag / 
 geometry restored, clamping into a 900×600 window, the picker and settings above a dragged-up window, the overlay
 restoring after a reload, the phone bar clear of Home / attribution / the overlay sheet, keyboard order, no console errors,
 `?render=full` without a fetch.
+
+## Re-review of the fix set (one fresh-context reviewer, HIGH)
+
+Every G16 finding confirmed fixed on the code and the test site, with one gap and four small items:
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| N-P2-1 | P2 | The overlay's FIRST mount still took the server's zone: the module's `allshore:forecast` fires before the overlay exists (the restore waits for the forecast), and the new listener returned early, so a viewer with a saved zone saw the table in it and the overlay in the station's zone until the next forecast. | The gated block remembers the zone of every landed forecast (`lastTz`) and creates the overlay with it; bootstrap test + string pin. |
+| N-P3-1 | P3 | Landscape phone (812×375): the map's 280 px floor put the bar over the map's bottom 29 px (Home, the sheet's legend). | The floor is 180 px in phone mode. |
+| N-P3-2 | P3 | The live panel's z 3500 applied in short-but-wide windows where it is not full screen, over the bar's dropdowns. | z 3500 only under the panel's own full-screen rule (≤ 500 px wide). |
+| N-P3-3 | P3 | A `render=full` page with a server error was seeded with whitespace as its table: no Retry, cached 10 min. | Seeded without a table when the page carries an error; `seed()` never caches a table-less error. |
+| N-P3-4 | P3 | Printing a minimised window in Graph view printed empty chart boxes. | Print shows the table and hides the charts. |
+| N-P3-5 | P3 | Surviving mutants of the fix code: the placeholder removal on a transport failure, the header rename on error, settings saved before the load. | Pinned (a minimise-side `visible()` check stays as defence). |
+
+Design notes from the re-review, accepted: after a gear choice the address is minimal, so a copied link does not carry
+the zone to another viewer (the old page's URL always did); a units change refreshes the overlay panel twice (harmless).
+
+After the re-review fixes: pytest 424, Node 173; UI asset 1.5.0; the golden re-baselined once more.

@@ -28,7 +28,7 @@
   var MIN_SIZE = { w: 360, h: 220 };
   var PHONE_QUERY = '(max-width: 500px), (max-height: 500px)';   // "phone mode": a bar + full screen, no drag / resize
   var API = '/api/forecast';
-  var TABLE_CHROME = 20 + 2;                                       // #fwBody padding + the window border (+ the scrollbar, measured)
+  var TABLE_CHROME = 20 + 2 + 10;                                  // #fwBody padding + the window border + its 5 px side margins (+ the scrollbar, measured)
   var DEFAULT_W = 1180;                                             // .forecast-win's CSS width: min(1180px, 100vw - 32px)
   var LABEL_PX = 44;                                                // room for one flat date label on the charts
 
@@ -75,6 +75,27 @@
     var h = Math.max(Math.min(m.h, vh - t - 2 * pad), Math.min(g.h, vh - t - 2 * pad));
     var x = Math.min(Math.max(g.x, pad), Math.max(pad, vw - pad - shown));
     var y = Math.min(Math.max(g.y, t + pad), Math.max(t + pad, vh - pad - h));
+    return { x: x, y: y, w: w, h: h };
+  }
+  // A resize from one edge or corner ('n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw') of the window box r by (dx, dy):
+  // the opposite edges stay where they are; the moving edge stops at the minimum size, at the viewport (8 px pad,
+  // below the top edge) and, horizontally, at the table width maxW (Table view). A horizontal resize starts from the
+  // width on screen (min(w, maxW)); a vertical one keeps the viewer's own width. (plan section 27)
+  function resizeGeometry(r, edge, dx, dy, vw, vh, top, min, maxW) {
+    var m = min || MIN_SIZE, t = top || 0, pad = 8;
+    var minW = Math.min(m.w, vw - 2 * pad), minH = Math.min(m.h, vh - t - 2 * pad);
+    var capW = maxW > 0 ? Math.max(maxW, minW) : Infinity;
+    var shown = Math.min(r.w, capW), x = r.x, y = r.y, w = r.w, h = r.h;
+    if (edge.indexOf('e') >= 0) { w = Math.max(minW, Math.min(shown + dx, capW, vw - pad - r.x)); }
+    if (edge.indexOf('w') >= 0) {
+      var right = r.x + shown;
+      x = Math.max(pad, right - capW, Math.min(r.x + dx, right - minW)); w = right - x;
+    }
+    if (edge.indexOf('s') >= 0) { h = Math.max(minH, Math.min(r.h + dy, vh - pad - r.y)); }
+    if (edge.indexOf('n') >= 0) {
+      var bottom = r.y + r.h;
+      y = Math.max(t + pad, Math.min(r.y + dy, bottom - minH)); h = bottom - y;
+    }
     return { x: x, y: y, w: w, h: h };
   }
   function readJson(storage, key) {
@@ -413,7 +434,7 @@
   };
   FloatingWindow.prototype._bind = function () {
     var self = this, d = this.d;
-    function drag(startEv, kind) {
+    function drag(startEv, kind, edge) {
       if (self.isPhone() || self.mode === 'max') return;
       var r = self._rect(), sx = startEv.clientX, sy = startEv.clientY, moved = false;
       var target = startEv.currentTarget;
@@ -422,8 +443,8 @@
         var dx = ev.clientX - sx, dy = ev.clientY - sy;
         if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return;
         moved = true;
-        var g = kind === 'move' ? { x: r.x + dx, y: r.y + dy, w: r.w, h: r.h } : { x: r.x, y: r.y, w: self._resized(self._shown(r.w) + dx), h: r.h + dy };
-        self._place(clampGeometry(g, d.win.innerWidth, d.win.innerHeight, self._top(), null, self.maxW));
+        if (kind === 'move') { self._place(clampGeometry({ x: r.x + dx, y: r.y + dy, w: r.w, h: r.h }, d.win.innerWidth, d.win.innerHeight, self._top(), null, self.maxW)); return; }
+        self._place(resizeGeometry(r, edge || 'se', dx, dy, d.win.innerWidth, d.win.innerHeight, self._top(), null, self.maxW));
       }
       function onUp() {
         target.removeEventListener('pointermove', onMove); target.removeEventListener('pointerup', onUp); target.removeEventListener('pointercancel', onUp);
@@ -445,7 +466,17 @@
       if (Date.now() - (self._expandedAt || 0) < 600) return;                   // the first click of this double-click expanded the chip
       if (d.canMax !== false) self.toggleMax();
     });
-    if (d.handle) d.handle.addEventListener('pointerdown', function (e) { if (self.mode === 'normal') drag(e, 'resize'); });
+    if (d.handle) d.handle.addEventListener('pointerdown', function (e) { if (self.mode === 'normal') drag(e, 'resize', 'se'); });
+    // the edges and the other corners (plan section 27): each element carries data-edge
+    var edges = this.el.querySelectorAll ? this.el.querySelectorAll('.fw-edge') : [];
+    Array.prototype.forEach.call(edges, function (h) {
+      var edge = h.getAttribute && h.getAttribute('data-edge');
+      if (!/^(n|s|e|w|ne|nw|se|sw)$/.test(edge || '')) return;
+      h.addEventListener('pointerdown', function (e) {
+        if (e.button !== undefined && e.button !== 0) return;
+        if (self.mode === 'normal') drag(e, 'resize', edge);
+      });
+    });
     // the arrow keys on the focused handle: 16 px a press, 64 with Shift (right/down grow, left/up shrink)
     if (d.handle) d.handle.addEventListener('keydown', function (e) {
       var k = { ArrowRight: [1, 0], ArrowLeft: [-1, 0], ArrowDown: [0, 1], ArrowUp: [0, -1] }[e.key];
@@ -689,7 +720,7 @@
     _internals: {
       SETTINGS_KEY: SETTINGS_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
-      clampGeometry: clampGeometry, dateTick: dateTick, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
+      clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY,
       app: function () { return app; }

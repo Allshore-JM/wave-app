@@ -325,8 +325,19 @@
     .fw-resize:focus-visible { outline: 2px solid #1d6fd6; outline-offset: -2px; }
     /* the window touched last is on top: the forecast window over the live-buoy window (z 2000) once touched */
     .forecast-win.fw-front { z-index: 2100; }
+    /* stretch from every side (plan section 27): invisible 5 px edges and 10 px corners inside the border; the body
+       keeps a 5 px margin so its scrollbars are never under an edge; the top edge sits in the header's 6 px padding */
+    .fw-edge { position: absolute; z-index: 5; touch-action: none; }
+    .fw-edge-n { top: 0; left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
+    .fw-edge-s { bottom: 0; left: 10px; right: 18px; height: 5px; cursor: ns-resize; }
+    .fw-edge-e { right: 0; top: 10px; bottom: 18px; width: 5px; cursor: ew-resize; }
+    .fw-edge-w { left: 0; top: 10px; bottom: 10px; width: 5px; cursor: ew-resize; }
+    .fw-edge-ne { top: 0; right: 0; width: 10px; height: 10px; cursor: nesw-resize; }
+    .fw-edge-nw { top: 0; left: 0; width: 10px; height: 10px; cursor: nwse-resize; }
+    .fw-edge-sw { bottom: 0; left: 0; width: 10px; height: 10px; cursor: nesw-resize; }
+    @media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-max):not(.fw-min) .fw-body { margin: 0 5px 5px; } }
     .fw-resize {
-      position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none;
+      position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; z-index: 6;
       background: linear-gradient(135deg, transparent 50%, #b0bac4 50%, #b0bac4 60%, transparent 60%, transparent 75%, #b0bac4 75%);
     }
     /* minimised: the header bar alone; on desktops the forecast chip is parked at the bottom-left beside the
@@ -343,13 +354,13 @@
       }
     }
     .fwin.fw-min .fw-header { cursor: pointer; }
-    .fwin.fw-min .fw-toolbar, .fwin.fw-min .fw-body, .fwin.fw-min .fw-resize { display: none; }
+    .fwin.fw-min .fw-toolbar, .fwin.fw-min .fw-body, .fwin.fw-min .fw-resize, .fwin.fw-min .fw-edge { display: none; }
     /* maximised: the viewport (the table window is capped by its inline max-width, the table's width) */
     .fwin.fw-max {
       left: 8px !important; top: calc(var(--map-topright-h, 120px) + 8px) !important; right: auto !important; bottom: 8px !important;
       width: calc(100vw - 16px) !important; height: auto !important;
     }
-    .fwin.fw-max .fw-resize { display: none; }
+    .fwin.fw-max .fw-resize, .fwin.fw-max .fw-edge { display: none; }
     /* the compact table inside the window: the body is the scroll box, the header stays frozen */
     #forecastTable { overflow: visible; }
     #forecastTable table { margin-bottom: 0; }
@@ -371,13 +382,13 @@
     html:not(.js) .forecast-win { position: static !important; width: auto !important; max-width: none; height: auto !important; box-shadow: none; margin-top: 12px; }
     html:not(.js) .forecast-win.fw-min .fw-toolbar, html:not(.js) .forecast-win.fw-min .fw-body { display: block; }
     html:not(.js) .live-win { display: none !important; }
-    html:not(.js) .fw-btn, html:not(.js) .fw-resize, html:not(.js) #settingsBtn { display: none; }
+    html:not(.js) .fw-btn, html:not(.js) .fw-resize, html:not(.js) .fw-edge, html:not(.js) #settingsBtn { display: none; }
     html:not(.js) .settings-panel { position: static; width: auto; box-shadow: none; border: 0; padding: 0; display: flex; gap: 10px; }
     html:not(.js) .settings-panel[hidden] { display: flex !important; }         /* Bootstrap's [hidden] is !important */
     html:not(.js) #forecastTable[hidden] { display: block !important; }        /* without JS only the table can show */
     html:not(.js) #graphs { display: none !important; }
     @media print {
-      #map, #pageHead, .fw-btn, .fw-resize, .live-win, .sr-star, .station-caret { display: none !important; }
+      #map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .sr-star, .station-caret { display: none !important; }
       .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
       .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
       #forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }   /* the charts are not printable: the table is */
@@ -446,7 +457,7 @@
       /* the bar cannot fit a long name AND the run text: the name has priority (the run text shrinks four times as
          fast, to an ellipsis; it is whole once the bar is expanded) */
       .fwin.fw-min .fw-titles .fw-cycle { flex: 0 4 auto; min-width: 2ch; overflow: hidden; text-overflow: ellipsis; }
-      .fw-resize { display: none; }
+      .fw-resize, .fw-edge { display: none; }
       .fw-header { cursor: default; }
       .fw-btn { width: 36px; height: 36px; }
     }
@@ -619,6 +630,8 @@
           <div class="chart-box"><canvas id="directionChart"></canvas></div>
         </div>
       </div>
+      <!-- stretch from every side (plan section 27): four edges, three corners, and the focusable bottom-right grip -->
+      <div class="fw-edge fw-edge-n" data-edge="n" aria-hidden="true"></div><div class="fw-edge fw-edge-s" data-edge="s" aria-hidden="true"></div><div class="fw-edge fw-edge-e" data-edge="e" aria-hidden="true"></div><div class="fw-edge fw-edge-w" data-edge="w" aria-hidden="true"></div><div class="fw-edge fw-edge-ne" data-edge="ne" aria-hidden="true"></div><div class="fw-edge fw-edge-nw" data-edge="nw" aria-hidden="true"></div><div class="fw-edge fw-edge-sw" data-edge="sw" aria-hidden="true"></div>
       <div id="fwResize" class="fw-resize" tabindex="0" role="img" aria-label="Resize the forecast window with the arrow keys" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" title="Drag or use the arrow keys to resize"></div>
     </section>
 
@@ -748,6 +761,7 @@
       <!-- Adaptive bulk panel for non-NDBC live buoys (CDIP / AODN / QLD / AusWaves) -->
       <div id="liveBuoyGeneric" class="d-none"></div>
     </div>
+    <div class="fw-edge fw-edge-n" data-edge="n" aria-hidden="true"></div><div class="fw-edge fw-edge-s" data-edge="s" aria-hidden="true"></div><div class="fw-edge fw-edge-e" data-edge="e" aria-hidden="true"></div><div class="fw-edge fw-edge-w" data-edge="w" aria-hidden="true"></div><div class="fw-edge fw-edge-ne" data-edge="ne" aria-hidden="true"></div><div class="fw-edge fw-edge-nw" data-edge="nw" aria-hidden="true"></div><div class="fw-edge fw-edge-sw" data-edge="sw" aria-hidden="true"></div>
     <div id="lwResize" class="fw-resize" tabindex="0" role="img" aria-label="Resize the live buoy window with the arrow keys" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" title="Drag or use the arrow keys to resize"></div>
   </section>
 

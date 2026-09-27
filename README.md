@@ -67,7 +67,7 @@ module: dragged, resized, minimised to a chip at the bottom-right or a bar above
 from any mode; `sessionStorage 'allshore.liveWin.v1'`). The forecast is a floating window (`#forecastWin`) that starts minimised in
 a new tab (a chip at the bottom-left on desktops, a bar along the bottom edge in phone mode = a viewport 500 px or
 less wide OR tall; expanded it is a window on desktops and full-screen in phone mode), holds the View (Table / Graph) and Model (GFS / SWAN, only on SWAN stations) controls
-in its toolbar, and is dragged by its header, resized by its corner handle, maximised below the map's top-right controls and minimised;
+in its toolbar, and is dragged by its header, resized from any edge or corner (the bottom-right grip also takes the arrow keys), maximised below the map's top-right controls and minimised;
 Escape closes the live-buoy panel first, then minimises the window. Every change (a marker or favourites pick, model, view,
 time zone, units) applies in place: the module fetches `/api/forecast?compact=1` (one request per change, older responses
 dropped, a 10-minute client cache of 16 forecasts; a failed build is never cached) and rewrites the address bar with

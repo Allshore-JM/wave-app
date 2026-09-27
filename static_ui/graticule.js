@@ -56,6 +56,8 @@
     }
     return out;
   }
+  // a line's position snapped to the middle of a DEVICE pixel (crisp at 125 % / 150 % display scaling too)
+  function snapPx(px, dpr) { return (Math.floor(px * dpr) + 0.5) / dpr; }
   function fmt(v) { return String(+Math.abs(v).toFixed(2)); }
   function lonLabel(lon) {
     var l = ((tidy(lon) + 540) % 360 + 360) % 360 - 180;       // -> [-180, 180)
@@ -67,6 +69,15 @@
   function latLabel(lat) { lat = tidy(lat); return lat === 0 ? '0°' : fmt(lat) + '°' + (lat < 0 ? 'S' : 'N'); }
   function readOn(storage) { try { return storage.getItem(KEY) !== '0'; } catch (e) { return true; } }
   function writeOn(storage, on) { try { storage.setItem(KEY, on ? '1' : '0'); } catch (e) {} }
+  // A longitude label's top: the map's top edge, or just below the controls it would sit under when they are
+  // short (a phone's overlay selector and layer list); under a tall control (the desktop overlay panel) it stays
+  // at the edge and is hidden.
+  var PUSH_MAX = 90;
+  function lonTop(left, w, rects) {
+    var below = 4;
+    rects.forEach(function (c) { if (c.top < 20 && left < c.right && left + w > c.left) below = Math.max(below, c.bottom + 2); });
+    return below <= PUSH_MAX ? below : 4;
+  }
   function overlaps(a, b) { return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top; }
   // The labels for a view: map-like {getZoom, getSize, getBounds, latLngToContainerPoint}; step from the TILE zoom.
   // Longitudes along the top edge (unwrapped, so every world copy on screen is labelled), latitudes along the right.
@@ -109,7 +120,7 @@
         ctx.beginPath();
         list.forEach(function (l) {
           if (!pick(l)) return;
-          var p = Math.floor(l.px) + px / 2;                    // centred in the first device pixel of its CSS pixel (crisp)
+          var p = snapPx(l.px, 1 / px);                         // the middle of a device pixel (crisp)
           if (vertical) { ctx.moveTo(p, 0); ctx.lineTo(p, TILE); } else { ctx.moveTo(0, p); ctx.lineTo(TILE, p); }
         });
         ctx.stroke();
@@ -135,7 +146,7 @@
     var pool = [];
     function controlRects() {
       var c = map.getContainer(), base = c.getBoundingClientRect();
-      return Array.prototype.map.call(c.querySelectorAll('.leaflet-control'), function (el) {
+      return Array.prototype.map.call(c.querySelectorAll('.leaflet-control, .ov-sheet'), function (el) {
         var r = el.getBoundingClientRect();
         return { left: r.left - base.left - 4, right: r.right - base.left + 4, top: r.top - base.top - 4, bottom: r.bottom - base.top + 4 };
       }).filter(function (r) { return r.right > r.left && r.bottom > r.top; });
@@ -151,6 +162,7 @@
         // top-edge longitudes centred on their line; right-edge latitudes centred on theirs
         var w = el.offsetWidth || lb.text.length * 7, h = el.offsetHeight || 14;
         var left = lb.kind === 'lon' ? lb.x - w / 2 : lb.x - w - 4, top = lb.kind === 'lon' ? 4 : lb.y - h / 2;
+        if (lb.kind === 'lon') top = lonTop(left, w, rects);    // below a short control at the top edge (phones)
         var r = { left: left, right: left + w, top: top, bottom: top + h };
         var hidden = rects.some(function (c) { return overlaps(r, c); }) || (lb.kind === 'lat' && top < 22);   // under a control / the top row
         el.style.left = Math.round(left) + 'px'; el.style.top = Math.round(top) + 'px';
@@ -160,6 +172,13 @@
       for (var i = used; i < pool.length; i++) pool[i].hidden = true;
     }
     var on = readOn(storage), frame = null;
+    // a control that grows or shrinks (the overlay panel mounting, Off, the phone sheet) re-places the labels
+    if (typeof root.ResizeObserver === 'function') {
+      try {
+        var ro = new root.ResizeObserver(function () { schedule(); });
+        Array.prototype.forEach.call(map.getContainer().querySelectorAll('.leaflet-top, .leaflet-bottom'), function (el) { ro.observe(el); });
+      } catch (e) {}
+    }
     function schedule() { if (frame !== null) return; frame = (root.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () { frame = null; update(); }); }
     map.on('move resize viewreset zoomend', schedule);
     map.on('zoomstart', function () { box.hidden = true; });
@@ -177,6 +196,6 @@
   root.AllshoreGraticule = {
     create: create,
     _internals: { KEY: KEY, STEPS: STEPS, MIN_PX: MIN_PX, CLOSE_ZOOM: CLOSE_ZOOM, stepFor: stepFor, latToY: latToY, yToLat: yToLat, lonToX: lonToX, xToLon: xToLon,
-                  tileLines: tileLines, lonLabel: lonLabel, latLabel: latLabel, labelsFor: labelsFor, readOn: readOn, writeOn: writeOn, overlaps: overlaps }
+                  tileLines: tileLines, snapPx: snapPx, lonTop: lonTop, lonLabel: lonLabel, latLabel: latLabel, labelsFor: labelsFor, readOn: readOn, writeOn: writeOn, overlaps: overlaps }
   };
 })(typeof window !== 'undefined' ? window : this);

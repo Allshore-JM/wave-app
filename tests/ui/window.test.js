@@ -602,9 +602,37 @@ test('plan section 26: in Table view the window is no wider than its table (drag
   const h = b.doc.getElementById('fwResize');
   for (let i = 0; i < 20; i++) h.dispatch('keydown', { key: 'ArrowRight', shiftKey: true, preventDefault: () => {} });
   assert.equal(fw.geom.w, 940, 'the keyboard never grows it past the table');
+  fw._place({ x: 100, y: 100, w: 1150, h: 400 });                           // the viewer's own width, wider than the table
+  fw.setMaxWidth(900); assert.equal(fw.geom.w, 1150, 'a new cap never rewrites the saved width');
+  fw.clamp(); assert.equal(fw.geom.w, 1150, 'nor does a clamp'); fw.setMaxWidth(940);
   fw.setMode('max'); assert.equal(b.page.w.style.maxWidth, '940px', 'maximised: full height, the table width');
   fw.setMode('min'); assert.equal(b.page.w.style.maxWidth, '', 'the chip keeps its own CSS width');
   fw.setMode('normal'); b.app.setView('Graph'); await settle();
   assert.equal(fw.maxW, 0); assert.equal(b.page.w.style.maxWidth, '', 'Graph view uses the full width');
-  assert.equal(b.F._internals.clampGeometry({ x: 0, y: 0, w: 2000, h: 300 }, 1500, 900, 0, null, 700).w, 700);
+  const cg = b.F._internals.clampGeometry({ x: 1400, y: 0, w: 1200, h: 300 }, 1500, 900, 0, null, 700);
+  assert.equal(cg.w, 1200, 'the width stays the viewer\'s'); assert.equal(cg.x, 1500 - 8 - 700, 'x keeps the capped window on screen');
+});
+
+test('G18a: the date labels are thinned so they never overlap on a narrow chart, and follow the range in view', () => {
+  const I = load(fakeWindow())._internals, parsed = [], mids = [];
+  for (let i = 0; i < 385; i++) { const d = new Date(2026, 8, 26, 14 + i); parsed.push(d); if (d.getHours() === 0) mids.push(i); }
+  const shown = (scale) => parsed.map((d, i) => I.dateTick(scale, parsed, mids, i)).filter(Boolean);
+  assert.equal(shown({ width: 1100, min: 0, max: 384 }).length, 16, 'wide: every midnight');
+  const narrow = shown({ width: 300, min: 0, max: 384 });
+  assert.ok(narrow.length <= Math.floor(300 / 44) + 1 && narrow.length >= 4, String(narrow.length));
+  assert.equal(shown({ width: 300, min: 0, max: 71 }).length, 3, 'the 3-day range: its three midnights fit');
+  assert.equal(I.dateTick({ width: 1100, min: 0, max: 384 }, parsed, mids, 1), '', 'not midnight: no label');
+});
+
+test('G18a: a Graph-view width survives a trip through Table view; a SWAN-to-GFS switch widens the window again', async () => {
+  const b = boot({}); await settle();
+  let tw = 800; const orig = b.page.table.querySelector.bind(b.page.table);
+  b.page.table.querySelector = (sel) => (sel === 'table' ? { scrollWidth: tw } : orig(sel));
+  b.fs_.last().release(payload()); await settle();
+  const fw = b.app.window; fw.setMode('normal'); fw._place({ x: 50, y: 100, w: 1150, h: 400 });
+  b.app.setView('Table'); assert.equal(b.page.w.style.maxWidth, '840px'); assert.equal(fw.geom.w, 1150);
+  b.app.setView('Graph'); assert.equal(b.page.w.style.maxWidth, ''); assert.equal(fw.geom.w, 1150, 'the viewer\'s width is back');
+  b.app.setView('Table'); tw = 950; b.app.loader.load({ model: 'GFS', station: '46001' }); await settle();
+  b.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
+  assert.equal(b.page.w.style.maxWidth, '990px', 'a wider table widens the window (the width was never cut)');
 });

@@ -25,7 +25,9 @@
   var MIN_SIZE = { w: 360, h: 220 };
   var PHONE_QUERY = '(max-width: 500px), (max-height: 500px)';   // "phone mode": a bar + full screen, no drag / resize
   var API = '/api/forecast';
-  var TABLE_CHROME = 20 + 2 + 18;                                  // #fwBody padding + the window border + a scrollbar
+  var TABLE_CHROME = 20 + 2;                                       // #fwBody padding + the window border (+ the scrollbar, measured)
+  var DEFAULT_W = 1180;                                             // .forecast-win's CSS width: min(1180px, 100vw - 32px)
+  var LABEL_PX = 44;                                                // room for one flat date label on the charts
 
   // ---- pure state helpers ----
   // The state a page starts from: the URL wins, then the viewer's saved settings (tz, unit only),
@@ -61,12 +63,14 @@
   function keyOf(s) { return [s.station, s.tz || '', s.unit, s.model].join('|'); }
   // A window geometry kept inside a viewport of vw x vh below a top edge: the size shrinks to fit (never
   // below min), the position is pulled back so the whole window (and so its header) stays on screen.
+  // maxW (the table's width in Table view) is applied by CSS max-width only: the viewer's own width is kept, and x is
+  // clamped with the width actually on screen.
   function clampGeometry(g, vw, vh, top, min, maxW) {
     var m = min || MIN_SIZE, t = top || 0, pad = 8;
-    var cap = maxW > 0 ? Math.min(vw - 2 * pad, maxW) : vw - 2 * pad;          // maxW: the window's content width (the table)
-    var w = Math.max(Math.min(m.w, vw - 2 * pad), Math.min(g.w, cap));
+    var w = Math.max(Math.min(m.w, vw - 2 * pad), Math.min(g.w, vw - 2 * pad));
+    var shown = maxW > 0 ? Math.max(Math.min(w, maxW), Math.min(m.w, vw - 2 * pad)) : w;
     var h = Math.max(Math.min(m.h, vh - t - 2 * pad), Math.min(g.h, vh - t - 2 * pad));
-    var x = Math.min(Math.max(g.x, pad), Math.max(pad, vw - pad - w));
+    var x = Math.min(Math.max(g.x, pad), Math.max(pad, vw - pad - shown));
     var y = Math.min(Math.max(g.y, t + pad), Math.max(t + pad, vh - pad - h));
     return { x: x, y: y, w: w, h: h };
   }
@@ -172,6 +176,14 @@
     return s && s.length ? s : ALL_SWELLS.slice();
   }
   var BOX_MIN = 300;                                        // px per chart (was 180-360: the plots were 60-80 px tall)
+  // A flat date label at every n-th midnight in view, n chosen so labels are at least LABEL_PX apart on this scale.
+  function dateTick(scale, parsed, mids, i) {
+    var d = parsed[i]; if (!d || isNaN(d) || d.getHours() !== 0) return '';
+    var lo = scale && Number.isFinite(scale.min) ? scale.min : 0, hi = scale && Number.isFinite(scale.max) ? scale.max : parsed.length - 1;
+    var inView = mids.filter(function (k) { return k >= lo && k <= hi; }), w = scale && scale.width > 0 ? scale.width : 1000;
+    var every = Math.max(1, Math.ceil(inView.length * LABEL_PX / w)), ord = inView.indexOf(i);
+    return ord >= 0 && ord % every === 0 ? formatMD(d) : '';
+  }
   function formatMD(d) { return d.getHours() === 0 && !isNaN(d) ? (d.getMonth() + 1) + '/' + d.getDate() : ''; }
   function formatMDHour(d) {
     var M = d.getMonth() + 1, D = d.getDate(), h = d.getHours();
@@ -198,13 +210,14 @@
       } };
     }
     function makeXAxis(parsed) {
-      var major = new Set(), minor = new Set();
-      parsed.forEach(function (d, i) { var h = d.getHours(); if (h === 0) major.add(i); else if (h === 12) minor.add(i); });
+      var major = new Set(), minor = new Set(), mids = [];
+      parsed.forEach(function (d, i) { var h = d.getHours(); if (h === 0) { major.add(i); mids.push(i); } else if (h === 12) minor.add(i); });
       var idx = function (c) { return c.tick && typeof c.tick.index === 'number' ? c.tick.index : c.index; };
       return { type: 'category',
         grid: { color: function (c) { var i = idx(c); return major.has(i) ? 'rgba(0,0,0,0.25)' : minor.has(i) ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.08)'; },
                 lineWidth: function (c) { var i = idx(c); return major.has(i) ? 1.4 : minor.has(i) ? 1.0 : 0.5; } },
-        ticks: { autoSkip: false, maxRotation: 0, minRotation: 0, callback: function (v, i) { return formatMD(parsed[i] || new Date(NaN)); }, font: { size: 10 } } };   // flat date labels at midnight (the noon lines stay)
+        ticks: { autoSkip: false, maxRotation: 0, minRotation: 0, font: { size: 10 },
+                 callback: function (v, i) { return dateTick(this, parsed, mids, i); } } };   // flat date labels at midnight, thinned to fit
     }
     function dots(label, key, src, color) { return { label: label, data: src[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false }; }
     function series(src, combined, keys) {
@@ -364,19 +377,22 @@
   // the window's current box (from CSS until the first drag or resize)
   FloatingWindow.prototype._rect = function () {
     if (this.geom) return this.geom;
-    var r = this.el.getBoundingClientRect();
-    return { x: r.left, y: r.top, w: r.width, h: r.height };
+    var r = this.el.getBoundingClientRect(), w = r.width;
+    if (this.maxW && w >= this.maxW - 1) w = Math.min(DEFAULT_W, this.d.win.innerWidth - 32);   // capped on screen: the CSS default width
+    return { x: r.left, y: r.top, w: w, h: r.height };
   };
   // The widest the window may be (0 = the viewport): the table's own width in Table view, so neither a drag,
   // a key nor maximising shows white space beside it. Not applied to the minimised chip (its own CSS width).
   FloatingWindow.prototype.setMaxWidth = function (w) {
     this.maxW = w > 0 ? Math.round(w) : 0;
-    this.el.style.maxWidth = this.maxW && this.mode !== 'min' ? this.maxW + 'px' : '';
-    if (this.geom && this.maxW && this.geom.w > this.maxW) this.clamp();
+    this.el.style.maxWidth = this.maxW && this.mode !== 'min' ? this.maxW + 'px' : '';   // the saved width stays the viewer's
   };
+  // a resize starts from the width on screen and, in Table view, stops at the table
+  FloatingWindow.prototype._shown = function (w) { return this.maxW ? Math.min(w, this.maxW) : w; };
+  FloatingWindow.prototype._resized = function (w) { return this.maxW ? Math.min(w, this.maxW) : w; };
   FloatingWindow.prototype.resizeBy = function (dw, dh) {
     var r = this._rect(), d = this.d;
-    this._place(clampGeometry({ x: r.x, y: r.y, w: r.w + dw, h: r.h + dh }, d.win.innerWidth, d.win.innerHeight, d.topBarHeight(), null, this.maxW));
+    this._place(clampGeometry({ x: r.x, y: r.y, w: this._resized(this._shown(r.w) + dw), h: r.h + dh }, d.win.innerWidth, d.win.innerHeight, d.topBarHeight(), null, this.maxW));
     this._save();
     if (d.onResize) d.onResize();
   };
@@ -396,7 +412,7 @@
         var dx = ev.clientX - sx, dy = ev.clientY - sy;
         if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return;
         moved = true;
-        var g = kind === 'move' ? { x: r.x + dx, y: r.y + dy, w: r.w, h: r.h } : { x: r.x, y: r.y, w: r.w + dx, h: r.h + dy };
+        var g = kind === 'move' ? { x: r.x + dx, y: r.y + dy, w: r.w, h: r.h } : { x: r.x, y: r.y, w: self._resized(self._shown(r.w) + dx), h: r.h + dy };
         self._place(clampGeometry(g, d.win.innerWidth, d.win.innerHeight, d.topBarHeight(), null, self.maxW));
       }
       function onUp() {
@@ -556,7 +572,8 @@
       if (!fw) return;
       if (state.view !== 'Table' || fw.isPhone()) { fw.setMaxWidth(0); return; }
       var t = els.table.querySelector ? els.table.querySelector('table') : null, w = t ? t.scrollWidth : 0;
-      if (w > 0) fw.setMaxWidth(w + TABLE_CHROME);
+      var bar = els.body.offsetWidth > 0 ? Math.max(0, els.body.offsetWidth - els.body.clientWidth) : 18;   // 0 with overlay scrollbars
+      if (w > 0) fw.setMaxWidth(w + TABLE_CHROME + bar);
     }
     function setView(v) {
       state.view = v === 'Graph' ? 'Graph' : 'Table';
@@ -626,7 +643,7 @@
     _internals: {
       SETTINGS_KEY: SETTINGS_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
-      clampGeometry: clampGeometry, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
+      clampGeometry: clampGeometry, dateTick: dateTick, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       createLoader: createLoader, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       app: function () { return app; }
     }

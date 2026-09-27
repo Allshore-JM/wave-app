@@ -147,7 +147,7 @@ def test_phone_sheets_sit_above_the_map_controls_and_the_no_js_page_shows_its_co
     assert "view=Table&amp;render=full" in body and "view=Graph&amp;render=full" not in body
     assert ".fwin[hidden] { display: none !important; }" in body
     assert "#forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }" in body[body.index("@media print"):]
-    assert "#map, #pageHead, .fw-btn, .fw-resize, .live-win, .sr-star, .station-caret { display: none !important; }" in body[body.index("@media print"):]
+    assert "#map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .sr-star, .station-caret { display: none !important; }" in body[body.index("@media print"):]
     assert ".leaflet-container:not(.attr-open) .leaflet-control-attribution { display: none; }" in body
 
 def test_the_map_extent_block_pans_by_whole_pixels_and_the_load_sequence_is_wired_before_the_first_view(client):
@@ -244,3 +244,16 @@ def test_g18b_pins(client):
     gear = gear[:gear.index("map.addControl(new SettingsControl())")]
     assert "L.DomEvent.disableClickPropagation(c);" in gear and "L.DomEvent.disableScrollPropagation(c);" in gear
     assert body.count("options: { position: 'topleft' },") == 1 and body.index("map.addControl(new BrandControl())") < body.index("L.control.layers(")
+
+def test_both_windows_stretch_from_every_side(client):
+    """Plan section 27: each window has four edges and three corners (data-edge) besides its focusable bottom-right
+    grip; they are hidden wherever the grip is (minimised, maximised, phones, no JS, print); the body keeps a 5 px margin
+    so its scrollbars are never under an edge."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    for k in ("n", "s", "e", "w", "ne", "nw", "sw"):
+        assert body.count('<div class="fw-edge fw-edge-%s" data-edge="%s" aria-hidden="true"></div>' % (k, k)) == 2, k
+    for rule in (".fwin.fw-min .fw-resize, .fwin.fw-min .fw-edge { display: none; }", ".fwin.fw-max .fw-resize, .fwin.fw-max .fw-edge { display: none; }",
+                 "html:not(.js) .fw-edge,", ".fw-resize, .fw-edge { display: none; }",
+                 "@media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-max):not(.fw-min) .fw-body { margin: 0 5px 5px; } }"):
+        assert rule in body, rule
+    assert body.index('data-edge="sw"') < body.index('id="fwResize"')

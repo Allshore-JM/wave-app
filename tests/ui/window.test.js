@@ -596,17 +596,17 @@ test('plan section 26: in Table view the window is no wider than its table (drag
   b.page.table.querySelector = (sel) => (sel === 'table' ? t : orig(sel));
   b.fs_.last().release(payload()); await settle();
   const fw = b.app.window;
-  assert.equal(fw.maxW, 900 + 40); assert.equal(b.page.w.style.maxWidth, '', 'minimised: the chip keeps its CSS width');
+  assert.equal(fw.maxW, 900 + 50); assert.equal(b.page.w.style.maxWidth, '', 'minimised: the chip keeps its CSS width');
   fw.setMode('normal'); await settle();
-  assert.equal(b.page.w.style.maxWidth, '940px');
+  assert.equal(b.page.w.style.maxWidth, '950px');
   fw._place({ x: 100, y: 100, w: 600, h: 400 });
   const h = b.doc.getElementById('fwResize');
   for (let i = 0; i < 20; i++) h.dispatch('keydown', { key: 'ArrowRight', shiftKey: true, preventDefault: () => {} });
-  assert.equal(fw.geom.w, 940, 'the keyboard never grows it past the table');
+  assert.equal(fw.geom.w, 950, 'the keyboard never grows it past the table');
   fw._place({ x: 100, y: 100, w: 1150, h: 400 });                           // the viewer's own width, wider than the table
   fw.setMaxWidth(900); assert.equal(fw.geom.w, 1150, 'a new cap never rewrites the saved width');
-  fw.clamp(); assert.equal(fw.geom.w, 1150, 'nor does a clamp'); fw.setMaxWidth(940);
-  fw.setMode('max'); assert.equal(b.page.w.style.maxWidth, '940px', 'maximised: full height, the table width');
+  fw.clamp(); assert.equal(fw.geom.w, 1150, 'nor does a clamp'); fw.setMaxWidth(950);
+  fw.setMode('max'); assert.equal(b.page.w.style.maxWidth, '950px', 'maximised: full height, the table width');
   fw.setMode('min'); assert.equal(b.page.w.style.maxWidth, '', 'the chip keeps its own CSS width');
   fw.setMode('normal'); b.app.setView('Graph'); await settle();
   assert.equal(fw.maxW, 0); assert.equal(b.page.w.style.maxWidth, '', 'Graph view uses the full width');
@@ -631,11 +631,11 @@ test('G18a: a Graph-view width survives a trip through Table view; a SWAN-to-GFS
   b.page.table.querySelector = (sel) => (sel === 'table' ? { scrollWidth: tw } : orig(sel));
   b.fs_.last().release(payload()); await settle();
   const fw = b.app.window; fw.setMode('normal'); fw._place({ x: 50, y: 100, w: 1150, h: 400 });
-  b.app.setView('Table'); assert.equal(b.page.w.style.maxWidth, '840px'); assert.equal(fw.geom.w, 1150);
+  b.app.setView('Table'); assert.equal(b.page.w.style.maxWidth, '850px'); assert.equal(fw.geom.w, 1150);
   b.app.setView('Graph'); assert.equal(b.page.w.style.maxWidth, ''); assert.equal(fw.geom.w, 1150, 'the viewer\'s width is back');
   b.app.setView('Table'); tw = 950; b.app.loader.load({ model: 'GFS', station: '46001' }); await settle();
   b.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
-  assert.equal(b.page.w.style.maxWidth, '990px', 'a wider table widens the window (the width was never cut)');
+  assert.equal(b.page.w.style.maxWidth, '1000px', 'a wider table widens the window (the width was never cut)');
 });
 
 // ---- plan section 26 (D2): the picker heading, two windows, the live-buoy window ----
@@ -727,4 +727,57 @@ test('plan section 27: a forecast with wind gaps is kept a minute, not ten (a tr
   now += 31 * 1000; L.load({}); await settle(); assert.equal(fs_.calls.length, 2, 'after the minute: fetched again');
   fs_.last().release(payload({ wind_complete: true })); await settle();
   now += 5 * 60 * 1000; L.load({}); await settle(); assert.equal(fs_.calls.length, 2, 'a complete forecast keeps the 10-minute cache');
+});
+
+// ---- plan section 27: stretch from every side ----
+test('resizeGeometry: each edge moves only its own side; the opposite side stays put at the minimum, the viewport and the table cap', () => {
+  const I = load(fakeWindow())._internals, R = I.resizeGeometry;
+  const r = { x: 300, y: 200, w: 800, h: 400 }, vw = 1580, vh = 900;
+  assert.deepEqual(R(r, 'e', 50, 0, vw, vh), { x: 300, y: 200, w: 850, h: 400 });
+  assert.deepEqual(R(r, 'w', -50, 0, vw, vh), { x: 250, y: 200, w: 850, h: 400 }, 'west: the right edge stays at 1100');
+  assert.deepEqual(R(r, 's', 0, 60, vw, vh), { x: 300, y: 200, w: 800, h: 460 });
+  assert.deepEqual(R(r, 'n', 0, -60, vw, vh), { x: 300, y: 140, w: 800, h: 460 }, 'north: the bottom edge stays at 600');
+  assert.deepEqual(R(r, 'nw', -20, -30, vw, vh), { x: 280, y: 170, w: 820, h: 430 });
+  assert.deepEqual(R(r, 'se', 10, 10, vw, vh), { x: 300, y: 200, w: 810, h: 410 });
+  const tooSmall = R(r, 'w', 700, 0, vw, vh);
+  assert.deepEqual([tooSmall.x + tooSmall.w, tooSmall.w], [1100, 360], 'west past the minimum: stops at 360 wide, the right edge never moves');
+  const tooShort = R(r, 'n', 0, 500, vw, vh);
+  assert.deepEqual([tooShort.y + tooShort.h, tooShort.h], [600, 220], 'north past the minimum: 220 tall, the bottom never moves');
+  assert.deepEqual(R(r, 'w', -900, 0, vw, vh).x, 8, 'the left side stops at the 8 px pad');
+  assert.equal(R(r, 'n', 0, -900, vw, vh).y, 8, 'the top stops at the 8 px pad');
+  assert.equal(R(r, 'e', 2000, 0, vw, vh).w, vw - 8 - 300, 'the right side stops at the viewport');
+  assert.equal(R(r, 's', 0, 2000, vw, vh).h, vh - 8 - 200, 'the bottom stops at the viewport');
+  // Table view: the width is capped at the table (maxW); the viewer's own width may be wider than the cap
+  const wide = { x: 300, y: 200, w: 1150, h: 400 };
+  assert.deepEqual(R(wide, 'w', -300, 0, vw, vh, 0, null, 900), { x: 300, y: 200, w: 900, h: 400 }, 'west at the cap: the shown right edge (1200) stays, the width stops at the table');
+  assert.equal(R(wide, 'e', 100, 0, vw, vh, 0, null, 900).w, 900, 'east at the cap');
+  assert.equal(R(wide, 'e', -100, 0, vw, vh, 0, null, 900).w, 800, 'east shrinks from the width on screen');
+  assert.equal(R(wide, 'n', 0, -40, vw, vh, 0, null, 900).w, 1150, 'a vertical resize keeps the viewer\'s own width');
+});
+
+test('plan section 27: every edge and corner of both windows stretches them by pointer; not when minimised, maximised or on a phone', () => {
+  const win = fakeWindow({ width: 1580, height: 900 }), page = buildPage(win), { fw, resizes } = makeWindow(win, page);
+  fw.setMode('normal'); fw._place({ x: 300, y: 200, w: 800, h: 400 }); resizes.length = 0;   // (setMode itself calls onResize)
+  const by = (k) => page.winEdges.find((e) => e.getAttribute('data-edge') === k);
+  const drag = (h, dx, dy) => { h.dispatch('pointerdown', ptr(500, 500)); h.dispatch('pointermove', ptr(500 + dx, 500 + dy)); h.dispatch('pointerup', ptr(500 + dx, 500 + dy)); };
+  drag(by('w'), -100, 0); assert.deepEqual(fw.geom, { x: 200, y: 200, w: 900, h: 400 });
+  drag(by('n'), 0, -50); assert.deepEqual(fw.geom, { x: 200, y: 150, w: 900, h: 450 });
+  drag(by('ne'), 40, 30); assert.deepEqual(fw.geom, { x: 200, y: 180, w: 940, h: 420 });
+  drag(by('sw'), 20, 20); assert.deepEqual(fw.geom, { x: 220, y: 180, w: 920, h: 440 });
+  drag(by('e'), -20, 99); assert.deepEqual(fw.geom, { x: 220, y: 180, w: 900, h: 440 }, 'an edge ignores the other axis');
+  drag(by('s'), 99, 10); assert.deepEqual(fw.geom, { x: 220, y: 180, w: 900, h: 450 });
+  assert.equal(resizes.length, 6, 'onResize once per drag (the charts / the table width follow)');
+  assert.deepEqual(JSON.parse(win.sessionStorage.getItem('allshore.forecastWin.v1')).x, 220, 'saved');
+  const before = { ...fw.geom };
+  by('w').dispatch('pointerdown', ptr(500, 500, { button: 2 })); by('w').dispatch('pointermove', ptr(400, 500)); by('w').dispatch('pointerup', ptr(400, 500));
+  assert.deepEqual(fw.geom, before, 'not with the right button');
+  fw.setMode('max'); drag(by('w'), -50, 0); fw.setMode('normal'); assert.deepEqual(fw.geom, before, 'not maximised');
+  fw.setMode('min'); drag(by('w'), -50, 0); fw.setMode('normal'); assert.deepEqual(fw.geom, before, 'not minimised');
+  win.phone = true; drag(by('w'), -50, 0); assert.deepEqual(fw.geom, before, 'not on a phone');
+  // the live window has the same edges
+  const w2 = fakeWindow({ width: 1580, height: 900 }), p2 = buildPage(w2), F2 = load(w2), lw = F2.createLiveWindow({ window: w2 });
+  lw.open(); lw.window._place({ x: 600, y: 150, w: 820, h: 600 });
+  const west = p2.liveEdges.find((e) => e.getAttribute('data-edge') === 'w');
+  west.dispatch('pointerdown', ptr(600, 400)); west.dispatch('pointermove', ptr(500, 400)); west.dispatch('pointerup', ptr(500, 400));
+  assert.deepEqual(lw.window.geom, { x: 500, y: 150, w: 920, h: 600 }, 'the live window stretches from its left side');
 });

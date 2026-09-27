@@ -121,7 +121,9 @@ function buildPage(win) {
   const live = el('section', 'liveBuoyPanel', doc.body); live.hidden = true; live.rect = { left: 400, top: 200, width: 820, height: 600 };
   const lwHeader = el('div', 'lwHeader', live); el('strong', 'liveBuoyTitle', lwHeader); el('span', 'liveBuoySubtitle', lwHeader);
   const lwMin = el('button', 'lwMin', lwHeader); const lwClose = el('button', 'lwClose', lwHeader);
-  el('div', 'lwBody', live); el('div', 'lwResize', live);
+  el('div', 'lwBody', live);
+  const edges = (win) => ['n', 's', 'e', 'w', 'ne', 'nw', 'sw'].map((k) => { const e = el('div', null, win, { 'data-edge': k }); e.classList.add('fw-edge'); return e; });
+  const liveEdges = edges(live); el('div', 'lwResize', live);
   const w = el('section', 'forecastWin', doc.body); w.rect = { left: 84, top: 300, width: 1180, height: 480 };
   const header = el('div', 'fwHeader', w);
   // the favourites picker is the window's heading: the station field with its trigger, label and native select
@@ -142,8 +144,8 @@ function buildPage(win) {
   const table = el('div', 'forecastTable', body); el('div', 'forecastLoading', table);
   const graphs = el('div', 'graphs', body); graphs.hidden = true;
   ['heightChart', 'periodChart', 'directionChart'].forEach((id) => { const box = el('div', null, graphs); box.classList.add('chart-box'); el('canvas', id, box); });
-  el('div', 'fwResize', w);
-  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwClose, w, header, viewBar, modelBar, rangeBar, body, table, graphs };
+  const winEdges = edges(w); el('div', 'fwResize', w);
+  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwClose, liveEdges, w, winEdges, header, viewBar, modelBar, rangeBar, body, table, graphs };
 }
 
 // A Chart.js stand-in that records instances.

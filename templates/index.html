@@ -721,7 +721,6 @@
 
     // Web Mercator practical latitude limits.
     // Longitude is intentionally not bounded so the map can scroll continuously east/west.
-    const WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
     const LATITUDE_LIMIT = 85;
 
     const DEFAULT_MAP_CENTER = [21.3, -157.9];
@@ -928,13 +927,58 @@
     });
 
     // --- Stable map sizing, single-world zoom floor, and continuous east/west wrap ---
+    // ---- map extent (tests/ui/mapclamp.test.js runs this block: keep it self-contained between the markers) ----
     function calculateSingleWorldMinZoom() {
-      const mapWidth = map.getSize().x || document.getElementById('map').clientWidth || 1024;
+      const el = document.getElementById('map');
+      const size = map.getSize();
+      const mapWidth = size.x || el.clientWidth || 1024;
+      const mapHeight = size.y || el.clientHeight || 0;
 
       // At zoom 0 the world is 256 px wide. Require the world pixel width to be
-      // at least the viewport width so no second world is visible at minimum zoom.
-      return Math.log2((mapWidth + MIN_ZOOM_PADDING_PX) / WORLD_TILE_SIZE);
+      // at least the viewport width so no second world is visible at minimum zoom...
+      const byWidth = Math.log2((mapWidth + MIN_ZOOM_PADDING_PX) / WORLD_TILE_SIZE);
+      // ...and the band between the latitude limits (the poles) at least the viewport height, so the
+      // poles are the farthest the map ever shows: a map taller than it is wide (a phone, a narrow
+      // window) would otherwise show the void beyond both poles at once, which no clamp can cure.
+      const bandAtZoom0 = map.project([-LATITUDE_LIMIT, 0], 0).y - map.project([LATITUDE_LIMIT, 0], 0).y;
+      const byHeight = mapHeight ? Math.log2((mapHeight + MIN_ZOOM_PADDING_PX) / bandAtZoom0) : 0;
+      return Math.max(byWidth, byHeight);
     }
+
+    // Prevent north/south dragging into the void beyond the poles, while still allowing continuous
+    // east/west movement. The overshoot is measured in PIXELS at the current zoom and the view is panned
+    // back by whole pixels only: Leaflet truncates pan offsets to whole pixels, so a correction in degrees
+    // that came to less than a pixel moved nothing, fired moveend again and recursed until the stack
+    // overflowed (with a saved view near a pole the page died at load: every layer waiting for the map's
+    // 'load' event, the station picker and the live buoys never came; a pan past a pole left the particle
+    // animation suspended). The moveend of the clamp's own pan is ignored; the outer handler finishes once.
+    let clampingLatitude = false;
+    function latitudeOvershootPx() {
+      const size = map.getSize(), zoom = map.getZoom();
+      const top = map.project([LATITUDE_LIMIT, 0], zoom).y;         // world pixel y of the north limit
+      const bottom = map.project([-LATITUDE_LIMIT, 0], zoom).y;     // ... and of the south limit
+      const cy = map.project(map.getCenter(), zoom).y, half = size.y / 2;
+      if (bottom - top <= size.y) return (top + bottom) / 2 - cy;   // the whole band fits: centre it
+      if (cy - half < top) return top - (cy - half);
+      if (cy + half > bottom) return bottom - (cy + half);
+      return 0;
+    }
+    function clampMapLatitude() {
+      // an animation in flight ends with its own moveend: clamp then, from the settled view
+      if (clampingLatitude || !map._loaded || map._animatingZoom || (map._panAnim && map._panAnim._inProgress)) return;
+      const dy = Math.round(latitudeOvershootPx());
+      if (!dy) return;
+      clampingLatitude = true;
+      try { map.panBy([0, dy], { animate: false }); } finally { clampingLatitude = false; }
+    }
+
+    function handleMapMoveEnd() {
+      if (clampingLatitude) return;             // the clamp's own pan: the outer call finishes below
+      try { clampMapLatitude(); } catch (e) { console.error('latitude clamp', e); }   // the map's load sequence must survive this handler
+      refreshWrappedMarkerCopies(false);
+      try { saveMapView(map); } catch (e) {}   // the page no longer reloads on a pick: keep the view for a real reload (storage may be blocked)
+    }
+    // ---- end map extent ----
 
     let lastEnforcedWidth = null;
     function enforceSingleWorld() {
@@ -985,41 +1029,6 @@
 
       clampMapLatitude();
       refreshWrappedMarkerCopies(true);
-    }
-
-    // Prevent north/south dragging into grey polar tile areas,
-    // while still allowing continuous east/west movement.
-    function clampMapLatitude() {
-      const bounds = map.getBounds();
-      const center = map.getCenter();
-
-      const northLimit = WORLD_BOUNDS.getNorth();
-      const southLimit = WORLD_BOUNDS.getSouth();
-
-      let correctedLat = center.lat;
-
-      if (bounds.getNorth() > northLimit) {
-        correctedLat -= (bounds.getNorth() - northLimit);
-      }
-
-      if (bounds.getSouth() < southLimit) {
-        correctedLat += (southLimit - bounds.getSouth());
-      }
-
-      correctedLat = Math.max(
-        southLimit,
-        Math.min(northLimit, correctedLat)
-      );
-
-      if (Math.abs(correctedLat - center.lat) > 0.000001) {
-        map.setView([correctedLat, center.lng], map.getZoom(), { animate: false });
-      }
-    }
-
-    function handleMapMoveEnd() {
-      clampMapLatitude();
-      refreshWrappedMarkerCopies(false);
-      try { saveMapView(map); } catch (e) {}   // the page no longer reloads on a pick: keep the view for a real reload (storage may be blocked)
     }
 
     // Map movement, resize handling, and initial view are wired up after

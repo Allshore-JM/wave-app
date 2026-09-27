@@ -440,9 +440,9 @@
       }
       .fwin.fw-min { left: 0 !important; right: 0 !important; bottom: 0 !important; top: auto !important; width: 100vw !important; max-width: none; border-radius: 10px 10px 0 0; }
       .live-win.fw-min { bottom: var(--fw-bar-h, 48px) !important; }     /* stacked above the forecast bar (its measured height) */
-      /* the bar: the station name keeps at most 62 % of the row, the run text takes the rest (ellipsis) */
-      .fwin.fw-min .fw-titles .station-field { max-width: 62%; }
-      .fwin.fw-min .fw-titles .fw-cycle { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      /* the bar cannot fit a long name AND the run text: the name has priority (the run text shrinks four times as
+         fast, to an ellipsis; it is whole once the bar is expanded) */
+      .fwin.fw-min .fw-titles .fw-cycle { flex: 0 4 auto; min-width: 2ch; overflow: hidden; text-overflow: ellipsis; }
       .fw-resize { display: none; }
       .fw-header { cursor: default; }
       .fw-btn { width: 36px; height: 36px; }

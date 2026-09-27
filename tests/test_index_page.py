@@ -143,5 +143,6 @@ def test_the_map_extent_block_pans_by_whole_pixels_and_the_load_sequence_is_wire
     block = body[body.index("// ---- map extent"):body.index("// ---- end map extent ----")]
     assert "map.panBy([0, dy], { animate: false })" in block and "setView" not in block
     assert "if (clampingLatitude) return;" in block and "catch (e) { console.error('latitude clamp', e); }" in block
-    assert "map.project([-LATITUDE_LIMIT, 0], 0).y - map.project([LATITUDE_LIMIT, 0], 0).y" in block   # the poles are the farthest extent
+    assert "map.project([LAT_LIMIT_SOUTH, 0], 0).y - map.project([LAT_LIMIT_NORTH, 0], 0).y" in block   # the limits are the farthest extent
+    assert "const LAT_LIMIT_NORTH = 84;" in body and "const LAT_LIMIT_SOUTH = -79;" in body   # just past Greenland's tip / Antarctica's ice fronts (owner)
     assert body.index("map.on('moveend', handleMapMoveEnd)") < body.index("enforceSingleWorld();")

@@ -719,7 +719,12 @@
 
     // Web Mercator practical latitude limits.
     // Longitude is intentionally not bounded so the map can scroll continuously east/west.
-    const LATITUDE_LIMIT = 85;
+    // The farthest the map shows: just past Greenland's northern tip (Cape Morris Jesup, 83.6 N) and just
+    // past Antarctica's ice-shelf fronts (Ross / Ronne, about 78.5 S); Mercator stretches the last degrees
+    // enormously, so the old 85 left a void the height of a continent south of Antarctica.
+    const LAT_LIMIT_NORTH = 84;
+    const LAT_LIMIT_SOUTH = -79;
+    function clampLat(lat) { return Math.max(LAT_LIMIT_SOUTH, Math.min(LAT_LIMIT_NORTH, lat)); }
 
     const DEFAULT_MAP_CENTER = [21.3, -157.9];
     const DEFAULT_MAP_ZOOM = 6;
@@ -785,10 +790,7 @@
     function saveMapView(map) {
       const v = { c: map.getCenter(), z: map.getZoom() };
 
-      const safeLat = Math.max(
-        -LATITUDE_LIMIT,
-        Math.min(LATITUDE_LIMIT, v.c.lat)
-      );
+      const safeLat = clampLat(v.c.lat);
 
       sessionStorage.setItem(
         mapKey,
@@ -938,7 +940,7 @@
       // ...and the band between the latitude limits (the poles) at least the viewport height, so the
       // poles are the farthest the map ever shows: a map taller than it is wide (a phone, a narrow
       // window) would otherwise show the void beyond both poles at once, which no clamp can cure.
-      const bandAtZoom0 = map.project([-LATITUDE_LIMIT, 0], 0).y - map.project([LATITUDE_LIMIT, 0], 0).y;
+      const bandAtZoom0 = map.project([LAT_LIMIT_SOUTH, 0], 0).y - map.project([LAT_LIMIT_NORTH, 0], 0).y;
       const byHeight = mapHeight ? Math.log2((mapHeight + MIN_ZOOM_PADDING_PX) / bandAtZoom0) : 0;
       return Math.max(byWidth, byHeight);
     }
@@ -953,10 +955,10 @@
     let clampingLatitude = false;
     function latitudeOvershootPx() {
       const size = map.getSize(), zoom = map.getZoom();
-      const top = map.project([LATITUDE_LIMIT, 0], zoom).y;         // world pixel y of the north limit
-      const bottom = map.project([-LATITUDE_LIMIT, 0], zoom).y;     // ... and of the south limit
+      const top = map.project([LAT_LIMIT_NORTH, 0], zoom).y;        // world pixel y of the north limit
+      const bottom = map.project([LAT_LIMIT_SOUTH, 0], zoom).y;     // ... and of the south limit
       const cy = map.project(map.getCenter(), zoom).y, half = size.y / 2;
-      if (bottom - top <= size.y) return (top + bottom) / 2 - cy;   // the whole band fits: centre it
+      if (bottom - top <= size.y) return (top + bottom) / 2 - cy;   // the whole band fits: centre it (the min zoom prevents this)
       if (cy - half < top) return top - (cy - half);
       if (cy + half > bottom) return bottom - (cy + half);
       return 0;
@@ -1014,7 +1016,7 @@
 
       if (view) {
         const safeZoom = Math.min(MAX_MAP_ZOOM, Math.max(view.z, MIN_MAP_ZOOM));
-        const safeLat = Math.max(-LATITUDE_LIMIT, Math.min(LATITUDE_LIMIT, view.lat));
+        const safeLat = clampLat(view.lat);
         map.setView([safeLat, view.lng], safeZoom, { animate: false });
       } else {
         map.setView(
@@ -1163,7 +1165,7 @@
       const lat = Number(st.lat), lon = Number(st.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
       const z = Math.min(MAX_MAP_ZOOM, Math.max(FORECAST_FOCUS_ZOOM, MIN_MAP_ZOOM));
-      const safeLat = Math.max(-LATITUDE_LIMIT, Math.min(LATITUDE_LIMIT, lat));
+      const safeLat = clampLat(lat);
       map.setView([safeLat, normLng(lon)], z, { animate: true });
       clampMapLatitude();
       refreshWrappedMarkerCopies(true);

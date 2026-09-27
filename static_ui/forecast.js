@@ -349,7 +349,8 @@
     if (deps.canMax === false) { if (this.mode === 'max') this.mode = 'normal'; this.prev = 'normal'; }
     this.opener = null; this.maxW = 0;
     this._applyMode();
-    if (this.geom) this._place(clampGeometry(this.geom, deps.win.innerWidth, deps.win.innerHeight, this._top(), null, this.maxW));
+    // phone mode leaves the geometry to CSS: a saved desktop box is neither applied nor cut down to the phone (G18b-B P3-3)
+    if (this.geom && !this.isPhone()) this._place(clampGeometry(this.geom, deps.win.innerWidth, deps.win.innerHeight, this._top(), null, this.maxW));
     this._bind();
   }
   FloatingWindow.prototype._top = function () { return this.d.topBarHeight ? this.d.topBarHeight() : 0; };

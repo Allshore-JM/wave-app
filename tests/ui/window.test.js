@@ -690,3 +690,16 @@ test('D2: on a phone the live window neither drags nor resizes; Escape in the pa
   assert.equal(liveOpen(), true);
   b.page.lwMin.dispatch('click'); assert.equal(liveOpen(), false, 'a parked chip does not count as open');
 });
+
+test('G18b-B P3-3: a phone-width load keeps a saved desktop geometry as it is (not cut to 360 px, not rewritten); widening clamps it', () => {
+  const saved = { 'allshore.forecastWin.v1': { mode: 'normal', prev: 'normal', x: 300, y: 200, w: 1150, h: 600 } };
+  const win = fakeWindow({ width: 375, height: 812, phone: true, session: saved }), page = buildPage(win);
+  const { fw } = makeWindow(win, page);
+  assert.deepEqual(fw.geom, { x: 300, y: 200, w: 1150, h: 600 }, 'untouched in memory');
+  assert.equal(page.w.style.left, undefined, 'and not applied (CSS owns the phone layout)');
+  fw.setMode('min'); fw.setMode('normal');                                    // mode changes save: still the desktop box
+  assert.equal(JSON.parse(win.sessionStorage.getItem('allshore.forecastWin.v1')).w, 1150);
+  win.phone = false; win.innerWidth = 1024; win.innerHeight = 768; win.fire('resize');
+  assert.deepEqual([fw.geom.w, fw.geom.x], [1008, 8], 'back on a desktop: clamped into the viewport, not 360 wide');
+});
+

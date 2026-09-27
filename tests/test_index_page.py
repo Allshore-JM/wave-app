@@ -24,19 +24,26 @@ def initial(body):
 
 def test_top_bar_and_window_markup(client):
     body = client.get("/?station=51201").get_data(as_text=True)
-    for needle in ('id="topBar"', 'class="brand"', 'id="stationTrigger"', 'id="settingsBtn"', 'id="settingsPanel"',
-                   'id="tz" name="tz"', 'id="unit" name="unit"', 'id="forecastWin" class="forecast-win fw-min"',
+    for needle in ('id="pageHead"', 'id="brand" class="brand"', 'id="settingsHost"', 'id="stationTrigger"', 'id="settingsBtn"', 'id="settingsPanel"',
+                   'id="tz" name="tz"', 'id="unit" name="unit"', 'id="forecastWin" class="fwin forecast-win fw-min"',
+                   'id="fwTitle" class="station-field"', 'id="station" name="station" form="controlForm"',
+                   'id="liveBuoyPanel" class="fwin live-win" hidden', 'id="lwHeader"', 'id="lwMin"', 'id="lwMax"', 'id="lwClose"', 'id="lwBody"', 'id="lwResize"',
+                   "map.addControl(new BrandControl())", "map.addControl(new SettingsControl())", "map.addControl(new AttrToggle())",
+                   "map.attributionControl.setPosition('bottomleft')", "zoomControl: false,", "AllshoreForecast.createLiveWindow(",
+                   "liveWin.close()", "liveWin.open()", "document.addEventListener('allshore:livewin'",
                    'id="fwHeader"', 'id="fwMin"', 'id="fwMax"', 'id="viewBar"', 'id="modelBar"', 'id="rangeBar"',
                    'id="fwBody"', 'id="fwError"', 'id="forecastMeta"', 'id="forecastTable"', 'id="forecastLoading"',
                    'id="graphs"', 'id="heightChart"', 'id="periodChart"', 'id="directionChart"', 'id="fwResize"',
                    '/ui/forecast.js?v=%s' % A.UI_ASSET_VERSION, "window.AllshoreForecast.init(", "document.documentElement.classList.add('js')"):
         assert needle in body, needle
-    for gone in ('id="updateBtn"', 'id="model" name="model"', 'id="view" name="view"', "sticky-top-bar", "nav-hidden",
+    for gone in ('id="updateBtn"', 'id="model" name="model"', 'id="view" name="view"', "sticky-top-bar", "nav-hidden", 'id="topBar"',
+                 "container-fluid", ".top-bar", "--topbar-h", 'class="card-header', "onclick=\"closeLiveBuoyPanel()\"", "panel.style.display = 'block'",
                  '<script src="https://cdn.jsdelivr.net/npm/chart.js', "allshore.focusStation", "controlForm').submit()"):
         assert gone not in body, gone
     # the settings live in the gear's panel, hidden until opened; the no-JS Go button only inside <noscript>
     assert re.search(r'id="settingsPanel"[^>]*\bhidden\b', body)
-    assert re.search(r"<noscript><button type=\"submit\"", body)
+    assert re.search(r"<noscript>\s*<button type=\"submit\" class=\"btn btn-sm btn-primary\" form=\"controlForm\">Go</button>", body)
+    assert body.index('id="brand"') < body.index('id="map"') < body.index('id="forecastWin"') < body.index('id="liveBuoyPanel"')
 
 
 def test_model_bar_only_for_swan_stations_and_the_state_echoes_the_request(client):
@@ -118,21 +125,27 @@ def test_the_pages_own_script_keeps_its_bridges_and_rules(client):
     assert "select.value = String(d.sid); refreshCurrent();" in body
 
 
-def test_phone_sheets_sit_above_the_top_bar_and_the_no_js_page_shows_its_controls(client):
-    """G16-A P0-1 / P2-5 / P3-1 / P3-2 as CSS pins: the full-screen sheets outrank the top bar in phone mode; the
-    no-JS layout shows the settings and the table whatever the [hidden] attributes say; the refresh is to the Table view."""
+def test_phone_sheets_sit_above_the_map_controls_and_the_no_js_page_shows_its_controls(client):
+    """CSS pins (G16 + plan section 26): in phone mode both full-screen windows outrank the map's top-right corner
+    (z 2600, so the gear panel is never under a window on desktops); the live bar stacks above the forecast bar; the
+    no-JS layout shows the head row, the settings and the table whatever the [hidden] attributes say; the refresh is
+    to the Table view."""
     body = client.get("/?station=51201&view=Graph").get_data(as_text=True)
-    bar = re.search(r"\.top-bar \{[^}]*z-index: (\d+)", body).group(1)
+    corner = re.search(r"\.leaflet-container \.leaflet-top\.leaflet-right \{ z-index: (\d+); \}", body).group(1)
     phone = body[body.index("@media (max-width: 500px), (max-height: 500px) {"):]
-    sheet = re.search(r"\.forecast-win:not\(\.fw-min\) \{ z-index: (\d+); \}", phone).group(1)
-    assert int(sheet) > int(bar) == 3000
+    sheet = re.search(r"\.fwin:not\(\.fw-min\) \{ z-index: (\d+); \}", phone).group(1)
+    assert int(sheet) > int(corner) > 2100 and int(corner) == 2600
+    assert ".live-win.fw-min { bottom: 48px !important; }" in phone
     assert "html:not(.js) .settings-panel[hidden] { display: flex !important; }" in body
+    assert "html:not(.js) #pageHead { display: flex;" in body and ".js #pageHead { display: none; }" in body
     assert "html:not(.js) #forecastTable[hidden] { display: block !important; }" in body
     assert "html:not(.js) .forecast-win { position: static !important; width: auto !important; max-width: none;" in body
+    assert "html:not(.js) .live-win { display: none !important; }" in body
     assert "view=Table&amp;render=full" in body and "view=Graph&amp;render=full" not in body
-    live = re.search(r"@media \(max-width: 500px\) \{\s*#liveBuoyPanel \{\s*z-index: (\d+);", body).group(1)
-    assert int(live) > int(bar), "the full-screen live panel outranks the bar (only where it is full screen)"
+    assert ".fwin[hidden] { display: none !important; }" in body
     assert "#forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }" in body[body.index("@media print"):]
+    assert "#map, #pageHead, .fw-btn, .fw-resize, .live-win, .sr-star, .station-caret { display: none !important; }" in body[body.index("@media print"):]
+    assert ".leaflet-container:not(.attr-open) .leaflet-control-attribution { display: none; }" in body
 
 def test_the_map_extent_block_pans_by_whole_pixels_and_the_load_sequence_is_wired_before_the_first_view(client):
     """The latitude clamp pans by whole pixels and ignores its own moveend: the old degree-based clamp called setView
@@ -157,14 +170,14 @@ def test_pr_c_polish_markup(client):
     assert "early: window.__early" in body
     assert re.search(r'id="fwResize" class="fw-resize" tabindex="0" role="img" aria-label="[^"]+" aria-keyshortcuts="', body)
     assert 'swan = ["' in head, "the head knows the SWAN stations (a SWAN link elsewhere is fetched as GFS, like the loader)"
-    assert body.index(".forecast-win.fw-front { z-index: 2100; }") < body.index(".forecast-win:not(.fw-min) { z-index: 3500; }")
+    assert body.index(".forecast-win.fw-front { z-index: 2100; }") < body.index(".fwin:not(.fw-min) { z-index: 3500; }")
     assert "new CustomEvent('allshore:livepanel')" in body and "document.addEventListener('allshore:livepanel', function () { front(false); });" in body
 
 def test_plan_26_d1_page_rules(client):
     """The maximised window is capped by the table width (inline max-width): it must not be pinned to both edges;
     the Leaflet prefix goes, the credits stay."""
     body = client.get("/?station=51201").get_data(as_text=True)
-    mx = body[body.index(".forecast-win.fw-max {"):]
+    mx = body[body.index(".fwin.fw-max {"):]
     mx = mx[:mx.index("}")]
     assert "right: auto !important" in mx and "width: calc(100vw - 16px) !important" in mx
     assert "map.attributionControl.setPrefix(false)" in body and "Esri &amp; contributors" in body.replace("Esri & contributors", "Esri &amp; contributors")
@@ -183,3 +196,15 @@ def test_gridlines_are_loaded_and_offered_in_the_settings(client):
     assert "window.AllshoreGraticule.create(map, { storage: st || undefined })" in body
     r = A.app.test_client().get("/ui/graticule.js?v=" + A.UI_ASSET_VERSION)
     assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+
+def test_the_map_is_the_page_and_the_windows_stack_by_touch(client):
+    """Plan section 26 (D2): the map's height comes from the viewport minus the phone bars (no top bar, no wrapper
+    padding); the width rule of enforceSingleWorld is untouched; the picker list is position: fixed and placed from
+    its trigger; the live window's phone bar drives a re-measure."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert "const bars = phone ? 1 + (lw && !lw.hidden && lw.classList.contains('fw-min') ? 1 : 0) : 0;" in body
+    assert "const reserve = bars * 48;" in body and "if (lastEnforcedWidth === w) {" in body
+    assert "html.js body { margin: 0; overflow: hidden; }" in body and "#map { height: 100vh; height: 100dvh; background: #0b2536; }" in body
+    assert "position: fixed; z-index: 2600; top: auto; left: auto;" in body[body.index(".station-results {"):]
+    assert "function place() {" in body and "window.addEventListener('resize', close);" in body
+    assert "liveOpen: function () { return !!(liveWin && liveWin.isOpen() && liveWin.window.mode !== 'min'); }" in body

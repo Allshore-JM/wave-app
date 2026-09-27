@@ -19,6 +19,7 @@
 
   var SETTINGS_KEY = 'allshore.settings.v1';   // localStorage {tz, unit}
   var WINDOW_KEY = 'allshore.forecastWin.v1';  // sessionStorage {x, y, w, h, mode, prev}
+  var LIVE_WINDOW_KEY = 'allshore.liveWin.v1'; // the live-buoy window's (the same shape)
   var RANGE_KEY = 'chartRange';                // sessionStorage 'full' | '7' | '3' (unchanged from the old page)
   function isUnit(u) { return u === 'US' || u === 'Metric'; }   // (an object lookup matched 'constructor' and the like)
   var CACHE_MAX = 16, CACHE_TTL_MS = 10 * 60 * 1000;
@@ -334,23 +335,27 @@
   }
 
   // ---- the floating window ----
-  // deps: el (#forecastWin), header, handle, storage (sessionStorage-like), win (window-like: innerWidth,
-  //       innerHeight, matchMedia, addEventListener), topBarHeight() -> px, onMode(mode), onResize().
+  // deps: el (the window), header, handle, storage (sessionStorage-like), win (window-like: innerWidth,
+  //       innerHeight, matchMedia, addEventListener), key (the storage key; the forecast window's by default),
+  //       defaultMode ('min' by default: a new tab starts minimised), topBarHeight() -> px (optional, 0 now
+  //       that the map is the page), onMode(mode), onResize().
   function FloatingWindow(deps) {
-    this.d = deps; this.el = deps.el;
-    var saved = readJson(deps.storage, WINDOW_KEY);
+    this.d = deps; this.el = deps.el; this.key = deps.key || WINDOW_KEY;
+    var saved = readJson(deps.storage, this.key);
     this.geom = typeof saved.w === 'number' && typeof saved.h === 'number' && typeof saved.x === 'number' && typeof saved.y === 'number' ? { x: saved.x, y: saved.y, w: saved.w, h: saved.h } : null;
-    this.mode = saved.mode === 'normal' || saved.mode === 'max' ? saved.mode : 'min';   // a new tab starts minimised
+    var dflt = deps.defaultMode === 'normal' || deps.defaultMode === 'max' ? deps.defaultMode : 'min';
+    this.mode = saved.mode === 'normal' || saved.mode === 'max' || saved.mode === 'min' ? saved.mode : dflt;
     this.prev = saved.prev === 'max' ? 'max' : 'normal';
     this.opener = null; this.maxW = 0;
     this._applyMode();
-    if (this.geom) this._place(clampGeometry(this.geom, deps.win.innerWidth, deps.win.innerHeight, deps.topBarHeight(), null, this.maxW));
+    if (this.geom) this._place(clampGeometry(this.geom, deps.win.innerWidth, deps.win.innerHeight, this._top(), null, this.maxW));
     this._bind();
   }
+  FloatingWindow.prototype._top = function () { return this.d.topBarHeight ? this.d.topBarHeight() : 0; };
   FloatingWindow.prototype.isPhone = function () { var mm = this.d.win.matchMedia; return !!(mm && mm.call(this.d.win, PHONE_QUERY).matches); };
   FloatingWindow.prototype._save = function () {
     var g = this.geom || {};
-    writeJson(this.d.storage, WINDOW_KEY, { x: g.x, y: g.y, w: g.w, h: g.h, mode: this.mode, prev: this.prev });
+    writeJson(this.d.storage, this.key, { x: g.x, y: g.y, w: g.w, h: g.h, mode: this.mode, prev: this.prev });
   };
   FloatingWindow.prototype._place = function (g) {
     this.geom = g;
@@ -360,7 +365,6 @@
   FloatingWindow.prototype._applyMode = function () {
     var cl = this.el.classList;
     cl.toggle('fw-min', this.mode === 'min'); cl.toggle('fw-max', this.mode === 'max');
-    this.el.style.setProperty('--topbar-h', this.d.topBarHeight() + 'px');
     if (this.el.style) this.el.style.maxWidth = this.maxW && this.mode !== 'min' ? this.maxW + 'px' : '';
     if (this.d.onMode) this.d.onMode(this.mode);
   };
@@ -392,13 +396,13 @@
   FloatingWindow.prototype._resized = function (w) { return this.maxW ? Math.min(w, this.maxW) : w; };
   FloatingWindow.prototype.resizeBy = function (dw, dh) {
     var r = this._rect(), d = this.d;
-    this._place(clampGeometry({ x: r.x, y: r.y, w: this._resized(this._shown(r.w) + dw), h: r.h + dh }, d.win.innerWidth, d.win.innerHeight, d.topBarHeight(), null, this.maxW));
+    this._place(clampGeometry({ x: r.x, y: r.y, w: this._resized(this._shown(r.w) + dw), h: r.h + dh }, d.win.innerWidth, d.win.innerHeight, this._top(), null, this.maxW));
     this._save();
     if (d.onResize) d.onResize();
   };
   FloatingWindow.prototype.clamp = function () {
     if (!this.geom || this.isPhone()) return;
-    this._place(clampGeometry(this.geom, this.d.win.innerWidth, this.d.win.innerHeight, this.d.topBarHeight(), null, this.maxW));
+    this._place(clampGeometry(this.geom, this.d.win.innerWidth, this.d.win.innerHeight, this._top(), null, this.maxW));
     this._save();
   };
   FloatingWindow.prototype._bind = function () {
@@ -413,7 +417,7 @@
         if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return;
         moved = true;
         var g = kind === 'move' ? { x: r.x + dx, y: r.y + dy, w: r.w, h: r.h } : { x: r.x, y: r.y, w: self._resized(self._shown(r.w) + dx), h: r.h + dy };
-        self._place(clampGeometry(g, d.win.innerWidth, d.win.innerHeight, d.topBarHeight(), null, self.maxW));
+        self._place(clampGeometry(g, d.win.innerWidth, d.win.innerHeight, self._top(), null, self.maxW));
       }
       function onUp() {
         target.removeEventListener('pointermove', onMove); target.removeEventListener('pointerup', onUp); target.removeEventListener('pointercancel', onUp);
@@ -444,7 +448,6 @@
       self.resizeBy(k[0] * (e.shiftKey ? 64 : 16), k[1] * (e.shiftKey ? 64 : 16));
     });
     d.win.addEventListener('resize', function () {
-      self.el.style.setProperty('--topbar-h', d.topBarHeight() + 'px');          // the bar's height changes with the width (the title hides on phones)
       self.clamp();
       if (self.mode !== 'min' && d.onResize) d.onResize();
     });
@@ -464,6 +467,42 @@
     return { open: function () { set(true); }, close: function () { set(false); }, isOpen: function () { return open; } };
   }
 
+  // ---- the live-buoy window (plan section 26) ----
+  // A FloatingWindow over the page's live-buoy markup (#liveBuoyPanel with #lwHeader, #lwMin, #lwMax, #lwClose,
+  // #lwResize), opened and closed by the map script; a new tab opens it as a window (never minimised at first);
+  // minimised it is a chip at the bottom-right (a bar above the forecast bar on phones) with the close button still
+  // there. Dispatches 'allshore:livewin' {open, mode} on every change (the page sizes the map around the phone bars).
+  // opts: window, document, storage, onClose() (the map script's own close work, e.g. abandoning a fetch).
+  function createLiveWindow(opts) {
+    opts = opts || {};
+    var win = opts.window || window, doc = opts.document || win.document;
+    var $ = function (id) { return doc.getElementById(id); };
+    var el = $('liveBuoyPanel'), header = $('lwHeader'), minBtn = $('lwMin'), maxBtn = $('lwMax'), closeBtn = $('lwClose');
+    if (!el || !header) return null;
+    var storage = opts.storage || (function () { try { var st = win.sessionStorage; if (st && typeof st.getItem === 'function') return st; } catch (e) {} return { getItem: function () { return null; }, setItem: function () {} }; })();
+    var fw = new FloatingWindow({ el: el, header: header, handle: $('lwResize'), storage: storage, win: win, key: LIVE_WINDOW_KEY, defaultMode: 'normal',
+      onMode: function (m) {
+        if (minBtn) { minBtn.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); minBtn.setAttribute('aria-label', m === 'min' ? 'Expand live buoy' : 'Minimise live buoy'); minBtn.textContent = m === 'min' ? '\u25B4' : '\u2013'; }
+        if (maxBtn) maxBtn.setAttribute('aria-pressed', m === 'max' ? 'true' : 'false');
+        notify();
+      } });
+    function notify() { try { doc.dispatchEvent(new CustomEvent('allshore:livewin', { detail: { open: !el.hidden, mode: fw.mode } })); } catch (e) {} }
+    function isOpen() { return !el.hidden; }
+    function open() {                                                       // a buoy pick: shown, expanded, on top
+      el.hidden = false;
+      if (fw.mode === 'min') fw.expand();
+      notify();
+    }
+    function close() { el.hidden = true; if (opts.onClose) opts.onClose(); notify(); }
+    if (minBtn) minBtn.addEventListener('click', function () { if (fw.mode === 'min') { fw.expand(); if (header.focus) header.focus({ preventScroll: true }); } else fw.minimise(); });
+    if (maxBtn) maxBtn.addEventListener('click', function () { if (fw.mode === 'min') { fw.prev = 'max'; fw.expand(); } else fw.toggleMax(); });
+    if (closeBtn) closeBtn.addEventListener('click', function () { close(); });
+    header.addEventListener('click', function (e) {
+      if (fw.mode === 'min' && !(e.target && e.target.closest && e.target.closest('button'))) { fw.expand(); }
+    });
+    return { window: fw, open: open, close: close, isOpen: isOpen, el: el };
+  }
+
   // ---- init: wire everything to the page ----
   // opts: initial (window.__initial), stationLabel(sid) -> text, loadChartJs() -> Promise, closeLivePanel(),
   //       liveOpen() -> bool, fetch, document, window, storage (session), settings (local), onMode(mode).
@@ -473,9 +512,10 @@
     var win = opts.window || window, doc = opts.document || win.document;
     if (!doc || !doc.getElementById) return null;
     var $ = function (id) { return doc.getElementById(id); };
-    var els = { win: $('forecastWin'), header: $('fwHeader'), title: $('fwTitle'), cycle: $('fwCycle'), busy: $('fwBusy'), min: $('fwMin'), max: $('fwMax'),
+    // the title is the picker's own label (#stationCurrent: the favourites picker is the window's heading)
+    var els = { win: $('forecastWin'), header: $('fwHeader'), title: $('stationCurrent') || $('fwTitle'), cycle: $('fwCycle'), busy: $('fwBusy'), min: $('fwMin'), max: $('fwMax'),
       viewBar: $('viewBar'), modelBar: $('modelBar'), rangeBar: $('rangeBar'), body: $('fwBody'), error: $('fwError'), meta: $('forecastMeta'),
-      table: $('forecastTable'), graphs: $('graphs'), handle: $('fwResize'), topBar: $('topBar'), tz: $('tz'), unit: $('unit'), station: $('station'), trigger: $('stationTrigger') };
+      table: $('forecastTable'), graphs: $('graphs'), handle: $('fwResize'), tz: $('tz'), unit: $('unit'), station: $('station'), trigger: $('stationTrigger') };
     if (!els.win || !els.body || !els.table) return null;
     function safeStorage(name) {
       try { var st = win[name]; if (st && typeof st.getItem === 'function' && typeof st.setItem === 'function') return st; } catch (e) {}
@@ -485,7 +525,6 @@
     var initial = opts.initial || {}, swanStations = initial.swan_stations || [];
     var state = resolveInitialState((win.location && win.location.search) || '', readJson(local, SETTINGS_KEY), initial);
     var fw = new FloatingWindow({ el: els.win, header: els.header, handle: els.handle, storage: session, win: win,
-      topBarHeight: function () { return els.topBar ? els.topBar.offsetHeight : 0; },
       onMode: function (m) {
         if (els.min) { els.min.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); els.min.setAttribute('aria-label', m === 'min' ? 'Expand forecast' : 'Minimise forecast'); els.min.textContent = m === 'min' ? '▴' : '–'; }
         if (els.max) els.max.setAttribute('aria-pressed', m === 'max' ? 'true' : 'false');
@@ -634,7 +673,7 @@
   }
 
   window.AllshoreForecast = {
-    init: init,
+    init: init, createLiveWindow: createLiveWindow,
     load: function (next) { return app ? app.loader.load(next) : Promise.resolve(null); },
     expand: function () { if (app) app.expand(); },
     minimise: function () { if (app) app.minimise(); },
@@ -645,6 +684,7 @@
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, dateTick: dateTick, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       createLoader: createLoader, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
+      createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY,
       app: function () { return app; }
     }
   };

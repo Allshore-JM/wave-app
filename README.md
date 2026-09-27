@@ -59,8 +59,12 @@ and update `tests/fixtures/ui_assets.json` (version + sha256); `tests/test_ui_mo
 the Node tests in `tests/ui/`. `/api/forecast` also reports `model` (the model actually used: SWAN falls back to GFS off the
 12 SWAN stations) and `swan_available`; `?compact=1` asks for the window's table.
 
-The page (2026-09-26, plan section 25): the top bar is one row (brand, the station search with favourites, a settings
-gear whose panel holds Time Zone and Units); the forecast is a floating window (`#forecastWin`) that starts minimised in
+The page (2026-09-26, plan sections 25 and 26): the map is the page — the brand sits on it top-left above the
+model-overlay selector, the settings gear (Time Zone, Units, lat/long gridlines) top-right under the layer legend, the
+credits behind an (i) beside the Home button; the forecast window's heading is the station picker with favourites
+(expanded and minimised); the live-buoy panel is a second floating window (`#liveBuoyPanel`, `createLiveWindow` in the
+module: dragged, resized, minimised to a chip at the bottom-right or a bar above the forecast bar on phones, closed
+from any mode; `sessionStorage 'allshore.liveWin.v1'`). The forecast is a floating window (`#forecastWin`) that starts minimised in
 a new tab (a chip at the bottom-left on desktops, a bar along the bottom edge in phone mode = a viewport 500 px or
 less wide OR tall; expanded it is a window on desktops and full-screen in phone mode), holds the View (Table / Graph) and Model (GFS / SWAN, only on SWAN stations) controls
 in its toolbar, and is dragged by its header, resized by its corner handle, maximised under the top bar and minimised;

@@ -53,7 +53,10 @@
   <script>document.documentElement.classList.add('js');</script>
   <style>
     html, body { height: 100%; }
-    #map { height: 460px; border: 1px solid #ccc; background: #0b2536; }
+    /* The map is the page (plan section 26): the script sets its height from the viewport (phone bars taken off). */
+    html.js body { margin: 0; overflow: hidden; }
+    #map { height: 100vh; height: 100dvh; background: #0b2536; }
+    html:not(.js) #map { height: 320px; border: 1px solid #ccc; }
     .leaflet-tooltip { font-weight: 600; }
     .form-inline .form-select, .form-inline .form-control { width: auto; }
 
@@ -65,22 +68,9 @@
       filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.9));
     }
 
-    #liveBuoyPanel {
-      position: fixed;
-      right: 18px;
-      bottom: 18px;
-      width: min(820px, calc(100vw - 36px));
-      max-height: 76vh;
-      overflow: auto;
-      z-index: 2000;
-      display: none;
-      border: 1px solid rgba(0,0,0,0.18);
-      box-shadow: 0 12px 36px rgba(0,0,0,0.32);
-    }
-
-    #liveBuoyPanel .card-header {
-      background: #f8fbff;
-    }
+    /* the live-buoy window's box (the shared window rules are .fwin below) */
+    .live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 36px)); height: min(76vh, 720px); z-index: 2000; }
+    .live-win .fw-body { padding: 12px 14px; }
 
     .live-buoy-summary {
       display: grid;
@@ -199,13 +189,6 @@
     }
 
     @media (max-width: 700px) {
-      #liveBuoyPanel {
-        right: 8px;
-        bottom: 8px;
-        width: calc(100vw - 16px);
-        max-height: 82vh;
-      }
-
       .live-buoy-summary {
         grid-template-columns: 1fr;
       }
@@ -254,27 +237,29 @@
 
     /* ===== Phase 3a: mobile + visual polish ===== */
 
-    /* The top bar (plan section 25): brand · station picker · settings gear, one row; above every
-       floating panel so its dropdowns are never covered. */
-    .top-bar {
-      display: flex; align-items: center; gap: 10px; padding: 4px 0 8px;
-      border-bottom: 1px solid #eee; background: #fff; position: relative; z-index: 3000;
-    }
+    /* ---------------- The brand and the gear on the map (plan section 26) ----------------
+       #pageHead holds them for the no-JS page; with JS they are adopted by map controls: the brand at the
+       top-left above the model-overlay selector, the gear at the top-right under the layer legend. */
+    .js #pageHead { display: none; }
+    html:not(.js) #pageHead { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: #fff; border-bottom: 1px solid #eee; }
     .brand { display: flex; align-items: center; gap: 8px; text-decoration: none; flex: 0 0 auto; }
     .brand .app-logo { width: 30px; height: 30px; flex-shrink: 0; display: block; }
     .brand .app-title {
       font-size: 1.15rem; font-weight: 800; color: #0b2536;
       line-height: 1.05; letter-spacing: -0.01em;
     }
-    .station-field { flex: 1 1 auto; display: flex; justify-content: center; min-width: 0; }
-    .top-actions { position: relative; flex: 0 0 auto; display: flex; gap: 6px; align-items: center; }
+    .leaflet-control-brand { margin: 10px 0 0 10px; }
+    .leaflet-control-brand .brand { background: rgba(255,255,255,.92); border-radius: 8px; padding: 4px 9px 4px 6px; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+    .settings-host { position: relative; }
+    /* the top-right corner (layer legend + gear) paints over both windows, so the gear's panel is never covered */
+    .leaflet-container .leaflet-top.leaflet-right { z-index: 2600; }
     .icon-btn {
       width: 38px; height: 38px; border: 1px solid #ced4da; border-radius: .375rem; background: #fff;
       font-size: 1.15rem; line-height: 1; color: #0b2536; cursor: pointer;
     }
     .icon-btn[aria-expanded="true"] { background: #e7f1ff; border-color: #86b7fe; }
     .settings-panel {
-      position: absolute; right: 0; top: calc(100% + 4px); width: 260px; padding: 10px 12px;
+      position: absolute; right: 0; top: calc(100% + 4px); width: 260px; padding: 10px 12px; text-align: left;
       background: #fff; border: 1px solid #ced4da; border-radius: .375rem;
       box-shadow: 0 6px 18px rgba(0,0,0,.18); z-index: 2000;
     }
@@ -295,22 +280,29 @@
     .lc-forecast { background: #FFD600; }
     .lc-live { background: #00E5FF; }
 
-    /* ---------------- The forecast window (plan section 25) ---------------- */
-    .forecast-win {
-      position: fixed; right: 16px; bottom: 16px;
-      width: min(1180px, calc(100vw - 32px)); height: min(60vh, 720px);
+    /* ---------------- The floating windows (plan sections 25, 26) ----------------
+       .fwin = the shared rules (the forecast window and the live-buoy window); each has its own box. */
+    .fwin {
+      position: fixed;
       min-width: 360px; min-height: 180px; max-width: 100vw; max-height: 100vh;
       z-index: 1500; display: flex; flex-direction: column;
       background: #fff; border: 1px solid rgba(0,0,0,.18); border-radius: 10px;
       box-shadow: 0 12px 36px rgba(0,0,0,.32); overflow: hidden;
     }
+    .fwin[hidden] { display: none !important; }
+    .forecast-win { right: 16px; bottom: 16px; width: min(1180px, calc(100vw - 32px)); height: min(60vh, 720px); }
     .fw-header {
       display: flex; align-items: center; gap: 8px; padding: 6px 10px;
       background: #f3f7fb; border-bottom: 1px solid #e4e9f0; cursor: move; user-select: none; touch-action: none;
     }
     .fw-header:focus { outline: none; }
-    .fw-titles { flex: 1 1 auto; min-width: 0; display: flex; gap: 10px; align-items: baseline; white-space: nowrap; overflow: hidden; }
+    .fw-titles { flex: 1 1 auto; min-width: 0; display: flex; gap: 10px; align-items: center; white-space: nowrap; overflow: hidden; }
     .fw-titles strong { overflow: hidden; text-overflow: ellipsis; }
+    /* the favourites picker IS the forecast window's heading (expanded and minimised) */
+    .fw-titles .station-field { flex: 0 1 auto; min-width: 0; display: flex; }
+    .fw-header .station-field { cursor: default; touch-action: auto; }
+    .fw-header .station-trigger { width: auto; max-width: min(420px, 100%); }
+    .fw-header .station-trigger .station-current { max-width: 40ch; }
     .fw-titles .fw-cycle { color: #5a6b7a; font-size: .85rem; flex: 0 0 auto; }
     .fw-btn {
       width: 30px; height: 30px; border: 1px solid #ced4da; border-radius: 6px; background: #fff;
@@ -320,29 +312,33 @@
     .fw-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; -webkit-overflow-scrolling: touch; }
     .fw-meta { color: #5a6b7a; font-size: .85rem; margin-bottom: 6px; }
     .fw-resize:focus-visible { outline: 2px solid #1d6fd6; outline-offset: -2px; }
-    /* the panel clicked last is on top: the window over the live-buoy panel (z 2000) once touched */
+    /* the window touched last is on top: the forecast window over the live-buoy window (z 2000) once touched */
     .forecast-win.fw-front { z-index: 2100; }
     .fw-resize {
       position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none;
       background: linear-gradient(135deg, transparent 50%, #b0bac4 50%, #b0bac4 60%, transparent 60%, transparent 75%, #b0bac4 75%);
     }
-    /* minimised: the header bar alone; on desktops a chip parked at the bottom-left beside the Home
-       button, so the map's attribution (bottom-right) stays visible */
-    .forecast-win.fw-min { height: auto !important; min-height: 0; }
+    /* minimised: the header bar alone; on desktops the forecast chip is parked at the bottom-left beside the
+       Home button and the live-buoy chip at the bottom-right; each takes at most half the width, so they never meet */
+    .fwin.fw-min { height: auto !important; min-height: 0; }
     @media (min-width: 501px) and (min-height: 501px) {
       .forecast-win.fw-min {
         left: 60px !important; right: auto !important; top: auto !important; bottom: 12px !important;
-        width: auto !important; max-width: min(560px, calc(100vw - 76px));
+        width: auto !important; max-width: min(560px, calc(50vw - 40px));
+      }
+      .live-win.fw-min {
+        right: 12px !important; left: auto !important; top: auto !important; bottom: 12px !important;
+        width: auto !important; max-width: min(420px, calc(50vw - 40px));
       }
     }
-    .forecast-win.fw-min .fw-header { cursor: pointer; }
-    .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body, .forecast-win.fw-min .fw-resize { display: none; }
-    /* maximised: the viewport under the top bar */
-    .forecast-win.fw-max {
-      left: 8px !important; top: calc(var(--topbar-h, 56px) + 8px) !important; right: auto !important; bottom: 8px !important;
-      width: calc(100vw - 16px) !important; height: auto !important;   /* capped by the inline max-width (the table's width) */
+    .fwin.fw-min .fw-header { cursor: pointer; }
+    .fwin.fw-min .fw-toolbar, .fwin.fw-min .fw-body, .fwin.fw-min .fw-resize { display: none; }
+    /* maximised: the viewport (the table window is capped by its inline max-width, the table's width) */
+    .fwin.fw-max {
+      left: 8px !important; top: 8px !important; right: auto !important; bottom: 8px !important;
+      width: calc(100vw - 16px) !important; height: auto !important;
     }
-    .forecast-win.fw-max .fw-resize { display: none; }
+    .fwin.fw-max .fw-resize { display: none; }
     /* the compact table inside the window: the body is the scroll box, the header stays frozen */
     #forecastTable { overflow: visible; }
     #forecastTable table { margin-bottom: 0; }
@@ -360,21 +356,28 @@
     .forecast-info { text-align: left; font-weight: 700; }
     #graphs .chart-box { position: relative; height: 260px; margin-bottom: 12px; }
     #graphs .chart-box:last-child { margin-bottom: 0; }
-    /* no JS: the window is a plain card in the page flow (render=full) */
+    /* no JS: the forecast window is a plain card in the page flow (render=full); the live window needs JS */
     html:not(.js) .forecast-win { position: static !important; width: auto !important; max-width: none; height: auto !important; box-shadow: none; margin-top: 12px; }
     html:not(.js) .forecast-win.fw-min .fw-toolbar, html:not(.js) .forecast-win.fw-min .fw-body { display: block; }
+    html:not(.js) .live-win { display: none !important; }
     html:not(.js) .fw-btn, html:not(.js) .fw-resize, html:not(.js) #settingsBtn { display: none; }
     html:not(.js) .settings-panel { position: static; width: auto; box-shadow: none; border: 0; padding: 0; display: flex; gap: 10px; }
     html:not(.js) .settings-panel[hidden] { display: flex !important; }         /* Bootstrap's [hidden] is !important */
     html:not(.js) #forecastTable[hidden] { display: block !important; }        /* without JS only the table can show */
     html:not(.js) #graphs { display: none !important; }
     @media print {
-      #map, #topBar, .fw-btn, .fw-resize, #liveBuoyPanel { display: none !important; }
+      #map, #pageHead, .fw-btn, .fw-resize, .live-win, .sr-star, .station-caret { display: none !important; }
       .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
       .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
       #forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }   /* the charts are not printable: the table is */
       .fw-body { overflow: visible; }
     }
+
+    /* the map credits behind an (i) at the bottom-left (Esri's terms, the overlay's NOAA / GSHHG line); Leaflet's own
+       attribution control stays alive for the overlay's addAttribution, shown only while the (i) is open */
+    .attr-btn { font: italic 700 15px/26px Georgia, serif; text-align: center; color: #0b2536; cursor: pointer; }
+    .leaflet-container:not(.attr-open) .leaflet-control-attribution { display: none; }
+    .leaflet-container.attr-open .leaflet-control-attribution { max-width: min(80vw, 640px); }
 
     /* Home View map control (Phase 3b) */
     .home-control { position: relative; }
@@ -408,9 +411,10 @@
       outline: 2px solid #0d6efd; outline-offset: 2px;
     }
 
-    /* Phones: the title goes, the picker takes the row, large tap targets */
+    /* Phones: the brand is its mark alone, large tap targets */
     @media (max-width: 576px) {
       .brand .app-title { display: none; }
+      .leaflet-control-brand .brand { padding: 3px 4px; }
       .settings-panel { width: min(300px, calc(100vw - 16px)); }
       .settings-panel .form-select { min-height: 44px; font-size: 16px; /* avoids iOS zoom-on-focus */ }
       .icon-btn { width: 44px; height: 44px; }
@@ -418,31 +422,19 @@
     /* Phones (and short windows): the window fills the screen like the live-buoy panel; minimised, a bar
        along the bottom edge; no maximise button (expanded is already full screen) */
     @media (max-width: 500px), (max-height: 500px) {
-      #fwMax { display: none; }
-      /* the full-screen window covers the top bar (z 3000): its own header buttons must stay reachable */
-      .forecast-win:not(.fw-min) { z-index: 3500; }
-      .forecast-win:not(.fw-min) {
+      .fw-maxbtn { display: none; }
+      /* the full-screen windows cover the map's controls (the top-right corner is z 2600): their own header buttons stay reachable */
+      .fwin:not(.fw-min) { z-index: 3500; }
+      .fwin:not(.fw-min) {
         left: 0 !important; top: 0 !important; right: 0 !important; bottom: 0 !important;
         width: 100vw !important; height: 100vh !important; height: 100dvh !important;
         border-radius: 0; border: none;
       }
-      .forecast-win.fw-min { left: 0 !important; right: 0 !important; bottom: 0 !important; top: auto !important; width: 100vw !important; max-width: none; border-radius: 10px 10px 0 0; }
+      .fwin.fw-min { left: 0 !important; right: 0 !important; bottom: 0 !important; top: auto !important; width: 100vw !important; max-width: none; border-radius: 10px 10px 0 0; }
+      .live-win.fw-min { bottom: 48px !important; }     /* stacked above the forecast bar */
       .fw-resize { display: none; }
       .fw-header { cursor: default; }
       .fw-btn { width: 36px; height: 36px; }
-    }
-
-    /* Live-buoy panel: full-screen sheet on narrow phones (after the 700px rule so this wins); full screen it
-       covers the top bar (z 3000), so its own close button stays reachable */
-    @media (max-width: 500px) {
-      #liveBuoyPanel {
-        z-index: 3500;
-        right: 0; left: 0; top: 0; bottom: 0;
-        width: 100vw;
-        height: 100vh; height: 100dvh;          /* dvh handles mobile browser bars */
-        max-height: 100vh; max-height: 100dvh;
-        border-radius: 0; border: none;
-      }
     }
 
     /* Favorites station picker (progressive enhancement; native <select> is the no-JS fallback) */
@@ -462,8 +454,8 @@
     .station-current { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .station-caret { flex: 0 0 auto; color: #6c757d; }
     .station-results {
-      position: absolute; z-index: 2000; top: 100%; left: 0;
-      margin: 2px 0 0; padding: 4px 0; list-style: none;
+      position: fixed; z-index: 2600; top: auto; left: auto;   /* placed by the script from the trigger's box (it escapes the window's overflow) */
+      margin: 0; padding: 4px 0; list-style: none;
       background: #fff; border: 1px solid #ced4da; border-radius: .375rem;
       box-shadow: 0 6px 18px rgba(0,0,0,.18);
       max-height: 340px; overflow-y: auto; min-width: 260px; max-width: 360px;
@@ -486,7 +478,7 @@
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
     @media (max-width: 576px) {
       .station-trigger { min-width: 0; width: 100%; max-width: none; }
-      .station-results { max-height: 50vh; left: 0; right: 0; max-width: none; }
+      .station-results { max-height: 50vh; max-width: none; }
       .station-results .fav-select { min-height: 44px; }
       .sr-star { min-width: 44px; min-height: 44px; }
     }
@@ -495,40 +487,21 @@
 </head>
 <body class="bg-light">
 
-  <div class="container-fluid py-2">
-    <!-- The top bar: brand, the station picker (favourites), the settings gear. The form is the no-JS
-         fallback (its Go button only shows without JS); with JS every change applies in place. -->
+  <!-- The brand and the settings gear (plan section 26): a plain row without JS; with JS the map script adopts
+       them into map controls (the brand top-left above the model-overlay selector, the gear top-right under the
+       layer legend) and the map fills the page. The form is the no-JS fallback (its Go button only shows without
+       JS; the station select in the forecast window and the view / model selects point at it with form="controlForm"). -->
+  <div id="pageHead">
+    <a id="brand" class="brand" href="/" aria-label="Allshore Surf home">
+      <svg class="app-logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="32" height="32" rx="6" fill="#0b2536"/>
+        <path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+      <span class="app-title">Allshore Surf</span>
+    </a>
     <form id="controlForm" method="GET" action="/">
-      <header id="topBar" class="top-bar">
-        <a class="brand" href="/" aria-label="Allshore Surf home">
-          <svg class="app-logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <rect width="32" height="32" rx="6" fill="#0b2536"/>
-            <path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>
-            <path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>
-          </svg>
-          <span class="app-title">Allshore Surf</span>
-        </a>
-        <div class="station-field">
-          <label for="station" class="form-label sr-only">Station</label>
-          <div class="station-picker">
-            <div class="station-trigger">
-              <button type="button" id="stationFavToggle" class="sr-star" aria-label="Favorite the current station">☆</button>
-              <button type="button" id="stationTrigger" class="station-open" aria-expanded="false" aria-controls="stationResults">
-                <span id="stationCurrent" class="station-current">Select a station</span>
-                <span class="station-caret" aria-hidden="true">▾</span>
-              </button>
-            </div>
-            <ul id="stationResults" class="station-results" aria-label="Favorite stations" hidden></ul>
-            <span id="stationStatus" class="sr-only" role="status" aria-live="polite"></span>
-          </div>
-          <select class="form-select" id="station" name="station">
-            {% for sid, name in stations %}
-              <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>{{ sid }} — {{ name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="top-actions">
-          <noscript><button type="submit" class="btn btn-sm btn-primary">Go</button></noscript>
+      <div id="settingsHost" class="settings-host">
           <button type="button" id="settingsBtn" class="icon-btn" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel">&#9881;</button>
           <div id="settingsPanel" class="settings-panel" hidden role="group" aria-label="Settings">
             <label for="tz" class="form-label mb-0">Time Zone</label>
@@ -546,28 +519,42 @@
             </select>
             <label class="grid-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="gridlines" checked> <span class="form-check-label">Lat/long gridlines</span></label>
           </div>
-        </div>
-      </header>
-    </form>
-
-    <div class="row mt-2">
-      <div class="col-12">
-        <div id="map"></div>
       </div>
-    </div>
+    </form>
+  </div>
 
-    <!-- The forecast window (plan section 25): floating, draggable, resizable; minimised on load. The
-         table and the charts are fetched from /api/forecast by static_ui/forecast.js; render=full
-         (the no-JS path) renders the table here server-side. -->
-    <section id="forecastWin" class="forecast-win fw-min" role="region" aria-label="Forecast">
+  <div id="map"></div>
+
+    <!-- The forecast window (plan section 25): floating, draggable, resizable; minimised on load. Its heading is
+         the station picker with favourites (plan section 26). The table and the charts are fetched from
+         /api/forecast by static_ui/forecast.js; render=full (the no-JS path) renders the table here server-side. -->
+    <section id="forecastWin" class="fwin forecast-win fw-min" role="region" aria-label="Forecast">
       <div id="fwHeader" class="fw-header" tabindex="-1">
         <div class="fw-titles">
-          <strong id="fwTitle">{{ selected_station }}</strong>
+          <div id="fwTitle" class="station-field">
+            <label for="station" class="form-label sr-only">Station</label>
+            <div class="station-picker">
+              <div class="station-trigger">
+                <button type="button" id="stationFavToggle" class="sr-star" aria-label="Favorite the current station">☆</button>
+                <button type="button" id="stationTrigger" class="station-open" aria-expanded="false" aria-controls="stationResults">
+                  <span id="stationCurrent" class="station-current">{{ selected_station }}</span>
+                  <span class="station-caret" aria-hidden="true">▾</span>
+                </button>
+              </div>
+              <ul id="stationResults" class="station-results" aria-label="Favorite stations" hidden></ul>
+              <span id="stationStatus" class="sr-only" role="status" aria-live="polite"></span>
+            </div>
+            <select class="form-select form-select-sm" id="station" name="station" form="controlForm">
+              {% for sid, name in stations %}
+                <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>{{ sid }} — {{ name }}</option>
+              {% endfor %}
+            </select>
+          </div>
           <span id="fwCycle" class="fw-cycle"></span>
         </div>
         <span id="fwBusy" class="spinner" hidden aria-hidden="true"></span>
         <button type="button" id="fwMin" class="fw-btn" aria-label="Expand forecast" aria-expanded="false">&#8211;</button>
-        <button type="button" id="fwMax" class="fw-btn" aria-label="Maximise forecast" aria-pressed="false">&#9633;</button>
+        <button type="button" id="fwMax" class="fw-btn fw-maxbtn" aria-label="Maximise forecast" aria-pressed="false">&#9633;</button>
       </div>
       <div id="fwToolbar" class="fw-toolbar">
         <div class="btn-group btn-group-sm" role="group" aria-label="View" id="viewBar">
@@ -584,6 +571,7 @@
           <button type="button" class="btn btn-outline-secondary" data-days="3">3 d</button>
         </div>
         <noscript>
+          <button type="submit" class="btn btn-sm btn-primary" form="controlForm">Go</button>
           <select class="form-select form-select-sm" name="view" form="controlForm" aria-label="View">
             <option value="Table" {% if selected_view != 'Graph' %}selected{% endif %}>Table</option>
             <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
@@ -619,20 +607,21 @@
       </div>
       <div id="fwResize" class="fw-resize" tabindex="0" role="img" aria-label="Resize the forecast window with the arrow keys" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" title="Drag or use the arrow keys to resize"></div>
     </section>
-  </div>
 
-  <!-- Live buoy detail panel (NDBC rich panel + adaptive panel for other sources) -->
-  <div id="liveBuoyPanel" class="card">
-    <div class="card-header d-flex align-items-start">
-      <div>
+  <!-- The live-buoy window (NDBC rich panel + adaptive panel for other sources): a floating window like the
+       forecast one (plan section 26) — dragged, resized, minimised to a chip at the bottom-right, closed from any mode. -->
+  <section id="liveBuoyPanel" class="fwin live-win" hidden role="region" aria-label="Live buoy">
+    <div id="lwHeader" class="fw-header" tabindex="-1">
+      <div class="fw-titles">
         <strong id="liveBuoyTitle">Live Buoy</strong>
-        <div id="liveBuoySubtitle" class="small text-muted"></div>
+        <span id="liveBuoySubtitle" class="fw-cycle"></span>
       </div>
-      <button type="button" class="btn-close ms-auto" aria-label="Close"
-              onclick="closeLiveBuoyPanel()"></button>
+      <button type="button" id="lwMin" class="fw-btn" aria-label="Minimise live buoy" aria-expanded="true">&#8211;</button>
+      <button type="button" id="lwMax" class="fw-btn fw-maxbtn" aria-label="Maximise live buoy" aria-pressed="false">&#9633;</button>
+      <button type="button" id="lwClose" class="fw-btn" aria-label="Close live buoy">&times;</button>
     </div>
 
-    <div class="card-body">
+    <div id="lwBody" class="fw-body">
       <div id="liveBuoyLoading" class="text-muted">
         <span class="spinner" style="vertical-align:middle;"></span>
         Loading live buoy data&hellip;
@@ -746,7 +735,8 @@
       <!-- Adaptive bulk panel for non-NDBC live buoys (CDIP / AODN / QLD / AusWaves) -->
       <div id="liveBuoyGeneric" class="d-none"></div>
     </div>
-  </div>
+    <div id="lwResize" class="fw-resize" tabindex="0" role="img" aria-label="Resize the live buoy window with the arrow keys" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" title="Drag or use the arrow keys to resize"></div>
+  </section>
 
   <!-- Leaflet: needed synchronously by the map script right below, but no longer blocks
        the parser before the page body is painted. -->
@@ -858,7 +848,7 @@
       // reduces layout/repaint overhead during pan/zoom.
       preferCanvas: true,
       worldCopyJump: false,
-      zoomControl: true,
+      zoomControl: false,                    // the keys, the wheel and pinching zoom (plan section 24)
       minZoom: 1,
       maxZoom: MAX_MAP_ZOOM,
 
@@ -870,6 +860,19 @@
     });
     // The credits stay (Esri's terms, the overlay's NOAA / GSHHG line); the "Leaflet" prefix goes (plan section 26).
     if (map.attributionControl) map.attributionControl.setPrefix(false);
+
+    // The brand on the map, top-left, added first so it sits above the model-overlay selector (plan section 26).
+    const BrandControl = L.Control.extend({
+      options: { position: 'topleft' },
+      onAdd: function () {
+        const c = L.DomUtil.create('div', 'leaflet-control-brand');
+        const brand = document.getElementById('brand');
+        if (brand) c.appendChild(brand);
+        L.DomEvent.disableClickPropagation(c);
+        return c;
+      }
+    });
+    map.addControl(new BrandControl());
 
     const initialLayerVisibility = loadLayerVisibility();
     const forecastLayer = L.layerGroup();
@@ -898,6 +901,20 @@
 
     map.on('overlayadd', saveLayerVisibility);
     map.on('overlayremove', saveLayerVisibility);
+
+    // The settings gear under the layer legend (top-right); its panel (Time Zone, Units, gridlines) opens below it.
+    const SettingsControl = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd: function () {
+        const c = L.DomUtil.create('div', 'leaflet-control-settings');
+        const host = document.getElementById('settingsHost');
+        if (host) c.appendChild(host);
+        L.DomEvent.disableClickPropagation(c);
+        L.DomEvent.disableScrollPropagation(c);
+        return c;
+      }
+    });
+    map.addControl(new SettingsControl());
 
     // Esri imagery.
     // noWrap:false allows horizontal world wrapping, which prevents grey side areas
@@ -963,6 +980,27 @@
     });
     map.zoomControl.setPosition('bottomleft');
     map.addControl(new HomeControl());
+
+    // The map credits behind an (i) beside Home (bottom-left): Leaflet's attribution control moves to that corner
+    // and shows only while the (i) is open (the overlay adds and removes its own line through the control).
+    const AttrToggle = L.Control.extend({
+      options: { position: 'bottomleft' },
+      onAdd: function (m) {
+        const c = L.DomUtil.create('div', 'leaflet-bar attr-toggle');
+        const a = L.DomUtil.create('a', 'attr-btn', c);
+        a.href = '#'; a.title = 'Map credits'; a.textContent = 'i';
+        a.setAttribute('role', 'button'); a.setAttribute('aria-label', 'Map credits'); a.setAttribute('aria-expanded', 'false');
+        L.DomEvent.disableClickPropagation(c);
+        L.DomEvent.on(a, 'click', function (e) {
+          L.DomEvent.preventDefault(e);
+          const on = m.getContainer().classList.toggle('attr-open');
+          a.setAttribute('aria-expanded', on ? 'true' : 'false');
+        });
+        return c;
+      }
+    });
+    map.addControl(new AttrToggle());
+    if (map.attributionControl) map.attributionControl.setPosition('bottomleft');
     // Dismiss the Home menu when interacting with the map (outside-click UX).
     map.on('movestart click', function () {
       document.querySelectorAll('.home-menu').forEach(function (m) { m.style.display = 'none'; });
@@ -1026,12 +1064,13 @@
     function enforceSingleWorld() {
       const el = document.getElementById('map');
 
-      // The map fills the viewport under the top bar (the forecast is a floating window now); on
-      // phones the minimised forecast bar along the bottom edge gets its 48 px.
-      const w = window.innerWidth;
-      const bar = document.getElementById('topBar');
-      const reserve = (bar ? bar.offsetHeight : 0) + 24 + (w <= 500 || window.innerHeight <= 500 ? 48 : 0);   // phone mode: the minimised bar's row
-      const targetH = Math.max(w <= 500 || window.innerHeight <= 500 ? 180 : 280, window.innerHeight - reserve);
+      // The map is the page (plan section 26); in phone mode each minimised window is a 48 px bar along the
+      // bottom edge (the forecast bar always, the live-buoy bar while one is parked) and the map stops above them.
+      const w = window.innerWidth, phone = w <= 500 || window.innerHeight <= 500;
+      const lw = document.getElementById('liveBuoyPanel');
+      const bars = phone ? 1 + (lw && !lw.hidden && lw.classList.contains('fw-min') ? 1 : 0) : 0;
+      const reserve = bars * 48;
+      const targetH = Math.max(phone ? 180 : 280, window.innerHeight - reserve);
       el.style.height = targetH + 'px';
 
       // Leaflet measured the container at its CSS height when the map was created and ignores
@@ -1263,9 +1302,10 @@
     // older buoy's response can never overwrite the buoy currently shown.
     let liveDetailSeq = 0;
 
+    let liveWin = null;                         // the live-buoy floating window (static_ui/forecast.js), set once the module is up
     function closeLiveBuoyPanel() {
       liveDetailSeq++;                          // discard any in-flight detail work
-      document.getElementById('liveBuoyPanel').style.display = 'none';
+      if (liveWin) liveWin.close(); else document.getElementById('liveBuoyPanel').hidden = true;
     }
     let lastNoaaWaveSummaryData = null;
     let lastLiveComponentData = null;
@@ -1318,7 +1358,7 @@
       document.getElementById('liveBuoyGeneric').classList.add('d-none');
       document.getElementById('liveBuoyNoRecent').classList.add('d-none');
 
-      panel.style.display = 'block';
+      if (liveWin) liveWin.open(); else panel.hidden = false;
     }
 
     // NDBC buoy with no observation inside the freshness window: show only the
@@ -2323,8 +2363,19 @@
           : (fav ? 'Remove current station from favorites: ' : 'Add current station to favorites: ') + c.label);
       }
 
-      function open() { renderFavs(); results.hidden = false; trigger.setAttribute('aria-expanded', 'true'); }
+      // The list is position: fixed (it escapes the window's overflow): placed from the trigger's box, below it
+      // when there is room, else above (the chip and the phone bar sit at the bottom edge); full width on phones.
+      function place() {
+        const r = trigger.getBoundingClientRect(), s = results.style, vw = window.innerWidth, vh = window.innerHeight;
+        if (vw <= 576) { s.left = '8px'; s.width = (vw - 16) + 'px'; }
+        else { s.width = ''; s.left = Math.max(8, Math.min(r.left, vw - 8 - 360)) + 'px'; }
+        const below = vh - r.bottom - 8, above = r.top - 8;
+        if (below >= 220 || below >= above) { s.top = (r.bottom + 2) + 'px'; s.bottom = 'auto'; s.maxHeight = Math.max(120, Math.min(340, below)) + 'px'; }
+        else { s.bottom = (vh - r.top + 2) + 'px'; s.top = 'auto'; s.maxHeight = Math.max(120, Math.min(340, above)) + 'px'; }
+      }
+      function open() { renderFavs(); place(); results.hidden = false; trigger.setAttribute('aria-expanded', 'true'); }
       function close() { results.hidden = true; trigger.setAttribute('aria-expanded', 'false'); }
+      window.addEventListener('resize', close);
 
       function selectStation(sid) {
         if (!bySid.has(sid)) return;
@@ -2613,11 +2664,19 @@
       if (window.AllshoreForecast) window.AllshoreForecast.init({
         initial: window.__initial, stationLabel: stationLabel, loadChartJs: loadChartJs,
         closeLivePanel: closeLiveBuoyPanel,
-        liveOpen: function () { var p = document.getElementById('liveBuoyPanel'); return !!(p && getComputedStyle(p).display !== 'none'); },
+        liveOpen: function () { return !!(liveWin && liveWin.isOpen() && liveWin.window.mode !== 'min'); },   // Escape leaves a parked chip alone
         early: window.__early
       });
-      // The panel touched last is on top (the live panel's z 2000 used to cover the window whatever was clicked):
-      // the window comes forward when it is clicked, focused or opened by a pick; the live panel when it is
+      // The live-buoy window: open / close from the map script (closeLiveBuoyPanel, showLiveBuoyPanelLoading);
+      // in phone mode its bar changes the map's height.
+      if (window.AllshoreForecast && window.AllshoreForecast.createLiveWindow) {
+        liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; } });
+        document.addEventListener('allshore:livewin', function () {
+          if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();
+        });
+      }
+      // The window touched last is on top (the live window's z 2000 covers the forecast window otherwise): the
+      // forecast window comes forward when it is clicked, focused or opened by a pick; the live window when it is
       // clicked, focused or opens for a buoy. Phones keep their own full-screen order (z 3500 for both).
       (function () {
         var fw = document.getElementById('forecastWin'), lp = document.getElementById('liveBuoyPanel');

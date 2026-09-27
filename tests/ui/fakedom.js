@@ -110,17 +110,28 @@ function buildPage(win) {
     const e = doc.createElement(tag); if (id) doc.register(e, id); if (parent) parent.appendChild(e);
     Object.entries(attrs || {}).forEach(([k, v]) => e.setAttribute(k, v)); return e;
   };
-  const topBar = el('header', 'topBar', doc.body); topBar.offsetHeight = 56;
-  const sel = el('select', 'station', topBar);
-  [['51201', '51201 — Waimea Bay, HI'], ['46001', '46001 — Gulf of Alaska']].forEach(([v, t]) => { const o = el('option', null, sel); o.value = v; o.textContent = t; });
-  sel.value = '51201';
-  const trigger = el('button', 'stationTrigger', topBar);
-  const gear = el('button', 'settingsBtn', topBar); const panel = el('div', 'settingsPanel', topBar); panel.hidden = true;
+  // the brand and the gear (adopted by map controls on the real page; here plain children of the body)
+  const pageHead = el('div', 'pageHead', doc.body); el('a', 'brand', pageHead);
+  const host = el('div', 'settingsHost', pageHead);
+  const gear = el('button', 'settingsBtn', host); const panel = el('div', 'settingsPanel', host); panel.hidden = true;
   const tz = el('select', 'tz', panel); [['', '(Buoy Local)'], ['Pacific/Honolulu', 'Honolulu'], ['UTC', 'UTC']].forEach(([v, t]) => { const o = el('option', null, tz); o.value = v; o.textContent = t; });
   const unit = el('select', 'unit', panel); [['US', 'US'], ['Metric', 'Metric']].forEach(([v, t]) => { const o = el('option', null, unit); o.value = v; o.textContent = t; });
-  const live = el('div', 'liveBuoyPanel', doc.body); live.style.display = 'none';
+  el('input', 'gridlines', panel).checked = true;
+  // the live-buoy window (plan section 26): a FloatingWindow like the forecast one, hidden until a buoy is picked
+  const live = el('section', 'liveBuoyPanel', doc.body); live.hidden = true; live.rect = { left: 400, top: 200, width: 820, height: 600 };
+  const lwHeader = el('div', 'lwHeader', live); el('strong', 'liveBuoyTitle', lwHeader); el('span', 'liveBuoySubtitle', lwHeader);
+  const lwMin = el('button', 'lwMin', lwHeader); const lwMax = el('button', 'lwMax', lwHeader); const lwClose = el('button', 'lwClose', lwHeader);
+  el('div', 'lwBody', live); el('div', 'lwResize', live);
   const w = el('section', 'forecastWin', doc.body); w.rect = { left: 84, top: 300, width: 1180, height: 480 };
-  const header = el('div', 'fwHeader', w); el('strong', 'fwTitle', header); el('span', 'fwCycle', header); el('span', 'fwBusy', header).hidden = true;
+  const header = el('div', 'fwHeader', w);
+  // the favourites picker is the window's heading: the station field with its trigger, label and native select
+  const field = el('div', 'fwTitle', header); const picker = el('div', null, field);
+  const trig = el('div', null, picker); el('button', 'stationFavToggle', trig); const trigger = el('button', 'stationTrigger', trig); el('span', 'stationCurrent', trigger);
+  el('ul', 'stationResults', picker).hidden = true;
+  const sel = el('select', 'station', field);
+  [['51201', '51201 — Waimea Bay, HI'], ['46001', '46001 — Gulf of Alaska']].forEach(([v, t]) => { const o = el('option', null, sel); o.value = v; o.textContent = t; });
+  sel.value = '51201';
+  el('span', 'fwCycle', header); el('span', 'fwBusy', header).hidden = true;
   el('button', 'fwMin', header); el('button', 'fwMax', header);
   const toolbar = el('div', 'fwToolbar', w);
   const viewBar = el('div', 'viewBar', toolbar); ['Table', 'Graph'].forEach((v) => el('button', null, viewBar, { 'data-view': v }));
@@ -132,7 +143,7 @@ function buildPage(win) {
   const graphs = el('div', 'graphs', body); graphs.hidden = true;
   ['heightChart', 'periodChart', 'directionChart'].forEach((id) => { const box = el('div', null, graphs); box.classList.add('chart-box'); el('canvas', id, box); });
   el('div', 'fwResize', w);
-  return { topBar, sel, trigger, gear, panel, tz, unit, live, w, header, viewBar, modelBar, rangeBar, body, table, graphs };
+  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwMax, lwClose, w, header, viewBar, modelBar, rangeBar, body, table, graphs };
 }
 
 // A Chart.js stand-in that records instances.

@@ -202,8 +202,9 @@ def test_the_map_is_the_page_and_the_windows_stack_by_touch(client):
     padding); the width rule of enforceSingleWorld is untouched; the picker list is position: fixed and placed from
     its trigger; the live window's phone bar drives a re-measure."""
     body = client.get("/?station=51201").get_data(as_text=True)
-    assert "const bars = phone ? 1 + (lw && !lw.hidden && lw.classList.contains('fw-min') ? 1 : 0) : 0;" in body
-    assert "const reserve = bars * 48;" in body and "if (lastEnforcedWidth === w) {" in body
+    assert "const liveBar = lw && !lw.hidden && lw.classList.contains('fw-min') ? lw.offsetHeight : 0;" in body
+    assert "const reserve = phone ? phoneBarH + liveBar : 0;" in body and "if (lastEnforcedWidth === w) {" in body
+    assert ".live-win.fw-min { bottom: var(--fw-bar-h, 48px) !important; }" in body and ".fwin.live-win {" in body
     assert "html.js body { margin: 0; overflow: hidden; }" in body and "#map { height: 100vh; height: 100dvh; background: #0b2536; }" in body
     assert "position: fixed; z-index: 2600; top: auto; left: auto;" in body[body.index(".station-results {"):]
     assert "function place() {" in body and "window.addEventListener('resize', close);" in body

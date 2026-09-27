@@ -168,3 +168,18 @@ def test_plan_26_d1_page_rules(client):
     mx = mx[:mx.index("}")]
     assert "right: auto !important" in mx and "width: calc(100vw - 16px) !important" in mx
     assert "map.attributionControl.setPrefix(false)" in body and "Esri &amp; contributors" in body.replace("Esri & contributors", "Esri &amp; contributors")
+
+def test_gridlines_are_loaded_and_offered_in_the_settings(client):
+    """Plan section 26 item 6: static_ui/graticule.js (served by /ui/, versioned with the module) loads after Leaflet and
+    before the map script; the gear panel offers the setting, checked by default; without JS the checkbox is hidden."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    leaflet = body.index("leaflet@1.9.4/dist/leaflet.js")
+    tag = body.index('<script src="/ui/graticule.js?v=%s"></script>' % A.UI_ASSET_VERSION)
+    assert leaflet < tag < body.index("const map = L.map(")
+    panel = body[body.index('id="settingsPanel"'):]
+    panel = panel[:panel.index("</div>")]
+    assert '<input class="form-check-input" type="checkbox" id="gridlines" checked>' in panel
+    assert "html:not(.js) .grid-setting { display: none; }" in body
+    assert "window.AllshoreGraticule.create(map, { storage: st || undefined })" in body
+    r = A.app.test_client().get("/ui/graticule.js?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=31536000, immutable"

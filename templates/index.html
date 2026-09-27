@@ -282,6 +282,14 @@
       box-shadow: 0 6px 18px rgba(0,0,0,.18); z-index: 2000;
     }
     .settings-panel .form-label { font-weight: 600; font-size: .85rem; }
+    .grid-setting { display: flex; align-items: center; gap: 6px; font-size: .9rem; }
+    html:not(.js) .grid-setting { display: none; }                              /* the gridlines need the map script */
+    /* lat/long gridline labels (static_ui/graticule.js): above the panes, below the map's controls */
+    .graticule-labels { position: absolute; inset: 0; z-index: 450; pointer-events: none; overflow: hidden; }
+    .graticule-label {
+      position: absolute; font: 600 11px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; color: #fff; white-space: nowrap;
+      text-shadow: 0 0 2px rgba(0,0,0,.9), 0 0 4px rgba(0,0,0,.6);
+    }
     /* Colored dot next to each layer-control label (doubles as the legend) */
     .lc-dot {
       display: inline-block; width: 11px; height: 11px; border-radius: 50%;
@@ -534,6 +542,7 @@
                 <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ u }}</option>
               {% endfor %}
             </select>
+            <label class="grid-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="gridlines" checked> <span class="form-check-label">Lat/long gridlines</span></label>
           </div>
         </div>
       </header>
@@ -740,6 +749,7 @@
   <!-- Leaflet: needed synchronously by the map script right below, but no longer blocks
        the parser before the page body is painted. -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/ui/graticule.js?v={{ ui_asset_version }}"></script>
   <script>
     // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
@@ -2416,6 +2426,19 @@
     }
 
     addLiveBuoyLayer();
+
+    // Lat/long gridlines (static_ui/graticule.js): on unless the viewer turned them off (localStorage).
+    (function initGridlines() {
+      var box = document.getElementById('gridlines'), grid = null;
+      try {
+        var st = null; try { st = window.localStorage; } catch (e) {}
+        if (window.AllshoreGraticule) grid = window.AllshoreGraticule.create(map, { storage: st || undefined });
+      } catch (e) { console.error('gridlines', e); }
+      if (!box) return;
+      if (!grid) { box.closest('.grid-setting').hidden = true; return; }
+      box.checked = grid.on();
+      box.addEventListener('change', function () { grid.set(box.checked); });
+    })();
 
   </script>{%- if model_overlays %}
 

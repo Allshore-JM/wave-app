@@ -2,7 +2,22 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Wave Forecast</title>
+  <title>{{ site_title }}</title>
+  <meta name="description" content="{{ site_description }}">
+  <link rel="canonical" href="{{ site_origin }}/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Allshore Surf">
+  <meta property="og:title" content="{{ site_title }}">
+  <meta property="og:description" content="{{ site_description }}">
+  <meta property="og:url" content="{{ site_origin }}/">
+  <meta property="og:image" content="{{ site_origin }}/og-image.jpg?v={{ icon_version }}">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Allshore Surf: surf forecasts, live buoys, wave and wind maps">
+  <meta name="twitter:card" content="summary_large_image">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@graph": [
+    {"@type": "WebSite", "name": "Allshore Surf", "alternateName": "allshoresurf.com", "url": "{{ site_origin }}/"},
+    {"@type": "Organization", "name": "Allshore Surf", "url": "{{ site_origin }}/", "logo": "{{ site_origin }}/icon-192.png"}]}</script>
   <link rel="icon" href="/favicon.ico?v={{ icon_version }}" sizes="16x16 32x32 48x48">
   <link rel="icon" type="image/png" href="/icon-192.png?v={{ icon_version }}" sizes="192x192">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png?v={{ icon_version }}">
@@ -550,7 +565,7 @@
     <section id="forecastWin" class="fwin forecast-win fw-min" role="region" aria-label="Forecast">
       <div id="fwHeader" class="fw-header" tabindex="-1">
         <div class="fw-titles">
-          <div id="fwTitle" class="station-field">
+          <div id="fwTitle" class="station-field" data-nosnippet>
             <label for="station" class="form-label sr-only">Station</label>
             <div class="station-picker">
               <div class="station-trigger">

@@ -275,8 +275,8 @@ def test_the_new_wordmark_is_the_brand_with_no_box_around_it(client):
     assert im.convert("RGBA").getpixel((0, 0))[3] == 0, "transparent around the lettering"
 
 
-def test_the_site_icon_is_the_wordmark_a(client):
-    """Owner (2026-09-27): the browser tab and Google's result show the new logo's "A", not the old wave mark.
+def test_the_site_icon_is_the_owners_monogram(client):
+    """Owner (2026-09-27): the browser tab and Google's result show the owner's "AS" monogram, not the old wave mark.
     Stable icon URLs (Google), linked with ?v= so browsers drop the cached old icon; a week in the cache."""
     body = client.get("/?station=51201").get_data(as_text=True)
     v = A.ICON_VERSION
@@ -294,3 +294,31 @@ def test_the_site_icon_is_the_wordmark_a(client):
         im = Image.open(_io.BytesIO(r.get_data()))
         assert (im.info.get("sizes") or {im.size}) == sizes, path
         assert b"<svg" not in r.get_data(), "not the old inline wave mark"
+
+
+def test_search_and_sharing_metadata(client):
+    """Owner (2026-09-27): the Google result reads "Allshore Surf | Surf Forecast & Live Buoys" with a written
+    description (never "free": the site may be monetised), the site name Allshore Surf, a sharing card, the station
+    picker kept out of snippets; robots.txt + sitemap.xml on allshoresurf.com, the Render addresses never indexed."""
+    import json as _json
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert "<title>Allshore Surf | Surf Forecast &amp; Live Buoys</title>" in body
+    assert '<meta name="description" content="%s">' % A.SITE_DESCRIPTION in body
+    assert "free" not in A.SITE_DESCRIPTION.lower()
+    assert '<link rel="canonical" href="https://allshoresurf.com/">' in body
+    assert '<meta property="og:image" content="https://allshoresurf.com/og-image.jpg?v=%s">' % A.ICON_VERSION in body
+    assert '<meta name="twitter:card" content="summary_large_image">' in body
+    ld = re.search(r'<script type="application/ld\+json">(.*?)</script>', body, re.S).group(1)
+    graph = _json.loads(ld)["@graph"]
+    assert {g["@type"]: g["name"] for g in graph} == {"WebSite": "Allshore Surf", "Organization": "Allshore Surf"}
+    assert '<div id="fwTitle" class="station-field" data-nosnippet>' in body
+    r = A.app.test_client().get("/og-image.jpg")
+    from PIL import Image
+    import io as _io
+    assert r.status_code == 200 and Image.open(_io.BytesIO(r.get_data())).size == (1200, 630)
+    pub = A.app.test_client().get("/robots.txt", base_url="https://allshoresurf.com")
+    assert pub.get_data(as_text=True) == "User-agent: *\nAllow: /\n\nSitemap: https://allshoresurf.com/sitemap.xml\n"
+    for host in ("https://wave-app-clean.onrender.com", "https://wave-app.onrender.com"):
+        assert A.app.test_client().get("/robots.txt", base_url=host).get_data(as_text=True) == "User-agent: *\nDisallow: /\n"
+    sm = A.app.test_client().get("/sitemap.xml")
+    assert sm.headers["Content-Type"].startswith("application/xml") and "<loc>https://allshoresurf.com/</loc>" in sm.get_data(as_text=True)

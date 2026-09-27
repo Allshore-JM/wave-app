@@ -42,7 +42,7 @@ Once deployed, navigate to the provided URL to access the app. The site will all
 
 - `app.py` — The main Flask application. It includes the routes for the home page and Excel download, the logic to detect the latest model run, fetch `.bull` files, parse them, and format the output.
 - `requirements.txt` — Lists the Python dependencies needed to run the app (`Flask`, `pandas`, `requests`, `openpyxl`, `gunicorn`, `pytz`).
-- `templates/index.html` — Jinja2 template containing the HTML structure for the home page: the top bar, the Leaflet map and the forecast window (see below); Bootstrap for styling.
+- `templates/index.html` — Jinja2 template containing the HTML structure for the home page: the map (the page), the Leaflet map and the forecast window (see below); Bootstrap for styling.
 - `static_ui/forecast.js` — the forecast window's client module (see below); `static_overlay/` — the optional model overlays.
 - `README.md` — This file. Provides setup instructions and describes the features of the project.
 
@@ -67,7 +67,7 @@ module: dragged, resized, minimised to a chip at the bottom-right or a bar above
 from any mode; `sessionStorage 'allshore.liveWin.v1'`). The forecast is a floating window (`#forecastWin`) that starts minimised in
 a new tab (a chip at the bottom-left on desktops, a bar along the bottom edge in phone mode = a viewport 500 px or
 less wide OR tall; expanded it is a window on desktops and full-screen in phone mode), holds the View (Table / Graph) and Model (GFS / SWAN, only on SWAN stations) controls
-in its toolbar, and is dragged by its header, resized by its corner handle, maximised under the top bar and minimised;
+in its toolbar, and is dragged by its header, resized by its corner handle, maximised below the map's top-right controls and minimised;
 Escape closes the live-buoy panel first, then minimises the window. Every change (a marker or favourites pick, model, view,
 time zone, units) applies in place: the module fetches `/api/forecast?compact=1` (one request per change, older responses
 dropped, a 10-minute client cache of 16 forecasts; a failed build is never cached) and rewrites the address bar with
@@ -82,7 +82,7 @@ rows: the window shows Cycle / Location / Time Zone in one line above it), about
 page is a shell on every JS load (the window fetches the forecast; the `#forecastLoading` placeholder stays until it
 lands, which the overlay's restore waits for); `?render=full`, reached by the `<noscript>` meta refresh, renders the
 forecast inline in the window's compact form and the module shows it without a fetch; without JS the window is a plain
-card in the page flow with a Go button in the top bar. The map fills the viewport under the top bar (on phones less the
+card in the page flow with a Go button in the window's toolbar. The map fills the viewport (on phones less the
 minimised bar) and re-applies its stored view only when the width changes (a phone keyboard must not snap it back). The
 page golden (`tests/fixtures/index_golden.json`) was re-baselined at this restructure (see `tests/test_overlay_flag.py`).
 

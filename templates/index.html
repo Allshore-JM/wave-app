@@ -296,6 +296,9 @@
     }
     .fwin[hidden] { display: none !important; }
     .forecast-win { right: 16px; bottom: 16px; width: min(1180px, calc(100vw - 32px)); height: min(60vh, 720px); }
+    /* a parked live chip sits on the default box's resize corner: the default box rises above it (a dragged window
+       keeps its own inline position) */
+    .live-chip .forecast-win:not(.fw-min):not(.fw-max) { bottom: 70px; }
     .fw-header {
       display: flex; align-items: center; gap: 8px; padding: 6px 10px;
       background: #f3f7fb; border-bottom: 1px solid #e4e9f0; cursor: move; user-select: none; touch-action: none;
@@ -328,7 +331,7 @@
     }
     /* minimised: the header bar alone; on desktops the forecast chip is parked at the bottom-left beside the
        Home button and the live-buoy chip at the bottom-right; each takes at most half the width, so they never meet */
-    .fwin.fw-min { height: auto !important; min-height: 0; }
+    .fwin.fw-min { height: auto !important; min-height: 0; min-width: 0; }   /* a chip shrinks below the window minimum (the chips never meet) */
     @media (min-width: 501px) and (min-height: 501px) {
       .forecast-win.fw-min {
         left: 60px !important; right: auto !important; top: auto !important; bottom: 12px !important;
@@ -402,7 +405,7 @@
     }
     @media (max-width: 576px) { .home-menu { max-height: 170px; } }
     /* the menu opens above the minimised forecast chip parked beside the Home button (desktops) */
-    @media (min-width: 501px) and (min-height: 501px) { .home-menu { bottom: 56px; } }   /* clear of the chip (G18b-B) */
+    @media (min-width: 501px) and (min-height: 501px) { .home-menu { bottom: 62px; } }   /* clear of the chip (G18b) */
     .home-menu-title {
       font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
       color: #607d92; font-weight: 700; padding: 2px 8px 6px;
@@ -2698,6 +2701,7 @@
       if (window.AllshoreForecast) window.AllshoreForecast.init({
         initial: window.__initial, stationLabel: stationLabel, loadChartJs: loadChartJs,
         closeLivePanel: closeLiveBuoyPanel,
+        onMode: function () { if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld(); },   // the bar's height after a rotation
         liveOpen: function () { return !!(liveWin && liveWin.isOpen() && liveWin.window.mode !== 'min'); },   // Escape leaves a parked chip alone
         early: window.__early
       });
@@ -2705,7 +2709,9 @@
       // in phone mode its bar changes the map's height.
       if (window.AllshoreForecast && window.AllshoreForecast.createLiveWindow) {
         liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; } });
-        document.addEventListener('allshore:livewin', function () {
+        document.addEventListener('allshore:livewin', function (e) {
+          var d = e.detail || {};
+          document.body.classList.toggle('live-chip', !!(d.open && d.mode === 'min'));   // the forecast window's default box rises above a parked chip
           if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();
         });
       }

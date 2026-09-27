@@ -216,3 +216,31 @@ def test_the_map_is_the_page_and_the_windows_stack_by_touch(client):
     assert ".fw-titles .station-field .station-picker { flex: 1 1 auto; min-width: 0; }" in body, "the picker box shrinks: it never covers the run text (owner)"
     assert "max-width: min(800px, calc(60vw - 40px));" in body and "max-width: min(420px, calc(40vw - 40px));" in body, "the chips never meet"
     assert body.index("let liveWin = null;") < body.index("const map = L.map("), "declared before anything that can throw (a later script assigns it)"
+
+def test_g18b_pins(client):
+    """G18b: the lines whose loss no other test would notice (reviewer A's surviving mutants), and the two P2s: the
+    chips shrink below the window minimum so they never meet, and the forecast window's default box rises above a
+    parked live chip (its resize corner stays reachable)."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    for needle in (
+        "liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; } });",
+        "if (fwEl && fwEl.classList.contains('fw-min') && fwEl.offsetHeight > 0) phoneBarH = fwEl.offsetHeight;",
+        "document.documentElement.style.setProperty('--fw-bar-h', phoneBarH + 'px');",
+        "function open() { renderFavs(); place(); results.hidden = false;",
+        "if (below >= 220 || below >= above) { s.top = (r.bottom + 2) + 'px'; s.bottom = 'auto';",
+        "if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();",
+        ".fwin.live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 36px)); height: min(76vh, 720px); z-index: 2000; }",
+        "new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['hidden'] });",
+        ".fw-maxbtn { display: none; }",
+        "options: { position: 'topleft' },",
+        ".fwin.fw-min { height: auto !important; min-height: 0; min-width: 0; }",
+        ".live-chip .forecast-win:not(.fw-min):not(.fw-max) { bottom: 70px; }",
+        "document.body.classList.toggle('live-chip', !!(d.open && d.mode === 'min'));",
+        "onMode: function () { if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld(); },",
+        ".home-menu { bottom: 62px; }",
+    ):
+        assert needle in body, needle
+    gear = body[body.index("const SettingsControl = L.Control.extend({"):]
+    gear = gear[:gear.index("map.addControl(new SettingsControl())")]
+    assert "L.DomEvent.disableClickPropagation(c);" in gear and "L.DomEvent.disableScrollPropagation(c);" in gear
+    assert body.count("options: { position: 'topleft' },") == 1 and body.index("map.addControl(new BrandControl())") < body.index("L.control.layers(")

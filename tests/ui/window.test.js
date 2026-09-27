@@ -665,7 +665,9 @@ test('D2: the live-buoy window opens expanded on a pick, minimises to a chip, cl
   assert.equal(page.lwMin.getAttribute('aria-expanded'), 'false'); assert.equal(page.lwMin.getAttribute('aria-label'), 'Expand live buoy');
   assert.deepEqual(events[events.length - 1], [true, 'min']);
   page.lwHeader.dispatch('click', { target: page.lwHeader }); assert.equal(lw.window.mode, 'normal', 'a click on the chip expands it');
+  page.lwMin.dispatch('click'); assert.equal(lw.window.mode, 'min'); page.lwMin.dispatch('click'); assert.equal(lw.window.mode, 'normal', 'the chip\'s own button expands it');
   page.lwMin.dispatch('click'); lw.open(); assert.equal(lw.window.mode, 'normal', 'a new pick expands a parked chip');
+  assert.equal(F._internals.LIVE_WINDOW_KEY, 'allshore.liveWin.v1'); assert.equal(win.sessionStorage.getItem('allshore.forecastWin.v1'), null, 'the forecast key is never written by the live window');
   page.lwMin.dispatch('click'); page.lwClose.dispatch('click');
   assert.equal(page.live.hidden, true); assert.equal(closes.length, 1); assert.deepEqual(events[events.length - 1], [false, 'min'], 'closed from the chip');
   lw.open(); assert.equal(lw.window.mode, 'normal');
@@ -703,3 +705,13 @@ test('G18b-B P3-3: a phone-width load keeps a saved desktop geometry as it is (n
   assert.deepEqual([fw.geom.w, fw.geom.x], [1008, 8], 'back on a desktop: clamped into the viewport, not 360 wide');
 });
 
+test('G18b-A: a pointerdown or a double-click on the favourites list never drags or maximises the window; the chip click ignores the list', async () => {
+  const b = boot({}); await settle(); b.fs_.last().release(payload()); await settle();
+  const fw = b.app.window; fw.setMode('normal'); fw._place({ x: 100, y: 100, w: 600, h: 400 });
+  const list = b.doc.getElementById('stationResults'); list.classList.add('station-results');
+  const item = b.doc.createElement('li'); list.appendChild(item); item.closest = (sel) => (sel.split(',').some((s) => s.trim() === '.station-results') ? list : null);
+  b.page.header.dispatch('pointerdown', ptr(10, 10, { target: item })); b.page.header.dispatch('pointermove', ptr(80, 60, { target: item })); b.page.header.dispatch('pointerup', ptr(80, 60, { target: item }));
+  assert.deepEqual([fw.geom.x, fw.geom.y], [100, 100], 'no drag from the list');
+  fw._expandedAt = 0; b.page.header.dispatch('dblclick', { target: item }); assert.equal(fw.mode, 'normal', 'no maximise from the list');
+  fw.setMode('min'); b.page.header.dispatch('click', { target: item }); assert.equal(fw.mode, 'min', 'a click inside the list does not expand the chip');
+});

@@ -582,13 +582,18 @@ def stations_json():
     return _json_cached_bytes(payload, etag, 3600, {"CDN-Cache-Control": "max-age=3600"})
 
 
-# The site icon (owner 2026-09-27): the "A" of the Allshore Surf wordmark, cut from the logo with its own navy
-# outline closing the cut (static_icons/, built from the owner's logo file). Stable URLs, because Google reads the
-# icon from <link rel="icon"> and wants it to stay put; the page links them with ?v=ICON_VERSION only so browsers
-# drop the old cached mark. A week in the cache, as before.
+# The site icon (owner 2026-09-27): the owner's "AS" monogram (static_icons/, trimmed and squared from the owner's
+# file; the sharing card og-image.jpg is the wordmark on the site's navy). Stable URLs, because Google reads the icon
+# from <link rel="icon"> and wants it to stay put; the page links them with ?v=ICON_VERSION only so browsers drop an
+# older cached icon. A week in the cache, as before.
 _ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_icons")
-_ICONS = {"favicon.ico": "image/x-icon", "icon-192.png": "image/png", "apple-touch-icon.png": "image/png"}
-ICON_VERSION = "2"
+_ICONS = {"favicon.ico": "image/x-icon", "icon-192.png": "image/png", "apple-touch-icon.png": "image/png",
+          "og-image.jpg": "image/jpeg"}
+ICON_VERSION = "3"
+SITE_ORIGIN = "https://allshoresurf.com"
+SITE_TITLE = "Allshore Surf | Surf Forecast & Live Buoys"
+SITE_DESCRIPTION = ("Surf forecasts from NOAA wave models: swell height, period and direction for thousands of points "
+                    "worldwide, live readings from about 600 buoys, and animated wave and wind maps.")   # no "free" (owner)
 
 
 def _site_icon(name):
@@ -611,6 +616,39 @@ def icon_192():
 @app.route('/apple-touch-icon.png')
 def apple_touch_icon():
     return _site_icon("apple-touch-icon.png")
+
+
+@app.route('/og-image.jpg')
+def og_image():
+    return _site_icon("og-image.jpg")
+
+
+def _is_public_host():
+    return request.host.split(":")[0].lower() in ("allshoresurf.com", "www.allshoresurf.com")
+
+
+@app.route('/robots.txt')
+def robots_txt():
+    """Search engines may crawl allshoresurf.com; the Render addresses (the test site and the production
+    service's onrender.com name) are never indexed as copies of it."""
+    if _is_public_host():
+        body = "User-agent: *\nAllow: /\n\nSitemap: %s/sitemap.xml\n" % SITE_ORIGIN
+    else:
+        body = "User-agent: *\nDisallow: /\n"
+    resp = app.response_class(body, mimetype="text/plain")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
+
+
+@app.route('/sitemap.xml')
+def sitemap_xml():
+    body = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            '  <url><loc>%s/</loc><changefreq>hourly</changefreq></url>\n'
+            '</urlset>\n') % SITE_ORIGIN
+    resp = app.response_class(body, mimetype="application/xml")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
 
 # ----------------------------- NOAA run detection ------------------------------
 
@@ -1883,6 +1921,9 @@ def index():
         initial_state=initial_state,
         ui_asset_version=UI_ASSET_VERSION,
         icon_version=ICON_VERSION,
+        site_origin=SITE_ORIGIN,
+        site_title=SITE_TITLE,
+        site_description=SITE_DESCRIPTION,
         **_overlay_context(selected_station, selected_tz, payload),
     )
 

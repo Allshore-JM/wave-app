@@ -199,7 +199,7 @@ def test_rendered_inline_scripts_parse_with_flag_on(monkeypatch):
     _on(monkeypatch, "https://frames.example/x")
     rec = G.run_scenarios(A)
     for name in ("render_full", "graph", "swan_station_model"):
-        blocks = re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", rec[name]["body"], flags=re.S)
+        blocks = re.findall(r"<script(?![^>]*(?:src=|application/ld\+json))[^>]*>(.*?)</script>", rec[name]["body"], flags=re.S)
         assert len(blocks) >= 4
         assert any("Optional model overlays" in b for b in blocks)
         for i, b in enumerate(blocks):

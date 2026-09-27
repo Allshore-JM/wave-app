@@ -301,10 +301,13 @@
     .fw-titles { flex: 1 1 auto; min-width: 0; display: flex; gap: 10px; align-items: center; white-space: nowrap; overflow: hidden; }
     .fw-titles strong { overflow: hidden; text-overflow: ellipsis; }
     /* the favourites picker IS the forecast window's heading (expanded and minimised) */
+    /* the picker box shrinks (its label gets the ellipsis) and never covers the run text beside it; the run text
+       never shrinks (the chip grows to fit it, up to its max-width) */
     .fw-titles .station-field { flex: 0 1 auto; min-width: 0; display: flex; }
+    .fw-titles .station-field .station-picker { flex: 1 1 auto; min-width: 0; }
     .fw-header .station-field { cursor: default; touch-action: auto; }
-    .fw-header .station-trigger { width: auto; max-width: min(420px, 100%); }
-    .fw-header .station-trigger .station-current { max-width: 40ch; }
+    .fw-header .station-trigger { width: auto; max-width: 100%; }
+    .fw-header .station-trigger .station-current { max-width: 48ch; }
     .fw-titles .fw-cycle { color: #5a6b7a; font-size: .85rem; flex: 0 0 auto; }
     .fw-btn {
       width: 30px; height: 30px; border: 1px solid #ced4da; border-radius: 6px; background: #fff;
@@ -326,11 +329,11 @@
     @media (min-width: 501px) and (min-height: 501px) {
       .forecast-win.fw-min {
         left: 60px !important; right: auto !important; top: auto !important; bottom: 12px !important;
-        width: auto !important; max-width: min(560px, calc(50vw - 40px));
+        width: auto !important; max-width: min(800px, calc(60vw - 40px));   /* wide enough for a long name AND the run text (owner) */
       }
       .live-win.fw-min {
         right: 12px !important; left: auto !important; top: auto !important; bottom: 12px !important;
-        width: auto !important; max-width: min(420px, calc(50vw - 40px));
+        width: auto !important; max-width: min(420px, calc(40vw - 40px));
       }
     }
     .fwin.fw-min .fw-header { cursor: pointer; }
@@ -434,6 +437,9 @@
       }
       .fwin.fw-min { left: 0 !important; right: 0 !important; bottom: 0 !important; top: auto !important; width: 100vw !important; max-width: none; border-radius: 10px 10px 0 0; }
       .live-win.fw-min { bottom: var(--fw-bar-h, 48px) !important; }     /* stacked above the forecast bar (its measured height) */
+      /* the bar: the station name keeps at most 62 % of the row, the run text takes the rest (ellipsis) */
+      .fwin.fw-min .fw-titles .station-field { max-width: 62%; }
+      .fwin.fw-min .fw-titles .fw-cycle { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
       .fw-resize { display: none; }
       .fw-header { cursor: default; }
       .fw-btn { width: 36px; height: 36px; }

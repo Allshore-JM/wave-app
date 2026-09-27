@@ -33,12 +33,21 @@ test('resolveInitialState: URL beats saved settings beats the server; an empty t
   assert.equal(I.resolveInitialState('', {}, {}).station, '51201');
 });
 
-test('urlFor writes the station always and the rest only when not the default; queryFor carries the four fetch params', () => {
+test('urlFor writes the station always, tz/unit when they differ from the saved settings (else the defaults), model/view when not default; queryFor carries the fetch params', () => {
   const base = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
   assert.equal(I.urlFor(base), '?station=51201');
   assert.equal(I.urlFor({ ...base, tz: 'Pacific/Honolulu', unit: 'Metric', model: 'SWAN', view: 'Graph' }),
     '?station=51201&tz=Pacific%2FHonolulu&unit=Metric&model=SWAN&view=Graph');
-  assert.equal(I.queryFor({ ...base, view: 'Graph' }), 'station=51201&tz=&unit=US&model=GFS');
+  const saved = { tz: 'Pacific/Honolulu', unit: 'Metric' };
+  assert.equal(I.urlFor({ ...base, tz: 'Pacific/Honolulu', unit: 'Metric' }, saved), '?station=51201', 'the saved settings are the reload\'s assumption');
+  assert.equal(I.urlFor(base, saved), '?station=51201&tz=&unit=US', 'Buoy Local and US must be named when the saved settings differ');
+  for (const st of [{ ...base }, { ...base, tz: 'UTC', unit: 'Metric' }, { ...base, tz: '' }]) {
+    for (const sv of [{}, saved, { tz: 'UTC' }, { unit: 5, tz: null }]) {
+      const back = I.resolveInitialState(I.urlFor(st, sv), sv, { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' });
+      assert.deepEqual(back, st, 'round trip with saved ' + JSON.stringify(sv) + ' for ' + JSON.stringify(st));
+    }
+  }
+  assert.equal(I.queryFor({ ...base, view: 'Graph' }), 'station=51201&tz=&unit=US&model=GFS&compact=1');
   assert.deepEqual(I.resolveInitialState(I.urlFor({ ...base, unit: 'Metric', view: 'Graph' }), {}, {}),
     { ...base, unit: 'Metric', view: 'Graph' }, 'urlFor round-trips through resolveInitialState');
 });

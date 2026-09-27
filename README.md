@@ -42,7 +42,8 @@ Once deployed, navigate to the provided URL to access the app. The site will all
 
 - `app.py` — The main Flask application. It includes the routes for the home page and Excel download, the logic to detect the latest model run, fetch `.bull` files, parse them, and format the output.
 - `requirements.txt` — Lists the Python dependencies needed to run the app (`Flask`, `pandas`, `requests`, `openpyxl`, `gunicorn`, `pytz`).
-- `templates/index.html` — Jinja2 template containing the HTML structure for the home page. It uses Bootstrap for styling and includes a buoy selection form, table display, and download link.
+- `templates/index.html` — Jinja2 template containing the HTML structure for the home page: the top bar, the Leaflet map and the forecast window (see below); Bootstrap for styling.
+- `static_ui/forecast.js` — the forecast window's client module (see below); `static_overlay/` — the optional model overlays.
 - `README.md` — This file. Provides setup instructions and describes the features of the project.
 
 ## Contributing
@@ -56,7 +57,30 @@ Contributions are welcome! If you want to add new features, improve the parsing 
 like the overlay assets: any other `?v` is a 404 with `no-store`. Bump `UI_ASSET_VERSION` on every change to `static_ui/*`
 and update `tests/fixtures/ui_assets.json` (version + sha256); `tests/test_ui_module.py` checks the route, the pin, and runs
 the Node tests in `tests/ui/`. `/api/forecast` also reports `model` (the model actually used: SWAN falls back to GFS off the
-12 SWAN stations) and `swan_available`.
+12 SWAN stations) and `swan_available`; `?compact=1` asks for the window's table.
+
+The page (2026-09-26, plan section 25): the top bar is one row (brand, the station search with favourites, a settings
+gear whose panel holds Time Zone and Units); the forecast is a floating window (`#forecastWin`) that starts minimised in
+a new tab (a chip at the bottom-left on desktops, a bar along the bottom edge in phone mode = a viewport 500 px or
+less wide OR tall; expanded it is a window on desktops and full-screen in phone mode), holds the View (Table / Graph) and Model (GFS / SWAN, only on SWAN stations) controls
+in its toolbar, and is dragged by its header, resized by its corner handle, maximised under the top bar and minimised;
+Escape closes the live-buoy panel first, then minimises the window. Every change (a marker or favourites pick, model, view,
+time zone, units) applies in place: the module fetches `/api/forecast?compact=1` (one request per change, older responses
+dropped, a 10-minute client cache of 16 forecasts; a failed build is never cached) and rewrites the address bar with
+`?station=` (tz and unit whenever they differ from the viewer's saved settings, so the address always reloads to the view on
+screen; model / view when not the default), so links and bookmarks keep working and the page never reloads (the map, the
+overlay and the live panel stay as they are; every landed forecast is announced as `allshore:forecast`, which the overlay
+uses to follow the table's zone and run). A marker pick goes back to Buoy Local, a favourites pick keeps the zone, as before. State
+precedence on load: the URL, then the viewer's saved settings (`localStorage 'allshore.settings.v1'` {tz, unit}), then the
+server's defaults; the window's geometry and mode live in `sessionStorage 'allshore.forecastWin.v1'`; the charts' range in
+`sessionStorage 'chartRange'` as before. The table is the compact form (short dates with the full date on hover, no info
+rows: the window shows Cycle / Location / Time Zone in one line above it), about 1,000 px wide for its 23 columns. The
+page is a shell on every JS load (the window fetches the forecast; the `#forecastLoading` placeholder stays until it
+lands, which the overlay's restore waits for); `?render=full`, reached by the `<noscript>` meta refresh, renders the
+forecast inline in the window's compact form and the module shows it without a fetch; without JS the window is a plain
+card in the page flow with a Go button in the top bar. The map fills the viewport under the top bar (on phones less the
+minimised bar) and re-applies its stored view only when the width changes (a phone keyboard must not snap it back). The
+page golden (`tests/fixtures/index_golden.json`) was re-baselined at this restructure (see `tests/test_overlay_flag.py`).
 
 ## Model overlays (optional)
 

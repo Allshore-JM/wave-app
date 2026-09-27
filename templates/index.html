@@ -25,18 +25,12 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <!-- Leaflet CSS (the script is loaded just before the map code, below the page body) -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  {% if selected_view == 'Graph' and graph_data %}
-  <!-- Chart.js: the Graph view draws its charts while the page is parsed, so it must be
-       loaded up front there. Every other view loads it on demand (first buoy spectrum). -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-  {% endif %}
+  <script>document.documentElement.classList.add('js');</script>
   <style>
     html, body { height: 100%; }
     #map { height: 460px; border: 1px solid #ccc; background: #0b2536; }
     .leaflet-tooltip { font-weight: 600; }
-    .sticky-top-bar { position: sticky; top: 0; z-index: 1000; background:#fff; border-bottom: 1px solid #eee; }
     .form-inline .form-select, .form-inline .form-control { width: auto; }
-    canvas.chart-tall { height: 260px !important; }
 
     /* smaller axis labels so 90° rotation stays readable */
     .chartjs-size-monitor, .chartjs-render-monitor { font-size: 10px; }
@@ -235,18 +229,31 @@
 
     /* ===== Phase 3a: mobile + visual polish ===== */
 
-    /* App header / branding */
-    .app-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 6px 2px 8px;
+    /* The top bar (plan section 25): brand · station picker · settings gear, one row; above every
+       floating panel so its dropdowns are never covered. */
+    .top-bar {
+      display: flex; align-items: center; gap: 10px; padding: 4px 0 8px;
+      border-bottom: 1px solid #eee; background: #fff; position: relative; z-index: 3000;
     }
-    .app-header .app-logo { width: 30px; height: 30px; flex-shrink: 0; display: block; }
-    .app-header .app-title {
+    .brand { display: flex; align-items: center; gap: 8px; text-decoration: none; flex: 0 0 auto; }
+    .brand .app-logo { width: 30px; height: 30px; flex-shrink: 0; display: block; }
+    .brand .app-title {
       font-size: 1.15rem; font-weight: 800; color: #0b2536;
       line-height: 1.05; letter-spacing: -0.01em;
     }
+    .station-field { flex: 1 1 auto; display: flex; justify-content: center; min-width: 0; }
+    .top-actions { position: relative; flex: 0 0 auto; display: flex; gap: 6px; align-items: center; }
+    .icon-btn {
+      width: 38px; height: 38px; border: 1px solid #ced4da; border-radius: .375rem; background: #fff;
+      font-size: 1.15rem; line-height: 1; color: #0b2536; cursor: pointer;
+    }
+    .icon-btn[aria-expanded="true"] { background: #e7f1ff; border-color: #86b7fe; }
+    .settings-panel {
+      position: absolute; right: 0; top: calc(100% + 4px); width: 260px; padding: 10px 12px;
+      background: #fff; border: 1px solid #ced4da; border-radius: .375rem;
+      box-shadow: 0 6px 18px rgba(0,0,0,.18); z-index: 2000;
+    }
+    .settings-panel .form-label { font-weight: 600; font-size: .85rem; }
     /* Colored dot next to each layer-control label (doubles as the legend) */
     .lc-dot {
       display: inline-block; width: 11px; height: 11px; border-radius: 50%;
@@ -255,17 +262,57 @@
     .lc-forecast { background: #FFD600; }
     .lc-live { background: #00E5FF; }
 
-    /* Forecast table: scroll inside its own box (x + y) with a frozen header,
-       so the column headers stay put and you don't scroll the whole page. */
-    #forecastTable {
-      overflow: auto;
-      /* Tall enough to show ~24 hourly rows under the frozen header
-         (~189px header + 24 x ~33px rows); scrolls internally past that. */
-      max-height: 1000px;
-      -webkit-overflow-scrolling: touch;
+    /* ---------------- The forecast window (plan section 25) ---------------- */
+    .forecast-win {
+      position: fixed; right: 16px; bottom: 16px;
+      width: min(1180px, calc(100vw - 32px)); height: min(60vh, 720px);
+      min-width: 360px; min-height: 180px; max-width: 100vw; max-height: 100vh;
+      z-index: 1500; display: flex; flex-direction: column;
+      background: #fff; border: 1px solid rgba(0,0,0,.18); border-radius: 10px;
+      box-shadow: 0 12px 36px rgba(0,0,0,.32); overflow: hidden;
     }
+    .fw-header {
+      display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+      background: #f3f7fb; border-bottom: 1px solid #e4e9f0; cursor: move; user-select: none; touch-action: none;
+    }
+    .fw-header:focus { outline: none; }
+    .fw-titles { flex: 1 1 auto; min-width: 0; display: flex; gap: 10px; align-items: baseline; white-space: nowrap; overflow: hidden; }
+    .fw-titles strong { overflow: hidden; text-overflow: ellipsis; }
+    .fw-titles .fw-cycle { color: #5a6b7a; font-size: .85rem; flex: 0 0 auto; }
+    .fw-btn {
+      width: 30px; height: 30px; border: 1px solid #ced4da; border-radius: 6px; background: #fff;
+      line-height: 1; font-size: 1rem; color: #0b2536; cursor: pointer; flex: 0 0 auto;
+    }
+    .fw-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #eee; flex-wrap: wrap; }
+    .fw-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; -webkit-overflow-scrolling: touch; }
+    .fw-meta { color: #5a6b7a; font-size: .85rem; margin-bottom: 6px; }
+    .fw-resize {
+      position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none;
+      background: linear-gradient(135deg, transparent 50%, #b0bac4 50%, #b0bac4 60%, transparent 60%, transparent 75%, #b0bac4 75%);
+    }
+    /* minimised: the header bar alone; on desktops a chip parked at the bottom-left beside the Home
+       button, so the map's attribution (bottom-right) stays visible */
+    .forecast-win.fw-min { height: auto !important; min-height: 0; }
+    @media (min-width: 501px) and (min-height: 501px) {
+      .forecast-win.fw-min {
+        left: 60px !important; right: auto !important; top: auto !important; bottom: 12px !important;
+        width: auto !important; max-width: min(560px, calc(100vw - 76px));
+      }
+    }
+    .forecast-win.fw-min .fw-header { cursor: pointer; }
+    .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body, .forecast-win.fw-min .fw-resize { display: none; }
+    /* maximised: the viewport under the top bar */
+    .forecast-win.fw-max {
+      left: 8px !important; top: calc(var(--topbar-h, 56px) + 8px) !important; right: 8px !important; bottom: 8px !important;
+      width: auto !important; height: auto !important;
+    }
+    .forecast-win.fw-max .fw-resize { display: none; }
+    /* the compact table inside the window: the body is the scroll box, the header stays frozen */
+    #forecastTable { overflow: visible; }
     #forecastTable table { margin-bottom: 0; }
-    #forecastTable thead { position: sticky; top: 0; z-index: 2; }
+    #forecastTable table.forecast-compact { font-size: 12.5px; line-height: 1.25; width: auto; }
+    #forecastTable table.forecast-compact td, #forecastTable table.forecast-compact th { padding: 2px 5px; white-space: nowrap; }
+    #forecastTable thead { position: sticky; top: -8px; z-index: 2; }
     #forecastTable thead th,
     #forecastTable thead td {
       background-color: #fff;  /* opaque default; colored headers keep their inline bg */
@@ -274,8 +321,24 @@
       box-shadow: inset 1px 0 0 #dee2e6, inset -1px 0 0 #dee2e6,
                   inset 0 1px 0 #dee2e6, inset 0 -1px 0 #dee2e6;
     }
-    /* Cycle/Location/TZ info rows — left-aligned, locked with the header */
     .forecast-info { text-align: left; font-weight: 700; }
+    #graphs .chart-box { position: relative; height: 260px; margin-bottom: 12px; }
+    #graphs .chart-box:last-child { margin-bottom: 0; }
+    /* no JS: the window is a plain card in the page flow (render=full) */
+    html:not(.js) .forecast-win { position: static !important; width: auto !important; max-width: none; height: auto !important; box-shadow: none; margin-top: 12px; }
+    html:not(.js) .forecast-win.fw-min .fw-toolbar, html:not(.js) .forecast-win.fw-min .fw-body { display: block; }
+    html:not(.js) .fw-btn, html:not(.js) .fw-resize, html:not(.js) #settingsBtn { display: none; }
+    html:not(.js) .settings-panel { position: static; width: auto; box-shadow: none; border: 0; padding: 0; display: flex; gap: 10px; }
+    html:not(.js) .settings-panel[hidden] { display: flex !important; }         /* Bootstrap's [hidden] is !important */
+    html:not(.js) #forecastTable[hidden] { display: block !important; }        /* without JS only the table can show */
+    html:not(.js) #graphs { display: none !important; }
+    @media print {
+      #map, #topBar, .fw-btn, .fw-resize, #liveBuoyPanel { display: none !important; }
+      .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
+      .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
+      #forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }   /* the charts are not printable: the table is */
+      .fw-body { overflow: visible; }
+    }
 
     /* Home View map control (Phase 3b) */
     .home-control { position: relative; }
@@ -291,6 +354,8 @@
       max-height: 300px; overflow-y: auto;
     }
     @media (max-width: 576px) { .home-menu { max-height: 170px; } }
+    /* the menu opens above the minimised forecast chip parked beside the Home button (desktops) */
+    @media (min-width: 501px) and (min-height: 501px) { .home-menu { bottom: 52px; } }
     .home-menu-title {
       font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
       color: #607d92; font-weight: 700; padding: 2px 8px 6px;
@@ -301,41 +366,41 @@
     }
     .home-menu button:hover { background: #eef3f8; }
 
-    /* Sticky bar depth + button polish */
-    .sticky-top-bar { box-shadow: 0 2px 8px rgba(0,0,0,0.06); transition: transform 0.25s ease; }
-    #updateBtn { transition: transform 0.1s ease, box-shadow 0.1s ease; }
-    #updateBtn:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(13,110,253,0.3); }
-
     /* Visible keyboard focus (a11y) */
     a:focus-visible, button:focus-visible, select:focus-visible,
     input:focus-visible, .form-select:focus-visible {
       outline: 2px solid #0d6efd; outline-offset: 2px;
     }
 
-    /* Tablet */
-    @media (max-width: 768px) {
-      canvas.chart-tall { height: 200px !important; }
-    }
-
-    /* Phones: stack controls, large tap targets */
+    /* Phones: the title goes, the picker takes the row, large tap targets */
     @media (max-width: 576px) {
-      #controlForm > .col-auto { width: 100%; }
-      #controlForm .form-select,
-      #controlForm .form-control,
-      #controlForm .btn {
-        width: 100%;
-        min-height: 44px;
-        font-size: 16px; /* avoids iOS zoom-on-focus */
+      .brand .app-title { display: none; }
+      .settings-panel { width: min(300px, calc(100vw - 16px)); }
+      .settings-panel .form-select { min-height: 44px; font-size: 16px; /* avoids iOS zoom-on-focus */ }
+      .icon-btn { width: 44px; height: 44px; }
+    }
+    /* Phones (and short windows): the window fills the screen like the live-buoy panel; minimised, a bar
+       along the bottom edge; no maximise button (expanded is already full screen) */
+    @media (max-width: 500px), (max-height: 500px) {
+      #fwMax { display: none; }
+      /* the full-screen window covers the top bar (z 3000): its own header buttons must stay reachable */
+      .forecast-win:not(.fw-min) { z-index: 3500; }
+      .forecast-win:not(.fw-min) {
+        left: 0 !important; top: 0 !important; right: 0 !important; bottom: 0 !important;
+        width: 100vw !important; height: 100vh !important; height: 100dvh !important;
+        border-radius: 0; border: none;
       }
-      #controlForm .form-label { margin-bottom: 2px; font-weight: 600; }
-      .app-header .app-title { font-size: 1.05rem; }
-      /* Tuck the control bar away while scrolling down the table (JS toggles). */
-      .sticky-top-bar.nav-hidden { transform: translateY(-115%); }
+      .forecast-win.fw-min { left: 0 !important; right: 0 !important; bottom: 0 !important; top: auto !important; width: 100vw !important; max-width: none; border-radius: 10px 10px 0 0; }
+      .fw-resize { display: none; }
+      .fw-header { cursor: default; }
+      .fw-btn { width: 36px; height: 36px; }
     }
 
-    /* Live-buoy panel: full-screen sheet on narrow phones (after the 700px rule so this wins) */
+    /* Live-buoy panel: full-screen sheet on narrow phones (after the 700px rule so this wins); full screen it
+       covers the top bar (z 3000), so its own close button stays reachable */
     @media (max-width: 500px) {
       #liveBuoyPanel {
+        z-index: 3500;
         right: 0; left: 0; top: 0; bottom: 0;
         width: 100vw;
         height: 100vh; height: 100dvh;          /* dvh handles mobile browser bars */
@@ -350,7 +415,7 @@
     .js-picker select#station { display: none; }
     /* Trigger box: favorite star + current-station label + caret, styled like a form-select */
     .station-trigger {
-      display: inline-flex; align-items: stretch; min-width: 240px; max-width: 320px;
+      display: inline-flex; align-items: stretch; width: min(360px, 100%);
       background: #fff; border: 1px solid #ced4da; border-radius: .375rem; overflow: hidden;
     }
     .station-trigger:focus-within { border-color: #86b7fe; box-shadow: 0 0 0 .25rem rgba(13,110,253,.25); }
@@ -394,21 +459,21 @@
 </head>
 <body class="bg-light">
 
-  <div class="container-fluid py-3">
-    <div class="app-header">
-      <svg class="app-logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <rect width="32" height="32" rx="6" fill="#0b2536"/>
-        <path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>
-        <path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>
-      </svg>
-      <div>
-        <div class="app-title">Allshore Surf</div>
-      </div>
-    </div>
-    <div class="sticky-top-bar pb-2">
-      <form id="controlForm" class="row g-2 align-items-center" method="GET" action="/">
-        <div class="col-auto station-field">
-          <label for="station" class="form-label mb-0">Station</label>
+  <div class="container-fluid py-2">
+    <!-- The top bar: brand, the station picker (favourites), the settings gear. The form is the no-JS
+         fallback (its Go button only shows without JS); with JS every change applies in place. -->
+    <form id="controlForm" method="GET" action="/">
+      <header id="topBar" class="top-bar">
+        <a class="brand" href="/" aria-label="Allshore Surf home">
+          <svg class="app-logo" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect width="32" height="32" rx="6" fill="#0b2536"/>
+            <path d="M2 20c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#00e5ff" stroke-width="2.5" stroke-linecap="round"/>
+            <path d="M2 25c3 0 3-4 6-4s3 4 6 4 3-4 6-4 3 4 6 4 3-4 4-4" fill="none" stroke="#4094ff" stroke-width="2.5" stroke-linecap="round"/>
+          </svg>
+          <span class="app-title">Allshore Surf</span>
+        </a>
+        <div class="station-field">
+          <label for="station" class="form-label sr-only">Station</label>
           <div class="station-picker">
             <div class="station-trigger">
               <button type="button" id="stationFavToggle" class="sr-star" aria-label="Favorite the current station">☆</button>
@@ -426,49 +491,27 @@
             {% endfor %}
           </select>
         </div>
-
-        <div class="col-auto">
-          <label for="tz" class="form-label mb-0">Time Zone</label>
-          <select class="form-select" id="tz" name="tz">
-            <option value="" {% if (selected_tz or '') == '' %}selected{% endif %}>(Buoy Local)</option>
-            {% for tzv, tzname in timezones %}
-              <option value="{{ tzv }}" {% if tzv == selected_tz %}selected{% endif %}>{{ tzname }}</option>
-            {% endfor %}
-          </select>
+        <div class="top-actions">
+          <noscript><button type="submit" class="btn btn-sm btn-primary">Go</button></noscript>
+          <button type="button" id="settingsBtn" class="icon-btn" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel">&#9881;</button>
+          <div id="settingsPanel" class="settings-panel" hidden role="group" aria-label="Settings">
+            <label for="tz" class="form-label mb-0">Time Zone</label>
+            <select class="form-select form-select-sm" id="tz" name="tz">
+              <option value="" {% if (selected_tz or '') == '' %}selected{% endif %}>(Buoy Local)</option>
+              {% for tzv, tzname in timezones %}
+                <option value="{{ tzv }}" {% if tzv == selected_tz %}selected{% endif %}>{{ tzname }}</option>
+              {% endfor %}
+            </select>
+            <label for="unit" class="form-label mb-0 mt-2">Units</label>
+            <select class="form-select form-select-sm" id="unit" name="unit">
+              {% for u in units %}
+                <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ u }}</option>
+              {% endfor %}
+            </select>
+          </div>
         </div>
-
-        <div class="col-auto">
-          <label for="unit" class="form-label mb-0">Units</label>
-          <select class="form-select" id="unit" name="unit">
-            {% for u in units %}
-              <option value="{{ u }}" {% if u == selected_unit %}selected{% endif %}>{{ u }}</option>
-            {% endfor %}
-          </select>
-        </div>
-
-        {% if swan_available %}
-        <div class="col-auto">
-          <label for="model" class="form-label mb-0">Model</label>
-          <select class="form-select" id="model" name="model">
-            <option value="GFS" {% if selected_model != 'SWAN' %}selected{% endif %}>GFS</option>
-            <option value="SWAN" {% if selected_model == 'SWAN' %}selected{% endif %}>SWAN</option>
-          </select>
-        </div>
-        {% endif %}
-
-        <div class="col-auto">
-          <label for="view" class="form-label mb-0">View</label>
-          <select class="form-select" id="view" name="view">
-            <option value="Table" {% if selected_view == 'Table' %}selected{% endif %}>Table</option>
-            <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
-          </select>
-        </div>
-
-        <div class="col-auto">
-          <button type="submit" class="btn btn-primary" id="updateBtn">Update</button>
-        </div>
-      </form>
-    </div>
+      </header>
+    </form>
 
     <div class="row mt-2">
       <div class="col-12">
@@ -476,72 +519,69 @@
       </div>
     </div>
 
-    <div class="row mt-3">
-      <div class="col-12">
-        {% if error %}
-          <div class="alert alert-warning">{{ error }}</div>
-        {% endif %}
-
-        {% if selected_view == 'Graph' %}
-          <!-- Graph View -->
-          <div id="graphs" class="card">
-            <div class="card-body">
-              <!-- Graph header (uses graph_header when available; falls back to graph_data.header) -->
-              {% set hdr = graph_header if graph_header is defined and graph_header else (graph_data.header if graph_data is defined and graph_data.header is defined else None) %}
-              {% if hdr %}
-              <div class="mb-2 small text-muted d-flex flex-wrap align-items-center">
-                <div>
-                  <strong>Cycle :</strong> {{ hdr.cycle }}
-                  &nbsp; | &nbsp; <strong>Location :</strong> {{ hdr.location }}
-                  &nbsp; | &nbsp; <strong>Time Zone:</strong> {{ hdr.tz }}
-                </div>
-                <div class="ms-auto">
-                  <span class="me-2 text-body">Range:</span>
-                  <label class="form-check form-check-inline small mb-0">
-                    <input class="form-check-input" type="checkbox" id="rangeFull"> <span class="form-check-label">Full</span>
-                  </label>
-                  <label class="form-check form-check-inline small mb-0">
-                    <input class="form-check-input" type="checkbox" id="range7d"> <span class="form-check-label">7 days</span>
-                  </label>
-                  <label class="form-check form-check-inline small mb-0">
-                    <input class="form-check-input" type="checkbox" id="range3d"> <span class="form-check-label">3 days</span>
-                  </label>
-                </div>
-              </div>
-
-              {% endif %}
-
-              <div class="mb-4">
-                <canvas id="heightChart" class="chart-tall"></canvas>
-              </div>
-              <div class="mb-4">
-                <canvas id="periodChart" class="chart-tall"></canvas>
-              </div>
-              <div>
-                <canvas id="directionChart" class="chart-tall"></canvas>
-              </div>
-            </div>
-          </div>
-        {% else %}
-          <!-- Table View -->
-          <div id="tableWrap" class="card">
-            <div class="card-body">
-              <div id="forecastTable">
-                {% if table_html %}{{ table_html|safe }}{% endif %}
-                {% if defer_forecast %}
-                <div id="forecastLoading" class="forecast-loading">
-                  <span class="spinner"></span> Loading forecast&hellip;
-                </div>
-                <noscript>
-                  <meta http-equiv="refresh" content="0;url=?station={{ selected_station|urlencode }}&amp;tz={{ selected_tz|urlencode }}&amp;unit={{ selected_unit|urlencode }}&amp;model={{ (selected_model or 'GFS')|urlencode }}&amp;view=Table&amp;render=full">
-                </noscript>
-                {% endif %}
-              </div>
-            </div>
-          </div>
-        {% endif %}
+    <!-- The forecast window (plan section 25): floating, draggable, resizable; minimised on load. The
+         table and the charts are fetched from /api/forecast by static_ui/forecast.js; render=full
+         (the no-JS path) renders the table here server-side. -->
+    <section id="forecastWin" class="forecast-win fw-min" role="region" aria-label="Forecast">
+      <div id="fwHeader" class="fw-header" tabindex="-1">
+        <div class="fw-titles">
+          <strong id="fwTitle">{{ selected_station }}</strong>
+          <span id="fwCycle" class="fw-cycle"></span>
+        </div>
+        <span id="fwBusy" class="spinner" hidden aria-hidden="true"></span>
+        <button type="button" id="fwMin" class="fw-btn" aria-label="Expand forecast" aria-expanded="false">&#8211;</button>
+        <button type="button" id="fwMax" class="fw-btn" aria-label="Maximise forecast" aria-pressed="false">&#9633;</button>
       </div>
-    </div>
+      <div id="fwToolbar" class="fw-toolbar">
+        <div class="btn-group btn-group-sm" role="group" aria-label="View" id="viewBar">
+          <button type="button" class="btn btn-outline-secondary{% if selected_view != 'Graph' %} active{% endif %}" data-view="Table" aria-pressed="{{ 'false' if selected_view == 'Graph' else 'true' }}">Table</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_view == 'Graph' %} active{% endif %}" data-view="Graph" aria-pressed="{{ 'true' if selected_view == 'Graph' else 'false' }}">Graph</button>
+        </div>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Model" id="modelBar"{% if not swan_available %} hidden{% endif %}>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model != 'SWAN' %} active{% endif %}" data-model="GFS" aria-pressed="{{ 'false' if selected_model == 'SWAN' else 'true' }}">GFS</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'SWAN' %} active{% endif %}" data-model="SWAN" aria-pressed="{{ 'true' if selected_model == 'SWAN' else 'false' }}">SWAN</button>
+        </div>
+        <div class="btn-group btn-group-sm ms-auto" role="group" aria-label="Range" id="rangeBar"{% if selected_view != 'Graph' %} hidden{% endif %}>
+          <button type="button" class="btn btn-outline-secondary" data-days="0">Full</button>
+          <button type="button" class="btn btn-outline-secondary" data-days="7">7 d</button>
+          <button type="button" class="btn btn-outline-secondary" data-days="3">3 d</button>
+        </div>
+        <noscript>
+          <select class="form-select form-select-sm" name="view" form="controlForm" aria-label="View">
+            <option value="Table" {% if selected_view != 'Graph' %}selected{% endif %}>Table</option>
+            <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
+          </select>
+          {% if swan_available %}
+          <select class="form-select form-select-sm" name="model" form="controlForm" aria-label="Model">
+            <option value="GFS" {% if selected_model != 'SWAN' %}selected{% endif %}>GFS</option>
+            <option value="SWAN" {% if selected_model == 'SWAN' %}selected{% endif %}>SWAN</option>
+          </select>
+          {% endif %}
+        </noscript>
+      </div>
+      <div id="fwBody" class="fw-body" tabindex="0" aria-busy="false">
+        <div id="fwError" class="alert alert-warning py-2 mb-2"{% if not error %} hidden{% endif %}>{{ error or '' }}</div>
+        <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz }}{% endif %}</div>
+
+        <div id="forecastTable"{% if selected_view == 'Graph' %} hidden{% endif %}>
+          {% if table_html %}{{ table_html|safe }}{% endif %}
+          {% if defer_forecast %}
+          <div id="forecastLoading" class="forecast-loading">
+            <span class="spinner"></span> Loading forecast&hellip;
+          </div>
+          <noscript>
+            <meta http-equiv="refresh" content="0;url=?station={{ selected_station|urlencode }}&amp;tz={{ selected_tz|urlencode }}&amp;unit={{ selected_unit|urlencode }}&amp;model={{ (selected_model or 'GFS')|urlencode }}&amp;view=Table&amp;render=full">
+          </noscript>
+          {% endif %}
+        </div>
+        <div id="graphs"{% if selected_view != 'Graph' %} hidden{% endif %}>
+          <div class="chart-box"><canvas id="heightChart"></canvas></div>
+          <div class="chart-box"><canvas id="periodChart"></canvas></div>
+          <div class="chart-box"><canvas id="directionChart"></canvas></div>
+        </div>
+      </div>
+      <div id="fwResize" class="fw-resize" aria-hidden="true"></div>
+    </section>
   </div>
 
   <!-- Live buoy detail panel (NDBC rich panel + adaptive panel for other sources) -->
@@ -681,8 +721,12 @@
 
     // Web Mercator practical latitude limits.
     // Longitude is intentionally not bounded so the map can scroll continuously east/west.
-    const WORLD_BOUNDS = L.latLngBounds([[-85, -180], [85, 180]]);
-    const LATITUDE_LIMIT = 85;
+    // The farthest the map shows: just past Greenland's northern tip (Cape Morris Jesup, 83.6 N) and just
+    // past Antarctica's ice-shelf fronts (Ross / Ronne, about 78.5 S); Mercator stretches the last degrees
+    // enormously, so the old 85 left a void the height of a continent south of Antarctica.
+    const LAT_LIMIT_NORTH = 84;
+    const LAT_LIMIT_SOUTH = -79;
+    function clampLat(lat) { return Math.max(LAT_LIMIT_SOUTH, Math.min(LAT_LIMIT_NORTH, lat)); }
 
     const DEFAULT_MAP_CENTER = [21.3, -157.9];
     const DEFAULT_MAP_ZOOM = 6;
@@ -748,10 +792,7 @@
     function saveMapView(map) {
       const v = { c: map.getCenter(), z: map.getZoom() };
 
-      const safeLat = Math.max(
-        -LATITUDE_LIMIT,
-        Math.min(LATITUDE_LIMIT, v.c.lat)
-      );
+      const safeLat = clampLat(v.c.lat);
 
       sessionStorage.setItem(
         mapKey,
@@ -888,29 +929,85 @@
     });
 
     // --- Stable map sizing, single-world zoom floor, and continuous east/west wrap ---
+    // ---- map extent (tests/ui/mapclamp.test.js runs this block: keep it self-contained between the markers) ----
     function calculateSingleWorldMinZoom() {
-      const mapWidth = map.getSize().x || document.getElementById('map').clientWidth || 1024;
+      const el = document.getElementById('map');
+      const size = map.getSize();
+      const mapWidth = size.x || el.clientWidth || 1024;
+      const mapHeight = size.y || el.clientHeight || 0;
 
       // At zoom 0 the world is 256 px wide. Require the world pixel width to be
-      // at least the viewport width so no second world is visible at minimum zoom.
-      return Math.log2((mapWidth + MIN_ZOOM_PADDING_PX) / WORLD_TILE_SIZE);
+      // at least the viewport width so no second world is visible at minimum zoom...
+      const byWidth = Math.log2((mapWidth + MIN_ZOOM_PADDING_PX) / WORLD_TILE_SIZE);
+      // ...and the band between the latitude limits (the poles) at least the viewport height, so the
+      // poles are the farthest the map ever shows: a map taller than it is wide (a phone, a narrow
+      // window) would otherwise show the void beyond both poles at once, which no clamp can cure.
+      const bandAtZoom0 = map.project([LAT_LIMIT_SOUTH, 0], 0).y - map.project([LAT_LIMIT_NORTH, 0], 0).y;
+      const byHeight = mapHeight ? Math.log2((mapHeight + MIN_ZOOM_PADDING_PX) / bandAtZoom0) : 0;
+      return Math.max(byWidth, byHeight);
     }
 
+    // Prevent north/south dragging into the void beyond the poles, while still allowing continuous
+    // east/west movement. The overshoot is measured in PIXELS at the current zoom and the view is panned
+    // back by whole pixels only: Leaflet truncates pan offsets to whole pixels, so a correction in degrees
+    // that came to less than a pixel moved nothing, fired moveend again and recursed until the stack
+    // overflowed (with a saved view near a pole the page died at load: every layer waiting for the map's
+    // 'load' event, the station picker and the live buoys never came; a pan past a pole left the particle
+    // animation suspended). The moveend of the clamp's own pan is ignored; the outer handler finishes once.
+    let clampingLatitude = false;
+    function latitudeOvershootPx() {
+      const size = map.getSize(), zoom = map.getZoom();
+      const top = map.project([LAT_LIMIT_NORTH, 0], zoom).y;        // world pixel y of the north limit
+      const bottom = map.project([LAT_LIMIT_SOUTH, 0], zoom).y;     // ... and of the south limit
+      const cy = map.project(map.getCenter(), zoom).y, half = size.y / 2;
+      if (bottom - top <= size.y) return (top + bottom) / 2 - cy;   // the whole band fits: centre it (the min zoom prevents this)
+      if (cy - half < top) return top - (cy - half);
+      if (cy + half > bottom) return bottom - (cy + half);
+      return 0;
+    }
+    function clampMapLatitude() {
+      // an animation in flight ends with its own moveend: clamp then, from the settled view
+      if (clampingLatitude || !map._loaded || map._animatingZoom || (map._panAnim && map._panAnim._inProgress)) return;
+      const dy = Math.round(latitudeOvershootPx());
+      if (!dy) return;
+      clampingLatitude = true;
+      try { map.panBy([0, dy], { animate: false }); } finally { clampingLatitude = false; }
+    }
+
+    function handleMapMoveEnd() {
+      if (clampingLatitude) return;             // the clamp's own pan: the outer call finishes below
+      try { clampMapLatitude(); } catch (e) { console.error('latitude clamp', e); }   // the map's load sequence must survive this handler
+      refreshWrappedMarkerCopies(false);
+      try { saveMapView(map); } catch (e) {}   // the page no longer reloads on a pick: keep the view for a real reload (storage may be blocked)
+    }
+    // ---- end map extent ----
+
+    let lastEnforcedWidth = null;
     function enforceSingleWorld() {
       const el = document.getElementById('map');
 
-      // Keep a stable usable map height; cap lower on phones/tablets so the
-      // map doesn't dominate the viewport (the forecast is the point).
+      // The map fills the viewport under the top bar (the forecast is a floating window now); on
+      // phones the minimised forecast bar along the bottom edge gets its 48 px.
       const w = window.innerWidth;
-      const cap = w <= 576 ? 260 : (w <= 768 ? 300 : 460);
-      const targetH = Math.min(cap, Math.floor(window.innerHeight * 0.48));
+      const bar = document.getElementById('topBar');
+      const reserve = (bar ? bar.offsetHeight : 0) + 24 + (w <= 500 || window.innerHeight <= 500 ? 48 : 0);   // phone mode: the minimised bar's row
+      const targetH = Math.max(w <= 500 || window.innerHeight <= 500 ? 180 : 280, window.innerHeight - reserve);
       el.style.height = targetH + 'px';
 
-      map.invalidateSize();
+      // Leaflet measured the container at its CSS height when the map was created and ignores
+      // invalidateSize() until the first view is set: force a fresh measurement (the map is much
+      // taller than the 460 px CSS default now; a stale size left the lower part without tiles).
+      map._sizeChanged = true;
+      map.invalidateSize({ animate: false });
 
       // Maximum zoomed-out extent = one non-repeated world width.
       MIN_MAP_ZOOM = Math.max(1, calculateSingleWorldMinZoom());
       map.setMinZoom(MIN_MAP_ZOOM);
+
+      // The stored view is (re)applied at load and when the width changes; a height-only resize (a phone's
+      // browser bar collapsing, a soft keyboard for the settings) must not snap the map back.
+      if (lastEnforcedWidth === w) { clampMapLatitude(); refreshWrappedMarkerCopies(true); return; }
+      lastEnforcedWidth = w;
 
       // Precedence: in-session view (sessionStorage) > saved Home View
       // (localStorage) > hard default. Lets each user open to their region.
@@ -921,7 +1018,7 @@
 
       if (view) {
         const safeZoom = Math.min(MAX_MAP_ZOOM, Math.max(view.z, MIN_MAP_ZOOM));
-        const safeLat = Math.max(-LATITUDE_LIMIT, Math.min(LATITUDE_LIMIT, view.lat));
+        const safeLat = clampLat(view.lat);
         map.setView([safeLat, view.lng], safeZoom, { animate: false });
       } else {
         map.setView(
@@ -930,43 +1027,10 @@
           { animate: false }
         );
       }
+      map.invalidateSize({ animate: false });      // now that the map has a view, the size is really re-read
 
       clampMapLatitude();
       refreshWrappedMarkerCopies(true);
-    }
-
-    // Prevent north/south dragging into grey polar tile areas,
-    // while still allowing continuous east/west movement.
-    function clampMapLatitude() {
-      const bounds = map.getBounds();
-      const center = map.getCenter();
-
-      const northLimit = WORLD_BOUNDS.getNorth();
-      const southLimit = WORLD_BOUNDS.getSouth();
-
-      let correctedLat = center.lat;
-
-      if (bounds.getNorth() > northLimit) {
-        correctedLat -= (bounds.getNorth() - northLimit);
-      }
-
-      if (bounds.getSouth() < southLimit) {
-        correctedLat += (southLimit - bounds.getSouth());
-      }
-
-      correctedLat = Math.max(
-        southLimit,
-        Math.min(northLimit, correctedLat)
-      );
-
-      if (Math.abs(correctedLat - center.lat) > 0.000001) {
-        map.setView([correctedLat, center.lng], map.getZoom(), { animate: false });
-      }
-    }
-
-    function handleMapMoveEnd() {
-      clampMapLatitude();
-      refreshWrappedMarkerCopies(false);
     }
 
     // Map movement, resize handling, and initial view are wired up after
@@ -1082,29 +1146,19 @@
 
         mk.on('click', function () {
           document.getElementById('station').value = s.id;
-
-          // Default to (Buoy Local) on station pick so we use that buoy's own timezone.
-          const tzSel = document.getElementById('tz');
-          if (tzSel) { tzSel.value = ''; }
-
-          saveMapView(map);
           saveLayerVisibility();
-          document.getElementById('controlForm').submit();
+          // The forecast window loads the station in place (back to Buoy Local, as a pick always did).
+          document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: String(s.id), source: 'map' } }));
         });
       });
     }
 
     // After a favorite is picked (which reloads the page via the form), recenter the
-    // map on that buoy. One-shot: the flag is set by the picker's selectStation() and
-    // cleared here. Only fires when the loaded station matches the flagged one.
+    // map on that buoy (a favourites pick; the picker asks through the 'allshore:station' event).
     const FORECAST_FOCUS_ZOOM = 8;
-    function focusSelectedStationIfRequested() {
-      let sid;
-      try { sid = sessionStorage.getItem('allshore.focusStation'); } catch (e) { return; }
-      if (!sid) return;
-      try { sessionStorage.removeItem('allshore.focusStation'); } catch (e) {}
-      const sel = document.getElementById('station');
-      if (!sel || sel.value !== sid) return;
+    let pendingFocusStation = null;
+    function focusStation(sid) {
+      if (!forecastStationsData.length) { pendingFocusStation = sid; return; }   // stations not loaded yet: after they are
       let st = null;
       for (let i = 0; i < forecastStationsData.length; i++) {
         if (String(forecastStationsData[i].id) === sid) { st = forecastStationsData[i]; break; }
@@ -1113,7 +1167,7 @@
       const lat = Number(st.lat), lon = Number(st.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
       const z = Math.min(MAX_MAP_ZOOM, Math.max(FORECAST_FOCUS_ZOOM, MIN_MAP_ZOOM));
-      const safeLat = Math.max(-LATITUDE_LIMIT, Math.min(LATITUDE_LIMIT, lat));
+      const safeLat = clampLat(lat);
       map.setView([safeLat, normLng(lon)], z, { animate: true });
       clampMapLatitude();
       refreshWrappedMarkerCopies(true);
@@ -1133,12 +1187,15 @@
       .then(stations => {
         forecastStationsData = stations || [];
         rebuildForecastMarkers(true);
-        focusSelectedStationIfRequested();
+        if (pendingFocusStation) { const sid = pendingFocusStation; pendingFocusStation = null; focusStation(sid); }
       });
 
-    document.getElementById('controlForm').addEventListener('submit', () => {
-      saveMapView(map);
-      saveLayerVisibility();
+    // With JS the page never submits the form (every change applies in place); a favourites pick asks
+    // the map to recentre on the station.
+    document.getElementById('controlForm').addEventListener('submit', (e) => { e.preventDefault(); });
+    document.addEventListener('allshore:station', (e) => {
+      const d = e.detail || {};
+      if (d.source === 'picker' && d.sid) focusStation(String(d.sid));
     });
 
     // ---------------- Live buoy layer (NDBC + CDIP + AU + Europe, merged + deduped) ----------------
@@ -2231,13 +2288,10 @@
       function selectStation(sid) {
         if (!bySid.has(sid)) return;
         select.value = sid;
-        // One-shot: ask the map to recenter on this buoy after the reload.
-        try { sessionStorage.setItem('allshore.focusStation', sid); } catch (e) {}
+        refreshCurrent();
         close();
-        const f = document.getElementById('controlForm');
-        // requestSubmit() fires the 'submit' event (plain .submit() does not), so the
-        // existing controlForm listener still persists map view + layer state.
-        if (f) { if (f.requestSubmit) f.requestSubmit(); else f.submit(); }
+        // The forecast window loads it in place and the map recentres on it (no reload).
+        document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: sid, source: 'picker' } }));
       }
 
       function renderFavs() {
@@ -2279,6 +2333,9 @@
         });
       }
 
+      favToggle.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !results.hidden) { e.stopPropagation(); close(); trigger.focus(); }
+      });
       favToggle.addEventListener('click', function (e) {
         e.preventDefault();
         const sid = select.value;
@@ -2310,6 +2367,8 @@
       // still handled by the document click listener below).
       field.addEventListener('focusout', function (e) { if (e.relatedTarget && !field.contains(e.relatedTarget)) close(); });
       document.addEventListener('click', function (e) { if (!field.contains(e.target)) close(); });
+      // a map pick changes the select from outside: the label and the star follow
+      document.addEventListener('allshore:station', function (e) { var d = e.detail || {}; if (bySid.has(String(d.sid))) select.value = String(d.sid); refreshCurrent(); });
 
       refreshCurrent();
     })();
@@ -2329,398 +2388,6 @@
 
     addLiveBuoyLayer();
 
-    {% if selected_view == 'Graph' and graph_data %}
-    // ---- Charting ----
-    const GD = {{ graph_data|tojson|safe }};
-
-    let heightChart, periodChart, directionChart;
-    const chartRangeKey = 'chartRange';
-
-    const colors = {
-      s1: '#C00000',
-      s2: '#ED7D31',
-      s3: '#FFC000',
-      s4: '#00B050',
-      s5: '#00B0F0',
-      s6: '#92D050',
-      combined: '#7030A0'
-    };
-
-    // Helpers
-    const finiteVals = arr => arr.filter(v => v !== null && v !== undefined && Number.isFinite(v));
-    const maxAcross = arrays => arrays.reduce((m,a)=>Math.max(m, ...finiteVals(a), -Infinity), -Infinity);
-    const minAcross = arrays => arrays.reduce((m,a)=>Math.min(m, ...finiteVals(a), Infinity), Infinity);
-    const padMax = (v, p=0.10) => Number.isFinite(v) ? v * (1+p) : v;
-    const niceCeil = (v, step) => Math.ceil(v/step)*step;
-
-    function heightStep(maxVal){ if(maxVal<=1) return 0.1; if(maxVal<=2) return 0.2; if(maxVal<=4) return 0.5; if(maxVal<=8) return 1; return 2; }
-    function periodStep(maxVal){ if(maxVal<=8) return 1; if(maxVal<=16) return 2; return 5; }
-
-    // --- Parse label strings -> Date objects ---
-    // Accepts forms like "8/30/25 6:00 AM" (current app labels)
-    const parsedDates = GD.labels.map(lbl => {
-      const re = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(\d{1,2}):(\d{2})\s*([APap][Mm])$/;
-      const m = (lbl||'').match(re);
-      if (m){
-        let [_, M, D, Y, h, min, ap] = m;
-        M = +M; D = +D; h = +h; min = +min; ap = ap.toLowerCase();
-        let year = (Y.length===2 ? 2000 + +Y : +Y);
-        if (ap==='pm' && h < 12) h += 12;
-        if (ap==='am' && h === 12) h = 0;
-        return new Date(year, M-1, D, h, min, 0);
-      }
-      const d = new Date(lbl);
-      return isNaN(d) ? new Date() : d;
-    });
-
-    // Indices for midnight / noon
-    const majorIdx = new Set(); // midnight
-    const minorIdx = new Set(); // noon
-    parsedDates.forEach((d, i) => {
-      const h = d.getHours();
-      if (h === 0) majorIdx.add(i);
-      else if (h === 12) minorIdx.add(i);
-    });
-
-    // --- Night-time shading plugin: shades 6pm..6am using the chart's current x-window ---
-    const nightShadePlugin = {
-      id: 'nightShade',
-      // draw behind datasets so it sits under points/lines
-      beforeDraw(chart, args, pluginOptions) {
-        const {ctx, chartArea, scales} = chart;
-        if (!chartArea || !scales?.x) return;
-
-        const x = scales.x;
-        const areaTop = chartArea.top;
-        const areaH = chartArea.bottom - areaTop;
-
-        // options (with defaults)
-        const startH = Number.isFinite(pluginOptions?.nightStart) ? pluginOptions.nightStart : 18; // 6pm
-        const endH   = Number.isFinite(pluginOptions?.nightEnd)   ? pluginOptions.nightEnd   : 6;  // 6am
-        const fill   = pluginOptions?.fill || 'rgba(0,0,0,0.06)';
-
-        // utility: does hour fall within [startH..24) U [0..endH)?
-        const isNightHour = (h) => (startH <= endH) ? (h >= startH && h < endH) : (h >= startH || h < endH);
-
-        const N = parsedDates.length;
-        // respect current window (e.g., Full / 7d / 3d)
-        const minIdx = Math.max(0, Math.floor(x.min ?? 0));
-        const maxIdx = Math.min(N - 1, Math.ceil(x.max ?? (N - 1)));
-
-        ctx.save();
-        ctx.fillStyle = fill;
-
-        // shade one "hour cell" at a time between i and i+1
-        for (let i = minIdx; i < maxIdx; i++) {
-          const hour = parsedDates[i]?.getHours?.() ?? NaN;
-          if (!Number.isFinite(hour) || !isNightHour(hour)) continue;
-
-          const x0 = x.getPixelForValue(i);
-          const x1 = x.getPixelForValue(i + 1);
-          const w  = x1 - x0;
-          if (Number.isFinite(w) && w > 0) {
-            ctx.fillRect(x0, areaTop, w, areaH);
-          }
-        }
-        ctx.restore();
-      }
-    };
-
-    
-    // Tick label formatter -> "M/D 12am|12pm" only at 12‑hour marks
-    function formatMDHour(d){
-      const M = d.getMonth()+1;
-      const D = d.getDate();
-      const h = d.getHours();
-      if (h === 0) return `${M}/${D} 12am`;
-      if (h === 12) return `${M}/${D} 12pm`;
-      return '';
-    }
-
-    // shared x‑axis config (category scale using our string labels)
-    const xAxis = {
-      type: 'category',
-      grid: {
-        color: ctx => {
-          const i = ctx.tick && typeof ctx.tick.index === 'number' ? ctx.tick.index : ctx.index;
-          if (majorIdx.has(i)) return 'rgba(0,0,0,0.25)';   // midnight
-          if (minorIdx.has(i)) return 'rgba(0,0,0,0.15)';   // noon
-          return 'rgba(0,0,0,0.08)';                        // others
-        },
-        lineWidth: ctx => {
-          const i = ctx.tick && typeof ctx.tick.index === 'number' ? ctx.tick.index : ctx.index;
-          if (majorIdx.has(i)) return 1.4;
-          if (minorIdx.has(i)) return 1.0;
-          return 0.5;
-        }
-      },
-      ticks: {
-        autoSkip: false,
-        maxRotation: 90,
-        minRotation: 90,
-        callback: (value, index) => formatMDHour(parsedDates[index]),
-        font: { size: 10 }
-      }
-    };
-
-    // Y ranges (+10% for height/period)
-    const heightArrays = [GD.height.s1,GD.height.s2,GD.height.s3,GD.height.s4,GD.height.s5,GD.height.s6,GD.height.combined];
-    let hMax = padMax(maxAcross(heightArrays), 0.10); if (!Number.isFinite(hMax)) hMax = 1;
-    const hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
-
-    const periodArrays = [GD.period.s1,GD.period.s2,GD.period.s3,GD.period.s4,GD.period.s5,GD.period.s6];
-    let pMax = padMax(maxAcross(periodArrays), 0.10); if (!Number.isFinite(pMax)) pMax = 10;
-    const pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
-
-    const dirArrays = [GD.direction.s1,GD.direction.s2,GD.direction.s3,GD.direction.s4,GD.direction.s5,GD.direction.s6];
-    let dMin = minAcross(dirArrays), dMax = maxAcross(dirArrays);
-    if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
-
-    const commonOpts = {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false, axis: 'x' },
-      layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } },
-      elements: { 
-        point: { radius: 1.6 }, 
-        line: { tension: 0.25, borderWidth: 0 } // lines hidden; dots only
-      },
-      plugins: {
-        legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 10, boxHeight: 6 } },
-        tooltip: { mode: 'nearest', intersect: false },
-        decimation: { enabled: false }
-      },
-      animation: false
-    };
-
-    function swellDots(label, key, data, color) {
-      return { label, data: data[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false };
-    }
-
-    // HEIGHT (includes Combined)
-    (() => {
-      const ds = [
-        swellDots('Swell 1','s1',GD.height,colors.s1),
-        swellDots('Swell 2','s2',GD.height,colors.s2),
-        swellDots('Swell 3','s3',GD.height,colors.s3),
-        swellDots('Swell 4','s4',GD.height,colors.s4),
-        swellDots('Swell 5','s5',GD.height,colors.s5),
-        swellDots('Swell 6','s6',GD.height,colors.s6),
-        { label:'Combined', data: GD.height.combined, borderColor: colors.combined, backgroundColor: colors.combined, showLine:false, spanGaps:false, pointRadius:1.6 }
-      ];
-      heightChart = new Chart(document.getElementById('heightChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        plugins: [nightShadePlugin],
-        options: {
-          ...commonOpts,
-          plugins: {
-            ...commonOpts.plugins,
-            title: { display: true, text: 'Swell Height' },
-            // Configure night-time shading (6pm..6am)
-            nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' }
-          },
-          scales: {
-            x: xAxis,
-            y: {
-              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-              border: { color: 'rgba(0,0,0,0.2)' },
-              beginAtZero: true, min: 0, max: hMax,
-              ticks: { stepSize: hStep },
-              title: { display: true, text: `Height (${GD.units})` }
-            }
-          }
-        }
-      });
-    })();
-
-    // PERIOD
-    (() => {
-      const ds = [
-        swellDots('Swell 1','s1',GD.period,colors.s1),
-        swellDots('Swell 2','s2',GD.period,colors.s2),
-        swellDots('Swell 3','s3',GD.period,colors.s3),
-        swellDots('Swell 4','s4',GD.period,colors.s4),
-        swellDots('Swell 5','s5',GD.period,colors.s5),
-        swellDots('Swell 6','s6',GD.period,colors.s6)
-      ];
-      periodChart = new Chart(document.getElementById('periodChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        plugins: [nightShadePlugin],
-        options: {
-          ...commonOpts,
-          plugins: {
-            ...commonOpts.plugins,
-            title: { display: true, text: 'Swell Period' },
-            // Configure night-time shading (6pm..6am)
-            nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' }
-          },
-          scales: {
-            x: xAxis,
-            y: {
-              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-              border: { color: 'rgba(0,0,0,0.2)' },
-              beginAtZero: true, min: 0, max: pMax,
-              ticks: { stepSize: pStep },
-              title: { display: true, text: 'Period (s)' }
-            }
-          }
-        }
-      });
-    })();
-
-    // DIRECTION
-    (() => {
-      const ds = [
-        swellDots('Swell 1','s1',GD.direction,colors.s1),
-        swellDots('Swell 2','s2',GD.direction,colors.s2),
-        swellDots('Swell 3','s3',GD.direction,colors.s3),
-        swellDots('Swell 4','s4',GD.direction,colors.s4),
-        swellDots('Swell 5','s5',GD.direction,colors.s5),
-        swellDots('Swell 6','s6',GD.direction,colors.s6),
-      ];
-      directionChart = new Chart(document.getElementById('directionChart').getContext('2d'), {
-        type: 'line',
-        data: { labels: GD.labels, datasets: ds },
-        plugins: [nightShadePlugin],
-        options: {
-          ...commonOpts,
-          plugins: {
-            ...commonOpts.plugins,
-            title: { display: true, text: 'Swell Direction' },
-            // Configure night-time shading (6pm..6am)
-            nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' }
-          },
-          scales: {
-            x: xAxis,
-            y: {
-              grid: { display: true, color: 'rgba(0,0,0,0.08)' },
-              border: { color: 'rgba(0,0,0,0.2)' },
-              min: dMin, max: dMax,
-              ticks: { stepSize: 45 },
-              title: { display: true, text: 'Direction (°)' }
-            }
-          }
-        }
-      });
-    })();
-
-      // ---- Cross‑graph hover/tooltip synchronization ----
-      // When you hover/touch on any one chart, show the same index on the other two.
-      (function syncTooltips() {
-        const charts = [heightChart, periodChart, directionChart];
-
-        function setActiveAtIndex(ch, idx) {
-          if (!ch || !ch.data || !ch.data.labels) return;
-          const max = ch.data.labels.length - 1;
-          const i = Math.max(0, Math.min(idx, max));
-          const active = ch.data.datasets.map((_, di) => ({ datasetIndex: di, index: i }));
-
-          ch.setActiveElements(active);
-          // Position the tooltip at this x pixel so it’s consistent across charts
-          const xScale = ch.scales?.x;
-          const x = xScale ? xScale.getPixelForValue(i) : undefined;
-          ch.tooltip?.setActiveElements(active, { x });
-          ch.update('none');
-        }
-
-        function clearActive(ch) {
-          if (!ch) return;
-          ch.setActiveElements([]);
-          ch.tooltip?.setActiveElements([], {});
-          ch.update('none');
-        }
-
-        function broadcastFrom(sourceChart, evt) {
-          // Find the hovered index on the source chart
-          const points = sourceChart.getElementsAtEventForMode(
-            evt,
-            'index',
-            { intersect: false, axis: 'x' },
-            true
-          );
-          if (!points || points.length === 0) return;
-          const idx = points[0].index;
-
-          // Apply same index to the other charts
-          charts.forEach(ch => {
-            if (ch !== sourceChart) setActiveAtIndex(ch, idx);
-          });
-        }
-
-        charts.forEach(ch => {
-          if (!ch || !ch.canvas) return;
-          const el = ch.canvas;
-
-          // Mouse
-          el.addEventListener('mousemove', e => broadcastFrom(ch, e));
-          el.addEventListener('mouseleave', () => charts.forEach(clearActive));
-
-          // Touch
-          el.addEventListener('touchstart', e => broadcastFrom(ch, e), { passive: true });
-          el.addEventListener('touchmove',  e => broadcastFrom(ch, e), { passive: true });
-          el.addEventListener('touchend',   () => charts.forEach(clearActive));
-          el.addEventListener('touchcancel',() => charts.forEach(clearActive));
-        });
-      })();
-      
-    // ---- Range controls (Full / 7d / 3d) ----
-    // Use index windowing: FIRST N*24 points from the START of the series.
-    function setWindowByDays(days) {
-      const N = GD.labels.length;
-      let start = 0;
-      let end = N - 1;
-      if (Number.isFinite(days) && days > 0) {
-        const hours = Math.round(days * 24);
-        end = Math.min(N - 1, hours - 1); // window from START
-      }
-      [heightChart, periodChart, directionChart].forEach(ch => {
-        if (!ch) return;
-        ch.options.scales.x.min = start;
-        ch.options.scales.x.max = end;
-        ch.update('none');
-      });
-    }
-
-
-    // Enforce "single selection" behavior for our 3 checkboxes
-    function exclusiveCheck(id) {
-      ['rangeFull','range7d','range3d'].forEach(k => {
-        const el = document.getElementById(k);
-        if (el) el.checked = (k === id);
-      });
-    }
-
-    function initRangeControls() {
-      const saved = sessionStorage.getItem(chartRangeKey) || 'full';
-      if (saved === '7') { exclusiveCheck('range7d'); setWindowByDays(7); }
-      else if (saved === '3') { exclusiveCheck('range3d'); setWindowByDays(3); }
-      else { exclusiveCheck('rangeFull'); setWindowByDays(null); }
-    }
-
-    function wireRangeControls() {
-      const full = document.getElementById('rangeFull');
-      const d7   = document.getElementById('range7d');
-      const d3   = document.getElementById('range3d');
-      if (!full || !d7 || !d3) return;
-
-      full.addEventListener('change', e => {
-        if (e.target.checked) { exclusiveCheck('rangeFull'); setWindowByDays(null); sessionStorage.setItem(chartRangeKey,'full'); }
-      });
-      d7.addEventListener('change', e => {
-        if (e.target.checked) { exclusiveCheck('range7d'); setWindowByDays(7); sessionStorage.setItem(chartRangeKey,'7'); }
-      });
-      d3.addEventListener('change', e => {
-        if (e.target.checked) { exclusiveCheck('range3d'); setWindowByDays(3); sessionStorage.setItem(chartRangeKey,'3'); }
-      });
-    }
-
-    // Activate
-    wireRangeControls();
-    initRangeControls();
-  
-    {% endif %}
   </script>{%- if model_overlays %}
 
   <style>
@@ -2736,6 +2403,7 @@
       var BASE = {{ model_frames_base|tojson }};
       var VERSION = {{ overlay_asset_version|tojson }};
       var TZ = {{ forecast_tz_name|tojson }};
+      var lastTz = TZ;                                          // the zone of the forecast on screen (the window announces each one)
       // (the model pane is created by the module on the first selection, so Off leaves the map's panes untouched)
 
       var Ctl = L.Control.extend({
@@ -2780,7 +2448,7 @@
       // The run the page's forecast is on ("Cycle : YYYYMMDD HH UTC" in the table or the Graph header),
       // read when asked so a deferred table counts; a SWAN page is a different model altogether.
       function pageCycle() {
-        var els = [document.getElementById('forecastTable'), document.getElementById('graphs')], txt = '';
+        var els = [document.getElementById('forecastMeta'), document.getElementById('forecastTable'), document.getElementById('graphs')], txt = '';
         for (var i = 0; i < els.length; i++) if (els[i]) txt += ' ' + (els[i].textContent || '');
         var m = /Cycle\s*:\s*([^|\n]*)/.exec(txt);
         if (!m) return null;
@@ -2816,7 +2484,7 @@
         loadAssets().then(function () {
           if (sel.value !== field) return;
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
-            base: BASE, panel: panel, tz: TZ, getUnit: getSelectedUnit,
+            base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
             fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer()
           });
           overlay.mount(field, restore);
@@ -2861,85 +2529,35 @@
       }
       var unitEl = document.getElementById('unit');
       if (unitEl) unitEl.addEventListener('change', function () { if (overlay) overlay.refresh(); });
+      // The forecast window changes station, zone and model in place (no reload): the overlay's valid times
+      // follow the table's zone and its run line the table's run.
+      document.addEventListener('allshore:forecast', function (e) {
+        var tz = e && e.detail && e.detail.tz;
+        if (typeof tz === 'string' && tz) lastTz = tz;                          // remembered for the first mount too (the forecast lands before it)
+        if (!overlay) return;
+        overlay.opts.tz = lastTz;
+        overlay.refresh();
+      });
     })();
   </script>
   {%- endif %}
 
+  <!-- The forecast window (static_ui/forecast.js): the forecast in place, drag / resize / minimise,
+       the charts, the settings panel, Escape for the live panel and the window. -->
+  <script src="/ui/forecast.js?v={{ ui_asset_version }}"></script>
   <script>
-    // Phase 2b: shell-first forecast loading. When the server deferred the
-    // Table view (cold cache), fetch /api/forecast and inject the table so the
-    // page paints instantly instead of blocking on the NOAA fetch.
+    window.__initial = {{ initial_state|tojson }};
     (function () {
-      var defer = {{ 'true' if defer_forecast else 'false' }};
-      if (!defer) return;
-      var box = document.getElementById('forecastTable');
-      if (!box) return;
-      var station = {{ selected_station|tojson }};
-      var params = new URLSearchParams({
-        station: station,
-        tz: {{ (selected_tz or '')|tojson }},
-        unit: {{ (selected_unit or 'US')|tojson }},
-        model: {{ (selected_model or 'GFS')|tojson }}
+      var sel = document.getElementById('station');
+      function stationLabel(sid) {
+        if (sel) for (var i = 0; i < sel.options.length; i++) if (sel.options[i].value === sid) return sel.options[i].textContent.trim();
+        return sid;
+      }
+      if (window.AllshoreForecast) window.AllshoreForecast.init({
+        initial: window.__initial, stationLabel: stationLabel, loadChartJs: loadChartJs,
+        closeLivePanel: closeLiveBuoyPanel,
+        liveOpen: function () { var p = document.getElementById('liveBuoyPanel'); return !!(p && getComputedStyle(p).display !== 'none'); }
       });
-      function showMessage(cls, text) {
-        // textContent, not innerHTML — d.error embeds the user-supplied station.
-        var div = document.createElement('div');
-        div.className = cls;
-        div.textContent = text;
-        box.innerHTML = '';
-        box.appendChild(div);
-      }
-      fetch('/api/forecast?' + params.toString())
-        .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(function (d) {
-          if (d && d.table_html) {
-            box.innerHTML = d.table_html;  // trusted server HTML (build_html_table)
-          } else if (d && d.error) {
-            showMessage('alert alert-warning', d.error);
-          } else {
-            showMessage('text-muted', 'No forecast available.');
-          }
-        })
-        .catch(function () {
-          var div = document.createElement('div');
-          div.className = 'alert alert-warning';
-          div.textContent = 'Could not load forecast. ';
-          var a = document.createElement('a');
-          // Preserve the user's tz/unit/view on retry (params already holds them).
-          a.href = '?' + params.toString() + '&view=Table&render=full';
-          a.textContent = 'Retry';
-          div.appendChild(a);
-          box.innerHTML = '';
-          box.appendChild(div);
-        });
-    })();
-
-    // Phase 3a: Escape closes the live-buoy panel (keyboard a11y).
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') {
-        var p = document.getElementById('liveBuoyPanel');
-        if (p && p.style.display !== 'none') closeLiveBuoyPanel();
-      }
-    });
-
-    // Phase 3a: on phones, tuck the control bar away when scrolling down the
-    // table and bring it back when scrolling up (it's tall when stacked).
-    (function () {
-      var bar = document.querySelector('.sticky-top-bar');
-      if (!bar) return;
-      var lastY = window.scrollY || 0;
-      var ticking = false;
-      function update() {
-        ticking = false;
-        if (window.innerWidth > 576) { bar.classList.remove('nav-hidden'); lastY = window.scrollY; return; }
-        var y = window.scrollY;
-        if (y > lastY && y > 90) bar.classList.add('nav-hidden');     // scrolling down
-        else if (y < lastY - 4) bar.classList.remove('nav-hidden');   // scrolling up
-        lastY = y;
-      }
-      window.addEventListener('scroll', function () {
-        if (!ticking) { window.requestAnimationFrame(update); ticking = true; }
-      }, { passive: true });
     })();
   </script>
   <!-- Cloudflare Web Analytics (cookieless page-view/visit counting) -->

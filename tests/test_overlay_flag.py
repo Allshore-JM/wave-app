@@ -1,8 +1,10 @@
 """Model overlays: the page is byte-identical with the feature off; assets and markup only with it on.
 
-Golden: tests/fixtures/index_golden.json captured by tests/capture_index_golden.py on the code
-BEFORE any overlay change (fixed forecast payload + station list, no network). Never recapture it
-after an overlay commit (regenerate from Live-Buoy-Update @ 4c4760a or earlier if it must change).
+Golden: tests/fixtures/index_golden.json captured by tests/capture_index_golden.py (fixed forecast
+payload + station list, no network). It is re-baselined ONLY by a commit that changes the flag-off page
+on purpose (last: the forecast window restructure, plan section 25, 2026-09-26); never recapture it
+after an overlay-only commit. Whatever the baseline, three invariants hold: flag off == golden with no
+'/overlay/' in it; flag on with no frames base == flag off; flag on == flag off + exactly the gated block.
 """
 import glob
 import json
@@ -66,6 +68,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert "choose(v, pending && v !== ''); remember(v, fresh)" in body and "document.hidden" in body
         # G8: the back/forward cache re-syncs the save; the restore waits for a deferred table (3 s at most)
         assert "'pageshow'" in body and "'forecastLoading'" in body and "setTimeout(start, 5000)" in body
+        assert "'allshore:forecast'" in body and "overlay.opts.tz = lastTz" in body and "tz: lastTz" in body   # G16: the zone follows the window, first mount included
         assert '"https://frames.example/gfswave/0p25/v1"' in body           # trailing slash stripped
         assert "var VERSION = %s;" % json.dumps(A.OVERLAY_ASSET_VERSION) in body
         assert GATED.search(body) is not None, name
@@ -76,9 +79,9 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
 def test_forecast_tz_follows_the_table_rule(monkeypatch):
     _on(monkeypatch)
     rec = G.run_scenarios(A)
-    assert 'var TZ = "HST";' in rec["table_inline"]["body"]                 # the rendered table's own label (fixture payload)
-    assert 'var TZ = "HST";' in rec["graph"]["body"]
-    assert 'var TZ = "Pacific/Honolulu";' in rec["table_deferred"]["body"]  # no payload: the station's zone
+    assert 'var TZ = "HST";' in rec["render_full"]["body"]                  # the rendered table's own label (fixture payload)
+    assert 'var TZ = "Pacific/Honolulu";' in rec["graph"]["body"]           # a shell (the window fetches): the station's zone
+    assert 'var TZ = "Pacific/Honolulu";' in rec["default"]["body"]
     saved = {k: getattr(A, k) for k in ("_forecast_is_cached", "get_station_list")}
     A.get_station_list = lambda: list(G.STATIONS)
     A._forecast_is_cached = lambda *a, **k: False                          # deferred table: the parsers' rule is mirrored
@@ -164,7 +167,7 @@ def test_overlay_module_unit_tests():
         pytest.skip("node not available")
     files = sorted(glob.glob(os.path.join(HERE, "overlay", "*.test.js")))
     assert files
-    r = subprocess.run(["node", "--test"] + files, capture_output=True, text=True, cwd=os.path.dirname(HERE))
+    r = subprocess.run(["node", "--test", "--test-timeout=20000"] + files, capture_output=True, text=True, cwd=os.path.dirname(HERE))
     assert r.returncode == 0, (r.stdout[-3000:], r.stderr[-3000:])
 
 
@@ -178,7 +181,7 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
     a = tpl.index("{%- if model_overlays %}")
     block = tpl[a:tpl.index("{%- endif %}", a)]
     src = block[block.index("<script>") + len("<script>"):block.index("</script>")]
-    for name, tz in (("table_inline", "HST"), ("table_deferred", "Pacific/Honolulu")):
+    for name, tz in (("render_full", "HST"), ("default", "Pacific/Honolulu")):
         body = rec[name]["body"].replace("\r\n", "\n")
         got = [b for b in re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", body, flags=re.S) if "Optional model overlays" in b]
         assert len(got) == 1, name
@@ -195,7 +198,7 @@ def test_rendered_inline_scripts_parse_with_flag_on(monkeypatch):
         pytest.skip("node not available")
     _on(monkeypatch, "https://frames.example/x")
     rec = G.run_scenarios(A)
-    for name in ("table_inline", "graph", "swan_station_model"):
+    for name in ("render_full", "graph", "swan_station_model"):
         blocks = re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", rec[name]["body"], flags=re.S)
         assert len(blocks) >= 4
         assert any("Optional model overlays" in b for b in blocks)

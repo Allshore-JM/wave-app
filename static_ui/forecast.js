@@ -10,8 +10,9 @@
  * Page contract (templates/index.html): #forecastWin #fwHeader #fwTitle #fwCycle #fwBusy #fwMin #fwMax
  * #viewBar[data-view] #modelBar[data-model] #rangeBar[data-days] #fwBody #fwError #forecastMeta
  * #forecastTable (#forecastLoading inside it until the first forecast lands) #graphs (.chart-box > canvas
- * #heightChart #periodChart #directionChart) #fwResize; #topBar #settingsBtn #settingsPanel #tz #unit
- * #station #stationTrigger #liveBuoyPanel. The page dispatches 'allshore:station' {sid, source} on a
+ * #heightChart #periodChart #directionChart) #fwResize; #settingsBtn #settingsPanel #tz #unit #station
+ * #stationTrigger #stationCurrent (the favourites picker is the window's heading; #fwTitle is its field);
+ * #liveBuoyPanel #lwHeader #lwMin #lwClose #lwResize (createLiveWindow). The page dispatches 'allshore:station' {sid, source} on a
  * marker click ('map') or a favourites pick ('picker').
  */
 (function () {
@@ -431,12 +432,12 @@
     }
     d.header.addEventListener('pointerdown', function (e) {
       if (e.button !== undefined && e.button !== 0) return;
-      if (e.target && e.target.closest && e.target.closest('button, a, input, select')) return;
+      if (e.target && e.target.closest && e.target.closest('button, a, input, select, .station-results')) return;
       if (self.mode === 'min') return;                                         // the minimised bar is not dragged (a click expands it)
       drag(e, 'move');
     });
     d.header.addEventListener('dblclick', function (e) {
-      if (e.target && e.target.closest && e.target.closest('button, a, input, select')) return;
+      if (e.target && e.target.closest && e.target.closest('button, a, input, select, .station-results')) return;
       if (self.isPhone()) return;
       if (self.mode === 'min') { self.expand(); return; }
       if (Date.now() - (self._expandedAt || 0) < 600) return;                   // the first click of this double-click expanded the chip
@@ -488,7 +489,10 @@
         if (minBtn) { minBtn.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); minBtn.setAttribute('aria-label', m === 'min' ? 'Expand live buoy' : 'Minimise live buoy'); minBtn.textContent = m === 'min' ? '\u25B4' : '\u2013'; }
         notify();
       } });
-    function notify() { try { doc.dispatchEvent(new CustomEvent('allshore:livewin', { detail: { open: !el.hidden, mode: fw.mode } })); } catch (e) {} }
+    function notify() {
+      if (!fw) return;                                                       // (onMode runs once inside the constructor)
+      try { doc.dispatchEvent(new CustomEvent('allshore:livewin', { detail: { open: !el.hidden, mode: fw.mode } })); } catch (e) {}
+    }
     function isOpen() { return !el.hidden; }
     function open() {                                                       // a buoy pick: shown, expanded, on top
       el.hidden = false;
@@ -641,7 +645,7 @@
     if (els.min) els.min.addEventListener('click', function () { if (fw.mode === 'min') expand(); else minimise(); });
     if (els.max) els.max.addEventListener('click', function () { if (fw.mode === 'min') { fw.prev = 'max'; expand(); } else { fw.toggleMax(); if (state.view === 'Graph') graphs.resize(); } });
     if (els.header) els.header.addEventListener('click', function (e) {
-      if (fw.mode === 'min' && !(e.target && e.target.closest && e.target.closest('button'))) expand();
+      if (fw.mode === 'min' && !(e.target && e.target.closest && e.target.closest('button, .station-results'))) expand();
     });
     if (els.viewBar) els.viewBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-view]') : null; if (b) setView(b.getAttribute('data-view')); });
     if (els.modelBar) els.modelBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-model]') : null; if (b) loader.load({ model: b.getAttribute('data-model') === 'SWAN' ? 'SWAN' : 'GFS' }); });

@@ -61,7 +61,7 @@ def test_every_js_page_is_a_shell_and_render_full_inlines_the_compact_table(clie
     assert initial(shell)["inline"] is False and "graph_data" not in initial(shell)
     assert re.search(r'<noscript>\s*<meta http-equiv="refresh" content="0;url=\?station=51201&amp;tz=&amp;unit=US&amp;model=GFS&amp;view=Table&amp;render=full">', shell)
     graph = client.get("/?station=51201&view=Graph").get_data(as_text=True)
-    assert 'id="forecastLoading"' in graph and "view=Graph&amp;render=full" in graph, "the Graph view is a shell too"
+    assert 'id="forecastLoading"' in graph and "view=Table&amp;render=full" in graph, "the Graph view is a shell too (its no-JS refresh goes to the Table view)"
     full = client.get("/?station=51201&render=full").get_data(as_text=True)
     assert "<table id='golden'>" in full and 'id="forecastLoading"' not in full and "<noscript>\n            <meta" not in full
     st = initial(full)
@@ -85,11 +85,16 @@ def test_render_full_asks_for_the_compact_table(monkeypatch):
     assert calls == [("51201", None, "Metric", "GFS", True)]
 
 
-def test_post_and_the_server_error_are_still_handled(client):
+def test_post_and_the_server_error_are_still_handled(client, monkeypatch):
     r = client.post("/", data={"station": "46001", "unit": "US", "tz": "", "model": "GFS", "view": "Table"})
     assert r.status_code == 200 and initial(r.get_data(as_text=True))["station"] == "46001"
-    err = client.get("/?station=51201&render=full")
-    assert re.search(r'id="fwError"[^>]*hidden', err.get_data(as_text=True)), "no error: the box is hidden"
+    ok = client.get("/?station=51201&render=full").get_data(as_text=True)
+    assert re.search(r'id="fwError"[^>]*hidden', ok), "no error: the box is hidden"
+    monkeypatch.setattr(A, "compute_forecast_payload", lambda *a, **k: dict(G.PAYLOAD, table_html=None, error="No SWAN forecast available for 51201"))
+    err = client.get("/?station=51201&render=full").get_data(as_text=True)
+    m = re.search(r'<div id="fwError"([^>]*)>([^<]*)</div>', err)
+    assert m and "hidden" not in m.group(1) and m.group(2) == "No SWAN forecast available for 51201"
+    assert initial(err)["error"] == "No SWAN forecast available for 51201"
 
 
 def test_the_gated_overlay_block_reads_the_run_from_the_meta_line(monkeypatch, client):
@@ -98,3 +103,30 @@ def test_the_gated_overlay_block_reads_the_run_from_the_meta_line(monkeypatch, c
     monkeypatch.setattr(A, "get_station_tz", lambda sid: "Pacific/Honolulu")
     body = client.get("/?station=51201").get_data(as_text=True)
     assert "document.getElementById('forecastMeta'), document.getElementById('forecastTable'), document.getElementById('graphs')" in body
+
+def test_the_pages_own_script_keeps_its_bridges_and_rules(client):
+    """The inline map script has no harness; these pins name the behaviours that make the no-reload page work
+    (G16-A): the map re-applies its stored view only on a width change, saves it on every move, the marker click
+    and the favourites pick go through 'allshore:station', the form never submits with JS."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert "if (lastEnforcedWidth === w) {" in body and "lastEnforcedWidth = w;" in body
+    assert re.search(r"function handleMapMoveEnd\(\) \{[^}]*saveMapView\(map\)", body, re.S)
+    assert "new CustomEvent('allshore:station', { detail: { sid: String(s.id), source: 'map' } })" in body
+    assert "new CustomEvent('allshore:station', { detail: { sid: sid, source: 'picker' } })" in body
+    assert "if (d.source === 'picker' && d.sid) focusStation(String(d.sid));" in body
+    assert "addEventListener('submit', (e) => { e.preventDefault(); })" in body
+    assert "select.value = String(d.sid); refreshCurrent();" in body
+
+
+def test_phone_sheets_sit_above_the_top_bar_and_the_no_js_page_shows_its_controls(client):
+    """G16-A P0-1 / P2-5 / P3-1 / P3-2 as CSS pins: the full-screen sheets outrank the top bar in phone mode; the
+    no-JS layout shows the settings and the table whatever the [hidden] attributes say; the refresh is to the Table view."""
+    body = client.get("/?station=51201&view=Graph").get_data(as_text=True)
+    bar = re.search(r"\.top-bar \{[^}]*z-index: (\d+)", body).group(1)
+    phone = body[body.index("@media (max-width: 500px), (max-height: 500px) {"):]
+    sheet = re.search(r"\.forecast-win:not\(\.fw-min\), #liveBuoyPanel \{ z-index: (\d+); \}", phone).group(1)
+    assert int(sheet) > int(bar) == 3000
+    assert "html:not(.js) .settings-panel[hidden] { display: flex !important; }" in body
+    assert "html:not(.js) #forecastTable[hidden] { display: block !important; }" in body
+    assert "html:not(.js) .forecast-win { position: static !important; width: auto !important; max-width: none;" in body
+    assert "view=Table&amp;render=full" in body and "view=Graph&amp;render=full" not in body

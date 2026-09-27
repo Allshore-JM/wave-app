@@ -221,3 +221,14 @@ test('the page drops the +/- zoom buttons (the Home button and every other way t
   const q = page();                                                            // no zoomControl on the map: nothing to do, no error
   assert.equal(q.map.removed, undefined);
 });
+
+test('G16-B P2-1: the page hands every landed forecast to the overlay: its zone updates in place and the panel refreshes', async () => {
+  const p = page({ complete: true });
+  p.sel.userPick('hs'); await settle();
+  const ov = p.overlays[0];
+  ov.opts = ov.opts || {}; ov.refresh = function () { p.log.push('refresh'); };
+  p.listeners.doc['allshore:forecast'].forEach((l) => l.fn({ detail: { station: '51201', tz: 'UTC', model: 'GFS', view: 'Table' } }));
+  assert.equal(ov.opts.tz, 'UTC'); assert.ok(p.log.includes('refresh'));
+  p.listeners.doc['allshore:forecast'].forEach((l) => l.fn({ detail: { station: '51201', tz: '', model: 'GFS', view: 'Table' } }));
+  assert.equal(ov.opts.tz, 'UTC', 'an empty zone leaves the last one');
+});

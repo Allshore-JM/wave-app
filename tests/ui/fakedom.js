@@ -78,6 +78,7 @@ class Document {
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push({ fn }); }
   removeEventListener(type, fn) { const l = this.listeners[type]; if (!l) return; const i = l.findIndex((r) => r.fn === fn); if (i >= 0) l.splice(i, 1); }
   fire(type, ev) { ev = Object.assign({ type, target: this, stopPropagation() {}, preventDefault() {} }, ev || {}); (this.listeners[type] || []).slice().forEach((r) => r.fn.call(this, ev)); return ev; }
+  dispatchEvent(ev) { (this.listeners[ev.type] || []).slice().forEach((r) => r.fn.call(this, ev)); return true; }
 }
 
 function memStorage(init) {

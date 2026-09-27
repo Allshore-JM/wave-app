@@ -10,6 +10,7 @@ const { fakeWindow, buildPage, fakeChart, memStorage } = require('./fakedom');
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'static_ui', 'forecast.js'), 'utf8');
 function load(win) { new Function('window', 'URLSearchParams', SRC)(win, URLSearchParams); return win.AllshoreForecast; }
 const tick = () => new Promise((r) => setImmediate(r));
+const I_PHONE_QUERY = () => load(fakeWindow())._internals.PHONE_QUERY;
 async function settle(n) { for (let i = 0; i < (n || 8); i++) await tick(); }
 
 function payload(over) {
@@ -208,20 +209,27 @@ test('window: drag by the header moves it (not from a button, not when minimised
   assert.deepEqual([page.w.style.width, page.w.style.height], ['1080px', '380px']); assert.equal(resizes.length, before + 1);
   handle.dispatch('pointerdown', ptr(900, 600)); handle.dispatch('pointermove', ptr(0, 0)); handle.dispatch('pointerup', ptr(0, 0));
   assert.deepEqual([page.w.style.width, page.w.style.height], ['360px', '220px'], 'never below the minimum');
-  fw.toggleMax(); page.header.dispatch('pointerdown', ptr(500, 320)); page.header.dispatch('pointermove', ptr(0, 0)); page.header.dispatch('pointerup', ptr(0, 0));
-  assert.equal(page.w.style.left, '8px', 'no drag while maximised');
+  fw.setMode('normal'); page.header.dispatch('pointerdown', ptr(100, 300)); page.header.dispatch('pointermove', ptr(400, 400)); page.header.dispatch('pointerup', ptr(400, 400));
+  const g0 = { ...fw.geom }; assert.ok(g0.x > 8 && g0.y > 64, 'moved off the edges first: ' + JSON.stringify(g0));
+  fw.toggleMax();
+  page.header.dispatch('pointerdown', ptr(500, 320)); page.header.dispatch('pointermove', ptr(700, 500)); page.header.dispatch('pointerup', ptr(700, 500));
+  assert.deepEqual(fw.geom, g0, 'no drag while maximised');
+  handle.dispatch('pointerdown', ptr(900, 600)); handle.dispatch('pointermove', ptr(1100, 700)); handle.dispatch('pointerup', ptr(1100, 700));
+  assert.deepEqual(fw.geom, g0, 'no resize while maximised');
   win.innerWidth = 700; win.innerHeight = 500; fw.setMode('normal'); win.fire('resize');
   const g = fw.geom; assert.ok(g.x + g.w <= 692 && g.y + g.h <= 492 && g.y >= 64, JSON.stringify(g));
 });
 
 test('window: on a phone nothing drags or resizes and geometry is left to CSS; a double-click on the header toggles maximise on desktops', () => {
   const win = fakeWindow({ phone: true, width: 375, height: 812 }), page = buildPage(win), { fw } = makeWindow(win, page);
-  fw.expand();
+  assert.ok(/max-height: 500px/.test(I_PHONE_QUERY()), 'a short window counts as phone mode too');
+  fw.expand(); fw._expandedAt = 0;
   page.header.dispatch('pointerdown', ptr(100, 100)); page.header.dispatch('pointermove', ptr(50, 50)); page.header.dispatch('pointerup', ptr(50, 50));
   assert.equal(page.w.style.left, undefined); assert.equal(fw.geom, null);
-  page.header.dispatch('dblclick', {}); assert.equal(fw.mode, 'normal');
+  page.header.dispatch('dblclick', {}); assert.equal(fw.mode, 'normal', 'no maximise by double-click on a phone');
   const win2 = fakeWindow(), page2 = buildPage(win2), r = makeWindow(win2, page2);
-  r.fw.expand(); page2.header.dispatch('dblclick', {}); assert.equal(r.fw.mode, 'max'); page2.header.dispatch('dblclick', {}); assert.equal(r.fw.mode, 'normal');
+  r.fw.expand(); r.fw._expandedAt = Date.now() - 1000;                        // (a double-click right after expanding is ignored: G16-A P3-7)
+  page2.header.dispatch('dblclick', {}); assert.equal(r.fw.mode, 'max'); page2.header.dispatch('dblclick', {}); assert.equal(r.fw.mode, 'normal');
 });
 
 // ---- init: the page wiring ----
@@ -283,7 +291,7 @@ test('init: units and model changes refetch and are remembered; the view switche
   const n = b.fs_.calls.length;
   b.page.viewBar.querySelectorAll('[data-view]')[1].dispatch('click'); await settle();
   assert.equal(b.fs_.calls.length, n, 'no fetch for a view change'); assert.equal(b.page.graphs.hidden, false); assert.equal(b.page.table.hidden, true);
-  assert.equal(b.win.history.urls[b.win.history.urls.length - 1], '?station=51201&unit=Metric&model=SWAN&view=Graph');
+  assert.equal(b.win.history.urls[b.win.history.urls.length - 1], '?station=51201&model=SWAN&view=Graph', 'Metric is the saved setting now: not named');
   b.page.trigger.focus(); b.app.expand(); assert.equal(b.doc.activeElement, b.page.header);
   b.page.live.style.display = 'block';
   b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.closes.length, 1); assert.equal(b.app.window.mode, 'normal', 'the live panel closed first');
@@ -299,7 +307,7 @@ test('init: a page-rendered forecast (render=full) is shown without a fetch; a s
   await settle(); assert.equal(b.fs_.calls.length, 0);
   const b2 = boot({}); await settle(); b2.fs_.last().release(payload({ table_html: null, graph_data: null, error: 'No SWAN forecast available for 51201' })); await settle();
   assert.equal(b2.page.table.textContent, 'No SWAN forecast available for 51201');
-  assert.equal(b2.doc.getElementById('fwError').hidden, true);
+  assert.equal(b2.doc.getElementById('fwError').hidden, false, 'a table-less error is shown in the box too (G16-A P2-1)');
   b2.page.gear.dispatch('click'); assert.equal(b2.page.panel.hidden, false); assert.equal(b2.page.gear.getAttribute('aria-expanded'), 'true');
   b2.page.panel.dispatch('keydown', { key: 'Escape' }); assert.equal(b2.page.panel.hidden, true); assert.equal(b2.app.window.mode, 'min', 'Escape in the panel does not reach the window');
   b2.page.gear.dispatch('click'); b2.page.header.dispatch('pointerdown', ptr(1, 1)); assert.equal(b2.page.panel.hidden, true, 'outside press closes it');
@@ -345,4 +353,139 @@ test('graphs: hidden (or replaced) while Chart.js is still loading -> nothing is
   assert.equal(Chart.made.length, 0, 'hidden before Chart.js arrived: not built');
   page.graphs.hidden = false; const p2 = G.show(); await settle(); release(); await p2; await settle();   // show builds it (the data is still dirty)
   assert.equal(Chart.made.length, 3);
+});
+
+test('G16-B P2-4: the loader writes the address against the saved settings, so a reload comes back to the view on screen', async () => {
+  const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), u = ui(), urls = [];
+  const st = { station: '46001', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => 1, replaceState: (x) => urls.push(x), swanStations: [], ui: u.ui, saved: () => ({ tz: 'Pacific/Honolulu', unit: 'Metric' }) }, st);
+  L.load({}); await settle();
+  assert.equal(urls[urls.length - 1], '?station=46001&tz=&unit=US');
+  const b = boot({ local: { 'allshore.settings.v1': { tz: 'Pacific/Honolulu', unit: 'Metric' } }, search: '?station=51201' });
+  await settle(); b.fs_.last().release(payload()); await settle();
+  assert.equal(b.win.history.urls[b.win.history.urls.length - 1], '?station=51201&unit=Metric&tz=Pacific%2FHonolulu'.replace('&unit=Metric&tz=Pacific%2FHonolulu', ''), 'stored settings on screen: nothing to name');
+  b.doc.fire('allshore:station', { detail: { sid: '46001', source: 'map' } }); await settle();
+  assert.equal(b.win.history.urls[b.win.history.urls.length - 1], '?station=46001&tz=', 'a map pick back to Buoy Local is named against the saved zone');
+  assert.deepEqual(b.win.localStorage.read('allshore.settings.v1'), { tz: 'Pacific/Honolulu', unit: 'Metric' }, 'the saved settings are untouched by a pick');
+});
+
+test('G16-B P2-2: a hidden opener (a favourites button whose list closed) never takes the focus back; the trigger does', async () => {
+  const b = boot({});
+  await settle(); b.fs_.last().release(payload()); await settle();
+  const fav = b.doc.createElement('button'); b.page.topBar.appendChild(fav); fav.offsetParent = null;   // hidden with its list
+  b.doc.activeElement = fav;
+  b.app.expand(); assert.equal(b.app.window.opener, null);
+  b.doc.fire('keydown', { key: 'Escape' });
+  assert.equal(b.app.window.mode, 'min'); assert.equal(b.doc.activeElement, b.page.trigger);
+  b.page.trigger.focus(); b.app.expand(); assert.equal(b.app.window.opener, b.page.trigger);
+  b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.doc.activeElement, b.page.trigger);
+});
+
+test('G16-B P2-1: every forecast that lands is announced with the table\'s zone, station and model (the overlay follows)', async () => {
+  const b = boot({}); const seen = [];
+  b.doc.addEventListener('allshore:forecast', (e) => seen.push(e.detail));
+  await settle(); b.fs_.last().release(payload({ tz_label: 'Pacific/Honolulu' })); await settle();
+  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table' }]);
+  b.page.tz.value = 'UTC'; b.page.tz.dispatch('change'); await settle(); b.fs_.last().release(payload({ tz_label: 'UTC', model: 'SWAN' })); await settle();
+  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table' });
+  assert.equal(b.doc.getElementById('fwCycle').title, 'SWAN · updated 20260926 12 UTC'.replace('updated ', 'updated ').replace('SWAN · updated 20260926 12 UTC', b.doc.getElementById('fwCycle').textContent), 'titles carry the full text');
+});
+
+// ---- G16 reviewer A ----
+test('G16-A M5: a forecast served from the cache supersedes a fetch still in flight; the late answer never lands', async () => {
+  const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), u = ui();
+  const st = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => 1, replaceState: () => {}, swanStations: [], ui: u.ui }, st);
+  const pB = L.load({ station: '46001' }); await settle(); fs_.last().release(payload({ station: '46001' })); await pB;   // B cached
+  const pA = L.load({ station: '51201' }); await settle();                                                               // A in flight
+  await L.load({ station: '46001' });                                                                                    // B from the cache
+  assert.equal(u.applied[u.applied.length - 1][0].station, '46001'); assert.equal(fs_.calls[1].aborted, true, 'the pending fetch is dropped');
+  fs_.calls[1].release(payload({ station: '51201' })); await pA; await settle();
+  assert.equal(u.applied[u.applied.length - 1][0].station, '46001', 'the late answer for A never overwrote B');
+  assert.equal(st.station, '46001');
+});
+
+test('G16-A P2-1 / P2-2: a table-less error is shown in the visible box with Retry in BOTH views, is never cached, and takes the loading placeholder with it', async () => {
+  const b = boot({ search: '?station=51201&view=Graph' });
+  await settle(); assert.ok(b.doc.getElementById('forecastLoading').parentNode, 'placeholder present while loading');
+  b.fs_.last().release(payload({ table_html: null, graph_data: null, error: 'Forecast temporarily unavailable' })); await settle();
+  const box = b.doc.getElementById('fwError');
+  assert.equal(box.hidden, false); assert.ok(box.textContent.startsWith('Forecast temporarily unavailable'), box.textContent);
+  assert.equal(box.querySelectorAll('button').length, 1, 'a Retry button');
+  assert.equal(b.doc.getElementById('forecastLoading').parentNode, null, 'the placeholder is gone');
+  assert.equal(b.page.table.hidden, true, 'Graph view: the table area stays hidden'); assert.equal(b.Chart.made.length, 0);
+  const n = b.fs_.calls.length;
+  box.querySelector('button').dispatch('click'); await settle();
+  assert.equal(b.fs_.calls.length, n + 1, 'Retry fetches again (the error was not cached)');
+  b.fs_.last().release(payload()); await settle();
+  assert.equal(box.hidden, true, 'a good forecast clears the error'); assert.equal(b.app.loader.cache.size, 1);
+  b.page.viewBar.querySelectorAll('[data-view]')[0].dispatch('click');
+  const c = boot({}); await settle(); c.fs_.last().release(payload({ table_html: null, error: 'No SWAN forecast available for 51201' })); await settle();
+  assert.equal(c.doc.getElementById('fwError').hidden, false, 'Table view too'); assert.equal(c.page.table.textContent, 'No SWAN forecast available for 51201');
+  assert.equal(c.app.loader.cache.size, 0, 'not cached');
+});
+
+test('G16-A P2-3: data that lands while Chart.js is still loading is drawn (the latest), and data set to null while loading destroys the charts', async () => {
+  const win = fakeWindow(), page = buildPage(win), F = load(win), I = F._internals, Chart = fakeChart();
+  let gate = null; const loadChartJs = () => gate || Promise.resolve();      // Chart.js: pending while a gate is held, instant afterwards
+  const hold = () => { let r; gate = new Promise((res) => { r = res; }); return () => { gate = null; r(); }; };
+  page.graphs.hidden = false;
+  const G = I.createForecastGraphs(graphDeps(win, page, Chart, { loadChartJs }));
+  const gd1 = payload().graph_data, gd2 = payload({ graph_data: Object.assign(payload().graph_data, { units: 'm' }) }).graph_data;
+  let release = hold();
+  const p1 = G.setData(gd1); await settle();
+  const p2 = G.setData(gd2); await settle();                                    // a newer forecast before Chart.js arrived
+  release(); await p1; await p2; await settle();
+  assert.equal(Chart.made.length, 3, 'built once, for the latest data'); assert.equal(Chart.made[0].options.scales.y.title.text, 'Height (m)');
+  release = hold();
+  const p3 = G.setData(gd1); await settle(); G.setData(null); release(); await p3; await settle();
+  assert.equal(G.charts().length, 0, 'null data while loading: nothing left'); assert.ok(Chart.made.slice(0, 3).every((c) => c.destroyed));
+});
+
+test('G16-A M1 / M2: an error payload after a good one destroys the charts; the next load clears the error box', async () => {
+  const b = boot({ search: '?view=Graph' });
+  await settle(); b.fs_.last().release(payload()); await settle(); b.app.expand(); await settle();
+  assert.equal(b.Chart.made.length, 3);
+  b.doc.fire('allshore:station', { detail: { sid: '46001', source: 'map' } }); await settle();
+  b.fs_.last().release(payload({ station: '46001', table_html: null, graph_data: null, error: 'down' })); await settle();
+  assert.ok(b.Chart.made.every((c) => c.destroyed), 'stale charts never outlive their data'); assert.equal(b.doc.getElementById('fwError').hidden, false);
+  b.doc.fire('allshore:station', { detail: { sid: '51202', source: 'map' } }); await settle();
+  assert.equal(b.doc.getElementById('fwError').hidden, true, 'a new (fetching) load clears the previous error at once');
+  assert.equal(b.doc.getElementById('fwBusy').hidden, false);
+});
+
+test('G16-A M3 / M11: a window resize refits the charts through init; expanding in Table view builds no chart and loads no Chart.js', async () => {
+  const b = boot({}); b.app.graphs.destroy();
+  b.app.expand(); await settle(); b.fs_.last().release(payload()); await settle();   // the forecast lands while expanded in Table view
+  assert.equal(b.Chart.made.length, 0, 'Table view: no charts');
+  b.page.viewBar.querySelectorAll('[data-view]')[1].dispatch('click'); await settle(); assert.equal(b.Chart.made.length, 3);
+  const r0 = b.Chart.made[0].resizes; b.win.fire('resize'); assert.ok(b.Chart.made[0].resizes > r0, 'refitted on a window resize');
+  const c = boot({}); c.win.Chart = undefined; c.app.graphs.destroy();
+  const winC = c.win; const F2 = c.F; let chartLoads = 0;
+  const app2 = F2.init({ window: winC, initial: { station: '51201', swan_stations: [] }, loadChartJs: () => { chartLoads++; return Promise.resolve(); }, fetch: c.fs_.fetch });
+  await settle(); c.fs_.last().release(payload()); await settle(); app2.expand(); await settle();
+  assert.equal(chartLoads, 0, 'no Chart.js download for the Table view');
+});
+
+test('G16-A M6: a saved geometry is clamped into a smaller viewport on restore', () => {
+  const win = fakeWindow({ width: 1280, height: 800, session: { 'allshore.forecastWin.v1': { mode: 'normal', prev: 'normal', x: 2000, y: 1500, w: 3000, h: 2000 } } }), page = buildPage(win);
+  const { fw } = makeWindow(win, page);
+  assert.deepEqual(fw.geom, { x: 8, y: 64, w: 1264, h: 728 }); assert.equal(page.w.style.left, '8px');
+});
+
+test('G16-A P3-5: throwing storage accessors do not stop the window; P3-6: the long label form is parsed exactly; P3-7: a double-click on the chip only expands, the top bar height follows a resize', async () => {
+  const win = fakeWindow(), page = buildPage(win), F = load(win), fs_ = fetchStub();
+  Object.defineProperty(win, 'sessionStorage', { get() { throw new Error('SecurityError'); } });
+  Object.defineProperty(win, 'localStorage', { get() { throw new Error('SecurityError'); } });
+  const app = F.init({ window: win, initial: { station: '51201', swan_stations: [] }, fetch: fs_.fetch, loadChartJs: () => Promise.resolve() });
+  assert.ok(app, 'started'); await settle(); fs_.last().release(payload()); await settle();
+  assert.equal(win.document.getElementById('fwTitle').textContent, '51201');
+  app.window.expand(); assert.equal(app.window.mode, 'normal');
+  const I = F._internals, d = I.parseLabel('Saturday, September 26, 2026 2:00 PM');
+  assert.deepEqual([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes()], [2026, 8, 26, 14, 0]);
+  assert.equal(I.parseLabel('Wednesday, January 7, 2026 12:00 AM').getHours(), 0); assert.equal(I.parseLabel('Monday, December 1, 2025 12:30 PM').getHours(), 12);
+  const b = boot({}); await settle(); b.fs_.last().release(payload()); await settle();
+  b.page.header.dispatch('click', {}); b.page.header.dispatch('dblclick', {});
+  assert.equal(b.app.window.mode, 'normal', 'a double-click on the chip expands, never maximises');
+  b.page.topBar.offsetHeight = 40; b.win.fire('resize'); assert.equal(b.page.w.style['--topbar-h'], '40px');
 });

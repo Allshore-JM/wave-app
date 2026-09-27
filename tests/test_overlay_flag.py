@@ -68,6 +68,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert "choose(v, pending && v !== ''); remember(v, fresh)" in body and "document.hidden" in body
         # G8: the back/forward cache re-syncs the save; the restore waits for a deferred table (3 s at most)
         assert "'pageshow'" in body and "'forecastLoading'" in body and "setTimeout(start, 5000)" in body
+        assert "'allshore:forecast'" in body and "overlay.opts.tz = tz" in body                      # G16-B: the zone follows the window
         assert '"https://frames.example/gfswave/0p25/v1"' in body           # trailing slash stripped
         assert "var VERSION = %s;" % json.dumps(A.OVERLAY_ASSET_VERSION) in body
         assert GATED.search(body) is not None, name
@@ -166,7 +167,7 @@ def test_overlay_module_unit_tests():
         pytest.skip("node not available")
     files = sorted(glob.glob(os.path.join(HERE, "overlay", "*.test.js")))
     assert files
-    r = subprocess.run(["node", "--test"] + files, capture_output=True, text=True, cwd=os.path.dirname(HERE))
+    r = subprocess.run(["node", "--test", "--test-timeout=20000"] + files, capture_output=True, text=True, cwd=os.path.dirname(HERE))
     assert r.returncode == 0, (r.stdout[-3000:], r.stderr[-3000:])
 
 

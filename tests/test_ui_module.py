@@ -61,7 +61,7 @@ def test_ui_module_syntax_and_unit_tests():
         assert r.returncode == 0, r.stderr
     files = sorted(glob.glob(os.path.join(HERE, "ui", "*.test.js")))
     assert files
-    r = subprocess.run(["node", "--test"] + files, capture_output=True, text=True, cwd=os.path.dirname(HERE))
+    r = subprocess.run(["node", "--test", "--test-timeout=20000"] + files, capture_output=True, text=True, cwd=os.path.dirname(HERE))
     assert r.returncode == 0, (r.stdout[-3000:], r.stderr[-3000:])
 
 

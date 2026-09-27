@@ -175,14 +175,14 @@ test('shortCycle for GFS and SWAN headers', () => {
 function makeWindow(win, page, over) {
   const I = load(win)._internals, modes = [], resizes = [];
   const fw = new I.FloatingWindow(Object.assign({ el: page.w, header: page.header, handle: win.document.getElementById('fwResize'), storage: win.sessionStorage, win,
-    topBarHeight: () => 56, onMode: (m) => modes.push(m), onResize: () => resizes.push(1) }, over || {}));
+    onMode: (m) => modes.push(m), onResize: () => resizes.push(1) }, over || {}));
   return { fw, modes, resizes, I };
 }
 const ptr = (x, y, extra) => Object.assign({ clientX: x, clientY: y, pointerId: 1, button: 0 }, extra || {});
 
 test('window: a new tab starts minimised; modes toggle classes and are saved; expand returns to the mode before minimising', () => {
   const win = fakeWindow(), page = buildPage(win), { fw, modes } = makeWindow(win, page);
-  assert.equal(fw.mode, 'min'); assert.ok(page.w.classList.contains('fw-min')); assert.equal(page.w.style['--topbar-h'], '56px');
+  assert.equal(fw.mode, 'min'); assert.ok(page.w.classList.contains('fw-min'));
   fw.expand(); assert.equal(fw.mode, 'normal'); assert.ok(!page.w.classList.contains('fw-min'));
   fw.toggleMax(); assert.equal(fw.mode, 'max'); assert.ok(page.w.classList.contains('fw-max'));
   fw.minimise(); fw.expand(); assert.equal(fw.mode, 'max', 'back to maximised');
@@ -239,7 +239,7 @@ function boot(opts) {
   const closes = [];
   const app = F.init({ window: win, initial: Object.assign({ station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: true, swan_stations: ['51201', '51202'] }, (opts && opts.initial) || {}),
     stationLabel: (sid) => { const o = page.sel.options.find((x) => x.value === sid); return o ? o.textContent : sid; },
-    loadChartJs: () => Promise.resolve(), fetch: fs_.fetch, closeLivePanel: () => { closes.push(1); page.live.style.display = 'none'; }, liveOpen: () => page.live.style.display !== 'none',
+    loadChartJs: () => Promise.resolve(), fetch: fs_.fetch, closeLivePanel: () => { closes.push(1); page.live.style.display = 'none'; }, liveOpen: () => page.live.style.display === 'block',
     early: opts && opts.early });
   return { win, page, F, fs_, Chart, app, closes, doc: win.document };
 }
@@ -250,7 +250,7 @@ test('init: fetches the URL\'s station into the minimised window; the first fore
   await settle(); assert.equal(b.fs_.calls.length, 1); assert.equal(b.fs_.param(b.fs_.last(), 'compact'), '1');
   assert.equal(b.doc.getElementById('fwBusy').hidden, false);
   b.fs_.last().release(payload()); await settle();
-  assert.equal(b.doc.getElementById('fwTitle').textContent, '51201 — Waimea Bay, HI');
+  assert.equal(b.doc.getElementById('stationCurrent').textContent, '51201 — Waimea Bay, HI');
   assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC');
   assert.equal(b.doc.getElementById('forecastMeta').textContent, 'Cycle : 20260926 12 UTC  |  Location : 51201 (21.67N 158.12W)  |  Time Zone: Pacific/Honolulu');
   assert.ok(/Cycle\s*:\s*([^|\n]*)/.exec(b.doc.getElementById('forecastMeta').textContent)[1].trim() === '20260926 12 UTC', 'the overlay\'s pageCycle regex still finds the run');
@@ -271,7 +271,7 @@ test('init: a map pick loads the station with Buoy Local and expands; a picker p
   assert.equal(b.fs_.param(b.fs_.last(), 'tz'), '');
   b.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
   assert.equal(b.doc.getElementById('modelBar').hidden, true, 'no SWAN here');
-  assert.equal(b.doc.getElementById('fwTitle').textContent, '46001 — Gulf of Alaska');
+  assert.equal(b.doc.getElementById('stationCurrent').textContent, '46001 — Gulf of Alaska');
   b.page.tz.value = 'Pacific/Honolulu'; b.page.tz.dispatch('change'); await settle();
   assert.equal(b.fs_.param(b.fs_.last(), 'tz'), 'Pacific/Honolulu'); b.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
   b.doc.fire('allshore:station', { detail: { sid: '51201', source: 'picker' } }); await settle();
@@ -298,7 +298,7 @@ test('init: units and model changes refetch and are remembered; the view switche
   b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.closes.length, 1); assert.equal(b.app.window.mode, 'normal', 'the live panel closed first');
   b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.app.window.mode, 'min'); assert.equal(b.doc.activeElement, b.page.trigger, 'focus back on the opener');
   b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.app.window.mode, 'min');
-  b.doc.activeElement = b.page.sel; b.app.expand(); b.doc.activeElement = b.page.sel;
+  b.doc.activeElement = b.page.gear; b.app.expand(); b.doc.activeElement = b.page.gear;   // the gear is outside the window (the select is inside it now)
   b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.app.window.mode, 'normal', 'Escape outside the window leaves it alone');
 });
 
@@ -373,7 +373,7 @@ test('G16-B P2-4: the loader writes the address against the saved settings, so a
 test('G16-B P2-2: a hidden opener (a favourites button whose list closed) never takes the focus back; the trigger does', async () => {
   const b = boot({});
   await settle(); b.fs_.last().release(payload()); await settle();
-  const fav = b.doc.createElement('button'); b.page.topBar.appendChild(fav); fav.offsetParent = null;   // hidden with its list
+  const fav = b.doc.createElement('button'); b.page.header.appendChild(fav); fav.offsetParent = null;   // hidden with its list
   b.doc.activeElement = fav;
   b.app.expand(); assert.equal(b.app.window.opener, null);
   b.doc.fire('keydown', { key: 'Escape' });
@@ -471,7 +471,7 @@ test('G16-A M3 / M11: a window resize refits the charts through init; expanding 
 test('G16-A M6: a saved geometry is clamped into a smaller viewport on restore', () => {
   const win = fakeWindow({ width: 1280, height: 800, session: { 'allshore.forecastWin.v1': { mode: 'normal', prev: 'normal', x: 2000, y: 1500, w: 3000, h: 2000 } } }), page = buildPage(win);
   const { fw } = makeWindow(win, page);
-  assert.deepEqual(fw.geom, { x: 8, y: 64, w: 1264, h: 728 }); assert.equal(page.w.style.left, '8px');
+  assert.deepEqual(fw.geom, { x: 8, y: 8, w: 1264, h: 784 }); assert.equal(page.w.style.left, '8px');   // the map is the page: no top bar to clear
 });
 
 test('G16-A P3-5: throwing storage accessors do not stop the window; P3-6: the long label form is parsed exactly; P3-7: a double-click on the chip only expands, the top bar height follows a resize', async () => {
@@ -480,7 +480,7 @@ test('G16-A P3-5: throwing storage accessors do not stop the window; P3-6: the l
   Object.defineProperty(win, 'localStorage', { get() { throw new Error('SecurityError'); } });
   const app = F.init({ window: win, initial: { station: '51201', swan_stations: [] }, fetch: fs_.fetch, loadChartJs: () => Promise.resolve() });
   assert.ok(app, 'started'); await settle(); fs_.last().release(payload()); await settle();
-  assert.equal(win.document.getElementById('fwTitle').textContent, '51201');
+  assert.equal(win.document.getElementById('stationCurrent').textContent, '51201');
   app.window.expand(); assert.equal(app.window.mode, 'normal');
   const I = F._internals, d = I.parseLabel('Saturday, September 26, 2026 2:00 PM');
   assert.deepEqual([d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes()], [2026, 8, 26, 14, 0]);
@@ -488,7 +488,8 @@ test('G16-A P3-5: throwing storage accessors do not stop the window; P3-6: the l
   const b = boot({}); await settle(); b.fs_.last().release(payload()); await settle();
   b.page.header.dispatch('click', {}); b.page.header.dispatch('dblclick', {});
   assert.equal(b.app.window.mode, 'normal', 'a double-click on the chip expands, never maximises');
-  b.page.topBar.offsetHeight = 40; b.win.fire('resize'); assert.equal(b.page.w.style['--topbar-h'], '40px');
+  b.app.window.setMode('normal'); b.app.window._place({ x: 100, y: 100, w: 600, h: 400 });
+  b.win.innerWidth = 500; b.win.fire('resize'); assert.equal(b.app.window.geom.x, 500 - 8 - 484, 'a resize clamps the window into the viewport (no top bar to allow for)');
 });
 
 test('G16 re-review: a transport failure removes the loading placeholder and names the station of the address bar; a page-rendered error is not cached and gets Retry; settings are saved before the load (the address stays minimal)', async () => {
@@ -496,7 +497,7 @@ test('G16 re-review: a transport failure removes the loading placeholder and nam
   await settle(); assert.ok(b.doc.getElementById('forecastLoading').parentNode);
   b.fs_.last().fail(); await settle();
   assert.equal(b.doc.getElementById('forecastLoading').parentNode, null, 'placeholder gone on a transport failure');
-  assert.equal(b.doc.getElementById('fwTitle').textContent, '46001 — Gulf of Alaska', 'the header names the station the address bar shows');
+  assert.equal(b.doc.getElementById('stationCurrent').textContent, '46001 — Gulf of Alaska', 'the header names the station the address bar shows');
   const c = boot({ initial: { inline: true, error: 'No .bull file found for 51201', model: 'GFS', swan_available: true } });
   c.page.table.innerHTML = '\n   \n';
   await settle();
@@ -515,7 +516,7 @@ test('PR C: the first load takes the <head>\'s early response when the query mat
   await settle();
   assert.equal(b.fs_.calls.length, 0, 'no fetch: the early request is used');
   release({ ok: true, status: 200, json: () => Promise.resolve(payload()) }); await settle();
-  assert.equal(b.doc.getElementById('fwTitle').textContent, '51201 — Waimea Bay, HI');
+  assert.equal(b.doc.getElementById('stationCurrent').textContent, '51201 — Waimea Bay, HI');
   b.app.loader.cache.clear(); b.app.loader.load({}); await settle();
   assert.equal(b.fs_.calls.length, 1, 'a later load fetches as usual (the early response is taken once)');
 });
@@ -532,7 +533,7 @@ test('PR C: an early request for another query is ignored (the first load fetche
   c.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
   r2({ ok: true, status: 200, json: () => Promise.resolve(payload()) }); await settle();
   assert.equal(c.app.state.station, '46001');
-  assert.equal(c.doc.getElementById('fwTitle').textContent, '46001 — Gulf of Alaska', 'the slow early answer never overwrites the newer pick');
+  assert.equal(c.doc.getElementById('stationCurrent').textContent, '46001 — Gulf of Alaska', 'the slow early answer never overwrites the newer pick');
   release({ ok: true, status: 200, json: () => Promise.resolve(payload()) });
 });
 
@@ -635,4 +636,54 @@ test('G18a: a Graph-view width survives a trip through Table view; a SWAN-to-GFS
   b.app.setView('Table'); tw = 950; b.app.loader.load({ model: 'GFS', station: '46001' }); await settle();
   b.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
   assert.equal(b.page.w.style.maxWidth, '990px', 'a wider table widens the window (the width was never cut)');
+});
+
+// ---- plan section 26 (D2): the picker heading, two windows, the live-buoy window ----
+test('D2: the forecast title is the picker label (#stationCurrent); FloatingWindow takes its own key and default mode', async () => {
+  const b = boot({ search: '?station=46001' }); await settle(); b.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
+  assert.equal(b.doc.getElementById('stationCurrent').textContent, '46001 — Gulf of Alaska');
+  const win = fakeWindow(), page = buildPage(win), I = load(win)._internals;
+  const a = new I.FloatingWindow({ el: page.w, header: page.header, storage: win.sessionStorage, win, key: 'k.a', defaultMode: 'normal' });
+  const c = new I.FloatingWindow({ el: page.live, header: page.lwHeader, storage: win.sessionStorage, win, key: 'k.c' });
+  assert.equal(a.mode, 'normal'); assert.equal(c.mode, 'min');
+  a.setMode('max'); c.setMode('normal');
+  assert.equal(JSON.parse(win.sessionStorage.getItem('k.a')).mode, 'max'); assert.equal(JSON.parse(win.sessionStorage.getItem('k.c')).mode, 'normal', 'separate keys');
+  assert.equal(win.sessionStorage.getItem(I.WINDOW_KEY), null, 'neither touched the forecast key');
+  const d = new I.FloatingWindow({ el: page.w, header: page.header, storage: win.sessionStorage, win, key: 'k.a', defaultMode: 'normal' });
+  assert.equal(d.mode, 'max', 'a saved mode wins over the default');
+  assert.equal(page.w.style['--topbar-h'], undefined, 'no top bar variable any more');
+});
+
+test('D2: the live-buoy window opens expanded on a pick, minimises to a chip, closes from any mode, and announces every change', async () => {
+  const win = fakeWindow(), page = buildPage(win), F = load(win), closes = [], events = [];
+  win.document.addEventListener('allshore:livewin', (e) => events.push([e.detail.open, e.detail.mode]));
+  const lw = F.createLiveWindow({ window: win, onClose: () => closes.push(1) });
+  assert.ok(lw && lw.window); assert.equal(lw.isOpen(), false); assert.equal(lw.window.mode, 'normal', 'a new tab: a window, never a chip at first');
+  lw.open(); assert.equal(page.live.hidden, false); assert.equal(lw.isOpen(), true);
+  assert.deepEqual(events[events.length - 1], [true, 'normal']);
+  page.lwMin.dispatch('click'); assert.equal(lw.window.mode, 'min'); assert.ok(page.live.classList.contains('fw-min'));
+  assert.equal(page.lwMin.getAttribute('aria-expanded'), 'false'); assert.equal(page.lwMin.getAttribute('aria-label'), 'Expand live buoy');
+  assert.deepEqual(events[events.length - 1], [true, 'min']);
+  page.lwHeader.dispatch('click', { target: page.lwHeader }); assert.equal(lw.window.mode, 'normal', 'a click on the chip expands it');
+  page.lwMin.dispatch('click'); lw.open(); assert.equal(lw.window.mode, 'normal', 'a new pick expands a parked chip');
+  page.lwMin.dispatch('click'); page.lwClose.dispatch('click');
+  assert.equal(page.live.hidden, true); assert.equal(closes.length, 1); assert.deepEqual(events[events.length - 1], [false, 'min'], 'closed from the chip');
+  lw.open(); assert.equal(lw.window.mode, 'normal');
+  page.lwMax.dispatch('click'); assert.equal(lw.window.mode, 'max'); page.lwMax.dispatch('click'); assert.equal(lw.window.mode, 'normal');
+  lw.close(); assert.equal(closes.length, 2);
+  assert.equal(JSON.parse(win.sessionStorage.getItem(F._internals.LIVE_WINDOW_KEY)).mode, 'normal');
+  assert.equal(F.createLiveWindow({ window: fakeWindow() }), null, 'no live markup: nothing');
+});
+
+test('D2: on a phone the live window neither drags nor resizes; Escape in the page closes an OPEN live window first, leaves a parked chip alone', async () => {
+  const win = fakeWindow({ phone: true }), page = buildPage(win), F = load(win);
+  const lw = F.createLiveWindow({ window: win }); lw.open();
+  page.lwHeader.dispatch('pointerdown', ptr(10, 10)); page.lwHeader.dispatch('pointermove', ptr(80, 60)); page.lwHeader.dispatch('pointerup', ptr(80, 60));
+  assert.equal(lw.window.geom, null, 'phone: no drag');
+  const b = boot({}); await settle(); b.fs_.last().release(payload()); await settle();
+  const live = b.F.createLiveWindow({ window: b.win });
+  const liveOpen = () => live.isOpen() && live.window.mode !== 'min';
+  b.app.expand(); live.open();
+  assert.equal(liveOpen(), true);
+  b.page.lwMin.dispatch('click'); assert.equal(liveOpen(), false, 'a parked chip does not count as open');
 });

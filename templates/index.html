@@ -286,6 +286,30 @@
     .settings-panel .form-label { font-weight: 600; font-size: .85rem; }
     .grid-setting { display: flex; align-items: center; gap: 6px; font-size: .9rem; }
     html:not(.js) .grid-setting { display: none; }                              /* the gridlines need the map script */
+    /* Map tools (plan section 29): the button beside the gear, its menu, the tool bar under the gear, the exposure fan */
+    .leaflet-control-settings { display: flex; gap: 6px; align-items: flex-start; }
+    .tools-host { position: relative; }
+    html:not(.js) .tools-host { display: none; }
+    .icon-btn svg { display: block; margin: auto; }
+    .tools-menu { width: 210px; display: flex; flex-direction: column; gap: 4px; }
+    .tools-menu[hidden] { display: none; }
+    .tools-menu .tool-item { text-align: left; border: 1px solid #ced4da; border-radius: .375rem; background: #fff; padding: 6px 10px; font-size: .9rem; color: #0b2536; cursor: pointer; }
+    .tools-menu .tool-item:hover, .tools-menu .tool-item[aria-pressed="true"] { background: #e7f1ff; border-color: #86b7fe; }
+    .tools-bar { width: 290px; background: #fff; border: 1px solid #ced4da; border-radius: .375rem; box-shadow: 0 6px 18px rgba(0,0,0,.18); padding: 8px 10px; font-size: .85rem; color: #0b2536; }
+    .tools-bar[hidden] { display: none !important; }
+    .tools-bar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .tools-x { border: 0; background: none; font-size: 1rem; line-height: 1; padding: 2px 4px; cursor: pointer; color: #0b2536; }
+    .tools-bar-body .tools-big { font-weight: 600; margin-top: 4px; }
+    .tools-bar-body .tools-sector { margin-top: 4px; }
+    .tools-bar-body .tools-hint { color: #5b6770; font-size: .78rem; margin-top: 4px; }
+    .tools-bar-actions { display: flex; gap: 6px; margin-top: 6px; }
+    .tools-bar-actions button { border: 1px solid #ced4da; background: #fff; border-radius: .3rem; padding: 2px 8px; font-size: .8rem; color: #0b2536; }
+    .tools-bar-actions button[hidden] { display: none; }
+    .leaflet-container.tools-active, .leaflet-container.tools-active .leaflet-interactive { cursor: crosshair; }
+    .tools-fan { background: none; border: 0; }
+    .tools-fan svg { display: block; overflow: visible; }
+    .tools-fan-label { font: 700 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #fff; paint-order: stroke; stroke: rgba(0,0,0,.75); stroke-width: 3px; }
+    .tools-label { font-weight: 600; font-size: 11px; padding: 1px 5px; }
     /* lat/long gridline labels (static_ui/graticule.js): above the panes, below the map's controls */
     .graticule-labels { position: absolute; inset: 0; z-index: 450; pointer-events: none; overflow: hidden; }
     .graticule-label {
@@ -403,7 +427,7 @@
     html:not(.js) #forecastTable[hidden] { display: block !important; }        /* without JS only the table can show */
     html:not(.js) #graphs { display: none !important; }
     @media print {
-      #map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .sr-star, .station-caret { display: none !important; }
+      #map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .sr-star, .station-caret, .tools-host, .tools-bar { display: none !important; }
       .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
       .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
       #forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }   /* the charts are not printable: the table is */
@@ -453,6 +477,9 @@
       .brand .brand-logo { height: 40px; }
       .settings-panel { width: min(300px, calc(100vw - 16px)); }
       .settings-panel .form-select { min-height: 44px; font-size: 16px; /* avoids iOS zoom-on-focus */ }
+      .tools-menu .tool-item { min-height: 44px; }
+      .tools-bar { width: min(290px, calc(100vw - 24px)); }
+      .tools-bar-actions button { min-height: 36px; padding: 4px 12px; }
       .icon-btn { width: 44px; height: 44px; }
     }
     /* Phones (and short windows): the window fills the screen like the live-buoy panel; minimised, a bar
@@ -534,6 +561,16 @@
     <a id="brand" class="brand" href="/" aria-label="Allshore Surf home">
       <img class="brand-logo" src="/ui/logo.png?v={{ ui_asset_version }}" alt="Allshore Surf" width="194" height="60">
     </a>
+    <!-- Map tools (plan section 29; static_ui/tools.js): measure distance / area, swell exposure. JS only; the map
+         script puts it beside the gear. -->
+    <div id="toolsHost" class="tools-host">
+      <button type="button" id="toolsBtn" class="icon-btn" aria-label="Map tools" aria-expanded="false" aria-controls="toolsMenu"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3.5 16.5 16.5 3.5l4 4-13 13z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7.5 12.5l2 2M10.5 9.5l2 2M13.5 6.5l2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      <div id="toolsMenu" class="settings-panel tools-menu" hidden role="group" aria-label="Map tools">
+        <button type="button" class="tool-item" data-tool="distance" aria-pressed="false">Measure distance</button>
+        <button type="button" class="tool-item" data-tool="area" aria-pressed="false">Measure area</button>
+        <button type="button" class="tool-item" data-tool="exposure" aria-pressed="false">Swell exposure</button>
+      </div>
+    </div>
     <form id="controlForm" method="GET" action="/">
       <div id="settingsHost" class="settings-host">
           <button type="button" id="settingsBtn" class="icon-btn" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel">&#9881;</button>
@@ -944,7 +981,8 @@
       options: { position: 'topright' },
       onAdd: function () {
         const c = L.DomUtil.create('div', 'leaflet-control-settings');
-        const host = document.getElementById('settingsHost');
+        const tools = document.getElementById('toolsHost'), host = document.getElementById('settingsHost');
+        if (tools) c.appendChild(tools);                                        // the map tools button sits left of the gear (plan section 29)
         if (host) c.appendChild(host);
         L.DomEvent.disableClickPropagation(c);
         L.DomEvent.disableScrollPropagation(c);
@@ -955,10 +993,11 @@
     // While the gear's panel is open the corner outranks the windows (CSS .settings-open); the module toggles the
     // panel's hidden attribute, so an observer follows it.
     (function () {
-      const panel = document.getElementById('settingsPanel');
+      const panel = document.getElementById('settingsPanel'), tmenu = document.getElementById('toolsMenu');
       if (!panel || typeof MutationObserver !== 'function') return;
-      const sync = () => map.getContainer().classList.toggle('settings-open', !panel.hidden);
+      const sync = () => map.getContainer().classList.toggle('settings-open', !panel.hidden || !!(tmenu && !tmenu.hidden));
       new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+      if (tmenu) new MutationObserver(sync).observe(tmenu, { attributes: true, attributeFilter: ['hidden'] });
       sync();
     })();
     // The height of that corner (legend + gear): the maximised forecast window starts below it, so its header buttons
@@ -1283,6 +1322,7 @@
         });
 
         mk.on('click', function () {
+          if (window.AllshoreTools && window.AllshoreTools.active()) return;   // a map tool takes the click (it reaches the map too)
           document.getElementById('station').value = s.id;
           saveLayerVisibility();
           // The forecast window loads the station in place (back to Buoy Local, as a pick always did).
@@ -2358,7 +2398,8 @@
           offset: [12, -2]
         });
 
-        marker.on('click', function () {
+        marker.on('click', function (e) {
+          if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng); return; }   // markers do not pass clicks to the map
           activeLiveBuoyId = s.id;
           rebuildLiveBuoyMarkers(true);
           saveMapView(map);
@@ -2753,6 +2794,14 @@
         document.addEventListener('allshore:livepanel', function () { front(false); });
       })();
     })();
+  </script>
+  <!-- Map tools (static_ui/tools.js, plan section 29): beside the gear; the coast data only for swell exposure. -->
+  <script src="/ui/tools.js?v={{ ui_asset_version }}"></script>
+  <script>
+    if (window.AllshoreTools) window.AllshoreTools.init({
+      map: map, coastBase: {{ coast_base|tojson }}, getUnit: getSelectedUnit, unitSelect: document.getElementById('unit'),
+      onLayout: function () { measureTopRight(); }
+    });
   </script>
   <!-- Cloudflare Web Analytics (cookieless page-view/visit counting) -->
   <script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "5cb8e83a86034ae2a3980001b33c0b31"}'></script>

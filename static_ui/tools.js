@@ -607,7 +607,7 @@
         lines.push({ t: s.selected >= 0 ? sectorText(s.result.sectors[s.selected], u) : 'Point at (or tap) a wedge for details.', cls: 'tools-sector' });
         if (s.result.snapped) lines.push({ t: 'Moved to the nearest water.', cls: 'tools-hint' });
         if (s.result.coarse) lines.push({ t: 'Nearby coastline at lower detail.', cls: 'tools-hint' });
-        lines.push({ t: 'Grey: shadowed by land (darker = more). Geometric exposure only: real swell bends around islands.', cls: 'tools-hint' });
+        lines.push({ t: 'Grey = land shadow (darker = more). Geometry only: real swell bends around islands.', cls: 'tools-hint' });
       } else lines.push({ t: s.msg || 'Click the water to see which swell directions reach it.', cls: 'tools-big' });
       setBody(lines);
     }
@@ -627,6 +627,17 @@
       s.fan = L.marker([s.result.origin.lat, s.fanLng], { icon: icon, interactive: false, keyboard: false, pane: 'toolsPane' }).addTo(map);
     }
     function select(k) { if (s.selected === k) return; s.selected = k; drawFan(); render(); }
+    // After a new result: pan just enough that the whole fan is inside the map and not under the tool bar (on a
+    // phone the bar covers the top of the map). When the map is too short for both, the bar wins.
+    function keepFanVisible() {
+      var el = s.fan && s.fan.getElement && s.fan.getElement();
+      if (!el) return;
+      var m = map.getContainer().getBoundingClientRect(), f = el.getBoundingClientRect(), b = barEl.getBoundingClientRect(), pad = 8, dx = 0, dy = 0;
+      if (f.left < m.left + pad) dx = f.left - m.left - pad; else if (f.right > m.right - pad) dx = f.right - m.right + pad;
+      if (f.top < m.top + pad) dy = f.top - m.top - pad; else if (f.bottom > m.bottom - pad) dy = f.bottom - m.bottom + pad;
+      if (!barEl.hidden && b.height && f.right - dx > b.left && f.left - dx < b.right && f.top - dy < b.bottom + pad) dy = f.top - b.bottom - pad;
+      if (dx || dy) map.panBy([Math.round(dx), Math.round(dy)], { animate: true, duration: 0.3 });
+    }
     function exposureAt(p) {
       if (Math.abs(p.lat) > MAX_ABS_LAT) { clear(true); s.msg = 'Swell exposure works between 75°S and 75°N.'; render(); return; }
       var gen = ++s.gen, clickLng = p.lng, origin = { lat: p.lat, lng: wrapLng(p.lng) };
@@ -645,7 +656,7 @@
           if (!res || gen !== s.gen) return;
           res.snapped = o.snapped; res.coarse = coarse;
           s.result = res; s.busy = false; s.fanLng = clickLng + (o.lng - origin.lng);
-          drawFan(); render();
+          drawFan(); render(); keepFanVisible();
         });
       }).catch(function () { if (gen !== s.gen) return; s.busy = false; s.msg = 'Coastline data unavailable. Try again later.'; render(); });
     }

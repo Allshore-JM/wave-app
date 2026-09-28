@@ -88,3 +88,34 @@ The fixes are in UI asset 1.11.0 @ 48c1732, with the golden @ 11a6165.
   - The Greenland on-line coast stops rays again.
   - Pipeline, Waikiki and Haleiwa are unchanged in character: the North Shore's south is dark and Kauai is light.
   - 5-47 ms per spot.
+
+## Re-review of the fix round (UI 1.11.0 @ fbaeeb5, 2026-09-27, two fresh reviewers at MAX)
+- **R1 (code):** 0 P0, 0 P1, 5 P2, 6 P3. 76 of 110 mutants killed. It confirmed:
+  - the P0 and the click-leak fix;
+  - the cell-line cancellation: all 83 real on-line segments survive, and the Greenland leak is closed (0.556 km);
+  - no false refusals near cell lines;
+  - Rincon stable from 20 m to 300 m out.
+- **R2 (test site and geography, 93 spots, in the page and in Node byte-for-byte):** 0 P0, 0 P1, 7 P2, 5 P3. 19 G20 rows
+  are confirmed fixed and 4 partially fixed. Wedge changes between clicks at 30 m and 300 m fell from 4.86 to 1.63 on
+  average. The owner's examples hold.
+
+| # | Sev | New finding | Outcome |
+|---|---|---|---|
+| R2 P2-A / R1 P3-5 | P2 | Small desktop windows (the 610×417 pane with the overlay details shown): nothing fits, so a 50-px fan sits under the bar or the panel. | planned |
+| R2 P2-B / R1 P2-1 | P2 | On a landscape phone the taller bar overflows the map: Clear and the caveat end up under the forecast bar (regression). | planned |
+| R2 P2-C / R1 P2-3 | P2 | A window that overlaps only the GROWN bar (the default forecast box at 1280×800) is not minimised. | planned |
+| R2 P2-D / R1 P2-2 | P2 | A resize or rotation pans the map back to a fan the user has panned away from (6,515 px in one case). | planned |
+| R2 P2-E | P2 | "Land beyond 1,000 km never shades" was built as a compressed curve. A fully blocked wedge reads open from ~430 km, and land at 50-70 km drops from dark to light (193 wedges at 43 of 87 spots against a literal cut). | planned: the earlier curve, faded out between 600 and 1,000 km |
+| R2 P2-F | P2 | The 50 km reference floor makes small bays and sounds read open (SF Bay, Long Island Sound, Pamlico Sound from a Rodanthe click). | planned: floor 100 km |
+| R2 P2-G | P2 | Naming wide windows by their centre misleads ("N (185°–180°)", Hatteras "ESE (015°–230°)"). | planned |
+| R1 P2-4 | P2 | `placeOrigin` can evaluate a land click exactly on the coastline, giving an all-dark fan with a "moved to open water" hint (4% of land clicks on Honolua's east headland). | planned |
+| R1 P2-5 | P2 | Touch: a double-tap on the first point still discards the outline (the 4 px dedupe against the 22 px close); a double-tap to finish a distance adds a point. | planned |
+| R2 P3-A | P3 | A press on a control that is released over the map counts as a map click. | planned |
+| R2 P3-B | P3 | Over the wave-height overlay the rim and the light wedges have little contrast; the rim colour is in the palette. | planned: a dark rim underlay |
+| R2 P3-C | P3 | The desktop bar still shifts 5 px while hovering. | planned |
+| R2 P3-D / R1 P3-1 | P3 | Escape is ignored with focus on the gear or tools button, or after a live-marker click. | planned |
+| R2 P3-E | P3 | Pans can be very long on mid-size windows. | planned |
+| R1 P3-2 | P3 | The reference flips at 9 vs 10 rays reaching open ocean. | planned: a smooth blend from 5 to 15 rays |
+| R1 P3-3 | P3 | A tier-1 chunk that loads but fails to decode is never retried. | planned |
+| R1 P3-4 | P3 | A water click in a channel under ~40 m wide can walk through a thin spit. | planned |
+| R1 P3-6 / mutants | P3 | Test titles overclaim, and 24 meaningful mutants survive (the leaving-ray percentile, one-direction on-line coast, placement nearest/shrink/windows, hover restyle, resize re-placement, the antimeridian fan, chunk retry, the rim over 180°, cos(lat) in the stand-off). | planned |

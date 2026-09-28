@@ -134,7 +134,7 @@ def test_phone_sheets_sit_above_the_map_controls_and_the_no_js_page_shows_its_co
     corner = re.search(r"\.leaflet-container\.settings-open \.leaflet-top\.leaflet-right \{ z-index: (\d+); \}", body).group(1)
     assert ".leaflet-container .leaflet-top.leaflet-right {" not in body, "the corner outranks the windows ONLY while the gear panel is open (owner: window buttons never under the legend)"
     assert "top: calc(var(--map-topright-h, 120px) + 8px) !important" in body[body.index(".fwin.fw-max {"):], "the maximised window starts below the legend corner"
-    assert "function measureTopRight()" in body and "classList.toggle('settings-open', !panel.hidden)" in body
+    assert "function measureTopRight()" in body and "classList.toggle('settings-open', !panel.hidden || !!(tmenu && !tmenu.hidden))" in body
     phone = body[body.index("@media (max-width: 500px), (max-height: 500px) {"):]
     sheet = re.search(r"\.fwin:not\(\.fw-min\) \{ z-index: (\d+); \}", phone).group(1)
     assert int(sheet) > int(corner) > 2100 and int(corner) == 2600
@@ -147,7 +147,7 @@ def test_phone_sheets_sit_above_the_map_controls_and_the_no_js_page_shows_its_co
     assert "view=Table&amp;render=full" in body and "view=Graph&amp;render=full" not in body
     assert ".fwin[hidden] { display: none !important; }" in body
     assert "#forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }" in body[body.index("@media print"):]
-    assert "#map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .sr-star, .station-caret { display: none !important; }" in body[body.index("@media print"):]
+    assert "#map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .sr-star, .station-caret, .tools-host, .tools-bar { display: none !important; }" in body[body.index("@media print"):]
     assert ".leaflet-container:not(.attr-open) .leaflet-control-attribution { display: none; }" in body
 
 def test_the_map_extent_block_pans_by_whole_pixels_and_the_load_sequence_is_wired_before_the_first_view(client):
@@ -322,3 +322,31 @@ def test_search_and_sharing_metadata(client):
         assert A.app.test_client().get("/robots.txt", base_url=host).get_data(as_text=True) == "User-agent: *\nDisallow: /\n"
     sm = A.app.test_client().get("/sitemap.xml")
     assert sm.headers["Content-Type"].startswith("application/xml") and "<loc>https://allshoresurf.com/</loc>" in sm.get_data(as_text=True)
+
+
+def test_map_tools_beside_the_gear(client, monkeypatch):
+    """Plan section 29: a tools button (JS only) beside the gear with three tools; the module script and its init;
+    the swell-exposure coast data derived from the frames base (or COAST_BASE), empty without either; while a tool
+    is active the forecast-point and live-buoy clicks go to the tool; hidden in print."""
+    monkeypatch.delenv("COAST_BASE", raising=False)
+    monkeypatch.delenv("MODEL_FRAMES_BASE", raising=False)
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert body.index('id="toolsHost"') < body.index('id="settingsHost"')
+    for tool in ("distance", "area", "exposure"):
+        assert 'data-tool="%s"' % tool in body
+    assert '<script src="/ui/tools.js?v=%s"></script>' % A.UI_ASSET_VERSION in body
+    assert 'coastBase: ""' in body
+    assert "html:not(.js) .tools-host { display: none; }" in body
+    assert ".station-caret, .tools-host, .tools-bar { display: none !important; }" in body
+    assert "if (window.AllshoreTools && window.AllshoreTools.active()) return;" in body
+    assert "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng); return; }" in body
+    assert "if (tools) c.appendChild(tools);" in body
+    monkeypatch.setenv("MODEL_FRAMES_BASE", "https://models.example.com/gfswave/0p25/v1/")
+    assert A._coast_base() == "https://models.example.com/static/coast/v1"
+    assert 'coastBase: "https://models.example.com/static/coast/v1"' in client.get("/?station=51201").get_data(as_text=True)
+    monkeypatch.setenv("COAST_BASE", "https://coast.example.com/v9/")
+    assert A._coast_base() == "https://coast.example.com/v9"
+    monkeypatch.delenv("COAST_BASE"); monkeypatch.setenv("MODEL_FRAMES_BASE", "https://elsewhere.example.com/frames")
+    assert A._coast_base() == ""
+    r = A.app.test_client().get("/ui/tools.js?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=31536000, immutable"

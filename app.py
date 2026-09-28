@@ -240,6 +240,18 @@ def _model_frames_base() -> str:
     return os.environ.get("MODEL_FRAMES_BASE", "").rstrip("/")
 
 
+def _coast_base() -> str:
+    """The GSHHG coast data (tools/coast) for the map tools' swell exposure (plan section 29): env COAST_BASE,
+    else beside the model frames (<root>/static/coast/v1, as the overlay derives it). Empty = no exposure tool."""
+    explicit = os.environ.get("COAST_BASE", "").rstrip("/")
+    if explicit:
+        return explicit
+    base = _model_frames_base()
+    if base.endswith("/gfswave/0p25/v1"):
+        return base[: -len("/gfswave/0p25/v1")] + "/static/coast/v1"
+    return ""
+
+
 def _versioned_asset(directory: str, assets: dict, name: str, version: str):
     """A whitelisted static file, immutable at a versioned URL (?v=): only the version this build
     ships is served (any other ?v is a 404 nothing may cache); the path must stay inside `directory`."""
@@ -270,9 +282,10 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.9.7"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.10.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
-_UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png"}
+_UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
+              "tools.js": "application/javascript"}
 
 
 @app.route("/ui/<name>")
@@ -1921,6 +1934,7 @@ def index():
         initial_state=initial_state,
         ui_asset_version=UI_ASSET_VERSION,
         icon_version=ICON_VERSION,
+        coast_base=_coast_base(),
         site_origin=SITE_ORIGIN,
         site_title=SITE_TITLE,
         site_description=SITE_DESCRIPTION,

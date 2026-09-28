@@ -2396,7 +2396,7 @@
         });
 
         marker.on('click', function (e) {
-          if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng); return; }   // markers do not pass clicks to the map
+          if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map
           activeLiveBuoyId = s.id;
           rebuildLiveBuoyMarkers(true);
           saveMapView(map);

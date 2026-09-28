@@ -130,8 +130,9 @@ test('exposure: the spot\'s own coast is dark, a distant island light, open ocea
   assert.equal(res.fRef, T.CAP_KM);
   assert.ok(T.windowsText(res.openWindows).startsWith('Open: '));
   assert.ok(res.openWindows.some((w) => w[0] <= 0 || w[1] >= 360 || (w[0] > w[1])) || res.openWindows.some((w) => w[0] < 30), 'north is open');
-  assert.match(T.sectorText(at(180), 'US'), /^S 180–185°: shadowed \(\d+%\), land at \d+ mi$/);
-  assert.match(T.sectorText(at(0), 'Metric'), /^N 000–005°: open, 3,000 km\+ of open water$/);
+  assert.match(T.sectorText(at(180), 'US'), /^S 180–185°: shadowed \(\d+%\), land at [\d.]+ mi$/);
+  assert.match(T.sectorText(at(0), 'Metric'), /^N 000–005°: open, no land within 3,000 km$/);
+  assert.equal(T.fmtDist(0.1, 'US'), 'under 0.1 mi'); assert.equal(T.fmtDist(0.2, 'US'), '0.1 mi'); assert.equal(T.fmtDist(1.6, 'US'), '1.0 mi'); assert.equal(T.fmtDist(150, 'Metric'), '150 km');
 });
 
 test('exposure adapts to an enclosed sea: every direction reaching the far shore reads open', () => {

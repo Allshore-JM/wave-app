@@ -93,7 +93,12 @@
     var mi2 = km2 / (KM_PER_MI * KM_PER_MI);
     return mi2 < 1 ? sig(mi2 * 640) + ' acres' : sig(mi2) + ' sq mi';
   }
-  function fmtDist(km, unit) { return unit === 'Metric' ? fmtNum(Math.round(km), 0) + ' km' : fmtNum(Math.round(km / KM_PER_MI), 0) + ' mi'; }
+  // A distance in the site unit: one decimal below 10, whole numbers above, "under 0.1" for the spot's own shore.
+  function fmtDist(km, unit) {
+    var v = unit === 'Metric' ? km : km / KM_PER_MI, u = unit === 'Metric' ? ' km' : ' mi';
+    if (v < 0.1) return 'under 0.1' + u;
+    return (v < 10 ? fmtNum(v, 1) : fmtNum(Math.round(v), 0)) + u;
+  }
   var COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
   function compass(b) { return COMPASS[Math.round(((b % 360) + 360) % 360 / 22.5) % 16]; }
   function pad3(d) { d = ((d % 360) + 360) % 360; return (d < 10 ? '00' : d < 100 ? '0' : '') + d; }
@@ -315,7 +320,7 @@
   function sectorText(sec, unit) {
     var head = compass(sec.from + 2.5) + ' ' + pad3(sec.from) + '–' + pad3(sec.to % 360) + '°: ';
     var pct = Math.round(sec.s * 100);
-    if (sec.level === 'open') return head + (sec.minLandKm == null ? 'open, ' + fmtDist(CAP_KM, unit) + '+ of open water' : 'open (nearest land ' + fmtDist(sec.minLandKm, unit) + ')');
+    if (sec.level === 'open') return head + (sec.minLandKm == null ? 'open, no land within ' + fmtDist(CAP_KM, unit) : 'open (nearest land ' + fmtDist(sec.minLandKm, unit) + ')');
     return head + (sec.level === 'light' ? 'partly shadowed' : 'shadowed') + ' (' + pct + '%), land at ' + fmtDist(sec.minLandKm, unit);
   }
   // Build both indexes for an origin from decoded sets: near = tier-1 sets (or tier 0 standing in), far = tier 0.
@@ -534,11 +539,17 @@
     function undo() { if (s.pts.length && !s.closed) { s.pts.pop(); render(); } }
     function finish() { if ((s.tool === 'distance' && s.pts.length >= 2) || (s.tool === 'area' && s.pts.length >= 3)) { s.closed = true; render(); } }
 
-    function click(latlng) {
+    // A touch tap (no hover to show a wedge's details): Chrome's click is a PointerEvent with pointerType; other
+    // browsers fall back to the device's hover capability.
+    function isTouch(ev) {
+      if (ev && ev.pointerType) return ev.pointerType === 'touch' || ev.pointerType === 'pen';
+      try { return !!(root.matchMedia && root.matchMedia('(hover: none)').matches); } catch (e) { return false; }
+    }
+    function click(latlng, ev) {
       if (!s.tool) return;
       var p = { lat: latlng.lat, lng: latlng.lng };
       if (s.tool === 'exposure') {
-        if (s.result && s.fan) {                                        // a click inside the fan picks a wedge (phones)
+        if (s.result && s.fan && isTouch(ev)) {                         // a tap inside the fan picks a wedge; a mouse click places a new point
           var c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]), q = map.latLngToContainerPoint(latlng);
           var k = sectorAt(q.x - c.x, q.y - c.y, s.radius);
           if (k >= 0) { select(k); return; }
@@ -593,7 +604,7 @@
       if (s.busy) lines.push({ t: 'Computing…', cls: 'tools-big' });
       else if (s.result) {
         lines.push({ t: windowsText(s.result.openWindows), cls: 'tools-big' });
-        lines.push({ t: s.selected >= 0 ? sectorText(s.result.sectors[s.selected], u) : 'Point at a wedge for details.', cls: 'tools-sector' });
+        lines.push({ t: s.selected >= 0 ? sectorText(s.result.sectors[s.selected], u) : 'Point at (or tap) a wedge for details.', cls: 'tools-sector' });
         if (s.result.snapped) lines.push({ t: 'Moved to the nearest water.', cls: 'tools-hint' });
         if (s.result.coarse) lines.push({ t: 'Nearby coastline at lower detail.', cls: 'tools-hint' });
         lines.push({ t: 'Grey: shadowed by land (darker = more). Geometric exposure only: real swell bends around islands.', cls: 'tools-hint' });
@@ -639,7 +650,7 @@
       }).catch(function () { if (gen !== s.gen) return; s.busy = false; s.msg = 'Coastline data unavailable. Try again later.'; render(); });
     }
 
-    map.on('click', function (e) { if (s.tool) click(e.latlng); });
+    map.on('click', function (e) { if (s.tool) click(e.latlng, e.originalEvent); });
     map.on('dblclick', function () { if (s.tool === 'distance' || s.tool === 'area') finish(); });
     map.on('mousemove', function (e) {
       if (s.tool !== 'exposure' || !s.result || !s.fan) return;
@@ -662,7 +673,7 @@
   root.AllshoreTools = {
     init: function (opts) { api = init(opts); return api; },
     active: function () { return !!(state && state.tool); },
-    click: function (latlng) { if (api) api.click(latlng); },
+    click: function (latlng, ev) { if (api) api.click(latlng, ev); },
     _internals: {
       distanceKm: distanceKm, bearingDeg: bearingDeg, destination: destination, densify: densify, pathKm: pathKm,
       sphericalAreaKm2: sphericalAreaKm2, fmtLength: fmtLength, fmtArea: fmtArea, fmtDist: fmtDist, compass: compass,

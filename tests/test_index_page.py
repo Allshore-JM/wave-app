@@ -339,7 +339,7 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     assert "html:not(.js) .tools-host { display: none; }" in body
     assert ".station-caret, .tools-host, .tools-bar { display: none !important; }" in body
     assert "if (window.AllshoreTools && window.AllshoreTools.active()) return;" in body
-    assert "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng); return; }" in body
+    assert "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }" in body
     assert "if (tools) c.appendChild(tools);" in body
     # the frames address alone never changes a flag-off page; with the overlay on, its gated block derives the coast
     monkeypatch.setenv("MODEL_FRAMES_BASE", "https://models.example.com/gfswave/0p25/v1/")

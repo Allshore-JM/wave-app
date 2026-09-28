@@ -341,12 +341,19 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     assert "if (window.AllshoreTools && window.AllshoreTools.active()) return;" in body
     assert "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }" in body
     assert "if (tools) c.appendChild(tools);" in body
+    # G20: the settings control stacks above the tool bar (its menus drop over it); a steady bar height; the windows
+    # are obstacles for the fan and an expanded one over the bar is minimised when a tool starts
+    assert ".leaflet-top.leaflet-right .leaflet-control-settings { z-index: 801; }" in body
+    assert ".tools-bar-body .tools-sector { margin-top: 4px; min-height: 2.6em; }" in body
+    assert "obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel')]; }," in body
+    assert "[['liveBuoyPanel', 'lwMin'], ['forecastWin', 'fwMin']].forEach(function (w) {" in body
+    assert "if (r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top) min.click();" in body
     # the frames address alone never changes a flag-off page; with the overlay on, its gated block derives the coast
     monkeypatch.setenv("MODEL_FRAMES_BASE", "https://models.example.com/gfswave/0p25/v1/")
     assert A._coast_base() == "" and "__allshoreCoastBase =" not in client.get("/?station=51201").get_data(as_text=True)
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
     on = client.get("/?station=51201").get_data(as_text=True)
-    assert "if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshoreCoastBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/coast/v1';" in on
+    assert r"if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshoreCoastBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/coast/v1';" in on
     assert on.index("window.__allshoreCoastBase =") < on.index("AllshoreTools.init(")
     monkeypatch.delenv("MODEL_OVERLAYS")
     monkeypatch.setenv("COAST_BASE", "https://coast.example.com/v9/")

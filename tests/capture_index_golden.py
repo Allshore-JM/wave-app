@@ -55,6 +55,7 @@ def run_scenarios(app_module):
 
 if __name__ == "__main__":
     os.environ.pop("MODEL_OVERLAYS", None)
+    os.environ.pop("COAST_BASE", None)                                      # the map tools' explicit coast address
     import app
     rec = run_scenarios(app)
     path = os.path.join(HERE, "fixtures", "index_golden.json")

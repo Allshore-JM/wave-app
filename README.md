@@ -86,6 +86,45 @@ card in the page flow with a Go button in the window's toolbar. The map fills th
 minimised bar) and re-applies its stored view only when the width changes (a phone keyboard must not snap it back). The
 page golden (`tests/fixtures/index_golden.json`) was re-baselined at this restructure (see `tests/test_overlay_flag.py`).
 
+## Map tools (static_ui/tools.js)
+
+A ruler button left of the settings gear (plan section 29) opens three tools. While one is active, map clicks, and clicks
+on forecast points and live buoys, go to the tool, and double-click zoom is off. Escape clears, then closes (only when
+nothing else has focus). A tool bar under the gear shows the result, with Undo / Finish / Clear. Starting a tool minimises
+an expanded window that would cover the bar.
+
+- **Measure distance / area:** great-circle geometry on a sphere (R = 6371.0088 km), in the gear's units plus nautical
+  miles. An outline that crosses itself is flagged.
+- **Swell exposure:** click the water. A fan of 72 five-degree wedges shows which directions swell can arrive FROM.
+  - **Clear with a cyan rim:** open.
+  - **Light grey:** partly shadowed, for example a distant island (Kauai seen from the North Shore, ~150 km).
+  - **Dark grey:** heavily shadowed, for example the spot's own coast.
+
+  How it works:
+  - Each wedge is sampled by ten great-circle rays running to the first coastline crossing or 3,000 km.
+  - The coastline is the GSHHG data the overlay publishes (`static/coast/v1`). Tier 1 is used for the first 50 km,
+    tier 0 beyond. The builder's cell-clip edges cancel by direction along each cell line.
+  - A ray's land shadows fully within 15 km and fades with the log of distance, to nothing at the spot's reference
+    distance or 1,000 km, whichever is nearer. The reference is the full 3,000 km when a wedge's worth of rays reach
+    open ocean; otherwise it is the 90th percentile of the rays that leave the spot's own coast (50 km minimum), so
+    enclosed seas adapt.
+  - Clicks on land, or within 150 m of the shore, are evaluated 150 m off the shore (the shoreline data is good to
+    ~50-100 m). Land clicks move up to 2 km; water clicks move up to 300 m.
+  - The fan keeps a fixed size on screen and is panned clear of the map's controls and the windows, shrinking on a
+    short map.
+
+  Limits (also said in the tool bar):
+  - It is geometry only: swell wraps headlands and islands, so point breaks can show their main swell as shadowed.
+  - Reefs and shallow banks are not in the data.
+  - Lakes count as land.
+  - Clicks near a marker land on the marker's position (Leaflet).
+- **Coast data address:** env `COAST_BASE`, else derived inside the overlay's gated block from `MODEL_FRAMES_BASE` when it
+  ends in `/gfswave/0p25/v1`. With neither (for example the overlay flag off and no `COAST_BASE`), the exposure item is
+  hidden and the measuring tools still work. Nothing is fetched before the first exposure click. `index.json`,
+  `world-i.bin` and 1-4 tier-1 cells follow, cached in memory (8 cells, LRU).
+- **Tests:** `tests/ui/tools.test.js` (pure functions, synthetic coasts and the Hawaii crop in `tests/fixtures/coast`, with
+  the owner's examples pinned) and `tests/ui/tools-ui.test.js` (the tool state machine on a fake Leaflet map).
+
 ## Model overlays (optional)
 
 Animated NOAA GFS-Wave / GFS frames drawn under the forecast and live-buoy points. Off unless BOTH

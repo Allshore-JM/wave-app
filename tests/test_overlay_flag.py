@@ -30,12 +30,14 @@ GATED = re.compile(r"  <style>\n    /\* Optional model overlays.*?</script>\n\n"
 
 
 def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
+    monkeypatch.delenv("COAST_BASE", raising=False)
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
     monkeypatch.setenv("MODEL_FRAMES_BASE", base)
     monkeypatch.setattr(A, "get_station_tz", lambda sid: "Pacific/Honolulu")
 
 
 def test_flag_off_page_is_byte_identical(monkeypatch):
+    monkeypatch.delenv("COAST_BASE", raising=False)                     # a developer's COAST_BASE would change the page
     monkeypatch.delenv("MODEL_OVERLAYS", raising=False)
     monkeypatch.setenv("MODEL_FRAMES_BASE", "https://frames.example/gfswave/0p25/v1")
     rec = G.run_scenarios(A)
@@ -47,6 +49,7 @@ def test_flag_off_page_is_byte_identical(monkeypatch):
 
 
 def test_flag_on_without_a_frames_base_is_off(monkeypatch):
+    monkeypatch.delenv("COAST_BASE", raising=False)                     # a developer's COAST_BASE would change the page
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
     monkeypatch.setenv("MODEL_FRAMES_BASE", "")
     rec = G.run_scenarios(A)

@@ -285,6 +285,8 @@
     html:not(.js) .grid-setting { display: none; }                              /* the gridlines need the map script */
     /* Map tools (plan section 29): the button beside the gear, its menu, the tool bar under the gear, the exposure fan */
     .leaflet-control-settings { display: flex; gap: 6px; align-items: flex-start; }
+    /* the gear's panel and the tools menu drop over the tool bar (a later control at Leaflet's z 800): G20 P0 */
+    .leaflet-top.leaflet-right .leaflet-control-settings { z-index: 801; }
     .tools-host { position: relative; }
     html:not(.js) .tools-host { display: none; }
     .icon-btn svg { display: block; margin: auto; }
@@ -297,7 +299,7 @@
     .tools-bar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .tools-x { border: 0; background: none; font-size: 1rem; line-height: 1; padding: 2px 4px; cursor: pointer; color: #0b2536; }
     .tools-bar-body .tools-big { font-weight: 600; margin-top: 4px; }
-    .tools-bar-body .tools-sector { margin-top: 4px; }
+    .tools-bar-body .tools-sector { margin-top: 4px; min-height: 2.6em; }   /* a steady height while hovering the wedges */
     .tools-bar-body .tools-hint { color: #5b6770; font-size: .78rem; margin-top: 4px; }
     .tools-bar-actions { display: flex; gap: 6px; margin-top: 6px; }
     .tools-bar-actions button { border: 1px solid #ced4da; background: #fff; border-radius: .3rem; padding: 2px 8px; font-size: .8rem; color: #0b2536; }
@@ -2799,7 +2801,19 @@
   <script>
     if (window.AllshoreTools) window.AllshoreTools.init({
       map: map, coastBase: {{ coast_base|tojson }} || window.__allshoreCoastBase || '', getUnit: getSelectedUnit, unitSelect: document.getElementById('unit'),
-      onLayout: function () { measureTopRight(); }
+      onLayout: function () { measureTopRight(); },
+      // the floating windows are obstacles for the exposure fan; an expanded one that covers the tool bar is
+      // minimised when a tool starts (owner, G20)
+      obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel')]; },
+      onStart: function (bar) {
+        var b = bar.getBoundingClientRect();
+        [['liveBuoyPanel', 'lwMin'], ['forecastWin', 'fwMin']].forEach(function (w) {
+          var el = document.getElementById(w[0]), min = document.getElementById(w[1]);
+          if (!el || !min || el.hidden || el.classList.contains('fw-min')) return;
+          var r = el.getBoundingClientRect();
+          if (r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top) min.click();
+        });
+      }
     });
   </script>
   <!-- Cloudflare Web Analytics (cookieless page-view/visit counting) -->

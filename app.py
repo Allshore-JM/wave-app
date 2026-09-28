@@ -241,15 +241,11 @@ def _model_frames_base() -> str:
 
 
 def _coast_base() -> str:
-    """The GSHHG coast data (tools/coast) for the map tools' swell exposure (plan section 29): env COAST_BASE,
-    else beside the model frames (<root>/static/coast/v1, as the overlay derives it). Empty = no exposure tool."""
-    explicit = os.environ.get("COAST_BASE", "").rstrip("/")
-    if explicit:
-        return explicit
-    base = _model_frames_base()
-    if base.endswith("/gfswave/0p25/v1"):
-        return base[: -len("/gfswave/0p25/v1")] + "/static/coast/v1"
-    return ""
+    """An explicit home for the GSHHG coast data (tools/coast) used by the map tools' swell exposure (plan section
+    29): env COAST_BASE. Without it the page takes the data published beside the model frames, derived inside the
+    overlay's gated block (so the frames address still never changes a page with the overlay off). Neither = no
+    exposure tool."""
+    return os.environ.get("COAST_BASE", "").rstrip("/")
 
 
 def _versioned_asset(directory: str, assets: dict, name: str, version: str):

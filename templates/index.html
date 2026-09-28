@@ -2604,6 +2604,8 @@
     // picks a layer: no model data is requested and the overlay module is not loaded before then.
     (function () {
       var BASE = {{ model_frames_base|tojson }};
+      // the map tools' swell exposure reads the coast data published beside the frames (plan section 29)
+      if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshoreCoastBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/coast/v1';
       var VERSION = {{ overlay_asset_version|tojson }};
       var TZ = {{ forecast_tz_name|tojson }};
       var lastTz = TZ;                                          // the zone of the forecast on screen (the window announces each one)
@@ -2796,7 +2798,7 @@
   <script src="/ui/tools.js?v={{ ui_asset_version }}"></script>
   <script>
     if (window.AllshoreTools) window.AllshoreTools.init({
-      map: map, coastBase: {{ coast_base|tojson }}, getUnit: getSelectedUnit, unitSelect: document.getElementById('unit'),
+      map: map, coastBase: {{ coast_base|tojson }} || window.__allshoreCoastBase || '', getUnit: getSelectedUnit, unitSelect: document.getElementById('unit'),
       onLayout: function () { measureTopRight(); }
     });
   </script>

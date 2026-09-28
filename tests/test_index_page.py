@@ -335,18 +335,23 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     for tool in ("distance", "area", "exposure"):
         assert 'data-tool="%s"' % tool in body
     assert '<script src="/ui/tools.js?v=%s"></script>' % A.UI_ASSET_VERSION in body
-    assert 'coastBase: ""' in body
+    assert "coastBase: \"\" || window.__allshoreCoastBase || ''" in body
     assert "html:not(.js) .tools-host { display: none; }" in body
     assert ".station-caret, .tools-host, .tools-bar { display: none !important; }" in body
     assert "if (window.AllshoreTools && window.AllshoreTools.active()) return;" in body
     assert "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng); return; }" in body
     assert "if (tools) c.appendChild(tools);" in body
+    # the frames address alone never changes a flag-off page; with the overlay on, its gated block derives the coast
     monkeypatch.setenv("MODEL_FRAMES_BASE", "https://models.example.com/gfswave/0p25/v1/")
-    assert A._coast_base() == "https://models.example.com/static/coast/v1"
-    assert 'coastBase: "https://models.example.com/static/coast/v1"' in client.get("/?station=51201").get_data(as_text=True)
+    assert A._coast_base() == "" and "__allshoreCoastBase =" not in client.get("/?station=51201").get_data(as_text=True)
+    monkeypatch.setenv("MODEL_OVERLAYS", "1")
+    on = client.get("/?station=51201").get_data(as_text=True)
+    assert "if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshoreCoastBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/coast/v1';" in on
+    assert on.index("window.__allshoreCoastBase =") < on.index("AllshoreTools.init(")
+    monkeypatch.delenv("MODEL_OVERLAYS")
     monkeypatch.setenv("COAST_BASE", "https://coast.example.com/v9/")
     assert A._coast_base() == "https://coast.example.com/v9"
-    monkeypatch.delenv("COAST_BASE"); monkeypatch.setenv("MODEL_FRAMES_BASE", "https://elsewhere.example.com/frames")
-    assert A._coast_base() == ""
+    assert "coastBase: \"https://coast.example.com/v9\" || window.__allshoreCoastBase" in client.get("/?station=51201").get_data(as_text=True)
+    monkeypatch.delenv("COAST_BASE")
     r = A.app.test_client().get("/ui/tools.js?v=" + A.UI_ASSET_VERSION)
     assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=31536000, immutable"

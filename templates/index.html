@@ -2810,12 +2810,15 @@
       onLayout: function (bar, grew) {
         measureTopRight();
         if (!grew) return;
-        var b = bar.getBoundingClientRect();
+        var b = bar.getBoundingClientRect(), had = document.activeElement;
         [['liveBuoyPanel', 'lwMin'], ['forecastWin', 'fwMin']].forEach(function (w) {
           var el = document.getElementById(w[0]), min = document.getElementById(w[1]);
           if (!el || !min || el.hidden || el.classList.contains('fw-min')) return;
           var r = el.getBoundingClientRect();
-          if (r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top) min.click();
+          if (!(r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top)) return;
+          min.click();
+          // minimising moves focus to the window's opener; keep it where it was (the tool keeps its keys)
+          if (had && had !== document.body && !el.contains(had) && document.contains(had)) try { had.focus({ preventScroll: true }); } catch (e) { /* no focus */ }
         });
       },
       // the floating windows are obstacles for the exposure fan

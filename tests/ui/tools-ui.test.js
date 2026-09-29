@@ -334,3 +334,53 @@ test('the fan stays in the click\'s world copy across the dateline', async () =>
   assert.ok(E.s.result.origin.lng < -179.99, 'evaluated east of the dateline: ' + E.s.result.origin.lng);
   assert.ok(E.s.fanLng > 180 && E.s.fanLng < 180.01, 'drawn beside the click, not a world away: ' + E.s.fanLng);
 });
+
+// ---- G20 re-check (fix round 3) ----
+test('the bar grows only above its tallest height since the tool started (not the dip to "Computing…" and back)', async () => {
+  const E = makeEnv(); E.pick('exposure');
+  assert.deepEqual(E.layouts, [true], 'shown');
+  E.bar._h = 320; E.clickAt(21.6655, -158.054); await E.settle();
+  assert.equal(E.layouts[E.layouts.length - 1], true, 'taller than ever: the page may minimise a window');
+  E.bar._h = 250; E.clickAt(21.269, -157.829); await E.settle();
+  E.bar._h = 320; E.clickAt(21.6655, -158.054); await E.settle();
+  assert.equal(E.layouts[E.layouts.length - 1], false, 'back to a height it had: a window the user opened meanwhile stays');
+  E.q('.tools-x').dispatch('click'); E.bar._h = 0; E.pick('distance');
+  assert.equal(E.layouts[E.layouts.length - 1], true, 'a new tool starts afresh');
+});
+
+test('the bar ends 8 px above the map\'s bottom edge, at least 60 px tall', () => {
+  const E = makeEnv({ mapH: 150 }); E.pick('distance');
+  assert.equal(E.bar.style.maxHeight, '82px', '150 - 60 - 8');
+  const S = makeEnv({ mapH: 100 }); S.pick('distance');
+  assert.equal(S.bar.style.maxHeight, '60px');
+});
+
+test('the overlay\'s phone sheet: an obstacle for the fan, not a map click when pressed, and it keeps its keys', async () => {
+  const E = makeEnv({ mapW: 375, mapH: 764, lat0: 22, lng0: -158.7, scale: 400 });
+  const sheet = E.doc.createElement('div'); sheet.classList.add('ov-sheet'); sheet.rect = { left: 50, top: 700, width: 325, height: 64 };
+  E.mapEl.appendChild(sheet); const btn = E.doc.createElement('button'); sheet.appendChild(btn);
+  E.pick('distance');
+  E.pressOn(btn); E.clickAt(21.3, -157.9, { pointerType: 'touch', target: E.mapEl, composedPath: () => [E.mapEl] });
+  assert.equal(E.s.pts.length, 0, 'a press on the sheet released over the map');
+  E.pressOn(E.mapEl); E.clickAt(21.3, -157.9, { pointerType: 'touch', target: E.mapEl, composedPath: () => [E.mapEl] }); E.clickAt(21.0, -157.0);
+  E.key('Escape', btn); assert.equal(E.s.pts.length, 2, 'Escape on a sheet button is the sheet\'s');
+  // the fan: Pipeline lands at y (22 - 21.6655) * 400 = 134; move the view so it sits at the bottom, over the sheet
+  E.view.lat0 = 21.6655 + 690 / 400;
+  E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle();
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]), pan = E.map.pans[E.map.pans.length - 1] || [0, 0];
+  assert.ok(c.y - pan[1] + E.s.radius + 16 <= 701, 'clear of the sheet (pans are whole pixels): ' + (c.y - pan[1]));
+});
+
+test('a rotation re-places a fan that was on the map, although the resize itself pushed it off (G20 re-check)', async () => {
+  const E = makeEnv({ mapW: 375, mapH: 764, lat0: 22, lng0: -158.7, scale: 400 });
+  E.view.lat0 = 21.6655 + 600 / 400;                                        // the fan at y 600 of a portrait map
+  E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle();
+  const n = E.map.pans.length;
+  // rotate: 375 x 764 -> 812 x 327; Leaflet keeps the centre, so every point shifts by half the size change
+  E.mapEl.rect = { left: 0, top: 0, width: 812, height: 327 };
+  E.view.lng0 -= (812 - 375) / 2 / 400; E.view.lat0 += (327 - 764) / 2 / 400;
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
+  assert.ok(c.y > 327, 'the resize pushed the fan below the new map: ' + c.y);
+  E.win.fire('resize'); await wait(200);
+  assert.equal(E.map.pans.length, n + 1, 'placed again');
+});

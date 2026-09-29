@@ -92,7 +92,8 @@ A ruler button left of the settings gear (plan section 29) opens three tools. Wh
 on forecast points and live buoys, go to the tool, and double-click zoom is off. Escape clears, then closes (only when
 nothing else has focus, or focus is on the tools button, the gear with its panel closed, or a marker). A tool bar under
 the gear shows the result, with Undo / Finish / Clear under its title; it never runs past the map's bottom edge (its text
-scrolls). An expanded window that the bar covers is minimised when a tool starts and whenever the bar grows. A press that
+scrolls). An expanded window that the bar covers is minimised when a tool starts and whenever the bar grows taller than
+it has been since then (keyboard focus stays where it was). A press that
 begins on a control or a window and is released over the map is not a map click. On touch, two taps within 16 px are one
 double-tap.
 
@@ -108,18 +109,22 @@ double-tap.
   - The coastline is the GSHHG data the overlay publishes (`static/coast/v1`). Tier 1 is used for the first 50 km,
     tier 0 beyond. The builder's cell-clip edges cancel by direction along each cell line.
   - A ray's land shadows fully within 15 km and fades with the log of distance, to nothing at the spot's reference
-    distance. Land beyond 600 km fades out further and never shades beyond 1,000 km (owner). The reference is the 90th
+    distance. Land beyond 600 km reads open by itself (at most 0.18) and fades to nothing at 1,000 km (owner: New England
+    no longer greys Cape Hatteras's NNE). The reference is the 90th
     percentile of the rays that leave the spot's own coast (100 km minimum, so small bays and sounds read sheltered),
     so enclosed seas adapt; it is the full 3,000 km when 15 or more rays reach open ocean, blended in between from 5.
   - Windows are named by the compass point of their centre, or of both ends when 45 degrees or wider ("NNE–SW
     (015°–230°)"); a spot open on 300 degrees or more reads "Open except …".
   - Clicks on land, or within 150 m of the shore, are evaluated 150 m off the shore (the shoreline data is good to
-    ~50-100 m). Land clicks move up to 2 km; water clicks move up to 300 m and never across a coast. A point within 5 m
-    of a coast is never used.
+    ~50-100 m). A land click walks to the nearest coast and then straight out to sea along it; a water click moves away
+    from the nearest coast, at most 300 m, and never across a coast. When that first walk finds only a sliver of water,
+    24 directions are searched for the nearest point 150 m out, else the clearest water. A land click never settles
+    within 5 m of a coast; with no such water within 2 km it is refused.
   - The fan keeps a fixed size on screen and is panned clear of the map's controls and the windows, preferring a
     smaller fan to a pan of more than a third of the map. When nothing is clear it takes the least-covered spot, never
-    centred under the tool bar. On a map shorter than 550 px the overlay panel's details fold when the exposure tool
-    starts. After a resize, a fan still on screen is placed again; one the user panned away from is only resized.
+    centred under the tool bar; the overlay's phone sheet counts as a control. On a map shorter than 550 px the overlay
+    panel's details fold when the exposure tool starts. After a resize or a rotation, a fan that was on screen before it
+    is placed again; one the user panned away from is only resized.
 
   Limits (also said in the tool bar):
   - It is geometry only: swell wraps headlands and islands, so point breaks can show their main swell as shadowed.

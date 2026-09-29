@@ -27,7 +27,7 @@ function manifest(run, runUtc, tag, nodirs, steps) {
 const ptr = (m) => ({ run: m.run, manifest: `gfswave/0p25/v1/${m.run}/manifest-x.json`, complete: true, published_utc: new Date().toISOString().replace(/\.\d+Z$/, 'Z') });
 const tick = () => new Promise((r) => setImmediate(r));
 async function settle(n) { for (let i = 0; i < (n || 6); i++) await tick(); }
-// These tests seek up to 30 frames past "now" in run A (2026-09-22 12Z, 81 frames to +240 h): run them on A's own day,
+// Tests that step or seek from "now" through run A (2026-09-22 12Z, 81 frames to +240 h) run on A's own day,
 // with a clock that still advances (cooldowns and timers keep working).
 async function onRunDay(fn) {
   const real = Date.now, t0 = real(), base = Date.parse('2026-09-23T00:00:00Z');
@@ -161,7 +161,7 @@ test('never more than MAX_INFLIGHT fetches during rapid seeks; unmount during pe
   assert.equal(o.cache.size(), 0); assert.equal(o.layer, null);
 });
 
-test('outage then Retry with the drawn frame still cached ends in the ready state, not "Loading" (G4 B1)', async () => {
+test('outage then Retry with the drawn frame still cached ends in the ready state, not "Loading" (G4 B1)', () => onRunDay(async () => {
   const w = world();
   const o = await mounted(w, A);
   await w.releaseAll();
@@ -176,9 +176,9 @@ test('outage then Retry with the drawn frame still cached ends in the ready stat
   assert.equal(o.frameIndex, i0); assert.equal(o.target, i0);
   assert.ok(Object.keys(o.inflight).length >= 1, 'prefetch resumed');
   o.unmount();
-});
+}));
 
-test('unavailable frames: 404 is permanent and skipped, a network error is a cooldown, and the drawn frame never advances early', async () => {
+test('unavailable frames: 404 is permanent and skipped, a network error is a cooldown, and the drawn frame never advances early', () => onRunDay(async () => {
   const w = world();
   const o = await mounted(w, A);
   await w.releaseAll();
@@ -196,7 +196,7 @@ test('unavailable frames: 404 is permanent and skipped, a network error is a coo
   const u = o.unavailable[o._key(i0 + 9)];
   assert.equal(typeof u, 'number'); assert.ok(u > Date.now(), 'cooldown timestamp');
   o.unmount();
-});
+}));
 
 // ---- coastlines ----
 // A tiny coast-v1 file: one 1x1-degree island at 10 N 10 E (see tests/overlay/coast.test.js for the encoder).
@@ -505,7 +505,7 @@ test('animation on: the direction frame rides beside the field frame, never more
   await w.releaseAll(); assert.equal(o.dcache.size(), 0, 'late decodes resolve into the void');
 });
 
-test('a direction frame that lands after the map moved on is never shown under the new step (a newer target drops it)', async () => {
+test('a direction frame that lands after the map moved on is never shown under the new step (a newer target drops it)', () => onRunDay(async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
   const i0 = o.frameIndex; assert.ok(o.flow.dir);
@@ -521,7 +521,7 @@ test('a direction frame that lands after the map moved on is never shown under t
   await w.releaseAll(); await settle();
   assert.equal(o.frameIndex, i0 + 9); assert.equal(o.flow.entry, A.frames[i0 + 9], 'the new step shows its own direction'); assert.equal(o.flow.dir, o.dcache.get(o._key(i0 + 9, 'dir')));
   o.unmount();
-});
+}));
 
 test('a run without direction fields: the animation is unavailable and no direction frame is ever requested', async () => {
   const w = world(); const A0 = manifest(A.run, A.run_utc, 12, true); w.pointer = ptr(A0); w.manifests[A0.run] = A0;
@@ -599,7 +599,7 @@ test('G10-A S1: a far seek is loading, then the direction resolution changes (zo
   o.unmount();
 }));
 
-test('G10-A S2 / S5: Animation ticked while a step is loading (outside the ring, and with _startDir eviction): the step still lands', async () => {
+test('G10-A S2 / S5: Animation ticked while a step is loading (outside the ring, and with _startDir eviction): the step still lands', () => onRunDay(async () => {
   for (const ahead of [3, 2]) {
     const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
     const o = w.create(); o.anim = false; o.mount('hs'); await settle();
@@ -615,7 +615,7 @@ test('G10-A S2 / S5: Animation ticked while a step is loading (outside the ring,
     assert.ok(o.flow.dir, 'its direction followed');
     o.unmount();
   }
-});
+}));
 
 test('G10-A: unticking Animation while a step is loading keeps the step; the shown step gets no direction fetch while another target is pending', () => onRunDay(async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
@@ -632,7 +632,7 @@ test('G10-A: unticking Animation while a step is loading keeps the step; the sho
   o.unmount();
 }));
 
-test('G10-A M26 / G10-C P2-1: a step shows its picture and its direction together; the old direction never sits under the new step', async () => {
+test('G10-A M26 / G10-C P2-1: a step shows its picture and its direction together; the old direction never sits under the new step', () => onRunDay(async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
   const shown = o.flow.dir, i0 = o.frameIndex; assert.ok(shown, 'a direction is on the map');
@@ -648,9 +648,9 @@ test('G10-A M26 / G10-C P2-1: a step shows its picture and its direction togethe
   o.step(1); await settle(); await w.releaseAll();
   assert.equal(o.frameIndex, i0 + 5, 'a transient direction failure does not hold the step either'); assert.equal(o.flow.dir, null);
   o.unmount();
-});
+}));
 
-test('G10-A M11/M12: _trimInflight keeps no survivor beside a target whose direction is in flight, exactly one otherwise', async () => {
+test('G10-A M11/M12: _trimInflight keeps no survivor beside a target whose direction is in flight, exactly one otherwise', () => onRunDay(async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.release(1);
   // constructed sets: the record shape is what the scheduler looks at
@@ -663,7 +663,7 @@ test('G10-A M11/M12: _trimInflight keeps no survivor beside a target whose direc
   o._trimInflight(t);
   assert.equal(Object.keys(o.inflight).length, 2, 'exactly one survivor beside the target'); assert.ok(o.inflight[o._key(t)]);
   o.inflight = {}; o.unmount();
-});
+}));
 
 test('G10-A M60 / P3-5 / P3-4: a cached direction is not fetched again; untick before the first frame aborts the direction fetch; direction successes do not mask field failures', () => onRunDay(async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;

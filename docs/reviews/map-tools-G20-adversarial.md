@@ -101,21 +101,58 @@ The fixes are in UI asset 1.11.0 @ 48c1732, with the golden @ 11a6165.
 
 | # | Sev | New finding | Outcome |
 |---|---|---|---|
-| R2 P2-A / R1 P3-5 | P2 | Small desktop windows (the 610×417 pane with the overlay details shown): nothing fits, so a 50-px fan sits under the bar or the panel. | planned |
-| R2 P2-B / R1 P2-1 | P2 | On a landscape phone the taller bar overflows the map: Clear and the caveat end up under the forecast bar (regression). | planned |
-| R2 P2-C / R1 P2-3 | P2 | A window that overlaps only the GROWN bar (the default forecast box at 1280×800) is not minimised. | planned |
-| R2 P2-D / R1 P2-2 | P2 | A resize or rotation pans the map back to a fan the user has panned away from (6,515 px in one case). | planned |
-| R2 P2-E | P2 | "Land beyond 1,000 km never shades" was built as a compressed curve. A fully blocked wedge reads open from ~430 km, and land at 50-70 km drops from dark to light (193 wedges at 43 of 87 spots against a literal cut). | planned: the earlier curve, faded out between 600 and 1,000 km |
-| R2 P2-F | P2 | The 50 km reference floor makes small bays and sounds read open (SF Bay, Long Island Sound, Pamlico Sound from a Rodanthe click). | planned: floor 100 km |
-| R2 P2-G | P2 | Naming wide windows by their centre misleads ("N (185°–180°)", Hatteras "ESE (015°–230°)"). | planned |
-| R1 P2-4 | P2 | `placeOrigin` can evaluate a land click exactly on the coastline, giving an all-dark fan with a "moved to open water" hint (4% of land clicks on Honolua's east headland). | planned |
-| R1 P2-5 | P2 | Touch: a double-tap on the first point still discards the outline (the 4 px dedupe against the 22 px close); a double-tap to finish a distance adds a point. | planned |
-| R2 P3-A | P3 | A press on a control that is released over the map counts as a map click. | planned |
-| R2 P3-B | P3 | Over the wave-height overlay the rim and the light wedges have little contrast; the rim colour is in the palette. | planned: a dark rim underlay |
-| R2 P3-C | P3 | The desktop bar still shifts 5 px while hovering. | planned |
-| R2 P3-D / R1 P3-1 | P3 | Escape is ignored with focus on the gear or tools button, or after a live-marker click. | planned |
-| R2 P3-E | P3 | Pans can be very long on mid-size windows. | planned |
-| R1 P3-2 | P3 | The reference flips at 9 vs 10 rays reaching open ocean. | planned: a smooth blend from 5 to 15 rays |
-| R1 P3-3 | P3 | A tier-1 chunk that loads but fails to decode is never retried. | planned |
-| R1 P3-4 | P3 | A water click in a channel under ~40 m wide can walk through a thin spit. | planned |
-| R1 P3-6 / mutants | P3 | Test titles overclaim, and 24 meaningful mutants survive (the leaving-ray percentile, one-direction on-line coast, placement nearest/shrink/windows, hover restyle, resize re-placement, the antimeridian fan, chunk retry, the rim over 180°, cos(lat) in the stand-off). | planned |
+| R2 P2-A / R1 P3-5 | P2 | Small desktop windows (the 610×417 pane with the overlay details shown): nothing fits, so a 50-px fan sits under the bar or the panel. | fixed: the overlay details fold on maps under 550 px; least-overlap fallback, never centred under the bar |
+| R2 P2-B / R1 P2-1 | P2 | On a landscape phone the taller bar overflows the map: Clear and the caveat end up under the forecast bar (regression). | fixed: the bar is capped at the map's bottom edge, actions under the title, the text scrolls |
+| R2 P2-C / R1 P2-3 | P2 | A window that overlaps only the GROWN bar (the default forecast box at 1280×800) is not minimised. | fixed: the page minimises an overlapped window whenever the bar grows |
+| R2 P2-D / R1 P2-2 | P2 | A resize or rotation pans the map back to a fan the user has panned away from (6,515 px in one case). | fixed: only a fan still on screen is placed again; otherwise it is only resized |
+| R2 P2-E | P2 | "Land beyond 1,000 km never shades" was built as a compressed curve. A fully blocked wedge reads open from ~430 km, and land at 50-70 km drops from dark to light (193 wedges at 43 of 87 spots against a literal cut). | fixed (owner): the earlier curve (zero at F_ref), faded out linearly from 600 to 1,000 km |
+| R2 P2-F | P2 | The 50 km reference floor makes small bays and sounds read open (SF Bay, Long Island Sound, Pamlico Sound from a Rodanthe click). | fixed: floor 100 km |
+| R2 P2-G | P2 | Naming wide windows by their centre misleads ("N (185°–180°)", Hatteras "ESE (015°–230°)"). | fixed: both ends from 45°, "Open except …" from 300°, repeated names shared |
+| R1 P2-4 | P2 | `placeOrigin` can evaluate a land click exactly on the coastline, giving an all-dark fan with a "moved to open water" hint (4% of land clicks on Honolua's east headland). | fixed: a point within 5 m of a coast is never used |
+| R1 P2-5 | P2 | Touch: a double-tap on the first point still discards the outline (the 4 px dedupe against the 22 px close); a double-tap to finish a distance adds a point. | fixed: 16 px on touch for both guards |
+| R2 P3-A | P3 | A press on a control that is released over the map counts as a map click. | fixed: a capture pointerdown remembers a press on a control or window |
+| R2 P3-B | P3 | Over the wave-height overlay the rim and the light wedges have little contrast; the rim colour is in the palette. | fixed: a 7 px #0b2536 underlay beneath the 4 px rim |
+| R2 P3-C | P3 | The desktop bar still shifts 5 px while hovering. | fixed: 3em (two lines) |
+| R2 P3-D / R1 P3-1 | P3 | Escape is ignored with focus on the gear or tools button, or after a live-marker click. | fixed: the tools button, the gear (panel closed) and markers own the keys; the opened menu takes focus |
+| R2 P3-E | P3 | Pans can be very long on mid-size windows. | fixed: a spot within a third of the map is preferred to a larger fan farther away |
+| R1 P3-2 | P3 | The reference flips at 9 vs 10 rays reaching open ocean. | fixed: a geometric blend from 5 to 15 capped rays |
+| R1 P3-3 | P3 | A tier-1 chunk that loads but fails to decode is never retried. | fixed: the in-flight entry is dropped on a failed fetch OR decode |
+| R1 P3-4 | P3 | A water click in a channel under ~40 m wide can walk through a thin spit. | fixed: a water click never crosses a coast; a land click stops at the far shore once it has its water |
+| R1 P3-6 / mutants | P3 | Test titles overclaim, and 24 meaningful mutants survive (the leaving-ray percentile, one-direction on-line coast, placement nearest/shrink/windows, hover restyle, resize re-placement, the antimeridian fan, chunk retry, the rim over 180°, cos(lat) in the stand-off). | fixed: 23 of the 24 re-targeted survivors killed plus 27 of 28 new mutants (P9 kept as a guard, see below) |
+
+## Fix round 2 (UI 1.11.1, 2026-09-29)
+
+Owner picks: far land = the earlier curve faded out between 600 and 1,000 km; short maps = fold the overlay panel's
+details when the exposure tool starts, then the least-overlap placement, never under the tool bar.
+
+- **Shading:** `rayShadow` is back to zero at F_ref, multiplied by a linear fade from 600 km (1) to 1,000 km (0). Land
+  at 432 km in a fully blocked wedge reads light again (0.37); Kauai from the North Shore is 0.57 (light).
+- **Reference:** floor 100 km (the 90 km test bay now reads "No open swell window"; a 220 km Marmara-sized sea stays
+  open all round); the full reach from 15 capped rays, a geometric blend from the spot's own percentile from 5 rays
+  (each extra ray ×(3000/own)^0.1).
+- **Window names:** centre for windows under 45°, both ends above ("NNE–SW (015°–230°)"), "Open except S
+  (180°–185°)" when the open windows cover 300° or more, neighbours with one name share it ("SSW (195°–200°,
+  205°–215°)"). Pipeline now reads "Open: W (250°–275°), WNW–NE (295°–045°)".
+- **Where a click is evaluated:** no point within 5 m of a coast (a synthetic two-cove grid: 444 of 7,130 clicks were
+  evaluated on the coastline before, 0 now); a water click never crosses a coast (the channel-and-spit case stays in its
+  channel); a land click walks on through a cove too narrow to use and stops at the far shore once it has its water.
+  Real data (R1's snapscan, 13 areas): false refusals 0 before and after; 4 more legitimate refusals in 2,062 land
+  clicks; placement time unchanged (max 7.3 ms).
+- **Placement:** `placeFan` prefers a spot within `maxPan` (a third of the map) at a smaller radius to a larger fan
+  farther away, then searches without the limit, then `leastOverlap` (disc samples: outside the map 1, an obstacle 1,
+  the tool bar 10; never centred on the bar). A resize re-places only a fan whose centre is on the map.
+- **Bar:** actions under the title, the body scrolls, `max-height` = the map's bottom − the bar's top − 8 px; the
+  actions row hides when empty; `onLayout(bar, grew)` lets the page minimise a window whenever the bar grows;
+  `onStart(bar, tool)` folds the overlay panel's details for the exposure tool on maps under 550 px.
+- **Interaction:** touch double-tap tolerance 16 px (mouse 4); a capture `pointerdown` on the document remembers a press
+  on a control or window, and the map click that follows is ignored; the keys are also owned with focus on the tools
+  button, the gear (panel closed) or a marker; the opened tools menu focuses its first item.
+- **Look:** a 7 px `#0b2536` underlay beneath the 4 px cyan rim; the wedge line is 3em (two lines, no 5 px jitter).
+- **Coast source:** a chunk that fails to decode leaves the in-flight map and is fetched again next time.
+- **Tests:** `tests/ui/tools.test.js` 20, `tests/ui/tools-ui.test.js` 16 (shared encoder `tests/ui/coastenc.js`;
+  `fakedom` matches `tag[attr="v"]`). Mutation run (52 mutants: R1's 24 survivors re-targeted + 28 for the new logic):
+  51 killed. Survivor P9 (least overlap without the "never centred on the bar" exclusion) is equivalent in every
+  geometry tried, because the bar's weight of 10 already keeps the centre off it; the exclusion stays as a guarantee.
+- **Also:** three overlay scheduler tests in `tests/overlay/playback.test.js` started failing on 2026-09-28 on the
+  unchanged HEAD (they seek 30 frames past "now" in a fixed 2026-09-22 run); they now run on that run's day with a
+  clock that still advances.

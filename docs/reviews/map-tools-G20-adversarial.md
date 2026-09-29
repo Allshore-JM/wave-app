@@ -233,3 +233,40 @@ ray counts at most `FAR_OPEN_MAX` 0.18 (under the open line) and fades to 0 at 1
   5 m (G7: a better point always exists in the tests), vertical-only resize shift (F2), the bar-centre guard (C5, kept
   as a guarantee), and the `leastOverlap` step (C4, performance only).
 
+## Re-check of fix round 3 (UI 1.11.2 @ f31509f, 2026-09-29, MAX)
+
+Two halves: R4, a fresh-context code reviewer (read-only, Node/Python, the published coast; report and scripts in the
+session scratchpad `g20/r4/`), and the author on the test site. Suites: pytest 456, Node 251 (also with the clock at
+2026-10-05, 2027-06-01 and 2027-12-31). About 176,000 placement clicks, including dateline and 74-75° grids: 0 false or
+new refusals against 1.11.1, 0 evaluated points on land, 0 land clicks within 5 m of a coast, 0 water clicks moved more
+than 300 m or across a coast. The 93 spots, 1.11.1 → 1.11.2: 31 wedges at 14 spots, all explained (21 by the new
+evaluation point at 7 spots, 10 by the far-land rule at 7 spots, every changed ray at 604-756 km); the owner's examples
+hold. Confirmed: far land (Cape Hatteras open from 015°), resize, date-bound tests, the phone sheet, `grew`, names,
+`placeFan` cost, bar minimum, golden, V-cove water clicks.
+
+**Test site (author).**
+Test site (UI 1.11.2, bytes = c289526), browser pane. The pane was hidden during this check, so the browser paused
+animation frames and did not fire window resize events by itself: resize events were dispatched by hand, the tool's
+pans were read from a `panBy` log (an animated pan does not play while hidden), and the overlay's phone sheet was built
+by presenting the page as visible to the overlay's code. No console errors.
+
+| Item | Verdict | Evidence |
+|---|---|---|
+| Rotation (R3 P2-B) | confirmed | 375×812, fan at (190, 600); rotate to 812×375: Leaflet keeps the centre (its own pan −219, 215) and pushes the fan to (409, 385), below the 322 px map; 177 ms later the tool pans (7, 183): target (402, 202), the whole disc inside the map |
+| Phone sheet (R3 P2-D) | confirmed | 812×375 with the real `.ov-sheet` (50-812 × 287-322): a fan clicked low is placed with its disc bottom at 284 (sheet top 287), clear of the bar; a press on the sheet's toggle released over the map adds no point; Escape with focus on the toggle leaves the measurement |
+| Window re-minimising (site P2 / R3 P3-2) | confirmed | 1280×800: the expanded forecast window is minimised at the first result (the bar grows to 265 px) and focus stays on the tool's ✕; re-opened by the user, it stays open through two more results (265 px, 242 px) |
+| Bar minimum (site P3) | confirmed | 457×309 (map 248): bar 134-240, max-height 106 px, Clear hit-tests to itself |
+| Far land / Hatteras (owner) | confirmed | "Open: NNE–SW (015°–230°)" |
+| Land clicks (R3 P2-A) | confirmed | Haleiwa "W, WNW–N" (0.4 mi), Honolua headland "W, N" (0.3 mi), Pipeline unchanged |
+| "Open except" order | confirmed | west of Kauai: "Open except ENE (070°–085°), ESE (090°–115°)" |
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| R4 P2-1 | P2 | Placement scans every edge of a 10×10 km window for every 20 m step of up to 25 walks: in dense estuaries it takes 100-230 ms, in the click's own task, before "Computing…" can paint. Kennebec mouth, Maine (43.818, −69.785; 5,287 edges): median 63-106 ms, max 205-233 ms (1.11.1: max 22 ms); with the rays up to 364 ms on a laptop, an estimated 0.7-0.9 s frozen on a phone. The record's "max 44 ms" held only for windows under ~1,400 edges. | planned |
+| R4 P2-2 | P2 | A land click whose nearest coast point is a cove-apex vertex: the first walk only grazes the tip, counts no crossing and runs on through land (Honolua Bay's head, 21.0169, −156.64062: evaluated 1,681 m away in the next bay, the search would give 460 m). 7 of 41,338 spot-grid land clicks, 55 in the Honolua dense grid. | planned |
+| R4 P3-1 | P3 | The look-out test (3 of 16 directions free for 2 km) and the clearest-water fallback sometimes pick worse water: a Hilo land click (19.7270, −155.0692) goes into a pond ("No open swell window"; 1.11.1: the bay, "N–ENE"); NW Scotland; Honolulu Harbor water clicks moved into the basin; Hvaler sounds. Far more gains than losses overall. The record's "8 in 41,338" is right for R3's spot grid (checked against both 1.11.0 and 1.11.1); R4's own grids give 24-25 land and 71 water clicks losing a window against 1.11.1 (2,348 gained). | planned (ranking tweaks, measured) |
+| R4 P3-2 | P3 | A tool switch at the same bar height skips the start-minimise and the next shrink reports growth; the template's focus restore skips focus on the page body. | planned |
+| R4 P3-3 | P3 | The placement rewrite is mostly unpinned: 20 of 32 placement mutants survive (the turn disabled, its side, parity, the on-coastline rule, the look-out threshold, the probe window, land within 5 m), plus the resize's y shift. | planned |
+| R4 P3-4 | P3 | README and a code comment describe the search and its fallback more narrowly than the code behaves. | planned |
+| R4 note | P3 | `playback.test.js` "coast: a download that hangs past the watchdog" (40 ms watchdog) fails under load: its first "still loading" check can run after the watchdog. | planned (test only) |
+

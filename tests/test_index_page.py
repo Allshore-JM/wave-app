@@ -347,13 +347,15 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     assert ".tools-bar-body .tools-sector { margin-top: 4px; min-height: 3em; }" in body
     assert "obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel')]; }," in body
     assert "[['liveBuoyPanel', 'lwMin'], ['forecastWin', 'fwMin']].forEach(function (w) {" in body
-    assert "if (r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top) min.click();" in body
+    assert "if (!(r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top)) return;" in body
     # G20 re-review: the bar is capped at the map (its body scrolls, the actions stay near the top); a window is
     # minimised whenever the bar GROWS over it; the overlay's details fold when the exposure tool starts on a short map
     assert "display: flex; flex-direction: column; }" in body and ".tools-bar-body { overflow-y: auto; min-height: 0; }" in body
     assert "onLayout: function (bar, grew) {" in body and "if (!grew) return;" in body
     assert "if (tool !== 'exposure' || map.getContainer().clientHeight >= 550) return;" in body
     assert "map.getContainer().querySelector('.ov-toggle[aria-expanded=\"true\"]');" in body
+    # G20 re-check: a page minimise keeps keyboard focus where it was (the tool keeps Escape / Backspace)
+    assert "if (had && had !== document.body && !el.contains(had) && document.contains(had)) try { had.focus({ preventScroll: true }); }" in body
     # the frames address alone never changes a flag-off page; with the overlay on, its gated block derives the coast
     monkeypatch.setenv("MODEL_FRAMES_BASE", "https://models.example.com/gfswave/0p25/v1/")
     assert A._coast_base() == "" and "__allshoreCoastBase =" not in client.get("/?station=51201").get_data(as_text=True)

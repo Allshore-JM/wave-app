@@ -13,8 +13,8 @@
  *   seas adapt: owner decision), 100..3,000 km; 3,000 km when 15 or more rays reach open ocean, blended in between
  *   from 5 rays (no flip at one ray more or less).
  * - A ray's shadow is 1 when land is within 15 km, falling with the log of the distance to 0 at F_ref; land beyond
- *   600 km fades out, to nothing at 1,000 km (owner, G20 re-review). A wedge's shadow is the mean over its ten rays:
- *   open below 0.2, light grey below 0.7, dark grey above.
+ *   600 km reads open by itself and fades to nothing at 1,000 km (owner, G20 re-check: Cape Hatteras's NNE opens). A
+ *   wedge's shadow is the mean over its ten rays: open below 0.2, light grey below 0.7, dark grey above.
  * A wedge at bearing b is swell arriving FROM b. Geometry only: real swell wraps headlands and islands, and reefs are
  * not in the data.
  *
@@ -316,9 +316,9 @@
   // ---- exposure ----
   var RAYS = 720, SECTORS = 72, PER_SECTOR = RAYS / SECTORS;
   var CAP_KM = 3000, NEAR_KM = 50, REF_MIN_KM = 100, REF_PCT = 0.9, BLEND_FROM = 5, BLEND_TO = 15;
-  var SHADOW_FULL_KM = 15, FAR_FADE_KM = 600, FAR_LAND_KM = 1000;
+  var SHADOW_FULL_KM = 15, FAR_FADE_KM = 600, FAR_LAND_KM = 1000, FAR_OPEN_MAX = 0.18;
   var OPEN_BELOW = 0.2, DARK_FROM = 0.7;
-  var STANDOFF_KM = 0.15, SNAP_MAX_KM = 2, ON_COAST_KM = 0.005;
+  var STANDOFF_KM = 0.15, SNAP_MAX_KM = 2, ON_COAST_KM = 0.005, OPEN_PROBE_KM = 2, OPEN_MIN_DIRS = 3;
   var MAX_ABS_LAT = 75;
   function stepKm(d) { return d < 20 ? 0.25 : d < 200 ? 2 : 10; }
   function rayBearing(i) { return (i + 0.5) * (360 / RAYS); }             // ray i lies in wedge floor(i / 10): [5k, 5k + 5)
@@ -358,13 +358,14 @@
   function levelOf(s) { return s < OPEN_BELOW ? 'open' : s < DARK_FROM ? 'light' : 'dark'; }
   // How much one ray's land blocks swell: fully within SHADOW_FULL_KM (the spot's own coast), falling off with the
   // log of the distance to nothing at F_ref (owner: nearby land darker; Kauai seen from the North Shore, ~150 km, is
-  // light grey). Land beyond FAR_FADE_KM fades out linearly and never shades beyond FAR_LAND_KM (owner, G20
-  // re-review: the shading nearer than 600 km stays as it was).
+  // light grey). Land beyond FAR_FADE_KM never makes a ray more than FAR_OPEN_MAX (below the open line) and fades to
+  // nothing at FAR_LAND_KM (owner, G20 re-check: the shading nearer than 600 km stays as it was, and New England no
+  // longer greys Cape Hatteras's NNE).
   function rayShadow(f, fRef) {
     if (f >= fRef || f >= FAR_LAND_KM) return 0;
     if (f <= SHADOW_FULL_KM) return 1;
     var s = 1 - Math.log(f / SHADOW_FULL_KM) / Math.log(fRef / SHADOW_FULL_KM);
-    if (f > FAR_FADE_KM) s *= (FAR_LAND_KM - f) / (FAR_LAND_KM - FAR_FADE_KM);
+    if (f > FAR_FADE_KM) s = Math.min(s, FAR_OPEN_MAX) * (FAR_LAND_KM - f) / (FAR_LAND_KM - FAR_FADE_KM);
     return Math.max(0, Math.min(1, s));
   }
   // From the per-ray fetches to the wedges.
@@ -413,6 +414,9 @@
       var n = nameOf(w), g = groups[groups.length - 1];
       if (g && g.name === n) g.ranges.push(rangeOf(w)); else groups.push({ name: n, ranges: [rangeOf(w)] });
     });
+    if (groups.length > 1 && groups[0].name === groups[groups.length - 1].name) {   // neighbours across north too
+      var last = groups.pop(); groups[0].ranges = last.ranges.concat(groups[0].ranges);
+    }
     return groups.map(function (g) { return g.name + ' (' + g.ranges.join(', ') + ')'; }).join(', ') +
       (ws.length > shown.length ? ' +' + (ws.length - shown.length) + ' more' : '');
   }
@@ -422,7 +426,8 @@
     if (ws.length === 1 && spanOf(ws[0]) === 360) return 'Open to swell from every direction';
     var total = 0; ws.forEach(function (w) { total += spanOf(w); });
     if (total >= EXCEPT_DEG) {                                                // name the gaps between the (clockwise) windows
-      return 'Open except ' + listText(ws.map(function (w, i) { return [w[1] % 360, ws[(i + 1) % ws.length][0]]; }));
+      return 'Open except ' + listText(ws.map(function (w, i) { return [w[1] % 360, ws[(i + 1) % ws.length][0]]; })
+        .sort(function (a, b) { return a[0] - b[0]; }));
     }
     return 'Open: ' + listText(ws);
   }
@@ -444,17 +449,22 @@
     var nw = nearWindow(origin.lat), fw = farWindow(origin.lat);
     return { near: indexOf(collectEdges(nearSets, origin, nw.wx, nw.wy), 0.02), far: indexOf(collectEdges([farSet], origin, fw.wx, fw.wy), 0.5) };
   }
-  // Where to evaluate a click (G20, owner: 150 m off the shore). On land: walk towards the nearest coast edge,
-  // through it, and on until the point is STANDOFF_KM from any coast (or the clearest water point within
-  // SNAP_MAX_KM). On water within STANDOFF_KM of the shore: walk away from the nearest edge, at most twice the
-  // stand-off. A point exactly on an edge steps along the edge's normal. The walk never crosses a coast beyond the
-  // water it chose (G20 re-review: a thin spit), and a point within 5 m of a coast is never chosen (every ray from it
-  // would stop at once). Returns {lat, lng, moved (km)} or null.
+  // Where to evaluate a click (G20, owner: 150 m off the shore). Returns {lat, lng, moved (km)} or null.
+  // - Open water at least STANDOFF_KM from any coast: the click itself.
+  // - A land click walks to the nearest coast edge; once through it, it turns along that edge's normal, straight out
+  //   to sea (G20 re-review R3: walking on in the original direction ran along the shore or on through land).
+  // - A water click within the stand-off walks away from the nearest edge, at most twice the stand-off.
+  // - When that walk does not reach the stand-off, 24 directions are searched: the nearest point that reaches it
+  //   within reach (2 km on land, twice the stand-off on water) that looks out (at least 3 of 16 directions run 2 km
+  //   without meeting land: a bay beats a pond behind the shore, G20 re-check, Hilo), else the nearest point reaching
+  //   the stand-off, else the clearest water found. A walk never crosses a
+  //   coast beyond its own water (a thin spit). A land click never settles within ON_COAST_KM of a coast (every ray
+  //   would stop at once); with no such water within 2 km it is refused.
   function placeOrigin(origin, sets, opts) {
     opts = opts || {};
     var maxKm = opts.maxKm == null ? SNAP_MAX_KM : opts.maxKm, stand = opts.standKm == null ? STANDOFF_KM : opts.standKm;
     sets = sets.filter(Boolean);
-    var kx = 111.32 * Math.max(0.05, Math.cos(origin.lat * D2R)), ky = 110.57, lim = maxKm + stand + 1;
+    var kx = 111.32 * Math.max(0.05, Math.cos(origin.lat * D2R)), ky = 110.57, lim = maxKm + Math.max(stand, OPEN_PROBE_KM) + 1;   // the probe's reach too
     var deg = collectEdges(sets, origin, Math.min(180, lim / kx), lim / ky), E = [];
     for (var i = 0; i < deg.length; i += 4) E.push(deg[i] * kx, (deg[i + 1] - origin.lat) * ky, deg[i + 2] * kx, (deg[i + 3] - origin.lat) * ky);
     function nearest(px, py) {
@@ -466,44 +476,95 @@
       }
       return best;
     }
-    // How many coast edges the step a->b crosses (touching at a does not count; two edges met at one shared vertex
-    // count once).
-    function crossings(ax, ay, bx, by) {
-      var dx = bx - ax, dy = by - ay, ts = [];
+    // The coast crossings of the step a->b: how many (touching at a does not count; edges met at one shared vertex
+    // count once) and the first one's parameter and edge.
+    function cuts(ax, ay, bx, by) {
+      var dx = bx - ax, dy = by - ay, ts = [], first = null;
       for (var j = 0; j < E.length; j += 4) {
         var cx = E[j], cy = E[j + 1], ex = E[j + 2] - cx, ey = E[j + 3] - cy, den = dx * ey - dy * ex;
         if (!den) continue;
         var t = ((cx - ax) * ey - (cy - ay) * ex) / den, u = ((cx - ax) * dy - (cy - ay) * dx) / den;
-        if (t > 1e-9 && t <= 1 && u >= 0 && u <= 1 && ts.every(function (v) { return Math.abs(v - t) > 1e-7; })) ts.push(t);
+        if (!(t > 1e-9 && t <= 1 && u >= 0 && u <= 1)) continue;
+        if (ts.every(function (v) { return Math.abs(v - t) > 1e-7; })) ts.push(t);
+        if (!first || t < first.t) first = { t: t, ex: ex, ey: ey };
       }
-      return ts.length;
+      return { n: ts.length, first: first };
     }
     function water(px, py) { return !inLand(sets, wrapLng(origin.lng + px / kx), origin.lat + py / ky); }
-    var land = !water(0, 0), nb = nearest(0, 0);
+    var land = !water(0, 0), nb = nearest(0, 0), step = 0.02;
+    // exactly on the coastline (a data vertex or edge): the water side, stepping off along the edge's normal (which
+    // side the point test calls it can flip with rounding, and a walk counting crossings must not start on a coast)
+    if (nb && nb.d <= 1e-6) land = false;
     if (!land && (!nb || nb.d >= stand)) return { lat: origin.lat, lng: origin.lng, moved: 0 };
     if (!nb) return land ? null : { lat: origin.lat, lng: origin.lng, moved: 0 };
+    var cands = [];                                                           // {px, py, clr, d (km walked)}
+    if (!land) cands.push({ px: 0, py: 0, clr: nb.d, d: 0 });
+    // One walk from (x0, y0) along (ux, uy): `inWater` says where it starts; it stops at the second state change
+    // (land -> water -> land) or the first (water -> land), at the first sample reaching the stand-off, or at `len`.
+    // `turn` (land clicks): once in the water, continue along the crossed edge's normal instead.
+    function walk(x0, y0, ux, uy, len, inWater, turn, base) {
+      var qx = x0, qy = y0, t = 0, dist = base;
+      while (t + step <= len + 1e-9) {
+        t += step;
+        var px = qx + ux * step, py = qy + uy * step, c = cuts(qx, qy, px, py);
+        if (c.n) {
+          if (inWater) return;                                                // the far shore, or a thin spit
+          inWater = c.n % 2 === 1;
+          if (inWater && turn && c.first) {                                  // through the coast: straight out to sea
+            var cxp = qx + (px - qx) * c.first.t, cyp = qy + (py - qy) * c.first.t, el = Math.sqrt(c.first.ex * c.first.ex + c.first.ey * c.first.ey) || 1;
+            var nx = -c.first.ey / el, ny = c.first.ex / el;
+            if (nx * ux + ny * uy < 0) { nx = -nx; ny = -ny; }                  // the side the walk crossed into
+            return walk(cxp, cyp, nx, ny, Math.min(len - t + step, 2 * stand), true, false, dist + (px - qx) * c.first.t * ux + (py - qy) * c.first.t * uy);
+          }
+        }
+        dist += step; qx = px; qy = py;
+        if (!inWater) continue;
+        var n2 = nearest(px, py), clr = n2 ? n2.d : Infinity;
+        cands.push({ px: px, py: py, clr: clr, d: dist });
+        if (clr >= stand) return;
+      }
+    }
+    // 1. towards (land) or away from (water) the nearest edge
     var ux, uy;
     if (nb.d > 1e-6) { ux = nb.cx / nb.d; uy = nb.cy / nb.d; if (!land) { ux = -ux; uy = -uy; } }
     else {                                                                    // exactly on an edge: its normal, towards the water
       var el = Math.sqrt(nb.ex * nb.ex + nb.ey * nb.ey) || 1, nx = -nb.ey / el, ny = nb.ex / el;
       if (water(nx * 0.01, ny * 0.01)) { ux = nx; uy = ny; } else { ux = -nx; uy = -ny; }
     }
-    // a click already on the water moves at most twice the stand-off (a narrow bay keeps its best point nearby)
-    var step = 0.02, best = null, walk = land ? maxKm : Math.min(maxKm, 2 * stand), qx = 0, qy = 0;
-    for (var t = land ? Math.max(step, nb.d - step) : step; t <= walk + 1e-9; t += step) {
-      var px = ux * t, py = uy * t, cut = crossings(qx, qy, px, py);
-      qx = px; qy = py;
-      // a water click never crosses a coast (a thin spit); a land click crosses its own, and once it has found its
-      // water point the next coast is the far shore (before that it walks on: a cove too narrow to use)
-      if (cut && (!land || best)) break;
-      if (!water(px, py)) continue;
-      var n2 = nearest(px, py), clr = n2 ? n2.d : Infinity;
-      if (clr < ON_COAST_KM) continue;                                        // on the coastline itself
-      if (!best || clr > best.clr) best = { px: px, py: py, clr: clr };
-      if (clr >= stand) break;
+    var reach = land ? maxKm : Math.min(maxKm, 2 * stand);
+    walk(0, 0, ux, uy, reach, !land || nb.d <= 1e-6, land, 0);
+    // a candidate really is water (a walk's parity can slip at a grazed vertex, or a turn pick the land side of a
+    // feature narrower than the 5 m side test): checked once, when it matters
+    function valid(c) { if (c.ok === undefined) c.ok = c.px === 0 && c.py === 0 ? !land : water(c.px, c.py); return c.ok; }
+    // how many of 16 directions run OPEN_PROBE_KM from a point without meeting a coast
+    function openness(c) {
+      if (c.open === undefined) {
+        c.open = 0;
+        for (var k = 0; k < 16; k++) { var b = k * 22.5 * D2R; if (!cuts(c.px, c.py, c.px + Math.sin(b) * OPEN_PROBE_KM, c.py + Math.cos(b) * OPEN_PROBE_KM).n) c.open++; }
+      }
+      return c.open;
     }
-    if (!best) return land ? null : { lat: origin.lat, lng: origin.lng, moved: 0 };   // a channel narrower than a step
-    return { lat: origin.lat + best.py / ky, lng: wrapLng(origin.lng + best.px / kx), moved: Math.sqrt(best.px * best.px + best.py * best.py) };
+    // the nearest candidate reaching the stand-off (that looks out, when `open`)
+    function reached(open) {
+      var r = null;
+      cands.slice().sort(function (p, q) { return p.d - q.d; }).some(function (c) {
+        if (c.clr >= stand && valid(c) && (!open || openness(c) >= OPEN_MIN_DIRS)) { r = c; return true; }
+        return false;
+      });
+      return r;
+    }
+    // 2. not out at the stand-off, or only into enclosed water: search around the click
+    if (!reached(true)) for (var a = 0; a < 360; a += 15) walk(0, 0, Math.sin(a * D2R), Math.cos(a * D2R), reach, !land, false, 0);
+    var pick = reached(true) || reached(false), minClr = land ? ON_COAST_KM : 0;
+    var order = pick ? [pick] : [];
+    cands.slice().sort(function (p, q) { return q.clr - p.clr || p.d - q.d; }).forEach(function (c) { if (c !== pick && c.clr >= minClr) order.push(c); });
+    for (var k = 0; k < order.length; k++) {
+      var c = order[k];
+      if (!valid(c)) continue;
+      if (c.px === 0 && c.py === 0) return { lat: origin.lat, lng: origin.lng, moved: 0 };
+      return { lat: origin.lat + c.py / ky, lng: wrapLng(origin.lng + c.px / kx), moved: Math.sqrt(c.px * c.px + c.py * c.py) };
+    }
+    return land ? null : { lat: origin.lat, lng: origin.lng, moved: 0 };
   }
   // The whole computation, time-sliced: yieldFn() between batches (a Promise), shouldStop() aborts.
   function computeExposure(origin, nearSets, farSet, opts) {
@@ -609,6 +670,7 @@
   // Nothing clear: score sample points of the disc (outside the map 1, on an obstacle 1, on a hard obstacle 10).
   function leastOverlap(w, h, cx, cy, r, obstacles, step) {
     if (!(w > 0 && h > 0)) return null;
+    step = Math.max(step, Math.ceil(Math.sqrt(w * h / 5000)));                // about 5,000 positions at most (a 4K map)
     var e = r + LABEL_PAD, pts = [[0, 0]], best = null;
     [0.35, 0.7, 1].forEach(function (f) { for (var a = 0; a < 360; a += 30) pts.push([Math.sin(a * D2R) * e * f, -Math.cos(a * D2R) * e * f]); });
     function inRect(o, x, y) { return x >= o.l && x <= o.r && y >= o.t && y <= o.b; }
@@ -693,7 +755,7 @@
     var coast = opts.coastBase ? new CoastSource(opts.coastBase, opts.fetch || root.fetch.bind(root)) : null;
     var expoBtn = menu.querySelector('[data-tool="exposure"]');
     if (expoBtn && !coast) expoBtn.hidden = true;
-    var s = state = { tool: null, pts: [], closed: false, closedAt: null, group: L.featureGroup(), fan: null, result: null, selected: -1, gen: 0, busy: false, msg: '', dblWas: null, radius: 0, barH: -1 };
+    var s = state = { tool: null, pts: [], closed: false, closedAt: null, group: L.featureGroup(), fan: null, result: null, selected: -1, gen: 0, busy: false, msg: '', dblWas: null, radius: 0, barH: -1, barMax: 0, size: null };
     s.group.addTo(map);
     if (!map.getPane('toolsPane')) { var pane = map.createPane('toolsPane'); pane.style.zIndex = 590; pane.style.pointerEvents = 'none'; }
 
@@ -752,22 +814,23 @@
       if (barEl.hidden) return;
       var m = map.getContainer().getBoundingClientRect(), b = barEl.getBoundingClientRect();
       if (!m.height) return;
-      barEl.style.maxHeight = Math.max(120, Math.floor(m.bottom - b.top - 8)) + 'px';
+      barEl.style.maxHeight = Math.max(60, Math.floor(m.bottom - b.top - 8)) + 'px';
     }
-    // The page's corner height, only when the bar's height changed; `grew` lets the page minimise a window the taller
-    // bar now overlaps (G20 re-review).
+    // The page's corner height, only when the bar's height changed; `grew` (the bar taller than it has been since the
+    // tool started: not the dip to "Computing…" and back) lets the page minimise a window the bar now overlaps.
     function layout() {
       fitBar();
       var h = barEl.hidden ? 0 : (barEl.offsetHeight || 0);
       if (h === s.barH) return;
-      var grew = h > Math.max(0, s.barH);
+      var grew = h > s.barMax;
+      if (grew) s.barMax = h;
       s.barH = h; if (opts.onLayout) opts.onLayout(barEl, grew);
     }
 
     function start(tool) {
       if (!TOOLS[tool]) return;
       clear(true);
-      s.tool = tool; barEl.hidden = false; titleEl.textContent = TOOLS[tool];
+      s.tool = tool; s.barMax = 0; barEl.hidden = false; titleEl.textContent = TOOLS[tool];
       Array.prototype.forEach.call(menu.querySelectorAll('[data-tool]'), function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-tool') === tool ? 'true' : 'false'); });
       map.getContainer().classList.add('tools-active');
       if (s.dblWas === null) { s.dblWas = map.doubleClickZoom.enabled(); map.doubleClickZoom.disable(); }
@@ -896,7 +959,7 @@
         var r = el.getBoundingClientRect(); if (!r.width || !r.height) return;
         out.push({ l: r.left - m.left, t: r.top - m.top, r: r.right - m.left, b: r.bottom - m.top, hard: el === barEl });
       }
-      Array.prototype.forEach.call(box.querySelectorAll('.leaflet-control'), add);
+      Array.prototype.forEach.call(box.querySelectorAll('.leaflet-control, .ov-sheet'), add);   // the overlay's phone sheet too
       (opts.obstacles ? opts.obstacles() : []).forEach(add);
       return out;
     }
@@ -906,6 +969,7 @@
     function placeCurrentFan() {
       if (!s.result || !s.fan) return;
       var size = map.getSize(), c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
+      s.size = size;
       var spot = placeFan(size.x, size.y, c.x, c.y, defaultRadius(), obstacles(), { maxPan: Math.max(size.x, size.y) / 3 });
       var r = spot ? spot.r : 50;
       if (r !== s.radius) { s.radius = r; drawFan(); }
@@ -944,7 +1008,7 @@
       var path = ev.composedPath ? ev.composedPath() : [];
       for (var i = 0; i < path.length; i++) {
         var el = path[i];
-        if (el && el.classList && (el.classList.contains('leaflet-control') || el.classList.contains('fwin'))) return true;
+        if (el && el.classList && (el.classList.contains('leaflet-control') || el.classList.contains('fwin') || el.classList.contains('ov-sheet'))) return true;
       }
       return false;
     }
@@ -965,9 +1029,13 @@
       clearTimeout(rz);
       rz = setTimeout(function () {
         if (s.result && s.fan) {
-          var z = map.getSize(), c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
-          if (c.x >= 0 && c.y >= 0 && c.x <= z.x && c.y <= z.y) placeCurrentFan();
+          // Was the fan on the map BEFORE the resize? Leaflet keeps the map's centre, so the old point is the new one
+          // shifted back by half the size change (G20 re-check: a rotation pushes a visible fan off the new map).
+          var z = map.getSize(), o = s.size || z, c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
+          var ox = c.x - (z.x - o.x) / 2, oy = c.y - (z.y - o.y) / 2;
+          if (ox >= 0 && oy >= 0 && ox <= o.x && oy <= o.y) placeCurrentFan();
           else if (s.radius !== defaultRadius()) { s.radius = defaultRadius(); drawFan(); }
+          s.size = z;
         }
         layout();
       }, 150);
@@ -983,7 +1051,7 @@
       if (!a || a === doc.body || a === doc.documentElement || a === box || barEl.contains(a) || a === btn) return true;
       var gear = doc.getElementById('settingsBtn'), panel = doc.getElementById('settingsPanel');
       if (gear && a === gear) return !panel || panel.hidden;
-      return box.contains(a) && !(a.closest && a.closest('.leaflet-control'));
+      return box.contains(a) && !(a.closest && a.closest('.leaflet-control, .ov-sheet'));
     }
     doc.addEventListener('keydown', function (e) {
       if (!s.tool || open || !ownsKeys()) return;
@@ -1009,7 +1077,7 @@
       placeOrigin: placeOrigin, computeExposure: computeExposure, fanSvg: fanSvg, sectorAt: sectorAt, placeFan: placeFan, leastOverlap: leastOverlap,
       innerRadius: innerRadius, levelOf: levelOf, rayShadow: rayShadow, onCellLine: onCellLine, CoastSource: CoastSource, wrapLng: wrapLng,
       RAYS: RAYS, SECTORS: SECTORS, CAP_KM: CAP_KM, NEAR_KM: NEAR_KM, REF_MIN_KM: REF_MIN_KM, SHADOW_FULL_KM: SHADOW_FULL_KM,
-      FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM
+      FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, FAR_OPEN_MAX: FAR_OPEN_MAX, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM
     }
   };
 })(typeof window !== 'undefined' ? window : this);

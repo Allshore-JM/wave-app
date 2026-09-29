@@ -211,11 +211,21 @@ test('real coast (Hawaii crop of the published data): the owner\'s examples, pin
   assert.equal(levels(pipe.r), '.........########################################+.....++++.............');
   assert.equal(T.windowsText(pipe.r.openWindows), 'Open: W (250°–275°), WNW–NE (295°–045°)');
   assert.equal(levels(at(21.269, -157.829).r), '############################+..........................+################', 'Waikiki: south open, north dark');
-  assert.equal(levels(at(21.5975, -158.109).r), '####################################################+..+++++...........#', 'Haleiwa: Kauai light');
+  assert.equal(levels(at(21.5975, -158.109).r), '####################################################+..+++++............', 'Haleiwa: Kauai light');
   // a Haleiwa land click (G20 re-check R3 P2-A): 1.11.1 walked 1,469 m into an embayment ("No open swell window")
   const hl = at(21.5931, -158.1065);
   assert.ok(hl.o.moved < 0.7, 'moved ' + hl.o.moved);
   assert.equal(T.windowsText(hl.r.openWindows), 'Open: W (265°–275°), WNW–N (300°–000°)');
+});
+
+test('Honolua Bay (published coast, Maui crop): a land click at the bay head is evaluated in the bay (G20 re-check R4)', () => {
+  // its nearest coast point is the tip of the bay: 1.11.2 grazed it and walked 1,681 m on over the headland
+  const t1 = fixture('maui-t1.bin');
+  const head = T.placeOrigin({ lat: 21.0169, lng: -156.64062 }, [t1]);
+  assert.ok(head && head.moved < 0.6, 'moved ' + (head && head.moved));
+  assert.ok(head.lng < -156.643 && head.lat < 21.026 && !T.inLand([t1], head.lng, head.lat), 'in the bay: ' + JSON.stringify(head));
+  const headland = T.placeOrigin({ lat: 21.0175, lng: -156.64 }, [t1]);
+  assert.ok(headland && headland.moved < 0.6, 'the east headland (1.11.1 refused it): ' + JSON.stringify(headland));
 });
 
 test('where a click is evaluated: 150 m off the shore; land within 2 km snaps; deep inland refused; a point ON an edge works', () => {
@@ -305,6 +315,17 @@ test('where a click is evaluated (G20 re-review): off the coastline, never throu
   assert.equal(T.inLand([withPond], 0, -kmy(0.55)), false, 'the pond is water');
   const seaward = T.placeOrigin({ lat: -kmy(0.3), lng: 0 }, [withPond]);
   assert.ok(seaward && seaward.lat > 0, 'out to sea, not into the pond: ' + JSON.stringify(seaward));
+  // a land click whose only water within 2 km is the tip of a sharp V (8 km long, 22 m wide at its mouth: under 6 m
+  // wide within reach): refused, never settled on a flank
+  const crackLand = set([[[D(-0.1), D(-0.1), D(0.1), D(-0.1), D(0.1), D(0.1), D(0.0001), D(0.1), D(0), D(0.0276), D(-0.0001), D(0.1), D(-0.1), D(0.1)]]]);
+  assert.equal(T.inLand([crackLand], 0, 0.05), false, 'the V is water');
+  assert.equal(T.placeOrigin({ lat: 0.0276 - kmy(0.05), lng: 0 }, [crackLand]), null, 'nothing usable within 2 km');
+  // a long enclosed lake 500 m south (400 m wide, 5 km long: 150 m out it looks out only east and west, 2 of 16) and
+  // the sea 1 km north: the sea (3 of 16 directions at least)
+  const lakeHole = [D(-0.0225), D(-0.0045), D(-0.0225), D(-0.0081), D(0.0225), D(-0.0081), D(0.0225), D(-0.0045)];   // clockwise
+  const withLake = set([[[D(-0.05), D(-0.05), D(0.05), D(-0.05), D(0.05), D(0.009), D(-0.05), D(0.009)], lakeHole]]);
+  const lookOut = T.placeOrigin({ lat: 0, lng: 0 }, [withLake]);
+  assert.ok(lookOut && lookOut.lat > 0.009, 'the sea, not the lake that only looks along itself: ' + JSON.stringify(lookOut));
   // the local scale follows the latitude (Thurso, 58.6 N): 150 m off an east-facing coast in true metres
   const kxT = 111.32 * Math.cos(58.6 * Math.PI / 180);
   const th = T.placeOrigin({ lat: 58.6, lng: -3.0 - 0.1 / kxT }, [set([[sq(-3.6, 58.3, -3.0, 58.9)]])]);
@@ -406,6 +427,20 @@ test('placing the fan: stays when clear, the nearest clear spot, shrinks on a sh
   // a maximised window on a 4K map (nothing fits anywhere) stays cheap
   const t0 = Date.now(); const big = T.placeFan(3840, 2160, 1900, 1000, 120, [{ l: 8, t: 8, r: 3832, b: 2152 }]);
   assert.ok(big && big.overlap && Date.now() - t0 < 100, 'within 100 ms: ' + (Date.now() - t0));
+});
+
+test('placement behind a dense coast (16,000 edges within reach) stays fast (G20 re-check R4: the Kennebec mouth)', () => {
+  // land south of 0, a field of 4,050 islets offshore (44 m each, 110 m apart): land clicks 250-660 m inland walk and
+  // search through thousands of edges; 1.11.2 took ~170-200 ms each, the bucket index ~10-30 ms
+  const pieces = [[sq(-0.05, -0.05, 0.05, 0)]];
+  for (let i = -45; i < 45; i++) for (let j = 2; j < 47; j++) pieces.push([sq(i * 0.001, j * 0.001, i * 0.001 + 0.0004, j * 0.001 + 0.0004)]);
+  const field = set(pieces);
+  let worst = 0;
+  for (const [lat, lng] of [[-0.003, 0], [-0.004, 0.0123], [-0.0025, -0.021], [-0.006, 0.004]]) {
+    const t0 = Date.now(); const o = T.placeOrigin({ lat, lng }, [field]); worst = Math.max(worst, Date.now() - t0);
+    assert.ok(o && o.lat > 0 && !T.inLand([field], o.lng, o.lat), 'out on the water: ' + JSON.stringify(o));
+  }
+  assert.ok(worst < 80, 'each placement under 80 ms: ' + worst);
 });
 
 test('the far window reaches as far as the rays: the whole circle when a ray can pass a pole', () => {

@@ -384,3 +384,30 @@ test('a rotation re-places a fan that was on the map, although the resize itself
   E.win.fire('resize'); await wait(200);
   assert.equal(E.map.pans.length, n + 1, 'placed again');
 });
+
+// ---- G20 re-check of fix round 3 (fix round 4) ----
+test('a rotation where only the height change shows the fan was on the map: it is placed again', async () => {
+  const E = makeEnv({ mapW: 812, mapH: 327, lat0: 22, lng0: -158.7, scale: 400 });
+  E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle();
+  // the user pans so the fan sits at (250, 300) of the landscape map
+  E.view.lng0 = E.s.fanLng - 250 / 400; E.view.lat0 = E.s.result.origin.lat + 300 / 400;
+  const n = E.map.pans.length;
+  // rotate to 375 x 764: Leaflet keeps the centre, so the point moves by half the size change: (31.5, 518.5), below the
+  // old height but on the new map, and too near the new left edge
+  E.mapEl.rect = { left: 0, top: 0, width: 375, height: 764 };
+  E.view.lng0 += (812 - 375) / 2 / 400; E.view.lat0 += (764 - 327) / 2 / 400;
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
+  assert.ok(Math.abs(c.x - 31.5) < 1e-6 && Math.abs(c.y - 518.5) < 1e-6, JSON.stringify(c));
+  E.win.fire('resize'); await wait(200);
+  assert.equal(E.map.pans.length, n + 1, 'placed again (judged at its pre-rotation point)');
+});
+
+test('switching tools at the same bar height still reports the bar, and a later shrink is not growth', async () => {
+  const E = makeEnv(); E.pick('distance');
+  const k = E.layouts.length;
+  E.pick('exposure');
+  assert.equal(E.layouts.length, k + 1, 'the new tool reports its bar although its height did not change');
+  assert.equal(E.layouts[E.layouts.length - 1], true);
+  E.bar._h = 150; E.clickAt(21.6655, -158.054); await E.settle();
+  assert.equal(E.layouts[E.layouts.length - 1], false, 'shorter: not growth');
+});

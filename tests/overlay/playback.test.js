@@ -27,6 +27,13 @@ function manifest(run, runUtc, tag, nodirs, steps) {
 const ptr = (m) => ({ run: m.run, manifest: `gfswave/0p25/v1/${m.run}/manifest-x.json`, complete: true, published_utc: new Date().toISOString().replace(/\.\d+Z$/, 'Z') });
 const tick = () => new Promise((r) => setImmediate(r));
 async function settle(n) { for (let i = 0; i < (n || 6); i++) await tick(); }
+// These tests seek up to 30 frames past "now" in run A (2026-09-22 12Z, 81 frames to +240 h): run them on A's own day,
+// with a clock that still advances (cooldowns and timers keep working).
+async function onRunDay(fn) {
+  const real = Date.now, t0 = real(), base = Date.parse('2026-09-23T00:00:00Z');
+  Date.now = () => base + (real() - t0);
+  try { await fn(); } finally { Date.now = real; }
+}
 
 // One world per test: stubs, a fresh module evaluation, and a controller with the DOM parts neutralised.
 function world(opts) {
@@ -575,7 +582,7 @@ test('Update: the direction cache goes with the run and a late old-run direction
 
 // ---- G10-A: a pending seek / step survives every new caller of _prefetch / _startDir; delivery follows the layer ----
 
-test('G10-A S1: a far seek is loading, then the direction resolution changes (zoom 6 -> 7.6): the seek still lands', async () => {
+test('G10-A S1: a far seek is loading, then the direction resolution changes (zoom 6 -> 7.6): the seek still lands', () => onRunDay(async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
   const i0 = o.frameIndex;
@@ -590,7 +597,7 @@ test('G10-A S1: a far seek is loading, then the direction resolution changes (zo
   assert.equal(o.frameIndex, i0 + 30, 'the seek landed'); assert.equal(o.target, i0 + 30);
   assert.ok(o.flow.dir && o.flow.dir.cols === 1440, 'the full-resolution direction of the landed step is shown');
   o.unmount();
-});
+}));
 
 test('G10-A S2 / S5: Animation ticked while a step is loading (outside the ring, and with _startDir eviction): the step still lands', async () => {
   for (const ahead of [3, 2]) {
@@ -610,7 +617,7 @@ test('G10-A S2 / S5: Animation ticked while a step is loading (outside the ring,
   }
 });
 
-test('G10-A: unticking Animation while a step is loading keeps the step; the shown step gets no direction fetch while another target is pending', async () => {
+test('G10-A: unticking Animation while a step is loading keeps the step; the shown step gets no direction fetch while another target is pending', () => onRunDay(async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
   const i0 = o.frameIndex;
@@ -623,7 +630,7 @@ test('G10-A: unticking Animation while a step is loading keeps the step; the sho
   await w.releaseAll(); await settle();
   assert.equal(o.frameIndex, i0 + 30); assert.ok(o.flow.dir);
   o.unmount();
-});
+}));
 
 test('G10-A M26 / G10-C P2-1: a step shows its picture and its direction together; the old direction never sits under the new step', async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
@@ -658,7 +665,7 @@ test('G10-A M11/M12: _trimInflight keeps no survivor beside a target whose direc
   o.inflight = {}; o.unmount();
 });
 
-test('G10-A M60 / P3-5 / P3-4: a cached direction is not fetched again; untick before the first frame aborts the direction fetch; direction successes do not mask field failures', async () => {
+test('G10-A M60 / P3-5 / P3-4: a cached direction is not fetched again; untick before the first frame aborts the direction fetch; direction successes do not mask field failures', () => onRunDay(async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create(); o.anim = true; o.mount('hs'); await settle();
   assert.ok(!Object.keys(o.inflight).some(isDir), 'no direction before the first picture (G15 P2-1)');
@@ -674,7 +681,7 @@ test('G10-A M60 / P3-5 / P3-4: a cached direction is not fetched again; untick b
   o.seek(i0 + 10); await settle(); await w.releaseAll(); o.seek(i0 + 20); await settle(); await w.releaseAll(); o.seek(i0 + 30); await settle(); await w.releaseAll();
   assert.equal(o.transientFails, 3, 'the counter follows the field frames only'); assert.equal(o.last && o.last.state, 'error');
   o.unmount();
-});
+}));
 
 test('G10-A D1 / M52: on a field switch a direction that lands before the field frame is not delivered; the animator is told the new field', async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;

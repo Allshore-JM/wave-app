@@ -280,10 +280,10 @@ test('coast: a download that hangs past the watchdog fails the coast load; the f
   w.coastAnswer = coastOk;
   w.pointer = ptr(A); w.manifests[A.run] = A;
   const o = w.create({ coast: true });
-  o.coast.timeoutMs = 40;                                                                      // the harness never answers coast fetches by itself
+  o.coast.timeoutMs = 150;                                                                     // the harness never answers coast fetches by itself (150 ms: the first check must run before it under load)
   o.mount('hs'); await settle();
   assert.equal(o.coast.status, 'loading');
-  await new Promise((r) => setTimeout(r, 120));
+  await new Promise((r) => setTimeout(r, 400));
   await settle();
   assert.equal(o.coast.status, 'failed');
   for (let i = 0; i < 4 && !w.pendingBitmaps.length; i++) await settle();

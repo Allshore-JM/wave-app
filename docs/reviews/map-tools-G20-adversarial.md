@@ -176,16 +176,60 @@ intended template change and four version bumps only).
 
 | # | Sev | Finding | Outcome |
 |---|---|---|---|
-| R3 P2-A | P2 | Land clicks near narrow water walk on through land: the 5 m rule skips near-shore samples and the walk continues up to 2 km. Haleiwa (21.5931, −158.1065) moves 1,469 m into an embayment ("No open swell window"; 1.11.0: 429 m, W and NW open); Hilo (19.7273, −155.0629) 1,250 m; Honolua's headland (21.0175, −156.6400) refused with usable water 140 m away. 8 broken and 4 falsely refused in 41,338 land clicks at 83 spots. | planned |
-| R3 P2-B | P2 | A resize judges "on screen" after the resize: Leaflet keeps the centre, so a rotation that pushes a visible fan off the map no longer re-places it (375×764 → 812×327: a 51 px sliver). | planned |
-| R3 P2-C | P2 | Six more tests in `tests/overlay/playback.test.js` step from "now" through the fixed run and fail from 2026-10-02 (checked to 2027-09 with a shifted clock; nothing else in the Node suites is date-bound). | planned |
-| R3 P2-D | P2 | The overlay's phone sheet (`div.ov-sheet`, not a `.leaflet-control`) is not an obstacle, not UI for the press rule, and now owns the keys; on a 375×812 phone a low click leaves ~24 px of the fan under it. | planned |
-| Site P2 / R3 P3-2 | P2 | Every exposure result reports `grew` (the bar shrinks to "Computing…" first), so a window the user expands while the tool is open is minimised again at the next click, and the forecast window's minimise moves focus out of the map. | planned |
-| Site P1 / R3 P3-7 | P1 (owner decision) | Cape Hatteras's NNE: the chosen option promised it "still opens"; 015°–025° read light (New England at 621-716 km: 0.27, 0.22). A fade from 500 km opens 020° only, from 450 km opens 015° at exactly 0.20; "land beyond 600 km reads open, fading to nothing at 1,000 km" opens it (0.16, 0.14) and differs from the shipped rule in 10 wedges at 7 of the 93 spots. | owner's call |
-| R3 P3-1 | P3 | A water click in very narrow water is kept at the click, whatever its clearance (Honolua cove 0.3 m); the docs say "never". | planned |
-| R3 P3-3 | P3 | A name can repeat across north ("N …, E …, N …"); "Open except" gaps are not in bearing order. | planned |
+| R3 P2-A | P2 | Land clicks near narrow water walk on through land: the 5 m rule skips near-shore samples and the walk continues up to 2 km. Haleiwa (21.5931, −158.1065) moves 1,469 m into an embayment ("No open swell window"; 1.11.0: 429 m, W and NW open); Hilo (19.7273, −155.0629) 1,250 m; Honolua's headland (21.0175, −156.6400) refused with usable water 140 m away. 8 broken and 4 falsely refused in 41,338 land clicks at 83 spots. | fixed (round 3) |
+| R3 P2-B | P2 | A resize judges "on screen" after the resize: Leaflet keeps the centre, so a rotation that pushes a visible fan off the map no longer re-places it (375×764 → 812×327: a 51 px sliver). | fixed (round 3) |
+| R3 P2-C | P2 | Six more tests in `tests/overlay/playback.test.js` step from "now" through the fixed run and fail from 2026-10-02 (checked to 2027-09 with a shifted clock; nothing else in the Node suites is date-bound). | fixed (round 3) |
+| R3 P2-D | P2 | The overlay's phone sheet (`div.ov-sheet`, not a `.leaflet-control`) is not an obstacle, not UI for the press rule, and now owns the keys; on a 375×812 phone a low click leaves ~24 px of the fan under it. | fixed (round 3) |
+| Site P2 / R3 P3-2 | P2 | Every exposure result reports `grew` (the bar shrinks to "Computing…" first), so a window the user expands while the tool is open is minimised again at the next click, and the forecast window's minimise moves focus out of the map. | fixed (round 3) |
+| Site P1 / R3 P3-7 | P1 (owner decision) | Cape Hatteras's NNE: the chosen option promised it "still opens"; 015°–025° read light (New England at 621-716 km: 0.27, 0.22). A fade from 500 km opens 020° only, from 450 km opens 015° at exactly 0.20; "land beyond 600 km reads open, fading to nothing at 1,000 km" opens it (0.16, 0.14) and differs from the shipped rule in 10 wedges at 7 of the 93 spots. | owner: "Open beyond 600 km"; fixed (round 3) |
+| R3 P3-1 | P3 | A water click in very narrow water is kept at the click, whatever its clearance (Honolua cove 0.3 m); the docs say "never". | fixed (round 3) |
+| R3 P3-3 | P3 | A name can repeat across north ("N …, E …, N …"); "Open except" gaps are not in bearing order. | fixed (round 3) |
 | R3 P3-4 | P3 | The floor of 100 km leaves Long Island Sound and Pamlico Sound (Rodanthe) open (their reference is 101-104 km); the record said "fixed". | record corrected here: partial by design |
-| R3 P3-5 | P3 | `placeFan` takes 116 ms at 3840×2160 when nothing fits (`leastOverlap` alone 83 ms). | planned |
-| R3 P3-6 | P3 | 14 meaningful mutants survive (the unlimited second pass, `leastOverlap`'s weights and tie-break, the 45°/300° edges, "except" with 3+ windows, "+N more" with shared names, the underlay order, the 120 px minimum, vertical visibility on resize); two test titles overclaim; the record's "51 of 52" is not reproducible with an independent set. | planned |
-| Site P3 | P3 | The bar's 120 px minimum exceeds the room on a very short map (457×309: 6 px past the map). | planned |
+| R3 P3-5 | P3 | `placeFan` takes 116 ms at 3840×2160 when nothing fits (`leastOverlap` alone 83 ms). | fixed (round 3) |
+| R3 P3-6 | P3 | 14 meaningful mutants survive (the unlimited second pass, `leastOverlap`'s weights and tie-break, the 45°/300° edges, "except" with 3+ windows, "+N more" with shared names, the underlay order, the 120 px minimum, vertical visibility on resize); two test titles overclaim; the record's "51 of 52" is not reproducible with an independent set. | fixed (round 3), survivors listed below |
+| Site P3 | P3 | The bar's 120 px minimum exceeds the room on a very short map (457×309: 6 px past the map). | fixed (round 3) |
+
+## Fix round 3 (UI 1.11.2 @ c289526, 2026-09-29, HIGH)
+
+Owner decision (re-check): **land beyond 600 km reads open**. `rayShadow` keeps the earlier curve to 600 km; beyond it a
+ray counts at most `FAR_OPEN_MAX` 0.18 (under the open line) and fades to 0 at 1,000 km. Cape Hatteras reads open from
+015° again (its 015°/020° wedges 0.16/0.14).
+
+- **Where a click is evaluated (R3 P2-A, P3-1).** `placeOrigin` rewritten:
+  - a land click walks to the nearest coast edge and, once through it, turns along that edge's normal on the side it
+    crossed into, straight out to sea; a water click within the stand-off walks away from the nearest edge (at most
+    twice the stand-off); a click exactly on the coastline starts on the water side;
+  - unless that walk reached a point 150 m out that looks out (3 of 16 directions run 2 km without meeting a coast:
+    a bay beats a pond behind the shore, as at Hilo), 24 directions (15°) are searched: the nearest such point, else the
+    nearest point 150 m out, else the clearest water; no walk crosses a coast beyond its own water;
+  - every candidate is checked against the coast data before it counts; a land click never settles within 5 m of a
+    coast, and with no such water within 2 km it is refused.
+  Real data (R3's scans on the published coast, 1.11.0 → 1.11.2):
+  - refusals: dense grids 35 → 0, 83-spot grids 2 → 0, R1's areas 1,057 → 1,055 (one legitimate new refusal at Chiba,
+    no water within reach); evaluations within 5 m of a coast: 194 → 0, 5 → 0, 4 → 0; water clicks evaluated across a
+    coast: 0; the V-cove water clicks: 0 of 7,500 kept on a flank;
+  - results "a window → no window": 8 in 41,338 land clicks at the 83 spots (2 Bora Bora: the lagoon, sheltered by its
+    reef; 3 Honolulu Harbor 5° slivers; 3 Taveuni), against 19-24 in the intermediate versions; worldwide (3,000 random
+    coastal clicks) 62 fixed, 3 broken, 0 newly refused;
+  - Haleiwa (21.5931, −158.1065) 640 m, "W (265°–275°), WNW–N (300°–000°)" (1.11.1: 1,469 m, none); Hilo 420 m, "N–ENE"
+    (1.11.1: 1,250 m, none); Honolua's headland 480 m, "W, N" (1.11.1: refused); the Stockholm skerries all placed;
+  - time: median 12 ms, p99 31 ms, max 44 ms over 2,000 clicks in the densest areas (alone on the machine).
+- **Resize (R3 P2-B).** Whether the fan was on the map is judged at its pre-resize point (Leaflet keeps the centre: the
+  current point shifted back by half the size change, against the previous size).
+- **Date-bound tests (R3 P2-C).** The six more run-A tests run on the run's day; the Node suites pass with the clock at
+  2026-10-05 and 2027-09-01.
+- **The overlay's phone sheet (R3 P2-D).** `.ov-sheet` is an obstacle, UI for the press rule, and keeps its keys.
+- **Window re-minimising (site P2 / R3 P3-2).** `grew` only above the tallest bar height since the tool started; the
+  page's minimise keeps keyboard focus where it was.
+- **Names (R3 P3-3).** The first and last windows share a name across north; "Open except" gaps in bearing order.
+- **Placement cost (R3 P3-5).** `leastOverlap` scans at most ~5,000 positions (the step grows with the map).
+- **Bar (site P3).** Minimum 60 px instead of 120.
+- **Tests (R3 P3-6).** tools.test.js 20, tools-ui.test.js 20: the far-land rule and Hatteras; names across north, gap
+  order, the 45° and 300° edges, 3+ gaps, "+N more" with shared names; the underlay order; the second placement pass,
+  `leastOverlap`'s weights and tie-break and a 4K map; water clicks in the coves; a corner turn; a pond behind the shore;
+  the Haleiwa land click pinned on the Hawaii fixture; the bar's height rule; the phone sheet; rotation. Suites: pytest
+  456, Node 251. Mutation (33 mutants of the round-3 logic): 26 killed. Survivors: the turn and its side (G1, G2: the
+  direction search reaches the same answers in the tests), the probe's coast window (G6b), land never settling within
+  5 m (G7: a better point always exists in the tests), vertical-only resize shift (F2), the bar-centre guard (C5, kept
+  as a guarantee), and the `leastOverlap` step (C4, performance only).
 

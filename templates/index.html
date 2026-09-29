@@ -294,14 +294,18 @@
     .tools-menu[hidden] { display: none; }
     .tools-menu .tool-item { text-align: left; border: 1px solid #ced4da; border-radius: .375rem; background: #fff; padding: 6px 10px; font-size: .9rem; color: #0b2536; cursor: pointer; }
     .tools-menu .tool-item:hover, .tools-menu .tool-item[aria-pressed="true"] { background: #e7f1ff; border-color: #86b7fe; }
-    .tools-bar { width: 290px; background: #fff; border: 1px solid #ced4da; border-radius: .375rem; box-shadow: 0 6px 18px rgba(0,0,0,.18); padding: 8px 10px; font-size: .85rem; color: #0b2536; }
+    /* the script caps the bar at the map's bottom edge; the actions stay under the title and the body scrolls */
+    .tools-bar { width: 290px; background: #fff; border: 1px solid #ced4da; border-radius: .375rem; box-shadow: 0 6px 18px rgba(0,0,0,.18); padding: 8px 10px; font-size: .85rem; color: #0b2536; display: flex; flex-direction: column; }
     .tools-bar[hidden] { display: none !important; }
+    .tools-bar-head, .tools-bar-actions { flex: none; }
+    .tools-bar-body { overflow-y: auto; min-height: 0; }
     .tools-bar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .tools-x { border: 0; background: none; font-size: 1rem; line-height: 1; padding: 2px 4px; cursor: pointer; color: #0b2536; }
     .tools-bar-body .tools-big { font-weight: 600; margin-top: 4px; }
-    .tools-bar-body .tools-sector { margin-top: 4px; min-height: 2.6em; }   /* a steady height while hovering the wedges */
+    .tools-bar-body .tools-sector { margin-top: 4px; min-height: 3em; }   /* two lines: a steady height while hovering the wedges */
     .tools-bar-body .tools-hint { color: #5b6770; font-size: .78rem; margin-top: 4px; }
     .tools-bar-actions { display: flex; gap: 6px; margin-top: 6px; }
+    .tools-bar-actions[hidden] { display: none; }
     .tools-bar-actions button { border: 1px solid #ced4da; background: #fff; border-radius: .3rem; padding: 2px 8px; font-size: .8rem; color: #0b2536; }
     .tools-bar-actions button[hidden] { display: none; }
     .leaflet-container.tools-active, .leaflet-container.tools-active .leaflet-interactive { cursor: crosshair; }
@@ -2801,11 +2805,11 @@
   <script>
     if (window.AllshoreTools) window.AllshoreTools.init({
       map: map, coastBase: {{ coast_base|tojson }} || window.__allshoreCoastBase || '', getUnit: getSelectedUnit, unitSelect: document.getElementById('unit'),
-      onLayout: function () { measureTopRight(); },
-      // the floating windows are obstacles for the exposure fan; an expanded one that covers the tool bar is
-      // minimised when a tool starts (owner, G20)
-      obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel')]; },
-      onStart: function (bar) {
+      // an expanded window that covers the tool bar is minimised when a tool starts and whenever the bar grows (owner,
+      // G20 and its re-review); a window opened later stays until the bar grows again
+      onLayout: function (bar, grew) {
+        measureTopRight();
+        if (!grew) return;
         var b = bar.getBoundingClientRect();
         [['liveBuoyPanel', 'lwMin'], ['forecastWin', 'fwMin']].forEach(function (w) {
           var el = document.getElementById(w[0]), min = document.getElementById(w[1]);
@@ -2813,6 +2817,15 @@
           var r = el.getBoundingClientRect();
           if (r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top) min.click();
         });
+      },
+      // the floating windows are obstacles for the exposure fan
+      obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel')]; },
+      // on a short map the overlay panel's details leave no room for the fan: they fold when the exposure tool starts
+      // (owner, G20 re-review; the ▸ button shows them again)
+      onStart: function (bar, tool) {
+        if (tool !== 'exposure' || map.getContainer().clientHeight >= 550) return;
+        var t = map.getContainer().querySelector('.ov-toggle[aria-expanded="true"]');
+        if (t) t.click();
       }
     });
   </script>

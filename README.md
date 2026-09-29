@@ -116,10 +116,15 @@ double-tap.
   - Windows are named by the compass point of their centre, or of both ends when 45 degrees or wider ("NNE–SW
     (015°–230°)"); a spot open on 300 degrees or more reads "Open except …".
   - Clicks on land, or within 150 m of the shore, are evaluated 150 m off the shore (the shoreline data is good to
-    ~50-100 m). A land click walks to the nearest coast and then straight out to sea along it; a water click moves away
-    from the nearest coast, at most 300 m, and never across a coast. When that first walk finds only a sliver of water,
-    24 directions are searched for the nearest point 150 m out, else the clearest water. A land click never settles
-    within 5 m of a coast; with no such water within 2 km it is refused.
+    ~50-100 m). A land click walks to the nearest coast (giving up just past it when it only grazes the tip of a cove)
+    and then straight out to sea along it; a water click moves away from the nearest coast. Unless that first walk
+    reached a point 150 m out that looks well out (8 of 16 directions run 2 km without meeting land), 24 directions are
+    also searched, up to 2 km on land and 300 m on water. The nearest point 150 m out that looks out well wins (6 of 16
+    directions: a bay beats a pond or an inner sound), else the nearest that looks out at all (3 of 16), else the
+    nearest point 150 m out; else, of the water found, the nearest that looks out, else the nearest at least 80 % as
+    clear as the clearest. No walk crosses a coast beyond its own water. A point on the coastline itself is
+    never used, a land click never settles within 5 m of a coast, and with no such water within 2 km it is refused.
+    Coast edges are kept in 100 m buckets, so placement stays around 10-30 ms in the densest estuaries.
   - The fan keeps a fixed size on screen and is panned clear of the map's controls and the windows, preferring a
     smaller fan to a pan of more than a third of the map. When nothing is clear it takes the least-covered spot, never
     centred under the tool bar; the overlay's phone sheet counts as a control. On a map shorter than 550 px the overlay

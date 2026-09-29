@@ -319,6 +319,7 @@
   var SHADOW_FULL_KM = 15, FAR_FADE_KM = 600, FAR_LAND_KM = 1000, FAR_OPEN_MAX = 0.18;
   var OPEN_BELOW = 0.2, DARK_FROM = 0.7;
   var STANDOFF_KM = 0.15, SNAP_MAX_KM = 2, ON_COAST_KM = 0.005, OPEN_PROBE_KM = 2, OPEN_MIN_DIRS = 3;
+  var PLACE_CELL_KM = 0.1, OPEN_WELL_DIRS = 6, OPEN_GOOD = 8, FALLBACK_SHARE = 0.8;
   var MAX_ABS_LAT = 75;
   function stepKm(d) { return d < 20 ? 0.25 : d < 200 ? 2 : 10; }
   function rayBearing(i) { return (i + 0.5) * (360 / RAYS); }             // ray i lies in wedge floor(i / 10): [5k, 5k + 5)
@@ -451,15 +452,18 @@
   }
   // Where to evaluate a click (G20, owner: 150 m off the shore). Returns {lat, lng, moved (km)} or null.
   // - Open water at least STANDOFF_KM from any coast: the click itself.
-  // - A land click walks to the nearest coast edge; once through it, it turns along that edge's normal, straight out
-  //   to sea (G20 re-review R3: walking on in the original direction ran along the shore or on through land).
-  // - A water click within the stand-off walks away from the nearest edge, at most twice the stand-off.
-  // - When that walk does not reach the stand-off, 24 directions are searched: the nearest point that reaches it
-  //   within reach (2 km on land, twice the stand-off on water) that looks out (at least 3 of 16 directions run 2 km
-  //   without meeting land: a bay beats a pond behind the shore, G20 re-check, Hilo), else the nearest point reaching
-  //   the stand-off, else the clearest water found. A walk never crosses a
-  //   coast beyond its own water (a thin spit). A land click never settles within ON_COAST_KM of a coast (every ray
-  //   would stop at once); with no such water within 2 km it is refused.
+  // - A land click walks towards the nearest coast point and, once through the coast, turns along that edge's normal,
+  //   straight out to sea; if it has not reached water two steps past that point (it only grazed the tip of a cove),
+  //   it stops there. A water click within the stand-off walks away from the nearest coast.
+  // - Unless that walk reached a point STANDOFF_KM out that looks well out (OPEN_GOOD of 16 directions run
+  //   OPEN_PROBE_KM without meeting land), 24 directions are also searched (up to 2 km on land, twice the stand-off on
+  //   water). The nearest point that reaches the stand-off and looks out well (OPEN_WELL_DIRS) wins, else the nearest
+  //   that looks out at all (OPEN_MIN_DIRS), else the nearest that reaches the stand-off; with none, of the water found
+  //   the nearest that looks out, else the nearest at least FALLBACK_SHARE as clear as the clearest. Measured on
+  //   48,000 clicks against 1.11.1 (G20 re-check): a bay beats a pond or an inner sound.
+  // - A walk stops at the far shore of its own water; the coast data says which side a crossing leads to. A point on
+  //   the coastline itself is never used, a land click never settles within ON_COAST_KM of a coast (every ray would stop
+  //   at once), and with no such water within 2 km it is refused.
   function placeOrigin(origin, sets, opts) {
     opts = opts || {};
     var maxKm = opts.maxKm == null ? SNAP_MAX_KM : opts.maxKm, stand = opts.standKm == null ? STANDOFF_KM : opts.standKm;
@@ -467,64 +471,114 @@
     var kx = 111.32 * Math.max(0.05, Math.cos(origin.lat * D2R)), ky = 110.57, lim = maxKm + Math.max(stand, OPEN_PROBE_KM) + 1;   // the probe's reach too
     var deg = collectEdges(sets, origin, Math.min(180, lim / kx), lim / ky), E = [];
     for (var i = 0; i < deg.length; i += 4) E.push(deg[i] * kx, (deg[i + 1] - origin.lat) * ky, deg[i + 2] * kx, (deg[i + 3] - origin.lat) * ky);
-    function nearest(px, py) {
+    // The edges in PLACE_CELL_KM buckets, so a step, a probe or a nearest-edge search tests only the buckets it touches
+    // (G20 re-check R4: estuaries have 5,000+ edges in the window).
+    var cells = new Map(), stamp = new Int32Array(E.length / 4), mark = 0;
+    function cell(v) { return Math.floor(v / PLACE_CELL_KM); }
+    function key(ix, iy) { return ix * 1048576 + iy; }
+    for (var e = 0; e < E.length / 4; e++) {
+      var i0 = cell(Math.min(E[e * 4], E[e * 4 + 2])), i1 = cell(Math.max(E[e * 4], E[e * 4 + 2]));
+      var j0 = cell(Math.min(E[e * 4 + 1], E[e * 4 + 3])), j1 = cell(Math.max(E[e * 4 + 1], E[e * 4 + 3]));
+      for (var ii = i0; ii <= i1; ii++) for (var jj = j0; jj <= j1; jj++) { var kk = key(ii, jj), l = cells.get(kk); if (l) l.push(e); else cells.set(kk, [e]); }
+    }
+    function each(x0, y0, x1, y1, fn) {                                       // every edge in the buckets over a box, once
+      mark++;
+      for (var ix = cell(Math.min(x0, x1)), ix1 = cell(Math.max(x0, x1)); ix <= ix1; ix++) {
+        for (var iy = cell(Math.min(y0, y1)), iy1 = cell(Math.max(y0, y1)); iy <= iy1; iy++) {
+          var l = cells.get(key(ix, iy)); if (!l) continue;
+          for (var n = 0; n < l.length; n++) { if (stamp[l[n]] !== mark) { stamp[l[n]] = mark; fn(l[n] * 4); } }
+        }
+      }
+    }
+    function nearest(px, py) {                                                // growing boxes until the best is inside
       var best = null;
-      for (var j = 0; j < E.length; j += 4) {
+      function test(j) {
         var x0 = E[j] - px, y0 = E[j + 1] - py, ex = E[j + 2] - E[j], ey = E[j + 3] - E[j + 1], L2 = ex * ex + ey * ey;
         var t = L2 ? Math.max(0, Math.min(1, -(x0 * ex + y0 * ey) / L2)) : 0, cx = x0 + t * ex, cy = y0 + t * ey, d = Math.sqrt(cx * cx + cy * cy);
         if (!best || d < best.d) best = { d: d, cx: cx, cy: cy, ex: ex, ey: ey };
       }
-      return best;
+      for (var r = PLACE_CELL_KM; ; r *= 2) {
+        each(px - r, py - r, px + r, py + r, test);
+        if ((best && best.d <= r) || r > 2 * lim) return best;
+      }
     }
-    // The coast crossings of the step a->b: how many (touching at a does not count; edges met at one shared vertex
-    // count once) and the first one's parameter and edge.
-    function cuts(ax, ay, bx, by) {
+    // The coast crossings of the step a->b: how many (edges met at one shared vertex count once) and the first one's
+    // parameter and edge. A step owns [a, b): a crossing exactly at b belongs to the next step, so a walk whose samples
+    // land on a coast still counts it once (G20 re-check); `atStart` drops one exactly at a (a walk starting on a coast).
+    function cuts(ax, ay, bx, by, atStart) {
       var dx = bx - ax, dy = by - ay, ts = [], first = null;
-      for (var j = 0; j < E.length; j += 4) {
+      each(ax, ay, bx, by, function (j) {
         var cx = E[j], cy = E[j + 1], ex = E[j + 2] - cx, ey = E[j + 3] - cy, den = dx * ey - dy * ex;
-        if (!den) continue;
+        if (!den) return;
         var t = ((cx - ax) * ey - (cy - ay) * ex) / den, u = ((cx - ax) * dy - (cy - ay) * dx) / den;
-        if (!(t > 1e-9 && t <= 1 && u >= 0 && u <= 1)) continue;
+        if (!(t >= (atStart ? 1e-9 : -1e-9) && t < 1 - 1e-9 && u >= 0 && u <= 1)) return;
         if (ts.every(function (v) { return Math.abs(v - t) > 1e-7; })) ts.push(t);
         if (!first || t < first.t) first = { t: t, ex: ex, ey: ey };
-      }
+      });
       return { n: ts.length, first: first };
     }
     function water(px, py) { return !inLand(sets, wrapLng(origin.lng + px / kx), origin.lat + py / ky); }
     var land = !water(0, 0), nb = nearest(0, 0), step = 0.02;
     // exactly on the coastline (a data vertex or edge): the water side, stepping off along the edge's normal (which
     // side the point test calls it can flip with rounding, and a walk counting crossings must not start on a coast)
-    if (nb && nb.d <= 1e-6) land = false;
+    var onCoast = !!nb && nb.d <= 1e-6;
+    if (onCoast) land = false;
     if (!land && (!nb || nb.d >= stand)) return { lat: origin.lat, lng: origin.lng, moved: 0 };
     if (!nb) return land ? null : { lat: origin.lat, lng: origin.lng, moved: 0 };
     var cands = [];                                                           // {px, py, clr, d (km walked)}
-    if (!land) cands.push({ px: 0, py: 0, clr: nb.d, d: 0 });
-    // One walk from (x0, y0) along (ux, uy): `inWater` says where it starts; it stops at the second state change
-    // (land -> water -> land) or the first (water -> land), at the first sample reaching the stand-off, or at `len`.
-    // `turn` (land clicks): once in the water, continue along the crossed edge's normal instead.
-    function walk(x0, y0, ux, uy, len, inWater, turn, base) {
+    if (!land && !onCoast) cands.push({ px: 0, py: 0, clr: nb.d, d: 0 });   // (a point on the coastline is never kept)
+    // One walk from (x0, y0) along (ux, uy): `inWater` says where it starts; after a crossing the coast data says
+    // which side it is on (a grazed cove tip counts no crossing, or one). It stops at the far shore of its water, at the first sample reaching the stand-off, at
+    // `len`, or (`giveUp`) when still on land that far along. `turn` (land clicks): once in the water, continue along
+    // the crossed edge's normal instead.
+    function walk(x0, y0, ux, uy, len, inWater, turn, base, giveUp) {
       var qx = x0, qy = y0, t = 0, dist = base;
       while (t + step <= len + 1e-9) {
         t += step;
-        var px = qx + ux * step, py = qy + uy * step, c = cuts(qx, qy, px, py);
+        var px = qx + ux * step, py = qy + uy * step, c = cuts(qx, qy, px, py, t === step);
         if (c.n) {
           if (inWater) return;                                                // the far shore, or a thin spit
-          inWater = c.n % 2 === 1;
+          // which side: the coast data, unless the step ends on the coastline itself (then the crossing count)
+          var on = nearest(px, py);
+          inWater = on && on.d <= 1e-6 ? c.n % 2 === 1 : water(px, py);
           if (inWater && turn && c.first) {                                  // through the coast: straight out to sea
             var cxp = qx + (px - qx) * c.first.t, cyp = qy + (py - qy) * c.first.t, el = Math.sqrt(c.first.ex * c.first.ex + c.first.ey * c.first.ey) || 1;
             var nx = -c.first.ey / el, ny = c.first.ex / el;
             if (nx * ux + ny * uy < 0) { nx = -nx; ny = -ny; }                  // the side the walk crossed into
-            return walk(cxp, cyp, nx, ny, Math.min(len - t + step, 2 * stand), true, false, dist + (px - qx) * c.first.t * ux + (py - qy) * c.first.t * uy);
+            return walk(cxp, cyp, nx, ny, Math.min(len - t + step, 2 * stand), true, false, dist + step * c.first.t, null);
           }
         }
         dist += step; qx = px; qy = py;
-        if (!inWater) continue;
+        if (!inWater) { if (giveUp != null && t > giveUp) return; continue; }
         var n2 = nearest(px, py), clr = n2 ? n2.d : Infinity;
         cands.push({ px: px, py: py, clr: clr, d: dist });
         if (clr >= stand) return;
       }
     }
-    // 1. towards (land) or away from (water) the nearest edge
+    // a candidate really is water (a turn can pick the land side of a feature narrower than a step): checked once
+    function valid(c) { if (c.ok === undefined) c.ok = c.px === 0 && c.py === 0 ? !land : water(c.px, c.py); return c.ok; }
+    // how many of 16 directions run OPEN_PROBE_KM from a point without meeting a coast (probed in bucket-sized steps)
+    function openness(c) {
+      if (c.open === undefined) {
+        c.open = 0;
+        var parts = Math.ceil(OPEN_PROBE_KM / PLACE_CELL_KM), sl = OPEN_PROBE_KM / parts;
+        for (var k = 0; k < 16; k++) {
+          var sx = Math.sin(k * 22.5 * D2R) * sl, sy = Math.cos(k * 22.5 * D2R) * sl, free = true;
+          for (var m = 0; m < parts && free; m++) if (cuts(c.px + sx * m, c.py + sy * m, c.px + sx * (m + 1), c.py + sy * (m + 1), m === 0).n) free = false;
+          if (free) c.open++;
+        }
+      }
+      return c.open;
+    }
+    function byDist(p, q) { return p.d - q.d; }
+    // the nearest candidate reaching the stand-off that looks out well (OPEN_WELL_DIRS: a bay beats a pond or an inner
+    // sound, G20 re-checks), else the nearest that looks out at all
+    function reachedOpen() {
+      var list = cands.filter(function (c) { return c.clr >= stand && valid(c) && openness(c) >= OPEN_MIN_DIRS; }).sort(byDist);
+      return list.filter(function (c) { return c.open >= OPEN_WELL_DIRS; })[0] || list[0] || null;
+    }
+    function reachedAny() { return cands.filter(function (c) { return c.clr >= stand && valid(c); }).sort(byDist)[0] || null; }
+    // 1. towards (land) or away from (water) the nearest coast
     var ux, uy;
     if (nb.d > 1e-6) { ux = nb.cx / nb.d; uy = nb.cy / nb.d; if (!land) { ux = -ux; uy = -uy; } }
     else {                                                                    // exactly on an edge: its normal, towards the water
@@ -532,39 +586,22 @@
       if (water(nx * 0.01, ny * 0.01)) { ux = nx; uy = ny; } else { ux = -nx; uy = -ny; }
     }
     var reach = land ? maxKm : Math.min(maxKm, 2 * stand);
-    walk(0, 0, ux, uy, reach, !land || nb.d <= 1e-6, land, 0);
-    // a candidate really is water (a walk's parity can slip at a grazed vertex, or a turn pick the land side of a
-    // feature narrower than the 5 m side test): checked once, when it matters
-    function valid(c) { if (c.ok === undefined) c.ok = c.px === 0 && c.py === 0 ? !land : water(c.px, c.py); return c.ok; }
-    // how many of 16 directions run OPEN_PROBE_KM from a point without meeting a coast
-    function openness(c) {
-      if (c.open === undefined) {
-        c.open = 0;
-        for (var k = 0; k < 16; k++) { var b = k * 22.5 * D2R; if (!cuts(c.px, c.py, c.px + Math.sin(b) * OPEN_PROBE_KM, c.py + Math.cos(b) * OPEN_PROBE_KM).n) c.open++; }
+    walk(0, 0, ux, uy, reach, !land, land, 0, land ? nb.d + 2 * step : null);
+    // 2. unless that found open water well out, search around the click
+    var first = reachedOpen();
+    if (!first || first.open < OPEN_GOOD) for (var a = 0; a < 360; a += 15) walk(0, 0, Math.sin(a * D2R), Math.cos(a * D2R), reach, !land, false, 0, null);
+    var pick = reachedOpen() || reachedAny();
+    if (!pick) {                                                              // no point reaches the stand-off
+      var minClr = land || onCoast ? ON_COAST_KM : 0, pool = cands.filter(function (c) { return c.clr >= minClr && valid(c); }).sort(byDist);
+      pick = pool.filter(function (c) { return c.clr >= ON_COAST_KM && openness(c) >= OPEN_MIN_DIRS; })[0];
+      if (!pick && pool.length) {
+        var top = 0; pool.forEach(function (c) { top = Math.max(top, c.clr); });
+        pick = pool.filter(function (c) { return c.clr >= FALLBACK_SHARE * top; })[0];
       }
-      return c.open;
     }
-    // the nearest candidate reaching the stand-off (that looks out, when `open`)
-    function reached(open) {
-      var r = null;
-      cands.slice().sort(function (p, q) { return p.d - q.d; }).some(function (c) {
-        if (c.clr >= stand && valid(c) && (!open || openness(c) >= OPEN_MIN_DIRS)) { r = c; return true; }
-        return false;
-      });
-      return r;
-    }
-    // 2. not out at the stand-off, or only into enclosed water: search around the click
-    if (!reached(true)) for (var a = 0; a < 360; a += 15) walk(0, 0, Math.sin(a * D2R), Math.cos(a * D2R), reach, !land, false, 0);
-    var pick = reached(true) || reached(false), minClr = land ? ON_COAST_KM : 0;
-    var order = pick ? [pick] : [];
-    cands.slice().sort(function (p, q) { return q.clr - p.clr || p.d - q.d; }).forEach(function (c) { if (c !== pick && c.clr >= minClr) order.push(c); });
-    for (var k = 0; k < order.length; k++) {
-      var c = order[k];
-      if (!valid(c)) continue;
-      if (c.px === 0 && c.py === 0) return { lat: origin.lat, lng: origin.lng, moved: 0 };
-      return { lat: origin.lat + c.py / ky, lng: wrapLng(origin.lng + c.px / kx), moved: Math.sqrt(c.px * c.px + c.py * c.py) };
-    }
-    return land ? null : { lat: origin.lat, lng: origin.lng, moved: 0 };
+    if (!pick) return land || onCoast ? null : { lat: origin.lat, lng: origin.lng, moved: 0 };
+    if (pick.px === 0 && pick.py === 0) return { lat: origin.lat, lng: origin.lng, moved: 0 };
+    return { lat: origin.lat + pick.py / ky, lng: wrapLng(origin.lng + pick.px / kx), moved: Math.sqrt(pick.px * pick.px + pick.py * pick.py) };
   }
   // The whole computation, time-sliced: yieldFn() between batches (a Promise), shouldStop() aborts.
   function computeExposure(origin, nearSets, farSet, opts) {
@@ -830,7 +867,7 @@
     function start(tool) {
       if (!TOOLS[tool]) return;
       clear(true);
-      s.tool = tool; s.barMax = 0; barEl.hidden = false; titleEl.textContent = TOOLS[tool];
+      s.tool = tool; s.barMax = 0; s.barH = -1; barEl.hidden = false; titleEl.textContent = TOOLS[tool];   // a switch always reports
       Array.prototype.forEach.call(menu.querySelectorAll('[data-tool]'), function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-tool') === tool ? 'true' : 'false'); });
       map.getContainer().classList.add('tools-active');
       if (s.dblWas === null) { s.dblWas = map.doubleClickZoom.enabled(); map.doubleClickZoom.disable(); }
@@ -982,6 +1019,9 @@
       s.group.clearLayers(); if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
       s.result = null; s.selected = -1; s.busy = true; render();
       coast.load().then(function () { return coast.near(origin); }).then(function (nearSets) {
+        // a task boundary first, so "Computing…" is painted before the placement's work (G20 re-check R4)
+        return new Promise(function (r) { setTimeout(r, 0); }).then(function () { return nearSets; });
+      }).then(function (nearSets) {
         if (gen !== s.gen) return null;
         var coarse = nearSets === null, sets = coarse ? [coast.tier0] : nearSets;
         var o = placeOrigin(origin, sets);

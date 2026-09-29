@@ -156,3 +156,36 @@ details when the exposure tool starts, then the least-overlap placement, never u
 - **Also:** three overlay scheduler tests in `tests/overlay/playback.test.js` started failing on 2026-09-28 on the
   unchanged HEAD (they seek 30 frames past "now" in a fixed 2026-09-22 run); they now run on that run's day with a
   clock that still advances.
+
+## Re-check of fix round 2 (UI 1.11.1 @ 9883f51, 2026-09-29, MAX)
+
+Two halves: R3, a fresh-context code reviewer (read-only, Node/Python, the published coast; report and scripts in the
+session scratchpad `g20/r3/`), and the author on the test site (browser pane, DOM-dispatched events, 1280×800, 812×375,
+610×417, 683×657, 375×812 and the pane's native 457×309; `tools.js?v=1.11.1` byte-identical to eeab4ce; no console
+errors). Suites at 9883f51: pytest 456, Node 247.
+
+**Confirmed on both sides:** the far-land rule is exactly the earlier curve below 600 km (all 166 wedges that changed at
+the 93 spots moved towards more shading; every change is explained, the evaluated point is identical at all 87 evaluated
+spots, and the owner's examples hold); window names ("Open except", shared names; 0 contradictions in 20,000 random fans);
+the blend (0 wedge changes at the 93 spots); the spit rule; touch 16 px (a real double-tap on the phone kept the outline);
+the rim underlay; the 3em line (one bar height over all 72 wedges); the bar cap (812×375: Clear reachable, the text
+scrolls); the chunk retry; the keys (gear, tools button, a live marker); the press released over the map; the overlay
+details folding (610×417: 0 of 120 disc samples covered in six clicks, the earlier review found 60-91 of 108); the pan
+limit (683×657: pans 0-197 px; one 361 px pan remains where nothing fits within a third of the map); the golden (the
+intended template change and four version bumps only).
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| R3 P2-A | P2 | Land clicks near narrow water walk on through land: the 5 m rule skips near-shore samples and the walk continues up to 2 km. Haleiwa (21.5931, −158.1065) moves 1,469 m into an embayment ("No open swell window"; 1.11.0: 429 m, W and NW open); Hilo (19.7273, −155.0629) 1,250 m; Honolua's headland (21.0175, −156.6400) refused with usable water 140 m away. 8 broken and 4 falsely refused in 41,338 land clicks at 83 spots. | planned |
+| R3 P2-B | P2 | A resize judges "on screen" after the resize: Leaflet keeps the centre, so a rotation that pushes a visible fan off the map no longer re-places it (375×764 → 812×327: a 51 px sliver). | planned |
+| R3 P2-C | P2 | Six more tests in `tests/overlay/playback.test.js` step from "now" through the fixed run and fail from 2026-10-02 (checked to 2027-09 with a shifted clock; nothing else in the Node suites is date-bound). | planned |
+| R3 P2-D | P2 | The overlay's phone sheet (`div.ov-sheet`, not a `.leaflet-control`) is not an obstacle, not UI for the press rule, and now owns the keys; on a 375×812 phone a low click leaves ~24 px of the fan under it. | planned |
+| Site P2 / R3 P3-2 | P2 | Every exposure result reports `grew` (the bar shrinks to "Computing…" first), so a window the user expands while the tool is open is minimised again at the next click, and the forecast window's minimise moves focus out of the map. | planned |
+| Site P1 / R3 P3-7 | P1 (owner decision) | Cape Hatteras's NNE: the chosen option promised it "still opens"; 015°–025° read light (New England at 621-716 km: 0.27, 0.22). A fade from 500 km opens 020° only, from 450 km opens 015° at exactly 0.20; "land beyond 600 km reads open, fading to nothing at 1,000 km" opens it (0.16, 0.14) and differs from the shipped rule in 10 wedges at 7 of the 93 spots. | owner's call |
+| R3 P3-1 | P3 | A water click in very narrow water is kept at the click, whatever its clearance (Honolua cove 0.3 m); the docs say "never". | planned |
+| R3 P3-3 | P3 | A name can repeat across north ("N …, E …, N …"); "Open except" gaps are not in bearing order. | planned |
+| R3 P3-4 | P3 | The floor of 100 km leaves Long Island Sound and Pamlico Sound (Rodanthe) open (their reference is 101-104 km); the record said "fixed". | record corrected here: partial by design |
+| R3 P3-5 | P3 | `placeFan` takes 116 ms at 3840×2160 when nothing fits (`leastOverlap` alone 83 ms). | planned |
+| R3 P3-6 | P3 | 14 meaningful mutants survive (the unlimited second pass, `leastOverlap`'s weights and tie-break, the 45°/300° edges, "except" with 3+ windows, "+N more" with shared names, the underlay order, the 120 px minimum, vertical visibility on resize); two test titles overclaim; the record's "51 of 52" is not reproducible with an independent set. | planned |
+| Site P3 | P3 | The bar's 120 px minimum exceeds the room on a very short map (457×309: 6 px past the map). | planned |
+

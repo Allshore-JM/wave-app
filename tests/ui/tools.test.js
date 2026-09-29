@@ -11,31 +11,7 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'static_ui', 'tools
 function load(win) { new Function('window', SRC)(win); return win.AllshoreTools; }
 const T = load({})._internals;
 
-// A JS encoder for coast-v1 (mirror of tools/coast/build_coast.py encode_file), for fixtures.
-function leb(v) { const out = []; do { const b = v % 128; v = Math.floor(v / 128); out.push(v ? b | 128 : b); } while (v); return out; }
-const zz = (v) => (v < 0 ? -2 * v - 1 : 2 * v);
-function encodeCoast(pieces, cell) {                   // pieces: [[ring, ...]], ring = flat [x, y, ...] in 1e-4 deg
-  const body = []; let nr = 0, nv = 0, bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
-  for (const rings of pieces) {
-    let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
-    for (const r of rings) for (let i = 0; i < r.length; i += 2) { minx = Math.min(minx, r[i]); maxx = Math.max(maxx, r[i]); miny = Math.min(miny, r[i + 1]); maxy = Math.max(maxy, r[i + 1]); }
-    bx0 = Math.min(bx0, minx); by0 = Math.min(by0, miny); bx1 = Math.max(bx1, maxx); by1 = Math.max(by1, maxy);
-    body.push(...leb(zz(minx)), ...leb(zz(miny)), ...leb(maxx - minx), ...leb(maxy - miny), ...leb(rings.length));
-    for (const r of rings) {
-      body.push(...leb(r.length / 2)); nr++; nv += r.length / 2;
-      let px = minx, py = miny;
-      for (let i = 0; i < r.length; i += 2) { body.push(...leb(zz(r[i] - px)), ...leb(zz(r[i + 1] - py))); px = r[i]; py = r[i + 1]; }
-    }
-  }
-  const buf = new ArrayBuffer(40 + body.length), dv = new DataView(buf), u8 = new Uint8Array(buf);
-  u8.set([67, 83, 84, 49], 0); dv.setUint16(4, cell, true); dv.setUint32(8, 10000, true); dv.setUint32(12, pieces.length, true);
-  dv.setUint32(16, nr, true); dv.setUint32(20, nv, true);
-  [bx0, by0, bx1, by1].forEach((v, i) => dv.setInt32(24 + i * 4, pieces.length ? v : 0, true));
-  u8.set(body, 40);
-  return buf;
-}
-const D = (deg) => Math.round(deg * 10000);
-const sq = (x0, y0, x1, y1) => [D(x0), D(y0), D(x1), D(y0), D(x1), D(y1), D(x0), D(y1)];     // CCW in (lon, lat)
+const { encodeCoast, D, sq } = require('./coastenc.js');
 const set = (pieces, cell) => T.decodeCoastLL(encodeCoast(pieces, cell || 5));
 function exposure(origin, nearPieces, farPieces) {
   return T.computeExposure(origin, nearPieces ? [set(nearPieces, 5)] : [], farPieces ? set(farPieces, 30) : null);
@@ -79,6 +55,7 @@ test('spherical area: a 1-degree cell, both windings, the dateline, a pole, a cr
 
 test('units: rounded before the unit and precision are chosen (no "10.00", "640 acres", "100.0 ha")', () => {
   assert.equal(T.fmtLength(0.3, 'US'), '984 ft · 0.16 nm');
+  assert.equal(T.fmtLength(0.4996 * 1.609344, 'US').split(' ·')[0], '0.50 mi', 'rounded to 0.50 mi, so miles (not 2,638 ft)');
   assert.equal(T.fmtLength(4111, 'US'), '2,554 mi · 2,220 nm');
   assert.equal(T.fmtLength(12.34, 'Metric'), '12.3 km · 6.66 nm');
   assert.equal(T.fmtLength(0.5, 'Metric'), '500 m · 0.27 nm');
@@ -140,6 +117,10 @@ test('cell lines: clip borders and zero-width bridges cancel (the Pensacola fals
   const real = [set([[[D(-88), D(30), D(-86), D(30), D(-86), D(30.3), D(-88), D(30.3)]]], 5)];
   const g = T.rayFetch(origin, 0.25, T.buildIndexes(origin, real, null).near, null);
   assert.ok(Math.abs(g - 11.12) < 0.1, 'a real coastline lying on the cell line still stops the ray: ' + g);
+  // the same with the land SOUTH of the line: its on-line edge runs the other way (net -1) and stays too
+  const southLand = [set([[[D(-88), D(29.7), D(-86), D(29.7), D(-86), D(30), D(-88), D(30)]]], 5)];
+  const o2 = { lat: 30.1, lng: -87.15 }, h = T.rayFetch(o2, 180.25, T.buildIndexes(o2, southLand, null).near, null);
+  assert.ok(Math.abs(h - 11.12) < 0.1, 'either direction along the line: ' + h);
   // two cells' pieces meeting along 30 N: their borders run in opposite directions and cancel
   const south = [D(-88), D(29.9), D(-86), D(29.9), D(-86), D(30), D(-88), D(30)];
   const north = [D(-88), D(30), D(-86), D(30), D(-86), D(30.1), D(-88), D(30.1)];
@@ -149,28 +130,42 @@ test('cell lines: clip borders and zero-width bridges cancel (the Pensacola fals
   assert.equal(T.onCellLine(-85, 20, -85, 25, 30), false); assert.equal(T.onCellLine(-85, 20, -85, 25, 5), true); assert.equal(T.onCellLine(-90, 20, -90, 25, 30), true);
 });
 
-test('the reference: open ocean through a wedge uses the full reach; an enclosed sea its own rays; a harbour the floor', () => {
+test('the reference: open ocean through 15 rays uses the full reach, blended from 5; an enclosed sea its own rays; the floor', () => {
   const rays = (fn) => Array.from({ length: 720 }, (_, i) => fn(i));
-  assert.equal(T.referenceKm(rays((i) => (i < 10 ? 3000 : 5))), T.CAP_KM, 'one wedge of open ocean (10 rays)');
-  assert.equal(T.referenceKm(rays((i) => (i < 10 ? 3000 : i < 210 ? 100 : 5))), T.CAP_KM, 'open ocean wins over many leaving rays that stop at 100 km');
-  assert.equal(T.referenceKm(rays((i) => (i < 9 ? 3000 : i < 210 ? 100 : 5))), 100, 'one ray short of a wedge: the percentile');
-  assert.equal(T.referenceKm(rays((i) => (i < 9 ? 3000 : i < 300 ? 60 : 5))), 60, 'most leaving rays stop at 60 km');
-  assert.equal(T.referenceKm(rays((i) => (i < 9 ? 3000 : i < 300 ? 40 : 5))), T.REF_MIN_KM, 'never below the floor');
+  assert.equal(T.REF_MIN_KM, 100, 'a small bay or sound is not "open" (G20 re-review)');
+  assert.equal(T.referenceKm(rays((i) => (i < 15 ? 3000 : 5))), T.CAP_KM, '15 rays of open ocean');
+  assert.equal(T.referenceKm(rays((i) => (i < 15 ? 3000 : i < 215 ? 100 : 5))), T.CAP_KM, 'open ocean wins over many leaving rays that stop at 100 km');
+  assert.equal(T.referenceKm(rays((i) => (i < 10 ? 3000 : 5))), T.CAP_KM, 'only open ocean leaves: its percentile is the full reach anyway');
+  assert.equal(T.referenceKm(rays((i) => (i < 5 ? 3000 : i < 205 ? 150 : 5))), 150, '5 rays: the spot\'s own percentile');
+  // no flip at one ray more or less (G20 re-review): each extra ray multiplies the reference by (3000 / own)^(1/10)
+  const blend = (n) => T.referenceKm(rays((i) => (i < n ? 3000 : i < n + 200 ? 150 : 5)));
+  assert.ok(Math.abs(blend(10) - Math.sqrt(150 * 3000)) < 1e-6, 'half way: the geometric mean: ' + blend(10));
+  for (let n = 5; n < 15; n++) assert.ok(Math.abs(blend(n + 1) / blend(n) - Math.pow(20, 0.1)) < 1e-9, 'smooth at ' + n);
+  assert.equal(T.referenceKm(rays((i) => (i < 5 ? 3000 : i < 300 ? 60 : 5))), T.REF_MIN_KM, 'never below the floor');
   assert.equal(T.referenceKm(rays(() => 5)), T.REF_MIN_KM, 'a harbour: nothing leaves');
   assert.equal(T.referenceKm(rays((i) => 500 + i)), 1147, 'an enclosed sea: its own 90th percentile');
+  // the percentile is over the rays that LEAVE the spot's coast (> 15 km), not over all rays (G20 re-review mutants)
+  assert.ok(Math.abs(T.referenceKm(rays((i) => (i < 600 ? 5 : 100 + (i - 600) * 900 / 119))) - (100 + 107 * 900 / 119)) < 1e-9, 'over the leaving rays');
+  assert.equal(T.referenceKm(rays((i) => (i < 700 ? 10 : 500))), 500, 'rays stopping within 15 km do not dilute it');
   // stability near the shore (G20 B P1-3): the result no longer flips around 72 capped rays
   assert.equal(T.referenceKm(rays((i) => (i < 72 ? 3000 : i < 400 ? 3 : 150))), T.CAP_KM);
   assert.equal(T.referenceKm(rays((i) => (i < 74 ? 3000 : i < 400 ? 3 : 150))), T.CAP_KM);
 });
 
-test('the shadow of one ray: full within 15 km, log fall-off, nothing beyond 1,000 km (owner) or the reference', () => {
+test('the shadow of one ray: full within 15 km, log fall-off to the reference, far land fading out from 600 to 1,000 km', () => {
   assert.equal(T.rayShadow(5, 3000), 1); assert.equal(T.rayShadow(15, 3000), 1);
   assert.equal(T.rayShadow(1000, 3000), 0); assert.equal(T.rayShadow(1200, 3000), 0);
   assert.equal(T.rayShadow(300, 300), 0);
+  const base = (f, ref) => 1 - Math.log(f / 15) / Math.log(ref / 15);
   const kauai = T.rayShadow(150, 3000);
-  assert.ok(kauai > 0.4 && kauai < 0.5, 'Kauai from the North Shore (~150 km): light grey: ' + kauai);
-  assert.ok(T.rayShadow(45, 3000) >= 0.7, 'the Channel Islands from Rincon (~45 km): dark');
-  assert.ok(Math.abs(T.rayShadow(100, 300) - (1 - Math.log(100 / 15) / Math.log(300 / 15))) < 1e-12);
+  assert.ok(kauai > 0.5 && kauai < 0.6, 'Kauai from the North Shore (~150 km): light grey: ' + kauai);
+  assert.ok(T.rayShadow(45, 3000) >= 0.7 && T.rayShadow(60, 3000) >= 0.7, 'the Channel Islands from Rincon (~45 km) and land at 60 km: dark');
+  assert.ok(Math.abs(T.rayShadow(432, 3000) - base(432, 3000)) < 1e-12 && T.rayShadow(432, 3000) >= 0.2, 'land at 432 km still light (not the compressed curve)');
+  assert.ok(Math.abs(T.rayShadow(100, 300) - base(100, 300)) < 1e-12);
+  assert.equal(T.FAR_FADE_KM, 600);
+  assert.ok(Math.abs(T.rayShadow(600, 3000) - base(600, 3000)) < 1e-12, 'the fade starts at 600 km');
+  assert.ok(Math.abs(T.rayShadow(800, 3000) - base(800, 3000) / 2) < 1e-12, 'half way through the fade');
+  assert.ok(T.rayShadow(999, 3000) < 0.001);
   assert.equal(T.levelOf(0.19), 'open'); assert.equal(T.levelOf(0.2), 'light'); assert.equal(T.levelOf(0.69), 'light'); assert.equal(T.levelOf(0.7), 'dark');
 });
 
@@ -195,9 +190,12 @@ test('exposure adapts to an enclosed sea (every direction reaching the far shore
   const big = exposure({ lat: 0, lng: 0 }, null, walls(4.5).map((w) => [w]));
   assert.ok(big.fRef > 490 && big.fRef < 720, String(big.fRef));
   assert.equal(T.windowsText(big.openWindows), 'Open to swell from every direction');
+  const mid = exposure({ lat: 0, lng: 0 }, walls(1).map((w) => [w]), walls(1).map((w) => [w]));
+  assert.ok(mid.fRef > 140 && mid.fRef < 150, 'a 220 km sea (Marmara-sized) keeps its own scale: ' + mid.fRef);
+  assert.equal(T.windowsText(mid.openWindows), 'Open to swell from every direction', 'and reads open (G20 B P2-8)');
   const small = exposure({ lat: 0, lng: 0 }, walls(0.4).map((w) => [w]), walls(0.4).map((w) => [w]));
-  assert.ok(small.fRef < 70 && small.fRef >= T.REF_MIN_KM, 'a 90 km sea keeps its own scale: ' + small.fRef);
-  assert.ok(small.sectors.filter((s) => s.level === 'open').length > 36, 'a small sea is mostly open (G20 B P2-8)');
+  assert.equal(small.fRef, T.REF_MIN_KM, 'a 90 km bay is held at the floor');
+  assert.equal(T.windowsText(small.openWindows), 'No open swell window', 'a small bay or sound is sheltered, not "open" (G20 re-review)');
 });
 
 test('real coast (Hawaii crop of the published data): the owner\'s examples, pinned', () => {
@@ -206,7 +204,7 @@ test('real coast (Hawaii crop of the published data): the owner\'s examples, pin
   const pipe = at(21.6655, -158.054);
   assert.ok(pipe.o.moved > 0.15 && pipe.o.moved < 0.5, 'a beach click is evaluated off the shore: ' + pipe.o.moved);
   assert.equal(levels(pipe.r), '.........########################################+.....++++.............');
-  assert.equal(T.windowsText(pipe.r.openWindows), 'Open: W (250°–275°), N (295°–045°)');
+  assert.equal(T.windowsText(pipe.r.openWindows), 'Open: W (250°–275°), WNW–NE (295°–045°)');
   assert.equal(levels(at(21.269, -157.829).r), '############################+..........................+################', 'Waikiki: south open, north dark');
   assert.equal(levels(at(21.5975, -158.109).r), '####################################################+..+++++...........#', 'Haleiwa: Kauai light');
 });
@@ -238,22 +236,82 @@ test('where a click is evaluated: 150 m off the shore; land within 2 km snaps; d
   assert.ok(g2 && g2.lat < 34.3 - 0.0012, 'near the real south shore, on the cell line: snaps south: ' + JSON.stringify(g2));
 });
 
-test('open windows: merged through north, compass names, the widest four listed', () => {
+test('where a click is evaluated (G20 re-review): never on the coastline, never through a spit, 2 km reach, local scale', () => {
+  const lat0 = 21.5, kx = 111.32 * Math.cos(lat0 * Math.PI / 180), ky = 110.57;
+  // two narrow V coves cut into a north coast (apexes at 21.5 N): the old walk evaluated hundreds of clicks around
+  // them ON the coastline (every ray 0 km, "No open swell window")
+  const ring = [D(-0.1), D(21.4), D(0.1), D(21.4), D(0.1), D(21.51), D(0.0031), D(21.51), D(0.003), D(21.5003), D(0.0029), D(21.51),
+    D(0.0006), D(21.51), D(0), D(21.5), D(-0.0006), D(21.51), D(-0.1), D(21.51)];
+  const cove = set([[ring]]);
+  const clearance = (o) => {
+    const e = T.collectEdges([cove], o, 0.02, 0.02); let md = Infinity;
+    for (let i = 0; i < e.length; i += 4) {
+      const x0 = e[i] * kx, y0 = (e[i + 1] - o.lat) * ky, ex = e[i + 2] * kx - x0, ey = (e[i + 3] - o.lat) * ky - y0, L2 = ex * ex + ey * ey;
+      const t = Math.max(0, Math.min(1, -(x0 * ex + y0 * ey) / L2)); md = Math.min(md, Math.hypot(x0 + t * ex, y0 + t * ey));
+    }
+    return md;
+  };
+  let placed = 0, onCoast = 0;
+  for (let dy = -0.0006; dy <= 0.00001; dy += 0.00004) for (let dx = -0.0008; dx <= 0.0038; dx += 0.00004) {
+    const o = T.placeOrigin({ lat: lat0 + dy, lng: dx }, [cove]);
+    if (!o) continue;
+    placed++; if (clearance(o) < 0.005) onCoast++;
+  }
+  assert.ok(placed > 500, 'most clicks are placed: ' + placed);
+  assert.equal(onCoast, 0, 'none within 5 m of a coast');
+  // a water click in a 25 m channel beside a 100 m spit stays in its channel (it walked 165 m beyond the spit)
+  const m = (v) => v / 1000 / 111.32;
+  const spit = set([[sq(-0.1, -0.1, -m(10), 0.1)], [sq(m(15), -0.1, m(115), 0.1)], [sq(m(400), -0.1, 0.1, 0.1)]]);
+  const ch = T.placeOrigin({ lat: 0, lng: 0 }, [spit]);
+  assert.ok(ch && ch.lng < m(15), 'not across the spit: ' + JSON.stringify(ch));
+  // a land click beside a channel too narrow for the stand-off stays in it, not across the next land (60 m channel,
+  // 100 m of land, then open water)
+  const strait = set([[sq(-0.1, -0.1, 0, 0.1)], [sq(m(60), -0.1, m(160), 0.1)]]);
+  const narrow = T.placeOrigin({ lat: 0, lng: -m(20) }, [strait]);
+  assert.ok(narrow && narrow.lng > 0 && narrow.lng < m(60), 'in the channel: ' + JSON.stringify(narrow));
+  // the local scale follows the latitude (Thurso, 58.6 N): 150 m off an east-facing coast in true metres
+  const kxT = 111.32 * Math.cos(58.6 * Math.PI / 180);
+  const th = T.placeOrigin({ lat: 58.6, lng: -3.0 - 0.1 / kxT }, [set([[sq(-3.6, 58.3, -3.0, 58.9)]])]);
+  const out = (th.lng + 3.0) * kxT * 1000;
+  assert.ok(out > 140 && out < 180, 'metres off the coast: ' + out);
+  // land clicks snap within 2 km of water, not beyond
+  const blk = set([[sq(-0.5, -0.5, 0, 0.5)]]);
+  assert.ok(T.placeOrigin({ lat: 0, lng: -1.5 / 111.32 }, [blk]), '1.5 km inland');
+  assert.ok(T.placeOrigin({ lat: 0, lng: -1.95 / 111.32 }, [blk]), '1.95 km inland');
+  assert.equal(T.placeOrigin({ lat: 0, lng: -2.5 / 111.32 }, [blk]), null, '2.5 km inland');
+  // coast beyond the 2 km reach still counts for the clearance: a channel from 1.8 to 2.05 km north of a land click
+  const isl = set([[sq(-0.5, -0.5, 0.5, 1.8 / ky)], [sq(-0.5, 2.05 / ky, 0.5, 0.5)]]);
+  const mid = T.placeOrigin({ lat: 0, lng: 0 }, [isl]);
+  assert.ok(mid && mid.lat * ky > 1.9 && mid.lat * ky < 1.94, 'the middle of the channel, not 50 m off the far shore: ' + (mid && mid.lat * ky));
+});
+
+test('open windows: merged through north, compass names (both ends when wide), the widest four listed, "open except"', () => {
   const mk = (lv) => lv.map((l, k) => ({ from: k * 5, to: k * 5 + 5, level: l }));
   const lv = Array(72).fill('dark'); for (let k = 58; k < 72; k++) lv[k] = 'open'; lv[0] = lv[1] = 'open'; lv[30] = 'open';
   assert.deepEqual(T.openWindows(mk(lv)), [[150, 155], [290, 10]]);
-  assert.equal(T.windowsText([[290, 10]]), 'Open: NNW (290°–010°)');
+  assert.equal(T.windowsText([[250, 275]]), 'Open: W (250°–275°)', 'a narrow window by its centre');
+  assert.equal(T.windowsText([[290, 10]]), 'Open: WNW–N (290°–010°)', 'a window of 45 degrees or more by its ends');
+  assert.equal(T.windowsText([[15, 230]]), 'Open: NNE–SW (015°–230°)', 'Cape Hatteras (not "ESE")');
+  assert.equal(T.windowsText([[350, 260]]), 'Open: N–W (350°–260°)', 'east of the Big Island (not "SE")');
+  assert.equal(T.windowsText([[185, 180]]), 'Open except S (180°–185°)', 'north of Oahu (not "N (185°–180°)")');
+  assert.equal(T.windowsText([[0, 170], [180, 355]]), 'Open except S (170°–180°), N (355°–000°)');
+  assert.equal(T.windowsText([[195, 200], [205, 215]]), 'Open: SSW (195°–200°, 205°–215°)', 'neighbours with one name share it');
   assert.equal(T.windowsText([]), 'No open swell window');
   assert.equal(T.windowsText([[0, 360]]), 'Open to swell from every direction');
-  assert.equal(T.windowsText([[10, 15], [30, 60], [90, 100], [120, 170], [200, 205], [250, 300]]), 'Open: NE (030°–060°), E (090°–100°), SE (120°–170°), W (250°–300°) +2 more');
+  assert.equal(T.windowsText([[10, 15], [30, 60], [90, 100], [120, 170], [200, 205], [250, 300]]), 'Open: NE (030°–060°), E (090°–100°), ESE–S (120°–170°), WSW–WNW (250°–300°) +2 more');
 });
 
 test('the fan: 72 wedges, a clear centre ring, rims on open windows, separators only where the shading changes', () => {
   const sectors = Array.from({ length: 72 }, (_, k) => ({ from: k * 5, to: k * 5 + 5, level: k < 36 ? 'open' : k < 54 ? 'light' : 'dark' }));
   const f = T.fanSvg({ sectors, openWindows: [[0, 180]] }, 120, 3);
   assert.equal((f.svg.match(/<path data-k=/g) || []).length, 72);
+  assert.equal((f.svg.match(/<path data-k="\d+" [^>]*fill="none"/g) || []).length, 36, 'open wedges are clear (owner, G20)');
   assert.equal((f.svg.match(/stroke="#fde047"/g) || []).length, 1, 'the selected wedge');
   assert.equal((f.svg.match(/class="tools-rim"/g) || []).length, 1, 'one rim arc for the one open window');
+  assert.equal((f.svg.match(/stroke="#0b2536" stroke-width="7"/g) || []).length, 1, 'on a dark underlay (G20 re-review: the overlay\'s cyan)');
+  const wide = T.fanSvg({ sectors, openWindows: [[15, 230]] }, 120, -1).svg;
+  assert.match(wide, /class="tools-rim" d="M[\d.,]+A118,118 0 1 1 /, 'a rim over 180 degrees takes the large arc');
+  assert.match(T.fanSvg({ sectors, openWindows: [[15, 100]] }, 120, -1).svg, /class="tools-rim" d="M[\d.,]+A118,118 0 0 1 /);
   assert.equal((f.svg.match(/stroke="rgba\(255,255,255,0\.7\)" stroke-width="1"\/>/g) || []).length, 3 + 1, 'three level changes (0, 180, 270) + the inner ring');
   assert.equal(f.size, 272); assert.equal(f.center, 136); assert.equal(T.innerRadius(120), 29);
   const all = T.fanSvg({ sectors: sectors.map((s) => Object.assign({}, s, { level: 'open' })), openWindows: [[0, 360]] }, 90, -1);
@@ -266,16 +324,28 @@ test('the fan: 72 wedges, a clear centre ring, rims on open windows, separators 
   assert.equal(T.sectorAt(0, -200, 120), -1); assert.equal(T.sectorAt(0, -20, 120), -1, 'inside the clear ring');
 });
 
-test('placing the fan: stays when clear, moves beside the tool bar, shrinks on a short map, gives up when nothing fits', () => {
+test('placing the fan: stays when clear, the nearest clear spot, shrinks on a short map, short pans, least overlap', () => {
   const bar = { l: 320, t: 120, r: 600, b: 330 };
   assert.deepEqual(T.placeFan(1280, 800, 400, 500, 120, [bar]), { x: 400, y: 500, r: 120 }, 'already clear');
   const moved = T.placeFan(610, 364, 450, 200, 120, [bar]);
-  assert.ok(moved && moved.x + moved.r + 16 <= bar.l && moved.r <= 120, 'beside the bar on a short map: ' + JSON.stringify(moved));
+  assert.deepEqual(moved, { x: 184, y: 200, r: 120 }, 'the NEAREST clear spot beside the bar on a short map');
   const tiny = T.placeFan(300, 200, 150, 100, 120, []);
-  assert.ok(tiny && tiny.r < 120 && tiny.r >= 50, 'a small map gets a smaller fan: ' + JSON.stringify(tiny));
-  assert.equal(T.placeFan(100, 100, 50, 50, 120, []), null, 'nothing fits');
+  assert.deepEqual(tiny, { x: 150, y: 100, r: 70 }, 'a small map gets a smaller fan');
   const inside = T.placeFan(1280, 800, 1270, 790, 120, []);
   assert.ok(inside.x <= 1280 - 136 - 8 && inside.y <= 800 - 136 - 8, 'pulled back inside the map');
+  // a mid-size window (683 x 657) with the bar and the overlay panel: a smaller fan nearby, not a long pan (G20 re-review)
+  const obs = [{ l: 383, t: 60, r: 673, b: 400, hard: true }, { l: 10, t: 10, r: 300, b: 240 }];
+  const far = T.placeFan(683, 657, 360, 100, 120, obs), near = T.placeFan(683, 657, 360, 100, 120, obs, { maxPan: 683 / 3 });
+  assert.deepEqual(far, { x: 240, y: 376, r: 120 });
+  assert.ok(near.r < 120 && Math.hypot(near.x - 360, near.y - 100) <= 683 / 3, 'within a third of the map: ' + JSON.stringify(near));
+  assert.deepEqual(T.placeFan(683, 657, 360, 400, 120, obs, { maxPan: 228 }), T.placeFan(683, 657, 360, 400, 120, obs), 'the same when the full fan is near');
+  // nothing clear: the least overlap, never centred under the tool bar (G20 re-review, small desktop windows)
+  assert.deepEqual(T.placeFan(100, 100, 50, 50, 120, []), { x: 50, y: 50, r: 50, overlap: true }, 'a tiny map: centred');
+  const hardBar = { l: 120, t: 50, r: 410, b: 290, hard: true };
+  const fall = T.placeFan(420, 300, 250, 150, 90, [hardBar]);
+  assert.ok(fall.overlap && fall.r === 50 && fall.x + 50 + 16 <= hardBar.l + 16, 'beside the bar: ' + JSON.stringify(fall));
+  assert.deepEqual(T.placeFan(420, 300, 250, 150, 90, [Object.assign({}, hardBar, { hard: false })]).overlap, true);
+  assert.equal(T.leastOverlap(0, 300, 10, 10, 50, [], 8), null, 'a map with no size');
 });
 
 test('the far window reaches as far as the rays: the whole circle when a ray can pass a pole', () => {
@@ -311,6 +381,21 @@ test('the coast source: loaded once, retried after a failure; tier-1 cells dedup
   cs.chunks.set('other', {});
   await cs.chunk('20_-160');
   assert.equal([...cs.chunks.keys()].pop(), '20_-160', 'a hit moves to the most recent end (LRU)');
+  // a chunk that arrives but does not decode (a captive portal's HTML) is fetched again next time (G20 re-review)
+  let portal = true; calls.length = 0;
+  const cs2 = new T.CoastSource('https://c', async (url) => {
+    calls.push(url);
+    if (url.endsWith('/index.json')) return body(idx);
+    if (url.endsWith('/world-i.bin')) return body(encodeCoast([[sq(10, 10, 11, 11)]], 30));
+    if (portal) { portal = false; return body(new TextEncoder().encode('<html>sign in</html>').buffer); }
+    return body(encodeCoast([[sq(-158.3, 21.25, -157.6, 21.7)]], 5));
+  });
+  await cs2.load();
+  assert.equal(await cs2.near({ lat: 21.7, lng: -158 }), null, 'the bad body: tier 0 stands in');
+  assert.equal(cs2.inflight.size, 0, 'nothing left in flight');
+  const again = await cs2.near({ lat: 21.7, lng: -158 });
+  assert.equal(again && again.length, 1, 'fetched again and decoded');
+  assert.equal(calls.filter((c) => c.endsWith('20_-160.bin')).length, 2);
 });
 
 test('computeExposure is time-sliced and can be stopped', async () => {

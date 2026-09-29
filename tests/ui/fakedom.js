@@ -6,6 +6,8 @@ function matches(el, sel) {
   return sel.split(',').some((part) => {
     const s = part.trim();
     if (!s) return false;
+    const t = /^([a-z]+)(\[.*\])$/i.exec(s);                                  // tag[attr="v"]
+    if (t) return el.tagName === t[1].toUpperCase() && matches(el, t[2]);
     if (s[0] === '[') { const m = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(s); if (!m) return false; return m[2] === undefined ? el.attrs.has(m[1]) : el.attrs.get(m[1]) === m[2]; }
     if (s[0] === '#') return el.id === s.slice(1);
     if (s[0] === '.') return el.classList.contains(s.slice(1));

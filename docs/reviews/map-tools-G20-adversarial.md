@@ -262,11 +262,59 @@ by presenting the page as visible to the overlay's code. No console errors.
 
 | # | Sev | Finding | Outcome |
 |---|---|---|---|
-| R4 P2-1 | P2 | Placement scans every edge of a 10×10 km window for every 20 m step of up to 25 walks: in dense estuaries it takes 100-230 ms, in the click's own task, before "Computing…" can paint. Kennebec mouth, Maine (43.818, −69.785; 5,287 edges): median 63-106 ms, max 205-233 ms (1.11.1: max 22 ms); with the rays up to 364 ms on a laptop, an estimated 0.7-0.9 s frozen on a phone. The record's "max 44 ms" held only for windows under ~1,400 edges. | planned |
-| R4 P2-2 | P2 | A land click whose nearest coast point is a cove-apex vertex: the first walk only grazes the tip, counts no crossing and runs on through land (Honolua Bay's head, 21.0169, −156.64062: evaluated 1,681 m away in the next bay, the search would give 460 m). 7 of 41,338 spot-grid land clicks, 55 in the Honolua dense grid. | planned |
-| R4 P3-1 | P3 | The look-out test (3 of 16 directions free for 2 km) and the clearest-water fallback sometimes pick worse water: a Hilo land click (19.7270, −155.0692) goes into a pond ("No open swell window"; 1.11.1: the bay, "N–ENE"); NW Scotland; Honolulu Harbor water clicks moved into the basin; Hvaler sounds. Far more gains than losses overall. The record's "8 in 41,338" is right for R3's spot grid (checked against both 1.11.0 and 1.11.1); R4's own grids give 24-25 land and 71 water clicks losing a window against 1.11.1 (2,348 gained). | planned (ranking tweaks, measured) |
-| R4 P3-2 | P3 | A tool switch at the same bar height skips the start-minimise and the next shrink reports growth; the template's focus restore skips focus on the page body. | planned |
-| R4 P3-3 | P3 | The placement rewrite is mostly unpinned: 20 of 32 placement mutants survive (the turn disabled, its side, parity, the on-coastline rule, the look-out threshold, the probe window, land within 5 m), plus the resize's y shift. | planned |
-| R4 P3-4 | P3 | README and a code comment describe the search and its fallback more narrowly than the code behaves. | planned |
-| R4 note | P3 | `playback.test.js` "coast: a download that hangs past the watchdog" (40 ms watchdog) fails under load: its first "still loading" check can run after the watchdog. | planned (test only) |
+| R4 P2-1 | P2 | Placement scans every edge of a 10×10 km window for every 20 m step of up to 25 walks: in dense estuaries it takes 100-230 ms, in the click's own task, before "Computing…" can paint. Kennebec mouth, Maine (43.818, −69.785; 5,287 edges): median 63-106 ms, max 205-233 ms (1.11.1: max 22 ms); with the rays up to 364 ms on a laptop, an estimated 0.7-0.9 s frozen on a phone. The record's "max 44 ms" held only for windows under ~1,400 edges. | fixed (round 4) |
+| R4 P2-2 | P2 | A land click whose nearest coast point is a cove-apex vertex: the first walk only grazes the tip, counts no crossing and runs on through land (Honolua Bay's head, 21.0169, −156.64062: evaluated 1,681 m away in the next bay, the search would give 460 m). 7 of 41,338 spot-grid land clicks, 55 in the Honolua dense grid. | fixed (round 4) |
+| R4 P3-1 | P3 | The look-out test (3 of 16 directions free for 2 km) and the clearest-water fallback sometimes pick worse water: a Hilo land click (19.7270, −155.0692) goes into a pond ("No open swell window"; 1.11.1: the bay, "N–ENE"); NW Scotland; Honolulu Harbor water clicks moved into the basin; Hvaler sounds. Far more gains than losses overall. The record's "8 in 41,338" is right for R3's spot grid (checked against both 1.11.0 and 1.11.1); R4's own grids give 24-25 land and 71 water clicks losing a window against 1.11.1 (2,348 gained). | fixed (round 4, measured) |
+| R4 P3-2 | P3 | A tool switch at the same bar height skips the start-minimise and the next shrink reports growth; the template's focus restore skips focus on the page body. | fixed (round 4) |
+| R4 P3-3 | P3 | The placement rewrite is mostly unpinned: 20 of 32 placement mutants survive (the turn disabled, its side, parity, the on-coastline rule, the look-out threshold, the probe window, land within 5 m), plus the resize's y shift. | fixed (round 4), survivors listed |
+| R4 P3-4 | P3 | README and a code comment describe the search and its fallback more narrowly than the code behaves. | fixed (round 4) |
+| R4 note | P3 | `playback.test.js` "coast: a download that hangs past the watchdog" (40 ms watchdog) fails under load: its first "still loading" check can run after the watchdog. | fixed (round 4) |
+
+## Fix round 4 (UI 1.11.3 @ c14bab0, 2026-09-29, HIGH)
+
+- **Placement speed (R4 P2-1).** The coast edges within reach go into 100 m buckets; a 20 m step, a look-out probe
+  (in 100 m pieces) and a nearest-edge search (growing boxes until the best edge is inside) test only nearby edges.
+  Kennebec mouth (43.818, −69.785; 5,287 edges), 400 clicks: median 4 ms, p99 11 ms, max 14 ms (1.11.2: max 205 ms);
+  2,000 clicks in the densest areas: median 3.6 ms, p99 20 ms, max 26 ms. `exposureAt` yields once (a macrotask)
+  before placement, so "Computing…" paints first.
+- **The cove-tip graze (R4 P2-2).** A land click's first walk gives up two steps past its nearest coast point when it
+  is still on land; after any crossing the coast data (not the crossing count) says which side the walk is on, except
+  on the coastline itself; a step owns [a, b), so a crossing that falls exactly on a sample point is counted once
+  (a synthetic channel whose samples landed on its banks had walked on through the next strip of land). Honolua Bay's
+  head (21.0169, −156.64062): 460 m, "W (260°–275°), N (340°–005°)" (1.11.2: 1,681 m over the headland), pinned on a
+  Maui crop of the published coast (`tests/fixtures/coast/maui-t1.bin`, identical placements to the full chunk).
+- **Which water wins (R4 P3-1), measured.** Six rules were run over 48,000 clicks (R3's spot and dense grids, R4's
+  Hilo/Honolulu grid, 3,000 random coastal clicks), windows lost / gained against 1.11.1:
+
+  | Rule | Land lost / gained | Water lost / gained |
+  |---|---|---|
+  | 1.11.2 | 78 / 2,704 | 102 / 150 |
+  | round 4, ranking as 1.11.2 | 93 / 2,717 | 104 / 151 |
+  | + relative look-out (0.6 × the best) | 56 / 3,101 | 104 / 151 |
+  | + fallback: looks out first, then the nearest ≥ 80 % as clear | 56 / 3,100 | 49 / 162 |
+  | same without the turn out to sea | 69 / 3,128 | 49 / 162 |
+  | **looks out well (6 of 16) first, else looks out (3 of 16)** | **32 / 3,601** | **49 / 162** |
+
+  The relative rule moved the Honolua head click 1,080 m past its bay (the bay looked out 6 of 16, water beyond it 10);
+  "looks out well" keeps it in the bay and keeps Hilo's clicks on the bay rather than the pond. A 300 m cap on how much
+  further a well-looking point may be cost ~200 gains in the dense grids and was dropped. Chosen: the nearest point
+  150 m out that looks out well (6 of 16 directions free for 2 km), else the nearest that looks out (3 of 16), else the
+  nearest 150 m out; the search is skipped when the first walk's point already looks out 8 of 16; the fallback takes the
+  nearest water that looks out (5 m clear at least), else the nearest at least 80 % as clear as the clearest. A point on
+  the coastline is never used (a click exactly on a coast vertex had been kept with 0 m of clearance).
+- **Placement safety (the final code, R3's scanner).** Refusals: dense grids 35 → 0, spot grids 2 → 0, R1's areas
+  1,057 → 1,055 (one legitimate new refusal at Chiba); evaluations within 5 m of a coast: 0 everywhere (1.11.0: 194 in the
+  dense grids); water clicks across a coast: 0, except 136 in R4's dateline grids, where this scanner does not wrap
+  longitudes (1.11.0: 137; R4's wrap-aware scanner found 0); worldwide sample 73 fixed, 2 broken, 0 newly refused.
+- **Also:** a tool switch always reports the bar (`s.barH = -1`); a page minimise releases focus when it was on the page
+  itself; README and comments describe the search as it is; the overlay watchdog test runs with 150 ms (c96a8cd).
+- **Tests.** tools.test.js 23, tools-ui.test.js 22: an island field behind a coast (16,200 edges; 1.11.2 took 165-196 ms
+  a click, fails the 80 ms limit), the Honolua Bay pin (fails on 1.11.2: 1.68 km), a long lake that looks out only east
+  and west (fails with a look-out minimum of 1), a sharp-V refusal, rotation judged by height, tool switching; the
+  Haleiwa example's pinned levels now end open (the point is 100 m out instead of 80 m; Kauai still light). pytest 456,
+  Node 255 (also with the clock at 2026-10-05 and 2027-09-01). Mutation (22 of the round-4 logic): 10 killed; the
+  survivors are layers with a second guard (the coastline click is both excluded and held to 5 m; the first walk's give-up
+  and the search both stop the graze; the side from the coast data and the half-open steps), the paint yield (browser
+  only), the turn and its side (the search reaches the same answers in the tests; the measurement shows the turn helps),
+  the nearest-edge box test, and the fallback's order.
 

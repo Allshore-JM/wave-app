@@ -318,3 +318,57 @@ by presenting the page as visible to the overlay's code. No console errors.
   only), the turn and its side (the search reaches the same answers in the tests; the measurement shows the turn helps),
   the nearest-edge box test, and the fallback's order.
 
+## Re-check of fix round 4 (UI 1.11.3 @ e4da450, 2026-09-29, MAX)
+
+Two halves: R5, a fresh-context code reviewer (read-only, Node/Python, the published coast; report and scripts in the
+session scratchpad `g20/r5/`), and the author on the test site. Suites: pytest 456, Node 255 (also with the clock at
+2026-10-05 and 2027-09-01). **No P0, P1 or P2; 7 P3.**
+
+**R5 (code).**
+- **Bucket index: exact.** `nearest()` against brute force: 0 wrong distances in 1,739,340 calls. `cuts()`: 15 of
+  34.3 M calls differ, all axis-aligned steps touching a vertex at exactly the click's latitude or longitude (lattice
+  grids only). With placements, those touches and ties at shared vertices move 31 of 30,968 points and change no window.
+- **Speed.** Kennebec mouth, 441 clicks: median 4.3 ms, p99 11.5 ms, max 17 ms. The 22 densest places, 9,702 clicks:
+  max 33 ms. The worst whole path is about 100 ms on a laptop.
+- **The ranking table reproduces exactly** on the four grid files, which hold 45,166 clicks. Against 1.11.2: land lost
+  66 / gained 1,009, water 16 / 81. Seed 11 (not in the author's set): 9 / 61 against 1.11.1.
+- **Safety, 69,302 clicks** (dateline, 74-75°, R1's areas, dense grids, two random seeds, a quarter of the spot
+  grids): 0 false or new refusals, 0 points on land, 0 land clicks within 5 m, 0 water clicks moved more than 300 m or
+  across a coast. Multi-edge crossings belong only to R4's known classes: lattice vertex touches, slivers under 20 m,
+  and one graze 1.11.2 shared.
+- **93 spots, 1.11.2 → 1.11.3:** 15 wedges at 4 spots (Haleiwa, Noosa, Honolulu Harbor, Bora Bora), every one from a
+  changed evaluation point; 0 unexplained. The owner's examples hold.
+- **Also confirmed.**
+  - Ten interventions during the new pause never leave a stale fan.
+  - Start/switch/stop orders report growth correctly.
+  - The golden differs only by the version and the three template lines.
+  - `maui-t1.bin` is an exact crop: identical placements over 6,561 clicks.
+  - The 150 ms watchdog passed 13 of 13 runs under load.
+  - The new tests fail on 1.11.2 where claimed.
+  - Mutation: 22 of 50 killed.
+
+**Test site (author).** Test site (test @ ff58a05), browser pane visible, desktop 1280×800 and phone 375×812. The
+served tools.js, forecast.js and graticule.js equal the committed blobs. Input goes through the real path (pointer and
+mouse events on the map, Leaflet's own click). At the site's maximum zoom (11, about 70 m a pixel) a click lands up to
+~47 m from a reference coordinate; the browser's evaluation point equals Node's for the same click point.
+
+| Item | Verdict | Evidence |
+|---|---|---|
+| Owner's spots | confirmed | Pipeline "W (250°–275°), WNW–NE (295°–045°)"; Haleiwa "W (265°–275°), WNW–N (300°–005°)"; Waikiki "SE–W (145°–275°)"; Hanalei "WNW–N (285°–010°)"; Rincon "SSE (150°–165°), W (250°–275°)"; Cape Hatteras "NNE–SW (015°–230°)"; Pensacola "SE–SW (125°–235°)"; Nice "SSE–SSW (165°–210°)" |
+| Round-4 pins | confirmed | Honolua head 540 m "W (255°–275°), N (340°–005°)" (the clicked pixel's point; 460 m at the exact coordinate); Hilo land "N–ENE (355°–070°)"; Honolulu Harbor water 160 m "SSW–WSW (200°–245°)" |
+| Speed and "Computing…" | confirmed | 64-146 ms click to result including new coast chunks; Kennebec 91-98 ms; Bergen with a fresh dense chunk 201 ms, cached 108 ms; "Computing…" shown every time, 3-19 frames drawn before the result, 0 long tasks inside any computation |
+| Races in the new pause | confirmed | two clicks in one task → one fan (the second); ✕ during the pause → no fan; tool switch → no fan; unit change → the result in the new unit; Clear after a result → no fan |
+| Same-height switch, focus | confirmed | area (83 px) → exposure (83 px) minimises an expanded forecast window over the bar, focus on the tool's ✕; with focus on the page, a result that grows the bar to 265 px minimises the window and focus stays on the page |
+| Phone | confirmed | taps 77-99 ms, 212 px fans wholly on the map below the bar; a tap under the bar is not a map tap |
+| Console | confirmed | no errors |
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| R5 P3-1 | P3 | The pause before placement is a 0 ms timer, which usually runs before the next frame, so "Computing…" is not guaranteed to paint first. The bucket index, not the pause, fixed R4 P2-1. | open |
+| R5 P3-2 | P3 | When tier-1 coast data fails to load, placement falls back to tier 0, and a long tier-0 edge fills every 100 m bucket of its bounding box. The worst, 104 km off Somalia, fills 544,019. The author reproduced it at (0.364, 43.246): 82-166 ms and 75-91 MB a placement (1.11.2: 2-4 ms, 1 MB), even for an open-water click, because the buckets are filled first. Guerrero: 47-50 ms, 54-56 MB. | open |
+| R5 P3-3 | P3 | The island-field timing test (< 80 ms) is load-sensitive: 18-24 ms on a quiet machine, but 5 of 12 runs failed with 12 busy loops. | open |
+| R5 P3-4 | P3 | The graze fix is not pinned. Removing both the give-up and the new side check passes all 44 tools tests, yet without the give-up (21.01525, −156.64300) goes 1,684 m over the headland. Also unpinned: `nearest()`'s exactness, the turn (the corner test passes without it), the 8-of-16 skip, the ranking tiers, the fallback order. | open |
+| R5 P3-5 | P3 | A water click in the innermost ~100 × 150 m of a narrow bay head now stays at the click (1.11.2 took the clearest water). Honolua's head loses 1,478 open wedges on R3's ±90 m grid (4 all-or-nothing losses); over the whole bay the net is −108 against 1.11.2 (+534 against 1.11.1), e.g. (21.01650, −156.64225): 1.11.2 "W, N", 1.11.3 none. | owner |
+| R5 P3-6 | P3 | "Looks out well first" places 34 % of land clicks beyond the nearest point 150 m out: 11 % more than 500 m further, 3 % more than 1 km. Where they are over 500 m apart, it gains a window at 2,658 clicks and loses one at 5. Honolulu Harbor shore clicks go 1.4-1.6 km to open water. NW Scotland (58.10485, −5.29741) still has no window: its inlet water looks out 1-2 of 16 and reads "NW (315°–325°)", and the pick, 600 m out at 6 of 16, reads none. | owner |
+| R5 P3-7 | P3 | Record and doc nits: "48,000" is 45,166; "tools.test.js 23" is 22; the README's "No walk crosses a coast beyond its own water" skips slivers under one 20 m step; one 161-character comment line. | open |
+| R5 note | P3 | The template's focus restore leaves focus on the window's opener when the saved element was hidden or detached; `if (document.activeElement !== had) document.activeElement.blur()` after the restore closes it. | open |

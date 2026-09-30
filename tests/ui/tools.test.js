@@ -463,6 +463,11 @@ test('placement rules, each pinned where it decides (G20 re-check R5)', () => {
   const strip = land([[-4, -1.5], [-0.03, -1.5], [0, 0], [0.03, -1.5], [4, -1.5], [4, 0.6], [-4, 0.6]]);
   const t = at(strip, 0.0003, 0.1);
   assert.ok(t && t.y > 0.6 && t.moved < 0.8, 'the north coast: ' + JSON.stringify(t));
+  // both walks run exactly through the cove's tip, where two edges meet: the same answer as testing every edge
+  for (const [s, x, y] of [[bay, 0.075, 0.13], [strip, 0.0003, 0.1]]) {
+    const p = { lat: y / 110.57, lng: x / 111.32 };
+    assert.deepEqual(T.placeOrigin(p, [s]), T.placeOrigin(p, [s], { brute: true }), 'index = every edge');
+  }
   // 3. the tiers: a bay 1 km square south of a land click 200 m east of it looks out 3 of 16 near its head; its mouth
   // looks out well (6+), and wins although further
   const sq1 = land([[-4, -1], [0, -1], [0, 0], [1, 0], [1, -1], [4, -1], [4, 4], [-4, 4]]);

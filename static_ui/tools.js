@@ -509,7 +509,8 @@
       function test(j) {
         var x0 = E[j] - px, y0 = E[j + 1] - py, ex = E[j + 2] - E[j], ey = E[j + 3] - E[j + 1], L2 = ex * ex + ey * ey;
         var t = L2 ? Math.max(0, Math.min(1, -(x0 * ex + y0 * ey) / L2)) : 0, cx = x0 + t * ex, cy = y0 + t * ey, d = Math.sqrt(cx * cx + cy * cy);
-        if (!best || d < best.d) best = { d: d, cx: cx, cy: cy, ex: ex, ey: ey };
+        // ties (here, and a walk through a vertex in cuts) go to the lower edge: no answer depends on the bucket order
+        if (!best || d < best.d || (d === best.d && j < best.j)) best = { d: d, cx: cx, cy: cy, ex: ex, ey: ey, j: j };
       }
       for (var r = PLACE_CELL_KM; ; r *= 2) {
         each(px - r, py - r, px + r, py + r, test);
@@ -527,7 +528,7 @@
         var t = ((cx - ax) * ey - (cy - ay) * ex) / den, u = ((cx - ax) * dy - (cy - ay) * dx) / den;
         if (!(t >= (atStart ? 1e-9 : -1e-9) && t < 1 - 1e-9 && u >= 0 && u <= 1)) return;
         if (ts.every(function (v) { return Math.abs(v - t) > 1e-7; })) ts.push(t);
-        if (!first || t < first.t) first = { t: t, ex: ex, ey: ey };
+        if (!first || t < first.t || (t === first.t && j < first.j)) first = { t: t, ex: ex, ey: ey, j: j };
       });
       return { n: ts.length, first: first };
     }

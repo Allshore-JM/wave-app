@@ -226,6 +226,22 @@ test('Honolua Bay (published coast, Maui crop): a land click at the bay head is 
   assert.ok(head.lng < -156.643 && head.lat < 21.026 && !T.inLand([t1], head.lng, head.lat), 'in the bay: ' + JSON.stringify(head));
   const headland = T.placeOrigin({ lat: 21.0175, lng: -156.64 }, [t1]);
   assert.ok(headland && headland.moved < 0.6, 'the east headland (1.11.1 refused it): ' + JSON.stringify(headland));
+  // a land click whose first walk grazes the bay's tip and would run 1,684 m on over the headland to water that looks
+  // out 9 of 16 (so the search is skipped): the give-up keeps it in the bay (G20 re-check R5)
+  const graze = T.placeOrigin({ lat: 21.01525, lng: -156.643 }, [t1]);
+  assert.ok(graze && graze.moved < 0.5 && graze.lat < 21.02, 'in the bay: ' + JSON.stringify(graze));
+  // a water click at the innermost head, looking out 3 of 16: kept at the click (owner, G20 re-check R5 P3-5)
+  const water = T.placeOrigin({ lat: 21.0165, lng: -156.64225 }, [t1]);
+  assert.ok(water && water.moved === 0, 'kept at the click: ' + JSON.stringify(water));
+  // the bucket index finds exactly what testing every edge finds, at a small fraction of the work
+  let tIdx = 0, tAll = 0;
+  for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) {
+    const p = { lat: 21.0125 + i * 0.00137, lng: -156.6475 + j * 0.00131 }, a = {}, b = {};
+    const o = T.placeOrigin(p, [t1], { stats: a }), q = T.placeOrigin(p, [t1], { stats: b, brute: true });
+    assert.deepEqual(o, q, 'index = every edge at ' + JSON.stringify(p));
+    tIdx += a.tests; tAll += b.tests;
+  }
+  assert.ok(tAll > 50 * tIdx, 'edge tests: ' + tIdx + ' vs ' + tAll);
 });
 
 test('where a click is evaluated: 150 m off the shore; land within 2 km snaps; deep inland refused; a point ON an edge works', () => {
@@ -301,8 +317,8 @@ test('where a click is evaluated (G20 re-review): off the coastline, never throu
   const strait = set([[sq(-0.1, -0.1, 0, 0.1)], [sq(m(60), -0.1, m(160), 0.1)]]);
   const narrow = T.placeOrigin({ lat: 0, lng: -m(20) }, [strait]);
   assert.ok(narrow && narrow.lng > 0 && narrow.lng < m(60), 'in the channel: ' + JSON.stringify(narrow));
-  // a land click whose walk to the nearest coast would run on along the shore (a corner): it turns straight out to sea
-  // (G20 re-check R3 P2-A: Haleiwa and Hilo walked 1.2-1.5 km on through land). Land south of the equator and west of 0.
+  // a land click near a corner of the shore is evaluated out to sea near the corner (G20 re-check R3 P2-A: Haleiwa and
+  // Hilo walked 1.2-1.5 km on through land; the turn itself is pinned below). Land south of the equator and west of 0.
   const corner = set([[sq(-0.1, -0.1, 0, 0)], [sq(-0.1, 0, -0.05, 0.1)]]);
   const turned = T.placeOrigin({ lat: -0.0009, lng: -0.0009 }, [corner]);
   assert.ok(turned && turned.moved < 0.4 && !T.inLand([corner], turned.lng, turned.lat), 'out to sea near the corner: ' + JSON.stringify(turned));
@@ -429,18 +445,52 @@ test('placing the fan: stays when clear, the nearest clear spot, shrinks on a sh
   assert.ok(big && big.overlap && Date.now() - t0 < 100, 'within 100 ms: ' + (Date.now() - t0));
 });
 
-test('placement behind a dense coast (16,000 edges within reach) stays fast (G20 re-check R4: the Kennebec mouth)', () => {
+test('placement rules, each pinned where it decides (G20 re-check R5)', () => {
+  // coasts drawn in km around (0, 0); each ring is land
+  const P = (x, y) => [D(x / 111.32), D(y / 110.57)];
+  const land = (pts) => { let a = 0; pts.forEach(([x0, y0], i) => { const [x1, y1] = pts[(i + 1) % pts.length]; a += x0 * y1 - x1 * y0; }); return set([[(a < 0 ? pts.slice().reverse() : pts).flatMap(([x, y]) => P(x, y))]]); };
+  const at = (s, x, y) => { const o = T.placeOrigin({ lat: y / 110.57, lng: x / 111.32 }, [s]); return o && { x: o.lng * 111.32, y: o.lat * 110.57, moved: o.moved }; };
+  // 1. the give-up: a hairline cove whose tip (0, 0) is the click's nearest coast; the walk grazes the tip and would run
+  // on over land to a headland's end 1.5 km away, open water that looks out 9 of 16 (so no search). It gives up just
+  // past the tip, and the search finds the bay the cove opens into (880 m; without the give-up 1,682 m).
+  const wall = (y) => 0.0866 - 0.5 * (-y - 0.05) / 0.866;                   // the bay's west shore, parallel to the graze
+  const bay = land([[-4, -1.2], [wall(-1.2), -1.2], [wall(-0.6), -0.6], [-0.01, -0.6], [0, 0], [0.01, -0.6], [4, -0.6], [4, 4], [-4, 4]]);
+  const g = at(bay, 0.075, 0.13);
+  assert.ok(g && g.moved < 1 && g.y > -1.2 && g.x > wall(g.y), 'in the bay, not past the headland: ' + JSON.stringify(g));
+  // 2. the turn: a land click 100 m behind the tip of a hairline cove that runs 1.5 km to the south coast; the walk
+  // enters the cove at its tip and turns across it (the far shore stops it), so the search finds the north coast 660 m
+  // away (without the turn it ran 1.76 km down the cove, and the search was skipped)
+  const strip = land([[-4, -1.5], [-0.03, -1.5], [0, 0], [0.03, -1.5], [4, -1.5], [4, 0.6], [-4, 0.6]]);
+  const t = at(strip, 0.0003, 0.1);
+  assert.ok(t && t.y > 0.6 && t.moved < 0.8, 'the north coast: ' + JSON.stringify(t));
+  // 3. the tiers: a bay 1 km square south of a land click 200 m east of it looks out 3 of 16 near its head; its mouth
+  // looks out well (6+), and wins although further
+  const sq1 = land([[-4, -1], [0, -1], [0, 0], [1, 0], [1, -1], [4, -1], [4, 4], [-4, 4]]);
+  const r = at(sq1, 1.2, -0.3);
+  assert.ok(r && r.y < -0.8, 'towards the mouth, not the inner bay: ' + JSON.stringify(r));
+  // 4. a long diagonal edge (160 km) beside a click: only the buckets it crosses inside the window hold it (a tier-0
+  // edge filled 544,019 buckets of its box: 80-170 ms and 75-90 MB a placement), and the result is the same
+  const diag = set([[[D(-0.7), D(-0.7), D(0.7), D(0.7), D(-0.7), D(0.7)]]]);
+  for (const [lat, lng] of [[-0.0081, 0.0081], [-0.0011, 0.0013], [-0.0003, 0.0004], [0.0007, -0.0003]]) {
+    const a = {}, o = T.placeOrigin({ lat, lng }, [diag], { stats: a }), q = T.placeOrigin({ lat, lng }, [diag], { brute: true });
+    assert.ok(a.entries < 1000, 'bucket entries: ' + a.entries);
+    assert.deepEqual(o, q, 'index = every edge');
+  }
+});
+
+test('placement behind a dense coast (16,000 edges within reach) tests only nearby edges (G20 re-checks R4, R5)', () => {
   // land south of 0, a field of 4,050 islets offshore (44 m each, 110 m apart): land clicks 250-660 m inland walk and
-  // search through thousands of edges; 1.11.2 took ~170-200 ms each, the bucket index ~10-30 ms
+  // search through thousands of edges. Counted, not timed (a timing limit failed on a loaded machine): the same
+  // result as testing every edge, with a small fraction of the edge tests (1.11.2 tested every edge: 170-200 ms)
   const pieces = [[sq(-0.05, -0.05, 0.05, 0)]];
   for (let i = -45; i < 45; i++) for (let j = 2; j < 47; j++) pieces.push([sq(i * 0.001, j * 0.001, i * 0.001 + 0.0004, j * 0.001 + 0.0004)]);
   const field = set(pieces);
-  let worst = 0;
   for (const [lat, lng] of [[-0.003, 0], [-0.004, 0.0123], [-0.0025, -0.021], [-0.006, 0.004]]) {
-    const t0 = Date.now(); const o = T.placeOrigin({ lat, lng }, [field]); worst = Math.max(worst, Date.now() - t0);
+    const a = {}, b = {}, o = T.placeOrigin({ lat, lng }, [field], { stats: a }), q = T.placeOrigin({ lat, lng }, [field], { stats: b, brute: true });
     assert.ok(o && o.lat > 0 && !T.inLand([field], o.lng, o.lat), 'out on the water: ' + JSON.stringify(o));
+    assert.deepEqual(o, q, 'index = every edge');
+    assert.ok(b.tests > 20 * a.tests, 'edge tests: ' + a.tests + ' vs ' + b.tests);
   }
-  assert.ok(worst < 80, 'each placement under 80 ms: ' + worst);
 });
 
 test('the far window reaches as far as the rays: the whole circle when a ray can pass a pole', () => {

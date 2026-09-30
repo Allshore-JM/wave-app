@@ -472,21 +472,35 @@
     var deg = collectEdges(sets, origin, Math.min(180, lim / kx), lim / ky), E = [];
     for (var i = 0; i < deg.length; i += 4) E.push(deg[i] * kx, (deg[i + 1] - origin.lat) * ky, deg[i + 2] * kx, (deg[i + 3] - origin.lat) * ky);
     // The edges in PLACE_CELL_KM buckets, so a step, a probe or a nearest-edge search tests only the buckets it touches
-    // (G20 re-check R4: estuaries have 5,000+ edges in the window).
-    var cells = new Map(), stamp = new Int32Array(E.length / 4), mark = 0;
+    // (G20 re-check R4: estuaries have 5,000+ edges in the window). An edge goes only into the buckets it crosses, and
+    // only inside the window (every query stays inside it): a tier-0 edge can be 100 km long (G20 re-check R5).
+    var cells = new Map(), stamp = new Int32Array(E.length / 4), mark = 0, W = lim + PLACE_CELL_KM, EPS = 1e-9;
+    var tally = opts.stats || {}; tally.tests = 0; tally.entries = 0;
     function cell(v) { return Math.floor(v / PLACE_CELL_KM); }
     function key(ix, iy) { return ix * 1048576 + iy; }
-    for (var e = 0; e < E.length / 4; e++) {
-      var i0 = cell(Math.min(E[e * 4], E[e * 4 + 2])), i1 = cell(Math.max(E[e * 4], E[e * 4 + 2]));
-      var j0 = cell(Math.min(E[e * 4 + 1], E[e * 4 + 3])), j1 = cell(Math.max(E[e * 4 + 1], E[e * 4 + 3]));
-      for (var ii = i0; ii <= i1; ii++) for (var jj = j0; jj <= j1; jj++) { var kk = key(ii, jj), l = cells.get(kk); if (l) l.push(e); else cells.set(kk, [e]); }
+    function put(ix, iy, e) { var kk = key(ix, iy), l = cells.get(kk); if (l) l.push(e); else cells.set(kk, [e]); tally.entries++; }
+    for (var e = 0; e < E.length / 4; e++) {                                  // row by row: the x span of the edge in each row
+      var ax = E[e * 4], ay = E[e * 4 + 1], bx = E[e * 4 + 2], by = E[e * 4 + 3];
+      var ylo = Math.max(Math.min(ay, by), -W), yhi = Math.min(Math.max(ay, by), W);
+      if (ylo > yhi || Math.max(ax, bx) < -W || Math.min(ax, bx) > W) continue;
+      for (var jj = cell(ylo - EPS), j1 = cell(yhi + EPS); jj <= j1; jj++) {
+        var xa = ax, xb = bx;
+        if (by !== ay) {
+          var ta = Math.max(0, Math.min(1, (Math.max(jj * PLACE_CELL_KM, ylo) - EPS - ay) / (by - ay)));
+          var tb = Math.max(0, Math.min(1, (Math.min((jj + 1) * PLACE_CELL_KM, yhi) + EPS - ay) / (by - ay)));
+          xa = ax + (bx - ax) * ta; xb = ax + (bx - ax) * tb;
+        }
+        var xl = Math.max(Math.min(xa, xb), -W), xh = Math.min(Math.max(xa, xb), W);
+        for (var ii = cell(xl - EPS), i1 = cell(xh + EPS); ii <= i1; ii++) put(ii, jj, e);
+      }
     }
     function each(x0, y0, x1, y1, fn) {                                       // every edge in the buckets over a box, once
       mark++;
+      if (opts.brute) { for (var b = 0; b < E.length / 4; b++) { tally.tests++; fn(b * 4); } return; }   // (tests: the index is exact)
       for (var ix = cell(Math.min(x0, x1)), ix1 = cell(Math.max(x0, x1)); ix <= ix1; ix++) {
         for (var iy = cell(Math.min(y0, y1)), iy1 = cell(Math.max(y0, y1)); iy <= iy1; iy++) {
           var l = cells.get(key(ix, iy)); if (!l) continue;
-          for (var n = 0; n < l.length; n++) { if (stamp[l[n]] !== mark) { stamp[l[n]] = mark; fn(l[n] * 4); } }
+          for (var n = 0; n < l.length; n++) { if (stamp[l[n]] !== mark) { stamp[l[n]] = mark; tally.tests++; fn(l[n] * 4); } }
         }
       }
     }
@@ -528,9 +542,10 @@
     var cands = [];                                                           // {px, py, clr, d (km walked)}
     if (!land && !onCoast) cands.push({ px: 0, py: 0, clr: nb.d, d: 0 });   // (a point on the coastline is never kept)
     // One walk from (x0, y0) along (ux, uy): `inWater` says where it starts; after a crossing the coast data says
-    // which side it is on (a grazed cove tip counts no crossing, or one). It stops at the far shore of its water, at the first sample reaching the stand-off, at
-    // `len`, or (`giveUp`) when still on land that far along. `turn` (land clicks): once in the water, continue along
-    // the crossed edge's normal instead.
+    // which side it is on (a grazed cove tip counts no crossing, or one; water narrower than one step, crossed within
+    // it, leaves the walk on land). It stops at the far shore of its water, at the first sample reaching the stand-off,
+    // at `len`, or (`giveUp`) when still on land that far along. `turn` (land clicks): once in the water, continue
+    // along the crossed edge's normal instead.
     function walk(x0, y0, ux, uy, len, inWater, turn, base, giveUp) {
       var qx = x0, qy = y0, t = 0, dist = base;
       while (t + step <= len + 1e-9) {
@@ -1019,8 +1034,13 @@
       s.group.clearLayers(); if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
       s.result = null; s.selected = -1; s.busy = true; render();
       coast.load().then(function () { return coast.near(origin); }).then(function (nearSets) {
-        // a task boundary first, so "Computing…" is painted before the placement's work (G20 re-check R4)
-        return new Promise(function (r) { setTimeout(r, 0); }).then(function () { return nearSets; });
+        // a frame first, so "Computing…" is painted before the placement's work (G20 re-checks R4, R5): a timer after the
+        // next animation frame; a hidden tab runs no frames, so a 100 ms timer as well
+        return new Promise(function (r) {
+          var done = false; function go() { if (!done) { done = true; r(nearSets); } }
+          if (typeof root.requestAnimationFrame === 'function') { root.requestAnimationFrame(function () { setTimeout(go, 0); }); setTimeout(go, 100); }
+          else setTimeout(go, 0);
+        });
       }).then(function (nearSets) {
         if (gen !== s.gen) return null;
         var coarse = nearSets === null, sets = coarse ? [coast.tier0] : nearSets;

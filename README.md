@@ -122,9 +122,10 @@ double-tap.
     also searched, up to 2 km on land and 300 m on water. The nearest point 150 m out that looks out well wins (6 of 16
     directions: a bay beats a pond or an inner sound), else the nearest that looks out at all (3 of 16), else the
     nearest point 150 m out; else, of the water found, the nearest that looks out, else the nearest at least 80 % as
-    clear as the clearest. No walk crosses a coast beyond its own water. A point on the coastline itself is
-    never used, a land click never settles within 5 m of a coast, and with no such water within 2 km it is refused.
-    Coast edges are kept in 100 m buckets, so placement stays around 10-30 ms in the densest estuaries.
+    clear as the clearest. A walk in the water stops at its far shore (a walk on land steps over water narrower
+    than its 20 m step). A point on the coastline itself is never used, a land click never settles within 5 m of a
+    coast, and with no such water within 2 km it is refused. Coast edges are kept in 100 m buckets (an edge only in
+    the buckets it crosses), so placement stays around 10-30 ms in the densest estuaries.
   - The fan keeps a fixed size on screen and is panned clear of the map's controls and the windows, preferring a
     smaller fan to a pan of more than a third of the map. When nothing is clear it takes the least-covered spot, never
     centred under the tool bar; the overlay's phone sheet counts as a control. On a map shorter than 550 px the overlay

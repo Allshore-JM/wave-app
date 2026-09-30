@@ -15,6 +15,7 @@ function makeEnv(opts) {
   opts = opts || {};
   const win = fakeWindow({ width: opts.width || 1280, height: opts.height || 800 });
   if (opts.touch) win.matchMedia = (q) => ({ matches: /hover: none/.test(q) });
+  if (opts.raf) win.requestAnimationFrame = opts.raf;
   const doc = win.document;
   const el = (tag, id, parent, attrs) => { const e = doc.createElement(tag); if (id) doc.register(e, id); if (parent) parent.appendChild(e); Object.entries(attrs || {}).forEach(([k, v]) => e.setAttribute(k, v)); return e; };
   const host = el('div', 'toolsHost', doc.body);
@@ -410,4 +411,56 @@ test('switching tools at the same bar height still reports the bar, and a later 
   assert.equal(E.layouts[E.layouts.length - 1], true);
   E.bar._h = 150; E.clickAt(21.6655, -158.054); await E.settle();
   assert.equal(E.layouts[E.layouts.length - 1], false, 'shorter: not growth');
+});
+
+// ---- G20 re-check of fix round 4 (fix round 5) ----
+test('placement waits for an animation frame, so "Computing…" is painted first; a hidden tab (no frames) still computes', async () => {
+  const frames = [];
+  const E = makeEnv({ raf: (fn) => frames.push(fn) });
+  E.pick('exposure'); E.clickAt(21.6655, -158.054);
+  await wait(40);
+  assert.equal(frames.length, 1, 'a frame was asked for');
+  assert.equal(E.s.busy, true, 'nothing placed before the frame');
+  assert.match(E.body(), /Computing/);
+  frames.shift()(); await E.settle();
+  assert.ok(E.s.result && E.fan(), 'placed once the frame ran');
+  const H = makeEnv({ raf: () => {} });                                      // a hidden tab: frames never run
+  H.pick('exposure'); const t0 = Date.now(); H.clickAt(21.6655, -158.054); await H.settle();
+  assert.ok(H.s.result && Date.now() - t0 >= 90, 'placed after the fallback timer: ' + (Date.now() - t0) + ' ms');
+});
+
+test('the page keeps focus where it was when it minimises a window for the tool bar (templates/index.html onLayout)', () => {
+  // the template's own onLayout, on a small DOM with browser focus rules: focus() on a hidden or detached element does
+  // nothing, blur() leaves focus on the page, minimising a window focuses its opener (G20 re-checks R4, R5)
+  const html = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r/g, '');
+  const a = html.indexOf('onLayout: function (bar, grew) {'), b = html.indexOf('// the floating windows are obstacles for the exposure fan');
+  const src = html.slice(a + 'onLayout: '.length, b).trim().replace(/,\s*$/, '');
+  function run(setup) {
+    const doc = { byId: {}, getElementById(id) { return this.byId[id] || null; }, contains(e) { return !!e && !e.detached; } };
+    const el = (id, o) => {
+      const e = Object.assign({ id, hidden: false, detached: false, classList: { set: new Set(), contains(c) { return this.set.has(c); }, add(c) { this.set.add(c); } } }, o || {});
+      e.contains = (x) => { for (let y = x; y; y = y.parent) if (y === e) return true; return false; };
+      e.focus = () => { if (!e.hidden && !e.detached) doc.activeElement = e; };
+      e.blur = () => { if (doc.activeElement === e) doc.activeElement = doc.body; };
+      e.getBoundingClientRect = () => e.rect || { left: 0, top: 0, right: 0, bottom: 0 };
+      if (id) doc.byId[id] = e; return e;
+    };
+    doc.body = el('body'); doc.activeElement = doc.body;
+    const bar = el('bar', { rect: { left: 700, top: 60, right: 990, bottom: 260 } });
+    const E = { doc, bar, x: el('x', { parent: bar }), clear: el('clear', { parent: bar }), opener: el('opener'), liveOpener: el('liveOpener') };
+    E.fw = el('forecastWin', { rect: { left: 600, top: 40, right: 1000, bottom: 500 } }); E.lp = el('liveBuoyPanel', { rect: { left: 650, top: 100, right: 1000, bottom: 400 } });
+    E.inFw = el('fwInput', { parent: E.fw });
+    el('fwMin', { click() { E.fw.classList.add('fw-min'); E.opener.focus(); } });
+    el('lwMin', { click() { E.lp.classList.add('fw-min'); E.liveOpener.focus(); } });
+    setup(E);
+    new Function('document', 'measureTopRight', 'return ' + src)(doc, () => {})(bar, true);
+    assert.ok(E.fw.classList.contains('fw-min') && (E.lp.hidden || E.lp.classList.contains('fw-min')), 'minimised');
+    return doc.activeElement.id;
+  }
+  assert.equal(run((E) => E.x.focus()), 'x', 'back on the tool');
+  assert.equal(run(() => {}), 'body', 'the page keeps it');
+  assert.equal(run((E) => E.inFw.focus()), 'opener', 'inside the window: its opener');
+  assert.equal(run((E) => { E.clear.focus(); E.clear.hidden = true; }), 'body', 'an element hidden since: off the opener');
+  assert.equal(run((E) => { E.clear.focus(); E.clear.detached = true; }), 'body', 'an element removed since: off the opener');
+  assert.equal(run((E) => { E.lp.hidden = true; }), 'body', 'one window');
 });

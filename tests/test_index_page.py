@@ -355,8 +355,8 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     assert "if (tool !== 'exposure' || map.getContainer().clientHeight >= 550) return;" in body
     assert "map.getContainer().querySelector('.ov-toggle[aria-expanded=\"true\"]');" in body
     # G20 re-check: a page minimise keeps keyboard focus where it was (the tool keeps Escape / Backspace)
-    assert "if (had && had !== document.body && !el.contains(had) && document.contains(had)) try { had.focus({ preventScroll: true }); }" in body
-    assert "else if ((!had || had === document.body) && document.activeElement && document.activeElement !== document.body) document.activeElement.blur();" in body
+    assert "if (had && had !== document.body && document.contains(had)) try { had.focus({ preventScroll: true }); }" in body
+    assert "if (document.activeElement !== had && document.activeElement && document.activeElement !== document.body) document.activeElement.blur();" in body
     # the frames address alone never changes a flag-off page; with the overlay on, its gated block derives the coast
     monkeypatch.setenv("MODEL_FRAMES_BASE", "https://models.example.com/gfswave/0p25/v1/")
     assert A._coast_base() == "" and "__allshoreCoastBase =" not in client.get("/?station=51201").get_data(as_text=True)

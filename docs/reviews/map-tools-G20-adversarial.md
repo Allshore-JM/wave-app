@@ -387,9 +387,11 @@ land clicks keep preferring water that looks out well (R5 P3-6); NW Scotland kee
   go to the lower edge, so the answer no longer depends on the bucket order. Over R5's four grid files (45,166 clicks;
   every click whose placement changed and one in seven of the rest checked against testing every edge): 0 differ from
   testing every edge. 29 placements differ from 1.11.3: all clicks where 1.11.3 did not match testing every edge
-  (lattice vertex touches and ties; a Sochi click was the one left before the tie rule). At their evaluation points 20 read the same and 9 move one window edge by 5-10°
-  (e.g. Hilo Bay "N–E (355°–080°)" → "N–ENE (355°–075°)", Steamer Lane "S–SW (175°–230°)" → "S–WSW (175°–240°)"); no window
-  appears or disappears.
+  (lattice vertex touches and ties; a Sochi click was the one left before the tie rule). At their evaluation points 20
+  read the same and 9 change. 8 move one window edge by 5-10° (e.g. Hilo Bay "N–E (355°–080°)" → "N–ENE (355°–075°)",
+  Steamer Lane "S–SW (175°–230°)" → "S–WSW (175°–240°)"). At the Honolua Bay mouth (21.023, −156.64; the point moves
+  885 m) "NNW–E (335°–080°)" becomes "NNW–NE (340°–035°)", 45° off its east end (corrected after R6). No window appears
+  or disappears.
   Mean placement time unchanged (0.6-3.0 ms per grid), the slowest 44 ms (dense grids; 1.11.3: 76 ms).
 - **Paint (R5 P3-1).** Placement waits for an animation frame (then a timer), with a 100 ms timer for a hidden tab, so
   "Computing…" is painted first.
@@ -423,3 +425,58 @@ land clicks keep preferring water that looks out well (R5 P3-6); NW Scotland kee
 - **Docs (R5 P3-7).** The round-4 section now says 45,166 clicks and tools.test.js 22. README: a walk on land steps over
   water narrower than its 20 m step; an edge is filed only in the buckets it crosses. The long comment line is wrapped.
 - **Suites.** pytest 456; Node 258, also with the clock at 2026-10-05 and 2027-09-01.
+
+## Final check of fix round 5 (UI 1.11.5 @ edec939, 2026-09-29, MAX)
+
+Two halves: R6, a fresh-context code reviewer (read-only, Node/Python, the published coast; report and scripts in the
+session scratchpad `g20/r6/`), and the author on the test site. **No P0, P1 or P2; 5 P3.**
+
+**R6 (code).**
+- **Bucket fill: complete.** 24,224 adversarial synthetic edges produced 0 missed buckets. They included:
+  - edges on bucket lines, ending on corners, zero-length or 20,000 km long;
+  - edges across the window's edge;
+  - near-horizontal edges down to dy 5e-324;
+  - 1e-4° lattice edges at 0-75°.
+
+  The checker is sensitive: without the tolerance it misses buckets on 5,778 of them.
+- **The index equals testing every edge.**
+  - `cuts()`: 0 differences in 89.9 M real calls.
+  - `nearest()`: 585 of 4.98 M calls differ, all where the true nearest coast is at least 5.1 km away, beyond the
+    window. Such an answer is only compared with 150 m, or ends in an inland refusal.
+  - Placements: 74,469 clicks, 0 differ from testing every edge or from the reversed bucket order.
+- **Speed.**
+  - Tier-0 fallback beside the 8 longest tier-0 edges: 0.3-2.2 ms and at most 1.7 MB (1.11.3: 18-148 ms, 27-90 MB).
+  - Kennebec: max 19 ms. The 22 densest places: max 37 ms (1.11.3 in the same run: 33 ms).
+- **Ties:** the 29 placements that differ from 1.11.3 are all 1.11.3's own deviations from testing every edge.
+- **Frame wait:** 15 interventions left exactly one placement per surviving click and never two fans. A hidden tab
+  is placed by the timer.
+- **Focus:** 10 of 48 cases change, each from the station trigger to the page (the tool keeps Escape). None is worse.
+- **Real data.**
+  - Safety scan, 69,302 clicks: clean.
+  - Windows against 1.11.1 are unchanged from 1.11.3 (land 32 / 3,601, water 49 / 162); against 1.11.3, 0 lost and
+    0 gained.
+  - The 93 spots and the owner's examples are identical to 1.11.3.
+  - Noted (rounds 3-4, not round 5): at one Ross Sea site (−74.88, 163.88) a one-wedge "SE (140°–145°)" window of
+    1.11.1 reads none.
+- **Golden and suites.** The golden differs from d1f7c8a only by the version and the focus lines. pytest 456; Node 258
+  (also with the clock at 2026-10-05 and 2027-09-01). Mutation: 24 of 49 killed.
+
+**Test site (author).** Test site (test @ 4aadf78, UI 1.11.5), browser pane visible, desktop 1280×800 and phone
+375×812. The served tools.js, forecast.js and graticule.js equal the committed blobs (tools.js sha256 a5eea2bc…).
+
+| Item | Verdict | Evidence |
+|---|---|---|
+| Owner's spots | confirmed | Pipeline "W (250°–275°), WNW–NE (295°–045°)"; Haleiwa "W (265°–275°), WNW–N (300°–005°)"; Waikiki "SE–W (145°–275°)"; Honolua head (exact coordinate, through the tool's click path) "W (260°–275°), N (340°–005°)"; Hilo land "N–ENE (355°–070°)"; Cape Hatteras "NNE–SW (015°–230°)"; Nice "SSE–SSW (165°–210°)"; clicks 52-185 ms, 0 long tasks; phone fans (212 px) wholly on the map below the bar |
+| Frame wait (R5 P3-1) | confirmed | the page's requestAnimationFrame held: still "Computing…" at 60 ms and nothing placed; frames never released (a hidden tab): the result at 193-204 ms (the 100 ms timer, then the rays); the frame released at 30 ms: 126-131 ms; normal frames: 60-69 ms (4 runs each) |
+| Tier-0 fallback (R5 P3-2) | confirmed | tier-1 chunks refused, in the page's engine: near Somalia (0.364, 43.246) 0.2-1.5 ms, no measurable heap, 178 bucket entries; Guerrero 0.3-1.7 ms, 140; side by side with 1.11.3's code (loaded from the public repo at e4da450): Somalia 80-112 ms and +38-42 MB, Guerrero 26-55 ms and up to +24 MB, 1.11.5 0-1 ms and +0 MB |
+| Ties | confirmed | the Sochi click (43.5815, 39.7207) through the tool's click path: 43.579941, 39.716897 "WSW–WNW (240°–295°)", the every-edge answer; Hilo Bay (19.7357, −155.0722): 19.736695, −155.071092, the every-edge answer |
+| Focus (R5 note) | confirmed | a result growing the bar over the expanded windows: focus inside the forecast window → its opener (here the tool's ✕); both windows, focus inside the forecast window → the same; focus on the live window's close button → kept (visible in its chip); focus on the page → the page |
+| Console | confirmed | no errors |
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| R6 P3-1 | P3 | The frame test cannot see a placement made before the paint: it checks `busy`, which stays true while the rays run. A 0 ms fallback timer, or placing inside the frame callback, passes every test. | follow-up |
+| R6 P3-2 | P3 | Still unpinned, although each changes real placements (of 45,166): the turn's side (5,838), its length (5,619), a 3 km bucket window (705) and the tie rule (16). A tie pin exists on the Maui crop at (21.023, −156.64). | follow-up |
+| R6 P3-3 | P3 | The two tests that compare the index with testing every edge take about 13 s (33-35 s under load). This is suite time only; Node's timeout does not stop a synchronous test. | follow-up |
+| R6 P3-4 | P3 | The crossing count's 1e-7 dedupe can still depend on visiting order, for three crossings within about 2 µm. It never happened in 89.9 M real calls. | follow-up |
+| R6 P3-5 | P3 | The round-5 section said all 9 changed windows move one edge by 5-10°; the Honolua Bay mouth window loses 45° off its east end. Also `tools.js:463` still says "48,000 clicks", and `:476` says "every query stays inside it" (`nearest()`'s boxes grow past the window, harmlessly). | record fixed; comments follow-up |

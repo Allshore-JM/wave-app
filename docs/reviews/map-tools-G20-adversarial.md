@@ -283,7 +283,7 @@ by presenting the page as visible to the overlay's code. No console errors.
   (a synthetic channel whose samples landed on its banks had walked on through the next strip of land). Honolua Bay's
   head (21.0169, −156.64062): 460 m, "W (260°–275°), N (340°–005°)" (1.11.2: 1,681 m over the headland), pinned on a
   Maui crop of the published coast (`tests/fixtures/coast/maui-t1.bin`, identical placements to the full chunk).
-- **Which water wins (R4 P3-1), measured.** Six rules were run over 48,000 clicks (R3's spot and dense grids, R4's
+- **Which water wins (R4 P3-1), measured.** Six rules were run over 45,166 clicks (R3's spot and dense grids, R4's
   Hilo/Honolulu grid, 3,000 random coastal clicks), windows lost / gained against 1.11.1:
 
   | Rule | Land lost / gained | Water lost / gained |
@@ -308,7 +308,7 @@ by presenting the page as visible to the overlay's code. No console errors.
   longitudes (1.11.0: 137; R4's wrap-aware scanner found 0); worldwide sample 73 fixed, 2 broken, 0 newly refused.
 - **Also:** a tool switch always reports the bar (`s.barH = -1`); a page minimise releases focus when it was on the page
   itself; README and comments describe the search as it is; the overlay watchdog test runs with 150 ms (c96a8cd).
-- **Tests.** tools.test.js 23, tools-ui.test.js 22: an island field behind a coast (16,200 edges; 1.11.2 took 165-196 ms
+- **Tests.** tools.test.js 22, tools-ui.test.js 22: an island field behind a coast (16,200 edges; 1.11.2 took 165-196 ms
   a click, fails the 80 ms limit), the Honolua Bay pin (fails on 1.11.2: 1.68 km), a long lake that looks out only east
   and west (fails with a look-out minimum of 1), a sharp-V refusal, rotation judged by height, tool switching; the
   Haleiwa example's pinned levels now end open (the point is 100 m out instead of 80 m; Kauai still light). pytest 456,
@@ -364,11 +364,62 @@ mouse events on the map, Leaflet's own click). At the site's maximum zoom (11, a
 
 | # | Sev | Finding | Outcome |
 |---|---|---|---|
-| R5 P3-1 | P3 | The pause before placement is a 0 ms timer, which usually runs before the next frame, so "Computing…" is not guaranteed to paint first. The bucket index, not the pause, fixed R4 P2-1. | open |
-| R5 P3-2 | P3 | When tier-1 coast data fails to load, placement falls back to tier 0, and a long tier-0 edge fills every 100 m bucket of its bounding box. The worst, 104 km off Somalia, fills 544,019. The author reproduced it at (0.364, 43.246): 82-166 ms and 75-91 MB a placement (1.11.2: 2-4 ms, 1 MB), even for an open-water click, because the buckets are filled first. Guerrero: 47-50 ms, 54-56 MB. | open |
-| R5 P3-3 | P3 | The island-field timing test (< 80 ms) is load-sensitive: 18-24 ms on a quiet machine, but 5 of 12 runs failed with 12 busy loops. | open |
-| R5 P3-4 | P3 | The graze fix is not pinned. Removing both the give-up and the new side check passes all 44 tools tests, yet without the give-up (21.01525, −156.64300) goes 1,684 m over the headland. Also unpinned: `nearest()`'s exactness, the turn (the corner test passes without it), the 8-of-16 skip, the ranking tiers, the fallback order. | open |
-| R5 P3-5 | P3 | A water click in the innermost ~100 × 150 m of a narrow bay head now stays at the click (1.11.2 took the clearest water). Honolua's head loses 1,478 open wedges on R3's ±90 m grid (4 all-or-nothing losses); over the whole bay the net is −108 against 1.11.2 (+534 against 1.11.1), e.g. (21.01650, −156.64225): 1.11.2 "W, N", 1.11.3 none. | owner |
-| R5 P3-6 | P3 | "Looks out well first" places 34 % of land clicks beyond the nearest point 150 m out: 11 % more than 500 m further, 3 % more than 1 km. Where they are over 500 m apart, it gains a window at 2,658 clicks and loses one at 5. Honolulu Harbor shore clicks go 1.4-1.6 km to open water. NW Scotland (58.10485, −5.29741) still has no window: its inlet water looks out 1-2 of 16 and reads "NW (315°–325°)", and the pick, 600 m out at 6 of 16, reads none. | owner |
-| R5 P3-7 | P3 | Record and doc nits: "48,000" is 45,166; "tools.test.js 23" is 22; the README's "No walk crosses a coast beyond its own water" skips slivers under one 20 m step; one 161-character comment line. | open |
-| R5 note | P3 | The template's focus restore leaves focus on the window's opener when the saved element was hidden or detached; `if (document.activeElement !== had) document.activeElement.blur()` after the restore closes it. | open |
+| R5 P3-1 | P3 | The pause before placement is a 0 ms timer, which usually runs before the next frame, so "Computing…" is not guaranteed to paint first. The bucket index, not the pause, fixed R4 P2-1. | fixed (round 5) |
+| R5 P3-2 | P3 | When tier-1 coast data fails to load, placement falls back to tier 0, and a long tier-0 edge fills every 100 m bucket of its bounding box. The worst, 104 km off Somalia, fills 544,019. The author reproduced it at (0.364, 43.246): 82-166 ms and 75-91 MB a placement (1.11.2: 2-4 ms, 1 MB), even for an open-water click, because the buckets are filled first. Guerrero: 47-50 ms, 54-56 MB. | fixed (round 5) |
+| R5 P3-3 | P3 | The island-field timing test (< 80 ms) is load-sensitive: 18-24 ms on a quiet machine, but 5 of 12 runs failed with 12 busy loops. | fixed (round 5) |
+| R5 P3-4 | P3 | The graze fix is not pinned. Removing both the give-up and the new side check passes all 44 tools tests, yet without the give-up (21.01525, −156.64300) goes 1,684 m over the headland. Also unpinned: `nearest()`'s exactness, the turn (the corner test passes without it), the 8-of-16 skip, the ranking tiers, the fallback order. | fixed (round 5) |
+| R5 P3-5 | P3 | A water click in the innermost ~100 × 150 m of a narrow bay head now stays at the click (1.11.2 took the clearest water). Honolua's head loses 1,478 open wedges on R3's ±90 m grid (4 all-or-nothing losses); over the whole bay the net is −108 against 1.11.2 (+534 against 1.11.1), e.g. (21.01650, −156.64225): 1.11.2 "W, N", 1.11.3 none. | accepted (owner) |
+| R5 P3-6 | P3 | "Looks out well first" places 34 % of land clicks beyond the nearest point 150 m out: 11 % more than 500 m further, 3 % more than 1 km. Where they are over 500 m apart, it gains a window at 2,658 clicks and loses one at 5. Honolulu Harbor shore clicks go 1.4-1.6 km to open water. NW Scotland (58.10485, −5.29741) still has no window: its inlet water looks out 1-2 of 16 and reads "NW (315°–325°)", and the pick, 600 m out at 6 of 16, reads none. | accepted (owner) |
+| R5 P3-7 | P3 | Record and doc nits: "48,000" is 45,166; "tools.test.js 23" is 22; the README's "No walk crosses a coast beyond its own water" skips slivers under one 20 m step; one 161-character comment line. | fixed (round 5) |
+| R5 note | P3 | The template's focus restore leaves focus on the window's opener when the saved element was hidden or detached; `if (document.activeElement !== had) document.activeElement.blur()` after the restore closes it. | fixed (round 5) |
+
+## Fix round 5 (UI 1.11.5, 2026-09-29, HIGH)
+
+**Owner decisions (2026-09-29).** Fix the P3s before production. Bay-head water clicks stay at the click (R5 P3-5), and
+land clicks keep preferring water that looks out well (R5 P3-6); NW Scotland keeps "No open swell window".
+
+- **Buckets (R5 P3-2).** An edge is filed only under the 100 m buckets it crosses (row by row, a small tolerance at
+  each bucket line), and only inside the placement window, which every query stays within. Off Somalia (0.364, 43.246),
+  in the tier-0 fallback: 3-4 ms and about 1 MB a placement (1.11.3: 82-166 ms and 75-91 MB); Guerrero 1-3 ms
+  (47-50 ms). The most bucket entries in any placement over the four grid files: 4,096.
+- **Ties (found in this round).** Where a walk runs exactly through a coast vertex, two edges give the same crossing
+  parameter, and the one visited first set the turn; the nearest-edge search had the same order dependence. Ties now
+  go to the lower edge, so the answer no longer depends on the bucket order. Over R5's four grid files (45,166 clicks;
+  every click whose placement changed and one in seven of the rest checked against testing every edge): 0 differ from
+  testing every edge. 29 placements differ from 1.11.3: all clicks where 1.11.3 did not match testing every edge
+  (lattice vertex touches and ties; a Sochi click was the one left before the tie rule). At their evaluation points 20 read the same and 9 move one window edge by 5-10°
+  (e.g. Hilo Bay "N–E (355°–080°)" → "N–ENE (355°–075°)", Steamer Lane "S–SW (175°–230°)" → "S–WSW (175°–240°)"); no window
+  appears or disappears.
+  Mean placement time unchanged (0.6-3.0 ms per grid), the slowest 44 ms (dense grids; 1.11.3: 76 ms).
+- **Paint (R5 P3-1).** Placement waits for an animation frame (then a timer), with a 100 ms timer for a hidden tab, so
+  "Computing…" is painted first.
+- **Focus (R5 note).** After minimising a window, the page returns focus to the element that had it; when that element
+  is now hidden or gone (or focus was on the page), focus leaves the window's opener. Focus that was inside the window
+  stays with its opener, as before.
+- **Tests (R5 P3-3, P3-4).**
+  - The dense-coast test counts edge tests (the same placement as testing every edge, with over 20× fewer tests)
+    instead of timing.
+  - One synthetic coast for each rule, built so that the rule decides the answer:
+    - the give-up: 880 m in the bay; without it, 1,682 m past the headland;
+    - the turn: the north coast at 660 m; without it, 1,760 m down the cove;
+    - the tiers: the bay mouth, not the inner bay.
+  - On the Maui crop:
+    - R5's graze point: 360 m in the bay; without the give-up, 1,684 m.
+    - The bay-head water click you kept: 0 m; without the fallback's look-out step, 220 m.
+    - 64 clicks match testing every edge, with over 50× fewer edge tests.
+  - A 160 km diagonal edge: fewer than 1,000 bucket entries, and the same placements as testing every edge.
+  - The frame wait: nothing placed before the frame; placed after 100 ms when frames never run.
+  - The template's own onLayout on a small DOM with browser focus rules.
+  - The new tests fail on the old code: the frame test on 1.11.3's tools.js, the focus test on its template.
+  - Targeted mutants: 7 of 9 killed:
+    - the give-up, the turn, the tiers and the fallback's look-out step;
+    - `nearest()` stopping early (R5's B7);
+    - 1.11.3's bounding-box buckets;
+    - a shrunk row band.
+  - The 2 survivors change the threshold for skipping the search (6, or never). In every coast built, the first walk's
+    point was also the nearest point that looks out well, so the threshold only saves work (accepted).
+  - The tie rule has no synthetic pin. In the synthetic coasts, both edges at the tip share buckets in edge order, so
+    the old order agreed. It is pinned by the real-data comparison above.
+- **Docs (R5 P3-7).** The round-4 section now says 45,166 clicks and tools.test.js 22. README: a walk on land steps over
+  water narrower than its 20 m step; an edge is filed only in the buckets it crosses. The long comment line is wrapped.
+- **Suites.** pytest 456; Node 258, also with the clock at 2026-10-05 and 2027-09-01.

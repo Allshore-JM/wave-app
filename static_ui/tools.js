@@ -773,21 +773,22 @@
   // distance, 5 to maxGapKm km, times the cosine of the latitude (a quarter at least), so the pieces stay on the great
   // circle near the spot and far north or south (G21 A-8: 100 km pieces bowed 0.4 km off it near a spot at 63 N, and a
   // half-degree gap's two sides crossed).
-  function radialStops(origin, brg, d0, d1, maxGapKm, minGapKm) {
+  function radialStops(origin, brg, d0, d1, maxGapKm, minGapKm, floorKm) {
     var lo = Math.min(d0, d1), hi = Math.max(d0, d1), gap = maxGapKm || 100, least = minGapKm || 5, inner = [], d = lo;
     for (;;) {
       var c = Math.max(0.25, Math.cos(rayPoint(origin, brg, d).lat * D2R));
-      d += Math.min(gap, Math.max(least, d / 10)) * c;
+      d += Math.max(floorKm || 0, Math.min(gap, Math.max(least, d / 10)) * c);
       if (d >= hi - 1e-9) break;
       inner.push(d);
     }
     return d1 >= d0 ? inner.concat([hi]) : inner.reverse().concat([lo]);
   }
-  // One ray as a line from the origin to `km`, no piece longer than maxGapKm (nor shorter than minGapKm, 5 km by default:
-  // the drawn rays use 25, being lines, not the edges of a filled shape).
+  // One ray as a line from the origin to `km`, no piece longer than maxGapKm. A minGapKm (the drawn rays: 25, being
+  // lines, not the edges of a filled shape) is also a floor after the latitude factor (G21 re-check R1-9: far north it
+  // made pieces of 6 km).
   function rayPath(origin, brg, km, maxGapKm, minGapKm) {
     var out = [rayPoint(origin, brg, 0)];
-    radialStops(origin, brg, 0, km, maxGapKm, minGapKm).forEach(function (d) { out.push(rayPoint(origin, brg, d)); });
+    radialStops(origin, brg, 0, km, maxGapKm, minGapKm, minGapKm).forEach(function (d) { out.push(rayPoint(origin, brg, d)); });
     return out;
   }
   // The water the spot can see, as one ring: each ray's arc at its reach, joined to the next ray's along the great
@@ -1053,7 +1054,7 @@
       return self.fetch(self.base + path, { mode: 'cors' }).then(function (r) {
         if (!r.ok) throw new Error('coast ' + r.status);
         return kind === 'json' ? r.json() : r.arrayBuffer();
-      });
+      }).catch(function (e) { throw /^coast\b/.test((e && e.message) || '') ? e : new Error('coast ' + ((e && e.message) || 'unreadable')); });   // a network failure is the data's
     }
     this._p = Promise.all([get('/index.json', 'json'), get('/world-i.bin', 'bin')]).then(function (res) {
       var idx = res[0];
@@ -1115,7 +1116,7 @@
     var t14 = fmtTravel(pr.km, 14), swell = ' · swell ' + (t14 === 'under 1 h' ? t14 : t14 + ' at 14 s, ' + fmtTravel(pr.km, 18) + ' at 18 s');
     var why;
     if (pr.visible) why = (pr.sector.level === 'open' ? 'In the window' : pr.sector.level === 'light' ? 'In the window (partly shadowed direction)' : 'In the window (mostly shadowed direction)') + swell;
-    else if (pr.stop === 'island') why = 'Partly blocked by a small island ' + fmtDist(pr.stopKm, unit) + ' from the spot' + swell;
+    else if (pr.stop === 'island') why = 'Behind a small island ' + fmtDist(pr.stopKm, unit) + ' out' + swell;   // three lines at most (G21 re-check R1-1)
     else if (pr.stop === 'land') why = 'Blocked by land ' + fmtDist(pr.stopKm, unit) + ' from the spot: no swell from here';
     else if (pr.stop === 'limit') why = 'Not in the window: its path to the spot crosses the map\'s polar limit';
     else why = 'Farther than the rays reach';
@@ -1145,9 +1146,15 @@
     // the window on the map: above the wave colours and particles (250, 300), below the gridlines and stations (350+)
     if (!map.getPane('toolsReachPane')) { var rpane = map.createPane('toolsReachPane'); rpane.style.zIndex = 320; rpane.style.pointerEvents = 'none'; }
     var reachLayer = s.reach = L.featureGroup();                             // (s.reach: for tests)
-    // its own canvas, half a map wider on every side than the default tenth, so a drag does not run past the drawn
-    // window before the redraw at its end (G21 B-7)
-    var reachRenderer = typeof L.canvas === 'function' ? L.canvas({ pane: 'toolsReachPane', padding: 0.5 }) : null;
+    // its own canvas, up to half a map wider on every side than the default tenth, so a drag does not run past the
+    // drawn window before the redraw at its end (G21 B-7); at most REACH_CANVAS_PX pixels (Leaflet doubles a canvas on a
+    // retina screen; iOS Safari draws nothing on one over 16.7 M pixels: G21 re-check R1-2)
+    var REACH_CANVAS_PX = 12e6;
+    function reachPadding() {
+      var z = map.getSize(), m = (root.devicePixelRatio || 1) > 1 ? 2 : 1, px = z.x * z.y * m * m;
+      return px > 0 ? Math.max(0.1, Math.min(0.5, (Math.sqrt(REACH_CANVAS_PX / px) - 1) / 2)) : 0.1;
+    }
+    var reachRenderer = typeof L.canvas === 'function' ? L.canvas({ pane: 'toolsReachPane', padding: reachPadding() }) : null;
     function reachOpt(o) { o.pane = 'toolsReachPane'; o.interactive = false; if (reachRenderer) o.renderer = reachRenderer; return o; }
 
     function touchUI() { try { return !!(root.matchMedia && root.matchMedia('(hover: none)').matches); } catch (e) { return false; } }
@@ -1187,7 +1194,7 @@
     var bar = new Bar(); map.addControl(bar);
     var barEl = bar.getContainer(), titleEl = barEl.querySelector('.tools-bar-title'), bodyEl = barEl.querySelector('.tools-bar-body'), closeBtn = barEl.querySelector('.tools-x');
     var actsEl = barEl.querySelector('.tools-bar-actions');
-    closeBtn.addEventListener('click', function () { stop(); });
+    closeBtn.addEventListener('click', function () { stop(); try { btn.focus(); } catch (e) { /* no focus */ } });   // back to the opener (R1-10)
     barEl.querySelector('[data-act="undo"]').addEventListener('click', function () { undo(); });
     barEl.querySelector('[data-act="finish"]').addEventListener('click', function () { finish(); });
     barEl.querySelector('[data-act="clear"]').addEventListener('click', function () { clear(); focusClose(); });   // focus stays in the bar (G21 B-11)
@@ -1234,13 +1241,20 @@
     // tool started: not the dip to "Computing…" and back) lets the page minimise a window the bar now overlaps.
     function layout() {
       fitBar();
-      var h = barEl.hidden ? 0 : (barEl.offsetHeight || 0);
+      var h = barEl.hidden ? 0 : Math.max(0, (barEl.offsetHeight || 0) - sectorExtra());
       if (h === s.barH) return;
       var grew = h > s.barMax;
       if (grew) s.barMax = h;
       s.barH = h; if (opts.onLayout) opts.onLayout(barEl, grew);
     }
 
+    // How much taller the details line is than its three lines (a long readout, large text): left out of the height the
+    // page sees, so hovering never moves the windows or minimises one (G21 re-check R1-1).
+    function sectorExtra() {
+      var el = bodyEl.querySelector && bodyEl.querySelector('.tools-sector');
+      if (!el || typeof root.getComputedStyle !== 'function') return 0;
+      return Math.max(0, (el.offsetHeight || 0) - Math.ceil(parseFloat(root.getComputedStyle(el).minHeight) || 0));
+    }
     function start(tool) {
       if (!TOOLS[tool]) return;
       clear(true);
@@ -1257,7 +1271,7 @@
     function setLock(on) {
       on = !!(on && s.tool === 'exposure' && s.result);
       if (on === s.locked) return;
-      s.locked = on;
+      s.locked = on; s.hover = false;
       if (!on && s.pinned) hideReadout();                                   // a tapped readout goes with the lock (G21 A-13)
       map.getContainer().classList.toggle('tools-active', !on);
       if (on) { if (s.dblWas) map.doubleClickZoom.enable(); }
@@ -1266,6 +1280,7 @@
     }
     function stop() {
       clear(true); s.tool = null; s.folded = false; barEl.hidden = true;
+      if (reachRenderer && typeof map.hasLayer === 'function' && map.hasLayer(reachRenderer)) map.removeLayer(reachRenderer);   // its canvas freed (R1-2)
       Array.prototype.forEach.call(menu.querySelectorAll('[data-tool]'), function (b) { b.setAttribute('aria-pressed', 'false'); });
       map.getContainer().classList.remove('tools-active');
       if (s.dblWas) map.doubleClickZoom.enable(); s.dblWas = null;
@@ -1344,7 +1359,7 @@
       }
       return lines;
     }
-    function compactUI() { var z = map.getSize(); return z.x < 576; }          // a phone: the bar keeps to its result (G21 B-6)
+    function compactUI() { var z = map.getSize(); return z.x < 576 || (z.y < 400 && touchUI()); }   // a phone, also on its side: the bar keeps to its result (G21 B-6, R1-6)
     function drawExposure() {
       var u = unit(), lines = [], verb = touchUI() ? 'Tap' : 'Click';
       if (s.busy) lines.push({ t: 'Computing…', cls: 'tools-big' });
@@ -1354,25 +1369,24 @@
         var idle = s.locked ? (touchUI() ? 'Tap the map for bearing and distance.' : 'Point at the map for bearing and distance.')
           : touchUI() ? 'Tap a wedge for details. Lock, then tap the map for bearing and distance.' : 'Point at a wedge or the map. A click moves the spot; Lock keeps it.';
         lines.push({ t: rt ? rt.where + '\n' + rt.why : s.selected >= 0 ? sectorText(s.result.sectors[s.selected], u) : idle, cls: 'tools-sector', live: s.hover ? 'off' : 'polite' });
-        if (s.reachFailed) lines.push({ t: 'The window could not be drawn on the map. Try the spot again.', cls: 'tools-hint' });
-        if (!compactUI()) {
-          if (s.result.moved > 0.02) lines.push({ t: 'Moved ' + fmtDist(s.result.moved, u) + ' off the shore to open water.', cls: 'tools-hint' });
-          if (s.result.coarse) lines.push({ t: 'Nearby coastline at lower detail.', cls: 'tools-hint' });
-          lines.push({ t: 'Clear = swell reaches the spot; shaded = blocked by land, lighter behind small islands. Coast geometry only: swell wraps islands; reefs and atoll rims are not in the data.', cls: 'tools-hint' });
-        }
-      } else lines.push({ t: s.msg || verb + ' the water to see which swell directions reach it.', cls: 'tools-big' });
+        if (s.reachFailed) lines.push({ t: 'The window could not be drawn on the map. Try the spot again.', cls: 'tools-hint', folded: true });
+        // status lines stay on a phone; the explanation goes (owner, G21 B-6; R1-5)
+        if (s.result.moved > 0.02) lines.push({ t: 'Moved ' + fmtDist(s.result.moved, u) + ' off the shore to open water.', cls: 'tools-hint' });
+        if (s.result.coarse) lines.push({ t: 'Nearby coastline at lower detail.', cls: 'tools-hint' });
+        if (!compactUI()) lines.push({ t: 'Clear = swell reaches the spot; shaded = blocked by land, lighter behind small islands. Coast geometry only: swell wraps islands; reefs and atoll rims are not in the data.', cls: 'tools-hint' });
+      } else lines.push({ t: s.msg || verb + ' the water to see which swell directions reach it.', cls: 'tools-big', folded: !!s.msg });
       return lines;
     }
     function render() {
       if (!s.tool) return;
       var lines = s.tool === 'exposure' ? drawExposure() : drawMeasure();
-      // folded: the title row, and under it only a readout that is showing (owner, G21 B-6)
-      setBody(s.folded ? lines.filter(function (l) { return l.cls === 'tools-sector' && s.readout; }) : lines);
+      // folded: the title row, and under it only a readout that is showing and the tool's messages (owner, G21 B-6; R1-4)
+      setBody(s.folded ? lines.filter(function (l) { return (l.cls === 'tools-sector' && s.readout) || l.folded; }) : lines);
       barEl.classList.toggle('is-folded', s.folded);
       foldBtn.setAttribute('aria-expanded', s.folded ? 'false' : 'true');
       foldBtn.setAttribute('aria-label', s.folded ? 'Unfold the tool bar' : 'Fold the tool bar');
       foldBtn.textContent = s.folded ? '▾' : '▴';
-      titleEl.textContent = s.folded && s.busy ? 'Computing…' : TOOLS[s.tool];
+      titleEl.textContent = s.folded && s.busy ? 'Computing…' : TOOLS[s.tool] + (s.folded && s.locked ? ' · locked' : '');
       setActions();
       layout();
     }
@@ -1387,6 +1401,7 @@
     function drawReach() {
       clearReach();
       var res = s.result; if (!res || !res.reach) return;
+      if (reachRenderer) reachRenderer.options.padding = reachPadding();    // the map's size now
       var st = REACH_STYLE, shift = s.fanLng - res.origin.lng, opt = reachOpt({});
       // the full veil outside the window with small islands' shadows bridged; those shadows get a lighter veil
       var bridged = res.reachWide || smallShadowReach(res.reach, ISLAND_RAYS, NEAR_KM), wide = litRing(res, 100, bridged);
@@ -1422,6 +1437,7 @@
         });
       });
       reachLayer.addTo(map); s.reachOn = true;
+      if (cursorLine && cursorLine.bringToFront) { cursorCase.bringToFront(); cursorLine.bringToFront(); }   // the readout's line on top (R1-3)
     }
     function drawFan() {
       if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
@@ -1538,7 +1554,8 @@
     function fromTouch(e) { return now() - lastTouch < 1000 || !!(e && e.sourceCapabilities && e.sourceCapabilities.firesTouchEvents); }
     // Hover straight from the map's element (the canvas renderer throttles Leaflet's mousemove).
     mapEl.addEventListener('mousemove', function (e) {
-      if (s.tool !== 'exposure' || !s.result || !s.fan || fromTouch(e) || onUi(e)) return;   // over a control: nothing changes (G21 B-15)
+      if (s.tool !== 'exposure' || !s.result || !s.fan || fromTouch(e)) return;
+      if (onUi(e)) { s.hoverPt = null; return; }                            // over a control: nothing changes (G21 B-15), nor later (R1-7)
       var q = map.mouseEventToContainerPoint(e), c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
       var k = sectorAt(q.x - c.x, q.y - c.y, s.radius);
       s.hover = true;
@@ -1546,7 +1563,10 @@
       if (s.result.reach) { s.hoverPt = [q.x, q.y]; showReadout(map.containerPointToLatLng([q.x, q.y])); }
     });
     // Leaving the map ends a hover readout; a tapped one stays (a window opening over the map sends a mouseleave too).
-    mapEl.addEventListener('mouseleave', function () { if (s.readout && !s.pinned) { hideReadout(); render(); } });
+    mapEl.addEventListener('mouseleave', function () {
+      s.hover = false; s.hoverPt = null;                                    // the details line speaks again (R1-7)
+      if (s.readout && !s.pinned) { hideReadout(); render(); }
+    });
     // The spot's copy follows the view, as the page's markers do (currentWorldOffset in templates/index.html): the fan
     // and the window on the map stay in the world the map is panned to, and so does a tapped readout's line (a hovered
     // one is drawn to the pointer, wherever it is).
@@ -1601,7 +1621,7 @@
           else if (s.radius !== fanR()) { s.radius = fanR(); drawFan(); }
           s.size = z;
         }
-        layout();
+        if (s.tool) render(); else layout();                                // compact or not follows the new size (R1-6)
       }, 150);
     }
     root.addEventListener('resize', onResize);
@@ -1651,7 +1671,7 @@
       FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, FAR_OPEN_MAX: FAR_OPEN_MAX, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM,
       worldEdges: worldEdges, worldIndex: worldIndex, indexSliced: indexSliced, limitKm: limitKm, reachWalk: reachWalk, computeReach: computeReach, rayPoint: rayPoint, rayPath: rayPath,
       litRing: litRing, stripPolygons: stripPolygons, probeText: probeText, COMPASS_R: COMPASS_R, COMPASS_BELOW: COMPASS_BELOW, FULL_FROM: FULL_FROM, smallShadowReach: smallShadowReach, ISLAND_RAYS: ISLAND_RAYS, linePieces: linePieces, ringRuns: ringRuns, ringArcs: ringArcs, ringLabelBearings: ringLabelBearings, radialStops: radialStops, worldEdgesSliced: worldEdgesSliced, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, fmtTravel: fmtTravel, probe: probe,
-      REACH_KM: REACH_KM, REACH_STEP_KM: REACH_STEP_KM, REACH_LAT_N: REACH_LAT_N, REACH_LAT_S: REACH_LAT_S, END_LAND: END_LAND, END_LIMIT: END_LIMIT, END_CAP: END_CAP
+      REACH_KM: REACH_KM, REACH_STEP_KM: REACH_STEP_KM, WORLD_PIECES: WORLD_PIECES, WORLD_BATCH: WORLD_BATCH, REACH_LAT_N: REACH_LAT_N, REACH_LAT_S: REACH_LAT_S, END_LAND: END_LAND, END_LIMIT: END_LIMIT, END_CAP: END_CAP
     }
   };
 })(typeof window !== 'undefined' ? window : this);

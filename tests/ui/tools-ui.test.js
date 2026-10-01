@@ -579,6 +579,8 @@ test('Lock: the window stays, the page has its clicks back (active() false, no c
   const E = makeEnv(); E.pick('exposure');
   const lock = E.q('[data-act="lock"]');
   assert.ok(lock.hidden, 'no Lock before a result');
+  lock.dispatch('click');
+  assert.ok(!E.s.locked && E.A.active(), 'and it does nothing then');
   E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
   assert.ok(!lock.hidden && lock.textContent === 'Lock' && !lock.classList.contains('is-on') && !lock.hasAttribute('aria-pressed'));
   lock.dispatch('click');
@@ -685,6 +687,7 @@ test('the spot\'s copy follows the view (as the page\'s markers do): the fan, th
   assert.ok(Math.abs(E.fan().a[1] - (lng0 + 720)) < 1e-9, 'the fan there');
   const outer = veil().a[0];
   assert.ok(Math.abs(outer[0][1] - (lng0 + 180)) < 1e-9 && Math.abs(outer[1][1] - (lng0 + 1260)) < 1e-9, 'the window round it');
+  assert.ok(veil().a.slice(1).every((h, j) => h.every((p) => Math.abs(p[1] - (E.s.fanLng + (j - 1) * 360)) < 180)), 'its holes round the fan\'s copy too');
   const end = cursorLineOf(E).a.slice(-1)[0];
   assert.ok(E.s.readout && E.s.pinned && Math.abs(end[1] - 560) < 1e-6 && Math.abs(end[0] - 22.5) < 1e-6, 'the tapped readout\'s line in that world too');
 });
@@ -695,6 +698,8 @@ test('the projection is on the map while a result stands, on its own canvas; the
   const E = makeEnv({ canvas: true }); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
   const A = E.A._internals, res = E.s.result, o = res.origin, shift = E.s.fanLng - o.lng, items = [...E.s.reach._items];
   assert.ok(E.layers.has(E.s.reach), 'the group is on the map');
+  const pane = E.map.getPane('toolsReachPane');
+  assert.ok(pane.style.zIndex === 320 && pane.style.pointerEvents === 'none', 'above the wave colours and particles, below the stations; no pointer events');
   const veil = items.find((l) => l.kind === 'polygon' && l.a.length === 4);
   assert.ok(veil.o.fillOpacity === 0.55 && veil.o.stroke === false && veil.o.pane === 'toolsReachPane' && veil.o.interactive === false);
   assert.ok(veil.o.renderer && veil.o.renderer.o.padding === 0.5 && veil.o.renderer.o.pane === 'toolsReachPane', 'its own canvas, half a map of padding (G21 B-7)');
@@ -803,7 +808,10 @@ test('Lock: Escape only unlocks; Unlock clears a tapped readout and holds double
   assert.ok(!E.s.readout && !cursorLineOf(E) && E.s.readoutAt === null && E.s.pinned === false, 'the tapped readout goes with the lock');
   assert.ok(!E.map.doubleClickZoom.enabled() && E.A.active(), 'the tool holds double-click zoom again');
   assert.equal(E.doc.activeElement, lock, 'focus stays on the button');
+  lock.dispatch('click');
+  assert.ok(E.s.locked && !E.mapEl.classList.contains('tools-active') && E.map.doubleClickZoom.enabled());
   E.q('[data-act="clear"]').dispatch('click');
+  assert.ok(!E.s.locked && E.mapEl.classList.contains('tools-active') && !E.map.doubleClickZoom.enabled(), 'Clear unlocks: the crosshair and the double-click hold are back');
   assert.ok(!E.s.result && E.doc.activeElement === E.q('.tools-x'), 'after Clear, focus on the bar\'s close button');
 });
 

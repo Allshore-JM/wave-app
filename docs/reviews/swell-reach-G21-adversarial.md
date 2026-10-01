@@ -160,3 +160,60 @@ Accepted as they are: B-10, B-14, the marker order and the compass hover in B-15
 
 Then: UI 1.12.6 with the golden in its own commit, the test site, a short re-check by a fresh reviewer at MAX, and a
 five-minute list for the owner's own phone (no real phone was available to either reviewer).
+
+## The fix round (UI 1.12.6 to 1.12.8, 2026-10-01, Opus 5.5 at HIGH)
+
+`feat/swell-reach` @ f84a529 (1.12.6), 3c8e6fe (1.12.7), 95465b4 (1.12.8), with the goldens in their own commits and
+test-only commits after; `test` carries the same commits and served each version with its bytes equal to the repo's.
+
+Every planned item above is in. Two changes came from measuring 1.12.6 on the test site:
+
+- **1.12.7, ring labels as plain icons.** Permanent Leaflet tooltips measure themselves (a page layout) each time they
+  are placed: the 24 ring labels cost about 35 ms on every redraw. They are now markers with a text icon centred by CSS,
+  in the window's own pane.
+- **1.12.8, the lighter strips as their own shapes.** The strips were drawn as each world copy's bridged ring and own
+  ring in full, about half of the window's points. They are now one polygon per strip, between the two reaches. The drawn
+  rays take pieces of 25 km or more (they are lines, not the edges of a filled shape). The window now draws 6-41 % fewer
+  points than 1.12.5 (Pipeline 19,400 against 26,100; Waikiki 46,300 against 49,200; Nice 7,900 against 13,400), and
+  Leaflet projects every path twice on each zoom (`zoomend` and `viewreset`).
+
+Measured on the test site at 1280 x 800 (synchronous cost of the call; the pane was hidden, so painting is not in it):
+
+| | 1.12.6 | 1.12.8 | no window |
+|---|---|---|---|
+| zoom, Pipeline | 129-163 ms | 11-27 ms | 5-12 ms |
+| zoom, Waikiki | | 33-38 ms | |
+| world switch (`setView` 720 degrees away), Pipeline | 188-218 ms | 24-25 ms | 18-44 ms |
+| mousemove (readout) | 1.5 ms median, 7.9 max | | |
+
+Checked on the test site (1.12.6 to 1.12.8, desktop 1280 x 800 and the phone preset): rings drawn as arcs with labels
+on them in the window's pane, its own canvas (padding 0.5); the point B used behind the Aleutians reads "Partly blocked
+by a small island 2,296 mi from the spot"; a hovered readout is `aria-live="off"`, a tapped one "polite"; fold to 104 px
+on desktop and 54 px on the phone with 36 px buttons, a readout under the title, "Computing…" while busy; Lock without
+`aria-pressed`, Escape in the bar only unlocks, Unlock clears a tapped readout, focus to the close button after Clear; at
+a 24 px root size the details line grows (overflow visible, nothing clipped); the phone bar is 206 px with a result (was
+251-273); a tap on the compass shows its wedge, a tap on its centre leaves the spot; a locked tap on a forecast point
+keeps its readout through the forecast window opening and after minimising it; no console errors.
+
+Tests: Node 295 (tools 43 + UI 42 among them) at the real clock, 2026-10-05 and 2027-09-01; pytest 456. Mutation:
+reviewer A's 203 mutants and 51 of the fix round's, two workers over the tool suites (scratch `g21/fix/mut_g21.js`),
+then every survivor again on the final code (`mut_some2.js`), plus 9 for 1.12.7-1.12.8:
+
+- 36 of A's mutants no longer apply (their code was rewritten); 167 of A's and 51 + 9 new ones were run.
+- Survivors of the first run that new tests now kill: A64 (the small-island rule from ray 0), A92 (the veil's box to the
+  limits), A97 (the holes in a far world copy), A114 (enclosed seas: a basin test), A120 / A121 (the pane's order and
+  pointer events), A126 / A127 (Clear while locked), A153 (Lock without a result), N0 (real coast on a cell line through
+  the sliced edge pass), N19 (the ring extent behind a small island), N49 (a tool switch while folded), S2 (a strip's last
+  ray: samples inside every strip).
+- Left alive, equivalent or harmless: A11, A32, A59, A62, A80 (as A classed them), A130-A133 (the stale guards: the
+  drawing reads `s.result`, so a stale call draws the current result), A135 (one reach slice: cost only), A186 (`probe`
+  works on any longitude), A195 (a unit change with no reach redraws nothing), A199 (`placeCurrentFan` refuses a compass
+  itself).
+
+Owner check on a real phone (no reviewer had one), on https://wave-app-clean.onrender.com:
+1. Tools > Swell exposure, tap the water off a north shore; the bar shows the "Open: …" line and the details line only.
+2. Pinch out to see the ocean: the fan becomes a small compass; tap a wedge of it: its details show, the spot stays.
+3. Tap Lock, then tap the water far away: bearing, distance and travel time show, with a yellow line to the tap.
+4. Still locked, tap a forecast point: its forecast opens; minimise it: the readout is still there.
+5. Tap the ▴ button: the bar folds to its title; tap ▾ to unfold. Tap Unlock: the readout goes.
+6. Drag the map a long way while the window shows: it should not run out at the edge mid-drag.

@@ -344,7 +344,10 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     # G20: the settings control stacks above the tool bar (its menus drop over it); a steady bar height; the windows
     # are obstacles for the fan and an expanded one over the bar is minimised when a tool starts
     assert ".leaflet-top.leaflet-right .leaflet-control-settings { z-index: 801; }" in body
-    assert ".tools-bar-body .tools-sector { margin-top: 4px; height: 4.5em; overflow: hidden; white-space: pre-line; }" in body
+    assert ".tools-bar-body .tools-sector { margin-top: 4px; min-height: 4.5em; white-space: pre-line; }" in body   # grows, never clips (G21 B-5)
+    assert "overflow: hidden; white-space: pre-line" not in body
+    assert ".tools-bar-actions button.is-on {" in body and '.tools-bar-actions button[aria-pressed="true"]' not in body   # Lock: no aria-pressed (G21 B-11)
+    assert ".tools-x, .tools-fold { min-width: 36px; min-height: 36px; }" in body[body.index("@media (max-width: 576px)"):]
     assert "obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel')]; }," in body
     assert "[['liveBuoyPanel', 'lwMin'], ['forecastWin', 'fwMin']].forEach(function (w) {" in body
     assert "if (!(r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top)) return;" in body

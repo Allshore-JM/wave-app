@@ -300,10 +300,11 @@
     .tools-bar-head, .tools-bar-actions { flex: none; }
     .tools-bar-body { overflow-y: auto; min-height: 0; }
     .tools-bar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .tools-x { border: 0; background: none; font-size: 1rem; line-height: 1; padding: 2px 4px; cursor: pointer; color: #0b2536; }
+    .tools-head-btns { display: flex; align-items: center; gap: 2px; }
+    .tools-x, .tools-fold { border: 0; background: none; font-size: 1rem; line-height: 1; padding: 2px 4px; cursor: pointer; color: #0b2536; }
     .tools-bar-body .tools-big { font-weight: 600; margin-top: 4px; }
-    .tools-bar-body .tools-sector { margin-top: 4px; height: 4.5em; overflow: hidden; white-space: pre-line; }   /* three lines, fixed: hovering never resizes the bar */
-    .tools-bar-actions button[aria-pressed="true"] { background: #e7f1ff; border-color: #86b7fe; }
+    .tools-bar-body .tools-sector { margin-top: 4px; min-height: 4.5em; white-space: pre-line; }   /* three lines: hovering does not resize the bar; larger text sizes grow it, never clip it (G21 B-5) */
+    .tools-bar-actions button.is-on { background: #e7f1ff; border-color: #86b7fe; }
     .tools-bar-body .tools-hint { color: #5b6770; font-size: .78rem; margin-top: 4px; }
     .tools-bar-actions { display: flex; gap: 6px; margin-top: 6px; }
     .tools-bar-actions[hidden] { display: none; }
@@ -486,6 +487,7 @@
       .tools-menu .tool-item { min-height: 44px; }
       .tools-bar { width: min(290px, calc(100vw - 24px)); }
       .tools-bar-actions button { min-height: 36px; padding: 4px 12px; }
+      .tools-x, .tools-fold { min-width: 36px; min-height: 36px; }
       .icon-btn { width: 44px; height: 44px; }
     }
     /* Phones (and short windows): the window fills the screen like the live-buoy panel; minimised, a bar

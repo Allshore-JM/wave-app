@@ -262,7 +262,24 @@
   function worldEdges(set) {
     var out = [], lines = {};
     if (!set) return out;
-    for (var p = 0; p < set.n; p++) {
+    worldPieces(set, 0, set.n, out, lines);
+    netLines(lines, out);
+    return out;
+  }
+  // The same in slices of `batch` pieces with yieldFn() between them (a Promise): the edge pass alone was a 15-37 ms
+  // task in the one that drew the session's first fan (G21 A-2).
+  function worldEdgesSliced(set, batch, yieldFn) {
+    var out = [], lines = {}, p = 0;
+    function run() {
+      var to = Math.min(set.n, p + batch);
+      worldPieces(set, p, to, out, lines); p = to;
+      if (p < set.n) return yieldFn().then(run);
+      netLines(lines, out); return out;
+    }
+    return Promise.resolve().then(run);
+  }
+  function worldPieces(set, p0, p1, out, lines) {
+    for (var p = p0; p < p1; p++) {
       for (var r = set.ringStart[p]; r < set.ringStart[p + 1]; r++) {
         var s = set.vertStart[r], e = set.vertStart[r + 1];
         for (var k = s; k < e; k++) {
@@ -280,8 +297,6 @@
         }
       }
     }
-    netLines(lines, out);
-    return out;
   }
   function worldIndex(set) { return indexOf(worldEdges(set), 0.5); }
   // The same index built in slices (a Promise): 290,000 edges are a long task on a phone in one go.
@@ -686,12 +701,12 @@
   // The fan classifies directions from the first 3,000 km. The projection needs each ray's whole run: to the first
   // coast however far, to the map's latitude limits (84 N / 79 S: polar ice, and where the map ends), or just short of
   // the antipode, where great circles meet again.
-  var REACH_KM = 19500, REACH_STEP_KM = 25, REACH_LAT_N = 84, REACH_LAT_S = -79, WORLD_BATCH = 40000;
+  var REACH_KM = 19500, REACH_STEP_KM = 25, REACH_LAT_N = 84, REACH_LAT_S = -79, WORLD_BATCH = 40000, WORLD_PIECES = 2000;
   var END_LAND = 0, END_LIMIT = 1, END_CAP = 2;
   // How the window is drawn (plan section 30; tuned on the owner's preview sheet).
   // Owner's pick (B): a 55 % veil and a ray every 5 degrees; small islands' shadows lighter (25 %).
   var REACH_STYLE = { veil: '#06121c', veilOpacity: 0.55, smallVeilOpacity: 0.25, ray: '#ffffff', rayOpacity: 0.5, rayWeight: 1, rayEvery: 10, rayMinKm: 300,
-    ring: '#ffffff', ringOpacity: 0.55, ringPct: 0.9 };
+    ring: '#ffffff', ringOpacity: 0.55 };
   // A small island's shadow: at most ISLAND_RAYS rays (2.5 degrees) wide, with farther-reaching rays on both sides, cast
   // by land more than NEAR_KM (50 km) away. Land wider than that, or nearer, keeps the full veil.
   var ISLAND_RAYS = 5;
@@ -722,8 +737,8 @@
     }
     return -1;
   }
-  // Each ray's reach, added to an exposure result: result.reach (km) and result.reachEnd (why it stopped: land, the
-  // latitude limit, or the cap). `world`: worldIndex(tier 0), or null for no land. Time-sliced like computeExposure.
+  // Each ray's reach, added to an exposure result: result.reach (km), result.reachEnd (why it stopped: land, the
+  // latitude limit, or the cap) and result.reachWide (small islands' shadows bridged, as drawn). `world`: worldIndex(tier 0), or null for no land. Time-sliced like computeExposure.
   function computeReach(result, world, opts) {
     opts = opts || {};
     var o = result.origin, n = result.fetch.length, reach = new Float64Array(n), end = new Uint8Array(n), i = 0;
@@ -741,7 +756,7 @@
       for (; i < to; i++) one(i);
       if (stop()) return null;
       if (i < n) return yieldFn ? yieldFn().then(run) : run();
-      result.reach = reach; result.reachEnd = end; return result;
+      result.reach = reach; result.reachEnd = end; result.reachWide = smallShadowReach(reach, ISLAND_RAYS, NEAR_KM); return result;
     }
     return yieldFn ? Promise.resolve().then(run) : run();
   }
@@ -754,10 +769,24 @@
     return { lat: Math.asin(Math.max(-1, Math.min(1, sf))) * R2D,
       lng: origin.lng + Math.atan2(Math.sin(t) * Math.sin(d) * Math.cos(f), Math.cos(d) - Math.sin(f) * sf) * R2D };
   }
-  // One ray as a line from the origin to `km`, no gap wider than maxGapKm.
+  // Distances along a ray from d0 to d1 (d0 left out, d1 last) for the straight pieces Leaflet draws: a tenth of the
+  // distance, 5 to maxGapKm km, times the cosine of the latitude (a quarter at least), so the pieces stay on the great
+  // circle near the spot and far north or south (G21 A-8: 100 km pieces bowed 0.4 km off it near a spot at 63 N, and a
+  // half-degree gap's two sides crossed).
+  function radialStops(origin, brg, d0, d1, maxGapKm) {
+    var lo = Math.min(d0, d1), hi = Math.max(d0, d1), gap = maxGapKm || 100, inner = [], d = lo;
+    for (;;) {
+      var c = Math.max(0.25, Math.cos(rayPoint(origin, brg, d).lat * D2R));
+      d += Math.min(gap, Math.max(5, d / 10)) * c;
+      if (d >= hi - 1e-9) break;
+      inner.push(d);
+    }
+    return d1 >= d0 ? inner.concat([hi]) : inner.reverse().concat([lo]);
+  }
+  // One ray as a line from the origin to `km`, no piece longer than maxGapKm.
   function rayPath(origin, brg, km, maxGapKm) {
-    var n = Math.max(1, Math.ceil(km / (maxGapKm || 100))), out = [];
-    for (var k = 0; k <= n; k++) out.push(rayPoint(origin, brg, km * k / n));
+    var out = [rayPoint(origin, brg, 0)];
+    radialStops(origin, brg, 0, km, maxGapKm).forEach(function (d) { out.push(rayPoint(origin, brg, d)); });
     return out;
   }
   // The water the spot can see, as one ring: each ray's arc at its reach, joined to the next ray's along the great
@@ -765,28 +794,72 @@
   function litRing(result, maxGapKm, reachOverride) {
     var o = result.origin, r = reachOverride || result.reach, n = r.length, w = 360 / n, gap = maxGapKm || 100, out = [];
     for (var i = 0; i < n; i++) {
-      var b0 = i * w, from = r[(i + n - 1) % n], to = r[i], m = Math.max(1, Math.ceil(Math.abs(to - from) / gap));
-      for (var k = 1; k <= m; k++) out.push(rayPoint(o, b0, from + (to - from) * k / m));
+      var b0 = i * w, from = r[(i + n - 1) % n], to = r[i];
+      radialStops(o, b0, from, to, gap).forEach(function (d) { out.push(rayPoint(o, b0, d)); });
       out.push(rayPoint(o, b0 + w, to));
     }
     return out;
   }
-  // A ring of equal distance round the origin, as lines: cut at the latitude limits and where it passes behind a pole
-  // (there its ends are 360 degrees apart).
-  function rangeRing(origin, km, stepDeg) {
-    var segs = [], cur = null, prev = null, step = stepDeg || 1;
-    for (var b = 0; b <= 360; b += step) {
-      var p = rayPoint(origin, b, km), ok = p.lat <= REACH_LAT_N && p.lat >= REACH_LAT_S;
-      if (!ok || (prev && Math.abs(p.lng - prev.lng) > 180)) cur = null;
-      if (ok) { if (!cur) { cur = []; segs.push(cur); } cur.push(p); }
-      prev = ok ? p : null;
+  // Points with longitudes counted on from the spot, as lines: cut where a point leaves the map's limits and where
+  // consecutive points are 360 degrees apart (behind a pole). At such a jump each piece gets the joining step in its own
+  // world copy, so the line has no gap (G21 A-6).
+  function linePieces(pts) {
+    var segs = [], cur = null, prev = null;
+    for (var i = 0; i < pts.length; i++) {
+      var p = pts[i];
+      if (p.lat > REACH_LAT_N || p.lat < REACH_LAT_S) { cur = null; prev = null; continue; }
+      if (prev && Math.abs(p.lng - prev.lng) > 180) {
+        var k = p.lng > prev.lng ? -360 : 360;
+        cur.push({ lat: p.lat, lng: p.lng + k });
+        cur = [{ lat: prev.lat, lng: prev.lng - k }]; segs.push(cur);
+      } else if (!cur) { cur = []; segs.push(cur); }
+      cur.push(p); prev = p;
     }
     return segs.filter(function (sg) { return sg.length > 1; });
   }
-  // The rings to draw: every 1,000 nm (US) or 2,000 km (Metric) out to the longest ray, ten at most.
+  // The runs of consecutive rays whose reach is at least `km`, as [first, last] ray indices (a run across ray 0 has
+  // indices past n - 1: use them modulo n); a reach all round is one run [0, n - 1].
+  function ringRuns(reach, km) {
+    var n = reach.length, i = 0, runs = [], start = -1;
+    while (i < n && reach[i] >= km) i++;
+    if (i === n) return [[0, n - 1]];
+    for (var c = 1; c <= n; c++) {
+      if (reach[(i + c) % n] >= km) { if (start < 0) start = i + c; }
+      else if (start >= 0) { runs.push([start, i + c - 1]); start = -1; }
+    }
+    return runs;
+  }
+  // A ring's arcs inside the window (owner, G21): one per run of rays that reach it (small islands bridged), from the
+  // run's first bearing to its last, so an arc ends on the window's edge. [{ pts, from, to }] (ray indices).
+  function ringArcs(result, km) {
+    var o = result.origin, r = result.reachWide || result.reach, w = 360 / r.length, out = [];
+    ringRuns(r, km).forEach(function (run) {
+      var pts = [];
+      for (var i = run[0]; i <= run[1] + 1; i++) pts.push(rayPoint(o, i * w, km));
+      linePieces(pts).forEach(function (seg) { out.push({ pts: seg, from: run[0], to: run[1] }); });
+    });
+    return out;
+  }
+  // Where a ring's labels go (bearings): the middle of its widest arc, and of any other arc 15 degrees or wider; none on
+  // an arc narrower than 1.5 degrees (G21 B-1: a fixed bearing put most labels outside the window).
+  var LABEL_MIN_DEG = 1.5, LABEL_MORE_DEG = 15;
+  function ringLabelBearings(reach, km) {
+    var w = 360 / reach.length, out = [];
+    var runs = ringRuns(reach, km).map(function (r) { return { a: r[0], b: r[1], deg: (r[1] - r[0] + 1) * w }; });
+    runs.sort(function (x, y) { return y.deg - x.deg || x.a - y.a; });
+    runs.forEach(function (r, i) {
+      if (r.deg < LABEL_MIN_DEG || (i > 0 && r.deg < LABEL_MORE_DEG)) return;
+      out.push(((r.a + r.b + 1) / 2 * w) % 360);
+    });
+    return out;
+  }
+  // The rings: the owner's 1,000 nm (US) or 2,000 km (Metric) when two of them fit inside the window, else the largest
+  // of 500 / 250 / 100 nm (1,000 / 500 / 200 km) that gives two (enclosed seas, short windows: G21 B-2); ten at most.
+  var RING_STEPS = { US: [1000, 500, 250, 100], Metric: [2000, 1000, 500, 200] };
   function ringsFor(unit, maxKm) {
-    var metric = unit === 'Metric', each = metric ? 2000 : 1000 * KM_PER_NM, out = [];
-    for (var k = 1; k <= 10 && k * each <= maxKm; k++) out.push({ km: k * each, label: fmtNum(k * (metric ? 2000 : 1000), 0) + (metric ? ' km' : ' nm') });
+    var metric = unit === 'Metric', steps = RING_STEPS[metric ? 'Metric' : 'US'], per = metric ? 1 : KM_PER_NM, step = steps[steps.length - 1], out = [];
+    for (var i = 0; i < steps.length; i++) if (2 * steps[i] * per <= maxKm) { step = steps[i]; break; }
+    for (var k = 1; k <= 10 && k * step * per <= maxKm; k++) out.push({ km: k * step * per, label: fmtNum(k * step, 0) + (metric ? ' km' : ' nm') });
     return out;
   }
   // Each ray's reach with small islands' shadows bridged: a run of up to `k` rays that all stop short of BOTH rays
@@ -804,8 +877,8 @@
     }
     return out;
   }
-  // How far the rings go: most rays' reach (the 90th percentile), not the one ray that runs round the world.
-  function ringReachKm(result) { return percentile(result.reach, REACH_STYLE.ringPct); }
+  // How far the rings go: the farthest the window reaches (they are drawn inside it only).
+  function ringReachKm(result) { var r = result.reachWide || result.reach, m = 0; for (var i = 0; i < r.length; i++) if (r[i] > m) m = r[i]; return m; }
   // Deep-water swell travels at its group speed, g T / 4 pi (0.78 T m/s): days to cover `km` at period `sec`.
   function travelDays(km, sec) { return km / (9.80665 * sec / (4 * Math.PI) * 3.6) / 24; }
   // The readout's travel time: whole hours under a day ("0.1 d" said little), else days to one decimal.
@@ -815,15 +888,17 @@
     return h < 23.5 ? Math.round(h) + ' h' : fmtNum(roundTo(d, 1), 1) + ' d';
   }
   // What the spot sees at a point on the map: the bearing and distance from the spot, its ray and wedge, and whether
-  // the ray reaches it (`visible`); when it does not, where the ray stopped (`stopKm`) and why (`stop`).
+  // the ray reaches it (`visible`); when it does not, where the ray stopped (`stopKm`) and why (`stop`: 'island' behind
+  // a small island, in a lighter strip; 'land'; 'limit'; 'cap').
   function probe(result, latlng) {
     var o = result.origin, p = { lat: latlng.lat, lng: latlng.lng }, km = distanceKm(o, p);
     if (!(km > 0)) return null;
     var brg = bearingDeg(o, p), n = result.reach.length, i = Math.min(n - 1, Math.floor(brg / (360 / n)));
     var sec = result.sectors[Math.min(SECTORS - 1, Math.floor(brg / (360 / SECTORS)))];
     var visible = km <= result.reach[i];                                    // (a ray's reach already ends at the map's limits)
-    return { bearing: brg, km: km, ray: i, sector: sec, visible: visible, stopKm: visible ? null : result.reach[i],
-      stop: visible ? null : (result.reachEnd[i] === END_LAND ? 'land' : result.reachEnd[i] === END_LIMIT ? 'limit' : 'cap') };
+    var island = !visible && !!result.reachWide && km <= result.reachWide[i];   // in a lighter strip behind a small island
+    return { bearing: brg, km: km, ray: i, sector: sec, visible: visible, island: island, stopKm: visible ? null : result.reach[i],
+      stop: visible ? null : island ? 'island' : (result.reachEnd[i] === END_LAND ? 'land' : result.reachEnd[i] === END_LIMIT ? 'limit' : 'cap') };
   }
 
   // ---- the fan (an SVG string; the page wraps it in a marker so it keeps its size on screen) ----
@@ -964,7 +1039,10 @@
     if (!this._hasWorld && !yieldFn) { this._world = worldIndex(this.tier0); this._hasWorld = true; }
     if (this._hasWorld) return yieldFn ? Promise.resolve(this._world) : this._world;
     if (!this._worldP) {
-      this._worldP = indexSliced(worldEdges(this.tier0), 0.5, WORLD_BATCH, yieldFn).then(function (ix) { self._world = ix; self._hasWorld = true; self._worldP = null; return ix; });
+      this._worldP = yieldFn().then(function () { return worldEdgesSliced(self.tier0, WORLD_PIECES, yieldFn); })
+        .then(function (edges) { return yieldFn().then(function () { return indexSliced(edges, 0.5, WORLD_BATCH, yieldFn); }); })
+        .then(function (ix) { self._world = ix; self._hasWorld = true; self._worldP = null; return ix; },
+          function (err) { self._worldP = null; throw err; });                // a failed build is tried again next time (G21 A-3)
     }
     return this._worldP;
   };
@@ -1002,12 +1080,12 @@
   function probeText(pr, unit) {
     if (!pr) return null;
     var where = pad3(Math.round(pr.bearing) % 360) + '° ' + compass(pr.bearing) + ' · ' + fmtLength(pr.km, unit);
+    var t14 = fmtTravel(pr.km, 14), swell = ' · swell ' + (t14 === 'under 1 h' ? t14 : t14 + ' at 14 s, ' + fmtTravel(pr.km, 18) + ' at 18 s');
     var why;
-    if (pr.visible) {
-      why = (pr.sector.level === 'open' ? 'In the window' : pr.sector.level === 'light' ? 'In the window (partly shadowed)' : 'In view, but in a shadowed direction') +
-        ' · swell ' + fmtTravel(pr.km, 14) + ' at 14 s, ' + fmtTravel(pr.km, 18) + ' at 18 s';
-    } else if (pr.stop === 'land') why = 'Blocked by land ' + fmtDist(pr.stopKm, unit) + ' from the spot: its swell cannot reach it';
-    else if (pr.stop === 'limit') why = 'Beyond the map\'s polar limit';
+    if (pr.visible) why = (pr.sector.level === 'open' ? 'In the window' : pr.sector.level === 'light' ? 'In the window (partly shadowed direction)' : 'In the window (mostly shadowed direction)') + swell;
+    else if (pr.stop === 'island') why = 'Partly blocked by a small island ' + fmtDist(pr.stopKm, unit) + ' from the spot' + swell;
+    else if (pr.stop === 'land') why = 'Blocked by land ' + fmtDist(pr.stopKm, unit) + ' from the spot: no swell from here';
+    else if (pr.stop === 'limit') why = 'Not in the window: its path to the spot crosses the map\'s polar limit';
     else why = 'Farther than the rays reach';
     return { where: where, why: why };
   }
@@ -1029,12 +1107,16 @@
     var coast = opts.coastBase ? new CoastSource(opts.coastBase, opts.fetch || root.fetch.bind(root)) : null;
     var expoBtn = menu.querySelector('[data-tool="exposure"]');
     if (expoBtn && !coast) expoBtn.hidden = true;
-    var s = state = { tool: null, pts: [], closed: false, closedAt: null, group: L.featureGroup(), fan: null, result: null, selected: -1, gen: 0, busy: false, msg: '', dblWas: null, radius: 0, barH: -1, barMax: 0, size: null, compass: false, readout: null, locked: false };
+    var s = state = { tool: null, pts: [], closed: false, closedAt: null, group: L.featureGroup(), fan: null, result: null, selected: -1, gen: 0, busy: false, msg: '', dblWas: null, radius: 0, barH: -1, barMax: 0, size: null, compass: false, readout: null, locked: false, folded: false, hover: false, hoverPt: null, reachFailed: false };
     s.group.addTo(map);
     if (!map.getPane('toolsPane')) { var pane = map.createPane('toolsPane'); pane.style.zIndex = 590; pane.style.pointerEvents = 'none'; }
     // the window on the map: above the wave colours and particles (250, 300), below the gridlines and stations (350+)
     if (!map.getPane('toolsReachPane')) { var rpane = map.createPane('toolsReachPane'); rpane.style.zIndex = 320; rpane.style.pointerEvents = 'none'; }
     var reachLayer = s.reach = L.featureGroup();                             // (s.reach: for tests)
+    // its own canvas, half a map wider on every side than the default tenth, so a drag does not run past the drawn
+    // window before the redraw at its end (G21 B-7)
+    var reachRenderer = typeof L.canvas === 'function' ? L.canvas({ pane: 'toolsReachPane', padding: 0.5 }) : null;
+    function reachOpt(o) { o.pane = 'toolsReachPane'; o.interactive = false; if (reachRenderer) o.renderer = reachRenderer; return o; }
 
     function touchUI() { try { return !!(root.matchMedia && root.matchMedia('(hover: none)').matches); } catch (e) { return false; } }
     // A touch tap (no hover to show a wedge's details): Chrome's click is a PointerEvent with pointerType; other
@@ -1061,9 +1143,10 @@
         var c = L.DomUtil.create('div', 'leaflet-control-toolsbar tools-bar');
         c.hidden = true; c.setAttribute('role', 'group'); c.setAttribute('aria-labelledby', 'toolsBarTitle');
         // the actions sit under the title and the body scrolls, so Clear stays reachable on a short map (G20 re-review)
-        c.innerHTML = '<div class="tools-bar-head"><strong class="tools-bar-title" id="toolsBarTitle"></strong><button type="button" class="tools-x" aria-label="Close tool">✕</button></div>' +
+        c.innerHTML = '<div class="tools-bar-head"><strong class="tools-bar-title" id="toolsBarTitle"></strong><span class="tools-head-btns">' +
+          '<button type="button" class="tools-fold" aria-expanded="true" aria-label="Fold the tool bar">▴</button><button type="button" class="tools-x" aria-label="Close tool">✕</button></span></div>' +
           '<div class="tools-bar-actions"><button type="button" data-act="undo">Undo</button><button type="button" data-act="finish">Finish</button><button type="button" data-act="clear">Clear</button>' +
-          '<button type="button" data-act="lock" aria-pressed="false" title="Keep the window on the map; clicks go back to the map">Lock</button></div>' +
+          '<button type="button" data-act="lock" title="Keep the window on the map; clicks go back to the map">Lock</button></div>' +
           '<div class="tools-bar-body" aria-live="polite"></div>';
         L.DomEvent.disableClickPropagation(c); L.DomEvent.disableScrollPropagation(c);
         return c;
@@ -1075,21 +1158,38 @@
     closeBtn.addEventListener('click', function () { stop(); });
     barEl.querySelector('[data-act="undo"]').addEventListener('click', function () { undo(); });
     barEl.querySelector('[data-act="finish"]').addEventListener('click', function () { finish(); });
-    barEl.querySelector('[data-act="clear"]').addEventListener('click', function () { clear(); });
+    barEl.querySelector('[data-act="clear"]').addEventListener('click', function () { clear(); focusClose(); });   // focus stays in the bar (G21 B-11)
     var lockBtn = barEl.querySelector('[data-act="lock"]');
     lockBtn.addEventListener('click', function () { setLock(!s.locked); });
+    var foldBtn = barEl.querySelector('.tools-fold');
+    foldBtn.addEventListener('click', function () { s.folded = !s.folded; render(); });
+    function focusClose() { try { closeBtn.focus(); } catch (e) { /* no focus */ } }
 
     function unit() { return getUnit() === 'Metric' ? 'Metric' : 'US'; }
-    function esc(t) { return String(t).replace(/[&<>"]/g, function (ch) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]; }); }
-    function setBody(lines) { bodyEl.innerHTML = lines.map(function (l) { return '<div class="' + (l.cls || '') + '">' + esc(l.t) + '</div>'; }).join(''); }
+    // The body line by line: lines keep their element while their kind stays, and only changed text is written. The
+    // details line is a live region of its own, silent while it follows the pointer (G21 B-11: the whole bar was
+    // rewritten and announced on every mousemove).
+    function setBody(lines) {
+      var kids = bodyEl.children, same = 0;
+      while (same < lines.length && same < kids.length && kids[same].className === (lines[same].cls || '')) same++;
+      while (kids.length > same) bodyEl.removeChild(kids[kids.length - 1]);
+      for (var i = 0; i < lines.length; i++) {
+        var l = lines[i], el = kids[i];
+        if (!el) { el = doc.createElement('div'); el.className = l.cls || ''; bodyEl.appendChild(el); }
+        if (l.live && el.getAttribute('aria-live') !== l.live) el.setAttribute('aria-live', l.live);
+        if (el.textContent !== l.t) el.textContent = l.t;
+      }
+    }
     function setActions() {
       var measuring = s.tool === 'distance' || s.tool === 'area';
       barEl.querySelector('[data-act="undo"]').hidden = !measuring || !s.pts.length || s.closed;
       barEl.querySelector('[data-act="finish"]').hidden = !measuring || s.closed || s.pts.length < (s.tool === 'area' ? 3 : 2);
       barEl.querySelector('[data-act="clear"]').hidden = !(s.pts.length || s.result || s.busy);
       lockBtn.hidden = !(s.tool === 'exposure' && s.result);
-      lockBtn.textContent = s.locked ? 'Unlock' : 'Lock'; lockBtn.setAttribute('aria-pressed', s.locked ? 'true' : 'false');
-      if (actsEl) actsEl.hidden = !Array.prototype.some.call(actsEl.querySelectorAll('button'), function (x) { return !x.hidden; });
+      // the label alone says what the button does (G21 B-11: "Unlock, pressed"); a class gives the pressed look
+      lockBtn.textContent = s.locked ? 'Unlock' : 'Lock'; lockBtn.classList.toggle('is-on', s.locked);
+      lockBtn.title = s.locked ? 'Let a click place a new spot again' : 'Keep the window on the map; clicks go back to the map';
+      if (actsEl) actsEl.hidden = s.folded || !Array.prototype.some.call(actsEl.querySelectorAll('button'), function (x) { return !x.hidden; });
     }
     // The bar never runs past the map's bottom edge (its body scrolls): G20 re-review, landscape phones.
     function fitBar() {
@@ -1112,7 +1212,7 @@
     function start(tool) {
       if (!TOOLS[tool]) return;
       clear(true);
-      s.tool = tool; s.barMax = 0; s.barH = -1; barEl.hidden = false; titleEl.textContent = TOOLS[tool];   // a switch always reports
+      s.tool = tool; s.barMax = 0; s.barH = -1; s.folded = false; barEl.hidden = false; titleEl.textContent = TOOLS[tool];   // a switch always reports
       Array.prototype.forEach.call(menu.querySelectorAll('[data-tool]'), function (b) { b.setAttribute('aria-pressed', b.getAttribute('data-tool') === tool ? 'true' : 'false'); });
       map.getContainer().classList.add('tools-active');
       if (s.dblWas === null) { s.dblWas = map.doubleClickZoom.enabled(); map.doubleClickZoom.disable(); }
@@ -1126,13 +1226,14 @@
       on = !!(on && s.tool === 'exposure' && s.result);
       if (on === s.locked) return;
       s.locked = on;
+      if (!on && s.pinned) hideReadout();                                   // a tapped readout goes with the lock (G21 A-13)
       map.getContainer().classList.toggle('tools-active', !on);
       if (on) { if (s.dblWas) map.doubleClickZoom.enable(); }
       else if (s.dblWas) map.doubleClickZoom.disable();
       render();
     }
     function stop() {
-      clear(true); s.tool = null; barEl.hidden = true;
+      clear(true); s.tool = null; s.folded = false; barEl.hidden = true;
       Array.prototype.forEach.call(menu.querySelectorAll('[data-tool]'), function (b) { b.setAttribute('aria-pressed', 'false'); });
       map.getContainer().classList.remove('tools-active');
       if (s.dblWas) map.doubleClickZoom.enable(); s.dblWas = null;
@@ -1141,7 +1242,7 @@
     function clear(silent) {
       if (s.locked) { s.locked = false; if (s.tool) map.getContainer().classList.add('tools-active'); if (s.dblWas) map.doubleClickZoom.disable(); }
       hideReadout();
-      s.gen++; s.pts = []; s.closed = false; s.closedAt = null; s.result = null; s.selected = -1; s.busy = false; s.msg = '';
+      s.gen++; s.pts = []; s.closed = false; s.closedAt = null; s.result = null; s.selected = -1; s.busy = false; s.msg = ''; s.reachFailed = false;
       s.group.clearLayers(); if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
       clearReach();
       if (!silent) render();
@@ -1153,11 +1254,13 @@
       if (!s.tool) return;
       var p = { lat: latlng.lat, lng: latlng.lng }, b = map.latLngToContainerPoint(latlng);
       if (s.tool === 'exposure') {
+        s.hover = false;
         if (s.locked) { showReadout(latlng, isTouch(ev)); return; }
-        if (s.result && s.fan && isTouch(ev) && !s.compass) {                         // a tap inside the fan picks a wedge; a mouse click places a new point
-          var c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
-          var k = sectorAt(b.x - c.x, b.y - c.y, s.radius);
+        if (s.result && s.fan && isTouch(ev)) {                               // a tap on the fan or the compass picks a wedge; a mouse click places a new point
+          var c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]), dx = b.x - c.x, dy = b.y - c.y;
+          var k = sectorAt(dx, dy, s.radius);
           if (k >= 0) { select(k); return; }
+          if (s.compass && dx * dx + dy * dy <= s.radius * s.radius) return;  // the compass's centre: not a new spot (G21 B-3)
         }
         return exposureAt(p);
       }
@@ -1207,8 +1310,9 @@
           if (!s.closed) lines.push({ t: verb + ' the first point, double-' + verb.toLowerCase() + ' or Finish to close.', cls: 'tools-hint' });
         }
       }
-      setBody(lines);
+      return lines;
     }
+    function compactUI() { var z = map.getSize(); return z.x < 576; }          // a phone: the bar keeps to its result (G21 B-6)
     function drawExposure() {
       var u = unit(), lines = [], verb = touchUI() ? 'Tap' : 'Click';
       if (s.busy) lines.push({ t: 'Computing…', cls: 'tools-big' });
@@ -1216,17 +1320,27 @@
         lines.push({ t: windowsText(s.result.openWindows), cls: 'tools-big' });
         var rt = s.readout && probeText(s.readout, u);
         var idle = s.locked ? (touchUI() ? 'Tap the map for bearing and distance.' : 'Point at the map for bearing and distance.')
-          : touchUI() ? 'Tap a wedge for details. Lock, then tap the map for bearing and distance.' : 'Point at a wedge, or anywhere on the map.';
-        lines.push({ t: rt ? rt.where + '\n' + rt.why : s.selected >= 0 ? sectorText(s.result.sectors[s.selected], u) : idle, cls: 'tools-sector' });
-        if (s.result.moved > 0.02) lines.push({ t: 'Moved ' + fmtDist(s.result.moved, u) + ' off the shore to open water.', cls: 'tools-hint' });
-        if (s.result.coarse) lines.push({ t: 'Nearby coastline at lower detail.', cls: 'tools-hint' });
-        lines.push({ t: 'Clear = swell reaches the spot; grey = land shadow. Coast geometry only: swell wraps islands; reefs not included.', cls: 'tools-hint' });
+          : touchUI() ? 'Tap a wedge for details. Lock, then tap the map for bearing and distance.' : 'Point at a wedge or the map. A click moves the spot; Lock keeps it.';
+        lines.push({ t: rt ? rt.where + '\n' + rt.why : s.selected >= 0 ? sectorText(s.result.sectors[s.selected], u) : idle, cls: 'tools-sector', live: s.hover ? 'off' : 'polite' });
+        if (s.reachFailed) lines.push({ t: 'The window could not be drawn on the map. Try the spot again.', cls: 'tools-hint' });
+        if (!compactUI()) {
+          if (s.result.moved > 0.02) lines.push({ t: 'Moved ' + fmtDist(s.result.moved, u) + ' off the shore to open water.', cls: 'tools-hint' });
+          if (s.result.coarse) lines.push({ t: 'Nearby coastline at lower detail.', cls: 'tools-hint' });
+          lines.push({ t: 'Clear = swell reaches the spot; shaded = blocked by land, lighter behind small islands. Coast geometry only: swell wraps islands; reefs and atoll rims are not in the data.', cls: 'tools-hint' });
+        }
       } else lines.push({ t: s.msg || verb + ' the water to see which swell directions reach it.', cls: 'tools-big' });
-      setBody(lines);
+      return lines;
     }
     function render() {
       if (!s.tool) return;
-      if (s.tool === 'exposure') drawExposure(); else drawMeasure();
+      var lines = s.tool === 'exposure' ? drawExposure() : drawMeasure();
+      // folded: the title row, and under it only a readout that is showing (owner, G21 B-6)
+      setBody(s.folded ? lines.filter(function (l) { return l.cls === 'tools-sector' && s.readout; }) : lines);
+      barEl.classList.toggle('is-folded', s.folded);
+      foldBtn.setAttribute('aria-expanded', s.folded ? 'false' : 'true');
+      foldBtn.setAttribute('aria-label', s.folded ? 'Unfold the tool bar' : 'Fold the tool bar');
+      foldBtn.textContent = s.folded ? '▾' : '▴';
+      titleEl.textContent = s.folded && s.busy ? 'Computing…' : TOOLS[s.tool];
       setActions();
       layout();
     }
@@ -1236,14 +1350,16 @@
     function ext(a, b) { var o = {}, k; for (k in a) o[k] = a[k]; for (k in b) o[k] = b[k]; return o; }
     function clearReach() { reachLayer.clearLayers(); if (s.reachOn) { map.removeLayer(reachLayer); s.reachOn = false; } }
     // The window on the map, in three world copies round the fan's: a veil over the water the spot cannot see (the
-    // world with the lit ring cut out), a ray every 2.5 degrees where it runs some way, and range rings with labels.
+    // world with the lit ring cut out), a ray every 5 degrees where it runs some way, and range rings drawn as arcs inside
+    // the window with their labels on them (owner, G21).
     function drawReach() {
       clearReach();
       var res = s.result; if (!res || !res.reach) return;
-      var st = REACH_STYLE, shift = s.fanLng - res.origin.lng, opt = { pane: 'toolsReachPane', interactive: false };
+      var st = REACH_STYLE, shift = s.fanLng - res.origin.lng, opt = reachOpt({});
       // the full veil outside the window with small islands' shadows bridged; those shadows get a lighter veil
-      var bridged = smallShadowReach(res.reach, ISLAND_RAYS, NEAR_KM), ring = litRing(res), wide = litRing(res, 100, bridged);
+      var bridged = res.reachWide || smallShadowReach(res.reach, ISLAND_RAYS, NEAR_KM), ring = litRing(res), wide = litRing(res, 100, bridged);
       var u = unit(), rings = ringsFor(u, ringReachKm(res)), holes = [];
+      var arcs = rings.map(function (rg) { return { rg: rg, arcs: ringArcs(res, rg.km), labels: ringLabelBearings(bridged, rg.km) }; });
       var at = function (k) { return function (q) { return [q.lat, q.lng + shift + k]; }; };
       [-360, 0, 360].forEach(function (k) { holes.push(wide.map(at(k))); });
       var west = s.fanLng - 540, east = s.fanLng + 540, outer = [[85, west], [85, east], [-85, east], [-85, west]];
@@ -1260,15 +1376,16 @@
           var line = rayPath(res.origin, rayBearing(i), res.reach[i], 100).map(function (q) { return [q.lat, q.lng + shift + k]; });
           L.polyline(line, ext({ color: st.ray, opacity: st.rayOpacity, weight: st.rayWeight }, opt)).addTo(reachLayer);
         }
-        rings.forEach(function (rg) {
-          rangeRing(res.origin, rg.km).forEach(function (seg) {
-            L.polyline(seg.map(function (q) { return [q.lat, q.lng + shift + k]; }), ext({ color: st.ring, opacity: st.ringOpacity, weight: 1, dashArray: '4 6' }, opt)).addTo(reachLayer);
+        arcs.forEach(function (a) {
+          a.arcs.forEach(function (arc) {
+            L.polyline(arc.pts.map(at(k)), ext({ color: st.ring, opacity: st.ringOpacity, weight: 1, dashArray: '4 6' }, opt)).addTo(reachLayer);
           });
-          var at = rayPoint(res.origin, 335, rg.km);
-          if (at.lat <= REACH_LAT_N && at.lat >= REACH_LAT_S) {
-            L.circleMarker([at.lat, at.lng + shift + k], ext({ radius: 0, stroke: false, fill: false }, opt))
-              .bindTooltip(rg.label, { permanent: true, direction: 'right', className: 'tools-label tools-ring-label', offset: [2, 0] }).addTo(reachLayer);
-          }
+          a.labels.forEach(function (brg) {
+            var q = rayPoint(res.origin, brg, a.rg.km);
+            if (q.lat > REACH_LAT_N || q.lat < REACH_LAT_S) return;
+            L.circleMarker([q.lat, q.lng + shift + k], ext({ radius: 0, stroke: false, fill: false }, opt))
+              .bindTooltip(a.rg.label, { pane: 'toolsReachPane', permanent: true, direction: 'center', className: 'tools-label tools-ring-label' }).addTo(reachLayer);
+          });
         });
       });
       reachLayer.addTo(map); s.reachOn = true;
@@ -1322,7 +1439,7 @@
       var gen = ++s.gen, clickLng = p.lng, origin = { lat: p.lat, lng: wrapLng(p.lng) };
       s.group.clearLayers(); if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
       clearReach(); hideReadout();                                         // the old spot's readout and line go too
-      s.result = null; s.selected = -1; s.busy = true; render();
+      s.result = null; s.selected = -1; s.busy = true; s.reachFailed = false; render();
       coast.load().then(function () { return coast.near(origin); }).then(function (nearSets) {
         // a frame first, so "Computing…" is painted before the placement's work (G20 re-checks R4, R5): a timer after the
         // next animation frame; a hidden tab runs no frames, so a 100 ms timer as well
@@ -1344,6 +1461,7 @@
           if (!res || gen !== s.gen) return;
           res.moved = o.moved; res.coarse = coarse;
           s.result = res; s.busy = false; s.fanLng = clickLng + wrapLng(o.lng - origin.lng);
+          if (typeof map.getCenter === 'function') s.fanLng += Math.round((map.getCenter().lng - s.fanLng) / 360) * 360;   // the copy in view (G21 B-8)
           s.compass = compassAt(map.getZoom(), s.compass); s.radius = fanR(); drawFan(); render(); placeCurrentFan();
           var slice = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
           return coast.world(slice).then(function (world) {
@@ -1351,7 +1469,12 @@
             return computeReach(res, world, { batch: 120, yieldFn: slice, shouldStop: function () { return gen !== s.gen; } });
           }).then(function (r) { if (r && gen === s.gen && s.result === res) drawReach(); });
         });
-      }).catch(function () { if (gen !== s.gen) return; s.busy = false; s.msg = 'Coastline data unavailable. Try again later.'; render(); });
+      }).catch(function (err) {
+        if (gen !== s.gen) return;
+        if (!(err && /^(coast|chunk)\b/.test(err.message || '')) && root.console && root.console.error) root.console.error(err);   // not the data's: say so (G21 A-4)
+        if (s.result) { s.reachFailed = true; render(); return; }             // the fan stands; its window could not be drawn
+        s.busy = false; s.msg = 'Coastline data unavailable. Try again later.'; render();
+      });
     }
 
     // A click that began on one of the map's controls or a floating window is not a map click, even when the control
@@ -1373,19 +1496,21 @@
     map.on('dblclick', function () { if (s.tool === 'distance' || s.tool === 'area') finish(); });
     // A tap also sends compatibility mouse events (a mousemove first), which must not start or move the readout, as in
     // the overlay's readout (lastTouch). Seen in capture, so a control that stops the event's bubbling still counts.
-    var lastTouch = 0, mapEl = map.getContainer();
-    function touched() { lastTouch = Date.now(); }
+    var lastTouch = -1e9, mapEl = map.getContainer();
+    function now() { var pf = root.performance; return pf && typeof pf.now === 'function' ? pf.now() : Date.now(); }   // not the wall clock (G21 A-15)
+    function touched() { lastTouch = now(); }
     mapEl.addEventListener('touchstart', touched, { passive: true, capture: true });
     mapEl.addEventListener('touchend', touched, { passive: true, capture: true });
     mapEl.addEventListener('pointerdown', function (e) { if (e.pointerType === 'touch' || e.pointerType === 'pen') touched(); }, true);
-    function fromTouch(e) { return Date.now() - lastTouch < 1000 || !!(e && e.sourceCapabilities && e.sourceCapabilities.firesTouchEvents); }
+    function fromTouch(e) { return now() - lastTouch < 1000 || !!(e && e.sourceCapabilities && e.sourceCapabilities.firesTouchEvents); }
     // Hover straight from the map's element (the canvas renderer throttles Leaflet's mousemove).
     mapEl.addEventListener('mousemove', function (e) {
-      if (s.tool !== 'exposure' || !s.result || !s.fan || fromTouch(e)) return;
+      if (s.tool !== 'exposure' || !s.result || !s.fan || fromTouch(e) || onUi(e)) return;   // over a control: nothing changes (G21 B-15)
       var q = map.mouseEventToContainerPoint(e), c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
       var k = sectorAt(q.x - c.x, q.y - c.y, s.radius);
+      s.hover = true;
       if (k >= 0) { select(k); return; }
-      if (s.result.reach && !onUi(e)) showReadout(map.containerPointToLatLng([q.x, q.y]));
+      if (s.result.reach) { s.hoverPt = [q.x, q.y]; showReadout(map.containerPointToLatLng([q.x, q.y])); }
     });
     // Leaving the map ends a hover readout; a tapped one stays (a window opening over the map sends a mouseleave too).
     mapEl.addEventListener('mouseleave', function () { if (s.readout && !s.pinned) { hideReadout(); render(); } });
@@ -1399,7 +1524,7 @@
       if (s.readout && s.pinned && s.readoutAt) {
         var j = Math.round((lng - s.readoutAt.lng) / 360) * 360;
         if (j) showReadout({ lat: s.readoutAt.lat, lng: s.readoutAt.lng + j }, true);
-      }
+      } else if (s.readout && s.hoverPt) showReadout(map.containerPointToLatLng(s.hoverPt));   // the map moved under the pointer
     });
     map.on('zoomend', function () {
       if (s.tool !== 'exposure' || !s.result || !s.fan) return;
@@ -1407,7 +1532,7 @@
       if (s.compass !== was) { s.radius = fanR(); drawFan(); }
     });
     // The readout at a point: the text in the bar's details line and a thin line along the great circle from the spot.
-    var cursorLine = null;
+    var cursorLine = null, cursorCase = null;
     function showReadout(latlng, pinned) {
       if (!s.result || !s.result.reach) return;
       var pr = probe(s.result, { lat: latlng.lat, lng: wrapLng(latlng.lng) });
@@ -1416,13 +1541,19 @@
       var o = s.result.origin, line = rayPath(o, pr.bearing, pr.km, 100), end = line[line.length - 1];
       var k = Math.round((latlng.lng - end.lng) / 360) * 360;
       var ll = line.map(function (p) { return [p.lat, p.lng + k]; });
-      if (cursorLine) cursorLine.setLatLngs(ll);
-      else cursorLine = L.polyline(ll, { pane: 'toolsReachPane', interactive: false, color: '#fde047', weight: 1.5, opacity: 0.9, dashArray: '2 4' }).addTo(map);
+      if (cursorLine) { cursorCase.setLatLngs(ll); cursorLine.setLatLngs(ll); }
+      else {                                                                  // on a dark casing: readable over yellow wave heights (G21 B-15)
+        cursorCase = L.polyline(ll, reachOpt({ color: '#0b2536', weight: 3.5, opacity: 0.5 })).addTo(map);
+        cursorLine = L.polyline(ll, reachOpt({ color: '#fde047', weight: 1.5, opacity: 0.95, dashArray: '2 4' })).addTo(map);
+      }
       var el = s.fan && s.fan.getElement && s.fan.getElement(), prev = el && el.querySelector && el.querySelector('path[stroke="' + SELECT + '"]');
       if (prev) prev.setAttribute('stroke', 'none');
       render();
     }
-    function hideReadout() { s.readout = null; s.pinned = false; s.readoutAt = null; if (cursorLine) { map.removeLayer(cursorLine); cursorLine = null; } }
+    function hideReadout() {
+      s.readout = null; s.pinned = false; s.readoutAt = null; s.hoverPt = null;
+      if (cursorLine) { map.removeLayer(cursorLine); map.removeLayer(cursorCase); cursorLine = cursorCase = null; }
+    }
     // Size changes (rotation, window resize): Leaflet's own resize event does not always fire here.
     var rz = null;
     function onResize() {
@@ -1455,7 +1586,14 @@
     }
     doc.addEventListener('keydown', function (e) {
       if (!s.tool || open || !ownsKeys() || (s.locked && !barEl.contains(doc.activeElement))) return;
-      if (e.key === 'Escape') { e.stopPropagation(); if (s.pts.length || s.result) clear(); else stop(); }
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        var inBar = barEl.contains(doc.activeElement);
+        if (s.locked) setLock(false);                                       // locked: Escape only unlocks (G21 B-9)
+        else if (s.pts.length || s.result) clear(); else stop();
+        var a = doc.activeElement;
+        if (inBar && s.tool && (!a || !barEl.contains(a) || a.hidden)) focusClose();   // the button it was on went away
+      }
       else if (e.key === 'Backspace' && (s.tool === 'distance' || s.tool === 'area') && !/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || '')) { e.preventDefault(); undo(); }
     }, true);
     if (opts.unitSelect) opts.unitSelect.addEventListener('change', function () { render(); if (s.result && s.result.reach) drawReach(); });
@@ -1479,7 +1617,7 @@
       RAYS: RAYS, SECTORS: SECTORS, CAP_KM: CAP_KM, NEAR_KM: NEAR_KM, REF_MIN_KM: REF_MIN_KM, SHADOW_FULL_KM: SHADOW_FULL_KM,
       FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, FAR_OPEN_MAX: FAR_OPEN_MAX, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM,
       worldEdges: worldEdges, worldIndex: worldIndex, indexSliced: indexSliced, limitKm: limitKm, reachWalk: reachWalk, computeReach: computeReach, rayPoint: rayPoint, rayPath: rayPath,
-      litRing: litRing, probeText: probeText, COMPASS_R: COMPASS_R, COMPASS_BELOW: COMPASS_BELOW, FULL_FROM: FULL_FROM, smallShadowReach: smallShadowReach, ISLAND_RAYS: ISLAND_RAYS, rangeRing: rangeRing, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, fmtTravel: fmtTravel, probe: probe,
+      litRing: litRing, probeText: probeText, COMPASS_R: COMPASS_R, COMPASS_BELOW: COMPASS_BELOW, FULL_FROM: FULL_FROM, smallShadowReach: smallShadowReach, ISLAND_RAYS: ISLAND_RAYS, linePieces: linePieces, ringRuns: ringRuns, ringArcs: ringArcs, ringLabelBearings: ringLabelBearings, radialStops: radialStops, worldEdgesSliced: worldEdgesSliced, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, fmtTravel: fmtTravel, probe: probe,
       REACH_KM: REACH_KM, REACH_STEP_KM: REACH_STEP_KM, REACH_LAT_N: REACH_LAT_N, REACH_LAT_S: REACH_LAT_S, END_LAND: END_LAND, END_LIMIT: END_LIMIT, END_CAP: END_CAP
     }
   };

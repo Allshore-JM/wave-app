@@ -904,6 +904,10 @@ test('the world build: the edge pass in slices equals the whole one; the build s
   const sliced = await T.worldEdgesSliced(t0, 7, () => { yields++; return Promise.resolve(); });
   assert.deepEqual(Array.from(sliced), Array.from(T.worldEdges(t0)), 'the same edges in the same order');
   assert.equal(yields, Math.ceil(t0.n / 7) - 1, 'a pause between slices of pieces');
+  const split = set([[sq(170, -10, 180, 10)], [sq(-180, -10, -170, 10)], [sq(30, 0, 40, 10)]], 30);   // edges along cell lines: netLines at the end (the seam cancels, x = 30 is real coast)
+  const one = await T.worldEdgesSliced(split, 1, () => Promise.resolve()), whole = T.worldEdges(split);
+  assert.ok(Array.from(whole).join().includes('30,0,30,10') || Array.from(whole).join().includes('30,10,30,0'), 'the coast along x = 30 is kept');
+  assert.ok(whole.length > 0 && Array.from(one).join() === Array.from(whole).join(), 'cell-line edges cancelled the same way');
   const cs = new T.CoastSource('https://c', async () => ({ ok: true, json: async () => ({ format: 'coast-v1', tier0: {}, tier1: { cell: 5, dir: 'f', cells: {} } }), arrayBuffer: async () => buf }));
   await cs.load();
   let calls = 0, fail = true;

@@ -103,7 +103,60 @@ correctness: the picture, the readout and the geography are right, and the fan i
   it at the remembered pointer position on `moveend`); the exposed constants for the rings change with the ring rework
   and need their own pins.
 
-## Owner decisions for the fix round
+## Owner decisions for the fix round (2026-10-01)
 
-Pending (asked 2026-10-01, with a sheet of ring options rendered by the real client on the test site): how the rings are
-drawn (B-1, B-2), the tool bar on phones (B-6), and what counts as a small island (A-9).
+Asked with a sheet of both ring treatments rendered by the real client on the test site (Waikiki looking at the South
+Pacific, Santa Barbara harbor's narrow slot, Nice):
+
+- **Rings: arcs inside the window.** Each ring is drawn only across the water the spot can see (the lighter strips
+  included), out to the farthest ray, with its label on the arc. Nothing is drawn over veiled water or land.
+- **Phone tool bar: compact, with a fold button.** With a result on a phone the bar drops its explanation lines, and a
+  fold button collapses it to its title row.
+- **Small islands: keep the 2.5 degree rule.** A shadow up to 2.5 degrees wide as seen from the spot is light whatever
+  the island's size (the Big Island from California is light; Futuna at 306 km and Kauai from the North Shore stay dark).
+
+## Fix round scope (UI 1.12.6)
+
+1. **Rings** (B-1, B-2, A-6, A-7, A-11). For a ring at distance d: one arc per run of consecutive rays whose bridged reach
+   is at least d, from the run's first bearing to its last (so an arc ends on the window's edge). Extent: the longest
+   bridged reach. Step: the owner's 1,000 nm / 2,000 km when two or more rings fit; else the largest of 500 / 250 /
+   100 nm (1,000 / 500 / 200 km) that gives two; ten rings at most. Label: centred on the arc at the middle of the
+   widest run, and on any other run 15 degrees or wider; none on a run under 1.5 degrees. Labels live in the projection's
+   pane (below the gridlines and stations). Where an arc is cut behind a pole the two pieces share the cut point. Three
+   world copies, as now.
+2. **Readout** (B-4, B-5, B-12, B-13). `computeReach` also stores the bridged reach; `probe` reports a point beyond the
+   ray's own reach but within the bridged reach as behind a small island. Texts: "In the window", "In the window (partly
+   shadowed direction)", "In the window (mostly shadowed direction)", "Partly blocked by a small island N from the spot",
+   each with the travel times ("swell under 1 h" once when both are); "Blocked by land N from the spot: no swell from
+   here"; "Not in the window: its path to the spot crosses the map's polar limit"; "Farther than the rays reach". The
+   details line: `min-height: 4.5em`, no clip. One legend line that covers the map (clear, shaded, lighter behind small
+   islands; coast geometry only, reefs and atoll rims not in the data). The desktop hint says that a click moves the spot
+   and that Lock keeps it.
+3. **Touch and Lock** (B-3, B-9, B-11, A-12, A-13, A-15). A touch tap inside the compass picks the wedge. While locked,
+   Escape in the bar only unlocks. Unlock clears a tapped readout. The Lock button's label alone carries its state
+   (Lock / Unlock, no `aria-pressed`; a class for the pressed look). The bar's body is updated line by line; a hovered
+   readout is not announced, a tapped one is. After Clear, focus goes to the bar's close button. The touch guard uses
+   `performance.now()`.
+4. **Phone bar** (B-6, owner). On a phone, once a result is shown, the hint lines are dropped. A fold button in the bar's
+   head (every screen size) collapses the bar to its title row; a tapped readout still shows under it; the title reads
+   "Computing..." while busy. The fold ends with the tool.
+5. **Drawing** (B-7, B-8 / A-5, A-8, B-15, the author's stale hover). The pane's own canvas renderer with padding 0.5.
+   The fan's longitude takes the copy nearest the view when the result lands. Points along a ray are spaced by distance
+   (5 km near the spot, a tenth of the distance, 100 km at most) and tightened at high latitude, in one helper shared by
+   the lit ring, the rays and the cursor line. The mousemove handler tests the controls before the fan. A dark casing
+   under the cursor line. A hovered readout is recomputed at the remembered pointer position on `moveend`.
+6. **Engine and chain** (A-2 / B-17, A-3, A-4). The world build starts in its own task and `worldEdges` is sliced. A
+   failed build is retried on the next use. The chain's `.catch` logs the error; when the projection could not be drawn
+   the bar says so.
+7. **Tests** (A-1, A-14). The fake map records what is on the map. New assertions: the group on the map while a result
+   stands; the holes' longitudes after a world shift; a synthetic small island that requires exactly three lighter
+   strips, each lighter than the veil and bounded by the bridged ring; the style constants; each ray's end point; the
+   arcs' ends and labels; a seam crossing off the equator; the 19,500 km cap; the small-island rule across ray 0; the fan
+   redrawn on a compass switch; a resize with a compass; the thresholds at 5.75 and 6.25; double-click zoom after Unlock;
+   the touch paths. Reviewer A's 203 mutants are re-run: every survivor A lists as a real defect must die.
+8. **Docs** (A-11, B-16): the stale comment, the README's pane and ring wording, a note on the world tier and atolls.
+
+Accepted as they are: B-10, B-14, the marker order and the compass hover in B-15, A-10, B-16's data limit.
+
+Then: UI 1.12.6 with the golden in its own commit, the test site, a short re-check by a fresh reviewer at MAX, and a
+five-minute list for the owner's own phone (no real phone was available to either reviewer).

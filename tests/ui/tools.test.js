@@ -936,6 +936,9 @@ test('reach: the cap is 19,500 km, just short of the antipode; the small-island 
   const r = new Float64Array(720).fill(8000); r[719] = r[0] = r[1] = 3000;
   const w = T.smallShadowReach(r, T.ISLAND_RAYS, T.NEAR_KM);
   assert.ok(w[719] === 8000 && w[0] === 8000 && w[1] === 8000, 'a notch across ray 0 is bridged');
+  const z = new Float64Array(720).fill(8000); z[0] = z[1] = 3000;
+  const wz = T.smallShadowReach(z, T.ISLAND_RAYS, T.NEAR_KM);
+  assert.ok(wz[0] === 8000 && wz[1] === 8000, 'a notch starting at ray 0: its left bound is ray 719');
   const res = reachOn({ lat: 0, lng: 0 }, [[sq(20, -0.3, 20.5, 0.3)], [sq(60, -10, 70, 10)]]);
   const behind = T.probe(res, { lat: 0.05, lng: 30 }), clear = T.probe(res, { lat: 3, lng: 30 }), far = T.probe(res, { lat: 0.05, lng: 75 });
   assert.ok(behind.island && behind.stop === 'island' && !behind.visible && Math.abs(behind.stopKm - 20 * KM_DEG) < 5, 'in the lighter strip behind a small island (G21 B-4): ' + JSON.stringify(behind));
@@ -962,4 +965,29 @@ test('points along a ray: closer near the spot and at high latitudes; either dir
   }
   assert.ok(up[0] < 1.5, 'the first step near 75 N is a quarter of 5 km or so: ' + up[0]);
   assert.deepEqual(T.radialStops(o, 90, 700, 700), [700], 'no length: one point');
+});
+
+test('the lighter strips are exactly the water between a ray\'s own reach and its bridged reach (G21 fix round)', () => {
+  const origin = { lat: 0, lng: 0 }, reach = new Float64Array(720).fill(8000);
+  reach[100] = reach[101] = reach[102] = 3000; reach[101] = 2600;          // a small island at 50-51.5 degrees, nested
+  reach[719] = reach[0] = 2500;                                             // one across ray 0
+  reach[400] = 600;                                                         // one ray only
+  for (let i = 500; i < 520; i++) reach[i] = 4000;                          // too wide: stays dark
+  const wide = T.smallShadowReach(reach, T.ISLAND_RAYS, T.NEAR_KM), res = { origin, reach };
+  const polys = T.stripPolygons(res, wide, 100);
+  assert.equal(polys.length, 3);
+  assert.deepEqual(T.stripPolygons(res, reach, 100), [], 'nothing lifted, nothing drawn');
+  const inPoly = (pts, x, y) => { let c = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const a = pts[i], b = pts[j]; if ((a.lat > y) !== (b.lat > y) && x < (b.lng - a.lng) * (y - a.lat) / (b.lat - a.lat) + a.lng) c = !c; } return c; };
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  let n = 0, inside = 0;
+  for (let s = 0; s < 40000; s++) {
+    const brg = rnd() * 360, d = 200 + rnd() * 8500, i = Math.floor(brg / 0.5) % 720;
+    if (Math.abs(brg / 0.5 - Math.round(brg / 0.5)) < 0.05) continue;       // near a ray boundary
+    if (Math.abs(d - reach[i]) < 30 || Math.abs(d - wide[i]) < 30) continue; // near a reach
+    const p = T.rayPoint(origin, brg, d), lng = p.lng > 180 ? p.lng - 360 : p.lng;
+    const want = reach[i] < d && d <= wide[i], got = polys.some((pts) => inPoly(pts, p.lng, p.lat) || inPoly(pts, lng, p.lat) || inPoly(pts, p.lng + 360, p.lat));
+    assert.equal(got, want, 'bearing ' + brg.toFixed(3) + ', ' + d.toFixed(0) + ' km');
+    n++; if (want) inside++;
+  }
+  assert.ok(n > 30000 && inside > 50, n + ' points, ' + inside + ' in strips');
 });

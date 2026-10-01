@@ -510,7 +510,7 @@ test('the projection: a click superseded during its reach draws nothing; a unit 
   E.clickAt(21.269, -157.829); await E.settle(); await reachDrawn(E); await wait(50);
   const veil = [...E.s.reach._items].filter((l) => l.kind === 'polygon' && l.a.length === 4);
   assert.equal(veil.length, 1, 'one projection');
-  const light = [...E.s.reach._items].filter((l) => l.kind === 'polygon' && l.a.length === 2);
+  const light = [...E.s.reach._items].filter((l) => l.kind === 'polygon' && l.o.fillOpacity === 0.25);
   assert.ok(light.length === 0 || light.length === 3, 'small-island shadows: none, or one per world copy');
   light.forEach((l) => assert.ok(l.o.fillOpacity < veil[0].o.fillOpacity, 'lighter than the veil'));
   assert.ok(Math.abs(E.s.result.origin.lat - 21.27) < 0.02, 'the second click\'s');
@@ -705,16 +705,23 @@ test('the projection is on the map while a result stands, on its own canvas; the
     assert.ok(h.length === wide.length && h.every((p, n) => Math.abs(p[0] - wide[n].lat) < 1e-12 && Math.abs(p[1] - (wide[n].lng + shift + k)) < 1e-9), 'hole ' + j);
   });
   assert.deepEqual(veil.a[0].map((p) => p[1]), [E.s.fanLng - 540, E.s.fanLng + 540, E.s.fanLng + 540, E.s.fanLng - 540]);
-  // the lighter strips: one per copy, between the bridged ring and the own ring
-  const strips = items.filter((l) => l.kind === 'polygon' && l.a.length === 2);
-  assert.equal(strips.length, 3, 'Kaula and the other small islands seen from Pipeline');
-  strips.forEach((s) => assert.ok(s.o.fillOpacity === 0.25 && s.a[0].length === wide.length && s.a[1].length === own.length));
+  assert.deepEqual(veil.a[0].map((p) => p[0]), [85, 85, -85, -85], 'the box covers the map to its limits');
+  // the lighter strips: one layer per copy, a polygon per strip (Kaula and the other small islands seen from Pipeline)
+  const strips = items.filter((l) => l.kind === 'polygon' && l.o.fillOpacity === 0.25), sp = A.stripPolygons(res, res.reachWide, 100);
+  assert.ok(strips.length === 3 && sp.length >= 2, strips.length + ' layers, ' + sp.length + ' strips');
+  [-360, 0, 360].forEach((k, j) => {
+    const s = strips[j];
+    assert.ok(s.o.stroke === false && s.a.length === sp.length && s.a.every((poly, m) => poly.length === 1 && poly[0].length === sp[m].length &&
+      poly[0].every((p, q) => Math.abs(p[0] - sp[m][q].lat) < 1e-12 && Math.abs(p[1] - (sp[m][q].lng + shift + k)) < 1e-9)), 'copy ' + j);
+  });
+  assert.ok(own.length > 1000, '(the own ring is no longer drawn)');
   // rays: every 10th (5 degrees) that runs 300 km or more, from the spot to its reach, in three copies
   const rays = items.filter((l) => l.kind === 'polyline' && !l.o.dashArray), want = [];
   for (let i = 5; i < 720; i += 10) if (res.reach[i] >= 300) want.push(i);
   assert.equal(rays.length, 3 * want.length);
   [-360, 0, 360].forEach((k, j) => want.forEach((i, n) => {
     const line = rays[j * want.length + n].a, end = A.rayPoint(o, A.rayBearing(i), res.reach[i]), last = line[line.length - 1];
+    assert.equal(line.length, A.rayPath(o, A.rayBearing(i), res.reach[i], 100, 25).length, 'pieces of 25 km or more');
     assert.ok(Math.abs(line[0][1] - (o.lng + shift + k)) < 1e-9 && Math.abs(last[0] - end.lat) < 1e-9 && Math.abs(last[1] - (end.lng + shift + k)) < 1e-9, 'ray ' + i);
   }));
   rays.forEach((l) => assert.ok(l.o.opacity === 0.5 && l.o.weight === 1 && l.o.color === '#ffffff'));

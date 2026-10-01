@@ -773,20 +773,21 @@
   // distance, 5 to maxGapKm km, times the cosine of the latitude (a quarter at least), so the pieces stay on the great
   // circle near the spot and far north or south (G21 A-8: 100 km pieces bowed 0.4 km off it near a spot at 63 N, and a
   // half-degree gap's two sides crossed).
-  function radialStops(origin, brg, d0, d1, maxGapKm) {
-    var lo = Math.min(d0, d1), hi = Math.max(d0, d1), gap = maxGapKm || 100, inner = [], d = lo;
+  function radialStops(origin, brg, d0, d1, maxGapKm, minGapKm) {
+    var lo = Math.min(d0, d1), hi = Math.max(d0, d1), gap = maxGapKm || 100, least = minGapKm || 5, inner = [], d = lo;
     for (;;) {
       var c = Math.max(0.25, Math.cos(rayPoint(origin, brg, d).lat * D2R));
-      d += Math.min(gap, Math.max(5, d / 10)) * c;
+      d += Math.min(gap, Math.max(least, d / 10)) * c;
       if (d >= hi - 1e-9) break;
       inner.push(d);
     }
     return d1 >= d0 ? inner.concat([hi]) : inner.reverse().concat([lo]);
   }
-  // One ray as a line from the origin to `km`, no piece longer than maxGapKm.
-  function rayPath(origin, brg, km, maxGapKm) {
+  // One ray as a line from the origin to `km`, no piece longer than maxGapKm (nor shorter than minGapKm, 5 km by default:
+  // the drawn rays use 25, being lines, not the edges of a filled shape).
+  function rayPath(origin, brg, km, maxGapKm, minGapKm) {
     var out = [rayPoint(origin, brg, 0)];
-    radialStops(origin, brg, 0, km, maxGapKm).forEach(function (d) { out.push(rayPoint(origin, brg, d)); });
+    radialStops(origin, brg, 0, km, maxGapKm, minGapKm).forEach(function (d) { out.push(rayPoint(origin, brg, d)); });
     return out;
   }
   // The water the spot can see, as one ring: each ray's arc at its reach, joined to the next ray's along the great
@@ -875,6 +876,37 @@
         if (low) for (j = 0; j < w; j++) out[(i + j) % n] = h;
       }
     }
+    return out;
+  }
+  // The lighter strips behind small islands: one polygon per run of rays whose bridged reach is beyond their own,
+  // between the two reaches (G21 fix round: the two whole rings this replaced were half the points of the window).
+  // Edges along rays are spaced as in litRing; longitudes as rayPoint.
+  function stripPolygons(result, wide, maxGapKm) {
+    var o = result.origin, r = result.reach, n = r.length, w = 360 / n, gap = maxGapKm || 100, out = [], i = 0, start = -1;
+    var at = function (j) { return ((j % n) + n) % n; }, lifted = function (j) { return wide[at(j)] > r[at(j)]; };
+    while (i < n && lifted(i)) i++;
+    if (i === n) return out;                                                // (a run is never all round: at most a few rays)
+    var runs = [];
+    for (var c = 1; c <= n; c++) {
+      if (lifted(i + c)) { if (start < 0) start = i + c; }
+      else if (start >= 0) { runs.push([start, i + c - 1]); start = -1; }
+    }
+    runs.forEach(function (run) {
+      var a = run[0], z = run[1], pts = [], k;
+      var radial = function (brg, d0, d1) { radialStops(o, brg, d0, d1, gap).forEach(function (d) { pts.push(rayPoint(o, brg, d)); }); };
+      pts.push(rayPoint(o, a * w, wide[at(a)]));
+      for (k = a; k <= z; k++) {                                            // the far edge, at the bridged reach
+        if (k > a) radial(k * w, wide[at(k - 1)], wide[at(k)]);
+        pts.push(rayPoint(o, (k + 1) * w, wide[at(k)]));
+      }
+      radial((z + 1) * w, wide[at(z)], r[at(z)]);                           // in to the own reach at the run's end
+      for (k = z; k >= a; k--) {                                            // the near edge, back to the run's start
+        if (k < z) radial((k + 1) * w, r[at(k + 1)], r[at(k)]);
+        pts.push(rayPoint(o, k * w, r[at(k)]));
+      }
+      radialStops(o, a * w, r[at(a)], wide[at(a)], gap).slice(0, -1).forEach(function (d) { pts.push(rayPoint(o, a * w, d)); });
+      out.push(pts);
+    });
     return out;
   }
   // How far the rings go: the farthest the window reaches (they are drawn inside it only).
@@ -1357,23 +1389,23 @@
       var res = s.result; if (!res || !res.reach) return;
       var st = REACH_STYLE, shift = s.fanLng - res.origin.lng, opt = reachOpt({});
       // the full veil outside the window with small islands' shadows bridged; those shadows get a lighter veil
-      var bridged = res.reachWide || smallShadowReach(res.reach, ISLAND_RAYS, NEAR_KM), ring = litRing(res), wide = litRing(res, 100, bridged);
+      var bridged = res.reachWide || smallShadowReach(res.reach, ISLAND_RAYS, NEAR_KM), wide = litRing(res, 100, bridged);
       var u = unit(), rings = ringsFor(u, ringReachKm(res)), holes = [];
       var arcs = rings.map(function (rg) { return { rg: rg, arcs: ringArcs(res, rg.km), labels: ringLabelBearings(bridged, rg.km) }; });
       var at = function (k) { return function (q) { return [q.lat, q.lng + shift + k]; }; };
       [-360, 0, 360].forEach(function (k) { holes.push(wide.map(at(k))); });
       var west = s.fanLng - 540, east = s.fanLng + 540, outer = [[85, west], [85, east], [-85, east], [-85, west]];
       L.polygon([outer].concat(holes), ext({ stroke: false, fillColor: st.veil, fillOpacity: st.veilOpacity }, opt)).addTo(reachLayer);
-      var small = false; for (var b = 0; b < bridged.length; b++) if (bridged[b] > res.reach[b]) { small = true; break; }
-      if (small) {
+      var strips = stripPolygons(res, bridged, 100);
+      if (strips.length) {                                                  // one layer per world copy, a polygon per strip
         [-360, 0, 360].forEach(function (k) {
-          L.polygon([wide.map(at(k)), ring.map(at(k))], ext({ stroke: false, fillColor: st.veil, fillOpacity: st.smallVeilOpacity }, opt)).addTo(reachLayer);
+          L.polygon(strips.map(function (sp) { return [sp.map(at(k))]; }), ext({ stroke: false, fillColor: st.veil, fillOpacity: st.smallVeilOpacity }, opt)).addTo(reachLayer);
         });
       }
       [-360, 0, 360].forEach(function (k) {
         for (var i = Math.floor(st.rayEvery / 2); i < res.reach.length; i += st.rayEvery) {
           if (res.reach[i] < st.rayMinKm) continue;
-          var line = rayPath(res.origin, rayBearing(i), res.reach[i], 100).map(function (q) { return [q.lat, q.lng + shift + k]; });
+          var line = rayPath(res.origin, rayBearing(i), res.reach[i], 100, 25).map(function (q) { return [q.lat, q.lng + shift + k]; });
           L.polyline(line, ext({ color: st.ray, opacity: st.rayOpacity, weight: st.rayWeight }, opt)).addTo(reachLayer);
         }
         arcs.forEach(function (a) {
@@ -1618,7 +1650,7 @@
       RAYS: RAYS, SECTORS: SECTORS, CAP_KM: CAP_KM, NEAR_KM: NEAR_KM, REF_MIN_KM: REF_MIN_KM, SHADOW_FULL_KM: SHADOW_FULL_KM,
       FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, FAR_OPEN_MAX: FAR_OPEN_MAX, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM,
       worldEdges: worldEdges, worldIndex: worldIndex, indexSliced: indexSliced, limitKm: limitKm, reachWalk: reachWalk, computeReach: computeReach, rayPoint: rayPoint, rayPath: rayPath,
-      litRing: litRing, probeText: probeText, COMPASS_R: COMPASS_R, COMPASS_BELOW: COMPASS_BELOW, FULL_FROM: FULL_FROM, smallShadowReach: smallShadowReach, ISLAND_RAYS: ISLAND_RAYS, linePieces: linePieces, ringRuns: ringRuns, ringArcs: ringArcs, ringLabelBearings: ringLabelBearings, radialStops: radialStops, worldEdgesSliced: worldEdgesSliced, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, fmtTravel: fmtTravel, probe: probe,
+      litRing: litRing, stripPolygons: stripPolygons, probeText: probeText, COMPASS_R: COMPASS_R, COMPASS_BELOW: COMPASS_BELOW, FULL_FROM: FULL_FROM, smallShadowReach: smallShadowReach, ISLAND_RAYS: ISLAND_RAYS, linePieces: linePieces, ringRuns: ringRuns, ringArcs: ringArcs, ringLabelBearings: ringLabelBearings, radialStops: radialStops, worldEdgesSliced: worldEdgesSliced, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, fmtTravel: fmtTravel, probe: probe,
       REACH_KM: REACH_KM, REACH_STEP_KM: REACH_STEP_KM, REACH_LAT_N: REACH_LAT_N, REACH_LAT_S: REACH_LAT_S, END_LAND: END_LAND, END_LIMIT: END_LIMIT, END_CAP: END_CAP
     }
   };

@@ -134,13 +134,16 @@ double-tap.
     compass, not moved into view; it grows back from zoom 6.25 (the band between keeps either size).
   - **The window on the map** (plan section 30). Each ray also runs on past 3,000 km to the first coast however far
     (tier 0 worldwide, built once a session in slices), to the map's limits (84 N / 79 S) or just short of the
-    antipode. Drawn above the wave colours and particles, below the gridlines and stations, in three world copies:
+    antipode. Drawn above the wave colours and particles, below the gridlines and stations, in three world copies round
+    the spot's copy nearest the view (the fan follows the view across worlds, as the stations do):
     a ray every 5 degrees that runs over 300 km, a 55 % veil over the water the spot cannot see, and a lighter 25 %
     veil behind small islands (a shadow at most 2.5 degrees wide, with farther rays on both sides, from land more
     than 50 km away). Dashed rings every 1,000 nm (2,000 km in Metric) out to most rays' reach.
   - **Readout:** pointing at the map (off the fan) shows the bearing and distance from the spot, whether that water's
     swell can reach the spot (in the window, partly shadowed, blocked by land N miles from the spot, beyond the polar limit), and
-    deep-water travel times at 14 and 18 s, with a dashed line along the great circle to the cursor.
+    deep-water travel times at 14 and 18 s (in hours under a day), with a dashed line along the great circle to the cursor.
+    On a touch screen, Lock and tap: the tapped readout stays until the next tap (also when a window opens over the
+    map), and a tap's compatibility mouse events never start or move it.
   - **Lock** keeps the window on the map and gives the map back to the page: forecast points, live buoys and
     double-click zoom work again, and a click only moves the readout. Escape then acts only with focus in the bar;
     Clear, closing or another tool unlocks.

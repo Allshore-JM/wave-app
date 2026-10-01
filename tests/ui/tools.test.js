@@ -685,7 +685,8 @@ test('the lit ring: arcs at each ray\'s reach, joined along great circles; longi
   const origin = { lat: 10, lng: 179.5 }, reach = new Float64Array(720).fill(4000);
   for (let i = 100; i < 110; i++) reach[i] = 500;                            // one wedge (50-55 degrees) blocked 500 km out
   const ring = T.litRing({ origin, reach });
-  assert.equal(ring.length, 1440 + 2 * 34, 'two points a ray, and 35 along each side of the notch');
+  const sides = { 50: T.radialStops(origin, 50, 4000, 500).length, 55: T.radialStops(origin, 55, 500, 4000).length };   // the notch's two sides
+  assert.equal(ring.length, 1440 + sides[50] - 1 + sides[55] - 1, 'two points a ray, and the stops along each side of the notch');
   ring.forEach((p) => {
     assert.ok(T.distanceKm(origin, { lat: p.lat, lng: p.lng }) < 4000.001, 'inside the reach');
     assert.ok(Math.abs(p.lng - origin.lng) < 180, 'not wrapped: ' + p.lng);
@@ -694,8 +695,8 @@ test('the lit ring: arcs at each ray\'s reach, joined along great circles; longi
   for (const side of [50, 55]) {                                              // the notch's sides lie on the rays' great circles
     const on = ring.filter((p) => { const d = T.distanceKm(origin, p); return d > 501 && d < 3999 && Math.abs(T.bearingDeg(origin, { lat: p.lat, lng: p.lng }) - side) < 1e-6; })
       .map((p) => T.distanceKm(origin, p)).sort((a, b) => a - b);
-    assert.equal(on.length, 34, 'points along ' + side + ' degrees');
-    for (let k = 1; k < on.length; k++) assert.ok(on[k] - on[k - 1] <= 100.001, 'no gap over 100 km');
+    assert.equal(on.length, sides[side] - 1, 'points along ' + side + ' degrees');
+    for (let k = 1; k < on.length; k++) assert.ok(on[k] - on[k - 1] <= Math.min(100, Math.max(5, on[k - 1] / 10)) + 1e-6, 'pieces a tenth of the distance, 100 km at most');
   }
   const round = T.litRing({ origin: { lat: -20, lng: 30 }, reach: new Float64Array(720).fill(2500) });
   assert.equal(round.length, 1440);
@@ -705,34 +706,85 @@ test('the lit ring: arcs at each ray\'s reach, joined along great circles; longi
     assert.ok(Math.min(Math.abs(got - want), 360 - Math.abs(got - want)) < 1e-6, 'point ' + k + ' at ' + got + ', not ' + want);
   }
   // one ray as a line, and a point's longitude against destination()
-  const path = T.rayPath(origin, 80, 950);
-  assert.ok(path.length === 11 && Math.abs(path[0].lat - origin.lat) < 1e-12 && path[0].lng === origin.lng && Math.abs(T.distanceKm(origin, path[10]) - 950) < 1e-6);
+  const path = T.rayPath(origin, 80, 950), last = path[path.length - 1];
+  assert.ok(Math.abs(path[0].lat - origin.lat) < 1e-12 && path[0].lng === origin.lng && Math.abs(T.distanceKm(origin, last) - 950) < 1e-6);
+  for (let k = 1; k < path.length; k++) {
+    const a = T.distanceKm(origin, path[k - 1]), b = T.distanceKm(origin, path[k]);
+    assert.ok(b > a && b - a <= Math.min(100, Math.max(5, a / 10)) + 1e-6 && (b - a >= 1.25 - 1e-6 || k === path.length - 1), 'step ' + k + ': ' + (b - a));
+  }
   const p = T.rayPoint(origin, 80, 950), q = T.destination(origin, 80, 950);
   assert.ok(Math.abs(p.lat - q.lat) < 1e-12 && Math.abs(T.wrapLng(p.lng) - q.lng) < 1e-9 && p.lng > 180);
 });
 
-test('range rings: every 1,000 nm or 2,000 km, cut at the limits and behind a pole', () => {
+test('rings: 1,000 nm / 2,000 km when two fit, else a finer step; ten at most (G21 B-2)', () => {
   assert.deepEqual(T.ringsFor('US', 6000).map((r) => r.label), ['1,000 nm', '2,000 nm', '3,000 nm']);
   assert.ok(Math.abs(T.ringsFor('US', 6000)[2].km - 5556) < 1e-9);
   assert.deepEqual(T.ringsFor('Metric', 6000).map((r) => [r.km, r.label]), [[2000, '2,000 km'], [4000, '4,000 km'], [6000, '6,000 km']]);
   assert.equal(T.ringsFor('US', 19500).length, 10);
   assert.equal(T.ringsFor('US', 40000).length, 10, 'ten at most');
-  assert.equal(T.ringsFor('US', 900).length, 0);
-  const o = { lat: 21.7, lng: -158 };
-  const near = T.rangeRing(o, 1852);
-  assert.ok(near.length === 1 && near[0].length === 361 && Math.abs(near[0][0].lng - near[0][360].lng) < 1e-6, 'a closed ring');
-  near[0].forEach((p) => assert.ok(Math.abs(T.distanceKm(o, p) - 1852) < 1e-6));
-  // 6,000 nm from Hawaii passes behind the north pole: one line across the whole map, its ends 360 degrees apart
-  const far = T.rangeRing(o, 6000 * 1.852);
-  assert.ok(far.length === 1 && Math.abs(Math.abs(far[0][0].lng - far[0][far[0].length - 1].lng) - 360) < 1e-6, 'open, right across');
-  // 7,000 nm also runs south of 79 S: cut there
-  const cut = T.rangeRing(o, 7000 * 1.852);
-  assert.ok(cut.length === 2, 'two pieces: ' + cut.length);
+  assert.deepEqual(T.ringsFor('US', 3000).map((r) => r.label), ['500 nm', '1,000 nm', '1,500 nm'], 'two 1,000 nm rings do not fit');
+  assert.deepEqual(T.ringsFor('US', 900).map((r) => r.label), ['100 nm', '200 nm', '300 nm', '400 nm'], 'an enclosed sea');
+  assert.deepEqual(T.ringsFor('Metric', 1500).map((r) => r.label), ['500 km', '1,000 km', '1,500 km']);
+  assert.deepEqual(T.ringsFor('Metric', 300).map((r) => r.label), ['200 km'], 'the finest step, even when only one fits');
+  assert.deepEqual(T.ringsFor('US', 100), []);
+});
+
+test('ring arcs: one per run of rays that reach the ring, ending on the window\'s edges; labels on the wide ones', () => {
+  const n = 720, reach = new Float64Array(n).fill(500);
+  for (let i = 100; i < 200; i++) reach[i] = 9000;                          // 50-100 degrees
+  for (let i = 300; i < 340; i++) reach[i] = 9000;                          // 150-170
+  for (let i = 400; i < 420; i++) reach[i] = 9000;                          // 200-210
+  for (let i = 500; i < 502; i++) reach[i] = 9000;                          // 250-251
+  for (let i = 715; i < 720; i++) reach[i] = 9000;                          // across ray 0: 357.5-362.5
+  for (let i = 0; i < 5; i++) reach[i] = 9000;
+  assert.deepEqual(T.ringRuns(reach, 1852), [[100, 199], [300, 339], [400, 419], [500, 501], [715, 724]]);
+  assert.deepEqual(T.ringRuns(new Float64Array(n).fill(3000), 1852), [[0, 719]], 'all round: one run');
+  assert.deepEqual(T.ringRuns(reach, 9500), [], 'nothing reaches it');
+  const o = { lat: 21.7, lng: -158 }, res = { origin: o, reach };
+  const arcs = T.ringArcs(res, 1852);
+  assert.equal(arcs.length, 5);
+  arcs.forEach((a) => {
+    a.pts.forEach((p) => assert.ok(Math.abs(T.distanceKm(o, p) - 1852) < 1e-6, 'on the ring'));
+    const b0 = T.bearingDeg(o, a.pts[0]), b1 = T.bearingDeg(o, a.pts[a.pts.length - 1]);
+    assert.ok(Math.abs(b0 - (a.from * 0.5) % 360) < 1e-6 && Math.abs(b1 - ((a.to + 1) * 0.5) % 360) < 1e-6, 'from the run\'s first bearing to its last: ' + [b0, b1]);
+  });
+  assert.equal(arcs.find((a) => a.from === 715).pts.length, 11, 'across ray 0 in one piece');
+  // the reach with small islands bridged is what the arcs follow
+  const wide = Float64Array.from(reach); wide[150] = 500;
+  assert.equal(T.ringArcs({ origin: o, reach, reachWide: wide }, 1852).length, 6, 'the bridged reach, not the own');
+  // labels: the widest arc's middle, and any other 15 degrees or wider; none under 1.5 degrees
+  assert.deepEqual(T.ringLabelBearings(reach, 1852), [75, 160]);
+  const narrow = new Float64Array(n).fill(500); narrow[10] = narrow[11] = 9000;
+  assert.deepEqual(T.ringLabelBearings(narrow, 1852), [], 'one degree wide: no label');
+  narrow[12] = 9000;
+  assert.deepEqual(T.ringLabelBearings(narrow, 1852), [5.75], '1.5 degrees: its middle');
+  assert.deepEqual(T.ringLabelBearings(new Float64Array(n).fill(3000), 1852), [180], 'all round');
+});
+
+test('ring lines: cut at the limits and behind a pole, with no gap where they are cut (G21 A-6)', () => {
+  const o = { lat: 21.7, lng: -158 }, all = new Float64Array(720).fill(19500);
+  const pieces = (km) => T.ringArcs({ origin: o, reach: all }, km).map((a) => a.pts);
+  const near = pieces(1852);
+  assert.ok(near.length === 1 && near[0].length === 721 && Math.abs(near[0][0].lng - near[0][720].lng) < 1e-6, 'a closed ring');
+  // 6,000 nm from Hawaii passes behind the north pole: all round, one line whose ends are a world apart
+  const whole = pieces(6000 * 1.852);
+  assert.ok(whole.length === 1 && Math.abs(Math.abs(whole[0][0].lng - whole[0][720].lng) - 360) < 1e-6);
+  // an arc that runs behind the pole in its middle: two pieces, each with the joining step in its own world copy
+  const gap = Float64Array.from(all); for (let i = 360; i < 380; i++) gap[i] = 500;
+  const far = T.ringArcs({ origin: o, reach: gap }, 6000 * 1.852).map((x) => x.pts);
+  assert.equal(far.length, 2);
+  const [a, b] = far, endA = a[a.length - 1], preA = a[a.length - 2];
+  assert.ok(Math.abs(Math.abs(endA.lng - b[1].lng) - 360) < 1e-9 && Math.abs(endA.lat - b[1].lat) < 1e-12, 'A ends where B goes on, a world over');
+  assert.ok(Math.abs(Math.abs(b[0].lng - preA.lng) - 360) < 1e-9 && Math.abs(b[0].lat - preA.lat) < 1e-12, 'B starts where A was, a world over');
+  far.forEach((sg) => sg.forEach((p, k) => { if (k) assert.ok(Math.abs(p.lng - sg[k - 1].lng) < 180, 'no jump inside a piece'); }));
+  // 7,000 nm also runs south of 79 S: cut there; every point inside the limits
+  const cut = pieces(7000 * 1.852);
+  assert.ok(cut.length >= 2);
   cut.forEach((sg) => sg.forEach((p, k) => { assert.ok(p.lat <= 84 && p.lat >= -79); if (k) assert.ok(Math.abs(p.lng - sg[k - 1].lng) < 180); }));
-  // from 40 S a ring 75 degrees out passes behind the south pole, inside the limits: cut where its two ends part
-  const south = T.rangeRing({ lat: -40, lng: 20 }, 75 * KM_DEG);
+  // from 40 S a ring 75 degrees out passes behind the south pole, inside the limits
+  const south = T.ringArcs({ origin: { lat: -40, lng: 20 }, reach: all }, 75 * KM_DEG).map((x) => x.pts);
   assert.equal(south.length, 2, 'two pieces');
-  south.forEach((sg) => sg.forEach((p, k) => { if (k) assert.ok(Math.abs(p.lng - sg[k - 1].lng) < 180, 'no jump inside a piece'); }));
+  assert.deepEqual(T.linePieces([{ lat: 0, lng: 0 }, { lat: 85, lng: 1 }, { lat: 1, lng: 2 }, { lat: 1, lng: 3 }]), [[{ lat: 1, lng: 2 }, { lat: 1, lng: 3 }]], 'a point past a limit cuts, a lone point is dropped');
 });
 
 test('the readout at a point: bearing and distance from the spot, seen or not, and why not; swell travel time', () => {
@@ -831,11 +883,83 @@ test('the cursor readout text: where the point is, and whether its swell reaches
   assert.equal(T.probeText({ bearing: 326, km: 280, visible: true, sector: sec('open') }, 'US').why, 'In the window · swell 7 h at 14 s, 6 h at 18 s', 'hours under a day');
   assert.deepEqual([10, 30, 924, 925, 2150 * 1.852].map((km) => T.fmtTravel(km, 14)), ['under 1 h', '1 h', '23 h', '1.0 d', '4.2 d']);
   assert.equal(T.probeText({ bearing: 305.4, km: 2150 * 1.852, visible: true, sector: sec('light') }, 'Metric').where, '305° NW · 3,982 km · 2,150 nm');
-  assert.match(T.probeText({ bearing: 5, km: 900, visible: true, sector: sec('light') }, 'US').why, /^In the window \(partly shadowed\)/);
-  assert.match(T.probeText({ bearing: 5, km: 900, visible: true, sector: sec('dark') }, 'US').why, /^In view, but in a shadowed direction/);
-  assert.equal(T.probeText({ bearing: 359.8, km: 9000, visible: false, stop: 'land', stopKm: 4942, sector: sec('open') }, 'US').why, 'Blocked by land 3,071 mi from the spot: its swell cannot reach it');
+  assert.equal(T.probeText({ bearing: 5, km: 900, visible: true, sector: sec('light') }, 'US').why, 'In the window (partly shadowed direction) · swell 23 h at 14 s, 18 h at 18 s');
+  assert.match(T.probeText({ bearing: 5, km: 900, visible: true, sector: sec('dark') }, 'US').why, /^In the window \(mostly shadowed direction\) · swell /);
+  assert.equal(T.probeText({ bearing: 5, km: 10, visible: true, sector: sec('open') }, 'US').why, 'In the window · swell under 1 h', 'once when both are under an hour');
+  assert.equal(T.probeText({ bearing: 359.8, km: 9000, visible: false, stop: 'land', stopKm: 4942, sector: sec('open') }, 'US').why, 'Blocked by land 3,071 mi from the spot: no swell from here');
+  assert.equal(T.probeText({ bearing: 300, km: 5000, visible: false, island: true, stop: 'island', stopKm: 4000, sector: sec('open') }, 'Metric').why,
+    'Partly blocked by a small island 4,000 km from the spot · swell 5.3 d at 14 s, 4.1 d at 18 s', 'a lighter strip (G21 B-4)');
   assert.equal(T.probeText({ bearing: 359.8, km: 9000, visible: false, stop: 'land', stopKm: 4942, sector: sec('open') }, 'US').where.slice(0, 7), '000° N ');
-  assert.equal(T.probeText({ bearing: 10, km: 9000, visible: false, stop: 'limit', stopKm: 7000, sector: sec('open') }, 'US').why, "Beyond the map's polar limit");
+  assert.equal(T.probeText({ bearing: 10, km: 9000, visible: false, stop: 'limit', stopKm: 7000, sector: sec('open') }, 'US').why, "Not in the window: its path to the spot crosses the map's polar limit");
   assert.equal(T.probeText({ bearing: 10, km: 19600, visible: false, stop: 'cap', stopKm: 19500, sector: sec('open') }, 'US').why, 'Farther than the rays reach');
   assert.equal(T.probeText(null, 'US'), null);
+});
+
+// ---- G21 fix round: the engine ----
+test('the world build: the edge pass in slices equals the whole one; the build starts in its own task and a failed one is tried again (G21 A-2, A-3)', async () => {
+  const b = fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'coast', 'hawaii-t0.bin'));
+  const buf = b.buffer.slice(b.byteOffset, b.byteOffset + b.length);
+  const t0 = T.decodeCoastLL(buf);
+  let yields = 0;
+  const sliced = await T.worldEdgesSliced(t0, 7, () => { yields++; return Promise.resolve(); });
+  assert.deepEqual(Array.from(sliced), Array.from(T.worldEdges(t0)), 'the same edges in the same order');
+  assert.equal(yields, Math.ceil(t0.n / 7) - 1, 'a pause between slices of pieces');
+  const cs = new T.CoastSource('https://c', async () => ({ ok: true, json: async () => ({ format: 'coast-v1', tier0: {}, tier1: { cell: 5, dir: 'f', cells: {} } }), arrayBuffer: async () => buf }));
+  await cs.load();
+  let calls = 0, fail = true;
+  const y = () => { calls++; if (fail) { fail = false; return Promise.reject(new Error('out of memory')); } return Promise.resolve(); };
+  const p = cs.world(y);
+  assert.equal(calls, 1, 'the first thing it does is yield: the build is not in the caller\'s task');
+  await assert.rejects(p, /out of memory/);
+  const w = await cs.world(y);
+  assert.ok(w && w.n > 100 && cs.world() === w, 'built on the next use');
+});
+
+test('reach: a step across +-180 off the equator is tested in two pieces that meet at the line where the step does (G21 A-14)', () => {
+  for (const [o, brg, side] of [[{ lat: 40, lng: 179.9 }, 60, 180], [{ lat: -35, lng: -179.92 }, 290, -180]]) {
+    const calls = [], world = { firstHit(ax, ay, bx, by) { calls.push([ax, ay, bx, by]); return -1; } };
+    assert.equal(T.reachWalk(o, brg, 0, 25, world), -1);
+    assert.equal(calls.length, 2, 'two pieces');
+    const [p1, p2] = calls, a = T.destination(o, brg, 0), q = T.destination(o, brg, 25);
+    const ts = (side - a.lng) / (q.lng + 2 * side - a.lng), ys = a.lat + (q.lat - a.lat) * ts;
+    assert.ok(p1[2] === side && p2[0] === -side && p1[3] === p2[1], 'the pieces meet at the line');
+    assert.ok(Math.abs(p1[3] - ys) < 1e-12 && Math.abs(p1[3] - a.lat) > 1e-3, 'at the latitude where the step meets it: ' + [p1[3], a.lat]);
+    assert.ok(p2[2] === q.lng && p2[3] === q.lat, 'on to the step\'s end');
+  }
+});
+
+test('reach: the cap is 19,500 km, just short of the antipode; the small-island rule runs across ray 0 (G21 A-14)', () => {
+  assert.equal(T.REACH_KM, 19500);
+  const base = T.computeExposure({ lat: 0, lng: 0 }, [], null); T.computeReach(base, null);
+  assert.ok(base.reach[rayAt(90.25)] === 19500 && base.reachEnd[rayAt(90.25)] === T.END_CAP, 'an equatorial ray on an empty world');
+  assert.equal(base.reachWide[rayAt(90.25)], 19500, 'kept with the bridged reach');
+  const r = new Float64Array(720).fill(8000); r[719] = r[0] = r[1] = 3000;
+  const w = T.smallShadowReach(r, T.ISLAND_RAYS, T.NEAR_KM);
+  assert.ok(w[719] === 8000 && w[0] === 8000 && w[1] === 8000, 'a notch across ray 0 is bridged');
+  const res = reachOn({ lat: 0, lng: 0 }, [[sq(20, -0.3, 20.5, 0.3)], [sq(60, -10, 70, 10)]]);
+  const behind = T.probe(res, { lat: 0.05, lng: 30 }), clear = T.probe(res, { lat: 3, lng: 30 }), far = T.probe(res, { lat: 0.05, lng: 75 });
+  assert.ok(behind.island && behind.stop === 'island' && !behind.visible && Math.abs(behind.stopKm - 20 * KM_DEG) < 5, 'in the lighter strip behind a small island (G21 B-4): ' + JSON.stringify(behind));
+  assert.ok(clear.visible && !clear.island);
+  assert.ok(!far.visible && !far.island && far.stop === 'land', 'behind the far coast: blocked');
+});
+
+test('the owner\'s picks for the drawing are pinned (tuning B, the lighter strips)', () => {
+  assert.deepEqual(T.REACH_STYLE, { veil: '#06121c', veilOpacity: 0.55, smallVeilOpacity: 0.25, ray: '#ffffff', rayOpacity: 0.5, rayWeight: 1, rayEvery: 10, rayMinKm: 300, ring: '#ffffff', ringOpacity: 0.55 });
+  assert.ok(T.ISLAND_RAYS === 5 && T.NEAR_KM === 50);
+  assert.ok(T.COMPASS_R === 44 && T.COMPASS_BELOW === 5.75 && T.FULL_FROM === 6.25);
+});
+
+test('points along a ray: closer near the spot and at high latitudes; either direction (G21 A-8)', () => {
+  const o = { lat: 75, lng: 10 };
+  const up = T.radialStops(o, 90, 0, 1500), down = T.radialStops(o, 90, 1500, 0);
+  assert.ok(up[up.length - 1] === 1500 && down[down.length - 1] === 0 && up.length === down.length);
+  assert.deepEqual(down.slice(0, -1), up.slice(0, -1).reverse(), 'the same stops, reversed');
+  let prev = 0;
+  for (const d of up) {
+    const lat = T.rayPoint(o, 90, prev).lat, c = Math.max(0.25, Math.cos(lat * Math.PI / 180));
+    assert.ok(d - prev <= Math.min(100, Math.max(5, prev / 10)) * c + 1e-9, 'step at ' + prev + ': ' + (d - prev));
+    prev = d;
+  }
+  assert.ok(up[0] < 1.5, 'the first step near 75 N is a quarter of 5 km or so: ' + up[0]);
+  assert.deepEqual(T.radialStops(o, 90, 700, 700), [700], 'no length: one point');
 });

@@ -138,15 +138,28 @@ double-tap.
     the spot's copy nearest the view (the fan follows the view across worlds, as the stations do):
     a ray every 5 degrees that runs over 300 km, a 55 % veil over the water the spot cannot see, and a lighter 25 %
     veil behind small islands (a shadow at most 2.5 degrees wide, with farther rays on both sides, from land more
-    than 50 km away). Dashed rings every 1,000 nm (2,000 km in Metric) out to most rays' reach.
+    than 50 km away). Dashed range rings are drawn only inside the window, as arcs that end on its edges, with their
+    labels on the arcs (the widest arc, and any other 15 degrees or wider); every 1,000 nm (2,000 km in Metric) when
+    two fit, else every 500 / 250 / 100 nm (1,000 / 500 / 200 km), out to the farthest the window reaches, ten at most.
+    The window has its own canvas with half a map of margin, so a drag does not run past it before it is redrawn.
+    The world tier (~1 km) leaves out the smallest islets, and reefs and atoll rims are in no tier, so the shadows of
+    atoll chains such as the Tuamotus and the Marshalls read more open than they are.
   - **Readout:** pointing at the map (off the fan) shows the bearing and distance from the spot, whether that water's
-    swell can reach the spot (in the window, partly shadowed, blocked by land N miles from the spot, beyond the polar limit), and
-    deep-water travel times at 14 and 18 s (in hours under a day), with a dashed line along the great circle to the cursor.
-    On a touch screen, Lock and tap: the tapped readout stays until the next tap (also when a window opens over the
-    map), and a tap's compatibility mouse events never start or move it.
+    swell can reach the spot ("In the window", with "(partly / mostly shadowed direction)" for a grey wedge; "Partly
+    blocked by a small island N from the spot" in a lighter strip; "Blocked by land N from the spot: no swell from
+    here"; "Not in the window: its path to the spot crosses the map's polar limit"), and deep-water travel times at 14
+    and 18 s (in hours under a day), with a dashed line on a dark casing along the great circle to the cursor. A
+    keyboard pan or zoom reads the point under the pointer again. Over the map's controls nothing changes. On a touch
+    screen, Lock and tap: the tapped readout stays until the next tap (also when a window opens over the map), and a
+    tap's compatibility mouse events never start or move it. A tap on a wedge, on the full fan or the compass, shows
+    that wedge; a tap on the compass's centre does nothing.
   - **Lock** keeps the window on the map and gives the map back to the page: forecast points, live buoys and
-    double-click zoom work again, and a click only moves the readout. Escape then acts only with focus in the bar;
-    Clear, closing or another tool unlocks.
+    double-click zoom work again, and a click only moves the readout. Escape then acts only with focus in the bar, and
+    there it only unlocks; Unlock also ends a tapped readout. Clear, closing or another tool unlock too.
+  - **The tool bar** folds to its title row with its ▴ button (a readout still shows under it, and "Computing…" while
+    busy). On a phone, once a result shows, the bar leaves out its explanation lines. The details line keeps three
+    lines at the default text size and grows, rather than clipping, at larger ones. Only the line that changed is
+    rewritten, and a readout that follows the pointer is not announced by screen readers (a tapped one is).
 
   Limits (also said in the tool bar):
   - It is geometry only: swell wraps headlands and islands, so point breaks can show their main swell as shadowed.

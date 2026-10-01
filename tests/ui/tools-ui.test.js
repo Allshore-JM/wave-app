@@ -16,6 +16,8 @@ function makeEnv(opts) {
   const win = fakeWindow({ width: opts.width || 1280, height: opts.height || 800 });
   if (opts.touch) win.matchMedia = (q) => ({ matches: /hover: none/.test(q) });
   if (opts.raf) win.requestAnimationFrame = opts.raf;
+  if (opts.clock) win.performance = { now: () => opts.clock.t };          // a monotonic clock the test moves
+  if (opts.console) win.console = opts.console;
   const doc = win.document;
   const el = (tag, id, parent, attrs) => { const e = doc.createElement(tag); if (id) doc.register(e, id); if (parent) parent.appendChild(e); Object.entries(attrs || {}).forEach(([k, v]) => e.setAttribute(k, v)); return e; };
   const host = el('div', 'toolsHost', doc.body);
@@ -48,6 +50,7 @@ function makeEnv(opts) {
       const box = c.onAdd(this); box.classList.add('leaflet-control'); c._container = box; mapEl.appendChild(box);
       if (box.classList.contains('tools-bar')) {                             // the bar's innerHTML as elements (fakedom does not parse HTML)
         const head = el('div', null, box); head.classList.add('tools-bar-head'); const title = el('strong', null, head); title.classList.add('tools-bar-title');
+        const fold = el('button', null, head); fold.classList.add('tools-fold');
         const x = el('button', null, head); x.classList.add('tools-x');
         const acts = el('div', null, box); acts.classList.add('tools-bar-actions'); ['undo', 'finish', 'clear', 'lock'].forEach((a) => el('button', null, acts, { 'data-act': a }));
         const body = el('div', null, box); body.classList.add('tools-bar-body');
@@ -58,14 +61,15 @@ function makeEnv(opts) {
     },
     panBy(d) { this.pans.push(d); }
   };
-  function layer(kind, a, o) { return { kind, a, o, addTo(t) { (t._items || layers).add(this); return this; }, bindTooltip(txt) { this.tip = txt; return this; }, getElement() { return this._el; }, setLatLngs(x) { this.a = x; return this; } }; }
+  function layer(kind, a, o) { return { kind, a, o, addTo(t) { (t._items || layers).add(this); return this; }, bindTooltip(txt, to) { this.tip = txt; this.tipOpts = to; return this; }, getElement() { return this._el; }, setLatLngs(x) { this.a = x; return this; } }; }
   win.L = {
-    featureGroup() { return { _items: new Set(), addTo() { return this; }, clearLayers() { this._items.clear(); }, add(x) { this._items.add(x); } }; },
+    featureGroup() { return { kind: 'group', _items: new Set(), addTo(t) { (t._items || layers).add(this); return this; }, clearLayers() { this._items.clear(); }, add(x) { this._items.add(x); } }; },   // on the map = in `layers`
     Control: { extend(proto) { function C() { this.options = proto.options; } C.prototype.onAdd = proto.onAdd; C.prototype.getContainer = function () { return this._container; }; return C; } },
     DomUtil: { create(tag, cls) { const e = doc.createElement(tag); cls.split(' ').forEach((c) => e.classList.add(c)); return e; } },
     DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} },
     polygon(a, o) { return layer('polygon', a, o); }, polyline(a, o) { return layer('polyline', a, o); }, circleMarker(a, o) { return layer('circle', a, o); },
     divIcon(o) { return o; },
+    ...(opts.canvas ? { canvas(o) { return { renderer: true, o }; } } : {}),
     marker(ll, o) {                                                          // the fan's element holds its 72 wedge paths
       const m = layer('fan', ll, o); m._el = doc.createElement('div');
       for (let k = 0; k < 72; k++) el('path', null, m._el, { 'data-k': k, stroke: new RegExp('data-k="' + k + '" [^>]*stroke="#fde047"').test(o.icon.html) ? '#fde047' : 'none' });
@@ -89,7 +93,8 @@ function makeEnv(opts) {
     onLayout: (b, grew) => layouts.push(grew), onStart: (b, tool) => starts.push(tool), obstacles: () => opts.obstacles || [] });
   const bar = mapEl.children.find((c) => c.classList.contains('tools-bar'));
   const q = (sel) => bar.querySelector(sel);
-  const body = () => q('.tools-bar-body').innerHTML;
+  // the body's lines as HTML (the tool writes them as elements; fakedom does not serialise)
+  const body = () => { const b = q('.tools-bar-body'); return b.children.length ? b.children.map((c) => '<div class="' + c.className + '">' + c.textContent + '</div>').join('') : b.innerHTML; };
   function key(k, focus) { doc.activeElement = focus || doc.body; return doc.fire('keydown', { key: k, target: focus || doc.body, _stop: false, stopPropagation() { this._stop = true; } }); }
   function clickAt(lat, lng, ev) { map.fire('click', { latlng: { lat, lng }, originalEvent: ev || { pointerType: 'mouse' } }); }
   function pressOn(target) { doc.fire('pointerdown', { target, composedPath: () => { const p = []; for (let e = target; e; e = e.parentNode) p.push(e); return p; } }); }
@@ -332,7 +337,7 @@ test('nothing fits (a small window with the overlay panel): the fan never sits c
 
 test('the fan stays in the click\'s world copy across the dateline', async () => {
   const land = [[sq(179.0, -16.5, 180.0, -16.0)]];
-  const E = makeEnv({ cells: { '-20_175': [1, 1] }, files: { '/world-i.bin': encodeCoast(land, 30), '/f/-20_175.bin': encodeCoast(land, 5) } });
+  const E = makeEnv({ lat0: -15.4, lng0: 178.8, cells: { '-20_175': [1, 1] }, files: { '/world-i.bin': encodeCoast(land, 30), '/f/-20_175.bin': encodeCoast(land, 5) } });
   E.pick('exposure'); E.clickAt(-16.25, 179.9995); await E.settle();
   assert.ok(E.s.result, E.body());
   assert.ok(E.s.result.origin.lng < -179.99, 'evaluated east of the dateline: ' + E.s.result.origin.lng);
@@ -528,10 +533,16 @@ test('zoomed out the fan is a compass (no pan); it grows back from zoom 6.25; th
   assert.ok(!E.s.compass, 'inside the dead band it stays full');
   E.view.zoom = 5.5; E.map.fire('zoomend');
   assert.ok(E.s.compass && E.s.radius === 44);
-  // a touch tap on the compass moves the point (wedges are picked on the full fan only)
+  // a touch tap on the compass picks its wedge (G21 B-3); on its centre it does nothing; outside it, a new point
   const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]), gen = E.s.gen;
-  E.map.fire('click', { latlng: E.map.containerPointToLatLng([c.x, c.y + 30]), originalEvent: { pointerType: 'touch' } });
-  assert.ok(E.s.gen > gen, 'a new point');
+  const tap = (dx, dy) => E.map.fire('click', { latlng: E.map.containerPointToLatLng([c.x + dx, c.y + dy]), originalEvent: { pointerType: 'touch' } });
+  tap(0, 30);
+  assert.ok(E.s.gen === gen && E.s.selected === 36, 'the south wedge: ' + E.s.selected);
+  assert.match(E.body(), /<div class="tools-sector">S 180/);
+  tap(0, 5);
+  assert.ok(E.s.gen === gen && E.s.result, 'the centre: nothing');
+  tap(0, 60);
+  assert.ok(E.s.gen > gen, 'outside the compass: a new point');
 });
 
 test('the cursor readout: off the fan it reads the map (and a line to the cursor); on the fan a wedge; leaving clears it', async () => {
@@ -568,9 +579,9 @@ test('Lock: the window stays, the page has its clicks back (active() false, no c
   const lock = E.q('[data-act="lock"]');
   assert.ok(lock.hidden, 'no Lock before a result');
   E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
-  assert.ok(!lock.hidden && lock.getAttribute('aria-pressed') === 'false');
+  assert.ok(!lock.hidden && lock.textContent === 'Lock' && !lock.classList.contains('is-on') && !lock.hasAttribute('aria-pressed'));
   lock.dispatch('click');
-  assert.ok(E.s.locked && lock.getAttribute('aria-pressed') === 'true' && lock.textContent === 'Unlock');
+  assert.ok(E.s.locked && lock.textContent === 'Unlock' && lock.classList.contains('is-on') && !lock.hasAttribute('aria-pressed'), 'the label alone says it (G21 B-11)');
   assert.equal(E.A.active(), false, 'the page\'s markers work again');
   assert.ok(!E.mapEl.classList.contains('tools-active') && E.map.doubleClickZoom.enabled(), 'no crosshair; double-click zooms');
   const gen = E.s.gen, origin = E.s.result.origin;
@@ -580,7 +591,9 @@ test('Lock: the window stays, the page has its clicks back (active() false, no c
   E.key('Escape');
   assert.ok(E.s.result && E.s.locked, 'Escape with focus on the page does nothing while locked');
   E.key('Escape', E.q('.tools-x'));
-  assert.ok(!E.s.result && !E.s.locked, 'Escape in the bar clears, and unlocks');
+  assert.ok(E.s.result && !E.s.locked, 'Escape in the bar only unlocks (G21 B-9: it is where focus is just after Lock)');
+  E.key('Escape', E.q('.tools-x'));
+  assert.ok(!E.s.result && !E.s.locked, 'then it clears');
   assert.ok(E.mapEl.classList.contains('tools-active') && !E.map.doubleClickZoom.enabled() && E.A.active(), 'the tool has the map again');
   E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
   lock.dispatch('click'); lock.dispatch('click');
@@ -631,7 +644,7 @@ test('a new point drops the old spot\'s readout and its line at once', async () 
   E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });
   assert.ok(E.s.readout && cursorLineOf(E));
   E.clickAt(21.269, -157.829);
-  assert.ok(E.s.busy && !E.s.readout && !cursorLineOf(E), 'gone with the old spot');
+  assert.ok(E.s.busy && !E.s.readout && !cursorLineOf(E) && ![...E.layers].some((l) => l.kind === 'polyline' && l.o.color === '#0b2536'), 'gone with the old spot, casing too');
   await E.settle(); await reachDrawn(E);
   assert.ok(E.s.result && !E.s.readout);
   const c2 = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
@@ -651,13 +664,17 @@ test('the spot\'s copy follows the view (as the page\'s markers do): the fan, th
   assert.equal(E.s.fanLng, lng0 + 360, 'the nearest copy, as the markers\' currentWorldOffset rounds');
   E.view.lng0 -= 250; E.map.fire('moveend');
   assert.equal(E.s.fanLng, lng0, 'and back');
-  // a hovered readout's line stays at the pointer
+  // a hovered readout is read again under the pointer when the map moves under it (a keyboard pan)
   const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
   E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });
   const hovered = cursorLineOf(E).a.slice(-1)[0];
   E.view.lng0 += 720; E.map.fire('moveend');
   assert.equal(E.s.fanLng, lng0 + 720, 'the spot\'s copy in the world in view');
-  assert.deepEqual(cursorLineOf(E).a.slice(-1)[0], hovered, 'a hovered readout waits for the pointer');
+  const again = cursorLineOf(E).a.slice(-1)[0];
+  assert.ok(Math.abs(again[0] - hovered[0]) < 1e-9 && Math.abs(again[1] - (hovered[1] + 720)) < 1e-9, 'under the pointer: ' + again);
+  E.view.lng0 += 0.5; E.map.fire('moveend');
+  assert.ok(Math.abs(cursorLineOf(E).a.slice(-1)[0][1] - (hovered[1] + 720.5)) < 1e-9, 'a small pan too');
+  E.view.lng0 -= 0.5;
   E.view.lng0 -= 720; E.map.fire('moveend');
   // a tapped readout (locked, touch) follows
   E.q('[data-act="lock"]').dispatch('click');
@@ -669,4 +686,185 @@ test('the spot\'s copy follows the view (as the page\'s markers do): the fan, th
   assert.ok(Math.abs(outer[0][1] - (lng0 + 180)) < 1e-9 && Math.abs(outer[1][1] - (lng0 + 1260)) < 1e-9, 'the window round it');
   const end = cursorLineOf(E).a.slice(-1)[0];
   assert.ok(E.s.readout && E.s.pinned && Math.abs(end[1] - 560) < 1e-6 && Math.abs(end[0] - 22.5) < 1e-6, 'the tapped readout\'s line in that world too');
+});
+
+// ---- G21 fix round: what is drawn, the bar, Lock and touch ----
+const dist = (A, o, p) => A.distanceKm(o, { lat: p[0], lng: p[1] });
+test('the projection is on the map while a result stands, on its own canvas; the owner\'s style; holes, rays, arcs and labels where they belong (G21 A-1)', async () => {
+  const E = makeEnv({ canvas: true }); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const A = E.A._internals, res = E.s.result, o = res.origin, shift = E.s.fanLng - o.lng, items = [...E.s.reach._items];
+  assert.ok(E.layers.has(E.s.reach), 'the group is on the map');
+  const veil = items.find((l) => l.kind === 'polygon' && l.a.length === 4);
+  assert.ok(veil.o.fillOpacity === 0.55 && veil.o.stroke === false && veil.o.pane === 'toolsReachPane' && veil.o.interactive === false);
+  assert.ok(veil.o.renderer && veil.o.renderer.o.padding === 0.5 && veil.o.renderer.o.pane === 'toolsReachPane', 'its own canvas, half a map of padding (G21 B-7)');
+  // the holes: the ring of the bridged reach, one per world copy round the fan's
+  const wide = A.litRing(res, 100, res.reachWide), own = A.litRing(res);
+  [-360, 0, 360].forEach((k, j) => {
+    const h = veil.a[j + 1];
+    assert.ok(h.length === wide.length && h.every((p, n) => Math.abs(p[0] - wide[n].lat) < 1e-12 && Math.abs(p[1] - (wide[n].lng + shift + k)) < 1e-9), 'hole ' + j);
+  });
+  assert.deepEqual(veil.a[0].map((p) => p[1]), [E.s.fanLng - 540, E.s.fanLng + 540, E.s.fanLng + 540, E.s.fanLng - 540]);
+  // the lighter strips: one per copy, between the bridged ring and the own ring
+  const strips = items.filter((l) => l.kind === 'polygon' && l.a.length === 2);
+  assert.equal(strips.length, 3, 'Kaula and the other small islands seen from Pipeline');
+  strips.forEach((s) => assert.ok(s.o.fillOpacity === 0.25 && s.a[0].length === wide.length && s.a[1].length === own.length));
+  // rays: every 10th (5 degrees) that runs 300 km or more, from the spot to its reach, in three copies
+  const rays = items.filter((l) => l.kind === 'polyline' && !l.o.dashArray), want = [];
+  for (let i = 5; i < 720; i += 10) if (res.reach[i] >= 300) want.push(i);
+  assert.equal(rays.length, 3 * want.length);
+  [-360, 0, 360].forEach((k, j) => want.forEach((i, n) => {
+    const line = rays[j * want.length + n].a, end = A.rayPoint(o, A.rayBearing(i), res.reach[i]), last = line[line.length - 1];
+    assert.ok(Math.abs(line[0][1] - (o.lng + shift + k)) < 1e-9 && Math.abs(last[0] - end.lat) < 1e-9 && Math.abs(last[1] - (end.lng + shift + k)) < 1e-9, 'ray ' + i);
+  }));
+  rays.forEach((l) => assert.ok(l.o.opacity === 0.5 && l.o.weight === 1 && l.o.color === '#ffffff'));
+  // rings: arcs on their distance inside the window; labels on them, in the projection's pane
+  const rings = A.ringsFor('US', A.ringReachKm(res)), arcs = items.filter((l) => l.kind === 'polyline' && l.o.dashArray === '4 6');
+  const inWin = (b, km) => [b - 1e-6, b + 1e-6].some((x) => res.reachWide[Math.floor((((x % 360) + 360) % 360) / 0.5) % 720] >= km);   // a ray boundary: either side
+  assert.ok(rings.length >= 2 && arcs.length >= 3 * rings.length, rings.length + ' rings, ' + arcs.length + ' arcs');
+  arcs.forEach((l) => {
+    const pts = l.a.map((p) => [p[0], p[1] - shift - Math.round((p[1] - shift - o.lng) / 360) * 360]);
+    const d = dist(A, o, pts[0]), ring = rings.find((r) => Math.abs(r.km - d) < 1e-6);
+    assert.ok(ring, 'on a ring: ' + d);
+    pts.forEach((p) => { assert.ok(Math.abs(dist(A, o, p) - ring.km) < 1e-6); assert.ok(inWin(A.bearingDeg(o, { lat: p[0], lng: p[1] }), ring.km), 'inside the window'); });
+  });
+  const copyOf = (lng) => Math.round((lng - shift - o.lng) / 360);
+  const perCopy = (ls, f) => [-1, 0, 1].map((k) => ls.filter((l) => copyOf(f(l)) === k).length);
+  const arcCopies = perCopy(arcs, (l) => l.a[0][1]);
+  assert.ok(arcCopies[0] === arcCopies[1] && arcCopies[1] === arcCopies[2], 'the arcs in each world copy: ' + arcCopies);
+  const labels = items.filter((l) => l.tip);
+  assert.ok(labels.length >= 3 * rings.length && labels.length % 3 === 0);
+  const labelCopies = perCopy(labels, (l) => l.a[1]);
+  assert.ok(labelCopies[0] === labelCopies[1] && labelCopies[1] === labelCopies[2], 'the labels in each world copy: ' + labelCopies);
+  labels.forEach((l) => {
+    assert.ok(l.tipOpts.pane === 'toolsReachPane' && l.tipOpts.permanent && /tools-ring-label/.test(l.tipOpts.className), 'below the gridlines and stations (G21 A-11)');
+    const p = [l.a[0], l.a[1] - shift - Math.round((l.a[1] - shift - o.lng) / 360) * 360], d = dist(A, o, p);
+    const ring = rings.find((r) => r.label === l.tip);
+    assert.ok(ring && Math.abs(d - ring.km) < 1e-6, l.tip + ' at ' + d);
+    assert.ok(inWin(A.bearingDeg(o, { lat: p[0], lng: p[1] }), ring.km), 'inside the window');
+  });
+  E.q('[data-act="clear"]').dispatch('click');
+  assert.ok(!E.layers.has(E.s.reach) && !E.s.reachOn, 'off the map after Clear');
+});
+
+test('the fold button folds the bar to its title (a readout still shows under it, "Computing…" while busy); phones drop the hints (G21 B-6)', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const fold = E.bar.querySelector('.tools-fold'), title = E.q('.tools-bar-title');
+  assert.match(E.body(), /tools-hint/);
+  fold.dispatch('click');
+  assert.ok(E.s.folded && E.bar.classList.contains('is-folded') && fold.getAttribute('aria-expanded') === 'false' && fold.getAttribute('aria-label') === 'Unfold the tool bar');
+  assert.ok(E.body() === '' && E.q('.tools-bar-actions').hidden, 'the title row alone');
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });
+  assert.match(E.body(), /^<div class="tools-sector">\d{3}° /, 'a readout shows under the title');
+  E.mapEl.dispatch('mouseleave', {});
+  assert.equal(E.body(), '');
+  E.clickAt(21.269, -157.829);
+  assert.equal(title.textContent, 'Computing…', 'busy, folded');
+  await E.settle(); await reachDrawn(E);
+  assert.equal(title.textContent, 'Swell exposure');
+  fold.dispatch('click');
+  assert.ok(!E.s.folded && /tools-big/.test(E.body()) && !E.q('.tools-bar-actions').hidden, 'unfolded');
+  fold.dispatch('click'); E.q('.tools-x').dispatch('click'); E.pick('exposure');
+  assert.ok(!E.s.folded && !E.bar.classList.contains('is-folded'), 'a new start is unfolded');
+  // a phone: once a result shows, no hint lines
+  const P = makeEnv({ mapW: 375, mapH: 700, barRect: { left: 75, top: 60, width: 290, height: 150 }, scale: 300, lat0: 22.3, lng0: -158.6 });
+  P.pick('exposure');
+  assert.match(P.body(), /Click the water/);
+  P.clickAt(21.6655, -158.054); await P.settle();
+  assert.ok(P.s.result && /tools-big/.test(P.body()) && /tools-sector/.test(P.body()) && !/tools-hint/.test(P.body()), P.body());
+});
+
+test('Lock: Escape only unlocks; Unlock clears a tapped readout and holds double-click again; a locked mouse click is not pinned; focus after Clear (G21 B-9, A-13, B-11)', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const lock = E.q('[data-act="lock"]');
+  lock.dispatch('click');
+  E.clickAt(22.5, -160, { pointerType: 'mouse' });
+  assert.ok(E.s.readout && !E.s.pinned, 'a mouse click while locked: a readout that the pointer moves on');
+  E.mapEl.dispatch('mouseleave', {});
+  assert.ok(!E.s.readout, 'and leaving ends it');
+  assert.match(E.body(), /Point at the map for bearing and distance\./, 'the locked hint');
+  E.clickAt(22.5, -160, { pointerType: 'touch' });
+  assert.ok(E.s.pinned && cursorLineOf(E));
+  const sector = () => E.q('.tools-bar-body').children.find((x) => x.className === 'tools-sector');
+  assert.equal(sector().getAttribute('aria-live'), 'polite', 'a tapped readout is announced');
+  E.mapEl.dispatch('mousemove', { clientX: 100, clientY: 100 });
+  assert.equal(sector().getAttribute('aria-live'), 'off', 'a hovered one is not (G21 B-11)');
+  E.clickAt(22.5, -160, { pointerType: 'touch' });
+  E.key('Escape', lock);
+  assert.ok(E.s.result && !E.s.locked, 'Escape on the Lock button only unlocks');
+  assert.ok(!E.s.readout && !cursorLineOf(E) && E.s.readoutAt === null && E.s.pinned === false, 'the tapped readout goes with the lock');
+  assert.ok(!E.map.doubleClickZoom.enabled() && E.A.active(), 'the tool holds double-click zoom again');
+  assert.equal(E.doc.activeElement, lock, 'focus stays on the button');
+  E.q('[data-act="clear"]').dispatch('click');
+  assert.ok(!E.s.result && E.doc.activeElement === E.q('.tools-x'), 'after Clear, focus on the bar\'s close button');
+});
+
+test('touch guard: touchend counts, the clock is monotonic (a wall clock set back does not block a mouse) (G21 A-15)', async () => {
+  const clock = { t: 5000 };
+  const E = makeEnv({ clock }); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]), water = { clientX: c.x - 300, clientY: c.y - 200 };
+  E.mapEl.dispatch('touchend', {});
+  E.mapEl.dispatch('mousemove', water);
+  assert.ok(!E.s.readout, 'a touchend within a second');
+  const now = Date.now; Date.now = () => now() - 3600e3;                     // the wall clock goes back an hour
+  try {
+    clock.t += 1500;
+    E.mapEl.dispatch('mousemove', water);
+    assert.ok(E.s.readout, 'a mouse 1.5 s later, whatever the wall clock says');
+  } finally { Date.now = now; }
+});
+
+test('the pointer over a control changes nothing, even above the fan; a hovered wedge\'s outline goes with a readout (G21 B-15)', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
+  const ctl = E.doc.createElement('div'); ctl.classList.add('leaflet-control');
+  E.mapEl.dispatch('mousemove', { clientX: c.x, clientY: c.y + 60, composedPath: () => [ctl, E.mapEl] });
+  assert.ok(E.s.selected === -1 && !E.s.readout, 'over a control on the fan: no wedge');
+  E.mapEl.dispatch('mousemove', { clientX: c.x, clientY: c.y + 60 });
+  const k = E.s.selected, path = () => E.fan()._el.children.find((x) => x.getAttribute('data-k') === String(k));
+  assert.ok(k >= 0 && path().getAttribute('stroke') === '#fde047', 'the wedge, outlined');
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200, composedPath: () => [ctl, E.mapEl] });
+  assert.ok(E.s.selected === k && !E.s.readout, 'over a control off the fan: unchanged');
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });
+  assert.ok(E.s.readout && E.s.selected === -1 && path().getAttribute('stroke') === 'none', 'a readout: the outline goes');
+  assert.ok([...E.layers].some((l) => l.kind === 'polyline' && l.o.color === '#0b2536' && l.o.weight > 3), 'the line has its dark casing');
+});
+
+test('the compass: switched at 5.75 / 6.25 exactly by the dead band, the fan redrawn at the new size; a resize keeps a compass where it is', async () => {
+  const E = makeEnv({ zoom: 8 }); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const full = E.fan();
+  assert.equal(full.o.icon.iconSize[0] > 200, true);
+  E.view.zoom = 5.75; E.map.fire('zoomend');
+  assert.ok(!E.s.compass && E.fan() === full, '5.75 is inside the dead band');
+  E.view.zoom = 5.7; E.map.fire('zoomend');
+  const small = E.fan();
+  assert.ok(E.s.compass && small !== full && small.o.icon.iconSize[0] < 150 && !E.layers.has(full), 'a compass, redrawn: ' + small.o.icon.iconSize[0]);
+  E.view.zoom = 6.2; E.map.fire('zoomend');
+  assert.ok(E.s.compass && E.fan() === small);
+  const pans = E.map.pans.length;
+  E.mapEl.rect = Object.assign({}, E.mapEl.rect, { width: 900 }); E.win.fire('resize'); await wait(200);
+  assert.ok(E.s.compass && E.s.radius === 44 && E.map.pans.length === pans, 'a resize: not moved, not grown');
+  E.view.zoom = 6.25; E.map.fire('zoomend');
+  assert.ok(!E.s.compass && E.fan().o.icon.iconSize[0] > 200, '6.25: the full fan');
+});
+
+test('a failure while drawing the window is logged and said in the bar; the fan stands (G21 A-4)', async () => {
+  const logged = [];
+  const E = makeEnv({ console: { error: (e) => logged.push(e) } }); E.pick('exposure');
+  const poly = E.win.L.polygon; E.win.L.polygon = () => { throw new Error('boom'); };
+  E.clickAt(21.6655, -158.054); await E.settle();
+  for (let i = 0; i < 600 && !E.s.reachFailed; i++) await wait(5);          // the world index is built in slices first
+  assert.ok(E.s.result && E.fan() && !E.s.reachOn, 'the fan, no window');
+  assert.ok(logged.length === 1 && /boom/.test(logged[0].message), 'logged');
+  assert.match(E.body(), /The window could not be drawn on the map/);
+  E.win.L.polygon = poly;
+  E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  assert.ok(E.s.reachOn && !/could not be drawn/.test(E.body()), 'the next spot draws');
+});
+
+test('a result that lands after the view moved a world away goes to the copy in view (G21 B-8)', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054);
+  E.view.lng0 += 720;                                                       // panned two worlds east while computing (no moveend yet)
+  await E.settle(); await reachDrawn(E);
+  assert.ok(Math.abs(E.s.fanLng - E.s.result.origin.lng - 720) < 0.01, 'fan at ' + E.s.fanLng);
 });

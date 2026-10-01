@@ -318,8 +318,8 @@
     .tools-fan svg { display: block; overflow: visible; }
     .tools-fan-label { font: 700 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: #fff; paint-order: stroke; stroke: rgba(0,0,0,.75); stroke-width: 3px; }
     .tools-label { font-weight: 600; font-size: 11px; padding: 1px 5px; }
-    .leaflet-tooltip.tools-ring-label { background: transparent; border: 0; box-shadow: none; padding: 0; color: #fff; text-shadow: 0 0 3px #000, 0 0 2px #000; }
-    .leaflet-tooltip.tools-ring-label::before { display: none; }
+    .tools-ring-label { background: none; border: 0; pointer-events: none; }
+    .tools-ring-label span { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%); white-space: nowrap; font: 600 11px system-ui, -apple-system, "Segoe UI", sans-serif; color: #fff; text-shadow: 0 0 3px #000, 0 0 2px #000; }
     /* lat/long gridline labels (static_ui/graticule.js): above the panes, below the map's controls */
     .graticule-labels { position: absolute; inset: 0; z-index: 450; pointer-events: none; overflow: hidden; }
     .graticule-label {

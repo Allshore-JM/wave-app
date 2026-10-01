@@ -71,6 +71,7 @@ function makeEnv(opts) {
     divIcon(o) { return o; },
     ...(opts.canvas ? { canvas(o) { return { renderer: true, o }; } } : {}),
     marker(ll, o) {                                                          // the fan's element holds its 72 wedge paths
+      if (o.icon && o.icon.className !== 'tools-fan') return layer('label', ll, o);   // a ring label
       const m = layer('fan', ll, o); m._el = doc.createElement('div');
       for (let k = 0; k < 72; k++) el('path', null, m._el, { 'data-k': k, stroke: new RegExp('data-k="' + k + '" [^>]*stroke="#fde047"').test(o.icon.html) ? '#fde047' : 'none' });
       m.addTo = function () { layers.add(this); return this; }; return m;
@@ -490,7 +491,7 @@ test('the projection: a veil with three holes, rays and rings after a result; go
   assert.ok(veil && veil.a.length === 4 && veil.o.pane === 'toolsReachPane', 'outer ring and three world copies of the lit ring');
   assert.ok(veil.a[2].length > 1000 && Math.abs(veil.a[1][0][1] - veil.a[2][0][1] + 360) < 1e-9, 'copies 360 degrees apart');
   const k = kinds(E);
-  assert.ok(k.polyline > 30 && k.circle >= 3, JSON.stringify(k));
+  assert.ok(k.polyline > 30 && k.label >= 3, JSON.stringify(k));
   const rays = [...E.s.reach._items].filter((l) => l.kind === 'polyline' && !l.o.dashArray);
   assert.ok(rays.every((l) => l.o.pane === 'toolsReachPane' && l.a.length >= 2), 'every ray in the pane');
   E.q('[data-act="clear"]').dispatch('click');
@@ -513,10 +514,10 @@ test('the projection: a click superseded during its reach draws nothing; a unit 
   assert.ok(light.length === 0 || light.length === 3, 'small-island shadows: none, or one per world copy');
   light.forEach((l) => assert.ok(l.o.fillOpacity < veil[0].o.fillOpacity, 'lighter than the veil'));
   assert.ok(Math.abs(E.s.result.origin.lat - 21.27) < 0.02, 'the second click\'s');
-  const labels = () => [...E.s.reach._items].filter((l) => l.tip).map((l) => l.tip);
-  assert.ok(labels().length && labels().every((x) => / nm$/.test(x)), labels().join());
+  const labels = () => [...E.s.reach._items].filter((l) => l.kind === 'label').map((l) => l.o.icon.html);
+  assert.ok(labels().length && labels().every((x) => / nm<\/span>$/.test(x)), labels().join());
   E.unitSel.value = 'Metric'; E.unitSel.dispatch('change');
-  assert.ok(labels().length && labels().every((x) => / km$/.test(x)), labels().join());
+  assert.ok(labels().length && labels().every((x) => / km<\/span>$/.test(x)), labels().join());
 });
 
 test('zoomed out the fan is a compass (no pan); it grows back from zoom 6.25; the dead band keeps either', async () => {
@@ -731,12 +732,12 @@ test('the projection is on the map while a result stands, on its own canvas; the
   const perCopy = (ls, f) => [-1, 0, 1].map((k) => ls.filter((l) => copyOf(f(l)) === k).length);
   const arcCopies = perCopy(arcs, (l) => l.a[0][1]);
   assert.ok(arcCopies[0] === arcCopies[1] && arcCopies[1] === arcCopies[2], 'the arcs in each world copy: ' + arcCopies);
-  const labels = items.filter((l) => l.tip);
+  const labels = items.filter((l) => l.kind === 'label').map((l) => Object.assign(l, { tip: /<span>(.*)<\/span>/.exec(l.o.icon.html)[1] }));
   assert.ok(labels.length >= 3 * rings.length && labels.length % 3 === 0);
   const labelCopies = perCopy(labels, (l) => l.a[1]);
   assert.ok(labelCopies[0] === labelCopies[1] && labelCopies[1] === labelCopies[2], 'the labels in each world copy: ' + labelCopies);
   labels.forEach((l) => {
-    assert.ok(l.tipOpts.pane === 'toolsReachPane' && l.tipOpts.permanent && /tools-ring-label/.test(l.tipOpts.className), 'below the gridlines and stations (G21 A-11)');
+    assert.ok(l.o.pane === 'toolsReachPane' && l.o.interactive === false && l.o.icon.className === 'tools-ring-label' && l.o.icon.iconSize === null, 'below the gridlines and stations (G21 A-11)');
     const p = [l.a[0], l.a[1] - shift - Math.round((l.a[1] - shift - o.lng) / 360) * 360], d = dist(A, o, p);
     const ring = rings.find((r) => r.label === l.tip);
     assert.ok(ring && Math.abs(d - ring.km) < 1e-6, l.tip + ' at ' + d);

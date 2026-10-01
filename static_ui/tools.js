@@ -17,6 +17,9 @@
  *   wedge's shadow is the mean over its ten rays: open below 0.2, light grey below 0.7, dark grey above.
  * A wedge at bearing b is swell arriving FROM b. Geometry only: real swell wraps headlands and islands, and reefs are
  * not in the data.
+ * - The window on the map (plan section 30): each ray's reach is its whole run to the first coast, however far (tier 0
+ *   worldwide beyond 3,000 km), to the map's latitude limits (84 N / 79 S) or just short of the antipode. The fan's
+ *   wedges still come from the first 3,000 km.
  *
  * window.AllshoreTools = { init(opts), active(), click(latlng, ev), _internals }. Nothing touches the DOM at load.
  */
@@ -234,6 +237,11 @@
         }
       }
     }
+    netLines(lines, out);
+    return out;
+  }
+  // The edges along each cell line, summed by direction: only the parts with a non-zero net are real coast.
+  function netLines(lines, out) {
     Object.keys(lines).forEach(function (key) {
       var L = lines[key], ends = [];
       L.segs.forEach(function (sg) { ends.push(Math.round(sg[0] * 1e7) / 1e7, Math.round(sg[1] * 1e7) / 1e7); });
@@ -242,10 +250,49 @@
       for (var i = 0; i + 1 < u.length; i++) {
         var mid = (u[i] + u[i + 1]) / 2, net = 0;
         L.segs.forEach(function (sg) { if (sg[0] <= mid && sg[1] >= mid) net += sg[2]; });
-        if (net !== 0) { if (L.horiz) out.push(u[i], L.at, u[i + 1], L.at); else out.push(L.at, u[i], L.at, u[i + 1]); }
+        if (net === 0) continue;
+        if (L.horiz) out.push(u[i], L.at, u[i + 1], L.at);
+        else { out.push(L.at, u[i], L.at, u[i + 1]); if (L.both) out.push(-L.at, u[i], -L.at, u[i + 1]); }
       }
     });
+  }
+  // Every coast edge of one set in absolute longitudes, for rays that run round the world (plan section 30). The
+  // builder splits polygons at +-180, so no edge crosses that line and nothing needs wrapping; the two sides of the
+  // split (x = 180 in one piece, -180 in the next) are one cell line, cancelled together like any other.
+  function worldEdges(set) {
+    var out = [], lines = {};
+    if (!set) return out;
+    for (var p = 0; p < set.n; p++) {
+      for (var r = set.ringStart[p]; r < set.ringStart[p + 1]; r++) {
+        var s = set.vertStart[r], e = set.vertStart[r + 1];
+        for (var k = s; k < e; k++) {
+          var k2 = k + 1 < e ? k + 1 : s;
+          var ax = set.ll[k * 2], ay = set.ll[k * 2 + 1], bx = set.ll[k2 * 2], by = set.ll[k2 * 2 + 1];
+          if (onCellLine(ax, ay, bx, by, set.cell)) {
+            var horiz = Math.abs(ay - by) < 1e-9, seam = !horiz && Math.abs(Math.abs(ax) - 180) < 1e-9, at = horiz ? ay : (seam ? -180 : ax);
+            var key = (horiz ? 'h' : 'v') + Math.round(at * 1e4);
+            var L = lines[key] || (lines[key] = { horiz: horiz, at: at, both: seam, segs: [] });
+            var a = horiz ? ax : ay, c = horiz ? bx : by;
+            L.segs.push(a < c ? [a, c, 1] : [c, a, -1]);
+            continue;
+          }
+          out.push(ax, ay, bx, by);
+        }
+      }
+    }
+    netLines(lines, out);
     return out;
+  }
+  function worldIndex(set) { return indexOf(worldEdges(set), 0.5); }
+  // The same index built in slices (a Promise): 290,000 edges are a long task on a phone in one go.
+  function indexSliced(edges, bucketDeg, batch, yieldFn) {
+    if (!edges.length) return Promise.resolve(null);
+    var idx = new EdgeIndex(bucketDeg), i = 0;
+    function run() {
+      for (var to = Math.min(edges.length, i + 4 * batch); i < to; i += 4) idx.add(edges[i], edges[i + 1], edges[i + 2], edges[i + 3]);
+      return i < edges.length ? yieldFn().then(run) : idx.finish();
+    }
+    return Promise.resolve().then(run);
   }
   function EdgeIndex(bucketDeg) { this.b = bucketDeg; this.cells = new Map(); this.xy = []; this.n = 0; }
   EdgeIndex.prototype._key = function (i, j) { return i * 100003 + j; };
@@ -634,6 +681,120 @@
     return yieldFn ? Promise.resolve().then(run) : run();
   }
 
+  // ---- reach: the window projected on the map (plan section 30) ----
+  // The fan classifies directions from the first 3,000 km. The projection needs each ray's whole run: to the first
+  // coast however far, to the map's latitude limits (84 N / 79 S: polar ice, and where the map ends), or just short of
+  // the antipode, where great circles meet again.
+  var REACH_KM = 19500, REACH_STEP_KM = 25, REACH_LAT_N = 84, REACH_LAT_S = -79, WORLD_BATCH = 40000;
+  var END_LAND = 0, END_LIMIT = 1, END_CAP = 2;
+  // How far along a ray its latitude first reaches `latLimit` (km; Infinity when it never does). On a great circle
+  // sin(lat) = sin(lat0) cos(d) + cos(lat0) cos(brg) sin(d) = R cos(d - a).
+  function limitKm(origin, brg, latLimit) {
+    var f = origin.lat * D2R, A = Math.sin(f), B = Math.cos(f) * Math.cos(brg * D2R), R = Math.sqrt(A * A + B * B), sl = Math.sin(latLimit * D2R);
+    if (!(R > 0) || Math.abs(sl) > R) return Infinity;
+    var a = Math.atan2(B, A), c = Math.acos(Math.max(-1, Math.min(1, sl / R))), best = Infinity;
+    [a - c, a + c].forEach(function (d) { d = ((d % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI); if (d > 1e-12 && d < best) best = d; });
+    return best * R_KM;
+  }
+  // The first coast along a ray between two distances, on the world index (absolute longitudes): km, or -1. A step
+  // that crosses +-180 is tested in two pieces, up to the line and on from it.
+  function reachWalk(origin, brg, fromKm, toKm, world) {
+    var d = fromKm, a = destination(origin, brg, d), ax = a.lng, ay = a.lat;
+    while (d < toKm) {
+      var st = Math.min(REACH_STEP_KM, toKm - d), q = destination(origin, brg, d + st), bx = q.lng, by = q.lat, t = -1;
+      if (Math.abs(bx - ax) <= 180) t = world.firstHit(ax, ay, bx, by);
+      else {
+        var side = ax > 0 ? 180 : -180, ts = (side - ax) / (bx + 2 * side - ax), ys = ay + (by - ay) * ts;
+        var t1 = world.firstHit(ax, ay, side, ys);
+        if (t1 >= 0) t = t1 * ts;
+        else { var t2 = world.firstHit(-side, ys, bx, by); if (t2 >= 0) t = ts + t2 * (1 - ts); }
+      }
+      if (t >= 0) return d + st * t;
+      d += st; ax = bx; ay = by;
+    }
+    return -1;
+  }
+  // Each ray's reach, added to an exposure result: result.reach (km) and result.reachEnd (why it stopped: land, the
+  // latitude limit, or the cap). `world`: worldIndex(tier 0), or null for no land. Time-sliced like computeExposure.
+  function computeReach(result, world, opts) {
+    opts = opts || {};
+    var o = result.origin, n = result.fetch.length, reach = new Float64Array(n), end = new Uint8Array(n), i = 0;
+    var batch = opts.batch || n, yieldFn = opts.yieldFn, stop = opts.shouldStop || function () { return false; };
+    function one(k) {
+      var brg = rayBearing(k), lim = Math.min(limitKm(o, brg, REACH_LAT_N), limitKm(o, brg, REACH_LAT_S)), cap = Math.min(REACH_KM, lim);
+      var f = result.fetch[k], hit = -1;
+      if (f < CAP_KM) hit = f;                                               // the fan's walk already met land
+      else if (cap > CAP_KM && world) hit = reachWalk(o, brg, CAP_KM, cap, world);
+      if (hit >= 0 && hit <= cap) { reach[k] = hit; end[k] = END_LAND; }
+      else { reach[k] = cap; end[k] = lim < REACH_KM ? END_LIMIT : END_CAP; }
+    }
+    function run() {
+      var to = Math.min(n, i + batch);
+      for (; i < to; i++) one(i);
+      if (stop()) return null;
+      if (i < n) return yieldFn ? yieldFn().then(run) : run();
+      result.reach = reach; result.reachEnd = end; return result;
+    }
+    return yieldFn ? Promise.resolve().then(run) : run();
+  }
+  // A point along a ray, its longitude counted on from the origin's without wrapping. Short of the antipode and of
+  // the poles (the limits above) it stays within 180 degrees of the origin, so shapes built from rays are in one
+  // piece on the map and the same in every world copy.
+  function rayPoint(origin, brg, km) {
+    var f = origin.lat * D2R, d = km / R_KM, t = brg * D2R;
+    var sf = Math.sin(f) * Math.cos(d) + Math.cos(f) * Math.sin(d) * Math.cos(t);
+    return { lat: Math.asin(Math.max(-1, Math.min(1, sf))) * R2D,
+      lng: origin.lng + Math.atan2(Math.sin(t) * Math.sin(d) * Math.cos(f), Math.cos(d) - Math.sin(f) * sf) * R2D };
+  }
+  // One ray as a line from the origin to `km`, no gap wider than maxGapKm.
+  function rayPath(origin, brg, km, maxGapKm) {
+    var n = Math.max(1, Math.ceil(km / (maxGapKm || 100))), out = [];
+    for (var k = 0; k <= n; k++) out.push(rayPoint(origin, brg, km * k / n));
+    return out;
+  }
+  // The water the spot can see, as one ring: each ray's arc at its reach, joined to the next ray's along the great
+  // circle between them (so a shadow's sides are great circles on the map). Longitudes as rayPoint.
+  function litRing(result, maxGapKm) {
+    var o = result.origin, r = result.reach, n = r.length, w = 360 / n, gap = maxGapKm || 100, out = [];
+    for (var i = 0; i < n; i++) {
+      var b0 = i * w, from = r[(i + n - 1) % n], to = r[i], m = Math.max(1, Math.ceil(Math.abs(to - from) / gap));
+      for (var k = 1; k <= m; k++) out.push(rayPoint(o, b0, from + (to - from) * k / m));
+      out.push(rayPoint(o, b0 + w, to));
+    }
+    return out;
+  }
+  // A ring of equal distance round the origin, as lines: cut at the latitude limits and where it passes behind a pole
+  // (there its ends are 360 degrees apart).
+  function rangeRing(origin, km, stepDeg) {
+    var segs = [], cur = null, prev = null, step = stepDeg || 1;
+    for (var b = 0; b <= 360; b += step) {
+      var p = rayPoint(origin, b, km), ok = p.lat <= REACH_LAT_N && p.lat >= REACH_LAT_S;
+      if (!ok || (prev && Math.abs(p.lng - prev.lng) > 180)) cur = null;
+      if (ok) { if (!cur) { cur = []; segs.push(cur); } cur.push(p); }
+      prev = ok ? p : null;
+    }
+    return segs.filter(function (sg) { return sg.length > 1; });
+  }
+  // The rings to draw: every 1,000 nm (US) or 2,000 km (Metric) out to the longest ray, ten at most.
+  function ringsFor(unit, maxKm) {
+    var metric = unit === 'Metric', each = metric ? 2000 : 1000 * KM_PER_NM, out = [];
+    for (var k = 1; k <= 10 && k * each <= maxKm; k++) out.push({ km: k * each, label: fmtNum(k * (metric ? 2000 : 1000), 0) + (metric ? ' km' : ' nm') });
+    return out;
+  }
+  // Deep-water swell travels at its group speed, g T / 4 pi (0.78 T m/s): days to cover `km` at period `sec`.
+  function travelDays(km, sec) { return km / (9.80665 * sec / (4 * Math.PI) * 3.6) / 24; }
+  // What the spot sees at a point on the map: the bearing and distance from the spot, its ray and wedge, and whether
+  // the ray reaches it (`visible`); when it does not, where the ray stopped (`stopKm`) and why (`stop`).
+  function probe(result, latlng) {
+    var o = result.origin, p = { lat: latlng.lat, lng: latlng.lng }, km = distanceKm(o, p);
+    if (!(km > 0)) return null;
+    var brg = bearingDeg(o, p), n = result.reach.length, i = Math.min(n - 1, Math.floor(brg / (360 / n)));
+    var sec = result.sectors[Math.min(SECTORS - 1, Math.floor(brg / (360 / SECTORS)))];
+    var visible = km <= result.reach[i];                                    // (a ray's reach already ends at the map's limits)
+    return { bearing: brg, km: km, ray: i, sector: sec, visible: visible, stopKm: visible ? null : result.reach[i],
+      stop: visible ? null : (result.reachEnd[i] === END_LAND ? 'land' : result.reachEnd[i] === END_LIMIT ? 'limit' : 'cap') };
+  }
+
   // ---- the fan (an SVG string; the page wraps it in a marker so it keeps its size on screen) ----
   // Owner (G20): open directions stay clear with a bright rim; shadow greys light enough to read over the dark ocean;
   // lines only where the shading changes; a clear centre ring so the break stays visible.
@@ -763,6 +924,18 @@
     });
     this._p.catch(function () { self._p = null; });                          // a later use retries
     return this._p;
+  };
+  // The world index for the rays' reach: built from tier 0 at the first use, then kept. With a yieldFn it is built
+  // in slices and a Promise is returned (one build, shared by callers that arrive meanwhile).
+  CoastSource.prototype.world = function (yieldFn) {
+    var self = this;
+    if (!this.tier0) return yieldFn ? Promise.resolve(null) : null;
+    if (!this._hasWorld && !yieldFn) { this._world = worldIndex(this.tier0); this._hasWorld = true; }
+    if (this._hasWorld) return yieldFn ? Promise.resolve(this._world) : this._world;
+    if (!this._worldP) {
+      this._worldP = indexSliced(worldEdges(this.tier0), 0.5, WORLD_BATCH, yieldFn).then(function (ix) { self._world = ix; self._hasWorld = true; self._worldP = null; return ix; });
+    }
+    return this._worldP;
   };
   // One tier-1 cell: a cached set (refreshed in the LRU), the request already in flight, or a new fetch.
   CoastSource.prototype.chunk = function (n) {
@@ -1138,7 +1311,10 @@
       placeOrigin: placeOrigin, computeExposure: computeExposure, fanSvg: fanSvg, sectorAt: sectorAt, placeFan: placeFan, leastOverlap: leastOverlap,
       innerRadius: innerRadius, levelOf: levelOf, rayShadow: rayShadow, onCellLine: onCellLine, CoastSource: CoastSource, wrapLng: wrapLng,
       RAYS: RAYS, SECTORS: SECTORS, CAP_KM: CAP_KM, NEAR_KM: NEAR_KM, REF_MIN_KM: REF_MIN_KM, SHADOW_FULL_KM: SHADOW_FULL_KM,
-      FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, FAR_OPEN_MAX: FAR_OPEN_MAX, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM
+      FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, FAR_OPEN_MAX: FAR_OPEN_MAX, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM,
+      worldEdges: worldEdges, worldIndex: worldIndex, indexSliced: indexSliced, limitKm: limitKm, reachWalk: reachWalk, computeReach: computeReach, rayPoint: rayPoint, rayPath: rayPath,
+      litRing: litRing, rangeRing: rangeRing, ringsFor: ringsFor, travelDays: travelDays, probe: probe,
+      REACH_KM: REACH_KM, REACH_STEP_KM: REACH_STEP_KM, REACH_LAT_N: REACH_LAT_N, REACH_LAT_S: REACH_LAT_S, END_LAND: END_LAND, END_LIMIT: END_LIMIT, END_CAP: END_CAP
     }
   };
 })(typeof window !== 'undefined' ? window : this);

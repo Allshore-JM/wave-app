@@ -563,3 +563,211 @@ test('active() and click() before init are harmless', () => {
   assert.equal(A.active(), false); A.click({ lat: 0, lng: 0 });
   assert.equal(A.init({}), null);
 });
+
+// ---- the window projected on the map: each ray's reach (plan section 30) ----
+const KM_DEG = 6371.0088 * Math.PI / 180;
+// the fan's 720 rays on a synthetic world (tier-0 style pieces, 30-degree cells), then their reach
+function reachOn(origin, pieces, opts) {
+  const far = pieces ? set(pieces, 30) : null, res = T.computeExposure(origin, [], far);
+  return T.computeReach(res, far ? T.worldIndex(far) : null, opts);
+}
+const rayAt = (brg) => Math.floor(brg / 0.5);                                // the ray whose half degree holds this bearing
+
+test('reach: a ray runs on past the fan\'s 3,000 km to the first coast; land the fan met stays where it was', () => {
+  // land from 61 E, 6,783 km east of a spot on the equator; and, for the west, land 120 km away
+  const res = reachOn({ lat: 0, lng: 0 }, [[sq(61, -10, 79, 10)], [sq(-2, -1, -1.08, 1)]]);
+  const e = rayAt(90.25), end = T.destination(res.origin, T.rayBearing(e), res.reach[e]);
+  assert.equal(res.fetch[e], T.CAP_KM, 'no land within the fan\'s 3,000 km');
+  assert.ok(Math.abs(end.lng - 61) < 1e-3 && Math.abs(res.reach[e] - 61 * KM_DEG) < 1, 'stops on the coast at 61 E: ' + res.reach[e] + ' ' + JSON.stringify(end));
+  assert.equal(res.reachEnd[e], T.END_LAND);
+  const w = rayAt(270.25);
+  assert.ok(res.fetch[w] < 125 && res.reach[w] === res.fetch[w] && res.reachEnd[w] === T.END_LAND, 'the fan\'s own distance: ' + res.reach[w]);
+  // nothing in the way: north and south stop at the map's limits, the rest just short of the antipode
+  const n = rayAt(0.25), s = rayAt(180.25), ne = rayAt(45.25);
+  assert.ok(Math.abs(res.reach[n] - 84 * KM_DEG) < 1 && res.reachEnd[n] === T.END_LIMIT, 'north to 84 N: ' + res.reach[n]);
+  assert.ok(Math.abs(res.reach[s] - 79 * KM_DEG) < 1 && res.reachEnd[s] === T.END_LIMIT, 'south to 79 S: ' + res.reach[s]);
+  assert.ok(res.reach[ne] === T.REACH_KM && res.reachEnd[ne] === T.END_CAP, 'the cap: ' + res.reach[ne]);
+  const open = reachOn({ lat: 0, lng: 0 }, null);
+  assert.ok(open.reach[e] === T.REACH_KM && open.reachEnd[e] === T.END_CAP, 'an empty world');
+});
+
+test('reach: off the equator the stop is where the great circle meets the coast (short steps, not a long chord)', () => {
+  // a coast along a meridian; where a ray's great circle crosses that meridian is found by bisection on the ray itself
+  for (const [origin, brg, coastLng, piece] of [
+    [{ lat: 35, lng: -140 }, 60.25, -95, sq(-95, 5, -70, 70)],
+    [{ lat: 55, lng: -30 }, 50.25, 40, sq(40, 30, 80, 80)],
+    [{ lat: -45, lng: 100 }, 250.25, 20, sq(-10, -75, 20, -20)]]) {
+    const res = reachOn(origin, [[piece]]), i = rayAt(brg), b = T.rayBearing(i);
+    assert.ok(res.fetch[i] === T.CAP_KM && res.reachEnd[i] === T.END_LAND, 'land beyond 3,000 km: ' + res.reach[i]);
+    let lo = 3000, hi = 9000;
+    const side = (d) => T.rayPoint(origin, b, d).lng - coastLng;
+    assert.ok(side(lo) * side(hi) < 0, 'the meridian lies between');
+    for (let k = 0; k < 60; k++) { const mid = (lo + hi) / 2; if (side(lo) * side(mid) <= 0) hi = mid; else lo = mid; }
+    assert.ok(Math.abs(res.reach[i] - lo) < 0.25, 'within 250 m: ' + res.reach[i] + ' vs ' + lo);
+  }
+});
+
+test('reach: rays cross the +-180 line either way, and land split at that line is one coast', () => {
+  // eastward over the line to a coast just beyond it (the step that crosses is tested in two pieces)
+  const east = reachOn({ lat: 0, lng: 150 }, [[sq(-179.9, -10, -170, 10)]]), e = rayAt(90.25);
+  const pe = T.destination(east.origin, T.rayBearing(e), east.reach[e]);
+  assert.ok(east.reachEnd[e] === T.END_LAND && Math.abs(pe.lng + 179.9) < 1e-3, 'east: ' + east.reach[e] + ' ' + JSON.stringify(pe));
+  assert.ok(Math.abs(east.reach[e] - 30.1 * KM_DEG) < 1);
+  // a coast just short of the line, in the same 25 km step that crosses it
+  const short = reachOn({ lat: 0, lng: 150 }, [[sq(179.95, -10, 180, 10)]]);
+  const ps = T.destination(short.origin, T.rayBearing(e), short.reach[e]);
+  assert.ok(short.reachEnd[e] === T.END_LAND && Math.abs(ps.lng - 179.95) < 1e-3, 'short of the line: ' + short.reach[e] + ' ' + JSON.stringify(ps));
+  // westward, to a coast just short of the line on the far side
+  const west = reachOn({ lat: 0, lng: -150 }, [[sq(170, -10, 179.95, 10)]]), w = rayAt(269.75);
+  const pw = T.destination(west.origin, T.rayBearing(w), west.reach[w]);
+  assert.ok(west.reachEnd[w] === T.END_LAND && Math.abs(pw.lng - 179.95) < 1e-3, 'west: ' + west.reach[w] + ' ' + JSON.stringify(pw));
+  // one land mass as the builder leaves it, split at the line: the split's two edges cancel, the coasts remain
+  const split = [[sq(175, -10, 180, 10)], [sq(-180, -10, -175, 10)]];
+  const edges = T.worldEdges(set(split, 30));
+  for (let i = 0; i < edges.length; i += 4) assert.ok(!(Math.abs(edges[i]) === 180 && Math.abs(edges[i + 2]) === 180), 'no edge along the line');
+  assert.equal(edges.length / 4, 6, 'three coasts each side');
+  const a = reachOn({ lat: 0, lng: 140 }, split), b = reachOn({ lat: 0, lng: -140 }, split);
+  assert.ok(Math.abs(T.destination(a.origin, T.rayBearing(e), a.reach[e]).lng - 175) < 1e-3, 'from the west: its west coast');
+  assert.ok(Math.abs(T.destination(b.origin, T.rayBearing(w), b.reach[w]).lng + 175) < 1e-3, 'from the east: its east coast');
+  // a coast that really runs along the line (land on one side only) is kept, and seen from both sides
+  const one = T.worldEdges(set([[sq(175, -10, 180, 10)]], 30));
+  let at180 = 0, atM180 = 0; for (let i = 0; i < one.length; i += 4) { if (one[i] === 180 && one[i + 2] === 180) at180++; if (one[i] === -180 && one[i + 2] === -180) atM180++; }
+  assert.ok(at180 === 1 && atM180 === 1, 'kept at both ends of the longitude range: ' + at180 + ' ' + atM180);
+  const c = reachOn({ lat: 0, lng: -140 }, [[sq(175, -10, 180, 10)]]);
+  assert.ok(c.reachEnd[w] === T.END_LAND && Math.abs(c.reach[w] - 40 * KM_DEG) < 1, 'met from the east at the line: ' + c.reach[w]);
+});
+
+test('reach: the latitude limits (84 N, 79 S), also inside the fan\'s 3,000 km; time-sliced and stoppable', async () => {
+  assert.ok(Math.abs(T.limitKm({ lat: 60, lng: 0 }, 0, 84) - 24 * KM_DEG) < 1e-6);
+  assert.ok(Math.abs(T.limitKm({ lat: -60, lng: 0 }, 180, -79) - 19 * KM_DEG) < 1e-6);
+  assert.equal(T.limitKm({ lat: 0, lng: 0 }, 90, 84), Infinity, 'along the equator: never');
+  assert.equal(T.limitKm({ lat: 30, lng: 0 }, 60, 84), Infinity, 'this great circle tops out below 84 N');
+  for (const [lat, brg, lim] of [[50, 5, 84], [21.7, 355, 84], [-34, 170, -79], [10, 185, -79], [74, 350, 84]]) {
+    const o = { lat, lng: -30 }, d = T.limitKm(o, brg, lim);
+    assert.ok(Math.abs(T.destination(o, brg, d).lat - lim) < 1e-9, 'on the limit');
+    for (let k = 1; k < 200; k++) { const la = T.destination(o, brg, d * k / 200).lat; assert.ok(la < 84 && la > -79, 'inside the limits before it'); }
+  }
+  // a northern spot: the ray north leaves the map 2,669 km out, before the fan's own 3,000 km
+  const res = reachOn({ lat: 60, lng: 0 }, null), n = rayAt(0.25);
+  assert.ok(res.fetch[n] === T.CAP_KM && Math.abs(res.reach[n] - 24 * KM_DEG) < 1 && res.reachEnd[n] === T.END_LIMIT, String(res.reach[n]));
+  // land beyond the limit does not count
+  const far = reachOn({ lat: 60, lng: 0 }, [[sq(-20, 85, 20, 88)]]);
+  assert.ok(far.reachEnd[n] === T.END_LIMIT && Math.abs(far.reach[n] - 24 * KM_DEG) < 1);
+  // sliced: seven pauses for 720 rays in batches of 100; a stop gives null and leaves the result as it was
+  let yields = 0;
+  const sliced = await reachOn({ lat: 0, lng: 0 }, [[sq(61, -10, 79, 10)]], { batch: 100, yieldFn: () => { yields++; return Promise.resolve(); } });
+  assert.ok(yields === 7 && sliced.reach.length === 720 && sliced.reachEnd[rayAt(90.25)] === T.END_LAND);
+  const base = T.computeExposure({ lat: 0, lng: 0 }, [], null);
+  let calls = 0;
+  const stopped = await T.computeReach(base, null, { batch: 100, yieldFn: () => Promise.resolve(), shouldStop: () => ++calls >= 2 });
+  assert.ok(stopped === null && base.reach === undefined && calls === 2, 'stopped after the second batch');
+});
+
+test('the lit ring: arcs at each ray\'s reach, joined along great circles; longitudes counted on from the spot', () => {
+  const origin = { lat: 10, lng: 179.5 }, reach = new Float64Array(720).fill(4000);
+  for (let i = 100; i < 110; i++) reach[i] = 500;                            // one wedge (50-55 degrees) blocked 500 km out
+  const ring = T.litRing({ origin, reach });
+  assert.equal(ring.length, 1440 + 2 * 34, 'two points a ray, and 35 along each side of the notch');
+  ring.forEach((p) => {
+    assert.ok(T.distanceKm(origin, { lat: p.lat, lng: p.lng }) < 4000.001, 'inside the reach');
+    assert.ok(Math.abs(p.lng - origin.lng) < 180, 'not wrapped: ' + p.lng);
+  });
+  assert.ok(ring.some((p) => p.lng > 180), 'east of the +-180 line the longitudes run on');
+  for (const side of [50, 55]) {                                              // the notch's sides lie on the rays' great circles
+    const on = ring.filter((p) => { const d = T.distanceKm(origin, p); return d > 501 && d < 3999 && Math.abs(T.bearingDeg(origin, { lat: p.lat, lng: p.lng }) - side) < 1e-6; })
+      .map((p) => T.distanceKm(origin, p)).sort((a, b) => a - b);
+    assert.equal(on.length, 34, 'points along ' + side + ' degrees');
+    for (let k = 1; k < on.length; k++) assert.ok(on[k] - on[k - 1] <= 100.001, 'no gap over 100 km');
+  }
+  const round = T.litRing({ origin: { lat: -20, lng: 30 }, reach: new Float64Array(720).fill(2500) });
+  assert.equal(round.length, 1440);
+  round.forEach((p) => assert.ok(Math.abs(T.distanceKm({ lat: -20, lng: 30 }, p) - 2500) < 1e-6));
+  for (const k of [0, 1, 400, 1439]) {                                        // each ray's arc spans its own half degree
+    const want = (k % 2 ? (k + 1) / 2 : k / 2) * 0.5, got = T.bearingDeg({ lat: -20, lng: 30 }, round[k]);
+    assert.ok(Math.min(Math.abs(got - want), 360 - Math.abs(got - want)) < 1e-6, 'point ' + k + ' at ' + got + ', not ' + want);
+  }
+  // one ray as a line, and a point's longitude against destination()
+  const path = T.rayPath(origin, 80, 950);
+  assert.ok(path.length === 11 && Math.abs(path[0].lat - origin.lat) < 1e-12 && path[0].lng === origin.lng && Math.abs(T.distanceKm(origin, path[10]) - 950) < 1e-6);
+  const p = T.rayPoint(origin, 80, 950), q = T.destination(origin, 80, 950);
+  assert.ok(Math.abs(p.lat - q.lat) < 1e-12 && Math.abs(T.wrapLng(p.lng) - q.lng) < 1e-9 && p.lng > 180);
+});
+
+test('range rings: every 1,000 nm or 2,000 km, cut at the limits and behind a pole', () => {
+  assert.deepEqual(T.ringsFor('US', 6000).map((r) => r.label), ['1,000 nm', '2,000 nm', '3,000 nm']);
+  assert.ok(Math.abs(T.ringsFor('US', 6000)[2].km - 5556) < 1e-9);
+  assert.deepEqual(T.ringsFor('Metric', 6000).map((r) => [r.km, r.label]), [[2000, '2,000 km'], [4000, '4,000 km'], [6000, '6,000 km']]);
+  assert.equal(T.ringsFor('US', 19500).length, 10);
+  assert.equal(T.ringsFor('US', 40000).length, 10, 'ten at most');
+  assert.equal(T.ringsFor('US', 900).length, 0);
+  const o = { lat: 21.7, lng: -158 };
+  const near = T.rangeRing(o, 1852);
+  assert.ok(near.length === 1 && near[0].length === 361 && Math.abs(near[0][0].lng - near[0][360].lng) < 1e-6, 'a closed ring');
+  near[0].forEach((p) => assert.ok(Math.abs(T.distanceKm(o, p) - 1852) < 1e-6));
+  // 6,000 nm from Hawaii passes behind the north pole: one line across the whole map, its ends 360 degrees apart
+  const far = T.rangeRing(o, 6000 * 1.852);
+  assert.ok(far.length === 1 && Math.abs(Math.abs(far[0][0].lng - far[0][far[0].length - 1].lng) - 360) < 1e-6, 'open, right across');
+  // 7,000 nm also runs south of 79 S: cut there
+  const cut = T.rangeRing(o, 7000 * 1.852);
+  assert.ok(cut.length === 2, 'two pieces: ' + cut.length);
+  cut.forEach((sg) => sg.forEach((p, k) => { assert.ok(p.lat <= 84 && p.lat >= -79); if (k) assert.ok(Math.abs(p.lng - sg[k - 1].lng) < 180); }));
+  // from 40 S a ring 75 degrees out passes behind the south pole, inside the limits: cut where its two ends part
+  const south = T.rangeRing({ lat: -40, lng: 20 }, 75 * KM_DEG);
+  assert.equal(south.length, 2, 'two pieces');
+  south.forEach((sg) => sg.forEach((p, k) => { if (k) assert.ok(Math.abs(p.lng - sg[k - 1].lng) < 180, 'no jump inside a piece'); }));
+});
+
+test('the readout at a point: bearing and distance from the spot, seen or not, and why not; swell travel time', () => {
+  const res = reachOn({ lat: 0, lng: 0 }, [[sq(61, -10, 79, 10)], [sq(-2, -1, -1.08, 1)]]);
+  const seen = T.probe(res, { lat: 0.1, lng: 30 });
+  assert.ok(seen.visible && seen.stop === null && seen.sector.level === 'open' && Math.abs(seen.bearing - 89.8) < 0.1 && Math.abs(seen.km - 30 * KM_DEG) < 5, JSON.stringify(seen));
+  const behind = T.probe(res, { lat: 0.1, lng: 85 });
+  assert.ok(!behind.visible && behind.stop === 'land' && Math.abs(behind.stopKm - 61 * KM_DEG) < 5, 'behind the far coast: ' + JSON.stringify(behind));
+  const shadow = T.probe(res, { lat: 0.1, lng: -20 });
+  assert.ok(!shadow.visible && shadow.stop === 'land' && shadow.stopKm < 125 && shadow.sector.level !== 'open', 'shadowed by the near coast');
+  const north = T.probe(res, { lat: 86, lng: 0.5 });
+  assert.ok(!north.visible && north.stop === 'limit', 'beyond the map: ' + JSON.stringify(north));
+  const anti = T.probe(reachOn({ lat: 0, lng: 0 }, null), { lat: 0.2, lng: 179 });
+  assert.ok(!anti.visible && anti.stop === 'cap' && anti.stopKm === T.REACH_KM, 'past the cap');
+  assert.equal(T.probe(res, { lat: 0, lng: 0 }), null, 'the spot itself');
+  // the ray that holds the point decides, on both sides of a half-degree edge
+  const edge = reachOn({ lat: 0, lng: 0 }, [[sq(61, 0.3, 79, 10)]]);                // land only north of 0.3 N
+  assert.ok(!T.probe(edge, { lat: 2, lng: 85 }).visible && T.probe(edge, { lat: -2, lng: 85 }).visible);
+  // which ray: the half degree that holds the point's bearing, no neighbour
+  const steps = { origin: { lat: 5, lng: -30 }, reach: Float64Array.from({ length: 720 }, (_, k) => 1000 + k), reachEnd: new Uint8Array(720), sectors: res.sectors };
+  const inside = T.probe(steps, T.rayPoint(steps.origin, 123.3, 1245.9)), outside = T.probe(steps, T.rayPoint(steps.origin, 123.3, 1246.5));
+  assert.ok(inside.ray === 246 && inside.visible && outside.ray === 246 && !outside.visible && outside.stopKm === 1246, JSON.stringify([inside.ray, inside.visible, outside.visible]));
+  // Honolulu to Tokyo Narita (an independent vector calculation: 6,136.1 km at 299.52 degrees)
+  const hnl = T.computeExposure({ lat: 21.3187, lng: -157.9225 }, [], null); T.computeReach(hnl, null);
+  const nrt = T.probe(hnl, { lat: 35.7647, lng: 140.3864 });
+  assert.ok(Math.abs(nrt.km - 6136.14) < 0.05 && Math.abs(nrt.bearing - 299.524) < 0.005 && nrt.visible, JSON.stringify([nrt.km, nrt.bearing]));
+  assert.ok(Math.abs(T.travelDays(2150 * 1.852, 14) - 4.218) < 0.001, '14 s swell over 2,150 nm: 4.2 days');
+  assert.ok(Math.abs(T.travelDays(1000, 10) / T.travelDays(1000, 20) - 2) < 1e-12, 'twice the period, twice the speed');
+});
+
+test('the world index is built once from tier 0 and kept on the coast source', async () => {
+  const b = fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'coast', 'hawaii-t0.bin'));
+  const buf = b.buffer.slice(b.byteOffset, b.byteOffset + b.length);
+  const cs = new T.CoastSource('https://c', async () => ({ ok: true, json: async () => ({ format: 'coast-v1', tier0: {}, tier1: { cell: 5, dir: 'f', cells: {} } }), arrayBuffer: async () => buf }));
+  assert.equal(cs.world(), null, 'nothing before the coast has loaded');
+  await cs.load();
+  const w = cs.world();
+  assert.ok(w && w.n > 100 && cs.world() === w, 'built after the load, and the same index again');
+  // built in slices it is the same index, and callers that arrive during the build share it
+  const cs2 = new T.CoastSource('https://c', async () => ({ ok: true, json: async () => ({ format: 'coast-v1', tier0: {}, tier1: { cell: 5, dir: 'f', cells: {} } }), arrayBuffer: async () => buf }));
+  assert.equal(await cs2.world(() => Promise.resolve()), null, 'nothing before the load, sliced too');
+  await cs2.load();
+  const pause = () => Promise.resolve();
+  const p1 = cs2.world(pause), p2 = cs2.world(pause);
+  assert.ok(p1 === p2, 'one build');
+  const w2 = await p1;
+  assert.ok(w2.n === w.n && w2.cells.size === w.cells.size && cs2.world() === w2 && (await cs2.world(pause)) === w2, 'the same edges, kept');
+  let yields = 0;
+  const w3 = await T.indexSliced(T.worldEdges(cs.tier0), 0.5, 50, () => { yields++; return Promise.resolve(); });
+  assert.ok(w3.n === w.n && yields === Math.ceil(w.n / 50) - 1 && yields > 3, 'a pause between slices: ' + yields);
+  assert.equal(await T.indexSliced([], 0.5, 50, pause), null, 'no edges, no index');
+  for (const [ax, ay, bx, by] of [[-160, 23, -155, 19], [-158.5, 21.2, -157.5, 21.9], [-157, 21.5, -156, 20.6]]) assert.equal(w2.firstHit(ax, ay, bx, by), w.firstHit(ax, ay, bx, by));
+  // on the Hawaii crop: Pipeline's north-west ray meets no land at all (the crop ends), so it runs to the cap
+  const res = T.computeExposure({ lat: 21.6679, lng: -158.0566 }, [], cs.tier0); T.computeReach(res, w);
+  assert.equal(res.reachEnd[rayAt(320.25)], T.END_CAP);
+});

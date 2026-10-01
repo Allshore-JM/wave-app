@@ -371,3 +371,6 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     monkeypatch.delenv("COAST_BASE")
     r = A.app.test_client().get("/ui/tools.js?v=" + A.UI_ASSET_VERSION)
     assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+    # the projected window (plan section 30) ends its rays at the map's own latitude limits
+    js, page = r.get_data(as_text=True), client.get("/?station=51201").get_data(as_text=True)
+    assert "REACH_LAT_N = 84, REACH_LAT_S = -79" in js and "const LAT_LIMIT_NORTH = 84;" in page and "const LAT_LIMIT_SOUTH = -79;" in page

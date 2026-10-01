@@ -217,3 +217,32 @@ Owner check on a real phone (no reviewer had one), on https://wave-app-clean.onr
 4. Still locked, tap a forecast point: its forecast opens; minimise it: the readout is still there.
 5. Tap the ▴ button: the bar folds to its title; tap ▾ to unfold. Tap Unlock: the readout goes.
 6. Drag the map a long way while the window shows: it should not run out at the edge mid-drag.
+
+## Re-check of the fix round (R1, UI 1.12.8 @ 8b94f5f, 2026-10-01, a fresh reviewer at MAX)
+
+One fresh-context reviewer, code and test site (report: scratch `g21/r1/g21-r1-report.md`). **0 P0, 0 P1, 2 P2, 8 P3.**
+Every G21 item the fix round took on was confirmed with reproductions on 1.12.5 and 1.12.8; five only partly (B-6,
+B-11, B-15, A-1, A-14: the gaps are R1-4 to R1-8) and B-5's fix caused R1-1. Also confirmed: the fan equals production
+at 315 clicks; the new strips cover exactly the intended water (418,011 points, no overlap, no gap); no self-crossing
+ring at 1,501 random spots; 1,800 fuzzed and 1,428 staged controller runs clean; 268 mutants, 239 killed, the 13
+survivors in A's numbering agreed as equivalent or harmless.
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| R1-1 | P2 | Hovering resized the bar again: the small-island sentence ran to four lines at the default text size (B-5 had made the details line a minimum height), the bar grew 281 -> 302 px, and that first growth minimised an open live-buoy or forecast window; a maximised forecast window jumped 21 px at every strip. | **Fixed** @ 280a2ab (1.12.9): "Behind a small island N out · swell …"; every readout kind with its longest values pinned to 79 characters (the longest that fits three lines); a details line taller than its three lines (large text) is left out of the height the page sees, so it never moves or minimises a window. |
+| R1-2 | P2 | The window's own canvas (padding 0.5) is four times the map's area for the whole session: 133 MB in a retina 1920 x 1080 window; on a 12.9-inch iPad 22.4 M pixels, over iOS Safari's 16.7 M limit (the canvas would draw nothing). Computed, not seen on a device. | **Fixed** @ 280a2ab: the padding is chosen so the canvas stays under 12 M pixels (0.1 to 0.5), set again at each redraw; the renderer is removed when the tool closes. A 12.9-inch iPad: about 12 M pixels. Still unseen on a real iPad (owner check). |
+| R1-3 | P3 | The cursor line and its casing dropped under the veil after the window was redrawn (world copy, unit change). | **Fixed**: brought back on top after each redraw. |
+| R1-4 | P3 | A folded bar hid the tool's messages (a refused click, the 75 degree limit, coast data unavailable, could not be drawn) and the lock. | **Fixed**: those lines show under the folded title, and the title reads "Swell exposure · locked". |
+| R1-5 | P3, owner's call | Compact mode also dropped the "Moved … off the shore" and "lower detail" status lines. | **Fixed**: status lines stay on a phone; only the explanation goes (the owner asked for no explanation lines). |
+| R1-6 | P3 | Landscape phones did not get the compact bar; compact mode did not follow a resize. | **Fixed**: compact when the map is narrower than 576 px or shorter than 400 px on a touch screen; a resize re-renders the bar. |
+| R1-7 | P3 | A hovered readout jumped to a stale pointer position after the pointer had moved onto a control; the details line stayed silent for screen readers after the pointer left the map. | **Fixed**: over a control the pointer is forgotten; leaving the map and Lock let the line speak again. |
+| R1-8 | P3 | Test gaps: labels back at 335 degrees, a line changing kind in place, Escape-clear focus, the world build's slice size. | **Fixed**: each pinned (the labels at the bearings `ringLabelBearings` gives; fold -> hover -> unfold classes; Escape-clear focus; `WORLD_PIECES` / `WORLD_BATCH`). |
+| R1-9 | P3 | "6-41 % fewer points" did not hold at North Cape (23 % more: the rays' 25 km minimum shrank with the latitude factor). | **Fixed**: a 25 km floor after the latitude factor for the drawn rays. |
+| R1-10 | P3 | A network failure was logged as a code error; after the close button focus dropped to the page; at zoom 2 the 1,000 nm label sits under the compass. | **Fixed**, the first two (the coast fetch's failures are data errors; closing gives focus to the tools button). **Accepted**: the label under the compass at the widest zooms. |
+
+For the owner (R1, section 6, kept as they are): a quarter of the arcs 5 degrees or wider carry no label (the rule labels
+the widest arc and others 15 degrees or wider); the ring step is chosen against the single farthest ray (at Busan the
+second ring is a one-ray sliver).
+
+Tests for 1.12.9: Node 302 at the real clock, 2026-10-05 and 2027-09-01; pytest 456. 22 mutants of the re-check fixes
+and of R1's gaps: all killed (two only after a test was split, so each of two hover fixes is seen on its own).

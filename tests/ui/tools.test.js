@@ -831,7 +831,7 @@ test('the cursor readout text: where the point is, and whether its swell reaches
   assert.equal(T.probeText({ bearing: 305.4, km: 2150 * 1.852, visible: true, sector: sec('light') }, 'Metric').where, '305° NW · 3,982 km · 2,150 nm');
   assert.match(T.probeText({ bearing: 5, km: 900, visible: true, sector: sec('light') }, 'US').why, /^In the window \(partly shadowed\)/);
   assert.match(T.probeText({ bearing: 5, km: 900, visible: true, sector: sec('dark') }, 'US').why, /^In view, but in a shadowed direction/);
-  assert.equal(T.probeText({ bearing: 359.8, km: 9000, visible: false, stop: 'land', stopKm: 4942, sector: sec('open') }, 'US').why, 'Behind land 3,071 mi out: its swell cannot reach the spot');
+  assert.equal(T.probeText({ bearing: 359.8, km: 9000, visible: false, stop: 'land', stopKm: 4942, sector: sec('open') }, 'US').why, 'Blocked by land 3,071 mi from the spot: its swell cannot reach it');
   assert.equal(T.probeText({ bearing: 359.8, km: 9000, visible: false, stop: 'land', stopKm: 4942, sector: sec('open') }, 'US').where.slice(0, 7), '000° N ');
   assert.equal(T.probeText({ bearing: 10, km: 9000, visible: false, stop: 'limit', stopKm: 7000, sector: sec('open') }, 'US').why, "Beyond the map's polar limit");
   assert.equal(T.probeText({ bearing: 10, km: 19600, visible: false, stop: 'cap', stopKm: 19500, sector: sec('open') }, 'US').why, 'Farther than the rays reach');

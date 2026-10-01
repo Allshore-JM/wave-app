@@ -771,3 +771,36 @@ test('the world index is built once from tier 0 and kept on the coast source', a
   const res = T.computeExposure({ lat: 21.6679, lng: -158.0566 }, [], cs.tier0); T.computeReach(res, w);
   assert.equal(res.reachEnd[rayAt(320.25)], T.END_CAP);
 });
+
+test('small-island shadows: a notch up to 2.5 degrees with farther rays on both sides is bridged; wide shadows stay', () => {
+  const r = new Float64Array(720).fill(8000);
+  r[100] = 3000;                                                              // one ray behind an atoll
+  for (let i = 200; i < 205; i++) r[i] = 2500;                                // five rays (2.5 degrees) behind an island
+  for (let i = 300; i < 306; i++) r[i] = 2500;                                // six rays: too wide
+  for (let i = 400; i < 480; i++) r[i] = 40;                                  // a coast near the spot (40 degrees)
+  r[719] = 1000; r[0] = 1000;                                                 // two rays across north
+  r[600] = 0; r[601] = 30;                                                    // the spot's own coast, 0-30 km away
+  const b = T.smallShadowReach(r, T.ISLAND_RAYS, T.NEAR_KM);
+  assert.ok(b[600] === 0 && b[601] === 30, 'land within 50 km keeps the full veil');
+  assert.equal(T.smallShadowReach(r, T.ISLAND_RAYS)[600], 8000, '(without the limit it would be bridged)');
+  assert.equal(b[100], 8000, 'the atoll');
+  for (let i = 200; i < 205; i++) assert.equal(b[i], 8000, 'the island, ray ' + i);
+  for (let i = 300; i < 306; i++) assert.equal(b[i], 2500, 'six rays keep their shadow, ray ' + i);
+  for (let i = 400; i < 480; i++) assert.equal(b[i], 40, 'the near coast');
+  assert.ok(b[719] === 8000 && b[0] === 8000, 'across north');
+  assert.ok(b.every((v, i) => v >= r[i]), 'never shorter than the ray');
+  // an atoll in front of a small island: both bridged, to the far edge
+  const nest = new Float64Array(720).fill(9000); for (let i = 50; i < 54; i++) nest[i] = 4000; nest[51] = 1500;
+  const nb = T.smallShadowReach(nest, 5);
+  for (let i = 50; i < 54; i++) assert.equal(nb[i], 9000, 'nested, ray ' + i);
+  // a step (one side all short) is not bridged; the bridge height is the shorter side
+  const s = new Float64Array(720).fill(5000); for (let i = 0; i < 360; i++) s[i] = 9000; s[200] = 100; s[500] = 100;
+  const sb = T.smallShadowReach(s, 5);
+  assert.ok(sb[200] === 9000 && sb[500] === 5000, 'bridged to the nearer far edge');
+  for (const i of [356, 357, 358, 359, 360, 361, 362, 363]) assert.equal(sb[i], s[i], 'the step between 9,000 and 5,000 is kept, ray ' + i);
+  // the lighter strip lies between the two rings: inside the bridged ring, outside the ray's own
+  const res = { origin: { lat: 0, lng: 0 }, reach: r }, own = T.litRing(res), wide = T.litRing(res, 100, b);
+  const nearest = (ringPts) => Math.min(...ringPts.filter((q) => { const a = T.bearingDeg(res.origin, q); return a > 49.99 && a < 50.51; }).map((q) => Math.round(T.distanceKm(res.origin, q))));
+  assert.equal(nearest(own), 3000, 'the own ring stops at the atoll (ray 100: 50.0-50.5 degrees)');
+  assert.equal(nearest(wide), 8000, 'the bridged ring runs on past it');
+});

@@ -492,8 +492,11 @@ test('the projection: a click superseded during its reach draws nothing; a unit 
   const E = makeEnv(); E.pick('exposure');
   E.clickAt(21.6655, -158.054); await E.settle();
   E.clickAt(21.269, -157.829); await E.settle(); await reachDrawn(E); await wait(50);
-  const veil = [...E.s.reach._items].filter((l) => l.kind === 'polygon');
+  const veil = [...E.s.reach._items].filter((l) => l.kind === 'polygon' && l.a.length === 4);
   assert.equal(veil.length, 1, 'one projection');
+  const light = [...E.s.reach._items].filter((l) => l.kind === 'polygon' && l.a.length === 2);
+  assert.ok(light.length === 0 || light.length === 3, 'small-island shadows: none, or one per world copy');
+  light.forEach((l) => assert.ok(l.o.fillOpacity < veil[0].o.fillOpacity, 'lighter than the veil'));
   assert.ok(Math.abs(E.s.result.origin.lat - 21.27) < 0.02, 'the second click\'s');
   const labels = () => [...E.s.reach._items].filter((l) => l.tip).map((l) => l.tip);
   assert.ok(labels().length && labels().every((x) => / nm$/.test(x)), labels().join());

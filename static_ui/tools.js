@@ -688,8 +688,12 @@
   var REACH_KM = 19500, REACH_STEP_KM = 25, REACH_LAT_N = 84, REACH_LAT_S = -79, WORLD_BATCH = 40000;
   var END_LAND = 0, END_LIMIT = 1, END_CAP = 2;
   // How the window is drawn (plan section 30; tuned on the owner's preview sheet).
-  var REACH_STYLE = { veil: '#06121c', veilOpacity: 0.38, ray: '#ffffff', rayOpacity: 0.55, rayWeight: 1, rayEvery: 5, rayMinKm: 300,
+  // Owner's pick (B): a 55 % veil and a ray every 5 degrees; small islands' shadows lighter (25 %).
+  var REACH_STYLE = { veil: '#06121c', veilOpacity: 0.55, smallVeilOpacity: 0.25, ray: '#ffffff', rayOpacity: 0.5, rayWeight: 1, rayEvery: 10, rayMinKm: 300,
     ring: '#ffffff', ringOpacity: 0.55, ringPct: 0.9 };
+  // A small island's shadow: at most ISLAND_RAYS rays (2.5 degrees) wide, with farther-reaching rays on both sides, cast
+  // by land more than NEAR_KM (50 km) away. Land wider than that, or nearer, keeps the full veil.
+  var ISLAND_RAYS = 5;
   // How far along a ray its latitude first reaches `latLimit` (km; Infinity when it never does). On a great circle
   // sin(lat) = sin(lat0) cos(d) + cos(lat0) cos(brg) sin(d) = R cos(d - a).
   function limitKm(origin, brg, latLimit) {
@@ -757,8 +761,8 @@
   }
   // The water the spot can see, as one ring: each ray's arc at its reach, joined to the next ray's along the great
   // circle between them (so a shadow's sides are great circles on the map). Longitudes as rayPoint.
-  function litRing(result, maxGapKm) {
-    var o = result.origin, r = result.reach, n = r.length, w = 360 / n, gap = maxGapKm || 100, out = [];
+  function litRing(result, maxGapKm, reachOverride) {
+    var o = result.origin, r = reachOverride || result.reach, n = r.length, w = 360 / n, gap = maxGapKm || 100, out = [];
     for (var i = 0; i < n; i++) {
       var b0 = i * w, from = r[(i + n - 1) % n], to = r[i], m = Math.max(1, Math.ceil(Math.abs(to - from) / gap));
       for (var k = 1; k <= m; k++) out.push(rayPoint(o, b0, from + (to - from) * k / m));
@@ -782,6 +786,21 @@
   function ringsFor(unit, maxKm) {
     var metric = unit === 'Metric', each = metric ? 2000 : 1000 * KM_PER_NM, out = [];
     for (var k = 1; k <= 10 && k * each <= maxKm; k++) out.push({ km: k * each, label: fmtNum(k * (metric ? 2000 : 1000), 0) + (metric ? ' km' : ' nm') });
+    return out;
+  }
+  // Each ray's reach with small islands' shadows bridged: a run of up to `k` rays that all stop short of BOTH rays
+  // bounding it is lifted to the shorter of those two (the shadow's far edge). Shorter runs first, so an island in
+  // front of another is bridged too. A shadow wider than k rays stays, and so does any shadow cast by land within
+  // minKm of the spot (its own coast and headlands: the fan's business).
+  function smallShadowReach(reach, k, minKm) {
+    var n = reach.length, out = Float64Array.from(reach);
+    for (var w = 1; w <= k; w++) {
+      for (var i = 0; i < n; i++) {
+        var h = Math.min(out[(i - 1 + n) % n], out[(i + w) % n]), low = true;
+        for (var j = 0; j < w && low; j++) if (out[(i + j) % n] >= h || reach[(i + j) % n] < (minKm || 0)) low = false;
+        if (low) for (j = 0; j < w; j++) out[(i + j) % n] = h;
+      }
+    }
     return out;
   }
   // How far the rings go: most rays' reach (the 90th percentile), not the one ray that runs round the world.
@@ -1175,13 +1194,19 @@
       clearReach();
       var res = s.result; if (!res || !res.reach) return;
       var st = REACH_STYLE, shift = s.fanLng - res.origin.lng, opt = { pane: 'toolsReachPane', interactive: false };
-      var ring = litRing(res), u = unit(), rings = ringsFor(u, ringReachKm(res)), outer = [], holes = [];
-      [-360, 0, 360].forEach(function (k) {
-        holes.push(ring.map(function (q) { return [q.lat, q.lng + shift + k]; }));
-      });
-      var west = s.fanLng - 540, east = s.fanLng + 540;
-      outer = [[85, west], [85, east], [-85, east], [-85, west]];
+      // the full veil outside the window with small islands' shadows bridged; those shadows get a lighter veil
+      var bridged = smallShadowReach(res.reach, ISLAND_RAYS, NEAR_KM), ring = litRing(res), wide = litRing(res, 100, bridged);
+      var u = unit(), rings = ringsFor(u, ringReachKm(res)), holes = [];
+      var at = function (k) { return function (q) { return [q.lat, q.lng + shift + k]; }; };
+      [-360, 0, 360].forEach(function (k) { holes.push(wide.map(at(k))); });
+      var west = s.fanLng - 540, east = s.fanLng + 540, outer = [[85, west], [85, east], [-85, east], [-85, west]];
       L.polygon([outer].concat(holes), ext({ stroke: false, fillColor: st.veil, fillOpacity: st.veilOpacity }, opt)).addTo(reachLayer);
+      var small = false; for (var b = 0; b < bridged.length; b++) if (bridged[b] > res.reach[b]) { small = true; break; }
+      if (small) {
+        [-360, 0, 360].forEach(function (k) {
+          L.polygon([wide.map(at(k)), ring.map(at(k))], ext({ stroke: false, fillColor: st.veil, fillOpacity: st.smallVeilOpacity }, opt)).addTo(reachLayer);
+        });
+      }
       [-360, 0, 360].forEach(function (k) {
         for (var i = Math.floor(st.rayEvery / 2); i < res.reach.length; i += st.rayEvery) {
           if (res.reach[i] < st.rayMinKm) continue;
@@ -1362,7 +1387,7 @@
       RAYS: RAYS, SECTORS: SECTORS, CAP_KM: CAP_KM, NEAR_KM: NEAR_KM, REF_MIN_KM: REF_MIN_KM, SHADOW_FULL_KM: SHADOW_FULL_KM,
       FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, FAR_OPEN_MAX: FAR_OPEN_MAX, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM,
       worldEdges: worldEdges, worldIndex: worldIndex, indexSliced: indexSliced, limitKm: limitKm, reachWalk: reachWalk, computeReach: computeReach, rayPoint: rayPoint, rayPath: rayPath,
-      litRing: litRing, rangeRing: rangeRing, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, probe: probe,
+      litRing: litRing, smallShadowReach: smallShadowReach, ISLAND_RAYS: ISLAND_RAYS, rangeRing: rangeRing, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, probe: probe,
       REACH_KM: REACH_KM, REACH_STEP_KM: REACH_STEP_KM, REACH_LAT_N: REACH_LAT_N, REACH_LAT_S: REACH_LAT_S, END_LAND: END_LAND, END_LIMIT: END_LIMIT, END_CAP: END_CAP
     }
   };

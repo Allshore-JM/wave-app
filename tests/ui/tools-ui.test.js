@@ -41,6 +41,7 @@ function makeEnv(opts) {
     mouseEventToContainerPoint(e) { return { x: e.clientX - mapEl.rect.left, y: e.clientY - mapEl.rect.top }; },
     containerPointToLatLng(p) { const x = Array.isArray(p) ? p[0] : p.x, y = Array.isArray(p) ? p[1] : p.y; return { lat: view.lat0 - y / view.scale, lng: view.lng0 + x / view.scale }; },
     getZoom() { return view.zoom; },
+    getCenter() { return map.containerPointToLatLng([mapEl.rect.width / 2, mapEl.rect.height / 2]); },
     getSize() { return { x: mapEl.rect.width, y: mapEl.rect.height }; },
     removeLayer(l) { layers.delete(l); },
     addControl(c) {
@@ -539,7 +540,7 @@ test('the cursor readout: off the fan it reads the map (and a line to the cursor
   E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });             // north-west, over open water
   assert.ok(E.s.readout && E.s.readout.visible, 'a readout');
   assert.match(E.body(), /° (NW|WNW|NNW) · [\d,.]+ (mi|ft) · [\d,.]+ nm/);
-  assert.match(E.body(), /In the window · swell [\d.]+ d at 14 s/);
+  assert.match(E.body(), /In the window · swell 2 h at 14 s, 2 h at 18 s/, 'hours under a day');
   const line = [...E.layers].find((l) => l.kind === 'polyline' && l.o.dashArray === '2 4');
   assert.ok(line && line.o.pane === 'toolsReachPane', 'a line to the cursor');
   const end = line.a[line.a.length - 1], at = E.map.containerPointToLatLng([c.x - 300, c.y - 200]);
@@ -586,4 +587,86 @@ test('Lock: the window stays, the page has its clicks back (active() false, no c
   assert.ok(!E.s.locked && E.A.active(), 'Unlock');
   lock.dispatch('click'); E.q('.tools-x').dispatch('click');
   assert.ok(!E.s.locked && !E.A.active() && E.map.doubleClickZoom.enabled(), 'closing unlocks and gives double-click back');
+});
+
+const cursorLineOf = (E) => [...E.layers].find((l) => l.kind === 'polyline' && l.o.dashArray === '2 4');
+test('touch: a tap\'s compatibility mousemove neither starts nor moves the readout; a tapped readout stays through a mouseleave', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]), water = { clientX: c.x - 300, clientY: c.y - 200 };
+  const now = Date.now; let skew = 0; Date.now = () => now() + skew;
+  try {
+    E.mapEl.dispatch('touchstart', {});
+    E.mapEl.dispatch('mousemove', water);
+    assert.ok(!E.s.readout, 'within a second of a touch: the tap\'s own mousemove');
+    skew = 1500; E.mapEl.dispatch('pointerdown', { pointerType: 'touch' });
+    E.mapEl.dispatch('mousemove', water);
+    assert.ok(!E.s.readout, 'a touch pointer counts too');
+    skew = 3000; E.mapEl.dispatch('pointerdown', { pointerType: 'pen' });
+    E.mapEl.dispatch('mousemove', water);
+    assert.ok(!E.s.readout, 'so does a pen');
+    skew = 4500;
+    E.mapEl.dispatch('mousemove', Object.assign({ sourceCapabilities: { firesTouchEvents: true } }, water));
+    assert.ok(!E.s.readout, 'a mousemove that says it came from touch');
+    E.mapEl.dispatch('pointerdown', { pointerType: 'mouse' });
+    E.mapEl.dispatch('mousemove', water);
+    assert.ok(E.s.readout && !E.s.pinned, 'a mouse: the hover readout');
+    E.mapEl.dispatch('mouseleave', {});
+    assert.ok(!E.s.readout && !cursorLineOf(E), 'leaving the map ends a hover readout');
+    // locked, a tap pins the readout: a window opening over the map sends a mouseleave, and the readout stays
+    E.q('[data-act="lock"]').dispatch('click');
+    E.clickAt(22.5, -160, { pointerType: 'touch' });
+    assert.ok(E.s.readout && E.s.pinned && cursorLineOf(E));
+    E.mapEl.dispatch('mouseleave', {});
+    assert.ok(E.s.readout && cursorLineOf(E), 'a tapped readout stays, with its line');
+    // after Unlock, a tap on a wedge takes the readout's line as well as its text
+    E.q('[data-act="lock"]').dispatch('click');
+    E.map.fire('click', { latlng: E.map.containerPointToLatLng([c.x, c.y + 60]), originalEvent: { pointerType: 'touch' } });
+    assert.ok(!E.s.readout && E.s.selected >= 0 && !cursorLineOf(E), 'the wedge; the line goes');
+  } finally { Date.now = now; }
+});
+
+test('a new point drops the old spot\'s readout and its line at once', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });
+  assert.ok(E.s.readout && cursorLineOf(E));
+  E.clickAt(21.269, -157.829);
+  assert.ok(E.s.busy && !E.s.readout && !cursorLineOf(E), 'gone with the old spot');
+  await E.settle(); await reachDrawn(E);
+  assert.ok(E.s.result && !E.s.readout);
+  const c2 = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
+  E.mapEl.dispatch('mousemove', { clientX: c2.x - 300, clientY: c2.y - 200 });
+  assert.ok(E.s.readout && cursorLineOf(E));
+  E.q('[data-act="clear"]').dispatch('click');
+  assert.ok(!E.s.readout && !cursorLineOf(E), 'Clear takes them too');
+});
+
+test('the spot\'s copy follows the view (as the page\'s markers do): the fan, the window and a tapped readout\'s line', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const lng0 = E.s.fanLng, veil = () => [...E.s.reach._items].find((l) => l.kind === 'polygon' && l.a.length === 4);
+  const v1 = veil();
+  E.view.lng0 += 100; E.map.fire('moveend');
+  assert.ok(E.s.fanLng === lng0 && veil() === v1, 'a pan inside the world changes nothing');
+  E.view.lng0 += 150; E.map.fire('moveend');                                    // the view's centre 250 degrees east of the spot
+  assert.equal(E.s.fanLng, lng0 + 360, 'the nearest copy, as the markers\' currentWorldOffset rounds');
+  E.view.lng0 -= 250; E.map.fire('moveend');
+  assert.equal(E.s.fanLng, lng0, 'and back');
+  // a hovered readout's line stays at the pointer
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });
+  const hovered = cursorLineOf(E).a.slice(-1)[0];
+  E.view.lng0 += 720; E.map.fire('moveend');
+  assert.equal(E.s.fanLng, lng0 + 720, 'the spot\'s copy in the world in view');
+  assert.deepEqual(cursorLineOf(E).a.slice(-1)[0], hovered, 'a hovered readout waits for the pointer');
+  E.view.lng0 -= 720; E.map.fire('moveend');
+  // a tapped readout (locked, touch) follows
+  E.q('[data-act="lock"]').dispatch('click');
+  E.clickAt(22.5, -160, { pointerType: 'touch' });
+  E.view.lng0 += 720; E.map.fire('moveend');                                    // two worlds east
+  assert.equal(E.s.fanLng, lng0 + 720);
+  assert.ok(Math.abs(E.fan().a[1] - (lng0 + 720)) < 1e-9, 'the fan there');
+  const outer = veil().a[0];
+  assert.ok(Math.abs(outer[0][1] - (lng0 + 180)) < 1e-9 && Math.abs(outer[1][1] - (lng0 + 1260)) < 1e-9, 'the window round it');
+  const end = cursorLineOf(E).a.slice(-1)[0];
+  assert.ok(E.s.readout && E.s.pinned && Math.abs(end[1] - 560) < 1e-6 && Math.abs(end[0] - 22.5) < 1e-6, 'the tapped readout\'s line in that world too');
 });

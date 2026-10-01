@@ -808,6 +808,12 @@
   function ringReachKm(result) { return percentile(result.reach, REACH_STYLE.ringPct); }
   // Deep-water swell travels at its group speed, g T / 4 pi (0.78 T m/s): days to cover `km` at period `sec`.
   function travelDays(km, sec) { return km / (9.80665 * sec / (4 * Math.PI) * 3.6) / 24; }
+  // The readout's travel time: whole hours under a day ("0.1 d" said little), else days to one decimal.
+  function fmtTravel(km, sec) {
+    var d = travelDays(km, sec), h = d * 24;
+    if (h < 0.5) return 'under 1 h';
+    return h < 23.5 ? Math.round(h) + ' h' : fmtNum(roundTo(d, 1), 1) + ' d';
+  }
   // What the spot sees at a point on the map: the bearing and distance from the spot, its ray and wedge, and whether
   // the ray reaches it (`visible`); when it does not, where the ray stopped (`stopKm`) and why (`stop`).
   function probe(result, latlng) {
@@ -999,7 +1005,7 @@
     var why;
     if (pr.visible) {
       why = (pr.sector.level === 'open' ? 'In the window' : pr.sector.level === 'light' ? 'In the window (partly shadowed)' : 'In view, but in a shadowed direction') +
-        ' · swell ' + fmtNum(roundTo(travelDays(pr.km, 14), 1), 1) + ' d at 14 s, ' + fmtNum(roundTo(travelDays(pr.km, 18), 1), 1) + ' d at 18 s';
+        ' · swell ' + fmtTravel(pr.km, 14) + ' at 14 s, ' + fmtTravel(pr.km, 18) + ' at 18 s';
     } else if (pr.stop === 'land') why = 'Blocked by land ' + fmtDist(pr.stopKm, unit) + ' from the spot: its swell cannot reach it';
     else if (pr.stop === 'limit') why = 'Beyond the map\'s polar limit';
     else why = 'Farther than the rays reach';
@@ -1134,7 +1140,7 @@
     }
     function clear(silent) {
       if (s.locked) { s.locked = false; if (s.tool) map.getContainer().classList.add('tools-active'); if (s.dblWas) map.doubleClickZoom.disable(); }
-      s.readout = null; if (cursorLine) { map.removeLayer(cursorLine); cursorLine = null; }
+      hideReadout();
       s.gen++; s.pts = []; s.closed = false; s.closedAt = null; s.result = null; s.selected = -1; s.busy = false; s.msg = '';
       s.group.clearLayers(); if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
       clearReach();
@@ -1147,7 +1153,7 @@
       if (!s.tool) return;
       var p = { lat: latlng.lat, lng: latlng.lng }, b = map.latLngToContainerPoint(latlng);
       if (s.tool === 'exposure') {
-        if (s.locked) { showReadout(latlng); return; }
+        if (s.locked) { showReadout(latlng, isTouch(ev)); return; }
         if (s.result && s.fan && isTouch(ev) && !s.compass) {                         // a tap inside the fan picks a wedge; a mouse click places a new point
           var c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
           var k = sectorAt(b.x - c.x, b.y - c.y, s.radius);
@@ -1283,7 +1289,7 @@
         if (prev) prev.setAttribute('stroke', 'none');
         if (next) next.setAttribute('stroke', SELECT);
       }
-      s.selected = k; s.readout = null; render();
+      s.selected = k; hideReadout(); render();
     }
     // The obstacles the fan should not sit under: the map's controls (the tool bar included, `hard`: the fan's centre
     // never goes under it) and whatever the page adds (the floating windows), as rects relative to the map.
@@ -1315,7 +1321,7 @@
       if (Math.abs(p.lat) > MAX_ABS_LAT) { clear(true); s.msg = 'Swell exposure works between 75°S and 75°N.'; render(); return; }
       var gen = ++s.gen, clickLng = p.lng, origin = { lat: p.lat, lng: wrapLng(p.lng) };
       s.group.clearLayers(); if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
-      clearReach();
+      clearReach(); hideReadout();                                         // the old spot's readout and line go too
       s.result = null; s.selected = -1; s.busy = true; render();
       coast.load().then(function () { return coast.near(origin); }).then(function (nearSets) {
         // a frame first, so "Computing…" is painted before the placement's work (G20 re-checks R4, R5): a timer after the
@@ -1365,15 +1371,36 @@
     doc.addEventListener('pointerdown', function (e) { pressUi = onUi(e); }, true);
     map.on('click', function (e) { if (s.tool && !pressUi && !onUi(e.originalEvent)) click(e.latlng, e.originalEvent); });
     map.on('dblclick', function () { if (s.tool === 'distance' || s.tool === 'area') finish(); });
+    // A tap also sends compatibility mouse events (a mousemove first), which must not start or move the readout, as in
+    // the overlay's readout (lastTouch). Seen in capture, so a control that stops the event's bubbling still counts.
+    var lastTouch = 0, mapEl = map.getContainer();
+    function touched() { lastTouch = Date.now(); }
+    mapEl.addEventListener('touchstart', touched, { passive: true, capture: true });
+    mapEl.addEventListener('touchend', touched, { passive: true, capture: true });
+    mapEl.addEventListener('pointerdown', function (e) { if (e.pointerType === 'touch' || e.pointerType === 'pen') touched(); }, true);
+    function fromTouch(e) { return Date.now() - lastTouch < 1000 || !!(e && e.sourceCapabilities && e.sourceCapabilities.firesTouchEvents); }
     // Hover straight from the map's element (the canvas renderer throttles Leaflet's mousemove).
-    map.getContainer().addEventListener('mousemove', function (e) {
-      if (s.tool !== 'exposure' || !s.result || !s.fan) return;
+    mapEl.addEventListener('mousemove', function (e) {
+      if (s.tool !== 'exposure' || !s.result || !s.fan || fromTouch(e)) return;
       var q = map.mouseEventToContainerPoint(e), c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
       var k = sectorAt(q.x - c.x, q.y - c.y, s.radius);
-      if (k >= 0) { if (s.readout) hideReadout(); select(k); return; }
+      if (k >= 0) { select(k); return; }
       if (s.result.reach && !onUi(e)) showReadout(map.containerPointToLatLng([q.x, q.y]));
     });
-    map.getContainer().addEventListener('mouseleave', function () { if (s.readout) { hideReadout(); render(); } });
+    // Leaving the map ends a hover readout; a tapped one stays (a window opening over the map sends a mouseleave too).
+    mapEl.addEventListener('mouseleave', function () { if (s.readout && !s.pinned) { hideReadout(); render(); } });
+    // The spot's copy follows the view, as the page's markers do (currentWorldOffset in templates/index.html): the fan
+    // and the window on the map stay in the world the map is panned to, and so does a tapped readout's line (a hovered
+    // one is drawn to the pointer, wherever it is).
+    map.on('moveend', function () {
+      if (s.tool !== 'exposure' || !s.result || !s.fan || typeof map.getCenter !== 'function') return;
+      var lng = map.getCenter().lng, k = Math.round((lng - s.fanLng) / 360) * 360;
+      if (k) { s.fanLng += k; drawFan(); if (s.reachOn) drawReach(); }
+      if (s.readout && s.pinned && s.readoutAt) {
+        var j = Math.round((lng - s.readoutAt.lng) / 360) * 360;
+        if (j) showReadout({ lat: s.readoutAt.lat, lng: s.readoutAt.lng + j }, true);
+      }
+    });
     map.on('zoomend', function () {
       if (s.tool !== 'exposure' || !s.result || !s.fan) return;
       var was = s.compass; s.compass = compassAt(map.getZoom(), s.compass);
@@ -1381,11 +1408,11 @@
     });
     // The readout at a point: the text in the bar's details line and a thin line along the great circle from the spot.
     var cursorLine = null;
-    function showReadout(latlng) {
+    function showReadout(latlng, pinned) {
       if (!s.result || !s.result.reach) return;
       var pr = probe(s.result, { lat: latlng.lat, lng: wrapLng(latlng.lng) });
       if (!pr) return;
-      s.readout = pr; s.selected = -1;
+      s.readout = pr; s.selected = -1; s.pinned = !!pinned; s.readoutAt = { lat: latlng.lat, lng: latlng.lng };
       var o = s.result.origin, line = rayPath(o, pr.bearing, pr.km, 100), end = line[line.length - 1];
       var k = Math.round((latlng.lng - end.lng) / 360) * 360;
       var ll = line.map(function (p) { return [p.lat, p.lng + k]; });
@@ -1395,7 +1422,7 @@
       if (prev) prev.setAttribute('stroke', 'none');
       render();
     }
-    function hideReadout() { s.readout = null; if (cursorLine) { map.removeLayer(cursorLine); cursorLine = null; } }
+    function hideReadout() { s.readout = null; s.pinned = false; s.readoutAt = null; if (cursorLine) { map.removeLayer(cursorLine); cursorLine = null; } }
     // Size changes (rotation, window resize): Leaflet's own resize event does not always fire here.
     var rz = null;
     function onResize() {
@@ -1452,7 +1479,7 @@
       RAYS: RAYS, SECTORS: SECTORS, CAP_KM: CAP_KM, NEAR_KM: NEAR_KM, REF_MIN_KM: REF_MIN_KM, SHADOW_FULL_KM: SHADOW_FULL_KM,
       FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, FAR_OPEN_MAX: FAR_OPEN_MAX, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM,
       worldEdges: worldEdges, worldIndex: worldIndex, indexSliced: indexSliced, limitKm: limitKm, reachWalk: reachWalk, computeReach: computeReach, rayPoint: rayPoint, rayPath: rayPath,
-      litRing: litRing, probeText: probeText, COMPASS_R: COMPASS_R, COMPASS_BELOW: COMPASS_BELOW, FULL_FROM: FULL_FROM, smallShadowReach: smallShadowReach, ISLAND_RAYS: ISLAND_RAYS, rangeRing: rangeRing, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, probe: probe,
+      litRing: litRing, probeText: probeText, COMPASS_R: COMPASS_R, COMPASS_BELOW: COMPASS_BELOW, FULL_FROM: FULL_FROM, smallShadowReach: smallShadowReach, ISLAND_RAYS: ISLAND_RAYS, rangeRing: rangeRing, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, fmtTravel: fmtTravel, probe: probe,
       REACH_KM: REACH_KM, REACH_STEP_KM: REACH_STEP_KM, REACH_LAT_N: REACH_LAT_N, REACH_LAT_S: REACH_LAT_S, END_LAND: END_LAND, END_LIMIT: END_LIMIT, END_CAP: END_CAP
     }
   };

@@ -828,6 +828,8 @@ test('the cursor readout text: where the point is, and whether its swell reaches
   const seen = T.probeText({ bearing: 305.4, km: 2150 * 1.852, visible: true, sector: sec('open') }, 'US');
   assert.equal(seen.where, '305° NW · 2,474 mi · 2,150 nm');
   assert.equal(seen.why, 'In the window · swell 4.2 d at 14 s, 3.3 d at 18 s');
+  assert.equal(T.probeText({ bearing: 326, km: 280, visible: true, sector: sec('open') }, 'US').why, 'In the window · swell 7 h at 14 s, 6 h at 18 s', 'hours under a day');
+  assert.deepEqual([10, 30, 924, 925, 2150 * 1.852].map((km) => T.fmtTravel(km, 14)), ['under 1 h', '1 h', '23 h', '1.0 d', '4.2 d']);
   assert.equal(T.probeText({ bearing: 305.4, km: 2150 * 1.852, visible: true, sector: sec('light') }, 'Metric').where, '305° NW · 3,982 km · 2,150 nm');
   assert.match(T.probeText({ bearing: 5, km: 900, visible: true, sector: sec('light') }, 'US').why, /^In the window \(partly shadowed\)/);
   assert.match(T.probeText({ bearing: 5, km: 900, visible: true, sector: sec('dark') }, 'US').why, /^In view, but in a shadowed direction/);

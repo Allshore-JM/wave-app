@@ -46,6 +46,7 @@ function makeEnv(opts) {
     getCenter() { return map.containerPointToLatLng([mapEl.rect.width / 2, mapEl.rect.height / 2]); },
     getSize() { return { x: mapEl.rect.width, y: mapEl.rect.height }; },
     removeLayer(l) { layers.delete(l); },
+    hasLayer(l) { return layers.has(l); },
     addControl(c) {
       const box = c.onAdd(this); box.classList.add('leaflet-control'); c._container = box; mapEl.appendChild(box);
       if (box.classList.contains('tools-bar')) {                             // the bar's innerHTML as elements (fakedom does not parse HTML)
@@ -61,7 +62,8 @@ function makeEnv(opts) {
     },
     panBy(d) { this.pans.push(d); }
   };
-  function layer(kind, a, o) { return { kind, a, o, addTo(t) { (t._items || layers).add(this); return this; }, bindTooltip(txt, to) { this.tip = txt; this.tipOpts = to; return this; }, getElement() { return this._el; }, setLatLngs(x) { this.a = x; return this; } }; }
+  let front = 0;
+  function layer(kind, a, o) { return { kind, a, o, addTo(t) { (t._items || layers).add(this); return this; }, bindTooltip(txt, to) { this.tip = txt; this.tipOpts = to; return this; }, getElement() { return this._el; }, setLatLngs(x) { this.a = x; return this; }, bringToFront() { this.front = ++front; return this; } }; }
   win.L = {
     featureGroup() { return { kind: 'group', _items: new Set(), addTo(t) { (t._items || layers).add(this); return this; }, clearLayers() { this._items.clear(); }, add(x) { this._items.add(x); } }; },   // on the map = in `layers`
     Control: { extend(proto) { function C() { this.options = proto.options; } C.prototype.onAdd = proto.onAdd; C.prototype.getContainer = function () { return this._container; }; return C; } },
@@ -69,7 +71,7 @@ function makeEnv(opts) {
     DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} },
     polygon(a, o) { return layer('polygon', a, o); }, polyline(a, o) { return layer('polyline', a, o); }, circleMarker(a, o) { return layer('circle', a, o); },
     divIcon(o) { return o; },
-    ...(opts.canvas ? { canvas(o) { return { renderer: true, o }; } } : {}),
+    ...(opts.canvas ? { canvas(o) { return { renderer: true, o, options: o }; } } : {}),
     marker(ll, o) {                                                          // the fan's element holds its 72 wedge paths
       if (o.icon && o.icon.className !== 'tools-fan') return layer('label', ll, o);   // a ring label
       const m = layer('fan', ll, o); m._el = doc.createElement('div');
@@ -754,6 +756,8 @@ test('the projection is on the map while a result stands, on its own canvas; the
     const ring = rings.find((r) => r.label === l.tip);
     assert.ok(ring && Math.abs(d - ring.km) < 1e-6, l.tip + ' at ' + d);
     assert.ok(inWin(A.bearingDeg(o, { lat: p[0], lng: p[1] }), ring.km), 'inside the window');
+    const b = A.bearingDeg(o, { lat: p[0], lng: p[1] });
+    assert.ok(A.ringLabelBearings(res.reachWide, ring.km).some((x) => Math.min(Math.abs(x - b), 360 - Math.abs(x - b)) < 1e-6), 'at the bearing the rule gives: ' + b);
   });
   E.q('[data-act="clear"]').dispatch('click');
   assert.ok(!E.layers.has(E.s.reach) && !E.s.reachOn, 'off the map after Clear');
@@ -775,8 +779,11 @@ test('the fold button folds the bar to its title (a readout still shows under it
   assert.equal(title.textContent, 'Computing…', 'busy, folded');
   await E.settle(); await reachDrawn(E);
   assert.equal(title.textContent, 'Swell exposure');
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });                                 // a readout while folded
   fold.dispatch('click');
   assert.ok(!E.s.folded && /tools-big/.test(E.body()) && !E.q('.tools-bar-actions').hidden, 'unfolded');
+  const kids = E.q('.tools-bar-body').children;
+  assert.ok(kids[0].className === 'tools-big' && kids[0].getAttribute('aria-live') === null && kids[1].className === 'tools-sector', 'each line its own kind again');
   fold.dispatch('click'); E.pick('distance');
   assert.ok(!E.s.folded && !E.bar.classList.contains('is-folded'), 'another tool starts unfolded');
   fold.dispatch('click'); E.q('.tools-x').dispatch('click'); E.pick('exposure');
@@ -786,7 +793,8 @@ test('the fold button folds the bar to its title (a readout still shows under it
   P.pick('exposure');
   assert.match(P.body(), /Click the water/);
   P.clickAt(21.6655, -158.054); await P.settle();
-  assert.ok(P.s.result && /tools-big/.test(P.body()) && /tools-sector/.test(P.body()) && !/tools-hint/.test(P.body()), P.body());
+  assert.ok(P.s.result && /tools-big/.test(P.body()) && /tools-sector/.test(P.body()) && !/Clear = swell/.test(P.body()), P.body());
+  assert.match(P.body(), /Moved [\d.]+ mi off the shore/, 'a status line stays (G21 re-check R1-5)');
 });
 
 test('Lock: Escape only unlocks; Unlock clears a tapped readout and holds double-click again; a locked mouse click is not pinned; focus after Clear (G21 B-9, A-13, B-11)', async () => {
@@ -897,4 +905,91 @@ test('an enclosed sea gets rings at a finer step, as arcs inside it (G21 B-2, ow
   [...E.s.reach._items].filter((l) => l.kind === 'polyline' && l.o.dashArray === '4 6').forEach((l) => l.a.forEach((p) => {
     assert.ok(A.distanceKm(o, { lat: p[0], lng: p[1] - Math.round(p[1] / 360) * 360 }) < 600, 'inside the basin');
   }));
+});
+
+// ---- G21 re-check (R1) ----
+test('a details line taller than its three lines is left out of the height the page sees: hovering never moves or minimises a window (R1-1)', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]), base = E.bar.offsetHeight, n = E.layouts.length;
+  const line = E.q('.tools-bar-body').children.find((x) => x.className === 'tools-sector'); line.classList.add('tools-sector');
+  E.win.getComputedStyle = () => ({ minHeight: '61.2px' });
+  line.offsetHeight = 83; E.bar._h = base + 21;                              // a four-line readout
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });
+  assert.equal(E.layouts.length, n, 'the page is not told: no window moves or is minimised');
+  line.offsetHeight = 62; E.bar._h = base + 40;                              // something else grew (a new line)
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 310, clientY: c.y - 200 });
+  assert.deepEqual(E.layouts.slice(n), [true], 'that is reported');
+});
+
+test('the window\'s canvas: padding capped by its size in pixels, freed when the tool closes; the readout\'s line stays on top of a redraw (R1-2, R1-3)', async () => {
+  const E = makeEnv({ canvas: true }); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const veil = () => [...E.s.reach._items].find((l) => l.kind === 'polygon' && l.a.length === 4), rend = veil().o.renderer;
+  assert.equal(rend.options.padding, 0.5, 'a 1000 x 700 map: the full half map');
+  E.win.devicePixelRatio = 2; E.mapEl.rect = Object.assign({}, E.mapEl.rect, { width: 2000, height: 1400 });
+  E.unitSel.value = 'Metric'; E.unitSel.dispatch('change');                 // a redraw at the new size
+  const m = 2, px = (w, h, p) => (w * (1 + 2 * p)) * (h * (1 + 2 * p)) * m * m;
+  assert.ok(rend.options.padding === 0.1 && px(2000, 1400, 0.1) < 16.7e6, 'a big retina map: the default tenth');
+  E.mapEl.rect = Object.assign({}, E.mapEl.rect, { width: 1024, height: 1300 });
+  E.unitSel.value = 'US'; E.unitSel.dispatch('change');
+  assert.ok(rend.options.padding > 0.1 && rend.options.padding < 0.5 && px(1024, 1300, rend.options.padding) <= 12e6 + 1, 'a 12.9-inch iPad: under iOS Safari\'s limit, ' + rend.options.padding);
+  // the readout's line on top after a redraw
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });
+  E.unitSel.value = 'Metric'; E.unitSel.dispatch('change');
+  const line = [...E.layers].find((l) => l.kind === 'polyline' && l.o.dashArray === '2 4'), casing = [...E.layers].find((l) => l.kind === 'polyline' && l.o.color === '#0b2536');
+  assert.ok(casing.front > 0 && line.front > casing.front, 'casing, then the line, brought to the front');
+  // closing frees the canvas (Leaflet adds the renderer to the map with the first path)
+  E.layers.add(rend);
+  E.q('.tools-x').dispatch('click');
+  assert.ok(!E.layers.has(rend), 'removed with the tool');
+  assert.equal(E.doc.activeElement, E.btn, 'focus back on the tools button (R1-10)');
+});
+
+test('folded, the bar still says why there is no result and that the map is locked (R1-4)', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  E.q('.tools-fold').dispatch('click');
+  E.q('[data-act="lock"]').dispatch('click');
+  assert.equal(E.q('.tools-bar-title').textContent, 'Swell exposure · locked');
+  E.q('[data-act="lock"]').dispatch('click');
+  assert.equal(E.q('.tools-bar-title').textContent, 'Swell exposure');
+  E.clickAt(80, -150);                                                       // beyond 75 degrees
+  assert.match(E.body(), /between 75°S and 75°N/, 'the message shows under the folded title');
+});
+
+test('compact on a short touch map (a phone on its side), and after a resize to a phone (R1-6); Escape-clear keeps focus in the bar (R1-8)', async () => {
+  const L1 = makeEnv({ touch: true, mapW: 812, mapH: 322, barRect: { left: 515, top: 50, width: 290, height: 186 }, lat0: 22.3, lng0: -159.2 });
+  L1.pick('exposure'); L1.clickAt(21.6655, -158.054); await L1.settle();
+  assert.ok(L1.s.result && !/Clear = swell/.test(L1.body()), L1.body());
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  assert.match(E.body(), /Clear = swell/);
+  E.mapEl.rect = Object.assign({}, E.mapEl.rect, { width: 375 }); E.win.fire('resize'); await wait(200);
+  assert.ok(!/Clear = swell/.test(E.body()), 'the resize re-renders the bar');
+  E.mapEl.rect = Object.assign({}, E.mapEl.rect, { width: 1000 }); E.win.fire('resize'); await wait(200);
+  assert.match(E.body(), /Clear = swell/, 'and back');
+  const clr = E.q('[data-act="clear"]');
+  E.key('Escape', clr);
+  assert.ok(!E.s.result && E.doc.activeElement === E.q('.tools-x'), 'Escape cleared, focus on the close button');
+});
+
+test('hover: over a control the pointer is forgotten (a later view change does not move the readout); leaving the map lets the line speak (R1-7)', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const c = E.map.latLngToContainerPoint([E.s.result.origin.lat, E.s.fanLng]);
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });
+  const before = cursorLineOf(E).a.slice(-1)[0];
+  const ctl = E.doc.createElement('div'); ctl.classList.add('leaflet-control');
+  E.mapEl.dispatch('mousemove', { clientX: 900, clientY: 100, composedPath: () => [ctl, E.mapEl] });
+  E.view.lng0 += 1; E.map.fire('moveend');
+  assert.deepEqual(cursorLineOf(E).a.slice(-1)[0], before, 'the readout stays where it was');
+  E.view.lng0 -= 1;
+  const sector = () => E.q('.tools-bar-body').children.find((x) => x.className === 'tools-sector');
+  assert.equal(sector().getAttribute('aria-live'), 'off');
+  E.mapEl.dispatch('mouseleave', {});
+  assert.equal(sector().getAttribute('aria-live'), 'polite', 'after leaving the map the line speaks again');
+  E.q('[data-act="lock"]').dispatch('click');
+  assert.equal(sector().getAttribute('aria-live'), 'polite', 'the locked hint is announced');
+  E.q('[data-act="lock"]').dispatch('click');
+  E.mapEl.dispatch('mousemove', { clientX: c.x - 300, clientY: c.y - 200 });
+  assert.equal(sector().getAttribute('aria-live'), 'off', 'hovering again: silent');
+  E.q('[data-act="lock"]').dispatch('click');                                  // Lock from the keyboard, the pointer still on the map
+  assert.equal(sector().getAttribute('aria-live'), 'polite', 'a Lock is announced without leaving the map');
 });

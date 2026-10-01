@@ -891,7 +891,7 @@ test('the cursor readout text: where the point is, and whether its swell reaches
   assert.equal(T.probeText({ bearing: 5, km: 10, visible: true, sector: sec('open') }, 'US').why, 'In the window · swell under 1 h', 'once when both are under an hour');
   assert.equal(T.probeText({ bearing: 359.8, km: 9000, visible: false, stop: 'land', stopKm: 4942, sector: sec('open') }, 'US').why, 'Blocked by land 3,071 mi from the spot: no swell from here');
   assert.equal(T.probeText({ bearing: 300, km: 5000, visible: false, island: true, stop: 'island', stopKm: 4000, sector: sec('open') }, 'Metric').why,
-    'Partly blocked by a small island 4,000 km from the spot · swell 5.3 d at 14 s, 4.1 d at 18 s', 'a lighter strip (G21 B-4)');
+    'Behind a small island 4,000 km out · swell 5.3 d at 14 s, 4.1 d at 18 s', 'a lighter strip (G21 B-4; three lines at most, R1-1)');
   assert.equal(T.probeText({ bearing: 359.8, km: 9000, visible: false, stop: 'land', stopKm: 4942, sector: sec('open') }, 'US').where.slice(0, 7), '000° N ');
   assert.equal(T.probeText({ bearing: 10, km: 9000, visible: false, stop: 'limit', stopKm: 7000, sector: sec('open') }, 'US').why, "Not in the window: its path to the spot crosses the map's polar limit");
   assert.equal(T.probeText({ bearing: 10, km: 19600, visible: false, stop: 'cap', stopKm: 19500, sector: sec('open') }, 'US').why, 'Farther than the rays reach');
@@ -957,6 +957,7 @@ test('the owner\'s picks for the drawing are pinned (tuning B, the lighter strip
   assert.deepEqual(T.REACH_STYLE, { veil: '#06121c', veilOpacity: 0.55, smallVeilOpacity: 0.25, ray: '#ffffff', rayOpacity: 0.5, rayWeight: 1, rayEvery: 10, rayMinKm: 300, ring: '#ffffff', ringOpacity: 0.55 });
   assert.ok(T.ISLAND_RAYS === 5 && T.NEAR_KM === 50);
   assert.ok(T.COMPASS_R === 44 && T.COMPASS_BELOW === 5.75 && T.FULL_FROM === 6.25);
+  assert.ok(T.WORLD_PIECES === 2000 && T.WORLD_BATCH === 40000, 'the world build\'s slices (G21 A-2, R1-8)');
 });
 
 test('points along a ray: closer near the spot and at high latitudes; either direction (G21 A-8)', () => {
@@ -1006,4 +1007,28 @@ test('the lighter strips are exactly the water between a ray\'s own reach and it
       assert.ok(polys.some((pts) => inPoly(pts, p.lng, p.lat) || inPoly(pts, lng, p.lat) || inPoly(pts, p.lng + 360, p.lat)), 'in the strip of ray ' + i + ': ' + d.toFixed(0) + ' km');
     }
   }
+});
+
+test('the readout\'s sentences fit the details line: every kind with its longest values (G21 re-check R1-1)', () => {
+  const sec = (level) => ({ level });
+  const longest = (d) => d * 24 * 9.80665 * 14 / (4 * Math.PI) * 3.6;     // km for a 14 s swell to take d days
+  const cases = [];
+  for (const unit of ['US', 'Metric']) {
+    for (const level of ['open', 'light', 'dark']) cases.push([{ bearing: 359.6, km: longest(10.64), visible: true, sector: sec(level) }, unit]);
+    cases.push([{ bearing: 359.6, km: longest(10.64), visible: false, island: true, stop: 'island', stopKm: 19499, sector: sec('open') }, unit]);
+    cases.push([{ bearing: 359.6, km: 19499, visible: false, stop: 'land', stopKm: 19499, sector: sec('open') }, unit]);
+    cases.push([{ bearing: 359.6, km: 19499, visible: false, stop: 'limit', stopKm: 19000, sector: sec('open') }, unit]);
+    cases.push([{ bearing: 359.6, km: 19600, visible: false, stop: 'cap', stopKm: 19500, sector: sec('open') }, unit]);
+  }
+  for (const [pr, unit] of cases) {
+    const t = T.probeText(pr, unit);
+    assert.ok(t.where.length <= 40 && t.why.length <= 79, unit + ' ' + (pr.stop || pr.sector.level) + ': ' + t.where.length + ' / ' + t.why.length + ' "' + t.why + '"');
+  }
+});
+
+test('the drawn rays: pieces of at least 25 km also far north (G21 re-check R1-9); a network failure of the coast files is a data error (R1-10)', async () => {
+  const path = T.rayPath({ lat: 74, lng: 20 }, 10, 3000, 100, 25);
+  for (let k = 1; k < path.length - 1; k++) assert.ok(T.distanceKm(path[k - 1], path[k]) >= 25 - 1e-6, 'piece ' + k);
+  const cs = new T.CoastSource('https://c', () => Promise.reject(new TypeError('Failed to fetch')));
+  await assert.rejects(cs.load(), (e) => /^coast\b/.test(e.message));
 });

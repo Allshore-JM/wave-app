@@ -1383,8 +1383,9 @@
           a.labels.forEach(function (brg) {
             var q = rayPoint(res.origin, brg, a.rg.km);
             if (q.lat > REACH_LAT_N || q.lat < REACH_LAT_S) return;
-            L.circleMarker([q.lat, q.lng + shift + k], ext({ radius: 0, stroke: false, fill: false }, opt))
-              .bindTooltip(a.rg.label, { pane: 'toolsReachPane', permanent: true, direction: 'center', className: 'tools-label tools-ring-label' }).addTo(reachLayer);
+            // a plain icon, not a tooltip: a tooltip measures itself (a page layout) every time it is placed (G21 fix round)
+            L.marker([q.lat, q.lng + shift + k], { pane: 'toolsReachPane', interactive: false, keyboard: false,
+              icon: L.divIcon({ className: 'tools-ring-label', html: '<span>' + a.rg.label + '</span>', iconSize: null }) }).addTo(reachLayer);
           });
         });
       });

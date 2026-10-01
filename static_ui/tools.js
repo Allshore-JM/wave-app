@@ -507,7 +507,7 @@
   //   water). The nearest point that reaches the stand-off and looks out well (OPEN_WELL_DIRS) wins, else the nearest
   //   that looks out at all (OPEN_MIN_DIRS), else the nearest that reaches the stand-off; with none, of the water found
   //   the nearest that looks out, else the nearest at least FALLBACK_SHARE as clear as the clearest. Measured on
-  //   48,000 clicks against 1.11.1 (G20 re-check): a bay beats a pond or an inner sound.
+  //   45,166 clicks against 1.11.1 (G20 re-check): a bay beats a pond or an inner sound.
   // - A walk stops at the far shore of its own water; the coast data says which side a crossing leads to. A point on
   //   the coastline itself is never used, a land click never settles within ON_COAST_KM of a coast (every ray would stop
   //   at once), and with no such water within 2 km it is refused.
@@ -520,7 +520,8 @@
     for (var i = 0; i < deg.length; i += 4) E.push(deg[i] * kx, (deg[i + 1] - origin.lat) * ky, deg[i + 2] * kx, (deg[i + 3] - origin.lat) * ky);
     // The edges in PLACE_CELL_KM buckets, so a step, a probe or a nearest-edge search tests only the buckets it touches
     // (G20 re-check R4: estuaries have 5,000+ edges in the window). An edge goes only into the buckets it crosses, and
-    // only inside the window (every query stays inside it): a tier-0 edge can be 100 km long (G20 re-check R5).
+    // only inside the window (every query whose answer matters stays inside it; nearest()'s widest boxes reach past
+    // it only where the nearest coast is farther than any test cares about): a tier-0 edge can be 100 km long (R5).
     var cells = new Map(), stamp = new Int32Array(E.length / 4), mark = 0, W = lim + PLACE_CELL_KM, EPS = 1e-9;
     var tally = opts.stats || {}; tally.tests = 0; tally.entries = 0;
     function cell(v) { return Math.floor(v / PLACE_CELL_KM); }
@@ -991,9 +992,26 @@
     return Promise.all(list.map(function (n) { return self.chunk(n); })).catch(function () { return null; });
   };
 
+  // The cursor readout, two short lines: where the point is from the spot, and whether its swell can reach the spot.
+  function probeText(pr, unit) {
+    if (!pr) return null;
+    var where = pad3(Math.round(pr.bearing) % 360) + '° ' + compass(pr.bearing) + ' · ' + fmtLength(pr.km, unit);
+    var why;
+    if (pr.visible) {
+      why = (pr.sector.level === 'open' ? 'In the window' : pr.sector.level === 'light' ? 'In the window (partly shadowed)' : 'In view, but in a shadowed direction') +
+        ' · swell ' + fmtNum(roundTo(travelDays(pr.km, 14), 1), 1) + ' d at 14 s, ' + fmtNum(roundTo(travelDays(pr.km, 18), 1), 1) + ' d at 18 s';
+    } else if (pr.stop === 'land') why = 'Behind land ' + fmtDist(pr.stopKm, unit) + ' out: its swell cannot reach the spot';
+    else if (pr.stop === 'limit') why = 'Beyond the map\'s polar limit';
+    else why = 'Farther than the rays reach';
+    return { where: where, why: why };
+  }
+
   // ---- the page: menu, tool bar, map interactions ----
   var TOOLS = { distance: 'Measure distance', area: 'Measure area', exposure: 'Swell exposure' };
   var TWIN_MOUSE_PX = 4, TWIN_TOUCH_PX = 16;
+  // Zoomed out the fan becomes a small compass so the window on the map shows round the spot (plan section 30); a dead
+  // band between the two zooms keeps it from flipping while the zoom settles.
+  var COMPASS_R = 44, COMPASS_BELOW = 5.75, FULL_FROM = 6.25;
   var state = null;
 
   function init(opts) {
@@ -1005,7 +1023,7 @@
     var coast = opts.coastBase ? new CoastSource(opts.coastBase, opts.fetch || root.fetch.bind(root)) : null;
     var expoBtn = menu.querySelector('[data-tool="exposure"]');
     if (expoBtn && !coast) expoBtn.hidden = true;
-    var s = state = { tool: null, pts: [], closed: false, closedAt: null, group: L.featureGroup(), fan: null, result: null, selected: -1, gen: 0, busy: false, msg: '', dblWas: null, radius: 0, barH: -1, barMax: 0, size: null };
+    var s = state = { tool: null, pts: [], closed: false, closedAt: null, group: L.featureGroup(), fan: null, result: null, selected: -1, gen: 0, busy: false, msg: '', dblWas: null, radius: 0, barH: -1, barMax: 0, size: null, compass: false, readout: null, locked: false };
     s.group.addTo(map);
     if (!map.getPane('toolsPane')) { var pane = map.createPane('toolsPane'); pane.style.zIndex = 590; pane.style.pointerEvents = 'none'; }
     // the window on the map: above the wave colours and particles (250, 300), below the gridlines and stations (350+)
@@ -1038,7 +1056,8 @@
         c.hidden = true; c.setAttribute('role', 'group'); c.setAttribute('aria-labelledby', 'toolsBarTitle');
         // the actions sit under the title and the body scrolls, so Clear stays reachable on a short map (G20 re-review)
         c.innerHTML = '<div class="tools-bar-head"><strong class="tools-bar-title" id="toolsBarTitle"></strong><button type="button" class="tools-x" aria-label="Close tool">✕</button></div>' +
-          '<div class="tools-bar-actions"><button type="button" data-act="undo">Undo</button><button type="button" data-act="finish">Finish</button><button type="button" data-act="clear">Clear</button></div>' +
+          '<div class="tools-bar-actions"><button type="button" data-act="undo">Undo</button><button type="button" data-act="finish">Finish</button><button type="button" data-act="clear">Clear</button>' +
+          '<button type="button" data-act="lock" aria-pressed="false" title="Keep the window on the map; clicks go back to the map">Lock</button></div>' +
           '<div class="tools-bar-body" aria-live="polite"></div>';
         L.DomEvent.disableClickPropagation(c); L.DomEvent.disableScrollPropagation(c);
         return c;
@@ -1051,6 +1070,8 @@
     barEl.querySelector('[data-act="undo"]').addEventListener('click', function () { undo(); });
     barEl.querySelector('[data-act="finish"]').addEventListener('click', function () { finish(); });
     barEl.querySelector('[data-act="clear"]').addEventListener('click', function () { clear(); });
+    var lockBtn = barEl.querySelector('[data-act="lock"]');
+    lockBtn.addEventListener('click', function () { setLock(!s.locked); });
 
     function unit() { return getUnit() === 'Metric' ? 'Metric' : 'US'; }
     function esc(t) { return String(t).replace(/[&<>"]/g, function (ch) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]; }); }
@@ -1060,6 +1081,8 @@
       barEl.querySelector('[data-act="undo"]').hidden = !measuring || !s.pts.length || s.closed;
       barEl.querySelector('[data-act="finish"]').hidden = !measuring || s.closed || s.pts.length < (s.tool === 'area' ? 3 : 2);
       barEl.querySelector('[data-act="clear"]').hidden = !(s.pts.length || s.result || s.busy);
+      lockBtn.hidden = !(s.tool === 'exposure' && s.result);
+      lockBtn.textContent = s.locked ? 'Unlock' : 'Lock'; lockBtn.setAttribute('aria-pressed', s.locked ? 'true' : 'false');
       if (actsEl) actsEl.hidden = !Array.prototype.some.call(actsEl.querySelectorAll('button'), function (x) { return !x.hidden; });
     }
     // The bar never runs past the map's bottom edge (its body scrolls): G20 re-review, landscape phones.
@@ -1091,6 +1114,17 @@
       if (opts.onStart) opts.onStart(barEl, tool);                            // the page makes room (e.g. the overlay's details on a short map)
       try { closeBtn.focus(); } catch (e) { /* no focus */ }                   // keyboard focus stays in the tool (G20 a11y)
     }
+    // Locked: the window stays, and the map is the page's again (forecast points, buoys, double-click zoom); a map click
+    // only moves the readout there. Clear, close and another tool unlock.
+    function setLock(on) {
+      on = !!(on && s.tool === 'exposure' && s.result);
+      if (on === s.locked) return;
+      s.locked = on;
+      map.getContainer().classList.toggle('tools-active', !on);
+      if (on) { if (s.dblWas) map.doubleClickZoom.enable(); }
+      else if (s.dblWas) map.doubleClickZoom.disable();
+      render();
+    }
     function stop() {
       clear(true); s.tool = null; barEl.hidden = true;
       Array.prototype.forEach.call(menu.querySelectorAll('[data-tool]'), function (b) { b.setAttribute('aria-pressed', 'false'); });
@@ -1099,6 +1133,8 @@
       layout();
     }
     function clear(silent) {
+      if (s.locked) { s.locked = false; if (s.tool) map.getContainer().classList.add('tools-active'); if (s.dblWas) map.doubleClickZoom.disable(); }
+      s.readout = null; if (cursorLine) { map.removeLayer(cursorLine); cursorLine = null; }
       s.gen++; s.pts = []; s.closed = false; s.closedAt = null; s.result = null; s.selected = -1; s.busy = false; s.msg = '';
       s.group.clearLayers(); if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
       clearReach();
@@ -1111,7 +1147,8 @@
       if (!s.tool) return;
       var p = { lat: latlng.lat, lng: latlng.lng }, b = map.latLngToContainerPoint(latlng);
       if (s.tool === 'exposure') {
-        if (s.result && s.fan && isTouch(ev)) {                         // a tap inside the fan picks a wedge; a mouse click places a new point
+        if (s.locked) { showReadout(latlng); return; }
+        if (s.result && s.fan && isTouch(ev) && !s.compass) {                         // a tap inside the fan picks a wedge; a mouse click places a new point
           var c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
           var k = sectorAt(b.x - c.x, b.y - c.y, s.radius);
           if (k >= 0) { select(k); return; }
@@ -1171,11 +1208,13 @@
       if (s.busy) lines.push({ t: 'Computing…', cls: 'tools-big' });
       else if (s.result) {
         lines.push({ t: windowsText(s.result.openWindows), cls: 'tools-big' });
-        lines.push({ t: s.selected >= 0 ? sectorText(s.result.sectors[s.selected], u) : (touchUI() ? 'Tap a wedge for details; tap outside the fan to move the point.' : 'Point at a wedge for details.'), cls: 'tools-sector' });
+        var rt = s.readout && probeText(s.readout, u);
+        var idle = s.locked ? (touchUI() ? 'Tap the map for bearing and distance.' : 'Point at the map for bearing and distance.')
+          : touchUI() ? 'Tap a wedge for details. Lock, then tap the map for bearing and distance.' : 'Point at a wedge, or anywhere on the map.';
+        lines.push({ t: rt ? rt.where + '\n' + rt.why : s.selected >= 0 ? sectorText(s.result.sectors[s.selected], u) : idle, cls: 'tools-sector' });
         if (s.result.moved > 0.02) lines.push({ t: 'Moved ' + fmtDist(s.result.moved, u) + ' off the shore to open water.', cls: 'tools-hint' });
         if (s.result.coarse) lines.push({ t: 'Nearby coastline at lower detail.', cls: 'tools-hint' });
-        lines.push({ t: 'Clear = swell reaches the spot from that direction; grey = land shadow (darker = more).', cls: 'tools-hint' });
-        lines.push({ t: 'Coast geometry only: swell wraps headlands and islands, and reefs are not included.', cls: 'tools-hint' });
+        lines.push({ t: 'Clear = swell reaches the spot; grey = land shadow. Coast geometry only: swell wraps islands; reefs not included.', cls: 'tools-hint' });
       } else lines.push({ t: s.msg || verb + ' the water to see which swell directions reach it.', cls: 'tools-big' });
       setBody(lines);
     }
@@ -1186,6 +1225,8 @@
       layout();
     }
     function defaultRadius() { var z = map.getSize(); return Math.min(z.x, z.y) < 576 ? 90 : 120; }
+    function compassAt(zoom, was) { return zoom < COMPASS_BELOW ? true : zoom >= FULL_FROM ? false : was; }
+    function fanR() { return s.compass ? COMPASS_R : defaultRadius(); }
     function ext(a, b) { var o = {}, k; for (k in a) o[k] = a[k]; for (k in b) o[k] = b[k]; return o; }
     function clearReach() { reachLayer.clearLayers(); if (s.reachOn) { map.removeLayer(reachLayer); s.reachOn = false; } }
     // The window on the map, in three world copies round the fan's: a veil over the water the spot cannot see (the
@@ -1242,7 +1283,7 @@
         if (prev) prev.setAttribute('stroke', 'none');
         if (next) next.setAttribute('stroke', SELECT);
       }
-      s.selected = k; render();
+      s.selected = k; s.readout = null; render();
     }
     // The obstacles the fan should not sit under: the map's controls (the tool bar included, `hard`: the fan's centre
     // never goes under it) and whatever the page adds (the floating windows), as rects relative to the map.
@@ -1261,7 +1302,7 @@
     // nothing fits at full size, preferring a pan of at most a third of the map); run after a new result and after
     // the map changes size, but a fan the user has panned away from is only redrawn at the new size (G20 re-review).
     function placeCurrentFan() {
-      if (!s.result || !s.fan) return;
+      if (!s.result || !s.fan || s.compass) return;                          // a compass is not moved into view
       var size = map.getSize(), c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
       s.size = size;
       var spot = placeFan(size.x, size.y, c.x, c.y, defaultRadius(), obstacles(), { maxPan: Math.max(size.x, size.y) / 3 });
@@ -1297,7 +1338,7 @@
           if (!res || gen !== s.gen) return;
           res.moved = o.moved; res.coarse = coarse;
           s.result = res; s.busy = false; s.fanLng = clickLng + wrapLng(o.lng - origin.lng);
-          s.radius = defaultRadius(); drawFan(); render(); placeCurrentFan();
+          s.compass = compassAt(map.getZoom(), s.compass); s.radius = fanR(); drawFan(); render(); placeCurrentFan();
           var slice = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
           return coast.world(slice).then(function (world) {
             if (gen !== s.gen) return null;
@@ -1329,8 +1370,32 @@
       if (s.tool !== 'exposure' || !s.result || !s.fan) return;
       var q = map.mouseEventToContainerPoint(e), c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
       var k = sectorAt(q.x - c.x, q.y - c.y, s.radius);
-      if (k >= 0) select(k);
+      if (k >= 0) { if (s.readout) hideReadout(); select(k); return; }
+      if (s.result.reach && !onUi(e)) showReadout(map.containerPointToLatLng([q.x, q.y]));
     });
+    map.getContainer().addEventListener('mouseleave', function () { if (s.readout) { hideReadout(); render(); } });
+    map.on('zoomend', function () {
+      if (s.tool !== 'exposure' || !s.result || !s.fan) return;
+      var was = s.compass; s.compass = compassAt(map.getZoom(), s.compass);
+      if (s.compass !== was) { s.radius = fanR(); drawFan(); }
+    });
+    // The readout at a point: the text in the bar's details line and a thin line along the great circle from the spot.
+    var cursorLine = null;
+    function showReadout(latlng) {
+      if (!s.result || !s.result.reach) return;
+      var pr = probe(s.result, { lat: latlng.lat, lng: wrapLng(latlng.lng) });
+      if (!pr) return;
+      s.readout = pr; s.selected = -1;
+      var o = s.result.origin, line = rayPath(o, pr.bearing, pr.km, 100), end = line[line.length - 1];
+      var k = Math.round((latlng.lng - end.lng) / 360) * 360;
+      var ll = line.map(function (p) { return [p.lat, p.lng + k]; });
+      if (cursorLine) cursorLine.setLatLngs(ll);
+      else cursorLine = L.polyline(ll, { pane: 'toolsReachPane', interactive: false, color: '#fde047', weight: 1.5, opacity: 0.9, dashArray: '2 4' }).addTo(map);
+      var el = s.fan && s.fan.getElement && s.fan.getElement(), prev = el && el.querySelector && el.querySelector('path[stroke="' + SELECT + '"]');
+      if (prev) prev.setAttribute('stroke', 'none');
+      render();
+    }
+    function hideReadout() { s.readout = null; if (cursorLine) { map.removeLayer(cursorLine); cursorLine = null; } }
     // Size changes (rotation, window resize): Leaflet's own resize event does not always fire here.
     var rz = null;
     function onResize() {
@@ -1341,8 +1406,8 @@
           // shifted back by half the size change (G20 re-check: a rotation pushes a visible fan off the new map).
           var z = map.getSize(), o = s.size || z, c = map.latLngToContainerPoint([s.result.origin.lat, s.fanLng]);
           var ox = c.x - (z.x - o.x) / 2, oy = c.y - (z.y - o.y) / 2;
-          if (ox >= 0 && oy >= 0 && ox <= o.x && oy <= o.y) placeCurrentFan();
-          else if (s.radius !== defaultRadius()) { s.radius = defaultRadius(); drawFan(); }
+          if (ox >= 0 && oy >= 0 && ox <= o.x && oy <= o.y && !s.compass) placeCurrentFan();
+          else if (s.radius !== fanR()) { s.radius = fanR(); drawFan(); }
           s.size = z;
         }
         layout();
@@ -1362,7 +1427,7 @@
       return box.contains(a) && !(a.closest && a.closest('.leaflet-control, .ov-sheet'));
     }
     doc.addEventListener('keydown', function (e) {
-      if (!s.tool || open || !ownsKeys()) return;
+      if (!s.tool || open || !ownsKeys() || (s.locked && !barEl.contains(doc.activeElement))) return;
       if (e.key === 'Escape') { e.stopPropagation(); if (s.pts.length || s.result) clear(); else stop(); }
       else if (e.key === 'Backspace' && (s.tool === 'distance' || s.tool === 'area') && !/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || '')) { e.preventDefault(); undo(); }
     }, true);
@@ -1374,7 +1439,7 @@
   var api = null;
   root.AllshoreTools = {
     init: function (opts) { api = init(opts); return api; },
-    active: function () { return !!(state && state.tool); },
+    active: function () { return !!(state && state.tool && !state.locked); },   // locked: the page has its clicks back
     click: function (latlng, ev) { if (api) api.click(latlng, ev); },
     _internals: {
       distanceKm: distanceKm, bearingDeg: bearingDeg, destination: destination, densify: densify, pathKm: pathKm,
@@ -1387,7 +1452,7 @@
       RAYS: RAYS, SECTORS: SECTORS, CAP_KM: CAP_KM, NEAR_KM: NEAR_KM, REF_MIN_KM: REF_MIN_KM, SHADOW_FULL_KM: SHADOW_FULL_KM,
       FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, FAR_OPEN_MAX: FAR_OPEN_MAX, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM,
       worldEdges: worldEdges, worldIndex: worldIndex, indexSliced: indexSliced, limitKm: limitKm, reachWalk: reachWalk, computeReach: computeReach, rayPoint: rayPoint, rayPath: rayPath,
-      litRing: litRing, smallShadowReach: smallShadowReach, ISLAND_RAYS: ISLAND_RAYS, rangeRing: rangeRing, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, probe: probe,
+      litRing: litRing, probeText: probeText, COMPASS_R: COMPASS_R, COMPASS_BELOW: COMPASS_BELOW, FULL_FROM: FULL_FROM, smallShadowReach: smallShadowReach, ISLAND_RAYS: ISLAND_RAYS, rangeRing: rangeRing, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, probe: probe,
       REACH_KM: REACH_KM, REACH_STEP_KM: REACH_STEP_KM, REACH_LAT_N: REACH_LAT_N, REACH_LAT_S: REACH_LAT_S, END_LAND: END_LAND, END_LIMIT: END_LIMIT, END_CAP: END_CAP
     }
   };

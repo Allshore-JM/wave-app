@@ -235,13 +235,17 @@ test('Honolua Bay (published coast, Maui crop): a land click at the bay head is 
   assert.ok(water && water.moved === 0, 'kept at the click: ' + JSON.stringify(water));
   // the bucket index finds exactly what testing every edge finds, at a small fraction of the work
   let tIdx = 0, tAll = 0;
-  for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) {
-    const p = { lat: 21.0125 + i * 0.00137, lng: -156.6475 + j * 0.00131 }, a = {}, b = {};
+  // walks through a vertex, where the tie rules decide: the nearest edge (600 m, not 660) and the crossing (556 m, not 558)
+  const clicks = [{ lat: 21.023, lng: -156.64 }, { lat: 20.5844, lng: -156.368 }];
+  for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) clicks.push({ lat: 21.0125 + i * 0.00137, lng: -156.6475 + j * 0.00131 });
+  for (const p of clicks) {
+    const a = {}, b = {};
     const o = T.placeOrigin(p, [t1], { stats: a }), q = T.placeOrigin(p, [t1], { stats: b, brute: true });
     assert.deepEqual(o, q, 'index = every edge at ' + JSON.stringify(p));
     tIdx += a.tests; tAll += b.tests;
   }
   assert.ok(tAll > 50 * tIdx, 'edge tests: ' + tIdx + ' vs ' + tAll);
+  assert.ok(Math.abs(T.placeOrigin(clicks[0], [t1]).moved - 0.6) < 0.005, 'the tie click: 600 m');
 });
 
 test('where a click is evaluated: 150 m off the shore; land within 2 km snaps; deep inland refused; a point ON an edge works', () => {
@@ -445,6 +449,18 @@ test('placing the fan: stays when clear, the nearest clear spot, shrinks on a sh
   assert.ok(big && big.overlap && Date.now() - t0 < 100, 'within 100 ms: ' + (Date.now() - t0));
 });
 
+test('the turn out to sea, on the real coast: its side and its length (Sunset Beach, Oahu crop; G20 re-check R6)', () => {
+  const o = T.placeOrigin({ lat: 21.675, lng: -158.0435 }, [fixture('oahu-t1.bin')]);
+  assert.ok(Math.abs(o.lat - 21.676703) < 2e-6 && Math.abs(o.lng + 158.045662) < 2e-6 && Math.abs(o.moved - 0.292) < 0.002, JSON.stringify(o));
+});
+
+test('the placement window holds land up to 5 km from the click (look-out probes reach 4 km; G20 re-check R6)', () => {
+  // open water at the click, a 200 m islet 4.5 km north: its edges are in the buckets (a 3 or 4 km window loses them)
+  const islet = set([[sq(-0.001, 4.5 / 110.57, 0.001, 4.7 / 110.57)]]);
+  const st = {}; T.placeOrigin({ lat: 0, lng: 0 }, [islet], { stats: st });
+  assert.ok(st.entries >= 4, 'registered: ' + st.entries);
+});
+
 test('placement rules, each pinned where it decides (G20 re-check R5)', () => {
   // coasts drawn in km around (0, 0); each ring is land
   const P = (x, y) => [D(x / 111.32), D(y / 110.57)];
@@ -490,12 +506,14 @@ test('placement behind a dense coast (16,000 edges within reach) tests only near
   const pieces = [[sq(-0.05, -0.05, 0.05, 0)]];
   for (let i = -45; i < 45; i++) for (let j = 2; j < 47; j++) pieces.push([sq(i * 0.001, j * 0.001, i * 0.001 + 0.0004, j * 0.001 + 0.0004)]);
   const field = set(pieces);
-  for (const [lat, lng] of [[-0.003, 0], [-0.004, 0.0123], [-0.0025, -0.021], [-0.006, 0.004]]) {
-    const a = {}, b = {}, o = T.placeOrigin({ lat, lng }, [field], { stats: a }), q = T.placeOrigin({ lat, lng }, [field], { stats: b, brute: true });
+  [[-0.003, 0], [-0.004, 0.0123], [-0.0025, -0.021], [-0.006, 0.004]].forEach(([lat, lng], k) => {
+    const a = {}, o = T.placeOrigin({ lat, lng }, [field], { stats: a });
     assert.ok(o && o.lat > 0 && !T.inLand([field], o.lng, o.lat), 'out on the water: ' + JSON.stringify(o));
+    if (k) return;                                                             // every edge once: it takes seconds (G20 re-check R6)
+    const b = {}, q = T.placeOrigin({ lat, lng }, [field], { stats: b, brute: true });
     assert.deepEqual(o, q, 'index = every edge');
     assert.ok(b.tests > 20 * a.tests, 'edge tests: ' + a.tests + ' vs ' + b.tests);
-  }
+  });
 });
 
 test('the far window reaches as far as the rays: the whole circle when a ray can pass a pole', () => {
@@ -803,4 +821,19 @@ test('small-island shadows: a notch up to 2.5 degrees with farther rays on both 
   const nearest = (ringPts) => Math.min(...ringPts.filter((q) => { const a = T.bearingDeg(res.origin, q); return a > 49.99 && a < 50.51; }).map((q) => Math.round(T.distanceKm(res.origin, q))));
   assert.equal(nearest(own), 3000, 'the own ring stops at the atoll (ray 100: 50.0-50.5 degrees)');
   assert.equal(nearest(wide), 8000, 'the bridged ring runs on past it');
+});
+
+test('the cursor readout text: where the point is, and whether its swell reaches the spot', () => {
+  const sec = (level) => ({ level });
+  const seen = T.probeText({ bearing: 305.4, km: 2150 * 1.852, visible: true, sector: sec('open') }, 'US');
+  assert.equal(seen.where, '305° NW · 2,474 mi · 2,150 nm');
+  assert.equal(seen.why, 'In the window · swell 4.2 d at 14 s, 3.3 d at 18 s');
+  assert.equal(T.probeText({ bearing: 305.4, km: 2150 * 1.852, visible: true, sector: sec('light') }, 'Metric').where, '305° NW · 3,982 km · 2,150 nm');
+  assert.match(T.probeText({ bearing: 5, km: 900, visible: true, sector: sec('light') }, 'US').why, /^In the window \(partly shadowed\)/);
+  assert.match(T.probeText({ bearing: 5, km: 900, visible: true, sector: sec('dark') }, 'US').why, /^In view, but in a shadowed direction/);
+  assert.equal(T.probeText({ bearing: 359.8, km: 9000, visible: false, stop: 'land', stopKm: 4942, sector: sec('open') }, 'US').why, 'Behind land 3,071 mi out: its swell cannot reach the spot');
+  assert.equal(T.probeText({ bearing: 359.8, km: 9000, visible: false, stop: 'land', stopKm: 4942, sector: sec('open') }, 'US').where.slice(0, 7), '000° N ');
+  assert.equal(T.probeText({ bearing: 10, km: 9000, visible: false, stop: 'limit', stopKm: 7000, sector: sec('open') }, 'US').why, "Beyond the map's polar limit");
+  assert.equal(T.probeText({ bearing: 10, km: 19600, visible: false, stop: 'cap', stopKm: 19500, sector: sec('open') }, 'US').why, 'Farther than the rays reach');
+  assert.equal(T.probeText(null, 'US'), null);
 });

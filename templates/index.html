@@ -305,7 +305,8 @@
     .tools-bar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .tools-x { border: 0; background: none; font-size: 1rem; line-height: 1; padding: 2px 4px; cursor: pointer; color: #0b2536; }
     .tools-bar-body .tools-big { font-weight: 600; margin-top: 4px; }
-    .tools-bar-body .tools-sector { margin-top: 4px; min-height: 3em; }   /* two lines: a steady height while hovering the wedges */
+    .tools-bar-body .tools-sector { margin-top: 4px; height: 4.5em; overflow: hidden; white-space: pre-line; }   /* three lines, fixed: hovering never resizes the bar */
+    .tools-bar-actions button[aria-pressed="true"] { background: #e7f1ff; border-color: #86b7fe; }
     .tools-bar-body .tools-hint { color: #5b6770; font-size: .78rem; margin-top: 4px; }
     .tools-bar-actions { display: flex; gap: 6px; margin-top: 6px; }
     .tools-bar-actions[hidden] { display: none; }

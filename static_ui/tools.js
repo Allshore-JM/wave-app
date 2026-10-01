@@ -687,6 +687,9 @@
   // the antipode, where great circles meet again.
   var REACH_KM = 19500, REACH_STEP_KM = 25, REACH_LAT_N = 84, REACH_LAT_S = -79, WORLD_BATCH = 40000;
   var END_LAND = 0, END_LIMIT = 1, END_CAP = 2;
+  // How the window is drawn (plan section 30; tuned on the owner's preview sheet).
+  var REACH_STYLE = { veil: '#06121c', veilOpacity: 0.38, ray: '#ffffff', rayOpacity: 0.55, rayWeight: 1, rayEvery: 5, rayMinKm: 300,
+    ring: '#ffffff', ringOpacity: 0.55, ringPct: 0.9 };
   // How far along a ray its latitude first reaches `latLimit` (km; Infinity when it never does). On a great circle
   // sin(lat) = sin(lat0) cos(d) + cos(lat0) cos(brg) sin(d) = R cos(d - a).
   function limitKm(origin, brg, latLimit) {
@@ -781,6 +784,8 @@
     for (var k = 1; k <= 10 && k * each <= maxKm; k++) out.push({ km: k * each, label: fmtNum(k * (metric ? 2000 : 1000), 0) + (metric ? ' km' : ' nm') });
     return out;
   }
+  // How far the rings go: most rays' reach (the 90th percentile), not the one ray that runs round the world.
+  function ringReachKm(result) { return percentile(result.reach, REACH_STYLE.ringPct); }
   // Deep-water swell travels at its group speed, g T / 4 pi (0.78 T m/s): days to cover `km` at period `sec`.
   function travelDays(km, sec) { return km / (9.80665 * sec / (4 * Math.PI) * 3.6) / 24; }
   // What the spot sees at a point on the map: the bearing and distance from the spot, its ray and wedge, and whether
@@ -984,6 +989,9 @@
     var s = state = { tool: null, pts: [], closed: false, closedAt: null, group: L.featureGroup(), fan: null, result: null, selected: -1, gen: 0, busy: false, msg: '', dblWas: null, radius: 0, barH: -1, barMax: 0, size: null };
     s.group.addTo(map);
     if (!map.getPane('toolsPane')) { var pane = map.createPane('toolsPane'); pane.style.zIndex = 590; pane.style.pointerEvents = 'none'; }
+    // the window on the map: above the wave colours and particles (250, 300), below the gridlines and stations (350+)
+    if (!map.getPane('toolsReachPane')) { var rpane = map.createPane('toolsReachPane'); rpane.style.zIndex = 320; rpane.style.pointerEvents = 'none'; }
+    var reachLayer = s.reach = L.featureGroup();                             // (s.reach: for tests)
 
     function touchUI() { try { return !!(root.matchMedia && root.matchMedia('(hover: none)').matches); } catch (e) { return false; } }
     // A touch tap (no hover to show a wedge's details): Chrome's click is a PointerEvent with pointerType; other
@@ -1074,6 +1082,7 @@
     function clear(silent) {
       s.gen++; s.pts = []; s.closed = false; s.closedAt = null; s.result = null; s.selected = -1; s.busy = false; s.msg = '';
       s.group.clearLayers(); if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
+      clearReach();
       if (!silent) render();
     }
     function undo() { if (s.pts.length && !s.closed) { s.pts.pop(); render(); } }
@@ -1158,6 +1167,40 @@
       layout();
     }
     function defaultRadius() { var z = map.getSize(); return Math.min(z.x, z.y) < 576 ? 90 : 120; }
+    function ext(a, b) { var o = {}, k; for (k in a) o[k] = a[k]; for (k in b) o[k] = b[k]; return o; }
+    function clearReach() { reachLayer.clearLayers(); if (s.reachOn) { map.removeLayer(reachLayer); s.reachOn = false; } }
+    // The window on the map, in three world copies round the fan's: a veil over the water the spot cannot see (the
+    // world with the lit ring cut out), a ray every 2.5 degrees where it runs some way, and range rings with labels.
+    function drawReach() {
+      clearReach();
+      var res = s.result; if (!res || !res.reach) return;
+      var st = REACH_STYLE, shift = s.fanLng - res.origin.lng, opt = { pane: 'toolsReachPane', interactive: false };
+      var ring = litRing(res), u = unit(), rings = ringsFor(u, ringReachKm(res)), outer = [], holes = [];
+      [-360, 0, 360].forEach(function (k) {
+        holes.push(ring.map(function (q) { return [q.lat, q.lng + shift + k]; }));
+      });
+      var west = s.fanLng - 540, east = s.fanLng + 540;
+      outer = [[85, west], [85, east], [-85, east], [-85, west]];
+      L.polygon([outer].concat(holes), ext({ stroke: false, fillColor: st.veil, fillOpacity: st.veilOpacity }, opt)).addTo(reachLayer);
+      [-360, 0, 360].forEach(function (k) {
+        for (var i = Math.floor(st.rayEvery / 2); i < res.reach.length; i += st.rayEvery) {
+          if (res.reach[i] < st.rayMinKm) continue;
+          var line = rayPath(res.origin, rayBearing(i), res.reach[i], 100).map(function (q) { return [q.lat, q.lng + shift + k]; });
+          L.polyline(line, ext({ color: st.ray, opacity: st.rayOpacity, weight: st.rayWeight }, opt)).addTo(reachLayer);
+        }
+        rings.forEach(function (rg) {
+          rangeRing(res.origin, rg.km).forEach(function (seg) {
+            L.polyline(seg.map(function (q) { return [q.lat, q.lng + shift + k]; }), ext({ color: st.ring, opacity: st.ringOpacity, weight: 1, dashArray: '4 6' }, opt)).addTo(reachLayer);
+          });
+          var at = rayPoint(res.origin, 335, rg.km);
+          if (at.lat <= REACH_LAT_N && at.lat >= REACH_LAT_S) {
+            L.circleMarker([at.lat, at.lng + shift + k], ext({ radius: 0, stroke: false, fill: false }, opt))
+              .bindTooltip(rg.label, { permanent: true, direction: 'right', className: 'tools-label tools-ring-label', offset: [2, 0] }).addTo(reachLayer);
+          }
+        });
+      });
+      reachLayer.addTo(map); s.reachOn = true;
+    }
     function drawFan() {
       if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
       if (!s.result) return;
@@ -1206,6 +1249,7 @@
       if (Math.abs(p.lat) > MAX_ABS_LAT) { clear(true); s.msg = 'Swell exposure works between 75°S and 75°N.'; render(); return; }
       var gen = ++s.gen, clickLng = p.lng, origin = { lat: p.lat, lng: wrapLng(p.lng) };
       s.group.clearLayers(); if (s.fan) { map.removeLayer(s.fan); s.fan = null; }
+      clearReach();
       s.result = null; s.selected = -1; s.busy = true; render();
       coast.load().then(function () { return coast.near(origin); }).then(function (nearSets) {
         // a frame first, so "Computing…" is painted before the placement's work (G20 re-checks R4, R5): a timer after the
@@ -1229,6 +1273,11 @@
           res.moved = o.moved; res.coarse = coarse;
           s.result = res; s.busy = false; s.fanLng = clickLng + wrapLng(o.lng - origin.lng);
           s.radius = defaultRadius(); drawFan(); render(); placeCurrentFan();
+          var slice = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
+          return coast.world(slice).then(function (world) {
+            if (gen !== s.gen) return null;
+            return computeReach(res, world, { batch: 120, yieldFn: slice, shouldStop: function () { return gen !== s.gen; } });
+          }).then(function (r) { if (r && gen === s.gen && s.result === res) drawReach(); });
         });
       }).catch(function () { if (gen !== s.gen) return; s.busy = false; s.msg = 'Coastline data unavailable. Try again later.'; render(); });
     }
@@ -1292,7 +1341,7 @@
       if (e.key === 'Escape') { e.stopPropagation(); if (s.pts.length || s.result) clear(); else stop(); }
       else if (e.key === 'Backspace' && (s.tool === 'distance' || s.tool === 'area') && !/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || '')) { e.preventDefault(); undo(); }
     }, true);
-    if (opts.unitSelect) opts.unitSelect.addEventListener('change', function () { render(); });
+    if (opts.unitSelect) opts.unitSelect.addEventListener('change', function () { render(); if (s.result && s.result.reach) drawReach(); });
 
     return { start: start, stop: stop, clear: clear, click: click, state: s };
   }
@@ -1313,7 +1362,7 @@
       RAYS: RAYS, SECTORS: SECTORS, CAP_KM: CAP_KM, NEAR_KM: NEAR_KM, REF_MIN_KM: REF_MIN_KM, SHADOW_FULL_KM: SHADOW_FULL_KM,
       FAR_LAND_KM: FAR_LAND_KM, FAR_FADE_KM: FAR_FADE_KM, FAR_OPEN_MAX: FAR_OPEN_MAX, STANDOFF_KM: STANDOFF_KM, OPEN_BELOW: OPEN_BELOW, DARK_FROM: DARK_FROM,
       worldEdges: worldEdges, worldIndex: worldIndex, indexSliced: indexSliced, limitKm: limitKm, reachWalk: reachWalk, computeReach: computeReach, rayPoint: rayPoint, rayPath: rayPath,
-      litRing: litRing, rangeRing: rangeRing, ringsFor: ringsFor, travelDays: travelDays, probe: probe,
+      litRing: litRing, rangeRing: rangeRing, ringReachKm: ringReachKm, REACH_STYLE: REACH_STYLE, ringsFor: ringsFor, travelDays: travelDays, probe: probe,
       REACH_KM: REACH_KM, REACH_STEP_KM: REACH_STEP_KM, REACH_LAT_N: REACH_LAT_N, REACH_LAT_S: REACH_LAT_S, END_LAND: END_LAND, END_LIMIT: END_LIMIT, END_CAP: END_CAP
     }
   };

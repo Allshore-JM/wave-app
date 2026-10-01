@@ -464,3 +464,39 @@ test('the page keeps focus where it was when it minimises a window for the tool 
   assert.equal(run((E) => { E.clear.focus(); E.clear.detached = true; }), 'body', 'an element removed since: off the opener');
   assert.equal(run((E) => { E.lp.hidden = true; }), 'body', 'one window');
 });
+
+// ---- the window projected on the map (plan section 30) ----
+async function reachDrawn(E) { for (let i = 0; i < 400 && !E.s.reachOn; i++) await wait(5); }
+const kinds = (E) => [...E.s.reach._items].reduce((m, l) => { m[l.kind] = (m[l.kind] || 0) + 1; return m; }, {});
+test('the projection: a veil with three holes, rays and rings after a result; gone after Clear, a new click and a tool switch', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  assert.ok(E.s.reachOn && E.s.result.reach, 'drawn');
+  const veil = [...E.s.reach._items].find((l) => l.kind === 'polygon');
+  assert.ok(veil && veil.a.length === 4 && veil.o.pane === 'toolsReachPane', 'outer ring and three world copies of the lit ring');
+  assert.ok(veil.a[2].length > 1000 && Math.abs(veil.a[1][0][1] - veil.a[2][0][1] + 360) < 1e-9, 'copies 360 degrees apart');
+  const k = kinds(E);
+  assert.ok(k.polyline > 30 && k.circle >= 3, JSON.stringify(k));
+  const rays = [...E.s.reach._items].filter((l) => l.kind === 'polyline' && !l.o.dashArray);
+  assert.ok(rays.every((l) => l.o.pane === 'toolsReachPane' && l.a.length >= 2), 'every ray in the pane');
+  E.q('[data-act="clear"]').dispatch('click');
+  assert.ok(!E.s.reachOn && E.s.reach._items.size === 0, 'Clear removes it');
+  E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  E.clickAt(21.269, -157.829);
+  assert.ok(!E.s.reachOn && E.s.reach._items.size === 0, 'a new click removes the old one at once');
+  await E.settle(); await reachDrawn(E);
+  assert.ok(E.s.reachOn);
+  E.pick('distance');
+  assert.ok(!E.s.reachOn && E.s.reach._items.size === 0, 'a tool switch removes it');
+});
+test('the projection: a click superseded during its reach draws nothing; a unit change relabels the rings', async () => {
+  const E = makeEnv(); E.pick('exposure');
+  E.clickAt(21.6655, -158.054); await E.settle();
+  E.clickAt(21.269, -157.829); await E.settle(); await reachDrawn(E); await wait(50);
+  const veil = [...E.s.reach._items].filter((l) => l.kind === 'polygon');
+  assert.equal(veil.length, 1, 'one projection');
+  assert.ok(Math.abs(E.s.result.origin.lat - 21.27) < 0.02, 'the second click\'s');
+  const labels = () => [...E.s.reach._items].filter((l) => l.tip).map((l) => l.tip);
+  assert.ok(labels().length && labels().every((x) => / nm$/.test(x)), labels().join());
+  E.unitSel.value = 'Metric'; E.unitSel.dispatch('change');
+  assert.ok(labels().length && labels().every((x) => / km$/.test(x)), labels().join());
+});

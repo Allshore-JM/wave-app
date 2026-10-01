@@ -1000,7 +1000,7 @@
     if (pr.visible) {
       why = (pr.sector.level === 'open' ? 'In the window' : pr.sector.level === 'light' ? 'In the window (partly shadowed)' : 'In view, but in a shadowed direction') +
         ' · swell ' + fmtNum(roundTo(travelDays(pr.km, 14), 1), 1) + ' d at 14 s, ' + fmtNum(roundTo(travelDays(pr.km, 18), 1), 1) + ' d at 18 s';
-    } else if (pr.stop === 'land') why = 'Behind land ' + fmtDist(pr.stopKm, unit) + ' out: its swell cannot reach the spot';
+    } else if (pr.stop === 'land') why = 'Blocked by land ' + fmtDist(pr.stopKm, unit) + ' from the spot: its swell cannot reach it';
     else if (pr.stop === 'limit') why = 'Beyond the map\'s polar limit';
     else why = 'Farther than the rays reach';
     return { where: where, why: why };

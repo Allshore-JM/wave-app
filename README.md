@@ -139,7 +139,7 @@ double-tap.
     veil behind small islands (a shadow at most 2.5 degrees wide, with farther rays on both sides, from land more
     than 50 km away). Dashed rings every 1,000 nm (2,000 km in Metric) out to most rays' reach.
   - **Readout:** pointing at the map (off the fan) shows the bearing and distance from the spot, whether that water's
-    swell can reach the spot (in the window, partly shadowed, behind land N miles out, beyond the polar limit), and
+    swell can reach the spot (in the window, partly shadowed, blocked by land N miles from the spot, beyond the polar limit), and
     deep-water travel times at 14 and 18 s, with a dashed line along the great circle to the cursor.
   - **Lock** keeps the window on the map and gives the map back to the page: forecast points, live buoys and
     double-click zoom work again, and a click only moves the readout. Escape then acts only with focus in the bar;

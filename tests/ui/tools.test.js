@@ -727,6 +727,9 @@ test('rings: 1,000 nm / 2,000 km when two fit, else a finer step; ten at most (G
   assert.deepEqual(T.ringsFor('Metric', 1500).map((r) => r.label), ['500 km', '1,000 km', '1,500 km']);
   assert.deepEqual(T.ringsFor('Metric', 300).map((r) => r.label), ['200 km'], 'the finest step, even when only one fits');
   assert.deepEqual(T.ringsFor('US', 100), []);
+  const own = new Float64Array(720).fill(3000), wide = Float64Array.from(own); wide[10] = 9000;
+  assert.equal(T.ringReachKm({ reach: own, reachWide: wide }), 9000, 'out to the farthest the window reaches, small islands bridged');
+  assert.equal(T.ringReachKm({ reach: own }), 3000);
 });
 
 test('ring arcs: one per run of rays that reach the ring, ending on the window\'s edges; labels on the wide ones', () => {
@@ -994,4 +997,13 @@ test('the lighter strips are exactly the water between a ray\'s own reach and it
     n++; if (want) inside++;
   }
   assert.ok(n > 30000 && inside > 50, n + ' points, ' + inside + ' in strips');
+  // and inside each strip, where a missing edge piece would show
+  for (let i = 0; i < 720; i++) {
+    if (!(wide[i] > reach[i])) continue;
+    for (let s = 0; s < 60; s++) {
+      const brg = (i + 0.05 + 0.9 * rnd()) * 0.5, d = reach[i] + 30 + (wide[i] - reach[i] - 60) * rnd();
+      const p = T.rayPoint(origin, brg, d), lng = p.lng > 180 ? p.lng - 360 : p.lng;
+      assert.ok(polys.some((pts) => inPoly(pts, p.lng, p.lat) || inPoly(pts, lng, p.lat) || inPoly(pts, p.lng + 360, p.lat)), 'in the strip of ray ' + i + ': ' + d.toFixed(0) + ' km');
+    }
+  }
 });

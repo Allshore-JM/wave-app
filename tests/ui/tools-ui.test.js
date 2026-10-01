@@ -777,6 +777,8 @@ test('the fold button folds the bar to its title (a readout still shows under it
   assert.equal(title.textContent, 'Swell exposure');
   fold.dispatch('click');
   assert.ok(!E.s.folded && /tools-big/.test(E.body()) && !E.q('.tools-bar-actions').hidden, 'unfolded');
+  fold.dispatch('click'); E.pick('distance');
+  assert.ok(!E.s.folded && !E.bar.classList.contains('is-folded'), 'another tool starts unfolded');
   fold.dispatch('click'); E.q('.tools-x').dispatch('click'); E.pick('exposure');
   assert.ok(!E.s.folded && !E.bar.classList.contains('is-folded'), 'a new start is unfolded');
   // a phone: once a result shows, no hint lines
@@ -883,4 +885,16 @@ test('a result that lands after the view moved a world away goes to the copy in 
   E.view.lng0 += 720;                                                       // panned two worlds east while computing (no moveend yet)
   await E.settle(); await reachDrawn(E);
   assert.ok(Math.abs(E.s.fanLng - E.s.result.origin.lng - 720) < 0.01, 'fan at ' + E.s.fanLng);
+});
+
+test('an enclosed sea gets rings at a finer step, as arcs inside it (G21 B-2, owner: arcs inside the window)', async () => {
+  const land = [[sq(-6, -6, 6, -4)], [sq(-6, 4, 6, 6)], [sq(-6, -4, -4, 4)], [sq(4, -4, 6, 4)]];      // a basin about 900 km across
+  const E = makeEnv({ lat0: 1.5, lng0: -1.25, scale: 100, cells: {}, files: { '/world-i.bin': encodeCoast(land, 30) } });
+  E.pick('exposure'); E.clickAt(0, 0); await E.settle(); await reachDrawn(E);
+  const labels = [...E.s.reach._items].filter((l) => l.kind === 'label').map((l) => /<span>(.*)<\/span>/.exec(l.o.icon.html)[1]);
+  assert.ok(labels.includes('100 nm') && labels.includes('200 nm') && !labels.some((x) => /1,000/.test(x)), labels.join());
+  const A = E.A._internals, o = E.s.result.origin;
+  [...E.s.reach._items].filter((l) => l.kind === 'polyline' && l.o.dashArray === '4 6').forEach((l) => l.a.forEach((p) => {
+    assert.ok(A.distanceKm(o, { lat: p[0], lng: p[1] - Math.round(p[1] / 360) * 360 }) < 600, 'inside the basin');
+  }));
 });

@@ -1124,7 +1124,9 @@
   }
 
   // ---- the page: menu, tool bar, map interactions ----
-  var TOOLS = { distance: 'Measure distance', area: 'Measure area', exposure: 'Swell exposure' };
+  // point: one click (or tap) on the water hands the point to the page (opts.onPoint), which opens its forecast
+  // (plan section 31); the tool ends with it, so the markers have their clicks back at once.
+  var TOOLS = { distance: 'Measure distance', area: 'Measure area', exposure: 'Swell exposure', point: 'Forecast point' };
   var TWIN_MOUSE_PX = 4, TWIN_TOUCH_PX = 16;
   // Zoomed out the fan becomes a small compass so the window on the map shows round the spot (plan section 30); a dead
   // band between the two zooms keeps it from flipping while the zoom settles.
@@ -1140,6 +1142,8 @@
     var coast = opts.coastBase ? new CoastSource(opts.coastBase, opts.fetch || root.fetch.bind(root)) : null;
     var expoBtn = menu.querySelector('[data-tool="exposure"]');
     if (expoBtn && !coast) expoBtn.hidden = true;
+    var pointBtn = menu.querySelector('[data-tool="point"]');
+    if (pointBtn && typeof opts.onPoint !== 'function') pointBtn.hidden = true;    // nothing to hand a point to
     var s = state = { tool: null, pts: [], closed: false, closedAt: null, group: L.featureGroup(), fan: null, result: null, selected: -1, gen: 0, busy: false, msg: '', dblWas: null, radius: 0, barH: -1, barMax: 0, size: null, compass: false, readout: null, locked: false, folded: false, hover: false, hoverPt: null, reachFailed: false };
     s.group.addTo(map);
     if (!map.getPane('toolsPane')) { var pane = map.createPane('toolsPane'); pane.style.zIndex = 590; pane.style.pointerEvents = 'none'; }
@@ -1299,6 +1303,12 @@
 
     function click(latlng, ev) {
       if (!s.tool) return;
+      if (s.tool === 'point') {                                               // one point: the tool ends, the page takes it
+        var to = opts.onPoint, at = { lat: latlng.lat, lng: wrapLng(latlng.lng) };
+        stop();
+        if (typeof to === 'function') to(at, ev);
+        return;
+      }
       var p = { lat: latlng.lat, lng: latlng.lng }, b = map.latLngToContainerPoint(latlng);
       if (s.tool === 'exposure') {
         s.hover = false;
@@ -1377,9 +1387,14 @@
       } else lines.push({ t: s.msg || verb + ' the water to see which swell directions reach it.', cls: 'tools-big', folded: !!s.msg });
       return lines;
     }
+    function drawPoint() {
+      var verb = touchUI() ? 'Tap' : 'Click';
+      return [{ t: verb + ' the water where you want a forecast.', cls: 'tools-big' },
+              { t: 'Its table and graphs open with the coordinates; the point is kept in this browser under My points.', cls: 'tools-hint' }];
+    }
     function render() {
       if (!s.tool) return;
-      var lines = s.tool === 'exposure' ? drawExposure() : drawMeasure();
+      var lines = s.tool === 'exposure' ? drawExposure() : s.tool === 'point' ? drawPoint() : drawMeasure();
       // folded: the title row, and under it only a readout that is showing and the tool's messages (owner, G21 B-6; R1-4)
       setBody(s.folded ? lines.filter(function (l) { return (l.cls === 'tools-sector' && s.readout) || l.folded; }) : lines);
       barEl.classList.toggle('is-folded', s.folded);

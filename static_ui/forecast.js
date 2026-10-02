@@ -13,7 +13,9 @@
  * #heightChart #periodChart #directionChart) #fwResize; #settingsBtn #settingsPanel #tz #unit #station
  * #stationTrigger #stationCurrent (the favourites picker is the window's heading; #fwTitle is its field);
  * #liveBuoyPanel #lwHeader #lwMin #lwClose #lwResize (createLiveWindow). The page dispatches 'allshore:station' {sid, source} on a
- * marker click ('map') or a favourites pick ('picker').
+ * marker click ('map') or a favourites pick ('picker'). After each forecast this module dispatches 'allshore:forecast'
+ * {station, tz, model, view, ok, point}. Forecast points (plan section 31): pointId / parsePointId (the server's id rule)
+ * and createPointStore (the visitor's own points, localStorage 'allshore.points.v1').
  */
 (function () {
   'use strict';
@@ -22,6 +24,10 @@
   var WINDOW_KEY = 'allshore.forecastWin.v1';  // sessionStorage {x, y, w, h, mode, prev}
   var LIVE_WINDOW_KEY = 'allshore.liveWin.v1'; // the live-buoy window's (the same shape)
   var RANGE_KEY = 'chartRange';                // sessionStorage 'full' | '7' | '3' (unchanged from the old page)
+  var POINTS_KEY = 'allshore.points.v1';       // localStorage [{id, lat, lon, name}]: the visitor's forecast points
+  var POINTS_MAX = 50, POINT_NAME_MAX = 40;
+  var STALE_H = 13;                            // a point's run older than this: a NOAA cycle was missed (runs go live ~5.5 h after
+                                               // the cycle and are replaced 6 h later, so a live run is 5.5-11.5 h old)
   function isUnit(u) { return u === 'US' || u === 'Metric'; }   // (an object lookup matched 'constructor' and the like)
   var CACHE_MAX = 16, CACHE_TTL_MS = 10 * 60 * 1000;
   var GAP_TTL_MS = 60 * 1000;                     // a forecast with wind gaps (a transient NOAA miss): kept a minute only
@@ -104,6 +110,81 @@
   function writeJson(storage, key, value) {
     try { storage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; }
   }
+  // ---- forecast points (plan section 31) ----
+  // The id of a point: latitude and longitude in thousandths of a degree, one spelling per point (point_forecast.py's
+  // point_id, which the server checks: no leading zeros, zero is N / E, the antimeridian is 180 W). null off the map.
+  function pointId(lat, lon) {
+    lat = +lat; lon = +lon;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    var latM = Math.floor(Math.abs(lat) * 1000 + 0.5);
+    if (latM > 90000) return null;
+    if (!(lon >= -180 && lon < 180)) lon = (((lon + 180) % 360) + 360) % 360 - 180;
+    var lonM = Math.floor(Math.abs(lon) * 1000 + 0.5);
+    var ns = lat < 0 && latM ? 'S' : 'N', ew = (lon < 0 && lonM) || lonM === 180000 ? 'W' : 'E';
+    return 'pt_' + latM + ns + '_' + lonM + ew;
+  }
+  var POINT_RE = /^pt_(\d{1,5})([NS])_(\d{1,6})([EW])$/;
+  function isPointId(s) { return typeof s === 'string' && s.indexOf('pt_') === 0; }
+  // {lat, lon} of an id, or null for anything pointId would not have written.
+  function parsePointId(s) {
+    var m = POINT_RE.exec(typeof s === 'string' ? s : '');
+    if (!m) return null;
+    var latM = +m[1], lonM = +m[3];
+    if (latM > 90000 || lonM > 180000) return null;
+    var lat = latM / 1000 * (m[2] === 'S' ? -1 : 1), lon = lonM / 1000 * (m[4] === 'W' ? -1 : 1);
+    return pointId(lat, lon) === s ? { lat: lat, lon: lon } : null;
+  }
+  function fmtPoint(lat, lon) {
+    return Math.abs(lat).toFixed(3) + (lat >= 0 ? 'N' : 'S') + ' ' + Math.abs(lon).toFixed(3) + (lon >= 0 ? 'E' : 'W');
+  }
+  // A name as the visitor typed it, made safe to keep: no control characters, single spaces, at most 40 characters.
+  function cleanName(s) {
+    return String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, POINT_NAME_MAX).trim();
+  }
+  // The text a point goes by: its coordinates always (owner: "the location should show the gps coordinates"), its
+  // name in front when it has one ("Pipeline — 21.667N 158.054W", like "51201 — Waimea Bay, HI").
+  function pointLabel(p) { var c = fmtPoint(p.lat, p.lon); return p.name ? p.name + ' — ' + c : c; }
+  // The visitor's points, in this browser only (accounts may come later: the record is versioned and self-contained).
+  // Read back strictly: an entry whose id is not a point id is dropped; the coordinates come from the id.
+  function readPoints(storage) {
+    var raw;
+    try { raw = JSON.parse(storage.getItem(POINTS_KEY) || '[]'); } catch (e) { return []; }
+    if (!Array.isArray(raw)) return [];
+    var seen = {}, out = [];
+    raw.forEach(function (r) {
+      var c = r && typeof r === 'object' ? parsePointId(r.id) : null;
+      if (!c || seen[r.id]) return;
+      seen[r.id] = true;
+      out.push({ id: r.id, lat: c.lat, lon: c.lon, name: cleanName(r.name) });
+    });
+    return out.slice(0, POINTS_MAX);
+  }
+  function createPointStore(storage) {
+    function write(list) { try { storage.setItem(POINTS_KEY, JSON.stringify(list)); return true; } catch (e) { return false; } }
+    function list() { return readPoints(storage); }
+    function get(id) { var l = list(); for (var i = 0; i < l.length; i++) if (l[i].id === id) return l[i]; return null; }
+    return {
+      list: list, get: get,
+      has: function (id) { return !!get(id); },
+      // 'added' (newest first), 'exists', 'full' (POINTS_MAX), 'invalid', or 'unsaved' (the storage refused it)
+      add: function (id, name) {
+        var c = parsePointId(id); if (!c) return 'invalid';
+        var l = list();
+        if (l.some(function (p) { return p.id === id; })) return 'exists';
+        if (l.length >= POINTS_MAX) return 'full';
+        l.unshift({ id: id, lat: c.lat, lon: c.lon, name: cleanName(name) });
+        return write(l) ? 'added' : 'unsaved';
+      },
+      remove: function (id) { var l = list(), n = l.length; l = l.filter(function (p) { return p.id !== id; }); return l.length !== n && write(l); },
+      rename: function (id, name) {
+        var l = list(), hit = false;
+        l.forEach(function (p) { if (p.id === id) { p.name = cleanName(name); hit = true; } });
+        return hit && write(l);
+      },
+      label: function (id) { var p = get(id) || parsePointId(id); return p ? pointLabel(p) : null; }
+    };
+  }
+
   // "GFS · run 20260926 12 UTC" / "SWAN · updated 20260925 23 UTC" for the window's header.
   function shortCycle(model, header) {
     var c = header && header.cycle ? String(header.cycle) : '';
@@ -123,10 +204,19 @@
     var d = new Date(s);
     return isNaN(d) ? new Date() : d;
   }
-  // The x window for a range of days from the START of the series (the old page's rule).
-  function rangeWindow(n, days) {
+  // The x window for a range of days from the START of the series. With the rows' times (parsed labels), the last
+  // row less than `days` x 24 h after the first: a forecast point's rows are hourly to +120 h, then 3-hourly (plan
+  // section 31). Without them, one row an hour (the old page's rule).
+  function rangeWindow(n, days, times) {
     var end = n - 1;
-    if (Number.isFinite(days) && days > 0) end = Math.min(n - 1, Math.round(days * 24) - 1);
+    if (Number.isFinite(days) && days > 0) {
+      var t0 = times && times.length === n && times[0] ? +times[0] : NaN;
+      if (Number.isFinite(t0)) {
+        var lim = t0 + days * 24 * 3600 * 1000;
+        end = 0;
+        for (var i = 1; i < n; i++) { if (+times[i] < lim) end = i; else break; }
+      } else end = Math.min(n - 1, Math.round(days * 24) - 1);
+    }
     return { min: 0, max: Math.max(0, end) };
   }
 
@@ -201,15 +291,37 @@
     return s && s.length ? s : ALL_SWELLS.slice();
   }
   var BOX_MIN = 300;                                        // px per chart (was 180-360: the plots were 60-80 px tall)
-  // A flat date label at every n-th midnight in view, n chosen so labels are at least LABEL_PX apart on this scale.
+  // The rows that start a day: each row whose date differs from the row before (the first row only when it is
+  // midnight: a day the series starts in the middle of gets no label). Hourly rows: the midnights. 3-hourly rows
+  // (a forecast point after +120 h, plan section 31): whatever hour comes first that day.
+  function dayStarts(parsed) {
+    var out = [];
+    for (var i = 0; i < parsed.length; i++) {
+      var d = parsed[i], p = parsed[i - 1];
+      if (!d || isNaN(d)) continue;
+      if (i === 0 ? d.getHours() === 0 : (!p || isNaN(p) || d.getDate() !== p.getDate() || d.getMonth() !== p.getMonth() || d.getFullYear() !== p.getFullYear())) out.push(i);
+    }
+    return out;
+  }
+  // The rows that start an afternoon: the first row of a day at or after noon (the noon rows when hourly).
+  function noonStarts(parsed) {
+    var out = [];
+    for (var i = 0; i < parsed.length; i++) {
+      var d = parsed[i], p = parsed[i - 1];
+      if (!d || isNaN(d) || d.getHours() < 12) continue;
+      if (i === 0 ? d.getHours() === 12 : (!p || isNaN(p) || p.getHours() < 12 || p.getDate() !== d.getDate())) out.push(i);
+    }
+    return out;
+  }
+  // A flat date label at every n-th day start in view, n chosen so labels are at least LABEL_PX apart on this scale.
   function dateTick(scale, parsed, mids, i) {
-    var d = parsed[i]; if (!d || isNaN(d) || d.getHours() !== 0) return '';
+    var d = parsed[i]; if (!d || isNaN(d) || mids.indexOf(i) < 0) return '';
     var lo = scale && Number.isFinite(scale.min) ? scale.min : 0, hi = scale && Number.isFinite(scale.max) ? scale.max : parsed.length - 1;
     var inView = mids.filter(function (k) { return k >= lo && k <= hi; }), w = scale && scale.width > 0 ? scale.width : 1000;
     var every = Math.max(1, Math.ceil(inView.length * LABEL_PX / w)), ord = inView.indexOf(i);
     return ord >= 0 && ord % every === 0 ? formatMD(d) : '';
   }
-  function formatMD(d) { return d.getHours() === 0 && !isNaN(d) ? (d.getMonth() + 1) + '/' + d.getDate() : ''; }
+  function formatMD(d) { return !isNaN(d) ? (d.getMonth() + 1) + '/' + d.getDate() : ''; }
   function formatMDHour(d) {
     var M = d.getMonth() + 1, D = d.getDate(), h = d.getHours();
     return h === 0 ? M + '/' + D + ' 12am' : h === 12 ? M + '/' + D + ' 12pm' : '';
@@ -235,14 +347,13 @@
       } };
     }
     function makeXAxis(parsed) {
-      var major = new Set(), minor = new Set(), mids = [];
-      parsed.forEach(function (d, i) { var h = d.getHours(); if (h === 0) { major.add(i); mids.push(i); } else if (h === 12) minor.add(i); });
+      var mids = dayStarts(parsed), major = new Set(mids), minor = new Set(noonStarts(parsed));
       var idx = function (c) { return c.tick && typeof c.tick.index === 'number' ? c.tick.index : c.index; };
       return { type: 'category',
         grid: { color: function (c) { var i = idx(c); return major.has(i) ? 'rgba(0,0,0,0.25)' : minor.has(i) ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.08)'; },
                 lineWidth: function (c) { var i = idx(c); return major.has(i) ? 1.4 : minor.has(i) ? 1.0 : 0.5; } },
         ticks: { autoSkip: false, maxRotation: 0, minRotation: 0, font: { size: 10 },
-                 callback: function (v, i) { return dateTick(this, parsed, mids, i); } } };   // flat date labels at midnight, thinned to fit
+                 callback: function (v, i) { return dateTick(this, parsed, mids, i); } } };   // flat date labels at each day's start, thinned to fit
     }
     function dots(label, key, src, color) { return { label: label, data: src[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false }; }
     function series(src, combined, keys) {
@@ -313,7 +424,7 @@
     }
     function applyRange(v) {
       if (!data) return;
-      var w = rangeWindow(data.labels.length, v === '7' ? 7 : v === '3' ? 3 : 0);
+      var w = rangeWindow(data.labels.length, v === '7' ? 7 : v === '3' ? 3 : 0, data.labels.map(parseLabel));
       charts.forEach(function (ch) { ch.options.scales.x.min = w.min; ch.options.scales.x.max = w.max; ch.update('none'); });
       if (deps.rangeBar) Array.prototype.forEach.call(deps.rangeBar.querySelectorAll('[data-days]'), function (b) {
         var on = (b.getAttribute('data-days') === (v === '7' ? '7' : v === '3' ? '3' : '0'));
@@ -621,19 +732,23 @@
               var avail = typeof d.swan_available === 'boolean' ? d.swan_available : swanStations.indexOf(st.station) >= 0;
               if (els.modelBar) { els.modelBar.hidden = !avail; pressed(els.modelBar, 'data-model', st.model); }
               var label = opts.stationLabel ? opts.stationLabel(st.station) : st.station, cyc = shortCycle(st.model, d.graph_header);
+              var age = d.point && Number.isFinite(d.point.age_hours) ? d.point.age_hours : null;
+              if (age !== null && age >= STALE_H) cyc += ' · ' + Math.round(age) + ' h old';   // a point's run NOAA stopped feeding (plan section 31)
               text(els.title, label); text(els.cycle, cyc);
               if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = cyc;
               setMeta(d.graph_header);
               if (d.table_html) els.table.innerHTML = d.table_html;           // the server's own table (build_html_table)
               else { clearNode(els.table); var p = doc.createElement('div'); p.className = 'text-muted'; p.textContent = d.error || 'No forecast available.'; els.table.appendChild(p); }
-              if (d.error && !d.table_html) showError(String(d.error), retry || null);   // visible in both views, with Retry (a failed build is not cached)
+              if (d.error && !d.table_html) showError(String(d.error), d.final ? null : retry || null);   // visible in both views, with Retry (a failed build is not cached; a land point's answer is final)
               else if (d.error) showError(String(d.error), null);
               else showError(null, null);
               graphs.setData(d.graph_data);
               fitWidth();                                                     // the window follows the new table's width
               syncSelects();
               // the page's other parts (the model overlay's valid-time zone and run line) follow the forecast on screen
-              try { doc.dispatchEvent(new CustomEvent('allshore:forecast', { detail: { station: st.station, tz: d.tz_label || '', model: st.model, view: state.view } })); } catch (e) {}
+              // ok: a forecast is on screen (a refused point - land, busy - is not; the page saves a new point only then)
+              try { doc.dispatchEvent(new CustomEvent('allshore:forecast', { detail: { station: st.station, tz: d.tz_label || '', model: st.model, view: state.view,
+                ok: !!d.table_html, point: d.point || null } })); } catch (e) {}
             } }, saved: function () { return readJson(local, SETTINGS_KEY); } }, state);
     function syncSelects() {
       if (els.station && els.station.value !== state.station) els.station.value = state.station;
@@ -712,6 +827,8 @@
 
   window.AllshoreForecast = {
     init: init, createLiveWindow: createLiveWindow,
+    pointId: pointId, parsePointId: parsePointId, isPointId: isPointId, pointLabel: pointLabel, fmtPoint: fmtPoint, cleanName: cleanName,
+    createPointStore: createPointStore, POINTS_MAX: POINTS_MAX,
     load: function (next) { return app ? app.loader.load(next) : Promise.resolve(null); },
     expand: function () { if (app) app.expand(); },
     minimise: function () { if (app) app.minimise(); },
@@ -723,6 +840,7 @@
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY,
+      POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,
       app: function () { return app; }
     }
   };

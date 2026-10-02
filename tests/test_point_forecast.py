@@ -695,17 +695,18 @@ def test_api_forecast_refuses_land_bad_ids_and_reports_an_unreachable_bucket(api
     product, get = api
     d = get(PFC.point_id(5.0, 104.0)).get_json()
     assert d["error"] == A.POINT_NO_DATA == "No model data here: land, ice or outside coverage"
+    assert d["final"] is True                                                     # the page offers no Retry for it
     assert d["table_html"] is None and d["point"] is None and d["graph_data"] is None and "busy" not in d
     assert get(PFC.point_id(60.0, 20.0)).get_json()["error"] == A.POINT_NO_DATA   # outside every grid
     assert len(A._POINT_CACHE) == 0                                               # a refusal is not kept
     for bad in ("pt_05200N_20300E", "pt_5200N", "pt_0S_0E"):
         d = get(bad).get_json()
-        assert d["error"] == "Invalid forecast point" and d["point"] is None
+        assert d["error"] == "Invalid forecast point" and d["point"] is None and d["final"] is True
     assert get("pt_5200N_20300E!").get_json()["error"] == "Invalid station id"
     n = len(product.calls)
     product.fail = lambda key: key.endswith("_2.bin")
     d = get(PFC.point_id(5.2, 20.3)).get_json()
-    assert d["error"] == "Forecast points are temporarily unavailable" and d["table_html"] is None
+    assert d["error"] == "Forecast points are temporarily unavailable" and d["table_html"] is None and "final" not in d
     product.fail = None
     assert get(PFC.point_id(5.2, 20.3)).get_json()["error"] is None and len(product.calls) == n + 2
 
@@ -811,7 +812,7 @@ def test_two_point_builds_at_once_and_the_third_is_told_to_come_back(api, monkey
         t.start()
     time.sleep(0.15)
     busy = get(PFC.point_id(5.0, 50.0)).get_json()                                # a third build while two are running
-    assert busy["error"] == A.POINT_BUSY and busy["busy"] is True and busy["table_html"] is None
+    assert busy["error"] == A.POINT_BUSY and busy["busy"] is True and busy["table_html"] is None and "final" not in busy
     cached = get(PFC.point_id(5.0, 20.0)).get_json()                              # a kept forecast is served all the same
     assert cached["error"] is None and "busy" not in cached
     for t in threads:
@@ -911,3 +912,11 @@ def test_importing_the_app_does_not_load_numpy():
     r = subprocess.run([sys.executable, "-c", "import sys, app; print('numpy' in sys.modules, 'pointfmt' in sys.modules)"],
                        cwd=ROOT, capture_output=True, text=True, timeout=120)
     assert r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "False False", (r.stdout, r.stderr[-500:])
+
+
+def test_the_pages_point_ids_are_the_servers():
+    """tests/fixtures/point_ids.json: point_id for 522 inputs (edges, random, halves of a thousandth). The page's
+    pointId (static_ui/forecast.js) is checked against the same file by tests/ui/points.test.js."""
+    fx = json.load(open(os.path.join(FIX, "point_ids.json")))
+    assert len(fx["cases"]) > 500
+    assert [PFC.point_id(la, lo) for la, lo, _ in fx["cases"]] == [i for _, _, i in fx["cases"]]

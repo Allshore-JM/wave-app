@@ -330,6 +330,9 @@
     }
     .lc-forecast { background: #FFD600; }
     .lc-live { background: #00E5FF; }
+    .lc-point { background: #fff; border: 2px solid #d6007a; }
+    .my-pt { background: #fff; border: 2.5px solid #d6007a; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,.45); cursor: pointer; }
+    .leaflet-container.tools-active .my-pt { cursor: crosshair; }
 
     /* ---------------- The floating windows (plan sections 25, 26) ----------------
        .fwin = the shared rules (the forecast window and the live-buoy window); each has its own box. */
@@ -549,12 +552,21 @@
     .sr-star:focus-visible { outline: 2px solid #0d6efd; outline-offset: -2px; border-radius: 3px; }
     .sr-star:disabled { color: #ced4da; cursor: default; }
     .station-results li.sr-empty { display: block; padding: 8px 10px; color: #6c757d; cursor: default; white-space: normal; }
+    /* My points (plan section 31): a heading, then each point with Rename and Remove */
+    .station-results li.sr-head { display: block; padding: 6px 10px 2px; font-size: .72rem; font-weight: 700; color: #5b6770; text-transform: uppercase; letter-spacing: .03em; }
+    .pt-act {
+      flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+      min-width: 32px; min-height: 32px; border: 0; background: none; padding: 0 2px;
+      font-size: .95rem; line-height: 1; color: #5b6770; cursor: pointer;
+    }
+    .pt-act:hover { color: #0b2536; }
+    .pt-act:focus-visible { outline: 2px solid #0d6efd; outline-offset: -2px; border-radius: 3px; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
     @media (max-width: 576px) {
       .station-trigger { min-width: 0; width: 100%; max-width: none; }
       .station-results { max-height: 50vh; max-width: none; }
       .station-results .fav-select { min-height: 44px; }
-      .sr-star { min-width: 44px; min-height: 44px; }
+      .sr-star, .pt-act { min-width: 44px; min-height: 44px; }
     }
 
   </style>
@@ -569,11 +581,12 @@
     <a id="brand" class="brand" href="/" aria-label="Allshore Surf home">
       <img class="brand-logo" src="/ui/logo.png?v={{ ui_asset_version }}" alt="Allshore Surf" width="194" height="60">
     </a>
-    <!-- Map tools (plan section 29; static_ui/tools.js): measure distance / area, swell exposure. JS only; the map
+    <!-- Map tools (plan sections 29, 31; static_ui/tools.js): forecast point, measure distance / area, swell exposure. JS only; the map
          script puts it beside the gear. -->
     <div id="toolsHost" class="tools-host">
       <button type="button" id="toolsBtn" class="icon-btn" aria-label="Map tools" aria-expanded="false" aria-controls="toolsMenu"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3.5 16.5 16.5 3.5l4 4-13 13z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7.5 12.5l2 2M10.5 9.5l2 2M13.5 6.5l2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
       <div id="toolsMenu" class="settings-panel tools-menu" hidden role="group" aria-label="Map tools">
+        <button type="button" class="tool-item" data-tool="point" aria-pressed="false">Forecast point</button>
         <button type="button" class="tool-item" data-tool="distance" aria-pressed="false">Measure distance</button>
         <button type="button" class="tool-item" data-tool="area" aria-pressed="false">Measure area</button>
         <button type="button" class="tool-item" data-tool="exposure" aria-pressed="false">Swell exposure</button>
@@ -881,12 +894,13 @@
         if (saved && typeof saved === 'object') {
           return {
             forecast: saved.forecast !== false,
-            live: saved.live !== false
+            live: saved.live !== false,
+            points: saved.points !== false
           };
         }
       } catch(e) {}
 
-      return { forecast: true, live: true };
+      return { forecast: true, live: true, points: true };
     }
 
     function saveLayerVisibility() {
@@ -894,7 +908,8 @@
         layerVisibilityKey,
         JSON.stringify({
           forecast: map.hasLayer(forecastLayer),
-          live: map.hasLayer(liveBuoyLayer)
+          live: map.hasLayer(liveBuoyLayer),
+          points: map.hasLayer(pointLayer)
         })
       );
     }
@@ -959,6 +974,10 @@
     const initialLayerVisibility = loadLayerVisibility();
     const forecastLayer = L.layerGroup();
     const liveBuoyLayer = L.layerGroup();
+    // The visitor's own forecast points (plan section 31): white rings in the marker pane, above the forecast dots.
+    const pointLayer = L.layerGroup();
+    const pointIcon = L.divIcon({ className: 'my-pt', iconSize: [14, 14], iconAnchor: [7, 7] });
+    if (initialLayerVisibility.points) pointLayer.addTo(map);
 
     if (initialLayerVisibility.forecast) {
       forecastLayer.addTo(map);
@@ -974,7 +993,8 @@
         // Leaflet renders layer names as HTML, so the colored dot doubles as
         // the legend (yellow = forecast point, cyan = live NDBC buoy).
         '<span class="lc-dot lc-forecast"></span>Forecast points': forecastLayer,
-        '<span class="lc-dot lc-live"></span>Live buoys': liveBuoyLayer
+        '<span class="lc-dot lc-live"></span>Live buoys': liveBuoyLayer,
+        '<span class="lc-dot lc-point"></span>My points': pointLayer
       },
       {
         collapsed: false
@@ -1294,6 +1314,7 @@
         if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
         rebuildForecastMarkers(true);
         rebuildLiveBuoyMarkers(true);
+        rebuildPointMarkers(true);
         return;
       }
 
@@ -1302,6 +1323,7 @@
         refreshTimer = null;
         rebuildForecastMarkers(false);
         rebuildLiveBuoyMarkers(false);
+        rebuildPointMarkers(false);
       }, REFRESH_DEBOUNCE_MS);
     }
 
@@ -1339,11 +1361,39 @@
       });
     }
 
+    // The visitor's points ([{id, lat, lon, label}], set by the page block after static_ui/forecast.js: setSavedPoints).
+    let savedPointsData = [];
+    let lastPointSig = null;
+    function setSavedPoints(list) { savedPointsData = list || []; rebuildPointMarkers(true); }
+    function rebuildPointMarkers(force = false) {
+      const vis = visibleCopies(savedPointsData);
+      const sig = renderSignature(vis);
+      if (!force && sig === lastPointSig) return;
+      lastPointSig = sig;
+      pointLayer.clearLayers();
+      vis.forEach(function (c) {
+        const p = c.s;
+        const mk = L.marker([p.lat, c.lng], { icon: pointIcon, title: p.label, alt: p.label, riseOnHover: true }).addTo(pointLayer);
+        mk.bindTooltip(p.label, { permanent: false, direction: 'top', offset: [0, -8] });
+        mk.on('click', function () {
+          if (window.AllshoreTools && window.AllshoreTools.active()) return;   // a map tool takes the click (it reaches the map too)
+          saveLayerVisibility();
+          document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: String(p.id), source: 'map' } }));
+        });
+      });
+    }
+
     // After a favorite is picked (which reloads the page via the form), recenter the
     // map on that buoy (a favourites pick; the picker asks through the 'allshore:station' event).
     const FORECAST_FOCUS_ZOOM = 8;
     let pendingFocusStation = null;
     function focusStation(sid) {
+      const pt = window.AllshoreForecast && window.AllshoreForecast.parsePointId(sid);   // one of My points: where its id says
+      if (pt) {
+        map.setView([clampLat(pt.lat), normLng(pt.lon)], Math.min(MAX_MAP_ZOOM, Math.max(FORECAST_FOCUS_ZOOM, MIN_MAP_ZOOM)), { animate: true });
+        clampMapLatitude(); refreshWrappedMarkerCopies(true); saveMapView(map);
+        return;
+      }
       if (!forecastStationsData.length) { pendingFocusStation = sid; return; }   // stations not loaded yet: after they are
       let st = null;
       for (let i = 0; i < forecastStationsData.length; i++) {
@@ -2440,9 +2490,18 @@
       const status = document.getElementById('stationStatus');
       if (!field || !select || !trigger || !favToggle || !currentEl || !results || !select.options.length) return;
 
-      const bySid = new Map(Array.from(select.options).map(function (o) {
-        return [o.value, { sid: o.value, label: (o.textContent || '').trim() }];
-      }));
+      // every option of the select, the stations and My points (the page block adds those as an optgroup and says
+      // so with 'allshore:points')
+      let bySid = null;
+      function index() {
+        bySid = new Map(Array.from(select.options).map(function (o) {
+          return [o.value, { sid: o.value, label: (o.textContent || '').trim() }];
+        }));
+      }
+      index();
+      // My points (plan section 31): the store and its sync, set by the page block after static_ui/forecast.js
+      function points() { return window.__allshorePoints || null; }
+      function isPoint(sid) { return typeof sid === 'string' && sid.indexOf('pt_') === 0; }
 
       const FAV_KEY = 'allshore.favStations.v1';
       function readFavs() {
@@ -2463,10 +2522,12 @@
         const sid = select.value;
         const c = bySid.get(sid);
         currentEl.textContent = c ? c.label : 'Select a station';
-        const fav = !!c && isFav(sid);
+        const P = points(), pt = isPoint(sid);
+        const fav = !!c && (pt ? !!(P && P.store.has(sid)) : isFav(sid));         // for a point the star is "kept in My points"
         favToggle.textContent = fav ? '★' : '☆';
-        favToggle.disabled = !c;
+        favToggle.disabled = !c || (pt && !P);
         favToggle.setAttribute('aria-label', !c ? 'No station selected'
+          : pt ? (fav ? 'Remove this point from My points: ' : 'Keep this point in My points: ') + c.label
           : (fav ? 'Remove current station from favorites: ' : 'Add current station to favorites: ') + c.label);
       }
 
@@ -2493,16 +2554,62 @@
         document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: sid, source: 'picker' } }));
       }
 
+      function head(text) { const li = document.createElement('li'); li.className = 'sr-head'; li.setAttribute('role', 'presentation'); li.textContent = text; results.appendChild(li); }
+      // Keep keyboard focus in the panel after a row went away: the next row's pick button (or close if none left).
+      function refocus(idx) {
+        const next = results.querySelectorAll('.fav-select');
+        if (next.length) { (next[idx] || next[next.length - 1]).focus(); }
+        else { close(); trigger.focus(); }
+      }
+      function renderPoints() {
+        const P = points(), list = P ? P.store.list() : [];
+        if (!list.length) return 0;
+        head('My points');
+        list.forEach(function (p) {
+          const label = window.AllshoreForecast.pointLabel(p);
+          const li = document.createElement('li');
+          const pick = document.createElement('button');
+          pick.type = 'button'; pick.className = 'fav-select'; pick.dataset.sid = p.id; pick.textContent = label;
+          pick.addEventListener('click', function () { selectStation(p.id); });
+          const ren = document.createElement('button');
+          ren.type = 'button'; ren.className = 'pt-act'; ren.textContent = '✎'; ren.setAttribute('aria-label', 'Rename point: ' + label);
+          ren.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const name = window.prompt('A name for this point (its coordinates stay in the label):', p.name || '');
+            if (name === null) return;
+            P.store.rename(p.id, name); P.sync(); renderFavs();
+            const again = results.querySelector('.fav-select[data-sid="' + p.id + '"]');
+            if (again && again.parentNode) again.parentNode.querySelector('.pt-act').focus();
+            announce('Renamed point ' + window.AllshoreForecast.fmtPoint(p.lat, p.lon));
+          });
+          const rem = document.createElement('button');
+          rem.type = 'button'; rem.className = 'pt-act'; rem.textContent = '✕'; rem.setAttribute('aria-label', 'Remove point: ' + label);
+          rem.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const idx = Array.prototype.slice.call(results.querySelectorAll('.fav-select')).indexOf(pick);
+            P.store.remove(p.id); P.sync(); renderFavs();
+            announce('Removed point ' + window.AllshoreForecast.fmtPoint(p.lat, p.lon));
+            refocus(idx);
+          });
+          li.appendChild(pick); li.appendChild(ren); li.appendChild(rem);
+          results.appendChild(li);
+        });
+        return list.length;
+      }
+
       function renderFavs() {
         results.textContent = '';
-        const favs = readFavs().map(function (s) { return bySid.get(s); }).filter(Boolean);
+        const npts = renderPoints();
+        const favs = readFavs().map(function (s) { return bySid.get(s); }).filter(function (c) { return c && !isPoint(c.sid); });
         if (!favs.length) {
+          if (npts) return;
           const li = document.createElement('li');
           li.className = 'sr-empty';
-          li.textContent = 'No favorites yet — pick a buoy on the map, then tap ★ to save it here.';
+          li.textContent = 'No favorites yet — pick a buoy on the map, then tap ★ to save it here. Map tools → Forecast point adds a point of your own.';
           results.appendChild(li);
           return;
         }
+        if (npts) head('Favorites');
         favs.forEach(function (c) {
           const li = document.createElement('li');
           const pick = document.createElement('button');
@@ -2522,10 +2629,7 @@
             const idx = rows.indexOf(pick);
             toggleFav(c.sid); refreshCurrent(); renderFavs();
             announce('Removed favorite ' + c.sid);
-            // Keep keyboard focus in the panel: move it to the next favorite (or close if none left).
-            const next = results.querySelectorAll('.fav-select');
-            if (next.length) { (next[idx] || next[next.length - 1]).focus(); }
-            else { close(); trigger.focus(); }
+            refocus(idx);
           });
           li.appendChild(pick); li.appendChild(star);
           results.appendChild(li);
@@ -2539,6 +2643,16 @@
         e.preventDefault();
         const sid = select.value;
         if (!bySid.has(sid)) return;
+        if (isPoint(sid)) {                                                     // a point: kept in My points, or not
+          const P = points(); if (!P) return;
+          const kept = P.store.has(sid);
+          const r = kept ? (P.store.remove(sid) ? 'removed' : 'unsaved') : P.store.add(sid);
+          if (r === 'full') { announce('My points is full (' + window.AllshoreForecast.POINTS_MAX + '). Remove one to keep this point.'); return; }
+          P.sync();
+          if (!results.hidden) renderFavs();
+          announce(r === 'removed' ? 'Removed from My points' : r === 'added' ? 'Kept in My points' : 'This browser could not keep the point');
+          return;
+        }
         const wasFav = isFav(sid);
         if (!wasFav && readFavs().length >= 100) { announce('Favorites are full (100). Remove one to add more.'); return; }
         toggleFav(sid); refreshCurrent();
@@ -2568,6 +2682,8 @@
       document.addEventListener('click', function (e) { if (!field.contains(e.target)) close(); });
       // a map pick changes the select from outside: the label and the star follow
       document.addEventListener('allshore:station', function (e) { var d = e.detail || {}; if (bySid.has(String(d.sid))) select.value = String(d.sid); refreshCurrent(); });
+      // My points changed (added, renamed, removed): the options are new
+      document.addEventListener('allshore:points', function () { index(); refreshCurrent(); if (!results.hidden) renderFavs(); });
 
       refreshCurrent();
     })();
@@ -2766,6 +2882,55 @@
   <script src="/ui/forecast.js?v={{ ui_asset_version }}"></script>
   <script>
     window.__initial = {{ initial_state|tojson }};
+    // My points (plan section 31): the visitor's own forecast points, kept in this browser (localStorage
+    // 'allshore.points.v1'). They are options of the station select (an optgroup) so the window's title, the picker and
+    // the select need nothing special, and markers of their own on the map. A point added with the map tool is kept
+    // once its forecast has come (land, ice or a busy server keep nothing); one opened from a link is shown, not kept.
+    (function () {
+      var F = window.AllshoreForecast, select = document.getElementById('station');
+      if (!F || !F.createPointStore || !select) return;
+      var storage; try { storage = window.localStorage; storage.getItem('x'); } catch (e) { storage = { getItem: function () { return null; }, setItem: function () {} }; }
+      var store = F.createPointStore(storage), pending = null;
+      var cur = new URLSearchParams(location.search).get('station') || (window.__initial || {}).station || '';
+      function sync() {
+        var group = document.getElementById('myPointsGroup'), keep = select.value, list = store.list();
+        if (!group) { group = document.createElement('optgroup'); group.id = 'myPointsGroup'; group.label = 'My points'; select.insertBefore(group, select.firstChild); }
+        var want = list.map(function (p) { return { id: p.id, text: F.pointLabel(p) }; });
+        var c = F.isPointId(cur) && !store.has(cur) ? F.parsePointId(cur) : null;    // the point on screen, kept or not
+        if (c) want.push({ id: cur, text: F.pointLabel(c) });
+        group.textContent = '';
+        want.forEach(function (w) { var o = document.createElement('option'); o.value = w.id; o.textContent = w.text; group.appendChild(o); });
+        select.value = cur;                                                     // the station on screen (a point's option exists now)
+        if (select.value !== cur && keep) select.value = keep;
+        if (typeof setSavedPoints === 'function') setSavedPoints(list.map(function (p) { return { id: p.id, lat: p.lat, lon: p.lon, label: F.pointLabel(p) }; }));
+        document.dispatchEvent(new CustomEvent('allshore:points'));
+      }
+      // the map tool's click: open the point (its forecast is fetched as any station's), keep it if a forecast comes
+      function add(ll) {
+        var id = F.pointId(ll.lat, ll.lng);
+        if (!id) return;
+        pending = id; cur = id; sync();
+        document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: id, source: 'map' } }));
+      }
+      function hasOption(sid) { for (var i = 0; i < select.options.length; i++) if (select.options[i].value === sid) return true; return false; }
+      document.addEventListener('allshore:station', function (e) {
+        var sid = String((e.detail || {}).sid || ''); if (!sid) return;
+        var was = cur; cur = sid;
+        if (pending && sid !== pending) pending = null;
+        // an unkept point's option goes; a point without one gets it (the title and the star follow)
+        if ((F.isPointId(was) && was !== sid && !store.has(was)) || (F.isPointId(sid) && !hasOption(sid))) sync();
+      });
+      document.addEventListener('allshore:forecast', function (e) {
+        var d = e.detail || {};
+        if (!pending || d.station !== pending || !d.ok) return;             // a refusal leaves it pending: Retry may still bring it
+        var id = pending; pending = null;
+        var r = store.add(id), st = document.getElementById('stationStatus');
+        if (st) st.textContent = r === 'added' ? 'Kept in My points' : r === 'full' ? 'My points is full (' + F.POINTS_MAX + '): this point is not kept.' : '';
+        sync();
+      });
+      window.__allshorePoints = { store: store, sync: sync, add: add };
+      sync();
+    })();
     (function () {
       var sel = document.getElementById('station');
       function stationLabel(sid) {
@@ -2810,6 +2975,8 @@
   <script>
     if (window.AllshoreTools) window.AllshoreTools.init({
       map: map, coastBase: {{ coast_base|tojson }} || window.__allshoreCoastBase || '', getUnit: getSelectedUnit, unitSelect: document.getElementById('unit'),
+      // the Forecast point tool (plan section 31): its click opens a forecast for that point
+      onPoint: window.__allshorePoints ? function (ll) { window.__allshorePoints.add(ll); } : null,
       // an expanded window that covers the tool bar is minimised when a tool starts and whenever the bar grows (owner,
       // G20 and its re-review); a window opened later stays until the bar grows again
       onLayout: function (bar, grew) {

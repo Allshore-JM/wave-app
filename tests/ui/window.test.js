@@ -386,9 +386,9 @@ test('G16-B P2-1: every forecast that lands is announced with the table\'s zone,
   const b = boot({}); const seen = [];
   b.doc.addEventListener('allshore:forecast', (e) => seen.push(e.detail));
   await settle(); b.fs_.last().release(payload({ tz_label: 'Pacific/Honolulu' })); await settle();
-  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table' }]);
+  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table', ok: true, point: null }]);
   b.page.tz.value = 'UTC'; b.page.tz.dispatch('change'); await settle(); b.fs_.last().release(payload({ tz_label: 'UTC', model: 'SWAN' })); await settle();
-  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table' });
+  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table', ok: true, point: null });
   assert.equal(b.doc.getElementById('fwCycle').title, 'SWAN · updated 20260926 12 UTC'.replace('updated ', 'updated ').replace('SWAN · updated 20260926 12 UTC', b.doc.getElementById('fwCycle').textContent), 'titles carry the full text');
 });
 
@@ -792,4 +792,31 @@ test('G19-A: the keyboard grip stops at the viewport like the pointer grip (the 
   const L = I.createLoader({ fetch: fs_.fetch, now: () => now, replaceState: () => {}, swanStations: [], ui: u.ui }, { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' });
   L.seed(payload({ wind_complete: false })); now += 61 * 1000; L.load({}); await settle();
   assert.equal(fs_.calls.length, 1, 'a gappy page-rendered forecast is fetched again after a minute');
+});
+
+// ---- forecast points (plan section 31) ----
+test('a forecast point: its answer is announced with ok and point; an old run says how old; a land answer offers no Retry, a busy one does', async () => {
+  const b = boot({ search: '?station=pt_21667N_158054W' }); const seen = [];
+  b.doc.addEventListener('allshore:forecast', (e) => seen.push(e.detail));
+  await settle();
+  const pt = { id: 'pt_21667N_158054W', lat: 21.667, lon: -158.054, cell_lat: 21.6667, cell_lon: -158.1667, cell_km: 11.6, grid: 'g16', run: '2026100206', age_hours: 9.4 };
+  b.fs_.last().release(payload({ station: 'pt_21667N_158054W', swan_available: false, point: pt })); await settle();
+  assert.deepEqual(seen[0], { station: 'pt_21667N_158054W', tz: '', model: 'GFS', view: 'Table', ok: true, point: pt });
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC', 'a run of normal age: no note');
+  assert.equal(b.doc.getElementById('modelBar').hidden, true, 'no SWAN for a point');
+  b.app.loader.cache.clear(); b.app.loader.load({ unit: 'Metric' }); await settle();
+  b.fs_.last().release(payload({ station: 'pt_21667N_158054W', swan_available: false, point: Object.assign({}, pt, { age_hours: 14.6 }) })); await settle();
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC · 15 h old', 'a cycle was missed: the age shows');
+  assert.equal(b.F._internals.STALE_H, 13);
+  b.app.loader.load({ station: 'pt_39740N_104990W' }); await settle();
+  b.fs_.last().release({ station: 'pt_39740N_104990W', error: 'No model data here: land, ice or outside coverage', table_html: null, graph_data: null, graph_header: null,
+    model: 'GFS', swan_available: false, point: null, final: true }); await settle();
+  const err = b.doc.getElementById('fwError');
+  assert.equal(err.hidden, false); assert.equal(err.querySelectorAll('button').length, 0, 'asking again gives the same answer: no Retry');
+  assert.equal(seen[seen.length - 1].ok, false, 'the page keeps nothing of it');
+  assert.equal(b.app.loader.cache.has('pt_39740N_104990W||Metric|GFS'), false);
+  b.app.loader.load({ station: 'pt_20000N_160000W' }); await settle();
+  b.fs_.last().release({ station: 'pt_20000N_160000W', error: 'The server is busy with other forecast points; try again in a moment', busy: true, table_html: null,
+    graph_data: null, graph_header: null, model: 'GFS', swan_available: false, point: null }); await settle();
+  assert.equal(err.querySelectorAll('button').length, 1, 'busy: Retry');
 });

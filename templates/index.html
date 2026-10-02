@@ -332,6 +332,8 @@
     .lc-live { background: #00E5FF; }
     .lc-point { background: #fff; border: 2px solid #d6007a; }
     .my-pt { background: #fff; border: 2.5px solid #d6007a; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,.45); cursor: pointer; }
+    .my-pt.my-pt-unkept { background: transparent; border-style: dashed; }       /* the point on screen, not in My points */
+    @media (pointer: coarse) { .my-pt::after { content: ''; position: absolute; inset: -12px; } }   /* a finger-sized target (G22 B-20) */
     .leaflet-container.tools-active .my-pt { cursor: crosshair; }
 
     /* ---------------- The floating windows (plan sections 25, 26) ----------------
@@ -364,6 +366,11 @@
     .fw-header .station-trigger { width: auto; max-width: 100%; }
     .fw-header .station-trigger .station-current { max-width: 48ch; }
     .fw-titles .fw-cycle { color: #5a6b7a; font-size: .85rem; flex: 0 0 auto; }
+    /* a label "name — coordinates": the name is cut when room runs out, never the coordinates (G22 B-4) */
+    .lbl-split { display: flex; min-width: 0; }
+    .lbl-split .lbl-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lbl-split .lbl-coord { flex: 0 0 auto; white-space: nowrap; }
+    .fw-note { background: #eef4fb; border: 1px solid #c9daf0; border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; font-size: .9rem; }
     .fw-btn {
       width: 30px; height: 30px; border: 1px solid #ced4da; border-radius: 6px; background: #fff;
       line-height: 1; font-size: 1rem; color: #0b2536; cursor: pointer; flex: 0 0 auto;
@@ -508,7 +515,8 @@
       .live-win.fw-min { bottom: var(--fw-bar-h, 48px) !important; }     /* stacked above the forecast bar (its measured height) */
       /* the bar cannot fit a long name AND the run text: the name has priority (the run text shrinks four times as
          fast, to an ellipsis; it is whole once the bar is expanded) */
-      .fwin.fw-min .fw-titles .fw-cycle { flex: 0 4 auto; min-width: 2ch; overflow: hidden; text-overflow: ellipsis; }
+      .fwin .fw-titles .fw-cycle { flex: 0 4 auto; min-width: 2ch; overflow: hidden; text-overflow: ellipsis; }   /* also full screen (G22 K-3) */
+      .fwin .fw-titles .station-field { flex: 0 1 auto; }
       .fw-resize, .fw-edge { display: none; }
       .fw-header { cursor: default; }
       .fw-btn { width: 36px; height: 36px; }
@@ -538,6 +546,8 @@
       max-height: 340px; overflow-y: auto; min-width: 260px; max-width: 360px;
     }
     .station-results li { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .tools-bar-body .tools-msg { color: #8a3b00; }
+    .station-results .fav-select.lbl-split { display: flex; }
     .station-results .fav-select {
       flex: 1 1 auto; min-width: 0; border: 0; background: none; padding: 8px 10px;
       font: inherit; color: #212529; text-align: left; cursor: pointer;
@@ -633,10 +643,11 @@
                   <span class="station-caret" aria-hidden="true">▾</span>
                 </button>
               </div>
-              <ul id="stationResults" class="station-results" aria-label="Favorite stations" hidden></ul>
+              <ul id="stationResults" class="station-results" aria-label="My points and favorite stations" hidden></ul>
               <span id="stationStatus" class="sr-only" role="status" aria-live="polite"></span>
             </div>
             <select class="form-select form-select-sm" id="station" name="station" form="controlForm">
+              {% if selected_point_label %}<option value="{{ selected_station }}" data-point selected>{{ selected_point_label }}</option>{% endif %}
               {% for sid, name in stations %}
                 <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>{{ sid }} — {{ name }}</option>
               {% endfor %}
@@ -677,6 +688,7 @@
         </noscript>
       </div>
       <div id="fwBody" class="fw-body" tabindex="0" aria-busy="false">
+        <div id="fwNote" class="fw-note" role="status" hidden></div>
         <div id="fwError" class="alert alert-warning py-2 mb-2"{% if not error %} hidden{% endif %}>{{ error or '' }}</div>
         <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz }}{% endif %}</div>
 
@@ -977,6 +989,9 @@
     // The visitor's own forecast points (plan section 31): white rings in the marker pane, above the forecast dots.
     const pointLayer = L.layerGroup();
     const pointIcon = L.divIcon({ className: 'my-pt', iconSize: [14, 14], iconAnchor: [7, 7] });
+    const pointIconUnkept = L.divIcon({ className: 'my-pt my-pt-unkept', iconSize: [14, 14], iconAnchor: [7, 7] });
+    // A tooltip with the visitor's or a provider's words: as TEXT (Leaflet puts a string in as HTML: G22 K-8, A-20)
+    function textTip(t) { const el = document.createElement('span'); el.textContent = String(t == null ? '' : t); return el; }
     if (initialLayerVisibility.points) pointLayer.addTo(map);
 
     if (initialLayerVisibility.forecast) {
@@ -1365,6 +1380,8 @@
     let savedPointsData = [];
     let lastPointSig = null;
     function setSavedPoints(list) { savedPointsData = list || []; rebuildPointMarkers(true); }
+    // a point was just added: its layer is shown even if the visitor had unticked it (G22 B-17)
+    function showPointLayer() { if (!map.hasLayer(pointLayer)) { pointLayer.addTo(map); saveLayerVisibility(); } }
     function rebuildPointMarkers(force = false) {
       const vis = visibleCopies(savedPointsData);
       const sig = renderSignature(vis);
@@ -1373,10 +1390,11 @@
       pointLayer.clearLayers();
       vis.forEach(function (c) {
         const p = c.s;
-        const mk = L.marker([p.lat, c.lng], { icon: pointIcon, title: p.label, alt: p.label, riseOnHover: true }).addTo(pointLayer);
-        mk.bindTooltip(p.label, { permanent: false, direction: 'top', offset: [0, -8] });
-        mk.on('click', function () {
-          if (window.AllshoreTools && window.AllshoreTools.active()) return;   // a map tool takes the click (it reaches the map too)
+        const name = (p.kept === false ? 'Point on screen: ' : 'My point: ') + p.label;
+        const mk = L.marker([p.lat, c.lng], { icon: p.kept === false ? pointIconUnkept : pointIcon, title: name, alt: name, riseOnHover: true }).addTo(pointLayer);
+        mk.bindTooltip(textTip(p.label), { permanent: false, direction: 'top', offset: [0, -8] });
+        mk.on('click', function (e) {
+          if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map (G22 B-8)
           saveLayerVisibility();
           document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: String(p.id), source: 'map' } }));
         });
@@ -2450,7 +2468,7 @@
           zIndexOffset: 500
         }).addTo(liveBuoyLayer);
 
-        marker.bindTooltip(label, {
+        marker.bindTooltip(textTip(label), {                       // a provider's station name: text, never HTML (G22 A-20)
           permanent: false,
           direction: 'top',
           offset: [12, -2]
@@ -2518,14 +2536,16 @@
       if (label) label.setAttribute('for', 'stationTrigger');
       function announce(msg) { if (status) status.textContent = msg; }
 
+      function writeLabel(el, text) { if (window.AllshoreForecast && window.AllshoreForecast.writeLabel) window.AllshoreForecast.writeLabel(el, text); else el.textContent = text; }
       function refreshCurrent() {
         const sid = select.value;
         const c = bySid.get(sid);
-        currentEl.textContent = c ? c.label : 'Select a station';
+        writeLabel(currentEl, c ? c.label : 'Select a station');
+        currentEl.title = c ? c.label : '';                                      // the whole label, also after a rename (G22 A-14)
         const P = points(), pt = isPoint(sid);
         const fav = !!c && (pt ? !!(P && P.store.has(sid)) : isFav(sid));         // for a point the star is "kept in My points"
         favToggle.textContent = fav ? '★' : '☆';
-        favToggle.disabled = !c || (pt && !P);
+        favToggle.disabled = !c || (pt && !P) || (pt && !fav && !!(P && P.refused(sid)));   // no forecast there: nothing to keep (G22 A-13)
         favToggle.setAttribute('aria-label', !c ? 'No station selected'
           : pt ? (fav ? 'Remove this point from My points: ' : 'Keep this point in My points: ') + c.label
           : (fav ? 'Remove current station from favorites: ' : 'Add current station to favorites: ') + c.label);
@@ -2569,13 +2589,13 @@
           const label = window.AllshoreForecast.pointLabel(p);
           const li = document.createElement('li');
           const pick = document.createElement('button');
-          pick.type = 'button'; pick.className = 'fav-select'; pick.dataset.sid = p.id; pick.textContent = label;
+          pick.type = 'button'; pick.className = 'fav-select'; pick.dataset.sid = p.id; writeLabel(pick, label); pick.title = label;
           pick.addEventListener('click', function () { selectStation(p.id); });
           const ren = document.createElement('button');
-          ren.type = 'button'; ren.className = 'pt-act'; ren.textContent = '✎'; ren.setAttribute('aria-label', 'Rename point: ' + label);
+          ren.type = 'button'; ren.className = 'pt-act'; ren.textContent = '✎'; ren.title = 'Rename'; ren.setAttribute('aria-label', 'Rename point: ' + label);
           ren.addEventListener('click', function (e) {
             e.stopPropagation();
-            const name = window.prompt('A name for this point (its coordinates stay in the label):', p.name || '');
+            const name = window.prompt('A name for this point (40 characters at most; its coordinates stay in the label):', p.name || '');
             if (name === null) return;
             P.store.rename(p.id, name); P.sync(); renderFavs();
             const again = results.querySelector('.fav-select[data-sid="' + p.id + '"]');
@@ -2583,9 +2603,10 @@
             announce('Renamed point ' + window.AllshoreForecast.fmtPoint(p.lat, p.lon));
           });
           const rem = document.createElement('button');
-          rem.type = 'button'; rem.className = 'pt-act'; rem.textContent = '✕'; rem.setAttribute('aria-label', 'Remove point: ' + label);
+          rem.type = 'button'; rem.className = 'pt-act'; rem.textContent = '✕'; rem.title = 'Remove'; rem.setAttribute('aria-label', 'Remove point: ' + label);
           rem.addEventListener('click', function (e) {
             e.stopPropagation();
+            if (p.name && !window.confirm('Remove "' + p.name + '" from My points?')) return;   // a name is the visitor's own work (G22 B-18)
             const idx = Array.prototype.slice.call(results.querySelectorAll('.fav-select')).indexOf(pick);
             P.store.remove(p.id); P.sync(); renderFavs();
             announce('Removed point ' + window.AllshoreForecast.fmtPoint(p.lat, p.lon));
@@ -2605,7 +2626,7 @@
           if (npts) return;
           const li = document.createElement('li');
           li.className = 'sr-empty';
-          li.textContent = 'No favorites yet — pick a buoy on the map, then tap ★ to save it here. Map tools → Forecast point adds a point of your own.';
+          li.textContent = 'Nothing saved yet. Pick a buoy on the map and tap ★ to keep it here, or add a point of your own with the map tools (Forecast point).';
           results.appendChild(li);
           return;
         }
@@ -2616,7 +2637,7 @@
           pick.type = 'button';
           pick.className = 'fav-select';
           pick.dataset.sid = c.sid;
-          pick.textContent = c.label;
+          pick.textContent = c.label; pick.title = c.label;
           pick.addEventListener('click', function () { selectStation(c.sid); });
           const star = document.createElement('button');
           star.type = 'button';
@@ -2646,11 +2667,12 @@
         if (isPoint(sid)) {                                                     // a point: kept in My points, or not
           const P = points(); if (!P) return;
           const kept = P.store.has(sid);
+          if (!kept && P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }
           const r = kept ? (P.store.remove(sid) ? 'removed' : 'unsaved') : P.store.add(sid);
-          if (r === 'full') { announce('My points is full (' + window.AllshoreForecast.POINTS_MAX + '). Remove one to keep this point.'); return; }
+          P.say(r, sid);                                                        // full or not saved: said in the window too (G22 B-3)
+          if (r === 'full') return;
           P.sync();
           if (!results.hidden) renderFavs();
-          announce(r === 'removed' ? 'Removed from My points' : r === 'added' ? 'Kept in My points' : 'This browser could not keep the point');
           return;
         }
         const wasFav = isFav(sid);
@@ -2666,12 +2688,23 @@
         if (e.key === 'ArrowDown') {
           e.preventDefault();
           if (results.hidden) open();
-          const first = results.querySelector('.fav-select, .sr-star');
+          const first = results.querySelector('.fav-select');
           if (first) first.focus();
         } else if (e.key === 'Escape' && !results.hidden) { e.stopPropagation(); close(); }
       });
       results.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') { e.stopPropagation(); close(); trigger.focus(); }
+        if (e.key === 'Escape') { e.stopPropagation(); close(); trigger.focus(); return; }
+        // ArrowUp / ArrowDown / Home / End move between the rows' pick buttons; Tab still reaches Rename and Remove (G22 B-6)
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].indexOf(e.key) < 0) return;
+        const rows = Array.prototype.slice.call(results.querySelectorAll('.fav-select'));
+        if (!rows.length) return;
+        const at = e.target && e.target.closest ? e.target.closest('li') : null;
+        let i = rows.findIndex(function (b) { return b.parentNode === at; });
+        e.preventDefault();
+        if (e.key === 'Home') i = 0; else if (e.key === 'End') i = rows.length - 1;
+        else if (e.key === 'ArrowDown') i = Math.min(rows.length - 1, i + 1);
+        else if (i <= 0) { trigger.focus(); return; } else i -= 1;
+        rows[i].focus();
       });
 
       // Close when focus or a click leaves the picker. Guard relatedTarget: removing a favorite
@@ -2889,9 +2922,12 @@
     (function () {
       var F = window.AllshoreForecast, select = document.getElementById('station');
       if (!F || !F.createPointStore || !select) return;
-      var storage; try { storage = window.localStorage; storage.getItem('x'); } catch (e) { storage = { getItem: function () { return null; }, setItem: function () {} }; }
-      var store = F.createPointStore(storage), pending = null;
-      var cur = new URLSearchParams(location.search).get('station') || (window.__initial || {}).station || '';
+      // without storage nothing can be kept, and the store must say so ('unsaved'), not pretend (G22 A-7)
+      var storage; try { storage = window.localStorage; storage.getItem('x'); } catch (e) { storage = { getItem: function () { return null; }, setItem: function () { throw new Error('no storage'); } }; }
+      var store = F.createPointStore(storage), refusedIds = {};
+      var cur = (new URLSearchParams(location.search).get('station') || '').trim() || (window.__initial || {}).station || '';
+      var served = select.querySelector('option[data-point]');                    // the no-script page's own option: the optgroup takes over
+      if (served && served.parentNode) served.parentNode.removeChild(served);
       function sync() {
         var group = document.getElementById('myPointsGroup'), keep = select.value, list = store.list();
         if (!group) { group = document.createElement('optgroup'); group.id = 'myPointsGroup'; group.label = 'My points'; select.insertBefore(group, select.firstChild); }
@@ -2902,33 +2938,57 @@
         want.forEach(function (w) { var o = document.createElement('option'); o.value = w.id; o.textContent = w.text; group.appendChild(o); });
         select.value = cur;                                                     // the station on screen (a point's option exists now)
         if (select.value !== cur && keep) select.value = keep;
-        if (typeof setSavedPoints === 'function') setSavedPoints(list.map(function (p) { return { id: p.id, lat: p.lat, lon: p.lon, label: F.pointLabel(p) }; }));
+        var marks = list.map(function (p) { return { id: p.id, lat: p.lat, lon: p.lon, label: F.pointLabel(p), kept: true }; });
+        if (c && !refusedIds[cur]) marks.push({ id: cur, lat: c.lat, lon: c.lon, label: F.pointLabel(c), kept: false });   // a linked point has its place on the map (G22 K-2)
+        if (typeof setSavedPoints === 'function') setSavedPoints(marks);
         document.dispatchEvent(new CustomEvent('allshore:points'));
       }
-      // the map tool's click: open the point (its forecast is fetched as any station's), keep it if a forecast comes
+      // What became of keeping a point, said where the visitor looks: the forecast window (G22 B-3), and the
+      // screen-reader status line.
+      function say(r, sid) {
+        var st = document.getElementById('stationStatus'), msg = {
+          added: 'Kept in My points', removed: 'Removed from My points',
+          full: 'My points is full (' + F.POINTS_MAX + '): this point is not kept. Remove one to keep it.',
+          unsaved: 'This browser could not keep the point (its storage is full or switched off).'
+        }[r] || '';
+        if (st) st.textContent = msg;
+        if (F.note) F.note(r === 'full' || r === 'unsaved' ? msg : null, sid);
+      }
+      // The map tool's click (static_ui/tools.js waits for this answer): the server is asked FIRST; only a forecast
+      // opens the window and keeps the point; a refusal stays in the tool bar (owner: land is refused, G22).
       function add(ll) {
         var id = F.pointId(ll.lat, ll.lng);
-        if (!id) return;
-        pending = id; cur = id; sync();
+        if (!id) return Promise.resolve({ ok: false, message: 'That is off the map.' });
+        if (!F.prefetch) return Promise.resolve({ ok: true, open: function () { open(id); } });
+        return F.prefetch(id).then(function (d) {
+          if (d && d.table_html) return { ok: true, open: function () { open(id); } };
+          if (d && d.final) refusedIds[id] = true;
+          return { ok: false, message: (d && d.error) || 'No forecast there.' };
+        });
+      }
+      function open(id) {
+        var r = store.has(id) ? 'exists' : store.add(id);
+        cur = id; sync();
+        if (r === 'added' || r === 'exists') showPointLayer();
         document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: id, source: 'map' } }));
+        if (r !== 'exists') say(r, id);                                          // after the load: the note belongs to this point
       }
       function hasOption(sid) { for (var i = 0; i < select.options.length; i++) if (select.options[i].value === sid) return true; return false; }
       document.addEventListener('allshore:station', function (e) {
         var sid = String((e.detail || {}).sid || ''); if (!sid) return;
         var was = cur; cur = sid;
-        if (pending && sid !== pending) pending = null;
         // an unkept point's option goes; a point without one gets it (the title and the star follow)
         if ((F.isPointId(was) && was !== sid && !store.has(was)) || (F.isPointId(sid) && !hasOption(sid))) sync();
       });
+      // a refusal (land, sheltered water, no model data) is remembered: the star cannot keep it, it has no marker
       document.addEventListener('allshore:forecast', function (e) {
         var d = e.detail || {};
-        if (!pending || d.station !== pending || !d.ok) return;             // a refusal leaves it pending: Retry may still bring it
-        var id = pending; pending = null;
-        var r = store.add(id), st = document.getElementById('stationStatus');
-        if (st) st.textContent = r === 'added' ? 'Kept in My points' : r === 'full' ? 'My points is full (' + F.POINTS_MAX + '): this point is not kept.' : '';
-        sync();
+        if (!F.isPointId(d.station) || !d.final || refusedIds[d.station]) return;
+        refusedIds[d.station] = true; sync();
       });
-      window.__allshorePoints = { store: store, sync: sync, add: add };
+      // another tab changed My points: this one follows (G22 B-9)
+      window.addEventListener('storage', function (e) { if (!e.key || e.key === 'allshore.points.v1') sync(); });
+      window.__allshorePoints = { store: store, sync: sync, add: add, say: say, refused: function (id) { return !!refusedIds[id]; } };
       sync();
     })();
     (function () {
@@ -2976,7 +3036,7 @@
     if (window.AllshoreTools) window.AllshoreTools.init({
       map: map, coastBase: {{ coast_base|tojson }} || window.__allshoreCoastBase || '', getUnit: getSelectedUnit, unitSelect: document.getElementById('unit'),
       // the Forecast point tool (plan section 31): its click opens a forecast for that point
-      onPoint: window.__allshorePoints ? function (ll) { window.__allshorePoints.add(ll); } : null,
+      onPoint: window.__allshorePoints ? function (ll) { return window.__allshorePoints.add(ll); } : null,
       // an expanded window that covers the tool bar is minimised when a tool starts and whenever the bar grows (owner,
       // G20 and its re-review); a window opened later stays until the bar grows again
       onLayout: function (bar, grew) {

@@ -759,7 +759,7 @@ def test_point_rows_have_the_bulletin_parsers_shape():
     rows2 = PFC.point_rows(blank, steps, datetime(2026, 10, 1, 12), pytz.utc)
     assert rows2[5][20:22] == [None, None] and rows2[6][22] is None and rows2[7][21] is None and rows2[7][20] is not None
     assert PFC.point_headers(RUN, 21.667, -158.054, fx["cell"]) == (
-        "Cycle : 20261001 12 UTC", "Location : 21.667N 158.054W (model cell 21.67N 158.17W, 5 km away)")
+        "Cycle : 20261001 12 UTC", "Location : 21.667N 158.054W (nearest model point 21.67N 158.17W, 5 km away)")
 
 
 def _bulletin(text, cycle_hour=12):
@@ -853,7 +853,7 @@ def test_api_forecast_for_a_point(api):
     hours = (datetime.utcnow() - datetime(2026, 10, 1, 12)).total_seconds() / 3600
     assert abs(p["age_hours"] - hours) < 0.2                                     # HOURS since the cycle (G22 A-8 S119)
     assert d["graph_header"] == {"cycle": "20261001 12 UTC", "tz": "Pacific/Honolulu",
-                                 "location": f"5.200N 20.300E (model cell 5.00N 20.00E, {p['cell_km']:.0f} km away)"}
+                                 "location": f"5.200N 20.300E (nearest model point 5.00N 20.00E, {p['cell_km']:.0f} km away)"}
     g = d["graph_data"]
     # the graphs' time axis: one slot per HOUR of the run, the rows where they belong, nothing between (G22 B-1)
     assert len(g["labels"]) == 385 and g["labels"][0] == "Thursday, October 1, 2026 2:00 AM" and g["units"] == "ft"
@@ -1072,7 +1072,7 @@ def test_the_page_renders_for_a_point_without_javascript(api):
     product, _get = api
     pid = PFC.point_id(5.2, 20.3)
     html = A.app.test_client().get(f"/?station={pid}&render=full").get_data(as_text=True)
-    assert "Swell 1" in html and "5.200N 20.300E (model cell 5.00N 20.00E" in html
+    assert "Swell 1" in html and "5.200N 20.300E (nearest model point 5.00N 20.00E" in html
     shell = A.app.test_client().get(f"/?station={pid}").get_data(as_text=True)
     assert f'"station": "{pid}"' in shell or f'"station":"{pid}"' in shell
 

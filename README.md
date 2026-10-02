@@ -461,26 +461,33 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   their fifth and sixth; the found ones within 0.03 m, 0.05 s and 1.4 degrees). Run it again when NOAA changes its
   wave products.
 
-## Forecast points: the page (plan section 31, step 5; UI asset 1.13.0)
+## Forecast points: the page (plan section 31, steps 5 and 8; UI asset 1.14.0)
 
-- **The tool**: Map tools -> **Forecast point** (first in the menu). One click (or tap) on the water opens that point in
-  the forecast window, as a station would open: the same table and graphs, titled with the point's coordinates
-  ("21.700N 158.200W", "Pipeline — 21.667N 158.054W" once named). The tool ends with the click, so the markers have
-  their clicks back at once. A click on land answers "No model data here ..." without Retry (the answer is final;
-  `final: true` in the payload); a busy server keeps Retry.
+- **The tool**: Map tools -> **Forecast point** (first in the menu). A click (or tap) ASKS the server first
+  ("Checking that point..." in the tool bar; `AllshoreForecast.prefetch` fetches and keeps the forecast without
+  showing it). A forecast: the tool ends and the point opens in the forecast window from that cache (the same table
+  and graphs as a station, titled with its coordinates: "21.700N 158.200W", "Pipeline — 21.667N 158.054W" once named).
+  A refusal (owner, 2026-10-02: land is refused; so is sheltered water and water without model data) or a failure:
+  the server's message in the tool bar, the tool stays on for another click, nothing on screen changes, nothing is
+  kept. A closed or restarted tool drops a late answer.
 - **My points**: kept in each visitor's own browser (localStorage `allshore.points.v1`, `[{id, lat, lon, name}]`, 50
   at most; the coordinates are read from the id, never trusted from storage; accounts may adopt the record later). A
-  point added with the tool is kept once its forecast has come (land, ice or an error keep nothing; a Retry that
-  succeeds keeps it); a point opened from a link (`?station=pt_...`) is shown but not kept until its star is set.
-  Kept points are white rings with a pink edge on the map (their own legend entry, "My points", remembered like the
-  others), options of the station select (an optgroup the page adds, so the window's title and the picker need nothing
-  special), and a "My points" group at the top of the picker's list with Rename (the browser's prompt; names are
-  cleaned and 40 characters at most, always written as text) and Remove. For a point, the picker's star means "kept in
-  My points". A pick from the list recentres the map on the point.
+  point opened with the tool is kept at once; when it cannot be (50 already, storage full or switched off) the window
+  says so (`#fwNote`) and the screen-reader line too. A point opened from a link (`?station=pt_...`) is shown with a
+  dashed ring and not kept until its star is set; the star cannot keep a refused point. Kept points are white rings
+  with a pink edge (their own legend entry, "My points", ticked again when a point is added), options of the station
+  select (an optgroup the page adds; the no-script page renders the point's own option), and a "My points" group at
+  the top of the picker's list with Rename (the browser's prompt) and Remove (a named point asks first). The arrow
+  keys, Home and End move between the list's rows. Another tab's changes arrive through the `storage` event.
+- **Names**: cleaned (no control or bidi-control characters), 40 characters as the visitor counts them, isolated
+  (U+2068 / U+2069) so a right-to-left name cannot turn the coordinates round; written as text everywhere,
+  tooltips included (a Leaflet tooltip given a string is HTML: the point and live-buoy tooltips are text nodes).
+  Where room runs out the NAME is cut, never the coordinates (`writeLabel`, CSS `.lbl-split`); on phones the run
+  text yields first.
 - **The window**: the run's age is shown after the cycle once it passes 13 hours ("· 15 h old": a NOAA cycle was
-  missed). The graphs' 7-day and 3-day ranges count time, not rows (a point's rows are hourly to +120 h, then every
-  3 hours), and the date labels mark each day's first row (in zones where the 3-hourly rows never fall on midnight,
-  the days after day 5 kept no label otherwise). The x axis is still one column per row: the 3-hourly part is drawn
-  narrower than its time.
+  missed). A point's graph data has one slot an hour (the server fills the 3-hourly part with gaps), so days are as
+  wide as a station's and the 7-day and 3-day ranges count rows as for every station. A refusal or error is said
+  once, in the window's box; a failed load clears the last table. Nautical zones are written as offsets ("Etc/GMT+11"
+  -> "UTC-11"). A map tool's click on a point marker goes to the tool.
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
   (522 inputs) is checked against both.

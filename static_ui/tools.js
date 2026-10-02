@@ -1124,8 +1124,11 @@
   }
 
   // ---- the page: menu, tool bar, map interactions ----
-  // point: one click (or tap) on the water hands the point to the page (opts.onPoint), which opens its forecast
-  // (plan section 31); the tool ends with it, so the markers have their clicks back at once.
+  // point: one click (or tap) hands the point to the page (opts.onPoint), which asks the server for its forecast
+  // (plan section 31). onPoint may answer with a Promise of {ok, message, open}: the tool says "Checking..." until
+  // it settles; a forecast ends the tool and opens it (the markers have their clicks back at once); a refusal
+  // (land, sheltered water, no model data) or a failure is said in the tool bar and the tool stays on for another
+  // click (G22: the owner refuses land). A click while one is being checked is ignored.
   var TOOLS = { distance: 'Measure distance', area: 'Measure area', exposure: 'Swell exposure', point: 'Forecast point' };
   var TWIN_MOUSE_PX = 4, TWIN_TOUCH_PX = 16;
   // Zoomed out the fan becomes a small compass so the window on the map shows round the spot (plan section 30); a dead
@@ -1207,6 +1210,7 @@
     var foldBtn = barEl.querySelector('.tools-fold');
     foldBtn.addEventListener('click', function () { s.folded = !s.folded; render(); });
     function focusClose() { try { closeBtn.focus(); } catch (e) { /* no focus */ } }
+    function focusTools() { try { btn.focus(); } catch (e) { /* no focus */ } }
 
     function unit() { return getUnit() === 'Metric' ? 'Metric' : 'US'; }
     // The body line by line: lines keep their element while their kind stays, and only changed text is written. The
@@ -1303,10 +1307,22 @@
 
     function click(latlng, ev) {
       if (!s.tool) return;
-      if (s.tool === 'point') {                                               // one point: the tool ends, the page takes it
+      if (s.tool === 'point') {
+        if (s.busy) return;
         var to = opts.onPoint, at = { lat: latlng.lat, lng: wrapLng(latlng.lng) };
-        stop();
-        if (typeof to === 'function') to(at, ev);
+        var asked = typeof to === 'function' ? to(at, ev) : null;
+        if (!asked || typeof asked.then !== 'function') { stop(); return; }   // the page opened it itself
+        var gen = s.gen;
+        s.busy = true; s.msg = ''; render();
+        asked.then(function (r) {
+          if (gen !== s.gen || s.tool !== 'point') return;                    // the tool was closed or restarted meanwhile: nothing opens
+          s.busy = false;
+          if (r && r.ok) { var inBar = barEl.contains(doc.activeElement); stop(); if (typeof r.open === 'function') r.open(); if (inBar) focusTools(); return; }
+          s.msg = (r && r.message) || 'No forecast there. Try another point on the sea.'; render();
+        }, function () {
+          if (gen !== s.gen || s.tool !== 'point') return;
+          s.busy = false; s.msg = 'Could not reach the server. Check the connection and try again.'; render();
+        });
         return;
       }
       var p = { lat: latlng.lat, lng: latlng.lng }, b = map.latLngToContainerPoint(latlng);
@@ -1389,8 +1405,12 @@
     }
     function drawPoint() {
       var verb = touchUI() ? 'Tap' : 'Click';
-      return [{ t: verb + ' the water where you want a forecast.', cls: 'tools-big' },
-              { t: 'Its table and graphs open with the coordinates; the point is kept in this browser under My points.', cls: 'tools-hint' }];
+      if (s.busy) return [{ t: 'Checking that point…', cls: 'tools-big', folded: true }];
+      var lines = [];
+      if (s.msg) lines.push({ t: s.msg, cls: 'tools-big tools-msg', folded: true });
+      lines.push({ t: (s.msg ? verb + ' another point on the sea.' : verb + ' the sea where you want a forecast.'), cls: s.msg ? 'tools-hint' : 'tools-big' });
+      if (!s.msg) lines.push({ t: 'Its table and graphs open with the coordinates; the point is kept in this browser under My points.', cls: 'tools-hint' });
+      return lines;
     }
     function render() {
       if (!s.tool) return;
@@ -1648,6 +1668,7 @@
     function ownsKeys() {
       var a = doc.activeElement, box = map.getContainer();
       if (!a || a === doc.body || a === doc.documentElement || a === box || barEl.contains(a) || a === btn) return true;
+      if (a.closest && a.closest('.fwin.fw-min')) return true;              // a minimised window's bar: Escape reaches the tool (G22 B-13)
       var gear = doc.getElementById('settingsBtn'), panel = doc.getElementById('settingsPanel');
       if (gear && a === gear) return !panel || panel.hidden;
       return box.contains(a) && !(a.closest && a.closest('.leaflet-control, .ov-sheet'));
@@ -1661,6 +1682,7 @@
         else if (s.pts.length || s.result) clear(); else stop();
         var a = doc.activeElement;
         if (inBar && s.tool && (!a || !barEl.contains(a) || a.hidden)) focusClose();   // the button it was on went away
+        else if (!s.tool && (inBar || !a || a === doc.body)) focusTools();   // the tool ended: back to its button, as its close button does (G22 K-4)
       }
       else if (e.key === 'Backspace' && (s.tool === 'distance' || s.tool === 'area') && !/INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || '')) { e.preventDefault(); undo(); }
     }, true);

@@ -45,7 +45,7 @@
     var p = new URLSearchParams(search || ''), st = stored || {}, sv = server || {};
     var unit = p.has('unit') ? p.get('unit') : (typeof st.unit === 'string' ? st.unit : sv.unit);
     return {
-      station: p.get('station') || sv.station || '51201',
+      station: (p.get('station') || '').trim() || sv.station || '51201',   // a link with white space after the id (G22 A-17)
       tz: p.has('tz') ? p.get('tz') : (typeof st.tz === 'string' ? st.tz : (sv.tz || '')),
       unit: isUnit(unit) ? unit : 'US',
       model: (p.get('model') || sv.model || 'GFS').toUpperCase() === 'SWAN' ? 'SWAN' : 'GFS',
@@ -137,13 +137,41 @@
   function fmtPoint(lat, lon) {
     return Math.abs(lat).toFixed(3) + (lat >= 0 ? 'N' : 'S') + ' ' + Math.abs(lon).toFixed(3) + (lon >= 0 ? 'E' : 'W');
   }
-  // A name as the visitor typed it, made safe to keep: no control characters, single spaces, at most 40 characters.
+  // A name as the visitor typed it, made safe to keep: no control characters (bidi controls included: a name could
+  // turn the coordinates round, G22 A-14), single spaces, at most 40 characters (counted as the visitor sees them:
+  // an emoji is not cut in half, G22 B-11).
   function cleanName(s) {
-    return String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, POINT_NAME_MAX).trim();
+    var t = String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim();
+    return Array.from(t).slice(0, POINT_NAME_MAX).join('').trim();
   }
   // The text a point goes by: its coordinates always (owner: "the location should show the gps coordinates"), its
-  // name in front when it has one ("Pipeline — 21.667N 158.054W", like "51201 — Waimea Bay, HI").
-  function pointLabel(p) { var c = fmtPoint(p.lat, p.lon); return p.name ? p.name + ' — ' + c : c; }
+  // name in front when it has one ("Pipeline — 21.667N 158.054W", like "51201 — Waimea Bay, HI"). The name is
+  // isolated (U+2068 ... U+2069): a right-to-left name cannot pull the coordinates into it (G22 B-10).
+  function pointLabel(p) { var c = fmtPoint(p.lat, p.lon); return p.name ? '\u2068' + p.name + '\u2069 — ' + c : c; }
+  // A label into an element. A point's coordinates are never what gets cut when room runs out (G22 B-4): they go
+  // in a span that does not shrink, the name in front of them in one that does (CSS .lbl-split).
+  var LABEL_TAIL = /^([\s\S]*) — (\d{1,2}\.\d{3}[NS] \d{1,3}\.\d{3}[EW])$/, COORDS_ONLY = /^\d{1,2}\.\d{3}[NS] \d{1,3}\.\d{3}[EW]$/;
+  function writeLabel(el, label) {
+    if (!el) return;
+    label = String(label == null ? '' : label);
+    if (el.firstChild && typeof el.removeChild === 'function') while (el.firstChild) el.removeChild(el.firstChild);
+    var doc = el.ownerDocument, m = LABEL_TAIL.exec(label), only = COORDS_ONLY.test(label);
+    if (!doc || typeof doc.createElement !== 'function') { el.textContent = label; return; }
+    if (el.classList) el.classList.toggle('lbl-split', !!(m || only));
+    if (!m && !only) { el.appendChild(doc.createTextNode(label)); return; }
+    if (m) {
+      var name = doc.createElement('span'); name.className = 'lbl-name'; name.setAttribute('dir', 'auto');
+      name.textContent = m[1].replace(/^\u2068|\u2069$/g, ''); el.appendChild(name);
+    }
+    var tail = doc.createElement('span'); tail.className = 'lbl-coord'; tail.textContent = m ? '\u00a0— ' + m[2] : label; el.appendChild(tail);
+  }
+  // A time zone as a visitor reads it: the nautical "Etc/GMT+11" means UTC-11 (its sign is POSIX's, backwards;
+  // G22 B-2), so it is shown as "UTC−11".
+  function zoneLabel(name) {
+    var z = String(name == null ? '' : name), m = /^Etc\/GMT([+-])(\d{1,2})$/.exec(z);
+    if (m) return +m[2] ? 'UTC' + (m[1] === '+' ? '\u2212' : '+') + (+m[2]) : 'UTC';
+    return /^Etc\/(GMT|UTC|UCT|Universal|Zulu|Greenwich)(0|[+-]0)?$/.test(z) ? 'UTC' : z;
+  }
   // The visitor's points, in this browser only (accounts may come later: the record is versioned and self-contained).
   // Read back strictly: an entry whose id is not a point id is dropped; the coordinates come from the id.
   function readPoints(storage) {
@@ -261,13 +289,28 @@
       }, function (err) {
         if (my !== seq || (err && err.name === 'AbortError')) return null;
         deps.ui.busy(false);
+        if (deps.ui.clear) deps.ui.clear();                                    // never the last station's table under this title (G22 B-7)
         deps.ui.error('Could not load the forecast.', function () { return load({}); });
         return null;
       });
     }
+    // A forecast fetched and kept for a station WITHOUT showing it (the map tool asks first, opens after: G22).
+    // -> the payload, or a rejection for a network failure. A refusal is returned, not kept.
+    function prefetch(next) {
+      var s = normalise(Object.assign({}, state, next || {})), key = keyOf(s), hit = cache.get(key), now = deps.now();
+      if (hit && now - hit.ts < (hit.ttl || CACHE_TTL_MS)) return Promise.resolve(hit.d);
+      return deps.fetch(API + '?' + queryFor(s), {}).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (d) {
+        if (!d || typeof d !== 'object') throw new Error('bad forecast');
+        if (!(d.error && !d.table_html)) { cache.set(key, { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim(); }
+        return d;
+      });
+    }
     // A forecast the page already rendered (render=full): cached and shown, no fetch.
     function seed(d) { if (!(d.error && !d.table_html)) { cache.set(keyOf(state), { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim(); } apply(d); }
-    return { load: load, seed: seed, state: state, cache: cache, sync: sync };
+    return { load: load, seed: seed, prefetch: prefetch, state: state, cache: cache, sync: sync };
   }
 
   // ---- the graphs ----
@@ -424,7 +467,7 @@
     }
     function applyRange(v) {
       if (!data) return;
-      var w = rangeWindow(data.labels.length, v === '7' ? 7 : v === '3' ? 3 : 0, data.labels.map(parseLabel));
+      var w = rangeWindow(data.labels.length, v === '7' ? 7 : v === '3' ? 3 : 0);   // one slot an hour (a point's too: the server fills the 3-hourly part)
       charts.forEach(function (ch) { ch.options.scales.x.min = w.min; ch.options.scales.x.max = w.max; ch.update('none'); });
       if (deps.rangeBar) Array.prototype.forEach.call(deps.rangeBar.querySelectorAll('[data-days]'), function (b) {
         var on = (b.getAttribute('data-days') === (v === '7' ? '7' : v === '3' ? '3' : '0'));
@@ -664,7 +707,7 @@
     // the title is the picker's own label (#stationCurrent: the favourites picker is the window's heading)
     var els = { win: $('forecastWin'), header: $('fwHeader'), title: $('stationCurrent') || $('fwTitle'), cycle: $('fwCycle'), busy: $('fwBusy'), min: $('fwMin'), max: $('fwMax'),
       viewBar: $('viewBar'), modelBar: $('modelBar'), rangeBar: $('rangeBar'), body: $('fwBody'), error: $('fwError'), meta: $('forecastMeta'),
-      table: $('forecastTable'), graphs: $('graphs'), handle: $('fwResize'), tz: $('tz'), unit: $('unit'), station: $('station'), trigger: $('stationTrigger') };
+      table: $('forecastTable'), graphs: $('graphs'), note: $('fwNote'), handle: $('fwResize'), tz: $('tz'), unit: $('unit'), station: $('station'), trigger: $('stationTrigger') };
     if (!els.win || !els.body || !els.table) return null;
     function safeStorage(name) {
       try { var st = win[name]; if (st && typeof st.getItem === 'function' && typeof st.setItem === 'function') return st; } catch (e) {}
@@ -695,14 +738,14 @@
       });
     }
     function text(el, s) { if (el) el.textContent = s; }
-    function clearNode(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+    function clearNode(el) { el.textContent = ''; }                                // children and any innerHTML text alike
     function showError(msg, retry) {
       var box = els.error; if (!box) return;
       clearNode(box);
       if (!msg) { box.hidden = true; return; }
       var ld = $('forecastLoading'); if (ld && ld.parentNode) ld.parentNode.removeChild(ld);   // no spinner beside an error
       var lbl = opts.stationLabel ? opts.stationLabel(state.station) : state.station;        // the header names the station the address bar shows
-      text(els.title, lbl); if (els.title) els.title.title = lbl;
+      writeLabel(els.title, lbl); if (els.title) els.title.title = lbl;
       box.appendChild(doc.createTextNode(msg + ' '));
       if (retry) { var b = doc.createElement('button'); b.type = 'button'; b.className = 'btn btn-sm btn-outline-secondary'; b.textContent = 'Retry'; b.addEventListener('click', function () { retry(); }); box.appendChild(b); }
       box.hidden = false;
@@ -711,11 +754,20 @@
       var m = els.meta; if (!m) return;
       clearNode(m);
       if (!h) return;
-      [['Cycle : ', h.cycle], ['Location : ', h.location], ['Time Zone: ', h.tz]].forEach(function (pair, i) {
+      [['Cycle : ', h.cycle], ['Location : ', h.location], ['Time Zone: ', zoneLabel(h.tz)]].forEach(function (pair, i) {
         if (i) m.appendChild(doc.createTextNode('  |  '));
         var b = doc.createElement('strong'); b.textContent = pair[0]; m.appendChild(b);
         m.appendChild(doc.createTextNode(String(pair[1] == null ? '' : pair[1])));
       });
+    }
+    // A line of news for the visitor in the window (a point that could not be kept, G22 B-3): shown until another
+    // station or point is on screen.
+    var noteFor = null;
+    function note(msg, sid) {
+      if (!els.note) return;
+      noteFor = msg ? (sid || state.station) : null;
+      els.note.textContent = msg || '';
+      els.note.hidden = !msg;
     }
     // the <head>'s early request (window.__early.forecast = {q, p}): taken once, by the first load, and only
     // for exactly the same query; any other first query fetches as usual (the early response is dropped)
@@ -728,17 +780,19 @@
       replaceState: function (url) { try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
+            clear: function () { clearNode(els.table); setMeta(null); graphs.setData(null); },
             apply: function (d, st, retry) {
               var avail = typeof d.swan_available === 'boolean' ? d.swan_available : swanStations.indexOf(st.station) >= 0;
               if (els.modelBar) { els.modelBar.hidden = !avail; pressed(els.modelBar, 'data-model', st.model); }
               var label = opts.stationLabel ? opts.stationLabel(st.station) : st.station, cyc = shortCycle(st.model, d.graph_header);
               var age = d.point && Number.isFinite(d.point.age_hours) ? d.point.age_hours : null;
               if (age !== null && age >= STALE_H) cyc += ' · ' + Math.round(age) + ' h old';   // a point's run NOAA stopped feeding (plan section 31)
-              text(els.title, label); text(els.cycle, cyc);
+              writeLabel(els.title, label); text(els.cycle, cyc);
+              if (noteFor !== null && noteFor !== st.station) note(null);
               if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = cyc;
               setMeta(d.graph_header);
               if (d.table_html) els.table.innerHTML = d.table_html;           // the server's own table (build_html_table)
-              else { clearNode(els.table); var p = doc.createElement('div'); p.className = 'text-muted'; p.textContent = d.error || 'No forecast available.'; els.table.appendChild(p); }
+              else { clearNode(els.table); if (!d.error) { var p = doc.createElement('div'); p.className = 'text-muted'; p.textContent = 'No forecast available.'; els.table.appendChild(p); } }   // an error is said once, in its box (G22 K-5)
               if (d.error && !d.table_html) showError(String(d.error), d.final ? null : retry || null);   // visible in both views, with Retry (a failed build is not cached; a land point's answer is final)
               else if (d.error) showError(String(d.error), null);
               else showError(null, null);
@@ -747,8 +801,9 @@
               syncSelects();
               // the page's other parts (the model overlay's valid-time zone and run line) follow the forecast on screen
               // ok: a forecast is on screen (a refused point - land, busy - is not; the page saves a new point only then)
+              // final: the answer will not change (a point on land, sheltered water, no model data: the star cannot keep it)
               try { doc.dispatchEvent(new CustomEvent('allshore:forecast', { detail: { station: st.station, tz: d.tz_label || '', model: st.model, view: state.view,
-                ok: !!d.table_html, point: d.point || null } })); } catch (e) {}
+                ok: !!d.table_html, point: d.point || null, final: !!d.final, reason: d.reason || null } })); } catch (e) {}
             } }, saved: function () { return readJson(local, SETTINGS_KEY); } }, state);
     function syncSelects() {
       if (els.station && els.station.value !== state.station) els.station.value = state.station;
@@ -819,17 +874,21 @@
     setView(state.view);
     if (initial.inline) {
       loader.seed({ table_html: initial.error ? null : (els.table.innerHTML.trim() || null), graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
-        error: initial.error || null, model: initial.model, swan_available: initial.swan_available, wind_complete: initial.wind_complete });
+        error: initial.error || null, model: initial.model, swan_available: initial.swan_available, wind_complete: initial.wind_complete,
+        point: initial.point || null, final: !!initial.final, reason: initial.reason || null });
     } else loader.load({});
-    app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, setView: setView, expand: expand, minimise: minimise, els: els };
+    app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, setView: setView, expand: expand, minimise: minimise, note: note, els: els };
     return app;
   }
 
   window.AllshoreForecast = {
     init: init, createLiveWindow: createLiveWindow,
     pointId: pointId, parsePointId: parsePointId, isPointId: isPointId, pointLabel: pointLabel, fmtPoint: fmtPoint, cleanName: cleanName,
-    createPointStore: createPointStore, POINTS_MAX: POINTS_MAX,
+    createPointStore: createPointStore, POINTS_MAX: POINTS_MAX, writeLabel: writeLabel, zoneLabel: zoneLabel,
     load: function (next) { return app ? app.loader.load(next) : Promise.resolve(null); },
+    // a station's forecast fetched and kept, not shown (a map pick goes back to Buoy Local, as allshore:station does)
+    prefetch: function (sid) { return app ? app.loader.prefetch({ station: String(sid), tz: '' }) : Promise.reject(new Error('no forecast window')); },
+    note: function (msg, sid) { if (app) app.note(msg, sid); },
     expand: function () { if (app) app.expand(); },
     minimise: function () { if (app) app.minimise(); },
     getMode: function () { return app ? app.window.mode : null; },

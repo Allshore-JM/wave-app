@@ -94,7 +94,7 @@ function makeEnv(opts) {
   const layouts = [], starts = [], points = [];
   const api = win.AllshoreTools.init({ map, coastBase: 'https://c', fetch: fetchFn, getUnit: () => unitSel.value, unitSelect: unitSel,
     onLayout: (b, grew) => layouts.push(grew), onStart: (b, tool) => starts.push(tool), obstacles: () => opts.obstacles || [],
-    onPoint: opts.noPoint ? null : (ll, ev) => points.push({ ll, ev, active: win.AllshoreTools.active(), dbl: map.doubleClickZoom.enabled() }) });
+    onPoint: opts.noPoint ? null : (ll, ev) => { points.push({ ll, ev, active: win.AllshoreTools.active(), dbl: map.doubleClickZoom.enabled() }); return opts.answer ? opts.answer(ll) : undefined; } });
   const bar = mapEl.children.find((c) => c.classList.contains('tools-bar'));
   const q = (sel) => bar.querySelector(sel);
   // the body's lines as HTML (the tool writes them as elements; fakedom does not serialise)
@@ -996,12 +996,12 @@ test('hover: over a control the pointer is forgotten (a later view change does n
 });
 
 // ---- the Forecast point tool (plan section 31) ----
-test('Forecast point: one click hands the point to the page and the tool ends first (the markers have their clicks back)', () => {
+test('Forecast point: one click hands the point to the page; a page that answers at once ends the tool (the markers have their clicks back)', () => {
   const E = makeEnv();
   assert.equal(E.menu.querySelector('[data-tool="point"]').hidden, false);
   E.pick('point');
   assert.equal(E.q('.tools-bar-title').textContent, 'Forecast point');
-  assert.match(E.body(), /Click the water where you want a forecast\./);
+  assert.match(E.body(), /Click the sea where you want a forecast\./);
   assert.match(E.body(), /kept in this browser under My points/);
   assert.equal(E.A.active(), true); assert.equal(E.map.doubleClickZoom.enabled(), false);
   assert.equal(E.q('.tools-bar-actions').hidden, true, 'no Undo / Finish / Clear / Lock');
@@ -1009,9 +1009,8 @@ test('Forecast point: one click hands the point to the page and the tool ends fi
   assert.equal(E.points.length, 1);
   assert.equal(E.points[0].ll.lat, 21.35);
   assert.ok(Math.abs(E.points[0].ll.lng - -158.6) < 1e-9, 'the longitude comes back to -180..180');
-  assert.equal(E.points[0].active, false, 'the tool had ended when the page was told');
-  assert.equal(E.points[0].dbl, true, 'double-click zoom is back');
-  assert.equal(E.bar.hidden, true); assert.equal(E.s.tool, null);
+  assert.equal(E.bar.hidden, true); assert.equal(E.s.tool, null, 'no promise from the page: the tool ends');
+  assert.equal(E.map.doubleClickZoom.enabled(), true, 'double-click zoom is back');
   E.clickAt(20, -158);
   assert.equal(E.points.length, 1, 'the next map click belongs to the map again');
   assert.equal(E.menu.querySelector('[data-tool="point"]').getAttribute('aria-pressed'), 'false');
@@ -1024,9 +1023,63 @@ test('Forecast point: Escape and the close button end it without a point; a touc
   E.pick('point'); E.q('.tools-x').dispatch('click');
   assert.equal(E.s.tool, null); assert.equal(E.points.length, 0);
   const T = makeEnv({ touch: true }); T.pick('point');
-  assert.match(T.body(), /^<div class="tools-big">Tap the water where you want a forecast\.<\/div>/);
+  assert.match(T.body(), /^<div class="tools-big">Tap the sea where you want a forecast\.<\/div>/);
   const N = makeEnv({ noPoint: true });
   assert.equal(N.menu.querySelector('[data-tool="point"]').hidden, true);
+});
+
+// G22 (owner: land is refused): the page asks the server first; the tool waits, says a refusal and stays on
+test('Forecast point: the tool waits for the answer of the page; a refusal is said in the bar and the tool stays on; a forecast ends it, then opens', async () => {
+  let resolve = null, reject = null, opened = [];
+  const E = makeEnv({ answer: () => new Promise((res, rej) => { resolve = res; reject = rej; }) });
+  E.pick('point');
+  E.clickAt(21.5, -158.0);
+  assert.equal(E.points.length, 1); assert.equal(E.s.busy, true);
+  assert.match(E.body(), /Checking that point/);
+  E.clickAt(21.7, -158.2);
+  assert.equal(E.points.length, 1, 'a click while one is being checked is ignored');
+  resolve({ ok: false, message: 'That point is on land or inland water. Pick a point on the sea.' }); await E.settle();
+  assert.equal(E.s.tool, 'point', 'the tool stays on'); assert.equal(E.s.busy, false); assert.equal(E.bar.hidden, false);
+  assert.match(E.body(), /^<div class="tools-big tools-msg">That point is on land or inland water\. Pick a point on the sea\.<\/div><div class="tools-hint">Click another point on the sea\.<\/div>$/);
+  E.clickAt(21.7, -158.2);                                                     // another click: asked again
+  assert.equal(E.points.length, 2);
+  reject(new Error('offline')); await E.settle();
+  assert.equal(E.s.tool, 'point'); assert.match(E.body(), /Could not reach the server/);
+  E.clickAt(21.71, -158.21);
+  resolve({ ok: true, open: () => opened.push({ active: E.A.active(), dbl: E.map.doubleClickZoom.enabled() }) }); await E.settle();
+  assert.equal(E.s.tool, null); assert.equal(E.bar.hidden, true);
+  assert.deepEqual(opened, [{ active: false, dbl: true }], 'the tool had ended when the point opened');
+  assert.equal(E.s.msg, '');
+});
+
+test('Forecast point: closed or switched while a point is being checked: nothing opens, nothing is said', async () => {
+  let resolve = null, opened = 0;
+  const E = makeEnv({ answer: () => new Promise((res) => { resolve = res; }) });
+  E.pick('point'); E.clickAt(21.5, -158.0);
+  E.q('.tools-x').dispatch('click');
+  resolve({ ok: true, open: () => { opened++; } }); await E.settle();
+  assert.equal(opened, 0); assert.equal(E.s.tool, null);
+  E.pick('point'); E.clickAt(21.5, -158.0);
+  E.pick('distance');
+  resolve({ ok: false, message: 'land' }); await E.settle();
+  assert.equal(E.s.tool, 'distance'); assert.doesNotMatch(E.body(), /land/);
+  E.pick('point'); E.clickAt(21.5, -158.0);
+  E.pick('point');                                                             // started again: the old answer is stale
+  resolve({ ok: true, open: () => { opened++; } }); await E.settle();
+  assert.equal(opened, 0); assert.equal(E.s.tool, 'point'); assert.equal(E.s.busy, false);
+});
+
+test('Forecast point: Escape that ends the tool gives the focus back to the tools button (G22 K-4); a minimised window bar lets Escape reach the tool (B-13)', () => {
+  const E = makeEnv();
+  E.pick('point');
+  E.key('Escape');
+  assert.equal(E.s.tool, null); assert.equal(E.doc.activeElement, E.btn);
+  E.pick('point');
+  const bar = E.doc.createElement('section'); bar.classList.add('fwin'); bar.classList.add('fw-min');
+  const head = E.doc.createElement('button'); bar.appendChild(head); E.doc.body.appendChild(bar);
+  head.focus();
+  E.key('Escape');
+  assert.equal(E.s.tool, null, 'Escape on a minimised window bar ends the tool');
 });
 
 test('Forecast point: a click that began on a control is not a point; another tool replaces it', () => {

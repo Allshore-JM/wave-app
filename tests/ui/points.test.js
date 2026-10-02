@@ -47,7 +47,7 @@ test('pointId and parsePointId: one spelling per point; anything else is refused
   assert.equal(F.fmtPoint(21.667, -158.054), '21.667N 158.054W');
   assert.equal(F.fmtPoint(-14.4, 170.7), '14.400S 170.700E');
   assert.equal(F.pointLabel({ lat: 21.667, lon: -158.054, name: '' }), '21.667N 158.054W');
-  assert.equal(F.pointLabel({ lat: 21.667, lon: -158.054, name: 'Pipeline' }), 'Pipeline — 21.667N 158.054W', 'the coordinates always show');
+  assert.equal(F.pointLabel({ lat: 21.667, lon: -158.054, name: 'Pipeline' }), '⁨Pipeline⁩ — 21.667N 158.054W', 'the coordinates always show; the name isolated (G22 B-10)');
 });
 
 test('cleanName: no control characters, single spaces, 40 characters at most', () => {
@@ -68,7 +68,7 @@ test('the store: add (newest first), exists, rename, remove; the coordinates alw
   assert.deepEqual(s.list().map((p) => p.id), ['pt_14400S_170700W', 'pt_21667N_158054W']);
   assert.deepEqual(s.get('pt_14400S_170700W'), { id: 'pt_14400S_170700W', lat: -14.4, lon: -170.7, name: 'Pago' });
   assert.equal(s.rename('pt_21667N_158054W', '  Pipeline  '), true);
-  assert.equal(s.label('pt_21667N_158054W'), 'Pipeline — 21.667N 158.054W');
+  assert.equal(s.label('pt_21667N_158054W'), '⁨Pipeline⁩ — 21.667N 158.054W');
   assert.equal(s.label('pt_5N_5E'), '0.005N 0.005E', 'an id not kept still has a label');
   assert.equal(s.label('nope'), null);
   assert.equal(s.rename('pt_5N_5E', 'x'), false);

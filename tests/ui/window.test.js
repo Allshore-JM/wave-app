@@ -307,8 +307,9 @@ test('init: a page-rendered forecast (render=full) is shown without a fetch; a s
   b.page.table.innerHTML = '<table class="x">server</table>';
   await settle(); assert.equal(b.fs_.calls.length, 0);
   const b2 = boot({}); await settle(); b2.fs_.last().release(payload({ table_html: null, graph_data: null, error: 'No SWAN forecast available for 51201' })); await settle();
-  assert.equal(b2.page.table.textContent, 'No SWAN forecast available for 51201');
-  assert.equal(b2.doc.getElementById('fwError').hidden, false, 'a table-less error is shown in the box too (G16-A P2-1)');
+  assert.equal(b2.page.table.textContent, '', 'the error is said once, in its box (G22 K-5)');
+  assert.equal(b2.doc.getElementById('fwError').hidden, false, 'a table-less error is shown in the box (G16-A P2-1)');
+  assert.match(b2.doc.getElementById('fwError').textContent, /No SWAN forecast available for 51201/);
   b2.page.gear.dispatch('click'); assert.equal(b2.page.panel.hidden, false); assert.equal(b2.page.gear.getAttribute('aria-expanded'), 'true');
   b2.page.panel.dispatch('keydown', { key: 'Escape' }); assert.equal(b2.page.panel.hidden, true); assert.equal(b2.app.window.mode, 'min', 'Escape in the panel does not reach the window');
   b2.page.gear.dispatch('click'); b2.page.header.dispatch('pointerdown', ptr(1, 1)); assert.equal(b2.page.panel.hidden, true, 'outside press closes it');
@@ -386,9 +387,9 @@ test('G16-B P2-1: every forecast that lands is announced with the table\'s zone,
   const b = boot({}); const seen = [];
   b.doc.addEventListener('allshore:forecast', (e) => seen.push(e.detail));
   await settle(); b.fs_.last().release(payload({ tz_label: 'Pacific/Honolulu' })); await settle();
-  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table', ok: true, point: null }]);
+  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table', ok: true, point: null, final: false, reason: null }]);
   b.page.tz.value = 'UTC'; b.page.tz.dispatch('change'); await settle(); b.fs_.last().release(payload({ tz_label: 'UTC', model: 'SWAN' })); await settle();
-  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table', ok: true, point: null });
+  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table', ok: true, point: null, final: false, reason: null });
   assert.equal(b.doc.getElementById('fwCycle').title, 'SWAN · updated 20260926 12 UTC'.replace('updated ', 'updated ').replace('SWAN · updated 20260926 12 UTC', b.doc.getElementById('fwCycle').textContent), 'titles carry the full text');
 });
 
@@ -422,7 +423,7 @@ test('G16-A P2-1 / P2-2: a table-less error is shown in the visible box with Ret
   assert.equal(box.hidden, true, 'a good forecast clears the error'); assert.equal(b.app.loader.cache.size, 1);
   b.page.viewBar.querySelectorAll('[data-view]')[0].dispatch('click');
   const c = boot({}); await settle(); c.fs_.last().release(payload({ table_html: null, error: 'No SWAN forecast available for 51201' })); await settle();
-  assert.equal(c.doc.getElementById('fwError').hidden, false, 'Table view too'); assert.equal(c.page.table.textContent, 'No SWAN forecast available for 51201');
+  assert.equal(c.doc.getElementById('fwError').hidden, false, 'Table view too'); assert.equal(c.page.table.textContent, '', 'said once (G22 K-5)');
   assert.equal(c.app.loader.cache.size, 0, 'not cached');
 });
 
@@ -801,7 +802,7 @@ test('a forecast point: its answer is announced with ok and point; an old run sa
   await settle();
   const pt = { id: 'pt_21667N_158054W', lat: 21.667, lon: -158.054, cell_lat: 21.6667, cell_lon: -158.1667, cell_km: 11.6, grid: 'g16', run: '2026100206', age_hours: 9.4 };
   b.fs_.last().release(payload({ station: 'pt_21667N_158054W', swan_available: false, point: pt })); await settle();
-  assert.deepEqual(seen[0], { station: 'pt_21667N_158054W', tz: '', model: 'GFS', view: 'Table', ok: true, point: pt });
+  assert.deepEqual(seen[0], { station: 'pt_21667N_158054W', tz: '', model: 'GFS', view: 'Table', ok: true, point: pt, final: false, reason: null });
   assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC', 'a run of normal age: no note');
   assert.equal(b.doc.getElementById('modelBar').hidden, true, 'no SWAN for a point');
   b.app.loader.cache.clear(); b.app.loader.load({ unit: 'Metric' }); await settle();
@@ -810,8 +811,9 @@ test('a forecast point: its answer is announced with ok and point; an old run sa
   assert.equal(b.F._internals.STALE_H, 13);
   b.app.loader.load({ station: 'pt_39740N_104990W' }); await settle();
   b.fs_.last().release({ station: 'pt_39740N_104990W', error: 'No model data here: land, ice or outside coverage', table_html: null, graph_data: null, graph_header: null,
-    model: 'GFS', swan_available: false, point: null, final: true }); await settle();
+    model: 'GFS', swan_available: false, point: null, final: true, reason: 'land' }); await settle();
   const err = b.doc.getElementById('fwError');
+  assert.deepEqual([seen[seen.length - 1].final, seen[seen.length - 1].reason], [true, 'land'], 'the page learns the answer is final');
   assert.equal(err.hidden, false); assert.equal(err.querySelectorAll('button').length, 0, 'asking again gives the same answer: no Retry');
   assert.equal(seen[seen.length - 1].ok, false, 'the page keeps nothing of it');
   assert.equal(b.app.loader.cache.has('pt_39740N_104990W||Metric|GFS'), false);

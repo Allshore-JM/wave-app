@@ -1,14 +1,15 @@
 """A forecast for any ocean point, read from the forecast-point product the points job publishes
 (tools/model_frames/points.py; format in tools/model_frames/pointfmt.py; plan section 31).
 
-Three parts:
+Four parts:
   - the point's id: "pt_21667N_158054W" (latitude and longitude in thousandths of a degree), one spelling per point;
+  - the coast: the site's published GSHHG coastlines (static/coast/v1, the files the swell-exposure tool reads) say
+    whether the point is water and whether a model cell can be reached from it over water (owner, 2026-10-02: land
+    is refused, and so is water whose only model cells lie beyond land);
   - PointSource: pointer -> manifest -> the grids' sea masks -> the tile of the point's model cell, with small
     caches (the web service is one worker: nothing here may hold much or fetch twice);
-  - pure functions that turn the cell's 15 planes into the forecast table's rows. NOAA's gridded files give the
-    wind sea and three swell partitions per step, ordered by height at each step, so partition 1 at one hour is
-    not the same swell train as partition 1 at the next: track_partitions() follows the trains through time and
-    gives each one a column, as the point bulletins do.
+  - pure functions that turn the cell's 15 planes into the forecast table's rows: at every step the wind sea and
+    the swells in rank order (rank_groups: height squared x peak period, the rule of every forecast table of the site).
 
 numpy and pointfmt are loaded on first use: the web process pays for them only once somebody asks for a point.
 """
@@ -17,6 +18,7 @@ import json
 import math
 import os
 import re
+import struct
 import sys
 import threading
 import time
@@ -27,8 +29,6 @@ PREFIX = "gfswave/points/v1"
 REACH_KM = 40.0                # how far the nearest sea cell may be from the point (1.4 cells of 1/4 degree, 2.2 of 1/6)
 NCOL = 6                       # the table's swell columns (the rows' shape, shared with the bulletins)
 USED = 4                       # ... of which a point fills four: NOAA gives the wind sea and three swells at most
-DIE_H = 12                     # hours a swell train may go unseen and still be the same train when it returns
-WEEK_H = 168                   # the columns are ordered by their energy over the first seven days
 M_TO_FT = 3.28084
 
 POINTER_TTL_S = 300            # the pointer's own max-age
@@ -40,6 +40,23 @@ MAX_MASK_BYTES = 2 * 1024 * 1024
 MAX_TILE_BYTES = 4 * 1024 * 1024     # compressed; a real tile is under 1 MB
 TILE_CACHE_BYTES = 24 * 1024 * 1024
 CELL_CACHE_MAX = 256                 # one cell's series is ~6 KB
+
+COAST_PREFIX = "static/coast/v1"     # the coastlines the page's exposure tool reads (tools/coast/build_coast.py)
+COAST_CELL_DEG = 5                   # tier 1: full resolution in 5-degree cells
+COAST_Q = 10000
+MAX_COAST_BYTES = 2 * 1024 * 1024    # one cell; the largest is 0.4 MB
+COAST_CACHE_BYTES = 16 * 1024 * 1024
+SHORE_M = 300.0                      # "land" this close to water is the shore: a beach, a pier, the data's own error
+SHORE_RINGS_M = (100.0, 200.0, 300.0)
+PATH_STEP_KM = 0.25                  # the path from the point to its cell is looked at this often
+PATH_LAND_RUN = 2                    # this many land samples in a row = land lies between (a rock is one sample)
+PATH_CELL_SKIP = 0.5                 # the path's end inside this share of the cell's half-width is not looked at
+
+REFUSALS = {                         # reason -> what the visitor is told (final answers: asking again changes nothing)
+    "land": "That point is on land or inland water. Pick a point on the sea.",
+    "sheltered": "No forecast here: the wave model's nearest points lie beyond land (sheltered water).",
+    "nodata": "The wave model has no data here: sea ice, or outside its coverage.",
+}
 
 _PF = None
 
@@ -109,6 +126,7 @@ def fmt_coord(lat, lon, places=3):
 
 _RUN_RE = re.compile(r"\d{10}")
 _GRID_RE = re.compile(r"[a-z0-9]{1,8}")
+_COAST_NAME_RE = re.compile(r"-?\d{1,2}_-?\d{1,3}")
 
 
 def _is_int(v, lo, hi):
@@ -186,6 +204,186 @@ def grid_in_reach(grid, lat, reach_km=REACH_KM):
     return south - pad <= lat <= north + pad
 
 
+def sea_cells_in_reach(grids, masks, lat, lon, reach_km=REACH_KM):
+    """Every sea cell of any grid within reach_km of the point, nearest first (on a tie the earlier grid, then the
+    scan's order: nearest_sea_cell's choice comes first). -> [{"grid", "row", "col", "lat", "lon", "km", "half"}]
+    (half = half a cell in degrees)."""
+    found = []
+    for grid in grids:
+        mask = masks.get(grid["name"])
+        if mask is None:
+            continue
+        per, ni, nj = grid["per_deg"], grid["ni"], grid["nj"]
+        r0 = int(round((grid["lat0"] - lat) * per))
+        c0 = int(round((lon % 360.0) * per))
+        kr = int(math.ceil(reach_km / 111.0 * per)) + 1
+        coslat = max(0.05, math.cos(math.radians(min(89.0, abs(lat) + reach_km / 111.0))))
+        kc = min(ni // 2, int(math.ceil(reach_km / (111.0 * coslat) * per)) + 1)
+        for r in range(max(0, r0 - kr), min(nj - 1, r0 + kr) + 1):
+            cell_lat = grid["lat0"] - r / per
+            for c in range(c0 - kc, c0 + kc + 1):
+                cc = c % ni
+                if not mask[r, cc]:
+                    continue
+                cell_lon = cc / per
+                km = _km(lat, lon, cell_lat, cell_lon)
+                if km <= reach_km:
+                    found.append({"grid": grid["name"], "row": r, "col": cc, "lat": cell_lat,
+                                  "lon": cell_lon - 360.0 if cell_lon >= 180.0 else cell_lon, "km": km, "half": 0.5 / per})
+    best = nearest_sea_cell(grids, masks, lat, lon, reach_km)
+    found.sort(key=lambda c: c["km"])                               # stable: ties stay in grid, then scan order
+    if best:                                                         # the tie rule of nearest_sea_cell, exactly
+        first = next(i for i, c in enumerate(found) if (c["grid"], c["row"], c["col"]) == (best["grid"], best["row"], best["col"]))
+        found.insert(0, found.pop(first))
+    return found
+
+
+# ------------------------------- the coast: land, and what lies between ---------------
+
+def coast_cell_name(lat, lon):
+    """The 5-degree coast cell that holds the point: "20_-160" (its south-west corner)."""
+    lon = (lon + 180.0) % 360.0 - 180.0
+    la = min(90 - COAST_CELL_DEG, int(math.floor(lat / COAST_CELL_DEG)) * COAST_CELL_DEG)
+    lo = int(math.floor(lon / COAST_CELL_DEG)) * COAST_CELL_DEG
+    return f"{la}_{lo}"
+
+
+def decode_coast(buf):
+    """A coast-v1 cell (tools/coast/build_coast.py; static_ui/tools.js decodeCoastLL reads the same bytes) as its
+    ring edges: (xi, yi, xj, yj) float64 arrays in degrees, edge = previous vertex j -> vertex i of each closed ring.
+    ValueError for anything that is not a whole, consistent cell."""
+    import numpy as np
+    if not isinstance(buf, (bytes, bytearray)) or not 40 <= len(buf) <= MAX_COAST_BYTES or bytes(buf[:4]) != b"CST1":
+        raise ValueError("coast cell")
+    q, n_pieces, n_rings, n_verts = struct.unpack_from("<IIII", buf, 8)
+    if (q != COAST_Q or n_pieces > 200000 or n_rings > 400000 or n_verts > 4000000 or n_rings < n_pieces
+            or n_verts < 3 * n_rings or 5 * n_pieces + n_rings + 2 * n_verts > len(buf) - 40):
+        raise ValueError("coast cell counts")
+    a = np.frombuffer(bytes(buf), dtype=np.uint8, offset=40)
+    if a.size == 0:
+        if n_pieces or n_rings or n_verts:
+            raise ValueError("coast cell length")
+        z = np.zeros(0)
+        return z, z, z, z                                            # a cell without land
+    if a[-1] & 128:
+        raise ValueError("coast cell varints")
+    ends = np.flatnonzero(a < 128)
+    starts = np.concatenate(([0], ends[:-1] + 1))
+    lens = ends - starts + 1
+    if int(lens.max()) > 5:
+        raise ValueError("coast cell varints")
+    place = np.arange(a.size) - np.repeat(starts, lens)
+    vals = np.add.reduceat((a & 127).astype(np.int64) << (7 * place), starts)
+    signed = np.where(vals & 1, -((vals + 1) // 2), vals // 2)
+    # the structure first (plain integers), then every ring's vertices at once
+    i, total, verts = 0, len(vals), 0
+    at, count, base_x, base_y = [], [], [], []                       # per ring: where its deltas start, how many vertices, its piece's origin
+    for _ in range(n_pieces):
+        if i + 5 > total:
+            raise ValueError("coast cell pieces")
+        minx, miny, nr = int(signed[i]), int(signed[i + 1]), int(vals[i + 4])
+        i += 5
+        if len(at) + nr > n_rings:
+            raise ValueError("coast cell rings")
+        for _k in range(nr):
+            if i >= total:
+                raise ValueError("coast cell rings")
+            n = int(vals[i])
+            i += 1
+            if n < 3 or verts + n > n_verts or i + 2 * n > total:
+                raise ValueError("coast cell ring")
+            at.append(i)
+            count.append(n)
+            base_x.append(minx)
+            base_y.append(miny)
+            i += 2 * n
+            verts += n
+    if len(at) != n_rings or verts != n_verts or i != total:
+        raise ValueError("coast cell length")
+    inv = 1.0 / q                                                    # as the page: x * (1 / q)
+    if not at:
+        z = np.zeros(0)
+        return z, z, z, z
+    count = np.array(count)
+    first = np.concatenate(([0], np.cumsum(count)[:-1]))             # each ring's first vertex in the flat arrays
+    ring_of = np.repeat(np.arange(len(count)), count)
+    src = np.repeat(np.array(at), count) + 2 * (np.arange(n_verts) - np.repeat(first, count))
+    out = []
+    for off, base, lim in ((0, base_x, 180 * q + 1), (1, base_y, 90 * q + 1)):
+        run = np.cumsum(signed[src + off])
+        before = np.concatenate(([0], run[:-1]))[first]              # the running sum just before each ring
+        v = run - before[ring_of] + np.array(base)[ring_of]
+        if int(np.abs(v).max()) > lim:
+            raise ValueError("coast cell coordinates")
+        prev = np.concatenate(([0], v[:-1]))
+        prev[first] = v[first + count - 1]                           # a ring's first vertex follows its last
+        out.append((v * inv, prev * inv))
+    return out[0][0], out[1][0], out[0][1], out[1][1]
+
+
+def land_parity(edges, lons, lats):
+    """Even-odd point-in-land for points inside ONE coast cell (the page's inLand: the same half-open crossing rule,
+    the same arithmetic). edges: decode_coast()'s; lons / lats: float arrays. -> bool array."""
+    import numpy as np
+    xi, yi, xj, yj = edges
+    out = np.zeros(len(lats), dtype=bool)
+    if not len(xi) or not len(lats):
+        return out
+    near = (np.minimum(yi, yj) <= lats.max()) & (np.maximum(yi, yj) > lats.min())   # only these can be crossed
+    xi, yi, xj, yj = xi[near], yi[near], xj[near], yj[near]
+    if not len(xi):
+        return out
+    for a in range(0, len(lats), 64):                                # 64 points x the edges at a time
+        la, lo = lats[a:a + 64, None], lons[a:a + 64, None]
+        cross = (yi > la) != (yj > la)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            hit = cross & (lo < (xj - xi) * (la - yi) / (yj - yi) + xi)
+        out[a:a + 64] = (hit.sum(axis=1) & 1).astype(bool)
+    return out
+
+
+def is_water(land, lat, lon):
+    """Water, or land within SHORE_M of water (tested on rings round the point). land(lats, lons) -> bool array."""
+    import numpy as np
+    if not land(np.array([lat]), np.array([lon]))[0]:
+        return True
+    lats, lons = [], []
+    coslat = max(0.05, math.cos(math.radians(lat)))
+    for m in SHORE_RINGS_M:
+        for k in range(16):
+            b = math.radians(22.5 * k)
+            lats.append(lat + m * math.cos(b) / 111195.0)
+            lons.append(lon + m * math.sin(b) / (111195.0 * coslat))
+    return not bool(land(np.array(lats), np.array(lons)).all())
+
+
+def path_clear(land, lat, lon, cell):
+    """Whether the straight path from the point to the cell's centre is water: no PATH_LAND_RUN samples of land in
+    a row, PATH_STEP_KM apart. Not looked at: the shore band at the point, and the cell's own box (what lies inside
+    a cell is the model's business; some sea cells have their centre on an islet or a headland: PATH_CELL_SKIP)."""
+    import numpy as np
+    km = cell["km"]
+    d = np.arange(SHORE_M / 1000.0, km, PATH_STEP_KM)
+    if not len(d):
+        return True
+    f = d / km
+    dlon = (cell["lon"] - lon + 180.0) % 360.0 - 180.0
+    lats, lons = lat + f * (cell["lat"] - lat), lon + f * dlon
+    half = cell["half"]
+    half = half * PATH_CELL_SKIP
+    outside = (np.abs(lats - cell["lat"]) > half) | (np.abs(lons - (lon + dlon)) > half)
+    lats, lons = lats[outside], lons[outside]
+    if len(lats) < PATH_LAND_RUN:
+        return True
+    on_land = land(lats, lons)
+    run = 0
+    for v in on_land:
+        run = run + 1 if v else 0
+        if run >= PATH_LAND_RUN:
+            return False
+    return True
+
+
 def nearest_sea_cell(grids, masks, lat, lon, reach_km=REACH_KM):
     """The nearest sea cell of any grid within reach_km of the point, or None. grids: check_manifest()'s, in
     priority order; masks: {grid name: bool [nj, ni]} (a grid without a mask is not looked at). On a tie the
@@ -232,6 +430,9 @@ class PointSource:
         self._tile_bytes = 0
         self._cells = OrderedDict()      # (run, grid, row, col) -> uint16 [field, step]
         self._inflight = {}              # key -> Lock
+        self._coast_index = None         # {cell name: bytes}: the coast cells that hold land
+        self._coast = OrderedDict()      # cell name -> (edges, bytes held)
+        self._coast_bytes = 0
 
     def _url(self, key):
         base = self._base()
@@ -286,7 +487,7 @@ class PointSource:
                     man = check_manifest(json.loads(self._get(mkey, MAX_JSON_BYTES).decode("utf-8")))
                     if man["run"] != run:
                         raise PointError("Forecast points are temporarily unavailable")
-            except (PointError, ValueError):
+            except (PointError, ValueError, RecursionError):         # RecursionError: JSON nested too deep (G22 A-10)
                 now = self._clock()
                 with self._lock:
                     if have and now - have[1] < POINTER_KEEP_S:
@@ -340,14 +541,112 @@ class PointSource:
             if (header.get("run"), header.get("grid")) != key or mask.shape != (grid["nj"], grid["ni"]):
                 raise PointError("Forecast points are temporarily unavailable")
             with self._lock:
-                self._masks[key] = mask
+                if self._keeps(man["run"]):
+                    self._masks[key] = mask
             return mask
         return self._once(("mask",) + key, cached, build)
 
+    def current_run(self):
+        """The run of the manifest in hand (None before the first read)."""
+        with self._lock:
+            return self._manifest[0]["run"] if self._manifest else None
+
+    def _keeps(self, run):
+        """Whether objects of this run may go into the caches: only the run in hand (a request that still holds an
+        older manifest at a run change must not fill them with the old run again; G22 A-11). Under self._lock."""
+        return self._manifest is None or self._manifest[0]["run"] == run
+
+    def _coast_cells(self):
+        """{cell name: bytes} of the coast cells that hold land (the index of static/coast/v1). Kept once read."""
+        def cached():
+            with self._lock:
+                return self._coast_index
+
+        def build():
+            try:
+                idx = json.loads(self._get(f"{COAST_PREFIX}/index.json", MAX_JSON_BYTES).decode("utf-8"))
+                tier = idx["tier1"]
+                if idx.get("format") != "coast-v1" or idx.get("q") != COAST_Q or tier.get("cell") != COAST_CELL_DEG or tier.get("dir") != "f":
+                    raise ValueError("coast index")
+                cells = {}
+                for name, entry in tier["cells"].items():
+                    if (not _COAST_NAME_RE.fullmatch(name) or not isinstance(entry, list) or not entry
+                            or not _is_int(entry[0], 40, MAX_COAST_BYTES)):
+                        raise ValueError("coast index entry")
+                    cells[name] = entry[0]
+                if not cells:
+                    raise ValueError("coast index empty")
+            except PointError:
+                raise
+            except Exception as exc:                                 # noqa: BLE001  bad JSON, a missing key, RecursionError ...
+                raise PointError("Forecast points are temporarily unavailable") from exc
+            with self._lock:
+                self._coast_index = cells
+            return cells
+        return self._once(("coast-index",), cached, build)
+
+    def _coast_cell(self, name):
+        """The edges of one coast cell, or None for a cell without land. A cell that cannot be read is an error:
+        a point is never served untested."""
+        nbytes = self._coast_cells().get(name)
+        if nbytes is None:
+            return None
+
+        def cached():
+            with self._lock:
+                hit = self._coast.get(name)
+                if hit is not None:
+                    self._coast.move_to_end(name)
+                    return hit[0]
+                return None
+
+        def build():
+            blob = self._get(f"{COAST_PREFIX}/f/{name}.bin", nbytes)
+            try:
+                if len(blob) != nbytes:
+                    raise ValueError("coast cell size")
+                edges = decode_coast(blob)
+            except ValueError as exc:
+                raise PointError("Forecast points are temporarily unavailable") from exc
+            held = sum(int(e.nbytes) for e in edges)
+            with self._lock:
+                if name not in self._coast:
+                    self._coast[name] = (edges, held)
+                    self._coast_bytes += held
+                    while self._coast_bytes > COAST_CACHE_BYTES and len(self._coast) > 1:
+                        _old, dropped = self._coast.popitem(last=False)
+                        self._coast_bytes -= dropped[1]
+            return edges
+        return self._once(("coast", name), cached, build)
+
+    def land(self, lats, lons):
+        """Whether each point is land by the coast data (numpy arrays in, a bool array out)."""
+        import numpy as np
+        lons = (lons + 180.0) % 360.0 - 180.0
+        out = np.zeros(len(lats), dtype=bool)
+        names = [coast_cell_name(la, lo) for la, lo in zip(lats.tolist(), lons.tolist())]
+        for name in set(names):
+            edges = self._coast_cell(name)
+            if edges is None:
+                continue
+            pick = np.array([n == name for n in names])
+            out[pick] = land_parity(edges, lons[pick], lats[pick])
+        return out
+
     def locate(self, man, lat, lon):
-        """The point's model cell (nearest_sea_cell), or None: land, ice, or outside every grid."""
+        """The point's model cell: the nearest sea cell within reach that can be reached from the point over water.
+        -> (cell, None), or (None, reason): "land" (the point is on land, beyond the shore band), "nodata" (no sea
+        cell within reach: ice, a sea the model does not have), "sheltered" (cells within reach, all beyond land)."""
+        if not is_water(self.land, lat, lon):
+            return None, "land"
         masks = {g["name"]: self.mask(man, g) for g in man["grids"] if grid_in_reach(g, lat)}
-        return nearest_sea_cell(man["grids"], masks, lat, lon) if masks else None
+        cells = sea_cells_in_reach(man["grids"], masks, lat, lon) if masks else []
+        if not cells:
+            return None, "nodata"
+        for cell in cells:
+            if path_clear(self.land, lat, lon, cell):
+                return cell, None
+        return None, "sheltered"
 
     def _tile(self, man, grid, tr, tc):
         key = (man["run"], grid["name"], tr, tc)
@@ -362,7 +661,7 @@ class PointSource:
         def build():
             blob = self._get(f"{PREFIX}/{man['run']}/{grid['name']}/{tr}_{tc}.bin", MAX_TILE_BYTES)
             with self._lock:
-                if key not in self._tiles:
+                if key not in self._tiles and self._keeps(man["run"]):
                     self._tiles[key] = blob
                     self._tile_bytes += len(blob)
                     while self._tile_bytes > TILE_CACHE_BYTES and len(self._tiles) > 1:
@@ -370,6 +669,12 @@ class PointSource:
                         self._tile_bytes -= len(dropped)
             return blob
         return self._once(("tile",) + key, cached, build)
+
+    def _drop_tile(self, key, blob):
+        with self._lock:
+            if self._tiles.get(key) is blob:
+                del self._tiles[key]
+                self._tile_bytes -= len(blob)
 
     def series(self, man, cell):
         """The cell's values: uint16 [field, step] (pointfmt.FIELD_NAMES order; pointfmt.MISSING = no value)."""
@@ -385,16 +690,22 @@ class PointSource:
         tr, tc = cell["row"] // t, cell["col"] // t
         blob = self._tile(man, grid, tr, tc)
         try:
-            header, bitmap, planes = PF.decode_tile(blob, steps=len(man["steps"]), fields=PF.FIELD_NAMES)
-        except ValueError as exc:
-            raise PointError("Forecast points are temporarily unavailable") from exc
-        if (header["run"], header["grid"], header["tile"], header["row0"], header["col0"]) != (man["run"], grid["name"], [tr, tc], tr * t, tc * t):
-            raise PointError("Forecast points are temporarily unavailable")
+            try:
+                header, bitmap, planes = PF.decode_tile(blob, steps=len(man["steps"]), fields=PF.FIELD_NAMES)
+            except ValueError as exc:
+                raise PointError("Forecast points are temporarily unavailable") from exc
+            if (header["run"], header["grid"], header["tile"], header["row0"], header["col0"]) != (man["run"], grid["name"], [tr, tc], tr * t, tc * t):
+                raise PointError("Forecast points are temporarily unavailable")
+        except PointError:
+            self._drop_tile((man["run"], grid["name"], tr, tc), blob)   # a bad body is not kept: the next request fetches again (G22 A-3)
+            raise
         i = PF.cell_index(bitmap, cell["row"] - tr * t, cell["col"] - tc * t)
         if i < 0:                                                    # the mask says sea, the tile does not
             raise PointError("Forecast points are temporarily unavailable")
         codes = planes[:, :, i].copy()
         with self._lock:
+            if not self._keeps(man["run"]):
+                return codes
             self._cells[key] = codes
             while len(self._cells) > CELL_CACHE_MAX:
                 self._cells.popitem(last=False)
@@ -402,7 +713,8 @@ class PointSource:
 
     def stats(self):
         with self._lock:
-            return {"masks": len(self._masks), "tiles": len(self._tiles), "tile_bytes": self._tile_bytes, "cells": len(self._cells)}
+            return {"masks": len(self._masks), "tiles": len(self._tiles), "tile_bytes": self._tile_bytes, "cells": len(self._cells),
+                    "coast": len(self._coast), "coast_bytes": self._coast_bytes}
 
 
 # ------------------------------- partitions -> columns --------------------------------
@@ -420,119 +732,51 @@ def partitions_at(codes, si):
     return out
 
 
-def _match_cost(part, track, gap_h):
-    """How far a partition is from where a train was last seen (0 = the same), or None when it cannot be that
-    train: the peak period within 15 % (at least 1 s), the direction within 30 degrees (45 for short periods,
-    which turn with the wind); both gates open up with the hours since the train was seen (x 1.7 across a 3-hour
-    step, x 2 at most). The wind sea is the wind sea: while NOAA calls both the train's last partition and this
-    one the wind sea, they are the same train whatever the period did (its peak jumps as the wind rises and
-    falls), up to a quarter turn of direction. A wind sea that the model re-labels as swell (the wind dropped)
-    is followed by the ordinary gates, so it keeps its column."""
-    widen = min(2.0, max(1.0, math.sqrt(gap_h)))
-    if len(part) > 3 and part[3] and track.get("wind"):
-        gate_t, gate_d = 8.0, 90.0
-    else:
-        gate_t = max(1.0, 0.15 * track["tp"]) * widen
-        gate_d = (45.0 if min(part[1], track["tp"]) < 7.0 else 30.0) * widen
-    dt = abs(part[1] - track["tp"])
-    dd = abs((part[2] - track["dir"] + 180.0) % 360.0 - 180.0)
-    if dt > gate_t or dd > gate_d:
-        return None
-    return dt / gate_t + dd / gate_d
+def swell_power(hs, tp):
+    """What ranks a wave system: height squared x peak period. In deep water that is the energy arriving per metre
+    of crest and second, and the only wave quantity in the usual breaker-height formula: the system that makes the
+    most surf comes first (owner, 2026-10-02: one rule for every forecast table of the site)."""
+    return (hs or 0.0) ** 2 * (tp or 0.0)
 
 
-def _assign(parts, live, hour):
-    """The best pairing of this step's partitions with the live trains: as many pairs as possible, then the
-    least total cost. -> [index into live, or None] per partition."""
-    costs = [[_match_cost(p, t, hour - t["hour"]) for t in live] for p in parts]
-    best = {"score": None, "pick": [None] * len(parts)}
-
-    def walk(i, used, pick, pairs, total):
-        if i == len(parts):
-            score = (-pairs, total)
-            if best["score"] is None or score < best["score"]:
-                best["score"], best["pick"] = score, list(pick)
-            return
-        for j in range(len(live)):
-            if j not in used and costs[i][j] is not None:
-                walk(i + 1, used | {j}, pick + [j], pairs + 1, total + costs[i][j])
-        walk(i + 1, used, pick + [None], pairs, total)
-    walk(0, frozenset(), [], 0, 0.0)
-    return best["pick"]
-
-
-def track_partitions(hours, parts):
-    """Follow the swell trains through the run. hours: each step's forecast hour (increasing); parts: each step's
-    partitions_at(). -> per step a list of NCOL entries, a partition or None: one of the first USED columns per
-    train while it lives. A train unseen for more than DIE_H hours is over and its column is free again; a new
-    train takes the free column that has been free the longest; when every column is held, the train unseen the
-    longest gives its column up (if it returns, it is a new train). The columns are then ordered by their energy
-    over the first WEEK_H hours (column 1 = the most energetic)."""
-    tracks, out = [], []
-    last_used = [None] * NCOL                                        # the hour each column last held a partition
-    for hour, step in zip(hours, parts):
-        live = [t for t in tracks if hour - t["hour"] <= DIE_H]
-        pick = _assign(step, live, hour)
-        row = [None] * NCOL
-        new = []
-        for p, j in zip(step, pick):
-            if j is None:
-                new.append(p)
-                continue
-            t = live[j]
-            t.update(tp=p[1], dir=p[2], hour=hour, wind=len(p) > 3 and p[3])
-            row[t["col"]] = p
-        for p in sorted(new, key=lambda p: -p[0]):                   # the bigger new train chooses first
-            held = {t["col"] for t in live}
-            free = [c for c in range(USED) if c not in held]
-            if free:
-                col = min(free, key=lambda c: (last_used[c] is not None, last_used[c] or 0, c))
-            else:                                                    # every column holds a live train: the stalest one goes
-                victim = min((t for t in live if row[t["col"]] is None), key=lambda t: t["hour"], default=None)
-                if victim is None:
-                    continue                                         # more partitions in one step than columns: a fifth is dropped
-                live.remove(victim)
-                tracks.remove(victim)
-                col = victim["col"]
-            t = {"col": col, "tp": p[1], "dir": p[2], "hour": hour, "wind": len(p) > 3 and p[3]}
-            tracks.append(t)
-            live.append(t)
-            row[col] = p
-        for c in range(NCOL):
-            if row[c] is not None:
-                last_used[c] = hour
-        tracks = [t for t in tracks if hour - t["hour"] <= DIE_H]
-        out.append(row)
-    # order the columns by energy over the first week (height squared x the hours the step stands for)
-    energy = [0.0] * NCOL
-    for i, (hour, row) in enumerate(zip(hours, out)):
-        if hour - hours[0] > WEEK_H:
-            break
-        span = (hours[i + 1] - hour) if i + 1 < len(hours) else 1
-        for c in range(NCOL):
-            if row[c] is not None:
-                energy[c] += row[c][0] ** 2 * span
-    order = sorted(range(NCOL), key=lambda c: (-energy[c], c))
-    return [[row[c] for c in order] for row in out]
+def rank_groups(groups):
+    """One row's wave systems [(height, peak period, direction), ...] (empty = height None) in rank order: the most
+    powerful first, the empty ones last; equal power: the higher first, then the source's order."""
+    live = [g for g in groups if g[0] is not None]
+    live.sort(key=lambda g: (-swell_power(g[0], g[1]), -g[0]))       # stable
+    return live + [(None, None, None)] * (len(groups) - len(live))
 
 
 # ------------------------------- the table's rows --------------------------------------
 
+def _labels(run_dt, hour, tz):
+    """(date, time) of run + hour in the pytz zone, as the bulletin parsers write them."""
+    import pytz
+    local = pytz.utc.localize(run_dt + timedelta(hours=hour)).astimezone(tz)
+    return f"{local:%A, %B} {local.day}, {local.year}", local.strftime("%I:%M %p").lstrip("0")
+
+
+def hour_slots(steps, run_dt, tz):
+    """Every hour from the first step to the last, for the graphs' time axis: [(date, time, index of the step's row
+    or None)]. A point's rows are hourly to +120 h and 3-hourly after; a graph with one slot per ROW would draw the
+    later days at a third of their width (G22 B-1)."""
+    at = {h: i for i, h in enumerate(steps)}
+    return [_labels(run_dt, h, tz) + (at.get(h),) for h in range(steps[0], steps[-1] + 1)]
+
+
 def point_rows(codes, steps, run_dt, tz):
     """The forecast rows in the bulletin parsers' 23-column shape: [date, time, 6 x (height ft, peak period s,
     direction deg FROM), wind m/s, wind direction deg FROM, combined height ft], times in the pytz zone `tz`.
-    codes: [field][step]; steps: forecast hours; run_dt: the cycle (naive UTC)."""
-    import pytz
+    codes: [field][step]; steps: forecast hours; run_dt: the cycle (naive UTC). The systems of a row are in rank
+    order (rank_groups), packed from the left."""
     PF = pointfmt()
     ix = {n: i for i, n in enumerate(PF.FIELD_NAMES)}
-    parts = [partitions_at(codes, si) for si in range(len(steps))]
-    columns = track_partitions(steps, parts)
     rows = []
     for si, hour in enumerate(steps):
-        local = pytz.utc.localize(run_dt + timedelta(hours=hour)).astimezone(tz)
-        row = [f"{local:%A, %B} {local.day}, {local.year}", local.strftime("%I:%M %p").lstrip("0")]
-        for p in columns[si]:
-            row.extend((None, None, None) if p is None else (round(p[0] * M_TO_FT, 2), round(p[1], 1), int(round(p[2])) % 360))
+        row = list(_labels(run_dt, hour, tz))
+        groups = [(round(p[0] * M_TO_FT, 2), round(p[1], 1), int(round(p[2])) % 360) for p in partitions_at(codes, si)]
+        for g in rank_groups(groups + [(None, None, None)] * (NCOL - len(groups))):
+            row.extend(g)
         wind, wdir = int(codes[ix["wind"]][si]), int(codes[ix["wdir"]][si])
         if wind == PF.MISSING:
             row.extend((None, None))

@@ -405,8 +405,7 @@ ocean point (the reader is a later change; this section is the job).
 
 `/api/forecast?station=pt_21667N_158054W` answers for ANY ocean point with the payload a station gets: the same
 table and graph data, built by the same code, from the forecast-point product above. `point_forecast.py` does the
-reading and the tracking; `app.py` (`point_forecast_data`) puts the service's limits around it. No page change yet
-(the map tool that adds points is the next step).
+reading and the tracking; `app.py` (`point_forecast_data`) puts the service's limits around it.
 
 - **The id**: `pt_<latitude in thousandths><N|S>_<longitude in thousandths><E|W>`, one spelling per point (no leading
   zeros, zero is N / E, the antimeridian is 180 W); anything else is "Invalid forecast point". No NOAA station id
@@ -440,3 +439,27 @@ reading and the tracking; `app.py` (`point_forecast_data`) puts the service's li
   0.007 m at the median open-ocean station; 87 % of the bulletins' partitions of 0.3 m or more found, the rest being
   their fifth and sixth; the found ones within 0.03 m, 0.05 s and 1.4 degrees). Run it again when NOAA changes its
   wave products.
+
+## Forecast points: the page (plan section 31, step 5; UI asset 1.13.0)
+
+- **The tool**: Map tools -> **Forecast point** (first in the menu). One click (or tap) on the water opens that point in
+  the forecast window, as a station would open: the same table and graphs, titled with the point's coordinates
+  ("21.700N 158.200W", "Pipeline — 21.667N 158.054W" once named). The tool ends with the click, so the markers have
+  their clicks back at once. A click on land answers "No model data here ..." without Retry (the answer is final;
+  `final: true` in the payload); a busy server keeps Retry.
+- **My points**: kept in each visitor's own browser (localStorage `allshore.points.v1`, `[{id, lat, lon, name}]`, 50
+  at most; the coordinates are read from the id, never trusted from storage; accounts may adopt the record later). A
+  point added with the tool is kept once its forecast has come (land, ice or an error keep nothing; a Retry that
+  succeeds keeps it); a point opened from a link (`?station=pt_...`) is shown but not kept until its star is set.
+  Kept points are white rings with a pink edge on the map (their own legend entry, "My points", remembered like the
+  others), options of the station select (an optgroup the page adds, so the window's title and the picker need nothing
+  special), and a "My points" group at the top of the picker's list with Rename (the browser's prompt; names are
+  cleaned and 40 characters at most, always written as text) and Remove. For a point, the picker's star means "kept in
+  My points". A pick from the list recentres the map on the point.
+- **The window**: the run's age is shown after the cycle once it passes 13 hours ("· 15 h old": a NOAA cycle was
+  missed). The graphs' 7-day and 3-day ranges count time, not rows (a point's rows are hourly to +120 h, then every
+  3 hours), and the date labels mark each day's first row (in zones where the 3-hourly rows never fall on midnight,
+  the days after day 5 kept no label otherwise). The x axis is still one column per row: the 3-hourly part is drawn
+  narrower than its time.
+- **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
+  (522 inputs) is checked against both.

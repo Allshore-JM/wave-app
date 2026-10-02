@@ -1,6 +1,7 @@
 # Public-repo schedules are disabled after 60 days without repository activity. Re-enabling the
-# publisher monthly keeps it alive during a quiet stretch (any ordinary commit also resets the
-# timer). The real monitor is latest.json age: the site shows a stale banner past 9 h.
+# publishers (overlay frames and forecast points) twice a month keeps them alive during a quiet stretch
+# (any ordinary commit also resets the timer). The real monitor is latest.json age: the site shows a
+# stale banner past 9 h.
 name: model-frames-keepalive
 on:
   schedule:
@@ -17,4 +18,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh workflow enable model-frames.yml --repo "$GITHUB_REPOSITORY"
+          gh workflow enable model-points.yml --repo "$GITHUB_REPOSITORY"
           gh workflow enable model-frames-keepalive.yml --repo "$GITHUB_REPOSITORY"

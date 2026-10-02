@@ -590,7 +590,7 @@ def test_trigger_worker_config_and_unit_tests():
     cfg = open(os.path.join(trigger, "wrangler.jsonc"), encoding="utf-8").read()
     assert '"workers_dev": false' in cfg
     assert re.search(r'"crons":\s*\["5,15,25,35,45,55 \* \* \* \*"\]', cfg)
-    for k, v in (("GH_REPO", "Allshore-JM/wave-app"), ("GH_WORKFLOW", "model-frames.yml"), ("GH_REF", "Live-Buoy-Update")):
+    for k, v in (("GH_REPO", "Allshore-JM/wave-app"), ("GH_WORKFLOW", "model-frames.yml,model-points.yml"), ("GH_REF", "Live-Buoy-Update")):
         assert f'"{k}": "{v}"' in cfg, k
     js = open(os.path.join(trigger, "worker.js"), encoding="utf-8").read()
     assert "async fetch" not in js and "GITHUB_TOKEN" in js and "/dispatches" in js

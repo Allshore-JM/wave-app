@@ -233,7 +233,8 @@ published under the old range (plan section 27: hs 0-75 ft with a 0-60 ft legend
 installed versions in the step summary; bump the pins deliberately. External cron trigger: GitHub drops or delays
 most `schedule` ticks, so a Cloudflare Worker (`tools/model_frames/trigger/`, deployed by Cloudflare Workers Builds
 from this repository -- root directory `tools/model_frames/trigger`, build command `npm run build`, deploy command
-`npx wrangler deploy`) calls the workflow-dispatch API at :05, :15, ... UTC; GitHub's own schedule stays on as a
+`npx wrangler deploy`) calls the workflow-dispatch API at :05, :15, ... UTC for every workflow in its `GH_WORKFLOW`
+list (the frames and the forecast-point product below); GitHub's own schedule stays on as a
 fallback and a duplicate run short-circuits. The Worker needs the secret `GITHUB_TOKEN`, a fine-grained token for
 this repository with "Actions: read and write", entered under the Worker's Settings > Variables and Secrets (rotate
 it there; it is never in the repository). Runs it starts show the event `workflow_dispatch` with the token's owner
@@ -330,3 +331,53 @@ drop the guard as well.
 See tools/coast/README.md for the builder, the publish workflow and the LGPL notice. Review records: `docs/reviews/overlays-G*-adversarial.md`. Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full
 sentence ("Source: NOAA/NCEP GFS-Wave (WAVEWATCH III) and GFS via NOAA Open Data Dissemination; rendered by
 Allshore Surf. Not an official NWS product.").
+
+## Forecast-point product (job; plan section 31)
+
+`tools/model_frames/points.py` (GitHub Actions `model-points.yml`: its own workflow and concurrency group, dispatched
+every 10 minutes by the same Cloudflare Worker as the frames, GitHub's schedule as the fallback) publishes, for every
+sea cell of NOAA's gridded GFS-Wave output and every step of the newest COMPLETE run, what a point bulletin holds:
+the combined wave height, the wind sea and three swell partitions (height, PEAK period, direction the waves come
+FROM) and the wind (speed, direction it blows FROM). The site reads one tile to build a forecast table for any
+ocean point (the reader is a later change; this section is the job).
+
+- **Grids** (`pointfmt.GRIDS`; their latitude bands do not overlap): `g16` = `gfswave global.0p16` (1/6 degree,
+  52.5 N to 15 S, the model's own grid), `s25` = `gfswave gsouth.0p25` (1/4 degree, south of 15 S to 79.5 S, the
+  model's own grid), `n25` = `gfswave global.0p25` (1/4 degree, north of 52.5 N; NOAA's interpolated global grid, the
+  only one that reaches there). A cell is a grid point: latitude `lat0 - row / per_deg`, longitude `col / per_deg`.
+- **Records**: 15 per file, found by their GRIB2 code numbers (discipline, category, number, surface type, and the
+  sequence number 1-3 of a swell partition), never by a decoder's short names; every used record is checked for its
+  cycle, forecast hour, grid geometry and a plausible range, and a file with a missing or duplicated record fails
+  the build. NOAA sorts the three swell partitions by height at every step: partition 1 at one step is not the same
+  swell train as partition 1 at the next (the reader has to track them).
+- **Values**: uint16, 65535 = missing (land, ice, or a partition the model did not find at that step), at the
+  bulletins' precision: heights 0.01 m, periods 0.1 s, directions 1 degree (360 stored as 0), wind 0.1 m/s. NOAA's
+  files hold two decimals, so ties are common; they all round up.
+- **Layout** (`gfswave/points/v1`, its own prefix: the frames' pruning never sees it and this job's never sees the
+  frames): `<RUN>/<grid>/<tr>_<tc>.bin` (one 4-degree tile: a JSON header, the block's sea bitmap, then xz of the
+  planes `[field, step, cell]`), `<RUN>/<grid>/mask.bin` (the grid's sea mask), `stats-<ts>.json`,
+  `manifest-<ts>.json`, then `latest.json` LAST and only for a complete run; `failed/<RUN>.json` and
+  `notready/<RUN>.json` as for the frames. About 2,900 objects and 1.2 GB a run; two runs are kept. Format `apt1` is
+  defined in `tools/model_frames/pointfmt.py` (pure numpy + standard library: the reader uses the same module).
+- **Sea cells**: the cells with a wave height at the build's first step, inside the grid's stored rows. NOAA's land
+  and ice mask is the same at every step of a run; a step that disagrees is stored as missing, counted in the stats
+  and reported as a WARNING in the step summary.
+- **How a build runs**: each step's three files are downloaded whole (about 28 MB a step, 6 GB a run, anonymous S3)
+  and decoded in worker processes (eccodes is not thread-safe); each worker writes its step into a scratch file on
+  the runner's disk (about 5.5 GB: a whole run does not fit in memory); the tiles are then cut one tile row at a
+  time, compressed in threads and uploaded behind the build. Every tile and mask is stored before the manifest, the
+  manifest before the pointer.
+- **Guards**: a run that is live is left alone; the pointer never moves back; a failed build is retried after 3 h,
+  three times at most; a complete run whose pointer write failed is re-pointed, not rebuilt; a run published in
+  another format (`format_key` in the manifest: fields, scales, grids, tile size, step schedule) is never rewritten,
+  not even with `--force` -- a format change takes a new prefix version.
+- **Run it**: `python tools/model_frames/points.py` (R2 secrets in the environment), `--dry-run` (build everything,
+  upload nothing), `--local DIR` (publish into a directory, same layout), `--steps 0,3,6` (a subset: only with
+  `--dry-run` or `--local`, never pointed to), `--force`, `--keep N` (default 2), `--workers N` (0 = in this process).
+  The workflow's `steps` input always implies a dry run.
+- **Stop it**: disable `model-points.yml` (and remove it from `model-frames-keepalive.yml`, which re-enables it twice a
+  month); the Worker's tick then reports an error for that workflow and still dispatches the frames. The last complete
+  run stays in the bucket.
+- **NOAA changes on the horizon**: GFS v17 (proposed for late 2026) renames wave files and may change grids. The
+  file tags, grid geometry, record identities and step schedule are constants in `pointfmt.py` / `fetch.py`; the
+  geometry and identity checks fail the build loudly (with a failure record) rather than publish a wrong product.

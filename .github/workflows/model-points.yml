@@ -1,0 +1,70 @@
+# Builds + publishes the forecast-point product (every sea cell's wave partitions and wind for the newest
+# COMPLETE NOAA GFS-Wave run, as block tiles) to R2 under gfswave/points/v1 -- see tools/model_frames/points.py.
+# A separate workflow with its own concurrency group, so it never delays the overlay frames (model-frames.yml);
+# both are dispatched every 10 minutes by the Cloudflare Worker (tools/model_frames/trigger) and by GitHub's own
+# schedule as the fallback. The job short-circuits in ~20 s when the live run is already current.
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET (the frames job's).
+# The environment is the frames job's, pinned to the same versions (one cached environment for both).
+name: model-points
+on:
+  schedule:
+    - cron: "3-59/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: "comma list of forecast hours (blank = all 209: hourly to 120, 3-hourly to 384). A subset is only ever a dry run."
+        default: ""
+      dry_run:
+        description: "build everything, upload nothing (true/false)"
+        default: "false"
+      force:
+        description: "rebuild even if the run is current (true/false)"
+        default: "false"
+concurrency:
+  group: model-points
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120                   # a 209-step build takes ~15-25 min; a killed build leaves no failure record
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462   # v2
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+          cache-environment: true
+      - name: Record environment
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|eccodes|python-eccodes|numpy|pillow|boto3)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "runner: $(nproc) cpus, $(free -g | awk '/^Mem:/ {print $2}') GB memory, $(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -d ' ') free in RUNNER_TEMP" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish points
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          STEPS: ${{ github.event.inputs.steps }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ -n "$STEPS" ] && ! [[ "$STEPS" =~ ^[0-9,]+$ ]]; then echo "bad steps input"; exit 2; fi
+          ARGS=()
+          [ -n "$STEPS" ] && ARGS+=(--steps "$STEPS" --dry-run)      # a subset is only ever a dry run
+          [ -z "$STEPS" ] && [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          [ "$FORCE" = "true" ] && ARGS+=(--force)
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/points.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          if [ "$rc" -eq 3 ]; then echo "no complete run yet" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          exit "$rc"

@@ -18,12 +18,14 @@ Runtime configuration (Settings -> Variables and secrets, Production):
 
 | Name | Kind | Value |
 |---|---|---|
-| `GH_REPO`, `GH_WORKFLOW`, `GH_REF` | plain vars from `wrangler.jsonc` | `Allshore-JM/wave-app`, `model-frames.yml`, `Live-Buoy-Update` |
+| `GH_REPO`, `GH_WORKFLOW`, `GH_REF` | plain vars from `wrangler.jsonc` | `Allshore-JM/wave-app`, `model-frames.yml,model-points.yml` (a comma-separated list: every workflow in it is dispatched on every tick), `Live-Buoy-Update` |
 | `GITHUB_TOKEN` | **secret, entered in the dashboard** | GitHub fine-grained personal access token: repository access = only `Allshore-JM/wave-app`, repository permission Actions = Read and write (Metadata read is implied), expiry per policy. Survives deploys. Rotate here. |
 
 Cron: `5,15,25,35,45,55 * * * *` UTC (Settings -> Trigger events after a successful deploy). Each tick
-starts one run of `model-frames.yml` on `Live-Buoy-Update`; the job short-circuits in ~20 s when the live run is
-current. Runs it starts appear in GitHub Actions with the event `workflow_dispatch` and the token's owner as actor.
+starts one run of `model-frames.yml` (the overlay frames) and one of `model-points.yml` (the forecast-point
+product) on `Live-Buoy-Update`; each job short-circuits in ~20 s when its live run is current, and a workflow that
+cannot be dispatched never holds back the other (the tick then ends as an error naming it). Runs it starts appear
+in GitHub Actions with the event `workflow_dispatch` and the token's owner as actor.
 
 Checks: a build must show the Installing / Building / Deploying stages (a missing Building stage means the build
 command is empty); a failed cron tick is visible under Metrics (errors) and Observability (logs) -- the common cause

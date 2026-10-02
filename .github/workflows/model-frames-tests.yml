@@ -2,9 +2,11 @@
 name: model-frames-tests
 on:
   push:
-    paths: ["tools/model_frames/**", "tests/model_frames/**", ".github/workflows/model-frames-tests.yml"]
+    paths: ["tools/model_frames/**", "tests/model_frames/**", ".github/workflows/model-frames-tests.yml",
+            ".github/workflows/model-frames.yml", ".github/workflows/model-points.yml", ".github/workflows/model-frames-keepalive.yml"]
   pull_request:
-    paths: ["tools/model_frames/**", "tests/model_frames/**"]
+    paths: ["tools/model_frames/**", "tests/model_frames/**", ".github/workflows/model-frames.yml",
+            ".github/workflows/model-points.yml", ".github/workflows/model-frames-keepalive.yml"]
 permissions:
   contents: read
 jobs:

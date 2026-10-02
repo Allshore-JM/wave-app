@@ -1,7 +1,7 @@
 # TEMPORARY (feature branch only; removed before the merge): runs the forecast-point job as a DRY RUN on the
 # real runner -- pinned eccodes, worker processes, the runner's disk -- for one fixed NOAA cycle, and reports the
 # timings, sizes and the run digest as a notice. No secrets, no uploads. It runs only when this file changes.
-# attempt: 1
+# attempt: 2 (after the G22a fixes: bands, guards)
 name: points-dryrun
 on:
   push:

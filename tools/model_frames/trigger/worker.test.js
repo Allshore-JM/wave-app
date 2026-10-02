@@ -76,3 +76,22 @@ test("one workflow failing never holds back the others, and the tick still repor
   const h = async () => ({ status: 500, text: async () => "x" });
   await assert.rejects(dispatchAll(BOTH, h), /model-frames[.]yml.* [|] .*model-points[.]yml/);
 });
+
+test("a fetch that THROWS for one workflow (a network error) never holds back the others", async () => {
+  const calls = [];
+  const f = async (url) => {
+    calls.push(url);
+    if (url.includes("model-frames.yml")) throw new TypeError("fetch failed");
+    return { status: 204, text: async () => "" };
+  };
+  await assert.rejects(dispatchAll(BOTH, f), /fetch failed/);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1].includes("model-points.yml"));
+  const g = async (url) => {
+    calls.push(url);
+    if (url.includes("model-points.yml")) throw new Error("socket hang up");
+    return { status: 204, text: async () => "" };
+  };
+  await assert.rejects(dispatchAll(BOTH, g), /socket hang up/);
+  assert.ok(calls[2].includes("model-frames.yml"));                 // the frames were dispatched first, and were
+});

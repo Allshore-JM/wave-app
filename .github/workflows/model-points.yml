@@ -15,11 +15,13 @@ on:
         description: "comma list of forecast hours (blank = all 209: hourly to 120, 3-hourly to 384). A subset is only ever a dry run."
         default: ""
       dry_run:
-        description: "build everything, upload nothing (true/false)"
-        default: "false"
+        description: "build everything, upload nothing"
+        type: boolean
+        default: false
       force:
-        description: "rebuild even if the run is current (true/false)"
-        default: "false"
+        description: "rebuild even if the run is current (it can move the pointer back to an older run)"
+        type: boolean
+        default: false
 concurrency:
   group: model-points
   cancel-in-progress: false

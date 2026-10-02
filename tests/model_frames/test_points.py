@@ -27,9 +27,9 @@ import publish as P    # noqa: E402
 RUN = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
 RUNKEY = "2026100112"
 SMALL = (
-    {"name": "g16", "tag": "global.0p16", "ni": 48, "nj": 20, "lat0": 52.5,  "per_deg": 6, "rows": (0, 20), "tile": 8},
-    {"name": "s25", "tag": "gsouth.0p25", "ni": 32, "nj": 14, "lat0": -10.5, "per_deg": 4, "rows": (3, 14), "tile": 4},
-    {"name": "n25", "tag": "global.0p25", "ni": 32, "nj": 18, "lat0": 90.0,  "per_deg": 4, "rows": (0, 6),  "tile": 4},
+    {"name": "g16", "tag": "global.0p16", "ni": 48, "nj": 20, "lat0": 52.5,  "per_deg": 6, "rows": (0, 20), "data": (0, 19), "tile": 8},
+    {"name": "s25", "tag": "gsouth.0p25", "ni": 32, "nj": 14, "lat0": -10.5, "per_deg": 4, "rows": (3, 14), "data": (3, None), "tile": 4},
+    {"name": "n25", "tag": "global.0p25", "ni": 32, "nj": 18, "lat0": 90.0,  "per_deg": 4, "rows": (0, 6),  "data": (None, 5), "tile": 4},
 )
 UNUSED = ((0, 2, 2, 1, None), (0, 2, 3, 1, None), (10, 0, 11, 1, None), (10, 0, 10, 1, None))   # UGRD VGRD PERPW DIRPW
 
@@ -209,12 +209,23 @@ def test_fields_are_the_fifteen_records_with_distinct_identities():
         assert [PF.FIELD_KIND[n] for n in part] == ["height", "period", "direction"] and len({n[:2] for n in part}) == 1
 
 
-def test_grids_cover_the_latitudes_once_and_tiles_are_four_degrees():
+def test_grid_bands_follow_the_rows_noaa_has_waves_for_and_leave_no_gap():
+    """NOAA's global.0p16 file spans 52.5 N .. 15 S but holds waves on rows 2..390 only (52.167 N .. 12.5 S: G22a
+    P1-1, measured on three cycles). The other two grids are stored up to those rows: a band cut at the FILE's
+    bounds left no wave data at all between 12.75 S and 14.85 S."""
     g16, s25, n25 = PF.GRIDS
     assert [g["name"] for g in PF.GRIDS] == ["g16", "s25", "n25"] and [g["tag"] for g in PF.GRIDS] == ["global.0p16", "gsouth.0p25", "global.0p25"]
-    assert (PF.grid_lat(g16, 0), PF.grid_lat(g16, g16["rows"][1] - 1)) == (52.5, -15.0) and g16["rows"] == (0, g16["nj"])
-    assert PF.grid_lat(s25, s25["rows"][0]) == -15.25 and PF.grid_lat(s25, s25["rows"][1] - 1) == -79.5 and s25["rows"][1] == s25["nj"]
-    assert PF.grid_lat(n25, n25["rows"][0]) == 90.0 and PF.grid_lat(n25, n25["rows"][1] - 1) == 52.75
+    assert g16["rows"] == (0, g16["nj"]) and g16["data"] == (2, 390)
+    assert (round(PF.grid_lat(g16, 2), 4), PF.grid_lat(g16, 390)) == (52.1667, -12.5)
+    assert s25["rows"] == (9, s25["nj"]) and s25["data"] == (9, None)
+    assert (PF.grid_lat(s25, 9), PF.grid_lat(s25, s25["nj"] - 1)) == (-12.75, -79.5)
+    assert n25["rows"] == (0, 152) and n25["data"] == (None, 151)
+    assert (PF.grid_lat(n25, 0), PF.grid_lat(n25, 151)) == (90.0, 52.25)
+    # between the data rows of two neighbours: never a gap wider than one row of the coarser grid, never an overlap
+    assert 0 < PF.grid_lat(g16, g16["data"][1]) - PF.grid_lat(s25, s25["data"][0]) <= 1 / s25["per_deg"]
+    assert 0 < PF.grid_lat(n25, n25["data"][1]) - PF.grid_lat(g16, g16["data"][0]) <= 1 / n25["per_deg"]
+    for g in PF.GRIDS:                                                        # "data" lies inside what is stored
+        assert all(d is None or g["rows"][0] <= d < g["rows"][1] for d in g["data"])
     assert all(g["tile"] / g["per_deg"] == 4.0 and g["ni"] % g["tile"] == 0 and g["ni"] / g["per_deg"] == 360.0 for g in PF.GRIDS)
     assert PF.grid_lon(g16, 0) == 0.0 and PF.grid_lon(g16, 1080) == -180.0 and abs(PF.grid_lon(g16, 2159) + 1 / 6) < 1e-12
     assert PF.grid_lon(s25, 807) == -158.25 and PF.grid_lon(s25, 1440) == 0.0
@@ -366,25 +377,39 @@ def test_messages_splits_whole_grib2_messages_only():
             PT.messages(bad)
 
 
-def test_fetch_file_maps_a_damaged_body_to_a_transport_error(monkeypatch):
-    seen = {}
+def test_fetch_file_downloads_again_after_a_damaged_body_or_a_transport_error(monkeypatch):
+    seen, naps = {"n": 0}, []
+    monkeypatch.setattr(PT.time, "sleep", naps.append)
 
     def req(url, timeout=60, **kw):
         seen["url"], seen["timeout"] = url, timeout
+        seen["n"] += 1
         return 200, _grib(40) + b"GRIB-cut"
     monkeypatch.setattr(PT.F, "_request", req)
-    with pytest.raises(F.TransportError):
+    with pytest.raises(F.TransportError, match="3 downloads"):
         PT.fetch_file(RUN, PF.GRIDS[1], 123)
     assert seen["url"] == "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20261001/12/wave/gridded/gfswave.t12z.gsouth.0p25.f123.grib2"
-    assert seen["timeout"] == PT.FILE_TIMEOUT_S
+    assert seen["timeout"] == PT.FILE_TIMEOUT_S and seen["n"] == PT.FILE_TRIES == 3 and naps == [5, 10]
     monkeypatch.setattr(PT.F, "_request", lambda url, **kw: (200, _grib(40) + _grib(60)))
     assert len(PT.fetch_file(RUN, PF.GRIDS[0], 0)) == 2
+    answers = [F.TransportError("reset"), (200, _grib(40)[:-3]), (200, _grib(40))]   # a reset, a short body, then the file
+
+    def flaky(url, **kw):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+    monkeypatch.setattr(PT.F, "_request", flaky)
+    assert len(PT.fetch_file(RUN, PF.GRIDS[0], 0)) == 1 and answers == []
+    calls = []
 
     def gone(url, **kw):
+        calls.append(url)
         raise F.NotReady("404 " + url)
     monkeypatch.setattr(PT.F, "_request", gone)
     with pytest.raises(F.NotReady):
         PT.fetch_file(RUN, PF.GRIDS[0], 0)
+    assert len(calls) == 1                                                    # not there is not retried here
 
 
 def test_identify_by_grib_code_numbers():
@@ -561,7 +586,13 @@ def test_objects_keys_order_and_manifest(world, tmp_path):
     assert stored["fields"][2] == {"name": "ws_t", "kind": "period", "grib": "WVPER", "scale": 10, "units": "s"}
     g16, s25, n25 = stored["grids"]
     assert (g16["name"], g16["source"], g16["lat0"], g16["lon0"], g16["per_deg"], g16["rows"], g16["tile"]) == ("g16", "gfswave global.0p16", 52.5, 0.0, 6, [0, 20], 8)
-    assert (s25["rows"], s25["lat_north"], s25["lat_south"]) == ([3, 14], -11.25, -13.75)
+    assert (s25["rows"], s25["data_rows"], s25["lat_north"], s25["lat_south"]) == ([3, 14], [3, 13], -11.25, -13.75)
+    assert (g16["data_rows"], g16["lat_north"], n25["data_rows"], n25["lat_south"]) == ([0, 19], 52.5, [0, 5], 88.75)
+    assert all((g["registration"], g["lon_periodic"]) == ("center", True) for g in stored["grids"])
+    assert (stored["order"], stored["dtype"], stored["codec"]) == ("field,step,cell", "<u2", "xz")
+    assert "most significant bit" in stored["bitmap"] and "earlier grid" in stored["nearest"]
+    assert stored["sea_cells"] == {"rule": stored["sea_cells"]["rule"], "grid_steps": 0, "lost_max": 0, "extra_max": 0}
+    assert "first step" in stored["sea_cells"]["rule"]
     assert n25["mask"] == "gfswave/points/v1/2026100112/n25/mask.bin"
     for g, grid in zip(stored["grids"], SMALL):
         r0, r1 = grid["rows"]
@@ -653,6 +684,7 @@ def test_the_sea_cells_are_the_first_steps_and_drift_is_counted(world, tmp_path)
     st = {(s["grid"], s["step"]): s for s in man["_stats"]["steps"]}
     assert (st[("g16", 3)]["hs_lost"], st[("g16", 3)]["hs_extra"]) == (1, 1)
     assert (st[("g16", 0)]["hs_lost"], st[("s25", 3)]["hs_lost"], st[("s25", 3)]["hs_extra"]) == (0, 0, 0)
+    assert {k: man["sea_cells"][k] for k in ("grid_steps", "lost_max", "extra_max")} == {"grid_steps": 1, "lost_max": 1, "extra_max": 1}
 
 
 def test_a_second_build_in_the_same_scratch_directory_uses_its_own_sea_cells(world, tmp_path):
@@ -710,6 +742,16 @@ def test_no_sea_cells_or_no_scratch_space_stop_the_build(world, tmp_path, monkey
     monkeypatch.setattr(PT.shutil, "disk_usage", lambda p: type("U", (), {"free": 1 << 20})())
     with pytest.raises(RuntimeError, match="scratch space"):
         build(None, [0], tmp_path, upload=False)
+    # the three scratch files are counted TOGETHER (they are sparse when created: each alone would always fit)
+    monkeypatch.setattr(PT, "SCRATCH_SLACK", 0)
+    sea = [int((~land(g))[g["rows"][0]:g["rows"][1]].sum()) for g in SMALL]
+    need = sum(2 * 15 * n * 2 for n in sea)                                   # 2 steps, 15 fields, uint16
+    monkeypatch.setattr(PT.shutil, "disk_usage", lambda p: type("U", (), {"free": int(need * 1.05) - 1})())
+    with pytest.raises(RuntimeError, match="scratch space"):
+        build(None, [0, 3], tmp_path, upload=False)
+    assert not list(tmp_path.glob("*.u16"))                                   # refused before any file was made
+    monkeypatch.setattr(PT.shutil, "disk_usage", lambda p: type("U", (), {"free": int(need * 1.05) + 1})())
+    build(None, [0, 3], tmp_path, upload=False)
 
 
 def test_an_upload_failure_stops_the_build_before_the_manifest_and_the_pointer(world, tmp_path, monkeypatch):
@@ -1040,7 +1082,7 @@ def test_local_store_round_trip(cli, tmp_path, world):
 def test_format_key_pins_the_format():
     """Anything that changes what a tile's bytes mean changes this key; a published run is then never rewritten.
     A deliberate format change takes a new PREFIX version and a new key here."""
-    assert PT.format_key() == "d4292c0a5ad8ad9b"
+    assert PT.format_key() == "948ea572f7cc5a7d"
     assert (PF.FORMAT, PF.MISSING, PF.XZ_PRESET, PT.PREFIX) == ("apt1", 65535, 6, "gfswave/points/v1")
 
 
@@ -1073,3 +1115,492 @@ def test_points_workflow_is_pinned_separate_and_kept_alive():
     assert 'if [ "$rc" -eq 3 ]' in text
     keep = open(os.path.join(wf, "model-frames-keepalive.yml"), encoding="utf-8").read()
     assert "gh workflow enable model-points.yml" in keep and "gh workflow enable model-frames.yml" in keep
+# ------------------------------- G22a: what the review asked the suite to hold ----------------
+
+def test_golden_bytes_of_a_tile_and_a_mask_read_without_numpy():
+    """The format's bytes, pinned: a reader written from the description alone (no numpy, no pointfmt) must read
+    what the writer wrote. Writer and reader changing together (bit order, byte order, plane order) fails here."""
+    import lzma
+    import struct
+    import zlib
+    grid = dict(PF.GRIDS[0], tile=3)
+    bitmap = np.array([[1, 0, 1], [0, 1, 1]], bool)
+    planes = (np.arange(15 * 2 * 4, dtype=np.uint16) * 257 + 3).reshape(15, 2, 4)      # both bytes of every value differ
+    blob = PF.encode_tile(PF.tile_header(RUNKEY, grid, 5, 7, 2, 3, 4, 2), bitmap, planes)
+    assert blob[:4] == b"APT1"
+    (hlen,) = struct.unpack("<I", blob[4:8])
+    header = json.loads(blob[8:8 + hlen])
+    assert header == {"format": "apt1", "run": RUNKEY, "grid": "g16", "tile": [5, 7], "row0": 15, "col0": 21, "rows": 2,
+                      "cols": 3, "cells": 4, "steps": 2, "fields": list(PF.FIELD_NAMES)}
+    assert blob[8 + hlen] == 0b10101100                                       # first cell in the most significant bit
+    payload = blob[8 + hlen + 1:]
+    assert payload[:6] == b"\xfd7zXZ\x00"                                    # one xz stream
+    raw = lzma.decompress(payload, format=lzma.FORMAT_XZ)
+    values = struct.unpack("<%dH" % (15 * 2 * 4), raw)                        # little-endian uint16
+    for f in range(15):
+        for s in range(2):
+            for c in range(4):
+                assert values[(f * 2 + s) * 4 + c] == int(planes[f, s, c])    # [field, step, cell]
+    assert raw[:4] == b"\x03\x00\x04\x01"                                     # 3, then 260: low byte first
+    cells = [(r, c) for r in range(2) for c in range(3) if (blob[8 + hlen] >> (7 - (r * 3 + c))) & 1]
+    assert cells == [(0, 0), (0, 2), (1, 1), (1, 2)] and PF.cell_index(bitmap, 1, 1) == 2
+    small = {"name": "s25", "ni": 5, "nj": 2}
+    mask = np.array([[1, 0, 0, 1, 1], [0, 0, 1, 0, 1]], bool)
+    mblob = PF.encode_mask(RUNKEY, small, mask)
+    (mlen,) = struct.unpack("<I", mblob[4:8])
+    assert mblob[:4] == b"APM1" and json.loads(mblob[8:8 + mlen]) == {"format": "apt1", "run": RUNKEY, "grid": "s25", "ni": 5, "nj": 2, "cells": 5}
+    assert zlib.decompress(mblob[8 + mlen:]) == bytes([0b10011001, 0b01000000])   # row-major, padded with zero bits
+
+
+def test_decoders_are_bounded_and_only_ever_raise_value_error():
+    """G22a P2-1: these run in the web server. Never more than MAX_TILE_BYTES unpacked, the xz dictionary capped,
+    xz only, plain ints only, and nothing but ValueError for any damaged object."""
+    import lzma
+    import struct
+    import tracemalloc
+    import zlib
+    header, bitmap, planes = _tile()
+    good = PF.encode_tile(header, bitmap, planes)
+    hlen = struct.unpack("<I", good[4:8])[0]
+    nb = (bitmap.size + 7) // 8
+    bits, body = good[8 + hlen:8 + hlen + nb], good[8 + hlen + nb:]
+
+    def tile(h, payload=body, bitmap_bytes=bits, raw_header=None):
+        hj = raw_header if raw_header is not None else json.dumps(h, separators=(",", ":")).encode()
+        return b"APT1" + struct.pack("<I", len(hj)) + hj + bitmap_bytes + payload
+
+    def peak_of(fn):
+        tracemalloc.start()
+        try:
+            with pytest.raises(ValueError):
+                fn()
+            return tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    # the largest claim the header limits would allow is refused before the payload is touched
+    big = dict(header, rows=64, cols=64, cells=4096, steps=1024, fields=["f%d" % i for i in range(64)])
+    zeros = lzma.compress(bytes(8 << 20))
+    assert peak_of(lambda: PF.decode_tile(tile(big, payload=zeros, bitmap_bytes=b"\xff" * 512))) < 4 << 20
+    assert 15 * 209 * 576 * 2 < PF.MAX_TILE_BYTES == 16 << 20 and PF.XZ_MEMLIMIT == 64 << 20 and PF.MAX_HEADER_BYTES == 4096
+    # a tiny stream that names a 1 GiB dictionary: liblzma is not allowed to allocate it
+    size = (body[12] + 1) * 4                                                 # the xz block header: its LZMA2 dictionary byte
+    head = bytearray(body[12:12 + size - 4])
+    assert head[1] == 0 and head[2] == 0x21 and head[3] == 1                  # one filter (LZMA2), one property byte
+    head[4] = 36                                                              # (2 | 0) << (36 / 2 + 11) = 1 GiB
+    huge_dict = body[:12] + bytes(head) + struct.pack("<I", zlib.crc32(bytes(head))) + body[12 + size:]
+    assert peak_of(lambda: PF.decode_tile(tile(header, payload=huge_dict))) < 32 << 20
+    cases = [
+        tile(header, payload=lzma.compress(planes.tobytes(), format=lzma.FORMAT_ALONE)),      # legacy .lzma is not xz
+        tile(header, payload=body + lzma.compress(b"")),                                      # a second stream
+        tile(None, raw_header=b'{"format":"apt1","rows":Infinity}'), tile(None, raw_header=b'{"format":"apt1","rows":NaN}'),
+        tile(None, raw_header=b'{"format":"apt1","rows":1e400}'),
+        tile(None, raw_header=b"[" * 2000 + b"]" * 2000), tile(None, raw_header=b"\xff\xfe"), tile(None, raw_header=b"{"),
+        tile(None, raw_header=b'"apt1"'), tile(None, raw_header=b" " * 5000),
+        tile(dict(header, rows=2.0)), tile(dict(header, rows=True)), tile(dict(header, cols="6")), tile(dict(header, steps=5.5)),
+        tile(dict(header, cells=None)), tile(dict(header, rows=65)), tile(dict(header, cols=0)), tile(dict(header, steps=1025)),
+        tile(dict(header, steps=-1)), tile(dict(header, cells=header["rows"] * header["cols"] + 1)),
+        tile(dict(header, fields="hs")), tile(dict(header, fields={"hs": 1})), tile(dict(header, fields=[1, 2])),
+        tile(dict(header, fields=[])), tile(dict(header, fields=["f"] * 65)),
+    ]
+    for i, blob in enumerate(cases):
+        try:
+            PF.decode_tile(blob)
+        except ValueError:
+            continue
+        except Exception as exc:                                              # noqa: BLE001
+            raise AssertionError(f"case {i}: {exc.__class__.__name__} instead of ValueError")
+        raise AssertionError(f"case {i} was accepted")
+    # what the reader asks for must be what the tile holds
+    assert PF.decode_tile(good, steps=header["steps"], fields=PF.FIELD_NAMES)[0] == header
+    for kw in ({"steps": header["steps"] + 1}, {"fields": PF.FIELD_NAMES[:-1]}, {"fields": list(reversed(PF.FIELD_NAMES))}):
+        with pytest.raises(ValueError, match="asked for"):
+            PF.decode_tile(good, **kw)
+    with pytest.raises(ValueError, match="too large"):
+        PF.encode_tile(dict(header, steps=1024, cells=24, rows=4, cols=6, fields=["f%d" % i for i in range(64)] * 6),
+                       np.ones((4, 6), bool), np.zeros((384, 1024, 24), np.uint16))
+    # the mask: same rules
+    grid = PF.GRIDS[1]
+    mgood = PF.encode_mask(RUNKEY, grid, np.ones((grid["nj"], grid["ni"]), bool))
+    mlen = struct.unpack("<I", mgood[4:8])[0]
+    mh = json.loads(mgood[8:8 + mlen])
+
+    def mask(h, payload=mgood[8 + mlen:], raw_header=None):
+        hj = raw_header if raw_header is not None else json.dumps(h, separators=(",", ":")).encode()
+        return b"APM1" + struct.pack("<I", len(hj)) + hj + payload
+    assert PF.decode_mask(mask(mh))[1].all()
+    bomb = mask(mh, payload=zlib.compress(bytes(200 << 20)))                  # 200 MB of zeros behind a 50 KB claim
+    assert peak_of(lambda: PF.decode_mask(bomb)) < 8 << 20
+    full = zlib.compress(np.packbits(np.ones((grid["nj"], grid["ni"]), bool)).tobytes(), 9)
+    co = zlib.compressobj()
+    open_ended = co.compress(np.packbits(np.ones((grid["nj"], grid["ni"]), bool)).tobytes()) + co.flush(zlib.Z_SYNC_FLUSH)
+    mcases = [mask(mh, payload=open_ended),                                    # all the bytes, but the stream never ends
+              mask(mh, payload=full + b"x"), mask(dict(mh, ni=8193)), mask(dict(mh, nj=4097)), mask(dict(mh, ni=1440.0)),
+              mask(dict(mh, cells=-1)), mask(dict(mh, cells="5")), mask(None, raw_header=b'{"format":"apt1","ni":Infinity}'),
+              mask(None, raw_header=b"[" * 2000 + b"]" * 2000)]
+    for i, blob in enumerate(mcases):
+        try:
+            PF.decode_mask(blob)
+        except ValueError:
+            continue
+        except Exception as exc:                                              # noqa: BLE001
+            raise AssertionError(f"mask case {i}: {exc.__class__.__name__} instead of ValueError")
+        raise AssertionError(f"mask case {i} was accepted")
+
+
+def test_ties_go_up_whatever_float64_makes_of_them():
+    ties = np.arange(5, 3000, 10) / 100.0                                      # 0.05, 0.15, ... 29.95
+    below = np.nextafter(ties, 0)                                              # what (R + X * 2^E) / 10^D can give
+    assert PF.quantise(below, "period").tolist() == list(range(1, 301))
+    assert PF.quantise(np.nextafter(np.arange(0, 360) + 0.5, 0), "direction").tolist() == list(range(1, 360)) + [0]
+    assert PF.quantise([7.4499, 7.4501], "period").tolist() == [74, 75]        # only a tie, not what is near one
+    assert PF.TIE == 1e-6
+
+
+def test_plausible_ranges_per_kind_and_geometry_tolerances(world):
+    g = SMALL[0]
+    msgs = world.fetch_file(RUN, g, 0)
+    for name, factor, kind in (("s2_t", 4.0, "period"), ("ws_d", 1.2, "direction"), ("wind", 6.0, "speed"), ("hs", 5.0, "height")):
+        world.alter = lambda grid, n, step, arr, name=name, factor=factor: arr * factor if n == name else arr
+        with pytest.raises(ValueError, match=f"{name}.*not a {kind}"):
+            PT.decode_file(msgs, g, RUN, 0)
+    world.alter = None
+    assert PT.PLAUSIBLE_MAX == {"height": 40.0, "period": 60.0, "direction": 360.0001, "speed": 150.0}
+    ok = meta_for(PF.GRIDS[0], (10, 0, 3, 1, None), 0)
+    for bad in ({"iDirectionIncrementInDegrees": 0.1666}, {"jDirectionIncrementInDegrees": 0.1667},     # 1/6 is 0.166667
+                {"longitudeOfFirstGridPointInDegrees": 0.01}, {"longitudeOfLastGridPointInDegrees": 359.82},
+                {"latitudeOfFirstGridPointInDegrees": 52.499}, {"latitudeOfLastGridPointInDegrees": -15.01}):
+        with pytest.raises(ValueError):
+            PT.check_geometry({**ok, **bad}, PF.GRIDS[0])
+
+
+def test_a_change_of_noaas_bands_stops_the_build(world, tmp_path):
+    """G22a P1-1: the rows with waves must be the ones the grids were cut for; otherwise a hole opens unseen."""
+    def empty_row(gname, row):
+        def alter(grid, name, step, arr):
+            if grid["name"] == gname and name == "hs":
+                arr = arr.copy()
+                arr[row] = np.nan
+            return arr
+        return alter
+    for gname, row in (("g16", 0), ("g16", 19), ("s25", 3), ("n25", 5)):       # an edge row the neighbours rely on
+        world.alter = empty_row(gname, row)
+        with pytest.raises(ValueError, match="grid bands have changed"):
+            build(None, [0], tmp_path, upload=False)
+        assert not list(tmp_path.glob("*.u16"))
+    for gname, row in (("s25", 13), ("n25", 0)):                               # the far edges move with the ice: fine
+        world.alter = empty_row(gname, row)
+        man = build(None, [0], tmp_path, upload=False)
+        assert {g["name"]: g["data_rows"] for g in man["grids"]}[gname] == ([3, 12] if gname == "s25" else [1, 5])
+
+
+def test_check_band_on_the_real_grids():
+    g16 = PF.GRIDS[0]                                                          # rows 2..390, exactly
+    mask = np.zeros((g16["nj"], g16["ni"]), bool)
+    mask[2:391, 100] = True
+    assert PT.check_band(mask, g16) == (2, 390)
+    for rows in ((1, 391), (2, 390), (3, 391), (2, 392)):
+        bad = np.zeros_like(mask)
+        bad[rows[0]:rows[1], 100] = True
+        with pytest.raises(ValueError, match="expected 2..390"):
+            PT.check_band(bad, g16)
+    s25 = PF.GRIDS[1]
+    ms = np.zeros((s25["nj"], s25["ni"]), bool)
+    ms[9:270, 5] = True
+    assert PT.check_band(ms, s25) == (9, 269)
+    ms[9, 5] = False
+    with pytest.raises(ValueError, match="expected 9..None"):
+        PT.check_band(ms, s25)
+
+
+def test_sea_cells_that_move_too_much_within_a_run_fail_the_build(world, tmp_path, monkeypatch):
+    g = SMALL[0]
+    sea = np.argwhere(~land(g))
+
+    def lose(n):
+        def alter(grid, name, step, arr):
+            if (grid["name"], name, step) == ("g16", "hs", 3):
+                arr = arr.copy()
+                for cell in sea[:n]:
+                    arr[tuple(cell)] = np.nan
+            return arr
+        return alter
+    limit = int(PT.DRIFT_FAIL * len(sea))
+    assert PT.DRIFT_FAIL == 0.01 and limit >= 2
+    world.alter = lose(limit)                                                  # at the limit: published, and said
+    man = build(None, [0, 3], tmp_path, upload=False)
+    assert man["sea_cells"]["lost_max"] == limit and man["sea_cells"]["grid_steps"] == 1
+    world.alter = lose(limit + 1)
+    client = FakeClient()
+    with pytest.raises(ValueError, match="not the first step's any more"):
+        build(P.Store(client, "b"), [0, 3], tmp_path)
+    assert client.log == []                                                    # nothing was uploaded
+
+
+def test_the_first_failure_is_raised_at_once_and_the_rest_is_dropped():
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    started = []
+
+    def job(i):
+        started.append(i)
+        if i == 1:
+            raise F.NotReady("404 the second file")
+        time.sleep(0.05)
+        return i
+    ex = ThreadPoolExecutor(2)
+    t = time.time()
+    with pytest.raises(F.NotReady):
+        list(PT._results(ex, job, list(range(200))))
+    ex.shutdown(wait=True)
+    assert len(started) < 20 and time.time() - t < 3                           # not after the 199 others (10 s of work)
+    ex = ThreadPoolExecutor(3)
+    assert sorted(PT._results(ex, lambda i: i * 2, [1, 2, 3, 4])) == [2, 4, 6, 8]
+    ex.shutdown()
+    assert list(PT._results(PT.Inline(), lambda i: i + 1, [1, 2])) == [2, 3]   # in this process: in order, lazily
+    seen = []
+
+    def boom(i):
+        seen.append(i)
+        if i == 2:
+            raise ValueError("stop")
+    with pytest.raises(ValueError):
+        list(PT._results(PT.Inline(), boom, [1, 2, 3, 4]))
+    assert seen == [1, 2]
+
+
+class SlowClient(FakeClient):
+    """Every upload takes a moment, as on a real network; chosen keys fail after it."""
+
+    def __init__(self, delay=0.004, fail=()):
+        super().__init__()
+        self.delay, self.fail = delay, tuple(fail)
+
+    def put_object(self, Bucket, Key, Body, ContentType, CacheControl):
+        import time
+        if Key.endswith(".bin"):
+            time.sleep(self.delay)
+        if any(Key.endswith(f) for f in self.fail):
+            raise RuntimeError(f"R2 refused {Key}")
+        super().put_object(Bucket, Key, Body, ContentType, CacheControl)
+
+
+def test_every_tile_and_mask_is_stored_before_the_stats_and_the_manifest_with_slow_uploads(world, tmp_path, monkeypatch):
+    """G22a P2-2: with uploads still in flight when the last tile is cut, the manifest must wait for them."""
+    monkeypatch.setattr(PT.F, "STEPS", [0, 3])
+    client = SlowClient()
+    man = build(P.Store(client, "b"), [0, 3], tmp_path)
+    keys = [k for _op, k in client.log]
+    bins = [k for k in keys if k.endswith(".bin")]
+    assert len(bins) == sum(g["tiles"] for g in man["grids"]) + 3 == man["_objects"]["count"]
+    first_json = min(i for i, k in enumerate(keys) if k.endswith(".json"))
+    assert first_json == len(bins) and keys[-1] == PT.LATEST_KEY               # all of them, then stats, manifest, pointer
+    assert man["_pointed"] is True
+
+
+@pytest.mark.parametrize("last", ["/n25/mask.bin", "/n25/1_7.bin", "/g16/mask.bin"])
+def test_a_failure_of_one_of_the_last_uploads_stops_the_build(world, tmp_path, monkeypatch, last):
+    """The objects handed over last are checked by the final drain alone: a slow failure there must still stop the
+    manifest and the pointer (the frames job's G12 P0-1)."""
+    monkeypatch.setattr(PT.F, "STEPS", [0, 3])
+    client = SlowClient(delay=0.02, fail=(last,))
+    with pytest.raises(RuntimeError, match="R2 refused"):
+        build(P.Store(client, "b"), [0, 3], tmp_path)
+    assert not any(k.endswith(".json") for k in client.objects)
+
+
+def test_a_late_upload_failure_reaches_main_as_a_failure_record(cli, monkeypatch):
+    client, run = cli
+    slow = SlowClient(delay=0.02, fail=("/n25/mask.bin",))
+    monkeypatch.setattr(PT, "_store_from_env", lambda: P.Store(slow, "the-bucket"))
+    with pytest.raises(RuntimeError, match="R2 refused"):
+        run()
+    assert json.loads(slow.objects[PT.failed_key(RUNKEY)]["body"])["attempts"] == 1
+    assert PT.LATEST_KEY not in slow.objects and not any("manifest" in k or "stats" in k for k in slow.objects)
+
+
+def test_uploads_never_run_further_behind_than_the_backlog():
+    import time
+
+    class Slow:
+        bucket = "b"
+
+        def put(self, key, body, ct, cc):
+            time.sleep(0.01)
+    up = PT.Uploads(Slow(), workers=2, backlog=3)
+    worst = 0
+    for i in range(30):
+        up.put(f"k{i}", b"x")
+        worst = max(worst, len(up.pending))
+    up.drain(0)
+    up.close()
+    assert worst <= 3 and up.pending == []
+    assert (PT.UPLOAD_BACKLOG, PT.UPLOAD_WORKERS, PT.COMPRESS_WORKERS, PT.WORKERS) == (64, 8, 4, 4)
+
+
+def test_existing_guard_only_repairs_to_a_whole_newer_run(cli):
+    client, _run = cli
+    store = P.Store(client, "b")
+    key = _manifest(client)
+    assert PT.existing_guard(store, RUNKEY, "2026100118", False) is None and PT.LATEST_KEY not in client.objects   # never back
+    assert PT.existing_guard(store, RUNKEY, RUNKEY, False) is None and PT.LATEST_KEY not in client.objects
+    for bad in ({"complete": False}, {"run": "2026100106"}, {"published_utc": None}, {"steps": "all"}):
+        _manifest(client, **bad)
+        assert PT.existing_guard(store, RUNKEY, None, False) is None and PT.LATEST_KEY not in client.objects, bad
+    _manifest(client)
+    assert PT.existing_guard(store, RUNKEY, "2026100106", False) == 0
+    assert json.loads(client.objects[PT.LATEST_KEY]["body"])["manifest"] == key
+    assert PT.existing_guard(store, "2026100118", None, False) is None        # a run with no manifest: build it
+
+
+def test_a_pointer_write_that_failed_is_repaired_on_the_next_tick_not_after_the_back_off(cli, capsys):
+    """G22a P3-4: the tiles and the manifest are stored; one PUT is missing. The failure record must not make the
+    next tick wait three hours for it."""
+    client, run = cli
+    client.fail_put = lambda key: key == PT.LATEST_KEY
+    with pytest.raises(RuntimeError, match="latest.json"):
+        run()
+    assert json.loads(client.objects[PT.failed_key(RUNKEY)]["body"])["attempts"] == 1
+    assert any("manifest-" in k for k in client.objects) and PT.LATEST_KEY not in client.objects
+    client.fail_put = None
+    n = sum(1 for k in client.objects if k.endswith(".bin"))
+    assert run() == 0
+    assert json.loads(client.objects[PT.LATEST_KEY]["body"])["run"] == RUNKEY
+    assert sum(1 for op, k in client.log if k.endswith(".bin")) == n           # repaired, not rebuilt
+    assert "pointer repaired" in capsys.readouterr().out
+
+
+def test_a_newer_run_that_went_live_during_the_build_keeps_the_pointer(cli, world, monkeypatch, tmp_path):
+    client, run = cli
+    newer = json.dumps({"run": "2026100118", "complete": True, "manifest": "m"}).encode()
+    orig = world.fetch_file
+
+    def fetch(run_dt, grid, step):                                            # another build finishes while this one decodes
+        if (grid["name"], step) == ("n25", 2):
+            client.put_object("b", PT.LATEST_KEY, newer, "application/json", "")
+        return orig(run_dt, grid, step)
+    monkeypatch.setattr(PT, "fetch_file", fetch)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    assert run() == 0
+    assert json.loads(client.objects[PT.LATEST_KEY]["body"])["run"] == "2026100118"
+    assert any("manifest-" in k for k in client.objects)                      # this run is stored, just not pointed to
+    text = summary.read_text()
+    assert "went live while 2026100112 was building" in text and "latest.json does not name it" in text
+    assert run("--force") == 0                                                 # --force says so explicitly, and moves it
+    assert json.loads(client.objects[PT.LATEST_KEY]["body"])["run"] == RUNKEY
+
+
+def test_a_partial_local_build_never_prunes_and_never_records_a_failure(cli, world, tmp_path):
+    client, run = cli
+    out = tmp_path / "out"
+    lc = PT.LocalClient(str(out))
+    for old in ("2026093000", "2026093006", "2026093012"):
+        _seed(lc, PT.PREFIX, old)
+    assert run("--local", str(out), "--steps", "0,1") == 0
+    store = P.Store(lc, "local")
+    assert set(PT.list_runs(store)) == {"2026093000", "2026093006", "2026093012", RUNKEY}
+    assert store.get_json(PT.LATEST_KEY) is None
+    world.fail = lambda grid, step: RuntimeError("boom") if step == 1 else None
+    with pytest.raises(RuntimeError):
+        run("--local", str(out), "--steps", "0,1")
+    assert store.get_json(PT.failed_key(RUNKEY)) is None
+
+
+def test_steps_argument_that_is_not_a_list_of_numbers_is_refused(cli):
+    client, run = cli
+    for bad in (",", "0,,1", "a", "0;1", ""):
+        assert run("--steps", bad, "--dry-run") == (0 if bad == "" else 2), bad   # an empty value means "all"
+
+
+def test_main_cleans_its_scratch_directory_and_shuts_the_executor_down(world, monkeypatch, tmp_path):
+    monkeypatch.setattr(PT.F, "STEPS", [0, 1, 2])
+    monkeypatch.setattr(PT, "latest_complete_run", lambda: RUN)
+    made = tmp_path / "points-scratch"
+
+    def mkdtemp(prefix=None, dir=None):
+        made.mkdir()
+        return str(made)
+    monkeypatch.setattr(PT.tempfile, "mkdtemp", mkdtemp)
+    shut = []
+
+    class Recording(PT.Inline):
+        def shutdown(self, **kw):
+            shut.append(kw)
+    monkeypatch.setattr(PT, "_executor", lambda workers: Recording())
+    assert PT.main(["--dry-run"]) == 0
+    assert not made.exists() and shut == [{"wait": False, "cancel_futures": True}]
+    kept = tmp_path / "kept"
+    assert PT.main(["--dry-run", "--work", str(kept)]) == 0 and (kept / "g16.u16").exists()   # a directory you named stays
+    world.fail = lambda grid, step: RuntimeError("boom") if step == 2 else None
+    with pytest.raises(RuntimeError):
+        PT.main(["--dry-run"])
+    assert not made.exists() and len(shut) == 3                                # also after a failure
+
+
+def test_run_digest_tells_the_grids_apart():
+    a = [{"grid": "g16", "step": 0, "crc": 1}, {"grid": "s25", "step": 0, "crc": 2}]
+    b = [{"grid": "g16", "step": 0, "crc": 2}, {"grid": "s25", "step": 0, "crc": 1}]
+    c = [{"grid": "g16", "step": 0, "crc": 1}, {"grid": "g16", "step": 3, "crc": 2}]
+    assert len({PT.run_digest(a), PT.run_digest(b), PT.run_digest(c)}) == 3
+
+
+def test_read_message_with_the_real_eccodes():
+    """The one function that talks to eccodes, on a message eccodes itself builds (simple packing: no JPEG2000
+    needed). Skipped where eccodes is not installed (the offline test workflow); the publisher has it."""
+    eccodes = pytest.importorskip("eccodes")
+    try:
+        h = eccodes.codes_grib_new_from_samples("regular_ll_sfc_grib2")
+    except Exception as exc:                                                  # noqa: BLE001
+        pytest.skip(f"no eccodes samples here: {exc}")
+    grid = {"name": "t", "tag": "test", "ni": 8, "nj": 5, "lat0": 1.0, "per_deg": 4, "rows": (0, 5), "data": (0, 4), "tile": 4}
+    want = np.arange(40, dtype=float) / 10 + 3.05                              # two decimals, ties at the stored tenth
+    want[[0, 7, 13]] = 9999.0
+    try:
+        for k, v in (("discipline", 10), ("parameterCategory", 0), ("parameterNumber", 9), ("typeOfFirstFixedSurface", 241),
+                     ("scaleFactorOfFirstFixedSurface", 0), ("scaledValueOfFirstFixedSurface", 2), ("dataDate", 20261001),
+                     ("dataTime", 1200), ("indicatorOfUnitOfTimeRange", 1), ("forecastTime", 123), ("Ni", 8), ("Nj", 5),
+                     ("jScansPositively", 0), ("iScansNegatively", 0), ("latitudeOfFirstGridPointInDegrees", 1.0),
+                     ("latitudeOfLastGridPointInDegrees", 0.0), ("longitudeOfFirstGridPointInDegrees", 0.0),
+                     ("longitudeOfLastGridPointInDegrees", 1.75), ("iDirectionIncrementInDegrees", 0.25),
+                     ("jDirectionIncrementInDegrees", 0.25), ("bitmapPresent", 1), ("missingValue", 9999.0),
+                     ("decimalScaleFactor", 2)):                                 # two decimals, as NOAA packs them
+            eccodes.codes_set(h, k, v)
+        eccodes.codes_set_values(h, want)
+        msg = eccodes.codes_get_message(h)
+    finally:
+        eccodes.codes_release(h)
+    assert PT.messages(msg) == [msg]
+    meta, vals = PT.read_message(msg, lambda m: False)
+    assert vals is None and PT.identify(meta) == "s2_t"
+    PT.check_time(meta, RUN, 123)
+    PT.check_geometry(meta, grid)
+    with pytest.raises(ValueError):
+        PT.check_time(meta, RUN, 120)
+    meta, vals = PT.read_message(msg, lambda m: True)
+    arr = np.where(vals == meta["missingValue"], np.nan, vals).reshape(5, 8)
+    assert np.isnan(arr[0, 0]) and np.isnan(arr[0, 7]) and np.isnan(arr[1, 5]) and np.isnan(arr).sum() == 3
+    assert arr[0, 1] == pytest.approx(3.15, abs=1e-6) and arr[4, 7] == pytest.approx(6.95, abs=1e-6)   # row-major, rows as given
+    codes = PF.quantise(arr, "period")
+    assert codes[0, 1] == 32 and codes[4, 7] == 70 and codes[0, 0] == PF.MISSING   # the ties go up after the packing
+
+
+def test_points_workflow_text_pins():
+    import re
+    wf = os.path.join(ROOT, ".github", "workflows")
+    text = open(os.path.join(wf, "model-points.yml"), encoding="utf-8").read()
+    assert re.search(r"\npermissions:\n  contents: read\n", text) and "write" not in text.split("jobs:")[0]
+    assert "timeout-minutes: 120" in text and re.search(r'cron: "3-59/10 \* \* \* \*"', text)
+    for name in ("dry_run", "force"):                                          # true or false: no typo can turn into a publish
+        assert re.search(rf"\n      {name}:\n        description: [^\n]+\n        type: boolean\n        default: false\n", text), name
+    assert '[ -z "$STEPS" ] && [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)' in text
+    assert '[ "$FORCE" = "true" ] && ARGS+=(--force)' in text
+    steps = text.split("    steps:\n", 1)[1].split("\n      - ")
+    with_secrets = [s.split("\n", 1)[0] for s in steps if "secrets." in s]
+    assert with_secrets == ["name: Publish points"]                            # no other step sees the R2 keys
+    keep = open(os.path.join(wf, "model-frames-keepalive.yml"), encoding="utf-8").read()
+    order = [keep.index(f"gh workflow enable {n}") for n in ("model-frames-keepalive.yml", "model-frames.yml", "model-points.yml")]
+    assert order == sorted(order)                                              # itself first: a later failure cannot stop it
+    tests = open(os.path.join(wf, "model-frames-tests.yml"), encoding="utf-8").read()
+    for path in (".github/workflows/model-points.yml", ".github/workflows/model-frames-keepalive.yml", ".github/workflows/model-frames.yml"):
+        assert path in tests.split("pull_request:")[0], path                   # a change of a pinned text runs the tests

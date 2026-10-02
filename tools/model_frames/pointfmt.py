@@ -4,15 +4,21 @@ whatever reads it. Pure: numpy and the standard library only (no eccodes, no net
 The product holds, for every sea cell of the model grids and every forecast step of one run, the combined wave
 height, the wind sea, three swell partitions and the wind, as NOAA's gridded GFS-Wave files give them.
 
-Grids (GRIDS, in priority order; their latitude bands do not overlap):
-  g16  gfswave global.0p16   1/6 deg   52.5 N .. 15 S          (the model's own grid there)
-  s25  gfswave gsouth.0p25   1/4 deg   south of 15 S to 79.5 S (the model's own grid there)
-  n25  gfswave global.0p25   1/4 deg   north of 52.5 N         (NOAA's interpolated global grid)
+Grids (GRIDS, in priority order; the rows that hold wave data do not overlap and leave no gap):
+  g16  gfswave global.0p16   1/6 deg   52.167 N .. 12.5 S   (the model's own grid there)
+  s25  gfswave gsouth.0p25   1/4 deg   12.75 S .. 79.5 S    (the model's own grid there)
+  n25  gfswave global.0p25   1/4 deg   52.25 N .. 90 N      (NOAA's interpolated global grid)
+NOAA's global.0p16 FILE spans 52.5 N .. 15 S, but its first two and last fifteen rows carry wind and no waves
+(the edge bands of the model's mosaic: the neighbouring grid has that water). So the other two grids are stored up
+to the first row g16 has no waves for ("rows": first, one past last; rows outside it are never stored), and each
+build checks that the rows with waves are still the ones in "data" (first, last; None where sea ice decides).
 A cell is a grid point: row r, column c -> latitude lat0 - r / per_deg, longitude c / per_deg (0..360 E,
-periodic). Rows outside "rows" (first, one past last) are never stored.
+periodic). A reader takes the nearest sea cell of any grid; on a tie, the earlier grid.
 
-Values are uint16 (little-endian); MISSING = 65535 means "no value" (land, ice, or a partition the model did not
-find at that step). FIELDS gives the plane order; KINDS the scale: value = code / scale.
+Values are uint16 (little-endian). Land and ice cells are not stored at all (they are not in the mask). Inside a
+tile MISSING = 65535 means "no value at this step": a partition the model did not find, or a sea cell that has no
+waves at this step although it had some at the build's first step. FIELDS gives the plane order; KINDS the scale:
+value = code / scale.
   height  m     x100   (0.01 m, the bulletins' precision)
   period  s     x10    (0.1 s; the partition periods are PEAK periods)
   direction deg x1     (degrees true the waves / the wind come FROM; 360 is stored as 0)
@@ -20,9 +26,12 @@ find at that step). FIELDS gives the plane order; KINDS the scale: value = code 
 
 One tile = one object, a block of `tile` x `tile` cells (4 degrees), holding only its sea cells:
   b"APT1" | u32le header length | header (JSON, UTF-8) | bitmap | payload
-  bitmap   np.packbits of the block's sea mask, rows x cols, row-major: bit set = sea cell
-  payload  xz of the uint16 planes [field, step, cell]; the cells are the bitmap's set bits in row-major order
-One mask per grid: b"APM1" | u32le header length | header (JSON) | zlib of np.packbits(mask [nj, ni]).
+  bitmap   the block's sea mask, rows x cols, row-major, packed 8 cells to a byte with the FIRST cell in the
+           most significant bit (np.packbits), the last byte padded with zero bits: bit set = sea cell
+  payload  one xz stream of the uint16 planes [field, step, cell]; the cells are the bitmap's set bits in
+           row-major order
+One mask per grid: b"APM1" | u32le header length | header (JSON) | one zlib stream of the mask [nj, ni] packed the
+same way.
 """
 import json
 import lzma
@@ -35,6 +44,11 @@ FORMAT = "apt1"
 MISSING = 65535
 TILE_MAGIC, MASK_MAGIC = b"APT1", b"APM1"
 XZ_PRESET = 6
+# What a decoder accepts at most (they run in the web server): a real tile's planes are 15 fields x 209 steps x
+# 576 cells x 2 bytes = 3.6 MB and its header ~350 bytes; decoding xz preset 6 takes ~9 MB.
+MAX_HEADER_BYTES = 4096
+MAX_TILE_BYTES = 16 << 20
+XZ_MEMLIMIT = 64 << 20
 
 KINDS = {
     "height":    {"scale": 100, "units": "m"},
@@ -45,7 +59,8 @@ KINDS = {
 
 # (name, kind, NOAA name, GRIB2 identity: discipline, parameter category, parameter number, type of first fixed
 # surface, sequence number). Surface type 1 = the surface; 241 = "ordered sequence of data" (the swell partitions
-# 1..3, sorted by NOAA at each step: partition n at one step is not the same swell train as n at the next).
+# 1..3, ordered by NOAA by height at each step: partition n at one step is not the same swell train as n at the
+# next. On the interpolated n25 grid the order does not always hold, and the wind sea can exceed the combined height).
 FIELDS = (
     ("hs",   "height",    "HTSGW",   (10, 0, 3, 1, None)),      # significant height of combined wind waves and swell
     ("ws_h", "height",    "WVHGT",   (10, 0, 5, 1, None)),      # wind sea
@@ -68,9 +83,12 @@ FIELD_KIND = {f[0]: f[1] for f in FIELDS}
 PARTITIONS = (("ws_h", "ws_t", "ws_d"), ("s1_h", "s1_t", "s1_d"), ("s2_h", "s2_t", "s2_d"), ("s3_h", "s3_t", "s3_d"))
 
 GRIDS = (
-    {"name": "g16", "tag": "global.0p16", "ni": 2160, "nj": 406, "lat0": 52.5,  "per_deg": 6, "rows": (0, 406),  "tile": 24},
-    {"name": "s25", "tag": "gsouth.0p25", "ni": 1440, "nj": 277, "lat0": -10.5, "per_deg": 4, "rows": (19, 277), "tile": 16},
-    {"name": "n25", "tag": "global.0p25", "ni": 1440, "nj": 721, "lat0": 90.0,  "per_deg": 4, "rows": (0, 150),  "tile": 16},
+    {"name": "g16", "tag": "global.0p16", "ni": 2160, "nj": 406, "lat0": 52.5,  "per_deg": 6, "rows": (0, 406),
+     "data": (2, 390), "tile": 24},
+    {"name": "s25", "tag": "gsouth.0p25", "ni": 1440, "nj": 277, "lat0": -10.5, "per_deg": 4, "rows": (9, 277),
+     "data": (9, None), "tile": 16},
+    {"name": "n25", "tag": "global.0p25", "ni": 1440, "nj": 721, "lat0": 90.0,  "per_deg": 4, "rows": (0, 152),
+     "data": (None, 151), "tile": 16},
 )
 GRID_BY_NAME = {g["name"]: g for g in GRIDS}
 
@@ -112,16 +130,32 @@ def _pack(magic, header, *parts):
     return b"".join((magic, struct.pack("<I", len(h)), h) + parts)
 
 
+def _no_constant(name):
+    raise ValueError(f"{name} is not a number a header may hold")
+
+
 def _unpack(blob, magic):
+    """-> (header dict, offset of what follows). Anything else raises ValueError (never another exception)."""
     if len(blob) < 8 or blob[:4] != magic:
         raise ValueError(f"not a {magic.decode()} object")
     (n,) = struct.unpack("<I", blob[4:8])
-    if n > 65536 or 8 + n > len(blob):
+    if n > MAX_HEADER_BYTES or 8 + n > len(blob):
         raise ValueError("bad header length")
-    header = json.loads(blob[8:8 + n].decode("utf-8"))
+    try:
+        header = json.loads(bytes(blob[8:8 + n]).decode("utf-8"), parse_constant=_no_constant)
+    except (ValueError, RecursionError) as exc:                 # bad UTF-8 and bad JSON are ValueErrors
+        raise ValueError(f"bad header ({exc.__class__.__name__})") from None
     if not isinstance(header, dict) or header.get("format") != FORMAT:
         raise ValueError("unknown format")
     return header, 8 + n
+
+
+def _int(header, key, lo, hi):
+    """header[key] as a plain int in lo..hi (a float, a bool or a string is refused, not converted)."""
+    v = header.get(key)
+    if type(v) is not int or not lo <= v <= hi:
+        raise ValueError(f"bad header: {key}")
+    return v
 
 
 def encode_tile(header, bitmap, planes, preset=XZ_PRESET):
@@ -134,7 +168,10 @@ def encode_tile(header, bitmap, planes, preset=XZ_PRESET):
         raise ValueError("bitmap does not match the header")
     if planes.shape != (len(header["fields"]), header["steps"], cells):
         raise ValueError(f"planes {planes.shape} do not match the header")
-    return _pack(TILE_MAGIC, header, np.packbits(bitmap).tobytes(), lzma.compress(planes.tobytes(), preset=preset))
+    if planes.nbytes > MAX_TILE_BYTES:
+        raise ValueError("tile too large for the format")
+    return _pack(TILE_MAGIC, header, np.packbits(bitmap).tobytes(),
+                 lzma.compress(planes.tobytes(), format=lzma.FORMAT_XZ, preset=preset))
 
 
 def tile_header(run, grid, tr, tc, rows, cols, cells, steps):
@@ -143,17 +180,22 @@ def tile_header(run, grid, tr, tc, rows, cols, cells, steps):
             "rows": rows, "cols": cols, "cells": cells, "steps": steps, "fields": list(FIELD_NAMES)}
 
 
-def decode_tile(blob):
+def decode_tile(blob, steps=None, fields=None):
     """-> (header, bitmap bool [rows, cols], planes uint16 [field, step, cell]). Raises ValueError on anything
-    that is not a well-formed tile (sizes are checked before and after decompression)."""
+    that is not a well-formed tile, and never unpacks more than MAX_TILE_BYTES (the claim is checked before the
+    payload is touched, the payload against the claim). A reader passes the manifest's number of `steps` and its
+    `fields`: a tile that holds anything else is refused."""
     header, pos = _unpack(blob, TILE_MAGIC)
-    try:
-        rows, cols, cells, steps, nf = (int(header["rows"]), int(header["cols"]), int(header["cells"]),
-                                        int(header["steps"]), len(header["fields"]))
-    except (KeyError, TypeError, ValueError):
-        raise ValueError("bad tile header") from None
-    if not (0 < rows <= 64 and 0 < cols <= 64 and 0 < cells <= rows * cols and 0 < steps <= 1024 and 0 < nf <= 64):
-        raise ValueError("bad tile header")
+    rows, cols = _int(header, "rows", 1, 64), _int(header, "cols", 1, 64)
+    cells, nsteps = _int(header, "cells", 1, rows * cols), _int(header, "steps", 1, 1024)
+    names = header.get("fields")
+    if not isinstance(names, list) or not 0 < len(names) <= 64 or not all(isinstance(n, str) for n in names):
+        raise ValueError("bad header: fields")
+    if (steps is not None and nsteps != steps) or (fields is not None and names != list(fields)):
+        raise ValueError("the tile does not hold the steps / fields asked for")
+    steps, nf = nsteps, len(names)
+    if nf * steps * cells * 2 > MAX_TILE_BYTES:
+        raise ValueError("tile too large for the format")
     nb = (rows * cols + 7) // 8
     if pos + nb > len(blob):
         raise ValueError("truncated tile")
@@ -161,7 +203,7 @@ def decode_tile(blob):
     if int(bitmap.sum()) != cells:
         raise ValueError("bitmap does not match the header")
     want = nf * steps * cells * 2
-    d = lzma.LZMADecompressor()
+    d = lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=XZ_MEMLIMIT)
     try:
         raw = d.decompress(blob[pos + nb:], max_length=want + 1)
     except lzma.LZMAError as exc:
@@ -192,12 +234,8 @@ def encode_mask(run, grid, mask):
 def decode_mask(blob):
     """-> (header, mask bool [nj, ni])."""
     header, pos = _unpack(blob, MASK_MAGIC)
-    try:
-        ni, nj, cells = int(header["ni"]), int(header["nj"]), int(header["cells"])
-    except (KeyError, TypeError, ValueError):
-        raise ValueError("bad mask header") from None
-    if not (0 < ni <= 8192 and 0 < nj <= 4096):
-        raise ValueError("bad mask header")
+    ni, nj = _int(header, "ni", 1, 8192), _int(header, "nj", 1, 4096)
+    cells = _int(header, "cells", 0, ni * nj)
     nb = (ni * nj + 7) // 8
     d = zlib.decompressobj()
     try:

@@ -17,6 +17,6 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          gh workflow enable model-frames-keepalive.yml --repo "$GITHUB_REPOSITORY"   # itself first: a failure below cannot stop it
           gh workflow enable model-frames.yml --repo "$GITHUB_REPOSITORY"
           gh workflow enable model-points.yml --repo "$GITHUB_REPOSITORY"
-          gh workflow enable model-frames-keepalive.yml --repo "$GITHUB_REPOSITORY"

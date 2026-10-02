@@ -14,6 +14,8 @@ Options:
 Exit codes (as run.py): 0 published / already current / newer run live / pointer repaired; 3 no complete run
 available or a needed object vanished mid-run; 1 build or publish failure; 2 bad arguments, or a refusal to
 rewrite a run published in another format.
+"No complete run" is not an error and leaves no record: if NOAA renames its files, every tick ends that way and
+the only signal is the age of the run latest.json names.
 
 Layout (PREFIX = gfswave/points/v1; its own prefix, so the frames job's pruning never sees it and this job's
 never sees the frames; the version segment changes whenever the format does):
@@ -31,7 +33,11 @@ How a build runs: each step's three files (one per grid) are downloaded whole an
 file on disk ([step, field, cell], cells in tile order: a whole run is ~5.5 GB, more than fits in memory).
 Then the tiles are cut from that file one tile row at a time, compressed in threads and uploaded.
 The sea cells of a grid are the cells with a wave height at the build's FIRST step (NOAA's land and ice mask is
-the same at every step of a run; a step that disagrees is counted in the stats and reported).
+the same at every step of a run). A later step that disagrees is counted: a cell that lost its waves is stored as
+missing there, one that gained waves is not in the product; the manifest says how many ("sea_cells"), the summary
+warns, and beyond DRIFT_FAIL of a grid's cells the build fails instead of publishing.
+Each grid's rows with waves must be the ones pointfmt.GRIDS expects ("data"): NOAA's files span more rows than
+they hold waves for, and a change of those bands would open a hole between the grids.
 """
 import argparse
 import hashlib
@@ -43,7 +49,7 @@ import sys
 import tempfile
 import time
 import zlib
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -66,6 +72,9 @@ FAILED_RETRY_AFTER_S = 3 * 3600
 FAILED_MAX_ATTEMPTS = 3
 NOTREADY_WARN = 6
 FILE_TIMEOUT_S = 180                     # one whole gridded file: 5-12 MB
+FILE_TRIES = 3                           # whole downloads of one file (each already retries its request 4 times)
+SCRATCH_SLACK = 64 << 20                 # free space wanted beyond the scratch files themselves
+DRIFT_FAIL = 0.01                        # share of a grid's sea cells that may differ from the first step's at any step
 # what a decoded field may hold at most; anything beyond is a record that is not what its identity says
 PLAUSIBLE_MAX = {"height": 40.0, "period": 60.0, "direction": 360.0001, "speed": 150.0}
 
@@ -147,13 +156,22 @@ def messages(buf):
 
 
 def fetch_file(run_dt, grid, step):
-    """One whole gridded file as its list of messages. 404 -> F.NotReady; a damaged body -> F.TransportError."""
+    """One whole gridded file as its list of messages. 404 -> F.NotReady (at once). A transport failure or a
+    damaged body is downloaded again, FILE_TRIES times in all, then -> F.TransportError: one bad download among
+    the 627 of a run must not cost the run."""
     url = grid_url(run_dt, grid, step)
-    _status, body = F._request(url, timeout=FILE_TIMEOUT_S)
-    try:
-        return messages(body)
-    except ValueError as exc:
-        raise F.TransportError(f"{url}: {exc}") from None
+    last = None
+    for attempt in range(FILE_TRIES):
+        if attempt:
+            time.sleep(5 * attempt)
+        try:
+            _status, body = F._request(url, timeout=FILE_TIMEOUT_S)
+            return messages(body)
+        except F.TransportError as exc:
+            last = str(exc)
+        except ValueError as exc:
+            last = f"{url}: {exc}"
+    raise F.TransportError(f"{last} ({FILE_TRIES} downloads)")
 
 
 _LONG_KEYS = ("discipline", "parameterCategory", "parameterNumber", "typeOfFirstFixedSurface",
@@ -258,6 +276,19 @@ def sea_mask(hs, grid):
     return mask
 
 
+def check_band(mask, grid):
+    """-> (first, last) row with sea cells. Raises unless they are the rows the grid's "data" names (None = not
+    checked: sea ice decides): the bands NOAA's files hold waves for are narrower than the files, the other grids
+    are stored up to them, and a change would open a hole between the grids (or hide an overlap)."""
+    rows = np.flatnonzero(mask.any(axis=1))
+    got = (int(rows[0]), int(rows[-1]))
+    for have, want in zip(got, grid["data"]):
+        if want is not None and have != want:
+            raise ValueError(f"{grid['tag']}: waves on rows {got[0]}..{got[1]}, expected {grid['data'][0]}..{grid['data'][1]}: "
+                             f"NOAA's grid bands have changed (pointfmt.GRIDS)")
+    return got
+
+
 def step_record(fields, cells, grid):
     """One step of one grid -> (uint16 [field, cell], numbers for the stats)."""
     rec = np.empty((len(PF.FIELDS), cells.size), dtype="<u2")
@@ -335,9 +366,10 @@ class Inline:
 
 
 def decode_run(run_dt, steps, work, executor, log=print):
-    """Fill the scratch files for every grid and step. -> ({grid name: (mask, cells, tiles)}, step stats)."""
+    """Fill the scratch files for every grid and step.
+    -> ({grid name: (mask, cells, tiles, (first, last) row with sea)}, step stats)."""
     run = P.run_key(run_dt)
-    layouts, stats = {}, []
+    layouts, stats, first = {}, [], []
     for grid in PF.GRIDS:                                          # the first step, here: it fixes the sea cells
         t = time.time()
         fields = decode_file(fetch_file(run_dt, grid, steps[0]), grid, run_dt, steps[0])
@@ -345,26 +377,65 @@ def decode_run(run_dt, steps, work, executor, log=print):
         cells, tiles = PF.layout(mask, grid["tile"])
         if not cells.size:
             raise ValueError(f"{grid['tag']}: no sea cells at f{steps[0]:03d}")
-        need = len(steps) * len(PF.FIELDS) * cells.size * 2
-        free = shutil.disk_usage(work).free
-        if free < need * 1.05 + (64 << 20):
-            raise RuntimeError(f"{grid['name']}: {need / 1e9:.2f} GB of scratch space needed, {free / 1e9:.2f} GB free in {work}")
+        data_rows = check_band(mask, grid)
+        rec, stat = step_record(fields, cells, grid)
+        stat.update(grid=grid["name"], step=steps[0], seconds=round(time.time() - t, 2))
+        first.append((grid, mask, cells, tiles, data_rows, rec, stat))
+        del fields
+    # the scratch files are sparse when created, so the space is checked for all of them together, before any
+    need = sum(len(steps) * len(PF.FIELDS) * f[2].size * 2 for f in first)
+    free = shutil.disk_usage(work).free
+    if free < need * 1.05 + SCRATCH_SLACK:
+        raise RuntimeError(f"{need / 1e9:.2f} GB of scratch space needed, {free / 1e9:.2f} GB free in {work}")
+    for grid, mask, cells, tiles, data_rows, rec, stat in first:
         cells_path, mm_path = _paths(work, grid["name"])
         np.save(cells_path, cells)
         _CELLS[(work, grid["name"])] = cells                       # never a list left by an earlier build in this process
         np.memmap(mm_path, dtype="<u2", mode="w+", shape=(len(steps), len(PF.FIELDS), cells.size)).flush()
-        rec, stat = step_record(fields, cells, grid)
         _write_step(work, grid["name"], len(steps), 0, rec)
-        stat.update(grid=grid["name"], step=steps[0], seconds=round(time.time() - t, 2))
         stats.append(stat)
-        layouts[grid["name"]] = (mask, cells, tiles)
-        log(f"{grid['name']} f{steps[0]:03d}: {cells.size} sea cells in {len(tiles)} tiles, {need / 1e9:.2f} GB scratch")
+        layouts[grid["name"]] = (mask, cells, tiles, data_rows)
+        log(f"{grid['name']} f{steps[0]:03d}: {cells.size} sea cells in {len(tiles)} tiles, rows {data_rows[0]}..{data_rows[1]}")
+    del first
     jobs = [(run, g["name"], s, si, len(steps), work) for si, s in enumerate(steps) if si for g in PF.GRIDS]
-    for n, stat in enumerate(executor.map(_step_task, jobs), 1):
+    for n, stat in enumerate(_results(executor, _step_task, jobs), 1):
         stats.append(stat)
         if n % len(PF.GRIDS) == 0:
-            log(f"f{stat['step']:03d} decoded ({n + len(PF.GRIDS)}/{len(jobs) + len(PF.GRIDS)} files)")
+            log(f"{n + len(PF.GRIDS)}/{len(jobs) + len(PF.GRIDS)} files decoded (last: {stat['grid']} f{stat['step']:03d})")
     return layouts, stats
+
+
+def _results(executor, fn, jobs):
+    """Each job's result as it FINISHES; the first failure is raised at once and the jobs not yet started are
+    dropped (a file that is not there is then seen after seconds, not after everything queued before it)."""
+    if not hasattr(executor, "submit"):
+        yield from executor.map(fn, jobs)
+        return
+    futures = [executor.submit(fn, job) for job in jobs]
+    try:
+        for f in as_completed(futures):
+            yield f.result()
+    finally:
+        for f in futures:
+            f.cancel()
+
+
+def drift_summary(layouts, step_stats):
+    """How far the steps' sea cells are from the first step's. Raises past DRIFT_FAIL of a grid's cells at any
+    step: that is a broken file or a mask that moves within a run, and the product's rule no longer holds."""
+    out = {"rule": "the cells with a wave height at the first step; a later step without one is stored as missing",
+           "grid_steps": 0, "lost_max": 0, "extra_max": 0}
+    for s in step_stats:
+        n = s["hs_lost"] + s["hs_extra"]
+        if not n:
+            continue
+        out["grid_steps"] += 1
+        out["lost_max"], out["extra_max"] = max(out["lost_max"], s["hs_lost"]), max(out["extra_max"], s["hs_extra"])
+        cells = layouts[s["grid"]][1].size
+        if n > DRIFT_FAIL * cells:
+            raise ValueError(f"{s['grid']} f{s['step']:03d}: {s['hs_lost']} sea cells without waves and {s['hs_extra']} "
+                             f"extra, of {cells}: the sea cells are not the first step's any more")
+    return out
 
 
 # ------------------------------- R2 side ---------------------------------------------
@@ -465,23 +536,26 @@ def publish_grid(run, grid, mask, cells, tiles, work, nsteps, uploads, compress_
     return sizes
 
 
-def build_and_publish(store, run_dt, steps, work, executor, upload=True, log=print):
+def build_and_publish(store, run_dt, steps, work, executor, upload=True, log=print, force=False):
     run = P.run_key(run_dt)
     t0 = time.time()
     layouts, step_stats = decode_run(run_dt, steps, work, executor, log)
+    drift = drift_summary(layouts, step_stats)
     t1 = time.time()
     uploads = Uploads(store if upload else None)
     compress_pool = ThreadPoolExecutor(COMPRESS_WORKERS)
     grids, tile_sizes = [], {}
     try:
         for grid in PF.GRIDS:
-            mask, cells, tiles = layouts[grid["name"]]
+            mask, cells, tiles, data_rows = layouts[grid["name"]]
             sizes = publish_grid(run, grid, mask, cells, tiles, work, len(steps), uploads, compress_pool, log)
             tile_sizes[grid["name"]] = sizes
             r0, r1 = grid["rows"]
             grids.append({"name": grid["name"], "source": f"gfswave {grid['tag']}", "ni": grid["ni"], "nj": grid["nj"],
                           "lat0": grid["lat0"], "lon0": 0.0, "per_deg": grid["per_deg"], "rows": [r0, r1],
-                          "lat_north": PF.grid_lat(grid, r0), "lat_south": PF.grid_lat(grid, r1 - 1),
+                          # the rows that hold sea cells in this run, and their latitudes (not the file's bounds)
+                          "data_rows": list(data_rows),
+                          "lat_north": PF.grid_lat(grid, data_rows[0]), "lat_south": PF.grid_lat(grid, data_rows[1]),
                           "lon_periodic": True, "registration": "center", "tile": grid["tile"],
                           "sea_cells": int(cells.size), "tiles": len(sizes), "bytes": int(sum(sizes.values())),
                           "mask": mask_key(run, grid["name"])})
@@ -498,6 +572,9 @@ def build_and_publish(store, run_dt, steps, work, executor, upload=True, log=pri
         "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": MODEL,
         "steps": list(steps), "step_schedule": F.STEP_SCHEDULE, "expected_steps": len(F.STEPS),
         "missing": PF.MISSING, "dtype": "<u2", "order": "field,step,cell", "codec": "xz",
+        "bitmap": "row-major, 8 cells to a byte, the first cell in the most significant bit",
+        "nearest": "a point takes the nearest sea cell of any grid; on a tie, the earlier grid in `grids`",
+        "sea_cells": drift,
         "fields": [{"name": n, "kind": k, "grib": noaa, "scale": PF.KINDS[k]["scale"], "units": PF.KINDS[k]["units"]}
                    for n, k, noaa, _ident in PF.FIELDS],
         "grids": grids, "files": {"template": files_template(run)}, "digest": run_digest(step_stats),
@@ -505,9 +582,11 @@ def build_and_publish(store, run_dt, steps, work, executor, upload=True, log=pri
         "decode_seconds": round(t1 - t0, 1), "build_seconds": round(time.time() - t0, 1),
     }
     stats = {"run": run, "steps": step_stats, "tiles": tile_sizes}
+    pointed = False
     if upload:
-        publish_manifest(store, run, manifest, stats)
-    manifest["_stats"] = stats                                      # in memory only
+        _mkey, pointed = publish_manifest(store, run, manifest, stats, force=force)
+    manifest["_pointed"] = pointed                                  # in memory only, like the two below
+    manifest["_stats"] = stats
     manifest["_objects"] = {"count": uploads.count, "bytes": uploads.bytes}
     return manifest
 
@@ -516,14 +595,19 @@ def _json(obj):
     return json.dumps(obj, separators=(",", ":"), sort_keys=True, allow_nan=False).encode()
 
 
-def publish_manifest(store, run, manifest, stats):
-    """The stats sidecar, then the manifest under a fresh immutable key; the pointer ONLY for a complete run."""
+def publish_manifest(store, run, manifest, stats, force=False):
+    """The stats sidecar, then the manifest under a fresh immutable key; the pointer ONLY for a complete run, and
+    (without --force) only if no NEWER run went live while this one was building. -> (manifest key, pointed)."""
     skey = stats_key(run, manifest["published_utc"])
     store.put(skey, _json(stats), "application/json", P.IMMUTABLE)
     manifest = dict(manifest, stats=skey)
     mkey = manifest_key(run, manifest["published_utc"], complete=manifest["complete"])
     store.put(mkey, _json(manifest), "application/json", P.IMMUTABLE)
     if not manifest["complete"]:
+        return mkey, False
+    live = (store.get_json(LATEST_KEY) or {}).get("run")
+    if live and live > run and not force:
+        _summary(f"WARNING: run {live} went live while {run} was building; the pointer stays on {live}")
         return mkey, False
     point_to(store, run, mkey, manifest)
     return mkey, True
@@ -715,7 +799,10 @@ def main(argv=None):
     if a.dry_run and a.local:
         print("--dry-run and --local are two different things; give one")
         return 2
-    steps = [int(s) for s in a.steps.split(",")] if a.steps else F.STEPS
+    try:
+        steps = [int(s) for s in a.steps.split(",")] if a.steps else F.STEPS
+    except ValueError:
+        steps = []
     if not steps or any(s not in F.STEPS for s in steps) or steps != sorted(set(steps)):
         print(f"--steps must be increasing forecast hours of the model output: hourly {F.STEP_SCHEDULE[0][0]}..{F.STEP_SCHEDULE[0][1]}, "
               f"then every {F.STEP_SCHEDULE[1][2]} h to {F.STEP_SCHEDULE[1][1]}")
@@ -755,20 +842,20 @@ def main(argv=None):
         if live and run < live and not a.force:
             print(f"newer run {live} is live; not regressing to {run}")
             return 0
+        if not partial:                                             # before the back-off: a run whose tiles and manifest
+            rc = existing_guard(store, run, live, a.force)          # are stored needs one PUT, not a 3 h wait
+            if rc is not None:
+                return rc
         if not partial and not a.force and _skip_failed(store, run):
             print(f"run {run} failed recently; waiting before retrying")
             return 0
-        if not partial:
-            rc = existing_guard(store, run, live, a.force)
-            if rc is not None:
-                return rc
     print(f"building run {run} ({len(steps)} steps){' [dry-run]' if a.dry_run else ''}{' [partial]' if partial else ''}")
 
     work = a.work or tempfile.mkdtemp(prefix="points-", dir=os.environ.get("RUNNER_TEMP") or None)
     os.makedirs(work, exist_ok=True)
     executor = _executor(a.workers)
     try:
-        manifest = build_and_publish(store, run_dt, steps, work, executor, upload=not a.dry_run)
+        manifest = build_and_publish(store, run_dt, steps, work, executor, upload=not a.dry_run, force=a.force)
     except F.NotReady as exc:
         print(f"object vanished/not ready mid-run: {exc}")
         if store is not None and not partial:
@@ -796,6 +883,8 @@ def main(argv=None):
              f"{obj['count']} objects, {obj['bytes'] / 1e6:.1f} MB, decode {manifest['decode_seconds']} s, "
              f"total {manifest['build_seconds']} s, published {lag_h:.1f} h after the cycle, digest {manifest['digest']}")
     _summary("grids: " + ", ".join(f"{g['name']} {g['sea_cells']} sea cells in {g['tiles']} tiles ({g['bytes'] / 1e6:.0f} MB)" for g in manifest["grids"]))
+    if store is not None and manifest["complete"] and not manifest["_pointed"]:
+        _summary(f"note: run {run} is stored but latest.json does not name it")
     st = manifest["_stats"]["steps"]
     drift = [s for s in st if s["hs_lost"] or s["hs_extra"]]
     if drift:

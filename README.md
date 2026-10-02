@@ -341,43 +341,59 @@ the combined wave height, the wind sea and three swell partitions (height, PEAK 
 FROM) and the wind (speed, direction it blows FROM). The site reads one tile to build a forecast table for any
 ocean point (the reader is a later change; this section is the job).
 
-- **Grids** (`pointfmt.GRIDS`; their latitude bands do not overlap): `g16` = `gfswave global.0p16` (1/6 degree,
-  52.5 N to 15 S, the model's own grid), `s25` = `gfswave gsouth.0p25` (1/4 degree, south of 15 S to 79.5 S, the
-  model's own grid), `n25` = `gfswave global.0p25` (1/4 degree, north of 52.5 N; NOAA's interpolated global grid, the
-  only one that reaches there). A cell is a grid point: latitude `lat0 - row / per_deg`, longitude `col / per_deg`.
+- **Grids** (`pointfmt.GRIDS`; the rows that hold waves do not overlap and leave no gap): `g16` = `gfswave
+  global.0p16` (1/6 degree, 52.167 N to 12.5 S, the model's own grid), `s25` = `gfswave gsouth.0p25` (1/4 degree,
+  12.75 S to 79.5 S, the model's own grid), `n25` = `gfswave global.0p25` (1/4 degree, 52.25 N northward; NOAA's
+  interpolated global grid, the only one that reaches there). NOAA's `global.0p16` FILE spans 52.5 N to 15 S, but
+  its first two and last fifteen rows carry wind and no waves, so the other grids are stored up to the rows it has
+  waves for (cutting at the file's bounds left no wave data from 12.75 S to 14.85 S: review G22a). Every build
+  checks that those rows are still the ones `pointfmt.GRIDS` expects (`data`) and fails if NOAA moved them. A cell
+  is a grid point: latitude `lat0 - row / per_deg`, longitude `col / per_deg`. A reader takes the nearest sea cell
+  of any grid; on a tie, the earlier grid.
 - **Records**: 15 per file, found by their GRIB2 code numbers (discipline, category, number, surface type, and the
   sequence number 1-3 of a swell partition), never by a decoder's short names; every used record is checked for its
   cycle, forecast hour, grid geometry and a plausible range, and a file with a missing or duplicated record fails
-  the build. NOAA sorts the three swell partitions by height at every step: partition 1 at one step is not the same
-  swell train as partition 1 at the next (the reader has to track them).
-- **Values**: uint16, 65535 = missing (land, ice, or a partition the model did not find at that step), at the
-  bulletins' precision: heights 0.01 m, periods 0.1 s, directions 1 degree (360 stored as 0), wind 0.1 m/s. NOAA's
-  files hold two decimals, so ties are common; they all round up.
+  the build. NOAA orders the three swell partitions by height at every step (on the interpolated `n25` grid not
+  always, and there the wind sea can even exceed the combined height): partition 1 at one step is not the same
+  swell train as partition 1 at the next, and a reader has to track them and must not rely on the order.
+- **Values**: uint16 at the bulletins' precision: heights 0.01 m, periods 0.1 s, directions 1 degree (360 stored as
+  0), wind 0.1 m/s. NOAA's files hold two decimals, so ties are common; they all round up. Land and ice cells are
+  not stored at all. 65535 inside a tile means no value at that step: a partition the model did not find, or a sea
+  cell without waves at that step.
 - **Layout** (`gfswave/points/v1`, its own prefix: the frames' pruning never sees it and this job's never sees the
-  frames): `<RUN>/<grid>/<tr>_<tc>.bin` (one 4-degree tile: a JSON header, the block's sea bitmap, then xz of the
-  planes `[field, step, cell]`), `<RUN>/<grid>/mask.bin` (the grid's sea mask), `stats-<ts>.json`,
+  frames): `<RUN>/<grid>/<tr>_<tc>.bin` (one 4-degree tile: a JSON header, the block's sea bitmap, then one xz
+  stream of the planes `[field, step, cell]`), `<RUN>/<grid>/mask.bin` (the grid's sea mask), `stats-<ts>.json`,
   `manifest-<ts>.json`, then `latest.json` LAST and only for a complete run; `failed/<RUN>.json` and
-  `notready/<RUN>.json` as for the frames. About 2,900 objects and 1.2 GB a run; two runs are kept. Format `apt1` is
-  defined in `tools/model_frames/pointfmt.py` (pure numpy + standard library: the reader uses the same module).
+  `notready/<RUN>.json` as for the frames. About 2,900 objects and 1.0 GB a run; two runs are kept. Format `apt1` is
+  defined, byte by byte, in `tools/model_frames/pointfmt.py` (pure numpy + standard library: the reader uses the
+  same module). Its decoders accept only what a real tile can be (at most 16 MB unpacked, xz only, the dictionary
+  capped) and raise `ValueError` for anything else.
 - **Sea cells**: the cells with a wave height at the build's first step, inside the grid's stored rows. NOAA's land
-  and ice mask is the same at every step of a run; a step that disagrees is stored as missing, counted in the stats
-  and reported as a WARNING in the step summary.
-- **How a build runs**: each step's three files are downloaded whole (about 28 MB a step, 6 GB a run, anonymous S3)
-  and decoded in worker processes (eccodes is not thread-safe); each worker writes its step into a scratch file on
-  the runner's disk (about 5.5 GB: a whole run does not fit in memory); the tiles are then cut one tile row at a
-  time, compressed in threads and uploaded behind the build. Every tile and mask is stored before the manifest, the
-  manifest before the pointer.
-- **Guards**: a run that is live is left alone; the pointer never moves back; a failed build is retried after 3 h,
-  three times at most; a complete run whose pointer write failed is re-pointed, not rebuilt; a run published in
-  another format (`format_key` in the manifest: fields, scales, grids, tile size, step schedule) is never rewritten,
-  not even with `--force` -- a format change takes a new prefix version.
+  and ice mask is the same at every step of a run. A later step that disagrees is counted: a cell that lost its
+  waves is stored as missing there, one that gained waves is not in the product; the manifest's `sea_cells` says how
+  many, the step summary warns, and beyond 1 % of a grid's cells at any step the build fails instead of publishing.
+- **How a build runs**: each step's three files are downloaded whole (about 28 MB a step, 6 GB a run, anonymous S3;
+  a failed or damaged download is tried three times) and decoded in worker processes (eccodes is not thread-safe);
+  each worker writes its step into a scratch file on the runner's disk (about 5.6 GB: a whole run does not fit in
+  memory); the first failure stops the build at once. The tiles are then cut one tile row at a time, compressed in
+  threads and uploaded behind the build. Every tile and mask is stored before the manifest, the manifest before the
+  pointer. About 21 minutes on the runner; the manifest carries a `digest` of every stored value (two builds of the
+  same NOAA files agree on it exactly when they stored the same values).
+- **Guards**: a run that is live is left alone; without `--force` the pointer never moves back, also not when a
+  newer run went live while this one was building; a failed build is retried after 3 h, three times at most; a
+  complete run whose pointer write failed is re-pointed on the next tick, not rebuilt; a run published in another
+  format (`format_key` in the manifest: fields, scales, grids, tile size, step schedule) is never rewritten, not even
+  with `--force` -- a format change takes a new prefix version. `--force` rebuilds the newest complete run even when
+  a newer one is live and then points to it: use it only knowing that.
 - **Run it**: `python tools/model_frames/points.py` (R2 secrets in the environment), `--dry-run` (build everything,
-  upload nothing), `--local DIR` (publish into a directory, same layout), `--steps 0,3,6` (a subset: only with
-  `--dry-run` or `--local`, never pointed to), `--force`, `--keep N` (default 2), `--workers N` (0 = in this process).
-  The workflow's `steps` input always implies a dry run.
+  upload nothing), `--local DIR` (publish into a directory, same layout), `--steps 0,3,6` (a subset) and `--run
+  YYYYMMDDHH` (a given cycle): both only with `--dry-run` or `--local`, a subset is never pointed to; `--force`,
+  `--keep N` (default 2), `--workers N` (0 = in this process). The workflow's `steps` input always implies a dry run.
 - **Stop it**: disable `model-points.yml` (and remove it from `model-frames-keepalive.yml`, which re-enables it twice a
   month); the Worker's tick then reports an error for that workflow and still dispatches the frames. The last complete
   run stays in the bucket.
-- **NOAA changes on the horizon**: GFS v17 (proposed for late 2026) renames wave files and may change grids. The
-  file tags, grid geometry, record identities and step schedule are constants in `pointfmt.py` / `fetch.py`; the
-  geometry and identity checks fail the build loudly (with a failure record) rather than publish a wrong product.
+- **NOAA changes on the horizon**: GFS v17 (proposed for late 2026) renames wave files and may change grids. A change
+  of grid geometry, record identity or the rows with waves fails the build loudly, with a failure record. RENAMED
+  files do not: the run then never counts as complete, every tick ends quietly as "no complete run", and the only
+  signal is the age of the run `latest.json` names (the reader must show it). The file tags, grid geometry, record
+  identities and step schedule are constants in `pointfmt.py` / `fetch.py`.

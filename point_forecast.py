@@ -791,4 +791,4 @@ def point_rows(codes, steps, run_dt, tz):
 def point_headers(run, lat, lon, cell):
     """(cycle line, location line) in the bulletins' style, so the page's header code reads them unchanged."""
     return (f"Cycle : {run[:8]} {run[8:]} UTC",
-            f"Location : {fmt_coord(lat, lon)} (model cell {fmt_coord(cell['lat'], cell['lon'], 2)}, {cell['km']:.0f} km away)")
+            f"Location : {fmt_coord(lat, lon)} (nearest model point {fmt_coord(cell['lat'], cell['lon'], 2)}, {cell['km']:.0f} km away)")

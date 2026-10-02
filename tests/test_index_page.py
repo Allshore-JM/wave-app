@@ -384,14 +384,18 @@ def test_my_points_on_the_page(client):
     """Plan section 31: the visitor's forecast points. The map tool hands its click to the page block; the points are
     options of the station select (an optgroup the block adds), markers of their own in a legend entry of their own,
     and a group in the picker's list with Rename and Remove; the picker's star keeps a point; a picker pick of a point
-    recentres the map on it; a point is kept only once its forecast has come."""
+    recentres the map on it. The tool asks the server first (G22): only a forecast opens the window and keeps the
+    point; a refusal stays in the tool bar."""
     body = client.get("/?station=pt_21667N_158054W").get_data(as_text=True)
-    assert "onPoint: window.__allshorePoints ? function (ll) { window.__allshorePoints.add(ll); } : null," in body
+    assert "onPoint: window.__allshorePoints ? function (ll) { return window.__allshorePoints.add(ll); } : null," in body
     block = body[body.index("window.__initial = "):body.index("window.AllshoreForecast.init({")]
-    assert "var store = F.createPointStore(storage), pending = null;" in block
+    assert "var store = F.createPointStore(storage), refusedIds = {};" in block
+    assert "setItem: function () { throw new Error('no storage'); }" in block                    # no storage: 'unsaved', never "kept"
     assert "group.id = 'myPointsGroup'; group.label = 'My points';" in block
-    assert "if (!pending || d.station !== pending || !d.ok) return;" in block                      # kept only once a forecast came
-    assert "window.__allshorePoints = { store: store, sync: sync, add: add };" in block
+    assert "return F.prefetch(id).then(function (d) {" in block and "if (d && d.table_html) return { ok: true, open: function () { open(id); } };" in block
+    assert "window.__allshorePoints = { store: store, sync: sync, add: add, say: say, refused: function (id) { return !!refusedIds[id]; } };" in block
+    assert "window.addEventListener('storage', function (e) { if (!e.key || e.key === 'allshore.points.v1') sync(); });" in block
+    assert '<div id="fwNote" class="fw-note" role="status" hidden></div>' in body
     assert block.index("window.__allshorePoints =") < block.rindex("sync();")
     assert "'<span class=\"lc-dot lc-point\"></span>My points': pointLayer" in body
     assert "points: saved.points !== false" in body and "points: map.hasLayer(pointLayer)" in body
@@ -402,6 +406,14 @@ def test_my_points_on_the_page(client):
     assert "document.addEventListener('allshore:points', function () { index(); refreshCurrent(); if (!results.hidden) renderFavs(); });" in body
     assert "ren.type = 'button'; ren.className = 'pt-act';" in body and "rem.setAttribute('aria-label', 'Remove point: ' + label);" in body
     assert "const r = kept ? (P.store.remove(sid) ? 'removed' : 'unsaved') : P.store.add(sid);" in body
+    assert "if (!kept && P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }" in body
+    # names and provider labels in tooltips are text (G22 K-8, A-20); point markers pass a tool's click on (B-8)
+    assert "mk.bindTooltip(textTip(p.label)," in body and "marker.bindTooltip(textTip(label)," in body
+    assert body.count("bindTooltip(") == 3 and "mk.bindTooltip(s.id," in body                     # the third: a station id
+    assert "{ window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map (G22 B-8)" in body
+    # the no-script page names the point in its select (B-5); the script takes that option over
+    assert '<option value="pt_21667N_158054W" data-point selected>21.667N 158.054W</option>' in body
+    assert client.get("/?station=51201").get_data(as_text=True).count('<option value="pt_') == 0
     assert ".sr-star, .pt-act { min-width: 44px; min-height: 44px; }" in body                   # phone targets
     assert "createPane" not in body                                                              # (the overlay's pin: no pane from the page)
     # the page names the point in its title (the server renders the shell; the window fills in the coordinates)

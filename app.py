@@ -280,7 +280,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.13.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.14.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript"}
@@ -2123,6 +2123,9 @@ def index():
         "index.html",
         stations=stations,
         selected_station=selected_station,
+        # a point is no option of the stations' select: the no-script page names it itself (G22 B-5)
+        selected_point_label=(point_forecast.fmt_coord(*point_forecast.parse_point_id(selected_station))
+                              if point_forecast.parse_point_id(selected_station) else None),
         timezones=timezones,
         selected_tz=selected_tz,
         units=unit_options,

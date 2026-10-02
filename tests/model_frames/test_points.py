@@ -1202,7 +1202,16 @@ def test_decoders_are_bounded_and_only_ever_raise_value_error():
         tile(dict(header, steps=-1)), tile(dict(header, cells=header["rows"] * header["cols"] + 1)),
         tile(dict(header, fields="hs")), tile(dict(header, fields={"hs": 1})), tile(dict(header, fields=[1, 2])),
         tile(dict(header, fields=[])), tile(dict(header, fields=["f"] * 65)),
+        # the right COUNT of fields, but not a list of names
+        tile(dict(header, fields="abcdefghijklmno")), tile(dict(header, fields={str(i): i for i in range(15)})),
+        tile(dict(header, fields=list(range(15)))), tile(dict(header, fields=list(PF.FIELD_NAMES[:14]) + [None])),
     ]
+    one_h, one_b, one_p = _tile(steps=1)                                       # true is not 1: a bool is not a count
+    one = PF.encode_tile(one_h, one_b, one_p)
+    olen = struct.unpack("<I", one[4:8])[0]
+    assert PF.decode_tile(one)[0]["steps"] == 1
+    cases.append(b"APT1" + struct.pack("<I", olen + 3) + one[8:8 + olen].replace(b'"steps":1', b'"steps":true') + one[8 + olen:])
+    assert b'"steps":true' in cases[-1]
     for i, blob in enumerate(cases):
         try:
             PF.decode_tile(blob)
@@ -1231,6 +1240,8 @@ def test_decoders_are_bounded_and_only_ever_raise_value_error():
     assert PF.decode_mask(mask(mh))[1].all()
     bomb = mask(mh, payload=zlib.compress(bytes(200 << 20)))                  # 200 MB of zeros behind a 50 KB claim
     assert peak_of(lambda: PF.decode_mask(bomb)) < 8 << 20
+    claim = mask(dict(mh, ni=100000, nj=100000, cells=0), payload=zlib.compress(bytes(200 << 20)))   # ... or behind a huge one
+    assert peak_of(lambda: PF.decode_mask(claim)) < 8 << 20
     full = zlib.compress(np.packbits(np.ones((grid["nj"], grid["ni"]), bool)).tobytes(), 9)
     co = zlib.compressobj()
     open_ended = co.compress(np.packbits(np.ones((grid["nj"], grid["ni"]), bool)).tobytes()) + co.flush(zlib.Z_SYNC_FLUSH)
@@ -1266,12 +1277,15 @@ def test_plausible_ranges_per_kind_and_geometry_tolerances(world):
             PT.decode_file(msgs, g, RUN, 0)
     world.alter = None
     assert PT.PLAUSIBLE_MAX == {"height": 40.0, "period": 60.0, "direction": 360.0001, "speed": 150.0}
-    ok = meta_for(PF.GRIDS[0], (10, 0, 3, 1, None), 0)
-    for bad in ({"iDirectionIncrementInDegrees": 0.1666}, {"jDirectionIncrementInDegrees": 0.1667},     # 1/6 is 0.166667
-                {"longitudeOfFirstGridPointInDegrees": 0.01}, {"longitudeOfLastGridPointInDegrees": 359.82},
-                {"latitudeOfFirstGridPointInDegrees": 52.499}, {"latitudeOfLastGridPointInDegrees": -15.01}):
-        with pytest.raises(ValueError):
-            PT.check_geometry({**ok, **bad}, PF.GRIDS[0])
+    for grid in PF.GRIDS:
+        ok = meta_for(grid, (10, 0, 3, 1, None), 0)
+        PT.check_geometry(ok, grid)
+        for key, off in (("iDirectionIncrementInDegrees", 0.00007), ("jDirectionIncrementInDegrees", -0.00004),   # 1/6 is 0.166667
+                         ("longitudeOfFirstGridPointInDegrees", 0.01), ("longitudeOfLastGridPointInDegrees", -0.013),
+                         ("latitudeOfFirstGridPointInDegrees", -0.001), ("latitudeOfLastGridPointInDegrees", 0.01)):
+            with pytest.raises(ValueError):
+                PT.check_geometry({**ok, key: ok[key] + off}, grid)
+            PT.check_geometry({**ok, key: ok[key] + off / 1000}, grid)         # NOAA's own rounding passes
 
 
 def test_a_change_of_noaas_bands_stops_the_build(world, tmp_path):
@@ -1291,7 +1305,10 @@ def test_a_change_of_noaas_bands_stops_the_build(world, tmp_path):
     for gname, row in (("s25", 13), ("n25", 0)):                               # the far edges move with the ice: fine
         world.alter = empty_row(gname, row)
         man = build(None, [0], tmp_path, upload=False)
-        assert {g["name"]: g["data_rows"] for g in man["grids"]}[gname] == ([3, 12] if gname == "s25" else [1, 5])
+        got = {g["name"]: g for g in man["grids"]}[gname]
+        assert got["data_rows"] == ([3, 12] if gname == "s25" else [1, 5])
+        # the manifest's latitudes are those of the rows with data, not of the stored band
+        assert (got["lat_north"], got["lat_south"]) == ((-11.25, -13.5) if gname == "s25" else (89.75, 88.75))
 
 
 def test_check_band_on_the_real_grids():
@@ -1335,6 +1352,18 @@ def test_sea_cells_that_move_too_much_within_a_run_fail_the_build(world, tmp_pat
     with pytest.raises(ValueError, match="not the first step's any more"):
         build(P.Store(client, "b"), [0, 3], tmp_path)
     assert client.log == []                                                    # nothing was uploaded
+    dry = np.argwhere(land(g))
+
+    def gain(grid, name, step, arr):                                           # waves appear on what was land at the first step
+        if (grid["name"], name, step) == ("g16", "hs", 3):
+            arr = arr.copy()
+            for cell in dry[:limit + 1]:
+                arr[tuple(cell)] = 1.0
+        return arr
+    world.alter = gain
+    with pytest.raises(ValueError, match=f"0 sea cells without waves and {limit + 1} extra"):
+        build(P.Store(client, "b"), [0, 3], tmp_path)
+    assert client.log == []
 
 
 def test_the_first_failure_is_raised_at_once_and_the_rest_is_dropped():
@@ -1346,14 +1375,15 @@ def test_the_first_failure_is_raised_at_once_and_the_rest_is_dropped():
         started.append(i)
         if i == 1:
             raise F.NotReady("404 the second file")
-        time.sleep(0.05)
+        time.sleep(1.0 if i == 0 else 0.05)                                    # the FIRST job is the slow one
         return i
     ex = ThreadPoolExecutor(2)
     t = time.time()
     with pytest.raises(F.NotReady):
         list(PT._results(ex, job, list(range(200))))
+    seen, took = len(started), time.time() - t
     ex.shutdown(wait=True)
-    assert len(started) < 20 and time.time() - t < 3                           # not after the 199 others (10 s of work)
+    assert seen < 8 and took < 0.8                                             # raised when it failed, not after the job before it
     ex = ThreadPoolExecutor(3)
     assert sorted(PT._results(ex, lambda i: i * 2, [1, 2, 3, 4])) == [2, 4, 6, 8]
     ex.shutdown()
@@ -1542,7 +1572,8 @@ def test_run_digest_tells_the_grids_apart():
     a = [{"grid": "g16", "step": 0, "crc": 1}, {"grid": "s25", "step": 0, "crc": 2}]
     b = [{"grid": "g16", "step": 0, "crc": 2}, {"grid": "s25", "step": 0, "crc": 1}]
     c = [{"grid": "g16", "step": 0, "crc": 1}, {"grid": "g16", "step": 3, "crc": 2}]
-    assert len({PT.run_digest(a), PT.run_digest(b), PT.run_digest(c)}) == 3
+    d = [{"grid": "g16", "step": 0, "crc": 1}, {"grid": "n25", "step": 0, "crc": 2}]   # the same numbers on another grid
+    assert len({PT.run_digest(a), PT.run_digest(b), PT.run_digest(c), PT.run_digest(d)}) == 4
 
 
 def test_read_message_with_the_real_eccodes():
@@ -1604,3 +1635,4 @@ def test_points_workflow_text_pins():
     tests = open(os.path.join(wf, "model-frames-tests.yml"), encoding="utf-8").read()
     for path in (".github/workflows/model-points.yml", ".github/workflows/model-frames-keepalive.yml", ".github/workflows/model-frames.yml"):
         assert path in tests.split("pull_request:")[0], path                   # a change of a pinned text runs the tests
+    assert sorted(f for f in os.listdir(wf) if "point" in f) == ["model-points.yml"]   # the dry-run helper of the review never ships

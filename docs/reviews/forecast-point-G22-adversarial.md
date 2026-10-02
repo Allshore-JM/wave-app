@@ -182,3 +182,241 @@ fixed).
 The busy answer on the service (a burst of 8 new points gave 8 tables in 1.0-3.9 s), the "N h old" text on a real stale
 run, a new run arriving under an open page, the first point after a deploy, real touch input and a real phone, a real
 no-script render and print preview, screen-reader speech, memory and timing on the 512 MB instance itself.
+
+## Re-check of the fix round (step 8c, 2026-10-02)
+
+Two fresh reviewers at MAX on `060535e` (UI 1.14.0) and the test site (`test` @ `0782008`):
+- **A, code and data**, without a browser. A re-ran G22 A's 124 server mutants and added 64 of its own; a helper ran
+  130 page mutants (111 finished).
+- **B, the test site and its use**, with real clicks on desktop and phone. B checked 32 of the 105 land and water
+  cases by hand and all 105 through the API. B also covered grids over six sheltered waters, 30 lagoons and harbours,
+  12 station tables against production, and 11 points at station coordinates.
+
+**Counts.**
+
+| Reviewer | P0 | P1 | P2 | P3 | Findings |
+|---|---|---|---|---|---|
+| A | 0 | 1 | 4 | 20 | R-A1 .. R-A25 |
+| B | 0 | 2 | 1 | 10 | R-B1 .. R-B13 |
+| **Distinct** | **0** | **2** | **5** | **26** | |
+
+Overlaps: R-A1 = R-B2 (b, c); R-B4 is part of R-A17; R-B5 and R-B6 are part of R-A14; R-B11 = R-A22.
+
+### Confirmed
+
+- **The station re-rank lost nothing.**
+  - A: 225 bulletins (53,577 rows) through the site's own parser in both trees. The same systems in every row;
+    30.6 % of rows re-ordered, another Swell 1 in 9.6 %; date, time, wind and combined height untouched.
+  - B: 12 station tables against production. 4,200 of 4,200 rows keep the same numbers, 1,776 re-ordered, none out
+    of power order.
+  - The live SWAN table (175 rows) and the live-buoy components: the same.
+- **A point's rows and graphs.** 420 payloads of real cells: 209 rows each, and 385 hourly labels in the zone asked
+  for (Sydney's clock change and three zones that fall back included). Every series is empty exactly between rows.
+- **The land test.** Server, page and builder agree at 54,585 points, apart from points lying exactly on a coast edge
+  (within 1.6e-9 m). Against raw GSHHG, 48,655 points agree within 5.9 m (the published rounding).
+- **Time zones.** All 4,036 station positions take their station's zone. B's 11 points at station coordinates take
+  the station's zone and its hourly slots.
+- **Limits.** Never more than two builds; no slot leaked; a run change keeps nothing of the old run; a
+  `RecursionError` answers 200.
+- **The fix round's claims (A's verdicts):**
+
+  | Verdict | G22 findings |
+  |---|---|
+  | Fixed (30) | B-13 among them, with a regression (R-A7) |
+  | Partly fixed (8) | A-2, A-6, A-8, A-16, A-19, B-7, B-11, B-17 |
+  | Accepted, as before | A-5, B-21 |
+  | Moot | A-18 (the tracking is gone) |
+  | Need a browser | B-20, K-3. B found K-3 still cut on 360-375 px phones (R-B3) |
+
+### The author's own checks
+
+- **R-A3:** confirmed on the test site. `pt_54500N_167000E` and `pt_52000N_162000E` answer `America/Adak`.
+- **R-A4:** confirmed in the browser. On a point's Full graph from day 6, no tooltip shows over about half of each
+  3-hour gap.
+- **R-A2:** read from A's measurements, which cover both behaviours. The timer's close waits for the reader's lock; a
+  shutdown from the timer ends a trickle at 10 s.
+- **R-A1 = R-B2 (b, c):** reproduced on the offline product, and measured against the candidate rules below.
+
+### P1
+
+- **R-A1 = R-B2 (b, c) Sheltered water is still served across land.**
+  - Two causes: the path check never looks at land within a quarter cell of the cell's centre (±4.6 km on g16,
+    ±6.9 km on s25/n25), and its 250 m samples miss spits.
+  - Venice, the Solent (Lymington), Townsville, Pamlico Sound and the Indian River Lagoon are served from the open
+    sea. The Cable Beach buoy, in open sea, is served from Roebuck Bay across 3.4 km of the Broome peninsula.
+  - 77 of 1,512 served near-coast points (5.1 %) have at least 0.5 km of land on the path (1fbdc89: 15.5 %).
+  - FIX: the path rule below.
+- **R-B1 The coast data lies 1-2.3 km seaward of the real shore at some breaks.**
+  - Puerto Escondido: water up to 1.3 km out is refused as land, 1.6 km out is served.
+  - Peahi: 100 m off the cliffs is refused, Jaws 800 m out is served.
+  - Honolua Bay: the break reads as land.
+  - A data limit: owner decision 5.
+- **R-B2 (a) Water that sees an open-sea cell through a mouth is served** (Southampton Water, the Solent at Cowes,
+  lower Tampa Bay, just inside the Golden Gate). This is the rule as worded to the owner: owner decision 6.
+
+### P2
+
+- **R-A2 The 8 s cap does not stop a slow body that has a Content-Length.**
+  - This covers every tile, mask and coast cell: measured over 40 s.
+  - The "cut short" check never fires on a real response: urllib3 raises first.
+  - FIX: the timer shuts the socket down, and the clock starts before the request. A trickle then ends at 10 s
+    (Content-Length) or 8 s (chunked).
+- **R-A3 Near the date line a point takes a station's zone from the other side.** Off the Commander Islands
+  (UTC+12) a point gets America/Adak (UTC-9), a calendar day off. 116 of 1,562 grid points near 180 are affected.
+  FIX: accept a station's zone only within 3 hours of the point's nautical offset.
+- **R-A4 A point's graphs lose the tooltip and the three-chart sync between the 3-hourly dots** from day 6.
+  FIX: each series only at its rows.
+- **R-A5 Mutant survivors that change what a visitor gets.**
+  - Server: M49 (only four of six columns ranked), S61 / S62 (a tile of another position or grid accepted), S124
+    (one run's values under the other run's times at a run change), M43 / M44 (busy rules), M24 (no land beyond
+    180 on a path), M56 (the live-buoy zone cache cap), M02 / M03 (the band's rings).
+  - Page: X32 (`textTip` parsing HTML would pass every test), F43 / F44 (3 d and 7 d windows), F04 / F06
+    (`prefetch` taking an error body), T07, T18 / T19 (Escape and focus), X16 / X18 / X39 / X41 (refusals from a
+    load, the star), X28 / X29 / X34 (the unkept marker), X23 (a throwing storage).
+  - Mutant totals:
+    - G22 A's 124 server mutants: 57 killed, 25 survive, 42 no longer apply.
+    - A's own 64: 51 killed, 13 survive.
+    - The page: 111 of 130 run, 43 survive, 22 of which change what a scenario sees.
+- **R-B3 On 360-375 px phones an unnamed point's coordinates are still cut.**
+
+### P3
+
+All are fixed in fix round 2 unless marked.
+
+- **Point loading and refusals:**
+  - R-A6: a late answer opens over a later pick.
+  - R-A8: a refusal is never forgotten.
+  - R-A9: the "not kept" note outlives its point.
+  - R-A10: the run text and model bar stay after a failed load.
+  - R-A11: the title reads "Select a station" after a refusal.
+- **Keys and focus:**
+  - R-A7: Escape with the favourites list open ends the tool.
+  - R-A16: focus is lost on another tab's change.
+  - R-B8: focus after Retry.
+- **Names and words:**
+  - R-A12: the cut splits emoji.
+  - R-A13: a stored name that is not a string stops the window.
+  - R-A14 with R-B5 and R-B6: words. An HTTP error is told as a network one, the folded bar says "Computing…"
+    while checking, and the removal words.
+  - R-A21: docs.
+- **The map:**
+  - R-A15: a point kept with the star while the layer is unticked has no marker.
+  - R-A18: the tool shows without a points bucket.
+- **Zone labels:** R-A17 with R-B4. A raw "Etc/GMT+N" still reaches the no-script page and the classic table, and
+  the window says "UTC−11" while the overlay says "GMT-11".
+- **The no-script page:** R-B12. An invalid id still shows "3FYT".
+- **Server and data:**
+  - R-A19: the coast data is not checked against its name, and the index is kept after a size mismatch.
+  - R-A20: the South Pole reads "no model data".
+  - R-A23: `rank_groups` drops a group that has no height.
+  - R-A24 / R-A25: page and server agree only off the coastline, and no shared test pins it.
+  - R-B7: a click on a spit is told "sheltered".
+- **Accepted:**
+  - R-B13: a metric rounding nit.
+  - R-A22 = R-B11, R-B9, R-B10: owner awareness, told.
+
+### The path rule, measured
+
+Prototypes (`proto_path.py`, `proto_rules.py` in the scratch folder) ran on the offline product and the published
+coast. The sets:
+- 36 surf spots from B's water cases;
+- 19 sheltered waters;
+- 11 waters that see the sea through a mouth;
+- the 596 live-buoy positions.
+
+| Rule | Surf served | Sheltered refused | Through a mouth served | Buoys served |
+|---|---|---|---|---|
+| 060535e (sampled; the cell's inner box skipped) | 36/36 | 13/19 | 11/11 | 554 |
+| A's proposal (sampled; forgive the land run reaching a land centre) | 36/36 | 11/19 | 11/11 | 555 |
+| Exact crossings, any land run of 0.1 km or more blocks, the run reaching the centre forgiven up to half a cell | 35/36 | 19/19 | 11/11 | 550 |
+| The same, with the path starting at the nearest coast-data water inside the 300 m band (**chosen**) | 35/36 | 19/19 | 11/11 | 551 |
+
+- A's proposal forgives any land run that reaches a centre on land, so San Francisco Bay, Sydney Harbour and Alcatraz
+  would be served again.
+- The chosen rule refuses the inner Honolua Bay point. The coast data barely has the bay, and the break itself reads
+  as land under every rule (R-B1).
+- The three buoys it newly refuses are all in sheltered water: Cockburn Sound, the Helsinki archipelago and
+  Lymington.
+
+### The owner's decisions on the re-check (2026-10-02)
+
+5. **Coastline data that lies off the real shore (R-B1): keep the 300 m band, say it better** ("300 m + clearer
+   message").
+   - A land refusal near the coast will say that the coastline data reads the point as land, and suggest clicking a
+     little farther out.
+   - Measured on B's cases: 3 of 59 nearshore water points are refused at 300 m (1 km would serve 24 of 39 checked
+     land points, against 11 now).
+   - A more accurate coastline (OpenStreetMap) is not planned.
+6. **Water that sees an open-sea model point through a mouth (R-B2 a): serve as now** ("Serve as now").
+   - The header names the model point and its distance.
+   - Surf spots in coves and at bay mouths stay served.
+
+### Told to the owner (no change)
+
+- **R-B9:** the live-buoy "Swell & wind-sea (last 24 h)" table now shows the most powerful system of each kind.
+- **R-B10:** far from every station a point can take a distant zone (35 N 150 E reads Asia/Magadan, from a grid
+  station 720 km away). Points either side of 180 read a day apart.
+- **R-A22 = R-B11:** after day 7 a hidden column holds the hour's weakest system by power, which can be taller than a
+  shown one.
+  - Stations: by up to 0.95 ft.
+  - One point cell: 2.5 m hidden beside 3.47 m and 3.35 m shown.
+
+### Fix round 2 scope (UI 1.15.0)
+
+**Server**
+
+1. **The chosen path rule.**
+   - The path is judged by exact crossings with the coast edges: longitude unwrapped from the point, the copies on
+     both sides of 180 included. `PATH_STEP_KM`, `PATH_LAND_RUN` and `PATH_CELL_SKIP` go.
+   - A click on land inside the band with no reachable cell answers "land", not "sheltered" (R-B7).
+   - The land message names the coastline data and suggests a click farther out (decision 5).
+   - Tests: a spit inside the cell's box, a barrier island, a path across 180 with land beyond it (M24), a centre on
+     an islet.
+2. A coast cell must lie inside its named box, and a size mismatch drops the kept index (R-A19). The ring samples
+   are clamped at the poles (R-A20).
+3. `rank_groups` keeps a group that has a period or a direction but no height (R-A23).
+4. The fetch cap: the timer shuts the socket down, and the clock starts before the request. The dead "cut short"
+   check and its test go (R-A2).
+5. Time zone: a station's zone only within 3 hours of the point's nautical offset (R-A3).
+6. No raw "Etc/GMT+N" anywhere, and one form ("UTC−11") on the screen (R-A17, R-B4).
+7. The tool shows only when a points bucket is set (R-A18). The no-script page of an invalid id is fixed (R-B12).
+8. Docs (R-A21).
+
+**Page**
+
+9. A point's graph series carry only their rows (`{x: slot, y}` on the hourly axis), so the tooltip and the sync
+   follow the nearest row (R-A4).
+10. Loading and keys:
+    - A late answer is dropped when the visitor picked something else since the click (R-A6).
+    - Escape with the favourites list open closes only the list (R-A7).
+    - A refusal is forgotten when a forecast for the id lands (R-A8).
+    - The note, the run text and the model bar are cleared on a failed load (R-A9, R-A10).
+    - The title keeps the point's label (R-A11).
+11. Names, words and focus:
+    - Names are cut by graphemes (R-A12).
+    - A stored name that is not a string is dropped (R-A13).
+    - Words (R-A14, R-B5, R-B6).
+    - The star ticks the layer on (R-A15).
+    - Focus is kept across another tab's change (R-A16) and goes to the window after Retry (R-B8).
+12. On 360-375 px phones an unnamed point's coordinates are never cut (R-B3).
+
+**Tests**
+
+13. Pins for the survivors that matter (R-A5). One land fixture is checked by both the page's `inLand` and the
+    server's `land_parity` (R-A24, R-A25). The mutants are re-run on the new code.
+14. Release steps:
+    - UI 1.15.0 with `ui_assets.json`, the golden in its own commit, and the README.
+    - Push, and the test site.
+    - A short MAX re-check.
+    - Production with the owner's go-ahead: tag `prod-pre-point` @ `4d37b8e`. The release note says the station
+      tables change order on purpose.
+
+**Follow-up (older code, not in this round):** the stations' `.spec` download uses the same timer pattern as R-A2.
+
+### Still wrong after fix round 2
+
+- Coast data that lies more than 300 m off the real shore: refused, with the clearer message.
+- Water that sees an open-sea model point through a mouth: served from that point (decision 6).
+- Atoll islets missing from the coast data, and sea ice: as before.
+- North of 52.25 N: NOAA's interpolated grid.
+- A point reads the nearest sea cell, while stations are interpolated to the buoy.

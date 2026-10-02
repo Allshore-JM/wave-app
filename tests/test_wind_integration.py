@@ -50,6 +50,21 @@ def _bull(monkeypatch, fixture_name, wind=WIND):
 
 # --------------------------- GFS bull wind join --------------------------------
 
+def test_bulletin_rows_come_out_in_rank_order(monkeypatch):
+    """NOAA lists a row's systems by height; the site ranks them by height squared x period (owner, 2026-10-02: one
+    rule for stations and points), packed from the left. The numbers of a row stay."""
+    seen = {}
+    real = app.rank_rows
+    monkeypatch.setattr(app, "rank_rows", lambda rows: seen.setdefault("before", [list(r) for r in rows]) and real(rows))
+    _, _, _, rows, _, err = _bull(monkeypatch, "gfswave_bull_modern.txt")
+    assert err is None and len(rows) == len(seen["before"]) == 3
+    for r, b in zip(rows, seen["before"]):
+        live = [g for g in range(6) if r[2 + 3 * g] is not None]
+        power = [r[2 + 3 * g] ** 2 * r[3 + 3 * g] for g in live]
+        assert live == list(range(len(live))) and power == sorted(power, reverse=True)
+        groups = lambda x: sorted((x[2 + 3 * g], x[3 + 3 * g], x[4 + 3 * g]) for g in range(6) if x[2 + 3 * g] is not None)   # noqa: E731
+        assert groups(r) == groups(b) and r[:2] == b[:2] and r[20:] == b[20:]
+
 def test_gfs_modern_format_wind_join(monkeypatch):
     _, _, _, rows, _, err = _bull(monkeypatch, "gfswave_bull_modern.txt")
     assert err is None and len(rows) == 3

@@ -1,7 +1,8 @@
-"""Forecast points (plan section 31, step 4): point ids, the reader of the points product, the tracking of swell
-trains, the rows, and the /api/forecast path. No network: a small product is built with the format's own writer
-(tools/model_frames/pointfmt.py) and served by a fake fetch; one real cell (NOAA station 51201's model cell, run
-2026100112) and its NOAA bulletin are fixtures.
+"""Forecast points (plan section 31): point ids, the reader of the points product, the coast (land, and what lies
+between a point and its cell), the rank of a row's swells, the rows, and the /api/forecast path. No network: a
+small product is built with the format's own writer (tools/model_frames/pointfmt.py), a small coast with the coast
+builder's (tools/coast/build_coast.py), both served by a fake fetch; one real cell (NOAA station 51201's model cell,
+run 2026100112), its NOAA bulletin and the real coast of Oahu are fixtures.
 
 Run:  pytest tests/
 """
@@ -21,7 +22,10 @@ import pytz
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+sys.path.insert(0, os.path.join(ROOT, "tools", "coast"))
+
 import app as A                    # noqa: E402
+import build_coast as BC           # noqa: E402
 import point_forecast as PFC       # noqa: E402
 
 PF = PFC.pointfmt()
@@ -57,11 +61,29 @@ def code(grid, name, si, r, c):
     return {"height": 150 - 30 * part + si, "period": 60 + 40 * part, "direction": (70 + 80 * part + c) % 360}[kind]
 
 
-class Product:
-    """latest.json, a manifest, masks and tiles of one run, built on demand; every fetch is recorded."""
+LAND = ((100.0, 110.0, -10.0, 30.0),)                        # the coast's land: (west, east, south, north) boxes
 
-    def __init__(self, run=RUN, steps=STEPS, grids=GRIDS):
+
+def coast_cells(boxes):
+    """{cell name: coast-v1 bytes} of land boxes, cut at the 5-degree cell lines as the builder cuts polygons."""
+    pieces = {}
+    for w, e, lo, hi in boxes:
+        for la in range(int(np.floor(lo / 5)) * 5, int(np.ceil(hi / 5)) * 5, 5):
+            for ln in range(int(np.floor(w / 5)) * 5, int(np.ceil(e / 5)) * 5, 5):
+                x0, x1, y0, y1 = max(w, ln), min(e, ln + 5), max(lo, la), min(hi, la + 5)
+                if x1 > x0 and y1 > y0:
+                    q = [int(round(v * 10000)) for v in (x0, x1, y0, y1)]
+                    ring = (np.array([q[0], q[1], q[1], q[0]], dtype=np.int64), np.array([q[2], q[2], q[3], q[3]], dtype=np.int64))
+                    pieces.setdefault(f"{la}_{ln}", []).append([ring])
+    return {name: BC.encode_file(ps, 5) for name, ps in pieces.items()}
+
+
+class Product:
+    """latest.json, a manifest, masks and tiles of one run, and the coast, built on demand; every fetch is recorded."""
+
+    def __init__(self, run=RUN, steps=STEPS, grids=GRIDS, land=LAND):
         self.run, self.steps, self.grids = run, list(steps), grids
+        self.coast = coast_cells(land)
         self.calls, self.fail, self.delay, self.lock = [], None, 0.0, threading.Lock()
         self.mkey = f"{PFC.PREFIX}/{run}/manifest-20261001T174000Z.json"
         self.overrides = {}
@@ -82,6 +104,14 @@ class Product:
             return json.dumps({"run": self.run, "manifest": self.mkey, "complete": True}).encode()
         if key == self.mkey:
             return json.dumps(self.manifest()).encode()
+        if key == f"{PFC.COAST_PREFIX}/index.json":
+            return json.dumps({"format": "coast-v1", "q": 10000, "tier1": {"cell": 5, "dir": "f", "cells": {
+                n: [len(b), 4] for n, b in self.coast.items()}}}).encode()
+        m = re.fullmatch(rf"{PFC.COAST_PREFIX}/f/(-?\d+_-?\d+)\.bin", key)
+        if m:
+            if m.group(1) not in self.coast:
+                raise IOError("HTTP 404")
+            return self.coast[m.group(1)]
         m = re.fullmatch(rf"{PFC.PREFIX}/{self.run}/([a-z0-9]+)/(mask|(\d+)_(\d+))\.bin", key)
         if not m:
             raise IOError("HTTP 404")
@@ -122,6 +152,11 @@ class Product:
 @pytest.fixture
 def product():
     return Product()
+
+
+def loc(src, man, lat, lon):
+    """The point's cell (None when it has none: locate()'s reason is asked for where it matters)."""
+    return src.locate(man, lat, lon)[0]
 
 
 def cell_of(grid, lat, lon):
@@ -247,20 +282,21 @@ def test_source_reads_a_cell_and_fetches_each_object_once(product):
     src = product.source()
     man = src.manifest()
     assert (man["run"], man["steps"]) == (RUN, STEPS)
-    cell = src.locate(man, 5.2, 20.3)
+    cell = loc(src, man, 5.2, 20.3)
     assert (cell["grid"], cell["row"], cell["col"]) == ("a", 5, 20)
     assert product.count("/b/") == 0                                            # grid b is out of reach: its mask is not fetched
     codes = src.series(man, cell)
     assert codes.shape == (15, len(STEPS)) and codes.dtype == np.dtype("<u2")
     for fi, name in enumerate(PF.FIELD_NAMES):
         assert codes[fi].tolist() == [code(GRIDS[0], name, si, 5, 20) for si in range(len(STEPS))], name
-    again = src.series(man, src.locate(src.manifest(), 5.2, 20.3))
+    again = src.series(man, loc(src, src.manifest(), 5.2, 20.3))
     assert (again == codes).all()
-    other = src.series(man, src.locate(man, 4.9, 22.1))                         # a neighbour in the same tile
+    other = src.series(man, loc(src, man, 4.9, 22.1))                         # a neighbour in the same tile
     assert other[0, 0] == code(GRIDS[0], "hs", 0, 5, 22)
-    assert [product.count(k) for k in ("latest.json", "manifest-", "/a/mask.bin", "/a/0_2.bin")] == [1, 1, 1, 1]
-    assert len(product.calls) == 4 and src.stats() == {"masks": 1, "tiles": 1, "tile_bytes": src.stats()["tile_bytes"], "cells": 2}
-    b = src.locate(man, 20.2, 50.2)
+    assert [product.count(k) for k in ("latest.json", "manifest-", "/a/mask.bin", "/a/0_2.bin", "coast/v1/index.json")] == [1, 1, 1, 1, 1]
+    assert len(product.calls) == 5                             # no coast cell: the index says these waters have no land
+    assert {k: src.stats()[k] for k in ("masks", "tiles", "cells", "coast")} == {"masks": 1, "tiles": 1, "cells": 2, "coast": 0}
+    b = loc(src, man, 20.2, 50.2)
     assert src.series(man, b)[0, 3] == code(GRIDS[1], "hs", 3, 20, 100) and product.count("/b/1_6.bin") == 1
 
 
@@ -268,7 +304,7 @@ def test_manifest_is_read_again_after_five_minutes_and_a_new_run_drops_the_old(p
     now = [1000.0]
     src = product.source(clock=lambda: now[0])
     man = src.manifest()
-    src.series(man, src.locate(man, 5.2, 20.3))
+    src.series(man, loc(src, man, 5.2, 20.3))
     now[0] += 299
     assert src.manifest() is man and product.count("latest.json") == 1
     now[0] += 2
@@ -279,7 +315,8 @@ def test_manifest_is_read_again_after_five_minutes_and_a_new_run_drops_the_old(p
     now[0] += 301
     man2 = src.manifest()
     assert man2["run"] == "2026100118" and src.stats()["cells"] == 0 and src.stats()["tiles"] == 0 and src.stats()["masks"] == 0
-    cell = src.locate(man2, 5.2, 20.3)
+    assert src.stats()["tile_bytes"] == 0                                       # the bytes are given back with the tiles (S52)
+    cell = loc(src, man2, 5.2, 20.3)
     assert src.series(man2, cell)[0, 0] == code(GRIDS[0], "hs", 0, 5, 20) and product.count("2026100118/a/0_2.bin") == 1
 
 
@@ -312,6 +349,66 @@ def test_a_bucket_that_does_not_answer(product):
         off.manifest()
 
 
+def test_pins_from_the_g22_mutation_run(product):
+    """Reviewer A's survivors that could hide a defect (G22 A-8), each pinned."""
+    assert (PFC.POINTER_TTL_S, PFC.POINTER_RETRY_S, PFC.POINTER_KEEP_S, PFC.POINTER_WAIT_S) == (300, 60, 21600, 2.0)   # S39-S41
+    # S49: the six hours count from the last GOOD read, however often a read fails in between
+    now = [1000.0]
+    src = product.source(clock=lambda: now[0])
+    man = src.manifest()
+    product.fail = lambda key: "latest.json" in key
+    served = 0
+    for _ in range(int(PFC.POINTER_KEEP_S / 61) + 20):
+        now[0] += 61
+        try:
+            assert src.manifest() is man
+            served += 1
+        except PFC.PointError:
+            break
+    assert now[0] - 1000.0 > PFC.POINTER_KEEP_S and served * 61 <= PFC.POINTER_KEEP_S + 61
+    with pytest.raises(PFC.PointError):
+        src.manifest()
+    product.fail = None
+    # S13: a manifest that does not say it is complete is not read
+    bad = product.manifest()
+    del bad["complete"]
+    with pytest.raises(PFC.PointError):
+        PFC.check_manifest(bad)
+    # S63: the mask says sea, the tile does not hold the cell: an error, never another cell's values
+    p = Product()
+    grid = GRIDS[0]
+    mask = sea(grid)
+    assert not mask[2, 4]
+    mask[2, 4] = True                                                           # (8 N, 4 E) is land in the tiles
+    p.overrides[f"{PFC.PREFIX}/{RUN}/a/mask.bin"] = PF.encode_mask(RUN, grid, mask)
+    src = p.source()
+    man = src.manifest()
+    cell = loc(src, man, 8.0, 4.0)
+    assert (cell["row"], cell["col"]) == (2, 4)
+    with pytest.raises(PFC.PointError):
+        src.series(man, cell)
+    # S62: a tile of ANOTHER grid under this grid's name is refused
+    p = Product()
+    p.overrides[f"{PFC.PREFIX}/{RUN}/a/0_2.bin"] = p.body(f"{PFC.PREFIX}/{RUN}/b/0_2.bin")
+    src = p.source()
+    man = src.manifest()
+    with pytest.raises(PFC.PointError):
+        src.series(man, loc(src, man, 5.2, 20.3))
+    # S64: a kept cell owns its values (not a view that keeps the whole decoded tile alive)
+    src = product.source()
+    man = src.manifest()
+    codes = src.series(man, loc(src, man, 5.2, 20.3))
+    assert codes.base is None and codes.nbytes == 15 * len(STEPS) * 2
+    # S31 / S32: the longitude window widens with the latitude (at 80 N a degree of longitude is 19 km)
+    hi = {"name": "h", "ni": 1440, "nj": 41, "lat0": 85.0, "per_deg": 4, "tile": 16, "data_rows": (0, 40)}
+    m = np.zeros((41, 1440), dtype=bool)
+    m[20, 47] = True                                                            # 80 N, 11.75 E
+    cell = PFC.nearest_sea_cell([hi], {"h": m}, 80.0, 10.0)
+    assert cell is not None and (cell["row"], cell["col"]) == (20, 47) and 33 < cell["km"] < 35
+    assert PFC.nearest_sea_cell([hi], {"h": m}, 80.0, 9.5) is None              # 43 km
+    assert [c["col"] for c in PFC.sea_cells_in_reach([hi], {"h": m}, 80.0, 10.0)] == [47]
+
+
 def test_a_pointer_or_object_that_is_not_what_was_asked_for_is_refused(product):
     def source_with(key, body):
         p = Product()
@@ -331,25 +428,25 @@ def test_a_pointer_or_object_that_is_not_what_was_asked_for_is_refused(product):
     other = Product(run="2026100118")
     p, src = source_with(f"{PFC.PREFIX}/{RUN}/a/mask.bin", other.body(f"{PFC.PREFIX}/2026100118/a/mask.bin"))   # another run's mask
     with pytest.raises(PFC.PointError):
-        src.locate(src.manifest(), 5.2, 20.3)
+        loc(src, src.manifest(), 5.2, 20.3)
     p, src = source_with(f"{PFC.PREFIX}/{RUN}/a/mask.bin", product.body(f"{PFC.PREFIX}/{RUN}/b/mask.bin"))        # another grid's
     with pytest.raises(PFC.PointError):
-        src.locate(src.manifest(), 5.2, 20.3)
+        loc(src, src.manifest(), 5.2, 20.3)
     for wrong in (f"{PFC.PREFIX}/{RUN}/a/0_3.bin", f"{PFC.PREFIX}/2026100118/a/0_2.bin"):                          # another tile, another run's
         body = (other if "2026100118" in wrong else product).body(wrong)
         p, src = source_with(f"{PFC.PREFIX}/{RUN}/a/0_2.bin", body)
         man = src.manifest()
         with pytest.raises(PFC.PointError):
-            src.series(man, src.locate(man, 5.2, 20.3))
+            src.series(man, loc(src, man, 5.2, 20.3))
     short = Product(steps=STEPS[:-1])                                           # a tile with fewer steps than the manifest says
     p, src = source_with(f"{PFC.PREFIX}/{RUN}/a/0_2.bin", short.body(f"{PFC.PREFIX}/{RUN}/a/0_2.bin"))
     man = src.manifest()
     with pytest.raises(PFC.PointError):
-        src.series(man, src.locate(man, 5.2, 20.3))
+        src.series(man, loc(src, man, 5.2, 20.3))
     p, src = source_with(f"{PFC.PREFIX}/{RUN}/a/0_2.bin", b"APT1" + b"\x00" * 64)
     man = src.manifest()
     with pytest.raises(PFC.PointError):
-        src.series(man, src.locate(man, 5.2, 20.3))
+        src.series(man, loc(src, man, 5.2, 20.3))
 
 
 def test_the_tile_cache_is_capped_by_bytes_and_the_cell_cache_by_count(product, monkeypatch):
@@ -359,28 +456,28 @@ def test_the_tile_cache_is_capped_by_bytes_and_the_cell_cache_by_count(product, 
     monkeypatch.setattr(PFC, "TILE_CACHE_BYTES", int(one * 2.5))
     monkeypatch.setattr(PFC, "CELL_CACHE_MAX", 3)
     for lon in (20.0, 30.0, 40.0, 50.0):                                        # four tiles: 0_2, 0_3, 0_5, 0_6
-        src.series(man, src.locate(man, 5.0, lon))
+        src.series(man, loc(src, man, 5.0, lon))
     st = src.stats()
     assert st["tiles"] == 2 and st["tile_bytes"] <= one * 2.5 and st["cells"] == 3
     n = product.count("/a/0_6.bin")
-    src.series(man, src.locate(man, 5.0, 51.0))                                 # the newest tile is still there
+    src.series(man, loc(src, man, 5.0, 51.0))                                 # the newest tile is still there
     assert product.count("/a/0_6.bin") == n
-    src.series(man, src.locate(man, 5.0, 21.0))                                 # the oldest was dropped: fetched again
+    src.series(man, loc(src, man, 5.0, 21.0))                                 # the oldest was dropped: fetched again
     assert product.count("/a/0_2.bin") == 2
     # least recently USED: 0_6 is asked for again (a hit), then a third tile comes: 0_2 goes, 0_6 stays
-    src.series(man, src.locate(man, 5.0, 52.0))
-    src.series(man, src.locate(man, 5.0, 60.0))                                 # tile 0_7
+    src.series(man, loc(src, man, 5.0, 52.0))
+    src.series(man, loc(src, man, 5.0, 60.0))                                 # tile 0_7
     n6 = product.count("/a/0_6.bin")
-    src.series(man, src.locate(man, 5.0, 53.0))
+    src.series(man, loc(src, man, 5.0, 53.0))
     assert product.count("/a/0_6.bin") == n6
-    src.series(man, src.locate(man, 5.0, 22.0))
+    src.series(man, loc(src, man, 5.0, 22.0))
     assert product.count("/a/0_2.bin") == 3
 
 
 def test_two_requests_for_one_tile_fetch_it_once(product):
     src = product.source()
     man = src.manifest()
-    cell_a, cell_b = src.locate(man, 5.0, 20.0), src.locate(man, 5.0, 22.0)     # two cells of one tile
+    cell_a, cell_b = loc(src, man, 5.0, 20.0), loc(src, man, 5.0, 22.0)     # two cells of one tile
     product.delay = 0.15
     out = []
     threads = [threading.Thread(target=lambda c=c: out.append(src.series(man, c)[0, 0])) for c in (cell_a, cell_b, cell_a)]
@@ -392,153 +489,227 @@ def test_two_requests_for_one_tile_fetch_it_once(product):
     assert product.count("/a/0_2.bin") == 1
 
 
-# ------------------------------- tracking ---------------------------------------------
+# ------------------------------- the rank of a row's swells ---------------------------
 
-def table(hours, parts):
-    return [[None if p is None else (p[0], p[1], p[2]) for p in row] for row in PFC.track_partitions(hours, parts)]
-
-
-def test_a_train_keeps_its_column_while_noaa_reorders_by_height():
-    hours = list(range(12))
-    nw = [(1.0 + 0.1 * h, 16.0 - 0.1 * h, 320.0 + h, False) for h in hours]     # grows: 1.0 -> 2.1 m, period decays
-    south = [(1.5, 14.0, 190.0, False)] * 12                                    # steady: NOAA lists the higher one first
-    parts = [sorted([nw[h], south[h]], key=lambda p: -p[0]) for h in hours]
-    assert [p[0][2] for p in parts][:3] == [190.0, 190.0, 190.0] and parts[-1][0][2] == 331.0      # the order flips at 1.5 m
-    cols = table(hours, parts)
-    assert all(row[2:] == [None] * 4 for row in cols)
-    first, second = [row[0] for row in cols], [row[1] for row in cols]
-    assert [p[2] for p in first] == [320.0 + h for h in hours]                  # one train per column, all the way
-    assert [p[2] for p in second] == [190.0] * 12
-    assert sum(p[0] ** 2 for p in first) > sum(p[0] ** 2 for p in second)       # column 1 = the more energetic over the week
+def test_rank_is_height_squared_times_period_the_most_powerful_first():
+    E = (None, None, None)
+    # NOAA station 13130's row: 1.26 m at 6.7 s is listed first, 1.05 m at 12.5 s carries more power
+    assert PFC.rank_groups([(1.26, 6.7, 202), (1.05, 12.5, 155), (0.24, 13.5, 27), E, E, E]) == [
+        (1.05, 12.5, 155), (1.26, 6.7, 202), (0.24, 13.5, 27), E, E, E]
+    assert PFC.swell_power(2.0, 10.0) == 40.0 and PFC.swell_power(None, 10.0) == 0.0 and PFC.swell_power(2.0, None) == 0.0
+    # packed from the left, whatever the holes were; the same length
+    assert PFC.rank_groups([E, (1.0, 10.0, 1), E, (2.0, 10.0, 2), E, E]) == [(2.0, 10.0, 2), (1.0, 10.0, 1), E, E, E, E]
+    # equal power: the higher one first; equal again: the source's order
+    assert PFC.rank_groups([(1.0, 16.0, 1), (2.0, 4.0, 2)]) == [(2.0, 4.0, 2), (1.0, 16.0, 1)]
+    assert PFC.rank_groups([(1.0, 9.0, 1), (1.0, 9.0, 2)]) == [(1.0, 9.0, 1), (1.0, 9.0, 2)]
+    # a system without a period ranks last among the systems, before the empty ones
+    assert PFC.rank_groups([(3.0, None, 1), (0.5, 8.0, 2), E]) == [(0.5, 8.0, 2), (3.0, None, 1), E]
+    assert PFC.rank_groups([]) == [] and PFC.rank_groups([E, E]) == [E, E]
 
 
-def test_gates_period_direction_and_the_hours_since_seen():
-    tr = {"tp": 14.0, "dir": 300.0, "hour": 0}
-    assert PFC._match_cost((1.0, 14.0, 300.0, False), tr, 1) == 0.0
-    assert PFC._match_cost((1.0, 16.0, 300.0, False), tr, 1) == pytest.approx(2.0 / 2.1)  # the gate: 15 % of 14 s
-    assert PFC._match_cost((1.0, 16.2, 300.0, False), tr, 1) is None and PFC._match_cost((1.0, 11.8, 300.0, False), tr, 1) is None
-    assert PFC._match_cost((1.0, 14.0, 330.0, False), tr, 1) == pytest.approx(1.0)       # 30 degrees
-    assert PFC._match_cost((1.0, 14.0, 331.0, False), tr, 1) is None
-    assert PFC._match_cost((1.0, 14.0, 269.0, False), tr, 1) is None
-    assert PFC._match_cost((1.0, 14.0, 10.0, False), dict(tr, dir=350.0), 1) == pytest.approx(20 / 30)   # across north
-    assert PFC._match_cost((1.0, 14.0, 345.0, False), tr, 3) is not None                 # 3 h: the gates x 1.73
-    assert PFC._match_cost((1.0, 14.0, 353.0, False), tr, 3) is None
-    assert PFC._match_cost((1.0, 14.0, 359.0, False), tr, 12) is not None                # x 2 at most
-    assert PFC._match_cost((1.0, 14.0, 1.0, False), tr, 100) is None
-    short = {"tp": 5.0, "dir": 60.0, "hour": 0}
-    assert PFC._match_cost((0.5, 6.0, 60.0, False), short, 1) == pytest.approx(1.0)      # at least 1 s
-    assert PFC._match_cost((0.5, 5.0, 104.0, False), short, 1) is not None               # short periods: 45 degrees
-    assert PFC._match_cost((0.5, 5.0, 106.0, False), short, 1) is None
-    wind = dict(short, wind=True)                                                        # the wind sea is the wind sea
-    assert PFC._match_cost((0.5, 3.1, 100.0, True), wind, 1) is not None
-    assert PFC._match_cost((0.5, 3.1, 100.0, False), wind, 1) is None                    # re-labelled as swell: the ordinary gates
-    assert PFC._match_cost((0.5, 3.1, 160.0, True), wind, 1) is None                     # not through more than a quarter turn
-    assert (PFC.DIE_H, PFC.USED, PFC.NCOL, PFC.WEEK_H) == (12, 4, 6, 168)
+def test_rank_rows_is_the_one_rule_for_stations_swan_and_points():
+    row = ["Thursday, October 1, 2026", "2:00 AM", 4.13, 6.7, 22, 3.44, 12.5, 335, None, None, None, 0.79, 13.5, 207,
+           None, None, None, None, None, None, 5.0, 60, 5.5]
+    rows = A.rank_rows([list(row), ["short"]])
+    assert rows[0][2:20] == [3.44, 12.5, 335, 4.13, 6.7, 22, 0.79, 13.5, 207] + [None] * 9
+    assert rows[0][:2] == row[:2] and rows[0][20:] == row[20:] and rows[1] == ["short"]      # nothing else moves
+    assert A.rank_rows(None) is None and A.rank_rows([]) == []
+    again = A.rank_rows([list(rows[0])])
+    assert again[0] == rows[0]                                                                # ranked rows stay as they are
+    # both bulletin parsers hand their rows through it (the points build theirs in rank order)
+    src = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
+    assert src.count("rank_rows(rows), effective_tz_name, None") == 2
+    rows = A._parse_swan_table_text(open(os.path.join(FIX, "swan_buoy_sample.table")).read(), "51201", "Pacific/Honolulu", None)[3]
+    assert len(rows) > 5
+    for r in rows:                                                                            # PacIOOS's rows, re-ranked
+        live = [g for g in range(6) if r[2 + 3 * g] is not None]
+        pw = [PFC.swell_power(r[2 + 3 * g], r[3 + 3 * g]) for g in live]
+        assert live == list(range(len(live))) and pw == sorted(pw, reverse=True)
 
 
-def test_the_wind_sea_stays_in_its_column_through_a_jump_of_its_period():
-    hours = list(range(8))
-    swell = (1.2, 12.0, 320.0, False)
-    seas = [(0.6, 5.9, 60.0, True), (0.6, 5.9, 62.0, True), (0.6, 3.1, 60.0, True), (0.6, 3.2, 61.0, True),
-            (0.5, 7.0, 60.0, True), (0.5, 6.9, 60.0, True), (0.7, 4.4, 61.0, True), (0.9, 5.5, 53.0, True)]
-    cols = table(hours, [[seas[h], swell] for h in hours])
-    assert [row[1][1] for row in cols] == [s[1] for s in seas] and all(row[0] == swell[:3] for row in cols)
-    assert all(row[2:] == [None] * 4 for row in cols)
+def test_live_buoy_components_are_in_the_same_rank():
+    src = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
+    assert 'components.sort(key=lambda c: (-point_forecast.swell_power(c["height_ft"], c["peak_period_sec"]), -c["height_ft"]))' in src
+    comps = [{"height_ft": 4.1, "peak_period_sec": 6.7, "type": "wind"}, {"height_ft": 3.4, "peak_period_sec": 12.5, "type": "swell"},
+             {"height_ft": 0.8, "peak_period_sec": 13.5, "type": "swell"}]
+    comps.sort(key=lambda c: (-PFC.swell_power(c["height_ft"], c["peak_period_sec"]), -c["height_ft"]))
+    assert [c["height_ft"] for c in comps] == [3.4, 4.1, 0.8]
 
 
-def test_a_train_that_pauses_returns_to_its_column_within_twelve_hours_only():
-    a, b = (1.5, 14.0, 300.0, False), (0.8, 9.0, 200.0, False)
-    hours = list(range(0, 40))
-    parts = [[a, b] if h < 5 or 10 <= h < 15 or h >= 30 else [a] for h in hours]     # b pauses for 5 h, then for 15 h
-    cols = table(hours, parts)
-    col_b = next(c for c in range(6) if cols[0][c] == b[:3])
-    assert all(cols[h][col_b] == b[:3] for h in range(10, 15))                        # back in its own column after 5 h
-    col_a = next(c for c in range(6) if cols[0][c] == a[:3])
-    col_b2 = next(c for c in range(6) if cols[30][c] == b[:3])                        # after 15 h it is a new train: it takes
-    assert col_b2 not in (col_a, col_b)                                               # a column that was never used
-    assert all(cols[h][col_b2] == b[:3] for h in range(30, 40)) and all(cols[h][col_b] is None for h in range(15, 40))
+# ------------------------------- the coast --------------------------------------------
+
+def oahu():
+    """The real full-resolution coast round Oahu (tests/fixtures/coast/oahu-t1.bin) as a land function."""
+    blob = open(os.path.join(FIX, "coast", "oahu-t1.bin"), "rb").read()
+    edges = PFC.decode_coast(blob)
+    return blob, edges, lambda lats, lons: PFC.land_parity(edges, lons, lats)
 
 
-def test_twelve_hours_unseen_is_still_the_train_thirteen_is_a_new_one():
-    a, b = (1.5, 14.0, 300.0, False), (0.8, 9.0, 200.0, False)
-    for back, same in ((26, True), (27, False)):                                      # last seen at hour 14
-        hours = list(range(0, 32))
-        cols = table(hours, [[a, b] if h <= 14 or h >= back else [a] for h in hours])
-        first = next(c for c in range(6) if cols[0][c] == b[:3])
-        again = next(c for c in range(6) if cols[back][c] == b[:3])
-        assert (again == first) is same, back
+def test_the_coast_decoder_and_land_test_agree_with_the_builders():
+    blob, edges, land = oahu()
+    pieces = BC.decode_file(blob)["pieces"]
+    rng = np.random.default_rng(7)
+    lons, lats = rng.uniform(-158.4, -157.5, 3000), rng.uniform(21.2, 21.8, 3000)
+    got = land(lats, lons)
+    want = np.array([BC.point_in_pieces(lo, la, pieces) for lo, la in zip(lons, lats)])
+    assert 300 < int(got.sum()) < 2700 and (got == want).all()
+    assert len(edges[0]) == len(edges[1]) == len(edges[2]) == len(edges[3]) > 1000
+    for bad in (b"", blob[:39], b"XXXX" + blob[4:], blob[:-1], blob + b"\x00", blob[:40] + bytes(len(blob) - 40), blob[:60]):
+        with pytest.raises(ValueError):
+            PFC.decode_coast(bad)
+    empty = BC.encode_file([], 5)
+    assert all(len(e) == 0 for e in PFC.decode_coast(empty))
+    assert not PFC.land_parity(PFC.decode_coast(empty), np.array([1.0]), np.array([1.0])).any()
+    assert PFC.coast_cell_name(21.6, -158.1) == "20_-160" and PFC.coast_cell_name(-0.1, 179.99) == "-5_175"
+    assert PFC.coast_cell_name(-0.1, 180.0) == "-5_-180" and PFC.coast_cell_name(90.0, 0.0) == "85_0" and PFC.coast_cell_name(-90.0, -0.001) == "-90_-5"
 
 
-def test_a_train_is_followed_from_where_it_was_last_seen_not_from_where_it_began():
-    hours = list(range(0, 80))
-    parts = [[(1.0, 18.0 - 0.1 * h, (300.0 + 0.5 * h) % 360, False)] for h in hours]   # 18 s -> 10.1 s, 300 -> 339.5 deg
-    cols = table(hours, parts)
-    assert all(row[0] is not None and row[1:] == [None] * 5 for row in cols)           # one train, one column, all the way
+def test_water_is_the_sea_or_land_within_the_shore_band():
+    _blob, _edges, land = oahu()
+    assert bool(land(np.array([21.667]), np.array([-158.054]))[0]) is True          # the plan's Pipeline id: "land" by 70 m
+    assert PFC.is_water(land, 21.667, -158.054) is True                              # ... and water by the band
+    assert PFC.is_water(land, 21.70, -158.20) is True                                # the open sea
+    assert PFC.is_water(land, 21.500, -158.025) is False                             # Wahiawa, the middle of the island
+    assert PFC.is_water(land, 21.262, -157.805) is False                             # Diamond Head crater, 1 km inland
+    assert PFC.SHORE_M == 300.0 and PFC.SHORE_RINGS_M[-1] == PFC.SHORE_M
+    # the band is SHORE_M wide: a straight coast along the equator, land to the north
+    coast = lambda lats, lons: lats > 0                                              # noqa: E731
+    assert PFC.is_water(coast, 0.0026, 10.0) is True and PFC.is_water(coast, 0.0028, 10.0) is False   # 289 m, 311 m
 
 
-def test_two_trains_close_together_are_paired_by_the_least_change():
-    hours = list(range(0, 10))
-    one = [(1.0 + 0.2 * h, 12.0, 300.0, False) for h in hours]                         # grows past the other at hour 3
-    two = [(1.5, 13.0, 312.0, False)] * 10                                            # within each other's gates
-    parts = [sorted([one[h], two[h]], key=lambda p: -p[0]) for h in hours]            # NOAA's order: by height
-    assert parts[0][0][1] == 13.0 and parts[-1][0][1] == 12.0
-    cols = table(hours, parts)
-    assert len({row[0][1] for row in cols}) == 1 and len({row[1][1] for row in cols}) == 1   # each column keeps its period
+def test_the_path_to_the_cell_must_be_water():
+    cell = {"lat": 0.0, "lon": 10.3, "km": PFC._km(0.0, 10.0, 0.0, 10.3), "half": 0.125}
+    sea = lambda lats, lons: np.zeros(len(lats), dtype=bool)                         # noqa: E731
+    assert PFC.path_clear(sea, 0.0, 10.0, cell) is True
+    wall = lambda w, e: (lambda lats, lons: (lons > w) & (lons < e))                 # noqa: E731
+    assert PFC.path_clear(wall(10.10, 10.11), 0.0, 10.0, cell) is False              # 1.1 km of land between
+    assert PFC.path_clear(wall(10.100, 10.103), 0.0, 10.0, cell) is True             # a rock: at most one sample
+    rocks = lambda lats, lons: ((lons > 10.100) & (lons < 10.103)) | ((lons > 10.150) & (lons < 10.153))   # noqa: E731
+    assert PFC.path_clear(rocks, 0.0, 10.0, cell) is True                            # two rocks apart are not land in a row
+    assert PFC.path_clear(wall(9.9, 10.002), 0.0, 10.0, cell) is True                # the shore band at the point is not looked at
+    assert PFC.path_clear(wall(9.9, 10.006), 0.0, 10.0, cell) is False               # ... beyond it, it is
+    assert PFC.path_clear(wall(10.25, 10.40), 0.0, 10.0, cell) is True               # the middle of the cell's own box is not looked at
+    assert PFC.path_clear(wall(10.20, 10.40), 0.0, 10.0, cell) is False              # ... its outer half is
+    assert PFC.PATH_LAND_RUN == 2 and PFC.PATH_STEP_KM == 0.25 and PFC.PATH_CELL_SKIP == 0.5
+    far = {"lat": 0.0, "lon": -179.8, "km": PFC._km(0.0, 179.9, 0.0, -179.8), "half": 0.125}    # across the antimeridian
+    seen = []
+    PFC.path_clear(lambda lats, lons: seen.append(lons.copy()) or np.zeros(len(lats), dtype=bool), 0.0, 179.9, far)
+    assert seen[0].min() > 179.9 and seen[0].max() < 180.3
+    assert PFC.path_clear(sea, 0.0, 10.0, dict(cell, lon=10.001, km=0.1)) is True    # the cell is at the point
 
 
-def test_a_new_train_takes_the_column_that_has_been_free_the_longest():
-    a = (2.0, 16.0, 300.0, False)
-    b, c, d, e = (0.8, 9.0, 200.0, False), (0.7, 12.0, 100.0, False), (0.6, 6.0, 40.0, False), (0.5, 20.0, 250.0, False)
-    hours = list(range(0, 60))
-    parts = []
-    for h in hours:
-        step = [a]
-        if h <= 4:
-            step.append(b)                                                            # b ends first,
-        if h <= 9:
-            step.append(c)                                                            # then c
-        if h >= 30:
-            step.append(d)                                                            # d arrives: a column never used
-        if h >= 40:
-            step.append(e)                                                            # e arrives: b's column (free since hour 4)
-        parts.append(step)
-    cols = table(hours, parts)
-    col = lambda p, h: next(k for k in range(6) if cols[h][k] == p[:3])               # noqa: E731
-    assert len({col(a, 0), col(b, 0), col(c, 0), col(d, 30)}) == 4
-    assert col(e, 40) == col(b, 0) and col(e, 59) == col(b, 0)
+def test_locate_refuses_land_and_sheltered_water_and_takes_the_cell_over_water():
+    # grid b: half a degree; the model's land (and the coast's) is 100..110 E; sea cells end at 99.5 E
+    p = Product()
+    src = p.source()
+    man = src.manifest()
+    assert src.locate(man, 20.0, 104.0) == (None, "land")
+    assert src.locate(man, 60.0, 20.0) == (None, "nodata")                           # water, and no model cell within reach
+    cell, why = src.locate(man, 20.0, 99.75)
+    assert why is None and (cell["grid"], cell["lat"], cell["lon"]) == ("b", 20.0, 99.5)
+    near = Product(land=((99.8, 110.0, -10.0, 30.0),)).source()                      # a shore 31 km from the cell at 99.5 E
+    nman = near.manifest()
+    assert near.locate(nman, 20.0, 99.802)[0]["lon"] == 99.5                         # 200 m "inland": the shore band
+    assert near.locate(nman, 20.0, 99.804) == (None, "land")                         # 400 m
+    # a spit between the point and the only cell within reach: sheltered
+    q = Product(land=LAND + ((99.63, 99.70, 15.0, 25.0),))
+    src = q.source()
+    assert src.locate(src.manifest(), 20.0, 99.75) == (None, "sheltered")
+    # ... with a second cell within reach the other way, that one is taken (the nearer one lies beyond land)
+    r = Product(land=LAND + ((99.31, 99.37, 15.0, 25.0),))                           # a wall between 99.27 E and the cell at 99.5 E
+    src = r.source()
+    man = src.manifest()
+    masks = {"b": src.mask(man, GRIDS[1])}
+    assert PFC.nearest_sea_cell(man["grids"], masks, 20.0, 99.27)["lon"] == 99.5     # the nearest: 24 km, beyond the wall
+    cell, why = src.locate(man, 20.0, 99.27)
+    assert why is None and (cell["lat"], cell["lon"]) == (20.0, 99.0) and 27 < cell["km"] < 29   # the next one, over water
+    cells = PFC.sea_cells_in_reach(man["grids"], {"a": src.mask(man, GRIDS[0])}, 5.2, 20.3, reach_km=200.0)
+    assert [c["km"] for c in cells] == sorted(c["km"] for c in cells) and (cells[0]["row"], cells[0]["col"]) == (5, 20)
+    assert cells[0]["half"] == 0.5 and len(cells) > 4
 
 
-def test_never_more_than_four_columns_and_nothing_is_lost():
-    rng = np.random.default_rng(5)
-    hours = list(range(0, 121)) + list(range(123, 385, 3))
-    parts = []
-    for h in hours:
-        n = int(rng.integers(0, 5))
-        parts.append([(float(rng.uniform(0.1, 3)), float(rng.uniform(3, 20)), float(rng.uniform(0, 360)), i == 0 and n > 1) for i in range(n)])
-    cols = PFC.track_partitions(hours, parts)
-    assert len(cols) == len(hours) and all(len(row) == PFC.NCOL for row in cols)
-    for row, step in zip(cols, parts):
-        assert row[4] is None and row[5] is None
-        assert sorted(p for p in row if p is not None) == sorted(step)                # every partition, once
-    assert PFC.track_partitions([], []) == [] and PFC.track_partitions([0], [[]]) == [[None] * 6]
+def test_a_point_is_never_served_untested(product):
+    """The coast data that cannot be read is "temporarily unavailable" (Retry), never a forecast and never final."""
+    lat, lon = 22.0, 104.0                                                           # land: needs its coast cell
+    for breaker in (lambda p: p.overrides.update({f"{PFC.COAST_PREFIX}/index.json": b"{"}),
+                    lambda p: p.overrides.update({f"{PFC.COAST_PREFIX}/index.json": b"[" * 100000}),
+                    lambda p: p.overrides.update({f"{PFC.COAST_PREFIX}/index.json": json.dumps({"format": "coast-v1", "q": 10000, "tier1": {"cell": 5, "dir": "f", "cells": {"../x": [50, 4]}}}).encode()}),
+                    lambda p: p.overrides.update({f"{PFC.COAST_PREFIX}/f/20_100.bin": b"CST1" + bytes(60)}),
+                    lambda p: p.overrides.update({f"{PFC.COAST_PREFIX}/f/20_100.bin": p.coast["20_100"][:-1]}),
+                    # a WHOLE cell, but not the one the index lists (an empty one: it would turn the land into water)
+                    lambda p: p.overrides.update({f"{PFC.COAST_PREFIX}/f/20_100.bin": BC.encode_file([], 5)}),
+                    lambda p: setattr(p, "fail", lambda key: "coast" in key)):
+        p = Product()
+        src = p.source()
+        man = src.manifest()
+        breaker(p)
+        with pytest.raises(PFC.PointError, match="temporarily unavailable"):
+            src.locate(man, lat, lon)
+        p.overrides.clear()
+        p.fail = None
+        assert src.locate(man, lat, lon) == (None, "land")                           # nothing bad was kept
+    p = Product()
+    src = p.source()
+    man = src.manifest()
+    for _ in range(3):
+        src.locate(man, 22.0, 104.0)
+        src.locate(man, 23.0, 104.5)
+    assert p.count("coast/v1/index.json") == 1 and p.count("f/20_100.bin") == 1      # read once, kept
+    assert src.stats()["coast"] == 1 and src.stats()["coast_bytes"] == 4 * 4 * 8
+    src.locate(man, 12.0, 104.0)                                                     # a second cell (10_100): both kept
+    assert src.stats()["coast"] == 2 and src.stats()["coast_bytes"] == 2 * 4 * 4 * 8
 
 
-def test_columns_are_ordered_by_energy_over_the_first_week():
-    small, late = (0.5, 10.0, 200.0, False), (3.0, 15.0, 300.0, False)
-    hours = list(range(0, 121)) + list(range(123, 385, 3))
-    parts = [[small] if h <= 168 else [small, late] for h in hours]                   # the big one only after day 7
-    cols = table(hours, parts)
-    assert cols[0][0] == small[:3] and cols[-1][1] == late[:3]                        # the first week decides
-    parts = [[small, late] if 100 <= h <= 168 else [small] for h in hours]            # three days of the big one inside the week
-    cols = table(hours, parts)
-    assert cols[0][1] == small[:3] and cols[hours.index(110)][0] == late[:3]
-    parts = [[small, (0.5, 15.0, 300.0, False)] for h in hours]                       # equal energy: the earlier column first
-    assert table(hours, parts)[0][:2] == [small[:3], (0.5, 15.0, 300.0)]
-    # a 3-hourly step stands for three hours: 16 steps of 1.2 m (123..168 h) outweigh 60 hourly steps of 1.0 m
-    x, y = (1.0, 10.0, 200.0, False), (1.2, 15.0, 300.0, False)
-    parts = [[x] if h < 60 else [y] if 123 <= h <= 168 else [] for h in hours]
-    cols = table(hours, parts)
-    assert cols[hours.index(150)][0] == y[:3] and cols[0][1] == x[:3]
+def test_the_coast_cache_is_capped_by_bytes(product, monkeypatch):
+    monkeypatch.setattr(PFC, "COAST_CACHE_BYTES", 4 * 4 * 8 + 10)                    # room for one of the test's cells
+    src = product.source()
+    man = src.manifest()
+    for lat in (22.0, 12.0, 2.0):
+        assert src.locate(man, lat, 104.0) == (None, "land")
+        assert src.stats()["coast"] == 1 and src.stats()["coast_bytes"] == 4 * 4 * 8
+    assert product.count("f/20_100.bin") == 1
+    src.locate(man, 22.0, 104.0)                                                     # the oldest was dropped: read again
+    assert product.count("f/20_100.bin") == 2
+
+
+def test_a_bad_tile_body_is_not_kept(product):
+    """G22 A-3: the tile was cached before it was checked; the next request must fetch again."""
+    key = f"{PFC.PREFIX}/{RUN}/a/0_2.bin"
+    good = product.body(key)
+    for bad in (good[:len(good) // 2], b"<html>error</html>", b"", product.body(f"{PFC.PREFIX}/{RUN}/a/0_3.bin")):
+        p = Product()
+        src = p.source()
+        man = src.manifest()
+        cell = loc(src, man, 5.2, 20.3)
+        p.overrides[key] = bad
+        with pytest.raises(PFC.PointError):
+            src.series(man, cell)
+        assert src.stats()["tiles"] == 0 and src.stats()["tile_bytes"] == 0
+        del p.overrides[key]
+        assert src.series(man, cell)[0, 0] == code(GRIDS[0], "hs", 0, 5, 20) and p.count("/a/0_2.bin") == 2
+
+
+def test_a_request_with_an_old_manifest_does_not_refill_the_caches(product):
+    """G22 A-11: at a run change, whoever still holds the old manifest gets its answer, and nothing of the old run
+    goes back into the caches."""
+    now = [1000.0]
+    src = product.source(clock=lambda: now[0])
+    old = src.manifest()
+    newer = Product(run="2026100118")
+    product.run, product.mkey = newer.run, newer.mkey
+    now[0] += PFC.POINTER_TTL_S + 1
+    new = src.manifest()
+    assert new["run"] == "2026100118" and src.current_run() == "2026100118"
+    product.run, product.mkey = RUN, f"{PFC.PREFIX}/{RUN}/manifest-20261001T174000Z.json"      # the old run's objects are still there
+    cell = loc(src, old, 5.2, 20.3)
+    assert src.series(old, cell)[0, 0] == code(GRIDS[0], "hs", 0, 5, 20)
+    assert src.stats()["masks"] == 0 and src.stats()["tiles"] == 0 and src.stats()["cells"] == 0
+
+
+def test_json_nested_too_deep_is_an_unavailable_product_not_a_crash(product):
+    product.overrides[f"{PFC.PREFIX}/latest.json"] = b"[" * 200000
+    with pytest.raises(PFC.PointError, match="temporarily unavailable"):
+        product.source().manifest()
 
 
 def test_partitions_at_needs_all_three_values():
@@ -574,6 +745,11 @@ def test_point_rows_have_the_bulletin_parsers_shape():
     want = sorted((round(p[0] * 3.28084, 2), round(p[1], 1), int(p[2])) for p in PFC.partitions_at(codes, 0))
     assert got == want and all(isinstance(g[2], int) and 0 <= g[2] < 360 for g in got)
     assert A._swell_groups(rows) == [0, 1, 2, 3] and A._swell_groups(rows, days=7) == [0, 1, 2, 3]
+    for r in rows:                                                                     # every row in rank order, packed from the left
+        live = [g for g in range(6) if r[2 + 3 * g] is not None]
+        power = [PFC.swell_power(r[2 + 3 * g], r[3 + 3 * g]) for g in live]
+        assert live == list(range(len(live))) and power == sorted(power, reverse=True)
+    assert any(r[2] < r[5] for r in rows if r[5] is not None)                          # ... which is not height order
     ny = PFC.point_rows(codes, steps, datetime(2026, 10, 1, 12), pytz.timezone("America/New_York"))
     assert ny[0][:2] == ["Thursday, October 1, 2026", "8:00 AM"] and [r[2:] for r in ny] == [r[2:] for r in rows]
     blank = codes.copy()
@@ -603,7 +779,20 @@ def _bulletin(text, cycle_hour=12):
     return rows
 
 
-def test_the_real_cell_agrees_with_noaas_bulletin_and_the_tracking_is_smoother_than_noaas_order():
+def test_hour_slots_are_every_hour_of_the_run_with_the_rows_where_they_belong():
+    tz = pytz.timezone("Pacific/Honolulu")
+    slots = PFC.hour_slots([0, 1, 2, 3, 6, 9, 120, 123, 384], datetime(2026, 10, 1, 12), tz)
+    assert len(slots) == 385 and [i for _d, _t, i in slots[:10]] == [0, 1, 2, 3, None, None, 4, None, None, 5]
+    assert slots[0][:2] == ("Thursday, October 1, 2026", "2:00 AM") and slots[4][:2] == ("Thursday, October 1, 2026", "6:00 AM")
+    assert slots[384] == ("Saturday, October 17, 2026", "2:00 AM", 8) and slots[120][2] == 6 and slots[123][2] == 7
+    assert sum(i is not None for _d, _t, i in slots) == 9
+    syd = PFC.hour_slots(list(range(0, 80)), datetime(2026, 10, 1, 12), pytz.timezone("Australia/Sydney"))
+    oct4 = [t for d, t, _i in syd if d == "Sunday, October 4, 2026"]
+    assert len(oct4) == 23 and "2:00 AM" not in oct4 and oct4[:3] == ["12:00 AM", "1:00 AM", "3:00 AM"]   # the clocks go forward
+    assert PFC.hour_slots([5], datetime(2026, 10, 1, 12), pytz.utc) == [("Thursday, October 1, 2026", "5:00 PM", 0)]
+
+
+def test_the_real_cell_agrees_with_noaas_bulletin():
     """NOAA station 51201 (Waimea Bay) and the model cell 4.8 km from it, the same run. The bulletin comes from
     the model's spectrum at the buoy, the product from the gridded partitions of the cell: the same waves."""
     fx = json.load(open(os.path.join(FIX, "point_51201_2026100112.json")))
@@ -629,20 +818,6 @@ def test_the_real_cell_agrees_with_noaas_bulletin_and_the_tracking_is_smoother_t
     assert max(hs_err) <= 0.05 and sum(hs_err) / len(hs_err) < 0.02                    # the combined height, every step
     assert n > 500 and hit / n > 0.95 and late_hit / late_n > 0.9                      # the partitions, also past +120 h
     assert dt / hit < 0.05 and dh / hit < 0.02                                         # same peak period, same height
-    cols = PFC.track_partitions(steps, parts)
-
-    def jumps(tab, ncol):
-        t = d = k = 0
-        for a, b in zip(tab, tab[1:]):
-            for c in range(ncol):
-                if c < len(a) and c < len(b) and a[c] is not None and b[c] is not None:
-                    t += abs(a[c][1] - b[c][1])
-                    d += dd(a[c][2], b[c][2])
-                    k += 1
-        return t / k, d / k
-    tracked, raw = jumps(cols, 6), jumps(parts, 4)
-    assert tracked[0] < raw[0] / 2 and tracked[1] < raw[1] / 2                         # period and direction jumps per step: halved
-    assert all(row[4] is None and row[5] is None for row in cols)
 
 
 # ------------------------------- the service ------------------------------------------
@@ -651,7 +826,9 @@ def test_the_real_cell_agrees_with_noaas_bulletin_and_the_tracking_is_smoother_t
 def api(product, monkeypatch):
     monkeypatch.setattr(A, "POINTS", product.source())
     monkeypatch.setattr(A, "_POINT_CACHE", {})
-    monkeypatch.setattr(A, "_buoy_tz_cached", lambda lat, lon: "Pacific/Honolulu")
+    monkeypatch.setattr(A, "_POINT_BUILD_SINCE", [])
+    monkeypatch.setattr(A, "_point_tz", lambda lat, lon: "Pacific/Honolulu")
+    monkeypatch.setenv("POINTS_ROOT", "https://bucket")
     client = A.app.test_client()
 
     def get(station, **params):
@@ -672,43 +849,60 @@ def test_api_forecast_for_a_point(api):
     assert {k: p[k] for k in ("id", "lat", "lon", "cell_lat", "cell_lon", "grid", "run", "run_utc", "published_utc")} == {
         "id": pid, "lat": 5.2, "lon": 20.3, "cell_lat": 5.0, "cell_lon": 20.0, "grid": "a", "run": RUN,
         "run_utc": "2026-10-01T12:00:00Z", "published_utc": "2026-10-01T17:40:00Z"}
-    assert 20 < p["cell_km"] < 45 and p["age_hours"] > 0
+    assert p["cell_km"] == round(PFC._km(5.2, 20.3, 5.0, 20.0), 1)                                  # km, one decimal
+    hours = (datetime.utcnow() - datetime(2026, 10, 1, 12)).total_seconds() / 3600
+    assert abs(p["age_hours"] - hours) < 0.2                                     # HOURS since the cycle (G22 A-8 S119)
     assert d["graph_header"] == {"cycle": "20261001 12 UTC", "tz": "Pacific/Honolulu",
                                  "location": f"5.200N 20.300E (model cell 5.00N 20.00E, {p['cell_km']:.0f} km away)"}
     g = d["graph_data"]
-    assert len(g["labels"]) == len(STEPS) and g["labels"][0] == "Thursday, October 1, 2026 2:00 AM" and g["units"] == "ft"
+    # the graphs' time axis: one slot per HOUR of the run, the rows where they belong, nothing between (G22 B-1)
+    assert len(g["labels"]) == 385 and g["labels"][0] == "Thursday, October 1, 2026 2:00 AM" and g["units"] == "ft"
+    assert g["labels"][4] == "Thursday, October 1, 2026 6:00 AM" and g["labels"][-1] == "Saturday, October 17, 2026 2:00 AM"
+    filled = [i for i, v in enumerate(g["height"]["combined"]) if v is not None]
+    assert filled == STEPS and [i for i, v in enumerate(g["period"]["s1"]) if v is not None] == STEPS
+    assert "_slots" not in p and all(not k.startswith("_") for k in p)
     assert g["swells"] == ["s1", "s2", "s3", "s4"] and g["cycle"] == "Cycle : 20261001 12 UTC"
     assert g["height"]["combined"][0] == round(code(GRIDS[0], "hs", 0, 5, 20) / 100 * 3.28084, 2)
-    assert g["height"]["s5"] == [None] * len(STEPS)
+    assert g["height"]["s5"] == [None] * 385
+    for i in STEPS:                                                               # the systems of a row in rank order
+        power = [g["height"][k][i] ** 2 * g["period"][k][i] for k in g["swells"] if g["height"][k][i] is not None]
+        assert power == sorted(power, reverse=True) and len(power) >= 3
     html = d["table_html"]
     assert html.count("<tr>") == 2 + len(STEPS) and [f"Swell {n}" in html for n in range(1, 7)] == [True] * 4 + [False] * 2
     m = get(pid, compact=1, unit="Metric").get_json()
     assert m["graph_data"]["units"] == "m" and m["graph_data"]["height"]["combined"][0] == round(code(GRIDS[0], "hs", 0, 5, 20) / 100, 2)
-    assert len(product.calls) == 4                                             # pointer, manifest, one mask, one tile: once
+    assert len(product.calls) == 5                                             # pointer, manifest, coast index, one mask, one tile: once
     ny = get(pid, tz="America/New_York").get_json()
     assert ny["tz_label"] == "America/New_York" and ny["graph_data"]["labels"][0] == "Thursday, October 1, 2026 8:00 AM"
     assert get(pid, tz="Not/AZone").get_json()["tz_label"] == "Pacific/Honolulu"
-    assert len(product.calls) == 4 and len(A._POINT_CACHE) == 2
+    assert len(product.calls) == 5 and len(A._POINT_CACHE) == 2
 
 
-def test_api_forecast_refuses_land_bad_ids_and_reports_an_unreachable_bucket(api):
+def test_api_forecast_refuses_land_bad_ids_and_reports_an_unreachable_bucket(api, monkeypatch):
     product, get = api
     d = get(PFC.point_id(5.0, 104.0)).get_json()
-    assert d["error"] == A.POINT_NO_DATA == "No model data here: land, ice or outside coverage"
-    assert d["final"] is True                                                     # the page offers no Retry for it
+    assert d["error"] == PFC.REFUSALS["land"] == "That point is on land or inland water. Pick a point on the sea."
+    assert d["final"] is True and d["reason"] == "land"                           # the page offers no Retry for it
     assert d["table_html"] is None and d["point"] is None and d["graph_data"] is None and "busy" not in d
-    assert get(PFC.point_id(60.0, 20.0)).get_json()["error"] == A.POINT_NO_DATA   # outside every grid
+    d = get(PFC.point_id(60.0, 20.0)).get_json()                                  # water, outside every grid
+    assert d["error"] == A.POINT_NO_DATA == PFC.REFUSALS["nodata"] and (d["final"], d["reason"]) == (True, "nodata")
+    monkeypatch.setattr(A, "POINTS", Product(land=LAND + ((99.63, 99.70, 15.0, 25.0),)).source())
+    d = get(PFC.point_id(20.0, 99.75)).get_json()                                 # a spit between the point and its only cell
+    assert d["error"] == PFC.REFUSALS["sheltered"] and (d["final"], d["reason"], d["point"]) == (True, "sheltered", None)
+    monkeypatch.setattr(A, "POINTS", product.source())
     assert len(A._POINT_CACHE) == 0                                               # a refusal is not kept
+    assert len({PFC.REFUSALS[k] for k in ("land", "sheltered", "nodata")}) == 3   # three answers, three texts
     for bad in ("pt_05200N_20300E", "pt_5200N", "pt_0S_0E"):
         d = get(bad).get_json()
-        assert d["error"] == "Invalid forecast point" and d["point"] is None and d["final"] is True
-    assert get("pt_5200N_20300E!").get_json()["error"] == "Invalid station id"
-    n = len(product.calls)
+        assert d["error"] == "Invalid forecast point" and d["point"] is None and (d["final"], d["reason"]) == (True, "invalid")
+    d = get("pt_5200N_20300E!").get_json()
+    assert d["error"] == "Invalid station id" and d["final"] is True              # no Retry for an id that can never be right
+    n = product.count("/a/0_2.bin")
     product.fail = lambda key: key.endswith("_2.bin")
     d = get(PFC.point_id(5.2, 20.3)).get_json()
     assert d["error"] == "Forecast points are temporarily unavailable" and d["table_html"] is None and "final" not in d
     product.fail = None
-    assert get(PFC.point_id(5.2, 20.3)).get_json()["error"] is None and len(product.calls) == n + 2
+    assert get(PFC.point_id(5.2, 20.3)).get_json()["error"] is None and product.count("/a/0_2.bin") == n + 2
 
 
 def test_points_are_off_without_a_bucket_address(monkeypatch):
@@ -718,6 +912,12 @@ def test_points_are_off_without_a_bucket_address(monkeypatch):
     assert A._points_root() == ""
     d = A.app.test_client().get("/api/forecast?station=pt_5200N_20300E").get_json()
     assert d["error"] == "Forecast points are not available on this server" and d["table_html"] is None
+    assert (d["final"], d["reason"]) == (True, "off")                             # no Retry: nothing will change (G22 A-16)
+    monkeypatch.setenv("POINTS_ROOT", "  https://example.org/  ")
+    assert A._points_root() == "https://example.org"                              # spaces round an address are not part of it
+    monkeypatch.delenv("POINTS_ROOT")
+    monkeypatch.setenv("MODEL_FRAMES_BASE", " https://models.allshoresurf.com/gfswave/0p25/v1 ")
+    assert A._points_root() == "https://models.allshoresurf.com"
     monkeypatch.setenv("MODEL_FRAMES_BASE", "https://models.allshoresurf.com/gfswave/0p25/v1/")
     assert A._points_root() == "https://models.allshoresurf.com"
     monkeypatch.setenv("MODEL_FRAMES_BASE", "https://pub-x.r2.dev/other/prefix")
@@ -862,7 +1062,7 @@ def test_station_forecasts_are_untouched(monkeypatch):
 
 def test_the_overlays_zone_for_a_point_is_the_points_civil_zone(monkeypatch):
     seen = []
-    monkeypatch.setattr(A, "_buoy_tz_cached", lambda lat, lon: seen.append((lat, lon)) or "Pacific/Pago_Pago")
+    monkeypatch.setattr(A, "_point_tz", lambda lat, lon: seen.append((lat, lon)) or "Pacific/Pago_Pago")
     assert A._effective_tz_name("pt_14400S_170700W", None) == "Pacific/Pago_Pago" and seen == [(-14.4, -170.7)]
     assert A._effective_tz_name("pt_14400S_170700W", "America/New_York") == "America/New_York"
     assert A._effective_tz_name("pt_014400S_170700W", None) == "UTC"               # not a point id: the old rule
@@ -879,8 +1079,11 @@ def test_the_page_renders_for_a_point_without_javascript(api):
 
 def test_points_fetch_caps_the_body_and_refuses_other_statuses(monkeypatch):
     class Resp:
-        def __init__(self, status, chunks):
-            self.status_code, self.chunks = status, chunks
+        def __init__(self, status, chunks, headers=None):
+            self.status_code, self.chunks, self.headers, self.closed = status, chunks, headers or {}, 0
+
+        def close(self):
+            self.closed += 1
 
         def iter_content(self, n):
             return iter(self.chunks)
@@ -895,9 +1098,32 @@ def test_points_fetch_caps_the_body_and_refuses_other_statuses(monkeypatch):
     def get(url, timeout=None, stream=False):
         seen.update(url=url, timeout=timeout, stream=stream)
         return seen["resp"]
-    monkeypatch.setattr(A.HTTP, "get", get)
+    monkeypatch.setattr(A._POINT_HTTP, "get", get)
+    monkeypatch.setattr(A.HTTP, "get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("the shared session retries: not for points")))
     seen["resp"] = Resp(200, [b"ab", b"cd"])
-    assert A._points_fetch("https://bucket/x", 4) == b"abcd" and seen["stream"] is True and seen["timeout"] == (4, 10)
+    assert A._points_fetch("https://bucket/x", 4) == b"abcd" and seen["stream"] is True and seen["timeout"] == (3, 6)
+    assert not any(isinstance(a.max_retries.total, int) and a.max_retries.total > 0 for a in A._POINT_HTTP.adapters.values())   # one attempt
+    assert A._POINT_FETCH_MAX_S == 8 and seen["resp"].closed == 0
+    seen["resp"] = Resp(200, [b"ab", b"c"], {"Content-Length": "4"})                # a body cut short (G22 A-3)
+    with pytest.raises(IOError, match="cut short"):
+        A._points_fetch("https://bucket/x", 9)
+    seen["resp"] = Resp(200, [b"abc"], {"Content-Length": "9", "Content-Encoding": "br"})   # a compressed body: its length is the wire's
+    assert A._points_fetch("https://bucket/x", 9) == b"abc"
+
+    class Slow(Resp):                                                               # a body that trickles: closed at the cap
+        def iter_content(self, n):
+            yield b"a"
+            for _ in range(100):
+                if self.closed:
+                    raise IOError("closed")
+                time.sleep(0.02)
+            yield b"b"
+    monkeypatch.setattr(A, "_POINT_FETCH_MAX_S", 0.1)
+    seen["resp"] = Slow(200, [])
+    t0 = time.time()
+    with pytest.raises(IOError, match="closed"):
+        A._points_fetch("https://bucket/x", 9)
+    assert time.time() - t0 < 1.0
     seen["resp"] = Resp(200, [b"ab", b"cde"])
     with pytest.raises(IOError, match="too large"):
         A._points_fetch("https://bucket/x", 4)
@@ -905,6 +1131,132 @@ def test_points_fetch_caps_the_body_and_refuses_other_statuses(monkeypatch):
         seen["resp"] = Resp(status, [b"x"])
         with pytest.raises(IOError, match=str(status)):
             A._points_fetch("https://bucket/x", 4)
+
+
+def test_a_points_time_zone_is_its_own_waters_then_the_nearest_stations(monkeypatch):
+    """Owner, 2026-10-02: the nearest station's zone (G22 B-2: 340 km north of Oahu showed Etc/GMT+11, an hour off
+    the station next to it)."""
+    coords = {"HNL01": {"lat": 24.0, "lon": -158.0}, "46006": {"lat": 40.8, "lon": -137.48}, "MID": {"lat": 0.0, "lon": -140.0},
+              "FAR": {"lat": -40.0, "lon": 100.0}}
+    zones = {"HNL01": "Pacific/Honolulu", "46006": "America/Los_Angeles", "MID": "Etc/GMT+9"}
+    own = {}
+    monkeypatch.setattr(A, "load_station_coords", lambda: coords)
+    monkeypatch.setattr(A, "get_station_tz", lambda sid: zones.get(sid))
+    monkeypatch.setattr(A, "_safe_tzname_for_latlon", lambda lat, lon: own.get((lat, lon), "Etc/GMT+11"))
+    monkeypatch.setattr(A, "_nearest_civil_tz", lambda lat, lon: "ring:%s" % lat)
+    monkeypatch.setattr(A, "_POINT_TZ_CACHE", A.OrderedDict())
+    assert A._point_tz(24.547, -157.896) == "Pacific/Honolulu"                    # 61 km from HNL01
+    assert A._point_tz(40.8, -137.48) == "America/Los_Angeles"                    # at the station
+    own[(21.3, -157.9)] = "Pacific/Honolulu"
+    own[(36.0, -6.5)] = "Europe/Madrid"
+    assert A._point_tz(36.0, -6.5) == "Europe/Madrid"                             # the point's own civil waters come first
+    assert A._point_tz(0.5, -140.0) == "ring:0.5"                                 # the nearest station is nautical itself: the old rule
+    assert A._point_tz(-60.0, 0.0) == "ring:-60.0"                                # no station within 1,000 km
+    assert A._nearest_station_tz(33.5, -158.0) is None and A._nearest_station_tz(32.9, -158.0) == "Pacific/Honolulu"   # 1,056 km, 990 km
+    assert A._nearest_station_tz(30.0, -150.0) is None                            # 667 km north and 770 km east of HNL01: 1,040 km away
+    assert A.POINT_TZ_STATION_KM == 1000.0
+    own[(1.0, 1.0)] = "UTC"                                                       # the lookup's own failure value is not a zone to keep
+    assert A._point_tz(1.0, 1.0) == "ring:1.0"
+    # the overlay's valid-time zone is the table's
+    monkeypatch.setattr(A, "_POINT_TZ_CACHE", A.OrderedDict())
+    assert A._effective_tz_name("pt_24547N_157896W", None) == "Pacific/Honolulu"
+    # bounded: any visitor can ask for any point (G22 A-9)
+    monkeypatch.setattr(A, "_TZ_CACHE_MAX", 5)
+    for k in range(40):
+        A._point_tz(10.0 + k, 20.0)
+        A._buoy_tz_cached(10.0 + k, 20.0)
+    assert len(A._POINT_TZ_CACHE) == 5 and len(A._BUOY_TZ_CACHE) <= 5 + 600
+
+
+def test_busy_is_said_at_once_when_both_builds_are_stuck_and_one_deadline_covers_both_waits(api, monkeypatch):
+    """G22 A-6: with both slots held by hanging fetches every further request used to wait its two seconds too, and
+    a request could wait twice (for the point's lock, then for a slot)."""
+    product, get = api
+    monkeypatch.setattr(A, "_POINT_BUILD_WAIT_S", 0.4)
+    gate = threading.Event()
+    real = product.fetch
+
+    def slow(url, max_bytes):
+        if "/a/0_" in url:
+            gate.wait(5)
+        return real(url, max_bytes)
+    monkeypatch.setattr(A, "POINTS", PFC.PointSource(lambda: "https://bucket", slow))
+    out = {}
+    th = [threading.Thread(target=lambda k=k, lon=lon: out.update({k: get(PFC.point_id(5.0, lon)).get_json()})) for k, lon in (("a", 20.0), ("b", 30.0))]
+    for t in th:
+        t.start()
+    time.sleep(0.15)
+    t0 = time.time()
+    d = get(PFC.point_id(5.0, 20.0)).get_json()                                   # the same point as a build in progress, slots full
+    waited = time.time() - t0
+    assert d["error"] == A.POINT_BUSY and d["busy"] is True and "final" not in d and 0.2 < waited < 0.6   # ONE wait, not two
+    time.sleep(0.4)                                                               # both builds now older than the wait
+    t0 = time.time()
+    d = get(PFC.point_id(5.0, 40.0)).get_json()
+    assert d["error"] == A.POINT_BUSY and time.time() - t0 < 0.15                 # at once
+    gate.set()
+    for t in th:
+        t.join()
+    assert out["a"]["error"] is None and out["b"]["error"] is None and A._POINT_BUILD_SINCE == [] and A._POINT_INFLIGHT == {}
+    assert get(PFC.point_id(5.0, 40.0)).get_json()["error"] is None
+
+
+def test_one_deadline_covers_the_wait_for_the_point_and_the_wait_for_a_slot(api, monkeypatch):
+    """A request that waited for another request's attempt at the same point has only the REST of its time for a
+    build slot (it used to get the whole wait a second time: G22 A-6, 3.9 s before "busy")."""
+    product, get = api
+    monkeypatch.setattr(A, "_POINT_BUILD_WAIT_S", 0.6)
+    gate = threading.Event()
+    real = product.fetch
+    monkeypatch.setattr(A, "POINTS", PFC.PointSource(lambda: "https://bucket", lambda url, n: (gate.wait(5) if "/a/0_" in url else None) or real(url, n)))
+    out = {}
+
+    def ask(k, lon):
+        t0 = time.time()
+        out[k] = (get(PFC.point_id(5.0, lon)).get_json(), time.time() - t0)
+    th = [threading.Thread(target=ask, args=a) for a in (("b", 30.0), ("d", 40.0))]   # both slots taken
+    for t in th:
+        t.start()
+    time.sleep(0.05)
+    x1 = threading.Thread(target=ask, args=("x1", 50.0))                              # waits for a slot, holding its point
+    x1.start()
+    time.sleep(0.2)
+    ask("x2", 50.0)                                                                   # waits for x1 (0.4 s), then has 0.2 s left
+    x1.join()
+    assert out["x1"][0]["busy"] is True and out["x2"][0]["busy"] is True
+    assert 0.5 < out["x2"][1] < 0.85                                                  # 0.6 s in all, not 0.4 + 0.6
+    gate.set()
+    for t in th:
+        t.join()
+    assert A._POINT_INFLIGHT == {} and A._POINT_BUILD_SINCE == []
+
+
+def test_only_the_run_in_hand_is_kept_and_only_older_runs_are_dropped(api, monkeypatch):
+    """G22 A-11: at a run change a request that still holds the old manifest gets its answer; it must neither be
+    kept nor wipe the new run's rows."""
+    product, get = api
+    src = product.source()
+    old = src.manifest()
+    monkeypatch.setattr(A, "POINTS", src)
+    monkeypatch.setattr(src, "manifest", lambda: old)
+    monkeypatch.setattr(src, "current_run", lambda: "2026100118")                    # the pointer has moved on
+    newer = ("2026100118", "pt_5000N_30000E", "")
+    A._POINT_CACHE[newer] = {"ts": time.time(), "data": "the new run's rows"}
+    d = get(PFC.point_id(5.0, 20.0)).get_json()
+    assert d["error"] is None and d["point"]["run"] == RUN and list(A._POINT_CACHE) == [newer]
+    monkeypatch.setattr(src, "current_run", lambda: RUN)                             # the usual case: this IS the run in hand
+    A._POINT_CACHE[("2026100106", "pt_5000N_30000E", "")] = {"ts": time.time(), "data": "an older run's rows"}
+    assert get(PFC.point_id(5.0, 20.0)).get_json()["error"] is None
+    assert sorted(k[0] for k in A._POINT_CACHE) == [RUN, "2026100118"]               # the older run went, the newer stayed
+
+
+def test_render_full_carries_a_refusal_as_final(api):
+    product, _get = api
+    html = A.app.test_client().get(f"/?station={PFC.point_id(5.0, 104.0)}&render=full").get_data(as_text=True)
+    seed = html[html.index("__initial"):html.index("__initial") + 4000]
+    assert '"final": true' in seed and '"reason": "land"' in seed and "That point is on land" in seed
+    ok = A.app.test_client().get(f"/?station={PFC.point_id(5.2, 20.3)}&render=full").get_data(as_text=True)
+    assert '"final"' not in ok[ok.index("__initial"):ok.index("__initial") + 400000].split("</script>")[0]
 
 
 def test_importing_the_app_does_not_load_numpy():

@@ -8,8 +8,8 @@ combined height at every step, and for every bulletin partition of at least 0.3 
 same hour with the nearest peak period and direction (within 1.5 s and 30 degrees = matched). The bulletin is made
 from the model's spectrum AT the station and has up to six partitions; the product is the gridded cell and has the
 wind sea and three swells: open-ocean stations match on height to a few centimetres, coastal stations (whose cell
-is not their water) less, and bulletin partitions beyond the product's four are not found. Then how the tracked
-columns compare with NOAA's order (by height) for smoothness. Exit code 1 if the product and the bulletins are not
+is not their water) less, and bulletin partitions beyond the product's four are not found. Then that every row
+the site builds is in rank order (height squared x period). Exit code 1 if the product and the bulletins are not
 the same waves (thresholds at the end). Read-only: anonymous GETs.
 """
 import os
@@ -72,7 +72,7 @@ def main(argv):
     print(f"product run {run}, {len(steps)} steps, grids {[g['name'] for g in man['grids']]}")
     print(f"{'id':6s} {'grid':4s} {'km':>5s} | combined Hs mean / max |d| (m) | bulletin partitions >= 0.3 m: n, matched, |dHs| |dTp| |dDir| | matched after +120 h")
     tot = {"st": 0, "hs_n": 0, "hs": 0.0, "bp": 0, "hit": 0, "dh": 0.0, "dt": 0.0, "dd": 0.0}
-    cont = {"t1": 0.0, "d1": 0.0, "n1": 0, "t0": 0.0, "d0": 0.0, "n0": 0}
+    cont = {"rows": 0, "ranked": 0}
     ocean = []                                               # per open-ocean station on a native grid: mean |d| of combined Hs
     for sid in stations:
         try:
@@ -83,9 +83,9 @@ def main(argv):
         if not b:
             continue
         lat, lon, brows = b
-        cell = src.locate(man, lat, lon)
+        cell, why = src.locate(man, lat, lon)
         if cell is None:
-            print(f"{sid:6s} no sea cell within {PFC.REACH_KM:.0f} km of {lat}, {lon}")
+            print(f"{sid:6s} no forecast at {lat}, {lon}: {why}")
             continue
         codes = src.series(man, cell)
         parts = [PFC.partitions_at(codes, si) for si in range(len(steps))]
@@ -109,14 +109,12 @@ def main(argv):
                     s["dh"] += abs(p[0] - bp[0])
                     s["dt"] += abs(p[1] - bp[1])
                     s["dd"] += turn(p[2], bp[2])
-        cols = PFC.track_partitions(steps, parts)
-        for table, key in ((cols, "1"), ([p + [None] * (4 - len(p)) for p in parts], "0")):
-            for a, bb in zip(table, table[1:]):
-                for c in range(min(len(a), len(bb))):
-                    if a[c] is not None and bb[c] is not None:
-                        cont["t" + key] += abs(a[c][1] - bb[c][1])
-                        cont["d" + key] += turn(a[c][2], bb[c][2])
-                        cont["n" + key] += 1
+        rows = PFC.point_rows(codes, steps, man["run_dt"], __import__("pytz").utc)
+        for r in rows:                                               # every row in rank order, packed from the left
+            live = [g for g in range(6) if r[2 + 3 * g] is not None]
+            power = [PFC.swell_power(r[2 + 3 * g], r[3 + 3 * g]) for g in live]
+            cont["rows"] += 1
+            cont["ranked"] += live == list(range(len(live))) and power == sorted(power, reverse=True)
         hit = s["hit"] or 1
         mean_hs = sum(s["hs"]) / max(1, len(s["hs"]))
         print(f"{sid:6s} {cell['grid']:4s} {cell['km']:5.1f} |      {mean_hs:6.3f} / {max(s['hs'] or [0]):5.2f}        | {s['bp']:5d} {100 * s['hit'] / max(1, s['bp']):6.1f} %  "
@@ -135,13 +133,12 @@ def main(argv):
     share, dt, dd = tot["hit"] / max(1, tot["bp"]), tot["dt"] / hit, tot["dd"] / hit
     print(f"\n{tot['st']} stations: combined Hs mean |d| {tot['hs'] / max(1, tot['hs_n']):.3f} m over {tot['hs_n']} rows; bulletin partitions >= 0.3 m: "
           f"{tot['bp']}, matched {100 * share:.1f} %, mean |dHs| {tot['dh'] / hit:.3f} m, |dTp| {dt:.2f} s, |dDir| {dd:.1f} deg")
-    t1, d1, t0, d0 = cont["t1"] / max(1, cont["n1"]), cont["d1"] / max(1, cont["n1"]), cont["t0"] / max(1, cont["n0"]), cont["d0"] / max(1, cont["n0"])
-    print(f"inside a column, step to step: tracked |dTp| {t1:.2f} s, |dDir| {d1:.1f} deg; NOAA's order |dTp| {t0:.2f} s, |dDir| {d0:.1f} deg")
+    print(f"rows in rank order (height squared x period, packed from the left): {cont['ranked']} of {cont['rows']}")
     med = sorted(ocean)[len(ocean) // 2] if ocean else None
     print(f"stations within 10 km of their cell on a native grid: {len(ocean)}, median of their mean |d| of combined Hs: {med if med is None else round(med, 3)} m")
     # the same waves: matched partitions agree on period and direction (the convention: FROM), most bulletin
-    # partitions are found, the combined height agrees where the cell is the station's water, tracking helps
-    ok = share > 0.75 and dt < 0.15 and dd < 4.0 and (med is None or med < 0.03) and t1 < 0.6 * t0 and d1 < 0.6 * d0
+    # partitions are found, the combined height agrees where the cell is the station's water, every row is ranked
+    ok = share > 0.75 and dt < 0.15 and dd < 4.0 and (med is None or med < 0.03) and cont["ranked"] == cont["rows"]
     print("RESULT:", "the product and the bulletins are the same waves" if ok else "MISMATCH: look at the table above")
     return 0 if ok else 1
 

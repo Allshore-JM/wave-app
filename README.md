@@ -357,7 +357,7 @@ ocean point (the reader is a later change; this section is the job).
   cycle, forecast hour, grid geometry and a plausible range, and a file with a missing or duplicated record fails
   the build. NOAA orders the three swell partitions by height at every step (on the interpolated `n25` grid not
   always, and there the wind sea can even exceed the combined height): partition 1 at one step is not the same
-  swell train as partition 1 at the next, and a reader has to track them and must not rely on the order.
+  swell train as partition 1 at the next, and a reader must not rely on the order (the site ranks every row itself).
 - **Values**: uint16 at the bulletins' precision: heights 0.01 m, periods 0.1 s, directions 1 degree (360 stored as
   0), wind 0.1 m/s. NOAA's files hold two decimals, so ties are common; they all round up. Land and ice cells are
   not stored at all. 65535 inside a tile means no value at that step: a partition the model did not find, or a sea
@@ -405,29 +405,50 @@ ocean point (the reader is a later change; this section is the job).
 
 `/api/forecast?station=pt_21667N_158054W` answers for ANY ocean point with the payload a station gets: the same
 table and graph data, built by the same code, from the forecast-point product above. `point_forecast.py` does the
-reading and the tracking; `app.py` (`point_forecast_data`) puts the service's limits around it.
+reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 
 - **The id**: `pt_<latitude in thousandths><N|S>_<longitude in thousandths><E|W>`, one spelling per point (no leading
   zeros, zero is N / E, the antimeridian is 180 W); anything else is "Invalid forecast point". No NOAA station id
   starts with `pt_`.
-- **The cell**: the nearest sea cell of any grid within 40 km (`REACH_KM`; on a tie the earlier grid), found from the
-  run's sea masks before any tile is fetched. 40 km is 1.4 cells of the quarter-degree grids and covers the pocket
-  off the Dutch coast where NOAA's 1/6-degree grid has no waves. Farther than that: "No model data here: land, ice
-  or outside coverage". The payload's `point` says where the point and its cell are (`cell_lat`, `cell_lon`,
-  `cell_km`, `grid`) and which run this is (`run`, `run_utc`, `published_utc`, `age_hours`: a run NOAA stopped feeding
-  shows only as an old cycle, so the page can say how old it is).
-- **The columns**: NOAA's gridded files give the wind sea and three swell partitions per step, ordered by height at
-  each step. `track_partitions` follows each swell train through the run and gives it one of four columns: a
-  partition continues the train whose last peak period (within 15 %, at least 1 s) and direction (within 30 degrees,
-  45 for short periods) it matches best, the gates opening up across the 3-hourly steps; the wind sea stays the wind
-  sea through the jumps of its period; a train unseen for 12 hours is over; the columns are ordered by their energy
-  over the first seven days. Against NOAA's own order, the step-to-step jumps inside a column drop from 0.8 s and 14
-  degrees to 0.3 s and 5 degrees. Differences from a station's bulletin: four systems at most (the bulletins have up
-  to six), rows hourly to +120 h and then every 3 hours, and the values are the model CELL's.
+- **Water or land** (owner, 2026-10-02: land is refused): the site's own coastlines (`static/coast/v1`, the
+  full-resolution GSHHG cells the swell-exposure tool reads) decide, at the id's coordinates, on the server, for tool
+  clicks, links and saved points alike. Water = the coast data says water, or water lies within 300 m (`SHORE_M`: a
+  beach, a pier, the data's own error; the id of Pipeline's line-up is "land" by 70 m). Land: "That point is on
+  land or inland water" (`reason: "land"`). The Python decoder and land test answer as the page's
+  (`decodeCoastLL` / `inLand`) do. Coast data that cannot be read answers "temporarily unavailable": a point is
+  never served untested.
+- **The cell**: the nearest sea cell of any grid within 40 km (`REACH_KM`; on a tie the earlier grid) that can be
+  REACHED OVER WATER (owner: water whose only cells lie beyond land is refused). The straight path from the point to
+  the cell's centre is looked at every 250 m; two land samples in a row block it (a rock is one); the shore band at
+  the point and the middle of the cell's own box are not looked at. The nearest cell blocked: the next one; none:
+  "No forecast here: the wave model's nearest points lie beyond land" (`reason: "sheltered"`: San Francisco Bay,
+  Pearl Harbor, Long Island Sound). No sea cell within reach at all (ice, the Black Sea, the Great Lakes are land in
+  the coast data): `reason: "nodata"`. Of 1,759 water points within 40 km of a coast 82 % keep the nearest cell, 4 %
+  take another (5 km farther at the median), 8 % are sheltered. The payload's `point` says where the point and its
+  cell are (`cell_lat`, `cell_lon`, `cell_km`, `grid`) and which run this is (`run`, `run_utc`, `published_utc`,
+  `age_hours`); a refusal carries `final: true` and its `reason` (also `invalid`, and `off` without a bucket).
+- **The rank of a row's swells** (owner, 2026-10-02, ONE rule for every forecast table of the site): at each hour the
+  wind sea and the swells in descending order of height squared x peak period (`rank_groups`), packed from the left.
+  That is the energy arriving per metre of crest in deep water and the only wave quantity in the usual breaker-height
+  formula: "Swell 1" is the system that makes the most surf. NOAA's bulletins list their systems by height (100 % of
+  53,577 rows of 225 bulletins); the site re-ranks them (`rank_rows`, in `parse_bull` and `parse_swan`: the numbers
+  of a row stay, the columns they sit in change in about a third of rows), and the live-buoy components take the
+  same order, so a point reads like the station beside it. A swell moves across columns as it grows and fades.
+  Differences from a station's bulletin: four systems at most (the bulletins have up to six), rows hourly to
+  +120 h and then every 3 hours, and the values are the model CELL's. North of 52.25 N the product comes from
+  NOAA's interpolated quarter-degree grid: its systems are blended (the bulletin has the site's system in 93.5 % of
+  cases against 98-99 % on the native grids).
+- **The graphs' time axis**: `graph_data` of a point has one slot per HOUR of the run (385 labels, empty between the
+  3-hourly rows), so a day is as wide on day 10 as on day 1, as a station's; the table keeps its 209 rows.
+- **The time zone** (owner: the nearest station's): the civil zone of the point's own waters when the lookup gives
+  one; else the zone of the nearest forecast station within 1,000 km (`_point_tz`: 340 km north of Oahu is Hawaii
+  time); else the nearest land's; else the nautical zone.
 - **Limits** (one worker, four threads): a cache of its own (`_POINT_CACHE`, 64 forecasts keyed by run, point and
   zone: points never push a station's forecast out); two point builds at a time, a third waits two seconds and is
-  then told "The server is busy ... try again" (`busy: true`, not kept); nobody waits longer than that for another
-  request's fetch; the pointer is read every five minutes and, when it cannot be read, the last manifest serves for
+  then told "The server is busy ... try again" (`busy: true`, not kept): one deadline for the whole wait, and at once
+  when both builds have been stuck longer than that; a point's objects are fetched with ONE attempt (3 s to connect,
+  6 s between bytes, 8 s for the whole object: a hanging bucket holds a slot for seconds, not half a minute); a tile that
+  fails its check is not kept; the pointer is read every five minutes and, when it cannot be read, the last manifest serves for
   up to six hours; a 24 MB cap on kept tiles, 256 kept cell series (a change of time zone or units costs no fetch).
   numpy and `pointfmt` load on the first point, not at start: about +22 MB then, +35 MB after sixteen points around
   the world. Measured against the live bucket: the first point 1.4 s, a new point about 0.5 s, a kept one 11 ms.

@@ -11,6 +11,7 @@ from calendar import monthrange
 from bs4 import BeautifulSoup
 import re
 import math
+from collections import OrderedDict
 import time
 import xml.etree.ElementTree as ET
 import buoy_sources
@@ -348,49 +349,70 @@ _POINT_CACHE_MAX = 64             # ~130 KB of rows each; a point's cell series 
 _POINT_CACHE_TTL = 6 * 3600       # a run's values never change; the key carries the run
 _POINT_INFLIGHT = {}              # key -> Lock (one build per point at a time)
 _POINT_BUILDS = threading.BoundedSemaphore(2)   # of four request threads: two may build points, two stay free
-_POINT_BUILD_WAIT_S = 2.0
+_POINT_BUILD_SINCE = []           # when each build in progress took its slot (under _CACHE_LOCK)
+_POINT_BUILD_WAIT_S = 2.0         # the whole wait of one request: for the same point being built AND for a slot
 POINT_BUSY = "The server is busy with other forecast points; try again in a moment"
-POINT_NO_DATA = "No model data here: land, ice or outside coverage"
+POINT_NO_DATA = point_forecast.REFUSALS["nodata"]
+POINT_INVALID = "Invalid forecast point"
+POINT_OFF = "Forecast points are not available on this server"
 _FRAMES_SUFFIX = "/gfswave/0p25/v1"
+_POINT_FETCH_TIMEOUT = (3, 6)     # connect, read: ONE attempt (the shared session retries twice: 31 s on a hanging bucket; G22 A-6)
+_POINT_FETCH_MAX_S = 8            # total wall-clock for one object
 
 
 def _points_root() -> str:
     """The public root of the bucket the points product lives in: env POINTS_ROOT, else the model frames'
     address without its own prefix. "" = no forecast points on this server."""
-    explicit = os.environ.get("POINTS_ROOT", "").rstrip("/")
+    explicit = os.environ.get("POINTS_ROOT", "").strip().rstrip("/")
     if explicit:
         return explicit
-    frames = _model_frames_base()
+    frames = os.environ.get("MODEL_FRAMES_BASE", "").strip().rstrip("/")
     return frames[:-len(_FRAMES_SUFFIX)] if frames.endswith(_FRAMES_SUFFIX) else ""
 
 
+_POINT_HTTP = requests.Session()      # no retry adapter: a point's objects are asked for once
+
+
 def _points_fetch(url: str, max_bytes: int) -> bytes:
-    """A whole 200 body of at most max_bytes, or an exception (point_forecast turns it into its message)."""
-    with HTTP.get(url, timeout=(4, 10), stream=True) as resp:
+    """A whole 200 body of at most max_bytes within _POINT_FETCH_MAX_S, or an exception (point_forecast turns it
+    into its message)."""
+    with _POINT_HTTP.get(url, timeout=_POINT_FETCH_TIMEOUT, stream=True) as resp:
         if resp.status_code != 200:
             raise IOError(f"HTTP {resp.status_code}")
-        body = bytearray()
-        for chunk in resp.iter_content(65536):
-            body += chunk
-            if len(body) > max_bytes:
-                raise IOError("body too large")
-        return bytes(body)
+        killer = threading.Timer(_POINT_FETCH_MAX_S, resp.close)     # a body that trickles: closed, the read raises
+        killer.daemon = True
+        killer.start()
+        try:
+            want = resp.headers.get("Content-Length")
+            body = bytearray()
+            for chunk in resp.iter_content(65536):
+                body += chunk
+                if len(body) > max_bytes:
+                    raise IOError("body too large")
+            if want is not None and want.isdigit() and int(want) != len(body) and not resp.headers.get("Content-Encoding"):
+                raise IOError("body cut short")
+            return bytes(body)
+        finally:
+            killer.cancel()
 
 
 POINTS = point_forecast.PointSource(_points_root, _points_fetch)
 
 
-def _point_failure(message: str):
-    return (None, None, None, None, 'UTC', message), None
+def _point_failure(message: str, reason: str | None = None):
+    """An answer without rows. reason: why a point has no forecast ("land", "sheltered", "nodata", "invalid", "off":
+    final answers, the same whenever asked), or None for something that may pass (busy, the bucket)."""
+    return (None, None, None, None, 'UTC', message), ({"reason": reason} if reason else None)
 
 
 def point_forecast_data(station_id: str, target_tz_name: str | None = None):
     """The forecast of a point id. -> (the parsers' 6-tuple, meta): rows in the bulletin parsers' shape, so the
     table and graph code downstream is the stations'; meta = where the point and its model cell are and which run
-    this is (None with an error)."""
+    this is, plus "_slots" (the graphs' hourly time axis); with an error: {"reason": ...} for a final refusal, None
+    for a passing failure."""
     coords = point_forecast.parse_point_id(station_id)
     if coords is None:
-        return _point_failure("Invalid forecast point")
+        return _point_failure(POINT_INVALID, "invalid")
     lat, lon = coords
     tz_name = None
     if target_tz_name:
@@ -398,6 +420,8 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
             tz_name = pytz.timezone(target_tz_name).zone
         except Exception:
             tz_name = None
+    if not _points_root():
+        return _point_failure(POINT_OFF, "off")
     try:
         man = POINTS.manifest()
     except point_forecast.PointError as exc:
@@ -410,11 +434,11 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
             return entry["data"] if entry and _fresh(entry["ts"], _POINT_CACHE_TTL) else None
 
     def build():
-        cell = POINTS.locate(man, lat, lon)
+        cell, reason = POINTS.locate(man, lat, lon)
         if cell is None:
-            return _point_failure(POINT_NO_DATA)
+            return _point_failure(point_forecast.REFUSALS[reason], reason)
         codes = POINTS.series(man, cell)
-        tz_eff = tz_name or _buoy_tz_cached(lat, lon)
+        tz_eff = tz_name or _point_tz(lat, lon)
         try:
             zone = pytz.timezone(tz_eff)
         except Exception:
@@ -424,33 +448,44 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
         meta = {"id": station_id, "lat": lat, "lon": lon, "cell_lat": round(cell["lat"], 4),
                 "cell_lon": round(cell["lon"], 4), "cell_km": round(cell["km"], 1), "grid": cell["grid"],
                 "run": man["run"], "run_utc": man["run_dt"].strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "published_utc": man["published_utc"]}
+                "published_utc": man["published_utc"],
+                "_slots": point_forecast.hour_slots(man["steps"], man["run_dt"], zone)}
         return (cycle_str, location_str, None, rows, tz_eff, None), meta
 
     data = cached()
     if data is not None:
         return data
+    deadline = time.monotonic() + _POINT_BUILD_WAIT_S
     with _CACHE_LOCK:
+        # both slots held for longer than anyone may wait: say so at once (a hanging bucket must not cost every
+        # further request its two seconds as well; G22 A-6)
+        if len(_POINT_BUILD_SINCE) >= 2 and all(time.monotonic() - t > _POINT_BUILD_WAIT_S for t in _POINT_BUILD_SINCE):
+            return _point_failure(POINT_BUSY)
         flock = _POINT_INFLIGHT.setdefault(key, threading.Lock())
     # Nobody waits long: not for the same point being built by another request, not for a free build slot. With
     # four request threads, two slow point builds and their waiters must never keep the stations' forecasts out.
-    if not flock.acquire(timeout=_POINT_BUILD_WAIT_S):
+    if not flock.acquire(timeout=max(0.0, deadline - time.monotonic())):
         return _point_failure(POINT_BUSY)
     try:
         data = cached()                                        # built by the caller we waited on?
         if data is not None:
             return data
-        if not _POINT_BUILDS.acquire(timeout=_POINT_BUILD_WAIT_S):
+        if not _POINT_BUILDS.acquire(timeout=max(0.0, deadline - time.monotonic())):
             return _point_failure(POINT_BUSY)
+        mark = time.monotonic()
+        with _CACHE_LOCK:
+            _POINT_BUILD_SINCE.append(mark)
         try:
             data = build()
         except point_forecast.PointError as exc:
             return _point_failure(str(exc))
         finally:
-            _POINT_BUILDS.release()
-        if not data[0][-1]:                                    # only clean results are kept
             with _CACHE_LOCK:
-                for old in [k for k in _POINT_CACHE if k[0] != man["run"]]:
+                _POINT_BUILD_SINCE.remove(mark)
+            _POINT_BUILDS.release()
+        if not data[0][-1] and POINTS.current_run() == man["run"]:   # only clean results, only of the run in hand
+            with _CACHE_LOCK:
+                for old in [k for k in _POINT_CACHE if k[0] < man["run"]]:
                     del _POINT_CACHE[old]                      # an earlier run's rows are never asked for again
                 _POINT_CACHE[key] = {"ts": time.time(), "data": data}
                 _evict_oldest(_POINT_CACHE, _POINT_CACHE_MAX)
@@ -460,6 +495,22 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
         with _CACHE_LOCK:
             if _POINT_INFLIGHT.get(key) is flock and not flock.locked():
                 _POINT_INFLIGHT.pop(key, None)
+
+
+def rank_rows(rows):
+    """Every row's wave systems in rank order (point_forecast.rank_groups: height squared x peak period, the most
+    powerful first), packed from the left. ONE rule for every forecast table of the site (owner, 2026-10-02): NOAA's
+    bulletins list their systems by height, PacIOOS by its own order; the same swell must be "Swell 1" at a station
+    and at a point beside it. The numbers of a row stay; the columns they sit in may change."""
+    for row in rows or ():
+        if len(row) < 2 + 3 * point_forecast.NCOL:
+            continue
+        groups = [(row[2 + 3 * g], row[3 + 3 * g], row[4 + 3 * g]) for g in range(point_forecast.NCOL)]
+        ranked = point_forecast.rank_groups(groups)
+        if ranked != groups:
+            for g, (hs, tp, dr) in enumerate(ranked):
+                row[2 + 3 * g], row[3 + 3 * g], row[4 + 3 * g] = hs, tp, dr
+    return rows
 
 
 # ---------------------- PacIOOS SWAN forecast bulletins -------------------------
@@ -1444,7 +1495,7 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
     if not rows:
         return cycle_str, location_str, model_run_str, None, effective_tz_name, "No data rows parsed from .bull file."
 
-    return cycle_str, location_str, model_run_str, rows, effective_tz_name, None
+    return cycle_str, location_str, model_run_str, rank_rows(rows), effective_tz_name, None
 
 # --------------------------- PacIOOS SWAN parser --------------------------------
 
@@ -1666,7 +1717,7 @@ def _parse_swan_table_text(text: str, station_id: str,
     else:
         cycle_str = "Cycle : PacIOOS SWAN (latest run)"
 
-    return cycle_str, location_str, None, rows, effective_tz_name, None
+    return cycle_str, location_str, None, rank_rows(rows), effective_tz_name, None
 
 # -------------------------- Table HTML builder (safe) ---------------------------
 
@@ -1875,6 +1926,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         return out
     if not _STATION_RE.fullmatch(station):
         out["error"] = "Invalid station id"
+        out["final"] = True                                    # asking again gives the same answer: no Retry
         return out
 
     model = resolve_model(station, model)
@@ -1882,11 +1934,17 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     if point_forecast.is_point_id(station):                    # a forecast point (plan section 31): the model's own cell
         (cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error), point = point_forecast_data(
             station, tz or None)
-        out["point"] = point
-        if parse_error == POINT_BUSY:
-            out["busy"] = True
-        elif parse_error in (POINT_NO_DATA, "Invalid forecast point"):
-            out["final"] = True                                # asking again gives the same answer: the page offers no Retry
+        slots = (point or {}).get("_slots")
+        if rows is None:
+            out["point"] = None
+            if parse_error == POINT_BUSY:
+                out["busy"] = True
+            elif point and point.get("reason"):                # land, sheltered water, no model data, a bad id, no bucket:
+                out["final"] = True                            # asking again gives the same answer: the page offers no Retry
+                out["reason"] = point["reason"]
+            point = None
+        else:
+            point = out["point"] = {k: v for k, v in point.items() if not k.startswith("_")}
     else:
         parser = parse_swan if model == "SWAN" else parse_bull
         cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parser(
@@ -1921,9 +1979,15 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         out["lon"] = coords_map[sid_str]['lon']
 
     # ----- pack graph data -----
-    labels = [f"{r[0]} {r[1]}" for r in rows]
+    # A point's rows are hourly to +120 h and 3-hourly after; its graphs get one slot per HOUR (empty between the
+    # 3-hourly rows) so a day is as wide on day 10 as on day 1, as a station's (G22 B-1). The table keeps its rows.
+    grows = rows
+    if point and slots:
+        blank = [None] * (len(rows[0]) - 2)
+        grows = [rows[i] if i is not None else [d, t] + blank for d, t, i in slots]
+    labels = [f"{r[0]} {r[1]}" for r in grows]
     def pick(array_index):
-        return [r[array_index] for r in rows]
+        return [r[array_index] for r in grows]
     def hs_idx(g): return 2 + g*3
     def tp_idx(g): return 3 + g*3
     def dr_idx(g): return 4 + g*3
@@ -1932,7 +1996,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     height_ft = {
         "s1": pick(hs_idx(0)), "s2": pick(hs_idx(1)), "s3": pick(hs_idx(2)),
         "s4": pick(hs_idx(3)), "s5": pick(hs_idx(4)), "s6": pick(hs_idx(5)),
-        "combined": [r[-1] for r in rows],
+        "combined": [r[-1] for r in grows],
     }
     period = {
         "s1": pick(tp_idx(0)), "s2": pick(tp_idx(1)), "s3": pick(tp_idx(2)),
@@ -2051,6 +2115,9 @@ def index():
         initial_state.update({"graph_data": payload["graph_data"], "graph_header": payload["graph_header"],
                               "error": payload["error"], "model": payload["model"],
                               "wind_complete": payload.get("wind_complete", True)})
+        for k in ("point", "final", "busy", "reason"):         # a point's own keys (a refusal is final: no Retry)
+            if payload.get(k) is not None:
+                initial_state[k] = payload[k]
 
     return render_template(
         "index.html",
@@ -2088,7 +2155,7 @@ def _effective_tz_name(station_id: str, requested_tz: str | None) -> str:
             pass
     point = point_forecast.parse_point_id(station_id)
     if point:
-        return _buoy_tz_cached(*point)
+        return _point_tz(*point)
     tz_name = get_station_tz(station_id)
     if tz_name:
         return tz_name
@@ -2925,14 +2992,9 @@ def _partition_spectrum_v2(freqs: list, density: list,
             "mean_r2": round(mean_r2, 2) if mean_r2 is not None else None,
         })
 
-    # Sort surf-relevant components by swell/wind type, then longer period, then height.
-    components.sort(
-        key=lambda c: (
-            0 if c["type"] == "swell" else 1,
-            -(c["peak_period_sec"] or 0),
-            -c["height_ft"]
-        )
-    )
+    # The site's one rank (owner, 2026-10-02): height squared x peak period, the most powerful first, as the
+    # forecast tables (point_forecast.rank_groups). A wind sea is ranked among the swells.
+    components.sort(key=lambda c: (-point_forecast.swell_power(c["height_ft"], c["peak_period_sec"]), -c["height_ft"]))
 
     # Keep the list readable, but allow more than the old algorithm.
     components = components[:8]
@@ -3408,7 +3470,10 @@ def get_buoy_providers():
     return _BUOY_PROVIDERS
 
 
-_BUOY_TZ_CACHE = {}
+_BUOY_TZ_CACHE = OrderedDict()     # (lat, lon to 0.01) -> zone; bounded: any visitor can ask for any point (G22 A-9)
+_POINT_TZ_CACHE = OrderedDict()
+_TZ_CACHE_MAX = 4096
+POINT_TZ_STATION_KM = 1000.0       # a point this close to a forecast station takes the station's time zone
 
 def _nearest_civil_tz(lat, lon):
     """timezonefinder returns nautical 'Etc/GMT+-N' zones (DST-unaware, off by the DST hour)
@@ -3441,10 +3506,51 @@ def _buoy_tz_cached(lat, lon):
     if lat is None or lon is None:
         return "UTC"
     key = (round(float(lat), 2), round(float(lon), 2))
-    tz = _BUOY_TZ_CACHE.get(key)
+    with _CACHE_LOCK:
+        tz = _BUOY_TZ_CACHE.get(key)
     if tz is None:
         tz = _nearest_civil_tz(float(lat), float(lon))
-        _BUOY_TZ_CACHE[key] = tz
+        with _CACHE_LOCK:
+            _BUOY_TZ_CACHE[key] = tz
+            while len(_BUOY_TZ_CACHE) > _TZ_CACHE_MAX:
+                _BUOY_TZ_CACHE.popitem(last=False)
+    return tz
+
+
+def _nearest_station_tz(lat, lon, reach_km=POINT_TZ_STATION_KM):
+    """The time zone of the nearest forecast station within reach_km, or None (no station, or none with a zone)."""
+    best, best_km = None, reach_km
+    coslat = math.cos(math.radians(lat))
+    for sid, c in load_station_coords().items():
+        dlat = c["lat"] - lat
+        if abs(dlat) * 111.2 > best_km:
+            continue
+        dlon = (c["lon"] - lon + 180.0) % 360.0 - 180.0
+        if abs(dlon) * 111.2 * min(coslat, math.cos(math.radians(c["lat"]))) > best_km:
+            continue
+        km = point_forecast._km(lat, lon, c["lat"], c["lon"])
+        if km < best_km:
+            best, best_km = sid, km
+    return get_station_tz(best) if best else None
+
+
+def _point_tz(lat, lon):
+    """The zone a forecast point's times are shown in (owner, 2026-10-02: the nearest station's): the civil zone of
+    the point's own waters when it has one; else the zone of the nearest forecast station within
+    POINT_TZ_STATION_KM, so a point reads like the stations round it (340 km north of Oahu: Hawaii time, not the
+    nautical zone an hour off); else the nearest land's zone; else the nautical zone."""
+    key = (round(float(lat), 2), round(float(lon), 2))
+    with _CACHE_LOCK:
+        tz = _POINT_TZ_CACHE.get(key)
+    if tz is None:
+        tz = _safe_tzname_for_latlon(lat, lon)
+        if not tz or tz.startswith("Etc/") or tz == "UTC":
+            near = _nearest_station_tz(lat, lon)
+            tz = near if near and not near.startswith("Etc/") else _nearest_civil_tz(float(lat), float(lon))
+        with _CACHE_LOCK:
+            _POINT_TZ_CACHE[key] = tz
+            while len(_POINT_TZ_CACHE) > _TZ_CACHE_MAX:
+                _POINT_TZ_CACHE.popitem(last=False)
     return tz
 
 

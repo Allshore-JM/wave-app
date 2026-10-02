@@ -332,8 +332,9 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     monkeypatch.delenv("MODEL_FRAMES_BASE", raising=False)
     body = client.get("/?station=51201").get_data(as_text=True)
     assert body.index('id="toolsHost"') < body.index('id="settingsHost"')
-    for tool in ("distance", "area", "exposure"):
+    for tool in ("point", "distance", "area", "exposure"):
         assert 'data-tool="%s"' % tool in body
+    assert body.index('data-tool="point"') < body.index('data-tool="distance"')        # Forecast point first (plan section 31)
     assert '<script src="/ui/tools.js?v=%s"></script>' % A.UI_ASSET_VERSION in body
     assert "coastBase: \"\" || window.__allshoreCoastBase || ''" in body
     assert "html:not(.js) .tools-host { display: none; }" in body
@@ -377,3 +378,31 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     # the projected window (plan section 30) ends its rays at the map's own latitude limits
     js, page = r.get_data(as_text=True), client.get("/?station=51201").get_data(as_text=True)
     assert "REACH_LAT_N = 84, REACH_LAT_S = -79" in js and "const LAT_LIMIT_NORTH = 84;" in page and "const LAT_LIMIT_SOUTH = -79;" in page
+
+
+def test_my_points_on_the_page(client):
+    """Plan section 31: the visitor's forecast points. The map tool hands its click to the page block; the points are
+    options of the station select (an optgroup the block adds), markers of their own in a legend entry of their own,
+    and a group in the picker's list with Rename and Remove; the picker's star keeps a point; a picker pick of a point
+    recentres the map on it; a point is kept only once its forecast has come."""
+    body = client.get("/?station=pt_21667N_158054W").get_data(as_text=True)
+    assert "onPoint: window.__allshorePoints ? function (ll) { window.__allshorePoints.add(ll); } : null," in body
+    block = body[body.index("window.__initial = "):body.index("window.AllshoreForecast.init({")]
+    assert "var store = F.createPointStore(storage), pending = null;" in block
+    assert "group.id = 'myPointsGroup'; group.label = 'My points';" in block
+    assert "if (!pending || d.station !== pending || !d.ok) return;" in block                      # kept only once a forecast came
+    assert "window.__allshorePoints = { store: store, sync: sync, add: add };" in block
+    assert block.index("window.__allshorePoints =") < block.rindex("sync();")
+    assert "'<span class=\"lc-dot lc-point\"></span>My points': pointLayer" in body
+    assert "points: saved.points !== false" in body and "points: map.hasLayer(pointLayer)" in body
+    assert "const pointIcon = L.divIcon({ className: 'my-pt', iconSize: [14, 14], iconAnchor: [7, 7] });" in body
+    assert ".my-pt { background: #fff; border: 2.5px solid #d6007a;" in body
+    assert "rebuildPointMarkers(true);" in body and "rebuildPointMarkers(false);" in body
+    assert "const pt = window.AllshoreForecast && window.AllshoreForecast.parsePointId(sid);" in body   # focusStation
+    assert "document.addEventListener('allshore:points', function () { index(); refreshCurrent(); if (!results.hidden) renderFavs(); });" in body
+    assert "ren.type = 'button'; ren.className = 'pt-act';" in body and "rem.setAttribute('aria-label', 'Remove point: ' + label);" in body
+    assert "const r = kept ? (P.store.remove(sid) ? 'removed' : 'unsaved') : P.store.add(sid);" in body
+    assert ".sr-star, .pt-act { min-width: 44px; min-height: 44px; }" in body                   # phone targets
+    assert "createPane" not in body                                                              # (the overlay's pin: no pane from the page)
+    # the page names the point in its title (the server renders the shell; the window fills in the coordinates)
+    assert '<span id="stationCurrent" class="station-current">pt_21667N_158054W</span>' in body

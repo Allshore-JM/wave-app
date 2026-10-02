@@ -23,7 +23,7 @@ function makeEnv(opts) {
   const host = el('div', 'toolsHost', doc.body);
   const btn = el('button', 'toolsBtn', host);
   const menu = el('div', 'toolsMenu', host); menu.hidden = true;
-  ['distance', 'area', 'exposure'].forEach((t) => el('button', null, menu, { 'data-tool': t }));
+  ['point', 'distance', 'area', 'exposure'].forEach((t) => el('button', null, menu, { 'data-tool': t }));
   const unitSel = el('select', 'unit', doc.body); ['US', 'Metric'].forEach((v) => { const o = el('option', null, unitSel); o.value = v; o.textContent = v; }); unitSel.value = 'US';
   const outside = el('input', 'station-search', doc.body);
   const gear = el('button', 'settingsBtn', doc.body), gearPanel = el('div', 'settingsPanel', doc.body); gearPanel.hidden = true;
@@ -91,9 +91,10 @@ function makeEnv(opts) {
     return { ok: false, status: 404 };
   };
   new Function('window', SRC)(win);
-  const layouts = [], starts = [];
+  const layouts = [], starts = [], points = [];
   const api = win.AllshoreTools.init({ map, coastBase: 'https://c', fetch: fetchFn, getUnit: () => unitSel.value, unitSelect: unitSel,
-    onLayout: (b, grew) => layouts.push(grew), onStart: (b, tool) => starts.push(tool), obstacles: () => opts.obstacles || [] });
+    onLayout: (b, grew) => layouts.push(grew), onStart: (b, tool) => starts.push(tool), obstacles: () => opts.obstacles || [],
+    onPoint: opts.noPoint ? null : (ll, ev) => points.push({ ll, ev, active: win.AllshoreTools.active(), dbl: map.doubleClickZoom.enabled() }) });
   const bar = mapEl.children.find((c) => c.classList.contains('tools-bar'));
   const q = (sel) => bar.querySelector(sel);
   // the body's lines as HTML (the tool writes them as elements; fakedom does not serialise)
@@ -104,7 +105,7 @@ function makeEnv(opts) {
   function pick(tool) { btn.dispatch('click'); menu.querySelector('[data-tool="' + tool + '"]').dispatch('click'); }
   async function settle() { for (let i = 0; i < 400 && api.state.busy; i++) await new Promise((r) => setTimeout(r, 5)); await new Promise((r) => setTimeout(r, 5)); }
   const fan = () => [...layers].find((l) => l.kind === 'fan');
-  return { win, doc, map, api, s: api.state, A: win.AllshoreTools, menu, btn, bar, q, body, unitSel, outside, gear, gearPanel, key, clickAt, pressOn, pick, settle, layouts, starts, fetches, view, mapEl, layers, fan };
+  return { win, doc, map, api, s: api.state, A: win.AllshoreTools, menu, btn, bar, q, body, unitSel, outside, gear, gearPanel, key, clickAt, pressOn, pick, settle, layouts, starts, fetches, view, mapEl, layers, fan, points };
 }
 
 test('the menu starts a tool: bar shown and labelled, focus on its close button, double-click zoom off; closing restores it', () => {
@@ -125,7 +126,7 @@ test('the menu starts a tool: bar shown and labelled, focus on its close button,
   assert.equal(E.A.active(), false); assert.equal(E.bar.hidden, true); assert.equal(E.map.doubleClickZoom.enabled(), true);
   assert.deepEqual(E.layouts, [true, false], 'closing re-measures the corner');
   E.btn.dispatch('click');
-  assert.equal(E.doc.activeElement, E.menu.querySelector('[data-tool="distance"]'), 'the opened menu takes focus (its Escape works)');
+  assert.equal(E.doc.activeElement, E.menu.querySelector('[data-tool="point"]'), 'the opened menu takes focus on its first item (its Escape works)');
 });
 
 test('distance: the double-click\'s second click is ignored, the dblclick finishes; units relabel; Backspace undoes', () => {
@@ -992,4 +993,52 @@ test('hover: over a control the pointer is forgotten (a later view change does n
   assert.equal(sector().getAttribute('aria-live'), 'off', 'hovering again: silent');
   E.q('[data-act="lock"]').dispatch('click');                                  // Lock from the keyboard, the pointer still on the map
   assert.equal(sector().getAttribute('aria-live'), 'polite', 'a Lock is announced without leaving the map');
+});
+
+// ---- the Forecast point tool (plan section 31) ----
+test('Forecast point: one click hands the point to the page and the tool ends first (the markers have their clicks back)', () => {
+  const E = makeEnv();
+  assert.equal(E.menu.querySelector('[data-tool="point"]').hidden, false);
+  E.pick('point');
+  assert.equal(E.q('.tools-bar-title').textContent, 'Forecast point');
+  assert.match(E.body(), /Click the water where you want a forecast\./);
+  assert.match(E.body(), /kept in this browser under My points/);
+  assert.equal(E.A.active(), true); assert.equal(E.map.doubleClickZoom.enabled(), false);
+  assert.equal(E.q('.tools-bar-actions').hidden, true, 'no Undo / Finish / Clear / Lock');
+  E.clickAt(21.35, -518.6);                                                  // a click in another world copy
+  assert.equal(E.points.length, 1);
+  assert.equal(E.points[0].ll.lat, 21.35);
+  assert.ok(Math.abs(E.points[0].ll.lng - -158.6) < 1e-9, 'the longitude comes back to -180..180');
+  assert.equal(E.points[0].active, false, 'the tool had ended when the page was told');
+  assert.equal(E.points[0].dbl, true, 'double-click zoom is back');
+  assert.equal(E.bar.hidden, true); assert.equal(E.s.tool, null);
+  E.clickAt(20, -158);
+  assert.equal(E.points.length, 1, 'the next map click belongs to the map again');
+  assert.equal(E.menu.querySelector('[data-tool="point"]').getAttribute('aria-pressed'), 'false');
+});
+
+test('Forecast point: Escape and the close button end it without a point; a touch says Tap; without onPoint the item is hidden', () => {
+  const E = makeEnv();
+  E.pick('point'); E.key('Escape');
+  assert.equal(E.s.tool, null); assert.equal(E.points.length, 0);
+  E.pick('point'); E.q('.tools-x').dispatch('click');
+  assert.equal(E.s.tool, null); assert.equal(E.points.length, 0);
+  const T = makeEnv({ touch: true }); T.pick('point');
+  assert.match(T.body(), /^<div class="tools-big">Tap the water where you want a forecast\.<\/div>/);
+  const N = makeEnv({ noPoint: true });
+  assert.equal(N.menu.querySelector('[data-tool="point"]').hidden, true);
+});
+
+test('Forecast point: a click that began on a control is not a point; another tool replaces it', () => {
+  const E = makeEnv();
+  E.pick('point');
+  const ctl = E.doc.createElement('div'); ctl.classList.add('leaflet-control');
+  E.clickAt(20, -158, { pointerType: 'mouse', target: ctl, composedPath: () => [ctl, E.mapEl] });
+  const win = E.doc.createElement('section'); win.classList.add('fwin');
+  E.clickAt(20, -158, { pointerType: 'mouse', target: win, composedPath: () => [win] });
+  assert.equal(E.points.length, 0, 'a click on a control or a window is not a point');
+  assert.equal(E.s.tool, 'point', 'and the tool waits on');
+  E.pick('distance');
+  E.clickAt(21.3, -157.9);
+  assert.equal(E.points.length, 0); assert.equal(E.s.pts.length, 1, 'the distance tool has the click');
 });

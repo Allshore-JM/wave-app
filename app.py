@@ -279,7 +279,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.12.9"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.13.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript"}
@@ -1885,6 +1885,8 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         out["point"] = point
         if parse_error == POINT_BUSY:
             out["busy"] = True
+        elif parse_error in (POINT_NO_DATA, "Invalid forecast point"):
+            out["final"] = True                                # asking again gives the same answer: the page offers no Retry
     else:
         parser = parse_swan if model == "SWAN" else parse_bull
         cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parser(

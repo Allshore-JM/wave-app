@@ -14,6 +14,7 @@ import math
 import time
 import xml.etree.ElementTree as ET
 import buoy_sources
+import point_forecast
 
 app = Flask(__name__)
 
@@ -336,6 +337,130 @@ def _forecast_entry_ttl(data) -> int:
     if rows and any(len(r) <= 20 or r[20] is None for r in rows):
         return _WIND_NEG_TTL
     return _FORECAST_CACHE_TTL
+
+# ---------------------- Forecast points (plan section 31) -----------------------
+# A forecast for ANY ocean point: station ids of the form pt_21667N_158054W are read from the forecast-point
+# product the points job publishes beside the model frames (tools/model_frames/points.py), not from a NOAA
+# bulletin. point_forecast.py does the reading and the tracking; here are the service's limits around it.
+# Their own cache: points never push the stations' forecasts out of _FORECAST_CACHE.
+_POINT_CACHE = {}                 # (run, point id, tz) -> {"ts", "data": (the parsers' 6-tuple, meta)}
+_POINT_CACHE_MAX = 64             # ~130 KB of rows each; a point's cell series is kept by the source, so a rebuild is cheap
+_POINT_CACHE_TTL = 6 * 3600       # a run's values never change; the key carries the run
+_POINT_INFLIGHT = {}              # key -> Lock (one build per point at a time)
+_POINT_BUILDS = threading.BoundedSemaphore(2)   # of four request threads: two may build points, two stay free
+_POINT_BUILD_WAIT_S = 2.0
+POINT_BUSY = "The server is busy with other forecast points; try again in a moment"
+POINT_NO_DATA = "No model data here: land, ice or outside coverage"
+_FRAMES_SUFFIX = "/gfswave/0p25/v1"
+
+
+def _points_root() -> str:
+    """The public root of the bucket the points product lives in: env POINTS_ROOT, else the model frames'
+    address without its own prefix. "" = no forecast points on this server."""
+    explicit = os.environ.get("POINTS_ROOT", "").rstrip("/")
+    if explicit:
+        return explicit
+    frames = _model_frames_base()
+    return frames[:-len(_FRAMES_SUFFIX)] if frames.endswith(_FRAMES_SUFFIX) else ""
+
+
+def _points_fetch(url: str, max_bytes: int) -> bytes:
+    """A whole 200 body of at most max_bytes, or an exception (point_forecast turns it into its message)."""
+    with HTTP.get(url, timeout=(4, 10), stream=True) as resp:
+        if resp.status_code != 200:
+            raise IOError(f"HTTP {resp.status_code}")
+        body = bytearray()
+        for chunk in resp.iter_content(65536):
+            body += chunk
+            if len(body) > max_bytes:
+                raise IOError("body too large")
+        return bytes(body)
+
+
+POINTS = point_forecast.PointSource(_points_root, _points_fetch)
+
+
+def _point_failure(message: str):
+    return (None, None, None, None, 'UTC', message), None
+
+
+def point_forecast_data(station_id: str, target_tz_name: str | None = None):
+    """The forecast of a point id. -> (the parsers' 6-tuple, meta): rows in the bulletin parsers' shape, so the
+    table and graph code downstream is the stations'; meta = where the point and its model cell are and which run
+    this is (None with an error)."""
+    coords = point_forecast.parse_point_id(station_id)
+    if coords is None:
+        return _point_failure("Invalid forecast point")
+    lat, lon = coords
+    tz_name = None
+    if target_tz_name:
+        try:
+            tz_name = pytz.timezone(target_tz_name).zone
+        except Exception:
+            tz_name = None
+    try:
+        man = POINTS.manifest()
+    except point_forecast.PointError as exc:
+        return _point_failure(str(exc))
+    key = (man["run"], station_id, tz_name or "")
+
+    def cached():
+        with _CACHE_LOCK:
+            entry = _POINT_CACHE.get(key)
+            return entry["data"] if entry and _fresh(entry["ts"], _POINT_CACHE_TTL) else None
+
+    def build():
+        cell = POINTS.locate(man, lat, lon)
+        if cell is None:
+            return _point_failure(POINT_NO_DATA)
+        codes = POINTS.series(man, cell)
+        tz_eff = tz_name or _buoy_tz_cached(lat, lon)
+        try:
+            zone = pytz.timezone(tz_eff)
+        except Exception:
+            tz_eff, zone = 'UTC', UTC
+        rows = point_forecast.point_rows(codes, man["steps"], man["run_dt"], zone)
+        cycle_str, location_str = point_forecast.point_headers(man["run"], lat, lon, cell)
+        meta = {"id": station_id, "lat": lat, "lon": lon, "cell_lat": round(cell["lat"], 4),
+                "cell_lon": round(cell["lon"], 4), "cell_km": round(cell["km"], 1), "grid": cell["grid"],
+                "run": man["run"], "run_utc": man["run_dt"].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "published_utc": man["published_utc"]}
+        return (cycle_str, location_str, None, rows, tz_eff, None), meta
+
+    data = cached()
+    if data is not None:
+        return data
+    with _CACHE_LOCK:
+        flock = _POINT_INFLIGHT.setdefault(key, threading.Lock())
+    # Nobody waits long: not for the same point being built by another request, not for a free build slot. With
+    # four request threads, two slow point builds and their waiters must never keep the stations' forecasts out.
+    if not flock.acquire(timeout=_POINT_BUILD_WAIT_S):
+        return _point_failure(POINT_BUSY)
+    try:
+        data = cached()                                        # built by the caller we waited on?
+        if data is not None:
+            return data
+        if not _POINT_BUILDS.acquire(timeout=_POINT_BUILD_WAIT_S):
+            return _point_failure(POINT_BUSY)
+        try:
+            data = build()
+        except point_forecast.PointError as exc:
+            return _point_failure(str(exc))
+        finally:
+            _POINT_BUILDS.release()
+        if not data[0][-1]:                                    # only clean results are kept
+            with _CACHE_LOCK:
+                for old in [k for k in _POINT_CACHE if k[0] != man["run"]]:
+                    del _POINT_CACHE[old]                      # an earlier run's rows are never asked for again
+                _POINT_CACHE[key] = {"ts": time.time(), "data": data}
+                _evict_oldest(_POINT_CACHE, _POINT_CACHE_MAX)
+        return data
+    finally:
+        flock.release()
+        with _CACHE_LOCK:
+            if _POINT_INFLIGHT.get(key) is flock and not flock.locked():
+                _POINT_INFLIGHT.pop(key, None)
+
 
 # ---------------------- PacIOOS SWAN forecast bulletins -------------------------
 # PacIOOS runs SWAN nearshore wave models for the main Hawaiian islands and
@@ -1753,10 +1878,18 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         return out
 
     model = resolve_model(station, model)
-    parser = parse_swan if model == "SWAN" else parse_bull
-    cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parser(
-        station, tz or None
-    )
+    point = None
+    if point_forecast.is_point_id(station):                    # a forecast point (plan section 31): the model's own cell
+        (cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error), point = point_forecast_data(
+            station, tz or None)
+        out["point"] = point
+        if parse_error == POINT_BUSY:
+            out["busy"] = True
+    else:
+        parser = parse_swan if model == "SWAN" else parse_bull
+        cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parser(
+            station, tz or None
+        )
     out["error"] = parse_error
     if rows is None:
         return out
@@ -1776,7 +1909,12 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     # single map marker if coords JSON has it
     coords_map = load_station_coords()
     sid_str = str(station).strip()
-    if sid_str in coords_map:
+    if point:
+        out["lat"], out["lon"] = point["lat"], point["lon"]
+        # how old the run is: a run NOAA stopped feeding shows only as an old cycle, so the page can say so
+        point = out["point"] = dict(point, age_hours=round(
+            (datetime.now(timezone.utc).replace(tzinfo=None) - datetime.strptime(point["run"], "%Y%m%d%H")).total_seconds() / 3600, 1))
+    elif sid_str in coords_map:
         out["lat"] = coords_map[sid_str]['lat']
         out["lon"] = coords_map[sid_str]['lon']
 
@@ -1946,6 +2084,9 @@ def _effective_tz_name(station_id: str, requested_tz: str | None) -> str:
             return pytz.timezone(requested_tz).zone            # the canonical IANA name (pytz accepts legacy spellings)
         except Exception:
             pass
+    point = point_forecast.parse_point_id(station_id)
+    if point:
+        return _buoy_tz_cached(*point)
     tz_name = get_station_tz(station_id)
     if tz_name:
         return tz_name

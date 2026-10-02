@@ -400,3 +400,43 @@ ocean point (the reader is a later change; this section is the job).
   files do not: the run then never counts as complete, every tick ends quietly as "no complete run", and the only
   signal is the age of the run `latest.json` names (the reader must show it). The file tags, grid geometry, record
   identities and step schedule are constants in `pointfmt.py` / `fetch.py`.
+
+## Forecast points: the reader (plan section 31, step 4)
+
+`/api/forecast?station=pt_21667N_158054W` answers for ANY ocean point with the payload a station gets: the same
+table and graph data, built by the same code, from the forecast-point product above. `point_forecast.py` does the
+reading and the tracking; `app.py` (`point_forecast_data`) puts the service's limits around it. No page change yet
+(the map tool that adds points is the next step).
+
+- **The id**: `pt_<latitude in thousandths><N|S>_<longitude in thousandths><E|W>`, one spelling per point (no leading
+  zeros, zero is N / E, the antimeridian is 180 W); anything else is "Invalid forecast point". No NOAA station id
+  starts with `pt_`.
+- **The cell**: the nearest sea cell of any grid within 40 km (`REACH_KM`; on a tie the earlier grid), found from the
+  run's sea masks before any tile is fetched. 40 km is 1.4 cells of the quarter-degree grids and covers the pocket
+  off the Dutch coast where NOAA's 1/6-degree grid has no waves. Farther than that: "No model data here: land, ice
+  or outside coverage". The payload's `point` says where the point and its cell are (`cell_lat`, `cell_lon`,
+  `cell_km`, `grid`) and which run this is (`run`, `run_utc`, `published_utc`, `age_hours`: a run NOAA stopped feeding
+  shows only as an old cycle, so the page can say how old it is).
+- **The columns**: NOAA's gridded files give the wind sea and three swell partitions per step, ordered by height at
+  each step. `track_partitions` follows each swell train through the run and gives it one of four columns: a
+  partition continues the train whose last peak period (within 15 %, at least 1 s) and direction (within 30 degrees,
+  45 for short periods) it matches best, the gates opening up across the 3-hourly steps; the wind sea stays the wind
+  sea through the jumps of its period; a train unseen for 12 hours is over; the columns are ordered by their energy
+  over the first seven days. Against NOAA's own order, the step-to-step jumps inside a column drop from 0.8 s and 14
+  degrees to 0.3 s and 5 degrees. Differences from a station's bulletin: four systems at most (the bulletins have up
+  to six), rows hourly to +120 h and then every 3 hours, and the values are the model CELL's.
+- **Limits** (one worker, four threads): a cache of its own (`_POINT_CACHE`, 64 forecasts keyed by run, point and
+  zone: points never push a station's forecast out); two point builds at a time, a third waits two seconds and is
+  then told "The server is busy ... try again" (`busy: true`, not kept); nobody waits longer than that for another
+  request's fetch; the pointer is read every five minutes and, when it cannot be read, the last manifest serves for
+  up to six hours; a 24 MB cap on kept tiles, 256 kept cell series (a change of time zone or units costs no fetch).
+  numpy and `pointfmt` load on the first point, not at start: about +22 MB then, +35 MB after sixteen points around
+  the world. Measured against the live bucket: the first point 1.4 s, a new point about 0.5 s, a kept one 11 ms.
+- **Where it reads**: env `POINTS_ROOT` (the bucket's public root), else `MODEL_FRAMES_BASE` without its
+  `/gfswave/0p25/v1`; neither: "Forecast points are not available on this server". Object keys are built here, never
+  taken from the manifest; every object is checked against what was asked for (run, grid, tile, steps, fields).
+- **Check by hand**: `python tools/model_frames/check_points.py` compares the live product, read as the site reads
+  it, with NOAA's bulletins of the same run at 45 stations (2026-10-02, run 2026100206: combined height within
+  0.007 m at the median open-ocean station; 87 % of the bulletins' partitions of 0.3 m or more found, the rest being
+  their fifth and sixth; the found ones within 0.03 m, 0.05 s and 1.4 degrees). Run it again when NOAA changes its
+  wave products.

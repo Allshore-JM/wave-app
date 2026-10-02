@@ -71,8 +71,9 @@ UPLOAD_BACKLOG = 64                      # tile uploads allowed to trail the bui
 FAILED_RETRY_AFTER_S = 3 * 3600
 FAILED_MAX_ATTEMPTS = 3
 NOTREADY_WARN = 6
-FILE_TIMEOUT_S = 180                     # one whole gridded file: 5-12 MB
-FILE_TRIES = 3                           # whole downloads of one file (each already retries its request 4 times)
+FILE_TIMEOUT_S = 120                     # one whole gridded file: 5-12 MB
+FILE_TRIES = 3                           # whole downloads of one file ...
+REQUEST_TRIES = 2                        # ... each of which tries its request this often: a stalled file fails in ~13 min
 SCRATCH_SLACK = 64 << 20                 # free space wanted beyond the scratch files themselves
 DRIFT_FAIL = 0.01                        # share of a grid's sea cells that may differ from the first step's at any step
 # what a decoded field may hold at most; anything beyond is a record that is not what its identity says
@@ -165,7 +166,7 @@ def fetch_file(run_dt, grid, step):
         if attempt:
             time.sleep(5 * attempt)
         try:
-            _status, body = F._request(url, timeout=FILE_TIMEOUT_S)
+            _status, body = F._request(url, timeout=FILE_TIMEOUT_S, tries=REQUEST_TRIES)
             return messages(body)
         except F.TransportError as exc:
             last = str(exc)
@@ -406,8 +407,9 @@ def decode_run(run_dt, steps, work, executor, log=print):
 
 
 def _results(executor, fn, jobs):
-    """Each job's result as it FINISHES; the first failure is raised at once and the jobs not yet started are
-    dropped (a file that is not there is then seen after seconds, not after everything queued before it)."""
+    """Each job's result as it FINISHES; the first failure is raised when it happens (not after the slower jobs
+    submitted before it) and the jobs not yet started are dropped. The jobs still START in the order given: a file
+    that is missing late in the run is only asked for after the steps before it."""
     if not hasattr(executor, "submit"):
         yield from executor.map(fn, jobs)
         return
@@ -540,6 +542,8 @@ def build_and_publish(store, run_dt, steps, work, executor, upload=True, log=pri
     run = P.run_key(run_dt)
     t0 = time.time()
     layouts, step_stats = decode_run(run_dt, steps, work, executor, log)
+    order = [g["name"] for g in PF.GRIDS]
+    step_stats.sort(key=lambda s: (s["step"], order.index(s["grid"])))        # they finished in any order
     drift = drift_summary(layouts, step_stats)
     t1 = time.time()
     uploads = Uploads(store if upload else None)

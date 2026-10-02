@@ -345,11 +345,13 @@ ocean point (the reader is a later change; this section is the job).
   global.0p16` (1/6 degree, 52.167 N to 12.5 S, the model's own grid), `s25` = `gfswave gsouth.0p25` (1/4 degree,
   12.75 S to 79.5 S, the model's own grid), `n25` = `gfswave global.0p25` (1/4 degree, 52.25 N northward; NOAA's
   interpolated global grid, the only one that reaches there). NOAA's `global.0p16` FILE spans 52.5 N to 15 S, but
-  its first two and last fifteen rows carry wind and no waves, so the other grids are stored up to the rows it has
-  waves for (cutting at the file's bounds left no wave data from 12.75 S to 14.85 S: review G22a). Every build
+  its first two and last fifteen rows carry no waves (most carry wind), so the other grids are stored up to the rows
+  it has waves for (cutting at the file's bounds left no wave data from 12.75 S to 14.85 S: review G22a). Every build
   checks that those rows are still the ones `pointfmt.GRIDS` expects (`data`) and fails if NOAA moved them. A cell
   is a grid point: latitude `lat0 - row / per_deg`, longitude `col / per_deg`. A reader takes the nearest sea cell
-  of any grid; on a tie, the earlier grid.
+  of any grid; on a tie, the earlier grid. One pocket is left INSIDE g16's band: off the Dutch coast (51.5-52.0 N,
+  3.5-3.75 E) NOAA's `global.0p16` has no waves on a few cells, so four cells of water are more than 1.5 cells from
+  any stored cell (the same in every cycle checked); the reader's reach has to cover it.
 - **Records**: 15 per file, found by their GRIB2 code numbers (discipline, category, number, surface type, and the
   sequence number 1-3 of a swell partition), never by a decoder's short names; every used record is checked for its
   cycle, forecast hour, grid geometry and a plausible range, and a file with a missing or duplicated record fails
@@ -375,9 +377,10 @@ ocean point (the reader is a later change; this section is the job).
 - **How a build runs**: each step's three files are downloaded whole (about 28 MB a step, 6 GB a run, anonymous S3;
   a failed or damaged download is tried three times) and decoded in worker processes (eccodes is not thread-safe);
   each worker writes its step into a scratch file on the runner's disk (about 5.6 GB: a whole run does not fit in
-  memory); the first failure stops the build at once. The tiles are then cut one tile row at a time, compressed in
+  memory); the first failure stops the build when it happens (a file missing late in the run is still only asked for
+  after the steps before it: about 3 minutes and 3 GB of downloads, again on every tick until NOAA serves it). The tiles are then cut one tile row at a time, compressed in
   threads and uploaded behind the build. Every tile and mask is stored before the manifest, the manifest before the
-  pointer. About 21 minutes on the runner; the manifest carries a `digest` of every stored value (two builds of the
+  pointer. About 22 minutes on the runner; the manifest carries a `digest` of every stored value (two builds of the
   same NOAA files agree on it exactly when they stored the same values).
 - **Guards**: a run that is live is left alone; without `--force` the pointer never moves back, also not when a
   newer run went live while this one was building; a failed build is retried after 3 h, three times at most; a

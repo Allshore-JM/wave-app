@@ -8,8 +8,8 @@ Grids (GRIDS, in priority order; the rows that hold wave data do not overlap and
   g16  gfswave global.0p16   1/6 deg   52.167 N .. 12.5 S   (the model's own grid there)
   s25  gfswave gsouth.0p25   1/4 deg   12.75 S .. 79.5 S    (the model's own grid there)
   n25  gfswave global.0p25   1/4 deg   52.25 N .. 90 N      (NOAA's interpolated global grid)
-NOAA's global.0p16 FILE spans 52.5 N .. 15 S, but its first two and last fifteen rows carry wind and no waves
-(the edge bands of the model's mosaic: the neighbouring grid has that water). So the other two grids are stored up
+NOAA's global.0p16 FILE spans 52.5 N .. 15 S, but its first two and last fifteen rows carry no waves (most of
+them carry wind: the edge bands of the model's mosaic; the neighbouring grid has that water). So the other two grids are stored up
 to the first row g16 has no waves for ("rows": first, one past last; rows outside it are never stored), and each
 build checks that the rows with waves are still the ones in "data" (first, last; None where sea ice decides).
 A cell is a grid point: row r, column c -> latitude lat0 - r / per_deg, longitude c / per_deg (0..360 E,
@@ -49,6 +49,7 @@ XZ_PRESET = 6
 MAX_HEADER_BYTES = 4096
 MAX_TILE_BYTES = 16 << 20
 XZ_MEMLIMIT = 64 << 20
+MAX_MASK_NI, MAX_MASK_NJ = 4096, 2048      # the largest real grid is 2160 x 721
 
 KINDS = {
     "height":    {"scale": 100, "units": "m"},
@@ -183,14 +184,23 @@ def tile_header(run, grid, tr, tc, rows, cols, cells, steps):
 def decode_tile(blob, steps=None, fields=None):
     """-> (header, bitmap bool [rows, cols], planes uint16 [field, step, cell]). Raises ValueError on anything
     that is not a well-formed tile, and never unpacks more than MAX_TILE_BYTES (the claim is checked before the
-    payload is touched, the payload against the claim). A reader passes the manifest's number of `steps` and its
-    `fields`: a tile that holds anything else is refused."""
+    payload is touched, the payload against the claim). A reader passes the manifest's number of `steps` and the
+    NAMES of its fields: a tile that holds anything else is refused. The header's `run`, `grid`, `tile`, `row0`
+    and `col0` are checked for their types only: whether this is the tile that was asked for is the reader's
+    question (compare them with what it fetched)."""
     header, pos = _unpack(blob, TILE_MAGIC)
     rows, cols = _int(header, "rows", 1, 64), _int(header, "cols", 1, 64)
     cells, nsteps = _int(header, "cells", 1, rows * cols), _int(header, "steps", 1, 1024)
     names = header.get("fields")
-    if not isinstance(names, list) or not 0 < len(names) <= 64 or not all(isinstance(n, str) for n in names):
+    if (not isinstance(names, list) or not 0 < len(names) <= 64 or not all(isinstance(n, str) for n in names)
+            or len(set(names)) != len(names)):
         raise ValueError("bad header: fields")
+    _int(header, "row0", 0, 1 << 20)
+    _int(header, "col0", 0, 1 << 20)
+    tile = header.get("tile")
+    if (not isinstance(tile, list) or len(tile) != 2 or not all(type(t) is int and 0 <= t < 1 << 20 for t in tile)
+            or not isinstance(header.get("run"), str) or not isinstance(header.get("grid"), str)):
+        raise ValueError("bad header: run / grid / tile")
     if (steps is not None and nsteps != steps) or (fields is not None and names != list(fields)):
         raise ValueError("the tile does not hold the steps / fields asked for")
     steps, nf = nsteps, len(names)
@@ -234,7 +244,7 @@ def encode_mask(run, grid, mask):
 def decode_mask(blob):
     """-> (header, mask bool [nj, ni])."""
     header, pos = _unpack(blob, MASK_MAGIC)
-    ni, nj = _int(header, "ni", 1, 8192), _int(header, "nj", 1, 4096)
+    ni, nj = _int(header, "ni", 1, MAX_MASK_NI), _int(header, "nj", 1, MAX_MASK_NJ)
     cells = _int(header, "cells", 0, ni * nj)
     nb = (ni * nj + 7) // 8
     d = zlib.decompressobj()

@@ -84,6 +84,7 @@ class World:
         self.lock = threading.Lock()
         self.alter = None            # (grid, name, step, array) -> array
         self.fail = None             # (grid, step) -> exception or None
+        self.meta = None             # (grid, name or None, meta) -> meta
 
     def fetch_file(self, run_dt, grid, step):
         assert run_dt == RUN
@@ -100,6 +101,8 @@ class World:
         gname, ident, step = pickle.loads(msg)
         grid = PF.GRID_BY_NAME[gname]
         meta = meta_for(grid, ident, step)
+        if self.meta:
+            meta = self.meta(grid, PT.identify(meta), meta)
         if not wanted(meta):
             return meta, None
         name = PT.identify(meta)
@@ -453,6 +456,16 @@ def test_decode_file_orientation_missing_and_guards(world):
     world.alter = lambda grid, name, step, arr: arr[:-1]                     # a record of the wrong size
     with pytest.raises(ValueError, match="values for a"):
         PT.decode_file(msgs, g, RUN, 6)
+    world.alter = None
+    # ONE used record laid out another way (same size: rows south to north) stops the file; an unused one does not
+    world.meta = lambda grid, name, meta: dict(meta, jScansPositively=1) if name == "s3_d" else meta
+    with pytest.raises(ValueError, match="rows north to south"):
+        PT.decode_file(msgs, g, RUN, 6)
+    world.meta = lambda grid, name, meta: dict(meta, forecastTime=9) if name == "wind" else meta
+    with pytest.raises(ValueError, match="forecast time 9"):
+        PT.decode_file(msgs, g, RUN, 6)
+    world.meta = lambda grid, name, meta: dict(meta, jScansPositively=1, forecastTime=9) if name is None else meta
+    assert set(PT.decode_file(msgs, g, RUN, 6)) == set(PF.FIELD_NAMES)
 
 
 def test_needed_keys_and_completeness(monkeypatch):
@@ -473,8 +486,10 @@ def test_needed_keys_and_completeness(monkeypatch):
     assert PT.run_is_complete(RUN) and len(asked) == 3 and all(p.endswith(".f") for p in asked)
     present.discard(keys[400])
     assert PT.missing_objects(RUN) == [keys[400]] and not PT.run_is_complete(RUN)
-    complete = {datetime(2026, 10, 1, 6, tzinfo=timezone.utc)}
+    complete = {datetime(2026, 10, 1, 6, tzinfo=timezone.utc), datetime(2026, 9, 30, 18, tzinfo=timezone.utc),
+                datetime(2026, 9, 30, 0, tzinfo=timezone.utc)}
     monkeypatch.setattr(PT, "run_is_complete", lambda dt: dt in complete)
+    # the 12Z cycle is not complete yet: the NEWEST complete one, not any complete one
     assert PT.latest_complete_run(now=datetime(2026, 10, 1, 17, 30, tzinfo=timezone.utc)) == datetime(2026, 10, 1, 6, tzinfo=timezone.utc)
     complete.clear()
     assert PT.latest_complete_run(now=datetime(2026, 10, 1, 17, 30, tzinfo=timezone.utc)) is None
@@ -781,6 +796,9 @@ def test_prune_keeps_two_complete_runs_the_pointer_and_a_build_in_progress():
         _seed(c, PT.PREFIX, run)
     _seed(c, PT.PREFIX, "2026093006", manifest=False)                         # an old crashed build
     _seed(c, PT.PREFIX, "2026100112", manifest=False)                         # one that may still be uploading
+    for run in ("2026093006", "2026100112"):                                  # a partial manifest is not a manifest
+        c.put_object("b", f"{PT.PREFIX}/{run}/partial-20261001T000000Z.json", b"{}", "application/json", "")
+        c.put_object("b", f"{PT.PREFIX}/{run}/stats-20261001T000000Z.json", b"{}", "application/json", "")
     c.put_object("b", PT.LATEST_KEY, json.dumps({"run": "2026093018"}).encode(), "application/json", "")
     c.put_object("b", f"{PT.PREFIX}/failed/2026093006.json", b"{}", "application/json", "")
     store = P.Store(c, "b")
@@ -853,7 +871,7 @@ def test_main_refuses_a_subset_without_dry_run_or_local_and_bad_arguments(cli, c
     client, run = cli
     assert run("--steps", "0,1") == 2 and client.log == []
     assert run("--steps", "0,5") == 2                                          # not a step of the (patched) model output
-    assert run("--steps", "1,0") == 2 and run("--steps", "1,1") == 2
+    assert run("--steps", "1,0", "--dry-run") == 2 and run("--steps", "1,1", "--dry-run") == 2   # increasing, each once
     assert run("--keep", "0") == 2
     assert run("--dry-run", "--local", str(tmp_path / "out")) == 2
     assert run("--steps", "0,1", "--dry-run") == 0 and client.log == []

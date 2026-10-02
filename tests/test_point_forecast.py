@@ -367,6 +367,14 @@ def test_the_tile_cache_is_capped_by_bytes_and_the_cell_cache_by_count(product, 
     assert product.count("/a/0_6.bin") == n
     src.series(man, src.locate(man, 5.0, 21.0))                                 # the oldest was dropped: fetched again
     assert product.count("/a/0_2.bin") == 2
+    # least recently USED: 0_6 is asked for again (a hit), then a third tile comes: 0_2 goes, 0_6 stays
+    src.series(man, src.locate(man, 5.0, 52.0))
+    src.series(man, src.locate(man, 5.0, 60.0))                                 # tile 0_7
+    n6 = product.count("/a/0_6.bin")
+    src.series(man, src.locate(man, 5.0, 53.0))
+    assert product.count("/a/0_6.bin") == n6
+    src.series(man, src.locate(man, 5.0, 22.0))
+    assert product.count("/a/0_2.bin") == 3
 
 
 def test_two_requests_for_one_tile_fetch_it_once(product):
@@ -445,10 +453,59 @@ def test_a_train_that_pauses_returns_to_its_column_within_twelve_hours_only():
     cols = table(hours, parts)
     col_b = next(c for c in range(6) if cols[0][c] == b[:3])
     assert all(cols[h][col_b] == b[:3] for h in range(10, 15))                        # back in its own column after 5 h
-    used = {c for row in cols for c in range(6) if row[c] is not None}
-    assert used == {0, 1} or len(used) == 3                                           # after 15 h it is a new train:
-    col_b2 = next(c for c in range(6) if cols[30][c] == b[:3])                        # it takes the column free the longest
-    assert col_b2 != next(c for c in range(6) if cols[0][c] == a[:3])
+    col_a = next(c for c in range(6) if cols[0][c] == a[:3])
+    col_b2 = next(c for c in range(6) if cols[30][c] == b[:3])                        # after 15 h it is a new train: it takes
+    assert col_b2 not in (col_a, col_b)                                               # a column that was never used
+    assert all(cols[h][col_b2] == b[:3] for h in range(30, 40)) and all(cols[h][col_b] is None for h in range(15, 40))
+
+
+def test_twelve_hours_unseen_is_still_the_train_thirteen_is_a_new_one():
+    a, b = (1.5, 14.0, 300.0, False), (0.8, 9.0, 200.0, False)
+    for back, same in ((26, True), (27, False)):                                      # last seen at hour 14
+        hours = list(range(0, 32))
+        cols = table(hours, [[a, b] if h <= 14 or h >= back else [a] for h in hours])
+        first = next(c for c in range(6) if cols[0][c] == b[:3])
+        again = next(c for c in range(6) if cols[back][c] == b[:3])
+        assert (again == first) is same, back
+
+
+def test_a_train_is_followed_from_where_it_was_last_seen_not_from_where_it_began():
+    hours = list(range(0, 80))
+    parts = [[(1.0, 18.0 - 0.1 * h, (300.0 + 0.5 * h) % 360, False)] for h in hours]   # 18 s -> 10.1 s, 300 -> 339.5 deg
+    cols = table(hours, parts)
+    assert all(row[0] is not None and row[1:] == [None] * 5 for row in cols)           # one train, one column, all the way
+
+
+def test_two_trains_close_together_are_paired_by_the_least_change():
+    hours = list(range(0, 10))
+    one = [(1.0 + 0.2 * h, 12.0, 300.0, False) for h in hours]                         # grows past the other at hour 3
+    two = [(1.5, 13.0, 312.0, False)] * 10                                            # within each other's gates
+    parts = [sorted([one[h], two[h]], key=lambda p: -p[0]) for h in hours]            # NOAA's order: by height
+    assert parts[0][0][1] == 13.0 and parts[-1][0][1] == 12.0
+    cols = table(hours, parts)
+    assert len({row[0][1] for row in cols}) == 1 and len({row[1][1] for row in cols}) == 1   # each column keeps its period
+
+
+def test_a_new_train_takes_the_column_that_has_been_free_the_longest():
+    a = (2.0, 16.0, 300.0, False)
+    b, c, d, e = (0.8, 9.0, 200.0, False), (0.7, 12.0, 100.0, False), (0.6, 6.0, 40.0, False), (0.5, 20.0, 250.0, False)
+    hours = list(range(0, 60))
+    parts = []
+    for h in hours:
+        step = [a]
+        if h <= 4:
+            step.append(b)                                                            # b ends first,
+        if h <= 9:
+            step.append(c)                                                            # then c
+        if h >= 30:
+            step.append(d)                                                            # d arrives: a column never used
+        if h >= 40:
+            step.append(e)                                                            # e arrives: b's column (free since hour 4)
+        parts.append(step)
+    cols = table(hours, parts)
+    col = lambda p, h: next(k for k in range(6) if cols[h][k] == p[:3])               # noqa: E731
+    assert len({col(a, 0), col(b, 0), col(c, 0), col(d, 30)}) == 4
+    assert col(e, 40) == col(b, 0) and col(e, 59) == col(b, 0)
 
 
 def test_never_more_than_four_columns_and_nothing_is_lost():
@@ -477,6 +534,11 @@ def test_columns_are_ordered_by_energy_over_the_first_week():
     assert cols[0][1] == small[:3] and cols[hours.index(110)][0] == late[:3]
     parts = [[small, (0.5, 15.0, 300.0, False)] for h in hours]                       # equal energy: the earlier column first
     assert table(hours, parts)[0][:2] == [small[:3], (0.5, 15.0, 300.0)]
+    # a 3-hourly step stands for three hours: 16 steps of 1.2 m (123..168 h) outweigh 60 hourly steps of 1.0 m
+    x, y = (1.0, 10.0, 200.0, False), (1.2, 15.0, 300.0, False)
+    parts = [[x] if h < 60 else [y] if 123 <= h <= 168 else [] for h in hours]
+    cols = table(hours, parts)
+    assert cols[hours.index(150)][0] == y[:3] and cols[0][1] == x[:3]
 
 
 def test_partitions_at_needs_all_three_values():

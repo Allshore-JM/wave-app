@@ -1,0 +1,39 @@
+# TEMPORARY (feature branch only; removed before the merge): runs the forecast-point job as a DRY RUN on the
+# real runner -- pinned eccodes, worker processes, the runner's disk -- for one fixed NOAA cycle, and reports the
+# timings, sizes and the run digest as a notice. No secrets, no uploads. It runs only when this file changes.
+# attempt: 1
+name: points-dryrun
+on:
+  push:
+    branches: [feat/forecast-point]
+    paths: [".github/workflows/points-dryrun.yml"]
+permissions:
+  contents: read
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
+      - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462   # v2
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+          cache-environment: true
+      - name: Dry run
+        shell: bash -l {0}
+        run: |
+          echo "runner: $(nproc) cpus, $(free -g | awk '/^Mem:/ {print $2}') GB memory, $(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -d ' ') free" | tee out.txt
+          /usr/bin/time -v -o time.txt python tools/model_frames/points.py --run 2026100112 --dry-run > run.log 2>&1
+          rc=$?
+          cat run.log
+          cat run.log >> out.txt
+          msg=$( (grep -E "^runner:|points run|^grids:|WARNING|^note:|^\{|Error|error" out.txt | tail -20; grep -E "Maximum resident|Elapsed" time.txt) | sed 's/%/%25/g' | tr '\n' '|' | sed 's/|/%0A/g')
+          echo "::notice title=points dry run (exit $rc)::$msg"
+          exit "$rc"

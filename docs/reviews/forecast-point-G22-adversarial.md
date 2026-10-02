@@ -54,7 +54,7 @@ width, and time zones nobody can read.
 
 | # | Finding | Outcome |
 |---|---|---|
-| A-1 | The compact table applies the stations' "a column needs a value in the first 7 days" rule to a point's TRAIN columns: a swell that starts after day 7 has no table column. `pt_46250S_96000E`, Fri 10/16 9 PM: three empty swell cells beside Comb. 9.99 m; 4.2 % of 1,200 cells hide a column. Reproduced by the author on the test site. | Fixed by the owner's column decision below (rows in rank order: a hidden column can then only hold the smallest system of its hour, as at a station). |
+| A-1 | The compact table applies the stations' "a column needs a value in the first 7 days" rule to a point's TRAIN columns: a swell that starts after day 7 has no table column. `pt_46250S_96000E`, Fri 10/16 9 PM: three empty swell cells beside Comb. 9.99 m; 4.2 % of 1,200 cells hide a column. Reproduced by the author on the test site. | Fixed by the owner's column decision below (rows in rank order: a hidden column can then only hold the weakest system of its hour, as at a station). |
 | A-2 | Water behind land is served from the cell beyond the land: Long Island Sound from the Atlantic 28 km away, San Francisco Bay from the Pacific 31 km, Tampa Bay, the Solent, Pearl Harbor. 11.1 % of 1,574 served nearshore water points have 0.5 km or more of land between point and cell. Reproduced by the author. | Owner: refuse. The cell must be reachable from the point over water (fix round, item 1). |
 | B-1 | A point's graphs give each ROW the same width: days 1-5 (hourly) are 123 px each, days 6-16 (3-hourly) 41 px, with no cue; a station's days are 67 px each. | A point's graph data goes on hourly slots (385 labels, empty between the 3-hourly rows); the table keeps its 209 rows. Removes B-14 (day line and night shading up to 2 h late) and A-15. |
 | B-2 | Points away from the coast show "Etc/GMT+11"-style zones (the name means UTC-11) and not the zone the station at the same place uses (46006: station America/Los_Angeles, point Etc/GMT+9; 340 km north of Oahu: Etc/GMT+11 beside Pacific/Honolulu). Reproduced by the author. | Owner: the nearest station's zone. Raw "Etc/" names are never shown ("UTC-11"). |
@@ -64,7 +64,7 @@ width, and time zones nobody can read.
 | # | Finding | Outcome |
 |---|---|---|
 | A-3 | A bad tile body is cached before it is checked: the tile stays "temporarily unavailable" until the run changes; Retry cannot help. | Check before caching; a test that asks again after the bucket recovers. |
-| A-4 (= B-15) | A point's "Swell n" is a swell TRAIN, a station's is the hour's rank: at a point "Swell 1" holds the hour's highest system in 50.7 % of rows and is empty beside another system in 16.6 %. | Owner: rank per hour, as the stations (below). The tracking goes. |
+| A-4 (= B-15) | A point's "Swell n" is a swell TRAIN, a station's is the hour's rank: at a point "Swell 1" holds the hour's highest system in 50.7 % of rows and is empty beside another system in 16.6 %. | Owner: one rank per hour for points and stations alike, by height squared x period (below). The tracking goes. |
 | A-5 | North of 52.25 N the product's grid is NOAA's interpolated 1/4 degree grid: the site's systems found in the bulletin 93.5 % (native grids 98-99 %), period p99 1.3 s (0.2 s), 44 rows with a partition above the combined height. | A limit of NOAA's file, told to the owner; README. Follow-up for the job: NOAA's native Arctic grid. |
 | A-6 | A bucket that hangs: 31 s per object (three attempts of 10 s), a build slot held 31-93 s, the pointer read outside the slots, "busy" after up to 3.9 s. | One attempt, a wall-clock cap per object, busy at once when both slots are held, one deadline per request. |
 | A-7 (= B-3) | A point that cannot be kept (the 51st, a storage error) is dropped with a screen-reader line only; with storage blocked the line says "Kept". | A visible message; the fallback storage reports "not saved". |
@@ -103,13 +103,20 @@ fixed).
 ## The owner's decisions (2026-10-02)
 
 1. **Land is refused.** Not snapped, not served from a sea cell across the island.
-2. **Columns: rank per hour, as the stations.** "It should be based on the swell energy ... Swell with largest energy
-   should be swell 1, second swell 2, etc. it is ok if swells transition across columns as they grow. this matches how
-   the stations swells are ranked". Measured on 225 bulletins (53,577 rows): NOAA lists the systems in height order in
-   100.00 % of rows, with no empty column left of a filled one. A system's energy goes with its height squared, so
-   energy order and height order are the same order; the period plays no part (an order by height squared x period
-   would differ in 35.6 % of rows and name another Swell 1 in 11.2 %). The point's rows follow the same rule, so a
-   point at a station reads like the station. The swell tracking of step 4 is removed.
+2. **Columns: rank per hour by wave power, height squared x peak period, SITE-WIDE.** "It should be based on the swell
+   energy, not necessarily by swell height. Swell with largest energy should be swell 1, second swell 2, etc. it is ok
+   if swells transition across columns as they grow"; then, after the measurement below: "The forecast point and the
+   added points must match in how they rank the swells. If we rank by energy the existing forecast point data should
+   be resorted", and "Yes to both, rank by height² × period site-wide".
+   Measured on 225 bulletins (53,577 rows): NOAA lists the systems in HEIGHT order in 100.00 % of rows, with no empty
+   column left of a filled one; an order by height squared x period differs in 35.6 % of rows and names another
+   Swell 1 in 11.2 % (station 13130: 1.26 m at 6.7 s is listed before 1.05 m at 12.5 s, which carries 30 % more
+   power). Height squared x period is the energy arriving per metre of crest (deep water) and the only wave quantity
+   in the usual breaker-height formula (Komar and Gaughan), so it ranks the swells by the surf they make.
+   ONE rule for every forecast table: added points, NOAA's stations (re-sorted: their numbers stay, the columns they
+   sit in change) and the SWAN stations; rows packed from the left; the graphs follow the table. The live-buoy swell
+   components (today: swell before wind sea, then the longest period) take the same order. The swell tracking of
+   step 4 is removed.
 3. **Water behind land is refused** when no model cell within reach can be reached over water.
 4. **Time zone: the nearest station's.** Far from every station a plain offset ("UTC-11").
 
@@ -136,10 +143,13 @@ fixed).
    tool ends, the window opens (the answer already in the page's cache), the point is kept. A refusal or a failure: the
    message in the tool bar, the tool stays on for another click, the window and the forecast on screen untouched. The
    pending / keep-later logic goes with A-13's edge cases. "Not kept" (50 points, storage refused) is said visibly.
-3. **Rows and graphs.** Rows in rank order per hour (height descending; the wind sea among the swells, as in a
-   bulletin), packed from the left; the tracking code, its constants, tests and words removed; the table's 7-day
-   column rule as for the stations. Graph data on hourly slots; `rangeWindow` counts rows again (exact for stations as
-   on production).
+3. **Rows and graphs.** ONE ranking function (height squared x peak period, descending; ties by height, then the
+   source's order; the wind sea among the swells; packed from the left) applied to the rows of all three sources
+   (points, NOAA bulletins, SWAN) after parsing, and to the live-buoy components; the tracking code, its constants,
+   tests and words removed; the table's 7-day column rule unchanged (a hidden column then holds only the weakest
+   system of its hour). The stations' answers change on purpose (same numbers, other columns in about a third of
+   rows): fixtures and the golden's fake rows follow, and the re-check covers the station tables. A point's graph
+   data on hourly slots; `rangeWindow` counts rows again.
 4. **Time zone.** The point's own civil zone when the lookup gives one; else the nearest station's zone
    (`station_timezones.json`) within about 1,000 km; else the ring search; else the nautical zone. "Etc/GMT+N" shown
    as "UTC-N" (display only: station answers keep their bytes). One helper for the table and for the overlay's

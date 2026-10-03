@@ -579,3 +579,41 @@ are byte-identical in their tables and graph data. The checked answers: 51201 (G
      - Stopping the search 0.5 km before the cell's centre: the Mundaka bar would get the note, and 134 points in all.
    - **The repo's code matches the prototype** at 0 of 2,029 served points. Cost: median 1-4 ms a point, at most 126 ms.
    - **Tests:** 15 mutants, all killed after 4 pins.
+
+## Re-check 2 (2026-10-03, one fresh reviewer at MAX, on `060535e..addf999` + `584cda3`)
+
+Report: scratch `g22/recheck2/g22-recheck2-report.md`, with its scripts and logs in `r/`. Counts: **0 P0, 1 P1, 3 P2,
+4 P3.**
+
+**Confirmed correct:**
+- **The path rule's arithmetic.** An independent 20 m sampled rule agrees at all 3,731 set points and 3,738 special
+  points (across 180, near the poles, along cell lines and at corners, in fjords).
+- **Coast cells:** all 1,473 published cells pass the own-box check.
+- **The owner's 13 reference spots** are served, and so are most clicks within 600 m of each.
+- **Fixed, checked with real clicks:** the folded bar, the late answer, the failed-load clearing and Retry's focus.
+- **Unchanged:** stations keep their tooltip modes.
+- **The narrow-mouth note** matches an independent method everywhere except near the 5-degree cell lines (R2-3),
+  including across 180 and in fjords, at about 5 ms a point.
+- **Suites:** pytest 589 passed and Node 343 passed on `addf999`.
+
+The author confirmed R2-1, R2-2 and R2-3 on the test site:
+- `pt_27580S_153370E` is served from -27.5 153.5, 15.6 km away.
+- `pt_57050N_177580W` shows Etc/GMT+12 from 6:00 AM, while station 46035 shows America/Nome from 10:00 AM.
+- `pt_39394N_140013E` reads "(open water 12 km away)".
+
+| Id | Severity | Finding | Planned |
+|---|---|---|---|
+| R2-1 | P1 | A land run reaching the cell's centre is forgiven up to half a cell (9.3 / 13.9 km). That re-serves sheltered water behind barrier islands, and Moreton Bay (refused at `060535e`) gets the Coral Sea's swell. Also 12 bay grid points, 3 of A's points, and 4 Wadden Sea points served only through the forgiveness. | Forgive at most 3 km (never more than the cell's smaller half-width in km). Pin: a lagoon behind a 10 km island with the cell centre on it. Re-measure every set. |
+| R2-2 | P2 | The 3-hour zone rule also rejects same-side zones (Alaska in the Bering Sea; 4 h from UTC-12 in summer). This depends on the season, and the cache keeps the answer. 30 station positions; 11 grid points get Asia/Anadyr, a day from the Nome-zone station beside them. | Reject a station's zone only across the date line (12 h or more from the nautical offset in both January and July). The ring search is the nearest land's own zone, so it gets no check. |
+| R2-3 | P2 | `mouth_aperture` takes the first crossing as land, and the coast cells' closing edge pairs along 5-degree lines through water count. False notes: Akita, Tokyo Bay, Ise Bay, Lake Borgne, Croatia, Chile (39 of 247 notes near cell lines; 1 of 48 in A's set). | The first land run of 0.1 km or more on each ray. Pin: an edge pair through water beside the path. |
+| R2-4 | P2 (older code) | The other two charts' synced tooltips list absent swells as "Swell N: 0". | `setActive` only for visible datasets with a value at the index. |
+| R2-5 | P3 | The shore band starts the path at its first water sample only. Honolua Bay (W29) and Mundaka shore clicks are refused although another water sample within 300 m reaches a cell. | Try the band's water samples, nearest first, until one reaches a cell. Only refused clicks pay. |
+| R2-6 | P3 | The note misses mouths inside the cell's own box (Botany Bay, Western Port, Kaipara). It says "open water" where the cell sits in an archipelago (Aland) or on land (an R2-1 serve). | Keep the box cut-off (by design) and the owner's wording; state both in the README. R2-1's fix removes the cell-on-land serve. |
+| R2-7 | P3 | `allshoreRow` picks the row over hidden datasets too. | Rows from visible datasets only. |
+| R2-8 | P3 | The fetch cap's docstring says "every system" (Windows waits for the read timeout). The timer is cancelled after the connection has gone back to the pool. | Cancel inside the `with`; correct the docstring (Linux, where the service runs, wakes). |
+
+Not checked by the reviewer:
+- Linux socket behaviour (reasoned only).
+- Its own mutants.
+- Live phones and keys.
+- Brief items 6-7 beyond reading.

@@ -1124,6 +1124,7 @@ test('Forecast point: while a point is checked the folded bar says so, and there
   E.q('.tools-fold').dispatch('click');
   E.clickAt(21.5, -158.0);
   assert.equal(E.q('.tools-bar-title').textContent, 'Checking that point…');
+  assert.doesNotMatch(E.body(), /Checking that point/, 'said once: the title (found on the test site)');
   assert.equal(E.q('[data-act="clear"]').hidden, true);
   resolve({ ok: false, message: 'land' }); await E.settle();
   assert.equal(E.q('.tools-bar-title').textContent, 'Forecast point');

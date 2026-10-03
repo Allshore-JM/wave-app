@@ -2116,8 +2116,10 @@
       try { return d.toLocaleString([], opts); }
       catch (e) { delete opts.timeZone; return d.toLocaleString([], opts); }
     }
-    // Short zone abbreviation (e.g. "AEST", "AWST", "GMT+10") for a given time + zone.
+    // Short zone abbreviation (e.g. "AEST", "AWST", "GMT+10") for a given time + zone. A nautical zone reads as the
+    // forecast window writes it ("Etc/GMT+8" -> "UTC−8", not Intl's "GMT-8": one name on one screen, G22 R-B4).
     function tzAbbr(iso, tz) {
+      if (/^Etc\//.test(tz || '') && window.AllshoreForecast && window.AllshoreForecast.zoneLabel) return window.AllshoreForecast.zoneLabel(tz);
       try {
         const parts = new Intl.DateTimeFormat('en-US',
           { timeZone: tz || undefined, timeZoneName: 'short' }).formatToParts(new Date(iso));

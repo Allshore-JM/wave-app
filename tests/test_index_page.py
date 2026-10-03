@@ -443,3 +443,5 @@ def test_the_fix_round_2_page_rules(client, monkeypatch):
     on = client.get("/?station=51201").get_data(as_text=True)
     assert "onPoint: true && window.__allshorePoints ?" in on
     assert ".fwin .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0;" in body
+    # the overlay's and the live panel's zone label: a nautical zone as the window writes it (R-B4, found on the test site)
+    assert "if (/^Etc\\//.test(tz || '') && window.AllshoreForecast && window.AllshoreForecast.zoneLabel) return window.AllshoreForecast.zoneLabel(tz);" in body

@@ -27,6 +27,9 @@ app.register_blueprint(reef_bp)
 from datetime import datetime, timezone
 import pytz  # keeping your existing library
 
+# A zone as a visitor reads it ("Etc/GMT+11" -> "UTC-11"; G22 R-A17). point_forecast is imported above.
+app.add_template_filter(lambda name: point_forecast.zone_label(name), "zone_label")
+
 @app.template_filter("in_tz")
 def jinja_in_tz(dt, tz_name, fmt="%b %d, %Y %I:%M %p"):
     """
@@ -93,6 +96,7 @@ import time
 import logging
 import threading
 import hashlib
+import socket
 from requests.adapters import HTTPAdapter
 try:
     from urllib3.util.retry import Retry
@@ -280,7 +284,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.14.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.15.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript"}
@@ -374,26 +378,42 @@ _POINT_HTTP = requests.Session()      # no retry adapter: a point's objects are 
 
 
 def _points_fetch(url: str, max_bytes: int) -> bytes:
-    """A whole 200 body of at most max_bytes within _POINT_FETCH_MAX_S, or an exception (point_forecast turns it
-    into its message)."""
-    with _POINT_HTTP.get(url, timeout=_POINT_FETCH_TIMEOUT, stream=True) as resp:
-        if resp.status_code != 200:
-            raise IOError(f"HTTP {resp.status_code}")
-        killer = threading.Timer(_POINT_FETCH_MAX_S, resp.close)     # a body that trickles: closed, the read raises
-        killer.daemon = True
-        killer.start()
-        try:
-            want = resp.headers.get("Content-Length")
+    """A whole 200 body of at most max_bytes within about _POINT_FETCH_MAX_S from the request, or an exception
+    (point_forecast turns it into its message). A body that trickles is cut by shutting its socket down: closing the
+    response from another thread would wait for the reader's lock, i.e. for the whole body (G22 R-A2). A short body
+    is urllib3's IncompleteRead. Headers that trickle are not cut (R2 sends them at once)."""
+    deadline = time.monotonic() + _POINT_FETCH_MAX_S
+    held = {"sock": None, "late": False}
+
+    def cut():
+        held["late"] = True
+        sock = held["sock"]
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)                      # wakes a blocked recv on every system, needs no lock
+            except OSError:
+                pass
+
+    killer = threading.Timer(_POINT_FETCH_MAX_S, cut)
+    killer.daemon = True
+    killer.start()
+    try:
+        with _POINT_HTTP.get(url, timeout=_POINT_FETCH_TIMEOUT, stream=True) as resp:
+            held["sock"] = getattr(getattr(resp.raw, "_connection", None), "sock", None)
+            if held["late"]:
+                cut()                                                # the time ran out while the headers came
+            if resp.status_code != 200:
+                raise IOError(f"HTTP {resp.status_code}")
             body = bytearray()
             for chunk in resp.iter_content(65536):
                 body += chunk
                 if len(body) > max_bytes:
                     raise IOError("body too large")
-            if want is not None and want.isdigit() and int(want) != len(body) and not resp.headers.get("Content-Encoding"):
-                raise IOError("body cut short")
+                if time.monotonic() > deadline:
+                    raise IOError("too slow")
             return bytes(body)
-        finally:
-            killer.cancel()
+    finally:
+        killer.cancel()
 
 
 POINTS = point_forecast.PointSource(_points_root, _points_fetch)
@@ -1764,7 +1784,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     if not compact:
         html += f'<tr><td colspan="{n_cols}" class="forecast-info">{cycle_str}</td></tr>\n'
         html += f'<tr><td colspan="{n_cols}" class="forecast-info">{location_str}</td></tr>\n'
-        html += f'<tr><td colspan="{n_cols}" class="forecast-info">Time Zone: {tz_label}</td></tr>\n'
+        html += f'<tr><td colspan="{n_cols}" class="forecast-info">Time Zone: {point_forecast.zone_label(tz_label)}</td></tr>\n'
     html += '<tr>'
     html += '<th rowspan="2" scope="col">Date</th><th rowspan="2" scope="col">Time</th>'
     for g in gs:
@@ -2126,6 +2146,10 @@ def index():
         # a point is no option of the stations' select: the no-script page names it itself (G22 B-5)
         selected_point_label=(point_forecast.fmt_coord(*point_forecast.parse_point_id(selected_station))
                               if point_forecast.parse_point_id(selected_station) else None),
+        # an id that is neither a station nor a point keeps its own option (no-script: not the first station; G22 R-B12)
+        selected_unknown=bool(selected_station) and not point_forecast.parse_point_id(selected_station)
+                         and all(sid != selected_station for sid, _name in stations),
+        points_enabled=bool(_points_root()),
         timezones=timezones,
         selected_tz=selected_tz,
         units=unit_options,
@@ -3537,6 +3561,20 @@ def _nearest_station_tz(lat, lon, reach_km=POINT_TZ_STATION_KM):
     return get_station_tz(best) if best else None
 
 
+POINT_TZ_MAX_SHIFT_H = 3.0          # a station's zone is taken only this close to the point's own sun time
+
+
+def _zone_near_nautical(tz_name, lon, now=None):
+    """Whether the zone's offset (now) lies within POINT_TZ_MAX_SHIFT_H of the point's nautical offset: a station
+    across the date line keeps its calendar, a day away from the point's (G22 R-A3)."""
+    try:
+        when = now or datetime.now(timezone.utc)
+        off = when.astimezone(pytz.timezone(tz_name)).utcoffset().total_seconds() / 3600.0
+    except Exception:
+        return False
+    return abs(off - round(float(lon) / 15.0)) <= POINT_TZ_MAX_SHIFT_H
+
+
 def _point_tz(lat, lon):
     """The zone a forecast point's times are shown in (owner, 2026-10-02: the nearest station's): the civil zone of
     the point's own waters when it has one; else the zone of the nearest forecast station within
@@ -3549,7 +3587,9 @@ def _point_tz(lat, lon):
         tz = _safe_tzname_for_latlon(lat, lon)
         if not tz or tz.startswith("Etc/") or tz == "UTC":
             near = _nearest_station_tz(lat, lon)
-            tz = near if near and not near.startswith("Etc/") else _nearest_civil_tz(float(lat), float(lon))
+            if near and (near.startswith("Etc/") or not _zone_near_nautical(near, lon)):
+                near = None                                          # e.g. America/Adak for the Commander Islands (G22 R-A3)
+            tz = near or _nearest_civil_tz(float(lat), float(lon))
         with _CACHE_LOCK:
             _POINT_TZ_CACHE[key] = tz
             while len(_POINT_TZ_CACHE) > _TZ_CACHE_MAX:

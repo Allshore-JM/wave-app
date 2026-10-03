@@ -1002,7 +1002,7 @@ test('Forecast point: one click hands the point to the page; a page that answers
   E.pick('point');
   assert.equal(E.q('.tools-bar-title').textContent, 'Forecast point');
   assert.match(E.body(), /Click the sea where you want a forecast\./);
-  assert.match(E.body(), /kept in this browser under My points/);
+  assert.match(E.body(), /kept under My points if this browser allows it/);   // no promise the browser cannot keep (G22 R-A14)
   assert.equal(E.A.active(), true); assert.equal(E.map.doubleClickZoom.enabled(), false);
   assert.equal(E.q('.tools-bar-actions').hidden, true, 'no Undo / Finish / Clear / Lock');
   E.clickAt(21.35, -518.6);                                                  // a click in another world copy
@@ -1078,7 +1078,7 @@ test('Forecast point: Escape that ends the tool gives the focus back to the tool
   const bar = E.doc.createElement('section'); bar.classList.add('fwin'); bar.classList.add('fw-min');
   const head = E.doc.createElement('button'); bar.appendChild(head); E.doc.body.appendChild(bar);
   head.focus();
-  E.key('Escape');
+  E.key('Escape', head);
   assert.equal(E.s.tool, null, 'Escape on a minimised window bar ends the tool');
 });
 
@@ -1094,4 +1094,52 @@ test('Forecast point: a click that began on a control is not a point; another to
   E.pick('distance');
   E.clickAt(21.3, -157.9);
   assert.equal(E.points.length, 0); assert.equal(E.s.pts.length, 1, 'the distance tool has the click');
+});
+
+// ---- G22 re-check (fix round 2) ----
+test('Forecast point: an answer that comes after the visitor opened something else ends the tool and opens nothing (G22 R-A6)', async () => {
+  let resolve = null, opened = 0;
+  const E = makeEnv({ answer: () => new Promise((res) => { resolve = res; }) });
+  E.pick('point'); E.clickAt(21.5, -158.0);
+  resolve({ ok: false, cancel: true, open: () => { opened++; } }); await E.settle();
+  assert.equal(opened, 0); assert.equal(E.s.tool, null); assert.equal(E.bar.hidden, true);
+});
+
+test('Forecast point: an HTTP error is told as the server\'s, a failed connection as the connection\'s (G22 R-B6)', async () => {
+  let reject = null;
+  const E = makeEnv({ answer: () => new Promise((res, rej) => { reject = rej; }) });
+  E.pick('point'); E.clickAt(21.5, -158.0);
+  reject(new Error('HTTP 503')); await E.settle();
+  assert.match(E.body(), /The forecast server could not answer \(HTTP 503\)\. Try again in a moment\./);
+  assert.doesNotMatch(E.body(), /reach the server/);
+  E.clickAt(21.6, -158.0);
+  reject(new TypeError('Failed to fetch')); await E.settle();
+  assert.match(E.body(), /Could not reach the server/);
+});
+
+test('Forecast point: while a point is checked the folded bar says so, and there is nothing to Clear (G22 R-B5)', async () => {
+  let resolve = null;
+  const E = makeEnv({ answer: () => new Promise((res) => { resolve = res; }) });
+  E.pick('point');
+  E.q('.tools-fold').dispatch('click');
+  E.clickAt(21.5, -158.0);
+  assert.equal(E.q('.tools-bar-title').textContent, 'Checking that point…');
+  assert.equal(E.q('[data-act="clear"]').hidden, true);
+  resolve({ ok: false, message: 'land' }); await E.settle();
+  assert.equal(E.q('.tools-bar-title').textContent, 'Forecast point');
+});
+
+test('Forecast point: Escape with the favourites list open on a minimised window closes the list, not the tool (G22 R-A7)', () => {
+  const E = makeEnv();
+  E.pick('point');
+  const bar = E.doc.createElement('section'); bar.classList.add('fwin'); bar.classList.add('fw-min');
+  const list = E.doc.createElement('ul'); list.id = 'stationResults'; bar.appendChild(list);
+  const row = E.doc.createElement('button'); list.appendChild(row); E.doc.body.appendChild(bar);
+  if (E.doc.byId) E.doc.byId.set('stationResults', list);
+  list.hidden = false;
+  E.key('Escape', row);
+  assert.equal(E.s.tool, 'point', 'the list has the key');
+  list.hidden = true;
+  E.key('Escape', row);
+  assert.equal(E.s.tool, null, 'the list closed: Escape reaches the tool again (B-13)');
 });

@@ -822,3 +822,50 @@ test('a forecast point: its answer is announced with ok and point; an old run sa
     graph_data: null, graph_header: null, model: 'GFS', swan_available: false, point: null }); await settle();
   assert.equal(err.querySelectorAll('button').length, 1, 'busy: Retry');
 });
+
+// ---- G22 re-check (fix round 2) ----
+test('graphs: a point\'s hourly slots: the tooltip and the sync take the nearest ROW between 3-hourly rows (G22 R-A4)', async () => {
+  const I = load(fakeWindow())._internals;
+  const n = 30, rows = Array.from({ length: n }, (_, j) => (j < 10 || j % 3 === 0 ? 1 : null)), ds = [{ data: rows }];
+  assert.equal(I.rowAt(ds, n, 13.4, 3), 12); assert.equal(I.rowAt(ds, n, 13.6, 3), 15); assert.equal(I.rowAt(ds, n, 4.2, 3), 4);
+  assert.equal(I.rowAt([{ data: Array(9).fill(null) }], 9, 4, 3), -1); assert.equal(I.rowAt(ds, n, NaN, 3), -1);
+  assert.equal(I.rowAt([{ data: [null, 1] }, { data: [2, null] }], 2, 0.2, 3), 0, 'a row is a slot with a value in ANY series');
+  assert.equal(I.slotted({ labels: ['a', 'b', 'c'], height: { combined: [1, null, 2] } }), true);
+  assert.equal(I.slotted({ labels: ['a', 'b'], height: { combined: [1, 2], s1: [null, null] } }), false);
+  const meta = (di) => ({ data: Array.from({ length: n }, (_, j) => ({ j, di })) });
+  const chart = { scales: { x: { getValueForPixel: (x) => x / 10 } }, chartArea: { left: 0, right: 1000 },
+    data: { labels: Array(n).fill(''), datasets: [ds[0], { data: rows.map((v) => (v === null ? null : 5)) }, { data: Array(n).fill(null) }] },
+    getDatasetMeta: meta, isDatasetVisible: () => true };
+  assert.deepEqual(I.rowMode(chart, { native: {}, x: 136 }).map((i) => [i.datasetIndex, i.index]), [[0, 15], [1, 15]], 'empty series give no item');
+  assert.deepEqual(I.rowMode(chart, { native: {}, x: -5 }), [], 'outside the plot');
+  const boxed = Object.assign({}, chart, { canvas: { getBoundingClientRect: () => ({ left: 100 }) } });
+  assert.deepEqual(I.rowMode(boxed, { clientX: 236, x: 999 }).map((i) => i.index), [15, 15], 'a native mouse event: from the canvas box');
+  assert.deepEqual(I.rowMode(boxed, { touches: [{ clientX: 141 }] }).map((i) => i.index), [4, 4], 'a touch');
+  // the charts of a point use it; a station's keep Chart.js's own 'index' mode
+  const win = fakeWindow(), page = buildPage(win), F = load(win), Chart = fakeChart();
+  page.graphs.hidden = false;
+  const G = F._internals.createForecastGraphs(graphDeps(win, page, Chart));
+  const gd = payload().graph_data;
+  const holes = (a) => a.map((v, j) => (j > 20 && j % 3 ? null : v));
+  const pt = Object.assign({}, gd, { height: Object.fromEntries(Object.entries(gd.height).map(([k, a]) => [k, holes(a)])) });
+  await G.setData(pt); await settle();
+  assert.equal(Chart.made[0].options.interaction.mode, 'allshoreRow'); assert.equal(Chart.made[0].options.plugins.tooltip.mode, 'allshoreRow');
+  assert.equal(typeof Chart.Interaction.modes.allshoreRow, 'function');
+  Chart.made[0].canvas.dispatch('mousemove', { index: 4 });
+  assert.equal(Chart.made[0].lastMode, 'allshoreRow', 'the three-chart sync asks the same mode');
+  await G.setData(gd); await settle();
+  assert.equal(Chart.made[3].options.interaction.mode, 'index'); assert.equal(Chart.made[3].options.plugins.tooltip.mode, 'nearest');
+});
+
+test('graphs: 7 d and 3 d of a long series are 168 and 72 slots (G22 re-check R-A5: F43 / F44)', async () => {
+  const win = fakeWindow({ session: { chartRange: '3' } }), page = buildPage(win), F = load(win), Chart = fakeChart();
+  page.graphs.hidden = false;
+  const labels = [];
+  for (let i = 0; i < 200; i++) { const d = new Date(2026, 9, 1, i); labels.push(`Thursday, October ${d.getDate()}, 2026 ${(d.getHours() % 12) || 12}:00 ${d.getHours() < 12 ? 'AM' : 'PM'}`); }
+  const g = (v) => ({ s1: labels.map(() => v), s2: [], s3: [], s4: [], s5: [], s6: [], combined: labels.map(() => v + 1) });
+  const G = F._internals.createForecastGraphs(graphDeps(win, page, Chart));
+  await G.setData({ labels, height: g(2), period: g(10), direction: g(300), units: 'ft' }); await settle();
+  assert.deepEqual([Chart.made[0].options.scales.x.min, Chart.made[0].options.scales.x.max], [0, 71]);
+  G.setRange('7'); assert.equal(Chart.made[0].options.scales.x.max, 167);
+  G.setRange('full'); assert.equal(Chart.made[0].options.scales.x.max, 199);
+});

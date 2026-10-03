@@ -412,19 +412,30 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   starts with `pt_`.
 - **Water or land** (owner, 2026-10-02: land is refused): the site's own coastlines (`static/coast/v1`, the
   full-resolution GSHHG cells the swell-exposure tool reads) decide, at the id's coordinates, on the server, for tool
-  clicks, links and saved points alike. Water = the coast data says water, or water lies within 300 m (`SHORE_M`: a
-  beach, a pier, the data's own error; the id of Pipeline's line-up is "land" by 70 m). Land: "That point is on
-  land or inland water" (`reason: "land"`). The Python decoder and land test answer as the page's
-  (`decodeCoastLL` / `inLand`) do. Coast data that cannot be read answers "temporarily unavailable": a point is
-  never served untested.
+  clicks, links and saved points alike. Water = the coast data says water, or water lies within 300 m (`SHORE_M`,
+  searched on rings every 50 m in 32 directions: a beach, a pier, the data's own error; the id of Pipeline's line-up
+  is "land" by 70 m). Land: "That point is land or inland water in the site's coastline data. If it is the sea, try
+  a point a little farther from the shore." (`reason: "land"`; owner, 2026-10-02: at a few breaks the data lies 1-2 km
+  off the real shore - Puerto Escondido, the Peahi cliffs, inner Honolua Bay - and the band stays 300 m). The Python
+  decoder and land test give the page's answers (`decodeCoastLL` / `inLand`) everywhere off the coastline itself;
+  `tests/fixtures/coast/land_parity.json` is checked on both sides. A coast cell must lie inside its own 5-degree box,
+  and a cell whose size disagrees with the index makes the index be read again. Coast data that cannot be read answers
+  "temporarily unavailable": a point is never served untested.
 - **The cell**: the nearest sea cell of any grid within 40 km (`REACH_KM`; on a tie the earlier grid) that can be
-  REACHED OVER WATER (owner: water whose only cells lie beyond land is refused). The straight path from the point to
-  the cell's centre is looked at every 250 m; two land samples in a row block it (a rock is one); the shore band at
-  the point and the middle of the cell's own box are not looked at. The nearest cell blocked: the next one; none:
-  "No forecast here: the wave model's nearest points lie beyond land" (`reason: "sheltered"`: San Francisco Bay,
-  Pearl Harbor, Long Island Sound). No sea cell within reach at all (ice, the Black Sea, the Great Lakes are land in
-  the coast data): `reason: "nodata"`. Of 1,759 water points within 40 km of a coast 82 % keep the nearest cell, 4 %
-  take another (5 km farther at the median), 8 % are sheltered. The payload's `point` says where the point and its
+  REACHED OVER WATER (owner: water whose only cells lie beyond land is refused). The straight path from the point
+  (from the nearest water when the point stands on the shore band) to the cell's centre is judged by its EXACT
+  crossings of the coast edges (`path_crossings`, `land_runs`; longitudes unwrapped from the point, the cells beyond
+  180 shifted by 360): any stretch of land of 100 m or more blocks it (`PATH_LAND_KM`), wherever it lies; only the
+  stretch that reaches the cell's centre is forgiven, up to half a cell (some sea cells have their centre on an islet
+  or a headland). The nearest cell blocked: the next one; none: "No forecast here: the wave model's nearest points lie
+  beyond land" (`reason: "sheltered"`: San Francisco Bay, Pearl Harbor, the Solent, Venice, lagoons behind barrier
+  islands), or `reason: "land"` when the click itself is on the shore band's land. Water that sees an open-sea cell
+  through a mouth is served from it (owner, 2026-10-02: the Golden Gate, Cowes, lower Tampa Bay; the header names the
+  cell and its distance). No sea cell within reach (sea ice; a sea the model does not have, such as the Black Sea,
+  which is water in the coast data): `reason: "nodata"`; the Great Lakes are land in the coast data (`reason:
+  "land"`). Measured on the reviewers' sets: 19 of 19 sheltered waters refused, 35 of 36 surf spots served (inner
+  Honolua Bay: the coast data barely has the bay), 551 of the 596 live-buoy positions served. The payload's `point`
+  says where the point and its
   cell are (`cell_lat`, `cell_lon`, `cell_km`, `grid`) and which run this is (`run`, `run_utc`, `published_utc`,
   `age_hours`); a refusal carries `final: true` and its `reason` (also `invalid`, and `off` without a bucket).
 - **The rank of a row's swells** (owner, 2026-10-02, ONE rule for every forecast table of the site): at each hour the
@@ -441,17 +452,21 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 - **The graphs' time axis**: `graph_data` of a point has one slot per HOUR of the run (385 labels, empty between the
   3-hourly rows), so a day is as wide on day 10 as on day 1, as a station's; the table keeps its 209 rows.
 - **The time zone** (owner: the nearest station's): the civil zone of the point's own waters when the lookup gives
-  one; else the zone of the nearest forecast station within 1,000 km (`_point_tz`: 340 km north of Oahu is Hawaii
-  time); else the nearest land's; else the nautical zone.
+  one; else the zone of the nearest forecast station within 1,000 km whose offset lies within 3 hours of the point's
+  nautical one (`_point_tz`: 340 km north of Oahu is Hawaii time; a station across the date line never gives its
+  calendar: off the Commander Islands Asia/Kamchatka, not America/Adak); else the nearest land's; else the nautical
+  zone, shown as "UTC-11", never "Etc/GMT+11" (`zone_label`, also on the no-script page).
 - **Limits** (one worker, four threads): a cache of its own (`_POINT_CACHE`, 64 forecasts keyed by run, point and
   zone: points never push a station's forecast out); two point builds at a time, a third waits two seconds and is
   then told "The server is busy ... try again" (`busy: true`, not kept): one deadline for the whole wait, and at once
   when both builds have been stuck longer than that; a point's objects are fetched with ONE attempt (3 s to connect,
-  6 s between bytes, 8 s for the whole object: a hanging bucket holds a slot for seconds, not half a minute); a tile that
+  6 s between bytes, about 8 s for the whole object from the request on: the socket of a body that trickles is shut
+  down, which also stops a body with a Content-Length - closing the response from another thread waited for all of it;
+  headers that trickle are not cut, R2 sends them at once); a tile that
   fails its check is not kept; the pointer is read every five minutes and, when it cannot be read, the last manifest serves for
   up to six hours; a 24 MB cap on kept tiles, 256 kept cell series (a change of time zone or units costs no fetch).
-  numpy and `pointfmt` load on the first point, not at start: about +22 MB then, +35 MB after sixteen points around
-  the world. Measured against the live bucket: the first point 1.4 s, a new point about 0.5 s, a kept one 11 ms.
+  `pointfmt` loads on the first point (numpy is already there: the time-zone lookup behind the live-buoy list loads
+  it): about +22 MB then, +35 MB after sixteen points around the world. Measured against the live bucket: the first point 1.4 s, a new point about 0.5 s, a kept one 11 ms.
 - **Where it reads**: env `POINTS_ROOT` (the bucket's public root), else `MODEL_FRAMES_BASE` without its
   `/gfswave/0p25/v1`; neither: "Forecast points are not available on this server". Object keys are built here, never
   taken from the manifest; every object is checked against what was asked for (run, grid, tile, steps, fields).
@@ -461,7 +476,7 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   their fifth and sixth; the found ones within 0.03 m, 0.05 s and 1.4 degrees). Run it again when NOAA changes its
   wave products.
 
-## Forecast points: the page (plan section 31, steps 5 and 8; UI asset 1.14.0)
+## Forecast points: the page (plan section 31, steps 5 and 8; UI asset 1.15.0)
 
 - **The tool**: Map tools -> **Forecast point** (first in the menu). A click (or tap) ASKS the server first
   ("Checking that point..." in the tool bar; `AllshoreForecast.prefetch` fetches and keeps the forecast without
@@ -469,7 +484,9 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   and graphs as a station, titled with its coordinates: "21.700N 158.200W", "Pipeline — 21.667N 158.054W" once named).
   A refusal (owner, 2026-10-02: land is refused; so is sheltered water and water without model data) or a failure:
   the server's message in the tool bar, the tool stays on for another click, nothing on screen changes, nothing is
-  kept. A closed or restarted tool drops a late answer.
+  kept. A closed or restarted tool drops a late answer, and so does a visitor who opened another forecast meanwhile.
+  An HTTP error is told as the server's, a failed connection as the connection's. The tool shows only where a points
+  bucket is set.
 - **My points**: kept in each visitor's own browser (localStorage `allshore.points.v1`, `[{id, lat, lon, name}]`, 50
   at most; the coordinates are read from the id, never trusted from storage; accounts may adopt the record later). A
   point opened with the tool is kept at once; when it cannot be (50 already, storage full or switched off) the window
@@ -486,8 +503,12 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   text yields first.
 - **The window**: the run's age is shown after the cycle once it passes 13 hours ("· 15 h old": a NOAA cycle was
   missed). A point's graph data has one slot an hour (the server fills the 3-hourly part with gaps), so days are as
-  wide as a station's and the 7-day and 3-day ranges count rows as for every station. A refusal or error is said
-  once, in the window's box; a failed load clears the last table. Nautical zones are written as offsets ("Etc/GMT+11"
-  -> "UTC-11"). A map tool's click on a point marker goes to the tool.
+  wide as a station's and the 7-day and 3-day ranges count rows as for every station; the tooltip and the
+  three-chart sync take the nearest ROW (a Chart.js interaction mode of the page's own, `allshoreRow`: Chart.js's
+  own modes went blank between the 3-hourly rows). A refusal or error is said once, in the window's box; a failed
+  load clears the last table, the run text, the model bar and the note; Retry keeps the keyboard in the window. A
+  refusal is forgotten when a forecast for the point lands. Nautical zones are written as offsets ("Etc/GMT+11" ->
+  "UTC-11"). A map tool's click on a point marker goes to the tool. Names are cut by what a visitor sees as one
+  character (a family emoji or a flag is one).
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
   (522 inputs) is checked against both.

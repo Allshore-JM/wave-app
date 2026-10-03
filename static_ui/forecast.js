@@ -138,11 +138,20 @@
     return Math.abs(lat).toFixed(3) + (lat >= 0 ? 'N' : 'S') + ' ' + Math.abs(lon).toFixed(3) + (lon >= 0 ? 'E' : 'W');
   }
   // A name as the visitor typed it, made safe to keep: no control characters (bidi controls included: a name could
-  // turn the coordinates round, G22 A-14), single spaces, at most 40 characters (counted as the visitor sees them:
-  // an emoji is not cut in half, G22 B-11).
+  // turn the coordinates round, G22 A-14), single spaces, at most 40 characters counted as the visitor sees them: a
+  // family emoji, a flag or a skin tone is one character and is never cut apart (G22 B-11, R-A12).
+  function graphemes(t) {
+    if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+      try { return Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(t), function (g) { return g.segment; }); } catch (e) {}
+    }
+    return Array.from(t);
+  }
   function cleanName(s) {
-    var t = String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim();
-    return Array.from(t).slice(0, POINT_NAME_MAX).join('').trim();
+    if (typeof s !== 'string' && typeof s !== 'number') s = '';                     // a stored object cannot stop the page (G22 R-A13)
+    var t = String(s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim();
+    var g = graphemes(t);
+    if (g.length <= POINT_NAME_MAX) return t;
+    return g.slice(0, POINT_NAME_MAX).join('').replace(/[\u200d\ufe0f]+$/, '').trim();   // without a Segmenter: no dangling joiner
   }
   // The text a point goes by: its coordinates always (owner: "the location should show the gps coordinates"), its
   // name in front when it has one ("Pipeline — 21.667N 158.054W", like "51201 — Waimea Bay, HI"). The name is
@@ -183,7 +192,7 @@
       var c = r && typeof r === 'object' ? parsePointId(r.id) : null;
       if (!c || seen[r.id]) return;
       seen[r.id] = true;
-      out.push({ id: r.id, lat: c.lat, lon: c.lon, name: cleanName(r.name) });
+      out.push({ id: r.id, lat: c.lat, lon: c.lon, name: typeof r.name === 'string' ? cleanName(r.name) : '' });
     });
     return out.slice(0, POINTS_MAX);
   }
@@ -369,6 +378,53 @@
     var M = d.getMonth() + 1, D = d.getDate(), h = d.getHours();
     return h === 0 ? M + '/' + D + ' 12am' : h === 12 ? M + '/' + D + ' 12pm' : '';
   }
+  // A forecast point's graphs have one slot an hour and rows every 3 hours after +120 h: the slots between rows are
+  // empty in every series. Chart.js's 'index' / 'nearest' modes look only at the two slots either side of the pointer
+  // and skip empty ones, so the tooltip and the sync went blank over a third of the later days (G22 R-A4). This mode
+  // takes the nearest slot that holds a row (any series with a value).
+  var ROW_MODE = 'allshoreRow';
+  function hasRow(datasets, j) {
+    for (var d = 0; d < datasets.length; d++) { var v = datasets[d].data ? datasets[d].data[j] : null; if (v !== null && v !== undefined && Number.isFinite(+v)) return true; }
+    return false;
+  }
+  // the slot of the row nearest to a slot value (fractional); -1 when none lies within `reach` slots
+  function rowAt(datasets, n, value, reach) {
+    if (!Number.isFinite(value)) return -1;
+    var best = -1, bestD = Infinity, lo = Math.max(0, Math.floor(value) - reach), hi = Math.min(n - 1, Math.ceil(value) + reach);
+    for (var j = lo; j <= hi; j++) { var dd = Math.abs(j - value); if (dd < bestD && hasRow(datasets, j)) { best = j; bestD = dd; } }
+    return best;
+  }
+  function slotted(gd) {                                                       // some slot holds no row in any series
+    var keys = ALL_SWELLS.concat(['combined']), n = gd && gd.labels ? gd.labels.length : 0;
+    var sets = keys.map(function (k) { return { data: (gd.height || {})[k] || [] }; });
+    for (var j = 0; j < n; j++) if (!hasRow(sets, j)) return true;
+    return false;
+  }
+  function rowMode(chart, e) {
+    var xs = chart.scales && chart.scales.x, area = chart.chartArea, labels = chart.data && chart.data.labels;
+    if (!xs || !labels) return [];
+    var x = e && typeof e.x === 'number' && ('native' in e || !('clientX' in e)) ? e.x : null;
+    if (x === null && e && chart.canvas && chart.canvas.getBoundingClientRect) {
+      var r = chart.canvas.getBoundingClientRect(), p = e.touches && e.touches[0] ? e.touches[0] : e;
+      x = p.clientX - r.left;
+    }
+    if (x === null || !Number.isFinite(x) || (area && (x < area.left || x > area.right))) return [];
+    var j = rowAt(chart.data.datasets, labels.length, xs.getValueForPixel(x), 3);
+    if (j < 0) return [];
+    var out = [];
+    chart.data.datasets.forEach(function (ds, di) {
+      var v = ds.data ? ds.data[j] : null, meta = chart.getDatasetMeta(di);
+      if (v === null || v === undefined || !chart.isDatasetVisible(di) || !meta || !meta.data[j]) return;
+      out.push({ element: meta.data[j], datasetIndex: di, index: j });
+    });
+    return out;
+  }
+  function registerRowMode(Chart) {
+    var modes = Chart && Chart.Interaction && Chart.Interaction.modes;
+    if (!modes) return false;
+    if (!modes[ROW_MODE]) modes[ROW_MODE] = rowMode;
+    return true;
+  }
   function readRange(storage) { try { var v = storage.getItem(RANGE_KEY); return v === '7' || v === '3' ? v : 'full'; } catch (e) { return 'full'; } }
 
   function createForecastGraphs(deps) {
@@ -406,10 +462,11 @@
     }
     function build(Chart, gd, parsed) {
       var shade = makeNightShade(parsed), xAxis = makeXAxis(parsed);
-      var common = { responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false, axis: 'x' },
+      var mode = slotted(gd) && registerRowMode(Chart) ? ROW_MODE : 'index';
+      var common = { responsive: true, maintainAspectRatio: false, interaction: { mode: mode, intersect: false, axis: 'x' },
         layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } }, elements: { point: { radius: 1.6 }, line: { tension: 0.25, borderWidth: 0 } },
         // one line of legend above the plot (it used to wrap under it and eat the plot height)
-        plugins: { legend: { position: 'top', align: 'start', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 6, padding: 8, font: { size: 11 } } }, tooltip: { mode: 'nearest', intersect: false }, decimation: { enabled: false } },
+        plugins: { legend: { position: 'top', align: 'start', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 6, padding: 8, font: { size: 11 } } }, tooltip: { mode: mode === ROW_MODE ? ROW_MODE : 'nearest', intersect: false }, decimation: { enabled: false } },
         animation: false };
       var keys = swellKeys(gd);
       var hArr = keys.concat(['combined']).map(function (k) { return gd.height[k]; });
@@ -446,7 +503,8 @@
       }
       function clear(ch) { if (!ch) return; ch.setActiveElements([]); if (ch.tooltip) ch.tooltip.setActiveElements([], {}); ch.update('none'); }
       function broadcast(src, evt) {
-        var pts = src.getElementsAtEventForMode(evt, 'index', { intersect: false, axis: 'x' }, true);
+        var m = src.options && src.options.interaction && src.options.interaction.mode === ROW_MODE ? ROW_MODE : 'index';
+        var pts = src.getElementsAtEventForMode(evt, m, { intersect: false, axis: 'x' }, true);
         if (!pts || !pts.length) return;
         list.forEach(function (ch) { if (ch !== src) setActive(ch, pts[0].index); });
       }
@@ -747,7 +805,11 @@
       var lbl = opts.stationLabel ? opts.stationLabel(state.station) : state.station;        // the header names the station the address bar shows
       writeLabel(els.title, lbl); if (els.title) els.title.title = lbl;
       box.appendChild(doc.createTextNode(msg + ' '));
-      if (retry) { var b = doc.createElement('button'); b.type = 'button'; b.className = 'btn btn-sm btn-outline-secondary'; b.textContent = 'Retry'; b.addEventListener('click', function () { retry(); }); box.appendChild(b); }
+      if (retry) {
+        var b = doc.createElement('button'); b.type = 'button'; b.className = 'btn btn-sm btn-outline-secondary'; b.textContent = 'Retry';
+        b.addEventListener('click', function () { if (els.body && els.body.focus) els.body.focus(); retry(); });   // the button goes: focus stays in the window (G22 R-B8)
+        box.appendChild(b);
+      }
       box.hidden = false;
     }
     function setMeta(h) {
@@ -780,7 +842,12 @@
       replaceState: function (url) { try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
-            clear: function () { clearNode(els.table); setMeta(null); graphs.setData(null); },
+            clear: function () {                                              // a failed load leaves nothing of the last forecast (G22 B-7, R-A9, R-A10)
+              clearNode(els.table); setMeta(null); graphs.setData(null);
+              text(els.cycle, ''); if (els.cycle) els.cycle.title = '';
+              if (els.modelBar) els.modelBar.hidden = true;
+              note(null);
+            },
             apply: function (d, st, retry) {
               var avail = typeof d.swan_available === 'boolean' ? d.swan_available : swanStations.indexOf(st.station) >= 0;
               if (els.modelBar) { els.modelBar.hidden = !avail; pressed(els.modelBar, 'data-model', st.model); }
@@ -896,7 +963,7 @@
     _internals: {
       SETTINGS_KEY: SETTINGS_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
-      clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
+      clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY,
       POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,

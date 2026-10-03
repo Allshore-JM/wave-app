@@ -468,7 +468,8 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   stretch that reaches the cell's centre is forgiven, up to 3 km (`PATH_CENTRE_KM`: some sea cells have their centre
   on an islet or a headland; half a cell let a whole barrier island through, G22 R2-1: Moreton Bay). The nearest
   cell blocked: the next one; none: "No forecast here: the wave model's nearest points lie beyond land"
-  (`reason: "sheltered"`: San Francisco Bay, Pearl Harbor, the Solent, Venice, lagoons behind barrier islands), or `reason: "land"` when the click itself is on the shore band's land. Water that sees an open-sea cell
+  (`reason: "sheltered"`: San Francisco Bay, Pearl Harbor, the Solent, Venice, lagoons behind barrier islands), or
+  `reason: "land"` when the click itself is on the shore band's land. Water that sees an open-sea cell
   through a mouth is served from it (owner, 2026-10-02: the Golden Gate, Cowes, lower Tampa Bay). No sea cell within
   reach (sea ice; a sea the model does not have, such as the Black Sea, which is water in the coast data):
   `reason: "nodata"`; the Great Lakes are land in the coast data (`reason: "land"`). Measured on the reviewers'

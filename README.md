@@ -430,14 +430,14 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   or a headland). The nearest cell blocked: the next one; none: "No forecast here: the wave model's nearest points lie
   beyond land" (`reason: "sheltered"`: San Francisco Bay, Pearl Harbor, the Solent, Venice, lagoons behind barrier
   islands), or `reason: "land"` when the click itself is on the shore band's land. Water that sees an open-sea cell
-  through a mouth is served from it (owner, 2026-10-02: the Golden Gate, Cowes, lower Tampa Bay; the header names the
-  cell and its distance). No sea cell within reach (sea ice; a sea the model does not have, such as the Black Sea,
-  which is water in the coast data): `reason: "nodata"`; the Great Lakes are land in the coast data (`reason:
-  "land"`). Measured on the reviewers' sets: 19 of 19 sheltered waters refused, 35 of 36 surf spots served (inner
-  Honolua Bay: the coast data barely has the bay), 551 of the 596 live-buoy positions served. The payload's `point`
-  says where the point and its
-  cell are (`cell_lat`, `cell_lon`, `cell_km`, `grid`) and which run this is (`run`, `run_utc`, `published_utc`,
-  `age_hours`); a refusal carries `final: true` and its `reason` (also `invalid`, and `off` without a bucket).
+  through a mouth is served from it (owner, 2026-10-02: the Golden Gate, Cowes, lower Tampa Bay). No sea cell within
+  reach (sea ice; a sea the model does not have, such as the Black Sea, which is water in the coast data):
+  `reason: "nodata"`; the Great Lakes are land in the coast data (`reason: "land"`). Measured on the reviewers'
+  sets: 19 of 19 sheltered waters refused, 35 of 36 surf spots served (inner Honolua Bay: the coast data barely has
+  the bay), 551 of the 596 live-buoy positions served. The table's and the graphs' Location line shows the clicked
+  point's coordinates only (owner, 2026-10-02: "Location : 21.700N 158.200W"); the payload's `point` says where
+  the point and its cell are (`cell_lat`, `cell_lon`, `cell_km`, `grid`) and which run this is (`run`, `run_utc`,
+  `published_utc`, `age_hours`); a refusal carries `final: true` and its `reason` (also `invalid`, and `off` without a bucket).
 - **The rank of a row's swells** (owner, 2026-10-02, ONE rule for every forecast table of the site): at each hour the
   wind sea and the swells in descending order of height squared x peak period (`rank_groups`), packed from the left.
   That is the energy arriving per metre of crest in deep water and the only wave quantity in the usual breaker-height

@@ -10,6 +10,7 @@ import csv
 import io
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -139,6 +140,29 @@ def test_spectra_rank_only_where_this_months_file_exists():
     assert len(probes) == len(B.AODNProvider.SPECTRA_SITES)
     p._fetch_stations()                                              # cached: no second round of probes
     assert len([u for u, _ in http.calls if u.startswith(B.AODNProvider.THREDDS)]) == len(probes)
+
+
+def test_the_three_requests_run_side_by_side():
+    """The positions query and the spectra probe run beside the map layer's stream (one after another they doubled
+    AODN's refresh, which the live-buoy list waits for). Each request below only answers once the other kind has been
+    asked: run one after another, a wait runs out and the refresh fails."""
+    map_asked, probe_asked = threading.Event(), threading.Event()
+
+    class Gated(RoutedHTTP):
+        def get(self, url, **kw):
+            if url.startswith(B.AODNProvider.THREDDS):
+                probe_asked.set()
+            elif B.AODNProvider.POS_LAYER in url:
+                assert map_asked.wait(5), "positions answered before the map layer was asked"
+            else:
+                map_asked.set()
+                assert probe_asked.wait(5), "the map layer answered before the spectra probe was asked"
+            return super().get(url, **kw)
+
+    p = B.AODNProvider(http=Gated(_positions_csv(_all_sites())))
+    t = time.time()
+    out = p._fetch_stations()
+    assert time.time() - t < 4 and {s["local_id"] for s in out} >= {"Bob", "Apollo Bay"}
 
 
 def test_aodn_markers_merge_with_another_network_on_the_site_name():

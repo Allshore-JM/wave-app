@@ -520,17 +520,18 @@ class AODNProvider(BuoyProvider):
         self._spec_probe = (month, now, ok)
         return ok
 
-    def _fetch_stations(self):
-        pos = self._observed_positions()       # first: a failure leaves every cache as it was
+    def _map_rows(self):
+        """(column index, site -> rows) from the map layer, streamed; (None, None) when the answer has no header or
+        lacks a needed column."""
         url = (self.BASE + "?service=WFS&version=1.0.0&request=GetFeature&typeName="
                + self.LAYER + "&outputFormat=csv&propertyName=" + self.PROPS)
         stream = _wfs_row_stream(self.http, url, self.timeout)
         hdr = next(stream, None)
         if not hdr:
-            return []
+            return None, None
         ix = {c: i for i, c in enumerate(hdr)}
         if any(c not in ix for c in ("site_name", "time_end", "TIME", "geom")):
-            return []
+            return None, None
         bysite = {}                        # the map layer carries each site's full series
         # Only the newest row and the last 24 h of each site's series end up in the output
         # (_recent_window), yet the layer ships ~7 days per site. Rows are pruned WHILE
@@ -559,12 +560,27 @@ class AODNProvider(BuoyProvider):
                 if len(srows) >= self.PRUNE_EVERY:
                     cut = maxtl[s] - self.PRUNE_KEEP
                     bysite[s] = [r for r in srows if _parse_naive(r[ix["TIME"]]) >= cut]
+        return ix, bysite
+
+    def _fetch_stations(self):
+        # Three independent requests: the observed positions and this month's spectra files run beside the map
+        # layer's stream, so a refresh waits for the slowest, not their sum (one after another they doubled the
+        # refresh, ~5 -> 8-13 s measured 2026-10-03, and the live-buoy list waits for it every 30 min). Nothing
+        # is stored before all three answers are in: a failure of any of them leaves every cache as it was.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            pos_f = ex.submit(self._observed_positions)
+            spec_f = ex.submit(self._spectra_available)
+            ix, bysite = self._map_rows()
+            pos = pos_f.result()               # a positions failure raises here, before anything is stored
+            spec_ok = spec_f.result()
+        if ix is None:
+            return []
         covered = sum(1 for s in bysite if s in pos)
         if len(bysite) - covered > max(1, (1 - self.POS_MIN_COVER) * len(bysite)):
             # the two layers cover the same window, so a short positions answer (a stream that
             # ended early) would silently drop sites: keep the last good list instead
             raise RuntimeError("AODN observed positions cover %d of %d sites" % (covered, len(bysite)))
-        spec_ok = self._spectra_available()
         out, latest_by, recent_by = [], {}, {}
         for s, srows in bysite.items():
             srows.sort(key=lambda r: r[ix["TIME"]])       # TIME is the per-obs timestamp

@@ -374,3 +374,16 @@ test('textTip makes text, never HTML (K-8 and A-20 pinned by behaviour, G22 re-c
   assert.equal(el.textContent, '<img src=x onerror=alert(1)> Reef'); assert.equal(el.children.length, 0);
   assert.equal(textTip(null).textContent, '');
 });
+
+test('the overlay\'s and the live panel\'s zone label: a nautical zone as the window writes it (G22 R-B4, found on the test site)', () => {
+  const a = TPL.indexOf('    function tzAbbr(iso, tz) {'), b = TPL.indexOf('\n    }\n', a);
+  assert.ok(a > 0 && b > a);
+  const b0 = boot();
+  const tzAbbr = new Function('window', TPL.slice(a, b + 6) + '\nreturn tzAbbr;')(b0.win);
+  const iso = '2026-10-03T01:00:00Z';
+  assert.equal(tzAbbr(iso, 'Etc/GMT+8'), b0.F.zoneLabel('Etc/GMT+8'));
+  assert.equal(tzAbbr(iso, 'Etc/GMT+8'), 'UTC−8');
+  assert.equal(tzAbbr(iso, 'Etc/GMT-12'), 'UTC+12');
+  assert.equal(tzAbbr(iso, 'Pacific/Honolulu'), 'HST', 'a civil zone keeps its own abbreviation');
+  assert.equal(new Function('window', TPL.slice(a, b + 6) + '\nreturn tzAbbr;')({})(iso, 'Etc/GMT+8'), 'GMT-8', 'before the module loads: Intl');
+});

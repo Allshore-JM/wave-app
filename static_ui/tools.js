@@ -1410,7 +1410,7 @@
     }
     function drawPoint() {
       var verb = touchUI() ? 'Tap' : 'Click';
-      if (s.busy) return [{ t: 'Checking that point…', cls: 'tools-big', folded: true }];
+      if (s.busy) return [{ t: 'Checking that point…', cls: 'tools-big' }];      // folded, the title says it (once)
       var lines = [];
       if (s.msg) lines.push({ t: s.msg, cls: 'tools-big tools-msg', folded: true });
       lines.push({ t: (s.msg ? verb + ' another point on the sea.' : verb + ' the sea where you want a forecast.'), cls: s.msg ? 'tools-hint' : 'tools-big' });

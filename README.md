@@ -476,7 +476,7 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   their fifth and sixth; the found ones within 0.03 m, 0.05 s and 1.4 degrees). Run it again when NOAA changes its
   wave products.
 
-## Forecast points: the page (plan section 31, steps 5 and 8; UI asset 1.15.0)
+## Forecast points: the page (plan section 31, steps 5 and 8; UI asset 1.15.1)
 
 - **The tool**: Map tools -> **Forecast point** (first in the menu). A click (or tap) ASKS the server first
   ("Checking that point..." in the tool bar; `AllshoreForecast.prefetch` fetches and keeps the forecast without

@@ -518,8 +518,8 @@
       .live-win.fw-min { bottom: var(--fw-bar-h, 48px) !important; }     /* stacked above the forecast bar (its measured height) */
       /* the bar cannot fit a long name AND the run text: the name has priority (the run text shrinks four times as
          fast, to an ellipsis; it is whole once the bar is expanded) */
-      .fwin .fw-titles .fw-cycle { flex: 0 4 auto; min-width: 2ch; overflow: hidden; text-overflow: ellipsis; }   /* also full screen (G22 K-3) */
-      .fwin .fw-titles .station-field { flex: 0 1 auto; }
+      .fwin .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }   /* gives way first, also full screen (G22 K-3, R-B3) */
+      .fwin .fw-titles .station-field { flex: 0 1 auto; }   /* shrinks by its basis x 1 against the run text's x 1000: the coordinates stay whole */
       .fw-resize, .fw-edge { display: none; }
       .fw-header { cursor: default; }
       .fw-btn { width: 36px; height: 36px; }
@@ -651,6 +651,7 @@
             </div>
             <select class="form-select form-select-sm" id="station" name="station" form="controlForm">
               {% if selected_point_label %}<option value="{{ selected_station }}" data-point selected>{{ selected_point_label }}</option>{% endif %}
+              {% if selected_unknown %}<option value="{{ selected_station }}" data-unknown selected>{{ selected_station }}</option>{% endif %}
               {% for sid, name in stations %}
                 <option value="{{ sid }}" {% if sid == selected_station %}selected{% endif %}>{{ sid }} — {{ name }}</option>
               {% endfor %}
@@ -693,7 +694,7 @@
       <div id="fwBody" class="fw-body" tabindex="0" aria-busy="false">
         <div id="fwNote" class="fw-note" role="status" hidden></div>
         <div id="fwError" class="alert alert-warning py-2 mb-2"{% if not error %} hidden{% endif %}>{{ error or '' }}</div>
-        <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz }}{% endif %}</div>
+        <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz|zone_label }}{% endif %}</div>
 
         <div id="forecastTable"{% if selected_view == 'Graph' %} hidden{% endif %}>
           {% if table_html %}{{ table_html|safe }}{% endif %}
@@ -2515,7 +2516,7 @@
       // so with 'allshore:points')
       let bySid = null;
       function index() {
-        bySid = new Map(Array.from(select.options).map(function (o) {
+        bySid = new Map(Array.from(select.options).filter(function (o) { return !o.hasAttribute('data-unknown'); }).map(function (o) {
           return [o.value, { sid: o.value, label: (o.textContent || '').trim() }];
         }));
       }
@@ -2543,13 +2544,14 @@
       function refreshCurrent() {
         const sid = select.value;
         const c = bySid.get(sid);
-        writeLabel(currentEl, c ? c.label : 'Select a station');
-        currentEl.title = c ? c.label : '';                                      // the whole label, also after a rename (G22 A-14)
+        writeLabel(currentEl, c ? c.label : (sid || 'Select a station'));         // an id without an option keeps its name (G22 R-A11)
+        currentEl.title = c ? c.label : (sid || '');                                      // the whole label, also after a rename (G22 A-14)
         const P = points(), pt = isPoint(sid);
         const fav = !!c && (pt ? !!(P && P.store.has(sid)) : isFav(sid));         // for a point the star is "kept in My points"
         favToggle.textContent = fav ? '★' : '☆';
         favToggle.disabled = !c || (pt && !P) || (pt && !fav && !!(P && P.refused(sid)));   // no forecast there: nothing to keep (G22 A-13)
         favToggle.setAttribute('aria-label', !c ? 'No station selected'
+          : pt && !fav && favToggle.disabled ? 'No forecast here, nothing to keep: ' + c.label
           : pt ? (fav ? 'Remove this point from My points: ' : 'Keep this point in My points: ') + c.label
           : (fav ? 'Remove current station from favorites: ' : 'Add current station to favorites: ') + c.label);
       }
@@ -2611,8 +2613,8 @@
             e.stopPropagation();
             if (p.name && !window.confirm('Remove "' + p.name + '" from My points?')) return;   // a name is the visitor's own work (G22 B-18)
             const idx = Array.prototype.slice.call(results.querySelectorAll('.fav-select')).indexOf(pick);
-            P.store.remove(p.id); P.sync(); renderFavs();
-            announce('Removed point ' + window.AllshoreForecast.fmtPoint(p.lat, p.lon));
+            const gone = P.store.remove(p.id); P.sync(); renderFavs();
+            announce(gone ? 'Removed point ' + window.AllshoreForecast.fmtPoint(p.lat, p.lon) : 'This browser could not change My points (its storage is switched off).');
             refocus(idx);
           });
           li.appendChild(pick); li.appendChild(ren); li.appendChild(rem);
@@ -2671,9 +2673,10 @@
           const P = points(); if (!P) return;
           const kept = P.store.has(sid);
           if (!kept && P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }
-          const r = kept ? (P.store.remove(sid) ? 'removed' : 'unsaved') : P.store.add(sid);
+          const r = kept ? (P.store.remove(sid) ? 'removed' : 'unremoved') : P.store.add(sid);
           P.say(r, sid);                                                        // full or not saved: said in the window too (G22 B-3)
           if (r === 'full') return;
+          if (r === 'added' && typeof showPointLayer === 'function') showPointLayer();   // a kept point shows on the map (G22 R-A15)
           P.sync();
           if (!results.hidden) renderFavs();
           return;
@@ -2719,7 +2722,18 @@
       // a map pick changes the select from outside: the label and the star follow
       document.addEventListener('allshore:station', function (e) { var d = e.detail || {}; if (bySid.has(String(d.sid))) select.value = String(d.sid); refreshCurrent(); });
       // My points changed (added, renamed, removed): the options are new
-      document.addEventListener('allshore:points', function () { index(); refreshCurrent(); if (!results.hidden) renderFavs(); });
+      document.addEventListener('allshore:points', function () {
+        const a = document.activeElement, inList = !!(a && results.contains(a));
+        const li = inList && a.closest ? a.closest('li') : null, row = li ? li.querySelector('.fav-select') : null;
+        const sid = row ? row.dataset.sid : null, acts = li ? Array.prototype.slice.call(li.querySelectorAll('button')) : [], at = acts.indexOf(a);
+        index(); refreshCurrent(); if (!results.hidden) renderFavs();
+        if (inList && !results.contains(document.activeElement)) {                 // the list was rebuilt under the focus (G22 R-A16)
+          const again = Array.prototype.slice.call(results.querySelectorAll('.fav-select')).filter(function (b) { return b.dataset.sid === sid; })[0];
+          const btns = again && again.parentNode ? again.parentNode.querySelectorAll('button') : [];
+          const to = (at >= 0 && btns[at]) || again || results.querySelector('.fav-select') || trigger;
+          if (to && to.focus) to.focus();
+        }
+      });
 
       refreshCurrent();
     })();
@@ -2952,10 +2966,12 @@
         var st = document.getElementById('stationStatus'), msg = {
           added: 'Kept in My points', removed: 'Removed from My points',
           full: 'My points is full (' + F.POINTS_MAX + '): this point is not kept. Remove one to keep it.',
-          unsaved: 'This browser could not keep the point (its storage is full or switched off).'
+          unsaved: 'This browser could not keep the point (its storage is full or switched off).',
+          unremoved: 'This browser could not change My points (its storage is switched off).'
         }[r] || '';
-        if (st) st.textContent = msg;
-        if (F.note) F.note(r === 'full' || r === 'unsaved' ? msg : null, sid);
+        var inWindow = !!F.note && (r === 'full' || r === 'unsaved' || r === 'unremoved');
+        if (st) st.textContent = inWindow ? '' : msg;                           // said once: the window's note is a status line itself (G22 R-A14)
+        if (F.note) F.note(inWindow ? msg : null, sid);
       }
       // The map tool's click (static_ui/tools.js waits for this answer): the server is asked FIRST; only a forecast
       // opens the window and keeps the point; a refusal stays in the tool bar (owner: land is refused, G22).
@@ -2963,7 +2979,9 @@
         var id = F.pointId(ll.lat, ll.lng);
         if (!id) return Promise.resolve({ ok: false, message: 'That is off the map.' });
         if (!F.prefetch) return Promise.resolve({ ok: true, open: function () { open(id); } });
+        var asked = cur;
         return F.prefetch(id).then(function (d) {
+          if (cur !== asked && d && d.table_html) return { ok: false, cancel: true };   // another forecast was opened meanwhile: it stays (G22 R-A6)
           if (d && d.table_html) return { ok: true, open: function () { open(id); } };
           if (d && d.final) refusedIds[id] = true;
           return { ok: false, message: (d && d.error) || 'No forecast there.' };
@@ -2986,13 +3004,15 @@
       // a refusal (land, sheltered water, no model data) is remembered: the star cannot keep it, it has no marker
       document.addEventListener('allshore:forecast', function (e) {
         var d = e.detail || {};
-        if (!F.isPointId(d.station) || !d.final || refusedIds[d.station]) return;
+        if (!F.isPointId(d.station)) return;
+        if (d.ok && refusedIds[d.station]) { delete refusedIds[d.station]; sync(); return; }   // a forecast now: no longer refused (G22 R-A8)
+        if (!d.final || refusedIds[d.station]) return;
         refusedIds[d.station] = true; sync();
       });
       // another tab changed My points: this one follows (G22 B-9)
       window.addEventListener('storage', function (e) { if (!e.key || e.key === 'allshore.points.v1') sync(); });
       window.__allshorePoints = { store: store, sync: sync, add: add, say: say, refused: function (id) { return !!refusedIds[id]; } };
-      sync();
+      try { sync(); } catch (e) {}                                              // damaged storage must not stop the window's start (G22 R-A13)
     })();
     (function () {
       var sel = document.getElementById('station');
@@ -3039,7 +3059,8 @@
     if (window.AllshoreTools) window.AllshoreTools.init({
       map: map, coastBase: {{ coast_base|tojson }} || window.__allshoreCoastBase || '', getUnit: getSelectedUnit, unitSelect: document.getElementById('unit'),
       // the Forecast point tool (plan section 31): its click opens a forecast for that point
-      onPoint: window.__allshorePoints ? function (ll) { return window.__allshorePoints.add(ll); } : null,
+      // ... only where a points bucket is set: elsewhere every click would be refused (G22 R-A18)
+      onPoint: {{ 'true' if points_enabled else 'false' }} && window.__allshorePoints ? function (ll) { return window.__allshorePoints.add(ll); } : null,
       // an expanded window that covers the tool bar is minimised when a tool starts and whenever the bar grows (owner,
       // G20 and its re-review); a window opened later stays until the bar grows again
       onLayout: function (bar, grew) {

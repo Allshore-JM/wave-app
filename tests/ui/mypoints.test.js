@@ -58,6 +58,7 @@ function boot(opts) {
   const select = el('select', 'station', field);
   const server = opts.station || '51201';
   if (server.indexOf('pt_') === 0) { const o = el('option', null, select, { 'data-point': '' }); o.value = server; o.textContent = 'served'; }   // the no-script option (G22 B-5)
+  if (opts.unknown) { const o = el('option', null, select, { 'data-unknown': '' }); o.value = server; o.textContent = server; }   // an id that is no station (G22 R-B12)
   [['51201', '51201 — Waimea Bay, HI'], ['46001', '46001 — Gulf of Alaska']].forEach(([v, t]) => { const o = el('option', null, select); o.value = v; o.textContent = t; });
   select.selectedIndex = Math.max(0, select.options.findIndex((o) => o.value === server));
   el('span', 'fwCycle', header); el('span', 'fwBusy', header).hidden = true; el('button', 'fwMin', header); el('button', 'fwMax', header);
@@ -186,7 +187,8 @@ test('a point that cannot be kept says so in the window (G22 B-3): My points ful
     const a = c.P.add({ lat: 21.7, lng: -158.2 }); await settle(); c.last().release(payload('pt_21700N_158200W')); await settle();
     (await a).open(); await settle();
     assert.equal(c.note.hidden, false); assert.match(c.note.textContent, /could not keep the point/);
-    assert.match(c.status.textContent, /could not keep/, 'never "Kept" when nothing was kept (G22 A-7)');
+    assert.doesNotMatch(c.status.textContent, /Kept/, 'never "Kept" when nothing was kept (G22 A-7)');
+    assert.equal(c.status.textContent, '', 'said once: in the window, its own status line (G22 R-A14)');
     assert.deepEqual(c.stored(), []);
   }
 });
@@ -274,4 +276,98 @@ test('the title keeps its whole label as a tooltip after a rename (G22 A-14)', a
   b.openPicker(); b.row('pt_21667N_158054W').children[1].click();
   assert.equal(b.current.title, '⁨Pipe⁩ — 21.667N 158.054W');
   assert.equal(b.current.textContent, 'Pipe — 21.667N 158.054W');
+});
+
+// ---- G22 re-check (fix round 2) ----
+test('a late answer: the visitor opened another forecast while the point was checked; that one stays (G22 R-A6)', async () => {
+  const b = boot(); await settle(); b.last().release(payload('51201')); await settle();
+  const asked = b.P.add({ lat: 21.7, lng: -158.2 }); await settle();
+  const pt = b.last();
+  b.doc.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: '46001', source: 'picker' } })); await settle();
+  pt.release(payload('pt_21700N_158200W')); await settle();
+  assert.deepEqual(await asked, { ok: false, cancel: true });
+  assert.deepEqual(b.stored(), []); assert.notEqual(b.station(), 'pt_21700N_158200W');
+});
+
+test('a refusal is forgotten when a forecast for the point lands (a later run has data there; G22 R-A8)', async () => {
+  const b = boot({ station: 'pt_21500N_158000W', search: '?station=pt_21500N_158000W' }); await settle();
+  b.last().release(LAND('pt_21500N_158000W')); await settle();
+  assert.equal(b.P.refused('pt_21500N_158000W'), true); assert.equal(b.star.disabled, true);
+  assert.match(b.star.getAttribute('aria-label'), /^No forecast here, nothing to keep/, 'the disabled star says why (G22 R-A14)');
+  b.app.loader.load({}); await settle(); b.last().release(payload('pt_21500N_158000W')); await settle();
+  assert.equal(b.P.refused('pt_21500N_158000W'), false); assert.equal(b.star.disabled, false);
+  assert.ok(b.lastMarks().some((m) => m.id === 'pt_21500N_158000W' && m.kept === false), 'its marker is back');
+  assert.match(b.star.getAttribute('aria-label'), /^Keep this point in My points/);
+  b.star.click(); assert.deepEqual(b.stored(), ['pt_21500N_158000W']);
+  assert.equal(b.layerShown.length, 1, 'kept with the star: the My points layer is shown (G22 R-A15)');
+});
+
+test('a failed load leaves nothing of the last forecast: run text, model bar, note (G22 R-A9, R-A10); Retry keeps the focus in the window (R-B8)', async () => {
+  const full = {}; full['allshore.points.v1'] = JSON.stringify(Array.from({ length: 50 }, (_, i) => ({ id: `pt_${10000 + i}N_150000W` })));
+  const b = boot({ local: full }); await settle(); b.last().release(payload('51201', { swan_available: true })); await settle();
+  const cycle = b.doc.getElementById('fwCycle'), bar = b.doc.getElementById('modelBar');
+  assert.notEqual(cycle.textContent, ''); assert.equal(bar.hidden, false);
+  const asked = b.P.add({ lat: 21.7, lng: -158.2 }); await settle(); b.last().release(payload('pt_21700N_158200W')); await settle();
+  (await asked).open(); await settle();
+  assert.equal(b.note.hidden, false);
+  b.app.loader.load({ station: '46001' }); await settle(); b.last().fail(); await settle();
+  assert.equal(cycle.textContent, ''); assert.equal(bar.hidden, true); assert.equal(b.note.hidden, true);
+  const retry = b.errBox.querySelectorAll('button')[0];
+  retry.focus(); retry.click(); await settle();
+  assert.equal(b.doc.activeElement, b.doc.getElementById('fwBody'), 'the button is gone: the focus is in the window, not on the page');
+  b.last().release(payload('46001')); await settle();
+  assert.equal(b.station(), '46001');
+});
+
+test('an id that is no station keeps its name in the title, also after a refusal (G22 R-A11, R-B12)', async () => {
+  const b = boot({ station: 'bad!id', unknown: true }); await settle();
+  b.last().release(REFUSED('bad!id', 'invalid', 'Invalid station id')); await settle();
+  assert.equal(b.current.textContent, 'bad!id');
+  b.openPicker();
+  assert.equal(b.results.querySelectorAll('.fav-select').some((x) => x.dataset.sid === 'bad!id'), false, 'not a row of the list');
+});
+
+test('names are cut by what a visitor sees as one character (G22 R-A12); a stored name that is not text is dropped (R-A13)', () => {
+  const b = boot();
+  const fam = '\u{1F468}‍\u{1F469}‍\u{1F467}', flag = '\u{1F1FA}\u{1F1F8}', tone = '\u{1F44D}\u{1F3FD}';
+  for (const e of [fam, flag, tone]) {
+    assert.equal(b.F.cleanName('a'.repeat(39) + e), 'a'.repeat(39) + e, 'whole at 40: ' + e);
+    assert.equal(b.F.cleanName('a'.repeat(40) + e), 'a'.repeat(40), 'never half of it: ' + e);
+  }
+  assert.equal(b.F.cleanName({ toString: 1 }), ''); assert.equal(b.F.cleanName(null), '');
+  const c = boot({ local: { 'allshore.points.v1': JSON.stringify([{ id: 'pt_1N_1E', name: { toString: 1 } }]) } });
+  assert.deepEqual(c.stored(), ['pt_1N_1E'], 'the window starts; the name is dropped');
+});
+
+test('another tab changed My points while the list had the focus: it stays on the same row (G22 R-A16)', async () => {
+  const pts = [{ id: 'pt_20000N_150000W' }, { id: 'pt_20001N_150000W', name: 'Two' }];
+  const b = boot({ local: { 'allshore.points.v1': JSON.stringify(pts) } }); await settle(); b.last().release(payload('51201')); await settle();
+  b.openPicker();
+  b.row('pt_20001N_150000W').children[1].focus();                                    // its Rename button
+  b.local.m.set('allshore.points.v1', JSON.stringify([{ id: 'pt_30000N_150000W' }].concat(pts)));
+  b.winListeners.storage.forEach((fn) => fn({ key: 'allshore.points.v1' }));
+  assert.equal(b.doc.activeElement, b.row('pt_20001N_150000W').children[1]);
+  b.row('pt_20000N_150000W').children[0].focus();
+  b.local.m.set('allshore.points.v1', JSON.stringify([{ id: 'pt_30000N_150000W' }]));        // its row is gone
+  b.winListeners.storage.forEach((fn) => fn({ key: 'allshore.points.v1' }));
+  assert.equal(b.doc.activeElement, b.row('pt_30000N_150000W').children[0], 'the first row then');
+});
+
+test('a storage whose reads throw is not used: nothing is said kept (G22 re-check X23); a removal the browser refuses says so', async () => {
+  const bad = { getItem() { throw new Error('denied'); }, setItem() {}, removeItem() {} };
+  const b = boot({ localStorage: bad }); await settle(); b.last().release(payload('51201')); await settle();
+  const a = b.P.add({ lat: 21.7, lng: -158.2 }); await settle(); b.last().release(payload('pt_21700N_158200W')); await settle();
+  (await a).open(); await settle();
+  assert.match(b.note.textContent, /could not keep the point/); assert.deepEqual(b.stored(), []);
+  b.P.say('unremoved', 'pt_21700N_158200W');
+  assert.match(b.note.textContent, /could not change My points/); assert.equal(b.status.textContent, '');
+});
+
+test('textTip makes text, never HTML (K-8 and A-20 pinned by behaviour, G22 re-check X32)', () => {
+  const line = TPL.split('\n').find((l) => l.indexOf('function textTip(t)') >= 0);
+  const doc = new Document_();
+  const textTip = new Function('document', line.trim() + '\nreturn textTip;')(doc);
+  const el = textTip('<img src=x onerror=alert(1)> Reef');
+  assert.equal(el.textContent, '<img src=x onerror=alert(1)> Reef'); assert.equal(el.children.length, 0);
+  assert.equal(textTip(null).textContent, '');
 });

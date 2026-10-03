@@ -10,7 +10,7 @@ function matches(el, sel) {
     if (t) return el.tagName === t[1].toUpperCase() && matches(el, t[2]);
     if (s[0] === '[') { const m = /^\[([\w-]+)(?:="([^"]*)")?\]$/.exec(s); if (!m) return false; return m[2] === undefined ? el.attrs.has(m[1]) : el.attrs.get(m[1]) === m[2]; }
     if (s[0] === '#') return el.id === s.slice(1);
-    if (s[0] === '.') return el.classList.contains(s.slice(1));
+    if (s[0] === '.') return s.slice(1).split('.').every((c) => el.classList.contains(c));   // .a.b: every class
     return el.tagName === s.toUpperCase();
   });
 }
@@ -162,7 +162,8 @@ function fakeChart() {
   Chart.prototype.update = function () { this.updates++; };
   Chart.prototype.resize = function () { this.resizes++; };
   Chart.prototype.setActiveElements = function (a) { this.active = a; };
-  Chart.prototype.getElementsAtEventForMode = function (evt) { return [{ index: evt.index || 0 }]; };
+  Chart.prototype.getElementsAtEventForMode = function (evt, mode) { this.lastMode = mode; return [{ index: evt.index || 0 }]; };
+  Chart.Interaction = { modes: {} };
   Chart.made = made;
   return Chart;
 }

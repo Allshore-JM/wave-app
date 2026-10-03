@@ -7,6 +7,7 @@ run 2026100112), its NOAA bulletin and the real coast of Oahu are fixtures.
 Run:  pytest tests/
 """
 import json
+import math
 import os
 import re
 import subprocess
@@ -527,6 +528,19 @@ def test_rank_rows_is_the_one_rule_for_stations_swan_and_points():
         assert live == list(range(len(live))) and pw == sorted(pw, reverse=True)
 
 
+def test_rank_rows_ranks_all_six_columns_and_keeps_partial_groups():
+    """NOAA lists up to six systems: the fifth and sixth take part in the rank too (G22 R-A5: M49). A group with a
+    period or a direction but no height keeps its values, after the ranked ones (G22 R-A23)."""
+    row = ["d", "t", 1.0, 5.0, 10, 1.1, 6.0, 20, 1.2, 7.0, 30, 0.9, 8.0, 40, 3.0, 15.0, 50, 2.0, 12.0, 60, 5.0, 90, 4.0]
+    A.rank_rows([row])
+    assert row[2:20] == [3.0, 15.0, 50, 2.0, 12.0, 60, 1.2, 7.0, 30, 1.1, 6.0, 20, 0.9, 8.0, 40, 1.0, 5.0, 10]
+    assert row[20:] == [5.0, 90, 4.0]
+    part = ["d", "t", None, 12.0, 270, 1.0, 8.0, 90] + [None] * 12 + [5.0, 90, 4.0]
+    A.rank_rows([part])
+    assert part[2:8] == [1.0, 8.0, 90, None, 12.0, 270] and part[8:20] == [None] * 12
+    assert PFC.rank_groups([(None, None, 10)]) == [(None, None, 10)]
+
+
 def test_live_buoy_components_are_in_the_same_rank():
     src = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
     assert 'components.sort(key=lambda c: (-point_forecast.swell_power(c["height_ft"], c["peak_period_sec"]), -c["height_ft"]))' in src
@@ -564,38 +578,118 @@ def test_the_coast_decoder_and_land_test_agree_with_the_builders():
     assert PFC.coast_cell_name(-0.1, 180.0) == "-5_-180" and PFC.coast_cell_name(90.0, 0.0) == "85_0" and PFC.coast_cell_name(-90.0, -0.001) == "-90_-5"
 
 
+def test_the_servers_land_test_gives_the_shared_fixtures_answers():
+    """tests/fixtures/coast/land_parity.json: the page's inLand is held to the same answers (tests/ui/tools.test.js)."""
+    fx = json.load(open(os.path.join(FIX, "coast", "land_parity.json")))
+    _blob, edges, _land = oahu()
+    pts = np.array([p[:2] for p in fx["points"]])
+    got = PFC.land_parity(edges, pts[:, 1], pts[:, 0])
+    assert fx["coast"] == "oahu-t1.bin" and len(pts) == 500 and got.tolist() == [p[2] for p in fx["points"]]
+    assert 100 < int(got.sum()) < 400
+
+
 def test_water_is_the_sea_or_land_within_the_shore_band():
     _blob, _edges, land = oahu()
     assert bool(land(np.array([21.667]), np.array([-158.054]))[0]) is True          # the plan's Pipeline id: "land" by 70 m
-    assert PFC.is_water(land, 21.667, -158.054) is True                              # ... and water by the band
-    assert PFC.is_water(land, 21.70, -158.20) is True                                # the open sea
-    assert PFC.is_water(land, 21.500, -158.025) is False                             # Wahiawa, the middle of the island
-    assert PFC.is_water(land, 21.262, -157.805) is False                             # Diamond Head crater, 1 km inland
-    assert PFC.SHORE_M == 300.0 and PFC.SHORE_RINGS_M[-1] == PFC.SHORE_M
+    o = PFC.water_origin(land, 21.667, -158.054)                                     # ... and water by the band: the path
+    assert o is not None and not land(np.array([o[0]]), np.array([o[1]]))[0]         # starts at the nearest water
+    assert 0 < PFC._km(21.667, -158.054, *o) * 1000 <= PFC.SHORE_M + 1
+    assert PFC.water_origin(land, 21.70, -158.20) == (21.70, -158.20)                # the open sea: the point itself
+    assert PFC.water_origin(land, 21.500, -158.025) is None                          # Wahiawa, the middle of the island
+    assert PFC.water_origin(land, 21.262, -157.805) is None                          # Diamond Head crater, 1 km inland
+    assert (PFC.SHORE_M, PFC.SHORE_STEP_M, PFC.SHORE_DIRS) == (300.0, 50.0, 32)
     # the band is SHORE_M wide: a straight coast along the equator, land to the north
     coast = lambda lats, lons: lats > 0                                              # noqa: E731
-    assert PFC.is_water(coast, 0.0026, 10.0) is True and PFC.is_water(coast, 0.0028, 10.0) is False   # 289 m, 311 m
+    assert PFC.water_origin(coast, 0.0026, 10.0) is not None and PFC.water_origin(coast, 0.0028, 10.0) is None   # 289 m, 311 m
+
+
+def test_the_shore_band_searches_every_ring_and_direction():
+    """Water seen only at 150 m and 11.25 degrees (direction 1 of 32, the third ring) is found; the nearest ring
+    wins, then the first direction clockwise from north (G22 R-A5: M02 / M03)."""
+    def pond(*spots):                                                                # land everywhere but a few 3 m ponds
+        def land(lats, lons):
+            out = np.ones(len(lats), dtype=bool)
+            for la, lo in spots:
+                out &= np.hypot((lats - la) * 111195.0, (lons - lo) * 111195.0 * math.cos(math.radians(la))) > 3.0
+            return out
+        return land
+
+    def at(m, deg, lat=20.0, lon=150.0):
+        b = math.radians(deg)
+        return lat + m * math.cos(b) / 111195.0, lon + m * math.sin(b) / (111195.0 * math.cos(math.radians(lat)))
+    o = PFC.water_origin(pond(at(150.0, 11.25)), 20.0, 150.0)
+    assert o is not None and abs(o[0] - at(150.0, 11.25)[0]) < 1e-9 and abs(o[1] - at(150.0, 11.25)[1]) < 1e-9
+    assert PFC.water_origin(pond(at(150.0, 5.0)), 20.0, 150.0) is None             # between two directions: not seen
+    near, far = at(50.0, 90.0), at(100.0, 180.0)
+    assert PFC.water_origin(pond(far, near), 20.0, 150.0) == pytest.approx(near, abs=1e-9)   # the nearer ring first
+    east, west = at(100.0, 90.0), at(100.0, 270.0)
+    assert PFC.water_origin(pond(west, east), 20.0, 150.0) == pytest.approx(east, abs=1e-9)  # then clockwise from north
+    seen = []
+    PFC.water_origin(lambda la, lo: seen.append(la.copy()) or np.ones(len(la), dtype=bool), -89.999, 0.0)
+    assert seen[1].min() >= -90.0                                                    # no sample beyond the pole (G22 R-A20)
+
+
+def box_edges(*boxes):
+    """Coast edges (xi, yi, xj, yj) of land boxes (west, east, south, north), each a closed ring."""
+    xs = [[], [], [], []]
+    for w, e, s_, n in boxes:
+        ring = [(w, s_), (e, s_), (e, n), (w, n)]
+        for k in range(4):
+            (xj, yj), (xi, yi) = ring[k - 1], ring[k]
+            for arr, v in zip(xs, (xi, yi, xj, yj)):
+                arr.append(v)
+    return tuple(np.array(a, dtype=float) for a in xs)
+
+
+def blocked(edges, x1=10.3, half=0.125, start=False, end=None):
+    """Whether the path from (10, 0) to (x1, 0) is blocked, judged as locate judges it (perturbed off the grid)."""
+    x0, y0, y1 = 10.0 + 3.7e-9, 2.9e-9, -2.1e-9
+    if end is None:
+        xi, yi, xj, yj = edges
+        end = bool(len(xi)) and PFC.land_parity(edges, np.array([x1 + 1.3e-9]), np.array([y1]))[0]
+    runs = PFC.land_runs(PFC.path_crossings(edges, x0, y0, x1 + 1.3e-9, y1), start, end)
+    return PFC.path_blocked(runs, PFC._km(0.0, 10.0, 0.0, x1), half * 111.2)
 
 
 def test_the_path_to_the_cell_must_be_water():
-    cell = {"lat": 0.0, "lon": 10.3, "km": PFC._km(0.0, 10.0, 0.0, 10.3), "half": 0.125}
-    sea = lambda lats, lons: np.zeros(len(lats), dtype=bool)                         # noqa: E731
-    assert PFC.path_clear(sea, 0.0, 10.0, cell) is True
-    wall = lambda w, e: (lambda lats, lons: (lons > w) & (lons < e))                 # noqa: E731
-    assert PFC.path_clear(wall(10.10, 10.11), 0.0, 10.0, cell) is False              # 1.1 km of land between
-    assert PFC.path_clear(wall(10.100, 10.103), 0.0, 10.0, cell) is True             # a rock: at most one sample
-    rocks = lambda lats, lons: ((lons > 10.100) & (lons < 10.103)) | ((lons > 10.150) & (lons < 10.153))   # noqa: E731
-    assert PFC.path_clear(rocks, 0.0, 10.0, cell) is True                            # two rocks apart are not land in a row
-    assert PFC.path_clear(wall(9.9, 10.002), 0.0, 10.0, cell) is True                # the shore band at the point is not looked at
-    assert PFC.path_clear(wall(9.9, 10.006), 0.0, 10.0, cell) is False               # ... beyond it, it is
-    assert PFC.path_clear(wall(10.25, 10.40), 0.0, 10.0, cell) is True               # the middle of the cell's own box is not looked at
-    assert PFC.path_clear(wall(10.20, 10.40), 0.0, 10.0, cell) is False              # ... its outer half is
-    assert PFC.PATH_LAND_RUN == 2 and PFC.PATH_STEP_KM == 0.25 and PFC.PATH_CELL_SKIP == 0.5
-    far = {"lat": 0.0, "lon": -179.8, "km": PFC._km(0.0, 179.9, 0.0, -179.8), "half": 0.125}    # across the antimeridian
-    seen = []
-    PFC.path_clear(lambda lats, lons: seen.append(lons.copy()) or np.zeros(len(lats), dtype=bool), 0.0, 179.9, far)
-    assert seen[0].min() > 179.9 and seen[0].max() < 180.3
-    assert PFC.path_clear(sea, 0.0, 10.0, dict(cell, lon=10.001, km=0.1)) is True    # the cell is at the point
+    """Exact crossings: any stretch of land of PATH_LAND_KM or more blocks, wherever it lies; only the stretch that
+    reaches the cell's centre is forgiven, up to half a cell (G22 R-A1, R-B2)."""
+    z = np.zeros(0)
+    assert blocked((z, z, z, z)) is False                                            # open sea
+    assert blocked(box_edges((10.10, 10.11, -1, 1))) is True                         # 1.1 km of land between
+    assert blocked(box_edges((10.100, 10.1005, -1, 1))) is False                     # a rock: 56 m
+    assert blocked(box_edges((10.100, 10.1012, -1, 1))) is True                      # a spit of 133 m (250 m samples missed it)
+    assert blocked(box_edges((10.100, 10.1005, -1, 1), (10.15, 10.1505, -1, 1))) is False   # two rocks are two rocks
+    assert blocked(box_edges((10.25, 10.26, -1, 1))) is True                         # a spit inside the cell's own box
+    assert blocked(box_edges((10.29, 10.31, -1, 1))) is False                        # the centre on an islet (1.1 km)
+    assert blocked(box_edges((10.15, 10.31, -1, 1))) is True                         # ... on 16.7 km of land: more than half a cell
+    # a polygon the builder cut at a cell line is crossed twice there: one stretch, not two (forgiven as a whole)
+    assert blocked(box_edges((10.22, 10.25, -1, 1), (10.25, 10.31, -1, 1))) is False
+    assert PFC.land_runs([0.2, 0.5, 0.5, 0.7], False, False) == [(0.2, 0.7)]
+    assert PFC.land_runs([0.2, 0.5], False, True) is None                            # the ends disagree: cannot tell
+    assert PFC.path_blocked(None, 10.0, 5.0) is True
+    assert PFC.land_runs([], True, True) == [(0.0, 1.0)] and PFC.land_runs([0.4], True, False) == [(0.0, 0.4)]
+    # a path through a vertex crosses once (each edge counts from its first vertex up to, not including, its second)
+    diamond = box_edges()
+    pts = [(10.1, 0.0), (10.15, 0.05), (10.2, 0.0), (10.15, -0.05)]
+    diamond = tuple(np.array(v) for v in zip(*[(pts[k][0], pts[k][1], pts[k - 1][0], pts[k - 1][1]) for k in range(4)]))
+    assert len(PFC.path_crossings(diamond, 10.0, 0.0, 10.3, 0.0)) == 2
+    assert PFC.PATH_LAND_KM == 0.1
+
+
+def test_the_coast_beyond_180_is_seen_from_both_sides():
+    """A box that runs past 180 gets the far side's edges shifted by 360, and the land test wraps (G22 R-A5: M24)."""
+    p = Product(land=LAND + ((-179.95, -179.85, 19.0, 21.0), (179.80, 179.84, 19.0, 21.0)))
+    src = p.source()
+    xi, yi, xj, yj = src.edges_over(179.7, 180.3, 19.5, 20.5)
+    assert len(xi) and xi.min() >= 179.79 and xi.max() <= 180.16 and (xi > 180.0).any()
+    xi, yi, xj, yj = src.edges_over(-180.3, -179.7, 19.5, 20.5)
+    assert len(xi) and xi.min() >= -180.21 and xi.max() <= -179.84 and (xi < -180.0).any()
+    assert src.land(np.array([20.0, 20.0, 20.0]), np.array([180.1, -179.9, 179.82])).tolist() == [True, True, True]
+    assert src.land(np.array([20.0]), np.array([179.9]))[0] == False                 # noqa: E712
+    edges = src.edges_over(179.75, 180.25, 19.5, 20.5)
+    ts = PFC.path_crossings(edges, 179.75, 20.0 + 2.9e-9, 180.25, 20.0 - 2.1e-9)
+    assert len(ts) == 4                                                              # in and out of both strips
 
 
 def test_locate_refuses_land_and_sheltered_water_and_takes_the_cell_over_water():
@@ -615,6 +709,9 @@ def test_locate_refuses_land_and_sheltered_water_and_takes_the_cell_over_water()
     q = Product(land=LAND + ((99.63, 99.70, 15.0, 25.0),))
     src = q.source()
     assert src.locate(src.manifest(), 20.0, 99.75) == (None, "sheltered")
+    assert src.locate(src.manifest(), 20.0, 99.6990) == (None, "land")             # ON the spit, in the band: land (G22 R-B7)
+    thin = Product(land=LAND + ((99.640, 99.6415, 15.0, 25.0),)).source()           # a spit of 157 m
+    assert thin.locate(thin.manifest(), 20.0, 99.75) == (None, "sheltered")
     # ... with a second cell within reach the other way, that one is taken (the nearer one lies beyond land)
     r = Product(land=LAND + ((99.31, 99.37, 15.0, 25.0),))                           # a wall between 99.27 E and the cell at 99.5 E
     src = r.source()
@@ -670,6 +767,62 @@ def test_the_coast_cache_is_capped_by_bytes(product, monkeypatch):
     assert product.count("f/20_100.bin") == 1
     src.locate(man, 22.0, 104.0)                                                     # the oldest was dropped: read again
     assert product.count("f/20_100.bin") == 2
+
+
+def test_one_answer_reads_one_manifest(api, monkeypatch):
+    """The cell's series is read with the manifest the cell was found with: at a run change a point must never show
+    one run's values under the other run's times (G22 R-A5: S124)."""
+    product, get = api
+    src = PFC.PointSource(lambda: "https://bucket", product.fetch)
+    seen = []
+    real = src.manifest
+    monkeypatch.setattr(src, "manifest", lambda: seen.append(1) or real())
+    monkeypatch.setattr(A, "POINTS", src)
+    assert get(PFC.point_id(5.0, 21.0)).get_json()["error"] is None and len(seen) == 1
+
+
+def test_a_tile_or_mask_of_another_place_is_refused(product):
+    """A tile whose header names other rows / columns or another grid, and a mask of another shape, are refused
+    and not kept (G22 R-A5: S61, S62, S56)."""
+    grid = GRIDS[0]
+    good = product.body(f"{PFC.PREFIX}/{RUN}/a/0_2.bin")
+    header, bitmap, planes = PF.decode_tile(good)
+    for change in ({"row0": 8}, {"col0": 24}, {"grid": "b"}):
+        p = Product()
+        bad = dict(header, **change)
+        p.overrides[f"{PFC.PREFIX}/{RUN}/a/0_2.bin"] = PF.encode_tile(bad, bitmap, planes)
+        src = p.source()
+        man = src.manifest()
+        with pytest.raises(PFC.PointError):
+            src.series(man, loc(src, man, 5.2, 20.3))
+        assert src.stats()["tiles"] == 0 and src.stats()["cells"] == 0
+    p = Product()
+    small = dict(grid, nj=grid["nj"] - 1)
+    p.overrides[f"{PFC.PREFIX}/{RUN}/a/mask.bin"] = PF.encode_mask(RUN, small, sea(small))
+    src = p.source()
+    with pytest.raises(PFC.PointError):
+        src.mask(src.manifest(), src.manifest()["grids"][0])
+
+
+def test_a_coast_cell_must_lie_in_its_own_box_and_a_size_mismatch_reads_the_index_again(product):
+    """G22 R-A19: a valid cell of another place served under a name, or an index that gives a cell another size,
+    is "temporarily unavailable"; the index is read again next time, so a corrected bucket heals without a restart."""
+    p = Product()
+    p.overrides[f"{PFC.COAST_PREFIX}/f/20_100.bin"] = p.coast["15_100"]                  # 15..20 N served as 20..25 N
+    p.overrides[f"{PFC.COAST_PREFIX}/index.json"] = json.dumps({"format": "coast-v1", "q": 10000, "tier1": {"cell": 5, "dir": "f", "cells": {
+        n: [len(p.coast["15_100"]) if n == "20_100" else len(b), 4] for n, b in p.coast.items()}}}).encode()
+    src = p.source()
+    with pytest.raises(PFC.PointError):
+        src.land(np.array([22.0]), np.array([104.0]))
+    p = Product()
+    p.overrides[f"{PFC.COAST_PREFIX}/index.json"] = json.dumps({"format": "coast-v1", "q": 10000, "tier1": {"cell": 5, "dir": "f", "cells": {
+        n: [len(b) + (7 if n == "20_100" else 0), 4] for n, b in p.coast.items()}}}).encode()
+    src = p.source()
+    with pytest.raises(PFC.PointError):
+        src.land(np.array([22.0]), np.array([104.0]))
+    p.overrides.clear()                                                               # the bucket is right again
+    assert src.land(np.array([22.0]), np.array([104.0]))[0]
+    assert p.count("coast/v1/index.json") == 2
 
 
 def test_a_bad_tile_body_is_not_kept(product):
@@ -881,7 +1034,8 @@ def test_api_forecast_for_a_point(api):
 def test_api_forecast_refuses_land_bad_ids_and_reports_an_unreachable_bucket(api, monkeypatch):
     product, get = api
     d = get(PFC.point_id(5.0, 104.0)).get_json()
-    assert d["error"] == PFC.REFUSALS["land"] == "That point is on land or inland water. Pick a point on the sea."
+    assert d["error"] == PFC.REFUSALS["land"] == ("That point is land or inland water in the site's coastline data. If it is "
+                                                  "the sea, try a point a little farther from the shore.")
     assert d["final"] is True and d["reason"] == "land"                           # the page offers no Retry for it
     assert d["table_html"] is None and d["point"] is None and d["graph_data"] is None and "busy" not in d
     d = get(PFC.point_id(60.0, 20.0)).get_json()                                  # water, outside every grid
@@ -1078,9 +1232,18 @@ def test_the_page_renders_for_a_point_without_javascript(api):
 
 
 def test_points_fetch_caps_the_body_and_refuses_other_statuses(monkeypatch):
+    class Sock:
+        def __init__(self):
+            self.down = 0
+
+        def shutdown(self, how):
+            self.down += 1
+
     class Resp:
         def __init__(self, status, chunks, headers=None):
             self.status_code, self.chunks, self.headers, self.closed = status, chunks, headers or {}, 0
+            self.sock = Sock()
+            self.raw = type("Raw", (), {"_connection": type("Conn", (), {"sock": self.sock})()})()
 
         def close(self):
             self.closed += 1
@@ -1103,27 +1266,40 @@ def test_points_fetch_caps_the_body_and_refuses_other_statuses(monkeypatch):
     seen["resp"] = Resp(200, [b"ab", b"cd"])
     assert A._points_fetch("https://bucket/x", 4) == b"abcd" and seen["stream"] is True and seen["timeout"] == (3, 6)
     assert not any(isinstance(a.max_retries.total, int) and a.max_retries.total > 0 for a in A._POINT_HTTP.adapters.values())   # one attempt
-    assert A._POINT_FETCH_MAX_S == 8 and seen["resp"].closed == 0
-    seen["resp"] = Resp(200, [b"ab", b"c"], {"Content-Length": "4"})                # a body cut short (G22 A-3)
-    with pytest.raises(IOError, match="cut short"):
-        A._points_fetch("https://bucket/x", 9)
-    seen["resp"] = Resp(200, [b"abc"], {"Content-Length": "9", "Content-Encoding": "br"})   # a compressed body: its length is the wire's
-    assert A._points_fetch("https://bucket/x", 9) == b"abc"
+    assert A._POINT_FETCH_MAX_S == 8 and seen["resp"].closed == 0 and seen["resp"].sock.down == 0
+    src = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
+    assert "cut short" not in src                                                    # urllib3 raises IncompleteRead itself (G22 R-A2)
 
-    class Slow(Resp):                                                               # a body that trickles: closed at the cap
-        def iter_content(self, n):
-            yield b"a"
+    class Slow(Resp):                                                               # a body that trickles: its socket shut down
+        def iter_content(self, n):                                                  # at the cap (a close would wait for the
+            yield b"a"                                                              # reader's lock: G22 R-A2)
             for _ in range(100):
-                if self.closed:
-                    raise IOError("closed")
+                if self.sock.down:
+                    raise IOError("shut down")
                 time.sleep(0.02)
             yield b"b"
     monkeypatch.setattr(A, "_POINT_FETCH_MAX_S", 0.1)
     seen["resp"] = Slow(200, [])
     t0 = time.time()
-    with pytest.raises(IOError, match="closed"):
+    with pytest.raises(IOError, match="shut down"):
         A._points_fetch("https://bucket/x", 9)
     assert time.time() - t0 < 1.0
+
+    class Late(Resp):                                                               # the time ran out before the body came:
+        def iter_content(self, n):                                                  # shut down at once, and the deadline
+            return iter([b"a", b"b"])                                               # counts from the request
+    monkeypatch.setattr(A, "_POINT_FETCH_MAX_S", 0.05)
+
+    def slow_get(url, timeout=None, stream=False):
+        time.sleep(0.12)
+        return seen["resp"]
+    monkeypatch.setattr(A._POINT_HTTP, "get", slow_get)
+    seen["resp"] = Late(200, [])
+    with pytest.raises(IOError, match="too slow"):
+        A._points_fetch("https://bucket/x", 9)
+    assert seen["resp"].sock.down == 1
+    monkeypatch.setattr(A._POINT_HTTP, "get", get)
+    monkeypatch.setattr(A, "_POINT_FETCH_MAX_S", 8)
     seen["resp"] = Resp(200, [b"ab", b"cde"])
     with pytest.raises(IOError, match="too large"):
         A._points_fetch("https://bucket/x", 4)
@@ -1162,10 +1338,43 @@ def test_a_points_time_zone_is_its_own_waters_then_the_nearest_stations(monkeypa
     assert A._effective_tz_name("pt_24547N_157896W", None) == "Pacific/Honolulu"
     # bounded: any visitor can ask for any point (G22 A-9)
     monkeypatch.setattr(A, "_TZ_CACHE_MAX", 5)
+    monkeypatch.setattr(A, "_BUOY_TZ_CACHE", A.OrderedDict())
     for k in range(40):
         A._point_tz(10.0 + k, 20.0)
         A._buoy_tz_cached(10.0 + k, 20.0)
-    assert len(A._POINT_TZ_CACHE) == 5 and len(A._BUOY_TZ_CACHE) <= 5 + 600
+    assert len(A._POINT_TZ_CACHE) == 5 and len(A._BUOY_TZ_CACHE) == 5
+
+
+def test_a_station_across_the_date_line_does_not_give_its_zone(monkeypatch):
+    """G22 R-A3: 31 km off the Commander Islands (Russia, UTC+12) a point took America/Adak (UTC-9) from a station
+    534 km away: a calendar day off. A station's zone counts only within 3 hours of the point's nautical offset."""
+    coords = {"46070": {"lat": 55.0, "lon": 175.3}, "HNL01": {"lat": 24.0, "lon": -158.0}, "62163": {"lat": 47.5, "lon": -8.5}}
+    zones = {"46070": "America/Adak", "HNL01": "Pacific/Honolulu", "62163": "Europe/Paris"}
+    monkeypatch.setattr(A, "load_station_coords", lambda: coords)
+    monkeypatch.setattr(A, "get_station_tz", lambda sid: zones.get(sid))
+    monkeypatch.setattr(A, "_safe_tzname_for_latlon", lambda lat, lon: "Etc/GMT-11")
+    monkeypatch.setattr(A, "_nearest_civil_tz", lambda lat, lon: "Asia/Kamchatka")
+    monkeypatch.setattr(A, "_POINT_TZ_CACHE", A.OrderedDict())
+    assert A._point_tz(54.5, 167.0) == "Asia/Kamchatka"                           # Adak is 20 h from 167 E's sun time
+    assert A._point_tz(24.5, -157.9) == "Pacific/Honolulu"                        # 1 h from it
+    assert A._point_tz(48.0, -11.0) == "Europe/Paris"                             # 2-3 h (summer / winter): kept
+    from datetime import timezone as _tz
+    jan, jul = datetime(2026, 1, 15, tzinfo=_tz.utc), datetime(2026, 7, 15, tzinfo=_tz.utc)
+    assert A._zone_near_nautical("America/Adak", 167.0, jan) is False and A._zone_near_nautical("America/Adak", -176.6, jul) is True
+    assert A._zone_near_nautical("Europe/Paris", -11.0, jul) is True and A._zone_near_nautical("Europe/Paris", -35.0, jul) is False
+    assert A._zone_near_nautical("Not/AZone", 0.0) is False and A.POINT_TZ_MAX_SHIFT_H == 3.0
+
+
+def test_a_zone_is_shown_as_a_visitor_reads_it(api):
+    """G22 R-A17: "Etc/GMT+11" is UTC-11; no raw Etc name on the no-script page or in the classic table."""
+    assert PFC.zone_label("Etc/GMT+11") == "UTC\u221211" and PFC.zone_label("Etc/GMT-5") == "UTC+5"
+    assert PFC.zone_label("Etc/GMT+0") == PFC.zone_label("Etc/GMT") == PFC.zone_label("Etc/UTC") == "UTC"
+    assert PFC.zone_label("Pacific/Honolulu") == "Pacific/Honolulu" and PFC.zone_label(None) == ""
+    html = A.build_html_table("Cycle : x", "Location : y", None, [], "Etc/GMT+11", "US")
+    assert "Time Zone: UTC\u221211" in html and "Etc/" not in html
+    page = A.app.test_client().get(f"/?station={PFC.point_id(5.0, 20.0)}&tz=Etc/GMT%2B11&render=full").get_data(as_text=True)
+    meta = page[page.index('id="forecastMeta"'):page.index('id="forecastMeta"') + 600]
+    assert "UTC\u221211" in meta and "Etc/GMT" not in meta
 
 
 def test_busy_is_said_at_once_when_both_builds_are_stuck_and_one_deadline_covers_both_waits(api, monkeypatch):
@@ -1199,6 +1408,15 @@ def test_busy_is_said_at_once_when_both_builds_are_stuck_and_one_deadline_covers
         t.join()
     assert out["a"]["error"] is None and out["b"]["error"] is None and A._POINT_BUILD_SINCE == [] and A._POINT_INFLIGHT == {}
     assert get(PFC.point_id(5.0, 40.0)).get_json()["error"] is None
+    # ONE stuck build is not "busy" for everyone: the other slot still builds (G22 R-A5: M43)
+    gate.clear()
+    th = threading.Thread(target=lambda: out.update({"c": get(PFC.point_id(5.0, 21.0)).get_json()}))
+    th.start()
+    time.sleep(0.5)                                                               # older than the wait, alone
+    d = get(PFC.point_id(-5.0, 31.0)).get_json()                                   # a tile the gate does not hold
+    assert d["error"] is None and not d.get("busy")
+    gate.set()
+    th.join()
 
 
 def test_one_deadline_covers_the_wait_for_the_point_and_the_wait_for_a_slot(api, monkeypatch):
@@ -1254,7 +1472,7 @@ def test_render_full_carries_a_refusal_as_final(api):
     product, _get = api
     html = A.app.test_client().get(f"/?station={PFC.point_id(5.0, 104.0)}&render=full").get_data(as_text=True)
     seed = html[html.index("__initial"):html.index("__initial") + 4000]
-    assert '"final": true' in seed and '"reason": "land"' in seed and "That point is on land" in seed
+    assert '"final": true' in seed and '"reason": "land"' in seed and "That point is land or inland water" in seed
     ok = A.app.test_client().get(f"/?station={PFC.point_id(5.2, 20.3)}&render=full").get_data(as_text=True)
     assert '"final"' not in ok[ok.index("__initial"):ok.index("__initial") + 400000].split("</script>")[0]
 

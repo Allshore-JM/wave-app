@@ -2,6 +2,7 @@
 the state handed to static_ui/forecast.js, the no-JS path. The exact bytes are pinned by the golden in
 tests/test_overlay_flag.py; these tests say WHY the page looks the way it does."""
 import json
+import os
 import re
 
 import pytest
@@ -13,6 +14,8 @@ import capture_index_golden as G
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.delenv("MODEL_OVERLAYS", raising=False)
+    monkeypatch.delenv("POINTS_ROOT", raising=False)                      # no points bucket unless a test sets one
+    monkeypatch.delenv("MODEL_FRAMES_BASE", raising=False)
     monkeypatch.setattr(A, "get_station_list", lambda: list(G.STATIONS))
     monkeypatch.setattr(A, "compute_forecast_payload", lambda *a, **k: dict(G.PAYLOAD, **({"model": "SWAN"} if k.get("model") == "SWAN" or (len(a) > 3 and a[3] == "SWAN") else {})))
     return A.app.test_client()
@@ -387,7 +390,8 @@ def test_my_points_on_the_page(client):
     recentres the map on it. The tool asks the server first (G22): only a forecast opens the window and keeps the
     point; a refusal stays in the tool bar."""
     body = client.get("/?station=pt_21667N_158054W").get_data(as_text=True)
-    assert "onPoint: window.__allshorePoints ? function (ll) { return window.__allshorePoints.add(ll); } : null," in body
+    # the tool only where a points bucket is set (G22 R-A18): the test app has none
+    assert "onPoint: false && window.__allshorePoints ? function (ll) { return window.__allshorePoints.add(ll); } : null," in body
     block = body[body.index("window.__initial = "):body.index("window.AllshoreForecast.init({")]
     assert "var store = F.createPointStore(storage), refusedIds = {};" in block
     assert "setItem: function () { throw new Error('no storage'); }" in block                    # no storage: 'unsaved', never "kept"
@@ -396,16 +400,20 @@ def test_my_points_on_the_page(client):
     assert "window.__allshorePoints = { store: store, sync: sync, add: add, say: say, refused: function (id) { return !!refusedIds[id]; } };" in block
     assert "window.addEventListener('storage', function (e) { if (!e.key || e.key === 'allshore.points.v1') sync(); });" in block
     assert '<div id="fwNote" class="fw-note" role="status" hidden></div>' in body
-    assert block.index("window.__allshorePoints =") < block.rindex("sync();")
+    assert block.index("window.__allshorePoints =") < block.rindex("try { sync(); } catch (e) {}")      # damaged storage cannot stop the window (G22 R-A13)
+    assert "if (cur !== asked && d && d.table_html) return { ok: false, cancel: true };" in block           # a late answer (G22 R-A6)
+    assert "if (d.ok && refusedIds[d.station]) { delete refusedIds[d.station]; sync(); return; }" in block   # a refusal forgotten (R-A8)
     assert "'<span class=\"lc-dot lc-point\"></span>My points': pointLayer" in body
     assert "points: saved.points !== false" in body and "points: map.hasLayer(pointLayer)" in body
     assert "const pointIcon = L.divIcon({ className: 'my-pt', iconSize: [14, 14], iconAnchor: [7, 7] });" in body
     assert ".my-pt { background: #fff; border: 2.5px solid #d6007a;" in body
     assert "rebuildPointMarkers(true);" in body and "rebuildPointMarkers(false);" in body
     assert "const pt = window.AllshoreForecast && window.AllshoreForecast.parsePointId(sid);" in body   # focusStation
-    assert "document.addEventListener('allshore:points', function () { index(); refreshCurrent(); if (!results.hidden) renderFavs(); });" in body
+    assert "document.addEventListener('allshore:points', function () {" in body and "the list was rebuilt under the focus (G22 R-A16)" in body
     assert "ren.type = 'button'; ren.className = 'pt-act';" in body and "rem.setAttribute('aria-label', 'Remove point: ' + label);" in body
-    assert "const r = kept ? (P.store.remove(sid) ? 'removed' : 'unsaved') : P.store.add(sid);" in body
+    assert "const r = kept ? (P.store.remove(sid) ? 'removed' : 'unremoved') : P.store.add(sid);" in body
+    assert "if (r === 'added' && typeof showPointLayer === 'function') showPointLayer();" in body            # the star shows the layer (R-A15)
+    assert "function showPointLayer() { if (!map.hasLayer(pointLayer)) { pointLayer.addTo(map); saveLayerVisibility(); } }" in body   # (X34)
     assert "if (!kept && P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }" in body
     # names and provider labels in tooltips are text (G22 K-8, A-20); point markers pass a tool's click on (B-8)
     assert "mk.bindTooltip(textTip(p.label)," in body and "marker.bindTooltip(textTip(label)," in body
@@ -418,3 +426,20 @@ def test_my_points_on_the_page(client):
     assert "createPane" not in body                                                              # (the overlay's pin: no pane from the page)
     # the page names the point in its title (the server renders the shell; the window fills in the coordinates)
     assert '<span id="stationCurrent" class="station-current">pt_21667N_158054W</span>' in body
+
+
+def test_the_fix_round_2_page_rules(client, monkeypatch):
+    """G22 re-check: an id that is no station keeps its own option and name without JavaScript (R-B12, R-A11); the
+    no-script meta line never shows a raw "Etc/" zone (R-A17); the tool shows where a points bucket is set (R-A18);
+    on phones the run text gives way first to a point's coordinates (R-B3)."""
+    body = client.get("/?station=NOPE9").get_data(as_text=True)
+    assert '<option value="NOPE9" data-unknown selected>NOPE9</option>' in body
+    assert "filter(function (o) { return !o.hasAttribute('data-unknown'); })" in body
+    assert "writeLabel(currentEl, c ? c.label : (sid || 'Select a station'));" in body
+    assert client.get("/?station=51201").get_data(as_text=True).count("data-unknown selected") == 0
+    assert client.get("/?station=pt_21667N_158054W").get_data(as_text=True).count("data-unknown selected") == 0
+    assert "{{ graph_header.tz|zone_label }}" in open(os.path.join(A.app.root_path, "templates", "index.html"), encoding="utf-8").read()
+    monkeypatch.setenv("POINTS_ROOT", "https://bucket.example")
+    on = client.get("/?station=51201").get_data(as_text=True)
+    assert "onPoint: true && window.__allshorePoints ?" in on
+    assert ".fwin .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0;" in body

@@ -11,7 +11,8 @@ Four parts:
   - pure functions that turn the cell's 15 planes into the forecast table's rows: at every step the wind sea and
     the swells in rank order (rank_groups: height squared x peak period, the rule of every forecast table of the site).
 
-numpy and pointfmt are loaded on first use: the web process pays for them only once somebody asks for a point.
+numpy and pointfmt are imported on first use (numpy is usually loaded already: the time-zone lookup behind the
+live-buoy list imports it); pointfmt costs the web process only once somebody asks for a point.
 """
 import importlib.util
 import json
@@ -47,13 +48,13 @@ COAST_Q = 10000
 MAX_COAST_BYTES = 2 * 1024 * 1024    # one cell; the largest is 0.4 MB
 COAST_CACHE_BYTES = 16 * 1024 * 1024
 SHORE_M = 300.0                      # "land" this close to water is the shore: a beach, a pier, the data's own error
-SHORE_RINGS_M = (100.0, 200.0, 300.0)
-PATH_STEP_KM = 0.25                  # the path from the point to its cell is looked at this often
-PATH_LAND_RUN = 2                    # this many land samples in a row = land lies between (a rock is one sample)
-PATH_CELL_SKIP = 0.5                 # the path's end inside this share of the cell's half-width is not looked at
+SHORE_STEP_M = 50.0                  # the shore band is searched for water on rings this far apart ...
+SHORE_DIRS = 32                      # ... in this many directions
+PATH_LAND_KM = 0.1                   # this much land on the straight path = land lies between (a rock, a reef flat is less)
 
 REFUSALS = {                         # reason -> what the visitor is told (final answers: asking again changes nothing)
-    "land": "That point is on land or inland water. Pick a point on the sea.",
+    "land": ("That point is land or inland water in the site's coastline data. If it is the sea, try a point a little "
+             "farther from the shore."),
     "sheltered": "No forecast here: the wave model's nearest points lie beyond land (sheltered water).",
     "nodata": "The wave model has no data here: sea ice, or outside its coverage.",
 }
@@ -115,6 +116,17 @@ def parse_point_id(station):
     lat = lat_m / 1000.0 * (-1 if m.group(2) == "S" else 1)
     lon = lon_m / 1000.0 * (-1 if m.group(4) == "W" else 1)
     return (lat, lon) if point_id(lat, lon) == station else None
+
+
+def zone_label(name):
+    """A time zone as a visitor reads it: the nautical "Etc/GMT+11" means UTC-11 (POSIX's sign, backwards), so it is
+    shown as "UTC-11" with a true minus sign (the page's zoneLabel does the same); every other name as it is."""
+    z = "" if name is None else str(name)
+    m = re.fullmatch(r"Etc/GMT([+-])(\d{1,2})", z)
+    if m:
+        sign = "−" if m.group(1) == "+" else "+"
+        return f"UTC{sign}{int(m.group(2))}" if int(m.group(2)) else "UTC"
+    return "UTC" if re.fullmatch(r"Etc/(GMT|UTC|UCT|Universal|Zulu|Greenwich)(0|[+-]0)?", z) else z
 
 
 def fmt_coord(lat, lon, places=3):
@@ -342,46 +354,90 @@ def land_parity(edges, lons, lats):
     return out
 
 
-def is_water(land, lat, lon):
-    """Water, or land within SHORE_M of water (tested on rings round the point). land(lats, lons) -> bool array."""
+def water_origin(land, lat, lon):
+    """Where the point's path to its model cell starts: the point itself when the coast data says water; else the
+    nearest water within SHORE_M (rings every SHORE_STEP_M, SHORE_DIRS directions; the nearest ring first, then
+    clockwise from north): the point stands on the shore band (a beach, a pier, the data's own error); else None (land).
+    land(lats, lons) -> bool array. -> (lat, lon) or None."""
     import numpy as np
     if not land(np.array([lat]), np.array([lon]))[0]:
-        return True
-    lats, lons = [], []
+        return lat, lon
     coslat = max(0.05, math.cos(math.radians(lat)))
-    for m in SHORE_RINGS_M:
-        for k in range(16):
-            b = math.radians(22.5 * k)
-            lats.append(lat + m * math.cos(b) / 111195.0)
-            lons.append(lon + m * math.sin(b) / (111195.0 * coslat))
-    return not bool(land(np.array(lats), np.array(lons)).all())
+    rings = np.arange(1, int(round(SHORE_M / SHORE_STEP_M)) + 1) * SHORE_STEP_M
+    bearing = np.radians(np.arange(SHORE_DIRS) * 360.0 / SHORE_DIRS)
+    m, b = np.repeat(rings, SHORE_DIRS), np.tile(bearing, len(rings))
+    lats = np.clip(lat + m * np.cos(b) / 111195.0, -90.0, 90.0)      # no sample beyond a pole (G22 R-A20)
+    lons = lon + m * np.sin(b) / (111195.0 * coslat)
+    water = ~land(lats, lons)
+    if not water.any():
+        return None
+    k = int(np.flatnonzero(water)[0])
+    return float(lats[k]), float(lons[k])
 
 
-def path_clear(land, lat, lon, cell):
-    """Whether the straight path from the point to the cell's centre is water: no PATH_LAND_RUN samples of land in
-    a row, PATH_STEP_KM apart. Not looked at: the shore band at the point, and the cell's own box (what lies inside
-    a cell is the model's business; some sea cells have their centre on an islet or a headland: PATH_CELL_SKIP)."""
+def coast_cells_over(west, east, south, north):
+    """The names of the coast cells a box meets (longitudes within -180..180)."""
+    c = COAST_CELL_DEG
+    names = set()
+    for la in range(int(math.floor(south / c)) * c, int(math.floor(north / c)) * c + 1, c):
+        for lo in range(int(math.floor(west / c)) * c, int(math.floor(east / c)) * c + 1, c):
+            names.add(coast_cell_name(la + c / 2.0, lo + c / 2.0))
+    return sorted(names)
+
+
+def path_crossings(edges, x0, y0, x1, y1):
+    """Where the straight path (x0, y0) -> (x1, y1) (degrees; the lat / lon plane) crosses the coast edges: sorted
+    t in [0, 1] along the path. Each edge counts from its first vertex up to (not including) its second, so a path
+    through a vertex crosses once."""
     import numpy as np
-    km = cell["km"]
-    d = np.arange(SHORE_M / 1000.0, km, PATH_STEP_KM)
-    if not len(d):
+    xi, yi, xj, yj = edges
+    if not len(xi):
+        return np.zeros(0)
+    ex, ey = xi - xj, yi - yj                                        # edge: vertex j -> vertex i
+    dx, dy = x1 - x0, y1 - y0
+    den = dx * ey - dy * ex
+    qx, qy = xj - x0, yj - y0
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = (qx * ey - qy * ex) / den
+        u = (qx * dy - qy * dx) / den
+    hit = (den != 0) & (t >= 0) & (t <= 1) & (u >= 0) & (u < 1)
+    return np.sort(t[hit])
+
+
+def land_runs(ts, start_land, end_land):
+    """The stretches of the path on land, [(t0, t1)], from its crossings and the land test at its two ends; runs that
+    touch (a cell line the builder cut a polygon at is crossed twice) are one run. None when the crossings disagree
+    with the ends (a graze the arithmetic cannot settle)."""
+    state, prev, out = bool(start_land), 0.0, []
+    for t in ts:
+        t = float(t)
+        if state:
+            if out and prev - out[-1][1] <= 1e-12:
+                out[-1] = (out[-1][0], t)
+            else:
+                out.append((prev, t))
+        state, prev = not state, t
+    if state:
+        if out and prev - out[-1][1] <= 1e-12:
+            out[-1] = (out[-1][0], 1.0)
+        else:
+            out.append((prev, 1.0))
+    return out if state == bool(end_land) else None
+
+
+def path_blocked(runs, km, half_km):
+    """Whether land lies between the point and its cell: a stretch of PATH_LAND_KM or more anywhere on the path. The
+    one stretch that reaches the cell's centre is forgiven up to half a cell (half_km): some sea cells have their
+    centre on an islet or a headland. runs: land_runs()'s (None = cannot tell: blocked)."""
+    if runs is None:
         return True
-    f = d / km
-    dlon = (cell["lon"] - lon + 180.0) % 360.0 - 180.0
-    lats, lons = lat + f * (cell["lat"] - lat), lon + f * dlon
-    half = cell["half"]
-    half = half * PATH_CELL_SKIP
-    outside = (np.abs(lats - cell["lat"]) > half) | (np.abs(lons - (lon + dlon)) > half)
-    lats, lons = lats[outside], lons[outside]
-    if len(lats) < PATH_LAND_RUN:
-        return True
-    on_land = land(lats, lons)
-    run = 0
-    for v in on_land:
-        run = run + 1 if v else 0
-        if run >= PATH_LAND_RUN:
-            return False
-    return True
+    for t0, t1 in runs:
+        length = (t1 - t0) * km
+        if t1 == 1.0 and length <= half_km:
+            continue
+        if length >= PATH_LAND_KM:
+            return True
+    return False
 
 
 def nearest_sea_cell(grids, masks, lat, lon, reach_km=REACH_KM):
@@ -604,8 +660,15 @@ class PointSource:
             blob = self._get(f"{COAST_PREFIX}/f/{name}.bin", nbytes)
             try:
                 if len(blob) != nbytes:
+                    with self._lock:                                 # the index and the cell disagree: read both again
+                        self._coast_index = None                     # next time (G22 R-A19)
                     raise ValueError("coast cell size")
                 edges = decode_coast(blob)
+                la, lo = (int(v) for v in name.split("_"))
+                top = 90 if la == 90 - COAST_CELL_DEG else la + COAST_CELL_DEG
+                if len(edges[0]) and (edges[0].min() < lo - 1e-9 or edges[0].max() > lo + COAST_CELL_DEG + 1e-9
+                                      or edges[1].min() < la - 1e-9 or edges[1].max() > top + 1e-9):
+                    raise ValueError("coast cell of another place")      # a cell must lie in its own box (G22 R-A19)
             except ValueError as exc:
                 raise PointError("Forecast points are temporarily unavailable") from exc
             held = sum(int(e.nbytes) for e in edges)
@@ -633,20 +696,59 @@ class PointSource:
             out[pick] = land_parity(edges, lons[pick], lats[pick])
         return out
 
+    def edges_over(self, west, east, south, north):
+        """The coast edges whose box meets [west, east] x [south, north] (degrees; the longitudes may run past +-180:
+        the edges of the cells beyond come shifted by 360 to meet them)."""
+        import numpy as np
+        parts = []
+        for shift in (-360.0, 0.0, 360.0):                           # the coast cells lie in -180..180
+            a, b = west - shift, east - shift
+            if b < -180.0 or a >= 180.0:
+                continue
+            for name in coast_cells_over(max(a, -180.0), min(b, 179.9999999), south, north):
+                edges = self._coast_cell(name)
+                if edges is None or not len(edges[0]):
+                    continue
+                xi, yi, xj, yj = edges
+                keep = ((np.maximum(xi, xj) + shift >= west) & (np.minimum(xi, xj) + shift <= east)
+                        & (np.maximum(yi, yj) >= south) & (np.minimum(yi, yj) <= north))
+                if keep.any():
+                    parts.append((xi[keep] + shift, yi[keep], xj[keep] + shift, yj[keep]))
+        if not parts:
+            z = np.zeros(0)
+            return z, z, z, z
+        return tuple(np.concatenate([p[k] for p in parts]) for k in range(4))
+
     def locate(self, man, lat, lon):
-        """The point's model cell: the nearest sea cell within reach that can be reached from the point over water.
-        -> (cell, None), or (None, reason): "land" (the point is on land, beyond the shore band), "nodata" (no sea
-        cell within reach: ice, a sea the model does not have), "sheltered" (cells within reach, all beyond land)."""
-        if not is_water(self.land, lat, lon):
+        """The point's model cell: the nearest sea cell within reach whose straight path from the point holds no land
+        (path_blocked; the path starts at the nearest water when the point stands on the shore band).
+        -> (cell, None), or (None, reason): "land" (the point is on land beyond the shore band, or on the band with
+        no cell reachable from its water), "nodata" (no sea cell within reach: ice, a sea the model does not have),
+        "sheltered" (water, and every cell within reach lies beyond land)."""
+        import numpy as np
+        origin = water_origin(self.land, lat, lon)
+        if origin is None:
             return None, "land"
         masks = {g["name"]: self.mask(man, g) for g in man["grids"] if grid_in_reach(g, lat)}
         cells = sea_cells_in_reach(man["grids"], masks, lat, lon) if masks else []
         if not cells:
             return None, "nodata"
-        for cell in cells:
-            if path_clear(self.land, lat, lon, cell):
+        olat, olon = origin
+        x0, y0 = olon + 3.7e-9, olat + 2.9e-9                        # off the data's 1e-4 grid: no path starts on a vertex
+        ends = [(olon + ((c["lon"] - olon + 180.0) % 360.0 - 180.0) + 1.3e-9, c["lat"] - 2.1e-9) for c in cells]
+        xs, ys = [x0] + [e[0] for e in ends], [y0] + [e[1] for e in ends]
+        edges = self.edges_over(min(xs), max(xs), max(-90.0, min(ys)), min(90.0, max(ys)))
+        states = self.land(np.array(ys), np.array(xs))
+        xi, yi, xj, yj = edges
+        for k, cell in enumerate(cells):
+            x1, y1 = ends[k]
+            keep = ((np.maximum(xi, xj) >= min(x0, x1)) & (np.minimum(xi, xj) <= max(x0, x1))
+                    & (np.maximum(yi, yj) >= min(y0, y1)) & (np.minimum(yi, yj) <= max(y0, y1)))
+            ts = path_crossings((xi[keep], yi[keep], xj[keep], yj[keep]), x0, y0, x1, y1)
+            km = _km(olat, olon, cell["lat"], cell["lon"])
+            if not path_blocked(land_runs(ts, states[0], states[k + 1]), km, cell["half"] * 111.2):
                 return cell, None
-        return None, "sheltered"
+        return None, ("sheltered" if origin == (lat, lon) else "land")   # a click on the shore band's land: land (G22 R-B7)
 
     def _tile(self, man, grid, tr, tc):
         key = (man["run"], grid["name"], tr, tc)
@@ -740,11 +842,13 @@ def swell_power(hs, tp):
 
 
 def rank_groups(groups):
-    """One row's wave systems [(height, peak period, direction), ...] (empty = height None) in rank order: the most
-    powerful first, the empty ones last; equal power: the higher first, then the source's order."""
+    """One row's wave systems [(height, peak period, direction), ...] in rank order: the most powerful first; equal
+    power: the higher first, then the source's order. A group without a height but with a period or a direction
+    keeps its values, after the ranked ones (no source sends one today; G22 R-A23); empty groups last."""
     live = [g for g in groups if g[0] is not None]
     live.sort(key=lambda g: (-swell_power(g[0], g[1]), -g[0]))       # stable
-    return live + [(None, None, None)] * (len(groups) - len(live))
+    part = [tuple(g) for g in groups if g[0] is None and any(v is not None for v in g[1:])]
+    return live + part + [(None, None, None)] * (len(groups) - len(live) - len(part))
 
 
 # ------------------------------- the table's rows --------------------------------------

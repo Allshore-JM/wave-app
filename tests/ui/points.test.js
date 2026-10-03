@@ -94,7 +94,7 @@ test('what the store reads back: bad entries are dropped, duplicates kept once, 
     { id: 'pt_21667N_158054W', name: 'twice' }, { id: 'pt_0S_0E' }, { id: 51201 }, null, 'pt_1N_1E', { id: 'pt_1N_1E', name: 5 },
   ]));
   assert.deepEqual(F.createPointStore(st).list(), [
-    { id: 'pt_21667N_158054W', lat: 21.667, lon: -158.054, name: 'Pipe line' }, { id: 'pt_1N_1E', lat: 0.001, lon: 0.001, name: '5' }]);
+    { id: 'pt_21667N_158054W', lat: 21.667, lon: -158.054, name: 'Pipe line' }, { id: 'pt_1N_1E', lat: 0.001, lon: 0.001, name: '' }]);   // a stored name that is not text is dropped (G22 R-A13)
   for (const raw of ['{', '"x"', '{"a":1}', '5', 'null']) { st.setItem(I.POINTS_KEY, raw); assert.deepEqual(F.createPointStore(st).list(), [], raw); }
   st.setItem(I.POINTS_KEY, JSON.stringify(Array.from({ length: 80 }, (_, i) => ({ id: F.pointId(i, i) }))));
   assert.equal(F.createPointStore(st).list().length, 50, 'never more than 50, whatever was stored');

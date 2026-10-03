@@ -1032,3 +1032,11 @@ test('the drawn rays: pieces of at least 25 km also far north (G21 re-check R1-9
   const cs = new T.CoastSource('https://c', () => Promise.reject(new TypeError('Failed to fetch')));
   await assert.rejects(cs.load(), (e) => /^coast\b/.test(e.message));
 });
+
+test('the page answers the shared land fixture as the server does (G22 re-check R-A24/25)', () => {
+  const fx = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'coast', 'land_parity.json'), 'utf8'));
+  const t1 = fixture(fx.coast);
+  assert.equal(fx.points.length, 500);
+  const wrong = fx.points.filter((p) => T.inLand([t1], p[1], p[0]) !== p[2]);
+  assert.deepEqual(wrong, []);
+});

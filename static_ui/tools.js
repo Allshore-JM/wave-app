@@ -1231,7 +1231,7 @@
       var measuring = s.tool === 'distance' || s.tool === 'area';
       barEl.querySelector('[data-act="undo"]').hidden = !measuring || !s.pts.length || s.closed;
       barEl.querySelector('[data-act="finish"]').hidden = !measuring || s.closed || s.pts.length < (s.tool === 'area' ? 3 : 2);
-      barEl.querySelector('[data-act="clear"]').hidden = !(s.pts.length || s.result || s.busy);
+      barEl.querySelector('[data-act="clear"]').hidden = !(s.pts.length || s.result || (s.busy && s.tool !== 'point'));   // nothing to clear while a point is checked (G22 R-B5)
       lockBtn.hidden = !(s.tool === 'exposure' && s.result);
       // the label alone says what the button does (G21 B-11: "Unlock, pressed"); a class gives the pressed look
       lockBtn.textContent = s.locked ? 'Unlock' : 'Lock'; lockBtn.classList.toggle('is-on', s.locked);
@@ -1317,11 +1317,16 @@
         asked.then(function (r) {
           if (gen !== s.gen || s.tool !== 'point') return;                    // the tool was closed or restarted meanwhile: nothing opens
           s.busy = false;
+          if (r && r.cancel) { stop(); return; }                               // the visitor opened something else meanwhile (G22 R-A6)
           if (r && r.ok) { var inBar = barEl.contains(doc.activeElement); stop(); if (typeof r.open === 'function') r.open(); if (inBar) focusTools(); return; }
           s.msg = (r && r.message) || 'No forecast there. Try another point on the sea.'; render();
-        }, function () {
+        }, function (err) {
           if (gen !== s.gen || s.tool !== 'point') return;
-          s.busy = false; s.msg = 'Could not reach the server. Check the connection and try again.'; render();
+          var http = err && /^HTTP \d+/.exec(String(err.message || ''));       // the server answered, with an error (G22 R-B6)
+          s.busy = false;
+          s.msg = http ? 'The forecast server could not answer (' + http[0] + '). Try again in a moment.'
+            : 'Could not reach the server. Check the connection and try again.';
+          render();
         });
         return;
       }
@@ -1409,7 +1414,7 @@
       var lines = [];
       if (s.msg) lines.push({ t: s.msg, cls: 'tools-big tools-msg', folded: true });
       lines.push({ t: (s.msg ? verb + ' another point on the sea.' : verb + ' the sea where you want a forecast.'), cls: s.msg ? 'tools-hint' : 'tools-big' });
-      if (!s.msg) lines.push({ t: 'Its table and graphs open with the coordinates; the point is kept in this browser under My points.', cls: 'tools-hint' });
+      if (!s.msg) lines.push({ t: 'Its table and graphs open with the coordinates, and the point is kept under My points if this browser allows it.', cls: 'tools-hint' });
       return lines;
     }
     function render() {
@@ -1421,7 +1426,7 @@
       foldBtn.setAttribute('aria-expanded', s.folded ? 'false' : 'true');
       foldBtn.setAttribute('aria-label', s.folded ? 'Unfold the tool bar' : 'Fold the tool bar');
       foldBtn.textContent = s.folded ? '▾' : '▴';
-      titleEl.textContent = s.folded && s.busy ? 'Computing…' : TOOLS[s.tool] + (s.folded && s.locked ? ' · locked' : '');
+      titleEl.textContent = s.folded && s.busy ? (s.tool === 'point' ? 'Checking that point…' : 'Computing…') : TOOLS[s.tool] + (s.folded && s.locked ? ' · locked' : '');
       setActions();
       layout();
     }
@@ -1668,7 +1673,8 @@
     function ownsKeys() {
       var a = doc.activeElement, box = map.getContainer();
       if (!a || a === doc.body || a === doc.documentElement || a === box || barEl.contains(a) || a === btn) return true;
-      if (a.closest && a.closest('.fwin.fw-min')) return true;              // a minimised window's bar: Escape reaches the tool (G22 B-13)
+      var list = doc.getElementById('stationResults');                       // ... unless the favourites list is open: its Escape
+      if (a.closest && a.closest('.fwin.fw-min')) return !(list && !list.hidden);   // closes the list (G22 R-A7); else a minimised window's bar: Escape reaches the tool (G22 B-13)
       var gear = doc.getElementById('settingsBtn'), panel = doc.getElementById('settingsPanel');
       if (gear && a === gear) return !panel || panel.hidden;
       return box.contains(a) && !(a.closest && a.closest('.leaflet-control, .ov-sheet'));

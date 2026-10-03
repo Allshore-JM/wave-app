@@ -284,7 +284,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.15.1"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.15.2"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript"}
@@ -381,16 +381,21 @@ def _points_fetch(url: str, max_bytes: int) -> bytes:
     """A whole 200 body of at most max_bytes within about _POINT_FETCH_MAX_S from the request, or an exception
     (point_forecast turns it into its message). A body that trickles is cut by shutting its socket down: closing the
     response from another thread would wait for the reader's lock, i.e. for the whole body (G22 R-A2). A short body
-    is urllib3's IncompleteRead. Headers that trickle are not cut (R2 sends them at once)."""
+    is urllib3's IncompleteRead. Headers that trickle are not cut (R2 sends them at once). On Linux, where the
+    service runs, the shutdown wakes a blocked read at once; on Windows such a read may last to the read timeout."""
     deadline = time.monotonic() + _POINT_FETCH_MAX_S
-    held = {"sock": None, "late": False}
+    held = {"sock": None, "late": False, "done": False}
+    guard = threading.Lock()
 
     def cut():
-        held["late"] = True
-        sock = held["sock"]
+        with guard:
+            if held["done"]:                                         # the body is read: the socket may be the pool's now
+                return
+            held["late"] = True
+            sock = held["sock"]
         if sock is not None:
             try:
-                sock.shutdown(socket.SHUT_RDWR)                      # wakes a blocked recv on every system, needs no lock
+                sock.shutdown(socket.SHUT_RDWR)                      # needs no lock of the reader's
             except OSError:
                 pass
 
@@ -399,19 +404,26 @@ def _points_fetch(url: str, max_bytes: int) -> bytes:
     killer.start()
     try:
         with _POINT_HTTP.get(url, timeout=_POINT_FETCH_TIMEOUT, stream=True) as resp:
-            held["sock"] = getattr(getattr(resp.raw, "_connection", None), "sock", None)
-            if held["late"]:
+            with guard:
+                held["sock"] = getattr(getattr(resp.raw, "_connection", None), "sock", None)
+                late = held["late"]
+            if late:
                 cut()                                                # the time ran out while the headers came
-            if resp.status_code != 200:
-                raise IOError(f"HTTP {resp.status_code}")
-            body = bytearray()
-            for chunk in resp.iter_content(65536):
-                body += chunk
-                if len(body) > max_bytes:
-                    raise IOError("body too large")
-                if time.monotonic() > deadline:
-                    raise IOError("too slow")
-            return bytes(body)
+            try:
+                if resp.status_code != 200:
+                    raise IOError(f"HTTP {resp.status_code}")
+                body = bytearray()
+                for chunk in resp.iter_content(65536):
+                    body += chunk
+                    if len(body) > max_bytes:
+                        raise IOError("body too large")
+                    if time.monotonic() > deadline:
+                        raise IOError("too slow")
+                return bytes(body)
+            finally:
+                with guard:                                          # before the connection goes back to the pool (G22 R2-8)
+                    held["done"] = True
+                killer.cancel()
     finally:
         killer.cancel()
 
@@ -3563,18 +3575,23 @@ def _nearest_station_tz(lat, lon, reach_km=POINT_TZ_STATION_KM):
     return get_station_tz(best) if best else None
 
 
-POINT_TZ_MAX_SHIFT_H = 3.0          # a station's zone is taken only this close to the point's own sun time
+POINT_TZ_DATE_LINE_H = 12.0         # a station zone this far from the point's own sun time lies across the date line
 
 
-def _zone_near_nautical(tz_name, lon, now=None):
-    """Whether the zone's offset (now) lies within POINT_TZ_MAX_SHIFT_H of the point's nautical offset: a station
-    across the date line keeps its calendar, a day away from the point's (G22 R-A3)."""
+def _zone_across_date_line(tz_name, lon):
+    """Whether a station's zone lies across the date line from the point: its offset 12 hours or more from the
+    point's nautical offset in January AND in July (so the season cannot change the answer). Such a zone keeps its
+    calendar, a day away from the point's (G22 R-A3: America/Adak off the Commander Islands); a zone on the same side
+    stays, however many hours off (Nome time in the Bering Sea, G22 R2-2). An unknown zone counts as across."""
     try:
-        when = now or datetime.now(timezone.utc)
-        off = when.astimezone(pytz.timezone(tz_name)).utcoffset().total_seconds() / 3600.0
+        zone = pytz.timezone(tz_name)
+        year = datetime.now(timezone.utc).year
+        offs = [datetime(year, m, 15, 12, tzinfo=timezone.utc).astimezone(zone).utcoffset().total_seconds() / 3600.0
+                for m in (1, 7)]
     except Exception:
-        return False
-    return abs(off - round(float(lon) / 15.0)) <= POINT_TZ_MAX_SHIFT_H
+        return True
+    naut = round(float(lon) / 15.0)
+    return all(abs(o - naut) >= POINT_TZ_DATE_LINE_H for o in offs)
 
 
 def _point_tz(lat, lon):
@@ -3589,7 +3606,7 @@ def _point_tz(lat, lon):
         tz = _safe_tzname_for_latlon(lat, lon)
         if not tz or tz.startswith("Etc/") or tz == "UTC":
             near = _nearest_station_tz(lat, lon)
-            if near and (near.startswith("Etc/") or not _zone_near_nautical(near, lon)):
+            if near and (near.startswith("Etc/") or _zone_across_date_line(near, lon)):
                 near = None                                          # e.g. America/Adak for the Commander Islands (G22 R-A3)
             tz = near or _nearest_civil_tz(float(lat), float(lon))
         with _CACHE_LOCK:

@@ -869,3 +869,21 @@ test('graphs: 7 d and 3 d of a long series are 168 and 72 slots (G22 re-check R-
   G.setRange('7'); assert.equal(Chart.made[0].options.scales.x.max, 167);
   G.setRange('full'); assert.equal(Chart.made[0].options.scales.x.max, 199);
 });
+
+test('graphs: the synced charts show only the swells there, and a row is a slot with a SHOWN value (G22 re-check 2: R2-4, R2-7)', async () => {
+  const win = fakeWindow(), page = buildPage(win), F = load(win), Chart = fakeChart();
+  page.graphs.hidden = false;
+  const G = F._internals.createForecastGraphs(graphDeps(win, page, Chart));
+  const gd = payload().graph_data;                        // s1 everywhere, s2 never: "Swell 2: 0" was listed
+  await G.setData(gd); await settle();
+  Chart.made[0].canvas.dispatch('mousemove', { index: 5 });
+  const ds = (ch) => (ch.active || []).map((a) => ch.data.datasets[a.datasetIndex].label);
+  assert.deepEqual(ds(Chart.made[1]), ['Swell 1'], 'period: no absent swell');
+  assert.deepEqual(ds(Chart.made[2]), ['Swell 1'], 'direction: no absent swell');
+  const I = F._internals, n = 10;
+  const hidden = { data: [null, null, null, 7, null, null, null, null, null, null] }, shown = { data: [1, null, null, null, null, null, 2, null, null, null] };
+  const meta = () => ({ data: Array.from({ length: n }, (_, j) => ({ j })) });
+  const chart = { scales: { x: { getValueForPixel: (x) => x / 10 } }, chartArea: { left: 0, right: 1000 }, data: { labels: Array(n).fill(''), datasets: [hidden, shown] },
+    getDatasetMeta: meta, isDatasetVisible: (di) => di === 1 };
+  assert.deepEqual(I.rowMode(chart, { native: {}, x: 32 }).map((i) => [i.datasetIndex, i.index]), [[1, 6]], 'the hidden series does not make a row');
+});

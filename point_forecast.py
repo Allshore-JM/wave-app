@@ -51,6 +51,9 @@ SHORE_M = 300.0                      # "land" this close to water is the shore: 
 SHORE_STEP_M = 50.0                  # the shore band is searched for water on rings this far apart ...
 SHORE_DIRS = 32                      # ... in this many directions
 PATH_LAND_KM = 0.1                   # this much land on the straight path = land lies between (a rock, a reef flat is less)
+PATH_CENTRE_KM = 3.0                 # land under the cell's centre forgiven up to this (an islet, a headland; not a barrier
+                                     # island: Moreton Bay behind North Stradbroke, G22 R2-1)
+SHORE_TRIES = 8                      # water samples of the shore band tried, nearest first, at least 100 m apart (G22 R2-5)
 MOUTH_CAP_KM = 10.0                  # land this close on BOTH sides of a served path makes a gap ...
 MOUTH_DEG = 70.0                     # ... that, narrower than this as seen from the point, is a narrow mouth (owner, 2026-10-03:
                                      # Cowes 8, Pamlico 19, lower Tampa Bay 40, Fort Point 67; Hanalei 85, Hilo Bay 104 are not)
@@ -358,25 +361,35 @@ def land_parity(edges, lons, lats):
     return out
 
 
-def water_origin(land, lat, lon):
-    """Where the point's path to its model cell starts: the point itself when the coast data says water; else the
-    nearest water within SHORE_M (rings every SHORE_STEP_M, SHORE_DIRS directions; the nearest ring first, then
-    clockwise from north): the point stands on the shore band (a beach, a pier, the data's own error); else None (land).
-    land(lats, lons) -> bool array. -> (lat, lon) or None."""
+def water_origins(land, lat, lon, limit=SHORE_TRIES):
+    """Where the point's path to its model cell may start: [the point itself] when the coast data says water; else the
+    water within SHORE_M (rings every SHORE_STEP_M, SHORE_DIRS directions; the nearest ring first, then clockwise from
+    north), at most `limit` samples at least 100 m apart: the point stands on the shore band (a beach, a pier, the
+    data's own error), and its nearest water may be a pocket while the sea lies on its other side (G22 R2-5); else []
+    (land). land(lats, lons) -> bool array. -> [(lat, lon), ...]."""
     import numpy as np
     if not land(np.array([lat]), np.array([lon]))[0]:
-        return lat, lon
+        return [(lat, lon)]
     coslat = max(0.05, math.cos(math.radians(lat)))
     rings = np.arange(1, int(round(SHORE_M / SHORE_STEP_M)) + 1) * SHORE_STEP_M
     bearing = np.radians(np.arange(SHORE_DIRS) * 360.0 / SHORE_DIRS)
     m, b = np.repeat(rings, SHORE_DIRS), np.tile(bearing, len(rings))
     lats = np.clip(lat + m * np.cos(b) / 111195.0, -90.0, 90.0)      # no sample beyond a pole (G22 R-A20)
     lons = lon + m * np.sin(b) / (111195.0 * coslat)
-    water = ~land(lats, lons)
-    if not water.any():
-        return None
-    k = int(np.flatnonzero(water)[0])
-    return float(lats[k]), float(lons[k])
+    out = []
+    for k in np.flatnonzero(~land(lats, lons)):
+        la, lo = float(lats[k]), float(lons[k])
+        if all(_km(la, lo, a, o) >= 0.1 for a, o in out):
+            out.append((la, lo))
+            if len(out) >= limit:
+                break
+    return out
+
+
+def water_origin(land, lat, lon):
+    """The first of water_origins(): the point itself, or its nearest water on the shore band, or None (land)."""
+    found = water_origins(land, lat, lon, 1)
+    return found[0] if found else None
 
 
 def coast_cells_over(west, east, south, north):
@@ -429,6 +442,12 @@ def land_runs(ts, start_land, end_land):
     return out if state == bool(end_land) else None
 
 
+def centre_forgiven_km(cell):
+    """How much land under a cell's centre is forgiven on the way to it: an islet or a headland, at most PATH_CENTRE_KM
+    and never more than the cell's own half-width east-west (G22 R2-1: half a cell let a whole barrier island through)."""
+    return min(PATH_CENTRE_KM, cell["half"] * 111.2 * max(0.05, math.cos(math.radians(cell["lat"]))))
+
+
 def path_blocked(runs, km, half_km):
     """Whether land lies between the point and its cell: a stretch of PATH_LAND_KM or more anywhere on the path. The
     one stretch that reaches the cell's centre is forgiven up to half a cell (half_km): some sea cells have their
@@ -478,13 +497,28 @@ def mouth_aperture(edges, olat, olon, clat, clon, half_deg, runs=(), cap_km=MOUT
                 keep = ((np.maximum(xi, xj) >= min(sx, ex)) & (np.minimum(xi, xj) <= max(sx, ex))
                         & (np.maximum(yi, yj) >= min(sy, ey)) & (np.minimum(yi, yj) <= max(sy, ey)))
                 ts = path_crossings((xi[keep], yi[keep], xj[keep], yj[keep]), sx + 3.7e-9, sy + 2.9e-9, ex + 1.3e-9, ey - 2.1e-9)
-                side.append(float(ts[0]) * cap_km if len(ts) else None)
+                side.append(first_land_km(ts, cap_km))
             if side[0] is not None and side[1] is not None:
                 deg = math.degrees(math.atan(side[0] / s) + math.atan(side[1] / s))
                 if best is None or deg < best[0]:
                     best = (deg, s, side[0] + side[1])
         s += 0.25 if s < 3.0 else 0.5
     return best
+
+
+def first_land_km(ts, length_km):
+    """How far along a ray from water its first stretch of land of PATH_LAND_KM or more begins, from its crossings
+    (sorted t in [0, 1]), or None. A crossing pair at one place is no land: the coast cells close their polygons along
+    the 5-degree lines with coincident edges through water (G22 R2-3); a rock is not a shore."""
+    state, prev = False, 0.0
+    for t in ts:
+        t = float(t)
+        if state and (t - prev) * length_km >= PATH_LAND_KM:
+            return prev * length_km
+        state, prev = not state, t
+    if state and (1.0 - prev) * length_km >= PATH_LAND_KM:
+        return prev * length_km
+    return None
 
 
 def nearest_sea_cell(grids, masks, lat, lon, reach_km=REACH_KM):
@@ -773,30 +807,33 @@ class PointSource:
         no cell reachable from its water), "nodata" (no sea cell within reach: ice, a sea the model does not have),
         "sheltered" (water, and every cell within reach lies beyond land)."""
         import numpy as np
-        origin = water_origin(self.land, lat, lon)
-        if origin is None:
+        origins = water_origins(self.land, lat, lon)
+        if not origins:
             return None, "land"
         masks = {g["name"]: self.mask(man, g) for g in man["grids"] if grid_in_reach(g, lat)}
         cells = sea_cells_in_reach(man["grids"], masks, lat, lon) if masks else []
         if not cells:
             return None, "nodata"
-        olat, olon = origin
-        x0, y0 = olon + 3.7e-9, olat + 2.9e-9                        # off the data's 1e-4 grid: no path starts on a vertex
-        ends = [(olon + ((c["lon"] - olon + 180.0) % 360.0 - 180.0) + 1.3e-9, c["lat"] - 2.1e-9) for c in cells]
-        xs, ys = [x0] + [e[0] for e in ends], [y0] + [e[1] for e in ends]
+        # the cells' centres, their longitudes unwrapped from the point (every origin lies within SHORE_M of it)
+        ends = [(lon + ((c["lon"] - lon + 180.0) % 360.0 - 180.0) + 1.3e-9, c["lat"] - 2.1e-9) for c in cells]
+        starts = [(o[1] + 3.7e-9, o[0] + 2.9e-9) for o in origins]  # off the data's 1e-4 grid: no path starts on a vertex
+        xs, ys = [p[0] for p in starts + ends], [p[1] for p in starts + ends]
         edges = self.edges_over(min(xs), max(xs), max(-90.0, min(ys)), min(90.0, max(ys)))
         states = self.land(np.array(ys), np.array(xs))
+        end_states = states[len(starts):]
         xi, yi, xj, yj = edges
-        for k, cell in enumerate(cells):
-            x1, y1 = ends[k]
-            keep = ((np.maximum(xi, xj) >= min(x0, x1)) & (np.minimum(xi, xj) <= max(x0, x1))
-                    & (np.maximum(yi, yj) >= min(y0, y1)) & (np.minimum(yi, yj) <= max(y0, y1)))
-            ts = path_crossings((xi[keep], yi[keep], xj[keep], yj[keep]), x0, y0, x1, y1)
-            km = _km(olat, olon, cell["lat"], cell["lon"])
-            runs = land_runs(ts, states[0], states[k + 1])
-            if not path_blocked(runs, km, cell["half"] * 111.2):
-                return dict(cell, mouth=self.mouth(olat, olon, cell, x1, runs)), None
-        return None, ("sheltered" if origin == (lat, lon) else "land")   # a click on the shore band's land: land (G22 R-B7)
+        for n, (olat, olon) in enumerate(origins):                  # the nearest water first; the others only if it fails
+            x0, y0 = starts[n]
+            for k, cell in enumerate(cells):
+                x1, y1 = ends[k]
+                keep = ((np.maximum(xi, xj) >= min(x0, x1)) & (np.minimum(xi, xj) <= max(x0, x1))
+                        & (np.maximum(yi, yj) >= min(y0, y1)) & (np.minimum(yi, yj) <= max(y0, y1)))
+                ts = path_crossings((xi[keep], yi[keep], xj[keep], yj[keep]), x0, y0, x1, y1)
+                km = _km(olat, olon, cell["lat"], cell["lon"])
+                runs = land_runs(ts, states[n], end_states[k])
+                if not path_blocked(runs, km, centre_forgiven_km(cell)):
+                    return dict(cell, mouth=self.mouth(olat, olon, cell, x1, runs)), None
+        return None, ("sheltered" if origins[0] == (lat, lon) else "land")   # a click on the shore band's land: land (G22 R-B7)
 
     def mouth(self, olat, olon, cell, clon, runs):
         """mouth_aperture() of a served path, with the coast edges round it."""

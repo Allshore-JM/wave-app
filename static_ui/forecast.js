@@ -409,7 +409,8 @@
       x = p.clientX - r.left;
     }
     if (x === null || !Number.isFinite(x) || (area && (x < area.left || x > area.right))) return [];
-    var j = rowAt(chart.data.datasets, labels.length, xs.getValueForPixel(x), 3);
+    var shown = chart.data.datasets.filter(function (ds, di) { return chart.isDatasetVisible(di); });   // a row is a slot with a SHOWN value (G22 R2-7)
+    var j = rowAt(shown, labels.length, xs.getValueForPixel(x), 3);
     if (j < 0) return [];
     var out = [];
     chart.data.datasets.forEach(function (ds, di) {
@@ -495,7 +496,11 @@
       function setActive(ch, idx) {
         if (!ch || !ch.data || !ch.data.labels) return;
         var i = Math.max(0, Math.min(idx, ch.data.labels.length - 1));
-        var active = ch.data.datasets.map(function (_, di) { return { datasetIndex: di, index: i }; });
+        var active = [];                                       // only the swells there: a missing one is no "Swell 4: 0" (G22 R2-4)
+        ch.data.datasets.forEach(function (ds, di) {
+          var v = ds.data ? ds.data[i] : null;
+          if (v !== null && v !== undefined && Number.isFinite(+v) && (!ch.isDatasetVisible || ch.isDatasetVisible(di))) active.push({ datasetIndex: di, index: i });
+        });
         ch.setActiveElements(active);
         var xs = ch.scales && ch.scales.x, x = xs ? xs.getPixelForValue(i) : undefined;
         if (ch.tooltip) ch.tooltip.setActiveElements(active, { x: x });

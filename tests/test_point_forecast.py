@@ -677,6 +677,61 @@ def test_the_path_to_the_cell_must_be_water():
     assert PFC.PATH_LAND_KM == 0.1
 
 
+def test_land_under_the_cells_centre_is_forgiven_up_to_3_km_only():
+    """G22 R2-1: half a cell (9-14 km) of forgiveness let a whole barrier island through (Moreton Bay behind North
+    Stradbroke Island). An islet or a headland under the centre is forgiven, at most PATH_CENTRE_KM."""
+    assert PFC.PATH_CENTRE_KM == 3.0
+    assert PFC.centre_forgiven_km({"lat": 0.0, "half": 0.125}) == 3.0
+    assert abs(PFC.centre_forgiven_km({"lat": 80.0, "half": 0.125}) - 0.125 * 111.2 * math.cos(math.radians(80))) < 1e-9
+    # a lagoon behind a barrier island 15 km wide whose middle carries the only cell within reach: sheltered
+    p = Product(land=LAND + ((99.42, 99.58, 19.9, 20.1),))
+    src = p.source()
+    assert src.locate(src.manifest(), 20.0, 99.75) == (None, "sheltered")
+    # ... an islet of 2 km under the centre is still forgiven
+    q = Product(land=LAND + ((99.49, 99.51, 19.99, 20.01),)).source()
+    cell, why = q.locate(q.manifest(), 20.0, 99.75)
+    assert why is None and cell["lon"] == 99.5
+
+
+def test_the_shore_band_tries_its_other_water_when_the_nearest_is_a_pocket():
+    """G22 R2-5: a click on the band whose nearest water is a closed pocket (an estuary, a pond) while the sea lies
+    within 300 m on its other side is served from the sea's side (Honolua Bay, the Mundaka shore)."""
+    block = ((99.795, 99.805, 19.998, 20.0008), (99.795, 99.805, 20.0012, 20.01),        # land round a 44 m pond
+             (99.795, 99.799, 20.0008, 20.0012), (99.801, 99.805, 20.0008, 20.0012))
+    src = Product(land=LAND + block).source()
+    man = src.manifest()
+    first = PFC.water_origin(src.land, 20.0, 99.80)
+    assert first is not None and 20.0008 < first[0] < 20.0012                          # the pond, 100 m north
+    origins = PFC.water_origins(src.land, 20.0, 99.80)
+    assert len(origins) > 1 and origins[0] == first and any(o[0] < 19.998 for o in origins)
+    assert all(PFC._km(*a, *b) >= 0.1 for i, a in enumerate(origins) for b in origins[:i])
+    assert len(origins) <= PFC.SHORE_TRIES == 8
+    cell, why = src.locate(man, 20.0, 99.80)
+    assert why is None and cell["lon"] == 99.5                                           # from the sea south of the block
+    only = PFC.water_origins(src.land, 20.0, 99.80, 1)
+    assert only == [first] and PFC.water_origins(lambda la, lo: la < 1000, 20.0, 99.8) == []
+
+
+def test_the_mouth_ignores_crossing_pairs_and_rocks():
+    """G22 R2-3: the coast cells close their polygons along the 5-degree lines with coincident edges through water; a
+    ray crossing such a pair meets no land. A rock under PATH_LAND_KM is no shore either."""
+    assert PFC.first_land_km([], 10.0) is None
+    assert PFC.first_land_km([0.2, 0.2], 10.0) is None                                 # a pair at one place
+    assert PFC.first_land_km([0.2, 0.2, 0.5], 10.0) == 5.0                            # the pair, then the shore at 5 km
+    assert PFC.first_land_km([0.1, 0.105, 0.3, 0.6], 10.0) == 3.0                      # a 50 m rock, then land at 3 km
+    assert PFC.first_land_km([0.995], 10.0) is None                                    # land in the last 50 m of the look
+    assert PFC.first_land_km([0.3], 10.0) == 3.0                                       # land to the end
+    # a pair along a cell line beside the path (y = 0.02) and real land on the other side: no gap
+    z = np.zeros(0)
+    pair = (np.array([10.25, 10.05]), np.array([0.02, 0.02]), np.array([10.05, 10.25]), np.array([0.02, 0.02]))
+    south = box_edges((10.05, 10.25, -0.2, -0.005))
+    edges = tuple(np.concatenate([pair[k], south[k]]) for k in range(4))
+    assert PFC.mouth_aperture(edges, 0.0, 10.0, 0.0, 10.3, 0.0) is None
+    north = box_edges((10.10, 10.12, 0.005, 0.2))                                       # a real shore there instead: a gap
+    edges = tuple(np.concatenate([pair[k], south[k], north[k]]) for k in range(4))
+    assert PFC.mouth_aperture(edges, 0.0, 10.0, 0.0, 10.3, 0.0) is not None
+
+
 def test_the_coast_beyond_180_is_seen_from_both_sides():
     """A box that runs past 180 gets the far side's edges shifted by 360, and the land test wraps (G22 R-A5: M24)."""
     p = Product(land=LAND + ((-179.95, -179.85, 19.0, 21.0), (179.80, 179.84, 19.0, 21.0)))
@@ -1304,6 +1359,24 @@ def test_points_fetch_caps_the_body_and_refuses_other_statuses(monkeypatch):
     assert seen["resp"].sock.down == 1
     monkeypatch.setattr(A._POINT_HTTP, "get", get)
     monkeypatch.setattr(A, "_POINT_FETCH_MAX_S", 8)
+    # a timer that fires once the body is read touches nothing: the socket may be the pool's again (G22 R2-8)
+    fired = []
+
+    class Hold:
+        def __init__(self, t, fn):
+            fired.append(fn)
+            self.daemon = False
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+    monkeypatch.setattr(A.threading, "Timer", Hold)
+    seen["resp"] = Resp(200, [b"ab"])
+    assert A._points_fetch("https://bucket/x", 9) == b"ab"
+    fired[-1]()
+    assert seen["resp"].sock.down == 0
     seen["resp"] = Resp(200, [b"ab", b"cde"])
     with pytest.raises(IOError, match="too large"):
         A._points_fetch("https://bucket/x", 4)
@@ -1351,22 +1424,29 @@ def test_a_points_time_zone_is_its_own_waters_then_the_nearest_stations(monkeypa
 
 def test_a_station_across_the_date_line_does_not_give_its_zone(monkeypatch):
     """G22 R-A3: 31 km off the Commander Islands (Russia, UTC+12) a point took America/Adak (UTC-9) from a station
-    534 km away: a calendar day off. A station's zone counts only within 3 hours of the point's nautical offset."""
-    coords = {"46070": {"lat": 55.0, "lon": 175.3}, "HNL01": {"lat": 24.0, "lon": -158.0}, "62163": {"lat": 47.5, "lon": -8.5}}
-    zones = {"46070": "America/Adak", "HNL01": "Pacific/Honolulu", "62163": "Europe/Paris"}
+    534 km away: a calendar day off. Only a zone ACROSS the date line is refused (12 hours or more from the point's
+    nautical offset in January and in July); a same-side zone stays, however many hours off: Nome time in the Bering
+    Sea (G22 R2-2: the 3-hour rule threw it away in summer and gave UTC-12, or Asia/Anadyr a day off)."""
+    coords = {"46070": {"lat": 55.0, "lon": 175.3}, "46035": {"lat": 57.05, "lon": -177.58}, "HNL01": {"lat": 24.0, "lon": -158.0},
+              "62163": {"lat": 47.5, "lon": -8.5}}
+    zones = {"46070": "America/Adak", "46035": "America/Nome", "HNL01": "Pacific/Honolulu", "62163": "Europe/Paris"}
     monkeypatch.setattr(A, "load_station_coords", lambda: coords)
     monkeypatch.setattr(A, "get_station_tz", lambda sid: zones.get(sid))
     monkeypatch.setattr(A, "_safe_tzname_for_latlon", lambda lat, lon: "Etc/GMT-11")
     monkeypatch.setattr(A, "_nearest_civil_tz", lambda lat, lon: "Asia/Kamchatka")
     monkeypatch.setattr(A, "_POINT_TZ_CACHE", A.OrderedDict())
-    assert A._point_tz(54.5, 167.0) == "Asia/Kamchatka"                           # Adak is 20 h from 167 E's sun time
-    assert A._point_tz(24.5, -157.9) == "Pacific/Honolulu"                        # 1 h from it
-    assert A._point_tz(48.0, -11.0) == "Europe/Paris"                             # 2-3 h (summer / winter): kept
-    from datetime import timezone as _tz
-    jan, jul = datetime(2026, 1, 15, tzinfo=_tz.utc), datetime(2026, 7, 15, tzinfo=_tz.utc)
-    assert A._zone_near_nautical("America/Adak", 167.0, jan) is False and A._zone_near_nautical("America/Adak", -176.6, jul) is True
-    assert A._zone_near_nautical("Europe/Paris", -11.0, jul) is True and A._zone_near_nautical("Europe/Paris", -35.0, jul) is False
-    assert A._zone_near_nautical("Not/AZone", 0.0) is False and A.POINT_TZ_MAX_SHIFT_H == 3.0
+    assert A._point_tz(54.5, 167.0) == "Asia/Kamchatka"                           # Adak is 20-21 h from 167 E's sun time
+    assert A._point_tz(57.05, -177.58) == "America/Nome"                          # same side: 3-4 h, kept (R2-2)
+    assert A._point_tz(24.5, -157.9) == "Pacific/Honolulu"
+    assert A._point_tz(48.0, -11.0) == "Europe/Paris"
+    assert A._zone_across_date_line("America/Adak", 167.0) is True and A._zone_across_date_line("America/Adak", -176.6) is False
+    assert A._zone_across_date_line("America/Nome", -177.58) is False and A._zone_across_date_line("Asia/Anadyr", -177.58) is True
+    assert A._zone_across_date_line("Europe/Paris", -35.0) is False                # many hours, but the same calendar
+    assert A._zone_across_date_line("Pacific/Kiritimati", -157.4) is True          # +14 beside -10: across, as the land says
+    assert A._zone_across_date_line("Not/AZone", 0.0) is True and A.POINT_TZ_DATE_LINE_H == 12.0
+    # the season cannot change the answer: January and July both decide
+    src = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
+    assert "for m in (1, 7)]" in src and "return all(abs(o - naut) >= POINT_TZ_DATE_LINE_H for o in offs)" in src
 
 
 def test_a_zone_is_shown_as_a_visitor_reads_it(api):

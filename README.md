@@ -423,11 +423,13 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   "temporarily unavailable": a point is never served untested.
 - **The cell**: the nearest sea cell of any grid within 40 km (`REACH_KM`; on a tie the earlier grid) that can be
   REACHED OVER WATER (owner: water whose only cells lie beyond land is refused). The straight path from the point
-  (from the nearest water when the point stands on the shore band) to the cell's centre is judged by its EXACT
+  (from the nearest water when the point stands on the shore band; if no cell is reachable from there, from the band's
+  other water samples, nearest first, at most 8 at least 100 m apart: a shore whose nearest water is a pocket) to the
+  cell's centre is judged by its EXACT
   crossings of the coast edges (`path_crossings`, `land_runs`; longitudes unwrapped from the point, the cells beyond
   180 shifted by 360): any stretch of land of 100 m or more blocks it (`PATH_LAND_KM`), wherever it lies; only the
-  stretch that reaches the cell's centre is forgiven, up to half a cell (some sea cells have their centre on an islet
-  or a headland). The nearest cell blocked: the next one; none: "No forecast here: the wave model's nearest points lie
+  stretch that reaches the cell's centre is forgiven, up to 3 km (`PATH_CENTRE_KM`: some sea cells have their centre
+  on an islet or a headland; half a cell let a whole barrier island through, G22 R2-1: Moreton Bay). The nearest cell blocked: the next one; none: "No forecast here: the wave model's nearest points lie
   beyond land" (`reason: "sheltered"`: San Francisco Bay, Pearl Harbor, the Solent, Venice, lagoons behind barrier
   islands), or `reason: "land"` when the click itself is on the shore band's land. Water that sees an open-sea cell
   through a mouth is served from it (owner, 2026-10-02: the Golden Gate, Cowes, lower Tampa Bay). No sea cell within
@@ -441,7 +443,9 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   (`MOUTH_CAP_KM`) makes a gap, and the narrowest gap, as seen from the point (atan(L/s) + atan(R/s)), is under 70
   degrees (`MOUTH_DEG`): Cowes 5, northern Pamlico Sound 23, lower Tampa Bay 40, Fort Point at the Golden Gate 67
   get the note; Hanalei Bay 85, Hilo Bay 112, coves such as Waimea and the open coast do not (about 3 % of the
-  near-coast points served). The payload's `point` carries `mouth_deg` (None: open water all the way) and says where
+  near-coast points served). Land on a ray is the first stretch of 100 m or more (the coast cells' closing edge pairs
+  along the 5-degree lines are no land). Known misses: an entrance inside the cell's own box gets no note (Botany Bay,
+  Western Port, Kaipara Harbour), and "open water" is the owner's word also where the cell lies in an archipelago. The payload's `point` carries `mouth_deg` (None: open water all the way) and says where
   the point and its cell are (`cell_lat`, `cell_lon`, `cell_km`, `grid`) and which run this is (`run`, `run_utc`,
   `published_utc`, `age_hours`); a refusal carries `final: true` and its `reason` (also `invalid`, and `off` without a bucket).
 - **The rank of a row's swells** (owner, 2026-10-02, ONE rule for every forecast table of the site): at each hour the
@@ -458,9 +462,10 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 - **The graphs' time axis**: `graph_data` of a point has one slot per HOUR of the run (385 labels, empty between the
   3-hourly rows), so a day is as wide on day 10 as on day 1, as a station's; the table keeps its 209 rows.
 - **The time zone** (owner: the nearest station's): the civil zone of the point's own waters when the lookup gives
-  one; else the zone of the nearest forecast station within 1,000 km whose offset lies within 3 hours of the point's
-  nautical one (`_point_tz`: 340 km north of Oahu is Hawaii time; a station across the date line never gives its
-  calendar: off the Commander Islands Asia/Kamchatka, not America/Adak); else the nearest land's; else the nautical
+  one; else the zone of the nearest forecast station within 1,000 km unless it lies across the date line (12 hours or
+  more from the point's nautical offset in January and in July; `_point_tz`: 340 km north of Oahu is Hawaii time,
+  the Bering Sea keeps Nome time, but off the Commander Islands Asia/Kamchatka, not America/Adak); else the nearest
+  land's; else the nautical
   zone, shown as "UTC-11", never "Etc/GMT+11" (`zone_label`, also on the no-script page).
 - **Limits** (one worker, four threads): a cache of its own (`_POINT_CACHE`, 64 forecasts keyed by run, point and
   zone: points never push a station's forecast out); two point builds at a time, a third waits two seconds and is
@@ -482,7 +487,7 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   their fifth and sixth; the found ones within 0.03 m, 0.05 s and 1.4 degrees). Run it again when NOAA changes its
   wave products.
 
-## Forecast points: the page (plan section 31, steps 5 and 8; UI asset 1.15.1)
+## Forecast points: the page (plan section 31, steps 5 and 8; UI asset 1.15.2)
 
 - **The tool**: Map tools -> **Forecast point** (first in the menu). A click (or tap) ASKS the server first
   ("Checking that point..." in the tool bar; `AllshoreForecast.prefetch` fetches and keeps the forecast without

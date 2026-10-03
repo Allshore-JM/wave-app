@@ -7,6 +7,9 @@ This repository contains a Flask web application that fetches the latest NOAA GF
 - **Buoy Dropdown**: The home page includes a dropdown menu preloaded with all NOAA GFS stations available in the `.bull` directory. You can select any buoy station to view the latest model data.
 - **Automatic Run Detection**: The application automatically determines the most recent model run (18z, 12z, 06z, or 00z) by probing the NOAA directory structure for the selected date and hour. If the latest run isn't available, it falls back to earlier runs.
 - **Excel-Style Table**: The data is formatted to mimic the two-level header structure found in the provided Excel **Table View** sheet, including a metadata row for cycle information and units row for each parameter. A blank separator row is also included for clarity.
+- **Forecast points**: Map tools -> **Forecast point** gives the same table and graphs as a buoy station for any
+  point on the open sea, titled with its coordinates, and keeps it under **My points** in the visitor's browser (see
+  "Forecast points" below).
 - **Download as Excel**: You can download the displayed table as an Excel file. The download preserves the two-level headers and units row.
 - **Deployment-Ready**: The repository includes a `requirements.txt` file and a `README.md` with instructions for deploying the web app on [Render](https://render.com) or running locally.
 
@@ -43,7 +46,12 @@ Once deployed, navigate to the provided URL to access the app. The site will all
 - `app.py` — The main Flask application. It includes the routes for the home page and Excel download, the logic to detect the latest model run, fetch `.bull` files, parse them, and format the output.
 - `requirements.txt` — Lists the Python dependencies needed to run the app (`Flask`, `pandas`, `requests`, `openpyxl`, `gunicorn`, `pytz`).
 - `templates/index.html` — Jinja2 template containing the HTML structure for the home page: the map (the page), the Leaflet map and the forecast window (see below); Bootstrap for styling.
-- `static_ui/forecast.js` — the forecast window's client module (see below); `static_overlay/` — the optional model overlays.
+- `static_ui/forecast.js` — the forecast window's client module (see below); `static_ui/tools.js` — the map tools,
+  including the Forecast point tool; `static_overlay/` — the optional model overlays.
+- `point_forecast.py` — reads the forecast-point product for one ocean point: the water / land test, the model cell,
+  the rows and the swell rank (see "Forecast points: the reader").
+- `tools/model_frames/points.py` and `pointfmt.py` — the GitHub Actions job that publishes the forecast-point product,
+  and its file format (shared with the reader).
 - `README.md` — This file. Provides setup instructions and describes the features of the project.
 
 ## Contributing
@@ -332,6 +340,35 @@ See tools/coast/README.md for the builder, the publish workflow and the LGPL not
 sentence ("Source: NOAA/NCEP GFS-Wave (WAVEWATCH III) and GFS via NOAA Open Data Dissemination; rendered by
 Allshore Surf. Not an official NWS product.").
 
+## Forecast points
+
+Live on allshoresurf.com since 2026-10-03 (UI asset 1.15.2; rollback tag `prod-pre-point`). A visitor picks **Map tools
+-> Forecast point** and clicks (or taps) the sea. The server checks the point first:
+
+- **Open water**: the forecast window opens with the same table and graphs a buoy station has, titled with the
+  point's coordinates ("21.700N 158.200W"), and the point is kept under **My points** (a ring on the map, an entry at
+  the top of the station picker; rename and remove there). Where the point looks out to the open sea through a narrow
+  mouth, the Location line adds the distance, e.g. "37.811N 122.477W (open water 31 km away)".
+- **Refused**, with the reason in the tool bar and the tool left on for another click: land (including the first few
+  hundred metres where the coastline data is off the real shore: "try a point a little farther from the shore");
+  sheltered water whose nearest model points lie beyond land (San Francisco Bay, Pearl Harbor, Moreton Bay); water the
+  model does not cover (sea ice, the Black Sea).
+- **How it differs from a station**: the values are those of the nearest NOAA GFS-Wave model cell reachable over water
+  (1/6 degree, about 18 km; 1/4 degree south of 12.75 S and north of 52.25 N), with the wind sea and up to three
+  swells (bulletins have up to six); rows are hourly to +120 h, then every 3 hours to +384 h; a run appears about 6 h
+  after its cycle. The time zone is the nearest station's (across the date line, the point's own).
+- **Swell order, site-wide**: in every table (points, NOAA stations, SWAN, the live-buoy components) each hour's
+  systems are ranked by height squared x peak period, so "Swell 1" is the system that makes the most surf. The
+  numbers in a station's row are NOAA's; only their columns follow this rank.
+- **Data path**: GitHub Actions (`model-points.yml`) -> the R2 bucket (`gfswave/points/v1`) -> `point_forecast.py` on
+  the server -> `/api/forecast?station=pt_...` -> the page. No third-party API; $0 while the
+  repo is public (Actions minutes) and the bucket stays in R2's free tier.
+- **Reviews**: `docs/reviews/forecast-point-G22a-adversarial.md` (the job) and
+  `docs/reviews/forecast-point-G22-adversarial.md` (the reader and the page: the reviews, the owner's decisions, three
+  fix rounds and the test-site verifications).
+
+The three sections below describe the job, the reader and the page in detail.
+
 ## Forecast-point product (job; plan section 31)
 
 `tools/model_frames/points.py` (GitHub Actions `model-points.yml`: its own workflow and concurrency group, dispatched
@@ -339,7 +376,7 @@ every 10 minutes by the same Cloudflare Worker as the frames, GitHub's schedule 
 sea cell of NOAA's gridded GFS-Wave output and every step of the newest COMPLETE run, what a point bulletin holds:
 the combined wave height, the wind sea and three swell partitions (height, PEAK period, direction the waves come
 FROM) and the wind (speed, direction it blows FROM). The site reads one tile to build a forecast table for any
-ocean point (the reader is a later change; this section is the job).
+ocean point (`point_forecast.py`, next section; this section is the job).
 
 - **Grids** (`pointfmt.GRIDS`; the rows that hold waves do not overlap and leave no gap): `g16` = `gfswave
   global.0p16` (1/6 degree, 52.167 N to 12.5 S, the model's own grid), `s25` = `gfswave gsouth.0p25` (1/4 degree,
@@ -351,7 +388,7 @@ ocean point (the reader is a later change; this section is the job).
   is a grid point: latitude `lat0 - row / per_deg`, longitude `col / per_deg`. A reader takes the nearest sea cell
   of any grid; on a tie, the earlier grid. One pocket is left INSIDE g16's band: off the Dutch coast (51.5-52.0 N,
   3.5-3.75 E) NOAA's `global.0p16` has no waves on a few cells, so four cells of water are more than 1.5 cells from
-  any stored cell (the same in every cycle checked); the reader's reach has to cover it.
+  any stored cell (the same in every cycle checked); the reader's 40 km reach covers it.
 - **Records**: 15 per file, found by their GRIB2 code numbers (discipline, category, number, surface type, and the
   sequence number 1-3 of a swell partition), never by a decoder's short names; every used record is checked for its
   cycle, forecast hour, grid geometry and a plausible range, and a file with a missing or duplicated record fails
@@ -429,9 +466,9 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   crossings of the coast edges (`path_crossings`, `land_runs`; longitudes unwrapped from the point, the cells beyond
   180 shifted by 360): any stretch of land of 100 m or more blocks it (`PATH_LAND_KM`), wherever it lies; only the
   stretch that reaches the cell's centre is forgiven, up to 3 km (`PATH_CENTRE_KM`: some sea cells have their centre
-  on an islet or a headland; half a cell let a whole barrier island through, G22 R2-1: Moreton Bay). The nearest cell blocked: the next one; none: "No forecast here: the wave model's nearest points lie
-  beyond land" (`reason: "sheltered"`: San Francisco Bay, Pearl Harbor, the Solent, Venice, lagoons behind barrier
-  islands), or `reason: "land"` when the click itself is on the shore band's land. Water that sees an open-sea cell
+  on an islet or a headland; half a cell let a whole barrier island through, G22 R2-1: Moreton Bay). The nearest
+  cell blocked: the next one; none: "No forecast here: the wave model's nearest points lie beyond land"
+  (`reason: "sheltered"`: San Francisco Bay, Pearl Harbor, the Solent, Venice, lagoons behind barrier islands), or `reason: "land"` when the click itself is on the shore band's land. Water that sees an open-sea cell
   through a mouth is served from it (owner, 2026-10-02: the Golden Gate, Cowes, lower Tampa Bay). No sea cell within
   reach (sea ice; a sea the model does not have, such as the Black Sea, which is water in the coast data):
   `reason: "nodata"`; the Great Lakes are land in the coast data (`reason: "land"`). Measured on the reviewers'
@@ -445,7 +482,8 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   get the note; Hanalei Bay 85, Hilo Bay 112, coves such as Waimea and the open coast do not (about 3 % of the
   near-coast points served). Land on a ray is the first stretch of 100 m or more (the coast cells' closing edge pairs
   along the 5-degree lines are no land). Known misses: an entrance inside the cell's own box gets no note (Botany Bay,
-  Western Port, Kaipara Harbour), and "open water" is the owner's word also where the cell lies in an archipelago. The payload's `point` carries `mouth_deg` (None: open water all the way) and says where
+  Western Port, Kaipara Harbour), and "open water" is the owner's word also where the cell lies in an archipelago.
+  The payload's `point` carries `mouth_deg` (None: open water all the way) and says where
   the point and its cell are (`cell_lat`, `cell_lon`, `cell_km`, `grid`) and which run this is (`run`, `run_utc`,
   `published_utc`, `age_hours`); a refusal carries `final: true` and its `reason` (also `invalid`, and `off` without a bucket).
 - **The rank of a row's swells** (owner, 2026-10-02, ONE rule for every forecast table of the site): at each hour the
@@ -516,9 +554,12 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   missed). A point's graph data has one slot an hour (the server fills the 3-hourly part with gaps), so days are as
   wide as a station's and the 7-day and 3-day ranges count rows as for every station; the tooltip and the
   three-chart sync take the nearest ROW (a Chart.js interaction mode of the page's own, `allshoreRow`: Chart.js's
-  own modes went blank between the 3-hourly rows). A refusal or error is said once, in the window's box; a failed
-  load clears the last table, the run text, the model bar and the note; Retry keeps the keyboard in the window. A
-  refusal is forgotten when a forecast for the point lands. Nautical zones are written as offsets ("Etc/GMT+11" ->
+  own modes went blank between the 3-hourly rows). The row is the nearest one with a value in a SHOWN series (a
+  series hidden from the legend does not count), and the other two charts list only the swells present at that row
+  (no "Swell 4: 0"); stations keep Chart.js's index mode with the same sync rule.
+  A refusal or error is said once, in the window's box; a failed load clears the last table, the run text, the
+  model bar and the note; Retry keeps the keyboard in the window. A refusal is forgotten when a forecast for the
+  point lands. Nautical zones are written as offsets ("Etc/GMT+11" ->
   "UTC-11"). A map tool's click on a point marker goes to the tool. Names are cut by what a visitor sees as one
   character (a family emoji or a flag is one).
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`

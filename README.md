@@ -4,7 +4,7 @@ This repository contains a Flask web application that fetches the latest NOAA GF
 
 ## Features
 
-- **Buoy Dropdown**: The home page includes a dropdown menu preloaded with all NOAA GFS stations available in the `.bull` directory. You can select any buoy station to view the latest model data.
+- **Buoy Dropdown**: The home page includes a dropdown menu preloaded with the NOAA GFS stations available in the `.bull` directory (see "The forecast-station list" below). You can select any buoy station to view the latest model data.
 - **Automatic Run Detection**: The application automatically determines the most recent model run (18z, 12z, 06z, or 00z) by probing the NOAA directory structure for the selected date and hour. If the latest run isn't available, it falls back to earlier runs.
 - **Excel-Style Table**: The data is formatted to mimic the two-level header structure found in the provided Excel **Table View** sheet, including a metadata row for cycle information and units row for each parameter. A blank separator row is also included for clarity.
 - **Forecast points**: Map tools -> **Forecast point** gives the same table and graphs as a buoy station for any
@@ -369,6 +369,22 @@ Live on allshoresurf.com since 2026-10-03 (UI asset 1.15.2; rollback tag `prod-p
 
 The three sections below describe the job, the reader and the page in detail.
 
+## The forecast-station list (plan section 32)
+
+`station_list.json` (the station dropdown, the picker and the map's forecast markers via `/stations.json`) holds 734
+points: the 461 buoys and 273 named points (the forecast offices' own points numbered below 51 such as HNL01 or MIA01,
+the OPC and TPC offshore points, the Pacific islands, the African and Indian Ocean coastal points, and others). Since
+2026-10-03 (owner) it leaves out NOAA's 3,302 BOUNDARY points of regional and coastal models, which drew boxes around
+ocean areas on the map: the NWPS edges of each NWS office (`NW-<office><n>`), the hurricane model's domain edges
+(`HWRF<basin>-<n>`), the `RW-NH1`/`RW-NH2` edges, other countries' model edges (`BKMG`, `CDIP`, `KNY`, `MDG`, `SYC`) and
+the older office sets numbered 51 and up (KEY, MIA, SJU, BER, MLB, PCB, SRH, CRP, LIX, TBW, JXFL, LCH, CHS, HGX, CCTX,
+MOB, BRO, JAX, MNE, HNL; HNL51-68 are the boxes around Oahu and Kauai). `tests/test_station_list.py` holds the rule.
+- `station_coords.json` and `station_timezones.json` keep all 4,036 entries: they are lookup tables, and the
+  forecast-point time-zone rule (below) reads every coordinate. Taking the boundary points out there would move point
+  time zones (measured: 202 of 1,078 sample points, some for the worse).
+- A link to a removed point (`?station=NW-HFO51`) still works: its forecast is NOAA's bulletin, shown under its raw id
+  like any id not in the list.
+
 ## Forecast-point product (job; plan section 31)
 
 `tools/model_frames/points.py` (GitHub Actions `model-points.yml`: its own workflow and concurrency group, dispatched
@@ -501,7 +517,8 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 - **The graphs' time axis**: `graph_data` of a point has one slot per HOUR of the run (385 labels, empty between the
   3-hourly rows), so a day is as wide on day 10 as on day 1, as a station's; the table keeps its 209 rows.
 - **The time zone** (owner: the nearest station's): the civil zone of the point's own waters when the lookup gives
-  one; else the zone of the nearest forecast station within 1,000 km unless it lies across the date line (12 hours or
+  one; else the zone of the nearest forecast station within 1,000 km (all 4,036 NOAA points, boundary points
+  included: `station_coords.json`) unless it lies across the date line (12 hours or
   more from the point's nautical offset in January and in July; `_point_tz`: 340 km north of Oahu is Hawaii time,
   the Bering Sea keeps Nome time, but off the Commander Islands Asia/Kamchatka, not America/Adak); else the nearest
   land's; else the nautical

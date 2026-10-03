@@ -372,13 +372,18 @@ The three sections below describe the job, the reader and the page in detail.
 ## The forecast-station list (plan section 32)
 
 `station_list.json` (the station dropdown, the picker and the map's forecast markers via `/stations.json`) holds 734
-points: the 461 buoys and 273 named points (the forecast offices' own points numbered below 51 such as HNL01 or MIA01,
-the OPC and TPC offshore points, the Pacific islands, the African and Indian Ocean coastal points, and others). Since
-2026-10-03 (owner) it leaves out NOAA's 3,302 BOUNDARY points of regional and coastal models, which drew boxes around
-ocean areas on the map: the NWPS edges of each NWS office (`NW-<office><n>`), the hurricane model's domain edges
-(`HWRF<basin>-<n>`), the `RW-NH1`/`RW-NH2` edges, other countries' model edges (`BKMG`, `CDIP`, `KNY`, `MDG`, `SYC`) and
-the older office sets numbered 51 and up (KEY, MIA, SJU, BER, MLB, PCB, SRH, CRP, LIX, TBW, JXFL, LCH, CHS, HGX, CCTX,
-MOB, BRO, JAX, MNE, HNL; HNL51-68 are the boxes around Oahu and Kauai). `tests/test_station_list.py` holds the rule.
+points: 461 numbered buoys and 273 named points (more buoys and platforms such as the BSH, LF and TF sets, the forecast
+offices' own points numbered below 51 such as HNL01 or MIA01, the OPC and TPC offshore points, the Pacific islands, the
+African and Indian Ocean coastal points, and others). Since 2026-10-03 (owner) it leaves out the 3,302 BOUNDARY points
+of regional and coastal models, which drew boxes around ocean areas on the map: the NWPS edges of each NWS office
+(`NW-<office><n>`), the hurricane model's domain edges (`HWRF<basin>-<n>`), the NHC domain edges `RW-NH1`/`RW-NH2`,
+other models' edges (`BKMG` Indonesia, `CDIP` Scripps' Southern California model, `KNY`, `MDG`, `SYC`) and the older
+office sets numbered 51 and up (KEY, MIA, SJU, BER, MLB, PCB, SRH, CRP, LIX, TBW, JXFL, LCH, CHS, HGX, CCTX, MOB, BRO,
+JAX, MNE, HNL; HNL51-68 are the boxes around Oahu and Kauai). `tests/test_station_list.py` holds the rule.
+- Source of the rule: NOAA's own point list for GFS-Wave (`parm/wave/wave_gfs.buoys.full` in NOAA-EMC/global-workflow)
+  gives each point a TYPE. Every removed id is a boundary type there (3,118 `IBP` for NCEP models, 184 `BPT` for other
+  models); the kept ones are data points (`DAT`, `XDT`) and virtual buoys (`VBY`), with one exception kept on purpose:
+  `DIABLO_01` (`BPT`, a single point that draws no box). If NOAA's list changes, re-derive the rule from that column.
 - `station_coords.json` and `station_timezones.json` keep all 4,036 entries: they are lookup tables, and the
   forecast-point time-zone rule (below) reads every coordinate. Taking the boundary points out there would move point
   time zones (measured: 202 of 1,078 sample points, some for the worse).

@@ -464,9 +464,11 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
         except Exception:
             tz_eff, zone = 'UTC', UTC
         rows = point_forecast.point_rows(codes, man["steps"], man["run_dt"], zone)
-        cycle_str, location_str = point_forecast.point_headers(man["run"], lat, lon)
+        cycle_str, location_str = point_forecast.point_headers(man["run"], lat, lon, cell)
         meta = {"id": station_id, "lat": lat, "lon": lon, "cell_lat": round(cell["lat"], 4),
                 "cell_lon": round(cell["lon"], 4), "cell_km": round(cell["km"], 1), "grid": cell["grid"],
+                # the narrowest gap on the way to the cell, as the point sees it (degrees; None: open water all the way)
+                "mouth_deg": round(cell["mouth"][0], 1) if cell.get("mouth") else None,
                 "run": man["run"], "run_utc": man["run_dt"].strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "published_utc": man["published_utc"],
                 "_slots": point_forecast.hour_slots(man["steps"], man["run_dt"], zone)}

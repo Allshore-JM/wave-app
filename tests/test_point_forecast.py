@@ -1494,3 +1494,91 @@ def test_the_pages_point_ids_are_the_servers():
     fx = json.load(open(os.path.join(FIX, "point_ids.json")))
     assert len(fx["cases"]) > 500
     assert [PFC.point_id(la, lo) for la, lo, _ in fx["cases"]] == [i for _, _, i in fx["cases"]]
+
+
+# ------------------------------- a narrow mouth (owner, 2026-10-03) -------------------
+
+def test_the_narrowest_gap_on_a_served_path_as_the_point_sees_it():
+    """mouth_aperture: land on BOTH sides of the path within MOUTH_CAP_KM makes a gap; seen from the point it subtends
+    atan(L / s) + atan(R / s); the narrowest counts. The path runs east along the equator from 10.0 E to 10.3 E."""
+    z = np.zeros(0)
+    cell = dict(lat=0.0, lon=10.3, half=0.125)
+
+    def ap(*boxes, runs=(), cap=PFC.MOUTH_CAP_KM, half=0.0):
+        e = box_edges(*boxes) if boxes else (z, z, z, z)
+        return PFC.mouth_aperture(e, 0.0, 10.0, cell["lat"], cell["lon"], half, runs, cap)
+    assert ap() is None                                                              # open water: no gap at all
+    assert ap((10.10, 10.12, 0.005, 0.2)) is None                                    # land on one side only
+    # a strait 0.01 degree (1.1 km) wide, 11.1-13.3 km out: about 5.7 degrees
+    deg, at, gap = ap((10.10, 10.12, 0.005, 0.2), (10.10, 10.12, -0.2, -0.005))
+    assert 4.5 < deg < 6.0 and 11.0 < at < 13.5 and abs(gap - 1.112) < 0.05
+    # the same gap seen from close by looks wide (a cove's own mouth): 2.2 km at 0.3-0.6 km
+    deg, at, gap = ap((10.003, 10.006, 0.01, 0.2), (10.003, 10.006, -0.2, -0.01))
+    assert deg > 120 and at < 0.7
+    assert ap((10.10, 10.12, 0.1, 0.2), (10.10, 10.12, -0.2, -0.1)) is None        # 11 km away on each side: beyond the 10 km look
+    assert ap((10.10, 10.12, 0.1, 0.2), (10.10, 10.12, -0.2, -0.1), cap=12.0) is not None
+    # samples in the path's own land runs are skipped (a rock on the path is no mouth)
+    rock = ((10.10, 10.12, 0.005, 0.2), (10.10, 10.12, -0.2, -0.005))
+    assert ap(*rock, runs=[(0.0, 1.0)]) is None
+    # a gap inside the cell's own box (the model's one patch of sea) is not one the point is served through
+    assert ap((10.28, 10.29, 0.005, 0.2), (10.28, 10.29, -0.2, -0.005)) is not None
+    assert ap((10.28, 10.29, 0.005, 0.2), (10.28, 10.29, -0.2, -0.005), half=0.125) is None
+    assert ap((10.10, 10.12, 0.005, 0.2), (10.10, 10.12, -0.2, -0.005), half=0.125) is not None   # outside the box: looked at
+    assert PFC.mouth_aperture((z, z, z, z), 0.0, 10.0, 0.0, 10.004, 0.0) is None   # under 0.6 km: no search
+    # both sides count, each at its own distance: 0.56 km north and 5.6 km south at 11 km is about 32 degrees, not 6
+    deg, at, gap = ap((10.10, 10.12, 0.005, 0.2), (10.10, 10.12, -0.2, -0.05))
+    assert 25 < deg < 35 and abs(gap - 6.12) < 0.05
+    # the NARROWEST gap on the path counts: a wide one near the point, a narrow one farther out
+    deg, at, gap = ap((10.02, 10.03, 0.02, 0.2), (10.02, 10.03, -0.2, -0.02), (10.20, 10.21, 0.002, 0.2), (10.20, 10.21, -0.2, -0.002))
+    assert deg < 3 and at > 20 and abs(gap - 0.445) < 0.01
+    # the point's own shore (the first MOUTH_FROM_KM) is not a mouth
+    assert ap((10.0, 10.0026, 0.009, 0.2), (10.0, 10.0026, -0.2, -0.009)) is None        # walls over the first 0.29 km only
+    assert (PFC.MOUTH_CAP_KM, PFC.MOUTH_DEG, PFC.MOUTH_FROM_KM) == (10.0, 70.0, 0.3)
+
+
+def test_a_point_served_through_a_narrow_mouth_says_how_far_the_open_water_is():
+    """Owner, 2026-10-03: "next to the location gps coordinates say 'open water _ km away'" where a point is served
+    through a narrow mouth (narrower than MOUTH_DEG as the point sees it; Fort Point at the Golden Gate is 67)."""
+    assert PFC.point_headers(RUN, 37.811, -122.477, {"km": 31.4, "mouth": (66.7, 2.5, 3.7)})[1] == (
+        "Location : 37.811N 122.477W (open water 31 km away)")
+    assert PFC.point_headers(RUN, 22.213, -159.503, {"km": 13.4, "mouth": (85.0, 1.1, 4.6)})[1] == "Location : 22.213N 159.503W"
+    assert PFC.point_headers(RUN, 21.667, -158.054, {"km": 11.6, "mouth": None})[1] == "Location : 21.667N 158.054W"
+    assert PFC.point_headers(RUN, 21.667, -158.054)[1] == "Location : 21.667N 158.054W"
+    assert PFC.point_headers(RUN, 1.0, 1.0, {"km": 0.4, "mouth": (10.0, 0.5, 0.2)})[1].endswith("(open water 1 km away)")
+    assert PFC.narrow_mouth({"mouth": (69.9, 1, 1)}) and not PFC.narrow_mouth({"mouth": (70.0, 1, 1)}) and not PFC.narrow_mouth(None)
+    # PointSource.mouth over the coast cells: a strait across the path from 20 N 99.95 E to a 1/6-degree cell at 99.5 E
+    strait = Product(land=LAND + ((99.60, 99.62, 20.005, 20.3), (99.60, 99.62, 19.7, 19.995))).source()
+    cell = {"lat": 20.0, "lon": 99.5, "half": 1 / 12, "km": PFC._km(20.0, 99.95, 20.0, 99.5)}
+    deg, at, gap = strait.mouth(20.0, 99.95, cell, 99.5, [])
+    assert deg < 3 and 34 < at < 37 and abs(gap - 1.112) < 0.01                   # 0.01 degree of latitude
+    assert Product().source().mouth(20.0, 99.95, cell, 99.5, []) is None             # the same path without the strait
+    # across 180: the point at 179.95 E, the cell beyond the date line (its longitude unwrapped from the point)
+    far = Product(land=LAND + ((-179.62, -179.60, 20.005, 20.3), (-179.62, -179.60, 19.7, 19.995))).source()
+    cell = {"lat": 20.0, "lon": -179.5, "half": 1 / 12, "km": PFC._km(20.0, 179.95, 20.0, -179.5)}
+    assert far.mouth(20.0, 179.95, cell, 180.5, [])[0] < 3
+    # locate attaches it to the cell it serves: a 1/6-degree grid, so the path runs outside the cell's own box first
+    fine = ({"name": "c", "ni": 2160, "nj": 61, "lat0": 25.0, "per_deg": 6, "tile": 30},)
+    src = Product(grids=fine, land=LAND + ((99.93, 99.935, 20.005, 20.3), (99.93, 99.935, 19.7, 19.995))).source()
+    cell, why = src.locate(src.manifest(), 20.0, 99.95)
+    assert why is None and (cell["lat"], round(cell["lon"], 4)) == (20.0, 99.8333)
+    assert cell["mouth"] is not None and 25 < cell["mouth"][0] < 45                  # 1.1 km at about 1.8 km
+    assert PFC.point_headers(RUN, 20.0, 99.95, cell)[1] == "Location : 20.000N 99.950E (open water 12 km away)"
+    src = Product(grids=fine).source()
+    cell, why = src.locate(src.manifest(), 20.0, 99.95)
+    assert why is None and "mouth" in cell and cell["mouth"] is None
+
+
+def test_the_api_names_the_open_water_behind_a_narrow_mouth(api, monkeypatch):
+    product, get = api
+    d = get(PFC.point_id(5.2, 20.3)).get_json()
+    assert d["error"] is None and d["graph_header"]["location"] == "5.200N 20.300E" and d["point"]["mouth_deg"] is None
+    real = A.POINTS.locate
+
+    def through_a_mouth(man, lat, lon):
+        cell, why = real(man, lat, lon)
+        return (dict(cell, mouth=(12.04, 3.0, 1.0)), why) if cell else (cell, why)
+    monkeypatch.setattr(A.POINTS, "locate", through_a_mouth)
+    d = get(PFC.point_id(5.2, 20.2)).get_json()
+    km = PFC._km(5.2, 20.2, 5.0, 20.0)
+    assert d["error"] is None and d["point"]["mouth_deg"] == 12.0
+    assert d["graph_header"]["location"] == f"5.200N 20.200E (open water {int(round(km))} km away)"

@@ -51,6 +51,10 @@ SHORE_M = 300.0                      # "land" this close to water is the shore: 
 SHORE_STEP_M = 50.0                  # the shore band is searched for water on rings this far apart ...
 SHORE_DIRS = 32                      # ... in this many directions
 PATH_LAND_KM = 0.1                   # this much land on the straight path = land lies between (a rock, a reef flat is less)
+MOUTH_CAP_KM = 10.0                  # land this close on BOTH sides of a served path makes a gap ...
+MOUTH_DEG = 70.0                     # ... that, narrower than this as seen from the point, is a narrow mouth (owner, 2026-10-03:
+                                     # Cowes 8, Pamlico 19, lower Tampa Bay 40, Fort Point 67; Hanalei 85, Hilo Bay 104 are not)
+MOUTH_FROM_KM = 0.3                  # the gap search starts here: the point's own shore is not a mouth
 
 REFUSALS = {                         # reason -> what the visitor is told (final answers: asking again changes nothing)
     "land": ("That point is land or inland water in the site's coastline data. If it is the sea, try a point a little "
@@ -440,6 +444,49 @@ def path_blocked(runs, km, half_km):
     return False
 
 
+def mouth_aperture(edges, olat, olon, clat, clon, half_deg, runs=(), cap_km=MOUTH_CAP_KM):
+    """The narrowest gap a served path passes, as the point sees it (owner, 2026-10-03: a point served through a
+    narrow mouth says "open water N km away"). Along the straight path from the point's water origin (olat, olon) to
+    the cell's centre (clat, clon: the longitude unwrapped from the point), every 250 m to 3 km and every 500 m beyond,
+    from MOUTH_FROM_KM to where the path enters the cell's own box (half_deg either side of the centre: the model
+    treats that box as one patch of sea, so a gap inside it is not one the point is served through), land is looked
+    for at right angles to the path, within cap_km on each side. Where both sides have land at L and R km, the gap seen from the point subtends
+    atan(L / s) + atan(R / s) at s km. Samples inside the path's own land runs (runs: land_runs()'s; a rock under
+    0.1 km, the forgiven run at the centre) are skipped. edges: coast edges covering the path's box widened by cap_km.
+    -> (degrees, s km, gap km) of the narrowest gap, or None (no place with land on both sides: open water)."""
+    import numpy as np
+    coslat = max(0.05, math.cos(math.radians(olat)))
+    ky, kx = 111.195, 111.195 * coslat
+    dx, dy = (clon - olon) * kx, (clat - olat) * ky
+    d = math.hypot(dx, dy)
+    if d < 2 * MOUTH_FROM_KM:
+        return None
+    ux, uy = dx / d, dy / d                                          # along the path (unit, km)
+    plon, plat = -uy * cap_km / kx, ux * cap_km / ky                 # cap_km to the left, in degrees
+    xi, yi, xj, yj = edges
+    best = None
+    s = MOUTH_FROM_KM
+    while s < d:
+        t = s / d
+        if abs(olat + uy * s / ky - clat) <= half_deg and abs(olon + ux * s / kx - clon) <= half_deg:
+            break                                                    # inside the cell's own box from here on
+        if not any(t0 <= t <= t1 for t0, t1 in (runs or ())):
+            sx, sy = olon + ux * s / kx, olat + uy * s / ky
+            side = []
+            for sign in (1.0, -1.0):
+                ex, ey = sx + sign * plon, sy + sign * plat
+                keep = ((np.maximum(xi, xj) >= min(sx, ex)) & (np.minimum(xi, xj) <= max(sx, ex))
+                        & (np.maximum(yi, yj) >= min(sy, ey)) & (np.minimum(yi, yj) <= max(sy, ey)))
+                ts = path_crossings((xi[keep], yi[keep], xj[keep], yj[keep]), sx + 3.7e-9, sy + 2.9e-9, ex + 1.3e-9, ey - 2.1e-9)
+                side.append(float(ts[0]) * cap_km if len(ts) else None)
+            if side[0] is not None and side[1] is not None:
+                deg = math.degrees(math.atan(side[0] / s) + math.atan(side[1] / s))
+                if best is None or deg < best[0]:
+                    best = (deg, s, side[0] + side[1])
+        s += 0.25 if s < 3.0 else 0.5
+    return best
+
+
 def nearest_sea_cell(grids, masks, lat, lon, reach_km=REACH_KM):
     """The nearest sea cell of any grid within reach_km of the point, or None. grids: check_manifest()'s, in
     priority order; masks: {grid name: bool [nj, ni]} (a grid without a mask is not looked at). On a tie the
@@ -746,9 +793,18 @@ class PointSource:
                     & (np.maximum(yi, yj) >= min(y0, y1)) & (np.minimum(yi, yj) <= max(y0, y1)))
             ts = path_crossings((xi[keep], yi[keep], xj[keep], yj[keep]), x0, y0, x1, y1)
             km = _km(olat, olon, cell["lat"], cell["lon"])
-            if not path_blocked(land_runs(ts, states[0], states[k + 1]), km, cell["half"] * 111.2):
-                return cell, None
+            runs = land_runs(ts, states[0], states[k + 1])
+            if not path_blocked(runs, km, cell["half"] * 111.2):
+                return dict(cell, mouth=self.mouth(olat, olon, cell, x1, runs)), None
         return None, ("sheltered" if origin == (lat, lon) else "land")   # a click on the shore band's land: land (G22 R-B7)
+
+    def mouth(self, olat, olon, cell, clon, runs):
+        """mouth_aperture() of a served path, with the coast edges round it."""
+        coslat = max(0.05, math.cos(math.radians(olat)))
+        pad = MOUTH_CAP_KM / 111.0 + 0.01
+        edges = self.edges_over(min(olon, clon) - pad / coslat, max(olon, clon) + pad / coslat,
+                                max(-90.0, min(olat, cell["lat"]) - pad), min(90.0, max(olat, cell["lat"]) + pad))
+        return mouth_aperture(edges, olat, olon, cell["lat"], clon, cell["half"], runs)
 
     def _tile(self, man, grid, tr, tc):
         key = (man["run"], grid["name"], tr, tc)
@@ -892,8 +948,18 @@ def point_rows(codes, steps, run_dt, tz):
     return rows
 
 
-def point_headers(run, lat, lon):
+def narrow_mouth(cell):
+    """Whether a served cell's path passes a narrow mouth (mouth_aperture under MOUTH_DEG)."""
+    m = cell.get("mouth") if cell else None
+    return bool(m) and m[0] < MOUTH_DEG
+
+
+def point_headers(run, lat, lon, cell=None):
     """(cycle line, location line) in the bulletins' style, so the page's header code reads them unchanged. The
-    location is the clicked point's coordinates only (owner, 2026-10-02: the model point's position and distance did
-    not help a visitor; the payload's `point` still carries them: cell_lat, cell_lon, cell_km)."""
-    return f"Cycle : {run[:8]} {run[8:]} UTC", f"Location : {fmt_coord(lat, lon)}"
+    location is the clicked point's coordinates (owner, 2026-10-02: the model point's position did not help a
+    visitor; the payload's `point` still carries it: cell_lat, cell_lon, cell_km); where the point is served through
+    a narrow mouth, the open water's distance follows (owner, 2026-10-03): "21.700N 158.200W (open water 31 km away)"."""
+    loc = f"Location : {fmt_coord(lat, lon)}"
+    if narrow_mouth(cell):
+        loc += f" (open water {max(1, int(round(cell['km'])))} km away)"
+    return f"Cycle : {run[:8]} {run[8:]} UTC", loc

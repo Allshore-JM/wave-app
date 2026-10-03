@@ -892,7 +892,8 @@ def point_rows(codes, steps, run_dt, tz):
     return rows
 
 
-def point_headers(run, lat, lon, cell):
-    """(cycle line, location line) in the bulletins' style, so the page's header code reads them unchanged."""
-    return (f"Cycle : {run[:8]} {run[8:]} UTC",
-            f"Location : {fmt_coord(lat, lon)} (nearest model point {fmt_coord(cell['lat'], cell['lon'], 2)}, {cell['km']:.0f} km away)")
+def point_headers(run, lat, lon):
+    """(cycle line, location line) in the bulletins' style, so the page's header code reads them unchanged. The
+    location is the clicked point's coordinates only (owner, 2026-10-02: the model point's position and distance did
+    not help a visitor; the payload's `point` still carries them: cell_lat, cell_lon, cell_km)."""
+    return f"Cycle : {run[:8]} {run[8:]} UTC", f"Location : {fmt_coord(lat, lon)}"

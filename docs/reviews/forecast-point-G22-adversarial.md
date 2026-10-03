@@ -484,3 +484,11 @@ own address), `ffb51d2` (golden, its own commit), then a follow-up commit with t
 The items of the re-check's "Still wrong after fix round 2" list. Also the follow-up for the stations' `.spec`
 download timer (older code; R-A2's note).
 
+
+### The owner's decision on the location line (2026-10-02)
+
+7. **A point's Location line shows only the clicked point's coordinates** ("it can be eliminated and just show the
+   gps coordinates for the location of the click"). The table, the graphs and the no-script page read "Location :
+   21.700N 158.200W". The model point's position and distance stay in the payload's `point` (`cell_lat`, `cell_lon`,
+   `cell_km`) for the API, but the page no longer shows them. Decision 6's note that "the header names the model
+   point and its distance" no longer holds.

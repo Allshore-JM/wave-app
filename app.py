@@ -464,7 +464,7 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
         except Exception:
             tz_eff, zone = 'UTC', UTC
         rows = point_forecast.point_rows(codes, man["steps"], man["run_dt"], zone)
-        cycle_str, location_str = point_forecast.point_headers(man["run"], lat, lon, cell)
+        cycle_str, location_str = point_forecast.point_headers(man["run"], lat, lon)
         meta = {"id": station_id, "lat": lat, "lon": lon, "cell_lat": round(cell["lat"], 4),
                 "cell_lon": round(cell["lon"], 4), "cell_km": round(cell["km"], 1), "grid": cell["grid"],
                 "run": man["run"], "run_utc": man["run_dt"].strftime("%Y-%m-%dT%H:%M:%SZ"),

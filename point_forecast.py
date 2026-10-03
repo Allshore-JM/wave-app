@@ -124,7 +124,7 @@ def zone_label(name):
     z = "" if name is None else str(name)
     m = re.fullmatch(r"Etc/GMT([+-])(\d{1,2})", z)
     if m:
-        sign = "−" if m.group(1) == "+" else "+"
+        sign = "\u2212" if m.group(1) == "+" else "+"
         return f"UTC{sign}{int(m.group(2))}" if int(m.group(2)) else "UTC"
     return "UTC" if re.fullmatch(r"Etc/(GMT|UTC|UCT|Universal|Zulu|Greenwich)(0|[+-]0)?", z) else z
 

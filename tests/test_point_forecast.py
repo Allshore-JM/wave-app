@@ -711,6 +711,10 @@ def test_locate_refuses_land_and_sheltered_water_and_takes_the_cell_over_water()
     assert src.locate(src.manifest(), 20.0, 99.75) == (None, "sheltered")
     assert src.locate(src.manifest(), 20.0, 99.6990) == (None, "land")             # ON the spit, in the band: land (G22 R-B7)
     thin = Product(land=LAND + ((99.640, 99.6415, 15.0, 25.0),)).source()           # a spit of 157 m
+    # a cell across 180 from the point: the path runs 0.15 degree east, not round the world over 100-110 E (R-A5: N15)
+    east = p.source()
+    cell, why = east.locate(east.manifest(), 20.0, 179.85)
+    assert why is None and (cell["lat"], cell["lon"]) == (20.0, -180.0) and cell["km"] < 16
     assert thin.locate(thin.manifest(), 20.0, 99.75) == (None, "sheltered")
     # ... with a second cell within reach the other way, that one is taken (the nearer one lies beyond land)
     r = Product(land=LAND + ((99.31, 99.37, 15.0, 25.0),))                           # a wall between 99.27 E and the cell at 99.5 E

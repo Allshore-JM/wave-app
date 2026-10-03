@@ -307,11 +307,14 @@ test('a failed load leaves nothing of the last forecast: run text, model bar, no
   const b = boot({ local: full }); await settle(); b.last().release(payload('51201', { swan_available: true })); await settle();
   const cycle = b.doc.getElementById('fwCycle'), bar = b.doc.getElementById('modelBar');
   assert.notEqual(cycle.textContent, ''); assert.equal(bar.hidden, false);
+  b.app.loader.load({ station: '46001' }); await settle(); b.last().fail(); await settle();   // a SWAN station's bar was showing
+  assert.equal(cycle.textContent, ''); assert.equal(bar.hidden, true);
+  b.app.loader.load({ station: '51201' }); await settle(); b.last().release(payload('51201', { swan_available: true })); await settle();
   const asked = b.P.add({ lat: 21.7, lng: -158.2 }); await settle(); b.last().release(payload('pt_21700N_158200W')); await settle();
   (await asked).open(); await settle();
   assert.equal(b.note.hidden, false);
   b.app.loader.load({ station: '46001' }); await settle(); b.last().fail(); await settle();
-  assert.equal(cycle.textContent, ''); assert.equal(bar.hidden, true); assert.equal(b.note.hidden, true);
+  assert.equal(cycle.textContent, ''); assert.equal(b.note.hidden, true);
   const retry = b.errBox.querySelectorAll('button')[0];
   retry.focus(); retry.click(); await settle();
   assert.equal(b.doc.activeElement, b.doc.getElementById('fwBody'), 'the button is gone: the focus is in the window, not on the page');

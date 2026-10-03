@@ -617,3 +617,36 @@ Not checked by the reviewer:
 - Its own mutants.
 - Live phones and keys.
 - Brief items 6-7 beyond reading.
+
+## Fix round 3 (2026-10-03, UI 1.15.2)
+
+| Finding | Change |
+|---|---|
+| R2-1 (P1) | `centre_forgiven_km`: the run reaching the cell's centre is forgiven up to `PATH_CENTRE_KM` 3 km, never more than the cell's own east-west half-width. |
+| R2-2 (P2) | `_zone_across_date_line`: a station's zone is refused only when it is 12 hours or more from the nautical offset in both January and July. |
+| R2-3 (P2) | `first_land_km`: on each right-angle ray the first land stretch of 100 m or more counts; a crossing pair is no land. |
+| R2-4 (P2) | The synced charts activate only the series with a value at that hour. |
+| R2-5 (P3) | `water_origins`: the band's other water samples, up to 8, at least 100 m apart, nearest first, are tried only if the first reaches no cell. |
+| R2-6 (P3) | Documented as known misses (README). |
+| R2-7 (P3) | `allshoreRow` finds rows among the shown series only. |
+| R2-8 (P3) | The fetch timer is guarded: done is set before the connection goes back to the pool. The docstring says Linux. |
+
+**Measured against the last commit (`78d36b4`) on the same sets.** The sets: B's 105, the 30 lagoons, the 596 buoys,
+A's 3,000, a Moreton grid of 112 and a Wadden grid of 56; offline run 2026100112.
+- **Moreton Bay** (B's lagoon point and the south bay): refused, or served from the model's own cell inside the bay
+  (-27.25, 153.25) with the note. 65 of the 112 grid points were served before, 51 now. None from the cell on North
+  Stradbroke Island.
+- **Bunyu (A1267) and Chile (A1813):** refused.
+- **Shore clicks now served** (R2-5): Honolua W29, the Mundaka shore, Kaneohe Bay inner (with the note), A582, A1493
+  and A1883.
+- **The false notes are gone:** Akita, and A1552 (a cell line).
+- **Kept, moved one cell:** Uluwatu, Townsville, Cottesloe and Soru each moved to a neighbouring cell.
+- **Totals:** buoys served 551 -> 551, A's served 1,478 -> 1,479, notes 62 -> 74. The extra notes are Moreton points
+  served from the bay cell between islands, Bora Bora's lagoon and Wadden inlets.
+- **Wadden Sea:** 53.40 N 5.91 E, the reviewer's example, is refused. Points at the tidal inlets are served from
+  open-sea cells with no land on the path, and get the note.
+
+**Tests:**
+- Pins: the island lagoon; the islet still forgiven; the pocket shore; crossing pairs and rocks; the date line in both
+  seasons; the late timer; the synced tooltips; hidden series.
+- Mutants: 17 server and 2 page, all killed.

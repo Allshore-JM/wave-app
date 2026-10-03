@@ -420,3 +420,67 @@ coast. The sets:
 - Atoll islets missing from the coast data, and sea ice: as before.
 - North of 52.25 N: NOAA's interpolated grid.
 - A point reads the nearest sea cell, while stations are interpolated to the buoy.
+
+## Fix round 2 (2026-10-02, UI 1.15.0)
+
+Commits on `feat/forecast-point`: `e51cbdc` (code and tests), `d1c8440` (golden tests: forecast points follow their
+own address), `ffb51d2` (golden, its own commit), then a follow-up commit with the mutation pins below.
+
+### What changed
+
+**Server**
+
+| Item | Finding | Change |
+|---|---|---|
+| 1 | R-A1 = R-B2 (b, c), R-B7, owner decision 5 | The path to the cell is judged by exact crossings (`path_crossings`, `land_runs`, `path_blocked`); it starts at the nearest water inside the 300 m band (`water_origin`: rings every 50 m, 32 directions); runs that touch at a cell line are one run; a click on the band's land with no reachable cell is "land"; the land message names the coastline data |
+| 2 | R-A19, R-A20 | A coast cell must lie in its own box; a size mismatch reads the index again; the band's samples are clamped at the poles |
+| 3 | R-A23 | `rank_groups` keeps a group without a height, after the ranked ones |
+| 4 | R-A2 | The fetch timer shuts the socket down; the clock starts before the request; the dead "cut short" check and its fake test are gone |
+| 5 | R-A3 | A station's zone only within 3 hours of the point's nautical offset (`_zone_near_nautical`) |
+| 6 | R-A17, R-B4 | `zone_label`: no raw "Etc/" zone on the no-script page or in the classic table |
+| 7 | R-A18, R-B12 | The tool shows only where a points bucket is set; an id that is no station keeps its own option |
+| 8 | R-A21 | README and docstrings corrected |
+
+**Page**
+
+| Item | Finding | Change |
+|---|---|---|
+| 9 | R-A4 | A Chart.js interaction mode of the page's own (`allshoreRow`) takes the nearest ROW for the tooltip and the three-chart sync on a point's graphs; stations keep `index` |
+| 10 | R-A6 .. R-A11 | A late answer after another pick ends the tool; a refusal is forgotten when a forecast lands; a failed load clears the note, the run text and the model bar; the title keeps an id without an option; Escape with the list open closes the list |
+| 11 | R-A12 .. R-A16, R-B5, R-B6, R-B8 | Names are cut by graphemes; a stored non-text name is dropped; the star shows the layer; focus stays on its row when another tab changes My points; Retry keeps the focus in the window; HTTP errors and network failures are told apart; the folded bar says "Checking that point…" and offers no Clear |
+| 12 | R-B3 | On phones the run text gives way first (`flex: 0 1000 auto`) |
+
+### Measured
+
+- **Path rule**, the repo's code against the prototype on the same sets (offline run, published coast):
+  - B's 105 cases, B's 30 lagoons, the 596 live-buoy positions and A's 3,000 near-coast points.
+  - It differs only where intended:
+    - clicks on the shore band's land now answer "land" instead of "sheltered" (R-B7);
+    - two buoys and one near-coast point take a nearer cell. A centre on land that a cell line cut into two runs is
+      now one forgiven run.
+  - Sheltered waters 19/19 refused, surf spots 35/36 served, buoys 551 served.
+  - 1.4-6.6 ms a point.
+- **Graphs**, with the real Chart.js 4.4.2 in a local preview:
+  - A point (`pt_24547N_157896W`): a tooltip on the nearest row at 175 of 175 pointer positions across days 6-16,
+    and the direction chart synced at the same row 175 times.
+  - A station (51201) keeps `index` and `nearest`, with tooltips at 37 of 37 positions.
+- **Suites**:
+  - pytest: 586 passed before the golden; the golden tests pass after it.
+  - Node: 342 passed, the CI list.
+  - A shared land fixture (`tests/fixtures/coast/land_parity.json`, 500 points) gets the same answers from the
+    server's `land_parity` and the page's `inLand`.
+- **Mutation:** 59 mutants of this round's code (server and page), run against the repo's own suites in a full
+  sandbox copy: 59 killed.
+  - At first N40 survived (the model bar after a failed load): the test's bar was already hidden before the failure.
+    It was reordered.
+  - N15 survived too (a cell across 180, its end not unwrapped from the point). It is now pinned by a locate test at
+    179.85 E.
+  - Two mutants first looked killed only because the sandbox lacked `static_icons`. They were rerun in a complete
+    copy and are killed by their own tests.
+- **Suites after the round:** pytest 589 passed, Node 342 passed.
+
+### Still open after fix round 2
+
+The items of the re-check's "Still wrong after fix round 2" list. Also the follow-up for the stations' `.spec`
+download timer (older code; R-A2's note).
+

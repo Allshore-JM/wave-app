@@ -29,7 +29,7 @@ SAMPLE = open(G.SAMPLE, encoding="utf-8", newline="").read()
 
 def _geom_positions(text):
     """Each site's map-layer geom (newest row), as the golden recorded it. Positions now come
-    from the data layer (tests/test_aodn_positions.py); these tests pin the map-layer streaming."""
+    from the data layer (tests/test_buoy_positions.py); these tests pin the map-layer streaming."""
     rows = list(csv.reader(io.StringIO(text)))
     ix = {c: i for i, c in enumerate(rows[0])}
     newest = {}
@@ -52,10 +52,12 @@ GEOM = _geom_positions(SAMPLE)
 @pytest.fixture(autouse=True)
 def _positions_from_geom(monkeypatch):
     monkeypatch.setattr(B.AODNProvider, "_observed_positions", lambda self: dict(GEOM))
+    monkeypatch.setattr(B.AODNProvider, "_spectra_available", lambda self: B.AODNProvider.SPECTRA_SITES)
 
 
 def _old_fetch_stations(p, text):
-    """Pre-change AODNProvider._fetch_stations + _wfs_rows, verbatim (whole-body parse)."""
+    """Pre-change AODNProvider._fetch_stations + _wfs_rows, verbatim (whole-body parse), except the
+    observation time: TIME is UTC since 2026-10-03 (the reference follows, so streaming stays pinned)."""
     if text.lstrip().startswith("<"):
         hdr, rows = [], []
     else:
@@ -81,17 +83,14 @@ def _old_fetch_stations(p, text):
         if not m:
             continue
         lon, lat = float(m.group(1)), float(m.group(2))
-        end_utc = B._parse_naive(last[ix["time_end"]])
-        max_t = B._parse_naive(last[ix["TIME"]])
-        offset = (max_t - end_utc) if (end_utc and max_t) else None
-        obs = []
+        obs = []                                   # 2026-10-03: TIME is UTC (the 10 h shift removed)
         for r in srows:
             tl = B._parse_naive(r[ix["TIME"]])
-            if tl is not None and offset is not None:
-                tu = (tl - offset).strftime("%Y-%m-%dT%H:%M:%SZ")
-            else:
-                tu = B._z(r[ix["time_end"]])
-            obs.append(p._obs(r, ix, tu))
+            if tl is None:
+                continue
+            obs.append(p._obs(r, ix, tl.strftime("%Y-%m-%dT%H:%M:%SZ")))
+        if not obs:
+            continue
         latest_by[s] = obs[-1]
         recent_by[s] = B._recent_window(obs)
         inst = last[ix["institution"]] if "institution" in ix else ""

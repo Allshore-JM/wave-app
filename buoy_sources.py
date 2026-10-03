@@ -421,7 +421,10 @@ class AODNProvider(BuoyProvider):
     # buoy's own GPS position with every observation; a site takes its newest one from the last
     # POS_DAYS, and a site with none is left off the map (no reliable position).
     POS_LAYER = "aodn:aodn_wave_nrt_v2_timeseries_data"
-    POS_DAYS = 7
+    POS_DAYS = 7                         # = the map layer's window (same rows, same sites)
+    POS_MAX_ROWS = 200_000               # 7 days ~ 17k rows; reaching the cap fails the refresh
+    POS_MIN_COVER = 0.9                  # positions must cover 90 % of the map layer's sites
+    SPEC_PROBE_TTL = 6 * 3600
 
     def __init__(self, http=None):
         super().__init__(http)
@@ -461,7 +464,8 @@ class AODNProvider(BuoyProvider):
         since = (datetime.now(timezone.utc) - timedelta(days=self.POS_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
         url = (self.BASE + "?service=WFS&version=1.0.0&request=GetFeature&typeName=" + self.POS_LAYER
                + "&outputFormat=csv&propertyName=site_name,TIME,LATITUDE,LONGITUDE"
-               + "&CQL_FILTER=" + requests.utils.quote("TIME >= '%s'" % since, safe=""))
+               + "&CQL_FILTER=" + requests.utils.quote("TIME >= '%s'" % since, safe="")
+               + "&maxFeatures=%d" % self.POS_MAX_ROWS)
         stream = _wfs_row_stream(self.http, url, self.timeout)
         hdr = next(stream, None)
         if not hdr or any(c not in hdr for c in ("site_name", "TIME", "LATITUDE", "LONGITUDE")):
@@ -469,7 +473,9 @@ class AODNProvider(BuoyProvider):
         ix = {c: i for i, c in enumerate(hdr)}
         need = max(ix["site_name"], ix["TIME"], ix["LATITUDE"], ix["LONGITUDE"])
         best = {}
+        rows = 0
         for row in stream:
+            rows += 1
             if len(row) <= need or not row[ix["site_name"]]:
                 continue
             try:
@@ -485,7 +491,34 @@ class AODNProvider(BuoyProvider):
                 best[s] = (t, lat, lon)
         if not best:
             raise RuntimeError("AODN observed positions: no rows")
+        if rows >= self.POS_MAX_ROWS:          # the cap was hit: the newest rows may be missing
+            raise RuntimeError("AODN observed positions: %d rows, the query cap" % rows)
         return {s: (lat, lon) for s, (_t, lat, lon) in best.items()}
+
+    def _spectra_available(self):
+        """SPECTRA_SITES codes whose current monthly THREDDS spectra file exists (2026-10-03: 6 of the
+        23 had none; ranked as spectra buoys they hid the richer AusWaves marker of the same buoy).
+        Probed in parallel, cached SPEC_PROBE_TTL; a code that does not answer 200 counts as absent."""
+        now = time.time()
+        month = datetime.now(timezone.utc).strftime("%Y%m")
+        hit = getattr(self, "_spec_probe", None)
+        if hit and hit[0] == month and now - hit[1] < self.SPEC_PROBE_TTL:
+            return hit[2]
+        y, m = month[:4], month[4:]
+
+        def probe(code):
+            url = (self.THREDDS + code + "/%s/IMOS_COASTAL-WAVE-BUOYS_%s%s01_%s_RT_WAVE-SPECTRA_monthly.nc.dds"
+                   % (y, y, m, code))
+            try:
+                r = self.http.get(url, timeout=20)
+                return code if r.status_code == 200 else None
+            except requests.RequestException:
+                return None
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            ok = frozenset(c for c in ex.map(probe, sorted(self.SPECTRA_SITES)) if c)
+        self._spec_probe = (month, now, ok)
+        return ok
 
     def _fetch_stations(self):
         pos = self._observed_positions()       # first: a failure leaves every cache as it was
@@ -526,6 +559,12 @@ class AODNProvider(BuoyProvider):
                 if len(srows) >= self.PRUNE_EVERY:
                     cut = maxtl[s] - self.PRUNE_KEEP
                     bysite[s] = [r for r in srows if _parse_naive(r[ix["TIME"]]) >= cut]
+        covered = sum(1 for s in bysite if s in pos)
+        if len(bysite) - covered > max(1, (1 - self.POS_MIN_COVER) * len(bysite)):
+            # the two layers cover the same window, so a short positions answer (a stream that
+            # ended early) would silently drop sites: keep the last good list instead
+            raise RuntimeError("AODN observed positions cover %d of %d sites" % (covered, len(bysite)))
+        spec_ok = self._spectra_available()
         out, latest_by, recent_by = [], {}, {}
         for s, srows in bysite.items():
             srows.sort(key=lambda r: r[ix["TIME"]])       # TIME is the per-obs timestamp
@@ -533,20 +572,18 @@ class AODNProvider(BuoyProvider):
             if s not in pos:                   # no observed position: not drawn (geom is unreliable)
                 continue
             lat, lon = pos[s]
-            # time_end is CONSTANT per site = latest obs in UTC; the per-row TIME column
-            # carries an offset (~+10h AEST). Derive that offset from the newest row and
-            # convert every row's TIME back to UTC.
-            end_utc = _parse_naive(last[ix["time_end"]])
-            max_t = _parse_naive(last[ix["TIME"]])
-            offset = (max_t - end_utc) if (end_utc and max_t) else None
+            # The per-row TIME is the observation time in UTC (2026-10-03: Wilsons Prom TIME
+            # 19:50 = AusWaves' 19:50Z for the same reading, and = the THREDDS spectra file's
+            # UTC). time_end is ~10 h behind it and is NOT used (the old code subtracted that
+            # difference, showing every AODN time 10 h early). A row without a TIME is dropped.
             obs = []
             for r in srows:
                 tl = _parse_naive(r[ix["TIME"]])
-                if tl is not None and offset is not None:
-                    tu = (tl - offset).strftime("%Y-%m-%dT%H:%M:%SZ")
-                else:
-                    tu = _z(r[ix["time_end"]])             # fallback (collapses history)
-                obs.append(self._obs(r, ix, tu))
+                if tl is None:
+                    continue
+                obs.append(self._obs(r, ix, tl.strftime("%Y-%m-%dT%H:%M:%SZ")))
+            if not obs:
+                continue
             latest_by[s] = obs[-1]
             recent_by[s] = _recent_window(obs)
             inst = last[ix["institution"]] if "institution" in ix else ""
@@ -556,7 +593,8 @@ class AODNProvider(BuoyProvider):
                 "lat": lat, "lon": lon,
                 "latest_time": obs[-1]["time_utc"],
             }
-            if self._spectra_code(s):     # this buoy publishes full directional spectra
+            code = self._spectra_code(s)
+            if code and code in spec_ok:  # this buoy publishes full directional spectra (this month's file exists)
                 st["capabilities"] = _caps(bulk=True, recent_history=True,
                                            directional=True, spectra=True, partitions=True)
             out.append(st)
@@ -1244,10 +1282,10 @@ class CopernicusProvider(BuoyProvider):
         best = {}
         # The newest file's position can be wrong on its own (2026-10-03: VillajoyosaBuoy's newest
         # file put it 6.5 km inland while every earlier one had it 3 km off Villajoyosa). Each
-        # platform keeps its three newest file positions (constant memory: this index is ~43 MB);
-        # a newest position more than OUTLIER_KM from the two before it, while those two agree,
-        # is an outlier and the platform is drawn at the earlier position. A real move shows in
-        # two files and is then taken.
+        # platform keeps its three newest single-position file records (constant memory: this index
+        # is ~43 MB); a newest position more than OUTLIER_KM from the two before it, while those two
+        # agree, is an outlier and the platform is drawn at the earlier position. A real move shows
+        # in two files and is then taken.
         recent = {}
         try:
             for r in csv.reader(self._decoded_lines(resp)):
@@ -1269,10 +1307,14 @@ class CopernicusProvider(BuoyProvider):
                     continue
                 fn = r[1]
                 pid = fn.split("/")[-1].rsplit("_", 1)[0]          # GL_TS_MO_6200064_DATE.nc -> GL_TS_MO_6200064
-                # compact per platform: up to 3 packed (t, lat, lon) records, newest first
+                # compact per platform: up to 3 packed (t, lat, lon) records, newest first; only
+                # files that report ONE position (box <= OUTLIER_KM) are evidence: a full-day row's
+                # box can span 3-19 km and its midpoint is nowhere the buoy was (Cerema buoys)
                 rec = _POS3.pack(int(ep), la, lo)
                 old = recent.get(pid)
-                if old is None:
+                if haversine_km(float(r[2]), float(r[4]), float(r[3]), float(r[5])) > self.OUTLIER_KM:
+                    pass
+                elif old is None:
                     recent[pid] = rec
                 elif len(old) < 72 or int(ep) > _POS3.unpack_from(old, 48)[0]:
                     recs = [old[i:i + 24] for i in range(0, len(old), 24)] + [rec]
@@ -1290,11 +1332,14 @@ class CopernicusProvider(BuoyProvider):
         self._file_by_id = {}
         for pid, (tend, fn, la, lo, tz) in best.items():
             self._file_by_id[pid] = fn
+            # the two newest single-position files OLDER than the newest file: if they agree and the
+            # newest file's position is more than OUTLIER_KM from them, it is an outlier
             b = recent.get(pid, b"")
-            r = [x for i in range(0, len(b), 24) for x in _POS3.unpack(b[i:i + 24])]
-            if (len(r) == 9 and haversine_km(r[4], r[5], r[7], r[8]) <= self.OUTLIER_KM
-                    and haversine_km(r[1], r[2], r[4], r[5]) > self.OUTLIER_KM):
-                la, lo = r[4], r[5]
+            t_new = int(_z_epoch({"time_utc": tz}) or 0)
+            older = [rec for rec in (_POS3.unpack(b[i:i + 24]) for i in range(0, len(b), 24)) if rec[0] < t_new]
+            if (len(older) >= 2 and haversine_km(older[0][1], older[0][2], older[1][1], older[1][2]) <= self.OUTLIER_KM
+                    and haversine_km(la, lo, older[0][1], older[0][2]) > self.OUTLIER_KM):
+                la, lo = older[0][1], older[0][2]
             name = pid.split("_")[-1].replace("-", " ") if "_" in pid else pid
             out.append({"local_id": pid, "name": name, "lat": la, "lon": lo, "latest_time": tz})
         return out
@@ -1366,6 +1411,16 @@ def _name_key(name):
     return re.sub(r"[^A-Z0-9]", "", n)
 
 
+def _match_name(st):
+    """The name the dedup compares. AODN markers are named "<site> - <institution>", so their full name
+    never equalled another network's name for the same buoy (2026-10-03: Storm Bay, Wilsons Prom, Mission
+    Beach, Inverloch drawn twice 1.7-2.5 km apart); they are matched on the site name alone."""
+    name = st.get("name") or ""
+    if st.get("source") == "AODN":
+        return name.split(" - ")[0]
+    return name
+
+
 def merge_stations(provider_lists, radius_km=1.0, name_radius_km=10.0):
     """Flatten provider station lists and physically dedup co-located buoys, keeping the
     RICHEST source per cluster (see _station_priority: spectra > sea/swell split > bulk).
@@ -1379,7 +1434,7 @@ def merge_stations(provider_lists, radius_km=1.0, name_radius_km=10.0):
     allst.sort(key=_station_priority, reverse=True)   # stable: ties keep provider order
     kept, keptkey = [], []
     for st in allst:
-        nk = _name_key(st.get("name"))
+        nk = _name_key(_match_name(st))
         dup = None
         for idx, k in enumerate(kept):
             if k["source"] == st["source"]:

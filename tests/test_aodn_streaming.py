@@ -12,6 +12,8 @@ import os
 import re
 import sys
 import tracemalloc
+
+import pytest
 from datetime import datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -23,6 +25,33 @@ import capture_aodn_golden as G  # noqa: E402
 
 GOLDEN = json.load(open(G.GOLDEN, encoding="utf-8"))
 SAMPLE = open(G.SAMPLE, encoding="utf-8", newline="").read()
+
+
+def _geom_positions(text):
+    """Each site's map-layer geom (newest row), as the golden recorded it. Positions now come
+    from the data layer (tests/test_aodn_positions.py); these tests pin the map-layer streaming."""
+    rows = list(csv.reader(io.StringIO(text)))
+    ix = {c: i for i, c in enumerate(rows[0])}
+    newest = {}
+    for r in rows[1:]:
+        if len(r) > ix["geom"] and r[ix["site_name"]]:
+            s = r[ix["site_name"]]
+            if s not in newest or r[ix["TIME"]] >= newest[s][ix["TIME"]]:
+                newest[s] = r
+    out = {}
+    for s, r in newest.items():
+        m = B.AODNProvider._POINT.search(r[ix["geom"]] or "")
+        if m:
+            out[s] = (float(m.group(2)), float(m.group(1)))
+    return out
+
+
+GEOM = _geom_positions(SAMPLE)
+
+
+@pytest.fixture(autouse=True)
+def _positions_from_geom(monkeypatch):
+    monkeypatch.setattr(B.AODNProvider, "_observed_positions", lambda self: dict(GEOM))
 
 
 def _old_fetch_stations(p, text):

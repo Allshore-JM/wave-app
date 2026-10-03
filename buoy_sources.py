@@ -17,6 +17,7 @@ import io
 import logging
 import math
 import re
+import struct
 import time
 import threading
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,9 @@ from datetime import datetime, timedelta, timezone
 import requests
 
 _log = logging.getLogger(__name__)
+
+
+_POS3 = struct.Struct("<qdd")   # (epoch, lat, lon): CMEMS position history, 24 bytes
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -411,6 +415,13 @@ class AODNProvider(BuoyProvider):
     spectra_ttl_sec = 1200
     PRUNE_KEEP = timedelta(hours=25)     # > the 24 h _recent_window, so nothing in-window goes
     PRUNE_EVERY = 64                     # rows per site between prune passes
+    # The map layer's per-site geom is NOT where the buoy is: it is one summary point over the
+    # site's whole history and deployments (2026-10-03: "Crowdy" drawn in central Australia,
+    # Coral Bay 164 km off, 48 of 60 sites more than 200 m off). The data layer carries the
+    # buoy's own GPS position with every observation; a site takes its newest one from the last
+    # POS_DAYS, and a site with none is left off the map (no reliable position).
+    POS_LAYER = "aodn:aodn_wave_nrt_v2_timeseries_data"
+    POS_DAYS = 7
 
     def __init__(self, http=None):
         super().__init__(http)
@@ -443,7 +454,41 @@ class AODNProvider(BuoyProvider):
             "dir_kind": "from",
         }
 
+    def _observed_positions(self):
+        """site_name -> (lat, lon) of its newest observation in the data layer over POS_DAYS.
+        Positions only, streamed (newest kept per site). No rows at all raises: the caller then
+        keeps its last good list instead of publishing sites without positions."""
+        since = (datetime.now(timezone.utc) - timedelta(days=self.POS_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        url = (self.BASE + "?service=WFS&version=1.0.0&request=GetFeature&typeName=" + self.POS_LAYER
+               + "&outputFormat=csv&propertyName=site_name,TIME,LATITUDE,LONGITUDE"
+               + "&CQL_FILTER=" + requests.utils.quote("TIME >= '%s'" % since, safe=""))
+        stream = _wfs_row_stream(self.http, url, self.timeout)
+        hdr = next(stream, None)
+        if not hdr or any(c not in hdr for c in ("site_name", "TIME", "LATITUDE", "LONGITUDE")):
+            raise RuntimeError("AODN observed positions: no header")
+        ix = {c: i for i, c in enumerate(hdr)}
+        need = max(ix["site_name"], ix["TIME"], ix["LATITUDE"], ix["LONGITUDE"])
+        best = {}
+        for row in stream:
+            if len(row) <= need or not row[ix["site_name"]]:
+                continue
+            try:
+                lat, lon = float(row[ix["LATITUDE"]]), float(row[ix["LONGITUDE"]])
+            except ValueError:
+                continue
+            if not (math.isfinite(lat) and math.isfinite(lon) and -90 <= lat <= 90 and -180 <= lon <= 360):
+                continue
+            if lon > 180:
+                lon -= 360
+            s, t = row[ix["site_name"]], row[ix["TIME"]]
+            if s not in best or t > best[s][0]:
+                best[s] = (t, lat, lon)
+        if not best:
+            raise RuntimeError("AODN observed positions: no rows")
+        return {s: (lat, lon) for s, (_t, lat, lon) in best.items()}
+
     def _fetch_stations(self):
+        pos = self._observed_positions()       # first: a failure leaves every cache as it was
         url = (self.BASE + "?service=WFS&version=1.0.0&request=GetFeature&typeName="
                + self.LAYER + "&outputFormat=csv&propertyName=" + self.PROPS)
         stream = _wfs_row_stream(self.http, url, self.timeout)
@@ -485,10 +530,9 @@ class AODNProvider(BuoyProvider):
         for s, srows in bysite.items():
             srows.sort(key=lambda r: r[ix["TIME"]])       # TIME is the per-obs timestamp
             last = srows[-1]
-            m = self._POINT.search(last[ix["geom"]] or "")
-            if not m:
+            if s not in pos:                   # no observed position: not drawn (geom is unreliable)
                 continue
-            lon, lat = float(m.group(1)), float(m.group(2))
+            lat, lon = pos[s]
             # time_end is CONSTANT per site = latest obs in UTC; the per-row TIME column
             # carries an offset (~+10h AEST). Derive that offset from the newest row and
             # convert every row's TIME back to UTC.
@@ -1171,6 +1215,8 @@ class CopernicusProvider(BuoyProvider):
                "cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/")
     BBOX = (30.0, 73.0, -30.0, 42.0)     # (lat_min, lat_max, lon_min, lon_max): Europe
     LIVE_MAX_AGE = 4 * 86400             # only platforms whose latest file is this fresh
+    OUTLIER_KM = 1.0                     # a newest position this far from two agreeing earlier ones
+    HISTORY_MAX_AGE = 14 * 86400         # files old enough to judge a newest position against
 
     def __init__(self, http=None):
         super().__init__(http)
@@ -1196,6 +1242,13 @@ class CopernicusProvider(BuoyProvider):
         latmin, latmax, lonmin, lonmax = self.BBOX
         now = time.time()
         best = {}
+        # The newest file's position can be wrong on its own (2026-10-03: VillajoyosaBuoy's newest
+        # file put it 6.5 km inland while every earlier one had it 3 km off Villajoyosa). Each
+        # platform keeps its three newest file positions (constant memory: this index is ~43 MB);
+        # a newest position more than OUTLIER_KM from the two before it, while those two agree,
+        # is an outlier and the platform is drawn at the earlier position. A real move shows in
+        # two files and is then taken.
+        recent = {}
         try:
             for r in csv.reader(self._decoded_lines(resp)):
                 if not r or r[0].startswith("#") or len(r) < 8:
@@ -1212,10 +1265,21 @@ class CopernicusProvider(BuoyProvider):
                 tend = r[7].strip()
                 tz = tend if tend.endswith("Z") else tend + "Z"
                 ep = _z_epoch({"time_utc": tz})
-                if ep is None or (now - ep) > self.LIVE_MAX_AGE:   # skip long-inactive platforms
+                if ep is None or (now - ep) > self.HISTORY_MAX_AGE:
                     continue
                 fn = r[1]
                 pid = fn.split("/")[-1].rsplit("_", 1)[0]          # GL_TS_MO_6200064_DATE.nc -> GL_TS_MO_6200064
+                # compact per platform: up to 3 packed (t, lat, lon) records, newest first
+                rec = _POS3.pack(int(ep), la, lo)
+                old = recent.get(pid)
+                if old is None:
+                    recent[pid] = rec
+                elif len(old) < 72 or int(ep) > _POS3.unpack_from(old, 48)[0]:
+                    recs = [old[i:i + 24] for i in range(0, len(old), 24)] + [rec]
+                    recs.sort(key=lambda b: _POS3.unpack(b)[0], reverse=True)
+                    recent[pid] = b"".join(recs[:3])
+                if (now - ep) > self.LIVE_MAX_AGE:                  # skip long-inactive platforms
+                    continue
                 if pid not in best or tend > best[pid][0]:
                     best[pid] = (tend, fn, la, lo, tz)
         except requests.RequestException:      # body failed mid-stream: same fail-soft as before
@@ -1226,6 +1290,11 @@ class CopernicusProvider(BuoyProvider):
         self._file_by_id = {}
         for pid, (tend, fn, la, lo, tz) in best.items():
             self._file_by_id[pid] = fn
+            b = recent.get(pid, b"")
+            r = [x for i in range(0, len(b), 24) for x in _POS3.unpack(b[i:i + 24])]
+            if (len(r) == 9 and haversine_km(r[4], r[5], r[7], r[8]) <= self.OUTLIER_KM
+                    and haversine_km(r[1], r[2], r[4], r[5]) > self.OUTLIER_KM):
+                la, lo = r[4], r[5]
             name = pid.split("_")[-1].replace("-", " ") if "_" in pid else pid
             out.append({"local_id": pid, "name": name, "lat": la, "lon": lo, "latest_time": tz})
         return out

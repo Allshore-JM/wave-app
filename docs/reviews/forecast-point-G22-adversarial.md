@@ -492,3 +492,67 @@ download timer (older code; R-A2's note).
    21.700N 158.200W". The model point's position and distance stay in the payload's `point` (`cell_lat`, `cell_lon`,
    `cell_km`) for the API, but the page no longer shows them. Decision 6's note that "the header names the model
    point and its distance" no longer holds.
+
+## Test-site verification of fix round 2 (2026-10-02/03, UI 1.15.0 then 1.15.1)
+
+`test` @ `12ebe57` (1.15.0), then @ `c8d48b7` (1.15.1, two fixes found here). The served `/ui/*.js` match the repo byte
+for byte. Done in the in-app browser at 1280x800, 375x812 and 360x780, with real clicks, keys and mouse moves where
+the pane allowed. Where the pane reported the page hidden, the steps were driven by script through the page's own
+code.
+
+**Stations unchanged.** Seven station answers captured before and after the deploy, on the same GFS run 2026100218,
+are byte-identical in their tables and graph data. The checked answers: 51201 (GFS, SWAN, Metric), 46026, 13130,
+41001, and 46001 in UTC.
+
+**The server, live:**
+- **Refused as sheltered:** Pearl Harbor, San Francisco Bay, Venice, the Solent, Pamlico Sound, Southampton Water,
+  Chichester Harbour, Alcatraz and the Lymington gauge.
+- **Refused as land, inside the shore band:** Indian River Lagoon, inner Kaneohe Bay, Venice north and the Sandy Hook
+  spit.
+- **Served:**
+  - The Cable Beach buoy, from the open-sea cell (18.0 S 122.0 E).
+  - Tokyo Bay, the Kaiwi Channel, Cloudbreak, Mundaka, Pipeline, Teahupoo, Hossegor and Mavericks.
+  - Through a mouth (decision 6): Golden Gate inside and Cowes Roads.
+- **Refused with the new land message:** Puerto Escondido (1.3 km out), the Honolua break, Peahi and central Oahu.
+- **Time zones:**
+  - Off the Commander Islands and off Kamchatka: Asia/Kamchatka.
+  - 340 km north of Oahu: Pacific/Honolulu. Near 46006: America/Los_Angeles.
+  - 35 N 150 E: Asia/Magadan (the rule as decided).
+  - Southern Ocean: shown as "UTC-8" in the classic table and on the no-script page.
+- **Other:** the Black Sea answers "nodata"; the unknown id keeps its own option; the tool shows with the bucket set.
+- **Location line (decision 7):** the click's coordinates only. Requests took 0.4-1.9 s, and 6.2 s for a cold region.
+
+**The page, live:**
+- **The Forecast point tool:**
+  - A land click gets the new message in the bar, and the tool stays on.
+  - A water click opens the window: title "23.624N 158.599W", meta "Location : 23.624N 158.599W".
+- **Graphs:** 24 of 24 real hovers across days 6-16 show a tooltip on the nearest row, and the other two charts follow
+  it (R-A4).
+- **Tool states:**
+  - While a point is checked, the folded bar says so and offers no Clear (R-B5).
+  - A late answer after a pick from the list opens nothing and ends the tool (R-A6).
+  - An HTTP 503 reads "The forecast server could not answer (HTTP 503)"; a failed connection reads "Could not reach
+    the server" (R-B6).
+- **Keys:** Escape with the favourites list open on the minimised window closes the list only; the next Escape ends the
+  tool (R-A7, B-13).
+- **A failed load** clears the run text, the SWAN/GFS bar, the table and the meta line, and Retry leaves the focus in
+  the window body (R-A10, R-B8).
+- **My points:**
+  - The star with "My points" unticked ticks it again and shows the markers (R-A15).
+  - A point added in a second real tab rebuilds the list and keeps the focus on the same row's Rename (R-A16).
+  - A rename with a family emoji at the 40th character keeps it whole (R-A12).
+- **Ids that are no station:** `NOPE9` and `bad!id` keep their names in the title. "Invalid station id" has no Retry.
+- **Phones:** at 375 and 360 px, in the bar and full screen, an unnamed point's coordinates are whole (133 of 133 px; R-B3).
+- **Console:** no errors.
+
+**Found and fixed during the verification (1.15.1, `7045add` and golden `452ee30`):**
+- The overlay's valid-time zone and the live-buoy panel still used Intl's "GMT-8" beside the window's "UTC-8". The
+  page's `tzAbbr` now writes a nautical zone as the window does; checked live.
+- The folded tool bar said "Checking that point..." twice, as title and line. The line now goes when folded; checked
+  live.
+
+**Noted, not changed:**
+- An id that passes the id rule but has no NOAA bulletin (`NOPE9`) gets NOAA's old wording ("No .bull file found for
+  NOPE9", with Retry). This predates the forecast points; the station code is unchanged.
+- The test branch's `test_importing_the_app_does_not_load_numpy` fails there already at `0782008`: its reef module
+  imports numpy.

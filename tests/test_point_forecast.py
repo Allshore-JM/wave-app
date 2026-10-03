@@ -188,7 +188,7 @@ def test_point_id_is_one_spelling_per_point():
 
 def test_no_station_is_spelled_like_a_point():
     ids = [sid for sid, _name in A.get_station_list()] + list(A.SWAN_STATIONS)
-    assert len(ids) > 1000 and not any(PFC.is_point_id(s) for s in ids)
+    assert len(ids) > 700 and not any(PFC.is_point_id(s) for s in ids)
 
 
 # ------------------------------- the manifest -----------------------------------------

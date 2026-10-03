@@ -556,3 +556,26 @@ are byte-identical in their tables and graph data. The checked answers: 51201 (G
   NOPE9", with Retry). This predates the forecast points; the station code is unchanged.
 - The test branch's `test_importing_the_app_does_not_load_numpy` fails there already at `0782008`: its reef module
   imports numpy.
+
+### The owner's decision on narrow mouths (2026-10-03)
+
+8. **A point served through a narrow mouth says how far the open water is.** The owner: "when a point is served
+   through a narrow mouth, next to the location gps coordinates say 'open water _ km away'". The note reads "Location :
+   37.811N 122.477W (open water 31 km away)".
+   - **How a narrow mouth is found.** Along the served path, outside the model cell's own box, land must lie within
+     10 km on both sides; that makes a gap. The narrowest gap, as seen from the point (atan(L/s) + atan(R/s)), must be
+     under 70 degrees.
+   - **The threshold.** The owner chose 70 degrees ("Up to 70 degrees, incl. Fort Point") over 45 degrees.
+   - **Calibrated on the reviewers' sets:**
+     - With the note: Cowes Roads 5, northern Pamlico Sound 23, lower Tampa Bay 40, Fort Point 67, and the King
+       George Sound buoy (Middleton Beach) 21.
+     - Without it: Hanalei Bay 85, Hilo Bay 112, Mundaka 115; Waimea, Pipeline, Mavericks, Uluwatu and the other open
+       coasts have no gap at all. Bays whose model cell lies inside them (Great South Bay, Port Phillip, Delaware Bay)
+       have no gap, nor does Botany Bay: its cell's own box covers the entrance.
+     - In numbers: 48 of 1,478 served near-coast points and 3 of 551 served buoy positions get the note.
+   - **Rejected measures:**
+     - The open window around the direct bearing to the cell: Mavericks 7 and outer Honolua 12 read "narrow" only because
+       their cell lies along the coast.
+     - Stopping the search 0.5 km before the cell's centre: the Mundaka bar would get the note, and 134 points in all.
+   - **The repo's code matches the prototype** at 0 of 2,029 served points. Cost: median 1-4 ms a point, at most 126 ms.
+   - **Tests:** 15 mutants, all killed after 4 pins.

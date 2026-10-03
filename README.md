@@ -435,7 +435,13 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   `reason: "nodata"`; the Great Lakes are land in the coast data (`reason: "land"`). Measured on the reviewers'
   sets: 19 of 19 sheltered waters refused, 35 of 36 surf spots served (inner Honolua Bay: the coast data barely has
   the bay), 551 of the 596 live-buoy positions served. The table's and the graphs' Location line shows the clicked
-  point's coordinates only (owner, 2026-10-02: "Location : 21.700N 158.200W"); the payload's `point` says where
+  point's coordinates (owner, 2026-10-02: "Location : 21.700N 158.200W"); where the point is served through a narrow
+  mouth, the open water's distance follows (owner, 2026-10-03: "37.811N 122.477W (open water 31 km away)"). A narrow
+  mouth (`mouth_aperture`): along the served path, outside the model cell's own box, land within 10 km on BOTH sides
+  (`MOUTH_CAP_KM`) makes a gap, and the narrowest gap, as seen from the point (atan(L/s) + atan(R/s)), is under 70
+  degrees (`MOUTH_DEG`): Cowes 5, northern Pamlico Sound 23, lower Tampa Bay 40, Fort Point at the Golden Gate 67
+  get the note; Hanalei Bay 85, Hilo Bay 112, coves such as Waimea and the open coast do not (about 3 % of the
+  near-coast points served). The payload's `point` carries `mouth_deg` (None: open water all the way) and says where
   the point and its cell are (`cell_lat`, `cell_lon`, `cell_km`, `grid`) and which run this is (`run`, `run_utc`,
   `published_utc`, `age_hours`); a refusal carries `final: true` and its `reason` (also `invalid`, and `off` without a bucket).
 - **The rank of a row's swells** (owner, 2026-10-02, ONE rule for every forecast table of the site): at each hour the

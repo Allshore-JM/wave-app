@@ -650,3 +650,65 @@ A's 3,000, a Moreton grid of 112 and a Wadden grid of 56; offline run 2026100112
 - Pins: the island lagoon; the islet still forgiven; the pocket shore; crossing pairs and rocks; the date line in both
   seasons; the late timer; the synced tooltips; hidden series.
 - Mutants: 17 server and 2 page, all killed.
+
+## Test-site verification of fix round 3 (2026-10-03, UI 1.15.2)
+
+`test` @ `f655e71` (cherry-picks of `78d36b4`, `a7c0af3` and `8ddce7e`; the README stays the test branch's copy).
+
+**Deploy.** The page links `?v=1.15.2`. `forecast.js`, `tools.js`, `graticule.js` and `logo.png` are served byte for byte
+as committed, immutable, with nosniff. The 1.15.1 address answers 404.
+
+**Stations unchanged.** Seven station answers were byte-identical before and after the deploy, on the same run
+(20261002 18 UTC): 51201 GFS, SWAN and Metric, 46026, 13130, 41001, and 46001 in UTC. The two page probes differ only
+by the version.
+
+**Live answers equal the repo code's, at 291 points.** The set: every point fix round 3 changed (67), B's 105, the 30
+lagoons, 60 of A's points and 30 buoys (seeded), and the reviewers' places. At every point the site gave the same
+answer as the repo code offline: the same refusal reason, or the same served cell, note and mouth angle. Of the 291:
+155 served, 23 served with the note, 37 sheltered, 68 land and 8 with no data. Median 0.28 s a request, longest 4.7 s.
+
+**The fix-round places, live:**
+- Moreton Bay (the south bay and B's lagoon point): refused as sheltered.
+- The Honolua W29 shore and the Mundaka shore: served.
+- Akita: no note.
+- The 14 narrow-mouth places are as decided. With the note: Cowes 5 deg, Pamlico N 24, King George Sound 21, lower
+  Tampa 40, Fort Point 67. Without: Hanalei 85, Hilo 112, Mundaka 127 and the open coasts.
+
+**Zones, live:**
+- A point at buoy 46035 takes America/Nome, like the station, and starts on the same row (Fri 10/2 10:00 AM).
+- The Commander Islands and 182 km off Kamchatka: Asia/Kamchatka.
+- 340 km north of Oahu: Pacific/Honolulu. The 46006 area: America/Los_Angeles. A point at 176.6 W: America/Adak.
+- At 55 S 120 W the classic table and the no-script page both write "UTC−8".
+
+**Page, desktop 1280x800** (real mouse moves and clicks):
+- 51201 Graph: at hours without a Swell 6, the three synced tooltips list only the swells there, with no "Swell 6: 0".
+- A point's Graph between 3-hourly rows: all three charts show the nearest row (row 198 for hour 199), and swells absent
+  at that row are left out.
+- Hidden series: with only Swell 4 shown, hour 197 picks row 195, the nearest row with a shown value. Row 198 holds only
+  hidden values.
+- Forecast point tool:
+  - Southern Moreton Bay: refused in the tool bar (sheltered); the tool stays on; nothing is kept.
+  - Inner Kaneohe Bay: served as "21.441N 157.810W (open water 29 km away)"; the point is kept and the tool ends.
+  - The Bering Sea point: America/Nome in the window, and AKDT on the overlay's valid time.
+
+**Phone 375x812:**
+- The point window opens full screen (z 3500) with 209 rows and the coordinates whole (133 px).
+- The minimised bar is 61 px, with the coordinates whole.
+- Moreton Bay is refused in the tool bar. A tap off Moreton Island is served (Australia/Brisbane).
+- The minimise button can be reached; no horizontal scroll.
+
+Throughout: the console was clean, the test origin's storage was left empty and the viewport was reset.
+
+**A refusal worth knowing (as designed).** A click on the shore beside He'eia fishpond (21.442 N 157.811 W) is refused
+as land. Within 300 m its band holds water only inside the fishpond: 4 samples, none of which reaches a model cell. At
+21.441 N 157.810 W, 150 m away, the band also reaches the bay, so that click is served from its 4th sample (R2-5 at work).
+Both answers match the repo code.
+
+**Suites on `test`:**
+- pytest: 452 passed. The 4 failures are the same as before: the three flag-off golden tests (the test-only logo
+  lines) and the numpy import test (the test branch's reef module).
+- Node: 343 passed.
+
+**Seen, not new.** When the pointer jumps from one chart straight onto another in a single synthetic move, Chart.js
+clears the chart it left one frame later. The next move restores the sync. A real mouse sends many moves, so this shows
+for one frame at most.

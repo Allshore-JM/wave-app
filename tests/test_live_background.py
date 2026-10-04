@@ -412,7 +412,9 @@ def test_healthz_waits_for_the_full_list_only_within_the_deploy_grace(bg, monkey
 
 
 def test_healthz_reports_builds_that_keep_failing(bg, monkeypatch):
-    """A memo build that keeps failing served [] forever while /healthz said ok (G25 A-6)."""
+    """A memo build that keeps failing served [] forever while /healthz said nothing (G25 A-6). It is REPORTED but never
+    a 503: its cause is in the data, a restart meets it again, and Render would restart the whole site in a loop
+    (re-check N-1)."""
     provs, rec, c = bg
     A._live_tick(provs)
     rec.run()
@@ -425,7 +427,9 @@ def test_healthz_reports_builds_that_keep_failing(bg, monkeypatch):
         body = c.get("/healthz").get_json()
         assert body["build_failures"] == i + 1
         assert body["build_failing"] is (i + 1 >= A.LIVE_BUILD_FAIL_MAX)
-    assert c.get("/healthz").status_code == 503
+    assert A.LIVE_BUILD_FAIL_MAX == 3
+    r = c.get("/healthz")
+    assert r.status_code == 200 and r.get_json()["build_failing"] is True     # reported, the site stays in rotation
     monkeypatch.setattr(A, "_live_prebuild", real)
     A._live_tick(provs)                                                  # a good build: healthy again
     body = c.get("/healthz").get_json()
@@ -535,7 +539,9 @@ def test_a_forked_child_starts_clean(bg, monkeypatch):
     monkeypatch.setattr(B, "_RUNNER_LOCK", B._RUNNER_LOCK)
     monkeypatch.setattr(B, "_REFRESH_RUNNER", B._REFRESH_RUNNER)
     # the parent's state at the fork: locks held by threads that will not exist, jobs queued and in flight
-    held = [A._LIVE_BUILD_LOCK, A._TZ_FINDER_LOCK, A._CACHE_LOCK, A._LIVE_BG_LOCK, B._RUNNER_LOCK]
+    held = [A._LIVE_BUILD_LOCK, A._TZ_FINDER_LOCK, A._CACHE_LOCK, A._LIVE_BG_LOCK, B._RUNNER_LOCK, A._BUOY_PROVIDERS_LOCK]
+    monkeypatch.setattr(A, "_BUOY_PROVIDERS_LOCK", A._BUOY_PROVIDERS_LOCK)
+    A._LIVE_BG.update(ticks=7, build_failures=2, last_tick_ts=1.0)
     runner_lock, wake, stop = B._RUNNER_LOCK, A._LIVE_WAKE, A._LIVE_STOP
     monkeypatch.setattr(B, "_NONBLOCKING", True)
     for lk in held:
@@ -556,6 +562,8 @@ def test_a_forked_child_starts_clean(bg, monkeypatch):
         assert A._LIVE_WAKE is not wake and A._LIVE_STOP is not stop
         assert B._NONBLOCKING is False
         assert A._LIVE_BG["thread"] is None and A._LIVE_BG["started_ts"] is None and A._LIVE_BG["warm_ts"] is None
+        assert A._LIVE_BG["ticks"] == 0 and A._LIVE_BG["build_failures"] == 0 and A._LIVE_BG["last_tick_ts"] is None
+        assert not A._BUOY_PROVIDERS_LOCK.locked()
         assert all(not q._lock.locked() for q in provs)
         B.set_refresh_runner(rec)
         assert p.schedule_refresh() is True                          # the child can queue and run refreshes
@@ -685,6 +693,12 @@ def test_the_app_imports_with_bad_knobs_and_the_deploy_grace_stays_under_15_seco
                        text=True, timeout=120)
     assert r.returncode == 0, r.stderr[-2000:]
     assert r.stdout.split() == ["30.0", "14.0", "3", "0"]
+    for tick, want in (("0", "1.0"), ("-5", "1.0"), ("99999", "120.0"), ("45", "45.0")):   # never a busy loop, never > 120 s
+        env.update(LIVE_TICK_SEC=tick)
+        env.pop("LIVE_WARM_DEADLINE_SEC", None)
+        r = subprocess.run([sys.executable, "-c", code], cwd=os.path.dirname(HERE), env=env, capture_output=True,
+                           text=True, timeout=120)
+        assert r.returncode == 0 and r.stdout.split()[:2] == [want, "10.0"], (tick, r.stdout, r.stderr[-500:])
 
 
 def test_only_the_recorded_scheduler_thread_keeps_running(bg, monkeypatch):
@@ -821,3 +835,171 @@ def test_refresh_workers_are_clamped(monkeypatch, raw, want):
     monkeypatch.setenv("LIVE_REFRESH_WORKERS", raw)
     B.set_refresh_runner(None)                                           # a fresh default runner (conftest restores)
     assert B.get_refresh_runner().workers == want
+
+
+
+# ------------------------------- G25 re-check (R1) -------------------------------
+
+def test_a_name_that_is_not_text_never_breaks_the_merged_list(bg):
+    """A platform with a numeric id and no description failed every build ('int'.upper()): re-check N-1."""
+    provs, rec, c = bg
+    cefas = next(p for p in provs if p.source == "CEFAS")
+    cefas._fetch_stations = lambda: [{"local_id": 62050, "name": None, "lat": 50.1, "lon": -4.2, "latest_time": F.FRESH},
+                                     {"local_id": "X", "name": 7, "lat": 50.2, "lon": -4.3, "latest_time": F.FRESH}]
+    A._live_tick(provs)
+    rec.run()
+    A._live_tick(provs)
+    assert A._LIVE_BG["build_failures"] == 0
+    names = {s["id"]: s["name"] for s in c.get(LIVE).get_json() if s["source"] == "CEFAS"}
+    assert names == {"cefas:62050": "62050", "cefas:X": "7"}
+
+
+def test_a_position_that_is_not_a_finite_number_is_dropped(bg):
+    """json.dumps writes NaN, which every browser's JSON.parse rejects: one bad position broke the list (re-check N-9)."""
+    provs, rec, c = bg
+    cdip = next(p for p in provs if p.source == "CDIP")
+    cdip._fetch_stations = lambda: [{"local_id": "a", "name": "a", "lat": float("nan"), "lon": -117.0},
+                                    {"local_id": "b", "name": "b", "lat": 32.0, "lon": float("inf")},
+                                    {"local_id": "c", "name": "c", "lat": "NaN", "lon": "-117.1"},
+                                    {"local_id": "d", "name": "d", "lat": "32.5", "lon": "-117.2"}]
+    A._live_tick(provs)
+    rec.run()
+    A._live_tick(provs)
+    r = c.get(LIVE)
+    body = r.get_data(as_text=True)
+    assert "NaN" not in body and "Infinity" not in body
+    json.loads(body, parse_constant=lambda x: (_ for _ in ()).throw(ValueError(x)))   # strict JSON
+    assert [s["id"] for s in r.get_json() if s["source"] == "CDIP"] == ["cdip:d"]
+
+
+def test_the_stall_limit_follows_a_long_tick(bg, monkeypatch):
+    """With a quiet site the scheduler sleeps a whole tick: a 300 s tick read "stalled" for 119 s of every cycle and
+    Render would restart it (re-check N-3). The tick is clamped to 120 s and the limit is max(180, 3 ticks)."""
+    provs, rec, c = bg
+    clock = F.FrozenTime()
+    monkeypatch.setattr(A, "time", clock)
+    monkeypatch.setattr(A, "LIVE_TICK_SEC", 120)
+    A._live_tick(provs)
+    rec.run()
+    A._live_tick(provs)
+    A._LIVE_BG["started_ts"] = clock.now - 1000
+    clock.now += 359
+    assert c.get("/healthz").get_json()["stalled"] is False
+    clock.now += 2
+    r = c.get("/healthz")
+    assert r.get_json()["stalled"] is True and r.status_code == 503
+
+
+def test_every_worker_held_by_a_hung_fetch_asks_for_a_restart(bg, monkeypatch):
+    """No overall deadline on a fetch: slow-drip feeds can hold every refresh worker forever and no list refreshes
+    again (re-check N-7). /healthz says so (a restart frees them); fewer stuck fetches are reported only."""
+    provs, rec, c = bg
+    A._live_tick(provs)
+    rec.run()
+    A._live_tick(provs)
+    runner = B.ThreadRunner(3)                                           # three real workers (none started yet)
+    B.set_refresh_runner(runner)
+    assert c.get("/healthz").status_code == 200
+    now = B.time.time()                                                  # the providers' clock
+    hung = provs[:2]
+    for p in hung:
+        p._refreshing, p._fetch_started_ts = True, now - A.LIVE_FETCH_STUCK_SEC - 1
+    provs[2]._refreshing, provs[2]._fetch_started_ts = True, now - 30    # a slow fetch is not a hung one
+    provs[3]._fetch_started_ts = now - 5000                              # finished long ago: not in flight
+    body = c.get("/healthz").get_json()
+    assert body["fetch_stuck"] is False and body["ok"] is True
+    flights = {s["source"]: s["in_flight_s"] for s in body["providers"]}
+    assert all(flights[p.source] > A.LIVE_FETCH_STUCK_SEC for p in hung)
+    assert 29 <= flights[provs[2].source] <= 90
+    assert flights[provs[3].source] is None
+    provs[2]._fetch_started_ts = now - A.LIVE_FETCH_STUCK_SEC - 1
+    r = c.get("/healthz")
+    assert r.status_code == 503 and r.get_json()["fetch_stuck"] is True
+    for p in provs[:3]:
+        p._refreshing = False
+    runner.shutdown()
+
+
+def test_healthz_runner_counts_waiting_and_running_jobs(bg):
+    """`waiting` = submitted and not started; /healthz shows it, not the old queued total (re-check N49/N50)."""
+    provs, rec, c = bg
+    runner = B.ThreadRunner(1)
+    B.set_refresh_runner(runner)
+    gate = threading.Event()
+    runner.submit(lambda: gate.wait(5), "a")
+    runner.submit(lambda: None, "b")
+    deadline = _time.time() + 5
+    while runner.running < 1 and _time.time() < deadline:
+        _time.sleep(0.01)
+    threads = list(runner._threads)
+    try:
+        assert c.get("/healthz").get_json()["runner"] == {"waiting": 1, "running": 1, "workers": 1}
+    finally:
+        gate.set()
+        runner.shutdown()
+    assert runner.queued == 0 and runner.waiting == 0
+    assert threads and not any(t.is_alive() for t in threads)
+
+
+def test_a_first_failure_publishes_its_age(monkeypatch):
+    """age_s for a first failure's [] read ~1.8e9 s (re-check N47)."""
+    clock = F.FrozenTime()
+    monkeypatch.setattr(B, "time", clock)
+    p = F.FakeSMHI(http=None)
+    p.list_stations_versioned()
+    clock.now += 42
+    assert p.status()["age_s"] == 42.0
+
+
+def test_the_time_zone_finder_is_built_once_under_concurrency(monkeypatch):
+    """get_tz_finder re-checks under its lock: two concurrent first callers build one finder (re-check RA17)."""
+    import timezonefinder
+    built = []
+
+    class Slow:
+        def __init__(self):
+            built.append(1)
+            _time.sleep(0.2)
+    monkeypatch.setattr(timezonefinder, "TimezoneFinder", Slow)
+    monkeypatch.setattr(A, "tz_finder", None)
+    got = []
+    ts = [threading.Thread(target=lambda: got.append(A.get_tz_finder())) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(5)
+    assert built == [1] and len({id(x) for x in got}) == 1
+
+
+def test_the_in_flight_time_counts_from_this_fetch(monkeypatch):
+    """in_flight_s starts with each fetch (not at 0 or at an earlier fetch): re-check N-7's clock."""
+    clock = F.FrozenTime()
+    monkeypatch.setattr(B, "time", clock)
+    p = F.FakeNDBC(http=None)
+    seen = []
+    plain = p._fetch_stations
+
+    def fetch():
+        clock.now += 7
+        seen.append(p.status()["in_flight_s"])
+        return plain()
+    p._fetch_stations = fetch
+    p.list_stations_versioned()
+    assert seen == [7.0] and p.status()["in_flight_s"] is None
+    clock.now += 5000
+    p.refresh()
+    assert seen == [7.0, 7.0]
+
+
+def test_a_stopped_runner_starts_workers_again_for_new_jobs():
+    """shutdown() forgets its workers, so a later job gets a fresh one instead of waiting forever."""
+    runner = B.ThreadRunner(1)
+    first, second = threading.Event(), threading.Event()
+    runner.submit(first.set, "a")
+    assert first.wait(5)
+    runner.shutdown()
+    runner.submit(second.set, "b")
+    try:
+        assert second.wait(5)
+    finally:
+        runner.shutdown()

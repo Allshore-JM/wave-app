@@ -187,7 +187,10 @@ def test_sixteen_threads_with_the_background_service_on(monkeypatch):
         assert not A._LIVE_BUILD_LOCK.locked()
     finally:
         _drain(runner, provs)
+        workers = list(runner._threads)
+        runner.shutdown()                                # no idle worker thread outlives the test (re-check N-8)
         B.set_refresh_runner(prev)
+    assert workers and not any(t.is_alive() for t in workers)
 
 
 def _drain(runner, provs, timeout=10):

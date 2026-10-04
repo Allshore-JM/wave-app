@@ -38,6 +38,9 @@ Follow these steps to deploy the web application on [Render](https://render.com)
    - **Build Command**: *(leave blank)*
    - **Start Command**: `gunicorn app:app`
 5. Click **Create Web Service** and wait for deployment to complete. Render will build your app and provide a public URL.
+6. Under **Settings -> Health Checks**, set **Health Check Path** to `/healthz` (see "Live buoys: background refresh"
+   below). Render then keeps the previous instance serving until the new one has loaded the live-buoy lists, so a deploy
+   never shows visitors an empty map.
 
 Once deployed, navigate to the provided URL to access the app. The site will allow you to choose from the list of available buoys and view the latest data.
 
@@ -52,6 +55,8 @@ Once deployed, navigate to the provided URL to access the app. The site will all
   the rows and the swell rank (see "Forecast points: the reader").
 - `tools/model_frames/points.py` and `pointfmt.py` — the GitHub Actions job that publishes the forecast-point product,
   and its file format (shared with the reader).
+- `buoy_sources.py` — the live-buoy providers (one per agency) and their background refresh; `static_ui/livelist.js` —
+  the page's live-buoy list loader (see "Live buoys: background refresh").
 - `README.md` — This file. Provides setup instructions and describes the features of the project.
 
 ## Contributing
@@ -640,3 +645,56 @@ the real times (`makeNightShade`; between first light and last light there is no
 0-360 with compass labels N NE E SE S SW W NW N. (A sky strip with sun / moon glyphs and a "now" line were tried in 1.16.0
 and removed: the owner found them clutter.) An older cached payload with none of these fields draws as before (the
 hour-rule shade, no mode buttons).
+
+## Live buoys: background refresh (plan section 36, UI asset 1.17.0)
+
+The "Live buoys" layer merges ten agencies' station lists (NDBC, CDIP, QLD, AODN, AusWaves, Marine Institute, CEFAS,
+SMHI, RWS, Copernicus). Until this change the list route asked every agency whose list had expired INSIDE the visitor's
+request and answered only when all of them had: every 30 minutes one visitor waited for a refresh, after a restart every
+visitor waited for every feed, and one slow agency held everyone's markers (the Marine Institute's ERDDAP once timed out
+three times: 124 s). Now nothing a visitor asks for waits for an agency.
+
+The server (`buoy_sources.py`, `app.py`):
+- Each provider keeps the list in hand and refreshes it in the background (stale-while-revalidate): due at 90 % of its
+  list TTL, at the retry moment after a failure (300 s, also for a first failure) or at the full TTL. A failed refresh
+  keeps the last good list for up to 6 h; an empty list after a good one counts as a failure. Only a provider with no
+  list at all makes a caller wait (one fetch shared by every waiting caller).
+- One daemon thread, `live-scheduler`, starts with the app: it loads the time-zone finder, asks every agency cheapest
+  first (NDBC, CDIP, SMHI, MI-IE, CEFAS, RWS, QLD, AusWaves, AODN, CMEMS), then every 30 s (2 s until every agency has
+  answered once) queues the refreshes that are due and rebuilds the merged list when any agency published, so a request
+  finds its bytes ready. Refreshes run on `LIVE_REFRESH_WORKERS` background threads in that order.
+- `/api/buoys/live-stations` never waits: it serves the merged list built from the lists in hand. While some agencies have
+  not answered yet (the first seconds to minutes after a start) the answer leaves them out and says so in the header
+  `X-Live-Stations-Partial: AODN,CMEMS`, with `Cache-Control: no-store`; complete answers keep `public, max-age=900`
+  and the ETag.
+- `/healthz` (never cached, never starts any work): per agency the list's version, size, age, next refresh, the last
+  error and the last refresh's duration; the merged list's age and build time; the scheduler's passes and errors; the
+  refresh queue; the process memory. It answers **503 until every agency has answered once or 90 s have passed since the
+  start** (so a dead feed never blocks a deploy), then 200. Set it as Render's Health Check Path (Deploy to Render, step 6)
+  on the production AND the test service.
+- The agencies' own log lines (each refresh's time and size, every failure) now reach the service log
+  (`buoy_sources` logger).
+
+The page (`static_ui/livelist.js`):
+- Draws the list this browser saw last at once (localStorage `allshore.liveList.v1`: positions, names and what the
+  detail panels need, no observations; at most 48 h old), with the note "cached list" beside **Live buoys** in the layer
+  legend, then replaces it with the fresh list (unchanged markers are left alone).
+- Takes the request the page started in `<head>` once; every request has an 8 s deadline; failures are retried after
+  2, 4, 8, 16, then every 30 s, only while the tab is visible ("retrying…").
+- A partial answer is drawn together with the remembered markers of the agencies still loading ("loading more…"), is
+  never stored, and is asked for again after 3, 3, 5, 5, 10, 10, 15 s, … (at most 40 times). A complete answer is stored.
+- A `performance` mark `allshore:live-first-markers` (detail: cached / partial) records when the first markers were drawn.
+
+Environment variables (all optional):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LIVE_BACKGROUND` | `1` | `0` turns the background service off: the route then asks every expired agency inline, as before (the tests and `start.sh`'s import check use this). |
+| `LIVE_REFRESH_WORKERS` | `3` | Agencies refreshed at the same time. |
+| `LIVE_TICK_SEC` | `30` | Seconds between the scheduler's passes once every agency has answered. |
+| `LIVE_WARM_DEADLINE_SEC` | `90` | `/healthz` turns 200 after this many seconds even if an agency has not answered. |
+| `LIVE_STATIONS_EDGE_TTL` | `0` | Seconds Cloudflare may keep a complete list (`CDN-Cache-Control: max-age`); capped at 300; `0` = never (`no-store`). Partial answers are never stored. (Before section 36 the value `1` switched on a lifetime computed from the lists' ages; it now means one second.) |
+| `LIVE_BREAK_PROVIDERS` | empty | Diagnosis only (test site): a comma list of agencies (e.g. `AODN,CMEMS`) whose list fetch fails on purpose, to watch the kept lists, the retries and `/healthz`. Never set it on production. |
+
+Gunicorn: the service runs one scheduler per worker process; the site runs one worker (with threads), so each agency is
+asked once per refresh. More workers would each run their own scheduler (correct, but more feed traffic).

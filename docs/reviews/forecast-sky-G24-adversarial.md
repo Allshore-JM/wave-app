@@ -103,7 +103,7 @@ consequences of the new rule on 3-hourly rows and the run's last row, a rounding
 |---|---|---|---|
 | RC-1 (R1-1) | P2 | Whole 3-hourly days still get "until 9:00 PM" / "until 10:00 PM" at high latitudes in local summer: the note compares the date's last row (21:00-23:00 on 3-hourly days) with sunset − 1 h. `pt_63500N_22000W` 11 of 11 days for May-July runs; `pt_66500S_140000E` (valid today) 9 of 10 days for a run from 2026-11-20. Dormant in October. | FIX: a note only on the run's first date ("from") and last date ("until"). |
 | RC-2 (R2-1 = R1-3) | P2 | The run's last row gets a slot as long as the step before it (3 h), so a last row at 5 AM whose assumed 5-8 AM slot holds first light becomes daylight, and the Summary shows a day made of that one pre-dawn sample: Sydney point "Tue 10/20 until 5:00 AM \| 9.3 ft ... \| ☀↑ 6:08 AM" (16 Summary rows became 17). | FIX: the Summary takes the rows whose OWN time lies between first light and last light (`lit`); the table's look keeps the owner's rule. |
-| RC-3 (R1-2 = R2-2) | P3 | Owner decision: on 3-hourly days a row is daylight up to ~2 h before first light (Fiji point: the 3 AM row bold on 11 days, first light 5:02-5:09; Oahu and Sydney 5 AM rows); the hourly graphs shade those hours as night (6-11 rows per point disagree). | OWNER (asked). The Summary is unaffected after RC-2. |
+| RC-3 (R1-2 = R2-2) | P3 | Owner decision: on 3-hourly days a row is daylight up to ~2 h before first light (Fiji point: the 3 AM row bold on 11 days, first light 5:02-5:09; Oahu and Sydney 5 AM rows); the hourly graphs shade those hours as night (6-11 rows per point disagree). | OWNER (2026-10-04): "Judge the first hour" — a row is daylight when its FIRST HOUR touches daylight (hourly rows unchanged: 6 AM with first light 6:02 is daylight; a 3-hourly row like the graphs' hourly shading at its time: Fiji's 3 AM row night, Sydney's 5 AM row with first light 5:45 daylight). FIX. |
 | RC-4 (R1-4 = R2-3) | P3 | Events are shown rounded to the minute but placed (and, since step 7, decide the state) by the exact instant: 62001 10-10 the 7 AM row is daylight showing "◐ 8:00" (first light 07:59:48); TFGRS an hourly 11 AM row shows "☾↑ 12:00 PM". 10 of 1,954 live events. | FIX: events slotted by the minute they are shown at. |
 | RC-5 (R1-5) | P3 | The Summary's moon is not tonight's badge where the night starts after local midnight (synthetic 62.5 N in May: 4 of 17 days, 🌕 98 % vs 🌖 94 %): the badge sits on the next date before noon and the fallback takes the date's last dusk (the previous evening's). | FIX: tonight = the first badge from the date's noon to the next noon; the fallback moon at the first last light after the date's noon. |
 | RC-6 (R1-6) | P3 | Cut first/last days get no note when the date has no sunrise or sunset (midnight sun, polar twilight). | FIX: compare with first / last light, else the date's own bounds (midnight sun). |
@@ -111,7 +111,7 @@ consequences of the new rule on 3-hourly rows and the run's last row, a rounding
 | RC-8 (R1-8) | P3 | README says the moon names are "as USNO names it" (USNO's own daily name differs on 9 of 52 badge-days, all within the ±12 h rule); `event_text`'s docstring predates the AM/PM rule. | FIX: wording. |
 | RC-9 (R1-9) | P3 | (a) `annotate_rows` on a span `events()` refuses (> 20 days) loses every event and turns first-light rows to night, while `day_summary` returns None (unreachable with 16-day runs); (b) pre-existing: `to_utc` reads a 3-hourly row at the second occurrence of a repeated wall hour as the first (no state change in 7 synthetic transitions). | FIX (a): refuse alike (None -> the clock rule). ACCEPTED (b). |
 | RC-10 (R2-4) | P3 | Pre-existing: the "one row of context" above the revealed now row is cut by the frozen header when it holds two events (two lines): the reveal subtracts the NOW row's height (20.6 px) instead of the row above it (32.6 px). | FIX: the row above's own height. |
-| RC-11 (R2-5) | P3 | The sun ☀ (U+2600) in the sunrise/sunset symbols renders as a colour emoji in Windows Chrome beside the plain ◐ ◑ ☾ (the B-7 colour does not reach it). | OWNER (asked). |
+| RC-11 (R2-5) | P3 | The sun ☀ (U+2600) in the sunrise/sunset symbols renders as a colour emoji in Windows Chrome beside the plain ◐ ◑ ☾ (the B-7 colour does not reach it). | OWNER (2026-10-04): keep the colour sun. No change. |
 
 Also measured (not a finding): the window payload costs ~17 ms in-process against the classic ~7 ms; on the test site
 ~0.31 s against ~0.14 s (R1, warm medians); the remaining cost is the sky (pytz conversions, `local_naive`, the per-date
@@ -126,3 +126,10 @@ events, 0 violations), B-1 (all three repro flows + the 1,500-px variant), B-3 (
 ≥ 4.67 on every tint), B-8, B-10; classic answers byte-identical to production except the relabel (13 cases); compact
 numbers = production's (4,267 rows); frozen edges, sizes, modes, graphs, zones/units, one request per change, no console
 output in a fresh tab; pytest 703, Node 362 in both reviews.
+
+Fix round scope (re-check): RC-1 notes only on the run's first / last date; RC-2 the Summary from `lit` rows; RC-3 the
+state from the row's first hour (owner); RC-4 events slotted by the shown minute; RC-5 tonight's moon from noon to noon,
+the fallback at the first last light after noon; RC-6 first / last light or the date's bounds when there is no sunrise /
+sunset; RC-7 the pins; RC-8 wording; RC-9 (a) `annotate_rows` refuses a refused span; RC-10 the context row's own
+height; plus the measured option: the run's static sky cached per place, zone and row times. Then UI 1.16.8 + golden, the
+test site, and the owner's production go-ahead.

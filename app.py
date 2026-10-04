@@ -4247,10 +4247,31 @@ def stop_live_background(timeout=5.0):
 
 
 @app.before_request
-def _live_background_fallback():
-    """Belt and braces: should the scheduler thread ever die, the next request restarts it."""
+def _live_background_start():
+    """The service starts with the first request the process serves (Render's health check makes
+    that the first seconds after a start) and restarts should its thread ever die. Never at
+    import: a gunicorn master that preloads the app forks its workers AFTER the import, and a
+    worker inherits the locks the master's threads held but none of the threads (found on the
+    test site: the refreshes never ran and the time-zone finder's lock was held forever)."""
     if LIVE_BACKGROUND and not _live_scheduler_alive():
         start_live_background()
+
+
+def _live_after_fork():
+    """In a forked child: none of the parent's background threads exist here, so every lock and
+    flag of the service starts clean (buoy_sources resets the providers and the runner itself)."""
+    global _LIVE_BG_LOCK, _LIVE_BUILD_LOCK, _TZ_FINDER_LOCK, _CACHE_LOCK, _LIVE_STOP, _LIVE_WAKE
+    _LIVE_BG_LOCK = threading.Lock()
+    _LIVE_BUILD_LOCK = threading.Lock()
+    _TZ_FINDER_LOCK = threading.Lock()
+    _CACHE_LOCK = threading.Lock()
+    _LIVE_STOP = threading.Event()
+    _LIVE_WAKE = threading.Event()
+    _LIVE_BG.update(thread=None, started=False, started_ts=None, warm_ts=None)
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_live_after_fork)
 
 
 def _live_scheduler_alive():
@@ -4418,10 +4439,6 @@ def api_buoys_components(bid):
             return _json_cached(result, max_age=900)
     return jsonify({"id": bid, "error": "unknown source"}), 404
 
-
-# Start the live-buoy scheduler as soon as the app is imported (the gunicorn worker imports it;
-# with more than one worker each would run its own, which is fine but doubles the feed traffic).
-start_live_background()
 
 if __name__ == "__main__":
     # Honor $PORT when set (dev tooling / managed runners); default to 5000 locally.

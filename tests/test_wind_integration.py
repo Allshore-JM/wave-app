@@ -91,7 +91,8 @@ def test_gfs_legacy_format_wind_join(monkeypatch):
     assert err is None and len(rows) == 3
     for r in rows:
         assert len(r) == 23
-        assert r[-1] is not None or True  # combined column present at row[-1]
+    # combined = the header's Hst column (it was the line's last number: swell 6's direction)
+    assert [r[-1] for r in rows] == [round(v * 3.28084, 2) for v in (1.27, 1.28, 1.28)]
     # legacy rows are cycle + 0/1/2 h = 12,13,14 UTC; wind covers 12 & 13.
     assert rows[0][20] == 8.09 and rows[0][21] == 72   # 12 UTC
     assert rows[1][20] == 8.09 and rows[1][21] == 72   # 13 UTC
@@ -212,7 +213,9 @@ def test_graph_data_has_no_wind_keys(monkeypatch):
     payload = app.compute_forecast_payload("51201", None, "US", "GFS")
     gd = payload["graph_data"]
     assert set(gd.keys()) == {"labels", "height", "period", "direction",
-                              "units", "cycle", "location", "tz", "swells"}   # swells: plan section 26
+                              "units", "cycle", "location", "tz", "swells",   # swells: plan section 26
+                              "sky", "sun_events"}                           # plan section 35: the window's only
+    assert gd["sky"] is None and gd["sun_events"] is None                    # the classic payload computes no sky
     assert "wind" not in gd and "wind_speed" not in gd
     # combined read from row[-1], not the wind column
     assert gd["height"]["combined"] == [4.17, 5.25]

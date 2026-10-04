@@ -1080,7 +1080,8 @@ def test_api_forecast_for_a_point(api):
         power = [g["height"][k][i] ** 2 * g["period"][k][i] for k in g["swells"] if g["height"][k][i] is not None]
         assert power == sorted(power, reverse=True) and len(power) >= 3
     html = d["table_html"]
-    assert html.count("<tr>") == 2 + len(STEPS) and [f"Swell {n}" in html for n in range(1, 7)] == [True] * 4 + [False] * 2
+    assert len(g["sky"]) == 385 and "col-sun" in html and g["sun_events"]       # plan section 35: hourly slots too
+    assert len(re.findall(r"<tr[ >]", html)) == 2 + len(STEPS) and [f"Swell {n}" in html for n in range(1, 7)] == [True] * 4 + [False] * 2
     m = get(pid, compact=1, unit="Metric").get_json()
     assert m["graph_data"]["units"] == "m" and m["graph_data"]["height"]["combined"][0] == round(code(GRIDS[0], "hs", 0, 5, 20) / 100, 2)
     assert len(product.calls) == 5                                             # pointer, manifest, coast index, one mask, one tile: once

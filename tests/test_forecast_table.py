@@ -41,11 +41,12 @@ def test_compact_table_drops_info_rows_padding_and_long_dates():
     assert "padding:" not in compact
     assert compact.count('title="Saturday, September 26, 2026">Sat 9/26</td>') == 2
     assert compact.count("Dir<br>(&deg;)") == 6 and "Dir<br>(d)" not in compact
-    # the same cells otherwise: bold day row, dashed night row, values, wind
+    # the same cells otherwise (no sky given: the clock rule's bold day row and dashed night row), values, wind
     assert "border:1px solid #000;" in compact and "border:1px dashed #999;" in compact
     assert compact.count(">3.20</td>") == 12 and ">17</td>" in compact and "76&deg; ENE" in compact
+    no_arrows = re.sub(r' <span class="dir-arrow"[^>]*>[^<]*</span>', "", compact)
     strip = lambda h: re.sub(r"<[^>]+>", "|", h)
-    assert strip(compact).count("|") < strip(classic).count("|")          # the info rows are gone, nothing added
+    assert strip(no_arrows).count("|") < strip(classic).count("|")        # the info rows are gone, only arrows added
 
 
 def test_compact_title_is_escaped():
@@ -69,11 +70,15 @@ def test_api_forecast_compact_is_opt_in(monkeypatch):
     assert compact["graph_data"]["labels"] == classic["graph_data"]["labels"]      # graph labels keep the long form
     assert compact["graph_data"]["labels"][0].startswith("Saturday, September 26, 2026")
 
-def test_compact_table_abbreviates_the_combined_header_only():
+def test_the_combined_column_is_named_significant_wave_height():
+    """'Comb.' was the significant wave height of the combined seas (bulletin Hst, SWAN Hsig, point HTSGW)."""
     compact = A.build_html_table("c", "l", "", [], "Pacific/Honolulu", "US", compact=True)
     full = A.build_html_table("c", "l", "", [], "Pacific/Honolulu", "US")
-    assert '<abbr title="Combined sea" aria-label="Combined">Comb.</abbr>' in compact and ">Combined</th>" not in compact
-    assert ">Combined</th>" in full and "Comb." not in full
+    assert ('<abbr title="Significant wave height of the combined seas" aria-label="Significant wave height">'
+            'Sig. Wave<br>Height</abbr>') in compact
+    assert ">Significant Wave Height</th>" in full
+    for html in (compact, full):
+        assert "Comb." not in html and "Combined<" not in html
 
 def _sparse_row(present, hs=2.5):
     """A 23-column row with swell groups only at the given indices (0-5)."""
@@ -122,3 +127,91 @@ def test_the_table_takes_the_swell_groups_of_the_first_7_days_the_graphs_every_g
     rows[167] = row(167, {0, 1, 2})                                   # the last hour of day 7 counts
     assert re.findall(r">Swell (\d)</th>", A.compute_forecast_payload("46001", None, "US", "GFS", compact=True)["table_html"]) == ["1", "2", "3"]
     assert A._swell_groups([["?", "?"] + [1.0, 2, 3] + [None] * 15 + [0, 0, 1]] * 3, days=7) == [0]   # unreadable times: by position
+
+
+# ------------------------------ the real sky (plan section 35) ------------------------------
+def _sky(state, events=(), moon=None, day_first=False, now=False):
+    from datetime import datetime
+    return {"state": state, "day_first": day_first, "now": now, "moon": moon,
+            "events": [{"kind": k, "text": t, "name": n, "time": datetime(2026, 9, 26, h, m)} for k, t, n, h, m in events]}
+
+
+def test_compact_table_with_sky_shades_rows_by_the_real_sky_and_adds_the_sun_column():
+    rows = [_row(time="5:00 AM"), _row(time="6:00 AM"), _row(time="2:00 PM"), _row(time="9:00 PM")]
+    moon = {"glyph": "\U0001F314", "pct": 72, "name": "Waxing gibbous"}
+    sky = [_sky("night", moon=moon, day_first=True), _sky("twilight", [("dawn", "\u25D0 6:02", "First light", 6, 2),
+                                                                       ("sunrise", "\u2600\u2191 6:24", "Sunrise", 6, 24)]),
+           _sky("day", now=True), _sky("night", moon=moon)]
+    html = A.build_html_table("c", "l", "", rows, "Pacific/Honolulu", "US", compact=True, sky=sky)
+    trs = re.findall(r"<tr[^>]*>", html.split("<tbody>")[1])
+    assert trs == ['<tr class="sky-night day-first" data-t="2026-09-26T05:00">',
+                   '<tr class="sky-twilight" data-t="2026-09-26T06:00">',
+                   '<tr class="sky-day now-row" data-t="2026-09-26T14:00">',
+                   '<tr class="sky-night" data-t="2026-09-26T21:00">']
+    assert '<th rowspan="2" scope="col" class="col-sun" title="Sun and moon">Sun</th>' in html
+    body = html.split("<tbody>")[1]
+    assert "border:" not in body and "font-weight" not in body           # the classes carry the look
+    assert ('<span class="sun-ev ev-dawn" title="First light 6:02 AM">\u25D0 6:02</span><br>'
+            '<span class="sun-ev ev-sunrise" title="Sunrise 6:24 AM">\u2600\u2191 6:24</span>') in body
+    assert body.count('class="moon-phase" title="Waxing gibbous, 72% illuminated">\U0001F314 72%</span>') == 2
+    first = body.split("</tr>")[0]
+    assert first.count("<td") == 2 + 1 + 3 * 6 + 1 + 2                 # date, time, sun, six swells, height, wind
+    assert '<td class="col-date" title="Saturday, September 26, 2026">Sat 9/26</td><td class="col-time">5:00 AM</td>' in first
+
+
+def test_without_a_matching_sky_the_compact_table_keeps_the_clock_rule():
+    rows = [_row(), _row(time="9:00 PM")]
+    for sky in (None, [], [_sky("day")]):                               # none, or not one per row
+        html = A.build_html_table("c", "l", "", rows, "UTC", "US", compact=True, sky=sky)
+        assert "col-sun" not in html and "sky-" not in html
+        assert "border:1px solid #000;" in html and "border:1px dashed #999;" in html
+    classic = A.build_html_table("c", "l", "", rows, "UTC", "US", sky=[_sky("day"), _sky("night")])
+    assert "col-sun" not in classic and "sky-" not in classic           # the classic table never takes it
+
+
+def test_directions_get_compass_letters_and_an_arrow_pointing_where_the_waves_go():
+    compact = A.build_html_table("c", "l", "", [_row()], "UTC", "US", compact=True)
+    classic = A.build_html_table("c", "l", "", [_row()], "UTC", "US")
+    swell = ('305&deg; NW <span class="dir-arrow" style="transform:rotate(125deg)" aria-hidden="true">&#8593;</span>')
+    wind = ('76&deg; ENE <span class="dir-arrow" style="transform:rotate(256deg)" aria-hidden="true">&#8593;</span>')
+    assert compact.count(swell) == 6 and compact.count(wind) == 1
+    assert "dir-arrow" not in classic and classic.count(">305</td>") == 6 and "76&deg; ENE</td>" in classic
+    assert A._dir_cell(0).count("rotate(180deg)") == 1 and A._dir_cell(200).count("rotate(20deg)") == 1
+
+
+def _day_rows(start_hour=0, hours=30):
+    from datetime import datetime, timedelta
+    t0 = datetime(2026, 10, 3, start_hour)
+    out = []
+    for h in range(hours):
+        t = t0 + timedelta(hours=h)
+        r = _row(date=t.strftime("%A, %B %d, %Y").replace(" 0", " "), time=t.strftime("%I:%M %p").lstrip("0"))
+        out.append(r)
+    return out
+
+
+def test_the_payload_carries_the_sky_for_the_table_and_the_graphs(monkeypatch):
+    rows = _day_rows()
+    monkeypatch.setattr(A, "parse_bull", lambda station, tz: ("Cycle : 20261003 00 UTC",
+                                                              "Location : 51201      (21.67N 158.12W)", "",
+                                                              [list(r) for r in rows], "Pacific/Honolulu", None))
+    monkeypatch.setattr(A, "load_station_coords", lambda: {})          # the bulletin's own coordinates are used
+    d = A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)
+    html, g = d["table_html"], d["graph_data"]
+    assert "col-sun" in html and "sky-day" in html and "sky-night" in html and "sky-twilight" in html
+    assert "\u2600\u2191 6:24" in html and "\u2600\u2193 6:18" in html     # Honolulu, 3 Oct 2026 (USNO 6:24 / 6:18)
+    assert len(g["sky"]) == len(g["labels"]) == 30
+    kinds = [e["kind"] for e in g["sun_events"]]
+    assert {"dawn", "sunrise", "sunset", "dusk", "moon"} <= set(kinds)
+    assert all(0 <= e["t"] < 30 and e["text"] and e["name"] for e in g["sun_events"])
+    classic = A.compute_forecast_payload("51201", None, "US", "GFS")
+    assert "col-sun" not in classic["table_html"] and classic["graph_data"]["sky"] is None
+    # a failure in the sky costs nothing else: the clock rule, no graph sky, the same numbers
+    def boom(*a, **k):
+        raise RuntimeError("no sky")
+    monkeypatch.setattr(A.sky, "annotate_rows", boom)
+    plain = A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)
+    assert "col-sun" not in plain["table_html"] and "border:1px solid #000;" in plain["table_html"]
+    assert plain["graph_data"]["sky"] is None and plain["graph_data"]["sun_events"] is None
+    for k in ("labels", "height", "period", "direction", "units", "swells"):
+        assert plain["graph_data"][k] == g[k]

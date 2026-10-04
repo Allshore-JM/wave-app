@@ -171,14 +171,20 @@ const GENERIC = cut('    async function loadGenericBuoyDetails(station, seq) {',
 
 function window503(answers, o) {
   o = o || {};
-  const calls = [], renders = [], errors = [];
+  const calls = [], renders = [], errors = [], waits = [];
   const ctx = { seq: 1 };
-  const fetch = (u) => { calls.push(u); const a = answers.shift(); return Promise.resolve(a); };
+  const note = { textContent: '' };
+  const document = { getElementById: (id) => (id === 'liveBuoyLoadingNote' ? note : { textContent: '', style: {}, classList: { add() {}, remove() {} } }) };
+  const fetch = (u) => { calls.push(u); const a = answers.length ? answers.shift() : (o.repeat ? o.repeat(calls.length) : undefined);
+    if (o.onFetch) o.onFetch(calls.length, ctx); return Promise.resolve(a); };
+  // a fake setTimeout: records the wait, runs the callback on the next turn (the real one would wait seconds)
+  const setTimeout = o.realTimers ? globalThis.setTimeout : (fn, ms) => { waits.push(ms); Promise.resolve().then(fn); return 0; };
   const code = 'let lastGenericSpectra = null;\n' + GENERIC + '\nreturn loadGenericBuoyDetails;';
   const fn = new Function('fetch', 'showLiveBuoyPanelLoading', 'renderGenericBuoy', 'showLiveBuoyError', 'loadChartJs', 'renderGenericSpectra',
-    'getSelectedUnit', 'console', 'ctx', code.replace(/liveDetailSeq/g, 'ctx.seq'))(
-    fetch, () => {}, (p) => renders.push(p), (m) => errors.push(m), () => Promise.resolve(), () => {}, () => 'US', { warn() {} }, ctx);
-  return { run: (st) => fn(st, 1), calls, renders, errors, ctx };
+    'getSelectedUnit', 'console', 'ctx', 'document', 'setTimeout', code.replace(/liveDetailSeq/g, 'ctx.seq'))(
+    fetch, () => {}, (p) => renders.push(p), (m) => errors.push(m), () => Promise.resolve(), () => {}, () => 'US', { warn() {} }, ctx,
+    document, setTimeout);
+  return { run: (st) => fn(st, 1), calls, renders, errors, ctx, waits, note };
 }
 function r503(after) { return resp({ id: 'aodn:SYD', error: 'The buoy list is still loading.', retry: true }, { status: 503, headers: { 'Retry-After': String(after) } }); }
 
@@ -191,7 +197,7 @@ test('the live window retries a "still loading" answer quietly, then shows the b
 });
 
 test('a retry stops when the window moved on to another buoy (stale)', async () => {
-  const w = window503([r503(1), resp({ latest: null, recent: [] })]);
+  const w = window503([r503(1), resp({ latest: null, recent: [] })], { realTimers: true });
   const p = w.run(FULL[1]);
   await flush();
   w.ctx.seq = 2;                                                   // another buoy opened meanwhile
@@ -206,4 +212,63 @@ test('an ordinary error (no retry flag) is shown at once', async () => {
   await w.run(FULL[1]);
   assert.equal(w.calls.length, 1);
   assert.deepEqual(w.errors, ['unknown source']);
+});
+
+
+test('the retry loop gives up after 25 requests with a clear message (no endless spinner)', async () => {
+  // an endless loop would end at the 61st request with a render (and fail), never spin forever
+  const w = window503([], { repeat: (n) => (n > 60 ? resp({ latest: { hs_m: 1 }, recent: [] }) : r503(5)) });
+  await w.run(FULL[1]);
+  assert.equal(w.calls.length, 25);
+  assert.equal(w.waits.length, 24);
+  assert.deepEqual(w.renders, []);
+  assert.equal(w.errors.length, 1);
+  assert.match(w.errors[0], /not available yet/);
+  assert.match(w.note.textContent, /still loading/, 'the wait was explained');
+});
+
+test('Retry-After is honoured and clamped to 1-30 s (5 s by default)', async () => {
+  const hdr = (v) => resp({ retry: true, error: 'x' }, { status: 503, headers: v === undefined ? {} : { 'Retry-After': v } });
+  const w = window503([hdr('2'), hdr('100'), hdr(undefined), hdr('abc'), hdr('0.2'), resp({ latest: { hs_m: 1 }, recent: [] })]);
+  await w.run(FULL[1]);
+  assert.deepEqual(w.waits, [2000, 30000, 5000, 5000, 1000]);
+  assert.equal(w.renders.length, 1);
+});
+
+test('a window moved on while a request was in flight neither renders nor asks again', async () => {
+  const w = window503([r503(5), resp({ latest: { hs_m: 1 }, recent: [] })], { onFetch: (n, ctx) => { if (n === 1) ctx.seq = 2; } });
+  await w.run(FULL[1]);
+  assert.equal(w.calls.length, 1);
+  assert.deepEqual(w.renders, []);
+  assert.deepEqual(w.errors, []);
+});
+
+test('a non-JSON error page (a proxy timeout) is an ordinary failure, not a parse error', async () => {
+  const html = { ok: false, status: 524, headers: { get: () => null }, json: () => Promise.reject(new SyntaxError("Unexpected token '<'")) };
+  const w = window503([html]);
+  await w.run(FULL[1]);
+  assert.deepEqual(w.errors, ['Unable to load buoy observation.']);
+});
+
+test('opening a window forgets the previous buoy (a unit change must not re-render it under the new name)', () => {
+  const open = cut('    function showLiveBuoyPanelLoading(station) {', '    // NDBC buoy with no observation inside the freshness window');
+  for (const name of ['lastNoaaWaveSummaryData', 'lastLiveComponentData', 'lastNoRecentStation', 'lastGenericBuoy', 'lastGenericSpectra']) {
+    assert.match(open, new RegExp(name + ' = null;'), name);
+  }
+  const err = cut('    function showLiveBuoyError(message) {', '    function componentTypeLabel(type) {');
+  assert.match(err, /getElementById\('liveBuoyGeneric'\)\.classList\.add\('d-none'\)/, 'the error hides the generic panel');
+});
+
+test('an answer for a window that moved on while it was in flight is never rendered', async () => {
+  const w = window503([resp({ latest: { hs_m: 1 }, recent: [] })], { onFetch: (n, ctx) => { ctx.seq = 2; } });
+  await w.run(FULL[1]);
+  assert.deepEqual(w.renders, []);
+  assert.deepEqual(w.errors, []);
+});
+
+test('a 503 without the retry flag (another failure) is shown at once, not retried', async () => {
+  const w = window503([resp({ error: 'Service unavailable' }, { status: 503, headers: { 'Retry-After': '5' } })]);
+  await w.run(FULL[1]);
+  assert.equal(w.calls.length, 1);
+  assert.deepEqual(w.errors, ['Service unavailable']);
 });

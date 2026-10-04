@@ -459,3 +459,14 @@ test('an answer resets the back-off: a failure after a partial answer waits 2 s 
   await r.timers.advance(I.RETRY_MS[0]);
   assert.equal(r.ll.state().done, true);
 });
+
+
+test('a malformed (non-list) answer also resets the deadline', async () => {
+  const f = scriptedFetch(['hang', resp({ not: 'a list' }), 'hang']);
+  const r = run({ fetch: f });
+  await flush();
+  await r.timers.advance(8000);                                    // timeout 1
+  assert.equal(r.ll.state().timeouts, 1);
+  await r.timers.advance(r.timers.pending()[0]);                   // the retry: a malformed answer (the server answered)
+  assert.equal(r.ll.state().timeouts, 0);
+});

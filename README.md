@@ -683,11 +683,13 @@ The server (`buoy_sources.py`, `app.py`):
   `LIVE_WARM_DEADLINE_SEC` (10 s, never more than 14) of the start while the served list is still incomplete (a deploy
   then keeps the old instance a moment longer when the feeds answer fast); when the scheduler has not completed a pass for
   180 s (`"stalled": true`); after three failed list builds in a row (`"build_failing": true`). The last two are faults a
-  restart cures, which is what Render then does.
+  restart cures, which is what Render then does. Set it as Render's Health Check Path (Deploy to Render, step 6) on the
+  production AND the test service, once the deployed code has the route.
 - A buoy window opened from the remembered list while that buoy's agency is still loading after a start gets
   `503 {"retry": true}` with `Retry-After: 5` at once from `/api/buoys/<id>/latest` (no request ever waits for a feed);
-  the window keeps its spinner and asks again for up to two minutes. Set it as Render's Health Check Path (Deploy to Render, step 6)
-  on the production AND the test service.
+  the window keeps its spinner, says why, and asks again for up to two minutes; then it says the buoy is not available
+  yet. The Marine Institute's per-station fallback (a buoy missing from its list) asks its server only while the list's
+  last refresh succeeded, and then once with short timeouts (3 s / 8 s), never through the retrying session.
 - The agencies' own log lines (each refresh's time and size, every failure) now reach the service log
   (`buoy_sources` logger).
 

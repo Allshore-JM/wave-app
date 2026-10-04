@@ -351,3 +351,21 @@ def test_cmems_file_map_is_swapped_whole(monkeypatch):
     p.http = G.FakeHTTP(sample)
     out = p._fetch_stations()
     assert len(out) == len(before) and during and all(d == before for d in during)
+
+
+def test_a_feed_that_keeps_failing_does_not_republish(clock, recorder):
+    """A dead feed retried every retry_after_sec published a new (empty) version each time, so the merged list was
+    rebuilt for nothing (seen on the test site: the Marine Institute's ERDDAP timing out for hours)."""
+    seen = []
+    B.add_publish_listener(seen.append)
+    try:
+        p = F.FakeSMHI(http=None)
+        assert p.list_stations_versioned()[:2] == ([], 1) and seen == [p]
+        for _ in range(3):
+            clock.now += p.retry_after_sec + 1
+            p.list_stations_versioned()
+            recorder.run_all()
+        assert p.snapshot()[1] == 1 and seen == [p] and F.FakeSMHI.fetch_calls == 4
+        assert "SMHI down" in p.status()["last_error"]
+    finally:
+        B.remove_publish_listener(seen.append)

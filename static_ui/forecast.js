@@ -932,8 +932,12 @@
     // (the page's CSS reads --date-w; it changes with the window's text size).
     function placeSticky() {
       var t = els.table.querySelector ? els.table.querySelector('table') : null;
-      var c = t && t.querySelector ? t.querySelector('td.col-date') : null, w = c ? c.offsetWidth : 0;
-      if (t && t.style && w > 0) t.style.setProperty('--date-w', w + 'px');
+      var c = t && t.querySelector ? t.querySelector('td.col-date') : null, w = 0;
+      // the rendered (fractional) width, rounded down: a whole-pixel offsetWidth left a sliver of the scrolled cells
+      // between the two frozen columns
+      if (c && c.getBoundingClientRect) w = c.getBoundingClientRect().width || 0;
+      if (!(w > 0) && c) w = c.offsetWidth || 0;
+      if (t && t.style && w > 0) t.style.setProperty('--date-w', (Math.floor(w * 100) / 100) + 'px');
     }
     // The current hour's row is brought into view once per station or point: only in Table view, Detailed mode and
     // with the window open (deferred until then), just under the frozen header. The body alone scrolls.

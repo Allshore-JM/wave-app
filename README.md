@@ -592,7 +592,7 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
   (522 inputs) is checked against both.
 
-## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.2)
+## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.3)
 
 The window's table and graphs know the real sun and moon at the station (`sky.py`, PyEphem; `requirements.txt`
 `ephem==4.2.1`; checked to the minute against USNO in `tests/test_sky.py`). What the server sends (`/api/forecast?compact=1`
@@ -622,7 +622,7 @@ hover, the now row blue with a left accent), a 2 px rule where each day starts, 
 15 %, Date and Time sticky on the left (the Time column's offset is the Date column's measured width, `--date-w`), the
 Sun/Moon column's glyphs coloured by kind. The now row is scrolled under the frozen header once per station or point (not on a
 unit or zone change; deferred while the window is minimised, in Graph view or in Summary mode). The Detailed | Summary
-buttons show only in Table view and only when the payload carries a summary; each mode keeps its own scroll position (the summary opens at its top). The forecast window's body has no top or side padding, so the frozen header and the sticky columns sit at offset 0 (a sticky table header at a negative offset let a few pixels of the scrolled rows show above it in Chromium). The charts: twilight and night bands at
+buttons show only in Table view and only when the payload carries a summary; each mode keeps its own scroll position (the summary opens at its top). The forecast window's body has no top or side padding, so the frozen header and the sticky columns sit at offset 0 (a sticky table header at a negative offset let a few pixels of the scrolled rows show above it in Chromium). Chromium also paints a frozen cell's collapsed borders where the cell would have been, so the edges above the frozen header and beside the frozen Date / Time columns carry no collapsed border (inset shadows draw those lines) and `--date-w` is the Date column's rendered, fractional width: otherwise a 1-px sliver of the scrolled rows showed there. The charts: twilight and night bands at
 the real times (`makeNightShade`), the combined series named "Significant Wave Height", and the direction axis fixed
 0-360 with compass labels N NE E SE S SW W NW N. (A sky strip with sun / moon glyphs and a "now" line were tried in 1.16.0
 and removed: the owner found them clutter.) An older cached payload with none of these fields draws as before (the

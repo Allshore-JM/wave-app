@@ -475,6 +475,13 @@ def test_forecast_table_upgrade_markup_and_css(client):
     assert ".forecast-win .fw-body { padding: 0 0 8px; }" in body
     assert "#forecastTable thead { position: sticky; top: 0; z-index: 2; }" in body and "top: -8px" not in body
     assert ".forecast-win #forecastMeta { padding-top: 8px; }" in body
+    # Chromium leaves a frozen cell's collapsed borders behind: no collapsed border above the frozen header or beside
+    # the frozen Date / Time columns (found at 1:1 on the test site: a 1-px sliver of the scrolled rows showed there)
+    for css in ("#forecastTable thead tr:first-child { border-top-width: 0; }",
+                "#forecastTable table.forecast-compact .col-date, #forecastTable table.forecast-compact .col-time { border-left-width: 0; border-right-width: 0; }",
+                "#forecastTable table.forecast-compact .col-time + *, #forecastTable table.forecast-compact thead tr:nth-child(2) > :first-child { border-left-width: 0; }",
+                "#forecastTable table.forecast-compact td.col-date { box-shadow: inset 1px 0 0 #dee2e6,"):
+        assert css in body, css
 
 
 def test_render_full_inlines_the_summary(monkeypatch, client):

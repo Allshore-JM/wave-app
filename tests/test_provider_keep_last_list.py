@@ -87,8 +87,9 @@ def test_first_failure_is_retried_after_retry_after_sec(clock):
     assert p.list_stations_versioned()[1] == 1       # not yet
     assert F.FakeSMHI.fetch_calls == 1
     clock.now += 2
-    assert p.list_stations_versioned()[1] == 2       # retried (still failing: a new empty publish)
+    assert p.list_stations_versioned()[1] == 1       # retried; still failing: the same empty list, the same version
     assert F.FakeSMHI.fetch_calls == 2
+    assert p.status()["due_in_s"] == pytest.approx(p.retry_after_sec, abs=1)   # and the retry after that
 
 
 def test_empty_list_after_a_good_one_is_kept(clock):

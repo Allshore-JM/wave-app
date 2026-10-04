@@ -231,9 +231,10 @@ class BuoyProvider:
                                  self.source, dur, self._last_error, len(self._list_cache),
                                  int(now - self._list_ok_ts), retry)
                     return self._list_cache, self._list_version, self._list_ts
-                self._list_cache = out            # [] : no markers rather than a broken map
+                if self._list_cache != out:       # [] : no markers rather than a broken map
+                    self._list_cache = out
+                    self._list_version += 1       # (a feed that keeps failing republishes nothing new)
                 self._list_ts = now
-                self._list_version += 1
                 self._due_ts = now + retry
                 _log.warning("buoy provider %s: refresh failed after %.1fs (%s), no list kept; "
                              "retry in %ds", self.source, dur, self._last_error, retry)

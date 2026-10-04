@@ -195,9 +195,12 @@ def test_failed_refresh_with_waiters_all_get_empty_and_lock_is_released(monkeypa
     [t.join() for t in ts]
     assert all(lst == [] for lst, _, _ in out) and len({v for _, v, _ in out}) == 1
     assert not p._refresh_lock.locked()
-    p._list_ts = 0.0                                  # next expiry refreshes again (today's semantics)
+    p._list_ts = 0.0                                  # next expiry refreshes again
+    attempts = []
+    monkeypatch.setattr(p, "_fetch_stations", lambda: attempts.append(1) or (_ for _ in ()).throw(RuntimeError("down")))
     lst, ver, _ = p.list_stations_versioned()
-    assert lst == [] and ver == 2
+    assert attempts == [1]
+    assert lst == [] and ver == 1                     # still failing: the same empty list keeps its version (section 36)
 
 
 def test_refresh_boundary_race_never_stores_old_list_under_new_key(monkeypatch):

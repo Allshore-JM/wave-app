@@ -676,7 +676,8 @@ The server (`buoy_sources.py`, `app.py`):
   error and the last refresh's duration; the merged list's age and build time; the scheduler's passes and errors; the
   refresh queue; the process memory. It answers **503 until the served list holds every agency (each has answered once
   and the list has been built from them) or 90 s have passed since the start** (so a dead feed never blocks a deploy),
-  then 200. Set it as Render's Health Check Path (Deploy to Render, step 6)
+  then 200; and 503 again (`"stalled": true`) if the scheduler has not completed a pass for 180 s (it runs one at least
+  every 30 s), so a frozen service never looks healthy. Set it as Render's Health Check Path (Deploy to Render, step 6)
   on the production AND the test service.
 - The agencies' own log lines (each refresh's time and size, every failure) now reach the service log
   (`buoy_sources` logger).

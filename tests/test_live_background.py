@@ -507,3 +507,20 @@ def test_a_forked_child_starts_clean(bg, monkeypatch):
 def test_providers_are_registered_for_the_fork_reset():
     p = F.FakeCDIP(http=None)
     assert p in B._PROVIDERS
+
+
+def test_healthz_reports_a_stalled_scheduler(bg):
+    """The first test-site failure answered 200 after the deadline while its scheduler was frozen."""
+    provs, rec, c = bg
+    A._live_tick(provs)
+    rec.run()
+    A._live_tick(provs)
+    assert c.get("/healthz").status_code == 200
+    A._LIVE_BG["last_tick_ts"] = _time.time() - A.LIVE_STALL_SEC - 1   # no pass for longer than LIVE_STALL_SEC
+    r = c.get("/healthz")
+    assert r.status_code == 503 and r.get_json()["stalled"] is True and r.get_json()["warm"] is True
+    A._live_tick(provs)                                                  # a pass: healthy again
+    r = c.get("/healthz")
+    assert r.status_code == 200 and r.get_json()["stalled"] is False
+    A._LIVE_BG.update(last_tick_ts=None, started_ts=_time.time() - A.LIVE_STALL_SEC - 1)   # never a pass since the start
+    assert c.get("/healthz").get_json()["stalled"] is True

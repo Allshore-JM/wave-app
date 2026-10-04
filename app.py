@@ -4085,6 +4085,7 @@ LIVE_BACKGROUND = os.environ.get("LIVE_BACKGROUND", "1") != "0"
 LIVE_TICK_SEC = float(os.environ.get("LIVE_TICK_SEC", "30"))          # between scheduler passes
 LIVE_WARM_TICK_SEC = 2.0                                               # while providers are still missing
 LIVE_WARM_DEADLINE_SEC = float(os.environ.get("LIVE_WARM_DEADLINE_SEC", "90"))
+LIVE_STALL_SEC = 180.0                       # no scheduler pass for this long: the service is stuck (/healthz 503)
 # Cheap and quick feeds first, the big ones (AODN's WFS, CMEMS's 43 MB index) last, so the
 # first partial answers carry the most markers soonest. Unknown sources go last.
 LIVE_WARM_ORDER = ["NDBC", "CDIP", "SMHI", "MI-IE", "CEFAS", "RWS", "QLD", "AusWaves", "AODN", "CMEMS"]
@@ -4299,7 +4300,8 @@ def healthz():
     state, the memo, the scheduler and the refresh runner. 503 until the merged list the route
     serves holds every provider (each has answered once AND the scheduler has built the list
     from them), or LIVE_WARM_DEADLINE_SEC have passed since the start (a dead feed never blocks
-    a deploy); then 200. Never triggers any work. Never cached."""
+    a deploy); then 200 -- unless the scheduler has not completed a pass for LIVE_STALL_SEC
+    (stuck: 503, "stalled"). Never triggers any work. Never cached."""
     now = time.time()
     providers = get_buoy_providers()
     statuses = [p.status() for p in providers]        # on the providers' own clock
@@ -4316,7 +4318,11 @@ def healthz():
     served_complete = bool(memo_key) and all(v is not None for _, v in memo_key)
     started_ts = bg.get("started_ts")
     deadline_passed = started_ts is not None and (now - started_ts) >= LIVE_WARM_DEADLINE_SEC
-    ok = (warm and served_complete) or deadline_passed or not LIVE_BACKGROUND
+    # A scheduler that has not completed a pass for LIVE_STALL_SEC is stuck (passes run at least every
+    # LIVE_TICK_SEC): the lists freeze while the route keeps answering, so say so even after the deadline.
+    last_pass = bg.get("last_tick_ts") or started_ts
+    stalled = bool(LIVE_BACKGROUND and last_pass is not None and (now - last_pass) > LIVE_STALL_SEC)
+    ok = not stalled and ((warm and served_complete) or deadline_passed or not LIVE_BACKGROUND)
     runner = buoy_sources.get_refresh_runner()
     body = {
         "ok": ok,
@@ -4324,6 +4330,7 @@ def healthz():
         "missing": missing,
         "background": LIVE_BACKGROUND,
         "scheduler_alive": _live_scheduler_alive(),
+        "stalled": stalled,
         "uptime_s": round(now - started_ts, 1) if started_ts else None,
         "warm_after_s": (round(bg["warm_ts"] - started_ts, 1) if bg.get("warm_ts") and started_ts else None),
         "ticks": bg.get("ticks"), "last_tick_age_s": (round(now - bg["last_tick_ts"], 1) if bg.get("last_tick_ts") else None),

@@ -331,8 +331,9 @@
     .lc-forecast { background: #FFD600; }
     .lc-live { background: #00E5FF; }
     .lc-point { background: #fff; border: 2px solid #d6007a; }
-    /* the live list's state beside "Live buoys" (static_ui/livelist.js): loading / cached list / loading more / retrying */
-    .lc-note { margin-left: 5px; font-size: 11px; color: #6c757d; font-style: italic; }
+    /* the live list's state under "Live buoys" (static_ui/livelist.js): loading / cached list / loading more / retrying.
+       On its own line, so the legend never widens into the overlay selector on a phone. */
+    .lc-note { display: block; padding-left: 21px; font-size: 11px; line-height: 1.15; color: #6c757d; font-style: italic; }
     .lc-note:empty { display: none; }
     .my-pt { background: #fff; border: 2.5px solid #d6007a; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,.45); cursor: pointer; }
     .my-pt.my-pt-unkept { background: transparent; border-style: dashed; }       /* the point on screen, not in My points */

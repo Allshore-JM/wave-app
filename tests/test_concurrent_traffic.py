@@ -171,10 +171,10 @@ def test_sixteen_threads_with_the_background_service_on(monkeypatch):
         for body in set(bodies):
             data = json.loads(body)
             assert isinstance(data, list) and all("id" in s and "source" in s for s in data)
-        deadline = time.time() + 10
-        while (runner.queued or any(p.status()["pending"] for p in provs)) and time.time() < deadline:
-            time.sleep(0.01)
-        assert runner.queued == 0
+        _drain(runner, provs)
+        # the final pass's refreshes run here, inline: a job left on the runner would keep fetching after the
+        # test returned and disturb the next test (the golden replay compares the fetch schedule: G25 A-3)
+        B.set_refresh_runner(B.InlineRunner())
         A._live_tick(provs)
         resp = client.get("/api/buoys/live-stations")
         assert resp.headers.get("X-Live-Stations-Partial") is None
@@ -186,4 +186,16 @@ def test_sixteen_threads_with_the_background_service_on(monkeypatch):
             assert not p._refresh_lock.locked() and not p.status()["in_flight"]
         assert not A._LIVE_BUILD_LOCK.locked()
     finally:
+        _drain(runner, provs)
         B.set_refresh_runner(prev)
+
+
+def _drain(runner, provs, timeout=10):
+    """Wait until no refresh job is queued, running or pending on any provider."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        busy = runner.queued or any(p.status()["pending"] or p.status()["in_flight"] for p in provs)
+        if not busy:
+            return
+        time.sleep(0.01)
+    raise AssertionError("refresh jobs still running after %ss" % timeout)

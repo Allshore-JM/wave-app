@@ -84,6 +84,7 @@ class BuoyProvider:
         # so a snapshot's (list, version) pair identifies exactly which publish it came from.
         self._list_version = 0
         self._list_ok_ts = 0.0           # when the current list was last fetched SUCCESSFULLY
+        self._pub_ts = 0.0               # when the list in hand was published (its age for /healthz)
         self._due_ts = 0.0               # when the next refresh is due (refresh_at / retry rule)
         # Singleflight for the refresh itself: concurrent callers that find the list expired
         # wait here and then return the ONE freshly published list instead of each fetching.
@@ -150,6 +151,9 @@ class BuoyProvider:
         of the golden replay identical). Only a provider with NO list yet fetches inline:
         concurrent cold callers wait on the one fetch (singleflight)."""
         if self.snapshot() is None:
+            if _NONBLOCKING:                        # a background scheduler is running: queue it,
+                self.schedule_refresh()             # never hold a request thread for a feed (G25 A-1)
+                return [], 0, 0.0
             return self.refresh()                   # cold: wait for the one fetch
         if self.refresh_due():
             self.schedule_refresh()                 # inline runner: refreshed before the read below
@@ -171,34 +175,40 @@ class BuoyProvider:
         return True
 
     def _scheduled_refresh(self):
+        changed = False
         try:
             with self._refresh_lock:
                 # published or refreshed by someone else while this job waited? (a cold caller
                 # on the inline path, or a forced refresh)
                 if self.refresh_due():
-                    self._refresh_locked()
+                    changed = self._refresh_locked()[1]
         finally:
             with self._lock:
                 self._refresh_pending = False
+        if changed:
+            _notify_publish(self)                   # outside every lock
 
     def refresh(self):
-        """Fetch and publish NOW (singleflight through _refresh_lock); returns the snapshot.
-        A caller that waited for another refresh gets that refresh's publish."""
+        """Fetch and publish unless a fresh list is already in hand (singleflight through
+        _refresh_lock; a caller that waited for another refresh gets that refresh's publish;
+        within the retry window after a failure the kept list counts as fresh). Returns the
+        snapshot; publish listeners are told outside every lock."""
         with self._refresh_lock:
             snap = self._snapshot_if_fresh()        # published while we waited?
             if snap is not None:
                 return snap
-            return self._refresh_locked()
+            snap, changed = self._refresh_locked()
+        if changed:
+            _notify_publish(self)
+        return snap
 
     def _refresh_locked(self):
-        """The fetch + publish, under _refresh_lock; tells the publish listeners (outside every
-        lock) when a new version was published."""
+        """The fetch + publish, under _refresh_lock -> (snapshot, changed). The CALLER tells the
+        publish listeners after releasing _refresh_lock when `changed` (a new version)."""
         with self._lock:
             before = self._list_version
         result = self._fetch_and_publish()
-        if result[1] != before:
-            _notify_publish(self)
-        return result
+        return result, result[1] != before
 
     def _fetch_and_publish(self):
         """Keeps the last good list through a failure (same version -> identical bytes
@@ -234,6 +244,7 @@ class BuoyProvider:
                 if self._list_cache != out:       # [] : no markers rather than a broken map
                     self._list_cache = out
                     self._list_version += 1       # (a feed that keeps failing republishes nothing new)
+                    self._pub_ts = now
                 self._list_ts = now
                 self._due_ts = now + retry
                 _log.warning("buoy provider %s: refresh failed after %.1fs (%s), no list kept; "
@@ -244,6 +255,7 @@ class BuoyProvider:
             self._list_ts = now
             self._list_version += 1
             self._list_ok_ts = now
+            self._pub_ts = now
             self._due_ts = now + self.list_ttl_sec * self.refresh_at
             _log.info("buoy provider %s: list refreshed in %.1fs (%d stations, version %d)",
                       self.source, dur, len(out), self._list_version)
@@ -258,7 +270,7 @@ class BuoyProvider:
                 "source": self.source,
                 "version": self._list_version if has else None,
                 "stations": len(self._list_cache) if has else None,
-                "age_s": round(now - self._list_ts, 1) if has else None,
+                "age_s": round(now - self._pub_ts, 1) if has else None,     # the list in hand's age
                 "good_age_s": round(now - self._list_ok_ts, 1) if self._list_ok_ts else None,
                 "due_in_s": (round(min(self._due_ts, self._list_ts + self.list_ttl_sec) - now, 1)
                              if has else 0.0),
@@ -336,6 +348,12 @@ class ThreadRunner:
         self.queued = 0                  # submitted, not finished (waiting or running)
         self.running = 0
 
+    @property
+    def waiting(self):
+        """Jobs submitted and not started yet."""
+        with self._lock:
+            return max(0, self.queued - self.running)
+
     def _worker(self):
         while True:
             name, fn = self._q.get()
@@ -367,6 +385,7 @@ class InlineRunner:
     replay stays identical to the inline-refresh implementation it was captured on)."""
     queued = 0
     running = 0
+    waiting = 0
 
     def submit(self, fn, name="buoy-refresh"):
         fn()
@@ -376,6 +395,14 @@ _REFRESH_RUNNER = None
 _RUNNER_LOCK = threading.Lock()
 _PUBLISH_LISTENERS = []
 _PROVIDERS = weakref.WeakSet()
+_NONBLOCKING = False             # set while a background scheduler refreshes the lists (app.py)
+
+
+def set_nonblocking(on):
+    """While a background scheduler keeps the lists fresh, a caller asking a provider that has no
+    list yet gets [] at once (and a refresh is queued) instead of waiting for the feed."""
+    global _NONBLOCKING
+    _NONBLOCKING = bool(on)
 
 
 def _reset_after_fork():
@@ -383,9 +410,10 @@ def _reset_after_fork():
     gets the parent's memory but none of its threads: a new runner (its worker threads are gone),
     a new runner lock, and every provider's locks and flags reset. Registered with
     os.register_at_fork where the platform has it."""
-    global _REFRESH_RUNNER, _RUNNER_LOCK
+    global _REFRESH_RUNNER, _RUNNER_LOCK, _NONBLOCKING
     _RUNNER_LOCK = threading.Lock()
     _REFRESH_RUNNER = None
+    _NONBLOCKING = False                 # no scheduler runs in the child until it starts its own
     for p in list(_PROVIDERS):
         p._reset_after_fork()
 
@@ -425,12 +453,11 @@ def get_refresh_runner():
     global _REFRESH_RUNNER
     with _RUNNER_LOCK:
         if _REFRESH_RUNNER is None:
-            import os
             try:
-                workers = int(os.environ.get("LIVE_REFRESH_WORKERS", "3"))
-            except ValueError:
+                workers = int(float(os.environ.get("LIVE_REFRESH_WORKERS", "3")))
+            except (ValueError, OverflowError):
                 workers = 3
-            _REFRESH_RUNNER = ThreadRunner(workers)
+            _REFRESH_RUNNER = ThreadRunner(max(1, min(10, workers)))
         return _REFRESH_RUNNER
 
 

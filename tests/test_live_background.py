@@ -31,6 +31,7 @@ class RecordingRunner:
         self.jobs = []
         self.queued = 0
         self.running = 0
+        self.waiting = 0
         self.workers = 0
 
     def submit(self, fn, name="x"):
@@ -46,7 +47,7 @@ class RecordingRunner:
 def _fresh_bg():
     return {"started": False, "thread": None, "started_ts": None, "warm_ts": None, "ticks": 0,
             "last_tick_ts": None, "last_tick_s": None, "prebuilds": 0, "errors": 0, "last_error": None,
-            "tz_loaded": False}
+            "tz_loaded": False, "build_failures": 0}
 
 
 @pytest.fixture
@@ -359,14 +360,76 @@ def test_healthz_503_until_warm_then_200(bg):
     assert by["SMHI"]["due_in_s"] == pytest.approx(300, abs=1)
     assert body["memo"]["sources"] == len(provs) and body["memo"]["bytes"] > 100
     assert body["ticks"] == 3 and body["prebuilds"] == 3 and body["errors"] == 0
-    assert body["runner"] == {"queued": 0, "running": 0, "workers": 0}
+    assert body["runner"] == {"waiting": 0, "running": 0, "workers": 0}
 
 
 def test_healthz_200_after_the_deadline_even_when_a_feed_is_dead(bg, monkeypatch):
     provs, rec, c = bg
     A._LIVE_BG["started_ts"] = _time.time() - A.LIVE_WARM_DEADLINE_SEC - 1
+    assert c.get("/healthz").status_code == 503                        # no pass yet: not serving lists
+    A._live_tick(provs)                                                  # a pass; nothing has answered
     r = c.get("/healthz")
     assert r.status_code == 200 and r.get_json()["ok"] is True and r.get_json()["warm"] is False
+
+
+def test_healthz_never_fails_for_15_seconds_after_a_restart(bg, monkeypatch):
+    """Render stops routing to an instance failing its check for 15 s and restarts it after 60 s, a
+    restarted one too (G25 A-2): a dead feed (MI-IE, 124 s per attempt) must not hold /healthz at 503."""
+    provs, rec, c = bg
+    clock = F.FrozenTime()
+    monkeypatch.setattr(A, "time", clock)
+    monkeypatch.setattr(B, "time", clock)
+    A._LIVE_BG["started_ts"] = clock.now
+    assert A.LIVE_WARM_DEADLINE_SEC < 15
+    A._live_tick(provs)                                                  # the first pass queues everyone
+    by = {name: fn for name, fn in rec.jobs}
+    for src in [s for s in A.LIVE_WARM_ORDER if s != "MI-IE"]:          # every feed but MI-IE answers at once
+        by["buoy-refresh-%s" % src]()
+    A._live_tick(provs)
+    worst, run = 0, 0
+    for second in range(0, 200):
+        clock.now = A._LIVE_BG["started_ts"] + second
+        A._live_tick(provs)                                              # the scheduler's passes go on
+        if c.get("/healthz").status_code == 503:
+            run += 1
+            worst = max(worst, run)
+        else:
+            run = 0
+    assert worst <= A.LIVE_WARM_DEADLINE_SEC + 1 and worst < 15        # never long enough for Render to act
+    r = c.get("/healthz").get_json()
+    assert r["ok"] and not r["warm"] and r["missing"] == ["MI-IE"]
+
+
+def test_healthz_waits_for_the_full_list_only_within_the_deploy_grace(bg, monkeypatch):
+    provs, rec, c = bg
+    clock = F.FrozenTime()
+    monkeypatch.setattr(A, "time", clock)
+    A._LIVE_BG["started_ts"] = clock.now
+    A._live_tick(provs)
+    rec.run()
+    A._live_tick(provs)                                                  # everyone answered within a second
+    assert c.get("/healthz").status_code == 200                          # complete: ready at once
+
+
+def test_healthz_reports_builds_that_keep_failing(bg, monkeypatch):
+    """A memo build that keeps failing served [] forever while /healthz said ok (G25 A-6)."""
+    provs, rec, c = bg
+    A._live_tick(provs)
+    rec.run()
+    A._live_tick(provs)
+    assert c.get("/healthz").status_code == 200
+    real = A._live_prebuild
+    monkeypatch.setattr(A, "_live_prebuild", lambda provs: (_ for _ in ()).throw(RuntimeError("build boom")))
+    for i in range(A.LIVE_BUILD_FAIL_MAX):
+        A._live_tick(provs)
+        body = c.get("/healthz").get_json()
+        assert body["build_failures"] == i + 1
+        assert body["build_failing"] is (i + 1 >= A.LIVE_BUILD_FAIL_MAX)
+    assert c.get("/healthz").status_code == 503
+    monkeypatch.setattr(A, "_live_prebuild", real)
+    A._live_tick(provs)                                                  # a good build: healthy again
+    body = c.get("/healthz").get_json()
+    assert body["build_failures"] == 0 and body["build_failing"] is False
 
 
 def test_healthz_200_with_the_service_off(bg, monkeypatch):
@@ -472,7 +535,9 @@ def test_a_forked_child_starts_clean(bg, monkeypatch):
     monkeypatch.setattr(B, "_RUNNER_LOCK", B._RUNNER_LOCK)
     monkeypatch.setattr(B, "_REFRESH_RUNNER", B._REFRESH_RUNNER)
     # the parent's state at the fork: locks held by threads that will not exist, jobs queued and in flight
-    held = [A._LIVE_BUILD_LOCK, A._TZ_FINDER_LOCK, A._CACHE_LOCK, A._LIVE_BG_LOCK]
+    held = [A._LIVE_BUILD_LOCK, A._TZ_FINDER_LOCK, A._CACHE_LOCK, A._LIVE_BG_LOCK, B._RUNNER_LOCK]
+    runner_lock, wake, stop = B._RUNNER_LOCK, A._LIVE_WAKE, A._LIVE_STOP
+    monkeypatch.setattr(B, "_NONBLOCKING", True)
     for lk in held:
         lk.acquire()
     p = provs[0]
@@ -487,7 +552,9 @@ def test_a_forked_child_starts_clean(bg, monkeypatch):
             assert not getattr(A, name).locked(), name
         assert not p._lock.locked() and not p._refresh_lock.locked()
         assert p._refresh_pending is False and p._refreshing is False
-        assert B._REFRESH_RUNNER is None and not B._RUNNER_LOCK.locked()
+        assert B._REFRESH_RUNNER is None and not B._RUNNER_LOCK.locked() and B._RUNNER_LOCK is not runner_lock
+        assert A._LIVE_WAKE is not wake and A._LIVE_STOP is not stop
+        assert B._NONBLOCKING is False
         assert A._LIVE_BG["thread"] is None and A._LIVE_BG["started_ts"] is None and A._LIVE_BG["warm_ts"] is None
         assert all(not q._lock.locked() for q in provs)
         B.set_refresh_runner(rec)
@@ -524,3 +591,233 @@ def test_healthz_reports_a_stalled_scheduler(bg):
     assert r.status_code == 200 and r.get_json()["stalled"] is False
     A._LIVE_BG.update(last_tick_ts=None, started_ts=_time.time() - A.LIVE_STALL_SEC - 1)   # never a pass since the start
     assert c.get("/healthz").get_json()["stalled"] is True
+
+
+
+# ------------------------------- G25 fixes -------------------------------
+
+def test_a_cold_providers_latest_answers_still_loading_at_once(bg):
+    """A click on a remembered marker whose provider has no list yet held a server thread for the whole
+    list fetch (G25 A-1): with the service on it answers 503 + Retry-After at once and queues the refresh."""
+    provs, rec, c = bg
+    t0 = _time.perf_counter()
+    r = c.get("/api/buoys/cdip:106/latest")
+    assert _time.perf_counter() - t0 < 0.5
+    assert r.status_code == 503 and r.get_json()["retry"] is True
+    assert r.headers["Retry-After"] == "5" and r.headers["Cache-Control"] == "no-store"
+    assert r.headers["CDN-Cache-Control"] == "no-store"
+    assert F.FakeCDIP.fetch_calls == 0 and [n for n, _ in rec.jobs] == ["buoy-refresh-CDIP"]
+    rec.run()                                                            # its list arrives
+    r = c.get("/api/buoys/cdip:106/latest")
+    assert r.status_code == 200 and r.get_json()["latest"]["hs_m"] == 1.5
+
+
+def test_the_cold_path_never_waits_while_the_service_runs(bg):
+    """Defence in depth for every detail() / latest() that asks for the list: [] at once + a refresh queued."""
+    provs, rec, c = bg
+    p = next(p for p in provs if p.source == "CEFAS")
+    B.set_nonblocking(True)
+    try:
+        assert p.list_stations_versioned() == ([], 0, 0.0)
+        assert F.FakeCEFAS.fetch_calls == 0 and len(rec.jobs) == 1
+        assert p.snapshot() is None                                      # nothing published by the shortcut
+    finally:
+        B.set_nonblocking(False)
+    lst, v, _ = p.list_stations_versioned()                               # without the service: the inline fetch
+    assert v == 1 and len(lst) == 2
+
+
+def test_start_and_stop_switch_the_non_blocking_cold_path(bg, monkeypatch):
+    provs, rec, c = bg
+    B.set_refresh_runner(B.InlineRunner())
+    monkeypatch.setattr(A, "get_tz_finder", lambda: object())
+    monkeypatch.setattr(A, "start_live_background", REAL_START)
+    try:
+        A.start_live_background()
+        assert B._NONBLOCKING is True
+    finally:
+        A.stop_live_background()
+    assert B._NONBLOCKING is False
+
+
+def test_publish_listeners_run_outside_the_refresh_lock(bg):
+    """The docstrings said "outside every lock" while _notify_publish ran under _refresh_lock (G25 A-4)."""
+    provs, rec, c = bg
+    p = next(p for p in provs if p.source == "CDIP")
+    seen = []
+
+    def listener(prov):
+        seen.append((prov.source, prov._refresh_lock.locked(), prov._lock.locked()))
+        prov.refresh_due()                                               # touching the provider must not deadlock
+    B.add_publish_listener(listener)
+    try:
+        p.refresh()                                                      # the inline path
+        p._list_ts = 0.0
+        assert p.schedule_refresh()
+        rec.run()                                                        # the scheduled path
+    finally:
+        B.remove_publish_listener(listener)
+    assert seen == [("CDIP", False, False), ("CDIP", False, False)]
+
+
+@pytest.mark.parametrize("raw,want", [("abc", 30.0), ("nan", 30.0), ("inf", 30.0), ("-inf", 30.0), ("1e999", 30.0),
+                                      ("0", 1.0), ("-5", 1.0), ("0.5", 1.0), ("45", 45.0), ("99999", 600.0)])
+def test_env_knobs_are_guarded(monkeypatch, raw, want):
+    """A bad LIVE_TICK_SEC broke the import, burnt a core or killed the thread (G25 A-5)."""
+    monkeypatch.setenv("LIVE_TICK_SEC", raw)
+    assert A._env_number("LIVE_TICK_SEC", 30, 1, 600) == want
+
+
+@pytest.mark.parametrize("raw", ["inf", "-inf", "nan", "1e999", "abc", ""])
+def test_a_bad_edge_ttl_never_breaks_the_route(monkeypatch, raw):
+    monkeypatch.setenv("LIVE_STATIONS_EDGE_TTL", raw)
+    assert A._live_stations_edge_ttl() == 0
+    assert A._live_stations_cdn_headers() == {"CDN-Cache-Control": "no-store"}
+
+
+def test_the_app_imports_with_bad_knobs_and_the_deploy_grace_stays_under_15_seconds():
+    import subprocess
+    env = dict(os.environ, LIVE_BACKGROUND="1", LIVE_TICK_SEC="abc", LIVE_WARM_DEADLINE_SEC="90",
+               LIVE_REFRESH_WORKERS="inf", LIVE_STATIONS_EDGE_TTL="nan")
+    code = ("import app, buoy_sources as B; print(app.LIVE_TICK_SEC, app.LIVE_WARM_DEADLINE_SEC, "
+            "B.get_refresh_runner().workers, app._live_stations_edge_ttl())")
+    r = subprocess.run([sys.executable, "-c", code], cwd=os.path.dirname(HERE), env=env, capture_output=True,
+                       text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert r.stdout.split() == ["30.0", "14.0", "3", "0"]
+
+
+def test_only_the_recorded_scheduler_thread_keeps_running(bg, monkeypatch):
+    """stop + start overlapping a pass left two or three loops running (G25 A-7)."""
+    provs, rec, c = bg
+    B.set_refresh_runner(B.InlineRunner())
+    monkeypatch.setattr(A, "LIVE_TICK_SEC", 0.02)
+    monkeypatch.setattr(A, "LIVE_WARM_TICK_SEC", 0.02)
+    monkeypatch.setattr(A, "get_tz_finder", lambda: object())
+    monkeypatch.setattr(A, "start_live_background", REAL_START)
+    try:
+        A.start_live_background()
+        first = A._LIVE_BG["thread"]
+        with A._LIVE_BG_LOCK:
+            A._LIVE_BG["thread"] = None                                  # as after a stop that did not wait
+        A.start_live_background()
+        second = A._LIVE_BG["thread"]
+        assert second is not first
+        first.join(2)
+        assert not first.is_alive() and second.is_alive()
+        assert second.daemon is True                                     # never holds the process at exit
+        alive = [t for t in threading.enumerate() if t.name == "live-scheduler"]
+        assert alive == [second]
+    finally:
+        A.stop_live_background()
+
+
+def test_one_provider_set_when_the_first_requests_race(monkeypatch):
+    """The first request and the scheduler thread could build two provider sets: every feed fetched twice at
+    boot (G25 A-8)."""
+    monkeypatch.setattr(A, "_BUOY_PROVIDERS", None)
+    real = A.NDBCBuoyProvider
+    monkeypatch.setattr(A, "NDBCBuoyProvider", lambda http=None: (_time.sleep(0.2), real(http=http))[1])   # a slow construction
+    got = []
+    ts = [threading.Thread(target=lambda: got.append(A.get_buoy_providers())) for _ in range(6)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(5)
+    assert len(got) == 6 and len({id(x) for x in got}) == 1
+
+
+def test_age_s_is_the_age_of_the_list_in_hand(monkeypatch):
+    """After a kept failure age_s read TTL - 300 for a list published long before (G25 A-9)."""
+    clock = F.FrozenTime()
+    monkeypatch.setattr(B, "time", clock)
+    p = F.FakeCDIP(http=None)
+    p.list_stations_versioned()
+    clock.now += 4000                                                    # past the 3600 s TTL
+    p._fetch_stations = lambda: (_ for _ in ()).throw(RuntimeError("down"))
+    p.refresh()
+    st = p.status()
+    assert st["age_s"] == 4000.0 and st["good_age_s"] == 4000.0 and st["last_error"]
+
+
+def test_passes_happen_without_a_wake(bg, monkeypatch):
+    """An unbounded wake wait passed the whole suite (G25 A-11): passes run every LIVE_TICK_SEC on their own."""
+    provs, rec, c = bg
+    B.set_refresh_runner(B.InlineRunner())
+    monkeypatch.setattr(A, "LIVE_TICK_SEC", 0.05)
+    monkeypatch.setattr(A, "LIVE_WARM_TICK_SEC", 0.05)
+    monkeypatch.setattr(A, "get_tz_finder", lambda: object())
+    monkeypatch.setattr(A, "start_live_background", REAL_START)
+    monkeypatch.setattr(A, "_live_wake", lambda *a: None)                 # nothing ever wakes it
+    monkeypatch.setattr(B, "_PUBLISH_LISTENERS", [])
+    try:
+        A.start_live_background()
+        _time.sleep(0.15)
+        before = A._LIVE_BG["ticks"]
+        _time.sleep(0.4)
+        assert A._LIVE_BG["ticks"] >= before + 4
+    finally:
+        A.stop_live_background()
+
+
+def test_a_failed_tz_load_does_not_end_the_loop_and_is_tried_once(bg, monkeypatch):
+    provs, rec, c = bg
+    B.set_refresh_runner(B.InlineRunner())
+    monkeypatch.setattr(A, "LIVE_TICK_SEC", 0.02)
+    monkeypatch.setattr(A, "LIVE_WARM_TICK_SEC", 0.02)
+    calls = []
+    monkeypatch.setattr(A, "get_tz_finder", lambda: calls.append(1) or (_ for _ in ()).throw(RuntimeError("no tz")))
+    monkeypatch.setattr(A, "start_live_background", REAL_START)
+    try:
+        A.start_live_background()
+        _time.sleep(0.3)
+        assert A._live_scheduler_alive() and A._LIVE_BG["ticks"] >= 5
+        assert calls == [1]                                              # one attempt; builds load it lazily
+        assert len(c.get(LIVE).get_json()) > 0                           # lists still built
+    finally:
+        A.stop_live_background()
+
+
+def test_the_warm_tick_gives_way_to_the_normal_tick(bg, monkeypatch):
+    provs, rec, c = bg
+    B.set_refresh_runner(B.InlineRunner())
+    monkeypatch.setattr(A, "LIVE_TICK_SEC", 60)
+    monkeypatch.setattr(A, "LIVE_WARM_TICK_SEC", 0.01)
+    monkeypatch.setattr(A, "get_tz_finder", lambda: object())
+    monkeypatch.setattr(A, "start_live_background", REAL_START)
+    try:
+        A.start_live_background()
+        deadline = _time.time() + 5
+        while A._LIVE_BG["warm_ts"] is None:
+            assert _time.time() < deadline
+            _time.sleep(0.01)
+        _time.sleep(0.1)
+        ticks = A._LIVE_BG["ticks"]
+        _time.sleep(0.3)
+        assert A._LIVE_BG["ticks"] == ticks                              # warm: the 60 s tick, no 10 ms loop
+    finally:
+        A.stop_live_background()
+
+
+def test_a_dead_scheduler_thread_is_restarted_by_the_next_request(bg, monkeypatch):
+    provs, rec, c = bg
+    B.set_refresh_runner(B.InlineRunner())
+    monkeypatch.setattr(A, "get_tz_finder", lambda: object())
+    monkeypatch.setattr(A, "start_live_background", REAL_START)
+    dead = threading.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+    A._LIVE_BG["thread"] = dead                                          # died (e.g. by an exception)
+    try:
+        c.get("/robots.txt")
+        assert A._live_scheduler_alive() and A._LIVE_BG["thread"] is not dead
+    finally:
+        A.stop_live_background()
+
+
+
+@pytest.mark.parametrize("raw,want", [("500", 10), ("0", 1), ("-3", 1), ("4", 4), ("inf", 3), ("abc", 3)])
+def test_refresh_workers_are_clamped(monkeypatch, raw, want):
+    monkeypatch.setenv("LIVE_REFRESH_WORKERS", raw)
+    B.set_refresh_runner(None)                                           # a fresh default runner (conftest restores)
+    assert B.get_refresh_runner().workers == want

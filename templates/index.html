@@ -1082,7 +1082,7 @@
         // the legend (yellow = forecast point, cyan = live NDBC buoy). The empty
         // .lc-note carries the live list's state (paintLiveNote, below).
         '<span class="lc-dot lc-forecast"></span>Forecast points': forecastLayer,
-        '<span class="lc-dot lc-live"></span>Live buoys<span class="lc-note" data-live-note aria-live="polite"></span>': liveBuoyLayer,
+        '<span class="lc-dot lc-live"></span>Live buoys<span class="lc-note" data-live-note aria-hidden="true"></span>': liveBuoyLayer,
         '<span class="lc-dot lc-point"></span>My points': pointLayer
       },
       {
@@ -2444,9 +2444,19 @@
       const stale = () => seq !== liveDetailSeq;   // superseded or panel closed
       lastGenericSpectra = null;
       try {
-        const resp = await fetch('/api/buoys/' + encodeURIComponent(station.id) + '/latest');
-        const payload = await resp.json();
-        if (stale()) return;
+        let resp, payload;
+        // Right after the server starts, a buoy drawn from the remembered list may belong to an agency whose list is
+        // still loading: the server answers 503 {retry: true} at once (it never holds a request for a feed: G25 A-1).
+        // Keep the spinner and ask again for up to ~2 minutes.
+        for (let tries = 0; ; tries++) {
+          resp = await fetch('/api/buoys/' + encodeURIComponent(station.id) + '/latest');
+          payload = await resp.json();
+          if (stale()) return;
+          if (!(resp.status === 503 && payload && payload.retry) || tries >= 24) break;
+          const wait = Math.min(30, Math.max(1, Number(resp.headers.get('Retry-After')) || 5));
+          await new Promise(function (r) { setTimeout(r, wait * 1000); });
+          if (stale()) return;
+        }
         if (!resp.ok || payload.error) {
           throw new Error(payload.error || 'Unable to load buoy observation.');
         }

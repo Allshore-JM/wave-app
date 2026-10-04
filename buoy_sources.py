@@ -470,10 +470,20 @@ def set_refresh_runner(runner):
     return prev
 
 
-def _erddap_rows(http, url, timeout):
+def _one_shot_get(http, url, timeout):
+    """One GET with no automatic retries: the shared app session retries twice, which turns a 40 s
+    read timeout into ~2 minutes. A real requests.Session goes through a plain requests.get (its
+    default adapter does not retry); a test's fake http is called as is."""
+    if isinstance(http, requests.Session):
+        return requests.get(url, timeout=timeout)
+    return http.get(url, timeout=timeout)
+
+
+def _erddap_rows(http, url, timeout, get=None):
     """GET an ERDDAP .csv and return (header, [data rows]) using a real CSV parser
-    (ERDDAP quotes commas inside fields, e.g. station names)."""
-    r = http.get(url, timeout=timeout)
+    (ERDDAP quotes commas inside fields, e.g. station names). `get(http, url, timeout)` replaces
+    the session's own GET (the one-shot variant for a request thread)."""
+    r = get(http, url, timeout) if get else http.get(url, timeout=timeout)
     if r.status_code != 200:
         return [], []
     rows = list(csv.reader(io.StringIO(r.text)))
@@ -1205,6 +1215,8 @@ class IrishMarineProvider(BuoyProvider):
     capabilities = _caps(bulk=True, recent_history=True, directional=True)
     list_ttl_sec = 1800
     timeout = 40
+    # The per-station fallback runs on a visitor's request thread: one attempt, short timeouts.
+    FALLBACK_TIMEOUT = (3.05, 8)
     BASE = "https://erddap.marine.ie/erddap/tabledap/IWBNetwork"
     COLS = ("station_id,time,latitude,longitude,WaveHeight,WavePeriod,Tp,"
             "MeanWaveDirection,Hmax,SeaTemperature,SprTp")
@@ -1275,11 +1287,21 @@ class IrishMarineProvider(BuoyProvider):
         rec = self._recent_by_id.get(local_id)
         if rec:
             return {"latest": self._latest_by_id.get(local_id), "recent": rec}
-        # Cache empty (the shared list-build failed/was slow) -> direct per-station history
-        # fetch so a buoy is never left history-less. Belt-and-braces vs the prior single-row bug.
+        # Not in the list in hand. When the list's last refresh FAILED the server is known to be down
+        # (its ERDDAP read-times-out 3 x 40 s on bad days): asking it again here would hold a visitor's
+        # request thread for minutes, so answer with what we have; the background refresh retries it.
+        with self._lock:
+            failing = self._last_error is not None
+        if failing:
+            return {"latest": self._latest_by_id.get(local_id), "recent": []}
+        # Otherwise a direct per-station history fetch (a buoy outside the list's window), one attempt
+        # with short timeouts: belt-and-braces vs the prior single-row bug, never minutes on a request.
         url = (self.BASE + ".csv?" + self.COLS + "&station_id=%22" + str(local_id) +
                "%22&time%3E=now-2days&orderBy(%22time%22)")
-        hdr, rows = _erddap_rows(self.http, url, self.timeout)
+        try:
+            hdr, rows = _erddap_rows(self.http, url, self.FALLBACK_TIMEOUT, get=_one_shot_get)
+        except requests.RequestException:
+            hdr, rows = [], []
         if hdr and rows:
             ix = {c: i for i, c in enumerate(hdr)}
             obs = [self._obs(r, ix) for r in rows]

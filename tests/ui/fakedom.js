@@ -140,26 +140,42 @@ function buildPage(win) {
   const toolbar = el('div', 'fwToolbar', w);
   const viewBar = el('div', 'viewBar', toolbar); ['Table', 'Graph'].forEach((v) => el('button', null, viewBar, { 'data-view': v }));
   const modelBar = el('div', 'modelBar', toolbar); ['GFS', 'SWAN'].forEach((v) => el('button', null, modelBar, { 'data-model': v }));
+  const modeBar = el('div', 'modeBar', toolbar); modeBar.hidden = true; ['detailed', 'summary'].forEach((v) => el('button', null, modeBar, { 'data-mode': v }));
   const rangeBar = el('div', 'rangeBar', toolbar); ['0', '7', '3'].forEach((v) => el('button', null, rangeBar, { 'data-days': v }));
   const body = el('div', 'fwBody', w); body.clientHeight = 400;
   el('div', 'fwError', body).hidden = true; el('div', 'forecastMeta', body);
   const table = el('div', 'forecastTable', body); el('div', 'forecastLoading', table);
+  const summary = el('div', 'forecastSummary', body); summary.hidden = true;
   const graphs = el('div', 'graphs', body); graphs.hidden = true;
   ['heightChart', 'periodChart', 'directionChart'].forEach((id) => { const box = el('div', null, graphs); box.classList.add('chart-box'); el('canvas', id, box); });
   const winEdges = edges(w); el('div', 'fwResize', w);
-  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwClose, liveEdges, w, winEdges, header, viewBar, modelBar, rangeBar, body, table, graphs };
+  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwClose, liveEdges, w, winEdges, header, viewBar, modelBar, modeBar, rangeBar, body, table, summary, graphs };
+}
+
+// A canvas 2D context stand-in that records what the sky / now plugins draw.
+function fakeCtx() {
+  const ctx = { ops: [], fillStyle: '', strokeStyle: '', font: '', textAlign: '', textBaseline: '', lineWidth: 1 };
+  ['save', 'restore', 'beginPath', 'clip', 'stroke', 'setLineDash'].forEach((k) => { ctx[k] = function () {}; });
+  ctx.fillRect = function (x, y, w, h) { ctx.ops.push({ op: 'rect', x, y, w, h, fill: ctx.fillStyle }); };
+  ctx.rect = function () {};
+  ctx.fillText = function (t, x, y) { ctx.ops.push({ op: 'text', t, x, y, fill: ctx.fillStyle }); };
+  ctx.moveTo = function (x, y) { ctx.ops.push({ op: 'move', x, y }); };
+  ctx.lineTo = function (x, y) { ctx.ops.push({ op: 'line', x, y }); };
+  return ctx;
 }
 
 // A Chart.js stand-in that records instances.
 function fakeChart() {
   const made = [];
   function Chart(ctx, cfg) {
-    this.canvas = ctx.canvas; this.config = cfg; this.data = cfg.data; this.options = cfg.options; this.destroyed = false; this.updates = 0; this.resizes = 0;
+    this.canvas = ctx.canvas; this.config = cfg; this.data = cfg.data; this.options = cfg.options; this.destroyed = false; this.updates = 0; this.resizes = 0; this.draws = 0;
     this.scales = { x: { min: undefined, max: undefined, getPixelForValue: (i) => i * 10 } }; this.tooltip = { setActiveElements() {} };
+    this.ctx = fakeCtx(); this.chartArea = { left: 0, right: 1000, top: 40, bottom: 300 };
     made.push(this);
   }
   Chart.prototype.destroy = function () { this.destroyed = true; };
   Chart.prototype.update = function () { this.updates++; };
+  Chart.prototype.draw = function () { this.draws++; };
   Chart.prototype.resize = function () { this.resizes++; };
   Chart.prototype.setActiveElements = function (a) { this.active = a; };
   Chart.prototype.getElementsAtEventForMode = function (evt, mode) { this.lastMode = mode; return [{ index: evt.index || 0 }]; };
@@ -168,4 +184,4 @@ function fakeChart() {
   return Chart;
 }
 
-module.exports = { fakeWindow, buildPage, fakeChart, memStorage, Element, Document };
+module.exports = { fakeWindow, buildPage, fakeChart, fakeCtx, memStorage, Element, Document };

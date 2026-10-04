@@ -116,6 +116,7 @@ def test_partial_answers_are_never_stored(monkeypatch):
     c, provs = _client(monkeypatch)
     monkeypatch.setattr(A, "LIVE_BACKGROUND", True)
     monkeypatch.setattr(A, "start_live_background", lambda: True)   # no real scheduler thread
+    monkeypatch.setattr(A, "_LIVE_BG", dict(A._LIVE_BG, ticks=0, prebuilds=0, errors=0, warm_ts=None))
 
     class Recorder:
         jobs = []
@@ -129,6 +130,7 @@ def test_partial_answers_are_never_stored(monkeypatch):
         assert r.headers["Cache-Control"] == NO_STORE
         for fn in Recorder.jobs:
             fn()
+        A._live_tick(provs)                                          # the scheduler's build
         r = c.get(LIVE)
         assert "X-Live-Stations-Partial" not in r.headers and r.headers["CDN-Cache-Control"] == "max-age=120"
     finally:

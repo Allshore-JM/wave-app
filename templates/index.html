@@ -442,50 +442,44 @@
     }
     #forecastTable thead { position: sticky; top: 0; z-index: 2; }
     #forecastTable thead th,
-    #forecastTable thead td {
-      background-color: #fff;  /* opaque default; colored headers keep their inline bg */
-      /* All four inset edges so the frozen header keeps its column dividers on
-         Chromium, where collapsed borders drop out under position: sticky. */
-      box-shadow: inset 1px 0 0 #dee2e6, inset -1px 0 0 #dee2e6,
-                  inset 0 1px 0 #dee2e6, inset 0 -1px 0 #dee2e6;
-    }
+    #forecastTable thead td { background-color: #fff; }  /* opaque default; colored headers keep their inline bg */
     /* the coloured group headers, softened a little (the server keeps its inline colours) */
     #forecastTable thead tr:first-child th[style] { background-image: linear-gradient(rgba(255,255,255,.15), rgba(255,255,255,.15)); }
     .forecast-info { text-align: left; font-weight: 700; }
-    /* The real sky (plan section 35): the server classes each row sky-day / sky-twilight / sky-night; a tint is laid
-       over every cell's own swell colour as a background image, so the colours stay and the row's state shows. */
+    /* The real sky (plan section 35): the server classes each row sky-day (first light to last light) or sky-night.
+       Daylight rows are bold with solid black borders, night rows normal with dashed grey ones (the look the fixed
+       6 AM - 7 PM rule had; owner), and a slate-blue tint is laid over each night cell's own swell colour as a
+       background image, so the colours stay. The borders are SEPARATE, each cell drawing its top and left edge (the
+       frozen Time column its right edge too) and the table its right and bottom: Chromium paints a frozen cell's
+       collapsed borders where the cell would have been, which left slivers of the scrolled rows beside the frozen
+       Date / Time columns and under the frozen header. */
+    #forecastTable table.forecast-compact { border-collapse: separate; border-spacing: 0; border-right: 1px solid #dee2e6; border-bottom: 1px solid #dee2e6; }
+    #forecastTable table.forecast-compact th, #forecastTable table.forecast-compact td { border: 0 solid #dee2e6; border-top-width: 1px; border-left-width: 1px; }
+    #forecastTable table.forecast-compact .col-time { border-right-width: 1px; }
+    #forecastTable table.forecast-compact .col-time + *, #forecastTable table.forecast-compact thead > tr:nth-child(2) > :first-child { border-left-width: 0; }
+    #forecastTable table.forecast-compact thead > tr:last-child > *, #forecastTable table.forecast-compact thead > tr:first-child > [rowspan] { border-bottom-width: 1px; }
     #forecastTable table.forecast-compact tbody td { background-image: linear-gradient(var(--tint, transparent), var(--tint, transparent)); }
-    #forecastTable tr.sky-twilight { --tint: rgba(255,170,0,.10); }
+    #forecastTable table.forecast-compact tr.sky-day > td { font-weight: 700; border-color: #000; }
+    #forecastTable table.forecast-compact tr.sky-night > td { border-color: #999; border-style: dashed; }
+    #forecastTable table.forecast-compact :where(tr.sky-day) + tr.sky-night > td { border-top-style: solid; border-top-color: #000; }   /* the line under a day row stays solid, as collapsed borders drew it */
+    #forecastTable table.forecast-compact tr.day-first > td { border-top: 2px solid #8a949e; }
+    #forecastTable table.forecast-compact tbody > tr:first-child > td { border-top-width: 0; }                          /* the frozen header draws that line */
     #forecastTable tr.sky-night { --tint: rgba(30,70,140,.10); }
     #forecastTable tbody tr:hover { --tint: rgba(0,0,0,.08); }
     #forecastTable tbody tr.sky-night:hover { --tint: rgba(30,70,140,.22); }
     #forecastTable tr.now-row { --tint: rgba(29,111,214,.14); }
     #forecastTable tr.now-row td.col-date { box-shadow: inset 3px 0 0 #1d6fd6; }
-    #forecastTable tr.day-first td { border-top: 2px solid #8a949e; }
-    #forecastTable td.col-date { font-weight: 700; }
     #forecastTable td.col-sun { font-size: .92em; line-height: 1.2; color: #334; }
     #forecastTable .sun-ev.ev-dawn, #forecastTable .sun-ev.ev-dusk { color: #8a6d1f; }
     #forecastTable .sun-ev.ev-sunrise, #forecastTable .sun-ev.ev-sunset { color: #b4530a; font-weight: 600; }
     #forecastTable .sun-ev.ev-moonrise, #forecastTable .sun-ev.ev-moonset { color: #3b4d7a; }
     #forecastTable .moon-phase { color: #3b4d7a; white-space: nowrap; }
-    /* Date and Time stay put while the body scrolls sideways (the Time column's offset is the Date column's width,
-       --date-w, measured by the script); the frozen header's corner cells sit above both */
-    #forecastTable table.forecast-compact td.col-date, #forecastTable table.forecast-compact td.col-time {
-      position: sticky; z-index: 1; background-color: #fff; box-shadow: inset -1px 0 0 #dee2e6, inset 0 -1px 0 #dee2e6;
-    }
-    #forecastTable table.forecast-compact td.col-date { box-shadow: inset 1px 0 0 #dee2e6, inset -1px 0 0 #dee2e6, inset 0 -1px 0 #dee2e6; }
+    /* Date and Time stay put while the body scrolls sideways (the Time column's offset is the Date column's rendered
+       width, --date-w, measured by the script); the frozen header's corner cells sit above both */
+    #forecastTable table.forecast-compact td.col-date, #forecastTable table.forecast-compact td.col-time { position: sticky; z-index: 1; background-color: #fff; }
     #forecastTable table.forecast-compact td.col-date, #forecastTable thead th.col-date { left: 0; }
     #forecastTable table.forecast-compact td.col-time, #forecastTable thead th.col-time { left: var(--date-w, 0px); }
     #forecastTable thead th.col-date, #forecastTable thead th.col-time { position: sticky; z-index: 3; }
-    /* Chromium paints a frozen cell's collapsed borders where the cell would have been, so the rows scrolling underneath
-       showed through a 1-px gap above the frozen header and beside the frozen Date / Time columns: those edges carry no
-       collapsed border (the inset shadows draw their lines) */
-    #forecastTable thead tr:first-child { border-top-width: 0; }
-    #forecastTable table.forecast-compact .col-date, #forecastTable table.forecast-compact .col-time { border-left-width: 0; border-right-width: 0; }
-    #forecastTable table.forecast-compact .col-time + *, #forecastTable table.forecast-compact thead tr:nth-child(2) > :first-child { border-left-width: 0; }
-    #forecastTable tr.day-first td.col-date { box-shadow: inset 0 2px 0 #8a949e, inset 1px 0 0 #dee2e6, inset -1px 0 0 #dee2e6; }
-    #forecastTable tr.day-first td.col-time { box-shadow: inset 0 2px 0 #8a949e, inset -1px 0 0 #dee2e6; }
-    #forecastTable tr.now-row td.col-date { box-shadow: inset 3px 0 0 #1d6fd6, inset -1px 0 0 #dee2e6; }
     .dir-arrow { display: inline-block; width: 1em; margin-left: .15em; line-height: 1; font-size: .95em; color: #333; }
     /* the Summary view: one row a day */
     .forecast-summary table { width: 100%; font-size: 12.5px; line-height: 1.3; font-variant-numeric: tabular-nums; margin-bottom: 0; }

@@ -62,11 +62,14 @@ def test_polar_day_and_night():
     assert not any(e["kind"] in sky.SUN_EVENTS for r in rows_s + rows_w for e in r["events"])
 
 
-def test_white_night_is_twilight_not_night():
+def test_white_night_counts_as_daylight():
+    """Reykjavik in June: the sun never gets 6 degrees under the horizon, so every row lies between first light and
+    last light and reads as daylight (owner: no twilight look)."""
     rows = sky.annotate_rows([datetime(2026, 6, 20, h) for h in range(24)], 64.15, -21.94, "Atlantic/Reykjavik")
-    assert "night" not in {r["state"] for r in rows}
-    assert rows[1]["state"] == "twilight" and rows[12]["state"] == "day"
+    assert {r["state"] for r in rows} == {"day"}
     assert [e["text"] for e in rows[0]["events"] if e["kind"] == "sunset"] == ["☀↓ 12:03"]
+    obs = sky._observer(64.15, -21.94)
+    assert -6 < sky.sun_alt(obs, sky.to_utc(__import__("pytz").timezone("Atlantic/Reykjavik"), datetime(2026, 6, 20, 1))) < -0.8333
 
 
 def _forecast_times(start, hourly=121, total=385, step=3):
@@ -95,14 +98,18 @@ def test_every_event_lands_once_in_the_row_whose_slot_holds_it():
     assert sum(1 for r in late for e in r["events"] if e["kind"] == "sunrise") >= 9       # 3-hourly rows keep them
 
 
-def test_rows_holding_a_sun_event_are_twilight_rows():
+def test_the_state_is_the_suns_altitude_at_the_rows_own_time():
+    """Honolulu, 3 Oct 2026 (USNO): first light 6:02, sunrise 6:24, sunset 6:18 PM, last light 6:40 PM. A row is
+    daylight when its time lies between first light and last light, whatever its slot holds: the 6 AM row (which
+    holds first light and sunrise) is night, the 6 PM row (which holds sunset and last light) is day."""
     times = [datetime(2026, 10, 3, h) for h in range(24)]
     rows = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu")
-    for t, r in zip(times, rows):
-        if any(e["kind"] in sky.SUN_EVENTS for e in r["events"]):
-            assert r["state"] == "twilight", t
-    assert rows[6]["state"] == "twilight" and [e["text"] for e in rows[6]["events"]] == ["◐ 6:02", "☀↑ 6:24"]
-    assert rows[12]["state"] == "day" and rows[0]["state"] == "night" and rows[22]["state"] == "night"
+    assert [r["state"] for r in rows] == ["night"] * 7 + ["day"] * 12 + ["night"] * 5
+    assert [e["text"] for e in rows[6]["events"]] == ["◐ 6:02", "☀↑ 6:24"]
+    assert [e["text"] for e in rows[18]["events"]] == ["☀↓ 6:18", "◑ 6:40"]
+    assert {r["state"] for r in rows} == {"day", "night"}
+    rows = sky.annotate_rows([datetime(2026, 10, 3, 6, m) for m in (1, 3)], 21.67, -158.12, "Pacific/Honolulu")
+    assert [r["state"] for r in rows] == ["night", "day"]                   # first light (6:02) turns the row
 
 
 def test_moon_badge_once_per_night_and_day_first_and_now():
@@ -194,7 +201,7 @@ def test_the_last_row_covers_a_slot_as_long_as_the_step_before_it():
     times = [datetime(2026, 10, 3, 20) + timedelta(hours=3 * k) for k in range(4)]          # 8 PM .. 5 AM
     rows = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu")
     assert [e["kind"] for e in rows[-1]["events"]] == ["dawn", "sunrise"]
-    assert rows[-1]["state"] == "twilight"
+    assert rows[-1]["state"] == "night"                                      # 5 AM is before first light
 
 
 def test_day_summary_keeps_the_first_rise_and_the_last_set(monkeypatch):

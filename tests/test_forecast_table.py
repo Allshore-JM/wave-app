@@ -41,8 +41,10 @@ def test_compact_table_drops_info_rows_padding_and_long_dates():
     assert "padding:" not in compact
     assert compact.count('title="Saturday, September 26, 2026">Sat 9/26</td>') == 2
     assert compact.count("Dir<br>(&deg;)") == 6 and "Dir<br>(d)" not in compact
-    # the same cells otherwise (no sky given: the clock rule's bold day row and dashed night row), values, wind
-    assert "border:1px solid #000;" in compact and "border:1px dashed #999;" in compact
+    # the same cells otherwise (no sky given: the clock rule's day row and night row, as classes for the page CSS;
+    # the window's cells carry no inline weight or border), values, wind
+    assert '<tr class="sky-day"><td class="col-date"' in compact and '<tr class="sky-night"><td class="col-date"' in compact
+    assert "border:" not in compact.split("<tbody>")[1] and "font-weight" not in compact.split("<tbody>")[1]
     assert compact.count(">3.20</td>") == 12 and ">17</td>" in compact and "76&deg; ENE" in compact
     no_arrows = re.sub(r' <span class="dir-arrow"[^>]*>[^<]*</span>', "", compact)
     strip = lambda h: re.sub(r"<[^>]+>", "|", h)
@@ -139,13 +141,13 @@ def _sky(state, events=(), moon=None, day_first=False, now=False):
 def test_compact_table_with_sky_shades_rows_by_the_real_sky_and_adds_the_sun_column():
     rows = [_row(time="5:00 AM"), _row(time="6:00 AM"), _row(time="2:00 PM"), _row(time="9:00 PM")]
     moon = {"glyph": "\U0001F314", "pct": 72, "name": "Waxing gibbous"}
-    sky = [_sky("night", moon=moon, day_first=True), _sky("twilight", [("dawn", "\u25D0 6:02", "First light", 6, 2),
-                                                                       ("sunrise", "\u2600\u2191 6:24", "Sunrise", 6, 24)]),
+    sky = [_sky("night", moon=moon, day_first=True), _sky("night", [("dawn", "\u25D0 6:02", "First light", 6, 2),
+                                                                    ("sunrise", "\u2600\u2191 6:24", "Sunrise", 6, 24)]),
            _sky("day", now=True), _sky("night", moon=moon)]
     html = A.build_html_table("c", "l", "", rows, "Pacific/Honolulu", "US", compact=True, sky=sky)
     trs = re.findall(r"<tr[^>]*>", html.split("<tbody>")[1])
     assert trs == ['<tr class="sky-night day-first" data-t="2026-09-26T05:00">',
-                   '<tr class="sky-twilight" data-t="2026-09-26T06:00">',
+                   '<tr class="sky-night" data-t="2026-09-26T06:00">',             # 6 AM holds first light but starts before it
                    '<tr class="sky-day now-row" data-t="2026-09-26T14:00">',
                    '<tr class="sky-night" data-t="2026-09-26T21:00">']
     assert '<th rowspan="2" scope="col" class="col-sun" title="Sun and moon">Sun/Moon</th>' in html
@@ -163,13 +165,18 @@ def test_compact_table_with_sky_shades_rows_by_the_real_sky_and_adds_the_sun_col
 
 
 def test_without_a_matching_sky_the_compact_table_keeps_the_clock_rule():
-    rows = [_row(), _row(time="9:00 PM")]
+    rows = [_row(), _row(time="9:00 PM"), _row(time="7:30 PM")]
     for sky in (None, [], [_sky("day")]):                               # none, or not one per row
         html = A.build_html_table("c", "l", "", rows, "UTC", "US", compact=True, sky=sky)
-        assert "col-sun" not in html and "sky-" not in html
-        assert "border:1px solid #000;" in html and "border:1px dashed #999;" in html
-    classic = A.build_html_table("c", "l", "", rows, "UTC", "US", sky=[_sky("day"), _sky("night")])
+        assert "col-sun" not in html and "data-t=" not in html and "day-first" not in html
+        trs = re.findall(r"<tr[^>]*>", html.split("<tbody>")[1])
+        assert trs == ['<tr class="sky-day">', '<tr class="sky-night">', '<tr>']   # 6 AM - 7 PM, 8 PM - 5 AM, between
+    classic = A.build_html_table("c", "l", "", rows, "UTC", "US", sky=[_sky("day"), _sky("night"), _sky("day")])
     assert "col-sun" not in classic and "sky-" not in classic           # the classic table never takes it
+    assert "border:1px solid #000;" in classic and "border:1px dashed #999;" in classic   # its inline clock rule
+    assert A._clock_state("6:00 AM") == A._clock_state("7:00 PM") == "day"
+    assert A._clock_state("8:00 PM") == A._clock_state("5:00 AM") == "night"
+    assert A._clock_state("7:30 PM") is None and A._clock_state("5:30 AM") is None and A._clock_state("x") is None
 
 
 def test_directions_get_compass_letters_and_an_arrow_pointing_where_the_waves_go():
@@ -201,10 +208,11 @@ def test_the_payload_carries_the_sky_for_the_table_and_the_graphs(monkeypatch):
     monkeypatch.setattr(A, "load_station_coords", lambda: {})          # the bulletin's own coordinates are used
     d = A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)
     html, g = d["table_html"], d["graph_data"]
-    assert "col-sun" in html and "sky-day" in html and "sky-night" in html and "sky-twilight" in html
+    assert "col-sun" in html and "sky-day" in html and "sky-night" in html and "sky-twilight" not in html
     assert "\u2600\u2191 6:24" in html and "\u2600\u2193 6:18" in html     # Honolulu, 3 Oct 2026 (USNO 6:24 / 6:18)
     assert len(g["sky"]) == len(g["labels"]) == 30
-    assert set(g["sky"]) == {"day", "twilight", "night"} and "sun_events" not in g      # the charts shade by it; no strip
+    assert set(g["sky"]) == {"day", "night"} and "sun_events" not in g      # the charts shade by it; no strip
+    assert g["sky"][6] == "night" and g["sky"][7] == "day" and g["sky"][18] == "day" and g["sky"][19] == "night"   # first light 6:02, last light 6:40 PM
     classic = A.compute_forecast_payload("51201", None, "US", "GFS")
     assert "col-sun" not in classic["table_html"] and classic["graph_data"]["sky"] is None
     # a failure in the sky costs nothing else: the clock rule, no graph sky, the same numbers
@@ -212,8 +220,8 @@ def test_the_payload_carries_the_sky_for_the_table_and_the_graphs(monkeypatch):
         raise RuntimeError("no sky")
     monkeypatch.setattr(A.sky, "annotate_rows", boom)
     plain = A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)
-    assert "col-sun" not in plain["table_html"] and "border:1px solid #000;" in plain["table_html"]
-    assert plain["graph_data"]["sky"] is None
+    assert "col-sun" not in plain["table_html"] and '<tr class="sky-day"><td class="col-date"' in plain["table_html"]
+    assert "data-t=" not in plain["table_html"] and plain["graph_data"]["sky"] is None
     for k in ("labels", "height", "period", "direction", "units", "swells"):
         assert plain["graph_data"][k] == g[k]
 
@@ -222,7 +230,7 @@ def test_the_window_table_puts_the_significant_height_first_and_sun_moon_last():
     """Owner (plan section 35): Date, Time, Sig. Wave Height, the swells, Wind, Sun/Moon. The classic table keeps its
     order (the height after the swells, no Sun/Moon)."""
     rows = [_row(time="5:00 AM"), _row(time="6:00 AM")]
-    sky = [_sky("night", day_first=True), _sky("twilight")]
+    sky = [_sky("night", day_first=True), _sky("day")]
     html = A.build_html_table("c", "l", "", rows, "Pacific/Honolulu", "US", compact=True, groups=[0, 1], sky=sky)
     head1, head2 = re.findall(r"<tr>(.*?)</tr>", html.split("<thead>")[1].split("</thead>")[0])
     names = [re.sub(r"<[^>]+>", " ", c).split() for c in re.findall(r"<th[^>]*>(.*?)</th>", head1)]

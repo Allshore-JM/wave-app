@@ -1,5 +1,5 @@
 'use strict';
-// Plan section 35, the client: the real sky on the charts (the day / twilight / night bands), the compass direction axis,
+// Plan section 35, the client: the real sky on the charts (the night bands; daylight runs first light to last light), the compass direction axis,
 // the 'Significant Wave Height' series, the Detailed | Summary table mode, the now-row reveal and the sticky Date / Time
 // measure, and the older payloads that carry none of it. (The sky strip and the 'now' line were tried and removed:
 // owner, 2026-10-03, "not very useful and only create clutter".)
@@ -30,8 +30,9 @@ function payload(over) {
     model: 'GFS', swan_available: false
   }, over || {});
 }
-// a 48-slot sky: night to 5, twilight 6, day 7-17, twilight 18, night from 19 (both days)
-function sky48() { return labels(48).map((_, i) => { const h = i % 24; return h < 6 || h > 18 ? 'night' : (h === 6 || h === 18) ? 'twilight' : 'day'; }); }
+// a 48-slot sky: night to 5, day 6-18, night from 19 (both days); slot 18 says 'twilight' the way an older payload
+// could (it counts as day: owner, no twilight look)
+function sky48() { return labels(48).map((_, i) => { const h = i % 24; return h < 6 || h > 18 ? 'night' : h === 18 ? 'twilight' : 'day'; }); }
 function skyPayload(over) {
   const p = payload(over);
   p.graph_data.sky = sky48();
@@ -60,27 +61,29 @@ function boot(opts) {
 }
 
 // ---- the sky, pure ----
-test('skyOf takes the server\'s per-slot sky when it covers every slot, else the 6 PM - 6 AM rule on the labels; skyBands merges runs inside the view', () => {
+test('skyOf takes the server\'s per-slot sky when it covers every slot (an older payload\'s twilight counts as day), else the 6 PM - 6 AM rule on the labels; skyBands merges the night runs inside the view', () => {
   const i = I(), parsed = labels(48).map(i.parseLabel);
-  assert.deepEqual(i.skyOf({ sky: sky48() }, parsed).slice(4, 9), ['night', 'night', 'twilight', 'day', 'day']);
+  assert.deepEqual(i.skyOf({ sky: sky48() }, parsed).slice(4, 9), ['night', 'night', 'day', 'day', 'day']);
+  assert.deepEqual(i.skyOf({ sky: sky48() }, parsed).slice(17, 20), ['day', 'day', 'night'], 'twilight reads as day');
   assert.deepEqual(i.skyOf({ sky: ['day', 'bogus'] }, parsed.slice(0, 2)), ['day', null], 'an unknown word is no state');
   const rule = i.skyOf({ sky: ['day'] }, parsed);                              // the wrong length: ignored
   assert.deepEqual([rule[0], rule[5], rule[6], rule[17], rule[18]], ['night', 'night', 'day', 'day', 'night']);
   assert.deepEqual(i.skyOf({}, parsed)[23], 'night'); assert.equal(i.hasSky({ sky: sky48() }, 48), true); assert.equal(i.hasSky({ sky: sky48() }, 47), false);
-  assert.deepEqual(i.skyBands(['day', 'day', 'twilight', 'night', 'night', 'day'], 0, 6), [{ from: 2, to: 3, kind: 'twilight' }, { from: 3, to: 5, kind: 'night' }]);
+  assert.deepEqual(i.skyBands(['day', 'day', 'day', 'night', 'night', 'day'], 0, 6), [{ from: 3, to: 5, kind: 'night' }]);
+  assert.deepEqual(i.skyBands(['day', 'twilight', 'night'], 0, 3), [{ from: 2, to: 3, kind: 'night' }], 'no band but night');
   assert.deepEqual(i.skyBands(['night', 'night', 'night'], 1, 3), [{ from: 1, to: 3, kind: 'night' }], 'clipped to the view');
   assert.deepEqual(i.skyBands([null, 'day'], 0, 2), []);
 });
 
-test('makeNightShade fills the twilight and night bands of the view (beforeDraw); older payloads keep the hour rule', () => {
+test('makeNightShade fills the night bands of the view (beforeDraw), nothing else; older payloads keep the hour rule', () => {
   const i = I(), parsed = labels(48).map(i.parseLabel), kinds = i.skyOf({ sky: sky48() }, parsed);
   const ch = stubChart(); i.makeNightShade(parsed, kinds).beforeDraw(ch);
   const rects = ch.ctx.ops.filter((o) => o.op === 'rect');
-  assert.deepEqual(rects.map((r) => [r.x, r.w]), [[0, 60], [60, 10], [180, 10], [190, 110], [300, 10], [420, 10], [430, 40]]);   // (the last slot has no right edge: unshaded, as before)
-  assert.ok(rects[0].fill.indexOf('30,60,110') >= 0 && rects[1].fill.indexOf('255,170,0') >= 0, 'night blue, twilight amber');
+  assert.deepEqual(rects.map((r) => [r.x, r.w]), [[0, 60], [190, 110], [430, 40]]);   // (the last slot has no right edge: unshaded, as before)
+  assert.ok(rects.every((r) => r.fill.indexOf('30,60,110') >= 0), 'night blue only');
   assert.ok(rects.every((r) => r.y === 40 && r.h === 260), 'the whole plot height');
   const win = stubChart({ scales: { x: { min: 10, max: 20, getPixelForValue: (k) => k * 10 } } }); i.makeNightShade(parsed, kinds).beforeDraw(win);
-  assert.deepEqual(win.ctx.ops.filter((o) => o.op === 'rect').map((r) => [r.x, r.w]), [[180, 10], [190, 10]], 'only the bands in view');
+  assert.deepEqual(win.ctx.ops.filter((o) => o.op === 'rect').map((r) => [r.x, r.w]), [[190, 10]], 'only the bands in view');
   const old = stubChart(); i.makeNightShade(parsed, i.skyOf({}, parsed)).beforeDraw(old);
   assert.deepEqual(old.ctx.ops.filter((o) => o.op === 'rect').map((r) => [r.x, r.w]), [[0, 60], [180, 120], [420, 50]], '6 PM - 6 AM');
 });

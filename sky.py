@@ -3,13 +3,12 @@
 Everything here is computed by PyEphem for a place (lat/lon) and a forecast zone (IANA name), and handed back in the
 rows' own convention: naive local times in that zone, the way the parsers write a row's date and time.
 
-- Sky state of a row (day / twilight / night) comes from the SUN'S ALTITUDE AT THE ROW'S TIME, not from comparing the
-  row with that date's sunrise and sunset: in Reykjavik on 20 June the evening's sunset falls at 00:03 the next morning
-  and the sun never gets 6 degrees below the horizon (USNO), and above the polar circles there are days with no sunrise
-  at all; the altitude needs no special cases. Day = the sun's centre above -0.833 deg (USNO's sunrise: upper limb on a
-  refracted horizon), twilight = above -6 deg (civil twilight: first light / last light), night = below. A row whose
-  slot holds first light, sunrise, sunset or last light is a twilight row whatever the altitude at its start (near the
-  equator twilight lasts ~23 min, so hourly rows would otherwise almost never show it).
+- Sky state of a row (day / night) comes from the SUN'S ALTITUDE AT THE ROW'S TIME, not from comparing the row with
+  that date's sunrise and sunset: in Reykjavik on 20 June the evening's sunset falls at 00:03 the next morning and the
+  sun never gets 6 degrees below the horizon (USNO), and above the polar circles there are days with no sunrise at all;
+  the altitude needs no special cases. Day = the sun's centre above -6 deg, i.e. the row's time lies between first
+  light and last light (civil twilight; owner: a row between them looks like daylight); night = below. A row whose slot
+  holds first light and sunrise but starts before first light is a night row.
 - Events (first light, sunrise, sunset, last light, moonrise, moonset) are searched over the whole forecast range, so an
   event after midnight belongs to the row it falls in. Checked against USNO (tests/test_sky.py): within 1 min.
 - The moon's phase (fraction of the synodic month since the last new moon) and lit fraction are taken at the time asked.
@@ -29,7 +28,7 @@ except ImportError:                       # the site still works: tables keep th
 AVAILABLE = ephem is not None
 
 DAY_ALT = -0.8333                         # deg, the sun's centre at sunrise / sunset (USNO convention)
-TWILIGHT_ALT = -6.0                       # deg, civil twilight: first light / last light
+TWILIGHT_ALT = -6.0                       # deg, civil twilight: first light / last light = the day / night threshold
 EVENT_KINDS = ("dawn", "sunrise", "sunset", "dusk", "moonrise", "moonset")
 SUN_EVENTS = frozenset(("dawn", "sunrise", "sunset", "dusk"))
 EVENT_GLYPH = {"dawn": "◐", "sunrise": "☀↑", "sunset": "☀↓", "dusk": "◑",
@@ -79,15 +78,15 @@ def to_utc(tz, naive, after=None):
     return cands[0]
 
 
-def sun_state(obs, utc):
-    """'day', 'twilight' or 'night' from the sun's altitude at `utc` (aware)."""
+def sun_alt(obs, utc):
+    """The sun's altitude (degrees) at `utc` (aware)."""
     obs.date = _edate(utc)
-    alt = math.degrees(float(ephem.Sun(obs).alt))
-    if alt > DAY_ALT:
-        return "day"
-    if alt > TWILIGHT_ALT:
-        return "twilight"
-    return "night"
+    return math.degrees(float(ephem.Sun(obs).alt))
+
+
+def sun_state(obs, utc):
+    """'day' between first light and last light (the sun's centre above -6 deg), else 'night'."""
+    return "day" if sun_alt(obs, utc) > TWILIGHT_ALT else "night"
 
 
 def moon_at(utc, lat):
@@ -213,8 +212,6 @@ def annotate_rows(times, lat, lon, tz_name, now_utc=None):
                          "time": local_naive(eu, tz)})
             k += 1
         state = sun_state(obs, u)
-        if any(e["kind"] in SUN_EVENTS for e in mine):
-            state = "twilight"             # first light .. last light pass in this row's slot: a transition row
         local = times[i]
         out.append({
             "state": state,
@@ -254,7 +251,7 @@ def day_summary(lat, lon, tz_name, dates):
             row[kind] = t
         noon = to_utc(tz, datetime.combine(d, datetime.min.time()) + timedelta(hours=12))
         if row["sunrise"] is None and row["sunset"] is None:
-            row["sky"] = "midnight sun" if sun_state(obs, noon) == "day" else "polar night"
+            row["sky"] = "midnight sun" if sun_alt(obs, noon) > DAY_ALT else "polar night"
         else:
             row["sky"] = "normal"
         row["moon"] = moon_at(noon, lat)

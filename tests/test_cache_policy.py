@@ -1,5 +1,8 @@
-"""Release D: every response states its cache policy; live data bypasses the edge by default;
-the optional edge lifetime for live-stations is derived from the exact provider snapshots.
+"""Release D: every response states its cache policy; live data bypasses the edge by default.
+Since plan section 36 the optional edge lifetime for live-stations is a NUMBER OF SECONDS
+(LIVE_STATIONS_EDGE_TTL, 0 = no-store, capped at LIVE_STATIONS_EDGE_TTL_MAX): the lists are
+refreshed in the background, so an edge HIT can no longer skip a refresh. A partial answer (a
+provider still warming up) is never stored anywhere.
 """
 import os
 import sys
@@ -83,58 +86,61 @@ def test_live_stations_edge_bypass_by_default(monkeypatch):
     assert r304.status_code == 304 and r304.headers["CDN-Cache-Control"] == NO_STORE
 
 
-# ------------------------------ flag on: lifetime from the snapshots -----------------------
+# ------------------------------ flag on: a number of seconds, capped ------------------------
 
-def _snaps(provs, ages):
-    """(list, version, ts) per provider with the given snapshot ages in seconds."""
-    return [([], 1, F.NOW_EPOCH - age) for age in ages]
-
-
-def test_edge_ttl_is_earliest_provider_remaining_validity(monkeypatch):
-    provs = F.make_providers()          # TTLs: 1800,3600,21600,1800,1800,1800,1800,3600,21600,10800
-    ages = [0] * len(provs)
-    assert A._live_stations_edge_ttl(provs, _snaps(provs, ages), now=F.NOW_EPOCH) == 900   # capped
-    ages[3] = 1800 - 60                 # AODN due in 60 s
-    assert A._live_stations_edge_ttl(provs, _snaps(provs, ages), now=F.NOW_EPOCH) == 60
-    ages[3] = 1800 - 1
-    assert A._live_stations_edge_ttl(provs, _snaps(provs, ages), now=F.NOW_EPOCH) == 1
-    ages[3] = 1800                      # due now
-    assert A._live_stations_edge_ttl(provs, _snaps(provs, ages), now=F.NOW_EPOCH) == 0
-    ages[3] = 1800 + 500                # past due (stale snapshot)
-    assert A._live_stations_edge_ttl(provs, _snaps(provs, ages), now=F.NOW_EPOCH) < 0
-    ages = [1800 - 120] * len(provs); ages[9] = 10800 - 30   # CMEMS earliest at 30 s
-    assert A._live_stations_edge_ttl(provs, _snaps(provs, ages), now=F.NOW_EPOCH) == 30
-    ages = [0] * len(provs)
-    snaps = _snaps(provs, ages); snaps[5] = ([], None, None)   # a provider whose fetch raised
-    assert A._live_stations_edge_ttl(provs, snaps, now=F.NOW_EPOCH) == 0
+@pytest.mark.parametrize("raw,ttl", [
+    ("", 0), ("0", 0), ("1", 1), ("60", 60), ("300", 300), ("900", 300), ("-5", 0), ("abc", 0), (" 120 ", 120),
+])
+def test_edge_ttl_is_seconds_capped(monkeypatch, raw, ttl):
+    monkeypatch.setenv("LIVE_STATIONS_EDGE_TTL", raw)
+    assert A._live_stations_edge_ttl() == ttl
+    want = {"CDN-Cache-Control": "max-age=%d" % ttl} if ttl else {"CDN-Cache-Control": NO_STORE}
+    assert A._live_stations_cdn_headers() == want
+    assert A._live_stations_cdn_headers(partial=True) == {"CDN-Cache-Control": NO_STORE}
 
 
-def test_flag_on_headers_follow_the_snapshots_and_never_extend(monkeypatch):
-    monkeypatch.setenv("LIVE_STATIONS_EDGE_TTL", "1")
-    frozen = F.FrozenTime()
-    c, provs = _client(monkeypatch, frozen=frozen)
-    monkeypatch.setattr(A.time, "time", lambda: frozen.now)        # route clock == provider clock
-    r = c.get(LIVE)                                                  # every snapshot age 0
-    assert r.headers["CDN-Cache-Control"] == "max-age=900"
-    aodn = next(p for p in provs if p.source == "AODN")
-    aodn._list_ts = frozen.now - (1800 - 60)                         # AODN due in 60 s
+def test_flag_on_headers_on_200_and_304(monkeypatch):
+    monkeypatch.setenv("LIVE_STATIONS_EDGE_TTL", "120")
+    c, provs = _client(monkeypatch)
     r = c.get(LIVE)
-    assert r.headers["CDN-Cache-Control"] == "max-age=60"
+    assert r.headers["CDN-Cache-Control"] == "max-age=120"
+    assert r.headers["Cache-Control"] == "public, max-age=900"
     r304 = c.get(LIVE, headers={"If-None-Match": r.headers["ETag"]})
-    assert r304.status_code == 304 and r304.headers["CDN-Cache-Control"] == "max-age=60"
-    # just before expiry: 1 s left; just after: the route refreshed AODN inline -> fresh snapshot
-    frozen.now += 59
-    assert c.get(LIVE).headers["CDN-Cache-Control"] == "max-age=1"
-    fetches_before = F.FakeAODN.fetch_calls
-    frozen.now += 1
-    r = c.get(LIVE)
-    assert F.FakeAODN.fetch_calls == fetches_before + 1              # refreshed exactly at expiry
-    assert r.headers["CDN-Cache-Control"] == "max-age=900"           # new snapshot, full lifetime
-    # a provider that raised inside the route -> not stored
-    monkeypatch.setattr(aodn, "list_stations_versioned", lambda: (_ for _ in ()).throw(RuntimeError("x")))
-    assert c.get(LIVE).headers["CDN-Cache-Control"] == NO_STORE
+    assert r304.status_code == 304 and r304.headers["CDN-Cache-Control"] == "max-age=120"
 
 
-def test_flag_off_ignores_snapshot_math(monkeypatch):
+def test_partial_answers_are_never_stored(monkeypatch):
+    """With the background service on, a provider still missing makes the answer partial:
+    no-store for the browser AND the edge, whatever the flag says."""
+    monkeypatch.setenv("LIVE_STATIONS_EDGE_TTL", "120")
+    c, provs = _client(monkeypatch)
+    monkeypatch.setattr(A, "LIVE_BACKGROUND", True)
+    monkeypatch.setattr(A, "start_live_background", lambda: True)   # no real scheduler thread
+
+    class Recorder:
+        jobs = []
+
+        def submit(self, fn, name="x"):
+            self.jobs.append(fn)
+    prev = B.set_refresh_runner(Recorder())
+    try:
+        r = c.get(LIVE)
+        assert r.headers["X-Live-Stations-Partial"] and r.headers["CDN-Cache-Control"] == NO_STORE
+        assert r.headers["Cache-Control"] == NO_STORE
+        for fn in Recorder.jobs:
+            fn()
+        r = c.get(LIVE)
+        assert "X-Live-Stations-Partial" not in r.headers and r.headers["CDN-Cache-Control"] == "max-age=120"
+    finally:
+        B.set_refresh_runner(prev)
+
+
+def test_flag_off_is_no_store(monkeypatch):
     c, _ = _client(monkeypatch)
     assert c.get(LIVE).headers["CDN-Cache-Control"] == NO_STORE
+
+
+def test_healthz_is_never_cached(monkeypatch):
+    c, _ = _client(monkeypatch)
+    r = c.get("/healthz")
+    assert r.headers["Cache-Control"] == NO_STORE and r.headers["CDN-Cache-Control"] == NO_STORE

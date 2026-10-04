@@ -11,6 +11,7 @@ import os
 import random
 import sys
 import threading
+import time
 
 import pytest
 
@@ -113,3 +114,76 @@ def test_sixteen_threads_with_failures(monkeypatch):
     for p in provs:                                      # no refresh lock left held
         assert not p._refresh_lock.locked()
     assert not A._LIVE_BUILD_LOCK.locked()
+
+
+def test_sixteen_threads_with_the_background_service_on(monkeypatch):
+    """Plan section 36: the non-blocking route under the same traffic, with a real ThreadRunner
+    doing the refreshes and scheduler passes interleaved with the requests. No request waits
+    for a fetch, nothing escapes, every body is a valid array, the memo matches its key, and
+    once everyone has published the answers are complete and equal to a fresh build."""
+    rng = random.Random(11)
+    provs = F.make_providers()
+    monkeypatch.setattr(A, "get_buoy_providers", lambda: provs)
+    monkeypatch.setattr(A, "LIVE_BACKGROUND", True)
+    monkeypatch.setattr(A, "start_live_background", lambda: True)   # no real scheduler thread
+    monkeypatch.setattr(A, "_LIVE_BG", {"started": False, "thread": None, "started_ts": None, "warm_ts": None,
+                                        "ticks": 0, "last_tick_ts": None, "last_tick_s": None, "prebuilds": 0,
+                                        "errors": 0, "last_error": None, "tz_loaded": False})
+    monkeypatch.setattr(B, "time", F.FrozenTime())
+    runner = B.ThreadRunner(3)
+    prev = B.set_refresh_runner(runner)
+    for p in provs:
+        orig = p._fetch_stations
+
+        def fetch(orig=orig, p=p):
+            time.sleep(rng.random() * 0.01)
+            if rng.random() < 0.3:
+                raise RuntimeError("flaky " + p.source)
+            return orig()
+        p._fetch_stations = fetch
+    client = A.app.test_client()
+    errors, statuses, bodies, partial = [], [], [], []
+    lock = threading.Lock()
+
+    def worker(n):
+        try:
+            for i in range(40):
+                if rng.random() < 0.15:
+                    p = rng.choice(provs); p._list_ts = 0.0           # expire someone
+                if rng.random() < 0.2:
+                    A._live_tick(provs)                               # a scheduler pass
+                t0 = time.perf_counter()
+                resp = client.get("/api/buoys/live-stations")
+                dt = time.perf_counter() - t0
+                with lock:
+                    statuses.append(resp.status_code)
+                    bodies.append(resp.get_data(as_text=True))
+                    partial.append(resp.headers.get("X-Live-Stations-Partial"))
+                    assert dt < 1.0
+        except Exception as exc:
+            with lock:
+                errors.append(repr(exc))
+    try:
+        ts = [threading.Thread(target=worker, args=(n,)) for n in range(16)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        assert errors == [] and len(statuses) == 16 * 40 and set(statuses) == {200}
+        for body in set(bodies):
+            data = json.loads(body)
+            assert isinstance(data, list) and all("id" in s and "source" in s for s in data)
+        deadline = time.time() + 10
+        while (runner.queued or any(p.status()["pending"] for p in provs)) and time.time() < deadline:
+            time.sleep(0.01)
+        assert runner.queued == 0
+        A._live_tick(provs)
+        resp = client.get("/api/buoys/live-stations")
+        assert resp.headers.get("X-Live-Stations-Partial") is None
+        snaps = [p.snapshot() for p in provs]
+        payload, etag = A._build_live_stations_payload([lst for lst, _, _ in snaps])
+        assert resp.get_data(as_text=True) == payload and resp.headers["ETag"] == '"%s"' % etag
+        assert A._LIVE_STATIONS_MEMO["key"] == A._live_memo_key(provs, snaps)
+        for p in provs:
+            assert not p._refresh_lock.locked() and not p.status()["in_flight"]
+        assert not A._LIVE_BUILD_LOCK.locked()
+    finally:
+        B.set_refresh_runner(prev)

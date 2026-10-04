@@ -39,8 +39,9 @@ Follow these steps to deploy the web application on [Render](https://render.com)
    - **Start Command**: `gunicorn app:app`
 5. Click **Create Web Service** and wait for deployment to complete. Render will build your app and provide a public URL.
 6. Under **Settings -> Health Checks**, set **Health Check Path** to `/healthz` (see "Live buoys: background refresh"
-   below). Render then keeps the previous instance serving until the new one has loaded the live-buoy lists, so a deploy
-   never shows visitors an empty map.
+   below) — only once the deployed code has that route (a 404 counts as failing: Render would restart the service). A
+   deploy then switches traffic when the new instance serves (and has the full live-buoy list, or 10 s have passed);
+   visitors' pages show the buoys they remember in the meantime.
 
 Once deployed, navigate to the provided URL to access the app. The site will allow you to choose from the list of available buoys and view the latest data.
 
@@ -672,12 +673,20 @@ The server (`buoy_sources.py`, `app.py`):
   server thread). While some agencies are not in that list yet (the first seconds to minutes after a start) the answer
   says so in the header `X-Live-Stations-Partial: AODN,CMEMS`, with `Cache-Control: no-store`; complete answers keep
   `public, max-age=900` and the ETag.
-- `/healthz` (never cached, never starts any work): per agency the list's version, size, age, next refresh, the last
-  error and the last refresh's duration; the merged list's age and build time; the scheduler's passes and errors; the
-  refresh queue; the process memory. It answers **503 until the served list holds every agency (each has answered once
-  and the list has been built from them) or 90 s have passed since the start** (so a dead feed never blocks a deploy),
-  then 200; and 503 again (`"stalled": true`) if the scheduler has not completed a pass for 180 s (it runs one at least
-  every 30 s), so a frozen service never looks healthy. Set it as Render's Health Check Path (Deploy to Render, step 6)
+- `/healthz` (never cached; starts no work beyond the first request a process serves): per agency the list's version,
+  size, age, next refresh, the last error and the last refresh's duration; the merged list's age, build time and whether
+  it is complete and current; the scheduler's passes and errors; the refresh queue (waiting / running); the process
+  memory. **Render's rules decide its shape**: an instance whose check fails for 15 s gets no traffic and after 60 s is
+  RESTARTED — a running or just restarted instance too, not only a deploy (render.com/docs/health-checks). So it answers
+  200 as soon as the process serves pages and the scheduler has completed a pass (partial buoy lists are a normal state:
+  the page shows the list it remembers and polls). It answers 503 only: before that first pass; within
+  `LIVE_WARM_DEADLINE_SEC` (10 s, never more than 14) of the start while the served list is still incomplete (a deploy
+  then keeps the old instance a moment longer when the feeds answer fast); when the scheduler has not completed a pass for
+  180 s (`"stalled": true`); after three failed list builds in a row (`"build_failing": true`). The last two are faults a
+  restart cures, which is what Render then does.
+- A buoy window opened from the remembered list while that buoy's agency is still loading after a start gets
+  `503 {"retry": true}` with `Retry-After: 5` at once from `/api/buoys/<id>/latest` (no request ever waits for a feed);
+  the window keeps its spinner and asks again for up to two minutes. Set it as Render's Health Check Path (Deploy to Render, step 6)
   on the production AND the test service.
 - The agencies' own log lines (each refresh's time and size, every failure) now reach the service log
   (`buoy_sources` logger).
@@ -686,10 +695,15 @@ The page (`static_ui/livelist.js`):
 - Draws the list this browser saw last at once (localStorage `allshore.liveList.v1`: positions, names and what the
   detail panels need, no observations; at most 48 h old), with the note "cached list" beside **Live buoys** in the layer
   legend, then replaces it with the fresh list (unchanged markers are left alone).
-- Takes the request the page started in `<head>` once; every request has an 8 s deadline; failures are retried after
-  2, 4, 8, 16, then every 30 s, only while the tab is visible ("retrying…").
-- A partial answer is drawn together with the remembered markers of the agencies still loading ("loading more…"), is
-  never stored, and is asked for again after 3, 3, 5, 5, 10, 10, 15 s, … (at most 40 times). A complete answer is stored.
+- Takes the request the page started in `<head>` once; every request has a deadline of 8 s (16 and then 30 s after
+  consecutive timeouts, so a steadily slow server is not starved); failures are retried after 2, 4, 8, 16, then every
+  30 s, only while the tab is visible ("retrying…").
+- A partial answer is drawn together with the remembered markers of the agencies still loading ("loading more…" once
+  something is on the map), is never stored, and is asked for again after 3, 3, 5, 5, 10, 10, 15 s, … (40 times), then
+  once a minute for two hours. A complete answer is stored.
+- "loading…" and "cached list" appear only when the list has not landed within 300 ms, so a normal load never makes the
+  legend grow a line and shrink back; the note is a visual hint (`aria-hidden`), the checkbox keeps the name
+  "Live buoys".
 - A `performance` mark `allshore:live-first-markers` (detail: cached / partial) records when the first markers were drawn.
 
 Environment variables (all optional):
@@ -697,9 +711,9 @@ Environment variables (all optional):
 | Variable | Default | Meaning |
 |---|---|---|
 | `LIVE_BACKGROUND` | `1` | `0` turns the background service off: the route then asks every expired agency inline, as before (the tests and `start.sh`'s import check use this). |
-| `LIVE_REFRESH_WORKERS` | `3` | Agencies refreshed at the same time. |
-| `LIVE_TICK_SEC` | `30` | Seconds between the scheduler's passes once every agency has answered. |
-| `LIVE_WARM_DEADLINE_SEC` | `90` | `/healthz` turns 200 after this many seconds even if an agency has not answered. |
+| `LIVE_REFRESH_WORKERS` | `3` | Agencies refreshed at the same time (1-10). |
+| `LIVE_TICK_SEC` | `30` | Seconds between the scheduler's passes once every agency has answered (1-600; a bad value falls back to 30). |
+| `LIVE_WARM_DEADLINE_SEC` | `10` | `/healthz` waits at most this long after a start for the full list (clamped to 0-14: Render cuts traffic after 15 s of failed checks). |
 | `LIVE_STATIONS_EDGE_TTL` | `0` | Seconds Cloudflare may keep a complete list (`CDN-Cache-Control: max-age`); capped at 300; `0` = never (`no-store`). Partial answers are never stored. (Before section 36 the value `1` switched on a lifetime computed from the lists' ages; it now means one second.) |
 | `LIVE_BREAK_PROVIDERS` | empty | Diagnosis only (test site): a comma list of agencies (e.g. `AODN,CMEMS`) whose list fetch fails on purpose, to watch the kept lists, the retries and `/healthz`. Never set it on production. |
 

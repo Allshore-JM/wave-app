@@ -4,14 +4,17 @@
  * What it does for the page:
  *  - draws the LAST list this browser saw at once (localStorage 'allshore.liveList.v1', positions and names
  *    only, at most 48 h old), marked as a cached list, while the fresh one loads;
- *  - takes the request the page started in <head> (once), then asks again itself: every attempt has an 8 s
- *    deadline, a failed or late attempt is retried after 2, 4, 8, 16, then every 30 s, and only while the tab
+ *  - takes the request the page started in <head> (once), then asks again itself: every attempt has a
+ *    deadline (8 s, growing to 16 and 30 s after consecutive timeouts so a steadily slow server is not
+ *    starved), a failed or late attempt is retried after 2, 4, 8, 16, then every 30 s, and only while the tab
  *    is visible (a hidden tab waits until it is shown again);
  *  - a PARTIAL answer (header X-Live-Stations-Partial: the sources the server is still loading after a
  *    restart) is drawn together with the cached markers of those sources, never stored, and asked again
- *    after 3, 3, 5, 5, 10, 10, 15 s ... (at most PARTIAL_MAX times);
+ *    after 3, 3, 5, 5, 10, 10, 15 s ... (PARTIAL_MAX times), then every minute for up to two hours;
  *  - a complete answer replaces everything and is stored for the next visit.
- * The page draws what onStations hands it and shows the onStatus text beside the "Live buoys" legend entry.
+ * The page draws what onStations hands it and shows the onStatus text under the "Live buoys" legend entry.
+ * "loading…" / "cached list" appear only if the list has not landed within NOTE_DELAY_MS (no flash of the
+ * legend on a normal load); "retrying…", "unavailable" and "loading more…" appear at once.
  */
 (function () {
   'use strict';
@@ -21,9 +24,13 @@
   var MAX_AGE_MS = 48 * 3600 * 1000;          // an older remembered list is not drawn
   var FUTURE_SKEW_MS = 5 * 60 * 1000;         // a list "saved in the future" (clock moved back) beyond this: ignored
   var DEADLINE_MS = 8000;
+  var DEADLINE_STEPS = [8000, 8000, 16000, 30000];            // by consecutive timeouts; the last repeats
   var RETRY_MS = [2000, 4000, 8000, 16000, 30000];            // after a failure; the last repeats
   var PARTIAL_MS = [3000, 3000, 5000, 5000, 10000, 10000, 15000];   // after a partial answer; the last repeats
-  var PARTIAL_MAX = 40;                       // ~10 min of partial answers: then the page keeps what it has
+  var PARTIAL_MAX = 40;                       // ~9 min of partial answers on that schedule ...
+  var SLOW_MS = 60000;                        // ... then one a minute
+  var SLOW_MAX = 120;                         // ... for two hours; the page then keeps what it has
+  var NOTE_DELAY_MS = 300;                    // "loading…" / "cached list" only when the list is this late
   var CAPS = ['bulk', 'recent_history', 'directional', 'spectra', 'partitions'];
   var META = ['source_name', 'source_url', 'license_label', 'attribution_text'];
   var STATUS_TEXT = {
@@ -156,7 +163,7 @@
     var now = opts.now || function () { return Date.now(); };
     var timers = opts.timers || { set: function (f, ms) { return setTimeout(f, ms); }, clear: function (t) { clearTimeout(t); } };
     var visibility = opts.visibility || { isVisible: function () { return true; }, onChange: function () {} };
-    var deadlineMs = opts.deadlineMs || DEADLINE_MS;
+    var deadlineSteps = opts.deadlineSteps || DEADLINE_STEPS;
     var AbortCtl = opts.AbortController !== undefined ? opts.AbortController
       : (typeof AbortController !== 'undefined' ? AbortController : null);
 
@@ -164,14 +171,26 @@
     var st = {
       started: false, stopped: false, done: false, gen: 0, timer: null, ctl: null,
       failures: 0, partials: 0, cached: null, shownKey: null, shown: false, status: null, waitingVisible: false,
-      attempts: 0
+      attempts: 0, timeouts: 0, noteTimer: null
     };
     var onStations = function () {}, onStatus = function () {};
 
-    function setStatus(code) {
+    function applyStatus(code) {
       if (st.status === code) return;
       st.status = code;
       try { onStatus(code, STATUS_TEXT[code] || ''); } catch (e) {}
+    }
+
+    // "loading…" and "cached list" wait NOTE_DELAY_MS: on a normal load the list lands first and the legend never
+    // grows a line only to lose it a moment later (G25 B-1). Every other status shows at once.
+    function setStatus(code) {
+      if (code === 'loading' || code === 'cached') {
+        if (st.noteTimer !== null || st.status === code) return;
+        st.noteTimer = timers.set(function () { st.noteTimer = null; applyStatus(code); }, NOTE_DELAY_MS);
+        return;
+      }
+      if (st.noteTimer !== null) { timers.clear(st.noteTimer); st.noteTimer = null; }
+      applyStatus(code);
     }
 
     function deliver(list, info) {
@@ -199,11 +218,12 @@
     }
 
     function withDeadline(promise, gen) {
+      var ms = deadlineSteps[Math.min(st.timeouts, deadlineSteps.length - 1)];
       return new Promise(function (resolve, reject) {
         var t = timers.set(function () {
           if (st.ctl && gen === st.gen) { try { st.ctl.abort(); } catch (e) {} }
           reject(new Error('deadline'));
-        }, deadlineMs);
+        }, ms);
         promise.then(function (v) { timers.clear(t); resolve(v); },
                      function (e) { timers.clear(t); reject(e); });
       });
@@ -233,26 +253,29 @@
       });
       withDeadline(body, gen).then(function (res) {
         if (gen !== st.gen || st.stopped || st.done) return;
+        st.timeouts = 0;                      // the server answered
         if (!Array.isArray(res.data)) { failed(); return; }
         st.failures = 0;
         if (res.missing.length) {
           st.partials += 1;
           deliver(unionPartial(res.data, st.cached, res.missing), { cached: false, partial: true, missing: res.missing });
-          if (st.partials >= PARTIAL_MAX) {   // the server is still warming up after ~10 min: keep what is drawn
-            setStatus(st.cached ? 'cached' : '');
+          // "loading more…" only when something is on the map; else it is still loading (G25 B-2)
+          setStatus(st.shown ? 'partial' : 'loading');
+          if (st.partials >= PARTIAL_MAX + SLOW_MAX) {   // still partial after ~2 h: keep what is drawn (and the note)
             st.done = true;
             return;
           }
-          setStatus('partial');
-          schedule(PARTIAL_MS[Math.min(st.partials - 1, PARTIAL_MS.length - 1)]);
+          schedule(st.partials < PARTIAL_MAX ? PARTIAL_MS[Math.min(st.partials - 1, PARTIAL_MS.length - 1)] : SLOW_MS);
           return;
         }
         st.done = true;
         if (res.data.length) writeStored(storage, res.data, now());
         deliver(res.data, { cached: false, partial: false, missing: [] });
         setStatus('');
-      }, function () {
+      }, function (err) {
         if (gen !== st.gen || st.stopped || st.done) return;
+        if (err && err.message === 'deadline') st.timeouts += 1;   // the next attempt gets longer (G25 B-5)
+        else st.timeouts = 0;
         failed();
       });
     }
@@ -265,7 +288,7 @@
 
     return {
       start: function (handlers) {
-        if (st.started) return;
+        if (st.started) return;               // once per instance
         st.started = true;
         handlers = handlers || {};
         if (typeof handlers.onStations === 'function') onStations = handlers.onStations;
@@ -283,11 +306,13 @@
       stop: function () {
         st.stopped = true;
         if (st.timer !== null) { timers.clear(st.timer); st.timer = null; }
+        if (st.noteTimer !== null) { timers.clear(st.noteTimer); st.noteTimer = null; }
         if (st.ctl) { try { st.ctl.abort(); } catch (e) {} }
       },
       state: function () {
         return { done: st.done, stopped: st.stopped, failures: st.failures, partials: st.partials, attempts: st.attempts,
-                 status: st.status, cached: !!st.cached, waitingVisible: st.waitingVisible, timer: st.timer !== null };
+                 status: st.status, cached: !!st.cached, waitingVisible: st.waitingVisible, timer: st.timer !== null,
+                 timeouts: st.timeouts, notePending: st.noteTimer !== null };
       }
     };
   }
@@ -296,7 +321,8 @@
     create: create,
     _internals: {
       KEY: KEY, VERSION: VERSION, MAX_AGE_MS: MAX_AGE_MS, FUTURE_SKEW_MS: FUTURE_SKEW_MS, DEADLINE_MS: DEADLINE_MS,
-      RETRY_MS: RETRY_MS, PARTIAL_MS: PARTIAL_MS, PARTIAL_MAX: PARTIAL_MAX, STATUS_TEXT: STATUS_TEXT,
+      DEADLINE_STEPS: DEADLINE_STEPS, RETRY_MS: RETRY_MS, PARTIAL_MS: PARTIAL_MS, PARTIAL_MAX: PARTIAL_MAX,
+      SLOW_MS: SLOW_MS, SLOW_MAX: SLOW_MAX, NOTE_DELAY_MS: NOTE_DELAY_MS, STATUS_TEXT: STATUS_TEXT,
       capsMask: capsMask, capsOf: capsOf, pack: pack, unpack: unpack, readStored: readStored, writeStored: writeStored,
       contentKey: contentKey, unionPartial: unionPartial, parseMissing: parseMissing
     }

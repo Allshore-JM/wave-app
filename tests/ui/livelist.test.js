@@ -155,12 +155,12 @@ test('a remembered list is drawn at once, then the complete answer replaces it a
   assert.equal(r.stations.length, 1, 'drawn synchronously in start()');
   assert.deepEqual(r.stations[0].ids, FULL.slice(0, 3).map((s) => s.id));
   assert.equal(r.stations[0].info.cached, true);
-  assert.deepEqual(r.status[0], ['cached', 'cached list']);
+  assert.deepEqual(r.status, [], 'no note yet: the fresh list usually lands within NOTE_DELAY_MS');
   await flush();
   assert.equal(r.stations.length, 2);
   assert.deepEqual(r.stations[1].ids, FULL.map((s) => s.id));
   assert.equal(r.stations[1].info.same, false);
-  assert.deepEqual(r.status.at(-1), ['', '']);
+  assert.deepEqual(r.status, [['', '']], 'the "cached list" note never showed');
   const stored = JSON.parse(storage.getItem(I.KEY));
   assert.equal(stored.t, NOW); assert.equal(stored.s.length, 4);
   assert.equal(f.calls.length, 1);
@@ -182,20 +182,41 @@ test('an unchanged list is reported as the same (the page skips the rebuild)', a
   assert.equal(r2.stations[1].info.same, false, 'same ids, other content: rebuilt');
 });
 
-test('no remembered list: "loading", then the answer', async () => {
+test('no remembered list: the answer, and no note when it lands quickly', async () => {
   const r = run({ fetch: scriptedFetch([resp(FULL)]) });
-  assert.deepEqual(r.status[0], ['loading', 'loading…']);
   assert.equal(r.stations.length, 0);
   await flush();
   assert.equal(r.stations.length, 1);
   assert.equal(r.stations[0].info.cached, false);
+  assert.deepEqual(r.status, [['', '']]);
+});
+
+test('"loading" and "cached list" show only when the list is later than NOTE_DELAY_MS (no flash: G25 B-1)', async () => {
+  assert.equal(I.NOTE_DELAY_MS, 300);
+  const r = run({ fetch: scriptedFetch(['hang']) });
+  await r.timers.advance(I.NOTE_DELAY_MS - 1);
+  assert.deepEqual(r.status, []);
+  await r.timers.advance(1);
+  assert.deepEqual(r.status, [['loading', 'loading\u2026']]);
+  const storage = memStorage({ [I.KEY]: JSON.stringify(I.pack(FULL, NOW - 60e3)) });
+  const r2 = run({ storage, fetch: scriptedFetch(['hang']) });
+  assert.equal(r2.stations.length, 1);
+  await r2.timers.advance(I.NOTE_DELAY_MS);
+  assert.deepEqual(r2.status, [['cached', 'cached list']]);
+  const r3 = run({ fetch: scriptedFetch(['hang']) });
+  r3.ll.stop();
+  await r3.timers.advance(5000);
+  assert.deepEqual(r3.status, [], 'stop() clears the pending note');
+  assert.deepEqual(r3.timers.pending(), []);
 });
 
 test('a remembered list older than 48 h is not drawn', async () => {
   const storage = memStorage({ [I.KEY]: JSON.stringify(I.pack(FULL, NOW - I.MAX_AGE_MS - 1)) });
   const r = run({ storage, fetch: scriptedFetch(['hang']) });
   assert.equal(r.stations.length, 0);
+  await r.timers.advance(I.NOTE_DELAY_MS);
   assert.deepEqual(r.status[0][0], 'loading');
+  assert.equal(I.MAX_AGE_MS, 48 * 3600 * 1000, 'the owner\'s 48 hours');
 });
 
 test('the <head> request is used once; the deadline then retries with fresh requests', async () => {
@@ -235,7 +256,7 @@ test('failures back off 2, 4, 8, 16, then every 30 s; HTTP errors and bad bodies
   assert.deepEqual(gaps, [2000, 4000, 8000, 16000, 30000, 30000]);
   assert.equal(f.calls.length, 7);
   assert.equal(r.ll.state().done, true);
-  assert.deepEqual(r.status.map((x) => x[0]), ['loading', 'unavailable', '']);
+  assert.deepEqual(r.status.map((x) => x[0]), ['unavailable', ''], 'the failure came before the loading note');
 });
 
 test('with a remembered list a failure says "retrying" and keeps the markers', async () => {
@@ -243,7 +264,7 @@ test('with a remembered list a failure says "retrying" and keeps the markers', a
   const r = run({ storage, fetch: scriptedFetch([new Error('down')]) });
   await flush();
   assert.equal(r.stations.length, 1);
-  assert.deepEqual(r.status.map((x) => x[0]), ['cached', 'retrying']);
+  assert.deepEqual(r.status.map((x) => x[0]), ['retrying'], 'shown at once; the pending "cached list" note dropped');
   assert.equal(JSON.parse(storage.getItem(I.KEY)).t, NOW - 60e3, 'a failure never touches the stored list');
 });
 
@@ -292,19 +313,94 @@ test('partial answers without a remembered list draw what the server has', async
   assert.deepEqual(r.stations[0].ids, ['ndbc:51201']);
 });
 
-test('the partial poll schedule and its cap', async () => {
+test('the partial poll schedule: fast, then one a minute for two hours; the note stays (G25 B-3)', async () => {
   const P = { headers: { 'X-Live-Stations-Partial': 'CMEMS' } };
+  const total = I.PARTIAL_MAX + I.SLOW_MAX;
   const answers = [];
-  for (let i = 0; i < I.PARTIAL_MAX + 5; i++) answers.push(resp([FULL[0]], P));
+  for (let i = 0; i < total + 5; i++) answers.push(resp([FULL[0]], P));
   const f = scriptedFetch(answers);
   const r = run({ fetch: f });
   await flush();
   const gaps = [];
-  while (r.timers.pending().length) { const g = r.timers.pending()[0]; gaps.push(g); await r.timers.advance(g); }
+  for (let guard = 0; r.timers.pending().length && guard < total + 10; guard++) {
+    const g = r.timers.pending()[0]; gaps.push(g); await r.timers.advance(g);
+  }
   assert.deepEqual(gaps.slice(0, 9), [3000, 3000, 5000, 5000, 10000, 10000, 15000, 15000, 15000]);
-  assert.equal(f.calls.length, I.PARTIAL_MAX);
+  assert.equal(gaps[I.PARTIAL_MAX - 2], 15000);
+  assert.equal(gaps[I.PARTIAL_MAX - 1], I.SLOW_MS);
+  assert.equal(I.SLOW_MS, 60000);
+  assert.ok(gaps.slice(I.PARTIAL_MAX - 1).every((g) => g === I.SLOW_MS));
+  assert.equal(f.calls.length, total);
+  assert.ok(gaps.reduce((a, b) => a + b, 0) >= 2 * 3600e3, 'about two hours in all');
   assert.equal(r.ll.state().done, true);
-  assert.deepEqual(r.status.at(-1)[0], '');
+  assert.deepEqual(r.status.at(-1), ['partial', 'loading more\u2026'], 'still incomplete: the note stays');
+});
+
+test('"loading more" only when something is drawn; else "loading" (G25 B-2)', async () => {
+  const P = { headers: { 'X-Live-Stations-Partial': 'NDBC,CDIP,AODN,CMEMS' } };
+  const f = scriptedFetch([resp([], P), resp([FULL[0]], P)]);
+  const r = run({ fetch: f });
+  await flush();
+  assert.equal(r.stations.at(-1).ids.length, 0);
+  await r.timers.advance(I.NOTE_DELAY_MS);
+  assert.deepEqual(r.status, [['loading', 'loading\u2026']], 'nothing on the map: still loading');
+  await r.timers.advance(I.PARTIAL_MS[0] - I.NOTE_DELAY_MS);
+  assert.deepEqual(r.status.at(-1), ['partial', 'loading more\u2026']);
+});
+
+test('the deadline grows after consecutive timeouts and resets on an answer (G25 B-5)', async () => {
+  assert.deepEqual(I.DEADLINE_STEPS, [8000, 8000, 16000, 30000]);
+  const f = scriptedFetch(['hang', 'hang', 'hang', 'hang', resp([], { status: 503 }), 'hang', resp(FULL)]);
+  const r = run({ fetch: f });
+  await flush();
+  const deadlines = [];
+  for (let i = 0; i < 4; i++) {                                   // a hung attempt: its deadline is the only timer
+    if (i) await r.timers.advance(r.timers.pending()[0]);          // the retry
+    const p = r.timers.pending().filter((x) => x > 300);
+    deadlines.push(p[0]);
+    await r.timers.advance(p[0]);
+  }
+  assert.deepEqual(deadlines, [8000, 8000, 16000, 30000]);
+  assert.equal(r.ll.state().timeouts, 4);
+  await r.timers.advance(r.timers.pending()[0]);                   // the retry: the 503 answers -> back to 8 s
+  assert.equal(r.ll.state().timeouts, 0);
+  await r.timers.advance(r.timers.pending()[0]);
+  assert.deepEqual(r.timers.pending(), [8000]);
+  const signal = f.calls.at(-1).init.signal;
+  await r.timers.advance(8000);
+  assert.equal(signal.aborted, true, 'the deadline aborts the hung request');
+});
+
+test('a successful (partial) answer resets the deadline too', async () => {
+  const P = { headers: { 'X-Live-Stations-Partial': 'CMEMS' } };
+  const f = scriptedFetch(['hang', 'hang', resp([FULL[0]], P), 'hang']);
+  const r = run({ fetch: f });
+  await flush();
+  await r.timers.advance(8000);                                    // timeout 1
+  await r.timers.advance(r.timers.pending()[0]);                   // retry
+  await r.timers.advance(8000);                                    // timeout 2
+  assert.equal(r.ll.state().timeouts, 2);
+  await r.timers.advance(r.timers.pending()[0]);                   // retry: the partial answer
+  assert.equal(r.ll.state().timeouts, 0);
+  await r.timers.advance(I.PARTIAL_MS[0]);                         // the next poll hangs: 8 s again, not 16
+  assert.deepEqual(r.timers.pending(), [8000]);
+});
+
+test('pins: a meta-only change is not "the same"; a second start() does nothing; empty names kept; lon bounds', async () => {
+  const meta = FULL.map((s) => Object.assign({}, s));
+  meta[0].attribution_text = 'Source: someone else';
+  assert.notEqual(I.contentKey(meta), I.contentKey(FULL));
+  const f = scriptedFetch([resp(FULL)]);
+  const r = run({ fetch: f });
+  r.ll.start({ onStations: () => { throw new Error('must not run'); } });
+  await flush();
+  assert.equal(f.calls.length, 1);
+  assert.equal(r.stations.length, 1);
+  const p = I.pack([Object.assign({}, FULL[0], { name: '' })], NOW);
+  assert.equal(I.unpack(p, NOW)[0].name, '', 'a station without a name is kept');
+  const lon = (x) => I.unpack(Object.assign({}, p, { s: [['a', 'n', 1, x, 'X', '', 0, 0, []]] }), NOW);
+  assert.ok(lon(539) && lon(-539));
+  assert.equal(lon(541), null);
 });
 
 test('an empty complete answer is drawn but not stored', async () => {

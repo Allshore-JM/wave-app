@@ -512,7 +512,7 @@ def test_the_live_list_loads_through_its_module(client):
     tag = body.index('<script src="/ui/livelist.js?v=%s"></script>' % A.UI_ASSET_VERSION)
     assert body.index("leaflet@1.9.4/dist/leaflet.js") < tag < body.index("const map = L.map(")
     assert "live: fetch('/api/buoys/live-stations')" in body                     # the <head> request
-    assert "'<span class=\"lc-dot lc-live\"></span>Live buoys<span class=\"lc-note\" data-live-note aria-live=\"polite\"></span>': liveBuoyLayer" in body
+    assert "'<span class=\"lc-dot lc-live\"></span>Live buoys<span class=\"lc-note\" data-live-note aria-hidden=\"true\"></span>': liveBuoyLayer" in body   # a visual hint (G25 B-4)
     assert ".lc-note:empty { display: none; }" in body
     assert ".lc-note { display: block; padding-left: 21px;" in body          # its own line: the legend never widens (phone)
     assert ("if (el && el.textContent !== liveNoteText) {" + chr(10) + "        el.textContent = liveNoteText;" + chr(10)

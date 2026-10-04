@@ -247,7 +247,7 @@ def _live_stations_edge_ttl() -> int:
     raw = os.environ.get("LIVE_STATIONS_EDGE_TTL", "0").strip()
     try:
         ttl = int(float(raw))
-    except ValueError:
+    except (ValueError, OverflowError):      # 'abc', 'inf', 'nan'
         return 0
     return max(0, min(LIVE_STATIONS_EDGE_TTL_MAX, ttl))
 
@@ -308,7 +308,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.17.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.17.1"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript"}
@@ -3818,11 +3818,21 @@ class NDBCBuoyProvider(buoy_sources.BuoyProvider):
 
 
 _BUOY_PROVIDERS = None
+_BUOY_PROVIDERS_LOCK = threading.Lock()
 
 def get_buoy_providers():
     """All live-buoy sources. Cross-source dedup is by buoy_sources._station_priority
     (richest wins), NOT list order, so order here is not significant. US: NDBC, CDIP.
-    Australia: QLD, AODN, AusWaves. Europe: Marine Institute (Ireland), CEFAS WaveNet."""
+    Australia: QLD, AODN, AusWaves. Europe: Marine Institute (Ireland), CEFAS WaveNet.
+    Built once (a lock: the first request and the scheduler thread arrive together)."""
+    global _BUOY_PROVIDERS
+    if _BUOY_PROVIDERS is not None:
+        return _BUOY_PROVIDERS
+    with _BUOY_PROVIDERS_LOCK:
+        return _build_buoy_providers()
+
+
+def _build_buoy_providers():
     global _BUOY_PROVIDERS
     if _BUOY_PROVIDERS is None:
         _BUOY_PROVIDERS = [
@@ -4081,17 +4091,33 @@ def _live_lists_inline(providers):
 # start-up import check). /healthz reports it (Render's health check path: the old instance
 # keeps serving until the new one has warmed up).
 # ---------------------------------------------------------------------------------------------
+def _env_number(name, default, lo, hi):
+    """A numeric env knob: the default when unset or not a finite number, clamped to [lo, hi] (a bad
+    value must never break the import, a route or the scheduler: G25 A-5)."""
+    try:
+        v = float(os.environ.get(name, default))
+    except (TypeError, ValueError, OverflowError):
+        return float(default)
+    if v != v or v in (float("inf"), float("-inf")):
+        return float(default)
+    return float(max(lo, min(hi, v)))
+
+
 LIVE_BACKGROUND = os.environ.get("LIVE_BACKGROUND", "1") != "0"
-LIVE_TICK_SEC = float(os.environ.get("LIVE_TICK_SEC", "30"))          # between scheduler passes
+LIVE_TICK_SEC = _env_number("LIVE_TICK_SEC", 30, 1, 600)              # between scheduler passes
 LIVE_WARM_TICK_SEC = 2.0                                               # while providers are still missing
-LIVE_WARM_DEADLINE_SEC = float(os.environ.get("LIVE_WARM_DEADLINE_SEC", "90"))
+# Render stops routing to an instance that fails its health check for 15 s and RESTARTS it after 60 s,
+# also a running or just restarted one (render.com/docs/health-checks): /healthz may wait for the full
+# list only this long after a start, always under 15 s (G25 A-2).
+LIVE_WARM_DEADLINE_SEC = _env_number("LIVE_WARM_DEADLINE_SEC", 10, 0, 14)
 LIVE_STALL_SEC = 180.0                       # no scheduler pass for this long: the service is stuck (/healthz 503)
+LIVE_BUILD_FAIL_MAX = 3                      # this many failed builds in a row: /healthz 503 (G25 A-6)
 # Cheap and quick feeds first, the big ones (AODN's WFS, CMEMS's 43 MB index) last, so the
 # first partial answers carry the most markers soonest. Unknown sources go last.
 LIVE_WARM_ORDER = ["NDBC", "CDIP", "SMHI", "MI-IE", "CEFAS", "RWS", "QLD", "AusWaves", "AODN", "CMEMS"]
 _LIVE_BG = {"started": False, "thread": None, "started_ts": None, "warm_ts": None, "ticks": 0,
             "last_tick_ts": None, "last_tick_s": None, "prebuilds": 0, "errors": 0, "last_error": None,
-            "tz_loaded": False}
+            "tz_loaded": False, "build_failures": 0}
 _LIVE_BG_LOCK = threading.Lock()
 _LIVE_STOP = threading.Event()
 _LIVE_WAKE = threading.Event()               # set by a provider publish or a request that saw newer lists
@@ -4157,9 +4183,12 @@ def _live_tick(providers=None):
     built = False
     try:
         built = _live_prebuild(providers)
+        with _LIVE_BG_LOCK:
+            _LIVE_BG["build_failures"] = 0
     except Exception as exc:
         with _LIVE_BG_LOCK:
             _LIVE_BG["errors"] += 1
+            _LIVE_BG["build_failures"] = _LIVE_BG.get("build_failures", 0) + 1
             _LIVE_BG["last_error"] = "prebuild: %s" % exc
         logger.warning("live buoys: memo prebuild failed: %s", exc)
     warm = _live_warm(providers)
@@ -4194,7 +4223,11 @@ def _live_scheduler_loop():
     merged list. The route only ever serves what this thread built. Nothing raised in here
     ends the loop."""
     tz_loaded = False
+    me = threading.current_thread()
     while not _LIVE_STOP.is_set():
+        with _LIVE_BG_LOCK:
+            if _LIVE_BG["thread"] is not me:     # replaced by a restart (stop + start overlapping a pass)
+                return
         _LIVE_WAKE.clear()                      # a publish from here on wakes the next wait
         try:
             out = _live_tick()
@@ -4227,6 +4260,7 @@ def start_live_background():
         _LIVE_BG["started"] = True
         if _LIVE_BG["started_ts"] is None:
             _LIVE_BG["started_ts"] = time.time()
+        buoy_sources.set_nonblocking(True)
         t.start()
         logger.info("live buoys: background scheduler started (tick %.0fs, workers %s)",
                     LIVE_TICK_SEC, buoy_sources.get_refresh_runner().workers
@@ -4245,6 +4279,7 @@ def stop_live_background(timeout=5.0):
     with _LIVE_BG_LOCK:
         _LIVE_BG["thread"] = None
         _LIVE_BG["started"] = False
+    buoy_sources.set_nonblocking(False)
 
 
 @app.before_request
@@ -4297,11 +4332,17 @@ def _rss_kb():
 @app.route("/healthz")
 def healthz():
     """Health of the live-buoy service for Render's health check and for diagnosis: per-provider
-    state, the memo, the scheduler and the refresh runner. 503 until the merged list the route
-    serves holds every provider (each has answered once AND the scheduler has built the list
-    from them), or LIVE_WARM_DEADLINE_SEC have passed since the start (a dead feed never blocks
-    a deploy); then 200 -- unless the scheduler has not completed a pass for LIVE_STALL_SEC
-    (stuck: 503, "stalled"). Never triggers any work. Never cached."""
+    state, the memo, the scheduler and the refresh runner. Never cached; triggers no work (the
+    first request a process serves starts the service, whichever route it is).
+
+    Render stops routing traffic to an instance whose checks fail for 15 s and restarts it after
+    60 s, deploys and restarts alike: so this answers 200 as soon as the process serves pages and
+    the scheduler has completed a pass (partial buoy lists are a normal state: the page polls and
+    shows the list it remembers). 503 only: before the first pass; within LIVE_WARM_DEADLINE_SEC
+    (<= 14 s) of the start while the served list is still incomplete (a deploy keeps the old
+    instance a little longer when the feeds answer fast); when the scheduler has not completed a
+    pass for LIVE_STALL_SEC ("stalled"); after LIVE_BUILD_FAIL_MAX failed builds in a row
+    ("build_failing"). The last two are failures a restart cures."""
     now = time.time()
     providers = get_buoy_providers()
     statuses = [p.status() for p in providers]        # on the providers' own clock
@@ -4319,10 +4360,16 @@ def healthz():
     started_ts = bg.get("started_ts")
     deadline_passed = started_ts is not None and (now - started_ts) >= LIVE_WARM_DEADLINE_SEC
     # A scheduler that has not completed a pass for LIVE_STALL_SEC is stuck (passes run at least every
-    # LIVE_TICK_SEC): the lists freeze while the route keeps answering, so say so even after the deadline.
+    # LIVE_TICK_SEC): the lists freeze while the route keeps answering, so say so.
     last_pass = bg.get("last_tick_ts") or started_ts
     stalled = bool(LIVE_BACKGROUND and last_pass is not None and (now - last_pass) > LIVE_STALL_SEC)
-    ok = not stalled and ((warm and served_complete) or deadline_passed or not LIVE_BACKGROUND)
+    build_failing = bg.get("build_failures", 0) >= LIVE_BUILD_FAIL_MAX
+    passed_once = bool(bg.get("ticks"))
+    if not LIVE_BACKGROUND:
+        ok = True
+    else:
+        ok = (passed_once and not stalled and not build_failing
+              and ((warm and served_complete) or deadline_passed))
     runner = buoy_sources.get_refresh_runner()
     body = {
         "ok": ok,
@@ -4331,6 +4378,8 @@ def healthz():
         "background": LIVE_BACKGROUND,
         "scheduler_alive": _live_scheduler_alive(),
         "stalled": stalled,
+        "build_failing": build_failing,
+        "build_failures": bg.get("build_failures", 0),
         "uptime_s": round(now - started_ts, 1) if started_ts else None,
         "warm_after_s": (round(bg["warm_ts"] - started_ts, 1) if bg.get("warm_ts") and started_ts else None),
         "ticks": bg.get("ticks"), "last_tick_age_s": (round(now - bg["last_tick_ts"], 1) if bg.get("last_tick_ts") else None),
@@ -4343,7 +4392,7 @@ def healthz():
                  "bytes": memo_bytes,
                  "sources": sum(1 for k in (memo_key or ()) if k[1] is not None),
                  "current": memo_key == current_key, "complete": served_complete},
-        "runner": {"queued": getattr(runner, "queued", None), "running": getattr(runner, "running", None),
+        "runner": {"waiting": getattr(runner, "waiting", None), "running": getattr(runner, "running", None),
                    "workers": getattr(runner, "workers", None)},
         "rss_kb": _rss_kb(),
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -4361,6 +4410,17 @@ def api_buoys_latest(bid):
     local = bid.split(":", 1)[1] if ":" in bid else bid
     for p in get_buoy_providers():
         if p.source.lower() == src:
+            if LIVE_BACKGROUND and p.snapshot() is None:
+                # Its list is still loading after a start: the page drew this marker from the list it
+                # remembers. Never hold a request thread for the feed (G25 A-1): the page retries.
+                p.schedule_refresh()
+                resp = jsonify({"id": bid, "source": p.source, "error": "The buoy list is still loading.",
+                                "retry": True})
+                resp.status_code = 503
+                resp.headers["Retry-After"] = "5"
+                resp.headers["Cache-Control"] = "no-store"
+                resp.headers["CDN-Cache-Control"] = "no-store"
+                return resp
             try:
                 d = p.detail(local)
             except Exception:

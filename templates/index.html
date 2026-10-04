@@ -376,7 +376,7 @@
       line-height: 1; font-size: 1rem; color: #0b2536; cursor: pointer; flex: 0 0 auto;
     }
     .fw-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #eee; flex-wrap: wrap; }
-    .fw-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; -webkit-overflow-scrolling: touch; }
+    .fw-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; -webkit-overflow-scrolling: touch; container-type: inline-size; container-name: fwbody; }
     .fw-meta { color: #5a6b7a; font-size: .85rem; margin-bottom: 6px; }
     .fw-resize:focus-visible { outline: 2px solid #1d6fd6; outline-offset: -2px; }
     /* the window touched last is on top: the forecast window over the live-buoy window (z 2000) once touched */
@@ -411,17 +411,23 @@
     }
     .fwin.fw-min .fw-header { cursor: pointer; }
     .fwin.fw-min .fw-toolbar, .fwin.fw-min .fw-body, .fwin.fw-min .fw-resize, .fwin.fw-min .fw-edge { display: none; }
-    /* maximised: the viewport (the table window is capped by its inline max-width, the table's width) */
+    /* maximised: the viewport */
     .fwin.fw-max {
       left: 8px !important; top: calc(var(--map-topright-h, 120px) + 8px) !important; right: auto !important; bottom: 8px !important;
       width: calc(100vw - 16px) !important; height: auto !important;
     }
     .fwin.fw-max .fw-resize, .fwin.fw-max .fw-edge { display: none; }
-    /* the compact table inside the window: the body is the scroll box, the header stays frozen */
+    /* the compact table inside the window: the body is the scroll box, the header stays frozen. The table is as wide
+       as its window (its nowrap cells keep it at least its natural width: the body scrolls sideways below that) and
+       its text grows a little in a wide window (plan section 35). */
     #forecastTable { overflow: visible; }
     #forecastTable table { margin-bottom: 0; }
-    #forecastTable table.forecast-compact { font-size: 12.5px; line-height: 1.25; width: auto; }
+    #forecastTable table.forecast-compact { font-size: 12.5px; line-height: 1.25; width: 100%; font-variant-numeric: tabular-nums; }
     #forecastTable table.forecast-compact td, #forecastTable table.forecast-compact th { padding: 2px 5px; white-space: nowrap; }
+    @container fwbody (min-width: 1100px) {
+      #forecastTable table.forecast-compact { font-size: 13.5px; }
+      #forecastTable table.forecast-compact td, #forecastTable table.forecast-compact th { padding: 3px 6px; }
+    }
     #forecastTable thead { position: sticky; top: -8px; z-index: 2; }
     #forecastTable thead th,
     #forecastTable thead td {
@@ -431,7 +437,48 @@
       box-shadow: inset 1px 0 0 #dee2e6, inset -1px 0 0 #dee2e6,
                   inset 0 1px 0 #dee2e6, inset 0 -1px 0 #dee2e6;
     }
+    /* the coloured group headers, softened a little (the server keeps its inline colours) */
+    #forecastTable thead tr:first-child th[style] { background-image: linear-gradient(rgba(255,255,255,.15), rgba(255,255,255,.15)); }
     .forecast-info { text-align: left; font-weight: 700; }
+    /* The real sky (plan section 35): the server classes each row sky-day / sky-twilight / sky-night; a tint is laid
+       over every cell's own swell colour as a background image, so the colours stay and the row's state shows. */
+    #forecastTable table.forecast-compact tbody td { background-image: linear-gradient(var(--tint, transparent), var(--tint, transparent)); }
+    #forecastTable tr.sky-twilight { --tint: rgba(255,170,0,.10); }
+    #forecastTable tr.sky-night { --tint: rgba(30,70,140,.10); }
+    #forecastTable tbody tr:hover { --tint: rgba(0,0,0,.08); }
+    #forecastTable tbody tr.sky-night:hover { --tint: rgba(30,70,140,.22); }
+    #forecastTable tr.now-row { --tint: rgba(29,111,214,.14); }
+    #forecastTable tr.now-row td.col-date { box-shadow: inset 3px 0 0 #1d6fd6; }
+    #forecastTable tr.day-first td { border-top: 2px solid #8a949e; }
+    #forecastTable td.col-date { font-weight: 700; }
+    #forecastTable td.col-sun { font-size: .92em; line-height: 1.2; color: #334; }
+    #forecastTable .sun-ev.ev-dawn, #forecastTable .sun-ev.ev-dusk { color: #8a6d1f; }
+    #forecastTable .sun-ev.ev-sunrise, #forecastTable .sun-ev.ev-sunset { color: #b4530a; font-weight: 600; }
+    #forecastTable .sun-ev.ev-moonrise, #forecastTable .sun-ev.ev-moonset { color: #3b4d7a; }
+    #forecastTable .moon-phase { color: #3b4d7a; white-space: nowrap; }
+    /* Date and Time stay put while the body scrolls sideways (the Time column's offset is the Date column's width,
+       --date-w, measured by the script); the frozen header's corner cells sit above both */
+    #forecastTable table.forecast-compact td.col-date, #forecastTable table.forecast-compact td.col-time {
+      position: sticky; z-index: 1; background-color: #fff; box-shadow: inset -1px 0 0 #dee2e6, inset 0 -1px 0 #dee2e6;
+    }
+    #forecastTable table.forecast-compact td.col-date, #forecastTable thead th.col-date { left: 0; }
+    #forecastTable table.forecast-compact td.col-time, #forecastTable thead th.col-time { left: var(--date-w, 0px); }
+    #forecastTable thead th.col-date, #forecastTable thead th.col-time { position: sticky; z-index: 3; }
+    #forecastTable tr.day-first td.col-date, #forecastTable tr.day-first td.col-time { box-shadow: inset 0 2px 0 #8a949e, inset -1px 0 0 #dee2e6; }
+    #forecastTable tr.now-row td.col-date { box-shadow: inset 3px 0 0 #1d6fd6, inset -1px 0 0 #dee2e6; }
+    .dir-arrow { display: inline-block; width: 1em; margin-left: .15em; line-height: 1; font-size: .95em; color: #333; }
+    /* the Summary view: one row a day */
+    .forecast-summary table { width: 100%; font-size: 12.5px; line-height: 1.3; font-variant-numeric: tabular-nums; margin-bottom: 0; }
+    .forecast-summary td, .forecast-summary th { white-space: nowrap; padding: 4px 8px; vertical-align: middle; }
+    .forecast-summary thead th { background: #f3f7fb; }
+    .forecast-summary td.col-date { font-weight: 700; }
+    .forecast-summary .sum-sub { font-weight: 400; color: #5a6b7a; font-size: .9em; }
+    .forecast-summary .sum-range, .forecast-summary .sum-hs { font-weight: 600; }
+    .forecast-summary .trend { margin-left: .35em; color: #5a6b7a; }
+    .forecast-summary .trend-rising { color: #1a7f37; } .forecast-summary .trend-falling { color: #b4530a; } .forecast-summary .trend-peak { color: #1d6fd6; }
+    .forecast-summary .sum-sun { color: #b4530a; } .forecast-summary .sum-moon { color: #3b4d7a; }
+    .forecast-summary tbody tr:hover td { background-color: rgba(0,0,0,.04); }
+    @container fwbody (min-width: 1100px) { .forecast-summary table { font-size: 13.5px; } }
     #graphs .chart-box { position: relative; height: 260px; margin-bottom: 12px; }
     #graphs .chart-box:last-child { margin-bottom: 0; }
     /* no JS: the forecast window is a plain card in the page flow (render=full); the live window needs JS */
@@ -447,7 +494,7 @@
       #map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .sr-star, .station-caret, .tools-host, .tools-bar { display: none !important; }
       .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
       .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
-      #forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }   /* the charts are not printable: the table is */
+      #forecastTable[hidden] { display: block !important; } #graphs, #forecastSummary { display: none !important; }   /* the charts are not printable: the detailed table is */
       .fw-body { overflow: visible; }
     }
 
@@ -669,6 +716,10 @@
           <button type="button" class="btn btn-outline-secondary{% if selected_model != 'SWAN' %} active{% endif %}" data-model="GFS" aria-pressed="{{ 'false' if selected_model == 'SWAN' else 'true' }}">GFS</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'SWAN' %} active{% endif %}" data-model="SWAN" aria-pressed="{{ 'true' if selected_model == 'SWAN' else 'false' }}">SWAN</button>
         </div>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Table mode" id="modeBar" hidden>
+          <button type="button" class="btn btn-outline-secondary active" data-mode="detailed" aria-pressed="true">Detailed</button>
+          <button type="button" class="btn btn-outline-secondary" data-mode="summary" aria-pressed="false">Summary</button>
+        </div>
         <div class="btn-group btn-group-sm ms-auto" role="group" aria-label="Range" id="rangeBar"{% if selected_view != 'Graph' %} hidden{% endif %}>
           <button type="button" class="btn btn-outline-secondary" data-days="0">Full</button>
           <button type="button" class="btn btn-outline-secondary" data-days="7">7 d</button>
@@ -704,6 +755,7 @@
           </noscript>
           {% endif %}
         </div>
+        <div id="forecastSummary" class="forecast-summary" hidden>{% if summary_html %}{{ summary_html|safe }}{% endif %}</div>
         <div id="graphs"{% if selected_view != 'Graph' %} hidden{% endif %}>
           <div class="chart-box"><canvas id="heightChart"></canvas></div>
           <div class="chart-box"><canvas id="periodChart"></canvas></div>

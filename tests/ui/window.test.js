@@ -590,29 +590,26 @@ test('plan section 26: the charts draw only the swells present (legend on top), 
   assert.deepEqual(I.swellKeys({ swells: ['s2', 'bogus'] }), ['s2']); assert.deepEqual(I.swellKeys({ swells: [] }).length, 6);
 });
 
-test('plan section 26: in Table view the window is no wider than its table (drag, keys and maximise included); Graph view and the chip are not capped', async () => {
+test('plan section 35: the table no longer caps the window: no inline max-width in any view or mode; the keyboard grows it to the viewport (plan section 26\'s cap is gone)', async () => {
   const b = boot({}); await settle();
-  const t = { scrollWidth: 900 };
+  const t = { scrollWidth: 900, style: { setProperty() {} }, querySelector: () => null };
   const orig = b.page.table.querySelector.bind(b.page.table);
   b.page.table.querySelector = (sel) => (sel === 'table' ? t : orig(sel));
   b.fs_.last().release(payload()); await settle();
   const fw = b.app.window;
-  assert.equal(fw.maxW, 900 + 50); assert.equal(b.page.w.style.maxWidth, '', 'minimised: the chip keeps its CSS width');
+  assert.equal(fw.maxW, undefined, 'no cap at all'); assert.equal(b.page.w.style.maxWidth, undefined);
   fw.setMode('normal'); await settle();
-  assert.equal(b.page.w.style.maxWidth, '950px');
+  assert.equal(b.page.w.style.maxWidth, undefined, 'Table view: the viewer\'s width, however wide the table');
   fw._place({ x: 100, y: 100, w: 600, h: 400 });
   const h = b.doc.getElementById('fwResize');
   for (let i = 0; i < 20; i++) h.dispatch('keydown', { key: 'ArrowRight', shiftKey: true, preventDefault: () => {} });
-  assert.equal(fw.geom.w, 950, 'the keyboard never grows it past the table');
-  fw._place({ x: 100, y: 100, w: 1150, h: 400 });                           // the viewer's own width, wider than the table
-  fw.setMaxWidth(900); assert.equal(fw.geom.w, 1150, 'a new cap never rewrites the saved width');
-  fw.clamp(); assert.equal(fw.geom.w, 1150, 'nor does a clamp'); fw.setMaxWidth(950);
-  fw.setMode('max'); assert.equal(b.page.w.style.maxWidth, '950px', 'maximised: full height, the table width');
-  fw.setMode('min'); assert.equal(b.page.w.style.maxWidth, '', 'the chip keeps its own CSS width');
-  fw.setMode('normal'); b.app.setView('Graph'); await settle();
-  assert.equal(fw.maxW, 0); assert.equal(b.page.w.style.maxWidth, '', 'Graph view uses the full width');
+  assert.equal(fw.geom.w, 1280 - 8 - 100, 'the keyboard grows it to the viewport pad, past the table');
+  fw.setMode('max'); assert.equal(b.page.w.style.maxWidth, undefined, 'maximised: the full viewport width');
+  fw.setMode('min'); fw.setMode('normal'); b.app.setView('Graph'); await settle();
+  assert.equal(b.page.w.style.maxWidth, undefined);
+  assert.ok(!('setMaxWidth' in fw), 'the cap machinery is gone');
   const cg = b.F._internals.clampGeometry({ x: 1400, y: 0, w: 1200, h: 300 }, 1500, 900, 0, null, 700);
-  assert.equal(cg.w, 1200, 'the width stays the viewer\'s'); assert.equal(cg.x, 1500 - 8 - 700, 'x keeps the capped window on screen');
+  assert.equal(cg.w, 1200); assert.equal(cg.x, 1500 - 8 - 1200, 'x keeps the whole window on screen (a sixth argument is ignored)');
 });
 
 test('G18a: the date labels are thinned so they never overlap on a narrow chart, and follow the range in view', () => {
@@ -626,17 +623,17 @@ test('G18a: the date labels are thinned so they never overlap on a narrow chart,
   assert.equal(I.dateTick({ width: 1100, min: 0, max: 384 }, parsed, mids, 1), '', 'not midnight: no label');
 });
 
-test('G18a: a Graph-view width survives a trip through Table view; a SWAN-to-GFS switch widens the window again', async () => {
+test('G18a / plan section 35: the viewer\'s width survives a trip through the views and a station switch; a wider table never touches it', async () => {
   const b = boot({}); await settle();
   let tw = 800; const orig = b.page.table.querySelector.bind(b.page.table);
-  b.page.table.querySelector = (sel) => (sel === 'table' ? { scrollWidth: tw } : orig(sel));
+  b.page.table.querySelector = (sel) => (sel === 'table' ? { scrollWidth: tw, style: { setProperty() {} }, querySelector: () => null } : orig(sel));
   b.fs_.last().release(payload()); await settle();
   const fw = b.app.window; fw.setMode('normal'); fw._place({ x: 50, y: 100, w: 1150, h: 400 });
-  b.app.setView('Table'); assert.equal(b.page.w.style.maxWidth, '850px'); assert.equal(fw.geom.w, 1150);
-  b.app.setView('Graph'); assert.equal(b.page.w.style.maxWidth, ''); assert.equal(fw.geom.w, 1150, 'the viewer\'s width is back');
-  b.app.setView('Table'); tw = 950; b.app.loader.load({ model: 'GFS', station: '46001' }); await settle();
+  b.app.setView('Table'); assert.equal(b.page.w.style.maxWidth, undefined); assert.equal(fw.geom.w, 1150);
+  b.app.setView('Graph'); assert.equal(fw.geom.w, 1150);
+  b.app.setView('Table'); tw = 1400; b.app.loader.load({ model: 'GFS', station: '46001' }); await settle();
   b.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
-  assert.equal(b.page.w.style.maxWidth, '1000px', 'a wider table widens the window (the width was never cut)');
+  assert.equal(b.page.w.style.maxWidth, undefined); assert.equal(fw.geom.w, 1150, 'a table wider than the window scrolls inside it');
 });
 
 // ---- plan section 26 (D2): the picker heading, two windows, the live-buoy window ----
@@ -731,7 +728,7 @@ test('plan section 27: a forecast with wind gaps is kept a minute, not ten (a tr
 });
 
 // ---- plan section 27: stretch from every side ----
-test('resizeGeometry: each edge moves only its own side; the opposite side stays put at the minimum, the viewport and the table cap', () => {
+test('resizeGeometry: each edge moves only its own side; the opposite side stays put at the minimum and the viewport', () => {
   const I = load(fakeWindow())._internals, R = I.resizeGeometry;
   const r = { x: 300, y: 200, w: 800, h: 400 }, vw = 1580, vh = 900;
   assert.deepEqual(R(r, 'e', 50, 0, vw, vh), { x: 300, y: 200, w: 850, h: 400 });
@@ -748,12 +745,11 @@ test('resizeGeometry: each edge moves only its own side; the opposite side stays
   assert.equal(R(r, 'n', 0, -900, vw, vh).y, 8, 'the top stops at the 8 px pad');
   assert.equal(R(r, 'e', 2000, 0, vw, vh).w, vw - 8 - 300, 'the right side stops at the viewport');
   assert.equal(R(r, 's', 0, 2000, vw, vh).h, vh - 8 - 200, 'the bottom stops at the viewport');
-  // Table view: the width is capped at the table (maxW); the viewer's own width may be wider than the cap
+  // no table cap any more (plan section 35): a ninth argument changes nothing
   const wide = { x: 300, y: 200, w: 1150, h: 400 };
-  assert.deepEqual(R(wide, 'w', -300, 0, vw, vh, 0, null, 900), { x: 300, y: 200, w: 900, h: 400 }, 'west at the cap: the shown right edge (1200) stays, the width stops at the table');
-  assert.equal(R(wide, 'e', 100, 0, vw, vh, 0, null, 900).w, 900, 'east at the cap');
-  assert.equal(R(wide, 'e', -100, 0, vw, vh, 0, null, 900).w, 800, 'east shrinks from the width on screen');
-  assert.equal(R(wide, 'n', 0, -40, vw, vh, 0, null, 900).w, 1150, 'a vertical resize keeps the viewer\'s own width');
+  assert.deepEqual(R(wide, 'w', -300, 0, vw, vh, 0, null, 900), { x: 8, y: 200, w: 1442, h: 400 }, 'west: to the pad, the right edge (1450) stays');
+  assert.equal(R(wide, 'e', 100, 0, vw, vh, 0, null, 900).w, 1250, 'east: grows past 900');
+  assert.equal(R(wide, 'n', 0, -40, vw, vh, 0, null, 900).w, 1150, 'a vertical resize keeps the width');
 });
 
 test('plan section 27: every edge and corner of both windows stretches them by pointer; not when minimised, maximised or on a phone', () => {

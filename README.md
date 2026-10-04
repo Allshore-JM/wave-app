@@ -85,8 +85,12 @@ overlay and the live panel stay as they are; every landed forecast is announced 
 uses to follow the table's zone and run). A marker pick goes back to Buoy Local, a favourites pick keeps the zone, as before. State
 precedence on load: the URL, then the viewer's saved settings (`localStorage 'allshore.settings.v1'` {tz, unit}), then the
 server's defaults; the window's geometry and mode live in `sessionStorage 'allshore.forecastWin.v1'`; the charts' range in
-`sessionStorage 'chartRange'` as before. The table is the compact form (short dates with the full date on hover, no info
-rows: the window shows Cycle / Location / Time Zone in one line above it), about 1,000 px wide for its 23 columns. The
+`sessionStorage 'chartRange'` as before; the table's Detailed | Summary mode in `sessionStorage 'allshore.tableMode.v1'`
+(plan section 35: the tab's own preference, never in the address). The table is the compact form (short dates with the
+full date on hover, no info rows: the window shows Cycle / Location / Time Zone in one line above it). It fills its
+window: a wider window spreads the columns (and past 1,100 px of body the text grows from 12.5 to 13.5 px, a CSS
+container query), a narrower one scrolls the table sideways with the Date and Time columns staying put; the window's
+width is the viewer's own in every view (the old cap at the table's width is gone). The
 page is a shell on every JS load (the window fetches the forecast; the `#forecastLoading` placeholder stays until it
 lands, which the overlay's restore waits for); `?render=full`, reached by the `<noscript>` meta refresh, renders the
 forecast inline in the window's compact form and the module shows it without a fetch; without JS the window is a plain
@@ -587,3 +591,39 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   character (a family emoji or a flag is one).
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
   (522 inputs) is checked against both.
+
+## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.0)
+
+The window's table and graphs know the real sun and moon at the station (`sky.py`, PyEphem; `requirements.txt`
+`ephem==4.2.1`; checked to the minute against USNO in `tests/test_sky.py`). What the server sends (`/api/forecast?compact=1`
+only; the classic table and payload are unchanged apart from the relabel; without coordinates, without ephem or on any
+error the table keeps its old 6 AM - 7 PM bold rule and the graphs their fixed night hours):
+
+- `table_html`: rows classed `sky-day` / `sky-twilight` / `sky-night` (from the sun's altitude at the row's time; a row
+  whose slot holds first light, sunrise, sunset or last light is a twilight row), `day-first` on each day's first row,
+  `now-row` on the current hour, `data-t`; a Sun column after Time (`col-sun`: first light ◐, sunrise ☀↑, sunset ☀↓, last
+  light ◑, moonrise ☾↑, moonset ☾↓ in the row's slot, an hourly row's hour or a 3-hourly row's three hours; the moon's
+  phase glyph and lit fraction on the first row of each night); `col-date` / `col-time` on the first two cells (the
+  sticky columns); "Comb." is now "Sig. Wave Height" (the bulletins' Hst, SWAN's Hsig, a point's HTSGW: the significant
+  wave height of the combined seas); directions read "248° WSW" with an arrow (`.dir-arrow`, rotated to where the waves go).
+- `summary_html`: the Summary view, one row per forecast day over its daylight rows (first light to last light):
+  significant wave height range + trend (↗ rising / ↘ falling / ▲ peak at an hour / → steady: the last third of the window
+  against the first, 10 % bands), the two most powerful swell SYSTEMS of the day (the hourly columns are re-ranked by
+  power, so a column is not a system: every hour's samples are grouped by period, within 20 % and at least 1.5 s, and
+  direction, within 40°; power = height² × period), wind range + mean direction, sunrise, sunset, the moon. A first or
+  last day without daylight rows is left out; a polar night keeps a row with a note; a day cut by the forecast's start or
+  end says "from 8:00 AM" / "until 5:00 PM".
+- `graph_data.sky` (one state per slot, a point's hourly slots included) and `graph_data.sun_events`
+  (`[{t: slot, kind, text, name}]`, kind `moon` at the start of each night with the phase glyph as `text`).
+
+The page: the row tints are a `--tint` gradient laid over each cell's own swell colour (twilight amber, night slate-blue,
+hover, the now row blue with a left accent), a 2 px rule where each day starts, tabular numerals, the group headers softened
+15 %, Date and Time sticky on the left (the Time column's offset is the Date column's measured width, `--date-w`), the Sun
+column's glyphs coloured by kind. The now row is scrolled under the frozen header once per station or point (not on a
+unit or zone change; deferred while the window is minimised, in Graph view or in Summary mode). The Detailed | Summary
+buttons show only in Table view and only when the payload carries a summary. The charts: twilight and night bands at
+the real times (`makeNightShade`), a 14 px sky strip in the top padding with ☀ at sunrise / sunset, ☾ at moonrise /
+moonset and the moon glyph centred in each night band at least 24 px wide (`makeSkyStrip`), a dashed "now" line at the
+current time in the forecast's zone redrawn every minute (`makeNowLine`; `zoneWallClock` via Intl, `nowIndex`), and the
+direction axis fixed 0-360 with compass labels N NE E SE S SW W NW N. An older cached payload with none of these fields
+draws as before (the hour-rule shade, no strip, no mode buttons).

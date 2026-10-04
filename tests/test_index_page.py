@@ -149,7 +149,7 @@ def test_phone_sheets_sit_above_the_map_controls_and_the_no_js_page_shows_its_co
     assert "html:not(.js) .live-win { display: none !important; }" in body
     assert "view=Table&amp;render=full" in body and "view=Graph&amp;render=full" not in body
     assert ".fwin[hidden] { display: none !important; }" in body
-    assert "#forecastTable[hidden] { display: block !important; } #graphs { display: none !important; }" in body[body.index("@media print"):]
+    assert "#forecastTable[hidden] { display: block !important; } #graphs, #forecastSummary { display: none !important; }" in body[body.index("@media print"):]
     assert "#map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .sr-star, .station-caret, .tools-host, .tools-bar { display: none !important; }" in body[body.index("@media print"):]
     assert ".leaflet-container:not(.attr-open) .leaflet-control-attribution { display: none; }" in body
 
@@ -445,3 +445,34 @@ def test_the_fix_round_2_page_rules(client, monkeypatch):
     assert ".fwin .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0;" in body
     # the overlay's and the live panel's zone label: a nautical zone as the window writes it (R-B4, found on the test site)
     assert "if (/^Etc\\//.test(tz || '') && window.AllshoreForecast && window.AllshoreForecast.zoneLabel) return window.AllshoreForecast.zoneLabel(tz);" in body
+
+
+def test_forecast_table_upgrade_markup_and_css(client):
+    """Plan section 35: the Detailed | Summary buttons and the summary container, the table that fills its window
+    (no width cap), the sky tints, the now row, the day dividers, the sticky Date / Time columns, the arrows."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert 'id="modeBar" hidden' in body
+    assert 'data-mode="detailed" aria-pressed="true">Detailed</button>' in body
+    assert 'data-mode="summary" aria-pressed="false">Summary</button>' in body
+    assert '<div id="forecastSummary" class="forecast-summary" hidden></div>' in body
+    for css in ("container-type: inline-size; container-name: fwbody;",
+                "#forecastTable table.forecast-compact { font-size: 12.5px; line-height: 1.25; width: 100%; font-variant-numeric: tabular-nums; }",
+                "@container fwbody (min-width: 1100px) {",
+                "background-image: linear-gradient(var(--tint, transparent), var(--tint, transparent)); }",
+                "#forecastTable tr.sky-twilight { --tint:", "#forecastTable tr.sky-night { --tint:", "#forecastTable tr.now-row { --tint:",
+                "#forecastTable tr.day-first td { border-top: 2px solid #8a949e; }",
+                "#forecastTable td.col-date { font-weight: 700; }",
+                "position: sticky; z-index: 1; background-color: #fff;",
+                "#forecastTable table.forecast-compact td.col-time, #forecastTable thead th.col-time { left: var(--date-w, 0px); }",
+                "#forecastTable thead th.col-date, #forecastTable thead th.col-time { position: sticky; z-index: 3; }",
+                ".dir-arrow { display: inline-block;", ".forecast-summary table { width: 100%;",
+                "#graphs, #forecastSummary { display: none !important; }"):
+        assert css in body, css
+    assert "width: auto; }" not in body.split("#forecastTable table.forecast-compact {")[1].split("\n")[0]
+    assert "fitWidth" not in body and "max-width, the table's width" not in body
+
+
+def test_render_full_inlines_the_summary(monkeypatch, client):
+    monkeypatch.setattr(A, "compute_forecast_payload", lambda *a, **k: dict(G.PAYLOAD, summary_html='<table class="forecast-summary"><tr><td>x</td></tr></table>'))
+    body = client.get("/?station=51201&render=full").get_data(as_text=True)
+    assert '<div id="forecastSummary" class="forecast-summary" hidden><table class="forecast-summary">' in body

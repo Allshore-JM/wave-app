@@ -8,8 +8,8 @@
  * the tab); the settings panel; init() wires them to the page's ids.
  *
  * Page contract (templates/index.html): #forecastWin #fwHeader #fwTitle #fwCycle #fwBusy #fwMin #fwMax
- * #viewBar[data-view] #modelBar[data-model] #rangeBar[data-days] #fwBody #fwError #forecastMeta
- * #forecastTable (#forecastLoading inside it until the first forecast lands) #graphs (.chart-box > canvas
+ * #viewBar[data-view] #modelBar[data-model] #rangeBar[data-days] #modeBar[data-mode] #fwBody #fwError #forecastMeta
+ * #forecastTable (#forecastLoading inside it until the first forecast lands) #forecastSummary #graphs (.chart-box > canvas
  * #heightChart #periodChart #directionChart) #fwResize; #settingsBtn #settingsPanel #tz #unit #station
  * #stationTrigger #stationCurrent (the favourites picker is the window's heading; #fwTitle is its field);
  * #liveBuoyPanel #lwHeader #lwMin #lwClose #lwResize (createLiveWindow). The page dispatches 'allshore:station' {sid, source} on a
@@ -34,9 +34,14 @@
   var MIN_SIZE = { w: 360, h: 220 };
   var PHONE_QUERY = '(max-width: 500px), (max-height: 500px)';   // "phone mode": a bar + full screen, no drag / resize
   var API = '/api/forecast';
-  var TABLE_CHROME = 20 + 2 + 10;                                  // #fwBody padding + the window border + its 5 px side margins (+ the scrollbar, measured)
-  var DEFAULT_W = 1180;                                             // .forecast-win's CSS width: min(1180px, 100vw - 32px)
   var LABEL_PX = 44;                                                // room for one flat date label on the charts
+  var TABLE_MODE_KEY = 'allshore.tableMode.v1';                     // sessionStorage 'detailed' | 'summary' (plan section 35)
+  var COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'];  // the direction axis, every 45 deg
+  var SKY_FILL = { twilight: 'rgba(255,170,0,0.10)', night: 'rgba(30,60,110,0.10)' };   // the plot's bands (the table's tints)
+  var STRIP_FILL = { day: 'rgba(255,220,80,0.18)', twilight: 'rgba(255,170,0,0.30)', night: 'rgba(30,60,110,0.30)' };
+  var STRIP_H = 14, STRIP_GAP = 2;                                  // the sky strip along the top of a chart, in its padding
+  var MOON_MIN_PX = 24;                                             // a night band narrower than this gets no moon glyph
+  var NOW_COLOR = 'rgba(29,111,214,0.9)', NOW_REDRAW_MS = 60000;
 
   // ---- pure state helpers ----
   // The state a page starts from: the URL wins, then the viewer's saved settings (tz, unit only),
@@ -72,30 +77,26 @@
   function keyOf(s) { return [s.station, s.tz || '', s.unit, s.model].join('|'); }
   // A window geometry kept inside a viewport of vw x vh below a top edge: the size shrinks to fit (never
   // below min), the position is pulled back so the whole window (and so its header) stays on screen.
-  // maxW (the table's width in Table view) is applied by CSS max-width only: the viewer's own width is kept, and x is
-  // clamped with the width actually on screen.
-  function clampGeometry(g, vw, vh, top, min, maxW) {
+  // (The table no longer caps the width, plan section 35: a wider window spreads the table's columns.)
+  function clampGeometry(g, vw, vh, top, min) {
     var m = min || MIN_SIZE, t = top || 0, pad = 8;
     var w = Math.max(Math.min(m.w, vw - 2 * pad), Math.min(g.w, vw - 2 * pad));
-    var shown = maxW > 0 ? Math.max(Math.min(w, maxW), Math.min(m.w, vw - 2 * pad)) : w;
     var h = Math.max(Math.min(m.h, vh - t - 2 * pad), Math.min(g.h, vh - t - 2 * pad));
-    var x = Math.min(Math.max(g.x, pad), Math.max(pad, vw - pad - shown));
+    var x = Math.min(Math.max(g.x, pad), Math.max(pad, vw - pad - w));
     var y = Math.min(Math.max(g.y, t + pad), Math.max(t + pad, vh - pad - h));
     return { x: x, y: y, w: w, h: h };
   }
   // A resize from one edge or corner ('n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw') of the window box r by (dx, dy):
-  // the opposite edges stay where they are; the moving edge stops at the minimum size, at the viewport (8 px pad,
-  // below the top edge) and, horizontally, at the table width maxW (Table view). A horizontal resize starts from the
-  // width on screen (min(w, maxW)); a vertical one keeps the viewer's own width. (plan section 27)
-  function resizeGeometry(r, edge, dx, dy, vw, vh, top, min, maxW) {
+  // the opposite edges stay where they are; the moving edge stops at the minimum size and at the viewport (8 px pad,
+  // below the top edge). (plan section 27)
+  function resizeGeometry(r, edge, dx, dy, vw, vh, top, min) {
     var m = min || MIN_SIZE, t = top || 0, pad = 8;
     var minW = Math.min(m.w, vw - 2 * pad), minH = Math.min(m.h, vh - t - 2 * pad);
-    var capW = maxW > 0 ? Math.max(maxW, minW) : Infinity;
-    var shown = Math.min(r.w, capW), x = r.x, y = r.y, w = r.w, h = r.h;
-    if (edge.indexOf('e') >= 0) { w = Math.max(minW, Math.min(shown + dx, capW, vw - pad - r.x)); }
+    var x = r.x, y = r.y, w = r.w, h = r.h;
+    if (edge.indexOf('e') >= 0) { w = Math.max(minW, Math.min(r.w + dx, vw - pad - r.x)); }
     if (edge.indexOf('w') >= 0) {
-      var right = r.x + shown;
-      x = Math.max(pad, right - capW, Math.min(r.x + dx, right - minW)); w = right - x;
+      var right = r.x + r.w;
+      x = Math.max(pad, Math.min(r.x + dx, right - minW)); w = right - x;
     }
     if (edge.indexOf('s') >= 0) { h = Math.max(minH, Math.min(r.h + dy, vh - pad - r.y)); }
     if (edge.indexOf('n') >= 0) {
@@ -427,25 +428,136 @@
     return true;
   }
   function readRange(storage) { try { var v = storage.getItem(RANGE_KEY); return v === '7' || v === '3' ? v : 'full'; } catch (e) { return 'full'; } }
+  function readTableMode(storage) { try { return storage.getItem(TABLE_MODE_KEY) === 'summary' ? 'summary' : 'detailed'; } catch (e) { return 'detailed'; } }
+
+  // ---- the sky on the charts (plan section 35) ----
+  // The server's graph_data.sky: one of 'day' / 'twilight' / 'night' per slot (computed from the real sun at the
+  // station), when it is there for every slot. Older or sky-less payloads fall back to the fixed 6 PM - 6 AM rule
+  // on the labels' own hours.
+  function hasSky(gd, n) { return !!(gd && Array.isArray(gd.sky) && gd.sky.length === n); }
+  function skyOf(gd, parsed) {
+    var n = parsed.length;
+    if (hasSky(gd, n)) return gd.sky.map(function (s) { return s === 'night' || s === 'twilight' || s === 'day' ? s : null; });
+    return parsed.map(function (d) { var h = d ? d.getHours() : NaN; return !Number.isFinite(h) ? null : (h >= 18 || h < 6) ? 'night' : 'day'; });
+  }
+  // Runs of twilight / night slots inside [minIdx, maxIdx): [{from, to, kind}], slot i spanning [i, i+1).
+  function skyBands(kinds, minIdx, maxIdx) {
+    var out = [], cur = null;
+    for (var i = minIdx; i < maxIdx; i++) {
+      var k = kinds[i] === 'twilight' || kinds[i] === 'night' ? kinds[i] : null;
+      if (cur && cur.kind === k) { cur.to = i + 1; continue; }
+      if (cur) out.push(cur);
+      cur = k ? { from: i, to: i + 1, kind: k } : null;
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+  function viewRange(chart, n) {
+    var x = chart.scales && chart.scales.x;
+    var lo = Math.max(0, Math.floor(x && x.min != null ? x.min : 0)), hi = Math.min(n - 1, Math.ceil(x && x.max != null ? x.max : n - 1));
+    return [lo, hi];
+  }
+  // the plot's twilight / night bands (drawn first: the grid lines paint over them)
+  function makeNightShade(parsed, kinds) {
+    return { id: 'nightShade', beforeDraw: function (chart) {
+      var ctx = chart.ctx, area = chart.chartArea, x = chart.scales && chart.scales.x;
+      if (!area || !x || !ctx) return;
+      var r = viewRange(chart, parsed.length);
+      ctx.save();
+      skyBands(kinds, r[0], r[1]).forEach(function (b) {
+        var x0 = x.getPixelForValue(b.from), x1 = x.getPixelForValue(b.to), w = x1 - x0;
+        if (!Number.isFinite(w) || w <= 0) return;
+        ctx.fillStyle = SKY_FILL[b.kind]; ctx.fillRect(x0, area.top, w, area.bottom - area.top);
+      });
+      ctx.restore();
+    } };
+  }
+  // A thin strip along the top of the plot: the day / twilight / night bands with the sun at sunrise and sunset, the
+  // moon at moonrise and moonset, and the moon's phase glyph in each night band wide enough to carry it. events:
+  // graph_data.sun_events [{t: slot (fractional allowed), kind, text, name}] ('moon' marks the start of a night).
+  function makeSkyStrip(parsed, kinds, events) {
+    var glyph = { sunrise: '☀', sunset: '☀', moonrise: '☾', moonset: '☾' };
+    return { id: 'skyStrip', afterDatasetsDraw: function (chart) {
+      var ctx = chart.ctx, area = chart.chartArea, x = chart.scales && chart.scales.x;
+      if (!area || !x || !ctx) return;
+      var n = parsed.length, r = viewRange(chart, n), top = area.top - STRIP_H - STRIP_GAP, mid = top + STRIP_H / 2;
+      var left = area.left, right = area.right;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(left, top, right - left, STRIP_H); ctx.clip();
+      ctx.fillStyle = STRIP_FILL.day; ctx.fillRect(left, top, right - left, STRIP_H);
+      var bands = skyBands(kinds, r[0], r[1]), runs = skyBands(kinds, 0, n);     // the view's bands; the whole night runs
+      bands.forEach(function (b) {
+        var x0 = x.getPixelForValue(b.from), x1 = x.getPixelForValue(b.to);
+        if (Number.isFinite(x1 - x0) && x1 > x0) { ctx.fillStyle = STRIP_FILL[b.kind]; ctx.fillRect(x0, top, x1 - x0, STRIP_H); }
+      });
+      ctx.font = '11px system-ui, -apple-system, "Segoe UI", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#333';
+      (events || []).forEach(function (e) {
+        if (!e || !Number.isFinite(+e.t)) return;
+        var t = +e.t;
+        if (e.kind === 'moon') {                                               // the phase glyph in the middle of its night run (the part in view)
+          var b = null;
+          for (var i = 0; i < runs.length; i++) if (runs[i].kind === 'night' && runs[i].from <= t && t < runs[i].to) { b = runs[i]; break; }
+          if (!b || b.to <= r[0] || b.from > r[1]) return;
+          var bx0 = Math.max(left, x.getPixelForValue(Math.max(b.from, r[0]))), bx1 = Math.min(right, x.getPixelForValue(Math.min(b.to, r[1] + 1)));
+          if (bx1 - bx0 >= MOON_MIN_PX && e.text) ctx.fillText(String(e.text), (bx0 + bx1) / 2, mid);
+          return;
+        }
+        if (!glyph[e.kind] || t < r[0] || t > r[1] + 1) return;
+        var px = x.getPixelForValue(t);
+        if (Number.isFinite(px) && px >= left && px <= right) ctx.fillText(glyph[e.kind], px, mid);
+      });
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(left, top + STRIP_H - 0.5); ctx.lineTo(right, top + STRIP_H - 0.5); ctx.stroke();
+      ctx.restore();
+    } };
+  }
+  // The wall clock now in an IANA zone as a Date in the browser's own calendar (the convention parseLabel uses for the
+  // labels, so the two compare directly). null for an unknown zone or without Intl.
+  function zoneWallClock(tz, nowMs) {
+    if (!tz || typeof Intl === 'undefined' || !Intl.DateTimeFormat) return null;
+    try {
+      var parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' }).formatToParts(new Date(nowMs));
+      var v = {};
+      parts.forEach(function (p) { v[p.type] = +p.value; });
+      if (!Number.isFinite(v.year) || !Number.isFinite(v.hour)) return null;
+      return new Date(v.year, v.month - 1, v.day, v.hour === 24 ? 0 : v.hour, v.minute, 0);
+    } catch (e) { return null; }
+  }
+  // The fractional slot of a wall-clock time among the parsed labels, or -1 outside the series (or with gaps).
+  function nowIndex(parsed, wall) {
+    if (!wall || isNaN(wall) || !parsed || parsed.length < 2) return -1;
+    var t = +wall, n = parsed.length;
+    if (!(parsed[0] && parsed[n - 1]) || t < +parsed[0] || t > +parsed[n - 1]) return -1;
+    for (var k = 0; k < n - 1; k++) {
+      var a = parsed[k], b = parsed[k + 1];
+      if (!a || !b) return -1;
+      if (t >= +a && t <= +b) { var span = +b - +a; return span > 0 ? k + (t - +a) / span : k; }
+    }
+    return -1;
+  }
+  // a dashed line at the current time in the forecast's zone, redrawn on a timer so it keeps moving
+  function makeNowLine(parsed, tz, now) {
+    return { id: 'nowLine', afterDatasetsDraw: function (chart) {
+      var ctx = chart.ctx, area = chart.chartArea, x = chart.scales && chart.scales.x;
+      if (!area || !x || !ctx) return;
+      var i = nowIndex(parsed, zoneWallClock(tz, now()));
+      if (i < 0) return;
+      var r = viewRange(chart, parsed.length);
+      if (i < r[0] || i > r[1]) return;
+      var px = x.getPixelForValue(i);
+      if (!Number.isFinite(px) || px < area.left || px > area.right) return;
+      ctx.save();
+      ctx.strokeStyle = NOW_COLOR; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(px, area.top); ctx.lineTo(px, area.bottom); ctx.stroke();
+      ctx.setLineDash([]); ctx.font = '10px system-ui, -apple-system, "Segoe UI", sans-serif'; ctx.fillStyle = NOW_COLOR; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText('now', px + 3, area.top + 2);
+      ctx.restore();
+    } };
+  }
+  function dirTick(v) { return Number.isFinite(v) && v >= 0 && v <= 360 && v % 45 === 0 ? COMPASS[v / 45] : ''; }
 
   function createForecastGraphs(deps) {
-    var charts = [], data = null, dirty = true, ac = null, rendering = null;
-    function makeNightShade(parsed) {
-      return { id: 'nightShade', beforeDraw: function (chart, args, opts) {
-        var ctx = chart.ctx, area = chart.chartArea, x = chart.scales && chart.scales.x;
-        if (!area || !x) return;
-        var startH = 18, endH = 6, fill = (opts && opts.fill) || 'rgba(0,0,0,0.06)';
-        var N = parsed.length, minIdx = Math.max(0, Math.floor(x.min == null ? 0 : x.min)), maxIdx = Math.min(N - 1, Math.ceil(x.max == null ? N - 1 : x.max));
-        ctx.save(); ctx.fillStyle = fill;
-        for (var i = minIdx; i < maxIdx; i++) {
-          var h = parsed[i] ? parsed[i].getHours() : NaN;
-          if (!Number.isFinite(h) || !(h >= startH || h < endH)) continue;
-          var x0 = x.getPixelForValue(i), x1 = x.getPixelForValue(i + 1), w = x1 - x0;
-          if (Number.isFinite(w) && w > 0) ctx.fillRect(x0, area.top, w, area.bottom - area.top);
-        }
-        ctx.restore();
-      } };
-    }
+    var charts = [], data = null, dirty = true, ac = null, rendering = null, tick = null;
     function makeXAxis(parsed) {
       var mids = dayStarts(parsed), major = new Set(mids), minor = new Set(noonStarts(parsed));
       var idx = function (c) { return c.tick && typeof c.tick.index === 'number' ? c.tick.index : c.index; };
@@ -462,10 +574,12 @@
       return ds;
     }
     function build(Chart, gd, parsed) {
-      var shade = makeNightShade(parsed), xAxis = makeXAxis(parsed);
+      var kinds = skyOf(gd, parsed), sky = hasSky(gd, parsed.length), xAxis = makeXAxis(parsed);
+      var plugins = [makeNightShade(parsed, kinds), makeNowLine(parsed, gd.tz, deps.now || function () { return Date.now(); })];
+      if (sky) plugins.push(makeSkyStrip(parsed, kinds, gd.sun_events || []));
       var mode = slotted(gd) && registerRowMode(Chart) ? ROW_MODE : 'index';
       var common = { responsive: true, maintainAspectRatio: false, interaction: { mode: mode, intersect: false, axis: 'x' },
-        layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } }, elements: { point: { radius: 1.6 }, line: { tension: 0.25, borderWidth: 0 } },
+        layout: { padding: { top: sky ? 8 + STRIP_H + STRIP_GAP : 8, right: 8, bottom: 0, left: 8 } }, elements: { point: { radius: 1.6 }, line: { tension: 0.25, borderWidth: 0 } },
         // one line of legend above the plot (it used to wrap under it and eat the plot height)
         plugins: { legend: { position: 'top', align: 'start', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 6, padding: 8, font: { size: 11 } } }, tooltip: { mode: mode === ROW_MODE ? ROW_MODE : 'nearest', intersect: false }, decimation: { enabled: false } },
         animation: false };
@@ -475,20 +589,18 @@
       var pArr = keys.map(function (k) { return gd.period[k]; });
       var pMax = padMax(maxAcross(pArr), 0.05); if (!Number.isFinite(pMax)) pMax = 10; var pStep = periodStep(pMax); pMax = niceCeil(pMax, pStep);
       var pMin = periodFloor(minAcross(pArr), pStep);
-      var dArr = keys.map(function (k) { return gd.direction[k]; });
-      var dMin = minAcross(dArr), dMax = maxAcross(dArr);
-      if (!Number.isFinite(dMin) || !Number.isFinite(dMax) || dMin === dMax) { dMin = 0; dMax = 360; }
       function opts(title, y) {
-        return Object.assign({}, common, { plugins: Object.assign({}, common.plugins, { title: { display: false, text: title }, nightShade: { nightStart: 18, nightEnd: 6, fill: 'rgba(0,0,0,0.06)' } }),
+        return Object.assign({}, common, { plugins: Object.assign({}, common.plugins, { title: { display: false, text: title } }),
           scales: { x: xAxis, y: Object.assign({ grid: { display: true, color: 'rgba(0,0,0,0.08)' }, border: { color: 'rgba(0,0,0,0.2)' } }, y) } });
       }
       var specs = [
         ['Swell Height', series(gd.height, true, keys), { beginAtZero: true, min: 0, max: hMax, ticks: { stepSize: hStep }, title: { display: true, text: 'Height (' + gd.units + ')' } }],
         ['Swell Period', series(gd.period, false, keys), { min: pMin, max: pMax, ticks: { stepSize: pStep }, title: { display: true, text: 'Period (s)' } }],
-        ['Swell Direction', series(gd.direction, false, keys), { min: dMin, max: dMax, ticks: { stepSize: 45 }, title: { display: true, text: 'Direction (°)' } }]
+        // the compass, N at both ends: a swell near north no longer jumps between 350 and 10 on a data-driven range
+        ['Swell Direction', series(gd.direction, false, keys), { min: 0, max: 360, ticks: { stepSize: 45, callback: function (v) { return dirTick(+v); } }, title: { display: true, text: 'Direction (from)' } }]
       ];
       return specs.map(function (sp, i) {
-        return new Chart(deps.canvases[i].getContext('2d'), { type: 'line', data: { labels: gd.labels, datasets: sp[1] }, plugins: [shade], options: opts(sp[0], sp[2]) });
+        return new Chart(deps.canvases[i].getContext('2d'), { type: 'line', data: { labels: gd.labels, datasets: sp[1] }, plugins: plugins, options: opts(sp[0], sp[2]) });
       });
     }
     // hover / touch on one chart shows the same index on the other two (listeners die with the signal)
@@ -527,6 +639,7 @@
       charts.forEach(function (c) { try { c.destroy(); } catch (e) {} });
       charts = [];
       if (ac) { ac.abort(); ac = null; }
+      if (tick) { (deps.clearInterval || clearInterval)(tick); tick = null; }
     }
     function applyRange(v) {
       if (!data) return;
@@ -557,6 +670,9 @@
         wireSync(charts, ac.signal);
         fit();
         applyRange(readRange(deps.storage));
+        // the 'now' line moves: a redraw a minute while the charts live (never keeps a Node process alive)
+        tick = (deps.setInterval || setInterval)(function () { charts.forEach(function (c) { try { c.draw(); } catch (e) {} }); }, NOW_REDRAW_MS);
+        if (tick && typeof tick.unref === 'function') tick.unref();
         dirty = false;
       }, function (err) {
         rendering = null;
@@ -588,10 +704,10 @@
     this.mode = saved.mode === 'normal' || saved.mode === 'max' || saved.mode === 'min' ? saved.mode : dflt;
     this.prev = saved.prev === 'max' ? 'max' : 'normal';
     if (deps.canMax === false) { if (this.mode === 'max') this.mode = 'normal'; this.prev = 'normal'; }
-    this.opener = null; this.maxW = 0;
+    this.opener = null;
     this._applyMode();
     // phone mode leaves the geometry to CSS: a saved desktop box is neither applied nor cut down to the phone (G18b-B P3-3)
-    if (this.geom && !this.isPhone()) this._place(clampGeometry(this.geom, deps.win.innerWidth, deps.win.innerHeight, this._top(), null, this.maxW));
+    if (this.geom && !this.isPhone()) this._place(clampGeometry(this.geom, deps.win.innerWidth, deps.win.innerHeight, this._top()));
     this._bind();
   }
   FloatingWindow.prototype._top = function () { return this.d.topBarHeight ? this.d.topBarHeight() : 0; };
@@ -608,7 +724,6 @@
   FloatingWindow.prototype._applyMode = function () {
     var cl = this.el.classList;
     cl.toggle('fw-min', this.mode === 'min'); cl.toggle('fw-max', this.mode === 'max');
-    if (this.el.style) this.el.style.maxWidth = this.maxW && this.mode !== 'min' ? this.maxW + 'px' : '';
     if (this.d.onMode) this.d.onMode(this.mode);
   };
   FloatingWindow.prototype.setMode = function (mode) {
@@ -625,28 +740,18 @@
   // the window's current box (from CSS until the first drag or resize)
   FloatingWindow.prototype._rect = function () {
     if (this.geom) return this.geom;
-    var r = this.el.getBoundingClientRect(), w = r.width;
-    if (this.maxW && w >= this.maxW - 1) w = Math.min(DEFAULT_W, this.d.win.innerWidth - 32);   // capped on screen: the CSS default width
-    return { x: r.left, y: r.top, w: w, h: r.height };
+    var r = this.el.getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
   };
-  // The widest the window may be (0 = the viewport): the table's own width in Table view, so neither a drag,
-  // a key nor maximising shows white space beside it. Not applied to the minimised chip (its own CSS width).
-  FloatingWindow.prototype.setMaxWidth = function (w) {
-    this.maxW = w > 0 ? Math.round(w) : 0;
-    this.el.style.maxWidth = this.maxW && this.mode !== 'min' ? this.maxW + 'px' : '';   // the saved width stays the viewer's
-  };
-  // a resize starts from the width on screen and, in Table view, stops at the table
-  FloatingWindow.prototype._shown = function (w) { return this.maxW ? Math.min(w, this.maxW) : w; };
-  FloatingWindow.prototype._resized = function (w) { return this.maxW ? Math.min(w, this.maxW) : w; };
   FloatingWindow.prototype.resizeBy = function (dw, dh) {
     var r = this._rect(), d = this.d;
-    this._place(resizeGeometry(r, 'se', dw, dh, d.win.innerWidth, d.win.innerHeight, this._top(), null, this.maxW));   // like the pointer grip (G19-A P3-2)
+    this._place(resizeGeometry(r, 'se', dw, dh, d.win.innerWidth, d.win.innerHeight, this._top()));   // like the pointer grip (G19-A P3-2)
     this._save();
     if (d.onResize) d.onResize();
   };
   FloatingWindow.prototype.clamp = function () {
     if (!this.geom || this.isPhone()) return;
-    this._place(clampGeometry(this.geom, this.d.win.innerWidth, this.d.win.innerHeight, this._top(), null, this.maxW));
+    this._place(clampGeometry(this.geom, this.d.win.innerWidth, this.d.win.innerHeight, this._top()));
     this._save();
   };
   FloatingWindow.prototype._bind = function () {
@@ -660,8 +765,8 @@
         var dx = ev.clientX - sx, dy = ev.clientY - sy;
         if (!moved && Math.abs(dx) + Math.abs(dy) < 2) return;
         moved = true;
-        if (kind === 'move') { self._place(clampGeometry({ x: r.x + dx, y: r.y + dy, w: r.w, h: r.h }, d.win.innerWidth, d.win.innerHeight, self._top(), null, self.maxW)); return; }
-        self._place(resizeGeometry(r, edge || 'se', dx, dy, d.win.innerWidth, d.win.innerHeight, self._top(), null, self.maxW));
+        if (kind === 'move') { self._place(clampGeometry({ x: r.x + dx, y: r.y + dy, w: r.w, h: r.h }, d.win.innerWidth, d.win.innerHeight, self._top())); return; }
+        self._place(resizeGeometry(r, edge || 'se', dx, dy, d.win.innerWidth, d.win.innerHeight, self._top()));
       }
       function onUp() {
         target.removeEventListener('pointermove', onMove); target.removeEventListener('pointerup', onUp); target.removeEventListener('pointercancel', onUp);
@@ -769,8 +874,8 @@
     var $ = function (id) { return doc.getElementById(id); };
     // the title is the picker's own label (#stationCurrent: the favourites picker is the window's heading)
     var els = { win: $('forecastWin'), header: $('fwHeader'), title: $('stationCurrent') || $('fwTitle'), cycle: $('fwCycle'), busy: $('fwBusy'), min: $('fwMin'), max: $('fwMax'),
-      viewBar: $('viewBar'), modelBar: $('modelBar'), rangeBar: $('rangeBar'), body: $('fwBody'), error: $('fwError'), meta: $('forecastMeta'),
-      table: $('forecastTable'), graphs: $('graphs'), note: $('fwNote'), handle: $('fwResize'), tz: $('tz'), unit: $('unit'), station: $('station'), trigger: $('stationTrigger') };
+      viewBar: $('viewBar'), modelBar: $('modelBar'), rangeBar: $('rangeBar'), modeBar: $('modeBar'), body: $('fwBody'), error: $('fwError'), meta: $('forecastMeta'),
+      table: $('forecastTable'), summary: $('forecastSummary'), graphs: $('graphs'), note: $('fwNote'), handle: $('fwResize'), tz: $('tz'), unit: $('unit'), station: $('station'), trigger: $('stationTrigger') };
     if (!els.win || !els.body || !els.table) return null;
     function safeStorage(name) {
       try { var st = win[name]; if (st && typeof st.getItem === 'function' && typeof st.setItem === 'function') return st; } catch (e) {}
@@ -779,18 +884,20 @@
     var session = opts.storage || safeStorage('sessionStorage'), local = opts.settings || safeStorage('localStorage');
     var initial = opts.initial || {}, swanStations = initial.swan_stations || [];
     var state = resolveInitialState((win.location && win.location.search) || '', readJson(local, SETTINGS_KEY), initial);
+    // the table's Detailed | Summary mode (plan section 35): the tab's own preference, never in the address bar
+    var tableMode = readTableMode(session), summaryAvail = false, revealPending = false, revealedFor = null;
     var fw = new FloatingWindow({ el: els.win, header: els.header, handle: els.handle, storage: session, win: win,
       onMode: function (m) {
         if (els.min) { els.min.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); els.min.setAttribute('aria-label', m === 'min' ? 'Expand forecast' : 'Minimise forecast'); els.min.textContent = m === 'min' ? '▴' : '–'; }
         if (els.max) els.max.setAttribute('aria-pressed', m === 'max' ? 'true' : 'false');
         if (opts.onMode) opts.onMode(m);
-        if (m !== 'min') fitWidth();
+        if (m !== 'min') { placeSticky(); revealNow(); }
       },
-      onResize: function () { if (state.view === 'Graph') graphs.resize(); else fitWidth(); } });
+      onResize: function () { if (state.view === 'Graph') graphs.resize(); else placeSticky(); } });
     var canvases = ['heightChart', 'periodChart', 'directionChart'].map($);
     var graphs = createForecastGraphs({ host: els.graphs, boxes: canvases.map(function (c) { return c.parentNode; }), canvases: canvases, rangeBar: els.rangeBar,
       loadChartJs: opts.loadChartJs || function () { return win.Chart ? Promise.resolve() : Promise.reject(new Error('Chart.js unavailable')); },
-      getChart: function () { return win.Chart; }, storage: session,
+      getChart: function () { return win.Chart; }, storage: session, now: opts.now, setInterval: opts.setInterval, clearInterval: opts.clearInterval,
       bodyHeight: function () { return els.body.clientHeight; },
       visible: function () { return state.view === 'Graph' && fw.mode !== 'min' && !els.graphs.hidden; },
       onError: function () { showError('Charts are unavailable right now.', function () { return setView('Graph'); }); } });
@@ -849,6 +956,7 @@
             error: showError,
             clear: function () {                                              // a failed load leaves nothing of the last forecast (G22 B-7, R-A9, R-A10)
               clearNode(els.table); setMeta(null); graphs.setData(null);
+              if (els.summary) clearNode(els.summary); summaryAvail = false; applyPanels();
               text(els.cycle, ''); if (els.cycle) els.cycle.title = '';
               if (els.modelBar) els.modelBar.hidden = true;
               note(null);
@@ -865,11 +973,15 @@
               setMeta(d.graph_header);
               if (d.table_html) els.table.innerHTML = d.table_html;           // the server's own table (build_html_table)
               else { clearNode(els.table); if (!d.error) { var p = doc.createElement('div'); p.className = 'text-muted'; p.textContent = 'No forecast available.'; els.table.appendChild(p); } }   // an error is said once, in its box (G22 K-5)
+              if (els.summary) { if (d.summary_html) els.summary.innerHTML = d.summary_html; else clearNode(els.summary); }   // the day-by-day Summary (plan section 35)
+              summaryAvail = !!(els.summary && d.summary_html);
               if (d.error && !d.table_html) showError(String(d.error), d.final ? null : retry || null);   // visible in both views, with Retry (a failed build is not cached; a land point's answer is final)
               else if (d.error) showError(String(d.error), null);
               else showError(null, null);
               graphs.setData(d.graph_data);
-              fitWidth();                                                     // the window follows the new table's width
+              applyPanels(); placeSticky();
+              if (d.table_html && st.station !== revealedFor) { revealedFor = st.station; revealPending = true; }   // once per station or point landing, not on a unit / zone change
+              revealNow();
               syncSelects();
               // the page's other parts (the model overlay's valid-time zone and run line) follow the forecast on screen
               // ok: a forecast is on screen (a refused point - land, busy - is not; the page saves a new point only then)
@@ -885,22 +997,49 @@
       }
       if (els.unit && els.unit.value !== state.unit) els.unit.value = state.unit;
     }
-    // Table view: the window is no wider than its table (+ the body's padding, border and a scrollbar); Graph view
-    // and phones: the full width. Measured only while the table is on screen (a minimised body measures 0).
-    function fitWidth() {
-      if (!fw) return;
-      if (state.view !== 'Table' || fw.isPhone()) { fw.setMaxWidth(0); return; }
-      var t = els.table.querySelector ? els.table.querySelector('table') : null, w = t ? t.scrollWidth : 0;
-      var bar = els.body.offsetWidth > 0 ? Math.max(0, els.body.offsetWidth - els.body.clientWidth) : 18;   // 0 with overlay scrollbars
-      if (w > 0) fw.setMaxWidth(w + TABLE_CHROME + bar);
+    // What is on screen: the detailed table, the day-by-day summary or the graphs, and the toolbar groups that go
+    // with each (the range buttons with the graphs, the Detailed | Summary buttons with a table that has a summary).
+    function applyPanels() {
+      var g = state.view === 'Graph', sum = !g && tableMode === 'summary' && summaryAvail;
+      els.table.hidden = g || sum;
+      if (els.summary) els.summary.hidden = !sum;
+      if (els.graphs) els.graphs.hidden = !g;
+      if (els.rangeBar) els.rangeBar.hidden = !g;
+      if (els.modeBar) els.modeBar.hidden = g || !summaryAvail;
+    }
+    function setTableMode(m) {
+      tableMode = m === 'summary' ? 'summary' : 'detailed';
+      pressed(els.modeBar, 'data-mode', tableMode);
+      try { session.setItem(TABLE_MODE_KEY, tableMode); } catch (e) {}
+      applyPanels();
+      if (tableMode === 'detailed') revealNow();
+    }
+    // The sticky Time column sits right of the sticky Date column: its left offset is the Date column's rendered width
+    // (the page's CSS reads --date-w; it changes with the window's text size).
+    function placeSticky() {
+      var t = els.table.querySelector ? els.table.querySelector('table') : null;
+      var c = t && t.querySelector ? t.querySelector('td.col-date') : null, w = c ? c.offsetWidth : 0;
+      if (t && t.style && w > 0) t.style.setProperty('--date-w', w + 'px');
+    }
+    // The current hour's row is brought into view once per station or point: only in Table view, Detailed mode and
+    // with the window open (deferred until then), just under the frozen header. The body alone scrolls.
+    function revealNow() {
+      if (!revealPending || state.view !== 'Table' || fw.mode === 'min' || tableMode !== 'detailed') return;
+      revealPending = false;
+      var row = els.table.querySelector ? els.table.querySelector('tr.now-row') : null; if (!row) return;
+      var head = els.table.querySelector('thead'), hh = head && head.offsetHeight ? head.offsetHeight : 0;
+      var rr = row.getBoundingClientRect ? row.getBoundingClientRect() : null, br = els.body.getBoundingClientRect ? els.body.getBoundingClientRect() : null;
+      if (!rr || !br) return;
+      var ctx = row.offsetHeight || 0;                                           // one row of context above the now row
+      els.body.scrollTop = Math.max(0, (rr.top - br.top) + els.body.scrollTop - hh - ctx);
     }
     function setView(v) {
       state.view = v === 'Graph' ? 'Graph' : 'Table';
       pressed(els.viewBar, 'data-view', state.view);
       var g = state.view === 'Graph';
-      els.table.hidden = g; if (els.graphs) els.graphs.hidden = !g; if (els.rangeBar) els.rangeBar.hidden = !g;
-      fitWidth();
+      applyPanels(); placeSticky();
       loader.sync();
+      if (!g) revealNow();
       return g ? graphs.show() : Promise.resolve();
     }
     // the element to give the focus back to: on screen, or none (a favourites button is hidden with its list)
@@ -924,6 +1063,7 @@
     });
     if (els.viewBar) els.viewBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-view]') : null; if (b) setView(b.getAttribute('data-view')); });
     if (els.modelBar) els.modelBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-model]') : null; if (b) loader.load({ model: b.getAttribute('data-model') === 'SWAN' ? 'SWAN' : 'GFS' }); });
+    if (els.modeBar) els.modeBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-mode]') : null; if (b) setTableMode(b.getAttribute('data-mode')); });
     function saveSettings() { writeJson(local, SETTINGS_KEY, { tz: state.tz, unit: state.unit }); }
     // the settings are saved BEFORE the load, so the address bar names nothing a reload would not assume anyway
     if (els.tz) els.tz.addEventListener('change', function () { state.tz = els.tz.value || ''; saveSettings(); loader.load({}); });
@@ -943,13 +1083,15 @@
     var settings = createSettings({ button: $('settingsBtn'), panel: $('settingsPanel'), document: doc, focusFirst: function () { if (els.tz && els.tz.focus) els.tz.focus(); } });
     // start
     syncSelects();
+    setTableMode(tableMode);                                                     // the buttons show the tab's preference before the first forecast
     setView(state.view);
     if (initial.inline) {
       loader.seed({ table_html: initial.error ? null : (els.table.innerHTML.trim() || null), graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
         error: initial.error || null, model: initial.model, swan_available: initial.swan_available, wind_complete: initial.wind_complete,
-        point: initial.point || null, final: !!initial.final, reason: initial.reason || null });
+        point: initial.point || null, final: !!initial.final, reason: initial.reason || null, summary_html: initial.summary_html || null });
     } else loader.load({});
-    app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, setView: setView, expand: expand, minimise: minimise, note: note, els: els };
+    app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, setView: setView, setTableMode: setTableMode,
+      tableMode: function () { return tableMode; }, expand: expand, minimise: minimise, note: note, els: els };
     return app;
   }
 
@@ -969,6 +1111,8 @@
       SETTINGS_KEY: SETTINGS_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
+      TABLE_MODE_KEY: TABLE_MODE_KEY, STRIP_H: STRIP_H, STRIP_GAP: STRIP_GAP, MOON_MIN_PX: MOON_MIN_PX, NOW_REDRAW_MS: NOW_REDRAW_MS, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands,
+      makeNightShade: makeNightShade, makeSkyStrip: makeSkyStrip, makeNowLine: makeNowLine, zoneWallClock: zoneWallClock, nowIndex: nowIndex, dirTick: dirTick,
       createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY,
       POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,

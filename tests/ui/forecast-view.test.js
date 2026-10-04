@@ -182,3 +182,18 @@ test('an older payload (no sky, no summary) renders as before: the hour-rule sha
   assert.equal(c.length, 3); assert.deepEqual(c[0].config.plugins.map((p) => p.id), ['nightShade']); assert.equal(c[0].options.layout.padding.top, 8);
   assert.deepEqual([c[2].options.scales.y.min, c[2].options.scales.y.max], [0, 360]);
 });
+
+test('each mode keeps its own scroll: the summary opens at its top, the detailed table returns where it was; another station starts afresh', async () => {
+  const b = boot({}); await settle();
+  b.fs_.last().release(skyPayload()); await settle();
+  b.app.window.setMode('normal');
+  b.page.body.scrollTop = 300;                                       // the visitor scrolled the detailed table
+  b.app.setTableMode('summary'); assert.equal(b.page.body.scrollTop, 0, 'the summary from its top');
+  b.page.body.scrollTop = 40;
+  b.app.setTableMode('detailed'); assert.equal(b.page.body.scrollTop, 300, 'back where the detailed table was');
+  b.app.setTableMode('summary'); assert.equal(b.page.body.scrollTop, 40, 'and the summary where it was');
+  b.app.setTableMode('summary'); assert.equal(b.page.body.scrollTop, 40, 'the same mode again: nothing moves');
+  b.app.loader.load({ station: '46001' }); await settle(); b.fs_.last().release(skyPayload({ station: '46001' })); await settle();
+  b.page.body.scrollTop = 120; b.app.setTableMode('detailed');
+  assert.equal(b.page.body.scrollTop, 0, 'another station: no remembered place (the now row is revealed when there is one)');
+});

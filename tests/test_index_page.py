@@ -470,6 +470,11 @@ def test_forecast_table_upgrade_markup_and_css(client):
         assert css in body, css
     assert "width: auto; }" not in body.split("#forecastTable table.forecast-compact {")[1].split("\n")[0]
     assert "fitWidth" not in body and "max-width, the table's width" not in body
+    # the frozen header and the sticky columns at offset 0: no body padding above or beside the table (a sticky table
+    # header at a negative offset let a few pixels of the scrolled rows show above it)
+    assert ".forecast-win .fw-body { padding: 0 0 8px; }" in body
+    assert "#forecastTable thead { position: sticky; top: 0; z-index: 2; }" in body and "top: -8px" not in body
+    assert ".forecast-win #forecastMeta { padding-top: 8px; }" in body
 
 
 def test_render_full_inlines_the_summary(monkeypatch, client):

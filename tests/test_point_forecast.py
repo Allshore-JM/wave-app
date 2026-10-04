@@ -1270,7 +1270,7 @@ def test_station_forecasts_are_untouched(monkeypatch):
     rows = [["Thursday, October 1, 2026", "2:00 AM"] + [1.0, 10.0, 300] + [None] * 15 + [5.0, 60, 1.2]]
     monkeypatch.setattr(A, "parse_bull", lambda station, tz: ("Cycle : 20261001 12 UTC", "Location : 51201 (21.67N 158.12W)", None, rows, "Pacific/Honolulu", None))
     d = A.compute_forecast_payload("51201", None, "US")
-    assert sorted(d) == ["error", "graph_data", "graph_header", "lat", "lon", "model", "station", "swan_available", "table_html", "tz_label", "wind_complete"]
+    assert sorted(d) == ["error", "graph_data", "graph_header", "lat", "lon", "model", "station", "summary_html", "swan_available", "table_html", "tz_label", "wind_complete"]
     assert d["graph_header"]["location"] == "51201 (21.67N 158.12W)"
 
 

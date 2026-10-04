@@ -120,3 +120,51 @@ Recorded for later, not in this round: the pre-existing per-station fallback fet
 thread (3 x 40 s when its ERDDAP is down) — a detail request's own, shorter timeout without retries; tz-tagging of the
 merged list without waiting for the TimezoneFinder load (first served markers ~5 s instead of ~34 s after a start on a
 CPU-starved instance; K-2); a content-based version for providers (no rebuild for identical lists).
+
+## Re-check of the fix round (2026-10-04)
+Two fresh reviewers at MAX on `feat/live-bg` @ 4613030 (db3f91b + golden) and the test site @ f290b78: R1 the server
+(no browser), R2 the client and the visitor's view. **0 P0, 0 P1, 4 P2, 10 P3** (R1 0/0/3/6, R2 0/0/1/4). Every G25
+item was confirmed FIXED with evidence, except A-11 (one of its eight pins missing: the time-zone finder built twice,
+RA17; pinned since) and B-9 (memory, open).
+
+What the reviewers confirmed:
+- R1: every click on a cold provider answers the 503 contract in at most 1.9 ms server-side on the real feeds (294
+  answers); after a start `/healthz` is never at 503 for more than 10 s, also on a dead-MI-IE day; the concurrent test is
+  stable (64 of 64 runs, also under CPU load); about 43,000 randomised list requests, 8,741 `/latest` and 5,649 `/healthz`
+  under stop/start chaos found no deadlock, no request over 120 ms and no inconsistent body; the live-stations golden is
+  byte-identical and the inline path unchanged.
+- R2: the window's quiet retry on the real page against local servers (503 in 10 ms, `Retry-After` honoured, the render
+  without an error state, a switch to another buoy stops the loop, late answers ignored); B-1 to B-6 frame by frame, in
+  Node with fake timers and with 57 + 15 mutants; the test site over 21 minutes: 420 `/healthz` answers all 200 and 420
+  list answers all complete (562 markers).
+
+| # | P | Finding | Outcome |
+|---|---|---|---|
+| R1 N-1 | P2 | `build_failing` answered 503, so one odd feed record (a CEFAS platform with a numeric id and no description fails every merged build) would make Render restart the whole site in a loop while the feed carried it. | FIXED @ 42a7476: reported in the body, never a 503; a station name is always text. |
+| R1 N-2 | P2 | MI-IE's per-station fallback held a request thread for about 2 minutes (3 x 40 s on its retrying session) right after its list fetch failed. | FIXED @ cc3b1ea (the owner asked for it before production): no direct request while the list's last refresh failed; otherwise one attempt with 3 s / 8 s timeouts and no retries. |
+| R1 N-3 | P2 | `LIVE_TICK_SEC` accepted up to 600 s while the stall limit was 180 s: a quiet site would read "stalled" for most of every cycle and Render would restart it. | FIXED @ 42a7476: the tick is clamped to 1-120 s and the stall limit is max(180 s, 3 ticks). |
+| R2 N-1 | P2 | A unit change while the live window waited showed the previous buoy's numbers under this buoy's name (the root cause is also in production's code; the quiet retry made the wait long). | FIXED @ 75fa516: opening a window forgets what the previous buoy rendered; an error hides the generic panel. |
+| R1 N-4 | P3 | The fork reset missed the providers lock and the pass counters. | FIXED @ 42a7476. |
+| R1 N-5 | P3 | Docs: this record's `/components` claim; README wording ("no request ever waits"), the section title's version, a misplaced sentence, the `/healthz` docstring. | FIXED (README @ 75fa516 and 42a7476; the record is corrected below). |
+| R1 N-6 | P3 | The deploy watch after the fix round did not show a zero-downtime switch: two 10 s timeouts (22:04:40 and 22:04:50 UTC), then the new instance answered at uptime 17.8 s. The free service had most likely idled, so there was no old instance to keep. | ACCEPTED as a correction of the author's claim; the next test-site deploy is watched with the instance kept awake first. |
+| R1 N-7 | P3 | `/healthz` stayed 200 while every refresh worker hung on a slow-drip feed (timeouts are per read, not overall). | FIXED @ 42a7476: `fetch_stuck` (every worker held by one fetch for 15 minutes) answers 503; providers report `in_flight_s`. |
+| R1 N-8 | P3 | Test hygiene and mutation gaps: idle worker threads left by a test; the non-blocking switch cleared outside the service lock; no pins for the tick's lower bound, the default grace, the build-failure count, a first failure's age, the runner's `waiting` or the finder's singleton. | FIXED @ 42a7476: `ThreadRunner.shutdown()`, the switch under the lock, a pin for each. |
+| R1 N-9 | P3 | A NaN position from any feed made the merged list invalid JSON for every visitor (pre-existing). | FIXED @ 42a7476: positions that are not finite numbers are dropped. |
+| R2 N-2 | P3 | The window's retry loop was weakly pinned (no cap, the `Retry-After` clamp and default, the stale check after the fetch). | FIXED @ 75fa516: harness pins; 12 of 12 window mutants killed. |
+| R2 N-3 | P3 | An MI-IE window could spin about 4 minutes and end on a Cloudflare 524 HTML page shown as a JSON parse error; the give-up text read as still trying. | FIXED @ cc3b1ea + 75fa516: the short fallback; a non-JSON answer is an ordinary failure; the wait is explained under the spinner; the give-up says the buoy's data is not available yet. |
+| R2 N-4 | P3 | The growing deadline still drops an answer slower than 30 s. | ACCEPTED: not reachable on the normal path (0.1-0.3 s). |
+| R2 N-5 | P3 | A README sentence sat on the wrong bullet. | FIXED @ 75fa516. |
+
+Correction to the record above: the A-1 outcome and "The fix round" say `/latest` AND `/components` answer 503 for a
+cold provider. Only `/latest` does, and that is right: `/components` never needs a provider's list (the spectra code is a
+static table).
+
+Mutation after the fixes: the re-check fixes 20 of 20 mutants killed (tick clamp, stall limit, the `/healthz` rule, the
+fork reset, finite positions, names as text, the in-flight time, the runner's shutdown; one first survived and got a
+pin: a stopped runner starts workers again for new jobs); the finder's singleton 2 of 2; the Irish fallback 6 of 6; the
+window 12 of 12. Suites at 42a7476: pytest 824 passed, Node 409 passed.
+
+Still open before production: B-9 (the test service's memory over a day, on Render's graph) and a restart of the test
+service watched from outside under the new `/healthz` rule (N-6). Accepted for the owner's awareness: on a CPU-starved
+instance the first served markers wait for the time-zone finder's load (about 29-34 s on the free test instance, K-2);
+the page shows the remembered list meanwhile.

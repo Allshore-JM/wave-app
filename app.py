@@ -285,7 +285,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.16.5"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.16.6"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript"}
@@ -1426,6 +1426,7 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
         # swell's direction).
         hdr_tokens = lines[start_idx - 1].split()
         hst_idx = hdr_tokens.index("Hst") if "Hst" in hdr_tokens else 1
+        swell_idx = hdr_tokens.index("Hs") if "Hs" in hdr_tokens else 6       # swell 1's Hs column (G24 A-7)
 
         import re
         m_old = re.search(r"(\d{8})\s*(\d{2})", cycle_str)
@@ -1461,7 +1462,7 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
                 date_str_local = local_dt.strftime("%A, %B %d, %Y").lstrip('0')
             time_str_local = local_dt.strftime("%I:%M %p").lstrip('0')
             row = [date_str_local, time_str_local]
-            idx_base = 6
+            idx_base = swell_idx
             for _ in range(6):
                 hs_val = tp_val = dir_val = None
                 tokens_collected = 0
@@ -1786,8 +1787,15 @@ def _clock_state(time_str):
     return None
 
 
+def _ascii(s: str) -> str:
+    """s with every non-ASCII character as a numeric character reference (the browser shows the same text). The
+    tables are built by `html +=`: once that string holds one non-ASCII character CPython stores it 2-4 bytes per
+    character and every later append copies it (G24 A-1: 250 ms instead of 10 ms for a 385-row table)."""
+    return s if s.isascii() else s.encode("ascii", "xmlcharrefreplace").decode("ascii")
+
+
 def _sun_cell(info) -> str:
-    """The Sun column: the moon's phase on the first row of a night, then the events in the row's slot."""
+    """The Sun column: the moon's phase on the first row of a night, then the events in the row's slot (ASCII)."""
     parts = []
     if info.get("moon"):
         m = info["moon"]
@@ -1797,7 +1805,7 @@ def _sun_cell(info) -> str:
         when = e["time"].strftime("%I:%M %p").lstrip("0")
         parts.append(f'<span class="sun-ev ev-{e["kind"]}" title="{html_escape(e["name"])} {when}">'
                      f'{html_escape(e["text"])}</span>')
-    return "<br>".join(parts)
+    return _ascii("<br>".join(parts))
 
 
 def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None,
@@ -1859,9 +1867,10 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         html += f'<th colspan="3" scope="colgroup" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {g + 1}</th>'
     if not compact:
         html += comb_th
-    html += f'<th colspan="2" scope="colgroup" style="background-color:{wind_colors["header"]}; color:white; text-align:center;">Wind</th>'
+    last = ' class="col-last"' if compact and not sky else ''  # the window table's right-edge cells draw that edge
+    html += f'<th colspan="2" scope="colgroup"{last} style="background-color:{wind_colors["header"]}; color:white; text-align:center;">Wind</th>'
     if sky:                                                    # the last column (owner, plan section 35)
-        html += '<th rowspan="2" scope="col" class="col-sun" title="Sun and moon">Sun/Moon</th>'
+        html += '<th rowspan="2" scope="col" class="col-sun col-last" title="Sun and moon">Sun/Moon</th>'
     html += '</tr>\n'
 
     # subheaders
@@ -1880,7 +1889,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     if not compact:
         html += comb_sub
     html += f'<th scope="col" style="background-color:{wind_colors["subheader"]}; text-align:center;">Spd<br>{wind_spd_label}</th>'
-    html += f'<th scope="col" style="background-color:{wind_colors["subheader"]}; text-align:center;">Dir</th>'
+    html += f'<th scope="col"{last} style="background-color:{wind_colors["subheader"]}; text-align:center;">Dir</th>'
     html += '</tr>\n'
     html += '</thead>\n'
 
@@ -1965,9 +1974,9 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         html += f'<td style="{wind_style}">{spd_str}</td>'
         wdir = row[21]
         dir_str = "" if wdir is None else (_dir_cell(wdir) if compact else f"{wdir}&deg; {_compass16(wdir)}")
-        html += f'<td style="{wind_style} white-space:nowrap;">{dir_str}</td>'
+        html += f'<td{last} style="{wind_style} white-space:nowrap;">{dir_str}</td>'
         if sky:                                                # Sun/Moon: the last column
-            html += f'<td class="col-sun">{_sun_cell(info or {})}</td>'
+            html += f'<td class="col-sun col-last">{_sun_cell(info or {})}</td>'
         html += '</tr>\n'
 
     html += '</tbody>\n'
@@ -1988,7 +1997,7 @@ def _circular_mean(dirs, weights):
 
 
 def _short_clock(t) -> str:
-    """'6:24 AM' from a datetime; '11 AM' for whole hours when short=True."""
+    """'6:24 AM' from a datetime."""
     return t.strftime("%I:%M %p").lstrip("0")
 
 
@@ -2010,7 +2019,7 @@ def _trend(vals, times):
     return "steady", "steady"
 
 
-TREND_GLYPH = {"rising": "↗", "falling": "↘", "peak": "▲", "steady": "→"}
+TREND_GLYPH = {"rising": "↗\ufe0e", "falling": "↘\ufe0e", "peak": "▲\ufe0e", "steady": "→\ufe0e"}   # U+FE0E: text, not emoji (G24 B-4)
 SYSTEM_TP_FRAC, SYSTEM_TP_MIN, SYSTEM_DIR = 0.20, 1.5, 40.0
 
 
@@ -2052,11 +2061,14 @@ def _swell_systems(win, to_h):
 
 
 def summary_days(rows, ann, days, unit):
-    """One entry per forecast day over its daylight rows, first light to last light (the rows whose sky state is day;
-    plan section 35): significant height range + trend, the two most powerful swell columns of the day
-    (summed Hs^2 x Tp: rank_rows already orders each hour's systems by that power), wind range + mean direction,
-    sunrise / sunset and the moon. A first or last day with no daylight rows in the forecast is left out; a polar
-    night keeps its row with a note."""
+    """One entry per forecast day over its daylight rows, first light to last light (the rows whose sky state is day,
+    i.e. at least partly in daylight; plan section 35): significant height range + trend, the two most powerful swell
+    SYSTEMS of the day (_swell_systems: every hour's samples grouped by period and direction, summed Hs^2 x Tp), wind
+    range + mean direction, sunrise / sunset and the moon (tonight's: the badge of the night that starts that evening,
+    the one the detailed table shows; else day_summary's at nightfall). A day the forecast itself cuts says so: "from
+    8:00 AM" when the day's FIRST row (of any state) comes more than an hour after sunrise, "until 2:00 PM" when its
+    LAST row comes more than an hour before sunset (both can show). A first or last day with no daylight rows in the
+    forecast is left out; a polar night keeps its row with a note."""
     to_h = (lambda ft: ft) if unit == "US" else (lambda ft: ft / 3.28084)
     to_w = (lambda ms: ms * 2.23694) if unit == "US" else (lambda ms: ms * 3.6)
     order, by_date = [], {}
@@ -2072,17 +2084,20 @@ def summary_days(rows, ann, days, unit):
     for di, d in enumerate(order):
         info = (days or {}).get(d) or {}
         win = [(t, r) for t, r, a in by_date[d] if a and a.get("state") == "day"]
+        evening = next((a["moon"] for t, r, a in by_date[d] if a and a.get("moon") and t.hour >= 12), None)
         day = {"date": d, "label": _short_date(by_date[d][0][1][0]), "long": by_date[d][0][1][0], "info": info,
-               "note": None, "hs": None, "swells": [], "wind": None}
+               "note": None, "hs": None, "swells": [], "wind": None, "moon": evening or info.get("moon")}
         if not win:
             if info.get("sky") == "polar night":
                 day["note"] = "Polar night"
                 out.append(day)
             continue                                   # a partial first or last day without daylight in the forecast
-        if info.get("sunrise") and win[0][0] > info["sunrise"] + timedelta(hours=1):
-            day["note"] = "from " + _short_clock(win[0][0])
-        elif info.get("sunset") and win[-1][0] < info["sunset"] - timedelta(hours=1):
-            day["note"] = "until " + _short_clock(win[-1][0])
+        notes = []
+        if info.get("sunrise") and by_date[d][0][0] > info["sunrise"] + timedelta(hours=1):
+            notes.append("from " + _short_clock(win[0][0]))         # the forecast starts after this day's sunrise
+        if info.get("sunset") and by_date[d][-1][0] < info["sunset"] - timedelta(hours=1):
+            notes.append("until " + _short_clock(win[-1][0]))       # the forecast ends before this day's sunset
+        day["note"] = " ".join(notes) or None
         hv = [(t, to_h(r[-1])) for t, r in win if r[-1] is not None]
         if hv:
             vals = [v for _, v in hv]
@@ -2130,7 +2145,8 @@ def build_summary_html(rows, ann, days, unit, tz_label=None) -> str:
                  f'title="{html_escape(str(day["long"]))}">{html_escape(str(day["label"]))}{note}</td>')
         hs = day["hs"]
         if hs:
-            html += (f'<td><span class="sum-range">{num(hs["min"])}&ndash;{num(hs["max"])} {h_unit}</span> '
+            rng = num(hs["min"]) if num(hs["min"]) == num(hs["max"]) else f'{num(hs["min"])}&ndash;{num(hs["max"])}'
+            html += (f'<td><span class="sum-range">{rng} {h_unit}</span> '
                      f'<span class="trend trend-{hs["trend"]}">{TREND_GLYPH[hs["trend"]]} {html_escape(hs["text"])}</span></td>')
         else:
             html += "<td></td>"
@@ -2145,12 +2161,12 @@ def build_summary_html(rows, ann, days, unit, tz_label=None) -> str:
         for k in ("sunrise", "sunset"):
             t = info.get(k)
             html += f'<td class="sum-sun">{sky.EVENT_GLYPH[k]} {_short_clock(t)}</td>' if t else '<td class="sum-sun">&mdash;</td>'
-        m = info.get("moon")
+        m = day.get("moon")
         html += (f'<td class="sum-moon"><span class="moon-phase" title="{html_escape(m["name"])}, {m["pct"]}% illuminated">'
                  f'{m["glyph"]} {m["pct"]}%</span></td>' if m else "<td></td>")
         html += "</tr>\n"
     html += "</tbody>\n</table>"
-    return html
+    return _ascii(html)
 
 
 # ------------------------------ Flask routes -----------------------------------

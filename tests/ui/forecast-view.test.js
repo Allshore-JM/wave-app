@@ -252,3 +252,65 @@ test('the place is the panel on screen: a detailed table shown for want of a sum
   b.app.setView('Table');
   assert.equal(b.page.summary.hidden, false); assert.equal(b.page.body.scrollTop, 0, 'the summary from its top, not the detailed table\'s 300');
 });
+
+
+// ---- G24 fix round ----
+test('a forecast that lands while the detailed table is hidden gets its --date-w when the table shows (G24 B-1)', async () => {
+  const b = boot({ session: { 'allshore.tableMode.v1': 'summary' } }); await settle(); const t = wireTable(b);
+  // a hidden table measures nothing: width 0 while hidden, the real width once shown
+  t.dateCell.getBoundingClientRect = () => ({ width: b.page.table.hidden ? 0 : 74.921875 });
+  Object.defineProperty(t.dateCell, 'offsetWidth', { get: () => (b.page.table.hidden ? 0 : 75), configurable: true });
+  b.app.window.setMode('normal');
+  t.tableEl.style['--date-w'] = undefined;           // (a real page has no table yet here: nothing to measure)
+  b.fs_.last().release(skyPayload()); await settle();
+  assert.equal(b.page.table.hidden, true, 'Summary on screen');
+  assert.equal(t.tableEl.style['--date-w'], undefined, 'nothing measured while hidden');
+  b.app.setTableMode('detailed');
+  assert.equal(t.tableEl.style['--date-w'], '74.92px', 'measured when the detailed table shows');
+  // the same from the Graph view
+  t.tableEl.style['--date-w'] = undefined;
+  b.app.setView('Graph'); b.app.setView('Table');
+  assert.equal(t.tableEl.style['--date-w'], '74.92px');
+});
+
+test('an error answer clears the revealed station: back to it, the now row is revealed again (G24 B-8)', async () => {
+  const b = boot({}); await settle(); wireTable(b); b.app.window.setMode('normal');
+  b.fs_.last().release(skyPayload()); await settle();
+  assert.equal(b.page.body.scrollTop, 340, 'revealed');
+  b.app.loader.load({ station: '99999' }); await settle();
+  b.fs_.last().release(payload({ station: '99999', table_html: null, error: 'No .bull file found for 99999' })); await settle();
+  b.page.body.scrollTop = 0;
+  b.app.loader.load({ station: '51201' }); await settle();
+  const last = b.fs_.last(); if (last && !last.done) { last.release(skyPayload()); await settle(); }
+  assert.equal(b.page.body.scrollTop, 340, 'revealed again');
+  b.page.body.scrollTop = 0;
+  b.app.loader.load({ station: '46001' }); await settle(); b.fs_.last().fail(); await settle();          // a failed fetch
+  b.app.loader.load({ station: '51201' }); await settle();
+  const again = b.fs_.last(); if (again && !again.done) { again.release(skyPayload()); await settle(); }
+  assert.equal(b.page.body.scrollTop, 340, 'and after a failed fetch');
+});
+
+test('the tab\'s table mode is stored when it is chosen, not on every page load (G24 B-10)', async () => {
+  const b = boot({}); await settle();
+  assert.equal(b.win.sessionStorage.getItem('allshore.tableMode.v1'), null, 'nothing written by the start');
+  b.fs_.last().release(skyPayload()); await settle();
+  b.app.setTableMode('summary'); assert.equal(b.win.sessionStorage.getItem('allshore.tableMode.v1'), 'summary');
+  b.app.setTableMode('detailed'); assert.equal(b.win.sessionStorage.getItem('allshore.tableMode.v1'), 'detailed');
+});
+
+test('viewRange widens a fractional x range to whole slots and clamps it (G24 B-10: m18)', () => {
+  const i = I();
+  assert.deepEqual(i.viewRange({ scales: { x: { min: 10.4, max: 19.6 } } }, 48), [10, 20]);
+  assert.deepEqual(i.viewRange({ scales: { x: { min: -3, max: 99 } } }, 48), [0, 47]);
+  assert.deepEqual(i.viewRange({ scales: {} }, 48), [0, 47]);
+});
+
+test('choosing a table mode in Graph view moves nothing (G24 B-10: m20)', async () => {
+  const b = boot({}); await settle();
+  b.fs_.last().release(skyPayload()); await settle(); b.app.window.setMode('normal');
+  b.app.setView('Graph'); b.page.body.scrollTop = 250;
+  b.app.setTableMode('summary');
+  assert.equal(b.page.body.scrollTop, 250, 'the graphs keep their place');
+  b.app.setView('Table');
+  assert.equal(b.page.summary.hidden, false); assert.equal(b.page.body.scrollTop, 0, 'the summary from its top');
+});

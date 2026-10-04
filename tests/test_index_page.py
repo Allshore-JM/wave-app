@@ -478,9 +478,12 @@ def test_forecast_table_upgrade_markup_and_css(client):
     # black borders, night rows dashed grey, the Date column not bold on its own. The borders are separate so the
     # frozen cells carry their own (Chromium paints a frozen cell's collapsed borders where the cell would have been:
     # found at 1:1 on the test site as 1-px slivers of the scrolled rows beside the frozen Date / Time columns).
-    for css in ("#forecastTable table.forecast-compact { border-collapse: separate; border-spacing: 0; border-right: 1px solid #dee2e6; border-bottom: 1px solid #dee2e6; }",
+    for css in ("#forecastTable table.forecast-compact { border-collapse: separate; border-spacing: 0; }",
                 "#forecastTable table.forecast-compact th, #forecastTable table.forecast-compact td { border: 0 solid #dee2e6; border-top-width: 1px; border-left-width: 1px; }",
-                "#forecastTable table.forecast-compact .col-time { border-right-width: 1px; }",
+                "#forecastTable table.forecast-compact .col-time, #forecastTable table.forecast-compact .col-last { border-right-width: 1px; }",
+                "#forecastTable table.forecast-compact tbody > tr:last-child > td { border-bottom-width: 1px; }",
+                "#forecastTable .sun-ev.ev-dawn, #forecastTable .sun-ev.ev-dusk { color: #6f5816; }",
+                "#forecastTable .sun-ev.ev-sunrise, #forecastTable .sun-ev.ev-sunset { color: #934207; }",
                 "#forecastTable table.forecast-compact .col-time + *, #forecastTable table.forecast-compact thead > tr:nth-child(2) > :first-child { border-left-width: 0; }",
                 "#forecastTable table.forecast-compact thead > tr:last-child > *, #forecastTable table.forecast-compact thead > tr:first-child > [rowspan] { border-bottom-width: 1px; }",
                 "#forecastTable table.forecast-compact tr.sky-day > td { font-weight: 700; border-color: #000; }",
@@ -489,7 +492,9 @@ def test_forecast_table_upgrade_markup_and_css(client):
                 "#forecastTable table.forecast-compact tbody > tr:first-child > td { border-top-width: 0; }"):
         assert css in body, css
     for gone in ("sky-twilight", "#forecastTable td.col-date { font-weight: 700; }", "box-shadow: inset 1px 0 0 #dee2e6",
-                 "inset 0 1px 0 #dee2e6", "#forecastTable thead tr:first-child { border-top-width: 0; }"):
+                 "inset 0 1px 0 #dee2e6", "#forecastTable thead tr:first-child { border-top-width: 0; }",
+                 "border-right: 1px solid #dee2e6; border-bottom: 1px solid #dee2e6",       # the table's own grey edges (G24 B-5)
+                 "#b4530a", "#8a6d1f", ".forecast-summary .trend-peak { color: #1d6fd6; }"):  # G24 B-7 (B-6: the sunrise rule above has no weight)
         assert gone not in body, gone
 
 

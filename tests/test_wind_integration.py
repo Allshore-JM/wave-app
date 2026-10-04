@@ -93,6 +93,8 @@ def test_gfs_legacy_format_wind_join(monkeypatch):
         assert len(r) == 23
     # combined = the header's Hst column (it was the line's last number: swell 6's direction)
     assert [r[-1] for r in rows] == [round(v * 3.28084, 2) for v in (1.27, 1.28, 1.28)]
+    # the swells start at the header's first "Hs" column (G24 A-7: they started at token 6 = swell 2's period)
+    assert rows[0][2:8] == [round(1.18 * 3.28084, 2), 7.9, (226 + 180) % 360, round(0.40 * 3.28084, 2), 12.8, (133 + 180) % 360]
     # legacy rows are cycle + 0/1/2 h = 12,13,14 UTC; wind covers 12 & 13.
     assert rows[0][20] == 8.09 and rows[0][21] == 72   # 12 UTC
     assert rows[1][20] == 8.09 and rows[1][21] == 72   # 13 UTC

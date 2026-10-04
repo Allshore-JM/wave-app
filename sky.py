@@ -3,15 +3,20 @@
 Everything here is computed by PyEphem for a place (lat/lon) and a forecast zone (IANA name), and handed back in the
 rows' own convention: naive local times in that zone, the way the parsers write a row's date and time.
 
-- Sky state of a row (day / night) comes from the SUN'S ALTITUDE AT THE ROW'S TIME, not from comparing the row with
-  that date's sunrise and sunset: in Reykjavik on 20 June the evening's sunset falls at 00:03 the next morning and the
-  sun never gets 6 degrees below the horizon (USNO), and above the polar circles there are days with no sunrise at all;
-  the altitude needs no special cases. Day = the sun's centre above -6 deg, i.e. the row's time lies between first
-  light and last light (civil twilight; owner: a row between them looks like daylight); night = below. A row whose slot
-  holds first light and sunrise but starts before first light is a night row.
+- Sky state of a row (day / night): DAY when any part of the row's slot lies between first light and last light
+  (owner: a row at least partly in daylight looks like full daylight; with first light at 6:02 the 6 AM row is a
+  daylight row), i.e. the sun's centre is above -6 deg (civil twilight) at the row's time, or first light falls inside
+  the slot; NIGHT when the whole slot is dark. The sun's ALTITUDE decides, not a comparison with that date's sunrise and
+  sunset: in Reykjavik on 20 June the evening's sunset falls at 00:03 the next morning and the sun never gets 6 degrees
+  below the horizon (USNO), and above the polar circles there are days with no sunrise at all; the altitude needs no
+  special cases.
 - Events (first light, sunrise, sunset, last light, moonrise, moonset) are searched over the whole forecast range, so an
-  event after midnight belongs to the row it falls in. Checked against USNO (tests/test_sky.py): within 1 min.
-- The moon's phase (fraction of the synodic month since the last new moon) and lit fraction are taken at the time asked.
+  event after midnight belongs to the row it falls in. Checked against USNO (tests/test_sky.py): within 1 min. Above
+  ~89 deg latitude the single yearly sunrise / sunset can be missed (ephem's daily search raises there); no forecast
+  place lies that far north (the map ends at 84 N).
+- The moon's phase (fraction of the synodic month since the last new moon) and lit fraction are taken at the time asked;
+  its name is a principal phase (new, first quarter, full, last quarter) only within 12 hours of that phase's instant,
+  else waxing / waning crescent / gibbous (USNO's convention).
 
 Without PyEphem (`AVAILABLE` False) every function returns None and the site serves its tables as before."""
 import functools
@@ -60,8 +65,8 @@ def _utc(edate):
 
 def to_utc(tz, naive, after=None):
     """A row's naive local time -> aware UTC. In the hour a clock falls back the wall time exists twice: the first
-    instant later than `after` (the previous row) is taken, so rows stay in order; a time skipped by a clock going
-    forward is read as standard time."""
+    instant later than `after` (the previous row) is taken, so rows stay in order; a wall time skipped by a clock going
+    forward is read on the summer-time offset (the earlier of the two readings)."""
     cands = []
     for dst in (True, False):
         try:
@@ -89,16 +94,58 @@ def sun_state(obs, utc):
     return "day" if sun_alt(obs, utc) > TWILIGHT_ALT else "night"
 
 
+PRINCIPAL = (("new", "New moon", "Waxing crescent"), ("first", "First quarter", "Waxing gibbous"),
+             ("full", "Full moon", "Waning gibbous"), ("last", "Last quarter", "Waning crescent"))
+PRINCIPAL_WINDOW = 0.5                    # days: a principal phase names the moon within 12 h of its instant
+
+
+PHASE_BLOCK = 16                          # days per cache entry of principal phase instants
+
+
+@functools.lru_cache(maxsize=64)
+def _principal_phases(block):
+    """The principal phase instants (ephem dates, sorted) from 40 days before ephem day block * PHASE_BLOCK to 40 days
+    after the block's end: [(edate, index into PRINCIPAL)]. A forecast's ~35 moon lookups share one or two entries."""
+    lo, hi = block * PHASE_BLOCK - 40, (block + 1) * PHASE_BLOCK + 40
+    out = []
+    for k, (prev_f, next_f) in enumerate(((ephem.previous_new_moon, ephem.next_new_moon),
+                                          (ephem.previous_first_quarter_moon, ephem.next_first_quarter_moon),
+                                          (ephem.previous_full_moon, ephem.next_full_moon),
+                                          (ephem.previous_last_quarter_moon, ephem.next_last_quarter_moon))):
+        t = float(prev_f(ephem.Date(lo)))
+        while t < hi:
+            out.append((t, k))
+            t = float(next_f(ephem.Date(t + 1)))
+    out.sort()
+    return tuple(out)
+
+
+def moon_name(d):
+    """The moon's name at ephem date `d`: a principal phase within PRINCIPAL_WINDOW of its instant, else the
+    crescent / gibbous between the principal phases around it."""
+    d = float(d)
+    phases = _principal_phases(int(d // PHASE_BLOCK))
+    before = [(t, k) for t, k in phases if t <= d]
+    after = [(t, k) for t, k in phases if t > d]
+    if before and d - before[-1][0] < PRINCIPAL_WINDOW:
+        return PRINCIPAL[before[-1][1]][1]
+    if after and after[0][0] - d < PRINCIPAL_WINDOW:
+        return PRINCIPAL[after[0][1]][1]
+    return PRINCIPAL[before[-1][1]][2] if before else PRINCIPAL[(after[0][1] - 1) % 4][2]
+
+
 def moon_at(utc, lat):
-    """The moon at `utc`: phase (0 new, 0.5 full), lit fraction, glyph and name. The emoji show the moon as seen from
-    the northern hemisphere (a waxing crescent lit on the right); south of the equator the lit side is mirrored."""
+    """The moon at `utc`: phase (0 new, 0.5 full), lit fraction, glyph and name. The glyph is one of eight, each
+    covering an eighth of the cycle around its phase (the usual display); the name follows USNO's convention (a
+    principal phase only within 12 h of its instant). The emoji show the moon as seen from the northern hemisphere (a
+    waxing crescent lit on the right); south of the equator the lit side is mirrored."""
     d = _edate(utc)
     prev, nxt = ephem.previous_new_moon(d), ephem.next_new_moon(d)
     phase = (float(d) - float(prev)) / (float(nxt) - float(prev))
     lit = float(ephem.Moon(d).moon_phase)
     i = int(phase * 8 + 0.5) % 8
     g = (8 - i) % 8 if lat < 0 else i
-    return {"phase": phase, "illumination": lit, "glyph": MOON_GLYPHS[g], "name": MOON_NAMES[i],
+    return {"phase": phase, "illumination": lit, "glyph": MOON_GLYPHS[g], "name": moon_name(d),
             "pct": int(round(lit * 100))}
 
 
@@ -166,7 +213,10 @@ def annotate_rows(times, lat, lon, tz_name, now_utc=None):
     {state, events: [{kind, text, name, time}], moon (on the first row of each run of night rows), day_first, now}.
 
     Row i covers [t_i, t_i+1): an hourly row shows the events of its hour, a 3-hourly row those of its three hours, and
-    the last row a slot as long as the step before it. Returns None without PyEphem, coordinates or a zone."""
+    the last row a slot as long as the step before it. The state is 'day' when any part of the slot lies between first
+    light and last light (see the module's notes). An event's text carries AM / PM when its half of the day differs
+    from the row's (a 3-hourly 11 PM row holding a 12:40 AM moonrise). Returns None without PyEphem, coordinates or a
+    zone."""
     if not AVAILABLE or lat is None or lon is None or not tz_name:
         return None
     try:
@@ -204,15 +254,20 @@ def annotate_rows(times, lat, lon, tz_name, now_utc=None):
             continue
         while j < len(evs) and evs[j][0] < u:
             j += 1
+        local = times[i]
         mine = []
         k = j
         while k < len(evs) and evs[k][0] < ends[i]:
             eu, kind = evs[k]
-            mine.append({"kind": kind, "text": event_text(eu, tz, kind), "name": EVENT_NAME[kind],
-                         "time": local_naive(eu, tz)})
+            tl = local_naive(eu, tz)
+            text = event_text(eu, tz, kind)
+            if (tl.hour < 12) != (local.hour < 12):
+                text += " AM" if tl.hour < 12 else " PM"
+            mine.append({"kind": kind, "text": text, "name": EVENT_NAME[kind], "time": tl})
             k += 1
         state = sun_state(obs, u)
-        local = times[i]
+        if state == "night" and any(e["kind"] == "dawn" for e in mine):
+            state = "day"                  # first light falls inside the slot: the row is partly daylight (owner)
         out.append({
             "state": state,
             "events": mine,
@@ -226,8 +281,9 @@ def annotate_rows(times, lat, lon, tz_name, now_utc=None):
 
 def day_summary(lat, lon, tz_name, dates):
     """{date: {dawn, sunrise, sunset, dusk, moonrise, moonset (naive local or None), sky ('normal' | 'midnight sun' |
-    'polar night'), moon (moon_at local noon)}} for the summary view. A date's events are those whose LOCAL date is
-    that date (first light and sunrise the first of the day, sunset and last light the last)."""
+    'polar night'), moon (moon_at nightfall: the day's last light, else local noon)}} for the summary view, or None
+    (no PyEphem, no place, or a span the event search refuses). A date's events are those whose LOCAL date is that
+    date (first light and sunrise the first of the day, sunset and last light the last)."""
     if not AVAILABLE or lat is None or lon is None or not tz_name or not dates:
         return None
     try:
@@ -237,11 +293,14 @@ def day_summary(lat, lon, tz_name, dates):
     first, last = min(dates), max(dates)
     start = to_utc(tz, datetime.combine(first, datetime.min.time()))
     end = to_utc(tz, datetime.combine(last + timedelta(days=1), datetime.min.time()))
-    evs = events(lat, lon, start, end) or []
+    evs = events(lat, lon, start, end)
+    if evs is None:
+        return None
     obs = _observer(lat, lon)
     out = {}
     for d in sorted(set(dates)):
         row = {k: None for k in EVENT_KINDS}
+        dusk_u = None
         for eu, kind in evs:
             t = local_naive(eu, tz)
             if t.date() != d:
@@ -249,11 +308,13 @@ def day_summary(lat, lon, tz_name, dates):
             if kind in ("dawn", "sunrise", "moonrise") and row[kind] is not None:
                 continue                   # keep the first
             row[kind] = t
+            if kind == "dusk":
+                dusk_u = eu
         noon = to_utc(tz, datetime.combine(d, datetime.min.time()) + timedelta(hours=12))
         if row["sunrise"] is None and row["sunset"] is None:
             row["sky"] = "midnight sun" if sun_alt(obs, noon) > DAY_ALT else "polar night"
         else:
             row["sky"] = "normal"
-        row["moon"] = moon_at(noon, lat)
+        row["moon"] = moon_at(dusk_u or noon, lat)
         out[d] = row
     return out

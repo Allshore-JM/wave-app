@@ -1,5 +1,6 @@
 """The compact forecast table for the forecast window (plan section 25) and its opt-in on /api/forecast.
 The classic table (the page as served today) is pinned by tests/test_spec_wind.py and the page golden."""
+import html as H
 import re
 
 import pytest
@@ -150,18 +151,21 @@ def test_compact_table_with_sky_shades_rows_by_the_real_sky_and_adds_the_sun_col
                    '<tr class="sky-night" data-t="2026-09-26T06:00">',             # 6 AM holds first light but starts before it
                    '<tr class="sky-day now-row" data-t="2026-09-26T14:00">',
                    '<tr class="sky-night" data-t="2026-09-26T21:00">']
-    assert '<th rowspan="2" scope="col" class="col-sun" title="Sun and moon">Sun/Moon</th>' in html
+    assert '<th rowspan="2" scope="col" class="col-sun col-last" title="Sun and moon">Sun/Moon</th>' in html
+    assert html.isascii()                                                # every glyph a numeric reference (G24 A-1)
     body = html.split("<tbody>")[1]
     assert "border:" not in body and "font-weight" not in body           # the classes carry the look
-    assert ('<span class="sun-ev ev-dawn" title="First light 6:02 AM">\u25D0 6:02</span><br>'
-            '<span class="sun-ev ev-sunrise" title="Sunrise 6:24 AM">\u2600\u2191 6:24</span>') in body
-    assert body.count('class="moon-phase" title="Waxing gibbous, 72% illuminated">\U0001F314 72%</span>') == 2
+    assert ('<span class="sun-ev ev-dawn" title="First light 6:02 AM">&#9680; 6:02</span><br>'
+            '<span class="sun-ev ev-sunrise" title="Sunrise 6:24 AM">&#9728;&#8593; 6:24</span>') in body
+    text = H.unescape(body)
+    assert ('\u25D0 6:02' in text and '\u2600\u2191 6:24' in text)
+    assert text.count('class="moon-phase" title="Waxing gibbous, 72% illuminated">\U0001F314 72%</span>') == 2
     first = body.split("</tr>")[0]
     assert first.count("<td") == 2 + 1 + 3 * 6 + 2 + 1                 # date, time, height, six swells, wind, sun/moon
     assert ('<td class="col-date" title="Saturday, September 26, 2026">Sat 9/26</td><td class="col-time">5:00 AM</td>'
             '<td style="background-color:#EDE9F4; text-align:right;">4.10</td>') in first   # Sig. Wave Height first after Time
-    assert first.endswith('<td class="col-sun"><span class="moon-phase" title="Waxing gibbous, 72% illuminated">'
-                          '🌔 72%</span></td>')                    # Sun/Moon last
+    assert first.endswith('<td class="col-sun col-last"><span class="moon-phase" title="Waxing gibbous, 72% illuminated">'
+                          '&#127764; 72%</span></td>')             # Sun/Moon last
 
 
 def test_without_a_matching_sky_the_compact_table_keeps_the_clock_rule():
@@ -209,10 +213,12 @@ def test_the_payload_carries_the_sky_for_the_table_and_the_graphs(monkeypatch):
     d = A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)
     html, g = d["table_html"], d["graph_data"]
     assert "col-sun" in html and "sky-day" in html and "sky-night" in html and "sky-twilight" not in html
-    assert "\u2600\u2191 6:24" in html and "\u2600\u2193 6:18" in html     # Honolulu, 3 Oct 2026 (USNO 6:24 / 6:18)
+    assert html.isascii()
+    assert "\u2600\u2191 6:24" in H.unescape(html) and "\u2600\u2193 6:18" in H.unescape(html)   # Honolulu, 3 Oct 2026 (USNO 6:24 / 6:18)
     assert len(g["sky"]) == len(g["labels"]) == 30
     assert set(g["sky"]) == {"day", "night"} and "sun_events" not in g      # the charts shade by it; no strip
-    assert g["sky"][6] == "night" and g["sky"][7] == "day" and g["sky"][18] == "day" and g["sky"][19] == "night"   # first light 6:02, last light 6:40 PM
+    # first light 6:02, last light 6:40 PM: the 6 AM and 6 PM slots are partly daylight (owner), 5 AM and 7 PM dark
+    assert g["sky"][5] == "night" and g["sky"][6] == "day" and g["sky"][18] == "day" and g["sky"][19] == "night"
     classic = A.compute_forecast_payload("51201", None, "US", "GFS")
     assert "col-sun" not in classic["table_html"] and classic["graph_data"]["sky"] is None
     # a failure in the sky costs nothing else: the clock rule, no graph sky, the same numbers
@@ -243,3 +249,31 @@ def test_the_window_table_puts_the_significant_height_first_and_sun_moon_last():
     assert order == ["Swell 6", "Significant Wave Height", "Wind"]
     without_sky = A.build_html_table("c", "l", "", rows, "UTC", "US", compact=True)
     assert re.findall(r"<td[^>]*>(.*?)</td>", without_sky.split("<tbody>")[1])[2] == "4.10"   # first after Time, sky or not
+
+
+def test_the_window_table_is_ascii_and_marks_its_right_edge_cells():
+    """G24 A-1: the window's table is pure ASCII (one emoji in the `html +=` string made a 385-row build 30x slower);
+    G24 B-5: its right-edge cells carry col-last (they draw the edge in their row's style); the classic table is
+    unchanged."""
+    import time
+    rows = _day_rows(hours=385)
+    moon = {"glyph": "\U0001F314", "pct": 72, "name": "Waxing gibbous"}
+    sky = [_sky("night" if (r % 24) < 6 or (r % 24) > 18 else "day",
+                [("moonrise", "\u263E\u2191 8:12", "Moonrise", 20, 12)] if r % 24 == 20 else (), moon=moon if r % 24 == 19 else None)
+           for r in range(385)]
+    t = time.perf_counter()
+    html = A.build_html_table("c", "l", "", rows, "Pacific/Honolulu", "US", compact=True, sky=sky)
+    assert time.perf_counter() - t < 0.1                                   # ~10 ms; 0.25 s when it was not ASCII
+    assert html.isascii() and "&#127764; 72%" in html and "&#9790;&#8593; 8:12" in html
+    head1, head2 = re.findall(r"<tr>(.*?)</tr>", html.split("<thead>")[1].split("</thead>")[0])
+    assert head1.count("col-last") == 1 and re.findall(r"<th[^>]*>", head1)[-1].count("col-last") == 1
+    assert "col-last" not in head2                                         # Sun/Moon spans both header rows
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html.split("<tbody>")[1]):
+        cells = re.findall(r"<td[^>]*>", tr)
+        assert [c.count("col-last") for c in cells] == [0] * (len(cells) - 1) + [1]
+    plain = A.build_html_table("c", "l", "", rows[:3], "UTC", "US", compact=True)                  # no Sun/Moon column
+    head1, head2 = re.findall(r"<tr>(.*?)</tr>", plain.split("<thead>")[1].split("</thead>")[0])
+    assert re.findall(r"<th[^>]*>", head1)[-1].count("col-last") == 1 and re.findall(r"<th[^>]*>", head2)[-1].count("col-last") == 1
+    assert all(re.findall(r"<td[^>]*>", tr)[-1].count("col-last") == 1 for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", plain.split("<tbody>")[1]))
+    classic = A.build_html_table("c", "l", "", rows[:3], "UTC", "US", sky=sky[:3])
+    assert "col-last" not in classic and classic.isascii()

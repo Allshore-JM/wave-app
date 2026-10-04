@@ -444,3 +444,66 @@ def test_a_publish_wakes_the_scheduler_thread_at_once(bg, monkeypatch):
     finally:
         A.stop_live_background()
     assert _time.time() - t0 < 2.0                                    # stop wakes the sleeping loop
+
+
+# ------------------------------- fork safety -------------------------------
+
+def test_importing_the_app_starts_no_thread():
+    """A gunicorn master that preloads the app forks its workers AFTER the import: a thread started at import would run
+    in the master, and the worker would inherit the locks it held but not the thread (found on the test site)."""
+    import subprocess
+    code = ("import os, threading; os.environ['LIVE_BACKGROUND'] = '1'; import app; "
+            "names = [t.name for t in threading.enumerate()]; "
+            "assert names == ['MainThread'], names; "
+            "c = app.app.test_client(); c.get('/healthz'); "
+            "assert 'live-scheduler' in [t.name for t in threading.enumerate()]; "
+            "app.stop_live_background(); print('ok')")
+    env = dict(os.environ, LIVE_BACKGROUND="1")
+    r = subprocess.run([sys.executable, "-c", code], cwd=os.path.dirname(HERE), env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0 and r.stdout.strip().endswith("ok"), r.stderr[-2000:]
+
+
+def test_a_forked_child_starts_clean(bg, monkeypatch):
+    """os.register_at_fork(after_in_child=...): every lock a parent's thread might have held is replaced, the runner is
+    dropped (its threads are gone), the providers' in-flight / queued flags are cleared, and the service can start."""
+    provs, rec, c = bg
+    for name in ("_LIVE_BG_LOCK", "_LIVE_BUILD_LOCK", "_TZ_FINDER_LOCK", "_CACHE_LOCK", "_LIVE_STOP", "_LIVE_WAKE"):
+        monkeypatch.setattr(A, name, getattr(A, name))               # restored after the test
+    monkeypatch.setattr(B, "_RUNNER_LOCK", B._RUNNER_LOCK)
+    monkeypatch.setattr(B, "_REFRESH_RUNNER", B._REFRESH_RUNNER)
+    # the parent's state at the fork: locks held by threads that will not exist, jobs queued and in flight
+    held = [A._LIVE_BUILD_LOCK, A._TZ_FINDER_LOCK, A._CACHE_LOCK, A._LIVE_BG_LOCK]
+    for lk in held:
+        lk.acquire()
+    p = provs[0]
+    p._lock.acquire()
+    p._refresh_lock.acquire()
+    p._refresh_pending = p._refreshing = True
+    A._LIVE_BG.update(thread=threading.Thread(target=lambda: None), started=True, started_ts=1.0, warm_ts=2.0)
+    try:
+        A._live_after_fork()
+        B._reset_after_fork()
+        for name in ("_LIVE_BG_LOCK", "_LIVE_BUILD_LOCK", "_TZ_FINDER_LOCK", "_CACHE_LOCK"):
+            assert not getattr(A, name).locked(), name
+        assert not p._lock.locked() and not p._refresh_lock.locked()
+        assert p._refresh_pending is False and p._refreshing is False
+        assert B._REFRESH_RUNNER is None and not B._RUNNER_LOCK.locked()
+        assert A._LIVE_BG["thread"] is None and A._LIVE_BG["started_ts"] is None and A._LIVE_BG["warm_ts"] is None
+        assert all(not q._lock.locked() for q in provs)
+        B.set_refresh_runner(rec)
+        assert p.schedule_refresh() is True                          # the child can queue and run refreshes
+        rec.run()
+        assert p.snapshot() is not None
+        A._live_tick(provs)
+        assert c.get("/healthz").status_code == 503                  # answers (no lock left held)
+    finally:
+        for lk in held:
+            try:
+                lk.release()
+            except RuntimeError:
+                pass
+
+
+def test_providers_are_registered_for_the_fork_reset():
+    p = F.FakeCDIP(http=None)
+    assert p in B._PROVIDERS

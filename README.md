@@ -659,18 +659,24 @@ The server (`buoy_sources.py`, `app.py`):
   list TTL, at the retry moment after a failure (300 s, also for a first failure) or at the full TTL. A failed refresh
   keeps the last good list for up to 6 h; an empty list after a good one counts as a failure. Only a provider with no
   list at all makes a caller wait (one fetch shared by every waiting caller).
-- One daemon thread, `live-scheduler`, starts with the app: it loads the time-zone finder, asks every agency cheapest
-  first (NDBC, CDIP, SMHI, MI-IE, CEFAS, RWS, QLD, AusWaves, AODN, CMEMS), then every 30 s (2 s until every agency has
-  answered once) queues the refreshes that are due and rebuilds the merged list when any agency published, so a request
-  finds its bytes ready. Refreshes run on `LIVE_REFRESH_WORKERS` background threads in that order.
-- `/api/buoys/live-stations` never waits: it serves the merged list built from the lists in hand. While some agencies have
-  not answered yet (the first seconds to minutes after a start) the answer leaves them out and says so in the header
-  `X-Live-Stations-Partial: AODN,CMEMS`, with `Cache-Control: no-store`; complete answers keep `public, max-age=900`
-  and the ETag.
+- One daemon thread, `live-scheduler`, starts with the FIRST REQUEST the process serves (Render's health check makes that
+  the first seconds after a start), never at import: a gunicorn master that preloads the app forks its workers after the
+  import, and a worker would inherit the locks the master's threads held but none of the threads. (Any forked child also
+  resets every lock and flag of the service: `os.register_at_fork`.) Its first pass queues every agency, cheapest first
+  (NDBC, CDIP, SMHI, MI-IE, CEFAS, RWS, QLD, AusWaves, AODN, CMEMS), then it loads the time-zone finder; after that it
+  runs whenever an agency publishes a new list (it is woken) and at least every 30 s (2 s until every agency has answered
+  once): it queues the refreshes that are due and rebuilds the merged list. Refreshes run on `LIVE_REFRESH_WORKERS`
+  background threads in that order.
+- `/api/buoys/live-stations` never builds and never waits: it serves the merged list the scheduler built last (the merge
+  and the per-buoy time zones cost seconds of CPU; built inside requests, the requests queued behind one build held every
+  server thread). While some agencies are not in that list yet (the first seconds to minutes after a start) the answer
+  says so in the header `X-Live-Stations-Partial: AODN,CMEMS`, with `Cache-Control: no-store`; complete answers keep
+  `public, max-age=900` and the ETag.
 - `/healthz` (never cached, never starts any work): per agency the list's version, size, age, next refresh, the last
   error and the last refresh's duration; the merged list's age and build time; the scheduler's passes and errors; the
-  refresh queue; the process memory. It answers **503 until every agency has answered once or 90 s have passed since the
-  start** (so a dead feed never blocks a deploy), then 200. Set it as Render's Health Check Path (Deploy to Render, step 6)
+  refresh queue; the process memory. It answers **503 until the served list holds every agency (each has answered once
+  and the list has been built from them) or 90 s have passed since the start** (so a dead feed never blocks a deploy),
+  then 200. Set it as Render's Health Check Path (Deploy to Render, step 6)
   on the production AND the test service.
 - The agencies' own log lines (each refresh's time and size, every failure) now reach the service log
   (`buoy_sources` logger).

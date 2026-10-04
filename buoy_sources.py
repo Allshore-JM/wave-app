@@ -19,10 +19,12 @@ import csv
 import io
 import logging
 import math
+import os
 import re
 import struct
 import time
 import threading
+import weakref
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -74,6 +76,7 @@ class BuoyProvider:
 
     def __init__(self, http=None):
         self.http = http or requests.Session()
+        _PROVIDERS.add(self)                 # so a forked child can reset every provider's locks
         self._lock = threading.Lock()
         self._list_cache = None
         self._list_ts = 0.0
@@ -104,6 +107,15 @@ class BuoyProvider:
     def list_stations(self):
         """Cached, fail-soft lean station list with namespaced ids + capabilities + attribution."""
         return self.list_stations_versioned()[0]
+
+    def _reset_after_fork(self):
+        """In a forked child the parent's refresh threads do not exist: any lock they held stays
+        held and their in-flight / queued flags never clear. Fresh locks and flags; the lists
+        themselves (plain data) are kept."""
+        self._lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
+        self._refresh_pending = False
+        self._refreshing = False
 
     def snapshot(self):
         """(list, version, published_ts) of the list in hand, read together under the lock, or
@@ -362,6 +374,23 @@ class InlineRunner:
 _REFRESH_RUNNER = None
 _RUNNER_LOCK = threading.Lock()
 _PUBLISH_LISTENERS = []
+_PROVIDERS = weakref.WeakSet()
+
+
+def _reset_after_fork():
+    """A forked child (e.g. a gunicorn worker forked by a master that had already refreshed lists)
+    gets the parent's memory but none of its threads: a new runner (its worker threads are gone),
+    a new runner lock, and every provider's locks and flags reset. Registered with
+    os.register_at_fork where the platform has it."""
+    global _REFRESH_RUNNER, _RUNNER_LOCK
+    _RUNNER_LOCK = threading.Lock()
+    _REFRESH_RUNNER = None
+    for p in list(_PROVIDERS):
+        p._reset_after_fork()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_after_fork)
 
 
 def add_publish_listener(fn):

@@ -39,7 +39,7 @@
   var COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'];  // the direction axis, every 45 deg
   var SKY_FILL = { twilight: 'rgba(255,170,0,0.10)', night: 'rgba(30,60,110,0.10)' };   // the plot's bands (the table's tints)
   var STRIP_FILL = { day: 'rgba(255,220,80,0.18)', twilight: 'rgba(255,170,0,0.30)', night: 'rgba(30,60,110,0.30)' };
-  var STRIP_H = 14, STRIP_GAP = 2;                                  // the sky strip along the top of a chart, in its padding
+  var STRIP_H = 14, STRIP_GAP = 2, PAD_TOP = 8;                     // the sky strip along the top of a chart, in its padding (above the legend)
   var MOON_MIN_PX = 24;                                             // a night band narrower than this gets no moon glyph
   var NOW_COLOR = 'rgba(29,111,214,0.9)', NOW_REDRAW_MS = 60000;
 
@@ -480,7 +480,7 @@
     return { id: 'skyStrip', afterDatasetsDraw: function (chart) {
       var ctx = chart.ctx, area = chart.chartArea, x = chart.scales && chart.scales.x;
       if (!area || !x || !ctx) return;
-      var n = parsed.length, r = viewRange(chart, n), top = area.top - STRIP_H - STRIP_GAP, mid = top + STRIP_H / 2;
+      var n = parsed.length, r = viewRange(chart, n), top = PAD_TOP, mid = top + STRIP_H / 2;   // the canvas top: the legend sits below, then the plot
       var left = area.left, right = area.right;
       ctx.save();
       ctx.beginPath(); ctx.rect(left, top, right - left, STRIP_H); ctx.clip();
@@ -579,7 +579,7 @@
       if (sky) plugins.push(makeSkyStrip(parsed, kinds, gd.sun_events || []));
       var mode = slotted(gd) && registerRowMode(Chart) ? ROW_MODE : 'index';
       var common = { responsive: true, maintainAspectRatio: false, interaction: { mode: mode, intersect: false, axis: 'x' },
-        layout: { padding: { top: sky ? 8 + STRIP_H + STRIP_GAP : 8, right: 8, bottom: 0, left: 8 } }, elements: { point: { radius: 1.6 }, line: { tension: 0.25, borderWidth: 0 } },
+        layout: { padding: { top: sky ? PAD_TOP + STRIP_H + STRIP_GAP : PAD_TOP, right: 8, bottom: 0, left: 8 } }, elements: { point: { radius: 1.6 }, line: { tension: 0.25, borderWidth: 0 } },
         // one line of legend above the plot (it used to wrap under it and eat the plot height)
         plugins: { legend: { position: 'top', align: 'start', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 6, padding: 8, font: { size: 11 } } }, tooltip: { mode: mode === ROW_MODE ? ROW_MODE : 'nearest', intersect: false }, decimation: { enabled: false } },
         animation: false };

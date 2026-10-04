@@ -92,8 +92,8 @@ test('makeSkyStrip draws the bands, the sun at sunrise / sunset, the moon at moo
   const texts = ch.ctx.ops.filter((o) => o.op === 'text');
   assert.deepEqual(texts.map((t) => [t.t, t.x]), [['☀', 64], ['☀', 183], ['☾', 136], ['🌗', 30], ['🌗', 245]], 'the second moon mid-way through the 19-29 night');
   const strip = ch.ctx.ops.filter((o) => o.op === 'rect');
-  assert.ok(strip.every((r) => r.y === 40 - i.STRIP_H - i.STRIP_GAP && r.h === i.STRIP_H), 'in the padding above the plot');
-  assert.ok(texts.every((t) => t.y === 40 - i.STRIP_H - i.STRIP_GAP + i.STRIP_H / 2));
+  assert.ok(strip.every((r) => r.y === 8 && r.h === i.STRIP_H), 'at the canvas top, in the padding above the legend and the plot');
+  assert.ok(texts.every((t) => t.y === 8 + i.STRIP_H / 2));
   const narrow = stubChart({ scales: { x: { min: undefined, max: undefined, getPixelForValue: (k) => k * 2 } } });   // a 48-slot series on 96 px
   i.makeSkyStrip(parsed, kinds, ev).afterDatasetsDraw(narrow);
   assert.deepEqual(narrow.ctx.ops.filter((o) => o.op === 'text').map((t) => t.t), ['☀', '☀', '☾'], 'night bands of 12 and 10 px carry no moon');

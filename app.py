@@ -285,7 +285,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.16.4"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.16.5"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript"}
@@ -1772,6 +1772,20 @@ def _dir_cell(deg) -> str:
             f' aria-hidden="true">&#8593;</span>')
 
 
+def _clock_state(time_str):
+    """The fixed clock rule's state of a row without sky data: 'day' 6 AM - 7 PM, 'night' 8 PM - 5 AM, else None."""
+    try:
+        t = datetime.strptime(time_str, "%I:%M %p").time()
+    except Exception:
+        return None
+    hm = (t.hour, t.minute)
+    if (6, 0) <= hm <= (19, 0):
+        return "day"
+    if hm >= (20, 0) or hm <= (5, 0):
+        return "night"
+    return None
+
+
 def _sun_cell(info) -> str:
     """The Sun column: the moon's phase on the first row of a night, then the events in the row's slot."""
     parts = []
@@ -1797,8 +1811,10 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     only the components the forecast contains); None = all six.
     sky (compact only; sky.annotate_rows, one entry per row; plan section 35): a Sun/Moon column, the last (first
     light, sunrise, sunset, last light, moonrise, moonset in each row's slot; the moon's phase on the first row of
-    each night), and rows classed by the real sky (sky-day / sky-twilight / sky-night, day-first, now-row) instead of
-    the fixed 6 AM - 7 PM bold rule. Without it the rows keep that rule."""
+    each night), and rows classed by the real sky (sky-day between first light and last light / sky-night, day-first,
+    now-row). The window's rows carry no inline weight or border: the page CSS makes daylight rows bold with solid
+    borders and night rows dashed; without sky data the classes come from the fixed 6 AM - 7 PM clock rule. The
+    classic table keeps that rule inline, as always."""
     sky = sky if compact and sky and len(sky) == len(rows) else None
     group_colors = [
         {"header": "#C00000", "subheader": "#F8B4B4", "data": "#F9DCDC"},
@@ -1874,47 +1890,28 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         info = sky[ri] if sky else None
         border_style = ""
         fw = "normal"
-        if info is not None and info.get("state"):
-            # the real sky (plan section 35): the row's class carries the look, the cells no inline weight or border
-            classes = ["sky-" + info["state"]] + (["day-first"] if info.get("day_first") else []) + \
-                (["now-row"] if info.get("now") else [])
-            t = _row_datetime(row)
-            stamp = f' data-t="{t:%Y-%m-%dT%H:%M}"' if t else ""
-            html += f'<tr class="{" ".join(classes)}"{stamp}>'
-            date_style = pad.strip()
-        else:
-            # style rules
-            try:
-                parsed_time = datetime.strptime(row[1], "%I:%M %p").time()
-            except Exception:
-                parsed_time = None
-            bold_start = datetime.strptime("6:00:00 AM", "%I:%M:%S %p").time()
-            bold_end = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()
-            dashed_start_evening = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
-            dashed_end_morning = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
-            if parsed_time is not None:
-                if bold_start <= parsed_time <= bold_end:
-                    border_style = "border:1px solid #000;"
-                    fw = "bold"
-                elif parsed_time >= dashed_start_evening or parsed_time <= dashed_end_morning:
-                    border_style = "border:1px dashed #999;"
-                    fw = "normal"
-            html += '<tr>'
-            date_style = f'font-weight:bold; {border_style}{pad}'
+        plain = compact                                        # the window's cells: no inline weight or border
         if compact:
-            style = f' style="{date_style}"' if date_style else ""
-            html += (f'<td class="col-date"{style} title="{html_escape(str(row[0]))}">'
-                     f'{html_escape(str(_short_date(row[0])))}</td>')
+            # the row's classes carry the look (plan section 35): the real sky when it is known, else the clock rule
+            state = (info.get("state") if info else None) or _clock_state(row[1])
+            classes = ([f"sky-{state}"] if state else []) + (["day-first"] if info and info.get("day_first") else []) + \
+                (["now-row"] if info and info.get("now") else [])
+            t = _row_datetime(row) if info and info.get("state") else None
+            stamp = f' data-t="{t:%Y-%m-%dT%H:%M}"' if t else ""
+            cls = f' class="{" ".join(classes)}"' if classes else ""
+            html += (f'<tr{cls}{stamp}><td class="col-date" title="{html_escape(str(row[0]))}">'
+                     f'{html_escape(str(_short_date(row[0])))}</td><td class="col-time">{row[1]}</td>')
         else:
-            html += f'<td style="{date_style}">{row[0]}</td>'
-        time_style = f'font-weight:{fw}; {border_style}{pad}'
-        if info is not None and info.get("state"):
-            html += f'<td class="col-time">{row[1]}</td>'
-        elif compact:
-            html += f'<td class="col-time" style="{time_style}">{row[1]}</td>'
-        else:
-            html += f'<td style="{time_style}">{row[1]}</td>'
-        plain = info is not None and info.get("state")
+            # the classic table: the fixed clock rule inline (6 AM - 7 PM bold with solid borders, 8 PM - 5 AM dashed)
+            cs = _clock_state(row[1])
+            if cs == "day":
+                border_style = "border:1px solid #000;"
+                fw = "bold"
+            elif cs == "night":
+                border_style = "border:1px dashed #999;"
+                fw = "normal"
+            html += f'<tr><td style="font-weight:bold; {border_style}{pad}">{row[0]}</td>'
+            html += f'<td style="font-weight:{fw}; {border_style}{pad}">{row[1]}</td>'
 
         # Combined (the significant wave height): first after Time in the window's table, after the swells in the classic
         val = row[-1]
@@ -2055,8 +2052,8 @@ def _swell_systems(win, to_h):
 
 
 def summary_days(rows, ann, days, unit):
-    """One entry per forecast day over its daylight rows, first light to last light (rows whose sky state is day or
-    twilight; plan section 35): significant height range + trend, the two most powerful swell columns of the day
+    """One entry per forecast day over its daylight rows, first light to last light (the rows whose sky state is day;
+    plan section 35): significant height range + trend, the two most powerful swell columns of the day
     (summed Hs^2 x Tp: rank_rows already orders each hour's systems by that power), wind range + mean direction,
     sunrise / sunset and the moon. A first or last day with no daylight rows in the forecast is left out; a polar
     night keeps its row with a note."""
@@ -2074,7 +2071,7 @@ def summary_days(rows, ann, days, unit):
     out = []
     for di, d in enumerate(order):
         info = (days or {}).get(d) or {}
-        win = [(t, r) for t, r, a in by_date[d] if a and a.get("state") in ("day", "twilight")]
+        win = [(t, r) for t, r, a in by_date[d] if a and a.get("state") == "day"]
         day = {"date": d, "label": _short_date(by_date[d][0][1][0]), "long": by_date[d][0][1][0], "info": info,
                "note": None, "hs": None, "swells": [], "wind": None}
         if not win:
@@ -2335,7 +2332,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         "sky": None,
     }
     if sky_rows:
-        # the charts' day / twilight / night shading: one state per graph slot (a point's hourly slots included)
+        # the charts' day / night shading: one state per graph slot (a point's hourly slots included)
         gsky = sky_rows if grows is rows else _sky_for(grows, sky_lat, sky_lon, tz_label)
         if gsky:
             out["graph_data"]["sky"] = [a["state"] for a in gsky]

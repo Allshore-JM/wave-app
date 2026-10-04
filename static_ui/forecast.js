@@ -37,7 +37,7 @@
   var LABEL_PX = 44;                                                // room for one flat date label on the charts
   var TABLE_MODE_KEY = 'allshore.tableMode.v1';                     // sessionStorage 'detailed' | 'summary' (plan section 35)
   var COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'];  // the direction axis, every 45 deg
-  var SKY_FILL = { twilight: 'rgba(255,170,0,0.10)', night: 'rgba(30,60,110,0.10)' };   // the plot's bands (the table's tints)
+  var SKY_FILL = { night: 'rgba(30,60,110,0.10)' };   // the plot's night bands (the table's tint); daylight runs first light to last light
 
   // ---- pure state helpers ----
   // The state a page starts from: the URL wins, then the viewer's saved settings (tz, unit only),
@@ -427,20 +427,21 @@
   function readTableMode(storage) { try { return storage.getItem(TABLE_MODE_KEY) === 'summary' ? 'summary' : 'detailed'; } catch (e) { return 'detailed'; } }
 
   // ---- the sky on the charts (plan section 35) ----
-  // The server's graph_data.sky: one of 'day' / 'twilight' / 'night' per slot (computed from the real sun at the
-  // station), when it is there for every slot. Older or sky-less payloads fall back to the fixed 6 PM - 6 AM rule
-  // on the labels' own hours.
+  // The server's graph_data.sky: 'day' (first light to last light) or 'night' per slot (computed from the real sun
+  // at the station), when it is there for every slot; a 'twilight' slot of an older payload counts as day (owner:
+  // between first and last light it looks like daylight). Older or sky-less payloads fall back to the fixed
+  // 6 PM - 6 AM rule on the labels' own hours.
   function hasSky(gd, n) { return !!(gd && Array.isArray(gd.sky) && gd.sky.length === n); }
   function skyOf(gd, parsed) {
     var n = parsed.length;
-    if (hasSky(gd, n)) return gd.sky.map(function (s) { return s === 'night' || s === 'twilight' || s === 'day' ? s : null; });
+    if (hasSky(gd, n)) return gd.sky.map(function (s) { return s === 'night' ? s : (s === 'twilight' || s === 'day') ? 'day' : null; });
     return parsed.map(function (d) { var h = d ? d.getHours() : NaN; return !Number.isFinite(h) ? null : (h >= 18 || h < 6) ? 'night' : 'day'; });
   }
-  // Runs of twilight / night slots inside [minIdx, maxIdx): [{from, to, kind}], slot i spanning [i, i+1).
+  // Runs of night slots inside [minIdx, maxIdx): [{from, to, kind}], slot i spanning [i, i+1).
   function skyBands(kinds, minIdx, maxIdx) {
     var out = [], cur = null;
     for (var i = minIdx; i < maxIdx; i++) {
-      var k = kinds[i] === 'twilight' || kinds[i] === 'night' ? kinds[i] : null;
+      var k = kinds[i] === 'night' ? 'night' : null;
       if (cur && cur.kind === k) { cur.to = i + 1; continue; }
       if (cur) out.push(cur);
       cur = k ? { from: i, to: i + 1, kind: k } : null;
@@ -453,7 +454,7 @@
     var lo = Math.max(0, Math.floor(x && x.min != null ? x.min : 0)), hi = Math.min(n - 1, Math.ceil(x && x.max != null ? x.max : n - 1));
     return [lo, hi];
   }
-  // the plot's twilight / night bands (drawn first: the grid lines paint over them)
+  // the plot's night bands (drawn first: the grid lines paint over them)
   function makeNightShade(parsed, kinds) {
     return { id: 'nightShade', beforeDraw: function (chart) {
       var ctx = chart.ctx, area = chart.chartArea, x = chart.scales && chart.scales.x;

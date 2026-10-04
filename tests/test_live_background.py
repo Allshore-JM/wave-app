@@ -82,11 +82,17 @@ def test_route_never_waits_and_says_what_is_missing(bg):
     assert r.status_code == 200 and r.get_json() == []
     assert r.headers["X-Live-Stations-Partial"] == ",".join(p.source for p in provs)
     assert r.headers["Cache-Control"] == "no-store" and r.headers["CDN-Cache-Control"] == "no-store"
+    assert r.headers["ETag"] == '"%s"' % A._LIVE_EMPTY[1]
     assert sum(c.fetch_calls for c in F.FAKE_CLASSES) == 0          # nothing fetched on the request
-    assert [n for n, _ in rec.jobs] == ["buoy-refresh-%s" % p.source for p in provs]   # queued, once each
+    assert [n for n, _ in rec.jobs] == ["buoy-refresh-%s" % s for s in A.LIVE_WARM_ORDER]   # queued once each, cheap first
     c.get(LIVE)
     assert len(rec.jobs) == len(provs)                               # a second request queues nothing new
     rec.run(2)                                                       # NDBC + CDIP land
+    A._LIVE_WAKE.clear()
+    r = c.get(LIVE)                                                  # not built yet: the last build, and a wake-up
+    assert r.get_json() == [] and A._LIVE_WAKE.is_set()
+    assert r.headers["X-Live-Stations-Partial"] == ",".join(p.source for p in provs)   # what the SERVED bytes lack
+    A._live_tick(provs)                                              # the scheduler builds them
     r = c.get(LIVE)
     assert r.headers["X-Live-Stations-Partial"] == ",".join(p.source for p in provs[2:])
     assert r.headers["Cache-Control"] == "no-store"
@@ -95,6 +101,7 @@ def test_route_never_waits_and_says_what_is_missing(bg):
     assert _ids(r) == sorted(s["id"] for s in json.loads(A._build_live_stations_payload(
         [provs[0].snapshot()[0], provs[1].snapshot()[0]])[0]))
     rec.run()                                                        # everyone
+    A._live_tick(provs)
     r = c.get(LIVE)
     assert "X-Live-Stations-Partial" not in r.headers
     assert r.headers["Cache-Control"] == "public, max-age=900"
@@ -107,7 +114,9 @@ def test_complete_answer_equals_the_inline_path_bytes(bg, monkeypatch):
     provs, rec, c = bg
     c.get(LIVE)
     rec.run()
+    A._live_tick(provs)
     r_bg = c.get(LIVE)
+    assert "X-Live-Stations-Partial" not in r_bg.headers
     # the same providers through the inline (golden) path, in a fresh memo
     monkeypatch.setattr(A, "LIVE_BACKGROUND", False)
     monkeypatch.setattr(A, "_LIVE_STATIONS_MEMO", {"key": None, "payload": None, "etag": None})
@@ -128,27 +137,80 @@ def test_route_serves_the_prebuilt_memo_without_a_build(bg, monkeypatch):
     assert len(r.get_json()) > 0
 
 
-def test_a_publish_between_ticks_is_built_once_by_the_requests(bg, monkeypatch):
+def test_a_publish_between_passes_is_served_from_the_last_build_and_wakes_the_scheduler(bg, monkeypatch):
     provs, rec, c = bg
     A._live_tick(provs)
     rec.run()
     A._live_tick(provs)
+    r0 = c.get(LIVE)
     cdip = next(p for p in provs if p.source == "CDIP")
     cdip._list_ts = 0.0                                              # due again
+    A._LIVE_WAKE.clear()
     assert cdip.schedule_refresh()                                   # (what the scheduler's pass does)
-    rec.run()                                                        # CDIP republished (same data, new version)
+    rec.run()                                                        # CDIP republished (new data, new version)
+    assert A._LIVE_WAKE.is_set()                                     # the publish woke the scheduler
     builds = []
     real = A._build_live_stations_payload
     monkeypatch.setattr(A, "_build_live_stations_payload", lambda lists: builds.append(1) or real(lists))
     r1 = c.get(LIVE)
-    r2 = c.get(LIVE)
-    assert builds == [1] and r1.data == r2.data
+    assert builds == [] and r1.data == r0.data                       # the request never builds: the last build
+    assert "X-Live-Stations-Partial" not in r1.headers               # complete (one version behind)
+    assert c.get("/healthz").get_json()["memo"]["current"] is False
+    assert A._live_tick(provs)["built"] is True and builds == [1]    # the scheduler builds it
+    assert c.get("/healthz").get_json()["memo"]["current"] is True
+
+
+def test_the_route_never_builds_nor_waits_for_a_build(bg, monkeypatch):
+    """Built inside requests, the merge and the time zones held every server thread on the test site."""
+    provs, rec, c = bg
+    A._live_tick(provs)
+    rec.run()
+    A._live_tick(provs)
+    r0 = c.get(LIVE)
+    for p in provs:                                                  # newer lists everywhere
+        p._list_ts = 0.0
+        p.schedule_refresh()
+    rec.run()
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("a request built the list"))
+    monkeypatch.setattr(A, "_build_live_stations_payload", boom)
+    monkeypatch.setattr(A, "_live_memo_bytes", boom)
+    monkeypatch.setattr(A, "_buoy_tz_cached", boom)
+    held = threading.Event(), threading.Event()
+
+    def hold():                                                      # a build in progress elsewhere
+        with A._LIVE_BUILD_LOCK:
+            held[0].set()
+            held[1].wait(5)
+    t = threading.Thread(target=hold)
+    t.start()
+    held[0].wait(5)
+    try:
+        t0 = _time.perf_counter()
+        r = c.get(LIVE)
+        assert _time.perf_counter() - t0 < 1.0
+        assert r.status_code == 200 and r.data == r0.data
+    finally:
+        held[1].set()
+        t.join(5)
+
+
+def test_a_kept_failure_does_not_wake_the_scheduler(bg):
+    provs, rec, c = bg
+    A._live_tick(provs)
+    rec.run()
+    p = next(p for p in provs if p.source == "CDIP")
+    p._fetch_stations = lambda: (_ for _ in ()).throw(RuntimeError("down"))
+    p._list_ts = 0.0
+    A._LIVE_WAKE.clear()
+    p.refresh()
+    assert p.status()["last_error"] and not A._LIVE_WAKE.is_set()    # same version: nothing to rebuild
 
 
 def test_stale_lists_are_served_at_once_while_refreshing(bg):
     provs, rec, c = bg
     A._live_tick(provs)
     rec.run()
+    A._live_tick(provs)
     r1 = c.get(LIVE)
     for p in provs:
         p._list_ts = 0.0                                             # everyone due
@@ -225,7 +287,10 @@ def test_scheduler_thread_warms_and_stops(bg, monkeypatch):
     B.set_refresh_runner(B.InlineRunner())
     monkeypatch.setattr(A, "LIVE_TICK_SEC", 0.05)
     monkeypatch.setattr(A, "LIVE_WARM_TICK_SEC", 0.02)
-    monkeypatch.setattr(A, "get_tz_finder", lambda: object())
+    order = []
+    real_tick = A._live_tick
+    monkeypatch.setattr(A, "_live_tick", lambda *a, **k: order.append("tick") or real_tick(*a, **k))
+    monkeypatch.setattr(A, "get_tz_finder", lambda: order.append("tz") or object())
     monkeypatch.setattr(A, "start_live_background", REAL_START)
     try:
         assert A.start_live_background() is True
@@ -238,6 +303,7 @@ def test_scheduler_thread_warms_and_stops(bg, monkeypatch):
         while A._LIVE_BG["warm_ts"] is None and _time.time() < deadline:
             _time.sleep(0.01)
         assert A._LIVE_BG["warm_ts"] is not None and A._LIVE_BG["tz_loaded"] is True
+        assert order[:3] == ["tick", "tz", "tick"]                      # refreshes queued before the tz finder loads
         r = c.get(LIVE)
         assert "X-Live-Stations-Partial" not in r.headers and len(r.get_json()) > 0
         assert c.get("/healthz").status_code == 200
@@ -281,6 +347,8 @@ def test_healthz_503_until_warm_then_200(bg):
     assert r.status_code == 503 and r.get_json()["missing"] == [p.source for p in provs if p.source != "NDBC"]
     assert A._LIVE_BG["warm_ts"] is None
     rec.run()
+    r = c.get("/healthz")                                            # every provider answered, the list not built yet
+    assert r.status_code == 503 and r.get_json()["warm"] is True and r.get_json()["memo"]["complete"] is False
     A._live_tick(provs)
     r = c.get("/healthz")
     body = r.get_json()
@@ -344,3 +412,35 @@ def test_thread_runner_starts_jobs_in_submission_order_bounded():
         _time.sleep(0.01)
     assert started[2:] == [2, 3, 4]                                      # FIFO: the queue order
     assert r.running == 0 and r.queued == 0 and len(r._threads) == 2
+
+
+def test_a_publish_wakes_the_scheduler_thread_at_once(bg, monkeypatch):
+    provs, rec, c = bg
+    B.set_refresh_runner(B.InlineRunner())
+    monkeypatch.setattr(A, "LIVE_TICK_SEC", 60)                       # a pass only when woken
+    monkeypatch.setattr(A, "LIVE_WARM_TICK_SEC", 60)
+    monkeypatch.setattr(A, "get_tz_finder", lambda: object())
+    monkeypatch.setattr(A, "start_live_background", REAL_START)
+    try:
+        A.start_live_background()
+        deadline = _time.time() + 5
+        while not A._LIVE_STATIONS_MEMO.get("key") or any(k[1] is None for k in A._LIVE_STATIONS_MEMO["key"]):
+            assert _time.time() < deadline, "warm-up not built"
+            _time.sleep(0.01)
+        before = A._LIVE_BG["prebuilds"]
+        cdip = next(p for p in provs if p.source == "CDIP")
+        cdip._list_ts = 0.0
+        cdip.refresh()                                                # publishes v2 -> wakes the loop
+        deadline = _time.time() + 5
+        while A._LIVE_BG["prebuilds"] == before:
+            assert _time.time() < deadline, "the publish did not wake the scheduler"
+            _time.sleep(0.01)
+        assert dict(A._LIVE_STATIONS_MEMO["key"])["CDIP"] == 2
+        _time.sleep(0.1)
+        ticks = A._LIVE_BG["ticks"]
+        _time.sleep(0.3)
+        assert A._LIVE_BG["ticks"] == ticks                            # back asleep: no busy loop
+        t0 = _time.time()
+    finally:
+        A.stop_live_background()
+    assert _time.time() - t0 < 2.0                                    # stop wakes the sleeping loop

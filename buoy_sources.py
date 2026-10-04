@@ -179,8 +179,18 @@ class BuoyProvider:
             return self._refresh_locked()
 
     def _refresh_locked(self):
-        """The fetch + publish, under _refresh_lock. Keeps the last good list through a failure
-        (same version -> identical bytes downstream) and comes back after retry_after_sec."""
+        """The fetch + publish, under _refresh_lock; tells the publish listeners (outside every
+        lock) when a new version was published."""
+        with self._lock:
+            before = self._list_version
+        result = self._fetch_and_publish()
+        if result[1] != before:
+            _notify_publish(self)
+        return result
+
+    def _fetch_and_publish(self):
+        """Keeps the last good list through a failure (same version -> identical bytes
+        downstream) and comes back after retry_after_sec."""
         with self._lock:
             self._refreshing = True
         t0 = time.monotonic()
@@ -351,6 +361,32 @@ class InlineRunner:
 
 _REFRESH_RUNNER = None
 _RUNNER_LOCK = threading.Lock()
+_PUBLISH_LISTENERS = []
+
+
+def add_publish_listener(fn):
+    """fn(provider) is called (outside every provider lock, in the refreshing thread) whenever a
+    provider publishes a new list version: the app's scheduler wakes up and rebuilds the merged
+    list at once instead of at its next pass. Idempotent."""
+    with _RUNNER_LOCK:
+        if fn not in _PUBLISH_LISTENERS:
+            _PUBLISH_LISTENERS.append(fn)
+
+
+def remove_publish_listener(fn):
+    with _RUNNER_LOCK:
+        if fn in _PUBLISH_LISTENERS:
+            _PUBLISH_LISTENERS.remove(fn)
+
+
+def _notify_publish(provider):
+    with _RUNNER_LOCK:
+        listeners = list(_PUBLISH_LISTENERS)
+    for fn in listeners:
+        try:
+            fn(provider)
+        except Exception:
+            _log.exception("buoy publish listener failed")
 
 
 def get_refresh_runner():

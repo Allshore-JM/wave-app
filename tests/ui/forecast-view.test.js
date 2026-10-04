@@ -202,3 +202,50 @@ test('each mode keeps its own scroll: the summary opens at its top, the detailed
   b.page.body.scrollTop = 120; b.app.setTableMode('detailed');
   assert.equal(b.page.body.scrollTop, 0, 'another station: no remembered place (the now row is revealed when there is one)');
 });
+
+test('each panel keeps its place sideways too, and the graphs open at their top (not at the detailed table\'s now row)', async () => {
+  const b = boot({}); await settle();
+  b.fs_.last().release(skyPayload()); await settle();
+  b.app.window.setMode('normal');
+  const at = () => [b.page.body.scrollTop, b.page.body.scrollLeft];
+  b.page.body.scrollTop = 300; b.page.body.scrollLeft = 650;                // the detailed table at the Sun/Moon column
+  b.app.setTableMode('summary'); assert.deepEqual(at(), [0, 0], 'the summary from its top left (found at 1:1: it opened cut off on the left)');
+  b.page.body.scrollTop = 40; b.page.body.scrollLeft = 30;
+  b.app.setView('Graph'); assert.deepEqual(at(), [0, 0], 'the graphs from their top (found at 1:1: the first chart opened cut off)');
+  b.page.body.scrollTop = 250;
+  b.app.setView('Table'); assert.deepEqual(at(), [40, 30], 'back to the summary where it was');
+  b.app.setTableMode('detailed'); assert.deepEqual(at(), [300, 650], 'and the detailed table where it was, down and sideways');
+  b.app.setView('Graph'); assert.deepEqual(at(), [250, 0], 'the graphs where they were');
+  b.app.setView('Graph'); assert.deepEqual(at(), [250, 0], 'the same view again: nothing moves');
+});
+
+test('another station that lands in Summary mode shows its summary from the first day', async () => {
+  const b = boot({ session: { 'allshore.tableMode.v1': 'summary' } }); await settle();
+  b.fs_.last().release(skyPayload()); await settle(); b.app.window.setMode('normal');
+  b.page.body.scrollTop = 200; b.page.body.scrollLeft = 90;
+  b.app.loader.load({ unit: 'Metric' }); await settle(); b.fs_.last().release(skyPayload()); await settle();
+  assert.deepEqual([b.page.body.scrollTop, b.page.body.scrollLeft], [200, 90], 'the same station (a unit change): left where it was');
+  b.app.loader.load({ station: '46001' }); await settle(); b.fs_.last().release(skyPayload({ station: '46001' })); await settle();
+  assert.deepEqual([b.page.body.scrollTop, b.page.body.scrollLeft], [0, 0], 'another station: from its first day');
+});
+
+test('another station keeps the detailed table\'s sideways place (only the now row moves it down) and the graphs\' place', async () => {
+  const b = boot({}); await settle();
+  b.fs_.last().release(skyPayload()); await settle(); b.app.window.setMode('normal');
+  b.page.body.scrollTop = 300; b.page.body.scrollLeft = 650;
+  b.app.loader.load({ station: '46001' }); await settle(); b.fs_.last().release(skyPayload({ station: '46001' })); await settle();
+  assert.equal(b.page.body.scrollLeft, 650, 'the same columns in view (e.g. Wind, Sun/Moon) when comparing stations');
+  b.app.setView('Graph'); b.page.body.scrollTop = 500;
+  b.app.loader.load({ station: '51201' }); await settle(); b.fs_.last().release(skyPayload()); await settle();
+  assert.equal(b.page.body.scrollTop, 500, 'the same chart in view');
+});
+
+test('the place is the panel on screen: a detailed table shown for want of a summary is not the summary\'s place', async () => {
+  const b = boot({ session: { 'allshore.tableMode.v1': 'summary' } }); await settle();
+  b.fs_.last().release(payload()); await settle(); b.app.window.setMode('normal');   // no summary: the detailed table
+  b.page.body.scrollTop = 300;
+  b.app.setView('Graph');
+  b.app.loader.load({ unit: 'Metric' }); await settle(); b.fs_.last().release(skyPayload()); await settle();   // the same station, now with a summary
+  b.app.setView('Table');
+  assert.equal(b.page.summary.hidden, false); assert.equal(b.page.body.scrollTop, 0, 'the summary from its top, not the detailed table\'s 300');
+});

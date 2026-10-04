@@ -796,7 +796,7 @@
     // the table's Detailed | Summary mode (plan section 35): the tab's own preference, never in the address bar; each
     // mode keeps its own scroll position (the summary opens at its top, the detailed table where it was left)
     var tableMode = readTableMode(session), summaryAvail = false, revealPending = false, revealedFor = null;
-    var modeScroll = { detailed: null, summary: null };
+    var panelScroll = {};                                                        // each panel's own place (panelKey)
     var fw = new FloatingWindow({ el: els.win, header: els.header, handle: els.handle, storage: session, win: win,
       onMode: function (m) {
         if (els.min) { els.min.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); els.min.setAttribute('aria-label', m === 'min' ? 'Expand forecast' : 'Minimise forecast'); els.min.textContent = m === 'min' ? '▴' : '–'; }
@@ -891,7 +891,10 @@
               else showError(null, null);
               graphs.setData(d.graph_data);
               applyPanels(); placeSticky();
-              if (d.table_html && st.station !== revealedFor) { revealedFor = st.station; revealPending = true; modeScroll = { detailed: null, summary: null }; }   // once per station or point landing, not on a unit / zone change
+              if (d.table_html && st.station !== revealedFor) {                 // once per station or point landing, not on a unit / zone change
+                revealedFor = st.station; revealPending = true; panelScroll = {};
+                if (panelKey() === 'summary') { els.body.scrollTop = 0; els.body.scrollLeft = 0; }   // another station's summary from its first day
+              }
               revealNow();
               syncSelects();
               // the page's other parts (the model overlay's valid-time zone and run line) follow the forecast on screen
@@ -918,14 +921,20 @@
       if (els.rangeBar) els.rangeBar.hidden = !g;
       if (els.modeBar) els.modeBar.hidden = g || !summaryAvail;
     }
+    // The detailed table, the summary and the graphs share the one scrolling body, and each keeps its own place in it,
+    // down and sideways: a panel shown for the first time starts at its top left (the detailed table then goes to the
+    // now row), and a panel shown again is where the visitor left it.
+    function panelKey() { return state.view === 'Graph' ? 'graph' : (tableMode === 'summary' && summaryAvail ? 'summary' : 'detailed'); }
+    function leavePanel() { panelScroll[panelKey()] = { top: els.body.scrollTop || 0, left: els.body.scrollLeft || 0 }; }
+    function enterPanel() { var p = panelScroll[panelKey()]; els.body.scrollTop = p ? p.top : 0; els.body.scrollLeft = p ? p.left : 0; }
     function setTableMode(m) {
       var next = m === 'summary' ? 'summary' : 'detailed', swap = next !== tableMode && state.view === 'Table' && summaryAvail;
-      if (swap) modeScroll[tableMode] = els.body.scrollTop;                  // the table being left keeps its place
+      if (swap) leavePanel();
       tableMode = next;
       pressed(els.modeBar, 'data-mode', tableMode);
       try { session.setItem(TABLE_MODE_KEY, tableMode); } catch (e) {}
       applyPanels();
-      if (swap) els.body.scrollTop = modeScroll[tableMode] || 0;            // the summary from its top the first time
+      if (swap) enterPanel();
       if (tableMode === 'detailed') revealNow();
     }
     // The sticky Time column sits right of the sticky Date column: its left offset is the Date column's rendered width
@@ -952,10 +961,13 @@
       els.body.scrollTop = Math.max(0, (rr.top - br.top) + els.body.scrollTop - hh - ctx);
     }
     function setView(v) {
-      state.view = v === 'Graph' ? 'Graph' : 'Table';
+      var next = v === 'Graph' ? 'Graph' : 'Table', swap = next !== state.view;
+      if (swap) leavePanel();
+      state.view = next;
       pressed(els.viewBar, 'data-view', state.view);
       var g = state.view === 'Graph';
       applyPanels(); placeSticky();
+      if (swap) enterPanel();                                                    // the graphs from their top the first time
       loader.sync();
       if (!g) revealNow();
       return g ? graphs.show() : Promise.resolve();

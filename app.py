@@ -1963,6 +1963,185 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     html += '</table>'
     return html
 
+def _circular_mean(dirs, weights):
+    """The weighted mean of compass directions (degrees), or None."""
+    x = y = 0.0
+    for d, w in zip(dirs, weights):
+        if d is None or not w:
+            continue
+        x += w * math.cos(math.radians(d))
+        y += w * math.sin(math.radians(d))
+    if abs(x) < 1e-12 and abs(y) < 1e-12:
+        return None
+    return int(round(math.degrees(math.atan2(y, x)))) % 360
+
+
+def _short_clock(t) -> str:
+    """'6:24 AM' from a datetime; '11 AM' for whole hours when short=True."""
+    return t.strftime("%I:%M %p").lstrip("0")
+
+
+def _trend(vals, times):
+    """(kind, text) of a day's significant heights: 'rising' / 'falling' (the last third's mean 10 % above / below the
+    first third's), 'peak' (a maximum inside the window 10 % above both ends; text names its hour) or 'steady'."""
+    n = len(vals)
+    if n < 2 or max(vals) <= 0:
+        return "steady", "steady"
+    k = max(1, n // 3)
+    first, last = sum(vals[:k]) / k, sum(vals[-k:]) / k
+    am = max(range(n), key=lambda i: vals[i])
+    if 0 < am < n - 1 and vals[am] >= 1.10 * max(first, last):
+        return "peak", "peak " + times[am].strftime("%I %p").lstrip("0")
+    if last >= 1.10 * first:
+        return "rising", "rising"
+    if last <= 0.90 * first:
+        return "falling", "falling"
+    return "steady", "steady"
+
+
+TREND_GLYPH = {"rising": "↗", "falling": "↘", "peak": "▲", "steady": "→"}
+SYSTEM_TP_FRAC, SYSTEM_TP_MIN, SYSTEM_DIR = 0.20, 1.5, 40.0
+
+
+def _swell_systems(win, to_h):
+    """The swell systems of a set of rows, most powerful first. The columns cannot be summarised one by one:
+    rank_rows re-orders each HOUR's systems by power, so 'Swell 1' is a 6 s wind swell one hour and a 12 s groundswell
+    the next. Every (height, period, direction) of every row is a sample; the most powerful sample not yet taken
+    starts a system that takes every sample within 20 % (at least 1.5 s) of its period and 40 deg of its direction.
+    Power = height^2 x period, summed."""
+    samples = []
+    for _, r in win:
+        for g in range(6):
+            hs, tp, dr = r[2 + 3 * g], r[3 + 3 * g], r[4 + 3 * g]
+            if hs is not None and tp is not None and hs > 0 and tp > 0:
+                samples.append((hs * hs * tp, hs, tp, dr))
+    samples.sort(key=lambda s: -s[0])
+    taken = [False] * len(samples)
+    out = []
+    for i, (p0, _, tp0, d0) in enumerate(samples):
+        if taken[i]:
+            continue
+        members = []
+        for j in range(i, len(samples)):
+            if taken[j]:
+                continue
+            _, _, tp, dr = samples[j]
+            near_dir = d0 is None or dr is None or abs((dr - d0 + 180) % 360 - 180) <= SYSTEM_DIR
+            if abs(tp - tp0) <= max(SYSTEM_TP_MIN, SYSTEM_TP_FRAC * tp0) and near_dir:
+                taken[j] = True
+                members.append(samples[j])
+        out.append({
+            "power": sum(m[0] for m in members),
+            "hs_max": to_h(max(m[1] for m in members)),
+            "tp_min": min(m[2] for m in members), "tp_max": max(m[2] for m in members),
+            "dir": _circular_mean([m[3] for m in members], [m[0] for m in members]),
+        })
+    out.sort(key=lambda s: -s["power"])
+    return out
+
+
+def summary_days(rows, ann, days, unit):
+    """One entry per forecast day over its daylight rows, first light to last light (rows whose sky state is day or
+    twilight; plan section 35): significant height range + trend, the two most powerful swell columns of the day
+    (summed Hs^2 x Tp: rank_rows already orders each hour's systems by that power), wind range + mean direction,
+    sunrise / sunset and the moon. A first or last day with no daylight rows in the forecast is left out; a polar
+    night keeps its row with a note."""
+    to_h = (lambda ft: ft) if unit == "US" else (lambda ft: ft / 3.28084)
+    to_w = (lambda ms: ms * 2.23694) if unit == "US" else (lambda ms: ms * 3.6)
+    order, by_date = [], {}
+    for r, a in zip(rows, ann):
+        t = _row_datetime(r)
+        if t is None:
+            continue
+        if t.date() not in by_date:
+            order.append(t.date())
+            by_date[t.date()] = []
+        by_date[t.date()].append((t, r, a))
+    out = []
+    for di, d in enumerate(order):
+        info = (days or {}).get(d) or {}
+        win = [(t, r) for t, r, a in by_date[d] if a and a.get("state") in ("day", "twilight")]
+        day = {"date": d, "label": _short_date(by_date[d][0][1][0]), "long": by_date[d][0][1][0], "info": info,
+               "note": None, "hs": None, "swells": [], "wind": None}
+        if not win:
+            if info.get("sky") == "polar night":
+                day["note"] = "Polar night"
+                out.append(day)
+            continue                                   # a partial first or last day without daylight in the forecast
+        if info.get("sunrise") and win[0][0] > info["sunrise"] + timedelta(hours=1):
+            day["note"] = "from " + _short_clock(win[0][0])
+        elif info.get("sunset") and win[-1][0] < info["sunset"] - timedelta(hours=1):
+            day["note"] = "until " + _short_clock(win[-1][0])
+        hv = [(t, to_h(r[-1])) for t, r in win if r[-1] is not None]
+        if hv:
+            vals = [v for _, v in hv]
+            kind, text = _trend(vals, [t for t, _ in hv])
+            day["hs"] = {"min": min(vals), "max": max(vals), "trend": kind, "text": text}
+        day["swells"] = _swell_systems(win, to_h)[:2]
+        ws = [r for _, r in win if len(r) > 21 and r[20] is not None]
+        if ws:
+            sp = [to_w(r[20]) for r in ws]
+            day["wind"] = {"min": int(round(min(sp))), "max": int(round(max(sp))),
+                           "dir": _circular_mean([r[21] for r in ws], [1.0] * len(ws))}
+        out.append(day)
+    return out
+
+
+def build_summary_html(rows, ann, days, unit, tz_label=None) -> str:
+    """The window's Summary view (plan section 35): one row per day, daylight hours only."""
+    h_unit = "ft" if unit == "US" else "m"
+    w_unit = "mph" if unit == "US" else "km/h"
+    html = ('<table class="table table-bordered table-sm forecast-summary">\n<thead><tr>'
+            '<th scope="col" class="col-date">Day</th>'
+            '<th scope="col" title="Significant wave height, first light to last light">Sig. Wave Height</th>'
+            '<th scope="col" title="The most powerful swell of the daylight hours (height squared x period)">'
+            'Dominant Swell</th><th scope="col">Second Swell</th><th scope="col">Wind</th>'
+            '<th scope="col">Sunrise</th><th scope="col">Sunset</th><th scope="col">Moon</th>'
+            '</tr></thead>\n<tbody>\n')
+
+    def num(v):
+        return f"{v:.1f}"
+
+    def swell(s):
+        if not s:
+            return ""
+        tp = (f"{s['tp_min']:.0f}" if round(s["tp_min"]) == round(s["tp_max"])
+              else f"{s['tp_min']:.0f}&ndash;{s['tp_max']:.0f}")
+        dirs = _dir_cell(s["dir"]) if s["dir"] is not None else ""
+        return (f'<span class="sum-hs">{num(s["hs_max"])} {h_unit}</span> &middot; {tp} s &middot; '
+                f'<span class="sum-dir">{dirs}</span>')
+
+    for day in summary_days(rows, ann, days, unit):
+        info = day["info"]
+        cls = "sum-day" + (" sum-note" if day["note"] else "")
+        note = f'<br><span class="sum-sub">{html_escape(day["note"])}</span>' if day["note"] else ""
+        html += (f'<tr class="{cls}" data-date="{day["date"]:%Y-%m-%d}"><td class="col-date" '
+                 f'title="{html_escape(str(day["long"]))}">{html_escape(str(day["label"]))}{note}</td>')
+        hs = day["hs"]
+        if hs:
+            html += (f'<td><span class="sum-range">{num(hs["min"])}&ndash;{num(hs["max"])} {h_unit}</span> '
+                     f'<span class="trend trend-{hs["trend"]}">{TREND_GLYPH[hs["trend"]]} {html_escape(hs["text"])}</span></td>')
+        else:
+            html += "<td></td>"
+        sw = day["swells"]
+        html += f'<td>{swell(sw[0] if sw else None)}</td><td>{swell(sw[1] if len(sw) > 1 else None)}</td>'
+        w = day["wind"]
+        if w:
+            spd = f"{w['min']}" if w["min"] == w["max"] else f"{w['min']}&ndash;{w['max']}"
+            html += f'<td>{spd} {w_unit} &middot; {_dir_cell(w["dir"]) if w["dir"] is not None else ""}</td>'
+        else:
+            html += "<td></td>"
+        for k in ("sunrise", "sunset"):
+            t = info.get(k)
+            html += f'<td class="sum-sun">{sky.EVENT_GLYPH[k]} {_short_clock(t)}</td>' if t else '<td class="sum-sun">&mdash;</td>'
+        m = info.get("moon")
+        html += (f'<td class="sum-moon"><span class="moon-phase" title="{html_escape(m["name"])}, {m["pct"]}% illuminated">'
+                 f'{m["glyph"]} {m["pct"]}%</span></td>' if m else "<td></td>")
+        html += "</tr>\n"
+    html += "</tbody>\n</table>"
+    return html
+
+
 # ------------------------------ Flask routes -----------------------------------
 
 # NDBC / GFS station ids are short and alphanumeric, with hyphens/underscores
@@ -2037,6 +2216,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         "graph_header": None,
         "model": resolve_model(station, model),               # the model actually used (SWAN falls back to GFS)
         "swan_available": station in SWAN_STATIONS,
+        "summary_html": None,                                  # the window's Summary view (plan section 35)
     }
     if not station:
         return out
@@ -2099,6 +2279,13 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     sky_rows = _sky_for(rows, sky_lat, sky_lon, tz_label) if compact else None
     out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit, compact=compact,
                                          groups=week if compact else None, sky=sky_rows)
+    if sky_rows:                                               # the window's Summary view (plan section 35)
+        try:
+            dates = sorted({t.date() for t in (_row_datetime(r) for r in rows) if t is not None})
+            out["summary_html"] = build_summary_html(rows, sky_rows, sky.day_summary(sky_lat, sky_lon, tz_label, dates),
+                                                     unit)
+        except Exception as exc:                               # the detailed table stands without it
+            app.logger.warning("summary for %s failed: %s", station, exc)
 
     # ----- pack graph data -----
     # A point's rows are hourly to +120 h and 3-hourly after; its graphs get one slot per HOUR (empty between the
@@ -2188,6 +2375,7 @@ def api_forecast():
             "table_html": None, "tz_label": "", "lat": None, "lon": None,
             "graph_data": None, "graph_header": None,
             "model": resolve_model(station, model), "swan_available": station in SWAN_STATIONS,
+            "summary_html": None,
         })
 
 
@@ -2244,7 +2432,8 @@ def index():
         initial_state.update({"graph_data": payload["graph_data"], "graph_header": payload["graph_header"],
                               "error": payload["error"], "model": payload["model"],
                               "wind_complete": payload.get("wind_complete", True)})
-        for k in ("point", "final", "busy", "reason"):         # a point's own keys (a refusal is final: no Retry)
+        for k in ("point", "final", "busy", "reason", "summary_html"):   # a point's own keys (a refusal is final: no
+                                                                          # Retry) and the Summary view
             if payload.get(k) is not None:
                 initial_state[k] = payload[k]
 

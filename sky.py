@@ -140,8 +140,9 @@ def moon_at(utc, lat):
     principal phase only within 12 h of its instant). The emoji show the moon as seen from the northern hemisphere (a
     waxing crescent lit on the right); south of the equator the lit side is mirrored."""
     d = _edate(utc)
-    prev, nxt = ephem.previous_new_moon(d), ephem.next_new_moon(d)
-    phase = (float(d) - float(prev)) / (float(nxt) - float(prev))
+    news = [t for t, k in _principal_phases(int(float(d) // PHASE_BLOCK)) if k == 0]   # the cached new moons around d
+    prev, nxt = max(t for t in news if t <= float(d)), min(t for t in news if t > float(d))
+    phase = (float(d) - prev) / (nxt - prev)
     lit = float(ephem.Moon(d).moon_phase)
     i = int(phase * 8 + 0.5) % 8
     g = (8 - i) % 8 if lat < 0 else i

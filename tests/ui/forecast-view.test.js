@@ -1,7 +1,8 @@
 'use strict';
-// Plan section 35, the client: the real sky on the charts (bands, the sky strip, the 'now' line), the compass direction
-// axis, the Detailed | Summary table mode, the now-row reveal and the sticky Date / Time measure, and the older
-// payloads that carry none of it.
+// Plan section 35, the client: the real sky on the charts (the day / twilight / night bands), the compass direction axis,
+// the 'Significant Wave Height' series, the Detailed | Summary table mode, the now-row reveal and the sticky Date / Time
+// measure, and the older payloads that carry none of it. (The sky strip and the 'now' line were tried and removed:
+// owner, 2026-10-03, "not very useful and only create clutter".)
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -34,8 +35,6 @@ function sky48() { return labels(48).map((_, i) => { const h = i % 24; return h 
 function skyPayload(over) {
   const p = payload(over);
   p.graph_data.sky = sky48();
-  p.graph_data.sun_events = [{ t: 6.4, kind: 'sunrise', text: '☀↑ 6:24', name: 'Sunrise 6:24 AM' }, { t: 18.3, kind: 'sunset', text: '☀↓ 6:18', name: 'Sunset 6:18 PM' },
-    { t: 13.6, kind: 'moonset', text: '☾↓ 1:38', name: 'Moonset 1:38 PM' }, { t: 0, kind: 'moon', text: '🌗', name: 'Last quarter, 46% illuminated' }, { t: 19, kind: 'moon', text: '🌗', name: 'Last quarter, 43% illuminated' }];
   p.summary_html = '<table class="forecast-summary"><tr class="sum-day"><td class="col-date">Sat 9/26</td></tr></table>';
   return p;
 }
@@ -56,7 +55,7 @@ function boot(opts) {
   const win = fakeWindow(opts), page = buildPage(win), F = load(win), fs_ = fetchStub(), Chart = fakeChart();
   win.Chart = Chart;
   const app = F.init({ window: win, initial: Object.assign({ station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: false, swan_stations: ['51201'] }, opts.initial || {}),
-    stationLabel: (sid) => sid, loadChartJs: () => Promise.resolve(), fetch: fs_.fetch, now: opts.now, setInterval: opts.setInterval, clearInterval: opts.clearInterval });
+    stationLabel: (sid) => sid, loadChartJs: () => Promise.resolve(), fetch: fs_.fetch });
   return { win, page, F, fs_, Chart, app, doc: win.document };
 }
 
@@ -86,60 +85,22 @@ test('makeNightShade fills the twilight and night bands of the view (beforeDraw)
   assert.deepEqual(old.ctx.ops.filter((o) => o.op === 'rect').map((r) => [r.x, r.w]), [[0, 60], [180, 120], [420, 50]], '6 PM - 6 AM');
 });
 
-test('makeSkyStrip draws the bands, the sun at sunrise / sunset, the moon at moonrise / moonset and the phase glyph in a night band wide enough; nothing off the view', () => {
-  const i = I(), parsed = labels(48).map(i.parseLabel), kinds = i.skyOf({ sky: sky48() }, parsed), ev = skyPayload().graph_data.sun_events;
-  const ch = stubChart(); i.makeSkyStrip(parsed, kinds, ev).afterDatasetsDraw(ch);
-  const texts = ch.ctx.ops.filter((o) => o.op === 'text');
-  assert.deepEqual(texts.map((t) => [t.t, t.x]), [['☀', 64], ['☀', 183], ['☾', 136], ['🌗', 30], ['🌗', 245]], 'the second moon mid-way through the 19-29 night');
-  const strip = ch.ctx.ops.filter((o) => o.op === 'rect');
-  assert.ok(strip.every((r) => r.y === 8 && r.h === i.STRIP_H), 'at the canvas top, in the padding above the legend and the plot');
-  assert.ok(texts.every((t) => t.y === 8 + i.STRIP_H / 2));
-  const narrow = stubChart({ scales: { x: { min: undefined, max: undefined, getPixelForValue: (k) => k * 2 } } });   // a 48-slot series on 96 px
-  i.makeSkyStrip(parsed, kinds, ev).afterDatasetsDraw(narrow);
-  assert.deepEqual(narrow.ctx.ops.filter((o) => o.op === 'text').map((t) => t.t), ['☀', '☀', '☾'], 'night bands of 12 and 10 px carry no moon');
-  const part = stubChart({ scales: { x: { min: 20, max: 40, getPixelForValue: (k) => k * 10 } } });
-  i.makeSkyStrip(parsed, kinds, ev).afterDatasetsDraw(part);
-  assert.deepEqual(part.ctx.ops.filter((o) => o.op === 'text').map((t) => [t.t, t.x]), [['🌗', 250]], 'a night run that began before the view still carries its moon, centred on its part in view (200-300); the first night and the sun events are out of view');
-  const tail = stubChart({ scales: { x: { min: 26, max: 40, getPixelForValue: (k) => k * 10 } } });
-  i.makeSkyStrip(parsed, kinds, ev).afterDatasetsDraw(tail);
-  assert.deepEqual(tail.ctx.ops.filter((o) => o.op === 'text').map((t) => [t.t, t.x]), [['🌗', 280]], 'centred on the part of the night in view (260-300)');
-});
-
-test('zoneWallClock, nowIndex and makeNowLine: the current time in the forecast zone, as a fractional slot, drawn as a dashed line', () => {
-  const i = I();
-  const w = i.zoneWallClock('Pacific/Honolulu', Date.UTC(2026, 8, 26, 12, 30));
-  assert.deepEqual([w.getFullYear(), w.getMonth(), w.getDate(), w.getHours(), w.getMinutes()], [2026, 8, 26, 2, 30]);
-  assert.equal(i.zoneWallClock('Not/AZone', Date.now()), null); assert.equal(i.zoneWallClock('', Date.now()), null);
-  const parsed = labels(5).map(i.parseLabel);                                   // midnight .. 4 AM
-  assert.equal(i.nowIndex(parsed, new Date(2026, 8, 26, 2, 30)), 2.5);
-  assert.equal(i.nowIndex(parsed, new Date(2026, 8, 25, 23, 0)), -1); assert.equal(i.nowIndex(parsed, new Date(2026, 8, 26, 5, 0)), -1);
-  assert.equal(i.nowIndex(parsed, null), -1); assert.equal(i.nowIndex([parsed[0]], new Date(2026, 8, 26, 0, 0)), -1);
-  const ch = stubChart(); i.makeNowLine(parsed, 'Pacific/Honolulu', () => Date.UTC(2026, 8, 26, 12, 30)).afterDatasetsDraw(ch);
-  const ops = ch.ctx.ops;
-  assert.deepEqual(ops.filter((o) => o.op === 'move' || o.op === 'line').map((o) => [o.op, o.x, o.y]), [['move', 25, 40], ['line', 25, 300]]);
-  assert.deepEqual(ops.filter((o) => o.op === 'text').map((o) => [o.t, o.x]), [['now', 28]]);
-  const off = stubChart(); i.makeNowLine(parsed, 'Pacific/Honolulu', () => Date.UTC(2026, 8, 27, 12, 30)).afterDatasetsDraw(off);
-  assert.equal(off.ctx.ops.length, 0, 'outside the series: nothing');
-});
-
-test('build: the sky strip and padding only with a sky; the now line always; the direction axis is the compass 0-360; a redraw timer while the charts live', async () => {
-  const i = I(), win = fakeWindow(), page = buildPage(win), F = load(win), Chart = fakeChart(), timers = [], cleared = [];
+test('build: one plugin (the shade), the small padding, the compass direction axis, the Significant Wave Height series; no strip, no now line, no timer', async () => {
+  const win = fakeWindow(), page = buildPage(win), F = load(win), Chart = fakeChart();
   page.graphs.hidden = false;
   const canvases = ['heightChart', 'periodChart', 'directionChart'].map((id) => win.document.getElementById(id));
   const G = F._internals.createForecastGraphs({ host: page.graphs, boxes: canvases.map((c) => c.parentNode), canvases, rangeBar: page.rangeBar, loadChartJs: () => Promise.resolve(),
-    getChart: () => Chart, storage: win.sessionStorage, bodyHeight: () => 400, visible: () => true, now: () => Date.UTC(2026, 8, 26, 12, 30),
-    setInterval: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearInterval: (id) => cleared.push(id) });
+    getChart: () => Chart, storage: win.sessionStorage, bodyHeight: () => 400, visible: () => true });
   await G.setData(skyPayload().graph_data); await settle();
   const c = Chart.made;
-  assert.deepEqual(c[0].config.plugins.map((p) => p.id), ['nightShade', 'nowLine', 'skyStrip']);
-  assert.equal(c[0].options.layout.padding.top, 8 + i.STRIP_H + i.STRIP_GAP);
+  assert.ok(c.every((x) => x.config.plugins.map((p) => p.id).join() === 'nightShade'));
+  assert.ok(c.every((x) => x.options.layout.padding.top === 8));
+  assert.deepEqual(c[0].data.datasets.map((d) => d.label), ['Swell 1', 'Swell 2', 'Swell 3', 'Swell 4', 'Swell 5', 'Swell 6', 'Significant Wave Height']);
   const y = c[2].options.scales.y;
   assert.deepEqual([y.min, y.max, y.ticks.stepSize, y.title.text], [0, 360, 45, 'Direction (from)']);
   assert.deepEqual([0, 45, 90, 180, 270, 360, 100].map((v) => y.ticks.callback(v)), ['N', 'NE', 'E', 'S', 'W', 'N', '']);
-  assert.deepEqual(timers.map((t) => t.ms), [60000]); timers[0].fn(); assert.deepEqual(c.map((x) => x.draws), [1, 1, 1], 'the timer redraws the three charts');
-  await G.setData(payload().graph_data); await settle();                      // no sky: no strip, the small padding; the old timer cleared
-  assert.deepEqual(cleared, [1]); assert.deepEqual(c[3].config.plugins.map((p) => p.id), ['nightShade', 'nowLine']); assert.equal(c[3].options.layout.padding.top, 8);
-  G.destroy(); assert.deepEqual(cleared, [1, 2]);
+  for (const k of ['makeSkyStrip', 'makeNowLine', 'zoneWallClock', 'nowIndex', 'STRIP_H']) assert.ok(!(k in F._internals), k + ' is gone');
+  G.destroy();
 });
 
 // ---- the Detailed | Summary mode ----
@@ -212,12 +173,12 @@ test('the reveal waits for Table view and Detailed mode', async () => {
   s.page.body.scrollTop = 7; s.app.setTableMode('summary'); s.app.setTableMode('detailed'); assert.equal(s.page.body.scrollTop, 7, 'once only');
 });
 
-test('an older payload (no sky, no summary) renders as before: two plugins, the small padding, no mode buttons, the hour-rule shade', async () => {
+test('an older payload (no sky, no summary) renders as before: the hour-rule shade, the small padding, no mode buttons', async () => {
   const b = boot({}); await settle();
   b.fs_.last().release(payload()); await settle();
   assert.equal(b.page.modeBar.hidden, true); assert.equal(b.page.summary.hidden, true); assert.equal(b.page.table.hidden, false);
   b.app.window.setMode('normal'); b.app.setView('Graph'); await settle();
   const c = b.Chart.made;
-  assert.equal(c.length, 3); assert.deepEqual(c[0].config.plugins.map((p) => p.id), ['nightShade', 'nowLine']); assert.equal(c[0].options.layout.padding.top, 8);
+  assert.equal(c.length, 3); assert.deepEqual(c[0].config.plugins.map((p) => p.id), ['nightShade']); assert.equal(c[0].options.layout.padding.top, 8);
   assert.deepEqual([c[2].options.scales.y.min, c[2].options.scales.y.max], [0, 360]);
 });

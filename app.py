@@ -285,7 +285,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.16.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.16.1"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript"}
@@ -1792,13 +1792,13 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     """The forecast table. compact (the forecast window, plan section 25): no Cycle/Location/Time Zone
     rows (the window shows them in one line above the table), no inline padding (the page CSS sets it),
     short dates ('Fri 9/26', the full date in the cell's title), 'Dir (deg)' headers, directions with compass
-    letters and an arrow.
+    letters and an arrow, and the significant wave height first after Time (owner, plan section 35).
     groups: the swell groups (0-5) to show, each keeping its own colour and "Swell n" label (plan section 26:
     only the components the forecast contains); None = all six.
-    sky (compact only; sky.annotate_rows, one entry per row; plan section 35): a Sun column (first light, sunrise,
-    sunset, last light, moonrise, moonset in each row's slot; the moon's phase on the first row of each night) and
-    rows classed by the real sky (sky-day / sky-twilight / sky-night, day-first, now-row) instead of the fixed
-    6 AM - 7 PM bold rule. Without it the rows keep that rule."""
+    sky (compact only; sky.annotate_rows, one entry per row; plan section 35): a Sun/Moon column, the last (first
+    light, sunrise, sunset, last light, moonrise, moonset in each row's slot; the moon's phase on the first row of
+    each night), and rows classed by the real sky (sky-day / sky-twilight / sky-night, day-first, now-row) instead of
+    the fixed 6 AM - 7 PM bold rule. Without it the rows keep that rule."""
     sky = sky if compact and sky and len(sky) == len(rows) else None
     group_colors = [
         {"header": "#C00000", "subheader": "#F8B4B4", "data": "#F9DCDC"},
@@ -1831,29 +1831,38 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         html += '<th rowspan="2" scope="col" class="col-date">Date</th><th rowspan="2" scope="col" class="col-time">Time</th>'
     else:
         html += '<th rowspan="2" scope="col">Date</th><th rowspan="2" scope="col">Time</th>'
-    if sky:
-        html += '<th rowspan="2" scope="col" class="col-sun" title="Sun and moon">Sun</th>'
+    # The significant wave height of the combined seas: the bulletins' Hst, SWAN's Hsig, the points' HTSGW. In the
+    # window's table it comes first after Time (owner, plan section 35); the classic table keeps it after the swells.
+    comb = ('<abbr title="Significant wave height of the combined seas" aria-label="Significant wave height">'
+            'Sig. Wave<br>Height</abbr>' if compact else 'Significant Wave Height')
+    comb_th = f'<th scope="colgroup" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">{comb}</th>'
+    if compact:
+        html += comb_th
     for g in gs:
         col = group_colors[g]
         html += f'<th colspan="3" scope="colgroup" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {g + 1}</th>'
-    # The significant wave height of the combined seas: the bulletins' Hst, SWAN's Hsig, the points' HTSGW.
-    comb = ('<abbr title="Significant wave height of the combined seas" aria-label="Significant wave height">'
-            'Sig. Wave<br>Height</abbr>' if compact else 'Significant Wave Height')
-    html += f'<th scope="colgroup" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">{comb}</th>'
+    if not compact:
+        html += comb_th
     html += f'<th colspan="2" scope="colgroup" style="background-color:{wind_colors["header"]}; color:white; text-align:center;">Wind</th>'
+    if sky:                                                    # the last column (owner, plan section 35)
+        html += '<th rowspan="2" scope="col" class="col-sun" title="Sun and moon">Sun/Moon</th>'
     html += '</tr>\n'
 
     # subheaders
     hs_unit_label = '(ft)' if unit == 'US' else '(m)'
     wind_spd_label = '(mph)' if unit == 'US' else '(km/h)'
     dir_label = '(&deg;)' if compact else '(d)'
+    comb_sub = f'<th scope="col" style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
     html += '<tr>'
+    if compact:
+        html += comb_sub
     for g in gs:
         col = group_colors[g]
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Tp<br>(s)</th>'
         html += f'<th scope="col" style="background-color:{col["subheader"]}; text-align:center;">Dir<br>{dir_label}</th>'
-    html += f'<th scope="col" style="background-color:{combined_colors["subheader"]}; text-align:center;">Hs<br>{hs_unit_label}</th>'
+    if not compact:
+        html += comb_sub
     html += f'<th scope="col" style="background-color:{wind_colors["subheader"]}; text-align:center;">Spd<br>{wind_spd_label}</th>'
     html += f'<th scope="col" style="background-color:{wind_colors["subheader"]}; text-align:center;">Dir</th>'
     html += '</tr>\n'
@@ -1905,9 +1914,17 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
             html += f'<td class="col-time" style="{time_style}">{row[1]}</td>'
         else:
             html += f'<td style="{time_style}">{row[1]}</td>'
-        if sky:
-            html += f'<td class="col-sun">{_sun_cell(info or {})}</td>'
         plain = info is not None and info.get("state")
+
+        # Combined (the significant wave height): first after Time in the window's table, after the swells in the classic
+        val = row[-1]
+        display_comb = None if val is None else (val if unit == 'US' else (val / 3.28084))
+        comb_str = "" if display_comb is None else f"{display_comb:.2f}"
+        comb_style = (f'background-color:{combined_colors["data"]}; text-align:right;' if plain else
+                      f'background-color:{combined_colors["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}')
+        comb_td = f'<td style="{comb_style}">{comb_str}</td>'
+        if compact:
+            html += comb_td
 
         for g in gs:
             col = group_colors[g]
@@ -1931,13 +1948,8 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
             html += f'<td style="{cell_style}">{dir_str}</td>'
             idx += 1
 
-        # Combined
-        val = row[-1]
-        display_comb = None if val is None else (val if unit == 'US' else (val / 3.28084))
-        comb_str = "" if display_comb is None else f"{display_comb:.2f}"
-        comb_style = (f'background-color:{combined_colors["data"]}; text-align:right;' if plain else
-                      f'background-color:{combined_colors["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}')
-        html += f'<td style="{comb_style}">{comb_str}</td>'
+        if not compact:
+            html += comb_td
 
         # Wind. Storage order differs from display order ON PURPOSE: wind lives
         # at row[20]/row[21] so combined stayed row[-1] and its three
@@ -1957,6 +1969,8 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         wdir = row[21]
         dir_str = "" if wdir is None else (_dir_cell(wdir) if compact else f"{wdir}&deg; {_compass16(wdir)}")
         html += f'<td style="{wind_style} white-space:nowrap;">{dir_str}</td>'
+        if sky:                                                # Sun/Moon: the last column
+            html += f'<td class="col-sun">{_sun_cell(info or {})}</td>'
         html += '</tr>\n'
 
     html += '</tbody>\n'
@@ -2183,20 +2197,6 @@ def _sky_for(rows, lat, lon, tz_name):
         return None
 
 
-def _graph_sun_events(gsky):
-    """[{t: slot index, kind, text, name}] for the graphs' sky strip; kind 'moon' marks the start of a night with the
-    phase glyph (text) and its name + lit fraction (name)."""
-    out = []
-    for i, a in enumerate(gsky):
-        if a.get("moon"):
-            m = a["moon"]
-            out.append({"t": i, "kind": "moon", "text": m["glyph"], "name": "%s, %d%% illuminated" % (m["name"], m["pct"])})
-        for e in a.get("events") or []:
-            out.append({"t": i, "kind": e["kind"], "text": e["text"],
-                        "name": "%s %s" % (e["name"], e["time"].strftime("%I:%M %p").lstrip("0"))})
-    return out
-
-
 def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str = "GFS", *,
                              compact: bool = False) -> dict:
     """Shared, cached forecast computation for both the homepage and /api/forecast.
@@ -2332,14 +2332,13 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         "units": graph_units,
         "cycle": cycle_str or "", "location": location_str or "", "tz": tz_label or "",
         "swells": ["s%d" % (g + 1) for g in present],          # the series worth drawing (plan section 26)
-        "sky": None, "sun_events": None,
+        "sky": None,
     }
     if sky_rows:
-        # per graph slot (a point's hourly slots, blank ones included): the sky state, and the events at their slot
+        # the charts' day / twilight / night shading: one state per graph slot (a point's hourly slots included)
         gsky = sky_rows if grows is rows else _sky_for(grows, sky_lat, sky_lon, tz_label)
         if gsky:
             out["graph_data"]["sky"] = [a["state"] for a in gsky]
-            out["graph_data"]["sun_events"] = _graph_sun_events(gsky)
 
     cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
     loc_clean   = _strip_header_prefix(location_str, "Location")

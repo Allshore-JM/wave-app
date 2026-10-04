@@ -592,7 +592,7 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
   (522 inputs) is checked against both.
 
-## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.0)
+## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.1)
 
 The window's table and graphs know the real sun and moon at the station (`sky.py`, PyEphem; `requirements.txt`
 `ephem==4.2.1`; checked to the minute against USNO in `tests/test_sky.py`). What the server sends (`/api/forecast?compact=1`
@@ -601,11 +601,13 @@ error the table keeps its old 6 AM - 7 PM bold rule and the graphs their fixed n
 
 - `table_html`: rows classed `sky-day` / `sky-twilight` / `sky-night` (from the sun's altitude at the row's time; a row
   whose slot holds first light, sunrise, sunset or last light is a twilight row), `day-first` on each day's first row,
-  `now-row` on the current hour, `data-t`; a Sun column after Time (`col-sun`: first light ◐, sunrise ☀↑, sunset ☀↓, last
-  light ◑, moonrise ☾↑, moonset ☾↓ in the row's slot, an hourly row's hour or a 3-hourly row's three hours; the moon's
-  phase glyph and lit fraction on the first row of each night); `col-date` / `col-time` on the first two cells (the
-  sticky columns); "Comb." is now "Sig. Wave Height" (the bulletins' Hst, SWAN's Hsig, a point's HTSGW: the significant
-  wave height of the combined seas); directions read "248° WSW" with an arrow (`.dir-arrow`, rotated to where the waves go).
+  `now-row` on the current hour, `data-t`. Columns: Date, Time, Sig. Wave Height, the swells, Wind, Sun/Moon (owner: the
+  significant height first after Time, Sun/Moon last). "Comb." is now "Sig. Wave Height" (the bulletins' Hst, SWAN's
+  Hsig, a point's HTSGW: the significant wave height of the combined seas; the classic table keeps it after the swells,
+  named "Significant Wave Height"). The Sun/Moon column (`col-sun`): first light ◐, sunrise ☀↑, sunset ☀↓, last light ◑,
+  moonrise ☾↑, moonset ☾↓ in the row's slot (an hourly row's hour or a 3-hourly row's three hours), the moon's phase
+  glyph and lit fraction on the first row of each night. `col-date` / `col-time` on the first two cells (the sticky
+  columns); directions read "248° WSW" with an arrow (`.dir-arrow`, rotated to where the waves go).
 - `summary_html`: the Summary view, one row per forecast day over its daylight rows (first light to last light):
   significant wave height range + trend (↗ rising / ↘ falling / ▲ peak at an hour / → steady: the last third of the window
   against the first, 10 % bands), the two most powerful swell SYSTEMS of the day (the hourly columns are re-ranked by
@@ -613,17 +615,15 @@ error the table keeps its old 6 AM - 7 PM bold rule and the graphs their fixed n
   direction, within 40°; power = height² × period), wind range + mean direction, sunrise, sunset, the moon. A first or
   last day without daylight rows is left out; a polar night keeps a row with a note; a day cut by the forecast's start or
   end says "from 8:00 AM" / "until 5:00 PM".
-- `graph_data.sky` (one state per slot, a point's hourly slots included) and `graph_data.sun_events`
-  (`[{t: slot, kind, text, name}]`, kind `moon` at the start of each night with the phase glyph as `text`).
+- `graph_data.sky`: one state per slot (a point's hourly slots included), for the charts' shading.
 
 The page: the row tints are a `--tint` gradient laid over each cell's own swell colour (twilight amber, night slate-blue,
 hover, the now row blue with a left accent), a 2 px rule where each day starts, tabular numerals, the group headers softened
-15 %, Date and Time sticky on the left (the Time column's offset is the Date column's measured width, `--date-w`), the Sun
-column's glyphs coloured by kind. The now row is scrolled under the frozen header once per station or point (not on a
+15 %, Date and Time sticky on the left (the Time column's offset is the Date column's measured width, `--date-w`), the
+Sun/Moon column's glyphs coloured by kind. The now row is scrolled under the frozen header once per station or point (not on a
 unit or zone change; deferred while the window is minimised, in Graph view or in Summary mode). The Detailed | Summary
 buttons show only in Table view and only when the payload carries a summary. The charts: twilight and night bands at
-the real times (`makeNightShade`), a 14 px sky strip in the top padding with ☀ at sunrise / sunset, ☾ at moonrise /
-moonset and the moon glyph centred in each night band at least 24 px wide (`makeSkyStrip`), a dashed "now" line at the
-current time in the forecast's zone redrawn every minute (`makeNowLine`; `zoneWallClock` via Intl, `nowIndex`), and the
-direction axis fixed 0-360 with compass labels N NE E SE S SW W NW N. An older cached payload with none of these fields
-draws as before (the hour-rule shade, no strip, no mode buttons).
+the real times (`makeNightShade`), the combined series named "Significant Wave Height", and the direction axis fixed
+0-360 with compass labels N NE E SE S SW W NW N. (A sky strip with sun / moon glyphs and a "now" line were tried in 1.16.0
+and removed: the owner found them clutter.) An older cached payload with none of these fields draws as before (the
+hour-rule shade, no mode buttons).

@@ -214,8 +214,8 @@ def test_graph_data_has_no_wind_keys(monkeypatch):
     gd = payload["graph_data"]
     assert set(gd.keys()) == {"labels", "height", "period", "direction",
                               "units", "cycle", "location", "tz", "swells",   # swells: plan section 26
-                              "sky", "sun_events"}                           # plan section 35: the window's only
-    assert gd["sky"] is None and gd["sun_events"] is None                    # the classic payload computes no sky
+                              "sky"}                                         # plan section 35: the window's only
+    assert gd["sky"] is None                                                 # the classic payload computes no sky
     assert "wind" not in gd and "wind_speed" not in gd
     # combined read from row[-1], not the wind column
     assert gd["height"]["combined"] == [4.17, 5.25]

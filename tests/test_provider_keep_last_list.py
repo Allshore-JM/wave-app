@@ -1,7 +1,8 @@
 """Bug fix: a FAILED provider refresh no longer replaces a good station list with [] for a whole
 TTL. The last good list is kept (same version -> the live-stations memo serves identical bytes),
-the provider is retried after retry_after_sec, and a legitimately EMPTY successful fetch still
-replaces the list as before. First-ever failure (no good list yet) is unchanged: [] for the TTL.
+the provider is retried after retry_after_sec. Since plan section 36 (stale-while-revalidate) a
+FIRST failure is retried after retry_after_sec too, and an EMPTY fetch after a good list counts
+as a failure (kept). Refreshes run inline here (tests/conftest.py installs the inline runner).
 
 Golden: tests/fixtures/live_stations_golden.json (unchanged code) must still replay byte for byte
 -- its SMHI provider fails from the start, i.e. the unchanged first-failure path.
@@ -19,6 +20,15 @@ import app as A  # noqa: E402
 import buoy_sources as B  # noqa: E402
 import fake_buoy_providers as F  # noqa: E402
 from test_live_stations_memo import test_golden_sequence_byte_identical as _golden  # noqa: E402,F401
+
+
+@pytest.fixture(autouse=True)
+def _reset_fetch_counters():
+    for c in F.FAKE_CLASSES:          # class-level counters: never carry across tests
+        c.fetch_calls = 0
+    yield
+    for c in F.FAKE_CLASSES:
+        c.fetch_calls = 0
 
 
 @pytest.fixture
@@ -69,23 +79,29 @@ def test_failed_refresh_keeps_last_good_list_and_version(clock):
     assert lst3 == lst1 and v3 == v1 + 1             # success publishes a new version
 
 
-def test_first_failure_is_unchanged_empty_for_ttl(clock):
+def test_first_failure_is_retried_after_retry_after_sec(clock):
     p = F.FakeSMHI(http=None)                        # raises from the start
     lst, v, _ = p.list_stations_versioned()
     assert lst == [] and v == 1
-    clock.now += p.retry_after_sec + 1
-    assert p.list_stations_versioned()[1] == 1       # no retry before the full TTL (as before)
-    clock.now += p.list_ttl_sec
-    assert p.list_stations_versioned()[1] == 2
+    clock.now += p.retry_after_sec - 1
+    assert p.list_stations_versioned()[1] == 1       # not yet
+    assert F.FakeSMHI.fetch_calls == 1
+    clock.now += 2
+    assert p.list_stations_versioned()[1] == 2       # retried (still failing: a new empty publish)
+    assert F.FakeSMHI.fetch_calls == 2
 
 
-def test_successful_empty_list_still_replaces(clock):
+def test_empty_list_after_a_good_one_is_kept(clock):
     p = F.FakeCDIP(http=None)
-    p.list_stations_versioned()
+    lst1, v1, _ = p.list_stations_versioned()
     clock.now += p.list_ttl_sec + 1
-    p._fetch_stations = lambda: []                   # legitimately empty
+    p._fetch_stations = lambda: []                   # an agency answering with nothing
     lst, v, _ = p.list_stations_versioned()
-    assert lst == [] and v == 2
+    assert lst == lst1 and v == v1                   # kept, retried after retry_after_sec
+    clock.now += p.retry_after_sec + 1
+    p._fetch_stations = lambda: [{"local_id": "9", "name": "n", "lat": 1.0, "lon": 2.0}]
+    lst, v, _ = p.list_stations_versioned()
+    assert len(lst) == 1 and v == v1 + 1
 
 
 def test_retention_is_bounded(clock):

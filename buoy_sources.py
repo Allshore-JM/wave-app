@@ -9,8 +9,11 @@ ERDDAP-based providers here are self-contained (no app.py import -> no circular 
 Conventions (normalize everything here so the render path stays simple):
   - heights in METERS, periods in SECONDS, directions in DEGREES, timestamps ISO-8601 UTC ("...Z").
   - wave direction is the "coming FROM" convention (matches NDBC).
-Resilience: every network call has a timeout and fails soft -- a down/slow source contributes no
-markers and never raises out of list_stations()/latest().
+Resilience: every network call has a timeout; a failed station-list fetch keeps the last good
+list (retried after retry_after_sec), and nothing raises out of list_stations()/latest().
+Freshness: lists are refreshed stale-while-revalidate on the module's refresh runner (see
+BuoyProvider.list_stations_versioned / ThreadRunner); only a provider with no list yet makes a
+caller wait.
 """
 import csv
 import io
@@ -63,6 +66,11 @@ class BuoyProvider:
     # keep_on_failure_sec after it was fetched (then the old fail-soft [] applies again).
     retry_after_sec = 300
     keep_on_failure_sec = 6 * 3600
+    # Stale-while-revalidate: a good list is REFRESHED IN THE BACKGROUND once this fraction of
+    # its TTL has passed, while callers keep getting the list in hand at once. Only a provider
+    # with no list at all makes a caller wait for a fetch. (The hard expiry at the full TTL
+    # still counts as "due", so a list is never older than a TTL plus one refresh.)
+    refresh_at = 0.9
 
     def __init__(self, http=None):
         self.http = http or requests.Session()
@@ -73,9 +81,15 @@ class BuoyProvider:
         # so a snapshot's (list, version) pair identifies exactly which publish it came from.
         self._list_version = 0
         self._list_ok_ts = 0.0           # when the current list was last fetched SUCCESSFULLY
+        self._due_ts = 0.0               # when the next refresh is due (refresh_at / retry rule)
         # Singleflight for the refresh itself: concurrent callers that find the list expired
         # wait here and then return the ONE freshly published list instead of each fetching.
         self._refresh_lock = threading.Lock()
+        self._refresh_pending = False    # a background refresh job is queued or running
+        self._refreshing = False         # a fetch is in flight right now (any path)
+        self._last_attempt_ts = 0.0      # diagnostics for /healthz
+        self._last_duration_s = None
+        self._last_error = None          # None after a good refresh; the failure text otherwise
 
     # --- interface ---
     def _fetch_stations(self):
@@ -91,6 +105,14 @@ class BuoyProvider:
         """Cached, fail-soft lean station list with namespaced ids + capabilities + attribution."""
         return self.list_stations_versioned()[0]
 
+    def snapshot(self):
+        """(list, version, published_ts) of the list in hand, read together under the lock, or
+        None when nothing has been published yet. Never fetches, never waits, no TTL check."""
+        with self._lock:
+            if self._list_cache is None:
+                return None
+            return self._list_cache, self._list_version, self._list_ts
+
     def _snapshot_if_fresh(self):
         """(list, version, published_ts) under the lock, or None when expired/never fetched."""
         with self._lock:
@@ -98,45 +120,140 @@ class BuoyProvider:
                 return self._list_cache, self._list_version, self._list_ts
         return None
 
+    def refresh_due(self, now=None):
+        """True when a refresh should run: no list yet, refresh_at of the TTL passed since the
+        last publish, the retry moment after a failure arrived, or the full TTL passed (the
+        hard expiry; tests force it by setting _list_ts = 0)."""
+        now = time.time() if now is None else now
+        with self._lock:
+            if self._list_cache is None:
+                return True
+            return now >= self._due_ts or (now - self._list_ts) >= self.list_ttl_sec
+
     def list_stations_versioned(self):
-        """Same as list_stations() but returns (list, version, published_ts) read together under
-        one lock, so a caller can key derived work on the exact publish it saw. Refresh timing
-        is unchanged: the first call after list_ttl_sec fetches inline; concurrent expired
-        callers wait for that fetch and get its result (the same list they would have obtained
-        from their own duplicate fetch today, minus the duplicate upstream hit)."""
-        snap = self._snapshot_if_fresh()
-        if snap is not None:
-            return snap
+        """(list, version, published_ts) read together under one lock, so a caller can key
+        derived work on the exact publish it saw. Stale-while-revalidate: the list in hand is
+        returned at once; when a refresh is due it is scheduled on the module's refresh runner
+        (background threads in production; inline in the tests, which keeps the fetch schedule
+        of the golden replay identical). Only a provider with NO list yet fetches inline:
+        concurrent cold callers wait on the one fetch (singleflight)."""
+        if self.snapshot() is None:
+            return self.refresh()                   # cold: wait for the one fetch
+        if self.refresh_due():
+            self.schedule_refresh()                 # inline runner: refreshed before the read below
+        return self.snapshot()
+
+    def schedule_refresh(self):
+        """Queue one background refresh (no-op while one is queued or in flight)."""
+        with self._lock:
+            if self._refresh_pending or self._refreshing:
+                return False
+            self._refresh_pending = True
+        try:
+            get_refresh_runner().submit(self._scheduled_refresh, "buoy-refresh-%s" % self.source)
+        except Exception as e:
+            with self._lock:
+                self._refresh_pending = False
+            _log.warning("buoy provider %s: could not schedule a refresh (%s)", self.source, e)
+            return False
+        return True
+
+    def _scheduled_refresh(self):
+        try:
+            with self._refresh_lock:
+                # published or refreshed by someone else while this job waited? (a cold caller
+                # on the inline path, or a forced refresh)
+                if self.refresh_due():
+                    self._refresh_locked()
+        finally:
+            with self._lock:
+                self._refresh_pending = False
+
+    def refresh(self):
+        """Fetch and publish NOW (singleflight through _refresh_lock); returns the snapshot.
+        A caller that waited for another refresh gets that refresh's publish."""
         with self._refresh_lock:
             snap = self._snapshot_if_fresh()        # published while we waited?
             if snap is not None:
                 return snap
-            out, ok = self._build_station_list()
-            with self._lock:
-                now = time.time()
-                if (not ok and self._list_cache
-                        and (now - self._list_ok_ts) < self.keep_on_failure_sec):
-                    # Keep the last good list (same version -> identical bytes downstream);
-                    # come back sooner than a full TTL.
-                    self._list_ts = now - self.list_ttl_sec + min(self.retry_after_sec, self.list_ttl_sec)
-                    _log.warning("buoy provider %s: refresh failed, keeping the previous list "
-                                 "(%d stations, fetched %ds ago); retry in %ds", self.source,
-                                 len(self._list_cache), int(now - self._list_ok_ts),
-                                 min(self.retry_after_sec, self.list_ttl_sec))
+            return self._refresh_locked()
+
+    def _refresh_locked(self):
+        """The fetch + publish, under _refresh_lock. Keeps the last good list through a failure
+        (same version -> identical bytes downstream) and comes back after retry_after_sec."""
+        with self._lock:
+            self._refreshing = True
+        t0 = time.monotonic()
+        try:
+            out, ok, err = self._build_station_list()
+        finally:
+            dur = time.monotonic() - t0
+        with self._lock:
+            now = time.time()
+            self._refreshing = False
+            self._last_attempt_ts = now
+            self._last_duration_s = dur
+            if ok and not out and self._list_cache:
+                # An agency that answered with NOTHING after a good list is as good as down
+                # (an empty catalogue page, a truncated feed): keep the markers, retry.
+                ok, err = False, "empty list after %d stations" % len(self._list_cache)
+            retry = min(self.retry_after_sec, self.list_ttl_sec)
+            if not ok:
+                self._last_error = err or "refresh failed"
+                if self._list_cache and (now - self._list_ok_ts) < self.keep_on_failure_sec:
+                    # Keep the last good list; come back sooner than a full TTL.
+                    self._list_ts = now - self.list_ttl_sec + retry
+                    self._due_ts = now + retry
+                    _log.warning("buoy provider %s: refresh failed after %.1fs (%s), keeping the "
+                                 "previous list (%d stations, fetched %ds ago); retry in %ds",
+                                 self.source, dur, self._last_error, len(self._list_cache),
+                                 int(now - self._list_ok_ts), retry)
                     return self._list_cache, self._list_version, self._list_ts
-                self._list_cache = out
+                self._list_cache = out            # [] : no markers rather than a broken map
                 self._list_ts = now
                 self._list_version += 1
-                if ok:
-                    self._list_ok_ts = now
+                self._due_ts = now + retry
+                _log.warning("buoy provider %s: refresh failed after %.1fs (%s), no list kept; "
+                             "retry in %ds", self.source, dur, self._last_error, retry)
                 return out, self._list_version, self._list_ts
+            self._last_error = None
+            self._list_cache = out
+            self._list_ts = now
+            self._list_version += 1
+            self._list_ok_ts = now
+            self._due_ts = now + self.list_ttl_sec * self.refresh_at
+            _log.info("buoy provider %s: list refreshed in %.1fs (%d stations, version %d)",
+                      self.source, dur, len(out), self._list_version)
+            return out, self._list_version, self._list_ts
+
+    def status(self, now=None):
+        """Diagnostics for /healthz (no work, no waiting)."""
+        now = time.time() if now is None else now
+        with self._lock:
+            has = self._list_cache is not None
+            return {
+                "source": self.source,
+                "version": self._list_version if has else None,
+                "stations": len(self._list_cache) if has else None,
+                "age_s": round(now - self._list_ts, 1) if has else None,
+                "good_age_s": round(now - self._list_ok_ts, 1) if self._list_ok_ts else None,
+                "due_in_s": (round(min(self._due_ts, self._list_ts + self.list_ttl_sec) - now, 1)
+                             if has else 0.0),
+                "in_flight": self._refreshing,
+                "pending": self._refresh_pending,
+                "last_error": self._last_error,
+                "last_duration_s": (round(self._last_duration_s, 2)
+                                    if self._last_duration_s is not None else None),
+                "last_attempt_ts": self._last_attempt_ts or None,
+            }
 
     def _build_station_list(self):
-        """One upstream fetch -> (lean entries, ok). ok=False means the fetch FAILED (as
+        """One upstream fetch -> (lean entries, ok, error). ok=False means the fetch FAILED (as
         opposed to a legitimately empty list); the caller decides whether to keep the last
         good list. Fail-soft: a failure yields [] (no markers rather than a broken map)."""
         out = []
         ok = True
+        err = None
         now = time.time()
         try:
             for s in self._fetch_stations():
@@ -172,12 +289,85 @@ class BuoyProvider:
             _log.warning("buoy provider %s: station-list fetch failed (%s)", self.source, e)
             out = []                          # fail soft: no markers rather than a broken map
             ok = False
-        return out, ok
+            err = "%s: %s" % (type(e).__name__, e)
+        return out, ok, err
 
     def detail(self, local_id):
         """Return {latest, recent}. Base: latest obs only (no history). Sources with
         recent_history override this to also return a recent obs list (newest-first)."""
         return {"latest": self.latest(local_id), "recent": []}
+
+
+class ThreadRunner:
+    """Runs refresh jobs on daemon threads, at most `workers` fetching at once (the rest wait
+    on the semaphore), so a boot-time warm-up of ten agencies never downloads ten feeds at
+    once (memory) and never blocks a request. Daemon: a process exit never waits for a feed."""
+
+    def __init__(self, workers=3):
+        self.workers = max(1, int(workers))
+        self._sem = threading.BoundedSemaphore(self.workers)
+        self._lock = threading.Lock()
+        self.queued = 0                  # submitted, not finished (waiting or running)
+        self.running = 0
+
+    def submit(self, fn, name="buoy-refresh"):
+        with self._lock:
+            self.queued += 1
+
+        def run():
+            try:
+                with self._sem:
+                    with self._lock:
+                        self.running += 1
+                    try:
+                        fn()
+                    except Exception:
+                        _log.exception("buoy refresh job %s failed", name)
+                    finally:
+                        with self._lock:
+                            self.running -= 1
+            finally:
+                with self._lock:
+                    self.queued -= 1
+        threading.Thread(target=run, name=name, daemon=True).start()
+
+
+class InlineRunner:
+    """Runs each job in the calling thread, at once (tests: the fetch schedule of the golden
+    replay stays identical to the inline-refresh implementation it was captured on)."""
+    queued = 0
+    running = 0
+
+    def submit(self, fn, name="buoy-refresh"):
+        fn()
+
+
+_REFRESH_RUNNER = None
+_RUNNER_LOCK = threading.Lock()
+
+
+def get_refresh_runner():
+    """The module's refresh runner: a ThreadRunner with LIVE_REFRESH_WORKERS threads (default 3)
+    unless set_refresh_runner() installed another."""
+    global _REFRESH_RUNNER
+    with _RUNNER_LOCK:
+        if _REFRESH_RUNNER is None:
+            import os
+            try:
+                workers = int(os.environ.get("LIVE_REFRESH_WORKERS", "3"))
+            except ValueError:
+                workers = 3
+            _REFRESH_RUNNER = ThreadRunner(workers)
+        return _REFRESH_RUNNER
+
+
+def set_refresh_runner(runner):
+    """Install a runner (None restores the default on the next use). Returns the previous one."""
+    global _REFRESH_RUNNER
+    with _RUNNER_LOCK:
+        prev = _REFRESH_RUNNER
+        _REFRESH_RUNNER = runner
+    return prev
 
 
 def _erddap_rows(http, url, timeout):
@@ -810,13 +1000,12 @@ class AusWavesProvider(BuoyProvider):
     }
 
     def _fetch_stations(self):
-        try:
-            r = self.http.get(self.LIST, headers=self.HEADERS, timeout=self.timeout)
-            if r.status_code != 200:
-                return []
-            catalogue = r.json()
-        except (ValueError, requests.RequestException):
-            return []
+        # A request error or a non-200 answer RAISES: the base class then keeps the last good
+        # list (fail-soft used to return [], which emptied the layer for a whole TTL).
+        r = self.http.get(self.LIST, headers=self.HEADERS, timeout=self.timeout)
+        if r.status_code != 200:
+            raise RuntimeError("HTTP %s from the AusWaves catalogue" % r.status_code)
+        catalogue = r.json()
         now = time.time()
         out = []
         for s in catalogue:
@@ -1025,13 +1214,10 @@ class CefasWaveNetProvider(BuoyProvider):
         self._latest_by_id = {}
 
     def _fetch_stations(self):
-        try:
-            r = self.http.get(self.URL, timeout=self.timeout)
-            if r.status_code != 200:
-                return []
-            data = r.json()
-        except (ValueError, requests.RequestException):
-            return []
+        r = self.http.get(self.URL, timeout=self.timeout)      # errors raise -> keep-last
+        if r.status_code != 200:
+            raise RuntimeError("HTTP %s from the WaveNet summary" % r.status_code)
+        data = r.json()
         out, latest = [], {}
         for p in data:
             try:
@@ -1123,10 +1309,10 @@ class SmhiProvider(BuoyProvider):
     PARAMS = (("hs_m", 1), ("tp_s", 9), ("mean_period_s", 10), ("dir_deg", 7), ("hmax_m", 11))
 
     def _fetch_stations(self):
-        try:
-            d = self.http.get(self.BASE + "/parameter/1.json", timeout=self.timeout).json()
-        except (ValueError, requests.RequestException):
-            return []
+        r = self.http.get(self.BASE + "/parameter/1.json", timeout=self.timeout)   # errors raise
+        if r.status_code != 200:
+            raise RuntimeError("HTTP %s from the SMHI station list" % r.status_code)
+        d = r.json()
         out = []
         for s in d.get("station", []):
             if not s.get("active"):
@@ -1306,11 +1492,11 @@ class CopernicusProvider(BuoyProvider):
             yield line
 
     def _fetch_stations(self):
-        try:
-            resp = self.http.get(self.S3 + self.DATASET + "index_latest.txt",
-                                 timeout=self.timeout, stream=True)
-        except requests.RequestException:
-            return []
+        resp = self.http.get(self.S3 + self.DATASET + "index_latest.txt",
+                             timeout=self.timeout, stream=True)     # errors raise -> keep-last
+        if resp.status_code != 200:
+            resp.close()
+            raise RuntimeError("HTTP %s from the CMEMS index" % resp.status_code)
         latmin, latmax, lonmin, lonmax = self.BBOX
         now = time.time()
         best = {}
@@ -1358,14 +1544,12 @@ class CopernicusProvider(BuoyProvider):
                     continue
                 if pid not in best or tend > best[pid][0]:
                     best[pid] = (tend, fn, la, lo, tz)
-        except requests.RequestException:      # body failed mid-stream: same fail-soft as before
-            return []
-        finally:
+        finally:                               # a body that fails mid-stream raises -> keep-last
             resp.close()
         out = []
-        self._file_by_id = {}
+        files = {}                             # swapped in whole below: detail() never sees a half map
         for pid, (tend, fn, la, lo, tz) in best.items():
-            self._file_by_id[pid] = fn
+            files[pid] = fn
             # the two newest single-position files OLDER than the newest file: if they agree and the
             # newest file's position is more than OUTLIER_KM from them, it is an outlier
             b = recent.get(pid, b"")
@@ -1376,6 +1560,7 @@ class CopernicusProvider(BuoyProvider):
                 la, lo = older[0][1], older[0][2]
             name = pid.split("_")[-1].replace("-", " ") if "_" in pid else pid
             out.append({"local_id": pid, "name": name, "lat": la, "lon": lo, "latest_time": tz})
+        self._file_by_id = files
         return out
 
     def detail(self, local_id):

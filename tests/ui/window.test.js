@@ -580,7 +580,7 @@ test('plan section 26: the charts draw only the swells present (legend on top), 
     loadChartJs: () => Promise.resolve(), getChart: () => Chart, storage: fakeWindow().sessionStorage, bodyHeight: () => 1300, visible: () => true });
   await G.setData(gd); await settle();
   const [h, p, d] = Chart.made;
-  assert.deepEqual(h.data.datasets.map((x) => x.label), ['Swell 1', 'Swell 3', 'Combined']);
+  assert.deepEqual(h.data.datasets.map((x) => x.label), ['Swell 1', 'Swell 3', 'Significant Wave Height']);
   assert.deepEqual(p.data.datasets.map((x) => x.label), ['Swell 1', 'Swell 3']);
   assert.equal(h.options.plugins.legend.position, 'top');
   assert.equal(page.graphs.children[0].style.height, '420px', 'three boxes share a tall body');

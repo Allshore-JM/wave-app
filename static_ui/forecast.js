@@ -38,10 +38,6 @@
   var TABLE_MODE_KEY = 'allshore.tableMode.v1';                     // sessionStorage 'detailed' | 'summary' (plan section 35)
   var COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'N'];  // the direction axis, every 45 deg
   var SKY_FILL = { twilight: 'rgba(255,170,0,0.10)', night: 'rgba(30,60,110,0.10)' };   // the plot's bands (the table's tints)
-  var STRIP_FILL = { day: 'rgba(255,220,80,0.18)', twilight: 'rgba(255,170,0,0.30)', night: 'rgba(30,60,110,0.30)' };
-  var STRIP_H = 14, STRIP_GAP = 2, PAD_TOP = 8;                     // the sky strip along the top of a chart, in its padding (above the legend)
-  var MOON_MIN_PX = 24;                                             // a night band narrower than this gets no moon glyph
-  var NOW_COLOR = 'rgba(29,111,214,0.9)', NOW_REDRAW_MS = 60000;
 
   // ---- pure state helpers ----
   // The state a page starts from: the URL wins, then the viewer's saved settings (tz, unit only),
@@ -472,92 +468,10 @@
       ctx.restore();
     } };
   }
-  // A thin strip along the top of the plot: the day / twilight / night bands with the sun at sunrise and sunset, the
-  // moon at moonrise and moonset, and the moon's phase glyph in each night band wide enough to carry it. events:
-  // graph_data.sun_events [{t: slot (fractional allowed), kind, text, name}] ('moon' marks the start of a night).
-  function makeSkyStrip(parsed, kinds, events) {
-    var glyph = { sunrise: '☀', sunset: '☀', moonrise: '☾', moonset: '☾' };
-    return { id: 'skyStrip', afterDatasetsDraw: function (chart) {
-      var ctx = chart.ctx, area = chart.chartArea, x = chart.scales && chart.scales.x;
-      if (!area || !x || !ctx) return;
-      var n = parsed.length, r = viewRange(chart, n), top = PAD_TOP, mid = top + STRIP_H / 2;   // the canvas top: the legend sits below, then the plot
-      var left = area.left, right = area.right;
-      ctx.save();
-      ctx.beginPath(); ctx.rect(left, top, right - left, STRIP_H); ctx.clip();
-      ctx.fillStyle = STRIP_FILL.day; ctx.fillRect(left, top, right - left, STRIP_H);
-      var bands = skyBands(kinds, r[0], r[1]), runs = skyBands(kinds, 0, n);     // the view's bands; the whole night runs
-      bands.forEach(function (b) {
-        var x0 = x.getPixelForValue(b.from), x1 = x.getPixelForValue(b.to);
-        if (Number.isFinite(x1 - x0) && x1 > x0) { ctx.fillStyle = STRIP_FILL[b.kind]; ctx.fillRect(x0, top, x1 - x0, STRIP_H); }
-      });
-      ctx.font = '11px system-ui, -apple-system, "Segoe UI", sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#333';
-      (events || []).forEach(function (e) {
-        if (!e || !Number.isFinite(+e.t)) return;
-        var t = +e.t;
-        if (e.kind === 'moon') {                                               // the phase glyph in the middle of its night run (the part in view)
-          var b = null;
-          for (var i = 0; i < runs.length; i++) if (runs[i].kind === 'night' && runs[i].from <= t && t < runs[i].to) { b = runs[i]; break; }
-          if (!b || b.to <= r[0] || b.from > r[1]) return;
-          var bx0 = Math.max(left, x.getPixelForValue(Math.max(b.from, r[0]))), bx1 = Math.min(right, x.getPixelForValue(Math.min(b.to, r[1] + 1)));
-          if (bx1 - bx0 >= MOON_MIN_PX && e.text) ctx.fillText(String(e.text), (bx0 + bx1) / 2, mid);
-          return;
-        }
-        if (!glyph[e.kind] || t < r[0] || t > r[1] + 1) return;
-        var px = x.getPixelForValue(t);
-        if (Number.isFinite(px) && px >= left && px <= right) ctx.fillText(glyph[e.kind], px, mid);
-      });
-      ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(left, top + STRIP_H - 0.5); ctx.lineTo(right, top + STRIP_H - 0.5); ctx.stroke();
-      ctx.restore();
-    } };
-  }
-  // The wall clock now in an IANA zone as a Date in the browser's own calendar (the convention parseLabel uses for the
-  // labels, so the two compare directly). null for an unknown zone or without Intl.
-  function zoneWallClock(tz, nowMs) {
-    if (!tz || typeof Intl === 'undefined' || !Intl.DateTimeFormat) return null;
-    try {
-      var parts = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' }).formatToParts(new Date(nowMs));
-      var v = {};
-      parts.forEach(function (p) { v[p.type] = +p.value; });
-      if (!Number.isFinite(v.year) || !Number.isFinite(v.hour)) return null;
-      return new Date(v.year, v.month - 1, v.day, v.hour === 24 ? 0 : v.hour, v.minute, 0);
-    } catch (e) { return null; }
-  }
-  // The fractional slot of a wall-clock time among the parsed labels, or -1 outside the series (or with gaps).
-  function nowIndex(parsed, wall) {
-    if (!wall || isNaN(wall) || !parsed || parsed.length < 2) return -1;
-    var t = +wall, n = parsed.length;
-    if (!(parsed[0] && parsed[n - 1]) || t < +parsed[0] || t > +parsed[n - 1]) return -1;
-    for (var k = 0; k < n - 1; k++) {
-      var a = parsed[k], b = parsed[k + 1];
-      if (!a || !b) return -1;
-      if (t >= +a && t <= +b) { var span = +b - +a; return span > 0 ? k + (t - +a) / span : k; }
-    }
-    return -1;
-  }
-  // a dashed line at the current time in the forecast's zone, redrawn on a timer so it keeps moving
-  function makeNowLine(parsed, tz, now) {
-    return { id: 'nowLine', afterDatasetsDraw: function (chart) {
-      var ctx = chart.ctx, area = chart.chartArea, x = chart.scales && chart.scales.x;
-      if (!area || !x || !ctx) return;
-      var i = nowIndex(parsed, zoneWallClock(tz, now()));
-      if (i < 0) return;
-      var r = viewRange(chart, parsed.length);
-      if (i < r[0] || i > r[1]) return;
-      var px = x.getPixelForValue(i);
-      if (!Number.isFinite(px) || px < area.left || px > area.right) return;
-      ctx.save();
-      ctx.strokeStyle = NOW_COLOR; ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
-      ctx.beginPath(); ctx.moveTo(px, area.top); ctx.lineTo(px, area.bottom); ctx.stroke();
-      ctx.setLineDash([]); ctx.font = '10px system-ui, -apple-system, "Segoe UI", sans-serif'; ctx.fillStyle = NOW_COLOR; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      ctx.fillText('now', px + 3, area.top + 2);
-      ctx.restore();
-    } };
-  }
   function dirTick(v) { return Number.isFinite(v) && v >= 0 && v <= 360 && v % 45 === 0 ? COMPASS[v / 45] : ''; }
 
   function createForecastGraphs(deps) {
-    var charts = [], data = null, dirty = true, ac = null, rendering = null, tick = null;
+    var charts = [], data = null, dirty = true, ac = null, rendering = null;
     function makeXAxis(parsed) {
       var mids = dayStarts(parsed), major = new Set(mids), minor = new Set(noonStarts(parsed));
       var idx = function (c) { return c.tick && typeof c.tick.index === 'number' ? c.tick.index : c.index; };
@@ -570,16 +484,15 @@
     function dots(label, key, src, color) { return { label: label, data: src[key], borderColor: color, backgroundColor: color, showLine: false, spanGaps: false }; }
     function series(src, combined, keys) {
       var ds = keys.map(function (k) { return dots('Swell ' + k.slice(1), k, src, COLORS[k]); });
-      if (combined) ds.push({ label: 'Combined', data: src.combined, borderColor: COLORS.combined, backgroundColor: COLORS.combined, showLine: false, spanGaps: false, pointRadius: 1.6 });
+      if (combined) ds.push({ label: 'Significant Wave Height', data: src.combined, borderColor: COLORS.combined, backgroundColor: COLORS.combined, showLine: false, spanGaps: false, pointRadius: 1.6 });
       return ds;
     }
     function build(Chart, gd, parsed) {
-      var kinds = skyOf(gd, parsed), sky = hasSky(gd, parsed.length), xAxis = makeXAxis(parsed);
-      var plugins = [makeNightShade(parsed, kinds), makeNowLine(parsed, gd.tz, deps.now || function () { return Date.now(); })];
-      if (sky) plugins.push(makeSkyStrip(parsed, kinds, gd.sun_events || []));
+      var kinds = skyOf(gd, parsed), xAxis = makeXAxis(parsed);
+      var plugins = [makeNightShade(parsed, kinds)];
       var mode = slotted(gd) && registerRowMode(Chart) ? ROW_MODE : 'index';
       var common = { responsive: true, maintainAspectRatio: false, interaction: { mode: mode, intersect: false, axis: 'x' },
-        layout: { padding: { top: sky ? PAD_TOP + STRIP_H + STRIP_GAP : PAD_TOP, right: 8, bottom: 0, left: 8 } }, elements: { point: { radius: 1.6 }, line: { tension: 0.25, borderWidth: 0 } },
+        layout: { padding: { top: 8, right: 8, bottom: 0, left: 8 } }, elements: { point: { radius: 1.6 }, line: { tension: 0.25, borderWidth: 0 } },
         // one line of legend above the plot (it used to wrap under it and eat the plot height)
         plugins: { legend: { position: 'top', align: 'start', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 6, padding: 8, font: { size: 11 } } }, tooltip: { mode: mode === ROW_MODE ? ROW_MODE : 'nearest', intersect: false }, decimation: { enabled: false } },
         animation: false };
@@ -639,7 +552,6 @@
       charts.forEach(function (c) { try { c.destroy(); } catch (e) {} });
       charts = [];
       if (ac) { ac.abort(); ac = null; }
-      if (tick) { (deps.clearInterval || clearInterval)(tick); tick = null; }
     }
     function applyRange(v) {
       if (!data) return;
@@ -670,9 +582,6 @@
         wireSync(charts, ac.signal);
         fit();
         applyRange(readRange(deps.storage));
-        // the 'now' line moves: a redraw a minute while the charts live (never keeps a Node process alive)
-        tick = (deps.setInterval || setInterval)(function () { charts.forEach(function (c) { try { c.draw(); } catch (e) {} }); }, NOW_REDRAW_MS);
-        if (tick && typeof tick.unref === 'function') tick.unref();
         dirty = false;
       }, function (err) {
         rendering = null;
@@ -897,7 +806,7 @@
     var canvases = ['heightChart', 'periodChart', 'directionChart'].map($);
     var graphs = createForecastGraphs({ host: els.graphs, boxes: canvases.map(function (c) { return c.parentNode; }), canvases: canvases, rangeBar: els.rangeBar,
       loadChartJs: opts.loadChartJs || function () { return win.Chart ? Promise.resolve() : Promise.reject(new Error('Chart.js unavailable')); },
-      getChart: function () { return win.Chart; }, storage: session, now: opts.now, setInterval: opts.setInterval, clearInterval: opts.clearInterval,
+      getChart: function () { return win.Chart; }, storage: session,
       bodyHeight: function () { return els.body.clientHeight; },
       visible: function () { return state.view === 'Graph' && fw.mode !== 'min' && !els.graphs.hidden; },
       onError: function () { showError('Charts are unavailable right now.', function () { return setView('Graph'); }); } });
@@ -1111,8 +1020,7 @@
       SETTINGS_KEY: SETTINGS_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
-      TABLE_MODE_KEY: TABLE_MODE_KEY, STRIP_H: STRIP_H, STRIP_GAP: STRIP_GAP, MOON_MIN_PX: MOON_MIN_PX, NOW_REDRAW_MS: NOW_REDRAW_MS, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands,
-      makeNightShade: makeNightShade, makeSkyStrip: makeSkyStrip, makeNowLine: makeNowLine, zoneWallClock: zoneWallClock, nowIndex: nowIndex, dirTick: dirTick,
+      TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, makeNightShade: makeNightShade, dirTick: dirTick,
       createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY,
       POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,

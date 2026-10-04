@@ -148,15 +148,18 @@ def test_compact_table_with_sky_shades_rows_by_the_real_sky_and_adds_the_sun_col
                    '<tr class="sky-twilight" data-t="2026-09-26T06:00">',
                    '<tr class="sky-day now-row" data-t="2026-09-26T14:00">',
                    '<tr class="sky-night" data-t="2026-09-26T21:00">']
-    assert '<th rowspan="2" scope="col" class="col-sun" title="Sun and moon">Sun</th>' in html
+    assert '<th rowspan="2" scope="col" class="col-sun" title="Sun and moon">Sun/Moon</th>' in html
     body = html.split("<tbody>")[1]
     assert "border:" not in body and "font-weight" not in body           # the classes carry the look
     assert ('<span class="sun-ev ev-dawn" title="First light 6:02 AM">\u25D0 6:02</span><br>'
             '<span class="sun-ev ev-sunrise" title="Sunrise 6:24 AM">\u2600\u2191 6:24</span>') in body
     assert body.count('class="moon-phase" title="Waxing gibbous, 72% illuminated">\U0001F314 72%</span>') == 2
     first = body.split("</tr>")[0]
-    assert first.count("<td") == 2 + 1 + 3 * 6 + 1 + 2                 # date, time, sun, six swells, height, wind
-    assert '<td class="col-date" title="Saturday, September 26, 2026">Sat 9/26</td><td class="col-time">5:00 AM</td>' in first
+    assert first.count("<td") == 2 + 1 + 3 * 6 + 2 + 1                 # date, time, height, six swells, wind, sun/moon
+    assert ('<td class="col-date" title="Saturday, September 26, 2026">Sat 9/26</td><td class="col-time">5:00 AM</td>'
+            '<td style="background-color:#EDE9F4; text-align:right;">4.10</td>') in first   # Sig. Wave Height first after Time
+    assert first.endswith('<td class="col-sun"><span class="moon-phase" title="Waxing gibbous, 72% illuminated">'
+                          '🌔 72%</span></td>')                    # Sun/Moon last
 
 
 def test_without_a_matching_sky_the_compact_table_keeps_the_clock_rule():
@@ -201,9 +204,7 @@ def test_the_payload_carries_the_sky_for_the_table_and_the_graphs(monkeypatch):
     assert "col-sun" in html and "sky-day" in html and "sky-night" in html and "sky-twilight" in html
     assert "\u2600\u2191 6:24" in html and "\u2600\u2193 6:18" in html     # Honolulu, 3 Oct 2026 (USNO 6:24 / 6:18)
     assert len(g["sky"]) == len(g["labels"]) == 30
-    kinds = [e["kind"] for e in g["sun_events"]]
-    assert {"dawn", "sunrise", "sunset", "dusk", "moon"} <= set(kinds)
-    assert all(0 <= e["t"] < 30 and e["text"] and e["name"] for e in g["sun_events"])
+    assert set(g["sky"]) == {"day", "twilight", "night"} and "sun_events" not in g      # the charts shade by it; no strip
     classic = A.compute_forecast_payload("51201", None, "US", "GFS")
     assert "col-sun" not in classic["table_html"] and classic["graph_data"]["sky"] is None
     # a failure in the sky costs nothing else: the clock rule, no graph sky, the same numbers
@@ -212,6 +213,25 @@ def test_the_payload_carries_the_sky_for_the_table_and_the_graphs(monkeypatch):
     monkeypatch.setattr(A.sky, "annotate_rows", boom)
     plain = A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)
     assert "col-sun" not in plain["table_html"] and "border:1px solid #000;" in plain["table_html"]
-    assert plain["graph_data"]["sky"] is None and plain["graph_data"]["sun_events"] is None
+    assert plain["graph_data"]["sky"] is None
     for k in ("labels", "height", "period", "direction", "units", "swells"):
         assert plain["graph_data"][k] == g[k]
+
+
+def test_the_window_table_puts_the_significant_height_first_and_sun_moon_last():
+    """Owner (plan section 35): Date, Time, Sig. Wave Height, the swells, Wind, Sun/Moon. The classic table keeps its
+    order (the height after the swells, no Sun/Moon)."""
+    rows = [_row(time="5:00 AM"), _row(time="6:00 AM")]
+    sky = [_sky("night", day_first=True), _sky("twilight")]
+    html = A.build_html_table("c", "l", "", rows, "Pacific/Honolulu", "US", compact=True, groups=[0, 1], sky=sky)
+    head1, head2 = re.findall(r"<tr>(.*?)</tr>", html.split("<thead>")[1].split("</thead>")[0])
+    names = [re.sub(r"<[^>]+>", " ", c).split() for c in re.findall(r"<th[^>]*>(.*?)</th>", head1)]
+    assert [" ".join(n) for n in names] == ["Date", "Time", "Sig. Wave Height", "Swell 1", "Swell 2", "Wind", "Sun/Moon"]
+    assert re.findall(r">([^<]+)<br>", head2) == ["Hs", "Hs", "Tp", "Dir", "Hs", "Tp", "Dir", "Spd"]
+    cells = re.findall(r"<td[^>]*>(.*?)</td>", html.split("<tbody>")[1].split("</tr>")[0])
+    assert cells[:4] == ["Sat 9/26", "5:00 AM", "4.10", "3.20"] and cells[-2].startswith("76&deg; ENE")
+    classic = A.build_html_table("c", "l", "", rows, "Pacific/Honolulu", "US", groups=None)
+    order = re.findall(r">(Swell 6|Significant Wave Height|Wind)</th>", classic)
+    assert order == ["Swell 6", "Significant Wave Height", "Wind"]
+    without_sky = A.build_html_table("c", "l", "", rows, "UTC", "US", compact=True)
+    assert re.findall(r"<td[^>]*>(.*?)</td>", without_sky.split("<tbody>")[1])[2] == "4.10"   # first after Time, sky or not

@@ -159,6 +159,11 @@ test('the now row is scrolled under the frozen header once per station (not on a
   assert.equal(b.page.body.scrollTop, 340, 'another station: revealed');
   assert.equal(t.tableEl.style['--date-w'], '72px', 'the Time column\'s offset is the Date column\'s width');
   t.dateCell.offsetWidth = 80; b.win.fire('resize'); assert.equal(t.tableEl.style['--date-w'], '80px', 're-measured on a resize');
+  // the rendered (fractional) width, rounded down: a whole-pixel width left a sliver between the two frozen columns
+  t.dateCell.getBoundingClientRect = () => ({ width: 74.921875 });
+  b.win.fire('resize'); assert.equal(t.tableEl.style['--date-w'], '74.92px');
+  t.dateCell.getBoundingClientRect = () => ({ width: 0 });
+  b.win.fire('resize'); assert.equal(t.tableEl.style['--date-w'], '80px', 'no layout box: the whole-pixel width');
 });
 
 test('the reveal waits for Table view and Detailed mode', async () => {

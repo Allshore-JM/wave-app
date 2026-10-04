@@ -133,3 +133,11 @@ the fallback at the first last light after noon; RC-6 first / last light or the 
 sunset; RC-7 the pins; RC-8 wording; RC-9 (a) `annotate_rows` refuses a refused span; RC-10 the context row's own
 height; plus the measured option: the run's static sky cached per place, zone and row times. Then UI 1.16.8 + golden, the
 test site, and the owner's production go-ahead.
+
+Re-check fix round DONE: UI 1.16.8 @ 9028d65 (+ golden 28e9e14); every FIX above implemented (RC-3 by the owner's
+"first hour" rule), plus the run's static sky and day summary cached per place, zone and row times (the `now` flags per
+request), and the last row's assumed slot capped at 3 h (a sparse synthetic run otherwise exceeded the 20-day search).
+pytest 720, Node 364; 17 fix mutants, all killed after two more pins. Test site (test @ c6ff527, run 2026100400):
+compact 0.22-0.32 s = classic 0.22-0.33 s; 3-hourly 5 AM rows day only when first light falls in their first hour
+(Sydney 5:58, Fiji 5:13: day; Oahu 6:04: night); notes only on the run's first and last dates; tables and summaries ASCII;
+classic answers identical to production except the relabel.

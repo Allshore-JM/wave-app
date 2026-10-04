@@ -86,3 +86,43 @@ production (tag `prod-pre-sky` @ 28d5573).
 
 Accepted / on record: A-6 (above 89° N), B-9 (a zone far from the station), the equivalent mutants (A's S2/S6/S7/S22,
 B's m07), the 1280-px sideways scroll (told to the owner at step 5).
+
+## Re-check of the fix round (step 7)
+
+Reviewed `21b5b50..d56009a` (UI 1.16.6 + 1.16.7: the G24 fixes and the owner's step-7 rule — a row is daylight when any
+part of its slot lies between first light and last light) on the test site (test @ 095e21b). Two fresh reviewers (Opus
+5.5, MAX), 2026-10-04: R1 code and data (no browser), R2 the test site and the client code. Reports in the session
+scratch `g24/recheck/r1/` and `g24/recheck/r2/`.
+
+**Result: 0 P0, 0 P1, 2 P2, 9 P3** (R1: 0/0/1/8, R2: 0/0/1/5; three overlap). Every G24 fix holds on the page and in
+the data. The new rule was re-derived without ephem on every row of 13 (R2) and 23 (R1) live payloads and 2,560
+synthetic grazing rows: 0 state mismatches, 0 sun events in night rows, 8,645 graph states right. The findings are
+consequences of the new rule on 3-hourly rows and the run's last row, a rounding edge, and corners.
+
+| # | P | Finding | Outcome |
+|---|---|---|---|
+| RC-1 (R1-1) | P2 | Whole 3-hourly days still get "until 9:00 PM" / "until 10:00 PM" at high latitudes in local summer: the note compares the date's last row (21:00-23:00 on 3-hourly days) with sunset − 1 h. `pt_63500N_22000W` 11 of 11 days for May-July runs; `pt_66500S_140000E` (valid today) 9 of 10 days for a run from 2026-11-20. Dormant in October. | FIX: a note only on the run's first date ("from") and last date ("until"). |
+| RC-2 (R2-1 = R1-3) | P2 | The run's last row gets a slot as long as the step before it (3 h), so a last row at 5 AM whose assumed 5-8 AM slot holds first light becomes daylight, and the Summary shows a day made of that one pre-dawn sample: Sydney point "Tue 10/20 until 5:00 AM \| 9.3 ft ... \| ☀↑ 6:08 AM" (16 Summary rows became 17). | FIX: the Summary takes the rows whose OWN time lies between first light and last light (`lit`); the table's look keeps the owner's rule. |
+| RC-3 (R1-2 = R2-2) | P3 | Owner decision: on 3-hourly days a row is daylight up to ~2 h before first light (Fiji point: the 3 AM row bold on 11 days, first light 5:02-5:09; Oahu and Sydney 5 AM rows); the hourly graphs shade those hours as night (6-11 rows per point disagree). | OWNER (asked). The Summary is unaffected after RC-2. |
+| RC-4 (R1-4 = R2-3) | P3 | Events are shown rounded to the minute but placed (and, since step 7, decide the state) by the exact instant: 62001 10-10 the 7 AM row is daylight showing "◐ 8:00" (first light 07:59:48); TFGRS an hourly 11 AM row shows "☾↑ 12:00 PM". 10 of 1,954 live events. | FIX: events slotted by the minute they are shown at. |
+| RC-5 (R1-5) | P3 | The Summary's moon is not tonight's badge where the night starts after local midnight (synthetic 62.5 N in May: 4 of 17 days, 🌕 98 % vs 🌖 94 %): the badge sits on the next date before noon and the fallback takes the date's last dusk (the previous evening's). | FIX: tonight = the first badge from the date's noon to the next noon; the fallback moon at the first last light after the date's noon. |
+| RC-6 (R1-6) | P3 | Cut first/last days get no note when the date has no sunrise or sunset (midnight sun, polar twilight). | FIX: compare with first / last light, else the date's own bounds (midnight sun). |
+| RC-7 (R1-7, R2-6) | P3 | Test gaps (R1: 12 of 52 fix-round mutants survive, A's A17 still survives because the test's excluded value lies between the others; R2: 4 of 15, one real): the first-light rule with a moon event before first light, 12:xx PM in an 11 AM row, a principal name after its instant, the notes' 1-h margins, a badge between noon and 6 PM / after midnight, A17, the compass 11.25° boundary, unreadable rows in `summary_days`, an error answer that still carries a table keeping the reveal. | FIX: pins for each. |
+| RC-8 (R1-8) | P3 | README says the moon names are "as USNO names it" (USNO's own daily name differs on 9 of 52 badge-days, all within the ±12 h rule); `event_text`'s docstring predates the AM/PM rule. | FIX: wording. |
+| RC-9 (R1-9) | P3 | (a) `annotate_rows` on a span `events()` refuses (> 20 days) loses every event and turns first-light rows to night, while `day_summary` returns None (unreachable with 16-day runs); (b) pre-existing: `to_utc` reads a 3-hourly row at the second occurrence of a repeated wall hour as the first (no state change in 7 synthetic transitions). | FIX (a): refuse alike (None -> the clock rule). ACCEPTED (b). |
+| RC-10 (R2-4) | P3 | Pre-existing: the "one row of context" above the revealed now row is cut by the frozen header when it holds two events (two lines): the reveal subtracts the NOW row's height (20.6 px) instead of the row above it (32.6 px). | FIX: the row above's own height. |
+| RC-11 (R2-5) | P3 | The sun ☀ (U+2600) in the sunrise/sunset symbols renders as a colour emoji in Windows Chrome beside the plain ◐ ◑ ☾ (the B-7 colour does not reach it). | OWNER (asked). |
+
+Also measured (not a finding): the window payload costs ~17 ms in-process against the classic ~7 ms; on the test site
+~0.31 s against ~0.14 s (R1, warm medians); the remaining cost is the sky (pytz conversions, `local_naive`, the per-date
+loops). Option for the fix round: cache the run's static sky (the rows' states, events and badges; `day_summary`) per place,
+zone and row times, so repeated requests within a run pay it once.
+
+Confirmed by the re-check (beyond the new rule): A-1 (pure ASCII everywhere, no double escaping; table build 5.3 ms), A-2
+(25 notes, all on a run's first or last date in October), A-3 (268 badges + 64,103 samples obey the ±12 h rule on USNO's
+instants; phase = ephem's search to 2.6e-11; block edges incl. negative ephem days), A-4, A-5, A-7, A-8, A-10 (1,954
+events, 0 violations), B-1 (all three repro flows + the 1,500-px variant), B-3 (345 days = tonight's badge), B-4, B-5
+(23 tables: col-last exactly on the right-edge cells; 1:1 edges in the row's style, single lines), B-6, B-7 (contrast
+≥ 4.67 on every tint), B-8, B-10; classic answers byte-identical to production except the relabel (13 cases); compact
+numbers = production's (4,267 rows); frozen edges, sizes, modes, graphs, zones/units, one request per change, no console
+output in a fresh tab; pytest 703, Node 362 in both reviews.

@@ -592,7 +592,7 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
   (522 inputs) is checked against both.
 
-## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.6)
+## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.7)
 
 The window's table and graphs know the real sun and moon at the station (`sky.py`, PyEphem; `requirements.txt`
 `ephem==4.2.1`; checked to the minute against USNO in `tests/test_sky.py`). What the server sends (`/api/forecast?compact=1`
@@ -612,7 +612,8 @@ error the table keeps its old 6 AM - 7 PM bold rule and the graphs their fixed n
   moon's phase glyph and lit fraction on the first row of each night (its name in the hover text: a principal phase
   only within 12 h of its instant, else waxing / waning crescent / gibbous, as USNO names it). The whole table is ASCII:
   the glyphs are numeric character references (one non-ASCII character in the `html +=` string made a 385-row build
-  ~30x slower). The right-edge cells carry `col-last`. `col-date` / `col-time` on the first two cells (the sticky
+  ~30x slower); the rows' parsed times and the new moons are cached, so a window payload costs ~17 ms against the
+  classic one's ~8 ms (it was ~290 ms). The right-edge cells carry `col-last`. `col-date` / `col-time` on the first two cells (the sticky
   columns); directions read "248° WSW" with an arrow (`.dir-arrow`, rotated to where the waves go).
 - `summary_html`: the Summary view, one row per forecast day over its daylight rows (first light to last light):
   significant wave height range + trend (↗ rising / ↘ falling / ▲ peak at an hour / → steady: the last third of the window

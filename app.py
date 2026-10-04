@@ -11,6 +11,7 @@ from calendar import monthrange
 from bs4 import BeautifulSoup
 import re
 import math
+import functools
 from collections import OrderedDict
 import time
 import xml.etree.ElementTree as ET
@@ -285,7 +286,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.16.6"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.16.7"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript"}
@@ -1760,6 +1761,14 @@ def _short_date(s: str) -> str:
     """'Friday, September 26, 2026' -> 'Fri 9/26' for the compact table (display only: the rows, the graph
     labels and the parse cache keep the long form); anything else passes through unchanged."""
     try:
+        return _short_date_of(s)
+    except TypeError:                                          # unhashable: not a date string
+        return s
+
+
+@functools.lru_cache(maxsize=1024)
+def _short_date_of(s):
+    try:
         d = datetime.strptime(s, "%A, %B %d, %Y")
     except (TypeError, ValueError):
         return s
@@ -2177,11 +2186,20 @@ def build_summary_html(rows, ann, days, unit, tz_label=None) -> str:
 _STATION_RE = re.compile(r"[A-Za-z0-9_-]{1,32}")
 
 
-def _row_datetime(row):
-    """The local datetime of a parsed row ('Saturday, September 26, 2026', '2:00 PM'), or None."""
+@functools.lru_cache(maxsize=4096)
+def _parse_row_time(date_str, time_str):
     try:
-        return datetime.strptime(f"{row[0]} {row[1]}", "%A, %B %d, %Y %I:%M %p")
+        return datetime.strptime(f"{date_str} {time_str}", "%A, %B %d, %Y %I:%M %p")
     except Exception:
+        return None
+
+
+def _row_datetime(row):
+    """The local datetime of a parsed row ('Saturday, September 26, 2026', '2:00 PM'), or None. Cached by the two
+    strings: a window payload reads each row's time five times (strptime was most of the sky's cost)."""
+    try:
+        return _parse_row_time(row[0], row[1])
+    except Exception:                                          # an unhashable or short row
         return None
 
 

@@ -91,6 +91,7 @@ class BuoyProvider:
         self._refresh_lock = threading.Lock()
         self._refresh_pending = False    # a background refresh job is queued or running
         self._refreshing = False         # a fetch is in flight right now (any path)
+        self._fetch_started_ts = 0.0     # when the fetch in flight started
         self._last_attempt_ts = 0.0      # diagnostics for /healthz
         self._last_duration_s = None
         self._last_error = None          # None after a good refresh; the failure text otherwise
@@ -215,6 +216,7 @@ class BuoyProvider:
         downstream) and comes back after retry_after_sec."""
         with self._lock:
             self._refreshing = True
+            self._fetch_started_ts = time.time()
         t0 = time.monotonic()
         try:
             out, ok, err = self._build_station_list()
@@ -275,6 +277,7 @@ class BuoyProvider:
                 "due_in_s": (round(min(self._due_ts, self._list_ts + self.list_ttl_sec) - now, 1)
                              if has else 0.0),
                 "in_flight": self._refreshing,
+                "in_flight_s": round(now - self._fetch_started_ts, 1) if self._refreshing else None,
                 "pending": self._refresh_pending,
                 "last_error": self._last_error,
                 "last_duration_s": (round(self._last_duration_s, 2)
@@ -295,6 +298,9 @@ class BuoyProvider:
                 lat, lon = s.get("lat"), s.get("lon")
                 if lat is None or lon is None:
                     continue
+                lat, lon = float(lat), float(lon)
+                if not (math.isfinite(lat) and math.isfinite(lon)):
+                    continue                      # NaN / inf would make the merged list invalid JSON for everyone
                 entry = {
                     "id": "%s:%s" % (self.source.lower(), s["local_id"]),
                     "source": self.source,
@@ -302,7 +308,7 @@ class BuoyProvider:
                     "source_url": self.source_url,
                     "license_label": self.license_label,
                     "attribution_text": self.attribution_text,
-                    "name": s.get("name") or s["local_id"],
+                    "name": str(s.get("name") or s["local_id"]),
                     "lat": float(lat),
                     "lon": float(lon),
                     # a provider may set per-station capabilities (e.g. only some AODN
@@ -357,6 +363,9 @@ class ThreadRunner:
     def _worker(self):
         while True:
             name, fn = self._q.get()
+            if fn is None:                       # shutdown()
+                self._q.task_done()
+                return
             with self._lock:
                 self.running += 1
             try:
@@ -368,6 +377,16 @@ class ThreadRunner:
                     self.running -= 1
                     self.queued -= 1
                 self._q.task_done()
+
+    def shutdown(self, timeout=5.0):
+        """Stop the worker threads once the queued jobs have run (tests: no idle thread outlives them)."""
+        with self._lock:
+            threads = list(self._threads)
+            self._threads = []
+        for _ in threads:
+            self._q.put(("shutdown", None))
+        for t in threads:
+            t.join(timeout)
 
     def submit(self, fn, name="buoy-refresh"):
         with self._lock:

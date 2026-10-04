@@ -647,7 +647,7 @@ the real times (`makeNightShade`; between first light and last light there is no
 and removed: the owner found them clutter.) An older cached payload with none of these fields draws as before (the
 hour-rule shade, no mode buttons).
 
-## Live buoys: background refresh (plan section 36, UI asset 1.17.0)
+## Live buoys: background refresh (plan section 36, UI asset 1.17.1)
 
 The "Live buoys" layer merges ten agencies' station lists (NDBC, CDIP, QLD, AODN, AusWaves, Marine Institute, CEFAS,
 SMHI, RWS, Copernicus). Until this change the list route asked every agency whose list had expired INSIDE the visitor's
@@ -658,8 +658,10 @@ three times: 124 s). Now nothing a visitor asks for waits for an agency.
 The server (`buoy_sources.py`, `app.py`):
 - Each provider keeps the list in hand and refreshes it in the background (stale-while-revalidate): due at 90 % of its
   list TTL, at the retry moment after a failure (300 s, also for a first failure) or at the full TTL. A failed refresh
-  keeps the last good list for up to 6 h; an empty list after a good one counts as a failure. Only a provider with no
-  list at all makes a caller wait (one fetch shared by every waiting caller).
+  keeps the last good list for up to 6 h; an empty list after a good one counts as a failure. While the background
+  service runs nobody waits for a provider's list: a caller asking a provider that has none yet gets an empty list at
+  once and a refresh is queued (with the service off, the old rule: that caller fetches it, one fetch shared by every
+  waiting caller). Positions that are not finite numbers are dropped (a NaN would make the whole list invalid JSON).
 - One daemon thread, `live-scheduler`, starts with the FIRST REQUEST the process serves (Render's health check makes that
   the first seconds after a start), never at import: a gunicorn master that preloads the app forks its workers after the
   import, and a worker would inherit the locks the master's threads held but none of the threads. (Any forked child also
@@ -682,11 +684,14 @@ The server (`buoy_sources.py`, `app.py`):
   the page shows the list it remembers and polls). It answers 503 only: before that first pass; within
   `LIVE_WARM_DEADLINE_SEC` (10 s, never more than 14) of the start while the served list is still incomplete (a deploy
   then keeps the old instance a moment longer when the feeds answer fast); when the scheduler has not completed a pass for
-  180 s (`"stalled": true`); after three failed list builds in a row (`"build_failing": true`). The last two are faults a
-  restart cures, which is what Render then does. Set it as Render's Health Check Path (Deploy to Render, step 6) on the
-  production AND the test service, once the deployed code has the route.
+  180 s, or three ticks if longer (`"stalled": true`); when every refresh worker has been held by one fetch for 15 minutes
+  (`"fetch_stuck": true`: a slow-drip feed; the read timeout is per read, not overall). Those two are process faults a
+  restart cures, which is what Render then does. Failed list builds in a row are reported (`"build_failing": true`) but
+  never answered with a 503: their cause is in a feed's data, which a restart would meet again (it would only restart the
+  whole site in a loop). Set it as Render's Health Check Path (Deploy to Render, step 6) on the production AND the test
+  service, once the deployed code has the route.
 - A buoy window opened from the remembered list while that buoy's agency is still loading after a start gets
-  `503 {"retry": true}` with `Retry-After: 5` at once from `/api/buoys/<id>/latest` (no request ever waits for a feed);
+  `503 {"retry": true}` with `Retry-After: 5` at once from `/api/buoys/<id>/latest` (no request waits for a provider's list);
   the window keeps its spinner, says why, and asks again for up to two minutes; then it says the buoy is not available
   yet. The Marine Institute's per-station fallback (a buoy missing from its list) asks its server only while the list's
   last refresh succeeded, and then once with short timeouts (3 s / 8 s), never through the retrying session.
@@ -714,7 +719,7 @@ Environment variables (all optional):
 |---|---|---|
 | `LIVE_BACKGROUND` | `1` | `0` turns the background service off: the route then asks every expired agency inline, as before (the tests and `start.sh`'s import check use this). |
 | `LIVE_REFRESH_WORKERS` | `3` | Agencies refreshed at the same time (1-10). |
-| `LIVE_TICK_SEC` | `30` | Seconds between the scheduler's passes once every agency has answered (1-600; a bad value falls back to 30). |
+| `LIVE_TICK_SEC` | `30` | Seconds between the scheduler's passes once every agency has answered (1-120; a bad value falls back to 30). |
 | `LIVE_WARM_DEADLINE_SEC` | `10` | `/healthz` waits at most this long after a start for the full list (clamped to 0-14: Render cuts traffic after 15 s of failed checks). |
 | `LIVE_STATIONS_EDGE_TTL` | `0` | Seconds Cloudflare may keep a complete list (`CDN-Cache-Control: max-age`); capped at 300; `0` = never (`no-store`). Partial answers are never stored. (Before section 36 the value `1` switched on a lifetime computed from the lists' ages; it now means one second.) |
 | `LIVE_BREAK_PROVIDERS` | empty | Diagnosis only (test site): a comma list of agencies (e.g. `AODN,CMEMS`) whose list fetch fails on purpose, to watch the kept lists, the retries and `/healthz`. Never set it on production. |

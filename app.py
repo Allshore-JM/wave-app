@@ -4104,14 +4104,15 @@ def _env_number(name, default, lo, hi):
 
 
 LIVE_BACKGROUND = os.environ.get("LIVE_BACKGROUND", "1") != "0"
-LIVE_TICK_SEC = _env_number("LIVE_TICK_SEC", 30, 1, 600)              # between scheduler passes
+LIVE_TICK_SEC = _env_number("LIVE_TICK_SEC", 30, 1, 120)              # between scheduler passes
 LIVE_WARM_TICK_SEC = 2.0                                               # while providers are still missing
 # Render stops routing to an instance that fails its health check for 15 s and RESTARTS it after 60 s,
 # also a running or just restarted one (render.com/docs/health-checks): /healthz may wait for the full
 # list only this long after a start, always under 15 s (G25 A-2).
 LIVE_WARM_DEADLINE_SEC = _env_number("LIVE_WARM_DEADLINE_SEC", 10, 0, 14)
-LIVE_STALL_SEC = 180.0                       # no scheduler pass for this long: the service is stuck (/healthz 503)
-LIVE_BUILD_FAIL_MAX = 3                      # this many failed builds in a row: /healthz 503 (G25 A-6)
+LIVE_STALL_SEC = 180.0                       # no scheduler pass for max(this, 3 x LIVE_TICK_SEC): stuck (/healthz 503)
+LIVE_BUILD_FAIL_MAX = 3                      # this many failed builds in a row: /healthz reports build_failing
+LIVE_FETCH_STUCK_SEC = 900.0                 # a list fetch in flight this long is hung (no overall socket deadline)
 # Cheap and quick feeds first, the big ones (AODN's WFS, CMEMS's 43 MB index) last, so the
 # first partial answers carry the most markers soonest. Unknown sources go last.
 LIVE_WARM_ORDER = ["NDBC", "CDIP", "SMHI", "MI-IE", "CEFAS", "RWS", "QLD", "AusWaves", "AODN", "CMEMS"]
@@ -4279,7 +4280,7 @@ def stop_live_background(timeout=5.0):
     with _LIVE_BG_LOCK:
         _LIVE_BG["thread"] = None
         _LIVE_BG["started"] = False
-    buoy_sources.set_nonblocking(False)
+        buoy_sources.set_nonblocking(False)
 
 
 @app.before_request
@@ -4296,14 +4297,16 @@ def _live_background_start():
 def _live_after_fork():
     """In a forked child: none of the parent's background threads exist here, so every lock and
     flag of the service starts clean (buoy_sources resets the providers and the runner itself)."""
-    global _LIVE_BG_LOCK, _LIVE_BUILD_LOCK, _TZ_FINDER_LOCK, _CACHE_LOCK, _LIVE_STOP, _LIVE_WAKE
+    global _LIVE_BG_LOCK, _LIVE_BUILD_LOCK, _TZ_FINDER_LOCK, _CACHE_LOCK, _LIVE_STOP, _LIVE_WAKE, _BUOY_PROVIDERS_LOCK
     _LIVE_BG_LOCK = threading.Lock()
     _LIVE_BUILD_LOCK = threading.Lock()
     _TZ_FINDER_LOCK = threading.Lock()
     _CACHE_LOCK = threading.Lock()
+    _BUOY_PROVIDERS_LOCK = threading.Lock()
     _LIVE_STOP = threading.Event()
     _LIVE_WAKE = threading.Event()
-    _LIVE_BG.update(thread=None, started=False, started_ts=None, warm_ts=None)
+    _LIVE_BG.update(thread=None, started=False, started_ts=None, warm_ts=None, ticks=0, last_tick_ts=None,
+                    last_tick_s=None, build_failures=0)
 
 
 if hasattr(os, "register_at_fork"):
@@ -4335,14 +4338,17 @@ def healthz():
     state, the memo, the scheduler and the refresh runner. Never cached; triggers no work (the
     first request a process serves starts the service, whichever route it is).
 
-    Render stops routing traffic to an instance whose checks fail for 15 s and restarts it after
-    60 s, deploys and restarts alike: so this answers 200 as soon as the process serves pages and
-    the scheduler has completed a pass (partial buoy lists are a normal state: the page polls and
-    shows the list it remembers). 503 only: before the first pass; within LIVE_WARM_DEADLINE_SEC
-    (<= 14 s) of the start while the served list is still incomplete (a deploy keeps the old
-    instance a little longer when the feeds answer fast); when the scheduler has not completed a
-    pass for LIVE_STALL_SEC ("stalled"); after LIVE_BUILD_FAIL_MAX failed builds in a row
-    ("build_failing"). The last two are failures a restart cures."""
+    Render (render.com/docs/health-checks): a deploy's new instance gets traffic once its checks pass;
+    a RUNNING instance -- a just restarted one too -- whose checks fail for 15 s gets no traffic and
+    after 60 s is restarted. So this answers 200 as soon as the process serves pages and the
+    scheduler has completed a pass (partial buoy lists are a normal state: the page polls and shows
+    the list it remembers). 503 only: before the first pass; within LIVE_WARM_DEADLINE_SEC (<= 14 s)
+    of the start while the served list is still incomplete (a deploy keeps the old instance a little
+    longer when the feeds answer fast); when the scheduler has not completed a pass for
+    max(LIVE_STALL_SEC, 3 x LIVE_TICK_SEC) ("stalled"); when every refresh worker has been held by one
+    fetch for LIVE_FETCH_STUCK_SEC ("fetch_stuck"). Those two are process faults a restart cures.
+    "build_failing" (builds failing in a row) is reported but never a 503: its cause is in the data,
+    which a restart would meet again."""
     now = time.time()
     providers = get_buoy_providers()
     statuses = [p.status() for p in providers]        # on the providers' own clock
@@ -4362,15 +4368,23 @@ def healthz():
     # A scheduler that has not completed a pass for LIVE_STALL_SEC is stuck (passes run at least every
     # LIVE_TICK_SEC): the lists freeze while the route keeps answering, so say so.
     last_pass = bg.get("last_tick_ts") or started_ts
-    stalled = bool(LIVE_BACKGROUND and last_pass is not None and (now - last_pass) > LIVE_STALL_SEC)
+    stall_sec = max(LIVE_STALL_SEC, 3 * LIVE_TICK_SEC)
+    stalled = bool(LIVE_BACKGROUND and last_pass is not None and (now - last_pass) > stall_sec)
+    # Reported, never a 503: a build that keeps failing comes from the DATA (a feed's odd record); a restart
+    # meets the same data, so Render would restart the whole site in a loop (G25 re-check N-1).
     build_failing = bg.get("build_failures", 0) >= LIVE_BUILD_FAIL_MAX
+    runner = buoy_sources.get_refresh_runner()
+    # Every refresh worker held by a fetch that has run for LIVE_FETCH_STUCK_SEC (a slow-drip feed: the read
+    # timeout is per read, not overall): no list can refresh any more; a restart frees them (re-check N-7).
+    workers = getattr(runner, "workers", 0) or 0
+    stuck = sum(1 for s in statuses if (s.get("in_flight_s") or 0) > LIVE_FETCH_STUCK_SEC)
+    fetch_stuck = bool(workers) and stuck >= workers
     passed_once = bool(bg.get("ticks"))
     if not LIVE_BACKGROUND:
         ok = True
     else:
-        ok = (passed_once and not stalled and not build_failing
+        ok = (passed_once and not stalled and not fetch_stuck
               and ((warm and served_complete) or deadline_passed))
-    runner = buoy_sources.get_refresh_runner()
     body = {
         "ok": ok,
         "warm": warm,
@@ -4379,6 +4393,7 @@ def healthz():
         "scheduler_alive": _live_scheduler_alive(),
         "stalled": stalled,
         "build_failing": build_failing,
+        "fetch_stuck": fetch_stuck,
         "build_failures": bg.get("build_failures", 0),
         "uptime_s": round(now - started_ts, 1) if started_ts else None,
         "warm_after_s": (round(bg["warm_ts"] - started_ts, 1) if bg.get("warm_ts") and started_ts else None),

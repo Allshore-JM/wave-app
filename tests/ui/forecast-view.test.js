@@ -314,3 +314,22 @@ test('choosing a table mode in Graph view moves nothing (G24 B-10: m20)', async 
   b.app.setView('Table');
   assert.equal(b.page.summary.hidden, false); assert.equal(b.page.body.scrollTop, 0, 'the summary from its top');
 });
+
+
+// ---- G24 re-check fix round ----
+test('an error answer that still carries a table keeps the reveal: no jump on a unit change (re-check RC-7)', async () => {
+  const b = boot({}); await settle(); wireTable(b); b.app.window.setMode('normal');
+  b.fs_.last().release(skyPayload()); await settle();
+  assert.equal(b.page.body.scrollTop, 340);
+  b.page.body.scrollTop = 77;
+  b.app.loader.load({ unit: 'Metric' }); await settle();
+  b.fs_.last().release(skyPayload({ error: 'Wind could not be read for part of the run' })); await settle();
+  assert.equal(b.page.body.scrollTop, 77, 'the same station with a table: left where the visitor scrolled');
+});
+
+test('the context row above the now row is the row above it, at its own height (re-check RC-10)', async () => {
+  const b = boot({}); await settle();
+  wireTable(b, { row: { previousElementSibling: { offsetHeight: 33 } } }); b.app.window.setMode('normal');
+  b.fs_.last().release(skyPayload()); await settle();
+  assert.equal(b.page.body.scrollTop, 500 - 100 - 40 - 33, 'a two-line row above stays whole under the header');
+});

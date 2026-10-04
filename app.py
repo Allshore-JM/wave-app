@@ -286,7 +286,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.16.7"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.16.8"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript"}
@@ -2070,14 +2070,16 @@ def _swell_systems(win, to_h):
 
 
 def summary_days(rows, ann, days, unit):
-    """One entry per forecast day over its daylight rows, first light to last light (the rows whose sky state is day,
-    i.e. at least partly in daylight; plan section 35): significant height range + trend, the two most powerful swell
-    SYSTEMS of the day (_swell_systems: every hour's samples grouped by period and direction, summed Hs^2 x Tp), wind
-    range + mean direction, sunrise / sunset and the moon (tonight's: the badge of the night that starts that evening,
-    the one the detailed table shows; else day_summary's at nightfall). A day the forecast itself cuts says so: "from
-    8:00 AM" when the day's FIRST row (of any state) comes more than an hour after sunrise, "until 2:00 PM" when its
-    LAST row comes more than an hour before sunset (both can show). A first or last day with no daylight rows in the
-    forecast is left out; a polar night keeps its row with a note."""
+    """One entry per forecast day over its daylight samples - the rows whose OWN time lies between first light and
+    last light (`lit`; a row only partly in daylight looks like daylight in the table, but its value is taken outside it;
+    plan section 35): significant height range + trend, the two most powerful swell SYSTEMS of the day (_swell_systems:
+    every hour's samples grouped by period and direction, summed Hs^2 x Tp), wind range + mean direction, sunrise /
+    sunset and the moon (tonight's: the first badge from the date's noon to the next noon, the one the detailed table
+    shows; else day_summary's, at tonight's last light). The forecast's first and last dates say when the forecast cuts
+    them: "from 8:00 AM" when the first row comes more than an hour after sunrise (else first light; a midnight-sun date:
+    midnight), "until 2:00 PM" when the last row comes more than an hour before sunset (else last light; a midnight-sun
+    date: midnight); the dates between are whole. A first or last day with no daylight samples is left out; a polar
+    night keeps its row with a note."""
     to_h = (lambda ft: ft) if unit == "US" else (lambda ft: ft / 3.28084)
     to_w = (lambda ms: ms * 2.23694) if unit == "US" else (lambda ms: ms * 3.6)
     order, by_date = [], {}
@@ -2089,22 +2091,28 @@ def summary_days(rows, ann, days, unit):
             order.append(t.date())
             by_date[t.date()] = []
         by_date[t.date()].append((t, r, a))
+    badges = [(t, a["moon"]) for d in order for t, r, a in by_date[d] if a and a.get("moon")]
     out = []
     for di, d in enumerate(order):
         info = (days or {}).get(d) or {}
-        win = [(t, r) for t, r, a in by_date[d] if a and a.get("state") == "day"]
-        evening = next((a["moon"] for t, r, a in by_date[d] if a and a.get("moon") and t.hour >= 12), None)
+        win = [(t, r) for t, r, a in by_date[d] if a and (a["lit"] if "lit" in a else a.get("state") == "day")]
+        noon = datetime.combine(d, datetime.min.time()) + timedelta(hours=12)
+        tonight = next((m for t, m in badges if noon <= t < noon + timedelta(hours=24)), None)
         day = {"date": d, "label": _short_date(by_date[d][0][1][0]), "long": by_date[d][0][1][0], "info": info,
-               "note": None, "hs": None, "swells": [], "wind": None, "moon": evening or info.get("moon")}
+               "note": None, "hs": None, "swells": [], "wind": None, "moon": tonight or info.get("moon")}
         if not win:
             if info.get("sky") == "polar night":
                 day["note"] = "Polar night"
                 out.append(day)
             continue                                   # a partial first or last day without daylight in the forecast
         notes = []
-        if info.get("sunrise") and by_date[d][0][0] > info["sunrise"] + timedelta(hours=1):
+        midnight = datetime.combine(d, datetime.min.time())
+        polar_day = info.get("sky") == "midnight sun"
+        start_ref = info.get("sunrise") or info.get("dawn") or (midnight if polar_day else None)
+        end_ref = info.get("sunset") or info.get("dusk") or (midnight + timedelta(days=1) if polar_day else None)
+        if di == 0 and start_ref and by_date[d][0][0] > start_ref + timedelta(hours=1):
             notes.append("from " + _short_clock(win[0][0]))         # the forecast starts after this day's sunrise
-        if info.get("sunset") and by_date[d][-1][0] < info["sunset"] - timedelta(hours=1):
+        if di == len(order) - 1 and end_ref and by_date[d][-1][0] < end_ref - timedelta(hours=1):
             notes.append("until " + _short_clock(win[-1][0]))       # the forecast ends before this day's sunset
         day["note"] = " ".join(notes) or None
         hv = [(t, to_h(r[-1])) for t, r in win if r[-1] is not None]

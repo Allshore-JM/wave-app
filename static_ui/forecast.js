@@ -961,7 +961,7 @@
       var head = els.table.querySelector('thead'), hh = head && head.offsetHeight ? head.offsetHeight : 0;
       var rr = row.getBoundingClientRect ? row.getBoundingClientRect() : null, br = els.body.getBoundingClientRect ? els.body.getBoundingClientRect() : null;
       if (!rr || !br) return;
-      var ctx = row.offsetHeight || 0;                                           // one row of context above the now row
+      var prev = row.previousElementSibling, ctx = prev && prev.offsetHeight ? prev.offsetHeight : (row.offsetHeight || 0);   // one row of context above the now row: its own height (G24 re-check RC-10)
       els.body.scrollTop = Math.max(0, (rr.top - br.top) + els.body.scrollTop - hh - ctx);
     }
     function setView(v) {

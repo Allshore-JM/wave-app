@@ -592,17 +592,18 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
   (522 inputs) is checked against both.
 
-## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.7)
+## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.8)
 
 The window's table and graphs know the real sun and moon at the station (`sky.py`, PyEphem; `requirements.txt`
 `ephem==4.2.1`; checked to the minute against USNO in `tests/test_sky.py`). What the server sends (`/api/forecast?compact=1`
 only; the classic table and payload are unchanged apart from the relabel; without coordinates, without ephem or on any
 error the table keeps its old 6 AM - 7 PM bold rule and the graphs their fixed night hours):
 
-- `table_html`: rows classed `sky-day` when any part of the row's slot lies between first light and last light (the
-  sun's centre above -6° at the row's time, or first light inside its slot: with first light at 6:02 the 6 AM row is a
-  daylight row; owner: a row at least partly in daylight looks like full daylight, there is no twilight look), else
-  `sky-night`; `day-first` on each day's first row, `now-row` on the current hour, `data-t`. Without sky data the window's
+- `table_html`: rows classed `sky-day` when any part of the row's FIRST HOUR lies between first light and last light
+  (the sun's centre above -6° at the row's time, or first light inside that hour: with first light at 6:02 the 6 AM row
+  is a daylight row; owner: a row at least partly in daylight looks like full daylight, there is no twilight look, and a
+  3-hourly row is judged by its first hour, like the graphs' hourly shading), else `sky-night`; events are slotted by
+  the minute they are shown at; `day-first` on each day's first row, `now-row` on the current hour, `data-t`. Without sky data the window's
   rows get the same classes from the fixed 6 AM - 7 PM clock rule (the classic table keeps that rule inline). Columns: Date, Time, Sig. Wave Height, the swells, Wind, Sun/Moon (owner: the
   significant height first after Time, Sun/Moon last). "Comb." is now "Sig. Wave Height" (the bulletins' Hst, SWAN's
   Hsig, a point's HTSGW: the significant wave height of the combined seas; the classic table keeps it after the swells,
@@ -610,7 +611,7 @@ error the table keeps its old 6 AM - 7 PM bold rule and the graphs their fixed n
   moonrise ☾↑, moonset ☾↓ in the row's slot (an hourly row's hour or a 3-hourly row's three hours; "AM" / "PM" added
   when the event's half of the day differs from the row's, e.g. a 12:40 AM moonrise in a 3-hourly 11 PM row), the
   moon's phase glyph and lit fraction on the first row of each night (its name in the hover text: a principal phase
-  only within 12 h of its instant, else waxing / waning crescent / gibbous, as USNO names it). The whole table is ASCII:
+  only within 12 h of its instant, else waxing / waning crescent / gibbous, on USNO's phase instants; USNO's own daily name can differ by a day). The whole table is ASCII:
   the glyphs are numeric character references (one non-ASCII character in the `html +=` string made a 385-row build
   ~30x slower); the rows' parsed times and the new moons are cached, so a window payload costs ~17 ms against the
   classic one's ~8 ms (it was ~290 ms). The right-edge cells carry `col-last`. `col-date` / `col-time` on the first two cells (the sticky
@@ -620,10 +621,11 @@ error the table keeps its old 6 AM - 7 PM bold rule and the graphs their fixed n
   against the first, 10 % bands), the two most powerful swell SYSTEMS of the day (the hourly columns are re-ranked by
   power, so a column is not a system: every hour's samples are grouped by period, within 20 % and at least 1.5 s, and
   direction, within 40°; power = height² × period), wind range + mean direction, sunrise, sunset, the moon (tonight's:
-  the badge the detailed table shows for that evening, else the day's at last light). A first or last day without
-  daylight rows is left out; a polar night keeps a row with a note; a day the forecast itself cuts says "from 8:00 AM"
-  (its first row comes more than an hour after sunrise) and / or "until 2:00 PM" (its last row more than an hour before
-  sunset) — a whole 3-hourly day never does.
+  the first badge from the date's noon to the next noon, else the moon at tonight's last light). The day's samples are
+  the rows whose own time lies between first light and last light (a row only partly in daylight looks like daylight but
+  its value is taken outside it). A first or last day without such samples is left out; a polar night keeps a row with a
+  note; only the forecast's first and last dates can be cut: "from 8:00 AM" (its first row more than an hour after
+  sunrise, else first light, else midnight under the midnight sun) and / or "until 2:00 PM" (likewise before sunset).
 - `graph_data.sky`: one state per slot (a point's hourly slots included), for the charts' shading.
 
 The page: daylight rows are bold with solid black borders and night rows normal with dashed grey ones (the look the

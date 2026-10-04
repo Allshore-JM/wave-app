@@ -240,7 +240,93 @@ def test_wind_speeds_round_and_the_mean_is_unweighted():
 
 def test_rows_without_a_state_are_not_daylight():
     d = date(2026, 10, 3)
-    rows = [_row(datetime(2026, 10, 3, h), hs=1.0 + h) for h in range(9, 12)]
+    rows = [_row(datetime(2026, 10, 3, h), hs=v) for h, v in ((9, 10.0), (10, 30.0), (11, 12.0))]
     ann = [_ann("day"), {"state": None, "events": [], "moon": None, "day_first": False, "now": False}, _ann("day")]
     out = A.summary_days(rows, ann, _days(d), "US")[0]
-    assert (out["hs"]["min"], out["hs"]["max"]) == (10.0, 12.0)            # the unreadable 10 AM row is left out
+    assert (out["hs"]["min"], out["hs"]["max"]) == (10.0, 12.0)            # the stateless 10 AM row (30 ft) is left out
+    garbled = rows + [["not a date", "x"] + [None] * 18 + [5.0, 90, 50.0]]
+    assert A.summary_days(garbled, ann + [_ann("day")], _days(d), "US")[0]["hs"]["max"] == 12.0   # unreadable time: skipped
+
+
+# ------------------------------ G24 re-check fix round ------------------------------
+def _lit_ann(state, lit):
+    return {"state": state, "lit": lit, "events": [], "moon": None, "day_first": False, "now": False}
+
+
+def test_the_summary_takes_the_samples_inside_first_light_to_last_light():
+    """Re-check RC-2: a row only partly in daylight (day, not lit) looks like daylight but is not a daylight sample:
+    the 5 AM pre-dawn value stays out of the range, and a last day made only of such a row is left out."""
+    d0, d1 = date(2026, 10, 19), date(2026, 10, 20)
+    rows = [_row(datetime(2026, 10, 19, h), hs=v) for h, v in ((2, 1.0), (5, 4.4), (8, 6.0), (11, 7.0), (14, 8.0), (17, 6.5), (20, 3.0), (23, 2.0))]
+    ann = [_lit_ann("night", False), _lit_ann("day", False), _lit_ann("day", True), _lit_ann("day", True),
+           _lit_ann("day", True), _lit_ann("day", True), _lit_ann("night", False), _lit_ann("night", False)]
+    rows += [_row(datetime(2026, 10, 20, 2), hs=9.0), _row(datetime(2026, 10, 20, 5), hs=9.3)]
+    ann += [_lit_ann("night", False), _lit_ann("day", False)]
+    out = A.summary_days(rows, ann, {**_days(d0), **_days(d1)}, "US")
+    assert [o["date"] for o in out] == [d0]                                 # Tue 10/20 (only a pre-dawn row) left out
+    assert (out[0]["hs"]["min"], out[0]["hs"]["max"]) == (6.0, 8.0)         # not 4.4 (the 5 AM sample)
+
+
+@pytest.mark.parametrize("sunset_hour, last_note", [(22, None), (23, "until 9:00 PM")])
+def test_whole_days_never_get_a_note_even_under_a_late_sunset(sunset_hour, last_note):
+    """Re-check RC-1: a whole 3-hourly middle day (last row 9 PM) under a 10-11 PM sunset is not cut; only the run's
+    first and last dates can be."""
+    days = [date(2027, 6, 10) + timedelta(days=k) for k in range(3)]
+    rows, ann = [], []
+    for d in days:
+        for h in range(0, 24, 3):
+            rows.append(_row(datetime.combine(d, datetime.min.time()) + timedelta(hours=h)))
+            ann.append(_ann("day" if 3 <= h <= 21 else "night"))
+    info = {}
+    for d in days:
+        info.update(_days(d, sunrise=3, sunset=sunset_hour))
+    out = A.summary_days(rows, ann, info, "US")
+    assert [o["note"] for o in out] == [None, None, last_note]            # only the run's last date (last row 9 PM) can be cut
+
+
+def test_the_notes_margin_is_one_hour():
+    d = date(2026, 10, 9)
+    for first, note in ((7, None), (8, "from 8:00 AM")):                    # sunrise 6:00: 7 AM is within the hour
+        rows = [_row(datetime(2026, 10, 9, h)) for h in range(first, 24)]
+        ann = [_ann("day" if h <= 18 else "night") for h in range(first, 24)]
+        assert A.summary_days(rows, ann, _days(d), "US")[0]["note"] == note
+    rows = [_row(datetime(2026, 10, 9, 6, 30) + timedelta(hours=h)) for h in range(0, 11)]   # 6:30 AM .. 4:30 PM
+    assert A.summary_days(rows, [_ann("day")] * 11, _days(d), "US")[0]["note"] == "until 4:30 PM"
+
+
+def test_a_cut_day_without_sunrise_or_sunset_still_says_so():
+    """Re-check RC-6: a midnight-sun first date cut at 5 PM says 'from 5:00 PM'; a polar-twilight last date (first and
+    last light, no sunrise) cut at 11 AM says 'until 11:00 AM'."""
+    d = date(2027, 6, 21)
+    rows = [_row(datetime(2027, 6, 21, h)) for h in range(17, 24)]
+    info = {d: {"sunrise": None, "sunset": None, "dawn": None, "dusk": None, "sky": "midnight sun",
+                "moon": {"glyph": "\U0001F314", "pct": 72, "name": "Waxing gibbous"}}}
+    assert A.summary_days(rows, [_ann("day")] * len(rows), info, "US")[0]["note"] == "from 5:00 PM"
+    d = date(2026, 10, 19)
+    rows = [_row(datetime(2026, 10, 19, h)) for h in range(0, 12)]
+    info = {d: {"sunrise": None, "sunset": None, "dawn": datetime(2026, 10, 19, 8), "dusk": datetime(2026, 10, 19, 15),
+                "sky": "polar night", "moon": None}}
+    ann = [_ann("day" if h >= 8 else "night") for h in range(0, 12)]
+    assert A.summary_days(rows, ann, info, "US")[0]["note"] == "until 11:00 AM"
+
+
+def test_tonights_moon_runs_from_noon_to_the_next_noon():
+    """Re-check RC-5: a badge between noon and 6 PM, or after midnight, is tonight's; a morning badge is last night's."""
+    d = date(2026, 10, 3)
+    rows = [_row(datetime(2026, 10, 3) + timedelta(hours=h)) for h in range(36)]
+    ann = [_ann("day" if 6 <= h % 24 <= 18 else "night") for h in range(36)]
+    m = lambda pct: {"glyph": "\U0001F318", "pct": pct, "name": "Waning crescent"}
+    ann[3] = dict(ann[3], moon=m(40))                    # 3 AM: last night's
+    ann[25] = dict(ann[25], moon=m(31))                  # 1 AM next date: tonight's (the night starts after midnight)
+    assert A.summary_days(rows, ann, _days(d), "US")[0]["moon"]["pct"] == 31
+    ann[14] = dict(ann[14], moon=m(33))                  # 2 PM (a polar dusk): the first one after noon
+    assert A.summary_days(rows, ann, _days(d), "US")[0]["moon"]["pct"] == 33
+
+
+def test_only_the_runs_first_date_can_say_from():
+    """Midnight sun, 3-hourly rows from 2 AM every day: the dates between are whole (no 'from 2:00 AM' on each)."""
+    days = [date(2027, 6, 20) + timedelta(days=k) for k in range(3)]
+    rows = [_row(datetime.combine(d, datetime.min.time()) + timedelta(hours=h)) for d in days for h in range(2, 24, 3)]
+    info = {d: {"sunrise": None, "sunset": None, "dawn": None, "dusk": None, "sky": "midnight sun", "moon": None} for d in days}
+    out = A.summary_days(rows, [_ann("day")] * len(rows), info, "US")
+    assert [o["note"] for o in out] == ["from 2:00 AM", None, None]

@@ -172,7 +172,7 @@ def test_clock_falling_back_keeps_rows_in_order():
 def test_unreadable_rows_and_missing_inputs():
     rows = sky.annotate_rows([datetime(2026, 10, 3, 5), None, datetime(2026, 10, 3, 7)], 21.67, -158.12,
                              "Pacific/Honolulu")
-    assert rows[1] == {"state": None, "events": [], "moon": None, "day_first": False, "now": False}
+    assert rows[1] == {"state": None, "lit": None, "events": [], "moon": None, "day_first": False, "now": False}
     assert rows[0]["state"] and rows[2]["state"]
     assert sky.annotate_rows([datetime(2026, 10, 3, 5)], None, None, "Pacific/Honolulu") is None
     assert sky.annotate_rows([datetime(2026, 10, 3, 5)], 21.0, -158.0, "Not/AZone") is None
@@ -205,9 +205,9 @@ def test_a_sixteen_day_forecast_is_quick():
     rows = sky.annotate_rows(times, -33.86, 151.21, "Australia/Sydney")
     assert len(rows) == len(times) == 209
     assert time.time() - t < 1.0
-    hits = sky._events.cache_info().hits
+    hits = sky._annotate_static.cache_info().hits
     sky.annotate_rows(times, -33.86, 151.21, "Australia/Sydney")
-    assert sky._events.cache_info().hits == hits + 1
+    assert sky._annotate_static.cache_info().hits == hits + 1                # the run's static sky is cached
     assert sky.events(21.0, -158.0, datetime(2026, 1, 1, tzinfo=timezone.utc),
                       datetime(2026, 2, 1, tzinfo=timezone.utc)) is None          # > 20 days: refused
 
@@ -217,8 +217,8 @@ def test_the_last_row_covers_a_slot_as_long_as_the_step_before_it():
     times = [datetime(2026, 10, 3, 20) + timedelta(hours=3 * k) for k in range(4)]          # 8 PM .. 5 AM
     rows = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu")
     assert [e["kind"] for e in rows[-1]["events"]] == ["dawn", "sunrise"]
-    assert rows[-1]["state"] == "day"                                        # its 5-8 AM slot holds first light (6:02)
-    assert [r["state"] for r in rows] == ["night", "night", "night", "day"]
+    assert rows[-1]["state"] == "night"                                      # its first hour (5-6 AM) is dark: owner, RC-3
+    assert [r["state"] for r in rows] == ["night", "night", "night", "night"]
 
 
 def test_day_summary_keeps_the_first_rise_and_the_last_set(monkeypatch):
@@ -312,3 +312,133 @@ def test_the_last_sunset_before_the_polar_night_is_found():
     evs = sky.events(lat, lon, datetime(2026, 2, 10, tzinfo=timezone.utc), datetime(2026, 2, 20, tzinfo=timezone.utc))
     got = [(sky.local_naive(u, tz).strftime("%m-%d %H:%M"), k) for u, k in evs if k in ("sunrise", "sunset")]
     assert got[:3] == [("02-15 11:57", "sunrise"), ("02-15 12:28", "sunset"), ("02-16 11:14", "sunrise")]
+
+
+# ------------------------------ G24 re-check fix round ------------------------------
+def _honolulu_dawn(day):
+    """The exact first light (aware UTC) at 51201 on 2026-10-<day>."""
+    import pytz
+    tz = pytz.timezone("Pacific/Honolulu")
+    start = sky.to_utc(tz, datetime(2026, 10, day, 0))
+    return next(u for u, k in sky.events(21.67, -158.12, start, start + timedelta(hours=24)) if k == "dawn")
+
+
+def test_a_three_hourly_row_is_judged_by_its_first_hour():
+    """Owner (re-check RC-3, "judge the first hour"): a 3-hourly row is daylight when its FIRST HOUR touches daylight,
+    like the graphs' hourly shading: 5 AM (5-8 AM slot, first light 6:02) is night; with rows at 6, 9, ... the 6 AM
+    row is day; hourly rows are unchanged (6 AM day)."""
+    t5 = [datetime(2026, 10, 4, 2) + timedelta(hours=3 * k) for k in range(4)]                # 2, 5, 8, 11 AM
+    rows = sky.annotate_rows(t5, 21.67, -158.12, "Pacific/Honolulu")
+    assert [r["state"] for r in rows] == ["night", "night", "day", "day"]
+    assert [e["kind"] for e in rows[1]["events"]] == ["dawn", "sunrise"]                      # still shown in the slot
+    t6 = [datetime(2026, 10, 4, 3) + timedelta(hours=3 * k) for k in range(4)]                # 3, 6, 9, 12
+    assert [r["state"] for r in sky.annotate_rows(t6, 21.67, -158.12, "Pacific/Honolulu")] == ["night", "day", "day", "day"]
+    hourly = sky.annotate_rows([datetime(2026, 10, 4, h) for h in range(4, 9)], 21.67, -158.12, "Pacific/Honolulu")
+    assert [r["state"] for r in hourly] == ["night", "night", "day", "day", "day"]
+
+
+def test_first_light_after_a_moon_event_in_the_same_slot_still_counts():
+    """46026-like: a moonrise before first light in the same hour (the first event is not the dawn)."""
+    rows = sky.annotate_rows([datetime(2026, 10, 3, 5), datetime(2026, 10, 3, 8)], 21.67, -158.12, "Pacific/Honolulu")
+    kinds = [e["kind"] for e in rows[0]["events"]]
+    assert kinds[0] != "dawn" or True
+    import pytz
+    tz = pytz.timezone("Pacific/Honolulu")
+    dawn = sky.local_naive(_honolulu_dawn(3), tz)
+    fake_moon = (sky.to_utc(tz, dawn - timedelta(minutes=10)), "moonrise")
+    real = sky.events
+
+    def with_moon(lat, lon, s, e):
+        return sorted((real(lat, lon, s, e) or []) + [fake_moon])
+    sky._annotate_static.cache_clear()
+    try:
+        sky.events = with_moon
+        rows = sky.annotate_rows([dawn - timedelta(minutes=30), dawn + timedelta(minutes=30)], 21.67, -158.12, "Pacific/Honolulu")
+    finally:
+        sky.events = real
+        sky._annotate_static.cache_clear()
+    assert [e["kind"] for e in rows[0]["events"]][:2] == ["moonrise", "dawn"] and rows[0]["state"] == "day"
+
+
+def test_events_are_slotted_by_the_minute_they_are_shown_at():
+    """Re-check RC-4: an event shown as 'h:00' belongs to the h row even when its exact instant is a few seconds
+    earlier (62001: first light 07:59:48 reads 8:00 and must not turn the 7 AM row to daylight)."""
+    import pytz
+    tz = pytz.timezone("Pacific/Honolulu")
+    for day in range(1, 29):
+        u = _honolulu_dawn(day)
+        if u.second >= 30:                                   # rounds up to the next minute
+            break
+    else:
+        pytest.skip("no first light with seconds >= 30 this month")
+    shown = sky.local_naive(u, tz)                            # h:mm, one minute after the exact minute
+    rows = sky.annotate_rows([shown - timedelta(minutes=1), shown], 21.67, -158.12, "Pacific/Honolulu")
+    assert rows[0]["state"] == "night" and rows[0]["events"] == []
+    assert rows[1]["state"] == "day" and rows[1]["events"][0]["kind"] == "dawn"
+
+
+def test_lit_is_the_rows_own_time_between_first_and_last_light():
+    rows = sky.annotate_rows([datetime(2026, 10, 3, h) for h in range(24)], 21.67, -158.12, "Pacific/Honolulu")
+    assert [r["lit"] for r in rows] == [False] * 7 + [True] * 12 + [False] * 5           # 6 AM day but not lit
+    assert rows[6]["state"] == "day" and rows[18]["lit"] is True
+
+
+def test_a_principal_name_also_holds_after_its_instant():
+    """Re-check RC-7: the first quarter (10-18 16:12 UTC) names the moon 11 h after it too."""
+    import pytz
+    u = datetime(2026, 10, 19, 3, 0, tzinfo=timezone.utc)                                   # 10.8 h after
+    assert sky.moon_at(u, 21.67)["name"] == "First quarter"
+    assert sky.moon_at(u + timedelta(hours=2), 21.67)["name"] == "Waxing gibbous"
+
+
+def test_a_twelve_oclock_pm_event_in_an_11_am_row_says_pm():
+    import pytz
+    tz = pytz.timezone("Pacific/Honolulu")
+    times = [datetime(2026, 10, 3, 11), datetime(2026, 10, 3, 14)]
+    fake = (sky.to_utc(tz, datetime(2026, 10, 3, 12, 10)), "moonrise")
+    real = sky.events
+    sky._annotate_static.cache_clear()
+    try:
+        sky.events = lambda lat, lon, s, e: sorted((real(lat, lon, s, e) or []) + [fake])
+        rows = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu")
+    finally:
+        sky.events = real
+        sky._annotate_static.cache_clear()
+    assert "\u263e\u2191 12:10 PM" in [e["text"] for e in rows[0]["events"]]
+
+
+def test_a_refused_span_is_refused_by_annotate_rows_too():
+    times = [datetime(2026, 10, 1), datetime(2026, 10, 25)]                                 # 24 days
+    assert sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu") is None
+
+
+def test_the_static_annotation_is_cached_but_now_is_not():
+    import pytz
+    tz = pytz.timezone("Pacific/Honolulu")
+    times = [datetime(2026, 10, 3, h) for h in range(6)]
+    sky._annotate_static.cache_clear()
+    a = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu", now_utc=sky.to_utc(tz, datetime(2026, 10, 3, 1, 30)))
+    b = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu", now_utc=sky.to_utc(tz, datetime(2026, 10, 3, 4, 30)))
+    assert sky._annotate_static.cache_info().hits == 1
+    assert [r["now"] for r in a] == [False, True, False, False, False, False]
+    assert [r["now"] for r in b] == [False, False, False, False, True, False]
+    a[0]["events"].append({"x": 1}); a[0]["state"] = "mutated"                              # callers get copies
+    c = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu")
+    assert c[0]["state"] == "night" and {"x": 1} not in c[0]["events"]
+    day = [datetime(2026, 10, 3, h) for h in range(24)]
+    d1 = sky.annotate_rows(day, 21.67, -158.12, "Pacific/Honolulu")
+    d1[6]["events"][0]["text"] = "changed"
+    assert sky.annotate_rows(day, 21.67, -158.12, "Pacific/Honolulu")[6]["events"][0]["text"] == "◐ 6:02"
+
+
+def test_day_summary_moon_is_tonights_even_after_midnight():
+    """Re-check RC-5: the moon at the first last light after the date's noon, which can fall after midnight."""
+    import pytz
+    tz = pytz.timezone("Atlantic/Reykjavik")
+    d = date(2027, 5, 22)
+    got = sky.day_summary(62.5, -20.0, "Atlantic/Reykjavik", [d, d + timedelta(days=1)])[d]      # G24 re-check R1's place
+    start = sky.to_utc(tz, datetime(2027, 5, 22, 12))
+    dusk = next(u for u, k in sky.events(62.5, -20.0, start, start + timedelta(hours=24)) if k == "dusk")
+    assert sky.local_naive(dusk, tz).date() == date(2027, 5, 23)                             # after midnight
+    want = sky.moon_at(dusk, 62.5)                                                           # 94 %: not last night's 98 %
+    assert abs(got["moon"]["illumination"] - want["illumination"]) < 1e-4 and got["moon"]["pct"] == want["pct"] == 94

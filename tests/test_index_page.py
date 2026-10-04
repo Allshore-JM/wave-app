@@ -514,6 +514,7 @@ def test_the_live_list_loads_through_its_module(client):
     assert "live: fetch('/api/buoys/live-stations')" in body                     # the <head> request
     assert "'<span class=\"lc-dot lc-live\"></span>Live buoys<span class=\"lc-note\" data-live-note aria-live=\"polite\"></span>': liveBuoyLayer" in body
     assert ".lc-note:empty { display: none; }" in body
+    assert ".lc-note { display: block; padding-left: 21px;" in body          # its own line: the legend never widens (phone)
     assert "if (el && el.textContent !== liveNoteText) el.textContent = liveNoteText;" in body   # text, never HTML
     assert "layersControl._update = function ()" in body and "paintLiveNote(); return r;" in body
     loader = body[body.index("function addLiveBuoyLayer() {"):body.index("addLiveBuoyLayer();\n")]

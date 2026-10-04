@@ -502,3 +502,26 @@ def test_render_full_inlines_the_summary(monkeypatch, client):
     monkeypatch.setattr(A, "compute_forecast_payload", lambda *a, **k: dict(G.PAYLOAD, summary_html='<table class="forecast-summary"><tr><td>x</td></tr></table>'))
     body = client.get("/?station=51201&render=full").get_data(as_text=True)
     assert '<div id="forecastSummary" class="forecast-summary" hidden><table class="forecast-summary">' in body
+
+
+def test_the_live_list_loads_through_its_module(client):
+    """Plan section 36: static_ui/livelist.js (served by /ui/, versioned with the module) loads before the map
+    script; the layer legend carries the list's state as text; the head still starts the request early and the
+    module takes it once; the first markers are marked for measurement; without the module the plain request."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    tag = body.index('<script src="/ui/livelist.js?v=%s"></script>' % A.UI_ASSET_VERSION)
+    assert body.index("leaflet@1.9.4/dist/leaflet.js") < tag < body.index("const map = L.map(")
+    assert "live: fetch('/api/buoys/live-stations')" in body                     # the <head> request
+    assert "'<span class=\"lc-dot lc-live\"></span>Live buoys<span class=\"lc-note\" data-live-note aria-live=\"polite\"></span>': liveBuoyLayer" in body
+    assert ".lc-note:empty { display: none; }" in body
+    assert "if (el && el.textContent !== liveNoteText) el.textContent = liveNoteText;" in body   # text, never HTML
+    assert "layersControl._update = function ()" in body and "paintLiveNote(); return r;" in body
+    loader = body[body.index("function addLiveBuoyLayer() {"):body.index("addLiveBuoyLayer();\n")]
+    for needle in ("window.AllshoreLiveList.create({", "early: (window.__early && window.__early.live) || null",
+                   "if (window.__early) window.__early.live = null;", "rebuildLiveBuoyMarkers(!info.same);",
+                   "performance.mark('allshore:live-first-markers'", "document.visibilityState !== 'hidden'",
+                   "try { storage = window.localStorage; } catch (e) {}", "if (!window.AllshoreLiveList) {"):
+        assert needle in loader, needle
+    r = A.app.test_client().get("/ui/livelist.js?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+    assert r.headers["Content-Type"].startswith("application/javascript")

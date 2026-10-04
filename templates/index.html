@@ -331,6 +331,9 @@
     .lc-forecast { background: #FFD600; }
     .lc-live { background: #00E5FF; }
     .lc-point { background: #fff; border: 2px solid #d6007a; }
+    /* the live list's state beside "Live buoys" (static_ui/livelist.js): loading / cached list / loading more / retrying */
+    .lc-note { margin-left: 5px; font-size: 11px; color: #6c757d; font-style: italic; }
+    .lc-note:empty { display: none; }
     .my-pt { background: #fff; border: 2.5px solid #d6007a; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,.45); cursor: pointer; }
     .my-pt.my-pt-unkept { background: transparent; border-style: dashed; }       /* the point on screen, not in My points */
     @media (pointer: coarse) { .my-pt::after { content: ''; position: absolute; inset: -12px; } }   /* a finger-sized target (G22 B-20) */
@@ -913,6 +916,7 @@
        the parser before the page body is painted. -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/ui/graticule.js?v={{ ui_asset_version }}"></script>
+  <script src="/ui/livelist.js?v={{ ui_asset_version }}"></script>
   <script>
     // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
@@ -1067,19 +1071,31 @@
       liveBuoyLayer.addTo(map);
     }
 
-    L.control.layers(
+    const layersControl = L.control.layers(
       null,
       {
         // Leaflet renders layer names as HTML, so the colored dot doubles as
-        // the legend (yellow = forecast point, cyan = live NDBC buoy).
+        // the legend (yellow = forecast point, cyan = live NDBC buoy). The empty
+        // .lc-note carries the live list's state (paintLiveNote, below).
         '<span class="lc-dot lc-forecast"></span>Forecast points': forecastLayer,
-        '<span class="lc-dot lc-live"></span>Live buoys': liveBuoyLayer,
+        '<span class="lc-dot lc-live"></span>Live buoys<span class="lc-note" data-live-note aria-live="polite"></span>': liveBuoyLayer,
         '<span class="lc-dot lc-point"></span>My points': pointLayer
       },
       {
         collapsed: false
       }
     ).addTo(map);
+    // The live list's state beside its legend entry, as TEXT. Leaflet rebuilds the list's DOM whenever a layer of
+    // the control is added or removed by code, so the text is kept here and painted again after every rebuild.
+    let liveNoteText = '';
+    function paintLiveNote() {
+      const el = document.querySelector('.leaflet-control-layers [data-live-note]');
+      if (el && el.textContent !== liveNoteText) el.textContent = liveNoteText;
+    }
+    if (typeof layersControl._update === 'function') {
+      const lcUpdate = layersControl._update;
+      layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintLiveNote(); return r; };
+    }
 
     map.on('overlayadd', saveLayerVisibility);
     map.on('overlayremove', saveLayerVisibility);
@@ -2804,16 +2820,41 @@
     if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();
 
     function addLiveBuoyLayer() {
-      // Merged worldwide live-buoy feed (NDBC + CDIP + AODN + QLD + AusWaves), deduped.
-      earlyFetch('live', '/api/buoys/live-stations')
-        .then(r => r.json())
-        .then(stations => {
+      // Merged worldwide live-buoy feed (every source, deduped) through static_ui/livelist.js (plan section 36): the
+      // list this browser saw last is drawn at once, the fresh one replaces it; every request has a deadline and is
+      // retried; a partial answer (the server still loading some sources after a restart) is asked again.
+      if (!window.AllshoreLiveList) {               // the module did not load: the plain request, as before
+        earlyFetch('live', '/api/buoys/live-stations')
+          .then(r => r.json())
+          .then(stations => { liveStationsData = stations || []; rebuildLiveBuoyMarkers(true); })
+          .catch(err => { console.warn('Could not load live buoy layer:', err); });
+        return;
+      }
+      let storage = null;
+      try { storage = window.localStorage; } catch (e) {}
+      let marked = false;
+      const live = window.AllshoreLiveList.create({
+        url: '/api/buoys/live-stations',
+        fetch: function (u, init) { return fetch(u, init); },
+        early: (window.__early && window.__early.live) || null,
+        storage: storage,
+        visibility: {
+          isVisible: function () { return document.visibilityState !== 'hidden'; },
+          onChange: function (fn) { document.addEventListener('visibilitychange', fn); }
+        }
+      });
+      if (window.__early) window.__early.live = null;   // taken: earlyFetch would otherwise hand it out again
+      live.start({
+        onStations: function (stations, info) {
           liveStationsData = stations || [];
-          rebuildLiveBuoyMarkers(true);
-        })
-        .catch(err => {
-          console.warn('Could not load live buoy layer:', err);
-        });
+          rebuildLiveBuoyMarkers(!info.same);        // an unchanged list keeps its markers (no rebuild, no flash)
+          if (!marked && liveStationsData.length) {
+            marked = true;
+            try { performance.mark('allshore:live-first-markers', { detail: { cached: !!info.cached, partial: !!info.partial } }); } catch (e) {}
+          }
+        },
+        onStatus: function (code, text) { liveNoteText = text || ''; paintLiveNote(); }
+      });
     }
 
     addLiveBuoyLayer();

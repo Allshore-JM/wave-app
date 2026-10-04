@@ -39,7 +39,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020   # v4.4.0
         with:
           node-version: "24"
-      - run: node --test --test-timeout=20000 tests/overlay/coast.test.js tests/overlay/playback.test.js tests/overlay/overlay.test.js tests/overlay/bootstrap.test.js tests/overlay/flow.test.js tests/ui/forecast.test.js tests/ui/window.test.js tests/ui/mapclamp.test.js tests/ui/early.test.js tests/ui/graticule.test.js tests/ui/tools.test.js tests/ui/tools-ui.test.js tests/ui/points.test.js tests/ui/mypoints.test.js tests/ui/forecast-view.test.js
+      - run: node --test --test-timeout=20000 tests/overlay/coast.test.js tests/overlay/playback.test.js tests/overlay/overlay.test.js tests/overlay/bootstrap.test.js tests/overlay/flow.test.js tests/ui/forecast.test.js tests/ui/window.test.js tests/ui/mapclamp.test.js tests/ui/early.test.js tests/ui/graticule.test.js tests/ui/tools.test.js tests/ui/tools-ui.test.js tests/ui/points.test.js tests/ui/mypoints.test.js tests/ui/forecast-view.test.js tests/ui/livelist.test.js
   build:
     if: github.event_name == 'workflow_dispatch'
     needs: tests

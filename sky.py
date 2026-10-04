@@ -3,10 +3,11 @@
 Everything here is computed by PyEphem for a place (lat/lon) and a forecast zone (IANA name), and handed back in the
 rows' own convention: naive local times in that zone, the way the parsers write a row's date and time.
 
-- Sky state of a row (day / night): DAY when any part of the row's slot lies between first light and last light
-  (owner: a row at least partly in daylight looks like full daylight; with first light at 6:02 the 6 AM row is a
-  daylight row), i.e. the sun's centre is above -6 deg (civil twilight) at the row's time, or first light falls inside
-  the slot; NIGHT when the whole slot is dark. The sun's ALTITUDE decides, not a comparison with that date's sunrise and
+- Sky state of a row (day / night): DAY when any part of the row's FIRST HOUR lies between first light and last
+  light (owner: a row at least partly in daylight looks like full daylight - with first light at 6:02 the 6 AM row is a
+  daylight row; a 3-hourly row is judged by its first hour, like the graphs' hourly shading), i.e. the sun's centre is
+  above -6 deg (civil twilight) at the row's time, or first light falls inside that hour; NIGHT otherwise. `lit` says
+  whether the row's OWN time lies between first light and last light (the Summary's samples). The sun's ALTITUDE decides, not a comparison with that date's sunrise and
   sunset: in Reykjavik on 20 June the evening's sunset falls at 00:03 the next morning and the sun never gets 6 degrees
   below the horizon (USNO), and above the polar circles there are days with no sunrise at all; the altitude needs no
   special cases.
@@ -45,6 +46,7 @@ MOON_GLYPHS = ("\U0001F311", "\U0001F312", "\U0001F313", "\U0001F314",
 MOON_NAMES = ("New moon", "Waxing crescent", "First quarter", "Waxing gibbous",
               "Full moon", "Waning gibbous", "Last quarter", "Waning crescent")
 MAX_SPAN = timedelta(days=20)             # a forecast is 16 days; refuse to search more
+LAST_SLOT_MAX = timedelta(hours=3)         # the last row's assumed slot: the step before it, at most this
 
 
 def _observer(lat, lon):
@@ -204,22 +206,48 @@ def local_naive(utc, tz):
 
 
 def event_text(utc, tz, kind):
-    """'☀↑ 6:23' (the hour without a leading zero; the row's own time says AM or PM)."""
+    """'☀↑ 6:23' (the hour without a leading zero; annotate_rows adds AM / PM when the row's own time does not say it)."""
     t = local_naive(utc, tz)
     return "%s %d:%02d" % (EVENT_GLYPH[kind], (t.hour % 12) or 12, t.minute)
 
 
+def _round_minute(utc):
+    """An aware instant to the nearest minute (as the events are printed)."""
+    return (utc + timedelta(seconds=30)).replace(second=0, microsecond=0)
+
+
 def annotate_rows(times, lat, lon, tz_name, now_utc=None):
     """Per row (naive local times in `tz_name`, oldest first; None for a row whose time could not be read):
-    {state, events: [{kind, text, name, time}], moon (on the first row of each run of night rows), day_first, now}.
+    {state, lit, events: [{kind, text, name, time}], moon (on the first row of each run of night rows), day_first, now}.
 
     Row i covers [t_i, t_i+1): an hourly row shows the events of its hour, a 3-hourly row those of its three hours, and
-    the last row a slot as long as the step before it. The state is 'day' when any part of the slot lies between first
-    light and last light (see the module's notes). An event's text carries AM / PM when its half of the day differs
-    from the row's (a 3-hourly 11 PM row holding a 12:40 AM moonrise). Returns None without PyEphem, coordinates or a
-    zone."""
+    the last row a slot as long as the step before it. Events are slotted by the minute they are shown at (first light
+    at 07:59:48 reads "8:00" and belongs to the 8 AM row). The state is 'day' when any part of the row's first hour lies
+    between first light and last light; `lit` when its own time does (see the module's notes). An event's text carries
+    AM / PM when its half of the day differs from the row's (a 3-hourly 11 PM row holding a 12:40 AM moonrise).
+    Returns None without PyEphem, coordinates or a zone, or for a span the event search refuses (> 20 days).
+
+    Everything but `now` depends on the place, the zone and the row times only: it is cached per run (a station's
+    table is asked for again and again within a run)."""
     if not AVAILABLE or lat is None or lon is None or not tz_name:
         return None
+    try:
+        static = _annotate_static(float(lat), float(lon), tz_name, tuple(times))
+    except TypeError:                                            # unhashable times: compute without the cache
+        static = _annotate_static.__wrapped__(float(lat), float(lon), tz_name, tuple(times))
+    if static is None:
+        return None
+    now_utc = now_utc or datetime.now(timezone.utc)
+    out = []
+    for u, end, state, lit, evs, moon, day_first in static:
+        out.append({"state": state, "lit": lit, "events": [dict(e) for e in evs], "moon": dict(moon) if moon else None,
+                    "day_first": day_first, "now": u is not None and u <= now_utc < end})
+    return out
+
+
+@functools.lru_cache(maxsize=16)
+def _annotate_static(lat, lon, tz_name, times):
+    """annotate_rows without `now`: ((utc, slot end, state, lit, events, moon, day_first) per row) or None."""
     try:
         tz = pytz.timezone(tz_name)
     except Exception:
@@ -243,14 +271,17 @@ def annotate_rows(times, lat, lon, tz_name, now_utc=None):
         else:
             before = [v for v in utcs[:i] if v is not None]
             step = (u - before[-1]) if before and u > before[-1] else timedelta(hours=1)
-            ends[i] = u + step
-    evs = events(lat, lon, known[0], max(e for e in ends if e is not None)) or []
-    now_utc = now_utc or datetime.now(timezone.utc)
+            ends[i] = u + min(step, LAST_SLOT_MAX)       # the forecast's own steps are 1 or 3 h
+    found = events(lat, lon, known[0], max(e for e in ends if e is not None))
+    if found is None:
+        return None                       # a span the search refuses: no half-annotated table (G24 re-check RC-9)
+    evs = [(_round_minute(u), k) for u, k in found]          # slotted by the minute they are shown at (RC-4)
     obs = _observer(lat, lon)
     out, j, prev_state, prev_date = [], 0, None, None
+    hour = timedelta(hours=1)
     for i, u in enumerate(utcs):
         if u is None:
-            out.append({"state": None, "events": [], "moon": None, "day_first": False, "now": False})
+            out.append((None, None, None, None, (), None, False))
             prev_state = None
             continue
         while j < len(evs) and evs[j][0] < u:
@@ -260,62 +291,68 @@ def annotate_rows(times, lat, lon, tz_name, now_utc=None):
         k = j
         while k < len(evs) and evs[k][0] < ends[i]:
             eu, kind = evs[k]
-            tl = local_naive(eu, tz)
-            text = event_text(eu, tz, kind)
+            tl = eu.astimezone(tz).replace(tzinfo=None)
+            text = "%s %d:%02d" % (EVENT_GLYPH[kind], (tl.hour % 12) or 12, tl.minute)
             if (tl.hour < 12) != (local.hour < 12):
                 text += " AM" if tl.hour < 12 else " PM"
-            mine.append({"kind": kind, "text": text, "name": EVENT_NAME[kind], "time": tl})
+            mine.append({"kind": kind, "text": text, "name": EVENT_NAME[kind], "time": tl, "_u": eu})
             k += 1
-        state = sun_state(obs, u)
-        if state == "night" and any(e["kind"] == "dawn" for e in mine):
-            state = "day"                  # first light falls inside the slot: the row is partly daylight (owner)
-        out.append({
-            "state": state,
-            "events": mine,
-            "moon": moon_at(u, lat) if state == "night" and prev_state != "night" else None,
-            "day_first": prev_date is None or local.date() != prev_date,
-            "now": u <= now_utc < ends[i],
-        })
+        lit = sun_state(obs, u) == "day"
+        first_hour = min(ends[i], u + hour)              # a 3-hourly row is judged by its first hour (owner, RC-3)
+        state = "day" if lit or any(e["kind"] == "dawn" and e["_u"] < first_hour for e in mine) else "night"
+        for e in mine:
+            del e["_u"]
+        moon = moon_at(u, lat) if state == "night" and prev_state != "night" else None
+        out.append((u, ends[i], state, lit, tuple(mine), moon, prev_date is None or local.date() != prev_date))
         prev_state, prev_date = state, local.date()
-    return out
+    return tuple(out)
 
 
 def day_summary(lat, lon, tz_name, dates):
     """{date: {dawn, sunrise, sunset, dusk, moonrise, moonset (naive local or None), sky ('normal' | 'midnight sun' |
-    'polar night'), moon (moon_at nightfall: the day's last light, else local noon)}} for the summary view, or None
-    (no PyEphem, no place, or a span the event search refuses). A date's events are those whose LOCAL date is that
-    date (first light and sunrise the first of the day, sunset and last light the last)."""
+    'polar night'), moon}} for the summary view, or None (no PyEphem, no place, or a span the event search refuses).
+    A date's events are those whose LOCAL date is that date (first light and sunrise the first of the day, sunset and
+    last light the last). The moon is tonight's: at the first last light after the date's noon (it can fall after
+    midnight), else at noon. Cached per place, zone and dates (a copy is returned)."""
     if not AVAILABLE or lat is None or lon is None or not tz_name or not dates:
         return None
+    try:
+        got = _day_summary(float(lat), float(lon), tz_name, tuple(sorted(set(dates))))
+    except TypeError:
+        return None
+    return None if got is None else {d: dict(row) for d, row in got}
+
+
+@functools.lru_cache(maxsize=16)
+def _day_summary(lat, lon, tz_name, dates):
     try:
         tz = pytz.timezone(tz_name)
     except Exception:
         return None
-    first, last = min(dates), max(dates)
+    first, last = dates[0], dates[-1]
     start = to_utc(tz, datetime.combine(first, datetime.min.time()))
-    end = to_utc(tz, datetime.combine(last + timedelta(days=1), datetime.min.time()))
+    end = to_utc(tz, datetime.combine(last + timedelta(days=1), datetime.min.time())) + timedelta(hours=12)
     evs = events(lat, lon, start, end)
     if evs is None:
         return None
+    evs = [(u, k, local_naive(u, tz)) for u, k in evs]          # each converted once
+    by_date = {}
+    for u, k, t in evs:
+        by_date.setdefault(t.date(), []).append((u, k, t))
     obs = _observer(lat, lon)
-    out = {}
-    for d in sorted(set(dates)):
+    out = []
+    for d in dates:
         row = {k: None for k in EVENT_KINDS}
-        dusk_u = None
-        for eu, kind in evs:
-            t = local_naive(eu, tz)
-            if t.date() != d:
-                continue
+        for u, kind, t in by_date.get(d, ()):
             if kind in ("dawn", "sunrise", "moonrise") and row[kind] is not None:
                 continue                   # keep the first
             row[kind] = t
-            if kind == "dusk":
-                dusk_u = eu
         noon = to_utc(tz, datetime.combine(d, datetime.min.time()) + timedelta(hours=12))
         if row["sunrise"] is None and row["sunset"] is None:
             row["sky"] = "midnight sun" if sun_alt(obs, noon) > DAY_ALT else "polar night"
         else:
             row["sky"] = "normal"
-        row["moon"] = moon_at(dusk_u or noon, lat)
-        out[d] = row
-    return out
+        tonight = next((u for u, k, _ in evs if k == "dusk" and noon <= u < noon + timedelta(hours=24)), None)
+        row["moon"] = moon_at(tonight or noon, lat)
+        out.append((d, row))
+    return tuple(out)

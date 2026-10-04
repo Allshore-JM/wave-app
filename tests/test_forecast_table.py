@@ -277,3 +277,8 @@ def test_the_window_table_is_ascii_and_marks_its_right_edge_cells():
     assert all(re.findall(r"<td[^>]*>", tr)[-1].count("col-last") == 1 for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", plain.split("<tbody>")[1]))
     classic = A.build_html_table("c", "l", "", rows[:3], "UTC", "US", sky=sky[:3])
     assert "col-last" not in classic and classic.isascii()
+
+
+def test_compass_letters_turn_at_the_sector_boundaries():
+    assert A._compass16(11.24) == "N" and A._compass16(11.25) == "NNE" and A._compass16(348.74) == "NNW"
+    assert A._compass16(348.75) == "N" and A._compass16(360) == "N"

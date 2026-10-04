@@ -80,11 +80,14 @@ def test_streams_instead_of_reading_text():
     assert http.calls and http.calls[0][1].get("stream") is True
 
 
-def test_request_exception_on_get_and_mid_body_are_fail_soft():
+def test_request_exception_on_get_and_mid_body_raise_for_keep_last():
+    """Since plan section 36 a failed index fetch RAISES (the base class keeps the last good
+    list and retries); it used to return [] and empty the layer for a whole TTL."""
     class Boom:
         def get(self, url, **kw):
             raise requests.ConnectionError("down")
-    assert B.CopernicusProvider(http=Boom())._fetch_stations() == []
+    with pytest.raises(requests.RequestException):
+        B.CopernicusProvider(http=Boom())._fetch_stations()
 
     class MidBody(G._Resp):
         def iter_lines(self, decode_unicode=False, chunk_size=None):
@@ -94,7 +97,8 @@ def test_request_exception_on_get_and_mid_body_are_fail_soft():
     class H:
         def get(self, url, **kw):
             return MidBody(SAMPLE)
-    assert B.CopernicusProvider(http=H())._fetch_stations() == []
+    with pytest.raises(requests.RequestException):
+        B.CopernicusProvider(http=H())._fetch_stations()
 
 
 def test_bytes_lines_are_decoded():

@@ -88,7 +88,7 @@ server's defaults; the window's geometry and mode live in `sessionStorage 'allsh
 `sessionStorage 'chartRange'` as before; the table's Detailed | Summary mode in `sessionStorage 'allshore.tableMode.v1'`
 (plan section 35: the tab's own preference, never in the address). The table is the compact form (short dates with the
 full date on hover, no info rows: the window shows Cycle / Location / Time Zone in one line above it). It fills its
-window: a wider window spreads the columns (and past 1,100 px of body the text grows from 12.5 to 13.5 px, a CSS
+window: a wider window spreads the columns (and past 1,500 px of body the text grows from 12.5 to 13.5 px, a CSS
 container query), a narrower one scrolls the table sideways with the Date and Time columns staying put; the window's
 width is the viewer's own in every view (the old cap at the table's width is gone). The
 page is a shell on every JS load (the window fetches the forecast; the `#forecastLoading` placeholder stays until it

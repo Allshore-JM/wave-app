@@ -457,7 +457,7 @@ def test_forecast_table_upgrade_markup_and_css(client):
     assert '<div id="forecastSummary" class="forecast-summary" hidden></div>' in body
     for css in ("container-type: inline-size; container-name: fwbody;",
                 "#forecastTable table.forecast-compact { font-size: 12.5px; line-height: 1.25; width: 100%; font-variant-numeric: tabular-nums; }",
-                "@container fwbody (min-width: 1100px) {",
+                "@container fwbody (min-width: 1500px) {",
                 "background-image: linear-gradient(var(--tint, transparent), var(--tint, transparent)); }",
                 "#forecastTable tr.sky-twilight { --tint:", "#forecastTable tr.sky-night { --tint:", "#forecastTable tr.now-row { --tint:",
                 "#forecastTable tr.day-first td { border-top: 2px solid #8a949e; }",

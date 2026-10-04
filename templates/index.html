@@ -1094,7 +1094,10 @@
     let liveNoteText = '';
     function paintLiveNote() {
       const el = document.querySelector('.leaflet-control-layers [data-live-note]');
-      if (el && el.textContent !== liveNoteText) el.textContent = liveNoteText;
+      if (el && el.textContent !== liveNoteText) {
+        el.textContent = liveNoteText;
+        measureTopRight();                       // the note's line changes the corner's height (a maximised window starts below it)
+      }
     }
     if (typeof layersControl._update === 'function') {
       const lcUpdate = layersControl._update;

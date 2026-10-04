@@ -16,6 +16,7 @@ import time
 import xml.etree.ElementTree as ET
 import buoy_sources
 import point_forecast
+import sky
 
 app = Flask(__name__)
 
@@ -1421,6 +1422,10 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
                 break
         if start_idx is None:
             return cycle_str, location_str, None, None, effective_tz_name, "Data section not found in .bull file."
+        # The combined (significant) height is the header's "Hst" column, not the line's last number (that is the last
+        # swell's direction).
+        hdr_tokens = lines[start_idx - 1].split()
+        hst_idx = hdr_tokens.index("Hst") if "Hst" in hdr_tokens else 1
 
         import re
         m_old = re.search(r"(\d{8})\s*(\d{2})", cycle_str)
@@ -1492,15 +1497,10 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
                     row.extend([hs_val, tp_val, dir_val])
 
             combined_hs_ft = None
-            for tok in reversed(parts):
-                tok_clean = tok.replace('*', '')
-                if tok_clean == '':
-                    continue
-                try:
-                    combined_hs_ft = float(tok_clean) * 3.28084
-                    break
-                except ValueError:
-                    continue
+            try:
+                combined_hs_ft = float(parts[hst_idx].replace('*', '')) * 3.28084
+            except (IndexError, ValueError):
+                pass
             # Wind at indices 20-21; combined stays row[-1] (see modern-format
             # comment above).
             row.extend(_wind_row_cells(wind_map, utc_dt))
@@ -1765,14 +1765,41 @@ def _short_date(s: str) -> str:
     return f"{d:%a} {d.month}/{d.day}"
 
 
+def _dir_cell(deg) -> str:
+    """'248&deg; WSW' plus an arrow pointing where the swell or wind GOES (it comes FROM deg): an up arrow rotated
+    clockwise to (deg + 180) mod 360."""
+    return (f'{deg}&deg; {_compass16(deg)} <span class="dir-arrow" style="transform:rotate({(int(deg) + 180) % 360}deg)"'
+            f' aria-hidden="true">&#8593;</span>')
+
+
+def _sun_cell(info) -> str:
+    """The Sun column: the moon's phase on the first row of a night, then the events in the row's slot."""
+    parts = []
+    if info.get("moon"):
+        m = info["moon"]
+        parts.append(f'<span class="moon-phase" title="{html_escape(m["name"])}, {m["pct"]}% illuminated">'
+                     f'{m["glyph"]} {m["pct"]}%</span>')
+    for e in info.get("events") or []:
+        when = e["time"].strftime("%I:%M %p").lstrip("0")
+        parts.append(f'<span class="sun-ev ev-{e["kind"]}" title="{html_escape(e["name"])} {when}">'
+                     f'{html_escape(e["text"])}</span>')
+    return "<br>".join(parts)
+
+
 def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None,
                      rows: list[list], tz_label: str, unit: str, *, compact: bool = False,
-                     groups: list[int] | None = None) -> str:
+                     groups: list[int] | None = None, sky: list | None = None) -> str:
     """The forecast table. compact (the forecast window, plan section 25): no Cycle/Location/Time Zone
     rows (the window shows them in one line above the table), no inline padding (the page CSS sets it),
-    short dates ('Fri 9/26', the full date in the cell's title), 'Dir (deg)' headers.
+    short dates ('Fri 9/26', the full date in the cell's title), 'Dir (deg)' headers, directions with compass
+    letters and an arrow.
     groups: the swell groups (0-5) to show, each keeping its own colour and "Swell n" label (plan section 26:
-    only the components the forecast contains); None = all six."""
+    only the components the forecast contains); None = all six.
+    sky (compact only; sky.annotate_rows, one entry per row; plan section 35): a Sun column (first light, sunrise,
+    sunset, last light, moonrise, moonset in each row's slot; the moon's phase on the first row of each night) and
+    rows classed by the real sky (sky-day / sky-twilight / sky-night, day-first, now-row) instead of the fixed
+    6 AM - 7 PM bold rule. Without it the rows keep that rule."""
+    sky = sky if compact and sky and len(sky) == len(rows) else None
     group_colors = [
         {"header": "#C00000", "subheader": "#F8B4B4", "data": "#F9DCDC"},
         {"header": "#ED7D31", "subheader": "#FBE5D6", "data": "#FDE7D4"},
@@ -1800,11 +1827,18 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         html += f'<tr><td colspan="{n_cols}" class="forecast-info">{location_str}</td></tr>\n'
         html += f'<tr><td colspan="{n_cols}" class="forecast-info">Time Zone: {point_forecast.zone_label(tz_label)}</td></tr>\n'
     html += '<tr>'
-    html += '<th rowspan="2" scope="col">Date</th><th rowspan="2" scope="col">Time</th>'
+    if compact:
+        html += '<th rowspan="2" scope="col" class="col-date">Date</th><th rowspan="2" scope="col" class="col-time">Time</th>'
+    else:
+        html += '<th rowspan="2" scope="col">Date</th><th rowspan="2" scope="col">Time</th>'
+    if sky:
+        html += '<th rowspan="2" scope="col" class="col-sun" title="Sun and moon">Sun</th>'
     for g in gs:
         col = group_colors[g]
         html += f'<th colspan="3" scope="colgroup" style="background-color:{col["header"]}; color:white; text-align:center;">Swell {g + 1}</th>'
-    comb = '<abbr title="Combined sea" aria-label="Combined">Comb.</abbr>' if compact else 'Combined'   # the window's narrower table
+    # The significant wave height of the combined seas: the bulletins' Hst, SWAN's Hsig, the points' HTSGW.
+    comb = ('<abbr title="Significant wave height of the combined seas" aria-label="Significant wave height">'
+            'Sig. Wave<br>Height</abbr>' if compact else 'Significant Wave Height')
     html += f'<th scope="colgroup" style="background-color:{combined_colors["header"]}; color:white; text-align:center;">{comb}</th>'
     html += f'<th colspan="2" scope="colgroup" style="background-color:{wind_colors["header"]}; color:white; text-align:center;">Wind</th>'
     html += '</tr>\n'
@@ -1827,34 +1861,53 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
 
     # rows
     html += '<tbody>\n'
-    for row in rows:
-        # style rules
-        try:
-            parsed_time = datetime.strptime(row[1], "%I:%M %p").time()
-        except Exception:
-            parsed_time = None
-        bold_start = datetime.strptime("6:00:00 AM", "%I:%M:%S %p").time()
-        bold_end = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()
-        dashed_start_evening = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
-        dashed_end_morning = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
+    for ri, row in enumerate(rows):
+        info = sky[ri] if sky else None
         border_style = ""
         fw = "normal"
-        if parsed_time is not None:
-            if bold_start <= parsed_time <= bold_end:
-                border_style = "border:1px solid #000;"
-                fw = "bold"
-            elif parsed_time >= dashed_start_evening or parsed_time <= dashed_end_morning:
-                border_style = "border:1px dashed #999;"
-                fw = "normal"
-
-        html += '<tr>'
-        date_style = f'font-weight:bold; {border_style}{pad}'
+        if info is not None and info.get("state"):
+            # the real sky (plan section 35): the row's class carries the look, the cells no inline weight or border
+            classes = ["sky-" + info["state"]] + (["day-first"] if info.get("day_first") else []) + \
+                (["now-row"] if info.get("now") else [])
+            t = _row_datetime(row)
+            stamp = f' data-t="{t:%Y-%m-%dT%H:%M}"' if t else ""
+            html += f'<tr class="{" ".join(classes)}"{stamp}>'
+            date_style = pad.strip()
+        else:
+            # style rules
+            try:
+                parsed_time = datetime.strptime(row[1], "%I:%M %p").time()
+            except Exception:
+                parsed_time = None
+            bold_start = datetime.strptime("6:00:00 AM", "%I:%M:%S %p").time()
+            bold_end = datetime.strptime("7:00:00 PM", "%I:%M:%S %p").time()
+            dashed_start_evening = datetime.strptime("8:00:00 PM", "%I:%M:%S %p").time()
+            dashed_end_morning = datetime.strptime("5:00:00 AM", "%I:%M:%S %p").time()
+            if parsed_time is not None:
+                if bold_start <= parsed_time <= bold_end:
+                    border_style = "border:1px solid #000;"
+                    fw = "bold"
+                elif parsed_time >= dashed_start_evening or parsed_time <= dashed_end_morning:
+                    border_style = "border:1px dashed #999;"
+                    fw = "normal"
+            html += '<tr>'
+            date_style = f'font-weight:bold; {border_style}{pad}'
         if compact:
-            html += f'<td style="{date_style}" title="{html_escape(str(row[0]))}">{html_escape(str(_short_date(row[0])))}</td>'
+            style = f' style="{date_style}"' if date_style else ""
+            html += (f'<td class="col-date"{style} title="{html_escape(str(row[0]))}">'
+                     f'{html_escape(str(_short_date(row[0])))}</td>')
         else:
             html += f'<td style="{date_style}">{row[0]}</td>'
         time_style = f'font-weight:{fw}; {border_style}{pad}'
-        html += f'<td style="{time_style}">{row[1]}</td>'
+        if info is not None and info.get("state"):
+            html += f'<td class="col-time">{row[1]}</td>'
+        elif compact:
+            html += f'<td class="col-time" style="{time_style}">{row[1]}</td>'
+        else:
+            html += f'<td style="{time_style}">{row[1]}</td>'
+        if sky:
+            html += f'<td class="col-sun">{_sun_cell(info or {})}</td>'
+        plain = info is not None and info.get("state")
 
         for g in gs:
             col = group_colors[g]
@@ -1863,7 +1916,8 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
             val = row[idx]
             display_val = None if val is None else (val if unit == 'US' else (val / 3.28084))
             hs_str = "" if display_val is None else f"{display_val:.2f}"
-            cell_style = f'background-color:{col["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}'
+            cell_style = (f'background-color:{col["data"]}; text-align:right;' if plain else
+                          f'background-color:{col["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}')
             html += f'<td style="{cell_style}">{hs_str}</td>'
             idx += 1
             # Tp
@@ -1873,7 +1927,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
             idx += 1
             # Dir
             val = row[idx]
-            dir_str = "" if val is None else f"{val}"
+            dir_str = "" if val is None else (_dir_cell(val) if compact else f"{val}")
             html += f'<td style="{cell_style}">{dir_str}</td>'
             idx += 1
 
@@ -1881,7 +1935,8 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         val = row[-1]
         display_comb = None if val is None else (val if unit == 'US' else (val / 3.28084))
         comb_str = "" if display_comb is None else f"{display_comb:.2f}"
-        comb_style = f'background-color:{combined_colors["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}'
+        comb_style = (f'background-color:{combined_colors["data"]}; text-align:right;' if plain else
+                      f'background-color:{combined_colors["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}')
         html += f'<td style="{comb_style}">{comb_str}</td>'
 
         # Wind. Storage order differs from display order ON PURPOSE: wind lives
@@ -1889,7 +1944,8 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         # pre-existing consumers (rounding pass, the cell above, graph packing)
         # were untouched. Speed is stored raw m/s (cache keys carry no unit)
         # and converted here, like heights' /3.28084 above.
-        wind_style = f'background-color:{wind_colors["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}'
+        wind_style = (f'background-color:{wind_colors["data"]}; text-align:right;' if plain else
+                      f'background-color:{wind_colors["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}')
         wspd = row[20]
         if wspd is None:
             spd_str = ""
@@ -1899,7 +1955,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
             spd_str = f"{int(round(wspd * 3.6))}"
         html += f'<td style="{wind_style}">{spd_str}</td>'
         wdir = row[21]
-        dir_str = "" if wdir is None else f"{wdir}&deg; {_compass16(wdir)}"
+        dir_str = "" if wdir is None else (_dir_cell(wdir) if compact else f"{wdir}&deg; {_compass16(wdir)}")
         html += f'<td style="{wind_style} white-space:nowrap;">{dir_str}</td>'
         html += '</tr>\n'
 
@@ -1934,6 +1990,32 @@ def _swell_groups(rows, days=None):
             return (t - t0).total_seconds() < limit * 3600 if t is not None else i < limit
         rows = [r for i, r in enumerate(rows) if inside(i, r)]
     return [g for g in range(6) if any(len(r) > 4 + 3 * g and r[2 + 3 * g] is not None for r in rows)]
+
+
+def _sky_for(rows, lat, lon, tz_name):
+    """sky.annotate_rows for the parsed rows, or None (no coordinates, no ephem, or any error: the table then keeps
+    its clock rule and the graphs their fixed night hours)."""
+    if lat is None or lon is None or not tz_name or not rows:
+        return None
+    try:
+        return sky.annotate_rows([_row_datetime(r) for r in rows], lat, lon, tz_name)
+    except Exception as exc:                                  # never let the sky cost a forecast
+        app.logger.warning("sky for %s,%s failed: %s", lat, lon, exc)
+        return None
+
+
+def _graph_sun_events(gsky):
+    """[{t: slot index, kind, text, name}] for the graphs' sky strip; kind 'moon' marks the start of a night with the
+    phase glyph (text) and its name + lit fraction (name)."""
+    out = []
+    for i, a in enumerate(gsky):
+        if a.get("moon"):
+            m = a["moon"]
+            out.append({"t": i, "kind": "moon", "text": m["glyph"], "name": "%s, %d%% illuminated" % (m["name"], m["pct"])})
+        for e in a.get("events") or []:
+            out.append({"t": i, "kind": e["kind"], "text": e["text"],
+                        "name": "%s %s" % (e["name"], e["time"].strftime("%I:%M %p").lstrip("0"))})
+    return out
 
 
 def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str = "GFS", *,
@@ -1997,8 +2079,6 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     week = _swell_groups(rows, days=7) or present
     # every row has wind (a transient NOAA miss leaves gaps: the page keeps such a forecast for a minute only)
     out["wind_complete"] = all(len(r) > 21 and r[20] is not None for r in rows)
-    out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit, compact=compact,
-                                         groups=week if compact else None)
 
     # single map marker if coords JSON has it
     coords_map = load_station_coords()
@@ -2011,6 +2091,14 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     elif sid_str in coords_map:
         out["lat"] = coords_map[sid_str]['lat']
         out["lon"] = coords_map[sid_str]['lon']
+    sky_lat, sky_lon = out["lat"], out["lon"]
+    if sky_lat is None:
+        sky_lat, sky_lon = _parse_header_coords(location_str)        # the bulletin's own "(21.67N 158.12W)"
+
+    # The real sky for the window's table and graphs (plan section 35); the classic table keeps the clock rule.
+    sky_rows = _sky_for(rows, sky_lat, sky_lon, tz_label) if compact else None
+    out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit, compact=compact,
+                                         groups=week if compact else None, sky=sky_rows)
 
     # ----- pack graph data -----
     # A point's rows are hourly to +120 h and 3-hourly after; its graphs get one slot per HOUR (empty between the
@@ -2057,7 +2145,14 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         "units": graph_units,
         "cycle": cycle_str or "", "location": location_str or "", "tz": tz_label or "",
         "swells": ["s%d" % (g + 1) for g in present],          # the series worth drawing (plan section 26)
+        "sky": None, "sun_events": None,
     }
+    if sky_rows:
+        # per graph slot (a point's hourly slots, blank ones included): the sky state, and the events at their slot
+        gsky = sky_rows if grows is rows else _sky_for(grows, sky_lat, sky_lon, tz_label)
+        if gsky:
+            out["graph_data"]["sky"] = [a["state"] for a in gsky]
+            out["graph_data"]["sun_events"] = _graph_sun_events(gsky)
 
     cycle_clean = _strip_header_prefix(cycle_str, "Cycle")
     loc_clean   = _strip_header_prefix(location_str, "Location")

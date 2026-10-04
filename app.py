@@ -14,6 +14,7 @@ import math
 import functools
 from collections import OrderedDict
 import time
+import threading
 import xml.etree.ElementTree as ET
 import buoy_sources
 import point_forecast
@@ -76,11 +77,18 @@ def jinja_in_tz(dt, tz_name, fmt="%b %d, %Y %I:%M %p"):
 tz_finder = None
 
 
+_TZ_FINDER_LOCK = threading.Lock()
+
+
 def get_tz_finder():
+    """The TimezoneFinder instance (built once; ~1-2 s and tens of MB, so the live-buoy warm-up
+    loads it off the request path and a request racing it waits rather than building a second)."""
     global tz_finder
     if tz_finder is None:
-        from timezonefinder import TimezoneFinder
-        tz_finder = TimezoneFinder()
+        with _TZ_FINDER_LOCK:
+            if tz_finder is None:
+                from timezonefinder import TimezoneFinder
+                tz_finder = TimezoneFinder()
     return tz_finder
 
 # Caches
@@ -114,6 +122,13 @@ if not logger.handlers:
     logger.addHandler(_log_handler)
 logger.setLevel(logging.INFO)
 logger.propagate = False
+# The live-buoy providers log their refreshes (timings, failures) to their own logger, which
+# had no handler of its own: route it to the same stream so the lines reach the host's log.
+_providers_logger = logging.getLogger("buoy_sources")
+if not _providers_logger.handlers:
+    _providers_logger.addHandler(logger.handlers[0])
+_providers_logger.setLevel(logging.INFO)
+_providers_logger.propagate = False
 
 
 def _build_http_session() -> requests.Session:
@@ -218,16 +233,23 @@ def _default_cache_policy(resp):
     return resp
 
 
-# /api/buoys/live-stations at the edge: BYPASS unless explicitly enabled. An edge HIT never
-# reaches the app, so a fixed lifetime would let visitors sail past a provider refresh that
-# an origin request would have triggered. With LIVE_STATIONS_EDGE_TTL=1 the edge lifetime is
-# derived from the SAME provider snapshots the response was built from: it expires exactly
-# when the earliest provider becomes due (capped at the browser max-age), never later.
+# /api/buoys/live-stations at the edge: BYPASS unless LIVE_STATIONS_EDGE_TTL gives a number of
+# seconds (0 = no-store; capped at LIVE_STATIONS_EDGE_TTL_MAX). Since the lists are refreshed in
+# the background (plan section 36) an edge HIT no longer skips a refresh an origin request
+# would have triggered, so a short fixed lifetime is safe; a PARTIAL answer (a provider still
+# warming up) is never stored anywhere.
 LIVE_STATIONS_BROWSER_MAX_AGE = 900
+LIVE_STATIONS_EDGE_TTL_MAX = 300
 
 
-def _live_stations_edge_enabled() -> bool:
-    return os.environ.get("LIVE_STATIONS_EDGE_TTL", "0") == "1"
+def _live_stations_edge_ttl() -> int:
+    """Whole seconds the edge may keep a complete live-stations answer (0 = do not store)."""
+    raw = os.environ.get("LIVE_STATIONS_EDGE_TTL", "0").strip()
+    try:
+        ttl = int(float(raw))
+    except ValueError:
+        return 0
+    return max(0, min(LIVE_STATIONS_EDGE_TTL_MAX, ttl))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -299,26 +321,10 @@ def ui_asset(name):
     return _versioned_asset(_UI_DIR, _UI_ASSETS, name, UI_ASSET_VERSION)
 
 
-def _live_stations_edge_ttl(providers, snaps, now=None) -> int:
-    """Whole seconds the edge may keep this exact response: min over providers of
-    (list_ttl_sec - age of the snapshot it was built from), capped at the browser max-age.
-    <= 0 means "do not store". A provider whose snapshot has no timestamp (fetch raised in
-    the route) counts as due now."""
-    now = time.time() if now is None else now
-    ttl = LIVE_STATIONS_BROWSER_MAX_AGE
-    for p, snap in zip(providers, snaps):
-        ts = snap[2] if len(snap) > 2 else None
-        if ts is None:
-            return 0
-        ttl = min(ttl, int(math.floor(p.list_ttl_sec - (now - ts))))
-    return ttl
-
-
-def _live_stations_cdn_headers(providers, snaps) -> dict:
-    if _live_stations_edge_enabled():
-        ttl = _live_stations_edge_ttl(providers, snaps)
-        if ttl > 0:
-            return {"CDN-Cache-Control": f"max-age={ttl}"}
+def _live_stations_cdn_headers(partial: bool = False) -> dict:
+    ttl = 0 if partial else _live_stations_edge_ttl()
+    if ttl > 0:
+        return {"CDN-Cache-Control": f"max-age={ttl}"}
     return {"CDN-Cache-Control": "no-store"}
 
 
@@ -3831,7 +3837,22 @@ def get_buoy_providers():
             buoy_sources.RwsProvider(http=HTTP),
             buoy_sources.CopernicusProvider(http=HTTP),      # pan-EU/global open aggregator
         ]
+        _break_providers(_BUOY_PROVIDERS)
     return _BUOY_PROVIDERS
+
+
+def _break_providers(providers, names=None):
+    """Diagnostic knob (test site): LIVE_BREAK_PROVIDERS=AODN,CMEMS makes those providers' list
+    fetches raise, to watch keep-last, the retries and /healthz under a feed outage."""
+    raw = os.environ.get("LIVE_BREAK_PROVIDERS", "") if names is None else names
+    broken = {n.strip().lower() for n in raw.split(",") if n.strip()}
+    for p in providers:
+        if p.source.lower() in broken:
+            def _raise(_src=p.source):
+                raise RuntimeError("LIVE_BREAK_PROVIDERS: %s is switched off" % _src)
+            p._fetch_stations = _raise
+            logger.warning("live buoys: provider %s broken on purpose (LIVE_BREAK_PROVIDERS)", p.source)
+    return broken
 
 
 _BUOY_TZ_CACHE = OrderedDict()     # (lat, lon to 0.01) -> zone; bounded: any visitor can ask for any point (G22 A-9)
@@ -3942,9 +3963,33 @@ def _point_tz(lat, lon):
 # Memo of the last serialized /api/buoys/live-stations response, keyed on the exact provider
 # publishes it was built from. Valid precisely as long as no provider has re-published (no
 # time-based TTL of its own), so the served bytes are identical to a fresh build. Guarded by
-# _CACHE_LOCK; _LIVE_BUILD_LOCK makes a burst of same-key misses build once.
+# _CACHE_LOCK; _LIVE_BUILD_LOCK makes a burst of same-key misses build once. The background
+# scheduler PREBUILDS it whenever a provider publishes, so a request normally finds its bytes.
 _LIVE_STATIONS_MEMO = {"key": None, "payload": None, "etag": None}
 _LIVE_BUILD_LOCK = threading.Lock()
+
+
+def _live_memo_key(providers, snaps):
+    """One key per combination of provider publishes; a provider with no list yet is None."""
+    return tuple((p.source, snap[1] if snap is not None else None) for p, snap in zip(providers, snaps))
+
+
+def _live_memo_bytes(key, snaps):
+    """(payload, etag) for these snapshots: the memo's when it was built from exactly them,
+    else one build (a burst of same-key misses builds once)."""
+    with _CACHE_LOCK:
+        if _LIVE_STATIONS_MEMO["key"] == key:
+            return _LIVE_STATIONS_MEMO["payload"], _LIVE_STATIONS_MEMO["etag"]
+    with _LIVE_BUILD_LOCK:
+        with _CACHE_LOCK:                     # built by the caller we waited on?
+            if _LIVE_STATIONS_MEMO["key"] == key:
+                return _LIVE_STATIONS_MEMO["payload"], _LIVE_STATIONS_MEMO["etag"]
+        t0 = time.monotonic()
+        payload, etag = _build_live_stations_payload([snap[0] for snap in snaps if snap is not None])
+        with _CACHE_LOCK:
+            _LIVE_STATIONS_MEMO.update(key=key, payload=payload, etag=etag,
+                                       built_ts=time.time(), build_s=time.monotonic() - t0)
+    return payload, etag
 
 
 def _build_live_stations_payload(lists):
@@ -3965,12 +4010,41 @@ def _build_live_stations_payload(lists):
 
 @app.route("/api/buoys/live-stations")
 def api_buoys_live_stations():
-    # Fetch every provider's station list CONCURRENTLY (each is cached + fail-soft), so one
-    # slow/down agency can't stall the layer as the source list grows (US + AU + Europe).
-    # Refresh timing is unchanged: an expired provider refreshes inline, right here.
-    from concurrent.futures import ThreadPoolExecutor
+    """The merged live-buoy marker list.
+
+    With the background service on (production): NEVER blocks. It reads each provider's
+    snapshot (the list in hand; refreshes happen on the scheduler), serves the prebuilt memo,
+    and compares the ETag at once. A provider with no list yet (the first seconds after a
+    start) is left out and the answer says so in X-Live-Stations-Partial (the sources still
+    missing) with Cache-Control: no-store, so the page polls until the answer is complete.
+
+    With the service off (tests, the start-up import check): the pre-section-36 behaviour,
+    every provider asked inline and concurrently (the golden replay pins those bytes)."""
     providers = get_buoy_providers()
-    snaps = [([], None, None) for _ in providers]   # (list, version, published_ts) per provider
+    if LIVE_BACKGROUND:
+        snaps = [p.snapshot() for p in providers]
+        missing = [p.source for p, snap in zip(providers, snaps) if snap is None]
+        for p, snap in zip(providers, snaps):
+            if snap is None:                  # the scheduler does this too; a request may be first
+                p.schedule_refresh()
+    else:
+        snaps = _live_lists_inline(providers)
+        missing = []
+    key = _live_memo_key(providers, snaps)
+    cdn = _live_stations_cdn_headers(partial=bool(missing))     # 200 and 304 alike
+    payload, etag = _live_memo_bytes(key, snaps)
+    resp = _json_cached_bytes(payload, etag, LIVE_STATIONS_BROWSER_MAX_AGE, cdn)
+    if missing:
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["X-Live-Stations-Partial"] = ",".join(missing)
+    return resp
+
+
+def _live_lists_inline(providers):
+    """Every provider's (list, version, ts) fetched CONCURRENTLY and inline (each cached +
+    fail-soft), the route's own behaviour before the background service."""
+    from concurrent.futures import ThreadPoolExecutor
+    snaps = [([], None, None) for _ in providers]
 
     def _fetch(i):
         p = providers[i]
@@ -3985,21 +4059,232 @@ def api_buoys_live_stations():
     with ThreadPoolExecutor(max_workers=min(8, len(providers))) as ex:
         for i, snap in ex.map(_fetch, range(len(providers))):
             snaps[i] = snap
+    return snaps
 
-    key = tuple((p.source, snap[1]) for p, snap in zip(providers, snaps))
-    cdn = _live_stations_cdn_headers(providers, snaps)      # from THESE snapshots, 200 and 304 alike
-    max_age = LIVE_STATIONS_BROWSER_MAX_AGE
+
+# ---------------------------------------------------------------------------------------------
+# Live-buoy background service (plan section 36): one daemon scheduler thread keeps every
+# provider's list fresh regardless of traffic and prebuilds the live-stations memo, so a
+# visitor's request never waits for an agency's feed. Off with LIVE_BACKGROUND=0 (tests, the
+# start-up import check). /healthz reports it (Render's health check path: the old instance
+# keeps serving until the new one has warmed up).
+# ---------------------------------------------------------------------------------------------
+LIVE_BACKGROUND = os.environ.get("LIVE_BACKGROUND", "1") != "0"
+LIVE_TICK_SEC = float(os.environ.get("LIVE_TICK_SEC", "30"))          # between scheduler passes
+LIVE_WARM_TICK_SEC = 2.0                                               # while providers are still missing
+LIVE_WARM_DEADLINE_SEC = float(os.environ.get("LIVE_WARM_DEADLINE_SEC", "90"))
+# Cheap and quick feeds first, the big ones (AODN's WFS, CMEMS's 43 MB index) last, so the
+# first partial answers carry the most markers soonest. Unknown sources go last.
+LIVE_WARM_ORDER = ["NDBC", "CDIP", "SMHI", "MI-IE", "CEFAS", "RWS", "QLD", "AusWaves", "AODN", "CMEMS"]
+_LIVE_BG = {"started": False, "thread": None, "started_ts": None, "warm_ts": None, "ticks": 0,
+            "last_tick_ts": None, "last_tick_s": None, "prebuilds": 0, "errors": 0, "last_error": None,
+            "tz_loaded": False}
+_LIVE_BG_LOCK = threading.Lock()
+_LIVE_STOP = threading.Event()
+
+
+def _live_providers_ordered(providers=None):
+    providers = get_buoy_providers() if providers is None else providers
+    rank = {s: i for i, s in enumerate(LIVE_WARM_ORDER)}
+    return sorted(providers, key=lambda p: rank.get(p.source, len(rank)))
+
+
+def _live_schedule(providers):
+    """Queue a refresh for every provider that is due, in LIVE_WARM_ORDER (at boot every provider
+    is due, so the first pass is the warm-up; after a scheduler restart fresh lists are left
+    alone). A provider whose check raises is skipped and counted, never the others."""
+    scheduled = []
+    for p in _live_providers_ordered(providers):
+        try:
+            if p.refresh_due():
+                if p.schedule_refresh():
+                    scheduled.append(p.source)
+        except Exception as exc:
+            with _LIVE_BG_LOCK:
+                _LIVE_BG["errors"] += 1
+                _LIVE_BG["last_error"] = "%s: %s" % (p.source, exc)
+            logger.warning("live buoys: scheduling %s failed: %s", p.source, exc)
+    return scheduled
+
+
+def _live_prebuild(providers):
+    """Build the live-stations memo for the providers' current snapshots when any of them
+    published since the last build. Returns True when a build happened."""
+    snaps = [p.snapshot() for p in providers]
+    key = _live_memo_key(providers, snaps)
     with _CACHE_LOCK:
         if _LIVE_STATIONS_MEMO["key"] == key:
-            return _json_cached_bytes(_LIVE_STATIONS_MEMO["payload"], _LIVE_STATIONS_MEMO["etag"], max_age, cdn)
-    with _LIVE_BUILD_LOCK:
-        with _CACHE_LOCK:                     # built by the caller we waited on?
-            if _LIVE_STATIONS_MEMO["key"] == key:
-                return _json_cached_bytes(_LIVE_STATIONS_MEMO["payload"], _LIVE_STATIONS_MEMO["etag"], max_age, cdn)
-        payload, etag = _build_live_stations_payload([snap[0] for snap in snaps])
-        with _CACHE_LOCK:
-            _LIVE_STATIONS_MEMO.update(key=key, payload=payload, etag=etag)
-    return _json_cached_bytes(payload, etag, max_age, cdn)
+            return False
+    _live_memo_bytes(key, snaps)
+    with _LIVE_BG_LOCK:
+        _LIVE_BG["prebuilds"] += 1
+    return True
+
+
+def _live_warm(providers):
+    """True once every provider has published a list (a failed first fetch counts: it
+    published [] and keep-last/retry take over from there)."""
+    return all(p.snapshot() is not None for p in providers)
+
+
+def _live_tick(providers=None):
+    """One scheduler pass: schedule due refreshes, prebuild the memo, note the warm-up."""
+    providers = get_buoy_providers() if providers is None else providers
+    t0 = time.monotonic()
+    scheduled = _live_schedule(providers)
+    built = False
+    try:
+        built = _live_prebuild(providers)
+    except Exception as exc:
+        with _LIVE_BG_LOCK:
+            _LIVE_BG["errors"] += 1
+            _LIVE_BG["last_error"] = "prebuild: %s" % exc
+        logger.warning("live buoys: memo prebuild failed: %s", exc)
+    warm = _live_warm(providers)
+    with _LIVE_BG_LOCK:
+        _LIVE_BG["ticks"] += 1
+        _LIVE_BG["last_tick_ts"] = time.time()
+        _LIVE_BG["last_tick_s"] = time.monotonic() - t0
+        if warm and _LIVE_BG["warm_ts"] is None:
+            _LIVE_BG["warm_ts"] = time.time()
+            if _LIVE_BG["started_ts"] is not None:
+                logger.info("live buoys: warm-up complete %.1fs after start (%s)",
+                            _LIVE_BG["warm_ts"] - _LIVE_BG["started_ts"],
+                            ", ".join("%s %s" % (p.source, len((p.snapshot() or ([],))[0])) for p in providers))
+    return {"scheduled": scheduled, "built": built, "warm": warm}
+
+
+def _live_scheduler_loop():
+    """The scheduler thread: load TimezoneFinder off the request path, warm every provider
+    cheap-first, then every LIVE_TICK_SEC schedule the due ones and prebuild the memo.
+    Nothing raised in here ends the loop."""
+    try:
+        get_tz_finder()
+        with _LIVE_BG_LOCK:
+            _LIVE_BG["tz_loaded"] = True
+    except Exception as exc:                    # the route builds it lazily as before
+        logger.warning("live buoys: TimezoneFinder did not load in the warm-up: %s", exc)
+    while not _LIVE_STOP.is_set():
+        try:
+            out = _live_tick()
+        except Exception as exc:
+            out = {"warm": False}
+            with _LIVE_BG_LOCK:
+                _LIVE_BG["errors"] += 1
+                _LIVE_BG["last_error"] = "tick: %s" % exc
+            logger.exception("live buoys: scheduler tick failed")
+        _LIVE_STOP.wait(LIVE_TICK_SEC if out.get("warm") else LIVE_WARM_TICK_SEC)
+
+
+def start_live_background():
+    """Start the scheduler thread once (idempotent; a dead thread is restarted). Returns
+    whether the service is running. No-op when LIVE_BACKGROUND=0."""
+    if not LIVE_BACKGROUND:
+        return False
+    with _LIVE_BG_LOCK:
+        t = _LIVE_BG["thread"]
+        if t is not None and t.is_alive():
+            return True
+        _LIVE_STOP.clear()
+        t = threading.Thread(target=_live_scheduler_loop, name="live-scheduler", daemon=True)
+        _LIVE_BG["thread"] = t
+        _LIVE_BG["started"] = True
+        if _LIVE_BG["started_ts"] is None:
+            _LIVE_BG["started_ts"] = time.time()
+        t.start()
+        logger.info("live buoys: background scheduler started (tick %.0fs, workers %s)",
+                    LIVE_TICK_SEC, buoy_sources.get_refresh_runner().workers
+                    if hasattr(buoy_sources.get_refresh_runner(), "workers") else "?")
+    return True
+
+
+def stop_live_background(timeout=5.0):
+    """Tests: stop the scheduler thread and wait for it."""
+    _LIVE_STOP.set()
+    with _LIVE_BG_LOCK:
+        t = _LIVE_BG["thread"]
+    if t is not None:
+        t.join(timeout)
+    with _LIVE_BG_LOCK:
+        _LIVE_BG["thread"] = None
+        _LIVE_BG["started"] = False
+
+
+@app.before_request
+def _live_background_fallback():
+    """Belt and braces: should the scheduler thread ever die, the next request restarts it."""
+    if LIVE_BACKGROUND and not _live_scheduler_alive():
+        start_live_background()
+
+
+def _live_scheduler_alive():
+    with _LIVE_BG_LOCK:
+        t = _LIVE_BG["thread"]
+    return t is not None and t.is_alive()
+
+
+def _rss_kb():
+    """Resident set size (and its high-water mark) in KB from /proc, where there is one."""
+    out = {}
+    try:
+        with open("/proc/self/status", encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                if line.startswith(("VmRSS:", "VmHWM:")):
+                    out[line.split(":")[0]] = int(line.split()[1])
+    except OSError:
+        return None
+    return out or None
+
+
+@app.route("/healthz")
+def healthz():
+    """Health of the live-buoy service for Render's health check and for diagnosis: per-provider
+    state, the memo, the scheduler and the refresh runner. 503 until the warm-up has completed
+    or LIVE_WARM_DEADLINE_SEC have passed since the start (a dead feed never blocks a deploy),
+    then 200. Never triggers any work. Never cached."""
+    now = time.time()
+    providers = get_buoy_providers()
+    statuses = [p.status() for p in providers]        # on the providers' own clock
+    with _LIVE_BG_LOCK:
+        bg = dict(_LIVE_BG)
+    with _CACHE_LOCK:
+        memo_key = _LIVE_STATIONS_MEMO.get("key")
+        memo_built = _LIVE_STATIONS_MEMO.get("built_ts")
+        memo_build_s = _LIVE_STATIONS_MEMO.get("build_s")
+        memo_bytes = len(_LIVE_STATIONS_MEMO.get("payload") or "")
+    missing = [s["source"] for s in statuses if s["version"] is None]
+    warm = not missing
+    started_ts = bg.get("started_ts")
+    deadline_passed = started_ts is not None and (now - started_ts) >= LIVE_WARM_DEADLINE_SEC
+    ok = warm or deadline_passed or not LIVE_BACKGROUND
+    runner = buoy_sources.get_refresh_runner()
+    body = {
+        "ok": ok,
+        "warm": warm,
+        "missing": missing,
+        "background": LIVE_BACKGROUND,
+        "scheduler_alive": _live_scheduler_alive(),
+        "uptime_s": round(now - started_ts, 1) if started_ts else None,
+        "warm_after_s": (round(bg["warm_ts"] - started_ts, 1) if bg.get("warm_ts") and started_ts else None),
+        "ticks": bg.get("ticks"), "last_tick_age_s": (round(now - bg["last_tick_ts"], 1) if bg.get("last_tick_ts") else None),
+        "last_tick_s": (round(bg["last_tick_s"], 3) if bg.get("last_tick_s") is not None else None),
+        "prebuilds": bg.get("prebuilds"), "errors": bg.get("errors"), "last_error": bg.get("last_error"),
+        "tz_loaded": tz_finder is not None,
+        "providers": statuses,
+        "memo": {"age_s": round(now - memo_built, 1) if memo_built else None,
+                 "build_s": round(memo_build_s, 3) if memo_build_s is not None else None,
+                 "bytes": memo_bytes,
+                 "sources": sum(1 for k in (memo_key or ()) if k[1] is not None)},
+        "runner": {"queued": getattr(runner, "queued", None), "running": getattr(runner, "running", None),
+                   "workers": getattr(runner, "workers", None)},
+        "rss_kb": _rss_kb(),
+        "time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+    resp = jsonify(body)
+    resp.status_code = 200 if ok else 503
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["CDN-Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route("/api/buoys/<path:bid>/latest")
@@ -4093,6 +4378,10 @@ def api_buoys_components(bid):
             return _json_cached(result, max_age=900)
     return jsonify({"id": bid, "error": "unknown source"}), 404
 
+
+# Start the live-buoy scheduler as soon as the app is imported (the gunicorn worker imports it;
+# with more than one worker each would run its own, which is fine but doubles the feed traffic).
+start_live_background()
 
 if __name__ == "__main__":
     # Honor $PORT when set (dev tooling / managed runners); default to 5000 locally.

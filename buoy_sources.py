@@ -299,37 +299,44 @@ class BuoyProvider:
 
 
 class ThreadRunner:
-    """Runs refresh jobs on daemon threads, at most `workers` fetching at once (the rest wait
-    on the semaphore), so a boot-time warm-up of ten agencies never downloads ten feeds at
-    once (memory) and never blocks a request. Daemon: a process exit never waits for a feed."""
+    """Runs refresh jobs on `workers` daemon threads fed from a FIFO queue, so a boot-time
+    warm-up of ten agencies downloads at most `workers` feeds at once (memory), in the order
+    they were submitted (cheap feeds first), and never on a request thread. Daemon threads:
+    a process exit never waits for a feed."""
 
     def __init__(self, workers=3):
+        import queue
         self.workers = max(1, int(workers))
-        self._sem = threading.BoundedSemaphore(self.workers)
+        self._q = queue.Queue()
         self._lock = threading.Lock()
+        self._threads = []
         self.queued = 0                  # submitted, not finished (waiting or running)
         self.running = 0
+
+    def _worker(self):
+        while True:
+            name, fn = self._q.get()
+            with self._lock:
+                self.running += 1
+            try:
+                fn()
+            except Exception:
+                _log.exception("buoy refresh job %s failed", name)
+            finally:
+                with self._lock:
+                    self.running -= 1
+                    self.queued -= 1
+                self._q.task_done()
 
     def submit(self, fn, name="buoy-refresh"):
         with self._lock:
             self.queued += 1
-
-        def run():
-            try:
-                with self._sem:
-                    with self._lock:
-                        self.running += 1
-                    try:
-                        fn()
-                    except Exception:
-                        _log.exception("buoy refresh job %s failed", name)
-                    finally:
-                        with self._lock:
-                            self.running -= 1
-            finally:
-                with self._lock:
-                    self.queued -= 1
-        threading.Thread(target=run, name=name, daemon=True).start()
+            if len(self._threads) < self.workers:          # started lazily, never joined
+                t = threading.Thread(target=self._worker, name="buoy-refresh-%d" % len(self._threads),
+                                     daemon=True)
+                self._threads.append(t)
+                t.start()
+        self._q.put((name, fn))
 
 
 class InlineRunner:

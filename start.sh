@@ -19,7 +19,7 @@ print("after flask import", flush=True)
 PY
 
 echo "===== STEP IMPORT APP MODULE ====="
-python - <<'PY'
+LIVE_BACKGROUND=0 python - <<'PY'
 import sys
 import traceback
 import faulthandler

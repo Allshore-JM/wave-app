@@ -592,39 +592,47 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
   (522 inputs) is checked against both.
 
-## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.5)
+## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.6)
 
 The window's table and graphs know the real sun and moon at the station (`sky.py`, PyEphem; `requirements.txt`
 `ephem==4.2.1`; checked to the minute against USNO in `tests/test_sky.py`). What the server sends (`/api/forecast?compact=1`
 only; the classic table and payload are unchanged apart from the relabel; without coordinates, without ephem or on any
 error the table keeps its old 6 AM - 7 PM bold rule and the graphs their fixed night hours):
 
-- `table_html`: rows classed `sky-day` / `sky-night` from the sun's altitude at the row's own time (day = between first
-  light and last light, the sun's centre above -6°; owner: a row between them looks like daylight, there is no twilight
-  look), `day-first` on each day's first row, `now-row` on the current hour, `data-t`. Without sky data the window's
+- `table_html`: rows classed `sky-day` when any part of the row's slot lies between first light and last light (the
+  sun's centre above -6° at the row's time, or first light inside its slot: with first light at 6:02 the 6 AM row is a
+  daylight row; owner: a row at least partly in daylight looks like full daylight, there is no twilight look), else
+  `sky-night`; `day-first` on each day's first row, `now-row` on the current hour, `data-t`. Without sky data the window's
   rows get the same classes from the fixed 6 AM - 7 PM clock rule (the classic table keeps that rule inline). Columns: Date, Time, Sig. Wave Height, the swells, Wind, Sun/Moon (owner: the
   significant height first after Time, Sun/Moon last). "Comb." is now "Sig. Wave Height" (the bulletins' Hst, SWAN's
   Hsig, a point's HTSGW: the significant wave height of the combined seas; the classic table keeps it after the swells,
   named "Significant Wave Height"). The Sun/Moon column (`col-sun`): first light ◐, sunrise ☀↑, sunset ☀↓, last light ◑,
-  moonrise ☾↑, moonset ☾↓ in the row's slot (an hourly row's hour or a 3-hourly row's three hours), the moon's phase
-  glyph and lit fraction on the first row of each night. `col-date` / `col-time` on the first two cells (the sticky
+  moonrise ☾↑, moonset ☾↓ in the row's slot (an hourly row's hour or a 3-hourly row's three hours; "AM" / "PM" added
+  when the event's half of the day differs from the row's, e.g. a 12:40 AM moonrise in a 3-hourly 11 PM row), the
+  moon's phase glyph and lit fraction on the first row of each night (its name in the hover text: a principal phase
+  only within 12 h of its instant, else waxing / waning crescent / gibbous, as USNO names it). The whole table is ASCII:
+  the glyphs are numeric character references (one non-ASCII character in the `html +=` string made a 385-row build
+  ~30x slower). The right-edge cells carry `col-last`. `col-date` / `col-time` on the first two cells (the sticky
   columns); directions read "248° WSW" with an arrow (`.dir-arrow`, rotated to where the waves go).
 - `summary_html`: the Summary view, one row per forecast day over its daylight rows (first light to last light):
   significant wave height range + trend (↗ rising / ↘ falling / ▲ peak at an hour / → steady: the last third of the window
   against the first, 10 % bands), the two most powerful swell SYSTEMS of the day (the hourly columns are re-ranked by
   power, so a column is not a system: every hour's samples are grouped by period, within 20 % and at least 1.5 s, and
-  direction, within 40°; power = height² × period), wind range + mean direction, sunrise, sunset, the moon. A first or
-  last day without daylight rows is left out; a polar night keeps a row with a note; a day cut by the forecast's start or
-  end says "from 8:00 AM" / "until 5:00 PM".
+  direction, within 40°; power = height² × period), wind range + mean direction, sunrise, sunset, the moon (tonight's:
+  the badge the detailed table shows for that evening, else the day's at last light). A first or last day without
+  daylight rows is left out; a polar night keeps a row with a note; a day the forecast itself cuts says "from 8:00 AM"
+  (its first row comes more than an hour after sunrise) and / or "until 2:00 PM" (its last row more than an hour before
+  sunset) — a whole 3-hourly day never does.
 - `graph_data.sky`: one state per slot (a point's hourly slots included), for the charts' shading.
 
 The page: daylight rows are bold with solid black borders and night rows normal with dashed grey ones (the look the
 clock rule always had; the Date column is bold only in daylight rows, like every other cell), a `--tint` gradient laid over
 each cell's own swell colour (night slate-blue, hover, the now row blue with a left accent), a 2 px rule where each day
 starts, tabular numerals, the group headers softened 15 %, Date and Time sticky on the left (the Time column's offset is the
-Date column's measured width, `--date-w`), the Sun/Moon column's glyphs coloured by kind. The now row is scrolled under the frozen header once per station or point (not on a
+Date column's measured width, `--date-w`, re-measured whenever the detailed table shows), the Sun/Moon column's glyphs
+coloured by kind (each colour at least 4.5:1 against every row tint). The now row is scrolled under the frozen header once per station or point (not on a
 unit or zone change; deferred while the window is minimised, in Graph view or in Summary mode). The Detailed | Summary
-buttons show only in Table view and only when the payload carries a summary; the detailed table, the summary and the graphs each keep their own place in the window's one scrolling body, down and sideways (a panel shown for the first time starts at its top left; another station's summary starts at its first day, while the detailed table keeps its columns in view and goes to the now row). The forecast window's body has no top or side padding, so the frozen header and the sticky columns sit at offset 0 (a sticky table header at a negative offset let a few pixels of the scrolled rows show above it in Chromium). The compact table's borders are SEPARATE (`border-collapse: separate`, each cell drawing its top and left edge, the frozen Time column its right edge, the table its right and bottom): Chromium paints a frozen cell's collapsed borders where the cell would have been, which left 1-px slivers of the scrolled rows beside the frozen Date / Time columns and under the frozen header; `--date-w` is the Date column's rendered, fractional width for the same reason. The charts: night bands at
+buttons show only in Table view and only when the payload carries a summary; the detailed table, the summary and the graphs each keep their own place in the window's one scrolling body, down and sideways (a panel shown for the first time starts at its top left; another station's summary starts at its first day, while the detailed table keeps its columns in view and goes to the now row). The forecast window's body has no top or side padding, so the frozen header and the sticky columns sit at offset 0 (a sticky table header at a negative offset let a few pixels of the scrolled rows show above it in Chromium). The compact table's borders are SEPARATE (`border-collapse: separate`, each cell drawing its top and left edge, the frozen Time column and the right-edge `col-last` cells their right edge and the last row its bottom, all in their row's style): Chromium paints a frozen cell's collapsed borders where the cell would have been, which left 1-px slivers of the scrolled rows beside the frozen Date / Time columns and under the frozen header; `--date-w` is the Date column's rendered, fractional width for the same reason. The charts: night bands at
 the real times (`makeNightShade`; between first light and last light there is no band), the combined series named "Significant Wave Height", and the direction axis fixed
 0-360 with compass labels N NE E SE S SW W NW N. (A sky strip with sun / moon glyphs and a "now" line were tried in 1.16.0
 and removed: the owner found them clutter.) An older cached payload with none of these fields draws as before (the

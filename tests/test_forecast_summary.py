@@ -1,5 +1,6 @@
 """The window's Summary view (plan section 35): one row per forecast day over its daylight rows (first light to last
 light): significant height range + trend, the day's two most powerful swell SYSTEMS, wind, sunrise / sunset, moon."""
+import html as H
 import re
 from datetime import date, datetime, timedelta
 
@@ -98,17 +99,20 @@ def test_summary_html():
     rows = [_row(datetime(2026, 10, 3, h), hs=2.0 + 0.2 * h, systems=[(1.8, 13.0, 315), (1.0, 7.0, 60)],
                  wind=(6.7056, 70)) for h in range(6, 19)]
     html = A.build_summary_html(rows, [_ann("day")] * len(rows), _days(d), "US")
+    assert html.isascii()                                                 # glyphs as numeric references (G24 A-1)
     assert html.startswith('<table class="table table-bordered table-sm forecast-summary">')
     heads = re.findall(r"<th[^>]*>([^<]+)</th>", html)
     assert heads == ["Day", "Sig. Wave Height", "Dominant Swell", "Second Swell", "Wind", "Sunrise", "Sunset", "Moon"]
     body = html.split("<tbody>")[1]
     assert body.count("<tr") == 1 and 'data-date="2026-10-03"' in body
-    assert '<span class="sum-range">3.2&ndash;5.6 ft</span>' in body and "trend-rising" in body and "↗ rising" in body
+    assert '<span class="sum-range">3.2&ndash;5.6 ft</span>' in body and "trend-rising" in body
+    text = H.unescape(body)
+    assert "\u2197\ufe0e rising" in text                                  # text presentation, not the emoji (G24 B-4)
     assert "1.8 ft</span> &middot; 13 s &middot;" in body and "315&deg; NW" in body
     assert "1.0 ft</span> &middot; 7 s &middot;" in body and "60&deg; ENE" in body
     assert "15 mph &middot; 70&deg; ENE" in body
-    assert "☀↑ 6:00 AM" in body and "☀↓ 6:00 PM" in body
-    assert 'title="Waxing gibbous, 72% illuminated">\U0001F314 72%</span>' in body
+    assert "\u2600\u2191 6:00 AM" in text and "\u2600\u2193 6:00 PM" in text
+    assert 'title="Waxing gibbous, 72% illuminated">\U0001F314 72%</span>' in text
     assert A.build_summary_html([], [], {}, "US").count("<tr") == 1          # header only
 
 
@@ -133,3 +137,110 @@ def test_the_payload_and_the_full_render_carry_the_summary(monkeypatch):
     monkeypatch.setattr(A.sky, "day_summary", boom)
     d = A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)
     assert d["summary_html"] is None and "col-sun" in d["table_html"]      # the detailed table stands without it
+
+
+# ------------------------------ G24 fix round ------------------------------
+def _hourly(d, first_hour, last_hour, step=1, hs=2.0):
+    rows, ann = [], []
+    for h in range(first_hour, last_hour + 1, step):
+        t = datetime.combine(d, datetime.min.time()) + timedelta(hours=h)
+        rows.append(_row(t, hs=hs, systems=[(1.5, 10.0, 300)]))
+        ann.append(_ann("day" if 6 <= h <= 18 else "night"))
+    return rows, ann
+
+
+@pytest.mark.parametrize("first, last, step, note", [
+    (0, 23, 3, None),                      # a whole 3-hourly day: rows at 0, 3, ..., 21
+    (2, 23, 3, None),                      # rows at 2, 5, 8, ...: its first daylight row 8 AM is NOT a cut (G24 A-2 / B-2)
+    (1, 23, 3, None),                      # rows at 1, 4, ..., 22: its last daylight row 4 PM is NOT a cut either
+    (0, 23, 1, None),                      # a whole hourly day
+    (9, 23, 1, "from 9:00 AM"),            # the forecast starts after this day's sunrise + 1 h
+    (0, 14, 1, "until 2:00 PM"),           # the forecast ends before this day's sunset - 1 h
+    (9, 14, 1, "from 9:00 AM until 2:00 PM"),   # both (the elif hid the second)
+    (7, 23, 1, None),                      # within an hour of sunrise: not a cut
+    (0, 17, 1, None),                      # within an hour of sunset: not a cut
+])
+def test_the_cut_day_note_comes_from_the_forecasts_own_first_and_last_row(first, last, step, note):
+    d = date(2026, 10, 9)
+    rows, ann = _hourly(d, first, last, step)
+    out = A.summary_days(rows, ann, _days(d), "US")
+    assert out[0]["note"] == note
+
+
+def test_equal_ends_are_one_height():
+    d = date(2026, 10, 3)
+    rows = [_row(datetime(2026, 10, 3, h), hs=1.8, systems=[(1.0, 9.0, 300)]) for h in range(6, 19)]
+    body = A.build_summary_html(rows, [_ann("day")] * len(rows), _days(d), "US").split("<tbody>")[1]
+    assert '<span class="sum-range">1.8 ft</span>' in body and "1.8&ndash;1.8" not in body
+    rows[3] = _row(datetime(2026, 10, 3, 9), hs=1.84, systems=[(1.0, 9.0, 300)])    # 1.84 shows as 1.8 too
+    body = A.build_summary_html(rows, [_ann("day")] * len(rows), _days(d), "US").split("<tbody>")[1]
+    assert '<span class="sum-range">1.8 ft</span>' in body
+
+
+def test_the_summary_moon_is_tonights_badge():
+    """The Moon column shows the moon the detailed table's badge shows for that evening (G24 B-3); without a badge
+    that day (the last day, a polar day) the day's own value."""
+    d = date(2026, 10, 3)
+    rows, ann = _hourly(d, 0, 23)
+    badge = {"glyph": "\U0001F318", "pct": 32, "name": "Waning crescent"}
+    morning = {"glyph": "\U0001F317", "pct": 40, "name": "Waning crescent"}
+    ann[0] = dict(ann[0], moon=morning)                # the night that started the evening before
+    ann[19] = dict(ann[19], moon=badge)                # tonight's (7 PM)
+    out = A.summary_days(rows, ann, _days(d), "US")
+    assert out[0]["moon"] is badge
+    text = H.unescape(A.build_summary_html(rows, ann, _days(d), "US"))
+    assert "\U0001F318 32%" in text and "\U0001F314 72%" not in text
+    ann[19] = dict(ann[19], moon=None)
+    assert A.summary_days(rows, ann, _days(d), "US")[0]["moon"]["pct"] == 72     # day_summary's value
+
+
+@pytest.mark.parametrize("vals, kind", [
+    ([1, 1, 1, 1, 1, 1.25], "rising"),     # thirds: the last third 1.125 >= 1.10 x 1.0 (halves would say steady)
+    ([1, 1, 1, 1.12, 1.12, 1.12], "rising"),
+    ([1, 1, 1, 1.08, 1.08, 1.08], "steady"),   # the 10 % band: 8 % is steady
+    ([1, 1, 1, 0.92, 0.92, 0.92], "steady"),
+    ([1, 1, 1, 0.88, 0.88, 0.88], "falling"),
+    ([1, 1.12, 1], "peak"),                # an interior maximum 12 % above both ends
+    ([1, 1.07, 1], "steady"),              # 7 %: not a peak
+    ([1, 1, 1, 1, 1, 2], "rising"),        # a maximum at the window's end is a rise, never a peak
+    ([2, 1, 1, 1, 1, 1], "falling"),       # nor at its start
+])
+def test_trend_thresholds(vals, kind):
+    times = [datetime(2026, 10, 3, 7) + timedelta(hours=i) for i in range(len(vals))]
+    assert A._trend(vals, times)[0] == kind
+
+
+def test_swell_systems_windows_and_ranking():
+    """Grouping: within 20 % of the period (at least 1.5 s) and 40 deg of the direction; ranked by summed Hs^2 x Tp;
+    the height shown is the system's largest; the direction is the power-weighted mean."""
+    def systems(samples):
+        win = [(None, _row(datetime(2026, 10, 3, 9 + i), systems=[s])) for i, s in enumerate(samples)]
+        return A._swell_systems(win, lambda ft: ft)
+    # the window centres on the most powerful sample (the first here: 2.5^2 x 10 = 62.5 > 2^2 x 12.1 = 48.4)
+    assert len(systems([(2.5, 10.0, 300), (2.0, 12.0, 300)])) == 1          # 2 s apart = 20 % of 10 s
+    assert len(systems([(2.5, 10.0, 300), (2.0, 12.1, 300)])) == 2
+    assert len(systems([(3.0, 5.0, 300), (2.0, 6.5, 300)])) == 1            # the 1.5 s floor beats 20 % of 5 s
+    assert len(systems([(3.0, 5.0, 300), (2.0, 6.6, 300)])) == 2
+    assert len(systems([(2.5, 10.0, 300), (2.0, 10.0, 340)])) == 1          # 40 deg
+    assert len(systems([(2.5, 10.0, 300), (2.0, 10.0, 341)])) == 2
+    one = systems([(3.0, 10.0, 300), (1.0, 10.0, 330)])[0]
+    assert one["hs_max"] == 3.0 and one["dir"] == 303                       # power weights 90 : 10 (the mean of 300, 330)
+    a, b = systems([(2.0, 16.0, 200), (2.6, 9.0, 40)])                      # 64 vs 60.8: Hs^2 x Tp, not Hs x Tp
+    assert a["tp_min"] == 16.0 and b["tp_min"] == 9.0
+    a, b = systems([(3.0, 8.0, 40), (2.0, 15.0, 200), (2.0, 15.0, 200), (2.0, 15.0, 200)])   # the summed power re-ranks
+    assert a["tp_min"] == 15.0 and round(a["power"]) == 180 and round(b["power"]) == 72
+
+
+def test_wind_speeds_round_and_the_mean_is_unweighted():
+    d = date(2026, 10, 3)
+    rows = [_row(datetime(2026, 10, 3, 9), wind=(4.25, 350)), _row(datetime(2026, 10, 3, 10), wind=(10.0, 10))]
+    out = A.summary_days(rows, [_ann("day")] * 2, _days(d), "US")[0]
+    assert out["wind"] == {"min": 10, "max": 22, "dir": 0}                  # 9.507 -> 10, 22.37 -> 22; (350 + 10) / 2
+
+
+def test_rows_without_a_state_are_not_daylight():
+    d = date(2026, 10, 3)
+    rows = [_row(datetime(2026, 10, 3, h), hs=1.0 + h) for h in range(9, 12)]
+    ann = [_ann("day"), {"state": None, "events": [], "moon": None, "day_first": False, "now": False}, _ann("day")]
+    out = A.summary_days(rows, ann, _days(d), "US")[0]
+    assert (out["hs"]["min"], out["hs"]["max"]) == (10.0, 12.0)            # the unreadable 10 AM row is left out

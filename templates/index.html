@@ -443,16 +443,17 @@
     /* the coloured group headers, softened a little (the server keeps its inline colours) */
     #forecastTable thead tr:first-child th[style] { background-image: linear-gradient(rgba(255,255,255,.15), rgba(255,255,255,.15)); }
     .forecast-info { text-align: left; font-weight: 700; }
-    /* The real sky (plan section 35): the server classes each row sky-day (first light to last light) or sky-night.
-       Daylight rows are bold with solid black borders, night rows normal with dashed grey ones (the look the fixed
-       6 AM - 7 PM rule had; owner), and a slate-blue tint is laid over each night cell's own swell colour as a
-       background image, so the colours stay. The borders are SEPARATE, each cell drawing its top and left edge (the
-       frozen Time column its right edge too) and the table its right and bottom: Chromium paints a frozen cell's
-       collapsed borders where the cell would have been, which left slivers of the scrolled rows beside the frozen
-       Date / Time columns and under the frozen header. */
-    #forecastTable table.forecast-compact { border-collapse: separate; border-spacing: 0; border-right: 1px solid #dee2e6; border-bottom: 1px solid #dee2e6; }
+    /* The real sky (plan section 35): the server classes each row sky-day (any part of it between first light and last
+       light) or sky-night. Daylight rows are bold with solid black borders, night rows normal with dashed grey ones (the
+       look the fixed 6 AM - 7 PM rule had; owner), and a slate-blue tint is laid over each night cell's own swell colour
+       as a background image, so the colours stay. The borders are SEPARATE, each cell drawing its top and left edge, the
+       frozen Time column and the right-edge cells (col-last) their right edge and the last row its bottom, all in their
+       row's style: Chromium paints a frozen cell's collapsed borders where the cell would have been, which left slivers
+       of the scrolled rows beside the frozen Date / Time columns and under the frozen header. */
+    #forecastTable table.forecast-compact { border-collapse: separate; border-spacing: 0; }
     #forecastTable table.forecast-compact th, #forecastTable table.forecast-compact td { border: 0 solid #dee2e6; border-top-width: 1px; border-left-width: 1px; }
-    #forecastTable table.forecast-compact .col-time { border-right-width: 1px; }
+    #forecastTable table.forecast-compact .col-time, #forecastTable table.forecast-compact .col-last { border-right-width: 1px; }
+    #forecastTable table.forecast-compact tbody > tr:last-child > td { border-bottom-width: 1px; }
     #forecastTable table.forecast-compact .col-time + *, #forecastTable table.forecast-compact thead > tr:nth-child(2) > :first-child { border-left-width: 0; }
     #forecastTable table.forecast-compact thead > tr:last-child > *, #forecastTable table.forecast-compact thead > tr:first-child > [rowspan] { border-bottom-width: 1px; }
     #forecastTable table.forecast-compact tbody td { background-image: linear-gradient(var(--tint, transparent), var(--tint, transparent)); }
@@ -467,8 +468,8 @@
     #forecastTable tr.now-row { --tint: rgba(29,111,214,.14); }
     #forecastTable tr.now-row td.col-date { box-shadow: inset 3px 0 0 #1d6fd6; }
     #forecastTable td.col-sun { font-size: .92em; line-height: 1.2; color: #334; }
-    #forecastTable .sun-ev.ev-dawn, #forecastTable .sun-ev.ev-dusk { color: #8a6d1f; }
-    #forecastTable .sun-ev.ev-sunrise, #forecastTable .sun-ev.ev-sunset { color: #b4530a; font-weight: 600; }
+    #forecastTable .sun-ev.ev-dawn, #forecastTable .sun-ev.ev-dusk { color: #6f5816; }          /* >= 4.6:1 on every row tint (WCAG AA) */
+    #forecastTable .sun-ev.ev-sunrise, #forecastTable .sun-ev.ev-sunset { color: #934207; }
     #forecastTable .sun-ev.ev-moonrise, #forecastTable .sun-ev.ev-moonset { color: #3b4d7a; }
     #forecastTable .moon-phase { color: #3b4d7a; white-space: nowrap; }
     /* Date and Time stay put while the body scrolls sideways (the Time column's offset is the Date column's rendered
@@ -486,8 +487,8 @@
     .forecast-summary .sum-sub { font-weight: 400; color: #5a6b7a; font-size: .9em; }
     .forecast-summary .sum-range, .forecast-summary .sum-hs { font-weight: 600; }
     .forecast-summary .trend { margin-left: .35em; color: #5a6b7a; }
-    .forecast-summary .trend-rising { color: #1a7f37; } .forecast-summary .trend-falling { color: #b4530a; } .forecast-summary .trend-peak { color: #1d6fd6; }
-    .forecast-summary .sum-sun { color: #b4530a; } .forecast-summary .sum-moon { color: #3b4d7a; }
+    .forecast-summary .trend-rising { color: #1a7f37; } .forecast-summary .trend-falling { color: #934207; } .forecast-summary .trend-peak { color: #1a66c6; }
+    .forecast-summary .sum-sun { color: #934207; } .forecast-summary .sum-moon { color: #3b4d7a; }
     .forecast-summary tbody tr:hover td { background-color: rgba(0,0,0,.04); }
     @container fwbody (min-width: 1500px) { .forecast-summary table { font-size: 13.5px; } }
     #graphs .chart-box { position: relative; height: 260px; margin-bottom: 12px; }

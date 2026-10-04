@@ -867,6 +867,7 @@
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
             clear: function () {                                              // a failed load leaves nothing of the last forecast (G22 B-7, R-A9, R-A10)
+              revealedFor = null;                                             // the station's table is gone: reveal it again when it comes back (G24 B-8)
               clearNode(els.table); setMeta(null); graphs.setData(null);
               if (els.summary) clearNode(els.summary); summaryAvail = false; applyPanels();
               text(els.cycle, ''); if (els.cycle) els.cycle.title = '';
@@ -891,7 +892,8 @@
               else if (d.error) showError(String(d.error), null);
               else showError(null, null);
               graphs.setData(d.graph_data);
-              applyPanels(); placeSticky();
+              applyPanels();
+              if (!d.table_html) revealedFor = null;                           // an error answer: the next table is revealed again (G24 B-8)
               if (d.table_html && st.station !== revealedFor) {                 // once per station or point landing, not on a unit / zone change
                 revealedFor = st.station; revealPending = true; panelScroll = {};
                 if (panelKey() === 'summary') { els.body.scrollTop = 0; els.body.scrollLeft = 0; }   // another station's summary from its first day
@@ -921,6 +923,7 @@
       if (els.graphs) els.graphs.hidden = !g;
       if (els.rangeBar) els.rangeBar.hidden = !g;
       if (els.modeBar) els.modeBar.hidden = g || !summaryAvail;
+      if (!els.table.hidden) placeSticky();          // measured whenever the detailed table shows (hidden, it measures 0: G24 B-1)
     }
     // The detailed table, the summary and the graphs share the one scrolling body, and each keeps its own place in it,
     // down and sideways: a panel shown for the first time starts at its top left (the detailed table then goes to the
@@ -933,7 +936,7 @@
       if (swap) leavePanel();
       tableMode = next;
       pressed(els.modeBar, 'data-mode', tableMode);
-      try { session.setItem(TABLE_MODE_KEY, tableMode); } catch (e) {}
+      if (readTableMode(session) !== tableMode) { try { session.setItem(TABLE_MODE_KEY, tableMode); } catch (e) {} }   // written on a choice only
       applyPanels();
       if (swap) enterPanel();
       if (tableMode === 'detailed') revealNow();
@@ -967,7 +970,7 @@
       state.view = next;
       pressed(els.viewBar, 'data-view', state.view);
       var g = state.view === 'Graph';
-      applyPanels(); placeSticky();
+      applyPanels();
       if (swap) enterPanel();                                                    // the graphs from their top the first time
       loader.sync();
       if (!g) revealNow();
@@ -1042,7 +1045,7 @@
       SETTINGS_KEY: SETTINGS_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
-      TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, makeNightShade: makeNightShade, dirTick: dirTick,
+      TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
       createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY,
       POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,

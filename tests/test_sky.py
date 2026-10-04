@@ -98,18 +98,34 @@ def test_every_event_lands_once_in_the_row_whose_slot_holds_it():
     assert sum(1 for r in late for e in r["events"] if e["kind"] == "sunrise") >= 9       # 3-hourly rows keep them
 
 
-def test_the_state_is_the_suns_altitude_at_the_rows_own_time():
-    """Honolulu, 3 Oct 2026 (USNO): first light 6:02, sunrise 6:24, sunset 6:18 PM, last light 6:40 PM. A row is
-    daylight when its time lies between first light and last light, whatever its slot holds: the 6 AM row (which
-    holds first light and sunrise) is night, the 6 PM row (which holds sunset and last light) is day."""
+def test_a_row_partly_in_daylight_is_a_daylight_row():
+    """Owner: "any row at least partially within daylight hours should appear the same as full daylight" (daylight =
+    first light to last light). Honolulu, 3 Oct 2026 (USNO): first light 6:02, sunrise 6:24, sunset 6:18 PM, last
+    light 6:40 PM: the 6 AM row (6:00-7:00, first light at 6:02) and the 6 PM row (last light at 6:40) are daylight;
+    the 5 AM and 7 PM rows are wholly dark."""
     times = [datetime(2026, 10, 3, h) for h in range(24)]
     rows = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu")
-    assert [r["state"] for r in rows] == ["night"] * 7 + ["day"] * 12 + ["night"] * 5
+    assert [r["state"] for r in rows] == ["night"] * 6 + ["day"] * 13 + ["night"] * 5
     assert [e["text"] for e in rows[6]["events"]] == ["◐ 6:02", "☀↑ 6:24"]
     assert [e["text"] for e in rows[18]["events"]] == ["☀↓ 6:18", "◑ 6:40"]
-    assert {r["state"] for r in rows} == {"day", "night"}
-    rows = sky.annotate_rows([datetime(2026, 10, 3, 6, m) for m in (1, 3)], 21.67, -158.12, "Pacific/Honolulu")
-    assert [r["state"] for r in rows] == ["night", "day"]                   # first light (6:02) turns the row
+    # every row holding a sun event is a daylight row (first light makes it one, the others follow it)
+    assert all(r["state"] == "day" for r in rows for e in r["events"] if e["kind"] in sky.SUN_EVENTS)
+
+
+def test_the_minute_of_first_light_and_last_light():
+    """Rows a minute apart around the exact instants: a slot that ends before first light is night, one that holds it
+    is day; a row starting before last light is day, one starting after it night."""
+    import pytz
+    tz = pytz.timezone("Pacific/Honolulu")
+    start = sky.to_utc(tz, datetime(2026, 10, 3, 0))
+    evs = dict((k, u) for u, k in sky.events(21.67, -158.12, start, start + timedelta(hours=24)))
+    dawn = evs["dawn"].astimezone(tz).replace(tzinfo=None, second=0, microsecond=0)    # the minute holding it
+    dusk = evs["dusk"].astimezone(tz).replace(tzinfo=None, second=0, microsecond=0)
+    m = timedelta(minutes=1)
+    rows = sky.annotate_rows([dawn - 2 * m, dawn - m, dawn, dawn + 2 * m], 21.67, -158.12, "Pacific/Honolulu")
+    assert [r["state"] for r in rows] == ["night", "night", "day", "day"]   # [d-2, d-1) and [d-1, d) end before it
+    rows = sky.annotate_rows([dusk - m, dusk, dusk + m, dusk + 2 * m], 21.67, -158.12, "Pacific/Honolulu")
+    assert [r["state"] for r in rows] == ["day", "day", "night", "night"]
 
 
 def test_moon_badge_once_per_night_and_day_first_and_now():
@@ -201,7 +217,8 @@ def test_the_last_row_covers_a_slot_as_long_as_the_step_before_it():
     times = [datetime(2026, 10, 3, 20) + timedelta(hours=3 * k) for k in range(4)]          # 8 PM .. 5 AM
     rows = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu")
     assert [e["kind"] for e in rows[-1]["events"]] == ["dawn", "sunrise"]
-    assert rows[-1]["state"] == "night"                                      # 5 AM is before first light
+    assert rows[-1]["state"] == "day"                                        # its 5-8 AM slot holds first light (6:02)
+    assert [r["state"] for r in rows] == ["night", "night", "night", "day"]
 
 
 def test_day_summary_keeps_the_first_rise_and_the_last_set(monkeypatch):
@@ -216,3 +233,82 @@ def test_day_summary_keeps_the_first_rise_and_the_last_set(monkeypatch):
     monkeypatch.setattr(sky, "events", lambda *a: fake)
     got = sky.day_summary(21.67, -158.12, "Pacific/Honolulu", [d])[d]
     assert got["sunrise"].hour == 1 and got["sunset"].hour == 21 and got["moonrise"].hour == 6
+
+
+# ------------------------------ G24 fix round ------------------------------
+def test_event_texts_say_am_or_pm_when_the_half_day_differs_from_the_rows():
+    """A 3-hourly 11 PM row holding a 12:40 AM moonrise says so (G24 A-10); events in the row's own half of the day
+    keep the short form."""
+    import pytz
+    tz = pytz.timezone("Pacific/Honolulu")
+    times = [datetime(2026, 10, 3, 20) + timedelta(hours=3 * k) for k in range(4)]          # 8 PM, 11 PM, 2 AM, 5 AM
+    rows = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu")
+    assert [e["text"] for e in rows[1]["events"]] == ["☾↑ 12:40 AM"]       # 11 PM row, 4 Oct 00:40
+    assert [e["text"] for e in rows[3]["events"]] == ["◐ 6:02", "☀↑ 6:25"]           # 4 Oct 5 AM row, its own half: no suffix
+    noon = [datetime(2026, 10, 3, 11), datetime(2026, 10, 3, 14)]                            # an 11 AM row holding 1:38 PM
+    r = sky.annotate_rows(noon + [datetime(2026, 10, 3, 17)], 21.67, -158.12, "Pacific/Honolulu")
+    assert [e["text"] for e in r[0]["events"]] == ["☾↓ 1:38 PM"]
+    assert all(" AM" not in e["text"] and " PM" not in e["text"]
+               for row in sky.annotate_rows([datetime(2026, 10, 3, h) for h in range(24)], 21.67, -158.12, "Pacific/Honolulu")
+               for e in row["events"])                                           # hourly rows: never needed
+
+
+@pytest.mark.parametrize("day, hour, name", [
+    (3, 19, "Waning crescent"),     # 46 % (USNO: Waning Crescent): last quarter was 03:25 that morning, 15.6 h before
+    (9, 19, "New moon"),            # 10.8 h before the new moon (10-10 15:50 UTC)
+    (10, 19, "Waxing crescent"),    # 13.2 h after it
+    (17, 19, "First quarter"),      # 11.2 h before the first quarter (10-18 16:12 UTC)
+    (18, 19, "Waxing gibbous"),     # 12.8 h after it
+])
+def test_moon_names_follow_usno_principal_phases_within_12_hours(day, hour, name):
+    """G24 A-3: a principal phase names the moon only within 12 h of its instant; the eight glyphs keep their eighths."""
+    import pytz
+    u = sky.to_utc(pytz.timezone("Pacific/Honolulu"), datetime(2026, 10, day, hour))
+    assert sky.moon_at(u, 21.67)["name"] == name
+
+
+def test_moon_glyph_is_not_mirrored_on_the_equator():
+    u = datetime(2026, 1, 15, 2, 0, tzinfo=timezone.utc)
+    assert sky.moon_at(u, 0.0)["glyph"] == sky.moon_at(u, 21.0)["glyph"] == "\U0001F318"
+    assert sky.moon_at(u, -0.01)["glyph"] == "\U0001F312"
+
+
+def test_day_summary_refuses_what_the_event_search_refuses():
+    """G24 A-5: a span the search refuses (> 20 days) gives None, not rows labelled midnight sun / polar night."""
+    assert sky.day_summary(21.67, -158.12, "Pacific/Honolulu", [date(2026, 10, 3), date(2026, 10, 30)]) is None
+    assert sky.day_summary(21.67, -158.12, "Pacific/Honolulu", [date(2026, 10, 3), date(2026, 10, 19)]) is not None
+
+
+def test_day_summary_moon_is_taken_at_last_light():
+    """G24 B-3: the day's moon at nightfall (last light), the evening the detailed table's badge describes."""
+    import pytz
+    tz = pytz.timezone("Pacific/Honolulu")
+    d = date(2026, 10, 4)
+    got = sky.day_summary(21.67, -158.12, "Pacific/Honolulu", [d])[d]
+    want = sky.moon_at(sky.to_utc(tz, got["dusk"]), 21.67)
+    assert abs(got["moon"]["illumination"] - want["illumination"]) < 0.002 and got["moon"]["pct"] == want["pct"]
+
+
+def test_now_is_the_row_whose_half_open_slot_holds_it():
+    import pytz
+    tz = pytz.timezone("Pacific/Honolulu")
+    times = [datetime(2026, 10, 3, h) for h in range(6)]
+    at = sky.to_utc(tz, datetime(2026, 10, 3, 3))                           # exactly on the 3 AM row's start
+    rows = sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu", now_utc=at)
+    assert [i for i, r in enumerate(rows) if r["now"]] == [3]
+
+
+def test_the_last_sunset_before_the_polar_night_is_found():
+    """Longyearbyen (USNO's one-day service, fetched by G24 reviewer A): the last sunset before the 2026-27 polar night is
+    26 Oct 2026 at 12:09 (none after it); the first sunrise after the 2025-26 polar night is 15 Feb 2026 at 11:57 (set
+    12:28), then 16 Feb at 11:14. The polar transitions are where the search skips ahead (ephem raises there)."""
+    import pytz
+    tz = pytz.timezone("Arctic/Longyearbyen")
+    lat, lon = 78.22, 15.65
+    evs = sky.events(lat, lon, datetime(2026, 10, 20, tzinfo=timezone.utc), datetime(2026, 11, 5, tzinfo=timezone.utc))
+    sets = [sky.local_naive(u, tz) for u, k in evs if k == "sunset"]
+    assert sets[-1].strftime("%m-%d %H:%M") == "10-26 12:09"
+    assert not [u for u, k in evs if k in ("sunrise", "sunset") and sky.local_naive(u, tz).date() > date(2026, 10, 26)]
+    evs = sky.events(lat, lon, datetime(2026, 2, 10, tzinfo=timezone.utc), datetime(2026, 2, 20, tzinfo=timezone.utc))
+    got = [(sky.local_naive(u, tz).strftime("%m-%d %H:%M"), k) for u, k in evs if k in ("sunrise", "sunset")]
+    assert got[:3] == [("02-15 11:57", "sunrise"), ("02-15 12:28", "sunset"), ("02-16 11:14", "sunrise")]

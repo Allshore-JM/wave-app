@@ -793,8 +793,10 @@
     var session = opts.storage || safeStorage('sessionStorage'), local = opts.settings || safeStorage('localStorage');
     var initial = opts.initial || {}, swanStations = initial.swan_stations || [];
     var state = resolveInitialState((win.location && win.location.search) || '', readJson(local, SETTINGS_KEY), initial);
-    // the table's Detailed | Summary mode (plan section 35): the tab's own preference, never in the address bar
+    // the table's Detailed | Summary mode (plan section 35): the tab's own preference, never in the address bar; each
+    // mode keeps its own scroll position (the summary opens at its top, the detailed table where it was left)
     var tableMode = readTableMode(session), summaryAvail = false, revealPending = false, revealedFor = null;
+    var modeScroll = { detailed: null, summary: null };
     var fw = new FloatingWindow({ el: els.win, header: els.header, handle: els.handle, storage: session, win: win,
       onMode: function (m) {
         if (els.min) { els.min.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); els.min.setAttribute('aria-label', m === 'min' ? 'Expand forecast' : 'Minimise forecast'); els.min.textContent = m === 'min' ? '▴' : '–'; }
@@ -889,7 +891,7 @@
               else showError(null, null);
               graphs.setData(d.graph_data);
               applyPanels(); placeSticky();
-              if (d.table_html && st.station !== revealedFor) { revealedFor = st.station; revealPending = true; }   // once per station or point landing, not on a unit / zone change
+              if (d.table_html && st.station !== revealedFor) { revealedFor = st.station; revealPending = true; modeScroll = { detailed: null, summary: null }; }   // once per station or point landing, not on a unit / zone change
               revealNow();
               syncSelects();
               // the page's other parts (the model overlay's valid-time zone and run line) follow the forecast on screen
@@ -917,10 +919,13 @@
       if (els.modeBar) els.modeBar.hidden = g || !summaryAvail;
     }
     function setTableMode(m) {
-      tableMode = m === 'summary' ? 'summary' : 'detailed';
+      var next = m === 'summary' ? 'summary' : 'detailed', swap = next !== tableMode && state.view === 'Table' && summaryAvail;
+      if (swap) modeScroll[tableMode] = els.body.scrollTop;                  // the table being left keeps its place
+      tableMode = next;
       pressed(els.modeBar, 'data-mode', tableMode);
       try { session.setItem(TABLE_MODE_KEY, tableMode); } catch (e) {}
       applyPanels();
+      if (swap) els.body.scrollTop = modeScroll[tableMode] || 0;            // the summary from its top the first time
       if (tableMode === 'detailed') revealNow();
     }
     // The sticky Time column sits right of the sticky Date column: its left offset is the Date column's rendered width

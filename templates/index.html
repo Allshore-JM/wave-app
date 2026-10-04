@@ -377,6 +377,15 @@
     }
     .fw-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #eee; flex-wrap: wrap; }
     .fw-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; -webkit-overflow-scrolling: touch; container-type: inline-size; container-name: fwbody; }
+    /* The forecast window's body has no top or side padding: the frozen header and the sticky Date / Time columns sit
+       at offset 0 (Chromium paints a sticky table header at a negative offset short of the scroll box's padding: the
+       scrolled rows showed through a few pixels above it). The spacing goes to the parts around the table. */
+    .forecast-win .fw-body { padding: 0 0 8px; }
+    .forecast-win .fw-body > #fwNote, .forecast-win .fw-body > #fwError, .forecast-win .fw-body > #forecastMeta,
+    .forecast-win .fw-body > #forecastSummary, .forecast-win .fw-body > #graphs { margin-left: 10px; margin-right: 10px; }
+    .forecast-win .fw-body > #fwNote, .forecast-win .fw-body > #fwError { margin-top: 8px; }
+    .forecast-win #forecastMeta { padding-top: 8px; }
+    #forecastTable > .text-muted { padding: 8px 10px; }
     .fw-meta { color: #5a6b7a; font-size: .85rem; margin-bottom: 6px; }
     .fw-resize:focus-visible { outline: 2px solid #1d6fd6; outline-offset: -2px; }
     /* the window touched last is on top: the forecast window over the live-buoy window (z 2000) once touched */
@@ -391,7 +400,7 @@
     .fw-edge-ne { top: 0; right: 0; width: 10px; height: 10px; cursor: nesw-resize; }
     .fw-edge-nw { top: 0; left: 0; width: 10px; height: 10px; cursor: nwse-resize; }
     .fw-edge-sw { bottom: 0; left: 0; width: 10px; height: 10px; cursor: nesw-resize; }
-    @media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-min) .fw-body { margin: 0 5px 5px; } }   /* kept when maximised: the table cap includes it */
+    @media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-min) .fw-body { margin: 0 5px 5px; } }   /* kept when maximised */
     .fw-resize {
       position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; z-index: 6;
       background: linear-gradient(135deg, transparent 50%, #b0bac4 50%, #b0bac4 60%, transparent 60%, transparent 75%, #b0bac4 75%);
@@ -428,7 +437,7 @@
       #forecastTable table.forecast-compact { font-size: 13.5px; }
       #forecastTable table.forecast-compact td, #forecastTable table.forecast-compact th { padding: 3px 6px; }
     }
-    #forecastTable thead { position: sticky; top: -8px; z-index: 2; }
+    #forecastTable thead { position: sticky; top: 0; z-index: 2; }
     #forecastTable thead th,
     #forecastTable thead td {
       background-color: #fff;  /* opaque default; colored headers keep their inline bg */

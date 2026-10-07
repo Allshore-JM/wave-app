@@ -77,6 +77,8 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert "'allshore:forecast'" in body and "overlay.opts.tz = lastTz" in body and "tz: lastTz" in body   # G16: the zone follows the window, first mount included
         assert '"https://frames.example/gfswave/0p25/v1"' in body           # trailing slash stripped
         assert "var VERSION = %s;" % json.dumps(A.OVERLAY_ASSET_VERSION) in body
+        assert "version: VERSION" in body                                    # the module serves its illustrations at its version
+        assert 'aria-label="Model overlay"' in body and "Model overlay <select" not in body   # no visible heading (section 37)
         assert GATED.search(body) is not None, name
         # removing the gated block gives back exactly the golden page
         assert GATED.sub("", body, count=1) == old["body"], name
@@ -117,9 +119,12 @@ def test_asset_route_versioning_headers_and_containment(monkeypatch):
     assert r.headers["Content-Type"].startswith("text/html")                # the site's default 404, not a JSON one
     assert r.get_data() == c.get("/no/such/path").get_data()
     _on(monkeypatch)
-    for name, ct in (("overlay.js", "application/javascript"), ("overlay.css", "text/css")):
+    for name, ct in (("overlay.js", "application/javascript"), ("overlay.css", "text/css"), ("snail.png", "image/png"),
+                     ("fish.png", "image/png"), ("shark.png", "image/png")):
         r = c.get("/overlay/%s?v=%s" % (name, v))
         assert r.status_code == 200 and r.headers["Content-Type"].startswith(ct)
+        if name.endswith(".png"):
+            assert r.get_data()[:8] == b"\x89PNG\r\n\x1a\n", name
         assert r.headers["Cache-Control"] == "public, max-age=31536000, immutable"
         assert r.headers["CDN-Cache-Control"] == "max-age=31536000"
         assert r.headers["X-Content-Type-Options"] == "nosniff"
@@ -128,8 +133,9 @@ def test_asset_route_versioning_headers_and_containment(monkeypatch):
         assert r304.headers["Cache-Control"] == "public, max-age=31536000, immutable"
         assert r304.headers["CDN-Cache-Control"] == "max-age=31536000"
     for bad_v in ("", "?v=", "?v=1", "?v=" + v + "x", "?v=2.0.4"):          # any other version: 404 nobody may cache
-        r = c.get("/overlay/overlay.js" + bad_v)
-        assert r.status_code == 404 and r.headers["Cache-Control"] == "no-store", bad_v
+        for name in ("overlay.js", "fish.png"):
+            r = c.get("/overlay/" + name + bad_v)
+            assert r.status_code == 404 and r.headers["Cache-Control"] == "no-store", (name, bad_v)
     for bad in ("../app.py", "app.py", "overlay.js/../../app.py", "nope.js"):
         assert c.get("/overlay/" + bad + "?v=" + v).status_code == 404
 
@@ -141,10 +147,30 @@ def test_asset_version_bumped_with_the_assets():
     h = hashlib.sha256()
     for name in ("overlay.js", "overlay.css"):
         h.update(open(os.path.join(STATIC, name), "rb").read().replace(b"\r\n", b"\n"))
+    for name in OVERLAY_IMAGES:                                               # binary: hashed raw (the PNG signature holds \r\n)
+        h.update(open(os.path.join(STATIC, name), "rb").read())
+    assert sorted(A._OVERLAY_ASSETS) == sorted(("overlay.js", "overlay.css") + OVERLAY_IMAGES), "every served overlay asset is pinned"
     pinned = json.load(open(os.path.join(HERE, "fixtures", "overlay_assets.json"), encoding="utf-8"))
     assert pinned["version"] == A.OVERLAY_ASSET_VERSION, "OVERLAY_ASSET_VERSION changed: update tests/fixtures/overlay_assets.json"
     assert pinned["sha256"] == h.hexdigest(), ("static_overlay/* changed: bump OVERLAY_ASSET_VERSION in app.py and "
-                                              "update tests/fixtures/overlay_assets.json (version + sha256)")
+                                              "update tests/fixtures/overlay_assets.json (version + sha256 of the js, the css "
+                                              "and the three PNGs)")
+
+
+OVERLAY_IMAGES = ("snail.png", "fish.png", "shark.png")
+
+
+def test_speed_illustrations_are_small_transparent_square_pngs():
+    """The owner's art for the speed selector (section 37): RGBA PNGs, square, small enough for an immutable
+    first-load fetch of three icons."""
+    import struct
+    for name in OVERLAY_IMAGES:
+        raw = open(os.path.join(STATIC, name), "rb").read()
+        assert raw[:8] == b"\x89PNG\r\n\x1a\n", name
+        w, h, depth, ctype = struct.unpack(">IIBB", raw[16:26])
+        assert w == h and 96 <= w <= 256, (name, w, h)
+        assert ctype == 6 or b"tRNS" in raw, (name, "no transparency")
+        assert len(raw) < 60000, (name, len(raw))
 
 
 def test_overlay_js_syntax_and_contract_strings():
@@ -157,10 +183,13 @@ def test_overlay_js_syntax_and_contract_strings():
                    "smoothBlock", "'pagehide'", "_pendingRestore",
                    "FlowAnimator", "'ovAnimPane'", "flowField", "leaflet-zoom-hide",
                    "FIXED_OPACITY",
-                   "frameAtHour", "'live since '", "next update about ",
+                   "frameAtHour", "'Updated: '", "'Next Update: '", "'expected shortly'", "'a newer run is available'",
+                   "SPEED_ANIMALS", "'snail.png'", "'fish.png'", "'shark.png'", "'listbox'", "'option'", "ov-playing", "speedOf",
                    "World_Hillshade", "mixBlendMode", "coastEdges", "_syncLook"):
         assert needle in js, needle
-    for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind"):   # owner 2026-09-26: no settings row
+    for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row
+                 "'live since '", "next update about ", "'First frame'", "'Previous frame'", "'Next frame'", "'Last frame'",
+                 "[0.5, 1, 2, 4]"):                                                                    # section 37: one play button, animals
         assert gone not in js, gone
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:

@@ -259,7 +259,9 @@ def _live_stations_edge_ttl() -> int:
 # ---------------------------------------------------------------------------------------------
 OVERLAY_ASSET_VERSION = "2.14.0"           # bump on every change to static_overlay/* (immutable URLs)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
-_OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css"}
+_OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
+                   # the speed selector's illustrations (plan section 37; the owner's art)
+                   "snail.png": "image/png", "fish.png": "image/png", "shark.png": "image/png"}
 
 
 def _model_overlays_enabled() -> bool:
@@ -297,8 +299,9 @@ def _versioned_asset(directory: str, assets: dict, name: str, version: str):
 
 @app.route("/overlay/<name>")
 def overlay_asset(name):
-    """The overlay's two static files, immutable at a versioned URL (?v=): only while the feature is
-    on, and only for the version this build ships (any other ?v is a 404 nothing may cache)."""
+    """The overlay's static files (the module, its stylesheet and the speed selector's three illustrations),
+    immutable at a versioned URL (?v=): only while the feature is on, and only for the version this build
+    ships (any other ?v is a 404 nothing may cache)."""
     if not _model_overlays_enabled() or name not in _OVERLAY_ASSETS:
         abort(404)                                            # the same default 404 the site gives any unknown path
     return _versioned_asset(_OVERLAY_DIR, _OVERLAY_ASSETS, name, OVERLAY_ASSET_VERSION)

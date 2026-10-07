@@ -206,9 +206,11 @@ environment variables are set on the web service:
   byte-identical to the pre-feature page (`tests/test_overlay_flag.py` replays a golden capture).
 - `MODEL_FRAMES_BASE` - public URL of the frame bucket prefix, e.g. `https://<host>/gfswave/0p25/v1`.
 
-The browser talks to the bucket directly; the Flask worker only serves two immutable assets
-(`/overlay/overlay.js?v=...` and `/overlay/overlay.css?v=...`). Bump `OVERLAY_ASSET_VERSION` in `app.py`
-on every change under `static_overlay/` (any other `?v` is a 404 that is never cached).
+The browser talks to the bucket directly; the Flask worker only serves five immutable assets
+(`/overlay/overlay.js?v=...`, `/overlay/overlay.css?v=...` and the speed selector's `snail.png`, `fish.png`, `shark.png`,
+all at the same `?v=`). Bump `OVERLAY_ASSET_VERSION` in `app.py` on every change under `static_overlay/` (any other `?v`
+is a 404 that is never cached); `tests/fixtures/overlay_assets.json` pins the version to a hash of all five files (the
+PNGs hashed raw; `.gitattributes` marks them binary).
 
 Frames come from `tools/model_frames` (GitHub Actions `model-frames.yml`, cron every 10 minutes, plus manual
 dispatch with `steps` / `dry_run` / `force`): NOAA open S3 byte-range GRIB records -> eccodes -> 8-bit PNG
@@ -265,7 +267,8 @@ field never waits for its direction frame (the particles join when it lands); la
 together. Frames are immutable, so a second loop costs nothing. Frames are decoded without a canvas
 where the browser has DecompressionStream.
 Overlay state (asset 2.7.6): the chosen layer, its valid time and whether it was playing are kept in the tab's
-sessionStorage (`allshore.overlay.v1`, with the playback speed), so picking another forecast
+sessionStorage (`allshore.overlay.v1`, with the playback speed: 1x / 2x / 4x, shown as a snail / fish / shark; a 0.5x
+from an older save plays at 1x), so picking another forecast
 point (a page reload) brings the overlay back where it was. The time and play state come only from a save under 30
 minutes old, counted from when the page was left (hiding or leaving the page refreshes the save, paused or not), never
 under the viewer's reduced-motion setting, and a hidden tab resumes when shown. The restore starts after the load
@@ -295,9 +298,10 @@ at 0.5 degrees only). Data per full 209-frame loop with Animation on (scaled fro
 + direction about 53 MB on desktops at the default zoom, 85 MB zoomed in; 30 MB on phones at the default zoom, 62 MB zoomed
 in to 7.5 and 85 MB beyond; wind + wind direction 59 MB (119 MB past zoom 7.5). A 1x loop takes about 105 s (the hourly
 first five days at 2 h/s, then 6 h/s). The timeline is laid out by time (+120 h at 31 % of the track) and snaps to a frame
-in the direction of travel. The panel's run line says when the run went live and when the next is expected ("live since
-1:07 PM HST · next update about 7:10 PM HST": one cycle after this run's own publish time), in the computer's own time
-zone (asset 2.10.1). On phones the sheet's header line leads with the forecast hour, then the valid time, and
+in the direction of travel. The panel's metadata lines give the run ("Run: 2026-10-07 06Z (UTC)", with the forecast
+table's run when it differs), when it went live ("Updated: 1:33 AM HST") and when the next is expected ("Next Update: about
+7:35 AM HST": one cycle after this run's own publish time; "expected shortly" once due; "a newer run is available" with the
+Update banner), in the computer's own time zone (asset 2.14.0; was one "live since … · next update about …" line). On phones the sheet's header line leads with the forecast hour, then the valid time, and
 shows a pending seek ("+213 h → +9 h loading…"). A direction is shown only for the step on the map: a step change clears the animation until that step's
 direction frame has landed, so an older direction is never drawn under a newer time. The flow is built as vectors on
 the model's nodes (the field value under the node times its FROM direction; the direction is the spectral peak's, NOAA
@@ -325,6 +329,16 @@ Simpler panel (asset 2.12.2, owner 2026-09-26): no Opacity / Contours / Animatio
 under the timeline), and the page's +/- zoom buttons are
 removed by the gated overlay block (`map.removeControl(map.zoomControl)`; the wheel, pinch, double-click and keyboard still
 zoom, the Home button stays); with the overlay flag unset the page is unchanged.
+Panel redesign (asset 2.14.0, owner 2026-10-07, plan section 37): the control is ivory with navy text and teal controls in the
+logo's palette (14 px corners, up to 340 px wide on desktops); the "Model overlay" heading is gone (the select keeps it as its
+accessible name) and the head row shows the model's name from the manifest ("NOAA/NCEP GFS-Wave (WAVEWATCH III)"). One
+play / pause button sits beside the timeline (no first / previous / next / last buttons). The playback speed is an
+illustrated selector: a button with the chosen animal (the owner's art: snail 1x, fish 2x, shark 4x; 0.5x dropped) opening a
+listbox of the three, keyboard-operable (arrows, Home / End, Enter / Space, Escape, Tab), closed by a press outside; the
+speeds appear only in tooltips and accessible names. While playing, the chosen animal bobs (snail) or swings its tail (fish,
+shark); not under reduced motion. The legend strip is taller with clearer labels (the colours and tick positions are
+unchanged). On phones the sheet opens with its details when 40 % of the map is at least 110 px (else the one-line summary,
+as before), with the model's name in the details.
 Coastline clip (asset 2.7.6): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for

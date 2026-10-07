@@ -1127,7 +1127,23 @@
   });
 
   // ---- playback helpers (pure; tested in Node) ----
-  var SPEEDS = [0.5, 1, 2, 4], BASE_FPS = 2;                 // 1x = 2 frames/s (owner default)
+  var SPEEDS = [1, 2, 4], BASE_FPS = 2;                      // 1x = 2 frames/s (owner default); 0.5x dropped (owner, 2026-10-07)
+  // The speed selector shows animals, never numbers (plan section 37): the speeds live in the tooltips and accessible names.
+  var SPEED_ANIMALS = [
+    { speed: 1, name: 'Snail', file: 'snail.png', title: 'Snail: 1\u00d7 speed' },
+    { speed: 2, name: 'Fish', file: 'fish.png', title: 'Fish: 2\u00d7 speed' },
+    { speed: 4, name: 'Shark', file: 'shark.png', title: 'Shark: 4\u00d7 speed' }
+  ];
+  function animalOf(speed) { for (var i = 0; i < SPEED_ANIMALS.length; i++) if (SPEED_ANIMALS[i].speed === speed) return SPEED_ANIMALS[i]; return SPEED_ANIMALS[0]; }
+  // A saved speed that is not offered any more (0.5 from an older save, anything odd) plays at 1x.
+  function speedOf(v) { return SPEEDS.indexOf(v) >= 0 ? v : 1; }
+  // The module's own version (the page passes it; the script URL's ?v= is the fallback): the illustrations are served
+  // immutable beside the module and only at the exact version.
+  var SCRIPT_VERSION = (function () {
+    try { var src = typeof document !== 'undefined' && document.currentScript && document.currentScript.src, m = src && /[?&]v=([^&#]+)/.exec(src); return m ? decodeURIComponent(m[1]) : ''; }
+    catch (e) { return ''; }
+  })();
+  function assetUrl(opts, file) { var v = (opts && opts.version) || SCRIPT_VERSION; return '/overlay/' + file + (v ? '?v=' + encodeURIComponent(v) : ''); }
   var RING_AHEAD = 2, RING_BEHIND = 2, MAX_DECODED = 5, MAX_INFLIGHT = 2;
   var RUN_CHECK_MS = 30 * 60 * 1000;                         // newer run -> banner only, never an automatic switch
   var RETRY_AFTER_MS = 60 * 1000;                            // a transient fetch failure keeps a frame out for this long
@@ -1665,14 +1681,14 @@
     try { return new Intl.DateTimeFormat(undefined, opts).format(d); } catch (e) { return d.toISOString().slice(11, 16) + ' UTC'; }
   }
   var CYCLE_MS = 6 * 3.6e6;                                // a new model cycle every 6 h
-  // When this run went live, and when the next one is expected: one cycle later with this run's own publish lag
-  // (published_utc + 6 h), rounded up to 5 minutes; null without a usable publish time.
+  // When this run went live ("Updated:"), and when the next one is expected ("Next Update:"): one cycle later with this
+  // run's own publish lag (published_utc + 6 h), rounded up to 5 minutes; null without a usable publish time.
   function runTimes(m, now, newer) {
     var run = Date.parse(m.run_utc), pub = Date.parse(m.published_utc);
     if (!isFinite(run) || !isFinite(pub) || pub < run) return null;
     var next = Math.ceil((pub + CYCLE_MS) / 3e5) * 3e5, status = newer ? 'newer' : next <= now ? 'shortly' : 'about';
-    return { status: status, next: next, text: 'live since ' + localClock(pub, now) + ' · ' +
-      (status === 'newer' ? 'a newer run is available' : status === 'shortly' ? 'next update expected shortly' : 'next update about ' + localClock(next, now)) };
+    return { status: status, next: next, updated: localClock(pub, now),
+      nextText: status === 'newer' ? 'a newer run is available' : status === 'shortly' ? 'expected shortly' : 'about ' + localClock(next, now) };
   }
 
   // ---- controller ----
@@ -1692,7 +1708,7 @@
     this.coast = opts.coast ? coastStore(this.root + '/static/coast/v1') : null;
     var s = saved();
     this.relief = null; this._base = 'imagery'; this._reliefFailed = 0;   // opts.baseLayer: the page's imagery (the wind swaps it)
-    this.speed = SPEEDS.indexOf(s.speed) >= 0 ? s.speed : 1;
+    this.speed = speedOf(s.speed);
     // Contours (wave height, period) and the particle animation (every field) are always on (owner, 2026-09-26: no
     // checkboxes); the animation stays off under a reduced-motion setting and on runs without direction data.
     this.contours = true;
@@ -2113,6 +2129,7 @@
   };
   Overlay.prototype.unmount = function () {
     var self = this;
+    this._closeMenus();
     this.field = null;                                     // first: the pause below must not save the layer as still on
     this.pause();
     this.abortAll();
@@ -2131,6 +2148,7 @@
     this.cache.clear(); this.dcache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null;
     this.field = null; this.frameIndex = null; this.res = null; this.dres = null; this.last = null; this.collapsed = undefined;
     clear(this.opts.panel);
+    if (this.opts.panel && this.opts.panel.classList) this.opts.panel.classList.remove('ov-playing');
   };
   Overlay.prototype._opacityFor = function (field) { return FIXED_OPACITY[field] || FIXED_OPACITY.hs; };
   // The basemap and the model pane's blend follow what is DRAWN: a wind frame on the map -> the relief
@@ -2376,14 +2394,17 @@
     if (this.last && this.layer) this.render(this.last);
     if (this.layer && this.contours) this.layer.setContours(this._contourCfg());   // the interval follows the site unit
   };
-  // The run line's text, in place (no panel rebuild: focus and the sheet's scroll stay).
+  // The run, Updated and Next Update lines, in place (no panel rebuild: focus and the sheet's scroll stay).
   Overlay.prototype._refreshRunLine = function () {
     var ui = this.ui;
     this._runLineAt = Date.now();
     if (!ui || !ui.runText || !this.manifest) return;
     var t = runTimes(this.manifest, Date.now(), !!this.newerRun);
     this._runStatus = t && t.status;
-    ui.runText.nodeValue = ui.runLabel + ' (UTC)' + (t ? ' · ' + t.text : '') + ui.runTail;
+    ui.runText.nodeValue = ui.runLabel + ' (UTC)' + ui.runTail;
+    if (ui.updLine) ui.updLine.hidden = !t;
+    if (ui.nextLine) ui.nextLine.hidden = !t;
+    if (t && ui.updText) { ui.updText.nodeValue = t.updated; ui.nextText.nodeValue = t.nextText; }
   };
   Overlay.prototype._hours = function (entry) { return Math.round((Date.parse(entry.valid_utc) - Date.parse(this.manifest.run_utc)) / 3.6e6); };
   Overlay.prototype._validLocal = function (entry) { return this.opts.fmtTime(entry.valid_utc, this.opts.tz) + ' ' + this.opts.tzAbbr(entry.valid_utc, this.opts.tz); };
@@ -2391,56 +2412,89 @@
     var b = mk('button', 'ov-btn ' + cls, text); b.type = 'button'; b.setAttribute('aria-label', label);
     b.addEventListener('click', onClick); return b;
   }
-  // Builds the panel for a state; frame-by-frame changes only touch the live parts through _syncUI().
-  Overlay.prototype.render = function (st) {
-    this.last = st; this.ui = null;
-    var self = this, host = this._host(), compact = host === this.sheet, m = this.manifest, unit = this.opts.getUnit();
-    var mapH = this._dims().h;
-    clear(host);
-    host.setAttribute('aria-live', 'polite');
-    if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._layoutSheet(); return; }
-    if (st.state === 'error') {
-      var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
-      e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.transientFails = 0; self.mount(self.field); } }));
-      host.appendChild(e); this._layoutSheet(); return;
+  // ---- the speed selector (plan section 37) ----
+  // A button showing the chosen animal and a small chevron; a listbox menu of the three animals with a check on the
+  // chosen one. Keyboard: Arrow keys on the button open it; in the menu the arrows wrap, Home/End, Enter/Space choose,
+  // Escape closes (focus back on the button), Tab closes and moves on. A press anywhere outside closes it (a capture
+  // listener: the map controls stop their events from bubbling). On the phone sheet it opens upward; on a desktop it
+  // flips upward when it would leave the window.
+  function animalImg(el, px) {
+    el.alt = ''; el.width = px; el.height = px;                              // decorative: the button / option carries the name
+    el.setAttribute('draggable', 'false'); el.setAttribute('decoding', 'async');
+  }
+  function speedSelector(ov, compact) {
+    var root = mk('div', 'ov-speed'), btn = mk('button', 'ov-speed-btn'), img = mk('img', 'ov-animal'), menu = mk('div', 'ov-speed-menu');
+    var options = [], docDown = null;
+    btn.type = 'button'; btn.setAttribute('aria-haspopup', 'listbox'); btn.setAttribute('aria-expanded', 'false');
+    animalImg(img, 28); btn.appendChild(img);
+    var chev = mk('span', 'ov-chev', '\u25be'); chev.setAttribute('aria-hidden', 'true'); btn.appendChild(chev);
+    menu.setAttribute('role', 'listbox'); menu.setAttribute('aria-label', 'Playback speed'); menu.hidden = true; menu.tabIndex = -1;
+    SPEED_ANIMALS.forEach(function (a) {
+      var o = mk('div', 'ov-speed-opt'); o.setAttribute('role', 'option'); o.tabIndex = -1;
+      o.setAttribute('data-speed', String(a.speed)); o.setAttribute('aria-label', a.title); o.title = a.title;
+      var oi = mk('img', 'ov-animal'); animalImg(oi, 36); oi.src = assetUrl(ov.opts, a.file); o.appendChild(oi);
+      var ck = mk('span', 'ov-check', '\u2713'); ck.setAttribute('aria-hidden', 'true'); o.appendChild(ck);
+      o.addEventListener('click', function () { choose(a.speed); });
+      menu.appendChild(o); options.push(o);
+    });
+    function selectedIndex() { for (var i = 0; i < SPEED_ANIMALS.length; i++) if (SPEED_ANIMALS[i].speed === ov.speed) return i; return 0; }
+    function sync() {
+      var a = animalOf(ov.speed), src = assetUrl(ov.opts, a.file);
+      if (img.src !== src) img.src = src;
+      btn.setAttribute('data-animal', a.name.toLowerCase());
+      btn.setAttribute('aria-label', 'Speed: ' + a.name + ', ' + a.speed + '\u00d7 speed'); btn.title = a.title;
+      options.forEach(function (o, i) { o.setAttribute('aria-selected', SPEED_ANIMALS[i].speed === a.speed ? 'true' : 'false'); });
     }
-    var field = this.layer.field, f = m.fields[field], fdesc = (m.model && m.model.fields && m.model.fields[field]) || {};
-    var label = fdesc.label || field, modelName = String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0];
-    var cap = Math.floor(mapH * 0.4);
-    if (this.collapsed === undefined) this.collapsed = compact;
-    var collapsed = !!this.collapsed;
-    var head = mk('div', 'ov-row ov-head');
-    var btn = mk('button', 'ov-toggle', collapsed ? '▸' : '▾'); btn.type = 'button';
-    btn.setAttribute('aria-label', collapsed ? 'Show overlay details' : 'Hide overlay details');
-    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
-    btn.addEventListener('click', function () { self.collapsed = !self.collapsed; self.render(st); });
-    head.appendChild(btn);
-    var playHead = button('ov-play', '▶', 'Play', function () { if (self.playing) self.pause(); else self.play(); });
-    head.appendChild(playHead);
-    var title = mk('span', 'ov-title');
-    head.appendChild(title);
-    host.appendChild(head);
-    var ui = this.ui = { title: title, play: [playHead], slider: null, valid: null, unavail: null, label: label, modelName: modelName, collapsed: collapsed, compact: compact };
-    if (compact && cap - host.offsetHeight - 8 < 40) { head.removeChild(btn); collapsed = ui.collapsed = true; }
-    var rt0 = runTimes(m, Date.now(), !!this.newerRun); this._runStatus = rt0 && rt0.status;
-    if (collapsed) { this._syncUI(); this._layoutSheet(); return; }
-    var body = mk('div', 'ov-details'); body.id = 'ovDetails'; body.style.maxHeight = cap + 'px'; host.appendChild(body);
-    // transport + timeline
-    var tr = mk('div', 'ov-row ov-transport');
-    tr.appendChild(button('', '⏮', 'First frame', function () { self.pause(); self.seek(0); }));
-    tr.appendChild(button('', '◀', 'Previous frame', function () { self.step(-1); }));
-    var playMain = button('ov-play', '▶', 'Play', function () { if (self.playing) self.pause(); else self.play(); });
-    ui.play.push(playMain); tr.appendChild(playMain);
-    tr.appendChild(button('', '▶▶', 'Next frame', function () { self.step(1); }));
-    tr.appendChild(button('', '⏭', 'Last frame', function () { self.pause(); self.seek(self.n - 1); }));
-    var speed = mk('select', 'ov-speed'); speed.setAttribute('aria-label', 'Playback speed');
-    SPEEDS.forEach(function (v) { var o = mk('option', null, v + '×'); o.value = String(v); speed.appendChild(o); });
-    speed.value = String(this.speed);
-    speed.addEventListener('change', function () { self.setSpeed(parseFloat(speed.value)); });
-    tr.appendChild(speed);
-    body.appendChild(tr);
-    // The timeline runs in hours (hourly frames to +120 h, then 3-hourly), so its thumb sits where the hour is; a value
-    // between two frames snaps in the direction of travel (frameAtHour).
+    function open(focusIdx) {
+      if (!menu.hidden) return;
+      menu.hidden = false; btn.setAttribute('aria-expanded', 'true');
+      root.classList.remove('ov-up');
+      if (compact) root.classList.add('ov-up');
+      else {
+        try {
+          var r = menu.getBoundingClientRect(), vh = (typeof window !== 'undefined' && window.innerHeight) || 0;
+          if (vh && r.bottom > vh - 4) root.classList.add('ov-up');
+        } catch (e) { /* no layout: stays below */ }
+      }
+      var o = options[focusIdx === undefined ? selectedIndex() : focusIdx];
+      if (o && o.focus) o.focus();
+      docDown = function (e) { if (!root.contains(e.target)) close(false); };
+      document.addEventListener('pointerdown', docDown, true);
+    }
+    function close(refocus) {
+      if (menu.hidden) return;
+      menu.hidden = true; btn.setAttribute('aria-expanded', 'false');
+      if (docDown) { document.removeEventListener('pointerdown', docDown, true); docDown = null; }
+      if (refocus && btn.focus) btn.focus();
+    }
+    function choose(v) { ov.setSpeed(v); sync(); close(true); }
+    btn.addEventListener('click', function () { if (menu.hidden) open(); else close(true); });
+    btn.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault(); e.stopPropagation(); open();
+    });
+    menu.addEventListener('keydown', function (e) {
+      var i = options.indexOf(document.activeElement), n = options.length, k = e.key;
+      if (k === 'ArrowDown') options[(i + 1) % n].focus();
+      else if (k === 'ArrowUp') options[(i - 1 + n) % n].focus();
+      else if (k === 'Home') options[0].focus();
+      else if (k === 'End') options[n - 1].focus();
+      else if (k === 'Enter' || k === ' ') { if (i >= 0) choose(SPEED_ANIMALS[i].speed); }
+      else if (k === 'Escape') close(true);
+      else if (k === 'Tab') { close(false); return; }                      // focus moves on as usual
+      else return;
+      e.preventDefault(); e.stopPropagation();                               // the page's Escape and the map's arrow keys stay out
+    });
+    root.appendChild(btn); root.appendChild(menu); sync();
+    return { root: root, btn: btn, menu: menu, options: options, open: open, close: close, sync: sync, isOpen: function () { return !menu.hidden; } };
+  }
+  Overlay.prototype._closeMenus = function () { if (this.ui && this.ui.speedSel) this.ui.speedSel.close(false); };
+  var SHEET_OPEN_PX = 110;                                   // the phone sheet opens expanded when 40 % of the map is this tall
+  // The timeline beside the play button (step 3 of plan section 37 replaces this range slider with the compass ribbon).
+  // It runs in hours (hourly frames to +120 h, then 3-hourly), so its thumb sits where the hour is; a value between two
+  // frames snaps in the direction of travel (frameAtHour).
+  Overlay.prototype._buildTimeline = function (ui, m) {
+    var self = this;
     var hrs = ui.hours = m.frames.map(function (fr) { return self._hours(fr); });
     var slider = mk('input', 'ov-timeline'); slider.type = 'range'; slider.min = String(hrs[0]); slider.max = String(hrs[hrs.length - 1]); slider.step = '1';
     slider.setAttribute('aria-label', 'Forecast hour');
@@ -2453,26 +2507,56 @@
       slider.value = String(hrs[idx]); slider.setAttribute('aria-valuetext', '+' + hrs[idx] + ' h');
       self.seek(idx);
     });
-    body.appendChild(slider); ui.slider = slider;
-    var valid = mk('div', 'ov-meta'); body.appendChild(valid); ui.valid = valid;
-    var runLine = mk('div', 'ov-meta'); runLine.appendChild(mk('b', null, 'Run: '));
-    var runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z'), pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
-    ui.runTail = pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run' : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '';
-    ui.runLabel = runLabel;
-    ui.runText = runLine.appendChild(document.createTextNode(''));
-    this._refreshRunLine();
-    body.appendChild(runLine);
-    var age = (Date.now() - Date.parse(this.pointer.published_utc)) / 1000;
-    this._staleShown = age > STALE_AFTER_S;
-    if (this._staleShown) body.appendChild(mk('div', 'ov-warn', 'Model overlay data is stale (published ' + Math.round(age / 3600) + ' h ago).'));
-    if (this.newerRun) {
-      var banner = mk('div', 'ov-warn', 'A newer run (' + String(this.newerRun.run).replace(/^(\d{8})(\d{2})$/, '$1 $2Z') + ') is available. ');
-      banner.appendChild(button('ov-update', 'Update', 'Switch to the newer run', function () { self.update(); }));
-      body.appendChild(banner);
+    ui.slider = slider;
+    return slider;
+  };
+  // Builds the panel for a state; frame-by-frame changes only touch the live parts through _syncUI().
+  // Head: the details toggle and the model's name (collapsed: the field and the time on the map). Then #ovDetails: the
+  // transport row (the ONE play/pause button, the timeline, the speed selector; outside the scroll box, so the speed
+  // menu is never clipped) and the scroll box (legend, Run / Updated / Next Update, warnings).
+  Overlay.prototype.render = function (st) {
+    this._closeMenus();
+    this.last = st; this.ui = null;
+    var self = this, host = this._host(), compact = host === this.sheet, m = this.manifest, unit = this.opts.getUnit();
+    var mapH = this._dims().h;
+    clear(host);
+    if (host.classList) host.classList.remove('ov-playing');
+    host.setAttribute('aria-live', 'polite');
+    if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._layoutSheet(); return; }
+    if (st.state === 'error') {
+      var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
+      e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.transientFails = 0; self.mount(self.field); } }));
+      host.appendChild(e); this._layoutSheet(); return;
     }
-    var unavail = mk('div', 'ov-warn'); unavail.hidden = true; body.appendChild(unavail); ui.unavail = unavail;
-    var clipped = !!this.layer._clip;
-    if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
+    var field = this.layer.field, f = m.fields[field], fdesc = (m.model && m.model.fields && m.model.fields[field]) || {};
+    var label = fdesc.label || field, modelName = String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0];
+    var cap = Math.floor(mapH * 0.4);
+    if (this.collapsed === undefined) this.collapsed = compact && cap < SHEET_OPEN_PX;
+    var collapsed = !!this.collapsed;
+    var head = mk('div', 'ov-row ov-head');
+    var btn = mk('button', 'ov-toggle', collapsed ? '▸' : '▾'); btn.type = 'button';
+    btn.setAttribute('aria-label', collapsed ? 'Show overlay details' : 'Hide overlay details');
+    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
+    btn.addEventListener('click', function () { self.collapsed = !self.collapsed; self.render(st); });
+    head.appendChild(btn);
+    var title = mk('span', 'ov-title' + (!compact && !collapsed ? ' ov-model' : ''));
+    head.appendChild(title);
+    host.appendChild(head);
+    var ui = this.ui = { host: host, title: title, play: null, speedSel: null, slider: null, valid: null, unavail: null,
+      runText: null, updText: null, nextText: null, updLine: null, nextLine: null,
+      label: label, modelName: modelName, collapsed: collapsed, compact: compact };
+    if (compact && cap - host.offsetHeight - 8 < 40) { head.removeChild(btn); collapsed = ui.collapsed = true; }
+    var rt0 = runTimes(m, Date.now(), !!this.newerRun); this._runStatus = rt0 && rt0.status;
+    if (collapsed) { this._syncUI(); this._layoutSheet(); return; }
+    var wrap = mk('div', 'ov-body'); wrap.id = 'ovDetails'; host.appendChild(wrap);
+    var tr = mk('div', 'ov-row ov-transport');
+    ui.play = button('ov-play', '▶', 'Play', function () { if (self.playing) self.pause(); else self.play(); });
+    tr.appendChild(ui.play);
+    tr.appendChild(this._buildTimeline(ui, m));
+    ui.speedSel = speedSelector(this, compact); tr.appendChild(ui.speedSel.root);
+    wrap.appendChild(tr);
+    var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
+    var valid = mk('div', 'ov-meta'); body.appendChild(valid); ui.valid = valid;
     // legend over the LEGEND range in the site's units (the encoding range is wider; extremes clamp)
     var leg = mk('div', 'ov-legend'), cv = mk('canvas'); cv.width = 256; cv.height = 1; leg.appendChild(cv);
     var lut = legendBar(field, f.legend), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);        // the bar is laid out by legend position
@@ -2484,12 +2568,32 @@
       s.style.left = (t.pos * 100).toFixed(2) + '%'; ticks.appendChild(s);
     });
     leg.appendChild(ticks); body.appendChild(leg);
-    if (compact) body.insertBefore(leg, valid);             // phones: the legend right under the timeline, inside the short details box
+    // Run (UTC, with the forecast table's run when it differs), Updated and Next Update (the computer's own zone)
+    var line = function (cls, name) { var d = mk('div', 'ov-meta ' + cls); d.appendChild(mk('b', null, name)); body.appendChild(d); return d; };
+    var runLine = line('ov-run', 'Run: '); ui.runText = runLine.appendChild(document.createTextNode(''));
+    ui.updLine = line('ov-upd', 'Updated: '); ui.updText = ui.updLine.appendChild(document.createTextNode(''));
+    ui.nextLine = line('ov-next', 'Next Update: '); ui.nextText = ui.nextLine.appendChild(document.createTextNode(''));
+    var pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
+    ui.runTail = pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run' : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '';
+    ui.runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z');
+    this._refreshRunLine();
+    if (compact) body.appendChild(mk('div', 'ov-meta ov-model', modelName));   // the sheet's head shows the hour instead
+    var age = (Date.now() - Date.parse(this.pointer.published_utc)) / 1000;
+    this._staleShown = age > STALE_AFTER_S;
+    if (this._staleShown) body.appendChild(mk('div', 'ov-warn', 'Model overlay data is stale (published ' + Math.round(age / 3600) + ' h ago).'));
+    if (this.newerRun) {
+      var banner = mk('div', 'ov-warn', 'A newer run (' + String(this.newerRun.run).replace(/^(\d{8})(\d{2})$/, '$1 $2Z') + ') is available. ');
+      banner.appendChild(button('ov-update', 'Update', 'Switch to the newer run', function () { self.update(); }));
+      body.appendChild(banner);
+    }
+    var unavail = mk('div', 'ov-warn'); unavail.hidden = true; body.appendChild(unavail); ui.unavail = unavail;
+    var clipped = !!this.layer._clip;
+    if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
     // (no settings row: fixed opacity, contours and the animation always on; owner, 2026-09-26)
     this._syncUI();
-    // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the details <= cap AND
-    // the top-left control must end above the zoom/Home stack (short windows: the site caps the map at
-    // 48 % of the viewport). Not enough room for a scroll box -> back to the one-line summary.
+    // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the scroll box <= cap AND the top-left
+    // control must end above the zoom/Home stack (short windows: the site caps the map at 48 % of the viewport). Not
+    // enough room for a scroll box -> back to the one-line summary.
     var room;
     if (compact) {
       room = cap - (host.offsetHeight - body.offsetHeight) - 2;
@@ -2498,34 +2602,38 @@
       room = Math.min(cap, mapH - this._stackHeight() - 10 - 10 - chrome - 8);
     }
     if (room < 40) {
-      host.removeChild(body); head.removeChild(btn); this.collapsed = true; ui.collapsed = true;
-      ui.slider = null; ui.valid = null; ui.unavail = null; ui.play = [playHead];
+      ui.speedSel.close(false);
+      host.removeChild(wrap); head.removeChild(btn); this.collapsed = true; ui.collapsed = true;
+      ui.play = null; ui.speedSel = null; ui.slider = null; ui.valid = null; ui.unavail = null;
+      ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
+      if (!compact && title.classList) title.classList.remove('ov-model');
       this._syncUI();
     } else {
       body.style.maxHeight = room + 'px';
     }
     this._layoutSheet();
   };
-  // The live parts: play/pause glyphs, the title, the valid-time line (from the DRAWN frame; a pending
-  // target is announced as loading), the timeline thumb (at the target) and the unavailable-frame note.
+  // The live parts: the play/pause glyph and the playing look (the chosen animal moves), the speed button, the title,
+  // the valid-time line (from the DRAWN frame; a pending target is announced as loading), the timeline thumb (at the
+  // target) and the unavailable-frame note.
   Overlay.prototype._syncUI = function () {
-    var ui = this.ui, self = this;
+    var ui = this.ui;
     if (!ui || !this.manifest || !this.layer) return;
     var drawn = this.layer.entry, pending = this.target !== null && this.target !== this.frameIndex;
     var validLocal = drawn ? this._validLocal(drawn) : '…', hours = drawn ? this._hours(drawn) : null;
-    var glyph = this.playing ? '❚❚' : '▶', name = this.playing ? 'Pause' : 'Play';
-    ui.play.forEach(function (b) { b.textContent = glyph; b.setAttribute('aria-label', name); });
+    if (ui.play) { ui.play.textContent = this.playing ? '❚❚' : '▶'; ui.play.setAttribute('aria-label', this.playing ? 'Pause' : 'Play'); }
+    if (ui.host && ui.host.classList) ui.host.classList.toggle('ov-playing', !!this.playing);
+    if (ui.speedSel) ui.speedSel.sync();
     // The sheet (phones): its header line carries the forecast hour FIRST (a narrow screen clips the end, never
-    // the hour), then the valid time, and a pending seek's hint ("loading", "unavailable"), which the short
-    // details box cannot show; the field's name is in the select above the map.
+    // the hour), then the valid time, and a pending seek's hint ("loading", "unavailable"); the field's name is in the
+    // select above the map. Desktops: the model's name, or (collapsed) the field and the time on the map.
     if (ui.compact) {
       var th = pending ? this._hours(this.manifest.frames[this.target]) : null;
       ui.title.textContent = hours === null ? '…' : pending
         ? '+' + hours + ' h → +' + th + ' h ' + (this._isUnavailable(this.target) ? 'unavailable' : 'loading…')
         : '+' + hours + ' h · ' + validLocal;
     } else {
-      ui.title.textContent = ui.collapsed ? ui.label + ' · ' + validLocal + (hours === null ? '' : ' (+' + hours + ' h)')
-        : ui.label + ' — ' + ui.modelName;
+      ui.title.textContent = ui.collapsed ? ui.label + ' · ' + validLocal + (hours === null ? '' : ' (+' + hours + ' h)') : ui.modelName;
     }
     if (ui.valid) {
       clear(ui.valid);
@@ -2570,6 +2678,7 @@
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
       ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk,
       frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes, TimelineState: TimelineState,
+      SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector, SHEET_OPEN_PX: SHEET_OPEN_PX,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
       forecastSpanText: forecastSpanText, RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX,
       RIBBON_DAY_MIN_PX: RIBBON_DAY_MIN_PX }

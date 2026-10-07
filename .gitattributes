@@ -1,0 +1,5 @@
+# Binary assets: never rewrite their line endings (the overlay asset pin hashes the PNGs raw).
+*.png binary
+*.webp binary
+*.jpg binary
+*.ico binary

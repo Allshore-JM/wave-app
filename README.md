@@ -303,7 +303,8 @@ hour ticks at 00/06/12/18, thinned when the scale is small), scroll under a fixe
 above it with its weekday ("Sun, Oct 11 · 7 AM HST"; while a frame loads it names the REQUESTED time with "loading…", or "unavailable" when that
 frame is missing, the picture staying on the frame drawn). Drag or swipe the ribbon (it follows the finger one to one and snaps
 to the nearest real frame; a tap picks the frame under the finger), scroll it sideways with the wheel, or use the keys on it
-(arrows one frame, Home / End, PageUp / PageDown a day). Every scrub pauses playback and goes through the ordinary seek, so
+(arrows one available frame, Home / End the first / last available frame, PageUp / PageDown a day; manual navigation stops
+at the ends, only playback loops). Every scrub pauses playback and goes through the ordinary seek, so
 obsolete fetches are cancelled and a late answer never replaces a newer choice. A thin overview slider beneath it spans the
 whole run (it snaps to a frame in the direction of travel); the run's length is not shown (owner). The panel's
 metadata lines give the run ("Run: 2026-10-07 06Z (UTC)", with the forecast
@@ -346,7 +347,12 @@ listbox of the three, keyboard-operable (arrows, Home / End, Enter / Space, Esca
 speeds appear only in tooltips and accessible names. While playing, the chosen animal bobs (snail) or swings its tail (fish,
 shark); not under reduced motion. The legend strip is taller with clearer labels (the colours and tick positions are
 unchanged). On phones the sheet opens with its details when 40 % of the map is at least 110 px (else the one-line summary,
-as before), with the model's name in the details.
+as before), with the model's name in the details. Asset 2.14.1 (test-site fixes): the keys stop at the first and last
+available frames; a field switch while a scrubbed frame is still loading keeps the requested time (Retry still goes back to
+the frame on the map); a pinned first-day label is dropped unless the next date is at least 60 px away; and the panel follows
+window resizes and rotations by watching the window and the map container (the page has Leaflet re-read the map size before
+`invalidateSize()`, so the map's own `resize` event does not fire there; before this the sheet stayed a sheet on a window
+grown to desktop size, and the attribution width and frame resolution did not follow either).
 Coastline clip (asset 2.7.6): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for

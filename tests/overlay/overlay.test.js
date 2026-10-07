@@ -314,6 +314,17 @@ test('nextAvailable skips unavailable frames, wraps, and reports when nothing is
   assert.equal(I.nextAvailable(5, -1, 81, un(new Set([4]))), 3);
   assert.equal(I.nextAvailable(5, 1, 81, un(new Set(Array.from({ length: 81 }, (_, i) => i)))), null);
   assert.equal(I.nextAvailable(5, 1, 81, un(new Set(Array.from({ length: 81 }, (_, i) => i).filter(i => i !== 5)))), null);   // never i itself
+  // manual navigation (plan section 37): stepAvailable never wraps; from -1 / n it finds the first / last available frame
+  const S = I.stepAvailable, none = un(new Set());
+  assert.equal(S(5, 1, 81, none), 6); assert.equal(S(5, -1, 81, none), 4);
+  assert.equal(S(80, 1, 81, none), null, 'the last frame: no wrap to the first');
+  assert.equal(S(0, -1, 81, none), null, 'the first frame: no wrap to the last');
+  assert.equal(S(5, 1, 81, un(new Set([6, 7]))), 8); assert.equal(S(5, -1, 81, un(new Set([4]))), 3);
+  assert.equal(S(78, 1, 81, un(new Set([79, 80]))), null, 'only unavailable frames ahead: nothing');
+  assert.equal(S(-1, 1, 81, un(new Set([0, 1]))), 2, 'the first available frame');
+  assert.equal(S(81, -1, 81, un(new Set([80]))), 79, 'the last available frame');
+  assert.equal(S(-1, 1, 81, none), 0); assert.equal(S(81, -1, 81, none), 80);
+  assert.equal(S(-1, 1, 3, () => true), null);
   const m = { frames: [0, 3, 6, 9].map(h => ({ step: h, valid_utc: `2026-09-22T${String(12 + h).padStart(2, '0')}:00:00Z` })) };
   assert.equal(I.nearestIndex(m, Date.parse('2026-09-22T16:20:00Z')), 1);
   assert.equal(I.nearestIndex(m, Date.parse('2026-09-22T16:40:00Z')), 2);
@@ -526,6 +537,19 @@ test('ribbonLayout: day labels at the local midnights across a month boundary, t
   // a run starting at 11 PM local: the pinned "Oct 6" would sit on top of "Oct 7" one hour later, so it is dropped
   const N = I.ribbonLayout(framesAt('2026-10-07T09:00:00Z', HOURS_81), '2026-10-07T09:00:00Z', 'Pacific/Honolulu', 4);
   assert.equal(N.days[0].text, 'Oct 7'); assert.equal(N.days[0].x, 4); assert.equal(N.days[0].clamped, false);
+});
+
+test('ribbonLayout: the pinned first-day label goes when the next midnight is under 60 px away (two-digit dates never touch)', () => {
+  assert.equal(I.RIBBON_DAY_MIN_PX, 60);
+  // UTC zone, a 12Z run at 3.86 px/h: midnight 46 px in; "Oct 12" pinned at x 0 (3 px in, ~33 px wide) would touch the
+  // centred "Oct 13" (step-4 finding F3)
+  const U = I.ribbonLayout(framesAt('2026-10-12T12:00:00Z', HOURS_81), '2026-10-12T12:00:00Z', 'UTC', 3.86);
+  assert.deepEqual([U.days[0].text, U.days[0].clamped], ['Oct 13', false]);
+  // 15 h before midnight = 57.9 px: dropped; 16 h = 61.8 px: kept
+  const a = I.ribbonLayout(framesAt('2026-10-12T09:00:00Z', HOURS_81), '2026-10-12T09:00:00Z', 'UTC', 3.86);
+  assert.equal(a.days[0].text, 'Oct 13');
+  const b = I.ribbonLayout(framesAt('2026-10-12T08:00:00Z', HOURS_81), '2026-10-12T08:00:00Z', 'UTC', 3.86);
+  assert.deepEqual([b.days[0].text, b.days[0].clamped, b.days[1].text], ['Oct 12', true, 'Oct 13']);
 });
 
 test('ribbonLayout: a clock change gives a 23-hour and a 25-hour day, with the ticks still on the local clock hours', () => {

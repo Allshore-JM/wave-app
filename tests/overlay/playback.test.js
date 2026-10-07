@@ -993,6 +993,67 @@ test('section 37: _ribbonKey steps one available frame, jumps to the ends and pa
   assert.equal(o3._ribbonKey('ArrowRight'), false, 'nothing mounted');
 }));
 
+test('section 37 (step-4 F1): manual navigation stops at the first and last AVAILABLE frames; playback still wraps', () => onRunDay(async () => {
+  const w = world();
+  const o = await mounted(w, A); await w.releaseAll();
+  o.seek(80); await settle(); await w.releaseAll(); assert.equal(o.frameIndex, 80);
+  assert.equal(o._ribbonKey('ArrowRight'), true); await settle(); await w.releaseAll();
+  assert.equal(o.frameIndex, 80, 'no wrap to the first frame'); assert.equal(o.target, 80);
+  o.seek(0); await settle(); await w.releaseAll(); assert.equal(o.frameIndex, 0);
+  assert.equal(o._ribbonKey('ArrowLeft'), true); await settle(); await w.releaseAll();
+  assert.equal(o.frameIndex, 0, 'no wrap to the last frame'); assert.equal(o.target, 0);
+  // the first and the last two frames unavailable: the keys stop at the first / last frame that exists
+  for (const i of [0, 79, 80]) o.unavailable[o._key(i)] = true;
+  o.seek(78); await settle(); await w.releaseAll();
+  o._ribbonKey('ArrowRight'); await settle(); await w.releaseAll(); assert.equal(o.frameIndex, 78);
+  o._ribbonKey('Home'); assert.equal(o.target, 1, 'Home: the first available frame'); await settle(); await w.releaseAll(); assert.equal(o.frameIndex, 1);
+  o._ribbonKey('ArrowLeft'); await settle(); await w.releaseAll(); assert.equal(o.frameIndex, 1);
+  o._ribbonKey('End'); assert.equal(o.target, 78, 'End: the last available frame'); await settle(); await w.releaseAll(); assert.equal(o.frameIndex, 78);
+  o.seek(74); await settle(); await w.releaseAll();
+  o._ribbonKey('PageUp'); assert.equal(o.target, 78, '+24 h is past the run, whose last frames are missing: the last available one');
+  await settle(); await w.releaseAll();
+  o.seek(8); await settle(); await w.releaseAll();
+  o._ribbonKey('PageDown'); assert.equal(o.target, 1, '-24 h = the missing first frame: the nearest available one, never a wrap');
+  await settle(); await w.releaseAll();
+  // playback is unchanged: from the last frame it goes on to the first
+  o.unavailable = {};
+  o.seek(80); await settle(); await w.releaseAll();
+  o.play(); assert.equal(o.target, 0, 'playback wraps from the last frame to the first'); o.pause();
+  o.unmount(); await w.releaseAll();
+}));
+
+test('section 37 (step-4 F2): a field switch or an Update while a scrubbed frame is loading keeps the REQUESTED time', () => onRunDay(async () => {
+  const M = withTp('2026092212', '2026-09-22T12:00:00Z', 12);
+  const w = world(); w.manifests[B.run] = B;
+  const o = await mounted(w, M); await w.releaseAll();
+  const i0 = o.frameIndex;
+  o._scrubTo(i0 + 9); await settle();                          // beyond the ring: fetched now, its decode held
+  assert.equal(o.target, i0 + 9); assert.equal(o.frameIndex, i0, 'still loading');
+  o.mount('tp'); await settle(); await w.releaseAll();
+  assert.equal(o.field, 'tp'); assert.equal(o.frameIndex, i0 + 9, 'the requested time, not the drawn one');
+  o._scrubTo(i0 + 12); await settle(); assert.equal(o.frameIndex, i0 + 9);
+  o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.field, 'hs'); assert.equal(o.frameIndex, i0 + 12);
+  o._scrubTo(i0 + 15); await settle(); assert.equal(o.frameIndex, i0 + 12);
+  w.pointer = ptr(B); o.newerRun = w.pointer; o.update(); await settle(); await w.releaseAll();
+  assert.equal(o.manifest.run, B.run);
+  assert.equal(o.layer.entry.valid_utc, M.frames[i0 + 15].valid_utc.replace('.000Z', 'Z'), 'Update: the requested time on the new run');
+  clearInterval(o.runTimer); o.unmount(); await w.releaseAll();
+}));
+
+test('section 37 (step-4 F2): a field switch before a reload\'s first frame has landed still restores the saved time and play state', async () => {
+  const M = withTp('2026092212', '2026-09-22T12:00:00Z', 12), t5 = Date.parse(M.frames[5].valid_utc);
+  const storage = memStore({ field: 'hs', t: t5, playing: true, at: Date.now() }), w = world({ storage });
+  w.pointer = ptr(M); w.manifests[M.run] = M;
+  const o = w.create();
+  o.mount('hs', true); await settle();                          // the manifest is in; the restored frame is decoding
+  assert.equal(o.target, 5); assert.equal(o.frameIndex, null);
+  o.mount('tp'); await settle(); await w.releaseAll();
+  assert.equal(o.field, 'tp'); assert.equal(o.playing, true, 'the saved play state survives the switch');
+  assert.ok(o.frameIndex === 5 || o.frameIndex === 6, 'restored at the saved frame (playback starts by stepping on): ' + o.frameIndex);
+  done(o); await w.releaseAll();
+});
+
 test('section 37: _ribbonLabel gives the requested time while loading and the drawn one after; unavailable keeps the picture', () => onRunDay(async () => {
   const w = world();
   const o = await mounted(w, A);

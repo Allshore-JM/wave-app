@@ -23,6 +23,8 @@ Element.prototype.appendChild = function (c) {
   if (this._text && !this.children.length && this.tagName !== '#TEXT') { const t = this.doc.createTextNode(this._text); this._text = ''; append0.call(this, t); }
   return append0.call(this, c);
 };
+// and removeAttribute (the fake has none)
+Element.prototype.removeAttribute = function (k) { this.attrs.delete(k); };
 // and insertBefore (the fake has none): before ref, or at the end without one
 Element.prototype.insertBefore = function (c, ref) {
   if (!ref) return this.appendChild(c);
@@ -533,13 +535,97 @@ test('resize (step-4 F4): the window and the map container are watched besides t
   dims = { w: 1200, h: 800 }; mapL.resize.forEach((f) => f());
   assert.equal(renders, 3); assert.equal(w.container.querySelector('.ov-sheet'), null); assert.ok(w.panel.querySelector('#ovDetails'));
   ros[0].cb(); await wait(150); assert.equal(renders, 3, 'the observer reporting a size already handled: nothing');
-  // a desktop height change re-measures the ribbon without a rebuild
+  // a desktop HEIGHT change re-renders (the room for the details follows the map's height: G26 B-1) ...
   dims = { w: 1200, h: 700 }; ros[0].cb(); await wait(150);
-  assert.deepEqual([renders, measures], [3, 1]);
+  assert.deepEqual([renders, measures], [4, 0]);
+  // ... a width-only change (the panel's width is fixed) re-measures the ribbon without a rebuild
+  dims = { w: 1180, h: 700 }; ros[0].cb(); await wait(150);
+  assert.deepEqual([renders, measures], [4, 1]);
   // Off: every watcher removed and a pending report dropped
   dims = { w: 800, h: 600 }; winL.resize[0]();
   w.ov.unmount();
   assert.equal(winL.resize.length, 0); assert.equal(winL.orientationchange.length, 0); assert.equal(ros[0].disconnected, true);
   assert.equal((mapL.resize || []).length, 0);
-  await wait(150); assert.deepEqual([renders, measures, checks], [3, 1, 4]);
+  await wait(150); assert.deepEqual([renders, measures, checks], [4, 1, 5]);
 });
+
+// ---- G26 fix round (step 6) ----
+test('G26 A-P2-2: a tap whose finger rolls 2 px just before lifting stays on the tapped frame (the queued rAF scrub is dropped at the release)', async () => withClock(async () => {
+  const w = world(); w.ov.render({ state: 'ready' });
+  const ui = w.ov.ui, rb = ui.ribbon, seeks = []; w.ov.seek = (i) => { seeks.push(i); w.ov.target = i; };
+  rb.rect = { left: 100, top: 0, width: ui.ribbonW, height: 40 };
+  const px = ui.layout.pxPerHour, centre = 100 + ui.ribbonW / 2;
+  dispatch(rb, 'pointerdown', { clientX: centre + 9 * px });
+  dispatch(rb, 'pointermove', { clientX: centre + 9 * px + 2 });
+  dispatch(rb, 'pointerup', { clientX: centre + 9 * px + 2 });
+  assert.equal(seeks[seeks.length - 1], 6, 'the tap picked the frame under the finger (+18 h)');
+  await wait(60);                                                            // the rAF queued by the 2-px move has fired by now
+  assert.deepEqual(seeks, [6], 'nothing after the release'); assert.equal(w.ov.target, 6); assert.equal(ui.rb.offset, ui.layout.xs[6]);
+}));
+
+test('G26 A-P2-3: a gesture the browser cancels (or a lost capture) is never a tap: it stays on the frame it started from', () => withClock(() => {
+  for (const ev of ['pointercancel', 'lostpointercapture']) {
+    const w = world(); w.ov.render({ state: 'ready' });
+    const ui = w.ov.ui, rb = ui.ribbon, seeks = []; w.ov.seek = (i) => { seeks.push(i); w.ov.target = i; };
+    rb.rect = { left: 100, top: 0, width: ui.ribbonW, height: 40 };
+    const px = ui.layout.pxPerHour, centre = 100 + ui.ribbonW / 2;
+    dispatch(rb, 'pointerdown', { clientX: centre + 9 * px, clientY: 20 });
+    dispatch(rb, ev, { clientX: centre + 9 * px + 2, clientY: 60 });
+    assert.deepEqual(seeks.filter((s) => s !== 3), [], ev + ': no jump to the frame under the finger (' + JSON.stringify(seeks) + ')');
+    assert.equal(ui.rb.offset, ui.layout.xs[3], ev + ': the ribbon snaps back to its frame');
+  }
+  const css = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.css'), 'utf8');
+  assert.match(css, /\.ov-ribbon \{[^}]*touch-action: none/, 'nothing scrolls under the ribbon: the browser never takes a swipe on it');
+}));
+
+test('G26 B-1: on a desktop the room for the details is measured from where the control starts in the map (below the brand)', () => withClock(() => {
+  const H = { 'ov-row ov-head': 30, 'ov-row ov-transport': 62, 'ov-overview': 14, 'ov-details': 120 };
+  const sized = (w, top) => {
+    const create0 = w.doc.createElement.bind(w.doc);
+    const height = function () { if (H[this.className] !== undefined) return H[this.className]; let s = 0; for (const c of this.children || []) s += c.offsetHeight || 0; return s; };
+    w.doc.createElement = (tag) => { const el = create0(tag); Object.defineProperty(el, 'offsetHeight', { configurable: true, get: height, set() {} }); return el; };
+    Object.defineProperty(w.ctl, 'offsetHeight', { configurable: true, get() { return w.panel.children.reduce((s, c) => s + (c.offsetHeight || 0), 0) + 12; }, set() {} });
+    w.ctl.rect = { left: 10, top: 50 + top, width: 340, height: 1 }; w.container.rect = { left: 0, top: 50, width: 1200, height: 900 };   // the map 50 px down the page
+    w.ov._stackHeight = () => 200;
+    return w;
+  };
+  // the control starts 80 px down (the brand above it): 470 - 200 - 10 - 80 - 8 = 172 px; the control without details 118 -> 54
+  const a = sized(world({ dims: { w: 1200, h: 470 } }), 80); a.ov.render({ state: 'ready' });
+  assert.equal(a.panel.querySelector('.ov-details').style.maxHeight, '54px');
+  // 420 px: 4 px left for the details -> they go; the transport row fits (4 px to spare)
+  const b = sized(world({ dims: { w: 1200, h: 420 } }), 80); b.ov.render({ state: 'ready' });
+  assert.equal(b.panel.querySelector('.ov-details'), null); assert.ok(b.panel.querySelector('.ov-transport')); assert.equal(headPlay(b.panel), null);
+  // 400 px: not even the transport row -> one line with the play button in the head
+  const c = sized(world({ dims: { w: 1200, h: 400 } }), 80); c.ov.render({ state: 'ready' });
+  assert.equal(c.panel.querySelector('#ovDetails'), null); assert.ok(headPlay(c.panel));
+  // the old assumption (a control 10 px from the top) would have kept the details at 420 px (74 px) and 400 px (54 px)
+  const d = sized(world({ dims: { w: 1200, h: 420 } }), 10); d.ov.render({ state: 'ready' });
+  assert.equal(d.panel.querySelector('.ov-details').style.maxHeight, '74px', 'a control 10 px down: room as before');
+}));
+
+test('G26 B-2: folding and unfolding with the keyboard keeps the focus on the toggle; a click from elsewhere does not steal it', () => withClock(() => {
+  const w = world(); w.ov.render({ state: 'ready' });
+  w.panel.querySelector('.ov-toggle').focus(); w.panel.querySelector('.ov-toggle').dispatch('click');
+  assert.equal(w.ov.collapsed, true); assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-toggle'), 'folded: focus on the new toggle');
+  w.panel.querySelector('.ov-toggle').dispatch('click');
+  assert.equal(w.ov.collapsed, false); assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-toggle'), 'unfolded: still there');
+  const other = w.doc.createElement('button'); w.doc.body.appendChild(other); other.focus();
+  w.panel.querySelector('.ov-toggle').dispatch('click'); assert.equal(w.doc.activeElement, other);
+}));
+
+test('G26 A-P3-5: only the loading / error states and the warning lines are live regions (the time changes every frame while playing)', () => withClock(() => {
+  const w = world();
+  w.ov.render({ state: 'loading' }); assert.equal(w.panel.getAttribute('aria-live'), 'polite');
+  w.ov.render({ state: 'ready' }); assert.equal(w.panel.getAttribute('aria-live'), null, 'the ready panel is not live');
+  assert.equal(w.ov.ui.unavail.getAttribute('aria-live'), 'polite', 'the unavailable-frames note is');
+  w.ov.render({ state: 'error', message: 'x' }); assert.equal(w.panel.getAttribute('aria-live'), 'polite');
+}));
+
+test('G26 A-P3-3: the speed button names its listbox (aria-controls); ArrowUp from the listbox itself goes to the last option', () => withClock(() => {
+  const w = world(); w.ov.render({ state: 'ready' });
+  const btn = w.panel.querySelector('.ov-speed-btn'), menu = w.panel.querySelector('.ov-speed-menu');
+  assert.equal(menu.id, 'ovSpeedMenu'); assert.equal(btn.getAttribute('aria-controls'), 'ovSpeedMenu');
+  btn.dispatch('click'); menu.focus();
+  dispatch(menu, 'keydown', { key: 'ArrowUp' });
+  const opts = all(menu, '[role="option"]'); assert.equal(w.doc.activeElement, opts[opts.length - 1]);
+}));

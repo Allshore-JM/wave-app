@@ -361,7 +361,15 @@ for the details (a phone turned sideways, a short window) the details go and the
 with no room for that either, or when the viewer folds the panel, the one play button sits in the head row instead (as the
 old panel's head button did); a fold for lack of room is never saved, and until the viewer uses the toggle the size decides
 at every render (a phone turned upright opens up again); a new sheet takes its place beside the zoom column before its
-ribbon is measured (else the pointer and the label could disagree by hours after a resize).
+ribbon is measured (else the pointer and the label could disagree by hours after a resize). Asset 2.14.5 (the G26 fixes,
+record `docs/reviews/overlays-G26-adversarial.md`): a day label wherever the local date changes, so a clock change AT
+midnight (the Azores, Havana, Santiago, Beirut, Cairo) neither drops a day nor labels one twice; a tap whose finger rolls a
+pixel before lifting is no longer undone by the scrub queued for the next frame; a gesture the browser cancels is never a
+tap, and the ribbon takes no browser panning (`touch-action: none`); on desktops the room for the details is measured from
+where the control really starts (below the brand), and a height change re-renders the panel; the toggle keeps the
+keyboard focus through a fold; only the loading / error states and the warning lines are live regions; the run line
+refreshes once a minute; the speed button names its listbox; an empty or unknown zone reads as the computer's own (as the
+page's clock); the coral pointer has a solid navy edge (3:1 on the cream ribbon); 24 px+ toggle and slider on touch.
 Coastline clip (asset 2.7.6): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for

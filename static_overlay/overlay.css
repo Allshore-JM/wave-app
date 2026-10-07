@@ -44,7 +44,7 @@
 .ov-ribbon-now { display: flex; justify-content: center; font-weight: 600; font-size: 12px; line-height: 1.3; color: #1d2b4f; white-space: nowrap; }
 .ov-ribbon-state { font-weight: 400; color: #8a5300; margin-left: 4px; }
 .ov-ribbon { position: relative; height: 40px; overflow: hidden; background: #fff6df; border: 1px solid #0f8f8c; border-radius: 6px;
-  touch-action: pan-y; cursor: grab; outline: none;
+  touch-action: none; cursor: grab; outline: none;   /* nothing scrolls under it: a vertical swipe must not become a cancelled tap (G26 A-P2-3) */
   -webkit-mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent); mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent); }
 .ov-ribbon:active { cursor: grabbing; }
 .ov-ribbon:focus-visible { box-shadow: inset 0 0 0 2px #0f8f8c; }
@@ -54,9 +54,10 @@
 .ov-rb-tick { position: absolute; bottom: 2px; transform: translateX(-50%); font-size: 9px; line-height: 1; color: #1d2b4f; padding-top: 8px; }
 .ov-rb-tick::before { content: ""; position: absolute; left: 50%; top: 0; width: 1px; height: 6px; background: #0f8f8c; }
 .ov-rb-major::before { top: -4px; height: 10px; width: 2px; margin-left: -1px; }
-.ov-ribbon-line { position: absolute; left: 50%; top: 6px; bottom: 0; width: 2px; margin-left: -1px; background: #ff6b5a; box-shadow: 0 0 0 1px rgba(29,43,79,0.35); pointer-events: none; }
+.ov-ribbon-line { position: absolute; left: 50%; top: 6px; bottom: 0; width: 2px; margin-left: -1px; background: #ff6b5a; box-shadow: 0 0 0 1px #1d2b4f; pointer-events: none; }
 .ov-ribbon-pointer { position: absolute; left: 50%; top: 0; width: 0; height: 0; margin-left: -7px; border-left: 7px solid transparent; border-right: 7px solid transparent;
-  border-top: 8px solid #ff6b5a; filter: drop-shadow(0 1px 0 rgba(29,43,79,0.45)); pointer-events: none; }
+  border-top: 8px solid #ff6b5a; filter: drop-shadow(1px 0 0 #1d2b4f) drop-shadow(-1px 0 0 #1d2b4f) drop-shadow(0 1px 0 #1d2b4f); pointer-events: none; }
+/* the coral pointer and line carry a solid navy edge: the edge gives the 3:1 contrast on the cream ribbon (G26 A-P3-1) */
 /* the overview beneath the ribbon: a thin slider across the whole run */
 .ov-overview { margin: 3px 0 2px; }
 .ov-timeline { display: block; width: 100%; height: 14px; margin: 0; accent-color: #0f8f8c; cursor: pointer; }
@@ -86,7 +87,8 @@
 .ov-playing .ov-speed-btn[data-animal="shark"] .ov-animal { transform-origin: 72% 50%; animation: ov-sway 1.1s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .ov-animal { animation: none !important; } }
 @media (pointer: coarse) { .ov-play, .ov-speed-btn { min-width: 40px; min-height: 40px; } .ov-speed-opt { min-height: 44px; }
-  .ov-head .ov-play { width: 40px; height: 40px; min-width: 40px; } }
+  .ov-head .ov-play { width: 40px; height: 40px; min-width: 40px; }
+  .ov-toggle { min-width: 28px; min-height: 28px; } .ov-timeline { height: 24px; } }   /* >= 24 px targets (G26 A-P3-4) */
 
 /* the legend: a taller strip and clearer labels (the colours and the tick positions are the module's, unchanged) */
 .ov-legend { margin-top: 6px; }

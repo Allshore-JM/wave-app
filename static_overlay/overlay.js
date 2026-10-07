@@ -1593,20 +1593,24 @@
   var RIBBON_DAY_MIN_PX = 60;
   var RIBBON_TAP_PX = 4;                                     // a press that moves less than this is a tap, not a drag
   // Local calendar parts in a zone, through one cached Intl formatter (en-US: fixed short month names, "7 AM" clocks).
-  // An unknown zone reads as UTC; without Intl at all, UTC by hand. Never throws.
+  // An empty or unknown zone reads as the COMPUTER's zone, as the page's own clock (fmtTimeInTz) does, so the weekday and
+  // the clock of a line can never come from two zones (G26 A-P3-2); without Intl at all, the computer's clock by hand.
+  // Never throws.
   var FMT_CACHE = {};
   function ribbonFormatter(tz) {
-    if (FMT_CACHE[tz || 'UTC']) return FMT_CACHE[tz || 'UTC'];
-    var out = buildFormatter(tz); FMT_CACHE[tz || 'UTC'] = out; return out;
+    var key = tz || '';
+    if (FMT_CACHE[key]) return FMT_CACHE[key];
+    var out = buildFormatter(tz); FMT_CACHE[key] = out; return out;
   }
   function buildFormatter(tz) {
-    var f = null, zone = tz || 'UTC';
+    var f = null, zone = 'local';
     var o = { hourCycle: 'h23', weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
-    try { f = new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: zone }, o)); }
-    catch (e) { zone = 'UTC'; try { f = new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: 'UTC' }, o)); } catch (e2) { f = null; } }
+    try { f = new Intl.DateTimeFormat('en-US', tz ? Object.assign({ timeZone: tz }, o) : o); }
+    catch (e) { try { f = new Intl.DateTimeFormat('en-US', o); } catch (e2) { f = null; } }
+    try { if (f) zone = f.resolvedOptions().timeZone || zone; } catch (e3) { /* the name only */ }
     function parts(ms) {
       var d = new Date(ms);
-      if (!f) return { y: d.getUTCFullYear(), mo: MONTHS[d.getUTCMonth()], d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes(), wd: WEEKDAYS[d.getUTCDay()] };
+      if (!f) return { y: d.getFullYear(), mo: MONTHS[d.getMonth()], d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), wd: WEEKDAYS[d.getDay()] };
       var got = {}, p = f.formatToParts(d);
       for (var i = 0; i < p.length; i++) got[p[i].type] = p[i].value;
       return { y: +got.year, mo: got.month, d: +got.day, h: (+got.hour) % 24, mi: +got.minute, wd: got.weekday };   // some engines print "24" at midnight
@@ -1647,12 +1651,16 @@
     var last = Date.parse(frames[n - 1].valid_utc), width = xs[n - 1];
     var gap = minGap === undefined ? RIBBON_MIN_TICK_GAP : minGap;
     var every = 6 * pxPerHour >= gap ? 6 : 12 * pxPerHour >= gap ? 12 : 24;
-    var days = [], ticks = [];
+    // A day label where the local DATE changes, not at "00:00": a clock change AT midnight gives a day without 00:00
+    // (its label goes at the day's first hour) or a 00:00 twice (one label, one tick; G26 A-P2-1: Azores, Havana,
+    // Santiago, Beirut, Cairo).
+    var days = [], ticks = [], prevDay = null, prevTick = null;
     for (t = localMidnightBefore(t0, fmt); t <= last; t += 3.6e6) {
       var p = fmt.parts(t), x = (t - t0) / 3.6e6 * pxPerHour;
       if (p.mi) { t += (60 - p.mi) * 60000 - 3.6e6; continue; }   // a half-hour clock change (Lord Howe): back onto the local hours
-      if (p.h === 0) days.push({ x: Math.max(0, x), text: p.mo + ' ' + p.d, ms: t, clamped: x < 0 });
-      if (x >= 0 && p.h % every === 0) ticks.push({ x: x, text: fmt.tick(t), major: p.h === 0, ms: t });
+      var day = p.mo + ' ' + p.d;
+      if (day !== prevDay) { days.push({ x: Math.max(0, x), text: day, ms: t, clamped: x < 0 }); prevDay = day; }
+      if (x >= 0 && p.h % every === 0 && day + ' ' + p.h !== prevTick) { ticks.push({ x: x, text: fmt.tick(t), major: p.h === 0, ms: t }); prevTick = day + ' ' + p.h; }
     }
     if (days.length > 1 && days[0].clamped && days[1].x < RIBBON_DAY_MIN_PX) days.shift();
     return { xs: xs, hours: hours, width: width, days: days, ticks: ticks, pxPerHour: pxPerHour, every: every,
@@ -1783,6 +1791,8 @@
       self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
       self._ensureFlow();
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
+      // "Next Update: about …" turns into "expected shortly" on an idle panel too (G26 A-P3-7): once a minute, in place
+      if (!self.lineTimer) self.lineTimer = setInterval(function () { if (self.ui && self.ui.runText) self._refreshRunLine(); }, 60000);
       return self._goto(idx, sig).catch(function (err) {
         // the chosen first frame is missing: show the next one that exists rather than nothing
         if (!(err && err.unavailable) || (sig && sig.aborted)) throw err;
@@ -2120,7 +2130,7 @@
     // The page sizes #map by script and has Leaflet re-read the size before invalidateSize(), so the map's own 'resize'
     // event does not fire on a window resize or a rotation: the window and the container are watched as well (as the
     // map tools do), and each new size is handled once.
-    this._sizeKey = this._sizeOf();
+    this._sizeKey = this._sizeOf(); this._sizeH = this._dims().h;
     this._onWinSize = function () {
       if (self._sizeTimer) clearTimeout(self._sizeTimer);
       self._sizeTimer = setTimeout(function () { self._sizeTimer = null; self._onSize(); }, 100);
@@ -2132,13 +2142,15 @@
   // A new map size: the attribution's width, the frame resolution, and the panel (rebuilt only when it has to move between
   // the control and the sheet, or when it is the sheet: its cap follows the map height; else the ribbon is re-measured).
   Overlay.prototype._onSize = function () {
-    var key = this._sizeOf();
+    var key = this._sizeOf(), h = this._dims().h;
     if (key === this._sizeKey) return;                       // the map's event, the window and the observer report one change
-    this._sizeKey = key;
+    var hChanged = this._sizeH !== undefined && h !== this._sizeH;
+    this._sizeKey = key; this._sizeH = h;
     this._sizeAttribution(); this._checkRes();
     if (!this.last) return;
     var compactNow = this.isCompact(), wasCompact = !!this.sheet;
-    if (compactNow !== wasCompact || this.sheet) this.render(this.last); else { this._ribbonMeasure(); this._syncUI(); this._layoutSheet(); }
+    // a desktop height change re-renders too: the room for the details (and the fold) follows the map's height (G26 B-1)
+    if (compactNow !== wasCompact || this.sheet || hChanged) this.render(this.last); else { this._ribbonMeasure(); this._syncUI(); this._layoutSheet(); }
   };
   Overlay.prototype._unbindSize = function () {
     if (this._onWinSize && window.removeEventListener) { window.removeEventListener('resize', this._onWinSize); window.removeEventListener('orientationchange', this._onWinSize); }
@@ -2175,6 +2187,7 @@
     this.pause();
     this.abortAll();
     if (this.runTimer) { clearInterval(this.runTimer); this.runTimer = null; }
+    if (this.lineTimer) { clearInterval(this.lineTimer); this.lineTimer = null; }
     if (this._onVis) { document.removeEventListener('visibilitychange', this._onVis); this._onVis = null; }
     if (this._onHide) { if (window.removeEventListener) window.removeEventListener('pagehide', this._onHide); this._onHide = null; }
     this._pendingRestore = null;
@@ -2427,6 +2440,14 @@
     var corners = this.map._controlCorners, el = corners && corners.bottomleft;
     return el && el.offsetWidth ? el.offsetWidth : 45;
   };
+  // The control's top within the map (the brand control sits above it in the same corner); 10 px when there is no layout.
+  Overlay.prototype._ctlTop = function (ctl) {
+    try {
+      var a = ctl.getBoundingClientRect(), b = this.map.getContainer().getBoundingClientRect();
+      if (a && b && a.height > 0 && isFinite(a.top - b.top)) return Math.max(0, a.top - b.top);
+    } catch (e) { /* no layout */ }
+    return 10;
+  };
   Overlay.prototype._stackHeight = function () {
     var corners = this.map._controlCorners, el = corners && corners.bottomleft;
     return el && el.offsetHeight ? el.offsetHeight : 120;
@@ -2485,6 +2506,7 @@
     animalImg(img, 28); btn.appendChild(img);
     var chev = mk('span', 'ov-chev', '\u25be'); chev.setAttribute('aria-hidden', 'true'); btn.appendChild(chev);
     menu.setAttribute('role', 'listbox'); menu.setAttribute('aria-label', 'Playback speed'); menu.hidden = true; menu.tabIndex = -1;
+    menu.id = 'ovSpeedMenu'; btn.setAttribute('aria-controls', 'ovSpeedMenu');   // one panel at a time (G26 A-P3-3)
     SPEED_ANIMALS.forEach(function (a) {
       var o = mk('div', 'ov-speed-opt'); o.setAttribute('role', 'option'); o.tabIndex = -1;
       o.setAttribute('data-speed', String(a.speed)); o.setAttribute('aria-label', a.title); o.title = a.title;
@@ -2532,7 +2554,7 @@
     menu.addEventListener('keydown', function (e) {
       var i = options.indexOf(document.activeElement), n = options.length, k = e.key;
       if (k === 'ArrowDown') options[(i + 1) % n].focus();
-      else if (k === 'ArrowUp') options[(i - 1 + n) % n].focus();
+      else if (k === 'ArrowUp') options[i < 0 ? n - 1 : (i - 1 + n) % n].focus();
       else if (k === 'Home') options[0].focus();
       else if (k === 'End') options[n - 1].focus();
       else if (k === 'Enter' || k === ' ') { if (i >= 0) choose(SPEED_ANIMALS[i].speed); }
@@ -2611,9 +2633,14 @@
       var idx = rb.move(e.clientX); if (idx === null) return;
       self._placeRibbon(); if (idx !== lastIdx) { lastIdx = idx; queueScrub(idx); }
     });
+    // Lift-off: a press that moved < 4 px is a tap on the frame under the finger, a drag snaps to the nearest frame. A
+    // scrub still queued for the next frame is dropped first, or it would land after the release with the pre-release
+    // frame and undo a tap (G26 A-P2-2). A gesture the browser CANCELS (or a lost capture) is never a tap: it snaps to the
+    // nearest frame of where the ribbon is (G26 A-P2-3).
     function release(e) {
       if (!rb.dragging) return;
-      var r = ribbon.getBoundingClientRect ? ribbon.getBoundingClientRect() : null;
+      pendingIdx = null;
+      var r = e.type === 'pointerup' && ribbon.getBoundingClientRect ? ribbon.getBoundingClientRect() : null;
       var idx = rb.end(r && typeof e.clientX === 'number' ? e.clientX - (r.left + r.width / 2) : undefined);
       track.style.transition = 'transform 120ms ease-out'; self._placeRibbon(); lastIdx = idx; self._scrubTo(idx);
     }
@@ -2697,7 +2724,9 @@
     clear(host);
     this._layoutSheet();                                       // a new sheet takes its place beside the zoom column BEFORE the ribbon is measured
     if (host.classList) host.classList.remove('ov-playing');
-    host.setAttribute('aria-live', 'polite');
+    // Live regions: the loading / error states announce themselves; the ready panel does NOT (its time changes on every
+    // frame while playing); only its warning lines are live (G26 A-P3-5). The focused ribbon's aria-valuetext has the time.
+    if (st.state === 'loading' || st.state === 'error') host.setAttribute('aria-live', 'polite'); else host.removeAttribute('aria-live');
     if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._layoutSheet(); return; }
     if (st.state === 'error') {
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
@@ -2717,7 +2746,12 @@
     var btn = mk('button', 'ov-toggle', collapsed ? '▸' : '▾'); btn.type = 'button';
     btn.setAttribute('aria-label', collapsed ? 'Show overlay details' : 'Hide overlay details');
     btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
-    btn.addEventListener('click', function () { self.collapsed = !collapsed; self.render(st); });
+    btn.addEventListener('click', function () {
+      var had = typeof document !== 'undefined' && document.activeElement === btn;
+      self.collapsed = !collapsed; self.render(st);
+      var nb = had && self.ui && self.ui.host && self.ui.host.querySelector('.ov-toggle');   // keyboard focus stays on the toggle (G26 B-2)
+      if (nb && nb.focus) nb.focus();
+    });
     head.appendChild(btn);
     var title = mk('span', 'ov-title' + (!collapsed ? ' ov-model' : ''));
     head.appendChild(title);
@@ -2774,7 +2808,7 @@
       banner.appendChild(button('ov-update', 'Update', 'Switch to the newer run', function () { self.update(); }));
       body.appendChild(banner);
     }
-    var unavail = mk('div', 'ov-warn'); unavail.hidden = true; body.appendChild(unavail); ui.unavail = unavail;
+    var unavail = mk('div', 'ov-warn'); unavail.hidden = true; unavail.setAttribute('aria-live', 'polite'); body.appendChild(unavail); ui.unavail = unavail;
     var clipped = !!this.layer._clip;
     if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
     // (no settings row: fixed opacity, contours and the animation always on; owner, 2026-09-26)
@@ -2784,8 +2818,10 @@
     // for a scroll box -> the details go and the transport row stays (a phone turned sideways keeps play, ribbon and
     // speed); no room for that either -> the one-line summary with the play button in the head. A fold belongs to the
     // size: it is never saved as a collapse, so a bigger map gets everything back.
-    var ctl = compact ? host : (host.closest && host.closest('.ov-ctl')) || host;
-    var spare = function () { return compact ? cap - host.offsetHeight - 2 : mapH - self._stackHeight() - 10 - 10 - ctl.offsetHeight - 8; };
+    // On desktops the room is measured from where the control really starts in the map (below the brand control in the
+    // same corner), not from an assumed 10 px (G26 B-1: a 330-410 px map put the meta lines under the (i)/Home column).
+    var ctl = compact ? host : (host.closest && host.closest('.ov-ctl')) || host, ctlTop = compact ? 0 : this._ctlTop(ctl);
+    var spare = function () { return compact ? cap - host.offsetHeight - 2 : mapH - self._stackHeight() - 10 - ctlTop - ctl.offsetHeight - 8; };
     var room = compact ? cap - (host.offsetHeight - body.offsetHeight) - 2 : Math.min(cap, spare() + body.offsetHeight);
     if (room < 40) {
       wrap.removeChild(body);

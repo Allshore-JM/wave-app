@@ -1078,3 +1078,13 @@ test('section 37: _ribbonLabel gives the requested time while loading and the dr
   const u = o._ribbonLabel(); assert.equal(u.text, expect(i0 + 9).text); assert.equal(u.state, 'unavailable'); assert.match(u.valuetext, /, unavailable$/);
   o.unmount(); await w.releaseAll();
 }));
+
+test('G26 A-P3-7: a minute timer refreshes the run line while mounted (an idle panel turns "about ..." into "expected shortly"); Off stops it', async () => {
+  const w = world();
+  const o = await mounted(w, A);
+  assert.ok(o.lineTimer, 'set at mount');
+  const t0 = o.lineTimer; o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.lineTimer, t0, 'one timer however many mounts');
+  clearInterval(o.runTimer); o.unmount();
+  assert.equal(o.lineTimer, null, 'cleared at Off');
+});

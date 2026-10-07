@@ -129,14 +129,14 @@ test('legend: the bar and the ticks come from the same functions as before (posi
   }
 }));
 
-test('collapsed: the one-line summary (weekday, date, time, zone; no field, no hour count) with the one play button in the head; the toggle reopens', () => withClock(() => {
+test('collapsed: the one-line summary (weekday, "Oct." date, time, zone; no field, no hour count) with the one play button in the head; the toggle reopens', () => withClock(() => {
   const w = world(); w.ov.collapsed = true; w.ov.render({ state: 'ready' });
-  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct 7, 03:00 PM HST', 'owner, 2026-10-07');
+  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST', 'owner, 2026-10-07');
   assert.equal(w.panel.querySelector('.ov-title').className, 'ov-title');
   w.ov.target = 9; w.ov._syncUI();                                            // a seek pending: the requested time with its state
-  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct 7, 03:00 PM HST · loading…');
+  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST · loading…');
   w.ov.unavailable[w.ov._key(9)] = true; w.ov._syncUI();
-  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct 7, 03:00 PM HST · unavailable');
+  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST · unavailable');
   w.ov.target = 3; w.ov._syncUI();
   assert.equal(w.panel.querySelector('#ovDetails'), null);
   assert.equal(all(w.panel, '.ov-play').length, 1, 'playback stays in reach'); assert.equal(w.ov.ui.play, headPlay(w.panel));
@@ -162,7 +162,7 @@ test('phone sheet: opens expanded when 40 % of the map holds the transport row, 
   const sh = s.container.querySelector('.ov-sheet');
   assert.equal(sh.querySelector('#ovDetails'), null, 'a short map: the one-line summary, as before');
   assert.equal(all(sh, '.ov-play').length, 1); assert.ok(headPlay(sh), 'with the play button in the head');
-  assert.equal(text(sh.querySelector('.ov-title')), 'Wed, Oct 7, 03:00 PM HST', 'folded: the same one line as the desktop panel');
+  assert.equal(text(sh.querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST', 'folded: the same one line as the desktop panel');
   assert.equal(s.ov.collapsed, undefined, 'folded by the size, nothing saved');
   sh.querySelector('.ov-toggle').dispatch('click');                                // the viewer opens it: the rendered state flips
   assert.equal(s.ov.collapsed, false); assert.ok(sh.querySelector('#ovDetails'));
@@ -258,7 +258,7 @@ test('no room for the details (a very short map): the one-line summary with the 
   assert.equal(w.ov.ui.play, headPlay(w.panel), 'the one play button, in the head');
   assert.equal(w.ov.ui.collapsed, true); assert.equal(w.panel.querySelector('.ov-toggle'), null);
   assert.notEqual(w.ov.collapsed, true, 'a fold belongs to the size: never saved as a collapse');
-  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct 7, 03:00 PM HST');
+  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST');
   w.ov.playing = true; w.ov._syncUI(); w.ov._refreshRunLine();               // must not throw
   assert.equal(w.ov.ui.play.textContent, '❚❚');
 }));

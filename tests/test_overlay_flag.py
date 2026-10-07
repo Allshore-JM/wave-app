@@ -186,7 +186,7 @@ def test_overlay_js_syntax_and_contract_strings():
                    "frameAtHour", "'Updated: '", "'Next Update: '", "'expected shortly'", "'a newer run is available'",
                    "SPEED_ANIMALS", "'snail.png'", "'fish.png'", "'shark.png'", "'listbox'", "'option'", "ov-playing", "speedOf",
                    "ov-ribbon", "'slider'", "aria-valuetext", "_scrubTo", "ribbonLayout", "RibbonState", "weekday: 'short'", "WEEKDAY_NAMES",
-                   "_summaryLine", "stepAvailable", "ResizeObserver", "'orientationchange'", "ov-play-head",
+                   "_summaryLine", "stepAvailable", "ResizeObserver", "'orientationchange'", "ov-play-head", "dotMonth",
                    "World_Hillshade", "mixBlendMode", "coastEdges", "_syncLook"):
         assert needle in js, needle
     for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row

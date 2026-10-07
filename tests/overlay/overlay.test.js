@@ -305,6 +305,16 @@ test('ringPlan: current, two ahead in the play direction, two behind, wrapping, 
   assert.deepEqual(Array.from(I.ringPlan(0, 1, 1)), [0]);
 });
 
+test('dotMonth: the month of the folded line gets a period (owner, 2026-10-07), never "May", never the shape of another locale', () => {
+  assert.equal(I.dotMonth('Oct 8, 06:00 PM'), 'Oct. 8, 06:00 PM');
+  for (const mo of ['Jan', 'Feb', 'Mar', 'Apr', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']) assert.equal(I.dotMonth(mo + ' 1, 12:00 AM'), mo + '. 1, 12:00 AM');
+  assert.equal(I.dotMonth('May 8, 06:00 PM'), 'May 8, 06:00 PM', 'the full name');
+  assert.equal(I.dotMonth('8. Okt., 18:00'), '8. Okt., 18:00', 'German (the browser locale decides the page clock)');
+  assert.equal(I.dotMonth('8 Oct, 18:00'), '8 Oct, 18:00', 'en-GB: day first, left alone');
+  assert.equal(I.dotMonth('—'), '—'); assert.equal(I.dotMonth('Oct. 8, 06:00 PM'), 'Oct. 8, 06:00 PM', 'never twice');
+  assert.equal(I.dotMonth('x Oct 8'), 'x Oct 8', 'only at the start'); assert.equal(I.dotMonth('Oct x'), 'Oct x', 'only before the day number');
+});
+
 test('nextAvailable skips unavailable frames, wraps, and reports when nothing is left', () => {
   const un = set => j => set.has(j);
   assert.equal(I.nextAvailable(5, 1, 81, un(new Set())), 6);

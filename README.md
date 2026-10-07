@@ -311,9 +311,10 @@ metadata lines give the run ("Run: 2026-10-07 06Z (UTC)", with the forecast
 table's run when it differs), when it went live ("Updated: 1:33 AM HST") and when the next is expected ("Next Update: about
 7:35 AM HST": one cycle after this run's own publish time; "expected shortly" once due; "a newer run is available" with the
 Update banner), in the computer's own time zone (asset 2.14.0; was one "live since … · next update about …" line). The head row
-(desktop panel and phone sheet alike) names the model while the panel is open and, folded, shows one line "Thu, Oct 8, 06:00 PM
-HST" (weekday, date, the table's clock, zone; a pending seek adds "· loading…" or "· unavailable"; asset 2.14.3, owner
-2026-10-07: no field name, no hour count; before: "+213 h → +9 h loading…" on phones). A direction is shown only for the step on the map: a step change clears the animation until that step's
+(desktop panel and phone sheet alike) names the model while the panel is open and, folded, shows one line "Thu, Oct. 8, 06:00
+PM HST" (weekday, date with a period after an abbreviated month — never "May", never another locale's shape —, the table's
+clock, zone; a pending seek adds "· loading…" or "· unavailable"; assets 2.14.3-2.14.4, owner 2026-10-07: no field name, no
+hour count; before: "+213 h → +9 h loading…" on phones). A direction is shown only for the step on the map: a step change clears the animation until that step's
 direction frame has landed, so an older direction is never drawn under a newer time. The flow is built as vectors on
 the model's nodes (the field value under the node times its FROM direction; the direction is the spectral peak's, NOAA
 DIRPW: the partition carrying the peak period, which is not always the forecast table's first swell) and interpolated

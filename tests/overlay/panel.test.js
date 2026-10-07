@@ -23,6 +23,12 @@ Element.prototype.appendChild = function (c) {
   if (this._text && !this.children.length && this.tagName !== '#TEXT') { const t = this.doc.createTextNode(this._text); this._text = ''; append0.call(this, t); }
   return append0.call(this, c);
 };
+// and insertBefore (the fake has none): before ref, or at the end without one
+Element.prototype.insertBefore = function (c, ref) {
+  if (!ref) return this.appendChild(c);
+  this.appendChild(c); this.children.pop();
+  const i = this.children.indexOf(ref); this.children.splice(i < 0 ? this.children.length : i, 0, c); return c;
+};
 
 const HS = { lo: 0, hi: 15, legend: [0, 12], units: 'm', interpolation: 'bilinear' };
 const RUN_UTC = '2026-10-07T06:00:00Z', PUB = '2026-10-07T11:33:25Z';
@@ -65,6 +71,7 @@ function withClock(fn) {
 }
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const all = (root, sel) => root.querySelectorAll(sel);
+const headPlay = (root) => { const h = root.querySelector('.ov-head'); return h ? h.querySelector('.ov-play') : null; };   // (the fake has no descendant selectors)
 
 test('desktop: head = toggle + the model name; ONE play button, then the timeline and the speed selector; no first/prev/next/last, no speed numbers', () => withClock(() => {
   const w = world(); w.ov.render({ state: 'ready' });
@@ -122,12 +129,18 @@ test('legend: the bar and the ticks come from the same functions as before (posi
   }
 }));
 
-test('collapsed: the one-line summary (field, time on the map, hour), no details, no play; the toggle reopens', () => withClock(() => {
+test('collapsed: the one-line summary (field, time on the map, hour) with the one play button in the head; the toggle reopens', () => withClock(() => {
   const w = world(); w.ov.collapsed = true; w.ov.render({ state: 'ready' });
   assert.equal(text(w.panel.querySelector('.ov-title')), 'Wave height · Oct 7, 03:00 PM HST (+9 h)');
-  assert.equal(w.panel.querySelector('#ovDetails'), null); assert.equal(all(w.panel, '.ov-play').length, 0);
+  assert.equal(w.panel.querySelector('#ovDetails'), null);
+  assert.equal(all(w.panel, '.ov-play').length, 1, 'playback stays in reach'); assert.equal(w.ov.ui.play, headPlay(w.panel));
+  assert.deepEqual(w.panel.querySelector('.ov-head').children.map((c) => c.className.split(' ').pop()), ['ov-toggle', 'ov-play-head', 'ov-title']);
+  let calls = 0; w.ov.play = function () { calls++; this.playing = true; this._syncUI(); }; w.ov.pause = function () { calls++; this.playing = false; this._syncUI(); };
+  w.ov.ui.play.dispatch('click'); assert.equal(w.ov.playing, true); assert.equal(w.ov.ui.play.textContent, '❚❚');
+  w.ov.ui.play.dispatch('click'); assert.equal(w.ov.playing, false); assert.equal(calls, 2);
   w.panel.querySelector('.ov-toggle').dispatch('click');
   assert.ok(w.panel.querySelector('#ovDetails')); assert.equal(text(w.panel.querySelector('.ov-title')), 'NOAA/NCEP GFS-Wave (WAVEWATCH III)');
+  assert.equal(all(w.panel, '.ov-play').length, 1, 'expanded: only the one beside the ribbon'); assert.equal(headPlay(w.panel), null);
 }));
 
 test('phone sheet: opens expanded when 40 % of the map holds the transport row, collapsed when it cannot; the model line in the details', () => withClock(() => {
@@ -141,6 +154,10 @@ test('phone sheet: opens expanded when 40 % of the map holds the transport row, 
   const s = world({ dims: { w: 375, h: 260 } }); s.ov.render({ state: 'ready' });  // 40 % = 104 px < 110
   const sh = s.container.querySelector('.ov-sheet');
   assert.equal(sh.querySelector('#ovDetails'), null, 'a short map: the one-line summary, as before');
+  assert.equal(all(sh, '.ov-play').length, 1); assert.ok(headPlay(sh), 'with the play button in the head');
+  assert.equal(s.ov.collapsed, undefined, 'folded by the size, nothing saved');
+  sh.querySelector('.ov-toggle').dispatch('click');                                // the viewer opens it: the rendered state flips
+  assert.equal(s.ov.collapsed, false); assert.ok(sh.querySelector('#ovDetails'));
 }));
 
 test('the speed selector: the chosen animal (decorative image + accessible name), a listbox of three, choosing saves and closes', () => withClock(() => {
@@ -227,12 +244,115 @@ test('playing: the host carries ov-playing (the chosen animal moves) and the but
   assert.ok(w.panel.classList.contains('ov-playing'), 'a re-render keeps the look while playing');
 }));
 
-test('no room for the details (a very short map): the one-line summary; nothing left that a later sync could touch', () => withClock(() => {
+test('no room for the details (a very short map): the one-line summary with the play button in the head; nothing left that a later sync could touch', () => withClock(() => {
   const w = world({ ctlHeight: 900 }); w.ov.render({ state: 'ready' });       // a desktop control taller than the map allows
-  assert.equal(w.panel.querySelector('#ovDetails'), null); assert.equal(w.ov.ui.play, null); assert.equal(w.ov.ui.speedSel, null);
+  assert.equal(w.panel.querySelector('#ovDetails'), null); assert.equal(w.ov.ui.speedSel, null);
+  assert.equal(w.ov.ui.play, headPlay(w.panel), 'the one play button, in the head');
   assert.equal(w.ov.ui.collapsed, true); assert.equal(w.panel.querySelector('.ov-toggle'), null);
+  assert.notEqual(w.ov.collapsed, true, 'a fold belongs to the size: never saved as a collapse');
   assert.match(text(w.panel.querySelector('.ov-title')), /^Wave height · /);
   w.ov.playing = true; w.ov._syncUI(); w.ov._refreshRunLine();               // must not throw
+  assert.equal(w.ov.ui.play.textContent, '❚❚');
+}));
+
+test('a phone turned sideways (step-4 F5): no room for the details -> the transport row stays; even less -> one line with the play button in the head; a fold is never saved', () => withClock(() => {
+  // layout heights by box (the fake DOM has no layout): head 30, transport row 62, overview 14, details 120; a box = its children
+  const H = { 'ov-row ov-head': 30, 'ov-row ov-transport': 62, 'ov-overview': 14, 'ov-details': 120 };
+  const sized = (w) => {
+    const create0 = w.doc.createElement.bind(w.doc);
+    w.doc.createElement = (tag) => {
+      const el = create0(tag);
+      Object.defineProperty(el, 'offsetHeight', { configurable: true, set(v) { this._oh = v; }, get() {
+        if (this._oh) return this._oh;
+        if (H[this.className] !== undefined) return H[this.className];
+        let s = 0; for (const c of this.children || []) s += c.offsetHeight || 0; return s;
+      } });
+      return el;
+    };
+    return w;
+  };
+  // 812 x 322 map: 40 % = 128 px holds head + transport + overview (106 + 2) but not the details
+  const w = sized(world({ dims: { w: 812, h: 322 } })); w.ov.render({ state: 'ready' });
+  const sheet = w.container.querySelector('.ov-sheet');
+  assert.ok(sheet.querySelector('.ov-transport'), 'the transport row stays'); assert.ok(sheet.querySelector('.ov-overview'));
+  assert.equal(sheet.querySelector('.ov-details'), null, 'the details go');
+  assert.equal(all(sheet, '.ov-play').length, 1); assert.equal(headPlay(sheet), null);
+  assert.ok(w.ov.ui.ribbon && w.ov.ui.rb && w.ov.ui.speedSel && w.ov.ui.slider, 'ribbon, speed and overview live');
+  assert.equal(w.ov.ui.runText, null); assert.equal(w.ov.ui.unavail, null);
+  assert.ok(sheet.querySelector('.ov-toggle'), 'the toggle can still fold it to one line');
+  assert.notEqual(w.ov.collapsed, true);
+  w.ov.target = 5; w.ov._syncUI(); w.ov._refreshRunLine();                    // must not throw
+  // 812 x 240: 40 % = 96 px cannot hold the transport row either -> one line, the play button in the head
+  const s = sized(world({ dims: { w: 812, h: 240 } })); s.ov.render({ state: 'ready' });
+  const sh = s.container.querySelector('.ov-sheet');
+  assert.equal(sh.querySelector('#ovDetails'), null); assert.equal(all(sh, '.ov-play').length, 1);
+  assert.equal(s.ov.ui.play, headPlay(sh)); assert.equal(s.ov.ui.ribbon, null);
+  assert.notEqual(s.ov.collapsed, true, 'not saved');
+  // the same overlay on a taller map (turned upright): everything is back
+  s.ov._dims = () => ({ w: 375, h: 700 }); s.ov.render({ state: 'ready' });
+  const up = s.container.querySelector('.ov-sheet');
+  assert.ok(up.querySelector('.ov-details'), 'the details are back'); assert.ok(up.querySelector('.ov-transport'));
+  assert.equal(headPlay(up), null); assert.equal(all(up, '.ov-play').length, 1);
+  // the toggle is the viewer's choice: it stays across sizes
+  up.querySelector('.ov-toggle').dispatch('click'); assert.equal(s.ov.collapsed, true);
+  s.ov._dims = () => ({ w: 812, h: 322 }); s.ov.render({ state: 'ready' });
+  const side = s.container.querySelector('.ov-sheet'); assert.equal(side.querySelector('#ovDetails'), null); assert.ok(headPlay(side));
+  s.ov._dims = () => ({ w: 375, h: 700 }); s.ov.render({ state: 'ready' });
+  assert.equal(s.container.querySelector('.ov-sheet').querySelector('#ovDetails'), null, 'still folded: the viewer chose it');
+  s.container.querySelector('.ov-sheet').querySelector('.ov-toggle').dispatch('click');
+  assert.equal(s.ov.collapsed, false); assert.ok(s.container.querySelector('.ov-sheet').querySelector('.ov-details'));
+}));
+
+test('a sheet built after the desktop panel measures its ribbon in place (step-4 F4): the left offset first; a late change re-measures once, never in a loop', () => withClock(() => {
+  const w = world();
+  const props = {}; w.container.style = { setProperty(k, v) { props[k] = v; }, removeProperty(k) { delete props[k]; } };
+  // the sheet runs from --ov-sheet-left to the map's right edge: its ribbon gets that width less 166 px of row and padding
+  const create0 = w.doc.createElement.bind(w.doc);
+  w.doc.createElement = (tag) => {
+    const el = create0(tag);
+    Object.defineProperty(el, 'clientWidth', { configurable: true, get() { return this.classList.contains('ov-ribbon') ? 375 - (parseFloat(props['--ov-sheet-left']) || 0) - 166 : 0; } });
+    return el;
+  };
+  w.ov._stackWidth = () => 45;
+  w.ov.render({ state: 'ready' });                                            // the desktop panel: no sheet, no offset
+  assert.equal(props['--ov-sheet-left'], undefined);
+  let renders = 0; const r0 = w.ov.render; w.ov.render = function (st) { renders++; return r0.call(this, st); };
+  w.ov._dims = () => ({ w: 375, h: 700 }); w.ov.render({ state: 'ready' });  // the window became a phone: the sheet
+  assert.equal(renders, 1, 'measured right the first time'); assert.equal(w.ov.ui.ribbonW, 375 - 51 - 166);
+  // the zoom column widens while the sheet is built (the end of the render sees another offset): one rebuild at the new width
+  let calls = 0; w.ov._stackWidth = () => (++calls > 1 ? 95 : 45);
+  renders = 0; w.ov.render({ state: 'ready' });
+  assert.equal(renders, 2); assert.equal(w.ov.ui.ribbonW, 375 - 101 - 166);
+  // a small change at the end (the column 5 px wider): no rebuild, the track re-placed at the new width
+  let c2 = 0; w.ov._stackWidth = () => (++c2 > 1 ? 50 : 45);
+  renders = 0; w.ov.render({ state: 'ready' });
+  assert.equal(renders, 1); assert.equal(w.ov.ui.ribbonW, 375 - 56 - 166);
+  assert.equal(w.ov.ui.track.style.transform, 'translateX(' + (w.ov.ui.ribbonW / 2 - w.ov.ui.rb.offset) + 'px)');
+  // a layout that keeps changing: one rebuild, then it stops
+  let k = 0; w.ov._stackWidth = () => (k++ % 2 ? 95 : 45);
+  renders = 0; w.ov.render({ state: 'ready' });
+  assert.equal(renders, 2, 'never a loop');
+}));
+
+test('a short desktop window (step-4 F5): the details scroll box takes the room above the zoom stack; too little -> the transport row stays, the details go', () => withClock(() => {
+  // heights by box: head 30, transport 62, overview 14, details 120; the control = its panel + 12 px of padding
+  const H = { 'ov-row ov-head': 30, 'ov-row ov-transport': 62, 'ov-overview': 14, 'ov-details': 120 };
+  const sized = (w) => {
+    const create0 = w.doc.createElement.bind(w.doc);
+    const height = function () { if (H[this.className] !== undefined) return H[this.className]; let s = 0; for (const c of this.children || []) s += c.offsetHeight || 0; return s; };
+    w.doc.createElement = (tag) => { const el = create0(tag); Object.defineProperty(el, 'offsetHeight', { configurable: true, get: height, set() {} }); return el; };
+    Object.defineProperty(w.ctl, 'offsetHeight', { configurable: true, get() { return w.panel.children.reduce((s, c) => s + (c.offsetHeight || 0), 0) + 12; }, set() {} });
+    w.ov._stackHeight = () => 200;
+    return w;
+  };
+  // 1200 x 420: above the stack 420 - 200 - 20 - 8 = 192 px; the control without its details 118 -> 74 px for the details
+  const w = sized(world({ dims: { w: 1200, h: 420 } })); w.ov.render({ state: 'ready' });
+  const det = w.panel.querySelector('.ov-details');
+  assert.ok(det, 'the details stay'); assert.equal(det.style.maxHeight, '74px');
+  // 1200 x 380: 34 px would be left for the details: they go, the transport row stays (play, ribbon, speed)
+  const s = sized(world({ dims: { w: 1200, h: 380 } })); s.ov.render({ state: 'ready' });
+  assert.equal(s.panel.querySelector('.ov-details'), null); assert.ok(s.panel.querySelector('.ov-transport'));
+  assert.equal(all(s.panel, '.ov-play').length, 1); assert.equal(headPlay(s.panel), null); assert.ok(s.ov.ui.ribbon);
 }));
 
 test('loading and error states keep their texts; Retry remounts', () => withClock(() => {

@@ -2681,6 +2681,7 @@
     var self = this, host = this._host(), compact = host === this.sheet, m = this.manifest, unit = this.opts.getUnit();
     var mapH = this._dims().h;
     clear(host);
+    this._layoutSheet();                                       // a new sheet takes its place beside the zoom column BEFORE the ribbon is measured
     if (host.classList) host.classList.remove('ov-playing');
     host.setAttribute('aria-live', 'polite');
     if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._layoutSheet(); return; }
@@ -2692,13 +2693,14 @@
     var field = this.layer.field, f = m.fields[field], fdesc = (m.model && m.model.fields && m.model.fields[field]) || {};
     var label = fdesc.label || field, modelName = String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0];
     var cap = Math.floor(mapH * 0.4);
-    if (this.collapsed === undefined) this.collapsed = compact && cap < SHEET_OPEN_PX;
-    var collapsed = !!this.collapsed;
+    // Open or folded: the viewer's choice once the toggle was used; until then the size decides at every render (the sheet
+    // opens folded only when 40 % of the map cannot hold the transport row), so a phone turned upright opens up again.
+    var collapsed = this.collapsed !== undefined ? !!this.collapsed : compact && cap < SHEET_OPEN_PX;
     var head = mk('div', 'ov-row ov-head');
     var btn = mk('button', 'ov-toggle', collapsed ? '▸' : '▾'); btn.type = 'button';
     btn.setAttribute('aria-label', collapsed ? 'Show overlay details' : 'Hide overlay details');
     btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
-    btn.addEventListener('click', function () { self.collapsed = !self.collapsed; self.render(st); });
+    btn.addEventListener('click', function () { self.collapsed = !collapsed; self.render(st); });
     head.appendChild(btn);
     var title = mk('span', 'ov-title' + (!compact && !collapsed ? ' ov-model' : ''));
     head.appendChild(title);
@@ -2707,12 +2709,16 @@
       ribbon: null, track: null, rb: null, layout: null, nowText: null, stateEl: null, ribbonW: 0,
       runText: null, updText: null, nextText: null, updLine: null, nextLine: null,
       label: label, modelName: modelName, collapsed: collapsed, compact: compact };
+    // The one play / pause button sits beside the ribbon; when the transport row is not shown (collapsed, or no room for
+    // it) it sits in the head instead, so playback is never out of reach.
+    var playPause = function () { if (self.playing) self.pause(); else self.play(); };
+    var headPlay = function () { ui.play = button('ov-play ov-play-head', '▶', 'Play', playPause); head.insertBefore(ui.play, title); };
     if (compact && cap - host.offsetHeight - 8 < 40) { head.removeChild(btn); collapsed = ui.collapsed = true; }
     var rt0 = runTimes(m, Date.now(), !!this.newerRun); this._runStatus = rt0 && rt0.status;
-    if (collapsed) { this._syncUI(); this._layoutSheet(); return; }
+    if (collapsed) { headPlay(); this._syncUI(); this._layoutSheet(); return; }
     var wrap = mk('div', 'ov-body'); wrap.id = 'ovDetails'; host.appendChild(wrap);
     var tr = mk('div', 'ov-row ov-transport');
-    ui.play = button('ov-play', '▶', 'Play', function () { if (self.playing) self.pause(); else self.play(); });
+    ui.play = button('ov-play', '▶', 'Play', playPause);
     tr.appendChild(ui.play);
     ui.speedSel = speedSelector(this, compact);
     wrap.appendChild(tr);
@@ -2758,27 +2764,36 @@
     // (no settings row: fixed opacity, contours and the animation always on; owner, 2026-09-26)
     this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the scroll box <= cap AND the top-left
-    // control must end above the zoom/Home stack (short windows: the site caps the map at 48 % of the viewport). Not
-    // enough room for a scroll box -> back to the one-line summary.
-    var room;
-    if (compact) {
-      room = cap - (host.offsetHeight - body.offsetHeight) - 2;
-    } else {
-      var ctl = (host.closest && host.closest('.ov-ctl')) || host, chrome = ctl.offsetHeight - body.offsetHeight;
-      room = Math.min(cap, mapH - this._stackHeight() - 10 - 10 - chrome - 8);
-    }
+    // control must end above the zoom/Home stack (short windows: the site caps the map at 48 % of the viewport). No room
+    // for a scroll box -> the details go and the transport row stays (a phone turned sideways keeps play, ribbon and
+    // speed); no room for that either -> the one-line summary with the play button in the head. A fold belongs to the
+    // size: it is never saved as a collapse, so a bigger map gets everything back.
+    var ctl = compact ? host : (host.closest && host.closest('.ov-ctl')) || host;
+    var spare = function () { return compact ? cap - host.offsetHeight - 2 : mapH - self._stackHeight() - 10 - 10 - ctl.offsetHeight - 8; };
+    var room = compact ? cap - (host.offsetHeight - body.offsetHeight) - 2 : Math.min(cap, spare() + body.offsetHeight);
     if (room < 40) {
-      ui.speedSel.close(false);
-      host.removeChild(wrap); head.removeChild(btn); this.collapsed = true; ui.collapsed = true;
-      ui.play = null; ui.speedSel = null; ui.slider = null; ui.unavail = null;
-      ui.ribbon = ui.track = ui.rb = ui.nowText = ui.stateEl = null;
-      ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
-      if (!compact && title.classList) title.classList.remove('ov-model');
+      wrap.removeChild(body);
+      ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
+      if (spare() < 0) {
+        ui.speedSel.close(false);
+        host.removeChild(wrap); head.removeChild(btn); ui.collapsed = true;
+        ui.speedSel = null; ui.slider = null;
+        ui.ribbon = ui.track = ui.rb = ui.nowText = ui.stateEl = null;
+        if (!compact && title.classList) title.classList.remove('ov-model');
+        headPlay();
+      }
       this._syncUI();
     } else {
       body.style.maxHeight = room + 'px';
     }
     this._layoutSheet();
+    // The ribbon's width once everything is in place: a small change re-places the track, a bigger one (another scale)
+    // rebuilds once.
+    if (ui.ribbon && !this._remeasuring) {
+      var w = ui.ribbon.clientWidth;
+      if (w && Math.abs(w - ui.ribbonW) > 8) { this._remeasuring = true; try { this.render(st); } finally { this._remeasuring = false; } }
+      else if (w && w !== ui.ribbonW) { ui.ribbonW = w; this._placeRibbon(); }
+    }
   };
   // The live parts: the play/pause glyph and the playing look (the chosen animal moves), the speed button, the title,
   // the ribbon (its label = the requested time with a loading state, its position = the target), the overview slider's

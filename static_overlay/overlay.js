@@ -1171,6 +1171,13 @@
     for (var k = 1; k < n; k++) { var j = ((i + k * dir) % n + n) % n; if (!unavailable(j)) return j; }
     return null;
   }
+  // Manual navigation stops at the ends (playback keeps wrapping through nextAvailable): the next index from i in
+  // direction dir that is not unavailable, without wrapping; null past the first / last frame. From -1 (dir 1) it
+  // gives the first available frame, from n (dir -1) the last.
+  function stepAvailable(i, dir, n, unavailable) {
+    for (var j = i + dir; j >= 0 && j < n; j += dir) if (!unavailable(j)) return j;
+    return null;
+  }
   // The frame whose valid time is nearest to t (ms since the epoch).
   function nearestIndex(m, t) {
     var idx = 0, best = Infinity;
@@ -1581,7 +1588,9 @@
   var RIBBON_WINDOW_H = 72;                                  // the viewport shows about three days
   var RIBBON_MIN_PX_H = 3, RIBBON_MAX_PX_H = 5;              // pixels per hour, bounded
   var RIBBON_MIN_TICK_GAP = 18;                              // hour ticks closer than this are thinned (06/18 first)
-  var RIBBON_DAY_MIN_PX = 40;                                // a pinned first-day label needs this much room before the next
+  // A pinned first-day label (left-aligned at x 0, 3 px in) needs this much room before the next one (centred on its
+  // midnight): 3 + its width (a two-digit date is ~33-35 px at 11 px) + a gap + half the next label's width.
+  var RIBBON_DAY_MIN_PX = 60;
   var RIBBON_TAP_PX = 4;                                     // a press that moves less than this is a tap, not a drag
   // Local calendar parts in a zone, through one cached Intl formatter (en-US: fixed short month names, "7 AM" clocks).
   // An unknown zone reads as UTC; without Intl at all, UTC by hand. Never throws.
@@ -1725,6 +1734,11 @@
   // or, if it never lands a frame, by the next one (another field picked meanwhile, Retry) until Off.
   Overlay.prototype.mount = function (fieldName, restore) {
     if (restore) this._pendingRestore = saved();
+    // The time position survives a field change and even a run change (nearest valid time), like Update. A field switch
+    // keeps the REQUESTED time (a scrub or step still loading) when there is one; Retry (the same field again) goes back
+    // to the frame on the map, which is cached (G4 B1). Taken before anything aborts. Before any frame is on the map the
+    // saved state decides, as before (a reload's restore, its play state included).
+    var keep = this.manifest && this.frameIndex !== null ? (fieldName !== this.field ? this._anchorIndex() : this.frameIndex) : null;
     var self = this, st = this._pendingRestore;
     if (!this.map.getPane('modelPane')) {
       var pane = this.map.createPane('modelPane'); pane.style.zIndex = 250; pane.style.pointerEvents = 'none';
@@ -1744,8 +1758,7 @@
       this._syncLook();                                    // nothing drawn: the imagery, the waves' opacity
     }
     this.render({ state: 'loading' });
-    // The time position survives a field change and even a run change (nearest valid time), like Update.
-    var prevValid = this.manifest && this.frameIndex !== null ? Date.parse(this.manifest.frames[this.frameIndex].valid_utc) : null;
+    var prevValid = keep !== null && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : null;
     var prevRun = this.manifest ? this.manifest.run : null;
     // The coastlines load beside the pointer/manifest/frame; the FIRST DRAW waits for them (a filled
     // field spilling onto land and then snapping back is the wrong picture), later draws never do.
@@ -1765,7 +1778,7 @@
       if (store !== undefined && self.layer._coast !== (store || null)) self.layer.setCoast(store);
       self.n = m.frames.length;
       var rIdx = prevValid === null && st ? restoreIndex(m, st, Date.now()) : null;
-      var idx = prevValid === null ? (rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(self.frameIndex, self.n - 1) : nearestIndex(m, prevValid);
+      var idx = prevValid === null ? (rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(keep, self.n - 1) : nearestIndex(m, prevValid);
       var resume = rIdx !== null && st.playing === true;
       self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
       self._ensureFlow();
@@ -1980,8 +1993,8 @@
   Overlay.prototype.update = function () {
     var self = this, ptr = this.newerRun;
     if (!ptr || !this.field) return;
-    var wasPlaying = this.playing; this.pause();
-    var prevValid = this.frameIndex !== null ? Date.parse(this.manifest.frames[this.frameIndex].valid_utc) : Date.now();
+    var wasPlaying = this.playing, keep = this.frameIndex !== null ? this._anchorIndex() : null; this.pause();   // the requested time while one is loading
+    var prevValid = keep !== null && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : Date.now();
     this.abortAll(); this.abort = new AbortController();
     var sig = this.abort.signal;
     this.render({ state: 'loading' });
@@ -2035,12 +2048,13 @@
     var wait = Math.max(0, this._interval() - (Date.now() - t0));
     this.timer = setTimeout(function () { self.timer = null; self._tick(gen); }, wait);
   };
+  // One available frame back or forward (the ribbon's arrow keys); it stops at the first and last available frame.
   Overlay.prototype.step = function (dir) {
     var self = this;
     this.pause();
     if (!this.manifest || this.frameIndex === null) return;
     var base = this.target !== null ? this.target : this.frameIndex;
-    var next = nextAvailable(base, dir, this.n, function (j) { return self._isUnavailable(j); });
+    var next = stepAvailable(base, dir, this.n, function (j) { return self._isUnavailable(j); });
     if (next !== null) { this.dir = dir; this._goto(next).catch(function (err) { self._afterMiss(err); }); }
   };
   Overlay.prototype.seek = function (idx) {
@@ -2102,13 +2116,35 @@
   Overlay.prototype._bindMap = function () {
     var self = this;
     this._on('zoomend', function () { self._checkRes(); });
-    this._on('resize', function () {
-      self._sizeAttribution(); self._checkRes();
-      if (!self.last) return;
-      // the panel is rebuilt only when it has to move between the control and the sheet
-      var compactNow = self.isCompact(), wasCompact = !!self.sheet;
-      if (compactNow !== wasCompact || self.sheet) self.render(self.last); else { self._ribbonMeasure(); self._syncUI(); self._layoutSheet(); }   // the sheet's cap follows the map height
-    });
+    this._on('resize', function () { self._onSize(); });
+    // The page sizes #map by script and has Leaflet re-read the size before invalidateSize(), so the map's own 'resize'
+    // event does not fire on a window resize or a rotation: the window and the container are watched as well (as the
+    // map tools do), and each new size is handled once.
+    this._sizeKey = this._sizeOf();
+    this._onWinSize = function () {
+      if (self._sizeTimer) clearTimeout(self._sizeTimer);
+      self._sizeTimer = setTimeout(function () { self._sizeTimer = null; self._onSize(); }, 100);
+    };
+    if (window.addEventListener) { window.addEventListener('resize', this._onWinSize); window.addEventListener('orientationchange', this._onWinSize); }
+    if (typeof window.ResizeObserver === 'function') { this._ro = new window.ResizeObserver(this._onWinSize); this._ro.observe(this.map.getContainer()); }
+  };
+  Overlay.prototype._sizeOf = function () { var d = this._dims(); return d.w + 'x' + d.h; };
+  // A new map size: the attribution's width, the frame resolution, and the panel (rebuilt only when it has to move between
+  // the control and the sheet, or when it is the sheet: its cap follows the map height; else the ribbon is re-measured).
+  Overlay.prototype._onSize = function () {
+    var key = this._sizeOf();
+    if (key === this._sizeKey) return;                       // the map's event, the window and the observer report one change
+    this._sizeKey = key;
+    this._sizeAttribution(); this._checkRes();
+    if (!this.last) return;
+    var compactNow = this.isCompact(), wasCompact = !!this.sheet;
+    if (compactNow !== wasCompact || this.sheet) this.render(this.last); else { this._ribbonMeasure(); this._syncUI(); this._layoutSheet(); }
+  };
+  Overlay.prototype._unbindSize = function () {
+    if (this._onWinSize && window.removeEventListener) { window.removeEventListener('resize', this._onWinSize); window.removeEventListener('orientationchange', this._onWinSize); }
+    if (this._ro) { this._ro.disconnect(); this._ro = null; }
+    if (this._sizeTimer) { clearTimeout(this._sizeTimer); this._sizeTimer = null; }
+    this._onWinSize = null;
   };
   Overlay.prototype._checkRes = function () {
     if (!this.layer || !this.layer.hasFrame() || !this.manifest || this.frameIndex === null || !this.field) return;
@@ -2149,6 +2185,7 @@
     this._unattribute();
     this._unbindReadout();
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
+    this._unbindSize();
     this._removeSheet();
     this.cache.clear(); this.dcache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null;
     this.field = null; this.frameIndex = null; this.res = null; this.dres = null; this.last = null; this.collapsed = undefined;
@@ -2602,20 +2639,25 @@
     var self = this;
     return (this.ui && this.ui.hours) || this.manifest.frames.map(function (f) { return self._hours(f); });
   };
-  // Keys on the ribbon: the arrows step one AVAILABLE frame (step pauses and skips unavailable ones), Home / End the
-  // first / last frame, PageUp / PageDown a day (frameAtHour, snapping in the key's direction). True when handled.
+  // Keys on the ribbon: the arrows step one AVAILABLE frame (step pauses, skips unavailable ones and stops at the ends),
+  // Home / End the first / last available frame, PageUp / PageDown a day (frameAtHour, snapping in the key's direction;
+  // an unavailable frame there gives way to the next available one that way, else the nearest one back). Manual
+  // navigation never wraps around. True when handled.
   Overlay.prototype._ribbonKey = function (key) {
     if (!this.manifest || this.frameIndex === null) return false;
-    var cur = this.target !== null ? this.target : this.frameIndex, hrs, idx;
+    var self = this, un = function (j) { return self._isUnavailable(j); };
+    var cur = this.target !== null ? this.target : this.frameIndex, hrs, idx, dir = 0;
     switch (key) {
       case 'ArrowRight': case 'ArrowUp': this.step(1); return true;
       case 'ArrowLeft': case 'ArrowDown': this.step(-1); return true;
-      case 'Home': idx = 0; break;
-      case 'End': idx = this.n - 1; break;
-      case 'PageUp': hrs = this._ribbonHours(); idx = frameAtHour(hrs, hrs[cur] + 24, true); break;
-      case 'PageDown': hrs = this._ribbonHours(); idx = frameAtHour(hrs, hrs[cur] - 24, false); break;
+      case 'Home': idx = stepAvailable(-1, 1, this.n, un); break;
+      case 'End': idx = stepAvailable(this.n, -1, this.n, un); break;
+      case 'PageUp': hrs = this._ribbonHours(); idx = frameAtHour(hrs, hrs[cur] + 24, true); dir = 1; break;
+      case 'PageDown': hrs = this._ribbonHours(); idx = frameAtHour(hrs, hrs[cur] - 24, false); dir = -1; break;
       default: return false;
     }
+    if (dir && un(idx)) { var on = stepAvailable(idx, dir, this.n, un); idx = on !== null ? on : stepAvailable(idx, -dir, this.n, un); }
+    if (idx === null) { if (this.playing) this.pause(); return true; }        // nothing available at all
     this._scrubTo(idx); return true;
   };
   // The label above the pointer: the REQUESTED time with its weekday (the target while a seek is pending, else the drawn
@@ -2794,7 +2836,7 @@
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
       parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,
       forwardPixel: forwardPixel, snapToPixel: snapToPixel, pixelOf: pixelOf, pad3: pad3,
-      ringPlan: ringPlan, nextAvailable: nextAvailable, nearestIndex: nearestIndex, restoreIndex: restoreIndex, SESSION_KEY: SESSION_KEY, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
+      ringPlan: ringPlan, nextAvailable: nextAvailable, stepAvailable: stepAvailable, nearestIndex: nearestIndex, restoreIndex: restoreIndex, SESSION_KEY: SESSION_KEY, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,

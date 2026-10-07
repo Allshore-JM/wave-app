@@ -369,3 +369,49 @@ test('ribbon: under reduced motion the ribbon moves without a transition (also w
   n.ov.playing = true; n.ov.speed = 4; n.ov.target = 5; n.ov._syncUI();
   assert.equal(n.ov.ui.track.style.transition, 'none', 'at the shark speed every step is a jump');
 }));
+
+test('resize (step-4 F4): the window and the map container are watched besides the map event; one handling per size; Off unbinds', async () => {
+  // The page has Leaflet re-read the map size before invalidateSize(), so the map's own 'resize' event does not fire on a
+  // window resize or a rotation: without these watchers the panel kept the sheet on a desktop-sized window.
+  const w = world();
+  const winL = {}; w.win.addEventListener = (ev, fn) => { (winL[ev] = winL[ev] || []).push(fn); };
+  w.win.removeEventListener = (ev, fn) => { winL[ev] = (winL[ev] || []).filter((f) => f !== fn); };
+  const ros = [];
+  w.win.ResizeObserver = function (cb) { this.cb = cb; this.observed = []; this.disconnected = false; ros.push(this); };
+  w.win.ResizeObserver.prototype.observe = function (el) { this.observed.push(el); };
+  w.win.ResizeObserver.prototype.disconnect = function () { this.disconnected = true; };
+  const mapL = {}; w.ov.map.on = (ev, fn) => { (mapL[ev] = mapL[ev] || []).push(fn); }; w.ov.map.off = (ev, fn) => { mapL[ev] = (mapL[ev] || []).filter((f) => f !== fn); };
+  let dims = { w: 1200, h: 800 }, checks = 0, renders = 0, measures = 0;
+  w.ov._dims = () => dims; w.ov._checkRes = () => { checks++; }; w.ov._sizeAttribution = () => {};
+  w.ov.render({ state: 'ready' });
+  w.ov._bindMap();
+  assert.equal(winL.resize.length, 1); assert.equal(winL.orientationchange.length, 1);
+  assert.equal(ros.length, 1); assert.deepEqual(ros[0].observed, [w.container]);
+  const r0 = w.ov.render, m0 = w.ov._ribbonMeasure;
+  w.ov.render = function (st) { renders++; return r0.call(this, st); };
+  w.ov._ribbonMeasure = function () { measures++; return m0.call(this); };
+  ros[0].cb(); await wait(150);
+  assert.deepEqual([renders, checks, measures], [0, 0, 0], 'the observer\'s first report (the size it started with) does nothing');
+  // the window becomes a phone: three reports, one handling, and the panel moves into the sheet
+  dims = { w: 375, h: 700 };
+  winL.resize[0](); ros[0].cb(); winL.orientationchange[0]();
+  await wait(150);
+  assert.deepEqual([renders, checks], [1, 1]); assert.ok(w.container.querySelector('.ov-sheet'), 'the sheet');
+  mapL.resize.forEach((f) => f()); assert.equal(renders, 1, 'the map\'s own event for the same size: nothing more');
+  // the phone's map gets shorter (a browser bar): the sheet is rebuilt, its cap follows the map height
+  dims = { w: 375, h: 600 }; ros[0].cb(); await wait(150);
+  assert.equal(renders, 2); assert.ok(w.container.querySelector('.ov-sheet'));
+  // back to a desktop size, reported by the map event this time: the panel returns to the control
+  dims = { w: 1200, h: 800 }; mapL.resize.forEach((f) => f());
+  assert.equal(renders, 3); assert.equal(w.container.querySelector('.ov-sheet'), null); assert.ok(w.panel.querySelector('#ovDetails'));
+  ros[0].cb(); await wait(150); assert.equal(renders, 3, 'the observer reporting a size already handled: nothing');
+  // a desktop height change re-measures the ribbon without a rebuild
+  dims = { w: 1200, h: 700 }; ros[0].cb(); await wait(150);
+  assert.deepEqual([renders, measures], [3, 1]);
+  // Off: every watcher removed and a pending report dropped
+  dims = { w: 800, h: 600 }; winL.resize[0]();
+  w.ov.unmount();
+  assert.equal(winL.resize.length, 0); assert.equal(winL.orientationchange.length, 0); assert.equal(ros[0].disconnected, true);
+  assert.equal((mapL.resize || []).length, 0);
+  await wait(150); assert.deepEqual([renders, measures, checks], [3, 1, 4]);
+});

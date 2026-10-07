@@ -1576,6 +1576,8 @@
   // midnights of the forecast's zone and hour ticks at local 00/06/12/18, so a 23-hour or 25-hour day of a clock change
   // is drawn at its true width with its ticks on the clock hours. Nothing is invented between frames.
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  var WEEKDAY_NAMES = { Sun: 'Sunday', Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday' };
   var RIBBON_WINDOW_H = 72;                                  // the viewport shows about three days
   var RIBBON_MIN_PX_H = 3, RIBBON_MAX_PX_H = 5;              // pixels per hour, bounded
   var RIBBON_MIN_TICK_GAP = 18;                              // hour ticks closer than this are thinned (06/18 first)
@@ -1590,23 +1592,26 @@
   }
   function buildFormatter(tz) {
     var f = null, zone = tz || 'UTC';
-    var o = { hourCycle: 'h23', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+    var o = { hourCycle: 'h23', weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
     try { f = new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: zone }, o)); }
     catch (e) { zone = 'UTC'; try { f = new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: 'UTC' }, o)); } catch (e2) { f = null; } }
     function parts(ms) {
       var d = new Date(ms);
-      if (!f) return { y: d.getUTCFullYear(), mo: MONTHS[d.getUTCMonth()], d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes() };
+      if (!f) return { y: d.getUTCFullYear(), mo: MONTHS[d.getUTCMonth()], d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes(), wd: WEEKDAYS[d.getUTCDay()] };
       var got = {}, p = f.formatToParts(d);
       for (var i = 0; i < p.length; i++) got[p[i].type] = p[i].value;
-      return { y: +got.year, mo: got.month, d: +got.day, h: (+got.hour) % 24, mi: +got.minute };   // some engines print "24" at midnight
+      return { y: +got.year, mo: got.month, d: +got.day, h: (+got.hour) % 24, mi: +got.minute, wd: got.weekday };   // some engines print "24" at midnight
     }
+    function clockOf(p) { var h12 = p.h % 12 || 12, mi = p.mi ? ':' + (p.mi < 10 ? '0' : '') + p.mi : ''; return h12 + mi + ' ' + (p.h < 12 ? 'AM' : 'PM'); }
     return {
       zone: zone, parts: parts,
       day: function (ms) { var p = parts(ms); return p.mo + ' ' + p.d; },                               // "Oct 10"
       tick: function (ms) { var h = parts(ms).h; return (h < 10 ? '0' : '') + h; },                     // "06"
-      clock: function (ms) {                                                                             // "7 AM", "7:30 PM"
-        var p = parts(ms), h12 = p.h % 12 || 12, mi = p.mi ? ':' + (p.mi < 10 ? '0' : '') + p.mi : '';
-        return h12 + mi + ' ' + (p.h < 12 ? 'AM' : 'PM');
+      clock: function (ms) { return clockOf(parts(ms)); },                                               // "7 AM", "7:30 PM"
+      // the label above the pointer: "Sun, Oct 11" + "7 AM" (one formatting pass), and the weekday's full name
+      stamp: function (ms) {
+        var p = parts(ms);
+        return { date: (p.wd ? p.wd + ', ' : '') + p.mo + ' ' + p.d, clock: clockOf(p), weekday: p.wd, weekdayName: WEEKDAY_NAMES[p.wd] || p.wd || '', day: p.mo + ' ' + p.d };
       }
     };
   }
@@ -1643,11 +1648,6 @@
     if (days.length > 1 && days[0].clamped && days[1].x < RIBBON_DAY_MIN_PX) days.shift();
     return { xs: xs, hours: hours, width: width, days: days, ticks: ticks, pxPerHour: pxPerHour, every: every,
       spanHours: (last - t0) / 3.6e6, zone: fmt.zone, fmt: fmt };
-  }
-  // "16-day forecast" from the run's real coverage (a run of under two days says its hours).
-  function forecastSpanText(spanHours) {
-    var d = spanHours / 24;
-    return d >= 2 ? Math.round(d) + '-day forecast' : Math.round(spanHours) + '-hour forecast';
   }
   // The ribbon's position and the bookkeeping of a drag. offset = the px (0..width) of the time under the fixed pointer;
   // the ribbon follows the pointer one to one (dragging right shows earlier times); nearest() is monotone in the offset,
@@ -2618,15 +2618,16 @@
     }
     this._scrubTo(idx); return true;
   };
-  // The label above the pointer: the REQUESTED time (the target while a seek is pending, else the drawn frame) and a
-  // state while the picture is not that frame yet ("loading…", or "unavailable": the previous picture stays).
+  // The label above the pointer: the REQUESTED time with its weekday (the target while a seek is pending, else the drawn
+  // frame) and a state while the picture is not that frame yet ("loading…", or "unavailable": the previous picture stays).
   Overlay.prototype._ribbonLabel = function () {
     var m = this.manifest, pending = this.target !== null && this.target !== this.frameIndex, idx = pending ? this.target : this.frameIndex;
     if (!m || idx === null || !m.frames[idx]) return { text: '…', state: '', valuetext: 'loading' };
     var fr = m.frames[idx], ms = Date.parse(fr.valid_utc), fmt = (this.ui && this.ui.layout) ? this.ui.layout.fmt : ribbonFormatter(this.opts.tz);
-    var abbr = this.opts.tzAbbr(fr.valid_utc, this.opts.tz), when = fmt.day(ms) + ' · ' + fmt.clock(ms) + (abbr ? ' ' + abbr : '');
+    var abbr = this.opts.tzAbbr(fr.valid_utc, this.opts.tz), zone = abbr ? ' ' + abbr : '', st = fmt.stamp(ms);
     var state = !pending ? '' : this._isUnavailable(idx) ? 'unavailable' : 'loading…';
-    return { text: when, state: state, valuetext: fmt.day(ms) + ', ' + fmt.clock(ms) + (abbr ? ' ' + abbr : '') + ' (+' + this._hours(fr) + ' h)' + (state ? ', ' + state.replace('…', '') : '') };
+    return { text: st.date + ' · ' + st.clock + zone, state: state,
+      valuetext: (st.weekdayName ? st.weekdayName + ', ' : '') + st.day + ', ' + st.clock + zone + ' (+' + this._hours(fr) + ' h)' + (state ? ', ' + state.replace('…', '') : '') };
   };
   // Builds the panel for a state; frame-by-frame changes only touch the live parts through _syncUI().
   // Head: the details toggle and the model's name (collapsed: the field and the time on the map). Then #ovDetails: the
@@ -2678,7 +2679,6 @@
     ui.ribbonW = ui.ribbon.clientWidth || ui.ribbonW;
     var over = mk('div', 'ov-overview');                       // the owner's small slider: the whole run at a glance
     over.appendChild(this._buildTimeline(ui, m));
-    over.appendChild(mk('div', 'ov-ribbon-span', forecastSpanText(ui.layout.spanHours)));
     wrap.appendChild(over);
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
     // legend over the LEGEND range in the site's units (the encoding range is wider; extremes clamp)
@@ -2807,7 +2807,7 @@
       frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes, TimelineState: TimelineState,
       SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector, SHEET_OPEN_PX: SHEET_OPEN_PX,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
-      forecastSpanText: forecastSpanText, RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX,
+      RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX,
       RIBBON_DAY_MIN_PX: RIBBON_DAY_MIN_PX, RIBBON_FALLBACK_W: RIBBON_FALLBACK_W }
   };
 })();

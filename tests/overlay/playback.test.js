@@ -999,8 +999,11 @@ test('section 37: _ribbonLabel gives the requested time while loading and the dr
   await w.releaseAll();
   o.opts.tz = 'Pacific/Honolulu'; o.opts.tzAbbr = () => 'HST';
   const fmt = w.I.ribbonFormatter('Pacific/Honolulu'), at = (i) => Date.parse(A.frames[i].valid_utc), hrs = (i) => A.frames[i].step;
-  const i0 = o.frameIndex, expect = (i, st) => ({ text: fmt.day(at(i)) + ' · ' + fmt.clock(at(i)) + ' HST', state: st ? st + '…' : '',
-    valuetext: fmt.day(at(i)) + ', ' + fmt.clock(at(i)) + ' HST (+' + hrs(i) + ' h)' + (st ? ', ' + st : '') });
+  const NAMES = { Sun: 'Sunday', Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday' };
+  const wd = (i) => fmt.parts(at(i)).wd;
+  const i0 = o.frameIndex, expect = (i, st) => ({ text: wd(i) + ', ' + fmt.day(at(i)) + ' · ' + fmt.clock(at(i)) + ' HST', state: st ? st + '…' : '',
+    valuetext: NAMES[wd(i)] + ', ' + fmt.day(at(i)) + ', ' + fmt.clock(at(i)) + ' HST (+' + hrs(i) + ' h)' + (st ? ', ' + st : '') });
+  assert.match(expect(i0).text, /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat), Sep \d+ · /);
   assert.deepEqual(o._ribbonLabel(), expect(i0, ''));
   const key = (i) => `gfswave/0p25/v1/${A.run}/hs/f${String(A.frames[i].step).padStart(3, '0')}.png`;
   o._scrubTo(i0 + 5); await settle();                          // beyond the ring: fetched now, its decode held

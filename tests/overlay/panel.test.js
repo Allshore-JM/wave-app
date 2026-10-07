@@ -76,9 +76,13 @@ test('desktop: head = toggle + the model name; ONE play button, then the timelin
   assert.ok(wrap.classList.contains('ov-body') && wrap.querySelector('.ov-details'), 'the transport row outside the scroll box');
   assert.equal(all(w.panel, '.ov-play').length, 1, 'exactly one play button');
   const tr = w.panel.querySelector('.ov-transport');
-  assert.deepEqual(tr.children.map((c) => c.className.split(' ')[0]), ['ov-btn', 'ov-timeline', 'ov-speed']);
+  assert.deepEqual(tr.children.map((c) => c.className.split(' ')[0]), ['ov-btn', 'ov-ribbon-wrap', 'ov-speed']);
   assert.ok(tr.children[0].classList.contains('ov-play'));
+  const over = wrap.children[1];
+  assert.equal(over.className, 'ov-overview'); assert.deepEqual(over.children.map((c) => c.className), ['ov-timeline', 'ov-ribbon-span']);
+  assert.equal(over.children[0].getAttribute('aria-label'), 'Forecast overview: the whole run'); assert.equal(text(over.children[1]), '10-day forecast');
   const t = text(w.panel);
+  assert.ok(!t.includes('Valid:'), 'the Valid line is gone: the ribbon label carries the time');
   for (const g of ['⏮', '⏭', '▶▶', '◀']) assert.ok(!t.includes(g), g);
   assert.equal(all(w.panel, 'select').length, 0, 'no speed dropdown');
   assert.ok(!/\d×/.test(t), 'no speed number on screen: ' + t);
@@ -236,4 +240,119 @@ test('loading and error states keep their texts; Retry remounts', () => withCloc
   w.ov.render({ state: 'error', message: 'frames unreachable' });
   assert.equal(text(w.panel), 'Overlay unavailable: frames unreachable Retry');
   w.panel.querySelector('.ov-retry').dispatch('click'); assert.equal(mounted, 'hs');
+}));
+
+// ---- the compass ribbon (step 3) ----
+const dispatch = (el, type, ev) => el.dispatch(type, Object.assign({ clientX: 0, clientY: 0, button: 0, pointerId: 1, key: '' }, ev || {}));
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('ribbon: the DOM (label above a fixed pointer, the track laid out by the frames\' times), aria slider, the label text and the transform', () => withClock(() => {
+  const w = world(); w.ov.render({ state: 'ready' });
+  const ui = w.ov.ui, rb = w.panel.querySelector('.ov-ribbon');
+  assert.equal(rb.getAttribute('role'), 'slider'); assert.equal(rb.tabIndex, 0); assert.equal(rb.getAttribute('aria-label'), 'Forecast time');
+  assert.equal(rb.getAttribute('aria-valuemin'), '0'); assert.equal(rb.getAttribute('aria-valuemax'), '80');
+  assert.equal(rb.getAttribute('aria-valuenow'), '3'); assert.equal(rb.getAttribute('aria-valuetext'), 'Oct 7, 5 AM HST (+9 h)');
+  assert.deepEqual(rb.children.map((c) => c.className), ['ov-ribbon-track', 'ov-ribbon-line', 'ov-ribbon-pointer']);
+  const now = w.panel.querySelector('.ov-ribbon-now');
+  assert.equal(text(now), 'Oct 7 · 5 AM HST'); assert.equal(ui.stateEl.hidden, true);
+  assert.equal(ui.ribbonW, w.I.RIBBON_FALLBACK_W, 'no layout in the fake DOM: the fallback width');
+  const L = w.I.ribbonLayout(w.m.frames, w.m.run_utc, 'Pacific/Honolulu', w.I.ribbonScale(ui.ribbonW));
+  assert.equal(ui.track.style.width, L.width + 'px');
+  const days = ui.track.children.filter((c) => c.classList.contains('ov-rb-day')), ticks = ui.track.children.filter((c) => c.classList.contains('ov-rb-tick'));
+  assert.deepEqual(days.map((d) => [d.textContent, d.style.left]), L.days.map((d) => [d.text, d.x + 'px']));
+  assert.equal(ticks.length, L.ticks.length); assert.equal(ticks.filter((t) => t.classList.contains('ov-rb-major')).length, L.ticks.filter((t) => t.major).length);
+  assert.equal(ui.rb.offset, L.xs[3]); assert.equal(ui.track.style.transform, 'translateX(' + (ui.ribbonW / 2 - L.xs[3]) + 'px)');
+  assert.equal(ui.track.style.transition, 'transform 150ms ease-out');
+  // a jump wider than the viewport (Home) moves without a transition; the overview thumb follows
+  w.ov.target = 40; w.ov.frameIndex = 40; w.ov.layer.entry = w.m.frames[40]; w.ov._syncUI();
+  assert.equal(ui.track.style.transition, 'none'); assert.equal(ui.rb.offset, L.xs[40]); assert.equal(ui.slider.value, '120');
+  assert.equal(rb.getAttribute('aria-valuenow'), '40');
+}));
+
+test('ribbon: a pending frame shows the REQUESTED time with "loading…", an unavailable one says so, the drawn frame stays', () => withClock(() => {
+  const w = world(); w.ov.render({ state: 'ready' });
+  const ui = w.ov.ui;
+  w.ov.target = 5; w.ov._syncUI();                                            // requested +15 h, drawn +9 h
+  assert.equal(text(w.panel.querySelector('.ov-ribbon-now')), 'Oct 7 · 11 AM HST loading…');
+  assert.equal(ui.stateEl.hidden, false); assert.equal(ui.ribbon.getAttribute('aria-valuetext'), 'Oct 7, 11 AM HST (+15 h), loading');
+  assert.equal(ui.rb.offset, ui.layout.xs[5], 'the pointer sits on the requested frame');
+  assert.equal(w.ov.layer.entry, w.m.frames[3], 'the picture is still the drawn frame');
+  w.ov.unavailable[w.ov._key(5)] = true; w.ov._syncUI();
+  assert.equal(text(w.panel.querySelector('.ov-ribbon-now')), 'Oct 7 · 11 AM HST unavailable');
+  assert.match(ui.ribbon.getAttribute('aria-valuetext'), /, unavailable$/);
+  w.ov.target = 3; w.ov._syncUI(); assert.equal(ui.stateEl.hidden, true);
+}));
+
+test('ribbon: a drag pauses, moves the track with the pointer, seeks the frame under the pointer (once per frame crossed) and snaps on release', async () => withClock(async () => {
+  const w = world(); w.ov.render({ state: 'ready' });
+  const ui = w.ov.ui, rb = ui.ribbon, seeks = []; w.ov.seek = (i) => { seeks.push(i); w.ov.target = i; };
+  w.ov.playing = true; w.ov.pause = function () { this.playing = false; };
+  rb.rect = { left: 100, top: 0, width: ui.ribbonW, height: 40 };
+  let ev = dispatch(rb, 'pointerdown', { clientX: 200 });
+  assert.equal(w.ov.playing, false, 'a scrub pauses'); assert.equal(ev.defaultPrevented, true); assert.equal(ev._stop, true, 'the map never sees the press');
+  assert.ok(rb.log.includes('capture:1')); assert.equal(w.doc.activeElement, rb);
+  const px = ui.layout.pxPerHour, x0 = ui.rb.offset;
+  dispatch(rb, 'pointermove', { clientX: 200 - 6 * px });                     // dragged left = 6 h later
+  assert.ok(Math.abs(ui.rb.offset - (x0 + 6 * px)) < 1e-9); assert.equal(ui.track.style.transition, 'none');
+  assert.equal(ui.track.style.transform, 'translateX(' + (ui.ribbonW / 2 - ui.rb.offset) + 'px)');
+  dispatch(rb, 'pointermove', { clientX: 200 - 7 * px }); dispatch(rb, 'pointermove', { clientX: 200 - 8 * px });
+  const mid = ui.rb.offset; w.ov.target = 2; w.ov._syncUI();
+  assert.equal(ui.rb.offset, mid, 'a sync during the drag never moves the ribbon under the finger'); w.ov.target = 3;
+  await wait(40);
+  assert.deepEqual(seeks, [6], 'one seek, for the frame nearest the LATEST position (+17 h -> +18 h), not one per move');
+  dispatch(rb, 'pointermove', { clientX: 200 - 12.2 * px }); await wait(40);
+  assert.deepEqual(seeks, [6, 7]);
+  dispatch(rb, 'pointerup', { clientX: 200 - 12.2 * px });
+  assert.equal(ui.rb.dragging, false); assert.equal(ui.rb.offset, ui.layout.xs[7], 'snapped to the nearest frame');
+  assert.equal(ui.track.style.transition, 'transform 120ms ease-out'); assert.deepEqual(seeks, [6, 7], 'the release repeats no seek');
+  // a tap picks the frame under the finger: 9 h right of the centre
+  dispatch(rb, 'pointerdown', { clientX: 300 }); dispatch(rb, 'pointerup', { clientX: 100 + ui.ribbonW / 2 + 9 * px });
+  assert.equal(seeks[seeks.length - 1], 10, '+30 h: three frames later than +21 h');
+  const r = dispatch(rb, 'pointerdown', { clientX: 300, button: 2 }); assert.equal(r.defaultPrevented, false, 'a right button is ignored');
+  // a move queued on the old panel never seeks after the panel was rebuilt
+  const n0 = seeks.length; dispatch(rb, 'pointerdown', { clientX: 300 }); dispatch(rb, 'pointermove', { clientX: 240 });
+  w.ov.render({ state: 'ready' }); await wait(40);
+  assert.equal(seeks.length, n0, 'the stale queued scrub was dropped');
+}));
+
+test('ribbon: the wheel scrolls it sideways (a vertical wheel is left alone) and snaps when it stops; keys step, jump and page', async () => withClock(async () => {
+  const w = world(); w.ov.render({ state: 'ready' });
+  const ui = w.ov.ui, rb = ui.ribbon, calls = [];
+  w.ov.seek = (i) => { calls.push(['seek', i]); w.ov.target = i; }; w.ov.step = (d) => calls.push(['step', d]);
+  let ev = dispatch(rb, 'wheel', { deltaX: 0, deltaY: 40, deltaMode: 0 });
+  assert.equal(ev.defaultPrevented, false, 'vertical: the details box scrolls'); assert.equal(ui.rb.offset, ui.layout.xs[3]);
+  ev = dispatch(rb, 'wheel', { deltaX: 13, deltaY: 2, deltaMode: 0 });
+  assert.equal(ev.defaultPrevented, true); assert.equal(ui.rb.offset, ui.layout.xs[3] + 13);
+  await wait(200);
+  assert.equal(ui.rb.offset, ui.layout.xs[4], 'snapped to the nearest frame once the wheel stopped');
+  assert.deepEqual(calls, [['seek', 4]]);
+  ev = dispatch(rb, 'wheel', { deltaX: 0, deltaY: 13, deltaMode: 0, shiftKey: true }); assert.equal(ev.defaultPrevented, true, 'shift + wheel scrolls sideways');
+  await wait(200); const o4 = ui.rb.offset;
+  ev = dispatch(rb, 'wheel', { deltaX: 5, deltaY: 40, deltaMode: 0 });
+  assert.equal(ev.defaultPrevented, false, 'a mostly vertical wheel is left alone'); assert.equal(ui.rb.offset, o4);
+  calls.length = 0;
+  ev = dispatch(rb, 'keydown', { key: 'ArrowRight' }); assert.deepEqual(calls, [['step', 1]]); assert.equal(ev.defaultPrevented, true); assert.equal(ev._stop, true);
+  dispatch(rb, 'keydown', { key: 'ArrowLeft' }); dispatch(rb, 'keydown', { key: 'ArrowUp' }); dispatch(rb, 'keydown', { key: 'ArrowDown' });
+  assert.deepEqual(calls.slice(1), [['step', -1], ['step', 1], ['step', -1]]);
+  calls.length = 0; w.ov.target = 3;
+  dispatch(rb, 'keydown', { key: 'End' }); dispatch(rb, 'keydown', { key: 'Home' }); dispatch(rb, 'keydown', { key: 'PageUp' }); dispatch(rb, 'keydown', { key: 'PageDown' });
+  assert.deepEqual(calls, [['seek', 80], ['seek', 0], ['seek', 8], ['seek', 0]]);
+  ev = dispatch(rb, 'keydown', { key: 'x' }); assert.equal(ev.defaultPrevented, false);
+}));
+
+test('ribbon: the overview slider beneath scrubs too (pausing), and the collapsed fold leaves no ribbon for a later sync to touch', () => withClock(() => {
+  const w = world(); w.ov.render({ state: 'ready' });
+  const seeks = []; w.ov.seek = (i) => { seeks.push(i); w.ov.target = i; }; w.ov.playing = true; w.ov.pause = function () { this.playing = false; };
+  const sl = w.ov.ui.slider; sl.value = '27'; sl.dispatch('input');
+  assert.deepEqual(seeks, [9]); assert.equal(w.ov.playing, false);
+  const f = world({ ctlHeight: 900 }); f.ov.render({ state: 'ready' });
+  assert.equal(f.ov.ui.ribbon, null); assert.equal(f.ov.ui.rb, null); f.ov.target = 5; f.ov._syncUI();
+  assert.equal(f.ov._ribbonLabel().text, 'Oct 7 · 11 AM HST', 'the label still computes without a ribbon (the sheet title, tests)');
+}));
+
+test('ribbon: a resize re-measures; a width change beyond 8 px rebuilds at the new scale', () => withClock(() => {
+  const w = world(); w.ov.render({ state: 'ready' });
+  const ui = w.ov.ui; let renders = 0; const render0 = w.ov.render; w.ov.render = function (st) { renders++; return render0.call(this, st); };
+  ui.ribbon.clientWidth = ui.ribbonW + 5; w.ov._ribbonMeasure(); assert.equal(renders, 0); assert.equal(w.ov.ui.ribbonW, ui.ribbonW);
+  w.ov.ui.ribbon.clientWidth = 300; w.ov._ribbonMeasure(); assert.equal(renders, 1);
 }));

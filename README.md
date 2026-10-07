@@ -297,8 +297,16 @@ soon as the map is zoomed in, from 6.5 (back below 6.25), so near coasts the dir
 at 0.5 degrees only). Data per full 209-frame loop with Animation on (scaled from run 2026092518): wave height or period
 + direction about 53 MB on desktops at the default zoom, 85 MB zoomed in; 30 MB on phones at the default zoom, 62 MB zoomed
 in to 7.5 and 85 MB beyond; wind + wind direction 59 MB (119 MB past zoom 7.5). A 1x loop takes about 105 s (the hourly
-first five days at 2 h/s, then 6 h/s). The timeline is laid out by time (+120 h at 31 % of the track) and snaps to a frame
-in the direction of travel. The panel's metadata lines give the run ("Run: 2026-10-07 06Z (UTC)", with the forecast
+first five days at 2 h/s, then 6 h/s). The timeline (asset 2.14.0) is a compass ribbon: the run's dates and hours, laid out
+by the frames' own times in the forecast's zone (3-hourly frames three times as far apart; day labels at the local midnights;
+hour ticks at 00/06/12/18, thinned when the scale is small), scroll under a fixed coral pointer, and the selected time sits
+above it ("Oct 11 · 7 AM HST"; while a frame loads it names the REQUESTED time with "loading…", or "unavailable" when that
+frame is missing, the picture staying on the frame drawn). Drag or swipe the ribbon (it follows the finger one to one and snaps
+to the nearest real frame; a tap picks the frame under the finger), scroll it sideways with the wheel, or use the keys on it
+(arrows one frame, Home / End, PageUp / PageDown a day). Every scrub pauses playback and goes through the ordinary seek, so
+obsolete fetches are cancelled and a late answer never replaces a newer choice. A thin overview slider beneath it spans the
+whole run (it snaps to a frame in the direction of travel) with the run's length under it ("16-day forecast"). The panel's
+metadata lines give the run ("Run: 2026-10-07 06Z (UTC)", with the forecast
 table's run when it differs), when it went live ("Updated: 1:33 AM HST") and when the next is expected ("Next Update: about
 7:35 AM HST": one cycle after this run's own publish time; "expected shortly" once due; "a newer run is available" with the
 Update banner), in the computer's own time zone (asset 2.14.0; was one "live since … · next update about …" line). On phones the sheet's header line leads with the forecast hour, then the valid time, and

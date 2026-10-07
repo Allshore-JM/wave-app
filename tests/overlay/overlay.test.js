@@ -540,13 +540,13 @@ test('ribbonLayout: a clock change gives a 23-hour and a 25-hour day, with the t
 test('ribbonLayout / ribbonScale: tick density follows the scale; the scale follows the viewport within 3-5 px per hour', () => {
   const frames = framesAt('2026-10-07T06:00:00Z', HOURS_81);
   assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 4.5).every, 6);
-  const L3 = I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 3);
+  const L3 = I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 2.5);
   assert.equal(L3.every, 12); assert.ok(L3.ticks.every((t) => t.text === '00' || t.text === '12'));
-  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 1.5).every, 24);
-  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 3, 10).every, 6, 'a smaller gap keeps every tick');
-  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 22 / 6).every, 6, 'exactly the gap still fits');
-  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 22 / 6 - 0.01).every, 12);
-  assert.equal(I.RIBBON_MIN_TICK_GAP, 22);
+  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 1.2).every, 24);
+  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 2.5, 10).every, 6, 'a smaller gap keeps every tick');
+  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 18 / 6).every, 6, 'exactly the gap still fits');
+  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 18 / 6 - 0.01).every, 12);
+  assert.equal(I.RIBBON_MIN_TICK_GAP, 18);
   assert.equal(I.ribbonScale(324), 4.5); assert.ok(Math.abs(I.ribbonScale(253) - 3.514) < 0.001);
   assert.equal(I.ribbonScale(10), 3); assert.equal(I.ribbonScale(1000), 5); assert.equal(I.ribbonScale(0), I.ribbonScale(300)); assert.equal(I.ribbonScale(undefined), I.ribbonScale(300));
 });

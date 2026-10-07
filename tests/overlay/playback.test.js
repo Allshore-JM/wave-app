@@ -932,3 +932,85 @@ test('plan section 37: a saved 0.5x (no longer offered) plays at 1x; setSpeed ta
   const r = await restored({}, { speed: 4 }); assert.equal(r.o.speed, 4); done(r.o);
   void w;
 });
+
+// ---- plan section 37: the compass ribbon's scrub path (drag / tap / wheel / keys all go through _scrubTo) ----
+test('section 37: a scrub across frames pauses, keeps at most MAX_INFLIGHT fetches and aborts the rest; a repeated index is free', () => onRunDay(async () => {
+  const w = world();
+  const o = await mounted(w, A);
+  o.play(); assert.equal(o.playing, true);
+  const before = w.fetches.length;
+  for (const idx of [5, 6, 7, 8, 9, 10]) { o._scrubTo(idx); await tick(); assert.ok(Object.keys(o.inflight).length <= w.I.MAX_INFLIGHT, 'inflight ' + Object.keys(o.inflight).length); }
+  assert.equal(o.playing, false, 'the first scrub paused playback'); assert.equal(o.target, 10);
+  assert.ok(o.inflight[o._key(10)], 'the latest target is in flight');
+  for (const idx of [5, 6, 7]) assert.ok(!o.inflight[o._key(idx)], 'frame ' + idx + ' was abandoned');
+  const n = w.fetches.length; o._scrubTo(10); await tick(); assert.equal(w.fetches.length, n, 'the same index again: no new fetch');
+  assert.ok(w.fetches.length - before >= 4, 'the scrub did fetch new frames');
+  o.unmount(); await w.releaseAll();
+}));
+
+test('section 37: a frame that lands late never replaces a newer scrub target', () => onRunDay(async () => {
+  const w = world();
+  const o = await mounted(w, A);
+  const drawn0 = o.layer._frame;
+  o._scrubTo(4); await settle();                               // frame 4 fetched, its decode held
+  o._scrubTo(9); await settle();                               // frame 9 fetched; frame 4's decode is still pending
+  const i4 = w.pendingBitmaps.findIndex((f) => /f012\.png/.test(f.blob.url)), i9 = w.pendingBitmaps.findIndex((f) => /f027\.png/.test(f.blob.url));
+  assert.ok(i9 >= 0, 'frame 9 is decoding');
+  if (i4 >= 0) { w.pendingBitmaps.splice(i4, 1)[0](); await settle(); }
+  assert.notEqual(o.frameIndex, 4, 'the late frame 4 did not land'); assert.equal(o.layer._frame, drawn0, 'the picture is unchanged');
+  assert.equal(o.target, 9);
+  const j9 = w.pendingBitmaps.findIndex((f) => /f027\.png/.test(f.blob.url)); w.pendingBitmaps.splice(j9, 1)[0](); await settle();
+  assert.equal(o.frameIndex, 9, 'the newer target landed');
+  o.unmount(); await w.releaseAll();
+}));
+
+test('section 37: _ribbonKey steps one available frame, jumps to the ends and pages a day; before a frame is on the map it does nothing', () => onRunDay(async () => {
+  const w = world();
+  const o = await mounted(w, A);
+  const i0 = o.frameIndex;
+  assert.equal(o._ribbonKey('ArrowRight'), true); assert.equal(o.target, i0 + 1); assert.equal(o.playing, false);
+  await w.releaseAll();
+  o.unavailable[o._key(o.frameIndex + 1)] = true;
+  assert.equal(o._ribbonKey('ArrowRight'), true); assert.equal(o.target, o.frameIndex + 2, 'an unavailable neighbour is skipped');
+  await w.releaseAll();
+  assert.equal(o._ribbonKey('Home'), true); assert.equal(o.target, 0); await w.releaseAll();
+  assert.equal(o._ribbonKey('End'), true); assert.equal(o.target, 80); await w.releaseAll();
+  assert.equal(o._ribbonKey('PageDown'), true); assert.equal(o.target, 72, '-24 h on an 81-frame run = 8 frames'); await w.releaseAll();
+  assert.equal(o._ribbonKey('PageUp'), true); assert.equal(o.target, 80); await w.releaseAll();
+  assert.equal(o._ribbonKey('Tab'), false); assert.equal(o._ribbonKey('x'), false);
+  o.unmount(); await w.releaseAll();
+  // the hourly / 3-hourly run: a page from +120 h lands on +144 h (index 128), from +123 h back on +99 h
+  const w2 = world(); const F = manifest('2026092606', '2026-09-26T06:00:00Z', 6, false, FULL_HORIZON);
+  const o2 = await mounted(w2, F);
+  o2.target = 120; o2.frameIndex = 120;
+  assert.equal(o2._ribbonKey('PageUp'), true); assert.equal(o2.target, 128); await w2.releaseAll();
+  o2.target = 121; o2.frameIndex = 121;
+  assert.equal(o2._ribbonKey('PageDown'), true); assert.equal(o2.target, 99); await w2.releaseAll();
+  o2.target = 119; o2.frameIndex = 119;                        // +143 h is between two 3-hourly frames: a page LATER lands on +144
+  assert.equal(o2._ribbonKey('PageUp'), true); assert.equal(o2.target, 128); await w2.releaseAll();
+  o2.unmount(); await w2.releaseAll();
+  const w3 = world(); w3.pointer = ptr(A); w3.manifests[A.run] = A; const o3 = w3.create();
+  assert.equal(o3._ribbonKey('ArrowRight'), false, 'nothing mounted');
+}));
+
+test('section 37: _ribbonLabel gives the requested time while loading and the drawn one after; unavailable keeps the picture', () => onRunDay(async () => {
+  const w = world();
+  const o = await mounted(w, A);
+  await w.releaseAll();
+  o.opts.tz = 'Pacific/Honolulu'; o.opts.tzAbbr = () => 'HST';
+  const fmt = w.I.ribbonFormatter('Pacific/Honolulu'), at = (i) => Date.parse(A.frames[i].valid_utc), hrs = (i) => A.frames[i].step;
+  const i0 = o.frameIndex, expect = (i, st) => ({ text: fmt.day(at(i)) + ' · ' + fmt.clock(at(i)) + ' HST', state: st ? st + '…' : '',
+    valuetext: fmt.day(at(i)) + ', ' + fmt.clock(at(i)) + ' HST (+' + hrs(i) + ' h)' + (st ? ', ' + st : '') });
+  assert.deepEqual(o._ribbonLabel(), expect(i0, ''));
+  const key = (i) => `gfswave/0p25/v1/${A.run}/hs/f${String(A.frames[i].step).padStart(3, '0')}.png`;
+  o._scrubTo(i0 + 5); await settle();                          // beyond the ring: fetched now, its decode held
+  assert.deepEqual(o._ribbonLabel(), expect(i0 + 5, 'loading'));
+  assert.equal(o.frameIndex, i0, 'the picture is still the drawn frame');
+  await w.releaseAll();
+  assert.equal(o._ribbonLabel().state, ''); assert.equal(o.frameIndex, i0 + 5);
+  w.failNext['https://x/' + key(i0 + 9)] = 404;
+  o._scrubTo(i0 + 9); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o._isUnavailable(i0 + 9), true); assert.equal(o.frameIndex, i0 + 5, 'the drawn frame stays');
+  const u = o._ribbonLabel(); assert.equal(u.text, expect(i0 + 9).text); assert.equal(u.state, 'unavailable'); assert.match(u.valuetext, /, unavailable$/);
+  o.unmount(); await w.releaseAll();
+}));

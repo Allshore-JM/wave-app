@@ -1578,12 +1578,17 @@
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   var RIBBON_WINDOW_H = 72;                                  // the viewport shows about three days
   var RIBBON_MIN_PX_H = 3, RIBBON_MAX_PX_H = 5;              // pixels per hour, bounded
-  var RIBBON_MIN_TICK_GAP = 22;                              // hour ticks closer than this are thinned (06/18 first)
+  var RIBBON_MIN_TICK_GAP = 18;                              // hour ticks closer than this are thinned (06/18 first)
   var RIBBON_DAY_MIN_PX = 40;                                // a pinned first-day label needs this much room before the next
   var RIBBON_TAP_PX = 4;                                     // a press that moves less than this is a tap, not a drag
   // Local calendar parts in a zone, through one cached Intl formatter (en-US: fixed short month names, "7 AM" clocks).
   // An unknown zone reads as UTC; without Intl at all, UTC by hand. Never throws.
+  var FMT_CACHE = {};
   function ribbonFormatter(tz) {
+    if (FMT_CACHE[tz || 'UTC']) return FMT_CACHE[tz || 'UTC'];
+    var out = buildFormatter(tz); FMT_CACHE[tz || 'UTC'] = out; return out;
+  }
+  function buildFormatter(tz) {
     var f = null, zone = tz || 'UTC';
     var o = { hourCycle: 'h23', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
     try { f = new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: zone }, o)); }
@@ -2102,7 +2107,7 @@
       if (!self.last) return;
       // the panel is rebuilt only when it has to move between the control and the sheet
       var compactNow = self.isCompact(), wasCompact = !!self.sheet;
-      if (compactNow !== wasCompact || self.sheet) self.render(self.last); else { self._syncUI(); self._layoutSheet(); }   // the sheet's cap follows the map height
+      if (compactNow !== wasCompact || self.sheet) self.render(self.last); else { self._ribbonMeasure(); self._syncUI(); self._layoutSheet(); }   // the sheet's cap follows the map height
     });
   };
   Overlay.prototype._checkRes = function () {
@@ -2497,7 +2502,7 @@
     var self = this;
     var hrs = ui.hours = m.frames.map(function (fr) { return self._hours(fr); });
     var slider = mk('input', 'ov-timeline'); slider.type = 'range'; slider.min = String(hrs[0]); slider.max = String(hrs[hrs.length - 1]); slider.step = '1';
-    slider.setAttribute('aria-label', 'Forecast hour');
+    slider.setAttribute('aria-label', 'Forecast overview: the whole run');
     var tl = ui.timeline = new TimelineState(), shownIdx = this.target !== null ? this.target : this.frameIndex;
     tl.shown = shownIdx !== null ? hrs[shownIdx] : null;
     slider.addEventListener('pointerdown', function () { tl.start(); });
@@ -2505,10 +2510,123 @@
     slider.addEventListener('input', function () {
       var idx = tl.pick(hrs, parseInt(slider.value, 10));
       slider.value = String(hrs[idx]); slider.setAttribute('aria-valuetext', '+' + hrs[idx] + ' h');
-      self.seek(idx);
+      self._scrubTo(idx);
     });
     ui.slider = slider;
     return slider;
+  };
+  // ---- the compass ribbon (plan section 37): the main timeline ----
+  // The dates and hours of the run scroll under a fixed pointer; the selected time (the REQUESTED one while a frame is
+  // loading, with a state beside it) sits above the pointer. Dragging, a tap, the wheel and the keys all go through
+  // _scrubTo: playback pauses and the frame becomes the target by the ordinary seek, so a scrub cancels the fetches it
+  // made obsolete and a late answer never replaces a newer choice (the target check in _goto). Only the track's
+  // transform changes from frame to frame; the spans are built once per render.
+  var raf = (typeof window !== 'undefined' && window.requestAnimationFrame) ? function (f) { return window.requestAnimationFrame(f); } : function (f) { return setTimeout(f, 16); };
+  var RIBBON_FALLBACK_W = 226;                                 // the viewport's width when it cannot be measured (tests)
+  Overlay.prototype._buildRibbon = function (ui, m, body, compact) {
+    var self = this;
+    var wrap = mk('div', 'ov-ribbon-wrap');
+    var now = mk('div', 'ov-ribbon-now'); ui.nowText = now.appendChild(document.createTextNode(''));
+    var state = mk('span', 'ov-ribbon-state'); state.hidden = true; now.appendChild(state); ui.stateEl = state;
+    wrap.appendChild(now);
+    var ribbon = mk('div', 'ov-ribbon'); ribbon.setAttribute('role', 'slider'); ribbon.tabIndex = 0;
+    ribbon.setAttribute('aria-label', 'Forecast time'); ribbon.setAttribute('aria-valuemin', '0'); ribbon.setAttribute('aria-valuemax', String(m.frames.length - 1));
+    var track = mk('div', 'ov-ribbon-track'); ribbon.appendChild(track);
+    ribbon.appendChild(mk('div', 'ov-ribbon-line')); ribbon.appendChild(mk('div', 'ov-ribbon-pointer'));
+    wrap.appendChild(ribbon);
+    ui.ribbon = ribbon; ui.track = track; ui.wrap = wrap;
+    body.appendChild(wrap);                                    // measured in place: the scale follows the real width
+    ui.ribbonW = ribbon.clientWidth || RIBBON_FALLBACK_W;
+    var layout = ui.layout = ribbonLayout(m.frames, m.run_utc, this.opts.tz, ribbonScale(ui.ribbonW));
+    ui.hours = layout.hours;
+    track.style.width = layout.width + 'px';
+    layout.days.forEach(function (d) { var sp = mk('span', 'ov-rb-day' + (d.clamped ? ' ov-rb-day-first' : ''), d.text); sp.style.left = d.x + 'px'; track.appendChild(sp); });
+    layout.ticks.forEach(function (t) { var sp = mk('span', 'ov-rb-tick' + (t.major ? ' ov-rb-major' : ''), t.text); sp.style.left = t.x + 'px'; track.appendChild(sp); });
+    var rb = ui.rb = new RibbonState(layout.xs);
+    var lastIdx = null, pendingIdx = null, rafId = null;
+    function queueScrub(idx) {
+      pendingIdx = idx;
+      if (rafId !== null) return;
+      rafId = raf(function () { rafId = null; if (pendingIdx !== null && self.ui === ui) self._scrubTo(pendingIdx); pendingIdx = null; });
+    }
+    ribbon.addEventListener('pointerdown', function (e) {
+      if (e.button) return;
+      e.preventDefault(); e.stopPropagation();
+      if (ribbon.setPointerCapture) { try { ribbon.setPointerCapture(e.pointerId); } catch (x) { /* no capture: the moves still arrive while over the ribbon */ } }
+      self.pause(); rb.begin(e.clientX); track.style.transition = 'none'; lastIdx = null;
+      if (ribbon.focus) { try { ribbon.focus({ preventScroll: true }); } catch (x) { ribbon.focus(); } }
+    });
+    ribbon.addEventListener('pointermove', function (e) {
+      var idx = rb.move(e.clientX); if (idx === null) return;
+      self._placeRibbon(); if (idx !== lastIdx) { lastIdx = idx; queueScrub(idx); }
+    });
+    function release(e) {
+      if (!rb.dragging) return;
+      var r = ribbon.getBoundingClientRect ? ribbon.getBoundingClientRect() : null;
+      var idx = rb.end(r && typeof e.clientX === 'number' ? e.clientX - (r.left + r.width / 2) : undefined);
+      track.style.transition = 'transform 120ms ease-out'; self._placeRibbon(); lastIdx = idx; self._scrubTo(idx);
+    }
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (ev) { ribbon.addEventListener(ev, release); });
+    var wheelSnap = null;
+    ribbon.addEventListener('wheel', function (e) {
+      var dx = e.deltaX || (e.shiftKey ? e.deltaY : 0);
+      if (!dx || (!e.shiftKey && Math.abs(e.deltaX) < Math.abs(e.deltaY))) return;   // a vertical wheel stays with the details box
+      e.preventDefault(); e.stopPropagation();
+      if (e.deltaMode === 1) dx *= 16;
+      track.style.transition = 'none';
+      var idx = rb.wheel(dx); self._placeRibbon(); queueScrub(idx);
+      if (wheelSnap) clearTimeout(wheelSnap);
+      wheelSnap = setTimeout(function () { wheelSnap = null; if (self.ui !== ui) return; rb.setFrame(rb.nearest(rb.offset)); track.style.transition = 'transform 120ms ease-out'; self._placeRibbon(); }, 150);
+    }, { passive: false });
+    ribbon.addEventListener('keydown', function (e) { if (self._ribbonKey(e.key)) { e.preventDefault(); e.stopPropagation(); } });
+    return wrap;
+  };
+  Overlay.prototype._placeRibbon = function () {
+    var ui = this.ui;
+    if (ui && ui.track && ui.rb) ui.track.style.transform = 'translateX(' + (ui.ribbonW / 2 - ui.rb.offset) + 'px)';
+  };
+  // After a resize: the viewport's width decides the scale, so a real change rebuilds; a small one just re-places.
+  Overlay.prototype._ribbonMeasure = function () {
+    var ui = this.ui;
+    if (!ui || !ui.ribbon) return;
+    var w = ui.ribbon.clientWidth || ui.ribbonW;
+    if (Math.abs(w - ui.ribbonW) > 8 && this.last) { this.render(this.last); return; }
+    ui.ribbonW = w; this._placeRibbon();
+  };
+  // A scrub (drag, tap, wheel, slider, key): playback pauses and the frame becomes the target; a repeated index is free.
+  Overlay.prototype._scrubTo = function (idx) {
+    if (this.playing) this.pause();
+    if (this.manifest && this.frameIndex !== null && idx !== this.target) this.seek(idx);
+  };
+  Overlay.prototype._ribbonHours = function () {
+    var self = this;
+    return (this.ui && this.ui.hours) || this.manifest.frames.map(function (f) { return self._hours(f); });
+  };
+  // Keys on the ribbon: the arrows step one AVAILABLE frame (step pauses and skips unavailable ones), Home / End the
+  // first / last frame, PageUp / PageDown a day (frameAtHour, snapping in the key's direction). True when handled.
+  Overlay.prototype._ribbonKey = function (key) {
+    if (!this.manifest || this.frameIndex === null) return false;
+    var cur = this.target !== null ? this.target : this.frameIndex, hrs, idx;
+    switch (key) {
+      case 'ArrowRight': case 'ArrowUp': this.step(1); return true;
+      case 'ArrowLeft': case 'ArrowDown': this.step(-1); return true;
+      case 'Home': idx = 0; break;
+      case 'End': idx = this.n - 1; break;
+      case 'PageUp': hrs = this._ribbonHours(); idx = frameAtHour(hrs, hrs[cur] + 24, true); break;
+      case 'PageDown': hrs = this._ribbonHours(); idx = frameAtHour(hrs, hrs[cur] - 24, false); break;
+      default: return false;
+    }
+    this._scrubTo(idx); return true;
+  };
+  // The label above the pointer: the REQUESTED time (the target while a seek is pending, else the drawn frame) and a
+  // state while the picture is not that frame yet ("loading…", or "unavailable": the previous picture stays).
+  Overlay.prototype._ribbonLabel = function () {
+    var m = this.manifest, pending = this.target !== null && this.target !== this.frameIndex, idx = pending ? this.target : this.frameIndex;
+    if (!m || idx === null || !m.frames[idx]) return { text: '…', state: '', valuetext: 'loading' };
+    var fr = m.frames[idx], ms = Date.parse(fr.valid_utc), fmt = (this.ui && this.ui.layout) ? this.ui.layout.fmt : ribbonFormatter(this.opts.tz);
+    var abbr = this.opts.tzAbbr(fr.valid_utc, this.opts.tz), when = fmt.day(ms) + ' · ' + fmt.clock(ms) + (abbr ? ' ' + abbr : '');
+    var state = !pending ? '' : this._isUnavailable(idx) ? 'unavailable' : 'loading…';
+    return { text: when, state: state, valuetext: fmt.day(ms) + ', ' + fmt.clock(ms) + (abbr ? ' ' + abbr : '') + ' (+' + this._hours(fr) + ' h)' + (state ? ', ' + state.replace('…', '') : '') };
   };
   // Builds the panel for a state; frame-by-frame changes only touch the live parts through _syncUI().
   // Head: the details toggle and the model's name (collapsed: the field and the time on the map). Then #ovDetails: the
@@ -2542,7 +2660,8 @@
     var title = mk('span', 'ov-title' + (!compact && !collapsed ? ' ov-model' : ''));
     head.appendChild(title);
     host.appendChild(head);
-    var ui = this.ui = { host: host, title: title, play: null, speedSel: null, slider: null, valid: null, unavail: null,
+    var ui = this.ui = { host: host, title: title, play: null, speedSel: null, slider: null, unavail: null,
+      ribbon: null, track: null, rb: null, layout: null, nowText: null, stateEl: null, ribbonW: 0,
       runText: null, updText: null, nextText: null, updLine: null, nextLine: null,
       label: label, modelName: modelName, collapsed: collapsed, compact: compact };
     if (compact && cap - host.offsetHeight - 8 < 40) { head.removeChild(btn); collapsed = ui.collapsed = true; }
@@ -2552,11 +2671,16 @@
     var tr = mk('div', 'ov-row ov-transport');
     ui.play = button('ov-play', '▶', 'Play', function () { if (self.playing) self.pause(); else self.play(); });
     tr.appendChild(ui.play);
-    tr.appendChild(this._buildTimeline(ui, m));
-    ui.speedSel = speedSelector(this, compact); tr.appendChild(ui.speedSel.root);
+    ui.speedSel = speedSelector(this, compact);
     wrap.appendChild(tr);
+    this._buildRibbon(ui, m, tr, compact);                     // measured inside the row, between the play button and the speed
+    tr.appendChild(ui.speedSel.root);
+    ui.ribbonW = ui.ribbon.clientWidth || ui.ribbonW;
+    var over = mk('div', 'ov-overview');                       // the owner's small slider: the whole run at a glance
+    over.appendChild(this._buildTimeline(ui, m));
+    over.appendChild(mk('div', 'ov-ribbon-span', forecastSpanText(ui.layout.spanHours)));
+    wrap.appendChild(over);
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
-    var valid = mk('div', 'ov-meta'); body.appendChild(valid); ui.valid = valid;
     // legend over the LEGEND range in the site's units (the encoding range is wider; extremes clamp)
     var leg = mk('div', 'ov-legend'), cv = mk('canvas'); cv.width = 256; cv.height = 1; leg.appendChild(cv);
     var lut = legendBar(field, f.legend), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);        // the bar is laid out by legend position
@@ -2604,7 +2728,8 @@
     if (room < 40) {
       ui.speedSel.close(false);
       host.removeChild(wrap); head.removeChild(btn); this.collapsed = true; ui.collapsed = true;
-      ui.play = null; ui.speedSel = null; ui.slider = null; ui.valid = null; ui.unavail = null;
+      ui.play = null; ui.speedSel = null; ui.slider = null; ui.unavail = null;
+      ui.ribbon = ui.track = ui.rb = ui.nowText = ui.stateEl = null;
       ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
       if (!compact && title.classList) title.classList.remove('ov-model');
       this._syncUI();
@@ -2614,8 +2739,8 @@
     this._layoutSheet();
   };
   // The live parts: the play/pause glyph and the playing look (the chosen animal moves), the speed button, the title,
-  // the valid-time line (from the DRAWN frame; a pending target is announced as loading), the timeline thumb (at the
-  // target) and the unavailable-frame note.
+  // the ribbon (its label = the requested time with a loading state, its position = the target), the overview slider's
+  // thumb (at the target) and the unavailable-frame note.
   Overlay.prototype._syncUI = function () {
     var ui = this.ui;
     if (!ui || !this.manifest || !this.layer) return;
@@ -2635,16 +2760,18 @@
     } else {
       ui.title.textContent = ui.collapsed ? ui.label + ' · ' + validLocal + (hours === null ? '' : ' (+' + hours + ' h)') : ui.modelName;
     }
-    if (ui.valid) {
-      clear(ui.valid);
-      ui.valid.appendChild(mk('b', null, 'Valid: '));
-      ui.valid.appendChild(document.createTextNode(validLocal + (hours === null ? '' : ' (+' + hours + ' h)')));
-      if (pending) {
-        var t = this.manifest.frames[this.target], hint = this._isUnavailable(this.target) ? ' — frame +' + this._hours(t) + ' h is unavailable' : ' — loading +' + this._hours(t) + ' h…';
-        ui.valid.appendChild(mk('span', 'ov-hint', hint));
+    var si = this.target !== null ? this.target : this.frameIndex;
+    if (ui.ribbon && ui.rb && si !== null) {
+      var lb = this._ribbonLabel();
+      ui.nowText.nodeValue = lb.text; ui.stateEl.textContent = lb.state ? ' ' + lb.state : ''; ui.stateEl.hidden = !lb.state;
+      ui.ribbon.setAttribute('aria-valuenow', String(si)); ui.ribbon.setAttribute('aria-valuetext', lb.valuetext);
+      if (!ui.rb.dragging) {
+        var prev = ui.rb.offset; ui.rb.setFrame(si);
+        var jump = Math.abs(ui.rb.offset - prev) > ui.ribbonW, ms = (jump || reducedMotion() || (this.playing && this.speed >= 4)) ? 0 : 150;
+        ui.track.style.transition = ms ? 'transform ' + ms + 'ms ease-out' : 'none';
+        this._placeRibbon();
       }
     }
-    var si = this.target !== null ? this.target : this.frameIndex;
     if (ui.slider && ui.hours && si !== null && !(ui.timeline && ui.timeline.dragging)) {
       ui.slider.value = String(ui.hours[si]); ui.slider.setAttribute('aria-valuetext', '+' + ui.hours[si] + ' h');
       if (ui.timeline) ui.timeline.shown = ui.hours[si];
@@ -2681,6 +2808,6 @@
       SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector, SHEET_OPEN_PX: SHEET_OPEN_PX,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
       forecastSpanText: forecastSpanText, RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX,
-      RIBBON_DAY_MIN_PX: RIBBON_DAY_MIN_PX }
+      RIBBON_DAY_MIN_PX: RIBBON_DAY_MIN_PX, RIBBON_FALLBACK_W: RIBBON_FALLBACK_W }
   };
 })();

@@ -310,8 +310,10 @@ whole run (it snaps to a frame in the direction of travel); the run's length is 
 metadata lines give the run ("Run: 2026-10-07 06Z (UTC)", with the forecast
 table's run when it differs), when it went live ("Updated: 1:33 AM HST") and when the next is expected ("Next Update: about
 7:35 AM HST": one cycle after this run's own publish time; "expected shortly" once due; "a newer run is available" with the
-Update banner), in the computer's own time zone (asset 2.14.0; was one "live since … · next update about …" line). On phones the sheet's header line leads with the forecast hour, then the valid time, and
-shows a pending seek ("+213 h → +9 h loading…"). A direction is shown only for the step on the map: a step change clears the animation until that step's
+Update banner), in the computer's own time zone (asset 2.14.0; was one "live since … · next update about …" line). The head row
+(desktop panel and phone sheet alike) names the model while the panel is open and, folded, shows one line "Thu, Oct 8, 06:00 PM
+HST" (weekday, date, the table's clock, zone; a pending seek adds "· loading…" or "· unavailable"; asset 2.14.3, owner
+2026-10-07: no field name, no hour count; before: "+213 h → +9 h loading…" on phones). A direction is shown only for the step on the map: a step change clears the animation until that step's
 direction frame has landed, so an older direction is never drawn under a newer time. The flow is built as vectors on
 the model's nodes (the field value under the node times its FROM direction; the direction is the spectral peak's, NOAA
 DIRPW: the partition carrying the peak period, which is not always the forecast table's first swell) and interpolated
@@ -340,14 +342,15 @@ removed by the gated overlay block (`map.removeControl(map.zoomControl)`; the wh
 zoom, the Home button stays); with the overlay flag unset the page is unchanged.
 Panel redesign (asset 2.14.0, owner 2026-10-07, plan section 37): the control is ivory with navy text and teal controls in the
 logo's palette (14 px corners, up to 340 px wide on desktops); the "Model overlay" heading is gone (the select keeps it as its
-accessible name) and the head row shows the model's name from the manifest ("NOAA/NCEP GFS-Wave (WAVEWATCH III)"). One
+accessible name) and the head row shows the model's name from the manifest without its agency prefix ("GFS-Wave (WAVEWATCH
+III)"; asset 2.14.3, owner; NOAA stays in the map's attribution). One
 play / pause button sits beside the timeline (no first / previous / next / last buttons). The playback speed is an
 illustrated selector: a button with the chosen animal (the owner's art: snail 1x, fish 2x, shark 4x; 0.5x dropped) opening a
 listbox of the three, keyboard-operable (arrows, Home / End, Enter / Space, Escape, Tab), closed by a press outside; the
 speeds appear only in tooltips and accessible names. While playing, the chosen animal bobs (snail) or swings its tail (fish,
 shark); not under reduced motion. The legend strip is taller with clearer labels (the colours and tick positions are
 unchanged). On phones the sheet opens with its details when 40 % of the map is at least 110 px (else the one-line summary,
-as before), with the model's name in the details. Asset 2.14.1 (test-site fixes): the keys stop at the first and last
+as before). Asset 2.14.1 (test-site fixes): the keys stop at the first and last
 available frames; a field switch while a scrubbed frame is still loading keeps the requested time (Retry still goes back to
 the frame on the map); a pinned first-day label is dropped unless the next date is at least 60 px away; and the panel follows
 window resizes and rotations by watching the window and the map container (the page has Leaflet re-read the map size before

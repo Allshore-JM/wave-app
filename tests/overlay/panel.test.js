@@ -77,7 +77,7 @@ test('desktop: head = toggle + the model name; ONE play button, then the timelin
   const w = world(); w.ov.render({ state: 'ready' });
   const head = w.panel.querySelector('.ov-head');
   assert.deepEqual(head.children.map((c) => c.className), ['ov-toggle', 'ov-title ov-model']);
-  assert.equal(text(head.children[1]), 'NOAA/NCEP GFS-Wave (WAVEWATCH III)', 'the manifest name up to " + ", never the field again');
+  assert.equal(text(head.children[1]), 'GFS-Wave (WAVEWATCH III)', 'the manifest name up to " + " without the agency prefix (owner, 2026-10-07), never the field again');
   const tog = w.panel.querySelector('.ov-toggle');
   assert.equal(tog.getAttribute('aria-expanded'), 'true'); assert.equal(tog.getAttribute('aria-controls'), 'ovDetails');
   const wrap = w.panel.querySelector('#ovDetails');
@@ -129,9 +129,15 @@ test('legend: the bar and the ticks come from the same functions as before (posi
   }
 }));
 
-test('collapsed: the one-line summary (field, time on the map, hour) with the one play button in the head; the toggle reopens', () => withClock(() => {
+test('collapsed: the one-line summary (weekday, date, time, zone; no field, no hour count) with the one play button in the head; the toggle reopens', () => withClock(() => {
   const w = world(); w.ov.collapsed = true; w.ov.render({ state: 'ready' });
-  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wave height · Oct 7, 03:00 PM HST (+9 h)');
+  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct 7, 03:00 PM HST', 'owner, 2026-10-07');
+  assert.equal(w.panel.querySelector('.ov-title').className, 'ov-title');
+  w.ov.target = 9; w.ov._syncUI();                                            // a seek pending: the requested time with its state
+  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct 7, 03:00 PM HST · loading…');
+  w.ov.unavailable[w.ov._key(9)] = true; w.ov._syncUI();
+  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct 7, 03:00 PM HST · unavailable');
+  w.ov.target = 3; w.ov._syncUI();
   assert.equal(w.panel.querySelector('#ovDetails'), null);
   assert.equal(all(w.panel, '.ov-play').length, 1, 'playback stays in reach'); assert.equal(w.ov.ui.play, headPlay(w.panel));
   assert.deepEqual(w.panel.querySelector('.ov-head').children.map((c) => c.className.split(' ').pop()), ['ov-toggle', 'ov-play-head', 'ov-title']);
@@ -139,22 +145,24 @@ test('collapsed: the one-line summary (field, time on the map, hour) with the on
   w.ov.ui.play.dispatch('click'); assert.equal(w.ov.playing, true); assert.equal(w.ov.ui.play.textContent, '❚❚');
   w.ov.ui.play.dispatch('click'); assert.equal(w.ov.playing, false); assert.equal(calls, 2);
   w.panel.querySelector('.ov-toggle').dispatch('click');
-  assert.ok(w.panel.querySelector('#ovDetails')); assert.equal(text(w.panel.querySelector('.ov-title')), 'NOAA/NCEP GFS-Wave (WAVEWATCH III)');
+  assert.ok(w.panel.querySelector('#ovDetails')); assert.equal(text(w.panel.querySelector('.ov-title')), 'GFS-Wave (WAVEWATCH III)');
   assert.equal(all(w.panel, '.ov-play').length, 1, 'expanded: only the one beside the ribbon'); assert.equal(headPlay(w.panel), null);
 }));
 
-test('phone sheet: opens expanded when 40 % of the map holds the transport row, collapsed when it cannot; the model line in the details', () => withClock(() => {
+test('phone sheet: opens expanded when 40 % of the map holds the transport row, collapsed when it cannot; the head carries the model (open) or the one-line summary (folded)', () => withClock(() => {
   const w = world({ dims: { w: 375, h: 700 } }); w.ov.render({ state: 'ready' });
   const sheet = w.container.querySelector('.ov-sheet');
   assert.ok(sheet && sheet.getAttribute('role') === 'region'); assert.equal(w.panel.children.length, 0, 'the control keeps only the select');
   assert.ok(sheet.querySelector('#ovDetails'), 'expanded: 40 % of 700 px = 280 px');
-  assert.equal(text(sheet.querySelector('.ov-title')), '+9 h · Oct 7, 03:00 PM HST');
-  assert.equal(text(sheet.querySelector('.ov-model')), 'NOAA/NCEP GFS-Wave (WAVEWATCH III)');
+  assert.equal(text(sheet.querySelector('.ov-title')), 'GFS-Wave (WAVEWATCH III)', 'open: the model, as on desktops (the time is in the ribbon label)');
+  assert.equal(all(sheet, '.ov-model').length, 1, 'the model is named once (no line in the details any more)');
+  assert.equal(text(sheet.querySelector('.ov-ribbon-now')), 'Wed, Oct 7 · 5 AM HST', 'frame 3 = +9 h = 15Z = 5 AM HST (the summary line uses the fixed clock text of this harness)');
   assert.equal(all(sheet, '.ov-play').length, 1);
   const s = world({ dims: { w: 375, h: 260 } }); s.ov.render({ state: 'ready' });  // 40 % = 104 px < 110
   const sh = s.container.querySelector('.ov-sheet');
   assert.equal(sh.querySelector('#ovDetails'), null, 'a short map: the one-line summary, as before');
   assert.equal(all(sh, '.ov-play').length, 1); assert.ok(headPlay(sh), 'with the play button in the head');
+  assert.equal(text(sh.querySelector('.ov-title')), 'Wed, Oct 7, 03:00 PM HST', 'folded: the same one line as the desktop panel');
   assert.equal(s.ov.collapsed, undefined, 'folded by the size, nothing saved');
   sh.querySelector('.ov-toggle').dispatch('click');                                // the viewer opens it: the rendered state flips
   assert.equal(s.ov.collapsed, false); assert.ok(sh.querySelector('#ovDetails'));
@@ -250,7 +258,7 @@ test('no room for the details (a very short map): the one-line summary with the 
   assert.equal(w.ov.ui.play, headPlay(w.panel), 'the one play button, in the head');
   assert.equal(w.ov.ui.collapsed, true); assert.equal(w.panel.querySelector('.ov-toggle'), null);
   assert.notEqual(w.ov.collapsed, true, 'a fold belongs to the size: never saved as a collapse');
-  assert.match(text(w.panel.querySelector('.ov-title')), /^Wave height · /);
+  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct 7, 03:00 PM HST');
   w.ov.playing = true; w.ov._syncUI(); w.ov._refreshRunLine();               // must not throw
   assert.equal(w.ov.ui.play.textContent, '❚❚');
 }));

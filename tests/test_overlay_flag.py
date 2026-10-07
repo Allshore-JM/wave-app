@@ -185,12 +185,12 @@ def test_overlay_js_syntax_and_contract_strings():
                    "FIXED_OPACITY",
                    "frameAtHour", "'Updated: '", "'Next Update: '", "'expected shortly'", "'a newer run is available'",
                    "SPEED_ANIMALS", "'snail.png'", "'fish.png'", "'shark.png'", "'listbox'", "'option'", "ov-playing", "speedOf",
-                   "ov-ribbon", "'slider'", "aria-valuetext", "_scrubTo", "ribbonLayout", "RibbonState", "forecastSpanText",
+                   "ov-ribbon", "'slider'", "aria-valuetext", "_scrubTo", "ribbonLayout", "RibbonState", "weekday: 'short'", "WEEKDAY_NAMES",
                    "World_Hillshade", "mixBlendMode", "coastEdges", "_syncLook"):
         assert needle in js, needle
     for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row
                  "'live since '", "next update about ", "'First frame'", "'Previous frame'", "'Next frame'", "'Last frame'",
-                 "[0.5, 1, 2, 4]", "'Valid: '"):                                                       # section 37: one play button, animals, the ribbon
+                 "[0.5, 1, 2, 4]", "'Valid: '", "forecastSpanText", "-day forecast"):                                                       # section 37: one play button, animals, the ribbon
         assert gone not in js, gone
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:

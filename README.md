@@ -300,12 +300,12 @@ in to 7.5 and 85 MB beyond; wind + wind direction 59 MB (119 MB past zoom 7.5). 
 first five days at 2 h/s, then 6 h/s). The timeline (asset 2.14.0) is a compass ribbon: the run's dates and hours, laid out
 by the frames' own times in the forecast's zone (3-hourly frames three times as far apart; day labels at the local midnights;
 hour ticks at 00/06/12/18, thinned when the scale is small), scroll under a fixed coral pointer, and the selected time sits
-above it ("Oct 11 · 7 AM HST"; while a frame loads it names the REQUESTED time with "loading…", or "unavailable" when that
+above it with its weekday ("Sun, Oct 11 · 7 AM HST"; while a frame loads it names the REQUESTED time with "loading…", or "unavailable" when that
 frame is missing, the picture staying on the frame drawn). Drag or swipe the ribbon (it follows the finger one to one and snaps
 to the nearest real frame; a tap picks the frame under the finger), scroll it sideways with the wheel, or use the keys on it
 (arrows one frame, Home / End, PageUp / PageDown a day). Every scrub pauses playback and goes through the ordinary seek, so
 obsolete fetches are cancelled and a late answer never replaces a newer choice. A thin overview slider beneath it spans the
-whole run (it snaps to a frame in the direction of travel) with the run's length under it ("16-day forecast"). The panel's
+whole run (it snaps to a frame in the direction of travel); the run's length is not shown (owner). The panel's
 metadata lines give the run ("Run: 2026-10-07 06Z (UTC)", with the forecast
 table's run when it differs), when it went live ("Updated: 1:33 AM HST") and when the next is expected ("Next Update: about
 7:35 AM HST": one cycle after this run's own publish time; "expected shortly" once due; "a newer run is available" with the

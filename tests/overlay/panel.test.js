@@ -39,7 +39,8 @@ function world(o) {
   const ctl = doc.createElement('div'); ctl.classList.add('ov-ctl'); doc.body.appendChild(ctl); ctl.offsetHeight = o.ctlHeight || 0;
   const panel = doc.createElement('div'); panel.id = 'ovPanel'; ctl.appendChild(panel);
   const container = doc.createElement('div'); container.style = { setProperty() {}, removeProperty() {} }; doc.body.appendChild(container);
-  const win = { innerHeight: o.innerHeight || 800, matchMedia: undefined, addEventListener() {}, removeEventListener() {} };
+  const win = { innerHeight: o.innerHeight || 800, addEventListener() {}, removeEventListener() {},
+    matchMedia: o.reduced ? (q) => ({ matches: /reduced-motion/.test(q) }) : undefined };
   const L = { GridLayer: { prototype: { initialize(x) { this.options = x; this._tiles = {}; } },
     extend(p) { function C(x) { p.initialize.call(this, x); } C.prototype = Object.assign({ setOpacity() {}, addTo() { return this; } }, p); return C; } },
     DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} } };
@@ -79,10 +80,11 @@ test('desktop: head = toggle + the model name; ONE play button, then the timelin
   assert.deepEqual(tr.children.map((c) => c.className.split(' ')[0]), ['ov-btn', 'ov-ribbon-wrap', 'ov-speed']);
   assert.ok(tr.children[0].classList.contains('ov-play'));
   const over = wrap.children[1];
-  assert.equal(over.className, 'ov-overview'); assert.deepEqual(over.children.map((c) => c.className), ['ov-timeline', 'ov-ribbon-span']);
-  assert.equal(over.children[0].getAttribute('aria-label'), 'Forecast overview: the whole run'); assert.equal(text(over.children[1]), '10-day forecast');
+  assert.equal(over.className, 'ov-overview'); assert.deepEqual(over.children.map((c) => c.className), ['ov-timeline']);
+  assert.equal(over.children[0].getAttribute('aria-label'), 'Forecast overview: the whole run');
   const t = text(w.panel);
   assert.ok(!t.includes('Valid:'), 'the Valid line is gone: the ribbon label carries the time');
+  assert.ok(!/-(day|hour) forecast/.test(t), 'no run-length line (owner, 2026-10-07)');
   for (const g of ['⏮', '⏭', '▶▶', '◀']) assert.ok(!t.includes(g), g);
   assert.equal(all(w.panel, 'select').length, 0, 'no speed dropdown');
   assert.ok(!/\d×/.test(t), 'no speed number on screen: ' + t);
@@ -251,15 +253,16 @@ test('ribbon: the DOM (label above a fixed pointer, the track laid out by the fr
   const ui = w.ov.ui, rb = w.panel.querySelector('.ov-ribbon');
   assert.equal(rb.getAttribute('role'), 'slider'); assert.equal(rb.tabIndex, 0); assert.equal(rb.getAttribute('aria-label'), 'Forecast time');
   assert.equal(rb.getAttribute('aria-valuemin'), '0'); assert.equal(rb.getAttribute('aria-valuemax'), '80');
-  assert.equal(rb.getAttribute('aria-valuenow'), '3'); assert.equal(rb.getAttribute('aria-valuetext'), 'Oct 7, 5 AM HST (+9 h)');
+  assert.equal(rb.getAttribute('aria-valuenow'), '3'); assert.equal(rb.getAttribute('aria-valuetext'), 'Wednesday, Oct 7, 5 AM HST (+9 h)');
   assert.deepEqual(rb.children.map((c) => c.className), ['ov-ribbon-track', 'ov-ribbon-line', 'ov-ribbon-pointer']);
   const now = w.panel.querySelector('.ov-ribbon-now');
-  assert.equal(text(now), 'Oct 7 · 5 AM HST'); assert.equal(ui.stateEl.hidden, true);
+  assert.equal(text(now), 'Wed, Oct 7 · 5 AM HST'); assert.equal(ui.stateEl.hidden, true);
   assert.equal(ui.ribbonW, w.I.RIBBON_FALLBACK_W, 'no layout in the fake DOM: the fallback width');
   const L = w.I.ribbonLayout(w.m.frames, w.m.run_utc, 'Pacific/Honolulu', w.I.ribbonScale(ui.ribbonW));
   assert.equal(ui.track.style.width, L.width + 'px');
   const days = ui.track.children.filter((c) => c.classList.contains('ov-rb-day')), ticks = ui.track.children.filter((c) => c.classList.contains('ov-rb-tick'));
   assert.deepEqual(days.map((d) => [d.textContent, d.style.left]), L.days.map((d) => [d.text, d.x + 'px']));
+  assert.ok(days.every((d) => /^[A-Z][a-z]{2} \d{1,2}$/.test(d.textContent)), 'the ribbon\'s own day labels stay "Oct 8" (no weekday)');
   assert.equal(ticks.length, L.ticks.length); assert.equal(ticks.filter((t) => t.classList.contains('ov-rb-major')).length, L.ticks.filter((t) => t.major).length);
   assert.equal(ui.rb.offset, L.xs[3]); assert.equal(ui.track.style.transform, 'translateX(' + (ui.ribbonW / 2 - L.xs[3]) + 'px)');
   assert.equal(ui.track.style.transition, 'transform 150ms ease-out');
@@ -273,12 +276,12 @@ test('ribbon: a pending frame shows the REQUESTED time with "loading…", an una
   const w = world(); w.ov.render({ state: 'ready' });
   const ui = w.ov.ui;
   w.ov.target = 5; w.ov._syncUI();                                            // requested +15 h, drawn +9 h
-  assert.equal(text(w.panel.querySelector('.ov-ribbon-now')), 'Oct 7 · 11 AM HST loading…');
-  assert.equal(ui.stateEl.hidden, false); assert.equal(ui.ribbon.getAttribute('aria-valuetext'), 'Oct 7, 11 AM HST (+15 h), loading');
+  assert.equal(text(w.panel.querySelector('.ov-ribbon-now')), 'Wed, Oct 7 · 11 AM HST loading…');
+  assert.equal(ui.stateEl.hidden, false); assert.equal(ui.ribbon.getAttribute('aria-valuetext'), 'Wednesday, Oct 7, 11 AM HST (+15 h), loading');
   assert.equal(ui.rb.offset, ui.layout.xs[5], 'the pointer sits on the requested frame');
   assert.equal(w.ov.layer.entry, w.m.frames[3], 'the picture is still the drawn frame');
   w.ov.unavailable[w.ov._key(5)] = true; w.ov._syncUI();
-  assert.equal(text(w.panel.querySelector('.ov-ribbon-now')), 'Oct 7 · 11 AM HST unavailable');
+  assert.equal(text(w.panel.querySelector('.ov-ribbon-now')), 'Wed, Oct 7 · 11 AM HST unavailable');
   assert.match(ui.ribbon.getAttribute('aria-valuetext'), /, unavailable$/);
   w.ov.target = 3; w.ov._syncUI(); assert.equal(ui.stateEl.hidden, true);
 }));
@@ -347,7 +350,7 @@ test('ribbon: the overview slider beneath scrubs too (pausing), and the collapse
   assert.deepEqual(seeks, [9]); assert.equal(w.ov.playing, false);
   const f = world({ ctlHeight: 900 }); f.ov.render({ state: 'ready' });
   assert.equal(f.ov.ui.ribbon, null); assert.equal(f.ov.ui.rb, null); f.ov.target = 5; f.ov._syncUI();
-  assert.equal(f.ov._ribbonLabel().text, 'Oct 7 · 11 AM HST', 'the label still computes without a ribbon (the sheet title, tests)');
+  assert.equal(f.ov._ribbonLabel().text, 'Wed, Oct 7 · 11 AM HST', 'the label still computes without a ribbon (the sheet title, tests)');
 }));
 
 test('ribbon: a resize re-measures; a width change beyond 8 px rebuilds at the new scale', () => withClock(() => {
@@ -355,4 +358,14 @@ test('ribbon: a resize re-measures; a width change beyond 8 px rebuilds at the n
   const ui = w.ov.ui; let renders = 0; const render0 = w.ov.render; w.ov.render = function (st) { renders++; return render0.call(this, st); };
   ui.ribbon.clientWidth = ui.ribbonW + 5; w.ov._ribbonMeasure(); assert.equal(renders, 0); assert.equal(w.ov.ui.ribbonW, ui.ribbonW);
   w.ov.ui.ribbon.clientWidth = 300; w.ov._ribbonMeasure(); assert.equal(renders, 1);
+}));
+
+test('ribbon: under reduced motion the ribbon moves without a transition (also when a step is a short one)', () => withClock(() => {
+  const w = world({ reduced: true }); w.ov.render({ state: 'ready' });
+  w.ov.target = 4; w.ov._syncUI();
+  assert.equal(w.ov.ui.track.style.transition, 'none');
+  const n = world(); n.ov.render({ state: 'ready' }); n.ov.target = 4; n.ov._syncUI();
+  assert.equal(n.ov.ui.track.style.transition, 'transform 150ms ease-out', 'a short step glides otherwise');
+  n.ov.playing = true; n.ov.speed = 4; n.ov.target = 5; n.ov._syncUI();
+  assert.equal(n.ov.ui.track.style.transition, 'none', 'at the shark speed every step is a jump');
 }));

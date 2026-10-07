@@ -452,7 +452,20 @@ test('ribbonFormatter: day / tick / clock texts in a zone; an unknown zone reads
   const f = I.ribbonFormatter('Pacific/Honolulu'), t = Date.parse('2026-10-11T17:00:00Z');                 // 7 AM HST
   assert.equal(f.zone, 'Pacific/Honolulu');
   assert.equal(f.day(t), 'Oct 11'); assert.equal(f.clock(t), '7 AM'); assert.equal(f.tick(t), '07');
-  assert.deepEqual(f.parts(t), { y: 2026, mo: 'Oct', d: 11, h: 7, mi: 0 });
+  assert.deepEqual(f.parts(t), { y: 2026, mo: 'Oct', d: 11, h: 7, mi: 0, wd: 'Sun' });
+  assert.deepEqual(f.stamp(t), { date: 'Sun, Oct 11', clock: '7 AM', weekday: 'Sun', weekdayName: 'Sunday', day: 'Oct 11' });
+  // the weekday turns over at the LOCAL midnight: 23:59 HST Saturday, 00:00 HST Sunday
+  assert.equal(f.stamp(Date.parse('2026-10-11T09:59:00Z')).date, 'Sat, Oct 10'); assert.equal(f.stamp(Date.parse('2026-10-11T10:00:00Z')).date, 'Sun, Oct 11');
+  assert.equal(I.ribbonFormatter('UTC').stamp(Date.parse('2026-10-11T09:59:00Z')).date, 'Sun, Oct 11', 'the same instant is already Sunday in UTC');
+  assert.equal(f.stamp(Date.parse('2026-10-31T12:00:00Z')).date, 'Sat, Oct 31'); assert.equal(f.stamp(Date.parse('2026-11-01T12:00:00Z')).date, 'Sun, Nov 1');
+  // without Intl (very old engines) the formatter falls back to UTC by hand, weekday included, and never throws
+  const DTF = Intl.DateTimeFormat;
+  try {
+    Intl.DateTimeFormat = function () { throw new RangeError('no Intl'); };
+    const u = I.ribbonFormatter('No/IntlZone');
+    assert.equal(u.zone, 'UTC'); assert.deepEqual(u.parts(t), { y: 2026, mo: 'Oct', d: 11, h: 17, mi: 0, wd: 'Sun' });
+    assert.equal(u.stamp(Date.parse('2026-10-13T01:00:00Z')).date, 'Tue, Oct 13'); assert.equal(u.clock(t), '5 PM');
+  } finally { Intl.DateTimeFormat = DTF; }
   const mid = Date.parse('2026-10-11T10:00:00Z');                                                            // midnight HST
   assert.equal(f.tick(mid), '00'); assert.equal(f.clock(mid), '12 AM'); assert.equal(f.clock(mid + 12 * 3.6e6), '12 PM');
   assert.equal(f.clock(Date.parse('2026-10-11T05:30:00Z')), '7:30 PM', 'minutes only when not on the hour');
@@ -460,7 +473,7 @@ test('ribbonFormatter: day / tick / clock texts in a zone; an unknown zone reads
   assert.equal(u.zone, 'UTC'); assert.equal(u.day(t), 'Oct 11'); assert.equal(u.clock(t), '5 PM');
   assert.equal(I.ribbonFormatter(undefined).zone, 'UTC');
   const k = I.ribbonFormatter('Asia/Kolkata');                                                               // a half-hour zone
-  assert.deepEqual(k.parts(Date.parse('2026-10-11T18:30:00Z')), { y: 2026, mo: 'Oct', d: 12, h: 0, mi: 0 });
+  assert.deepEqual(k.parts(Date.parse('2026-10-11T18:30:00Z')), { y: 2026, mo: 'Oct', d: 12, h: 0, mi: 0, wd: 'Mon' });
 });
 
 test('localMidnightBefore: plain days, both clock changes of New York, a half-hour zone', () => {
@@ -483,10 +496,10 @@ test('ribbonLayout: positions from the frames\' own times (3-hourly frames three
   const L = I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', HOURS_209), '2026-10-07T06:00:00Z', 'Pacific/Honolulu', 4.5);
   assert.equal(L.xs.length, 209); assert.equal(L.xs[0], 0); assert.equal(L.xs[1], 4.5); assert.equal(L.xs[120], 540);
   assert.equal(L.xs[121] - L.xs[120], 13.5); assert.equal(L.width, 384 * 4.5); assert.equal(L.hours[208], 384); assert.equal(L.hours[0], 0);
-  assert.equal(L.spanHours, 384); assert.equal(I.forecastSpanText(L.spanHours), '16-day forecast'); assert.equal(L.every, 6);
+  assert.equal(L.spanHours, 384); assert.equal(L.every, 6);
   const O = I.ribbonLayout(framesAt('2026-09-22T12:00:00Z', HOURS_81), '2026-09-22T12:00:00Z', 'UTC', 4.5);
-  assert.equal(O.xs[1], 13.5); assert.equal(O.width, 240 * 4.5); assert.equal(O.spanHours, 240); assert.equal(I.forecastSpanText(O.spanHours), '10-day forecast');
-  assert.equal(I.forecastSpanText(36), '36-hour forecast'); assert.equal(I.forecastSpanText(48), '2-day forecast');
+  assert.equal(O.xs[1], 13.5); assert.equal(O.width, 240 * 4.5); assert.equal(O.spanHours, 240);
+  assert.equal(I.forecastSpanText, undefined, 'the run-length line is gone (owner, 2026-10-07)');
   // frames that do not start at the run (a trimmed run): hours count from the run, xs from the first frame
   const Tr = I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', [6, 9, 12]), '2026-10-07T06:00:00Z', 'UTC', 4);
   assert.deepEqual(Tr.hours, [6, 9, 12]); assert.deepEqual(Tr.xs, [0, 12, 24]); assert.equal(Tr.spanHours, 6);

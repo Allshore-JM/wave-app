@@ -320,7 +320,7 @@ test('FrameCache: LRU with a cap, never evicts the frame on the map', () => {
   assert.equal(c.get('zz'), null);
   c.clear(); assert.equal(c.size(), 0);
   assert.equal(I.MAX_DECODED, 5); assert.equal(I.MAX_INFLIGHT, 2);
-  assert.deepEqual(Array.from(I.SPEEDS), [0.5, 1, 2, 4]); assert.equal(I.BASE_FPS, 2);
+  assert.deepEqual(Array.from(I.SPEEDS), [1, 2, 4]); assert.equal(I.BASE_FPS, 2);
 });
 
 test('failureKind: missing or undecodable frames are permanent, everything else is retried', () => {
@@ -585,7 +585,7 @@ test('RibbonState: nearest frame (ties later), clamping, a drag follows the poin
   const one = new I.RibbonState([0]); assert.equal(one.nearest(100), 0); assert.equal(one.width, 0); one.begin(0); assert.equal(one.end(5), 0);
 });
 
-test('runTimes / localClock: live since and the next update in the computer time zone (weekday only when not today; rounded up to 5 min)', () => {
+test('runTimes / localClock: the Updated and Next Update parts in the computer time zone (weekday only when not today; rounded up to 5 min)', () => {
   const tz0 = process.env.TZ;
   const m = { run_utc: '2026-09-25T18:00:00Z', published_utc: '2026-09-25T23:07:18Z' };        // live 23:07Z; next ~05:10Z
   try {
@@ -593,17 +593,19 @@ test('runTimes / localClock: live since and the next update in the computer time
     let now = Date.parse('2026-09-26T00:00:00Z');                                           // 2 PM HST, same day
     let t = I.runTimes(m, now, false);
     assert.equal(t.status, 'about'); assert.equal(t.next, Date.parse('2026-09-26T05:10:00Z'));
-    assert.match(t.text, /^live since 1:07\sPM HST · next update about 7:10\sPM HST$/);
+    assert.match(t.updated, /^1:07\sPM HST$/); assert.match(t.nextText, /^about 7:10\sPM HST$/); assert.equal(t.text, undefined);
     process.env.TZ = 'America/New_York';                                                     // 7:07 PM EDT; next 1:10 AM EDT tomorrow
     t = I.runTimes(m, now, false);
-    assert.match(t.text, /^live since 7:07\sPM EDT · next update about Sat,? 1:10\sAM EDT$/);
+    assert.match(t.updated, /^7:07\sPM EDT$/); assert.match(t.nextText, /^about Sat,? 1:10\sAM EDT$/);
     process.env.TZ = 'Asia/Kolkata';                                                         // a half-hour zone: 4:37 AM on the same local day as now (5:30 AM)
-    assert.match(I.runTimes(m, now, false).text, /^live since 4:37\sAM (GMT\+5:30|IST) · next update about 10:40\sAM (GMT\+5:30|IST)$/);
+    t = I.runTimes(m, now, false);
+    assert.match(t.updated, /^4:37\sAM (GMT\+5:30|IST)$/); assert.match(t.nextText, /^about 10:40\sAM (GMT\+5:30|IST)$/);
     process.env.TZ = 'UTC';
-    assert.match(I.runTimes(m, now, false).text, /live since Fri,? 11:07\sPM UTC · next update about 5:10\sAM UTC/);
+    t = I.runTimes(m, now, false);
+    assert.match(t.updated, /^Fri,? 11:07\sPM UTC$/); assert.match(t.nextText, /^about 5:10\sAM UTC$/);
     now = Date.parse('2026-09-26T05:30:00Z');
-    assert.equal(I.runTimes(m, now, false).status, 'shortly'); assert.match(I.runTimes(m, now, false).text, /next update expected shortly$/);
-    assert.equal(I.runTimes(m, now, true).status, 'newer'); assert.match(I.runTimes(m, now, true).text, /a newer run is available$/);
+    assert.equal(I.runTimes(m, now, false).status, 'shortly'); assert.equal(I.runTimes(m, now, false).nextText, 'expected shortly');
+    assert.equal(I.runTimes(m, now, true).status, 'newer'); assert.equal(I.runTimes(m, now, true).nextText, 'a newer run is available');
     assert.equal(I.runTimes({ run_utc: m.run_utc }, now, false), null, 'no publish time: no line');
     assert.equal(I.runTimes({ run_utc: m.run_utc, published_utc: '2026-09-25T17:00:00Z' }, now, false), null, 'published before its cycle: no line');
   } finally { if (tz0 === undefined) delete process.env.TZ; else process.env.TZ = tz0; }
@@ -653,4 +655,17 @@ test('plan section 27: a run whose legend is 0-60 ft (18.288 m) gets the wider s
   assert.deepEqual(mt.map((t) => t.label), ['0', '1', '2', '3', '4', '6', '9', '18+ m']);
   assert.ok(us[us.length - 2].pos <= 0.8 && mt[mt.length - 2].pos <= 0.8, 'no numeric tick under the top label');
   for (const v of [0, 5, 10, 15, 18.288]) assert.ok(Math.abs(I.legendInv('hs', L60, I.legendPos('hs', L60, v)) - v) < 1e-9);
+});
+
+test('the speed selector\'s table: snail 1x, fish 2x, shark 4x; an older or odd saved speed plays at 1x; asset URLs carry the version', () => {
+  assert.deepEqual(I.SPEED_ANIMALS.map((a) => [a.speed, a.name, a.file, a.title]),
+    [[1, 'Snail', 'snail.png', 'Snail: 1\u00d7 speed'], [2, 'Fish', 'fish.png', 'Fish: 2\u00d7 speed'], [4, 'Shark', 'shark.png', 'Shark: 4\u00d7 speed']]);
+  assert.deepEqual(I.SPEED_ANIMALS.map((a) => a.speed), Array.from(I.SPEEDS));
+  assert.equal(I.speedOf(0.5), 1); assert.equal(I.speedOf(2), 2); assert.equal(I.speedOf(4), 4); assert.equal(I.speedOf('4'), 1);
+  assert.equal(I.speedOf(undefined), 1); assert.equal(I.speedOf(3), 1);
+  assert.equal(I.animalOf(4).name, 'Shark'); assert.equal(I.animalOf(2).name, 'Fish'); assert.equal(I.animalOf(0.5).name, 'Snail');
+  assert.equal(I.assetUrl({ version: '2.14.0' }, 'fish.png'), '/overlay/fish.png?v=2.14.0');
+  assert.equal(I.assetUrl({ version: 'a b' }, 'fish.png'), '/overlay/fish.png?v=a%20b');
+  assert.equal(I.assetUrl({}, 'snail.png'), '/overlay/snail.png', 'no version known (Node): a bare path');
+  assert.equal(I.SHEET_OPEN_PX, 110);
 });

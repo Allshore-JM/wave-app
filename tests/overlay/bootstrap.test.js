@@ -210,6 +210,7 @@ test('the page hands its satellite imagery layer to the module (the wind overlay
   const p = page({ complete: true, TileLayer: TL, layers: [{ _url: 'World_Imagery (not a tile layer)' }, other, img] });
   p.sel.userPick('wind'); await settle();
   assert.equal(p.overlays[0].opts.baseLayer, img);
+  assert.equal(p.overlays[0].opts.version, '9.9.9', 'the module learns its version (the speed illustrations are served at it)');
   const q = page({ complete: true, TileLayer: TL, layers: [other] }); q.sel.userPick('wind'); await settle();
   assert.equal(q.overlays[0].opts.baseLayer, null);
   const r = page({ complete: true }); r.sel.userPick('hs'); await settle();                     // no eachLayer / TileLayer: harmless

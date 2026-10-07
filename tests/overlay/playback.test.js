@@ -921,3 +921,14 @@ test('wind look through mount/unmount: the relief after the wind lands, the imag
   assert.ok(o.layer.hasFrame()); assert.equal(o.layer._coast, o.coast);
   done(o);
 });
+
+test('plan section 37: a saved 0.5x (no longer offered) plays at 1x; setSpeed takes only snail / fish / shark speeds', async () => {
+  const { w, o, storage } = await restored({}, { speed: 0.5 });
+  assert.equal(o.speed, 1);
+  o.setSpeed(0.5); assert.equal(o.speed, 1); assert.equal(storage.read().speed, 0.5, 'nothing written for a refused speed');
+  o.setSpeed(2); assert.equal(o.speed, 2); assert.equal(storage.read().speed, 2); assert.equal(o._interval(), 250);
+  o.setSpeed(4); assert.equal(o._interval(), 125); o.setSpeed(1); assert.equal(o._interval(), 500);
+  done(o);
+  const r = await restored({}, { speed: 4 }); assert.equal(r.o.speed, 4); done(r.o);
+  void w;
+});

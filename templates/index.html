@@ -2910,10 +2910,11 @@
   </script>{%- if model_overlays %}
 
   <style>
-    /* Optional model overlays: the selector control (the module's own CSS loads with the first selection) */
-    .ov-ctl { background: rgba(255,255,255,0.94); padding: 6px 8px; font: 12px system-ui, sans-serif; }
-    .ov-ctl label { font-weight: 600; margin: 0; }
-    .ov-ctl select { font-size: 12px; }
+    /* Optional model overlays: the selector control (the module's own CSS loads with the first selection; the same
+       ivory look here, so nothing flashes white before it arrives) */
+    .leaflet-container .ov-ctl.leaflet-bar, .ov-ctl { background: #fbf7ee; color: #1d2b4f; border: 0; border-radius: 14px; padding: 6px 8px;
+      box-shadow: 0 2px 10px rgba(29,43,79,0.25); font: 12px system-ui, sans-serif; }
+    .ov-ctl select { font-size: 12px; color: #1d2b4f; background: #fff; border: 1px solid #0f8f8c; border-radius: 8px; padding: 3px 6px; }
   </style>
   <script>
     // Optional model overlays (NOAA GFS-Wave frames). Everything here is inert until the user
@@ -2931,9 +2932,10 @@
         options: { position: 'topleft' },
         onAdd: function () {
           var box = L.DomUtil.create('div', 'ov-ctl leaflet-bar');
-          box.innerHTML = '<label>Model overlay <select id="ovField" autocomplete="off" aria-label="Model overlay">' +
+          // no visible heading (plan section 37): the select keeps its accessible name
+          box.innerHTML = '<select id="ovField" autocomplete="off" aria-label="Model overlay">' +
             '<option value="">Off</option><option value="hs">Wave height</option>' +
-            '<option value="tp">Peak period</option><option value="wind">Wind speed</option></select></label>' +
+            '<option value="tp">Peak period</option><option value="wind">Wind speed</option></select>' +
             '<div id="ovPanel"></div>';
           L.DomEvent.disableClickPropagation(box);
           L.DomEvent.disableScrollPropagation(box);
@@ -3006,7 +3008,7 @@
           if (sel.value !== field) return;
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
             base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
-            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer()
+            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION
           });
           overlay.mount(field, restore);
         }).catch(function (err) {

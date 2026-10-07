@@ -370,7 +370,8 @@ where the control really starts (below the brand), and a height change re-render
 keyboard focus through a fold; only the loading / error states and the warning lines are live regions; the run line
 refreshes once a minute; the speed button names its listbox; an empty or unknown zone reads as the computer's own (as the
 page's clock); the coral pointer has a solid navy edge (3:1 on the cream ribbon); 24 px+ toggle and slider on touch. Asset 2.14.6
-(seen on the test site with real touch input): a swipe up or down the ribbon (10 px or more) is never a pick.
+(seen on the test site with real touch input): a swipe up or down the ribbon (10 px or more) is never a pick. Asset 2.14.7: such
+a release (and a cancelled gesture) with under 4 px of sideways drift goes back exactly to its own frame.
 Coastline clip (asset 2.7.6): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for

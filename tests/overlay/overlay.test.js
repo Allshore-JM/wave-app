@@ -636,6 +636,15 @@ test('ribbonLayout / ribbonScale: tick density follows the scale; the scale foll
   assert.equal(I.ribbonScale(10), 3); assert.equal(I.ribbonScale(1000), 5); assert.equal(I.ribbonScale(0), I.ribbonScale(300)); assert.equal(I.ribbonScale(undefined), I.ribbonScale(300));
 });
 
+test('RibbonState (step 6): a release that is not a pick (no finger position: a swipe or a cancelled gesture) with < 4 px of travel goes back to where it started', () => {
+  const L = I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', HOURS_209), '2026-10-07T06:00:00Z', 'UTC', 3.6);
+  const rb = new I.RibbonState(L.xs); rb.setFrame(16);
+  rb.begin(100); rb.move(102);                                   // 2 px of drift: 0.56 h, past the halfway point to frame 15
+  assert.equal(rb.nearest(rb.offset), 15);
+  assert.equal(rb.end(undefined), 16, 'back to its own frame'); assert.equal(rb.offset, L.xs[16]);
+  rb.begin(100); rb.move(130); assert.equal(rb.end(undefined), rb.nearest(L.xs[16] - 30), 'a real drag still snaps to the nearest frame');
+});
+
 test('RibbonState: nearest frame (ties later), clamping, a drag follows the pointer one to one, a tap picks under the finger, wheel', () => {
   const L = I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', HOURS_209), '2026-10-07T06:00:00Z', 'UTC', 4.5);
   const rb = new I.RibbonState(L.xs);

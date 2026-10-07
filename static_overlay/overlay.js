@@ -2450,6 +2450,16 @@
   };
   Overlay.prototype._hours = function (entry) { return Math.round((Date.parse(entry.valid_utc) - Date.parse(this.manifest.run_utc)) / 3.6e6); };
   Overlay.prototype._validLocal = function (entry) { return this.opts.fmtTime(entry.valid_utc, this.opts.tz) + ' ' + this.opts.tzAbbr(entry.valid_utc, this.opts.tz); };
+  // The folded panel's one line: "Thu, Oct 8, 06:00 PM HST" (weekday, date, time, zone; no field name, no hour count:
+  // owner, 2026-10-07) in the forecast table's own clock format, for the REQUESTED time with its state while a seek is
+  // pending (the ribbon label's rule; a folded sheet has no ribbon to show it).
+  Overlay.prototype._summaryLine = function () {
+    var m = this.manifest, pending = this.target !== null && this.target !== this.frameIndex, idx = pending ? this.target : this.frameIndex;
+    if (!m || idx === null || !m.frames[idx]) return '…';
+    var fr = m.frames[idx], wd = ribbonFormatter(this.opts.tz).stamp(Date.parse(fr.valid_utc)).weekday;
+    var state = !pending ? '' : this._isUnavailable(idx) ? ' · unavailable' : ' · loading…';
+    return (wd ? wd + ', ' : '') + this._validLocal(fr) + state;
+  };
   function button(cls, text, label, onClick) {
     var b = mk('button', 'ov-btn ' + cls, text); b.type = 'button'; b.setAttribute('aria-label', label);
     b.addEventListener('click', onClick); return b;
@@ -2691,7 +2701,10 @@
       host.appendChild(e); this._layoutSheet(); return;
     }
     var field = this.layer.field, f = m.fields[field], fdesc = (m.model && m.model.fields && m.model.fields[field]) || {};
-    var label = fdesc.label || field, modelName = String(m.model && m.model.name || 'NOAA GFS-Wave').split(' + ')[0];
+    // The model's name as the head shows it: the manifest's up to " + " (the wind's own model), without the agency
+    // prefix ("NOAA/NCEP GFS-Wave (WAVEWATCH III)" -> "GFS-Wave (WAVEWATCH III)"; owner, 2026-10-07). NOAA stays in
+    // the map's attribution.
+    var label = fdesc.label || field, modelName = String(m.model && m.model.name || 'GFS-Wave').split(' + ')[0].replace(/^NOAA(\/NCEP)?\s+/i, '');
     var cap = Math.floor(mapH * 0.4);
     // Open or folded: the viewer's choice once the toggle was used; until then the size decides at every render (the sheet
     // opens folded only when 40 % of the map cannot hold the transport row), so a phone turned upright opens up again.
@@ -2702,7 +2715,7 @@
     btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
     btn.addEventListener('click', function () { self.collapsed = !collapsed; self.render(st); });
     head.appendChild(btn);
-    var title = mk('span', 'ov-title' + (!compact && !collapsed ? ' ov-model' : ''));
+    var title = mk('span', 'ov-title' + (!collapsed ? ' ov-model' : ''));
     head.appendChild(title);
     host.appendChild(head);
     var ui = this.ui = { host: host, title: title, play: null, speedSel: null, slider: null, unavail: null,
@@ -2749,7 +2762,6 @@
     ui.runTail = pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run' : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '';
     ui.runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z');
     this._refreshRunLine();
-    if (compact) body.appendChild(mk('div', 'ov-meta ov-model', modelName));   // the sheet's head shows the hour instead
     var age = (Date.now() - Date.parse(this.pointer.published_utc)) / 1000;
     this._staleShown = age > STALE_AFTER_S;
     if (this._staleShown) body.appendChild(mk('div', 'ov-warn', 'Model overlay data is stale (published ' + Math.round(age / 3600) + ' h ago).'));
@@ -2779,7 +2791,7 @@
         host.removeChild(wrap); head.removeChild(btn); ui.collapsed = true;
         ui.speedSel = null; ui.slider = null;
         ui.ribbon = ui.track = ui.rb = ui.nowText = ui.stateEl = null;
-        if (!compact && title.classList) title.classList.remove('ov-model');
+        if (title.classList) title.classList.remove('ov-model');
         headPlay();
       }
       this._syncUI();
@@ -2801,22 +2813,12 @@
   Overlay.prototype._syncUI = function () {
     var ui = this.ui;
     if (!ui || !this.manifest || !this.layer) return;
-    var drawn = this.layer.entry, pending = this.target !== null && this.target !== this.frameIndex;
-    var validLocal = drawn ? this._validLocal(drawn) : '…', hours = drawn ? this._hours(drawn) : null;
     if (ui.play) { ui.play.textContent = this.playing ? '❚❚' : '▶'; ui.play.setAttribute('aria-label', this.playing ? 'Pause' : 'Play'); }
     if (ui.host && ui.host.classList) ui.host.classList.toggle('ov-playing', !!this.playing);
     if (ui.speedSel) ui.speedSel.sync();
-    // The sheet (phones): its header line carries the forecast hour FIRST (a narrow screen clips the end, never
-    // the hour), then the valid time, and a pending seek's hint ("loading", "unavailable"); the field's name is in the
-    // select above the map. Desktops: the model's name, or (collapsed) the field and the time on the map.
-    if (ui.compact) {
-      var th = pending ? this._hours(this.manifest.frames[this.target]) : null;
-      ui.title.textContent = hours === null ? '…' : pending
-        ? '+' + hours + ' h → +' + th + ' h ' + (this._isUnavailable(this.target) ? 'unavailable' : 'loading…')
-        : '+' + hours + ' h · ' + validLocal;
-    } else {
-      ui.title.textContent = ui.collapsed ? ui.label + ' · ' + validLocal + (hours === null ? '' : ' (+' + hours + ' h)') : ui.modelName;
-    }
+    // The head line, desktop panel and phone sheet alike: open, the model's name (the time is in the ribbon's label);
+    // folded, the one-line summary.
+    ui.title.textContent = ui.collapsed ? this._summaryLine() : ui.modelName;
     var si = this.target !== null ? this.target : this.frameIndex;
     if (ui.ribbon && ui.rb && si !== null) {
       var lb = this._ribbonLabel();

@@ -629,3 +629,24 @@ test('G26 A-P3-3: the speed button names its listbox (aria-controls); ArrowUp fr
   dispatch(menu, 'keydown', { key: 'ArrowUp' });
   const opts = all(menu, '[role="option"]'); assert.equal(w.doc.activeElement, opts[opts.length - 1]);
 }));
+
+test('step 6 (seen live): a swipe up or down the ribbon is never a pick -- with touch-action none it ends as an ordinary lift-off', () => withClock(() => {
+  const w = world(); w.ov.render({ state: 'ready' });
+  const ui = w.ov.ui, rb = ui.ribbon, seeks = []; w.ov.seek = (i) => { seeks.push(i); w.ov.target = i; };
+  rb.rect = { left: 100, top: 0, width: ui.ribbonW, height: 40 };
+  const px = ui.layout.pxPerHour, centre = 100 + ui.ribbonW / 2;
+  dispatch(rb, 'pointerdown', { clientX: centre - 8 * px, clientY: 20 });
+  for (let k = 1; k <= 8; k++) dispatch(rb, 'pointermove', { clientX: centre - 8 * px + (k > 4 ? 2 : 1), clientY: 20 - k * 25 });
+  dispatch(rb, 'pointerup', { clientX: centre - 8 * px + 2, clientY: -180 });
+  assert.deepEqual(seeks.filter((x) => x !== 3), [], 'the time stays (' + JSON.stringify(seeks) + ')');
+  assert.equal(ui.rb.offset, ui.layout.xs[3]);
+  // a swipe that goes up and comes back down to where it started: still not a pick
+  dispatch(rb, 'pointerdown', { clientX: centre - 8 * px, clientY: 20 });
+  dispatch(rb, 'pointermove', { clientX: centre - 8 * px + 1, clientY: -80 }); dispatch(rb, 'pointermove', { clientX: centre - 8 * px + 2, clientY: 21 });
+  dispatch(rb, 'pointerup', { clientX: centre - 8 * px + 2, clientY: 22 });
+  assert.deepEqual(seeks.filter((x) => x !== 3), [], 'up and back: the time stays (' + JSON.stringify(seeks) + ')');
+  // a tap with a little vertical wobble (under 10 px) is still a tap
+  dispatch(rb, 'pointerdown', { clientX: centre + 9 * px, clientY: 20 });
+  dispatch(rb, 'pointerup', { clientX: centre + 9 * px, clientY: 26 });
+  assert.equal(seeks[seeks.length - 1], 6, 'the tap picked +18 h');
+}));

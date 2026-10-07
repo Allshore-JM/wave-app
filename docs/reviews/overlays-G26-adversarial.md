@@ -111,3 +111,13 @@ Every item of the scope above was fixed, each with a test:
   the control-top room rule with the map off the page's top, toggle focus, live regions, the selector's ARIA), updated
   expectations (the formatter fallback; a desktop height change now re-renders). Mutation: 19 of 19 killed
   (`scratch panel/mut_step6.py`; B2 survived first, killed by placing the map 50 px down the page in the test).
+
+## Test-site check of the fix round (asset 2.14.5, headless Edge with trusted touch input)
+- Confirmed: the ribbon's `touch-action` is none and the pointer's line has the navy edge; a tap with a 2 px roll lands on
+  the frame under the finger at lift-off and stays there; at 1280x460 / 420 the panel ends 18 px above the (i)/Home column
+  and at 1280x400 it drops the details and keeps the transport row (was up to 53 px under it); the folded line "Wed, Oct.
+  7, 04:00 PM HST" with the focus kept on the toggle; the ready panel not live; no page errors.
+- FOUND: with `touch-action: none` the browser no longer cancels a vertical swipe on the ribbon, so it ended as an ordinary
+  lift-off with < 4 px sideways travel and the tap rule moved the time 8 h. FIXED in asset 2.14.6: a press that travelled
+  10 px or more up or down (tracked during the move and at the lift-off) is never a tap; it snaps back to its frame. Panel
+  test (a straight swipe, an up-and-back swipe, a tap with a 6 px wobble still a tap); 4 of 4 mutants killed.

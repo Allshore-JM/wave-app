@@ -1592,6 +1592,7 @@
   // midnight): 3 + its width (a two-digit date is ~33-35 px at 11 px) + a gap + half the next label's width.
   var RIBBON_DAY_MIN_PX = 60;
   var RIBBON_TAP_PX = 4;                                     // a press that moves less than this is a tap, not a drag
+  var RIBBON_SWIPE_PX = 10;                                  // ... and one that went this far up or down is a swipe, never a tap
   // Local calendar parts in a zone, through one cached Intl formatter (en-US: fixed short month names, "7 AM" clocks).
   // An empty or unknown zone reads as the COMPUTER's zone, as the page's own clock (fmtTimeInTz) does, so the weekday and
   // the clock of a line can never come from two zones (G26 A-P3-2); without Intl at all, the computer's clock by hand.
@@ -2616,7 +2617,7 @@
     layout.days.forEach(function (d) { var sp = mk('span', 'ov-rb-day' + (d.clamped ? ' ov-rb-day-first' : ''), d.text); sp.style.left = d.x + 'px'; track.appendChild(sp); });
     layout.ticks.forEach(function (t) { var sp = mk('span', 'ov-rb-tick' + (t.major ? ' ov-rb-major' : ''), t.text); sp.style.left = t.x + 'px'; track.appendChild(sp); });
     var rb = ui.rb = new RibbonState(layout.xs);
-    var lastIdx = null, pendingIdx = null, rafId = null;
+    var lastIdx = null, pendingIdx = null, rafId = null, y0 = 0, dyMax = 0;
     function queueScrub(idx) {
       pendingIdx = idx;
       if (rafId !== null) return;
@@ -2626,10 +2627,11 @@
       if (e.button) return;
       e.preventDefault(); e.stopPropagation();
       if (ribbon.setPointerCapture) { try { ribbon.setPointerCapture(e.pointerId); } catch (x) { /* no capture: the moves still arrive while over the ribbon */ } }
-      self.pause(); rb.begin(e.clientX); track.style.transition = 'none'; lastIdx = null;
+      self.pause(); rb.begin(e.clientX); track.style.transition = 'none'; lastIdx = null; y0 = e.clientY; dyMax = 0;
       if (ribbon.focus) { try { ribbon.focus({ preventScroll: true }); } catch (x) { ribbon.focus(); } }
     });
     ribbon.addEventListener('pointermove', function (e) {
+      if (rb.dragging && typeof e.clientY === 'number' && typeof y0 === 'number') dyMax = Math.max(dyMax, Math.abs(e.clientY - y0));
       var idx = rb.move(e.clientX); if (idx === null) return;
       self._placeRibbon(); if (idx !== lastIdx) { lastIdx = idx; queueScrub(idx); }
     });
@@ -2640,7 +2642,9 @@
     function release(e) {
       if (!rb.dragging) return;
       pendingIdx = null;
-      var r = e.type === 'pointerup' && ribbon.getBoundingClientRect ? ribbon.getBoundingClientRect() : null;
+      if (typeof e.clientY === 'number' && typeof y0 === 'number') dyMax = Math.max(dyMax, Math.abs(e.clientY - y0));
+      // a swipe up or down the ribbon is not a pick: with touch-action none the browser leaves it to us (step 6, seen live)
+      var r = e.type === 'pointerup' && dyMax < RIBBON_SWIPE_PX && ribbon.getBoundingClientRect ? ribbon.getBoundingClientRect() : null;
       var idx = rb.end(r && typeof e.clientX === 'number' ? e.clientX - (r.left + r.width / 2) : undefined);
       track.style.transition = 'transform 120ms ease-out'; self._placeRibbon(); lastIdx = idx; self._scrubTo(idx);
     }

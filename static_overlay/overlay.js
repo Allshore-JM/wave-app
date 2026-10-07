@@ -1554,6 +1554,110 @@
   };
   TimelineState.prototype.start = function () { this.dragging = true; this.lastRaw = null; };
   TimelineState.prototype.end = function () { this.dragging = false; this.lastRaw = null; };
+  // ---- the compass ribbon (plan section 37): the timeline laid out by real time ----
+  // A fixed pointer with the dates and hours of the forecast scrolling under it. Every position comes from a frame's own
+  // valid time (hourly frames to +120 h, then 3-hourly: three times as far apart); day labels sit at the real local
+  // midnights of the forecast's zone and hour ticks at local 00/06/12/18, so a 23-hour or 25-hour day of a clock change
+  // is drawn at its true width with its ticks on the clock hours. Nothing is invented between frames.
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var RIBBON_WINDOW_H = 72;                                  // the viewport shows about three days
+  var RIBBON_MIN_PX_H = 3, RIBBON_MAX_PX_H = 5;              // pixels per hour, bounded
+  var RIBBON_MIN_TICK_GAP = 22;                              // hour ticks closer than this are thinned (06/18 first)
+  var RIBBON_DAY_MIN_PX = 40;                                // a pinned first-day label needs this much room before the next
+  var RIBBON_TAP_PX = 4;                                     // a press that moves less than this is a tap, not a drag
+  // Local calendar parts in a zone, through one cached Intl formatter (en-US: fixed short month names, "7 AM" clocks).
+  // An unknown zone reads as UTC; without Intl at all, UTC by hand. Never throws.
+  function ribbonFormatter(tz) {
+    var f = null, zone = tz || 'UTC';
+    var o = { hourCycle: 'h23', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+    try { f = new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: zone }, o)); }
+    catch (e) { zone = 'UTC'; try { f = new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: 'UTC' }, o)); } catch (e2) { f = null; } }
+    function parts(ms) {
+      var d = new Date(ms);
+      if (!f) return { y: d.getUTCFullYear(), mo: MONTHS[d.getUTCMonth()], d: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes() };
+      var got = {}, p = f.formatToParts(d);
+      for (var i = 0; i < p.length; i++) got[p[i].type] = p[i].value;
+      return { y: +got.year, mo: got.month, d: +got.day, h: (+got.hour) % 24, mi: +got.minute };   // some engines print "24" at midnight
+    }
+    return {
+      zone: zone, parts: parts,
+      day: function (ms) { var p = parts(ms); return p.mo + ' ' + p.d; },                               // "Oct 10"
+      tick: function (ms) { var h = parts(ms).h; return (h < 10 ? '0' : '') + h; },                     // "06"
+      clock: function (ms) {                                                                             // "7 AM", "7:30 PM"
+        var p = parts(ms), h12 = p.h % 12 || 12, mi = p.mi ? ':' + (p.mi < 10 ? '0' : '') + p.mi : '';
+        return h12 + mi + ' ' + (p.h < 12 ? 'AM' : 'PM');
+      }
+    };
+  }
+  // The local midnight at or before ms. The first guess subtracts the clock time; on a clock-change day the elapsed time
+  // since midnight differs from the clock time by the shift, which one correction from the guess's own clock reading fixes.
+  function localMidnightBefore(ms, fmt) {
+    var p = fmt.parts(ms), cand = ms - (p.h * 60 + p.mi) * 60000;
+    p = fmt.parts(cand);
+    if (p.h || p.mi) cand += p.h >= 12 ? (1440 - p.h * 60 - p.mi) * 60000 : -(p.h * 60 + p.mi) * 60000;
+    return cand;
+  }
+  // Pixels per hour for a viewport: about three days visible (324 px -> 4.5; a 253-px phone sheet -> 3.5), within bounds.
+  function ribbonScale(viewportW) {
+    return Math.max(RIBBON_MIN_PX_H, Math.min(RIBBON_MAX_PX_H, (viewportW || 300) / RIBBON_WINDOW_H));
+  }
+  // The ribbon's geometry for a run: xs[i] = px of frame i from frame 0 (its hours since frame 0 x pxPerHour), hours[i] =
+  // hours since the run, width, the day labels (one at every local midnight the run covers; the day frame 0 starts in is
+  // pinned to x 0 and marked clamped, dropped when the next label would crowd it), the hour ticks (local 00/06/12/18;
+  // 00/12 when 6 h is narrower than minGap px, then 00 only) and the span of the run in hours.
+  function ribbonLayout(frames, runUtc, tz, pxPerHour, minGap) {
+    var fmt = ribbonFormatter(tz), n = frames.length, t0 = Date.parse(frames[0].valid_utc), run = Date.parse(runUtc);
+    var xs = new Array(n), hours = new Array(n), i, t;
+    for (i = 0; i < n; i++) { t = Date.parse(frames[i].valid_utc); xs[i] = (t - t0) / 3.6e6 * pxPerHour; hours[i] = Math.round((t - run) / 3.6e6); }
+    var last = Date.parse(frames[n - 1].valid_utc), width = xs[n - 1];
+    var gap = minGap === undefined ? RIBBON_MIN_TICK_GAP : minGap;
+    var every = 6 * pxPerHour >= gap ? 6 : 12 * pxPerHour >= gap ? 12 : 24;
+    var days = [], ticks = [];
+    for (t = localMidnightBefore(t0, fmt); t <= last; t += 3.6e6) {
+      var p = fmt.parts(t), x = (t - t0) / 3.6e6 * pxPerHour;
+      if (p.mi) { t += (60 - p.mi) * 60000 - 3.6e6; continue; }   // a half-hour clock change (Lord Howe): back onto the local hours
+      if (p.h === 0) days.push({ x: Math.max(0, x), text: p.mo + ' ' + p.d, ms: t, clamped: x < 0 });
+      if (x >= 0 && p.h % every === 0) ticks.push({ x: x, text: fmt.tick(t), major: p.h === 0, ms: t });
+    }
+    if (days.length > 1 && days[0].clamped && days[1].x < RIBBON_DAY_MIN_PX) days.shift();
+    return { xs: xs, hours: hours, width: width, days: days, ticks: ticks, pxPerHour: pxPerHour, every: every,
+      spanHours: (last - t0) / 3.6e6, zone: fmt.zone, fmt: fmt };
+  }
+  // "16-day forecast" from the run's real coverage (a run of under two days says its hours).
+  function forecastSpanText(spanHours) {
+    var d = spanHours / 24;
+    return d >= 2 ? Math.round(d) + '-day forecast' : Math.round(spanHours) + '-hour forecast';
+  }
+  // The ribbon's position and the bookkeeping of a drag. offset = the px (0..width) of the time under the fixed pointer;
+  // the ribbon follows the pointer one to one (dragging right shows earlier times); nearest() is monotone in the offset,
+  // so a slow drag in either direction never picks a frame against its direction.
+  function RibbonState(xs) {
+    this.xs = xs; this.width = xs[xs.length - 1]; this.offset = 0;
+    this.dragging = false; this.x0 = 0; this.o0 = 0; this.moved = 0;
+  }
+  RibbonState.prototype.clamp = function (o) { return Math.max(0, Math.min(this.width, o)); };
+  RibbonState.prototype.nearest = function (o) {               // the frame whose px is nearest o (ties go later)
+    var xs = this.xs, lo = 0, hi = xs.length - 1;
+    if (hi <= 0) return 0;
+    while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (xs[mid] <= o) lo = mid; else hi = mid; }
+    return o - xs[lo] < xs[hi] - o ? lo : hi;
+  };
+  RibbonState.prototype.setFrame = function (idx) { this.offset = this.xs[Math.max(0, Math.min(this.xs.length - 1, idx))]; };
+  RibbonState.prototype.begin = function (px) { this.dragging = true; this.x0 = px; this.o0 = this.offset; this.moved = 0; };
+  RibbonState.prototype.move = function (px) {                 // -> the frame now under the pointer, or null when not dragging
+    if (!this.dragging) return null;
+    this.moved = Math.max(this.moved, Math.abs(px - this.x0));
+    this.offset = this.clamp(this.o0 - (px - this.x0));
+    return this.nearest(this.offset);
+  };
+  // The release: a tap picks the frame under the finger (pxFromCentre right of the pointer = later); a drag snaps to the
+  // nearest frame. Returns the frame index; the offset then sits exactly on it.
+  RibbonState.prototype.end = function (pxFromCentre) {
+    this.dragging = false;
+    if (this.moved < RIBBON_TAP_PX && typeof pxFromCentre === 'number') this.offset = this.clamp(this.o0 + pxFromCentre);
+    var idx = this.nearest(this.offset); this.offset = this.xs[idx]; return idx;
+  };
+  RibbonState.prototype.wheel = function (dx) { this.offset = this.clamp(this.offset + dx); return this.nearest(this.offset); };
   // "1:07 PM HST" in the computer's own time zone (not the forecast table's), with the weekday when it is not today there.
   function localClock(ms, now) {
     var d = new Date(ms), opts = { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' };
@@ -2465,6 +2569,9 @@
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
       ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk,
-      frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes, TimelineState: TimelineState }
+      frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes, TimelineState: TimelineState,
+      ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
+      forecastSpanText: forecastSpanText, RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX,
+      RIBBON_DAY_MIN_PX: RIBBON_DAY_MIN_PX }
   };
 })();

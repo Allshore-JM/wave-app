@@ -442,6 +442,162 @@ test('frameAtHour: the frame for a timeline hour snaps in the direction of trave
   assert.equal(old[I.frameAtHour(old, 7, true)], 9); assert.equal(old[I.frameAtHour(old, 7, false)], 6);
 });
 
+// ---- plan section 37: the compass ribbon's engine (real timestamps, local midnights, snapping) ----
+
+const HOURS_209 = [...Array(121).keys()].concat([...Array(88).keys()].map((i) => 123 + 3 * i));
+const HOURS_81 = [...Array(81).keys()].map((i) => 3 * i);
+function framesAt(runUtc, hours) { const run = Date.parse(runUtc); return hours.map((h) => ({ step: h, valid_utc: new Date(run + h * 3.6e6).toISOString() })); }
+
+test('ribbonFormatter: day / tick / clock texts in a zone; an unknown zone reads as UTC; midnight is "00" and "12 AM"', () => {
+  const f = I.ribbonFormatter('Pacific/Honolulu'), t = Date.parse('2026-10-11T17:00:00Z');                 // 7 AM HST
+  assert.equal(f.zone, 'Pacific/Honolulu');
+  assert.equal(f.day(t), 'Oct 11'); assert.equal(f.clock(t), '7 AM'); assert.equal(f.tick(t), '07');
+  assert.deepEqual(f.parts(t), { y: 2026, mo: 'Oct', d: 11, h: 7, mi: 0 });
+  const mid = Date.parse('2026-10-11T10:00:00Z');                                                            // midnight HST
+  assert.equal(f.tick(mid), '00'); assert.equal(f.clock(mid), '12 AM'); assert.equal(f.clock(mid + 12 * 3.6e6), '12 PM');
+  assert.equal(f.clock(Date.parse('2026-10-11T05:30:00Z')), '7:30 PM', 'minutes only when not on the hour');
+  const u = I.ribbonFormatter('Not/AZone');
+  assert.equal(u.zone, 'UTC'); assert.equal(u.day(t), 'Oct 11'); assert.equal(u.clock(t), '5 PM');
+  assert.equal(I.ribbonFormatter(undefined).zone, 'UTC');
+  const k = I.ribbonFormatter('Asia/Kolkata');                                                               // a half-hour zone
+  assert.deepEqual(k.parts(Date.parse('2026-10-11T18:30:00Z')), { y: 2026, mo: 'Oct', d: 12, h: 0, mi: 0 });
+});
+
+test('localMidnightBefore: plain days, both clock changes of New York, a half-hour zone', () => {
+  const H = I.ribbonFormatter('Pacific/Honolulu'), NY = I.ribbonFormatter('America/New_York'), K = I.ribbonFormatter('Asia/Kolkata');
+  assert.equal(I.localMidnightBefore(Date.parse('2026-10-11T17:00:00Z'), H), Date.parse('2026-10-11T10:00:00Z'));
+  assert.equal(I.localMidnightBefore(Date.parse('2026-10-11T10:00:00Z'), H), Date.parse('2026-10-11T10:00:00Z'), 'midnight itself');
+  assert.equal(I.localMidnightBefore(Date.parse('2026-10-11T09:59:00Z'), H), Date.parse('2026-10-10T10:00:00Z'));
+  // 2026-03-08: 2 AM EST -> 3 AM EDT (07:00Z). A frame at 5 AM EDT is 09:00Z; midnight was 05:00Z (EST): a 23-hour day.
+  assert.equal(I.localMidnightBefore(Date.parse('2026-03-08T09:00:00Z'), NY), Date.parse('2026-03-08T05:00:00Z'));
+  // 2026-11-01: 2 AM EDT -> 1 AM EST (06:00Z). A frame at 5 AM EST is 10:00Z; midnight was 04:00Z (EDT): a 25-hour day.
+  assert.equal(I.localMidnightBefore(Date.parse('2026-11-01T10:00:00Z'), NY), Date.parse('2026-11-01T04:00:00Z'));
+  assert.equal(I.localMidnightBefore(Date.parse('2026-11-01T06:30:00Z'), NY), Date.parse('2026-11-01T04:00:00Z'), 'inside the repeated hour');
+  assert.equal(I.localMidnightBefore(Date.parse('2026-10-11T20:00:00Z'), K), Date.parse('2026-10-11T18:30:00Z'), '1:30 AM Oct 12 IST: midnight was 18:30Z');
+  for (const [ms, f] of [[Date.parse('2026-03-08T09:00:00Z'), NY], [Date.parse('2026-11-01T10:00:00Z'), NY], [Date.parse('2026-10-11T20:00:00Z'), K]]) {
+    const p = f.parts(I.localMidnightBefore(ms, f)); assert.equal(p.h, 0); assert.equal(p.mi, 0);
+  }
+});
+
+test('ribbonLayout: positions from the frames\' own times (3-hourly frames three times as far apart), the span, the width', () => {
+  const L = I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', HOURS_209), '2026-10-07T06:00:00Z', 'Pacific/Honolulu', 4.5);
+  assert.equal(L.xs.length, 209); assert.equal(L.xs[0], 0); assert.equal(L.xs[1], 4.5); assert.equal(L.xs[120], 540);
+  assert.equal(L.xs[121] - L.xs[120], 13.5); assert.equal(L.width, 384 * 4.5); assert.equal(L.hours[208], 384); assert.equal(L.hours[0], 0);
+  assert.equal(L.spanHours, 384); assert.equal(I.forecastSpanText(L.spanHours), '16-day forecast'); assert.equal(L.every, 6);
+  const O = I.ribbonLayout(framesAt('2026-09-22T12:00:00Z', HOURS_81), '2026-09-22T12:00:00Z', 'UTC', 4.5);
+  assert.equal(O.xs[1], 13.5); assert.equal(O.width, 240 * 4.5); assert.equal(O.spanHours, 240); assert.equal(I.forecastSpanText(O.spanHours), '10-day forecast');
+  assert.equal(I.forecastSpanText(36), '36-hour forecast'); assert.equal(I.forecastSpanText(48), '2-day forecast');
+  // frames that do not start at the run (a trimmed run): hours count from the run, xs from the first frame
+  const Tr = I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', [6, 9, 12]), '2026-10-07T06:00:00Z', 'UTC', 4);
+  assert.deepEqual(Tr.hours, [6, 9, 12]); assert.deepEqual(Tr.xs, [0, 12, 24]); assert.equal(Tr.spanHours, 6);
+});
+
+test('ribbonLayout: day labels at the local midnights across a month boundary, the first day pinned to x 0, ticks only inside the run', () => {
+  // run 2026-09-29 12Z = 2 AM HST Sep 29: the ribbon starts inside Sep 29; the next midnights are Sep 30, Oct 1, ...
+  const L = I.ribbonLayout(framesAt('2026-09-29T12:00:00Z', HOURS_209), '2026-09-29T12:00:00Z', 'Pacific/Honolulu', 4.5);
+  const texts = L.days.map((d) => d.text);
+  assert.deepEqual(texts.slice(0, 4), ['Sep 29', 'Sep 30', 'Oct 1', 'Oct 2']);
+  assert.deepEqual(L.days[0], { x: 0, text: 'Sep 29', ms: Date.parse('2026-09-29T10:00:00Z'), clamped: true });
+  assert.equal(L.days[1].x, 22 * 4.5, 'Sep 30 midnight is 22 h after the 2 AM start'); assert.equal(L.days[1].clamped, false);
+  for (let i = 2; i < L.days.length; i++) assert.equal(L.days[i].x - L.days[i - 1].x, 24 * 4.5, 'consecutive days a whole day apart (no clock change in Hawaii)');
+  assert.equal(L.days[L.days.length - 1].text, 'Oct 15'); assert.equal(texts.length, 17);
+  assert.ok(L.ticks.every((t) => t.x >= 0 && t.x <= L.width), 'no tick outside the run');
+  assert.ok(L.ticks.every((t) => ['00', '06', '12', '18'].includes(t.text)));
+  assert.ok(L.ticks.every((t) => t.major === (t.text === '00')));
+  assert.equal(L.ticks[0].text, '06'); assert.equal(L.ticks[0].x, 4 * 4.5, 'the first tick after a 2 AM start is 6 AM, 4 h in');
+  assert.equal(L.ticks.filter((t) => t.text === '00').length, 16, 'one midnight tick per full day boundary inside the run');
+  // a run starting right at a local midnight: the first day label is not clamped and sits at x 0
+  const M = I.ribbonLayout(framesAt('2026-10-07T10:00:00Z', HOURS_81), '2026-10-07T10:00:00Z', 'Pacific/Honolulu', 4);
+  assert.deepEqual(M.days[0], { x: 0, text: 'Oct 7', ms: Date.parse('2026-10-07T10:00:00Z'), clamped: false });
+  assert.equal(M.ticks[0].text, '00');
+  // a run starting at 11 PM local: the pinned "Oct 6" would sit on top of "Oct 7" one hour later, so it is dropped
+  const N = I.ribbonLayout(framesAt('2026-10-07T09:00:00Z', HOURS_81), '2026-10-07T09:00:00Z', 'Pacific/Honolulu', 4);
+  assert.equal(N.days[0].text, 'Oct 7'); assert.equal(N.days[0].x, 4); assert.equal(N.days[0].clamped, false);
+});
+
+test('ribbonLayout: a clock change gives a 23-hour and a 25-hour day, with the ticks still on the local clock hours', () => {
+  const NY = 'America/New_York';
+  // spring forward 2026-03-08: run 2026-03-07 00Z (7 PM EST Mar 6)
+  const S = I.ribbonLayout(framesAt('2026-03-07T00:00:00Z', HOURS_209), '2026-03-07T00:00:00Z', NY, 4);
+  const sd = S.days.map((d) => d.text), i8 = sd.indexOf('Mar 8');
+  assert.equal(S.days[i8 + 1].x - S.days[i8].x, 23 * 4, 'Mar 8 is 23 hours wide');
+  assert.equal(S.days[i8 + 2].x - S.days[i8 + 1].x, 24 * 4);
+  const fmt = I.ribbonFormatter(NY);
+  for (const t of S.ticks) { const p = fmt.parts(t.ms); assert.equal(p.mi, 0); assert.equal(p.h % 6, 0); assert.equal(t.text, (p.h < 10 ? '0' : '') + p.h); }
+  const mar8 = S.ticks.filter((t) => fmt.parts(t.ms).d === 8 && fmt.parts(t.ms).mo === 'Mar').map((t) => t.text);
+  assert.deepEqual(mar8, ['00', '06', '12', '18']);
+  // fall back 2026-11-01: run 2026-10-31 00Z
+  const F = I.ribbonLayout(framesAt('2026-10-31T00:00:00Z', HOURS_209), '2026-10-31T00:00:00Z', NY, 4);
+  const fd = F.days.map((d) => d.text), i1 = fd.indexOf('Nov 1');
+  assert.equal(F.days[i1 + 1].x - F.days[i1].x, 25 * 4, 'Nov 1 is 25 hours wide');
+  const nov1 = F.ticks.filter((t) => fmt.parts(t.ms).d === 1 && fmt.parts(t.ms).mo === 'Nov');
+  assert.deepEqual(nov1.map((t) => t.text), ['00', '06', '12', '18']);
+  assert.equal(nov1[1].x - nov1[0].x, 7 * 4, '6 AM EST is 7 elapsed hours after midnight EDT');
+  // a half-hour zone: ticks on the local hours (which fall on :30 UTC), never between
+  const K = I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', HOURS_81), '2026-10-07T06:00:00Z', 'Asia/Kolkata', 4);
+  const kf = I.ribbonFormatter('Asia/Kolkata');
+  assert.ok(K.ticks.length > 30); assert.ok(K.ticks.every((t) => kf.parts(t.ms).mi === 0 && kf.parts(t.ms).h % 6 === 0));
+  assert.equal(kf.parts(K.days[1].ms).h, 0);
+  // a HALF-HOUR clock change (Lord Howe Island, 2026-10-04 2:00 -> 2:30): the walk gets back onto the local hours, so the
+  // days and ticks after the change are still labelled, all on the clock hour
+  const LH = 'Australia/Lord_Howe', lf = I.ribbonFormatter(LH);
+  const H = I.ribbonLayout(framesAt('2026-10-03T00:00:00Z', HOURS_209), '2026-10-03T00:00:00Z', LH, 4);
+  const hd = H.days.map((d) => d.text);
+  assert.ok(hd.includes('Oct 4') && hd.includes('Oct 6') && hd.includes('Oct 12'), hd.join());
+  assert.ok(H.days.every((d) => { const p = lf.parts(d.ms); return p.h === 0 && p.mi === 0; }));
+  assert.ok(H.ticks.every((t) => { const p = lf.parts(t.ms); return p.mi === 0 && p.h % 6 === 0; }));
+  const i4 = hd.indexOf('Oct 4'); assert.equal(H.days[i4 + 1].x - H.days[i4].x, 23.5 * 4, 'the change-over day is 23.5 hours wide');
+  assert.ok(H.ticks.filter((t) => t.ms > H.days[i4 + 1].ms).length > 30, 'ticks go on after the change');
+});
+
+test('ribbonLayout / ribbonScale: tick density follows the scale; the scale follows the viewport within 3-5 px per hour', () => {
+  const frames = framesAt('2026-10-07T06:00:00Z', HOURS_81);
+  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 4.5).every, 6);
+  const L3 = I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 3);
+  assert.equal(L3.every, 12); assert.ok(L3.ticks.every((t) => t.text === '00' || t.text === '12'));
+  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 1.5).every, 24);
+  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 3, 10).every, 6, 'a smaller gap keeps every tick');
+  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 22 / 6).every, 6, 'exactly the gap still fits');
+  assert.equal(I.ribbonLayout(frames, '2026-10-07T06:00:00Z', 'UTC', 22 / 6 - 0.01).every, 12);
+  assert.equal(I.RIBBON_MIN_TICK_GAP, 22);
+  assert.equal(I.ribbonScale(324), 4.5); assert.ok(Math.abs(I.ribbonScale(253) - 3.514) < 0.001);
+  assert.equal(I.ribbonScale(10), 3); assert.equal(I.ribbonScale(1000), 5); assert.equal(I.ribbonScale(0), I.ribbonScale(300)); assert.equal(I.ribbonScale(undefined), I.ribbonScale(300));
+});
+
+test('RibbonState: nearest frame (ties later), clamping, a drag follows the pointer one to one, a tap picks under the finger, wheel', () => {
+  const L = I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', HOURS_209), '2026-10-07T06:00:00Z', 'UTC', 4.5);
+  const rb = new I.RibbonState(L.xs);
+  assert.equal(rb.width, 384 * 4.5); assert.equal(rb.offset, 0);
+  assert.equal(rb.nearest(L.xs[120] + 6), 120); assert.equal(rb.nearest(L.xs[120] + 7), 121);
+  assert.equal(rb.nearest(L.xs[120] + 6.75), 121, 'a tie goes to the later frame');
+  assert.equal(rb.nearest(-50), 0); assert.equal(rb.nearest(1e9), 208);
+  assert.equal(rb.clamp(-5), 0); assert.equal(rb.clamp(rb.width + 1), rb.width); assert.equal(rb.clamp(7), 7);
+  rb.setFrame(10); assert.equal(rb.offset, 45); rb.setFrame(-3); assert.equal(rb.offset, 0); rb.setFrame(999); assert.equal(rb.offset, rb.width);
+  // a drag: the ribbon moves with the pointer, so dragging LEFT shows later times
+  rb.setFrame(10); rb.begin(100);
+  assert.equal(rb.move(90), rb.nearest(55)); assert.equal(rb.offset, 55); assert.equal(rb.dragging, true);
+  assert.equal(rb.move(300), 0); assert.equal(rb.offset, 0, 'clamped at the first frame');
+  rb.move(-10000); assert.equal(rb.offset, rb.width, 'clamped at the last frame');
+  rb.move(96); const idx = rb.end(); assert.equal(rb.dragging, false); assert.equal(rb.offset, L.xs[idx]); assert.equal(idx, rb.nearest(49));
+  assert.equal(rb.move(5), null, 'no drag in progress');
+  // a tap (under 4 px of travel) picks the frame under the finger: 27 px right of the pointer = 6 h later at 4.5 px/h
+  rb.setFrame(10); rb.begin(100); rb.move(102); assert.equal(rb.end(27), 16); assert.equal(rb.offset, L.xs[16]);
+  rb.setFrame(10); rb.begin(100); rb.move(102); assert.equal(rb.end(-27), 4, 'left of the pointer = earlier');
+  rb.setFrame(0); rb.begin(100); assert.equal(rb.end(-27), 0, 'a tap before the first frame clamps');
+  rb.setFrame(10); rb.begin(100); rb.move(130); assert.equal(rb.end(27), rb.nearest(45 - 30), 'a real drag ignores the tap position');
+  assert.equal(I.RIBBON_TAP_PX, 4);
+  // monotone: a slow 1-px forward drag through the 3-hourly part never steps back, backward never forward (G13b's property)
+  rb.setFrame(118); rb.begin(0); let prev = -1;
+  for (let px = 0; px >= -150; px--) { const i = rb.move(px); assert.ok(i >= prev, 'forward drag stepped back at ' + px); prev = i; }
+  assert.equal(prev, rb.nearest(L.xs[118] + 150));
+  rb.end(); rb.setFrame(141); rb.begin(0); prev = 1e9;
+  for (let px = 0; px <= 150; px++) { const i = rb.move(px); assert.ok(i <= prev, 'backward drag jumped forward at ' + px); prev = i; }
+  rb.end();
+  // wheel: 13.5 px = one 3-hourly frame at 4.5 px/h, clamped at the ends
+  rb.setFrame(130); assert.equal(rb.wheel(13.5), 131); assert.equal(rb.offset, L.xs[131]); assert.equal(rb.wheel(-1e6), 0); assert.equal(rb.offset, 0);
+  const one = new I.RibbonState([0]); assert.equal(one.nearest(100), 0); assert.equal(one.width, 0); one.begin(0); assert.equal(one.end(5), 0);
+});
+
 test('runTimes / localClock: live since and the next update in the computer time zone (weekday only when not today; rounded up to 5 min)', () => {
   const tz0 = process.env.TZ;
   const m = { run_utc: '2026-09-25T18:00:00Z', published_utc: '2026-09-25T23:07:18Z' };        // live 23:07Z; next ~05:10Z

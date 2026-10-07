@@ -121,3 +121,7 @@ Every item of the scope above was fixed, each with a test:
   lift-off with < 4 px sideways travel and the tap rule moved the time 8 h. FIXED in asset 2.14.6: a press that travelled
   10 px or more up or down (tracked during the move and at the lift-off) is never a tap; it snaps back to its frame. Panel
   test (a straight swipe, an up-and-back swipe, a tap with a 6 px wobble still a tap); 4 of 4 mutants killed.
+- 2.14.6 on the test site: the vertical swipe no longer jumps 8 h, but its 2 px of sideways drift (0.56 h at 3.6 px/h) still
+  snapped it to the NEIGHBOURING frame (16 -> 15). FIXED in asset 2.14.7: `RibbonState.end` sends a release that is not
+  a pick (no finger position) with < 4 px of travel back to the offset it started from; a real drag still snaps to the
+  nearest frame. Unit test; the old `end` fails it.

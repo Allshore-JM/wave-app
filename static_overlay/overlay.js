@@ -1693,7 +1693,9 @@
   // nearest frame. Returns the frame index; the offset then sits exactly on it.
   RibbonState.prototype.end = function (pxFromCentre) {
     this.dragging = false;
-    if (this.moved < RIBBON_TAP_PX && typeof pxFromCentre === 'number') this.offset = this.clamp(this.o0 + pxFromCentre);
+    // under 4 px of sideways travel: a tap picks the frame under the finger; anything else that is not a pick (a swipe up
+    // or down, a cancelled gesture) goes back exactly where it started, never to a neighbour the drift reached
+    if (this.moved < RIBBON_TAP_PX) this.offset = typeof pxFromCentre === 'number' ? this.clamp(this.o0 + pxFromCentre) : this.o0;
     var idx = this.nearest(this.offset); this.offset = this.xs[idx]; return idx;
   };
   RibbonState.prototype.wheel = function (dx) { this.offset = this.clamp(this.offset + dx); return this.nearest(this.offset); };

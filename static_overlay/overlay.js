@@ -2450,7 +2450,11 @@
   };
   Overlay.prototype._hours = function (entry) { return Math.round((Date.parse(entry.valid_utc) - Date.parse(this.manifest.run_utc)) / 3.6e6); };
   Overlay.prototype._validLocal = function (entry) { return this.opts.fmtTime(entry.valid_utc, this.opts.tz) + ' ' + this.opts.tzAbbr(entry.valid_utc, this.opts.tz); };
-  // The folded panel's one line: "Thu, Oct 8, 06:00 PM HST" (weekday, date, time, zone; no field name, no hour count:
+  // "Oct 8, 06:00 PM" -> "Oct. 8, 06:00 PM": the period after an abbreviated month in the folded line (owner,
+  // 2026-10-07). Only the English three-letter abbreviations get one ("May" is the full name); a string in another
+  // locale's shape (the page formats the clock in the browser's locale: "8. Okt., 18:00") is left as it is.
+  function dotMonth(s) { return String(s).replace(/^(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (?=\d)/, '$1. '); }
+  // The folded panel's one line: "Thu, Oct. 8, 06:00 PM HST" (weekday, date, time, zone; no field name, no hour count:
   // owner, 2026-10-07) in the forecast table's own clock format, for the REQUESTED time with its state while a seek is
   // pending (the ribbon label's rule; a folded sheet has no ribbon to show it).
   Overlay.prototype._summaryLine = function () {
@@ -2458,7 +2462,7 @@
     if (!m || idx === null || !m.frames[idx]) return '…';
     var fr = m.frames[idx], wd = ribbonFormatter(this.opts.tz).stamp(Date.parse(fr.valid_utc)).weekday;
     var state = !pending ? '' : this._isUnavailable(idx) ? ' · unavailable' : ' · loading…';
-    return (wd ? wd + ', ' : '') + this._validLocal(fr) + state;
+    return (wd ? wd + ', ' : '') + dotMonth(this._validLocal(fr)) + state;
   };
   function button(cls, text, label, onClick) {
     var b = mk('button', 'ov-btn ' + cls, text); b.type = 'button'; b.setAttribute('aria-label', label);
@@ -2853,7 +2857,7 @@
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,
       parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,
       forwardPixel: forwardPixel, snapToPixel: snapToPixel, pixelOf: pixelOf, pad3: pad3,
-      ringPlan: ringPlan, nextAvailable: nextAvailable, stepAvailable: stepAvailable, nearestIndex: nearestIndex, restoreIndex: restoreIndex, SESSION_KEY: SESSION_KEY, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
+      ringPlan: ringPlan, nextAvailable: nextAvailable, stepAvailable: stepAvailable, nearestIndex: nearestIndex, dotMonth: dotMonth, restoreIndex: restoreIndex, SESSION_KEY: SESSION_KEY, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,

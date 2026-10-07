@@ -456,7 +456,7 @@ const HOURS_209 = [...Array(121).keys()].concat([...Array(88).keys()].map((i) =>
 const HOURS_81 = [...Array(81).keys()].map((i) => 3 * i);
 function framesAt(runUtc, hours) { const run = Date.parse(runUtc); return hours.map((h) => ({ step: h, valid_utc: new Date(run + h * 3.6e6).toISOString() })); }
 
-test('ribbonFormatter: day / tick / clock texts in a zone; an unknown zone reads as UTC; midnight is "00" and "12 AM"', () => {
+test('ribbonFormatter: day / tick / clock texts in a zone; an empty or unknown zone reads as the zone of the computer (as the page clock); midnight is "00" and "12 AM"', () => {
   const f = I.ribbonFormatter('Pacific/Honolulu'), t = Date.parse('2026-10-11T17:00:00Z');                 // 7 AM HST
   assert.equal(f.zone, 'Pacific/Honolulu');
   assert.equal(f.day(t), 'Oct 11'); assert.equal(f.clock(t), '7 AM'); assert.equal(f.tick(t), '07');
@@ -466,20 +466,24 @@ test('ribbonFormatter: day / tick / clock texts in a zone; an unknown zone reads
   assert.equal(f.stamp(Date.parse('2026-10-11T09:59:00Z')).date, 'Sat, Oct 10'); assert.equal(f.stamp(Date.parse('2026-10-11T10:00:00Z')).date, 'Sun, Oct 11');
   assert.equal(I.ribbonFormatter('UTC').stamp(Date.parse('2026-10-11T09:59:00Z')).date, 'Sun, Oct 11', 'the same instant is already Sunday in UTC');
   assert.equal(f.stamp(Date.parse('2026-10-31T12:00:00Z')).date, 'Sat, Oct 31'); assert.equal(f.stamp(Date.parse('2026-11-01T12:00:00Z')).date, 'Sun, Nov 1');
-  // without Intl (very old engines) the formatter falls back to UTC by hand, weekday included, and never throws
-  const DTF = Intl.DateTimeFormat;
+  // without Intl (very old engines) the formatter reads the computer's clock by hand, weekday included, and never throws
+  const DTF = Intl.DateTimeFormat, MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const local = (ms) => { const d = new Date(ms); return { y: d.getFullYear(), mo: MON[d.getMonth()], d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), wd: WD[d.getDay()] }; };
   try {
     Intl.DateTimeFormat = function () { throw new RangeError('no Intl'); };
     const u = I.ribbonFormatter('No/IntlZone');
-    assert.equal(u.zone, 'UTC'); assert.deepEqual(u.parts(t), { y: 2026, mo: 'Oct', d: 11, h: 17, mi: 0, wd: 'Sun' });
-    assert.equal(u.stamp(Date.parse('2026-10-13T01:00:00Z')).date, 'Tue, Oct 13'); assert.equal(u.clock(t), '5 PM');
+    assert.equal(u.zone, 'local'); assert.deepEqual(u.parts(t), local(t));
+    const t2 = Date.parse('2026-10-13T01:00:00Z'), l2 = local(t2);
+    assert.equal(u.stamp(t2).date, l2.wd + ', ' + l2.mo + ' ' + l2.d);
   } finally { Intl.DateTimeFormat = DTF; }
   const mid = Date.parse('2026-10-11T10:00:00Z');                                                            // midnight HST
   assert.equal(f.tick(mid), '00'); assert.equal(f.clock(mid), '12 AM'); assert.equal(f.clock(mid + 12 * 3.6e6), '12 PM');
   assert.equal(f.clock(Date.parse('2026-10-11T05:30:00Z')), '7:30 PM', 'minutes only when not on the hour');
+  const here = new Intl.DateTimeFormat().resolvedOptions().timeZone, H = I.ribbonFormatter(here);
   const u = I.ribbonFormatter('Not/AZone');
-  assert.equal(u.zone, 'UTC'); assert.equal(u.day(t), 'Oct 11'); assert.equal(u.clock(t), '5 PM');
-  assert.equal(I.ribbonFormatter(undefined).zone, 'UTC');
+  assert.equal(u.zone, here); assert.equal(u.day(t), H.day(t)); assert.equal(u.clock(t), H.clock(t)); assert.deepEqual(u.parts(t), H.parts(t));
+  assert.equal(I.ribbonFormatter(undefined).zone, here); assert.equal(I.ribbonFormatter('').zone, here);
+  assert.equal(I.ribbonFormatter('UTC').zone, 'UTC', 'UTC by name stays UTC');
   const k = I.ribbonFormatter('Asia/Kolkata');                                                               // a half-hour zone
   assert.deepEqual(k.parts(Date.parse('2026-10-11T18:30:00Z')), { y: 2026, mo: 'Oct', d: 12, h: 0, mi: 0, wd: 'Mon' });
 });
@@ -547,6 +551,27 @@ test('ribbonLayout: the pinned first-day label goes when the next midnight is un
   assert.equal(a.days[0].text, 'Oct 13');
   const b = I.ribbonLayout(framesAt('2026-10-12T08:00:00Z', HOURS_81), '2026-10-12T08:00:00Z', 'UTC', 3.86);
   assert.deepEqual([b.days[0].text, b.days[0].clamped, b.days[1].text], ['Oct 12', true, 'Oct 13']);
+});
+
+test('ribbonLayout (G26 A-P2-1): a clock change AT midnight -- one day label per local date, at its first hour; one 00 tick', () => {
+  const labels = (tz, run, hrs) => I.ribbonLayout(framesAt(run, hrs), run, tz, 3.86);
+  // spring: the day starts at 01:00 (no 00:00 exists) -- it still gets its label, at that first hour
+  for (const [tz, run, day] of [['America/Havana', '2026-03-07T00:00:00Z', 'Mar 8'], ['Atlantic/Azores', '2026-03-28T00:00:00Z', 'Mar 29'],
+    ['America/Santiago', '2026-09-05T00:00:00Z', 'Sep 6'], ['Asia/Beirut', '2026-03-28T00:00:00Z', 'Mar 29'], ['Africa/Cairo', '2026-04-23T00:00:00Z', 'Apr 24']]) {
+    const L = labels(tz, run, HOURS_81), d = L.days.find((x) => x.text === day), f = I.ribbonFormatter(tz);
+    assert.ok(d, tz + ': ' + day + ' labelled (' + L.days.map((x) => x.text).join(',') + ')');
+    const p = f.parts(d.ms); assert.equal(p.mo + ' ' + p.d, day); assert.equal(p.h, 1, tz + ': the day begins at 01:00');
+  }
+  // fall: 00:00 happens twice -- one label, one major tick
+  for (const [tz, run, day] of [['America/Havana', '2026-10-31T00:00:00Z', 'Nov 1'], ['Atlantic/Azores', '2026-10-24T00:00:00Z', 'Oct 25']]) {
+    const L = labels(tz, run, HOURS_81), f = I.ribbonFormatter(tz);
+    assert.equal(L.days.filter((x) => x.text === day).length, 1, tz + ': ' + day + ' once');
+    const majors = L.ticks.filter((t) => t.major && (() => { const p = f.parts(t.ms); return p.mo + ' ' + p.d === day; })());
+    assert.equal(majors.length, 1, tz + ': one 00 tick on ' + day);
+  }
+  // every day of a 209-frame run in the Azores is labelled exactly once, in order
+  const Z = labels('Atlantic/Azores', '2026-10-20T00:00:00Z', HOURS_209), texts = Z.days.map((x) => x.text);
+  assert.equal(new Set(texts).size, texts.length); assert.ok(Z.days.every((d, i) => i === 0 || d.x > Z.days[i - 1].x));
 });
 
 test('ribbonLayout: a clock change gives a 23-hour and a 25-hour day, with the ticks still on the local clock hours', () => {

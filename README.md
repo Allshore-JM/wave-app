@@ -352,7 +352,12 @@ available frames; a field switch while a scrubbed frame is still loading keeps t
 the frame on the map); a pinned first-day label is dropped unless the next date is at least 60 px away; and the panel follows
 window resizes and rotations by watching the window and the map container (the page has Leaflet re-read the map size before
 `invalidateSize()`, so the map's own `resize` event does not fire there; before this the sheet stayed a sheet on a window
-grown to desktop size, and the attribution width and frame resolution did not follow either).
+grown to desktop size, and the attribution width and frame resolution did not follow either). Asset 2.14.2: with no room
+for the details (a phone turned sideways, a short window) the details go and the transport row (play, ribbon, speed) stays;
+with no room for that either, or when the viewer folds the panel, the one play button sits in the head row instead (as the
+old panel's head button did); a fold for lack of room is never saved, and until the viewer uses the toggle the size decides
+at every render (a phone turned upright opens up again); a new sheet takes its place beside the zoom column before its
+ribbon is measured (else the pointer and the label could disagree by hours after a resize).
 Coastline clip (asset 2.7.6): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for

@@ -35,6 +35,8 @@
 .ov-play:hover { background: #0b7774; }
 .ov-transport { gap: 8px; flex-wrap: nowrap; align-items: flex-end; }
 .ov-transport > .ov-play, .ov-transport > .ov-speed { margin-bottom: 2px; }
+/* the same button in the head when the transport row is not shown (collapsed, or no room for it): smaller */
+.ov-head .ov-play { width: 26px; height: 26px; min-width: 26px; font-size: 11px; border-width: 1px; }
 .ov-hint { color: #8a5300; }
 
 /* the compass ribbon: the dates and hours scroll under a fixed coral pointer; the selected time above it */
@@ -83,7 +85,8 @@
 .ov-playing .ov-speed-btn[data-animal="fish"] .ov-animal,
 .ov-playing .ov-speed-btn[data-animal="shark"] .ov-animal { transform-origin: 72% 50%; animation: ov-sway 1.1s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .ov-animal { animation: none !important; } }
-@media (pointer: coarse) { .ov-play, .ov-speed-btn { min-width: 40px; min-height: 40px; } .ov-speed-opt { min-height: 44px; } }
+@media (pointer: coarse) { .ov-play, .ov-speed-btn { min-width: 40px; min-height: 40px; } .ov-speed-opt { min-height: 44px; }
+  .ov-head .ov-play { width: 40px; height: 40px; min-width: 40px; } }
 
 /* the legend: a taller strip and clearer labels (the colours and the tick positions are the module's, unchanged) */
 .ov-legend { margin-top: 6px; }

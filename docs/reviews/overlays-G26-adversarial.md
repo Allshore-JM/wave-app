@@ -260,3 +260,63 @@ Every item of the scope above was fixed, each with a test:
   - Flag needles.
 - **Results.** Mutation: 32 of 32 killed (scratch `g26/fix2/mut_fix2.py`; 4 survived the first run and were pinned).
   pytest 825 (exit 0), Node 469, and the Node suites also pass under TZ=UTC.
+
+## Test-site verification of fix round 2 (Opus 5.5 MAX): asset 2.14.8 on test @ 8ff91b8
+- **Deploy.** test @ 8ff91b8 is the cherry-picks of the re-check record and fix round 2 (README kept as test's). Live
+  from 04:19 UTC. The served `overlay.js` and `overlay.css` equal the committed files byte for byte; the 2.14.7 URL
+  answers 404. Every mount reported 2.14.8.
+- **Method.** Headless Edge 154 with trusted DevTools input (scratch `g26/verify2/hl/`, reviewer R2's harness on my own
+  port and profile): touch with emulation and a coarse pointer on the phone sizes; mouse, wheel and keys on desktop.
+- **Touch, 375x812 and 412x915: 280 gestures, 0 flagged.** Taps and taps with a 2 / 3 / 3.5 px roll land on the frame
+  where the finger touched down. Wobble up to 9 px is a tap; 10 / 12 px is no pick. These all leave the time unchanged
+  and load no frame: straight swipes, swipes drifting 3 / 4 / 6 / 8 / 12 / 20 px, a swipe drifting 6 px down, a drift
+  that comes back, diagonals at 50 / 60 / 70 / 80 degrees, and 12 px up followed by 60 px sideways. Diagonals at
+  20 / 30 / 40 degrees scrub to the expected frame, as do short drags of 4-12 px, the slow 60 px drag (+17 h), the clamps
+  at 0 and 208, a long press, and a 30 px drag that is then cancelled. A 2 px roll then a cancel is no pick. While
+  playing at 1x, a straight swipe, an 8 px drifting swipe and a 70 degree swipe keep playback running with no seek; a tap
+  and a drag pause. The map never moved, the page never scrolled or zoomed, and no contextmenu appeared.
+- **Two fingers** (3 runs each, all as designed):
+  - a second finger landing during a drag goes back to the start frame (seeks 43, 44, 46, 40);
+  - a pinch-out and a pinch-in on the ribbon, and a second finger tapping while the first holds: unchanged, no seek;
+  - one finger on the map and one on the ribbon: an ordinary one-finger gesture.
+- **Fold (RC-3): 100 sizes, 0 dead toggles, nothing over (i)/Home.**
+  - Phone sideways (812 x 240-430), shrinking and growing: the play row with a working toggle from a 317 px map up, one
+    line + play without a toggle below.
+  - The viewer's fold: the toggle shows exactly where opening shows more.
+  - Desktop 1280 x 330-520 in the page's phone mode: the toggle works at every height, open and folded.
+  - A focused toggle that disappears hands the focus to the play button.
+- **Focus (RC-6), real keys.**
+  - The ribbon, reached with 18 real Tabs, keeps the focus through 800 -> 700 -> 800 height changes, and ArrowRight /
+    ArrowLeft still step it.
+  - The play button keeps the focus and Space still plays and pauses.
+  - An open speed menu closes on a height change with the focus on its button, and Enter reopens it.
+  - The toggle and the overview slider keep the focus; a width-only change keeps it; the field select (outside the
+    panel) is never taken.
+- **Announcements (RC-7).**
+  - The status node read "Loading model frame…" then "" at the mount; there is exactly one, in the body, and the panel
+    never has `aria-live`.
+  - With 404s injected at +42 h and +44 h during 7 s of 2x playback, it changed twice (once per new unavailable frame),
+    not on every frame, and the visible note matches it.
+  - With every frame 503, the error is said once; a real click on Retry gives "Loading model frame…" then "".
+  - Off clears it.
+- **Regression sweep** (R2's script, unchanged):
+  - the open head and the folded line "Wed, Oct. 7, 07:00 PM HST";
+  - every field, then Off with 0 model requests in the next 7 s;
+  - cadence 513 / 257 / 147 ms at 1x / 2x / 4x and the loop wrapping at the end;
+  - a 2.5 s frame shows "loading…", a 404 frame is skipped and listed, and the late frame of an out-of-order pair is
+    never drawn;
+  - zones and units; a forecast-point click while playing; the phone speed menu opening upward.
+- **Other checks.**
+  - Nine sizes without reloads, open and folded: the selected time sits exactly under the pointer and nothing covers
+    (i)/Home.
+  - A resize in the middle of a drag: the moves that follow never pan the map (K-2, as on 2.14.7).
+  - The desktop height sweep (232 steps): minimum clearance 20 px, the same as 2.14.7.
+  - A fresh tab has no console errors.
+- **Mouse, by design.**
+  - A click with a 2 px roll now picks the frame under the press (RC-5).
+  - R2's zig-zag drags whose first move is 5 px sideways and 10 / 15 px down are now swipes. Their first 10 px are mostly
+    vertical, so the larger-axis rule decides at that point. A gentle 6 px wobble and a drag drifting 15 px down still
+    scrub (+16 h).
+- **Screenshots:** scratch `g26/verify2/shots/overlay_panel_2.14.8.jpg`.
+- **Cleanup:** the test origin's storage emptied through /robots.txt, emulation reset, Edge closed (no process left on
+  the profile), and the profile removed.

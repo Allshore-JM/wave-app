@@ -91,13 +91,43 @@
     .live-win .fw-body { padding: 12px 14px; }
     /* the tide-station window's box (plan section 38): a third window, its chip stacked above the live-buoy chip */
     .fwin.tide-win { right: 18px; bottom: 18px; width: min(760px, calc(100vw - 36px)); height: min(64vh, 640px); z-index: 2000; }
-    .tide-win .fw-body { padding: 10px 14px 12px; }
-    .tide-win .chart-box { position: relative; height: 300px; }
-    .tide-hilo { margin: 8px 0 4px; font-size: 12.5px; font-variant-numeric: tabular-nums; }
-    .tide-hilo th { font-weight: 600; color: #3f4d6e; }
-    .tide-hilo tr.tide-high td:nth-child(3) { color: #0b3d91; font-weight: 600; }
-    .tide-hilo tr.tide-low td:nth-child(3) { color: #6f5816; }
-    #tideMeta { font-size: 11.5px; color: #5a6b7a; line-height: 1.35; }
+    .tide-win .fw-body { padding: 8px 10px 12px; }
+    /* the day strip (static_ui/tides.js, after tide-forecast.com's layout): one table, the label column stuck to the
+       left while the days scroll sideways; a closed day is one narrow column, an open day two halves (AM | PM) */
+    .tide-strip { font-variant-numeric: tabular-nums; }
+    .tide-scroll { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+    .tide-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 11.5px; color: #1d2b4f; }
+    .tide-table th, .tide-table td { padding: 0; vertical-align: top; border-right: 1px solid rgba(0,0,0,.12); border-bottom: 1px solid rgba(0,0,0,.08); }
+    .tide-table .tide-lab { position: sticky; left: 0; z-index: 3; background: #fff; width: 60px; min-width: 60px; max-width: 60px;
+      border-right: 1px solid rgba(0,0,0,.22); font-weight: 600; color: #3f4d6e; padding: 4px 4px; white-space: nowrap; }
+    .tide-table .tide-lab .tide-l2 { font-weight: 400; font-size: 10.5px; color: #6c757d; }
+    .tide-table .tide-day { background: #e9f0f8; text-align: center; }
+    .tide-table .tide-day-open { background: #d8e6f6; }
+    .tide-table .tide-day-today .tide-daybtn { color: #0b3d91; }
+    .tide-daybtn { display: block; width: 100%; min-height: 30px; padding: 4px 2px; border: 0; background: transparent; font: inherit; font-weight: 600;
+      color: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tide-daybtn:hover { background: rgba(29,111,214,.10); }
+    .tide-daybtn:focus-visible { outline: 2px solid #1d6fd6; outline-offset: -2px; }
+    .tide-table .tide-half { font-size: 10.5px; font-weight: 500; color: #5a6b7a; text-align: center; background: #f3f7fb; height: 16px; line-height: 16px; }
+    .tide-table .tide-half-closed { background: #f3f7fb; }
+    .tide-table .tide-lab-chart { padding: 0; }
+    .tide-ylabels { position: relative; }
+    .tide-ytick { position: absolute; right: 4px; font-size: 10.5px; font-weight: 400; color: #5a6b7a; }
+    .tide-ynow { position: absolute; left: 3px; font-size: 10.5px; font-weight: 700; color: #d6336c; background: rgba(255,255,255,.85); padding: 0 2px; border-radius: 2px; }
+    .tide-table .tide-chart-cell { padding: 0; line-height: 0; }
+    .tide-svg { display: block; }
+    .tide-table .tide-cell { padding: 3px 2px; text-align: center; min-height: 20px; }
+    .tide-ex, .tide-ev { line-height: 1.2; padding: 2px 0; }
+    .tide-ex .tide-l1, .tide-ev .tide-l2 { font-weight: 600; }
+    .tide-ex .tide-l2 { color: #3f4d6e; }
+    .tide-high .tide-ex .tide-l1 { color: #0b3d91; }
+    .tide-low .tide-ex .tide-l1 { color: #6f5816; }
+    .tide-ev .tide-l1 { font-size: 12px; }
+    .tide-moon-glyph { font-size: 17px; line-height: 1.1; }
+    .tide-svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .tide-callout text { paint-order: stroke; stroke: #fff; stroke-width: 3px; stroke-linejoin: round; }
+    .tide-table .tide-lab-head { background: #e9f0f8; }
+    #tideMeta { font-size: 11.5px; color: #5a6b7a; line-height: 1.35; margin-top: 8px; }
     #tideMeta div + div { margin-top: 2px; }
 
     .live-buoy-summary {
@@ -963,13 +993,7 @@
       <div id="tideError" class="alert alert-warning py-2 d-none" role="alert"><span id="tideErrorText"></span>
         <button type="button" id="tideRetry" class="btn btn-sm btn-outline-secondary ms-2">Retry</button></div>
       <div id="tideContent" class="d-none">
-        <div class="btn-group btn-group-sm mb-1" role="group" aria-label="Range" id="tideRangeBar">
-          <button type="button" class="btn btn-outline-secondary active" data-days="3" aria-pressed="true">3 d</button>
-          <button type="button" class="btn btn-outline-secondary" data-days="7" aria-pressed="false">7 d</button>
-          <button type="button" class="btn btn-outline-secondary" data-days="16" aria-pressed="false">16 d</button>
-        </div>
-        <div class="chart-box" id="tideBox"><canvas id="tideChart" aria-label="Tide height graph" role="img"></canvas></div>
-        <div id="tideHiLo"></div>
+        <div id="tideStrip" class="tide-strip"></div>
         <div id="tideMeta"></div>
       </div>
     </div>
@@ -2766,15 +2790,11 @@
     function ensureTideView() {
       if (tideView || !window.AllshoreTides) return tideView;
       const $ = function (id) { return document.getElementById(id); };
-      let storage = null;
-      try { storage = window.sessionStorage; } catch (e) {}
       tideView = window.AllshoreTides.createTideView({
         els: { content: $('tideContent'), loading: $('tideLoading'), error: $('tideError'), errorText: $('tideErrorText'), retry: $('tideRetry'),
-               rangeBar: $('tideRangeBar'), box: $('tideBox'), canvas: $('tideChart'), hilo: $('tideHiLo'), meta: $('tideMeta') },
-        document: document, fetch: function (u, o) { return fetch(u, o); }, loadChartJs: loadChartJs, getChart: function () { return window.Chart; },
-        storage: storage || { getItem: function () { return null; }, setItem: function () {} },
+               strip: $('tideStrip'), meta: $('tideMeta') },
+        document: document, fetch: function (u, o) { return fetch(u, o); },
         visible: function () { return !!(tideWin && tideWin.isOpen() && tideWin.window.mode !== 'min'); },
-        bodyHeight: function () { const b = $('twBody'); return b ? b.clientHeight : 0; },
         unit: getSelectedUnit(),
         zoneAbbr: function (ms, tz) { try { return tzAbbr(new Date(ms).toISOString(), tz); } catch (e) { return tz; } }
       });

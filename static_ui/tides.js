@@ -1,37 +1,41 @@
 /* Allshore Surf tide station view (plan section 38). Loaded on every page; touches no DOM until createTideView(...)
  * is called with the tide window's elements, so tests/ui/tides.test.js evaluates it in Node with fakes.
  *
- * One station at a time: load(station) asks the server (/api/tides/<id>: NOAA's predictions, the curve every 30 min,
- * the predicted highs and lows, the nights), draws one chart and lists the highs and lows of the range shown.
- *  - The time axis is LINEAR in hours since today's local midnight in the display zone (the site's #tz, else the
- *    station's own zone), so 3-hourly gaps, observations and the now line all sit at their true times; its ticks are
- *    local clock hours (midnights with the date, then noon / 6 AM / 6 PM as room allows), found by reading the clock in
- *    the zone, so 23- and 25-hour days come out right.
- *  - Tabs 3 d / 7 d / 16 d (remembered for the tab in sessionStorage) end at the 3rd / 7th / 16th local midnight.
- *  - Heights above MLLW in the site's unit (US: ft, one decimal; Metric: m, two). Nights shaded (last light to first
- *    light, the forecast graphs' rule), a dashed line at the current time (redrawn every minute), and for a station
- *    with a gauge the observed water level of the last 48 h (asked after the curve is drawn; a failure is only a note).
+ * One station at a time: load(station) asks the server (/api/tides/<id>: NOAA's predictions every 30 min for 30 days,
+ * the predicted highs and lows, the nights, the sun and moon) and draws a DAY STRIP (after tide-forecast.com's layout,
+ * owner 2026-10-08): one table whose first column (the labels) stays put while the rest scrolls sideways, a column per
+ * local day for 30 days from today's midnight in the display zone (the site's #tz, else the station's own zone), each
+ * day closed (narrow: the date) or OPEN (wide: the full date over AM | PM halves; today opens by itself; a click on a
+ * day's header toggles it, several may be open). Over the columns one SVG chart: the predicted curve with its fill,
+ * the nights shaded, a dot at every high and low with its time and height written out on open days, the observed
+ * water level dashed (stations with a gauge), a red dashed line at the current time with a dot at the current height
+ * and a dashed level line to the axis (the current height in the label column), redrawn every minute. Under the chart,
+ * aligned to the columns: HIGH and LOW (time + height), Sun (rise / set), Moon (phase, set / rise). Hovering (or
+ * touching) the chart reads the time and height under the pointer. Heights above MLLW in the site's unit (US: ft, one
+ * decimal; Metric: m, two). Within a day the time runs linearly over its own column (23- and 25-hour days right).
  *  - A busy or unreachable server (503 + retry) is asked again after its Retry-After; a station NOAA has no
  *    predictions for says so (no retry); any other failure offers Retry.
- *  - A newer load() makes every answer of an older one void (sequence + AbortController), and a chart is only built
- *    while the window shows its body (show() builds a deferred one).
+ *  - A newer load() makes every answer of an older one void (sequence + AbortController); a strip is only built while
+ *    the window shows its body (show() builds a deferred one). Text only (every string from the server is a text node).
  */
 (function () {
   'use strict';
 
-  var RANGE_KEY = 'allshore.tideRange.v1';
-  var RANGES = ['3', '7', '16'];
-  var DEFAULT_RANGE = '3';
   var FT_PER_M = 3.28084;
-  var HOUR_MS = 3600000;
-  var BOX_MIN = 220, BOX_MAX = 420, BOX_CHROME = 120;       // the chart box: the body minus the tabs, list header, margins
-  var MIN_TICK_PX = 40;                                     // hour ticks no closer than this
-  var LABEL_PX = { full: 64, short: 38 };                   // "Thu 10/8" / "10/8"
+  var HOUR_MS = 3600000, MIN_MS = 60000;
+  var DAYS = 30;
+  var COL_CLOSED = 64, COL_OPEN = 240, LABEL_W = 60;          // px: a closed day, an open day (two halves), the label column
+  var CHART_H = 230, CHART_PAD = { top: 26, bottom: 10 };     // the chart's height; room for callouts above the highest high
   var RETRY_MAX = 24, RETRY_DEFAULT_S = 5, RETRY_MAX_S = 60;
   var NOW_REDRAW_MS = 60000;
-  var COLORS = { predicted: 'rgba(29,111,214,1)', fill: 'rgba(29,111,214,0.10)', extreme: 'rgba(11,61,145,1)',
-                 observed: 'rgba(232,89,12,0.95)', night: 'rgba(30,60,110,0.10)', now: 'rgba(214,51,108,0.9)' };
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  var COLORS = { curve: '#1d6fd6', fill: 'rgba(29,111,214,0.16)', extreme: '#0b3d91', observed: '#e8590c',
+                 night: 'rgba(30,60,110,0.11)', now: '#d6336c', grid: 'rgba(0,0,0,0.12)', text: '#1d2b4f' };
   var WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  var WEEKDAY_NAMES = { Sun: 'Sunday', Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday' };
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  // the moon as seen from the northern hemisphere, one glyph per eighth of the cycle (the forecast table's); mirrored south
+  var MOON_GLYPHS = ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'];
   var METHOD_TEXT = {
     harmonic: 'Curve: NOAA tide predictions',
     reference: 'Curve: the predictions of NOAA station %REF% shaped between this station’s predicted highs and lows (NOAA subordinate station)',
@@ -68,9 +72,9 @@
   // The local midnight at or before ms: the first guess subtracts the clock time; on a clock-change day the time
   // elapsed since midnight differs from the clock reading by the shift, which one correction fixes.
   function localMidnightBefore(ms, clk) {
-    var p = clk.parts(ms), cand = ms - (p.h * 60 + p.mi) * 60000 - (new Date(ms).getUTCSeconds() * 1000 + new Date(ms).getUTCMilliseconds());
+    var p = clk.parts(ms), cand = ms - (p.h * 60 + p.mi) * MIN_MS - (new Date(ms).getUTCSeconds() * 1000 + new Date(ms).getUTCMilliseconds());
     p = clk.parts(cand);
-    if (p.h || p.mi) cand += p.h >= 12 ? (1440 - p.h * 60 - p.mi) * 60000 : -(p.h * 60 + p.mi) * 60000;
+    if (p.h || p.mi) cand += p.h >= 12 ? (1440 - p.h * 60 - p.mi) * MIN_MS : -(p.h * 60 + p.mi) * MIN_MS;
     return cand;
   }
   // count + 1 local midnights from the one at or before ms (index k = the start of day k)
@@ -79,170 +83,146 @@
     for (var k = 0; k < count; k++) out.push(localMidnightBefore(out[k] + 36 * HOUR_MS, clk));
     return out;
   }
-  function clockText(p, compact) {
-    var h12 = p.h % 12 || 12, mi = p.mi ? ':' + (p.mi < 10 ? '0' : '') + p.mi : '';
-    if (compact && !p.mi && p.h === 12) return 'Noon';
-    return h12 + (compact ? mi : ':' + (p.mi < 10 ? '0' : '') + p.mi) + ' ' + (p.h < 12 ? 'AM' : 'PM');
+  function clockText(p) {
+    var h12 = p.h % 12 || 12;
+    return h12 + ':' + (p.mi < 10 ? '0' : '') + p.mi + ' ' + (p.h < 12 ? 'AM' : 'PM');
   }
-  function dateText(p, weekday) { return (weekday && p.wd ? p.wd + ' ' : '') + p.mo + '/' + p.d; }
-
-  // The axis marks between two local midnights: every local clock hour 0 / 6 / 12 / 18 (read from the clock, so a
-  // 23- or 25-hour day keeps its marks at the right instants). -> [{ms, x (hours since origin), h, p}]
-  function hourMarks(origin, end, clk) {
-    var out = [];
-    for (var ms = origin; ms <= end + 1; ) {
-      var p = clk.parts(ms);
-      if (p.mi !== 0) { ms += (60 - p.mi) * 60000; continue; }             // after a 30-minute clock change: the next :00
-      if (p.h % 6 === 0) out.push({ ms: ms, x: (ms - origin) / HOUR_MS, h: p.h, p: p });
-      ms += HOUR_MS;
-    }
-    return out;
-  }
-  // The finest step (6, 12 or 24 h) whose marks are at least MIN_TICK_PX apart over this width, and the date labels:
-  // every n-th midnight so labels do not collide (with the weekday when there is room).
-  function tickPlan(days, widthPx) {
-    var perDay = (widthPx > 0 ? widthPx : 600) / Math.max(1, days);
-    var step = perDay / 4 >= MIN_TICK_PX ? 6 : perDay / 2 >= MIN_TICK_PX ? 12 : 24;
-    var weekday = perDay >= LABEL_PX.full;
-    var every = Math.max(1, Math.ceil((weekday ? LABEL_PX.full : LABEL_PX.short) / perDay));
-    return { step: step, weekday: weekday, every: every };
-  }
-  function tickLabel(mark, plan, dayIndex) {
-    if (mark.h === 0) return dayIndex % plan.every === 0 ? dateText(mark.p, plan.weekday) : '';
-    return plan.step < 24 && mark.h % plan.step === 0 ? clockText(mark.p, true) : '';
-  }
+  function dayShort(p) { return (p.wd || '') + ' ' + p.d; }                                       // "Fri 9"
+  function dayLong(p) { return (WEEKDAY_NAMES[p.wd] || p.wd || '') + ', ' + MONTHS[p.mo - 1] + ' ' + p.d; }   // "Friday, Oct 9"
+  function stampText(p) { return (p.wd || '') + ' ' + p.mo + '/' + p.d + ', ' + clockText(p); }   // "Fri 10/9, 3:05 PM"
 
   // ---- the data ----------------------------------------------------------------------------------------------------
   function num(v) { return typeof v === 'number' && isFinite(v); }        // isFinite(null) is true: a gap is no 0
-  function rangeOf(v) { v = String(v); return RANGES.indexOf(v) >= 0 ? v : DEFAULT_RANGE; }
-  function readRange(storage) { try { return rangeOf(storage.getItem(RANGE_KEY)); } catch (e) { return DEFAULT_RANGE; } }
   function unitOf(u) { return u === 'Metric' ? 'Metric' : 'US'; }
   function height(m, unit) { return unit === 'Metric' ? m : m * FT_PER_M; }
   function heightText(m, unit) { return unit === 'Metric' ? height(m, unit).toFixed(2) + ' m' : height(m, unit).toFixed(1) + ' ft'; }
 
-  // Chart points of the predicted curve, the extremes and the observations: x in hours since origin, y in the unit.
-  function points(d, obs, origin, unit) {
-    var curve = [], ext = [], seen = [];
-    var b = d.begin * 1000, step = d.step * 1000;
-    for (var i = 0; i < (d.v || []).length; i++) {
-      var v = d.v[i];
-      curve.push({ x: (b + i * step - origin) / HOUR_MS, y: num(v) ? height(v, unit) : null });
+  // The columns: day k runs [mids[k], mids[k+1]) and is COL_OPEN wide when open, else COL_CLOSED;
+  // -> { mids, lefts (px of each day's start), widths, total, open (booleans) }
+  function layout(mids, openSet) {
+    var lefts = [], widths = [], open = [], x = 0;
+    for (var k = 0; k < mids.length - 1; k++) {
+      var o = !!(openSet && openSet[k]);
+      open.push(o); lefts.push(x); widths.push(o ? COL_OPEN : COL_CLOSED); x += widths[k];
     }
+    return { mids: mids, lefts: lefts, widths: widths, total: x, open: open };
+  }
+  function dayOf(L, ms) {                                                  // the day index of an instant, or -1 outside the strip
+    var m = L.mids;
+    if (ms < m[0] || ms >= m[m.length - 1]) return -1;
+    var lo = 0, hi = m.length - 2;
+    while (lo < hi) { var mid = (lo + hi + 1) >> 1; if (m[mid] <= ms) lo = mid; else hi = mid - 1; }
+    return lo;
+  }
+  // an instant -> px from the strip's left edge (linear within its own day; outside the strip the edges' slopes)
+  function xOf(L, ms) {
+    var k = dayOf(L, ms);
+    if (k < 0) k = ms < L.mids[0] ? 0 : L.mids.length - 2;
+    var a = L.mids[k], b = L.mids[k + 1];
+    return L.lefts[k] + (ms - a) / (b - a) * L.widths[k];
+  }
+  function tOf(L, x) {                                                     // px -> the instant (inside the strip)
+    if (x <= 0) return L.mids[0];
+    for (var k = 0; k < L.widths.length; k++) {
+      if (x < L.lefts[k] + L.widths[k] || k === L.widths.length - 1) {
+        var f = Math.max(0, Math.min(1, (x - L.lefts[k]) / L.widths[k]));
+        return L.mids[k] + f * (L.mids[k + 1] - L.mids[k]);
+      }
+    }
+    return L.mids[L.mids.length - 1];
+  }
+
+  // The chart's vertical scale over the curve, the extremes and the observations in the unit: a nice tick step giving
+  // 3-7 ticks; -> { lo, hi, step, ticks, y(value) }
+  function yScale(values, unit) {
+    var lo = Infinity, hi = -Infinity;
+    for (var i = 0; i < values.length; i++) { var v = values[i]; if (num(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    if (hi - lo < 0.2) { hi = lo + 0.2; }
+    var steps = unit === 'Metric' ? [0.1, 0.2, 0.25, 0.5, 1, 2, 5] : [0.25, 0.5, 1, 2, 5, 10], step = steps[steps.length - 1];
+    for (var s = 0; s < steps.length; s++) { if ((hi - lo) / steps[s] <= 7) { step = steps[s]; break; } }
+    var a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step;
+    if (b - hi < step * 0.1) b += step;                                   // room above the top value
+    var ticks = [];
+    for (var t = a; t <= b + 1e-9; t += step) ticks.push(Math.round(t * 1000) / 1000);
+    var inner = CHART_H - CHART_PAD.top - CHART_PAD.bottom;
+    return { lo: a, hi: b, step: step, ticks: ticks,
+             y: function (v) { return CHART_PAD.top + (b - v) / (b - a) * inner; } };
+  }
+  function tickText(v, unit) { return unit === 'Metric' ? v.toFixed(1) : (Math.abs(v - Math.round(v)) < 1e-9 ? String(Math.round(v)) : v.toFixed(2).replace(/0$/, '')); }
+
+  // the curve's samples inside [from, to) plus one on each side: [{t, m}] (m null in a gap)
+  function samples(d, from, to) {
+    var out = [], b = d.begin * 1000, step = d.step * 1000;
+    var i0 = Math.max(0, Math.floor((from - b) / step) - 1), i1 = Math.min((d.v || []).length - 1, Math.ceil((to - b) / step) + 1);
+    for (var i = i0; i <= i1; i++) out.push({ t: b + i * step, m: num(d.v[i]) ? d.v[i] : null });
+    return out;
+  }
+  // the predicted height at an instant (linear between samples), or null
+  function heightAt(d, ms) {
+    var b = d.begin * 1000, step = d.step * 1000, x = (ms - b) / step, i = Math.floor(x);
+    if (!d.v || i < 0 || i + 1 >= d.v.length || !num(d.v[i]) || !num(d.v[i + 1])) return null;
+    return d.v[i] + (d.v[i + 1] - d.v[i]) * (x - i);
+  }
+  // the extremes of a day's half: [{t, m, k}] (half: 0 AM, 1 PM, -1 the whole day), in time order
+  function extremesIn(d, L, k, half) {
+    var a = L.mids[k], b = L.mids[k + 1], noon = a + (b - a) / 2;
+    var from = half === 1 ? noon : a, to = half === 0 ? noon : b, out = [];
     (d.hilo || []).forEach(function (e) {
       if (!e || !num(e[0]) || !num(e[1])) return;
-      ext.push({ x: (e[0] * 1000 - origin) / HOUR_MS, y: height(+e[1], unit), k: e[2] === 'H' ? 'H' : 'L', m: +e[1], t: e[0] * 1000 });
+      var t = e[0] * 1000;
+      if (t >= from && t < to) out.push({ t: t, m: e[1], k: e[2] === 'H' ? 'H' : 'L' });
     });
-    if (obs && obs.t && obs.v) for (var j = 0; j < obs.t.length; j++) {
-      if (num(obs.t[j]) && num(obs.v[j])) seen.push({ x: (obs.t[j] * 1000 - origin) / HOUR_MS, y: height(+obs.v[j], unit) });
+    return out;
+  }
+  function eventsIn(d, L, k, half, kinds) {                                // sun / moon events of a day's half: [{t, kind}]
+    var a = L.mids[k], b = L.mids[k + 1], noon = a + (b - a) / 2;
+    var from = half === 1 ? noon : a, to = half === 0 ? noon : b, out = [];
+    (d.events || []).forEach(function (e) {
+      if (!e || !num(e[0])) return;
+      var t = e[0] * 1000;
+      if (t >= from && t < to && kinds.indexOf(e[1]) >= 0) out.push({ t: t, kind: e[1] });
+    });
+    return out;
+  }
+  // the moon on a day: the sample nearest the day's middle -> {phase, pct, name, glyph} or null
+  function moonOf(d, L, k, lat) {
+    var mid = (L.mids[k] + L.mids[k + 1]) / 2, best = null, bd = Infinity;
+    (d.moon || []).forEach(function (m) {
+      if (!m || !num(m[0])) return;
+      var dd = Math.abs(m[0] * 1000 - mid);
+      if (dd < bd) { bd = dd; best = m; }
+    });
+    if (!best) return null;
+    var i = Math.round(best[1] * 8) % 8, g = lat < 0 ? (8 - i) % 8 : i;
+    return { phase: best[1], pct: best[2], name: best[3], glyph: MOON_GLYPHS[g] };
+  }
+  // the nights as [x0, x1] px inside the strip
+  function nightSpans(d, L) {
+    var end = L.total, out = [];
+    (d.night || []).forEach(function (n) {
+      if (!n || !num(n[0]) || !num(n[1]) || n[1] <= n[0]) return;
+      var x0 = Math.max(0, xOf(L, n[0] * 1000)), x1 = Math.min(end, xOf(L, n[1] * 1000));
+      if (x1 > x0) out.push([x0, x1]);
+    });
+    return out;
+  }
+  // the SVG path of the curve ("M x y L x y ...", a new M after a gap), and the closed area under it
+  function curvePaths(d, L, ys, unit) {
+    var pts = samples(d, L.mids[0], L.mids[L.mids.length - 1]), line = '', area = '', run = [];
+    function flush() {
+      if (run.length < 2) { run = []; return; }
+      var seg = run.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join('');
+      line += seg;
+      area += seg + 'L' + run[run.length - 1][0].toFixed(1) + ' ' + CHART_H + 'L' + run[0][0].toFixed(1) + ' ' + CHART_H + 'Z';
+      run = [];
     }
-    return { curve: curve, ext: ext, seen: seen };
-  }
-  // The nights as [x0, x1] in hours since origin
-  function nightSpans(d, origin) {
-    return (d.night || []).filter(function (n) { return n && num(n[0]) && num(n[1]) && n[1] > n[0]; })
-      .map(function (n) { return [(n[0] * 1000 - origin) / HOUR_MS, (n[1] * 1000 - origin) / HOUR_MS]; });
-  }
-  // The highs and lows between two instants: [{ms, kind, m}] in time order
-  function extremesBetween(d, from, to) {
-    return (d.hilo || []).filter(function (e) { return e && num(e[0]) && num(e[1]) && e[0] * 1000 >= from && e[0] * 1000 < to; })
-      .map(function (e) { return { ms: e[0] * 1000, kind: e[2] === 'H' ? 'High' : 'Low', m: +e[1] }; });
-  }
-
-  // ---- plugins -------------------------------------------------------------------------------------------------
-  function makeNightShade(spans) {
-    return { id: 'tideNights', beforeDraw: function (chart) {
-      var ctx = chart.ctx, area = chart.chartArea, x = chart.scales && chart.scales.x;
-      if (!ctx || !area || !x) return;
-      ctx.save();
-      ctx.fillStyle = COLORS.night;
-      spans.forEach(function (s) {
-        var x0 = Math.max(area.left, x.getPixelForValue(s[0])), x1 = Math.min(area.right, x.getPixelForValue(s[1]));
-        if (isFinite(x0) && isFinite(x1) && x1 > x0) ctx.fillRect(x0, area.top, x1 - x0, area.bottom - area.top);
-      });
-      ctx.restore();
-    } };
-  }
-  function makeNowLine(origin, now) {
-    return { id: 'tideNow', afterDatasetsDraw: function (chart) {
-      var ctx = chart.ctx, area = chart.chartArea, x = chart.scales && chart.scales.x;
-      if (!ctx || !area || !x) return;
-      var px = x.getPixelForValue((now() - origin) / HOUR_MS);
-      if (!isFinite(px) || px < area.left || px > area.right) return;
-      ctx.save();
-      ctx.strokeStyle = COLORS.now; ctx.lineWidth = 1; if (ctx.setLineDash) ctx.setLineDash([4, 3]);
-      ctx.beginPath(); ctx.moveTo(px, area.top); ctx.lineTo(px, area.bottom); ctx.stroke();
-      if (ctx.setLineDash) ctx.setLineDash([]);
-      ctx.font = '10px system-ui, -apple-system, "Segoe UI", sans-serif'; ctx.fillStyle = COLORS.now; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      ctx.fillText('now', px + 3, area.top + 2);
-      ctx.restore();
-    } };
-  }
-
-  // ---- the chart's configuration (pure: tests read it) --------------------------------------------------------------
-  function chartConfig(d, obs, view) {
-    var unit = unitOf(view.unit), clk = zoneClock(view.zone), days = +view.range;
-    var mids = midnights(view.now(), 16, clk), origin = mids[0];
-    var pts = points(d, obs, origin, unit), marks = hourMarks(origin, mids[16], clk);
-    var dayOf = function (ms) { for (var k = mids.length - 1; k >= 0; k--) if (ms >= mids[k]) return k; return 0; };
-    var markAt = {};
-    marks.forEach(function (m) { markAt[m.x.toFixed(4)] = m; });
-    var unitText = unit === 'Metric' ? 'm' : 'ft';
-    var datasets = [
-      { label: 'Predicted', data: pts.curve, parsing: false, borderColor: COLORS.predicted, backgroundColor: COLORS.fill, fill: 'start',
-        borderWidth: 1.8, pointRadius: 0, pointHitRadius: 4, tension: 0.3, spanGaps: false, order: 2 },
-      { label: 'High / low', data: pts.ext, parsing: false, showLine: false, borderColor: COLORS.extreme, backgroundColor: COLORS.extreme,
-        pointRadius: 3.5, pointHoverRadius: 5, order: 1 }
-    ];
-    if (pts.seen.length) datasets.push({ label: 'Observed', data: pts.seen, parsing: false, borderColor: COLORS.observed,
-      backgroundColor: COLORS.observed, borderWidth: 1.5, borderDash: [5, 3], pointRadius: 0, pointHitRadius: 3, spanGaps: false, order: 0 });
-    var x = {
-      type: 'linear', min: 0, max: (mids[days] - origin) / HOUR_MS,
-      afterBuildTicks: function (axis) {
-        var lo = axis.min, hi = axis.max;
-        axis.ticks = marks.filter(function (m) { return m.x >= lo - 1e-6 && m.x <= hi + 1e-6; }).map(function (m) { return { value: m.x }; });
-      },
-      ticks: { autoSkip: false, maxRotation: 0, minRotation: 0, includeBounds: false, font: { size: 10 },
-        callback: function (value) {
-          var m = markAt[(+value).toFixed(4)];
-          if (!m) return '';
-          var span = this && isFinite(this.max) && isFinite(this.min) ? (this.max - this.min) / 24 : days;
-          var plan = tickPlan(span, this && this.width > 0 ? this.width : 600);
-          return tickLabel(m, plan, dayOf(m.ms));
-        } },
-      grid: {
-        color: function (c) { var m = c.tick && markAt[(+c.tick.value).toFixed(4)]; return !m ? 'rgba(0,0,0,0)' : m.h === 0 ? 'rgba(0,0,0,0.25)' : m.h === 12 ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.06)'; },
-        lineWidth: function (c) { var m = c.tick && markAt[(+c.tick.value).toFixed(4)]; return m && m.h === 0 ? 1.3 : 0.8; } }
-    };
-    var y = { grace: '8%', grid: { color: 'rgba(0,0,0,0.08)' }, border: { color: 'rgba(0,0,0,0.2)' },
-      title: { display: true, text: 'Height (' + unitText + ', above MLLW)' } };   // Chart.js's own labels (0.5 steps stay 0.5)
-    return {
-      type: 'line',
-      data: { datasets: datasets },
-      plugins: [makeNightShade(nightSpans(d, origin)), makeNowLine(origin, view.now)],
-      options: {
-        responsive: true, maintainAspectRatio: false, animation: false, normalized: true,
-        interaction: { mode: 'nearest', axis: 'x', intersect: false },
-        layout: { padding: { top: 4, right: 8, bottom: 0, left: 4 } },
-        scales: { x: x, y: y },
-        plugins: {
-          legend: { position: 'top', align: 'start', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 6, padding: 8, font: { size: 11 },
-            sort: function (a, b) { return a.datasetIndex - b.datasetIndex; } } },   // Predicted, High / low, Observed (not the drawing order)
-          decimation: { enabled: false },
-          tooltip: { callbacks: {
-            title: function (items) {
-              if (!items || !items.length) return '';
-              var p = clk.parts(origin + items[0].parsed.x * HOUR_MS);
-              return p.wd + ' ' + p.mo + '/' + p.d + ', ' + clockText(p, false);
-            },
-            label: function (item) {
-              var raw = item.raw || {}, v = item.parsed.y;
-              var name = raw.k ? (raw.k === 'H' ? 'High' : 'Low') : item.dataset.label;
-              return name + ': ' + (unit === 'Metric' ? (+v).toFixed(2) + ' m' : (+v).toFixed(1) + ' ft');
-            } } }
-        }
-      },
-      _view: { origin: origin, mids: mids, marks: marks }
-    };
+    pts.forEach(function (p) {
+      if (p.m === null) { flush(); return; }
+      run.push([Math.max(0, Math.min(L.total, xOf(L, p.t))), ys.y(height(p.m, unit))]);
+    });
+    flush();
+    return { line: line, area: area };
   }
 
   // ---- the view ----------------------------------------------------------------------------------------------------
@@ -250,11 +230,10 @@
     var els = deps.els, doc = deps.document;
     var now = deps.now || function () { return Date.now(); };
     var timers = deps.timers || { set: function (f, ms) { return setTimeout(f, ms); }, clear: function (id) { clearTimeout(id); } };
-    var st = { seq: 0, station: null, data: null, obs: null, unit: 'US', zone: null, chart: null, dirty: false,
-               rendering: null, ac: null, retryTimer: null, nowTimer: null, tries: 0, status: 'idle' };
+    var st = { seq: 0, station: null, data: null, obs: null, unit: 'US', zone: null, dirty: false, built: null,
+               ac: null, retryTimer: null, nowTimer: null, tries: 0, status: 'idle', open: {}, L: null, ys: null };
     if (deps.unit) st.unit = unitOf(deps.unit);
 
-    function range() { return readRange(deps.storage); }
     function zone() { return st.zone || (st.station && st.station.tz) || (st.data && st.data.tz) || 'UTC'; }
     function show(el, on) { if (el) el.classList.toggle('d-none', !on); }
     function setStatus(s, text, retry) {
@@ -269,104 +248,232 @@
       if (st.retryTimer !== null) { timers.clear(st.retryTimer); st.retryTimer = null; }
       if (st.nowTimer !== null) { timers.clear(st.nowTimer); st.nowTimer = null; }
     }
-    function destroyChart() {
-      if (st.chart) { try { st.chart.destroy(); } catch (e) {} st.chart = null; }
-      if (st.nowTimer !== null) { timers.clear(st.nowTimer); st.nowTimer = null; }
+    function addClass(e, cls) { if (cls) cls.split(' ').forEach(function (c) { if (c) e.classList.add(c); }); return e; }   // classList: also on SVG elements
+    function el(tag, cls, text) { var e = addClass(doc.createElement(tag), cls); if (text !== undefined) e.textContent = text; return e; }
+    function svgEl(tag, attrs) {
+      var e = doc.createElementNS(SVG_NS, tag);
+      for (var k in attrs) { if (attrs[k] === undefined || attrs[k] === null) continue; if (k === 'class') addClass(e, attrs[k]); else e.setAttribute(k, attrs[k]); }
+      return e;
     }
-    function pressRange(v) {
-      if (!els.rangeBar) return;
-      Array.prototype.forEach.call(els.rangeBar.querySelectorAll('[data-days]'), function (b) {
-        var on = b.getAttribute('data-days') === v;
-        b.classList.toggle('active', on); b.setAttribute('aria-pressed', on ? 'true' : 'false');
-      });
-    }
-    function fit() {
-      var h = Math.max(BOX_MIN, Math.min(BOX_MAX, Math.floor((deps.bodyHeight ? deps.bodyHeight() : 0) - BOX_CHROME)));
-      if (els.box) els.box.style.height = h + 'px';
-      if (st.chart) { try { st.chart.resize(); } catch (e) {} }
-    }
-    function zoneText(ms) {
-      try { if (deps.zoneAbbr) return deps.zoneAbbr(ms, zone()) || zone(); } catch (e) {}
+    function kidsOf(e) { return e.childNodes && e.childNodes.length ? e.childNodes : e.children; }
+    function zoneText() {
+      try { if (deps.zoneAbbr) return deps.zoneAbbr(now(), zone()) || zone(); } catch (e) {}
       return zone();
     }
+
     function writeMeta() {
       var d = st.data;
       if (!els.meta || !d) return;
       els.meta.textContent = '';
-      var lines = ['Heights above mean lower low water (MLLW) · times in ' + zoneText(now()),
+      var lines = ['Heights above mean lower low water (MLLW) · times in ' + zoneText() + ' · click a day to open or close it',
                    (METHOD_TEXT[d.method] || METHOD_TEXT.harmonic).replace('%REF%', d.ref || ''),
                    'Predictions do not include storm surge or wind effects.'];
       if (st.obs && st.obs.note) lines.push(st.obs.note + '.');
-      lines.forEach(function (t) { var p = doc.createElement('div'); p.textContent = t; els.meta.appendChild(p); });
-      var src = doc.createElement('div');
-      var a = doc.createElement('a');
+      lines.forEach(function (t) { els.meta.appendChild(el('div', '', t)); });
+      var src = el('div', ''), a = el('a', '', 'NOAA CO-OPS station ' + d.id);
       a.setAttribute('href', 'https://tidesandcurrents.noaa.gov/noaatidepredictions.html?id=' + encodeURIComponent(d.id));
       a.setAttribute('target', '_blank'); a.setAttribute('rel', 'noopener');
-      a.textContent = 'NOAA CO-OPS station ' + d.id;
       src.appendChild(doc.createTextNode('Source: ')); src.appendChild(a);
       els.meta.appendChild(src);
     }
-    function writeList() {
-      var d = st.data;
-      if (!els.hilo || !d) return;
-      els.hilo.textContent = '';
-      var clk = zoneClock(zone()), days = +range(), mids = midnights(now(), days, clk);
-      var rows = extremesBetween(d, mids[0], mids[days]);
-      var table = doc.createElement('table');
-      table.className = 'table table-sm tide-hilo';
-      var head = doc.createElement('tr');
-      ['Day', 'Time', 'Tide', 'Height'].forEach(function (h) { var th = doc.createElement('th'); th.textContent = h; head.appendChild(th); });
-      var thead = doc.createElement('thead'); thead.appendChild(head); table.appendChild(thead);
-      var body = doc.createElement('tbody'), lastDay = '';
-      rows.forEach(function (r) {
-        var p = clk.parts(r.ms), day = dateText(p, true), tr = doc.createElement('tr');
-        tr.className = r.kind === 'High' ? 'tide-high' : 'tide-low';
-        [day === lastDay ? '' : day, clockText(p, false), r.kind, heightText(r.m, unitOf(st.unit))].forEach(function (t) {
-          var td = doc.createElement('td'); td.textContent = t; tr.appendChild(td);
+
+    // ---- the strip
+    function cell(tag, cls, span) { var c = el(tag, cls); if (span > 1) c.setAttribute('colspan', String(span)); return c; }
+    function twoLine(c, a, b) { c.appendChild(el('div', 'tide-l1', a)); c.appendChild(el('div', 'tide-l2', b)); return c; }
+    function extremeCells(tr, d, L, k, kind, clk) {                        // HIGH / LOW cells of day k (one, or AM + PM)
+      var halves = L.open[k] ? [0, 1] : [-1];
+      halves.forEach(function (half) {
+        var c = cell('td', 'tide-cell tide-' + (kind === 'H' ? 'high' : 'low'), half < 0 ? 2 : 1);
+        extremesIn(d, L, k, half).filter(function (e) { return e.k === kind; }).forEach(function (e) {
+          c.appendChild(twoLine(el('div', 'tide-ex'), clockText(clk.parts(e.t)), heightText(e.m, st.unit)));
         });
-        lastDay = day;
-        body.appendChild(tr);
+        tr.appendChild(c);
       });
-      table.appendChild(body);
-      els.hilo.appendChild(table);
+    }
+    function sunCells(tr, d, L, k, clk) {
+      var halves = L.open[k] ? [0, 1] : [-1];
+      halves.forEach(function (half) {
+        var c = cell('td', 'tide-cell tide-sun', half < 0 ? 2 : 1);
+        eventsIn(d, L, k, half, ['sunrise', 'sunset']).forEach(function (e) {
+          var box = twoLine(el('div', 'tide-ev'), e.kind === 'sunrise' ? '☀️↑' : '☀️↓', clockText(clk.parts(e.t)));
+          box.setAttribute('title', (e.kind === 'sunrise' ? 'Sunrise ' : 'Sunset ') + clockText(clk.parts(e.t)));
+          c.appendChild(box);
+        });
+        tr.appendChild(c);
+      });
+    }
+    function moonCells(tr, d, L, k, clk, lat) {
+      var halves = L.open[k] ? [0, 1] : [-1], m = moonOf(d, L, k, lat);
+      halves.forEach(function (half, i) {
+        var c = cell('td', 'tide-cell tide-moon', half < 0 ? 2 : 1);
+        if (i === 0 && m) { var g = el('div', 'tide-moon-glyph', m.glyph); g.setAttribute('title', m.name + ', ' + m.pct + '% lit'); c.appendChild(g); }
+        eventsIn(d, L, k, half, ['moonrise', 'moonset']).forEach(function (e) {
+          var box = twoLine(el('div', 'tide-ev'), e.kind === 'moonrise' ? '☽↑' : '☽↓', clockText(clk.parts(e.t)));
+          box.setAttribute('title', (e.kind === 'moonrise' ? 'Moonrise ' : 'Moonset ') + clockText(clk.parts(e.t)));
+          c.appendChild(box);
+        });
+        tr.appendChild(c);
+      });
+    }
+    function buildChart(d, L, ys, clk) {
+      var svg = svgEl('svg', { 'class': 'tide-svg', width: L.total, height: CHART_H, viewBox: '0 0 ' + L.total + ' ' + CHART_H, role: 'img', 'aria-label': 'Tide height graph' });
+      nightSpans(d, L).forEach(function (s) { svg.appendChild(svgEl('rect', { 'class': 'tide-night', x: s[0].toFixed(1), y: 0, width: (s[1] - s[0]).toFixed(1), height: CHART_H, fill: COLORS.night })); });
+      ys.ticks.forEach(function (v) { var y = ys.y(v).toFixed(1); svg.appendChild(svgEl('line', { x1: 0, x2: L.total, y1: y, y2: y, stroke: COLORS.grid, 'stroke-width': 0.7 })); });
+      for (var k = 0; k < L.widths.length; k++) {
+        svg.appendChild(svgEl('line', { x1: L.lefts[k], x2: L.lefts[k], y1: 0, y2: CHART_H, stroke: 'rgba(0,0,0,0.28)', 'stroke-width': 1 }));
+        if (L.open[k]) svg.appendChild(svgEl('line', { x1: L.lefts[k] + L.widths[k] / 2, x2: L.lefts[k] + L.widths[k] / 2, y1: 0, y2: CHART_H, stroke: 'rgba(0,0,0,0.12)', 'stroke-width': 1, 'stroke-dasharray': '3 3' }));
+      }
+      var paths = curvePaths(d, L, ys, st.unit);
+      svg.appendChild(svgEl('path', { 'class': 'tide-area', d: paths.area, fill: COLORS.fill, stroke: 'none' }));
+      svg.appendChild(svgEl('path', { 'class': 'tide-curve', d: paths.line, fill: 'none', stroke: COLORS.curve, 'stroke-width': 1.8, 'stroke-linejoin': 'round' }));
+      if (st.obs && st.obs.t && st.obs.v) {
+        var o = '', pen = false;
+        for (var i = 0; i < st.obs.t.length; i++) {
+          if (!num(st.obs.t[i]) || !num(st.obs.v[i])) { pen = false; continue; }
+          var ox = xOf(L, st.obs.t[i] * 1000);
+          if (ox < 0 || ox > L.total) { pen = false; continue; }
+          o += (pen ? 'L' : 'M') + ox.toFixed(1) + ' ' + ys.y(height(st.obs.v[i], st.unit)).toFixed(1); pen = true;
+        }
+        if (o) svg.appendChild(svgEl('path', { 'class': 'tide-observed', d: o, fill: 'none', stroke: COLORS.observed, 'stroke-width': 1.5, 'stroke-dasharray': '5 3' }));
+      }
+      for (var k2 = 0; k2 < L.widths.length; k2++) {
+        extremesIn(d, L, k2, -1).forEach(function (e) {
+          var x = xOf(L, e.t), y = ys.y(height(e.m, st.unit));
+          svg.appendChild(svgEl('circle', { 'class': 'tide-dot', cx: x.toFixed(1), cy: y.toFixed(1), r: 3.2, fill: COLORS.extreme }));
+          if (L.open[k2]) {                                                // the callout on an open day: time over height
+            var up = e.k === 'H', y1 = up ? y - 20 : y + 14, y2 = up ? y - 9 : y + 25;
+            var g = svgEl('g', { 'class': 'tide-callout tide-callout-' + (up ? 'high' : 'low') });
+            var t1 = svgEl('text', { x: x.toFixed(1), y: y1.toFixed(1), 'text-anchor': 'middle', 'font-size': 10.5, fill: COLORS.text }); t1.textContent = clockText(clk.parts(e.t)); g.appendChild(t1);
+            var t2 = svgEl('text', { x: x.toFixed(1), y: y2.toFixed(1), 'text-anchor': 'middle', 'font-size': 10.5, 'font-weight': 600, fill: COLORS.text }); t2.textContent = (up ? '↑' : '↓') + heightText(e.m, st.unit); g.appendChild(t2);
+            svg.appendChild(g);
+          }
+        });
+      }
+      // the current time: a dashed line, a dot at the current height, a level line to the axis
+      var nowG = svgEl('g', { 'class': 'tide-now' });
+      nowG.appendChild(svgEl('line', { 'class': 'tide-now-line', x1: 0, x2: 0, y1: 0, y2: CHART_H, stroke: COLORS.now, 'stroke-width': 1.2, 'stroke-dasharray': '4 3' }));
+      nowG.appendChild(svgEl('line', { 'class': 'tide-now-level', x1: 0, x2: 0, y1: 0, y2: 0, stroke: COLORS.now, 'stroke-width': 1, 'stroke-dasharray': '2 3' }));
+      nowG.appendChild(svgEl('circle', { 'class': 'tide-now-dot', cx: 0, cy: 0, r: 4, fill: COLORS.now, stroke: '#fff', 'stroke-width': 1.5 }));
+      svg.appendChild(nowG);
+      // the pointer's readout: a guide line and a label (hidden until the pointer is over the chart)
+      var rd = svgEl('g', { 'class': 'tide-readout', visibility: 'hidden' });
+      rd.appendChild(svgEl('line', { x1: 0, x2: 0, y1: 0, y2: CHART_H, stroke: 'rgba(0,0,0,0.45)', 'stroke-width': 1 }));
+      rd.appendChild(svgEl('circle', { cx: 0, cy: 0, r: 3, fill: '#fff', stroke: COLORS.curve, 'stroke-width': 1.5 }));
+      rd.appendChild(svgEl('rect', { x: 0, y: 2, width: 150, height: 16, rx: 3, fill: 'rgba(255,255,255,0.92)', stroke: 'rgba(0,0,0,0.25)' }));
+      var rt = svgEl('text', { x: 0, y: 14, 'font-size': 11, fill: COLORS.text }); rt.textContent = ''; rd.appendChild(rt);
+      svg.appendChild(rd);
+      return { svg: svg, nowG: nowG, readout: rd };
+    }
+    function placeNow(ms) {                                                // the now group and the level label: at ms
+      var b = st.built; if (!b || !st.data) return;
+      var x = xOf(st.L, ms), m = heightAt(st.data, ms), inside = ms >= st.L.mids[0] && ms < st.L.mids[st.L.mids.length - 1];
+      var kids = kidsOf(b.nowG), line = kids[0], level = kids[1], dot = kids[2];
+      if (!inside) { b.nowG.setAttribute('visibility', 'hidden'); b.nowLabel.textContent = ''; return; }
+      b.nowG.setAttribute('visibility', 'visible');
+      line.setAttribute('x1', x.toFixed(1)); line.setAttribute('x2', x.toFixed(1));
+      if (m === null) { dot.setAttribute('visibility', 'hidden'); level.setAttribute('visibility', 'hidden'); b.nowLabel.textContent = ''; return; }
+      var y = st.ys.y(height(m, st.unit));
+      dot.setAttribute('visibility', 'visible'); level.setAttribute('visibility', 'visible');
+      dot.setAttribute('cx', x.toFixed(1)); dot.setAttribute('cy', y.toFixed(1));
+      level.setAttribute('x1', 0); level.setAttribute('x2', x.toFixed(1)); level.setAttribute('y1', y.toFixed(1)); level.setAttribute('y2', y.toFixed(1));
+      b.nowLabel.textContent = heightText(m, st.unit); b.nowLabel.style.top = (y - 8) + 'px';
+    }
+    function readoutAt(px) {                                               // the pointer at px from the strip's left edge
+      var b = st.built; if (!b || !st.data) return;
+      var kids = kidsOf(b.readout);
+      if (px === null || px < 0 || px > st.L.total) { b.readout.setAttribute('visibility', 'hidden'); b.readoutText = ''; return; }
+      var t = tOf(st.L, px), m = heightAt(st.data, t), clk = zoneClock(zone());
+      var text = stampText(clk.parts(t)) + (m === null ? '' : ' · ' + heightText(m, st.unit));
+      b.readout.setAttribute('visibility', 'visible');
+      kids[0].setAttribute('x1', px.toFixed(1)); kids[0].setAttribute('x2', px.toFixed(1));
+      if (m === null) kids[1].setAttribute('visibility', 'hidden');
+      else { kids[1].setAttribute('visibility', 'visible'); kids[1].setAttribute('cx', px.toFixed(1)); kids[1].setAttribute('cy', st.ys.y(height(m, st.unit)).toFixed(1)); }
+      var w = Math.min(190, 7 * text.length + 12), lx = Math.max(0, Math.min(st.L.total - w, px + 8));
+      kids[2].setAttribute('x', lx.toFixed(1)); kids[2].setAttribute('width', w);
+      kids[3].setAttribute('x', (lx + 6).toFixed(1)); kids[3].textContent = text;
+      b.readoutText = text;
+    }
+    function build() {
+      var d = st.data; if (!d || !els.strip) return;
+      var clk = zoneClock(zone()), mids = midnights(now(), DAYS, clk), L = layout(mids, st.open);
+      var vals = [];
+      samples(d, mids[0], mids[DAYS]).forEach(function (p) { if (p.m !== null) vals.push(height(p.m, st.unit)); });
+      if (st.obs && st.obs.v) st.obs.v.forEach(function (v) { if (num(v)) vals.push(height(v, st.unit)); });
+      var ys = yScale(vals, st.unit);
+      st.L = L; st.ys = ys;
+      var lat = num(d.lat) ? d.lat : (st.station && num(st.station.lat) ? st.station.lat : 0);
+      var scroller = el('div', 'tide-scroll'), table = el('table', 'tide-table');
+      var colgroup = el('colgroup'), c0 = el('col'); c0.style.width = LABEL_W + 'px'; colgroup.appendChild(c0);
+      for (var k = 0; k < DAYS; k++) { for (var hh = 0; hh < 2; hh++) { var c = el('col'); c.style.width = (L.widths[k] / 2) + 'px'; colgroup.appendChild(c); } }
+      table.appendChild(colgroup);
+      // the day headers
+      var thead = el('thead'), hr = el('tr', 'tide-days'); hr.appendChild(cell('th', 'tide-lab tide-lab-head', 1));
+      for (k = 0; k < DAYS; k++) {
+        var th = cell('th', 'tide-day' + (L.open[k] ? ' tide-day-open' : '') + (k === 0 ? ' tide-day-today' : ''), 2);
+        th.setAttribute('data-day', String(k));
+        var p = clk.parts(mids[k] + 12 * HOUR_MS), btn = el('button', 'tide-daybtn', L.open[k] ? dayLong(p) : dayShort(p));
+        btn.setAttribute('type', 'button'); btn.setAttribute('data-day', String(k)); btn.setAttribute('aria-expanded', L.open[k] ? 'true' : 'false');
+        btn.setAttribute('title', (L.open[k] ? 'Collapse ' : 'Expand ') + dayLong(p));
+        th.appendChild(btn); hr.appendChild(th);
+      }
+      thead.appendChild(hr);
+      var ar = el('tr', 'tide-ampm'); ar.appendChild(cell('th', 'tide-lab', 1));
+      for (k = 0; k < DAYS; k++) {
+        if (L.open[k]) { ar.appendChild(cell('th', 'tide-half', 1)).textContent = 'AM'; ar.appendChild(cell('th', 'tide-half', 1)).textContent = 'PM'; }
+        else ar.appendChild(cell('th', 'tide-half tide-half-closed', 2));
+      }
+      thead.appendChild(ar); table.appendChild(thead);
+      var tbody = el('tbody');
+      // the chart row: the y labels in the sticky cell, the SVG across every day
+      var cr = el('tr', 'tide-chart-row'), cl = cell('td', 'tide-lab tide-lab-chart', 1), lab = el('div', 'tide-ylabels'); lab.style.height = CHART_H + 'px';
+      ys.ticks.forEach(function (v) { var s = el('span', 'tide-ytick', tickText(v, st.unit)); s.style.top = (ys.y(v) - 7) + 'px'; lab.appendChild(s); });
+      var nowLabel = el('span', 'tide-ynow', ''); lab.appendChild(nowLabel);
+      cl.appendChild(lab); cr.appendChild(cl);
+      var cc = cell('td', 'tide-chart-cell', DAYS * 2), chart = buildChart(d, L, ys, clk); cc.appendChild(chart.svg); cr.appendChild(cc); tbody.appendChild(cr);
+      [['tide-row-high', 'HIGH', 'H'], ['tide-row-low', 'LOW', 'L']].forEach(function (r) {
+        var tr = el('tr', r[0]); tr.appendChild(twoLine(cell('td', 'tide-lab', 1), r[1], '(' + zoneText() + ')'));
+        for (var kk = 0; kk < DAYS; kk++) extremeCells(tr, d, L, kk, r[2], clk);
+        tbody.appendChild(tr);
+      });
+      var sr = el('tr', 'tide-row-sun'); sr.appendChild(cell('td', 'tide-lab', 1)).textContent = 'Sun';
+      for (k = 0; k < DAYS; k++) sunCells(sr, d, L, k, clk);
+      tbody.appendChild(sr);
+      var mr = el('tr', 'tide-row-moon'); mr.appendChild(cell('td', 'tide-lab', 1)).textContent = 'Moon';
+      for (k = 0; k < DAYS; k++) moonCells(mr, d, L, k, clk, lat);
+      tbody.appendChild(mr);
+      table.appendChild(tbody); scroller.appendChild(table);
+      var keepScroll = st.built && st.built.scroller ? st.built.scroller.scrollLeft : 0;
+      els.strip.textContent = '';
+      els.strip.appendChild(scroller);
+      st.built = { scroller: scroller, table: table, svg: chart.svg, nowG: chart.nowG, readout: chart.readout, nowLabel: nowLabel, readoutText: '' };
+      if (keepScroll) scroller.scrollLeft = keepScroll;
+      placeNow(now());
+      st.dirty = false;
+    }
+    function toggleDay(k) {
+      if (!st.data || !(k >= 0 && k < DAYS)) return;
+      st.open[k] = !st.open[k];
+      build();
+      var btn = st.built && st.built.table.querySelector('button[data-day="' + k + '"]');
+      if (btn && btn.focus) try { btn.focus({ preventScroll: true }); } catch (e) {}
     }
     function scheduleNow() {
       if (st.nowTimer !== null) timers.clear(st.nowTimer);
       st.nowTimer = timers.set(function tick() {
         st.nowTimer = null;
-        if (!st.chart) return;
-        try { st.chart.draw(); } catch (e) {}
+        if (!st.built || !st.data) return;
+        var t = now();
+        if (t >= st.L.mids[1]) { st.open = { 0: true }; build(); }         // a new day: the strip starts today again
+        else placeNow(t);
         st.nowTimer = timers.set(tick, NOW_REDRAW_MS);
       }, NOW_REDRAW_MS);
     }
-    // One build at a time; the build reads the station's CURRENT data, observations, unit, zone and range when it runs
-    // (after Chart.js has loaded), so a change while it waits is drawn by it.
     function render() {
-      if (st.rendering) return st.rendering;
-      if (!st.data) { destroyChart(); return Promise.resolve(); }
-      st.rendering = Promise.resolve(deps.loadChartJs()).then(function () {
-        st.rendering = null;
-        // whatever station is current NOW: a station picked while Chart.js loaded asked for its chart through this
-        // same promise, so giving up here would leave it without one
-        if (!st.data) return;
-        if (!deps.visible()) { st.dirty = true; return; }                  // hidden: show() draws it
-        destroyChart();
-        var Chart = deps.getChart();
-        st.chart = new Chart(els.canvas.getContext('2d'), chartConfig(st.data, st.obs, { unit: st.unit, zone: zone(), range: range(), now: now }));
-        st.dirty = false;
-        fit();
-        scheduleNow();
-      }, function (err) {
-        st.rendering = null;
-        if (st.data) setStatus('error', MSG.failed, true);                 // Chart.js could not be loaded
-        if (deps.onError) deps.onError(err);
-      });
-      return st.rendering;
-    }
-    function redraw() {
-      writeList(); writeMeta(); pressRange(range());
-      st.dirty = true;
-      return deps.visible() ? render() : Promise.resolve();
+      if (!st.data) return;
+      if (!deps.visible()) { st.dirty = true; return; }
+      build();
+      writeMeta();
+      scheduleNow();
     }
     function ask(path, seq, signal) {
       return deps.fetch(path, { signal: signal, headers: { Accept: 'application/json' } }).then(function (r) {
@@ -381,7 +488,7 @@
       if (!s || !st.data || !st.data.obs) return;                          // the server's word: the station has a gauge
       ask('/api/tides/' + encodeURIComponent(s.id) + '/observed', seq, st.ac && st.ac.signal).then(function (res) {
         if (res.stale || seq !== st.seq) return;
-        if (res.status === 200 && res.body && Array.isArray(res.body.t)) { st.obs = res.body; redraw(); }
+        if (res.status === 200 && res.body && Array.isArray(res.body.t)) { st.obs = res.body; render(); }
       }, function () { /* the predictions stand on their own */ });
     }
     function attempt(seq) {
@@ -391,9 +498,9 @@
         if (res.stale || seq !== st.seq) return;
         var b = res.body || {};
         if (res.status === 200 && Array.isArray(b.v) && !b.final) {
-          st.data = b; st.tries = 0;
+          st.data = b; st.tries = 0; st.open = { 0: true };
           setStatus('ready');
-          redraw();
+          render();
           fetchObserved(seq);
           return;
         }
@@ -415,14 +522,13 @@
       opts = opts || {};
       st.seq++;
       if (st.ac) { try { st.ac.abort(); } catch (e) {} }
-      stopTimers(); destroyChart();
+      stopTimers();
       st.ac = deps.AbortController ? new deps.AbortController() : new AbortController();
-      st.station = station; st.data = null; st.obs = null; st.tries = 0; st.dirty = false;
+      st.station = station; st.data = null; st.obs = null; st.tries = 0; st.dirty = false; st.built = null; st.open = { 0: true };
       if (opts.unit) st.unit = unitOf(opts.unit);
       st.zone = opts.zone || null;
-      if (els.hilo) els.hilo.textContent = '';
+      if (els.strip) els.strip.textContent = '';
       if (els.meta) els.meta.textContent = '';
-      pressRange(range());
       setStatus('loading');
       attempt(st.seq);
       return st.seq;
@@ -431,37 +537,42 @@
     function clear() {
       st.seq++;
       if (st.ac) { try { st.ac.abort(); } catch (e) {} st.ac = null; }
-      stopTimers(); destroyChart();
-      st.station = null; st.data = null; st.obs = null;
+      stopTimers();
+      st.station = null; st.data = null; st.obs = null; st.built = null;
+      if (els.strip) els.strip.textContent = '';
       setStatus('idle');
     }
-    function setRange(v) {
-      v = rangeOf(v);
-      try { deps.storage.setItem(RANGE_KEY, v); } catch (e) {}
-      pressRange(v);
-      if (!st.data) return;
-      writeList();
-      if (st.chart && !st.rendering) {                                     // same data, another end: no rebuild
-        var cfg = chartConfig(st.data, st.obs, { unit: st.unit, zone: zone(), range: v, now: now });
-        st.chart.options.scales.x.max = cfg.options.scales.x.max;
-        st.chart.update('none');
-      } else redraw();
+    // the day headers and the readout: the strip's own listeners, which survive every rebuild
+    function pointerX(e) {
+      var svg = st.built && st.built.svg; if (!svg || !svg.getBoundingClientRect) return null;
+      var p = e.touches && e.touches[0] ? e.touches[0] : e, r = svg.getBoundingClientRect();
+      if (typeof p.clientX !== 'number') return null;
+      if (p.clientY < r.top || p.clientY > r.bottom) return null;
+      return p.clientX - r.left;
     }
-    if (els.rangeBar) els.rangeBar.addEventListener('click', function (e) {
-      var b = e.target && e.target.closest ? e.target.closest('[data-days]') : null;
-      if (b) setRange(b.getAttribute('data-days'));
-    });
+    if (els.strip) {
+      els.strip.addEventListener('click', function (e) {
+        var b = e.target && e.target.closest ? e.target.closest('button[data-day]') : null;
+        if (b) toggleDay(+b.getAttribute('data-day'));
+      });
+      els.strip.addEventListener('mousemove', function (e) { readoutAt(pointerX(e)); });
+      els.strip.addEventListener('mouseleave', function () { readoutAt(null); });
+      els.strip.addEventListener('touchstart', function (e) { readoutAt(pointerX(e)); }, { passive: true });
+      els.strip.addEventListener('touchmove', function (e) { readoutAt(pointerX(e)); }, { passive: true });
+      els.strip.addEventListener('touchend', function () { readoutAt(null); });
+    }
     if (els.retry) els.retry.addEventListener('click', retry);
     return {
-      load: load, clear: clear, retry: retry, setRange: setRange,
-      setUnit: function (u) { st.unit = unitOf(u); if (st.data) redraw(); },
-      setZone: function (z) { st.zone = z || null; if (st.data) redraw(); },
-      show: function () { if (st.data && (st.dirty || !st.chart)) return render(); fit(); return Promise.resolve(); },
-      resize: fit,
+      load: load, clear: clear, retry: retry, toggleDay: toggleDay,
+      setUnit: function (u) { st.unit = unitOf(u); if (st.data) render(); },
+      setZone: function (z) { st.zone = z || null; if (st.data) render(); },
+      show: function () { if (st.data && (st.dirty || !st.built)) render(); return Promise.resolve(); },
+      resize: function () { /* the strip is content-sized and scrolls: nothing to do */ },
       state: function () {
         return { seq: st.seq, status: st.status, station: st.station && st.station.id, hasData: !!st.data, hasObs: !!st.obs,
-                 chart: st.chart, unit: st.unit, zone: zone(), range: range(), tries: st.tries,
-                 retryTimer: st.retryTimer !== null, nowTimer: st.nowTimer !== null };
+                 built: !!st.built, unit: st.unit, zone: zone(), tries: st.tries, open: Object.keys(st.open).filter(function (k) { return st.open[k]; }).map(Number),
+                 retryTimer: st.retryTimer !== null, nowTimer: st.nowTimer !== null, readout: st.built ? st.built.readoutText : '',
+                 layout: st.L, scale: st.ys };
       }
     };
   }
@@ -469,12 +580,12 @@
   var api = {
     createTideView: createTideView,
     _internals: {
-      RANGE_KEY: RANGE_KEY, RANGES: RANGES, DEFAULT_RANGE: DEFAULT_RANGE, FT_PER_M: FT_PER_M, MIN_TICK_PX: MIN_TICK_PX,
-      RETRY_MAX: RETRY_MAX, NOW_REDRAW_MS: NOW_REDRAW_MS, BOX_MIN: BOX_MIN, BOX_MAX: BOX_MAX, BOX_CHROME: BOX_CHROME,
-      zoneClock: zoneClock, localMidnightBefore: localMidnightBefore, midnights: midnights, hourMarks: hourMarks,
-      tickPlan: tickPlan, tickLabel: tickLabel, clockText: clockText, dateText: dateText, readRange: readRange,
-      points: points, nightSpans: nightSpans, extremesBetween: extremesBetween, heightText: heightText,
-      makeNightShade: makeNightShade, makeNowLine: makeNowLine, chartConfig: chartConfig
+      FT_PER_M: FT_PER_M, DAYS: DAYS, COL_CLOSED: COL_CLOSED, COL_OPEN: COL_OPEN, LABEL_W: LABEL_W, CHART_H: CHART_H, CHART_PAD: CHART_PAD,
+      RETRY_MAX: RETRY_MAX, NOW_REDRAW_MS: NOW_REDRAW_MS, MOON_GLYPHS: MOON_GLYPHS,
+      zoneClock: zoneClock, localMidnightBefore: localMidnightBefore, midnights: midnights, clockText: clockText, dayShort: dayShort,
+      dayLong: dayLong, stampText: stampText, layout: layout, dayOf: dayOf, xOf: xOf, tOf: tOf, yScale: yScale, tickText: tickText,
+      samples: samples, heightAt: heightAt, extremesIn: extremesIn, eventsIn: eventsIn, moonOf: moonOf, nightSpans: nightSpans,
+      curvePaths: curvePaths, heightText: heightText
     }
   };
   if (typeof window !== 'undefined') window.AllshoreTides = api;

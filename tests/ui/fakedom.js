@@ -74,6 +74,7 @@ class Select extends Element {
 class Document {
   constructor() { this.byId = new Map(); this.listeners = {}; this.activeElement = null; this.body = this.createElement('body'); this.hidden = false; }
   createElement(tag) { const el = tag === 'select' ? new Select(this, tag) : new Element(this, tag); return el; }
+  createElementNS(ns, tag) { const el = new Element(this, tag); el.namespaceURI = ns; return el; }
   createTextNode(t) { const el = new Element(this, '#text'); el._text = String(t); el.attrs = new Map(); return el; }
   getElementById(id) { return this.byId.get(id) || null; }
   register(el, id) { el.id = id; this.byId.set(id, el); return el; }
@@ -132,10 +133,7 @@ function buildPage(win) {
   const twMin = el('button', 'twMin', twHeader); const twClose = el('button', 'twClose', twHeader);
   const twBody = el('div', 'twBody', tide); twBody.clientHeight = 500;
   el('div', 'tideLoading', twBody); const tideError = el('div', 'tideError', twBody); el('span', 'tideErrorText', tideError); el('button', 'tideRetry', tideError);
-  const tideContent = el('div', 'tideContent', twBody); const tideRangeBar = el('div', 'tideRangeBar', tideContent);
-  ['3', '7', '16'].forEach((v) => el('button', null, tideRangeBar, { 'data-days': v }));
-  const tideBox = el('div', 'tideBox', tideContent); tideBox.classList.add('chart-box'); el('canvas', 'tideChart', tideBox);
-  el('div', 'tideHiLo', tideContent); el('div', 'tideMeta', tideContent);
+  const tideContent = el('div', 'tideContent', twBody); el('div', 'tideStrip', tideContent); el('div', 'tideMeta', tideContent);
   const tideEdges = edges(tide); el('div', 'twResize', tide);
   const w = el('section', 'forecastWin', doc.body); w.rect = { left: 84, top: 300, width: 1180, height: 480 };
   const header = el('div', 'fwHeader', w);

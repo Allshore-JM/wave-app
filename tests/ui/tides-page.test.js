@@ -29,7 +29,7 @@ const LIST = { fields: ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'], statio
 function boot(o = {}) {
   const notes = { live: { textContent: '' }, tide: { textContent: '' } };
   const byId = {};
-  ['tideTitle', 'tideSubtitle', 'tideWin', 'twBody', 'tz'].forEach((id) => { byId[id] = { textContent: '', hidden: true, clientHeight: 480, value: '' }; });
+  ['tideTitle', 'tideSubtitle', 'tideWin', 'tz'].forEach((id) => { byId[id] = { textContent: '', hidden: true, value: '' }; });
   const events = [];
   const document = {
     querySelector: (sel) => (sel.indexOf('[data-live-note]') >= 0 ? notes.live : sel.indexOf('[data-tide-note]') >= 0 ? notes.tide : null),
@@ -120,7 +120,8 @@ test('a click opens the window on that station in the chosen zone (else its own)
   assert.equal(b.tideWin.opens, 1); assert.deepEqual(b.events, ['allshore:tidepanel']);
   assert.deepEqual(b.loads, [['1612340', { unit: 'US', zone: 'Pacific/Honolulu' }]]);
   assert.equal(b.api.tideView, b.view, 'the view is made once');
-  assert.equal(b.view.deps.visible(), true); assert.equal(b.view.deps.bodyHeight(), 480); assert.equal(b.view.deps.zoneAbbr(0, 'UTC'), 'UTC!');
+  assert.equal(b.view.deps.visible(), true); assert.equal(b.view.deps.zoneAbbr(0, 'UTC'), 'UTC!');
+  assert.equal(b.view.deps.loadChartJs, undefined, 'no Chart.js: the strip is SVG');
   b.byId.tz.value = 'UTC';
   b.tideLayer.items[1].handlers.click({ latlng: {}, originalEvent: {} });
   assert.deepEqual(b.loads[1], ['1611401', { unit: 'US', zone: 'UTC' }], 'the site zone when chosen');

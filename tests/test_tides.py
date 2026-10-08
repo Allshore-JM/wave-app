@@ -130,12 +130,14 @@ def test_a_subordinate_curve_passes_through_its_own_extremes_and_uses_its_refere
             assert v == pytest.approx(h, abs=1e-9)                               # exact at every extreme, either way
             hits += 1
             shaped += from_ref
-    assert hits > 60 and shaped == hits
+            if not from_ref:                    # only where NOAA's list for this station skips a pair its reference has
+                assert partner[i] is None or partner[i + 1] is None or partner[i + 1] != partner[i] + 1
+    assert hits > 110 and shaped >= hits - 2
     g, used = T.reference_grid(ex, ref_ex, ref_g, START, (7, 18), START)
     assert all(v is not None for v in g)
     inside = [T.reference_at(ex, ref_ex, partner, ref_g, START, BEGIN + i * T.STEP_S)[1]
               for i in range(T.SPAN_DAYS * 48 + 1)]
-    assert all(inside)                                                        # every point of the window is shaped
+    assert sum(inside) >= len(inside) - 48                                    # shaped but for a skipped pair's stretch
 
 
 def test_pairing_needs_an_offset_and_a_partner_within_the_tolerance():
@@ -164,15 +166,14 @@ def test_night_bands_follow_first_and_last_light():
     if not sky.AVAILABLE:
         pytest.skip("PyEphem not installed")
     bands = T.night_bands(21.3, -157.86, BEGIN, BEGIN + T.SPAN_S)
-    assert 17 <= len(bands) <= 19
+    assert 31 <= len(bands) <= 33
     assert all(BEGIN <= a < b <= BEGIN + T.SPAN_S for a, b in bands)
     assert all(b[0] > a[1] for a, b in zip(bands, bands[1:]))
     inner = [b - a for a, b in bands[1:-1]]
     assert all(10.5 * 3600 < d < 12.5 * 3600 for d in inner)                # Honolulu in October
-    ev = sky.events(21.3, -157.86, datetime.fromtimestamp(BEGIN, tz=timezone.utc),
-                    datetime.fromtimestamp(BEGIN + T.SPAN_S, tz=timezone.utc))
-    dusk = {int(u.timestamp()) for u, k in ev if k == "dusk"}
-    dawn = {int(u.timestamp()) for u, k in ev if k == "dawn"}
+    ev = T.sky_events(21.3, -157.86, BEGIN, BEGIN + T.SPAN_S)
+    dusk = {t for t, k in ev if k == "dusk"}
+    dawn = {t for t, k in ev if k == "dawn"}
     assert all(a in dusk for a, _ in bands[1:]) and all(b in dawn for _, b in bands[:-1])   # last light to first light
     hst = timezone(timedelta(hours=-10))
     first_light = datetime.fromtimestamp(bands[1][1], tz=hst)
@@ -181,14 +182,39 @@ def test_night_bands_follow_first_and_last_light():
     assert T.night_bands(82.0, -60.0, dec, dec + 5 * 86400) == [[dec, dec + 5 * 86400]]   # polar night
 
 
-def test_the_window_covers_today_from_local_midnight_plus_16_days_in_every_zone():
+def test_sky_events_are_searched_in_chunks_without_gaps_or_repeats():
+    import sky
+    if not sky.AVAILABLE:
+        pytest.skip("PyEphem not installed")
+    a, z = START, START + T.CURVE_HOURS * 3600
+    evs = T.sky_events(21.3, -157.86, a, z)
+    assert evs == sorted(evs) and len(evs) == len(set(evs))
+    rises = [t for t, k in evs if k == "sunrise"]
+    assert len(rises) in (32, 33)                                             # one a day, none lost at a chunk edge
+    assert all(20 * 3600 < b - a < 28 * 3600 for a, b in zip(rises, rises[1:]))
+    for edge in range(a + T.SKY_CHUNK_S, z, T.SKY_CHUNK_S):                    # the same events as one search there
+        ref = sky.events(21.3, -157.86, datetime.fromtimestamp(edge - 86400, tz=timezone.utc),
+                         datetime.fromtimestamp(edge + 86400, tz=timezone.utc))
+        got = [(t, k) for t, k in evs if edge - 86400 <= t < edge + 86400]
+        want = [(int(u.timestamp()), k) for u, k in ref]
+        assert [k for _, k in got] == [k for _, k in want]                    # the same events ...
+        assert all(abs(g[0] - x[0]) <= 2 for g, x in zip(got, want))          # ... to ephem's second
+    assert T.sun_moon([(1, "dawn"), (2, "sunrise"), (3, "moonset"), (4, "dusk")]) == [[2, "sunrise"], [3, "moonset"]]
+    assert T.sun_moon(None) is None
+    moon = T.moon_samples(21.3, a, a + 2 * 86400)
+    assert [m[0] - a for m in moon] == [i * 6 * 3600 for i in range(9)]
+    assert all(0 <= m[1] < 1 and 0 <= m[2] <= 100 and isinstance(m[3], str) for m in moon)
+    assert moon[1][1] > moon[0][1] or moon[1][1] < 0.05                      # the phase grows (or a new moon passed)
+
+
+def test_the_window_covers_today_from_local_midnight_plus_30_days_in_every_zone():
     for hour in range(0, 24, 3):
         now = BEGIN + 86400 + hour * 3600
         b = T.begin_of(now)
         for off_h in range(-12, 15):
             local = datetime.fromtimestamp(now, tz=timezone(timedelta(hours=off_h)))
             midnight = int(local.replace(hour=0, minute=0, second=0).timestamp())
-            assert b <= midnight and midnight + 16 * 86400 <= b + T.SPAN_S, (hour, off_h)
+            assert b <= midnight and midnight + 30 * 86400 <= b + T.SPAN_S, (hour, off_h)
 
 
 # ------------------------------------------------------------------------------------------ the service
@@ -248,7 +274,14 @@ def test_a_harmonic_station_answers_noaas_curve_and_extremes_once_a_day():
     assert len(p["v"]) == T.POINTS and p["v"] == grid("honolulu")
     assert p["hilo"][0] == [hilo("honolulu")[0][0], hilo("honolulu")[0][1], hilo("honolulu")[0][2]]
     assert p["datum"] == "MLLW" and p["units"] == "m" and p["tz"] == "Pacific/Honolulu" and p["obs"] is True
-    assert p["night"] is None or len(p["night"]) >= 17
+    import sky
+    assert (p["events"] is not None) == sky.AVAILABLE and (p["moon"] is not None) == sky.AVAILABLE
+    assert p["night"] is None or (len(p["night"]) >= 31 and p["night"][0][0] == p["begin"])   # 02:00 HST: night from the curve's start
+    if p["events"] is not None:
+        kinds = {k for _, k in p["events"]}
+        assert kinds == {"sunrise", "sunset", "moonrise", "moonset"}
+        assert all(p["begin"] <= t < p["begin"] + T.CURVE_HOURS * 3600 for t, _ in p["events"])
+        assert len(p["moon"]) == T.CURVE_HOURS // 6 + 1 and all(len(m) == 4 for m in p["moon"])
     assert len(noaa.calls) == 2
     assert svc.forecast("1612340") == (status, p) and len(noaa.calls) == 2   # cached
     clock.t += 17 * 3600                                                      # still the same UTC day

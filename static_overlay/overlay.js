@@ -1690,14 +1690,15 @@
     this.offset = this.clamp(this.o0 - (px - this.x0));
     return this.nearest(this.offset);
   };
-  // The release: a tap picks the frame under the finger (pxFromCentre right of the pointer = later); a drag snaps to the
-  // nearest frame. Returns the frame index; the offset then sits exactly on it.
+  // The release: a tap picks the frame under the finger where it TOUCHED DOWN (pxFromCentre = the touch-down point right
+  // of the pointer = later); a drag snaps to the nearest frame. Returns the frame index; the offset then sits on it.
   RibbonState.prototype.end = function (pxFromCentre) {
     this.dragging = false;
-    // under 4 px of sideways travel: a tap picks the frame under the finger at lift-off. The ribbon followed the finger's
-    // roll, so that is the CURRENT offset plus the lift-off point (= where the finger touched down; G26 re-check RC-5).
-    // Without a finger position (a cancelled gesture) it goes back exactly where it started, never to a neighbour.
-    if (this.moved < RIBBON_TAP_PX) this.offset = typeof pxFromCentre === 'number' ? this.clamp(this.offset + pxFromCentre) : this.o0;
+    // under 4 px of sideways travel: a tap reads the touch-down point against the ribbon as it was at the press (the
+    // offset at the press + the point), so a roll before lifting never counts, also at the run's ends where the ribbon
+    // could not follow it (G26 re-check RC-5, fresh check F1). Without a finger position (a cancelled gesture) it goes back
+    // exactly where it started, never to a neighbour.
+    if (this.moved < RIBBON_TAP_PX) this.offset = typeof pxFromCentre === 'number' ? this.clamp(this.o0 + pxFromCentre) : this.o0;
     var idx = this.nearest(this.offset); this.offset = this.xs[idx]; return idx;
   };
   // A gesture that is no pick (a swipe up or down, a second finger): back where it started, whatever the travel.
@@ -2198,7 +2199,7 @@
     if (this.lineTimer) { clearInterval(this.lineTimer); this.lineTimer = null; }
     if (this._onVis) { document.removeEventListener('visibilitychange', this._onVis); this._onVis = null; }
     if (this._onHide) { if (window.removeEventListener) window.removeEventListener('pagehide', this._onHide); this._onHide = null; }
-    this._pendingRestore = null;
+    this._pendingRestore = null; this._pendingFocus = null;
     if (this.layer) { this.map.removeLayer(this.layer); this.layer = null; }
     this._syncLook();                                      // the page's imagery back, no blend
     if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
@@ -2642,17 +2643,33 @@
       track.style.transition = 'transform 120ms ease-out'; self._placeRibbon();
       self._syncUI();                                          // while playing, the ribbon follows playback again at once
     }
+    // Where the ribbon is SEEN: during its 150 ms step glide the visible position lags the offset, and a tap must read
+    // what was under the finger (fresh check F6). null without a computed transform (no layout).
+    function visibleOffset() {
+      try {
+        var cs = typeof window !== 'undefined' && window.getComputedStyle ? window.getComputedStyle(track) : null;
+        var m = cs && /^matrix\(([^)]+)\)$/.exec(cs.transform || ''), tx = m ? parseFloat(m[1].split(',')[4]) : NaN;
+        return isFinite(tx) ? ui.ribbonW / 2 - tx : null;
+      } catch (x) { return null; }
+    }
     ribbon.addEventListener('pointerdown', function (e) {
       if (e.button) return;
       e.preventDefault(); e.stopPropagation();
       if (g && e.pointerId === g.id) g = null;                 // a press whose release never reached us: start over
+      // a gesture whose pointer no longer holds the capture ended without telling us: a new press is a new gesture, not a
+      // second finger (else every later touch would be ignored until the next render)
+      if (g && g.captured && ribbon.hasPointerCapture && !ribbon.hasPointerCapture(g.id)) g = null;
       if (g) {
         if (g.axis !== 'void') { var was = g.axis; g.axis = 'void'; pendingIdx = null; if (was === 'x') self._scrubTo(g.start); back(); }
         return;
       }
-      if (ribbon.setPointerCapture) { try { ribbon.setPointerCapture(e.pointerId); } catch (x) { /* no capture: the moves still arrive while over the ribbon */ } }
-      rb.begin(e.clientX); track.style.transition = 'none'; lastIdx = null;
-      g = { id: e.pointerId, x0: e.clientX, y0: typeof e.clientY === 'number' ? e.clientY : 0, axis: null, start: rb.nearest(rb.offset) };
+      var captured = false;
+      if (ribbon.setPointerCapture) { try { ribbon.setPointerCapture(e.pointerId); captured = true; } catch (x) { /* no capture: the moves still arrive while over the ribbon */ } }
+      var vis = visibleOffset();
+      if (vis !== null) rb.offset = rb.clamp(vis);             // stop the glide where it is seen
+      track.style.transition = 'none'; self._placeRibbon();
+      rb.begin(e.clientX); lastIdx = null;
+      g = { id: e.pointerId, x0: e.clientX, y0: typeof e.clientY === 'number' ? e.clientY : 0, axis: null, start: rb.nearest(rb.offset), captured: captured };
       if (ribbon.focus) { try { ribbon.focus({ preventScroll: true }); } catch (x) { ribbon.focus(); } }
     });
     ribbon.addEventListener('pointermove', function (e) {
@@ -2673,15 +2690,21 @@
     // lostpointercapture that follows every pointerup finds no gesture left (G26 re-check RC-8 a).
     function release(e) {
       if (!g || e.pointerId !== g.id) return;
-      var axis = g.axis, dy = typeof e.clientY === 'number' ? Math.abs(e.clientY - g.y0) : 0;
+      var axis = g.axis, x0 = g.x0, y0 = g.y0;
       g = null; pendingIdx = null;
       if (axis === 'y' || axis === 'void') return;            // already back where it started
-      // undecided: a cancel or a lost capture is no pick; a pointerup is a tap or a short drag (rb.end decides by the
-      // sideways travel), except a lift-off RIBBON_AXIS_PX up or down with no move in between, which is no tap
-      if (axis === null && (e.type !== 'pointerup' || (dy >= RIBBON_AXIS_PX && rb.moved < RIBBON_TAP_PX))) { back(); return; }
-      var tap = axis === null && dy < RIBBON_AXIS_PX;
-      var r = tap && ribbon.getBoundingClientRect ? ribbon.getBoundingClientRect() : null;
-      var idx = rb.end(r && typeof e.clientX === 'number' ? e.clientX - (r.left + r.width / 2) : undefined);
+      if (axis === null) {
+        if (e.type !== 'pointerup') { back(); return; }        // a cancel or a lost capture before it was a scrub: no pick
+        // the lift-off point decides like a move (a browser may send no move to where the button is released; fresh
+        // check F3); short of the decision: a tap (< 4 px sideways) or a short drag, by rb.end
+        if (typeof e.clientX === 'number') {
+          var dx = Math.abs(e.clientX - x0), dy = typeof e.clientY === 'number' ? Math.abs(e.clientY - y0) : 0;
+          if (Math.max(dx, dy) >= RIBBON_AXIS_PX) { if (dy >= dx) { back(); return; } axis = 'x'; }
+          rb.move(e.clientX);
+        }
+      }
+      var r = axis === null && ribbon.getBoundingClientRect ? ribbon.getBoundingClientRect() : null;
+      var idx = rb.end(r ? x0 - (r.left + r.width / 2) : undefined);
       track.style.transition = 'transform 120ms ease-out'; self._placeRibbon(); lastIdx = idx; self._scrubTo(idx);
     }
     ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (ev) { ribbon.addEventListener(ev, release); });
@@ -2758,6 +2781,10 @@
   // menu is never clipped) and the scroll box (legend, Run / Updated / Next Update, warnings).
   Overlay.prototype.render = function (st) {
     var focusCls = this._focusedPart();                       // before the menu closes (a hidden option loses the focus)
+    // a part that had the focus before a loading panel (nothing to focus there) gets it back now, unless the focus went
+    // somewhere else meanwhile (fresh check F2: Retry, Update)
+    if (!focusCls && this._pendingFocus && this._focusLost()) focusCls = this._pendingFocus;
+    this._pendingFocus = null;
     this._closeMenus();
     this.last = st; this.ui = null;
     var self = this, host = this._host(), compact = host === this.sheet, m = this.manifest, unit = this.opts.getUnit();
@@ -2768,12 +2795,12 @@
     // Nothing in the panel is a live region (its time changes on every frame while playing); the loading, error and
     // unavailable-frame messages are said once through the overlay's own status node (_say; G26 A-P3-5, re-check RC-7).
     // The focused ribbon's aria-valuetext has the time.
-    if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._say('Loading model frame…'); this._layoutSheet(); return; }
+    if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._say('Loading model frame…'); this._layoutSheet(); this._pendingFocus = focusCls; return; }
     if (st.state === 'error') {
       this._say('Overlay unavailable: ' + st.message);
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
       e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.transientFails = 0; self.mount(self.field); } }));
-      host.appendChild(e); this._layoutSheet(); return;
+      host.appendChild(e); this._layoutSheet(); this._refocus(focusCls, host); return;
     }
     var field = this.layer.field, f = m.fields[field], fdesc = (m.model && m.model.fields && m.model.fields[field]) || {};
     // The model's name as the head shows it: the manifest's up to " + " (the wind's own model), without the agency
@@ -2893,7 +2920,7 @@
   };
   // Keyboard focus through a render (G26 B-2, re-check RC-6): the part of the panel that had it, by its class; its
   // successor in the new panel gets it back (else the play button, else the toggle). Never taken from outside the panel.
-  var FOCUS_PARTS = ['ov-toggle', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update'];
+  var FOCUS_PARTS = ['ov-toggle', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-details'];
   Overlay.prototype._focusedPart = function () {
     var a = typeof document !== 'undefined' ? document.activeElement : null, hosts = [this.opts.panel, this.sheet];
     if (!a || !a.classList) return null;
@@ -2904,22 +2931,35 @@
     }
     return 'ov-play';
   };
-  Overlay.prototype._refocus = function (cls) {
-    var h = cls && this.ui && this.ui.host;
+  // No element has the focus (the body), or the one that had it is gone from the page.
+  Overlay.prototype._focusLost = function () {
+    if (typeof document === 'undefined') return false;
+    var a = document.activeElement, b = document.body;
+    return !a || a === b || !!(b && b.contains && !b.contains(a));
+  };
+  Overlay.prototype._refocus = function (cls, host) {
+    var h = cls && (host || (this.ui && this.ui.host));
     if (!h || !h.querySelector) return;
-    var el = h.querySelector('.' + cls) || h.querySelector('.ov-play') || h.querySelector('.ov-toggle');
+    var el = h.querySelector('.' + cls) || h.querySelector('.ov-play') || h.querySelector('.ov-toggle') || h.querySelector('.ov-retry');
     if (el && el.focus) { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } }
   };
   // The overlay's one live region: a visually hidden role=status node, created once, written only when its text
   // changes (a rewrite with the same text could be read out again on every frame; G26 re-check RC-7).
+  // A live region that appears together with its text is often not read out (fresh check F5): the node goes in empty and
+  // its first text follows a moment later (the latest text by then).
   Overlay.prototype._say = function (text) {
-    text = text || '';
+    var self = this;
+    this._sayText = text = text || '';
     if (!this._status) {
       if (!text || typeof document === 'undefined' || !document.body) return;
       this._status = mk('div', 'ov-sr'); this._status.setAttribute('role', 'status'); document.body.appendChild(this._status);
+      this._sayTimer = setTimeout(function () { self._sayTimer = null; if (self._status.textContent !== self._sayText) self._status.textContent = self._sayText; }, SAY_FIRST_MS);
+      return;
     }
+    if (this._sayTimer) return;                                // the first text is on its way and takes the latest
     if (this._status.textContent !== text) this._status.textContent = text;
   };
+  var SAY_FIRST_MS = 100;
   // The live parts: the play/pause glyph and the playing look (the chosen animal moves), the speed button, the title,
   // the ribbon (its label = the requested time with a loading state, its position = the target), the overview slider's
   // thumb (at the target) and the unavailable-frame note.

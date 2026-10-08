@@ -380,6 +380,11 @@ down) or a short drag; a second finger ends the gesture with no pick, back to th
 far as the room allows (measured, no fixed height) and offers the toggle only when opening shows more than its one-line
 head; keyboard focus stays on the same control through every re-render; the loading, error and unavailable-frame
 messages are read out once through one hidden `role=status` node (nothing in the panel itself is a live region).
+Asset 2.14.9 (the short fresh check of 2.14.8): a tap reads the touch-down point against the ribbon as it was at the press
+(also at the run's ends, where the ribbon cannot follow a roll); the point where a press is released decides its direction
+like a move; a press during the ribbon's step glide starts from where the ribbon is seen; keyboard focus survives the
+loading and error panels (Retry, Update) and the details scroll box keeps it; the status node goes in empty and its first
+text follows a moment later; a touch whose release never arrived no longer blocks the next one.
 Coastline clip (asset 2.7.6): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for

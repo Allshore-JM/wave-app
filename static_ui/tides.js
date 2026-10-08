@@ -90,6 +90,7 @@
   }
   function dayShort(p) { return (p.wd || '') + ' ' + p.d; }                                       // "Fri 9"
   function dayLong(p) { return (WEEKDAY_NAMES[p.wd] || p.wd || '') + ', ' + MONTHS[p.mo - 1] + ' ' + p.d; }   // "Friday, Oct 9"
+  function dayMedium(p) { return (p.wd || '') + ', ' + MONTHS[p.mo - 1] + ' ' + p.d; }                       // "Sun, Nov 1"
   function stampText(p) { return (p.wd || '') + ' ' + p.mo + '/' + p.d + ', ' + clockText(p); }   // "Fri 10/9, 3:05 PM"
 
   // ---- the data ----------------------------------------------------------------------------------------------------
@@ -271,16 +272,34 @@
       return e;
     }
     function kidsOf(e) { return e.childNodes && e.childNodes.length ? e.childNodes : e.children; }
-    function zoneText() {
-      try { if (deps.zoneAbbr) return deps.zoneAbbr(now(), zone()) || zone(); } catch (e) {}
+    function zoneAt(ms) {
+      try { if (deps.zoneAbbr) return deps.zoneAbbr(ms, zone()) || zone(); } catch (e) {}
       return zone();
+    }
+    // The zone's names over the strip, in order: [{k, text}], k = the day a name starts on. One entry unless the clocks
+    // change inside the 30 days (New York in late October: EDT, then EST from Sun, Nov 1).
+    function zoneSpans(L) {
+      if (!L || !L.mids || L.mids.length < 2) return [{ k: 0, text: zoneAt(now()) }];
+      var out = [{ k: 0, text: zoneAt(L.mids[0]) }];
+      for (var k = 0; k + 1 < L.mids.length; k++) {
+        var t = zoneAt(L.mids[k + 1] - 1);                                 // the name as day k ends
+        if (t !== out[out.length - 1].text) out.push({ k: k, text: t });
+      }
+      return out;
+    }
+    function spans() { return st.zs || zoneSpans(st.L); }
+    function zoneText() { var z = spans(); return z.length > 1 ? 'local' : z[0].text; }   // the rows' label: one name, else "local"
+    function zoneMeta() {                                                  // "EDT (EST from Sun, Nov 1)"
+      var z = spans(), clk = zoneClock(zone()), L = st.L;
+      if (z.length < 2 || !L || !L.noons) return z[0].text;
+      return z[0].text + ' (' + z.slice(1).map(function (s) { return s.text + ' from ' + dayMedium(clk.parts(L.noons[s.k])); }).join('; ') + ')';
     }
 
     function writeMeta() {
       var d = st.data;
       if (!els.meta || !d) return;
       els.meta.textContent = '';
-      var lines = ['Heights above mean lower low water (MLLW) · times in ' + zoneText() + ' · click a day to open or close it',
+      var lines = ['Heights above mean lower low water (MLLW) · times in ' + zoneMeta() + ' · click a day to open or close it',
                    (METHOD_TEXT[d.method] || METHOD_TEXT.harmonic).replace('%REF%', d.ref || ''),
                    'Predictions do not include storm surge or wind effects.'];
       if (st.obs && st.obs.note) lines.push(st.obs.note + '.');
@@ -415,7 +434,7 @@
       samples(d, mids[0], mids[DAYS]).forEach(function (p) { if (p.m !== null) vals.push(height(p.m, st.unit)); });
       if (st.obs && st.obs.v) st.obs.v.forEach(function (v) { if (num(v)) vals.push(height(v, st.unit)); });
       var ys = yScale(vals, st.unit);
-      st.L = L; st.ys = ys;
+      st.L = L; st.ys = ys; st.zs = zoneSpans(L);
       var lat = num(d.lat) ? d.lat : (st.station && num(st.station.lat) ? st.station.lat : 0);
       var scroller = el('div', 'tide-scroll'), table = el('table', 'tide-table');
       var colgroup = el('colgroup'), c0 = el('col'); c0.style.width = LABEL_W + 'px'; colgroup.appendChild(c0);

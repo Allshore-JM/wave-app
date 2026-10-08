@@ -168,7 +168,7 @@ function setup(opts = {}) {
   const timers = fakeTimers();
   let visible = opts.visible !== false, nowMs = opts.now || NOW;
   const view = T.createTideView({ els, document: doc, fetch, timers, now: () => nowMs, visible: () => visible, unit: opts.unit || 'US',
-    zoneAbbr: (ms, tz) => (tz === 'Pacific/Honolulu' ? 'HST' : tz) });
+    zoneAbbr: opts.zoneAbbr || ((ms, tz) => (tz === 'Pacific/Honolulu' ? 'HST' : tz)) });
   const q = (sel) => els.strip.querySelectorAll(sel);
   return { doc, els, calls, answers, timers, view, q, setVisible: (v) => { visible = v; }, setNow: (t) => { nowMs = t; } };
 }
@@ -441,4 +441,33 @@ test('the strip on a clock-change week: New York on Fri 30 Oct, Sun 1 Nov opened
   const L = s.view.state().layout;
   assert.equal(I.xOf(L, noonSun), L.lefts[2] + I.COL_OPEN / 2, 'local noon at the AM | PM line');
   assert.equal(s.q('.tide-moon-glyph')[0].getAttribute('title'), 'Noon sample, 12% lit', 'the sample nearest local noon');
+});
+
+test('a clock change inside the 30 days: the rows say "local", the notes name both zones and the day the clocks change', async () => {
+  const abbr = (ms, tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(new Date(ms)).find((x) => x.type === 'timeZoneName').value;
+  const ny = { id: '8518750', name: 'The Battery', tz: 'America/New_York', obs: false, lat: 40.7 };
+  const s = setup({ now: Date.UTC(2026, 9, 20, 16), zoneAbbr: abbr });         // Tue 20 Oct, noon EDT: Sun 1 Nov in the strip
+  s.view.load(ny);
+  s.answers[0].res(response(200, payload({ id: '8518750', tz: 'America/New_York', lat: 40.7, obs: false })));
+  await flush();
+  assert.equal(s.q('.tide-row-high')[0].querySelectorAll('td')[0].textContent, 'HIGH(local)');
+  assert.equal(s.q('.tide-row-low')[0].querySelectorAll('td')[0].textContent, 'LOW(local)');
+  assert.match(s.els.meta.textContent, /times in EDT \(EST from Sun, Nov 1\) · click a day/);
+  // the day the name changes is the day of the change, also when the strip starts on it
+  const t = setup({ now: Date.UTC(2026, 10, 1, 4, 30), zoneAbbr: abbr });     // Sun 1 Nov, 12:30 AM EDT
+  t.view.load(ny);
+  t.answers[0].res(response(200, payload({ id: '8518750', tz: 'America/New_York', lat: 40.7, obs: false })));
+  await flush();
+  assert.match(t.els.meta.textContent, /times in EDT \(EST from Sun, Nov 1\)/);
+  // after the change: one name again
+  const u = setup({ now: Date.UTC(2026, 10, 2, 17), zoneAbbr: abbr });       // Mon 2 Nov, noon EST
+  u.view.load(ny);
+  u.answers[0].res(response(200, payload({ id: '8518750', tz: 'America/New_York', lat: 40.7, obs: false })));
+  await flush();
+  assert.equal(u.q('.tide-row-high')[0].querySelectorAll('td')[0].textContent, 'HIGH(EST)');
+  assert.match(u.els.meta.textContent, /times in EST · click a day/);
+  // a zone change on the gear follows (UTC: one name)
+  s.view.setZone('UTC');
+  assert.equal(s.q('.tide-row-high')[0].querySelectorAll('td')[0].textContent, 'HIGH(UTC)');
+  assert.match(s.els.meta.textContent, /times in UTC · click a day/);
 });

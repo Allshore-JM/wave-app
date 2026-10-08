@@ -38,9 +38,13 @@ function boot(o = {}) {
   };
   let zoom = o.zoom === undefined ? 9 : o.zoom, on = o.on !== false;
   const tideLayer = { items: [], clearLayers() { this.items = []; } };
-  const credits = new Set();
+  // Leaflet's attribution control COUNTS: each addAttribution needs its removeAttribution before the text goes
+  const counts = new Map();
+  const credits = { count: (t) => counts.get(t) || 0, has: (t) => (counts.get(t) || 0) > 0,
+    get size() { let c = 0; counts.forEach((v) => { if (v > 0) c++; }); return c; } };
   const map = { hasLayer: (l) => l === tideLayer && on, getZoom: () => zoom,
-    attributionControl: { addAttribution: (t) => credits.add(t), removeAttribution: (t) => credits.delete(t) } };
+    attributionControl: { addAttribution: (t) => { counts.set(t, credits.count(t) + 1); },
+                          removeAttribution: (t) => { if (credits.count(t)) counts.set(t, credits.count(t) - 1); } } };
   const L = { marker(ll, opts) { return { ll, opts, handlers: {}, addTo(layer) { layer.items.push(this); return this; },
     bindTooltip(c, tipOpts) { this.tip = c; this.tipOpts = tipOpts; return this; }, on(t, fn) { this.handlers[t] = fn; return this; } }; } };
   const fetchCalls = [];
@@ -88,6 +92,7 @@ test('below the gate: no request, no markers, the note; at the gate the list is 
   assert.deepEqual(b.tideLayer.items[0].tip, { text: 'Tide station Honolulu' }, 'the name as text, never HTML');
   b.api.rebuildTideMarkers(false); b.api.rebuildTideMarkers(false);
   assert.equal(b.fetchCalls.length, 1, 'asked once');
+  assert.equal(b.credits.count(b.api.TIDE_CREDIT), 1, 'the credit added once, however often the markers are rebuilt');
   b.setZoom(8.5); b.api.rebuildTideMarkers(false);
   assert.equal(b.tideLayer.items.length, 0, 'zoomed out: the layer is cleared (the gate bit of the signature)');
   assert.equal(b.notes.tide.textContent, 'zoom in to see tide stations');
@@ -95,6 +100,10 @@ test('below the gate: no request, no markers, the note; at the gate the list is 
   assert.equal(b.tideLayer.items.length, 2); assert.equal(b.fetchCalls.length, 1);
   b.setOn(false); b.api.rebuildTideMarkers(true);
   assert.equal(b.tideLayer.items.length, 0); assert.equal(b.notes.tide.textContent, ''); assert.equal(b.credits.size, 0, 'unticked: no note, no credit');
+  b.api.rebuildTideMarkers(false); b.api.rebuildTideMarkers(true);
+  assert.equal(b.credits.count(b.api.TIDE_CREDIT), 0, 'removed once, never below');
+  b.setOn(true); b.api.rebuildTideMarkers(true); b.api.rebuildTideMarkers(false);
+  assert.equal(b.credits.count(b.api.TIDE_CREDIT), 1, 'ticked again: back, once');
 });
 
 test('world copies get their own markers; a failed list is said and asked again', async () => {

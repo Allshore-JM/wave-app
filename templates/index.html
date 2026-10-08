@@ -1520,6 +1520,7 @@
     let tideListPromise = null;
     let activeTideId = null;
     let lastTideSig = null;
+    let tideCreditShown = false;                    // Leaflet counts add/removeAttribution calls: change it only on a change
     let tideView = null;
 
     // `force` rebuilds immediately (init, resize, data load); otherwise the
@@ -2759,8 +2760,9 @@
         const want = on ? (tideStationsData.length ? '' : tideNoteText) : 'zoom in to see tide stations';
         if (want !== tideNoteText) { tideNoteText = want; paintTideNote(); }
       } else if (tideNoteText) { tideNoteText = ''; paintTideNote(); }
-      if (map.attributionControl) {                   // the credit while the layer is on (NOS asks for attribution)
-        if (map.hasLayer(tideLayer)) map.attributionControl.addAttribution(TIDE_CREDIT); else map.attributionControl.removeAttribution(TIDE_CREDIT);
+      if (map.attributionControl && map.hasLayer(tideLayer) !== tideCreditShown) {   // the credit while the layer is on (NOS
+        tideCreditShown = !tideCreditShown;           // asks for attribution); every pan rebuilds, so only a change calls Leaflet
+        if (tideCreditShown) map.attributionControl.addAttribution(TIDE_CREDIT); else map.attributionControl.removeAttribution(TIDE_CREDIT);
       }
       if (!force && sig === lastTideSig) return;
       lastTideSig = sig;

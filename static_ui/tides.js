@@ -12,7 +12,8 @@
  * and a dashed level line to the axis (the current height in the label column), redrawn every minute. Under the chart,
  * aligned to the columns: HIGH and LOW (time + height), Sun (rise / set), Moon (phase, set / rise). Hovering (or
  * touching) the chart reads the time and height under the pointer. Heights above MLLW in the site's unit (US: ft, one
- * decimal; Metric: m, two). Within a day the time runs linearly over its own column (23- and 25-hour days right).
+ * decimal; Metric: m, two). Within a day the time runs linearly from midnight to the zone's own noon over the left half
+ * of its column and from noon to midnight over the right half, so 23- and 25-hour days keep noon at the AM | PM line.
  *  - A busy or unreachable server (503 + retry) is asked again after its Retry-After; a station NOAA has no
  *    predictions for says so (no retry); any other failure offers Retry.
  *  - A newer load() makes every answer of an older one void (sequence + AbortController); a strip is only built while
@@ -97,15 +98,28 @@
   function height(m, unit) { return unit === 'Metric' ? m : m * FT_PER_M; }
   function heightText(m, unit) { return unit === 'Metric' ? height(m, unit).toFixed(2) + ' m' : height(m, unit).toFixed(1) + ' ft'; }
 
-  // The columns: day k runs [mids[k], mids[k+1]) and is COL_OPEN wide when open, else COL_CLOSED;
-  // -> { mids, lefts (px of each day's start), widths, total, open (booleans) }
-  function layout(mids, openSet) {
-    var lefts = [], widths = [], open = [], x = 0;
+  // The local noon of each day: the instant the zone's clock reads 12:00 (on a clock-change day not the day's middle:
+  // 25 h from midnight to midnight puts the middle at 11:30 AM, 23 h at 12:30 PM).
+  function noons(mids, clk) {
+    var out = [];
+    for (var k = 0; k < mids.length - 1; k++) {
+      var c = mids[k] + 12 * HOUR_MS, p = clk.parts(c);
+      c -= ((p.h - 12) * 60 + p.mi) * MIN_MS;
+      out.push(Math.max(mids[k] + 1, Math.min(mids[k + 1] - 1, c)));
+    }
+    return out;
+  }
+  // The columns: day k runs [mids[k], mids[k+1]) and is COL_OPEN wide when open, else COL_CLOSED; its local noon sits
+  // in the middle of its column (noonList; without it the day's middle), so an open day's AM | PM halves are the
+  // clock's. -> { mids, noons, lefts (px of each day's start), widths, total, open (booleans) }
+  function layout(mids, openSet, noonList) {
+    var lefts = [], widths = [], open = [], nn = [], x = 0;
     for (var k = 0; k < mids.length - 1; k++) {
       var o = !!(openSet && openSet[k]);
       open.push(o); lefts.push(x); widths.push(o ? COL_OPEN : COL_CLOSED); x += widths[k];
+      nn.push(noonList && noonList[k] > mids[k] && noonList[k] < mids[k + 1] ? noonList[k] : (mids[k] + mids[k + 1]) / 2);
     }
-    return { mids: mids, lefts: lefts, widths: widths, total: x, open: open };
+    return { mids: mids, noons: nn, lefts: lefts, widths: widths, total: x, open: open };
   }
   function dayOf(L, ms) {                                                  // the day index of an instant, or -1 outside the strip
     var m = L.mids;
@@ -114,19 +128,20 @@
     while (lo < hi) { var mid = (lo + hi + 1) >> 1; if (m[mid] <= ms) lo = mid; else hi = mid - 1; }
     return lo;
   }
-  // an instant -> px from the strip's left edge (linear within its own day; outside the strip the edges' slopes)
+  // an instant -> px from the strip's left edge: linear from midnight to noon over the left half of its day's column
+  // and from noon to midnight over the right half (outside the strip: the edge halves' slopes)
   function xOf(L, ms) {
     var k = dayOf(L, ms);
     if (k < 0) k = ms < L.mids[0] ? 0 : L.mids.length - 2;
-    var a = L.mids[k], b = L.mids[k + 1];
-    return L.lefts[k] + (ms - a) / (b - a) * L.widths[k];
+    var a = L.mids[k], n = L.noons[k], b = L.mids[k + 1], half = L.widths[k] / 2;
+    return ms < n ? L.lefts[k] + (ms - a) / (n - a) * half : L.lefts[k] + half + (ms - n) / (b - n) * half;
   }
   function tOf(L, x) {                                                     // px -> the instant (inside the strip)
     if (x <= 0) return L.mids[0];
     for (var k = 0; k < L.widths.length; k++) {
       if (x < L.lefts[k] + L.widths[k] || k === L.widths.length - 1) {
-        var f = Math.max(0, Math.min(1, (x - L.lefts[k]) / L.widths[k]));
-        return L.mids[k] + f * (L.mids[k + 1] - L.mids[k]);
+        var half = L.widths[k] / 2, f = Math.max(0, Math.min(L.widths[k], x - L.lefts[k]));
+        return f < half ? L.mids[k] + f / half * (L.noons[k] - L.mids[k]) : L.noons[k] + (f - half) / half * (L.mids[k + 1] - L.noons[k]);
       }
     }
     return L.mids[L.mids.length - 1];
@@ -166,7 +181,7 @@
   }
   // the extremes of a day's half: [{t, m, k}] (half: 0 AM, 1 PM, -1 the whole day), in time order
   function extremesIn(d, L, k, half) {
-    var a = L.mids[k], b = L.mids[k + 1], noon = a + (b - a) / 2;
+    var a = L.mids[k], b = L.mids[k + 1], noon = L.noons[k];
     var from = half === 1 ? noon : a, to = half === 0 ? noon : b, out = [];
     (d.hilo || []).forEach(function (e) {
       if (!e || !num(e[0]) || !num(e[1])) return;
@@ -176,7 +191,7 @@
     return out;
   }
   function eventsIn(d, L, k, half, kinds) {                                // sun / moon events of a day's half: [{t, kind}]
-    var a = L.mids[k], b = L.mids[k + 1], noon = a + (b - a) / 2;
+    var a = L.mids[k], b = L.mids[k + 1], noon = L.noons[k];
     var from = half === 1 ? noon : a, to = half === 0 ? noon : b, out = [];
     (d.events || []).forEach(function (e) {
       if (!e || !num(e[0])) return;
@@ -185,9 +200,9 @@
     });
     return out;
   }
-  // the moon on a day: the sample nearest the day's middle -> {phase, pct, name, glyph} or null
+  // the moon on a day: the sample nearest the day's local noon -> {phase, pct, name, glyph} or null
   function moonOf(d, L, k, lat) {
-    var mid = (L.mids[k] + L.mids[k + 1]) / 2, best = null, bd = Infinity;
+    var mid = L.noons[k], best = null, bd = Infinity;
     (d.moon || []).forEach(function (m) {
       if (!m || !num(m[0])) return;
       var dd = Math.abs(m[0] * 1000 - mid);
@@ -395,7 +410,7 @@
     }
     function build() {
       var d = st.data; if (!d || !els.strip) return;
-      var clk = zoneClock(zone()), mids = midnights(now(), DAYS, clk), L = layout(mids, st.open);
+      var clk = zoneClock(zone()), mids = midnights(now(), DAYS, clk), L = layout(mids, st.open, noons(mids, clk));
       var vals = [];
       samples(d, mids[0], mids[DAYS]).forEach(function (p) { if (p.m !== null) vals.push(height(p.m, st.unit)); });
       if (st.obs && st.obs.v) st.obs.v.forEach(function (v) { if (num(v)) vals.push(height(v, st.unit)); });
@@ -582,7 +597,7 @@
     _internals: {
       FT_PER_M: FT_PER_M, DAYS: DAYS, COL_CLOSED: COL_CLOSED, COL_OPEN: COL_OPEN, LABEL_W: LABEL_W, CHART_H: CHART_H, CHART_PAD: CHART_PAD,
       RETRY_MAX: RETRY_MAX, NOW_REDRAW_MS: NOW_REDRAW_MS, MOON_GLYPHS: MOON_GLYPHS,
-      zoneClock: zoneClock, localMidnightBefore: localMidnightBefore, midnights: midnights, clockText: clockText, dayShort: dayShort,
+      zoneClock: zoneClock, localMidnightBefore: localMidnightBefore, midnights: midnights, noons: noons, clockText: clockText, dayShort: dayShort,
       dayLong: dayLong, stampText: stampText, layout: layout, dayOf: dayOf, xOf: xOf, tOf: tOf, yScale: yScale, tickText: tickText,
       samples: samples, heightAt: heightAt, extremesIn: extremesIn, eventsIn: eventsIn, moonOf: moonOf, nightSpans: nightSpans,
       curvePaths: curvePaths, heightText: heightText

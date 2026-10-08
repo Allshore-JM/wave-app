@@ -795,7 +795,7 @@ Environment variables (all optional):
 Gunicorn: the service runs one scheduler per worker process; the site runs one worker (with threads), so each agency is
 asked once per refresh. More workers would each run their own scheduler (correct, but more feed traffic).
 
-## Tide stations (plan section 38, UI asset 1.18.1)
+## Tide stations (plan section 38, UI asset 1.18.2)
 
 NOAA CO-OPS tide predictions (public domain; NOS asks for attribution, given in the map credits while the layer is on
 and in the window) for the map's "Tide stations" layer.
@@ -844,6 +844,6 @@ with a dot at the current height and a level line to the axis (the current heigh
 minute; a new day restarts the strip at today). Under the chart, aligned to the columns: HIGH and LOW (time + height),
 Sun (rise / set), Moon (the phase glyph nearest the day's middle, mirrored south of the equator, and its set / rise).
 Hovering or touching the chart reads the time and height under the pointer. Within a day the time runs linearly over
-its own column, so 23- and 25-hour days come out right. Heights above MLLW in the site's unit. A newer station voids an
+its own column from midnight to the zone's noon over the left half and from noon to midnight over the right half, so 23- and 25-hour days keep noon at the AM | PM line. Heights above MLLW in the site's unit. A newer station voids an
 older one's answers; a hidden (minimised) window builds its strip when expanded; text from the server is written as
 text only.

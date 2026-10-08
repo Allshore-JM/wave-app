@@ -11,8 +11,9 @@ This repository contains a Flask web application that fetches the latest NOAA GF
   point on the open sea, titled with its coordinates, and keeps it under **My points** in the visitor's browser (see
   "Forecast points" below).
 - **Tide stations**: NOAA's tide-prediction stations appear on the map from zoom 9 (sine-wave markers); a click opens
-  a tide window with the predicted curve for 3, 7 or 16 days from today, the highs and lows, the nights, the current
-  time and, where the station has a gauge, the observed water level of the last 48 h (see "Tide stations" below).
+  a tide window: a day strip for 30 days (a column per day, today open, a click opens or closes any day) with the
+  predicted curve, the highs and lows, the nights, the sun and moon, the current time and, where the station has a
+  gauge, the observed water level of the last 48 h (see "Tide stations" below).
 - **Download as Excel**: You can download the displayed table as an Excel file. The download preserves the two-level headers and units row.
 - **Deployment-Ready**: The repository includes a `requirements.txt` file and a `README.md` with instructions for deploying the web app on [Render](https://render.com) or running locally.
 
@@ -794,7 +795,7 @@ Environment variables (all optional):
 Gunicorn: the service runs one scheduler per worker process; the site runs one worker (with threads), so each agency is
 asked once per refresh. More workers would each run their own scheduler (correct, but more feed traffic).
 
-## Tide stations (plan section 38, UI asset 1.18.0)
+## Tide stations (plan section 38, UI asset 1.18.1)
 
 NOAA CO-OPS tide predictions (public domain; NOS asks for attribution, given in the map credits while the layer is on
 and in the window) for the map's "Tide stations" layer.
@@ -832,11 +833,17 @@ one attempt, an 8 s wall-clock cap):
 
 The page (`templates/index.html`, `static_ui/tides.js`): markers (an empty div each, the sine-wave glyph is CSS) from
 `TIDE_MIN_ZOOM = 9`; below it the legend entry says "zoom in to see tide stations"; the list is asked the first time
-the layer is on at that zoom. A click opens the tide window (`#tideWin`): the chart has a linear time axis in hours
-since today's local midnight in the display zone (the site's Time Zone when one is chosen, else the station's own; the
-live-buoy panel keeps its own-zone rule) with ticks read from the zone's clock (dates, noon / 6 AM / 6 PM as room
-allows; 23- and 25-hour days come out right), the predicted curve, the highs and lows as points and as a list below the
-chart, the observed series dashed, the nights shaded, a "now" line redrawn every minute; heights above MLLW in the site's
-unit. Tabs 3 d / 7 d / 16 d end at the 3rd / 7th / 16th local midnight (`sessionStorage 'allshore.tideRange.v1'`). A
-newer station voids an older one's answers; a hidden (minimised) window builds its chart when expanded; text from the
-server is written as text only.
+the layer is on at that zoom. A click opens the tide window (`#tideWin`) on a DAY STRIP (after tide-forecast.com's
+layout, owner 2026-10-08): one table whose label column stays put while the days scroll sideways; a column per local
+day for 30 days from today's midnight in the display zone (the site's Time Zone when one is chosen, else the station's
+own; the live-buoy panel keeps its own-zone rule); a closed day is 64 px (its date), an open day 240 px (the full date
+over AM | PM halves); today opens by itself and a click on any day's header opens or closes it (several may be open).
+Over the columns one SVG chart: the predicted curve with its fill, the nights shaded, a dot at every high and low with
+the time and height written out on open days, the observed water level dashed, a red dashed line at the current time
+with a dot at the current height and a level line to the axis (the current height in the label column; redrawn every
+minute; a new day restarts the strip at today). Under the chart, aligned to the columns: HIGH and LOW (time + height),
+Sun (rise / set), Moon (the phase glyph nearest the day's middle, mirrored south of the equator, and its set / rise).
+Hovering or touching the chart reads the time and height under the pointer. Within a day the time runs linearly over
+its own column, so 23- and 25-hour days come out right. Heights above MLLW in the site's unit. A newer station voids an
+older one's answers; a hidden (minimised) window builds its strip when expanded; text from the server is written as
+text only.

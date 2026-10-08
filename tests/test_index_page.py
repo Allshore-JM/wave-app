@@ -553,8 +553,9 @@ def test_tide_stations_on_the_page(client):
         "L.divIcon({ className: 'tide-icon', html: '', iconSize: [18, 18], iconAnchor: [9, 9] })",
         # the window
         '<section id="tideWin" class="fwin tide-win" hidden role="region" aria-label="Tide station">',
-        'id="twHeader"', 'id="twMin"', 'id="twClose"', 'id="twBody"', 'id="twResize"', 'id="tideRangeBar"', 'data-days="16"',
-        'id="tideChart"', 'id="tideHiLo"', 'id="tideMeta"', 'id="tideRetry"',
+        'id="twHeader"', 'id="twMin"', 'id="twClose"', 'id="twBody"', 'id="twResize"', 'id="tideStrip" class="tide-strip"',
+        'id="tideMeta"', 'id="tideRetry"', ".tide-table .tide-lab { position: sticky; left: 0; z-index: 3;",
+        ".tide-scroll { overflow-x: auto; overflow-y: hidden;", "strip: $('tideStrip'), meta: $('tideMeta') },",
         ".fwin.tide-win { right: 18px; bottom: 18px; width: min(760px, calc(100vw - 36px)); height: min(64vh, 640px); z-index: 2000; }",
         "body.live-chip .tide-win.fw-min { bottom: calc(20px + var(--lw-chip-h, 40px)) !important; }",
         ".tide-win.fw-min { bottom: calc(var(--fw-bar-h, 48px) + var(--lw-bar-h, 0px)) !important; }",

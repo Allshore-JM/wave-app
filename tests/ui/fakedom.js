@@ -126,6 +126,17 @@ function buildPage(win) {
   el('div', 'lwBody', live);
   const edges = (win) => ['n', 's', 'e', 'w', 'ne', 'nw', 'sw'].map((k) => { const e = el('div', null, win, { 'data-edge': k }); e.classList.add('fw-edge'); return e; });
   const liveEdges = edges(live); el('div', 'lwResize', live);
+  // the tide-station window (plan section 38): a third FloatingWindow, hidden until a tide station is picked
+  const tide = el('section', 'tideWin', doc.body); tide.hidden = true; tide.rect = { left: 500, top: 250, width: 760, height: 520 };
+  const twHeader = el('div', 'twHeader', tide); el('strong', 'tideTitle', twHeader); el('span', 'tideSubtitle', twHeader);
+  const twMin = el('button', 'twMin', twHeader); const twClose = el('button', 'twClose', twHeader);
+  const twBody = el('div', 'twBody', tide); twBody.clientHeight = 500;
+  el('div', 'tideLoading', twBody); const tideError = el('div', 'tideError', twBody); el('span', 'tideErrorText', tideError); el('button', 'tideRetry', tideError);
+  const tideContent = el('div', 'tideContent', twBody); const tideRangeBar = el('div', 'tideRangeBar', tideContent);
+  ['3', '7', '16'].forEach((v) => el('button', null, tideRangeBar, { 'data-days': v }));
+  const tideBox = el('div', 'tideBox', tideContent); tideBox.classList.add('chart-box'); el('canvas', 'tideChart', tideBox);
+  el('div', 'tideHiLo', tideContent); el('div', 'tideMeta', tideContent);
+  const tideEdges = edges(tide); el('div', 'twResize', tide);
   const w = el('section', 'forecastWin', doc.body); w.rect = { left: 84, top: 300, width: 1180, height: 480 };
   const header = el('div', 'fwHeader', w);
   // the favourites picker is the window's heading: the station field with its trigger, label and native select
@@ -149,7 +160,7 @@ function buildPage(win) {
   const graphs = el('div', 'graphs', body); graphs.hidden = true;
   ['heightChart', 'periodChart', 'directionChart'].forEach((id) => { const box = el('div', null, graphs); box.classList.add('chart-box'); el('canvas', id, box); });
   const winEdges = edges(w); el('div', 'fwResize', w);
-  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwClose, liveEdges, w, winEdges, header, viewBar, modelBar, modeBar, rangeBar, body, table, summary, graphs };
+  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwClose, liveEdges, tide, twHeader, twMin, twClose, twBody, tideEdges, w, winEdges, header, viewBar, modelBar, modeBar, rangeBar, body, table, summary, graphs };
 }
 
 // A canvas 2D context stand-in that records what the sky / now plugins draw.

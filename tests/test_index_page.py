@@ -146,11 +146,11 @@ def test_phone_sheets_sit_above_the_map_controls_and_the_no_js_page_shows_its_co
     assert "html:not(.js) #pageHead { display: flex;" in body and ".js #pageHead { display: none; }" in body
     assert "html:not(.js) #forecastTable[hidden] { display: block !important; }" in body
     assert "html:not(.js) .forecast-win { position: static !important; width: auto !important; max-width: none;" in body
-    assert "html:not(.js) .live-win { display: none !important; }" in body
+    assert "html:not(.js) .live-win, html:not(.js) .tide-win { display: none !important; }" in body
     assert "view=Table&amp;render=full" in body and "view=Graph&amp;render=full" not in body
     assert ".fwin[hidden] { display: none !important; }" in body
     assert "#forecastTable[hidden] { display: block !important; } #graphs, #forecastSummary { display: none !important; }" in body[body.index("@media print"):]
-    assert "#map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .sr-star, .station-caret, .tools-host, .tools-bar { display: none !important; }" in body[body.index("@media print"):]
+    assert "#map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .tide-win, .sr-star, .station-caret, .tools-host, .tools-bar { display: none !important; }" in body[body.index("@media print"):]
     assert ".leaflet-container:not(.attr-open) .leaflet-control-attribution { display: none; }" in body
 
 def test_the_map_extent_block_pans_by_whole_pixels_and_the_load_sequence_is_wired_before_the_first_view(client):
@@ -177,7 +177,7 @@ def test_pr_c_polish_markup(client):
     assert re.search(r'id="fwResize" class="fw-resize" tabindex="0" role="img" aria-label="[^"]+" aria-keyshortcuts="', body)
     assert 'swan = ["' in head, "the head knows the SWAN stations (a SWAN link elsewhere is fetched as GFS, like the loader)"
     assert body.index(".forecast-win.fw-front { z-index: 2100; }") < body.index(".fwin:not(.fw-min) { z-index: 3500; }")
-    assert "new CustomEvent('allshore:livepanel')" in body and "document.addEventListener('allshore:livepanel', function () { front(false); });" in body
+    assert "new CustomEvent('allshore:livepanel')" in body and "document.addEventListener('allshore:livepanel', function () { front(1); });" in body
 
 def test_plan_26_d1_page_rules(client):
     """The maximised window is capped by the table width (inline max-width): it must not be pinned to both edges;
@@ -209,7 +209,7 @@ def test_the_map_is_the_page_and_the_windows_stack_by_touch(client):
     its trigger; the live window's phone bar drives a re-measure."""
     body = client.get("/?station=51201").get_data(as_text=True)
     assert "const liveBar = lw && !lw.hidden && lw.classList.contains('fw-min') ? lw.offsetHeight : 0;" in body
-    assert "const reserve = phone ? phoneBarH + liveBar : 0;" in body and "if (lastEnforcedWidth === w) {" in body
+    assert "const reserve = phone ? phoneBarH + liveBar + tideBar : 0;" in body and "if (lastEnforcedWidth === w) {" in body
     assert ".live-win.fw-min { bottom: var(--fw-bar-h, 48px) !important; }" in body and ".fwin.live-win {" in body
     assert "html.js body { margin: 0; overflow: hidden; }" in body and "#map { height: 100vh; height: 100dvh; background: #0b2536; }" in body
     assert "position: fixed; z-index: 2600; top: auto; left: auto;" in body[body.index(".station-results {"):]
@@ -254,7 +254,7 @@ def test_both_windows_stretch_from_every_side(client):
     so its scrollbars are never under an edge."""
     body = client.get("/?station=51201").get_data(as_text=True)
     for k in ("n", "s", "e", "w", "ne", "nw", "sw"):
-        assert body.count('<div class="fw-edge fw-edge-%s" data-edge="%s" aria-hidden="true"></div>' % (k, k)) == 2, k
+        assert body.count('<div class="fw-edge fw-edge-%s" data-edge="%s" aria-hidden="true"></div>' % (k, k)) == 3, k   # three windows (section 38)
     for rule in (".fwin.fw-min .fw-resize, .fwin.fw-min .fw-edge { display: none; }", ".fwin.fw-max .fw-resize, .fwin.fw-max .fw-edge { display: none; }",
                  "html:not(.js) .fw-edge,", ".fw-resize, .fw-edge { display: none; }",
                  "@media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-min) .fw-body { margin: 0 5px 5px; } }"):
@@ -352,8 +352,8 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     assert "overflow: hidden; white-space: pre-line" not in body
     assert ".tools-bar-actions button.is-on {" in body and '.tools-bar-actions button[aria-pressed="true"]' not in body   # Lock: no aria-pressed (G21 B-11)
     assert ".tools-x, .tools-fold { min-width: 36px; min-height: 36px; }" in body[body.index("@media (max-width: 576px)"):]
-    assert "obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel')]; }," in body
-    assert "[['liveBuoyPanel', 'lwMin'], ['forecastWin', 'fwMin']].forEach(function (w) {" in body
+    assert "obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel'), document.getElementById('tideWin')]; }," in body
+    assert "[['liveBuoyPanel', 'lwMin'], ['tideWin', 'twMin'], ['forecastWin', 'fwMin']].forEach(function (w) {" in body
     assert "if (!(r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top)) return;" in body
     # G20 re-review: the bar is capped at the map (its body scrolls, the actions stay near the top); a window is
     # minimised whenever the bar GROWS over it; the overlay's details fold when the exposure tool starts on a short map
@@ -417,7 +417,7 @@ def test_my_points_on_the_page(client):
     assert "if (!kept && P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }" in body
     # names and provider labels in tooltips are text (G22 K-8, A-20); point markers pass a tool's click on (B-8)
     assert "mk.bindTooltip(textTip(p.label)," in body and "marker.bindTooltip(textTip(label)," in body
-    assert body.count("bindTooltip(") == 3 and "mk.bindTooltip(s.id," in body                     # the third: a station id
+    assert body.count("bindTooltip(") == 4 and "mk.bindTooltip(s.id," in body                     # the third: a station id; the fourth: a tide station
     assert "{ window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map (G22 B-8)" in body
     # the no-script page names the point in its select (B-5); the script takes that option over
     assert '<option value="pt_21667N_158054W" data-point selected>21.667N 158.054W</option>' in body
@@ -527,3 +527,55 @@ def test_the_live_list_loads_through_its_module(client):
     r = A.app.test_client().get("/ui/livelist.js?v=" + A.UI_ASSET_VERSION)
     assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=31536000, immutable"
     assert r.headers["Content-Type"].startswith("application/javascript")
+
+
+def test_tide_stations_on_the_page(client):
+    """Plan section 38: the tide layer (markers from zoom 9, the legend entry with its note, the credit), the third
+    window with its own ids, chip and phone bar stacking, the Escape order, the unit / zone hooks, the module's tag."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    tag = body.index('<script src="/ui/tides.js?v=%s"></script>' % A.UI_ASSET_VERSION)
+    assert body.index('<script src="/ui/livelist.js?v=%s"></script>' % A.UI_ASSET_VERSION) < tag < body.index("const map = L.map(")
+    r = client.get("/ui/tides.js?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+    for needle in (
+        # the layer and its gate
+        "const TIDE_MIN_ZOOM = 9;", "function tideVisible() { return map.hasLayer(tideLayer) && map.getZoom() >= TIDE_MIN_ZOOM; }",
+        "const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis);",
+        "'zoom in to see tide stations'", "tides: saved.tides !== false", "tides: map.hasLayer(tideLayer)",
+        "'<span class=\"lc-dot lc-tide\"></span>Tide stations<span class=\"lc-note\" data-tide-note aria-hidden=\"true\"></span>': tideLayer",
+        "layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintLiveNote(); return r; };",
+        "map.on('overlayadd overlayremove', function (e) { if (e.layer === tideLayer) rebuildTideMarkers(true); });",
+        "rebuildTideMarkers(true);\n        return;", "rebuildTideMarkers(false);\n      }, REFRESH_DEBOUNCE_MS);",
+        "const TIDE_CREDIT = 'Tides: <a href=\"https://tidesandcurrents.noaa.gov/\" target=\"_blank\" rel=\"noopener\">NOAA CO-OPS</a>';",
+        "marker.bindTooltip(textTip(label), { permanent: false, direction: 'top', offset: [0, -8] });",
+        "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map\n          activeTideId = s.id;",
+        ".tide-icon { background: url(\"data:image/svg+xml,", ".tide-icon.tide-icon-active { background-image:",
+        "L.divIcon({ className: 'tide-icon', html: '', iconSize: [18, 18], iconAnchor: [9, 9] })",
+        # the window
+        '<section id="tideWin" class="fwin tide-win" hidden role="region" aria-label="Tide station">',
+        'id="twHeader"', 'id="twMin"', 'id="twClose"', 'id="twBody"', 'id="twResize"', 'id="tideRangeBar"', 'data-days="16"',
+        'id="tideChart"', 'id="tideHiLo"', 'id="tideMeta"', 'id="tideRetry"',
+        ".fwin.tide-win { right: 18px; bottom: 18px; width: min(760px, calc(100vw - 36px)); height: min(64vh, 640px); z-index: 2000; }",
+        "body.live-chip .tide-win.fw-min { bottom: calc(20px + var(--lw-chip-h, 40px)) !important; }",
+        ".tide-win.fw-min { bottom: calc(var(--fw-bar-h, 48px) + var(--lw-bar-h, 0px)) !important; }",
+        "document.documentElement.style.setProperty('--lw-bar-h', liveBar + 'px');",
+        ".live-chip.tide-chip .forecast-win:not(.fw-min):not(.fw-max) { bottom: calc(78px + var(--lw-chip-h, 40px)); }",
+        ".live-chip .tide-win:not(.fw-min):not(.fw-max) { bottom: calc(26px + var(--lw-chip-h, 40px)); }",
+        ".tide-chip .live-win:not(.fw-min):not(.fw-max) { bottom: calc(26px + var(--tw-chip-h, 40px)); }",
+        "[['liveBuoyPanel', '--lw-chip-h'], ['tideWin', '--tw-chip-h']].forEach(function (c) {",
+        ".live-win.fw-front, .tide-win.fw-front { z-index: 2100; }",
+        "function front(which) { wins.forEach(function (w, i) { if (w) w.classList.toggle('fw-front', i === which); }); }",
+        "document.addEventListener('allshore:tidepanel', function () { front(2); });",
+        "tideWin = window.AllshoreForecast.createTideWindow({ onClose: tideWindowClosed, onResize: function () { if (tideView) tideView.resize(); } });",
+        "document.body.classList.toggle('tide-chip', !!(d.open && d.mode === 'min'));",
+        "closeTidePanel: closeTideWindow,", "tideOpen: function () { return !!(tideWin && tideWin.isOpen() && tideWin.window.mode !== 'min'); },",
+        "if (tideView) tideView.setUnit(getSelectedUnit());", "if (tideView) tideView.setZone(tzSel.value || '');",
+        "function tideZone(station) { const sel = document.getElementById('tz'); return (sel && sel.value) || (station && station.tz) || 'UTC'; }",
+        "let tideWin = null;",
+    ):
+        assert needle in body, needle
+    assert body.index("let tideWin = null;") < body.index("const map = L.map(")
+    assert body.count("options: { position: 'topleft' },") == 1
+    assert 'id="tideWin"' in body[body.index('id="liveBuoyPanel"'):body.index("leaflet@1.9.4/dist/leaflet.js")]   # after the live window, before the map script
+    assert "tideDetailSeq" not in body                                              # the module keeps the sequence (tides.js)
+

@@ -103,12 +103,12 @@ function boot(opts) {
   const events = [];
   ['allshore:station', 'allshore:forecast', 'allshore:points'].forEach((t) => doc.addEventListener(t, (e) => events.push([t, e.detail ? JSON.parse(JSON.stringify(e.detail)) : null])));
   const env = ['window', 'document', 'location', 'localStorage', 'CustomEvent', 'URLSearchParams', 'setSavedPoints', 'showPointLayer', 'loadChartJs', 'closeLiveBuoyPanel',
-    'enforceSingleWorld', 'liveWin', 'liveDetailSeq'];
+    'enforceSingleWorld', 'liveWin', 'liveDetailSeq', 'closeTideWindow', 'tideWindowClosed', 'tideView'];   // (the tide window, plan section 38: stubs)
   const args = () => [win, doc, win.location, opts.localStorageThrows ? undefined : local, CustomEvent, URLSearchParams, setSavedPoints, showPointLayer,
-    () => Promise.reject(new Error('no charts here')), () => {}, () => {}, null, 0];
+    () => Promise.reject(new Error('no charts here')), () => {}, () => {}, null, 0, () => {}, () => {}, null];
   new Function(...env, PICKER.replace(/\n\s*$/, '') + '\n')(...args());
   new Function(...env, BLOCK)(...args());
-  new Function(...env, 'var liveWin = null, liveDetailSeq = 0;\n' + INIT.replace('var liveWin', 'var _unused'))(...args());
+  new Function(...env, 'var liveWin = null, liveDetailSeq = 0, tideWin = null;\n' + INIT.replace('var liveWin', 'var _unused'))(...args());
   const app = F._internals.app();
   const P = win.__allshorePoints;
   return { doc, win, F, app, P, calls, markers, events, confirms, winListeners, layerShown, local, select, star, trigger, current, results, status, errBox, note, table,

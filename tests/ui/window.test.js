@@ -883,3 +883,56 @@ test('graphs: the synced charts show only the swells there, and a row is a slot 
     getDatasetMeta: meta, isDatasetVisible: (di) => di === 1 };
   assert.deepEqual(I.rowMode(chart, { native: {}, x: 32 }).map((i) => [i.datasetIndex, i.index]), [[1, 6]], 'the hidden series does not make a row');
 });
+
+// ---- plan section 38: the tide-station window, a third window from the same factory ----
+test('section 38: createTideWindow is a station window with its own ids, key, event and labels; both station windows open at once', () => {
+  const win = fakeWindow(), page = buildPage(win), F = load(win), events = [], closes = [], resizes = [];
+  win.document.addEventListener('allshore:tidewin', (e) => events.push([e.detail.open, e.detail.mode]));
+  const tw = F.createTideWindow({ window: win, onClose: () => closes.push(1), onResize: () => resizes.push(1) });
+  assert.ok(tw && tw.window); assert.equal(tw.el, page.tide); assert.equal(tw.window.key, 'allshore.tideWin.v1');
+  assert.equal(F._internals.TIDE_WINDOW_KEY, 'allshore.tideWin.v1');
+  assert.equal(tw.isOpen(), false); assert.equal(tw.window.mode, 'normal', 'a new tab: a window first');
+  tw.open(); assert.equal(page.tide.hidden, false); assert.deepEqual(events[events.length - 1], [true, 'normal']);
+  page.twMin.dispatch('click'); assert.equal(tw.window.mode, 'min');
+  assert.equal(page.twMin.getAttribute('aria-label'), 'Expand tide station'); assert.equal(page.twMin.getAttribute('aria-expanded'), 'false');
+  assert.deepEqual(events[events.length - 1], [true, 'min']);
+  page.twHeader.dispatch('click', { target: page.twHeader }); assert.equal(tw.window.mode, 'normal', 'a click on the chip expands it');
+  assert.equal(page.twMin.getAttribute('aria-label'), 'Minimise tide station');
+  tw.window.setMode('normal'); tw.window._place({ x: 300, y: 200, w: 800, h: 400 }); resizes.length = 0;
+  const e = page.tideEdges.find((x) => x.getAttribute('data-edge') === 'e');
+  e.dispatch('pointerdown', ptr(500, 500)); e.dispatch('pointermove', ptr(560, 500)); e.dispatch('pointerup', ptr(560, 500));
+  assert.equal(tw.window.geom.w, 860); assert.equal(resizes.length, 1, 'onResize reaches the page (the chart follows)');
+  assert.equal(JSON.parse(win.sessionStorage.getItem('allshore.tideWin.v1')).w, 860, 'its own key');
+  assert.equal(win.sessionStorage.getItem('allshore.liveWin.v1'), null, 'never the live window key');
+  const lw = F.createLiveWindow({ window: win });
+  lw.open();
+  assert.equal(lw.isOpen() && tw.isOpen(), true, 'a buoy and a tide station open together');
+  assert.equal(page.lwMin.getAttribute('aria-label'), 'Minimise live buoy', 'the live window keeps its words');
+  page.twClose.dispatch('click');
+  assert.equal(page.tide.hidden, true); assert.equal(closes.length, 1); assert.deepEqual(events[events.length - 1], [false, 'normal']);
+  assert.equal(lw.isOpen(), true, 'closing one leaves the other');
+  tw.window.setMode('max'); assert.equal(tw.window.mode, 'normal', 'no maximised state');
+  assert.equal(F.createTideWindow({ window: fakeWindow() }), null, 'no tide markup: nothing');
+  const I = F._internals;
+  assert.equal(typeof I.createStationWindow, 'function');
+  assert.equal(I.createStationWindow({ window: win, ids: { el: 'nope', header: 'nope' }, key: 'k', event: 'x' }), null);
+});
+
+test('section 38: Escape closes an open tide window first, then the live window, then minimises the forecast window', async () => {
+  const win = fakeWindow(), page = buildPage(win), F = load(win), fs_ = fetchStub(), order = [];
+  win.Chart = fakeChart();
+  let tideOpen = false, liveOpen = false;
+  const app = F.init({ window: win, initial: { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: true, swan_stations: ['51201'] },
+    stationLabel: (sid) => sid, loadChartJs: () => Promise.resolve(), fetch: fs_.fetch,
+    closeLivePanel: () => { order.push('live'); liveOpen = false; }, liveOpen: () => liveOpen,
+    closeTidePanel: () => { order.push('tide'); tideOpen = false; }, tideOpen: () => tideOpen });
+  await settle(); fs_.last().release(payload()); await settle();
+  app.expand(); win.document.activeElement = page.header;
+  tideOpen = true; liveOpen = true;
+  win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['tide']); assert.equal(app.window.mode, 'normal');
+  win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['tide', 'live']); assert.equal(app.window.mode, 'normal');
+  win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['tide', 'live']); assert.equal(app.window.mode, 'min', 'then the forecast window');
+  const b = boot({}); await settle(); b.fs_.last().release(payload()); await settle();
+  b.app.expand(); b.win.document.activeElement = b.page.header; b.page.live.style.display = 'block';
+  b.win.document.fire('keydown', { key: 'Escape' }); assert.equal(b.closes.length, 1, 'without tide options the old order holds');
+});

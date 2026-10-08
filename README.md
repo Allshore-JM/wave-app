@@ -10,6 +10,9 @@ This repository contains a Flask web application that fetches the latest NOAA GF
 - **Forecast points**: Map tools -> **Forecast point** gives the same table and graphs as a buoy station for any
   point on the open sea, titled with its coordinates, and keeps it under **My points** in the visitor's browser (see
   "Forecast points" below).
+- **Tide stations**: NOAA's tide-prediction stations appear on the map from zoom 9 (sine-wave markers); a click opens
+  a tide window with the predicted curve for 3, 7 or 16 days from today, the highs and lows, the nights, the current
+  time and, where the station has a gauge, the observed water level of the last 48 h (see "Tide stations" below).
 - **Download as Excel**: You can download the displayed table as an Excel file. The download preserves the two-level headers and units row.
 - **Deployment-Ready**: The repository includes a `requirements.txt` file and a `README.md` with instructions for deploying the web app on [Render](https://render.com) or running locally.
 
@@ -58,6 +61,8 @@ Once deployed, navigate to the provided URL to access the app. The site will all
   and its file format (shared with the reader).
 - `buoy_sources.py` — the live-buoy providers (one per agency) and their background refresh; `static_ui/livelist.js` —
   the page's live-buoy list loader (see "Live buoys: background refresh").
+- `tide_sources.py` — NOAA CO-OPS tide predictions per station (the curves, the cache); `tide_stations.json` — the
+  station snapshot (`tools/tides/fetch_stations.py`); `static_ui/tides.js` — the tide window's chart (see "Tide stations").
 - `README.md` — This file. Provides setup instructions and describes the features of the project.
 
 ## Contributing
@@ -78,11 +83,13 @@ model-overlay selector, the settings gear (Time Zone, Units, lat/long gridlines)
 credits behind an (i) beside the Home button; the forecast window's heading is the station picker with favourites
 (expanded and minimised); the live-buoy panel is a second floating window (`#liveBuoyPanel`, `createLiveWindow` in the
 module: dragged, resized, minimised to a chip at the bottom-right or a bar above the forecast bar on phones, closed
-from any mode; `sessionStorage 'allshore.liveWin.v1'`). The forecast is a floating window (`#forecastWin`) that starts minimised in
+from any mode; `sessionStorage 'allshore.liveWin.v1'`); the tide-station window is a third one of the same kind
+(`#tideWin`, `createTideWindow`; `sessionStorage 'allshore.tideWin.v1'`; its chip stacks above the live-buoy chip, its
+phone bar above the live bar; both station windows can be open at once, the one touched last on top). The forecast is a floating window (`#forecastWin`) that starts minimised in
 a new tab (a chip at the bottom-left on desktops, a bar along the bottom edge in phone mode = a viewport 500 px or
 less wide OR tall; expanded it is a window on desktops and full-screen in phone mode), holds the View (Table / Graph) and Model (GFS / SWAN, only on SWAN stations) controls
 in its toolbar, and is dragged by its header, resized from any edge or corner (the bottom-right grip also takes the arrow keys), maximised below the map's top-right controls and minimised;
-Escape closes the live-buoy panel first, then minimises the window. Every change (a marker or favourites pick, model, view,
+Escape closes the tide window first, then the live-buoy panel, then minimises the window. Every change (a marker or favourites pick, model, view,
 time zone, units) applies in place: the module fetches `/api/forecast?compact=1` (one request per change, older responses
 dropped, a 10-minute client cache of 16 forecasts; a failed build is never cached) and rewrites the address bar with
 `?station=` (tz and unit whenever they differ from the viewer's saved settings, so the address always reloads to the view on
@@ -786,3 +793,47 @@ Environment variables (all optional):
 
 Gunicorn: the service runs one scheduler per worker process; the site runs one worker (with threads), so each agency is
 asked once per refresh. More workers would each run their own scheduler (correct, but more feed traffic).
+
+## Tide stations (plan section 38, UI asset 1.18.0)
+
+NOAA CO-OPS tide predictions (public domain; NOS asks for attribution, given in the map credits while the layer is on
+and in the window) for the map's "Tide stations" layer.
+
+The station list is a committed snapshot, `tide_stations.json` (3,501 stations: NOAA's `type=tidepredictions` list
+joined with its `type=waterlevels` list for the `obs` flag, each station's nearest civil time zone by the live buoys'
+rule, and for every subordinate station its reference station and NOAA's published time offsets). Rebuild it now and
+then with `python tools/tides/fetch_stations.py` (`--offsets-cache FILE` keeps the ~2,250 per-station offset answers
+between runs) and commit the file; the site never asks NOAA's metadata service at runtime. `/api/tides/stations`
+serves the page's copy (id, name, position, kind, zone, gauge) with an ETag, 6 h for browsers and the edge.
+
+`tide_sources.py` reads the predictions (`TideService`, wired in `app.py` with the forecast points' bounded fetch:
+one attempt, an 8 s wall-clock cap):
+- A **harmonic** station ("R", 1,260) gets NOAA's own curve every 30 minutes plus its highs and lows.
+- A **subordinate** station ("S", 2,241) has no curve at NOAA: only highs and lows, each its reference station's extreme
+  moved by a published time offset and height ratio (checked at 25 of 25 stations, to the minute). Its curve is the
+  reference station's NOAA curve re-timed and re-scaled between each pair of its own extremes (paired through the
+  offsets), so it passes through every extreme exactly and keeps the shape of the real tide (stands, uneven rises).
+  Measured where the truth is known (two harmonic stations, one shaped onto the other's extremes): San Diego 3 cm
+  worst against a plain cosine's 31 cm, Seattle 4 (24), Galveston 8 (23), Nawiliwili 9 (17). Where an extreme has no
+  partner, or the reference's curve is unavailable, that stretch is a half cosine between the extremes. A pair of
+  extremes of the same kind, or more than 20 h apart (diurnal Gulf tides reach 16.6 h), leaves a gap: nothing is invented.
+- The window is 18 days from 00:00 UTC yesterday (every zone's "today from midnight" plus 16 days lies inside it; the
+  curve carries 12 h more on each side, the extremes 24 h), kept per station per UTC day (predictions never change); a
+  subordinate station shares its reference's cached curve. NOAA's "no predictions" is final (kept 24 h); a failure is
+  remembered for a minute; one build per station at a time, two build slots, "busy" instead of a long wait; LRU 256.
+- Nights (last light to first light, `sky.events`) travel with the payload; observed water level (`product=water_level`,
+  6-minute samples of the last 48 h) is a separate route, cached 15 min, asked by the page only for stations with a gauge.
+- Routes: `/api/tides/<id>` (30 min; an id not in the snapshot is a 404 without any upstream request: never a proxy),
+  `/api/tides/<id>/observed` (5 min); busy or unreachable = 503 + `Retry-After: 5` + `retry: true` (the page asks
+  again); the tide service is no live-buoy provider (not in the live list, the scheduler or `/healthz`).
+
+The page (`templates/index.html`, `static_ui/tides.js`): markers (an empty div each, the sine-wave glyph is CSS) from
+`TIDE_MIN_ZOOM = 9`; below it the legend entry says "zoom in to see tide stations"; the list is asked the first time
+the layer is on at that zoom. A click opens the tide window (`#tideWin`): the chart has a linear time axis in hours
+since today's local midnight in the display zone (the site's Time Zone when one is chosen, else the station's own; the
+live-buoy panel keeps its own-zone rule) with ticks read from the zone's clock (dates, noon / 6 AM / 6 PM as room
+allows; 23- and 25-hour days come out right), the predicted curve, the highs and lows as points and as a list below the
+chart, the observed series dashed, the nights shaded, a "now" line redrawn every minute; heights above MLLW in the site's
+unit. Tabs 3 d / 7 d / 16 d end at the 3rd / 7th / 16th local midnight (`sessionStorage 'allshore.tideRange.v1'`). A
+newer station voids an older one's answers; a hidden (minimised) window builds its chart when expanded; text from the
+server is written as text only.

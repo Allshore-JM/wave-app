@@ -406,3 +406,42 @@ The owner chose to fix every item of the scope above. Each fix has a test:
   was pinned). The round-2 set re-run: 27 of 27 applicable killed, plus X4 and X2 re-targeted and killed. The reviewer's
   fuzz on 2.14.9 (`g26/fix3/fuzz`): 20,000 runs, 98,411 gestures, 0 violations (1,259 taps at the ends).
 - **Suites.** pytest 825 (exit 0) and Node 477, also under TZ=UTC.
+
+## Test-site verification of fix round 3 (Opus 5.5 MAX): asset 2.14.9 on test @ 8adbecb
+- **Deploy.** test @ 8adbecb is the cherry-picks of 39e59bb, 91f53d8 and c87a626 (README kept as test's). Live from
+  06:03 UTC. All five assets equal the commit byte for byte, are immutable with nosniff, and the 2.14.8 URL answers 404.
+  The live run was 2026-10-08 00Z.
+- **The fresh check's findings, re-run with the reviewer's own scripts and trusted input in headless Edge:**
+  - **F1:** taps at the run's first frame with a rightward roll: 0 of 25 off the touch-down frame (2.14.8: 10 of 25).
+    At the last frame with a leftward roll: 0 of 25. The frame-40 control: 0 of 6.
+  - **F3,** trusted CDP mouse:
+    - a release 12 px down after a (-5, +3) move, with no move at the release point, picks nothing (no seek);
+    - a release 28 px left with no move at all is a drag (frame 67);
+    - a release 6 px down after a (-2, 0) move is a tap;
+    - a release 9 px up-left after a (-3, -2) move is a short drag (frame 62).
+  - **F6:** taps while playing: 0 of 40 at 1x (9 landed during the glide) and 0 of 40 at 2x (17 during the glide)
+    picked anything but the frame visibly under the finger (2.14.8: 4 and 8 of 40).
+  - **F2:**
+    - Retry, reached with a real Tab, keeps the focus through an 800 -> 700 height change.
+    - Enter on Retry that fails again: the focus is on the new Retry. Enter on Retry that succeeds: the play button.
+    - Enter on Update: the play button.
+    - The page never scrolled. (2.14.8: BODY in every case.)
+  - **F4:** the focused details scroll box at 1280x430 keeps the focus through a height change. Its scroll position
+    resets, as any re-render does.
+  - **F5:** from page load the status node is added empty, says "Loading model frame…" about 100 ms later in its own
+    mutation batch, then "". Off / On: one node.
+  - **Status:** with two 404 frames during 6 s of 2x playback (the period layer) it was said twice, once per new frame,
+    and the visible note matches. It does not change the page's scroll size, with or without print media.
+- **The full regression set again:**
+  - touch 280 gestures at 375x812 and 412x915, 0 flagged;
+  - two fingers as designed;
+  - the fold at 100 sizes, 0 dead toggles, nothing over (i)/Home;
+  - focus with real keys (ribbon, play, speed menu, toggle, overview, a width-only change, nothing taken from outside);
+  - the regression sweep: head, folded line, fields, Off with 0 requests, cadence 506 / 263 / 150 ms, the loop,
+    loading / 404 / out-of-order frames, zones and units, a forecast-point click while playing, the phone menu;
+  - nine sizes; a mid-drag resize (K-2 as before); the desktop sweep (minimum clearance 20 px);
+  - a fresh tab with no console errors.
+  One row of the focus-and-status script saw no 404: the page had restored the wind layer while its 404 rules target
+  wave-height frames, a harness artefact; the status check above covers it.
+- **Cleanup:** the test origin's storage emptied through /robots.txt, emulation reset, Edge closed (no process left on
+  the profile), and the profile removed.

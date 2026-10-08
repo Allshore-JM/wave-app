@@ -1083,6 +1083,7 @@ test('G26 A-P3-7: a minute timer refreshes the run line while mounted (an idle p
   const w = world();
   const o = await mounted(w, A);
   assert.ok(o.lineTimer, 'set at mount');
+  if (o.lineTimer._idleTimeout !== undefined) assert.equal(o.lineTimer._idleTimeout, 60000, 'once a minute (re-check RC-8 g)');
   const t0 = o.lineTimer; o.mount('hs'); await settle(); await w.releaseAll();
   assert.equal(o.lineTimer, t0, 'one timer however many mounts');
   clearInterval(o.runTimer); o.unmount();

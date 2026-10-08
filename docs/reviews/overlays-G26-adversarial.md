@@ -234,3 +234,29 @@ Not counted:
    - Then STOP for the owner's production approval.
 
 Accepted: the 4 px tap line (by design), and K-1 to K-6 as stated.
+
+## Fix round 2 (step 6, Opus 5.5 HIGH): asset 2.14.8
+Every item of the scope above was fixed, each with a test:
+- **Gestures (RC-1, RC-2, RC-4, RC-5).** One pointer per gesture. Its direction is decided at 10 px of travel by the
+  larger direction: sideways scrubs (playback pauses then), up or down is a swipe that loads nothing and leaves playback
+  alone. Before the decision the ribbon follows the finger but loads nothing. A second pointer ends the gesture as no
+  pick, back to its start frame. A press from the same pointer as an unfinished gesture starts over. The tap is the
+  current offset plus the lift-off point. A cancel before the decision is no pick. The stale comments are gone.
+- **Fold (RC-3).** The open panel is always built and measured. The toggle is offered only when opening shows more than
+  the head line. The size default is "as much as fits" (the fixed 110 px rule is gone).
+- **Focus (RC-6).** `_focusedPart` / `_refocus` carry the focused control across every render; the toggle's own refocus
+  is gone.
+- **Announcements (RC-7).** One `role=status` node (`_say`) holds the loading, error and unavailable messages and is
+  written only when the text changes. The unavailable note is written only on change. The panel has no `aria-live`.
+- **RC-9.** `FMT_CACHE` keys carry a `z:` prefix.
+- **Tests.**
+  - overlay +1: roll and `cancel`. The zone-fallback test now runs in a non-UTC zone and pins Object-member zone names.
+  - panel +8: drifting swipes, angles, no load before the decision, two pointers, foreign pointers, a release then
+    lostpointercapture, a cancel, the 9 / 10 px boundary, the roll, the measured fold, focus through renders, the status
+    node, the first height change after binding, the line-mode wheel, the listbox tab stop.
+  - Updated: the measured sheet, the pause at the decision.
+  - playback: the timer period.
+  - CSS pins: the navy edge, the coarse sizes, `.ov-sr`.
+  - Flag needles.
+- **Results.** Mutation: 32 of 32 killed (scratch `g26/fix2/mut_fix2.py`; 4 survived the first run and were pinned).
+  pytest 825 (exit 0), Node 469, and the Node suites also pass under TZ=UTC.

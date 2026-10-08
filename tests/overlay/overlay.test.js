@@ -470,6 +470,10 @@ const HOURS_81 = [...Array(81).keys()].map((i) => 3 * i);
 function framesAt(runUtc, hours) { const run = Date.parse(runUtc); return hours.map((h) => ({ step: h, valid_utc: new Date(run + h * 3.6e6).toISOString() })); }
 
 test('ribbonFormatter: day / tick / clock texts in a zone; an empty or unknown zone reads as the zone of the computer (as the page clock); midnight is "00" and "12 AM"', () => {
+  // the computer's zone is set to one that is not UTC, so a fallback to UTC would fail here on a UTC machine too (CI runs
+  // in UTC; G26 re-check RC-8 d). The '' / undefined / unknown keys are first built in this test, under this zone.
+  const tz0 = process.env.TZ; process.env.TZ = 'Pacific/Honolulu';
+  try {
   const f = I.ribbonFormatter('Pacific/Honolulu'), t = Date.parse('2026-10-11T17:00:00Z');                 // 7 AM HST
   assert.equal(f.zone, 'Pacific/Honolulu');
   assert.equal(f.day(t), 'Oct 11'); assert.equal(f.clock(t), '7 AM'); assert.equal(f.tick(t), '07');
@@ -493,12 +497,19 @@ test('ribbonFormatter: day / tick / clock texts in a zone; an empty or unknown z
   assert.equal(f.tick(mid), '00'); assert.equal(f.clock(mid), '12 AM'); assert.equal(f.clock(mid + 12 * 3.6e6), '12 PM');
   assert.equal(f.clock(Date.parse('2026-10-11T05:30:00Z')), '7:30 PM', 'minutes only when not on the hour');
   const here = new Intl.DateTimeFormat().resolvedOptions().timeZone, H = I.ribbonFormatter(here);
+  assert.equal(here, 'Pacific/Honolulu', 'the computer zone of this test');
   const u = I.ribbonFormatter('Not/AZone');
   assert.equal(u.zone, here); assert.equal(u.day(t), H.day(t)); assert.equal(u.clock(t), H.clock(t)); assert.deepEqual(u.parts(t), H.parts(t));
   assert.equal(I.ribbonFormatter(undefined).zone, here); assert.equal(I.ribbonFormatter('').zone, here);
   assert.equal(I.ribbonFormatter('UTC').zone, 'UTC', 'UTC by name stays UTC');
   const k = I.ribbonFormatter('Asia/Kolkata');                                                               // a half-hour zone
   assert.deepEqual(k.parts(Date.parse('2026-10-11T18:30:00Z')), { y: 2026, mo: 'Oct', d: 12, h: 0, mi: 0, wd: 'Mon' });
+  // a zone string that names an Object member is just an unknown zone (G26 re-check RC-9): never "not a formatter"
+  for (const z of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    const fz = I.ribbonFormatter(z); assert.equal(typeof fz.parts, 'function', z); assert.equal(fz.zone, here, z);
+    assert.ok(I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', [0, 3, 6]), '2026-10-07T06:00:00Z', z, 4).days.length >= 1, z);
+  }
+  } finally { if (tz0 === undefined) delete process.env.TZ; else process.env.TZ = tz0; }
 });
 
 test('localMidnightBefore: plain days, both clock changes of New York, a half-hour zone', () => {
@@ -679,6 +690,19 @@ test('RibbonState: nearest frame (ties later), clamping, a drag follows the poin
   const one = new I.RibbonState([0]); assert.equal(one.nearest(100), 0); assert.equal(one.width, 0); one.begin(0); assert.equal(one.end(5), 0);
 });
 
+test('RibbonState (G26 re-check RC-5): a tap counts the finger\'s roll once (the ribbon followed it); cancel() goes back whatever the travel', () => {
+  const L = I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', HOURS_209), '2026-10-07T06:00:00Z', 'UTC', 4);
+  const rb = new I.RibbonState(L.xs);
+  // the finger touches down 0.5 px past frame 25 (1.5 px short of halfway to 26), then rolls; the old rule picked 26 from 1.5 px
+  for (const roll of [0, 1, 2, 3, 3.9, -2, -3]) {
+    rb.setFrame(20); const down = (L.xs[25] + 0.5) - L.xs[20];              // px right of the pointer
+    rb.begin(100); rb.move(100 + roll);
+    assert.equal(rb.end(down + roll), 25, 'roll ' + roll + ': still the frame it touched');
+  }
+  rb.setFrame(30); rb.begin(0); rb.move(-60); assert.equal(rb.cancel(), 30); assert.equal(rb.offset, L.xs[30]); assert.equal(rb.dragging, false);
+  assert.equal(I.RIBBON_AXIS_PX, 10);
+});
+
 test('runTimes / localClock: the Updated and Next Update parts in the computer time zone (weekday only when not today; rounded up to 5 min)', () => {
   const tz0 = process.env.TZ;
   const m = { run_utc: '2026-09-25T18:00:00Z', published_utc: '2026-09-25T23:07:18Z' };        // live 23:07Z; next ~05:10Z
@@ -761,5 +785,4 @@ test('the speed selector\'s table: snail 1x, fish 2x, shark 4x; an older or odd 
   assert.equal(I.assetUrl({ version: '2.14.0' }, 'fish.png'), '/overlay/fish.png?v=2.14.0');
   assert.equal(I.assetUrl({ version: 'a b' }, 'fish.png'), '/overlay/fish.png?v=a%20b');
   assert.equal(I.assetUrl({}, 'snail.png'), '/overlay/snail.png', 'no version known (Node): a bare path');
-  assert.equal(I.SHEET_OPEN_PX, 110);
 });

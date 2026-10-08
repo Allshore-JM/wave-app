@@ -371,7 +371,15 @@ keyboard focus through a fold; only the loading / error states and the warning l
 refreshes once a minute; the speed button names its listbox; an empty or unknown zone reads as the computer's own (as the
 page's clock); the coral pointer has a solid navy edge (3:1 on the cream ribbon); 24 px+ toggle and slider on touch. Asset 2.14.6
 (seen on the test site with real touch input): a swipe up or down the ribbon (10 px or more) is never a pick. Asset 2.14.7: such
-a release (and a cancelled gesture) with under 4 px of sideways drift goes back exactly to its own frame.
+a release (and a cancelled gesture) with under 4 px of sideways drift goes back exactly to its own frame. Asset 2.14.8 (the
+G26 re-check): a gesture on the ribbon is one pointer, the one that pressed, and its direction is decided once it has
+travelled 10 px, by the larger of the two: sideways is a scrub (playback pauses then and frames are asked for from then
+on), up or down is a swipe that is never a pick (the ribbon goes back, nothing is loaded, playback carries on); before
+that the ribbon follows the finger but loads nothing, and a release is a tap (the frame under the finger where it touched
+down) or a short drag; a second finger ends the gesture with no pick, back to the frame it started on. The panel opens as
+far as the room allows (measured, no fixed height) and offers the toggle only when opening shows more than its one-line
+head; keyboard focus stays on the same control through every re-render; the loading, error and unavailable-frame
+messages are read out once through one hidden `role=status` node (nothing in the panel itself is a live region).
 Coastline clip (asset 2.7.6): wave height and peak period are clipped to the ocean in the browser, so the field
 stops exactly at the coastline; wind is never clipped. Every map tile's land alpha is rasterised once per tile per
 zoom from GSHHG polygons served beside the frames under `static/coast/v1/` (tier 0 `world-i.bin`, ~1 km, for

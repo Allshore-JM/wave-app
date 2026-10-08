@@ -74,6 +74,21 @@ function withClock(fn) {
 const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
 const all = (root, sel) => root.querySelectorAll(sel);
 const headPlay = (root) => { const h = root.querySelector('.ov-head'); return h ? h.querySelector('.ov-play') : null; };   // (the fake has no descendant selectors)
+// layout heights by box (the fake DOM has no layout): head 30, transport row 62, overview 14, details 120; a box = its children
+const BOX_H = { 'ov-row ov-head': 30, 'ov-row ov-transport': 62, 'ov-overview': 14, 'ov-details': 120 };
+function sizedLayout(w) {
+  const create0 = w.doc.createElement.bind(w.doc);
+  w.doc.createElement = (tag) => {
+    const el = create0(tag);
+    Object.defineProperty(el, 'offsetHeight', { configurable: true, set(v) { this._oh = v; }, get() {
+      if (this._oh) return this._oh;
+      if (BOX_H[this.className] !== undefined) return BOX_H[this.className];
+      let n = 0; for (const c of this.children || []) n += c.offsetHeight || 0; return n;
+    } });
+    return el;
+  };
+  return w;
+}
 
 test('desktop: head = toggle + the model name; ONE play button, then the timeline and the speed selector; no first/prev/next/last, no speed numbers', () => withClock(() => {
   const w = world(); w.ov.render({ state: 'ready' });
@@ -151,7 +166,7 @@ test('collapsed: the one-line summary (weekday, "Oct." date, time, zone; no fiel
   assert.equal(all(w.panel, '.ov-play').length, 1, 'expanded: only the one beside the ribbon'); assert.equal(headPlay(w.panel), null);
 }));
 
-test('phone sheet: opens expanded when 40 % of the map holds the transport row, collapsed when it cannot; the head carries the model (open) or the one-line summary (folded)', () => withClock(() => {
+test('phone sheet: opens as far as 40 % of the map holds (measured); folded, the head carries the one-line summary; the toggle only where opening shows more', () => withClock(() => {
   const w = world({ dims: { w: 375, h: 700 } }); w.ov.render({ state: 'ready' });
   const sheet = w.container.querySelector('.ov-sheet');
   assert.ok(sheet && sheet.getAttribute('role') === 'region'); assert.equal(w.panel.children.length, 0, 'the control keeps only the select');
@@ -160,14 +175,21 @@ test('phone sheet: opens expanded when 40 % of the map holds the transport row, 
   assert.equal(all(sheet, '.ov-model').length, 1, 'the model is named once (no line in the details any more)');
   assert.equal(text(sheet.querySelector('.ov-ribbon-now')), 'Wed, Oct 7 · 5 AM HST', 'frame 3 = +9 h = 15Z = 5 AM HST (the summary line uses the fixed clock text of this harness)');
   assert.equal(all(sheet, '.ov-play').length, 1);
-  const s = world({ dims: { w: 375, h: 260 } }); s.ov.render({ state: 'ready' });  // 40 % = 104 px < 110
+  const s = sizedLayout(world({ dims: { w: 375, h: 240 } })); s.ov.render({ state: 'ready' });  // 40 % = 96 px < head + transport + overview
   const sh = s.container.querySelector('.ov-sheet');
-  assert.equal(sh.querySelector('#ovDetails'), null, 'a short map: the one-line summary, as before');
+  assert.equal(sh.querySelector('#ovDetails'), null, 'a short map: the one-line summary');
   assert.equal(all(sh, '.ov-play').length, 1); assert.ok(headPlay(sh), 'with the play button in the head');
   assert.equal(text(sh.querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST', 'folded: the same one line as the desktop panel');
+  assert.equal(sh.querySelector('.ov-toggle'), null, 'no toggle: opening could show nothing more (re-check RC-3)');
   assert.equal(s.ov.collapsed, undefined, 'folded by the size, nothing saved');
-  sh.querySelector('.ov-toggle').dispatch('click');                                // the viewer opens it: the rendered state flips
-  assert.equal(s.ov.collapsed, false); assert.ok(sh.querySelector('#ovDetails'));
+  const t = sizedLayout(world({ dims: { w: 375, h: 270 } })); t.ov.render({ state: 'ready' });   // 108 px: the transport row fits
+  const th = t.container.querySelector('.ov-sheet');
+  assert.ok(th.querySelector('.ov-transport'), 'opens by itself as far as it fits'); assert.equal(th.querySelector('.ov-details'), null);
+  th.querySelector('.ov-toggle').dispatch('click'); assert.equal(t.ov.collapsed, true);
+  const tf = t.container.querySelector('.ov-sheet');
+  assert.equal(tf.querySelector('#ovDetails'), null); assert.ok(tf.querySelector('.ov-toggle'), 'folded by the viewer: the toggle reopens it');
+  tf.querySelector('.ov-toggle').dispatch('click');
+  assert.equal(t.ov.collapsed, false); assert.ok(t.container.querySelector('.ov-sheet').querySelector('.ov-transport'));
 }));
 
 test('the speed selector: the chosen animal (decorative image + accessible name), a listbox of three, choosing saves and closes', () => withClock(() => {
@@ -407,6 +429,7 @@ test('ribbon: a pending frame shows the REQUESTED time with "loading…", an una
   const ui = w.ov.ui;
   w.ov.target = 5; w.ov._syncUI();                                            // requested +15 h, drawn +9 h
   assert.equal(text(w.panel.querySelector('.ov-ribbon-now')), 'Wed, Oct 7 · 11 AM HST loading…');
+  assert.equal(ui.ribbon.getAttribute('aria-valuenow'), '5', 'the slider reports the requested frame (re-check U2)');
   assert.equal(ui.stateEl.hidden, false); assert.equal(ui.ribbon.getAttribute('aria-valuetext'), 'Wednesday, Oct 7, 11 AM HST (+15 h), loading');
   assert.equal(ui.rb.offset, ui.layout.xs[5], 'the pointer sits on the requested frame');
   assert.equal(w.ov.layer.entry, w.m.frames[3], 'the picture is still the drawn frame');
@@ -422,10 +445,12 @@ test('ribbon: a drag pauses, moves the track with the pointer, seeks the frame u
   w.ov.playing = true; w.ov.pause = function () { this.playing = false; };
   rb.rect = { left: 100, top: 0, width: ui.ribbonW, height: 40 };
   let ev = dispatch(rb, 'pointerdown', { clientX: 200 });
-  assert.equal(w.ov.playing, false, 'a scrub pauses'); assert.equal(ev.defaultPrevented, true); assert.equal(ev._stop, true, 'the map never sees the press');
+  assert.equal(w.ov.playing, true, 'a press alone does not pause: it may still be a swipe (re-check RC-1)');
+  assert.equal(ev.defaultPrevented, true); assert.equal(ev._stop, true, 'the map never sees the press');
   assert.ok(rb.log.includes('capture:1')); assert.equal(w.doc.activeElement, rb);
   const px = ui.layout.pxPerHour, x0 = ui.rb.offset;
-  dispatch(rb, 'pointermove', { clientX: 200 - 6 * px });                     // dragged left = 6 h later
+  dispatch(rb, 'pointermove', { clientX: 200 - 6 * px });                     // dragged left = 6 h later (past 10 px sideways: a scrub)
+  assert.equal(w.ov.playing, false, 'a scrub pauses');
   assert.ok(Math.abs(ui.rb.offset - (x0 + 6 * px)) < 1e-9); assert.equal(ui.track.style.transition, 'none');
   assert.equal(ui.track.style.transform, 'translateX(' + (ui.ribbonW / 2 - ui.rb.offset) + 'px)');
   dispatch(rb, 'pointermove', { clientX: 200 - 7 * px }); dispatch(rb, 'pointermove', { clientX: 200 - 8 * px });
@@ -576,6 +601,11 @@ test('G26 A-P2-3: a gesture the browser cancels (or a lost capture) is never a t
   }
   const css = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.css'), 'utf8');
   assert.match(css, /\.ov-ribbon \{[^}]*touch-action: none/, 'nothing scrolls under the ribbon: the browser never takes a swipe on it');
+  // the pointer's navy edge (A-P3-1), the coarse targets (A-P3-4) and the hidden status node (re-check RC-7, RC-8 h)
+  assert.match(css, /\.ov-ribbon-line \{[^}]*box-shadow: 0 0 0 1px #1d2b4f/);
+  assert.match(css, /\.ov-ribbon-pointer \{[^}]*drop-shadow\(1px 0 0 #1d2b4f\) drop-shadow\(-1px 0 0 #1d2b4f\)/);
+  assert.match(css, /@media \(pointer: coarse\)[^@]*\.ov-toggle \{ min-width: 28px; min-height: 28px; \} \.ov-timeline \{ height: 24px; \}/);
+  assert.match(css, /\.ov-sr \{[^}]*position: absolute; width: 1px; height: 1px;[^}]*overflow: hidden;/);
 }));
 
 test('G26 B-1: on a desktop the room for the details is measured from where the control starts in the map (below the brand)', () => withClock(() => {
@@ -613,12 +643,26 @@ test('G26 B-2: folding and unfolding with the keyboard keeps the focus on the to
   w.panel.querySelector('.ov-toggle').dispatch('click'); assert.equal(w.doc.activeElement, other);
 }));
 
-test('G26 A-P3-5: only the loading / error states and the warning lines are live regions (the time changes every frame while playing)', () => withClock(() => {
+test('G26 A-P3-5 / re-check RC-7: nothing in the panel is live; loading, error and unavailable frames are said once by one role=status node; Off clears it', () => withClock(() => {
   const w = world();
-  w.ov.render({ state: 'loading' }); assert.equal(w.panel.getAttribute('aria-live'), 'polite');
-  w.ov.render({ state: 'ready' }); assert.equal(w.panel.getAttribute('aria-live'), null, 'the ready panel is not live');
-  assert.equal(w.ov.ui.unavail.getAttribute('aria-live'), 'polite', 'the unavailable-frames note is');
-  w.ov.render({ state: 'error', message: 'x' }); assert.equal(w.panel.getAttribute('aria-live'), 'polite');
+  w.ov.render({ state: 'loading' }); assert.equal(w.panel.getAttribute('aria-live'), null);
+  const st = w.doc.body.querySelector('.ov-sr');
+  assert.ok(st, 'one status node, outside the panel'); assert.equal(st.getAttribute('role'), 'status'); assert.equal(st.textContent, 'Loading model frame…');
+  w.ov.render({ state: 'ready' }); assert.equal(w.panel.getAttribute('aria-live'), null, 'the ready panel is not live'); assert.equal(st.textContent, '');
+  assert.equal(w.ov.ui.unavail.getAttribute('aria-live'), null, 'nor its note');
+  let said = st.textContent, sayWrites = 0, noteWrites = 0, note = w.ov.ui.unavail, noteText = '';
+  Object.defineProperty(st, 'textContent', { configurable: true, get() { return said; }, set(x) { sayWrites++; said = x; } });
+  Object.defineProperty(note, 'textContent', { configurable: true, get() { return noteText; }, set(x) { noteWrites++; noteText = x; } });
+  w.ov.unavailable[w.ov._key(9)] = true;
+  for (let k = 0; k < 20; k++) { w.ov.target = 3 + (k % 5); w.ov._syncUI(); }                // twenty frames while playing
+  assert.equal(said, 'Unavailable frames are skipped: +27 h'); assert.equal(noteText, said); assert.equal(note.hidden, false);
+  assert.deepEqual([sayWrites, noteWrites], [1, 1], 'written once, not on every frame');
+  for (let i = 10; i < 20; i++) w.ov.unavailable[w.ov._key(i)] = true;
+  w.ov._syncUI(); assert.match(said, /^Unavailable frames are skipped: \+27 h, \+30 h, .* and 3 more$/, 'eight listed, the rest counted');
+  assert.equal(said.split(', ').length, 8, 'eight listed');
+  w.ov.render({ state: 'error', message: 'x' }); assert.equal(said, 'Overlay unavailable: x'); assert.equal(w.panel.getAttribute('aria-live'), null);
+  assert.equal(all(w.doc.body, '.ov-sr').length, 1, 'one node however many renders');
+  w.ov.unmount(); assert.equal(said, '', 'Off: nothing left to read');
 }));
 
 test('G26 A-P3-3: the speed button names its listbox (aria-controls); ArrowUp from the listbox itself goes to the last option', () => withClock(() => {
@@ -649,4 +693,174 @@ test('step 6 (seen live): a swipe up or down the ribbon is never a pick -- with 
   dispatch(rb, 'pointerdown', { clientX: centre + 9 * px, clientY: 20 });
   dispatch(rb, 'pointerup', { clientX: centre + 9 * px, clientY: 26 });
   assert.equal(seeks[seeks.length - 1], 6, 'the tap picked +18 h');
+}));
+
+// ---- G26 re-check, fix round 2 ----
+function ribbonWorld(o) {
+  const w = world(o); w.ov.render({ state: 'ready' }); w.ov.target = 3;
+  const ui = w.ov.ui, rb = ui.ribbon, seeks = []; w.ov.seek = (i) => { seeks.push(i); w.ov.target = i; };
+  let pauses = 0; w.ov.playing = !!(o && o.playing); w.ov.pause = function () { pauses++; this.playing = false; };
+  rb.rect = { left: 100, top: 0, width: ui.ribbonW, height: 40 };
+  return { w, ui, rb, seeks, px: ui.layout.pxPerHour, centre: 100 + ui.ribbonW / 2, pauses: () => pauses };
+}
+
+test('G26 re-check RC-1 / RC-4: the direction is decided at 10 px of travel; a swipe that drifts sideways is no pick, loads nothing and leaves playback alone', async () => withClock(async () => {
+  for (const drift of [0, 4, 6, 8, 12]) {
+    const r = ribbonWorld({ playing: true });
+    dispatch(r.rb, 'pointerdown', { clientX: r.centre, clientY: 200 });
+    assert.equal(r.w.ov.playing, true, 'a press alone does not pause');
+    for (let k = 1; k <= 8; k++) dispatch(r.rb, 'pointermove', { clientX: r.centre + drift * k / 8, clientY: 200 - 15 * k });
+    await wait(40);
+    dispatch(r.rb, 'pointerup', { clientX: r.centre + drift, clientY: 80 }); await wait(40);
+    assert.deepEqual(r.seeks, [], 'drift ' + drift + ' px: nothing loaded');
+    assert.equal(r.w.ov.playing, true, 'drift ' + drift + ' px: playback carries on'); assert.equal(r.pauses(), 0);
+    assert.equal(r.ui.rb.offset, r.ui.layout.xs[3]); assert.equal(r.ui.rb.dragging, false);
+  }
+  // at an angle: mostly up (70 and 50 degrees from the horizontal) is a swipe; mostly sideways (30 degrees) a scrub
+  for (const [deg, scrub] of [[70, false], [50, false], [30, true]]) {
+    const r = ribbonWorld({ playing: true }), c = Math.cos(deg * Math.PI / 180), sn = Math.sin(deg * Math.PI / 180);
+    dispatch(r.rb, 'pointerdown', { clientX: r.centre, clientY: 200 });
+    for (let k = 1; k <= 6; k++) dispatch(r.rb, 'pointermove', { clientX: r.centre - 10 * k * c, clientY: 200 - 10 * k * sn });
+    await wait(40); dispatch(r.rb, 'pointerup', { clientX: r.centre - 60 * c, clientY: 200 - 60 * sn });
+    assert.equal(r.seeks.length > 0, scrub, deg + ' degrees'); assert.equal(r.w.ov.playing, !scrub, deg + ' degrees: only a scrub pauses');
+  }
+  // before the decision the ribbon follows the finger but nothing is loaded; a short drag loads once, at the release
+  const r = ribbonWorld();
+  dispatch(r.rb, 'pointerdown', { clientX: r.centre, clientY: 20 });
+  for (const dx of [2, 4, 6, 8]) dispatch(r.rb, 'pointermove', { clientX: r.centre - dx, clientY: 20 });
+  assert.ok(Math.abs(r.ui.rb.offset - (r.ui.layout.xs[3] + 8)) < 1e-9, 'the ribbon followed the finger');
+  await wait(40); assert.deepEqual(r.seeks, [], 'nothing loaded before the decision');
+  dispatch(r.rb, 'pointerup', { clientX: r.centre - 8, clientY: 20 });
+  assert.deepEqual(r.seeks, [4], 'a short drag: the nearest frame (+12 h), once'); assert.equal(r.ui.rb.offset, r.ui.layout.xs[4]);
+}));
+
+test('G26 re-check RC-2: one pointer drives the ribbon; a second one ends the gesture as no pick (back to the frame it started on)', async () => withClock(async () => {
+  // a scrub, then a second finger: back to the start frame, and nothing more until the fingers lift
+  const r = ribbonWorld();
+  dispatch(r.rb, 'pointerdown', { clientX: r.centre, clientY: 20, pointerId: 1 });
+  dispatch(r.rb, 'pointermove', { clientX: r.centre - 40, clientY: 20, pointerId: 1 }); await wait(40);
+  assert.equal(r.seeks.length, 1); assert.notEqual(r.w.ov.target, 3);
+  const ev = dispatch(r.rb, 'pointerdown', { clientX: r.centre + 60, clientY: 20, pointerId: 2 });
+  assert.equal(ev.defaultPrevented, true);
+  assert.equal(r.w.ov.target, 3, 'back to the frame it started on'); assert.equal(r.ui.rb.offset, r.ui.layout.xs[3]); assert.equal(r.ui.rb.dragging, false);
+  const n = r.seeks.length;
+  for (const id of [1, 2]) dispatch(r.rb, 'pointermove', { clientX: r.centre - 120, clientY: 20, pointerId: id });
+  await wait(40);
+  dispatch(r.rb, 'pointerup', { clientX: r.centre - 120, pointerId: 2 }); dispatch(r.rb, 'pointerup', { clientX: r.centre - 120, pointerId: 1 });
+  dispatch(r.rb, 'lostpointercapture', { pointerId: 1 }); await wait(40);
+  assert.equal(r.seeks.length, n, 'neither finger moves it any more'); assert.equal(r.w.ov.target, 3);
+  // a pinch that starts on the ribbon (both fingers down before they move) loads nothing and keeps playback
+  const p = ribbonWorld({ playing: true });
+  dispatch(p.rb, 'pointerdown', { clientX: p.centre - 30, pointerId: 1 }); dispatch(p.rb, 'pointerdown', { clientX: p.centre + 30, pointerId: 2 });
+  for (let k = 1; k <= 6; k++) {
+    dispatch(p.rb, 'pointermove', { clientX: p.centre - 30 - 10 * k, pointerId: 1 }); dispatch(p.rb, 'pointermove', { clientX: p.centre + 30 + 10 * k, pointerId: 2 });
+  }
+  await wait(40);
+  dispatch(p.rb, 'pointerup', { clientX: p.centre - 90, pointerId: 1 }); dispatch(p.rb, 'pointerup', { clientX: p.centre + 90, pointerId: 2 });
+  assert.deepEqual(p.seeks, []); assert.equal(p.w.ov.playing, true); assert.equal(p.ui.rb.offset, p.ui.layout.xs[3]);
+  // the next one-finger gesture works as usual
+  dispatch(p.rb, 'pointerdown', { clientX: p.centre + 9 * p.px, clientY: 20, pointerId: 3 });
+  dispatch(p.rb, 'pointerup', { clientX: p.centre + 9 * p.px, clientY: 20, pointerId: 3 });
+  assert.deepEqual(p.seeks, [6]);
+}));
+
+test('G26 re-check RC-8 / RC-5: a pointerup and the lostpointercapture after it are one release; a cancel is never a tap; 9 px down is a tap, 10 px a swipe; a roll counts once', async () => withClock(async () => {
+  const r = ribbonWorld();
+  dispatch(r.rb, 'pointerdown', { clientX: r.centre + 9 * r.px, clientY: 20 }); dispatch(r.rb, 'pointerup', { clientX: r.centre + 9 * r.px, clientY: 20 });
+  dispatch(r.rb, 'lostpointercapture', { clientX: r.centre + 9 * r.px, clientY: 20 });   // browsers send it after every pointerup
+  assert.deepEqual(r.seeks, [6]); assert.equal(r.ui.rb.offset, r.ui.layout.xs[6], 'the tap stays');
+  for (const ev of ['pointercancel', 'lostpointercapture']) {                  // a 2 px roll and 3 px down, then the browser ends it
+    const c = ribbonWorld();
+    dispatch(c.rb, 'pointerdown', { clientX: c.centre + 9 * c.px, clientY: 20 });
+    dispatch(c.rb, 'pointermove', { clientX: c.centre + 9 * c.px + 2, clientY: 23 });
+    dispatch(c.rb, ev, { clientX: c.centre + 9 * c.px + 2, clientY: 23 });
+    assert.deepEqual(c.seeks, [], ev + ': no pick'); assert.equal(c.ui.rb.offset, c.ui.layout.xs[3]);
+  }
+  for (const [dy, pick] of [[9, true], [10, false]]) {
+    const t = ribbonWorld();
+    dispatch(t.rb, 'pointerdown', { clientX: t.centre + 9 * t.px, clientY: 20 });
+    dispatch(t.rb, 'pointermove', { clientX: t.centre + 9 * t.px, clientY: 20 + dy });
+    dispatch(t.rb, 'pointerup', { clientX: t.centre + 9 * t.px, clientY: 20 + dy });
+    assert.deepEqual(t.seeks, pick ? [6] : [], dy + ' px down');
+  }
+  // the roll: the finger touches down 1 px past frame 6 and rolls 3.9 px before lifting; the ribbon followed it: still 6
+  const q = ribbonWorld(), down = q.centre + (q.ui.layout.xs[6] - q.ui.layout.xs[3]) + 1;
+  dispatch(q.rb, 'pointerdown', { clientX: down, clientY: 20 }); dispatch(q.rb, 'pointermove', { clientX: down + 3.9, clientY: 20 });
+  dispatch(q.rb, 'pointerup', { clientX: down + 3.9, clientY: 20 });
+  assert.deepEqual(q.seeks, [6]);
+}));
+
+test('G26 re-check RC-3: the toggle is offered only where opening shows more; a focused toggle that goes hands the focus to the play button', () => withClock(() => {
+  for (const h of [195, 230, 264]) {                                       // 40 % = 78 / 92 / 105 px: not even the transport row
+    const s = sizedLayout(world({ dims: { w: 812, h } })); s.ov.render({ state: 'ready' });
+    const sh = s.container.querySelector('.ov-sheet');
+    assert.equal(sh.querySelector('.ov-toggle'), null, h + ': no toggle that could open nothing'); assert.ok(headPlay(sh));
+    s.ov.collapsed = true; s.ov.render({ state: 'ready' });                // a fold the viewer chose earlier
+    assert.equal(s.container.querySelector('.ov-sheet').querySelector('.ov-toggle'), null, h + ': folded, still none');
+  }
+  const s = sizedLayout(world({ dims: { w: 375, h: 700 } })); s.ov.render({ state: 'ready' });
+  let sh = s.container.querySelector('.ov-sheet');
+  sh.querySelector('.ov-toggle').focus(); sh.querySelector('.ov-toggle').dispatch('click');
+  sh = s.container.querySelector('.ov-sheet'); assert.equal(s.doc.activeElement, sh.querySelector('.ov-toggle'), 'folded: the focus on the new toggle');
+  s.ov._dims = () => ({ w: 375, h: 230 }); s.ov.render({ state: 'ready' });   // the map shrank
+  sh = s.container.querySelector('.ov-sheet');
+  assert.equal(sh.querySelector('.ov-toggle'), null); assert.equal(s.doc.activeElement, headPlay(sh), 'the focus went to the play button');
+  s.ov._dims = () => ({ w: 375, h: 700 }); s.ov.render({ state: 'ready' });
+  sh = s.container.querySelector('.ov-sheet');
+  assert.ok(sh.querySelector('.ov-toggle'), 'room again: the toggle is back'); assert.equal(sh.querySelector('#ovDetails'), null, 'still the viewer\'s fold');
+}));
+
+test('G26 re-check RC-6: keyboard focus survives a render (a desktop height change): ribbon, play, speed (from its open menu) and the overview keep it; nothing is taken from outside', () => withClock(() => {
+  for (const cls of ['ov-ribbon', 'ov-play', 'ov-speed-btn', 'ov-timeline']) {
+    const w = world(); w.ov.render({ state: 'ready' });
+    w.panel.querySelector('.' + cls).focus();
+    w.ov._dims = () => ({ w: 1200, h: 700 }); w.ov.render({ state: 'ready' });
+    assert.equal(w.doc.activeElement, w.panel.querySelector('.' + cls), cls);
+  }
+  const w = world(); w.ov.render({ state: 'ready' });
+  w.panel.querySelector('.ov-speed-btn').dispatch('click');                  // the menu opens with the focus on an option
+  assert.ok(w.doc.activeElement.classList.contains('ov-speed-opt'));
+  w.ov.render({ state: 'ready' });
+  assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-speed-btn'), 'the closed menu\'s button');
+  assert.equal(w.panel.querySelector('.ov-speed-menu').hidden, true);
+  const other = w.doc.createElement('button'); w.doc.body.appendChild(other); other.focus();
+  w.ov.render({ state: 'ready' }); assert.equal(w.doc.activeElement, other, 'never taken from outside the panel');
+}));
+
+test('G26 re-check RC-8 e: the first desktop height change after binding re-renders', async () => {
+  const w = world(); const ros = [];
+  w.win.ResizeObserver = function (cb) { this.cb = cb; ros.push(this); };
+  w.win.ResizeObserver.prototype.observe = function () {}; w.win.ResizeObserver.prototype.disconnect = function () {};
+  let dims = { w: 1200, h: 800 }, renders = 0;
+  w.ov._dims = () => dims; w.ov._checkRes = () => {}; w.ov._sizeAttribution = () => {};
+  w.ov.render({ state: 'ready' }); w.ov._bindMap();
+  const r0 = w.ov.render; w.ov.render = function (st) { renders++; return r0.call(this, st); };
+  dims = { w: 1200, h: 700 }; ros[0].cb(); await wait(150);
+  assert.equal(renders, 1);
+  w.ov.unmount();
+});
+
+test('G26 re-check S8 / A5: a line-mode wheel scrolls 16 px a line; the speed listbox itself is not a tab stop', async () => withClock(async () => {
+  const r = ribbonWorld();
+  dispatch(r.rb, 'wheel', { deltaX: 2, deltaY: 0, deltaMode: 1 });
+  assert.equal(r.ui.rb.offset, r.ui.layout.xs[3] + 32);
+  await wait(200);
+  assert.equal(r.w.panel.querySelector('.ov-speed-menu').tabIndex, -1);
+}));
+
+test('G26 re-check RC-2: a finger that pressed elsewhere (the map) and moves or lifts over the ribbon is not the gesture; a press from the same pointer starts over', async () => withClock(async () => {
+  const r = ribbonWorld();
+  dispatch(r.rb, 'pointerdown', { clientX: r.centre, clientY: 20, pointerId: 1 });
+  dispatch(r.rb, 'pointermove', { clientX: r.centre - 40, clientY: 20, pointerId: 5 });       // never pressed on the ribbon
+  assert.ok(Math.abs(r.ui.rb.offset - r.ui.layout.xs[3]) < 1e-9, 'its move does not drag the ribbon');
+  dispatch(r.rb, 'pointerup', { clientX: r.centre - 40, clientY: 20, pointerId: 5 });
+  assert.equal(r.ui.rb.dragging, true, 'its lift-off does not end the gesture');
+  dispatch(r.rb, 'pointerup', { clientX: r.centre + 9 * r.px, clientY: 20, pointerId: 1 });
+  assert.deepEqual(r.seeks, [6], 'the pressing finger\'s own tap');
+  // a pointerdown from the pointer of an unfinished gesture (its release never arrived) is a new press, not a second finger
+  const q = ribbonWorld();
+  dispatch(q.rb, 'pointerdown', { clientX: q.centre - 50, clientY: 20, pointerId: 1 });
+  dispatch(q.rb, 'pointerdown', { clientX: q.centre + 9 * q.px, clientY: 20, pointerId: 1 });
+  dispatch(q.rb, 'pointerup', { clientX: q.centre + 9 * q.px, clientY: 20, pointerId: 1 });
+  assert.deepEqual(q.seeks, [6]);
 }));

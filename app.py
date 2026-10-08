@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 import buoy_sources
 import point_forecast
 import sky
+import tide_sources
 
 app = Flask(__name__)
 
@@ -540,6 +541,85 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
         with _CACHE_LOCK:
             if _POINT_INFLIGHT.get(key) is flock and not flock.locked():
                 _POINT_INFLIGHT.pop(key, None)
+
+
+# ---------------------- Tide stations (plan section 38) -----------------------
+# NOAA CO-OPS tide predictions for the map's tide layer. tide_sources.py does the reading, the subordinate curves and
+# the per-station daily cache; the station list is a committed snapshot (tools/tides/fetch_stations.py), so the layer
+# never depends on NOAA's metadata service at runtime. Not a live buoy provider: not in the live list, scheduler or
+# /healthz. Upstream requests go through _points_fetch (one attempt, a wall-clock cap).
+TIDE_STATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tide_stations.json")
+TIDE_LIST_MAX_AGE = 6 * 3600      # the list changes only with a deploy; browsers and the edge keep it 6 h
+TIDE_MAX_AGE = 1800               # a station's forecast (the same all UTC day; the page asks again on a new visit)
+TIDE_OBS_MAX_AGE = 300            # observed water level (6-minute samples)
+TIDE_FINAL_MAX_AGE = 3600         # NOAA has nothing for this station: the same whenever asked
+TIDES_OFF = "Tide stations are not available on this server"
+_TIDES = {"svc": None, "list": None}
+_TIDES_LOCK = threading.Lock()
+
+
+def _tides():
+    """(TideService, (list payload, etag)), loaded once; raises when the snapshot cannot be read."""
+    with _TIDES_LOCK:
+        if _TIDES["svc"] is None:
+            stations, doc = tide_sources.load_stations(TIDE_STATIONS_PATH)
+            _TIDES["list"] = _json_payload_and_etag(tide_sources.client_list(doc))
+            _TIDES["svc"] = tide_sources.TideService(stations, _points_fetch)
+        return _TIDES["svc"], _TIDES["list"]
+
+
+def _tide_uncached(payload, status, retry=False):
+    resp = jsonify(payload)
+    resp.status_code = status
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["CDN-Cache-Control"] = "no-store"
+    if retry:
+        resp.headers["Retry-After"] = "5"
+    return resp
+
+
+def _tide_station(sid):
+    """(service, station) for a known station id, or (None, a response to return)."""
+    try:
+        svc, _ = _tides()
+    except Exception:
+        return None, _tide_uncached({"error": TIDES_OFF}, 503)
+    if not tide_sources.valid_id(sid) or sid not in svc.stations:
+        return None, _tide_uncached({"id": sid, "error": "Unknown tide station"}, 404)   # never a proxy to NOAA
+    return svc, None
+
+
+def _tide_answer(status, payload, max_age):
+    if status == "ok":
+        return _json_cached(payload, max_age=max_age)
+    if status == "final":
+        return _json_cached(dict(payload, final=True), max_age=TIDE_FINAL_MAX_AGE)
+    return _tide_uncached(dict(payload, retry=True), 503, retry=True)        # busy / NOAA unreachable: the page retries
+
+
+@app.route("/api/tides/stations")
+def api_tide_stations():
+    try:
+        _, (payload, etag) = _tides()
+    except Exception:
+        return _tide_uncached({"error": TIDES_OFF}, 503)
+    return _json_cached_bytes(payload, etag, TIDE_LIST_MAX_AGE, {"CDN-Cache-Control": f"max-age={TIDE_LIST_MAX_AGE}"})
+
+
+@app.route("/api/tides/<sid>")
+def api_tide_station(sid):
+    svc, err = _tide_station(sid)
+    if err is not None:
+        return err
+    return _tide_answer(*svc.forecast(sid), TIDE_MAX_AGE)
+
+
+@app.route("/api/tides/<sid>/observed")
+def api_tide_observed(sid):
+    svc, err = _tide_station(sid)
+    if err is not None:
+        return err
+    return _tide_answer(*svc.observed(sid), TIDE_OBS_MAX_AGE)
 
 
 def rank_rows(rows):
@@ -4301,6 +4381,8 @@ def _live_after_fork():
     """In a forked child: none of the parent's background threads exist here, so every lock and
     flag of the service starts clean (buoy_sources resets the providers and the runner itself)."""
     global _LIVE_BG_LOCK, _LIVE_BUILD_LOCK, _TZ_FINDER_LOCK, _CACHE_LOCK, _LIVE_STOP, _LIVE_WAKE, _BUOY_PROVIDERS_LOCK
+    global _TIDES_LOCK
+    _TIDES_LOCK = threading.Lock()                # the tide service resets its own locks (tide_sources)
     _LIVE_BG_LOCK = threading.Lock()
     _LIVE_BUILD_LOCK = threading.Lock()
     _TZ_FINDER_LOCK = threading.Lock()

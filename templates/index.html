@@ -86,11 +86,14 @@
       filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.9));
     }
 
-    /* the live-buoy window's box (the shared window rules are .fwin below) */
-    .fwin.live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 36px)); height: min(76vh, 720px); z-index: 2000; }   /* (.fwin's z is 1500) */
+    /* the live-buoy window's box (the shared window rules are .fwin below). The three windows open at the bottom-right
+       corner; their widths fall forecast > tide > live and their heights rise the other way (caps too), so whichever
+       is in front, the one behind shows an edge (40 px or more) to click */
+    .fwin.live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 136px)); height: min(76vh, 800px); z-index: 2000; }   /* (.fwin's z is 1500) */
     .live-win .fw-body { padding: 12px 14px; }
-    /* the tide-station window's box (plan section 38): a third window, its chip stacked above the live-buoy chip */
-    .fwin.tide-win { right: 18px; bottom: 18px; width: min(760px, calc(100vw - 36px)); height: min(64vh, 640px); z-index: 2000; }
+    /* the tide-station window's box (plan section 38): a third window, its chip stacked above the live-buoy chip;
+       narrower and taller than the forecast window, wider and shorter than the live-buoy window (see above) */
+    .fwin.tide-win { right: 18px; bottom: 18px; width: min(880px, calc(100vw - 76px)); height: min(66vh, 760px); z-index: 2000; }
     .tide-win .fw-body { padding: 8px 10px 12px; }
     /* the day strip (static_ui/tides.js, after tide-forecast.com's layout): one table, the label column stuck to the
        left while the days scroll sideways; a closed day is one narrow column, an open day two halves (AM | PM) */
@@ -407,6 +410,14 @@
        parked chip (its measured height), so the chip stays reachable; a dragged window keeps its own position */
     .live-chip .tide-win:not(.fw-min):not(.fw-max) { bottom: calc(26px + var(--lw-chip-h, 40px)); }
     .tide-chip .live-win:not(.fw-min):not(.fw-max) { bottom: calc(26px + var(--tw-chip-h, 40px)); }
+    /* a raised default box gives way in height before it reaches the top-right corner (legend + gear: --map-topright-h),
+       so the gear stays clickable on shorter screens; a dragged window's own height (inline) wins over these */
+    .live-chip .forecast-win:not(.fw-min):not(.fw-max), .tide-chip .forecast-win:not(.fw-min):not(.fw-max) {
+      height: min(60vh, 720px, calc(100vh - 78px - var(--map-topright-h, 0px))); }
+    .live-chip.tide-chip .forecast-win:not(.fw-min):not(.fw-max) {
+      height: min(60vh, 720px, calc(100vh - 86px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }
+    .live-chip .tide-win:not(.fw-min):not(.fw-max) { height: min(66vh, 760px, calc(100vh - 34px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }
+    .tide-chip .live-win:not(.fw-min):not(.fw-max) { height: min(76vh, 800px, calc(100vh - 34px - var(--tw-chip-h, 40px) - var(--map-topright-h, 0px))); }
     .fw-header {
       display: flex; align-items: center; gap: 8px; padding: 6px 10px;
       background: #f3f7fb; border-bottom: 1px solid #e4e9f0; cursor: move; user-select: none; touch-action: none;

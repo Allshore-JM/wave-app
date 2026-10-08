@@ -125,3 +125,5 @@
 @media (max-width: 340px) {
   .ov-sheet .ov-row { gap: 3px; }
 }
+/* the overlay's one live region (loading / error / unavailable frames): read out, not shown */
+.ov-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }

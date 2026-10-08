@@ -1592,14 +1592,15 @@
   // midnight): 3 + its width (a two-digit date is ~33-35 px at 11 px) + a gap + half the next label's width.
   var RIBBON_DAY_MIN_PX = 60;
   var RIBBON_TAP_PX = 4;                                     // a press that moves less than this is a tap, not a drag
-  var RIBBON_SWIPE_PX = 10;                                  // ... and one that went this far up or down is a swipe, never a tap
+  var RIBBON_AXIS_PX = 10;                                   // the travel at which a gesture's direction is decided (sideways = a scrub)
   // Local calendar parts in a zone, through one cached Intl formatter (en-US: fixed short month names, "7 AM" clocks).
   // An empty or unknown zone reads as the COMPUTER's zone, as the page's own clock (fmtTimeInTz) does, so the weekday and
   // the clock of a line can never come from two zones (G26 A-P3-2); without Intl at all, the computer's clock by hand.
-  // Never throws.
+  // Never throws: the cache keys are prefixed, so a zone string such as "constructor" can never hit an Object member
+  // (G26 re-check RC-9).
   var FMT_CACHE = {};
   function ribbonFormatter(tz) {
-    var key = tz || '';
+    var key = 'z:' + (tz || '');
     if (FMT_CACHE[key]) return FMT_CACHE[key];
     var out = buildFormatter(tz); FMT_CACHE[key] = out; return out;
   }
@@ -1642,7 +1643,7 @@
     return Math.max(RIBBON_MIN_PX_H, Math.min(RIBBON_MAX_PX_H, (viewportW || 300) / RIBBON_WINDOW_H));
   }
   // The ribbon's geometry for a run: xs[i] = px of frame i from frame 0 (its hours since frame 0 x pxPerHour), hours[i] =
-  // hours since the run, width, the day labels (one at every local midnight the run covers; the day frame 0 starts in is
+  // hours since the run, width, the day labels (one for every local date the run covers, where that date begins; the day frame 0 starts in is
   // pinned to x 0 and marked clamped, dropped when the next label would crowd it), the hour ticks (local 00/06/12/18;
   // 00/12 when 6 h is narrower than minGap px, then 00 only) and the span of the run in hours.
   function ribbonLayout(frames, runUtc, tz, pxPerHour, minGap) {
@@ -1693,11 +1694,14 @@
   // nearest frame. Returns the frame index; the offset then sits exactly on it.
   RibbonState.prototype.end = function (pxFromCentre) {
     this.dragging = false;
-    // under 4 px of sideways travel: a tap picks the frame under the finger; anything else that is not a pick (a swipe up
-    // or down, a cancelled gesture) goes back exactly where it started, never to a neighbour the drift reached
-    if (this.moved < RIBBON_TAP_PX) this.offset = typeof pxFromCentre === 'number' ? this.clamp(this.o0 + pxFromCentre) : this.o0;
+    // under 4 px of sideways travel: a tap picks the frame under the finger at lift-off. The ribbon followed the finger's
+    // roll, so that is the CURRENT offset plus the lift-off point (= where the finger touched down; G26 re-check RC-5).
+    // Without a finger position (a cancelled gesture) it goes back exactly where it started, never to a neighbour.
+    if (this.moved < RIBBON_TAP_PX) this.offset = typeof pxFromCentre === 'number' ? this.clamp(this.offset + pxFromCentre) : this.o0;
     var idx = this.nearest(this.offset); this.offset = this.xs[idx]; return idx;
   };
+  // A gesture that is no pick (a swipe up or down, a second finger): back where it started, whatever the travel.
+  RibbonState.prototype.cancel = function () { this.dragging = false; this.offset = this.o0; return this.nearest(this.o0); };
   RibbonState.prototype.wheel = function (dx) { this.offset = this.clamp(this.offset + dx); return this.nearest(this.offset); };
   // "1:07 PM HST" in the computer's own time zone (not the forecast table's), with the weekday when it is not today there.
   function localClock(ms, now) {
@@ -2142,8 +2146,9 @@
     if (typeof window.ResizeObserver === 'function') { this._ro = new window.ResizeObserver(this._onWinSize); this._ro.observe(this.map.getContainer()); }
   };
   Overlay.prototype._sizeOf = function () { var d = this._dims(); return d.w + 'x' + d.h; };
-  // A new map size: the attribution's width, the frame resolution, and the panel (rebuilt only when it has to move between
-  // the control and the sheet, or when it is the sheet: its cap follows the map height; else the ribbon is re-measured).
+  // A new map size: the attribution's width, the frame resolution, and the panel (rebuilt when it has to move between the
+  // control and the sheet, when it is the sheet (its cap follows the map height) and on a desktop height change (the room
+  // for the details follows it: G26 B-1); a width-only change on a desktop re-measures the ribbon).
   Overlay.prototype._onSize = function () {
     var key = this._sizeOf(), h = this._dims().h;
     if (key === this._sizeKey) return;                       // the map's event, the window and the observer report one change
@@ -2207,6 +2212,7 @@
     this.field = null; this.frameIndex = null; this.res = null; this.dres = null; this.last = null; this.collapsed = undefined;
     clear(this.opts.panel);
     if (this.opts.panel && this.opts.panel.classList) this.opts.panel.classList.remove('ov-playing');
+    this._say('');                                             // Off leaves nothing to be read out
   };
   Overlay.prototype._opacityFor = function (field) { return FIXED_OPACITY[field] || FIXED_OPACITY.hs; };
   // The basemap and the model pane's blend follow what is DRAWN: a wind frame on the map -> the relief
@@ -2570,7 +2576,6 @@
     return { root: root, btn: btn, menu: menu, options: options, open: open, close: close, sync: sync, isOpen: function () { return !menu.hidden; } };
   }
   Overlay.prototype._closeMenus = function () { if (this.ui && this.ui.speedSel) this.ui.speedSel.close(false); };
-  var SHEET_OPEN_PX = 110;                                   // the phone sheet opens expanded when 40 % of the map is this tall
   // The timeline beside the play button (step 3 of plan section 37 replaces this range slider with the compass ribbon).
   // It runs in hours (hourly frames to +120 h, then 3-hourly), so its thumb sits where the hour is; a value between two
   // frames snaps in the direction of travel (frameAtHour).
@@ -2619,34 +2624,63 @@
     layout.days.forEach(function (d) { var sp = mk('span', 'ov-rb-day' + (d.clamped ? ' ov-rb-day-first' : ''), d.text); sp.style.left = d.x + 'px'; track.appendChild(sp); });
     layout.ticks.forEach(function (t) { var sp = mk('span', 'ov-rb-tick' + (t.major ? ' ov-rb-major' : ''), t.text); sp.style.left = t.x + 'px'; track.appendChild(sp); });
     var rb = ui.rb = new RibbonState(layout.xs);
-    var lastIdx = null, pendingIdx = null, rafId = null, y0 = 0, dyMax = 0;
+    var lastIdx = null, pendingIdx = null, rafId = null, g = null;
     function queueScrub(idx) {
       pendingIdx = idx;
       if (rafId !== null) return;
       rafId = raf(function () { rafId = null; if (pendingIdx !== null && self.ui === ui) self._scrubTo(pendingIdx); pendingIdx = null; });
     }
+    // The gesture (G26 re-check RC-1, RC-2, RC-4): ONE pointer, the one that pressed. Its direction is decided once it has
+    // travelled RIBBON_AXIS_PX, by the larger of the two: sideways is a scrub (playback pauses then, and frames are asked
+    // for from then on); up or down is a swipe, never a pick (the ribbon goes back, nothing is loaded, playback carries
+    // on). Before that the ribbon follows the finger but nothing is loaded; a release then is a tap (< 4 px sideways: the
+    // frame under the finger) or a short drag. A second pointer (a pinch, a palm) ends the gesture as no pick: back to
+    // the frame it started on, and nothing more until the pointers lift. A gesture the browser cancels before it was a
+    // scrub is no pick either; a cancelled scrub keeps the frame it reached.
+    function back() {                                         // a swipe or a second pointer: no pick
+      pendingIdx = null; rb.cancel();
+      track.style.transition = 'transform 120ms ease-out'; self._placeRibbon();
+      self._syncUI();                                          // while playing, the ribbon follows playback again at once
+    }
     ribbon.addEventListener('pointerdown', function (e) {
       if (e.button) return;
       e.preventDefault(); e.stopPropagation();
+      if (g && e.pointerId === g.id) g = null;                 // a press whose release never reached us: start over
+      if (g) {
+        if (g.axis !== 'void') { var was = g.axis; g.axis = 'void'; pendingIdx = null; if (was === 'x') self._scrubTo(g.start); back(); }
+        return;
+      }
       if (ribbon.setPointerCapture) { try { ribbon.setPointerCapture(e.pointerId); } catch (x) { /* no capture: the moves still arrive while over the ribbon */ } }
-      self.pause(); rb.begin(e.clientX); track.style.transition = 'none'; lastIdx = null; y0 = e.clientY; dyMax = 0;
+      rb.begin(e.clientX); track.style.transition = 'none'; lastIdx = null;
+      g = { id: e.pointerId, x0: e.clientX, y0: typeof e.clientY === 'number' ? e.clientY : 0, axis: null, start: rb.nearest(rb.offset) };
       if (ribbon.focus) { try { ribbon.focus({ preventScroll: true }); } catch (x) { ribbon.focus(); } }
     });
     ribbon.addEventListener('pointermove', function (e) {
-      if (rb.dragging && typeof e.clientY === 'number' && typeof y0 === 'number') dyMax = Math.max(dyMax, Math.abs(e.clientY - y0));
+      if (!g || e.pointerId !== g.id || g.axis === 'y' || g.axis === 'void' || typeof e.clientX !== 'number') return;
+      if (g.axis === null) {
+        var dx = Math.abs(e.clientX - g.x0), dy = typeof e.clientY === 'number' ? Math.abs(e.clientY - g.y0) : 0;
+        if (Math.max(dx, dy) >= RIBBON_AXIS_PX) {
+          if (dy >= dx) { g.axis = 'y'; back(); return; }
+          g.axis = 'x'; if (self.playing) self.pause();
+        }
+      }
       var idx = rb.move(e.clientX); if (idx === null) return;
-      self._placeRibbon(); if (idx !== lastIdx) { lastIdx = idx; queueScrub(idx); }
+      self._placeRibbon();
+      if (g.axis === 'x' && idx !== lastIdx) { lastIdx = idx; queueScrub(idx); }
     });
-    // Lift-off: a press that moved < 4 px is a tap on the frame under the finger, a drag snaps to the nearest frame. A
-    // scrub still queued for the next frame is dropped first, or it would land after the release with the pre-release
-    // frame and undo a tap (G26 A-P2-2). A gesture the browser CANCELS (or a lost capture) is never a tap: it snaps to the
-    // nearest frame of where the ribbon is (G26 A-P2-3).
+    // Lift-off. A scrub still queued for the next frame is dropped first, or it would land after the release with the
+    // pre-release frame and undo a tap (G26 A-P2-2). Only the pressing pointer's release counts, once: the
+    // lostpointercapture that follows every pointerup finds no gesture left (G26 re-check RC-8 a).
     function release(e) {
-      if (!rb.dragging) return;
-      pendingIdx = null;
-      if (typeof e.clientY === 'number' && typeof y0 === 'number') dyMax = Math.max(dyMax, Math.abs(e.clientY - y0));
-      // a swipe up or down the ribbon is not a pick: with touch-action none the browser leaves it to us (step 6, seen live)
-      var r = e.type === 'pointerup' && dyMax < RIBBON_SWIPE_PX && ribbon.getBoundingClientRect ? ribbon.getBoundingClientRect() : null;
+      if (!g || e.pointerId !== g.id) return;
+      var axis = g.axis, dy = typeof e.clientY === 'number' ? Math.abs(e.clientY - g.y0) : 0;
+      g = null; pendingIdx = null;
+      if (axis === 'y' || axis === 'void') return;            // already back where it started
+      // undecided: a cancel or a lost capture is no pick; a pointerup is a tap or a short drag (rb.end decides by the
+      // sideways travel), except a lift-off RIBBON_AXIS_PX up or down with no move in between, which is no tap
+      if (axis === null && (e.type !== 'pointerup' || (dy >= RIBBON_AXIS_PX && rb.moved < RIBBON_TAP_PX))) { back(); return; }
+      var tap = axis === null && dy < RIBBON_AXIS_PX;
+      var r = tap && ribbon.getBoundingClientRect ? ribbon.getBoundingClientRect() : null;
       var idx = rb.end(r && typeof e.clientX === 'number' ? e.clientX - (r.left + r.width / 2) : undefined);
       track.style.transition = 'transform 120ms ease-out'; self._placeRibbon(); lastIdx = idx; self._scrubTo(idx);
     }
@@ -2723,6 +2757,7 @@
   // transport row (the ONE play/pause button, the timeline, the speed selector; outside the scroll box, so the speed
   // menu is never clipped) and the scroll box (legend, Run / Updated / Next Update, warnings).
   Overlay.prototype.render = function (st) {
+    var focusCls = this._focusedPart();                       // before the menu closes (a hidden option loses the focus)
     this._closeMenus();
     this.last = st; this.ui = null;
     var self = this, host = this._host(), compact = host === this.sheet, m = this.manifest, unit = this.opts.getUnit();
@@ -2730,11 +2765,12 @@
     clear(host);
     this._layoutSheet();                                       // a new sheet takes its place beside the zoom column BEFORE the ribbon is measured
     if (host.classList) host.classList.remove('ov-playing');
-    // Live regions: the loading / error states announce themselves; the ready panel does NOT (its time changes on every
-    // frame while playing); only its warning lines are live (G26 A-P3-5). The focused ribbon's aria-valuetext has the time.
-    if (st.state === 'loading' || st.state === 'error') host.setAttribute('aria-live', 'polite'); else host.removeAttribute('aria-live');
-    if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._layoutSheet(); return; }
+    // Nothing in the panel is a live region (its time changes on every frame while playing); the loading, error and
+    // unavailable-frame messages are said once through the overlay's own status node (_say; G26 A-P3-5, re-check RC-7).
+    // The focused ribbon's aria-valuetext has the time.
+    if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._say('Loading model frame…'); this._layoutSheet(); return; }
     if (st.state === 'error') {
+      this._say('Overlay unavailable: ' + st.message);
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
       e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.transientFails = 0; self.mount(self.field); } }));
       host.appendChild(e); this._layoutSheet(); return;
@@ -2745,19 +2781,14 @@
     // the map's attribution.
     var label = fdesc.label || field, modelName = String(m.model && m.model.name || 'GFS-Wave').split(' + ')[0].replace(/^NOAA(\/NCEP)?\s+/i, '');
     var cap = Math.floor(mapH * 0.4);
-    // Open or folded: the viewer's choice once the toggle was used; until then the size decides at every render (the sheet
-    // opens folded only when 40 % of the map cannot hold the transport row), so a phone turned upright opens up again.
-    var collapsed = this.collapsed !== undefined ? !!this.collapsed : compact && cap < SHEET_OPEN_PX;
+    // Open or folded: the viewer's choice once the toggle was used; until then the size decides at every render: as much
+    // as fits (G26 re-check RC-3: measured, not a fixed height), so a phone turned upright opens up again.
+    var collapsed = this.collapsed !== undefined ? !!this.collapsed : false;
     var head = mk('div', 'ov-row ov-head');
     var btn = mk('button', 'ov-toggle', collapsed ? '▸' : '▾'); btn.type = 'button';
     btn.setAttribute('aria-label', collapsed ? 'Show overlay details' : 'Hide overlay details');
     btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
-    btn.addEventListener('click', function () {
-      var had = typeof document !== 'undefined' && document.activeElement === btn;
-      self.collapsed = !collapsed; self.render(st);
-      var nb = had && self.ui && self.ui.host && self.ui.host.querySelector('.ov-toggle');   // keyboard focus stays on the toggle (G26 B-2)
-      if (nb && nb.focus) nb.focus();
-    });
+    btn.addEventListener('click', function () { self.collapsed = !collapsed; self.render(st); });   // the focus follows (_refocus)
     head.appendChild(btn);
     var title = mk('span', 'ov-title' + (!collapsed ? ' ov-model' : ''));
     head.appendChild(title);
@@ -2765,14 +2796,15 @@
     var ui = this.ui = { host: host, title: title, play: null, speedSel: null, slider: null, unavail: null,
       ribbon: null, track: null, rb: null, layout: null, nowText: null, stateEl: null, ribbonW: 0,
       runText: null, updText: null, nextText: null, updLine: null, nextLine: null,
-      label: label, modelName: modelName, collapsed: collapsed, compact: compact };
+      label: label, modelName: modelName, collapsed: false, compact: compact };
     // The one play / pause button sits beside the ribbon; when the transport row is not shown (collapsed, or no room for
     // it) it sits in the head instead, so playback is never out of reach.
     var playPause = function () { if (self.playing) self.pause(); else self.play(); };
     var headPlay = function () { ui.play = button('ov-play ov-play-head', '▶', 'Play', playPause); head.insertBefore(ui.play, title); };
-    if (compact && cap - host.offsetHeight - 8 < 40) { head.removeChild(btn); collapsed = ui.collapsed = true; }
     var rt0 = runTimes(m, Date.now(), !!this.newerRun); this._runStatus = rt0 && rt0.status;
-    if (collapsed) { headPlay(); this._syncUI(); this._layoutSheet(); return; }
+    if (compact && cap - host.offsetHeight - 8 < 40) {           // a sheet too short for anything but its head line
+      head.removeChild(btn); ui.collapsed = true; headPlay(); this._syncUI(); this._layoutSheet(); this._refocus(focusCls); return;
+    }
     var wrap = mk('div', 'ov-body'); wrap.id = 'ovDetails'; host.appendChild(wrap);
     var tr = mk('div', 'ov-row ov-transport');
     ui.play = button('ov-play', '▶', 'Play', playPause);
@@ -2814,7 +2846,7 @@
       banner.appendChild(button('ov-update', 'Update', 'Switch to the newer run', function () { self.update(); }));
       body.appendChild(banner);
     }
-    var unavail = mk('div', 'ov-warn'); unavail.hidden = true; unavail.setAttribute('aria-live', 'polite'); body.appendChild(unavail); ui.unavail = unavail;
+    var unavail = mk('div', 'ov-warn'); unavail.hidden = true; body.appendChild(unavail); ui.unavail = unavail;
     var clipped = !!this.layer._clip;
     if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
     // (no settings row: fixed opacity, contours and the animation always on; owner, 2026-09-26)
@@ -2829,21 +2861,26 @@
     var ctl = compact ? host : (host.closest && host.closest('.ov-ctl')) || host, ctlTop = compact ? 0 : this._ctlTop(ctl);
     var spare = function () { return compact ? cap - host.offsetHeight - 2 : mapH - self._stackHeight() - 10 - ctlTop - ctl.offsetHeight - 8; };
     var room = compact ? cap - (host.offsetHeight - body.offsetHeight) - 2 : Math.min(cap, spare() + body.offsetHeight);
+    // The open panel is built (and measured) even when it will be folded: the toggle is offered only when opening shows
+    // more than the one-line head (G26 re-check RC-3: a toggle that could open nothing disappeared when tapped).
+    var opens = true;
     if (room < 40) {
       wrap.removeChild(body);
       ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
-      if (spare() < 0) {
-        ui.speedSel.close(false);
-        host.removeChild(wrap); head.removeChild(btn); ui.collapsed = true;
-        ui.speedSel = null; ui.slider = null;
-        ui.ribbon = ui.track = ui.rb = ui.nowText = ui.stateEl = null;
-        if (title.classList) title.classList.remove('ov-model');
-        headPlay();
-      }
-      this._syncUI();
+      if (spare() < 0) opens = false;
     } else {
       body.style.maxHeight = room + 'px';
     }
+    if (!opens || collapsed) {                                  // one line: the viewer's fold (toggle kept) or no room (none)
+      if (ui.speedSel) ui.speedSel.close(false);
+      host.removeChild(wrap); if (!opens) head.removeChild(btn);
+      ui.collapsed = true; ui.speedSel = null; ui.slider = null;
+      ui.ribbon = ui.track = ui.rb = ui.nowText = ui.stateEl = null;
+      ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
+      if (title.classList) title.classList.remove('ov-model');
+      headPlay();
+    }
+    this._syncUI();
     this._layoutSheet();
     // The ribbon's width once everything is in place: a small change re-places the track, a bigger one (another scale)
     // rebuilds once.
@@ -2852,6 +2889,36 @@
       if (w && Math.abs(w - ui.ribbonW) > 8) { this._remeasuring = true; try { this.render(st); } finally { this._remeasuring = false; } }
       else if (w && w !== ui.ribbonW) { ui.ribbonW = w; this._placeRibbon(); }
     }
+    this._refocus(focusCls);                                   // after the last (re)build: on the control that had it
+  };
+  // Keyboard focus through a render (G26 B-2, re-check RC-6): the part of the panel that had it, by its class; its
+  // successor in the new panel gets it back (else the play button, else the toggle). Never taken from outside the panel.
+  var FOCUS_PARTS = ['ov-toggle', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update'];
+  Overlay.prototype._focusedPart = function () {
+    var a = typeof document !== 'undefined' ? document.activeElement : null, hosts = [this.opts.panel, this.sheet];
+    if (!a || !a.classList) return null;
+    var inside = hosts.some(function (h) { return h && h !== a && h.contains && h.contains(a); });
+    if (!inside) return null;
+    for (var i = 0; i < FOCUS_PARTS.length; i++) {
+      if (a.classList.contains(FOCUS_PARTS[i])) return /^ov-speed-(opt|menu)$/.test(FOCUS_PARTS[i]) ? 'ov-speed-btn' : FOCUS_PARTS[i];
+    }
+    return 'ov-play';
+  };
+  Overlay.prototype._refocus = function (cls) {
+    var h = cls && this.ui && this.ui.host;
+    if (!h || !h.querySelector) return;
+    var el = h.querySelector('.' + cls) || h.querySelector('.ov-play') || h.querySelector('.ov-toggle');
+    if (el && el.focus) { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } }
+  };
+  // The overlay's one live region: a visually hidden role=status node, created once, written only when its text
+  // changes (a rewrite with the same text could be read out again on every frame; G26 re-check RC-7).
+  Overlay.prototype._say = function (text) {
+    text = text || '';
+    if (!this._status) {
+      if (!text || typeof document === 'undefined' || !document.body) return;
+      this._status = mk('div', 'ov-sr'); this._status.setAttribute('role', 'status'); document.body.appendChild(this._status);
+    }
+    if (this._status.textContent !== text) this._status.textContent = text;
   };
   // The live parts: the play/pause glyph and the playing look (the chosen animal moves), the speed button, the title,
   // the ribbon (its label = the requested time with a loading state, its position = the target), the overview slider's
@@ -2882,13 +2949,15 @@
       if (ui.timeline) ui.timeline.shown = ui.hours[si];
     }
     if (ui.runText && Date.now() - (this._runLineAt || 0) > 60000) this._refreshRunLine();
-    if (ui.unavail) {
-      var missing = [];
-      for (var i = 0; i < this.n; i++) if (this._isUnavailable(i)) missing.push('+' + this._hours(this.manifest.frames[i]) + ' h');
-      ui.unavail.hidden = missing.length === 0;
-      ui.unavail.textContent = missing.length ? 'Unavailable frames are skipped: ' + missing.slice(0, 8).join(', ') +
-        (missing.length > 8 ? ' and ' + (missing.length - 8) + ' more' : '') : '';
+    var missing = [];
+    for (var i = 0; i < this.n; i++) if (this._isUnavailable(i)) missing.push('+' + this._hours(this.manifest.frames[i]) + ' h');
+    var note = missing.length ? 'Unavailable frames are skipped: ' + missing.slice(0, 8).join(', ') +
+      (missing.length > 8 ? ' and ' + (missing.length - 8) + ' more' : '') : '';
+    if (ui.unavail) {                                          // written only when it changes
+      if (ui.unavail.hidden !== !note) ui.unavail.hidden = !note;
+      if (ui.unavail.textContent !== note) ui.unavail.textContent = note;
     }
+    this._say(note);
   };
 
   window.AllshoreOverlay = {
@@ -2910,9 +2979,9 @@
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
       ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk,
       frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes, TimelineState: TimelineState,
-      SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector, SHEET_OPEN_PX: SHEET_OPEN_PX,
+      SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
-      RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX,
+      RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX, RIBBON_AXIS_PX: RIBBON_AXIS_PX,
       RIBBON_DAY_MIN_PX: RIBBON_DAY_MIN_PX, RIBBON_FALLBACK_W: RIBBON_FALLBACK_W }
   };
 })();

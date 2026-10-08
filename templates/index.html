@@ -1530,6 +1530,8 @@
     let refreshTimer = null;
     // the tide layer's state (plan section 38; the functions are with rebuildLiveBuoyMarkers below)
     const TIDE_MIN_ZOOM = 9;                        // the stations show from this map zoom (fractional zooms: >=)
+    const TIDE_ALL_ZOOM = MAX_MAP_ZOOM;             // from this zoom every station shows; below it overlapping icons are thinned
+    const TIDE_GAP_PX = 24;                         // icons (18 px) closer than this on screen overlap: the less important goes
     let tideStationsData = [];
     let tideListPromise = null;
     let activeTideId = null;
@@ -2765,10 +2767,37 @@
       return tideListPromise;
     }
     function tideVisible() { return map.hasLayer(tideLayer) && map.getZoom() >= TIDE_MIN_ZOOM; }
+    // Busy coasts (owner, 2026-10-08: hide overlaps): the more important station keeps its place on screen, a gauge before
+    // a harmonic station before a subordinate one, then by id (the same answer on every pan); the opened station always
+    // shows; nothing hides at the map's last zoom, so every station can be reached.
+    function tideRank(s) { return (s.obs ? 0 : 2) + (s.type === 'R' ? 0 : 1); }
+    function thinTideCopies(copies) {
+      if (map.getZoom() >= TIDE_ALL_ZOOM || copies.length < 2) return copies;
+      const order = copies.slice().sort(function (a, b) {
+        return (b.s.id === activeTideId) - (a.s.id === activeTideId) || tideRank(a.s) - tideRank(b.s) ||
+               (a.s.id < b.s.id ? -1 : a.s.id > b.s.id ? 1 : a.o - b.o);
+      });
+      const cells = new Map(), kept = [];
+      order.forEach(function (c) {
+        const p = map.latLngToContainerPoint([c.s.lat, c.lng]);
+        const cx = Math.floor(p.x / TIDE_GAP_PX), cy = Math.floor(p.y / TIDE_GAP_PX);
+        for (let i = cx - 1; i <= cx + 1; i++) {
+          for (let j = cy - 1; j <= cy + 1; j++) {
+            const near = cells.get(i + ',' + j);
+            if (near && near.some(function (q) { return (q.x - p.x) * (q.x - p.x) + (q.y - p.y) * (q.y - p.y) < TIDE_GAP_PX * TIDE_GAP_PX; })) return;
+          }
+        }
+        const key = cx + ',' + cy;
+        if (!cells.has(key)) cells.set(key, []);
+        cells.get(key).push(p);
+        kept.push(c);
+      });
+      return kept;
+    }
     function rebuildTideMarkers(force = false) {
       const on = tideVisible();
       if (on && !tideListPromise) loadTideStations();
-      const vis = on ? visibleCopies(tideStationsData) : [];
+      const vis = on ? thinTideCopies(visibleCopies(tideStationsData)) : [];
       const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis);   // the gate bit clears the layer on a zoom-out
       if (map.hasLayer(tideLayer)) {
         const want = on ? (tideStationsData.length ? '' : tideNoteText) : 'zoom in to see tide stations';

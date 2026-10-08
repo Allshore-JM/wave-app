@@ -42,13 +42,15 @@ function boot(o = {}) {
   const counts = new Map();
   const credits = { count: (t) => counts.get(t) || 0, has: (t) => (counts.get(t) || 0) > 0,
     get size() { let c = 0; counts.forEach((v) => { if (v > 0) c++; }); return c; } };
+  const pxPerDeg = o.pxPerDeg || 1000;             // a flat stand-in for the projection: degrees -> container px
   const map = { hasLayer: (l) => l === tideLayer && on, getZoom: () => zoom,
+    latLngToContainerPoint: (ll) => ({ x: ll[1] * pxPerDeg, y: -ll[0] * pxPerDeg }),
     attributionControl: { addAttribution: (t) => { counts.set(t, credits.count(t) + 1); },
                           removeAttribution: (t) => { if (credits.count(t)) counts.set(t, credits.count(t) - 1); } } };
   const L = { marker(ll, opts) { return { ll, opts, handlers: {}, addTo(layer) { layer.items.push(this); return this; },
     bindTooltip(c, tipOpts) { this.tip = c; this.tipOpts = tipOpts; return this; }, on(t, fn) { this.handlers[t] = fn; return this; } }; } };
   const fetchCalls = [];
-  const answers = (o.answers || [{ ok: true, status: 200, json: () => Promise.resolve(LIST) }]).slice();
+  const answers = (o.answers || [{ ok: true, status: 200, json: () => Promise.resolve(o.list || LIST) }]).slice();
   const fetch = (u, init) => { fetchCalls.push(u); const a = answers.length ? answers.shift() : answers.at(-1);
     if (a instanceof Error) return Promise.reject(a); return Promise.resolve(a); };
   const measures = [];
@@ -68,10 +70,10 @@ function boot(o = {}) {
     'get tideView() { return tideView; }, setLive(t) { liveNoteText = t; } };';
   const layersControl = { _update: function () { notes.live.textContent = ''; notes.tide.textContent = ''; return this; } };
   const api = new Function('window', 'document', 'fetch', 'map', 'L', 'tideLayer', 'tideIcon', 'tideIconActive', 'visibleCopies', 'renderSignature', 'textTip',
-    'saveMapView', 'saveLayerVisibility', 'measureTopRight', 'getSelectedUnit', 'tzAbbr', 'loadChartJs', 'CustomEvent', 'tideWin', 'layersControl', code)(
+    'saveMapView', 'saveLayerVisibility', 'measureTopRight', 'getSelectedUnit', 'tzAbbr', 'loadChartJs', 'CustomEvent', 'tideWin', 'layersControl', 'MAX_MAP_ZOOM', code)(
     window, document, fetch, map, L, tideLayer, 'ICON', 'ICON-ACTIVE', visibleCopies, renderSignature, (t) => ({ text: String(t) }),
     () => saves.push('view'), () => saves.push('layers'), () => measures.push(1), () => (o.unit || 'US'), (iso, tz) => tz + '!', () => Promise.resolve(),
-    class { constructor(type) { this.type = type; } }, tideWin, layersControl);
+    class { constructor(type) { this.type = type; } }, tideWin, layersControl, 11);
   return { api, notes, byId, events, tideLayer, credits, fetchCalls, loads, clears, view, toolClicks, saves, measures, layersControl, tideWin,
     setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; } };
 }
@@ -168,4 +170,39 @@ test('tideZone: the site zone, else the station\'s, else UTC', () => {
   assert.equal(b.api.tideZone({}), 'UTC');
   b.byId.tz.value = 'America/New_York';
   assert.equal(b.api.tideZone({ tz: 'Pacific/Fiji' }), 'America/New_York');
+});
+
+test('busy coasts: below the last zoom an icon overlapping a more important one is not drawn; the opened one always; all at the last zoom', async () => {
+  // 1 px = 1/1000 degree: A (gauge, harmonic) and B (harmonic) 10 px apart, C (subordinate) 15 px from A, D far away, E 30 px off
+  const list = { fields: ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'], stations: [
+    ['C', 'Sub', 20.015, -157, 'S', 'UTC', false], ['B', 'Harm', 20.010, -157, 'R', 'UTC', false],
+    ['A', 'Gauge', 20.000, -157, 'R', 'UTC', true], ['D', 'Far', 21, -157, 'S', 'UTC', false], ['E', 'Edge', 20, -156.970, 'S', 'UTC', false]] };
+  const b = boot({ zoom: 9.5, list });
+  b.api.rebuildTideMarkers(true); await flush();
+  const ids = () => b.tideLayer.items.map((m) => m.opts.title.replace('Tide station ', '')).sort();
+  assert.deepEqual(ids(), ['Edge', 'Far', 'Gauge'], 'the gauge station keeps its place; 24 px or more apart all show');
+  // at the map's last zoom every station shows
+  b.setZoom(11); b.api.rebuildTideMarkers(true);
+  assert.deepEqual(ids(), ['Edge', 'Far', 'Gauge', 'Harm', 'Sub']);
+  // the station opened there still shows after a zoom-out, and hides its neighbours instead
+  b.tideLayer.items.find((m) => /Sub/.test(m.opts.title)).handlers.click({ latlng: null, originalEvent: {} });
+  assert.equal(b.api.activeTideId, 'C');
+  b.setZoom(9.5); b.api.rebuildTideMarkers(true);
+  assert.deepEqual(ids(), ['Edge', 'Far', 'Sub']);
+  // the same answer whatever order the list comes in (the most important wins, ties by id)
+  const c = boot({ zoom: 9.5, list: { fields: list.fields, stations: list.stations.slice().reverse() } });
+  c.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(c.tideLayer.items.map((m) => m.opts.title.replace('Tide station ', '')).sort(), ['Edge', 'Far', 'Gauge']);
+});
+
+test('busy coasts: the order of importance (gauge, then harmonic, then id) and neighbours across a grid cell line', async () => {
+  const list = { fields: ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'], stations: [
+    ['Y1', 'Harmonic no gauge', 25.000, -150, 'R', 'UTC', false], ['Z1', 'Subordinate gauge', 25.010, -150, 'S', 'UTC', true],
+    ['P1', 'Sub', 26.000, -150, 'S', 'UTC', false], ['P2', 'Harm', 26.010, -150, 'R', 'UTC', false],
+    ['Q2', 'Second', 27.000, -150, 'S', 'UTC', false], ['Q1', 'First', 27.010, -150, 'S', 'UTC', false],
+    ['K1', 'West of the line', 30, -156.002, 'S', 'UTC', false], ['K2', 'East of the line', 30, -155.997, 'S', 'UTC', false]] };
+  const b = boot({ zoom: 10, list });
+  b.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(b.tideLayer.items.map((m) => m.opts.title.replace('Tide station ', '')).sort(),
+    ['First', 'Harm', 'Subordinate gauge', 'West of the line'], 'a gauge first, then a harmonic station, then the lower id; 5 px apart across a cell line: one');
 });

@@ -57,9 +57,28 @@ test('layout: a column per day, open days wide; time <-> px linear within each d
   assert.equal(I.tOf(L, I.COL_OPEN + I.COL_CLOSED / 2), MIDS[1] + 12 * H);
   assert.equal(I.tOf(L, -5), MIDS[0]); assert.equal(I.tOf(L, 1e6), MIDS[30]);
   for (let x = 0; x < L.total; x += 37) assert.ok(Math.abs(I.xOf(L, I.tOf(L, x)) - x) < 1e-6);   // a round trip
-  const ny = I.zoneClock('America/New_York'), m = I.midnights(Date.UTC(2026, 9, 31, 18), 3, ny), Ln = I.layout(m, { 1: true });
-  assert.equal((m[2] - m[1]) / H, 25);
-  assert.equal(I.xOf(Ln, m[1] + 12.5 * H), I.COL_CLOSED + I.COL_OPEN / 2, 'the 25-hour day: its middle instant sits mid-column');
+});
+
+test('clock-change days: local noon sits at the AM | PM line of an open day, the halves follow the clock, the mapping stays monotone', () => {
+  const ny = I.zoneClock('America/New_York');
+  for (const [start, len, label] of [[Date.UTC(2026, 9, 31, 18), 25, 'fall back'], [Date.UTC(2026, 2, 7, 18), 23, 'spring forward']]) {
+    const m = I.midnights(start, 3, ny), nn = I.noons(m, ny), L = I.layout(m, { 1: true }, nn);
+    assert.equal((m[2] - m[1]) / H, len, label);
+    const noon = ny.parts(nn[1]); assert.deepEqual([noon.h, noon.mi], [12, 0], label + ': the clock reads 12:00');
+    assert.equal(I.xOf(L, nn[1]), I.COL_CLOSED + I.COL_OPEN / 2, label + ': noon at the middle of the open column');
+    assert.equal(I.tOf(L, I.COL_CLOSED + I.COL_OPEN / 2), nn[1]);
+    const before = nn[1] - 15 * 60000, after = nn[1] + 15 * 60000;          // 11:45 AM and 12:15 PM on the clock
+    const d = { hilo: [[before / 1000, 1.2, 'H'], [after / 1000, 0.3, 'L']], events: [[before / 1000, 'moonrise'], [after / 1000, 'moonset']] };
+    assert.deepEqual(I.extremesIn(d, L, 1, 0).map((e) => e.k), ['H'], label + ': 11:45 AM is morning');
+    assert.deepEqual(I.extremesIn(d, L, 1, 1).map((e) => e.k), ['L'], label + ': 12:15 PM is afternoon');
+    assert.deepEqual(I.eventsIn(d, L, 1, 0, ['moonrise', 'moonset']).map((e) => e.kind), ['moonrise']);
+    let prev = -Infinity;
+    for (let t = m[1]; t <= m[2]; t += 10 * 60000) { const x = I.xOf(L, t); assert.ok(x > prev, label + ': monotone'); prev = x; }
+    for (let x = I.COL_CLOSED; x < I.COL_CLOSED + I.COL_OPEN; x += 13) assert.ok(Math.abs(I.xOf(L, I.tOf(L, x)) - x) < 1e-6);
+  }
+  const plain = I.noons(MIDS, HNL); assert.ok(plain.every((n, k) => n === (MIDS[k] + MIDS[k + 1]) / 2), 'a 24-hour day: its middle');
+  const lh = I.zoneClock('Australia/Lord_Howe'), lm = I.midnights(Date.UTC(2026, 9, 3, 6), 2, lh), ln = I.noons(lm, lh);
+  assert.deepEqual([lh.parts(ln[1]).h, lh.parts(ln[1]).mi], [12, 0], 'the 23.5-hour day of Lord Howe too');
 });
 
 test('the vertical scale: a nice step with 3-7 ticks, room above the top, feet and metres', () => {
@@ -402,4 +421,24 @@ test('the scale keeps a step of room above a value that sits on a tick; a slow a
   a.answers[2].res(response(200, payload({ obs: false })));
   await flush();
   assert.deepEqual(a.view.state().open, [0], 'a new station: today open, nothing else');
+});
+
+test('the strip on a clock-change week: New York on Fri 30 Oct, Sun 1 Nov opened, its 11:45 AM high in the AM half; the moon taken at local noon', async () => {
+  const ny = I.zoneClock('America/New_York'), now = Date.UTC(2026, 9, 30, 16), m = I.midnights(now, 3, ny), nn = I.noons(m, ny);
+  const noonSun = nn[2], before = noonSun - 15 * 60000;                     // Sun 1 Nov 11:45 AM EST
+  const s = setup({ now });
+  s.view.load({ id: '8518750', name: 'The Battery', tz: 'America/New_York', obs: false, lat: 40.7 });
+  const pl = payload({ id: '8518750', tz: 'America/New_York', lat: 40.7, obs: false, begin: Date.UTC(2026, 9, 28, 12) / 1000,
+    hilo: [[before / 1000, 1.2, 'H'], [(noonSun + 6 * H) / 1000, 0.2, 'L']],
+    moon: [[m[0] / 1000, 0.1, 10, 'Midnight sample'], [(m[0] + 12 * H + 2 * H) / 1000, 0.12, 12, 'Noon sample']] });
+  s.answers[0].res(response(200, pl));
+  await flush();
+  s.q('button[data-day="2"]')[0].dispatch('click');
+  assert.equal(s.q('button[data-day="2"]')[0].textContent, 'Sunday, Nov 1');
+  const highs = s.q('.tide-row-high')[0].querySelectorAll('td');            // label, day 0 (open: AM, PM), day 1, day 2 AM, day 2 PM ...
+  assert.equal(highs[4].textContent, '11:45 AM3.9 ft', 'the high at 11:45 AM sits in the AM half of the 25-hour day');
+  assert.equal(highs[5].textContent, '');
+  const L = s.view.state().layout;
+  assert.equal(I.xOf(L, noonSun), L.lefts[2] + I.COL_OPEN / 2, 'local noon at the AM | PM line');
+  assert.equal(s.q('.tide-moon-glyph')[0].getAttribute('title'), 'Noon sample, 12% lit', 'the sample nearest local noon');
 });

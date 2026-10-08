@@ -320,3 +320,55 @@ Every item of the scope above was fixed, each with a test:
 - **Screenshots:** scratch `g26/verify2/shots/overlay_panel_2.14.8.jpg`.
 - **Cleanup:** the test origin's storage emptied through /robots.txt, emulation reset, Edge closed (no process left on
   the profile), and the profile removed.
+
+## Short fresh check of fix round 2 (Opus 5.5 MAX, one fresh reviewer): asset 2.14.8
+The reviewer worked on the code in its own worktree and on the test site with trusted input (headless Edge 154).
+Report: scratch `g26/fix2check/fix2check-report.md` (scripts in `fuzz/` and `hl/`, raw output in `out/`).
+
+**Result: 0 P0, 0 P1, 0 P2, 7 P3.** It saw no wrong data under a label, no hang, no console error and no stuck state.
+
+### Confirmed by the reviewer
+- **Served files:** byte for byte the commit. Its own suites: Node 469 and pytest 825.
+- **Gesture fuzz:** 20,000 runs and 98,247 gestures on the real `render()`, with a controllable rAF and timers, against
+  an oracle written from the brief. The events included one to three pointers, cancels, stray lost captures, renders
+  mid-gesture, playback ticks, wheel, keys and same-id re-presses. Invariants (a), (b), (d), (e), (f) and (g) always
+  hold; (c) holds except F1. As a sanity check, the same fuzz flags 22 violation classes on 2.14.7.
+- **Live gestures:** fast flicks, a slow jittery drag, paths crossing 45 degrees, long presses at 4x then a tap (the
+  frame under the finger), and two-finger taps all behaved as designed. K-2 is no worse.
+- **Fold vs 2.14.7:** 108 rows, 36 sizes x 3 passes. Only 4 differences, all the intended removal of the dead toggle
+  (RC-3). Nothing over (i)/Home.
+- **Focus:** never taken from outside the panel. It follows the panel between the control and the sheet, and never
+  scrolls the page.
+- **Status node:** one node through Off / On, errors, Retry and Update. It does not change the page's scroll size or
+  print, and it speaks once per new unavailable frame.
+- **`FMT_CACHE`:** Object-member zone names no longer throw.
+
+### Findings (author's check in the last column)
+| # | Sev | Finding | Author's check |
+|---|---|---|---|
+| F1 | P3 | At either end of the run, a tap whose finger rolls outward picks the frame under the LIFT-OFF point, not the touch-down point. `rb.move` clamps the offset, so the current offset plus the lift-off point counts the clamped part of the roll. Live: 10 of 25 taps at +0 h with a rightward roll went 1-2 frames late; 0 of 6 at frame 40. | Reproduced on `RibbonState`: frame 0 with 1.26 px + 1 px roll picks 1 (touch-down 0); 0.72 + 2 picks 1; 2.34 + 3.5 picks 2 (1); the last frame with -1.26 - 1 picks 119 (120); frame 40 correct. |
+| F2 | P3 | Keyboard focus is lost through the loading and error renders. Their early returns never call `_refocus`, and the loading panel has nothing focusable, so the ready render finds the focus outside the panel. Live with real keys: Retry focused + a height change -> BODY; Enter on Retry (failing or succeeding) -> BODY; Enter on Update -> BODY. Fix round 2's scope listed Update and Retry. Not a regression. | Code: overlay.js 2771-2777. |
+| F3 | P3 | A pointerup at a new position with no move before it skips the direction rule when the sideways travel was already >= 4 px. Live, trusted CDP mouse: move (-5, +3), release at (-5, +12): seek 60 -> 61 although the travel is mostly vertical. Chromium sent no pointermove at the release point. Unknown whether a physical mouse does this. | Code: the release check at 2681 looks at the release point only when `rb.moved < 4`. |
+| F4 | P3 | A focused details scroll box (Chromium makes an overflowing scroller a Tab stop, seen at 1280x430) loses its focus to the play button on a re-render: `ov-details` is not in `FOCUS_PARTS`. | Code: 2896. |
+| F5 | P3 | The first message of a page load is probably not spoken: `_say` creates the role=status node already holding "Loading model frame…" in one mutation batch, and a live region that appears with its content is often skipped. Not checked with a screen reader. | Code: 2919. |
+| F6 | P3 | (Also in 2.14.7.) While playing at 1x / 2x, a tap during the ribbon's 150 ms step animation picks the frame AFTER the one visibly under the finger. The press drops the transition and uses the logical offset. 2.14.8: 4 / 40 at 1x and 8 / 40 at 2x; 2.14.7 served in its place: 5 / 40 and 9 / 40. Long presses at 4x (no animation) picked the visible frame. | Code: `pointerdown` sets `transition: none`, and the tap starts from `rb.offset` (the target, not the visible position). |
+| F7 | P3 | Test gaps: 16 of the reviewer's 25 new mutants survive the suites. The ones that matter: N1 (an exact 45-degree tie decides sideways), N2 / N3 (the release-point guard), N4 (`<` vs `<=` on the 4 px tap line), N5 (`back()` without `_syncUI`), N8 (the unavailable message spoken only while the details exist), N9 (the folded title keeps `.ov-model`), N15 (an empty warning box shown), N17 (direction by \|dx\| + \|dy\|), N23 / N24 (the tiny-sheet path keeps a dead toggle or drops the refocus), N25 (a wrong start frame). N5, N17 and N25 are caught only by the reviewer's fuzz. | `fix2check/fuzz/fc_mut.log.txt`. |
+
+**Not counted (defensive):** a touch whose release never reaches the ribbon leaves the gesture open. Every later touch
+(a new `pointerId`) is then taken as a second finger and ignored until the next render. The reviewer could not make a
+release go missing with trusted input; capture plus `lostpointercapture` normally prevents it. Code-read confirmed.
+
+**Noted:** a folded render now costs what an open one does (about 4.5-5.4 ms, was 0.4-1.2 ms), because the open panel
+is built to be measured. Renders happen only on size changes and toggles.
+
+### Proposed fix round 3 scope (asset 2.14.9), for the owner's decision
+1. **F1:** a tap picks `o0 + (touch-down point - centre)`.
+2. **F3:** the release point follows the same direction rule as a move.
+3. **F6:** a press during the step animation starts from the ribbon's visible position.
+4. **F2:** focus is kept through the loading and error states (a pending focus class, applied only while the focus is
+   on the body) and Retry gets it back.
+5. **F4:** `ov-details` is added to the focus parts.
+6. **F5:** the status node is created empty and its first text written a moment later.
+7. **Defensive:** a press from a new pointer starts a new gesture when the old pointer no longer holds the capture.
+8. **F7:** tests for the gaps above, mutants, the version, the pin and README.
+9. A short test-site check with trusted input, then STOP for production.

@@ -125,3 +125,112 @@ Every item of the scope above was fixed, each with a test:
   snapped it to the NEIGHBOURING frame (16 -> 15). FIXED in asset 2.14.7: `RibbonState.end` sends a release that is not
   a pick (no finger position) with < 4 px of travel back to the offset it started from; a real drag still snaps to the
   nearest frame. Unit test; the old `end` fails it.
+
+## Re-check of the fix round (step 6, Opus 5.5 MAX): asset 2.14.7, two fresh reviewers
+Reviewer R1 read the code without a browser. It worked in its own worktrees, re-ran A's scripts, ran an all-zone check,
+built a gesture case table with a 6,000-gesture fuzz, and ran three mutant sets. Reviewer R2 tested the test site
+(test @ ececc24) with trusted input in headless Edge 154: touch with emulation on the phone sizes, and mouse, wheel and
+keys on desktop. It logged `isTrusted` on every event. Their reports are in scratch `g26/recheck/r1/recheck-r1-report.md`
+and `g26/recheck/r2/recheck-r2-report.md`.
+
+**Result: 0 P0, 0 P1, 3 P2, 6 P3 distinct.** R1 found 0 P0, 0 P1, 2 P2 and 7 P3; R2 found 0 P0, 0 P1, 2 P2 and 1 P3;
+three findings overlap. Neither reviewer saw wrong data under a label, a hang or a console error. The map never moved
+under a ribbon gesture, and nothing covered the (i)/Home column at any size.
+
+### The G26 findings
+| Finding | Verdict | Evidence |
+|---|---|---|
+| A-P2-1 clock change at midnight | FIXED | R1 checked every UTC-offset change of 2026-27 (520 changes in 130 zones), each with 20 run starts: 65,920 + 3,352 layouts, 0 differences from an independent 15-minute scan. R2 checked 780 layouts in Edge's own Intl (0 mismatches) and switched the live page to Atlantic/Azores; the 25-hour day showed one "Oct 25" label. |
+| A-P2-2 tap race | FIXED | R2: 36 of 36 trusted taps with a 1-3 px roll landed on the tapped frame. With rAF forced 80 ms late, 6 of 6 made one seek only. R1: A's TAP RACE passes in both orders; nothing landed after a release in the fuzz. |
+| A-P2-3 cancel / vertical swipe | PARTLY | Fixed: a real touch cancel goes back to its own frame, and straight swipes leave the time alone (R2, 36 of 36). Left: a swipe that drifts sideways still moves the time (RC-1). |
+| B-1 desktop room | FIXED | R2 swept 1280 x 330-900 in 10 px steps (58 fresh loads, 232 resize steps, open and folded): never an overlap, minimum clearance 20 px. At 1280x400 the clearance is +42 px (was -53). R1's arithmetic holds at both edges for control tops 0, 10, 80 and 140. |
+| A-P3-1 pointer contrast | FIXED | R2's 2x pixels show a 1 px navy edge on each side of the coral line and on both slanted edges of the triangle; navy on cream is 12.91:1. |
+| A-P3-2 zone fallback | FIXED | R1: 924 checks (7 computer zones x 22 zone values x 6 instants) all match the page's clock. R2 confirmed it in the browser with the computer's zone emulated. A visitor cannot reach this path. |
+| A-P3-3 selector | FIXED | Both: one `#ovSpeedMenu` across renders; ArrowUp from the listbox goes to the last option. |
+| A-P3-4 coarse targets | FIXED | R2 measured on coarse-pointer phones: toggle 28 x 28 px, overview slider 24 px tall. |
+| A-P3-5 live regions | PARTLY | The ready panel is no longer live, but the unavailable note, still a live region, is rewritten on every frame (RC-7). |
+| A-P3-6 test gaps | FIXED as scoped | The re-check found new gaps (RC-8). |
+| A-P3-7 run line | FIXED | R2: the real timer fires every 60.0 s on an idle panel; with the clock faked +6 h it switched to "expected shortly". R1: one timer per mount, cleared at Off. |
+| B-2 focus through a fold | FIXED for the toggle | Other renders still drop the focus (RC-6). An unfold that ends with no toggle drops it too (RC-3). |
+
+### New findings
+| # | Sev | Finding | From | Author's check |
+|---|---|---|---|---|
+| RC-1 | P2 | A vertical swipe on the ribbon that drifts 4 px or more sideways is handled as a drag. Over a 100-120 px swipe, 4 / 6 / 8 / 12 px of drift moves the time 1-4 h (R2: trusted touch, 3 of 3 each, on two phone sizes and with a mouse; R1: the case table). Swipes at 70-80 degrees scrub 6-10 h. A straight swipe while playing stops playback. There is no direction lock; the 4 px tap line is the only guard. R2 tried `touch-action: pan-y` again: no `pointercancel` in 48 trials, so reverting would not help. | R1-1, R2-1 | Code: the moves follow x from the first move, and `end()` keeps any travel of 4 px or more. |
+| RC-2 | P2 | Two fingers on the ribbon move the time by up to 1.5 days. Every `pointerdown` restarts the drag, and moves are not filtered by `pointerId`. A pinch-out gave +33 h, a pinch-in +17 / +28 h, and a second finger during a drag jumped +46 -> +64 -> +51 h. Present since step 3. | R2-2 (P2), R1-5 (P3) | Code read. |
+| RC-3 | P2 | At some sizes the folded panel offers ▸ but the open panel cannot fit even the transport row. Tapping ▸ then removes ▸, opens nothing, and takes the keyboard focus with it. On the phone sheet this is maps of about 195-274 px: a phone held sideways with the forecast or live-buoy bar docked. On desktop it happens in the page's phone mode. Present since step 4c. | R1-2 | Re-run on the author's code: at maps of 195, 230 and 264 px, ▸ disappears, `collapsed` becomes false and the focus stays on the removed toggle; at 274 px the transport row opens. |
+| RC-4 | P3 | Even with less than 4 px of drift, a swipe loads the neighbouring frame and then goes back (472 of 1,838 swipes in R1's fuzz; R2 saw seeks 39, 38, 39, 40). | R1-3, R2 | Code read. |
+| RC-5 | P3 | The tap rule counts the finger's roll twice: it uses `o0 +` the lift-off point, but the ribbon already followed the roll. A 2 px roll at a frame boundary picks the next hour. | R1-4 | Code read. |
+| RC-6 | P3 | Every render except the toggle's own drops the keyboard focus, and an open speed menu closes. Since B-1, every desktop height change re-renders: a window resize, page zoom, a browser bar, or the page's phone-mode bars. | R1-7, R2-3 | Code read (`clear(host)`). |
+| RC-7 | P3 | The unavailable note, a live region, is rewritten with the same text on every frame. A loading render makes the host live in the same step as its content, which screen readers often miss. | R1-6 | Code read: `_syncUI` writes `textContent` on every call. |
+| RC-8 | P3 | Test gaps. Mutants of these survive the shipped suites: (a) the `!rb.dragging` guard, the only thing stopping the `lostpointercapture` that follows every `pointerup` from undoing a tap (S4); (b) the pointerup-only tap rule (G7); (c) the 10 px swipe threshold (G3); (d) the zone-fallback tests, which only fail off-UTC while CI runs in UTC; (e) the first height change after binding; (f) the order of the B-2 focus check; (g) the timer period; (h) the CSS edge and coarse sizes; (i) the roll rule. Also pre-existing gaps nothing kills: U2, T6, S8, A5. | R1-8 | S4, G7 and G3 run against the shipped suites: all three survive. |
+| RC-9 | P3 | `FMT_CACHE` is a plain object, so `ribbonFormatter('constructor')` returns `Object` and `ribbonLayout` throws. Not reachable: the server always sends a validated IANA name. | R1-9 | Code read. |
+
+Not counted:
+- K-5 is confirmed, along with two more stale comments of the same kind: `_onSize`'s header and `ribbonLayout`'s
+  "every local midnight".
+- Turning the layer Off in the loading or error state leaves `aria-live` on the empty panel.
+- By design: the 4 px tap line is below a finger's usual slop, so a 4-9 px slide is a 1-2 h drag.
+
+### Confirmed by the re-check
+- **Suites:** Node 460 and pytest 825 pass in R1's worktree.
+- **A's scripts at 630a768:** the scrub fuzz passes 8 of 8; the RibbonState fuzz passes 1,022,273 checks; the panel
+  extras pass 15 of 16, and the one failure is by design (a desktop height change now re-renders).
+- **K-2:** not worse than stated.
+- **Touch:** 228 one-finger gestures on two phone sizes (taps, rolls, wobble up to 9 px, long press, short and long
+  drags, clamps at 0 / 208). The map never moved, and the page never scrolled or zoomed.
+- **Mouse, wheel and keys:** as in G26.
+- **Sizes:** nine sizes without reloads. The time sits exactly under the pointer, nothing covers (i)/Home, and the
+  viewer's fold is kept.
+- **Regression sweep:**
+  - fields, and Off with 0 model requests afterwards;
+  - cadence and the loop;
+  - loading, 404 and out-of-order frames;
+  - the folded line "Fri, Oct. 9, 08:00 AM HST";
+  - zones and units;
+  - forecast-point and live-buoy clicks while playing;
+  - the phone menu opening upward;
+  - a fresh tab with no console errors;
+  - the warm first frame within noise of production (286 vs 305 ms).
+
+### Mutation
+- The author's step-6 set: 18 of 18 applicable killed.
+- R1's own 50: 28 of 49 applied killed. Each of the 21 survivors has a verdict; the real gaps are in RC-8.
+- A's 56 (K-6, now finished): 32 of 51 applicable killed. U2, T6, S8 and A5 are killed by nothing.
+
+### Could not check
+- A real phone, Safari or Firefox, or a screen reader.
+- A real device's cancel timing and how far a real finger drifts sideways.
+- The in-app pane (hidden).
+- A clock change at midnight on the live run (checked through the module instead).
+
+### Fix round 2 scope (asset 2.14.8)
+1. **The ribbon's gestures (RC-1, RC-2, RC-4, RC-5).**
+   - One pointer per gesture: the pointer that pressed.
+   - Its direction is decided once the press has travelled 10 px, by whichever direction is larger. Sideways is a
+     scrub: playback pauses and scrubbing starts then. Up or down is a swipe: never a pick, the ribbon goes back, no
+     frame is loaded, and playback carries on.
+   - Before the decision the ribbon follows the finger but loads nothing. A release before it is a tap if the finger
+     moved less than 4 px sideways (the frame under the finger when it touched down), or a short drag otherwise.
+   - A second finger ends the gesture as no pick: back to the frame it started on.
+   - The tap uses the current offset plus the lift-off point.
+   - Fix K-5 and the two other stale comments.
+2. **The fold (RC-3).**
+   - Decide open or folded from the built panel, measured.
+   - Offer ▸ only when opening shows more than the one-line head. The sheet opens whenever the transport row fits;
+     this replaces the fixed 110 px rule.
+   - When a focused toggle goes, move the focus to the head play button.
+3. **Focus through renders (RC-6).** After any render, the control that had the focus gets it back on its successor
+   (with preventScroll): toggle, play, ribbon, speed button or menu, overview slider, Update or Retry. This replaces the
+   toggle's own refocus.
+4. **Announcements (RC-7).** One persistent, visually hidden status node (role=status) carries the loading, error and
+   unavailable messages, and is written only when the text changes. The host and the note are no longer live regions,
+   so Off leaves nothing live.
+5. **`FMT_CACHE`:** prefix its keys (RC-9).
+6. **Tests and release.**
+   - Tests for RC-8 (a)-(i) and for U2, T6, S8 and A5, plus mutants of the new code.
+   - Version 2.14.8, the asset pin and README.
+   - The test site with trusted touch (headless Edge) at MAX, then a short fresh check of the gesture model.
+   - Then STOP for the owner's production approval.
+
+Accepted: the 4 px tap line (by design), and K-1 to K-6 as stated.

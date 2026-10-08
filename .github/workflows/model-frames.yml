@@ -28,11 +28,11 @@ permissions:
   contents: read
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120                   # a 209-step build takes ~10-15 min; a killed build leaves no failure record (G13a P3-1)
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
-      - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462   # v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
         with:
           environment-name: frames
           create-args: >-

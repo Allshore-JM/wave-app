@@ -618,6 +618,28 @@ def test_workflows_pin_actions_and_packages():
     assert all(re.fullmatch(r"[a-z0-9-]+==[0-9][0-9A-Za-z.]*", p) for p in pip), pip
 
 
+def test_workflows_pin_the_runner_and_skip_tag_pushes():
+    """Every job on a fixed runner image (ubuntu-latest moves to a new release on GitHub's schedule); the push-triggered
+    test workflows run for branches only (a rollback tag on an old commit re-ran old, already superseded failures) and
+    whenever the shared tests/conftest.py changes (every suite loads it: a break there failed both jobs unnoticed)."""
+    import re
+    wf = os.path.join(ROOT, ".github", "workflows")
+    names = sorted(f for f in os.listdir(wf) if f.endswith(".yml"))
+    assert len(names) >= 5
+    for name in names:
+        text = open(os.path.join(wf, name), encoding="utf-8").read()
+        runners = re.findall(r"runs-on:[ ]*([^\s#]+)", text)
+        assert runners and set(runners) == {"ubuntu-24.04"}, (name, runners)
+    for name in ("coast-build.yml", "model-frames-tests.yml"):
+        text = open(os.path.join(wf, name), encoding="utf-8").read()
+        push = text.split("  push:\n", 1)[1].split("\n  ", 1)[0]
+        assert re.match(r'[ ]+branches: \["\*\*"\]', push), (name, push)
+        on_push = text.split("  push:\n", 1)[1].split("\npermissions:", 1)[0].split("workflow_dispatch:", 1)[0]
+        assert '"tests/conftest.py"' in on_push.split("pull_request:")[0], name
+    tests = open(os.path.join(wf, "model-frames-tests.yml"), encoding="utf-8").read()
+    assert '"tests/conftest.py"' in tests.split("pull_request:")[1].split("permissions:")[0]
+
+
 def test_main_counts_not_ready_without_backoff(monkeypatch, capsys):
     monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
     c = FakeClient()

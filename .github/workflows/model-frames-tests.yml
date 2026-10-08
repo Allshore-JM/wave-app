@@ -2,20 +2,21 @@
 name: model-frames-tests
 on:
   push:
-    paths: ["tools/model_frames/**", "tests/model_frames/**", ".github/workflows/model-frames-tests.yml",
+    branches: ["**"]                       # branches only: a rollback tag on an old commit is not a new test run
+    paths: ["tools/model_frames/**", "tests/model_frames/**", "tests/conftest.py", ".github/workflows/model-frames-tests.yml",
             ".github/workflows/model-frames.yml", ".github/workflows/model-points.yml", ".github/workflows/model-frames-keepalive.yml"]
   pull_request:
-    paths: ["tools/model_frames/**", "tests/model_frames/**", ".github/workflows/model-frames.yml",
+    paths: ["tools/model_frames/**", "tests/model_frames/**", "tests/conftest.py", ".github/workflows/model-frames.yml",
             ".github/workflows/model-points.yml", ".github/workflows/model-frames-keepalive.yml"]
 permissions:
   contents: read
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065   # v5.6.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
         with:
           python-version: "3.11"
       - run: pip install numpy==2.2.6 pillow==11.2.1 pytest==9.1.1

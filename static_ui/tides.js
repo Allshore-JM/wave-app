@@ -35,6 +35,7 @@
   var WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   var WEEKDAY_NAMES = { Sun: 'Sunday', Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday' };
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var CALLOUT_EDGE = 26;                // px: a callout this close to an end of the strip is anchored at the dot, not centred
   // the moon as seen from the northern hemisphere, one glyph per eighth of the cycle (the forecast table's); mirrored south
   var MOON_GLYPHS = ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'];
   var METHOD_TEXT = {
@@ -97,7 +98,8 @@
   function num(v) { return typeof v === 'number' && isFinite(v); }        // isFinite(null) is true: a gap is no 0
   function unitOf(u) { return u === 'Metric' ? 'Metric' : 'US'; }
   function height(m, unit) { return unit === 'Metric' ? m : m * FT_PER_M; }
-  function heightText(m, unit) { return unit === 'Metric' ? height(m, unit).toFixed(2) + ' m' : height(m, unit).toFixed(1) + ' ft'; }
+  function fixed(v, n) { var s = v.toFixed(n); return /^-0(\.0+)?$/.test(s) ? s.slice(1) : s; }            // never "-0.0"
+  function heightText(m, unit) { return unit === 'Metric' ? fixed(height(m, unit), 2) + ' m' : fixed(height(m, unit), 1) + ' ft'; }
 
   // The local noon of each day: the instant the zone's clock reads 12:00 (on a clock-change day not the day's middle:
   // 25 h from midnight to midnight puts the middle at 11:30 AM, 23 h at 12:30 PM).
@@ -165,7 +167,7 @@
     return { lo: a, hi: b, step: step, ticks: ticks,
              y: function (v) { return CHART_PAD.top + (b - v) / (b - a) * inner; } };
   }
-  function tickText(v, unit) { return unit === 'Metric' ? v.toFixed(1) : (Math.abs(v - Math.round(v)) < 1e-9 ? String(Math.round(v)) : v.toFixed(2).replace(/0$/, '')); }
+  function tickText(v, unit) { return unit === 'Metric' ? fixed(v, 1) : (Math.abs(v - Math.round(v)) < 1e-9 ? String(Math.round(v) + 0) : fixed(v, 2).replace(/0$/, '')); }
 
   // the curve's samples inside [from, to) plus one on each side: [{t, m}] (m null in a gap)
   function samples(d, from, to) {
@@ -376,9 +378,12 @@
           svg.appendChild(svgEl('circle', { 'class': 'tide-dot', cx: x.toFixed(1), cy: y.toFixed(1), r: 3.2, fill: COLORS.extreme }));
           if (L.open[k2]) {                                                // the callout on an open day: time over height
             var up = e.k === 'H', y1 = up ? y - 20 : y + 14, y2 = up ? y - 9 : y + 25;
+            // near either end of the strip the text starts (or ends) at the dot, so the chart's edge does not cut it
+            var anchor = x < CALLOUT_EDGE ? 'start' : x > L.total - CALLOUT_EDGE ? 'end' : 'middle';
+            var tx = (anchor === 'start' ? Math.max(2, x - 3) : anchor === 'end' ? Math.min(L.total - 2, x + 3) : x).toFixed(1);
             var g = svgEl('g', { 'class': 'tide-callout tide-callout-' + (up ? 'high' : 'low') });
-            var t1 = svgEl('text', { x: x.toFixed(1), y: y1.toFixed(1), 'text-anchor': 'middle', 'font-size': 10.5, fill: COLORS.text }); t1.textContent = clockText(clk.parts(e.t)); g.appendChild(t1);
-            var t2 = svgEl('text', { x: x.toFixed(1), y: y2.toFixed(1), 'text-anchor': 'middle', 'font-size': 10.5, 'font-weight': 600, fill: COLORS.text }); t2.textContent = (up ? '↑' : '↓') + heightText(e.m, st.unit); g.appendChild(t2);
+            var t1 = svgEl('text', { x: tx, y: y1.toFixed(1), 'text-anchor': anchor, 'font-size': 10.5, fill: COLORS.text }); t1.textContent = clockText(clk.parts(e.t)); g.appendChild(t1);
+            var t2 = svgEl('text', { x: tx, y: y2.toFixed(1), 'text-anchor': anchor, 'font-size': 10.5, 'font-weight': 600, fill: COLORS.text }); t2.textContent = (up ? '↑' : '↓') + heightText(e.m, st.unit); g.appendChild(t2);
             svg.appendChild(g);
           }
         });
@@ -619,7 +624,7 @@
       zoneClock: zoneClock, localMidnightBefore: localMidnightBefore, midnights: midnights, noons: noons, clockText: clockText, dayShort: dayShort,
       dayLong: dayLong, stampText: stampText, layout: layout, dayOf: dayOf, xOf: xOf, tOf: tOf, yScale: yScale, tickText: tickText,
       samples: samples, heightAt: heightAt, extremesIn: extremesIn, eventsIn: eventsIn, moonOf: moonOf, nightSpans: nightSpans,
-      curvePaths: curvePaths, heightText: heightText
+      curvePaths: curvePaths, heightText: heightText, CALLOUT_EDGE: CALLOUT_EDGE
     }
   };
   if (typeof window !== 'undefined') window.AllshoreTides = api;

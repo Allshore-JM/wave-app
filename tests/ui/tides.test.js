@@ -471,3 +471,27 @@ test('a clock change inside the 30 days: the rows say "local", the notes name bo
   assert.equal(s.q('.tide-row-high')[0].querySelectorAll('td')[0].textContent, 'HIGH(UTC)');
   assert.match(s.els.meta.textContent, /times in UTC · click a day/);
 });
+
+test('heights never read "-0.0"; a callout at either end of the strip is anchored at its dot, not cut by the edge', async () => {
+  assert.equal(I.heightText(-0.01, 'US'), '0.0 ft'); assert.equal(I.heightText(-0.004, 'Metric'), '0.00 m');
+  assert.equal(I.heightText(-0.02, 'US'), '-0.1 ft'); assert.equal(I.heightText(-0.006, 'Metric'), '-0.01 m');
+  assert.equal(I.tickText(-1e-12, 'Metric'), '0.0'); assert.equal(I.tickText(-1e-12, 'US'), '0'); assert.equal(I.tickText(-0.5, 'US'), '-0.5');
+  const s = setup();
+  s.view.load(HNL_ST);
+  const t0 = MIDS[0] / 1000 + 20 * 60, tEnd = MIDS[I.DAYS] / 1000 - 20 * 60;   // 12:20 AM today; 11:40 PM on the last day
+  const pl = payload({ hilo: [[t0, -0.01, 'L'], [t0 + 6 * 3600, 0.9, 'H'], [(MIDS[0] + 13 * 3600000) / 1000, 0.1, 'L'], [tEnd, 0.8, 'H']] });
+  s.answers[0].res(response(200, pl));
+  await flush();
+  const L = s.view.state().layout;
+  const first = s.q('.tide-callout')[0].querySelectorAll('text');
+  assert.equal(first[0].getAttribute('text-anchor'), 'start', 'by the left end: starts at the dot');
+  assert.equal(first[1].textContent, '↓0.0 ft');
+  assert.ok(+first[0].getAttribute('x') >= 2 && +first[0].getAttribute('x') < I.CALLOUT_EDGE);
+  const mid = s.q('.tide-callout')[1].querySelectorAll('text');
+  assert.equal(mid[0].getAttribute('text-anchor'), 'middle');
+  s.view.toggleDay(I.DAYS - 1);                                              // the last day open: its late high by the right end
+  const all = s.q('.tide-callout'), last = all[all.length - 1].querySelectorAll('text');
+  assert.equal(last[0].getAttribute('text-anchor'), 'end');
+  assert.ok(+last[0].getAttribute('x') <= L.total || +last[0].getAttribute('x') <= s.view.state().layout.total);
+  assert.equal(s.q('.tide-row-low')[0].querySelectorAll('td')[1].textContent, '12:20 AM0.0 ft', 'the table says 0.0 too');
+});

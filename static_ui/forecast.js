@@ -12,7 +12,8 @@
  * #forecastTable (#forecastLoading inside it until the first forecast lands) #forecastSummary #graphs (.chart-box > canvas
  * #heightChart #periodChart #directionChart) #fwResize; #settingsBtn #settingsPanel #tz #unit #station
  * #stationTrigger #stationCurrent (the favourites picker is the window's heading; #fwTitle is its field);
- * #liveBuoyPanel #lwHeader #lwMin #lwClose #lwResize (createLiveWindow). The page dispatches 'allshore:station' {sid, source} on a
+ * #liveBuoyPanel #lwHeader #lwMin #lwClose #lwResize (createLiveWindow); #tideWin #twHeader #twMin #twClose #twResize
+ * (createTideWindow, plan section 38). The page dispatches 'allshore:station' {sid, source} on a
  * marker click ('map') or a favourites pick ('picker'). After each forecast this module dispatches 'allshore:forecast'
  * {station, tz, model, view, ok, point}. Forecast points (plan section 31): pointId / parsePointId (the server's id rule)
  * and createPointStore (the visitor's own points, localStorage 'allshore.points.v1').
@@ -23,6 +24,7 @@
   var SETTINGS_KEY = 'allshore.settings.v1';   // localStorage {tz, unit}
   var WINDOW_KEY = 'allshore.forecastWin.v1';  // sessionStorage {x, y, w, h, mode, prev}
   var LIVE_WINDOW_KEY = 'allshore.liveWin.v1'; // the live-buoy window's (the same shape)
+  var TIDE_WINDOW_KEY = 'allshore.tideWin.v1'; // the tide-station window's (plan section 38)
   var RANGE_KEY = 'chartRange';                // sessionStorage 'full' | '7' | '3' (unchanged from the old page)
   var POINTS_KEY = 'allshore.points.v1';       // localStorage [{id, lat, lon, name}]: the visitor's forecast points
   var POINTS_MAX = 50, POINT_NAME_MAX = 40;
@@ -736,35 +738,38 @@
     return { open: function () { set(true); }, close: function () { set(false); }, isOpen: function () { return open; } };
   }
 
-  // ---- the live-buoy window (plan section 26) ----
-  // A FloatingWindow over the page's live-buoy markup (#liveBuoyPanel with #lwHeader, #lwMin, #lwClose, #lwResize),
-  // opened and closed by the map script; no maximised state (owner: no gain); a new tab opens it as a window;
-  // minimised it is a chip at the bottom-right (a bar above the forecast bar on phones) with the close button still
-  // there. Dispatches 'allshore:livewin' {open, mode} on every change (the page sizes the map around the phone bars).
-  // opts: window, document, storage, onClose() (the map script's own close work, e.g. abandoning a fetch).
-  function createLiveWindow(opts) {
-    opts = opts || {};
-    var win = opts.window || window, doc = opts.document || win.document;
+  // ---- the station windows: live buoy (plan section 26) and tide station (plan section 38) ----
+  // A FloatingWindow over the page's markup for one station kind, opened and closed by the map script; no maximised
+  // state (owner: no gain); a new tab opens it as a window; minimised it is a chip at the bottom-right (a bar above
+  // the forecast bar on phones) with the close button still there. Dispatches its event {open, mode} on every change
+  // (the page sizes the map around the phone bars and stacks the chips).
+  // spec: ids {el, header, min, close, resize}, key (sessionStorage), event, label ("live buoy" in the buttons' names),
+  //       window, document, storage, onClose() (the map script's own close work, e.g. abandoning a fetch),
+  //       onResize() (the tide chart follows its window).
+  function createStationWindow(spec) {
+    spec = spec || {};
+    var win = spec.window || window, doc = spec.document || win.document, ids = spec.ids || {};
     var $ = function (id) { return doc.getElementById(id); };
-    var el = $('liveBuoyPanel'), header = $('lwHeader'), minBtn = $('lwMin'), closeBtn = $('lwClose');
+    var el = $(ids.el), header = $(ids.header), minBtn = $(ids.min), closeBtn = $(ids.close), label = spec.label || 'window';
     if (!el || !header) return null;
-    var storage = opts.storage || (function () { try { var st = win.sessionStorage; if (st && typeof st.getItem === 'function') return st; } catch (e) {} return { getItem: function () { return null; }, setItem: function () {} }; })();
-    var fw = new FloatingWindow({ el: el, header: header, handle: $('lwResize'), storage: storage, win: win, key: LIVE_WINDOW_KEY, defaultMode: 'normal', canMax: false,
+    var storage = spec.storage || (function () { try { var st = win.sessionStorage; if (st && typeof st.getItem === 'function') return st; } catch (e) {} return { getItem: function () { return null; }, setItem: function () {} }; })();
+    var fw = new FloatingWindow({ el: el, header: header, handle: $(ids.resize), storage: storage, win: win, key: spec.key, defaultMode: 'normal', canMax: false,
       onMode: function (m) {
-        if (minBtn) { minBtn.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); minBtn.setAttribute('aria-label', m === 'min' ? 'Expand live buoy' : 'Minimise live buoy'); minBtn.textContent = m === 'min' ? '\u25B4' : '\u2013'; }
+        if (minBtn) { minBtn.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); minBtn.setAttribute('aria-label', (m === 'min' ? 'Expand ' : 'Minimise ') + label); minBtn.textContent = m === 'min' ? '▴' : '–'; }
         notify();
-      } });
+      },
+      onResize: function () { if (spec.onResize) spec.onResize(); } });
     function notify() {
       if (!fw) return;                                                       // (onMode runs once inside the constructor)
-      try { doc.dispatchEvent(new CustomEvent('allshore:livewin', { detail: { open: !el.hidden, mode: fw.mode } })); } catch (e) {}
+      try { doc.dispatchEvent(new CustomEvent(spec.event, { detail: { open: !el.hidden, mode: fw.mode } })); } catch (e) {}
     }
     function isOpen() { return !el.hidden; }
-    function open() {                                                       // a buoy pick: shown, expanded, on top
+    function open() {                                                       // a pick: shown, expanded, on top
       el.hidden = false;
       if (fw.mode === 'min') fw.expand();
       notify();
     }
-    function close() { el.hidden = true; if (opts.onClose) opts.onClose(); notify(); }
+    function close() { el.hidden = true; if (spec.onClose) spec.onClose(); notify(); }
     if (minBtn) minBtn.addEventListener('click', function () { if (fw.mode === 'min') { fw.expand(); if (header.focus) header.focus({ preventScroll: true }); } else fw.minimise(); });
     if (closeBtn) closeBtn.addEventListener('click', function () { close(); });
     header.addEventListener('click', function (e) {
@@ -772,10 +777,21 @@
     });
     return { window: fw, open: open, close: close, isOpen: isOpen, el: el };
   }
+  // the live-buoy window over #liveBuoyPanel (#lwHeader, #lwMin, #lwClose, #lwResize); opts: window, document, storage, onClose
+  function createLiveWindow(opts) {
+    return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'liveBuoyPanel', header: 'lwHeader', min: 'lwMin', close: 'lwClose', resize: 'lwResize' },
+      key: LIVE_WINDOW_KEY, event: 'allshore:livewin', label: 'live buoy' }));
+  }
+  // the tide-station window over #tideWin (#twHeader, #twMin, #twClose, #twResize); opts: window, document, storage, onClose, onResize
+  function createTideWindow(opts) {
+    return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'tideWin', header: 'twHeader', min: 'twMin', close: 'twClose', resize: 'twResize' },
+      key: TIDE_WINDOW_KEY, event: 'allshore:tidewin', label: 'tide station' }));
+  }
 
   // ---- init: wire everything to the page ----
   // opts: initial (window.__initial), stationLabel(sid) -> text, loadChartJs() -> Promise, closeLivePanel(),
-  //       liveOpen() -> bool, fetch, document, window, storage (session), settings (local), onMode(mode).
+  //       liveOpen() -> bool, closeTidePanel(), tideOpen() -> bool, fetch, document, window, storage (session),
+  //       settings (local), onMode(mode).
   var app = null;
   function init(opts) {
     opts = opts || {};
@@ -1011,6 +1027,7 @@
     });
     doc.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
+      if (opts.tideOpen && opts.tideOpen()) { if (opts.closeTidePanel) opts.closeTidePanel(); return; }   // the tide window first, then the live one
       if (opts.liveOpen && opts.liveOpen()) { if (opts.closeLivePanel) opts.closeLivePanel(); return; }
       if (fw.mode !== 'min' && els.win.contains(doc.activeElement)) minimise();
     });
@@ -1030,7 +1047,7 @@
   }
 
   window.AllshoreForecast = {
-    init: init, createLiveWindow: createLiveWindow,
+    init: init, createLiveWindow: createLiveWindow, createTideWindow: createTideWindow,
     pointId: pointId, parsePointId: parsePointId, isPointId: isPointId, pointLabel: pointLabel, fmtPoint: fmtPoint, cleanName: cleanName,
     createPointStore: createPointStore, POINTS_MAX: POINTS_MAX, writeLabel: writeLabel, zoneLabel: zoneLabel,
     load: function (next) { return app ? app.loader.load(next) : Promise.resolve(null); },
@@ -1047,7 +1064,8 @@
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
       createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
-      createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY,
+      createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
+      createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY,
       POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,
       app: function () { return app; }
     }

@@ -232,7 +232,7 @@ def test_g18b_pins(client):
         "function open() { renderFavs(); place(); results.hidden = false;",
         "if (below >= 220 || below >= above) { s.top = (r.bottom + 2) + 'px'; s.bottom = 'auto';",
         "if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();",
-        ".fwin.live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 36px)); height: min(76vh, 720px); z-index: 2000; }",
+        ".fwin.live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 136px)); height: min(76vh, 800px); z-index: 2000; }",
         "new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['hidden'] });",
         ".fw-maxbtn { display: none; }",
         "options: { position: 'topleft' },",
@@ -556,7 +556,7 @@ def test_tide_stations_on_the_page(client):
         'id="twHeader"', 'id="twMin"', 'id="twClose"', 'id="twBody"', 'id="twResize"', 'id="tideStrip" class="tide-strip"',
         'id="tideMeta"', 'id="tideRetry"', ".tide-table .tide-lab { position: sticky; left: 0; z-index: 3;",
         ".tide-scroll { overflow-x: auto; overflow-y: hidden;", "strip: $('tideStrip'), meta: $('tideMeta') },",
-        ".fwin.tide-win { right: 18px; bottom: 18px; width: min(760px, calc(100vw - 36px)); height: min(64vh, 640px); z-index: 2000; }",
+        ".fwin.tide-win { right: 18px; bottom: 18px; width: min(880px, calc(100vw - 76px)); height: min(66vh, 760px); z-index: 2000; }",
         "body.live-chip .tide-win.fw-min { bottom: calc(20px + var(--lw-chip-h, 40px)) !important; }",
         ".tide-win.fw-min { bottom: calc(var(--fw-bar-h, 48px) + var(--lw-bar-h, 0px)) !important; }",
         "document.documentElement.style.setProperty('--lw-bar-h', liveBar + 'px');",
@@ -580,3 +580,35 @@ def test_tide_stations_on_the_page(client):
     assert 'id="tideWin"' in body[body.index('id="liveBuoyPanel"'):body.index("leaflet@1.9.4/dist/leaflet.js")]   # after the live window, before the map script
     assert "tideDetailSeq" not in body                                              # the module keeps the sequence (tides.js)
 
+
+
+def test_no_window_covers_another_whole_at_their_default_boxes(client):
+    """Plan section 38, step 4: the three windows open at the bottom-right corner. Widths fall forecast > tide > live and
+    heights rise the other way (caps included), so on every desktop size the window behind shows an edge of 24 px or
+    more to click, whichever is in front. A raised box (a chip below it) stops below the top-right corner."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    def rule(sel):
+        m = re.search(re.escape(sel) + r" \{ right: (\d+)px; bottom: (\d+)px; width: min\((\d+)px, calc\(100vw - (\d+)px\)\); "
+                      r"height: min\((\d+)vh, (\d+)px\)", body)
+        assert m, sel
+        return tuple(int(g) for g in m.groups())
+    rules = {"forecast": rule(".forecast-win"), "tide": rule(".fwin.tide-win"), "live": rule(".fwin.live-win")}
+    def box(r, W, H):                                    # (left, top, right, bottom) in the viewport
+        right, bottom, wpx, wm, vh, cap = r
+        w, h = min(wpx, W - wm), min(vh * H / 100.0, cap)
+        return (W - right - w, H - bottom - h, W - right, H - bottom)
+    def edge(behind, front):                             # the widest strip of `behind` outside `front`
+        return max(front[0] - behind[0], front[1] - behind[1], behind[2] - front[2], behind[3] - front[3])
+    for W in (520, 600, 768, 820, 900, 956, 1024, 1180, 1280, 1366, 1440, 1536, 1600, 1920, 2560):
+        for H in (501, 560, 600, 700, 768, 800, 864, 900, 1024, 1080, 1200, 1440):
+            b = {n: box(r, W, H) for n, r in rules.items()}
+            for front in b:
+                for behind in b:
+                    if front != behind:
+                        assert edge(b[behind], b[front]) >= 24, (W, H, front, behind, b)
+    for needle in (                                      # the raised boxes give way in height below the corner
+        "height: min(60vh, 720px, calc(100vh - 78px - var(--map-topright-h, 0px))); }",
+        "height: min(60vh, 720px, calc(100vh - 86px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }",
+        ".live-chip .tide-win:not(.fw-min):not(.fw-max) { height: min(66vh, 760px, calc(100vh - 34px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }",
+        ".tide-chip .live-win:not(.fw-min):not(.fw-max) { height: min(76vh, 800px, calc(100vh - 34px - var(--tw-chip-h, 40px) - var(--map-topright-h, 0px))); }"):
+        assert needle in body, needle

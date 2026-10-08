@@ -817,11 +817,14 @@ one attempt, an 8 s wall-clock cap):
   worst against a plain cosine's 31 cm, Seattle 4 (24), Galveston 8 (23), Nawiliwili 9 (17). Where an extreme has no
   partner, or the reference's curve is unavailable, that stretch is a half cosine between the extremes. A pair of
   extremes of the same kind, or more than 20 h apart (diurnal Gulf tides reach 16.6 h), leaves a gap: nothing is invented.
-- The window is 18 days from 00:00 UTC yesterday (every zone's "today from midnight" plus 16 days lies inside it; the
+- The window is 32 days from 00:00 UTC yesterday (every zone's "today from midnight" plus 30 days lies inside it; the
   curve carries 12 h more on each side, the extremes 24 h), kept per station per UTC day (predictions never change); a
   subordinate station shares its reference's cached curve. NOAA's "no predictions" is final (kept 24 h); a failure is
   remembered for a minute; one build per station at a time, two build slots, "busy" instead of a long wait; LRU 256.
-- Nights (last light to first light, `sky.events`) travel with the payload; observed water level (`product=water_level`,
+- The sky travels with the payload, from `sky.events` (searched in 16-day chunks: it refuses more than 20 days at a
+  time): the nights (last light to first light), the sunrise / sunset / moonrise / moonset instants (`events`) and the
+  moon's phase, lit percentage and name every 6 h (`moon`; the page takes the sample nearest each local noon); about
+  21 KB a station. Observed water level (`product=water_level`,
   6-minute samples of the last 48 h) is a separate route, cached 15 min, asked by the page only for stations with a gauge.
 - Routes: `/api/tides/<id>` (30 min; an id not in the snapshot is a 404 without any upstream request: never a proxy),
   `/api/tides/<id>/observed` (5 min); busy or unreachable = 503 + `Retry-After: 5` + `retry: true` (the page asks

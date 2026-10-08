@@ -11,7 +11,7 @@ Two kinds of station (tide_stations.json, built by tools/tides/fetch_stations.py
   known: San Diego 3 cm worst (a plain cosine between the extremes: 31 cm), Seattle 4 (24), Galveston 8 (23),
   Nawiliwili 9 (17). Where an extreme has no partner, that stretch falls back to a cosine between the extremes.
 
-A forecast covers 18 days from 00:00 UTC yesterday (every zone's "today from midnight" plus 16 days lies inside it),
+A forecast covers 32 days from 00:00 UTC yesterday (every zone's "today from midnight" plus 30 days lies inside it),
 the curve 12 h more on each side; it never changes, so it is kept per station per UTC day. NOAA is asked at most twice per station per day (curve + extremes)
 and a subordinate station shares its reference's cached curve. No retries here: a failure is answered at once (the page
 retries) and remembered for a minute so a dead upstream is not asked by every visitor.
@@ -34,13 +34,16 @@ API = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
 APPLICATION = "allshoresurf.com"          # CO-OPS asks every client to name itself
 ATTRIBUTION = "NOAA CO-OPS tide predictions (tidesandcurrents.noaa.gov)"
 STEP_S = 1800                             # the curve's step: 30 minutes
-SPAN_DAYS = 18
+SPAN_DAYS = 32                            # today's local midnight + 30 days lies inside in every zone (owner: 30 days)
 SPAN_S = SPAN_DAYS * 86400
 LEAD_S = 12 * 3600                        # the curve runs this long before and after the window (a subordinate is shaped
                                           # on its reference's curve to the window's ends); the extremes twice as long
 CURVE_HOURS = SPAN_DAYS * 24 + 2 * 12
 HILO_HOURS = SPAN_DAYS * 24 + 4 * 12
-POINTS = CURVE_HOURS * 2 + 1              # both ends included (NOAA answers 913 values for range=456)
+POINTS = CURVE_HOURS * 2 + 1              # both ends included (NOAA answers 1,585 values for range=792)
+SKY_CHUNK_S = 16 * 86400                  # sky.events searches at most 20 days at a time
+MOON_STEP_S = 6 * 3600                    # the moon's phase every 6 h (the page takes the sample nearest each local noon)
+SUN_MOON = ("sunrise", "sunset", "moonrise", "moonset")
 MAX_GAP_S = 20 * 3600                     # longest stretch between a high and a low (diurnal Gulf tides: 16.6 h)
 PAIR_TOL_S = 3600                         # a subordinate extreme's partner: its reference extreme within an hour of t - offset
 MAX_BODY = 512 * 1024
@@ -251,20 +254,51 @@ def reference_grid(sub_ex, ref_ex, ref_grid, ref_begin, offsets, begin, n=POINTS
     return out, used
 
 
-def night_bands(lat, lon, begin, end):
+def sky_events(lat, lon, begin, end):
+    """[(epoch, kind)] of the sun and moon events (sky.EVENT_KINDS) in [begin, end), in time order, searched in chunks of
+    SKY_CHUNK_S (sky.events refuses spans over 20 days; the chunks are half-open, so nothing is found twice). None
+    without PyEphem."""
+    if not sky.AVAILABLE:
+        return None
+    out, t = [], begin
+    while t < end:
+        u = min(end, t + SKY_CHUNK_S)
+        evs = sky.events(lat, lon, datetime.fromtimestamp(t, tz=timezone.utc), datetime.fromtimestamp(u, tz=timezone.utc))
+        if evs is None:
+            return None
+        out.extend((int(x.timestamp()), k) for x, k in evs if t <= x.timestamp() < u)
+        t = u
+    return out
+
+
+def sun_moon(events):
+    """The page's rows: [[epoch, kind]] of sunrise, sunset, moonrise and moonset."""
+    return None if events is None else [[t, k] for t, k in events if k in SUN_MOON]
+
+
+def moon_samples(lat, begin, end, step=MOON_STEP_S):
+    """[[epoch, phase 0..1 (0 new, 0.5 full), lit %, name]] every `step` seconds from begin to end. None without PyEphem."""
+    if not sky.AVAILABLE:
+        return None
+    out = []
+    for t in range(begin, end + 1, step):
+        m = sky.moon_at(datetime.fromtimestamp(t, tz=timezone.utc), lat)
+        out.append([t, round(m["phase"], 4), m["pct"], m["name"]])
+    return out
+
+
+def night_bands(lat, lon, begin, end, events=None):
     """[[start, end]] (epoch) of the nights between begin and end: last light to first light (the sun's centre below
-    -6 deg, the forecast graphs' rule). None without PyEphem."""
+    -6 deg, the forecast graphs' rule). None without PyEphem. `events`: sky_events(lat, lon, begin, end) if in hand."""
     if not sky.AVAILABLE:
         return None
     b = datetime.fromtimestamp(begin, tz=timezone.utc)
-    e = datetime.fromtimestamp(end, tz=timezone.utc)
-    evs = sky.events(lat, lon, b, e)
+    evs = sky_events(lat, lon, begin, end) if events is None else events
     if evs is None:
         return None
     night_from = begin if sky.sun_state(sky._observer(lat, lon), b) == "night" else None
     out = []
-    for utc, kind in evs:
-        t = int(utc.timestamp())
+    for t, kind in evs:
         if kind == "dusk" and night_from is None:
             night_from = t
         elif kind == "dawn" and night_from is not None:
@@ -480,15 +514,21 @@ class TideService:
         if grid is None or not any(v is not None for v in grid):
             return "final", {"id": sid, "error": NO_PREDICTIONS, "final": True}
         ex = ex or []                                          # a harmonic curve without NOAA's list of extremes
-        return "ok", {
+        out = {
             "id": sid, "name": st.get("name"), "lat": st.get("lat"), "lon": st.get("lon"), "tz": st.get("tz"),
             "type": st.get("type"), "obs": bool(st.get("obs")), "datum": "MLLW", "units": "m",
             "begin": begin - LEAD_S, "window": [begin, begin + SPAN_S], "step": STEP_S, "v": grid,
             "hilo": [[t, round(h, 3), k] for t, h, k in ex],
-            "night": night_bands(st["lat"], st["lon"], begin - LEAD_S, begin + SPAN_S + LEAD_S)
-            if st.get("lat") is not None else None,
+            "night": None, "events": None, "moon": None,
             "method": method, "ref": ref_used, "source": ATTRIBUTION,
         }
+        if st.get("lat") is not None and st.get("lon") is not None:     # the sky over the curve's whole span
+            a, z = begin - LEAD_S, begin + SPAN_S + LEAD_S
+            evs = sky_events(st["lat"], st["lon"], a, z)
+            out["night"] = night_bands(st["lat"], st["lon"], a, z, evs)
+            out["events"] = sun_moon(evs)
+            out["moon"] = moon_samples(st["lat"], a, z)
+        return "ok", out
 
     # -- observations
     def observed(self, sid):

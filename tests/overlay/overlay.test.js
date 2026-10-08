@@ -677,14 +677,19 @@ test('RibbonState: nearest frame (ties later), clamping, a drag follows the poin
   const one = new I.RibbonState([0]); assert.equal(one.nearest(100), 0); assert.equal(one.width, 0); one.begin(0); assert.equal(one.end(5), 0);
 });
 
-test('RibbonState (G26 re-check RC-5): a tap counts the finger\'s roll once (the ribbon followed it); cancel() goes back whatever the travel', () => {
+test('RibbonState (G26 re-check RC-5, fresh check F1): a tap reads the touch-down point against the offset at the press, never the roll (also at the run\'s ends); cancel() goes back whatever the travel', () => {
   const L = I.ribbonLayout(framesAt('2026-10-07T06:00:00Z', HOURS_209), '2026-10-07T06:00:00Z', 'UTC', 4);
   const rb = new I.RibbonState(L.xs);
   // the finger touches down 0.5 px past frame 25 (1.5 px short of halfway to 26), then rolls; the old rule picked 26 from 1.5 px
   for (const roll of [0, 1, 2, 3, 3.9, -2, -3]) {
     rb.setFrame(20); const down = (L.xs[25] + 0.5) - L.xs[20];              // px right of the pointer
     rb.begin(100); rb.move(100 + roll);
-    assert.equal(rb.end(down + roll), 25, 'roll ' + roll + ': still the frame it touched');
+    assert.equal(rb.end(down), 25, 'roll ' + roll + ': still the frame it touched');
+  }
+  // at the run's ends the ribbon cannot follow a roll outward (the offset is clamped): still the touch-down frame
+  for (const [f, down, roll, want] of [[0, 1.26, 1, 0], [0, 0.72, 2, 0], [0, 2.34, 3.5, 1], [208, -1.26, -1, 208]]) {
+    rb.setFrame(f); rb.begin(100); rb.move(100 + roll);
+    assert.equal(rb.end(down), want, 'frame ' + f + ', touch-down ' + down + ' px, roll ' + roll);
   }
   rb.setFrame(30); rb.begin(0); rb.move(-60); assert.equal(rb.cancel(), 30); assert.equal(rb.offset, L.xs[30]); assert.equal(rb.dragging, false);
   assert.equal(I.RIBBON_AXIS_PX, 10);

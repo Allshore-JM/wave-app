@@ -372,3 +372,37 @@ is built to be measured. Renders happen only on size changes and toggles.
 7. **Defensive:** a press from a new pointer starts a new gesture when the old pointer no longer holds the capture.
 8. **F7:** tests for the gaps above, mutants, the version, the pin and README.
 9. A short test-site check with trusted input, then STOP for production.
+
+## Fix round 3 (Opus 5.5 HIGH): asset 2.14.9
+The owner chose to fix every item of the scope above. Each fix has a test:
+- **F1.** `RibbonState.end` reads a tap's touch-down point against the offset at the press (`o0 + point`), and the
+  release passes the touch-down point. At frame 0 a tap 3 px right with a 3.9 px roll stays on frame 0; on the reviewer's
+  four end cases the state picks the touch-down frame.
+- **F3.** An undecided `pointerup` first applies the 10 px direction rule to its own point: mostly up or down is no
+  pick, mostly sideways is a drag to that point. Below 10 px it is a tap or a short drag as before, and a cancel or lost
+  capture is still no pick.
+- **F6.** The press reads the track's computed transform (`visibleOffset`), stops the glide there and starts the
+  gesture from the visible position. Without a computed transform it uses the offset, as before.
+- **Lost release.** A press from a new pointer while the old gesture's pointer no longer holds the capture
+  (`hasPointerCapture`, only when the capture was taken) starts a new gesture.
+- **F2.**
+  - A loading render keeps the focused part as `_pendingFocus`. The next render uses it only while the focus is lost
+    (`_focusLost`: no element, the body, or a removed node).
+  - The error render refocuses, and the fallbacks are play, the toggle, then Retry.
+  - Off clears it.
+- **F4.** `ov-details` is a focus part.
+- **F5.** `_say` adds the status node empty and writes its first text (the latest by then) after `SAY_FIRST_MS` (100 ms).
+- **Tests.**
+  - overlay: the end cases of the tap.
+  - panel +9:
+    - F1 at the first frame; F3 swipe and drag; F6 a tap during a glide; the lost-release guard;
+    - N1 / N4 / N5 / N17 / N25; F2 / F4 / N12 / N13 / N14 focus (loading, error, Retry, focus elsewhere, details,
+      an unlisted part, preventScroll, an open menu with the browser's blur);
+    - F5 / N8 / N21 / FS2 status; N23 / N24 the tiny sheet.
+  - The N9 / N15 assertions.
+  - Updated: the RC-5 contract, a realistic tap in the drag test, the async first text.
+  - Needles, version, pin, README.
+- **Mutation.** The round-3 set: 34 of 34 killed (scratch `g26/fix3/mut_fix3.py` + `mut_fix3b.py`; FS2 survived once and
+  was pinned). The round-2 set re-run: 27 of 27 applicable killed, plus X4 and X2 re-targeted and killed. The reviewer's
+  fuzz on 2.14.9 (`g26/fix3/fuzz`): 20,000 runs, 98,411 gestures, 0 violations (1,259 taps at the ends).
+- **Suites.** pytest 825 (exit 0) and Node 477, also under TZ=UTC.

@@ -282,6 +282,7 @@ test('no room for the details (a very short map): the one-line summary with the 
   assert.equal(w.ov.ui.play, headPlay(w.panel), 'the one play button, in the head');
   assert.equal(w.ov.ui.collapsed, true); assert.equal(w.panel.querySelector('.ov-toggle'), null);
   assert.notEqual(w.ov.collapsed, true, 'a fold belongs to the size: never saved as a collapse');
+  assert.equal(w.panel.querySelector('.ov-title').className, 'ov-title', 'the one line, not the model look (fresh check N9)');
   assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST');
   w.ov.playing = true; w.ov._syncUI(); w.ov._refreshRunLine();               // must not throw
   assert.equal(w.ov.ui.play.textContent, '❚❚');
@@ -464,7 +465,7 @@ test('ribbon: a drag pauses, moves the track with the pointer, seeks the frame u
   assert.equal(ui.rb.dragging, false); assert.equal(ui.rb.offset, ui.layout.xs[7], 'snapped to the nearest frame');
   assert.equal(ui.track.style.transition, 'transform 120ms ease-out'); assert.deepEqual(seeks, [6, 7], 'the release repeats no seek');
   // a tap picks the frame under the finger: 9 h right of the centre
-  dispatch(rb, 'pointerdown', { clientX: 300 }); dispatch(rb, 'pointerup', { clientX: 100 + ui.ribbonW / 2 + 9 * px });
+  dispatch(rb, 'pointerdown', { clientX: 100 + ui.ribbonW / 2 + 9 * px }); dispatch(rb, 'pointerup', { clientX: 100 + ui.ribbonW / 2 + 9 * px });
   assert.equal(seeks[seeks.length - 1], 10, '+30 h: three frames later than +21 h');
   const r = dispatch(rb, 'pointerdown', { clientX: 300, button: 2 }); assert.equal(r.defaultPrevented, false, 'a right button is ignored');
   // a move queued on the old panel never seeks after the panel was rebuilt
@@ -643,13 +644,16 @@ test('G26 B-2: folding and unfolding with the keyboard keeps the focus on the to
   w.panel.querySelector('.ov-toggle').dispatch('click'); assert.equal(w.doc.activeElement, other);
 }));
 
-test('G26 A-P3-5 / re-check RC-7: nothing in the panel is live; loading, error and unavailable frames are said once by one role=status node; Off clears it', () => withClock(() => {
+test('G26 A-P3-5 / re-check RC-7: nothing in the panel is live; loading, error and unavailable frames are said once by one role=status node; Off clears it', async () => withClock(async () => {
   const w = world();
   w.ov.render({ state: 'loading' }); assert.equal(w.panel.getAttribute('aria-live'), null);
   const st = w.doc.body.querySelector('.ov-sr');
-  assert.ok(st, 'one status node, outside the panel'); assert.equal(st.getAttribute('role'), 'status'); assert.equal(st.textContent, 'Loading model frame…');
+  assert.ok(st, 'one status node, outside the panel'); assert.equal(st.getAttribute('role'), 'status');
+  assert.equal(st.textContent, '', 'the node goes in empty (a region that appears with its text is often not read: fresh check F5)');
+  await wait(150); assert.equal(st.textContent, 'Loading model frame…', 'the first text a moment later');
   w.ov.render({ state: 'ready' }); assert.equal(w.panel.getAttribute('aria-live'), null, 'the ready panel is not live'); assert.equal(st.textContent, '');
   assert.equal(w.ov.ui.unavail.getAttribute('aria-live'), null, 'nor its note');
+  assert.equal(w.ov.ui.unavail.hidden, true, 'an empty note is not shown (fresh check N15)');
   let said = st.textContent, sayWrites = 0, noteWrites = 0, note = w.ov.ui.unavail, noteText = '';
   Object.defineProperty(st, 'textContent', { configurable: true, get() { return said; }, set(x) { sayWrites++; said = x; } });
   Object.defineProperty(note, 'textContent', { configurable: true, get() { return noteText; }, set(x) { noteWrites++; noteText = x; } });
@@ -850,7 +854,7 @@ test('G26 re-check S8 / A5: a line-mode wheel scrolls 16 px a line; the speed li
 
 test('G26 re-check RC-2: a finger that pressed elsewhere (the map) and moves or lifts over the ribbon is not the gesture; a press from the same pointer starts over', async () => withClock(async () => {
   const r = ribbonWorld();
-  dispatch(r.rb, 'pointerdown', { clientX: r.centre, clientY: 20, pointerId: 1 });
+  dispatch(r.rb, 'pointerdown', { clientX: r.centre + 9 * r.px, clientY: 20, pointerId: 1 });
   dispatch(r.rb, 'pointermove', { clientX: r.centre - 40, clientY: 20, pointerId: 5 });       // never pressed on the ribbon
   assert.ok(Math.abs(r.ui.rb.offset - r.ui.layout.xs[3]) < 1e-9, 'its move does not drag the ribbon');
   dispatch(r.rb, 'pointerup', { clientX: r.centre - 40, clientY: 20, pointerId: 5 });
@@ -863,4 +867,131 @@ test('G26 re-check RC-2: a finger that pressed elsewhere (the map) and moves or 
   dispatch(q.rb, 'pointerdown', { clientX: q.centre + 9 * q.px, clientY: 20, pointerId: 1 });
   dispatch(q.rb, 'pointerup', { clientX: q.centre + 9 * q.px, clientY: 20, pointerId: 1 });
   assert.deepEqual(q.seeks, [6]);
+}));
+
+// ---- the short fresh check of fix round 2 (fix round 3) ----
+test('fresh check F1: at the run\'s first frame a tap whose finger rolls outward still picks the frame it touched', () => withClock(() => {
+  const r = ribbonWorld(); r.w.ov.target = 0; r.w.ov._syncUI();
+  assert.equal(r.ui.rb.offset, 0);
+  dispatch(r.rb, 'pointerdown', { clientX: r.centre + 3, clientY: 20 });          // 3 px right of the pointer: frame 0
+  dispatch(r.rb, 'pointermove', { clientX: r.centre + 6.9, clientY: 20 });        // a 3.9 px roll the clamped ribbon cannot follow
+  dispatch(r.rb, 'pointerup', { clientX: r.centre + 6.9, clientY: 20 });
+  assert.deepEqual(r.seeks, [], 'frame 0, not the frame under the lift-off point'); assert.equal(r.ui.rb.offset, 0);
+}));
+
+test('fresh check F3: the lift-off point decides like a move (a browser may send no move there): mostly up or down is no pick, mostly sideways a drag', () => withClock(() => {
+  const r = ribbonWorld();
+  dispatch(r.rb, 'pointerdown', { clientX: r.centre, clientY: 20 });
+  dispatch(r.rb, 'pointermove', { clientX: r.centre - 5, clientY: 23 });
+  dispatch(r.rb, 'pointerup', { clientX: r.centre - 5, clientY: 32 });            // 12 px down, 5 px sideways, no move there
+  assert.deepEqual(r.seeks, [], 'a swipe'); assert.equal(r.ui.rb.offset, r.ui.layout.xs[3]);
+  const q = ribbonWorld();
+  dispatch(q.rb, 'pointerdown', { clientX: q.centre, clientY: 20 });
+  dispatch(q.rb, 'pointerup', { clientX: q.centre - 28, clientY: 21 });           // 28 px sideways at once
+  assert.deepEqual(q.seeks, [q.ui.rb.nearest(q.ui.layout.xs[3] + 28)], 'a drag to the lift-off point');
+  assert.equal(q.seeks[0], 6);
+}));
+
+test('fresh check F6: a press during the step glide starts from where the ribbon is SEEN, so a tap picks the frame under the finger', () => withClock(() => {
+  const r = ribbonWorld(); r.w.ov.target = 4; r.w.ov._syncUI();                  // gliding from frame 3 to 4
+  const seen = r.ui.layout.xs[3];                                                 // ... and still seen at frame 3
+  r.w.win.getComputedStyle = () => ({ transform: 'matrix(1, 0, 0, 1, ' + (r.ui.ribbonW / 2 - seen) + ', 0)' });
+  const x = r.centre + (r.ui.layout.xs[6] - r.ui.layout.xs[3]);                   // the finger over frame 6 as seen
+  dispatch(r.rb, 'pointerdown', { clientX: x, clientY: 20 });
+  assert.equal(r.ui.track.style.transform, 'translateX(' + (r.ui.ribbonW / 2 - seen) + 'px)', 'stopped where it is seen');
+  dispatch(r.rb, 'pointerup', { clientX: x, clientY: 20 });
+  assert.deepEqual(r.seeks, [6], 'the frame under the finger, not one later');
+}));
+
+test('fresh check: a touch whose release never arrived does not block the next touch (its pointer no longer holds the capture)', () => withClock(() => {
+  const r = ribbonWorld(); let held = true; r.rb.hasPointerCapture = () => held;
+  dispatch(r.rb, 'pointerdown', { clientX: r.centre, clientY: 20, pointerId: 1 });     // its pointerup is lost
+  dispatch(r.rb, 'pointerdown', { clientX: r.centre + 9 * r.px, clientY: 20, pointerId: 2 });
+  dispatch(r.rb, 'pointerup', { clientX: r.centre + 9 * r.px, clientY: 20, pointerId: 2 });
+  assert.deepEqual(r.seeks, [], 'while pointer 1 still holds the capture, pointer 2 is a second finger');
+  const q = ribbonWorld(); q.rb.hasPointerCapture = () => false;
+  dispatch(q.rb, 'pointerdown', { clientX: q.centre, clientY: 20, pointerId: 1 });
+  dispatch(q.rb, 'pointerdown', { clientX: q.centre + 9 * q.px, clientY: 20, pointerId: 2 });
+  dispatch(q.rb, 'pointerup', { clientX: q.centre + 9 * q.px, clientY: 20, pointerId: 2 });
+  assert.deepEqual(q.seeks, [6], 'pointer 1 is gone: pointer 2 is a new gesture (a tap)');
+}));
+
+test('fresh check N1 / N4 / N5 / N17 / N25: an exact 45-degree start is a swipe; 4.0 px is a short drag, 3.9 a tap; a swipe hands the ribbon back to playback at once; the larger axis decides; a second finger returns to the frame SHOWN at the press', () => withClock(() => {
+  const a = ribbonWorld({ playing: true });
+  dispatch(a.rb, 'pointerdown', { clientX: a.centre, clientY: 20 }); dispatch(a.rb, 'pointermove', { clientX: a.centre - 10, clientY: 10 });
+  dispatch(a.rb, 'pointerup', { clientX: a.centre - 10, clientY: 10 });
+  assert.deepEqual(a.seeks, [], '45 degrees: a swipe'); assert.equal(a.w.ov.playing, true);
+  for (const [d, want] of [[4, []], [3.9, [6]]]) {
+    const b = ribbonWorld();
+    dispatch(b.rb, 'pointerdown', { clientX: b.centre + 9 * b.px, clientY: 20 });
+    dispatch(b.rb, 'pointermove', { clientX: b.centre + 9 * b.px + d, clientY: 20 }); dispatch(b.rb, 'pointerup', { clientX: b.centre + 9 * b.px + d, clientY: 20 });
+    assert.deepEqual(b.seeks, want, d + ' px sideways');
+  }
+  const c = ribbonWorld({ playing: true });
+  dispatch(c.rb, 'pointerdown', { clientX: c.centre, clientY: 20 });
+  c.w.ov.target = 5; c.w.ov._syncUI();                                            // playback moved on during the press
+  assert.equal(c.ui.rb.offset, c.ui.layout.xs[3], 'the ribbon stays under the finger while undecided');
+  dispatch(c.rb, 'pointermove', { clientX: c.centre, clientY: 8 });               // up: a swipe
+  assert.equal(c.ui.rb.offset, c.ui.layout.xs[5], 'back with playback at once');
+  const e = ribbonWorld();
+  dispatch(e.rb, 'pointerdown', { clientX: e.centre, clientY: 20 }); dispatch(e.rb, 'pointermove', { clientX: e.centre + 6, clientY: 26 });
+  dispatch(e.rb, 'pointerup', { clientX: e.centre + 6, clientY: 26 });            // 6 and 6: under 10 in each direction
+  assert.deepEqual(e.seeks, [2], 'undecided: a short drag of 6 px (not a swipe by the sum)');
+  const f = ribbonWorld();
+  dispatch(f.rb, 'pointerdown', { clientX: f.centre + 9 * f.px, clientY: 20, pointerId: 1 });   // off the pointer: frame 6 under the finger
+  dispatch(f.rb, 'pointermove', { clientX: f.centre + 9 * f.px - 40, clientY: 20, pointerId: 1 });
+  dispatch(f.rb, 'pointerdown', { clientX: f.centre, clientY: 20, pointerId: 2 });
+  assert.equal(f.w.ov.target, 3, 'the frame shown at the press, not the one under the finger');
+}));
+
+test('fresh check F2 / F4 / N12 / N13 / N14: focus through the loading and error panels, the details box, an unlisted part, without scrolling, from an open menu', () => withClock(() => {
+  const focusArgs = []; const f0 = Element.prototype.focus;
+  Element.prototype.focus = function (o) { focusArgs.push(o); return f0.call(this); };
+  try {
+    const w = world(); w.ov.render({ state: 'ready' });
+    w.panel.querySelector('.ov-ribbon').focus();
+    w.ov.render({ state: 'loading' }); w.ov.render({ state: 'ready' });
+    assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-ribbon'), 'the ribbon again after a loading panel');
+    assert.deepEqual(focusArgs[focusArgs.length - 1], { preventScroll: true }, 'never scrolls the page');
+    w.ov.render({ state: 'error', message: 'x' });
+    assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-retry'), 'an error: on Retry');
+    w.ov.mount = () => w.ov.render({ state: 'loading' });
+    w.panel.querySelector('.ov-retry').dispatch('click'); w.ov.render({ state: 'ready' });
+    assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-play'), 'Retry by keyboard: on the play button after the load');
+    // focus moved elsewhere during the load: not taken back
+    w.panel.querySelector('.ov-ribbon').focus(); w.ov.render({ state: 'loading' });
+    const other = w.doc.createElement('button'); w.doc.body.appendChild(other); other.focus();
+    w.ov.render({ state: 'ready' }); assert.equal(w.doc.activeElement, other);
+    // the details scroll box (a Tab stop when it overflows) and an unlisted part
+    w.panel.querySelector('.ov-details').focus(); w.ov.render({ state: 'ready' });
+    assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-details'), 'the details box keeps it');
+    const t = w.panel.querySelector('.ov-title'); t.tabIndex = 0; t.focus(); w.ov.render({ state: 'ready' });
+    assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-play'), 'an unlisted part: the play button');
+    // an open menu: a browser takes the focus from an option when its menu hides; it is noted before the menu closes
+    const btn = w.panel.querySelector('.ov-speed-btn'); btn.dispatch('click');
+    const menu = w.panel.querySelector('.ov-speed-menu'); let hid = menu.hidden;
+    Object.defineProperty(menu, 'hidden', { configurable: true, get() { return hid; }, set(v) { hid = v; if (v && menu.contains(w.doc.activeElement)) w.doc.activeElement = w.doc.body; } });
+    w.ov.render({ state: 'ready' });
+    assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-speed-btn'), 'the speed button');
+  } finally { Element.prototype.focus = f0; }
+}));
+
+test('fresh check F5 / N8 / N21: the status node goes in empty and its first text follows; an error can be the first text; the unavailable message is said with the panel folded too', async () => withClock(async () => {
+  const w = world(); w.ov.render({ state: 'error', message: 'frames unreachable' });
+  const st = w.doc.body.querySelector('.ov-sr'); assert.ok(st); assert.equal(st.textContent, '');
+  await wait(150); assert.equal(st.textContent, 'Overlay unavailable: frames unreachable');
+  const q = world(); q.ov.render({ state: 'loading' }); q.ov.render({ state: 'ready' });   // ready before the first text went out
+  await wait(150); assert.equal(q.doc.body.querySelector('.ov-sr').textContent, '', 'the first text is the latest one, not the loading message');
+  const f = world(); f.ov.collapsed = true; f.ov.render({ state: 'ready' });
+  assert.equal(f.ov.ui.unavail, null, 'folded: no note in the panel');
+  f.ov.unavailable[f.ov._key(9)] = true; f.ov._syncUI(); await wait(150);
+  assert.equal(f.doc.body.querySelector('.ov-sr').textContent, 'Unavailable frames are skipped: +27 h');
+}));
+
+test('fresh check N23 / N24: a sheet too short for anything but its head line has no toggle, and a focused toggle hands the focus to the play button', () => withClock(() => {
+  const s = sizedLayout(world({ dims: { w: 375, h: 700 } })); s.ov.render({ state: 'ready' });
+  s.container.querySelector('.ov-sheet').querySelector('.ov-toggle').focus();
+  s.ov._dims = () => ({ w: 375, h: 150 }); s.ov.render({ state: 'ready' });        // 40 % = 60 px: the head line only
+  const sh = s.container.querySelector('.ov-sheet');
+  assert.equal(sh.querySelector('.ov-toggle'), null); assert.ok(headPlay(sh)); assert.equal(s.doc.activeElement, headPlay(sh));
 }));

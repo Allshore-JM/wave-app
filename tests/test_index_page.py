@@ -540,7 +540,7 @@ def test_tide_stations_on_the_page(client):
     for needle in (
         # the layer and its gate
         "const TIDE_MIN_ZOOM = 9;", "function tideVisible() { return map.hasLayer(tideLayer) && map.getZoom() >= TIDE_MIN_ZOOM; }",
-        "const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis);",
+        "const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis) + '|' + nudgeSignature(nudges);",
         "'zoom in to see tide stations'", "tides: saved.tides !== false", "tides: map.hasLayer(tideLayer)",
         "'<span class=\"lc-dot lc-tide\"></span>Tide stations<span class=\"lc-note\" data-tide-note aria-hidden=\"true\"></span>': tideLayer",
         "layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintLiveNote(); return r; };",
@@ -555,7 +555,12 @@ def test_tide_stations_on_the_page(client):
         "autoPanOnFocus: false", "if (marker.on) marker.on('add', bind);", "inset: calc(-1 * var(--tide-tap, 10px));",
         "contain: inline-size;", "const TIDE_CELL_PX = 32;", "body.fw-chip .tide-win:not(.fw-min):not(.fw-max) {",
         "map.on('overlayadd', function (e) { if (e.layer === liveBuoyLayer) rebuildLiveBuoyMarkers(true); });",
-        ".live-win.fw-min .fw-titles .fw-cycle, .tide-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto;", ".tide-table th.tide-lab { text-align: left; }", "onRetried: function () { const h = document.getElementById('twHeader');", "const TIDE_ALL_ZOOM = MAX_MAP_ZOOM;",
+        ".live-win.fw-min .fw-titles .fw-cycle, .tide-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto;", ".tide-table th.tide-lab { text-align: left; }", "if (h && h.focus && (!a || a === document.body || (w && w.contains && w.contains(a)))) h.focus({ preventScroll: true });",
+        # the tablet chip rule's pieces no behaviour test can reach (fresh check T23, T30, T31)
+        "if (min && fw.offsetHeight > 0) document.documentElement.style.setProperty('--fw-chip-h', fw.offsetHeight + 'px');",
+        "@media (min-width: 501px) and (max-width: 1179.98px) and (min-height: 501px) {",
+        "body.fw-chip.live-chip .tide-win:not(.fw-min):not(.fw-max) { --tw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--lw-chip-h, 40px))); }",
+        "body.fw-chip.tide-chip .live-win:not(.fw-min):not(.fw-max) { --lw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--tw-chip-h, 40px))); }", "const TIDE_ALL_ZOOM = MAX_MAP_ZOOM;",
         # the window
         '<section id="tideWin" class="fwin tide-win" hidden role="region" aria-label="Tide station">',
         'id="twHeader"', 'id="twMin"', 'id="twClose"', 'id="twBody"', 'id="twResize"', 'id="tideStrip" class="tide-strip"',

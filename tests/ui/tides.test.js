@@ -845,3 +845,45 @@ test('fix round 2 pins (C11 / N16): a null just before the strip is no gap; a re
   s.setNow(Date.UTC(2026, 9, 9, 10, 12)); s.timers.fire(I.NOW_REDRAW_MS);
   assert.equal(s.calls.length, 3, 'a refused refresh is asked again ten minutes later');
 });
+
+// ---------------------------------------------------------------------------------------------- fresh check (fix round 3)
+
+test('fresh check C11 / C14: a high and a low an hour apart keep their own sides; a callout with no room on either side is left out, never drawn off the chart', async () => {
+  const t0 = MIDS[0] / 1000;
+  const v = new Array(1585).fill(0.5);
+  const s = setup();
+  s.view.load(HNL_ST);
+  s.answers[0].res(response(200, payload({ obs: false, v, hilo: [[t0 + 4 * 3600, 0.9, 'H'], [t0 + 5 * 3600, 0.7, 'L']] })));
+  await flush();
+  const dots = s.q('.tide-dot'), hy = +dots[0].getAttribute('cy'), ly = +dots[1].getAttribute('cy');
+  const high = s.q('.tide-callout-high'), low = s.q('.tide-callout-low');
+  assert.equal(high.length, 1); assert.equal(low.length, 1);
+  assert.ok(+high[0].querySelectorAll('text')[1].getAttribute('y') < hy, 'the high above its dot');
+  assert.ok(+low[0].querySelectorAll('text')[0].getAttribute('y') > ly, 'the low below its dot: the two boxes do not meet (C11)');
+  // two highs 2 h 22 min apart near the chart's bottom: the second has no room above (the first) nor below (the edge)
+  const lo = 0.2 / I.FT_PER_M;
+  const c = setup();
+  c.view.load(HNL_ST);
+  c.answers[0].res(response(200, payload({ obs: false, v, hilo: [[t0 + 4.4 * 3600, lo, 'H'], [t0 + 6.77 * 3600, lo, 'H'], [t0 + 15 * 3600, lo, 'L'], [t0 + 20 * 3600, 3.44 / I.FT_PER_M, 'H']] })));   // the scale 0 .. 3.5 ft
+  await flush();
+  const ld = +c.q('.tide-dot')[0].getAttribute('cy');
+  assert.ok(ld + 28 > I.CHART_H && ld - 31 >= 0, 'the low highs: room above, none below: ' + ld);
+  assert.equal(c.q('.tide-callout-high').length, 2, 'the first low high and the top one; the second low high is left out (C14)');
+  c.q('.tide-callout text').forEach((t) => assert.ok(+t.getAttribute('y') <= I.CHART_H, 'no callout text below the chart'));
+});
+
+test('fresh check C12: a midnight refresh of an older station that fails schedules nothing for the newer one', async () => {
+  const s = setup({ now: Date.UTC(2026, 9, 9, 9, 50) });                  // Thu Oct 8, 11:50 PM HST
+  s.view.load(HNL_ST);
+  s.answers[0].res(response(200, payload({ obs: false })));
+  await flush();
+  s.setNow(Date.UTC(2026, 9, 9, 10, 1)); s.timers.fire(I.NOW_REDRAW_MS);    // a new day: Honolulu's refresh asked
+  assert.equal(s.calls.length, 2);
+  s.view.load(WAI_ST);                                                      // another station before it answers
+  s.answers[2].res(response(200, payload({ id: '1611401', name: 'Waimea Bay', obs: false })));
+  await flush();
+  s.answers[1].rej(new Error('down'));                                      // the old refresh fails afterwards
+  await flush();
+  s.setNow(Date.UTC(2026, 9, 9, 10, 15)); s.timers.fire(I.NOW_REDRAW_MS);
+  assert.equal(s.calls.length, 3, 'no retry for Waimea Bay because of Honolulu\'s failure');
+});

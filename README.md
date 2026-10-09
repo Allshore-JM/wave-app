@@ -833,7 +833,8 @@ one attempt, an 8 s wall-clock cap):
   subordinate station shares its reference's cached curve. Only NOAA's "no predictions" answer is final, and only when
   NOAA gives it twice in a row (it has sent it for a moment for a station it serves: Nairai Island); a final answer is
   kept an hour on the server and 10 minutes in browsers, and so is an answer built around one (a curve without its list
-  of highs and lows, or a subordinate's cosine because its reference has nothing). Any other NOAA message (a throttle, a
+  of highs and lows, or a subordinate's cosine because its reference has nothing: kept no longer than that reference's own
+  entry, so the subordinate is shaped as soon as NOAA answers for the reference again). Any other NOAA message (a throttle, a
   hiccup), on either of a station's two requests, and any failure are remembered for a minute and asked again; one build per station at a time (per-key locks counted, so a waiter never orphans one), two
   build slots, "busy" instead of a long wait; LRU 256. A subordinate's payload names its reference (`ref`, `ref_name`).
 - The sky travels with the payload, from `sky.events` (searched in 16-day chunks: it refuses more than 20 days at a
@@ -884,13 +885,16 @@ other tide icons, and changes nothing else (no icon comes or goes when a station
 Clicks and taps: an icon is an 18-px square (the opened one 22 px). An icon whose centre lies in a more important
 icon's box, or that has the other's centre in its own, is moved 12 px aside (east, west, south, north, then the corners;
 24 px when none of these is free), its anchor and tooltip, not its place. So stations NOAA lists at one spot can each be
-clicked (and, below zoom 11, the stations beside the opened one). On a touch screen an icon's target reaches 10 px
-beyond its box, cut to half the gap to the nearest drawn icon, so a tap on an icon's centre always opens that icon's
-station (checked over the whole snapshot at zooms 9 to 11, also with each of the 200 most crowded stations opened).
+clicked (and, below zoom 11, the stations beside the opened one). The icons are placed in order of importance, the
+opened one at its own rank with its larger box, so opening a station moves no other icon (the opened one steps aside
+when its larger box needs the room); the moves are worked out again at every zoom. On a touch screen an icon's target
+reaches 10 px beyond its box, cut to half the gap to the nearest drawn icon, so a tap on an icon's centre always opens
+that icon's station (checked over the whole snapshot at zooms 9 to 11 with every station opened, also after zoom steps).
 
 Keyboard: only the markers inside the view are Tab stops (a marker in the padding beyond it is not: Leaflet would pan
-the map to it), a focused marker never pans the map, and a rebuild hands the focus to the same marker's new element.
-Enter or Space opens a focused tide (or live-buoy) marker and its window's header takes the focus; closing a station
+the map to it), a focused marker never pans the map, and a rebuild hands the focus to the same marker's new element
+(to the map when the marker is no longer drawn: a zoom-out hid it). Enter or Space opens a focused tide (or live-buoy)
+marker and its window's header takes the focus (after a Retry only when the focus is still in the window); closing a station
 window (the x, Escape) hands the focus to the map when it was in the window. A failed station list is asked for again
 after 30 s, not on every pan, and the legend says so meanwhile. The legend's notes wrap under their label: the legend
 never changes width when one comes or goes.

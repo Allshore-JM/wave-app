@@ -411,6 +411,118 @@ def test_observed_water_level_only_where_a_gauge_reports():
     assert len(noaa.calls) == 2
 
 
+
+# ------------------------------------------------------------------------------------------ G27 (plan section 38)
+
+def _answering(msg_for):
+    """A FakeNoaa whose answer for some URLs is NOAA's error body with the given message."""
+    class N(FakeNoaa):
+        def __call__(self, u, m):
+            msg = msg_for(u)
+            if msg is not None:
+                self.calls.append(u)
+                return json.dumps({"error": {"message": msg}}).encode()
+            return super().__call__(u, m)
+    return N()
+
+
+def test_only_noaas_no_predictions_answer_is_final():
+    """G27 A-F3: a throttle or any other NOAA message passes (a minute, then asked again); "no predictions" is final
+    and kept (not asked again a minute later)."""
+    assert T.final_error("No Predictions data was found. Please make sure the Datum input is valid.")
+    assert T.final_error("Great Lakes stations don't have Predictions data.")
+    assert not T.final_error("Request limit exceeded. Please try again later.") and not T.final_error("")
+    throttle = {"on": True}
+    noaa = _answering(lambda u: "Request limit exceeded. Please try again later." if throttle["on"] else None)
+    clock = Clock(NOW)
+    svc = T.TideService(dict(STATIONS), noaa, now=clock)
+    status, p = svc.forecast("1612340")
+    assert status == "error" and p["error"] == T.UNAVAILABLE
+    throttle["on"] = False
+    clock.t += 61
+    assert svc.forecast("1612340")[0] == "ok"
+    noaa = _answering(lambda u: "No Predictions data was found." if "station=1611400" in u else None)
+    clock = Clock(NOW)
+    svc = T.TideService(dict(STATIONS), noaa, now=clock)
+    assert svc.forecast("1611400")[0] == "final"
+    n = len(noaa.calls)
+    clock.t += 3600                                                            # still kept an hour later (P16)
+    assert svc.forecast("1611400")[0] == "final" and len(noaa.calls) == n
+
+
+def test_a_passing_error_on_one_of_two_requests_is_an_error_not_a_degraded_day():
+    """G27 A-F3: a throttle on the extremes alone (or the curve alone) is not a curve without dots for a day."""
+    for which in ("interval=hilo", "interval=30"):
+        noaa = _answering(lambda u, w=which: "Request limit exceeded." if w in u else None)
+        svc = T.TideService(dict(STATIONS), noaa, now=Clock(NOW))
+        assert svc.forecast("1612340")[0] == "error", which
+
+
+def test_a_busy_reference_answers_busy_never_a_cosine_for_the_day():
+    """G27 A-F2: while another request builds the reference, its subordinate is "busy" (not cached), then shaped."""
+    svc, noaa, _ = service(wait_s=0.2)
+    e = svc._key_lock(("p", "1611400", BEGIN))
+    e[0].acquire()                                                             # someone is building Nawiliwili
+    status, _ = svc.forecast("1611401")
+    assert status == "busy" and svc._get(("p", "1611401", BEGIN)) is None     # not remembered
+    e[0].release()
+    svc._drop_key(("p", "1611400", BEGIN), e)
+    status, p = svc.forecast("1611401")
+    assert status == "ok" and p["method"] == "reference" and p["ref"] == "1611400" and p["ref_name"] == "Nawiliwili"
+    assert svc._inflight == {}                                                 # every lock entry dropped (A-F12)
+
+
+def test_a_failed_reference_is_an_error_for_a_minute_then_the_subordinate_is_shaped():
+    """G27 A-F2: a reference that cannot be fetched now does not leave its subordinate on a cosine until midnight."""
+    class RefDown(FakeNoaa):
+        down = True
+
+        def __call__(self, u, m):
+            if self.down and "station=1611400" in u:
+                self.calls.append(u)
+                raise IOError("timed out")
+            return super().__call__(u, m)
+    noaa, clock = RefDown(), Clock(NOW)
+    svc = T.TideService(dict(STATIONS), noaa, now=clock)
+    assert svc.forecast("1611401")[0] == "error"
+    noaa.down = False
+    clock.t += 61
+    status, p = svc.forecast("1611401")
+    assert status == "ok" and p["method"] == "reference"
+
+
+def test_the_method_and_reference_say_cosine_when_nothing_could_be_shaped():
+    """G27 P28/P36: a harmonic reference in hand but no extreme paired (no offsets): the curve is a cosine, named so."""
+    stations = dict(STATIONS)
+    stations["1611401"] = dict(STATIONS["1611401"], oh=None, ol=None)
+    svc = T.TideService(stations, FakeNoaa(), now=Clock(NOW))
+    status, p = svc.forecast("1611401")
+    assert status == "ok" and p["method"] == "cosine" and p["ref"] is None and p["ref_name"] is None
+    assert p["v"] == T.cosine_grid(hilo("waimea"), START)
+
+
+def test_a_request_waiting_on_a_build_gets_the_build_not_busy():
+    """G27 P41: a second request for a station being built waits (up to wait_s) and receives the same answer."""
+    svc, noaa, _ = service(wait_s=3.0)
+    noaa.hold = threading.Event()
+    out = {}
+    t = threading.Thread(target=lambda: out.setdefault("a", svc.forecast("1612340")))
+    t.start()
+    time.sleep(0.05)
+    threading.Timer(0.3, noaa.hold.set).start()
+    b = svc.forecast("1612340")
+    t.join(5)
+    assert b[0] == "ok" and b == out["a"] and sum("1612340" in u for u in noaa.calls) == 2
+
+
+def test_the_gap_guard_and_the_partner_kind():
+    """G27 P07 / P39: a 21-hour stretch between extremes is a gap (19 h is drawn); a partner is of the same kind."""
+    ex = [(0, 1.0, "H"), (19 * 3600, 0.0, "L"), (40 * 3600, 1.0, "H")]
+    assert T.cosine_at(ex, 9 * 3600) is not None and T.cosine_at(ex, 30 * 3600) is None
+    sub = [(10 * 3600, 1.0, "H")]
+    assert T.pair_reference(sub, [(10 * 3600 - 600, 0.2, "L")], (10, 10)) == [None]      # an L 10 min away: no partner
+    assert T.pair_reference(sub, [(10 * 3600 - 600, 0.9, "H")], (10, 10)) == [0]
+
 def test_fork_resets_the_locks():
     svc, _, _ = service()
     svc._lock.acquire()
@@ -438,6 +550,40 @@ def test_the_station_snapshot():
     page = T.client_list(doc)
     assert page["fields"] == ["id", "name", "lat", "lon", "type", "tz", "obs"]
     assert len(page["stations"]) == len(stations) and all(len(r) == 7 for r in page["stations"])
+    # G27 A-F4: NOAA's wrong positions corrected, the zone following; A-F6: abbreviations inside mixed names kept
+    fixed = {"TPT2891": (-169.91667, "Pacific/Niue"), "TPT2893": (-173.98333, "Pacific/Tongatapu"),
+             "TPT2897": (-174.79, "Pacific/Tongatapu"), "TWC0279": (-78.833, "America/Guayaquil")}
+    for sid, (lon, tz) in fixed.items():
+        assert (stations[sid]["lon"], stations[sid]["tz"]) == (lon, tz), sid
+    assert stations["6835001"]["lat"] == -6.1
+    names = {s["name"] for s in stations.values()}
+    for good in ("Martha's Vineyard GPS Buoy", "Fort Eustis (MARAD)", "PGA Boulevard Bridge, ICWW", "Lake Worth ICW",
+                 "CBBT, Chesapeake Channel", "Port O'Connor, Matagorda Bay", "Lime Tree Bay, St.Croix Island",
+                 "Pago Pago Harbor, Tutuila Island", "New York (The Battery)", "Cut 1N Front Range, St Marys River Entr"):
+        assert good in names, good
+
+
+def test_the_station_tools_names_and_zone_check():
+    """G27 A-F6 / A-F4: tools/tides/fetch_stations.py converts NOAA's capitalised names only, and stops the build when a
+    derived zone disagrees with NOAA's timezonecorr by more than 3 h outside the known stale / date-line list."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fetch_stations", os.path.join(ROOT, "tools", "tides", "fetch_stations.py"))
+    FS = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(FS)
+    cases = {"HONOLULU": "Honolulu", "MOKU O LOE": "Moku O Loe", "CHUUK, Moen Island": "Chuuk, Moen Island",
+             "PAGO PAGO Harbor, Tutuila Island": "Pago Pago Harbor, Tutuila Island",
+             "APIA (Observatory), Upolu Island": "Apia (Observatory), Upolu Island",
+             "PGA Boulevard Bridge, ICWW": "PGA Boulevard Bridge, ICWW", "Little Creek, NAB": "Little Creek, NAB",
+             "COX WC-53 Platform": "COX WC-53 Platform", "VACA KEY, USCG STATION, FLORIDA BAY": "Vaca Key, USCG Station, Florida Bay",
+             "MARTHA'S VINEYARD": "Martha's Vineyard", "PORT O'CONNOR, MATAGORDA BAY": "Port O'Connor, Matagorda Bay",
+             "ST. MARKS RIVER ENTRANCE": "St. Marks River Entrance", "  Two   spaces ": "Two spaces", "": ""}
+    for raw, want in cases.items():
+        assert FS.clean_name(raw) == want, raw
+    rows = [["1612340", "Honolulu", 21.3, -157.86, "R", None, "Pacific/Honolulu", True, None, None],
+            ["TPT2891", "Niue", -19.0, 169.9, "S", "X", "Pacific/Efate", False, 0, 0],
+            ["1778000", "Apia", -13.8, -171.8, "R", None, "Pacific/Apia", False, None, None]]
+    bad = FS.zone_mismatches(rows, {"1612340": "-10", "TPT2891": "-11", "1778000": "-11"})
+    assert [b[0] for b in bad] == ["TPT2891"]                                  # Apia is a known date-line difference
 
 
 # ------------------------------------------------------------------------------------------ the routes
@@ -509,3 +655,28 @@ def test_tides_stay_out_of_the_live_buoy_service():
     import app as A
     assert all("tide" not in type(p).__name__.lower() for p in A.get_buoy_providers())
     assert not any(isinstance(p, T.TideService) for p in A.get_buoy_providers())
+
+
+def test_a_throttled_subordinate_and_a_reference_failed_a_moment_ago_are_failures_not_a_day_long_answer():
+    """G27 A-F2 / A-F3 pins: a NOAA message other than "no predictions" on a subordinate's extremes passes; a reference
+    whose failure is remembered (a direct request failed a minute ago) fails its subordinate too (not a cosine day)."""
+    noaa = _answering(lambda u: "Request limit exceeded." if "station=1611401" in u else None)
+    svc = T.TideService(dict(STATIONS), noaa, now=Clock(NOW))
+    assert svc.forecast("1611401")[0] == "error"
+
+    class RefDownOnce(FakeNoaa):
+        down = True
+
+        def __call__(self, u, m):
+            if self.down and "station=1611400" in u:
+                self.calls.append(u)
+                raise IOError("timed out")
+            return super().__call__(u, m)
+    noaa, clock = RefDownOnce(), Clock(NOW)
+    svc = T.TideService(dict(STATIONS), noaa, now=clock)
+    assert svc.forecast("1611400")[0] == "error"                              # remembered under the reference's key
+    noaa.down = False
+    assert svc.forecast("1611401")[0] == "error"                              # within that minute: no cosine for the day
+    clock.t += 61
+    status, p = svc.forecast("1611401")
+    assert status == "ok" and p["method"] == "reference"

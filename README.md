@@ -795,7 +795,7 @@ Environment variables (all optional):
 Gunicorn: the service runs one scheduler per worker process; the site runs one worker (with threads), so each agency is
 asked once per refresh. More workers would each run their own scheduler (correct, but more feed traffic).
 
-## Tide stations (plan section 38, UI asset 1.18.2)
+## Tide stations (plan section 38, UI asset 1.18.5)
 
 NOAA CO-OPS tide predictions (public domain; NOS asks for attribution, given in the map credits while the layer is on
 and in the window) for the map's "Tide stations" layer.
@@ -804,7 +804,13 @@ The station list is a committed snapshot, `tide_stations.json` (3,501 stations: 
 joined with its `type=waterlevels` list for the `obs` flag, each station's nearest civil time zone by the live buoys'
 rule, and for every subordinate station its reference station and NOAA's published time offsets). Rebuild it now and
 then with `python tools/tides/fetch_stations.py` (`--offsets-cache FILE` keeps the ~2,250 per-station offset answers
-between runs) and commit the file; the site never asks NOAA's metadata service at runtime. `/api/tides/stations`
+between runs) and commit the file; the site never asks NOAA's metadata service at runtime. NOAA's metadata has a few
+positions wrong (Niue, Neiafu and Nomuka in Tonga, San Lorenzo in Ecuador: a longitude's sign; Djakarta: the
+latitude): `POSITION_FIX` in the tool puts them right and their zones follow; the tool stops (exit 2) when a derived
+zone differs from NOAA's own `timezonecorr` by more than 3 hours at a station outside `KNOWN_ZONE_DIFF` (a dozen
+places where NOAA's value is stale or on the other side of the date line), so a new wrong position is looked at before
+it ships. Names NOAA writes in capitals ("HONOLULU", "PAGO PAGO Harbor") are written as names; capitals inside a
+mixed-case name are abbreviations and stay ("Martha's Vineyard GPS Buoy", "PGA Boulevard Bridge"). `/api/tides/stations`
 serves the page's copy (id, name, position, kind, zone, gauge) with an ETag, 6 h for browsers and the edge.
 
 `tide_sources.py` reads the predictions (`TideService`, wired in `app.py` with the forecast points' bounded fetch:
@@ -814,14 +820,20 @@ one attempt, an 8 s wall-clock cap):
   moved by a published time offset and height ratio (checked at 25 of 25 stations, to the minute). Its curve is the
   reference station's NOAA curve re-timed and re-scaled between each pair of its own extremes (paired through the
   offsets), so it passes through every extreme exactly and keeps the shape of the real tide (stands, uneven rises).
-  Measured where the truth is known (two harmonic stations, one shaped onto the other's extremes): San Diego 3 cm
-  worst against a plain cosine's 31 cm, Seattle 4 (24), Galveston 8 (23), Nawiliwili 9 (17). Where an extreme has no
-  partner, or the reference's curve is unavailable, that stretch is a half cosine between the extremes. A pair of
+  Measured where the truth is known (two harmonic stations, one shaped onto the other's extremes, the shaped stretches):
+  San Diego 3 cm worst against a plain cosine's 31 cm, Seattle 5 (24), Galveston 5 (23), Nawiliwili 3 (17); a reference
+  far away or in another tidal regime does worse (Anchorage shaped on Nikiski's curve, a 10.6 m range: up to 1.5 m).
+  Where an extreme has no partner, or NOAA has no curve for the reference, that stretch is a half cosine between the
+  extremes (up to ~20 cm off the real shape at a mixed tide); these are a few of the ~130 stretches of a station's
+  32 days. A reference that is being fetched by another request, or cannot be fetched now, makes the subordinate
+  station answer "busy" or a one-minute failure (the page asks again), never a cosine kept for the day. A pair of
   extremes of the same kind, or more than 20 h apart (diurnal Gulf tides reach 16.6 h), leaves a gap: nothing is invented.
 - The window is 32 days from 00:00 UTC yesterday (every zone's "today from midnight" plus 30 days lies inside it; the
   curve carries 12 h more on each side, the extremes 24 h), kept per station per UTC day (predictions never change); a
-  subordinate station shares its reference's cached curve. NOAA's "no predictions" is final (kept 24 h); a failure is
-  remembered for a minute; one build per station at a time, two build slots, "busy" instead of a long wait; LRU 256.
+  subordinate station shares its reference's cached curve. Only NOAA's "no predictions" answer is final (kept 24 h); any
+  other NOAA message (a throttle, a hiccup), on either of a station's two requests, and any failure are remembered for a
+  minute and asked again; one build per station at a time (per-key locks counted, so a waiter never orphans one), two
+  build slots, "busy" instead of a long wait; LRU 256. A subordinate's payload names its reference (`ref`, `ref_name`).
 - The sky travels with the payload, from `sky.events` (searched in 16-day chunks: it refuses more than 20 days at a
   time): the nights (last light to first light), the sunrise / sunset / moonrise / moonset instants (`events`) and the
   moon's phase, lit percentage and name every 6 h (`moon`; the page takes the sample nearest each local noon); about
@@ -843,7 +855,26 @@ the time and height written out on open days, the observed water level dashed, a
 with a dot at the current height and a level line to the axis (the current height in the label column; redrawn every
 minute; a new day restarts the strip at today). Under the chart, aligned to the columns: HIGH and LOW (time + height),
 Sun (rise / set), Moon (the phase glyph nearest the day's middle, mirrored south of the equator, and its set / rise).
-Hovering or touching the chart reads the time and height under the pointer. Within a day the time runs linearly over
-its own column from midnight to the zone's noon over the left half and from noon to midnight over the right half, so 23- and 25-hour days keep noon at the AM | PM line. Heights above MLLW in the site's unit. A newer station voids an
-older one's answers; a hidden (minimised) window builds its strip when expanded; text from the server is written as
-text only.
+Hovering or touching the chart reads the time and height under the pointer (a tap's readout ends with the tap; on a
+strip whose zone changes name the readout names it). Within a day the time runs linearly over its own column from
+midnight to the zone's noon over the left half and from noon to midnight over the right half, so 23- and 25-hour days
+keep noon at the AM | PM line; where a clock goes back at midnight (Cuba) the day starts at the first 00:00. The drawn
+curve is NOAA's 30-minute samples with the exact highs and lows put in between (so every dot sits on the line and the
+current height and the readout follow the real peak; between samples the line is straight: up to ~0.12 ft off the
+true curve near an extreme at the biggest tides); it is cut cleanly at the strip's two ends; a gap (NOAA's list of highs
+and lows incomplete) is drawn as a gap and named in the notes. Heights above MLLW in the site's unit (axis labels in
+feet or metres with up to two decimals). When the local day changes in an open window the strip restarts at today, its
+notes follow and the station is asked for again (quietly; a failure keeps the strip). A newer station voids an older
+one's answers; a hidden (minimised) window builds its strip when expanded; Retry hands the focus back to the window;
+text from the server is written as text only. For screen readers the table has a caption, its row labels are row
+headers, and the sun / moon glyphs are read as words ("Sunrise 7:18 AM", the moon's phase and lit share).
+
+Busy coasts (owner, 2026-10-08): each station gets a REVEAL ZOOM once per list and opened station, in order of
+importance (the opened station, then a station with a gauge, a harmonic one, a subordinate one, then by id): the zoom
+from which it is 24 px clear of every more important station already shown there. A station is drawn from its reveal
+zoom on, so an icon never vanishes as you zoom in, no two icons are closer than 24 px below the map's last zoom (11),
+and the legend's note says "zoom in for more stations" while one in view waits. At zoom 11 every station is drawn; an
+icon within 9 px of a more important one is moved 12 px aside (its anchor, not its place), so stations NOAA lists at
+the same spot can each be clicked. Enter or Space opens a focused tide (or live-buoy) marker; closing the window hands
+the focus to the map. A failed station list is asked for again after 30 s, not on every pan. The minimised chips sit
+above the station windows, and a station chip gives its subtitle up before the station's name.

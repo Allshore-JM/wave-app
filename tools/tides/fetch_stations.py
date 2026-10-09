@@ -12,19 +12,36 @@ NOAA's list changes rarely; the site never asks mdapi at runtime, so re-run it n
 import argparse
 import json
 import os
-import string
+import re
 import sys
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(ROOT, "tide_stations.json")
 MD = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi"
 FIELDS = ["id", "name", "lat", "lon", "type", "ref", "tz", "obs", "oh", "ol"]
-KEEP_UPPER = {"ICWW", "USCG", "NOAA", "US", "RR", "AFB", "NAS", "II", "III", "IV", "SW", "SE", "NW", "NE"}
+KEEP_UPPER = {"ICWW", "ICW", "USCG", "NOAA", "US", "USS", "RR", "AFB", "NAS", "NAB", "MSF", "PGA", "GPS", "GNSS", "NERR",
+              "ANVSA", "MARAD", "CBBT", "LAWMA", "II", "III", "IV", "SW", "SE", "NW", "NE"}
+# NOAA's metadata has a few positions wrong (G27 A-F4: a longitude's sign, or a latitude): the station's real place,
+# from which its time zone follows. Checked against charts / the place's known coordinates.
+POSITION_FIX = {
+    "TPT2891": (-19.03333, -169.91667),     # Niue Island: NOAA +169.92 (Vanuatu's waters); Niue is 169.9 W, UTC-11
+    "TPT2893": (-18.65, -173.98333),        # Neiafu, Vava'u (Tonga): NOAA +6.017 (= 180 - 173.983)
+    "TPT2897": (-20.26667, -174.79),        # Nomuka (Tonga): NOAA +174.79 (Fiji's waters)
+    "TWC0279": (1.25, -78.833),             # San Lorenzo (Ecuador): NOAA +78.833 (the Indian Ocean)
+    "6835001": (-6.1, 106.86667),           # Djakarta (Tanjung Priok, 6 06 S): NOAA -2.20 (430 km out in the Java Sea)
+}
+# Stations whose derived zone differs from NOAA's own `timezonecorr` by more than ZONE_TOL_H because NOAA's value is
+# stale or on the other side of the date line (the same clock, a day apart): Apia, Kiribati, Tonga, Kanton, Raoul,
+# Easter Island. Any OTHER station differing that much stops the build: look at its position first.
+KNOWN_ZONE_DIFF = {"1778000", "1814060", "TPT2743", "TPT2819", "TPT2821", "TPT2855", "TPT2859", "TPT2893", "TPT2895",
+                   "TPT2897", "TPT2899", "TPT2905"}
+ZONE_TOL_H = 3
 
 
 def get(url, tries=3):
@@ -38,18 +55,62 @@ def get(url, tries=3):
             time.sleep(1 + 2 * k)
 
 
+def _caps_word(w):
+    """A word written in capitals, without digits ("HONOLULU", "O'CONNOR,", "ST.CROIX", "(BREAKWATER")."""
+    return any(c.isalpha() for c in w) and not any(c.islower() or c.isdigit() for c in w)
+
+
+def _title(w):
+    """Each run of capitals in a word capitalised ("O'CONNOR" -> "O'Connor", "ST.CROIX" -> "St.Croix"), abbreviations
+    (KEEP_UPPER) and single letters kept, an "S" after an apostrophe lowered ("MARTHA'S" -> "Martha's")."""
+    def one(m):
+        run = m.group(0)
+        if run in KEEP_UPPER:
+            return run
+        if len(run) == 1:
+            return run.lower() if run == "S" and m.start() > 0 and w[m.start() - 1] == "'" else run
+        return run.capitalize()
+    return re.sub(r"[A-Z]+", one, w)
+
+
 def clean_name(name):
-    """NOAA writes some names in capitals ("HONOLULU", "PAGO PAGO Harbor", "NEW YORK (The Battery)"): every word of
-    three or more capital letters (or "ST.") is capitalised, abbreviations kept (ICWW, USCG ...; "B.C."); other words
-    as written."""
+    """NOAA writes the main stations' names in capitals, wholly ("HONOLULU", "CBBT, CHESAPEAKE CHANNEL") or their
+    leading place ("PAGO PAGO Harbor, Tutuila Island", "CHUUK, Moen Island", "NEW YORK (The Battery)"): those capitals
+    are converted (abbreviations kept: ICWW, USCG, CBBT ...). A capital word inside a mixed name is an abbreviation and
+    stays ("Martha's Vineyard GPS Buoy", "PGA Boulevard Bridge", "Fort Eustis (MARAD)"). G27 A-F6."""
     name = " ".join(str(name or "").split())
-    words = []
-    for w in name.split(" "):
-        core = w.strip(string.punctuation)
-        if (len(core) >= 3 or w.endswith(".")) and core.isalpha() and core.isupper() and core not in KEEP_UPPER:
-            w = w.replace(core, core.capitalize())
-        words.append(w)
-    return " ".join(words)
+    words = name.split(" ") if name else []
+    if not any(c.islower() for c in name):
+        n = len(words)                                         # the whole name is in capitals
+    else:
+        n = 0                                                  # the leading run of capital words: the place's name
+        while n < len(words) and _caps_word(words[n]):
+            n += 1
+        ends_segment = n > 0 and (n == len(words) or words[n - 1][-1] in ",)" or words[n].startswith("("))
+        if not (n >= 2 or ends_segment):
+            n = 0                                              # one capital word inside a phrase: an abbreviation
+    return " ".join([_title(w) for w in words[:n]] + words[n:])
+
+
+def std_offset_h(zone):
+    """A zone's standard UTC offset in hours (the smaller of January's and July's)."""
+    z = ZoneInfo(zone)
+    return min(z.utcoffset(datetime(2026, m, 15)).total_seconds() / 3600 for m in (1, 7))
+
+
+def zone_mismatches(rows, corr):
+    """Stations (not in KNOWN_ZONE_DIFF) whose zone differs from NOAA's timezonecorr by more than ZONE_TOL_H:
+    [(id, name, zone, corr)]. rows: the snapshot's rows; corr: {id: NOAA's timezonecorr}."""
+    out = []
+    for r in rows:
+        sid, zone = r[0], r[6]
+        try:
+            c = float(corr.get(sid))
+        except (TypeError, ValueError):
+            continue
+        if sid not in KNOWN_ZONE_DIFF and abs(std_offset_h(zone) - c) > ZONE_TOL_H:
+            out.append((sid, r[1], zone, c))
+    return out
 
 
 def main(argv=None):
@@ -92,11 +153,17 @@ def main(argv=None):
         if s.get("type") == "S" and (s.get("reference_id") in (None, "", s["id"]) or s.get("reference_id") not in ids):
             dropped.append(s["id"])                            # NOAA answers nothing for these (Malakal Harbor: its own ref)
             continue
-        lat, lon = round(float(s["lat"]), 5), round(float(s["lng"]), 5)
+        lat, lon = POSITION_FIX.get(s["id"], (round(float(s["lat"]), 5), round(float(s["lng"]), 5)))
         kind = "S" if s.get("type") == "S" else "R"
         oh, ol = cache.get(s["id"], [None, None]) if kind == "S" else (None, None)
         rows.append([s["id"], clean_name(s["name"]), lat, lon, kind, (s.get("reference_id") or None) if kind == "S" else None,
                      A._nearest_civil_tz(lat, lon), s["id"] in gauges, oh, ol])
+    bad = zone_mismatches(rows, {s["id"]: s.get("timezonecorr") for s in preds})
+    if bad:                                                    # a position NOAA has wrong (A-F4): fix it or list it
+        print("ZONE CHECK FAILED (derived zone vs NOAA's timezonecorr, > %d h):" % ZONE_TOL_H, file=sys.stderr)
+        for b in bad:
+            print("  %s %s: %s vs NOAA %+g h" % b, file=sys.stderr)
+        return 2
     doc = {"source": "NOAA CO-OPS metadata API (tidesandcurrents.noaa.gov), public domain",
            "captured": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "fields": FIELDS, "stations": rows}

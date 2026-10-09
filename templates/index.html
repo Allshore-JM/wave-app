@@ -93,7 +93,7 @@
     .live-win .fw-body { padding: 12px 14px; }
     /* the tide-station window's box (plan section 38): a third window, its chip stacked above the live-buoy chip;
        narrower and taller than the forecast window, wider and shorter than the live-buoy window (see above) */
-    .fwin.tide-win { right: 18px; bottom: 18px; width: min(880px, calc(100vw - 76px)); height: min(66vh, 760px); z-index: 2000; }
+    .fwin.tide-win { right: 18px; bottom: 18px; width: min(880px, calc(100vw - 76px)); height: min(70vh, 760px); z-index: 2000; }
     .tide-win .fw-body { padding: 8px 10px 12px; }
     /* the day strip (static_ui/tides.js, after tide-forecast.com's layout): one table, the label column stuck to the
        left while the days scroll sideways; a closed day is one narrow column, an open day two halves (AM | PM) */
@@ -104,6 +104,7 @@
     .tide-table .tide-lab { position: sticky; left: 0; z-index: 3; background: #fff; width: 60px; min-width: 60px; max-width: 60px;
       border-right: 1px solid rgba(0,0,0,.22); font-weight: 600; color: #3f4d6e; padding: 4px 4px; white-space: nowrap; }
     .tide-table .tide-lab .tide-l2 { font-weight: 400; font-size: 10.5px; color: #6c757d; }
+    .tide-table th.tide-lab { text-align: left; }   /* the rows' labels are row headers (G27 B-P3-4) */
     .tide-table .tide-day { background: #e9f0f8; text-align: center; }
     .tide-table .tide-day-open { background: #d8e6f6; }
     .tide-table .tide-day-today .tide-daybtn { color: #0b3d91; }
@@ -416,7 +417,7 @@
       height: min(60vh, 720px, calc(100vh - 78px - var(--map-topright-h, 0px))); }
     .live-chip.tide-chip .forecast-win:not(.fw-min):not(.fw-max) {
       height: min(60vh, 720px, calc(100vh - 86px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }
-    .live-chip .tide-win:not(.fw-min):not(.fw-max) { height: min(66vh, 760px, calc(100vh - 34px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }
+    .live-chip .tide-win:not(.fw-min):not(.fw-max) { height: min(70vh, 760px, calc(100vh - 34px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }
     .tide-chip .live-win:not(.fw-min):not(.fw-max) { height: min(76vh, 800px, calc(100vh - 34px - var(--tw-chip-h, 40px) - var(--map-topright-h, 0px))); }
     .fw-header {
       display: flex; align-items: center; gap: 8px; padding: 6px 10px;
@@ -477,6 +478,10 @@
     /* minimised: the header bar alone; on desktops the forecast chip is parked at the bottom-left beside the
        Home button and the live-buoy chip at the bottom-right; each takes at most half the width, so they never meet */
     .fwin.fw-min { height: auto !important; min-height: 0; min-width: 0; }   /* a chip shrinks below the window minimum (the chips never meet) */
+    /* a parked chip stays above the expanded station windows (their default boxes reach the forecast chip's buttons; G27
+       B-P3-8), and a station chip gives its subtitle up before the station's name (G27 B-P2-2) */
+    .fwin.fw-min { z-index: 2150; }
+    .live-win.fw-min .fw-titles .fw-cycle, .tide-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     @media (min-width: 501px) and (min-height: 501px) {
       .forecast-win.fw-min {
         left: 60px !important; right: auto !important; top: auto !important; bottom: 12px !important;
@@ -1528,7 +1533,11 @@
     // the tide layer's state (plan section 38; the functions are with rebuildLiveBuoyMarkers below)
     const TIDE_MIN_ZOOM = 9;                        // the stations show from this map zoom (fractional zooms: >=)
     const TIDE_ALL_ZOOM = MAX_MAP_ZOOM;             // from this zoom every station shows; below it overlapping icons are thinned
-    const TIDE_GAP_PX = 24;                         // icons (18 px) closer than this on screen overlap: the less important goes
+    const TIDE_GAP_PX = 24;                         // icons (18 px) closer than this on screen overlap: the less important waits
+    const TIDE_NUDGE_PX = 9, TIDE_NUDGE_STEP = 12;  // at the last zoom an icon within 9 px of a more important one moves 12 px aside
+    const TIDE_LIST_RETRY_MS = 30000;               // a failed station list is asked again after this (not on every pan)
+    let tideListFailedAt = -Infinity;
+    let tideReveal = null, tideRevealKey = '';      // each station's reveal zoom (per list and opened station)
     let tideStationsData = [];
     let tideListPromise = null;
     let activeTideId = null;
@@ -2727,6 +2736,7 @@
           direction: 'top',
           offset: [12, -2]
         });
+        keyOpens(marker);                                         // Enter / Space opens it (G27 B-P2-1)
 
         marker.on('click', function (e) {
           if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map
@@ -2758,46 +2768,107 @@
         tideNoteText = ''; paintTideNote();
         rebuildTideMarkers(true);
       }, function () {
-        tideListPromise = null;                       // asked again on the next zoom or tick
+        tideListPromise = null;                       // asked again on a pan or zoom TIDE_LIST_RETRY_MS later (G27 A-F11)
+        tideListFailedAt = Date.now();
         tideNoteText = 'unavailable'; paintTideNote();
       });
       return tideListPromise;
     }
     function tideVisible() { return map.hasLayer(tideLayer) && map.getZoom() >= TIDE_MIN_ZOOM; }
-    // Busy coasts (owner, 2026-10-08: hide overlaps): the more important station keeps its place on screen, a gauge before
-    // a harmonic station before a subordinate one, then by id (the same answer on every pan); the opened station always
-    // shows; nothing hides at the map's last zoom, so every station can be reached.
+    // Busy coasts (owner, 2026-10-08: hide overlaps). Each station gets a REVEAL ZOOM, once per list and opened station,
+    // in order of importance (the opened station, then a gauge, a harmonic station, a subordinate one, then by id): the
+    // zoom from which it is 24 px clear of every more important station already shown there (two stations d px apart at
+    // zoom 9 are 24 px apart from zoom 9 + log2(24 / d)). A station is drawn from its reveal zoom on, so an icon shown
+    // never vanishes as you zoom in (G27 B-P1-1); the opened one always shows; every station at the map's last zoom.
     function tideRank(s) { return (s.obs ? 0 : 2) + (s.type === 'R' ? 0 : 1); }
-    function thinTideCopies(copies) {
-      if (map.getZoom() >= TIDE_ALL_ZOOM || copies.length < 2) return copies;
-      const order = copies.slice().sort(function (a, b) {
-        return (b.s.id === activeTideId) - (a.s.id === activeTideId) || tideRank(a.s) - tideRank(b.s) ||
-               (a.s.id < b.s.id ? -1 : a.s.id > b.s.id ? 1 : a.o - b.o);
-      });
-      const cells = new Map(), kept = [];
-      order.forEach(function (c) {
-        const p = map.latLngToContainerPoint([c.s.lat, c.lng]);
-        const cx = Math.floor(p.x / TIDE_GAP_PX), cy = Math.floor(p.y / TIDE_GAP_PX);
-        for (let i = cx - 1; i <= cx + 1; i++) {
-          for (let j = cy - 1; j <= cy + 1; j++) {
-            const near = cells.get(i + ',' + j);
-            if (near && near.some(function (q) { return (q.x - p.x) * (q.x - p.x) + (q.y - p.y) * (q.y - p.y) < TIDE_GAP_PX * TIDE_GAP_PX; })) return;
+    function tideOrder(a, b) {
+      return (b.id === activeTideId) - (a.id === activeTideId) || tideRank(a) - tideRank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    }
+    function tideRevealZooms() {
+      const key = tideStationsData.length + '|' + (activeTideId || '');
+      if (tideReveal && tideRevealKey === key) return tideReveal;
+      const W = 256 * Math.pow(2, TIDE_MIN_ZOOM), cols = Math.ceil(W / TIDE_GAP_PX), cells = new Map(), out = {};
+      tideStationsData.slice().sort(tideOrder).forEach(function (s) {
+        const p = map.project([s.lat, ((s.lon + 540) % 360) - 180], TIDE_MIN_ZOOM);
+        const x = ((p.x % W) + W) % W, cx = Math.floor(x / TIDE_GAP_PX), cy = Math.floor(p.y / TIDE_GAP_PX);
+        let need = TIDE_MIN_ZOOM;
+        if (s.id !== activeTideId) {
+          for (let i = cx - 1; i <= cx + 1; i++) {
+            for (let j = cy - 1; j <= cy + 1; j++) {
+              (cells.get((((i % cols) + cols) % cols) + ',' + j) || []).forEach(function (q) {
+                let dx = Math.abs(q.x - x); dx = Math.min(dx, W - dx);          // across the date line too
+                const d = Math.hypot(dx, q.y - p.y);
+                const clear = d > 0 ? TIDE_MIN_ZOOM + Math.log2(TIDE_GAP_PX / d) : Infinity;
+                if (clear > q.z && clear > need) need = clear;                   // q shows before the two are clear: wait
+              });
+            }
           }
         }
-        const key = cx + ',' + cy;
-        if (!cells.has(key)) cells.set(key, []);
-        cells.get(key).push(p);
-        kept.push(c);
+        out[s.id] = need;
+        const k = cx + ',' + cy;
+        if (!cells.has(k)) cells.set(k, []);
+        cells.get(k).push({ x: x, y: p.y, z: need });
       });
-      return kept;
+      tideReveal = out; tideRevealKey = key;
+      return out;
+    }
+    function thinTideCopies(copies) {
+      const z = map.getZoom();
+      if (z >= TIDE_ALL_ZOOM) return copies;
+      const rz = tideRevealZooms();
+      return copies.filter(function (c) { return !(rz[c.s.id] > z + 1e-9); });
+    }
+    // At the last zoom an icon within 9 px of a more important one moves 12 px aside (east, west, south, north, then the
+    // corners: the first free spot), so both can be clicked; its place on the map stays (the icon's anchor moves). G27 A-F7.
+    function tideNudges(copies) {
+      const out = new Map(), z = map.getZoom();
+      if (z < TIDE_ALL_ZOOM || copies.length < 2) return out;
+      const placed = [], free = function (x, y) { return placed.every(function (q) { return Math.hypot(q.x - x, q.y - y) >= TIDE_NUDGE_PX; }); };
+      copies.slice().sort(function (a, b) { return tideOrder(a.s, b.s) || a.o - b.o; }).forEach(function (c) {
+        const p = map.project([c.s.lat, c.lng], z);
+        let off = null;
+        if (!free(p.x, p.y)) {
+          [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]].some(function (t) {
+            const x = p.x + t[0] * TIDE_NUDGE_STEP, y = p.y + t[1] * TIDE_NUDGE_STEP;
+            if (free(x, y)) { off = [t[0] * TIDE_NUDGE_STEP, t[1] * TIDE_NUDGE_STEP]; return true; }
+            return false;
+          });
+        }
+        placed.push(off ? { x: p.x + off[0], y: p.y + off[1] } : p);
+        if (off) out.set(c.s.id + '#' + c.o, off);
+      });
+      return out;
+    }
+    const tideIconCache = {};
+    function tideIconFor(active, off) {
+      if (!off) return active ? tideIconActive : tideIcon;
+      const key = (active ? 'a' : 'i') + off[0] + ',' + off[1];
+      if (!tideIconCache[key]) {
+        const half = active ? 11 : 9;
+        tideIconCache[key] = L.divIcon({ className: active ? 'tide-icon tide-icon-active' : 'tide-icon', html: '', iconSize: [half * 2, half * 2],
+                                         iconAnchor: [half - off[0], half - off[1]], tooltipAnchor: [off[0], off[1]] });
+      }
+      return tideIconCache[key];
+    }
+    // Enter or Space on a focused marker opens it, as a click does (Leaflet's markers are tab stops but open nothing
+    // from the keyboard without a popup; G27 B-P2-1). Used by the tide and live-buoy markers.
+    function keyOpens(marker) {
+      const el = marker.getElement && marker.getElement();
+      if (!el || !el.addEventListener) return;
+      el.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+        if (e.preventDefault) e.preventDefault();
+        marker.fire('click', { latlng: marker.getLatLng(), originalEvent: e });
+      });
     }
     function rebuildTideMarkers(force = false) {
       const on = tideVisible();
-      if (on && !tideListPromise) loadTideStations();
-      const vis = on ? thinTideCopies(visibleCopies(tideStationsData)) : [];
+      if (on && !tideListPromise && Date.now() - tideListFailedAt >= TIDE_LIST_RETRY_MS) loadTideStations();
+      const all = on ? visibleCopies(tideStationsData) : [], vis = on ? thinTideCopies(all) : [];
       const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis);   // the gate bit clears the layer on a zoom-out
       if (map.hasLayer(tideLayer)) {
-        const want = on ? (tideStationsData.length ? '' : tideNoteText) : 'zoom in to see tide stations';
+        const want = on ? (tideStationsData.length ? (hiddenInView(all, vis) ? 'zoom in for more stations' : '') : tideNoteText)
+                        : 'zoom in to see tide stations';
         if (want !== tideNoteText) { tideNoteText = want; paintTideNote(); }
       } else if (tideNoteText) { tideNoteText = ''; paintTideNote(); }
       if (map.attributionControl && map.hasLayer(tideLayer) !== tideCreditShown) {   // the credit while the layer is on (NOS
@@ -2807,11 +2878,14 @@
       if (!force && sig === lastTideSig) return;
       lastTideSig = sig;
       tideLayer.clearLayers();
+      const nudges = tideNudges(vis);
       vis.forEach(function (c) {
         const s = c.s;
         const label = 'Tide station ' + s.name;
-        const marker = L.marker([s.lat, c.lng], { icon: s.id === activeTideId ? tideIconActive : tideIcon, title: label, zIndexOffset: 400 }).addTo(tideLayer);
+        const icon = tideIconFor(s.id === activeTideId, nudges.get(s.id + '#' + c.o));
+        const marker = L.marker([s.lat, c.lng], { icon: icon, title: label, zIndexOffset: 400 }).addTo(tideLayer);
         marker.bindTooltip(textTip(label), { permanent: false, direction: 'top', offset: [0, -8] });   // NOAA's name: text, never HTML
+        keyOpens(marker);
         marker.on('click', function (e) {
           if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map
           activeTideId = s.id;
@@ -2820,6 +2894,16 @@
           saveLayerVisibility();
           openTideStation(s);
         });
+      });
+    }
+    // a station in view (not in the padding) is hidden by the thinning: the legend says more come with zooming in (B-P3-1)
+    function hiddenInView(all, vis) {
+      if (vis.length >= all.length || !map.getSize) return false;
+      const size = map.getSize(), kept = new Set(vis);
+      return all.some(function (c) {
+        if (kept.has(c)) return false;
+        const p = map.latLngToContainerPoint([c.s.lat, c.lng]);
+        return p.x >= 0 && p.y >= 0 && p.x <= size.x && p.y <= size.y;
       });
     }
     const TIDE_CREDIT = 'Tides: <a href="https://tidesandcurrents.noaa.gov/" target="_blank" rel="noopener">NOAA CO-OPS</a>';
@@ -2835,7 +2919,8 @@
         document: document, fetch: function (u, o) { return fetch(u, o); },
         visible: function () { return !!(tideWin && tideWin.isOpen() && tideWin.window.mode !== 'min'); },
         unit: getSelectedUnit(),
-        zoneAbbr: function (ms, tz) { try { return tzAbbr(new Date(ms).toISOString(), tz); } catch (e) { return tz; } }
+        zoneAbbr: function (ms, tz) { try { return tzAbbr(new Date(ms).toISOString(), tz); } catch (e) { return tz; } },
+        onRetried: function () { const h = document.getElementById('twHeader'); if (h && h.focus) h.focus({ preventScroll: true }); }   // G27 B-P3-3
       });
       return tideView;
     }
@@ -2853,6 +2938,11 @@
     function tideWindowClosed() {                     // from the x, Escape or closeTideWindow (the window's onClose)
       if (tideView) tideView.clear();
       if (activeTideId !== null) { activeTideId = null; rebuildTideMarkers(true); }
+      // the focus was in the window (now hidden) or nowhere: the map takes it, not the page's start (G27 B-P3-3)
+      const a = document.activeElement, w = document.getElementById('tideWin');
+      if (map.getContainer && (!a || a === document.body || (w && w.contains && w.contains(a)))) {
+        try { map.getContainer().focus({ preventScroll: true }); } catch (e) {}
+      }
     }
 
     // Wire map movement after all wrapped-marker state and rebuild functions exist.

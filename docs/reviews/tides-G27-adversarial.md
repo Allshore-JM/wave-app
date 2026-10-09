@@ -522,3 +522,41 @@ Accepted, for the owner's awareness (no change):
 Release: UI 1.18.7 and its fixture; the golden in its own commit; the test site at MAX (with the whole-snapshot targets
 check and trusted taps and clicks on the F-1 and F-2 cases); then the owner's production go-ahead (tag `prod-pre-tides` @
 20839a3).
+
+## Fix round 3 (Opus 5.5 HIGH): 61442c9 + eceb687 (goldens 4eee976, ef9722f), UI asset unchanged (1.18.6)
+Every item of the scope above (the owner's "proceed", F-6 and F-9 accepted), with these notes:
+- F-1: `tideNudges` runs on every rebuild call and `nudgeSignature(nudges)` joins the render signature, so a zoom that
+  changes any nudge redraws the icons.
+- F-2: the nudges are placed in order of importance (`tideRankOrder`); the opened icon keeps its rank, with its 22-px
+  box. The planned fallback (the opened icon first when the order leaves an icon with no free spot) never triggered:
+  with every station opened at zooms 9 to 11 by 0.1, 73,521 states in a 1280x800 view and 73,521 in a 390x844 view, no
+  icon is left without a free spot. So the fallback and `tideOrder` were removed (eceb687).
+- F-3: `refocusMarker(markers, key, prefix)`: when a focused marker of that layer ('t:' or 'l:') is not drawn again,
+  the map takes the focus. Another layer's focused marker is left alone.
+- F-4: the page's `onRetried` focuses `#twHeader` only when the focus is on the page's body or inside the tide window.
+- F-5: `_reference_curve` returns when the reference's cache entry runs out (`_expires`). A subordinate built on a
+  degraded reference is kept min(1 h, that time), and at least a minute.
+- F-8: the module docstring.
+- No file under `static_ui` changed (F-4 is in the page), so the UI asset version stays 1.18.6.
+Measured with the reviewer's harness of the page's own block (`g27/fix3/`: `targets_run.js`, `swap.js`, `verify_f1.js`,
+`verify_f2.js`, `fallback.js`):
+- The F-1 cases (Ford Island beside the Ferry, Malakal Harbor beside Koror): no conflict after the zoom steps.
+- The whole snapshot with every station opened, zooms 9 to 11, desktop boxes and finger targets: 0 conflicts in 94,527
+  fresh states and 71,246 zoom-step states (1280x800), and 0 in 94,527 and 121,114 (390x844). The fix2check run had found
+  59 and 70 in the zoom steps. With no station opened, the whole world at every zoom: 0. The smallest gap between drawn
+  centres below zoom 11 is 22.8 px.
+- Opening a station (60,642 states): another icon moves in 12 states (13 icons; fix2check: 83 states, 104 icons), all at
+  zoom 11 where the opened icon's 22-px box needs the room. After the redraw the clicked spot holds another station in 0
+  states (fix2check: 11).
+- The five F-2 pairs: Little Torch Key x2, 8722861 and TEC3447 keep their places. Oakland Grove Street 9414763 and
+  8573777, opened, step 24 px to the other side of their neighbour, whose icon stays where it was.
+Tests: `tests/test_tides.py` 46 (+2), `tests/ui/tides.test.js` 36 (+2), `tests/ui/tides-page.test.js` 24 (+5; the
+harness now also runs the live markers' block), page pins. pytest 875 (exit 0), Node 539.
+Mutation (`g27/fix3/mut_fix3.py`, a detached worktree of 4eee976): the fresh check's 18 survivors and 14 new mutants, 32
+in all. 23 were killed by behaviour tests and 4 by text pins (the CSS rules T23, T30 and T31, and N10). C11 survived;
+its test was strengthened in eceb687 and now kills it. N10 is now killed by a behaviour test too.
+- N03-N05 (the fallback): moot, the fallback was removed.
+- N13 (no floor under the subordinate's capped TTL): equivalent. The reference entry was read live a moment before, so
+  its end lies in the future. An evicted entry gives 0, which keeps the plain hour.
+Next: the test site at MAX (cherry-picks onto `test`; trusted taps and clicks on the F-1 and F-2 cases, the keyboard
+focus after a zoom-out, Retry after a wait), then the owner's production go-ahead (tag `prod-pre-tides` @ 20839a3).

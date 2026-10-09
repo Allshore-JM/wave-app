@@ -139,3 +139,31 @@ Then: the test site at MAX (the reveal rule by trusted zooming in the Keys, keyb
 short fresh re-check (MAX), then the owner's production approval (tag `prod-pre-tides` @ 20839a3).
 Owner's calls, with the author's recommendations: B-P3-2 accept (today's elapsed observations); B-P3-5 GMT±N zone
 names accept (site-wide); B-P3-8 the covered marker accept; A-F14's CI gap: optional, a separate change.
+
+## The fix round (step 6, Opus 5.5 HIGH): UI 1.18.5 @ ae7f40b (+ golden 40da15c)
+Every item of the scope above, as planned, with these notes:
+- A-F3 as built: only NOAA's "no predictions" wording is final; any other NOAA message, on either of a harmonic
+  station's two requests or on a subordinate's extremes, is a one-minute failure. A genuine "no predictions" on ONE of
+  the two requests still leaves the other (NOAA's own data incomplete for good: a curve without its list, or a cosine
+  through the list), as before.
+- A-F2 as built: a reference held by another build -> "busy" (503 retry, not cached); a reference fetch failure, or a
+  reference failure remembered under its own key, -> the subordinate's one-minute failure; the cosine only when NOAA's
+  data rules the reference out (no such harmonic station, no predictions, no curve).
+- A-F4: the regenerated snapshot differs from the reviewed one in exactly 16 names (A-F6), 5 positions and 4 zones
+  (Niue -> Pacific/Niue, Neiafu and Nomuka -> Pacific/Tongatapu, San Lorenzo -> America/Guayaquil); 3,501 stations,
+  1,260 R / 2,241 S, 238 gauges as before. `KNOWN_ZONE_DIFF` = the 12 stations where NOAA's `timezonecorr` is stale or
+  on the other side of the date line (Apia, Kiribati, Tonga, Kanton, Raoul, Easter Island), measured against NOAA's
+  live list.
+- B-P1-1: the reveal zoom (rank order; a station waits only for a more important neighbour shown before the two are
+  24 px apart; d px apart at zoom 9 -> clear from 9 + log2(24 / d); across the date line by the wrapped distance).
+  Checked on the whole snapshot before building it: monotone by construction, no drawn pair closer than 24.0 px at
+  zooms 9 to 10.99, 2,277 stations shown at 9 (224 only at 11); the Keys at zoom 9 show 56 (greedy 62).
+- The owner's calls (2026-10-08, "proceed" after the recommendations): B-P3-2 observed water level for today's elapsed
+  part ACCEPTED; GMT+-N zone names ACCEPTED (site-wide); the window over the clicked marker ACCEPTED; the CI site-tests
+  job left for a separate change.
+Tests: `tests/test_tides.py` 39 (+9: final wording, one-of-two, busy reference, failed reference then shaped, nothing
+shaped, waiter gets the build, gap guard and partner kind, the tool's names and zone check, a throttled subordinate and
+a remembered reference failure), `tests/ui/tides.test.js` 28 (+9), `tests/ui/tides-page.test.js` 12 (+4), page pins.
+Mutation of the fix round (scratch `g27/fix/mut_fix.py`, a copy of the tree): 41 mutants, 39 killed; the 2 survivors
+are equivalent (a later reveal keeps both invariants; a nudge below zoom 11 never applies). pytest 867 (the 3 golden
+comparisons re-baselined in their own commit), Node 521.

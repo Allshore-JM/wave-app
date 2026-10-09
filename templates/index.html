@@ -2781,7 +2781,7 @@
           loadLiveBuoyDetails(s);
         });
       });
-      refocusMarker(liveDrawn.map(function (d) { return d.marker; }), focusKey);
+      refocusMarker(liveDrawn.map(function (d) { return d.marker; }), focusKey, 'l:');
       liveTabStops();
     }
 
@@ -2820,7 +2820,7 @@
     // on top of the others, and changes nothing else (G27 re-check RC-15: no icon elsewhere comes or goes on opening).
     function tideRank(s) { return (s.obs ? 0 : 2) + (s.type === 'R' ? 0 : 1); }
     function tideRankOrder(a, b) { return tideRank(a) - tideRank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }
-    function tideOrder(a, b) { return (b.id === activeTideId) - (a.id === activeTideId) || tideRankOrder(a, b); }   // the opened one first
+    function tideOrder(a, b) { return (b.id === activeTideId) - (a.id === activeTideId) || tideRankOrder(a, b); }   // the opened one first (the nudges' fallback)
     function tideRevealZooms() {
       const key = String(tideStationsData.length);
       if (tideReveal && tideRevealKey === key) return tideReveal;
@@ -2860,30 +2860,46 @@
     // when none is free), so
     // a click on each centre opens its own station; its place on the map stays (the icon's anchor moves). At the last
     // zoom for stations NOAA lists at one spot (G27 A-F7); below it only beside the opened station (drawn whatever its
-    // reveal zoom). G27 re-check RC-4: the test is by the square boxes, not a 9-px circle.
+    // reveal zoom). G27 re-check RC-4: the test is by the square boxes, not a 9-px circle. The icons are placed in order
+    // of importance, the opened one at its own rank with its larger box, so opening a station moves no other icon unless
+    // that box needs the room (fresh check F-2: placed first, it swapped places with a neighbour under the pointer); when
+    // that order leaves an icon with no free spot and the opened one first does not, the opened one goes first.
     function tideNudges(copies) {
-      const out = new Map(), z = map.getZoom();
-      if (copies.length < 2) return out;
-      const placed = [];
-      const free = function (x, y, h) {
-        return placed.every(function (q) { return Math.max(Math.abs(q.x - x), Math.abs(q.y - y)) >= Math.max(h, q.h) + 1; });
-      };
-      copies.slice().sort(function (a, b) { return tideOrder(a.s, b.s) || a.o - b.o; }).forEach(function (c) {
-        const p = map.project([c.s.lat, c.lng], z), h = c.s.id === activeTideId ? TIDE_HALF_ACTIVE : TIDE_HALF;
-        let off = null;
-        if (!free(p.x, p.y, h)) {
-          [1, 2].some(function (ring) {                // 12 px away, then 24 (a crowded harbour beside the opened icon)
-            return [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]].some(function (t) {
-              const dx = t[0] * TIDE_NUDGE_STEP * ring, dy = t[1] * TIDE_NUDGE_STEP * ring;
-              if (free(p.x + dx, p.y + dy, h)) { off = [dx, dy]; return true; }
-              return false;
+      const z = map.getZoom();
+      if (copies.length < 2) return new Map();
+      const place = function (order) {
+        const out = new Map(), placed = [];
+        let stuck = 0;
+        const free = function (x, y, h) {
+          return placed.every(function (q) { return Math.max(Math.abs(q.x - x), Math.abs(q.y - y)) >= Math.max(h, q.h) + 1; });
+        };
+        copies.slice().sort(function (a, b) { return order(a.s, b.s) || a.o - b.o; }).forEach(function (c) {
+          const p = map.project([c.s.lat, c.lng], z), h = c.s.id === activeTideId ? TIDE_HALF_ACTIVE : TIDE_HALF;
+          let off = null;
+          if (!free(p.x, p.y, h)) {
+            [1, 2].some(function (ring) {              // 12 px away, then 24 (a crowded harbour beside the opened icon)
+              return [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]].some(function (t) {
+                const dx = t[0] * TIDE_NUDGE_STEP * ring, dy = t[1] * TIDE_NUDGE_STEP * ring;
+                if (free(p.x + dx, p.y + dy, h)) { off = [dx, dy]; return true; }
+                return false;
+              });
             });
-          });
-        }
-        placed.push(off ? { x: p.x + off[0], y: p.y + off[1], h: h } : { x: p.x, y: p.y, h: h });
-        if (off) out.set(c.s.id + '#' + c.o, off);
-      });
-      return out;
+            if (!off) stuck++;
+          }
+          placed.push(off ? { x: p.x + off[0], y: p.y + off[1], h: h } : { x: p.x, y: p.y, h: h });
+          if (off) out.set(c.s.id + '#' + c.o, off);
+        });
+        return { out: out, stuck: stuck };
+      };
+      const byRank = place(tideRankOrder);
+      if (!byRank.stuck || activeTideId === null) return byRank.out;
+      const first = place(tideOrder);
+      return first.stuck < byRank.stuck ? first.out : byRank.out;
+    }
+    function nudgeSignature(nudges) {
+      const parts = [];
+      nudges.forEach(function (v, k) { parts.push(k + ':' + v[0] + ',' + v[1]); });
+      return parts.sort().join(';');
     }
     const tideIconCache = {};
     function tideIconFor(active, off) {
@@ -2934,14 +2950,19 @@
       const a = document.activeElement;
       return a && a.getAttribute ? a.getAttribute('data-mk') : null;
     }
-    function refocusMarker(markers, key) {
+    // `mine` is the layer's key prefix: a focused marker of this layer that is not drawn again (a zoom-out hid it, the
+    // gate closed) hands the focus to the map, not to the page's start (fresh check F-3); another layer's is left alone.
+    function refocusMarker(markers, key, mine) {
       if (!key) return;
-      markers.some(function (m) {
+      const found = markers.some(function (m) {
         const el = m.getElement && m.getElement();
         if (!el || !el.getAttribute || el.getAttribute('data-mk') !== key) return false;
         try { el.focus({ preventScroll: true }); } catch (e) {}
         return true;
       });
+      if (!found && mine && key.indexOf(mine) === 0 && map.getContainer) {
+        try { map.getContainer().focus({ preventScroll: true }); } catch (e) {}
+      }
     }
     function setTabStops(markers, posOf) {
       const size = map.getSize ? map.getSize() : null;
@@ -2971,7 +2992,9 @@
       const on = tideVisible();
       if (on && !tideListPromise && Date.now() - tideListFailedAt >= TIDE_LIST_RETRY_MS) loadTideStations();
       const all = on ? visibleCopies(tideStationsData) : [], vis = on ? thinTideCopies(all) : [];
-      const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis);   // the gate bit clears the layer on a zoom-out
+      // the nudges depend on the zoom: a zoom that moves one redraws even when the drawn set stays (fresh check F-1)
+      const nudges = tideNudges(vis);
+      const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis) + '|' + nudgeSignature(nudges);   // the gate bit clears the layer on a zoom-out
       if (map.hasLayer(tideLayer)) {
         const want = on ? (tideStationsData.length ? (hiddenInView(all, vis) ? 'zoom in for more stations' : '') : tideListNote)
                         : 'zoom in to see tide stations';
@@ -2986,7 +3009,6 @@
       const focusKey = focusedMarkerKey();
       tideLayer.clearLayers();
       tideDrawn = [];
-      const nudges = tideNudges(vis);
       vis.forEach(function (c) {
         const s = c.s, active = s.id === activeTideId, off = nudges.get(s.id + '#' + c.o);
         const label = 'Tide station ' + s.name;
@@ -3004,7 +3026,7 @@
           openTideStation(s);
         });
       });
-      refocusMarker(tideDrawn.map(function (d) { return d.marker; }), focusKey);
+      refocusMarker(tideDrawn.map(function (d) { return d.marker; }), focusKey, 't:');
       tideTargets();
     }
     // a station in view (not in the padding) is hidden by the thinning: the legend says more come with zooming in (B-P3-1)
@@ -3031,7 +3053,10 @@
         visible: function () { return !!(tideWin && tideWin.isOpen() && tideWin.window.mode !== 'min'); },
         unit: getSelectedUnit(),
         zoneAbbr: function (ms, tz) { try { return tzAbbr(new Date(ms).toISOString(), tz); } catch (e) { return tz; } },
-        onRetried: function () { const h = document.getElementById('twHeader'); if (h && h.focus) h.focus({ preventScroll: true }); }   // G27 B-P3-3
+        onRetried: function () {                      // G27 B-P3-3; never from where the visitor went meanwhile (fresh check F-4)
+          const h = document.getElementById('twHeader'), a = document.activeElement, w = document.getElementById('tideWin');
+          if (h && h.focus && (!a || a === document.body || (w && w.contains && w.contains(a)))) h.focus({ preventScroll: true });
+        }
       });
       return tideView;
     }

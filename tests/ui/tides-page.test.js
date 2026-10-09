@@ -19,6 +19,8 @@ function cut(from, to, inclusive) {
 const NOTE = cut("    // The live list's state beside its legend entry, as TEXT.", "    map.on('overlayadd', saveLayerVisibility);");
 const STATE = cut('    const TIDE_MIN_ZOOM = 9;', '    let tideView = null;\n', true);
 const BLOCK = cut('    // ---------------- Tide stations (plan section 38) ----------------', '    // Wire map movement after all wrapped-marker state');
+// the live markers' rebuild (it shares the key, Tab-stop and refocus helpers of the tide block)
+const LIVE = cut('    function liveTabStops() {', '    // ---------------- Tide stations (plan section 38) ----------------');
 
 const flush = async (n) => { for (let i = 0; i < (n || 10); i++) await new Promise((r) => setImmediate(r)); };
 const LIST = { fields: ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'], stations: [
@@ -32,7 +34,7 @@ function boot(o = {}) {
   ['tideTitle', 'tideSubtitle', 'tideWin', 'tz'].forEach((id) => { byId[id] = { textContent: '', hidden: true, value: '' }; });
   const events = [];
   const document = {
-    activeElement: null,
+    activeElement: null, body: { tag: 'body' },
     querySelector: (sel) => (sel.indexOf('[data-live-note]') >= 0 ? notes.live : sel.indexOf('[data-tide-note]') >= 0 ? notes.tide : null),
     getElementById: (id) => byId[id] || null,
     dispatchEvent: (e) => { events.push(e.type); return true; },
@@ -46,15 +48,16 @@ function boot(o = {}) {
   // a flat stand-in for the projection: at zoom 9 one degree is pxPerDeg px, doubling per zoom (container = the same, no pan)
   const pxPerDeg = o.pxPerDeg || 1000, scale = () => pxPerDeg * Math.pow(2, zoom - 9);
   const container = { focused: 0, focus() { this.focused++; } };
-  const map = { hasLayer: (l) => l === tideLayer && on, getZoom: () => zoom,
+  const liveLayer = { items: [], clearLayers() { this.items = []; } };
+  const map = { hasLayer: (l) => (l === tideLayer && on) || (l === liveLayer && o.liveOn !== false), getZoom: () => zoom,
     latLngToContainerPoint: (ll) => ({ x: (ll[1] + 180) * scale(), y: (90 - ll[0]) * scale() }),
     project: (ll, z) => ({ x: (ll[1] + 180) * pxPerDeg * Math.pow(2, z - 9), y: (90 - ll[0]) * pxPerDeg * Math.pow(2, z - 9) }),   // Leaflet's: x from -180
     getSize: () => o.size || { x: 1e9, y: 1e9 }, getContainer: () => container,
     attributionControl: { addAttribution: (t) => { counts.set(t, credits.count(t) + 1); },
                           removeAttribution: (t) => { if (credits.count(t)) counts.set(t, credits.count(t) - 1); } } };
   // an element: its listeners, attributes, inline style and the focus (document.activeElement)
-  const mkEl = () => ({ keys: {}, attrs: {}, style: { props: {}, setProperty(k, v) { this.props[k] = v; } },
-    addEventListener(t, fn) { this.keys[t] = fn; }, setAttribute(k, v) { this.attrs[k] = String(v); },
+  const mkEl = () => ({ keys: {}, bound: {}, attrs: {}, style: { props: {}, setProperty(k, v) { this.props[k] = v; } },
+    addEventListener(t, fn) { this.keys[t] = fn; this.bound[t] = (this.bound[t] || 0) + 1; }, setAttribute(k, v) { this.attrs[k] = String(v); },
     getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }, focus() { document.activeElement = this; } });
   byId.twHeader = Object.assign(mkEl(), { closest: () => byId.tideWin });
   byId.tideWin.contains = (x) => x === byId.twHeader;                       // the header is in the window
@@ -73,25 +76,28 @@ function boot(o = {}) {
   const view = { load: (st, opts) => loads.push([st.id, opts]), clear: () => clears.push(1), resize() {}, show() {}, setUnit() {}, setZone() {} };
   const AllshoreTides = { createTideView: (deps) => { view.deps = deps; return view; } };
   const toolClicks = [];
-  const window = { AllshoreTides, AllshoreTools: { active: () => !!o.toolActive, click: (ll, ev) => toolClicks.push(ll) }, Chart: undefined, sessionStorage: { getItem: () => null, setItem() {} } };
+  const window = { AllshoreTides: o.noTides ? null : AllshoreTides, AllshoreTools: { active: () => !!o.toolActive, click: (ll, ev) => toolClicks.push(ll) }, Chart: undefined, sessionStorage: { getItem: () => null, setItem() {} } };
   const tideWin = { opens: 0, el: byId.tideWin, isOpen: () => !byId.tideWin.hidden, window: { mode: 'normal' },
     open() { this.opens++; byId.tideWin.hidden = false; }, close() { byId.tideWin.hidden = true; api.tideWindowClosed(); } };
   const visibleCopies = (stations) => stations.flatMap((s) => (o.copies || [0]).map((off) => ({ s, lng: s.lon + off, o: off })));
   const renderSignature = (vis) => vis.map((c) => c.s.id + '@' + c.lng).join(',');
   const saves = [];
-  const code = STATE + NOTE + BLOCK +
+  const liveOpened = [];
+  const code = 'let liveStationsData = [], lastLiveSig = null, liveDrawn = [], activeLiveBuoyId = null;\n' + STATE + NOTE + LIVE + BLOCK +
     '\nreturn { get tideNoteText() { return tideNoteText; }, get tideStationsData() { return tideStationsData; }, get activeTideId() { return activeTideId; }, ' +
     'rebuildTideMarkers, loadTideStations, openTideStation, closeTideWindow, tideWindowClosed, tideZone, paintTideNote, paintLiveNote, TIDE_CREDIT, ' +
-    'get tideView() { return tideView; }, setLive(t) { liveNoteText = t; } };';
+    'get tideView() { return tideView; }, setLive(t) { liveNoteText = t; }, rebuildLiveBuoyMarkers, set liveData(d) { liveStationsData = d; } };';
   const layersControl = { _update: function () { notes.live.textContent = ''; notes.tide.textContent = ''; return this; } };
   const api = new Function('window', 'document', 'fetch', 'map', 'L', 'tideLayer', 'tideIcon', 'tideIconActive', 'visibleCopies', 'renderSignature', 'textTip',
-    'saveMapView', 'saveLayerVisibility', 'measureTopRight', 'getSelectedUnit', 'tzAbbr', 'loadChartJs', 'CustomEvent', 'tideWin', 'layersControl', 'MAX_MAP_ZOOM', code)(
+    'saveMapView', 'saveLayerVisibility', 'measureTopRight', 'getSelectedUnit', 'tzAbbr', 'loadChartJs', 'CustomEvent', 'tideWin', 'layersControl', 'MAX_MAP_ZOOM',
+    'liveBuoyLayer', 'liveBuoyIconActive', 'liveBuoyIconInactive', 'buoyDisplayLabel', 'loadLiveBuoyDetails', code)(
     window, document, fetch, map, L, tideLayer, 'ICON', 'ICON-ACTIVE', visibleCopies, renderSignature, (t) => ({ text: String(t) }),
     () => saves.push('view'), () => saves.push('layers'), () => measures.push(1), () => (o.unit || 'US'), (iso, tz) => tz + '!', () => Promise.resolve(),
-    class { constructor(type) { this.type = type; } }, tideWin, layersControl, 11);
+    class { constructor(type) { this.type = type; } }, tideWin, layersControl, 11,
+    liveLayer, 'LIVE-ACTIVE', 'LIVE', (st) => st.id, (st) => liveOpened.push(st.id));
   api.container = container;
   return { api, notes, byId, events, tideLayer, credits, fetchCalls, loads, clears, view, toolClicks, saves, measures, layersControl, tideWin,
-    document, mkEl, setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; } };
+    document, mkEl, liveLayer, liveOpened, setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; } };
 }
 
 test('below the gate: no request, no markers, the note; at the gate the list is asked once and the markers drawn', async () => {
@@ -358,11 +364,12 @@ test('G27 re-check RC-4: the nudge tests the square boxes; beside the opened (la
   const r = boot({ zoom: 11, list: { fields: FIELDS, stations: list.stations.slice().reverse() } });
   r.api.rebuildTideMarkers(true); await flush();
   assert.equal(byTitle(r, 'Gauge').opts.icon, 'ICON');
-  // the opened icon is 22 px: a neighbour 11 px away (inside its box) moves
+  // the opened icon is 22 px: a neighbour 11 px away lies inside its box, so the opened one (placed at its own rank)
+  // finds room beside it; the neighbour stays (fresh check F-2)
   assert.equal(icon('Near open'), 'ICON'); assert.equal(icon('Opened'), 'ICON');
   byTitle(b, 'Opened').handlers.click({ latlng: null, originalEvent: {} });
-  assert.ok(icon('Near open').divIcon, 'beside the opened icon: moved');
-  assert.equal(icon('Opened'), 'ICON-ACTIVE', 'the opened one stays on its spot');
+  assert.equal(icon('Near open'), 'ICON', 'opening moves no other icon');
+  assert.ok(icon('Opened').divIcon && /tide-icon-active/.test(icon('Opened').divIcon.className), 'the opened one moved aside');
 });
 
 test('G27 re-check RC-6 / T02: the reveal grid meets across the date line; stations at one spot wait for the last zoom', async () => {
@@ -456,4 +463,105 @@ test('fix round 2 pin (N26): a key press a map tool takes leaves the focus on th
   byTitle(b, 'Two').el.focus();
   byTitle(b, 'Two').el.keys.keydown({ key: ' ', preventDefault() {} });
   assert.equal(b.toolClicks.length, 1); assert.equal(b.document.activeElement, byTitle(b, 'Two').el);
+});
+
+// ---------------------------------------------------------------------------------------------- fresh check (fix round 3)
+
+const offOf = (m) => (typeof m.opts.icon === 'string' ? null : m.opts.icon.divIcon.tooltipAnchor.join(','));
+
+test('fresh check F-1: a zoom that keeps the drawn icons but changes a nudge redraws them', async () => {
+  // at zoom 11 (4 px per 1/1000 degree) G and O are 12.4 px apart: room even for the opened 22-px icon; O is shown only at 11
+  // (it waits for G until 9 + log2(24 / 3) = 12) or opened. Opened, it stays drawn at 10.5, where the two are 8.8 px apart
+  const list = { fields: FIELDS, stations: [['G', 'Gauge', 30, -150, 'R', 'UTC', true], ['O', 'Opened', 30, -149.9969, 'S', 'UTC', false]] };
+  const b = boot({ zoom: 11, list });
+  b.api.rebuildTideMarkers(true); await flush();
+  byTitle(b, 'Opened').handlers.click({ latlng: null, originalEvent: {} });
+  assert.equal(offOf(byTitle(b, 'Opened')), null, '12 px apart at zoom 11: no nudge');
+  b.setZoom(10.5); b.api.rebuildTideMarkers(false);                          // the same two icons (no rebuild before)
+  assert.equal(b.tideLayer.items.length, 2);
+  assert.ok(offOf(byTitle(b, 'Opened')), "the opened icon moved aside: the gauge's centre is not under it");
+  assert.equal(offOf(byTitle(b, 'Gauge')), null, 'the gauge stays');
+  b.setZoom(11); b.api.rebuildTideMarkers(false);
+  assert.equal(offOf(byTitle(b, 'Opened')), null, 'back at 11: back on its spot');
+});
+
+test('fresh check F-2 / T04 / T05: nudges by importance (opening swaps nothing); the box test is square and needs one more pixel', async () => {
+  const list = { fields: FIELDS, stations: [
+    ['G', 'Gauge', 30, -150, 'R', 'UTC', true], ['S', 'Same spot', 30, -150, 'S', 'UTC', false],
+    ['E1', 'Edge a', 20, -150, 'R', 'UTC', true], ['E2', 'Edge b', 20, -149.99775, 'S', 'UTC', false],              // 9 px east
+    ['D1', 'Diag a', 10, -150, 'R', 'UTC', true], ['D2', 'Diag b', 9.998, -149.998, 'S', 'UTC', false]] };          // 8 px, 8 px
+  const b = boot({ zoom: 11, list });
+  b.api.rebuildTideMarkers(true); await flush();
+  assert.equal(offOf(byTitle(b, 'Gauge')), null); assert.equal(offOf(byTitle(b, 'Same spot')), '12,0');
+  assert.ok(offOf(byTitle(b, 'Edge b')), 'a centre ON the other box\'s edge (9 px) moves too (T04)');
+  assert.ok(offOf(byTitle(b, 'Diag b')), '8 px in x and y (11.3 px apart) lies in the square box (T05)');
+  byTitle(b, 'Same spot').handlers.click({ latlng: null, originalEvent: {} });
+  assert.equal(offOf(byTitle(b, 'Gauge')), null, 'the neighbour does not move into the clicked spot');
+  assert.equal(offOf(byTitle(b, 'Same spot')), '12,0', 'the opened icon stays under the pointer');
+});
+
+test('fresh check F-3 / T13 / T15 / T26 / T28: a hidden focused marker hands the focus to the map; padding Tab stops; a hidden window keeps no focus; one key handler', async () => {
+  const list = { fields: FIELDS, stations: [['G', 'Gauge', 30, -150, 'R', 'UTC', true], ['O', 'Other', 30, -149.997, 'S', 'UTC', false]] };
+  const b = boot({ zoom: 11, list });
+  b.api.rebuildTideMarkers(true); await flush();
+  byTitle(b, 'Other').el.focus();
+  b.setZoom(10.5); b.api.rebuildTideMarkers(false);                          // Other is hidden below 11
+  assert.equal(b.tideLayer.items.length, 1);
+  assert.equal(b.api.container.focused, 1, 'its focus goes to the map, not the page\'s start');
+  const live = b.mkEl(); live.attrs['data-mk'] = 'l:51201#0'; b.document.activeElement = live;   // another layer's marker
+  b.setZoom(11); b.api.rebuildTideMarkers(false);
+  assert.equal(b.document.activeElement, live, 'a live marker keeps the focus through a tide rebuild');
+  assert.equal(b.api.container.focused, 1);
+  // a marker 50 px past the view's edge is no Tab stop (T13: the padding is not the view)
+  const p = boot({ zoom: 9, size: { x: 300, y: 1e9 }, list: { fields: FIELDS, stations: [['N', 'Near edge', 30, -179.65, 'R', 'UTC', true]] } });
+  p.api.rebuildTideMarkers(true); await flush();
+  assert.equal(byTitle(p, 'Near edge').el.getAttribute('tabindex'), '-1');
+  // the focus on the page's body when the window closes: the map takes it (T15)
+  const c = boot({ zoom: 11, list });
+  c.api.rebuildTideMarkers(true); await flush();
+  byTitle(c, 'Gauge').handlers.click({ latlng: null, originalEvent: {} });
+  c.document.activeElement = c.document.body;
+  c.api.closeTideWindow();
+  assert.equal(c.api.container.focused, 1);
+  // no tide module: the window stays hidden and its header takes no focus (T26); the key handler is bound once (T28)
+  const n = boot({ zoom: 11, list, noTides: true });
+  n.api.rebuildTideMarkers(true); await flush();
+  const g = byTitle(n, 'Gauge');
+  g.el.focus(); g.el.keys.keydown({ key: 'Enter', preventDefault() {} });
+  assert.equal(n.byId.tideWin.hidden, true); assert.notEqual(n.document.activeElement, n.byId.twHeader);
+  g.handlers.add(); g.handlers.add();
+  assert.equal(g.el.bound.keydown, 1, 'one key handler per element, however often Leaflet adds it');
+});
+
+test('fresh check F-4: Retry\'s answer takes the focus only from the page\'s body or the tide window', async () => {
+  const b = boot({ zoom: 9 });
+  b.api.rebuildTideMarkers(true); await flush();
+  b.tideLayer.items[0].handlers.click({ latlng: null, originalEvent: {} });
+  const gear = b.mkEl(); b.document.activeElement = gear;                    // the visitor went to the settings
+  b.view.deps.onRetried();
+  assert.equal(b.document.activeElement, gear, 'the focus stays in the settings');
+  b.document.activeElement = b.document.body;
+  b.view.deps.onRetried();
+  assert.equal(b.document.activeElement, b.byId.twHeader);
+  b.document.activeElement = b.byId.twHeader;
+  b.view.deps.onRetried();
+  assert.equal(b.document.activeElement, b.byId.twHeader, 'from inside the window too');
+});
+
+test('fresh check T16 / T17 / T27: live markers: Tab stops follow the view without a rebuild, the focus survives a rebuild, no pan on focus, Enter opens', async () => {
+  const size = { x: 300, y: 1e9 };
+  const b = boot({ zoom: 9, size, list: { fields: FIELDS, stations: [] } });
+  b.api.liveData = [{ id: 'IN', lat: 30, lon: -179.85, source: 'NDBC' }, { id: 'OUT', lat: 30, lon: -179.5, source: 'NDBC' }];
+  b.api.rebuildLiveBuoyMarkers(true);
+  const byId = (id) => b.liveLayer.items.find((m) => m.opts.title.indexOf('Live ' + id + ' ') === 0);
+  assert.equal(byId('IN').opts.autoPanOnFocus, false, 'a focused live marker never pans the map (T27)');
+  assert.equal(byId('IN').el.getAttribute('tabindex'), '0'); assert.equal(byId('OUT').el.getAttribute('tabindex'), '-1');
+  size.x = 600; b.api.rebuildLiveBuoyMarkers(false);
+  assert.equal(byId('OUT').el.getAttribute('tabindex'), '0', 'Tab stops follow the view (T16)');
+  byId('IN').el.focus();
+  const old = byId('IN').el;
+  b.api.rebuildLiveBuoyMarkers(true);
+  assert.notEqual(byId('IN').el, old); assert.equal(b.document.activeElement, byId('IN').el, 'the focus on the new element (T17)');
+  byId('IN').el.keys.keydown({ key: 'Enter', preventDefault() {} });
+  assert.deepEqual(b.liveOpened, ['IN']);
 });

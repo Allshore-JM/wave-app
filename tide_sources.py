@@ -13,11 +13,13 @@ Two kinds of station (tide_stations.json, built by tools/tides/fetch_stations.py
   the extremes.
 
 A forecast covers 32 days from 00:00 UTC yesterday (every zone's "today from midnight" plus 30 days lies inside it),
-the curve 12 h more on each side; it never changes, so it is kept per station per UTC day. NOAA is asked at most twice
-per station per day (curve + extremes) and a subordinate station shares its reference's cached curve. No retries here,
-with one exception: NOAA's "no predictions" answer is asked once more before it is believed (NOAA has sent it for a
-moment for a station it serves), and a believed one is kept an hour, not a day. A failure is answered at once (the page
-retries) and remembered for a minute so a dead upstream is not asked by every visitor.
+the curve 12 h more on each side; it never changes, so it is kept per station per UTC day. A good day costs NOAA two
+requests per station (curve + extremes), and a subordinate station shares its reference's cached curve. No retries
+here, with one exception: NOAA's "no predictions" answer is asked once more before it is believed (NOAA has sent it for
+a moment for a station it serves). A believed one, and an answer built around one (a curve without its list, a cosine
+through the list, a subordinate whose reference has nothing to shape on), is kept an hour, not a day, so it is built
+again from NOAA every hour while it lasts. A failure is answered at once (the page retries) and remembered for a minute
+so a dead upstream is not asked by every visitor.
 
 Nothing here is a live buoy provider: it is not in the live-buoy list, its scheduler or /healthz."""
 import json
@@ -401,6 +403,12 @@ class TideService:
             self._cache.move_to_end(key)
             return hit[1], hit[2]
 
+    def _expires(self, key):
+        """When the key's entry runs out (0 when there is none)."""
+        with self._lock:
+            hit = self._cache.get(key)
+            return hit[0] if hit is not None else 0.0
+
     def _put(self, key, status, payload, ttl):
         with self._lock:
             self._cache[key] = (self._now() + ttl, status, payload)
@@ -510,7 +518,8 @@ class TideService:
         return grid, ex, (e1 if e1 and e2 else None), bool(e1 or e2)
 
     def _reference_curve(self, ref, begin, deadline):
-        """(the reference station's curve and extremes, or None; degraded), from the cache or fetched under the
+        """(the reference station's curve and extremes, or None; degraded; when the reference's entry runs out), from
+        the cache or fetched under the
         reference's own key lock (an R station never waits on another station, so S -> R is the only lock order). None
         when the reference cannot shape anything: not a harmonic station in the snapshot (the same every day), or NOAA's
         data rules it out now (no predictions, no curve: degraded, so the subordinate's cosine is kept an hour, not a
@@ -518,7 +527,7 @@ class TideService:
         reference cannot be fetched now (G27 A-F2: never a cosine cached for the day because of a moment's trouble)."""
         st = self.stations.get(ref)
         if not st or st.get("type") != "R":
-            return None, False
+            return None, False, 0.0
         key = ("p", ref, begin)
         hit = self._get(key)
         if hit is None:
@@ -544,12 +553,12 @@ class TideService:
         if status == "error":                                          # the reference failed a moment ago
             raise TideError("the reference station could not be fetched")
         if status != "ok" or payload.get("method") != "harmonic" or not payload.get("hilo"):
-            return None, True                                          # nothing to shape on: asked again in an hour
-        return (payload["v"], [tuple(e) for e in payload["hilo"]]), False
+            return None, True, self._expires(key)                      # nothing to shape on: asked again in an hour
+        return (payload["v"], [tuple(e) for e in payload["hilo"]]), False, 0.0
 
     def _build(self, st, begin):
         sid = st["id"]
-        method, ref_used, degraded = None, None, False
+        method, ref_used, degraded, until = None, None, False, 0.0
         if st.get("type") == "R":
             grid, ex, err, degraded = self._harmonic(sid, begin)
             if err:
@@ -566,8 +575,8 @@ class TideService:
             if err:
                 return "final", {"id": sid, "error": NO_PREDICTIONS, "noaa": err[:200], "final": True}
             ex = parse_hilo(doc)
-            ref, degraded = (self._reference_curve(st.get("ref"), begin, time.monotonic() + self.wait_s)
-                             if st.get("ref") else (None, False))
+            ref, degraded, until = (self._reference_curve(st.get("ref"), begin, time.monotonic() + self.wait_s)
+                                    if st.get("ref") else (None, False, 0.0))
             if ref is not None and ex:
                 start = begin - LEAD_S
                 grid, used = reference_grid(ex, ref[1], ref[0], start, (st.get("oh"), st.get("ol")), start)
@@ -594,8 +603,11 @@ class TideService:
             out["night"] = night_bands(st["lat"], st["lon"], a, z, evs)
             out["events"] = sun_moon(evs)
             out["moon"] = moon_samples(st["lat"], a, z)
-        if degraded:                                           # NOAA's "no predictions" behind it: asked again in an hour
-            return "ok", out, self.final_ttl
+        if degraded:                                           # NOAA's "no predictions" behind it: asked again in an hour,
+            ttl = self.final_ttl                               # and a subordinate no later than its reference (fresh check
+            if until:                                          # F-5: its cosine never outlives the reference's recovery)
+                ttl = max(self.error_ttl, min(ttl, until - self._now()))
+            return "ok", out, ttl
         return "ok", out
 
     # -- observations

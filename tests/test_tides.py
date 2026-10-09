@@ -807,3 +807,49 @@ def test_a_reference_without_its_highs_and_lows_is_asked_again_within_the_hour()
     n = ref_calls()
     clock.t += 3601
     assert svc.forecast("1611401")[1]["method"] == "cosine" and ref_calls() > n   # the reference asked again
+
+
+def test_fresh_check_pins_the_second_ask_the_degraded_curve_and_a_final_reference():
+    """Fix round 3 (fresh check F-7: S02, S06, S10): only "no predictions" is asked twice; a curve that came back "no
+    predictions" leaves a cosine through the list kept an hour, not a day; a reference with nothing is asked again
+    within the hour too."""
+    noaa = _answering(lambda u: "Request limit exceeded." if "interval=hilo" in u else None)
+    svc = T.TideService(dict(STATIONS), noaa, now=Clock(NOW))
+    assert svc.forecast("1612340")[0] == "error"
+    assert sum("interval=hilo" in u for u in noaa.calls) == 1                     # S02: asked once
+    noaa = _answering(lambda u: "No Predictions data was found." if "station=1612340" in u and "interval=30" in u
+                      else None)
+    clock = Clock(NOW)
+    svc = T.TideService(dict(STATIONS), noaa, now=clock)
+    status, p = svc.forecast("1612340")
+    assert status == "ok" and p["method"] == "cosine" and len(p["hilo"]) > 50
+    n = len(noaa.calls)
+    clock.t += 3601                                                            # S06: kept an hour, not a day
+    svc.forecast("1612340")
+    assert len(noaa.calls) > n
+    noaa = _answering(lambda u: "No Predictions data was found." if "station=1611400" in u else None)
+    clock = Clock(NOW)
+    svc = T.TideService(dict(STATIONS), noaa, now=clock)
+    assert svc.forecast("1611401")[1]["method"] == "cosine"
+    ref_calls = lambda: sum("station=1611400" in u for u in noaa.calls)
+    n = ref_calls()
+    clock.t += 3601                                                            # S10: the reference too
+    svc.forecast("1611401")
+    assert ref_calls() > n
+
+
+def test_a_subordinates_cosine_never_outlives_its_references_recovery():
+    """Fix round 3 (fresh check F-5): a subordinate built on a degraded reference late in the reference's hour is kept
+    only until the reference is asked again, so it is shaped as soon as NOAA's data is back."""
+    down = {"on": True}
+    noaa = _answering(lambda u: "No Predictions data was found." if down["on"] and "station=1611400" in u else None)
+    clock = Clock(NOW)
+    svc = T.TideService(dict(STATIONS), noaa, now=clock)
+    assert svc.forecast("1611400")[0] == "final"                               # the reference: nothing, for an hour
+    clock.t += 59 * 60
+    assert svc.forecast("1611401")[1]["method"] == "cosine"                    # built at minute 59
+    down["on"] = False
+    clock.t += 61                                                              # the reference's hour is over
+    status, p = svc.forecast("1611401")
+    assert status == "ok" and p["method"] == "reference"                       # not a cosine for another hour
+    assert svc._expires(("p", "nope", 0)) == 0.0

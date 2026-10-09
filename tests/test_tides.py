@@ -11,6 +11,11 @@ import pytest
 
 import tide_sources as T
 
+
+@pytest.fixture(autouse=True)
+def _no_confirm_pause(monkeypatch):
+    monkeypatch.setattr(T, "CONFIRM_PAUSE_S", 0)              # the second ask of a "no predictions" answer at once
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(HERE, "fixtures", "tides")
 ROOT = os.path.dirname(HERE)
@@ -446,8 +451,11 @@ def test_only_noaas_no_predictions_answer_is_final():
     svc = T.TideService(dict(STATIONS), noaa, now=clock)
     assert svc.forecast("1611400")[0] == "final"
     n = len(noaa.calls)
-    clock.t += 3600                                                            # still kept an hour later (P16)
+    clock.t += 3599                                                            # kept for an hour (P16) ...
     assert svc.forecast("1611400")[0] == "final" and len(noaa.calls) == n
+    clock.t += 2                                                               # ... then asked again (G27 RC-2)
+    assert svc.forecast("1611400")[0] == "final" and len(noaa.calls) > n
+    assert not T.final_error("Wrong Date: please use yyyyMMdd") and not T.final_error("No data was found.")   # S03
 
 
 def test_a_passing_error_on_one_of_two_requests_is_an_error_not_a_degraded_day():
@@ -584,6 +592,18 @@ def test_the_station_tools_names_and_zone_check():
             ["1778000", "Apia", -13.8, -171.8, "R", None, "Pacific/Apia", False, None, None]]
     bad = FS.zone_mismatches(rows, {"1612340": "-10", "TPT2891": "-11", "1778000": "-11"})
     assert [b[0] for b in bad] == ["TPT2891"]                                  # Apia is a known date-line difference
+    # G27 re-check RC-12: a listed station must have ITS zone (a lost position fix still stops the build), and any
+    # other station more than 3 h from NOAA's value stops it (F03 / F04)
+    rows = [["TPT2893", "Neiafu", -18.65, 6.01667, "S", "X", "Africa/Windhoek", False, 0, 0],
+            ["TPT2899", "Nukualofa", -21.13, -175.2, "S", "X", "Pacific/Tongatapu", False, 0, 0],
+            ["9999990", "Five hours off", 30.0, -80.0, "R", None, "America/New_York", False, None, None]]
+    bad = FS.zone_mismatches(rows, {"TPT2893": "-11", "TPT2899": "-11", "9999990": "0"})
+    assert [b[0] for b in bad] == ["TPT2893", "9999990"]
+    stations, _ = T.load_stations(os.path.join(ROOT, "tide_stations.json"))
+    for sid, (lat, lon) in FS.POSITION_FIX.items():                          # the snapshot carries every fix
+        assert (stations[sid]["lat"], stations[sid]["lon"]) == (lat, lon), sid
+    for sid, zone in FS.KNOWN_ZONE_DIFF.items():
+        assert stations[sid]["tz"] == zone, sid
 
 
 # ------------------------------------------------------------------------------------------ the routes
@@ -629,7 +649,7 @@ def test_route_forecast_ok_final_busy_and_unknown(client, monkeypatch):
     assert r.get_json()["retry"] is True
     monkeypatch.setattr(svc, "forecast", lambda sid: ("final", {"id": sid, "error": T.NO_PREDICTIONS}))
     r = c.get("/api/tides/1612340")
-    assert r.status_code == 200 and r.get_json()["final"] is True and r.headers["Cache-Control"] == "public, max-age=3600"
+    assert r.status_code == 200 and r.get_json()["final"] is True and r.headers["Cache-Control"] == "public, max-age=600"
 
 
 def test_route_observed(client):
@@ -680,3 +700,95 @@ def test_a_throttled_subordinate_and_a_reference_failed_a_moment_ago_are_failure
     clock.t += 61
     status, p = svc.forecast("1611401")
     assert status == "ok" and p["method"] == "reference"
+
+
+def test_a_passing_no_predictions_answer_is_asked_again_before_it_is_believed():
+    """G27 re-check RC-2: NOAA sent "No Predictions data was found" for a moment for a station it serves (Nairai
+    Island); the server asked once and kept "NOAA publishes no tide predictions" for a day. Now the answer is asked
+    again once before it is believed."""
+    seen = {}
+
+    def once(u):                                       # each URL answers "no predictions" the first time only
+        seen[u] = seen.get(u, 0) + 1
+        return "No Predictions data was found. Please make sure the Datum input is valid." if seen[u] == 1 else None
+    noaa = _answering(once)
+    svc = T.TideService(dict(STATIONS), noaa, now=Clock(NOW))
+    status, p = svc.forecast("1611401")
+    assert status == "ok" and p["method"] == "reference" and len(p["hilo"]) > 50
+    seen.clear()
+    status, p = svc.forecast("1612340")
+    assert status == "ok" and p["method"] == "harmonic" and len(p["hilo"]) > 50
+    assert all(n == 2 for n in seen.values()) and len(seen) == 2              # both requests asked twice, no more
+
+
+def test_answers_built_around_a_no_predictions_answer_are_kept_an_hour_not_a_day():
+    """G27 re-check RC-2: a believed "no predictions" may still have been NOAA's moment, so what was built around it
+    (a harmonic curve without its list; a subordinate's cosine because its reference has nothing) is asked for again
+    after an hour; a full answer stays for the day."""
+    noaa = _answering(lambda u: "No Predictions data was found." if "station=1612340" in u and "interval=hilo" in u
+                      else None)
+    clock = Clock(NOW)
+    svc = T.TideService(dict(STATIONS), noaa, now=clock)
+    status, p = svc.forecast("1612340")
+    assert status == "ok" and p["method"] == "harmonic" and p["hilo"] == []
+    n = len(noaa.calls)
+    clock.t += 3599
+    assert svc.forecast("1612340")[0] == "ok" and len(noaa.calls) == n
+    clock.t += 2
+    assert svc.forecast("1612340")[0] == "ok" and len(noaa.calls) > n          # asked again after an hour
+    # a reference with no predictions at all: its subordinate is a cosine (S07: never a minute-by-minute error) ...
+    noaa = _answering(lambda u: "No Predictions data was found." if "station=1611400" in u else None)
+    clock = Clock(NOW)
+    svc = T.TideService(dict(STATIONS), noaa, now=clock)
+    status, p = svc.forecast("1611401")
+    assert status == "ok" and p["method"] == "cosine" and p["ref"] is None
+    assert svc.forecast("1611400")[0] == "final"                               # the reference's own answer, remembered
+    n = len(noaa.calls)
+    clock.t += 61
+    assert svc.forecast("1611401")[1]["method"] == "cosine" and len(noaa.calls) == n   # not an error a minute later
+    clock.t += 3600                                                            # ... kept an hour, then asked again
+    svc.forecast("1611401")
+    assert len(noaa.calls) > n
+    # a full answer stays until the next UTC day
+    svc, noaa, clock = service()
+    assert svc.forecast("1612340")[0] == "ok"
+    n = len(noaa.calls)
+    clock.t += 12 * 3600
+    assert svc.forecast("1612340")[0] == "ok" and len(noaa.calls) == n
+
+
+def test_a_subordinate_waits_for_a_reference_being_built_but_not_for_long():
+    """S08 / S18: a reference held by another build is waited for (up to wait_s), then the subordinate is shaped; a
+    reference held longer answers "busy" after about wait_s, never a long wait."""
+    svc, noaa, _ = service(wait_s=2.0)
+    key = ("p", "1611400", BEGIN)
+    e = svc._key_lock(key)
+    e[0].acquire()
+    threading.Timer(0.3, lambda: (e[0].release(), svc._drop_key(key, e))).start()
+    status, p = svc.forecast("1611401")
+    assert status == "ok" and p["method"] == "reference"
+    svc, noaa, _ = service(wait_s=0.3)
+    e = svc._key_lock(key)
+    e[0].acquire()
+    t0 = time.monotonic()
+    status, _ = svc.forecast("1611401")
+    assert status == "busy" and time.monotonic() - t0 < 1.5
+    e[0].release()
+    svc._drop_key(key, e)
+
+
+def test_per_key_locks_are_counted_and_dropped_only_when_unused():
+    """A-F12 (S10 / S11): every user of a key's lock is counted; the entry goes only when the last one drops it, so a
+    waiter never ends up with a lock nobody else uses (two builds of one key at once)."""
+    svc, _, _ = service()
+    k = ("p", "1612340", BEGIN)
+    a = svc._key_lock(k)
+    b = svc._key_lock(k)
+    assert a is b and a[1] == 2
+    svc._drop_key(k, a)
+    assert svc._inflight.get(k) is a and a[1] == 1
+    c = svc._key_lock(k)
+    assert c is a                                                              # a third user shares the same lock
+    svc._drop_key(k, b)
+    svc._drop_key(k, c)
+    assert k not in svc._inflight

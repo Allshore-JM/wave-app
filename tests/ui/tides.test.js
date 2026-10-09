@@ -164,7 +164,7 @@ function setup(opts = {}) {
   const els = { content: mk('div', 'tideContent'), loading: mk('div', 'tideLoading'), error: mk('div', 'tideError'),
     errorText: mk('span', 'tideErrorText'), retry: mk('button', 'tideRetry'), strip: mk('div', 'tideStrip'), meta: mk('div', 'tideMeta') };
   const calls = [], answers = [];
-  const fetch = (url, o) => { calls.push({ url, signal: o.signal }); const d = deferred(); answers.push(d); return d.p; };
+  const fetch = (url, o) => { calls.push({ url, signal: o.signal, cache: o.cache }); const d = deferred(); answers.push(d); return d.p; };
   const timers = fakeTimers();
   let visible = opts.visible !== false, nowMs = opts.now || NOW;
   const view = T.createTideView({ els, document: doc, fetch, timers, now: () => nowMs, visible: () => visible, unit: opts.unit || 'US',
@@ -672,4 +672,159 @@ test('G27 A-F10 pins: the curve is cut at both ends where midnight is off the ha
   const g = payload({ v, hilo: [[t / 1000, 2.0, 'H']] });
   assert.ok(!I.series(g).some((p) => p.t === t), 'the extreme beside the gap stays out');
   assert.equal(I.heightAt(g, t), null, 'no height beside the gap');
+});
+
+// ---------------------------------------------------------------------------------------------- G27 re-check (fix round 2)
+
+test('G27 re-check RC-8: a failed Retry leaves no flag behind; a later ordinary load keeps the focus where it is', async () => {
+  let focused = 0;
+  const s = setup({ onRetried: () => { focused++; } });
+  s.view.load(HNL_ST);
+  s.answers[0].rej(new Error('down'));
+  await flush();
+  s.els.retry.dispatch('click');                                           // Retry ... fails again
+  s.answers[1].rej(new Error('still down'));
+  await flush();
+  assert.equal(s.view.state().status, 'error');
+  s.view.load(WAI_ST);                                                     // a station picked on the map
+  s.answers[2].res(response(200, payload({ obs: false })));
+  await flush();
+  assert.equal(s.view.state().status, 'ready'); assert.equal(focused, 0, 'the old Retry does not take the focus');
+  s.view.load(HNL_ST);
+  s.answers[3].rej(new Error('down'));
+  await flush();
+  s.els.retry.dispatch('click');
+  s.view.clear();                                                          // the window closed while the Retry ran
+  s.view.load(WAI_ST);
+  s.answers[5].res(response(200, payload({ obs: false })));
+  await flush();
+  assert.equal(focused, 0, 'nor after a close');
+});
+
+test('G27 re-check RC-14 / C18 / C19 / C27: a cancelled touch ends the readout; mouse events count from the touch\'s end, 700 ms', async () => {
+  let wall = 1000;
+  const s = setup({ wallClock: () => wall });
+  s.view.load(HNL_ST);
+  s.answers[0].res(response(200, payload({ obs: false })));
+  await flush();
+  s.q('svg')[0].rect = { left: 100, top: 50, width: s.view.state().layout.total, height: I.CHART_H };
+  const at = { clientX: 100 + I.COL_OPEN / 2, clientY: 120 };
+  s.els.strip.dispatch('touchstart', { touches: [at] });
+  assert.match(s.view.state().readout, /^Thu 10\/8/);
+  s.els.strip.dispatch('touchcancel', {});
+  assert.equal(s.view.state().readout, '', 'a cancelled touch (a pinch, a long press) ends the readout');
+  s.els.strip.dispatch('touchstart', { touches: [at] });
+  wall += 600;                                                             // a long press: the touch ends 600 ms later
+  s.els.strip.dispatch('touchend', {});
+  wall += 650;                                                             // a slow phone's compatibility mousemove
+  s.els.strip.dispatch('mousemove', at);
+  assert.equal(s.view.state().readout, '', '650 ms after the touch ended: still the touch');
+  wall += 60;                                                              // 710 ms after: a real mouse
+  s.els.strip.dispatch('mousemove', at);
+  assert.match(s.view.state().readout, /^Thu 10\/8/);
+  assert.equal(I.TOUCH_MOUSE_MS, 700);
+});
+
+test('G27 re-check RC-17 / C12 / C13: callouts never overlap (the second of a double high goes below its dot); the edge rules', async () => {
+  const s = setup();
+  s.view.load(HNL_ST);
+  const t0 = MIDS[0] / 1000;
+  const v = new Array(1585).fill(0.5);
+  // a double high 2 h 22 min apart (Christmas Bay's Oct 31), a low between: today, the AM half (10 px an hour)
+  s.answers[0].res(response(200, payload({ obs: false, v, hilo: [[t0 + 4.4 * 3600, 0.9, 'H'], [t0 + 6.77 * 3600, 0.9, 'H'], [t0 + 15 * 3600, 0.1, 'L']] })));
+  await flush();
+  const dots = s.q('.tide-dot'), highs = s.q('.tide-callout-high');
+  const dotY = (k) => +dots[k].getAttribute('cy');
+  assert.equal(highs.length, 2, 'both highs keep a callout');
+  const y1 = +highs[0].querySelectorAll('text')[1].getAttribute('y'), y2 = +highs[1].querySelectorAll('text')[1].getAttribute('y');
+  assert.ok(y1 < dotY(0), 'the first above its dot');
+  assert.ok(y2 > dotY(1), 'the second below its dot (above, it would cover the first)');
+  // three extremes within 2.4 hours: whatever is drawn never overlaps (the one without room is left out)
+  const c = setup();
+  c.view.load(HNL_ST);
+  c.answers[0].res(response(200, payload({ obs: false, v, hilo: [[t0 + 4.4 * 3600, 0.9, 'H'], [t0 + 5.6 * 3600, 0.8, 'L'], [t0 + 6.77 * 3600, 0.9, 'H']] })));
+  await flush();
+  const boxes = c.q('.tide-callout').map((g) => { const tx = g.querySelectorAll('text'), x = +tx[0].getAttribute('x'), w = 8 * 6;
+    return { x0: x - w / 2, x1: x + w / 2, y0: +tx[0].getAttribute('y') - 9, y1: +tx[1].getAttribute('y') + 3 }; });
+  assert.ok(boxes.length >= 2);
+  for (let a = 0; a < boxes.length; a++) for (let b = a + 1; b < boxes.length; b++) {
+    const p = boxes[a], q = boxes[b];
+    assert.ok(!(p.x0 < q.x1 && q.x0 < p.x1 && p.y0 < q.y1 && q.y0 < p.y1), 'callouts ' + a + ' and ' + b + ' overlap');
+  }
+  // a high at the top of the chart flips below its dot at y < 31 (C12); a low near the bottom flips above at y + 28 > 230 (C13)
+  const r = setup();
+  r.view.load(HNL_ST);
+  const hi = 3.44 / I.FT_PER_M, lo = 0.2 / I.FT_PER_M;                     // feet: the scale 0 .. 3.5, the high at y ~ 29.3
+  r.answers[0].res(response(200, payload({ obs: false, v, hilo: [[t0 + 3 * 3600, hi, 'H'], [t0 + 15 * 3600, lo, 'L']] })));
+  await flush();
+  const hd = r.q('.tide-dot'), hy = +hd[0].getAttribute('cy'), ly = +hd[1].getAttribute('cy');
+  assert.ok(hy > 20 && hy < 31, 'the high sits between 20 and 31 px from the top: ' + hy);
+  assert.ok(ly + 14 <= I.CHART_H && ly + 28 > I.CHART_H, 'the low between 14 and 28 px from the bottom: ' + ly);
+  assert.ok(+r.q('.tide-callout-high')[0].querySelectorAll('text')[0].getAttribute('y') > hy, 'the high\'s callout below it');
+  assert.ok(+r.q('.tide-callout-low')[0].querySelectorAll('text')[1].getAttribute('y') < ly, 'the low\'s callout above it');
+});
+
+test('G27 re-check (R1 N-12) / C15 / C16 / C22 / C23: a failed midnight refresh is asked again every 10 minutes; it revalidates, rewrites the notes, asks for the observations and never lands on a newer station', async () => {
+  const s = setup({ now: Date.UTC(2026, 9, 9, 9, 50) });                  // Thu Oct 8, 11:50 PM HST
+  s.view.load(HNL_ST);
+  s.answers[0].res(response(200, payload({ obs: true })));
+  await flush();
+  s.answers[1].res(response(200, { t: [], v: [] }));                        // today's observations
+  await flush();
+  s.els.meta.textContent = 'stale';
+  s.setNow(Date.UTC(2026, 9, 9, 10, 1));                                    // Fri 12:01 AM: a new day
+  s.timers.fire(I.NOW_REDRAW_MS);
+  assert.equal(s.calls.length, 3); assert.equal(s.calls[2].url, '/api/tides/1612340');
+  s.answers[2].rej(new Error('down'));                                      // the refresh fails
+  await flush();
+  for (const min of [3, 6, 9]) { s.setNow(Date.UTC(2026, 9, 9, 10, 1 + min)); s.timers.fire(I.NOW_REDRAW_MS); }
+  assert.equal(s.calls.length, 3, 'not asked again before ten minutes');
+  s.setNow(Date.UTC(2026, 9, 9, 10, 11, 30));
+  s.timers.fire(I.NOW_REDRAW_MS);
+  assert.equal(s.calls.length, 4, 'asked again ten minutes later');
+  assert.equal(I.REFRESH_RETRY_MS, 10 * 60000);
+  s.els.meta.textContent = 'stale';
+  s.answers[3].res(response(200, payload({ obs: true })));
+  await flush();
+  assert.notEqual(s.els.meta.textContent, 'stale', 'the refreshed answer rewrites the notes');
+  assert.equal(s.calls.length, 5, 'and asks for the observations'); assert.match(s.calls[4].url, /\/observed$/);
+  s.setNow(Date.UTC(2026, 9, 9, 10, 30)); s.timers.fire(I.NOW_REDRAW_MS);
+  assert.equal(s.calls.length, 5, 'a refresh that answered is not asked again');
+  // the refresh is revalidated, not taken from the browser's cache (C15); a refresh answer arriving after another
+  // station was picked is dropped (C16)
+  const r = setup({ now: Date.UTC(2026, 9, 9, 9, 50) });
+  r.view.load(HNL_ST);
+  r.answers[0].res(response(200, payload({ obs: false })));
+  await flush();
+  r.setNow(Date.UTC(2026, 9, 9, 10, 1)); r.timers.fire(I.NOW_REDRAW_MS);
+  assert.equal(r.calls.length, 2); assert.equal(r.calls[1].cache, 'no-cache');
+  r.view.load(WAI_ST);
+  r.answers[2].res(response(200, payload({ id: '1611401', name: 'Waimea Bay', obs: false })));
+  await flush();
+  r.answers[1].res(response(200, payload({ obs: false })));                // the old station's late refresh
+  await flush();
+  assert.equal(r.view.state().station, '1611401');
+  assert.match(r.els.meta.textContent, /NOAA CO-OPS station 1611401/, "the newer station's data stands");
+});
+
+test('G27 re-check C05 / C07 / C11 / C24: gaps stay gaps (no extreme fills one, no height read across one, a null outside the strip is no gap); event tooltips', async () => {
+  const d = payload(), i = 700, v = d.v.slice(); v[i] = null;
+  const ti = d.begin + i * d.step;                                         // the null sample's own instant
+  const g = payload({ v, hilo: [[ti, 2.0, 'H']] });
+  assert.equal(I.heightAt(g, ti * 1000), null, 'an extreme at a null sample does not fill it');
+  assert.equal(I.heightAt(g, (ti + 600) * 1000), null, 'no height between the null sample and the next one');
+  assert.equal(I.heightAt(g, (ti - 600) * 1000), null, 'nor between the one before and the null sample');
+  const L = I.layout(MIDS, { 0: true }, I.noons(MIDS, HNL));
+  const base = d.v.map((x) => (x === null ? 0.5 : x));                    // the payload's own gap filled
+  const early = base.slice(); early[0] = null; early[1] = null;              // hours before today's midnight
+  assert.equal(I.hasGap(payload({ v: early }), L), false, 'a null before the strip is not a gap');
+  const inside = base.slice(); inside[Math.round((MIDS[2] / 1000 - d.begin) / d.step)] = null;
+  assert.equal(I.hasGap(payload({ v: inside }), L), true);
+  const s = setup();
+  s.view.load(HNL_ST);
+  s.answers[0].res(response(200, payload({ obs: false })));
+  await flush();
+  const ev = s.q('.tide-ev');
+  assert.ok(ev.length > 0);
+  assert.match(ev[0].getAttribute('title') || '', /^(Sunrise|Sunset|Moonrise|Moonset) \d{1,2}:\d\d [AP]M$/, 'a pointer shows the event\'s name');
 });

@@ -226,7 +226,7 @@ def test_g18b_pins(client):
     parked live chip (its resize corner stays reachable)."""
     body = client.get("/?station=51201").get_data(as_text=True)
     for needle in (
-        "liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; } });",
+        "liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; focusMapAfterClose('liveBuoyPanel'); } });",
         "if (fwEl && fwEl.classList.contains('fw-min') && fwEl.offsetHeight > 0) phoneBarH = fwEl.offsetHeight;",
         "document.documentElement.style.setProperty('--fw-bar-h', phoneBarH + 'px');",
         "function open() { renderFavs(); place(); results.hidden = false;",
@@ -551,7 +551,10 @@ def test_tide_stations_on_the_page(client):
         "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map\n          activeTideId = s.id;",
         ".tide-icon { background: url(\"data:image/svg+xml,", ".tide-icon.tide-icon-active { background-image:",
         "L.divIcon({ className: 'tide-icon', html: '', iconSize: [18, 18], iconAnchor: [9, 9] })",
-        "const all = on ? visibleCopies(tideStationsData) : [], vis = on ? thinTideCopies(all) : [];", "keyOpens(marker);",
+        "const all = on ? visibleCopies(tideStationsData) : [], vis = on ? thinTideCopies(all) : [];", "keyOpens(marker, 't:' + s.id + '#' + c.o, 'twHeader');", "keyOpens(marker, 'l:' + s.id + '#' + c.o, 'lwHeader');",
+        "autoPanOnFocus: false", "if (marker.on) marker.on('add', bind);", "inset: calc(-1 * var(--tide-tap, 10px));",
+        "contain: inline-size;", "const TIDE_CELL_PX = 32;", "body.fw-chip .tide-win:not(.fw-min):not(.fw-max) {",
+        "map.on('overlayadd', function (e) { if (e.layer === liveBuoyLayer) rebuildLiveBuoyMarkers(true); });",
         ".live-win.fw-min .fw-titles .fw-cycle, .tide-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto;", ".tide-table th.tide-lab { text-align: left; }", "onRetried: function () { const h = document.getElementById('twHeader');", "const TIDE_ALL_ZOOM = MAX_MAP_ZOOM;",
         # the window
         '<section id="tideWin" class="fwin tide-win" hidden role="region" aria-label="Tide station">',

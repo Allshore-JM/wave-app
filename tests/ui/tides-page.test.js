@@ -32,6 +32,7 @@ function boot(o = {}) {
   ['tideTitle', 'tideSubtitle', 'tideWin', 'tz'].forEach((id) => { byId[id] = { textContent: '', hidden: true, value: '' }; });
   const events = [];
   const document = {
+    activeElement: null,
     querySelector: (sel) => (sel.indexOf('[data-live-note]') >= 0 ? notes.live : sel.indexOf('[data-tide-note]') >= 0 ? notes.tide : null),
     getElementById: (id) => byId[id] || null,
     dispatchEvent: (e) => { events.push(e.type); return true; },
@@ -51,9 +52,15 @@ function boot(o = {}) {
     getSize: () => o.size || { x: 1e9, y: 1e9 }, getContainer: () => container,
     attributionControl: { addAttribution: (t) => { counts.set(t, credits.count(t) + 1); },
                           removeAttribution: (t) => { if (credits.count(t)) counts.set(t, credits.count(t) - 1); } } };
+  // an element: its listeners, attributes, inline style and the focus (document.activeElement)
+  const mkEl = () => ({ keys: {}, attrs: {}, style: { props: {}, setProperty(k, v) { this.props[k] = v; } },
+    addEventListener(t, fn) { this.keys[t] = fn; }, setAttribute(k, v) { this.attrs[k] = String(v); },
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }, focus() { document.activeElement = this; } });
+  byId.twHeader = Object.assign(mkEl(), { closest: () => byId.tideWin });
+  byId.tideWin.contains = (x) => x === byId.twHeader;                       // the header is in the window
   const L = { marker(ll, opts) {
-    const el = { keys: {}, addEventListener(t, fn) { this.keys[t] = fn; } };
-    return { ll, opts, el, handlers: {}, addTo(layer) { layer.items.push(this); return this; }, getElement() { return el; },
+    const el = mkEl();
+    return { ll, opts, el, handlers: {}, addTo(layer) { layer.items.push(this); return this; }, getElement() { return this.el; },
       getLatLng() { return { lat: ll[0], lng: ll[1] }; }, fire(t, d) { if (this.handlers[t]) this.handlers[t](d); return this; },
       bindTooltip(c, tipOpts) { this.tip = c; this.tipOpts = tipOpts; return this; }, on(t, fn) { this.handlers[t] = fn; return this; } }; },
     divIcon: (opts) => ({ divIcon: opts }) };
@@ -84,7 +91,7 @@ function boot(o = {}) {
     class { constructor(type) { this.type = type; } }, tideWin, layersControl, 11);
   api.container = container;
   return { api, notes, byId, events, tideLayer, credits, fetchCalls, loads, clears, view, toolClicks, saves, measures, layersControl, tideWin,
-    setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; } };
+    document, mkEl, setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; } };
 }
 
 test('below the gate: no request, no markers, the note; at the gate the list is asked once and the markers drawn', async () => {
@@ -201,11 +208,14 @@ test('busy coasts: below the last zoom an icon overlapping a more important one 
   // at the map's last zoom every station shows
   b.setZoom(11); b.api.rebuildTideMarkers(true);
   assert.deepEqual(ids(), ['Edge', 'Far', 'Gauge', 'Harm', 'Sub']);
-  // the station opened there still shows after a zoom-out, and hides its neighbours instead
+  // the station opened there still shows after a zoom-out, on top of the others, and nothing else changes (G27
+  // re-check RC-15: no icon elsewhere comes or goes when a station is opened or closed)
   b.tideLayer.items.find((m) => /Sub/.test(m.opts.title)).handlers.click({ latlng: null, originalEvent: {} });
   assert.equal(b.api.activeTideId, 'C');
   b.setZoom(9.5); b.api.rebuildTideMarkers(true);
-  assert.deepEqual(ids(), ['Edge', 'Far', 'Sub']);
+  assert.deepEqual(ids(), ['Edge', 'Far', 'Gauge', 'Sub']);
+  assert.equal(b.tideLayer.items.find((m) => /Sub/.test(m.opts.title)).opts.zIndexOffset, 450, 'the opened one on top');
+  assert.equal(b.tideLayer.items.find((m) => /Gauge/.test(m.opts.title)).opts.zIndexOffset, 400);
   // the same answer whatever order the list comes in (the most important wins, ties by id)
   const c = boot({ zoom: 9.5, list: { fields: list.fields, stations: list.stations.slice().reverse() } });
   c.api.rebuildTideMarkers(true); await flush();
@@ -298,4 +308,140 @@ test('G27 B-P1-1 pin: a station waits only for neighbours shown before the two a
   const b = boot({ zoom: 9, list });
   b.api.rebuildTideMarkers(true); await flush();
   assert.deepEqual(b.tideLayer.items.map((m) => m.opts.title.replace('Tide station ', '')).sort(), ['Gauge', 'Sub']);
+});
+
+// ---------------------------------------------------------------------------------------------- G27 re-check (fix round 2)
+
+const FIELDS = ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'];
+const byTitle = (b, n) => b.tideLayer.items.find((m) => m.opts.title === 'Tide station ' + n);
+
+test('G27 re-check RC-1: a finger\'s target is cut to half the gap to the nearest icon (no target covers another icon\'s centre); updated at every zoom', async () => {
+  // 1 px = 1/1000 degree at zoom 9 (the stub): a lone station, a pair 30 px apart (east), a diagonal pair 17 px x 17 px
+  const list = { fields: FIELDS, stations: [
+    ['L', 'Lone', 40, -150, 'R', 'UTC', true],
+    ['P1', 'Pair west', 30, -150, 'R', 'UTC', true], ['P2', 'Pair east', 30, -149.970, 'R', 'UTC', true],
+    ['D1', 'Diag one', 20, -150, 'R', 'UTC', true], ['D2', 'Diag two', 19.983, -149.983, 'R', 'UTC', true]] };
+  const b = boot({ zoom: 9, list });
+  b.api.rebuildTideMarkers(true); await flush();
+  const pad = (n) => byTitle(b, n).el.style.props['--tide-tap'];
+  assert.equal(pad('Lone'), '10px');
+  assert.equal(pad('Pair west'), '6px'); assert.equal(pad('Pair east'), '6px');      // 30 px apart: 15 - 9
+  assert.equal(pad('Diag one'), '0px', 'a diagonal neighbour 24 px away: 17 px in x and y, inside a 38-px target');
+  for (const [a, c] of [['Pair west', 'Pair east'], ['Diag one', 'Diag two']]) {
+    const A = byTitle(b, a), C = byTitle(b, c);
+    const ha = 9 + parseInt(pad(a), 10), cx = (C.ll[1] - A.ll[1]) * 1000, cy = (A.ll[0] - C.ll[0]) * 1000;
+    assert.ok(Math.max(Math.abs(cx), Math.abs(cy)) > ha, a + '\'s target stops short of ' + c + '\'s centre');
+  }
+  b.setZoom(10); b.api.rebuildTideMarkers(false);                          // the same icons, twice as far apart
+  assert.equal(pad('Pair west'), '10px'); assert.equal(pad('Diag one'), '8px');
+});
+
+test('G27 re-check RC-4: the nudge tests the square boxes; beside the opened (larger) icon too; no icon lands on a third; by importance; tooltips follow', async () => {
+  // at zoom 11 the stub's 1/1000 degree is 4 px: G and S 6.4 px apart in x and y (9 px: outside a 9-px circle, inside the box)
+  const list = { fields: FIELDS, stations: [
+    ['S', 'Sub', 30.0016, -150 + 0.0016, 'S', 'UTC', false], ['G', 'Gauge', 30, -150, 'R', 'UTC', true],
+    ['T1', 'Three a', 25, -150, 'R', 'UTC', true], ['T2', 'Three b', 25, -150, 'S', 'UTC', false], ['T3', 'Three c', 25, -150, 'S', 'UTC', false],
+    ['F1', 'Five a', 20, -150, 'R', 'UTC', true], ['F2', 'Five b', 20, -150, 'S', 'UTC', false], ['F3', 'Five c', 20, -150, 'S', 'UTC', false],
+    ['F4', 'Five d', 20, -150, 'S', 'UTC', false], ['F5', 'Five e', 20, -150, 'S', 'UTC', false], ['F6', 'Five f', 20, -150, 'S', 'UTC', false],
+    ['N1', 'Near open', 35, -150, 'S', 'UTC', false], ['N2', 'Opened', 35, -149.99725, 'S', 'UTC', false]] };
+  const b = boot({ zoom: 11, list });
+  b.api.rebuildTideMarkers(true); await flush();
+  const icon = (n) => byTitle(b, n).opts.icon;
+  assert.equal(icon('Gauge'), 'ICON', 'the more important one stays');
+  assert.deepEqual(icon('Sub').divIcon.iconAnchor, [9 - 12, 9], 'its centre lies in the gauge\'s box: moved');
+  assert.deepEqual(icon('Sub').divIcon.tooltipAnchor, [12, 0], 'the tooltip follows the icon');
+  const spots = ['Three a', 'Three b', 'Three c'].map((n) => (icon(n) === 'ICON' ? '0,0' : icon(n).divIcon.tooltipAnchor.join(',')));
+  assert.equal(new Set(spots).size, 3, 'three at one spot: three places (a nudged spot is taken)');
+  const five = ['Five a', 'Five b', 'Five c', 'Five d', 'Five e', 'Five f'].map((n) => (icon(n) === 'ICON' ? '0,0' : icon(n).divIcon.tooltipAnchor.join(',')));
+  assert.equal(new Set(five).size, 6, 'six at one spot'); assert.ok(five.includes('12,12') || five.includes('-12,12'), 'the corners when the sides are taken');
+  // the reverse list order gives the same nudges (importance decides, not the list)
+  const r = boot({ zoom: 11, list: { fields: FIELDS, stations: list.stations.slice().reverse() } });
+  r.api.rebuildTideMarkers(true); await flush();
+  assert.equal(byTitle(r, 'Gauge').opts.icon, 'ICON');
+  // the opened icon is 22 px: a neighbour 11 px away (inside its box) moves
+  assert.equal(icon('Near open'), 'ICON'); assert.equal(icon('Opened'), 'ICON');
+  byTitle(b, 'Opened').handlers.click({ latlng: null, originalEvent: {} });
+  assert.ok(icon('Near open').divIcon, 'beside the opened icon: moved');
+  assert.equal(icon('Opened'), 'ICON-ACTIVE', 'the opened one stays on its spot');
+});
+
+test('G27 re-check RC-6 / T02: the reveal grid meets across the date line; stations at one spot wait for the last zoom', async () => {
+  // Leaflet's world at zoom 9 is 131,072 px (the stub's degree scaled to it): x 131,061 and x 1.8 are 12.8 px apart
+  const d = boot({ zoom: 9, pxPerDeg: 131072 / 360, list: { fields: FIELDS, stations: [
+    ['D1', 'East of 180', -17, 179.97, 'R', 'UTC', true], ['D2', 'West of 180', -17, -179.995, 'S', 'UTC', false]] } });
+  d.api.rebuildTideMarkers(true); await flush();
+  assert.equal(d.tideLayer.items.length, 1, 'the cells at x 131,040 and x 0 are neighbours');
+  const s = boot({ zoom: 10.99, list: { fields: FIELDS, stations: [['A', 'One', 30, -150, 'R', 'UTC', true], ['B', 'Two', 30, -150, 'S', 'UTC', false]] } });
+  s.api.rebuildTideMarkers(true); await flush();
+  assert.equal(s.tideLayer.items.length, 1, 'one spot: one icon below the last zoom');
+  s.setZoom(11); s.api.rebuildTideMarkers(true);
+  assert.equal(s.tideLayer.items.length, 2);
+});
+
+test('G27 re-check RC-3 / RC-5: Tab stops only in view; the focus survives a rebuild; a key open focuses the window; a re-added element gets the key', async () => {
+  const size = { x: 300, y: 1e9 };                                          // the view: x 0 .. 300 (the stub: lon -180 at x 0)
+  const list = { fields: FIELDS, stations: [['IN', 'Inside', 30, -179.85, 'R', 'UTC', true], ['OUT', 'Outside', 30, -179.5, 'R', 'UTC', true]] };
+  const b = boot({ zoom: 9, list, size });
+  b.api.rebuildTideMarkers(true); await flush();
+  assert.equal(byTitle(b, 'Inside').el.getAttribute('tabindex'), '0');
+  assert.equal(byTitle(b, 'Outside').el.getAttribute('tabindex'), '-1', 'a marker in the padding is no Tab stop');
+  assert.equal(byTitle(b, 'Inside').opts.autoPanOnFocus, false, 'a focused marker never pans the map');
+  size.x = 600;                                                              // the view moves: the same icons
+  b.api.rebuildTideMarkers(false);
+  assert.equal(byTitle(b, 'Outside').el.getAttribute('tabindex'), '0', 'Tab stops follow the view without a rebuild');
+  byTitle(b, 'Inside').el.focus();
+  const old = byTitle(b, 'Inside').el;
+  b.api.rebuildTideMarkers(true);
+  assert.notEqual(byTitle(b, 'Inside').el, old); assert.equal(b.document.activeElement, byTitle(b, 'Inside').el, 'the focus on the new element');
+  // Enter opens the station and the window's header takes the focus; with a map tool active the focus stays
+  byTitle(b, 'Inside').el.keys.keydown({ key: 'Enter', preventDefault() {} });
+  assert.equal(b.loads.length, 1); assert.equal(b.document.activeElement, b.byId.twHeader);
+  const t = boot({ zoom: 9, list, size, toolActive: true });
+  t.api.rebuildTideMarkers(true); await flush();
+  byTitle(t, 'Inside').el.focus();
+  byTitle(t, 'Inside').el.keys.keydown({ key: ' ', preventDefault() {} });
+  assert.equal(t.toolClicks.length, 1); assert.equal(t.document.activeElement, byTitle(t, 'Inside').el, 'a tool took the press');
+  // Leaflet makes a new element when a marker is added again (its layer unticked and ticked): the key comes with it
+  const m = byTitle(b, 'Outside'), fresh = b.mkEl();
+  m.el = fresh; m.handlers.add();
+  assert.equal(typeof fresh.keys.keydown, 'function'); assert.equal(fresh.getAttribute('data-mk'), 't:OUT#0');
+});
+
+test('G27 re-check RC-7 / T11 / T23: the list\'s note during its back-off; the map takes the focus only from the window; a drawn station is not "hidden"', async () => {
+  const b = boot({ zoom: 9.5, answers: [new Error('down')] });
+  const realNow = Date.now; let t = realNow(); Date.now = () => t;
+  try {
+    b.api.rebuildTideMarkers(true); await flush();
+    assert.equal(b.notes.tide.textContent, 'unavailable');
+    b.setZoom(8); b.api.rebuildTideMarkers(false);
+    assert.equal(b.notes.tide.textContent, 'zoom in to see tide stations');
+    t += 5000; b.setZoom(9.5); b.api.rebuildTideMarkers(false);
+    assert.equal(b.notes.tide.textContent, 'unavailable', 'zoomed in again, still within the back-off: the list\'s state');
+  } finally { Date.now = realNow; }
+  const c = boot({ zoom: 9 });
+  c.api.rebuildTideMarkers(true); await flush();
+  c.tideLayer.items[0].handlers.click({ latlng: null, originalEvent: {} });
+  const elsewhere = c.mkEl(); c.document.activeElement = elsewhere;        // the gear, a field: not in the window
+  c.api.closeTideWindow();
+  assert.equal(c.api.container.focused, 0, 'the focus stays where the visitor put it');
+  // every station in view drawn; one hidden outside it: no note
+  const list = { fields: FIELDS, stations: [['A', 'In view', 30, -179.9, 'R', 'UTC', true], ['B', 'Beside it', 30, -179.895, 'S', 'UTC', false],
+    ['C', 'Lone', 30, -179.5, 'R', 'UTC', true]] };
+  const d = boot({ zoom: 9, list, size: { x: 600, y: 1e9 } });               // B (hidden) at x 105, inside: the note
+  d.api.rebuildTideMarkers(true); await flush();
+  assert.equal(d.notes.tide.textContent, 'zoom in for more stations');
+  const e = boot({ zoom: 9, list: { fields: FIELDS, stations: [list.stations[2], ['Z', 'Far hidden', 30, -170, 'S', 'UTC', false], ['Y', 'Far gauge', 30, -169.995, 'R', 'UTC', true]] }, size: { x: 600, y: 1e9 } });
+  e.api.rebuildTideMarkers(true); await flush();
+  assert.equal(e.tideLayer.items.length, 2);
+  assert.equal(e.notes.tide.textContent, '', 'the hidden one is out of view; the drawn ones are not counted');
+});
+
+test('G27 re-check RC-4: when every spot 12 px away is taken, an icon moves 24 px (ten stations at one spot: ten places)', async () => {
+  const stations = [['R0', 'Ring 0', 10, -150, 'R', 'UTC', true]];
+  for (let i = 1; i < 10; i++) stations.push(['R' + i, 'Ring ' + i, 10, -150, 'S', 'UTC', false]);
+  const b = boot({ zoom: 11, list: { fields: FIELDS, stations } });
+  b.api.rebuildTideMarkers(true); await flush();
+  const at = b.tideLayer.items.map((m) => (m.opts.icon === 'ICON' ? '0,0' : m.opts.icon.divIcon.tooltipAnchor.join(',')));
+  assert.equal(new Set(at).size, 10, 'ten places');
+  assert.ok(at.includes('24,0'), 'the tenth 24 px east');
 });

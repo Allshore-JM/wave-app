@@ -13,7 +13,7 @@ This repository contains a Flask web application that fetches the latest NOAA GF
 - **Tide stations**: NOAA's tide-prediction stations appear on the map from zoom 9 (sine-wave markers); a click opens
   a tide window: a day strip for 30 days (a column per day, today open, a click opens or closes any day) with the
   predicted curve, the highs and lows, the nights, the sun and moon, the current time and, where the station has a
-  gauge, the observed water level of the last 48 h (see "Tide stations" below).
+  gauge, the observed water level of today so far (see "Tide stations" below).
 - **Download as Excel**: You can download the displayed table as an Excel file. The download preserves the two-level headers and units row.
 - **Deployment-Ready**: The repository includes a `requirements.txt` file and a `README.md` with instructions for deploying the web app on [Render](https://render.com) or running locally.
 
@@ -795,7 +795,7 @@ Environment variables (all optional):
 Gunicorn: the service runs one scheduler per worker process; the site runs one worker (with threads), so each agency is
 asked once per refresh. More workers would each run their own scheduler (correct, but more feed traffic).
 
-## Tide stations (plan section 38, UI asset 1.18.5)
+## Tide stations (plan section 38, UI asset 1.18.6)
 
 NOAA CO-OPS tide predictions (public domain; NOS asks for attribution, given in the map credits while the layer is on
 and in the window) for the map's "Tide stations" layer.
@@ -821,7 +821,7 @@ one attempt, an 8 s wall-clock cap):
   reference station's NOAA curve re-timed and re-scaled between each pair of its own extremes (paired through the
   offsets), so it passes through every extreme exactly and keeps the shape of the real tide (stands, uneven rises).
   Measured where the truth is known (two harmonic stations, one shaped onto the other's extremes, the shaped stretches):
-  San Diego 3 cm worst against a plain cosine's 31 cm, Seattle 5 (24), Galveston 5 (23), Nawiliwili 3 (17); a reference
+  San Diego 3 cm worst against a plain cosine's 31 cm, Seattle 5 (24), Galveston 5 (23), Nawiliwili 2 (17); a reference
   far away or in another tidal regime does worse (Anchorage shaped on Nikiski's curve, a 10.6 m range: up to 1.5 m).
   Where an extreme has no partner, or NOAA has no curve for the reference, that stretch is a half cosine between the
   extremes (up to ~20 cm off the real shape at a mixed tide); these are a few of the ~130 stretches of a station's
@@ -830,15 +830,18 @@ one attempt, an 8 s wall-clock cap):
   extremes of the same kind, or more than 20 h apart (diurnal Gulf tides reach 16.6 h), leaves a gap: nothing is invented.
 - The window is 32 days from 00:00 UTC yesterday (every zone's "today from midnight" plus 30 days lies inside it; the
   curve carries 12 h more on each side, the extremes 24 h), kept per station per UTC day (predictions never change); a
-  subordinate station shares its reference's cached curve. Only NOAA's "no predictions" answer is final (kept 24 h); any
-  other NOAA message (a throttle, a hiccup), on either of a station's two requests, and any failure are remembered for a
-  minute and asked again; one build per station at a time (per-key locks counted, so a waiter never orphans one), two
+  subordinate station shares its reference's cached curve. Only NOAA's "no predictions" answer is final, and only when
+  NOAA gives it twice in a row (it has sent it for a moment for a station it serves: Nairai Island); a final answer is
+  kept an hour on the server and 10 minutes in browsers, and so is an answer built around one (a curve without its list
+  of highs and lows, or a subordinate's cosine because its reference has nothing). Any other NOAA message (a throttle, a
+  hiccup), on either of a station's two requests, and any failure are remembered for a minute and asked again; one build per station at a time (per-key locks counted, so a waiter never orphans one), two
   build slots, "busy" instead of a long wait; LRU 256. A subordinate's payload names its reference (`ref`, `ref_name`).
 - The sky travels with the payload, from `sky.events` (searched in 16-day chunks: it refuses more than 20 days at a
   time): the nights (last light to first light), the sunrise / sunset / moonrise / moonset instants (`events`) and the
   moon's phase, lit percentage and name every 6 h (`moon`; the page takes the sample nearest each local noon); about
   21 KB a station. Observed water level (`product=water_level`,
-  6-minute samples of the last 48 h) is a separate route, cached 15 min, asked by the page only for stations with a gauge.
+  6-minute samples of the last 48 h, of which the page draws today's part) is a separate route, cached 15 min, asked by
+  the page only for stations with a gauge.
 - Routes: `/api/tides/<id>` (30 min; an id not in the snapshot is a 404 without any upstream request: never a proxy),
   `/api/tides/<id>/observed` (5 min); busy or unreachable = 503 + `Retry-After: 5` + `retry: true` (the page asks
   again); the tide service is no live-buoy provider (not in the live list, the scheduler or `/healthz`).
@@ -860,21 +863,38 @@ strip whose zone changes name the readout names it). Within a day the time runs 
 midnight to the zone's noon over the left half and from noon to midnight over the right half, so 23- and 25-hour days
 keep noon at the AM | PM line; where a clock goes back at midnight (Cuba) the day starts at the first 00:00. The drawn
 curve is NOAA's 30-minute samples with the exact highs and lows put in between (so every dot sits on the line and the
-current height and the readout follow the real peak; between samples the line is straight: up to ~0.12 ft off the
-true curve near an extreme at the biggest tides); it is cut cleanly at the strip's two ends; a gap (NOAA's list of highs
+current height and the readout follow the real peak; between samples the line is straight: up to about 0.4 ft off
+NOAA's 6-minute predictions at Anchorage, on the steep rise after a low, a few hundredths of a foot at most stations); it is cut cleanly at the strip's two ends; a gap (NOAA's list of highs
 and lows incomplete) is drawn as a gap and named in the notes. Heights above MLLW in the site's unit (axis labels in
 feet or metres with up to two decimals). When the local day changes in an open window the strip restarts at today, its
-notes follow and the station is asked for again (quietly; a failure keeps the strip). A newer station voids an older
+notes follow and the station is asked for again (quietly; a failure keeps the strip and asks again every 10
+minutes). A newer station voids an older
 one's answers; a hidden (minimised) window builds its strip when expanded; Retry hands the focus back to the window;
 text from the server is written as text only. For screen readers the table has a caption, its row labels are row
 headers, and the sun / moon glyphs are read as words ("Sunrise 7:18 AM", the moon's phase and lit share).
 
-Busy coasts (owner, 2026-10-08): each station gets a REVEAL ZOOM once per list and opened station, in order of
-importance (the opened station, then a station with a gauge, a harmonic one, a subordinate one, then by id): the zoom
-from which it is 24 px clear of every more important station already shown there. A station is drawn from its reveal
-zoom on, so an icon never vanishes as you zoom in, no two icons are closer than 24 px below the map's last zoom (11),
-and the legend's note says "zoom in for more stations" while one in view waits. At zoom 11 every station is drawn; an
-icon within 9 px of a more important one is moved 12 px aside (its anchor, not its place), so stations NOAA lists at
-the same spot can each be clicked. Enter or Space opens a focused tide (or live-buoy) marker; closing the window hands
-the focus to the map. A failed station list is asked for again after 30 s, not on every pan. The minimised chips sit
-above the station windows, and a station chip gives its subtitle up before the station's name.
+Busy coasts (owner, 2026-10-08): each station gets a REVEAL ZOOM once per list, in order of importance (a station
+with a gauge, a harmonic one, a subordinate one, then by id): the zoom from which it is 24 px clear of every more
+important station already shown there (the grid of 32-px cells divides the world's width, so stations meet across the
+date line). A station is drawn from its reveal zoom on, so an icon never vanishes as you zoom in, no two icons are
+closer than 24 px below the map's last zoom (11), and the legend's note says "zoom in for more stations" while one in
+view waits. At zoom 11 every station is drawn. The opened station is drawn whatever its reveal zoom, on top of the
+other tide icons, and changes nothing else (no icon comes or goes when a station is opened or closed).
+
+Clicks and taps: an icon is an 18-px square (the opened one 22 px). An icon whose centre lies in a more important
+icon's box, or that has the other's centre in its own, is moved 12 px aside (east, west, south, north, then the corners;
+24 px when none of these is free), its anchor and tooltip, not its place. So stations NOAA lists at one spot can each be
+clicked (and, below zoom 11, the stations beside the opened one). On a touch screen an icon's target reaches 10 px
+beyond its box, cut to half the gap to the nearest drawn icon, so a tap on an icon's centre always opens that icon's
+station (checked over the whole snapshot at zooms 9 to 11, also with each of the 200 most crowded stations opened).
+
+Keyboard: only the markers inside the view are Tab stops (a marker in the padding beyond it is not: Leaflet would pan
+the map to it), a focused marker never pans the map, and a rebuild hands the focus to the same marker's new element.
+Enter or Space opens a focused tide (or live-buoy) marker and its window's header takes the focus; closing a station
+window (the x, Escape) hands the focus to the map when it was in the window. A failed station list is asked for again
+after 30 s, not on every pan, and the legend says so meanwhile. The legend's notes wrap under their label: the legend
+never changes width when one comes or goes.
+
+Windows: a station chip gives its subtitle up before the station's name. An expanded station window may cover the
+parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
+that chip.

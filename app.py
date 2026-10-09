@@ -312,7 +312,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.18.5"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.18.6"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript"}
@@ -552,7 +552,7 @@ TIDE_STATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "t
 TIDE_LIST_MAX_AGE = 6 * 3600      # the list changes only with a deploy; browsers and the edge keep it 6 h
 TIDE_MAX_AGE = 1800               # a station's forecast (the same all UTC day; the page asks again on a new visit)
 TIDE_OBS_MAX_AGE = 300            # observed water level (6-minute samples)
-TIDE_FINAL_MAX_AGE = 3600         # NOAA has nothing for this station: the same whenever asked
+TIDE_FINAL_MAX_AGE = 600          # NOAA says it has nothing for this station (it has said so for a moment: G27 RC-2)
 TIDES_OFF = "Tide stations are not available on this server"
 _TIDES = {"svc": None, "list": None}
 _TIDES_LOCK = threading.Lock()

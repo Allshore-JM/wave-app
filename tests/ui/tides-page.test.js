@@ -42,13 +42,21 @@ function boot(o = {}) {
   const counts = new Map();
   const credits = { count: (t) => counts.get(t) || 0, has: (t) => (counts.get(t) || 0) > 0,
     get size() { let c = 0; counts.forEach((v) => { if (v > 0) c++; }); return c; } };
-  const pxPerDeg = o.pxPerDeg || 1000;             // a flat stand-in for the projection: degrees -> container px
+  // a flat stand-in for the projection: at zoom 9 one degree is pxPerDeg px, doubling per zoom (container = the same, no pan)
+  const pxPerDeg = o.pxPerDeg || 1000, scale = () => pxPerDeg * Math.pow(2, zoom - 9);
+  const container = { focused: 0, focus() { this.focused++; } };
   const map = { hasLayer: (l) => l === tideLayer && on, getZoom: () => zoom,
-    latLngToContainerPoint: (ll) => ({ x: ll[1] * pxPerDeg, y: -ll[0] * pxPerDeg }),
+    latLngToContainerPoint: (ll) => ({ x: (ll[1] + 180) * scale(), y: (90 - ll[0]) * scale() }),
+    project: (ll, z) => ({ x: (ll[1] + 180) * pxPerDeg * Math.pow(2, z - 9), y: (90 - ll[0]) * pxPerDeg * Math.pow(2, z - 9) }),   // Leaflet's: x from -180
+    getSize: () => o.size || { x: 1e9, y: 1e9 }, getContainer: () => container,
     attributionControl: { addAttribution: (t) => { counts.set(t, credits.count(t) + 1); },
                           removeAttribution: (t) => { if (credits.count(t)) counts.set(t, credits.count(t) - 1); } } };
-  const L = { marker(ll, opts) { return { ll, opts, handlers: {}, addTo(layer) { layer.items.push(this); return this; },
-    bindTooltip(c, tipOpts) { this.tip = c; this.tipOpts = tipOpts; return this; }, on(t, fn) { this.handlers[t] = fn; return this; } }; } };
+  const L = { marker(ll, opts) {
+    const el = { keys: {}, addEventListener(t, fn) { this.keys[t] = fn; } };
+    return { ll, opts, el, handlers: {}, addTo(layer) { layer.items.push(this); return this; }, getElement() { return el; },
+      getLatLng() { return { lat: ll[0], lng: ll[1] }; }, fire(t, d) { if (this.handlers[t]) this.handlers[t](d); return this; },
+      bindTooltip(c, tipOpts) { this.tip = c; this.tipOpts = tipOpts; return this; }, on(t, fn) { this.handlers[t] = fn; return this; } }; },
+    divIcon: (opts) => ({ divIcon: opts }) };
   const fetchCalls = [];
   const answers = (o.answers || [{ ok: true, status: 200, json: () => Promise.resolve(o.list || LIST) }]).slice();
   const fetch = (u, init) => { fetchCalls.push(u); const a = answers.length ? answers.shift() : answers.at(-1);
@@ -74,6 +82,7 @@ function boot(o = {}) {
     window, document, fetch, map, L, tideLayer, 'ICON', 'ICON-ACTIVE', visibleCopies, renderSignature, (t) => ({ text: String(t) }),
     () => saves.push('view'), () => saves.push('layers'), () => measures.push(1), () => (o.unit || 'US'), (iso, tz) => tz + '!', () => Promise.resolve(),
     class { constructor(type) { this.type = type; } }, tideWin, layersControl, 11);
+  api.container = container;
   return { api, notes, byId, events, tideLayer, credits, fetchCalls, loads, clears, view, toolClicks, saves, measures, layersControl, tideWin,
     setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; } };
 }
@@ -110,12 +119,20 @@ test('below the gate: no request, no markers, the note; at the gate the list is 
 
 test('world copies get their own markers; a failed list is said and asked again', async () => {
   const b = boot({ copies: [-360, 0, 360], answers: [new Error('down'), { ok: false, status: 503, json: () => Promise.resolve({}) }, { ok: true, status: 200, json: () => Promise.resolve(LIST) }] });
-  b.api.rebuildTideMarkers(true); await flush();
-  assert.equal(b.notes.tide.textContent, 'unavailable'); assert.equal(b.tideLayer.items.length, 0);
-  b.api.rebuildTideMarkers(false); await flush();
-  assert.equal(b.fetchCalls.length, 2); assert.equal(b.notes.tide.textContent, 'unavailable');
-  b.api.rebuildTideMarkers(false); await flush();
-  assert.equal(b.fetchCalls.length, 3); assert.equal(b.tideLayer.items.length, 6, 'two stations in three world copies');
+  const realNow = Date.now; let t = realNow();
+  Date.now = () => t;
+  try {
+    b.api.rebuildTideMarkers(true); await flush();
+    assert.equal(b.notes.tide.textContent, 'unavailable'); assert.equal(b.tideLayer.items.length, 0);
+    b.api.rebuildTideMarkers(false); await flush();
+    assert.equal(b.fetchCalls.length, 1, 'not asked again on the next pan (G27 A-F11)');
+    t += 30000;
+    b.api.rebuildTideMarkers(false); await flush();
+    assert.equal(b.fetchCalls.length, 2); assert.equal(b.notes.tide.textContent, 'unavailable');
+    t += 30000;
+    b.api.rebuildTideMarkers(false); await flush();
+    assert.equal(b.fetchCalls.length, 3); assert.equal(b.tideLayer.items.length, 6, 'two stations in three world copies');
+  } finally { Date.now = realNow; }
   assert.deepEqual(b.tideLayer.items.map((m) => m.ll[1]).slice(0, 3), [-157.8645 - 360, -157.8645, -157.8645 + 360]);
 });
 
@@ -205,4 +222,80 @@ test('busy coasts: the order of importance (gauge, then harmonic, then id) and n
   b.api.rebuildTideMarkers(true); await flush();
   assert.deepEqual(b.tideLayer.items.map((m) => m.opts.title.replace('Tide station ', '')).sort(),
     ['First', 'Harm', 'Subordinate gauge', 'West of the line'], 'a gauge first, then a harmonic station, then the lower id; 5 px apart across a cell line: one');
+});
+
+test('G27 B-P1-1: an icon shown at one zoom stays shown at every closer zoom; never two within 24 px; the opened one first', async () => {
+  // 60 random stations in a 0.2 x 0.2 degree box (200 px at zoom 9): a busy coast
+  let seed = 7; const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const rows = [];
+  for (let i = 0; i < 60; i++) rows.push(['S' + String(i).padStart(3, '0'), 'St ' + i, 25 + rnd() * 0.2, -81 + rnd() * 0.2, rnd() < 0.3 ? 'R' : 'S', 'UTC', rnd() < 0.15]);
+  const b = boot({ zoom: 9, list: { fields: ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'], stations: rows } });
+  b.api.rebuildTideMarkers(true); await flush();
+  const shownAt = {};
+  for (const z of [9, 9.25, 9.5, 9.75, 10, 10.25, 10.5, 10.75, 10.99]) {
+    b.setZoom(z); b.api.rebuildTideMarkers(true);
+    shownAt[z] = new Set(b.tideLayer.items.map((m) => m.opts.title));
+    const pts = b.tideLayer.items.map((m) => [m.ll[1] * 1000 * Math.pow(2, z - 9), -m.ll[0] * 1000 * Math.pow(2, z - 9)]);
+    for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
+      assert.ok(Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]) >= 24 - 1e-6, 'zoom ' + z + ': two icons overlap');
+    }
+  }
+  const zs = Object.keys(shownAt).map(Number).sort((a, c) => a - c);
+  for (let k = 1; k < zs.length; k++) for (const t of shownAt[zs[k - 1]]) assert.ok(shownAt[zs[k]].has(t), t + ' vanished at ' + zs[k]);
+  assert.ok(shownAt[9].size < 60 && shownAt[10.99].size > shownAt[9].size, 'more come with zooming in');
+  b.setZoom(11); b.api.rebuildTideMarkers(true);
+  assert.equal(b.tideLayer.items.length, 60, 'all at the last zoom');
+  const hidden = rows.find((r) => !shownAt[9].has('Tide station ' + r[1]));
+  b.tideLayer.items.find((m) => m.opts.title === 'Tide station ' + hidden[1]).handlers.click({ latlng: null, originalEvent: {} });
+  b.setZoom(9); b.api.rebuildTideMarkers(true);
+  assert.ok(b.tideLayer.items.some((m) => m.opts.title === 'Tide station ' + hidden[1]), 'the opened station at zoom 9');
+});
+
+test('G27 A-F7: at the last zoom an icon on top of another moves 12 px aside; stations across the date line are neighbours', async () => {
+  const list = { fields: ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'], stations: [
+    ['A1', 'First', 30, -150, 'R', 'UTC', true], ['A2', 'Same place', 30, -150, 'S', 'UTC', false],
+    ['A3', 'Near', 30.0007, -150, 'S', 'UTC', false], ['A4', 'Far', 31, -150, 'S', 'UTC', false]] };
+  const b = boot({ zoom: 11, list });
+  b.api.rebuildTideMarkers(true); await flush();
+  const icon = (n) => b.tideLayer.items.find((m) => m.opts.title === 'Tide station ' + n).opts.icon;
+  assert.equal(icon('First'), 'ICON'); assert.equal(icon('Far'), 'ICON');
+  assert.deepEqual(icon('Same place').divIcon.iconAnchor, [9 - 12, 9], 'moved 12 px east');
+  assert.ok(icon('Near').divIcon, 'within 9 px of one placed (2.8 px): moved too');
+  b.setZoom(10.5); b.api.rebuildTideMarkers(true);
+  assert.ok(b.tideLayer.items.every((m) => m.opts.icon === 'ICON'), 'no nudge below the last zoom');
+  // Leaflet's world at zoom 9 is 131,072 px wide: the stub's degree scaled to it, so x wraps as on the real map
+  const d = boot({ zoom: 9, pxPerDeg: 131072 / 360, list: { fields: list.fields, stations: [['D1', 'East of 180', -17, 179.99, 'R', 'UTC', true], ['D2', 'West of 180', -17, -179.995, 'S', 'UTC', false]] } });
+  d.api.rebuildTideMarkers(true); await flush();
+  assert.equal(d.tideLayer.items.length, 1, 'the two sides of the date line are 5.5 px apart: one shows at zoom 9');
+});
+
+test('G27 B-P2-1 / B-P3-1 / B-P3-3: Enter opens a focused marker; the legend says when stations are hidden; closing hands the focus to the map', async () => {
+  const list = { fields: ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'], stations: [
+    ['1612340', 'Honolulu', 21.3, -157.86, 'R', 'Pacific/Honolulu', true], ['1612341', 'Next door', 21.305, -157.86, 'S', 'Pacific/Honolulu', false]] };
+  const b = boot({ zoom: 9, list, size: { x: 1e9, y: 1e9 } });
+  b.api.rebuildTideMarkers(true); await flush();
+  assert.equal(b.tideLayer.items.length, 1);
+  assert.equal(b.notes.tide.textContent, 'zoom in for more stations');
+  let prevented = 0;
+  b.tideLayer.items[0].el.keys.keydown({ key: 'Tab', preventDefault() { prevented++; } });
+  assert.equal(b.loads.length, 0, 'other keys do nothing');
+  b.tideLayer.items[0].el.keys.keydown({ key: 'Enter', preventDefault() { prevented++; } });
+  assert.equal(prevented, 1); assert.equal(b.loads.length, 1); assert.equal(b.loads[0][0], '1612340');
+  b.setZoom(11); b.api.rebuildTideMarkers(true);
+  assert.equal(b.notes.tide.textContent, '', 'all shown: no note');
+  b.api.closeTideWindow();
+  assert.equal(b.api.container.focused, 1, 'the map takes the focus');
+  const c = boot({ zoom: 9, list, size: { x: 10, y: 10 } });                   // the hidden one lies outside the view
+  c.api.rebuildTideMarkers(true); await flush();
+  assert.equal(c.notes.tide.textContent, '');
+});
+
+test('G27 B-P1-1 pin: a station waits only for neighbours shown before the two are clear', async () => {
+  // A (gauge) at 0; P (harmonic) 10 px east of A waits until 10.26; X (subordinate) 20 px east of P (30 px from A) is
+  // clear of P from 9.26, after P would show: X is not held back by P and shows at 9
+  const list = { fields: ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'], stations: [
+    ['A', 'Gauge', 30, -150, 'R', 'UTC', true], ['P', 'Harmonic', 30, -149.99, 'R', 'UTC', false], ['X', 'Sub', 30, -149.97, 'S', 'UTC', false]] };
+  const b = boot({ zoom: 9, list });
+  b.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(b.tideLayer.items.map((m) => m.opts.title.replace('Tide station ', '')).sort(), ['Gauge', 'Sub']);
 });

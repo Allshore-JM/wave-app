@@ -48,6 +48,9 @@ MAX_GAP_S = 20 * 3600                     # longest stretch between a high and a
 PAIR_TOL_S = 3600                         # a subordinate extreme's partner: its reference extreme within an hour of t - offset
 MAX_BODY = 512 * 1024
 ID_RE = re.compile(r"[A-Za-z0-9]{3,10}")
+# NOAA's answer for a station without predictions ("No Predictions data was found ...", "... don't have Predictions
+# data"): the only error kept as final; any other message (a throttle, a hiccup) may pass and is retried in a minute
+FINAL_RE = re.compile(r"no predictions|don'?t have predictions", re.I)
 
 NO_PREDICTIONS = "NOAA publishes no tide predictions for this station"
 UNAVAILABLE = "NOAA's tide service could not be reached; try again in a moment"
@@ -55,7 +58,12 @@ BUSY = "The server is busy with other tide stations; try again in a moment"
 
 
 class TideError(Exception):
-    """A failure that may pass (network, a malformed answer): never cached for long."""
+    """A failure that may pass (network, a malformed answer, a NOAA message other than "no predictions"): never cached
+    for long."""
+
+
+class TideBusy(TideError):
+    """A subordinate's reference is being built by another request right now: ask again in a moment (not cached)."""
 
 
 # ---------------------------------------------------------------------------------------------- NOAA's answers
@@ -72,6 +80,17 @@ def noaa_error(doc):
         msg = err.get("message") if isinstance(err, dict) else err
         return str(msg or "error").strip()
     return None
+
+
+def final_error(msg):
+    """True for NOAA's "no predictions for this station" answers, the only errors that do not pass."""
+    return bool(msg) and bool(FINAL_RE.search(msg))
+
+
+def _check(msg):
+    """A NOAA message that may pass is a failure (a minute, then asked again)."""
+    if msg and not final_error(msg):
+        raise TideError("NOAA answered: " + msg[:120])
 
 
 def _rows(doc, key):
@@ -385,13 +404,19 @@ class TideService:
                 self._cache.popitem(last=False)
 
     def _key_lock(self, key):
+        """The key's [lock, users] entry, counted: every caller must _drop_key it, whether it got the lock or not
+        (an entry is removed only when nobody holds or waits for it, so two builds of one key never run at once)."""
         with self._lock:
-            return self._inflight.setdefault(key, threading.Lock())
+            e = self._inflight.get(key)
+            if e is None:
+                e = self._inflight[key] = [threading.Lock(), 0]
+            e[1] += 1
+            return e
 
-    def _release_key(self, key, lk):
-        lk.release()
+    def _drop_key(self, key, e):
         with self._lock:
-            if self._inflight.get(key) is lk and not lk.locked():
+            e[1] -= 1
+            if e[1] <= 0 and self._inflight.get(key) is e:
                 del self._inflight[key]
 
     def _json(self, u):
@@ -410,26 +435,31 @@ class TideService:
         if hit is not None:
             return hit
         deadline = time.monotonic() + self.wait_s
-        lk = self._key_lock(key)
-        if not lk.acquire(timeout=self.wait_s):
-            return "busy", {"error": BUSY}
+        e = self._key_lock(key)
         try:
-            hit = self._get(key)
-            if hit is not None:
-                return hit
-            if not self._builds.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            if not e[0].acquire(timeout=self.wait_s):
                 return "busy", {"error": BUSY}
             try:
-                status, payload = build()
-            except TideError:
-                status, payload = "error", {"error": UNAVAILABLE}
+                hit = self._get(key)
+                if hit is not None:
+                    return hit
+                if not self._builds.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                    return "busy", {"error": BUSY}
+                try:
+                    status, payload = build()
+                except TideBusy:
+                    return "busy", {"error": BUSY}                       # never cached: asked again in a moment
+                except TideError:
+                    status, payload = "error", {"error": UNAVAILABLE}
+                finally:
+                    self._builds.release()
+                ttl = ttl_ok if status == "ok" else self.final_ttl if status == "final" else self.error_ttl
+                self._put(key, status, payload, ttl)
+                return status, payload
             finally:
-                self._builds.release()
-            ttl = ttl_ok if status == "ok" else self.final_ttl if status == "final" else self.error_ttl
-            self._put(key, status, payload, ttl)
-            return status, payload
+                e[0].release()
         finally:
-            self._release_key(key, lk)
+            self._drop_key(key, e)
 
     # -- forecasts
     def forecast(self, sid):
@@ -444,12 +474,15 @@ class TideService:
 
     def _harmonic(self, sid, begin):
         """(curve or None, extremes or None, error message or None) of a harmonic station: NOAA's 30-minute curve and
-        its highs and lows. A NOAA error on one leaves the other; on both: the message."""
+        its highs and lows. NOAA's "no predictions" on one leaves the other; on both: the message. Any other NOAA
+        message, on either, is a failure that may pass (TideError: a minute, then asked again), never a degraded day."""
         hilo_doc = self._json(url(sid, product="predictions", interval="hilo", begin_date=_stamp(begin - 2 * LEAD_S),
                                   range=HILO_HOURS))
         curve_doc = self._json(url(sid, product="predictions", interval="30", begin_date=_stamp(begin - LEAD_S),
                                    range=CURVE_HOURS))
         e1, e2 = noaa_error(hilo_doc), noaa_error(curve_doc)
+        _check(e1)
+        _check(e2)
         ex = None if e1 else parse_hilo(hilo_doc)
         grid = None if e2 else on_grid(parse_predictions(curve_doc), begin - LEAD_S)
         if grid is not None and not any(v is not None for v in grid):
@@ -458,28 +491,33 @@ class TideService:
 
     def _reference_curve(self, ref, begin, deadline):
         """The reference station's curve and extremes, from the cache or fetched under the reference's own key lock
-        (an R station never waits on another station, so S -> R is the only lock order). None when unusable."""
+        (an R station never waits on another station, so S -> R is the only lock order). None when NOAA's own data rules
+        it out for the day (no such station, not harmonic, no predictions, no curve): the subordinate is then drawn as a
+        cosine. A passing failure raises: TideBusy while another request builds the reference, TideError when the
+        reference cannot be fetched now (G27 A-F2: never a cosine cached for the day because of a moment's trouble)."""
         st = self.stations.get(ref)
         if not st or st.get("type") != "R":
             return None
         key = ("p", ref, begin)
         hit = self._get(key)
         if hit is None:
-            lk = self._key_lock(key)
-            if not lk.acquire(timeout=max(0.0, deadline - time.monotonic())):
-                return None
+            e = self._key_lock(key)
             try:
-                hit = self._get(key)
-                if hit is None:
-                    try:
-                        hit = self._build(st, begin)
-                    except TideError:
-                        return None
-                    if hit[0] == "ok":
-                        self._put(key, hit[0], hit[1], self._until_next_day(begin))
+                if not e[0].acquire(timeout=max(0.0, deadline - time.monotonic())):
+                    raise TideBusy("the reference station is being built")
+                try:
+                    hit = self._get(key)
+                    if hit is None:
+                        hit = self._build(st, begin)                    # a TideError passes up: the subordinate fails too
+                        ttl = self._until_next_day(begin) if hit[0] == "ok" else self.final_ttl
+                        self._put(key, hit[0], hit[1], ttl)
+                finally:
+                    e[0].release()
             finally:
-                self._release_key(key, lk)
+                self._drop_key(key, e)
         status, payload = hit
+        if status == "error":                                          # the reference failed a moment ago
+            raise TideError("the reference station could not be fetched")
         if status != "ok" or payload.get("method") != "harmonic":
             return None
         return payload["v"], [tuple(e) for e in payload["hilo"]]
@@ -499,6 +537,7 @@ class TideService:
             doc = self._json(url(sid, product="predictions", interval="hilo", begin_date=_stamp(begin - 2 * LEAD_S),
                                  range=HILO_HOURS))
             err = noaa_error(doc)
+            _check(err)
             if err:
                 return "final", {"id": sid, "error": NO_PREDICTIONS, "noaa": err[:200], "final": True}
             ex = parse_hilo(doc)
@@ -521,6 +560,7 @@ class TideService:
             "hilo": [[t, round(h, 3), k] for t, h, k in ex],
             "night": None, "events": None, "moon": None,
             "method": method, "ref": ref_used, "source": ATTRIBUTION,
+            "ref_name": (self.stations.get(ref_used) or {}).get("name") if ref_used else None,
         }
         if st.get("lat") is not None and st.get("lon") is not None:     # the sky over the curve's whole span
             a, z = begin - LEAD_S, begin + SPAN_S + LEAD_S

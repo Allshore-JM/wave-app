@@ -168,10 +168,14 @@ function setup(opts = {}) {
   const timers = fakeTimers();
   let visible = opts.visible !== false, nowMs = opts.now || NOW;
   const view = T.createTideView({ els, document: doc, fetch, timers, now: () => nowMs, visible: () => visible, unit: opts.unit || 'US',
-    zoneAbbr: opts.zoneAbbr || ((ms, tz) => (tz === 'Pacific/Honolulu' ? 'HST' : tz)) });
+    zoneAbbr: opts.zoneAbbr || ((ms, tz) => (tz === 'Pacific/Honolulu' ? 'HST' : tz)), wallClock: opts.wallClock, onRetried: opts.onRetried });
   const q = (sel) => els.strip.querySelectorAll(sel);
-  return { doc, els, calls, answers, timers, view, q, setVisible: (v) => { visible = v; }, setNow: (t) => { nowMs = t; } };
+  lastSetup = { doc, els, calls, answers, timers, view, q, setVisible: (v) => { visible = v; }, setNow: (t) => { nowMs = t; } };
+  return lastSetup;
 }
+// a row's label (its row header) in the setup's strip
+let lastSetup = null;
+function label(sel, which) { const v = which || lastSetup; return v.q(sel)[0].querySelectorAll('th')[0].textContent; }
 const HNL_ST = { id: '1612340', name: 'Honolulu', tz: 'Pacific/Honolulu', obs: true, lat: 21.3 };
 const WAI_ST = { id: '1611401', name: 'Waimea Bay', tz: 'Pacific/Honolulu', obs: false, lat: 21.95 };
 
@@ -199,10 +203,12 @@ test('a station loads: the strip has 30 day columns with today open, the chart, 
   assert.ok(s.q('.tide-night').length >= 30);
   assert.equal(s.q('.tide-observed').length, 0);
   const high = s.q('.tide-row-high')[0].querySelectorAll('td'), low = s.q('.tide-row-low')[0].querySelectorAll('td');
-  assert.equal(high.length, 1 + 2 + 29); assert.equal(low.length, 1 + 2 + 29);
-  assert.equal(high[0].textContent, 'HIGH(HST)');
+  assert.equal(high.length, 2 + 29); assert.equal(low.length, 2 + 29);   // the day cells; the label is the row's header
+  assert.equal(label('.tide-row-high'), 'HIGH(HST)');
+  const head = s.q('.tide-row-high')[0].querySelectorAll('th')[0];
+  assert.equal(head.getAttribute('scope'), 'row', 'the label is a row header for screen readers');
   assert.match(s.q('.tide-row-high')[0].querySelectorAll('.tide-ex')[0].textContent, /^\d{1,2}:\d{2} [AP]M[\d.]+ ft$/);
-  assert.equal(s.q('.tide-row-sun')[0].querySelectorAll('td')[0].textContent, 'Sun'); assert.equal(s.q('.tide-row-sun')[0].querySelectorAll('.tide-ev').length, 2 * I.DAYS);
+  assert.equal(label('.tide-row-sun'), 'Sun'); assert.equal(s.q('.tide-row-sun')[0].querySelectorAll('.tide-ev').length, 2 * I.DAYS);
   assert.equal(s.q('.tide-row-moon')[0].querySelectorAll('.tide-moon-glyph').length, I.DAYS);
   assert.match(s.q('.tide-row-moon')[0].querySelectorAll('.tide-moon-glyph')[0].getAttribute('title'), /Waxing gibbous, 50% lit/);
   assert.equal(s.q('.tide-ytick').length, st.scale.ticks.length);
@@ -235,7 +241,7 @@ test('clicking a day header opens it (AM | PM, wider column, callouts), again cl
   s.q('button[data-day="0"]')[0].dispatch('click');
   st = s.view.state(); assert.deepEqual(st.open, [3]);
   assert.equal(s.q('button[data-day="0"]')[0].textContent, 'Thu 8');
-  assert.equal(s.q('.tide-row-high')[0].querySelectorAll('td').length, 1 + 29 + 2);
+  assert.equal(s.q('.tide-row-high')[0].querySelectorAll('td').length, 29 + 2);
   s.view.toggleDay(99); assert.deepEqual(s.view.state().open, [3], 'no such day');
   assert.equal(s.calls.length, 1, 'never asked the server again');
 });
@@ -435,9 +441,9 @@ test('the strip on a clock-change week: New York on Fri 30 Oct, Sun 1 Nov opened
   await flush();
   s.q('button[data-day="2"]')[0].dispatch('click');
   assert.equal(s.q('button[data-day="2"]')[0].textContent, 'Sunday, Nov 1');
-  const highs = s.q('.tide-row-high')[0].querySelectorAll('td');            // label, day 0 (open: AM, PM), day 1, day 2 AM, day 2 PM ...
-  assert.equal(highs[4].textContent, '11:45 AM3.9 ft', 'the high at 11:45 AM sits in the AM half of the 25-hour day');
-  assert.equal(highs[5].textContent, '');
+  const highs = s.q('.tide-row-high')[0].querySelectorAll('td');            // day 0 (open: AM, PM), day 1, day 2 AM, day 2 PM ...
+  assert.equal(highs[3].textContent, '11:45 AM3.9 ft', 'the high at 11:45 AM sits in the AM half of the 25-hour day');
+  assert.equal(highs[4].textContent, '');
   const L = s.view.state().layout;
   assert.equal(I.xOf(L, noonSun), L.lefts[2] + I.COL_OPEN / 2, 'local noon at the AM | PM line');
   assert.equal(s.q('.tide-moon-glyph')[0].getAttribute('title'), 'Noon sample, 12% lit', 'the sample nearest local noon');
@@ -450,8 +456,8 @@ test('a clock change inside the 30 days: the rows say "local", the notes name bo
   s.view.load(ny);
   s.answers[0].res(response(200, payload({ id: '8518750', tz: 'America/New_York', lat: 40.7, obs: false })));
   await flush();
-  assert.equal(s.q('.tide-row-high')[0].querySelectorAll('td')[0].textContent, 'HIGH(local)');
-  assert.equal(s.q('.tide-row-low')[0].querySelectorAll('td')[0].textContent, 'LOW(local)');
+  assert.equal(label('.tide-row-high', s), 'HIGH(local)');
+  assert.equal(label('.tide-row-low', s), 'LOW(local)');
   assert.match(s.els.meta.textContent, /times in EDT \(EST from Sun, Nov 1\) · click a day/);
   // the day the name changes is the day of the change, also when the strip starts on it
   const t = setup({ now: Date.UTC(2026, 10, 1, 4, 30), zoneAbbr: abbr });     // Sun 1 Nov, 12:30 AM EDT
@@ -464,18 +470,18 @@ test('a clock change inside the 30 days: the rows say "local", the notes name bo
   u.view.load(ny);
   u.answers[0].res(response(200, payload({ id: '8518750', tz: 'America/New_York', lat: 40.7, obs: false })));
   await flush();
-  assert.equal(u.q('.tide-row-high')[0].querySelectorAll('td')[0].textContent, 'HIGH(EST)');
+  assert.equal(label('.tide-row-high', u), 'HIGH(EST)');
   assert.match(u.els.meta.textContent, /times in EST · click a day/);
   // a zone change on the gear follows (UTC: one name)
   s.view.setZone('UTC');
-  assert.equal(s.q('.tide-row-high')[0].querySelectorAll('td')[0].textContent, 'HIGH(UTC)');
+  assert.equal(label('.tide-row-high', s), 'HIGH(UTC)');
   assert.match(s.els.meta.textContent, /times in UTC · click a day/);
 });
 
 test('heights never read "-0.0"; a callout at either end of the strip is anchored at its dot, not cut by the edge', async () => {
   assert.equal(I.heightText(-0.01, 'US'), '0.0 ft'); assert.equal(I.heightText(-0.004, 'Metric'), '0.00 m');
   assert.equal(I.heightText(-0.02, 'US'), '-0.1 ft'); assert.equal(I.heightText(-0.006, 'Metric'), '-0.01 m');
-  assert.equal(I.tickText(-1e-12, 'Metric'), '0.0'); assert.equal(I.tickText(-1e-12, 'US'), '0'); assert.equal(I.tickText(-0.5, 'US'), '-0.5');
+  assert.equal(I.tickText(-1e-12, 'Metric'), '0'); assert.equal(I.tickText(-1e-12, 'US'), '0'); assert.equal(I.tickText(-0.5, 'US'), '-0.5');
   const s = setup();
   s.view.load(HNL_ST);
   const t0 = MIDS[0] / 1000 + 20 * 60, tEnd = MIDS[I.DAYS] / 1000 - 20 * 60;   // 12:20 AM today; 11:40 PM on the last day
@@ -493,5 +499,177 @@ test('heights never read "-0.0"; a callout at either end of the strip is anchore
   const all = s.q('.tide-callout'), last = all[all.length - 1].querySelectorAll('text');
   assert.equal(last[0].getAttribute('text-anchor'), 'end');
   assert.ok(+last[0].getAttribute('x') <= L.total || +last[0].getAttribute('x') <= s.view.state().layout.total);
-  assert.equal(s.q('.tide-row-low')[0].querySelectorAll('td')[1].textContent, '12:20 AM0.0 ft', 'the table says 0.0 too');
+  assert.equal(s.q('.tide-row-low')[0].querySelectorAll('td')[0].textContent, '12:20 AM0.0 ft', 'the table says 0.0 too');
+});
+
+// ---------------------------------------------------------------------------------------------- G27 fix round
+
+test('G27 A-F1: Metric axis labels read their own values (0.25 / 0.75 ...), like the feet', () => {
+  assert.deepEqual([0.25, 0.75, 1.25, 1.75, 0.5, 1, -0.25, 0.1].map((v) => I.tickText(v, 'Metric')), ['0.25', '0.75', '1.25', '1.75', '0.5', '1', '-0.25', '0.1']);
+  const ys = I.yScale([0, 1.6], 'Metric');
+  assert.equal(ys.step, 0.25);
+  assert.deepEqual(ys.ticks.map((v) => I.tickText(v, 'Metric')), ['0', '0.25', '0.5', '0.75', '1', '1.25', '1.5', '1.75']);
+});
+
+test('G27 A-F8: a clock that goes back AT midnight (Havana) starts the day at the first 00:00', () => {
+  const hv = I.zoneClock('America/Havana');
+  const m = I.midnights(Date.UTC(2026, 9, 30, 12), 4, hv);
+  assert.deepEqual(m.slice(1).map((x, i) => (x - m[i]) / H), [24, 24, 25, 24]);  // Oct 30, 31, Nov 1 (25 h), Nov 2 (not Oct 31)
+  assert.equal(new Date(m[2]).toISOString(), '2026-11-01T04:00:00.000Z', 'Nov 1 starts at the first 00:00 (CDT)');
+  const L = I.layout(m, {}, I.noons(m, hv));
+  assert.equal(I.dayOf(L, Date.UTC(2026, 10, 1, 4, 30)), 2, '00:30 CDT is Sunday, not Saturday');
+  assert.equal(hv.parts(L.noons[2]).h, 12);
+  const ny = I.zoneClock('America/New_York'), n = I.midnights(Date.UTC(2026, 9, 30, 12), 4, ny);
+  assert.deepEqual(n.slice(1).map((x, i) => (x - n[i]) / H), [24, 24, 25, 24], 'a 2 AM change is untouched');
+});
+
+test('G27 A-F10: the exact highs and lows join the drawn curve; the path is cut at the strip edges', () => {
+  const d = payload();
+  const s = I.series(d), e = d.hilo[3], t = e[0] * 1000;
+  const at = s.findIndex((p) => p.t === t);
+  assert.ok(at > 0 && s[at].m === e[1] && s[at - 1].t < t && s[at + 1].t > t, 'the extreme between two samples');
+  assert.equal(I.heightAt(d, t), e[1], 'the now level / readout at the extreme = the extreme');
+  assert.equal(I.series(d), s, 'kept on the payload');
+  assert.ok(!Object.keys(d).includes('__series'), 'not an own enumerable key');
+  assert.ok(I.series(payload()).some((p) => p.m === null), 'the gap stays');
+  const L = I.layout(MIDS, { 0: true }), ys = I.yScale([0, 3.5], 'US');
+  const paths = I.curvePaths(d, L, ys, 'US');
+  const head = /^M(-?[\d.]+) (-?[\d.]+)L(-?[\d.]+) (-?[\d.]+)/.exec(paths.line);
+  assert.equal(+head[1], 0, 'the path starts at the left edge of the strip');
+  assert.ok(+head[3] > 0, 'and goes right: no vertical stroke from a clamped outside point');
+  const h0 = I.heightAt(d, MIDS[0]);
+  assert.ok(Math.abs(+head[2] - ys.y(h0 * I.FT_PER_M)) < 0.11, 'its height at midnight, interpolated');
+  const xs = (paths.line.match(/[ML](-?[\d.]+) /g) || []).map((m) => +m.slice(1));
+  assert.ok(Math.max.apply(null, xs) <= L.total + 1e-6 && Math.min.apply(null, xs) >= 0);
+  assert.equal(xs[xs.length - 1].toFixed(1), L.total.toFixed(1), 'and ends at its right edge');
+});
+
+test('G27 A-F9 / B-P3-5 / B-P3-4: a gap is named; the reference by its name; caption, row headers and hidden words', async () => {
+  const s = setup();
+  s.view.load(WAI_ST);
+  const extra = { id: '1611401', type: 'S', method: 'reference', ref: '1611400', ref_name: 'Nawiliwili', obs: false };
+  const v = payload(extra).v.slice();
+  for (let i = 600; i < 630; i++) v[i] = null;                              // inside the strip
+  s.answers[0].res(response(200, payload(Object.assign({}, extra, { v }))));
+  await flush();
+  assert.match(s.els.meta.textContent, /NOAA station Nawiliwili \(1611400\) shaped/);
+  assert.match(s.els.meta.textContent, /The curve has gaps where NOAA’s list of highs and lows is incomplete\./);
+  assert.match(s.q('caption')[0].textContent, /^Tide predictions for Waimea Bay, 30 days from Thursday, Oct 8, times in HST$/);
+  assert.equal(s.q('caption')[0].classList.contains('visually-hidden'), true);
+  const sun = s.q('.tide-row-sun')[0].querySelectorAll('.tide-ev')[0];
+  assert.match(sun.textContent, /^(Sunrise|Sunset) ☀️[↑↓]\d{1,2}:\d{2} [AP]M$/);
+  assert.equal(sun.querySelectorAll('.tide-l1')[0].getAttribute('aria-hidden'), 'true');
+  const moon = s.q('.tide-row-moon')[0].querySelectorAll('.visually-hidden')[0];
+  assert.equal(moon.textContent, 'Waxing gibbous, 50% lit. ');
+  const t = setup();
+  t.view.load(HNL_ST);
+  t.answers[0].res(response(200, payload({ obs: false, v: payload().v.map((x) => (x === null ? 0.5 : x)) })));
+  await flush();
+  assert.doesNotMatch(t.els.meta.textContent, /gaps/, 'no gap, no note');
+});
+
+test('G27 A-F5 / A-F13: a new day asks for a fresh answer quietly and rewrites the notes; a failure keeps the strip', async () => {
+  const ny = { id: '8518750', name: 'The Battery', tz: 'America/New_York', obs: false, lat: 40.7 };
+  const abbr = (ms, tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(new Date(ms)).find((x) => x.type === 'timeZoneName').value;
+  const s = setup({ now: Date.UTC(2026, 9, 31, 12), zoneAbbr: abbr });     // Sat Oct 31: the change tomorrow
+  s.view.load(ny);
+  s.answers[0].res(response(200, payload({ id: '8518750', tz: 'America/New_York', lat: 40.7, obs: false })));
+  await flush();
+  assert.match(s.els.meta.textContent, /times in EDT \(EST from Sun, Nov 1\)/);
+  s.setNow(Date.UTC(2026, 10, 2, 5, 10));                                  // Mon Nov 2, 12:10 AM EST: the strip moves on
+  s.timers.fire(I.NOW_REDRAW_MS);
+  assert.match(s.els.meta.textContent, /times in EST · /, 'the notes follow the strip');
+  assert.equal(s.calls.length, 2, 'the station asked again');
+  s.answers[1].res(response(200, payload({ id: '8518750', tz: 'America/New_York', lat: 40.7, obs: false })));
+  await flush();
+  assert.equal(s.view.state().status, 'ready');
+  s.setNow(Date.UTC(2026, 10, 3, 5, 10));
+  s.timers.fire(I.NOW_REDRAW_MS);
+  s.answers[2].res(response(500, undefined));
+  await flush();
+  assert.equal(s.view.state().status, 'ready', 'a failed refresh keeps the strip');
+  assert.equal(s.view.state().built, true);
+});
+
+test('G27 B-P3-3: an answer brought by Retry hands the focus back to the window', async () => {
+  let focused = 0;
+  const s = setup({ onRetried: () => { focused++; } });
+  s.view.load(HNL_ST);
+  s.answers[0].rej(new Error('down'));
+  await flush();
+  assert.equal(s.view.state().status, 'error');
+  s.els.retry.dispatch('click');
+  s.answers[1].res(response(200, payload({ obs: false })));
+  await flush();
+  assert.equal(s.view.state().status, 'ready'); assert.equal(focused, 1);
+  s.view.load(WAI_ST);
+  s.answers[2].res(response(200, payload({ obs: false })));
+  await flush();
+  assert.equal(focused, 1, 'an ordinary load leaves the focus alone');
+});
+
+test('G27 B-P3-6 / B-P3-5: the mouse events a browser sends after a tap are ignored; the readout names the zone on a change strip', async () => {
+  let wall = 1000;
+  const s = setup({ wallClock: () => wall });
+  s.view.load(HNL_ST);
+  s.answers[0].res(response(200, payload({ obs: false })));
+  await flush();
+  const svg = s.q('svg')[0];
+  svg.rect = { left: 100, top: 50, width: s.view.state().layout.total, height: I.CHART_H };
+  s.els.strip.dispatch('touchstart', { touches: [{ clientX: 100 + I.COL_OPEN / 2, clientY: 120 }] });
+  s.els.strip.dispatch('touchend', {});
+  s.els.strip.dispatch('mousemove', { clientX: 100 + I.COL_OPEN / 2, clientY: 120 });   // the tap's compatibility event
+  assert.equal(s.view.state().readout, '', 'a tap leaves no readout behind');
+  wall += I.TOUCH_MOUSE_MS + 1;
+  s.els.strip.dispatch('mousemove', { clientX: 100 + I.COL_OPEN / 2, clientY: 120 });
+  assert.match(s.view.state().readout, /^Thu 10\/8, 12:00 PM · /, 'a real mouse later works');
+  const abbr = (ms, tz) => new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(new Date(ms)).find((x) => x.type === 'timeZoneName').value;
+  const n = setup({ now: Date.UTC(2026, 9, 31, 12), zoneAbbr: abbr });
+  n.view.load({ id: '8518750', name: 'The Battery', tz: 'America/New_York', obs: false, lat: 40.7 });
+  n.answers[0].res(response(200, payload({ id: '8518750', tz: 'America/New_York', lat: 40.7, obs: false })));
+  await flush();
+  n.q('svg')[0].rect = { left: 0, top: 0, width: n.view.state().layout.total, height: I.CHART_H };
+  n.els.strip.dispatch('mousemove', { clientX: I.COL_OPEN / 2, clientY: 60 });
+  assert.match(n.view.state().readout, /^Sat 10\/31, 12:00 PM EDT · /);
+});
+
+test('G27 B-P3-7 / J08 / J13: callouts stay in the chart; Retry-After is capped; an extreme at noon / midnight belongs to what follows', async () => {
+  const s = setup();
+  s.view.load(HNL_ST);
+  const low = MIDS[0] / 1000 + 9 * 3600;
+  s.answers[0].res(response(200, payload({ obs: false, hilo: [[MIDS[0] / 1000 + 3 * 3600, 0.9, 'H'], [low, -0.3047999, 'L'], [MIDS[0] / 1000 + 15 * 3600, 0.95, 'H']] })));
+  await flush();
+  const ys = s.view.state().scale;
+  const cy = ys.y(-0.3047999 * I.FT_PER_M);                                // -1.0 ft: on the bottom tick
+  const g = s.q('.tide-callout-low')[0].querySelectorAll('text');
+  assert.ok(cy + 28 > I.CHART_H, 'the lowest low sits by the bottom edge');
+  assert.ok(+g[1].getAttribute('y') < cy && +g[1].getAttribute('y') <= I.CHART_H, 'its callout above the dot, inside the chart');
+  const r = setup();
+  r.view.load(HNL_ST);
+  r.answers[0].res(response(503, { retry: true }, { 'Retry-After': '600' }));
+  await flush();
+  assert.ok(r.timers.pending().includes(I.RETRY_MAX_S * 1000), 'Retry-After 600 s is capped at a minute');
+  const L = I.layout(MIDS, { 0: true }, I.noons(MIDS, HNL));
+  const d = { hilo: [[L.noons[0] / 1000, 1, 'H'], [MIDS[1] / 1000, 0.2, 'L']] };
+  assert.equal(I.extremesIn(d, L, 0, 0).length, 0); assert.equal(I.extremesIn(d, L, 0, 1).length, 1, 'noon: the PM half');
+  assert.equal(I.extremesIn(d, L, 1, -1).length, 1, 'midnight: the new day');
+});
+
+test('G27 A-F10 pins: the curve is cut at both ends where midnight is off the half-hour grid (Kathmandu); an extreme beside a gap stays out', () => {
+  const kt = I.zoneClock('Asia/Kathmandu');                                  // UTC+5:45: midnight = 18:15 UTC
+  const mids = I.midnights(NOW, I.DAYS, kt), L = I.layout(mids, { 0: true }, I.noons(mids, kt));
+  const d = payload(), ys = I.yScale([0, 3.5], 'US');                         // the data's range in feet
+  assert.ok((mids[0] - d.begin * 1000) % (30 * 60000) !== 0, 'midnight between two samples');
+  const pts = (I.curvePaths(d, L, ys, 'US').line.match(/[ML]-?[\d.]+ -?[\d.]+/g) || []).map((m) => m.slice(1).split(' ').map(Number));
+  assert.equal(pts[0][0], 0, 'cut at the left edge');
+  assert.ok(Math.abs(pts[0][1] - ys.y(I.heightAt(d, mids[0]) * I.FT_PER_M)) < 0.11, 'at the height at midnight');
+  const last = pts[pts.length - 1];
+  assert.equal(last[0].toFixed(1), L.total.toFixed(1), 'cut at the right edge');
+  assert.ok(Math.abs(last[1] - ys.y(I.heightAt(d, mids[I.DAYS]) * I.FT_PER_M)) < 0.11, 'at the height at the last midnight');
+  // an extreme between a sample and a gap is not drawn into the gap
+  const v = d.v.slice(); const i = 700; v[i] = null;
+  const t = (d.begin + (i - 1) * d.step + 600) * 1000;                       // 10 min after sample i-1, before the gap
+  const g = payload({ v, hilo: [[t / 1000, 2.0, 'H']] });
+  assert.ok(!I.series(g).some((p) => p.t === t), 'the extreme beside the gap stays out');
+  assert.equal(I.heightAt(g, t), null, 'no height beside the gap');
 });

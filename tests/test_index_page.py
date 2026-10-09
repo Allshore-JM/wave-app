@@ -551,13 +551,14 @@ def test_tide_stations_on_the_page(client):
         "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map\n          activeTideId = s.id;",
         ".tide-icon { background: url(\"data:image/svg+xml,", ".tide-icon.tide-icon-active { background-image:",
         "L.divIcon({ className: 'tide-icon', html: '', iconSize: [18, 18], iconAnchor: [9, 9] })",
-        "const vis = on ? thinTideCopies(visibleCopies(tideStationsData)) : [];", "const TIDE_ALL_ZOOM = MAX_MAP_ZOOM;",
+        "const all = on ? visibleCopies(tideStationsData) : [], vis = on ? thinTideCopies(all) : [];", "keyOpens(marker);",
+        ".fwin.fw-min { z-index: 2150; }", ".live-win.fw-min .fw-titles .fw-cycle, .tide-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto;", ".tide-table th.tide-lab { text-align: left; }", "onRetried: function () { const h = document.getElementById('twHeader');", "const TIDE_ALL_ZOOM = MAX_MAP_ZOOM;",
         # the window
         '<section id="tideWin" class="fwin tide-win" hidden role="region" aria-label="Tide station">',
         'id="twHeader"', 'id="twMin"', 'id="twClose"', 'id="twBody"', 'id="twResize"', 'id="tideStrip" class="tide-strip"',
         'id="tideMeta"', 'id="tideRetry"', ".tide-table .tide-lab { position: sticky; left: 0; z-index: 3;",
         ".tide-scroll { overflow-x: auto; overflow-y: hidden;", "strip: $('tideStrip'), meta: $('tideMeta') },",
-        ".fwin.tide-win { right: 18px; bottom: 18px; width: min(880px, calc(100vw - 76px)); height: min(66vh, 760px); z-index: 2000; }",
+        ".fwin.tide-win { right: 18px; bottom: 18px; width: min(880px, calc(100vw - 76px)); height: min(70vh, 760px); z-index: 2000; }",
         "body.live-chip .tide-win.fw-min { bottom: calc(20px + var(--lw-chip-h, 40px)) !important; }",
         ".tide-win.fw-min { bottom: calc(var(--fw-bar-h, 48px) + var(--lw-bar-h, 0px)) !important; }",
         "document.documentElement.style.setProperty('--lw-bar-h', liveBar + 'px');",
@@ -610,6 +611,6 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
     for needle in (                                      # the raised boxes give way in height below the corner
         "height: min(60vh, 720px, calc(100vh - 78px - var(--map-topright-h, 0px))); }",
         "height: min(60vh, 720px, calc(100vh - 86px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }",
-        ".live-chip .tide-win:not(.fw-min):not(.fw-max) { height: min(66vh, 760px, calc(100vh - 34px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }",
+        ".live-chip .tide-win:not(.fw-min):not(.fw-max) { height: min(70vh, 760px, calc(100vh - 34px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }",
         ".tide-chip .live-win:not(.fw-min):not(.fw-max) { height: min(76vh, 800px, calc(100vh - 34px - var(--tw-chip-h, 40px) - var(--map-topright-h, 0px))); }"):
         assert needle in body, needle

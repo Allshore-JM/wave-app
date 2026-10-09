@@ -438,3 +438,87 @@ Oct 9. The record's own commits are not on `test`. Checks with trusted mouse, to
 - Console: no errors in any run. The test origin's storage was emptied after each run. Edge was closed over DevTools,
   nothing was left on its profile, and the profile was removed.
 Next: a short fresh check of fix round 2 (MAX), then the owner's production go-ahead (tag `prod-pre-tides` @ 20839a3).
+
+## Short fresh check of fix round 2 (Opus 5.5 MAX): 0 P0, 0 P1, 1 P2, 8 P3
+One fresh-context reviewer on `feat/tide-stations` @ 8c8280e (code = f045da7) and `test` @ d0a07ed (UI 1.18.6),
+briefed with the owner's eight decisions (decision 8 = RC-15), every claim of fix round 2, the known items and the
+rules (scratch `g27/fix2check/brief.md`). It checked code, data and the test site with trusted mouse, touch and keys in
+its own headless Edge (report `g27/fix2check/fix2check-report.md`; scripts `hl/k1..k18`, `srv_check.py`,
+`page_harness.js`, `targets_run.js`, `swap.js`, `client_check.js`, `mut_fc.py`). 13 NOAA requests.
+
+What holds (the reviewer's evidence):
+- The data: every HIGH / LOW cell of all 30 days equals NOAA's highs and lows (time, height, local-day column) at 13
+  runs, 1,469 extremes: Honolulu (also Metric), Waimea Bay, Boston across Sun Nov 1 (also UTC), Christmas Bay, Nairai
+  Island, Anchorage, Key West, Guam, Neiafu, Apia, Eastport.
+- The server's cache rules (RC-2) in a fake-fetch harness with a fake clock (29 checks): the second ask, every degraded
+  answer kept exactly 3,600 s, a believed final answer 3,600 s and `max-age=600`, failures 60 s, a cached good reference
+  never replaced, one build for five concurrent asks.
+- Keyboard: over the Florida Keys the Tab stops are exactly the markers in view (0 mismatches after pans in four
+  directions, a resize, Fiji across 180 and wheel zooms); 110 Tabs moved the map 0 times; a focused marker keeps the
+  focus across zooms and forced rebuilds; the refocus never took the focus from the gear, the station trigger, the
+  forecast window's minimise button or the tools button; Enter / Space focus the opened window's header, and with a map
+  tool active the press goes to the tool; the Escape order; the live markers keyed after "Live buoys" is ticked again,
+  also when the layer starts unticked; markers are buttons named "Tide station <name>" / "Live <id> (<source>)".
+- Hit targets in every freshly drawn state: the page's own tide block over the whole world, zooms 9.0 .. 11.0, desktop
+  boxes and finger targets: 0 conflicts; every station opened in a phone view and in a desktop view at 27 zooms (94,527
+  states each): 0; on the site 745 (phone) and 2,082 (desktop) uncovered icon centres at 14 crowded and date-line spots
+  hit their own icon; RC-15: 60,642 opens add or lose 0 icons.
+- RC-6 (7,498 synthetic pairs across 180 deg: reveal zoom = 9 + log2(24 / gap) exactly), RC-7, RC-8, RC-9 (Anchorage
+  0.344 ft worst, Honolulu 0.009), RC-12, RC-13 (12 sizes x 7 window / chip combinations: from 600 to 1179 px the parked
+  chips whole, the gear clickable, `--fw-chip-h` = the chip's height), RC-14, RC-16 (legend 144.4 px with and without
+  the note, desktop and phone), RC-17 (14 stations x US / Metric x all 30 days open, the real font: 0 overlapping
+  callouts; the estimate is 4-12 px wider than the text), RC-18, N-12 (asked again 11, 21, 31, 41 min after midnight;
+  nothing after `clear()` or another station).
+- Suites in its own worktree: pytest 873 (exit 0), Node 532.
+
+### Verdicts on the re-check's findings
+- FIXED: RC-2, RC-3, RC-5 .. RC-10, RC-12 .. RC-18, N-12. RC-15 FIXED for the re-ranking, with F-1 and F-2 as caveats on
+  "nothing else changes".
+- PARTLY: RC-1 and RC-4 (they fail only through F-1), RC-11 (F-7).
+
+### Findings
+| # | Sev | Finding | The author's check |
+|---|---|---|---|
+| F-1 | P2 | Stale nudges after a zoom that changes no drawn icon. `rebuildTideMarkers` re-runs `tideNudges` only when the drawn set changes (`if (!force && sig === lastTideSig) { tideTargets(); return; }`), so the offsets of the last rebuild stay. Beside an opened station drawn below its reveal zoom (RC-15), a neighbour's centre can then lie inside the opened 22-px icon (z 450, on top): a click or tap on the neighbour reopens the opened station. On the site: Pearl Harbor, Ford Island Ferry (1612404) opened at zoom 11, zoomed out to 9.4 .. 9.1, a tap on Ford Island (1612401) reopened the Ferry (phone 390x844); Koror (1841281) opened at 11, one wheel notch to 9.8, a click on Malakal Harbor (1841367) opened Koror (desktop). 70 of 124,968 zoomed phone states, 59 of 71,485 desktop. | `g27/fix2check/author/verify_f1.js` (my driver of the reviewer's harness of the page's own block): Ferry, phone view: conflicts at 9.4, 9.3, 9.2 after stepped zooms, none in a fresh rebuild at the same zooms; Koror, desktop and phone: 9.8 .. 9.0, none fresh. |
+| F-2 | P3 | Opening a nudged icon at zoom 11 swaps it with its neighbour. `tideNudges` places the opened station first, so the clicked icon jumps back to its own spot and its neighbour is nudged into the spot the visitor clicked; a second click, or a double-click, there opens the neighbour (5 pairs on the site). Older than fix round 2 (the G27 fix round's nudge order), but against decision 8. | `verify_f2.js`: Oakland 9414763 clicked at (652, 400) -> opened, its icon moves to (640, 400), the spot holds 9414764; the same for 8724223 -> 8724224 (both "Little Torch Key, Pine Channel Bridge, south side": the window would switch to the other station under the same name), 8722861 -> 8722862, TEC3447 -> TEC3445, 8573777 -> 8633777; opening 8724224 moves its icon 12 px from under the pointer. |
+| F-3 | P3 | A focused marker hidden by a zoom-out (the thinning or the gate) drops the focus to the page's body; the next Tab starts at the page's top. | Read: `refocusMarker` finds no element with the key after `clearLayers()`. |
+| F-4 | P3 | A Retry answered after a 503 wait moves the focus to the tide window's header even when the visitor has gone to the settings meanwhile. | Read: `st.retried` survives the 503 waits in `attempt()`, and the page's `onRetried` focuses `#twHeader` unconditionally. |
+| F-5 | P3 | A subordinate's fallback cosine can outlive its reference's recovery by up to an hour (the subordinate's entry gets a full hour from its own build, the reference's degraded entry may be nearly an hour old). The extremes stay NOAA's. | Read: `_build` returns `final_ttl` for a degraded subordinate; `_reference_curve` does not pass the reference entry's remaining life. |
+| F-6 | P3 | The tide window's default box covers the settings gear on viewports about 620 px tall or less (e.g. a 1280x720 screen); the RC-13 rule's corner cap applies only from 501 to 1179 px with the forecast window parked. K-2's pattern (the live window, on production, at about 700 px). | Read: `.fwin.tide-win { height: min(70vh, 760px) }`. |
+| F-7 | P3 | Test gaps (66 mutants: 42 killed by behaviour tests, 3 only by text pins, 17 only by the golden or the asset hash, 4 by nothing). By nothing: S02 (second ask for any NOAA message), S06 (a curve's "no predictions" not degraded), S10 (a final reference kept a day), S13 (no pause; equivalent for the suites). Golden only: C02, C11, C12, C14, T04, T05 (RC-4's square test turned back into a circle), T13 (padding markers Tab stops), T15, T16, T17, T23, T26, T27, T28, T30, T31. Text pins only: T18, T19, T24. | From `mut_fc.json`. |
+| F-8 | P3 | `tide_sources.py`'s docstring still says NOAA is asked at most twice per station per day. | Read. |
+| F-9 | P3 | Older than fix round 2: live buoy 46254's dot (z 500) covers La Jolla's tide icon (9410230) at zooms 9 to 10.6, so a click on La Jolla's centre opens the buoy. The only such pair in the snapshot. | From the reviewer's `cross.js` (559 live buoys against the whole snapshot). |
+
+### Fix round 3 scope (UI 1.18.7)
+Page (`templates/index.html`):
+1. F-1: `tideNudges` runs on every rebuild call and its offsets join the signature, so a zoom that changes any offset
+   redraws the icons (a drawn view holds at most a few hundred copies). Pins: the Ferry and Koror cases, zoom steps with no
+   change of the drawn set.
+2. F-2: the nudges are placed in order of importance only (the opened icon keeps its rank, with its 22-px box), so
+   opening a station moves no other icon unless the larger box needs the room. When the opened icon finds no free spot,
+   that view keeps today's order (the opened icon first). Re-run the whole-snapshot check: every station opened, zooms 9
+   to 11, desktop boxes and finger targets, fresh and after zoom steps, 0 conflicts. Pins: the five pairs.
+3. F-3: a focused marker that is not drawn again hands the focus to the map (tide and live markers).
+
+Client (`static_ui/tides.js` / the page's `onRetried`):
+4. F-4: Retry's answer moves the focus only when it is on the page's body or inside the tide window.
+
+Server (`tide_sources.py`):
+5. F-5: a subordinate built on a degraded reference is kept no longer than the reference's own entry.
+6. F-8: the module docstring.
+
+Tests:
+7. F-7: behavioural pins for S02, S06, S10, C02, C11, C12, C14, T04, T05, T13, T15 and T26; the live markers' block run in
+   Node (T16, T17, T18, T19, T27, T28); text pins where no behaviour test can reach (T23, T24, T30, T31). Re-run
+   `g27/fix2check/mut_fc.py` and the author's `mut_fix2.py`.
+
+Accepted, for the owner's awareness (no change):
+- F-6 joins K-2: on screens about 620 px tall or less, the tide window's default box covers the gear (the live window's
+  does at about 700 px, on production). Minimise or drag the window to reach the gear. Capping the boxes by the corner
+  would have to lower all three windows together, so the window behind keeps a visible edge: a separate layout change if
+  wanted.
+- F-9: one place in the snapshot (La Jolla under the Scripps Nearshore buoy until zoom 10.6).
+
+Release: UI 1.18.7 and its fixture; the golden in its own commit; the test site at MAX (with the whole-snapshot targets
+check and trusted taps and clicks on the F-1 and F-2 cases); then the owner's production go-ahead (tag `prod-pre-tides` @
+20839a3).

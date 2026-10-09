@@ -38,9 +38,14 @@ POSITION_FIX = {
 }
 # Stations whose derived zone differs from NOAA's own `timezonecorr` by more than ZONE_TOL_H because NOAA's value is
 # stale or on the other side of the date line (the same clock, a day apart): Apia, Kiribati, Tonga, Kanton, Raoul,
-# Easter Island. Any OTHER station differing that much stops the build: look at its position first.
-KNOWN_ZONE_DIFF = {"1778000", "1814060", "TPT2743", "TPT2819", "TPT2821", "TPT2855", "TPT2859", "TPT2893", "TPT2895",
-                   "TPT2897", "TPT2899", "TPT2905"}
+# Easter Island. Each is listed with the zone it MUST have, so a lost or wrong position (two are in POSITION_FIX) still
+# stops the build (G27 re-check RC-12). Any OTHER station differing that much stops it too: look at its position first.
+KNOWN_ZONE_DIFF = {
+    "1778000": "Pacific/Apia", "1814060": "Pacific/Kiritimati", "TPT2743": "Pacific/Kiritimati",
+    "TPT2819": "Pacific/Easter", "TPT2821": "Pacific/Kiritimati", "TPT2855": "Pacific/Kanton",
+    "TPT2859": "Pacific/Apia", "TPT2893": "Pacific/Tongatapu", "TPT2895": "Pacific/Tongatapu",
+    "TPT2897": "Pacific/Tongatapu", "TPT2899": "Pacific/Tongatapu", "TPT2905": "Pacific/Auckland",
+}
 ZONE_TOL_H = 3
 
 
@@ -99,16 +104,21 @@ def std_offset_h(zone):
 
 
 def zone_mismatches(rows, corr):
-    """Stations (not in KNOWN_ZONE_DIFF) whose zone differs from NOAA's timezonecorr by more than ZONE_TOL_H:
-    [(id, name, zone, corr)]. rows: the snapshot's rows; corr: {id: NOAA's timezonecorr}."""
+    """Stations whose zone is wrong: a KNOWN_ZONE_DIFF station without the zone listed for it, any other station whose
+    zone differs from NOAA's timezonecorr by more than ZONE_TOL_H: [(id, name, zone, corr)]. rows: the snapshot's rows;
+    corr: {id: NOAA's timezonecorr}."""
     out = []
     for r in rows:
         sid, zone = r[0], r[6]
+        if sid in KNOWN_ZONE_DIFF:
+            if zone != KNOWN_ZONE_DIFF[sid]:
+                out.append((sid, r[1], zone, KNOWN_ZONE_DIFF[sid]))
+            continue
         try:
             c = float(corr.get(sid))
         except (TypeError, ValueError):
             continue
-        if sid not in KNOWN_ZONE_DIFF and abs(std_offset_h(zone) - c) > ZONE_TOL_H:
+        if abs(std_offset_h(zone) - c) > ZONE_TOL_H:
             out.append((sid, r[1], zone, c))
     return out
 
@@ -162,7 +172,8 @@ def main(argv=None):
     if bad:                                                    # a position NOAA has wrong (A-F4): fix it or list it
         print("ZONE CHECK FAILED (derived zone vs NOAA's timezonecorr, > %d h):" % ZONE_TOL_H, file=sys.stderr)
         for b in bad:
-            print("  %s %s: %s vs NOAA %+g h" % b, file=sys.stderr)
+            print("  %s %s: %s vs %s" % (b[0], b[1], b[2], b[3] if isinstance(b[3], str) else "NOAA %+g h" % b[3]),
+                  file=sys.stderr)
         return 2
     doc = {"source": "NOAA CO-OPS metadata API (tidesandcurrents.noaa.gov), public domain",
            "captured": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

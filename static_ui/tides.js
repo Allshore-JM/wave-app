@@ -30,6 +30,8 @@
   var RETRY_MAX = 24, RETRY_DEFAULT_S = 5, RETRY_MAX_S = 60;
   var TOUCH_MOUSE_MS = 700;               // mouse events this soon after a touch come from the touch
   var NOW_REDRAW_MS = 60000;
+  var REFRESH_RETRY_MS = 10 * 60000;     // a midnight refresh that failed is tried again this often until it answers
+  var CALLOUT_CHAR_W = 6;                // a callout's text width per character at 10.5 px (an estimate, a little wide)
   var SVG_NS = 'http://www.w3.org/2000/svg';
   var COLORS = { curve: '#1d6fd6', fill: 'rgba(29,111,214,0.16)', extreme: '#0b3d91', observed: '#e8590c',
                  night: 'rgba(30,60,110,0.11)', now: '#d6336c', grid: 'rgba(0,0,0,0.12)', text: '#1d2b4f' };
@@ -292,7 +294,8 @@
     var now = deps.now || function () { return Date.now(); };
     var timers = deps.timers || { set: function (f, ms) { return setTimeout(f, ms); }, clear: function (id) { clearTimeout(id); } };
     var st = { seq: 0, station: null, data: null, obs: null, unit: 'US', zone: null, dirty: false, built: null,
-               ac: null, retryTimer: null, nowTimer: null, tries: 0, status: 'idle', open: {}, L: null, ys: null };
+               ac: null, retryTimer: null, nowTimer: null, tries: 0, status: 'idle', open: {}, L: null, ys: null,
+               retried: false, refreshAt: 0 };
     if (deps.unit) st.unit = unitOf(deps.unit);
 
     function zone() { return st.zone || (st.station && st.station.tz) || (st.data && st.data.tz) || 'UTC'; }
@@ -427,6 +430,12 @@
         }
         if (o) svg.appendChild(svgEl('path', { 'class': 'tide-observed', d: o, fill: 'none', stroke: COLORS.observed, 'stroke-width': 1.5, 'stroke-dasharray': '5 3' }));
       }
+      var boxes = [];                                                      // the callouts drawn so far: none overlaps another
+      function boxAt(tx, anchor, above, y, w) {
+        var x0 = anchor === 'start' ? tx : anchor === 'end' ? tx - w : tx - w / 2;
+        return { x0: x0, x1: x0 + w, y0: above ? y - 29 : y + 5, y1: above ? y - 6 : y + 28 };
+      }
+      function clashes(b) { return boxes.some(function (o) { return b.x0 < o.x1 && o.x0 < b.x1 && b.y0 < o.y1 && o.y0 < b.y1; }); }
       for (var k2 = 0; k2 < L.widths.length; k2++) {
         extremesIn(d, L, k2, -1).forEach(function (e) {
           var x = xOf(L, e.t), y = ys.y(height(e.m, st.unit));
@@ -434,13 +443,22 @@
           if (L.open[k2]) {                                                // the callout on an open day: time over height
             // a high's callout above its dot, a low's below; flipped when that would leave the chart (G27 B-P3-7)
             var up = e.k === 'H', above = up ? y - 31 >= 0 : y + 28 > CHART_H;
-            var y1 = above ? y - 20 : y + 14, y2 = above ? y - 9 : y + 25;
             // near either end of the strip the text starts (or ends) at the dot, so the chart's edge does not cut it
             var anchor = x < CALLOUT_EDGE ? 'start' : x > L.total - CALLOUT_EDGE ? 'end' : 'middle';
-            var tx = (anchor === 'start' ? Math.max(2, x - 3) : anchor === 'end' ? Math.min(L.total - 2, x + 3) : x).toFixed(1);
+            var txn = anchor === 'start' ? Math.max(2, x - 3) : anchor === 'end' ? Math.min(L.total - 2, x + 3) : x;
+            var s1 = clockText(clk.parts(e.t)), s2 = (up ? '↑' : '↓') + heightText(e.m, st.unit);
+            var w = Math.max(s1.length, s2.length) * CALLOUT_CHAR_W + 2, box = boxAt(txn, anchor, above, y, w);
+            if (clashes(box)) {                                            // over another callout (a double high): the
+              var other = !above, fits = other ? y - 31 >= 0 : y + 28 <= CHART_H;      // other side of the dot, else none
+              box = boxAt(txn, anchor, other, y, w);
+              if (!fits || clashes(box)) return;                           // the dot and the rows still carry the values
+              above = other;
+            }
+            boxes.push(box);
+            var y1 = above ? y - 20 : y + 14, y2 = above ? y - 9 : y + 25, tx = txn.toFixed(1);
             var g = svgEl('g', { 'class': 'tide-callout tide-callout-' + (up ? 'high' : 'low') });
-            var t1 = svgEl('text', { x: tx, y: y1.toFixed(1), 'text-anchor': anchor, 'font-size': 10.5, fill: COLORS.text }); t1.textContent = clockText(clk.parts(e.t)); g.appendChild(t1);
-            var t2 = svgEl('text', { x: tx, y: y2.toFixed(1), 'text-anchor': anchor, 'font-size': 10.5, 'font-weight': 600, fill: COLORS.text }); t2.textContent = (up ? '↑' : '↓') + heightText(e.m, st.unit); g.appendChild(t2);
+            var t1 = svgEl('text', { x: tx, y: y1.toFixed(1), 'text-anchor': anchor, 'font-size': 10.5, fill: COLORS.text }); t1.textContent = s1; g.appendChild(t1);
+            var t2 = svgEl('text', { x: tx, y: y2.toFixed(1), 'text-anchor': anchor, 'font-size': 10.5, 'font-weight': 600, fill: COLORS.text }); t2.textContent = s2; g.appendChild(t2);
             svg.appendChild(g);
           }
         });
@@ -564,7 +582,10 @@
         var t = now();
         if (t >= st.L.mids[1]) {                                           // a new day: the strip starts today again, its
           st.open = { 0: true }; build(); writeMeta(); refresh();          // notes follow and a fresh answer is asked for
-        } else placeNow(t);
+        } else {
+          placeNow(t);
+          if (st.refreshAt && t >= st.refreshAt) refresh();                // that answer failed: asked again (G27 re-check)
+        }
         st.nowTimer = timers.set(tick, NOW_REDRAW_MS);
       }, NOW_REDRAW_MS);
     }
@@ -584,16 +605,19 @@
       });
     }
     // The answer again, revalidated (a tab open across midnight: the old answer's curve ends 12 h after its 32 days; G27
-    // A-F5). Quiet: a failure keeps the strip as it is.
+    // A-F5). Quiet: a failure keeps the strip as it is, and the station is asked again every REFRESH_RETRY_MS.
     function refresh() {
       var s = st.station, seq = st.seq;
       if (!s) return;
+      st.refreshAt = 0;
+      var failed = function () { if (seq === st.seq) st.refreshAt = now() + REFRESH_RETRY_MS; };
       deps.fetch('/api/tides/' + encodeURIComponent(s.id), { cache: 'no-cache', headers: { Accept: 'application/json' } }).then(function (r) {
         return seq === st.seq && r.status === 200 ? r.json() : null;
       }).then(function (b) {
-        if (!b || seq !== st.seq || !Array.isArray(b.v) || b.final) return;
+        if (seq !== st.seq) return;
+        if (!b || !Array.isArray(b.v) || b.final) { failed(); return; }
         st.data = b; build(); writeMeta(); fetchObserved(seq);
-      }, function () { /* the strip in hand stands */ });
+      }, failed);
     }
     function fetchObserved(seq) {
       var s = st.station;
@@ -638,6 +662,7 @@
       stopTimers();
       st.ac = deps.AbortController ? new deps.AbortController() : new AbortController();
       st.station = station; st.data = null; st.obs = null; st.tries = 0; st.dirty = false; st.built = null; st.open = { 0: true };
+      st.retried = false; st.refreshAt = 0;                                // a Retry sets its flag after this (G27 re-check RC-8)
       if (opts.unit) st.unit = unitOf(opts.unit);
       st.zone = opts.zone || null;
       if (els.strip) els.strip.textContent = '';
@@ -651,7 +676,7 @@
       st.seq++;
       if (st.ac) { try { st.ac.abort(); } catch (e) {} st.ac = null; }
       stopTimers();
-      st.station = null; st.data = null; st.obs = null; st.built = null;
+      st.station = null; st.data = null; st.obs = null; st.built = null; st.retried = false; st.refreshAt = 0;
       if (els.strip) els.strip.textContent = '';
       setStatus('idle');
     }
@@ -675,6 +700,7 @@
       els.strip.addEventListener('touchstart', function (e) { touchedAt = wall(); readoutAt(pointerX(e)); }, { passive: true });
       els.strip.addEventListener('touchmove', function (e) { touchedAt = wall(); readoutAt(pointerX(e)); }, { passive: true });
       els.strip.addEventListener('touchend', function () { touchedAt = wall(); readoutAt(null); });
+      els.strip.addEventListener('touchcancel', function () { touchedAt = wall(); readoutAt(null); });   // a pinch, a long press
     }
     if (els.retry) els.retry.addEventListener('click', retry);
     return {
@@ -701,7 +727,7 @@
       dayLong: dayLong, stampText: stampText, layout: layout, dayOf: dayOf, xOf: xOf, tOf: tOf, yScale: yScale, tickText: tickText,
       samples: samples, heightAt: heightAt, extremesIn: extremesIn, eventsIn: eventsIn, moonOf: moonOf, nightSpans: nightSpans,
       curvePaths: curvePaths, heightText: heightText, CALLOUT_EDGE: CALLOUT_EDGE, series: series, hasGap: hasGap,
-      RETRY_MAX_S: RETRY_MAX_S, TOUCH_MOUSE_MS: TOUCH_MOUSE_MS
+      RETRY_MAX_S: RETRY_MAX_S, TOUCH_MOUSE_MS: TOUCH_MOUSE_MS, REFRESH_RETRY_MS: REFRESH_RETRY_MS, CALLOUT_CHAR_W: CALLOUT_CHAR_W
     }
   };
   if (typeof window !== 'undefined') window.AllshoreTides = api;

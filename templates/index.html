@@ -478,9 +478,9 @@
     /* minimised: the header bar alone; on desktops the forecast chip is parked at the bottom-left beside the
        Home button and the live-buoy chip at the bottom-right; each takes at most half the width, so they never meet */
     .fwin.fw-min { height: auto !important; min-height: 0; min-width: 0; }   /* a chip shrinks below the window minimum (the chips never meet) */
-    /* a parked chip stays above the expanded station windows (their default boxes reach the forecast chip's buttons; G27
-       B-P3-8), and a station chip gives its subtitle up before the station's name (G27 B-P2-2) */
-    .fwin.fw-min { z-index: 2150; }
+    /* a station chip gives its subtitle up before the station's name (G27 B-P2-2). (An expanded station window may cover
+       the parked forecast chip's two buttons, whose title stays clickable: G27 B-P3-8, accepted; a chip drawn above the
+       window covered the window's corner instead.) */
     .live-win.fw-min .fw-titles .fw-cycle, .tide-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     @media (min-width: 501px) and (min-height: 501px) {
       .forecast-win.fw-min {

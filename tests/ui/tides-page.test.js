@@ -543,7 +543,9 @@ test('fresh check F-4: Retry\'s answer takes the focus only from the page\'s bod
   b.document.activeElement = b.document.body;
   b.view.deps.onRetried();
   assert.equal(b.document.activeElement, b.byId.twHeader);
-  b.document.activeElement = b.byId.twHeader;
+  const retryBtn = b.mkEl();                                                  // the Retry button, inside the window
+  b.byId.tideWin.contains = (x) => x === b.byId.twHeader || x === retryBtn;
+  b.document.activeElement = retryBtn;
   b.view.deps.onRetried();
   assert.equal(b.document.activeElement, b.byId.twHeader, 'from inside the window too');
 });

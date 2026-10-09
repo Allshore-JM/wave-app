@@ -560,3 +560,54 @@ its test was strengthened in eceb687 and now kills it. N10 is now killed by a be
   its end lies in the future. An evicted entry gives 0, which keeps the plain hour.
 Next: the test site at MAX (cherry-picks onto `test`; trusted taps and clicks on the F-1 and F-2 cases, the keyboard
 focus after a zoom-out, Retry after a wait), then the owner's production go-ahead (tag `prod-pre-tides` @ 20839a3).
+
+## Test-site verification of fix round 3 (Opus 5.5 MAX): `test` @ 7093dcc, UI 1.18.6
+Deployed as cherry-picks of 61442c9, 4eee976, eceb687 and ef9722f (README kept as the test branch's), live at 18:01 UTC on
+Oct 9. The record's own commits are not on `test`. Checks used trusted mouse, wheel, touch and keys in a headless Edge 154,
+mostly with the fresh check's own scripts (scratch `g27/fix3/vhl`; outputs in `g27/fix3/out/`, screenshots in
+`g27/fix3/shots/`).
+- Served files: `tides.js`, `forecast.js`, `livelist.js`, `tools.js` and `graticule.js` at `?v=1.18.6` equal the repo's
+  bytes (unchanged by this round), and the 1.18.5 URL answers 404. The served page's tide block, live-marker block and
+  tablet chip CSS equal the feature branch's; `tideOrder` is gone. The test branch's template differs only by its 3
+  test-logo lines.
+- Server (`tides/live_vs_repo.py`): 25 stations' answers equal a local build of the same code, including Nairai Island and
+  the corrected stations. Unknown ids answer 404, and the station list as before (3,501, ETag, 304).
+- F-1, which fix2check reproduced as stale nudges, holds on the site (`f1_site.js`). Each of four cases opens the station
+  by a trusted tap or click at zoom 11, parks its window, then zooms out to 9 in 0.1 steps (one case by the wheel). No
+  drawn icon's centre hit another icon at any step (66 steps, 40 with no rebuild of the icons). At the zoom where fix2check
+  saw the wrong station, a trusted tap or click on the neighbour opened the neighbour:
+  - Pearl Harbor, the Ferry (1612404) opened, then Ford Island (1612401) tapped and clicked at 9.3: Ford Island opened,
+    phone 390x844 and desktop 1280x800.
+  - Palau, Koror (1841281) opened, then Malakal Harbor (1841367) at 9.8: Malakal opened on the desktop (after wheel steps)
+    and on the phone.
+- F-2 (`k11_swap.js`, desktop zoom 11): for all five pairs a second trusted click at the spot first clicked opened no
+  other station:
+  - Little Torch Key 8724223, Hillsboro Inlet 8722861 and TEC3447 keep their icons where they were.
+  - Oakland Grove Street 9414763 and Saxis 8573777 step 24 px aside. The clicked spot then holds no icon, and their
+    neighbours stay.
+- F-3 (`k14_hidden.js`, `k1_tab.js`): a Tab-focused marker hidden by the thinning after a wheel zoom-out (8723667, reveal
+  zoom 9.85, out to 9.8) gives the focus to the map. So does one hidden by the gate (zoom 10.5 out to 8.5). The next Tab
+  goes to the first marker.
+- F-4 (`k8_retry.js`): Honolulu's load failed (intercepted 500), and Retry by a trusted click got a 503 with Retry-After 5.
+  The visitor then opened the settings (focus on the Time Zone select). When the 200 arrived the window was ready and the
+  focus stayed on the select. RC-8 (`k8b_rc8.js`): after a failed Retry, Waianae opened by mouse keeps the focus on its
+  marker.
+- Regression (fix2check's scripts):
+  - `k10_spots.js`: 2,082 desktop and 745 phone icon centres at 14 crowded and date-line spots each hit their own icon.
+    Of 38 trusted clicks and 30 taps, 5 opened nothing. Those 5 icons lie under page controls (the overlay panel's
+    timeline, the gear, the phone's overlay sheet; `k10b_check.js`), as in fix2check's run.
+  - Keyboard: `k1_tab.js` gave Tab stops = the markers in view and 110 Tabs with 0 map moves. `k2_enter.js`: Enter /
+    Space focus `#twHeader` / `#lwHeader`, the live window's x gives the focus to the map, the refocus never took the
+    focus from the gear, the station trigger, the forecast window's minimise button or the tools button, the live markers
+    are keyed after "Live buoys" is ticked again, and with a map tool active the press goes to the tool.
+  - `k3_pans.js`: arrow-key pans, a resize, Fiji across 180, and the live layer starting unticked.
+  - `k16_zoomstops.js`: wheel zooms across 180, 0 Tab-stop mismatches.
+  - `k18_mono.js`: 50 zoom-in states, 0 icons vanished.
+  - `k15_ax.js`: markers are buttons named "Tide station <name>" / "Live <id> (<source>)"; the window is a region.
+  - `k13_phone.js`: full-screen windows, the three bars stacked with the map above them, rotation, no page scroll.
+  - `smoke.js`: no markers or list request at zoom 8.9; 27 markers, one list request and the credit once at 9.0;
+    Fiji's stations across 180; Metric and UTC re-render the strip with no tide request.
+- Console: no errors in any run. The test origin's storage was emptied (0 and 0 on /robots.txt). Edge was closed over
+  DevTools, no process was left on its profile, and the profile was removed.
+Next: the owner's production go-ahead (tag `prod-pre-tides` @ 20839a3; fast-forward `Live-Buoy-Update` to
+`feat/tide-stations`).

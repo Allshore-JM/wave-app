@@ -543,8 +543,8 @@ class TideService:
         status, payload = hit
         if status == "error":                                          # the reference failed a moment ago
             raise TideError("the reference station could not be fetched")
-        if status != "ok" or payload.get("method") != "harmonic":
-            return None, True
+        if status != "ok" or payload.get("method") != "harmonic" or not payload.get("hilo"):
+            return None, True                                          # nothing to shape on: asked again in an hour
         return (payload["v"], [tuple(e) for e in payload["hilo"]]), False
 
     def _build(self, st, begin):

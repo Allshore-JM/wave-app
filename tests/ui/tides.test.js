@@ -742,8 +742,9 @@ test('G27 re-check RC-17 / C12 / C13: callouts never overlap (the second of a do
   // three extremes within 2.4 hours: whatever is drawn never overlaps (the one without room is left out)
   const c = setup();
   c.view.load(HNL_ST);
-  c.answers[0].res(response(200, payload({ obs: false, v, hilo: [[t0 + 4.4 * 3600, 0.9, 'H'], [t0 + 5.6 * 3600, 0.8, 'L'], [t0 + 6.77 * 3600, 0.9, 'H']] })));
+  c.answers[0].res(response(200, payload({ obs: false, v, hilo: [[t0 + 4.4 * 3600, 0.9, 'H'], [t0 + 5.6 * 3600, 0.88, 'L'], [t0 + 6.77 * 3600, 0.9, 'H']] })));
   await flush();
+  assert.equal(c.q('.tide-callout').length, 2, 'the second high has room on neither side: left out (N13)');
   const boxes = c.q('.tide-callout').map((g) => { const tx = g.querySelectorAll('text'), x = +tx[0].getAttribute('x'), w = 8 * 6;
     return { x0: x - w / 2, x1: x + w / 2, y0: +tx[0].getAttribute('y') - 9, y1: +tx[1].getAttribute('y') + 3 }; });
   assert.ok(boxes.length >= 2);
@@ -827,4 +828,20 @@ test('G27 re-check C05 / C07 / C11 / C24: gaps stay gaps (no extreme fills one, 
   const ev = s.q('.tide-ev');
   assert.ok(ev.length > 0);
   assert.match(ev[0].getAttribute('title') || '', /^(Sunrise|Sunset|Moonrise|Moonset) \d{1,2}:\d\d [AP]M$/, 'a pointer shows the event\'s name');
+});
+
+test('fix round 2 pins (C11 / N16): a null just before the strip is no gap; a refused midnight refresh is asked again too', async () => {
+  const d = payload(), base = d.v.map((x) => (x === null ? 0.5 : x));
+  const L = I.layout(MIDS, { 0: true }, I.noons(MIDS, HNL));
+  const before = base.slice(); before[Math.ceil((MIDS[0] / 1000 - d.begin) / d.step) - 1] = null;   // the sample just before
+  assert.equal(I.hasGap(payload({ v: before }), L), false);
+  const s = setup({ now: Date.UTC(2026, 9, 9, 9, 50) });
+  s.view.load(HNL_ST);
+  s.answers[0].res(response(200, payload({ obs: false })));
+  await flush();
+  s.setNow(Date.UTC(2026, 9, 9, 10, 1)); s.timers.fire(I.NOW_REDRAW_MS);
+  s.answers[1].res(response(200, { error: 'NOAA publishes no tide predictions for this station', final: true }));
+  await flush();
+  s.setNow(Date.UTC(2026, 9, 9, 10, 12)); s.timers.fire(I.NOW_REDRAW_MS);
+  assert.equal(s.calls.length, 3, 'a refused refresh is asked again ten minutes later');
 });

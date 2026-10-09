@@ -445,3 +445,15 @@ test('G27 re-check RC-4: when every spot 12 px away is taken, an icon moves 24 p
   assert.equal(new Set(at).size, 10, 'ten places');
   assert.ok(at.includes('24,0'), 'the tenth 24 px east');
 });
+
+test('fix round 2 pin (N26): a key press a map tool takes leaves the focus on the marker, also with a tide window open', async () => {
+  const o = { zoom: 9, list: { fields: FIELDS, stations: [['A', 'One', 30, -179.9, 'R', 'UTC', true], ['B', 'Two', 30, -179.5, 'R', 'UTC', true]] }, size: { x: 1e9, y: 1e9 } };
+  const b = boot(o);
+  b.api.rebuildTideMarkers(true); await flush();
+  byTitle(b, 'One').el.keys.keydown({ key: 'Enter', preventDefault() {} });
+  assert.equal(b.document.activeElement, b.byId.twHeader, 'the window opened and took the focus');
+  o.toolActive = true;                                                       // a map tool now: the press goes to it
+  byTitle(b, 'Two').el.focus();
+  byTitle(b, 'Two').el.keys.keydown({ key: ' ', preventDefault() {} });
+  assert.equal(b.toolClicks.length, 1); assert.equal(b.document.activeElement, byTitle(b, 'Two').el);
+});

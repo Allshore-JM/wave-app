@@ -166,4 +166,60 @@ shaped, waiter gets the build, gap guard and partner kind, the tool's names and 
 a remembered reference failure), `tests/ui/tides.test.js` 28 (+9), `tests/ui/tides-page.test.js` 12 (+4), page pins.
 Mutation of the fix round (scratch `g27/fix/mut_fix.py`, a copy of the tree): 41 mutants, 39 killed; the 2 survivors
 are equivalent (a later reveal keeps both invariants; a nudge below zoom 11 never applies). pytest 867 (the 3 golden
-comparisons re-baselined in their own commit), Node 521.
+comparisons re-baselined in their own commit), Node 519 (first written here as 521: a miscount).
+
+## Test-site verification of the fix round (Opus 5.5 MAX): `test` @ 03b5d83, UI 1.18.5
+Deployed as cherry-picks: the fix round @ 293cf63 (+ golden 4516efa), then the chip change below @ 1d04f87 (+ golden
+03b5d83), live at 02:03:50 UTC on Oct 9 (16:03 HST on Oct 8). The record's own commits are not on `test`. Headless Edge
+with trusted mouse, touch and keys (scratch `tides/hl` t8a / t8b on 4516efa, t8c on 03b5d83); 1280x800 unless stated.
+- Served files: `tides.js`, `forecast.js` and `livelist.js` at `?v=1.18.5` = the repo's bytes; the 1.18.4 URLs answer 404.
+- API: 25 stations (harmonic and subordinate; the five corrected ones, Hawaii, Fiji, Alaska, the Gulf, New York) = the
+  local build's answers. The station list carries the corrected names, positions and zones. Waimea Bay (1611401) names
+  its reference (`ref_name` Nawiliwili).
+- Data on the page (A-F1, A-F4, A-F9, A-F10, B-P3-4, B-P3-5):
+  - Niue, Neiafu, San Lorenzo and Djakarta open where they are, in Pacific/Niue, Pacific/Tongatapu, America/Guayaquil
+    and Asia/Jakarta; their rows read "HIGH (GMT-11)", "(GMT+13)", "(GMT-5)" and "(GMT+7)".
+  - Suva in Metric: ticks -0.25 to 1.75 m every 0.25 m.
+  - New York (the strip crosses Sun, Nov 1): readout "Thu 10/8, 6:00 AM EDT · 5.0 ft"; the rows say "(local)"; the
+    notes say "times in EDT (EST from Sun, Nov 1)".
+  - Anchorage (a 10 m range): 116 dots, none off the drawn curve. The curve starts at the strip's left edge ([0, 178.3],
+    then [5, 183.2]) and ends at its right edge (x 2096 = the strip's width).
+  - Christmas Bay: the note on gaps in NOAA's list of highs and lows.
+  - Waimea Bay: "the predictions of NOAA station Nawiliwili (1611400) shaped between this station's predicted highs and
+    lows".
+  - The table: a caption hidden from view ("Tide predictions for Waimea Bay, 30 days from Thursday, Oct 8, times in
+    HST"), row headers High / Low / Sun / Moon (`th scope=row`), and sun and moon words for screen readers.
+- The reveal rule (B-P1-1, A-F7), Florida Keys:
+  - From zoom 9 to 11 by `setZoom` (10 steps) and by six trusted wheel steps: no icon well inside the view vanished on
+    zooming in.
+  - Drawn icons: 63 at zoom 9, 74 at 10, 92 at 10.75, 133 at 11.
+  - Below 11 the closest pair is 23.8 to 25 px apart (24 px less Leaflet's whole-pixel rounding). The note says "zoom in
+    for more stations" until zoom 11.
+  - Stations at the same spot, at zoom 11: drawn 12 px apart, and each icon is hit on its own centre. Sawyer Key's two
+    stations hit by their own titles (inside / outside). Little Torch Key's two share NOAA's name, so there the check
+    shows two separate icons. Saxis also checked. A click opens its station.
+- Keyboard and focus (B-P2-1, B-P3-3):
+  - Enter on a focused tide marker opens it.
+  - Escape closes the window and the map takes the focus.
+  - Space on a live-buoy marker opens its window.
+  - A failed first request (intercepted), then Retry by a trusted click: ready, with the focus on the window's header.
+- Chips (B-P2-2): the parked tide chip keeps "Honolulu" whole at 768, 820, 900 and 1280 px (the subtitle gives way).
+- B-P3-8 (chips above the windows), CHANGED BACK. On the test site the forecast chip, raised to z 2150, covered the
+  tide window's lower-left corner (the start of the Moon row). Reverted @ 57438a6 (+ golden d8c7492; `test` 1d04f87 +
+  03b5d83). An expanded station window again covers the chip's two buttons where they overlap, while the chip's title
+  and station picker stay clickable; the live window does the same on production. Outcome: ACCEPTED, not fixed. A
+  test keeps the rule out. Checked after the revert: the forecast chip at z 1500, the tide window on top where they
+  overlap.
+- Midnight (A-F5 / A-F13): the page's clock was moved to 30 s before Honolulu's next midnight. At the minute tick the
+  strip starts on "Friday, Oct 9", the station is asked again (requests 1 -> 2), today is open and the notes are
+  rewritten.
+- Phone 375x812 (touch), after the revert:
+  - Key West opens full screen (z 3500).
+  - A tap on the chart leaves no readout behind (B-P3-6).
+  - The tide bar at 700-751 sits above the forecast bar at 751-812, the map is 700 px tall, and "Key West" is whole.
+- Console: no errors in any run. The test origin's storage was emptied. Edge was closed over DevTools; nothing was left
+  running on its profile, and the profile was removed.
+Suites on `feat/tide-stations` @ d8c7492: pytest 868 passed, exit 0 (867 plus the test that keeps the chip rule out),
+Node 519.
+Next: a short fresh re-check of the fix round (MAX), then the owner's production go-ahead (tag `prod-pre-tides` @
+20839a3).

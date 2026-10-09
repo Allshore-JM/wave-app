@@ -552,7 +552,7 @@ def test_tide_stations_on_the_page(client):
         ".tide-icon { background: url(\"data:image/svg+xml,", ".tide-icon.tide-icon-active { background-image:",
         "L.divIcon({ className: 'tide-icon', html: '', iconSize: [18, 18], iconAnchor: [9, 9] })",
         "const all = on ? visibleCopies(tideStationsData) : [], vis = on ? thinTideCopies(all) : [];", "keyOpens(marker);",
-        ".fwin.fw-min { z-index: 2150; }", ".live-win.fw-min .fw-titles .fw-cycle, .tide-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto;", ".tide-table th.tide-lab { text-align: left; }", "onRetried: function () { const h = document.getElementById('twHeader');", "const TIDE_ALL_ZOOM = MAX_MAP_ZOOM;",
+        ".live-win.fw-min .fw-titles .fw-cycle, .tide-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto;", ".tide-table th.tide-lab { text-align: left; }", "onRetried: function () { const h = document.getElementById('twHeader');", "const TIDE_ALL_ZOOM = MAX_MAP_ZOOM;",
         # the window
         '<section id="tideWin" class="fwin tide-win" hidden role="region" aria-label="Tide station">',
         'id="twHeader"', 'id="twMin"', 'id="twClose"', 'id="twBody"', 'id="twResize"', 'id="tideStrip" class="tide-strip"',
@@ -582,6 +582,13 @@ def test_tide_stations_on_the_page(client):
     assert 'id="tideWin"' in body[body.index('id="liveBuoyPanel"'):body.index("leaflet@1.9.4/dist/leaflet.js")]   # after the live window, before the map script
     assert "tideDetailSeq" not in body                                              # the module keeps the sequence (tides.js)
 
+
+
+def test_parked_chips_stay_below_the_expanded_windows(client):
+    """G27 B-P3-8 (accepted at the test-site check): a chip is never raised above the station windows; drawn above, the
+    forecast chip covered the tide window's lower-left corner (its content), worse than two of its own buttons covered."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert ".fwin.fw-min { z-index" not in body
 
 
 def test_no_window_covers_another_whole_at_their_default_boxes(client):

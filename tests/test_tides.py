@@ -792,3 +792,18 @@ def test_per_key_locks_are_counted_and_dropped_only_when_unused():
     svc._drop_key(k, b)
     svc._drop_key(k, c)
     assert k not in svc._inflight
+
+
+def test_a_reference_without_its_highs_and_lows_is_asked_again_within_the_hour():
+    """Fix round 2 (mutant N08): a reference built under a subordinate around a "no predictions" answer (its curve
+    without its list) is kept an hour, and so is the subordinate's cosine; both are asked again after it."""
+    noaa = _answering(lambda u: "No Predictions data was found." if "station=1611400" in u and "interval=hilo" in u
+                      else None)
+    clock = Clock(NOW)
+    svc = T.TideService(dict(STATIONS), noaa, now=clock)
+    status, p = svc.forecast("1611401")
+    assert status == "ok" and p["method"] == "cosine"
+    ref_calls = lambda: sum("station=1611400" in u for u in noaa.calls)
+    n = ref_calls()
+    clock.t += 3601
+    assert svc.forecast("1611401")[1]["method"] == "cosine" and ref_calls() > n   # the reference asked again

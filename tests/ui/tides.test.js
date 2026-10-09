@@ -853,11 +853,12 @@ test('fresh check C11 / C14: a high and a low an hour apart keep their own sides
   const v = new Array(1585).fill(0.5);
   const s = setup();
   s.view.load(HNL_ST);
-  s.answers[0].res(response(200, payload({ obs: false, v, hilo: [[t0 + 4 * 3600, 0.9, 'H'], [t0 + 5 * 3600, 0.7, 'L']] })));
+  s.answers[0].res(response(200, payload({ obs: false, v, hilo: [[t0 + 4 * 3600, 0.9, 'H'], [t0 + 5 * 3600, 0.8, 'L'], [t0 + 20 * 3600, 3.44 / I.FT_PER_M, 'H']] })));   // the scale 0 .. 3.5 ft: the dots ~21 px apart
   await flush();
   const dots = s.q('.tide-dot'), hy = +dots[0].getAttribute('cy'), ly = +dots[1].getAttribute('cy');
   const high = s.q('.tide-callout-high'), low = s.q('.tide-callout-low');
-  assert.equal(high.length, 1); assert.equal(low.length, 1);
+  assert.equal(high.length, 2); assert.equal(low.length, 1);
+  assert.ok(ly - hy > 12 && ly - hy < 56, 'boxes on the wrong sides would meet: ' + (ly - hy));
   assert.ok(+high[0].querySelectorAll('text')[1].getAttribute('y') < hy, 'the high above its dot');
   assert.ok(+low[0].querySelectorAll('text')[0].getAttribute('y') > ly, 'the low below its dot: the two boxes do not meet (C11)');
   // two highs 2 h 22 min apart near the chart's bottom: the second has no room above (the first) nor below (the edge)

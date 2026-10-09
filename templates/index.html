@@ -2820,7 +2820,6 @@
     // on top of the others, and changes nothing else (G27 re-check RC-15: no icon elsewhere comes or goes on opening).
     function tideRank(s) { return (s.obs ? 0 : 2) + (s.type === 'R' ? 0 : 1); }
     function tideRankOrder(a, b) { return tideRank(a) - tideRank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }
-    function tideOrder(a, b) { return (b.id === activeTideId) - (a.id === activeTideId) || tideRankOrder(a, b); }   // the opened one first (the nudges' fallback)
     function tideRevealZooms() {
       const key = String(tideStationsData.length);
       if (tideReveal && tideRevealKey === key) return tideReveal;
@@ -2862,39 +2861,31 @@
     // zoom for stations NOAA lists at one spot (G27 A-F7); below it only beside the opened station (drawn whatever its
     // reveal zoom). G27 re-check RC-4: the test is by the square boxes, not a 9-px circle. The icons are placed in order
     // of importance, the opened one at its own rank with its larger box, so opening a station moves no other icon unless
-    // that box needs the room (fresh check F-2: placed first, it swapped places with a neighbour under the pointer); when
-    // that order leaves an icon with no free spot and the opened one first does not, the opened one goes first.
+    // that box needs the room (fresh check F-2: placed first, it swapped places with a neighbour under the pointer; every
+    // station opened at zooms 9 to 11 still finds a free spot this way, desktop and phone views).
     function tideNudges(copies) {
-      const z = map.getZoom();
-      if (copies.length < 2) return new Map();
-      const place = function (order) {
-        const out = new Map(), placed = [];
-        let stuck = 0;
-        const free = function (x, y, h) {
-          return placed.every(function (q) { return Math.max(Math.abs(q.x - x), Math.abs(q.y - y)) >= Math.max(h, q.h) + 1; });
-        };
-        copies.slice().sort(function (a, b) { return order(a.s, b.s) || a.o - b.o; }).forEach(function (c) {
-          const p = map.project([c.s.lat, c.lng], z), h = c.s.id === activeTideId ? TIDE_HALF_ACTIVE : TIDE_HALF;
-          let off = null;
-          if (!free(p.x, p.y, h)) {
-            [1, 2].some(function (ring) {              // 12 px away, then 24 (a crowded harbour beside the opened icon)
-              return [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]].some(function (t) {
-                const dx = t[0] * TIDE_NUDGE_STEP * ring, dy = t[1] * TIDE_NUDGE_STEP * ring;
-                if (free(p.x + dx, p.y + dy, h)) { off = [dx, dy]; return true; }
-                return false;
-              });
-            });
-            if (!off) stuck++;
-          }
-          placed.push(off ? { x: p.x + off[0], y: p.y + off[1], h: h } : { x: p.x, y: p.y, h: h });
-          if (off) out.set(c.s.id + '#' + c.o, off);
-        });
-        return { out: out, stuck: stuck };
+      const out = new Map(), z = map.getZoom();
+      if (copies.length < 2) return out;
+      const placed = [];
+      const free = function (x, y, h) {
+        return placed.every(function (q) { return Math.max(Math.abs(q.x - x), Math.abs(q.y - y)) >= Math.max(h, q.h) + 1; });
       };
-      const byRank = place(tideRankOrder);
-      if (!byRank.stuck || activeTideId === null) return byRank.out;
-      const first = place(tideOrder);
-      return first.stuck < byRank.stuck ? first.out : byRank.out;
+      copies.slice().sort(function (a, b) { return tideRankOrder(a.s, b.s) || a.o - b.o; }).forEach(function (c) {
+        const p = map.project([c.s.lat, c.lng], z), h = c.s.id === activeTideId ? TIDE_HALF_ACTIVE : TIDE_HALF;
+        let off = null;
+        if (!free(p.x, p.y, h)) {
+          [1, 2].some(function (ring) {                // 12 px away, then 24 (a crowded harbour beside the opened icon)
+            return [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]].some(function (t) {
+              const dx = t[0] * TIDE_NUDGE_STEP * ring, dy = t[1] * TIDE_NUDGE_STEP * ring;
+              if (free(p.x + dx, p.y + dy, h)) { off = [dx, dy]; return true; }
+              return false;
+            });
+          });
+        }
+        placed.push(off ? { x: p.x + off[0], y: p.y + off[1], h: h } : { x: p.x, y: p.y, h: h });
+        if (off) out.set(c.s.id + '#' + c.o, off);
+      });
+      return out;
     }
     function nudgeSignature(nudges) {
       const parts = [];

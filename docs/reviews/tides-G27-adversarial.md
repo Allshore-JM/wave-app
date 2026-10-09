@@ -335,3 +335,59 @@ go-ahead (tag `prod-pre-tides` @ 20839a3).
 
 Unchanged and accepted: B-P3-2, the GMT±N names, the window over the clicked marker, the CI job; R2's nit that the
 tide note is `aria-hidden` (the live note's pattern since G25 B-4).
+
+## Fix round 2 (Opus 5.5 HIGH): UI 1.18.6 @ d8d3021 (+ golden 8fd4cb1, pins f045da7)
+Every item of the scope above, with these notes:
+- RC-2: `TideService._ask` asks a "no predictions" answer once more (after `CONFIRM_PAUSE_S`, 0.5 s) before it is
+  believed; `final_ttl` is 1 h and browsers keep a final answer 10 min (`TIDE_FINAL_MAX_AGE = 600`). A build may now
+  return its own TTL: an answer built around a "no predictions" (a harmonic curve without its list, a cosine through
+  the list, a subordinate's cosine because its reference has nothing) is kept 1 h; `_reference_curve` returns
+  (curve, degraded).
+- RC-12: `KNOWN_ZONE_DIFF` maps each of the 12 stations to the zone it must have; the tool reports a listed station
+  without that zone.
+- RC-1 and RC-4: the nudge tests a free spot with the square boxes (each centre at least max(half sizes) + 1 px away
+  along x or y; 9, the opened icon 11). It runs at every zoom, because the opened station is now drawn whatever its
+  reveal zoom (RC-15); below the last zoom only the opened icon's neighbours can need it. When none of the eight spots
+  12 px away is free, the eight 24 px away are tried (added after the whole-snapshot check below found one crowded
+  case). On a touch screen each icon's extra margin (`--tide-tap`) is floor(c / 2 - half size), clamped to 0..10 px,
+  where c is the Chebyshev gap to the nearest drawn icon, set after every rebuild call (also when the drawn set has not
+  changed). Whole-snapshot check (`g27/recheck/author/targets.js`: the page's own code through R1's harness, Leaflet's
+  projection): at zooms 9, 9.25, ... 10.99 and 11, no centre inside another icon's box and none inside another icon's
+  finger target; the same with each of the 200 most crowded stations opened, at zooms 9, 10 and 11 (before the second
+  ring: one case, 8724239 opened at zoom 11 leaving 8724232 and 8724237 5.3 px apart).
+- RC-3: tide and live markers: `autoPanOnFocus: false`; a marker outside the map's view gets `tabindex="-1"` (refreshed
+  after every rebuild call); a rebuild hands the focus to the same marker's new element (`data-mk` = station and world
+  copy); Enter or Space focuses the opened window's header (`#twHeader`, `#lwHeader`), not when a map tool took the
+  press. The live layer ticked again rebuilds its markers at once.
+- RC-5: `keyOpens` binds on the marker's `add` as well as at once, so an element Leaflet makes later has the key.
+- RC-6: reveal-grid cells of 32 px (`TIDE_CELL_PX`; 4,096 columns at zoom 9).
+- RC-7: the list's state (`tideListNote`) is kept apart from the note on screen; a failed list rebuilds to say so.
+- RC-15 (the author's recommendation; the owner's "proceed"): the reveal zooms no longer depend on the opened station;
+  the opened station is drawn whatever its reveal zoom, on top of the other tide icons (z offset 450, the live buoys
+  500), and nothing else changes.
+- RC-13: `body.fw-chip` and `--fw-chip-h` follow the forecast window (a MutationObserver on its class); from 501 to
+  1179 px the station windows' default boxes rise above the parked forecast chip (and above a parked station chip,
+  whichever is higher), their height giving way below the top-right corner.
+- RC-16: `.lc-note` has `contain: inline-size` (it wraps under its label and never widens the legend).
+- RC-18: `focusMapAfterClose` is shared by the tide and the live window's close.
+- R1 N-12: a midnight refresh that fails (or answers without a curve) is asked again every 10 minutes
+  (`REFRESH_RETRY_MS`) until it answers.
+- RC-17: a callout whose (estimated) box would overlap one already drawn goes to the other side of its dot when it fits
+  there, else it is left out (the dot and the HIGH / LOW rows carry the values).
+- Docs: README (the feature line, the accuracy numbers, the final rule, the observed water level, the now level's worst
+  case, the midnight retry, and the "Busy coasts", "Clicks and taps", "Keyboard" and "Windows" paragraphs), the
+  `tide_sources.py` docstrings.
+- Found by the mutation run (f045da7): a reference whose own list of highs and lows came back "no predictions" (a curve
+  without its list) left its subordinates on a cosine kept for the day; a reference without extremes now counts as
+  degraded too (both asked again within the hour).
+Tests: `tests/test_tides.py` 44 (+5: the second ask, answers kept an hour, the wait for a reference, the counted locks,
+a reference without its list; the tool's zone map and position fixes pinned), `tests/ui/tides.test.js` 34 (+6),
+`tests/ui/tides-page.test.js` 19 (+7), page pins. pytest 873 (the 3 golden comparisons re-baselined in their own
+commit), Node 532.
+Mutation (`g27/recheck/author/mut_fix2.py`, a detached worktree of the commit): R1's 31 test-gap survivors (adapted
+where the text moved) and 34 new mutants of this round: 65 in all, 64 killed. The survivor N30 (the reveal order with
+the opened station first) is equivalent: the reveal zooms are computed once per station list, before any station can
+be opened. T10 and N38 (the live markers' key handler, the live window's focus) are killed by the page's text pins
+only: the live block has no behavioural harness.
+Next: the test site at MAX, a short fresh check (MAX), then the owner's production go-ahead (tag `prod-pre-tides` @
+20839a3).

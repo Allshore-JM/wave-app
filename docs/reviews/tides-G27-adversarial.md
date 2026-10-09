@@ -391,3 +391,50 @@ be opened. T10 and N38 (the live markers' key handler, the live window's focus) 
 only: the live block has no behavioural harness.
 Next: the test site at MAX, a short fresh check (MAX), then the owner's production go-ahead (tag `prod-pre-tides` @
 20839a3).
+
+## Test-site verification of fix round 2 (Opus 5.5 MAX): `test` @ d0a07ed, UI 1.18.6
+Deployed as cherry-picks of d8d3021, 8fd4cb1 and f045da7 (README kept as the test branch's), live at 06:03:26 UTC on
+Oct 9. The record's own commits are not on `test`. Checks with trusted mouse, touch and keys in a headless Edge 154
+(scratch `tides/hl` t9a to t9f; outputs in `tides/out/`).
+- Served files: `tides.js`, `forecast.js`, `livelist.js`, `tools.js` and `graticule.js` at `?v=1.18.6` = the repo's bytes;
+  the 1.18.5 URL answers 404. The site's files equal the feature branch's apart from the test-only logo lines.
+- Server (`tides/live_vs_repo.py`): 25 stations' answers = a local build of the same code. Nairai Island (TPT2885),
+  kept as "no predictions" on the previous build, answers with its curve shaped on Suva's (the new process; RC-2).
+  Unknown ids 404 without an upstream request; the station list as before (3,501, ETag, 304).
+- RC-15 (Florida Keys, zoom 9): opening a drawn station leaves the 62 drawn icons exactly as they were. A station hidden
+  at zoom 9 (Ramrod Key 8724239), opened at 11, is drawn at 9 with nothing else added or lost; after closing, the icons
+  are as before. Its z-index beats every icon it could overlap (offset 450 against 400, and overlapping icons are less
+  than 22 px apart vertically); icons lower on the screen far away keep a higher z-index, which does not matter.
+- RC-4 (desktop, zoom 11): a trusted click on the centre of each of 25 icons (R2's eight that opened a neighbour on
+  1.18.5, their partners, the four same-spot pairs and Little Torch Key's third station) opens that station, and the
+  element at each centre is the icon itself. With Lake Montauk open, Montauk Harbor entrance's centre opens it.
+- RC-1 (phone 375x812, touch, `pointer: coarse`): trusted taps on 25 icons at zoom 11 (the same-spot pairs, Oakland,
+  Pigeon Key, Snake Creek, Montauk, York Harbor, Ocean City Inlet, Rudee Inlet, Hillsboro) each open their own station
+  (1.18.5: 8 of 20); the crowded icons' tap margin is 0-1 px. Below zoom 11 the diagonal pairs (Cape Neddick, Belleville,
+  Village Creek, Jacksonville Main Street Bridge at 9, Tylerville at 9.25, Salisbury Point at 9.5) each open their own.
+- RC-3 (desktop): over the Florida Keys at zoom 10, 150 Tabs moved the map 0 times; 62 of the 74 markers are Tab stops
+  (the 12 in the padding are not) and no focused marker was out of view. Over Oahu one Tab cycle runs: the map, the 6
+  live buoys, the 23 tide icons in view, the map's controls, then the page's end (the browser's turn) and back to the
+  map. Enter on a tide marker opens it and focuses `#twHeader`; on a live marker (51201) it focuses `#lwHeader`; Escape
+  and the x hand the focus to the map (RC-18). After "Live buoys" is unticked and ticked, the 6 new elements carry the key
+  and Enter opens the buoy (RC-5).
+- RC-7: the station list failing (intercepted 500) at zoom 9.5 says "unavailable"; zoomed out, "zoom in to see tide
+  stations"; zoomed in again within the back-off, "unavailable" (one list request); after 30 s the list loads.
+- RC-8: Honolulu failing twice (load and Retry, intercepted), then Waimea Bay opened by mouse: the focus is on Waimea
+  Bay's marker, not the tide window's header.
+- RC-17: Christmas Bay with Sat Oct 31 open: 8 callouts, none overlapping (the browser's own boxes).
+- RC-16: unticking "Tide stations" while its note shows leaves the legend 144.4 px wide and every checkbox in place
+  (only the gear below moves up by the note's line); a second click at the same spot ticks it again.
+- RC-13: with Honolulu's window at its default box and the forecast window parked: at 768x1024, 820x1180, 900x700,
+  1024x768 and 1179x820 the whole chip is clickable (title, both buttons); at 1180x820 and 1280x800 the window covers
+  the chip's two buttons, its title stays clickable (as accepted); 1920x1080 all of it. The window's corners are its own
+  at every size.
+- RC-14: a touch on the chart shows the readout ("Thu 10/8, 12:00 PM · 1.3 ft"); a cancelled touch clears it.
+- R1 N-12: the page's clock moved to 30 s before Honolulu's midnight: the strip moves to Friday and the refresh is
+  asked (failed by interception); ten minutes later on the page's clock it is asked again.
+- Smoke: no markers and no list request at zoom 8.9, 27 markers, one list request and the credit once at 9.0; Fiji's
+  stations across 180 in view; Metric and UTC switch the strip with no request. Escape minimises the forecast window
+  only with the focus inside it (as designed since section 25).
+- Console: no errors in any run. The test origin's storage was emptied after each run. Edge was closed over DevTools,
+  nothing was left on its profile, and the profile was removed.
+Next: a short fresh check of fix round 2 (MAX), then the owner's production go-ahead (tag `prod-pre-tides` @ 20839a3).

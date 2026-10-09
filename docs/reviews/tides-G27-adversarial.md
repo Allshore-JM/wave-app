@@ -223,3 +223,115 @@ Suites on `feat/tide-stations` @ d8c7492: pytest 868 passed, exit 0 (867 plus th
 Node 519.
 Next: a short fresh re-check of the fix round (MAX), then the owner's production go-ahead (tag `prod-pre-tides` @
 20839a3).
+
+## Re-check of the fix round (Opus 5.5 MAX): 0 P0, 0 P1, 3 P2, 15 P3
+Two fresh-context reviewers on `feat/tide-stations` @ f25595d (code = d8c7492) and `test` @ 03b5d83 (UI 1.18.5),
+briefed with the owner's seven decisions, every fix claim, B-P3-8 changed back, the known items and the rules (scratch
+`g27/recheck/brief.md`):
+- R1 (code, data, tests; no browser; report `g27/recheck/r1/recheck-r1-report.md`): the service in a fake-fetch
+  harness, 174 paced NOAA requests, the snapshot against NOAA's live list and gazetteers, the client's clock and curve
+  functions in Node, the page's tide block over the whole snapshot at 200 zooms, and 83 mutants. 0 P0, 0 P1, 1 P2, 9 P3.
+- R2 (the test site with trusted mouse, wheel, touch and keys in a headless Edge; report
+  `g27/recheck/r2/recheck-r2-report.md`): 19 stations against NOAA, 147 zoom states, phones, keyboard, chips,
+  midnight, failures, about 60 paced NOAA requests. 0 P0, 0 P1, 3 P2, 6 P3.
+Three findings overlap (R1 N-1 = R2 N-1; R1 N-10 is part of R2 N-3; R1's note N-11 = R2 N-7).
+
+What holds:
+- The data under every station's name: 2,144 of 2,144 NOAA extremes in the right local-date column at 19 stations,
+  Havana's 25-hour Sun Nov 1 from its first 00:00, New York's readout across the repeated hour, the corrected
+  stations, every dot on the curve.
+- The server never caches a day-long cosine because of a passing trouble; the counted locks hold under a 60-thread
+  storm.
+- The reveal rule over the whole snapshot: no two drawn icons closer than 24 px at any zoom below 11, and nothing
+  vanishes on zooming in (147 trusted zoom states on the site, 0 pops).
+- The snapshot's 16 names, 5 positions and 4 zones.
+- G27's surviving mutants J08, J13, J17, P07, P16, P28, P36, P39 and P41 are now killed.
+- pytest 868 and Node 519, also under four time zones and with the clock 400 days ahead.
+
+### Verdicts on the G27 findings
+- FIXED: A-F1, A-F2, A-F4, A-F5 / A-F13, A-F6, A-F8, A-F9, A-F10, A-F11, B-P1-1, B-P2-2, B-P3-1, B-P3-4, B-P3-5,
+  B-P3-6 (taps), B-P3-7, B-P3-9 (R2: Anchorage's now label 24.7 ft against NOAA's 24.71; R1's worst case: RC-9),
+  B-P3-10.
+- PARTLY: A-F3 (RC-2), A-F7 (RC-1, RC-4), A-F12 (fixed but no test: RC-11), A-F14 (new test gaps: RC-11), B-P2-1
+  (RC-3, RC-5), B-P3-3 (the tide window fixed; the live window not: RC-18).
+- ACCEPTED as stated: B-P3-2; B-P3-8 from about 1180 px (worse at tablet widths: RC-13).
+
+### Findings
+| # | Sev | Finding (source) | The author's check |
+|---|---|---|---|
+| RC-1 | P2 | On phones a tap on a tide icon's centre can open a NEIGHBOUR. The coarse-pointer tap area is a 38-px square (`.tide-icon::after { inset: -10px }`) but the zoom-11 nudge moves icons only 12 px apart. Of the 41 nudged pairs only 3 open both stations by finger (37 by mouse); on the site 12 of 20 taps on the 10 tightest pairs opened another station, and no tap opens Little Torch Key 8724223; 170 stations are affected at zoom 11 (R1 N-1, R2 N-1). | R1's `touch_pairs.js` re-run: identical. The author's `g27/recheck/author/touch_below11.js` finds the same below zoom 11 over the whole snapshot: a diagonal neighbour 24-26.9 px away (the thinning's spacing) has its centre inside the other's 38-px square, 3 to 11 icons per zoom from 9 to 10.75 (Cape Neddick -> 8419518 at 24.8 px). |
+| RC-2 | P2 | A passing NOAA "No Predictions data was found" is kept for a day: Nairai Island (TPT2885) answered `final` ("NOAA publishes no tide predictions") while NOAA served the server's own request with 131 extremes. A final answer is kept 24 h on the server and 1 h in browsers (R2 N-2). | The test site still answered `final` at 04:57 UTC with NOAA's message "No Predictions data was found. Please make sure the Datum input is valid."; NOAA answered the server's exact URL (`begin_date=20261007 00:00`, `range=816`, `application=allshoresurf.com`) with 131 extremes in 0.92 s at 05:00 UTC. The snapshot is NOAA's own list of prediction stations, so a "no predictions" answer for one of them must be confirmed before it is believed. |
+| RC-3 | P2 | Keyboard: markers in the view's 25 % padding are Tab stops. Focusing one makes Leaflet pan the map to it, the rebuild destroys the focused marker, and the focus falls to the page (Florida Keys zoom 10: on the 2nd Tab; 150 Tabs moved the map about 360 km north). After Enter or Space opens a station the focus is on the page too (R2 N-3, R1 N-10). | Leaflet 1.9.4 has `autoPanOnFocus: true` by default (leaflet-src.js 7762, 7928, 8067); `rebuildTideMarkers` and `rebuildLiveBuoyMarkers` clear and recreate every marker; the click handlers rebuild before the window opens. |
+| RC-4 | P3 | Desktop, zoom 11: 15 icon centres open a neighbour. The nudge tests a free spot by a round 9 px while the icons are 18-px squares; TEC3789 and 8630315 were nudged onto a third icon; the opened 22-px icon covers its nudged neighbour's centre (3 of 3) (R2 N-4; R1's A-F7 row). | Read `tideNudges`: Euclidean `>= 9`, steps of 12 from the icon's own spot. |
+| RC-5 | P3 | Enter / Space do nothing on live-buoy markers after "Live buoys" is unticked and ticked again, or when it starts unticked: Leaflet rebuilds a re-added marker's element and nothing re-binds the key handler (R1 N-2). | Read: the live layer has no overlayadd rebuild; `keyOpens` binds to the element present at creation. |
+| RC-6 | P3 | The reveal grid's 24-px cells do not divide the world width (131,072 px at zoom 9): columns 5460 and 0 are never compared across 180 deg, so a synthetic pair 14 px apart is drawn at zoom 9 (no pair in today's snapshot) (R1 N-3). | Arithmetic confirmed (5,462 columns, the last one 8 px wide). |
+| RC-7 | P3 | During the 30-s list back-off the legend says "zoom in to see tide stations" while zoomed in (R1 N-4). | Read: the gate's text overwrites the list's state in `tideNoteText`. |
+| RC-8 | P3 | A failed Retry leaves `st.retried` set, so a later ordinary load moves the focus into the tide window (R1 N-5). | Read: only a ready answer clears it; `load()` and `clear()` do not. |
+| RC-9 | P3 | The worst error of the now level and the readout is unchanged: 0.36 ft at Anchorage against NOAA's 6-minute predictions, on the steep rise after a low (the chord between two 30-min samples); README says "up to ~0.12 ft" (R1 N-6). | From R1's measurement (7,680 instants a station); R2's single instant (24.7 vs 24.71 ft) agrees that it is small away from the steepest stretch. |
+| RC-10 | P3 | Stale docs. README says the chips sit above the station windows (changed back) and that the observed water level covers the last 48 h (today's elapsed part, accepted), and gives Nawiliwili 3 cm (measured 2.4); `tide_sources.py`'s docstring keeps the old accuracy numbers and 2,242 subordinates (2,241) (R1 N-7). | Read. |
+| RC-11 | P3 | Test gaps: 31 of R1's 83 mutants survive the behavioural suites (S03, S07, S08, S10, S11, S18, F03, F04, C05, C07, C11, C12, C13, C15, C16, C18, C19, C22, C23, C24, C27, T02, T06, T07, T08, T09, T10, T11, T21, T23, T25). The template ones are caught only by the golden's byte comparison, which pins no behaviour (R1 N-8). | From R1's tables (`mut.py`, `mut2.py`). |
+| RC-12 | P3 | `KNOWN_ZONE_DIFF` exempts Neiafu and Nomuka, which are also in `POSITION_FIX`: if their position fix were lost the zone check would not stop the build (mutant F04 survives) (R1 N-9). | Read: a set of ids, not the zone each should have. |
+| RC-13 | P3 | Tablet widths (768-1024 px): the expanded tide window leaves 11-22 % of the parked forecast chip clickable (a 6-px strip at 768), so "the chip's title stays clickable" (B-P3-8, accepted) holds only from about 1180 px (R2 N-5). | From R2's screenshots and measurements. |
+| RC-14 | P3 | A cancelled touch leaves the chart's readout up until the next tap: there is no `touchcancel` listener (R2 N-6). | Read: touchstart / touchmove / touchend only. |
+| RC-15 | P3 | Opening a station re-ranks the reveal zooms with it first: icons up to 93 px away vanish or appear, and swap back when it is closed (R2 N-7, R1 note N-11). | From both reports (the same 93-px case, Horseshoe Keys -> Key Lois). |
+| RC-16 | P3 | The legend widens by 20 px while "zoom in for more stations" shows, so unticking "Tide stations" moves every checkbox 20 px and a second click at the same spot lands on the map (R2 N-8). | Read: `.lc-note` is a block inside the label, and the shrink-to-fit legend follows its width. |
+| RC-17 | P3 | Two callouts overlap by 15 px at Christmas Bay's double high on Sat Oct 31 (4:24 AM and 6:46 AM) (R2 N-9). | From R2's screenshot. |
+| RC-18 | P3 | The live window's x and Escape still leave the focus on the page (B-P3-3 named it) (R2's verdict). | Read: the live window's `onClose` only bumps `liveDetailSeq`. |
+
+Also noted (R1 N-12): a midnight refresh that fails is not tried again before the next midnight, and a curve that
+simply ends early gets no note.
+
+### Fix round 2 scope (UI 1.18.6)
+Server (`tide_sources.py`, `app.py`):
+1. RC-2: a "no predictions" answer is asked once more before it is believed. A believed one is kept 1 h on the
+   server and 10 min in browsers (was 24 h and 1 h). Answers degraded by one (a harmonic curve without its list, a
+   cosine through the list, a subordinate's cosine because its reference has none) are kept 1 h too, not until the
+   next UTC day. Pins.
+2. RC-11, server: pins for S03, S07, S08, S10, S11 and S18.
+
+Tool (`tools/tides/fetch_stations.py`):
+3. RC-12: `KNOWN_ZONE_DIFF` becomes {id: the zone it must have}; pins for F03 and F04.
+
+Client (`static_ui/tides.js`):
+4. RC-8: `load()` and `clear()` reset the Retry flag.
+5. RC-14: `touchcancel` ends the readout; the touch window pinned (C18, C19, C27).
+6. RC-17: a callout that would overlap its neighbour goes to the other side of its dot, else it is left out (the rows
+   carry the values); C12 and C13 pinned.
+7. R1 N-12: after a failed midnight refresh the station is asked again every 10 minutes until it answers.
+8. RC-11, client: pins for C05, C07, C11, C15, C16, C22, C23 and C24.
+
+Page (`templates/index.html`, `static_ui/forecast.js`):
+9. RC-1 and RC-4, so that no icon's hit area covers another icon's centre:
+   - the zoom-11 nudge tests a free spot with the square boxes (each centre at least the larger half-size + 1 px away
+     along x or y: 10 px, 12 beside the opened icon);
+   - on coarse pointers each icon's extra tap margin is cut to half the gap to its nearest drawn neighbour (0-10 px),
+     set after every rebuild call, also when the drawn set does not change;
+   - pins T06, T07, T08, T21 and T25, plus tests at zoom 9 (diagonal pairs) and 11 (pairs, a cluster, the opened icon).
+10. RC-3, for tide and live markers:
+    - only markers in view are Tab stops (the padding's copies get tabindex -1, refreshed on every move);
+    - `autoPanOnFocus: false`;
+    - a focused marker is refocused after a rebuild (the same station and copy);
+    - opening by keyboard focuses the opened window's header.
+11. RC-5: the key handler is bound on the marker's `add`, so a re-added element gets it; pins T09 and T10.
+12. RC-6: reveal-grid cells of 32 px (a divisor of the world width).
+13. RC-7: the list's note is kept apart from the gate's.
+14. RC-15 (the author's recommendation; the owner may keep the ripple instead): opening a station no longer re-ranks
+    the reveal zooms. The opened station is drawn on top of the other tide icons and nothing else changes, so below
+    its own reveal zoom it may overlap a neighbour.
+15. RC-13: below 1180 px the station windows' default boxes rise above a parked forecast chip, as the forecast box
+    rises above the station chips.
+16. RC-16: the legend's notes never change its width (they wrap under their label).
+17. RC-18: the live window's x and Escape give the focus to the map (the tide window's rule).
+18. RC-11, page: pins for T02, T11 and T23.
+
+Docs:
+19. RC-9 and RC-10: README (the chips sentence, the observed water level of today, Nawiliwili 2 cm, the now level's
+    worst case of about 0.4 ft at Anchorage, the new tap, keyboard and reveal rules) and `tide_sources.py`'s docstring
+    (the accuracy numbers, 2,241).
+
+Release: UI 1.18.6 and its fixture; the golden in its own commit; R1's mutants (`g27/recheck/r1/mut.py`, `mut2.py`)
+re-run with every test gap killed; the test site at MAX; a short fresh check (MAX); then the owner's production
+go-ahead (tag `prod-pre-tides` @ 20839a3).
+
+Unchanged and accepted: B-P3-2, the GMT±N names, the window over the clicked marker, the CI job; R2's nit that the
+tide note is `aria-hidden` (the live note's pattern since G25 B-4).

@@ -185,7 +185,8 @@ test('the feed asks at once, then every 5 minutes; a partial answer every 5 s (2
 
 test('the feed retries after 5, 10, 30, 30 s: HTTP errors, bad answers, network errors and the 8-s deadline', async () => {
   const s = feedSetup(); s.start(); await flush();
-  s.answers[0].res(resp(503, { error: 'x' })); await flush();
+  s.answers[0].res(resp(500, LATEST)); await flush();                         // a well-formed body under an error status
+  assert.equal(s.data.length, 0);
   assert.deepEqual(s.status.at(-1), ['unavailable', 'unavailable']); assert.deepEqual(s.timers.pending(), [5000]);
   s.timers.fire(5000); await flush();
   s.answers[1].res(resp(200, { rows: 'no' })); await flush();
@@ -336,7 +337,7 @@ test('a station loads: the chart, the arrows, the current reading, the table, th
   const cur = s.els.current.textContent;
   assert.match(cur, /^\d+ mph from [A-Z]+ \(\d+°\)(, gusts \d+ mph)? · \d+ kt · just now$/);
   const rows = bodyRows(s);
-  assert.equal(rows.length, I.TABLE_MAX);
+  assert.equal(rows.length, 48); assert.equal(I.TABLE_MAX, 48);
   assert.equal(rows[0].children[0].textContent, 'Sat 10/10, 7:00 AM', 'newest first');
   assert.match(rows[0].children[1].textContent, /^\d+ mph \(\d+ kt\)$/);
   assert.equal(s.els.table.querySelector('caption').textContent, 'Readings, newest first (times in HST)');

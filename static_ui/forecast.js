@@ -25,6 +25,7 @@
   var WINDOW_KEY = 'allshore.forecastWin.v1';  // sessionStorage {x, y, w, h, mode, prev}
   var LIVE_WINDOW_KEY = 'allshore.liveWin.v1'; // the live-buoy window's (the same shape)
   var TIDE_WINDOW_KEY = 'allshore.tideWin.v1'; // the tide-station window's (plan section 38)
+  var WIND_WINDOW_KEY = 'allshore.windWin.v1'; // the wind-station window's (plan section 39)
   var RANGE_KEY = 'chartRange';                // sessionStorage 'full' | '7' | '3' (unchanged from the old page)
   var POINTS_KEY = 'allshore.points.v1';       // localStorage [{id, lat, lon, name}]: the visitor's forecast points
   var POINTS_MAX = 50, POINT_NAME_MAX = 40;
@@ -787,11 +788,16 @@
     return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'tideWin', header: 'twHeader', min: 'twMin', close: 'twClose', resize: 'twResize' },
       key: TIDE_WINDOW_KEY, event: 'allshore:tidewin', label: 'tide station' }));
   }
+  // the wind-station window over #windWin (#wwHeader, #wwMin, #wwClose, #wwResize; plan section 39); opts as the tide window's
+  function createWindWindow(opts) {
+    return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'windWin', header: 'wwHeader', min: 'wwMin', close: 'wwClose', resize: 'wwResize' },
+      key: WIND_WINDOW_KEY, event: 'allshore:windwin', label: 'wind station' }));
+  }
 
   // ---- init: wire everything to the page ----
   // opts: initial (window.__initial), stationLabel(sid) -> text, loadChartJs() -> Promise, closeLivePanel(),
-  //       liveOpen() -> bool, closeTidePanel(), tideOpen() -> bool, fetch, document, window, storage (session),
-  //       settings (local), onMode(mode).
+  //       liveOpen() -> bool, closeTidePanel(), tideOpen() -> bool, closeWindPanel(), windOpen() -> bool, fetch,
+  //       document, window, storage (session), settings (local), onMode(mode).
   var app = null;
   function init(opts) {
     opts = opts || {};
@@ -1027,7 +1033,8 @@
     });
     doc.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
-      if (opts.tideOpen && opts.tideOpen()) { if (opts.closeTidePanel) opts.closeTidePanel(); return; }   // the tide window first, then the live one
+      if (opts.windOpen && opts.windOpen()) { if (opts.closeWindPanel) opts.closeWindPanel(); return; }   // the wind window first (section 39),
+      if (opts.tideOpen && opts.tideOpen()) { if (opts.closeTidePanel) opts.closeTidePanel(); return; }   // then the tide window, then the live one
       if (opts.liveOpen && opts.liveOpen()) { if (opts.closeLivePanel) opts.closeLivePanel(); return; }
       if (fw.mode !== 'min' && els.win.contains(doc.activeElement)) minimise();
     });
@@ -1047,7 +1054,7 @@
   }
 
   window.AllshoreForecast = {
-    init: init, createLiveWindow: createLiveWindow, createTideWindow: createTideWindow,
+    init: init, createLiveWindow: createLiveWindow, createTideWindow: createTideWindow, createWindWindow: createWindWindow,
     pointId: pointId, parsePointId: parsePointId, isPointId: isPointId, pointLabel: pointLabel, fmtPoint: fmtPoint, cleanName: cleanName,
     createPointStore: createPointStore, POINTS_MAX: POINTS_MAX, writeLabel: writeLabel, zoneLabel: zoneLabel,
     load: function (next) { return app ? app.loader.load(next) : Promise.resolve(null); },
@@ -1065,7 +1072,7 @@
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
       createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
-      createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY,
+      createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,
       app: function () { return app; }
     }

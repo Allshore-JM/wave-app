@@ -902,3 +902,68 @@ never changes width when one comes or goes.
 Windows: a station chip gives its subtitle up before the station's name. An expanded station window may cover the
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
+
+## Wind stations (plan section 39, UI asset 1.19.0)
+
+Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from three public-domain NOAA / NWS
+feeds (attribution requested, given in the map credits while the layer is on and in the window): NOAA NDBC buoys,
+C-MAN and other fixed stations; the weather sensors of NOAA CO-OPS tide gauges; and airports reporting METAR through
+the NWS Aviation Weather Center (within 30 km of a coastline, or at sea: offshore platforms). iKitesurf's page was the
+visual reference (owner, 2026-10-09); its data is WeatherFlow's and proprietary, so none of it is used.
+
+The station list is a committed snapshot, `wind_stations.json` (2,459 stations: ids `coops:1612340`, `ndbc:51003`,
+`metar:PHNL`; kinds gauge, buoy, cman, station, airport; the nearest civil time zone; for a gauge the NDBC id it is
+relayed under, its `alias`). Rebuild it now and then with `python tools/wind/fetch_stations.py --sensors-cache FILE`
+(~2.5 min: one `sensors.json` per CO-OPS met station, NDBC's `latest_obs.txt` and station table, the METAR cache and
+site list, the API for coastal sites not in the cache, the site's own GSHHG coastline for the 30-km rule) and commit the
+file. CO-OPS gauges are kept when their Wind sensor is active (232 of 315); NDBC stations when they report a wind speed
+(moving ones left out: drifting buoys, ferries, ships, gliders; anchored lightships and a station-keeping surface
+vehicle kept); NDBC's relays of kept gauges (227, named by the gauge's id in NDBC's station table) become the gauge's
+alias, never a second flag; airports when they reported wind in the last 24 hours (1,797 incl. 51 offshore platforms).
+
+`wind_sources.py` (wired in `app.py`; upstream requests through the forecast points' bounded fetch, with a User-Agent
+naming the site as aviationweather.gov asks):
+- The latest readings come from three `BuoyProvider`s in a list of their own (`get_wind_providers`): NDBC (one GET of
+  `latest_obs.txt`, every 5 min), METAR (one GET of the gzipped cache of the last ~80 minutes of reports, every 5 min;
+  whole knots; a direction of 0 or `VRB` is no direction, 360 is north), CO-OPS (one `product=wind&date=latest` request
+  per gauge, `WIND_COOPS_WORKERS` at a time, every 10 min; a gauge whose request fails has no reading, every request
+  failing is a failed fetch). They ride on the live-buoy scheduler's pass (`_wind_tick` after the buoy part; a failure
+  there never reaches the buoys) with the same keep-last rule, runner and fork reset, and are NOT in the live-buoy list,
+  memo, warm-up or golden; `/healthz` reports them under `wind`, which is never part of `ok`.
+- `/api/wind/latest` is the merged table the scheduler prebuilt (never a build or a wait in the request): `{now, stale_s,
+  fields [id, t, s, g, d], rows, missing}` with speeds in m/s and directions the wind blows FROM; a gauge without a CO-OPS
+  reading takes its NDBC relay's. Feeds still loading after a start are named in `X-Wind-Stations-Partial` with
+  `Cache-Control: no-store` (the page asks again); else 2 min. `/api/wind/stations` serves the snapshot (6 h, ETag).
+- `/api/wind/<id>/history` (5 min): the last 24 hours (`t, s, g, d` ascending) from NDBC's `realtime2` file (cut at 24 h
+  and 300 rows), CO-OPS `range=24`, or the METAR API's `hours=24` behind a token bucket of 60 requests a minute (the API
+  allows 100); a gauge falls back on its NDBC relay (`via: "ndbc"`). The tide service's cache core: ok 10 min, a
+  failure 1 min, busy never cached (503 + `Retry-After: 5` + `retry: true`), one build per station at a time, LRU 256.
+  An id not in the snapshot is a 404 without any upstream request.
+- Off with `WIND_STATIONS=0` (the routes answer 503, the scheduler leaves the feeds alone; the tests set it).
+
+The page (`templates/index.html`, `static_ui/winds.js`): flags from `WIND_MIN_ZOOM = 9` (below it the legend entry
+says "zoom in to see wind stations"; the list is asked the first time the layer is on at that zoom). A flag is a 40-px
+box: a ring at the station, an arrow pointing the way the wind BLOWS, and the speed in the site's unit (mph / km/h)
+14 px upwind so it never sits under the arrow; coloured by the band in whole knots (iKitesurf-style, owner): calm under
+1 (a ring with "0"), light 1-9 blue, moderate 10-15 green, fresh 16-21 amber, strong 22-30 red, gale 31 and up purple;
+a reading with no direction shows its number above the ring; no reading is a small grey ring; a reading older than 2 h
+(the server's `stale_s`) is grey. Busy coasts are thinned as the tide icons are (a reveal zoom per station, 40 px clear
+of every more important flag: a gauge or buoy before a C-MAN or other fixed station before an airport; every station at
+zoom 11; the opened station always). The feed (`createWindFeed`) asks `/api/wind/latest` every 5 minutes while the
+flags show (nothing while the tab is hidden; a partial answer again every 5 s, 24 times at most) and the drawn flags are
+repainted IN PLACE (text, classes, the arrow's rotation; the markers, their listeners and the focus stay). A click
+opens the wind window (`#windWin`, a fourth floating window: its chip stacks on top of the station chips through the
+measured `--chips-h`, its phone bar above the tide bar; Escape closes it first) on the station's last 24 hours
+(`createWindView`): an SVG chart of the speed (solid) and gusts (dashed), the site's unit on the left and knots on the
+right, hour ticks every 3 h (6 h when narrow) with local midnights dated, gaps where readings are more than 90 minutes
+apart, a row of direction arrows under it, a hover / touch readout (the nearest reading within 45 min), the current
+reading with its age (every minute), a newest-first table of 48 rows, the source; the readings are asked again every
+5 minutes, quietly. Units and the display zone follow the gear (the site's Time Zone when one is chosen, else the
+station's own). Limitations: airports report hourly (a flag up to ~90 min old at worst), buoys hourly, gauges and C-MAN
+every 6-10 min; readings are the agencies' raw values; outside the US the layer is airports; a wind flag beside a
+live-buoy dot or a tide icon is a second marker drawn below them (each stays clickable).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WIND_STATIONS` | `1` | `0` turns the wind feeds and routes off. |
+| `WIND_COOPS_WORKERS` | `4` | Gauges asked at once by the CO-OPS feed (1-8). |

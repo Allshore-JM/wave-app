@@ -541,7 +541,7 @@ def test_tide_stations_on_the_page(client):
         # the layer and its gate
         "const TIDE_MIN_ZOOM = 9;", "function tideVisible() { return map.hasLayer(tideLayer) && map.getZoom() >= TIDE_MIN_ZOOM; }",
         "const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis) + '|' + nudgeSignature(nudges);",
-        "'zoom in to see tide stations'", "tides: saved.tides !== false", "tides: map.hasLayer(tideLayer)",
+        "const want = on && !tideStationsData.length ? tideListNote : '';", "tides: saved.tides !== false", "tides: map.hasLayer(tideLayer)",
         "'<span class=\"lc-dot lc-tide\"></span>Tide stations<span class=\"lc-note\" data-tide-note aria-hidden=\"true\"></span>': tideLayer",
         "layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintWindNote(); paintLiveNote(); return r; };",
         "map.on('overlayadd overlayremove', function (e) { if (e.layer === tideLayer) rebuildTideMarkers(true); });",
@@ -645,7 +645,7 @@ def test_wind_stations_on_the_page(client):
         "const WIND_MIN_ZOOM = 9;", "function windVisible() { return map.hasLayer(windLayer) && map.getZoom() >= WIND_MIN_ZOOM; }",
         "const WIND_GAP_PX = 40;", "const WIND_CELL_PX = 64;", "const WIND_ALL_ZOOM = MAX_MAP_ZOOM;",
         "const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis);",
-        "'zoom in to see wind stations'", "wind: saved.wind !== false", "wind: map.hasLayer(windLayer)",
+        "if (!map.hasLayer(windLayer) || !on) return '';", "wind: saved.wind !== false", "wind: map.hasLayer(windLayer)",
         "'<span class=\"lc-dot lc-wind\"></span>Wind stations<span class=\"lc-note\" data-wind-note aria-hidden=\"true\"></span>': windLayer",
         "map.on('overlayadd overlayremove', function (e) { if (e.layer === windLayer) rebuildWindMarkers(true); });",
         "rebuildWindMarkers(true);\n        rebuildTideMarkers(true);", "rebuildWindMarkers(false);\n        rebuildTideMarkers(false);",
@@ -691,3 +691,5 @@ def test_wind_stations_on_the_page(client):
     assert body.index("// ---------------- (end of the wind stations block) ----------------") < body.index("enforceSingleWorld();\n")
     assert ".wind-win { display: none !important; }" in body[body.index("@media print"):]
     assert "windDetailSeq" not in body                                              # the module keeps the sequence (winds.js)
+    # owner, 2026-10-10: no "zoom in" text in the legend at any zoom (tide and wind layers alike)
+    assert "zoom in to see" not in body and "zoom in for more" not in body and "hiddenInView" not in body

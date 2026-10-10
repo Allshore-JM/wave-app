@@ -47,7 +47,7 @@ function boot(o = {}) {
   ['windTitle', 'windSubtitle', 'tideTitle', 'tideSubtitle'].forEach((id) => mk('span', id));
   const windWinEl = mk('section', 'windWin'); windWinEl.hidden = true; mk('section', 'tideWin').hidden = true;
   const wwHeader = mk('div', 'wwHeader'); windWinEl.appendChild(wwHeader); mk('div', 'twHeader');
-  ['windContent', 'windLoading', 'windError', 'windErrorText', 'windRetry', 'windCurrent', 'windChart', 'windArrows', 'windTable', 'windMeta'].forEach((id) => mk('div', id));
+  ['windContent', 'windLoading', 'windError', 'windErrorText', 'windRetry', 'windCurrent', 'windConditions', 'windChart', 'windArrows', 'windTemp', 'windTable', 'windMeta'].forEach((id) => mk('div', id));
   const tz = mk('select', 'tz'); const opt = doc.createElement('option'); opt.value = 'UTC'; tz.appendChild(opt);
   mk('div', 'station').value = '51201';                                   // (the page's select; a plain element keeps any value)
   const events = []; doc.dispatchEvent = (e) => { events.push(e.type); return true; };
@@ -97,7 +97,7 @@ function boot(o = {}) {
   const code = 'let liveNoteText = "";\n' + TIDE_STATE + WIND_STATE + NOTE.replace("    let liveNoteText = '';\n", '') + TIDE_BLOCK + WIND_BLOCK +
     '\nreturn { get windNoteText() { return windNoteText; }, get windStationsData() { return windStationsData; }, get activeWindId() { return activeWindId; }, ' +
     'get windDrawn() { return windDrawn; }, get windReadings() { return windReadings; }, get windFeed() { return windFeed; }, ' +
-    'rebuildWindMarkers, loadWindStations, openWindStation, closeWindWindow, windWindowClosed, windZone, refreshWindFlags, syncWindNote, paintWindNote, WIND_CREDIT, windSubtitle, ' +
+    'rebuildWindMarkers, loadWindStations, openWindStation, closeWindWindow, windWindowClosed, windZone, refreshWindFlags, syncWindNote, paintWindNote, WIND_CREDIT, windSubtitle, windRank, WIND_ALL_ZOOM, ' +
     'get windView() { return windView; } };';
   const layersControl = { _update: function () { notes.wind.textContent = ''; notes.tide.textContent = ''; notes.live.textContent = ''; return this; } };
   const forecastStationsData = o.forecast || [];                       // the yellow dots (a flag over one gets a hollow ring)
@@ -201,6 +201,10 @@ test('world copies: a flag per copy, keys per copy; the active station rimmed an
   assert.equal(b.api.windSubtitle({ id: 'nws:001HE', kind: 'utility' }), 'Wind · HECO / HELCO / MECO station 001HE');
   assert.equal(b.api.windSubtitle({ id: 'nws:029HI', kind: 'mesonet' }), 'Wind · Mesonet station 029HI');
   assert.equal(b.api.windSubtitle({ id: 'nws:AP834', kind: 'cwop' }), 'Wind · CWOP amateur station AP834');
+  // who keeps the flag where flags crowd (owner, 2026-10-10): gauges / buoys, airports / NDBC stations, the NWS stations, CWOP last
+  const rank = (k) => b.api.windRank({ kind: k });
+  assert.deepEqual(['gauge', 'buoy', 'airport', 'cman', 'station', 'utility', 'mesonet', 'raws', 'hads', 'weather', 'cwop'].map(rank), [0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 3]);
+  assert.equal(b.api.WIND_ALL_ZOOM, 13, 'every station from zoom 13 (owner, 2026-10-10)');
   assert.ok(b.api.WIND_CREDIT.indexOf('https://api.weather.gov/') > 0, 'the NWS API in the credit (step 5c)');
 });
 

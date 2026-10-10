@@ -35,11 +35,11 @@ def first_t(text):
 
 STATIONS = {
     "coops:1612340": {"id": "coops:1612340", "name": "Honolulu", "lat": 21.30333, "lon": -157.86453, "kind": "gauge",
-                      "src": "coops", "tz": "Pacific/Honolulu", "alias": "OOUH1"},
+                      "src": "coops", "tz": "Pacific/Honolulu", "alias": "OOUH1", "wx": "awp"},
     "coops:1611400": {"id": "coops:1611400", "name": "Nawiliwili", "lat": 21.9544, "lon": -159.3561, "kind": "gauge",
-                      "src": "coops", "tz": "Pacific/Honolulu", "alias": "NWWH1"},
+                      "src": "coops", "tz": "Pacific/Honolulu", "alias": "NWWH1", "wx": "awph"},
     "coops:1612401": {"id": "coops:1612401", "name": "Pearl Harbor", "lat": 21.3675, "lon": -157.9639, "kind": "gauge",
-                      "src": "coops", "tz": "Pacific/Honolulu", "alias": None},
+                      "src": "coops", "tz": "Pacific/Honolulu", "alias": None, "wx": None},
     "ndbc:51003": {"id": "ndbc:51003", "name": "Western Hawaii", "lat": 19.151, "lon": -160.617, "kind": "buoy",
                    "src": "ndbc", "tz": "Pacific/Honolulu", "alias": None},
     "ndbc:HRRH1": {"id": "ndbc:HRRH1", "name": "Lono Circle", "lat": 21.43, "lon": -157.8, "kind": "station",
@@ -113,6 +113,8 @@ def clock(monkeypatch):
 
 def test_reading_checks_its_fields():
     assert W.reading(1791651240, "1.0", "3.5", "74.0") == {"t": 1791651240, "s": 1.0, "g": 3.5, "d": 74}
+    assert W.reading(1, 0.04, None, 120) == {"t": 1, "s": 0.0, "g": None, "d": None}, "a speed that rounds to 0 is calm (step 5c D)"
+    assert W.reading(1, 0.06, None, 120) == {"t": 1, "s": 0.1, "g": None, "d": 120}
     assert W.reading(1791651240, 2.26, None, 359.6) == {"t": 1791651240, "s": 2.3, "g": None, "d": 0}
     assert W.reading("x", 1, 1, 1) is None and W.reading(1, "MM", 1, 1) is None and W.reading(1, -1, 1, 1) is None
     assert W.reading(1, 200, 1, 1) is None                                  # above MAX_SPEED_MS
@@ -165,12 +167,42 @@ def test_parse_realtime2_stops_at_since_and_caps():
     assert W.parse_realtime2(RT2, t0 + 1) == []
 
 
+def test_weather_helpers():
+    assert W._temp("27.1") == 27.1 and W._temp("MM") is None and W._temp(70) is None and W._temp(-95) is None
+    assert W._pct(85.0) == 85 and isinstance(W._pct(85.0), int) and W._pct(101) is None
+    assert W._hpa("1014.1") == 1014.1 and W._hpa(700) is None and W._hpa_delta("-1.3") == -1.3 and W._hpa_delta(70) is None
+    assert W._km("10") == 10.0 and W._km(-1) is None and W._words("  light   rain ") == "light rain" and W._words("") is None
+    assert W.with_weather({"t": 1}, at=20.0, wt=None, zz=5) == {"t": 1, "at": 20.0} and W.with_weather(None, at=1) is None
+    assert W.humidity_from(25.0, 20.0) == 74 and W.humidity_from(30.0, 30.0) == 100 and W.humidity_from(None, 20.0) is None
+    assert W.humidity_from(-40.0, -40.0) == 100 and 1 <= W.humidity_from(40.0, -40.0) <= 2
+
+
+def test_parse_realtime2_carries_the_weather_columns():
+    rows = W.parse_realtime2(fx("realtime2_51003.txt", "r"), 0)
+    r = rows[0]
+    assert r["at"] == 27.1 and r["wt"] == 27.5 and r["dp"] == 24.5 and r["p"] == 1012.4 and "pt" not in r and "vis" not in r
+    rows = W.parse_realtime2(fx("realtime2_OOUH1.txt", "r"), 0)
+    assert rows[0]["wt"] == 29.0 and rows[0]["p"] == 1014.1 and "at" not in rows[0], "the gauge's relay carries water temperature and pressure only"
+    text = ("#YY  MM DD hh mm WDIR WSPD GST  WVHT   DPD   APD MWD   PRES  ATMP  WTMP  DEWP  VIS PTDY  TIDE\n"
+            "#yr  mo dy hr mn degT m/s  m/s     m   sec   sec degT   hPa  degC  degC  degC  nmi  hPa    ft\n"
+            "2026 10 10 16 18  50  1.5  3.6    MM    MM    MM  MM 1014.1  25.0  29.0  20.0  5.0 -1.2    MM\n")
+    r = W.parse_realtime2(text, 0)[0]
+    assert r["vis"] == 9.3 and r["pt"] == -1.2 and r["at"] == 25.0, "VIS in nautical miles -> km; PTDY the 3-hour change"
+
+
 def test_parse_realtime2_fixture_is_24_hours_newest_first():
     text = fx("realtime2_OOUH1.txt", "r")
     t0 = first_t(text)
     rows = W.parse_realtime2(text, t0 - W.HISTORY_S)
     assert 150 <= len(rows) <= W.HISTORY_ROWS                               # 6-minute rows: ~240 in a day
     assert all(a["t"] > b["t"] for a, b in zip(rows, rows[1:])) and rows[-1]["t"] >= t0 - W.HISTORY_S
+
+
+def test_parse_coops_series_and_the_weather_fixtures():
+    air = W.parse_coops_series(json.loads(fx("coops_air_temperature.json")))
+    assert len(air) >= 200 and all(isinstance(t, int) and 20 < v < 35 for t, v in air.items())
+    assert W.parse_coops_series(json.loads(fx("coops_error.json"))) == {} and W.parse_coops_series([]) == {}
+    assert W.parse_coops_series({"data": [{"t": "2026-10-10 16:42", "v": "x"}, {"t": "bad", "v": "1"}, {"t": "2026-10-10 16:48", "v": "1016.2"}]}) == {1791650880: 1016.2}
 
 
 def test_parse_coops_wind_and_error():
@@ -224,6 +256,55 @@ def test_parse_metar_cache_fixture():
     assert {"PHNL", "KSFO", "EGLL"} <= set(got) and "KGMU" not in got        # KGMU reported no wind
     assert got["KSFO"]["g"] is not None and got["KSFO"]["g"] >= got["KSFO"]["s"]
     assert got["YKSC"] == {"t": got["YKSC"]["t"], "s": 0.0, "g": None, "d": None}   # calm
+
+
+@pytest.mark.parametrize("wx,cover,want", [
+    ("-SHRA BR", "BKN", "light showers of rain, mist"), ("VCTS", None, "thunderstorm nearby"), (None, "FEW", "A few clouds"),
+    ("+TSRA", "OVC", "heavy thunderstorm with rain"), ("FZFG", "", "freezing fog"), ("BCFG", None, "patches of fog"),
+    ("RA SN", None, "rain, snow"), ("NSW", "CLR", "Clear"), ("", "", None), ("-RASN", None, "light rain and snow"),
+    ("ZZ", None, "zz"), (None, "OVX", "Sky obscured")])
+def test_metar_weather_words(wx, cover, want):
+    assert W.metar_weather_words(wx, cover) == want
+
+
+def test_metar_visibility_km():
+    assert W.metar_visibility_km("10+") == 16.1 and W.metar_visibility_km("1/2") == 0.8 and W.metar_visibility_km(3) == 4.8
+    assert W.metar_visibility_km(None) is None and W.metar_visibility_km("") is None and W.metar_visibility_km("x") is None
+    assert W.metar_visibility_km("20+") == 32.2 and W.metar_visibility_km("1/0") is None
+
+
+def test_parse_metar_history_carries_the_weather():
+    rows = W.parse_metar_history(json.loads(fx("metar_history.json")))
+    r = rows[0]
+    assert r["at"] == 25.6 and r["dp"] == 21.1 and r["p"] == 1014.2 and r["vis"] == 16.1 and r["wx"] == "A few clouds"
+    rows = W.parse_metar_history([{"obsTime": 1791651180, "wdir": 50, "wspd": 5, "temp": 20, "dewp": 10, "altim": 1013.0, "visib": "6", "wxString": "-RA"}])
+    assert rows[0]["p"] == 1013.0 and rows[0]["wx"] == "light rain" and rows[0]["vis"] == 9.7, "altim when slp is missing"
+
+
+def test_parse_nws_observations_carries_the_weather():
+    rows = W.parse_nws_observations(json.loads(fx("nws_history.json")))
+    assert rows[0]["at"] == 24.7 and rows[0]["dp"] == 22.0 and rows[0]["rh"] == 85 and "p" not in rows[0]
+    q = lambda v, u, qc="S": {"unitCode": u, "value": v, "qualityControl": qc}
+    doc = {"@graph": [{"timestamp": "2026-10-10T20:50:00+00:00", "windSpeed": q(3.6, "wmoUnit:km_h-1"), "windDirection": q(90, "wmoUnit:degree_(angle)"),
+                       "temperature": q(77, "wmoUnit:degF"), "dewpoint": q(290.15, "wmoUnit:K"), "relativeHumidity": q(60.4, "wmoUnit:percent"),
+                       "seaLevelPressure": q(101520, "wmoUnit:Pa"), "barometricPressure": q(100000, "wmoUnit:Pa"), "visibility": q(16090, "wmoUnit:m"),
+                       "textDescription": "Mostly Cloudy"},
+                      {"timestamp": "2026-10-10T20:40:00+00:00", "windSpeed": q(3.6, "wmoUnit:km_h-1"), "windDirection": q(90, "wmoUnit:degree_(angle)"),
+                       "temperature": q(20, "wmoUnit:degC", "X"), "barometricPressure": q(100000, "wmoUnit:Pa"), "visibility": q(2, "wmoUnit:furlong")}]}
+    a, b = W.parse_nws_observations(doc)
+    assert a["at"] == 25.0 and a["dp"] == 17.0 and a["rh"] == 60 and a["p"] == 1015.2 and a["vis"] == 16.1 and a["wx"] == "Mostly Cloudy"
+    assert "at" not in b and b["p"] == 1000.0 and "vis" not in b, "a rejected temperature is dropped; the barometric pressure stands in; an unknown unit is nothing"
+
+
+def test_conditions_newest_within_three_hours_and_the_pressure_trend():
+    rows = [{"t": 0, "s": 1.0, "at": 20.0, "p": 1010.0, "wx": "rain"}, {"t": 10800 - 600, "s": 1.0, "p": 1011.0},
+            {"t": 10800, "s": 1.0, "at": 21.0}, {"t": 21600, "s": 1.0, "p": 1013.5, "dp": 15.0}]
+    c = W.conditions(rows)
+    assert c["at"] == [10800, 21.0] and c["p"] == [21600, 1013.5] and c["dp"] == [21600, 15.0] and "rh" not in c
+    assert "wx" not in c, "6 hours old: not current (3 hours exactly still is: the air temperature)"
+    assert c["trend"] == 2.5, "the pressure 3 h earlier (within half an hour of it)"
+    assert W.conditions([{"t": 5, "s": 1.0, "p": 1000.0, "pt": -1.5}])["trend"] == -1.5, "the report's own 3-hour change first"
+    assert W.conditions([{"t": 5, "s": 1.0, "p": 1000.0}])["trend"] is None and W.conditions([]) == {}
 
 
 def test_parse_metar_history_fixture_and_shapes():
@@ -500,6 +581,9 @@ def history_fetch():
     return FakeFetch({W.NDBC_RT2_URL % "51003": fx("realtime2_51003.txt"),
                       W.NDBC_RT2_URL % "OOUH1": fx("realtime2_OOUH1.txt"),
                       W.coops_url("1612340", range=24): fx("coops_24.json"),
+                      W.coops_url("1612340", product="air_temperature", range=24): fx("coops_air_temperature.json"),
+                      W.coops_url("1612340", product="water_temperature", range=24): fx("coops_water_temperature.json"),
+                      W.coops_url("1612340", product="air_pressure", range=24): fx("coops_air_pressure.json"),
                       W.coops_url("1611400", range=24): fx("coops_error.json"),
                       W.METAR_API_URL % "PHNL": fx("metar_history.json")})
 
@@ -534,6 +618,40 @@ def test_history_coops_and_metar_and_notes():
     status, p = svc.history("metar:PHNL")
     assert status == "ok" and p["kind"] == "airport" and 20 <= len(p["t"]) <= 60 and p["source"] == W.ATTRIBUTION["metar"]
     assert fetch.calls[-1][2]["User-Agent"] == W.USER_AGENT
+
+
+def test_history_weather_fields_and_conditions():
+    fetch = history_fetch()
+    rows = W.parse_coops_wind(json.loads(fx("coops_24.json")))
+    svc = W.WindHistory(STATIONS, fetch, now=Clock(rows[-1]["t"] + 60))
+    status, p = svc.history("coops:1612340")
+    assert status == "ok" and fetch.count("product=air_temperature") == 1 and fetch.count("product=water_temperature") == 1
+    assert fetch.count("product=air_pressure") == 1 and fetch.count("product=humidity") == 0, "only the gauge's wx letters (awp)"
+    assert len(p["at"]) == len(p["t"]) and sum(1 for v in p["at"] if v is not None) >= 150 and "dp" not in p and "rh" not in p
+    assert p["units"]["at"] == "degC" and p["units"]["p"] == "hPa" and p["units"]["vis"] == "km"
+    c = p["conditions"]
+    assert c["at"][0] == p["t"][-1] or c["at"][0] >= p["t"][-1] - W.CONDITIONS_S
+    assert 20 < c["at"][1] < 35 and 20 < c["wt"][1] < 35 and 990 < c["p"][1] < 1040 and c["trend"] is not None
+    # a product that fails or has no data adds nothing; the window still answers
+    fetch.table[W.coops_url("1612340", product="air_temperature", range=24)] = IOError("down")
+    fetch.table[W.coops_url("1612340", product="water_temperature", range=24)] = fx("coops_error.json")
+    svc = W.WindHistory(STATIONS, fetch, now=Clock(rows[-1]["t"] + 60))
+    status, p = svc.history("coops:1612340")
+    assert status == "ok" and "at" not in p and "wt" not in p and "p" in p and "at" not in p["conditions"]
+    # the other sources carry their weather from the answer already fetched; humidity from the dew point
+    svc = W.WindHistory(STATIONS, fetch, now=Clock(first_t(fx("realtime2_51003.txt", "r")) + 60))
+    status, p = svc.history("ndbc:51003")
+    assert p["at"][-1] == 27.1 and p["wt"][-1] == 27.5 and p["dp"][-1] == 24.5 and p["p"][-1] == 1012.4 and p["rh"][-1] == 86
+    assert p["conditions"]["rh"][1] == 86 and "wx" not in p, "NDBC has no weather words"
+    hist = W.parse_metar_history(json.loads(fx("metar_history.json")))
+    svc = W.WindHistory(STATIONS, fetch, now=Clock(max(r["t"] for r in hist) + 60))
+    status, p = svc.history("metar:PHNL")
+    assert p["conditions"]["wx"][1] == "A few clouds" and p["conditions"]["vis"][1] == 16.1 and p["rh"][-1] == W.humidity_from(p["at"][-1], p["dp"][-1])
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = fx("nws_history.json")
+    nws = W.parse_nws_observations(json.loads(fx("nws_history.json")))
+    svc = W.WindHistory(STATIONS, fetch, now=Clock(nws[0]["t"] + 60))
+    status, p = svc.history("nws:001HE")
+    assert p["rh"][-1] == 85 and p["at"][-1] == 24.7 and p["conditions"]["rh"] == [nws[0]["t"], 85]
 
 
 def test_history_gauge_falls_back_on_its_ndbc_relay():
@@ -703,8 +821,8 @@ def winds(monkeypatch, clock):
     provs, fetch = make_fakes(clock.time())
     hfetch = history_fetch()
     svc = W.WindHistory(STATIONS, hfetch, now=Clock(first_t(fx("realtime2_51003.txt", "r")) + 60))
-    doc = {"captured": "2026-10-10T00:00:00Z", "source": "test", "fields": ["id", "name", "lat", "lon", "kind", "src", "tz", "alias"],
-           "stations": [[s[k] for k in ("id", "name", "lat", "lon", "kind", "src", "tz", "alias")] for s in STATIONS.values()]}
+    doc = {"captured": "2026-10-10T00:00:00Z", "source": "test", "fields": ["id", "name", "lat", "lon", "kind", "src", "tz", "alias", "wx"],
+           "stations": [[s.get(k) for k in ("id", "name", "lat", "lon", "kind", "src", "tz", "alias", "wx")] for s in STATIONS.values()]}
     monkeypatch.setattr(A, "WIND_ENABLED", True)
     monkeypatch.setattr(A, "_WINDS", {"svc": svc, "list": A._json_payload_and_etag(W.client_list(doc)),
                                       "providers": provs, "stations": dict(STATIONS)})

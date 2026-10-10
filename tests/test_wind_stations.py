@@ -38,7 +38,7 @@ def snap():
 
 def test_snapshot_shape(snap):
     doc, rows = snap
-    assert doc["fields"] == W.FIELDS == ["id", "name", "lat", "lon", "kind", "src", "tz", "alias"]
+    assert doc["fields"] == W.FIELDS == ["id", "name", "lat", "lon", "kind", "src", "tz", "alias", "wx"]
     assert all(len(r) == len(W.FIELDS) for r in doc["stations"])
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", doc["captured"])
     assert "public domain" in doc["source"]
@@ -63,6 +63,20 @@ def test_names_positions_and_zones(snap):
         assert isinstance(r["name"], str) and r["name"].strip() == r["name"] and r["name"], r
         assert W.usable_position(r["lat"], r["lon"]), r
         zones.setdefault(r["tz"], ZoneInfo(r["tz"]))                   # every zone is a real zone
+
+
+def test_wx_letters_only_for_gauges(snap):
+    _, rows = snap
+    for r in rows:
+        if r["src"] == "coops":
+            assert r["wx"] is None or (re.fullmatch(r"a?w?p?h?", r["wx"]) and r["wx"]), r
+        else:
+            assert r["wx"] is None, r
+    by = {r["id"]: r for r in rows}
+    assert by["coops:1612340"]["wx"] == "awp"
+    assert sum(1 for r in rows if r["src"] == "coops" and r["wx"] and "a" in r["wx"]) >= 150
+    assert W.wx_letters([["Wind", 1, ""], ["Air Temperature", 1, ""], ["Relative Humidity", 1, ""], ["Water Temperature", 0, ""]]) == "ah"
+    assert W.wx_letters([["Wind", 1, ""]]) is None and W.wx_letters(None) is None and W.wx_letters([["x"]]) is None
 
 
 def test_aliases_name_ndbc_relays_never_drawn_twice(snap):
@@ -219,6 +233,10 @@ def test_nws_name():
     assert W.nws_name("AHUMOA", "AHMH1", "raws", clean) == "Ahumoa"
     assert W.nws_name("MECO Kealaloloa Ridge", "001HE", "utility", clean) == "MECO Kealaloloa Ridge"
     assert W.nws_name("  ", "XYZ", "weather", clean) == "XYZ" and W.nws_name("KH6ABC", "AQ1", "cwop", clean) == "KH6ABC"
+    assert W.nws_name("BELLOWS AFS AT WAIMANALO", "BELH1", "hads", clean) == "Bellows AFS at Waimanalo"
+    assert W.nws_name("HONOULIULI PHB", "HOFH1", "raws", clean) == "Honouliuli PHB"
+    assert W.nws_name("PORT ALLEN NEAR HANAPEPE 2SW", "PAKH1", "hads", clean) == "Port Allen near Hanapepe 2SW"
+    assert W.nws_name("AT THE TOP", "X", "raws", clean) == "At the Top" and W.nws_name("KANEOHE MCBH", "X", "raws", clean) == "Kaneohe MCBH"
 
 
 def test_too_close():

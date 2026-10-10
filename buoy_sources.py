@@ -73,6 +73,9 @@ class BuoyProvider:
     # with no list at all makes a caller wait for a fetch. (The hard expiry at the full TTL
     # still counts as "due", so a list is never older than a TTL plus one refresh.)
     refresh_at = 0.9
+    # Keys a provider's fetched rows may carry beyond the station's identity, copied into the lean entry
+    # as they are (the wind providers' readings, plan section 39). The live-buoy providers set none.
+    extra_keys = ()
 
     def __init__(self, http=None):
         self.http = http or requests.Session()
@@ -325,6 +328,9 @@ class BuoyProvider:
                     ep = _z_epoch({"time_utc": lt})
                     if ep is not None and (now - ep) > self.stale_after_sec:
                         entry["is_stale"] = True
+                for k in self.extra_keys:
+                    if k in s:
+                        entry[k] = s[k]
                 out.append(entry)
         except Exception as e:
             _log.warning("buoy provider %s: station-list fetch failed (%s)", self.source, e)

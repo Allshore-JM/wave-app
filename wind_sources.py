@@ -643,9 +643,10 @@ class WindHistory:
         else:
             try:
                 rows = self._coops(local, since)
-            except WindError:
+            except WindError as exc:
                 if not st.get("alias"):
                     raise
+                _log.info("wind history %s: CO-OPS did not answer (%s); NDBC's relay %s instead", sid, exc, st["alias"])
                 rows = self._ndbc(st["alias"], since)                  # NDBC's relay of the gauge
                 via = "ndbc"
         rows = sorted({r["t"]: r for r in rows}.values(), key=lambda r: r["t"])[-HISTORY_ROWS:]

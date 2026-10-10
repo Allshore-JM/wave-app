@@ -403,8 +403,11 @@ test('a station with weather: the conditions line, the temperature chart on the 
   // Metric re-renders the line and the chart
   s.view.setUnit('Metric');
   assert.equal(s.els.conditions.textContent.slice(0, 29), 'Air 25.6°C · Water 27.2°C · H'); assert.equal(s.els.temp.querySelectorAll('.wind-tunit')[0].textContent, '°C');
+  // a new load clears the previous station's weather while the answer is awaited
+  s.view.load(HNL, { unit: 'US' });
+  assert.equal(s.els.conditions.textContent, ''); assert.equal(s.els.temp.querySelectorAll('svg').length, 0);
   // a plain answer: no line, no chart, four columns
-  s.view.load(HNL, { unit: 'US' }); s.answers[1].res(resp(200, history())); await flush();
+  s.answers[1].res(resp(200, history())); await flush();
   assert.equal(s.els.conditions.textContent, ''); assert.ok(s.els.conditions.classList.contains('d-none'));
   assert.equal(s.els.temp.querySelectorAll('svg').length, 0); assert.equal(s.view.state().temp, false);
   assert.deepEqual(s.els.table.querySelector('thead').querySelector('tr').children.map((e) => e.textContent), ['Time', 'Speed', 'Gust', 'Direction']);

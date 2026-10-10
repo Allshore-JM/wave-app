@@ -95,6 +95,25 @@
        narrower and taller than the forecast window, wider and shorter than the live-buoy window (see above) */
     .fwin.tide-win { right: 18px; bottom: 18px; width: min(880px, calc(100vw - 76px)); height: min(70vh, 760px); z-index: 2000; }
     .tide-win .fw-body { padding: 8px 10px 12px; }
+    /* the wind-station window's box (plan section 39): a fourth window, narrower and taller again (its chip stacks on
+       top of the station chips); its chart is drawn by static_ui/winds.js */
+    .fwin.wind-win { right: 18px; bottom: 18px; width: min(760px, calc(100vw - 196px)); height: min(82vh, 840px); z-index: 2000; }
+    .wind-win .fw-body { padding: 8px 12px 12px; }
+    #windCurrent { font-size: 13px; font-weight: 600; color: #1d2b4f; margin: 2px 0 6px; }
+    .wind-cur-dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: currentColor; border: 1.5px solid #fff;
+                    box-shadow: 0 0 0 1px rgba(0,0,0,.25); margin-right: 6px; vertical-align: -1px; }
+    .wind-cur-age { font-weight: 400; color: #5a6b7a; }
+    .wind-cur-stale { color: #b02a37; }
+    #windChart, #windArrows { line-height: 0; }
+    .wind-svg, .wind-arrows-svg { display: block; max-width: 100%; height: auto; }
+    .wind-svg text, .wind-arrows-svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .wind-readings { margin-top: 8px; font-size: 12px; }
+    .wind-readings summary { cursor: pointer; color: #1d6fd6; font-weight: 600; }
+    .wind-table { font-size: 12px; font-variant-numeric: tabular-nums; margin-top: 6px; }
+    .wind-table th, .wind-table td { padding: 2px 8px; }
+    .wind-table caption { caption-side: top; font-size: 11.5px; color: #5a6b7a; padding: 0 0 4px; }
+    #windMeta { font-size: 11.5px; color: #5a6b7a; line-height: 1.35; margin-top: 8px; }
+    #windMeta div + div { margin-top: 2px; }
     /* the day strip (static_ui/tides.js, after tide-forecast.com's layout): one table, the label column stuck to the
        left while the days scroll sideways; a closed day is one narrow column, an open day two halves (AM | PM) */
     .tide-strip { font-variant-numeric: tabular-nums; }
@@ -379,6 +398,7 @@
     .lc-live { background: #00E5FF; }
     .lc-point { background: #fff; border: 2px solid #d6007a; }
     .lc-tide { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='9' fill='%23fff' stroke='%231d2b4f' stroke-width='1.3'/%3E%3Cpath d='M3 10 C4.3 4.5 6.2 4.5 7.5 10 S10.7 15.5 12 10 S15.2 4.5 17 10' fill='none' stroke='%230f8f8c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 100% 100% no-repeat; border: 0; width: 13px; height: 13px; }
+    .lc-wind { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='9' fill='%23fff' stroke='%231d2b4f' stroke-width='1.3'/%3E%3Cpath d='M10 3.5 L14.5 10 L11.3 9.2 L11.3 16.5 L8.7 16.5 L8.7 9.2 L5.5 10 Z' fill='%232f9e44'/%3E%3C/svg%3E") center / 100% 100% no-repeat; border: 0; width: 13px; height: 13px; }
     /* the live list's state under "Live buoys" (static_ui/livelist.js): loading / cached list / loading more / retrying,
        and the tide layer's ("zoom in for more stations"). On its own line, and with no width of its own (it wraps under
        its label), so the legend neither widens into the overlay selector on a phone nor jumps under the pointer when a
@@ -398,6 +418,32 @@
        the page after every redraw) so no target covers another icon's centre (G27 re-check RC-1) */
     @media (pointer: coarse) { .tide-icon::after { content: ''; position: absolute; inset: calc(-1 * var(--tide-tap, 10px)); } }
     .leaflet-container.tools-active .tide-icon { cursor: crosshair; }
+    /* a wind station (plan section 39): a flag built by static_ui/winds.js inside a 40-px marker (the class name
+       replaces Leaflet's leaflet-div-icon: no white box): the ring at the station, the arrow pointing the way the wind
+       blows, the speed 14 px upwind in the site's unit, coloured by the band (iKitesurf-style, owner 2026-10-09); a
+       calm reading a ring with "0", a reading with no direction its number above the ring, no reading a small grey
+       ring, a reading older than 2 h grey. The station in its window gets a coral rim. */
+    .wind-marker { background: transparent; border: 0; cursor: pointer; }
+    .wind-flag { position: relative; width: 40px; height: 40px; color: #1d2b4f; }
+    .wind-arrow { position: absolute; left: 0; top: 0; transform-origin: 20px 20px; overflow: visible; pointer-events: none; }
+    .wind-arrow path { fill: currentColor; stroke: #fff; stroke-width: 1.2; paint-order: stroke; }
+    .wind-ring { position: absolute; left: 15px; top: 15px; width: 10px; height: 10px; border-radius: 50%; background: currentColor;
+                 border: 1.5px solid #fff; box-sizing: border-box; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+    .wind-num { position: absolute; transform: translate(-50%, -50%); font: 700 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+                color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 0 3px #000; white-space: nowrap; pointer-events: none; }
+    .wind-calm .wind-ring { left: 11px; top: 11px; width: 18px; height: 18px; background: rgba(255,255,255,.9); border: 2px solid currentColor; }
+    .wind-calm .wind-num { color: #1d2b4f; text-shadow: none; font-size: 11px; }
+    .wind-none .wind-ring { left: 16px; top: 16px; width: 8px; height: 8px; background: #fff; border: 1.5px solid #8a96a3; box-shadow: none; }
+    .wind-none .wind-num { display: none; }
+    .wind-flag.wind-calm, .wind-cur-dot.wind-calm { color: #8a96a3; }
+    .wind-flag.wind-light, .wind-cur-dot.wind-light { color: #339af0; }
+    .wind-flag.wind-moderate, .wind-cur-dot.wind-moderate { color: #2f9e44; }
+    .wind-flag.wind-fresh, .wind-cur-dot.wind-fresh { color: #f59f00; }
+    .wind-flag.wind-strong, .wind-cur-dot.wind-strong { color: #e03131; }
+    .wind-flag.wind-gale, .wind-cur-dot.wind-gale { color: #9c36b5; }
+    .wind-flag.wind-stale, .wind-cur-dot.wind-stale { color: #9aa3ad; }
+    .wind-marker-active .wind-ring { box-shadow: 0 0 0 2.5px #ff6b5a; }
+    .leaflet-container.tools-active .wind-marker { cursor: crosshair; }
 
     /* ---------------- The floating windows (plan sections 25, 26) ----------------
        .fwin = the shared rules (the forecast window and the live-buoy window); each has its own box. */
@@ -438,6 +484,28 @@
         bottom: var(--tw-bottom); height: min(70vh, 760px, calc(100vh - 8px - var(--tw-bottom) - var(--map-topright-h, 0px))); }
       body.fw-chip .live-win:not(.fw-min):not(.fw-max) {
         bottom: var(--lw-bottom); height: min(76vh, 800px, calc(100vh - 8px - var(--lw-bottom) - var(--map-topright-h, 0px))); }
+    }
+    /* the wind window (plan section 39) in the stack: the page measures the parked live and tide chips into --chips-h
+       (each height + 8 px) and the parked wind chip into --ww-chip-h. An expanded wind window's default box clears
+       --chips-h; a parked WIND chip sits on top of the station chips, so the other windows' boxes clear both. (.fwin in
+       the selectors: these outrank the rules above at the same place in the cascade.) */
+    body.live-chip .fwin.wind-win:not(.fw-min):not(.fw-max), body.tide-chip .fwin.wind-win:not(.fw-min):not(.fw-max) {
+      bottom: calc(18px + var(--chips-h, 0px)); height: min(82vh, 840px, calc(100vh - 26px - var(--chips-h, 0px) - var(--map-topright-h, 0px))); }
+    body.wind-chip .fwin.tide-win:not(.fw-min):not(.fw-max) {
+      bottom: calc(26px + var(--chips-h, 0px) + var(--ww-chip-h, 40px));
+      height: min(70vh, 760px, calc(100vh - 34px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }
+    body.wind-chip .fwin.live-win:not(.fw-min):not(.fw-max) {
+      bottom: calc(26px + var(--chips-h, 0px) + var(--ww-chip-h, 40px));
+      height: min(76vh, 800px, calc(100vh - 34px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }
+    body.wind-chip .fwin.forecast-win:not(.fw-min):not(.fw-max) {
+      bottom: calc(30px + var(--chips-h, 0px) + var(--ww-chip-h, 40px));
+      height: min(60vh, 720px, calc(100vh - 38px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }
+    @media (min-width: 501px) and (max-width: 1179.98px) and (min-height: 501px) {
+      body.fw-chip .fwin.wind-win:not(.fw-min):not(.fw-max) {
+        --ww-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(18px + var(--chips-h, 0px)));
+        bottom: var(--ww-bottom); height: min(82vh, 840px, calc(100vh - 8px - var(--ww-bottom) - var(--map-topright-h, 0px))); }
+      body.fw-chip.wind-chip .fwin.tide-win:not(.fw-min):not(.fw-max) { --tw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--chips-h, 0px) + var(--ww-chip-h, 40px))); }
+      body.fw-chip.wind-chip .fwin.live-win:not(.fw-min):not(.fw-max) { --lw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--chips-h, 0px) + var(--ww-chip-h, 40px))); }
     }
     .fw-header {
       display: flex; align-items: center; gap: 8px; padding: 6px 10px;
@@ -480,6 +548,7 @@
     /* the window touched last is on top: the forecast window over the live-buoy window (z 2000) once touched */
     .forecast-win.fw-front { z-index: 2100; }
     .live-win.fw-front, .tide-win.fw-front { z-index: 2100; }   /* the three windows: the one touched last is on top */
+    .wind-win.fw-front { z-index: 2100; }                        /* ... and the fourth (plan section 39) */
     /* stretch from every side (plan section 27): invisible 5 px edges and 10 px corners inside the border; the body
        keeps a 5 px margin so its scrollbars are never under an edge; the top edge sits in the header's 6 px padding */
     .fw-edge { position: absolute; z-index: 5; touch-action: none; }
@@ -502,6 +571,7 @@
        the parked forecast chip's two buttons, whose title stays clickable: G27 B-P3-8, accepted; a chip drawn above the
        window covered the window's corner instead.) */
     .live-win.fw-min .fw-titles .fw-cycle, .tide-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .wind-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     @media (min-width: 501px) and (min-height: 501px) {
       .forecast-win.fw-min {
         left: 60px !important; right: auto !important; top: auto !important; bottom: 12px !important;
@@ -517,6 +587,11 @@
         width: auto !important; max-width: min(420px, calc(40vw - 40px));
       }
       body.live-chip .tide-win.fw-min { bottom: calc(20px + var(--lw-chip-h, 40px)) !important; }
+      /* the wind chip (plan section 39): on top of the parked station chips (--chips-h: their heights + gaps) */
+      .wind-win.fw-min {
+        right: 12px !important; left: auto !important; top: auto !important; bottom: calc(12px + var(--chips-h, 0px)) !important;
+        width: auto !important; max-width: min(420px, calc(40vw - 40px));
+      }
     }
     .fwin.fw-min .fw-header { cursor: pointer; }
     .fwin.fw-min .fw-toolbar, .fwin.fw-min .fw-body, .fwin.fw-min .fw-resize, .fwin.fw-min .fw-edge { display: none; }
@@ -597,6 +672,7 @@
     html:not(.js) .forecast-win { position: static !important; width: auto !important; max-width: none; height: auto !important; box-shadow: none; margin-top: 12px; }
     html:not(.js) .forecast-win.fw-min .fw-toolbar, html:not(.js) .forecast-win.fw-min .fw-body { display: block; }
     html:not(.js) .live-win, html:not(.js) .tide-win { display: none !important; }
+    html:not(.js) .wind-win { display: none !important; }
     html:not(.js) .fw-btn, html:not(.js) .fw-resize, html:not(.js) .fw-edge, html:not(.js) #settingsBtn { display: none; }
     html:not(.js) .settings-panel { position: static; width: auto; box-shadow: none; border: 0; padding: 0; display: flex; gap: 10px; }
     html:not(.js) .settings-panel[hidden] { display: flex !important; }         /* Bootstrap's [hidden] is !important */
@@ -604,6 +680,7 @@
     html:not(.js) #graphs { display: none !important; }
     @media print {
       #map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .tide-win, .sr-star, .station-caret, .tools-host, .tools-bar { display: none !important; }
+      .wind-win { display: none !important; }
       .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
       .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
       #forecastTable[hidden] { display: block !important; } #graphs, #forecastSummary { display: none !important; }   /* the charts are not printable: the detailed table is */
@@ -673,6 +750,7 @@
       .fwin.fw-min { left: 0 !important; right: 0 !important; bottom: 0 !important; top: auto !important; width: 100vw !important; max-width: none; border-radius: 10px 10px 0 0; }
       .live-win.fw-min { bottom: var(--fw-bar-h, 48px) !important; }     /* stacked above the forecast bar (its measured height) */
       .tide-win.fw-min { bottom: calc(var(--fw-bar-h, 48px) + var(--lw-bar-h, 0px)) !important; }   /* above the live bar when one is parked */
+      .wind-win.fw-min { bottom: calc(var(--fw-bar-h, 48px) + var(--lw-bar-h, 0px) + var(--tw-bar-h, 0px)) !important; }   /* above the tide bar (section 39) */
       /* the bar cannot fit a long name AND the run text: the name has priority (the run text shrinks four times as
          fast, to an ellipsis; it is whole once the bar is expanded) */
       .fwin .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }   /* gives way first, also full screen (G22 K-3, R-B3) */
@@ -1034,18 +1112,46 @@
     <div id="twResize" class="fw-resize" tabindex="0" role="img" aria-label="Resize the tide station window with the arrow keys" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" title="Drag or use the arrow keys to resize"></div>
   </section>
 
+  <!-- The wind-station window (plan section 39): a fourth floating window; its chart is drawn by static_ui/winds.js. -->
+  <section id="windWin" class="fwin wind-win" hidden role="region" aria-label="Wind station">
+    <div id="wwHeader" class="fw-header" tabindex="-1">
+      <div class="fw-titles">
+        <strong id="windTitle">Wind station</strong>
+        <span id="windSubtitle" class="fw-cycle"></span>
+      </div>
+      <button type="button" id="wwMin" class="fw-btn" aria-label="Minimise wind station" aria-expanded="true">&#8211;</button>
+      <button type="button" id="wwClose" class="fw-btn" aria-label="Close wind station">&times;</button>
+    </div>
+    <div id="wwBody" class="fw-body">
+      <div id="windLoading" class="text-muted"><span class="spinner" style="vertical-align:middle;"></span> Loading the wind readings&hellip;</div>
+      <div id="windError" class="alert alert-warning py-2 d-none" role="alert"><span id="windErrorText"></span>
+        <button type="button" id="windRetry" class="btn btn-sm btn-outline-secondary ms-2">Retry</button></div>
+      <div id="windContent" class="d-none">
+        <div id="windCurrent"></div>
+        <div id="windChart"></div>
+        <div id="windArrows"></div>
+        <details class="wind-readings"><summary>Readings</summary><div id="windTable"></div></details>
+        <div id="windMeta"></div>
+      </div>
+    </div>
+    <div class="fw-edge fw-edge-n" data-edge="n" aria-hidden="true"></div><div class="fw-edge fw-edge-s" data-edge="s" aria-hidden="true"></div><div class="fw-edge fw-edge-e" data-edge="e" aria-hidden="true"></div><div class="fw-edge fw-edge-w" data-edge="w" aria-hidden="true"></div><div class="fw-edge fw-edge-ne" data-edge="ne" aria-hidden="true"></div><div class="fw-edge fw-edge-nw" data-edge="nw" aria-hidden="true"></div><div class="fw-edge fw-edge-sw" data-edge="sw" aria-hidden="true"></div>
+    <div id="wwResize" class="fw-resize" tabindex="0" role="img" aria-label="Resize the wind station window with the arrow keys" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" title="Drag or use the arrow keys to resize"></div>
+  </section>
+
   <!-- Leaflet: needed synchronously by the map script right below, but no longer blocks
        the parser before the page body is painted. -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/ui/graticule.js?v={{ ui_asset_version }}"></script>
   <script src="/ui/livelist.js?v={{ ui_asset_version }}"></script>
   <script src="/ui/tides.js?v={{ ui_asset_version }}"></script>
+  <script src="/ui/winds.js?v={{ ui_asset_version }}"></script>
   <script>
     // ---- Preserve map zoom/center between requests ----
     const mapKey = 'mapView';
     const layerVisibilityKey = 'mapLayerVisibility';
     let liveWin = null;                         // the live-buoy floating window (static_ui/forecast.js), set by the last script
     let tideWin = null;                         // the tide-station window (plan section 38), likewise
+    let windWin = null;                         // the wind-station window (plan section 39), likewise
 
     // Web Mercator practical latitude limits.
     // Longitude is intentionally not bounded so the map can scroll continuously east/west.
@@ -1101,12 +1207,13 @@
             forecast: saved.forecast !== false,
             live: saved.live !== false,
             points: saved.points !== false,
-            tides: saved.tides !== false
+            tides: saved.tides !== false,
+            wind: saved.wind !== false
           };
         }
       } catch(e) {}
 
-      return { forecast: true, live: true, points: true, tides: true };
+      return { forecast: true, live: true, points: true, tides: true, wind: true };
     }
 
     function saveLayerVisibility() {
@@ -1116,7 +1223,8 @@
           forecast: map.hasLayer(forecastLayer),
           live: map.hasLayer(liveBuoyLayer),
           points: map.hasLayer(pointLayer),
-          tides: map.hasLayer(tideLayer)
+          tides: map.hasLayer(tideLayer),
+          wind: map.hasLayer(windLayer)
         })
       );
     }
@@ -1194,6 +1302,10 @@
     const tideIcon = L.divIcon({ className: 'tide-icon', html: '', iconSize: [18, 18], iconAnchor: [9, 9] });
     const tideIconActive = L.divIcon({ className: 'tide-icon tide-icon-active', html: '', iconSize: [22, 22], iconAnchor: [11, 11] });
     if (initialLayerVisibility.tides) tideLayer.addTo(map);
+    // NOAA / NWS wind stations (plan section 39): flags from zoom WIND_MIN_ZOOM (rebuildWindMarkers), their readings
+    // refreshed in place every 5 minutes (static_ui/winds.js), a window with the last 24 hours (openWindStation).
+    const windLayer = L.layerGroup();
+    if (initialLayerVisibility.wind) windLayer.addTo(map);
 
     if (initialLayerVisibility.forecast) {
       forecastLayer.addTo(map);
@@ -1212,7 +1324,8 @@
         '<span class="lc-dot lc-forecast"></span>Forecast points': forecastLayer,
         '<span class="lc-dot lc-live"></span>Live buoys<span class="lc-note" data-live-note aria-hidden="true"></span>': liveBuoyLayer,
         '<span class="lc-dot lc-point"></span>My points': pointLayer,
-        '<span class="lc-dot lc-tide"></span>Tide stations<span class="lc-note" data-tide-note aria-hidden="true"></span>': tideLayer
+        '<span class="lc-dot lc-tide"></span>Tide stations<span class="lc-note" data-tide-note aria-hidden="true"></span>': tideLayer,
+        '<span class="lc-dot lc-wind"></span>Wind stations<span class="lc-note" data-wind-note aria-hidden="true"></span>': windLayer
       },
       {
         collapsed: false
@@ -1237,15 +1350,25 @@
         measureTopRight();
       }
     }
+    // The wind layer's note likewise ("zoom in to see wind stations" below the gate, the list's and the feed's state).
+    let windNoteText = '';
+    function paintWindNote() {
+      const el = document.querySelector('.leaflet-control-layers [data-wind-note]');
+      if (el && el.textContent !== windNoteText) {
+        el.textContent = windNoteText;
+        measureTopRight();
+      }
+    }
     if (typeof layersControl._update === 'function') {
       const lcUpdate = layersControl._update;
-      layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintLiveNote(); return r; };
+      layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintWindNote(); paintLiveNote(); return r; };
     }
 
     map.on('overlayadd', saveLayerVisibility);
     map.on('overlayremove', saveLayerVisibility);
     // the tide layer ticked or unticked: its markers, its note and its credit follow
     map.on('overlayadd overlayremove', function (e) { if (e.layer === tideLayer) rebuildTideMarkers(true); });
+    map.on('overlayadd overlayremove', function (e) { if (e.layer === windLayer) rebuildWindMarkers(true); });   // the flags, the feed, the note, the credit
     map.on('overlayadd', function (e) { if (e.layer === liveBuoyLayer) rebuildLiveBuoyMarkers(true); });   // new elements: keys, Tab stops
 
     // The settings gear under the layer legend (top-right); its panel (Time Zone, Units, gridlines) opens below it.
@@ -1441,7 +1564,10 @@
       document.documentElement.style.setProperty('--lw-bar-h', liveBar + 'px');   // the tide bar stacks above the live bar
       const tw = document.getElementById('tideWin');
       const tideBar = tw && !tw.hidden && tw.classList.contains('fw-min') ? tw.offsetHeight : 0;
-      const reserve = phone ? phoneBarH + liveBar + tideBar : 0;
+      document.documentElement.style.setProperty('--tw-bar-h', tideBar + 'px');   // the wind bar stacks above the tide bar (section 39)
+      const ww = document.getElementById('windWin');
+      const windBar = ww && !ww.hidden && ww.classList.contains('fw-min') ? ww.offsetHeight : 0;
+      const reserve = phone ? phoneBarH + liveBar + tideBar + windBar : 0;
       const targetH = Math.max(phone ? 180 : 280, window.innerHeight - reserve);
       el.style.height = targetH + 'px';
       measureTopRight();
@@ -1570,6 +1696,27 @@
     let lastTideSig = null;
     let tideCreditShown = false;                    // Leaflet counts add/removeAttribution calls: change it only on a change
     let tideView = null;
+    // the wind layer's state (plan section 39; the functions follow the tide block below)
+    const WIND_MIN_ZOOM = 9;                        // the flags show from this map zoom (fractional zooms: >=)
+    const WIND_ALL_ZOOM = MAX_MAP_ZOOM;             // from this zoom every station shows; below it overlapping flags are thinned
+    const WIND_GAP_PX = 40;                         // flags (40 px) closer than this on screen overlap: the less important waits
+    const WIND_CELL_PX = 64;                        // the reveal grid: >= WIND_GAP_PX, and a divisor of the world's width
+    const WIND_LIST_RETRY_MS = 30000;               // a failed station list is asked again after this
+    const WIND_CREDIT = 'Wind: <a href="https://www.ndbc.noaa.gov/" target="_blank" rel="noopener">NOAA NDBC</a> · <a href="https://tidesandcurrents.noaa.gov/" target="_blank" rel="noopener">CO-OPS</a> · <a href="https://aviationweather.gov/" target="_blank" rel="noopener">NWS Aviation Weather</a>';
+    const WIND_KIND_TEXT = { gauge: 'NOAA tide gauge', buoy: 'NDBC buoy', cman: 'NDBC C-MAN station', station: 'NDBC station', airport: 'Airport (METAR)' };
+    let windListFailedAt = -Infinity;
+    let windReveal = null, windRevealKey = '';      // each station's reveal zoom (once per list)
+    let windStationsData = [];
+    let windListPromise = null;
+    let windListNote = '';                          // the list's own state ('loading…', 'unavailable')
+    let windFeedNote = '';                          // the feed's ('loading…', 'loading more…', 'retrying…', 'unavailable')
+    let activeWindId = null;
+    let windDrawn = [];                             // the drawn markers: { marker, s, lng, o, flag, label, active }
+    let lastWindSig = null;
+    let windCreditShown = false;
+    let windView = null, windFeed = null;
+    let windReadings = {};                          // id -> the latest reading {t, s, g, d} (static_ui/winds.js readings())
+    let windStaleS = 7200;                          // the server's stale_s (a reading older than this is drawn grey)
 
     // `force` rebuilds immediately (init, resize, data load); otherwise the
     // request is debounced so rapid pan/zoom doesn't thrash the marker layers.
@@ -1581,6 +1728,7 @@
         rebuildForecastMarkers(true);
         rebuildLiveBuoyMarkers(true);
         rebuildPointMarkers(true);
+        rebuildWindMarkers(true);
         rebuildTideMarkers(true);
         return;
       }
@@ -1591,6 +1739,7 @@
         rebuildForecastMarkers(false);
         rebuildLiveBuoyMarkers(false);
         rebuildPointMarkers(false);
+        rebuildWindMarkers(false);
         rebuildTideMarkers(false);
       }, REFRESH_DEBOUNCE_MS);
     }
@@ -2673,6 +2822,8 @@
     if (unitSelect) {
       unitSelect.addEventListener('change', () => {
         if (tideView) tideView.setUnit(getSelectedUnit());               // the tide window follows the unit (plan section 38)
+        if (windView) windView.setUnit(getSelectedUnit());               // the wind window and the flags too (plan section 39)
+        refreshWindFlags();
         // A "No Recent Reports" panel has no values to convert -- keep it as-is.
         if (lastNoRecentStation) {
           showLiveBuoyNoRecent(lastNoaaWaveSummaryData, lastNoRecentStation);
@@ -2707,7 +2858,10 @@
     // ... and the site's Time Zone (the tide window shows its station's own zone until one is chosen)
     (function () {
       const tzSel = document.getElementById('tz');
-      if (tzSel) tzSel.addEventListener('change', function () { if (tideView) tideView.setZone(tzSel.value || ''); });
+      if (tzSel) tzSel.addEventListener('change', function () {
+        if (tideView) tideView.setZone(tzSel.value || '');
+        if (windView) windView.setZone(tzSel.value || '');
+      });
     })();
 
     function createLiveBuoyIcon(isActive = false) {
@@ -3079,6 +3233,217 @@
     // Wire map movement after all wrapped-marker state and rebuild functions exist.
     map.on('moveend', handleMapMoveEnd);
     map.on('zoomend', clampMapLatitude);
+
+    // ---------------- Wind stations (plan section 39) ----------------
+    // The station list (/api/wind/stations, a committed snapshot) is asked for the first time the layer is ticked at
+    // zoom WIND_MIN_ZOOM or closer; below the gate the layer is empty and its legend note says so. The latest readings
+    // come from a feed (static_ui/winds.js: /api/wind/latest every 5 minutes while the flags show, nothing while the
+    // tab is hidden) and are painted into the drawn flags IN PLACE: the markers, their listeners and the focus stay.
+    // The helpers it shares with the tide block (keyOpens, refocusMarker, setTabStops, hiddenInView, focusMapAfterClose)
+    // are above.
+    function loadWindStations() {
+      if (windListPromise) return windListPromise;
+      windListNote = 'loading…';
+      windListPromise = fetch('/api/wind/stations', { headers: { Accept: 'application/json' } }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (doc) {
+        const f = doc.fields, ix = function (k) { return f.indexOf(k); };
+        const I = { id: ix('id'), name: ix('name'), lat: ix('lat'), lon: ix('lon'), kind: ix('kind'), src: ix('src'), tz: ix('tz'), alias: ix('alias') };
+        windStationsData = (doc.stations || []).map(function (r) {
+          return { id: String(r[I.id]), name: String(r[I.name] || r[I.id]), lat: +r[I.lat], lon: +r[I.lon], kind: String(r[I.kind] || ''),
+                   src: String(r[I.src] || ''), tz: r[I.tz] || 'UTC', alias: r[I.alias] ? String(r[I.alias]) : null };
+        }).filter(function (st) { return Number.isFinite(st.lat) && Number.isFinite(st.lon); });
+        windListNote = '';
+        rebuildWindMarkers(true);
+      }, function () {
+        windListPromise = null;                       // asked again on a pan or zoom WIND_LIST_RETRY_MS later
+        windListFailedAt = Date.now();
+        windListNote = 'unavailable';
+        rebuildWindMarkers(false);
+      });
+      return windListPromise;
+    }
+    function windVisible() { return map.hasLayer(windLayer) && map.getZoom() >= WIND_MIN_ZOOM; }
+    // Busy coasts: a reveal zoom per station as for the tide icons (importance: a gauge or a buoy, then a C-MAN or
+    // another fixed station, then an airport, then by id), WIND_GAP_PX clear of every more important flag shown before
+    // it; every station at the map's last zoom; the opened station whatever its reveal zoom.
+    function windRank(s) { return s.kind === 'gauge' || s.kind === 'buoy' ? 0 : s.kind === 'airport' ? 2 : 1; }
+    function windRankOrder(a, b) { return windRank(a) - windRank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }
+    function windRevealZooms() {
+      const key = String(windStationsData.length);
+      if (windReveal && windRevealKey === key) return windReveal;
+      const W = 256 * Math.pow(2, WIND_MIN_ZOOM), cols = W / WIND_CELL_PX, cells = new Map(), out = {};
+      windStationsData.slice().sort(windRankOrder).forEach(function (s) {
+        const p = map.project([s.lat, ((s.lon + 540) % 360) - 180], WIND_MIN_ZOOM);
+        const x = ((p.x % W) + W) % W, cx = Math.floor(x / WIND_CELL_PX), cy = Math.floor(p.y / WIND_CELL_PX);
+        let need = WIND_MIN_ZOOM;
+        for (let i = cx - 1; i <= cx + 1; i++) {
+          for (let j = cy - 1; j <= cy + 1; j++) {
+            (cells.get((((i % cols) + cols) % cols) + ',' + j) || []).forEach(function (q) {
+              let dx = Math.abs(q.x - x); dx = Math.min(dx, W - dx);            // across the date line too
+              const d = Math.hypot(dx, q.y - p.y);
+              const clear = d > 0 ? WIND_MIN_ZOOM + Math.log2(WIND_GAP_PX / d) : Infinity;
+              if (clear > q.z && clear > need) need = clear;
+            });
+          }
+        }
+        out[s.id] = need;
+        const k = cx + ',' + cy;
+        if (!cells.has(k)) cells.set(k, []);
+        cells.get(k).push({ x: x, y: p.y, z: need });
+      });
+      windReveal = out; windRevealKey = key;
+      return out;
+    }
+    function thinWindCopies(copies) {
+      const z = map.getZoom();
+      if (z >= WIND_ALL_ZOOM) return copies;
+      const rz = windRevealZooms();
+      return copies.filter(function (c) { return c.s.id === activeWindId || !(rz[c.s.id] > z + 1e-9); });
+    }
+    function windReading(id) { return windReadings[id] || null; }
+    function windLabel(s, r) {                        // the marker's words (its title, its tooltip): the station and its reading
+      const W = window.AllshoreWinds;
+      return 'Wind station ' + s.name + (W ? ': ' + W.readingText(r, Date.now(), getSelectedUnit()) : '');
+    }
+    function windSubtitle(s) {
+      const local = String(s.id).split(':')[1] || s.id;
+      return 'Wind · ' + (WIND_KIND_TEXT[s.kind] || 'Station') + ' ' + local + (s.alias ? ' (NDBC ' + s.alias + ')' : '');
+    }
+    // the feed of latest readings: running only while the flags show (the layer on, at the gate); its answers repaint
+    // the drawn flags; its state goes to the legend note
+    function ensureWindFeed() {
+      if (windFeed || !window.AllshoreWinds) return windFeed;
+      windFeed = window.AllshoreWinds.createWindFeed({
+        fetch: function (u, o) { return fetch(u, o); },
+        visibility: { isVisible: function () { return !document.hidden; }, onChange: function (fn) { document.addEventListener('visibilitychange', fn); } }
+      });
+      return windFeed;
+    }
+    function syncWindFeed(on) {
+      const feed = on ? ensureWindFeed() : windFeed;
+      if (!feed) return;
+      if (on) {
+        feed.start({
+          onData: function (payload, info) {
+            windReadings = (info && info.readings) || {};
+            if (payload && Number.isFinite(payload.stale_s)) windStaleS = payload.stale_s;
+            refreshWindFlags();
+          },
+          onStatus: function (code, text) { windFeedNote = text || ''; syncWindNote(); }
+        });
+      } else feed.stop();
+    }
+    function windNoteWanted(on, all, vis) {
+      if (!map.hasLayer(windLayer)) return '';
+      if (!on) return 'zoom in to see wind stations';
+      if (!windStationsData.length) return windListNote;
+      if (windFeedNote) return windFeedNote;
+      return hiddenInView(all, vis) ? 'zoom in for more stations' : '';
+    }
+    function syncWindNote() {
+      const on = windVisible(), all = on ? visibleCopies(windStationsData) : [], vis = on ? thinWindCopies(all) : [];
+      const want = windNoteWanted(on, all, vis);
+      if (want !== windNoteText) { windNoteText = want; paintWindNote(); }
+    }
+    // the drawn flags repainted from the latest readings (a feed answer, a unit change): each flag's text, classes
+    // and arrow change in place; the markers, their listeners and the focus stay
+    function refreshWindFlags() {
+      if (!windDrawn.length || !window.AllshoreWinds) return;
+      const W = window.AllshoreWinds, now = Date.now(), unit = getSelectedUnit();
+      windDrawn.forEach(function (d) {
+        const r = windReading(d.s.id);
+        W.updateFlag(d.flag, r, now, unit, windStaleS);
+        const label = windLabel(d.s, r);
+        if (d.label === label) return;
+        d.label = label;
+        if (d.marker.setTooltipContent) d.marker.setTooltipContent(textTip(label));
+        const el = d.marker.getElement && d.marker.getElement();
+        if (el && el.setAttribute) { el.setAttribute('title', label); el.setAttribute('aria-label', label); }
+      });
+    }
+    function windTabStops() {
+      if (!windDrawn.length || !map.latLngToContainerPoint) return;
+      setTabStops(windDrawn.map(function (d) { return d.marker; }), function (m, i) { return map.latLngToContainerPoint([windDrawn[i].s.lat, windDrawn[i].lng]); });
+    }
+    function rebuildWindMarkers(force = false) {
+      const on = windVisible();
+      if (on && !windListPromise && Date.now() - windListFailedAt >= WIND_LIST_RETRY_MS) loadWindStations();
+      const all = on ? visibleCopies(windStationsData) : [], vis = on ? thinWindCopies(all) : [];
+      const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis);   // the gate bit clears the layer on a zoom-out
+      const want = windNoteWanted(on, all, vis);
+      if (want !== windNoteText) { windNoteText = want; paintWindNote(); }
+      if (map.attributionControl && map.hasLayer(windLayer) !== windCreditShown) {   // the credit while the layer is on
+        windCreditShown = !windCreditShown;
+        if (windCreditShown) map.attributionControl.addAttribution(WIND_CREDIT); else map.attributionControl.removeAttribution(WIND_CREDIT);
+      }
+      syncWindFeed(on);
+      if (!force && sig === lastWindSig) { windTabStops(); return; }
+      lastWindSig = sig;
+      const focusKey = focusedMarkerKey();
+      windLayer.clearLayers();
+      windDrawn = [];
+      const W = window.AllshoreWinds, now = Date.now(), unit = getSelectedUnit();
+      vis.forEach(function (c) {
+        const s = c.s, active = s.id === activeWindId, r = windReading(s.id);
+        const flag = W ? W.buildFlag(document, r, now, unit, windStaleS) : document.createElement('div');
+        const icon = L.divIcon({ className: 'wind-marker' + (active ? ' wind-marker-active' : ''), html: flag, iconSize: [40, 40], iconAnchor: [20, 20], tooltipAnchor: [0, -14] });
+        const label = windLabel(s, r);
+        // below the live-buoy dots (500) and the tide icons (400): a flag beside a buoy's dot or a gauge's icon leaves them clickable
+        const marker = L.marker([s.lat, c.lng], { icon: icon, title: label, zIndexOffset: active ? 350 : 300, autoPanOnFocus: false }).addTo(windLayer);
+        windDrawn.push({ marker: marker, s: s, lng: c.lng, o: c.o, flag: flag, label: label, active: active });
+        marker.bindTooltip(textTip(label), { permanent: false, direction: 'top', offset: [0, -8] });   // the name: text, never HTML
+        keyOpens(marker, 'w:' + s.id + '#' + c.o, 'wwHeader');
+        marker.on('click', function (e) {
+          if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map
+          activeWindId = s.id;
+          rebuildWindMarkers(true);
+          saveMapView(map);
+          saveLayerVisibility();
+          openWindStation(s);
+        });
+      });
+      refocusMarker(windDrawn.map(function (d) { return d.marker; }), focusKey, 'w:');
+      windTabStops();
+    }
+    // the zone the wind window shows: the site's Time Zone when one is chosen, else the station's own (the tide window's rule)
+    function windZone(station) { const sel = document.getElementById('tz'); return (sel && sel.value) || (station && station.tz) || 'UTC'; }
+    function ensureWindView() {
+      if (windView || !window.AllshoreWinds) return windView;
+      const $ = function (id) { return document.getElementById(id); };
+      windView = window.AllshoreWinds.createWindView({
+        els: { content: $('windContent'), loading: $('windLoading'), error: $('windError'), errorText: $('windErrorText'), retry: $('windRetry'),
+               current: $('windCurrent'), chart: $('windChart'), arrows: $('windArrows'), table: $('windTable'), meta: $('windMeta') },
+        document: document, fetch: function (u, o) { return fetch(u, o); },
+        visible: function () { return !!(windWin && windWin.isOpen() && windWin.window.mode !== 'min'); },
+        width: function () { const c = $('windChart'); return c ? c.clientWidth : 0; },
+        unit: getSelectedUnit(),
+        zoneAbbr: function (ms, tz) { try { return tzAbbr(new Date(ms).toISOString(), tz); } catch (e) { return tz; } },
+        onRetried: function () {                      // the focus back in the window, never from where the visitor went meanwhile
+          const h = document.getElementById('wwHeader'), a = document.activeElement, w = document.getElementById('windWin');
+          if (h && h.focus && (!a || a === document.body || (w && w.contains && w.contains(a)))) h.focus({ preventScroll: true });
+        }
+      });
+      return windView;
+    }
+    function openWindStation(station) {
+      if (!ensureWindView()) return;
+      document.getElementById('windTitle').textContent = station.name;
+      document.getElementById('windSubtitle').textContent = windSubtitle(station);
+      if (windWin) windWin.open(); else document.getElementById('windWin').hidden = false;
+      try { document.dispatchEvent(new CustomEvent('allshore:windpanel')); } catch (e) {}   // bring the window forward
+      windView.load(station, { unit: getSelectedUnit(), zone: windZone(station) });
+    }
+    function closeWindWindow() {
+      if (windWin) windWin.close(); else { document.getElementById('windWin').hidden = true; windWindowClosed(); }
+    }
+    function windWindowClosed() {                     // from the x, Escape or closeWindWindow (the window's onClose)
+      if (windView) windView.clear();
+      if (activeWindId !== null) { activeWindId = null; rebuildWindMarkers(true); }
+      focusMapAfterClose('windWin');
+    }
+    // ---------------- (end of the wind stations block) ----------------
 
     window.addEventListener('resize', enforceSingleWorld);
     enforceSingleWorld();
@@ -3641,17 +4006,23 @@
         liveOpen: function () { return !!(liveWin && liveWin.isOpen() && liveWin.window.mode !== 'min'); },   // Escape leaves a parked chip alone
         closeTidePanel: closeTideWindow,
         tideOpen: function () { return !!(tideWin && tideWin.isOpen() && tideWin.window.mode !== 'min'); },   // Escape: the tide window first
+        closeWindPanel: closeWindWindow,
+        windOpen: function () { return !!(windWin && windWin.isOpen() && windWin.window.mode !== 'min'); },   // ... after the wind window (section 39)
         early: window.__early
       });
       // The live-buoy window: open / close from the map script (closeLiveBuoyPanel, showLiveBuoyPanelLoading);
       // in phone mode its bar changes the map's height.
       // the chips at the bottom-right: the tide chip stacks above a parked live chip (its measured height)
+      // (the wind chip stacks on top of them: --chips-h is the parked live and tide chips' heights plus a gap each)
       function syncChips() {
-        [['liveBuoyPanel', '--lw-chip-h'], ['tideWin', '--tw-chip-h']].forEach(function (c) {
+        var below = 0;
+        [['liveBuoyPanel', '--lw-chip-h'], ['tideWin', '--tw-chip-h'], ['windWin', '--ww-chip-h']].forEach(function (c) {
           var el = document.getElementById(c[0]);
           var h = el && !el.hidden && el.classList.contains('fw-min') ? el.offsetHeight : 0;
           document.documentElement.style.setProperty(c[1], h + 'px');
+          if (h && c[0] !== 'windWin') below += h + 8;
         });
+        document.documentElement.style.setProperty('--chips-h', below + 'px');
       }
       // the forecast window parked as a chip: below 1180 px the station windows' default boxes rise above it (RC-13)
       (function () {
@@ -3687,11 +4058,23 @@
           if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();
         });
       }
+      // The wind-station window (plan section 39): opened by openWindStation; its chart follows its size; closed from
+      // any mode, which clears the chart and the flag's rim.
+      if (window.AllshoreForecast && window.AllshoreForecast.createWindWindow) {
+        windWin = window.AllshoreForecast.createWindWindow({ onClose: windWindowClosed, onResize: function () { if (windView) windView.resize(); } });
+        document.addEventListener('allshore:windwin', function (e) {
+          var d = e.detail || {};
+          document.body.classList.toggle('wind-chip', !!(d.open && d.mode === 'min'));
+          syncChips();
+          if (d.open && d.mode !== 'min' && windView) windView.show();
+          if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();
+        });
+      }
       // The window touched last is on top (the live window's z 2000 covers the forecast window otherwise): the
       // forecast window comes forward when it is clicked, focused or opened by a pick; the live window when it is
       // clicked, focused or opens for a buoy. Phones keep their own full-screen order (z 3500 for both).
       (function () {
-        var wins = [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel'), document.getElementById('tideWin')];
+        var wins = [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel'), document.getElementById('tideWin'), document.getElementById('windWin')];
         if (!wins[0] || !wins[1]) return;
         function front(which) { wins.forEach(function (w, i) { if (w) w.classList.toggle('fw-front', i === which); }); }   // exactly one on top
         wins.forEach(function (w, i) {
@@ -3702,6 +4085,7 @@
         document.addEventListener('allshore:station', function () { front(0); });
         document.addEventListener('allshore:livepanel', function () { front(1); });
         document.addEventListener('allshore:tidepanel', function () { front(2); });
+        document.addEventListener('allshore:windpanel', function () { front(3); });
       })();
     })();
   </script>
@@ -3719,7 +4103,7 @@
         measureTopRight();
         if (!grew) return;
         var b = bar.getBoundingClientRect(), had = document.activeElement;
-        [['liveBuoyPanel', 'lwMin'], ['tideWin', 'twMin'], ['forecastWin', 'fwMin']].forEach(function (w) {
+        [['liveBuoyPanel', 'lwMin'], ['tideWin', 'twMin'], ['windWin', 'wwMin'], ['forecastWin', 'fwMin']].forEach(function (w) {
           var el = document.getElementById(w[0]), min = document.getElementById(w[1]);
           if (!el || !min || el.hidden || el.classList.contains('fw-min')) return;
           var r = el.getBoundingClientRect();
@@ -3734,7 +4118,7 @@
         });
       },
       // the floating windows are obstacles for the exposure fan
-      obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel'), document.getElementById('tideWin')]; },
+      obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel'), document.getElementById('tideWin'), document.getElementById('windWin')]; },
       // on a short map the overlay panel's details leave no room for the fan: they fold when the exposure tool starts
       // (owner, G20 re-review; the ▸ button shows them again)
       onStart: function (bar, tool) {

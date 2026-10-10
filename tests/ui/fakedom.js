@@ -135,6 +135,15 @@ function buildPage(win) {
   el('div', 'tideLoading', twBody); const tideError = el('div', 'tideError', twBody); el('span', 'tideErrorText', tideError); el('button', 'tideRetry', tideError);
   const tideContent = el('div', 'tideContent', twBody); el('div', 'tideStrip', tideContent); el('div', 'tideMeta', tideContent);
   const tideEdges = edges(tide); el('div', 'twResize', tide);
+  // the wind-station window (plan section 39): a fourth FloatingWindow, hidden until a wind station is picked
+  const wind = el('section', 'windWin', doc.body); wind.hidden = true; wind.rect = { left: 520, top: 200, width: 700, height: 600 };
+  const wwHeader = el('div', 'wwHeader', wind); el('strong', 'windTitle', wwHeader); el('span', 'windSubtitle', wwHeader);
+  const wwMin = el('button', 'wwMin', wwHeader); const wwClose = el('button', 'wwClose', wwHeader);
+  const wwBody = el('div', 'wwBody', wind); wwBody.clientHeight = 560;
+  el('div', 'windLoading', wwBody); const windError = el('div', 'windError', wwBody); el('span', 'windErrorText', windError); el('button', 'windRetry', windError);
+  const windContent = el('div', 'windContent', wwBody);
+  ['windCurrent', 'windChart', 'windArrows', 'windTable', 'windMeta'].forEach((id) => el('div', id, windContent));
+  const windEdges = edges(wind); el('div', 'wwResize', wind);
   const w = el('section', 'forecastWin', doc.body); w.rect = { left: 84, top: 300, width: 1180, height: 480 };
   const header = el('div', 'fwHeader', w);
   // the favourites picker is the window's heading: the station field with its trigger, label and native select
@@ -158,7 +167,8 @@ function buildPage(win) {
   const graphs = el('div', 'graphs', body); graphs.hidden = true;
   ['heightChart', 'periodChart', 'directionChart'].forEach((id) => { const box = el('div', null, graphs); box.classList.add('chart-box'); el('canvas', id, box); });
   const winEdges = edges(w); el('div', 'fwResize', w);
-  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwClose, liveEdges, tide, twHeader, twMin, twClose, twBody, tideEdges, w, winEdges, header, viewBar, modelBar, modeBar, rangeBar, body, table, summary, graphs };
+  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwClose, liveEdges, tide, twHeader, twMin, twClose, twBody, tideEdges,
+           wind, wwHeader, wwMin, wwClose, wwBody, windEdges, w, winEdges, header, viewBar, modelBar, modeBar, rangeBar, body, table, summary, graphs };
 }
 
 // A canvas 2D context stand-in that records what the sky / now plugins draw.

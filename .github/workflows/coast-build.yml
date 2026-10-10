@@ -40,7 +40,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38   # v6.5.0
         with:
           node-version: "24"
-      - run: node --test --test-timeout=20000 tests/overlay/coast.test.js tests/overlay/playback.test.js tests/overlay/overlay.test.js tests/overlay/bootstrap.test.js tests/overlay/flow.test.js tests/overlay/panel.test.js tests/ui/forecast.test.js tests/ui/window.test.js tests/ui/mapclamp.test.js tests/ui/early.test.js tests/ui/graticule.test.js tests/ui/tools.test.js tests/ui/tools-ui.test.js tests/ui/points.test.js tests/ui/mypoints.test.js tests/ui/forecast-view.test.js tests/ui/livelist.test.js tests/ui/livelist-page.test.js tests/ui/tides.test.js tests/ui/tides-page.test.js tests/ui/winds.test.js
+      - run: node --test --test-timeout=20000 tests/overlay/coast.test.js tests/overlay/playback.test.js tests/overlay/overlay.test.js tests/overlay/bootstrap.test.js tests/overlay/flow.test.js tests/overlay/panel.test.js tests/ui/forecast.test.js tests/ui/window.test.js tests/ui/mapclamp.test.js tests/ui/early.test.js tests/ui/graticule.test.js tests/ui/tools.test.js tests/ui/tools-ui.test.js tests/ui/points.test.js tests/ui/mypoints.test.js tests/ui/forecast-view.test.js tests/ui/livelist.test.js tests/ui/livelist-page.test.js tests/ui/tides.test.js tests/ui/tides-page.test.js tests/ui/winds.test.js tests/ui/winds-page.test.js
   build:
     if: github.event_name == 'workflow_dispatch'
     needs: tests

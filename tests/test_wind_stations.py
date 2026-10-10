@@ -208,14 +208,15 @@ def test_metar_reporting_batches_and_survives_a_lost_batch():
         ids = re.search(r"ids=([^&]+)", url).group(1).split(",")
         asked.append(ids)
         assert "hours=24" in url and "format=json" in url
-        if "LOST" in ids:
+        if "0LOST" in ids:
             raise OSError("timeout")
         return [{"icaoId": i, "wspd": None if i.startswith("Q") else 5} for i in ids] + [{"icaoId": "OTHER", "wspd": 3}]
 
-    ids = ["A%02d" % k for k in range(20)] + ["Q1", "LOST"]
+    ids = ["A%02d" % k for k in range(20)] + ["Q1", "0LOST"]          # sorted: the lost batch holds 0LOST, not Q1
     got = W.metar_reporting(ids, fetch=fetch, pause=0)
     assert all(len(b) <= W.METAR_API_IDS for b in asked) and sum(len(b) for b in asked) == len(ids)
-    lost = next(b for b in asked if "LOST" in b)
+    lost = next(b for b in asked if "0LOST" in b)
+    assert "Q1" not in lost
     assert got == {i for i in ids if i.startswith("A") and i not in lost}   # no Q (no speed), no OTHER (not asked)
 
 
@@ -248,6 +249,18 @@ def test_coast_index_ignores_cell_lines_and_wraps_the_date_line():
     assert abs(idx.distance_km(0.05, -179.8, 50) - 0.1 * 111.32) < 0.2   # east of the island: its east coast
     assert abs(idx.distance_km(0.05, 179.8, 50) - 0.1 * 111.32) < 0.2    # west of it, across the line
     assert abs(idx.distance_km(0.05, 180.0, 50) - 0.1 * 111.32) < 0.2    # on the cut: 11 km from either coast
+
+
+def test_coast_index_finds_coast_only_across_the_date_line():
+    import numpy as np
+    # an island's east coast runs from 179.95 E to exactly 180 (not a cell line: a diagonal); the point lies east of
+    # the line, so the coast is only found through the buckets' wrap (stored at column 720 = 0, looked up from -1)
+    idx = W.CoastIndex((np.array([179.95]), np.array([0.0]), np.array([180.0]), np.array([0.05])))
+    assert idx.dropped == 0
+    d = idx.distance_km(0.05, -179.99, 30)
+    assert abs(d - 0.01 * 111.32) < 0.05, d
+    idx2 = W.CoastIndex((np.array([179.8]), np.array([0.0]), np.array([179.8]), np.array([0.1])))
+    assert abs(idx2.distance_km(0.05, -179.95, 30) - 0.25 * 111.32) < 0.1
 
 
 def test_in_land_on_the_hawaii_crop():

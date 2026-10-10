@@ -432,21 +432,21 @@
        ring, a reading older than 2 h grey. The station in its window gets a coral rim. */
     /* Clicks reach a flag only on its visible parts (the ring, the arrow's shape, the number), never on the empty 40-px box:
        a forecast point or a map click beside a flag keeps working (owner, 2026-10-10). On touch screens the ring has a
-       30-px disc around it. A forecast point under the ring (.wind-hollow, set by the page) leaves the ring hollow and
-       without clicks: the yellow dot shows through and keeps its click; the arrow and the number still open the window. */
+       33-px disc around it. A forecast point under the ring (.wind-hollow, set by the page) leaves the ring hollow and
+       without clicks: the yellow dot shows through and keeps its click; the arrow and the number still open the window.
+       A click on a flag close to a forecast dot elsewhere in its box goes to that forecast point (the page's windDotHit). */
     .leaflet-marker-icon.wind-marker { background: transparent; border: 0; cursor: pointer; pointer-events: none; }
     .wind-flag { position: relative; width: 40px; height: 40px; color: #1d2b4f; }
     .wind-arrow { position: absolute; left: 0; top: 0; transform-origin: 20px 20px; overflow: visible; pointer-events: none; }
     .wind-arrow path { fill: currentColor; stroke: #fff; stroke-width: 1.2; paint-order: stroke; pointer-events: auto; }
     .wind-ring { position: absolute; left: 15px; top: 15px; width: 10px; height: 10px; border-radius: 50%; background: currentColor;
                  border: 1.5px solid #fff; box-sizing: border-box; box-shadow: 0 0 0 1px rgba(0,0,0,.35); pointer-events: auto; }
-    @media (pointer: coarse) { .wind-ring::after { content: ''; position: absolute; inset: -10px; border-radius: 50%; } }
+    @media (pointer: coarse) { .wind-ring::after { content: ''; position: absolute; inset: -13px; border-radius: 50%; } }
     .wind-num { position: absolute; transform: translate(-50%, -50%); font: 700 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
                 color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 0 3px #000; white-space: nowrap; pointer-events: auto; }
     .wind-hollow .wind-ring { left: 13px; top: 13px; width: 14px; height: 14px; background: transparent; border: 2px solid currentColor;
                               box-shadow: 0 0 0 1px rgba(255,255,255,.7); pointer-events: none; }
     .wind-hollow.wind-calm .wind-ring, .wind-hollow.wind-none .wind-ring { background: transparent; pointer-events: none; }
-    .wind-dotted .wind-num, .wind-dotted .wind-arrow path { pointer-events: none; }
     .wind-calm .wind-ring { left: 11px; top: 11px; width: 18px; height: 18px; background: rgba(255,255,255,.9); border: 2px solid currentColor; }
     .wind-calm .wind-num { color: #1d2b4f; text-shadow: none; font-size: 11px; }
     .wind-none .wind-ring { left: 16px; top: 16px; width: 8px; height: 8px; background: #fff; border: 1.5px solid #8a96a3; box-shadow: none; }
@@ -3316,11 +3316,13 @@
       return copies.filter(function (c) { return c.s.id === activeWindId || !(rz[c.s.id] > z + 1e-9); });
     }
     function windReading(id) { return windReadings[id] || null; }
-    // a forecast point within WIND_HOLLOW_PX of a flag's station on screen: that flag's ring is hollow and takes no clicks
-    // (the dot keeps its click); within WIND_DOTTED_PX (inside the flag's box, where the number or the arrow may lie over
-    // the dot): the number and the arrow take no clicks either, the ring still opens the window. A Map id#copy -> 'hollow'
-    // | 'dotted', part of the drawn signature, so a zoom that changes it redraws
-    const WIND_HOLLOW_PX = 7, WIND_DOTTED_PX = 20;
+    // Forecast points beside a flag. Within WIND_HOLLOW_PX of the station on screen the flag's ring is hollow and takes no
+    // clicks (the yellow dot shows through and keeps its click); within WIND_NEAR_PX (the flag's box, where the number or
+    // the arrow may lie over the dot as the wind turns) a click on the flag within WIND_DOT_HIT_PX of the dot (12 px on
+    // touch screens) selects the forecast point instead of opening the wind window (windDotHit). A Map id#copy ->
+    // { mode: 'hollow' | 'near', f: the forecast station, lng: its longitude in the flag's world copy }; the modes are part
+    // of the drawn signature, so a zoom that changes one redraws (step 5b; owner, 2026-10-10: the dot keeps its click).
+    const WIND_HOLLOW_PX = 7, WIND_NEAR_PX = 20, WIND_DOT_HIT_PX = 8, WIND_DOT_HIT_TOUCH_PX = 12;
     function windHollowSet(copies) {
       const out = new Map();
       if (!copies.length || !forecastStationsData.length) return out;
@@ -3330,25 +3332,43 @@
         if (!Number.isFinite(f.lat) || !Number.isFinite(f.lon)) return;
         const p = px(f.lat, f.lon), k = Math.floor(p.x / cell) + ',' + Math.floor(p.y / cell);
         if (!cells.has(k)) cells.set(k, []);
-        cells.get(k).push(p);
+        cells.get(k).push({ x: p.x, y: p.y, f: f });
       });
       if (!cells.size) return out;
-      const cols = Math.ceil(W / cell), reach = Math.ceil(WIND_DOTTED_PX / cell);
+      const cols = Math.ceil(W / cell), reach = Math.ceil(WIND_NEAR_PX / cell);
       copies.forEach(function (c) {
         const p = px(c.s.lat, c.lng), cx = Math.floor(p.x / cell), cy = Math.floor(p.y / cell);
-        let best = Infinity;
+        let best = Infinity, near = null;
         for (let i = cx - reach; i <= cx + reach; i++) {
           for (let j = cy - reach; j <= cy + reach; j++) {
             (cells.get((((i % cols) + cols) % cols) + ',' + j) || []).forEach(function (q) {
               let dx = Math.abs(q.x - p.x); dx = Math.min(dx, W - dx);
-              best = Math.min(best, Math.hypot(dx, q.y - p.y));
+              const d = Math.hypot(dx, q.y - p.y);
+              if (d < best) { best = d; near = q.f; }
             });
           }
         }
-        if (best <= WIND_HOLLOW_PX) out.set(c.s.id + '#' + c.o, 'hollow');
-        else if (best <= WIND_DOTTED_PX) out.set(c.s.id + '#' + c.o, 'dotted');
+        if (best > WIND_NEAR_PX || !near) return;
+        let lng = near.lon + (c.lng - c.s.lon);                       // the dot in the flag's world copy
+        while (lng - c.lng > 180) lng -= 360;
+        while (c.lng - lng > 180) lng += 360;
+        out.set(c.s.id + '#' + c.o, { mode: best <= WIND_HOLLOW_PX ? 'hollow' : 'near', f: near, lng: lng });
       });
       return out;
+    }
+    // a click on a flag close to its forecast dot: that forecast point (as a click on the dot would); null otherwise
+    // (a key press has no position: the flag opens)
+    function windDotHit(d, ev) {
+      if (!d.dot || !ev || typeof ev.clientX !== 'number' || !map.mouseEventToContainerPoint) return null;
+      const at = map.mouseEventToContainerPoint(ev), p = map.latLngToContainerPoint([d.dot.f.lat, d.dot.lng]);
+      const touch = ev.pointerType === 'touch' || (typeof ev.sourceCapabilities === 'object' && ev.sourceCapabilities && ev.sourceCapabilities.firesTouchEvents) ||
+        (window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+      return Math.hypot(at.x - p.x, at.y - p.y) <= (touch ? WIND_DOT_HIT_TOUCH_PX : WIND_DOT_HIT_PX) ? d.dot.f : null;
+    }
+    function pickForecastPoint(f) {                   // what a click on the forecast point's own dot does
+      document.getElementById('station').value = f.id;
+      saveLayerVisibility();
+      document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: String(f.id), source: 'map' } }));
     }
     function windLabel(s, r) {                        // the marker's words (its title, its tooltip): the station and its reading
       const W = window.AllshoreWinds;
@@ -3418,7 +3438,7 @@
       if (on && !windListPromise && Date.now() - windListFailedAt >= WIND_LIST_RETRY_MS) loadWindStations();
       const all = on ? visibleCopies(windStationsData) : [], vis = on ? thinWindCopies(all) : [];
       const hollow = windHollowSet(vis);
-      const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis) + '|h:' + Array.from(hollow, function (e) { return e[0] + '=' + e[1]; }).sort().join(',');   // the gate bit clears the layer on a zoom-out
+      const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis) + '|h:' + Array.from(hollow, function (e) { return e[0] + '=' + e[1].mode + ':' + e[1].f.id; }).sort().join(',');   // the gate bit clears the layer on a zoom-out
       const want = windNoteWanted(on);
       if (want !== windNoteText) { windNoteText = want; paintWindNote(); }
       if (map.attributionControl && map.hasLayer(windLayer) !== windCreditShown) {   // the credit while the layer is on
@@ -3435,16 +3455,20 @@
       vis.forEach(function (c) {
         const s = c.s, active = s.id === activeWindId, r = windReading(s.id);
         const flag = W ? W.buildFlag(document, r, now, unit, windStaleS) : document.createElement('div');
-        if (hollow.has(s.id + '#' + c.o) && flag.classList) flag.classList.add('wind-' + hollow.get(s.id + '#' + c.o));
+        const dot = hollow.get(s.id + '#' + c.o) || null;
+        if (dot && dot.mode === 'hollow' && flag.classList) flag.classList.add('wind-hollow');
         const icon = L.divIcon({ className: 'wind-marker' + (active ? ' wind-marker-active' : ''), html: flag, iconSize: [40, 40], iconAnchor: [20, 20], tooltipAnchor: [0, -14] });
         const label = windLabel(s, r);
         // below the live-buoy dots (500) and the tide icons (400): a flag beside a buoy's dot or a gauge's icon leaves them clickable
         const marker = L.marker([s.lat, c.lng], { icon: icon, title: label, zIndexOffset: active ? 350 : 300, autoPanOnFocus: false }).addTo(windLayer);
-        windDrawn.push({ marker: marker, s: s, lng: c.lng, o: c.o, flag: flag, label: label, active: active });
+        const drawn = { marker: marker, s: s, lng: c.lng, o: c.o, flag: flag, label: label, active: active, dot: dot };
+        windDrawn.push(drawn);
         marker.bindTooltip(textTip(label), { permanent: false, direction: 'top', offset: [0, -8] });   // the name: text, never HTML
         keyOpens(marker, 'w:' + s.id + '#' + c.o, 'wwHeader');
         marker.on('click', function (e) {
           if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map
+          const f = windDotHit(drawn, e && e.originalEvent);
+          if (f) { pickForecastPoint(f); return; }                    // the forecast dot under the flag keeps its click
           activeWindId = s.id;
           rebuildWindMarkers(true);
           saveMapView(map);

@@ -848,8 +848,8 @@ one attempt, an 8 s wall-clock cap):
   again); the tide service is no live-buoy provider (not in the live list, the scheduler or `/healthz`).
 
 The page (`templates/index.html`, `static_ui/tides.js`): markers (an empty div each, the sine-wave glyph is CSS) from
-`TIDE_MIN_ZOOM = 9`; below it the legend entry says "zoom in to see tide stations"; the list is asked the first time
-the layer is on at that zoom. A click opens the tide window (`#tideWin`) on a DAY STRIP (after tide-forecast.com's
+`TIDE_MIN_ZOOM = 9` (the legend gives no zoom hint at any zoom, owner 2026-10-10: its note shows only the list's
+state, "loading…" or "unavailable"); the list is asked the first time the layer is on at that zoom. A click opens the tide window (`#tideWin`) on a DAY STRIP (after tide-forecast.com's
 layout, owner 2026-10-08): one table whose label column stays put while the days scroll sideways; a column per local
 day for 30 days from today's midnight in the display zone (the site's Time Zone when one is chosen, else the station's
 own; the live-buoy panel keeps its own-zone rule); a closed day is 64 px (its date), an open day 240 px (the full date
@@ -877,9 +877,9 @@ headers, and the sun / moon glyphs are read as words ("Sunrise 7:18 AM", the moo
 Busy coasts (owner, 2026-10-08): each station gets a REVEAL ZOOM once per list, in order of importance (a station
 with a gauge, a harmonic one, a subordinate one, then by id): the zoom from which it is 24 px clear of every more
 important station already shown there (the grid of 32-px cells divides the world's width, so stations meet across the
-date line). A station is drawn from its reveal zoom on, so an icon never vanishes as you zoom in, no two icons are
-closer than 24 px below the map's last zoom (11), and the legend's note says "zoom in for more stations" while one in
-view waits. At zoom 11 every station is drawn. The opened station is drawn whatever its reveal zoom, on top of the
+date line). A station is drawn from its reveal zoom on, so an icon never vanishes as you zoom in, and no two icons are
+closer than 24 px below the map's last zoom (11); the legend says nothing about the stations held back (owner,
+2026-10-10: it is understood that more appear when zoomed in). At zoom 11 every station is drawn. The opened station is drawn whatever its reveal zoom, on top of the
 other tide icons, and changes nothing else (no icon comes or goes when a station is opened or closed).
 
 Clicks and taps: an icon is an 18-px square (the opened one 22 px). An icon whose centre lies in a more important
@@ -941,8 +941,9 @@ naming the site as aviationweather.gov asks):
   An id not in the snapshot is a 404 without any upstream request.
 - Off with `WIND_STATIONS=0` (the routes answer 503, the scheduler leaves the feeds alone; the tests set it).
 
-The page (`templates/index.html`, `static_ui/winds.js`): flags from `WIND_MIN_ZOOM = 9` (below it the legend entry
-says "zoom in to see wind stations"; the list is asked the first time the layer is on at that zoom). A flag is a 40-px
+The page (`templates/index.html`, `static_ui/winds.js`): flags from `WIND_MIN_ZOOM = 9` (the legend gives no zoom hint
+at any zoom, owner 2026-10-10: its note shows only the list's and the feed's state; the list is asked the first time
+the layer is on at that zoom). A flag is a 40-px
 box: a ring at the station, an arrow pointing the way the wind BLOWS, and the speed in the site's unit (mph / km/h)
 14 px upwind so it never sits under the arrow; coloured by the band in whole knots (iKitesurf-style, owner): calm under
 1 (a ring with "0"), light 1-9 blue, moderate 10-15 green, fresh 16-21 amber, strong 22-30 red, gale 31 and up purple;

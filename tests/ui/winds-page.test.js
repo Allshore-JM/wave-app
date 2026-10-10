@@ -109,11 +109,11 @@ function boot(o = {}) {
 }
 const flagOf = (m) => m.el.children[0];
 
-test('below the gate: no request, no flags, the note; at the gate the list is asked once, the flags drawn, the feed started', async () => {
+test('below the gate: no request, no flags, no zoom hint (owner, 2026-10-10); at the gate the list is asked once, the flags drawn, the feed started', async () => {
   const b = boot({ zoom: 8.9 });
   b.api.rebuildWindMarkers(true);
   assert.equal(b.fetchCalls.length, 0); assert.equal(b.windLayer.items.length, 0);
-  assert.equal(b.notes.wind.textContent, 'zoom in to see wind stations');
+  assert.equal(b.notes.wind.textContent, '');
   assert.equal(b.credits.has(b.api.WIND_CREDIT), true, 'the credit while the layer is on');
   assert.equal(b.api.windFeed, null, 'no feed below the gate');
   b.setZoom(9.0); b.api.rebuildWindMarkers(false);
@@ -142,7 +142,7 @@ test('below the gate: no request, no flags, the note; at the gate the list is as
   assert.equal(b.fetchCalls.length, 2, 'asked once each');
   assert.equal(b.credits.count(b.api.WIND_CREDIT), 1, 'the credit added once');
   b.setZoom(8.5); b.api.rebuildWindMarkers(false);
-  assert.equal(b.windLayer.items.length, 0); assert.equal(b.notes.wind.textContent, 'zoom in to see wind stations');
+  assert.equal(b.windLayer.items.length, 0); assert.equal(b.notes.wind.textContent, '', 'zoomed out: no zoom hint');
   assert.equal(b.api.windFeed.state().running, false, 'the feed stops below the gate');
   b.setZoom(9.5); b.api.rebuildWindMarkers(false); await flush();
   assert.equal(b.fetchCalls.length, 3, 'the feed asks again when it restarts (the list is kept)');
@@ -197,14 +197,14 @@ test('world copies: a flag per copy, keys per copy; the active station rimmed an
   assert.equal(b.api.windSubtitle({ id: 'ndbc:51003', kind: 'buoy' }), 'Wind · NDBC buoy 51003');
 });
 
-test('thinning: two stations 20 px apart at zoom 9 (the gauge first) show one, both at zoom 10; the opened one always; "zoom in for more"', async () => {
+test('thinning: two stations 20 px apart at zoom 9 (the gauge first) show one, both at zoom 10; the opened one always; no note for it', async () => {
   const list = { fields: LIST.fields, stations: [
     ['metar:PHJR', 'Kalaeloa', 21.3, -158.07, 'airport', 'metar', 'Pacific/Honolulu', null],
     ['coops:1612401', 'Pearl Harbor', 21.3, -158.05, 'gauge', 'coops', 'Pacific/Honolulu', null]] };
   const b = boot({ list, latestAnswers: [resp(200, { now: NOW / 1000, stale_s: 7200, fields: ['id', 't', 's', 'g', 'd'], rows: [], missing: [] })] });
   b.api.rebuildWindMarkers(true); await flush();
   assert.deepEqual(b.windLayer.items.map((m) => m.opts.title.split(':')[0]), ['Wind station Pearl Harbor'], 'the gauge first, the airport waits');
-  assert.equal(b.notes.wind.textContent, 'zoom in for more stations');
+  assert.equal(b.notes.wind.textContent, '', 'a flag held back by the thinning: no note (owner, 2026-10-10)');
   b.setZoom(10); b.api.rebuildWindMarkers(false);
   assert.equal(b.windLayer.items.length, 2, '40 px apart at zoom 10'); assert.equal(b.notes.wind.textContent, '');
   b.setZoom(9); b.api.rebuildWindMarkers(false);
@@ -235,16 +235,25 @@ test('a tool active: the click goes to the tool; a failed list says so and is as
   void Date_; void later;
 });
 
-test('the zone hooks, the note painter after a legend rebuild, no module', async () => {
+test('the zone hooks, the note painter after a legend rebuild, never a zoom hint, no module', async () => {
   const b = boot();
   b.api.rebuildWindMarkers(true); await flush();
   assert.equal(b.api.windZone({ tz: 'Pacific/Honolulu' }), 'Pacific/Honolulu');
   b.doc.getElementById('tz').value = 'UTC';
   assert.equal(b.api.windZone({ tz: 'Pacific/Honolulu' }), 'UTC', 'the site zone when one is chosen');
-  b.setZoom(8); b.api.rebuildWindMarkers(false);
-  b.notes.wind.textContent = '';                                              // Leaflet rebuilt the legend: the painter puts it back
-  b.api.paintWindNote(); assert.equal(b.notes.wind.textContent, 'zoom in to see wind stations');
-  b.api.syncWindNote(); assert.equal(b.notes.wind.textContent, 'zoom in to see wind stations', 'nothing to change');
+  for (const z of [8, 5, 2, 9, 10.5, 11]) {
+    b.setZoom(z); b.api.rebuildWindMarkers(false);
+    assert.equal(b.notes.wind.textContent, '', 'no note at zoom ' + z);
+  }
+  // a state note (the list unavailable) survives Leaflet's legend rebuild: the painter puts it back
+  const u = boot({ listAnswers: [resp(503, { error: 'x' })] });
+  u.api.rebuildWindMarkers(true); await flush();
+  assert.equal(u.notes.wind.textContent, 'unavailable');
+  u.notes.wind.textContent = '';                                              // Leaflet rebuilt the legend
+  u.api.paintWindNote(); assert.equal(u.notes.wind.textContent, 'unavailable');
+  u.api.syncWindNote(); assert.equal(u.notes.wind.textContent, 'unavailable', 'nothing to change');
+  u.setZoom(8); u.api.rebuildWindMarkers(false);
+  assert.equal(u.notes.wind.textContent, '', 'below the gate even the list\'s state is not shown');
   const n = boot({ noWinds: true });
   n.api.rebuildWindMarkers(true); await flush();
   assert.equal(n.windLayer.items.length, 3, 'markers without the module: plain markers'); assert.equal(n.api.windFeed, null);

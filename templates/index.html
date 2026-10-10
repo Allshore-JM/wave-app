@@ -397,7 +397,8 @@
     .lc-tide { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='9' fill='%23fff' stroke='%231d2b4f' stroke-width='1.3'/%3E%3Cpath d='M3 10 C4.3 4.5 6.2 4.5 7.5 10 S10.7 15.5 12 10 S15.2 4.5 17 10' fill='none' stroke='%230f8f8c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 100% 100% no-repeat; border: 0; width: 13px; height: 13px; }
     .lc-wind { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='9' fill='%23fff' stroke='%231d2b4f' stroke-width='1.3'/%3E%3Cpath d='M10 3.5 L14.5 10 L11.3 9.2 L11.3 16.5 L8.7 16.5 L8.7 9.2 L5.5 10 Z' fill='%232f9e44'/%3E%3C/svg%3E") center / 100% 100% no-repeat; border: 0; width: 13px; height: 13px; }
     /* the live list's state under "Live buoys" (static_ui/livelist.js): loading / cached list / loading more / retrying,
-       and the tide layer's ("zoom in for more stations"). On its own line, and with no width of its own (it wraps under
+       and the tide and wind layers' (their lists' and the wind feed's state; never a zoom hint: owner, 2026-10-10).
+       On its own line, and with no width of its own (it wraps under
        its label), so the legend neither widens into the overlay selector on a phone nor jumps under the pointer when a
        note comes or goes (G27 re-check RC-16). */
     .lc-note { display: block; padding-left: 21px; font-size: 11px; line-height: 1.15; color: #6c757d; font-style: italic;
@@ -1338,7 +1339,7 @@
         measureTopRight();                       // the note's line changes the corner's height (a maximised window starts below it)
       }
     }
-    // The tide layer's note the same way ("zoom in to see tide stations" below the gate, the list's state).
+    // The tide layer's note the same way (the list's state: loading / unavailable; no zoom hints, owner 2026-10-10).
     let tideNoteText = '';
     function paintTideNote() {
       const el = document.querySelector('.leaflet-control-layers [data-tide-note]');
@@ -1347,7 +1348,7 @@
         measureTopRight();
       }
     }
-    // The wind layer's note likewise ("zoom in to see wind stations" below the gate, the list's and the feed's state).
+    // The wind layer's note likewise (the list's and the feed's state; no zoom hints).
     let windNoteText = '';
     function paintWindNote() {
       const el = document.querySelector('.leaflet-control-layers [data-wind-note]');
@@ -3138,8 +3139,10 @@
       const nudges = tideNudges(vis);
       const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis) + '|' + nudgeSignature(nudges);   // the gate bit clears the layer on a zoom-out
       if (map.hasLayer(tideLayer)) {
-        const want = on ? (tideStationsData.length ? (hiddenInView(all, vis) ? 'zoom in for more stations' : '') : tideListNote)
-                        : 'zoom in to see tide stations';
+        // the list's state only (loading / unavailable at the gate): no zoom hint below the gate and none for the
+        // stations the thinning holds back (owner, 2026-10-10: it is understood that stations appear when zoomed in;
+        // the G27 B-P3-1 note is gone)
+        const want = on && !tideStationsData.length ? tideListNote : '';
         if (want !== tideNoteText) { tideNoteText = want; paintTideNote(); }
       } else if (tideNoteText) { tideNoteText = ''; paintTideNote(); }
       if (map.attributionControl && map.hasLayer(tideLayer) !== tideCreditShown) {   // the credit while the layer is on (NOS
@@ -3170,16 +3173,6 @@
       });
       refocusMarker(tideDrawn.map(function (d) { return d.marker; }), focusKey, 't:');
       tideTargets();
-    }
-    // a station in view (not in the padding) is hidden by the thinning: the legend says more come with zooming in (B-P3-1)
-    function hiddenInView(all, vis) {
-      if (vis.length >= all.length || !map.getSize) return false;
-      const size = map.getSize(), kept = new Set(vis);
-      return all.some(function (c) {
-        if (kept.has(c)) return false;
-        const p = map.latLngToContainerPoint([c.s.lat, c.lng]);
-        return p.x >= 0 && p.y >= 0 && p.x <= size.x && p.y <= size.y;
-      });
     }
     const TIDE_CREDIT = 'Tides: <a href="https://tidesandcurrents.noaa.gov/" target="_blank" rel="noopener">NOAA CO-OPS</a>';
     // the zone the tide window shows: the site's Time Zone when one is chosen, else the station's own (the forecast
@@ -3236,7 +3229,7 @@
     // zoom WIND_MIN_ZOOM or closer; below the gate the layer is empty and its legend note says so. The latest readings
     // come from a feed (static_ui/winds.js: /api/wind/latest every 5 minutes while the flags show, nothing while the
     // tab is hidden) and are painted into the drawn flags IN PLACE: the markers, their listeners and the focus stay.
-    // The helpers it shares with the tide block (keyOpens, refocusMarker, setTabStops, hiddenInView, focusMapAfterClose)
+    // The helpers it shares with the tide block (keyOpens, refocusMarker, setTabStops, focusMapAfterClose)
     // are above.
     function loadWindStations() {
       if (windListPromise) return windListPromise;
@@ -3332,16 +3325,15 @@
         });
       } else feed.stop();
     }
-    function windNoteWanted(on, all, vis) {
-      if (!map.hasLayer(windLayer)) return '';
-      if (!on) return 'zoom in to see wind stations';
+    // the note: the list's and the feed's state at the gate; never a zoom hint, below zoom 9 or for the flags the
+    // thinning holds back (owner, 2026-10-10: it is understood that stations appear when zoomed in)
+    function windNoteWanted(on) {
+      if (!map.hasLayer(windLayer) || !on) return '';
       if (!windStationsData.length) return windListNote;
-      if (windFeedNote) return windFeedNote;
-      return hiddenInView(all, vis) ? 'zoom in for more stations' : '';
+      return windFeedNote;
     }
     function syncWindNote() {
-      const on = windVisible(), all = on ? visibleCopies(windStationsData) : [], vis = on ? thinWindCopies(all) : [];
-      const want = windNoteWanted(on, all, vis);
+      const want = windNoteWanted(windVisible());
       if (want !== windNoteText) { windNoteText = want; paintWindNote(); }
     }
     // the drawn flags repainted from the latest readings (a feed answer, a unit change): each flag's text, classes
@@ -3369,7 +3361,7 @@
       if (on && !windListPromise && Date.now() - windListFailedAt >= WIND_LIST_RETRY_MS) loadWindStations();
       const all = on ? visibleCopies(windStationsData) : [], vis = on ? thinWindCopies(all) : [];
       const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis);   // the gate bit clears the layer on a zoom-out
-      const want = windNoteWanted(on, all, vis);
+      const want = windNoteWanted(on);
       if (want !== windNoteText) { windNoteText = want; paintWindNote(); }
       if (map.attributionControl && map.hasLayer(windLayer) !== windCreditShown) {   // the credit while the layer is on
         windCreditShown = !windCreditShown;

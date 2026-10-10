@@ -100,11 +100,11 @@ function boot(o = {}) {
     document, mkEl, liveLayer, liveOpened, setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; } };
 }
 
-test('below the gate: no request, no markers, the note; at the gate the list is asked once and the markers drawn', async () => {
+test('below the gate: no request, no markers, no zoom hint (owner, 2026-10-10); at the gate the list is asked once and the markers drawn', async () => {
   const b = boot({ zoom: 8.9 });
   b.api.rebuildTideMarkers(true);
   assert.equal(b.fetchCalls.length, 0); assert.equal(b.tideLayer.items.length, 0);
-  assert.equal(b.notes.tide.textContent, 'zoom in to see tide stations');
+  assert.equal(b.notes.tide.textContent, '');
   assert.equal(b.credits.has(b.api.TIDE_CREDIT), true, 'the credit while the layer is on');
   b.setZoom(9.0); b.api.rebuildTideMarkers(false);
   assert.deepEqual(b.fetchCalls, ['/api/tides/stations']);
@@ -119,7 +119,7 @@ test('below the gate: no request, no markers, the note; at the gate the list is 
   assert.equal(b.credits.count(b.api.TIDE_CREDIT), 1, 'the credit added once, however often the markers are rebuilt');
   b.setZoom(8.5); b.api.rebuildTideMarkers(false);
   assert.equal(b.tideLayer.items.length, 0, 'zoomed out: the layer is cleared (the gate bit of the signature)');
-  assert.equal(b.notes.tide.textContent, 'zoom in to see tide stations');
+  assert.equal(b.notes.tide.textContent, '', 'zoomed out: no zoom hint');
   b.setZoom(10); b.api.rebuildTideMarkers(false);
   assert.equal(b.tideLayer.items.length, 2); assert.equal(b.fetchCalls.length, 1);
   b.setOn(false); b.api.rebuildTideMarkers(true);
@@ -183,12 +183,12 @@ test('with a map tool active the click goes to the tool', async () => {
 });
 
 test('the legend painter keeps both notes through Leaflet\'s rebuilds and re-measures the corner', () => {
-  const b = boot({ zoom: 5 });
-  b.api.rebuildTideMarkers(true);
+  const b = boot({ zoom: 9 });
+  b.api.rebuildTideMarkers(true);                                             // the list asked, not answered yet: "loading…"
   b.api.setLive('cached list'); b.api.paintLiveNote();
-  assert.equal(b.notes.live.textContent, 'cached list'); assert.equal(b.notes.tide.textContent, 'zoom in to see tide stations');
+  assert.equal(b.notes.live.textContent, 'cached list'); assert.equal(b.notes.tide.textContent, 'loading…');
   b.layersControl._update();
-  assert.equal(b.notes.live.textContent, 'cached list'); assert.equal(b.notes.tide.textContent, 'zoom in to see tide stations');
+  assert.equal(b.notes.live.textContent, 'cached list'); assert.equal(b.notes.tide.textContent, 'loading…');
   assert.ok(b.measures.length >= 2);
   const n = b.measures.length;
   b.api.paintTideNote(); assert.equal(b.measures.length, n, 'nothing to paint: no re-measure');
@@ -285,13 +285,13 @@ test('G27 A-F7: at the last zoom an icon on top of another moves 12 px aside; st
   assert.equal(d.tideLayer.items.length, 1, 'the two sides of the date line are 5.5 px apart: one shows at zoom 9');
 });
 
-test('G27 B-P2-1 / B-P3-1 / B-P3-3: Enter opens a focused marker; the legend says when stations are hidden; closing hands the focus to the map', async () => {
+test('G27 B-P2-1 / B-P3-3: Enter opens a focused marker; no note for the stations the thinning holds back (owner, 2026-10-10); closing hands the focus to the map', async () => {
   const list = { fields: ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'], stations: [
     ['1612340', 'Honolulu', 21.3, -157.86, 'R', 'Pacific/Honolulu', true], ['1612341', 'Next door', 21.305, -157.86, 'S', 'Pacific/Honolulu', false]] };
   const b = boot({ zoom: 9, list, size: { x: 1e9, y: 1e9 } });
   b.api.rebuildTideMarkers(true); await flush();
   assert.equal(b.tideLayer.items.length, 1);
-  assert.equal(b.notes.tide.textContent, 'zoom in for more stations');
+  assert.equal(b.notes.tide.textContent, '', 'one station in view held back: no zoom hint (the G27 B-P3-1 note is gone)');
   let prevented = 0;
   b.tideLayer.items[0].el.keys.keydown({ key: 'Tab', preventDefault() { prevented++; } });
   assert.equal(b.loads.length, 0, 'other keys do nothing');
@@ -421,7 +421,7 @@ test('G27 re-check RC-7 / T11 / T23: the list\'s note during its back-off; the m
     b.api.rebuildTideMarkers(true); await flush();
     assert.equal(b.notes.tide.textContent, 'unavailable');
     b.setZoom(8); b.api.rebuildTideMarkers(false);
-    assert.equal(b.notes.tide.textContent, 'zoom in to see tide stations');
+    assert.equal(b.notes.tide.textContent, '', 'zoomed out: no note (no zoom hint, owner 2026-10-10)');
     t += 5000; b.setZoom(9.5); b.api.rebuildTideMarkers(false);
     assert.equal(b.notes.tide.textContent, 'unavailable', 'zoomed in again, still within the back-off: the list\'s state');
   } finally { Date.now = realNow; }
@@ -431,16 +431,17 @@ test('G27 re-check RC-7 / T11 / T23: the list\'s note during its back-off; the m
   const elsewhere = c.mkEl(); c.document.activeElement = elsewhere;        // the gear, a field: not in the window
   c.api.closeTideWindow();
   assert.equal(c.api.container.focused, 0, 'the focus stays where the visitor put it');
-  // every station in view drawn; one hidden outside it: no note
+  // a station held back by the thinning inside the view, and below the gate: never a zoom hint (owner, 2026-10-10)
   const list = { fields: FIELDS, stations: [['A', 'In view', 30, -179.9, 'R', 'UTC', true], ['B', 'Beside it', 30, -179.895, 'S', 'UTC', false],
     ['C', 'Lone', 30, -179.5, 'R', 'UTC', true]] };
-  const d = boot({ zoom: 9, list, size: { x: 600, y: 1e9 } });               // B (hidden) at x 105, inside: the note
+  const d = boot({ zoom: 9, list, size: { x: 600, y: 1e9 } });               // B (held back) at x 105, inside the view
   d.api.rebuildTideMarkers(true); await flush();
-  assert.equal(d.notes.tide.textContent, 'zoom in for more stations');
-  const e = boot({ zoom: 9, list: { fields: FIELDS, stations: [list.stations[2], ['Z', 'Far hidden', 30, -170, 'S', 'UTC', false], ['Y', 'Far gauge', 30, -169.995, 'R', 'UTC', true]] }, size: { x: 600, y: 1e9 } });
-  e.api.rebuildTideMarkers(true); await flush();
-  assert.equal(e.tideLayer.items.length, 2);
-  assert.equal(e.notes.tide.textContent, '', 'the hidden one is out of view; the drawn ones are not counted');
+  assert.equal(d.tideLayer.items.length, 2);
+  assert.equal(d.notes.tide.textContent, '');
+  for (const z of [8.9, 5, 2, 9, 10.5, 11]) {
+    d.setZoom(z); d.api.rebuildTideMarkers(false);
+    assert.equal(d.notes.tide.textContent, '', 'no note at zoom ' + z);
+  }
 });
 
 test('G27 re-check RC-4: when every spot 12 px away is taken, an icon moves 24 px (ten stations at one spot: ten places)', async () => {

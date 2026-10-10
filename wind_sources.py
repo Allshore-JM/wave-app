@@ -61,6 +61,10 @@ METAR_CACHE_MAX = 2 * 1024 * 1024              # ~280 KB gzipped ...
 METAR_CACHE_INFLATED_MAX = 16 * 1024 * 1024    # ... ~3.5 MB inflated (a bomb is cut here)
 METAR_API_MAX = 1024 * 1024
 COOPS_MAX = 256 * 1024
+COOPS_TTL_S = 60                               # the CO-OPS feed's refresh period: one slice of gauges per refresh
+COOPS_PER_REFRESH = 24                         # gauges asked per refresh (232 gauges: every gauge about every 10 minutes)
+COOPS_PAUSE_S = 120                            # after NOAA refuses (HTTP 403): no CO-OPS request for this long
+COOPS_KEEP_S = 6 * 3600                        # a CO-OPS reading older than this is dropped (the flag then says "no reading")
 METAR_BUCKET_PER_MIN = 60                      # the API's limit is 100 requests a minute per client
 ID_RE = re.compile(r"(coops|ndbc|metar):[A-Z0-9]{3,8}")
 _NUM = re.compile(r"-?\d+(\.\d+)?$")
@@ -68,6 +72,7 @@ _NUM = re.compile(r"-?\d+(\.\d+)?$")
 UNAVAILABLE = "The station's agency could not be reached; try again in a moment"
 BUSY = "The server is busy with other wind stations; try again in a moment"
 NO_HISTORY = "No wind readings in the last 24 hours"
+NDBC_NO_FILE = "NDBC publishes no 24-hour history for this station; the flag shows its latest report"
 
 
 class WindError(Exception):
@@ -76,6 +81,10 @@ class WindError(Exception):
 
 class WindBusy(WindError):
     """Too many builds or METAR requests at once: never cached, the page asks again in a moment."""
+
+
+class WindNoFile(WindError):
+    """NDBC publishes no 24-hour file for the station (HTTP 404): a known, lasting answer, not a passing failure."""
 
 
 # ---------------------------------------------------------------------------------------------- readings
@@ -392,19 +401,38 @@ class MetarProvider(WindProvider):
 
 
 class CoopsWindProvider(WindProvider):
-    """Every snapshot gauge's latest 6-minute reading, one datagetter request per gauge, `workers` at a time. A
-    gauge whose request fails or whose answer is NOAA's "no data" has no reading now; when EVERY request fails the
-    fetch fails (keep-last applies)."""
+    """The snapshot gauges' latest 6-minute readings, one datagetter request per gauge, PACED: NOAA answered
+    HTTP 403 to everything from the server for about a minute after 232 requests in a few seconds (step 5, F1: new
+    tide windows failed then too), so each refresh (every COOPS_TTL_S) asks the next `per_refresh` gauges in turn,
+    `workers` at a time, and merges their readings into the ones kept: every gauge is asked about every 10 minutes
+    and NOAA sees a steady trickle. A gauge whose request fails keeps its last reading; NOAA's "no data" drops it;
+    a reading older than COOPS_KEEP_S is dropped. When EVERY request of a slice fails the fetch fails (keep-last
+    applies); a 403 pauses the feed for COOPS_PAUSE_S (the kept readings stay)."""
     source = "COOPS"
     source_name = "NOAA CO-OPS"
     source_url = "https://tidesandcurrents.noaa.gov"
     attribution_text = "Source: " + ATTRIBUTION["coops"]
-    list_ttl_sec = 600
+    list_ttl_sec = COOPS_TTL_S
     warm_rank = 2
 
-    def __init__(self, stations, fetch, workers=4):
+    def __init__(self, stations, fetch, workers=2, per_refresh=COOPS_PER_REFRESH):
         super().__init__(stations, fetch)
         self.workers = max(1, min(8, int(workers)))
+        self.per_refresh = max(1, min(500, int(per_refresh)))
+        self._ids = sorted(self.stations)
+        self._cursor = 0                        # the next gauge to ask (round robin over _ids)
+        self._readings = {}                     # local id -> the latest reading kept
+        self._paused_until = 0.0
+
+    def _slice(self):
+        """The next per_refresh gauges in turn (all of them when there are fewer)."""
+        n = len(self._ids)
+        if not n:
+            return []
+        start = self._cursor % n
+        out = [self._ids[(start + i) % n] for i in range(min(self.per_refresh, n))]
+        self._cursor = (start + len(out)) % n
+        return out
 
     def _one(self, local):
         """(local id, reading or None, failed): failed is a fetch / parse failure, not NOAA's "no data"."""
@@ -418,31 +446,51 @@ class CoopsWindProvider(WindProvider):
         return local, (max(rows, key=lambda r: r["t"]) if rows else None), None
 
     def _fetch_stations(self):
-        ids = sorted(self.stations)
+        now = buoy_sources.time.time()
+        if now < self._paused_until:
+            raise RuntimeError("paused after NOAA's HTTP 403 (%d s left)" % round(self._paused_until - now))
+        ids = self._slice()
         if not ids:
             return []
-        out, failures, last = [], 0, None
+        failures, last, forbidden = 0, None, False
         with ThreadPoolExecutor(self.workers) as pool:
             for local, r, err in pool.map(self._one, ids):
                 if err:
                     failures += 1
                     last = err
-                elif r is not None:
-                    out.append(self._entry(local, r))
+                    if "HTTP 403" in err:
+                        forbidden = True
+                elif r is None:
+                    self._readings.pop(local, None)                    # NOAA: no data for the gauge now
+                else:
+                    self._readings[local] = r
+        if forbidden:
+            self._paused_until = buoy_sources.time.time() + COOPS_PAUSE_S
+            raise RuntimeError("NOAA refused a CO-OPS request (HTTP 403): paused for %d s" % COOPS_PAUSE_S)
         if failures == len(ids):
             raise RuntimeError("every CO-OPS request failed (%s)" % last)
         if failures:
             _log.info("wind provider COOPS: %d of %d gauges could not be asked (%s)", failures, len(ids), last)
-        return out
+        cut = now - COOPS_KEEP_S
+        for local in [k for k, r in self._readings.items() if r["t"] < cut]:
+            del self._readings[local]
+        return [self._entry(local, r) for local, r in sorted(self._readings.items())]
+
+    def status(self, now=None):
+        s = super().status(now)
+        now = buoy_sources.time.time() if now is None else now
+        s.update(readings=len(self._readings), per_refresh=self.per_refresh, cursor=self._cursor,
+                 paused_s=round(max(0.0, self._paused_until - now), 1))
+        return s
 
 
-def make_providers(stations, fetch, coops_workers=4):
+def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER_REFRESH):
     """The three providers over the snapshot's stations, in warm order (cheap, quick feeds first)."""
     groups = by_source(stations)
     aliases = {st["alias"]: st for sid, st in stations.items() if st.get("alias") and sid.startswith("coops:")}
     return [NdbcWindProvider(groups.get("ndbc", {}), fetch, aliases),
             MetarProvider(groups.get("metar", {}), fetch),
-            CoopsWindProvider(groups.get("coops", {}), fetch, coops_workers)]
+            CoopsWindProvider(groups.get("coops", {}), fetch, coops_workers, coops_per_refresh)]
 
 
 # ---------------------------------------------------------------------------------------------- the merged table
@@ -610,7 +658,12 @@ class WindHistory:
             raise WindError("the answer is not JSON") from None
 
     def _ndbc(self, local, since):
-        text = self._body(NDBC_RT2_URL % local, NDBC_RT2_MAX).decode("utf-8", "replace")
+        try:
+            text = self._body(NDBC_RT2_URL % local, NDBC_RT2_MAX).decode("utf-8", "replace")
+        except WindError as exc:
+            if "HTTP 404" in str(exc):                                 # no realtime2 file (8 Korean buoys, step 5 F4)
+                raise WindNoFile(str(exc)) from None
+            raise
         return parse_realtime2(text, since)
 
     def _coops(self, local, since):
@@ -635,9 +688,12 @@ class WindHistory:
         now = self._now()
         since = int(now) - HISTORY_S
         src, _, local = sid.partition(":")
-        note, via = None, None
+        note, via, no_file = None, None, False
         if src == "ndbc":
-            rows = self._ndbc(local, since)
+            try:
+                rows = self._ndbc(local, since)
+            except WindNoFile:
+                rows, no_file = [], True
         elif src == "metar":
             rows = self._metar(local, since)
         else:
@@ -647,11 +703,14 @@ class WindHistory:
                 if not st.get("alias"):
                     raise
                 _log.info("wind history %s: CO-OPS did not answer (%s); NDBC's relay %s instead", sid, exc, st["alias"])
-                rows = self._ndbc(st["alias"], since)                  # NDBC's relay of the gauge
                 via = "ndbc"
+                try:
+                    rows = self._ndbc(st["alias"], since)              # NDBC's relay of the gauge
+                except WindNoFile:
+                    rows, no_file = [], True
         rows = sorted({r["t"]: r for r in rows}.values(), key=lambda r: r["t"])[-HISTORY_ROWS:]
         if not rows:
-            note = NO_HISTORY
+            note = NDBC_NO_FILE if no_file else NO_HISTORY
         out = {"id": sid, "name": st.get("name"), "kind": st.get("kind"), "src": src, "tz": st.get("tz"),
                "alias": st.get("alias"), "lat": st.get("lat"), "lon": st.get("lon"), "hours": HISTORY_S // 3600,
                "units": {"s": "m/s", "g": "m/s", "d": "deg"}, "stale_s": STALE_S, "now": int(now),

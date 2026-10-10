@@ -88,13 +88,14 @@ function boot(o = {}) {
     'rebuildTideMarkers, loadTideStations, openTideStation, closeTideWindow, tideWindowClosed, tideZone, paintTideNote, paintLiveNote, TIDE_CREDIT, ' +
     'get tideView() { return tideView; }, setLive(t) { liveNoteText = t; }, rebuildLiveBuoyMarkers, set liveData(d) { liveStationsData = d; } };';
   const layersControl = { _update: function () { notes.live.textContent = ''; notes.tide.textContent = ''; return this; } };
+  const windDrawn = o.windDrawn || [];                                  // the wind block's drawn flags ({s: {lat}, lng}): a tide icon on one keeps no pad
   const api = new Function('window', 'document', 'fetch', 'map', 'L', 'tideLayer', 'tideIcon', 'tideIconActive', 'visibleCopies', 'renderSignature', 'textTip',
     'saveMapView', 'saveLayerVisibility', 'measureTopRight', 'getSelectedUnit', 'tzAbbr', 'loadChartJs', 'CustomEvent', 'tideWin', 'layersControl', 'MAX_MAP_ZOOM',
-    'liveBuoyLayer', 'liveBuoyIconActive', 'liveBuoyIconInactive', 'buoyDisplayLabel', 'loadLiveBuoyDetails', code)(
+    'liveBuoyLayer', 'liveBuoyIconActive', 'liveBuoyIconInactive', 'buoyDisplayLabel', 'loadLiveBuoyDetails', 'windDrawn', code)(
     window, document, fetch, map, L, tideLayer, 'ICON', 'ICON-ACTIVE', visibleCopies, renderSignature, (t) => ({ text: String(t) }),
     () => saves.push('view'), () => saves.push('layers'), () => measures.push(1), () => (o.unit || 'US'), (iso, tz) => tz + '!', () => Promise.resolve(),
     class { constructor(type) { this.type = type; } }, tideWin, layersControl, 11,
-    liveLayer, 'LIVE-ACTIVE', 'LIVE', (st) => st.id, (st) => liveOpened.push(st.id));
+    liveLayer, 'LIVE-ACTIVE', 'LIVE', (st) => st.id, (st) => liveOpened.push(st.id), windDrawn);
   api.container = container;
   return { api, notes, byId, events, tideLayer, credits, fetchCalls, loads, clears, view, toolClicks, saves, measures, layersControl, tideWin,
     document, mkEl, liveLayer, liveOpened, setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; } };
@@ -340,6 +341,14 @@ test('G27 re-check RC-1: a finger\'s target is cut to half the gap to the neares
   }
   b.setZoom(10); b.api.rebuildTideMarkers(false);                          // the same icons, twice as far apart
   assert.equal(pad('Pair west'), '10px'); assert.equal(pad('Diag one'), '8px');
+});
+
+test('step 5 F3: a tide icon with a wind flag on the same spot keeps only its own 18 px on touch screens (pad 0); the others their pads', async () => {
+  const list = { fields: FIELDS, stations: [['L', 'Lone', 40, -150, 'R', 'UTC', true], ['G', 'Gauge with wind', 30, -150, 'R', 'UTC', true]] };
+  const b = boot({ zoom: 9, list, windDrawn: [{ s: { lat: 30 }, lng: -150.001 }, { s: { lat: 40 }, lng: -149.970 }] });   // 1 px east of the gauge: the same spot; 30 px east of Lone: not
+  b.api.rebuildTideMarkers(true); await flush();
+  const pad = (n) => byTitle(b, n).el.style.props['--tide-tap'];
+  assert.equal(pad('Lone'), '10px'); assert.equal(pad('Gauge with wind'), '0px');
 });
 
 test('G27 re-check RC-4: the nudge tests the square boxes; beside the opened (larger) icon too; no icon lands on a third; by importance; tooltips follow', async () => {

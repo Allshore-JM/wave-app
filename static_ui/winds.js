@@ -65,9 +65,6 @@
     busy: 'The wind readings are not available yet; try again in a moment.',
     empty: 'No wind readings in the last 24 hours.'
   };
-  var KIND_TEXT = { gauge: 'NOAA tide gauge', buoy: 'NDBC buoy', cman: 'NDBC C-MAN station', station: 'NDBC station',
-                    airport: 'Airport (METAR)' };
-
   // ---- speeds, bands, directions ---------------------------------------------------------------------------------
   function num(v) { return typeof v === 'number' && isFinite(v); }
   function unitOf(u) { return u === 'Metric' ? 'Metric' : 'US'; }
@@ -409,7 +406,7 @@
 
     function writeCurrent() {
       if (!els.current) return;
-      var r = latest(), t = now();
+      var r = latest() || st.fallback, t = now();                      // no history: the flag's own latest reading (F4)
       els.current.textContent = '';
       if (!r) { els.current.appendChild(el('span', 'wind-cur-text', MSG.empty)); return; }
       var s = flagState(r, t, st.unit, staleS());
@@ -424,11 +421,10 @@
       var d = st.data, s = st.station || {};
       if (!els.meta || !d) return;
       els.meta.textContent = '';
-      var src = d.src || String(d.id || '').split(':')[0], local = String(d.id || '').split(':')[1] || '';
-      var who = (KIND_TEXT[d.kind || s.kind] || 'Station') + ' ' + local + (d.alias ? ' (NDBC ' + d.alias + ')' : '');
-      var lines = [who,
-                   'Speeds in ' + unitName(st.unit) + ', knots on the right · times in ' + zoneAt(now()) +
-                   ' · the arrows point the way the wind blows'];
+      var src = d.src || String(d.id || '').split(':')[0];
+      // the zone the readings are shown in, and nothing more (owner, 2026-10-10: the window's subtitle names the
+      // station; the units and the arrows' meaning need no sentence); then the notes, then the source
+      var lines = ['Times in ' + zoneAt(now()) + '.'];
       if (d.via === 'ndbc') lines.push('Readings from NDBC’s copy of this gauge (NOAA CO-OPS did not answer).');
       if (d.note) lines.push(d.note + (/[.!?]$/.test(d.note) ? '' : '.'));
       if (latest() && flagState(latest(), now(), st.unit, staleS()).stale) lines.push('The latest reading is more than ' + Math.round(staleS() / 3600) + ' hours old.');
@@ -625,6 +621,7 @@
       st.ac = deps.AbortController ? new deps.AbortController() : new AbortController();
       st.station = station; st.data = null; st.rows = []; st.tries = 0; st.dirty = false; st.built = null;
       st.retried = false; st.fetchedAt = 0;
+      st.fallback = opts.reading && num(opts.reading.s) ? opts.reading : null;   // shown as the current reading when the history is empty
       if (opts.unit) st.unit = unitOf(opts.unit);
       st.zone = opts.zone || null;
       [els.chart, els.arrows, els.table, els.meta, els.current].forEach(function (e) { if (e) e.textContent = ''; });

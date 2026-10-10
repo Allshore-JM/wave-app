@@ -822,6 +822,7 @@ test('wind look: the relief goes on top and the imagery leaves once the relief h
   o.layer = drawn('wind'); o._syncLook();
   const relief = o.relief;
   assert.equal(relief.url, w.I.WIND_LOOK.base); assert.equal(relief.options.maxZoom, 11); assert.equal(relief.options.attribution, w.I.WIND_LOOK.attribution);
+  assert.equal(relief.options.maxNativeZoom, 16, 'Esri\'s relief ends at zoom 16: scaled up past it (the map zooms to 18 since section 39 step 5b)');
   assert.ok(!('noWrap' in relief.options), 'options the page did not set are left to Leaflet');
   assert.deepEqual(both(), [true, true], 'the imagery stays until the relief is in');
   assert.equal(map.pane.style.mixBlendMode, '', 'no blend onto the imagery'); assert.equal(o.layer.op, 1);

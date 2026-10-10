@@ -344,8 +344,8 @@ test('a station loads: the chart, the arrows, the current reading, the table, th
   const dirs = rows.map((r) => r.children[3].textContent);
   assert.ok(dirs.includes('Variable')); assert.ok(rows.map((r) => r.children[2].textContent).includes('–'));
   const meta = s.els.meta.children.map((e) => e.textContent);
-  assert.equal(meta[0], 'NOAA tide gauge 1612340 (NDBC OOUH1)');
-  assert.equal(meta[1], 'Speeds in mph, knots on the right · times in HST · the arrows point the way the wind blows');
+  assert.deepEqual(meta.slice(0, -1), ['Times in HST.'], 'the zone, nothing more (owner, 2026-10-10); then the source');
+  assert.ok(meta[meta.length - 1].startsWith('Source: '));
   const a = s.els.meta.querySelector('a');
   assert.equal(a.getAttribute('href'), 'https://tidesandcurrents.noaa.gov/stationhome.html?id=1612340');
   assert.equal(a.textContent, 'NOAA CO-OPS (tidesandcurrents.noaa.gov)'); assert.equal(a.getAttribute('rel'), 'noopener');
@@ -378,8 +378,21 @@ test('empty, calm and stale answers; the relay note; the source of an airport an
   assert.equal(bodyRows(s)[0].children[3].textContent, 'Calm');
   const air = { id: 'metar:PHNL', name: 'Honolulu Intl', tz: 'Pacific/Honolulu', kind: 'airport' };
   s.view.load(air); s.answers[2].res(resp(200, history({ id: 'metar:PHNL', kind: 'airport', src: 'metar', alias: null, source: 'NWS' }))); await flush();
-  assert.equal(s.els.meta.children[0].textContent, 'Airport (METAR) PHNL');
+  assert.equal(s.els.meta.children[0].textContent, 'Times in HST.');
   assert.equal(s.els.meta.querySelector('a').getAttribute('href'), 'https://aviationweather.gov/data/metar/?ids=PHNL&hours=24');
+});
+
+test('no history (NDBC has no 24-hour file, step 5 F4): the current reading is the flag\'s own, passed with the load; the note shows', async () => {
+  const s = viewSetup();
+  const reading = { t: T0 - 1200, s: 4.0, g: null, d: 40 };
+  s.view.load(HNL, { reading }); s.answers[0].res(resp(200, history({ t: [], s: [], g: [], d: [], note: 'NDBC publishes no 24-hour history for this station; the flag shows its latest report' }))); await flush();
+  assert.equal(s.view.state().status, 'ready'); assert.equal(s.q('.wind-empty').length, 1);
+  assert.equal(s.els.current.textContent, '9 mph from NE (40°) · 8 kt · 20 min ago');
+  assert.ok(s.els.meta.children.some((e) => e.textContent === 'NDBC publishes no 24-hour history for this station; the flag shows its latest report.'));
+  s.view.load(HNL, { reading: { t: T0, s: 'x' } }); s.answers[1].res(resp(200, history({ t: [], s: [], g: [], d: [] }))); await flush();
+  assert.equal(s.els.current.textContent, I.MSG.empty, 'a reading without a number is no reading');
+  s.view.load(HNL, { reading }); s.answers[2].res(resp(200, history())); await flush();
+  assert.match(s.els.current.textContent, /^\d+ mph from [A-Z]+ \(\d+°\)(, gusts \d+ mph)? · \d+ kt · just now$/, 'with a history the history\'s latest reading');
 });
 
 test('a busy server is asked again after its Retry-After (capped); unknown and failed say so; Retry', async () => {
@@ -423,7 +436,7 @@ test('a newer load voids the older answer; clear() voids everything', async () =
   assert.equal(sig.aborted, true);
   s.answers[1].res(resp(200, history({ id: 'ndbc:51003', kind: 'buoy', src: 'ndbc', alias: null }))); await flush();
   s.answers[0].res(resp(200, history())); await flush();
-  assert.equal(s.view.state().station, 'ndbc:51003'); assert.equal(s.els.meta.children[0].textContent, 'NDBC buoy 51003');
+  assert.equal(s.view.state().station, 'ndbc:51003'); assert.equal(s.els.meta.children[0].textContent, 'Times in HST.');
   s.view.clear();
   assert.equal(s.view.state().status, 'idle'); assert.equal(s.els.chart.children.length, 0); assert.deepEqual(s.timers.pending(), []);
 });
@@ -436,9 +449,10 @@ test('unit and zone changes re-render without asking again; a hidden window buil
   assert.equal(s.view.state().built, true);
   s.view.setUnit('Metric');
   assert.match(s.els.current.textContent, / km\/h /); assert.equal(s.q('.wind-yunit')[0].textContent, 'km/h');
-  assert.match(s.els.meta.children[1].textContent, /^Speeds in km\/h/);
+  assert.equal(s.els.meta.children[0].textContent, 'Times in HST.');
   s.view.setZone('UTC');
   assert.equal(s.view.state().zone, 'UTC'); assert.equal(bodyRows(s)[0].children[0].textContent, 'Sat 10/10, 5:00 PM');
+  assert.equal(s.els.meta.children[0].textContent, 'Times in UTC.');
   assert.equal(s.q('.wind-xdate').length, 1); assert.equal(s.q('.wind-midnight').length, 1);
   assert.equal(s.calls.length, 1);
 });

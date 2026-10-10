@@ -42,6 +42,7 @@
   var WIND_LOOK = {
     base: 'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}',
     attribution: '&copy; Esri & contributors',
+    maxNativeZoom: 16,                                       // Esri's relief ends at zoom 16 (a flat placeholder past it): closer zooms scale its tiles up
     blend: 'multiply',                                       // the model pane over the relief (the particle pane is not blended)
     ink: [34, 38, 46], gain: 1.4                             // the coastline's colour and strength (coastEdges)
   };
@@ -2260,6 +2261,7 @@
     if (this.relief) return this.relief;
     var o = img.options || {}, ro = { attribution: WIND_LOOK.attribution, className: 'ov-relief' };
     ['maxZoom', 'minZoom', 'noWrap', 'keepBuffer'].forEach(function (k) { if (o[k] !== undefined) ro[k] = o[k]; });
+    if (WIND_LOOK.maxNativeZoom) ro.maxNativeZoom = WIND_LOOK.maxNativeZoom;
     var r = this.relief = L.tileLayer(WIND_LOOK.base, ro);
     r._ovTiles = 0;
     r.on('tileload', function () { r._ovTiles++; });

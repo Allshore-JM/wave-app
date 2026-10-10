@@ -926,8 +926,12 @@ naming the site as aviationweather.gov asks):
 - The latest readings come from three `BuoyProvider`s in a list of their own (`get_wind_providers`): NDBC (one GET of
   `latest_obs.txt`, every 5 min), METAR (one GET of the gzipped cache of the last ~80 minutes of reports, every 5 min;
   whole knots; a direction of 0 or `VRB` is no direction, 360 is north), CO-OPS (one `product=wind&date=latest` request
-  per gauge, `WIND_COOPS_WORKERS` at a time, every 10 min; a gauge whose request fails has no reading, every request
-  failing is a failed fetch). They ride on the live-buoy scheduler's pass (`_wind_tick` after the buoy part; a failure
+  per gauge, PACED: every minute the next `WIND_COOPS_PER_REFRESH` gauges in turn, `WIND_COOPS_WORKERS` at a time, so
+  every gauge is asked about every 10 minutes; NOAA answered HTTP 403 to everything from the server for about a minute
+  after 232 requests in a few seconds, and new tide windows failed then too. A gauge whose request fails keeps its last
+  reading, NOAA's "no data" drops it, a reading older than 6 h is dropped; every request of a slice failing is a
+  failed fetch; a 403 pauses the feed for 2 min with the readings kept). They ride on the live-buoy scheduler's pass
+  (`_wind_tick` after the buoy part; a failure
   there never reaches the buoys) with the same keep-last rule, runner and fork reset, and are NOT in the live-buoy list,
   memo, warm-up or golden; `/healthz` reports them under `wind`, which is never part of `ok`.
 - `/api/wind/latest` is the merged table the scheduler prebuilt (never a build or a wait in the request): `{now, stale_s,
@@ -952,19 +956,33 @@ a reading with no direction shows its number above the ring; no reading is a sma
 of every more important flag: a gauge or buoy before a C-MAN or other fixed station before an airport; every station at
 zoom 11; the opened station always). The feed (`createWindFeed`) asks `/api/wind/latest` every 5 minutes while the
 flags show (nothing while the tab is hidden; a partial answer again every 5 s, 24 times at most) and the drawn flags are
-repainted IN PLACE (text, classes, the arrow's rotation; the markers, their listeners and the focus stay). A click
-opens the wind window (`#windWin`, a fourth floating window: its chip stacks on top of the station chips through the
-measured `--chips-h`, its phone bar above the tide bar; Escape closes it first) on the station's last 24 hours
+repainted IN PLACE (text, classes, the arrow's rotation; the markers, their listeners and the focus stay). Clicks reach
+a flag only on its visible parts (the ring, the arrow's shape, the number: the 40-px box itself passes clicks to what lies
+under it); on touch screens the ring has a 30-px disc, and a tide icon on the same spot keeps only its own 18 px (the disc
+around it opens the wind window). A forecast point under the ring (within 7 px on screen) leaves the ring hollow and
+without clicks, so the yellow dot shows through and keeps its click; a forecast point elsewhere in the box (within 20 px)
+takes the clicks from the number and the arrow too, the ring still opening the window (owner, 2026-10-10). A click opens
+the wind window (`#windWin`, a fourth floating window at the TOP-right corner below the legend, tools and gear, as tall
+as its content, never over the parked chips nor lower than 42 px above the bottom edge, so it scrolls on a short screen;
+its chip stacks on top of the station chips at the bottom-right through the measured `--chips-h`, its phone bar above the
+tide bar; Escape closes it first) on the station's last 24 hours
 (`createWindView`): an SVG chart of the speed (solid) and gusts (dashed), the site's unit on the left and knots on the
 right, hour ticks every 3 h (6 h when narrow) with local midnights dated, gaps where readings are more than 90 minutes
 apart, a row of direction arrows under it, a hover / touch readout (the nearest reading within 45 min), the current
-reading with its age (every minute), a newest-first table of 48 rows, the source; the readings are asked again every
-5 minutes, quietly. Units and the display zone follow the gear (the site's Time Zone when one is chosen, else the
-station's own). Limitations: airports report hourly (a flag up to ~90 min old at worst), buoys hourly, gauges and C-MAN
-every 6-10 min; readings are the agencies' raw values; outside the US the layer is airports; a wind flag beside a
-live-buoy dot or a tide icon is a second marker drawn below them (each stays clickable).
+reading with its age (every minute), a folded newest-first table of 48 rows, the zone the times are in and the source;
+the readings are asked again every 5 minutes, quietly. A station NDBC publishes no 24-hour file for (eight Korean buoys)
+shows the flag's own latest reading and says so. Units and the display zone follow the gear (the site's Time Zone when
+one is chosen, else the station's own). Limitations: airports report hourly (a flag up to ~90 min old at worst), buoys
+hourly, gauges and C-MAN every 6-10 min; readings are the agencies' raw values; outside the US the layer is airports; a
+wind flag beside a live-buoy dot or a tide icon is a second marker drawn below them (each stays clickable).
+
+The map zooms to 18 since section 39 step 5b (owner: close enough to tell overlapping tide, wind, buoy and forecast
+markers apart; Esri's imagery is sharp to 18-19 in most places and a flat placeholder tile past its coverage in a few
+remote ones). The station layers draw every station from zoom 11 (`TIDE_ALL_ZOOM`, `WIND_ALL_ZOOM`); the wind overlay's
+relief basemap ends at zoom 16 and is scaled up past it (`WIND_LOOK.maxNativeZoom`, overlay asset 2.14.10).
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `WIND_STATIONS` | `1` | `0` turns the wind feeds and routes off. |
-| `WIND_COOPS_WORKERS` | `4` | Gauges asked at once by the CO-OPS feed (1-8). |
+| `WIND_COOPS_WORKERS` | `2` | Gauges asked at once by the CO-OPS feed (1-8). |
+| `WIND_COOPS_PER_REFRESH` | `24` | Gauges the CO-OPS feed asks per minute, in turn (1-500); 24 of 232 = every gauge about every 10 minutes. |

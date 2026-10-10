@@ -69,6 +69,7 @@ function world(opts) {
     Uint8Array, Uint8ClampedArray, Float32Array, Float64Array, Symbol, matchMedia: undefined,
   };
   g.window = g; g.addEventListener = on('win'); g.removeEventListener = off('win');
+  w.g = g;                                                                   // the module's window (a page global such as AllshoreBasemap)
   w.fire = (t, ev) => (reg[t][ev] || []).slice().forEach((f) => f({}));
   w.listeners = (t, ev) => (reg[t][ev] || []).length;
   w.doc = g.document;
@@ -808,6 +809,23 @@ function fakeTile(url, options) {
 }
 function drawn(field, frame) { return { field, op: null, options: {}, frame: frame === undefined ? !!field : frame, hasFrame() { return this.frame; }, setOpacity(v) { this.op = v; this.options.opacity = v; } }; }
 const fade = () => new Promise((r) => setTimeout(r, 330));
+
+test('section 39 step 5b: the relief is made by the page\'s basemap layer (static_ui/basemap.js) when it is there, so a relief tile Esri does not have is drawn from a coarser one; else by Leaflet', () => {
+  const w = world(), map = lookMap(), img = fakeTile('World_Imagery', { maxZoom: 18, minZoom: 1, keepBuffer: 2 });
+  const made = [];
+  w.L.tileLayer = (url, o) => { made.push(['leaflet', url]); return fakeTile(url, o); };
+  w.g.AllshoreBasemap = { tileLayer: (url, o) => { made.push(['basemap', url, o.maxNativeZoom, o.maxZoom]); return fakeTile(url, o); } };
+  img.addTo(map);
+  const o = new w.I.Overlay(map, { base: 'https://x/gfswave/0p25/v1', baseLayer: img });
+  o.layer = drawn('wind'); o._syncLook();
+  assert.deepEqual(made, [['basemap', w.I.WIND_LOOK.base, 16, 18]]);
+  const w2 = world(), map2 = lookMap(), img2 = fakeTile('World_Imagery', { maxZoom: 18 }), made2 = [];
+  w2.L.tileLayer = (url, o) => { made2.push(url); return fakeTile(url, o); };
+  img2.addTo(map2);
+  const o2 = new w2.I.Overlay(map2, { base: 'https://x/gfswave/0p25/v1', baseLayer: img2 });
+  o2.layer = drawn('wind'); o2._syncLook();
+  assert.deepEqual(made2, [w2.I.WIND_LOOK.base], 'no basemap module: Leaflet\'s own layer');
+});
 
 test('wind look: the relief goes on top and the imagery leaves once the relief has loaded AND faded in; any other field brings the imagery back; quick switches never leave the map without a basemap', async () => {
   const w = world(), map = lookMap(), img = fakeTile('World_Imagery', { maxZoom: 11, minZoom: 1, keepBuffer: 2 });

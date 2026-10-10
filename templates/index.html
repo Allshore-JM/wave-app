@@ -1157,6 +1157,7 @@
   <!-- Leaflet: needed synchronously by the map script right below, but no longer blocks
        the parser before the page body is painted. -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/ui/basemap.js?v={{ ui_asset_version }}"></script>
   <script src="/ui/graticule.js?v={{ ui_asset_version }}"></script>
   <script src="/ui/livelist.js?v={{ ui_asset_version }}"></script>
   <script src="/ui/tides.js?v={{ ui_asset_version }}"></script>
@@ -1426,8 +1427,9 @@
 
     // Esri imagery.
     // noWrap:false allows horizontal world wrapping, which prevents grey side areas
-    // when panning east/west across the dateline.
-    L.tileLayer(
+    // when panning east/west across the dateline. A tile Esri does not have ("Map data not yet available": the open
+    // ocean from about zoom 14) is drawn from its closest coarser tile (static_ui/basemap.js; section 39 step 5b).
+    (window.AllshoreBasemap ? window.AllshoreBasemap.tileLayer : L.tileLayer)(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       {
         maxZoom: MAX_MAP_ZOOM,

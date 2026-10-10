@@ -6,7 +6,9 @@ The stations are a committed snapshot (wind_stations.json, built by tools/wind/f
 (airports and offshore platforms within 30 km of a coast or at sea) and "nws:001HE" (the land weather stations the
 NWS API lists for Hawaii: HECO / HELCO / MECO, the University of Hawaii, RAWS, CWOP, HADS and others, step 5c). A
 reading is {t: epoch seconds, s: speed m/s, g: gust m/s or None, d: direction the wind blows FROM in degrees true,
-or None when calm or variable}.
+or None when calm or variable}; a HISTORY row may also carry the weather the same report holds (WX_FIELDS: at / wt air
+and water temperature C, dp dew point C, rh humidity %, p pressure hPa, pt its 3-hour change hPa, vis visibility km,
+wx weather words), step 5d: the window shows the current conditions and a 24-hour temperature chart.
 
 The latest readings come from four BuoyProvider subclasses (buoy_sources: the section-36 stale-while-revalidate
 lists, keep-last on a failed fetch, the shared refresh runner and the fork reset) kept in a list of their OWN
@@ -87,6 +89,24 @@ NWS_HISTORY_MAX = 4 * 1024 * 1024
 NWS_BUCKET_PER_MIN = 30                        # histories; with the feed's 25 a minute the server stays under ~55 a minute
 NWS_QC_REJECTED = ("X", "B")                   # MADIS quality control: rejected / subjectively bad values are dropped
 NWS_UNITS = {"wmoUnit:km_h-1": 1 / 3.6, "wmoUnit:m_s-1": 1.0, "wmoUnit:[kn_i]": KT_MS, "wmoUnit:mi_h-1": 0.44704}
+NWS_TEMP_UNITS = {"wmoUnit:degC": (1.0, 0.0), "wmoUnit:degF": (5 / 9, -32 * 5 / 9), "wmoUnit:K": (1.0, -273.15)}
+NWS_PRESSURE_UNITS = {"wmoUnit:Pa": 0.01, "wmoUnit:hPa": 1.0, "wmoUnit:mbar": 1.0}
+NWS_LENGTH_UNITS = {"wmoUnit:m": 0.001, "wmoUnit:km": 1.0, "wmoUnit:[mi_i]": 1.609344}
+WX_FIELDS = ("at", "wt", "dp", "rh", "p", "pt", "vis", "wx")   # the weather a history row may carry (see the module docstring)
+CONDITIONS_S = 3 * 3600                        # the current conditions: each field's newest value within this of the newest row
+TREND_S = 3 * 3600                             # the pressure's change over this long ("rising" / "falling" on the page)
+COOPS_WX_PRODUCTS = {"a": ("air_temperature", "at"), "w": ("water_temperature", "wt"), "p": ("air_pressure", "p"),
+                     "h": ("humidity", "rh")}   # the snapshot's `wx` letters -> (datagetter product, the row's field)
+NMI_KM = 1.852
+SM_KM = 1.609344
+METAR_COVER = {"CLR": "Clear", "SKC": "Clear", "CAVOK": "Clear", "FEW": "A few clouds", "SCT": "Scattered clouds",
+               "BKN": "Mostly cloudy", "OVC": "Overcast", "OVX": "Sky obscured"}
+METAR_WX = {"RA": "rain", "DZ": "drizzle", "SN": "snow", "SG": "snow grains", "GR": "hail", "GS": "small hail",
+            "PL": "ice pellets", "IC": "ice crystals", "UP": "precipitation", "BR": "mist", "FG": "fog", "HZ": "haze",
+            "FU": "smoke", "DU": "dust", "SA": "sand", "VA": "volcanic ash", "SQ": "squalls", "FC": "funnel cloud",
+            "PO": "dust whirls", "DS": "dust storm", "SS": "sandstorm", "PY": "spray"}
+METAR_WX_DESC = {"SH": "showers", "TS": "thunderstorm", "FZ": "freezing", "BL": "blowing", "DR": "drifting",
+                 "MI": "shallow", "BC": "patches of", "PR": "partial"}
 ID_RE = re.compile(r"(coops|ndbc|metar|nws):[A-Z0-9]{3,8}")
 _NUM = re.compile(r"-?\d+(\.\d+)?$")
 
@@ -131,7 +151,8 @@ def _direction(v):
 
 
 def reading(t, s, g=None, d=None):
-    """A reading dict with its fields checked (t epoch seconds; s, g m/s; d degrees FROM). None without t or s."""
+    """A reading dict with its fields checked (t epoch seconds; s, g m/s; d degrees FROM). None without t or s. A
+    speed that rounds to 0.0 is calm: it keeps no direction (step 5c D)."""
     try:
         t = int(t)
     except (TypeError, ValueError):
@@ -139,7 +160,53 @@ def reading(t, s, g=None, d=None):
     s = _speed(s)
     if s is None:
         return None
-    return {"t": t, "s": round(s, 1), "g": (round(_speed(g), 1) if _speed(g) is not None else None), "d": _direction(d)}
+    s = round(s, 1)
+    return {"t": t, "s": s, "g": (round(_speed(g), 1) if _speed(g) is not None else None), "d": _direction(d) if s > 0 else None}
+
+
+def _num_in(v, lo, hi, digits=1):
+    """A number within [lo, hi] rounded to `digits`, else None (missing, "MM", out of range, not finite)."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x) or x < lo or x > hi:
+        return None
+    return int(round(x)) if digits == 0 else round(x, digits)
+
+
+def _temp(v): return _num_in(v, -90.0, 60.0)                           # degC
+def _pct(v): return _num_in(v, 0.0, 100.0, 0)
+def _hpa(v): return _num_in(v, 800.0, 1100.0)
+def _hpa_delta(v): return _num_in(v, -60.0, 60.0)
+def _km(v): return _num_in(v, 0.0, 500.0)
+
+
+def _words(v, limit=48):
+    """Weather words: a short plain string, or None."""
+    w = " ".join(str(v or "").split())
+    return w[:limit] if w else None
+
+
+def with_weather(r, **fields):
+    """The reading with the weather fields that have a value (keys of WX_FIELDS); the others left out."""
+    if r is None:
+        return None
+    for k, v in fields.items():
+        if k in WX_FIELDS and v is not None:
+            r[k] = v
+    return r
+
+
+def humidity_from(at, dp):
+    """Relative humidity (%) from air temperature and dew point (degC; Magnus, Alduchov-Eskridge constants), or None."""
+    if at is None or dp is None:
+        return None
+    try:
+        rh = 100.0 * math.exp(17.625 * dp / (243.04 + dp)) / math.exp(17.625 * at / (243.04 + at))
+    except (OverflowError, ZeroDivisionError):
+        return None
+    return int(round(max(1.0, min(100.0, rh))))
 
 
 def iso_z(t):
@@ -197,6 +264,10 @@ def parse_realtime2(text, since, max_rows=HISTORY_ROWS):
             break
         r = reading(t, row.get("WSPD"), row.get("GST"), row.get("WDIR"))
         if r is not None:
+            vis = _km(row.get("VIS"))
+            with_weather(r, at=_temp(row.get("ATMP")), wt=_temp(row.get("WTMP")), dp=_temp(row.get("DEWP")),
+                         p=_hpa(row.get("PRES")), pt=_hpa_delta(row.get("PTDY")),
+                         vis=round(vis * NMI_KM, 1) if vis is not None else None)        # VIS in nautical miles
             out.append(r)
             if len(out) >= max_rows:
                 break
@@ -225,6 +296,21 @@ def _coops_epoch(text):
         return calendar.timegm(time.strptime(str(text).strip(), "%Y-%m-%d %H:%M"))
     except (TypeError, ValueError):
         return None
+
+
+def parse_coops_series(doc):
+    """datagetter product=air_temperature / water_temperature / air_pressure / humidity (units=metric) -> {epoch: value}
+    for the rows carrying a number; an error answer or anything else -> {}."""
+    out = {}
+    rows = doc.get("data") if isinstance(doc, dict) else None
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        t = _coops_epoch(row.get("t"))
+        v = _num_in(row.get("v"), -1e6, 1e6)
+        if t is not None and v is not None:
+            out[t] = v
+    return out
 
 
 def parse_coops_wind(doc):
@@ -297,15 +383,77 @@ def parse_metar_cache(raw):
     return out
 
 
+def metar_visibility_km(v):
+    """visib in statute miles ("10+" = 10 or more, a number, "1/2") -> km, or None."""
+    text = str(v if v is not None else "").strip()
+    if not text:
+        return None
+    more = text.endswith("+")
+    text = text.rstrip("+")
+    try:
+        if "/" in text:
+            a, b = text.split("/", 1)
+            miles = float(a) / float(b)
+        else:
+            miles = float(text)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    km = _km(miles * SM_KM)
+    return km if km is None or not more else max(km, 16.0)
+
+
+def metar_weather_words(wx, cover):
+    """Plain words for a METAR's present weather ("-SHRA" -> "light showers of rain", "VCTS" -> "thunderstorm nearby",
+    "BR" -> "mist"; several groups joined), else the sky cover's words ("FEW" -> "A few clouds"); None without either."""
+    groups = []
+    for code in str(wx or "").split():
+        c = code.upper()
+        if c in ("NSW", "NOSIG"):
+            continue
+        words = []
+        if c.startswith("+"):
+            words.append("heavy"); c = c[1:]
+        elif c.startswith("-"):
+            words.append("light"); c = c[1:]
+        nearby = c.startswith("VC")
+        if nearby:
+            c = c[2:]
+        if c.startswith("RE"):
+            c = c[2:]; words.append("recent")
+        desc = c[:2] if c[:2] in METAR_WX_DESC else None
+        if desc:
+            c = c[2:]
+        phen = []
+        while c:
+            phen.append(METAR_WX.get(c[:2], c[:2].lower())); c = c[2:]
+        if desc and phen:
+            words.append(METAR_WX_DESC[desc] + (" of " if desc == "SH" else " with " if desc == "TS" else " ") + " and ".join(phen))
+        elif desc:
+            words.append(METAR_WX_DESC[desc])
+        elif phen:
+            words.append(" and ".join(phen))
+        if nearby:
+            words.append("nearby")
+        if words:
+            groups.append(" ".join(words))
+    if groups:
+        return _words(", ".join(groups))
+    return METAR_COVER.get(str(cover or "").strip().upper())
+
+
 def parse_metar_history(doc):
     """api/data/metar (format=json) -> readings in the order given. obsTime is epoch seconds; wdir an integer or
-    "VRB"; wspd / wgst whole knots (wgst absent without a gust)."""
+    "VRB"; wspd / wgst whole knots (wgst absent without a gust); temp / dewp degC; slp (else altim) hPa; visib
+    statute miles; wxString + cover -> weather words."""
     out = []
     for row in doc if isinstance(doc, list) else []:
         if not isinstance(row, dict):
             continue
         r = _metar_reading(row.get("obsTime"), row.get("wdir"), row.get("wspd"), row.get("wgst"))
         if r is not None:
+            with_weather(r, at=_temp(row.get("temp")), dp=_temp(row.get("dewp")),
+                         p=_hpa(row.get("slp")) if _hpa(row.get("slp")) is not None else _hpa(row.get("altim")),
+                         vis=metar_visibility_km(row.get("visib")), wx=metar_weather_words(row.get("wxString"), row.get("cover")))
             out.append(r)
     return out
 
@@ -355,8 +503,23 @@ def parse_nws_observations(doc):
         d = None if s == 0 else _nws_quantity(row.get("windDirection"))
         r = reading(_nws_epoch(row.get("timestamp")), s, _nws_quantity(row.get("windGust"), NWS_UNITS), d)
         if r is not None:
+            p = _nws_quantity(row.get("seaLevelPressure"), NWS_PRESSURE_UNITS)
+            if p is None:
+                p = _nws_quantity(row.get("barometricPressure"), NWS_PRESSURE_UNITS)
+            with_weather(r, at=_temp(_nws_temp(row.get("temperature"))), dp=_temp(_nws_temp(row.get("dewpoint"))),
+                         rh=_pct(_nws_quantity(row.get("relativeHumidity"))), p=_hpa(p),
+                         vis=_km(_nws_quantity(row.get("visibility"), NWS_LENGTH_UNITS)), wx=_words(row.get("textDescription")))
             out.append(r)
     return out
+
+
+def _nws_temp(q):
+    """A temperature field -> degC (degC, degF or K by its unit code), or None."""
+    v = _nws_quantity(q)
+    if v is None:
+        return None
+    k = NWS_TEMP_UNITS.get(str((q or {}).get("unitCode") or ""))
+    return v * k[0] + k[1] if k else None
 
 
 # ---------------------------------------------------------------------------------------------- the snapshot
@@ -805,6 +968,28 @@ class WindHistory:
             return []                                                  # NOAA has nothing for the last 24 h
         return [r for r in parse_coops_wind(doc) if r["t"] >= since]
 
+    def _coops_weather(self, local, letters, rows):
+        """The gauge's own weather products (COOPS_WX_PRODUCTS, only the letters the snapshot lists) merged into the
+        wind rows at the same minute; a product that cannot be read or has no data adds nothing (logged)."""
+        by_t = {r["t"]: r for r in rows}
+        for letter in str(letters or ""):
+            prod = COOPS_WX_PRODUCTS.get(letter)
+            if not prod or not by_t:
+                continue
+            product, key = prod
+            try:
+                doc = self._json(coops_url(local, product=product, range=24), COOPS_MAX)
+            except WindError as exc:
+                _log.info("wind history coops:%s: %s not read (%s)", local, product, exc)
+                continue
+            if coops_error(doc):
+                continue
+            check = _temp if key in ("at", "wt") else _hpa if key == "p" else _pct
+            for t, v in parse_coops_series(doc).items():
+                r = by_t.get(t)
+                if r is not None and check(v) is not None:
+                    r[key] = check(v)
+
     def _metar(self, local, since):
         if not self.bucket.take():
             raise WindBusy("the METAR request budget is used up")
@@ -845,6 +1030,7 @@ class WindHistory:
         else:
             try:
                 rows = self._coops(local, since)
+                self._coops_weather(local, st.get("wx"), rows)
             except WindError as exc:
                 if not st.get("alias"):
                     raise
@@ -857,12 +1043,53 @@ class WindHistory:
         rows = sorted({r["t"]: r for r in rows}.values(), key=lambda r: r["t"])[-HISTORY_ROWS:]
         if not rows:
             note = NDBC_NO_FILE if no_file else NO_HISTORY
+        for r in rows:                                                 # humidity from the dew point where not reported
+            if r.get("rh") is None and r.get("at") is not None and r.get("dp") is not None:
+                r["rh"] = humidity_from(r["at"], r["dp"])
         out = {"id": sid, "name": st.get("name"), "kind": st.get("kind"), "src": src, "tz": st.get("tz"),
                "alias": st.get("alias"), "lat": st.get("lat"), "lon": st.get("lon"), "hours": HISTORY_S // 3600,
-               "units": {"s": "m/s", "g": "m/s", "d": "deg"}, "stale_s": STALE_S, "now": int(now),
+               "units": {"s": "m/s", "g": "m/s", "d": "deg", "at": "degC", "wt": "degC", "dp": "degC", "rh": "%",
+                         "p": "hPa", "pt": "hPa/3h", "vis": "km"}, "stale_s": STALE_S, "now": int(now),
                "t": [r["t"] for r in rows], "s": [r["s"] for r in rows], "g": [r["g"] for r in rows],
                "d": [r["d"] for r in rows], "source": ATTRIBUTION[via or src], "via": via, "note": note}
+        for k in WX_FIELDS:                                            # only the fields some row carries
+            if any(r.get(k) is not None for r in rows):
+                out[k] = [r.get(k) for r in rows]
+        out["conditions"] = conditions(rows)
         return "ok", out
+
+
+def conditions(rows):
+    """The current conditions from history rows (ascending): for each WX field the newest value within CONDITIONS_S
+    of the newest row, as [t, value]; "trend": the pressure's change over TREND_S in hPa (the newest row's pt, else
+    the newest pressure minus the one closest to TREND_S earlier, within half an hour of it), or None."""
+    out = {}
+    if not rows:
+        return out
+    newest = rows[-1]["t"]
+    for k in WX_FIELDS:
+        for r in reversed(rows):
+            if r["t"] < newest - CONDITIONS_S:
+                break
+            if r.get(k) is not None:
+                out[k] = [r["t"], r[k]]
+                break
+    trend = None
+    if out.get("pt") is not None:
+        trend = out["pt"][1]
+    elif out.get("p") is not None:
+        t_now, p_now = out["p"]
+        best = None
+        for r in rows:
+            if r.get("p") is None:
+                continue
+            off = abs((t_now - r["t"]) - TREND_S)
+            if off <= 1800 and (best is None or off < best[0]):
+                best = (off, r["p"])
+        if best is not None:
+            trend = round(p_now - best[1], 1)
+    out["trend"] = trend
+    return out
 
 
 def _after_fork():

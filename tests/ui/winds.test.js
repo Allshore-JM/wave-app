@@ -300,7 +300,9 @@ function viewSetup(opts = {}) {
   const mk = (tag, id) => doc.register(doc.createElement(tag), id);
   const els = { content: mk('div', 'windContent'), loading: mk('div', 'windLoading'), error: mk('div', 'windError'),
     errorText: mk('span', 'windErrorText'), retry: mk('button', 'windRetry'), current: mk('div', 'windCurrent'),
-    chart: mk('div', 'windChart'), arrows: mk('div', 'windArrows'), table: mk('div', 'windTable'), meta: mk('div', 'windMeta') };
+    conditions: mk('div', 'windConditions'), chart: mk('div', 'windChart'), arrows: mk('div', 'windArrows'),
+    temp: mk('div', 'windTemp'), table: mk('div', 'windTable'), meta: mk('div', 'windMeta') };
+  if (opts.oldEls) { delete els.conditions; delete els.temp; }                 // a page without the step-5d elements
   const calls = [], answers = [], timers = fakeTimers();
   let visible = opts.visible !== false, nowMs = opts.now || NOW, width = opts.width || 640;
   const retried = [];
@@ -351,6 +353,65 @@ test('a station loads: the chart, the arrows, the current reading, the table, th
   assert.equal(a.getAttribute('href'), 'https://tidesandcurrents.noaa.gov/stationhome.html?id=1612340');
   assert.equal(a.textContent, 'NOAA CO-OPS (tidesandcurrents.noaa.gov)'); assert.equal(a.getAttribute('rel'), 'noopener');
   assert.ok(s.timers.pending().includes(I.TICK_MS));
+});
+
+function weather(extra) {
+  const h = history(extra);
+  h.at = h.t.map((t, i) => (i % 7 === 3 ? null : +(24 + 3 * Math.sin(i / 30)).toFixed(1)));
+  h.wt = h.t.map(() => 27.2); h.dp = h.t.map(() => 20.0); h.rh = h.t.map(() => 78); h.p = h.t.map((t, i) => +(1014 - i / 100).toFixed(1));
+  h.conditions = { at: [T0, 25.6], wt: [T0, 27.2], rh: [T0, 78], dp: [T0, 20.0], p: [T0, 1011.8], trend: -1.2, vis: [T0, 16.1], wx: [T0, 'light rain'] };
+  return h;
+}
+
+test('the weather in the site\'s unit: temperatures, pressure, distances, the trend words, the conditions line', () => {
+  assert.equal(I.tempText(25.6, 'US'), '78°F'); assert.equal(I.tempText(25.6, 'Metric'), '25.6°C'); assert.equal(I.tempText(-0.04, 'US'), '32°F');
+  assert.equal(I.pressText(1011.8, 'US'), '29.88 inHg'); assert.equal(I.pressText(1011.8, 'Metric'), '1012 hPa');
+  assert.equal(I.distText(16.1, 'US'), '10 mi'); assert.equal(I.distText(0.8, 'US'), '0.5 mi'); assert.equal(I.distText(16.1, 'Metric'), '16 km'); assert.equal(I.distText(2.45, 'Metric'), '2.5 km');
+  assert.deepEqual([I.trendText(1.2), I.trendText(-0.6), I.trendText(0.3), I.trendText(null)], ['rising', 'falling', 'steady', '']);
+  const c = weather().conditions;
+  assert.equal(I.conditionsText(c, 'US'), 'Air 78°F · Water 81°F · Humidity 78% · Dew point 68°F · Pressure 29.88 inHg, falling · Visibility 10 mi · Light rain');
+  assert.equal(I.conditionsText(c, 'Metric'), 'Air 25.6°C · Water 27.2°C · Humidity 78% · Dew point 20°C · Pressure 1012 hPa, falling · Visibility 16 km · Light rain');
+  assert.equal(I.conditionsText({ p: [1, 1020.0], trend: 0.1 }, 'US'), 'Pressure 30.12 inHg, steady');
+  assert.equal(I.conditionsText({ at: [1, 'x'], wx: [1, ''] }, 'US'), ''); assert.equal(I.conditionsText(null, 'US'), ''); assert.equal(I.conditionsText({}, 'US'), '');
+});
+
+test('a station with weather: the conditions line, the temperature chart on the wind chart\'s axis, Air / Water columns, the readout; without weather nothing of it', async () => {
+  const s = viewSetup();
+  s.view.load(HNL, { unit: 'US' }); s.answers[0].res(resp(200, weather())); await flush();
+  assert.equal(s.view.state().temp, true);
+  assert.equal(s.els.conditions.textContent, 'Air 78°F · Water 81°F · Humidity 78% · Dew point 68°F · Pressure 29.88 inHg, falling · Visibility 10 mi · Light rain');
+  assert.ok(!s.els.conditions.classList.contains('d-none'));
+  const tsvg = s.els.temp.querySelectorAll('svg')[0];
+  assert.equal(tsvg.getAttribute('height'), String(I.TEMP_H)); assert.equal(tsvg.getAttribute('width'), '640');
+  const air = s.els.temp.querySelectorAll('.wind-air')[0].getAttribute('d'), water = s.els.temp.querySelectorAll('.wind-water')[0].getAttribute('d');
+  assert.ok((air.match(/M/g) || []).length >= 30, 'every 7th air temperature is missing: the air line breaks there');
+  assert.equal((water.match(/M/g) || []).length, 2, 'the 2-hour hole splits the water line');
+  const ticks = s.els.temp.querySelectorAll('.wind-ttick').map((e) => +e.textContent);
+  assert.ok(ticks.length >= 3 && ticks[0] <= 72 && ticks.at(-1) >= 82, 'the ticks span the temperatures in °F');
+  assert.equal(s.els.temp.querySelectorAll('.wind-tunit')[0].textContent, '°F');
+  assert.equal(s.els.temp.querySelectorAll('.wind-midnight').length, 1, 'the same marks as the wind chart');
+  const firstX = (d) => +d.slice(1).split(' ')[0];
+  assert.equal(firstX(water), firstX(s.q('.wind-speed')[0].getAttribute('d')), 'the same x axis');
+  const rows = bodyRows(s), heads = s.els.table.querySelector('thead').querySelector('tr').children.map((e) => e.textContent);
+  assert.deepEqual(heads, ['Time', 'Speed', 'Gust', 'Direction', 'Air', 'Water']);
+  assert.equal(rows[0].children[5].textContent, '81°F'); assert.match(rows[0].children[4].textContent, /^(\d+°F|–)$/);
+  assert.ok(rows.some((r) => r.children[4].textContent === '–'), 'a missing air temperature is a dash');
+  // the readout names the air temperature
+  const svg = s.q('svg')[0]; svg.rect = { left: 0, top: 0, width: 640, height: I.CHART_H };
+  s.els.chart.dispatch('mousemove', { clientX: 640 - I.MARGIN.r, clientY: 50 });
+  assert.match(s.view.state().readout, / · Air \d+°F$/);
+  // Metric re-renders the line and the chart
+  s.view.setUnit('Metric');
+  assert.equal(s.els.conditions.textContent.slice(0, 29), 'Air 25.6°C · Water 27.2°C · H'); assert.equal(s.els.temp.querySelectorAll('.wind-tunit')[0].textContent, '°C');
+  // a plain answer: no line, no chart, four columns
+  s.view.load(HNL, { unit: 'US' }); s.answers[1].res(resp(200, history())); await flush();
+  assert.equal(s.els.conditions.textContent, ''); assert.ok(s.els.conditions.classList.contains('d-none'));
+  assert.equal(s.els.temp.querySelectorAll('svg').length, 0); assert.equal(s.view.state().temp, false);
+  assert.deepEqual(s.els.table.querySelector('thead').querySelector('tr').children.map((e) => e.textContent), ['Time', 'Speed', 'Gust', 'Direction']);
+  // a page without the new elements still works
+  const o = viewSetup({ oldEls: true });
+  o.view.load(HNL, { unit: 'US' }); o.answers[0].res(resp(200, weather())); await flush();
+  assert.equal(o.view.state().status, 'ready'); assert.equal(o.view.state().temp, true);
 });
 
 test('narrow windows: hour ticks every 6 h and fewer arrows; resize rebuilds only past 8 px', async () => {

@@ -106,6 +106,12 @@
                      max-height: calc(100vh - var(--map-topright-h, 120px) - 50px - var(--chips-h, 0px)); z-index: 2000; }
     .wind-win .fw-body { padding: 8px 12px 12px; }
     #windCurrent { font-size: 13px; font-weight: 600; color: #1d2b4f; margin: 2px 0 6px; }
+    /* the current conditions (air / water temperature, humidity, dew point, pressure, visibility, weather: only what the
+       station reports) under the wind reading, and the temperature chart under the arrows (step 5d) */
+    #windConditions { font-size: 12.5px; color: #3f4d6e; margin: -3px 0 8px; }
+    #windTemp { line-height: 0; margin-top: 4px; }
+    .wind-temp-svg { display: block; max-width: 100%; height: auto; }
+    .wind-temp-svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
     .wind-cur-dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; background: currentColor; border: 1.5px solid #fff;
                     box-shadow: 0 0 0 1px rgba(0,0,0,.25); margin-right: 6px; vertical-align: -1px; }
     .wind-cur-age { font-weight: 400; color: #5a6b7a; }
@@ -1141,8 +1147,10 @@
         <button type="button" id="windRetry" class="btn btn-sm btn-outline-secondary ms-2">Retry</button></div>
       <div id="windContent" class="d-none">
         <div id="windCurrent"></div>
+        <div id="windConditions" class="d-none"></div>
         <div id="windChart"></div>
         <div id="windArrows"></div>
+        <div id="windTemp"></div>
         <details class="wind-readings"><summary>Readings</summary><div id="windTable"></div></details>
         <div id="windMeta"></div>
       </div>
@@ -1204,7 +1212,7 @@
 
     // As close as Esri's imagery stays sharp (owner, 2026-10-10: close enough to tell overlapping tide, wind, buoy and
     // forecast markers apart): zoom 18 is ~0.6 m per pixel; the imagery runs out a little earlier in a few remote places
-    // (a flat placeholder tile there). The station layers show every station from zoom 11 (TIDE_ALL_ZOOM, WIND_ALL_ZOOM).
+    // (a flat placeholder tile there). The station layers show every station from zoom 11 (TIDE_ALL_ZOOM) / 13 (WIND_ALL_ZOOM).
     const MAX_MAP_ZOOM = 18;
 
     // Leaflet world width is 256 px at zoom 0.
@@ -1715,7 +1723,7 @@
     let tideView = null;
     // the wind layer's state (plan section 39; the functions follow the tide block below)
     const WIND_MIN_ZOOM = 9;                        // the flags show from this map zoom (fractional zooms: >=)
-    const WIND_ALL_ZOOM = 11;                       // from this zoom every station shows; below it overlapping flags are thinned
+    const WIND_ALL_ZOOM = 13;                       // from this zoom every station shows; below it overlapping flags are thinned (owner, 2026-10-10: 13 with the NWS stations)
     const WIND_GAP_PX = 40;                         // flags (40 px) closer than this on screen overlap: the less important waits
     const WIND_CELL_PX = 64;                        // the reveal grid: >= WIND_GAP_PX, and a divisor of the world's width
     const WIND_LIST_RETRY_MS = 30000;               // a failed station list is asked again after this
@@ -3282,7 +3290,9 @@
     // Busy coasts: a reveal zoom per station as for the tide icons (importance: a gauge or a buoy, then a C-MAN or
     // another fixed station, then an airport, then by id), WIND_GAP_PX clear of every more important flag shown before
     // it; every station at the map's last zoom; the opened station whatever its reveal zoom.
-    function windRank(s) { return s.kind === 'gauge' || s.kind === 'buoy' ? 0 : s.kind === 'airport' ? 2 : 1; }
+    // who keeps the flag where flags crowd (owner, 2026-10-10): gauges and buoys, then airports and NDBC stations, then
+    // the NWS API's land stations, CWOP amateur stations last
+    function windRank(s) { return s.kind === 'gauge' || s.kind === 'buoy' ? 0 : s.kind === 'airport' || s.kind === 'cman' || s.kind === 'station' ? 1 : s.kind === 'cwop' ? 3 : 2; }
     function windRankOrder(a, b) { return windRank(a) - windRank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }
     function windRevealZooms() {
       const key = String(windStationsData.length);
@@ -3488,7 +3498,8 @@
       const $ = function (id) { return document.getElementById(id); };
       windView = window.AllshoreWinds.createWindView({
         els: { content: $('windContent'), loading: $('windLoading'), error: $('windError'), errorText: $('windErrorText'), retry: $('windRetry'),
-               current: $('windCurrent'), chart: $('windChart'), arrows: $('windArrows'), table: $('windTable'), meta: $('windMeta') },
+               current: $('windCurrent'), conditions: $('windConditions'), chart: $('windChart'), arrows: $('windArrows'),
+               temp: $('windTemp'), table: $('windTable'), meta: $('windMeta') },
         document: document, fetch: function (u, o) { return fetch(u, o); },
         visible: function () { return !!(windWin && windWin.isOpen() && windWin.window.mode !== 'min'); },
         width: function () { const c = $('windChart'); return c ? c.clientWidth : 0; },

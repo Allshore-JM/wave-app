@@ -903,7 +903,7 @@ Windows: a station chip gives its subtitle up before the station's name. An expa
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
 
-## Wind stations (plan section 39, UI asset 1.19.4)
+## Wind stations (plan section 39, UI asset 1.20.0)
 
 Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from four public-domain NOAA / NWS
 feeds (attribution requested, given in the map credits while the layer is on and in the window): NOAA NDBC buoys,
@@ -913,11 +913,12 @@ owner 2026-10-10 "Hawaii now"), the land weather stations the NWS API lists (api
 University of Hawaii mesonet, RAWS, CWOP, HADS and others, fed to the NWS through MADIS). iKitesurf's page was the
 visual reference (owner, 2026-10-09); its data is WeatherFlow's and proprietary, so none of it is used.
 
-The station list is a committed snapshot, `wind_stations.json` (2,742 stations, 296 of them the NWS API's Hawaii stations:
+The station list is a committed snapshot, `wind_stations.json` (~2,740 stations, 296 of them the NWS API's Hawaii stations:
 125 utility, 68 mesonet, 68 RAWS, 29 CWOP, 6 HADS; ids `coops:1612340`, `ndbc:51003`, `metar:PHNL`,
 `nws:001HE`; kinds gauge, buoy, cman, station, airport and, for the NWS API's stations, utility (HECO / HELCO / MECO),
 mesonet (University of Hawaii, SCAN, CRN), raws, cwop, hads, weather; the nearest civil time zone; for a gauge the NDBC id
-it is relayed under, its `alias`). Rebuild it now and then with `python tools/wind/fetch_stations.py --sensors-cache
+it is relayed under, its `alias`, and its weather sensors as letters, `wx`: a air temperature, w water temperature, p
+pressure, h humidity). Rebuild it now and then with `python tools/wind/fetch_stations.py --sensors-cache
 FILE --nws-cache FILE` (~10 min: one `sensors.json` per CO-OPS met station, NDBC's `latest_obs.txt` and station table,
 the METAR cache and site list, the API for coastal sites not in the cache, the site's own GSHHG coastline for the 30-km
 rule, the NWS API's station list per area (`--nws-areas`, default HI) and one observations probe per station, 0.75 s
@@ -951,11 +952,19 @@ naming the site as aviationweather.gov asks):
   fields [id, t, s, g, d], rows, missing}` with speeds in m/s and directions the wind blows FROM; a gauge without a CO-OPS
   reading takes its NDBC relay's. Feeds still loading after a start are named in `X-Wind-Stations-Partial` with
   `Cache-Control: no-store` (the page asks again); else 2 min. `/api/wind/stations` serves the snapshot (6 h, ETag).
-- `/api/wind/<id>/history` (5 min): the last 24 hours (`t, s, g, d` ascending) from NDBC's `realtime2` file (cut at 24 h
+- `/api/wind/<id>/history` (5 min): the last 24 hours (`t, s, g, d` ascending, plus the weather the same reports hold
+  where any row has it, step 5d: `at` / `wt` air and water temperature degC, `dp` dew point, `rh` humidity % (from the
+  dew point where not reported), `p` pressure hPa, `pt` its 3-hour change, `vis` visibility km, `wx` weather words;
+  and `conditions`, each field's newest value within 3 hours as `[t, value]` with the pressure `trend` over 3 hours)
+  from NDBC's `realtime2` file (its ATMP / WTMP / DEWP / PRES / PTDY / VIS columns; cut at 24 h
   and 300 rows), CO-OPS `range=24`, the METAR API's `hours=24` behind a token bucket of 60 requests a minute (the API
-  allows 100), or the NWS API's `observations?start=<24 h ago>&limit=500` behind a bucket of 30 a minute (so the server
-  sends the NWS API at most ~55 requests a minute with the feed's 25); a gauge falls back on its NDBC relay
-  (`via: "ndbc"`). The tide service's cache core: ok 10 min, a
+  allows 100; temp / dewp / slp or altim / visib / wxString + cover), or the NWS API's `observations?start=<24 h
+  ago>&limit=500` behind a bucket of 30 a minute (so the server sends the NWS API at most ~55 requests a minute with the
+  feed's 25; temperature / dewpoint / relativeHumidity / seaLevelPressure or barometricPressure / visibility /
+  textDescription by their unit codes); a CO-OPS gauge's weather comes from its own products (`air_temperature`,
+  `water_temperature`, `air_pressure`, `humidity`, `range=24`: only those its `wx` letters list, beside the wind request;
+  a product that fails adds nothing); a gauge falls back on its NDBC relay (`via: "ndbc"`). The tide service's cache
+  core: ok 10 min, a
   failure 1 min, busy never cached (503 + `Retry-After: 5` + `retry: true`), one build per station at a time, LRU 256.
   An id not in the snapshot is a 404 without any upstream request.
 - Off with `WIND_STATIONS=0` (the routes answer 503, the scheduler leaves the feeds alone; the tests set it).
@@ -968,8 +977,8 @@ box: a ring at the station, an arrow pointing the way the wind BLOWS, and the sp
 1 (a ring with "0"), light 1-9 blue, moderate 10-15 green, fresh 16-21 amber, strong 22-30 red, gale 31 and up purple;
 a reading with no direction shows its number above the ring; no reading is a small grey ring; a reading older than 2 h
 (the server's `stale_s`) is grey. Busy coasts are thinned as the tide icons are (a reveal zoom per station, 40 px clear
-of every more important flag: a gauge or buoy before a C-MAN or other fixed station before an airport; every station at
-zoom 11; the opened station always). The feed (`createWindFeed`) asks `/api/wind/latest` every 5 minutes while the
+of every more important flag: a gauge or buoy before an airport, C-MAN or other NDBC station before the NWS API's land
+stations, CWOP amateur stations last (owner, 2026-10-10); every station at zoom 13; the opened station always). The feed (`createWindFeed`) asks `/api/wind/latest` every 5 minutes while the
 flags show (nothing while the tab is hidden; a partial answer again every 5 s, 24 times at most) and the drawn flags are
 repainted IN PLACE (text, classes, the arrow's rotation; the markers, their listeners and the focus stay). Clicks reach
 a flag only on its visible parts (the ring, the arrow's shape, the number: the 40-px box itself passes clicks to what lies
@@ -986,7 +995,11 @@ tide bar; Escape closes it first) on the station's last 24 hours
 right, hour ticks every 3 h (6 h when narrow) with local midnights dated, gaps where readings are more than 90 minutes
 apart, a row of direction arrows under it, a hover / touch readout (the nearest reading within 45 min), the current
 reading with its age (every minute), a folded newest-first table of 48 rows, the zone the times are in and the source;
-the readings are asked again every 5 minutes, quietly. A station NDBC publishes no 24-hour file for (eight Korean buoys)
+the readings are asked again every 5 minutes, quietly. Under the wind reading a conditions line (step 5d: air / water
+temperature, humidity, dew point, pressure with its trend, visibility, the weather in words, only what the station
+reports, in the site's units: °F / inHg / miles or °C / hPa / km) and under the arrows a small 24-hour chart of the air
+(solid) and water (dashed) temperature on the same time axis; the Readings table gains Air / Water columns; the readout
+names the air temperature. A station NDBC publishes no 24-hour file for (eight Korean buoys)
 shows the flag's own latest reading and says so. Units and the display zone follow the gear (the site's Time Zone when
 one is chosen, else the station's own). Limitations: airports report hourly (a flag up to ~90 min old at worst), buoys
 hourly, gauges and C-MAN every 6-10 min; readings are the agencies' raw values; outside the US the layer is airports; a

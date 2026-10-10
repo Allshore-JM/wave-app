@@ -674,7 +674,8 @@ def test_wind_stations_on_the_page(client):
     assert r.status_code == 200 and "AllshoreWinds" in r.get_data(as_text=True)
     for needle in (
         "const WIND_MIN_ZOOM = 9;", "function windVisible() { return map.hasLayer(windLayer) && map.getZoom() >= WIND_MIN_ZOOM; }",
-        "const WIND_GAP_PX = 40;", "const WIND_CELL_PX = 64;", "const WIND_ALL_ZOOM = 11;", "const MAX_MAP_ZOOM = 18;",
+        "const WIND_GAP_PX = 40;", "const WIND_CELL_PX = 64;", "const WIND_ALL_ZOOM = 13;", "const MAX_MAP_ZOOM = 18;",
+        "function windRank(s) { return s.kind === 'gauge' || s.kind === 'buoy' ? 0 : s.kind === 'airport' || s.kind === 'cman' || s.kind === 'station' ? 1 : s.kind === 'cwop' ? 3 : 2; }",
         "const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis) + '|h:' + Array.from(hollow, function (e) { return e[0] + '=' + e[1].mode + ':' + e[1].f.id; }).sort().join(',');",
         "const WIND_HOLLOW_PX = 7, WIND_NEAR_PX = 20, WIND_DOT_HIT_PX = 8, WIND_DOT_HIT_TOUCH_PX = 12;", "if (dot && dot.mode === 'hollow' && flag.classList) flag.classList.add('wind-hollow');",
         "const f = windDotHit(drawn, e && e.originalEvent);", "if (f) { pickForecastPoint(f); return; }",
@@ -701,7 +702,8 @@ def test_wind_stations_on_the_page(client):
         ".wind-marker-active .wind-ring { box-shadow: 0 0 0 2.5px #ff6b5a; }", ".leaflet-container.tools-active .wind-marker { cursor: crosshair; }",
         '<section id="windWin" class="fwin wind-win" hidden role="region" aria-label="Wind station">',
         'id="wwHeader"', 'id="wwMin"', 'id="wwClose"', 'id="wwBody"', 'id="wwResize"', 'id="windCurrent"', 'id="windChart"', 'id="windArrows"',
-        'id="windTable"', 'id="windMeta"', 'id="windRetry"', "current: $('windCurrent'), chart: $('windChart'), arrows: $('windArrows'), table: $('windTable'), meta: $('windMeta') },",
+        'id="windTable"', 'id="windMeta"', 'id="windRetry"', 'id="windConditions"', 'id="windTemp"',
+        "current: $('windCurrent'), conditions: $('windConditions'), chart: $('windChart'), arrows: $('windArrows'),\n               temp: $('windTemp'), table: $('windTable'), meta: $('windMeta') },",
         ".fwin.wind-win { right: 18px; top: calc(var(--map-topright-h, 120px) + 8px); bottom: auto; width: min(1030px, calc(100vw - 44px)); height: auto;",
         ".fwin.wind-win:not(.fw-min) { max-height: none; }",
         ".wind-win.fw-min {\n        right: 12px !important; left: auto !important; top: auto !important; bottom: calc(12px + var(--chips-h, 0px)) !important;",

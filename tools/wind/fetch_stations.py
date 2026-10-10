@@ -1,7 +1,9 @@
 """Build wind_stations.json: the stations of the map's wind layer (plan section 39).
 
 Per station: id ("coops:1612340", "ndbc:51003", "metar:PHNL", "nws:001HE"), name, lat, lon, kind, src, tz (the nearest
-civil zone, the live buoys' rule), alias (a CO-OPS gauge's NDBC id when NDBC relays it under one: "OOUH1").
+civil zone, the live buoys' rule), alias (a CO-OPS gauge's NDBC id when NDBC relays it under one: "OOUH1"), wx (a
+CO-OPS gauge's weather sensors as letters, COOPS_WX_SENSORS: "awp" = air temperature, water temperature, pressure;
+the wind window asks only those products, step 5d; null for the other sources).
 
 kind: "gauge"   a NOAA tide gauge's weather sensors (CO-OPS, 6-minute readings; or NDBC's relay of a gauge CO-OPS does
                 not list with an active wind sensor)
@@ -72,7 +74,11 @@ NWS_PAUSE_S = 0.75              # between probes: ~80 requests a minute at most
 NWS_CACHE_S = 12 * 3600         # a cached probe answer younger than this is reused
 NWS_SKIP_PROVIDERS = {"NOS-NWLON", "ASOS", "OTHER-MTR", "NONFEDAWOS"}   # tide gauges and airports: the other feeds' (upper case)
 NWS_KINDS = ("utility", "mesonet", "raws", "cwop", "hads", "weather")
-FIELDS = ["id", "name", "lat", "lon", "kind", "src", "tz", "alias"]
+FIELDS = ["id", "name", "lat", "lon", "kind", "src", "tz", "alias", "wx"]
+COOPS_WX_SENSORS = {"Air Temperature": "a", "Water Temperature": "w", "Barometric Pressure": "p", "Relative Humidity": "h"}
+NWS_ABBREVIATIONS = {"AFS", "AFB", "PHB", "MCBH", "USGS", "USCG", "NERR", "NWS", "NPS", "HVO", "UH", "HQ", "ARS", "SCAN",
+                     "CRN", "FAA", "PMRF", "USDA", "NOAA", "NASA", "WWTP", "STP", "DOFAW", "NAR", "CPD"}
+NWS_SMALL_WORDS = {"at", "of", "the", "and", "near", "in", "on", "by", "to"}
 KINDS = ("gauge", "buoy", "cman", "station", "airport") + NWS_KINDS
 COAST_KM = 30.0                 # owner, 2026-10-09: airports within 30 km of the coast only
 OFFSHORE_METAR = True           # a METAR site at sea (an offshore platform) is no inland airport: kept
@@ -446,10 +452,31 @@ def nws_usable(ids, fetch=None, pause=NWS_PAUSE_S, cache=None, now=None):
     return out
 
 
+def wx_letters(sensors):
+    """A CO-OPS gauge's active weather sensors as letters (COOPS_WX_SENSORS, in that order); None without any."""
+    active = {item[0] for item in sensors or [] if len(item) > 1 and item[1] == 1}
+    out = "".join(letter for name, letter in COOPS_WX_SENSORS.items() if name in active)
+    return out or None
+
+
+def _fix_case(text):
+    """After the capital-name conversion: known abbreviations back in capitals ("Afs" -> "AFS"), small words lower-case
+    except the first ("At" -> "at"): "Bellows AFS at Waimanalo" (step 5c finding C)."""
+    out = []
+    for i, w in enumerate(text.split(" ")):
+        core = w.strip("(),.")
+        if core.upper() in NWS_ABBREVIATIONS:
+            w = w.replace(core, core.upper())
+        elif i > 0 and w == core and core.lower() in NWS_SMALL_WORDS:
+            w = core.lower()
+        out.append(w)
+    return " ".join(out)
+
+
 def nws_name(name, sid, kind, clean=lambda n: n):
     """An NWS API station's name for the map: the API's, with the all-capital names NOAA writes for RAWS / HADS sites
-    converted ("AHUMOA" -> "Ahumoa"); a CWOP station keeps its amateur call sign as written ("WH6BXK KAHULUI" ->
-    "WH6BXK Kahului"); the id when there is no name."""
+    converted ("AHUMOA" -> "Ahumoa", "BELLOWS AFS AT WAIMANALO" -> "Bellows AFS at Waimanalo"); a CWOP station keeps
+    its amateur call sign as written ("WH6BXK KAHULUI" -> "WH6BXK Kahului"); the id when there is no name."""
     n = " ".join(str(name or "").split())
     if not n:
         return sid
@@ -457,8 +484,8 @@ def nws_name(name, sid, kind, clean=lambda n: n):
         if " " not in n:
             return n.upper()                                           # the call sign alone
         call, rest = n.split(" ", 1)
-        return call.upper() + " " + (clean(rest) or rest)
-    return clean(n) or n
+        return call.upper() + " " + _fix_case(clean(rest) or rest)
+    return _fix_case(clean(n) or n)
 
 
 def too_close(rows, lat, lon, metres=ALIAS_M):
@@ -525,7 +552,8 @@ def main(argv=None):
     for s in met:
         if any(x[0] == "Wind" and x[1] == 1 for x in cache[s["id"]]) and usable_position(s.get("lat"), s.get("lng")):
             lat, lon = TT.POSITION_FIX.get(s["id"], (round(float(s["lat"]), 5), round(float(s["lng"]), 5)))
-            coops[s["id"]] = {"name": TT.clean_name(s["name"]), "lat": lat, "lon": lon, "corr": s.get("timezonecorr")}
+            coops[s["id"]] = {"name": TT.clean_name(s["name"]), "lat": lat, "lon": lon, "corr": s.get("timezonecorr"),
+                              "wx": wx_letters(cache[s["id"]])}
     print(f"CO-OPS: {len(met)} met stations, {len(coops)} with an active wind sensor", flush=True)
 
     # ---- NDBC: stations with wind now
@@ -572,17 +600,17 @@ def main(argv=None):
     rows = []
     for cid, s in sorted(coops.items()):
         rows.append(["coops:" + cid, s["name"], s["lat"], s["lon"], "gauge", "coops",
-                     A._nearest_civil_tz(s["lat"], s["lon"]), alias.get(cid)])
+                     A._nearest_civil_tz(s["lat"], s["lon"]), alias.get(cid), s["wx"]])
     for sid, s in sorted(ndbc.items()):
         if sid in aliased:
             continue
         lat, lon = round(s["lat"], 4), round(s["lon"], 4)
-        rows.append(["ndbc:" + sid, s["name"], lat, lon, s["kind"], "ndbc", A._nearest_civil_tz(lat, lon), None])
+        rows.append(["ndbc:" + sid, s["name"], lat, lon, s["kind"], "ndbc", A._nearest_civil_tz(lat, lon), None, None])
     for sid in sorted(reporting):
         name, lat, lon = sites.get(sid, (sid, cand[sid][0], cand[sid][1]))
         lat, lon = round(lat, 4), round(lon, 4)
         rows.append(["metar:" + sid, site_name(name, sid, TT.clean_name), lat, lon, "airport", "metar",
-                     A._nearest_civil_tz(lat, lon), None])
+                     A._nearest_civil_tz(lat, lon), None, None])
 
     # ---- NWS API: land stations with a usable wind reading, per area (step 5c)
     if not args.no_nws:
@@ -609,7 +637,7 @@ def main(argv=None):
                 close.append((sid, near))
                 continue
             rows.append(["nws:" + sid, nws_name(st["name"], sid, kind, TT.clean_name), st["lat"], st["lon"], kind, "nws",
-                         A._nearest_civil_tz(st["lat"], st["lon"]), None])
+                         A._nearest_civil_tz(st["lat"], st["lon"]), None, None])
         kinds = {}
         for sid in usable:
             if sid in cand and not any(c[0] == sid for c in close):

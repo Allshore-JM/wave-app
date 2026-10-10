@@ -3,6 +3,8 @@
  *
  *  - BANDS: the flags' colours by speed, iKitesurf-style (owner 2026-10-09), in whole knots: calm under 1, light 1-9,
  *    moderate 10-15, fresh 16-21, strong 22-30, gale 31 and up.
+ *  - the window also shows the current conditions (air / water temperature, humidity, dew point, pressure and its
+ *    trend, visibility, weather words: only what the station reports) and a 24-hour temperature chart (step 5d)
  *  - buildFlag / updateFlag: a station's flag (a 40-px box for L.divIcon): a ring at the station, an arrow from it
  *    pointing the way the wind BLOWS (downwind, as iKitesurf), and the speed in the site's unit (US: mph, Metric: km/h)
  *    14 px UPWIND of the ring, so the number never sits under the arrow. Calm: a ring with "0". A speed without a
@@ -50,6 +52,9 @@
 
   // ---- the view's geometry and schedule
   var CHART_H = 190, ARROWS_H = 34, MARGIN = { l: 42, r: 36, t: 10, b: 24 };
+  var TEMP_H = 110, TEMP_MARGIN = { t: 14, b: 8 };   // the temperature chart under the arrows (step 5d): the same x axis
+  var WX_NUM = ['at', 'wt', 'dp', 'rh', 'p', 'pt', 'vis'];   // the weather a history row may carry (numbers) + wx (words)
+  var IN_HG = 33.8639, MI_KM = 1.609344;
   var ARROW_SLOT = 28;                    // px: at most one direction arrow per this much width
   var GAP_S = 90 * 60;                    // readings further apart than this: a gap in the lines
   var NARROW = 480;                       // px: below this width the hour ticks are 6 h apart (else 3 h)
@@ -57,7 +62,7 @@
   var REFRESH_MS = 5 * MIN_MS, TICK_MS = MIN_MS;
   var RETRY_MAX = 24, RETRY_DEFAULT_S = 5, RETRY_MAX_S = 60, TOUCH_MOUSE_MS = 700;
   var COLORS = { speed: '#1d6fd6', gust: '#e8590c', grid: 'rgba(0,0,0,0.12)', midnight: 'rgba(0,0,0,0.38)', text: '#1d2b4f',
-                 muted: '#5b6577' };
+                 muted: '#5b6577', air: '#c2410c', water: '#0e7490' };
   var WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   var MSG = {
     unknown: 'This wind station is not known.',
@@ -81,6 +86,31 @@
     return BANDS[BANDS.length - 1];
   }
   function arrowDeg(from) { return ((from % 360) + 360 + 180) % 360; }          // the way the wind blows (downwind)
+  // the weather in the site's unit (step 5d): temperatures degC -> degF whole / degC one decimal; pressure hPa ->
+  // inHg two decimals / hPa whole; visibility km -> miles / km (one decimal under 10)
+  function tempValue(c, unit) { return unitOf(unit) === 'Metric' ? Math.round(c * 10) / 10 : Math.round(c * 9 / 5 + 32) + 0; }
+  function tempText(c, unit) { return tempValue(c, unit) + (unitOf(unit) === 'Metric' ? '°C' : '°F'); }
+  function pressText(hpa, unit) { return unitOf(unit) === 'Metric' ? Math.round(hpa) + ' hPa' : (hpa / IN_HG).toFixed(2) + ' inHg'; }
+  function distText(km, unit) {
+    var v = unitOf(unit) === 'Metric' ? km : km / MI_KM, n = v >= 10 ? Math.round(v) : Math.round(v * 10) / 10;
+    return n + (unitOf(unit) === 'Metric' ? ' km' : ' mi');
+  }
+  function trendText(delta) { return !num(delta) ? '' : delta > 0.5 ? 'rising' : delta < -0.5 ? 'falling' : 'steady'; }
+  function capital(t) { t = String(t || ''); return t ? t.charAt(0).toUpperCase() + t.slice(1) : ''; }
+  // The current conditions line from the server's `conditions` ({field: [t, value], trend}): only what the station
+  // reports, in a fixed order; '' when there is nothing.
+  function conditionsText(c, unit) {
+    if (!c || typeof c !== 'object') return '';
+    var v = function (k) { return c[k] && num(c[k][1]) ? c[k][1] : null; }, items = [];
+    if (v('at') !== null) items.push('Air ' + tempText(v('at'), unit));
+    if (v('wt') !== null) items.push('Water ' + tempText(v('wt'), unit));
+    if (v('rh') !== null) items.push('Humidity ' + Math.round(v('rh')) + '%');
+    if (v('dp') !== null) items.push('Dew point ' + tempText(v('dp'), unit));
+    if (v('p') !== null) items.push('Pressure ' + pressText(v('p'), unit) + (trendText(c.trend) ? ', ' + trendText(c.trend) : ''));
+    if (v('vis') !== null) items.push('Visibility ' + distText(v('vis'), unit));
+    if (c.wx && typeof c.wx[1] === 'string' && c.wx[1]) items.push(capital(c.wx[1]));
+    return items.join(' · ');
+  }
   function compass(d) { return COMPASS[Math.round(((d % 360) + 360) % 360 / 22.5) % 16]; }
   function dirText(d) { return compass(d) + ' (' + Math.round(d) % 360 + '°)'; }               // "ENE (75°)"
   // the number's centre in the flag's box: NUM_OFFSET px toward where the wind comes FROM
@@ -324,7 +354,10 @@
     for (var i = 0; i < b.t.length; i++) {
       var t = b.t[i], s = b.s && b.s[i];
       if (!num(t) || !num(s)) continue;
-      out.push({ t: t, s: s, g: b.g && num(b.g[i]) ? b.g[i] : null, d: b.d && num(b.d[i]) ? b.d[i] : null });
+      var r = { t: t, s: s, g: b.g && num(b.g[i]) ? b.g[i] : null, d: b.d && num(b.d[i]) ? b.d[i] : null };
+      WX_NUM.forEach(function (k) { if (Array.isArray(b[k]) && num(b[k][i])) r[k] = b[k][i]; });
+      if (Array.isArray(b.wx) && typeof b.wx[i] === 'string' && b.wx[i]) r.wx = b.wx[i];
+      out.push(r);
     }
     out.sort(function (a, c) { return a.t - c.t; });
     return out;
@@ -419,6 +452,12 @@
       els.current.appendChild(el('span', 'wind-cur-text', words));
       els.current.appendChild(el('span', 'wind-cur-age' + (s.stale ? ' wind-cur-stale' : ''), ' · ' + ageText(t / 1000 - r.t)));
     }
+    function writeConditions() {
+      if (!els.conditions) return;
+      var text = st.data ? conditionsText(st.data.conditions, st.unit) : '';
+      els.conditions.textContent = text;
+      show(els.conditions, !!text);
+    }
     function writeMeta() {
       var d = st.data, s = st.station || {};
       if (!els.meta || !d) return;
@@ -446,7 +485,10 @@
       var clk = zoneClock(zone()), table = el('table', 'table table-sm wind-table');
       table.appendChild(el('caption', '', 'Readings, newest first (times in ' + zoneAt(now()) + ')'));
       var thead = el('thead'), hr = el('tr');
-      ['Time', 'Speed', 'Gust', 'Direction'].forEach(function (h) { var th = el('th', '', h); th.setAttribute('scope', 'col'); hr.appendChild(th); });
+      var hasAir = st.rows.some(function (r) { return num(r.at); }), hasWater = st.rows.some(function (r) { return num(r.wt); });
+      var heads = ['Time', 'Speed', 'Gust', 'Direction'];
+      if (hasAir) heads.push('Air'); if (hasWater) heads.push('Water');
+      heads.forEach(function (h) { var th = el('th', '', h); th.setAttribute('scope', 'col'); hr.appendChild(th); });
       thead.appendChild(hr); table.appendChild(thead);
       var tbody = el('tbody'), rows = st.rows.slice(-TABLE_MAX).reverse();
       rows.forEach(function (r) {
@@ -455,6 +497,8 @@
         tr.appendChild(el('td', '', speedText(r.s, st.unit) + ' (' + knotsText(r.s) + ')'));
         tr.appendChild(el('td', '', num(r.g) ? speedText(r.g, st.unit) : '–'));
         tr.appendChild(el('td', '', bandOf(r.s).name === 'calm' ? 'Calm' : num(r.d) ? dirText(r.d) : 'Variable'));
+        if (hasAir) tr.appendChild(el('td', '', num(r.at) ? tempText(r.at, st.unit) : '–'));
+        if (hasWater) tr.appendChild(el('td', '', num(r.wt) ? tempText(r.wt, st.unit) : '–'));
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);
@@ -524,16 +568,55 @@
         g.appendChild(svgEl('path', { d: SLOT_ARROW_PATH, fill: bandOf(a.r.s).color }));   // 24 px: never into the next slot
         asvg.appendChild(g);
       });
-      return { svg: svg, arrows: asvg, readout: rd, x: x, y: y, t0: t0, t1: t1, rows: rows, W: W };
+      return { svg: svg, arrows: asvg, readout: rd, x: x, y: y, t0: t0, t1: t1, rows: rows, W: W, marks: marks, temp: buildTempChart(rows, x, W, marks, unit) };
+    }
+    // The temperature chart (step 5d): air (solid) and water (dashed) in the site's unit on the wind chart's x axis;
+    // null when no row carries a temperature.
+    function buildTempChart(rows, x, W, marks, unit) {
+      var vals = [];
+      rows.forEach(function (r) { if (num(r.at)) vals.push(tempValue(r.at, unit)); if (num(r.wt)) vals.push(tempValue(r.wt, unit)); });
+      if (!vals.length) return null;
+      var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals), span = Math.max(hi - lo, unitOf(unit) === 'Metric' ? 3 : 5);
+      var step = niceStep(span, 4);
+      var y0 = Math.floor((lo - span * 0.1) / step) * step, y1 = Math.ceil((hi + span * 0.1) / step) * step;
+      if (y1 <= y0) y1 = y0 + step;
+      var plotH = TEMP_H - TEMP_MARGIN.t - TEMP_MARGIN.b;
+      function y(v) { return TEMP_MARGIN.t + plotH - (v - y0) / (y1 - y0) * plotH; }
+      function yc(c) { return y(tempValue(c, unit)); }
+      var svg = svgEl('svg', { 'class': 'wind-temp-svg', width: W, height: TEMP_H, viewBox: '0 0 ' + W + ' ' + TEMP_H, role: 'img',
+                               'aria-label': 'Air and water temperature over the last 24 hours' });
+      for (var v = y0; v <= y1 + 1e-9; v += step) {
+        var gy = y(v).toFixed(1);
+        svg.appendChild(svgEl('line', { 'class': 'wind-grid', x1: MARGIN.l, x2: W - MARGIN.r, y1: gy, y2: gy, stroke: COLORS.grid, 'stroke-width': 0.7 }));
+        var lt = svgEl('text', { 'class': 'wind-ttick', x: MARGIN.l - 5, y: (+gy + 3.5).toFixed(1), 'text-anchor': 'end', 'font-size': 10.5, fill: COLORS.text });
+        lt.textContent = String(Math.round(v * 10) / 10); svg.appendChild(lt);
+      }
+      var ul = svgEl('text', { 'class': 'wind-tunit', x: 4, y: TEMP_MARGIN.t - 3, 'font-size': 10, fill: COLORS.muted });
+      ul.textContent = unitOf(unit) === 'Metric' ? '°C' : '°F'; svg.appendChild(ul);
+      marks.forEach(function (m) {
+        var mx = x(m.t / 1000).toFixed(1);
+        svg.appendChild(svgEl('line', { 'class': m.midnight ? 'wind-midnight' : 'wind-hour', x1: mx, x2: mx, y1: TEMP_MARGIN.t, y2: TEMP_MARGIN.t + plotH,
+                                       stroke: m.midnight ? COLORS.midnight : COLORS.grid, 'stroke-width': m.midnight ? 1.2 : 0.7 }));
+      });
+      var water = linePath(rows, 'wt', x, yc), air = linePath(rows, 'at', x, yc);
+      if (water) svg.appendChild(svgEl('path', { 'class': 'wind-water', d: water, fill: 'none', stroke: COLORS.water, 'stroke-width': 1.6, 'stroke-dasharray': '5 3' }));
+      if (air) svg.appendChild(svgEl('path', { 'class': 'wind-air', d: air, fill: 'none', stroke: COLORS.air, 'stroke-width': 2, 'stroke-linejoin': 'round' }));
+      var legend = svgEl('text', { 'class': 'wind-tlegend', x: W - MARGIN.r, y: TEMP_MARGIN.t - 3, 'text-anchor': 'end', 'font-size': 10 });
+      if (air) { var a = svgEl('tspan', { fill: COLORS.air }); a.textContent = 'Air'; legend.appendChild(a); }
+      if (air && water) { var sep = svgEl('tspan', { fill: COLORS.muted }); sep.textContent = ' · '; legend.appendChild(sep); }
+      if (water) { var w = svgEl('tspan', { fill: COLORS.water }); w.textContent = 'Water'; legend.appendChild(w); }
+      svg.appendChild(legend);
+      return svg;
     }
     function build() {
       if (!st.data) return;
       var c = buildCharts();
       if (els.chart) { els.chart.textContent = ''; els.chart.appendChild(c.svg); }
       if (els.arrows) { els.arrows.textContent = ''; els.arrows.appendChild(c.arrows); }
-      st.built = { svg: c.svg, readout: c.readout, x: c.x, y: c.y, t0: c.t0, t1: c.t1, rows: c.rows, readoutText: '' };
+      if (els.temp) { els.temp.textContent = ''; if (c.temp) els.temp.appendChild(c.temp); }
+      st.built = { svg: c.svg, readout: c.readout, x: c.x, y: c.y, t0: c.t0, t1: c.t1, rows: c.rows, readoutText: '', temp: !!c.temp };
       st.width = c.W;
-      writeCurrent(); writeTable(); writeMeta();
+      writeCurrent(); writeConditions(); writeTable(); writeMeta();
       st.dirty = false;
     }
     function readoutAt(px) {
@@ -542,7 +625,8 @@
       var r = px === null || px < MARGIN.l || px > st.width - MARGIN.r ? null : nearest(b.rows, t, READOUT_NEAR_S);
       if (!r) { b.readout.setAttribute('visibility', 'hidden'); b.readoutText = ''; return; }
       var clk = zoneClock(zone()), rx = b.x(r.t);
-      var text = stampText(clk.parts(r.t * 1000)) + ' · ' + readingText(r, now(), st.unit, false) + ' · ' + knotsText(r.s);
+      var text = stampText(clk.parts(r.t * 1000)) + ' · ' + readingText(r, now(), st.unit, false) + ' · ' + knotsText(r.s) +
+                 (num(r.at) ? ' · Air ' + tempText(r.at, st.unit) : '');
       b.readout.setAttribute('visibility', 'visible');
       kids[0].setAttribute('x1', rx.toFixed(1)); kids[0].setAttribute('x2', rx.toFixed(1));
       kids[1].setAttribute('cx', rx.toFixed(1)); kids[1].setAttribute('cy', b.y(r.s).toFixed(1));
@@ -626,7 +710,7 @@
       st.fallback = opts.reading && num(opts.reading.s) ? opts.reading : null;   // shown as the current reading when the history is empty
       if (opts.unit) st.unit = unitOf(opts.unit);
       st.zone = opts.zone || null;
-      [els.chart, els.arrows, els.table, els.meta, els.current].forEach(function (e) { if (e) e.textContent = ''; });
+      [els.chart, els.arrows, els.temp, els.table, els.meta, els.current, els.conditions].forEach(function (e) { if (e) e.textContent = ''; });
       setStatus('loading');
       attempt(st.seq);
       return st.seq;
@@ -637,7 +721,7 @@
       if (st.ac) { try { st.ac.abort(); } catch (e) {} st.ac = null; }
       stopTimers();
       st.station = null; st.data = null; st.rows = []; st.built = null; st.retried = false;
-      [els.chart, els.arrows, els.table, els.meta, els.current].forEach(function (e) { if (e) e.textContent = ''; });
+      [els.chart, els.arrows, els.temp, els.table, els.meta, els.current, els.conditions].forEach(function (e) { if (e) e.textContent = ''; });
       setStatus('idle');
     }
     // the readout: the chart container's own listeners, which survive every rebuild
@@ -666,7 +750,8 @@
       state: function () {
         return { seq: st.seq, status: st.status, station: st.station && st.station.id, hasData: !!st.data, rows: st.rows.length,
                  built: !!st.built, unit: st.unit, zone: zone(), tries: st.tries, retryTimer: st.retryTimer !== null,
-                 tickTimer: st.tickTimer !== null, readout: st.built ? st.built.readoutText : '', width: st.width };
+                 tickTimer: st.tickTimer !== null, readout: st.built ? st.built.readoutText : '', width: st.width,
+                 temp: !!(st.built && st.built.temp) };
       }
     };
   }
@@ -686,7 +771,8 @@
       RETRY_MAX: RETRY_MAX, RETRY_MAX_S: RETRY_MAX_S, TOUCH_MOUSE_MS: TOUCH_MOUSE_MS, MSG: MSG,
       zoneClock: zoneClock, hourMarks: hourMarks, niceStep: niceStep, historyRows: historyRows, linePath: linePath,
       arrowSlots: arrowSlots, nearest: nearest, sourceLink: sourceLink, clockText: clockText, hourText: hourText,
-      dateText: dateText, stampText: stampText
+      dateText: dateText, stampText: stampText, TEMP_H: TEMP_H, WX_NUM: WX_NUM, tempValue: tempValue, tempText: tempText,
+      pressText: pressText, distText: distText, trendText: trendText, conditionsText: conditionsText
     }
   };
   if (typeof window !== 'undefined') window.AllshoreWinds = api;

@@ -142,7 +142,7 @@ function buildPage(win) {
   const wwBody = el('div', 'wwBody', wind); wwBody.clientHeight = 560;
   el('div', 'windLoading', wwBody); const windError = el('div', 'windError', wwBody); el('span', 'windErrorText', windError); el('button', 'windRetry', windError);
   const windContent = el('div', 'windContent', wwBody);
-  ['windCurrent', 'windChart', 'windArrows', 'windTable', 'windMeta'].forEach((id) => el('div', id, windContent));
+  ['windCurrent', 'windConditions', 'windChart', 'windArrows', 'windTemp', 'windTable', 'windMeta'].forEach((id) => el('div', id, windContent));
   const windEdges = edges(wind); el('div', 'wwResize', wind);
   const w = el('section', 'forecastWin', doc.body); w.rect = { left: 84, top: 300, width: 1180, height: 480 };
   const header = el('div', 'fwHeader', w);

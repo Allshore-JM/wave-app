@@ -247,11 +247,14 @@ def test_parse_nws_observations_units_quality_and_calm():
                       row("2026-10-10T20:00:00+00:00", 10.0, 90, unit="wmoUnit:m_s-1"),
                       row("2026-10-10T19:50:00+00:00", 10.0, 90, unit="wmoUnit:[kn_i]"),
                       row("2026-10-10T19:40:00+00:00", 10.0, 90, unit="wmoUnit:furlong"),   # unknown unit: no reading
+                      row("2026-10-10T19:30:00Z", 3.6, 270),                       # a "Z" time: the same instant as +00:00
                       row("bad time", 5.0, 90), "not a row"]}
     got = W.parse_nws_observations(doc)
     assert got == [{"t": 1791665400, "s": 1.9, "g": 4.1, "d": 204}, {"t": 1791664200, "s": 0.0, "g": None, "d": None},
                    {"t": 1791663000, "s": 1.4, "g": None, "d": None}, {"t": 1791662400, "s": 10.0, "g": None, "d": 90},
-                   {"t": 1791661800, "s": 5.1, "g": None, "d": 90}]
+                   {"t": 1791661800, "s": 5.1, "g": None, "d": 90}, {"t": 1791660600, "s": 1.0, "g": None, "d": 270}]
+    assert W._nws_epoch("2026-10-10T19:30:00Z") == W._nws_epoch("2026-10-10T19:30:00+00:00") == 1791660600
+    assert W._nws_epoch("2026-10-10T09:30:00-10:00") == 1791660600 and W._nws_epoch(None) is None
     feats = {"features": [{"properties": row("2026-10-10T20:50:00+00:00", 3.6, 10)}]}       # GeoJSON: the same rows
     assert W.parse_nws_observations(feats) == [{"t": 1791665400, "s": 1.0, "g": None, "d": 10}]
     assert W.parse_nws_observations({}) == [] and W.parse_nws_observations([]) == []

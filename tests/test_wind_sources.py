@@ -50,7 +50,12 @@ STATIONS = {
                    "src": "metar", "tz": "America/Los_Angeles", "alias": None},
     "metar:KGMU": {"id": "metar:KGMU", "name": "Greenville", "lat": 34.85, "lon": -82.35, "kind": "airport",
                    "src": "metar", "tz": "America/New_York", "alias": None},
+    "nws:001HE": {"id": "nws:001HE", "name": "MECO Kealaloloa Ridge", "lat": 20.80393, "lon": -156.54018, "kind": "utility",
+                  "src": "nws", "tz": "Pacific/Honolulu", "alias": None},
+    "nws:029HI": {"id": "nws:029HI", "name": "Keahuolu", "lat": 19.6687, "lon": -155.9575, "kind": "mesonet",
+                  "src": "nws", "tz": "Pacific/Honolulu", "alias": None},
 }
+NWS_IDS = {k.split(":")[1]: v for k, v in STATIONS.items() if k.startswith("nws:")}
 
 
 class FakeFetch:
@@ -80,11 +85,18 @@ def coops_table():
             W.coops_url("1612401", date="latest"): IOError("timeout")}
 
 
+def nws_table():
+    """NWS API answers per station (the url up to its query): 001HE readings, 029HI nothing in the window."""
+    return {W.NWS_API + "/stations/001HE/observations?": fx("nws_obs.json"),
+            W.NWS_API + "/stations/029HI/observations?": b'{"@context": {}, "@graph": []}'}
+
+
 def make_fakes(now_epoch):
-    """The three providers over STATIONS, their fetches answered by the fixtures (the NDBC file, the METAR cache as
-    plain CSV, CO-OPS per gauge), on a frozen clock."""
+    """The four providers over STATIONS, their fetches answered by the fixtures (the NDBC file, the METAR cache as
+    plain CSV, CO-OPS per gauge, the NWS API per station), on a frozen clock."""
     fetch = FakeFetch({W.NDBC_LATEST_URL: fx("latest_obs.txt"), W.METAR_CACHE_URL: fx("metars.csv")})
     fetch.table.update(coops_table())
+    fetch.table.update(nws_table())
     provs = W.make_providers(STATIONS, fetch, coops_workers=2)
     return provs, fetch
 
@@ -222,6 +234,37 @@ def test_parse_metar_history_fixture_and_shapes():
     assert W.parse_metar_history({"not": "a list"}) == []
 
 
+def test_parse_nws_observations_units_quality_and_calm():
+    row = lambda ts, s, d, g=None, qs="S", qd="S", unit="wmoUnit:km_h-1": {
+        "timestamp": ts, "windSpeed": {"unitCode": unit, "value": s, "qualityControl": qs},
+        "windDirection": {"unitCode": "wmoUnit:degree_(angle)", "value": d, "qualityControl": qd},
+        "windGust": {"unitCode": unit, "value": g, "qualityControl": "S"}}
+    doc = {"@graph": [row("2026-10-10T20:50:00+00:00", 6.876, 203.6, 14.796),         # km/h -> m/s
+                      row("2026-10-10T20:40:00Z", None, None, 13.0, qs="Z", qd="Z"),   # a gust-only row: no reading
+                      row("2026-10-10T20:30:00+00:00", 0, 90),                         # calm: no direction
+                      row("2026-10-10T20:20:00+00:00", 36.0, 180, qs="X"),             # rejected by quality control
+                      row("2026-10-10T20:10:00+00:00", 5.0, 180, qd="B"),              # a bad direction only
+                      row("2026-10-10T20:00:00+00:00", 10.0, 90, unit="wmoUnit:m_s-1"),
+                      row("2026-10-10T19:50:00+00:00", 10.0, 90, unit="wmoUnit:[kn_i]"),
+                      row("2026-10-10T19:40:00+00:00", 10.0, 90, unit="wmoUnit:furlong"),   # unknown unit: no reading
+                      row("bad time", 5.0, 90), "not a row"]}
+    got = W.parse_nws_observations(doc)
+    assert got == [{"t": 1791665400, "s": 1.9, "g": 4.1, "d": 204}, {"t": 1791664200, "s": 0.0, "g": None, "d": None},
+                   {"t": 1791663000, "s": 1.4, "g": None, "d": None}, {"t": 1791662400, "s": 10.0, "g": None, "d": 90},
+                   {"t": 1791661800, "s": 5.1, "g": None, "d": 90}]
+    feats = {"features": [{"properties": row("2026-10-10T20:50:00+00:00", 3.6, 10)}]}       # GeoJSON: the same rows
+    assert W.parse_nws_observations(feats) == [{"t": 1791665400, "s": 1.0, "g": None, "d": 10}]
+    assert W.parse_nws_observations({}) == [] and W.parse_nws_observations([]) == []
+
+
+def test_parse_nws_observations_fixtures():
+    obs = W.parse_nws_observations(json.loads(fx("nws_obs.json")))
+    assert 10 <= len(obs) <= 12 and all(a["t"] > b["t"] for a, b in zip(obs, obs[1:]))     # newest first; one gust-only row
+    assert all(0 <= r["s"] < 30 and (r["d"] is None or 0 <= r["d"] < 360) for r in obs)
+    hist = W.parse_nws_observations(json.loads(fx("nws_history.json")))
+    assert 30 <= len(hist) <= 40 and all(r["g"] is None or r["g"] >= r["s"] for r in hist)
+
+
 def test_gunzip_bounded_cuts_a_bomb():
     assert W.gunzip_bounded(gzip.compress(b"x" * 1000), 1000) == b"x" * 1000
     with pytest.raises(ValueError):
@@ -239,15 +282,19 @@ def test_snapshot_loads_and_ids_validate():
     lst = W.client_list(doc)
     assert lst["fields"] == doc["fields"] and len(lst["stations"]) == len(stations)
     assert not W.valid_id("coops:1612340/x") and not W.valid_id("ndbc:oouh1") and not W.valid_id(5)
-    assert set(W.by_source(stations)) == {"coops", "ndbc", "metar"}
+    assert set(W.by_source(stations)) == {"coops", "ndbc", "metar", "nws"}
 
 
 # ------------------------------------------------------------------ providers
 
 def test_make_providers_and_aliases():
     provs = W.make_providers(STATIONS, FakeFetch(), coops_workers=20)
-    assert [p.source for p in provs] == ["NDBC", "METAR", "COOPS"]
-    ndbc, metar, coops = provs
+    assert [p.source for p in provs] == ["NDBC", "METAR", "COOPS", "NWS"]
+    ndbc, metar, coops, nws = provs
+    assert set(nws.stations) == {"001HE", "029HI"} and nws.workers == 2 and nws.per_refresh == W.NWS_PER_REFRESH == 25
+    assert nws.list_ttl_sec == W.NWS_TTL_S == 60 and nws.keep_s == W.NWS_KEEP_S and nws.refused_codes == ("403", "429")
+    assert W.make_providers(STATIONS, FakeFetch(), nws_workers=9, nws_per_refresh=0)[3].workers == 8
+    assert W.make_providers(STATIONS, FakeFetch(), nws_workers=9, nws_per_refresh=0)[3].per_refresh == 1
     assert set(ndbc.stations) == {"51003", "HRRH1"} and set(metar.stations) == {"PHNL", "KSFO", "KGMU"}
     assert set(coops.stations) == {"1612340", "1611400", "1612401"} and coops.workers == 8
     assert ndbc.aliases["OOUH1"]["id"] == "coops:1612340" and ndbc.aliases["NWWH1"]["id"] == "coops:1611400"
@@ -354,6 +401,51 @@ def test_coops_provider_pauses_two_minutes_after_a_403(clock):
     assert coops.list_stations_versioned()[1] == 2 and fetch.count("station=") > n and coops.status()["paused_s"] == 0
 
 
+def test_nws_provider_asks_a_window_per_station_paced_and_drops_empty_answers(clock):
+    """Step 5c: the NWS API feed is the CO-OPS feed's pacing over api.weather.gov: one observations request per
+    station (the last 2 hours, the newest 6 rows, ld+json), the newest row with a speed is the reading; an empty
+    answer drops the reading; a 429 (or 403) pauses the feed."""
+    fetch = FakeFetch(nws_table())
+    nws = W.NwsProvider(NWS_IDS, fetch, workers=2, per_refresh=1)
+    assert nws._ids == ["001HE", "029HI"]
+    ids = lambda: [e["id"] for e in nws.list_stations_versioned()[0]]
+    assert ids() == ["nws:001HE"]
+    url, max_bytes, headers = fetch.calls[-1]
+    start = W.iso_z(clock.time() - W.NWS_FEED_WINDOW_S)
+    assert url == W.NWS_OBS_URL % ("001HE", start, W.NWS_FEED_LIMIT) and max_bytes == W.NWS_FEED_MAX
+    assert headers == {"User-Agent": W.USER_AGENT, "Accept": "application/ld+json"}
+    e = nws.list_stations_versioned()[0][0]
+    newest = W.parse_nws_observations(json.loads(fx("nws_obs.json")))[0]
+    assert e["wind"] == [newest["s"], newest["g"], newest["d"]] and e["latest_time"] == W.iso_z(newest["t"])
+    assert e["name"] == "MECO Kealaloloa Ridge" and e["lat"] == 20.80393
+    clock.now += 60; assert ids() == ["nws:001HE"] and fetch.count("029HI") == 1       # 029HI: nothing in the window
+    # the station's answer turns empty: its reading goes; the LIST keeps the last good one for a while (the base class
+    # treats an empty list after a good one as the agency being down, as for the CO-OPS feed)
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
+    clock.now += 60; assert ids() == ["nws:001HE"] and nws.status()["readings"] == 0
+    assert nws.status()["last_error"] == "empty list after 1 stations"
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = fx("nws_obs.json")
+    clock.now += 60; ids()                                                            # 029HI's turn: still nothing
+    assert nws.status()["readings"] == 0 and fetch.count("029HI") == 2
+    clock.now += 60; assert ids() == ["nws:001HE"] and nws.status()["readings"] == 1   # 001HE asked again: back
+    # a 429 pauses the feed for NWS_PAUSE_S with the readings kept
+    fetch.table[W.NWS_API + "/stations/029HI/observations?"] = IOError("HTTP 429")
+    v = nws.list_stations_versioned()[1]
+    clock.now += 60
+    assert ids() == ["nws:001HE"] and nws.list_stations_versioned()[1] == v
+    assert nws.status()["last_error"] == "RuntimeError: the NWS API refused a request (HTTP 429): paused for %d s" % W.NWS_PAUSE_S
+    assert nws.status()["paused_s"] == W.NWS_PAUSE_S
+    n = fetch.count("observations")
+    clock.now += 60; ids()
+    assert fetch.count("observations") == n and nws.status()["last_error"].startswith("RuntimeError: paused after the NWS API's HTTP 403/429")
+    for sid in ("001HE", "029HI"):
+        fetch.table[W.NWS_API + "/stations/%s/observations?" % sid] = IOError("timeout")
+    clock.now += W.NWS_PAUSE_S
+    ids()                                                                            # the pause over: asked again
+    assert fetch.count("observations") == n + 1 and nws.status()["last_error"] == "RuntimeError: every NWS API request failed (OSError: timeout)"
+    assert ids() == ["nws:001HE"], "keep-last"
+
+
 def test_coops_provider_takes_the_newest_row_of_an_answer():
     two = json.dumps({"data": [{"t": "2026-10-10 16:42", "s": "2.0", "d": "80", "g": "3.0"},
                                {"t": "2026-10-10 16:48", "s": "1.0", "d": "74", "g": "3.5"}]}).encode()
@@ -454,6 +546,31 @@ def test_history_gauge_falls_back_on_its_ndbc_relay():
     assert status == "error" and p == {"error": W.UNAVAILABLE}
     assert svc.history("coops:1612401")[0] == "error" and fetch.count("1612401") == 1
     assert fetch.count("realtime2") == 1                                     # no relay: NDBC was not asked for one
+
+
+def test_history_nws_cut_at_24_hours_behind_its_own_bucket():
+    fetch = history_fetch()
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = fx("nws_history.json")
+    hist = W.parse_nws_observations(json.loads(fx("nws_history.json")))
+    now = hist[0]["t"] + 60
+    svc = W.WindHistory(STATIONS, fetch, now=Clock(now))
+    status, p = svc.history("nws:001HE")
+    assert status == "ok" and p["src"] == "nws" and p["kind"] == "utility" and p["source"] == W.ATTRIBUTION["nws"]
+    assert p["t"] == sorted(r["t"] for r in hist) and p["t"][-1] == now - 60 and p["via"] is None and p["note"] is None
+    url, max_bytes, headers = fetch.calls[-1]
+    assert url == W.NWS_OBS_URL % ("001HE", W.iso_z(now - W.HISTORY_S), W.NWS_HISTORY_LIMIT) and max_bytes == W.NWS_HISTORY_MAX
+    assert headers["Accept"] == "application/ld+json" and headers["User-Agent"] == W.USER_AGENT
+    # rows older than 24 h are cut; an empty answer is a known "no readings"
+    svc2 = W.WindHistory(STATIONS, fetch, now=Clock(hist[-1]["t"] + W.HISTORY_S + 60))
+    assert svc2.history("nws:001HE")[1]["t"] == sorted(r["t"] for r in hist if r["t"] >= hist[-1]["t"] + 60)
+    fetch.table[W.NWS_API + "/stations/029HI/observations?"] = b'{"@graph": []}'
+    assert svc.history("nws:029HI")[1]["note"] == W.NO_HISTORY
+    # its own token bucket: the METAR bucket is untouched
+    bucket = W.TokenBucket(rate=1, now=lambda: 0.0)
+    svc3 = W.WindHistory(STATIONS, fetch, now=Clock(now), nws_bucket=bucket)
+    assert svc3.history("nws:001HE")[0] == "ok" and svc3.history("nws:029HI") == ("busy", {"error": W.BUSY})
+    assert svc3.history("metar:PHNL")[0] == "ok" and svc3.bucket.rate == W.METAR_BUCKET_PER_MIN and bucket.rate == 1
+    assert W.WindHistory(STATIONS, fetch).nws_bucket.rate == W.NWS_BUCKET_PER_MIN == 30
 
 
 def test_history_unknown_errors_and_ttls():
@@ -686,11 +803,11 @@ def test_scheduler_pass_queues_the_wind_feeds_after_the_buoys_and_prebuilds(bg):
     out = A._live_tick(bprovs)
     names = [n for n, _ in rec.jobs]
     assert names[:len(bprovs)] == ["buoy-refresh-%s" % p.source for p in A._live_providers_ordered(bprovs)]
-    assert names[len(bprovs):] == ["buoy-refresh-NDBC", "buoy-refresh-METAR", "buoy-refresh-COOPS"]
+    assert names[len(bprovs):] == ["buoy-refresh-NDBC", "buoy-refresh-METAR", "buoy-refresh-COOPS", "buoy-refresh-NWS"]
     assert out["warm"] is False and A._WIND_BG["ticks"] == 1 and A._WIND_BG["prebuilds"] == 1   # an empty table
     rec.run()
     A._live_tick(bprovs)
-    assert A._WIND_BG["prebuilds"] == 2 and A._WIND_MEMO["key"] == (("NDBC", 1), ("METAR", 1), ("COOPS", 1))
+    assert A._WIND_BG["prebuilds"] == 2 and A._WIND_MEMO["key"] == (("NDBC", 1), ("METAR", 1), ("COOPS", 1), ("NWS", 1))
     assert A._live_tick(bprovs)["built"] is False and A._WIND_BG["prebuilds"] == 2   # nothing new: no build
 
 
@@ -706,12 +823,12 @@ def test_route_latest_with_the_service_on_never_waits(bg):
     bprovs, wprovs, rec, c = bg
     r = c.get("/api/wind/latest")
     assert r.status_code == 200 and r.get_json()["rows"] == [] and r.headers["Cache-Control"] == "no-store"
-    assert r.headers["X-Wind-Stations-Partial"] == "NDBC,METAR,COOPS"
-    assert [n for n, _ in rec.jobs] == ["buoy-refresh-NDBC", "buoy-refresh-METAR", "buoy-refresh-COOPS"]  # cold: queued
+    assert r.headers["X-Wind-Stations-Partial"] == "NDBC,METAR,COOPS,NWS"
+    assert [n for n, _ in rec.jobs] == ["buoy-refresh-NDBC", "buoy-refresh-METAR", "buoy-refresh-COOPS", "buoy-refresh-NWS"]  # cold: queued
     rec.run(2)                                                               # NDBC and METAR published
     A._live_tick(bprovs)                                                     # the scheduler builds them
     r = c.get("/api/wind/latest")
-    assert r.headers["X-Wind-Stations-Partial"] == "COOPS" and r.headers["Cache-Control"] == "no-store"
+    assert r.headers["X-Wind-Stations-Partial"] == "COOPS,NWS" and r.headers["Cache-Control"] == "no-store"
     d = r.get_json()
     rows = {row[0]: row for row in d["rows"]}
     assert "ndbc:51003" in rows and "metar:PHNL" in rows
@@ -720,12 +837,13 @@ def test_route_latest_with_the_service_on_never_waits(bg):
     assert not any(s.startswith("coops:") for s in d["missing"])              # CO-OPS has no list yet: not "missing"
     rec.run()
     A._LIVE_WAKE.clear()
-    r = c.get("/api/wind/latest")                                            # COOPS published, not built yet: old table
-    assert r.headers["X-Wind-Stations-Partial"] == "COOPS" and A._LIVE_WAKE.is_set()   # ... and the scheduler is woken
+    r = c.get("/api/wind/latest")                                            # COOPS + NWS published, not built yet: old table
+    assert r.headers["X-Wind-Stations-Partial"] == "COOPS,NWS" and A._LIVE_WAKE.is_set()   # ... and the scheduler is woken
     A._live_tick(bprovs)
     r = c.get("/api/wind/latest")
     assert "X-Wind-Stations-Partial" not in r.headers and r.headers["Cache-Control"] == "public, max-age=120"
     d = r.get_json()
+    assert "nws:001HE" in {row[0] for row in d["rows"]} and "nws:029HI" in d["missing"]
     own = next(row for row in d["rows"] if row[0] == "coops:1612340")
     latest = W.parse_coops_wind(json.loads(fx("coops_latest.json")))[0]
     assert own != relay and own[1:] == [latest["t"], latest["s"], latest["g"], latest["d"]]   # CO-OPS's own reading now
@@ -741,8 +859,8 @@ def test_healthz_reports_the_wind_feeds_without_touching_warm(bg):
     body = c.get("/healthz").get_json()
     assert body["warm"] is True and body["missing"] == [] and body["ok"] is True   # the wind feeds are still cold ...
     w = body["wind"]
-    assert w["enabled"] is True and w["missing"] == ["NDBC", "METAR", "COOPS"] and w["memo"]["complete"] is False
-    assert [s["source"] for s in w["providers"]] == ["NDBC", "METAR", "COOPS"] and w["ticks"] == 2
+    assert w["enabled"] is True and w["missing"] == ["NDBC", "METAR", "COOPS", "NWS"] and w["memo"]["complete"] is False
+    assert [s["source"] for s in w["providers"]] == ["NDBC", "METAR", "COOPS", "NWS"] and w["ticks"] == 2
     rec.run()
     A._live_tick(bprovs)
     w = c.get("/healthz").get_json()["wind"]

@@ -10,6 +10,10 @@ shape the parsers must handle kept: a missing wind ("MM"), a calm and a variable
   coops_error.json      CO-OPS's error answer (a station without wind data)
   metars.csv            the METAR cache's header + the rows of KEEP_METAR (+ one VRB and one calm report found)
   metar_history.json    api/data/metar?ids=PHNL&hours=24
+  nws_obs.json          api.weather.gov stations/001HE/observations (ld+json), the newest 12 rows of the last 24 hours: a
+                        gust-only row (the top of the hour), rows with speed + direction, rows with speed only
+  nws_history.json      the same station's last 24 hours (limit 500), TRIMMED to its first 40 rows
+  nws_stations.json     api.weather.gov stations?state=HI (ld+json), TRIMMED to one station per network
 """
 import csv
 import gzip
@@ -69,6 +73,29 @@ def main():
     hist = get(W.METAR_API_URL % "PHNL")
     json.loads(hist)
     save("metar_history.json", hist)
+    # NWS API (step 5c): ld+json (Accept header), the newest rows first
+    since = W.iso_z(int(__import__("time").time()) - W.HISTORY_S)
+    obs = json.loads(get_nws(W.NWS_OBS_URL % ("001HE", since, 12)))
+    save("nws_obs.json", json.dumps(obs, indent=1).encode())
+    hist = json.loads(get_nws(W.NWS_OBS_URL % ("001HE", since, W.NWS_HISTORY_LIMIT)))
+    hist["@graph"] = hist["@graph"][:40]
+    save("nws_history.json", json.dumps(hist, indent=1).encode())
+    page = json.loads(get_nws(W.NWS_API + "/stations?state=HI&limit=500"))
+    seen, keep = set(), []
+    for st in page.get("@graph", []):
+        key = (st.get("provider"), st.get("subProvider"), st.get("stationIdentifier", "")[-2:] == "HE")
+        if key not in seen:
+            seen.add(key)
+            keep.append(st)
+    page["@graph"] = keep
+    page.pop("pagination", None)
+    save("nws_stations.json", json.dumps(page, indent=1).encode())
+
+
+def get_nws(url):
+    req = urllib.request.Request(url, headers=W.NWS_HEADERS)
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return r.read()
 
 
 if __name__ == "__main__":

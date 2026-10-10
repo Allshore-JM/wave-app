@@ -1,7 +1,7 @@
 """Build wind_stations.json: the stations of the map's wind layer (plan section 39).
 
-Per station: id ("coops:1612340", "ndbc:51003", "metar:PHNL"), name, lat, lon, kind, src, tz (the nearest civil zone,
-the live buoys' rule), alias (a CO-OPS gauge's NDBC id when NDBC relays it under one: "OOUH1").
+Per station: id ("coops:1612340", "ndbc:51003", "metar:PHNL", "nws:001HE"), name, lat, lon, kind, src, tz (the nearest
+civil zone, the live buoys' rule), alias (a CO-OPS gauge's NDBC id when NDBC relays it under one: "OOUH1").
 
 kind: "gauge"   a NOAA tide gauge's weather sensors (CO-OPS, 6-minute readings; or NDBC's relay of a gauge CO-OPS does
                 not list with an active wind sensor)
@@ -9,6 +9,13 @@ kind: "gauge"   a NOAA tide gauge's weather sensors (CO-OPS, 6-minute readings; 
       "cman"    an NDBC C-MAN coastal station
       "station" another fixed NDBC station (platforms, towers, partners' weather stations)
       "airport" a METAR station within COAST_KM of a coastline, or one at sea (offshore platforms: OFFSHORE_METAR)
+      NWS API stations (step 5c, owner 2026-10-10 "Hawaii now": NWS_AREAS), by network:
+      "utility" HECO / HELCO / MECO (the Hawaiian electric utilities' stations; ids ...HE)
+      "mesonet" the University of Hawaii mesonet (...HI) and other research networks (SCAN, CRN)
+      "raws"    RAWS fire-weather stations
+      "cwop"    CWOP / APRS amateur stations
+      "hads"    HADS hydrological stations with a wind sensor
+      "weather" any other land station the API lists
 
 Sources (public domain, NOAA / NWS):
 - CO-OPS: mdapi stations.json?type=met, then one sensors.json per station (four at a time; --sensors-cache keeps them):
@@ -22,8 +29,13 @@ Sources (public domain, NOAA / NWS):
   minute).
 - The coastline: the site's own GSHHG tier-0 file (models.allshoresurf.com/static/coast/v1/world-i.bin, ~1 km; the
   exposure tool's), its cell-line edges left out (they lie inside land). Lakes count as land (GSHHG level 1).
+- NWS API (api.weather.gov, with a User-Agent; ld+json): stations?state=<area> (paginated), then ONE observations
+  request per station (its newest NWS_PROBE_LIMIT rows of the last NWS_PROBE_HOURS, NWS_PAUSE_S apart: the API's rate
+  limit is not published): a station is kept when a row carries a wind speed. Left out: the networks the other feeds
+  cover (tide gauges, airports; NWS_SKIP_PROVIDERS), NDBC's buoys (5-digit ids), and any station within ALIAS_M of a
+  station already kept. --nws-cache keeps the probe answers for NWS_CACHE_S so an interrupted run resumes.
 
-Run:  python tools/wind/fetch_stations.py --sensors-cache <file>     (writes ../../wind_stations.json)
+Run:  python tools/wind/fetch_stations.py --sensors-cache <file> --nws-cache <file>   (writes ../../wind_stations.json)
 The site never asks these lists at runtime: re-run now and then and commit the file."""
 import argparse
 import csv
@@ -50,8 +62,18 @@ METAR_CACHE = AWC + "/data/cache/metars.cache.csv.gz"
 METAR_SITES = AWC + "/data/cache/stations.cache.json.gz"
 COAST_URL = "https://models.allshoresurf.com/static/coast/v1/world-i.bin"
 UA = "allshoresurf.com wind station snapshot (https://allshoresurf.com)"
+NWS_API = "https://api.weather.gov"
+NWS_HEADERS = {"User-Agent": "allshoresurf.com wind station snapshot (https://allshoresurf.com)", "Accept": "application/ld+json"}
+NWS_AREAS = ["HI"]              # owner, 2026-10-10: Hawaii now; other regions once the API's rate limit is understood
+NWS_LIST_LIMIT = 500            # stations per list page (the API's most)
+NWS_PROBE_HOURS = 24            # a station is usable when it reported a wind speed in this window ...
+NWS_PROBE_LIMIT = 20            # ... among its newest rows (the top of an hour is often a gust-only row)
+NWS_PAUSE_S = 0.75              # between probes: ~80 requests a minute at most
+NWS_CACHE_S = 12 * 3600         # a cached probe answer younger than this is reused
+NWS_SKIP_PROVIDERS = {"NOS-NWLON", "ASOS", "OTHER-MTR", "NONFEDAWOS"}   # tide gauges and airports: the other feeds' (upper case)
+NWS_KINDS = ("utility", "mesonet", "raws", "cwop", "hads", "weather")
 FIELDS = ["id", "name", "lat", "lon", "kind", "src", "tz", "alias"]
-KINDS = ("gauge", "buoy", "cman", "station", "airport")
+KINDS = ("gauge", "buoy", "cman", "station", "airport") + NWS_KINDS
 COAST_KM = 30.0                 # owner, 2026-10-09: airports within 30 km of the coast only
 OFFSHORE_METAR = True           # a METAR site at sea (an offshore platform) is no inland airport: kept
 ALIAS_M = 300.0                 # an NDBC station this close to a kept CO-OPS gauge is that gauge
@@ -340,6 +362,113 @@ def metar_reporting(ids, fetch=None, pause=METAR_API_PAUSE_S):
     return seen
 
 
+# ------------------------------------------------------------------ NWS API
+
+def nws_stations(area, fetch=None):
+    """stations?state=<area> (every page) -> {ID: {"name", "lat", "lon", "provider", "sub", "tz"}} for the stations with
+    a usable position. fetch(url) -> the parsed ld+json document."""
+    fetch = fetch or (lambda url: json.loads(get_bytes(url, headers=NWS_HEADERS) or b"{}"))
+    out, url, pages = {}, f"{NWS_API}/stations?state={area}&limit={NWS_LIST_LIMIT}", 0
+    while url and pages < 20:
+        doc = fetch(url)
+        pages += 1
+        items = doc.get("@graph") or [f.get("properties", {}) | {"geometry": f.get("geometry")} for f in doc.get("features") or []]
+        if not items:
+            break
+        for st in items:
+            sid = str(st.get("stationIdentifier") or "").strip().upper()
+            geom = st.get("geometry")
+            coords = geom.get("coordinates") if isinstance(geom, dict) else None
+            if isinstance(geom, str):                                   # ld+json: "POINT(-156.54 20.80)"
+                m = re.search(r"POINT\s*\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\)", geom)
+                coords = [float(m.group(1)), float(m.group(2))] if m else None
+            if not sid or not coords or len(coords) < 2 or not usable_position(coords[1], coords[0]):
+                continue
+            out[sid] = {"name": " ".join(str(st.get("name") or "").split()), "lat": round(float(coords[1]), 5),
+                        "lon": round(float(coords[0]), 5), "provider": str(st.get("provider") or ""),
+                        "sub": str(st.get("subProvider") or ""), "tz": st.get("timeZone")}
+        url = (doc.get("pagination") or {}).get("next")
+        if url and NWS_PAUSE_S:
+            time.sleep(NWS_PAUSE_S)
+    return out
+
+
+def nws_kind(sid, provider, sub):
+    """The layer's kind for an NWS API station, or None for one another feed covers (a tide gauge, an airport, an
+    NDBC buoy)."""
+    provider, sub = (provider or "").upper(), (sub or "").upper()
+    if provider in NWS_SKIP_PROVIDERS or re.fullmatch(r"\d{5}", sid):
+        return None
+    if sub == "HECO" or re.fullmatch(r"\d{3}HE", sid):
+        return "utility"
+    if sub in ("U-HAWAII", "SCAN", "CRN") or re.fullmatch(r"\d{3}HI", sid):
+        return "mesonet"
+    if provider == "RAWS":
+        return "raws"
+    if provider == "APRSWXNET" or re.fullmatch(r"[A-G][A-Z]\d{3}", sid):
+        return "cwop"
+    if provider == "HADS":
+        return "hads"
+    return "weather"
+
+
+def nws_usable(ids, fetch=None, pause=NWS_PAUSE_S, cache=None, now=None):
+    """{ID: epoch of the newest row with a wind speed} over `ids`, one observations request each (the newest
+    NWS_PROBE_LIMIT rows of the last NWS_PROBE_HOURS); a station without one, or whose request fails, is left out.
+    cache {ID: [asked epoch, newest epoch or None]} is read and updated (NWS_CACHE_S). fetch(url) -> the document."""
+    sys.path.insert(0, ROOT)
+    import wind_sources as W
+    fetch = fetch or (lambda url: json.loads(get_bytes(url, headers=NWS_HEADERS) or b"{}"))
+    now = time.time() if now is None else now
+    cache = cache if cache is not None else {}
+    out, asked = {}, 0
+    for sid in sorted(ids):
+        hit = cache.get(sid)
+        if hit and now - hit[0] < NWS_CACHE_S:
+            if hit[1]:
+                out[sid] = hit[1]
+            continue
+        start = W.iso_z(now - NWS_PROBE_HOURS * 3600)
+        try:
+            rows = W.parse_nws_observations(fetch(W.NWS_OBS_URL % (sid, start, NWS_PROBE_LIMIT)))
+        except Exception as e:                                          # a lost probe leaves the station out, never stops the build
+            print(f"  nws probe {sid}: {e}", file=sys.stderr)
+            rows = None
+        asked += 1
+        if rows is not None:
+            newest = max((r["t"] for r in rows), default=None)
+            cache[sid] = [now, newest]
+            if newest:
+                out[sid] = newest
+        if pause:
+            time.sleep(pause)
+    print(f"NWS: {asked} stations probed, {len(ids) - asked} from the cache", flush=True)
+    return out
+
+
+def nws_name(name, sid, kind, clean=lambda n: n):
+    """An NWS API station's name for the map: the API's, with the all-capital names NOAA writes for RAWS / HADS sites
+    converted ("AHUMOA" -> "Ahumoa"); a CWOP station keeps its amateur call sign as written ("WH6BXK KAHULUI" ->
+    "WH6BXK Kahului"); the id when there is no name."""
+    n = " ".join(str(name or "").split())
+    if not n:
+        return sid
+    if kind == "cwop":
+        if " " not in n:
+            return n.upper()                                           # the call sign alone
+        call, rest = n.split(" ", 1)
+        return call.upper() + " " + (clean(rest) or rest)
+    return clean(n) or n
+
+
+def too_close(rows, lat, lon, metres=ALIAS_M):
+    """The id of a row within `metres` of (lat, lon), else None (rows: the snapshot rows built so far)."""
+    for r in rows:
+        if abs(r[2] - lat) <= 0.01 and km_between(lat, lon, r[2], r[3]) * 1000 <= metres:
+            return r[0]
+    return None
+
+
 # ------------------------------------------------------------------ the build
 
 def write_doc(path, rows, source):
@@ -357,6 +486,9 @@ def main(argv=None):
     ap.add_argument("--sensors-cache", default=None, help="JSON file keeping CO-OPS sensors.json answers between runs")
     ap.add_argument("--coast", default=None, help="a local copy of world-i.bin (else it is downloaded)")
     ap.add_argument("--no-metar-api", action="store_true", help="airports: only those in the METAR cache now")
+    ap.add_argument("--nws-areas", default=",".join(NWS_AREAS), help="NWS API areas (states) to list, comma-separated")
+    ap.add_argument("--nws-cache", default=None, help="JSON file keeping the NWS probe answers between runs")
+    ap.add_argument("--no-nws", action="store_true", help="leave the NWS API stations out")
     args = ap.parse_args(argv)
 
     os.environ.setdefault("LIVE_BACKGROUND", "0")
@@ -452,6 +584,40 @@ def main(argv=None):
         rows.append(["metar:" + sid, site_name(name, sid, TT.clean_name), lat, lon, "airport", "metar",
                      A._nearest_civil_tz(lat, lon), None])
 
+    # ---- NWS API: land stations with a usable wind reading, per area (step 5c)
+    if not args.no_nws:
+        ncache = {}
+        if args.nws_cache and os.path.exists(args.nws_cache):
+            ncache = json.load(open(args.nws_cache))
+        listed, skipped_kind, close = {}, 0, []
+        for area in [a.strip().upper() for a in args.nws_areas.split(",") if a.strip()]:
+            listed.update(nws_stations(area))
+        cand = {}
+        for sid, st in listed.items():
+            kind = nws_kind(sid, st["provider"], st["sub"])
+            if kind is None:
+                skipped_kind += 1
+                continue
+            cand[sid] = (st, kind)
+        usable = nws_usable(cand, cache=ncache)
+        if args.nws_cache:
+            json.dump(ncache, open(args.nws_cache, "w"))
+        for sid in sorted(usable):
+            st, kind = cand[sid]
+            near = too_close(rows, st["lat"], st["lon"])
+            if near:
+                close.append((sid, near))
+                continue
+            rows.append(["nws:" + sid, nws_name(st["name"], sid, kind, TT.clean_name), st["lat"], st["lon"], kind, "nws",
+                         A._nearest_civil_tz(st["lat"], st["lon"]), None])
+        kinds = {}
+        for sid in usable:
+            if sid in cand and not any(c[0] == sid for c in close):
+                kinds[cand[sid][1]] = kinds.get(cand[sid][1], 0) + 1
+        print(f"NWS: {len(listed)} stations listed in {args.nws_areas}, {skipped_kind} other feeds' (gauges, airports, "
+              f"NDBC), {len(cand)} probed, {len(usable)} with a wind reading, {len(close)} within {ALIAS_M:g} m of a kept "
+              f"station {close[:12]}; kept by kind {kinds}", flush=True)
+
     bad = TT.zone_mismatches([[r[0][6:], r[1], r[2], r[3], r[4], r[5], r[6]] for r in rows if r[5] == "coops"],
                              {c: s["corr"] for c, s in coops.items()})
     if bad:
@@ -459,8 +625,9 @@ def main(argv=None):
         for b in bad:
             print("  %s %s: %s vs %s" % b, file=sys.stderr)
         return 2
-    write_doc(args.out, rows, "NOAA CO-OPS (tidesandcurrents.noaa.gov), NOAA NDBC (ndbc.noaa.gov) and NWS Aviation "
-              "Weather Center (aviationweather.gov) station lists, public domain; coastlines GSHHG 2.3.7")
+    write_doc(args.out, rows, "NOAA CO-OPS (tidesandcurrents.noaa.gov), NOAA NDBC (ndbc.noaa.gov), NWS Aviation "
+              "Weather Center (aviationweather.gov) and NWS API (api.weather.gov) station lists, public domain; "
+              "coastlines GSHHG 2.3.7")
     by = {}
     for r in rows:
         by[r[4]] = by.get(r[4], 0) + 1

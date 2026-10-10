@@ -48,7 +48,7 @@ def test_ids_are_namespaced_unique_and_match_their_source(snap):
     _, rows = snap
     ids = [r["id"] for r in rows]
     assert len(ids) == len(set(ids))
-    kinds = {"coops": {"gauge"}, "ndbc": {"gauge", "buoy", "cman", "station"}, "metar": {"airport"}}
+    kinds = {"coops": {"gauge"}, "ndbc": {"gauge", "buoy", "cman", "station"}, "metar": {"airport"}, "nws": set(W.NWS_KINDS)}
     for r in rows:
         src, _, native = r["id"].partition(":")
         assert src == r["src"] and src in kinds, r
@@ -87,6 +87,17 @@ def test_hawaii_and_counts(snap):
     for r in rows:
         count[r["kind"]] = count.get(r["kind"], 0) + 1
     assert count["gauge"] >= 200 and count["buoy"] >= 150 and count["airport"] >= 1000, count
+    nws = [r for r in rows if r["src"] == "nws"]
+    assert 200 <= len(nws) <= 600 and count["utility"] >= 50 and count["mesonet"] >= 20, count    # step 5c: Hawaii
+    assert all(18.8 < r["lat"] < 22.3 and -160.3 < r["lon"] < -154.7 and r["tz"] == "Pacific/Honolulu" for r in nws)
+    others = [r for r in rows if r["src"] != "nws" and 18 < r["lat"] < 23 and -161 < r["lon"] < -154]
+    for r in nws:                                                        # never within 300 m of another kept station
+        assert W.too_close(others_rows(others), r["lat"], r["lon"]) is None, r
+    assert not any(re.fullmatch(r"\d{5}", r["id"][4:]) for r in nws), "NDBC's buoys are NDBC's"
+
+
+def others_rows(rows):
+    return [[r["id"], r["name"], r["lat"], r["lon"]] for r in rows]
 
 
 # ------------------------------------------------------------------ NDBC
@@ -135,6 +146,85 @@ def test_parse_station_table():
 ])
 def test_ndbc_kind(ttype, sid, kind):
     assert W.ndbc_kind(sid, ttype) == kind
+
+
+@pytest.mark.parametrize("sid,provider,sub,kind", [
+    ("001HE", "MesoWest", "HECO", "utility"),
+    ("010HE", "", "", "utility"),                            # a utility station the API lists without a provider
+    ("001HI", "MesoWest", "U-HAWAII", "mesonet"),
+    ("KXAH1", "MesoWest", "SCAN", "mesonet"),
+    ("AHMH1", "RAWS", "", "raws"),
+    ("AP834", "APRSWXNET", "", "cwop"),
+    ("AHUH1", "HADS", "", "hads"),
+    ("XYZ", "", "", "weather"),
+    ("ILOH1", "NOS-NWLON", "NWLON", None),                   # a tide gauge: the CO-OPS feed's
+    ("PHBK", "ASOS", "", None),                              # airports: the METAR feed's
+    ("PHHI", "OTHER-MTR", "", None),
+    ("PHMU", "NonFedAWOS", "SAI", None),
+    ("51202", "", "", None),                                 # an NDBC buoy
+])
+def test_nws_kind(sid, provider, sub, kind):
+    assert W.nws_kind(sid, provider, sub) == kind
+
+
+def test_nws_stations_pages_and_keeps_usable_positions():
+    page = json.loads(open(os.path.join(HERE, "fixtures", "wind", "nws_stations.json"), encoding="utf-8").read())
+    page1 = dict(page, pagination={"next": "NEXT"})
+    page2 = {"@graph": [{"stationIdentifier": "ZZZ", "name": "Nowhere", "geometry": "POINT(0 0)", "provider": ""},
+                        {"stationIdentifier": "far", "name": "Far", "geometry": "POINT(-156.1 20.9)", "provider": "RAWS", "timeZone": "Pacific/Honolulu"}],
+             "pagination": {"next": "LAST"}}
+    answers = {"NEXT": page2, "LAST": {"@graph": []}}
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        return answers.get(url, page1)
+    W.NWS_PAUSE_S, pause = 0, W.NWS_PAUSE_S
+    try:
+        got = W.nws_stations("HI", fetch)
+    finally:
+        W.NWS_PAUSE_S = pause
+    assert calls[0] == W.NWS_API + "/stations?state=HI&limit=500" and calls[1:] == ["NEXT", "LAST"]
+    assert got["001HE"] == {"name": "MECO Kealaloloa Ridge", "lat": 20.80393, "lon": -156.54018, "provider": "MesoWest",
+                            "sub": "HECO", "tz": "Pacific/Honolulu"}
+    assert "ZZZ" not in got and got["FAR"]["lat"] == 20.9 and got["FAR"]["provider"] == "RAWS"
+    assert len(got) == len(page["@graph"]) + 1
+
+
+def test_nws_usable_probes_the_newest_rows_and_keeps_a_cache(capsys):
+    obs = json.loads(open(os.path.join(HERE, "fixtures", "wind", "nws_obs.json"), encoding="utf-8").read())
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if "001HE" in url:
+            return obs
+        if "BAD" in url:
+            raise IOError("down")
+        return {"@graph": []}
+    cache = {"OLD": [1000.0, 5], "FRESH": [1_000_000.0, None]}
+    got = W.nws_usable(["001HE", "NONE", "BAD", "OLD", "FRESH"], fetch, pause=0, cache=cache, now=1_000_100.0)
+    assert got == {"001HE": max(r["t"] for r in __import__("wind_sources").parse_nws_observations(obs))}
+    assert len(calls) == 4 and all("limit=%d" % W.NWS_PROBE_LIMIT in u and "start=" in u for u in calls)
+    assert "FRESH" not in "".join(calls) and cache["FRESH"] == [1_000_000.0, None], "a fresh cache answer is reused"
+    assert cache["001HE"] == [1_000_100.0, got["001HE"]] and cache["NONE"] == [1_000_100.0, None]
+    assert cache["OLD"][0] == 1_000_100.0 and "BAD" not in cache, "a lost probe is not remembered"
+    assert "nws probe BAD" in capsys.readouterr().err
+
+
+def test_nws_name():
+    clean = _tool().tide_tool().clean_name
+    assert W.nws_name("WH6BXK KAHULUI", "AW209", "cwop", clean) == "WH6BXK Kahului"
+    assert W.nws_name("KH6HHG Makawao", "AP834", "cwop", clean) == "KH6HHG Makawao"
+    assert W.nws_name("AHUMOA", "AHMH1", "raws", clean) == "Ahumoa"
+    assert W.nws_name("MECO Kealaloloa Ridge", "001HE", "utility", clean) == "MECO Kealaloloa Ridge"
+    assert W.nws_name("  ", "XYZ", "weather", clean) == "XYZ" and W.nws_name("KH6ABC", "AQ1", "cwop", clean) == "KH6ABC"
+
+
+def test_too_close():
+    rows = [["coops:1612340", "Honolulu", 21.30333, -157.86453], ["metar:PHNL", "Honolulu Intl", 21.315, -157.924]]
+    assert W.too_close(rows, 21.3034, -157.8645) == "coops:1612340"
+    assert W.too_close(rows, 21.31, -157.86) is None and W.too_close(rows, 21.3034, -157.8645, metres=5) is None
 
 
 @pytest.mark.parametrize("name,want", [

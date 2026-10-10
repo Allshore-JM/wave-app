@@ -364,6 +364,7 @@
     if (src === 'ndbc') return 'https://www.ndbc.noaa.gov/station_page.php?station=' + encodeURIComponent(local.toLowerCase());
     if (src === 'coops') return 'https://tidesandcurrents.noaa.gov/stationhome.html?id=' + encodeURIComponent(local);
     if (src === 'metar') return 'https://aviationweather.gov/data/metar/?ids=' + encodeURIComponent(local) + '&hours=24';
+    if (src === 'nws') return 'https://api.weather.gov/stations/' + encodeURIComponent(local) + '/observations/latest';
     return null;
   }
 

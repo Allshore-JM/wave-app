@@ -1,0 +1,1079 @@
+{
+ "@context": {
+  "@version": "1.1",
+  "wx": "https://api.weather.gov/ontology#",
+  "s": "https://schema.org/",
+  "geo": "http://www.opengis.net/ont/geosparql#",
+  "unit": "http://codes.wmo.int/common/unit/",
+  "@vocab": "https://api.weather.gov/ontology#",
+  "geometry": {
+   "@id": "s:GeoCoordinates",
+   "@type": "geo:wktLiteral"
+  },
+  "city": "s:addressLocality",
+  "state": "s:addressRegion",
+  "distance": {
+   "@id": "s:Distance",
+   "@type": "s:QuantitativeValue"
+  },
+  "bearing": {
+   "@type": "s:QuantitativeValue"
+  },
+  "value": {
+   "@id": "s:value"
+  },
+  "unitCode": {
+   "@id": "s:unitCode",
+   "@type": "@id"
+  },
+  "forecastOffice": {
+   "@type": "@id"
+  },
+  "forecastGridData": {
+   "@type": "@id"
+  },
+  "publicZone": {
+   "@type": "@id"
+  },
+  "county": {
+   "@type": "@id"
+  }
+ },
+ "@graph": [
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T21:00:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T21:00:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 13.788,
+    "qualityControl": "S"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T20:50:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T20:50:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.66,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 21.96,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 203.6,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 6.876,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 14.796,
+    "qualityControl": "S"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 84.956287137585,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 25.399858608592776,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T20:40:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T20:40:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.54,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 20.18,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 42.03,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 10.512,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 24.372,
+    "qualityControl": "S"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 76.707719935276,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 25.052479353865557,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T20:30:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T20:30:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.14,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 20.09,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 25.6,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 17.424,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 30.564,
+    "qualityControl": "S"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 78.132249284103,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.64967539797389,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T20:20:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T20:20:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.04,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 20.12,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 14.77,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 19.764,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 34.776,
+    "qualityControl": "S"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 78.748688978987,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.55577132334,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T20:10:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T20:10:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.07,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 20.26,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 25.78,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 17.784,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 31.968,
+    "qualityControl": "S"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 79.290254594702,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.60291220330611,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T20:00:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T20:00:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.28,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 20.12,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 21.51,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 12.888,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 77.622877709494,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.79037514019222,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T19:50:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T19:50:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.06,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 20.82,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 40.49,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 10.404,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 82.125088725942,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.665932872288334,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T19:40:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T19:40:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.1,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 21.89,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 184,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 8.676,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 87.479922765869,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.849753538886667,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T19:30:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T19:30:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.5,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 20.05,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 61.61,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 8.28,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 76.275706367764,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.997198999602777,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T19:20:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T19:20:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.57,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 20.06,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 10.09,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 7.488,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 76.003946515035,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 25.06710304789278,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  },
+  {
+   "@id": "https://api.weather.gov/stations/001HE/observations/2026-10-10T19:10:00+00:00",
+   "@type": "wx:ObservationStation",
+   "geometry": "POINT(-156.54 20.8)",
+   "elevation": {
+    "unitCode": "wmoUnit:m",
+    "value": 571.2
+   },
+   "station": "https://api.weather.gov/stations/001HE",
+   "stationId": "001HE",
+   "stationName": "MECO Kealaloloa Ridge",
+   "timestamp": "2026-10-10T19:10:00+00:00",
+   "rawMessage": "",
+   "textDescription": "",
+   "icon": null,
+   "presentWeather": [],
+   "temperature": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.41,
+    "qualityControl": "S"
+   },
+   "dewpoint": {
+    "unitCode": "wmoUnit:degC",
+    "value": 19.46,
+    "qualityControl": "S"
+   },
+   "windDirection": {
+    "unitCode": "wmoUnit:degree_(angle)",
+    "value": 20.79,
+    "qualityControl": "S"
+   },
+   "windSpeed": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 9.18,
+    "qualityControl": "S"
+   },
+   "windGust": {
+    "unitCode": "wmoUnit:km_h-1",
+    "value": 22.176,
+    "qualityControl": "S"
+   },
+   "barometricPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "seaLevelPressure": {
+    "unitCode": "wmoUnit:Pa",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "visibility": {
+    "unitCode": "wmoUnit:m",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "maxTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "minTemperatureLast24Hours": {
+    "unitCode": "wmoUnit:degC",
+    "value": null
+   },
+   "precipitationLast3Hours": {
+    "unitCode": "wmoUnit:mm",
+    "value": null,
+    "qualityControl": "Z"
+   },
+   "relativeHumidity": {
+    "unitCode": "wmoUnit:percent",
+    "value": 73.932098111144,
+    "qualityControl": "S"
+   },
+   "windChill": {
+    "unitCode": "wmoUnit:degC",
+    "value": null,
+    "qualityControl": "S"
+   },
+   "heatIndex": {
+    "unitCode": "wmoUnit:degC",
+    "value": 24.837004784013335,
+    "qualityControl": "S"
+   },
+   "cloudLayers": []
+  }
+ ],
+ "pagination": {
+  "next": "https://api.weather.gov/stations/001HE/observations?cursor=eyJzIjoiMjAyNi0xMC0xMFQxOToxMDowMCswMDowMCJ9"
+ }
+}

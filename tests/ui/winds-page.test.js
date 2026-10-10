@@ -198,6 +198,10 @@ test('world copies: a flag per copy, keys per copy; the active station rimmed an
   assert.equal(b.api.container.focused, 1, 'the map takes the focus');
   assert.equal(b.api.windSubtitle({ id: 'metar:PHNL', kind: 'airport' }), 'Wind · Airport (METAR) PHNL');
   assert.equal(b.api.windSubtitle({ id: 'ndbc:51003', kind: 'buoy' }), 'Wind · NDBC buoy 51003');
+  assert.equal(b.api.windSubtitle({ id: 'nws:001HE', kind: 'utility' }), 'Wind · HECO / HELCO / MECO station 001HE');
+  assert.equal(b.api.windSubtitle({ id: 'nws:029HI', kind: 'mesonet' }), 'Wind · Mesonet station 029HI');
+  assert.equal(b.api.windSubtitle({ id: 'nws:AP834', kind: 'cwop' }), 'Wind · CWOP amateur station AP834');
+  assert.ok(b.api.WIND_CREDIT.indexOf('https://api.weather.gov/') > 0, 'the NWS API in the credit (step 5c)');
 });
 
 test('thinning: two stations 20 px apart at zoom 9 (the gauge first) show one, both at zoom 10; the opened one always; no note for it', async () => {

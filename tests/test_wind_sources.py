@@ -252,7 +252,9 @@ def test_make_providers_and_aliases():
     assert set(coops.stations) == {"1612340", "1611400", "1612401"} and coops.workers == 8
     assert ndbc.aliases["OOUH1"]["id"] == "coops:1612340" and ndbc.aliases["NWWH1"]["id"] == "coops:1611400"
     assert all(p.extra_keys == ("wind", "alias_of") for p in provs)
-    assert ndbc.list_ttl_sec == 300 and metar.list_ttl_sec == 300 and coops.list_ttl_sec == 600
+    assert ndbc.list_ttl_sec == 300 and metar.list_ttl_sec == 300 and coops.list_ttl_sec == W.COOPS_TTL_S == 60
+    assert coops.per_refresh == W.COOPS_PER_REFRESH == 24 and W.CoopsWindProvider({}, FakeFetch(), 0, 9999).per_refresh == 500
+    assert W.make_providers(STATIONS, FakeFetch())[2].workers == 2, "two at a time by default: a trickle, not a burst"
 
 
 def test_ndbc_provider_lists_its_stations_and_the_relays(clock):
@@ -297,6 +299,59 @@ def test_coops_provider_one_failure_is_a_missing_reading_all_failures_fail(clock
     clock.now += coops.list_ttl_sec + 1
     lst2, version2, _ = coops.list_stations_versioned()
     assert lst2 == lst and version2 == 1 and coops.status()["last_error"].startswith("RuntimeError: every CO-OPS")
+
+
+COOPS_IDS = {k.split(":")[1]: v for k, v in STATIONS.items() if k.startswith("coops:")}
+
+
+def test_coops_provider_asks_a_slice_per_refresh_in_turn_and_keeps_the_readings(clock):
+    """Step 5 F1: NOAA blocked the server for ~60 s after 232 requests in a few seconds. The feed now asks per_refresh
+    gauges per refresh, round robin, and merges: a gauge keeps its reading until asked again; a failed request keeps it;
+    NOAA's "no data" drops it; a reading older than COOPS_KEEP_S is dropped."""
+    fetch = FakeFetch(coops_table())
+    fetch.table[W.coops_url("1612401", date="latest")] = fx("coops_latest.json")   # all three answer (1611400: no data)
+    coops = W.CoopsWindProvider(COOPS_IDS, fetch, workers=2, per_refresh=1)
+    assert coops._ids == ["1611400", "1612340", "1612401"]
+    ids = lambda: [e["id"] for e in coops.list_stations_versioned()[0]]
+    assert ids() == [] and fetch.count("station=") == 1 and fetch.count("1611400") == 1    # the first slice: NOAA has no data
+    clock.now += 60; assert ids() == ["coops:1612340"] and fetch.count("1612340") == 1
+    clock.now += 60; assert ids() == ["coops:1612340", "coops:1612401"] and fetch.count("1612401") == 1
+    clock.now += 60; assert ids() == ["coops:1612340", "coops:1612401"] and fetch.count("1611400") == 2, "round robin: the first gauge again"
+    st = coops.status()
+    assert st["readings"] == 2 and st["per_refresh"] == 1 and st["cursor"] == 1 and st["paused_s"] == 0
+    # a request that fails keeps the gauge's reading (and, alone in its slice, fails the fetch: keep-last)
+    fetch.table[W.coops_url("1612340", date="latest")] = IOError("timeout")
+    v0 = coops.list_stations_versioned()[1]
+    clock.now += 60; assert ids() == ["coops:1612340", "coops:1612401"] and fetch.count("1612340") == 2
+    assert coops.list_stations_versioned()[1] == v0 and coops.status()["last_error"].startswith("RuntimeError: every CO-OPS")
+    # NOAA's "no data" for a gauge drops its reading
+    fetch.table[W.coops_url("1612340", date="latest")] = fx("coops_latest.json")
+    fetch.table[W.coops_url("1612401", date="latest")] = fx("coops_error.json")
+    clock.now += 60; ids()                                                            # 1612401 asked: no data
+    assert ids() == ["coops:1612340"]
+    # a reading older than COOPS_KEEP_S goes when the feed next runs (the gauge then shows "no reading")
+    clock.now += W.COOPS_KEEP_S + 3600
+    clock.now += 60; assert ids() == [] and coops.status()["readings"] == 0
+
+
+def test_coops_provider_pauses_two_minutes_after_a_403(clock):
+    fetch = FakeFetch(coops_table())
+    coops = W.CoopsWindProvider(COOPS_IDS, fetch, workers=2, per_refresh=24)
+    lst, v, _ = coops.list_stations_versioned()
+    assert [e["id"] for e in lst] == ["coops:1612340"] and v == 1
+    fetch.table[W.coops_url("1612340", date="latest")] = IOError("HTTP 403")
+    clock.now += 60
+    lst2, v2, _ = coops.list_stations_versioned()
+    assert lst2 == lst and v2 == 1, "the readings in hand stay"
+    assert coops.status()["last_error"].startswith("RuntimeError: NOAA refused") and coops.status()["paused_s"] == W.COOPS_PAUSE_S
+    n = fetch.count("station=")
+    clock.now += 60
+    coops.list_stations_versioned()
+    assert fetch.count("station=") == n and coops.status()["last_error"].startswith("RuntimeError: paused"), "no request during the pause"
+    assert 0 < coops.status()["paused_s"] <= 60
+    fetch.table[W.coops_url("1612340", date="latest")] = fx("coops_latest.json")
+    clock.now += 61
+    assert coops.list_stations_versioned()[1] == 2 and fetch.count("station=") > n and coops.status()["paused_s"] == 0
 
 
 def test_coops_provider_takes_the_newest_row_of_an_answer():
@@ -417,6 +472,28 @@ def test_history_unknown_errors_and_ttls():
     fetch.table[W.NDBC_RT2_URL % "51003"] = b"\xff\xfe not a feed"           # unreadable: no rows, a note
     clock.t += svc.error_ttl + 1
     assert svc.history("ndbc:51003")[1]["note"] == W.NO_HISTORY
+
+
+def test_history_ndbc_without_a_24_hour_file_is_a_known_answer(clock):
+    """Step 5 F4: NDBC publishes no realtime2 file for eight Korean buoys (HTTP 404): an ok answer with no rows and its
+    own note, cached like any ok answer (not retried every minute); the page shows the flag's own reading. The relay
+    of a gauge alike."""
+    fetch = history_fetch()
+    fetch.table[W.NDBC_RT2_URL % "51003"] = IOError("HTTP 404")
+    fetch.table[W.coops_url("1612340", range=24)] = IOError("timeout")
+    fetch.table[W.NDBC_RT2_URL % "OOUH1"] = IOError("HTTP 404")
+    c = Clock(1791651300)
+    svc = W.WindHistory(STATIONS, fetch, now=c)
+    status, p = svc.history("ndbc:51003")
+    assert status == "ok" and p["t"] == [] and p["note"] == W.NDBC_NO_FILE and p["via"] is None
+    c.t += svc.error_ttl + 1
+    svc.history("ndbc:51003")
+    assert fetch.count("51003") == 1, "cached as an ok answer"
+    status, p = svc.history("coops:1612340")
+    assert status == "ok" and p["t"] == [] and p["note"] == W.NDBC_NO_FILE and p["via"] == "ndbc"
+    fetch.table[W.NDBC_RT2_URL % "51003"] = IOError("HTTP 500")
+    c.t += svc.ok_ttl + 1
+    assert svc.history("ndbc:51003") == ("error", {"error": W.UNAVAILABLE}), "any other failure is a passing one"
 
 
 def test_history_coops_and_metar_cut_at_24_hours():

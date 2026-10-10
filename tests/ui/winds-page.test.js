@@ -98,11 +98,12 @@ function boot(o = {}) {
     'rebuildWindMarkers, loadWindStations, openWindStation, closeWindWindow, windWindowClosed, windZone, refreshWindFlags, syncWindNote, paintWindNote, WIND_CREDIT, windSubtitle, ' +
     'get windView() { return windView; } };';
   const layersControl = { _update: function () { notes.wind.textContent = ''; notes.tide.textContent = ''; notes.live.textContent = ''; return this; } };
+  const forecastStationsData = o.forecast || [];                       // the yellow dots (a flag over one gets a hollow ring)
   const api = new Function('window', 'document', 'fetch', 'map', 'L', 'windLayer', 'tideLayer', 'tideIcon', 'tideIconActive', 'visibleCopies', 'renderSignature', 'textTip',
-    'saveMapView', 'saveLayerVisibility', 'measureTopRight', 'getSelectedUnit', 'tzAbbr', 'CustomEvent', 'windWin', 'tideWin', 'layersControl', 'MAX_MAP_ZOOM', 'Date', code)(
+    'saveMapView', 'saveLayerVisibility', 'measureTopRight', 'getSelectedUnit', 'tzAbbr', 'CustomEvent', 'windWin', 'tideWin', 'layersControl', 'MAX_MAP_ZOOM', 'Date', 'forecastStationsData', code)(
     window, doc, fetch, map, L, windLayer, tideLayer, 'ICON', 'ICON-ACTIVE', visibleCopies, renderSignature, (t) => ({ text: String(t) }),
     () => saves.push('view'), () => saves.push('layers'), () => {}, () => unit, (iso, tz) => tz + '!',
-    class { constructor(type) { this.type = type; } }, windWin, null, layersControl, 11, Object.assign(function () {}, { now: () => NOW }));
+    class { constructor(type) { this.type = type; } }, windWin, null, layersControl, 11, Object.assign(function () {}, { now: () => NOW }), forecastStationsData);
   api.container = container;
   return { api, notes, doc, events, windLayer, credits, fetchCalls, loads, clears, units, zones, view, toolClicks, saves, windWin, timerQ, docListeners,
     setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; }, setUnit: (u) => { unit = u; }, setHidden: (h) => { hidden = h; }, answers };
@@ -183,7 +184,7 @@ test('world copies: a flag per copy, keys per copy; the active station rimmed an
   assert.ok(keys.includes('w:coops:1612340#0') && keys.includes('w:coops:1612340#360'));
   b.windLayer.items[0].fire('click', { latlng: { lat: 21.3, lng: -157.86 } });
   assert.equal(b.api.activeWindId, 'coops:1612340'); assert.equal(b.windWin.opens, 1);
-  assert.deepEqual(b.loads, [['coops:1612340', { unit: 'US', zone: 'Pacific/Honolulu' }]]);
+  assert.deepEqual(b.loads, [['coops:1612340', { unit: 'US', zone: 'Pacific/Honolulu', reading: { t: NOW / 1000 - 600, s: 1.0, g: 2.8, d: 75 } }]], "the flag's reading goes with the load (shown when the history is empty: F4)");
   assert.deepEqual(b.saves, ['view', 'layers']); assert.ok(b.events.includes('allshore:windpanel'));
   assert.equal(b.doc.getElementById('windTitle').textContent, 'Honolulu');
   assert.equal(b.doc.getElementById('windSubtitle').textContent, 'Wind · NOAA tide gauge 1612340 (NDBC OOUH1)');
@@ -233,6 +234,27 @@ test('a tool active: the click goes to the tool; a failed list says so and is as
   m.el.listeners.keydown[0].fn.call(m.el, { key: 'Enter', preventDefault() {} });
   assert.deepEqual(b.toolClicks.length, 2, 'Enter fires the click (the tool takes it)');
   void Date_; void later;
+});
+
+test('a forecast point under a flag\'s ring: the ring is hollow (no clicks there, the dot keeps its click); inside the box only: the number and arrow take no clicks (wind-dotted); whole again when the zoom parts them; part of the drawn signature (step 5 F2)', async () => {
+  // 1 px = 1/1000 degree at zoom 9 (the stub): the dot 0.005 deg east of Honolulu's gauge = 5 px at zoom 9 (hollow), 20 px at zoom 11 (dotted), 40 px at zoom 12
+  const b = boot({ zoom: 9, forecast: [{ id: 'HNL01', lat: 21.3033, lon: -157.8595 }, { id: 'far', lat: 30, lon: -150 }, { id: 'bad', lat: 'x', lon: 1 }] });
+  b.api.rebuildWindMarkers(true); await flush();
+  const flag = (id) => flagOf(b.windLayer.items.find((m) => m.opts.title.startsWith('Wind station ' + id)));
+  const marks = (id) => ['wind-hollow', 'wind-dotted'].filter((c) => flag(id).classList.contains(c)).join(',');
+  assert.equal(marks('Honolulu'), 'wind-hollow', 'the dot within 7 px of the station');
+  assert.equal(marks('Western Hawaii'), ''); assert.equal(marks('Honolulu Intl'), '');
+  const before = b.windLayer.items;
+  b.api.rebuildWindMarkers(false); assert.equal(b.windLayer.items, before, 'the same zoom: no redraw');
+  b.setZoom(11); b.api.rebuildWindMarkers(false);
+  assert.notEqual(b.windLayer.items, before, 'the set changed: redrawn');
+  assert.equal(marks('Honolulu'), 'wind-dotted', '20 px apart at zoom 11: inside the box, not under the ring');
+  b.api.refreshWindFlags();                                                // a feed repaint leaves the class alone
+  assert.equal(marks('Honolulu'), 'wind-dotted');
+  b.setZoom(12); b.api.rebuildWindMarkers(false); assert.equal(marks('Honolulu'), '', '40 px apart: a plain flag');
+  b.setZoom(9); b.api.rebuildWindMarkers(false); assert.equal(marks('Honolulu'), 'wind-hollow');
+  const c = boot({ zoom: 9 }); c.api.rebuildWindMarkers(true); await flush();
+  assert.ok(c.windLayer.items.every((m) => !flagOf(m).classList.contains('wind-hollow') && !flagOf(m).classList.contains('wind-dotted')), 'no forecast points: plain flags');
 });
 
 test('the zone hooks, the note painter after a legend rebuild, never a zoom hint, no module', async () => {

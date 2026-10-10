@@ -259,7 +259,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.14.9"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.14.10"           # bump on every change to static_overlay/* (immutable URLs)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
                    # the speed selector's illustrations (plan section 37; the owner's art)
@@ -313,7 +313,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.19.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.19.1"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -638,10 +638,14 @@ WIND_STATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "w
 WIND_LIST_MAX_AGE = 6 * 3600      # the list changes only with a deploy
 WIND_LATEST_MAX_AGE = 120         # the merged table (the page re-asks every 5 minutes; readings are 5-60 min apart)
 WIND_HISTORY_MAX_AGE = 300        # a station's last 24 hours
-try:                              # gauges asked at once (1-8; a bad value never breaks the import)
-    WIND_COOPS_WORKERS = max(1, min(8, int(float(os.environ.get("WIND_COOPS_WORKERS", "4")))))
+try:                              # gauges asked at once (1-8) and per minute (1-500); a bad value never breaks the import
+    WIND_COOPS_WORKERS = max(1, min(8, int(float(os.environ.get("WIND_COOPS_WORKERS", "2")))))
 except (TypeError, ValueError, OverflowError):
-    WIND_COOPS_WORKERS = 4
+    WIND_COOPS_WORKERS = 2
+try:                              # NOAA blocks the server for ~60 s after a burst of 232 requests (section 39 step 5, F1)
+    WIND_COOPS_PER_REFRESH = max(1, min(500, int(float(os.environ.get("WIND_COOPS_PER_REFRESH", str(wind_sources.COOPS_PER_REFRESH))))))
+except (TypeError, ValueError, OverflowError):
+    WIND_COOPS_PER_REFRESH = wind_sources.COOPS_PER_REFRESH
 WIND_WARM_ORDER = ["NDBC", "METAR", "COOPS"]     # cheap single-file feeds first; CO-OPS asks every gauge
 WIND_OFF = "Wind stations are not available on this server"
 _WINDS = {"svc": None, "list": None, "providers": None, "stations": None}
@@ -660,7 +664,7 @@ def _winds():
             stations, doc = wind_sources.load_stations(WIND_STATIONS_PATH)
             _WINDS["stations"] = stations
             _WINDS["list"] = _json_payload_and_etag(wind_sources.client_list(doc))
-            _WINDS["providers"] = wind_sources.make_providers(stations, _points_fetch, WIND_COOPS_WORKERS)
+            _WINDS["providers"] = wind_sources.make_providers(stations, _points_fetch, WIND_COOPS_WORKERS, WIND_COOPS_PER_REFRESH)
             _WINDS["svc"] = wind_sources.WindHistory(stations, _points_fetch)
         return _WINDS
 

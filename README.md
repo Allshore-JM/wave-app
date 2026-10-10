@@ -958,10 +958,11 @@ zoom 11; the opened station always). The feed (`createWindFeed`) asks `/api/wind
 flags show (nothing while the tab is hidden; a partial answer again every 5 s, 24 times at most) and the drawn flags are
 repainted IN PLACE (text, classes, the arrow's rotation; the markers, their listeners and the focus stay). Clicks reach
 a flag only on its visible parts (the ring, the arrow's shape, the number: the 40-px box itself passes clicks to what lies
-under it); on touch screens the ring has a 30-px disc, and a tide icon on the same spot keeps only its own 18 px (the disc
+under it); on touch screens the ring has a 33-px disc, and a tide icon on the same spot keeps only its own 18 px (the disc
 around it opens the wind window). A forecast point under the ring (within 7 px on screen) leaves the ring hollow and
-without clicks, so the yellow dot shows through and keeps its click; a forecast point elsewhere in the box (within 20 px)
-takes the clicks from the number and the arrow too, the ring still opening the window (owner, 2026-10-10). A click opens
+without clicks, so the yellow dot shows through and keeps its click; with a forecast point elsewhere in the box (within
+20 px), a click on the flag within 8 px of the dot (12 px on a touch screen) selects the forecast point and anywhere else
+opens the wind window (owner, 2026-10-10: the dot keeps its click; a live dot on the ring leaves the number and arrow). A click opens
 the wind window (`#windWin`, a fourth floating window at the TOP-right corner below the legend, tools and gear, as tall
 as its content, never over the parked chips nor lower than 42 px above the bottom edge, so it scrolls on a short screen;
 its chip stacks on top of the station chips at the bottom-right through the measured `--chips-h`, its phone bar above the

@@ -49,6 +49,7 @@ function boot(o = {}) {
   const wwHeader = mk('div', 'wwHeader'); windWinEl.appendChild(wwHeader); mk('div', 'twHeader');
   ['windContent', 'windLoading', 'windError', 'windErrorText', 'windRetry', 'windCurrent', 'windChart', 'windArrows', 'windTable', 'windMeta'].forEach((id) => mk('div', id));
   const tz = mk('select', 'tz'); const opt = doc.createElement('option'); opt.value = 'UTC'; tz.appendChild(opt);
+  mk('div', 'station').value = '51201';                                   // (the page's select; a plain element keeps any value)
   const events = []; doc.dispatchEvent = (e) => { events.push(e.type); return true; };
   let zoom = o.zoom === undefined ? 9 : o.zoom, on = o.on !== false, hidden = false;
   const docListeners = {};
@@ -61,6 +62,7 @@ function boot(o = {}) {
   const container = { focused: 0, focus() { this.focused++; } };
   const map = { hasLayer: (l) => (l === windLayer && on) || (l === tideLayer && false), getZoom: () => zoom,
     latLngToContainerPoint: (ll) => ({ x: (ll[1] + 180) * scale(), y: (90 - ll[0]) * scale() }),
+    mouseEventToContainerPoint: (ev) => ({ x: ev.clientX, y: ev.clientY }),
     project: (ll, z) => ({ x: (ll[1] + 180) * pxPerDeg * Math.pow(2, z - 9), y: (90 - ll[0]) * pxPerDeg * Math.pow(2, z - 9) }),
     getSize: () => o.size || { x: 1e9, y: 1e9 }, getContainer: () => container,
     attributionControl: { addAttribution: (t) => { counts.set(t, credits.count(t) + 1); }, removeAttribution: (t) => { if (credits.count(t)) counts.set(t, credits.count(t) - 1); } } };
@@ -236,25 +238,48 @@ test('a tool active: the click goes to the tool; a failed list says so and is as
   void Date_; void later;
 });
 
-test('a forecast point under a flag\'s ring: the ring is hollow (no clicks there, the dot keeps its click); inside the box only: the number and arrow take no clicks (wind-dotted); whole again when the zoom parts them; part of the drawn signature (step 5 F2)', async () => {
-  // 1 px = 1/1000 degree at zoom 9 (the stub): the dot 0.005 deg east of Honolulu's gauge = 5 px at zoom 9 (hollow), 20 px at zoom 11 (dotted), 40 px at zoom 12
+test('a forecast point under a flag\'s ring: the ring is hollow (no clicks there, the dot keeps its click); in the box: a click within 8 px of the dot selects the forecast point, anywhere else the flag opens; whole again when the zoom parts them; part of the drawn signature (step 5b)', async () => {
+  // 1 px = 1/1000 degree at zoom 9 (the stub): the dot 0.005 deg east of Honolulu's gauge = 5 px at zoom 9 (hollow), 20 px at zoom 11 (near), 40 px at zoom 12
   const b = boot({ zoom: 9, forecast: [{ id: 'HNL01', lat: 21.3033, lon: -157.8595 }, { id: 'far', lat: 30, lon: -150 }, { id: 'bad', lat: 'x', lon: 1 }] });
   b.api.rebuildWindMarkers(true); await flush();
-  const flag = (id) => flagOf(b.windLayer.items.find((m) => m.opts.title.startsWith('Wind station ' + id)));
-  const marks = (id) => ['wind-hollow', 'wind-dotted'].filter((c) => flag(id).classList.contains(c)).join(',');
-  assert.equal(marks('Honolulu'), 'wind-hollow', 'the dot within 7 px of the station');
-  assert.equal(marks('Western Hawaii'), ''); assert.equal(marks('Honolulu Intl'), '');
+  const marker = (id) => b.windLayer.items.find((m) => m.opts.title.startsWith('Wind station ' + id));
+  const flag = (id) => flagOf(marker(id));
+  assert.ok(flag('Honolulu').classList.contains('wind-hollow'), 'the dot within 7 px of the station');
+  assert.ok(!flag('Western Hawaii').classList.contains('wind-hollow')); assert.ok(!flag('Honolulu Intl').classList.contains('wind-hollow'));
   const before = b.windLayer.items;
   b.api.rebuildWindMarkers(false); assert.equal(b.windLayer.items, before, 'the same zoom: no redraw');
   b.setZoom(11); b.api.rebuildWindMarkers(false);
   assert.notEqual(b.windLayer.items, before, 'the set changed: redrawn');
-  assert.equal(marks('Honolulu'), 'wind-dotted', '20 px apart at zoom 11: inside the box, not under the ring');
-  b.api.refreshWindFlags();                                                // a feed repaint leaves the class alone
-  assert.equal(marks('Honolulu'), 'wind-dotted');
-  b.setZoom(12); b.api.rebuildWindMarkers(false); assert.equal(marks('Honolulu'), '', '40 px apart: a plain flag');
-  b.setZoom(9); b.api.rebuildWindMarkers(false); assert.equal(marks('Honolulu'), 'wind-hollow');
+  assert.ok(!flag('Honolulu').classList.contains('wind-hollow'), '20 px apart at zoom 11: a whole ring');
+  // the stub's container point of a lat/lng: ((lon + 180) * 4000, (90 - lat) * 4000) at zoom 11
+  const pt = (lat, lon) => ({ x: (lon + 180) * 4000, y: (90 - lat) * 4000 });
+  const dot = pt(21.3033, -157.8595), st = pt(21.3033, -157.8645);
+  marker('Honolulu').fire('click', { latlng: { lat: 21.3, lng: -157.86 }, originalEvent: { clientX: dot.x + 6, clientY: dot.y, pointerType: 'mouse' } });
+  assert.equal(b.doc.getElementById('station').value, 'HNL01', 'a click 6 px from the dot: the forecast point');
+  assert.ok(b.events.includes('allshore:station')); assert.equal(b.windWin.opens, 0); assert.equal(b.api.activeWindId, null);
+  marker('Honolulu').fire('click', { latlng: { lat: 21.3, lng: -157.86 }, originalEvent: { clientX: dot.x + 10, clientY: dot.y, pointerType: 'touch' } });
+  assert.equal(b.windWin.opens, 0, 'a tap 10 px from the dot: still the forecast point (12 px on touch)');
+  marker('Honolulu').fire('click', { latlng: { lat: 21.3, lng: -157.86 }, originalEvent: { clientX: st.x - 6, clientY: st.y, pointerType: 'mouse' } });
+  assert.equal(b.windWin.opens, 1, 'a click on the far side of the ring (26 px from the dot): the wind window');
+  assert.equal(b.api.activeWindId, 'coops:1612340');
+  b.api.windWindowClosed();
+  marker('Honolulu').fire('click', { latlng: { lat: 21.3, lng: -157.86 }, originalEvent: { key: 'Enter' } });
+  assert.equal(b.windWin.opens, 2, 'a key press has no position: the window');
+  b.api.windWindowClosed();
+  b.api.refreshWindFlags();                                                // a feed repaint changes nothing here
+  b.setZoom(12); b.api.rebuildWindMarkers(false);
+  marker('Honolulu').fire('click', { latlng: { lat: 21.3, lng: -157.86 }, originalEvent: { clientX: (-157.8595 + 180) * 8000, clientY: (90 - 21.3033) * 8000, pointerType: 'mouse' } });
+  assert.equal(b.windWin.opens, 3, '40 px apart at zoom 12: a plain flag (no forecast point beside it)');
+  b.setZoom(9); b.api.rebuildWindMarkers(false); assert.ok(flag('Honolulu').classList.contains('wind-hollow'));
   const c = boot({ zoom: 9 }); c.api.rebuildWindMarkers(true); await flush();
-  assert.ok(c.windLayer.items.every((m) => !flagOf(m).classList.contains('wind-hollow') && !flagOf(m).classList.contains('wind-dotted')), 'no forecast points: plain flags');
+  assert.ok(c.windLayer.items.every((m) => !flagOf(m).classList.contains('wind-hollow')), 'no forecast points: plain flags');
+  // a world copy: the dot is looked for in the flag's own copy (360 degrees east here)
+  const d = boot({ zoom: 11, copies: [0, 360], forecast: [{ id: 'HNL01', lat: 21.3033, lon: -157.8595 }] });
+  d.api.rebuildWindMarkers(true); await flush();
+  const east = d.windLayer.items.find((m) => m.opts.title.startsWith('Wind station Honolulu') && m.ll[1] > 0);
+  east.fire('click', { latlng: { lat: 21.3, lng: 202.14 }, originalEvent: { clientX: (-157.8595 + 360 + 180) * 4000 + 6, clientY: (90 - 21.3033) * 4000, pointerType: 'mouse' } });
+  assert.equal(d.doc.getElementById('station').value, 'HNL01', 'the copy 360 degrees east: its own dot');
+  assert.equal(d.windWin.opens, 0);
 });
 
 test('the zone hooks, the note painter after a legend rebuild, never a zoom hint, no module', async () => {

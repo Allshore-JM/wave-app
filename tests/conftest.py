@@ -1,6 +1,8 @@
 """Test-wide setup for the live-buoy background service (plan section 36).
 
 * LIVE_BACKGROUND=0 before `app` is imported: no scheduler thread starts in the test process.
+* WIND_STATIONS=0: the wind feeds (plan section 39) are off; their tests install fake providers and switch
+  app.WIND_ENABLED on themselves, so no test ever reaches NOAA or aviationweather.gov.
 * The provider refresh runner is INLINE for every test (a refresh scheduled by
   list_stations_versioned runs in the calling thread, at once), so the fetch schedule of the
   live-stations golden replay (tests/fixtures/live_stations_golden.json, captured on the
@@ -12,6 +14,7 @@ import sys
 import pytest
 
 os.environ.setdefault("LIVE_BACKGROUND", "0")
+os.environ.setdefault("WIND_STATIONS", "0")      # the wind feeds (section 39) stay off unless a test switches them on
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if os.path.dirname(HERE) not in sys.path:

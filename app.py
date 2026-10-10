@@ -20,6 +20,7 @@ import buoy_sources
 import point_forecast
 import sky
 import tide_sources
+import wind_sources
 
 app = Flask(__name__)
 
@@ -389,9 +390,10 @@ def _points_root() -> str:
 _POINT_HTTP = requests.Session()      # no retry adapter: a point's objects are asked for once
 
 
-def _points_fetch(url: str, max_bytes: int) -> bytes:
+def _points_fetch(url: str, max_bytes: int, headers=None) -> bytes:
     """A whole 200 body of at most max_bytes within about _POINT_FETCH_MAX_S from the request, or an exception
-    (point_forecast turns it into its message). A body that trickles is cut by shutting its socket down: closing the
+    (point_forecast turns it into its message). `headers` go with the request (the wind feeds name the site in a
+    User-Agent). A body that trickles is cut by shutting its socket down: closing the
     response from another thread would wait for the reader's lock, i.e. for the whole body (G22 R-A2). A short body
     is urllib3's IncompleteRead. Headers that trickle are not cut (R2 sends them at once). On Linux, where the
     service runs, the shutdown wakes a blocked read at once; on Windows such a read may last to the read timeout."""
@@ -415,7 +417,7 @@ def _points_fetch(url: str, max_bytes: int) -> bytes:
     killer.daemon = True
     killer.start()
     try:
-        with _POINT_HTTP.get(url, timeout=_POINT_FETCH_TIMEOUT, stream=True) as resp:
+        with _POINT_HTTP.get(url, timeout=_POINT_FETCH_TIMEOUT, stream=True, headers=headers or None) as resp:
             with guard:
                 held["sock"] = getattr(getattr(resp.raw, "_connection", None), "sock", None)
                 late = held["late"]
@@ -620,6 +622,239 @@ def api_tide_observed(sid):
     if err is not None:
         return err
     return _tide_answer(*svc.observed(sid), TIDE_OBS_MAX_AGE)
+
+
+# ---------------------- Wind stations (plan section 39) -----------------------
+# The latest wind reading of every station on the map's wind layer and a station's last 24 hours (wind_sources.py).
+# The station list is a committed snapshot (tools/wind/fetch_stations.py). The three feeds are BuoyProvider
+# subclasses in a list of their own: refreshed by the live-buoy scheduler (its pass runs _wind_tick after the buoy
+# part), which prebuilds the merged table; the route never builds or waits. They are NOT in the live-buoy list, memo,
+# warm-up or golden, and /healthz's `warm` ignores them. Off with WIND_STATIONS=0 (the tests set it; the routes then
+# answer 503 and the scheduler leaves the feeds alone). Upstream requests go through _points_fetch.
+WIND_ENABLED = os.environ.get("WIND_STATIONS", "1") != "0"
+WIND_STATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wind_stations.json")
+WIND_LIST_MAX_AGE = 6 * 3600      # the list changes only with a deploy
+WIND_LATEST_MAX_AGE = 120         # the merged table (the page re-asks every 5 minutes; readings are 5-60 min apart)
+WIND_HISTORY_MAX_AGE = 300        # a station's last 24 hours
+try:                              # gauges asked at once (1-8; a bad value never breaks the import)
+    WIND_COOPS_WORKERS = max(1, min(8, int(float(os.environ.get("WIND_COOPS_WORKERS", "4")))))
+except (TypeError, ValueError, OverflowError):
+    WIND_COOPS_WORKERS = 4
+WIND_WARM_ORDER = ["NDBC", "METAR", "COOPS"]     # cheap single-file feeds first; CO-OPS asks every gauge
+WIND_OFF = "Wind stations are not available on this server"
+_WINDS = {"svc": None, "list": None, "providers": None, "stations": None}
+_WINDS_LOCK = threading.Lock()
+_WIND_MEMO = {"key": None, "payload": None, "etag": None, "built_ts": None, "build_s": None}
+_WIND_BUILD_LOCK = threading.Lock()
+_WIND_BG = {"ticks": 0, "prebuilds": 0, "errors": 0, "last_error": None, "last_tick_ts": None}
+_WIND_EMPTY = _json_payload_and_etag(wind_sources.build_latest({}, {}, 0))   # the answer before anything was built
+
+
+def _winds():
+    """{svc: WindHistory, list: (payload, etag), providers: [...], stations: {id: station}}, loaded once; raises
+    when the snapshot cannot be read."""
+    with _WINDS_LOCK:
+        if _WINDS["svc"] is None:
+            stations, doc = wind_sources.load_stations(WIND_STATIONS_PATH)
+            _WINDS["stations"] = stations
+            _WINDS["list"] = _json_payload_and_etag(wind_sources.client_list(doc))
+            _WINDS["providers"] = wind_sources.make_providers(stations, _points_fetch, WIND_COOPS_WORKERS)
+            _WINDS["svc"] = wind_sources.WindHistory(stations, _points_fetch)
+        return _WINDS
+
+
+def get_wind_providers():
+    """The wind feeds (NDBC, METAR, CO-OPS), built once with the snapshot; [] when wind stations are off or the
+    snapshot cannot be read (the scheduler then has nothing to do)."""
+    if not WIND_ENABLED:
+        return []
+    try:
+        return list(_winds()["providers"])
+    except Exception as exc:
+        logger.warning("wind stations: no providers (%s)", exc)
+        return []
+
+
+def _wind_providers_ordered(providers):
+    rank = {s: i for i, s in enumerate(WIND_WARM_ORDER)}
+    return sorted(providers, key=lambda p: rank.get(p.source, len(rank)))
+
+
+def _wind_memo_key(providers, snaps):
+    return tuple((p.source, snap[1] if snap is not None else None) for p, snap in zip(providers, snaps))
+
+
+def _wind_memo_bytes(key, providers, snaps):
+    """(payload, etag) of the merged table for these snapshots: the memo's when built from exactly them, else
+    one build (a burst of same-key misses builds once)."""
+    with _CACHE_LOCK:
+        if _WIND_MEMO["key"] == key:
+            return _WIND_MEMO["payload"], _WIND_MEMO["etag"]
+    with _WIND_BUILD_LOCK:
+        with _CACHE_LOCK:
+            if _WIND_MEMO["key"] == key:
+                return _WIND_MEMO["payload"], _WIND_MEMO["etag"]
+        t0 = time.monotonic()
+        lists = {p.source.lower(): (snap[0] if snap is not None else None) for p, snap in zip(providers, snaps)}
+        payload, etag = _json_payload_and_etag(wind_sources.build_latest(_winds()["stations"], lists, time.time()))
+        with _CACHE_LOCK:
+            _WIND_MEMO.update(key=key, payload=payload, etag=etag, built_ts=time.time(), build_s=time.monotonic() - t0)
+    return payload, etag
+
+
+def _wind_prebuild(providers):
+    """Build the merged table when a feed published since the last build. True when a build happened."""
+    snaps = [p.snapshot() for p in providers]
+    key = _wind_memo_key(providers, snaps)
+    with _CACHE_LOCK:
+        if _WIND_MEMO["key"] == key:
+            return False
+    _wind_memo_bytes(key, providers, snaps)
+    with _LIVE_BG_LOCK:
+        _WIND_BG["prebuilds"] += 1
+    return True
+
+
+def _wind_tick(providers=None):
+    """The wind part of a scheduler pass: queue the due feeds (cheap ones first) and prebuild the table. Nothing
+    raised in here reaches the buoy part (the caller catches)."""
+    providers = get_wind_providers() if providers is None else providers
+    scheduled = []
+    for p in _wind_providers_ordered(providers):
+        try:
+            if p.refresh_due() and p.schedule_refresh():
+                scheduled.append(p.source)
+        except Exception as exc:
+            with _LIVE_BG_LOCK:
+                _WIND_BG["errors"] += 1
+                _WIND_BG["last_error"] = "%s: %s" % (p.source, exc)
+            logger.warning("wind stations: scheduling %s failed: %s", p.source, exc)
+    built = False
+    try:
+        built = _wind_prebuild(providers) if providers else False
+    except Exception as exc:
+        with _LIVE_BG_LOCK:
+            _WIND_BG["errors"] += 1
+            _WIND_BG["last_error"] = "prebuild: %s" % exc
+        logger.warning("wind stations: table prebuild failed: %s", exc)
+    with _LIVE_BG_LOCK:
+        _WIND_BG["ticks"] += 1
+        _WIND_BG["last_tick_ts"] = time.time()
+    return {"scheduled": scheduled, "built": built}
+
+
+def _wind_lists_inline(providers):
+    """Every feed's (list, version, ts) asked inline (the pre-scheduler path: tests, the service off)."""
+    snaps = []
+    for p in providers:
+        try:
+            snaps.append(p.list_stations_versioned())
+        except Exception as exc:
+            logger.warning("wind provider %s failed: %s", p.source, exc)
+            snaps.append(([], None, None))
+    return snaps
+
+
+def _wind_health(now):
+    """The wind feeds' state for /healthz (no work, no waiting)."""
+    if not WIND_ENABLED:
+        return {"enabled": False}
+    try:
+        w = _winds()
+    except Exception as exc:
+        return {"enabled": True, "error": str(exc)}
+    providers = w["providers"]
+    statuses = [p.status() for p in providers]
+    current = _wind_memo_key(providers, [p.snapshot() for p in providers])
+    with _CACHE_LOCK:
+        memo = dict(_WIND_MEMO)
+    with _LIVE_BG_LOCK:
+        bg = dict(_WIND_BG)
+    return {"enabled": True, "providers": statuses,
+            "missing": [s["source"] for s in statuses if s["version"] is None],
+            "memo": {"age_s": round(now - memo["built_ts"], 1) if memo.get("built_ts") else None,
+                     "build_s": round(memo["build_s"], 3) if memo.get("build_s") is not None else None,
+                     "bytes": len(memo.get("payload") or ""),
+                     "sources": sum(1 for k in (memo.get("key") or ()) if k[1] is not None),
+                     "current": memo.get("key") == current,
+                     "complete": bool(memo.get("key")) and all(v is not None for _, v in memo["key"])},
+            "ticks": bg["ticks"], "prebuilds": bg["prebuilds"], "errors": bg["errors"], "last_error": bg["last_error"],
+            "history_entries": w["svc"].entries()}
+
+
+def _wind_uncached(payload, status, retry=False):
+    return _tide_uncached(payload, status, retry)
+
+
+@app.route("/api/wind/stations")
+def api_wind_stations():
+    if not WIND_ENABLED:
+        return _wind_uncached({"error": WIND_OFF}, 503)
+    try:
+        payload, etag = _winds()["list"]
+    except Exception:
+        return _wind_uncached({"error": WIND_OFF}, 503)
+    return _json_cached_bytes(payload, etag, WIND_LIST_MAX_AGE, {"CDN-Cache-Control": f"max-age={WIND_LIST_MAX_AGE}"})
+
+
+@app.route("/api/wind/latest")
+def api_wind_latest():
+    """The merged table of latest readings. With the background service on: the table the scheduler built last,
+    never a build or a wait in the request; feeds missing from it are named in X-Wind-Stations-Partial with
+    Cache-Control: no-store, so the page asks again until the answer is complete. With the service off (tests):
+    every feed asked inline."""
+    if not WIND_ENABLED:
+        return _wind_uncached({"error": WIND_OFF}, 503)
+    try:
+        providers = _winds()["providers"]
+    except Exception:
+        return _wind_uncached({"error": WIND_OFF}, 503)
+    cdn = {"CDN-Cache-Control": "no-store"}
+    if not LIVE_BACKGROUND:
+        snaps = _wind_lists_inline(providers)
+        payload, etag = _wind_memo_bytes(_wind_memo_key(providers, snaps), providers, snaps)
+        return _json_cached_bytes(payload, etag, WIND_LATEST_MAX_AGE, cdn)
+    snaps = [p.snapshot() for p in providers]
+    cold = {p.source for p, snap in zip(providers, snaps) if snap is None}
+    for p in _wind_providers_ordered(providers):
+        if p.source in cold:                      # the scheduler does this too; a request may be first
+            p.schedule_refresh()
+    current = _wind_memo_key(providers, snaps)
+    with _CACHE_LOCK:
+        key, payload, etag = _WIND_MEMO["key"], _WIND_MEMO["payload"], _WIND_MEMO["etag"]
+    if payload is None:                           # nothing built yet (the first moments after a start)
+        payload, etag = _WIND_EMPTY
+        built = {}
+    else:
+        built = dict(key or ())
+    if key != current:
+        _live_wake()                              # newer publishes: the scheduler builds them now
+    missing = [p.source for p in providers if built.get(p.source) is None]
+    resp = _json_cached_bytes(payload, etag, WIND_LATEST_MAX_AGE, cdn)
+    if missing:
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["X-Wind-Stations-Partial"] = ",".join(missing)
+    return resp
+
+
+@app.route("/api/wind/<sid>/history")
+def api_wind_history(sid):
+    """A station's last 24 hours: 404 for an id not in the snapshot (never a proxy to the agencies); the tide
+    routes' contract otherwise (ok cached; busy / unreachable = 503 + Retry-After 5, retry: true)."""
+    if not WIND_ENABLED:
+        return _wind_uncached({"error": WIND_OFF}, 503)
+    try:
+        w = _winds()
+    except Exception:
+        return _wind_uncached({"error": WIND_OFF}, 503)
+    if not wind_sources.valid_id(sid) or sid not in w["stations"]:
+        return _wind_uncached({"id": sid, "error": "Unknown wind station"}, 404)
+    status, payload = w["svc"].history(sid)
+    if status == "ok":
+        return _json_cached(payload, max_age=WIND_HISTORY_MAX_AGE)
+    if status == "final":
+        return _wind_uncached(dict(payload, final=True), 404)
+    return _wind_uncached(dict(payload, retry=True), 503, retry=True)
 
 
 def rank_rows(rows):
@@ -4275,6 +4510,14 @@ def _live_tick(providers=None):
             _LIVE_BG["build_failures"] = _LIVE_BG.get("build_failures", 0) + 1
             _LIVE_BG["last_error"] = "prebuild: %s" % exc
         logger.warning("live buoys: memo prebuild failed: %s", exc)
+    if WIND_ENABLED:                              # the wind feeds ride on the same pass (plan section 39)
+        try:
+            _wind_tick()
+        except Exception as exc:
+            with _LIVE_BG_LOCK:
+                _WIND_BG["errors"] += 1
+                _WIND_BG["last_error"] = "tick: %s" % exc
+            logger.warning("wind stations: scheduler pass failed: %s", exc)
     warm = _live_warm(providers)
     with _LIVE_BG_LOCK:
         _LIVE_BG["ticks"] += 1
@@ -4381,8 +4624,10 @@ def _live_after_fork():
     """In a forked child: none of the parent's background threads exist here, so every lock and
     flag of the service starts clean (buoy_sources resets the providers and the runner itself)."""
     global _LIVE_BG_LOCK, _LIVE_BUILD_LOCK, _TZ_FINDER_LOCK, _CACHE_LOCK, _LIVE_STOP, _LIVE_WAKE, _BUOY_PROVIDERS_LOCK
-    global _TIDES_LOCK
+    global _TIDES_LOCK, _WINDS_LOCK, _WIND_BUILD_LOCK
     _TIDES_LOCK = threading.Lock()                # the tide service resets its own locks (tide_sources)
+    _WINDS_LOCK = threading.Lock()                # the wind history service and providers reset their own
+    _WIND_BUILD_LOCK = threading.Lock()
     _LIVE_BG_LOCK = threading.Lock()
     _LIVE_BUILD_LOCK = threading.Lock()
     _TZ_FINDER_LOCK = threading.Lock()
@@ -4496,6 +4741,7 @@ def healthz():
                    "workers": getattr(runner, "workers", None)},
         "rss_kb": _rss_kb(),
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "wind": _wind_health(now),                # the wind feeds (section 39): reported, never part of `ok`
     }
     resp = jsonify(body)
     resp.status_code = 200 if ok else 503

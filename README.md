@@ -978,9 +978,14 @@ hourly, gauges and C-MAN every 6-10 min; readings are the agencies' raw values; 
 wind flag beside a live-buoy dot or a tide icon is a second marker drawn below them (each stays clickable).
 
 The map zooms to 18 since section 39 step 5b (owner: close enough to tell overlapping tide, wind, buoy and forecast
-markers apart; Esri's imagery is sharp to 18-19 in most places and a flat placeholder tile past its coverage in a few
-remote ones). The station layers draw every station from zoom 11 (`TIDE_ALL_ZOOM`, `WIND_ALL_ZOOM`); the wind overlay's
-relief basemap ends at zoom 16 and is scaled up past it (`WIND_LOOK.maxNativeZoom`, overlay asset 2.14.10).
+markers apart; Esri's imagery is sharp to 18-19 along most coasts). Where Esri has no tile it serves "Map data not yet
+available" (one 2,521-byte JPEG): over the open ocean from about zoom 14, at a few remote coasts from 17-18, in the relief
+from 15-17. `static_ui/basemap.js` (`AllshoreBasemap.tileLayer`, used for the imagery and, through the overlay, the relief)
+looks every tile from zoom 13 up in the service's tilemap (`/MapServer/tilemap/z/top/left/32/32`, one request per 32 x 32
+tiles, kept for the session; Esri sends `Access-Control-Allow-Origin: *`): a tile Esri has loads as usual, a missing one is
+drawn from the closest coarser tile it has (its part scaled up into a canvas, then the tile's `src`); a tilemap that cannot
+be read counts as "the tile exists". The station layers draw every station from zoom 11 (`TIDE_ALL_ZOOM`,
+`WIND_ALL_ZOOM`); the relief is asked at zoom 16 at most (`WIND_LOOK.maxNativeZoom`, overlay asset 2.14.11).
 
 | Variable | Default | Meaning |
 |---|---|---|

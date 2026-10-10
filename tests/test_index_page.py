@@ -648,6 +648,20 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
         assert needle in body, needle
 
 
+def test_basemap_draws_missing_esri_tiles_from_coarser_ones(client):
+    """Plan section 39 step 5b: the map zooms to 18; Esri serves "Map data not yet available" where it has no tile (the
+    open ocean from about zoom 14). static_ui/basemap.js looks tiles up in Esri's tilemap and draws a missing one from the
+    closest coarser tile; the page builds its imagery with it (Leaflet's own layer when the module is missing)."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    tag = body.index('<script src="/ui/basemap.js?v=%s"></script>' % A.UI_ASSET_VERSION)
+    assert body.index("leaflet@1.9.4/dist/leaflet.js") < tag < body.index("const mapKey = 'mapView';")
+    assert ("(window.AllshoreBasemap ? window.AllshoreBasemap.tileLayer : L.tileLayer)(\n"
+            "      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',") in body
+    assert "const MAX_MAP_ZOOM = 18;" in body
+    r = client.get("/ui/basemap.js?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and "AllshoreBasemap" in r.get_data(as_text=True)
+
+
 def test_wind_stations_on_the_page(client):
     """Plan section 39: the wind layer (flags from zoom 9, the legend entry with its note, the credit), the fourth window
     (#windWin: its box, its chip on top of the station chips through the measured --chips-h, its phone bar above the

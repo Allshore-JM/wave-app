@@ -2262,7 +2262,9 @@
     var o = img.options || {}, ro = { attribution: WIND_LOOK.attribution, className: 'ov-relief' };
     ['maxZoom', 'minZoom', 'noWrap', 'keepBuffer'].forEach(function (k) { if (o[k] !== undefined) ro[k] = o[k]; });
     if (WIND_LOOK.maxNativeZoom) ro.maxNativeZoom = WIND_LOOK.maxNativeZoom;
-    var r = this.relief = L.tileLayer(WIND_LOOK.base, ro);
+    // the page's basemap layer (static_ui/basemap.js) draws a relief tile Esri does not have from a coarser one
+    var make = (typeof window !== 'undefined' && window.AllshoreBasemap && window.AllshoreBasemap.tileLayer) || L.tileLayer;
+    var r = this.relief = make(WIND_LOOK.base, ro);
     r._ovTiles = 0;
     r.on('tileload', function () { r._ovTiles++; });
     return r;

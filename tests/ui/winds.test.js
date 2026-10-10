@@ -275,6 +275,7 @@ test('nice steps, rows from a payload, lines with gaps, one arrow per slot, the 
   assert.equal(I.sourceLink('ndbc', 'ndbc:OOUH1'), 'https://www.ndbc.noaa.gov/station_page.php?station=oouh1');
   assert.equal(I.sourceLink('coops', 'coops:1612340'), 'https://tidesandcurrents.noaa.gov/stationhome.html?id=1612340');
   assert.equal(I.sourceLink('metar', 'metar:PHNL'), 'https://aviationweather.gov/data/metar/?ids=PHNL&hours=24');
+  assert.equal(I.sourceLink('nws', 'nws:001HE'), 'https://api.weather.gov/stations/001HE/observations/latest');
   assert.equal(I.sourceLink('x', 'x:1'), null);
 });
 

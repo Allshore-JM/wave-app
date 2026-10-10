@@ -1719,8 +1719,10 @@
     const WIND_GAP_PX = 40;                         // flags (40 px) closer than this on screen overlap: the less important waits
     const WIND_CELL_PX = 64;                        // the reveal grid: >= WIND_GAP_PX, and a divisor of the world's width
     const WIND_LIST_RETRY_MS = 30000;               // a failed station list is asked again after this
-    const WIND_CREDIT = 'Wind: <a href="https://www.ndbc.noaa.gov/" target="_blank" rel="noopener">NOAA NDBC</a> · <a href="https://tidesandcurrents.noaa.gov/" target="_blank" rel="noopener">CO-OPS</a> · <a href="https://aviationweather.gov/" target="_blank" rel="noopener">NWS Aviation Weather</a>';
-    const WIND_KIND_TEXT = { gauge: 'NOAA tide gauge', buoy: 'NDBC buoy', cman: 'NDBC C-MAN station', station: 'NDBC station', airport: 'Airport (METAR)' };
+    const WIND_CREDIT = 'Wind: <a href="https://www.ndbc.noaa.gov/" target="_blank" rel="noopener">NOAA NDBC</a> · <a href="https://tidesandcurrents.noaa.gov/" target="_blank" rel="noopener">CO-OPS</a> · <a href="https://aviationweather.gov/" target="_blank" rel="noopener">NWS Aviation Weather</a> · <a href="https://api.weather.gov/" target="_blank" rel="noopener">NWS API</a>';
+    const WIND_KIND_TEXT = { gauge: 'NOAA tide gauge', buoy: 'NDBC buoy', cman: 'NDBC C-MAN station', station: 'NDBC station', airport: 'Airport (METAR)',
+                             utility: 'HECO / HELCO / MECO station', mesonet: 'Mesonet station', raws: 'RAWS fire-weather station',
+                             cwop: 'CWOP amateur station', hads: 'HADS station', weather: 'Weather station' };   // the NWS API's networks (step 5c)
     let windListFailedAt = -Infinity;
     let windReveal = null, windRevealKey = '';      // each station's reveal zoom (once per list)
     let windStationsData = [];

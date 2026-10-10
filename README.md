@@ -903,23 +903,31 @@ Windows: a station chip gives its subtitle up before the station's name. An expa
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
 
-## Wind stations (plan section 39, UI asset 1.19.0)
+## Wind stations (plan section 39, UI asset 1.19.4)
 
-Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from three public-domain NOAA / NWS
+Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from four public-domain NOAA / NWS
 feeds (attribution requested, given in the map credits while the layer is on and in the window): NOAA NDBC buoys,
-C-MAN and other fixed stations; the weather sensors of NOAA CO-OPS tide gauges; and airports reporting METAR through
-the NWS Aviation Weather Center (within 30 km of a coastline, or at sea: offshore platforms). iKitesurf's page was the
+C-MAN and other fixed stations; the weather sensors of NOAA CO-OPS tide gauges; airports reporting METAR through
+the NWS Aviation Weather Center (within 30 km of a coastline, or at sea: offshore platforms); and, for Hawaii (step 5c,
+owner 2026-10-10 "Hawaii now"), the land weather stations the NWS API lists (api.weather.gov: HECO / HELCO / MECO, the
+University of Hawaii mesonet, RAWS, CWOP, HADS and others, fed to the NWS through MADIS). iKitesurf's page was the
 visual reference (owner, 2026-10-09); its data is WeatherFlow's and proprietary, so none of it is used.
 
-The station list is a committed snapshot, `wind_stations.json` (2,459 stations: ids `coops:1612340`, `ndbc:51003`,
-`metar:PHNL`; kinds gauge, buoy, cman, station, airport; the nearest civil time zone; for a gauge the NDBC id it is
-relayed under, its `alias`). Rebuild it now and then with `python tools/wind/fetch_stations.py --sensors-cache FILE`
-(~2.5 min: one `sensors.json` per CO-OPS met station, NDBC's `latest_obs.txt` and station table, the METAR cache and
-site list, the API for coastal sites not in the cache, the site's own GSHHG coastline for the 30-km rule) and commit the
-file. CO-OPS gauges are kept when their Wind sensor is active (232 of 315); NDBC stations when they report a wind speed
-(moving ones left out: drifting buoys, ferries, ships, gliders; anchored lightships and a station-keeping surface
-vehicle kept); NDBC's relays of kept gauges (227, named by the gauge's id in NDBC's station table) become the gauge's
-alias, never a second flag; airports when they reported wind in the last 24 hours (1,797 incl. 51 offshore platforms).
+The station list is a committed snapshot, `wind_stations.json` (2,742 stations, 296 of them the NWS API's Hawaii stations:
+125 utility, 68 mesonet, 68 RAWS, 29 CWOP, 6 HADS; ids `coops:1612340`, `ndbc:51003`, `metar:PHNL`,
+`nws:001HE`; kinds gauge, buoy, cman, station, airport and, for the NWS API's stations, utility (HECO / HELCO / MECO),
+mesonet (University of Hawaii, SCAN, CRN), raws, cwop, hads, weather; the nearest civil time zone; for a gauge the NDBC id
+it is relayed under, its `alias`). Rebuild it now and then with `python tools/wind/fetch_stations.py --sensors-cache
+FILE --nws-cache FILE` (~10 min: one `sensors.json` per CO-OPS met station, NDBC's `latest_obs.txt` and station table,
+the METAR cache and site list, the API for coastal sites not in the cache, the site's own GSHHG coastline for the 30-km
+rule, the NWS API's station list per area (`--nws-areas`, default HI) and one observations probe per station, 0.75 s
+apart) and commit the file. CO-OPS gauges are kept when their Wind sensor is active (232 of 315); NDBC stations when they
+report a wind speed (moving ones left out: drifting buoys, ferries, ships, gliders; anchored lightships and a
+station-keeping surface vehicle kept); NDBC's relays of kept gauges (227, named by the gauge's id in NDBC's station table)
+become the gauge's alias, never a second flag; airports when they reported wind in the last 24 hours (1,797 incl. 51
+offshore platforms, counts of 2026-10-09); NWS API stations when a row of their newest 20 observations of the last 24 hours carries a wind
+speed, leaving out the networks the other feeds cover (tide gauges, airports, NDBC buoys) and any station within 300 m
+of one already kept.
 
 `wind_sources.py` (wired in `app.py`; upstream requests through the forecast points' bounded fetch, with a User-Agent
 naming the site as aviationweather.gov asks):
@@ -930,7 +938,12 @@ naming the site as aviationweather.gov asks):
   every gauge is asked about every 10 minutes; NOAA answered HTTP 403 to everything from the server for about a minute
   after 232 requests in a few seconds, and new tide windows failed then too. A gauge whose request fails keeps its last
   reading, NOAA's "no data" drops it, a reading older than 6 h is dropped; every request of a slice failing is a
-  failed fetch; a 403 pauses the feed for 2 min with the readings kept). They ride on the live-buoy scheduler's pass
+  failed fetch; a 403 pauses the feed for 2 min with the readings kept), and the NWS API (one `observations?start=<2 h
+  ago>&limit=6` request per station, `Accept: application/ld+json`, paced the same way: `WIND_NWS_PER_REFRESH` stations
+  a minute, `WIND_NWS_WORKERS` at a time, so every station is asked about every 12 minutes; the newest row with a wind
+  speed is the reading (the top of an hour is often a gust-only row); speeds converted from the row's unit code,
+  MADIS-rejected values dropped, a calm row has no direction; an empty answer drops the station's reading; a 403 or 429
+  pauses the feed for 2 min). They ride on the live-buoy scheduler's pass
   (`_wind_tick` after the buoy part; a failure
   there never reaches the buoys) with the same keep-last rule, runner and fork reset, and are NOT in the live-buoy list,
   memo, warm-up or golden; `/healthz` reports them under `wind`, which is never part of `ok`.
@@ -939,8 +952,10 @@ naming the site as aviationweather.gov asks):
   reading takes its NDBC relay's. Feeds still loading after a start are named in `X-Wind-Stations-Partial` with
   `Cache-Control: no-store` (the page asks again); else 2 min. `/api/wind/stations` serves the snapshot (6 h, ETag).
 - `/api/wind/<id>/history` (5 min): the last 24 hours (`t, s, g, d` ascending) from NDBC's `realtime2` file (cut at 24 h
-  and 300 rows), CO-OPS `range=24`, or the METAR API's `hours=24` behind a token bucket of 60 requests a minute (the API
-  allows 100); a gauge falls back on its NDBC relay (`via: "ndbc"`). The tide service's cache core: ok 10 min, a
+  and 300 rows), CO-OPS `range=24`, the METAR API's `hours=24` behind a token bucket of 60 requests a minute (the API
+  allows 100), or the NWS API's `observations?start=<24 h ago>&limit=500` behind a bucket of 30 a minute (so the server
+  sends the NWS API at most ~55 requests a minute with the feed's 25); a gauge falls back on its NDBC relay
+  (`via: "ndbc"`). The tide service's cache core: ok 10 min, a
   failure 1 min, busy never cached (503 + `Retry-After: 5` + `retry: true`), one build per station at a time, LRU 256.
   An id not in the snapshot is a 404 without any upstream request.
 - Off with `WIND_STATIONS=0` (the routes answer 503, the scheduler leaves the feeds alone; the tests set it).
@@ -992,3 +1007,5 @@ be read counts as "the tile exists". The station layers draw every station from 
 | `WIND_STATIONS` | `1` | `0` turns the wind feeds and routes off. |
 | `WIND_COOPS_WORKERS` | `2` | Gauges asked at once by the CO-OPS feed (1-8). |
 | `WIND_COOPS_PER_REFRESH` | `24` | Gauges the CO-OPS feed asks per minute, in turn (1-500); 24 of 232 = every gauge about every 10 minutes. |
+| `WIND_NWS_WORKERS` | `2` | Stations asked at once by the NWS API feed (1-8). |
+| `WIND_NWS_PER_REFRESH` | `25` | Stations the NWS API feed asks per minute, in turn (1-500); 25 of Hawaii's ~300 = every station about every 12 minutes. |

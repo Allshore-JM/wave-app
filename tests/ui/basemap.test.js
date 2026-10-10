@@ -163,10 +163,21 @@ test('the layer: a tile removed before the answers (a zoom, a pan, the layer off
   const t = failing.layer.createTile({ z: 15, x: 5, y: 5 }, () => {});
   await flush();
   assert.equal(t.src, 'TILE/15/5/5', 'the tile itself (the placeholder at worst)');
-  const t2 = failing.layer.createTile({ z: 15, x: 6, y: 6 }, () => {});
+  const t2 = failing.layer.createTile({ z: 15, x: 4, y: 5 }, () => {});         // the same coarser tile (14/2/2) as t
   await flush();
-  assert.equal(failing.images.length, 2, 'a failed coarser image is asked again next time');
-  assert.equal(t2.src, 'TILE/15/6/6');
+  assert.deepEqual(failing.images.slice(0, 2), [failing.images[0], failing.images[0]], 'a failed coarser image is asked again next time');
+  assert.equal(failing.images.length, 2);
+  assert.equal(t2.src, 'TILE/15/5/4');
+  // removed WHILE its coarser image loads: no source when the image lands
+  let release;
+  const held = makeLayer((z) => z <= 14, { loadImage: () => new Promise((res) => { release = res; }) });
+  const late = held.layer.createTile({ z: 15, x: 7, y: 7 }, () => {});
+  await flush();
+  assert.equal(held.images.length, 1, 'the coarser image is being loaded');
+  late.parentNode = null;
+  release({ img: 'x' }); await flush();
+  assert.equal(late.src, '', 'a tile gone meanwhile stays without a source');
+  assert.equal(held.doc.drawn.length, 0, 'and nothing is drawn for it');
 });
 
 test('tileLayer() builds the layer on the page\'s Leaflet; the relief\'s template works too', async () => {

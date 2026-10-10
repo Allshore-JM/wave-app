@@ -63,7 +63,8 @@
     unknown: 'This wind station is not known.',
     failed: 'The wind readings could not be loaded.',
     busy: 'The wind readings are not available yet; try again in a moment.',
-    empty: 'No wind readings in the last 24 hours.'
+    empty: 'No wind readings in the last 24 hours.',
+    noHistory: 'No 24-hour history for this station.'          // the window shows the flag's own reading (F4)
   };
   // ---- speeds, bands, directions ---------------------------------------------------------------------------------
   function num(v) { return typeof v === 'number' && isFinite(v); }
@@ -501,7 +502,7 @@
       if (last) svg.appendChild(svgEl('circle', { 'class': 'wind-last', cx: x(last.t).toFixed(1), cy: y(last.s).toFixed(1), r: 3.5, fill: COLORS.speed, stroke: '#fff', 'stroke-width': 1.5 }));
       if (!rows.length) {
         var e = svgEl('text', { 'class': 'wind-empty', x: (MARGIN.l + plotW / 2).toFixed(1), y: (MARGIN.t + plotH / 2).toFixed(1), 'text-anchor': 'middle', 'font-size': 12, fill: COLORS.muted });
-        e.textContent = MSG.empty; svg.appendChild(e);
+        e.textContent = st.fallback ? MSG.noHistory : MSG.empty; svg.appendChild(e);
       }
       var rd = svgEl('g', { 'class': 'wind-readout', visibility: 'hidden' });
       rd.appendChild(svgEl('line', { x1: 0, x2: 0, y1: MARGIN.t, y2: MARGIN.t + plotH, stroke: 'rgba(0,0,0,0.45)', 'stroke-width': 1 }));

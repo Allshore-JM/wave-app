@@ -367,6 +367,7 @@ test('empty, calm and stale answers; the relay note; the source of an airport an
   const s = viewSetup();
   s.view.load(HNL); s.answers[0].res(resp(200, history({ t: [], s: [], g: [], d: [], note: 'No wind readings in the last 24 hours' }))); await flush();
   assert.equal(s.view.state().status, 'ready'); assert.equal(s.q('.wind-empty').length, 1); assert.equal(s.q('.wind-speed').length, 0);
+  assert.equal(s.q('.wind-empty')[0].textContent, I.MSG.empty, 'no reading at all: no readings in 24 hours');
   assert.equal(s.els.current.textContent, I.MSG.empty);
   assert.ok(s.els.meta.children.some((e) => e.textContent === 'No wind readings in the last 24 hours.'));
   s.view.load(HNL); s.answers[1].res(resp(200, history({ t: [T0 - 3 * 3600], s: [0.1], g: [null], d: [null], via: 'ndbc', source: 'NOAA National Data Buoy Center (ndbc.noaa.gov)' }))); await flush();
@@ -388,9 +389,12 @@ test('no history (NDBC has no 24-hour file, step 5 F4): the current reading is t
   s.view.load(HNL, { reading }); s.answers[0].res(resp(200, history({ t: [], s: [], g: [], d: [], note: 'NDBC publishes no 24-hour history for this station; the flag shows its latest report' }))); await flush();
   assert.equal(s.view.state().status, 'ready'); assert.equal(s.q('.wind-empty').length, 1);
   assert.equal(s.els.current.textContent, '9 mph from NE (40°) · 8 kt · 20 min ago');
+  assert.equal(s.q('.wind-empty')[0].textContent, I.MSG.noHistory, 'the chart never says "no readings" under the flag\'s reading');
+  assert.equal(I.MSG.noHistory, 'No 24-hour history for this station.');
   assert.ok(s.els.meta.children.some((e) => e.textContent === 'NDBC publishes no 24-hour history for this station; the flag shows its latest report.'));
   s.view.load(HNL, { reading: { t: T0, s: 'x' } }); s.answers[1].res(resp(200, history({ t: [], s: [], g: [], d: [] }))); await flush();
   assert.equal(s.els.current.textContent, I.MSG.empty, 'a reading without a number is no reading');
+  assert.equal(s.q('.wind-empty')[0].textContent, I.MSG.empty);
   s.view.load(HNL, { reading }); s.answers[2].res(resp(200, history())); await flush();
   assert.match(s.els.current.textContent, /^\d+ mph from [A-Z]+ \(\d+°\)(, gusts \d+ mph)? · \d+ kt · just now$/, 'with a history the history\'s latest reading');
 });

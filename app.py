@@ -417,7 +417,8 @@ def _points_fetch(url: str, max_bytes: int, headers=None) -> bytes:
     killer.daemon = True
     killer.start()
     try:
-        with _POINT_HTTP.get(url, timeout=_POINT_FETCH_TIMEOUT, stream=True, headers=headers or None) as resp:
+        extra = {"headers": dict(headers)} if headers else {}        # the point callers make the call as before
+        with _POINT_HTTP.get(url, timeout=_POINT_FETCH_TIMEOUT, stream=True, **extra) as resp:
             with guard:
                 held["sock"] = getattr(getattr(resp.raw, "_connection", None), "sock", None)
                 late = held["late"]

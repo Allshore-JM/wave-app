@@ -398,6 +398,7 @@ def test_history_gauge_falls_back_on_its_ndbc_relay():
     status, p = svc.history("coops:1612401")
     assert status == "error" and p == {"error": W.UNAVAILABLE}
     assert svc.history("coops:1612401")[0] == "error" and fetch.count("1612401") == 1
+    assert fetch.count("realtime2") == 1                                     # no relay: NDBC was not asked for one
 
 
 def test_history_unknown_errors_and_ttls():
@@ -416,6 +417,17 @@ def test_history_unknown_errors_and_ttls():
     fetch.table[W.NDBC_RT2_URL % "51003"] = b"\xff\xfe not a feed"           # unreadable: no rows, a note
     clock.t += svc.error_ttl + 1
     assert svc.history("ndbc:51003")[1]["note"] == W.NO_HISTORY
+
+
+def test_history_coops_and_metar_cut_at_24_hours():
+    old, new = "2026-10-09 10:00", "2026-10-10 16:48"                      # 30 h and a few minutes before now
+    doc = json.dumps({"data": [{"t": old, "s": "9.0", "d": "180", "g": "12.0"}, {"t": new, "s": "1.0", "d": "74", "g": "3.5"}]}).encode()
+    fetch = FakeFetch({W.coops_url("1612340", range=24): doc,
+                       W.METAR_API_URL % "PHNL": json.dumps([{"obsTime": 1791651180, "wdir": 50, "wspd": 5},
+                                                             {"obsTime": 1791651180 - 30 * 3600, "wdir": 50, "wspd": 20}]).encode()})
+    svc = W.WindHistory(STATIONS, fetch, now=Clock(1791651180 + 600))
+    assert svc.history("coops:1612340")[1]["t"] == [1791650880]
+    assert svc.history("metar:PHNL")[1]["t"] == [1791651180]
 
 
 def test_history_dedupes_sorts_and_caps():
@@ -474,6 +486,8 @@ def test_history_singleflight_and_busy():
         th.join(5)
     assert fetch.count("51003") == 1 and {v[0] for v in out.values()} <= {"ok", "busy"}
     assert sum(1 for v in out.values() if v[0] == "ok") >= 1
+    # the waiters on the one key gave up after wait_s (the build held its lock longer): busy, not a long wait
+    assert sum(1 for v in out.values() if v[0] == "busy") >= 2
 
 
 def test_after_fork_resets_the_service_locks():

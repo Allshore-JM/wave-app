@@ -220,6 +220,15 @@ def _json_cached_bytes(payload: str, etag: str, max_age: int, extra_headers=None
     return resp
 
 
+def _station_list_answer(payload: str, etag: str):
+    """A committed station list (tide or wind stations). Its address never changes, so it is never kept without
+    asking: the browser asks again on every page load and gets a 304 while the list is unchanged; the edge keeps
+    nothing. (A 6-hour max-age kept a pre-deploy list in browsers for hours after the list grew: section 39 5e.)"""
+    resp = _json_cached_bytes(payload, etag, 0, {"CDN-Cache-Control": "no-store"})
+    resp.headers["Cache-Control"] = "public, no-cache"
+    return resp
+
+
 # ---------------------------------------------------------------------------------------------
 # Response cache policy. Render's edge cache ("All files" mode) stores any header-less 200 for
 # 120 min and 404s for 3 min, so EVERY response must say what it is. Default: not shareable.
@@ -553,7 +562,6 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
 # never depends on NOAA's metadata service at runtime. Not a live buoy provider: not in the live list, scheduler or
 # /healthz. Upstream requests go through _points_fetch (one attempt, a wall-clock cap).
 TIDE_STATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tide_stations.json")
-TIDE_LIST_MAX_AGE = 6 * 3600      # the list changes only with a deploy; browsers and the edge keep it 6 h
 TIDE_MAX_AGE = 1800               # a station's forecast (the same all UTC day; the page asks again on a new visit)
 TIDE_OBS_MAX_AGE = 300            # observed water level (6-minute samples)
 TIDE_FINAL_MAX_AGE = 600          # NOAA says it has nothing for this station (it has said so for a moment: G27 RC-2)
@@ -607,7 +615,7 @@ def api_tide_stations():
         _, (payload, etag) = _tides()
     except Exception:
         return _tide_uncached({"error": TIDES_OFF}, 503)
-    return _json_cached_bytes(payload, etag, TIDE_LIST_MAX_AGE, {"CDN-Cache-Control": f"max-age={TIDE_LIST_MAX_AGE}"})
+    return _station_list_answer(payload, etag)
 
 
 @app.route("/api/tides/<sid>")
@@ -635,7 +643,6 @@ def api_tide_observed(sid):
 # answer 503 and the scheduler leaves the feeds alone). Upstream requests go through _points_fetch.
 WIND_ENABLED = os.environ.get("WIND_STATIONS", "1") != "0"
 WIND_STATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wind_stations.json")
-WIND_LIST_MAX_AGE = 6 * 3600      # the list changes only with a deploy
 WIND_LATEST_MAX_AGE = 120         # the merged table (the page re-asks every 5 minutes; readings are 5-60 min apart)
 WIND_HISTORY_MAX_AGE = 300        # a station's last 24 hours
 try:                              # gauges asked at once (1-8) and per minute (1-500); a bad value never breaks the import
@@ -809,7 +816,7 @@ def api_wind_stations():
         payload, etag = _winds()["list"]
     except Exception:
         return _wind_uncached({"error": WIND_OFF}, 503)
-    return _json_cached_bytes(payload, etag, WIND_LIST_MAX_AGE, {"CDN-Cache-Control": f"max-age={WIND_LIST_MAX_AGE}"})
+    return _station_list_answer(payload, etag)
 
 
 @app.route("/api/wind/latest")

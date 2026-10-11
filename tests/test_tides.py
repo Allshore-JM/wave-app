@@ -620,14 +620,16 @@ def client(monkeypatch):
     return A.app.test_client(), noaa, svc
 
 
-def test_route_station_list_is_cached_for_hours_with_an_etag(client):
+def test_route_station_list_is_revalidated_on_every_load(client):
     c, noaa, _ = client
     r = c.get("/api/tides/stations")
-    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=21600"
-    assert r.headers["CDN-Cache-Control"] == "max-age=21600" and r.headers["ETag"]
+    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, no-cache"
+    assert r.headers["CDN-Cache-Control"] == "no-store" and r.headers["ETag"]
     body = r.get_json()
     assert body["fields"][0] == "id" and len(body["stations"]) == 3
-    assert c.get("/api/tides/stations", headers={"If-None-Match": r.headers["ETag"]}).status_code == 304
+    r2 = c.get("/api/tides/stations", headers={"If-None-Match": r.headers["ETag"]})
+    assert r2.status_code == 304 and r2.headers["Cache-Control"] == "public, no-cache"
+    assert r2.headers["CDN-Cache-Control"] == "no-store" and r2.headers["ETag"] == r.headers["ETag"]
     assert noaa.calls == []
 
 

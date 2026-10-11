@@ -59,6 +59,7 @@
   var GAP_S = 90 * 60;                    // readings further apart than this: a gap in the lines
   var NARROW = 480;                       // px: below this width the hour ticks are 6 h apart (else 3 h)
   var TABLE_MAX = 48, READOUT_NEAR_S = 45 * 60, MIN_WIDTH = 280, DEFAULT_WIDTH = 640, RESIZE_PX = 8;
+  var READOUT_NARROW = 420;               // px: a narrower chart (phones) gets the short readout (G28 B-6)
   var REFRESH_MS = 5 * MIN_MS, TICK_MS = MIN_MS;
   var RETRY_MAX = 24, RETRY_DEFAULT_S = 5, RETRY_MAX_S = 60, TOUCH_MOUSE_MS = 700;
   var COLORS = { speed: '#1d6fd6', gust: '#e8590c', grid: 'rgba(0,0,0,0.12)', midnight: 'rgba(0,0,0,0.38)', text: '#1d2b4f',
@@ -89,11 +90,13 @@
   // the weather in the site's unit (step 5d): temperatures degC -> degF whole / degC one decimal; pressure hPa ->
   // inHg two decimals / hPa whole; visibility km -> miles / km (one decimal under 10)
   function tempValue(c, unit) { return unitOf(unit) === 'Metric' ? Math.round(c * 10) / 10 : Math.round(c * 9 / 5 + 32) + 0; }
-  function tempText(c, unit) { return tempValue(c, unit) + (unitOf(unit) === 'Metric' ? '°C' : '°F'); }
+  function tempText(c, unit) {                                    // Metric always with its decimal: "29.0°C" (G28 K-1)
+    return unitOf(unit) === 'Metric' ? tempValue(c, unit).toFixed(1) + '°C' : tempValue(c, unit) + '°F';
+  }
   function pressText(hpa, unit) { return unitOf(unit) === 'Metric' ? Math.round(hpa) + ' hPa' : (hpa / IN_HG).toFixed(2) + ' inHg'; }
-  function distText(km, unit) {
+  function distText(km, unit, more) {                             // more: "or more" (METAR "10+", "6+": G28 A-3)
     var v = unitOf(unit) === 'Metric' ? km : km / MI_KM, n = v >= 10 ? Math.round(v) : Math.round(v * 10) / 10;
-    return n + (unitOf(unit) === 'Metric' ? ' km' : ' mi');
+    return n + (more ? '+' : '') + (unitOf(unit) === 'Metric' ? ' km' : ' mi');
   }
   function trendText(delta) { return !num(delta) ? '' : delta > 0.5 ? 'rising' : delta < -0.5 ? 'falling' : 'steady'; }
   function capital(t) { t = String(t || ''); return t ? t.charAt(0).toUpperCase() + t.slice(1) : ''; }
@@ -107,7 +110,7 @@
     if (v('rh') !== null) items.push('Humidity ' + Math.round(v('rh')) + '%');
     if (v('dp') !== null) items.push('Dew point ' + tempText(v('dp'), unit));
     if (v('p') !== null) items.push('Pressure ' + pressText(v('p'), unit) + (trendText(c.trend) ? ', ' + trendText(c.trend) : ''));
-    if (v('vis') !== null) items.push('Visibility ' + distText(v('vis'), unit));
+    if (v('vis') !== null) items.push('Visibility ' + distText(v('vis'), unit, !!(c.vg && c.vg[1])));
     if (c.wx && typeof c.wx[1] === 'string' && c.wx[1]) items.push(capital(c.wx[1]));
     return items.join(' · ');
   }
@@ -397,7 +400,7 @@
     if (src === 'ndbc') return 'https://www.ndbc.noaa.gov/station_page.php?station=' + encodeURIComponent(local.toLowerCase());
     if (src === 'coops') return 'https://tidesandcurrents.noaa.gov/stationhome.html?id=' + encodeURIComponent(local);
     if (src === 'metar') return 'https://aviationweather.gov/data/metar/?ids=' + encodeURIComponent(local) + '&hours=24';
-    if (src === 'nws') return 'https://api.weather.gov/stations/' + encodeURIComponent(local) + '/observations/latest';
+    if (src === 'nws') return 'https://www.weather.gov/wrh/timeseries?site=' + encodeURIComponent(local);   // a page, not JSON (G28 B-10)
     return null;
   }
 
@@ -625,8 +628,9 @@
       var r = px === null || px < MARGIN.l || px > st.width - MARGIN.r ? null : nearest(b.rows, t, READOUT_NEAR_S);
       if (!r) { b.readout.setAttribute('visibility', 'hidden'); b.readoutText = ''; return; }
       var clk = zoneClock(zone()), rx = b.x(r.t);
-      var text = stampText(clk.parts(r.t * 1000)) + ' · ' + readingText(r, now(), st.unit, false) + ' · ' + knotsText(r.s) +
-                 (num(r.at) ? ' · Air ' + tempText(r.at, st.unit) : '');
+      var text = st.width < READOUT_NARROW ? shortReadout(clk, r) :
+        stampText(clk.parts(r.t * 1000)) + ' · ' + readingText(r, now(), st.unit, false) + ' · ' + knotsText(r.s) +
+        (num(r.at) ? ' · Air ' + tempText(r.at, st.unit) : '');
       b.readout.setAttribute('visibility', 'visible');
       kids[0].setAttribute('x1', rx.toFixed(1)); kids[0].setAttribute('x2', rx.toFixed(1));
       kids[1].setAttribute('cx', rx.toFixed(1)); kids[1].setAttribute('cy', b.y(r.s).toFixed(1));
@@ -634,6 +638,12 @@
       kids[2].setAttribute('x', lx.toFixed(1)); kids[2].setAttribute('width', w.toFixed(1));
       kids[3].setAttribute('x', (lx + 6).toFixed(1)); kids[3].textContent = text;
       b.readoutText = text;
+    }
+    // a phone's chart: the time, the speed with its compass point and gust, the air (G28 B-6: the long line ran past the box)
+    function shortReadout(clk, r) {
+      var calm = bandOf(r.s).name === 'calm';
+      var w = calm ? 'Calm' : speedText(r.s, st.unit) + (num(r.d) ? ' ' + compass(r.d) : '') + (num(r.g) ? ' G' + speedValue(r.g, st.unit) : '');
+      return clockText(clk.parts(r.t * 1000)) + ' · ' + w + (num(r.at) ? ' · ' + tempText(r.at, st.unit) : '');
     }
     function render() {
       if (!st.data) return;
@@ -645,8 +655,9 @@
       st.tickTimer = timers.set(function tick() {
         st.tickTimer = null;
         if (!st.data) return;
-        if (now() - st.fetchedAt >= REFRESH_MS) refresh();                // new readings (quiet: a failure keeps these)
-        else if (deps.visible()) { writeCurrent(); } else st.dirty = true;  // the reading's age
+        var seen = deps.visible() && !(doc && doc.hidden);
+        if (now() - st.fetchedAt >= REFRESH_MS && seen) refresh();         // new readings (quiet: a failure keeps these)
+        else if (seen) { writeCurrent(); } else st.dirty = true;            // not while hidden or parked (G28 B-12)
         st.tickTimer = timers.set(tick, TICK_MS);
       }, TICK_MS);
     }
@@ -663,6 +674,22 @@
     function path() { return '/api/wind/' + encodeURIComponent(st.station.id) + '/history'; }
     function accept(b) {
       st.data = b; st.rows = historyRows(b); st.fetchedAt = now();
+      joinFallback();
+    }
+    // The flag's reading (the latest table) when it is newer than the history's last row: the history is cached for
+    // minutes on the server, the table is not, and the window must not contradict the flag just clicked (G28 B-3).
+    function joinFallback() {
+      var r = st.fallback, last = latest();
+      if (!r || !num(r.t) || !num(r.s) || !last || r.t <= last.t) return false;   // no history: the chart says so (F4)
+      st.rows.push({ t: r.t, s: r.s, g: num(r.g) ? r.g : null, d: num(r.d) ? r.d : null });
+      return true;
+    }
+    function setReading(r) {
+      if (!r || !num(r.t) || !num(r.s) || !st.station) return;
+      if (st.fallback && num(st.fallback.t) && st.fallback.t >= r.t) return;
+      st.fallback = r;
+      if (st.data && joinFallback()) render();
+      else if (!st.data || !st.rows.length) writeCurrent();
     }
     function refresh() {
       var seq = st.seq;
@@ -715,7 +742,7 @@
       attempt(st.seq);
       return st.seq;
     }
-    function retry() { if (st.station) { load(st.station, { unit: st.unit, zone: st.zone }); st.retried = true; } }
+    function retry() { if (st.station) { load(st.station, { unit: st.unit, zone: st.zone, reading: st.fallback }); st.retried = true; } }
     function clear() {
       st.seq++;
       if (st.ac) { try { st.ac.abort(); } catch (e) {} st.ac = null; }
@@ -741,11 +768,19 @@
       els.chart.addEventListener('touchcancel', function () { touchedAt = wall(); readoutAt(null); });
     }
     if (els.retry) els.retry.addEventListener('click', retry);
+    if (doc && doc.addEventListener) doc.addEventListener('visibilitychange', function () {   // the turns missed while hidden
+      if (!doc.hidden && st.data && st.status === 'ready' && deps.visible() && now() - st.fetchedAt >= REFRESH_MS) refresh();
+    });
     return {
       load: load, clear: clear, retry: retry,
       setUnit: function (u) { st.unit = unitOf(u); if (st.data) render(); },
       setZone: function (z) { st.zone = z || null; if (st.data) render(); },
-      show: function () { if (st.data && (st.dirty || !st.built)) render(); return Promise.resolve(); },
+      show: function () {
+        if (st.data && (st.dirty || !st.built)) render();
+        if (st.data && st.status === 'ready' && now() - st.fetchedAt >= REFRESH_MS) refresh();   // the turns missed while parked
+        return Promise.resolve();
+      },
+      setReading: setReading,
       resize: function () { if (st.data && st.built && Math.abs(width() - st.width) > RESIZE_PX) render(); },
       state: function () {
         return { seq: st.seq, status: st.status, station: st.station && st.station.id, hasData: !!st.data, rows: st.rows.length,
@@ -768,6 +803,7 @@
       FEED_PARTIAL_MAX: FEED_PARTIAL_MAX, FEED_RETRY_MS: FEED_RETRY_MS, FEED_STATUS: FEED_STATUS,
       CHART_H: CHART_H, ARROWS_H: ARROWS_H, MARGIN: MARGIN, ARROW_SLOT: ARROW_SLOT, GAP_S: GAP_S, NARROW: NARROW,
       TABLE_MAX: TABLE_MAX, READOUT_NEAR_S: READOUT_NEAR_S, MIN_WIDTH: MIN_WIDTH, REFRESH_MS: REFRESH_MS, TICK_MS: TICK_MS,
+      READOUT_NARROW: READOUT_NARROW,
       RETRY_MAX: RETRY_MAX, RETRY_MAX_S: RETRY_MAX_S, TOUCH_MOUSE_MS: TOUCH_MOUSE_MS, MSG: MSG,
       zoneClock: zoneClock, hourMarks: hourMarks, niceStep: niceStep, historyRows: historyRows, linePath: linePath,
       arrowSlots: arrowSlots, nearest: nearest, sourceLink: sourceLink, clockText: clockText, hourText: hourText,

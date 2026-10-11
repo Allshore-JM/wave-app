@@ -338,7 +338,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.20.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.21.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -669,7 +669,7 @@ def api_tide_observed(sid):
 WIND_ENABLED = os.environ.get("WIND_STATIONS", "1") != "0"
 WIND_STATIONS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wind_stations.json")
 WIND_LATEST_MAX_AGE = 120         # the merged table (the page re-asks every 5 minutes; readings are 5-60 min apart)
-WIND_HISTORY_MAX_AGE = 300        # a station's last 24 hours
+WIND_HISTORY_MAX_AGE = 60         # a station's last 24 hours (a minute in the browser: the window must not lag the flag, G28 B-3)
 try:                              # gauges asked at once (1-8) and per minute (1-500); a bad value never breaks the import
     WIND_COOPS_WORKERS = max(1, min(8, int(float(os.environ.get("WIND_COOPS_WORKERS", "2")))))
 except (TypeError, ValueError, OverflowError):

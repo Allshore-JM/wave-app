@@ -151,6 +151,16 @@ test('the layer: a missing tile is drawn from the closest coarser tile Esri has 
   assert.equal(srv.calls.filter((u) => /\/tilemap\/16\//.test(u)).length, 1, 'one zoom-16 window for both');
 });
 
+test('the layer keeps the coarser images it loaded (64 of them): coming back to a place asks for none again (G28 A-9 B12)', async () => {
+  assert.equal(I.IMAGES_MAX, 64);
+  const { layer, images } = makeLayer((z) => z <= 14);
+  const at = (x) => layer.createTile({ z: 16, x: x, y: 8002 }, () => {});
+  for (const x of [4001, 4101, 4201, 4301]) { at(x); await flush(); }
+  assert.equal(images.length, 4, 'four places, four coarser tiles');
+  at(4002); await flush();                                          // the first place again (same zoom-14 tile)
+  assert.equal(images.length, 4, 'the first coarser image is still kept');
+});
+
 test('the layer: a tile removed before the answers (a zoom, a pan, the layer off) is never given a source; a coarser tile that fails gives the tile itself', async () => {
   const { layer } = makeLayer((z) => z <= 14);
   const gone = layer.createTile({ z: 15, x: 3, y: 3 }, () => {});

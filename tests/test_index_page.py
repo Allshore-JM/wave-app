@@ -615,31 +615,78 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
         w, h = min(wpx, W - wm), min(vh * H / 100.0, cap)
         return (W - right - w, H - bottom - h, W - right, H - bottom)
     # the wind window (section 39 step 5b, owner): at the top-right corner below the legend / tools / gear (the corner
-    # measures about 180 px on a desktop: --map-topright-h), as tall as its content (about 400 px with the Readings
-    # folded; 440 here as the bound), never lower than 42 px above the bottom edge: the bottom-right windows show their
-    # bottom 24 px below it; it shows its top above them (its left edge is inside the forecast window's) on screens
-    # 570 px tall or more. On a shorter desktop screen the forecast window, when in front, covers it (Escape closes it).
-    m = re.search(r"\.fwin\.wind-win \{ right: (\d+)px; top: calc\(var\(--map-topright-h, 120px\) \+ (\d+)px\); bottom: auto; "
-                  r"width: min\((\d+)px, calc\(100vw - (\d+)px\)\); height: auto;\n\s+max-height: calc\(100vh - var\(--map-topright-h, 120px\) - (\d+)px - var\(--chips-h, 0px\)\); z-index: 2000; \}", body)
+    # measures about 180 px on a desktop: --map-topright-h), as tall as its content (up to ~530 px for a gauge with its
+    # weather; 540 here as the bound), never lower than 42 px above the bottom edge. Its box (G28): its left edge right
+    # of the top-left controls (the logo and the overlay panel end ~360 px from the left; ~204 px below 576 px, where the
+    # overlay is a sheet: --map-topleft-r, B-7); while the live or tide window is open, its right edge WW_GAP in from the
+    # margin (--ww-gap) and, when its top does not show WW_ABOVE above one of them, WW_OUT wider than that window
+    # (--ww-min-w): every open window keeps a strip to click whichever is in front (B-13; the page measures both).
+    m = re.search(r"\.fwin\.wind-win \{ right: calc\((\d+)px \+ var\(--ww-gap, 0px\)\); top: calc\(var\(--map-topright-h, 120px\) \+ (\d+)px\); "
+                  r"bottom: auto; height: auto;\n"
+                  r"\s+--ww-w: min\(calc\(100vw - (\d+)px\), max\(var\(--ww-min-w, 0px\), min\((\d+)px, calc\(100vw - \3px\), "
+                  r"calc\(100vw - (\d+)px - var\(--map-topleft-r, 0px\)\)\)\)\);\n"
+                  r"\s+width: calc\(var\(--ww-w\) - var\(--ww-gap, 0px\)\);\n"
+                  r"\s+max-height: calc\(100vh - var\(--map-topright-h, 120px\) - (\d+)px - var\(--chips-h, 0px\)\); z-index: 2000; \}", body)
     assert m, "the wind window's box"
-    w_right, w_gap, w_px, w_margin, w_reserve = (int(g) for g in m.groups())
-    assert w_reserve - w_gap >= 24 and w_px < 1180 and w_margin > 32 and w_margin <= 76 - 24, "below the forecast window's bottom by 24 px; narrower than it, wider than the tide window by 24"
-    CORNER_PX, WIND_CONTENT_PX = 180, 440
-    def wind_box(W, H):
-        w, h = min(w_px, W - w_margin), min(WIND_CONTENT_PX, H - CORNER_PX - w_reserve)
-        return (W - w_right - w, CORNER_PX + w_gap, W - w_right, CORNER_PX + w_gap + h)
-    def edge(behind, front):                             # the widest strip of `behind` outside `front`
-        return max(front[0] - behind[0], front[1] - behind[1], behind[2] - front[2], behind[3] - front[3])
+    w_right, w_gap, w_margin, w_px, w_left_gap, w_reserve = (int(g) for g in m.groups())
+    k = re.search(r"var WW_GAP = (\d+), WW_OUT = (\d+), WW_ABOVE = (\d+);", body)
+    assert k, "the wind window's constants"
+    GAP, OUT, ABOVE = (int(g) for g in k.groups())
+    for needle in ("if (wtop !== null && r.top - wtop < WW_ABOVE) minW = Math.max(minW, Math.round(r.width) + WW_OUT);",
+                   "root.style.setProperty('--ww-gap', (open ? WW_GAP : 0) + 'px');",
+                   "if (minW) root.style.setProperty('--ww-min-w', minW + 'px'); else root.style.removeProperty('--ww-min-w');"):
+        assert needle in body, needle
+    CORNER_PX, WIND_CONTENT_PX = 180, 540
+    def topleft_r(W):
+        return 204 if W < 576 else 360
+    def wind_box(W, H, others):
+        top = CORNER_PX + w_gap
+        base = min(w_px, W - w_margin, W - w_left_gap - topleft_r(W))
+        open_ = [o for o in ("live", "tide") if o in others]
+        stick = [others[o][2] - others[o][0] + OUT for o in open_ if others[o][1] - top < ABOVE]
+        ww = min(W - w_margin, max(max(stick or [0]), base))
+        gap = GAP if open_ else 0
+        h = min(WIND_CONTENT_PX, H - CORNER_PX - w_reserve)
+        right = W - w_right - gap
+        return (right - (ww - gap), top, right, top + h)
+    def minus(rect, cut):                                # rect minus cut: up to four rectangles
+        l, t, r, b = rect
+        cl, ct, cr, cb = cut
+        if cr <= l or cl >= r or cb <= t or ct >= b:
+            return [rect]
+        out = []
+        if ct > t: out.append((l, t, r, ct))
+        if cb < b: out.append((l, cb, r, b))
+        top, bot = max(t, ct), min(b, cb)
+        if cl > l: out.append((l, top, cl, bot))
+        if cr < r: out.append((cr, top, r, bot))
+        return out
+    def clickable(rect, above):                          # a 24 x 24 px area of rect outside every window above it
+        parts = [rect]
+        for c in above:
+            parts = [q for p in parts for q in minus(p, c)]
+        return any(p[2] - p[0] >= 24 and p[3] - p[1] >= 24 for p in parts)
+    ORDER = ["forecast", "live", "tide", "wind"]         # the page order: a later window lies above an earlier one
     for W in (520, 600, 768, 820, 900, 956, 1024, 1180, 1280, 1366, 1440, 1536, 1600, 1920, 2560):
         for H in (501, 560, 600, 700, 768, 800, 864, 900, 1024, 1080, 1200, 1440):
             b = {n: box(r, W, H) for n, r in rules.items()}
-            b["wind"] = wind_box(W, H)
-            for front in b:
-                for behind in b:
-                    if front == behind or (front == "forecast" and behind == "wind" and H < 570):
-                        continue
-                    assert edge(b[behind], b[front]) >= 24, (W, H, front, behind, b)
-    assert edge(wind_box(1280, 570), box(rules["forecast"], 1280, 570)) >= 24 and edge(wind_box(1280, 560), box(rules["forecast"], 1280, 560)) < 24
+            b["wind"] = wind_box(W, H, b)
+            for front in ORDER:
+                stack = [n for n in ORDER if n != front] + [front]      # bottom to top
+                for i, n in enumerate(stack[:-1]):
+                    if front == "forecast" and n == "wind" and H < 570:
+                        continue                         # a short desktop screen: Escape closes it (known since 5b)
+                    assert clickable(b[n], [b[x] for x in stack[i + 1:]]), (W, H, "front", front, "hidden", n, b)
+    # only the forecast and wind windows open: the wind window keeps its full width at the margin (the rule is for the
+    # live / tide window)
+    full = wind_box(1920, 1080, {"forecast": box(rules["forecast"], 1920, 1080)})
+    assert full[2] - full[0] == w_px and full[2] == 1920 - w_right
+    # B-7 holds whenever the live / tide window leaves room: from 1366 px wide the wind window never reaches over the
+    # top-left controls; below that, with a live or tide window open, it can (the strip rule wins: owner, step 7b)
+    for W in (1366, 1440, 1536, 1600, 1920, 2560):
+        for H in (501, 600, 768, 900, 1080, 1440):
+            b = {n: box(r, W, H) for n, r in rules.items()}
+            assert wind_box(W, H, b)[0] >= topleft_r(W), (W, H)
     for needle in (                                      # the raised boxes give way in height below the corner
         "height: min(60vh, 720px, calc(100vh - 78px - var(--map-topright-h, 0px))); }",
         "height: min(60vh, 720px, calc(100vh - 86px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }",
@@ -676,9 +723,12 @@ def test_wind_stations_on_the_page(client):
         "const WIND_MIN_ZOOM = 9;", "function windVisible() { return map.hasLayer(windLayer) && map.getZoom() >= WIND_MIN_ZOOM; }",
         "const WIND_GAP_PX = 40;", "const WIND_CELL_PX = 64;", "const WIND_ALL_ZOOM = 13;", "const MAX_MAP_ZOOM = 18;",
         "function windRank(s) { return s.kind === 'gauge' || s.kind === 'buoy' ? 0 : s.kind === 'airport' || s.kind === 'cman' || s.kind === 'station' ? 1 : s.kind === 'cwop' ? 3 : 2; }",
-        "const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis) + '|h:' + Array.from(hollow, function (e) { return e[0] + '=' + e[1].mode + ':' + e[1].f.id; }).sort().join(',');",
-        "const WIND_HOLLOW_PX = 7, WIND_NEAR_PX = 20, WIND_DOT_HIT_PX = 8, WIND_DOT_HIT_TOUCH_PX = 12;", "if (dot && dot.mode === 'hollow' && flag.classList) flag.classList.add('wind-hollow');",
-        "const f = windDotHit(drawn, e && e.originalEvent);", "if (f) { pickForecastPoint(f); return; }",
+        "const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis) + '|h:' + Array.from(hollow, function (e) { return e[0] + '=' + e[1].kind + ':' + e[1].f.id + ':' + e[1].r; }).sort().join(',');",
+        "const WIND_DOT_HIT_PX = 8, WIND_DOT_HIT_TOUCH_PX = 12;", "if (dot && flag.classList) flag.classList.add('wind-hollow');",
+        "function windTapPx() { return window.matchMedia && window.matchMedia('(pointer: coarse)').matches ? WIND_DOT_HIT_TOUCH_PX : WIND_DOT_HIT_PX; }",
+        "const hit = windDotHit(drawn, e && e.originalEvent);", "if (hit) { pickDot(hit); return; }",
+        "let windByKey = new Map();", "windByKey.forEach(function (d) { windLayer.removeLayer(d.marker); });",
+        "if (old && old.state === state && old.lng === c.lng) { windByKey.delete(key); next.set(key, old); drawnNow.push(old); return; }",
         "if (typeof tideTargets === 'function') tideTargets();", "const pad = shared ? 0 : Math.max(0, Math.min(10, Math.floor(c / 2 - p.h)));",
         "windView.load(station, { unit: getSelectedUnit(), zone: windZone(station), reading: windReading(station.id) });",
         ".leaflet-marker-icon.wind-marker { background: transparent; border: 0; cursor: pointer; pointer-events: none; }",
@@ -695,7 +745,7 @@ def test_wind_stations_on_the_page(client):
         "L.divIcon({ className: 'wind-marker' + (active ? ' wind-marker-active' : ''), html: flag, iconSize: [40, 40], iconAnchor: [20, 20], tooltipAnchor: [0, -14] })",
         "zIndexOffset: active ? 350 : 300, autoPanOnFocus: false", "keyOpens(marker, 'w:' + s.id + '#' + c.o, 'wwHeader');",
         "refocusMarker(windDrawn.map(function (d) { return d.marker; }), focusKey, 'w:');",
-        "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map\n          const f = windDotHit(drawn, e && e.originalEvent);",
+        "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map\n          const hit = windDotHit(drawn, e && e.originalEvent);",
         "windFeed = window.AllshoreWinds.createWindFeed({", "feed.start({", "} else feed.stop();", "syncWindFeed(on);",
         ".wind-arrow { position: absolute; left: 0; top: 0; transform-origin: 20px 20px;",
         ".wind-num { position: absolute; transform: translate(-50%, -50%);", ".wind-flag.wind-stale, .wind-cur-dot.wind-stale { color: #9aa3ad; }",
@@ -704,8 +754,10 @@ def test_wind_stations_on_the_page(client):
         'id="wwHeader"', 'id="wwMin"', 'id="wwClose"', 'id="wwBody"', 'id="wwResize"', 'id="windCurrent"', 'id="windChart"', 'id="windArrows"',
         'id="windTable"', 'id="windMeta"', 'id="windRetry"', 'id="windConditions"', 'id="windTemp"',
         "current: $('windCurrent'), conditions: $('windConditions'), chart: $('windChart'), arrows: $('windArrows'),\n               temp: $('windTemp'), table: $('windTable'), meta: $('windMeta') },",
-        ".fwin.wind-win { right: 18px; top: calc(var(--map-topright-h, 120px) + 8px); bottom: auto; width: min(1030px, calc(100vw - 44px)); height: auto;",
-        ".fwin.wind-win:not(.fw-min) { max-height: none; }",
+        ".fwin.wind-win { right: calc(18px + var(--ww-gap, 0px)); top: calc(var(--map-topright-h, 120px) + 8px); bottom: auto; height: auto;",
+        ".fwin.wind-win { max-height: none; }                       /* the full screen, like the others; its bar never capped (B-2) */",
+        "window.addEventListener('resize', syncWindWidth);",
+        "['allshore:livewin', 'allshore:tidewin', 'allshore:windwin'].forEach(function (n) { document.addEventListener(n, syncWindWidth); });",
         ".wind-win.fw-min {\n        right: 12px !important; left: auto !important; top: auto !important; bottom: calc(12px + var(--chips-h, 0px)) !important;",
         ".wind-win.fw-min { bottom: calc(var(--fw-bar-h, 48px) + var(--lw-bar-h, 0px) + var(--tw-bar-h, 0px)) !important; }",
         "document.documentElement.style.setProperty('--tw-bar-h', tideBar + 'px');",

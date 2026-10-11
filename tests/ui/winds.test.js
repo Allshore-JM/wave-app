@@ -275,7 +275,7 @@ test('nice steps, rows from a payload, lines with gaps, one arrow per slot, the 
   assert.equal(I.sourceLink('ndbc', 'ndbc:OOUH1'), 'https://www.ndbc.noaa.gov/station_page.php?station=oouh1');
   assert.equal(I.sourceLink('coops', 'coops:1612340'), 'https://tidesandcurrents.noaa.gov/stationhome.html?id=1612340');
   assert.equal(I.sourceLink('metar', 'metar:PHNL'), 'https://aviationweather.gov/data/metar/?ids=PHNL&hours=24');
-  assert.equal(I.sourceLink('nws', 'nws:001HE'), 'https://api.weather.gov/stations/001HE/observations/latest');
+  assert.equal(I.sourceLink('nws', 'nws:001HE'), 'https://www.weather.gov/wrh/timeseries?site=001HE', 'a page, not JSON (G28 B-10)');
   assert.equal(I.sourceLink('x', 'x:1'), null);
 });
 
@@ -364,13 +364,13 @@ function weather(extra) {
 }
 
 test('the weather in the site\'s unit: temperatures, pressure, distances, the trend words, the conditions line', () => {
-  assert.equal(I.tempText(25.6, 'US'), '78°F'); assert.equal(I.tempText(25.6, 'Metric'), '25.6°C'); assert.equal(I.tempText(-0.04, 'US'), '32°F');
+  assert.equal(I.tempText(25.6, 'US'), '78°F'); assert.equal(I.tempText(25.6, 'Metric'), '25.6°C'); assert.equal(I.tempText(29, 'Metric'), '29.0°C', 'one decimal always (G28 K-1)'); assert.equal(I.tempText(-0.04, 'Metric'), '0.0°C'); assert.equal(I.tempText(-0.04, 'US'), '32°F');
   assert.equal(I.pressText(1011.8, 'US'), '29.88 inHg'); assert.equal(I.pressText(1011.8, 'Metric'), '1012 hPa');
   assert.equal(I.distText(16.1, 'US'), '10 mi'); assert.equal(I.distText(0.8, 'US'), '0.5 mi'); assert.equal(I.distText(16.1, 'Metric'), '16 km'); assert.equal(I.distText(2.45, 'Metric'), '2.5 km');
   assert.deepEqual([I.trendText(1.2), I.trendText(-0.6), I.trendText(0.3), I.trendText(null)], ['rising', 'falling', 'steady', '']);
   const c = weather().conditions;
   assert.equal(I.conditionsText(c, 'US'), 'Air 78°F · Water 81°F · Humidity 78% · Dew point 68°F · Pressure 29.88 inHg, falling · Visibility 10 mi · Light rain');
-  assert.equal(I.conditionsText(c, 'Metric'), 'Air 25.6°C · Water 27.2°C · Humidity 78% · Dew point 20°C · Pressure 1012 hPa, falling · Visibility 16 km · Light rain');
+  assert.equal(I.conditionsText(c, 'Metric'), 'Air 25.6°C · Water 27.2°C · Humidity 78% · Dew point 20.0°C · Pressure 1012 hPa, falling · Visibility 16 km · Light rain');
   assert.equal(I.conditionsText({ p: [1, 1020.0], trend: 0.1 }, 'US'), 'Pressure 30.12 inHg, steady');
   assert.equal(I.conditionsText({ at: [1, 'x'], wx: [1, ''] }, 'US'), ''); assert.equal(I.conditionsText(null, 'US'), ''); assert.equal(I.conditionsText({}, 'US'), '');
 });
@@ -570,4 +570,100 @@ test('every minute the age moves; after 5 minutes the readings are asked again, 
   s.answers[2].res(resp(200, h)); await flush();
   assert.equal(s.view.state().rows, 1); assert.match(s.els.current.textContent, /^20 mph from S \(180°\) · 17 kt · 1 min ago$/);
   assert.ok(s.timers.pending().includes(I.TICK_MS));
+});
+
+// ---------------------------------------------------------------------------------------------- G28 step 7b
+
+test('the flag\'s newer reading joins the window (G28 B-3): the headline, the chart and the table; an older one never', async () => {
+  const s = viewSetup();
+  s.view.load(HNL, { reading: { t: T0 - 60, s: 9.0, g: 12.0, d: 10 } }); s.answers[0].res(resp(200, history({ t: [T0 - 1200], s: [3.0], g: [null], d: [90] }))); await flush();
+  assert.equal(s.view.state().rows, 2, 'the history\'s last row is 20 min old, the flag\'s 1 min: joined');
+  assert.match(s.els.current.textContent, /^20 mph from N \(10°\), gusts 27 mph · 17 kt · 1 min ago$/);
+  assert.equal(bodyRows(s)[0].children[1].textContent, '20 mph (17 kt)');
+  s.view.setReading({ t: T0 - 30, s: 4.0, g: null, d: 200 });                // the feed brings a newer one: joined, redrawn
+  assert.equal(s.view.state().rows, 3); assert.match(s.els.current.textContent, /^9 mph from SSW/);
+  s.view.setReading({ t: T0 - 3000, s: 20, g: null, d: 0 });                // older: nothing
+  assert.equal(s.view.state().rows, 3);
+  s.view.load(HNL, { reading: { t: T0 - 5000, s: 9.0, g: null, d: 10 } }); s.answers[1].res(resp(200, history({ t: [T0 - 1200], s: [3.0], g: [null], d: [90] }))); await flush();
+  assert.equal(s.view.state().rows, 1, 'a flag reading older than the history: not joined');
+});
+
+test('the window asks nothing while the tab is hidden or the window is parked; it catches up when shown (G28 B-12)', async () => {
+  const s = viewSetup();
+  let hidden = false; Object.defineProperty(s.doc, 'hidden', { get: () => hidden, configurable: true });
+  s.view.load(HNL); s.answers[0].res(resp(200, history())); await flush();
+  hidden = true; s.setNow(NOW + I.REFRESH_MS + 1);
+  s.timers.fire(I.TICK_MS); await flush();
+  assert.equal(s.calls.length, 1, 'hidden: no request');
+  hidden = false; s.setVisible(false); s.timers.fire(I.TICK_MS); await flush();
+  assert.equal(s.calls.length, 1, 'parked: no request');
+  s.setVisible(true); s.view.show(); await flush();
+  assert.equal(s.calls.length, 2, 'shown again: the missed turn at once');
+  assert.equal(s.calls[1].o.cache, 'no-cache');
+});
+
+test('Retry keeps the flag\'s reading (G28 A-10); the short readout on a narrow chart (B-6)', async () => {
+  const s = viewSetup();
+  const reading = { t: T0 - 1200, s: 4.0, g: null, d: 40 };
+  s.view.load(HNL, { reading }); s.answers[0].res(resp(500, {})); await flush();
+  assert.equal(s.view.state().status, 'error');
+  s.view.retry(); s.answers[1].res(resp(200, history({ t: [], s: [], g: [], d: [] }))); await flush();
+  assert.equal(s.els.current.textContent, '9 mph from NE (40°) · 8 kt · 20 min ago', 'the flag\'s reading after Retry');
+  const n = viewSetup({ width: 351 });
+  n.view.load(HNL); n.answers[0].res(resp(200, history())); await flush();
+  const svg = n.q('svg')[0]; svg.rect = { left: 0, top: 0, width: 351, height: I.CHART_H };
+  n.els.chart.dispatch('mousemove', { clientX: 351 - I.MARGIN.r, clientY: 10 });
+  assert.match(n.view.state().readout, /^7:00 AM · \d+ mph [A-Z]+( G\d+)?$/, 'time, speed, compass point, gust');
+  assert.ok(n.view.state().readout.length * 6.2 + 12 < 351 - 4, 'it fits its box');
+  assert.equal(I.READOUT_NARROW, 420);
+});
+
+test('visibility "or more" (G28 A-3); Metric one decimal (K-1); the chart\'s gap threshold is 90 minutes (A-9 J12)', () => {
+  assert.equal(I.distText(9.7, 'US', true), '6+ mi'); assert.equal(I.distText(16.1, 'Metric', true), '16+ km'); assert.equal(I.distText(4.8, 'US'), '3 mi');
+  assert.equal(I.conditionsText({ vis: [1, 9.7], vg: [1, 1] }, 'US'), 'Visibility 6+ mi');
+  assert.equal(I.conditionsText({ vis: [1, 9.7] }, 'Metric'), 'Visibility 9.7 km');
+  assert.equal(I.conditionsText({ at: [1, 29] }, 'Metric'), 'Air 29.0°C');
+  const near = I.linePath([{ t: 0, s: 1 }, { t: I.GAP_S, s: 1 }], 's', (t) => t, (v) => v);
+  const far = I.linePath([{ t: 0, s: 1 }, { t: I.GAP_S + 1, s: 1 }], 's', (t) => t, (v) => v);
+  assert.equal((near.match(/M/g) || []).length, 1); assert.equal((far.match(/M/g) || []).length, 2); assert.equal(I.GAP_S, 5400);
+});
+
+test('the feed keeps polling partial answers until the 24th (A-9 J08)', async () => {
+  const s = feedSetup(); s.start(); await flush();
+  s.answers[0].res(resp(200, LATEST, { 'X-Wind-Stations-Partial': 'COOPS' })); await flush();
+  for (let k = 1; k <= 3; k++) {
+    s.timers.fire(I.FEED_PARTIAL_MS); await flush();
+    s.answers[k].res(resp(200, LATEST, { 'X-Wind-Stations-Partial': 'COOPS' })); await flush();
+    assert.deepEqual(s.timers.pending(), [I.FEED_PARTIAL_MS], 'partial answer ' + (k + 1) + ': still every 5 s');
+  }
+  assert.equal(I.FEED_PARTIAL_MAX, 24);
+});
+
+test('the flag\'s reading joins only when strictly newer, never steps back, and redraws the table (G28 B-3 pins)', async () => {
+  const s = viewSetup();
+  s.view.load(HNL); s.answers[0].res(resp(200, history({ t: [T0 - 1200], s: [3.0], g: [null], d: [90] }))); await flush();
+  s.view.setReading({ t: T0 - 1200, s: 5.0, g: null, d: 10 });              // the history's own last time: no second row
+  assert.equal(s.view.state().rows, 1);
+  s.view.setReading({ t: T0 - 60, s: 9.0, g: null, d: 10 });
+  assert.equal(s.view.state().rows, 2); assert.equal(bodyRows(s)[0].children[1].textContent, '20 mph (17 kt)', 'the table redrawn with it');
+  const f = viewSetup();
+  f.view.load(HNL, { reading: { t: T0 - 60, s: 9.0, g: null, d: 10 } }); f.answers[0].res(resp(500, {})); await flush();
+  f.view.setReading({ t: T0 - 3000, s: 2.0, g: null, d: 200 });              // an older reading never replaces the newer one
+  f.view.retry(); f.answers[1].res(resp(200, history({ t: [], s: [], g: [], d: [] }))); await flush();
+  assert.match(f.els.current.textContent, /^20 mph from N \(10°\) · 17 kt · 1 min ago$/);
+});
+
+test('a tab shown again after a hidden turn asks at once (visibilitychange, G28 B-12); the short readout names the gust (B-6)', async () => {
+  const s = viewSetup();
+  s.view.load(HNL); s.answers[0].res(resp(200, history())); await flush();
+  s.doc.hidden = true; s.setNow(NOW + I.REFRESH_MS + 1);
+  s.timers.fire(I.TICK_MS); await flush();
+  assert.equal(s.calls.length, 1, 'hidden: no request');
+  s.doc.hidden = false; s.doc.fire('visibilitychange'); await flush();
+  assert.equal(s.calls.length, 2, 'shown: the missed turn');
+  const n = viewSetup({ width: 351 });
+  n.view.load(HNL); n.answers[0].res(resp(200, history({ t: [T0 - 60], s: [5.0], g: [8.0], d: [90] }))); await flush();
+  const svg = n.q('svg')[0]; svg.rect = { left: 0, top: 0, width: 351, height: I.CHART_H };
+  n.els.chart.dispatch('mousemove', { clientX: 351 - I.MARGIN.r, clientY: 10 });
+  assert.match(n.view.state().readout, / · 11 mph E G18$/);
 });

@@ -905,7 +905,7 @@ Windows: a station chip gives its subtitle up before the station's name. An expa
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
 
-## Wind stations (plan section 39, UI asset 1.20.0)
+## Wind stations (plan section 39, UI asset 1.21.0)
 
 Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from four public-domain NOAA / NWS
 feeds (attribution requested, given in the map credits while the layer is on and in the window): NOAA NDBC buoys,
@@ -999,22 +999,30 @@ stations, CWOP amateur stations last (owner, 2026-10-10); every station at zoom 
 flags show (nothing while the tab is hidden; a partial answer again every 5 s, 24 times at most) and the drawn flags are
 repainted IN PLACE (text, classes, the arrow's rotation; the markers, their listeners and the focus stay). Clicks reach
 a flag only on its visible parts (the ring, the arrow's shape, the number: the 40-px box itself passes clicks to what lies
-under it); on touch screens the ring has a 36-px disc, and a tide icon on the same spot keeps only its own 18 px (the disc
-around it opens the wind window). A forecast point under the ring (within 7 px on screen) leaves the ring hollow and
-without clicks, so the yellow dot shows through and keeps its click; with a forecast point elsewhere in the box (within
-20 px), a click on the flag within 8 px of the dot (12 px on a touch screen) selects the forecast point and anywhere else
-opens the wind window (owner, 2026-10-10: the dot keeps its click; a live dot on the ring leaves the number and arrow). A click opens
+under it); on touch screens the ring has a 36-px disc, and a tide icon on the same station (matched by id, not by
+pixels) keeps only its own 18 px (the disc around it opens the wind window). A forecast point or one of My points close
+enough to take a tap on the flag (8 px with a mouse, 12 px on a touch screen, while its layer is shown) leaves the ring
+hollow and without clicks, and a click on the arrow or the number within that distance of the dot goes to the dot; a
+SOLID ring, its arrow and its number always open the wind window (owner, G28: what you see is what you get). A pan or a
+zoom redraws only the flags that change (the others keep their markers, listeners and focus). A click opens
 the wind window (`#windWin`, a fourth floating window at the TOP-right corner below the legend, tools and gear, as tall
 as its content, never over the parked chips nor lower than 42 px above the bottom edge, so it scrolls on a short screen;
-its chip stacks on top of the station chips at the bottom-right through the measured `--chips-h`, its phone bar above the
-tide bar; Escape closes it first) on the station's last 24 hours
+its left edge right of the logo and the overlay panel (G28, owner). While the live-buoy or tide window is open its
+right edge sits 60 px in from the margin, and where its own top does not show above one of them it is 30 px wider than
+that window on the left: every open window keeps a strip to click, whichever is in front. On screens up to about
+1,280 px wide that can reach over the overlay panel's right part. The page measures these boxes (`syncWindWidth`:
+`--map-topleft-r`, `--ww-gap`, `--ww-min-w`). Its chip stacks on top of the station chips at the bottom-right through the
+measured `--chips-h`, its phone bar above the tide bar and never capped; Escape closes it first) on the station's last 24 hours
 (`createWindView`): an SVG chart of the speed (solid) and gusts (dashed), the site's unit on the left and knots on the
 right, hour ticks every 3 h (6 h when narrow) with local midnights dated, gaps where readings are more than 90 minutes
 apart, a row of direction arrows under it, a hover / touch readout (the nearest reading within 45 min), the current
-reading with its age (every minute), a folded newest-first table of 48 rows, the zone the times are in and the source;
-the readings are asked again every 5 minutes, quietly. Under the wind reading a conditions line (step 5d: air / water
+reading with its age (every minute; the flag's own reading when it is newer than the history's last row, which the
+browser keeps for a minute), a folded newest-first table of 48 rows, the zone the times are in and the source (the NWS
+API's stations link to NOAA's readable time-series page); the readings are asked again every 5 minutes, quietly, but not
+while the tab is hidden or the window parked (it catches up when shown); Retry keeps the flag's reading. On a narrow chart
+(phones) the readout is short: the time, the speed with its compass point and gust, the air temperature. Under the wind reading a conditions line (step 5d: air / water
 temperature, humidity, dew point, pressure with its trend, visibility, the weather in words, only what the station
-reports, in the site's units: °F / inHg / miles or °C / hPa / km) and under the arrows a small 24-hour chart of the air
+reports, in the site's units: °F / inHg / miles or °C with one decimal / hPa / km; a METAR "6+" or "10+" visibility shows its "+") and under the arrows a small 24-hour chart of the air
 (solid) and water (dashed) temperature on the same time axis; the Readings table gains Air / Water columns; the readout
 names the air temperature. A station NDBC publishes no 24-hour file for (eight Korean buoys)
 shows the flag's own latest reading and says so. Units and the display zone follow the gear (the site's Time Zone when

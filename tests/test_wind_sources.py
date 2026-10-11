@@ -863,7 +863,7 @@ def test_route_history_contract(winds):
     assert c.get("/api/wind/ndbc:51201/history").status_code == 404        # NDBC serves it; not in the snapshot
     assert c.get("/api/wind/bad%20id/history").status_code == 404
     r = c.get("/api/wind/ndbc:51003/history")
-    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=300" and r.get_json()["src"] == "ndbc"
+    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=60" and r.get_json()["src"] == "ndbc"   # G28 B-3
     hfetch.table[W.coops_url("1612401", range=24)] = IOError("down")
     r = c.get("/api/wind/coops:1612401/history")
     assert r.status_code == 503 and r.headers["Retry-After"] == "5" and r.get_json()["retry"] is True

@@ -55,12 +55,14 @@ function boot(o = {}) {
   const docListeners = {};
   doc.addEventListener = (t, fn) => { (docListeners[t] = docListeners[t] || []).push(fn); };
   Object.defineProperty(doc, 'hidden', { get: () => hidden });
-  const windLayer = { items: [], clearLayers() { this.items = []; } }, tideLayer = { items: [], clearLayers() { this.items = []; } };
+  const windLayer = { items: [], clearLayers() { this.items = []; }, removeLayer(m) { this.items = this.items.filter((x) => x !== m); } },
+    tideLayer = { items: [], clearLayers() { this.items = []; } };
+  const forecastLayer = { name: 'forecast' }, pointLayer = { name: 'points' };
   const counts = new Map();
   const credits = { count: (t) => counts.get(t) || 0, has: (t) => (counts.get(t) || 0) > 0 };
   const pxPerDeg = o.pxPerDeg || 1000, scale = () => pxPerDeg * Math.pow(2, zoom - 9);
   const container = { focused: 0, focus() { this.focused++; } };
-  const map = { hasLayer: (l) => (l === windLayer && on) || (l === tideLayer && false), getZoom: () => zoom,
+  const map = { hasLayer: (l) => (l === windLayer && on) || (l === tideLayer && false) || (l === forecastLayer && !o.forecastOff) || (l === pointLayer && !o.pointsOff), getZoom: () => zoom,
     latLngToContainerPoint: (ll) => ({ x: (ll[1] + 180) * scale(), y: (90 - ll[0]) * scale() }),
     mouseEventToContainerPoint: (ev) => ({ x: ev.clientX, y: ev.clientY }),
     project: (ll, z) => ({ x: (ll[1] + 180) * pxPerDeg * Math.pow(2, z - 9), y: (90 - ll[0]) * pxPerDeg * Math.pow(2, z - 9) }),
@@ -77,17 +79,23 @@ function boot(o = {}) {
     divIcon: (opts) => ({ divIcon: opts }) };
   const fetchCalls = [];
   const answers = { '/api/wind/stations': (o.listAnswers || [resp(200, o.list || LIST)]).slice(), '/api/wind/latest': (o.latestAnswers || [resp(200, LATEST)]).slice() };
-  const fetch = (u, init) => { fetchCalls.push(u); const q = answers[u] || []; const a = q.length > 1 ? q.shift() : q[0];
+  // a request budget (G28 A-9 T10): a page that asks again in a loop gets no more answers after FETCH_BUDGET requests, so
+  // the loop stops (the test then fails on its counts) instead of spinning the process forever
+  const FETCH_BUDGET = 100;
+  const fetch = (u, init) => { fetchCalls.push(u); if (fetchCalls.length > FETCH_BUDGET) return new Promise(() => {});
+    const q = answers[u] || []; const a = q.length > 1 ? q.shift() : q[0];
     if (!a) return new Promise(() => {}); if (a instanceof Error) return Promise.reject(a); return Promise.resolve(a); };
   const timerQ = [];
   const fakeSet = (fn, ms) => { timerQ.push({ fn, ms }); return timerQ.length; }, fakeClear = (id) => { if (timerQ[id - 1]) timerQ[id - 1].fn = null; };
   const w = {}; new Function('window', 'module', 'setTimeout', 'clearTimeout', SRC)(w, undefined, fakeSet, fakeClear);
   const loads = [], clears = [], units = [], zones = [];
-  const view = { load: (st, opts) => loads.push([st.id, opts]), clear: () => clears.push(1), resize() {}, show() {}, setUnit: (u) => units.push(u), setZone: (z) => zones.push(z) };
+  const view = { load: (st, opts) => loads.push([st.id, opts]), clear: () => clears.push(1), resize() {}, show() {}, setUnit: (u) => units.push(u), setZone: (z) => zones.push(z),
+    readings: [], setReading(r) { this.readings.push(r); } };
   const realWinds = w.AllshoreWinds;
   const AllshoreWinds = Object.assign({}, realWinds, { createWindView: (deps) => { view.deps = deps; return view; } });
   const toolClicks = [];
   const window = { AllshoreWinds: o.noWinds ? null : AllshoreWinds, AllshoreTools: { active: () => !!o.toolActive, click: (ll, ev) => toolClicks.push(ll) } };
+  if (o.coarse !== undefined) window.matchMedia = (q) => ({ matches: q === '(pointer: coarse)' && !!o.coarse });
   const windWin = { opens: 0, el: windWinEl, isOpen: () => !windWinEl.hidden, window: { mode: 'normal' },
     open() { this.opens++; windWinEl.hidden = false; }, close() { windWinEl.hidden = true; api.windWindowClosed(); } };
   const visibleCopies = (stations) => stations.flatMap((s) => (o.copies || [0]).map((off) => ({ s, lng: s.lon + off, o: off })));
@@ -98,14 +106,17 @@ function boot(o = {}) {
     '\nreturn { get windNoteText() { return windNoteText; }, get windStationsData() { return windStationsData; }, get activeWindId() { return activeWindId; }, ' +
     'get windDrawn() { return windDrawn; }, get windReadings() { return windReadings; }, get windFeed() { return windFeed; }, ' +
     'rebuildWindMarkers, loadWindStations, openWindStation, closeWindWindow, windWindowClosed, windZone, refreshWindFlags, syncWindNote, paintWindNote, WIND_CREDIT, windSubtitle, windRank, WIND_ALL_ZOOM, ' +
-    'get windView() { return windView; } };';
+    'get windView() { return windView; }, tideTargets, setTideDrawn(x) { tideDrawn = x; } };';
   const layersControl = { _update: function () { notes.wind.textContent = ''; notes.tide.textContent = ''; notes.live.textContent = ''; return this; } };
   const forecastStationsData = o.forecast || [];                       // the yellow dots (a flag over one gets a hollow ring)
+  const savedPointsData = o.points || [];                              // My points (the same rule: G28 B-5)
   const api = new Function('window', 'document', 'fetch', 'map', 'L', 'windLayer', 'tideLayer', 'tideIcon', 'tideIconActive', 'visibleCopies', 'renderSignature', 'textTip',
-    'saveMapView', 'saveLayerVisibility', 'measureTopRight', 'getSelectedUnit', 'tzAbbr', 'CustomEvent', 'windWin', 'tideWin', 'layersControl', 'MAX_MAP_ZOOM', 'Date', 'forecastStationsData', code)(
+    'saveMapView', 'saveLayerVisibility', 'measureTopRight', 'getSelectedUnit', 'tzAbbr', 'CustomEvent', 'windWin', 'tideWin', 'layersControl', 'MAX_MAP_ZOOM', 'Date', 'forecastStationsData',
+    'forecastLayer', 'pointLayer', 'savedPointsData', code)(
     window, doc, fetch, map, L, windLayer, tideLayer, 'ICON', 'ICON-ACTIVE', visibleCopies, renderSignature, (t) => ({ text: String(t) }),
     () => saves.push('view'), () => saves.push('layers'), () => {}, () => unit, (iso, tz) => tz + '!',
-    class { constructor(type) { this.type = type; } }, windWin, null, layersControl, 11, Object.assign(function () {}, { now: () => NOW }), forecastStationsData);
+    class { constructor(type) { this.type = type; } }, windWin, null, layersControl, 11, Object.assign(function () {}, { now: () => NOW }), forecastStationsData,
+    forecastLayer, pointLayer, savedPointsData);
   api.container = container;
   return { api, notes, doc, events, windLayer, credits, fetchCalls, loads, clears, units, zones, view, toolClicks, saves, windWin, timerQ, docListeners,
     setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; }, setUnit: (u) => { unit = u; }, setHidden: (h) => { hidden = h; }, answers };
@@ -246,46 +257,58 @@ test('a tool active: the click goes to the tool; a failed list says so and is as
   void Date_; void later;
 });
 
-test('a forecast point under a flag\'s ring: the ring is hollow (no clicks there, the dot keeps its click); in the box: a click within 8 px of the dot selects the forecast point, anywhere else the flag opens; whole again when the zoom parts them; part of the drawn signature (step 5b)', async () => {
-  // 1 px = 1/1000 degree at zoom 9 (the stub): the dot 0.005 deg east of Honolulu's gauge = 5 px at zoom 9 (hollow), 20 px at zoom 11 (near), 40 px at zoom 12
-  const b = boot({ zoom: 9, forecast: [{ id: 'HNL01', lat: 21.3033, lon: -157.8595 }, { id: 'far', lat: 30, lon: -150 }, { id: 'bad', lat: 'x', lon: 1 }] });
+test('the dot\'s tap (G28 B-1, B-5): a forecast point or one of My points within the tap distance (8 px mouse, 12 px touch) makes the ring hollow and keeps its click; a solid ring always opens the wind window; layers off: no dots; part of the drawn signature', async () => {
+  // 1 px = 1/1000 degree at zoom 9 (the stub): the dot 0.005 deg east of Honolulu's gauge = 5 px at zoom 9, 10 px at zoom 10
+  const HNL = { id: 'HNL01', lat: 21.3033, lon: -157.8595 };
+  const b = boot({ zoom: 9, forecast: [HNL, { id: 'far', lat: 30, lon: -150 }, { id: 'bad', lat: 'x', lon: 1 }] });
   b.api.rebuildWindMarkers(true); await flush();
-  const marker = (id) => b.windLayer.items.find((m) => m.opts.title.startsWith('Wind station ' + id));
-  const flag = (id) => flagOf(marker(id));
-  assert.ok(flag('Honolulu').classList.contains('wind-hollow'), 'the dot within 7 px of the station');
-  assert.ok(!flag('Western Hawaii').classList.contains('wind-hollow')); assert.ok(!flag('Honolulu Intl').classList.contains('wind-hollow'));
-  const before = b.windLayer.items;
-  b.api.rebuildWindMarkers(false); assert.equal(b.windLayer.items, before, 'the same zoom: no redraw');
-  b.setZoom(11); b.api.rebuildWindMarkers(false);
-  assert.notEqual(b.windLayer.items, before, 'the set changed: redrawn');
-  assert.ok(!flag('Honolulu').classList.contains('wind-hollow'), '20 px apart at zoom 11: a whole ring');
-  // the stub's container point of a lat/lng: ((lon + 180) * 4000, (90 - lat) * 4000) at zoom 11
-  const pt = (lat, lon) => ({ x: (lon + 180) * 4000, y: (90 - lat) * 4000 });
-  const dot = pt(21.3033, -157.8595), st = pt(21.3033, -157.8645);
-  marker('Honolulu').fire('click', { latlng: { lat: 21.3, lng: -157.86 }, originalEvent: { clientX: dot.x + 6, clientY: dot.y, pointerType: 'mouse' } });
-  assert.equal(b.doc.getElementById('station').value, 'HNL01', 'a click 6 px from the dot: the forecast point');
-  assert.ok(b.events.includes('allshore:station')); assert.equal(b.windWin.opens, 0); assert.equal(b.api.activeWindId, null);
-  marker('Honolulu').fire('click', { latlng: { lat: 21.3, lng: -157.86 }, originalEvent: { clientX: dot.x + 10, clientY: dot.y, pointerType: 'touch' } });
-  assert.equal(b.windWin.opens, 0, 'a tap 10 px from the dot: still the forecast point (12 px on touch)');
-  marker('Honolulu').fire('click', { latlng: { lat: 21.3, lng: -157.86 }, originalEvent: { clientX: st.x - 6, clientY: st.y, pointerType: 'mouse' } });
-  assert.equal(b.windWin.opens, 1, 'a click on the far side of the ring (26 px from the dot): the wind window');
-  assert.equal(b.api.activeWindId, 'coops:1612340');
+  const marker = (bb, id) => bb.windLayer.items.find((m) => m.opts.title === 'Wind station ' + id || m.opts.title.startsWith('Wind station ' + id + ':'));   // the exact name (not 'Honolulu Intl')
+  const flag = (bb, id) => flagOf(marker(bb, id));
+  assert.ok(flag(b, 'Honolulu').classList.contains('wind-hollow'), 'the dot 5 px away: hollow');
+  assert.ok(!flag(b, 'Western Hawaii').classList.contains('wind-hollow')); assert.ok(!flag(b, 'Honolulu Intl').classList.contains('wind-hollow'));
+  const kept = marker(b, 'Western Hawaii');
+  b.api.rebuildWindMarkers(true); assert.equal(marker(b, 'Western Hawaii'), kept, 'a flag that stays keeps its marker (B-11)');
+  // hollow at zoom 9: a click on the arrow / number within 8 px of the dot -> the forecast point; further -> the window
+  const pt9 = (lat, lon) => ({ x: (lon + 180) * 1000, y: (90 - lat) * 1000 });
+  const dot9 = pt9(HNL.lat, HNL.lon), st9 = pt9(21.3033, -157.8645);
+  marker(b, 'Honolulu').fire('click', { latlng: {}, originalEvent: { clientX: dot9.x + 7, clientY: dot9.y } });
+  assert.equal(b.doc.getElementById('station').value, 'HNL01', 'within 8 px of the dot: the forecast point');
+  assert.equal(b.windWin.opens, 0);
+  marker(b, 'Honolulu').fire('click', { latlng: {}, originalEvent: { clientX: st9.x - 10, clientY: st9.y } });
+  assert.equal(b.windWin.opens, 1, '15 px from the dot: the wind window');
   b.api.windWindowClosed();
-  marker('Honolulu').fire('click', { latlng: { lat: 21.3, lng: -157.86 }, originalEvent: { key: 'Enter' } });
-  assert.equal(b.windWin.opens, 2, 'a key press has no position: the window');
+  // zoom 10: 10 px apart. A mouse: a SOLID ring, and a click on it (the station) opens the window, never the dot (B-1)
+  b.setZoom(10); b.api.rebuildWindMarkers(false);
+  assert.ok(!flag(b, 'Honolulu').classList.contains('wind-hollow'), '10 px with a mouse: solid');
+  const st10 = { x: (-157.8645 + 180) * 2000, y: (90 - 21.3033) * 2000 };
+  marker(b, 'Honolulu').fire('click', { latlng: {}, originalEvent: { clientX: st10.x + 3, clientY: st10.y } });
+  assert.equal(b.windWin.opens, 2, 'the solid ring: the wind window (7 px from the dot)');
   b.api.windWindowClosed();
-  b.api.refreshWindFlags();                                                // a feed repaint changes nothing here
-  b.setZoom(12); b.api.rebuildWindMarkers(false);
-  marker('Honolulu').fire('click', { latlng: { lat: 21.3, lng: -157.86 }, originalEvent: { clientX: (-157.8595 + 180) * 8000, clientY: (90 - 21.3033) * 8000, pointerType: 'mouse' } });
-  assert.equal(b.windWin.opens, 3, '40 px apart at zoom 12: a plain flag (no forecast point beside it)');
-  b.setZoom(9); b.api.rebuildWindMarkers(false); assert.ok(flag('Honolulu').classList.contains('wind-hollow'));
+  // a touch screen: 12 px -> hollow at zoom 10
+  const t = boot({ zoom: 10, coarse: true, forecast: [HNL] }); t.api.rebuildWindMarkers(true); await flush();
+  assert.ok(flag(t, 'Honolulu').classList.contains('wind-hollow'), '10 px on a touch screen: hollow');
+  marker(t, 'Honolulu').fire('click', { latlng: {}, originalEvent: { clientX: st10.x + 9, clientY: st10.y } });
+  assert.equal(t.doc.getElementById('station').value, 'HNL01', 'a tap 1 px from the dot: the forecast point');
+  marker(t, 'Honolulu').fire('click', { latlng: {}, originalEvent: { key: 'Enter' } });
+  assert.equal(t.windWin.opens, 1, 'a key press has no position: the window');
+  // My points (B-5): the same rule; a hit opens the point (its marker's own click)
+  const m = boot({ zoom: 9, points: [{ id: 'pt_21303N_157859W', lat: 21.3033, lon: -157.8595, label: 'Mine' }] });
+  m.api.rebuildWindMarkers(true); await flush();
+  assert.ok(flag(m, 'Honolulu').classList.contains('wind-hollow'), 'one of My points 5 px away: hollow');
+  marker(m, 'Honolulu').fire('click', { latlng: {}, originalEvent: { clientX: dot9.x + 2, clientY: dot9.y } });
+  assert.ok(m.events.includes('allshore:station') && m.windWin.opens === 0, 'the point opens, not the wind window');
+  assert.notEqual(m.doc.getElementById('station').value, 'pt_21303N_157859W', 'the select is the forecast points\' (the event carries the point)');
+  // layers off: no dots
+  const off = boot({ zoom: 9, forecastOff: true, pointsOff: true, forecast: [HNL], points: [{ id: 'p', lat: 21.3033, lon: -157.8595 }] });
+  off.api.rebuildWindMarkers(true); await flush();
+  assert.ok(off.windLayer.items.every((x) => !flagOf(x).classList.contains('wind-hollow')), 'their layers unticked: plain flags');
   const c = boot({ zoom: 9 }); c.api.rebuildWindMarkers(true); await flush();
-  assert.ok(c.windLayer.items.every((m) => !flagOf(m).classList.contains('wind-hollow')), 'no forecast points: plain flags');
+  assert.ok(c.windLayer.items.every((x) => !flagOf(x).classList.contains('wind-hollow')), 'no dots: plain flags');
   // a world copy: the dot is looked for in the flag's own copy (360 degrees east here)
-  const d = boot({ zoom: 11, copies: [0, 360], forecast: [{ id: 'HNL01', lat: 21.3033, lon: -157.8595 }] });
+  const d = boot({ zoom: 9, copies: [0, 360], forecast: [HNL] });
   d.api.rebuildWindMarkers(true); await flush();
-  const east = d.windLayer.items.find((m) => m.opts.title.startsWith('Wind station Honolulu') && m.ll[1] > 0);
-  east.fire('click', { latlng: { lat: 21.3, lng: 202.14 }, originalEvent: { clientX: (-157.8595 + 360 + 180) * 4000 + 6, clientY: (90 - 21.3033) * 4000, pointerType: 'mouse' } });
+  const east = d.windLayer.items.find((x) => x.opts.title.startsWith('Wind station Honolulu:') && x.ll[1] > 0);
+  east.fire('click', { latlng: {}, originalEvent: { clientX: (HNL.lon + 360 + 180) * 1000 + 6, clientY: (90 - HNL.lat) * 1000 } });
   assert.equal(d.doc.getElementById('station').value, 'HNL01', 'the copy 360 degrees east: its own dot');
   assert.equal(d.windWin.opens, 0);
 });
@@ -314,4 +337,73 @@ test('the zone hooks, the note painter after a legend rebuild, never a zoom hint
   assert.equal(n.windLayer.items.length, 3, 'markers without the module: plain markers'); assert.equal(n.api.windFeed, null);
   n.windLayer.items[0].fire('click', { latlng: {} });
   assert.equal(n.windWin.opens, 0, 'no view without the module: nothing opens');
+});
+
+// ---- the wind window's measured box (G28 B-7 / B-13: syncWindWidth) ----
+const SYNC = cut('      var WW_GAP = 60, WW_OUT = 30, WW_ABOVE = 30;', "      window.addEventListener('resize', syncWindWidth);");
+function syncPage(o) {
+  const props = {}, removed = [];
+  const rect = (r) => ({ getBoundingClientRect: () => r });
+  const win = (w) => w && { hidden: !!w.hidden, offsetWidth: w.offsetWidth === undefined ? w.width : w.offsetWidth,
+    classList: { contains: (c) => (w.cls || []).indexOf(c) >= 0 }, getBoundingClientRect: () => ({ top: w.top, width: w.width }) };
+  const els = { windWin: win(o.wind), liveBuoyPanel: win(o.live), tideWin: win(o.tide) };
+  const box = { getBoundingClientRect: () => ({ left: 0 }), querySelectorAll: () => (o.controls || []).map(rect) };
+  const map = { getContainer: () => box };
+  const document = { getElementById: (id) => els[id] || null,
+    documentElement: { style: { setProperty: (k, v) => { props[k] = v; }, removeProperty: (k) => { delete props[k]; removed.push(k); } } } };
+  const sync = new Function('map', 'document', SYNC + '\nreturn syncWindWidth;')(map, document);
+  sync();
+  return { props, removed };
+}
+
+test('the wind window\'s box: right of the top-left controls; a 60-px gap at the right while the live / tide window is open; 30 px wider than one whose top it does not clear', () => {
+  const controls = [{ right: 204, width: 194 }, { right: 360, width: 300 }, { right: 999, width: 0 }];   // a hidden control (width 0) does not count
+  let p = syncPage({ controls, wind: { top: 188, width: 1030 } }).props;
+  assert.deepEqual(p, { '--map-topleft-r': '360px', '--ww-gap': '0px' }, 'nothing else open: the full box');
+  p = syncPage({ controls, wind: { top: 188, width: 900 }, live: { top: 260, width: 820 } }).props;
+  assert.equal(p['--ww-gap'], '60px'); assert.equal(p['--ww-min-w'], undefined, 'its top clears the live window by 72 px: no stick-out');
+  p = syncPage({ controls, wind: { top: 188, width: 900 }, live: { top: 217.9, width: 820 } }).props;
+  assert.equal(p['--ww-min-w'], '850px', 'less than 30 px above it: 30 px wider than the live window');
+  p = syncPage({ controls, wind: { top: 188, width: 900 }, live: { top: 218, width: 820 } }).props;
+  assert.equal(p['--ww-min-w'], undefined, 'exactly 30 px: clear');
+  p = syncPage({ controls, wind: { top: 188, width: 900 }, live: { top: 150, width: 820 }, tide: { top: 120, width: 880.4 } }).props;
+  assert.equal(p['--ww-min-w'], '910px', 'the wider of the two it does not clear');
+  for (const cls of [['fw-min'], ['fw-max']]) {
+    const r = syncPage({ controls, wind: { top: 188, width: 900 }, live: { top: 150, width: 820, cls } });
+    assert.equal(r.props['--ww-gap'], '0px', cls[0] + ': not an open window'); assert.ok(r.removed.indexOf('--ww-min-w') >= 0);
+  }
+  assert.equal(syncPage({ controls, wind: { top: 188, width: 900 }, live: { top: 150, width: 820, hidden: true } }).props['--ww-gap'], '0px');
+  assert.equal(syncPage({ controls, wind: { top: 188, width: 900 }, live: { top: 150, width: 820, offsetWidth: 0 } }).props['--ww-gap'], '0px');
+  p = syncPage({ controls, wind: { top: 188, width: 900, hidden: true }, live: { top: 150, width: 820 } }).props;
+  assert.equal(p['--ww-gap'], '60px'); assert.equal(p['--ww-min-w'], undefined, 'the wind window closed: nothing to measure against');
+  assert.deepEqual(syncPage({ controls: [] }).props, { '--map-topleft-r': '0px', '--ww-gap': '0px' }, 'no wind window, no controls');
+});
+
+test('a partial feed answer keeps the readings of the feeds it names; the open window gets the newer reading (G28 A-10, B-3)', async () => {
+  const partial = { now: NOW / 1000, stale_s: 7200, fields: ['id', 't', 's', 'g', 'd'], rows: [['ndbc:51003', NOW / 1000 - 600, 6.0, 8.0, 130]], missing: [] };
+  const later = { now: NOW / 1000, stale_s: 7200, fields: ['id', 't', 's', 'g', 'd'], rows: [['coops:1612340', NOW / 1000 - 60, 5.0, null, 90]], missing: [] };
+  const b = boot({ latestAnswers: [resp(200, LATEST), resp(200, partial, { 'X-Wind-Stations-Partial': 'COOPS' }), resp(200, later)] });
+  b.api.rebuildWindMarkers(true); await flush();
+  const hnl = () => b.windLayer.items.find((m) => m.opts.title.startsWith('Wind station Honolulu:'));
+  hnl().fire('click', { latlng: {} });
+  assert.equal(b.api.activeWindId, 'coops:1612340');
+  const turn = () => { const t = b.timerQ.find((x) => x.fn && x.ms >= 5000); const fn = t.fn; t.fn = null; fn(); };
+  turn(); await flush();                                                       // the CO-OPS feed still loading: its readings stay
+  assert.ok(flagOf(hnl()).classList.contains('wind-light'), 'the gauge keeps the reading it showed');
+  assert.equal(b.api.windReadings['coops:1612340'].s, 1.0);
+  assert.equal(b.api.windReadings['ndbc:51003'].t, NOW / 1000 - 600, 'the named-complete feed takes its new reading');
+  turn(); await flush();
+  const last = b.view.readings[b.view.readings.length - 1];
+  assert.equal(last.t, NOW / 1000 - 60, 'the window hears the newer reading of its station'); assert.equal(last.s, 5.0);
+});
+
+test('a tide icon on a wind flag\'s gauge has no tap pad, matched by station id (the snapshots differ by pixels at high zoom: G28 A-10)', async () => {
+  const b = boot({ zoom: 9 });
+  b.api.rebuildWindMarkers(true); await flush();
+  const el = () => ({ style: { setProperty(k, v) { this[k] = v; } }, setAttribute() {}, getAttribute() { return null; } });
+  const a = { s: { id: '1612340', lat: 21.3033, lon: -157.8595 }, lng: -157.8595, o: 0, active: false, marker: { el: el(), getElement() { return this.el; } } };
+  const far = { s: { id: '1612480', lat: 21.3433, lon: -157.8595 }, lng: -157.8595, o: 0, active: false, marker: { el: el(), getElement() { return this.el; } } };
+  b.api.setTideDrawn([a, far]); b.api.tideTargets();
+  assert.equal(a.marker.el.style['--tide-tap'], '0px', '5 px from its own gauge\'s flag: no pad');
+  assert.equal(far.marker.el.style['--tide-tap'], '10px', 'another station: its pad');
 });

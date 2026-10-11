@@ -186,3 +186,37 @@ Every item of 7a done as scoped. Deviations / details:
   on purpose (NWS keeps a reading, METAR altim + vg, the scheduler fixture records the wind runner). pytest 1,055, Node
   582. Mutation: 37 of 37 killed (`scratch g28/fix7a/mut7a.py`). Reviewer A's W35 survivor (conditions' break ->
   continue) is equivalent: the rows are sorted.
+
+## Fix round 7b — page + client (2026-10-11, Opus 5.5 HIGH) @ 80ad49b + golden b840c04 (local)
+Every item of 7b done (UI 1.21.0). Deviations / details:
+- B-1 / B-5 (owner 1): `windHollowSet` collects the forecast dots (while that layer shows) and My points (while theirs
+  shows); within the tap distance (`WIND_DOT_HIT_PX` 8, `WIND_DOT_HIT_TOUCH_PX` 12 on `(pointer: coarse)`) the ring is
+  hollow and a click on the arrow / number within that distance of the dot goes to the dot (`windDotHit` -> `pickDot`:
+  a forecast point as its own click, one of My points through `allshore:station`). The old 7 px / 20 px two-mode rule is
+  gone. The distance is in the drawn signature.
+- B-2: phones `.fwin.wind-win { max-height: none; }`.
+- B-3: `setReading` / `joinFallback` in winds.js (only a strictly newer reading, never one older than the kept one; the
+  chart and table redrawn); the page calls it on every feed answer for the open station; `WIND_HISTORY_MAX_AGE` 300 -> 60 s.
+- B-7 / B-8 / B-13 (owner 2 + 3) — DEVIATION: the owner's option 3 ("live and tide start below the wind window") was
+  measured first: at 1280x800 it leaves the live / tide windows ~60 px tall, so it was not built. Built instead
+  (`syncWindWidth`, measured by the page; the rule searched over 180 screen sizes in scratch `g28/fix7b/layouts.py`):
+  the wind window's left edge right of the logo and the overlay panel (`--map-topleft-r`); while the live-buoy or tide
+  window is open its right edge 60 px in from the margin (`--ww-gap`) and, when its own top is not at least 30 px above
+  one of them, 30 px wider than that window on the left (`--ww-min-w`). Every open window then keeps a 24 x 24 px area
+  outside every window above it, whichever is in front, at all 180 sizes (the old test checked pairs; the new one
+  subtracts the union), except the known short-screen case (forecast in front of wind under 570 px tall: Escape). COST
+  against owner decision 2: with a live or tide window open, on screens up to ~1,280 px wide the wind window can reach
+  over the overlay panel's right part (up to ~108 px at 1180 px, 8 px at 1280x768); from 1,366 px never (pinned).
+- B-6: `READOUT_NARROW` 420 px: time · speed compass G-gust · air. B-11: `windByKey` keeps unchanged flags (state = active
+  + dot), removes only the ones no longer drawn. B-12: the tick refreshes only while the window shows and the tab is
+  visible; `show()` and `visibilitychange` catch up.
+- A-10: the tide pad matched by `coops:` id (or < 2 px); Retry passes the kept reading; a partial feed answer keeps the
+  readings of the sources it names as missing; NWS source link -> `weather.gov/wrh/timeseries?site=`.
+- K-1 Metric temperature `toFixed(1)`; A-3 visibility "6+ mi"; K-2 the three playback relief tests on a fake clock;
+  A-9 T10: the page harness's fake fetch has a 100-request budget (a re-ask loop now fails in milliseconds instead of
+  spinning the process); A-9 J08 / J12 / B12 pins.
+- Tests: pytest 1,055 (1,044 + 11 golden), Node 593; a behaviour test of `syncWindWidth`; the hollow test's marker
+  finder made exact (it matched "Honolulu Intl" for "Honolulu" once B-11 kept markers, which hid mutant T04).
+  Mutation: 34 of 34 killed (`scratch g28/fix7b/mut7b.py`; 9 survived the first run and got tests).
+- NEXT: test-site verification at MAX (cherry-pick 1f43e25, f55e790, 80ad49b, b840c04 onto `test`; the record commits
+  stay local), then a short fresh re-check at MAX, then production (tag `prod-pre-wind`).

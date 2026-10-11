@@ -101,6 +101,22 @@ stations_data_cache = None
 
 # NOAA URLs
 NOAA_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
+# NOAA's copy of the same GFS directory tree on AWS Open Data (NODD). It carries every station .bull byte for
+# byte (checked 2026-10-11) a minute or two after NOMADS, with no per-address rate limit; NOMADS refused the
+# production server's address on 2026-10-11 and every GFS forecast said "No recent run found." The run probe and
+# the .bull are asked here first, NOMADS second. It has no per-station .spec, so the Wind column still reads NOMADS.
+NOAA_BUCKET = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
+# NOMADS_DISABLED=1 skips NOMADS entirely (a diagnostic: shows what the site serves while NOMADS refuses us).
+NOMADS_DISABLED = os.environ.get("NOMADS_DISABLED", "") == "1"
+
+
+def _bull_bases():
+    """Where a GFS-Wave station bulletin is asked for, in order."""
+    return (NOAA_BUCKET,) if NOMADS_DISABLED else (NOAA_BUCKET, NOAA_BASE)
+
+
+def _host(url: str) -> str:
+    return url.split("/")[2] if url.count("/") >= 2 else url
 
 # ---------------------- HTTP session, logging, caches (Phase 2a) ----------------
 import time
@@ -969,20 +985,24 @@ def _detect_latest_run():
     """
     now = datetime.utcnow()
     run_hours = [18, 12, 6, 0]
+    seen = {}                                     # host -> the last answer (a status or an error), for the log
     for delta_day in [0, 1]:
         check_date = now - timedelta(days=delta_day)
         yyyymmdd = check_date.strftime("%Y%m%d")
         for hour in run_hours:
             run_str = f"{hour:02d}"
-            url = f"{NOAA_BASE}/gfs.{yyyymmdd}/{run_str}/wave/station/bulls.t{run_str}z/"
-            test_file = f"{url}gfswave.51201.bull"
-            try:
-                resp = HTTP.head(test_file, timeout=10)
-                if resp.status_code == 200:
-                    return yyyymmdd, run_str
-            except Exception as exc:
-                logger.debug("run probe failed for %s: %r", test_file, exc)
-                continue
+            for base in _bull_bases():            # a run counts when either copy has the bulletin
+                test_file = f"{base}/gfs.{yyyymmdd}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.51201.bull"
+                try:
+                    resp = HTTP.head(test_file, timeout=10)
+                    if resp.status_code == 200:
+                        return yyyymmdd, run_str
+                    seen[_host(base)] = f"HTTP {resp.status_code}"
+                except Exception as exc:
+                    logger.debug("run probe failed for %s: %r", test_file, exc)
+                    seen[_host(base)] = type(exc).__name__
+    logger.warning("run probe: no GFS-wave run found (last answers: %s)",
+                   ", ".join(f"{h} {a}" for h, a in seen.items()) or "none")
     return None, None
 
 
@@ -1164,6 +1184,8 @@ def get_station_wind(station_id: str, date_str: str | None = None,
                    f"bulls.t{run_str}z/gfswave.{station_id}.spec")
             wind = {}
             try:
+                if NOMADS_DISABLED:
+                    raise ConnectionError("NOMADS_DISABLED=1")
                 with HTTP.get(url, stream=True, timeout=(10, 30)) as resp:
                     if resp.status_code == 200:
                         # Total wall-clock cap: read timeout is per-recv, so a
@@ -1363,13 +1385,23 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
     if not date_str:
         return None, None, None, None, 'UTC', "No recent run found."
 
-    bull_url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
-    try:
-        resp = HTTP.get(bull_url, timeout=15)
-    except Exception as exc:
-        logger.warning("could not download .bull for %s: %r", station_id, exc)
-        return None, None, None, None, 'UTC', f"Could not download .bull for {station_id}"
-    if resp.status_code != 200 or not resp.text:
+    resp, answered = None, False
+    for base in _bull_bases():                    # NOAA's AWS copy first, then NOMADS
+        bull_url = f"{base}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
+        try:
+            r = HTTP.get(bull_url, timeout=15)
+        except Exception as exc:
+            logger.warning("could not download .bull for %s from %s: %r", station_id, _host(base), exc)
+            continue
+        answered = True
+        if r.status_code == 200 and r.text:
+            resp = r
+            break
+        logger.warning(".bull for %s: HTTP %s from %s (run %s %sZ)", station_id, r.status_code, _host(base),
+                       date_str, run_str)
+    if resp is None:
+        if not answered:
+            return None, None, None, None, 'UTC', f"Could not download .bull for {station_id}"
         return None, None, None, None, 'UTC', f"No .bull file found for {station_id}"
 
     # GFS wind for the Wind table columns -- pinned to the SAME cycle as this

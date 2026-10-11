@@ -335,9 +335,10 @@ def test_a3_metar_visibility_keeps_its_or_more():
 
 
 def test_a3_conditions_take_the_or_more_from_the_visibility_row():
-    rows = [{"t": 0, "vis": 9.7, "vg": 1}, {"t": 600, "vis": 4.8}]
+    rows = [{"t": 0, "vis": 9.7, "vg": 1, "at": 20.0}, {"t": 600, "vis": 4.8}]
     c = W.conditions(rows)
-    assert c["vis"] == [600, 4.8] and "vg" not in c, "the older row's 'or more' is not the newest visibility's"
+    assert c["vis"] == [600, 4.8] and c["at"] == [0, 20.0]
+    assert "vg" not in c, "the older row's 'or more' is not the newest visibility's (nor the air temperature row's)"
     c = W.conditions([{"t": 0, "vis": 4.8}, {"t": 600, "vis": 9.7, "vg": 1}])
     assert c["vis"] == [600, 9.7] and c["vg"] == [600, 1]
 

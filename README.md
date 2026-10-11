@@ -811,7 +811,9 @@ zone differs from NOAA's own `timezonecorr` by more than 3 hours at a station ou
 places where NOAA's value is stale or on the other side of the date line), so a new wrong position is looked at before
 it ships. Names NOAA writes in capitals ("HONOLULU", "PAGO PAGO Harbor") are written as names; capitals inside a
 mixed-case name are abbreviations and stay ("Martha's Vineyard GPS Buoy", "PGA Boulevard Bridge"). `/api/tides/stations`
-serves the page's copy (id, name, position, kind, zone, gauge) with an ETag, 6 h for browsers and the edge.
+serves the page's copy (id, name, position, kind, zone, gauge) with an ETag and `Cache-Control: no-cache` (the browser
+asks again on every page load and gets a 304 while it is unchanged; the edge keeps nothing), so a changed list shows on
+the next page load after a deploy.
 
 `tide_sources.py` reads the predictions (`TideService`, wired in `app.py` with the forecast points' bounded fetch:
 one attempt, an 8 s wall-clock cap):
@@ -951,7 +953,7 @@ naming the site as aviationweather.gov asks):
 - `/api/wind/latest` is the merged table the scheduler prebuilt (never a build or a wait in the request): `{now, stale_s,
   fields [id, t, s, g, d], rows, missing}` with speeds in m/s and directions the wind blows FROM; a gauge without a CO-OPS
   reading takes its NDBC relay's. Feeds still loading after a start are named in `X-Wind-Stations-Partial` with
-  `Cache-Control: no-store` (the page asks again); else 2 min. `/api/wind/stations` serves the snapshot (6 h, ETag).
+  `Cache-Control: no-store` (the page asks again); else 2 min. `/api/wind/stations` serves the snapshot (ETag, `no-cache`: revalidated on every page load, like the tide list).
 - `/api/wind/<id>/history` (5 min): the last 24 hours (`t, s, g, d` ascending, plus the weather the same reports hold
   where any row has it, step 5d: `at` / `wt` air and water temperature degC, `dp` dew point, `rh` humidity % (from the
   dew point where not reported), `p` pressure hPa, `pt` its 3-hour change, `vis` visibility km, `wx` weather words;

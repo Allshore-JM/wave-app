@@ -530,7 +530,8 @@ def test_nws_provider_asks_a_window_per_station_paced_and_drops_empty_answers(cl
     assert ids() == ["nws:001HE"], "keep-last"
 
 
-def test_coops_provider_takes_the_newest_row_of_an_answer():
+def test_coops_provider_takes_the_newest_row_of_an_answer(monkeypatch):
+    monkeypatch.setattr(W.buoy_sources.time, "time", lambda: 1791650880 + 600)   # the reading is 10 min old, on any day
     two = json.dumps({"data": [{"t": "2026-10-10 16:42", "s": "2.0", "d": "80", "g": "3.0"},
                                {"t": "2026-10-10 16:48", "s": "1.0", "d": "74", "g": "3.5"}]}).encode()
     coops = W.CoopsWindProvider({"1612340": STATIONS["coops:1612340"]}, FakeFetch({W.coops_url("1612340", date="latest"): two}))
@@ -831,12 +832,14 @@ def winds(monkeypatch, clock):
     return provs, fetch, hfetch, A.app.test_client()
 
 
-def test_route_station_list_is_cached_for_hours_with_an_etag(winds):
+def test_route_station_list_is_revalidated_on_every_load(winds):
     _, _, _, c = winds
     r = c.get("/api/wind/stations")
-    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=21600"
-    assert r.headers["CDN-Cache-Control"] == "max-age=21600" and len(r.get_json()["stations"]) == len(STATIONS)
-    assert c.get("/api/wind/stations", headers={"If-None-Match": r.headers["ETag"]}).status_code == 304
+    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, no-cache"
+    assert r.headers["CDN-Cache-Control"] == "no-store" and len(r.get_json()["stations"]) == len(STATIONS)
+    r2 = c.get("/api/wind/stations", headers={"If-None-Match": r.headers["ETag"]})
+    assert r2.status_code == 304 and r2.headers["Cache-Control"] == "public, no-cache"
+    assert r2.headers["CDN-Cache-Control"] == "no-store" and r2.headers["ETag"] == r.headers["ETag"]
 
 
 def test_route_latest_inline_path_builds_once(winds):

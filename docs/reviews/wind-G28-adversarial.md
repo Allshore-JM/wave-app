@@ -154,3 +154,35 @@ Split in two parts, each with its own cue; then the test-site verification (MAX)
 20. K-1: Metric temperatures always with one decimal; K-2: the overlay timing test on fake timers; the page harness gets
     its own deadline (A-9's hang); the NWS source link to a readable page.
 21. UI version bump, golden re-captured in its own commit, README.
+
+## Fix round 7a — server + station list (2026-10-11, Opus 5.5 HIGH) @ 1f43e25 + f55e790 (local)
+Every item of 7a done as scoped. Deviations / details:
+- Budgets: CO-OPS on-demand 30 a minute, 15 at once (`COOPS_ON_DEMAND_*`), ONE bucket in `app.py` (`_COOPS_BUDGET`) passed to
+  the tide service (`TideService(bucket=)`: every `_json` takes a token, else `TideBusy` -> busy) and the wind history
+  (`WindHistory(coops_bucket=)`: a gauge window takes 1 + its products' tokens before the first request); NDBC histories
+  30 a minute. Reviewer A's `exp/coops_burst.py` re-run on the fix: 232 gauge windows at once -> 15 CO-OPS requests in
+  all (was 547-655), the rest busy (the page retries).
+- Build cap: `buoy_sources.SharedCap(2)` = `_REQUEST_BUILDS` = `_POINT_BUILDS`, passed to both services (`cap=`); reset
+  after a fork (it was never reset before for the points either). Weather products asked together (a small pool),
+  `WX_DEADLINE_S` 10 s for all; none asked without wind rows.
+- Runner: `BuoyProvider.refresh_runner()` hook; `WindProvider` -> `wind_sources.get_wind_runner()` (ThreadRunner,
+  `WIND_REFRESH_WORKERS` 1-4, default 2; reset after a fork). Reviewer A's `exp/runner_starve.py` re-run: with three wind
+  fetches hanging, 10 of 10 live-buoy lists published (was 0). `/healthz` `wind.runner` + `wind.fetch_stuck` (reported).
+- Paced slices: a shared stop flag checked before each request; at most `workers - 1` more after the refusal; the cursor
+  rewinds to the first station not asked.
+- CO-OPS messages: `coops_no_data()` ("No data was found"); feed: any other message = a failure (reading kept);
+  history: `WindError` (1 min, NDBC relay); products: logged, nothing added.
+- NDBC: `_kept` per station (newer only), cut at `NDBC_KEEP_S` 6 h.
+- METAR: `metar_visibility()` -> (km, more) and `vg` = 1 in rows, payload arrays (`WX_FLAGS`) and `conditions` (only from the
+  visibility's own row); pressure = altim, else slp.
+- A-10: NWS `NO_NEW` sentinel (keep the reading); relay newer wins; intensity-only weather groups dropped; bucket locks
+  reset after a fork; `warm_rank` removed.
+- Station list (owner decision 4): `one_per_spot` (100 m; coops > metar > ndbc; reporting now; id) before the NWS part;
+  `_fix_case(places=True)` for NDBC / METAR names. Rebuilt 2026-10-11: 2,727 stations (gauge 232, buoy 210, station 160,
+  cman 54, airport 1,777, NWS 294): 14 left out by the rule (CYGR, CYZV, CDXA2, CSXA2, KATP, KBQX, KGBK, KGHB, KGRY,
+  KSPR, KVAF NDBC copies, LJPC1, NAXR1, NMXA2), 12 names fixed, the rest daily drift (airports and seasonal buoys).
+  The gauge / NDBC near-twins were left OUT rather than folded as second aliases (one alias per gauge in the snapshot).
+- Tests: `tests/test_wind_g28.py` 28 + 3 tool tests (incl. "no two snapshot stations within 100 m"); 4 tests updated
+  on purpose (NWS keeps a reading, METAR altim + vg, the scheduler fixture records the wind runner). pytest 1,055, Node
+  582. Mutation: 37 of 37 killed (`scratch g28/fix7a/mut7a.py`). Reviewer A's W35 survivor (conditions' break ->
+  continue) is equivalent: the rows are sorted.

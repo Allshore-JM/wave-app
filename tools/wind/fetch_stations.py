@@ -79,10 +79,18 @@ COOPS_WX_SENSORS = {"Air Temperature": "a", "Water Temperature": "w", "Barometri
 NWS_ABBREVIATIONS = {"AFS", "AFB", "PHB", "MCBH", "USGS", "USCG", "NERR", "NWS", "NPS", "HVO", "UH", "HQ", "ARS", "SCAN",
                      "CRN", "FAA", "PMRF", "USDA", "NOAA", "NASA", "WWTP", "STP", "DOFAW", "NAR", "CPD"}
 NWS_SMALL_WORDS = {"at", "of", "the", "and", "near", "in", "on", "by", "to"}
+COMPASS = {"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"}
+US_STATES = {"AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA",
+             "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK",
+             "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC", "PR", "VI", "GU",
+             "AS", "MP"}
+DIST_RE = re.compile(r"(\d+)(nm|km|mi)$", re.I)
 KINDS = ("gauge", "buoy", "cman", "station", "airport") + NWS_KINDS
 COAST_KM = 30.0                 # owner, 2026-10-09: airports within 30 km of the coast only
 OFFSHORE_METAR = True           # a METAR site at sea (an offshore platform) is no inland airport: kept
 ALIAS_M = 300.0                 # an NDBC station this close to a kept CO-OPS gauge is that gauge
+SPOT_M = 100.0                  # owner decision 4 (G28): one flag per spot; within this, the first by SPOT_RANK stays
+SPOT_RANK = {"coops": 0, "metar": 1, "ndbc": 2, "nws": 3}   # a gauge, then an airport's METAR, then NDBC's copy
 CELL_DEG = 30                   # tier 0's cells: edges along these lines close the clipped pieces (inside land)
 BUCKET_DEG = 0.5
 METAR_API_IDS = 15              # ids per API request (24 h of hourly reports stays under its 400)
@@ -459,18 +467,56 @@ def wx_letters(sensors):
     return out or None
 
 
-def _fix_case(text):
+def _fix_case(text, places=False):
     """After the capital-name conversion: known abbreviations back in capitals ("Afs" -> "AFS"), small words lower-case
-    except the first ("At" -> "at"): "Bellows AFS at Waimanalo" (step 5c finding C)."""
+    except the first ("At" -> "at"): "Bellows AFS at Waimanalo" (step 5c finding C). places=True (NDBC and METAR
+    names, G28 A-10) also: compass points ("Nne" -> "NNE"), distances ("142Nm" -> "142NM") and a US state code after a
+    comma ("Attu Is, Ak" -> "Attu Is, AK")."""
     out = []
-    for i, w in enumerate(text.split(" ")):
+    words = text.split(" ")
+    for i, w in enumerate(words):
         core = w.strip("(),.")
+        after_comma = i > 0 and words[i - 1].endswith(",")
         if core.upper() in NWS_ABBREVIATIONS:
+            w = w.replace(core, core.upper())
+        elif places and len(core) > 1 and core.upper() in COMPASS:
+            w = w.replace(core, core.upper())
+        elif places and DIST_RE.fullmatch(core):
+            w = w.replace(core, core.upper())
+        elif places and after_comma and core.upper() in US_STATES:
             w = w.replace(core, core.upper())
         elif i > 0 and w == core and core.lower() in NWS_SMALL_WORDS:
             w = core.lower()
         out.append(w)
     return " ".join(out)
+
+
+def one_per_spot(rows, fresh=frozenset(), metres=SPOT_M):
+    """Owner decision 4 (G28 A-7 / B-9): one station per spot. Of rows within `metres` of each other the first by
+    (SPOT_RANK of its source, reporting now (in `fresh`), id) stays: a gauge before an airport's METAR before NDBC's
+    copy of it (the offshore platforms report as both), and of two ids at one spot the one reporting now. Returns
+    (the rows kept, in their order, [(dropped id, kept id), ...])."""
+    order = sorted(rows, key=lambda r: (SPOT_RANK.get(r[5], 9), 0 if r[0] in fresh else 1, r[0]))
+    grid, keep, dropped = {}, set(), []
+    for r in order:
+        cy, cx = round(r[2] * 50), round(r[3] * 50)                 # 0.02-degree cells: neighbours within 100 m
+        near = None
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                for k in grid.get((cy + dy, cx + dx), ()):
+                    if km_between(r[2], r[3], k[2], k[3]) * 1000 <= metres:
+                        near = k
+                        break
+                if near:
+                    break
+            if near:
+                break
+        if near:
+            dropped.append((r[0], near[0]))
+            continue
+        keep.add(r[0])
+        grid.setdefault((cy, cx), []).append(r)
+    return [r for r in rows if r[0] in keep], dropped
 
 
 def nws_name(name, sid, kind, clean=lambda n: n):
@@ -568,7 +614,7 @@ def main(argv=None):
             continue
         ref, rest = coops_id_in_name(t.get("name", ""))
         ndbc[sid] = {"lat": lat, "lon": lon, "kind": kind, "coops_ref": ref,
-                     "name": TT.clean_name(" ".join((rest or "").split())) or sid}
+                     "name": _fix_case(TT.clean_name(" ".join((rest or "").split())), places=True) or sid}
     alias, alias_log = assign_aliases(ndbc, {c: (s["lat"], s["lon"]) for c, s in coops.items()})
     aliased = {sid for sid in alias.values()}
     print(f"NDBC: {len(latest)} with wind now, {len(moving)} moving left out {sorted(moving)}, "
@@ -609,8 +655,13 @@ def main(argv=None):
     for sid in sorted(reporting):
         name, lat, lon = sites.get(sid, (sid, cand[sid][0], cand[sid][1]))
         lat, lon = round(lat, 4), round(lon, 4)
-        rows.append(["metar:" + sid, site_name(name, sid, TT.clean_name), lat, lon, "airport", "metar",
+        rows.append(["metar:" + sid, _fix_case(site_name(name, sid, TT.clean_name), places=True), lat, lon, "airport", "metar",
                      A._nearest_civil_tz(lat, lon), None, None])
+
+    # ---- one station per spot (owner decision 4, G28)
+    fresh = {"metar:" + sid for sid in now} | {"ndbc:" + sid for sid in latest}
+    rows, spot_dropped = one_per_spot(rows, fresh)
+    print(f"one per spot (within {SPOT_M:g} m): {len(spot_dropped)} left out {spot_dropped}", flush=True)
 
     # ---- NWS API: land stations with a usable wind reading, per area (step 5c)
     if not args.no_nws:

@@ -391,7 +391,16 @@ _POINT_CACHE = {}                 # (run, point id, tz) -> {"ts", "data": (the p
 _POINT_CACHE_MAX = 64             # ~130 KB of rows each; a point's cell series is kept by the source, so a rebuild is cheap
 _POINT_CACHE_TTL = 6 * 3600       # a run's values never change; the key carries the run
 _POINT_INFLIGHT = {}              # key -> Lock (one build per point at a time)
-_POINT_BUILDS = threading.BoundedSemaphore(2)   # of four request threads: two may build points, two stay free
+# One build cap for every request-path service that asks an agency while a visitor waits: forecast points, tide windows
+# and wind histories together build at most two at once, so two of the four request threads always stay free for the
+# page, the forecasts and /healthz (G28 A-6: three pools of two could hold all four when NOAA is slow). A forked child
+# gets a fresh one (buoy_sources' fork hook).
+_REQUEST_BUILDS = buoy_sources.SharedCap(2)
+_POINT_BUILDS = _REQUEST_BUILDS
+# One budget for the CO-OPS requests made while a visitor waits (tide windows and gauge wind windows: same agency, same
+# server address; NOAA blocked the test server for a minute after a burst of 232: G28 A-1). The paced wind feed's own
+# 24 a minute come on top of it.
+_COOPS_BUDGET = wind_sources.TokenBucket(wind_sources.COOPS_ON_DEMAND_PER_MIN, burst=wind_sources.COOPS_ON_DEMAND_BURST)
 _POINT_BUILD_SINCE = []           # when each build in progress took its slot (under _CACHE_LOCK)
 _POINT_BUILD_WAIT_S = 2.0         # the whole wait of one request: for the same point being built AND for a slot
 POINT_BUSY = "The server is busy with other forecast points; try again in a moment"
@@ -592,7 +601,7 @@ def _tides():
         if _TIDES["svc"] is None:
             stations, doc = tide_sources.load_stations(TIDE_STATIONS_PATH)
             _TIDES["list"] = _json_payload_and_etag(tide_sources.client_list(doc))
-            _TIDES["svc"] = tide_sources.TideService(stations, _points_fetch)
+            _TIDES["svc"] = tide_sources.TideService(stations, _points_fetch, bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
         return _TIDES["svc"], _TIDES["list"]
 
 
@@ -697,7 +706,7 @@ def _winds():
             _WINDS["list"] = _json_payload_and_etag(wind_sources.client_list(doc))
             _WINDS["providers"] = wind_sources.make_providers(stations, _points_fetch, WIND_COOPS_WORKERS, WIND_COOPS_PER_REFRESH,
                                                               WIND_NWS_WORKERS, WIND_NWS_PER_REFRESH)
-            _WINDS["svc"] = wind_sources.WindHistory(stations, _points_fetch)
+            _WINDS["svc"] = wind_sources.WindHistory(stations, _points_fetch, coops_bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
         return _WINDS
 
 
@@ -804,6 +813,9 @@ def _wind_health(now):
     providers = w["providers"]
     statuses = [p.status() for p in providers]
     current = _wind_memo_key(providers, [p.snapshot() for p in providers])
+    runner = wind_sources.get_wind_runner()
+    workers = getattr(runner, "workers", 0) or 0
+    stuck = sum(1 for st in statuses if (st.get("in_flight_s") or 0) > LIVE_FETCH_STUCK_SEC)
     with _CACHE_LOCK:
         memo = dict(_WIND_MEMO)
     with _LIVE_BG_LOCK:
@@ -817,7 +829,11 @@ def _wind_health(now):
                      "current": memo.get("key") == current,
                      "complete": bool(memo.get("key")) and all(v is not None for _, v in memo["key"])},
             "ticks": bg["ticks"], "prebuilds": bg["prebuilds"], "errors": bg["errors"], "last_error": bg["last_error"],
-            "history_entries": w["svc"].entries()}
+            "history_entries": w["svc"].entries(),
+            # the wind feeds' own runner (G28 A-5): reported, never part of `ok` (the buoys do not wait for it)
+            "runner": {"workers": workers, "running": getattr(runner, "running", None),
+                       "waiting": getattr(runner, "waiting", None)},
+            "fetch_stuck": bool(workers) and stuck >= workers}
 
 
 def _wind_uncached(payload, status, retry=False):

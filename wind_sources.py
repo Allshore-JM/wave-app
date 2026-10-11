@@ -38,7 +38,7 @@ import time
 import weakref
 import zlib
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 import buoy_sources
@@ -87,12 +87,19 @@ NWS_FEED_MAX = 512 * 1024                      # a row is ~3 KB
 NWS_HISTORY_LIMIT = 500                        # the API's most per request (a 5-minute station has 288 rows in 24 h)
 NWS_HISTORY_MAX = 4 * 1024 * 1024
 NWS_BUCKET_PER_MIN = 30                        # histories; with the feed's 25 a minute the server stays under ~55 a minute
+COOPS_ON_DEMAND_PER_MIN = 30                   # CO-OPS requests a minute for windows (wind histories AND tide windows share
+COOPS_ON_DEMAND_BURST = 15                     # it: G28 A-1); at most this many at once. The feed's own 24 a minute come on top
+NDBC_HISTORY_PER_MIN = 30                      # NDBC realtime2 files (0.2-1 MB each) for the windows
+WX_DEADLINE_S = 10.0                           # a gauge's weather products: one deadline for all of them (asked together, A-6)
+NDBC_KEEP_S = 6 * 3600                         # an NDBC reading kept this long after its station's newest line had no wind (B-4)
+WIND_REFRESH_WORKERS = 2                       # the wind feeds' own refresh threads (never the live buoys' workers: A-5)
 NWS_QC_REJECTED = ("X", "B")                   # MADIS quality control: rejected / subjectively bad values are dropped
 NWS_UNITS = {"wmoUnit:km_h-1": 1 / 3.6, "wmoUnit:m_s-1": 1.0, "wmoUnit:[kn_i]": KT_MS, "wmoUnit:mi_h-1": 0.44704}
 NWS_TEMP_UNITS = {"wmoUnit:degC": (1.0, 0.0), "wmoUnit:degF": (5 / 9, -32 * 5 / 9), "wmoUnit:K": (1.0, -273.15)}
 NWS_PRESSURE_UNITS = {"wmoUnit:Pa": 0.01, "wmoUnit:hPa": 1.0, "wmoUnit:mbar": 1.0}
 NWS_LENGTH_UNITS = {"wmoUnit:m": 0.001, "wmoUnit:km": 1.0, "wmoUnit:[mi_i]": 1.609344}
 WX_FIELDS = ("at", "wt", "dp", "rh", "p", "pt", "vis", "wx")   # the weather a history row may carry (see the module docstring)
+WX_FLAGS = ("vg",)                             # vg = 1: the row's visibility is "or more" (METAR "10+", "6+": G28 A-3)
 CONDITIONS_S = 3 * 3600                        # the current conditions: each field's newest value within this of the newest row
 TREND_S = 3 * 3600                             # the pressure's change over this long ("rising" / "falling" on the page)
 COOPS_WX_PRODUCTS = {"a": ("air_temperature", "at"), "w": ("water_temperature", "wt"), "p": ("air_pressure", "p"),
@@ -108,6 +115,8 @@ METAR_WX = {"RA": "rain", "DZ": "drizzle", "SN": "snow", "SG": "snow grains", "G
 METAR_WX_DESC = {"SH": "showers", "TS": "thunderstorm", "FZ": "freezing", "BL": "blowing", "DR": "drifting",
                  "MI": "shallow", "BC": "patches of", "PR": "partial"}
 ID_RE = re.compile(r"(coops|ndbc|metar|nws):[A-Z0-9]{3,8}")
+COOPS_NO_DATA_RE = re.compile(r"no data was found", re.I)   # the only CO-OPS message that means "nothing for the station"
+NO_NEW = object()                              # a paced station answered without a new reading: keep the one in hand
 _NUM = re.compile(r"-?\d+(\.\d+)?$")
 
 UNAVAILABLE = "The station's agency could not be reached; try again in a moment"
@@ -193,7 +202,7 @@ def with_weather(r, **fields):
     if r is None:
         return None
     for k, v in fields.items():
-        if k in WX_FIELDS and v is not None:
+        if (k in WX_FIELDS or k in WX_FLAGS) and v is not None:
             r[k] = v
     return r
 
@@ -290,6 +299,12 @@ def coops_error(doc):
     return None
 
 
+def coops_no_data(msg):
+    """True when NOAA's message says it has no data for the station ("No data was found ..."). Any other message
+    (a throttle, a hiccup) is a failure that may pass (G28 A-4; section 38 learned the same for the tides)."""
+    return bool(msg) and bool(COOPS_NO_DATA_RE.search(str(msg)))
+
+
 def _coops_epoch(text):
     """"2026-10-10 16:48" (GMT) -> epoch seconds, or None."""
     try:
@@ -383,12 +398,20 @@ def parse_metar_cache(raw):
     return out
 
 
+def metar_visibility(v):
+    """visib in statute miles ("10+" / "6+" = that or more, a number, "1/2") -> (km, more) or (None, False). "6+" is how
+    the API writes the international 9999 (10 km or more): 9.7 km and "or more", never a made-up 16 km (G28 A-3)."""
+    text = str(v if v is not None else "").strip()
+    more = text.endswith("+")
+    km = metar_visibility_km(text.rstrip("+"))
+    return (km, bool(more)) if km is not None else (None, False)
+
+
 def metar_visibility_km(v):
-    """visib in statute miles ("10+" = 10 or more, a number, "1/2") -> km, or None."""
+    """visib in statute miles (a number, "1/2"; a trailing "+" ignored) -> km, or None."""
     text = str(v if v is not None else "").strip()
     if not text:
         return None
-    more = text.endswith("+")
     text = text.rstrip("+")
     try:
         if "/" in text:
@@ -398,8 +421,7 @@ def metar_visibility_km(v):
             miles = float(text)
     except (TypeError, ValueError, ZeroDivisionError):
         return None
-    km = _km(miles * SM_KM)
-    return km if km is None or not more else max(km, 16.0)
+    return _km(miles * SM_KM)
 
 
 def metar_weather_words(wx, cover):
@@ -434,7 +456,7 @@ def metar_weather_words(wx, cover):
             words.append(" and ".join(phen))
         if nearby:
             words.append("nearby")
-        if words:
+        if desc or phen:                                               # "+" / "VC" alone say nothing
             groups.append(" ".join(words))
     if groups:
         return _words(", ".join(groups))
@@ -443,17 +465,20 @@ def metar_weather_words(wx, cover):
 
 def parse_metar_history(doc):
     """api/data/metar (format=json) -> readings in the order given. obsTime is epoch seconds; wdir an integer or
-    "VRB"; wspd / wgst whole knots (wgst absent without a gust); temp / dewp degC; slp (else altim) hPa; visib
-    statute miles; wxString + cover -> weather words."""
+    "VRB"; wspd / wgst whole knots (wgst absent without a gust); temp / dewp degC; altim (else slp) hPa: one quantity
+    for every row, so the 3-hour trend compares like with like (US SPECIs carry no slp: G28 A-8); visib statute miles
+    (vg = 1 for "or more"); wxString + cover -> weather words."""
     out = []
     for row in doc if isinstance(doc, list) else []:
         if not isinstance(row, dict):
             continue
         r = _metar_reading(row.get("obsTime"), row.get("wdir"), row.get("wspd"), row.get("wgst"))
         if r is not None:
+            vis, more = metar_visibility(row.get("visib"))
             with_weather(r, at=_temp(row.get("temp")), dp=_temp(row.get("dewp")),
-                         p=_hpa(row.get("slp")) if _hpa(row.get("slp")) is not None else _hpa(row.get("altim")),
-                         vis=metar_visibility_km(row.get("visib")), wx=metar_weather_words(row.get("wxString"), row.get("cover")))
+                         p=_hpa(row.get("altim")) if _hpa(row.get("altim")) is not None else _hpa(row.get("slp")),
+                         vis=vis, vg=1 if more and vis is not None else None,
+                         wx=metar_weather_words(row.get("wxString"), row.get("cover")))
             out.append(r)
     return out
 
@@ -566,12 +591,14 @@ class WindProvider(buoy_sources.BuoyProvider):
     capabilities = buoy_sources._caps(bulk=True, recent_history=True)
     extra_keys = ("wind", "alias_of")
     stale_after_sec = STALE_S
-    warm_rank = 0
 
     def __init__(self, stations, fetch):
         super().__init__(http=None)
         self.stations = dict(stations)          # local id -> snapshot station
         self._fetch = fetch
+
+    def refresh_runner(self):
+        return get_wind_runner()                # never the live buoys' workers (G28 A-5)
 
     def _entry(self, local, r, extra=None):
         st = self.stations.get(local) or {}
@@ -598,24 +625,33 @@ class NdbcWindProvider(WindProvider):
     source_url = "https://www.ndbc.noaa.gov"
     attribution_text = "Source: " + ATTRIBUTION["ndbc"]
     list_ttl_sec = 300
-    warm_rank = 0
 
     def __init__(self, stations, fetch, aliases=None):
         super().__init__(stations, fetch)
         self.aliases = dict(aliases or {})      # NDBC id -> the gauge's snapshot station (id "coops:1612340")
+        self._kept = {}                         # local id -> (the latest wind reading, alias extra or None)
 
     def _fetch_stations(self):
+        """latest_obs.txt holds ONE line per station, its newest report; an hourly buoy's newest is often its wave-only
+        line ("MM" wind), so each station keeps its last wind reading until a newer one comes or it is NDBC_KEEP_S
+        old (it is drawn grey past STALE_S like any old reading): G28 B-4, the buoys read "no reading" up to 45 % of
+        every hour before."""
         body = self._fetch(NDBC_LATEST_URL, NDBC_LATEST_MAX, HEADERS)
         obs = parse_latest_obs(body.decode("utf-8", "replace"))
-        out = []
         for local, r in obs.items():
+            old = self._kept.get(local)
+            if old is not None and old[0]["t"] > r["t"]:
+                continue
             if local in self.stations:
-                out.append(self._entry(local, r))
+                self._kept[local] = (r, None)
             elif local in self.aliases:
                 g = self.aliases[local]
-                out.append(self._entry(local, r, {"alias_of": g["id"], "name": g.get("name") or local,
-                                                  "lat": g.get("lat"), "lon": g.get("lon")}))
-        return out
+                self._kept[local] = (r, {"alias_of": g["id"], "name": g.get("name") or local,
+                                         "lat": g.get("lat"), "lon": g.get("lon")})
+        cut = buoy_sources.time.time() - NDBC_KEEP_S
+        for local in [k for k, (r, _) in self._kept.items() if r["t"] < cut]:
+            del self._kept[local]
+        return [self._entry(local, r, extra) for local, (r, extra) in sorted(self._kept.items())]
 
 
 class MetarProvider(WindProvider):
@@ -625,7 +661,6 @@ class MetarProvider(WindProvider):
     source_url = "https://aviationweather.gov"
     attribution_text = "Source: " + ATTRIBUTION["metar"]
     list_ttl_sec = 300
-    warm_rank = 1
 
     def _fetch_stations(self):
         body = self._fetch(METAR_CACHE_URL, METAR_CACHE_MAX, HEADERS)
@@ -639,8 +674,9 @@ class PacedProvider(WindProvider):
     station is asked about every (stations / per_refresh) minutes and the agency sees a steady trickle. A station
     whose request fails keeps its last reading; the agency's "no data" drops it; a reading older than keep_s is
     dropped. When EVERY request of a slice fails the fetch fails (keep-last applies); an answer in refused_codes
-    (HTTP 403 / 429) pauses the feed for pause_s (the kept readings stay). Subclasses give the codes, the messages
-    and _one(local) -> (local, reading or None, error text or None)."""
+    (HTTP 403 / 429) stops the rest of the slice before it is sent (G28 A-2: those stations are asked first after the
+    pause) and pauses the feed for pause_s (the kept readings stay). Subclasses give the codes, the messages and
+    _one(local) -> (local, reading / None (no data: dropped) / NO_NEW (keep the one in hand), error text or None)."""
     refused_codes = ("403",)
     pause_s = COOPS_PAUSE_S
     keep_s = COOPS_KEEP_S
@@ -681,19 +717,35 @@ class PacedProvider(WindProvider):
         ids = self._slice()
         if not ids:
             return []
-        failures, last, refused = 0, None, None
+        failures, last, refused, skipped = 0, None, None, []
+        stop = threading.Event()
+
+        def ask(local):
+            if stop.is_set():                                          # refused: the rest of the slice is not sent
+                return local, None, None, True
+            local, r, err = self._one(local)
+            if err and self._refused(err):
+                stop.set()
+            return local, r, err, False
+
         with ThreadPoolExecutor(self.workers) as pool:
-            for local, r, err in pool.map(self._one, ids):
-                if err:
+            for local, r, err, skip in pool.map(ask, ids):
+                if skip:
+                    skipped.append(local)
+                elif err:
                     failures += 1
                     last = err
                     if self._refused(err):
                         refused = err
+                elif r is NO_NEW:
+                    pass                                               # nothing newer: the reading in hand stays
                 elif r is None:
                     self._readings.pop(local, None)                    # the agency: no data for the station now
                 else:
                     self._readings[local] = r
         if refused:
+            if skipped:
+                self._cursor = self._ids.index(skipped[0])             # the stations not asked go first after the pause
             self._paused_until = buoy_sources.time.time() + self.pause_s
             code = next((c for c in self.refused_codes if ("HTTP %s" % c) in refused), self.refused_codes[0])
             raise RuntimeError(self.refused_msg % (code, self.pause_s))
@@ -724,7 +776,6 @@ class CoopsWindProvider(PacedProvider):
     source_url = "https://tidesandcurrents.noaa.gov"
     attribution_text = "Source: " + ATTRIBUTION["coops"]
     list_ttl_sec = COOPS_TTL_S
-    warm_rank = 2
     refused_codes = ("403",)
     pause_s = COOPS_PAUSE_S
     keep_s = COOPS_KEEP_S
@@ -739,8 +790,11 @@ class CoopsWindProvider(PacedProvider):
             doc = json.loads(self._fetch(coops_url(local, date="latest"), COOPS_MAX, HEADERS))
         except Exception as e:
             return local, None, "%s: %s" % (type(e).__name__, e)
-        if coops_error(doc):
-            return local, None, None
+        msg = coops_error(doc)
+        if msg:
+            if coops_no_data(msg):
+                return local, None, None                               # NOAA has no reading for the gauge now
+            return local, None, "NOAA: %s" % msg[:120]                 # a passing message: the reading in hand stays
         rows = parse_coops_wind(doc)
         return local, (max(rows, key=lambda r: r["t"]) if rows else None), None
 
@@ -748,14 +802,14 @@ class CoopsWindProvider(PacedProvider):
 class NwsProvider(PacedProvider):
     """The NWS API's land weather stations (step 5c; Hawaii first): one observations request per station for its
     newest NWS_FEED_LIMIT rows of the last NWS_FEED_WINDOW_S, paced like the CO-OPS feed (the API's rate limit is
-    not published; it answers 403 or 429 to abuse). The newest row with a wind speed is the reading; an empty
-    answer (no observations, or a station the API no longer knows) drops the station's reading."""
+    not published; it answers 403 or 429 to abuse). The newest row with a wind speed is the reading; an answer
+    without one (no wind in the last 2 hours, or a station the API no longer knows) keeps the reading in hand until
+    it is keep_s old (owner decision 12)."""
     source = "NWS"
     source_name = "NWS API"
     source_url = "https://api.weather.gov"
     attribution_text = "Source: " + ATTRIBUTION["nws"]
     list_ttl_sec = NWS_TTL_S
-    warm_rank = 3
     refused_codes = ("403", "429")
     pause_s = NWS_PAUSE_S
     keep_s = NWS_KEEP_S
@@ -774,7 +828,7 @@ class NwsProvider(PacedProvider):
         except Exception as e:
             return local, None, "%s: %s" % (type(e).__name__, e)
         rows = parse_nws_observations(doc)
-        return local, (max(rows, key=lambda r: r["t"]) if rows else None), None
+        return local, (max(rows, key=lambda r: r["t"]) if rows else NO_NEW), None
 
 
 def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER_REFRESH, nws_workers=2,
@@ -796,7 +850,8 @@ FIELDS = ["id", "t", "s", "g", "d"]
 def build_latest(stations, lists, now):
     """The page's table of latest readings. lists: {src: the provider's snapshot list (lean entries), or None for a
     provider with no list yet (it contributes nothing; the route names it as partial)}. rows: [id, t, s, g, d] per
-    station with a reading, in id order; a gauge without a CO-OPS reading takes its NDBC relay's (alias_of).
+    station with a reading, in id order; a gauge takes its NDBC relay's reading (alias_of) when it has no CO-OPS
+    reading or the relay's is newer (NDBC keeps updating while CO-OPS cannot be asked).
     missing: the snapshot ids of the sources that HAVE a list (even an empty one) but no reading now."""
     rows, have, relays = {}, set(), {}
     listed = {src for src, lst in lists.items() if lst is not None}
@@ -814,7 +869,7 @@ def build_latest(stations, lists, now):
                 rows[sid] = [sid, int(t), w[0], w[1], w[2]]
                 have.add(sid)
     for sid, (t, w) in relays.items():
-        if sid in stations and sid not in rows:
+        if sid in stations and (sid not in rows or t > rows[sid][1]):
             rows[sid] = [sid, t, w[0], w[1], w[2]]
             have.add(sid)
     missing = sorted(sid for sid in stations if sid not in have and sid.split(":", 1)[0] in listed)
@@ -824,24 +879,33 @@ def build_latest(stations, lists, now):
 
 # ---------------------------------------------------------------------------------------------- history
 
-class TokenBucket:
-    """`rate` tokens a minute, at most `rate` held: take() is True when one was available."""
+_BUCKETS = weakref.WeakSet()
 
-    def __init__(self, rate=METAR_BUCKET_PER_MIN, now=time.monotonic):
+
+class TokenBucket:
+    """`rate` tokens a minute, at most `burst` held (default: rate): take(n) is True when n were available (then
+    taken), else False and nothing is taken."""
+
+    def __init__(self, rate=METAR_BUCKET_PER_MIN, now=time.monotonic, burst=None):
         self.rate, self._now = float(rate), now
-        self._tokens = float(rate)
+        self.burst = float(burst if burst is not None else rate)
+        self._tokens = self.burst
         self._at = now()
         self._lock = threading.Lock()
+        _BUCKETS.add(self)
 
-    def take(self):
+    def take(self, n=1):
         with self._lock:
             t = self._now()
-            self._tokens = min(self.rate, self._tokens + (t - self._at) * self.rate / 60.0)
+            self._tokens = min(self.burst, self._tokens + (t - self._at) * self.rate / 60.0)
             self._at = t
-            if self._tokens >= 1.0:
-                self._tokens -= 1.0
+            if self._tokens >= n:
+                self._tokens -= n
                 return True
             return False
+
+    def _reset_lock(self):
+        self._lock = threading.Lock()
 
 
 _SERVICES = weakref.WeakSet()
@@ -850,10 +914,13 @@ _SERVICES = weakref.WeakSet()
 class WindHistory:
     """A station's readings of the last 24 hours, cached, one upstream request per station at a time (the tide
     service's core: answers are (status, payload) with status "ok", "final", "busy" or "error"; "busy" is never
-    cached). fetch(url, max_bytes, headers=None) -> bytes raises on failure; now() -> epoch seconds."""
+    cached). fetch(url, max_bytes, headers=None) -> bytes raises on failure; now() -> epoch seconds. Every upstream
+    request takes a token from its agency's budget first (METAR, NWS, CO-OPS (shared with the tide windows: G28 A-1),
+    NDBC); an empty budget answers "busy". cap: an optional build cap shared with the other request-path services
+    (G28 A-6) instead of this service's own `builds`."""
 
     def __init__(self, stations, fetch, now=time.time, max_entries=256, ok_ttl=600, error_ttl=60, builds=2,
-                 wait_s=2.0, bucket=None, nws_bucket=None):
+                 wait_s=2.0, bucket=None, nws_bucket=None, coops_bucket=None, ndbc_bucket=None, cap=None):
         self.stations = stations
         self._fetch = fetch
         self._now = now
@@ -862,6 +929,9 @@ class WindHistory:
         self._builds_n, self.wait_s = builds, wait_s
         self.bucket = bucket or TokenBucket()
         self.nws_bucket = nws_bucket or TokenBucket(NWS_BUCKET_PER_MIN)
+        self.coops_bucket = coops_bucket or TokenBucket(COOPS_ON_DEMAND_PER_MIN, burst=COOPS_ON_DEMAND_BURST)
+        self.ndbc_bucket = ndbc_bucket or TokenBucket(NDBC_HISTORY_PER_MIN)
+        self._cap = cap
         self._reset_locks()
         self._cache = OrderedDict()           # key -> (expires, status, payload)
         _SERVICES.add(self)
@@ -869,7 +939,7 @@ class WindHistory:
     def _reset_locks(self):
         self._lock = threading.Lock()
         self._inflight = {}
-        self._builds = threading.BoundedSemaphore(self._builds_n)
+        self._builds = self._cap if self._cap is not None else threading.BoundedSemaphore(self._builds_n)
 
     # -- cache
     def _get(self, key):
@@ -953,7 +1023,13 @@ class WindHistory:
         except ValueError:
             raise WindError("the answer is not JSON") from None
 
+    @staticmethod
+    def _take(bucket, what, n=1):
+        if not bucket.take(n):
+            raise WindBusy("the %s request budget is used up" % what)
+
     def _ndbc(self, local, since):
+        self._take(self.ndbc_bucket, "NDBC")
         try:
             text = self._body(NDBC_RT2_URL % local, NDBC_RT2_MAX).decode("utf-8", "replace")
         except WindError as exc:
@@ -964,25 +1040,51 @@ class WindHistory:
 
     def _coops(self, local, since):
         doc = self._json(coops_url(local, range=24), COOPS_MAX)
-        if coops_error(doc):
-            return []                                                  # NOAA has nothing for the last 24 h
+        msg = coops_error(doc)
+        if msg:
+            if coops_no_data(msg):
+                return []                                              # NOAA has nothing for the last 24 h
+            raise WindError("NOAA: %s" % msg[:120])                    # a passing message: 60 s, the NDBC relay (A-4)
         return [r for r in parse_coops_wind(doc) if r["t"] >= since]
+
+    @staticmethod
+    def _wx_products(letters):
+        return [COOPS_WX_PRODUCTS[c] for c in str(letters or "") if c in COOPS_WX_PRODUCTS]
 
     def _coops_weather(self, local, letters, rows):
         """The gauge's own weather products (COOPS_WX_PRODUCTS, only the letters the snapshot lists) merged into the
-        wind rows at the same minute; a product that cannot be read or has no data adds nothing (logged)."""
+        wind rows at the same minute, asked together under ONE deadline (WX_DEADLINE_S: a slow NOAA must not hold a
+        request thread for one request after another, G28 A-6); a product that cannot be read in time or says
+        anything but "no data" adds nothing (logged)."""
         by_t = {r["t"]: r for r in rows}
-        for letter in str(letters or ""):
-            prod = COOPS_WX_PRODUCTS.get(letter)
-            if not prod or not by_t:
-                continue
-            product, key = prod
+        prods = self._wx_products(letters)
+        if not prods or not by_t:
+            return
+
+        def get(prod):
             try:
-                doc = self._json(coops_url(local, product=product, range=24), COOPS_MAX)
+                return self._json(coops_url(local, product=prod[0], range=24), COOPS_MAX), None
             except WindError as exc:
+                return None, exc
+
+        pool = ThreadPoolExecutor(min(4, len(prods)))
+        try:
+            futs = [pool.submit(get, prod) for prod in prods]
+            done, _ = wait(futs, timeout=WX_DEADLINE_S)
+        finally:
+            pool.shutdown(wait=False)                                 # a late answer is dropped, never waited for
+        for (product, key), fut in zip(prods, futs):
+            if fut not in done:
+                _log.info("wind history coops:%s: %s not read in %g s", local, product, WX_DEADLINE_S)
+                continue
+            doc, exc = fut.result()
+            if exc is not None:
                 _log.info("wind history coops:%s: %s not read (%s)", local, product, exc)
                 continue
-            if coops_error(doc):
+            msg = coops_error(doc)
+            if msg:
+                if not coops_no_data(msg):
+                    _log.info("wind history coops:%s: %s: NOAA says %s", local, product, msg[:120])
                 continue
             check = _temp if key in ("at", "wt") else _hpa if key == "p" else _pct
             for t, v in parse_coops_series(doc).items():
@@ -1028,9 +1130,12 @@ class WindHistory:
         elif src == "nws":
             rows = self._nws(local, since)
         else:
+            self._take(self.coops_bucket, "CO-OPS", 1 + len(self._wx_products(st.get("wx"))))
             try:
                 rows = self._coops(local, since)
                 self._coops_weather(local, st.get("wx"), rows)
+            except WindBusy:
+                raise
             except WindError as exc:
                 if not st.get("alias"):
                     raise
@@ -1052,7 +1157,7 @@ class WindHistory:
                          "p": "hPa", "pt": "hPa/3h", "vis": "km"}, "stale_s": STALE_S, "now": int(now),
                "t": [r["t"] for r in rows], "s": [r["s"] for r in rows], "g": [r["g"] for r in rows],
                "d": [r["d"] for r in rows], "source": ATTRIBUTION[via or src], "via": via, "note": note}
-        for k in WX_FIELDS:                                            # only the fields some row carries
+        for k in WX_FIELDS + WX_FLAGS:                                 # only the fields some row carries
             if any(r.get(k) is not None for r in rows):
                 out[k] = [r.get(k) for r in rows]
         out["conditions"] = conditions(rows)
@@ -1073,6 +1178,8 @@ def conditions(rows):
                 break
             if r.get(k) is not None:
                 out[k] = [r["t"], r[k]]
+                if k == "vis" and r.get("vg"):
+                    out["vg"] = [r["t"], 1]                            # that visibility is "or more"
                 break
     trend = None
     if out.get("pt") is not None:
@@ -1092,9 +1199,40 @@ def conditions(rows):
     return out
 
 
+_WIND_RUNNER = None
+_WIND_RUNNER_LOCK = threading.Lock()
+
+
+def get_wind_runner():
+    """The wind feeds' own refresh runner (WIND_REFRESH_WORKERS threads, env WIND_REFRESH_WORKERS 1-4): a slow or hung
+    agency here never holds one of the live buoys' workers (G28 A-5)."""
+    global _WIND_RUNNER
+    with _WIND_RUNNER_LOCK:
+        if _WIND_RUNNER is None:
+            try:
+                n = int(float(os.environ.get("WIND_REFRESH_WORKERS", WIND_REFRESH_WORKERS)))
+            except (ValueError, OverflowError):
+                n = WIND_REFRESH_WORKERS
+            _WIND_RUNNER = buoy_sources.ThreadRunner(max(1, min(4, n)))
+        return _WIND_RUNNER
+
+
+def set_wind_runner(runner):
+    """Install a runner (None: the default again on the next use). Returns the previous one."""
+    global _WIND_RUNNER
+    with _WIND_RUNNER_LOCK:
+        prev, _WIND_RUNNER = _WIND_RUNNER, runner
+    return prev
+
+
 def _after_fork():
+    global _WIND_RUNNER, _WIND_RUNNER_LOCK
+    _WIND_RUNNER_LOCK = threading.Lock()
+    _WIND_RUNNER = None                         # its threads are not in the child
     for svc in list(_SERVICES):
         svc._reset_locks()
+    for b in list(_BUCKETS):
+        b._reset_lock()
 
 
 if hasattr(os, "register_at_fork"):

@@ -276,7 +276,8 @@ def test_metar_visibility_km():
 def test_parse_metar_history_carries_the_weather():
     rows = W.parse_metar_history(json.loads(fx("metar_history.json")))
     r = rows[0]
-    assert r["at"] == 25.6 and r["dp"] == 21.1 and r["p"] == 1014.2 and r["vis"] == 16.1 and r["wx"] == "A few clouds"
+    assert r["at"] == 25.6 and r["dp"] == 21.1 and r["p"] == 1014.3 and r["vis"] == 16.1 and r["wx"] == "A few clouds"
+    assert r["vg"] == 1                                                    # "10+": 10 statute miles OR MORE (G28 A-3)
     rows = W.parse_metar_history([{"obsTime": 1791651180, "wdir": 50, "wspd": 5, "temp": 20, "dewp": 10, "altim": 1013.0, "visib": "6", "wxString": "-RA"}])
     assert rows[0]["p"] == 1013.0 and rows[0]["wx"] == "light rain" and rows[0]["vis"] == 9.7, "altim when slp is missing"
 
@@ -485,10 +486,10 @@ def test_coops_provider_pauses_two_minutes_after_a_403(clock):
     assert coops.list_stations_versioned()[1] == 2 and fetch.count("station=") > n and coops.status()["paused_s"] == 0
 
 
-def test_nws_provider_asks_a_window_per_station_paced_and_drops_empty_answers(clock):
+def test_nws_provider_asks_a_window_per_station_paced_and_keeps_readings_through_empty_answers(clock):
     """Step 5c: the NWS API feed is the CO-OPS feed's pacing over api.weather.gov: one observations request per
-    station (the last 2 hours, the newest 6 rows, ld+json), the newest row with a speed is the reading; an empty
-    answer drops the reading; a 429 (or 403) pauses the feed."""
+    station (the last 2 hours, the newest 6 rows, ld+json), the newest row with a speed is the reading; an answer
+    without one keeps the reading in hand until NWS_KEEP_S (decision 12; G28 A-10); a 429 (or 403) pauses the feed."""
     fetch = FakeFetch(nws_table())
     nws = W.NwsProvider(NWS_IDS, fetch, workers=2, per_refresh=1)
     assert nws._ids == ["001HE", "029HI"]
@@ -503,15 +504,14 @@ def test_nws_provider_asks_a_window_per_station_paced_and_drops_empty_answers(cl
     assert e["wind"] == [newest["s"], newest["g"], newest["d"]] and e["latest_time"] == W.iso_z(newest["t"])
     assert e["name"] == "MECO Kealaloloa Ridge" and e["lat"] == 20.80393
     clock.now += 60; assert ids() == ["nws:001HE"] and fetch.count("029HI") == 1       # 029HI: nothing in the window
-    # the station's answer turns empty: its reading goes; the LIST keeps the last good one for a while (the base class
-    # treats an empty list after a good one as the agency being down, as for the CO-OPS feed)
+    # the station's answer turns empty (nothing in its 2-hour window): the reading in hand stays (G28 A-10)
     fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
-    clock.now += 60; assert ids() == ["nws:001HE"] and nws.status()["readings"] == 0
-    assert nws.status()["last_error"] == "empty list after 1 stations"
+    clock.now += 60; assert ids() == ["nws:001HE"] and nws.status()["readings"] == 1
+    assert nws.status()["last_error"] is None
     fetch.table[W.NWS_API + "/stations/001HE/observations?"] = fx("nws_obs.json")
     clock.now += 60; ids()                                                            # 029HI's turn: still nothing
-    assert nws.status()["readings"] == 0 and fetch.count("029HI") == 2
-    clock.now += 60; assert ids() == ["nws:001HE"] and nws.status()["readings"] == 1   # 001HE asked again: back
+    assert nws.status()["readings"] == 1 and fetch.count("029HI") == 2
+    clock.now += 60; assert ids() == ["nws:001HE"] and nws.status()["readings"] == 1   # 001HE asked again
     # a 429 pauses the feed for NWS_PAUSE_S with the readings kept
     fetch.table[W.NWS_API + "/stations/029HI/observations?"] = IOError("HTTP 429")
     v = nws.list_stations_versioned()[1]
@@ -918,8 +918,10 @@ def bg(winds, monkeypatch):
     monkeypatch.setattr(A, "start_live_background", lambda: True)
     rec = RecordingRunner()
     prev = B.set_refresh_runner(rec)
+    prev_w = W.set_wind_runner(rec)              # the wind feeds' own runner (G28 A-5), recorded in the same list here
     yield bprovs, winds[0], rec, winds[3]
     B.set_refresh_runner(prev)
+    W.set_wind_runner(prev_w)
 
 
 def test_scheduler_pass_queues_the_wind_feeds_after_the_buoys_and_prebuilds(bg):

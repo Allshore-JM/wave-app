@@ -375,3 +375,41 @@ def test_in_land_on_the_hawaii_crop():
     edges = _hawaii_edges()
     got = W.in_land(edges, [21.48, 21.0, 19.6, 21.315], [-158.0, -158.5, -155.5, -157.6])
     assert got == [True, False, True, False]                         # central Oahu, sea, Big Island, east of Oahu
+
+
+# ------------------------------------------------------------------ G28 step 7a: one per spot, place names
+
+@pytest.mark.parametrize("name,want", [
+    ("Southwest Bering Sea - 142Nm Nne Of Attu Is, Ak", "Southwest Bering Sea - 142NM NNE of Attu Is, AK"),
+    ("Tillamook, Or - 85 NM WNW of Tillamook, OR", "Tillamook, OR - 85 NM WNW of Tillamook, OR"),
+    ("Isle Of Man Arpt", "Isle of Man Arpt"), ("East Of Sw Pass, La", "East of SW Pass, LA"),
+    ("Honolulu Intl, HI, US", "Honolulu Intl, HI, US"), ("W Hawaii", "W Hawaii"), ("St Paul Mxak, Ak", "St Paul Mxak, AK"),
+])
+def test_place_names_through_the_case_rules(name, want):
+    assert W._fix_case(name, places=True) == want
+    assert W._fix_case("East Of Sw Pass, La") == "East of Sw Pass, La", "places=False: the NWS rule only"
+
+
+def test_one_per_spot_keeps_a_gauge_then_metar_then_ndbc():
+    rows = [["coops:1", "g", 21.0, -157.0, "gauge", "coops"], ["ndbc:A", "n", 21.0003, -157.0, "buoy", "ndbc"],
+            ["metar:KX", "m", 25.0, -90.0, "airport", "metar"], ["ndbc:KX", "n", 25.0004, -90.0, "station", "ndbc"],
+            ["metar:CWGR", "a", 47.4, -61.8, "airport", "metar"], ["metar:CYGR", "b", 47.4, -61.8, "airport", "metar"],
+            ["ndbc:FAR", "f", 21.002, -157.0, "buoy", "ndbc"]]                  # 222 m away: kept
+    kept, dropped = W.one_per_spot(rows, fresh={"metar:CYGR"})
+    assert [r[0] for r in kept] == ["coops:1", "metar:KX", "metar:CYGR", "ndbc:FAR"], "input order kept"
+    assert sorted(dropped) == [("metar:CWGR", "metar:CYGR"), ("ndbc:A", "coops:1"), ("ndbc:KX", "metar:KX")]
+    kept2, _ = W.one_per_spot(rows)
+    assert "metar:CWGR" in [r[0] for r in kept2], "neither reporting: the id order decides"
+
+
+def test_the_snapshot_has_one_station_per_spot(snap):
+    _, rows = snap
+    pts = sorted((r["lat"], r["lon"], r["id"]) for r in rows)
+    close = []
+    for i, (la, lo, sid) in enumerate(pts):
+        for la2, lo2, sid2 in pts[i + 1:]:
+            if la2 - la > 0.001:
+                break
+            if W.km_between(la, lo, la2, lo2) * 1000 <= W.SPOT_M:
+                close.append((sid, sid2))
+    assert close == [], close

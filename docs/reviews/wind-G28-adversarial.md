@@ -368,3 +368,65 @@ and `wind/verify5/vhl` w30-w36 (headless Edge, trusted mouse / touch / keys).
 10. R1-N7 / R2-5: in Metric an "or more" 9.7 km (9999) reads "10+ km".
 11. Tests for every item + R1-N5's survivors; README (R1-N8, the cap rule); UI 1.22.0; golden in its own commit;
     mutation pass; then the test-site verification (MAX) incl. R2's parked paths and a phone tap sweep.
+
+## Fix round 7c — the re-check's fixes (2026-10-12, Opus 5.5 HIGH) @ f86763b + golden 1bee857 (local)
+Pins for the survivors @ 335ccc2. UI 1.22.0. Every item of the scope above; numbers by item.
+
+**Server**
+1. R1-N4 / R1-N1: `SharedCap` (buoy_sources.py) keeps each thread's acquire times; `stuck(wait_s)` is true when every slot
+   has been held longer than `wait_s`, and then forecast points, tide windows and wind histories answer busy AT ONCE (no
+   2-s wait in a request thread). The points' own `_POINT_BUILD_SINCE` bookkeeping is gone (one rule in the cap for all
+   three services); the points' busy text is "The server is busy right now; try again in a moment". Tests: the cap's
+   rule and marks; each of the three services answers busy at once while tide or wind builds hold both slots; the
+   points' cap is back to 0 after every build.
+2. R1-N2: a gauge window takes ONE CO-OPS token for its wind rows (none: busy, nothing sent); each weather product only
+   if a token is free at once (`take(1)`); a product left out is logged and treated like one past the deadline (the
+   window shows the rest). A gauge with no weather products still takes its one token (R25). Tests: one token for the
+   wind rows, products optional, the emptied-bucket busy case.
+3. R1-N6 / R1-N8: `one_per_spot` drops NDBC's copy of a kept METAR id at any distance (KGVW: 332 m) and treats two METAR
+   sites within `AIRPORT_SPOT_M` 500 m as one airfield; "MXAK" is kept in capitals; `--respot` applies the rules to a
+   built snapshot without asking any agency and keeps its capture time. `wind_stations.json` respotted 2,727 -> 2,724:
+   `ndbc:KGVW`, `metar:CYAB` (kept CXAT) and `metar:CYRB` (kept CXRB) left out; KOZA2, PAUA2, SGXA2 renamed "... MXAK".
+
+**Page / client**
+4. R2-1: `syncWindWidth()` runs at the end of `syncChips()` and `syncForecastChip()`, i.e. after the chip classes and
+   boxes change (resize and the corner observer as before).
+5. R2-2, both variants: where one rule raises the live and tide windows (`body.fw-chip` on tablets, `body.wind-chip`)
+   the tide window's height cap is 32 px below the live window's (tablet: `100vh - 40px - var(--tw-bottom) - ...`, was
+   8 px; wind-chip: `100vh - 66px - ...`, was 34 px), so the live window's top always shows above the wider tide window.
+   AUTHOR'S FINDING while writing the sweep: the RAISED forecast box (section 38's live-chip / tide-chip rules and
+   section 39's wind-chip rule) reached up to the station windows' capped top on short screens, so with the forecast
+   window in front an open live or tide window had no visible part (with the wind parked up to 781 px tall; with the
+   live or tide window parked, production's own section-38 layout, on short desktops). Fixed: a raised forecast box
+   stops 64 px below the corner-capped top (heights `100vh - 142px` (was 78) with one station chip, `- 150px` (was 86)
+   with both, wind-chip `- 102px` (was 38)). `test_live_and_tide_raised_together_keep_every_window_clickable` = an
+   exact largest-visible-square sweep (compressed coordinates) over state A (tablets, forecast parked: 9 widths x 12
+   heights, with and without the wind window), B (wind parked: 9 x 14) and C / D (live or tide parked, with and without
+   the wind window: 7 x 12): every open window keeps a 24-px square whichever is in front (K-9's forecast-over-wind below
+   570 px tall stays the known exception: Escape).
+6. R2-3: on touch screens each solid ring's disc is sized per flag (`--wind-disc`): it ends 1 px before the nearest
+   visible forecast dot (radius 4) or My point (radius 7) within reach, 13 px when none; `windDotState(e)` (kind, id,
+   distance, disc) is part of the drawn signature and the flag's state, so a change redraws.
+7. R1-N3 / R2-4: ticking or unticking "Forecast points" or "My points" runs `rebuildWindMarkers(false)` (the overlay
+   events on the map); `setSavedPoints` redraws too (R71).
+8. R2-6: the hollow / disc distances are measured between ROUNDED pixel positions (as Leaflet draws them), with the
+   world wrap; `windHollowSet` returns hollow entries `{f, kind, lng, r}` or disc entries `{..., disc}`.
+9. R1-N1 client: the forecast window asks a busy answer again quietly `BUSY_TRIES` 5 times `BUSY_WAIT_MS` 4 s apart before
+   it shows the error with Retry; the point tool's prefetch likewise; a newer request ends the waiting.
+10. R1-N7 / R2-5: an "or more" distance in Metric is rounded to a whole number ("10+ km").
+11. Tests (R1-N5's survivors): R25 (a gauge without products takes a token), R57 (the flag's state carries the dot's
+   identity), R71 (`setSavedPoints` redraws), R44 (no refresh on every tab show), R54 (the hollow search's date-line wrap,
+   pxPerDeg 256*512/360), R66 / R71 (page pins), R47 ("Calm" in the short readout), R43 (the headline with an empty
+   history), R27 (`fetch_stuck` below its threshold + LIVE_FETCH_STUCK_SEC), R39 (`_fix_case`'s comma rule), R04
+   (NDBC_KEEP_S). README: the points' busy text and quiet retries, the budget's token rule, the cap's stuck rule,
+   history 60 s, the touch disc, the 1.22.0 heading.
+- Suites: pytest 1,054 + the golden 11 (exit 0), Node 599.
+- Mutation pass (scratch `g28/fix7c/mut7c.py`): 34 mutants of the 7c code (cap rule, the three services' stuck checks,
+  tokens, busy text, spot rules, respot, legend toggle, both syncWindWidth calls, the four raised caps, the disc formula,
+  dot radii, reach, rounding, the signature, the disc style, the CSS inset, the client's retries, the Metric rounding):
+  31 killed at first; S02 (`all` -> `any`: one old slot and one just taken), C02 (the prefetch's retry) and C04 (a
+  superseded wait asking again) survived and are pinned @ 335ccc2: 34 of 34 killed.
+- Next: the test-site deploy and verification (MAX): R2's parked paths (live / forecast parked with tide in front, both
+  raised variants), the four-window real-box sweep incl. the raised forecast box, a phone tap sweep 12-26 px from a
+  flag, the legend toggles, the forecast busy retry; then the owner's call (another short check or production).
+

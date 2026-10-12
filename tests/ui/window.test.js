@@ -89,6 +89,30 @@ test('loader: a failed fetch reports an error whose Retry re-runs the same state
   assert.equal(u.applied.length, 0);
 });
 
+test('loader: a busy answer waits quietly; a newer request during the wait ends it with no extra request; prefetch asks again too (fix round 7c pins)', async () => {
+  const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), u = ui(), waits = [];
+  const wait = (ms) => new Promise((res) => waits.push({ ms, res }));
+  const st = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => 1, replaceState: () => {}, swanStations: [], ui: u.ui, wait }, st);
+  const BUSY = { busy: true, error: 'The server is busy right now; try again in a moment', table_html: null };
+  const p = L.load({}); await settle();
+  fs_.calls[0].release(BUSY); await settle();
+  assert.equal(waits.length, 1); assert.equal(waits[0].ms, I.BUSY_WAIT_MS);
+  assert.equal(u.errors.filter((e) => e[0]).length, 0, 'no error while it waits');
+  const p2 = L.load({ station: '46001' }); await settle();
+  assert.equal(fs_.calls.length, 2);
+  waits[0].res(); await settle();
+  assert.equal(fs_.calls.length, 2, 'the superseded wait asks nothing');
+  fs_.calls[1].release(payload({ station: '46001' })); await p2; await p;
+  assert.equal(u.applied.length, 1); assert.equal(u.applied[0][0].station, '46001');
+  const q = L.prefetch({ station: 'pt_20000N_160000W' }); await settle();
+  fs_.last().release(BUSY); await settle();
+  assert.equal(waits.length, 2); waits[1].res(); await settle();
+  assert.equal(fs_.calls.length, 4, 'the prefetch asked again after its wait');
+  fs_.last().release(payload({ station: 'pt_20000N_160000W' }));
+  assert.equal((await q).station, 'pt_20000N_160000W');
+});
+
 test('loader: SWAN is never requested off the SWAN stations; the server\'s model echo wins and the URL drops model= on the fallback', async () => {
   const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), u = ui(), urls = [];
   const st = { station: '51201', tz: '', unit: 'US', model: 'SWAN', view: 'Table' };

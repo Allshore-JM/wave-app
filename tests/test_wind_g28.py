@@ -189,6 +189,19 @@ def test_shared_cap_stuck_rule_and_marks():
     assert cap.held() == 0
 
 
+def test_shared_cap_is_stuck_only_when_the_youngest_slot_is_old(monkeypatch):
+    """One slot held long and the other taken a moment ago is not stuck: a build has just started (fix round 7c pin)."""
+    clock = [1000.0]
+    monkeypatch.setattr(B.time, "monotonic", lambda: clock[0])
+    cap = B.SharedCap(2)
+    assert cap.acquire(blocking=False)
+    clock[0] += 10.0
+    assert cap.acquire(blocking=False)
+    assert not cap.stuck(5.0, now=clock[0] + 3.0), "the second slot is 3 s old"
+    assert cap.stuck(5.0, now=clock[0] + 6.0)
+    cap.release(); cap.release()
+
+
 @pytest.mark.parametrize("kind", ["tide", "wind"])
 def test_every_service_answers_busy_at_once_when_both_slots_are_stuck(kind, monkeypatch):
     """Re-check R1-N4 / R1-N1: with both slots of the shared cap held longer than a request's wait, a tide window, a

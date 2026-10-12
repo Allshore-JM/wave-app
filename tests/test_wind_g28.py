@@ -192,7 +192,7 @@ def test_shared_cap_stuck_rule_and_marks():
 def test_shared_cap_is_stuck_only_when_the_youngest_slot_is_old(monkeypatch):
     """One slot held long and the other taken a moment ago is not stuck: a build has just started (fix round 7c pin)."""
     clock = [1000.0]
-    monkeypatch.setattr(B.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(B, "time", type("Clock", (), {"monotonic": staticmethod(lambda: clock[0])})())
     cap = B.SharedCap(2)
     assert cap.acquire(blocking=False)
     clock[0] += 10.0

@@ -220,3 +220,62 @@ Every item of 7b done (UI 1.21.0). Deviations / details:
   Mutation: 34 of 34 killed (`scratch g28/fix7b/mut7b.py`; 9 survived the first run and got tests).
 - NEXT: test-site verification at MAX (cherry-pick 1f43e25, f55e790, 80ad49b, b840c04 onto `test`; the record commits
   stay local), then a short fresh re-check at MAX, then production (tag `prod-pre-wind`).
+
+## Test-site verification of fix rounds 7a + 7b (2026-10-11/12, Opus 5.5 MAX)
+`test` @ b5a7952 (cherry-picks of 1f43e25, f55e790, 80ad49b, b840c04; README kept as test's copy; site files = the
+feature branch except test's 3 logo lines). Pushed 23:00:05 UTC, the new instance served from 23:01:07: 578+ polls of
+`/robots.txt`, `/healthz` and `/api/wind/latest` across the switch, none failed; the wind table complete 43 s after the
+start (partial before, as designed). Served UI assets (winds, forecast, tides, basemap, tools, livelist, graticule) = the
+repo at 1.21.0, immutable + nosniff; the 1.20.0 URL 404. Test branch: Node 592 pass; pytest 911 + the 4 known failures
+(3 test-logo goldens, the reef module's numpy import). Scripts: scratch `g28/verify7` (watch7.py, data7.py, memwatch.py)
+and `wind/verify5/vhl` w30-w36 (headless Edge, trusted mouse / touch / keys).
+- **Server (7a)**: snapshot 2,727 stations, 0 pairs within 100 m (A-7/B-9); NDBC/METAR names end in "AK" (A-10). History
+  answers `public, max-age=60` for all four sources (B-3). METAR against AWC's own cache and API: 732 snapshot airports
+  report "6+"; at SBFL, SYCJ, NGTA, PHNL, KSFO, KJFK every common row has the agency's visibility with the "or more" flag
+  exactly and the pressure = the altimeter setting (A-3, A-8; 0 mismatches). CO-OPS burst (A-1/A-6): 12 gauge windows
+  with weather products + 3 tide windows at once: 5 answered at once, 10 "busy, Retry-After 5", all served within 80 s by
+  retrying like the page; during it `/robots.txt` p50 0.14 s (max 0.28) and the live list p50 0.14 s (max 1.96), no
+  NOAA 403, the CO-OPS feed without an error. Feeds over 44 min: 0 errors, 0 pauses (CO-OPS 230 / NWS 286 readings);
+  B-4: reviewer B's buoys 51001 46026 41013 45012 51003 present in all 578 polls (B: absent in 44 %); tide canary 73/73;
+  `/healthz` wind runner 2 workers, `fetch_stuck` false (A-5).
+- **Layout (7b B-7/B-8/B-13)**: all four windows open (forecast 51201, live 51201, tide and wind Honolulu = the tallest
+  wind window), 10 sizes 1024x768-2560x1440, each window in front in turn: every other window has a visible area of at
+  least 24 x 24 px and a TRUSTED click there brings it forward (0 failures). Exact sweep of the real boxes (largest
+  visible rectangle, compressed coordinates) over 190 sizes: >= 24 px everywhere except 540 px tall (forecast in front
+  of the wind window: 12 px; the known short-screen case, Escape). Tightest: 24 px at 640-740 px tall (the tide window's
+  strip below the wind window while the live window is in front: the wind window's height cap ends 42 px above the
+  bottom, the tide window 18 px). Overlay panel covered by the wind window (with a live / tide window open): 1024 wide
+  194-254 px, 1100 118, 1180 38, from 1280 none (800 tall); none at 1080 tall. At those widths the live and tide windows
+  (production since section 38) already reach over the panel (left edges 186 / 126 at 1024).
+- **Rings (B-1/B-5)**, buoy 46092 beside its forecast dot: mouse, 6.4 px -> hollow: the number 3.6 px from the dot loads
+  forecast 46092, the number 9.5 px away opens the wind window, the dot itself loads the forecast; 9.2 px -> solid: the
+  ring opens the wind window, the dot beside it loads the forecast. Touch (375x812): 9.2 and 11.4 px -> hollow, a tap on
+  the number near the dot loads the forecast. One of My points 2 px from Honolulu airport's flag: hollow; the arrow 5.4
+  px from it opens the point; the number 9.5 px away opens the wind window.
+- **Window (B-3, A-10, K-1, B-10)**: the history answered without its 3 newest rows (as an older cached copy) -> the
+  headline and the table's first row are the flag's newer reading (23 min). 22107 (no 24-hour file) with its first answer
+  failed (injected 500) -> error + Retry; a trusted Retry -> the flag's reading and "No 24-hour history for this station".
+  A feed answer without the CO-OPS rows and naming COOPS partial -> the 230 gauge readings and their flags kept, the note
+  "loading more…". Metric "Air 28.5°C · Water 28.9°C"; PHNL "Visibility 10+ mi"; the NWS source link opens NOAA's
+  Time Series Viewer.
+- **Polling (B-12)**: the window parked 6 min in a visible tab -> 0 history requests, expanded -> 1 at once; another tab
+  in front 6 min (visibilityState hidden) -> 0, shown -> 1 at once.
+- **Phones**: A-10 at zoom 18 at 3 gauges whose tide and wind entries are 0.37-0.55 m apart: the tide icon has no pad, a
+  tap 14 px from the centre opens the wind window, the icon the tide window. B-6 readout "4:48 AM · 2 mph E G3 · 76°F"
+  inside the 351-px chart (desktop keeps the long line). B-2 sideways 812x375 with all four parked: the wind bar 51 px,
+  whole, `max-height: none`, the bars stacked; it opens full screen (z 3500). The map keeps its 180-px minimum, so with
+  four bars it runs 11 px under the wind bar (the documented limit).
+- **Pans (B-11)**: 30 trusted drags, Honolulu z11 (51 flags): 0 long tasks (B on the old code: 8-13 up to 76 ms),
+  rebuild median 2.6 ms / max 5.4 (was up to 23.6), 49 of 51 flags kept per pan; South Florida z9 (26 flags): 0 long
+  tasks, 1.8 / 4.9 ms, all kept.
+- Console clean in every run (the only error is the 500 injected for the Retry check).
+- **Memory**: 107 MB at the switch -> 182 MB after the first hour of heavy test traffic (~50 page loads, 25 histories with
+  weather, bursts), then flat at 177 MB for 11 idle minutes while the feeds published every minute (CO-OPS / NWS
+  versions 59 -> 70): the caches are bounded and the feeds do not grow.
+- Findings (none blocks):
+  - V-1 (P3) the 24-px strip at 640-740 px tall is exactly the rule. Optional: the wind window's bottom reserve 50 -> 56 px
+    makes it 30 px (the window then scrolls 6 px sooner on short screens).
+  - V-2 (owner awareness, decision 2's cost as measured above) the overlay panel at tablet widths.
+  - V-3 (documented limit) a phone held sideways with all four windows parked: the map keeps its 180-px minimum and runs
+    11 px under the wind bar.
+- NEXT: a short fresh re-check at MAX (code of 7a + 7b and the test site), then production (tag `prod-pre-wind`).

@@ -2,7 +2,7 @@
 
 Golden: tests/fixtures/index_golden.json captured by tests/capture_index_golden.py (fixed forecast
 payload + station list, no network). It is re-baselined ONLY by a commit that changes the flag-off page
-on purpose (last: the G28 page fixes: the measured wind window box and the hollow-ring rule, UI 1.21.0, plan section 39 step 7b, 2026-10-11); never recapture it
+on purpose (last: the G28 re-check fixes: raised window caps, the touch disc and the forecast busy retry, UI 1.22.0, plan section 39 fix round 7c, 2026-10-12); never recapture it
 after an overlay-only commit. Whatever the baseline, three invariants hold: flag off == golden with no
 '/overlay/' in it; flag on with no frames base == flag off; flag on == flag off + exactly the gated block.
 """

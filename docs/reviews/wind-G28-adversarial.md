@@ -279,3 +279,92 @@ and `wind/verify5/vhl` w30-w36 (headless Edge, trusted mouse / touch / keys).
   - V-3 (documented limit) a phone held sideways with all four windows parked: the map keeps its 180-px minimum and runs
     11 px under the wind bar.
 - NEXT: a short fresh re-check at MAX (code of 7a + 7b and the test site), then production (tag `prod-pre-wind`).
+
+## Re-check of fix rounds 7a + 7b (2026-10-12, Opus 5.5 MAX, two fresh reviewers)
+- Target: `feat/wind-stations` @ 890a901 (code b840c04) / `test` @ b5a7952 (UI 1.21.0). Brief: scratch `g28/recheck/brief.md`.
+  R1 code + data (no browser, own worktree, staged experiments over the real services, 54 own mutants):
+  `g28/recheck/r1/recheck-r1-report.md` (P0 0 · P1 0 · P2 3 · P3 5). R2 test site + use (headless Edge, trusted mouse /
+  touch / keys, 4 opening orders, parked mixes, drags, 125 / 150 % zoom, tablets, phones): `g28/recheck/r2/recheck-r2-report.md`
+  (P0 0 · P1 0 · P2 4 · P3 2). Overlaps: R1-N3 = R2-4, R1-N7 = R2-5.
+- **Combined: 0 P0, 0 P1, 6 P2, 6 P3.**
+- G28 verdicts: FIXED A-1 (232 windows at once -> 15 CO-OPS requests; real wiring: busiest minute 44 <= 45, 10 s 19 <= 20),
+  A-2 (24 staged refusals: <= workers-1 in flight, none after, cursor right), A-4, A-5 (10 / 10 live lists with three hung
+  wind fetches), A-6 (a gauge window holds a thread 2 s / 11 s / 18 s at 1 s / hanging products / the fetch cap), A-8,
+  A-9 (9 of A's 11 gap mutants killed, 2 covered), B-2, B-3 (the window never older than the flag at 4 stations), B-4,
+  B-6, B-10, B-11 (focus kept through pans and repaints), B-12 (visible: one refresh at 308 s; parked / hidden 5.5 min:
+  0, then 1), K-1, K-2; FIXED with new edges B-1 (R2-3, R2-4, R2-6) and B-5 (R2-4); PARTLY A-3 (R2-5), A-7 (R1-N6),
+  A-10 (names, R1-N8), B-13 (R2-1, R2-2); B-7 fixed at the stated cost, which reaches to ~1,256 px wide (where the wind
+  window becomes wider than the tide window: 254 px at 1024, 178 at 1100x820, 126 at 1152x648, 49 at 1229x691 @125 %,
+  0 from 1240), not "~1,180" as the brief said; B-8 accepted. Nothing else (gear, tools, legend, chips) covered in any run.
+
+### P2
+- **R2-1 — decision 17 broken after an ordinary park**: `syncWindWidth` listens to the window events but is registered
+  BEFORE the listeners that set `body.live-chip / tide-chip / wind-chip` and run `syncChips()`, so it measures the boxes
+  from before the change; the forecast window's park (`body.fw-chip`, `syncForecastChip`) does not run it at all. Parking
+  the live window (1180-1255 px wide) or the forecast window (below 1180 px, 787-939 px tall) raises the tide window to
+  the wind window's top, the stick-out is not recomputed, and with the tide window in front the OPEN wind window has no
+  visible part (1200x800, 1180x820, 1100x820, 1024x819 @125 %, 1152x864; 11 px at 1240x900). Author: confirmed in the code.
+- **R2-2 — the live window hidden under the tide window when both are raised by the same rule**: below 1180 px with the
+  forecast window parked (a new tab's default; pre-existing since section 38, RC-13) both get the same bottom and, up to
+  ~840 px tall, the same capped top; the tide window is wider and later in the page, so it covers the live window
+  completely (1024x768 with only live + tide = production's layout; 1093x614 @125 %, 1152x648, 1100x820). Author: the same
+  pattern ALSO occurs on desktops with the WIND window parked (`body.wind-chip` gives both the same bottom and cap): the
+  author's own w30 run ended with live [442,188,820,541] inside tide [382,188,880,541] at 1280x800, missed in the
+  test-site verification; this variant is new with section 39.
+- **R2-3 — phones: a visible forecast dot 12-18 px from a station cannot be tapped** (regression of the B-1 fix): the
+  solid ring's invisible 36-px touch disc covers it and opens the wind window (390x844, 46092: 12.8 / 15.0 / 16.3 px).
+- **R1-N3 = R2-4 — ticking / unticking "Forecast points" or "My points" does not redraw the flags**: a hollow ring stays
+  hollow over a hidden dot (its number / arrow opens the HIDDEN forecast point or point), a re-shown dot sits under a
+  solid ring (B-1 again) until the next pan or zoom.
+- **R1-N1 — a forecast point answers "busy with other forecast points" while two tide / gauge windows build** (the build
+  cap is shared since 7a; the points' fast-busy rule sees only point builds; the forecast window shows the error with a
+  manual Retry, no quiet retry).
+- **R1-N4 — slow NOAA + ~15 pending tide / gauge windows: the cap's 2-s waits fill the free request threads** (staged
+  gthread model: a /healthz-like request p50 5.1 s, max 12 s; 6 windows: max 4 s; healthy NOAA: max 1.6 s).
+
+### P3
+- R1-N2 the shared CO-OPS budget starves gauge wind windows (all-at-once take(1 + products)) behind tide windows (one
+  token at a time): wind median 20.6 s / max 110.6 s under contention, tide max 7.5 s.
+- R1-N5 R1's mutation pass: 54 mutants, 41 killed, 2 equivalent, 11 survivors (R25 a gauge without products takes no
+  token; R57 the kept flag's state without the dot's identity; R71 `setSavedPoints` not redrawing; R44 a refresh on
+  every tab show; R54 the hollow search's date-line wrap; R66 the ResizeObserver; R47 "Calm" in the short readout; R43
+  the headline with an empty history; R27 `fetch_stuck`'s threshold; R39 `_fix_case`'s state rule; R04 `NDBC_KEEP_S`).
+- R1-N6 A-7 residual: metar:KGVW + ndbc:KGVW (332 m) still both drawn; CXRB/CYRB (335 m) and CXAT/CYAB (358 m) airport
+  pairs; the snapshot cannot be reproduced from caches (NDBC / METAR / "reporting now" are read live).
+- R1-N7 = R2-5 Metric shows the international 9999 as "Visibility 9.7+ km" (scope: "10+ km").
+- R1-N8 docs: README "/api/wind/<id>/history (5 min)" (60 s), "two request threads always free" (builds only); three
+  names still "Mxak" (KOZA2, PAUA2, SGXA2).
+- R2-6 the 8 / 12-px hollow distance is computed on unrounded projected pixels (up to ~1.4 px of slop at the boundary).
+- Observations (not counted): an NWS history pair (016HE, 003HI) answered "busy" five times in ~25 s at 00:58-01:00 UTC
+  and opened in 0.6-0.7 s 20 min later (a slow api.weather.gov build holding its key lock is the likely cause; the
+  page's retries covered it); the maximised forecast window covers the station windows by design (section 26); a tide
+  window dragged 60 px up can hide the live window (any free drag; production too); B-4 residual: right after a server
+  start a buoy whose newest line is wave-only reads "no reading" until its next wind line (7 of 424 at 01:16 UTC).
+
+## Fix round 7c scope
+**Server**
+1. R1-N4 / R1-N1: `SharedCap` keeps when each slot was taken; an `acquire` with a timeout answers at once when every slot
+   has been held longer than that timeout (the points' `_POINT_BUILD_SINCE` rule moved into the cap, for all three
+   services); the busy text no longer names forecast points only.
+2. R1-N2: a gauge window takes one token for its wind rows; each weather product only if a token is free at once (a
+   product without one is left out, as one past the deadline is).
+3. R1-N6 / R1-N8 names: the snapshot tool drops an NDBC copy of a kept METAR id at any distance and treats two airports of
+   one name within 500 m as one spot; "MXAK" kept in capitals; the rules applied to the committed snapshot by a
+   deterministic pass (no live refetch).
+
+**Page**
+4. R2-1: `syncWindWidth` runs after every change of the boxes (at the end of `syncChips()` and `syncForecastChip()`;
+   resize and the corner observer as now).
+5. R2-2 (both variants): where the live and tide windows are raised by the same rule (`body.fw-chip` below 1180 px,
+   `body.wind-chip`) the tide window's height cap is 32 px below the live window's, so the live window's top shows above
+   it; the four-window sweep gains the parked states (forecast, wind, live, tide parked) and a real-box sweep on the test
+   site.
+6. R2-3: on touch a solid ring's disc never covers a visible dot (forecast dots and My points while their layer shows):
+   per flag the disc ends before the nearest dot.
+7. R1-N3 / R2-4: the flags are redrawn when "Forecast points" or "My points" is ticked or unticked.
+8. R2-6: the hollow distance from rounded pixel positions (as drawn).
+9. R1-N1 client: the forecast window (and the point tool's prefetch) retries a busy answer quietly a few times before
+   showing the error with Retry.
+10. R1-N7 / R2-5: in Metric an "or more" 9.7 km (9999) reads "10+ km".
+11. Tests for every item + R1-N5's survivors; README (R1-N8, the cap rule); UI 1.22.0; golden in its own commit;
+    mutation pass; then the test-site verification (MAX) incl. R2's parked paths and a phone tap sweep.

@@ -453,6 +453,9 @@ class TideService:
         hit = self._get(key)
         if hit is not None:
             return hit
+        stuck = getattr(self._builds, "stuck", None)                # a shared cap: every slot held too long -> at once
+        if stuck is not None and stuck(self.wait_s):
+            return "busy", {"error": BUSY}
         deadline = time.monotonic() + self.wait_s
         e = self._key_lock(key)
         try:

@@ -95,7 +95,9 @@
   }
   function pressText(hpa, unit) { return unitOf(unit) === 'Metric' ? Math.round(hpa) + ' hPa' : (hpa / IN_HG).toFixed(2) + ' inHg'; }
   function distText(km, unit, more) {                             // more: "or more" (METAR "10+", "6+": G28 A-3)
-    var v = unitOf(unit) === 'Metric' ? km : km / MI_KM, n = v >= 10 ? Math.round(v) : Math.round(v * 10) / 10;
+    // an "or more" value is a whole number: METAR's 9999 ("10 km or more", the API's "6+" mi) reads "10+ km", not
+    // "9.7+ km" (G28 re-check R1-N7 / R2-5)
+    var v = unitOf(unit) === 'Metric' ? km : km / MI_KM, n = more || v >= 10 ? Math.round(v) : Math.round(v * 10) / 10;
     return n + (more ? '+' : '') + (unitOf(unit) === 'Metric' ? ' km' : ' mi');
   }
   function trendText(delta) { return !num(delta) ? '' : delta > 0.5 ? 'rising' : delta < -0.5 ? 'falling' : 'steady'; }

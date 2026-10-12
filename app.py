@@ -338,7 +338,7 @@ def overlay_asset(name):
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.21.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.22.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -401,9 +401,8 @@ _POINT_BUILDS = _REQUEST_BUILDS
 # server address; NOAA blocked the test server for a minute after a burst of 232: G28 A-1). The paced wind feed's own
 # 24 a minute come on top of it.
 _COOPS_BUDGET = wind_sources.TokenBucket(wind_sources.COOPS_ON_DEMAND_PER_MIN, burst=wind_sources.COOPS_ON_DEMAND_BURST)
-_POINT_BUILD_SINCE = []           # when each build in progress took its slot (under _CACHE_LOCK)
 _POINT_BUILD_WAIT_S = 2.0         # the whole wait of one request: for the same point being built AND for a slot
-POINT_BUSY = "The server is busy with other forecast points; try again in a moment"
+POINT_BUSY = "The server is busy right now; try again in a moment"   # any build may hold the shared cap (re-check R1-N1)
 POINT_NO_DATA = point_forecast.REFUSALS["nodata"]
 POINT_INVALID = "Invalid forecast point"
 POINT_OFF = "Forecast points are not available on this server"
@@ -540,11 +539,11 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
     if data is not None:
         return data
     deadline = time.monotonic() + _POINT_BUILD_WAIT_S
+    # both slots (points, tide or wind windows) held for longer than anyone may wait: say so at once (a hanging
+    # bucket or agency must not cost every further request its two seconds as well; G22 A-6, G28 re-check R1-N4)
+    if _POINT_BUILDS.stuck(_POINT_BUILD_WAIT_S):
+        return _point_failure(POINT_BUSY)
     with _CACHE_LOCK:
-        # both slots held for longer than anyone may wait: say so at once (a hanging bucket must not cost every
-        # further request its two seconds as well; G22 A-6)
-        if len(_POINT_BUILD_SINCE) >= 2 and all(time.monotonic() - t > _POINT_BUILD_WAIT_S for t in _POINT_BUILD_SINCE):
-            return _point_failure(POINT_BUSY)
         flock = _POINT_INFLIGHT.setdefault(key, threading.Lock())
     # Nobody waits long: not for the same point being built by another request, not for a free build slot. With
     # four request threads, two slow point builds and their waiters must never keep the stations' forecasts out.
@@ -556,16 +555,11 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
             return data
         if not _POINT_BUILDS.acquire(timeout=max(0.0, deadline - time.monotonic())):
             return _point_failure(POINT_BUSY)
-        mark = time.monotonic()
-        with _CACHE_LOCK:
-            _POINT_BUILD_SINCE.append(mark)
         try:
             data = build()
         except point_forecast.PointError as exc:
             return _point_failure(str(exc))
         finally:
-            with _CACHE_LOCK:
-                _POINT_BUILD_SINCE.remove(mark)
             _POINT_BUILDS.release()
         if not data[0][-1] and POINTS.current_run() == man["run"]:   # only clean results, only of the run in hand
             with _CACHE_LOCK:

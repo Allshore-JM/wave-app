@@ -77,7 +77,7 @@ NWS_KINDS = ("utility", "mesonet", "raws", "cwop", "hads", "weather")
 FIELDS = ["id", "name", "lat", "lon", "kind", "src", "tz", "alias", "wx"]
 COOPS_WX_SENSORS = {"Air Temperature": "a", "Water Temperature": "w", "Barometric Pressure": "p", "Relative Humidity": "h"}
 NWS_ABBREVIATIONS = {"AFS", "AFB", "PHB", "MCBH", "USGS", "USCG", "NERR", "NWS", "NPS", "HVO", "UH", "HQ", "ARS", "SCAN",
-                     "CRN", "FAA", "PMRF", "USDA", "NOAA", "NASA", "WWTP", "STP", "DOFAW", "NAR", "CPD"}
+                     "CRN", "FAA", "PMRF", "USDA", "NOAA", "NASA", "WWTP", "STP", "DOFAW", "NAR", "CPD", "MXAK"}
 NWS_SMALL_WORDS = {"at", "of", "the", "and", "near", "in", "on", "by", "to"}
 COMPASS = {"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"}
 US_STATES = {"AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA",
@@ -91,6 +91,7 @@ OFFSHORE_METAR = True           # a METAR site at sea (an offshore platform) is 
 ALIAS_M = 300.0                 # an NDBC station this close to a kept CO-OPS gauge is that gauge
 SPOT_M = 100.0                  # owner decision 4 (G28): one flag per spot; within this, the first by SPOT_RANK stays
 SPOT_RANK = {"coops": 0, "metar": 1, "ndbc": 2, "nws": 3}   # a gauge, then an airport's METAR, then NDBC's copy
+AIRPORT_SPOT_M = 500.0          # two METAR sites this close are one airfield (CXAT / CYAB, CXRB / CYRB: G28 re-check R1-N6)
 CELL_DEG = 30                   # tier 0's cells: edges along these lines close the clipped pieces (inside land)
 BUCKET_DEG = 0.5
 METAR_API_IDS = 15              # ids per API request (24 h of hourly reports stays under its 400)
@@ -491,20 +492,26 @@ def _fix_case(text, places=False):
     return " ".join(out)
 
 
-def one_per_spot(rows, fresh=frozenset(), metres=SPOT_M):
+def one_per_spot(rows, fresh=frozenset(), metres=SPOT_M, airport_m=AIRPORT_SPOT_M):
     """Owner decision 4 (G28 A-7 / B-9): one station per spot. Of rows within `metres` of each other the first by
     (SPOT_RANK of its source, reporting now (in `fresh`), id) stays: a gauge before an airport's METAR before NDBC's
-    copy of it (the offshore platforms report as both), and of two ids at one spot the one reporting now. Returns
-    (the rows kept, in their order, [(dropped id, kept id), ...])."""
+    copy of it (the offshore platforms report as both), and of two ids at one spot the one reporting now. Also (G28
+    re-check R1-N6): NDBC's copy of a kept METAR id at ANY distance (KGVW: 332 m), and two METAR sites within
+    `airport_m` (one airfield). Returns (the rows kept, in their order, [(dropped id, kept id), ...])."""
     order = sorted(rows, key=lambda r: (SPOT_RANK.get(r[5], 9), 0 if r[0] in fresh else 1, r[0]))
     grid, keep, dropped = {}, set(), []
     for r in order:
-        cy, cx = round(r[2] * 50), round(r[3] * 50)                 # 0.02-degree cells: neighbours within 100 m
+        twin = "metar:" + r[0].split(":", 1)[1]
+        if r[5] == "ndbc" and twin in keep:                          # the platform's own METAR is kept
+            dropped.append((r[0], twin))
+            continue
+        cy, cx = round(r[2] * 50), round(r[3] * 50)                 # 0.02-degree cells: neighbours within 100 / 500 m
         near = None
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
                 for k in grid.get((cy + dy, cx + dx), ()):
-                    if km_between(r[2], r[3], k[2], k[3]) * 1000 <= metres:
+                    lim = airport_m if r[5] == "metar" and k[5] == "metar" else metres
+                    if km_between(r[2], r[3], k[2], k[3]) * 1000 <= lim:
                         near = k
                         break
                 if near:
@@ -544,13 +551,39 @@ def too_close(rows, lat, lon, metres=ALIAS_M):
 
 # ------------------------------------------------------------------ the build
 
-def write_doc(path, rows, source):
+def write_doc(path, rows, source, captured=None):
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write('{"source":%s,"captured":%s,"fields":%s,"stations":[\n' % (
-            json.dumps(source), json.dumps(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
+            json.dumps(source), json.dumps(captured or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
             json.dumps(FIELDS)))
         f.write(",\n".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) for r in rows))
         f.write("\n]}\n")
+
+
+def respot(path):
+    """The current one-per-spot rules and name cases applied to a snapshot already built (no agency is asked; the
+    capture time is kept). NWS rows were placed against the other rows when the snapshot was built and are kept."""
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    assert doc["fields"] == FIELDS, doc["fields"]
+    rows = doc["stations"]
+    base = [r for r in rows if r[5] != "nws"]
+    kept, dropped = one_per_spot(base)
+    keep = {r[0] for r in kept}
+    renamed = []
+    out = []
+    for r in rows:
+        if r[5] != "nws" and r[0] not in keep:
+            continue
+        if r[5] in ("ndbc", "metar"):
+            name = _fix_case(r[1], places=True)
+            if name != r[1]:
+                renamed.append((r[0], r[1], name))
+                r = r[:1] + [name] + r[2:]
+        out.append(r)
+    write_doc(path, out, doc["source"], doc.get("captured"))
+    print(f"respot {path}: {len(rows)} -> {len(out)} stations; left out {dropped}; renamed {renamed}")
+    return 0
 
 
 def main(argv=None):
@@ -562,7 +595,10 @@ def main(argv=None):
     ap.add_argument("--nws-areas", default=",".join(NWS_AREAS), help="NWS API areas (states) to list, comma-separated")
     ap.add_argument("--nws-cache", default=None, help="JSON file keeping the NWS probe answers between runs")
     ap.add_argument("--no-nws", action="store_true", help="leave the NWS API stations out")
+    ap.add_argument("--respot", action="store_true", help="only re-apply the one-per-spot rules and name cases to --out")
     args = ap.parse_args(argv)
+    if args.respot:
+        return respot(args.out)
 
     os.environ.setdefault("LIVE_BACKGROUND", "0")
     sys.path.insert(0, ROOT)

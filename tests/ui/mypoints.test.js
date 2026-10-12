@@ -81,6 +81,7 @@ function boot(opts) {
     addEventListener(t, fn) { (winListeners[t] = winListeners[t] || []).push(fn); },
     history: { urls: [], replaceState(a, b, url) { this.urls.push(url); win.location.search = url; } },
     sessionStorage: storage(), Chart: undefined,
+    setTimeout(fn) { Promise.resolve().then(fn); return 1; },                // the loader's quiet busy retries: at once here
     prompt() { return opts.prompt === undefined ? null : opts.prompt; },
     confirm(msg) { confirms.push(msg); return opts.confirm !== false; },
     fetch(url, o) {
@@ -165,7 +166,8 @@ test('a refusal (land, sheltered water, no data): nothing opens, nothing is kept
   assert.deepEqual(b.stored(), []);
   assert.equal(b.lastMarks().some((m) => m.id === 'pt_21500N_158000W'), false);
   // a busy server and a failure are NOT final: the point may be tried again and kept
-  const busy = b.P.add({ lat: 22.5, lng: -158.0 }); await settle(); b.last().release(BUSY('pt_22500N_158000W')); await settle();
+  const busy = b.P.add({ lat: 22.5, lng: -158.0 }); await settle();
+  for (let k = 0; k <= b.F._internals.BUSY_TRIES; k++) { b.last().release(BUSY('pt_22500N_158000W')); await settle(); }   // retried quietly first
   assert.equal((await busy).ok, false); assert.equal(b.P.refused('pt_22500N_158000W'), false);
   const down = b.P.add({ lat: 22.6, lng: -158.0 }); await settle(); b.last().fail();
   await assert.rejects(down, 'a network failure rejects: the tool says it could not reach the server');

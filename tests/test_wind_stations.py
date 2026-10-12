@@ -383,11 +383,12 @@ def test_in_land_on_the_hawaii_crop():
     ("Southwest Bering Sea - 142Nm Nne Of Attu Is, Ak", "Southwest Bering Sea - 142NM NNE of Attu Is, AK"),
     ("Tillamook, Or - 85 NM WNW of Tillamook, OR", "Tillamook, OR - 85 NM WNW of Tillamook, OR"),
     ("Isle Of Man Arpt", "Isle of Man Arpt"), ("East Of Sw Pass, La", "East of SW Pass, LA"),
-    ("Honolulu Intl, HI, US", "Honolulu Intl, HI, US"), ("W Hawaii", "W Hawaii"), ("St Paul Mxak, Ak", "St Paul Mxak, AK"),
+    ("Honolulu Intl, HI, US", "Honolulu Intl, HI, US"), ("W Hawaii", "W Hawaii"), ("St Paul Mxak, Ak", "St Paul MXAK, AK"),
 ])
 def test_place_names_through_the_case_rules(name, want):
     assert W._fix_case(name, places=True) == want
     assert W._fix_case("East Of Sw Pass, La") == "East of Sw Pass, La", "places=False: the NWS rule only"
+    assert W._fix_case("Ak Cape, Ak", places=True) == "Ak Cape, AK", "a state code only after a comma (re-check R39)"
 
 
 def test_one_per_spot_keeps_a_gauge_then_metar_then_ndbc():
@@ -400,6 +401,45 @@ def test_one_per_spot_keeps_a_gauge_then_metar_then_ndbc():
     assert sorted(dropped) == [("metar:CWGR", "metar:CYGR"), ("ndbc:A", "coops:1"), ("ndbc:KX", "metar:KX")]
     kept2, _ = W.one_per_spot(rows)
     assert "metar:CWGR" in [r[0] for r in kept2], "neither reporting: the id order decides"
+
+
+def test_one_per_spot_drops_ndbc_copies_of_a_kept_metar_id_and_two_metars_on_one_airfield():
+    """G28 re-check R1-N6: NDBC's copy of a platform whose METAR is kept goes at any distance (KGVW: 332 m), and two METAR
+    sites within AIRPORT_SPOT_M are one airfield (CXAT / CYAB 358 m); other NDBC stations and airports keep 100 m."""
+    rows = [["metar:KGVW", "a", 29.13, -94.5469, "airport", "metar"], ["ndbc:KGVW", "b", 29.13, -94.55, "station", "ndbc"],
+            ["metar:CXAT", "c", 73.0, -85.02, "airport", "metar"], ["metar:CYAB", "d", 73.003, -85.029, "airport", "metar"],
+            ["metar:KFAR", "e", 30.0, -90.0, "airport", "metar"], ["metar:KFAZ", "f", 30.006, -90.0, "airport", "metar"],
+            ["ndbc:B1", "g", 40.0, -70.0, "buoy", "ndbc"], ["ndbc:B2", "h", 40.003, -70.0, "buoy", "ndbc"]]
+    kept, dropped = W.one_per_spot(rows)
+    assert W.AIRPORT_SPOT_M == 500.0
+    assert sorted(dropped) == [("metar:CYAB", "metar:CXAT"), ("ndbc:KGVW", "metar:KGVW")]
+    assert [r[0] for r in kept] == ["metar:KGVW", "metar:CXAT", "metar:KFAR", "metar:KFAZ", "ndbc:B1", "ndbc:B2"],         "667 m apart: two airfields; 333 m apart: two buoys"
+
+
+def test_respot_rewrites_only_the_spots_and_names_and_keeps_the_capture_time(tmp_path):
+    src = {"source": "S", "captured": "2026-10-11T21:44:38Z", "fields": W.FIELDS, "stations": [
+        ["metar:KGVW", "Galveston", 29.13, -94.5469, "airport", "metar", "America/Chicago", None, None],
+        ["ndbc:KGVW", "Galveston 209A", 29.13, -94.55, "station", "ndbc", "America/Chicago", None, None],
+        ["ndbc:KOZA2", "Kotzebue Mxak, AK", 66.9, -162.6, "station", "ndbc", "America/Nome", None, None],
+        ["nws:X1", "Somewhere", 29.13, -94.5469, "utility", "nws", "America/Chicago", None, None]]}
+    f = tmp_path / "w.json"
+    f.write_text(json.dumps(src), encoding="utf-8")
+    assert W.main(["--respot", "--out", str(f)]) == 0
+    doc = json.loads(f.read_text(encoding="utf-8"))
+    assert doc["captured"] == "2026-10-11T21:44:38Z" and doc["source"] == "S"
+    assert [r[0] for r in doc["stations"]] == ["metar:KGVW", "ndbc:KOZA2", "nws:X1"], "NWS rows were placed at build time"
+    assert doc["stations"][1][1] == "Kotzebue MXAK, AK"
+
+
+def test_the_snapshot_has_no_ndbc_copy_of_a_kept_metar_and_one_metar_per_airfield(snap):
+    _, rows = snap
+    metar = {r["id"].split(":")[1] for r in rows if r["src"] == "metar"}
+    assert [r["id"] for r in rows if r["src"] == "ndbc" and r["id"].split(":")[1] in metar] == []
+    air = sorted((r["lat"], r["lon"], r["id"]) for r in rows if r["src"] == "metar")
+    close = [(a[2], b[2]) for i, a in enumerate(air) for b in air[i + 1:i + 40]
+             if abs(b[0] - a[0]) < 0.01 and W.km_between(a[0], a[1], b[0], b[1]) * 1000 <= W.AIRPORT_SPOT_M]
+    assert close == [], close
+    assert not [r["name"] for r in rows if "Mxak" in r["name"]]
 
 
 def test_the_snapshot_has_one_station_per_spot(snap):

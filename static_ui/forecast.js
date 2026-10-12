@@ -259,10 +259,15 @@
 
   // ---- the loader ----
   // deps: fetch(url, {signal}) -> Response-like {ok, status, json()}; now(); replaceState(url);
-  //       swanStations (array); ui.apply(d, state), ui.busy(bool), ui.error(message | null, retry | null).
+  //       swanStations (array); ui.apply(d, state), ui.busy(bool), ui.error(message | null, retry | null);
+  //       wait(ms) -> Promise (optional; setTimeout).
+  // A "busy" answer (the server's build slots are taken: forecast points share them with the tide and wind windows) is
+  // asked again quietly BUSY_TRIES times, BUSY_WAIT_MS apart, before it is shown with Retry (G28 re-check R1-N1).
+  var BUSY_TRIES = 5, BUSY_WAIT_MS = 4000;
   function ttlOf(d) { return d && d.wind_complete === false ? GAP_TTL_MS : CACHE_TTL_MS; }
   function createLoader(deps, state) {
     var cache = new Map(), seq = 0, ctrl = null;
+    var wait = deps.wait || function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
     function trim() { while (cache.size > CACHE_MAX) { var k = cache.keys().next().value; cache.delete(k); } }
     function normalise(s) {                                                    // never a SWAN request off the SWAN stations
       if (s.model === 'SWAN' && deps.swanStations && deps.swanStations.indexOf(s.station) < 0) s.model = 'GFS';
@@ -285,10 +290,21 @@
       var c = ctrl = new AbortController();
       deps.ui.busy(true); deps.ui.error(null, null);
       var q = queryFor(state), early = deps.takeEarly ? deps.takeEarly(q) : null;   // the page's <head> may have started this very request
-      return (early || deps.fetch(API + '?' + q, { signal: c.signal })).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      }).then(function (d) {
+      var tries = 0;
+      function ask(first) {
+        return (first && early ? early : deps.fetch(API + '?' + q, { signal: c.signal })).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        }).then(function (d) {
+          if (my !== seq) return null;
+          if (d && typeof d === 'object' && d.busy && tries < BUSY_TRIES) {    // quietly again (the spinner stays)
+            tries += 1;
+            return wait(BUSY_WAIT_MS).then(function () { return my === seq ? ask(false) : null; });
+          }
+          return d;
+        });
+      }
+      return ask(true).then(function (d) {
         if (my !== seq) return null;                                           // superseded: no DOM writes
         if (!d || typeof d !== 'object') throw new Error('bad forecast');
         if (!(d.error && !d.table_html)) { cache.set(key, { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim(); }   // a failed build is not kept (the server does not keep it either)
@@ -308,10 +324,17 @@
     function prefetch(next) {
       var s = normalise(Object.assign({}, state, next || {})), key = keyOf(s), hit = cache.get(key), now = deps.now();
       if (hit && now - hit.ts < (hit.ttl || CACHE_TTL_MS)) return Promise.resolve(hit.d);
-      return deps.fetch(API + '?' + queryFor(s), {}).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      }).then(function (d) {
+      var tries = 0;
+      function ask() {
+        return deps.fetch(API + '?' + queryFor(s), {}).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        }).then(function (d) {
+          if (d && typeof d === 'object' && d.busy && tries < BUSY_TRIES) { tries += 1; return wait(BUSY_WAIT_MS).then(ask); }
+          return d;
+        });
+      }
+      return ask().then(function (d) {
         if (!d || typeof d !== 'object') throw new Error('bad forecast');
         if (!(d.error && !d.table_html)) { cache.set(key, { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim(); }
         return d;
@@ -885,6 +908,7 @@
       return e && e.q === q && e.p && typeof e.p.then === 'function' ? e.p : null;
     }
     var loader = createLoader({ fetch: opts.fetch || function (u, o) { return win.fetch(u, o); }, takeEarly: takeEarly, now: function () { return Date.now(); },
+      wait: opts.wait || function (ms) { return new Promise(function (res) { if (win.setTimeout) win.setTimeout(res, ms); else setTimeout(res, ms); }); },
       replaceState: function (url) { try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
@@ -1070,7 +1094,7 @@
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
-      createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
+      createLoader: createLoader, ttlOf: ttlOf, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
       createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,

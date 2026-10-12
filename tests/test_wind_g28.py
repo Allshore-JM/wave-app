@@ -66,6 +66,79 @@ def test_a1_a_gauge_without_weather_products_still_takes_its_wind_token():
     assert not budget.take(), "the window used the only token"
 
 
+def test_v7c_a_gauge_window_missing_weather_products_is_kept_a_minute():
+    """Fix round 7c test-site verification (V7c-1): a gauge window built while the budget left some (or all) of its
+    weather products out is kept error_ttl (60 s), not ok_ttl: the weather fills in at the next ask, not 10 min later."""
+    t = [0.0]
+    budget = W.TokenBucket(rate=30, now=lambda: t[0], burst=4)
+    assert budget.take(2)                                              # tide windows took two: the wind rows + ONE product
+    fetch, clock = history_fetch(), Clock(coops_rows_now())
+    svc = W.WindHistory(STATIONS, fetch, now=clock, coops_bucket=budget)
+    status, p = svc.history("coops:1612340")
+    assert status == "ok" and sum(1 for k in ("at", "wt", "p") if k in p) == 1
+    clock.t += 30
+    assert svc.history("coops:1612340")[1] is p, "within the minute: the same answer"
+    clock.t += svc.error_ttl - 30 + 1
+    t[0] += 60.0                                                       # the budget has refilled
+    status2, p2 = svc.history("coops:1612340")
+    assert status2 == "ok" and p2 is not p and all(k in p2 for k in ("at", "wt", "p")), "built again: all products"
+    clock.t += svc.error_ttl + 1
+    assert svc.history("coops:1612340")[1] is p2, "a complete answer is kept ok_ttl"
+    # every product left out (one token: the wind rows only): also a minute
+    one = W.TokenBucket(rate=30, now=lambda: 0.0, burst=1)
+    clock3 = Clock(coops_rows_now())
+    svc3 = W.WindHistory(STATIONS, history_fetch(), now=clock3, coops_bucket=one)
+    p3 = svc3.history("coops:1612340")[1]
+    assert not any(k in p3 for k in ("at", "wt", "p")) and p3["t"]
+    clock3.t += svc3.error_ttl + 1
+    assert svc3.history("coops:1612340") == ("busy", {"error": W.BUSY}), "not kept: asked again (no token yet)"
+
+
+def test_v7c_a_late_failed_or_throttled_product_keeps_the_window_a_minute(monkeypatch):
+    monkeypatch.setattr(W, "WX_DEADLINE_S", 0.3)
+    fetch, gate = history_fetch(), threading.Event()
+
+    def slow_water(url, max_bytes, headers=None):
+        gate.wait(3)
+        return fx("coops_water_temperature.json")
+    fetch.table[W.coops_url("1612340", product="water_temperature", range=24)] = slow_water
+    clock = Clock(coops_rows_now())
+    svc = W.WindHistory(STATIONS, fetch, now=clock)
+    status, p = svc.history("coops:1612340")
+    gate.set()
+    assert status == "ok" and "wt" not in p and "at" in p
+    clock.t += svc.error_ttl + 1
+    p2 = svc.history("coops:1612340")[1]
+    assert p2 is not p and "wt" in p2, "asked again a minute later, in time now"
+    for bad in (THROTTLE, IOError("timeout")):                          # a passing NOAA message, a failed request
+        f2 = history_fetch()
+        f2.table[W.coops_url("1612340", product="air_temperature", range=24)] = bad
+        c2 = Clock(coops_rows_now())
+        s2 = W.WindHistory(STATIONS, f2, now=c2)
+        q = s2.history("coops:1612340")[1]
+        assert "at" not in q and "wt" in q
+        c2.t += s2.error_ttl + 1
+        assert s2.history("coops:1612340")[1] is not q, bad
+
+
+def test_v7c_no_data_products_and_gauges_without_products_keep_ten_minutes():
+    fetch = history_fetch()
+    fetch.table[W.coops_url("1612340", product="air_pressure", range=24)] = fx("coops_error.json")   # NOAA: no data
+    clock = Clock(coops_rows_now())
+    svc = W.WindHistory(STATIONS, fetch, now=clock)
+    status, p = svc.history("coops:1612340")
+    assert status == "ok" and "p" not in p and "at" in p
+    clock.t += svc.error_ttl + 1
+    assert svc.history("coops:1612340")[1] is p, "no data is an answer: kept ok_ttl"
+    stations = dict(STATIONS)
+    stations["coops:1612340"] = dict(STATIONS["coops:1612340"], wx="")
+    c2 = Clock(coops_rows_now())
+    s2 = W.WindHistory(stations, history_fetch(), now=c2)
+    q = s2.history("coops:1612340")[1]
+    c2.t += s2.error_ttl + 1
+    assert s2.history("coops:1612340")[1] is q, "a gauge without products: complete"
+
+
 def test_a1_the_budget_is_shared_with_the_tide_windows(monkeypatch):
     budget = W.TokenBucket(rate=30, now=lambda: 0.0, burst=1)
     tide_calls = []

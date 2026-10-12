@@ -997,8 +997,12 @@ class WindHistory:
                     return hit
                 if not self._builds.acquire(timeout=max(0.0, deadline - time.monotonic())):
                     return "busy", {"error": BUSY}
+                ttl = None
                 try:
-                    status, payload = build()
+                    res = build()                                      # (status, payload) or (status, payload, ttl)
+                    status, payload = res[0], res[1]
+                    if len(res) > 2:
+                        ttl = res[2]
                 except WindBusy:
                     return "busy", {"error": BUSY}                       # never cached: asked again in a moment
                 except WindError as exc:
@@ -1006,7 +1010,9 @@ class WindHistory:
                     status, payload = "error", {"error": UNAVAILABLE}
                 finally:
                     self._builds.release()
-                self._put(key, status, payload, self.ok_ttl if status == "ok" else self.error_ttl)
+                if ttl is None:
+                    ttl = self.ok_ttl if status == "ok" else self.error_ttl
+                self._put(key, status, payload, ttl)
                 return status, payload
             finally:
                 e[0].release()
@@ -1058,19 +1064,21 @@ class WindHistory:
         """The gauge's own weather products (COOPS_WX_PRODUCTS, only the letters the snapshot lists) merged into the
         wind rows at the same minute, asked together under ONE deadline (WX_DEADLINE_S: a slow NOAA must not hold a
         request thread for one request after another, G28 A-6); a product that cannot be read in time or says
-        anything but "no data" adds nothing (logged)."""
+        anything but "no data" adds nothing (logged). -> True when every product was read (NOAA's "no data" counts),
+        False when one was left out, late or failed: that answer is kept a minute only (fix round 7c verification)."""
         by_t = {r["t"]: r for r in rows}
         prods = self._wx_products(letters)
         if not prods or not by_t:
-            return
+            return True
         # one token each, only if free at once: a product without one is left out like a late one (the wind rows
         # took theirs; a window never waits for all of its products' tokens at once: G28 re-check R1-N2)
         asked = [p for p in prods if self.coops_bucket.take(1)]
-        if len(asked) < len(prods):
+        complete = len(asked) == len(prods)
+        if not complete:
             _log.info("wind history coops:%s: %d weather products left out (the CO-OPS budget)", local, len(prods) - len(asked))
         prods = asked
         if not prods:
-            return
+            return False
 
         def get(prod):
             try:
@@ -1087,21 +1095,25 @@ class WindHistory:
         for (product, key), fut in zip(prods, futs):
             if fut not in done:
                 _log.info("wind history coops:%s: %s not read in %g s", local, product, WX_DEADLINE_S)
+                complete = False
                 continue
             doc, exc = fut.result()
             if exc is not None:
                 _log.info("wind history coops:%s: %s not read (%s)", local, product, exc)
+                complete = False
                 continue
             msg = coops_error(doc)
             if msg:
                 if not coops_no_data(msg):
                     _log.info("wind history coops:%s: %s: NOAA says %s", local, product, msg[:120])
+                    complete = False
                 continue
             check = _temp if key in ("at", "wt") else _hpa if key == "p" else _pct
             for t, v in parse_coops_series(doc).items():
                 r = by_t.get(t)
                 if r is not None and check(v) is not None:
                     r[key] = check(v)
+        return complete
 
     def _metar(self, local, since):
         if not self.bucket.take():
@@ -1130,7 +1142,7 @@ class WindHistory:
         now = self._now()
         since = int(now) - HISTORY_S
         src, _, local = sid.partition(":")
-        note, via, no_file = None, None, False
+        note, via, no_file, partial = None, None, False, False
         if src == "ndbc":
             try:
                 rows = self._ndbc(local, since)
@@ -1144,7 +1156,7 @@ class WindHistory:
             self._take(self.coops_bucket, "CO-OPS")                    # the wind rows; the products take theirs as they go
             try:
                 rows = self._coops(local, since)
-                self._coops_weather(local, st.get("wx"), rows)
+                partial = not self._coops_weather(local, st.get("wx"), rows)
             except WindBusy:
                 raise
             except WindError as exc:
@@ -1172,6 +1184,8 @@ class WindHistory:
             if any(r.get(k) is not None for r in rows):
                 out[k] = [r.get(k) for r in rows]
         out["conditions"] = conditions(rows)
+        if partial:                                                    # weather products missing: asked again in a minute
+            return "ok", out, self.error_ttl
         return "ok", out
 
 

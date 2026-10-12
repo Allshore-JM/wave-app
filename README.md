@@ -987,7 +987,9 @@ naming the site as aviationweather.gov asks):
   answers busy at once while both slots have been held longer than that (`SharedCap.stuck`: a slow agency does not tie
   up the threads `/healthz` needs; G28 re-check R1-N4). The tide service's cache
   core: ok 10 min, a
-  failure 1 min, busy never cached (503 + `Retry-After: 5` + `retry: true`), one build per station at a time, LRU 256.
+  failure 1 min, busy never cached (503 + `Retry-After: 5` + `retry: true`), one build per station at a time, LRU 256;
+  a gauge's window built without some of its weather products (left out by the budget, late or failed; NOAA's "no
+  data" is an answer) is kept 1 min only, so the weather fills in at the next ask (fix round 7c verification).
   An id not in the snapshot is a 404 without any upstream request.
 - Off with `WIND_STATIONS=0` (the routes answer 503, the scheduler leaves the feeds alone; the tests set it).
 

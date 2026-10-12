@@ -822,7 +822,8 @@
   // PNG -> Uint8Array of codes. Direct inflate where the browser has DecompressionStream, else the
   // canvas path (needs CORS on the bucket for getImageData). `expect` = the manifest grid the frame
   // must have: a body that is too large or a picture of another size is refused before decoding.
-  function decodeFrame(url, signal, expect) {
+  // onBody(): called once the whole body has arrived, before the decode (the download watchdog stops there).
+  function decodeFrame(url, signal, expect, onBody) {
     var direct = typeof DecompressionStream === 'function' && typeof Response === 'function';
     return fetch(url, { signal: signal, mode: 'cors' }).then(function (r) {
       if (!r.ok) throw new Error('frame ' + r.status);
@@ -830,6 +831,7 @@
       if (len > MAX_FRAME_BYTES) throw new Error('frame decode failed');
       return direct ? r.arrayBuffer() : r.blob();
     }).then(function (body) {
+      if (onBody) onBody();
       var size = direct ? body.byteLength : body.size;
       if (size > MAX_FRAME_BYTES) throw new Error('frame decode failed');
       if (!direct) return decodeCanvas_(body, expect);
@@ -1149,7 +1151,8 @@
   var RUN_CHECK_MS = 30 * 60 * 1000;                         // newer run -> banner only, never an automatic switch
   var RETRY_AFTER_MS = 60 * 1000;                            // a transient fetch failure keeps a frame out for this long
   var MAX_TRANSIENT = 3;                                     // consecutive transient failures -> "unavailable" + Retry
-  var STALL_MS = 5000;                                       // a frame download slower than this (or 4 intervals) is skipped
+  var STALL_MS = 5000;                                       // a frame DOWNLOAD slower than this (or 4 intervals) is asked again
+  var LATE_TRIES = 3;                                        // download attempts before a stalling frame counts as a failure
   // A frame that does not exist (or cannot be decoded) is gone for the session; anything else (network
   // error, 403 from a bot check, 5xx, browser out of resources) is retried after a cooldown.
   function failureKind(err) {
@@ -1843,25 +1846,39 @@
     if (this.inflight[key]) return this.inflight[key].promise;
     if (this._isUnavailable(idx, kind)) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
     delete this.unavailable[key];                                            // an expired cooldown: try again
-    var m = this.manifest, ctrl = new AbortController(), rec, half = (dir ? this.dres : this.res) === 'half', stalled = false, kindName = dir ? 'dir' : 'field';
+    var m = this.manifest, ctrl = new AbortController(), rec, half = (dir ? this.dres : this.res) === 'half', kindName = dir ? 'dir' : 'field';
     var url = this.root + '/' + frameKey(m, m.frames[idx], dir ? DIR_FIELDS[this.field] : this.field, half);
     function mine() { return self.inflight[key] === rec; }
-    // a download that stalls (one frame in a loop took 6.5 s at G4) is dropped like a transient failure
-    var watchdog = setTimeout(function () { stalled = true; ctrl.abort(); }, Math.max(STALL_MS, 4 * self._interval()));
-    var p = decodeFrame(url, ctrl.signal, half ? m.grid_half : m.grid).then(function (frame) {
-      clearTimeout(watchdog);
+    // The watchdog times the DOWNLOAD only (until the body has arrived): a decode that waits behind a busy page
+    // (fast playback on a large screen) is late, never missing. A download that stalls (one took 6.5 s at G4) is
+    // asked again at once, LATE_TRIES times in all; only then does it count as a failure ("frame stalled").
+    function attempt(n) {
+      var inner = new AbortController(), stalled = false, onOuter = function () { inner.abort(); };
+      ctrl.signal.addEventListener('abort', onOuter);
+      var watchdog = setTimeout(function () { stalled = true; inner.abort(); }, Math.max(STALL_MS, 4 * self._interval()));
+      function done() { clearTimeout(watchdog); ctrl.signal.removeEventListener('abort', onOuter); }
+      return decodeFrame(url, inner.signal, half ? m.grid_half : m.grid, function () { clearTimeout(watchdog); }).then(function (frame) {
+        done(); return frame;
+      }, function (err) {
+        done();
+        if (stalled && !ctrl.signal.aborted && self.manifest === m) {
+          if (n + 1 < LATE_TRIES) return attempt(n + 1);                    // late: asked again, not marked
+          err = new Error('frame stalled');
+        }
+        throw err;
+      });
+    }
+    var p = attempt(0).then(function (frame) {
       if (mine()) delete self.inflight[key];
       // A decode cannot be cancelled: one that outlives its abort (Update, Off, field or resolution
       // change) must neither be cached nor delivered.
-      if ((ctrl.signal.aborted && !stalled) || self.manifest !== m) throw abortError();
+      if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
       if (!dir) self.transientFails = 0;                                      // the outage counter follows the field frames only
       cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null);
       return frame;
     }, function (err) {
-      clearTimeout(watchdog);
       if (mine()) delete self.inflight[key];
-      if ((ctrl.signal.aborted && !stalled) || self.manifest !== m) throw abortError();
-      if (stalled) err = new Error('frame stalled');
+      if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
       var kind_ = failureKind(err);
       self.unavailable[key] = kind_ === 'permanent' ? true : Date.now() + RETRY_AFTER_MS;
       err.unavailable = true;
@@ -3013,7 +3030,7 @@
       parsePng: parsePng, unfilter: unfilter, decodePngGrey: decodePngGrey,
       forwardPixel: forwardPixel, snapToPixel: snapToPixel, pixelOf: pixelOf, pad3: pad3,
       ringPlan: ringPlan, nextAvailable: nextAvailable, stepAvailable: stepAvailable, nearestIndex: nearestIndex, dotMonth: dotMonth, restoreIndex: restoreIndex, SESSION_KEY: SESSION_KEY, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
-      MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT,
+      MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT, STALL_MS: STALL_MS, LATE_TRIES: LATE_TRIES,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,

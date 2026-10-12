@@ -37,7 +37,7 @@ async function onRunDay(fn) {
 
 // One world per test: stubs, a fresh module evaluation, and a controller with the DOM parts neutralised.
 function world(opts) {
-  const w = { pendingBitmaps: [], fetches: [], failNext: {}, pointer: null, manifests: {}, pendingCoast: [], coastAnswer: () => ({ ok: false, status: 500 }) };
+  const w = { pendingBitmaps: [], fetches: [], failNext: {}, hang: {}, pointer: null, manifests: {}, pendingCoast: [], coastAnswer: () => ({ ok: false, status: 500 }) };
   const reg = { doc: {}, win: {} };
   const on = (t) => (ev, fn) => { (reg[t][ev] = reg[t][ev] || []).push(fn); };
   const off = (t) => (ev, fn) => { reg[t][ev] = (reg[t][ev] || []).filter((f) => f !== fn); };
@@ -57,6 +57,10 @@ function world(opts) {
       if (url.endsWith('latest.json')) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(w.pointer) });
       const mm = /gfswave\/0p25\/v1\/(\d{10})\/manifest-x\.json$/.exec(url);
       if (mm) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(w.manifests[mm[1]]) });
+      if (w.hang[url] > 0) {                                                 // a download that never answers (until aborted)
+        w.hang[url]--; (w.hung = w.hung || []).push({ url, signal: o && o.signal });
+        return new Promise((res, rej) => { if (o && o.signal) o.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))); });
+      }
       const fail = w.failNext[url]; if (fail) { delete w.failNext[url]; if (fail === 'network') return Promise.reject(new TypeError('Failed to fetch')); return Promise.resolve({ ok: false, status: fail }); }
       if (url.indexOf('/static/coast/') >= 0) return new Promise((res, rej) => {                  // released by hand, like decodes; aborts reject like a real fetch
         w.pendingCoast.push(() => res(w.coastAnswer(url)));
@@ -210,6 +214,52 @@ test('unavailable frames: 404 is permanent and skipped, a network error is a coo
   o.seek(i0 + 9); await settle();
   const u = o.unavailable[o._key(i0 + 9)];
   assert.equal(typeof u, 'number'); assert.ok(u > Date.now(), 'cooldown timestamp');
+  o.unmount();
+}));
+
+test('a frame whose download is done but whose decode waits behind a busy page is late, never "unavailable" (2026-10-12)', () => onRunDay(async () => {
+  const w = world({ fakeTimers: true });
+  const o = await mounted(w, A);
+  await w.releaseAll();
+  const i0 = o.frameIndex, url = 'https://x/' + `gfswave/0p25/v1/${A.run}/hs/f${String(A.frames[i0 + 10].step).padStart(3, '0')}.png`;
+  o.seek(i0 + 10); await settle();
+  assert.equal(w.fetches.filter((u) => u === url).length, 1);
+  await w.fade(20000); await settle();                         // the decode is held 20 s (the watchdog used to fire at 5 s)
+  assert.equal(o._isUnavailable(i0 + 10), false, 'not marked');
+  assert.equal(w.fetches.filter((u) => u === url).length, 1, 'not asked again');
+  await w.releaseAll();
+  assert.equal(o.frameIndex, i0 + 10, 'it lands');
+  assert.equal(o.transientFails, 0);
+  o.unmount();
+}));
+
+test('a download that stalls is asked again at once; only the third stall in a row makes it a cooldown; a superseded one is not retried', () => onRunDay(async () => {
+  const w = world({ fakeTimers: true });
+  const o = await mounted(w, A);
+  await w.releaseAll();
+  const i0 = o.frameIndex, u = (i) => 'https://x/' + `gfswave/0p25/v1/${A.run}/hs/f${String(A.frames[i].step).padStart(3, '0')}.png`;
+  const n = (i) => w.fetches.filter((x) => x === u(i)).length;
+  w.hang[u(i0 + 10)] = 1;                                      // stalls once
+  o.seek(i0 + 10); await settle();
+  await w.fade(w.I.STALL_MS); await settle();
+  assert.equal(n(i0 + 10), 2, 'asked again at the watchdog');
+  assert.equal(o._isUnavailable(i0 + 10), false);
+  await w.releaseAll();
+  assert.equal(o.frameIndex, i0 + 10, 'the second answer lands');
+  w.hang[u(i0 + 20)] = 3;                                      // stalls on every attempt
+  o.seek(i0 + 20); await settle();
+  for (let k = 0; k < w.I.LATE_TRIES; k++) { await w.fade(w.I.STALL_MS); await settle(); }
+  assert.equal(n(i0 + 20), w.I.LATE_TRIES);
+  assert.equal(typeof o.unavailable[o._key(i0 + 20)], 'number', 'a cooldown, not permanent');
+  assert.equal(o.frameIndex, i0 + 10, 'the drawn frame stays');
+  assert.equal(o.transientFails, 1, 'one failure, not three');
+  w.hang[u(i0 + 30)] = 1;
+  o.seek(i0 + 30); await settle();
+  o.seek(i0 + 40); await settle();                             // the stalling download is dropped by the newer seek
+  assert.equal(w.hung.filter((h) => h.url === u(i0 + 30))[0].signal.aborted, true, 'its request is cancelled at once');
+  await w.fade(w.I.STALL_MS * 2); await settle();
+  assert.equal(n(i0 + 30), 1, 'never asked again');
+  assert.equal(o._isUnavailable(i0 + 30), false);
   o.unmount();
 }));
 

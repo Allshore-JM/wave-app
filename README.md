@@ -219,6 +219,9 @@ event (5 s at most), a deferred forecast table (3 s at most) and an idle moment,
 meanwhile. Off, a new tab, or a layer picked from Off starts without a saved time; switching layers while the saved
 one waits to be restored keeps the time; a page shown again from the back/forward cache writes its own state back to
 the tab.
+Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
+stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
+"Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.
 Wave-height colours and contours (asset 2.7.6): wave height uses value knots so 0-3 m fills about half of the
 legend (owner-picked spectral palette; the knots stretch to whatever legend the manifest carries; a run whose legend is exactly 0-60 ft = 0-18.288 m uses the wider scale in `SCALES`: 0-30 ft unchanged, 40 ft pale pink, 50 ft rose, 60 ft deep purple, plan section 27); tp and wind keep
 linear scales. Contours (wave height and period, always on since asset 2.12.0; no checkbox) are light

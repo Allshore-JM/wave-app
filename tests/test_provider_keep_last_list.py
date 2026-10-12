@@ -52,6 +52,12 @@ def _flaky(p, fail):
 
 
 def test_golden_replay_still_identical(monkeypatch):
+    # The memo module's autouse isolation does not reach its test imported here: run_sequence assigns these three
+    # directly, so they are recorded first and restored afterwards (they once stayed frozen for the rest of the session).
+    monkeypatch.setattr(A, "_LIVE_STATIONS_MEMO", {"key": None, "payload": None, "etag": None})
+    monkeypatch.setattr(B, "time", B.time)
+    monkeypatch.setattr(A, "get_buoy_providers", A.get_buoy_providers)
+    monkeypatch.setattr(A, "_buoy_tz_cached", A._buoy_tz_cached)
     _golden(monkeypatch)
 
 

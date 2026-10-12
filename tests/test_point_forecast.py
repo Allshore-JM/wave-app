@@ -1038,7 +1038,6 @@ def test_the_real_cell_agrees_with_noaas_bulletin():
 def api(product, monkeypatch):
     monkeypatch.setattr(A, "POINTS", product.source())
     monkeypatch.setattr(A, "_POINT_CACHE", {})
-    monkeypatch.setattr(A, "_POINT_BUILD_SINCE", [])
     monkeypatch.setattr(A, "_point_tz", lambda lat, lon: "Pacific/Honolulu")
     monkeypatch.setenv("POINTS_ROOT", "https://bucket")
     client = A.app.test_client()
@@ -1462,6 +1461,36 @@ def test_a_zone_is_shown_as_a_visitor_reads_it(api):
     assert "UTC\u221211" in meta and "Etc/GMT" not in meta
 
 
+def test_a_point_is_busy_at_once_when_tide_or_wind_builds_hold_both_slots(api, monkeypatch):
+    """G28 re-check R1-N1 / R1-N4: the build cap is shared with the tide and wind windows; when two of THEIR builds have
+    held both slots longer than a point's wait, the point says so at once (in words that do not blame other points)."""
+    product, get = api
+    cap = A._POINT_BUILDS
+    hold, took = threading.Event(), threading.Barrier(3)
+
+    def other_build():
+        assert cap.acquire(timeout=1)
+        took.wait(2)
+        hold.wait(5)
+        cap.release()
+    th = [threading.Thread(target=other_build) for _ in range(2)]
+    for t in th:
+        t.start()
+    took.wait(2)
+    try:
+        monkeypatch.setattr(A, "_POINT_BUILD_WAIT_S", 0.2)
+        time.sleep(0.3)                                                    # both slots older than the wait
+        t0 = time.time()
+        d = get(PFC.point_id(5.0, 20.0)).get_json()
+        assert d["error"] == A.POINT_BUSY and d["busy"] is True and time.time() - t0 < 0.15
+        assert "points" not in A.POINT_BUSY
+    finally:
+        hold.set()
+        for t in th:
+            t.join(5)
+    assert get(PFC.point_id(5.0, 20.0)).get_json()["error"] is None and cap.held() == 0
+
+
 def test_busy_is_said_at_once_when_both_builds_are_stuck_and_one_deadline_covers_both_waits(api, monkeypatch):
     """G22 A-6: with both slots held by hanging fetches every further request used to wait its two seconds too, and
     a request could wait twice (for the point's lock, then for a slot)."""
@@ -1491,7 +1520,7 @@ def test_busy_is_said_at_once_when_both_builds_are_stuck_and_one_deadline_covers
     gate.set()
     for t in th:
         t.join()
-    assert out["a"]["error"] is None and out["b"]["error"] is None and A._POINT_BUILD_SINCE == [] and A._POINT_INFLIGHT == {}
+    assert out["a"]["error"] is None and out["b"]["error"] is None and A._POINT_BUILDS.held() == 0 and A._POINT_INFLIGHT == {}
     assert get(PFC.point_id(5.0, 40.0)).get_json()["error"] is None
     # ONE stuck build is not "busy" for everyone: the other slot still builds (G22 R-A5: M43)
     gate.clear()
@@ -1531,7 +1560,7 @@ def test_one_deadline_covers_the_wait_for_the_point_and_the_wait_for_a_slot(api,
     gate.set()
     for t in th:
         t.join()
-    assert A._POINT_INFLIGHT == {} and A._POINT_BUILD_SINCE == []
+    assert A._POINT_INFLIGHT == {} and A._POINT_BUILDS.held() == 0
 
 
 def test_only_the_run_in_hand_is_kept_and_only_older_runs_are_dropped(api, monkeypatch):

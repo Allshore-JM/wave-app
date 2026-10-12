@@ -607,9 +607,11 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   land's; else the nautical
   zone, shown as "UTC-11", never "Etc/GMT+11" (`zone_label`, also on the no-script page).
 - **Limits** (one worker, four threads): a cache of its own (`_POINT_CACHE`, 64 forecasts keyed by run, point and
-  zone: points never push a station's forecast out); two point builds at a time, a third waits two seconds and is
-  then told "The server is busy ... try again" (`busy: true`, not kept): one deadline for the whole wait, and at once
-  when both builds have been stuck longer than that; a point's objects are fetched with ONE attempt (3 s to connect,
+  zone: points never push a station's forecast out); two builds at a time, shared with the tide and wind windows (the
+  build cap below), a third waits two seconds and is then told "The server is busy right now; try again in a moment"
+  (`busy: true`, not kept): one deadline for the whole wait, and at once when both slots have been held longer than
+  that (by any build: `SharedCap.stuck`); the forecast window asks a busy answer again quietly five times, 4 s apart,
+  before it shows it with Retry (the point tool's first request likewise); a point's objects are fetched with ONE attempt (3 s to connect,
   6 s between bytes, about 8 s for the whole object from the request on: the socket of a body that trickles is shut
   down, which also stops a body with a Content-Length - closing the response from another thread waited for all of it;
   headers that trickle are not cut, R2 sends them at once); a tile that
@@ -811,7 +813,9 @@ zone differs from NOAA's own `timezonecorr` by more than 3 hours at a station ou
 places where NOAA's value is stale or on the other side of the date line), so a new wrong position is looked at before
 it ships. Names NOAA writes in capitals ("HONOLULU", "PAGO PAGO Harbor") are written as names; capitals inside a
 mixed-case name are abbreviations and stay ("Martha's Vineyard GPS Buoy", "PGA Boulevard Bridge"). `/api/tides/stations`
-serves the page's copy (id, name, position, kind, zone, gauge) with an ETag, 6 h for browsers and the edge.
+serves the page's copy (id, name, position, kind, zone, gauge) with an ETag and `Cache-Control: no-cache` (the browser
+asks again on every page load and gets a 304 while it is unchanged; the edge keeps nothing), so a changed list shows on
+the next page load after a deploy.
 
 `tide_sources.py` reads the predictions (`TideService`, wired in `app.py` with the forecast points' bounded fetch:
 one attempt, an 8 s wall-clock cap):
@@ -848,8 +852,8 @@ one attempt, an 8 s wall-clock cap):
   again); the tide service is no live-buoy provider (not in the live list, the scheduler or `/healthz`).
 
 The page (`templates/index.html`, `static_ui/tides.js`): markers (an empty div each, the sine-wave glyph is CSS) from
-`TIDE_MIN_ZOOM = 9`; below it the legend entry says "zoom in to see tide stations"; the list is asked the first time
-the layer is on at that zoom. A click opens the tide window (`#tideWin`) on a DAY STRIP (after tide-forecast.com's
+`TIDE_MIN_ZOOM = 9` (the legend gives no zoom hint at any zoom, owner 2026-10-10: its note shows only the list's
+state, "loading…" or "unavailable"); the list is asked the first time the layer is on at that zoom. A click opens the tide window (`#tideWin`) on a DAY STRIP (after tide-forecast.com's
 layout, owner 2026-10-08): one table whose label column stays put while the days scroll sideways; a column per local
 day for 30 days from today's midnight in the display zone (the site's Time Zone when one is chosen, else the station's
 own; the live-buoy panel keeps its own-zone rule); a closed day is 64 px (its date), an open day 240 px (the full date
@@ -877,9 +881,9 @@ headers, and the sun / moon glyphs are read as words ("Sunrise 7:18 AM", the moo
 Busy coasts (owner, 2026-10-08): each station gets a REVEAL ZOOM once per list, in order of importance (a station
 with a gauge, a harmonic one, a subordinate one, then by id): the zoom from which it is 24 px clear of every more
 important station already shown there (the grid of 32-px cells divides the world's width, so stations meet across the
-date line). A station is drawn from its reveal zoom on, so an icon never vanishes as you zoom in, no two icons are
-closer than 24 px below the map's last zoom (11), and the legend's note says "zoom in for more stations" while one in
-view waits. At zoom 11 every station is drawn. The opened station is drawn whatever its reveal zoom, on top of the
+date line). A station is drawn from its reveal zoom on, so an icon never vanishes as you zoom in, and no two icons are
+closer than 24 px below the map's last zoom (11); the legend says nothing about the stations held back (owner,
+2026-10-10: it is understood that more appear when zoomed in). At zoom 11 every station is drawn. The opened station is drawn whatever its reveal zoom, on top of the
 other tide icons, and changes nothing else (no icon comes or goes when a station is opened or closed).
 
 Clicks and taps: an icon is an 18-px square (the opened one 22 px). An icon whose centre lies in a more important
@@ -902,3 +906,154 @@ never changes width when one comes or goes.
 Windows: a station chip gives its subtitle up before the station's name. An expanded station window may cover the
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
+
+## Wind stations (plan section 39, UI asset 1.22.0)
+
+Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from four public-domain NOAA / NWS
+feeds (attribution requested, given in the map credits while the layer is on and in the window): NOAA NDBC buoys,
+C-MAN and other fixed stations; the weather sensors of NOAA CO-OPS tide gauges; airports reporting METAR through
+the NWS Aviation Weather Center (within 30 km of a coastline, or at sea: offshore platforms); and, for Hawaii (step 5c,
+owner 2026-10-10 "Hawaii now"), the land weather stations the NWS API lists (api.weather.gov: HECO / HELCO / MECO, the
+University of Hawaii mesonet, RAWS, CWOP, HADS and others, fed to the NWS through MADIS). iKitesurf's page was the
+visual reference (owner, 2026-10-09); its data is WeatherFlow's and proprietary, so none of it is used.
+
+The station list is a committed snapshot, `wind_stations.json` (~2,730 stations, 294 of them the NWS API's Hawaii stations:
+125 utility, 68 mesonet, 67 RAWS, 28 CWOP, 6 HADS; ids `coops:1612340`, `ndbc:51003`, `metar:PHNL`,
+`nws:001HE`; kinds gauge, buoy, cman, station, airport and, for the NWS API's stations, utility (HECO / HELCO / MECO),
+mesonet (University of Hawaii, SCAN, CRN), raws, cwop, hads, weather; the nearest civil time zone; for a gauge the NDBC id
+it is relayed under, its `alias`, and its weather sensors as letters, `wx`: a air temperature, w water temperature, p
+pressure, h humidity). Rebuild it now and then with `python tools/wind/fetch_stations.py --sensors-cache
+FILE --nws-cache FILE` (~10 min: one `sensors.json` per CO-OPS met station, NDBC's `latest_obs.txt` and station table,
+the METAR cache and site list, the API for coastal sites not in the cache, the site's own GSHHG coastline for the 30-km
+rule, the NWS API's station list per area (`--nws-areas`, default HI) and one observations probe per station, 0.75 s
+apart) and commit the file. CO-OPS gauges are kept when their Wind sensor is active (232 of 315); NDBC stations when they
+report a wind speed (moving ones left out: drifting buoys, ferries, ships, gliders; anchored lightships and a
+station-keeping surface vehicle kept); NDBC's relays of kept gauges (224, named by the gauge's id in NDBC's station table)
+become the gauge's alias, never a second flag; airports when they reported wind in the last 24 hours (1,777 incl. the
+offshore platforms, counts of 2026-10-11); NWS API stations when a row of their newest 20 observations of the last 24 hours carries a wind
+speed, leaving out the networks the other feeds cover (tide gauges, airports, NDBC buoys) and any station within 300 m
+of one already kept. One station per spot (owner, G28): of stations within 100 m of each other the gauge stays, then an
+airport's METAR, then NDBC's copy (the offshore platforms report both ways), and of two ids at one spot the one reporting
+now. NDBC and METAR names go through the same case rules as the NWS names, plus compass points, distances and a US state
+after a comma ("142NM NNE of Attu Is, AK").
+
+`wind_sources.py` (wired in `app.py`; upstream requests through the forecast points' bounded fetch, with a User-Agent
+naming the site as aviationweather.gov asks):
+- The latest readings come from four `BuoyProvider`s in a list of their own (`get_wind_providers`): NDBC (one GET of
+  `latest_obs.txt`, every 5 min; the file holds one line per station, its newest, and an hourly buoy's newest is often
+  its wave-only line, so each station keeps its last wind reading until a newer one or 6 h: G28 B-4), METAR (one GET of the gzipped cache of the last ~80 minutes of reports, every 5 min;
+  whole knots; a direction of 0 or `VRB` is no direction, 360 is north), CO-OPS (one `product=wind&date=latest` request
+  per gauge, PACED: every minute the next `WIND_COOPS_PER_REFRESH` gauges in turn, `WIND_COOPS_WORKERS` at a time, so
+  every gauge is asked about every 10 minutes; NOAA answered HTTP 403 to everything from the server for about a minute
+  after 232 requests in a few seconds, and new tide windows failed then too. A gauge whose request fails keeps its last
+  reading, only NOAA's "No data was found" drops it (any other NOAA message keeps it and counts as a failure: G28 A-4), a
+  reading older than 6 h is dropped; every request of a slice failing is a failed fetch; the first 403 stops the rest of
+  the slice before it is sent (those gauges go first after the pause: G28 A-2) and pauses the feed for 2 min with the
+  readings kept), and the NWS API (one `observations?start=<2 h
+  ago>&limit=6` request per station, `Accept: application/ld+json`, paced the same way: `WIND_NWS_PER_REFRESH` stations
+  a minute, `WIND_NWS_WORKERS` at a time, so every station is asked about every 12 minutes; the newest row with a wind
+  speed is the reading (the top of an hour is often a gust-only row); speeds converted from the row's unit code,
+  MADIS-rejected values dropped, a calm row has no direction; an answer without a wind row keeps the station's reading
+  until it is 6 h old; a 403 or 429 stops the slice and pauses the feed for 2 min). They ride on the live-buoy
+  scheduler's pass (`_wind_tick` after the buoy part; a failure there never reaches the buoys) with the same keep-last
+  rule and fork reset but a refresh runner of their own (`WIND_REFRESH_WORKERS`, default 2: a slow or hung agency never
+  holds one of the live buoys' workers, G28 A-5), and are NOT in the live-buoy list, memo, warm-up or golden;
+  `/healthz` reports them under `wind` (with their runner and `fetch_stuck`), which is never part of `ok`.
+- `/api/wind/latest` is the merged table the scheduler prebuilt (never a build or a wait in the request): `{now, stale_s,
+  fields [id, t, s, g, d], rows, missing}` with speeds in m/s and directions the wind blows FROM; a gauge takes its NDBC
+  relay's reading when it has no CO-OPS reading or the relay's is newer. Feeds still loading after a start are named in `X-Wind-Stations-Partial` with
+  `Cache-Control: no-store` (the page asks again); else 2 min. `/api/wind/stations` serves the snapshot (ETag, `no-cache`: revalidated on every page load, like the tide list).
+- `/api/wind/<id>/history` (60 s in the browser): the last 24 hours (`t, s, g, d` ascending, plus the weather the same reports hold
+  where any row has it, step 5d: `at` / `wt` air and water temperature degC, `dp` dew point, `rh` humidity % (from the
+  dew point where not reported), `p` pressure hPa, `pt` its 3-hour change, `vis` visibility km (with `vg` = 1 when it
+  is "or more": the METAR API's "10+" / "6+", the latter its form of the international 9999, G28 A-3), `wx` weather words;
+  and `conditions`, each field's newest value within 3 hours as `[t, value]` with the pressure `trend` over 3 hours)
+  from NDBC's `realtime2` file (its ATMP / WTMP / DEWP / PRES / PTDY / VIS columns; cut at 24 h
+  and 300 rows), CO-OPS `range=24`, the METAR API's `hours=24` behind a token bucket of 60 requests a minute (the API
+  allows 100; temp / dewp / altim (else slp: one quantity per station, so the trend compares like with like, G28 A-8)
+  / visib / wxString + cover), or the NWS API's `observations?start=<24 h
+  ago>&limit=500` behind a bucket of 30 a minute (so the server sends the NWS API at most ~55 requests a minute with the
+  feed's 25; temperature / dewpoint / relativeHumidity / seaLevelPressure or barometricPressure / visibility /
+  textDescription by their unit codes); a CO-OPS gauge's weather comes from its own products (`air_temperature`,
+  `water_temperature`, `air_pressure`, `humidity`, `range=24`: only those its `wx` letters list, asked together after
+  the wind request under one 10-s deadline; a product that fails, is late or says anything but "no data" adds nothing);
+  a CO-OPS message other than "No data was found" is a failure and the gauge falls back on its NDBC relay (`via:
+  "ndbc"`). Request budgets (G28 A-1): every CO-OPS request made for a window comes out of ONE budget of 30 a minute,
+  15 at once, shared with the tide windows (same agency, same address; the paced feed's 24 a minute come on top): the
+  wind request takes its token first (none: busy, nothing sent); each of the gauge's weather products only if a token
+  is free at once (one left out is like one past the deadline: the window shows the rest; G28 re-check R1-N2); NDBC
+  `realtime2` files 30 a minute. Forecast points, tide windows and wind histories share one build cap of two
+  (`_REQUEST_BUILDS`, G28 A-6): at most two builds hold request threads; a request waits for a slot at most 2 s, and
+  answers busy at once while both slots have been held longer than that (`SharedCap.stuck`: a slow agency does not tie
+  up the threads `/healthz` needs; G28 re-check R1-N4). The tide service's cache
+  core: ok 10 min, a
+  failure 1 min, busy never cached (503 + `Retry-After: 5` + `retry: true`), one build per station at a time, LRU 256;
+  a gauge's window built without some of its weather products (left out by the budget, late or failed; NOAA's "no
+  data" is an answer) is kept 1 min only, so the weather fills in at the next ask (fix round 7c verification).
+  An id not in the snapshot is a 404 without any upstream request.
+- Off with `WIND_STATIONS=0` (the routes answer 503, the scheduler leaves the feeds alone; the tests set it).
+
+The page (`templates/index.html`, `static_ui/winds.js`): flags from `WIND_MIN_ZOOM = 9` (the legend gives no zoom hint
+at any zoom, owner 2026-10-10: its note shows only the list's and the feed's state; the list is asked the first time
+the layer is on at that zoom). A flag is a 40-px
+box: a ring at the station, an arrow pointing the way the wind BLOWS, and the speed in the site's unit (mph / km/h)
+14 px upwind so it never sits under the arrow; coloured by the band in whole knots (iKitesurf-style, owner): calm under
+1 (a ring with "0"), light 1-9 blue, moderate 10-15 green, fresh 16-21 amber, strong 22-30 red, gale 31 and up purple;
+a reading with no direction shows its number above the ring; no reading is a small grey ring; a reading older than 2 h
+(the server's `stale_s`) is grey. Busy coasts are thinned as the tide icons are (a reveal zoom per station, 40 px clear
+of every more important flag: a gauge or buoy before an airport, C-MAN or other NDBC station before the NWS API's land
+stations, CWOP amateur stations last (owner, 2026-10-10); every station at zoom 13; the opened station always). The feed (`createWindFeed`) asks `/api/wind/latest` every 5 minutes while the
+flags show (nothing while the tab is hidden; a partial answer again every 5 s, 24 times at most) and the drawn flags are
+repainted IN PLACE (text, classes, the arrow's rotation; the markers, their listeners and the focus stay). Clicks reach
+a flag only on its visible parts (the ring, the arrow's shape, the number: the 40-px box itself passes clicks to what lies
+under it); on touch screens the ring has a disc of up to 36 px that ends 1 px before a visible dot beside it (a
+forecast point or one of My points 12-26 px away keeps its own taps: G28 re-check R2-3), and a tide icon on the same
+station (matched by id, not by
+pixels) keeps only its own 18 px (the disc around it opens the wind window). A forecast point or one of My points close
+enough to take a tap on the flag (8 px with a mouse, 12 px on a touch screen, while its layer is shown) leaves the ring
+hollow and without clicks, and a click on the arrow or the number within that distance of the dot goes to the dot; a
+SOLID ring, its arrow and its number always open the wind window (owner, G28: what you see is what you get). A pan or a
+zoom redraws only the flags that change (the others keep their markers, listeners and focus). A click opens
+the wind window (`#windWin`, a fourth floating window at the TOP-right corner below the legend, tools and gear, as tall
+as its content, never over the parked chips nor lower than 42 px above the bottom edge, so it scrolls on a short screen;
+its left edge right of the logo and the overlay panel (G28, owner). While the live-buoy or tide window is open its
+right edge sits 60 px in from the margin, and where its own top does not show above one of them it is 30 px wider than
+that window on the left: every open window keeps a strip to click, whichever is in front. On screens up to about
+1,280 px wide that can reach over the overlay panel's right part. The page measures these boxes (`syncWindWidth`:
+`--map-topleft-r`, `--ww-gap`, `--ww-min-w`). Its chip stacks on top of the station chips at the bottom-right through the
+measured `--chips-h`, its phone bar above the tide bar and never capped; Escape closes it first) on the station's last 24 hours
+(`createWindView`): an SVG chart of the speed (solid) and gusts (dashed), the site's unit on the left and knots on the
+right, hour ticks every 3 h (6 h when narrow) with local midnights dated, gaps where readings are more than 90 minutes
+apart, a row of direction arrows under it, a hover / touch readout (the nearest reading within 45 min), the current
+reading with its age (every minute; the flag's own reading when it is newer than the history's last row, which the
+browser keeps for a minute), a folded newest-first table of 48 rows, the zone the times are in and the source (the NWS
+API's stations link to NOAA's readable time-series page); the readings are asked again every 5 minutes, quietly, but not
+while the tab is hidden or the window parked (it catches up when shown); Retry keeps the flag's reading. On a narrow chart
+(phones) the readout is short: the time, the speed with its compass point and gust, the air temperature. Under the wind reading a conditions line (step 5d: air / water
+temperature, humidity, dew point, pressure with its trend, visibility, the weather in words, only what the station
+reports, in the site's units: °F / inHg / miles or °C with one decimal / hPa / km; a METAR "6+" or "10+" visibility shows its "+") and under the arrows a small 24-hour chart of the air
+(solid) and water (dashed) temperature on the same time axis; the Readings table gains Air / Water columns; the readout
+names the air temperature. A station NDBC publishes no 24-hour file for (eight Korean buoys)
+shows the flag's own latest reading and says so. Units and the display zone follow the gear (the site's Time Zone when
+one is chosen, else the station's own). Limitations: airports report hourly (a flag up to ~90 min old at worst), buoys
+hourly, gauges and C-MAN every 6-10 min; readings are the agencies' raw values; outside the US the layer is airports; a
+wind flag beside a live-buoy dot or a tide icon is a second marker drawn below them (each stays clickable).
+
+The map zooms to 18 since section 39 step 5b (owner: close enough to tell overlapping tide, wind, buoy and forecast
+markers apart; Esri's imagery is sharp to 18-19 along most coasts). Where Esri has no tile it serves "Map data not yet
+available" (one 2,521-byte JPEG): over the open ocean from about zoom 14, at a few remote coasts from 17-18, in the relief
+from 15-17. `static_ui/basemap.js` (`AllshoreBasemap.tileLayer`, used for the imagery and, through the overlay, the relief)
+looks every tile from zoom 13 up in the service's tilemap (`/MapServer/tilemap/z/top/left/32/32`, one request per 32 x 32
+tiles, kept for the session; Esri sends `Access-Control-Allow-Origin: *`): a tile Esri has loads as usual, a missing one is
+drawn from the closest coarser tile it has (its part scaled up into a canvas, then the tile's `src`); a tilemap that cannot
+be read counts as "the tile exists". The station layers draw every station from zoom 11 (tides, `TIDE_ALL_ZOOM`) and 13
+(wind, `WIND_ALL_ZOOM`); the relief is asked at zoom 16 at most (`WIND_LOOK.maxNativeZoom`, overlay asset 2.14.11).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WIND_STATIONS` | `1` | `0` turns the wind feeds and routes off. |
+| `WIND_COOPS_WORKERS` | `2` | Gauges asked at once by the CO-OPS feed (1-8). |
+| `WIND_COOPS_PER_REFRESH` | `24` | Gauges the CO-OPS feed asks per minute, in turn (1-500); 24 of 232 = every gauge about every 10 minutes. |
+| `WIND_NWS_WORKERS` | `2` | Stations asked at once by the NWS API feed (1-8). |
+| `WIND_REFRESH_WORKERS` | `2` | The wind feeds' own refresh threads (1-4), apart from the live buoys' `LIVE_REFRESH_WORKERS`. |
+| `WIND_NWS_PER_REFRESH` | `25` | Stations the NWS API feed asks per minute, in turn (1-500); 25 of Hawaii's ~300 = every station about every 12 minutes. |

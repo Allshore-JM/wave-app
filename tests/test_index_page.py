@@ -209,7 +209,7 @@ def test_the_map_is_the_page_and_the_windows_stack_by_touch(client):
     its trigger; the live window's phone bar drives a re-measure."""
     body = client.get("/?station=51201").get_data(as_text=True)
     assert "const liveBar = lw && !lw.hidden && lw.classList.contains('fw-min') ? lw.offsetHeight : 0;" in body
-    assert "const reserve = phone ? phoneBarH + liveBar + tideBar : 0;" in body and "if (lastEnforcedWidth === w) {" in body
+    assert "const reserve = phone ? phoneBarH + liveBar + tideBar + windBar : 0;" in body and "if (lastEnforcedWidth === w) {" in body
     assert ".live-win.fw-min { bottom: var(--fw-bar-h, 48px) !important; }" in body and ".fwin.live-win {" in body
     assert "html.js body { margin: 0; overflow: hidden; }" in body and "#map { height: 100vh; height: 100dvh; background: #0b2536; }" in body
     assert "position: fixed; z-index: 2600; top: auto; left: auto;" in body[body.index(".station-results {"):]
@@ -254,7 +254,7 @@ def test_both_windows_stretch_from_every_side(client):
     so its scrollbars are never under an edge."""
     body = client.get("/?station=51201").get_data(as_text=True)
     for k in ("n", "s", "e", "w", "ne", "nw", "sw"):
-        assert body.count('<div class="fw-edge fw-edge-%s" data-edge="%s" aria-hidden="true"></div>' % (k, k)) == 3, k   # three windows (section 38)
+        assert body.count('<div class="fw-edge fw-edge-%s" data-edge="%s" aria-hidden="true"></div>' % (k, k)) == 4, k   # four windows (sections 38, 39)
     for rule in (".fwin.fw-min .fw-resize, .fwin.fw-min .fw-edge { display: none; }", ".fwin.fw-max .fw-resize, .fwin.fw-max .fw-edge { display: none; }",
                  "html:not(.js) .fw-edge,", ".fw-resize, .fw-edge { display: none; }",
                  "@media (min-width: 501px) and (min-height: 501px) { .fwin:not(.fw-min) .fw-body { margin: 0 5px 5px; } }"):
@@ -352,8 +352,8 @@ def test_map_tools_beside_the_gear(client, monkeypatch):
     assert "overflow: hidden; white-space: pre-line" not in body
     assert ".tools-bar-actions button.is-on {" in body and '.tools-bar-actions button[aria-pressed="true"]' not in body   # Lock: no aria-pressed (G21 B-11)
     assert ".tools-x, .tools-fold { min-width: 36px; min-height: 36px; }" in body[body.index("@media (max-width: 576px)"):]
-    assert "obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel'), document.getElementById('tideWin')]; }," in body
-    assert "[['liveBuoyPanel', 'lwMin'], ['tideWin', 'twMin'], ['forecastWin', 'fwMin']].forEach(function (w) {" in body
+    assert "obstacles: function () { return [document.getElementById('forecastWin'), document.getElementById('liveBuoyPanel'), document.getElementById('tideWin'), document.getElementById('windWin')]; }," in body
+    assert "[['liveBuoyPanel', 'lwMin'], ['tideWin', 'twMin'], ['windWin', 'wwMin'], ['forecastWin', 'fwMin']].forEach(function (w) {" in body
     assert "if (!(r.left < b.right && r.right > b.left && r.top < b.bottom && r.bottom > b.top)) return;" in body
     # G20 re-review: the bar is capped at the map (its body scrolls, the actions stay near the top); a window is
     # minimised whenever the bar GROWS over it; the overlay's details fold when the exposure tool starts on a short map
@@ -417,7 +417,7 @@ def test_my_points_on_the_page(client):
     assert "if (!kept && P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }" in body
     # names and provider labels in tooltips are text (G22 K-8, A-20); point markers pass a tool's click on (B-8)
     assert "mk.bindTooltip(textTip(p.label)," in body and "marker.bindTooltip(textTip(label)," in body
-    assert body.count("bindTooltip(") == 4 and "mk.bindTooltip(s.id," in body                     # the third: a station id; the fourth: a tide station
+    assert body.count("bindTooltip(") == 5 and "mk.bindTooltip(s.id," in body                     # the third: a station id; the fourth: a tide station; the fifth: a wind station
     assert "{ window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map (G22 B-8)" in body
     # the no-script page names the point in its select (B-5); the script takes that option over
     assert '<option value="pt_21667N_158054W" data-point selected>21.667N 158.054W</option>' in body
@@ -541,9 +541,9 @@ def test_tide_stations_on_the_page(client):
         # the layer and its gate
         "const TIDE_MIN_ZOOM = 9;", "function tideVisible() { return map.hasLayer(tideLayer) && map.getZoom() >= TIDE_MIN_ZOOM; }",
         "const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis) + '|' + nudgeSignature(nudges);",
-        "'zoom in to see tide stations'", "tides: saved.tides !== false", "tides: map.hasLayer(tideLayer)",
+        "const want = on && !tideStationsData.length ? tideListNote : '';", "tides: saved.tides !== false", "tides: map.hasLayer(tideLayer)",
         "'<span class=\"lc-dot lc-tide\"></span>Tide stations<span class=\"lc-note\" data-tide-note aria-hidden=\"true\"></span>': tideLayer",
-        "layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintLiveNote(); return r; };",
+        "layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintWindNote(); paintLiveNote(); return r; };",
         "map.on('overlayadd overlayremove', function (e) { if (e.layer === tideLayer) rebuildTideMarkers(true); });",
         "rebuildTideMarkers(true);\n        return;", "rebuildTideMarkers(false);\n      }, REFRESH_DEBOUNCE_MS);",
         "const TIDE_CREDIT = 'Tides: <a href=\"https://tidesandcurrents.noaa.gov/\" target=\"_blank\" rel=\"noopener\">NOAA CO-OPS</a>';",
@@ -560,7 +560,7 @@ def test_tide_stations_on_the_page(client):
         "if (min && fw.offsetHeight > 0) document.documentElement.style.setProperty('--fw-chip-h', fw.offsetHeight + 'px');",
         "@media (min-width: 501px) and (max-width: 1179.98px) and (min-height: 501px) {",
         "body.fw-chip.live-chip .tide-win:not(.fw-min):not(.fw-max) { --tw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--lw-chip-h, 40px))); }",
-        "body.fw-chip.tide-chip .live-win:not(.fw-min):not(.fw-max) { --lw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--tw-chip-h, 40px))); }", "const TIDE_ALL_ZOOM = MAX_MAP_ZOOM;",
+        "body.fw-chip.tide-chip .live-win:not(.fw-min):not(.fw-max) { --lw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--tw-chip-h, 40px))); }", "const TIDE_ALL_ZOOM = 11;",
         # the window
         '<section id="tideWin" class="fwin tide-win" hidden role="region" aria-label="Tide station">',
         'id="twHeader"', 'id="twMin"', 'id="twClose"', 'id="twBody"', 'id="twResize"', 'id="tideStrip" class="tide-strip"',
@@ -573,7 +573,7 @@ def test_tide_stations_on_the_page(client):
         ".live-chip.tide-chip .forecast-win:not(.fw-min):not(.fw-max) { bottom: calc(78px + var(--lw-chip-h, 40px)); }",
         ".live-chip .tide-win:not(.fw-min):not(.fw-max) { bottom: calc(26px + var(--lw-chip-h, 40px)); }",
         ".tide-chip .live-win:not(.fw-min):not(.fw-max) { bottom: calc(26px + var(--tw-chip-h, 40px)); }",
-        "[['liveBuoyPanel', '--lw-chip-h'], ['tideWin', '--tw-chip-h']].forEach(function (c) {",
+        "[['liveBuoyPanel', '--lw-chip-h'], ['tideWin', '--tw-chip-h'], ['windWin', '--ww-chip-h']].forEach(function (c) {",
         ".live-win.fw-front, .tide-win.fw-front { z-index: 2100; }",
         "function front(which) { wins.forEach(function (w, i) { if (w) w.classList.toggle('fw-front', i === which); }); }",
         "document.addEventListener('allshore:tidepanel', function () { front(2); });",
@@ -614,18 +614,278 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
         right, bottom, wpx, wm, vh, cap = r
         w, h = min(wpx, W - wm), min(vh * H / 100.0, cap)
         return (W - right - w, H - bottom - h, W - right, H - bottom)
-    def edge(behind, front):                             # the widest strip of `behind` outside `front`
-        return max(front[0] - behind[0], front[1] - behind[1], behind[2] - front[2], behind[3] - front[3])
+    # the wind window (section 39 step 5b, owner): at the top-right corner below the legend / tools / gear (the corner
+    # measures about 180 px on a desktop: --map-topright-h), as tall as its content (up to ~530 px for a gauge with its
+    # weather; 540 here as the bound), never lower than 42 px above the bottom edge. Its box (G28): its left edge right
+    # of the top-left controls (the logo and the overlay panel end ~360 px from the left; ~204 px below 576 px, where the
+    # overlay is a sheet: --map-topleft-r, B-7); while the live or tide window is open, its right edge WW_GAP in from the
+    # margin (--ww-gap) and, when its top does not show WW_ABOVE above one of them, WW_OUT wider than that window
+    # (--ww-min-w): every open window keeps a strip to click whichever is in front (B-13; the page measures both).
+    m = re.search(r"\.fwin\.wind-win \{ right: calc\((\d+)px \+ var\(--ww-gap, 0px\)\); top: calc\(var\(--map-topright-h, 120px\) \+ (\d+)px\); "
+                  r"bottom: auto; height: auto;\n"
+                  r"\s+--ww-w: min\(calc\(100vw - (\d+)px\), max\(var\(--ww-min-w, 0px\), min\((\d+)px, calc\(100vw - \3px\), "
+                  r"calc\(100vw - (\d+)px - var\(--map-topleft-r, 0px\)\)\)\)\);\n"
+                  r"\s+width: calc\(var\(--ww-w\) - var\(--ww-gap, 0px\)\);\n"
+                  r"\s+max-height: calc\(100vh - var\(--map-topright-h, 120px\) - (\d+)px - var\(--chips-h, 0px\)\); z-index: 2000; \}", body)
+    assert m, "the wind window's box"
+    w_right, w_gap, w_margin, w_px, w_left_gap, w_reserve = (int(g) for g in m.groups())
+    k = re.search(r"var WW_GAP = (\d+), WW_OUT = (\d+), WW_ABOVE = (\d+);", body)
+    assert k, "the wind window's constants"
+    GAP, OUT, ABOVE = (int(g) for g in k.groups())
+    for needle in ("if (wtop !== null && r.top - wtop < WW_ABOVE) minW = Math.max(minW, Math.round(r.width) + WW_OUT);",
+                   "root.style.setProperty('--ww-gap', (open ? WW_GAP : 0) + 'px');",
+                   "if (minW) root.style.setProperty('--ww-min-w', minW + 'px'); else root.style.removeProperty('--ww-min-w');"):
+        assert needle in body, needle
+    CORNER_PX, WIND_CONTENT_PX = 180, 540
+    def topleft_r(W):
+        return 204 if W < 576 else 360
+    def wind_box(W, H, others):
+        top = CORNER_PX + w_gap
+        base = min(w_px, W - w_margin, W - w_left_gap - topleft_r(W))
+        open_ = [o for o in ("live", "tide") if o in others]
+        stick = [others[o][2] - others[o][0] + OUT for o in open_ if others[o][1] - top < ABOVE]
+        ww = min(W - w_margin, max(max(stick or [0]), base))
+        gap = GAP if open_ else 0
+        h = min(WIND_CONTENT_PX, H - CORNER_PX - w_reserve)
+        right = W - w_right - gap
+        return (right - (ww - gap), top, right, top + h)
+    def minus(rect, cut):                                # rect minus cut: up to four rectangles
+        l, t, r, b = rect
+        cl, ct, cr, cb = cut
+        if cr <= l or cl >= r or cb <= t or ct >= b:
+            return [rect]
+        out = []
+        if ct > t: out.append((l, t, r, ct))
+        if cb < b: out.append((l, cb, r, b))
+        top, bot = max(t, ct), min(b, cb)
+        if cl > l: out.append((l, top, cl, bot))
+        if cr < r: out.append((cr, top, r, bot))
+        return out
+    def clickable(rect, above):                          # a 24 x 24 px area of rect outside every window above it
+        parts = [rect]
+        for c in above:
+            parts = [q for p in parts for q in minus(p, c)]
+        return any(p[2] - p[0] >= 24 and p[3] - p[1] >= 24 for p in parts)
+    ORDER = ["forecast", "live", "tide", "wind"]         # the page order: a later window lies above an earlier one
     for W in (520, 600, 768, 820, 900, 956, 1024, 1180, 1280, 1366, 1440, 1536, 1600, 1920, 2560):
         for H in (501, 560, 600, 700, 768, 800, 864, 900, 1024, 1080, 1200, 1440):
             b = {n: box(r, W, H) for n, r in rules.items()}
-            for front in b:
-                for behind in b:
-                    if front != behind:
-                        assert edge(b[behind], b[front]) >= 24, (W, H, front, behind, b)
+            b["wind"] = wind_box(W, H, b)
+            for front in ORDER:
+                stack = [n for n in ORDER if n != front] + [front]      # bottom to top
+                for i, n in enumerate(stack[:-1]):
+                    if front == "forecast" and n == "wind" and H < 570:
+                        continue                         # a short desktop screen: Escape closes it (known since 5b)
+                    assert clickable(b[n], [b[x] for x in stack[i + 1:]]), (W, H, "front", front, "hidden", n, b)
+    # only the forecast and wind windows open: the wind window keeps its full width at the margin (the rule is for the
+    # live / tide window)
+    full = wind_box(1920, 1080, {"forecast": box(rules["forecast"], 1920, 1080)})
+    assert full[2] - full[0] == w_px and full[2] == 1920 - w_right
+    # B-7 holds whenever the live / tide window leaves room: from 1366 px wide the wind window never reaches over the
+    # top-left controls; below that, with a live or tide window open, it can (the strip rule wins: owner, step 7b)
+    for W in (1366, 1440, 1536, 1600, 1920, 2560):
+        for H in (501, 600, 768, 900, 1080, 1440):
+            b = {n: box(r, W, H) for n, r in rules.items()}
+            assert wind_box(W, H, b)[0] >= topleft_r(W), (W, H)
     for needle in (                                      # the raised boxes give way in height below the corner
-        "height: min(60vh, 720px, calc(100vh - 78px - var(--map-topright-h, 0px))); }",
-        "height: min(60vh, 720px, calc(100vh - 86px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }",
+        "height: min(60vh, 720px, calc(100vh - 142px - var(--map-topright-h, 0px))); }",
+        "height: min(60vh, 720px, calc(100vh - 150px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }",
         ".live-chip .tide-win:not(.fw-min):not(.fw-max) { height: min(70vh, 760px, calc(100vh - 34px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }",
         ".tide-chip .live-win:not(.fw-min):not(.fw-max) { height: min(76vh, 800px, calc(100vh - 34px - var(--tw-chip-h, 40px) - var(--map-topright-h, 0px))); }"):
         assert needle in body, needle
+
+
+def _largest_visible(rect, above):
+    """The side of the largest square of rect outside every rect in `above` (exact: compressed coordinates)."""
+    xs = sorted({rect[0], rect[2]} | {v for a in above for v in (a[0], a[2]) if rect[0] < v < rect[2]})
+    ys = sorted({rect[1], rect[3]} | {v for a in above for v in (a[1], a[3]) if rect[1] < v < rect[3]})
+    vis = [[not any(a[0] < (xs[i] + xs[i + 1]) / 2 < a[2] and a[1] < (ys[j] + ys[j + 1]) / 2 < a[3] for a in above)
+            for i in range(len(xs) - 1)] for j in range(len(ys) - 1)]
+    best = 0.0
+    for i0 in range(len(xs) - 1):
+        for i1 in range(i0 + 1, len(xs)):
+            for j0 in range(len(ys) - 1):
+                for j1 in range(j0 + 1, len(ys)):
+                    if all(vis[j][i] for j in range(j0, j1) for i in range(i0, i1)):
+                        best = max(best, min(xs[i1] - xs[i0], ys[j1] - ys[j0]))
+    return best
+
+
+def test_live_and_tide_raised_together_keep_every_window_clickable(client):
+    """G28 re-check R2-2: where one rule raises both station windows (the forecast window parked below 1180 px; the
+    wind window parked at any width) their bottoms are equal; the tide window's height cap is 32 px below the live
+    window's, so the wider tide window never hides the live one, and a raised forecast box stops 64 px below the
+    station windows' highest top (also with the live or the tide window parked: section 38's raised boxes), so the
+    forecast window in front never hides them on short screens. Each open window keeps a 24-px square to click,
+    whichever is in front (exact largest visible square; chip heights at their CSS defaults)."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    for needle in (
+        "bottom: var(--tw-bottom); height: min(70vh, 760px, calc(100vh - 40px - var(--tw-bottom) - var(--map-topright-h, 0px))); }",
+        "bottom: var(--lw-bottom); height: min(76vh, 800px, calc(100vh - 8px - var(--lw-bottom) - var(--map-topright-h, 0px))); }",
+        "      height: min(70vh, 760px, calc(100vh - 66px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }",
+        "      height: min(76vh, 800px, calc(100vh - 34px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }"):
+        assert needle in body, needle
+    CORNER, FW_CHIP, WW_CHIP, GAP, OUT, ABOVE = 180, 44, 45, 60, 30, 30
+
+    def box(right, bottom, w, h, W, H):
+        return (W - right - w, H - bottom - h, W - right, H - bottom)
+
+    def wind(W, H, others):                                      # the measured box (syncWindWidth), as in the sweep above
+        top = CORNER + 8
+        base = min(1030, W - 44, W - 26 - (204 if W < 576 else 360))
+        stick = [o[2] - o[0] + OUT for o in others if o[1] - top < ABOVE]
+        ww = min(W - 44, max(max(stick or [0]), base))
+        h = min(540, H - CORNER - 50 - 2)
+        return (W - 18 - GAP - (ww - GAP), top, W - 18 - GAP, top + h)
+
+    fails = []
+    for W in (600, 768, 820, 900, 956, 1024, 1100, 1152, 1179):                  # A: the forecast window parked
+        for H in (501, 560, 600, 640, 700, 768, 800, 840, 900, 1024, 1200, 1440):
+            bot = max(20 + FW_CHIP, 18)
+            live = box(18, bot, min(820, W - 136), min(0.76 * H, 800, H - 8 - bot - CORNER), W, H)
+            tide = box(18, bot, min(880, W - 76), min(0.70 * H, 760, H - 40 - bot - CORNER), W, H)
+            for wins in ({"live": live, "tide": tide}, {"live": live, "tide": tide, "wind": wind(W, H, [live, tide])}):
+                order = [n for n in ("live", "tide", "wind") if n in wins]
+                for front in order:
+                    stack = [n for n in order if n != front] + [front]
+                    for i, n in enumerate(stack[:-1]):
+                        k = _largest_visible(wins[n], [wins[x] for x in stack[i + 1:]])
+                        if k < 24:
+                            fails.append(("A", W, H, front, n, round(k, 1)))
+    for W in (1024, 1180, 1280, 1366, 1440, 1536, 1600, 1920, 2560):              # B: the wind window parked
+        for H in (501, 560, 600, 640, 700, 768, 800, 840, 864, 900, 1024, 1080, 1200, 1440):
+            bot = 26 + WW_CHIP
+            live = box(18, bot, min(820, W - 136), min(0.76 * H, 800, H - 34 - WW_CHIP - CORNER), W, H)
+            tide = box(18, bot, min(880, W - 76), min(0.70 * H, 760, H - 66 - WW_CHIP - CORNER), W, H)
+            fc = box(16, 30 + WW_CHIP, min(1180, W - 32), min(0.60 * H, 720, H - 102 - WW_CHIP - CORNER), W, H)
+            wins = {"forecast": fc, "live": live, "tide": tide}
+            for front in ("forecast", "live", "tide"):
+                stack = [n for n in ("forecast", "live", "tide") if n != front] + [front]
+                for i, n in enumerate(stack[:-1]):
+                    k = _largest_visible(wins[n], [wins[x] for x in stack[i + 1:]])
+                    if k < 24:
+                        fails.append(("B", W, H, front, n, round(k, 1)))
+    LW_CHIP = TW_CHIP = 40
+    for W in (1180, 1280, 1366, 1440, 1536, 1920, 2560):                          # C / D: the live / the tide window parked
+        for H in (501, 560, 600, 640, 700, 768, 800, 840, 900, 1024, 1080, 1440):
+            fc = box(16, 70, min(1180, W - 32), min(0.60 * H, 720, H - 142 - CORNER), W, H)
+            tide = box(18, 26 + LW_CHIP, min(880, W - 76), min(0.70 * H, 760, H - 34 - LW_CHIP - CORNER), W, H)
+            live = box(18, 26 + TW_CHIP, min(820, W - 136), min(0.76 * H, 800, H - 34 - TW_CHIP - CORNER), W, H)
+            for label, station in (("C", ("tide", tide)), ("D", ("live", live))):
+                for with_wind in (False, True):
+                    wins = {"forecast": fc, station[0]: station[1]}
+                    if with_wind:
+                        wins["wind"] = wind(W, H, [station[1]])
+                    order = [n for n in ("forecast", "live", "tide", "wind") if n in wins]
+                    for front in order:
+                        stack = [n for n in order if n != front] + [front]
+                        for i, n in enumerate(stack[:-1]):
+                            k = _largest_visible(wins[n], [wins[x] for x in stack[i + 1:]])
+                            if k < 24 and not (front == "forecast" and n == "wind" and H < 570):   # K-9 (Escape)
+                                fails.append((label, W, H, front, n, round(k, 1)))
+    assert fails == [], fails[:20]
+
+
+def test_basemap_draws_missing_esri_tiles_from_coarser_ones(client):
+    """Plan section 39 step 5b: the map zooms to 18; Esri serves "Map data not yet available" where it has no tile (the
+    open ocean from about zoom 14). static_ui/basemap.js looks tiles up in Esri's tilemap and draws a missing one from the
+    closest coarser tile; the page builds its imagery with it (Leaflet's own layer when the module is missing)."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    tag = body.index('<script src="/ui/basemap.js?v=%s"></script>' % A.UI_ASSET_VERSION)
+    assert body.index("leaflet@1.9.4/dist/leaflet.js") < tag < body.index("const mapKey = 'mapView';")
+    assert ("(window.AllshoreBasemap ? window.AllshoreBasemap.tileLayer : L.tileLayer)(\n"
+            "      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',") in body
+    assert "const MAX_MAP_ZOOM = 18;" in body
+    r = client.get("/ui/basemap.js?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and "AllshoreBasemap" in r.get_data(as_text=True)
+
+
+def test_wind_stations_on_the_page(client):
+    """Plan section 39: the wind layer (flags from zoom 9, the legend entry with its note, the credit), the fourth window
+    (#windWin: its box, its chip on top of the station chips through the measured --chips-h, its phone bar above the
+    tide bar, a parked wind chip raising the other windows' boxes), the hooks (unit, zone, Escape, the tools' lists),
+    and the module's script tag."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    tag = body.index('<script src="/ui/winds.js?v=%s"></script>' % A.UI_ASSET_VERSION)
+    assert body.index('<script src="/ui/tides.js?v=') < tag < body.index("const mapKey = 'mapView';")
+    r = client.get("/ui/winds.js?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and "AllshoreWinds" in r.get_data(as_text=True)
+    for needle in (
+        "const WIND_MIN_ZOOM = 9;", "function windVisible() { return map.hasLayer(windLayer) && map.getZoom() >= WIND_MIN_ZOOM; }",
+        "const WIND_GAP_PX = 40;", "const WIND_CELL_PX = 64;", "const WIND_ALL_ZOOM = 13;", "const MAX_MAP_ZOOM = 18;",
+        "function windRank(s) { return s.kind === 'gauge' || s.kind === 'buoy' ? 0 : s.kind === 'airport' || s.kind === 'cman' || s.kind === 'station' ? 1 : s.kind === 'cwop' ? 3 : 2; }",
+        "const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis) + '|h:' + Array.from(hollow, function (e) { return e[0] + '=' + windDotState(e[1]); }).sort().join(',');",
+        "function windDotState(e) { return (e.disc !== undefined ? 'd' + e.disc + ':' : '') + e.kind + ':' + e.f.id + ':' + e.r; }",
+        "if (disc !== null && flag.style && flag.style.setProperty) flag.style.setProperty('--wind-disc', disc + 'px');   // R2-3",
+        "const WIND_DISC_PX = 13, WIND_RING_R = 5;", "const WIND_DOT_R = { forecast: 4, point: 7 };",
+        "map.on('overlayadd overlayremove', function (e) { if (e.layer === forecastLayer || e.layer === pointLayer) rebuildWindMarkers(false); });",
+        "syncWindWidth();                                     // the boxes just moved: measure them now (G28 re-check R2-1)",
+        "syncWindWidth();                                   // the raised boxes move with the forecast chip (R2-1)",
+        "if (window.ResizeObserver && typeof map !== 'undefined' && map && map.getContainer) {",
+        "const WIND_DOT_HIT_PX = 8, WIND_DOT_HIT_TOUCH_PX = 12;", "if (dot && flag.classList) flag.classList.add('wind-hollow');",
+        "function windTapPx() { return windTouch() ? WIND_DOT_HIT_TOUCH_PX : WIND_DOT_HIT_PX; }",
+        "function windTouch() { return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); }",
+        "if (typeof rebuildWindMarkers === 'function') rebuildWindMarkers(false);   // a flag over a new point turns hollow (B-5)",
+        "const hit = windDotHit(drawn, e && e.originalEvent);", "if (hit) { pickDot(hit); return; }",
+        "let windByKey = new Map();", "windByKey.forEach(function (d) { windLayer.removeLayer(d.marker); });",
+        "if (old && old.state === state && old.lng === c.lng) { windByKey.delete(key); next.set(key, old); drawnNow.push(old); return; }",
+        "if (typeof tideTargets === 'function') tideTargets();", "const pad = shared ? 0 : Math.max(0, Math.min(10, Math.floor(c / 2 - p.h)));",
+        "windView.load(station, { unit: getSelectedUnit(), zone: windZone(station), reading: windReading(station.id) });",
+        ".leaflet-marker-icon.wind-marker { background: transparent; border: 0; cursor: pointer; pointer-events: none; }",
+        ".wind-arrow path { fill: currentColor; stroke: #fff; stroke-width: 1.2; paint-order: stroke; pointer-events: auto; }",
+        "@media (pointer: coarse) { .wind-ring::after { content: ''; position: absolute; inset: calc(-1 * var(--wind-disc, 13px)); border-radius: 50%; } }",
+        ".wind-hollow .wind-ring { left: 13px; top: 13px; width: 14px; height: 14px; background: transparent; border: 2px solid currentColor;",
+        ".fw-titles strong { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }",
+        "if (!map.hasLayer(windLayer) || !on) return '';", "wind: saved.wind !== false", "wind: map.hasLayer(windLayer)",
+        "'<span class=\"lc-dot lc-wind\"></span>Wind stations<span class=\"lc-note\" data-wind-note aria-hidden=\"true\"></span>': windLayer",
+        "map.on('overlayadd overlayremove', function (e) { if (e.layer === windLayer) rebuildWindMarkers(true); });",
+        "rebuildWindMarkers(true);\n        rebuildTideMarkers(true);", "rebuildWindMarkers(false);\n        rebuildTideMarkers(false);",
+        "const WIND_CREDIT = 'Wind: <a href=\"https://www.ndbc.noaa.gov/\" target=\"_blank\" rel=\"noopener\">NOAA NDBC</a>",
+        "W.updateFlag(d.flag, r, now, unit, windStaleS);", "const flag = W ? W.buildFlag(document, r, now, unit, windStaleS) : document.createElement('div');",
+        "L.divIcon({ className: 'wind-marker' + (active ? ' wind-marker-active' : ''), html: flag, iconSize: [40, 40], iconAnchor: [20, 20], tooltipAnchor: [0, -14] })",
+        "zIndexOffset: active ? 350 : 300, autoPanOnFocus: false", "keyOpens(marker, 'w:' + s.id + '#' + c.o, 'wwHeader');",
+        "refocusMarker(windDrawn.map(function (d) { return d.marker; }), focusKey, 'w:');",
+        "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map\n          const hit = windDotHit(drawn, e && e.originalEvent);",
+        "windFeed = window.AllshoreWinds.createWindFeed({", "feed.start({", "} else feed.stop();", "syncWindFeed(on);",
+        ".wind-arrow { position: absolute; left: 0; top: 0; transform-origin: 20px 20px;",
+        ".wind-num { position: absolute; transform: translate(-50%, -50%);", ".wind-flag.wind-stale, .wind-cur-dot.wind-stale { color: #9aa3ad; }",
+        ".wind-marker-active .wind-ring { box-shadow: 0 0 0 2.5px #ff6b5a; }", ".leaflet-container.tools-active .wind-marker { cursor: crosshair; }",
+        '<section id="windWin" class="fwin wind-win" hidden role="region" aria-label="Wind station">',
+        'id="wwHeader"', 'id="wwMin"', 'id="wwClose"', 'id="wwBody"', 'id="wwResize"', 'id="windCurrent"', 'id="windChart"', 'id="windArrows"',
+        'id="windTable"', 'id="windMeta"', 'id="windRetry"', 'id="windConditions"', 'id="windTemp"',
+        "current: $('windCurrent'), conditions: $('windConditions'), chart: $('windChart'), arrows: $('windArrows'),\n               temp: $('windTemp'), table: $('windTable'), meta: $('windMeta') },",
+        ".fwin.wind-win { right: calc(18px + var(--ww-gap, 0px)); top: calc(var(--map-topright-h, 120px) + 8px); bottom: auto; height: auto;",
+        ".fwin.wind-win { max-height: none; }                       /* the full screen, like the others; its bar never capped (B-2) */",
+        "window.addEventListener('resize', syncWindWidth);",
+        "['allshore:livewin', 'allshore:tidewin', 'allshore:windwin'].forEach(function (n) { document.addEventListener(n, syncWindWidth); });",
+        ".wind-win.fw-min {\n        right: 12px !important; left: auto !important; top: auto !important; bottom: calc(12px + var(--chips-h, 0px)) !important;",
+        ".wind-win.fw-min { bottom: calc(var(--fw-bar-h, 48px) + var(--lw-bar-h, 0px) + var(--tw-bar-h, 0px)) !important; }",
+        "document.documentElement.style.setProperty('--tw-bar-h', tideBar + 'px');",
+        "body.wind-chip .fwin.tide-win:not(.fw-min):not(.fw-max) {   /* 32 px below the live window's top (R2-2) */\n      bottom: calc(26px + var(--chips-h, 0px) + var(--ww-chip-h, 40px));\n"
+        "      height: min(70vh, 760px, calc(100vh - 66px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }",
+        "body.wind-chip .fwin.live-win:not(.fw-min):not(.fw-max) {\n      bottom: calc(26px + var(--chips-h, 0px) + var(--ww-chip-h, 40px));",
+        "body.wind-chip .fwin.forecast-win:not(.fw-min):not(.fw-max) {   /* 64 px below the live window's top (re-check) */\n      bottom: calc(30px + var(--chips-h, 0px) + var(--ww-chip-h, 40px));\n"
+        "      height: min(60vh, 720px, calc(100vh - 102px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }",
+        "body.fw-chip .fwin.wind-win:not(.fw-min):not(.fw-max) {   /* above the parked forecast chip too (it spans the width here) */\n        max-height: calc(100vh - var(--map-topright-h, 120px) - 50px - max(var(--chips-h, 0px), calc(var(--fw-chip-h, 44px) + 2px))); }",
+        "body.fw-chip.wind-chip .fwin.tide-win:not(.fw-min):not(.fw-max) { --tw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--chips-h, 0px) + var(--ww-chip-h, 40px))); }",
+        "body.fw-chip.wind-chip .fwin.live-win:not(.fw-min):not(.fw-max) { --lw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--chips-h, 0px) + var(--ww-chip-h, 40px))); }",
+        "if (h && c[0] !== 'windWin') below += h + 8;", "document.documentElement.style.setProperty('--chips-h', below + 'px');",
+        ".wind-win.fw-front { z-index: 2100; }", "html:not(.js) .wind-win { display: none !important; }",
+        ".wind-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }",
+        "document.addEventListener('allshore:windpanel', function () { front(3); });",
+        "windWin = window.AllshoreForecast.createWindWindow({ onClose: windWindowClosed, onResize: function () { if (windView) windView.resize(); } });",
+        "document.body.classList.toggle('wind-chip', !!(d.open && d.mode === 'min'));",
+        "closeWindPanel: closeWindWindow,", "windOpen: function () { return !!(windWin && windWin.isOpen() && windWin.window.mode !== 'min'); },",
+        "if (windView) windView.setUnit(getSelectedUnit());", "refreshWindFlags();", "if (windView) windView.setZone(tzSel.value || '');",
+        "function windZone(station) { const sel = document.getElementById('tz'); return (sel && sel.value) || (station && station.tz) || 'UTC'; }",
+        "let windWin = null;", "document.getElementById('windSubtitle').textContent = windSubtitle(station);"):
+        assert needle in body, needle
+    assert body.index("let windWin = null;") < body.index("const map = L.map(")
+    assert 'id="windWin"' in body[body.index('id="tideWin"'):body.index("leaflet@1.9.4/dist/leaflet.js")]   # after the tide window, before the map script
+    assert body.index("const WIND_MIN_ZOOM = 9;") < body.index("function refreshWrappedMarkerCopies(")   # the state before the first rebuild
+    assert body.index("// ---------------- Wind stations (plan section 39) ----------------") > body.index("map.on('zoomend', clampMapLatitude);")
+    assert body.index("// ---------------- (end of the wind stations block) ----------------") < body.index("enforceSingleWorld();\n")
+    assert ".wind-win { display: none !important; }" in body[body.index("@media print"):]
+    assert "windDetailSeq" not in body                                              # the module keeps the sequence (winds.js)
+    # owner, 2026-10-10: no "zoom in" text in the legend at any zoom (tide and wind layers alike)
+    assert "zoom in to see" not in body and "zoom in for more" not in body and "hiddenInView" not in body

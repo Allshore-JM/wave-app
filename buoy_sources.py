@@ -73,6 +73,9 @@ class BuoyProvider:
     # with no list at all makes a caller wait for a fetch. (The hard expiry at the full TTL
     # still counts as "due", so a list is never older than a TTL plus one refresh.)
     refresh_at = 0.9
+    # Keys a provider's fetched rows may carry beyond the station's identity, copied into the lean entry
+    # as they are (the wind providers' readings, plan section 39). The live-buoy providers set none.
+    extra_keys = ()
 
     def __init__(self, http=None):
         self.http = http or requests.Session()
@@ -160,6 +163,11 @@ class BuoyProvider:
             self.schedule_refresh()                 # inline runner: refreshed before the read below
         return self.snapshot()
 
+    def refresh_runner(self):
+        """The runner this provider's background refreshes go to (the live buoys' shared one; the wind feeds keep
+        their own, so a slow wind agency never holds a live-buoy worker: G28 A-5)."""
+        return get_refresh_runner()
+
     def schedule_refresh(self):
         """Queue one background refresh (no-op while one is queued or in flight)."""
         with self._lock:
@@ -167,7 +175,7 @@ class BuoyProvider:
                 return False
             self._refresh_pending = True
         try:
-            get_refresh_runner().submit(self._scheduled_refresh, "buoy-refresh-%s" % self.source)
+            self.refresh_runner().submit(self._scheduled_refresh, "buoy-refresh-%s" % self.source)
         except Exception as e:
             with self._lock:
                 self._refresh_pending = False
@@ -325,6 +333,9 @@ class BuoyProvider:
                     ep = _z_epoch({"time_utc": lt})
                     if ep is not None and (now - ep) > self.stale_after_sec:
                         entry["is_stale"] = True
+                for k in self.extra_keys:
+                    if k in s:
+                        entry[k] = s[k]
                 out.append(entry)
         except Exception as e:
             _log.warning("buoy provider %s: station-list fetch failed (%s)", self.source, e)
@@ -414,6 +425,62 @@ _REFRESH_RUNNER = None
 _RUNNER_LOCK = threading.Lock()
 _PUBLISH_LISTENERS = []
 _PROVIDERS = weakref.WeakSet()
+_CAPS = weakref.WeakSet()
+
+
+class SharedCap:
+    """A cap on concurrent builds shared by several request-path services (forecast points, tide windows, wind
+    histories: G28 A-6): acquire(blocking=True, timeout=-1) / release() like a BoundedSemaphore, called from the same
+    thread. It keeps when each slot was taken: stuck(wait_s) is True while every slot has been held longer than wait_s,
+    so a caller answers "busy" at once instead of spending its wait on a request thread (a slow agency must not tie up
+    the threads /healthz needs: G28 re-check R1-N4; the forecast points' own rule, G22 A-6, for all three services).
+    A forked child gets a fresh one (a parent's thread may have held a slot)."""
+
+    def __init__(self, n=2):
+        self.n = int(n)
+        self._sem = threading.BoundedSemaphore(self.n)
+        self._lock = threading.Lock()
+        self._since = {}                     # thread ident -> the times it took its slots
+        _CAPS.add(self)
+
+    def stuck(self, wait_s, now=None):
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            marks = [t for ts in self._since.values() for t in ts]
+        return len(marks) >= self.n and all(now - t > wait_s for t in marks)
+
+    def held(self):
+        with self._lock:
+            return sum(len(ts) for ts in self._since.values())
+
+    def acquire(self, blocking=True, timeout=-1):
+        if not blocking:
+            ok = self._sem.acquire(False)
+        else:
+            ok = self._sem.acquire(True, None if timeout is None or timeout < 0 else timeout)
+        if ok:
+            with self._lock:
+                self._since.setdefault(threading.get_ident(), []).append(time.monotonic())
+        return ok
+
+    def release(self):
+        with self._lock:
+            me = threading.get_ident()
+            ts = self._since.get(me)
+            if not ts and self._since:           # released by another thread: forget the oldest mark
+                me = min(self._since, key=lambda k: min(self._since[k]))
+                ts = self._since[me]
+                ts.remove(min(ts))
+            elif ts:
+                ts.pop()
+            if me in self._since and not self._since[me]:
+                del self._since[me]
+        self._sem.release()
+
+    def _reset(self):
+        self._sem = threading.BoundedSemaphore(self.n)
+        self._lock = threading.Lock()
+        self._since = {}
 _NONBLOCKING = False             # set while a background scheduler refreshes the lists (app.py)
 
 
@@ -435,6 +502,8 @@ def _reset_after_fork():
     _NONBLOCKING = False                 # no scheduler runs in the child until it starts its own
     for p in list(_PROVIDERS):
         p._reset_after_fork()
+    for c in list(_CAPS):
+        c._reset()
 
 
 if hasattr(os, "register_at_fork"):

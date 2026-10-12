@@ -372,16 +372,20 @@ class TideService:
 
     fetch(url, max_bytes) -> bytes (raises on any failure); now() -> epoch seconds. Answers are (status, payload) with
     status "ok", "final" (NOAA says, twice, that it has nothing for this station: kept an hour), "busy" or "error"
-    (may pass). An "ok" built around such an answer (a curve without its list, a cosine) is kept an hour too."""
+    (may pass). An "ok" built around such an answer (a curve without its list, a cosine) is kept an hour too.
+    bucket: an optional shared request budget (take() -> bool) for NOAA CO-OPS (the wind histories ask the same
+    agency from the same address: G28 A-1); empty -> "busy". cap: an optional build cap shared with the other
+    request-path services (acquire(timeout=) / release(): G28 A-6) instead of this service's own `builds`."""
 
     def __init__(self, stations, fetch, now=time.time, max_entries=256, final_ttl=3600, error_ttl=60,
-                 obs_ttl=900, builds=2, wait_s=2.0):
+                 obs_ttl=900, builds=2, wait_s=2.0, bucket=None, cap=None):
         self.stations = stations
         self._fetch = fetch
         self._now = now
         self.max_entries = max_entries
         self.final_ttl, self.error_ttl, self.obs_ttl = final_ttl, error_ttl, obs_ttl
         self._builds_n, self.wait_s = builds, wait_s
+        self.bucket, self._cap = bucket, cap
         self._reset_locks()
         self._cache = OrderedDict()           # key -> (expires, status, payload)
         _SERVICES.add(self)
@@ -389,7 +393,7 @@ class TideService:
     def _reset_locks(self):
         self._lock = threading.Lock()
         self._inflight = {}
-        self._builds = threading.BoundedSemaphore(self._builds_n)
+        self._builds = self._cap if self._cap is not None else threading.BoundedSemaphore(self._builds_n)
 
     # -- cache
     def _get(self, key):
@@ -433,6 +437,8 @@ class TideService:
                 del self._inflight[key]
 
     def _json(self, u):
+        if self.bucket is not None and not self.bucket.take():
+            raise TideBusy("the CO-OPS request budget is used up")            # never cached: asked again in a moment
         try:
             body = self._fetch(u, MAX_BODY)
         except Exception as exc:
@@ -447,6 +453,9 @@ class TideService:
         hit = self._get(key)
         if hit is not None:
             return hit
+        stuck = getattr(self._builds, "stuck", None)                # a shared cap: every slot held too long -> at once
+        if stuck is not None and stuck(self.wait_s):
+            return "busy", {"error": BUSY}
         deadline = time.monotonic() + self.wait_s
         e = self._key_lock(key)
         try:

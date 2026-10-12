@@ -25,6 +25,7 @@
   var WINDOW_KEY = 'allshore.forecastWin.v1';  // sessionStorage {x, y, w, h, mode, prev}
   var LIVE_WINDOW_KEY = 'allshore.liveWin.v1'; // the live-buoy window's (the same shape)
   var TIDE_WINDOW_KEY = 'allshore.tideWin.v1'; // the tide-station window's (plan section 38)
+  var WIND_WINDOW_KEY = 'allshore.windWin.v1'; // the wind-station window's (plan section 39)
   var RANGE_KEY = 'chartRange';                // sessionStorage 'full' | '7' | '3' (unchanged from the old page)
   var POINTS_KEY = 'allshore.points.v1';       // localStorage [{id, lat, lon, name}]: the visitor's forecast points
   var POINTS_MAX = 50, POINT_NAME_MAX = 40;
@@ -258,10 +259,15 @@
 
   // ---- the loader ----
   // deps: fetch(url, {signal}) -> Response-like {ok, status, json()}; now(); replaceState(url);
-  //       swanStations (array); ui.apply(d, state), ui.busy(bool), ui.error(message | null, retry | null).
+  //       swanStations (array); ui.apply(d, state), ui.busy(bool), ui.error(message | null, retry | null);
+  //       wait(ms) -> Promise (optional; setTimeout).
+  // A "busy" answer (the server's build slots are taken: forecast points share them with the tide and wind windows) is
+  // asked again quietly BUSY_TRIES times, BUSY_WAIT_MS apart, before it is shown with Retry (G28 re-check R1-N1).
+  var BUSY_TRIES = 5, BUSY_WAIT_MS = 4000;
   function ttlOf(d) { return d && d.wind_complete === false ? GAP_TTL_MS : CACHE_TTL_MS; }
   function createLoader(deps, state) {
     var cache = new Map(), seq = 0, ctrl = null;
+    var wait = deps.wait || function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
     function trim() { while (cache.size > CACHE_MAX) { var k = cache.keys().next().value; cache.delete(k); } }
     function normalise(s) {                                                    // never a SWAN request off the SWAN stations
       if (s.model === 'SWAN' && deps.swanStations && deps.swanStations.indexOf(s.station) < 0) s.model = 'GFS';
@@ -284,10 +290,21 @@
       var c = ctrl = new AbortController();
       deps.ui.busy(true); deps.ui.error(null, null);
       var q = queryFor(state), early = deps.takeEarly ? deps.takeEarly(q) : null;   // the page's <head> may have started this very request
-      return (early || deps.fetch(API + '?' + q, { signal: c.signal })).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      }).then(function (d) {
+      var tries = 0;
+      function ask(first) {
+        return (first && early ? early : deps.fetch(API + '?' + q, { signal: c.signal })).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        }).then(function (d) {
+          if (my !== seq) return null;
+          if (d && typeof d === 'object' && d.busy && tries < BUSY_TRIES) {    // quietly again (the spinner stays)
+            tries += 1;
+            return wait(BUSY_WAIT_MS).then(function () { return my === seq ? ask(false) : null; });
+          }
+          return d;
+        });
+      }
+      return ask(true).then(function (d) {
         if (my !== seq) return null;                                           // superseded: no DOM writes
         if (!d || typeof d !== 'object') throw new Error('bad forecast');
         if (!(d.error && !d.table_html)) { cache.set(key, { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim(); }   // a failed build is not kept (the server does not keep it either)
@@ -307,10 +324,17 @@
     function prefetch(next) {
       var s = normalise(Object.assign({}, state, next || {})), key = keyOf(s), hit = cache.get(key), now = deps.now();
       if (hit && now - hit.ts < (hit.ttl || CACHE_TTL_MS)) return Promise.resolve(hit.d);
-      return deps.fetch(API + '?' + queryFor(s), {}).then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      }).then(function (d) {
+      var tries = 0;
+      function ask() {
+        return deps.fetch(API + '?' + queryFor(s), {}).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        }).then(function (d) {
+          if (d && typeof d === 'object' && d.busy && tries < BUSY_TRIES) { tries += 1; return wait(BUSY_WAIT_MS).then(ask); }
+          return d;
+        });
+      }
+      return ask().then(function (d) {
         if (!d || typeof d !== 'object') throw new Error('bad forecast');
         if (!(d.error && !d.table_html)) { cache.set(key, { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim(); }
         return d;
@@ -787,11 +811,16 @@
     return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'tideWin', header: 'twHeader', min: 'twMin', close: 'twClose', resize: 'twResize' },
       key: TIDE_WINDOW_KEY, event: 'allshore:tidewin', label: 'tide station' }));
   }
+  // the wind-station window over #windWin (#wwHeader, #wwMin, #wwClose, #wwResize; plan section 39); opts as the tide window's
+  function createWindWindow(opts) {
+    return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'windWin', header: 'wwHeader', min: 'wwMin', close: 'wwClose', resize: 'wwResize' },
+      key: WIND_WINDOW_KEY, event: 'allshore:windwin', label: 'wind station' }));
+  }
 
   // ---- init: wire everything to the page ----
   // opts: initial (window.__initial), stationLabel(sid) -> text, loadChartJs() -> Promise, closeLivePanel(),
-  //       liveOpen() -> bool, closeTidePanel(), tideOpen() -> bool, fetch, document, window, storage (session),
-  //       settings (local), onMode(mode).
+  //       liveOpen() -> bool, closeTidePanel(), tideOpen() -> bool, closeWindPanel(), windOpen() -> bool, fetch,
+  //       document, window, storage (session), settings (local), onMode(mode).
   var app = null;
   function init(opts) {
     opts = opts || {};
@@ -879,6 +908,7 @@
       return e && e.q === q && e.p && typeof e.p.then === 'function' ? e.p : null;
     }
     var loader = createLoader({ fetch: opts.fetch || function (u, o) { return win.fetch(u, o); }, takeEarly: takeEarly, now: function () { return Date.now(); },
+      wait: opts.wait || function (ms) { return new Promise(function (res) { if (win.setTimeout) win.setTimeout(res, ms); else setTimeout(res, ms); }); },
       replaceState: function (url) { try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
@@ -1027,7 +1057,8 @@
     });
     doc.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
-      if (opts.tideOpen && opts.tideOpen()) { if (opts.closeTidePanel) opts.closeTidePanel(); return; }   // the tide window first, then the live one
+      if (opts.windOpen && opts.windOpen()) { if (opts.closeWindPanel) opts.closeWindPanel(); return; }   // the wind window first (section 39),
+      if (opts.tideOpen && opts.tideOpen()) { if (opts.closeTidePanel) opts.closeTidePanel(); return; }   // then the tide window, then the live one
       if (opts.liveOpen && opts.liveOpen()) { if (opts.closeLivePanel) opts.closeLivePanel(); return; }
       if (fw.mode !== 'min' && els.win.contains(doc.activeElement)) minimise();
     });
@@ -1047,7 +1078,7 @@
   }
 
   window.AllshoreForecast = {
-    init: init, createLiveWindow: createLiveWindow, createTideWindow: createTideWindow,
+    init: init, createLiveWindow: createLiveWindow, createTideWindow: createTideWindow, createWindWindow: createWindWindow,
     pointId: pointId, parsePointId: parsePointId, isPointId: isPointId, pointLabel: pointLabel, fmtPoint: fmtPoint, cleanName: cleanName,
     createPointStore: createPointStore, POINTS_MAX: POINTS_MAX, writeLabel: writeLabel, zoneLabel: zoneLabel,
     load: function (next) { return app ? app.loader.load(next) : Promise.resolve(null); },
@@ -1063,9 +1094,9 @@
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
-      createLoader: createLoader, ttlOf: ttlOf, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
+      createLoader: createLoader, ttlOf: ttlOf, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
-      createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY,
+      createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,
       app: function () { return app; }
     }

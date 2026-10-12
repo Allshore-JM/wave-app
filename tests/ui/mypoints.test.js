@@ -81,6 +81,7 @@ function boot(opts) {
     addEventListener(t, fn) { (winListeners[t] = winListeners[t] || []).push(fn); },
     history: { urls: [], replaceState(a, b, url) { this.urls.push(url); win.location.search = url; } },
     sessionStorage: storage(), Chart: undefined,
+    setTimeout(fn) { Promise.resolve().then(fn); return 1; },                // the loader's quiet busy retries: at once here
     prompt() { return opts.prompt === undefined ? null : opts.prompt; },
     confirm(msg) { confirms.push(msg); return opts.confirm !== false; },
     fetch(url, o) {
@@ -103,12 +104,13 @@ function boot(opts) {
   const events = [];
   ['allshore:station', 'allshore:forecast', 'allshore:points'].forEach((t) => doc.addEventListener(t, (e) => events.push([t, e.detail ? JSON.parse(JSON.stringify(e.detail)) : null])));
   const env = ['window', 'document', 'location', 'localStorage', 'CustomEvent', 'URLSearchParams', 'setSavedPoints', 'showPointLayer', 'loadChartJs', 'closeLiveBuoyPanel',
-    'enforceSingleWorld', 'liveWin', 'liveDetailSeq', 'closeTideWindow', 'tideWindowClosed', 'tideView'];   // (the tide window, plan section 38: stubs)
+    'enforceSingleWorld', 'liveWin', 'liveDetailSeq', 'closeTideWindow', 'tideWindowClosed', 'tideView',   // (the tide window, plan section 38: stubs)
+    'closeWindWindow', 'windWindowClosed', 'windView'];                                                  // (the wind window, plan section 39: stubs)
   const args = () => [win, doc, win.location, opts.localStorageThrows ? undefined : local, CustomEvent, URLSearchParams, setSavedPoints, showPointLayer,
-    () => Promise.reject(new Error('no charts here')), () => {}, () => {}, null, 0, () => {}, () => {}, null];
+    () => Promise.reject(new Error('no charts here')), () => {}, () => {}, null, 0, () => {}, () => {}, null, () => {}, () => {}, null];
   new Function(...env, PICKER.replace(/\n\s*$/, '') + '\n')(...args());
   new Function(...env, BLOCK)(...args());
-  new Function(...env, 'var liveWin = null, liveDetailSeq = 0, tideWin = null;\n' + INIT.replace('var liveWin', 'var _unused'))(...args());
+  new Function(...env, 'var liveWin = null, liveDetailSeq = 0, tideWin = null, windWin = null;\n' + INIT.replace('var liveWin', 'var _unused'))(...args());
   const app = F._internals.app();
   const P = win.__allshorePoints;
   return { doc, win, F, app, P, calls, markers, events, confirms, winListeners, layerShown, local, select, star, trigger, current, results, status, errBox, note, table,
@@ -164,7 +166,8 @@ test('a refusal (land, sheltered water, no data): nothing opens, nothing is kept
   assert.deepEqual(b.stored(), []);
   assert.equal(b.lastMarks().some((m) => m.id === 'pt_21500N_158000W'), false);
   // a busy server and a failure are NOT final: the point may be tried again and kept
-  const busy = b.P.add({ lat: 22.5, lng: -158.0 }); await settle(); b.last().release(BUSY('pt_22500N_158000W')); await settle();
+  const busy = b.P.add({ lat: 22.5, lng: -158.0 }); await settle();
+  for (let k = 0; k <= b.F._internals.BUSY_TRIES; k++) { b.last().release(BUSY('pt_22500N_158000W')); await settle(); }   // retried quietly first
   assert.equal((await busy).ok, false); assert.equal(b.P.refused('pt_22500N_158000W'), false);
   const down = b.P.add({ lat: 22.6, lng: -158.0 }); await settle(); b.last().fail();
   await assert.rejects(down, 'a network failure rejects: the tool says it could not reach the server');

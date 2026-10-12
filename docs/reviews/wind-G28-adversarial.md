@@ -436,3 +436,80 @@ Pins for the survivors @ 335ccc2. UI 1.22.0. Every item of the scope above; numb
   raised variants), the four-window real-box sweep incl. the raised forecast box, a phone tap sweep 12-26 px from a
   flag, the legend toggles, the forecast busy retry; then the owner's call (another short check or production).
 
+## Test-site verification of fix round 7c (2026-10-12, Opus 5.5 MAX)
+`test` @ bda2e38 (cherry-picks of f86763b, 1bee857, 335ccc2, 721565c; README kept as test's copy; site files = the feature
+branch except test's 3 logo lines), live from 02:30:24 UTC; then the verification fix below @ 835a773 (test @ 0d2a349).
+Scratch `g28/verify7c` (watch7c.py, data7c.py, burst7c.py, refill7c.py, memwatch7c.py) and `wind/verify5/vhl` + `vhl2`
+(w40_parked.js, w42_taps.js, w42b_probe.js, w43_legend.js, w44_busy.js, w45_chip.js, w46_sheet.js; the 7b scripts w32_page,
+w32b_rings, w34_phone re-run); sheet `wind/verify5/shots/wind_stations_7c.jpg`.
+- **Deploy**: zero downtime (344 polls 02:28:52-02:56:52; the old instance until 02:30:19, the new from 02:30:24, no failed
+  request; the only non-200 was the first /healthz while the idle free instance woke, before the push took effect); the
+  wind table partial (no-store, the page polls) for the new instance's first 15 s (uptime 19-34 s; step 5's F5, awareness),
+  complete from 02:30:44. UI 1.22.0: all 8 /ui/ assets = the repo, immutable; 1.21.0 URLs 404. The page
+  carries the 7c rules (raised caps 142 / 150 / 102 px, the tide cap 66 / 40 px, `--wind-disc`, both syncWindWidth calls,
+  the overlay handler, windDotState). Test-branch suite: 921 passed + the 4 known failures (3 test-logo goldens, the reef module's numpy import); 924 + the same
+  4 at 0d2a349.
+- **Station list**: 2,724 = the committed snapshot; ndbc:KGVW, metar:CYAB, metar:CYRB gone (metar:KGVW, CXAT, CXRB kept);
+  KOZA2 / PAUA2 / SGXA2 read "... MXAK", no "Mxak" left; none of the removed ids in /api/wind/latest; 0 ids outside the list.
+- **Visibility "or more" (R1-N7 / R2-5)**: RJTT / LIRF / EKCH / ESSA histories carry 9.7 km + vg; the window reads
+  "Visibility 10+ km" in Metric (RJTT, EKCH), "6+ mi" in US, PHNL "16+ km". One EHAM history answered 503 "agency could not be
+  reached" once (AWC answered EHAM directly 200; the site served it 61 s later): a passing upstream failure.
+- **Mixed burst (shared cap + shared CO-OPS budget)**: 10 uncached gauge windows + 10 tide windows + 8 uncached forecast
+  points at once, each retrying as the page does: all 28 answered in the end (points first try 4.8-15.1 s, 0 busy; gauges
+  median 12.4 s / max 70.3 s; tides median 49.5 s / max 81.2 s): gauge windows are no longer starved behind tide windows
+  (R1-N2: wind median 20.6 / max 110.6 s vs tide max 7.5 s). /robots.txt and /healthz stayed 0.12-0.6 s through it; one
+  /api/wind/latest at the burst's first second took 8.9 s (28 requests on 4 threads), all others <= 0.34 s; the paced CO-OPS
+  feed 0 errors, 0 pauses (no NOAA 403). The busy answers came 3.6-12.3 s after their request (mostly waiting for one of the 4
+  request threads among the 28); the stuck rule itself is proven by the tests (it needs builds held > 2 s, which a healthy NOAA does not produce).
+- **FOUND (V7c-1, P3) and fixed**: under the burst 7 of 10 gauge windows were built without their weather products (the
+  budget had no token for them, as R1-N2 decided) - and such an answer was cached like a full one (10 min on the server):
+  a visitor opening three or four gauges in a minute could see one without its weather for 10 minutes. Fix @ 835a773: a gauge
+  window missing a product (left out, late or failed; NOAA's "no data" is an answer) is kept 1 min (error_ttl), so the
+  weather fills in at the next ask; complete answers and the NDBC-relay fallback keep 10 min. Tests (3; they fail on the old
+  code), 10 / 10 mutants, README. On the test site after the fix: pushed 03:06:24, the new instance from 03:07:39 (the old one until 03:07:34; 93 polls, 0 failed); a second burst on the fixed server
+  answered all 28 again (gauges median 33.5 s / max 60 s; tides 23.2 / 76.2 s; points 9.7 / 13.4 s) and again left 7 of 10 gauge
+  windows without some or all of their weather; asked again 65 s later (8 s apart), all 7 were rebuilt with every product
+  (air, water, pressure; one also humidity) and the 3 complete ones were still the same cached answer.
+- **Busy retry (R1-N1)**, the browser's network layer answering chosen /api/forecast requests "busy": a station picked on
+  the map, busy twice: no error, the spinner on, retries exactly 4.0 s apart, the table at 10.6 s; busy six times: the error
+  with Retry at 20.4 s (5 retries 4.0 s apart), a trusted click on Retry -> the table in 2.7 s; the Forecast point tool, busy
+  twice: "Checking that point..." for 10 s, then the window on 21.951N 158.450W; busy six times: the busy message in the
+  tool bar at 20.2 s, the tool still on.
+- **Windows with parked ones (R2-1, R2-2, the raised forecast box)**: 10 states (open / parked / closed combinations reached
+  by the windows' own minimise buttons, after opening) x 157 sizes (1024-1920 x 540-1080, three at 125 % zoom), every open
+  window in front in turn, the exact largest visible square of every other open window: 0 under 24 px except the 11 known
+  K-9 cases (the forecast window in front over the wind window below 570 px tall; Escape). Trusted clicks on a plain spot of
+  each visible part at 18 sizes (the re-check's own: 1200x800, 1180x820, 1100x820, 1024x819 @125 %, 1152x864, 1240x900,
+  1024x768, 1093x614 @125 %, 1152x648, 1280x800 ...): 828 clicks, every one brought its window forward (0 failures; the smallest part clicked 24 px). Production vs test (screenshots): 1280x650 with the tide
+  window parked and the forecast window in front - production's live window has no visible part, the test site's shows a
+  64-px square with its header; 1024x768 tablet with the forecast window parked and the tide window in front - production 0,
+  test 32 px (the live window's header and buttons); 1200x800 with all four, the live window parked, the tide window in
+  front - the wind window keeps 90 px (R2 measured 0).
+- **Phones (R2-3)**: 390x844, touch, trusted taps; 46092's forecast dot at 7.8-27 px from its flag (11 zooms): hollow within
+  12 px, beyond it the disc = floor(d - 4 - 1 - 5) exactly (2, 4, 5, 6, 8, 9 px, then 13), taps on the dot's centre and inside
+  its edge -> the forecast point, on the ring and inside the disc's edge -> the wind window: 0 wrong. A My point (radius 7)
+  beside PHNL's flag at 9.4-28.3 px: disc right at every distance; at 12.5-13 px the point lies under the flag's ARROW
+  (drawn on top of it, pointing at it): a tap there opens the wind window - owner decision B-1 ("a solid ring, its arrow and
+  its number always open the wind window"); the point's uncovered edge opens the point. Not a 7c regression (owner
+  awareness; a possible later rule: the hollow distance grows with the dot's radius).
+- **Legend (R1-N3 / R2-4)**: trusted clicks on "Forecast points": 46092's hollow ring turns solid at once and back, no pan or
+  zoom; "My points" likewise for a point beside PHNL.
+- **Regression**: the 7b scripts re-run - mouse rings (hollow at 6.4 px: the number near the dot -> forecast, far -> wind; solid
+  at 9.2 px), touch hollow at 9.2 / 11.4 px, B-3 headline, the Retry path, the partial feed answer, Metric, the NWS link;
+  phone: co-located gauges at zoom 18 (pad 0, tap 14 px -> wind, the icon -> tide), sideways four bars and the full-screen wind
+  window - the same outcomes as the 7b run, apart from live readings and one intended change: 62145's dot is 8.0 px
+  from its flag at zoom 11.78 when both are rounded as drawn, so its ring is now hollow (R2-6; unrounded it was just over 8). The parked forecast chip's buttons lie under the live / tide windows at
+  1180-1440 px wide (forecast parked, both open): identical on production, accepted at G27 (B-P3-8: the title stays
+  clickable).
+- **Feeds and memory**: 30 min after the deploy NDBC / METAR / CO-OPS / NWS 0 errors, 0 pauses; CO-OPS 230 readings, NWS
+  286 after its first paced pass; the B-4 buoys 5 / 5 in every poll; tide canary 43 / 44 (one busy at once while the burst
+  emptied the budget). RSS 105 MB at start, 175 MB after the burst (8 point tiles, coast cells, histories), 195-201 MB by
+  27 min; after the fix deploy the new instance: 103 MB at 18 s, 164 MB after the second burst,
+  189 MB from 5 min (the re-asks), 196 MB after a feed refresh at 15 min, then flat at 196.1-196.3 MB to 23 min (a plateau,
+  as 7b's 177-180 MB idle plus the tiles, coast cells and histories the bursts loaded).
+- A fresh tab (no console history): UI 1.22.0 everywhere, the four windows open, the wind window ready with its weather, a
+  unit change and a pan: no console error or warning.
+- Test-origin storage emptied (robots.txt in both headless profiles); both headless Edges stopped by PID, profiles removed.
+- P3 wording nit (not fixed): after a busy answer the Forecast point tool's bar also says "Click another point on the sea."
+  (the refusal hint), where "try again" would fit. P3 naming nit (not fixed): two stations named by a code read in mixed
+  case, "Mbm1" (ndbc:46092, NDBC's "MBM1") and "Pali2" (nws:PLIH1): keep a letters-and-digits code in capitals.

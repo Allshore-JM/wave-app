@@ -62,7 +62,8 @@ function boot(o = {}) {
   const credits = { count: (t) => counts.get(t) || 0, has: (t) => (counts.get(t) || 0) > 0 };
   const pxPerDeg = o.pxPerDeg || 1000, scale = () => pxPerDeg * Math.pow(2, zoom - 9);
   const container = { focused: 0, focus() { this.focused++; } };
-  const map = { hasLayer: (l) => (l === windLayer && on) || (l === tideLayer && false) || (l === forecastLayer && !o.forecastOff) || (l === pointLayer && !o.pointsOff), getZoom: () => zoom,
+  let forecastOn = !o.forecastOff, pointsOn = !o.pointsOff;
+  const map = { hasLayer: (l) => (l === windLayer && on) || (l === tideLayer && false) || (l === forecastLayer && forecastOn) || (l === pointLayer && pointsOn), getZoom: () => zoom,
     latLngToContainerPoint: (ll) => ({ x: (ll[1] + 180) * scale(), y: (90 - ll[0]) * scale() }),
     mouseEventToContainerPoint: (ev) => ({ x: ev.clientX, y: ev.clientY }),
     project: (ll, z) => ({ x: (ll[1] + 180) * pxPerDeg * Math.pow(2, z - 9), y: (90 - ll[0]) * pxPerDeg * Math.pow(2, z - 9) }),
@@ -119,7 +120,7 @@ function boot(o = {}) {
     forecastLayer, pointLayer, savedPointsData);
   api.container = container;
   return { api, notes, doc, events, windLayer, credits, fetchCalls, loads, clears, units, zones, view, toolClicks, saves, windWin, timerQ, docListeners,
-    setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; }, setUnit: (u) => { unit = u; }, setHidden: (h) => { hidden = h; }, answers };
+    setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; }, setForecastOn: (v) => { forecastOn = v; }, setPointsOn: (v) => { pointsOn = v; }, setUnit: (u) => { unit = u; }, setHidden: (h) => { hidden = h; }, answers };
 }
 const flagOf = (m) => m.el.children[0];
 
@@ -406,4 +407,85 @@ test('a tide icon on a wind flag\'s gauge has no tap pad, matched by station id 
   b.api.setTideDrawn([a, far]); b.api.tideTargets();
   assert.equal(a.marker.el.style['--tide-tap'], '0px', '5 px from its own gauge\'s flag: no pad');
   assert.equal(far.marker.el.style['--tide-tap'], '10px', 'another station: its pad');
+});
+
+// ---- G28 re-check fixes (fix round 7c) ----
+const markerOf = (bb, id) => bb.windLayer.items.find((m) => m.opts.title === 'Wind station ' + id || m.opts.title.startsWith('Wind station ' + id + ':'));
+const HNLDOT = (dlon) => ({ id: 'HNL01', lat: 21.3033, lon: -157.8645 + dlon });   // a dot east of Honolulu's gauge, 1000 px a degree at zoom 9
+
+test('the rings follow the forecast / My points layers: untick -> solid at the next rebuild, tick -> hollow again (R1-N3 / R2-4)', async () => {
+  const b = boot({ zoom: 9, forecast: [HNLDOT(0.005)] });
+  b.api.rebuildWindMarkers(true); await flush();
+  assert.ok(flagOf(markerOf(b, 'Honolulu')).classList.contains('wind-hollow'));
+  b.setForecastOn(false); b.api.rebuildWindMarkers(false);                 // the page calls this on overlayremove (pinned)
+  assert.ok(!flagOf(markerOf(b, 'Honolulu')).classList.contains('wind-hollow'), 'the dot is hidden: the ring is solid again');
+  b.setForecastOn(true); b.api.rebuildWindMarkers(false);
+  assert.ok(flagOf(markerOf(b, 'Honolulu')).classList.contains('wind-hollow'), 'shown again: hollow');
+  const m = boot({ zoom: 9, points: [{ id: 'pt_x', lat: 21.3033, lon: -157.8595 }] });
+  m.api.rebuildWindMarkers(true); await flush();
+  assert.ok(flagOf(markerOf(m, 'Honolulu')).classList.contains('wind-hollow'));
+  m.setPointsOn(false); m.api.rebuildWindMarkers(false);
+  assert.ok(!flagOf(markerOf(m, 'Honolulu')).classList.contains('wind-hollow'), 'My points unticked: solid');
+});
+
+test('touch: a solid ring\'s finger disc ends before a visible dot 12-26 px away; nearer: hollow; farther: the full disc (R2-3)', async () => {
+  const disc = (bb) => flagOf(markerOf(bb, 'Honolulu')).style['--wind-disc'] || '';                // (the fake DOM's style)
+  const x = (lng) => Math.round((((lng + 540) % 360) - 180 + 180) * 1000);   // drawn x through the harness's projection
+  for (const px of [13, 15, 20]) {
+    const b = boot({ zoom: 9, coarse: true, forecast: [HNLDOT(px / 1000)] });
+    b.api.rebuildWindMarkers(true); await flush();
+    const f = flagOf(markerOf(b, 'Honolulu'));
+    assert.ok(!f.classList.contains('wind-hollow'), px + ' px: solid');
+    const d = x(-157.8645 + px / 1000) - x(-157.8645);
+    assert.equal(disc(b), (d - 4 - 1 - 5) + 'px', px + ' px: the disc ends 1 px before the dot (4-px dot, 5-px ring)');
+  }
+  const near = boot({ zoom: 9, coarse: true, forecast: [HNLDOT(0.011)] });
+  near.api.rebuildWindMarkers(true); await flush();
+  assert.ok(flagOf(markerOf(near, 'Honolulu')).classList.contains('wind-hollow'), '11 px on touch: hollow');
+  const far = boot({ zoom: 9, coarse: true, forecast: [HNLDOT(0.030)] });
+  far.api.rebuildWindMarkers(true); await flush();
+  assert.equal(disc(far), '', '30 px: the full disc (no variable)');
+  const point = boot({ zoom: 9, coarse: true, points: [{ id: 'pt_y', lat: 21.3033, lon: -157.8645 + 0.020 }] });
+  point.api.rebuildWindMarkers(true); await flush();
+  assert.equal(disc(point), (x(-157.8645 + 0.020) - x(-157.8645) - 7 - 1 - 5) + 'px', 'one of My points is drawn 14 px wide: d - 7 - 1 - 5');
+  const mouse = boot({ zoom: 9, forecast: [HNLDOT(0.015)] });
+  mouse.api.rebuildWindMarkers(true); await flush();
+  assert.equal(disc(mouse), '', 'a mouse has no disc');
+  // the disc is part of the drawn state: a zoom that changes it rebuilds the flag
+  const z = boot({ zoom: 9, coarse: true, forecast: [HNLDOT(0.015)] });
+  z.api.rebuildWindMarkers(true); await flush();
+  const before = markerOf(z, 'Honolulu');
+  z.setZoom(9.2); z.api.rebuildWindMarkers(false);
+  assert.notEqual(markerOf(z, 'Honolulu'), before); assert.notEqual(disc(z), '5px');
+});
+
+test('the hollow distance is measured between whole pixels, as Leaflet draws the markers (R2-6)', async () => {
+  // find an offset whose raw distance is over 8 px but whose rounded distance is 8 (the harness projects 1000 px a degree)
+  const y = (lat) => (90 - lat) * 1000;                                 // a dot due south: the harness's y
+  const st = 21.3033;
+  let off = null;
+  for (let k = 0; k < 4000 && off === null; k++) {
+    const d = (8.05 + k * 0.0004) / 1000, raw = y(st - d) - y(st);
+    if (raw > 8 && Math.round(y(st - d)) - Math.round(y(st)) === 8) off = d;
+  }
+  assert.ok(off !== null);
+  const b = boot({ zoom: 9, forecast: [{ id: 'HNL01', lat: st - off, lon: -157.8645 }] });
+  b.api.rebuildWindMarkers(true); await flush();
+  assert.ok(flagOf(markerOf(b, 'Honolulu')).classList.contains('wind-hollow'), (off * 1000).toFixed(3) + ' px raw, 8 px drawn: hollow');
+});
+
+test('a flag whose dot changes keeps no stale marker (R57) and the dot search wraps at the date line (R54)', async () => {
+  const fc = [HNLDOT(0.005)];
+  const b = boot({ zoom: 9, forecast: fc });
+  b.api.rebuildWindMarkers(true); await flush();
+  const first = markerOf(b, 'Honolulu');
+  fc.splice(0, 1, { id: 'OTHER', lat: 21.3033, lon: -157.8645 + 0.005 });
+  b.api.rebuildWindMarkers(false);
+  assert.notEqual(markerOf(b, 'Honolulu'), first, 'another dot at the same place: the flag is rebuilt (its click goes to the new dot)');
+  // a station a hair west of 180 E and a dot a hair east of 180 W: neighbours across the world's edge
+  const wrap = boot({ zoom: 9, pxPerDeg: 256 * 512 / 360, list: { fields: ['id', 'name', 'lat', 'lon', 'kind', 'src', 'tz', 'alias'],
+    stations: [['metar:EDGE', 'Edge', -16.5, 179.999, 'airport', 'metar', 'Pacific/Fiji', null]] },
+  forecast: [{ id: 'X', lat: -16.5, lon: -179.999 }] });
+  wrap.api.rebuildWindMarkers(true); await flush();
+  assert.ok(flagOf(markerOf(wrap, 'Edge')).classList.contains('wind-hollow'), '2 px apart across 180: hollow');
 });

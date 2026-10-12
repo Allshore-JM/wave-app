@@ -32,16 +32,38 @@ def coops_rows_now():
 
 # ------------------------------------------------------------------ A-1: a CO-OPS budget for the windows
 
-def test_a1_a_gauge_window_takes_its_whole_coops_budget_first_or_answers_busy():
+def test_a1_a_gauge_window_takes_one_token_for_its_wind_and_one_per_product_only_while_free():
+    """G28 A-1 with re-check R1-N2: the wind rows take a token (none -> busy, no request); each weather product takes
+    one only if it is free at once, else it is left out (a window never waits for all its products' tokens at once,
+    so gauge windows are not starved behind tide windows that take theirs one at a time)."""
     fetch = history_fetch()
     budget = W.TokenBucket(rate=30, now=lambda: 0.0, burst=5)
     svc = W.WindHistory(STATIONS, fetch, now=Clock(coops_rows_now()), coops_bucket=budget)
     assert svc.history("coops:1612340")[0] == "ok"                      # wx "awp": 1 + 3 tokens
     assert fetch.count("1612340") == 4
-    # one token left: Nawiliwili (wx "awph") needs 5 -> busy, and NOT ONE request went to NOAA
-    assert svc.history("coops:1611400") == ("busy", {"error": W.BUSY})
-    assert fetch.count("1611400") == 0
-    assert svc.history("coops:1611400") == ("busy", {"error": W.BUSY}), "busy is never cached"
+    # two tokens: the wind rows and ONE of the three products; the others are left out, the window still answers
+    fetch2 = history_fetch()
+    svc2 = W.WindHistory(STATIONS, fetch2, now=Clock(coops_rows_now()), coops_bucket=W.TokenBucket(rate=30, now=lambda: 0.0, burst=2))
+    status, doc = svc2.history("coops:1612340")
+    assert status == "ok" and doc["t"] and fetch2.count("1612340") == 2 and wx_requests(fetch2) == 1
+    assert sum(1 for k in ("at", "wt", "p") if k in doc) == 1
+    # none left: busy, and NOT ONE request went to NOAA
+    empty = W.TokenBucket(rate=30, now=lambda: 0.0, burst=1)
+    assert empty.take()
+    fetch3 = history_fetch()
+    svc3 = W.WindHistory(STATIONS, fetch3, now=Clock(coops_rows_now()), coops_bucket=empty)
+    assert svc3.history("coops:1612340") == ("busy", {"error": W.BUSY}) and fetch3.calls == []
+    assert svc3.history("coops:1612340") == ("busy", {"error": W.BUSY}), "busy is never cached"
+
+
+def test_a1_a_gauge_without_weather_products_still_takes_its_wind_token():
+    """Re-check R1-N5 (R25): the 11 gauges without weather letters still take one token per window."""
+    fetch = history_fetch()
+    budget = W.TokenBucket(rate=30, now=lambda: 0.0, burst=1)
+    svc = W.WindHistory(STATIONS, fetch, now=Clock(coops_rows_now()), coops_bucket=budget)
+    assert STATIONS["coops:1612401"]["wx"] in (None, "")
+    svc.history("coops:1612401")
+    assert not budget.take(), "the window used the only token"
 
 
 def test_a1_the_budget_is_shared_with_the_tide_windows(monkeypatch):
@@ -149,6 +171,61 @@ def test_shared_cap_api_and_fork_reset():
     cap.release()
 
 
+
+def test_shared_cap_stuck_rule_and_marks():
+    """Re-check R1-N4: the cap keeps when each slot was taken; stuck(wait) only when EVERY slot is older than wait."""
+    cap = B.SharedCap(2)
+    assert not cap.stuck(0.0) and cap.held() == 0
+    assert cap.acquire(blocking=False)
+    assert not cap.stuck(0.0, now=_time.monotonic() + 9), "one slot free: never stuck"
+    assert cap.acquire(timeout=0.05) and cap.held() == 2
+    assert not cap.stuck(5.0) and cap.stuck(5.0, now=_time.monotonic() + 6)
+    cap.release()
+    assert cap.held() == 1 and not cap.stuck(0.0, now=_time.monotonic() + 9)
+    other = threading.Thread(target=cap.release)                      # released by another thread: still counted right
+    other.start(); other.join()
+    assert cap.held() == 0
+    B._reset_after_fork()
+    assert cap.held() == 0
+
+
+@pytest.mark.parametrize("kind", ["tide", "wind"])
+def test_every_service_answers_busy_at_once_when_both_slots_are_stuck(kind, monkeypatch):
+    """Re-check R1-N4 / R1-N1: with both slots of the shared cap held longer than a request's wait, a tide window, a
+    wind window answer "busy" AT ONCE (they no longer spend their wait on a request thread; the forecast point's case is
+    in tests/test_point_forecast.py)."""
+    cap = A._REQUEST_BUILDS
+    hold = [threading.Event(), threading.Event()]
+    took = threading.Barrier(3)
+
+    def holder(ev):
+        assert cap.acquire(timeout=1)
+        took.wait(2)
+        ev.wait(5)
+        cap.release()
+    th = [threading.Thread(target=holder, args=(ev,)) for ev in hold]
+    for t in th:
+        t.start()
+    took.wait(2)
+    try:
+        monkeypatch.setattr(_time, "monotonic", lambda real=_time.monotonic: real() + 10.0)   # both slots now 10 s old
+        t0 = _time.perf_counter()
+        if kind == "tide":
+            svc = T.TideService({"1612340": {"id": "1612340", "type": "R"}}, lambda u, m: b"{}", cap=cap, wait_s=2.0)
+            assert svc.forecast("1612340") == ("busy", {"error": T.BUSY})
+        elif kind == "wind":
+            svc = W.WindHistory(STATIONS, history_fetch(), now=Clock(coops_rows_now()), cap=cap, wait_s=2.0)
+            assert svc.history("coops:1612340") == ("busy", {"error": W.BUSY})
+        assert _time.perf_counter() - t0 < 0.5
+    finally:
+        monkeypatch.undo()
+        for ev in hold:
+            ev.set()
+        for t in th:
+            t.join(5)
+    assert cap.held() == 0
+
+
 # ------------------------------------------------------------------ A-5: the wind feeds' own runner
 
 def test_a5_wind_refreshes_go_to_their_own_runner():
@@ -206,6 +283,11 @@ def test_a5_healthz_reports_a_stuck_wind_runner_without_failing(monkeypatch):
             monkeypatch.setattr(p, "status", lambda now=None, s=p.source: {"source": s, "version": 1,
                                                                            "in_flight_s": A.LIVE_FETCH_STUCK_SEC + 1})
         assert A._wind_health(_time.time())["fetch_stuck"] is True
+        for p in provs[:2]:                                            # a fetch in flight but not yet hung (re-check R27)
+            monkeypatch.setattr(p, "status", lambda now=None, s=p.source: {"source": s, "version": 1,
+                                                                           "in_flight_s": A.LIVE_FETCH_STUCK_SEC - 1})
+        assert A._wind_health(_time.time())["fetch_stuck"] is False
+        assert A.LIVE_FETCH_STUCK_SEC == 900.0 and W.NDBC_KEEP_S == 6 * 3600   # (R04: the keep window, decision 12's 6 h)
     finally:
         W.set_wind_runner(prev)
 

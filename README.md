@@ -607,9 +607,11 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
   land's; else the nautical
   zone, shown as "UTC-11", never "Etc/GMT+11" (`zone_label`, also on the no-script page).
 - **Limits** (one worker, four threads): a cache of its own (`_POINT_CACHE`, 64 forecasts keyed by run, point and
-  zone: points never push a station's forecast out); two point builds at a time, a third waits two seconds and is
-  then told "The server is busy ... try again" (`busy: true`, not kept): one deadline for the whole wait, and at once
-  when both builds have been stuck longer than that; a point's objects are fetched with ONE attempt (3 s to connect,
+  zone: points never push a station's forecast out); two builds at a time, shared with the tide and wind windows (the
+  build cap below), a third waits two seconds and is then told "The server is busy right now; try again in a moment"
+  (`busy: true`, not kept): one deadline for the whole wait, and at once when both slots have been held longer than
+  that (by any build: `SharedCap.stuck`); the forecast window asks a busy answer again quietly five times, 4 s apart,
+  before it shows it with Retry (the point tool's first request likewise); a point's objects are fetched with ONE attempt (3 s to connect,
   6 s between bytes, about 8 s for the whole object from the request on: the socket of a body that trickles is shut
   down, which also stops a body with a Content-Length - closing the response from another thread waited for all of it;
   headers that trickle are not cut, R2 sends them at once); a tile that
@@ -905,7 +907,7 @@ Windows: a station chip gives its subtitle up before the station's name. An expa
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
 
-## Wind stations (plan section 39, UI asset 1.21.0)
+## Wind stations (plan section 39, UI asset 1.22.0)
 
 Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from four public-domain NOAA / NWS
 feeds (attribution requested, given in the map credits while the layer is on and in the window): NOAA NDBC buoys,
@@ -961,7 +963,7 @@ naming the site as aviationweather.gov asks):
   fields [id, t, s, g, d], rows, missing}` with speeds in m/s and directions the wind blows FROM; a gauge takes its NDBC
   relay's reading when it has no CO-OPS reading or the relay's is newer. Feeds still loading after a start are named in `X-Wind-Stations-Partial` with
   `Cache-Control: no-store` (the page asks again); else 2 min. `/api/wind/stations` serves the snapshot (ETag, `no-cache`: revalidated on every page load, like the tide list).
-- `/api/wind/<id>/history` (5 min): the last 24 hours (`t, s, g, d` ascending, plus the weather the same reports hold
+- `/api/wind/<id>/history` (60 s in the browser): the last 24 hours (`t, s, g, d` ascending, plus the weather the same reports hold
   where any row has it, step 5d: `at` / `wt` air and water temperature degC, `dp` dew point, `rh` humidity % (from the
   dew point where not reported), `p` pressure hPa, `pt` its 3-hour change, `vis` visibility km (with `vg` = 1 when it
   is "or more": the METAR API's "10+" / "6+", the latter its form of the international 9999, G28 A-3), `wx` weather words;
@@ -976,11 +978,14 @@ naming the site as aviationweather.gov asks):
   `water_temperature`, `air_pressure`, `humidity`, `range=24`: only those its `wx` letters list, asked together after
   the wind request under one 10-s deadline; a product that fails, is late or says anything but "no data" adds nothing);
   a CO-OPS message other than "No data was found" is a failure and the gauge falls back on its NDBC relay (`via:
-  "ndbc"`). Request budgets (G28 A-1): every CO-OPS request made for a window (the wind request and the gauge's
-  products, all taken before the first is sent) comes out of ONE budget of 30 a minute, 15 at once, shared with the
-  tide windows (same agency, same address; the paced feed's 24 a minute come on top); NDBC `realtime2` files 30 a
-  minute; an empty budget answers busy. Forecast points, tide windows and wind histories share one build cap of two
-  (`_REQUEST_BUILDS`), so two of the four request threads always stay free (G28 A-6). The tide service's cache
+  "ndbc"`). Request budgets (G28 A-1): every CO-OPS request made for a window comes out of ONE budget of 30 a minute,
+  15 at once, shared with the tide windows (same agency, same address; the paced feed's 24 a minute come on top): the
+  wind request takes its token first (none: busy, nothing sent); each of the gauge's weather products only if a token
+  is free at once (one left out is like one past the deadline: the window shows the rest; G28 re-check R1-N2); NDBC
+  `realtime2` files 30 a minute. Forecast points, tide windows and wind histories share one build cap of two
+  (`_REQUEST_BUILDS`, G28 A-6): at most two builds hold request threads; a request waits for a slot at most 2 s, and
+  answers busy at once while both slots have been held longer than that (`SharedCap.stuck`: a slow agency does not tie
+  up the threads `/healthz` needs; G28 re-check R1-N4). The tide service's cache
   core: ok 10 min, a
   failure 1 min, busy never cached (503 + `Retry-After: 5` + `retry: true`), one build per station at a time, LRU 256.
   An id not in the snapshot is a 404 without any upstream request.
@@ -999,7 +1004,9 @@ stations, CWOP amateur stations last (owner, 2026-10-10); every station at zoom 
 flags show (nothing while the tab is hidden; a partial answer again every 5 s, 24 times at most) and the drawn flags are
 repainted IN PLACE (text, classes, the arrow's rotation; the markers, their listeners and the focus stay). Clicks reach
 a flag only on its visible parts (the ring, the arrow's shape, the number: the 40-px box itself passes clicks to what lies
-under it); on touch screens the ring has a 36-px disc, and a tide icon on the same station (matched by id, not by
+under it); on touch screens the ring has a disc of up to 36 px that ends 1 px before a visible dot beside it (a
+forecast point or one of My points 12-26 px away keeps its own taps: G28 re-check R2-3), and a tide icon on the same
+station (matched by id, not by
 pixels) keeps only its own 18 px (the disc around it opens the wind window). A forecast point or one of My points close
 enough to take a tap on the flag (8 px with a mouse, 12 px on a touch screen, while its layer is shown) leaves the ring
 hollow and without clicks, and a click on the arrow or the number within that distance of the dot goes to the dot; a

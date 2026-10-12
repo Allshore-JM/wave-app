@@ -240,7 +240,7 @@ function boot(opts) {
   const app = F.init({ window: win, initial: Object.assign({ station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: true, swan_stations: ['51201', '51202'] }, (opts && opts.initial) || {}),
     stationLabel: (sid) => { const o = page.sel.options.find((x) => x.value === sid); return o ? o.textContent : sid; },
     loadChartJs: () => Promise.resolve(), fetch: fs_.fetch, closeLivePanel: () => { closes.push(1); page.live.style.display = 'none'; }, liveOpen: () => page.live.style.display === 'block',
-    early: opts && opts.early });
+    early: opts && opts.early, wait: (opts && opts.wait) || (() => Promise.resolve()) });
   return { win, page, F, fs_, Chart, app, closes, doc: win.document };
 }
 
@@ -813,10 +813,19 @@ test('a forecast point: its answer is announced with ok and point; an old run sa
   assert.equal(err.hidden, false); assert.equal(err.querySelectorAll('button').length, 0, 'asking again gives the same answer: no Retry');
   assert.equal(seen[seen.length - 1].ok, false, 'the page keeps nothing of it');
   assert.equal(b.app.loader.cache.has('pt_39740N_104990W||Metric|GFS'), false);
+  // busy: asked again quietly BUSY_TRIES times (the spinner on, no error), then shown with Retry (G28 re-check R1-N1)
+  const BUSY = { station: 'pt_20000N_160000W', error: 'The server is busy right now; try again in a moment', busy: true, table_html: null,
+    graph_data: null, graph_header: null, model: 'GFS', swan_available: false, point: null };
+  const n0 = b.fs_.calls.length;
   b.app.loader.load({ station: 'pt_20000N_160000W' }); await settle();
-  b.fs_.last().release({ station: 'pt_20000N_160000W', error: 'The server is busy with other forecast points; try again in a moment', busy: true, table_html: null,
-    graph_data: null, graph_header: null, model: 'GFS', swan_available: false, point: null }); await settle();
-  assert.equal(err.querySelectorAll('button').length, 1, 'busy: Retry');
+  for (let k = 0; k < b.F._internals.BUSY_TRIES; k++) {
+    b.fs_.last().release(BUSY); await settle();
+    assert.equal(b.doc.getElementById('fwBusy').hidden, false, 'still asking');
+  }
+  assert.equal(b.fs_.calls.length - n0, b.F._internals.BUSY_TRIES + 1, 'one request plus the quiet retries');
+  b.fs_.last().release(BUSY); await settle();
+  assert.equal(err.querySelectorAll('button').length, 1, 'still busy after the retries: Retry');
+  assert.equal(b.F._internals.BUSY_TRIES, 5); assert.equal(b.F._internals.BUSY_WAIT_MS, 4000);
 });
 
 // ---- G22 re-check (fix round 2) ----

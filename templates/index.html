@@ -443,7 +443,8 @@
        ring, a reading older than 2 h grey. The station in its window gets a coral rim. */
     /* Clicks reach a flag only on its visible parts (the ring, the arrow's shape, the number), never on the empty 40-px box:
        a forecast point or a map click beside a flag keeps working (owner, 2026-10-10). On touch screens the ring has a
-       36-px disc around it. A forecast point or one of My points close enough to take a tap on the flag (8 px with a
+       36-px disc around it, smaller where a dot is near: the disc never covers a visible dot (--wind-disc, set by the page:
+       G28 re-check R2-3). A forecast point or one of My points close enough to take a tap on the flag (8 px with a
        mouse, 12 px on a touch screen: .wind-hollow, set by the page) leaves the ring hollow and without clicks, and a
        click on the arrow or the number within that distance of the dot goes to the dot (the page's windDotHit); a SOLID
        ring, its arrow and its number always open the wind window (owner, G28: what you see is what you get). */
@@ -453,7 +454,7 @@
     .wind-arrow path { fill: currentColor; stroke: #fff; stroke-width: 1.2; paint-order: stroke; pointer-events: auto; }
     .wind-ring { position: absolute; left: 15px; top: 15px; width: 10px; height: 10px; border-radius: 50%; background: currentColor;
                  border: 1.5px solid #fff; box-sizing: border-box; box-shadow: 0 0 0 1px rgba(0,0,0,.35); pointer-events: auto; }
-    @media (pointer: coarse) { .wind-ring::after { content: ''; position: absolute; inset: -13px; border-radius: 50%; } }
+    @media (pointer: coarse) { .wind-ring::after { content: ''; position: absolute; inset: calc(-1 * var(--wind-disc, 13px)); border-radius: 50%; } }
     .wind-num { position: absolute; transform: translate(-50%, -50%); font: 700 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
                 color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 0 3px #000; white-space: nowrap; pointer-events: auto; }
     .wind-hollow .wind-ring { left: 13px; top: 13px; width: 14px; height: 14px; background: transparent; border: 2px solid currentColor;
@@ -494,11 +495,13 @@
     .live-chip .tide-win:not(.fw-min):not(.fw-max) { bottom: calc(26px + var(--lw-chip-h, 40px)); }
     .tide-chip .live-win:not(.fw-min):not(.fw-max) { bottom: calc(26px + var(--tw-chip-h, 40px)); }
     /* a raised default box gives way in height before it reaches the top-right corner (legend + gear: --map-topright-h),
-       so the gear stays clickable on shorter screens; a dragged window's own height (inline) wins over these */
+       so the gear stays clickable on shorter screens; a dragged window's own height (inline) wins over these. The raised
+       forecast box stops 64 px lower than the station windows' highest top (they may reach the corner here): the station
+       windows' tops show above it whichever is in front (G28 re-check: 32 px each for the live and the tide window) */
     .live-chip .forecast-win:not(.fw-min):not(.fw-max), .tide-chip .forecast-win:not(.fw-min):not(.fw-max) {
-      height: min(60vh, 720px, calc(100vh - 78px - var(--map-topright-h, 0px))); }
+      height: min(60vh, 720px, calc(100vh - 142px - var(--map-topright-h, 0px))); }
     .live-chip.tide-chip .forecast-win:not(.fw-min):not(.fw-max) {
-      height: min(60vh, 720px, calc(100vh - 86px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }
+      height: min(60vh, 720px, calc(100vh - 150px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }
     .live-chip .tide-win:not(.fw-min):not(.fw-max) { height: min(70vh, 760px, calc(100vh - 34px - var(--lw-chip-h, 40px) - var(--map-topright-h, 0px))); }
     .tide-chip .live-win:not(.fw-min):not(.fw-max) { height: min(76vh, 800px, calc(100vh - 34px - var(--tw-chip-h, 40px) - var(--map-topright-h, 0px))); }
     /* below 1180 px an expanded station window's default box would cover the parked forecast chip (its title too): it
@@ -508,8 +511,10 @@
       body.fw-chip.live-chip .tide-win:not(.fw-min):not(.fw-max) { --tw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--lw-chip-h, 40px))); }
       body.fw-chip .live-win:not(.fw-min):not(.fw-max) { --lw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), 18px); }
       body.fw-chip.tide-chip .live-win:not(.fw-min):not(.fw-max) { --lw-bottom: max(calc(20px + var(--fw-chip-h, 44px)), calc(26px + var(--tw-chip-h, 40px))); }
+      /* the tide window 32 px lower than the live window (the same bottom here): the live window's top always shows
+         (G28 re-check R2-2; before, both were capped to the same top and the wider tide window hid the live one) */
       body.fw-chip .tide-win:not(.fw-min):not(.fw-max) {
-        bottom: var(--tw-bottom); height: min(70vh, 760px, calc(100vh - 8px - var(--tw-bottom) - var(--map-topright-h, 0px))); }
+        bottom: var(--tw-bottom); height: min(70vh, 760px, calc(100vh - 40px - var(--tw-bottom) - var(--map-topright-h, 0px))); }
       body.fw-chip .live-win:not(.fw-min):not(.fw-max) {
         bottom: var(--lw-bottom); height: min(76vh, 800px, calc(100vh - 8px - var(--lw-bottom) - var(--map-topright-h, 0px))); }
     }
@@ -517,15 +522,15 @@
        (each height + 8 px) and the parked wind chip into --ww-chip-h. An expanded wind window's default box clears
        --chips-h; a parked WIND chip sits on top of the station chips, so the other windows' boxes clear both. (.fwin in
        the selectors: these outrank the rules above at the same place in the cascade.) */
-    body.wind-chip .fwin.tide-win:not(.fw-min):not(.fw-max) {
+    body.wind-chip .fwin.tide-win:not(.fw-min):not(.fw-max) {   /* 32 px below the live window's top (R2-2) */
       bottom: calc(26px + var(--chips-h, 0px) + var(--ww-chip-h, 40px));
-      height: min(70vh, 760px, calc(100vh - 34px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }
+      height: min(70vh, 760px, calc(100vh - 66px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }
     body.wind-chip .fwin.live-win:not(.fw-min):not(.fw-max) {
       bottom: calc(26px + var(--chips-h, 0px) + var(--ww-chip-h, 40px));
       height: min(76vh, 800px, calc(100vh - 34px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }
-    body.wind-chip .fwin.forecast-win:not(.fw-min):not(.fw-max) {
+    body.wind-chip .fwin.forecast-win:not(.fw-min):not(.fw-max) {   /* 64 px below the live window's top (re-check) */
       bottom: calc(30px + var(--chips-h, 0px) + var(--ww-chip-h, 40px));
-      height: min(60vh, 720px, calc(100vh - 38px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }
+      height: min(60vh, 720px, calc(100vh - 102px - var(--chips-h, 0px) - var(--ww-chip-h, 40px) - var(--map-topright-h, 0px))); }
     @media (min-width: 501px) and (max-width: 1179.98px) and (min-height: 501px) {
       body.fw-chip .fwin.wind-win:not(.fw-min):not(.fw-max) {   /* above the parked forecast chip too (it spans the width here) */
         max-height: calc(100vh - var(--map-topright-h, 120px) - 50px - max(var(--chips-h, 0px), calc(var(--fw-chip-h, 44px) + 2px))); }
@@ -1402,6 +1407,8 @@
     // the tide layer ticked or unticked: its markers, its note and its credit follow
     map.on('overlayadd overlayremove', function (e) { if (e.layer === tideLayer) rebuildTideMarkers(true); });
     map.on('overlayadd overlayremove', function (e) { if (e.layer === windLayer) rebuildWindMarkers(true); });   // the flags, the feed, the note, the credit
+    // the rings depend on the forecast dots and My points shown beside them (G28 re-check R1-N3 / R2-4)
+    map.on('overlayadd overlayremove', function (e) { if (e.layer === forecastLayer || e.layer === pointLayer) rebuildWindMarkers(false); });
     map.on('overlayadd', function (e) { if (e.layer === liveBuoyLayer) rebuildLiveBuoyMarkers(true); });   // new elements: keys, Tab stops
 
     // The settings gear under the layer legend (top-right); its panel (Time Zone, Units, gridlines) opens below it.
@@ -3349,17 +3356,24 @@
     // the dot (windDotHit); a solid ring, its arrow and its number always open the wind window (owner, G28 B-1: what you
     // see is what you get; B-5: My points as well). A Map id#copy -> { f: {id, lat, lon}, kind: 'forecast' | 'point',
     // lng: its longitude in the flag's world copy, r: the tap distance }; part of the drawn signature (a zoom that changes
-    // one redraws).
+    // one redraws). On a touch screen a dot a little further than the tap distance gets an entry with `disc` instead (not
+    // hollow): the ring's finger disc (CSS --wind-disc, beyond the 10-px ring) ends 1 px before the dot's edge, so the solid
+    // ring keeps its own taps and the visible dot keeps its own (G28 re-check R2-3). Distances from whole pixels, as Leaflet
+    // draws both markers (R2-6).
     const WIND_DOT_HIT_PX = 8, WIND_DOT_HIT_TOUCH_PX = 12;
-    function windTapPx() { return window.matchMedia && window.matchMedia('(pointer: coarse)').matches ? WIND_DOT_HIT_TOUCH_PX : WIND_DOT_HIT_PX; }
+    const WIND_DISC_PX = 13, WIND_RING_R = 5;              // the touch disc beyond the ring (CSS), the ring's radius
+    const WIND_DOT_R = { forecast: 4, point: 7 };           // the dots' drawn radii: the circle marker (3 + stroke), My point (14 px)
+    function windTouch() { return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); }
+    function windTapPx() { return windTouch() ? WIND_DOT_HIT_TOUCH_PX : WIND_DOT_HIT_PX; }
     function windHollowSet(copies) {
       const out = new Map();
       const dots = [];
       if (map.hasLayer(forecastLayer)) forecastStationsData.forEach(function (f) { dots.push({ f: f, kind: 'forecast' }); });
       if (map.hasLayer(pointLayer)) savedPointsData.forEach(function (q) { dots.push({ f: q, kind: 'point' }); });
       if (!copies.length || !dots.length) return out;
-      const z = map.getZoom(), W = 256 * Math.pow(2, z), cell = 16, cells = new Map(), r = windTapPx();
-      const px = function (lat, lng) { const p = map.project([lat, ((lng + 540) % 360) - 180], z); return { x: ((p.x % W) + W) % W, y: p.y }; };
+      const z = map.getZoom(), W = 256 * Math.pow(2, z), cell = 16, cells = new Map(), r = windTapPx(), touch = windTouch();
+      const far = touch ? WIND_RING_R + WIND_DISC_PX + Math.max(WIND_DOT_R.forecast, WIND_DOT_R.point) + 1 : r;   // looked for
+      const px = function (lat, lng) { const p = map.project([lat, ((lng + 540) % 360) - 180], z); const x = Math.round(p.x); return { x: ((x % W) + W) % W, y: Math.round(p.y) }; };
       dots.forEach(function (d) {
         const lat = Number(d.f.lat), lon = Number(d.f.lon);
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
@@ -3368,7 +3382,7 @@
         cells.get(k).push({ x: p.x, y: p.y, f: d.f, kind: d.kind });
       });
       if (!cells.size) return out;
-      const cols = Math.ceil(W / cell), reach = Math.ceil(r / cell);
+      const cols = Math.ceil(W / cell), reach = Math.ceil(far / cell);
       copies.forEach(function (c) {
         const p = px(c.s.lat, c.lng), cx = Math.floor(p.x / cell), cy = Math.floor(p.y / cell);
         let best = Infinity, near = null;
@@ -3381,14 +3395,18 @@
             });
           }
         }
-        if (best > r || !near) return;
+        if (best > far || !near) return;
         let lng = Number(near.f.lon) + (c.lng - c.s.lon);              // the dot in the flag's world copy
         while (lng - c.lng > 180) lng -= 360;
         while (c.lng - lng > 180) lng += 360;
-        out.set(c.s.id + '#' + c.o, { f: near.f, kind: near.kind, lng: lng, r: r });
+        if (best <= r) { out.set(c.s.id + '#' + c.o, { f: near.f, kind: near.kind, lng: lng, r: r }); return; }   // hollow
+        const disc = Math.max(0, Math.min(WIND_DISC_PX, Math.floor(best - (WIND_DOT_R[near.kind] || 4) - 1 - WIND_RING_R)));
+        if (disc < WIND_DISC_PX) out.set(c.s.id + '#' + c.o, { f: near.f, kind: near.kind, lng: lng, r: r, disc: disc });
       });
       return out;
     }
+    // a dot's part of a flag's state: hollow (kind:id:tap distance) or a smaller touch disc (d<px>:kind:id)
+    function windDotState(e) { return (e.disc !== undefined ? 'd' + e.disc + ':' : '') + e.kind + ':' + e.f.id + ':' + e.r; }
     // a click on a hollow flag's arrow or number within its tap distance of the dot: that dot (as a click on it would);
     // null otherwise (a key press has no position: the flag opens)
     function windDotHit(d, ev) {
@@ -3482,7 +3500,7 @@
       if (on && !windListPromise && Date.now() - windListFailedAt >= WIND_LIST_RETRY_MS) loadWindStations();
       const all = on ? visibleCopies(windStationsData) : [], vis = on ? thinWindCopies(all) : [];
       const hollow = windHollowSet(vis);
-      const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis) + '|h:' + Array.from(hollow, function (e) { return e[0] + '=' + e[1].kind + ':' + e[1].f.id + ':' + e[1].r; }).sort().join(',');   // the gate bit clears the layer on a zoom-out
+      const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis) + '|h:' + Array.from(hollow, function (e) { return e[0] + '=' + windDotState(e[1]); }).sort().join(',');   // the gate bit clears the layer on a zoom-out
       const want = windNoteWanted(on);
       if (want !== windNoteText) { windNoteText = want; paintWindNote(); }
       if (map.attributionControl && map.hasLayer(windLayer) !== windCreditShown) {   // the credit while the layer is on
@@ -3498,13 +3516,15 @@
       const next = new Map(), drawnNow = [];
       const W = window.AllshoreWinds, now = Date.now(), unit = getSelectedUnit();
       vis.forEach(function (c) {
-        const s = c.s, key = s.id + '#' + c.o, active = s.id === activeWindId, dot = hollow.get(key) || null;
-        const state = (active ? 'a' : '-') + '|' + (dot ? dot.kind + ':' + dot.f.id + ':' + dot.r : '');
+        const s = c.s, key = s.id + '#' + c.o, active = s.id === activeWindId, near = hollow.get(key) || null;
+        const dot = near && near.disc === undefined ? near : null, disc = near && near.disc !== undefined ? near.disc : null;
+        const state = (active ? 'a' : '-') + '|' + (near ? windDotState(near) : '');
         const old = windByKey.get(key);
         if (old && old.state === state && old.lng === c.lng) { windByKey.delete(key); next.set(key, old); drawnNow.push(old); return; }
         const r = windReading(s.id);
         const flag = W ? W.buildFlag(document, r, now, unit, windStaleS) : document.createElement('div');
         if (dot && flag.classList) flag.classList.add('wind-hollow');
+        if (disc !== null && flag.style && flag.style.setProperty) flag.style.setProperty('--wind-disc', disc + 'px');   // R2-3
         const icon = L.divIcon({ className: 'wind-marker' + (active ? ' wind-marker-active' : ''), html: flag, iconSize: [40, 40], iconAnchor: [20, 20], tooltipAnchor: [0, -14] });
         const label = windLabel(s, r);
         // below the live-buoy dots (500) and the tide icons (400): a flag beside a buoy's dot or a gauge's icon leaves them clickable
@@ -4179,6 +4199,7 @@
           if (h && c[0] !== 'windWin') below += h + 8;
         });
         document.documentElement.style.setProperty('--chips-h', below + 'px');
+        syncWindWidth();                                     // the boxes just moved: measure them now (G28 re-check R2-1)
       }
       // the forecast window parked as a chip: below 1180 px the station windows' default boxes rise above it (RC-13)
       (function () {
@@ -4188,6 +4209,7 @@
           var min = fw.classList.contains('fw-min');
           document.body.classList.toggle('fw-chip', min);
           if (min && fw.offsetHeight > 0) document.documentElement.style.setProperty('--fw-chip-h', fw.offsetHeight + 'px');
+          syncWindWidth();                                   // the raised boxes move with the forecast chip (R2-1)
         }
         syncForecastChip();
         if (window.MutationObserver) new MutationObserver(syncForecastChip).observe(fw, { attributes: true, attributeFilter: ['class'] });

@@ -430,24 +430,57 @@ _CAPS = weakref.WeakSet()
 
 class SharedCap:
     """A cap on concurrent builds shared by several request-path services (forecast points, tide windows, wind
-    histories: G28 A-6): acquire(blocking=True, timeout=-1) / release() like a BoundedSemaphore. A forked child gets a
-    fresh one (a parent's thread may have held a slot)."""
+    histories: G28 A-6): acquire(blocking=True, timeout=-1) / release() like a BoundedSemaphore, called from the same
+    thread. It keeps when each slot was taken: stuck(wait_s) is True while every slot has been held longer than wait_s,
+    so a caller answers "busy" at once instead of spending its wait on a request thread (a slow agency must not tie up
+    the threads /healthz needs: G28 re-check R1-N4; the forecast points' own rule, G22 A-6, for all three services).
+    A forked child gets a fresh one (a parent's thread may have held a slot)."""
 
     def __init__(self, n=2):
         self.n = int(n)
         self._sem = threading.BoundedSemaphore(self.n)
+        self._lock = threading.Lock()
+        self._since = {}                     # thread ident -> the times it took its slots
         _CAPS.add(self)
+
+    def stuck(self, wait_s, now=None):
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            marks = [t for ts in self._since.values() for t in ts]
+        return len(marks) >= self.n and all(now - t > wait_s for t in marks)
+
+    def held(self):
+        with self._lock:
+            return sum(len(ts) for ts in self._since.values())
 
     def acquire(self, blocking=True, timeout=-1):
         if not blocking:
-            return self._sem.acquire(False)
-        return self._sem.acquire(True, None if timeout is None or timeout < 0 else timeout)
+            ok = self._sem.acquire(False)
+        else:
+            ok = self._sem.acquire(True, None if timeout is None or timeout < 0 else timeout)
+        if ok:
+            with self._lock:
+                self._since.setdefault(threading.get_ident(), []).append(time.monotonic())
+        return ok
 
     def release(self):
+        with self._lock:
+            me = threading.get_ident()
+            ts = self._since.get(me)
+            if not ts and self._since:           # released by another thread: forget the oldest mark
+                me = min(self._since, key=lambda k: min(self._since[k]))
+                ts = self._since[me]
+                ts.remove(min(ts))
+            elif ts:
+                ts.pop()
+            if me in self._since and not self._since[me]:
+                del self._since[me]
         self._sem.release()
 
     def _reset(self):
         self._sem = threading.BoundedSemaphore(self.n)
+        self._lock = threading.Lock()
+        self._since = {}
 _NONBLOCKING = False             # set while a background scheduler refreshes the lists (app.py)
 
 

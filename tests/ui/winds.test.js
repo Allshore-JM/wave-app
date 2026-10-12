@@ -667,3 +667,23 @@ test('a tab shown again after a hidden turn asks at once (visibilitychange, G28 
   n.els.chart.dispatch('mousemove', { clientX: 351 - I.MARGIN.r, clientY: 10 });
   assert.match(n.view.state().readout, / · 11 mph E G18$/);
 });
+
+test('fix round 7c pins: "or more" in whole units (R1-N7), Calm in the short readout (R47), a newer flag reading rewrites an empty window at once (R43), no refresh on show while fresh (R44)', async () => {
+  assert.equal(I.distText(9.656, 'Metric', true), '10+ km', 'METAR 9999 / the API\'s "6+"');
+  assert.equal(I.distText(16.09, 'Metric', true), '16+ km'); assert.equal(I.distText(9.656, 'US', true), '6+ mi');
+  assert.equal(I.distText(9.656, 'Metric'), '9.7 km', 'an exact value keeps its decimal');
+  const n = viewSetup({ width: 351 });
+  n.view.load(HNL); n.answers[0].res(resp(200, history({ t: [T0 - 60], s: [0.1], g: [null], d: [null] }))); await flush();
+  const svg = n.q('svg')[0]; svg.rect = { left: 0, top: 0, width: 351, height: I.CHART_H };
+  n.els.chart.dispatch('mousemove', { clientX: 351 - I.MARGIN.r, clientY: 10 });
+  assert.match(n.view.state().readout, /^\d+:\d\d [AP]M · Calm$/);
+  const e = viewSetup();
+  e.view.load(HNL, { reading: { t: T0 - 1200, s: 4.0, g: null, d: 40 } }); e.answers[0].res(resp(200, history({ t: [], s: [], g: [], d: [] }))); await flush();
+  assert.match(e.els.current.textContent, /20 min ago$/);
+  e.view.setReading({ t: T0 - 60, s: 9.0, g: null, d: 10 });
+  assert.match(e.els.current.textContent, /^20 mph from N \(10°\) · 17 kt · 1 min ago$/, 'at once, not at the next tick');
+  const f = viewSetup();
+  f.view.load(HNL); f.answers[0].res(resp(200, history())); await flush();
+  f.view.show(); f.doc.fire('visibilitychange'); await flush();
+  assert.equal(f.calls.length, 1, 'fresh: neither a show nor a tab show asks again');
+});

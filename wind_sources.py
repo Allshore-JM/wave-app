@@ -983,6 +983,9 @@ class WindHistory:
         hit = self._get(key)
         if hit is not None:
             return hit
+        stuck = getattr(self._builds, "stuck", None)                # a shared cap: every slot held too long -> at once
+        if stuck is not None and stuck(self.wait_s):
+            return "busy", {"error": BUSY}
         deadline = time.monotonic() + self.wait_s
         e = self._key_lock(key)
         try:
@@ -1060,6 +1063,14 @@ class WindHistory:
         prods = self._wx_products(letters)
         if not prods or not by_t:
             return
+        # one token each, only if free at once: a product without one is left out like a late one (the wind rows
+        # took theirs; a window never waits for all of its products' tokens at once: G28 re-check R1-N2)
+        asked = [p for p in prods if self.coops_bucket.take(1)]
+        if len(asked) < len(prods):
+            _log.info("wind history coops:%s: %d weather products left out (the CO-OPS budget)", local, len(prods) - len(asked))
+        prods = asked
+        if not prods:
+            return
 
         def get(prod):
             try:
@@ -1130,7 +1141,7 @@ class WindHistory:
         elif src == "nws":
             rows = self._nws(local, since)
         else:
-            self._take(self.coops_bucket, "CO-OPS", 1 + len(self._wx_products(st.get("wx"))))
+            self._take(self.coops_bucket, "CO-OPS")                    # the wind rows; the products take theirs as they go
             try:
                 rows = self._coops(local, since)
                 self._coops_weather(local, st.get("wx"), rows)

@@ -420,7 +420,13 @@ Pins for the survivors @ 335ccc2. UI 1.22.0. Every item of the scope above; numb
    history), R27 (`fetch_stuck` below its threshold + LIVE_FETCH_STUCK_SEC), R39 (`_fix_case`'s comma rule), R04
    (NDBC_KEEP_S). README: the points' busy text and quiet retries, the budget's token rule, the cap's stuck rule,
    history 60 s, the touch disc, the 1.22.0 heading.
-- Suites: pytest 1,054 + the golden 11 (exit 0), Node 599.
+- Suites: pytest 1,065 incl. the golden (exit 0, full run), Node 599.
+- Found by the full run (not in the file alone): `test_provider_keep_last_list.py::test_golden_replay_still_identical`
+  (older than section 39) called the memo module's golden test without that module's autouse isolation, so
+  `run_sequence`'s direct assignments (`buoy_sources.time` frozen, `app.get_buoy_providers`, `app._buoy_tz_cached`)
+  stayed for the rest of the session; the new cap pin then patched `monotonic` on the frozen clock and the services'
+  stuck test saw an unpatched clock. Fixed @ 721565c (the replay records and restores the three; the pin patches
+  `buoy_sources.time` itself); a full run with a watcher on the clock modules shows the real clock throughout.
 - Mutation pass (scratch `g28/fix7c/mut7c.py`): 34 mutants of the 7c code (cap rule, the three services' stuck checks,
   tokens, busy text, spot rules, respot, legend toggle, both syncWindWidth calls, the four raised caps, the disc formula,
   dot radii, reach, rounding, the signature, the disc style, the CSS inset, the client's retries, the Metric rounding):

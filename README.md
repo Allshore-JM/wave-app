@@ -222,7 +222,7 @@ the tab.
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.
-Fast playback (assets 2.15.0-2.15.1, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
+Fast playback (assets 2.15.0-2.16.0, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
 to 1920x1080 because (1) the ring of decoded frames follows the speed: paused and at 1x the G3/G4 budgets stand (the
 frame on the map, 2 ahead, 2 behind, at most 2 downloads at once, at most 5 decoded frames per kind); at 2x the ring is
 4 ahead / 1 behind with 3 downloads and 7 decoded, at 4x 6 ahead / 1 behind with 4 downloads and 9 decoded (the direction
@@ -239,8 +239,23 @@ longer add up: the snail showed 1.92 of 2 frames/s with everything cached); a fr
 successor at once, one back-to-back frame, never a skipped one; (3) a new frame draws the tiles in view first and the
 buffer tiles Leaflet keeps around the view in idle time (requestIdleCallback, else one task), and a drag that brings
 a buffer tile into view draws it at once; the readout samples the frame itself and the particles read only the land
-masks, so a buffer tile a frame behind is never read. A worker decode of the frames is on record for the case the
-1080p shark still falls short (plan section 42, step 3).
+masks, so a buffer tile a frame behind is never read.
+Step 3 (asset 2.16.0): (4) the frames are DECODED OFF THE MAIN THREAD: a Web Worker built from the module's own decode
+functions (one asset, one version) inflates and unfilters each downloaded body (transferred, not copied) and hands the
+code array back; the main thread keeps the download, its watchdog and the late-frame rules. A worker that dies ends its
+pending decodes, which are downloaded once more (edge-cached) for the main-thread path, and stays off for the session
+(one console warning); without Worker / Blob / DecompressionStream, or with `?ovdecode=main` in the address (a
+diagnostic), the main thread decodes as before. (5) The particle lattice is rebuilt from the model nodes around the view
+plus a screen on every side, not the whole grid (the same vectors on screen; a pan beyond the margin recomputes).
+(6) Particles: their pace follows the playback speed (x2 at fish, x4 at shark; x1 paused or at snail), so at the fast
+speeds they keep up with the time-lapse instead of drifting behind the storms, while their tails keep their length on
+screen and their lifetimes stay in real time; their look (density, line weight, tail opacity) is one table (`LOOKS`;
+`?ovlook=B` / `?ovlook=C` show the candidates on the test site until the owner's pick becomes the one look). (7) A
+2-second watchdog restarts the animation when it should be running and is not (its data and canvas present, the page
+visible, nothing in progress on the map, yet no frame drawn or a pause that never ended), and on WebKit (Safari, every
+iPad browser) the animation canvas is a fresh element after every zoom, since the iPad lost its particles after a pinch
+zoom until a reload (not reproducible in Chromium); `?ovdebug=1` writes the animator's and the scheduler's state into
+the panel once a second.
 Wave-height colours and contours (asset 2.7.6): wave height uses value knots so 0-3 m fills about half of the
 legend (owner-picked spectral palette; the knots stretch to whatever legend the manifest carries; a run whose legend is exactly 0-60 ft = 0-18.288 m uses the wider scale in `SCALES`: 0-30 ft unchanged, 40 ft pale pink, 50 ft rose, 60 ft deep purple, plan section 27); tp and wind keep
 linear scales. Contours (wave height and period, always on since asset 2.12.0; no checkbox) are light

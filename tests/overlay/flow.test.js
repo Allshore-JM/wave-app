@@ -268,3 +268,101 @@ test('G12: a half-resolution field under a full-resolution direction (a phone zo
   assert.ok(Math.abs(N.V[row + 21] - speed(3)) < 0.2, 'between the half nodes: the mean height (3 m): ' + N.V[row + 21]);
   assert.ok(Math.abs(N.V[row + 22] - speed(4)) < 0.2, 'on the next half node (4 m)');
 });
+
+
+// ---- plan section 42 step 3: the look table, the playback rate, the watchdog, the canvas after a zoom, the readout ----
+test('section 42: the look table: A is the look before section 42 and the default; ?ovlook=B / C pick the others; anything else is A', () => {
+  assert.equal(I.LOOK, I.LOOKS.A); assert.equal(I.LOOKS.A.px2, 900); assert.deepEqual(I.LOOKS.A.style.hs, { width: 1.5, halo: 3.2 }); assert.equal(I.LOOKS.A.tail, 0.4);
+  assert.equal(I.lookFor('?ovlook=B'), I.LOOKS.B); assert.equal(I.lookFor('?a=1&ovlook=C'), I.LOOKS.C); assert.equal(I.lookFor('?ovlook=D'), I.LOOKS.A); assert.equal(I.lookFor(''), I.LOOKS.A); assert.equal(I.lookFor(undefined), I.LOOKS.A);
+  assert.ok(I.LOOKS.B.px2 < I.LOOKS.A.px2 && I.LOOKS.C.px2 < I.LOOKS.B.px2, 'denser'); assert.ok(I.LOOKS.B.style.hs.width > I.LOOKS.A.style.hs.width);
+  assert.equal(I.PARTICLE_PX2, I.LOOK.px2); assert.equal(I.FLOW_STYLE, I.LOOK.style);
+});
+
+test('section 42: the rate: particles move rate times as far per frame, their tails sample rate times as often, lifetimes stay in real time; the default rate is 1', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(270));   // from the west: particles run east (x grows)
+  const run = (rate) => {
+    const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+    const { fa } = animator('hs', l, pdir, HALF);
+    fa.setRate(rate);
+    const P = fa.particles; fa.count = 1; P[0] = 100; P[1] = 300; P[2] = 0; P[3] = 1e9;
+    for (let i = 0; i < 1000; i++) fa.hist[i] = 0; fa.histN[0] = 0; fa.histT[0] = 0;
+    const dx = []; let samples = 0;
+    for (let k = 0; k < 10; k++) { const x0 = P[0]; fa._renderParticles(16); dx.push(P[0] - x0); samples = fa.histN[0]; }
+    return { dx: dx.slice(2).reduce((a, b) => a + b, 0) / 8, age: P[2], samples };
+  };
+  const one = run(1), four = run(4);
+  assert.ok(one.dx > 0, 'moves east'); assert.ok(Math.abs(four.dx / one.dx - 4) < 0.05, 'four times as far: ' + four.dx / one.dx);
+  assert.equal(one.age, 160); assert.equal(four.age, 160, 'age in real time');
+  assert.ok(four.samples > one.samples, 'the tail samples more often at the higher rate (' + one.samples + ' -> ' + four.samples + ')');
+  const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6; const { fa } = animator('hs', l, pdir, HALF);
+  assert.equal(fa.rate, 1); fa.setRate(0); assert.equal(fa.rate, 1, 'a bad rate is 1');
+});
+
+test('section 42: the watchdog restarts an animator that should run and does not (a stuck suspend, a dead loop), never while the map is busy, hidden or without data', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(180));
+  const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+  const { fa, map } = animator('hs', l, pdir, HALF);
+  assert.ok(fa.watch !== null, 'the watchdog timer exists');
+  fa.pending(16);                                                              // one frame drawn: fresh
+  assert.equal(fa.active, true); fa._check(); assert.equal(fa.healed, 0, 'healthy: nothing');
+  // a suspend that never ended
+  fa.suspend(); assert.equal(fa.suspended, 1); assert.equal(fa.active, false);
+  fa._check(); assert.equal(fa.healed, 1); assert.equal(fa.suspended, 0); assert.equal(fa.active, true); assert.match(fa.log[fa.log.length - 1][0], /heal:suspended/);
+  // the loop stopped drawing (no frame for WATCHDOG_MS) although active
+  fa.lastFrameAt = performance.now() - 3000; fa._check(); assert.equal(fa.healed, 2); assert.match(fa.log[fa.log.length - 1][0], /heal:dead/);
+  fa.pending(16);
+  // not while something is in progress on the map
+  fa.suspend(); map._animatingZoom = true; fa._check(); assert.equal(fa.healed, 2, 'a zoom animation'); map._animatingZoom = false;
+  map.dragging = { moving: () => true }; fa._check(); assert.equal(fa.healed, 2, 'a drag'); map.dragging = null;
+  map.touchZoom = { _zooming: true }; fa._check(); assert.equal(fa.healed, 2, 'a pinch'); map.touchZoom = null;
+  map._panAnim = { _inProgress: true }; fa._check(); assert.equal(fa.healed, 2, 'a pan animation'); map._panAnim = null;
+  global.document.hidden = true; fa._check(); assert.equal(fa.healed, 2, 'hidden'); global.document.hidden = false;
+  fa._check(); assert.equal(fa.healed, 3, 'then healed'); assert.equal(fa.suspended, 0);
+  // no data: nothing to run
+  fa.clearData(); fa.suspended = 1; fa._check(); assert.equal(fa.healed, 3);
+  fa.detach(); assert.equal(fa.watch, null, 'the timer is cleared on detach');
+});
+
+test('section 42: after a zoom the canvas is a fresh element on WebKit (the old one released), the same element elsewhere; the map events are logged for the readout', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(180));
+  const saveNav = Object.getOwnPropertyDescriptor(global, 'navigator');
+  const setNav = (v) => Object.defineProperty(global, 'navigator', { value: v, configurable: true, writable: true });
+  try {
+    for (const [ua, fresh] of [['Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1', true],
+      ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0', false],
+      ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0 Mobile/15E148 Safari/604.1', false]]) {
+      setNav({ userAgent: ua });
+      assert.equal(I.isWebKit(), fresh, ua.slice(0, 40));
+      const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+      const { fa, events, canvas } = animator('hs', l, pdir, HALF);
+      const made = []; const pane = { style: {}, appendChild(c) { made.push(c); } };
+      // the harness's document hands out one object; give the pane and a fresh canvas per creation here
+      global.document.createElement = () => ({ style: {}, width: 0, height: 0, getContext: () => fakeCtx(), remove() { this.removed = true; } });
+      fa.canvas.parentNode = pane;
+      const before = fa.canvas;
+      events.zoomstart.forEach((h) => h()); events.zoomend.forEach((h) => h());
+      if (fresh) { assert.notEqual(fa.canvas, before, 'a fresh canvas'); assert.equal(before.width, 0); assert.equal(before.removed, true); assert.equal(made.length, 1); assert.ok(fa.canvas.width > 0, 'placed by the rebuild'); }
+      else { assert.equal(fa.canvas, before, 'the same canvas'); assert.equal(made.length, 0); }
+      assert.deepEqual(fa.log.map((e) => e[0]), ['zoomstart', 'zoomend']);
+      assert.equal(fa.suspended, 0); assert.equal(fa.active, true);
+      const st = fa.debugState();
+      assert.equal(typeof st.log, 'string'); assert.match(st.log, /zoomstart@\d+ zoomend@\d+/); assert.equal(st.rate, 1); assert.equal(st.dir, true); assert.equal(st.healed, 0);
+      void canvas;
+    }
+  } finally { if (saveNav) Object.defineProperty(global, 'navigator', saveNav); else delete global.navigator; }
+});
+
+
+test('section 42 C2: a pan beyond the node window recomputes the nodes (the lattice keeps its vectors), a small pan does not', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(270));
+  const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+  const { fa, map } = animator('hs', l, pdir, HALF);
+  const win0 = fa.nodes.win; assert.ok(win0 && win0.count < 720);
+  const moving = (fa.vf.u.filter((x) => x !== 0).length);
+  assert.ok(moving > 0.9 * fa.vf.u.length, 'a uniform field: nearly every lattice node moves');
+  map.getPixelBounds = () => ({ min: { x: 10000 + 300, y: 9000 } }); fa._rebuild();
+  assert.equal(fa.nodes.win, win0, 'a small pan: the same nodes');
+  map.getPixelBounds = () => ({ min: { x: 10000 + 3 * 800, y: 9000 } }); fa._rebuild();
+  assert.notEqual(fa.nodes.win, win0, 'three screens east: recomputed'); assert.notEqual(fa.nodes.win.c0, win0.c0);
+  assert.ok(fa.vf.u.filter((x) => x !== 0).length > 0.9 * fa.vf.u.length, 'the lattice still has its vectors (stale nodes would be absent)');
+});

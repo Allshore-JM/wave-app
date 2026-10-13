@@ -1345,3 +1345,25 @@ test('section 42 (step 2 finding): the cache never evicts a frame the ring still
     });
   }
 });
+
+
+test('section 42 step 3: the particles\' rate follows the playback (1 paused, the speed while playing); Off disposes the decode worker; the readout is text only and runs only with ?ovdebug=1', async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    w.pointer = ptr(A); w.manifests[A.run] = A;
+    const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+    assert.ok(o.flow); assert.equal(o.flow.rate, 1);
+    o.setSpeed(4); assert.equal(o.flow.rate, 1, 'paused: 1 whatever the speed');
+    o.play(); assert.equal(o.flow.rate, 4);
+    o.setSpeed(2); assert.equal(o.flow.rate, 2);
+    o.pause(); assert.equal(o.flow.rate, 1);
+    o.play(); assert.equal(o.flow.rate, 2);
+    const fake = { disposed: 0, dead: false, worker: null, dispose() { this.disposed++; } };
+    w.I.setDecoderForTest(fake);
+    assert.equal(w.I.OV_DEBUG, false, 'no ?ovdebug in the harness'); assert.equal(o.debugTimer, undefined);
+    assert.match(o._debugText(), /playing: true\nspeed: 2\n/); assert.match(o._debugText(), /decoder: idle/); assert.match(o._debugText(), /flow\.rate: 2/);
+    o.unmount();
+    assert.equal(fake.disposed, 1, 'Off disposes the decoder'); assert.equal(o.flow, null);
+    w.I.resetDecoder();
+  });
+});

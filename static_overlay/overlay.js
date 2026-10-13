@@ -1415,9 +1415,10 @@
   var LOOKS = {
     A: { px2: 900, style: { wind: { width: 1.2, halo: 2.6 }, hs: { width: 1.5, halo: 3.2 }, tp: { width: 1.5, halo: 3.2 } }, head: 0.9, headHalo: 0.35, tail: 0.4, tailHalo: 0.18 },
     B: { px2: 720, style: { wind: { width: 1.6, halo: 3.4 }, hs: { width: 2.0, halo: 4.0 }, tp: { width: 2.0, halo: 4.0 } }, head: 0.95, headHalo: 0.4, tail: 0.55, tailHalo: 0.25 },
-    C: { px2: 600, style: { wind: { width: 1.8, halo: 3.8 }, hs: { width: 2.2, halo: 4.4 }, tp: { width: 2.2, halo: 4.4 } }, head: 0.95, headHalo: 0.4, tail: 0.6, tailHalo: 0.28 }
+    C: { px2: 600, style: { wind: { width: 1.8, halo: 3.8 }, hs: { width: 2.2, halo: 4.4 }, tp: { width: 2.2, halo: 4.4 } }, head: 0.95, headHalo: 0.4, tail: 0.6, tailHalo: 0.28 },
+    D: { px2: 900, style: { wind: { width: 1.6, halo: 3.4 }, hs: { width: 2.0, halo: 4.0 }, tp: { width: 2.0, halo: 4.0 } }, head: 0.95, headHalo: 0.4, tail: 0.55, tailHalo: 0.25 }   // A's density, B's weight (the count is the cost)
   };
-  function lookFor(search) { var m = /[?&]ovlook=([ABC])(?:&|$)/.exec(search || ''); return LOOKS[m ? m[1] : 'A']; }
+  function lookFor(search) { var m = /[?&]ovlook=([ABCD])(?:&|$)/.exec(search || ''); return LOOKS[m ? m[1] : 'A']; }
   var LOOK = (function () { try { return lookFor(pageQuery()); } catch (e) { return LOOKS.A; } })();
   var PARTICLE_PX2 = LOOK.px2;
   var OV_DEBUG = (function () { try { return /[?&]ovdebug=1(?:&|$)/.test(pageQuery()); } catch (e) { return false; } })();

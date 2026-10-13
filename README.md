@@ -222,7 +222,7 @@ the tab.
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.
-Fast playback (assets 2.15.0-2.16.1, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
+Fast playback (assets 2.15.0-2.16.2, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
 to 1920x1080 because (1) the ring of decoded frames follows the speed: paused and at 1x the G3/G4 budgets stand (the
 frame on the map, 2 ahead, 2 behind, at most 2 downloads at once, at most 5 decoded frames per kind); at 2x the ring is
 4 ahead / 1 behind with 3 downloads and 7 decoded, at 4x 6 ahead / 1 behind with 4 downloads and 9 decoded (the direction
@@ -250,7 +250,7 @@ plus a screen on every side, not the whole grid (the same vectors on screen; a p
 (6) Particles: their pace follows the playback speed (x2 at fish, x4 at shark; x1 paused or at snail), so at the fast
 speeds they keep up with the time-lapse instead of drifting behind the storms, while their tails keep their length on
 screen and their lifetimes stay in real time; their look (density, line weight, tail opacity) is one table (`LOOKS`;
-`?ovlook=B` / `?ovlook=C` show the candidates on the test site until the owner's pick becomes the one look). (7) A
+`?ovlook=B` / `C` / `D` show the candidates on the test site until the owner's pick becomes the one look; D = A's density with B's line weight). (7) A
 2-second watchdog restarts the animation when it should be running and is not (its data and canvas present, the page
 visible, nothing in progress on the map, yet no frame drawn or a pause that never ended), and on WebKit (Safari, every
 iPad browser) the animation canvas is a fresh element after every zoom, since the iPad lost its particles after a pinch

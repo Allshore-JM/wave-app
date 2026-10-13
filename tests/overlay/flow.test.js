@@ -273,7 +273,7 @@ test('G12: a half-resolution field under a full-resolution direction (a phone zo
 // ---- plan section 42 step 3: the look table, the playback rate, the watchdog, the canvas after a zoom, the readout ----
 test('section 42: the look table: A is the look before section 42 and the default; ?ovlook=B / C pick the others; anything else is A', () => {
   assert.equal(I.LOOK, I.LOOKS.A); assert.equal(I.LOOKS.A.px2, 900); assert.deepEqual(I.LOOKS.A.style.hs, { width: 1.5, halo: 3.2 }); assert.equal(I.LOOKS.A.tail, 0.4);
-  assert.equal(I.lookFor('?ovlook=B'), I.LOOKS.B); assert.equal(I.lookFor('?a=1&ovlook=C'), I.LOOKS.C); assert.equal(I.lookFor('?ovlook=D'), I.LOOKS.A); assert.equal(I.lookFor(''), I.LOOKS.A); assert.equal(I.lookFor(undefined), I.LOOKS.A);
+  assert.equal(I.lookFor('?ovlook=B'), I.LOOKS.B); assert.equal(I.lookFor('?a=1&ovlook=C'), I.LOOKS.C); assert.equal(I.lookFor('?ovlook=D'), I.LOOKS.D); assert.equal(I.LOOKS.D.px2, I.LOOKS.A.px2); assert.deepEqual(I.LOOKS.D.style, I.LOOKS.B.style); assert.equal(I.lookFor('?ovlook=E'), I.LOOKS.A); assert.equal(I.lookFor(''), I.LOOKS.A); assert.equal(I.lookFor(undefined), I.LOOKS.A);
   assert.ok(I.LOOKS.B.px2 < I.LOOKS.A.px2 && I.LOOKS.C.px2 < I.LOOKS.B.px2, 'denser'); assert.ok(I.LOOKS.B.style.hs.width > I.LOOKS.A.style.hs.width);
   assert.equal(I.PARTICLE_PX2, I.LOOK.px2); assert.equal(I.FLOW_STYLE, I.LOOK.style);
 });

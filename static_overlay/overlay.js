@@ -1978,15 +1978,20 @@
     for (var i = 0; i < plan.length; i++) { out.push([plan[i], 'field']); if (want) out.push([plan[i], 'dir']); }
     return out;
   };
-  // Keep the in-flight set to what the target needs: everything outside the new ring is dropped, and
-  // at most (the in-flight cap - 1) older fetches survive beside the target (timeline drags fire many seeks),
-  // the target's direction frame first among them.
+  // Keep the in-flight set to what the target needs: everything outside the new ring is dropped, and beside the
+  // target's own fetches (its field frame, unless it is decoded already, and its direction frame) only as many ring
+  // fetches survive as the in-flight cap leaves room for (timeline drags fire many seeks), the NEAREST ones by the
+  // ring's rank. A target already decoded (the next step while playing) needs no slot: the ring fetches ahead of it
+  // keep theirs (plan section 42: reserving one anyway and dropping the OLDEST survivor, usually the next frame
+  // needed, made 1 in 4 frames at 4x be fetched twice and the next step wait for it).
   Overlay.prototype._trimInflight = function (idx) {
-    var keep = {}, plan = this._plan(idx), i, k;
-    for (i = 0; i < plan.length; i++) keep[this._key(plan[i][0], plan[i][1])] = true;
-    var target = this._key(idx), dtarget = this._wantDir() ? this._key(idx, 'dir') : null, survivors = [], room = this._maxInflight() - 1;
-    for (k in this.inflight) if (!keep[k]) { this.inflight[k].abort.abort(); delete this.inflight[k]; } else if (k === dtarget) room--; else if (k !== target) survivors.push(k);
-    while (survivors.length > Math.max(0, room)) { k = survivors.shift(); this.inflight[k].abort.abort(); delete this.inflight[k]; }
+    var rank = {}, plan = this._plan(idx), i, k;
+    for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
+    var target = this._key(idx), dtarget = this._wantDir() ? this._key(idx, 'dir') : null, survivors = [];
+    var room = this._maxInflight() - (this.cache.has(target) ? 0 : 1);
+    for (k in this.inflight) if (rank[k] === undefined) { this.inflight[k].abort.abort(); delete this.inflight[k]; } else if (k === dtarget) room--; else if (k !== target) survivors.push(k);
+    survivors.sort(function (a, b) { return rank[a] - rank[b]; });
+    while (survivors.length > Math.max(0, room)) { k = survivors.pop(); this.inflight[k].abort.abort(); delete this.inflight[k]; }
   };
   // Show frame idx: the label/timeline move to the target at once, the picture and the valid time only
   // when the frame has landed (never an old picture under a new time). Rejects for an unavailable frame

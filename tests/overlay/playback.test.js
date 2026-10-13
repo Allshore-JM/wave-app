@@ -731,6 +731,7 @@ test('G10-A M11/M12: _trimInflight keeps no survivor beside a target whose direc
   o.inflight = {}; o.inflight[o._key(t)] = rec(o._key(t), 'field'); o.inflight[o._key(i + 2)] = rec(o._key(i + 2), 'field'); o.inflight[o._key(i + 3)] = rec(o._key(i + 3), 'field');
   o._trimInflight(t);
   assert.equal(Object.keys(o.inflight).length, 2, 'exactly one survivor beside the target'); assert.ok(o.inflight[o._key(t)]);
+  assert.ok(o.inflight[o._key(i + 2)], 'the nearest survives, not the oldest (section 42)');
   o.inflight = {}; o.unmount();
 }));
 
@@ -1034,7 +1035,9 @@ test('section 37: a scrub across frames pauses, keeps at most MAX_INFLIGHT fetch
   assert.ok(o.inflight[o._key(10)], 'the latest target is in flight');
   for (const idx of [5, 6, 7]) assert.ok(!o.inflight[o._key(idx)], 'frame ' + idx + ' was abandoned');
   const n = w.fetches.length; o._scrubTo(10); await tick(); assert.equal(w.fetches.length, n, 'the same index again: no new fetch');
-  assert.ok(w.fetches.length - before >= 4, 'the scrub did fetch new frames');
+  const scrubbed = w.fetches.slice(before);                                     // frames 8, 9, 10 (6 and 7 were in flight already)
+  assert.ok(scrubbed.length >= 3, 'the scrub did fetch new frames');
+  assert.equal(new Set(scrubbed).size, scrubbed.length, 'no frame fetched twice (section 42: the old rule dropped frame 6 in flight on the scrub onto the decoded frame 5, then fetched it again)');
   o.unmount(); await w.releaseAll();
 }));
 
@@ -1295,3 +1298,28 @@ test('section 42: a far target in a cooldown with the drawn frame outside its ri
   assert.equal(Object.keys(o.inflight).length, 0, 'nothing left in flight: the ring is full up to the budget');
   o.unmount();
 }));
+
+
+test('section 42 (step 2 finding): a step whose frame is decoded keeps every ring fetch ahead of it; with too little room the farthest go, never the nearest', async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    w.pointer = ptr(A); w.manifests[A.run] = A;
+    const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+    const rec = (k, kind) => ({ promise: Promise.resolve(), abort: new AbortController(), key: k, kind });
+    o.setSpeed(4); o.play(); await settle();                                    // (play's own landing; the ring is in flight now)
+    const i = o.frameIndex, t = i + 1;
+    // the next step's frame decoded, four ring fetches ahead of it in flight: none is dropped
+    o.cache.set(o._key(t), { q: new Uint8Array(1), cols: 1, rows: 1 }, o._key(i));
+    o.inflight = {}; for (const k of [o._key(t + 1), o._key(t + 1, 'dir'), o._key(t + 2), o._key(t + 2, 'dir')]) o.inflight[k] = rec(k, /dir/.test(k) ? 'dir' : 'field');
+    const before = Object.keys(o.inflight).sort();
+    o._trimInflight(t);
+    assert.deepEqual(Object.keys(o.inflight).sort(), before, 'a decoded target needs no slot: every ring fetch keeps its own');
+    // the target not decoded (its slot is reserved) and four ring fetches, the OLDEST one the nearest: room for three; the
+    // farthest goes (the old rule dropped the oldest, i.e. the next frame needed)
+    const T = t + 3; o.cache.map.delete(o._key(T));
+    o.inflight = {}; for (const j of [T + 1, T + 6, T + 4, T + 5]) o.inflight[o._key(j)] = rec(o._key(j), 'field');
+    o._trimInflight(T);
+    assert.deepEqual(Object.keys(o.inflight).sort(), [T + 1, T + 4, T + 5].map((j) => o._key(j)).sort(), 'kept the nearest three, dropped T+6');
+    o.inflight = {}; o.pause(); o.unmount();
+  });
+});

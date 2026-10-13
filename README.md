@@ -287,15 +287,18 @@ the tab.
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.
-Fast playback (asset 2.15.0, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
+Fast playback (assets 2.15.0-2.15.1, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
 to 1920x1080 because (1) the ring of decoded frames follows the speed: paused and at 1x the G3/G4 budgets stand (the
 frame on the map, 2 ahead, 2 behind, at most 2 downloads at once, at most 5 decoded frames per kind); at 2x the ring is
 4 ahead / 1 behind with 3 downloads and 7 decoded, at 4x 6 ahead / 1 behind with 4 downloads and 9 decoded (the direction
 frames alike), so a step never waits for its own download and a ring frame is never evicted before it is drawn (at 4x
 the old 5-frame cache fetched every frame about 1.8 times); every landing refills the ring, not only the target's;
 a pause or a slower speed shrinks the caches and the downloads back to the budget at once, never dropping the target's
-own field or direction download; with a pending target far from the frame on the map (a seek into a cooldown) the
-ring is filled only up to the budget, so nothing is ever fetched back and forth; (2) the cadence is drift-free: each
+own field or direction download; a step whose frame is decoded already keeps every ring download ahead of it, and when a
+new target leaves too little room the farthest ring downloads go, never the nearest (2.15.1: the old rule reserved a slot
+for a decoded target and dropped the oldest download, usually the next frame needed); with a pending target far from the
+frame on the map (a seek into a cooldown) the ring is filled only up to the budget, so nothing is ever fetched back and
+forth; (2) the cadence is drift-free: each
 frame is due one interval after the last one was DUE, not after it landed (timer latency and the particles' frames no
 longer add up: the snail showed 1.92 of 2 frames/s with everything cached); a frame that lands late is followed by its
 successor at once, one back-to-back frame, never a skipped one; (3) a new frame draws the tiles in view first and the

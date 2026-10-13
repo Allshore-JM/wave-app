@@ -865,6 +865,9 @@
   }
 
   // ---- the layer ----
+  var STALE_TILE_MS = 3;                                     // idle time one buffer tile needs (about 2 ms measured)
+  var STALE_MAX_MS = 500;                                    // a buffer tile is never further behind than this while the page is busy
+  function tileInRange(c, r) { return c.z === r.z && c.x >= r.x0 && c.x <= r.x1 && c.y >= r.y0 && c.y <= r.y1; }
   var ModelGridLayer = L.GridLayer.extend({
     initialize: function (opts) {
       L.GridLayer.prototype.initialize.call(this, { pane: 'modelPane', tileSize: TILE, updateWhenZooming: false,
@@ -877,6 +880,7 @@
       this._contour = null; this._F = null; this._sm = null; this._sv = null;
       this._sc = new Float64Array(TILE / 2 + 2); this._sr = new Float64Array(TILE / 2 + 2); this._srow = new Float64Array(TILE / 2 + 2);
       this._pi = new Int32Array(TILE + 2); this._pt = new Float64Array(TILE + 2);
+      this._gen = 0; this._staleQ = null;                   // plan section 42: which frame a tile shows (el._ovGen)
     },
     // cfg {step: interval in display units, per: SI -> display factor} or null (no contours; the smoothed
     // copy of the frame is dropped). quiet: only set it, for the draw that follows.
@@ -887,7 +891,8 @@
       this._frame = frame; this._grid = grid; this._lut = lut; this.field = fieldName; this.fdef = fdef; this.entry = entry || null;
       this._nearest = fdef.interpolation === 'nearest'; this._lo = fdef.lo; this._hi = fdef.hi; this._legend = fdef.legend;
       this._clip = !!(this._coast && CLIP_FIELDS[fieldName]);
-      this._redraw();
+      this._gen++;
+      this._redraw(true);
     },
     clear: function () { this._frame = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._sm = null; this._redraw(); },
     hasFrame: function () { return !!this._frame; },
@@ -905,7 +910,62 @@
       this._redraw();
       if (this.onRedraw) this.onRedraw();
     },
-    _redraw: function () { for (var k in this._tiles) { var t = this._tiles[k]; if (t.el && t.coords) this._draw(t.el, t.coords); } },
+    // Every tile, or (split: a new frame while playing, plan section 42) first the tiles inside the map's pixel bounds,
+    // synchronously, and the buffer tiles Leaflet keeps around the view (keepBuffer 1: up to about as many again after a
+    // pan) in idle time afterwards (_drawStale), so a step's main-thread cost is the visible tiles' alone. A tile a
+    // frame behind is never read: the readout samples the frame itself and the particles read only the land masks.
+    _redraw: function (split) {
+      var range = split ? this._viewRange() : null, later = false;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.el || !t.coords) continue;
+        if (range && !tileInRange(t.coords, range)) { later = true; continue; }
+        this._draw(t.el, t.coords);
+      }
+      if (later) this._queueStale();
+    },
+    onRemove: function (map) {
+      this._cancelStale();
+      L.GridLayer.prototype.onRemove.call(this, map);
+    },
+    // The tiles the viewer sees: Leaflet's pixel bounds at the map zoom, scaled to the tile zoom (a fractional zoom keeps
+    // the tiles of the nearest level, CSS-scaled); null off a map (every tile is drawn at once then: the Node stubs).
+    _viewRange: function () {
+      var map = this._map;
+      if (!map || typeof map.getPixelBounds !== 'function') return null;
+      var z = map.getZoom(), tz = typeof this._tileZoom === 'number' ? this._tileZoom : Math.round(z);
+      var scale = typeof map.getZoomScale === 'function' ? map.getZoomScale(z, tz) : Math.pow(2, z - tz), pb = map.getPixelBounds();
+      return { z: tz, x0: Math.floor(pb.min.x / scale / TILE), x1: Math.floor((pb.max.x / scale - 1) / TILE),
+        y0: Math.floor(pb.min.y / scale / TILE), y1: Math.floor((pb.max.y / scale - 1) / TILE) };
+    },
+    // Draw the tiles that still show an older frame: those in view at once (a drag that brings a buffer tile into
+    // view: the page calls this on 'move'), the rest while the browser has idle time (requestIdleCallback where it
+    // exists, else one task), coming back for the remainder.
+    _drawStale: function (inView, deadline) {
+      if (!this._frame) return;
+      var range = this._viewRange(), left = false;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.el || !t.coords || t.el._ovGen === this._gen) continue;
+        if (inView) { if (range && !tileInRange(t.coords, range)) continue; }
+        else if (deadline && typeof deadline.timeRemaining === 'function' && !deadline.didTimeout && deadline.timeRemaining() < STALE_TILE_MS) { left = true; break; }
+        this._draw(t.el, t.coords);
+      }
+      if (left) this._queueStale();
+    },
+    _queueStale: function () {
+      var self = this;
+      if (this._staleQ) return;
+      var run = function (dl) { self._staleQ = null; self._drawStale(false, dl); };
+      this._staleQ = typeof requestIdleCallback === 'function' ? { idle: requestIdleCallback(run, { timeout: STALE_MAX_MS }) } : { timer: setTimeout(run, 0) };
+    },
+    _cancelStale: function () {
+      var q = this._staleQ;
+      if (!q) return;
+      this._staleQ = null;
+      if (q.timer !== undefined) clearTimeout(q.timer);
+      else if (typeof cancelIdleCallback === 'function') cancelIdleCallback(q.idle);
+    },
     // The tiles need land masks: clipped fields (hs, tp) and outlined ones (wind) once a coast store is set.
     _masked: function () { return !!(this._coast && (CLIP_FIELDS[this.field] || OUTLINE_FIELDS[this.field])); },
     // The tier-1 cells the tiles on the map need right now (the store drops queued downloads for others).
@@ -993,6 +1053,7 @@
     },
     _draw: function (el, coords) {
       var ctx = el.getContext('2d');
+      el._ovGen = this._gen;
       if (!this._frame) { ctx.clearRect(0, 0, TILE, TILE); return; }
       var land = this._masked() ? this._landFor(el, coords) : null;
       if (this._clip && land === LAND_ALL) { ctx.clearRect(0, 0, TILE, TILE); return; }   // nothing but land: no sampling at all
@@ -1148,6 +1209,15 @@
   })();
   function assetUrl(opts, file) { var v = (opts && opts.version) || SCRIPT_VERSION; return '/overlay/' + file + (v ? '?v=' + encodeURIComponent(v) : ''); }
   var RING_AHEAD = 2, RING_BEHIND = 2, MAX_DECODED = 5, MAX_INFLIGHT = 2;
+  // Playing fast, the ring runs further ahead with more downloads at once, so a step never waits for its own frame
+  // (plan section 42): decoded = the ring's size + 1, so a ring entry is never evicted before it is drawn (at 4x the
+  // 5-frame cache fetched every frame about 1.8 times). Paused, and at 1x, the budgets of G3/G4 (5 / 2 / 5) stand.
+  var PLAY_RING = {
+    1: { ahead: RING_AHEAD, behind: RING_BEHIND, inflight: MAX_INFLIGHT, decoded: MAX_DECODED },
+    2: { ahead: 4, behind: 1, inflight: 3, decoded: 7 },
+    4: { ahead: 6, behind: 1, inflight: 4, decoded: 9 }
+  };
+  function ringFor(speed, playing) { return (playing && PLAY_RING[speed]) || PLAY_RING[1]; }
   var RUN_CHECK_MS = 30 * 60 * 1000;                         // newer run -> banner only, never an automatic switch
   var RETRY_AFTER_MS = 60 * 1000;                            // a transient fetch failure keeps a frame out for this long
   var MAX_TRANSIENT = 3;                                     // consecutive transient failures -> "unavailable" + Retry
@@ -1162,10 +1232,12 @@
   }
   function abortError() { var e = new Error('aborted'); e.name = 'AbortError'; return e; }
   // Indices worth having decoded around i: i itself, then ahead in the play direction, then behind (wrapping).
-  function ringPlan(i, n, dir) {
+  function ringPlan(i, n, dir, ahead, behind) {
     var out = [i], seen = {}, uniq = [], k;
-    for (k = 1; k <= RING_AHEAD; k++) out.push(((i + k * dir) % n + n) % n);
-    for (k = 1; k <= RING_BEHIND; k++) out.push(((i - k * dir) % n + n) % n);
+    if (ahead === undefined) ahead = RING_AHEAD;
+    if (behind === undefined) behind = RING_BEHIND;
+    for (k = 1; k <= ahead; k++) out.push(((i + k * dir) % n + n) % n);
+    for (k = 1; k <= behind; k++) out.push(((i - k * dir) % n + n) % n);
     for (k = 0; k < out.length; k++) if (!seen[out[k]]) { seen[out[k]] = true; uniq.push(out[k]); }
     return uniq;
   }
@@ -1207,6 +1279,11 @@
   FrameCache.prototype.size = function () { return this.map.size; };
   FrameCache.prototype.set = function (key, frame, keep) {
     this.map.delete(key); this.map.set(key, frame);
+    this._trim(key, keep);
+  };
+  // A new cap (the ring grows with the speed and shrinks back on pause): the least recently used go, never keep.
+  FrameCache.prototype.limit = function (max, keep) { this.max = max; this._trim(null, keep); };
+  FrameCache.prototype._trim = function (key, keep) {
     if (this.map.size <= this.max) return;
     var keys = Array.from(this.map.keys());
     for (var i = 0; i < keys.length && this.map.size > this.max; i++) if (keys[i] !== key && keys[i] !== keep) this.map.delete(keys[i]);
@@ -1737,6 +1814,7 @@
     this._listeners = []; this._attributed = false; this.collapsed = undefined; this._touch = null; this._onVis = null;
     this.cache = new FrameCache(MAX_DECODED); this.inflight = {}; this.unavailable = {}; this.target = null; this.dir = 1; this.n = 0;
     this.playing = false; this.wasPlaying = false; this.timer = null; this.runTimer = null; this.ui = null; this._lutFor = null;
+    this._due = 0;                                          // when the frame being shown was due (the drift-free cadence)
     this.playGen = 0; this.transientFails = 0; this._staleShown = false; this._pendingRestore = null; this._onHide = null;
     // opts.coast: clip wave height / peak period to the coastlines published beside the frames
     this.coast = opts.coast ? coastStore(this.root + '/static/coast/v1') : null;
@@ -1846,8 +1924,9 @@
     if (this.inflight[key]) return this.inflight[key].promise;
     if (this._isUnavailable(idx, kind)) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
     delete this.unavailable[key];                                            // an expired cooldown: try again
-    var m = this.manifest, ctrl = new AbortController(), rec, half = (dir ? this.dres : this.res) === 'half', kindName = dir ? 'dir' : 'field';
-    var url = this.root + '/' + frameKey(m, m.frames[idx], dir ? DIR_FIELDS[this.field] : this.field, half);
+    var m = this.manifest, ctrl = new AbortController(), rec, half = (dir ? this.dres : this.res) === 'half', kindName = dir ? 'dir' : 'field', url;
+    try { url = this.root + '/' + frameKey(m, m.frames[idx], dir ? DIR_FIELDS[this.field] : this.field, half); }
+    catch (e) { return Promise.reject(e); }                                  // never a throw: _prefetch runs from UI handlers (setSpeed, pause)
     function mine() { return self.inflight[key] === rec; }
     // The watchdog times the DOWNLOAD only (until the body has arrived): a decode that waits behind a busy page
     // (fast playback on a large screen) is late, never missing. A download that stalls (one took 6.5 s at G4) is
@@ -1875,6 +1954,7 @@
       if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
       if (!dir) self.transientFails = 0;                                      // the outage counter follows the field frames only
       cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null);
+      self._prefetch();                                                        // the ring refills on every landing, not only the target's (plan section 42)
       return frame;
     }, function (err) {
       if (mine()) delete self.inflight[key];
@@ -1890,18 +1970,21 @@
   };
   // What the ring wants, in priority order: the target's field frame, its direction frame (Animation
   // on), then the ring ahead and behind, field and direction interleaved.
+  // The ring budget for the moment: by speed while playing, the paused one otherwise.
+  Overlay.prototype._ring = function () { return ringFor(this.speed, this.playing); };
+  Overlay.prototype._maxInflight = function () { return this._ring().inflight; };
   Overlay.prototype._plan = function (idx) {
-    var plan = ringPlan(idx, this.n, this.dir), want = this._wantDir(), out = [];
+    var r = this._ring(), plan = ringPlan(idx, this.n, this.dir, r.ahead, r.behind), want = this._wantDir(), out = [];
     for (var i = 0; i < plan.length; i++) { out.push([plan[i], 'field']); if (want) out.push([plan[i], 'dir']); }
     return out;
   };
   // Keep the in-flight set to what the target needs: everything outside the new ring is dropped, and
-  // at most MAX_INFLIGHT - 1 older fetches survive beside the target (timeline drags fire many seeks),
+  // at most (the in-flight cap - 1) older fetches survive beside the target (timeline drags fire many seeks),
   // the target's direction frame first among them.
   Overlay.prototype._trimInflight = function (idx) {
     var keep = {}, plan = this._plan(idx), i, k;
     for (i = 0; i < plan.length; i++) keep[this._key(plan[i][0], plan[i][1])] = true;
-    var target = this._key(idx), dtarget = this._wantDir() ? this._key(idx, 'dir') : null, survivors = [], room = MAX_INFLIGHT - 1;
+    var target = this._key(idx), dtarget = this._wantDir() ? this._key(idx, 'dir') : null, survivors = [], room = this._maxInflight() - 1;
     for (k in this.inflight) if (!keep[k]) { this.inflight[k].abort.abort(); delete this.inflight[k]; } else if (k === dtarget) room--; else if (k !== target) survivors.push(k);
     while (survivors.length > Math.max(0, room)) { k = survivors.shift(); this.inflight[k].abort.abort(); delete this.inflight[k]; }
   };
@@ -1938,17 +2021,33 @@
   };
   // The step the ring is planned around: a pending seek / step target, else the frame on the map.
   Overlay.prototype._anchorIndex = function () { return this.target !== null ? this.target : this.frameIndex; };
-  // Keep the ring (current, two ahead, two behind; with the direction frames interleaved while the
-  // Animation is on) decoded with at most MAX_INFLIGHT fetches; drop fetches the ring no longer wants
-  // (direction, field, resolution or Animation changed). Planned around a PENDING target, so a seek that
-  // is still loading is never aborted by a change of Animation or of the direction's resolution.
-  Overlay.prototype._prefetch = function () {
-    if (this.frameIndex === null || !this.manifest) return;
-    var plan = this._plan(this._anchorIndex()), want = {}, i, k;
-    for (i = 0; i < plan.length; i++) want[this._key(plan[i][0], plan[i][1])] = true;
-    for (k in this.inflight) if (!want[k]) { this.inflight[k].abort.abort(); delete this.inflight[k]; }
-    for (i = 0; i < plan.length && Object.keys(this.inflight).length < MAX_INFLIGHT; i++) {
+  // Keep the ring (current, ahead, behind: the counts by speed, with the direction frames interleaved while the
+  // Animation is on) decoded with at most the cap's fetches; drop fetches the ring no longer wants (direction,
+  // field, resolution, Animation or the ring's size changed), and above the cap (a pause, a slower speed) the
+  // lowest-ranked ring fetches, never the target's own field or direction fetch (rank 0 / 1). Planned around a
+  // PENDING target, so a seek that is still loading is never aborted by a change of Animation or of the direction's
+  // resolution. Called on every landing (_ensure) as well as on play / pause / speed changes; shrinkOnly: trim the
+  // caches and the in-flight set to the budget without starting anything (a pause).
+  Overlay.prototype._prefetch = function (shrinkOnly) {
+    if (this.frameIndex === null || !this.manifest || !this.field) return;
+    var r = this._ring(), cap = r.inflight, plan = this._plan(this._anchorIndex()), rank = {}, i, k, keys;
+    var shown = this.frameIndex, keepF = this._key(shown), keepD = this._wantDir() ? this._key(shown, 'dir') : null;
+    this.cache.limit(r.decoded, keepF); this.dcache.limit(r.decoded, keepD);
+    for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
+    for (k in this.inflight) if (rank[k] === undefined) { this.inflight[k].abort.abort(); delete this.inflight[k]; }
+    keys = Object.keys(this.inflight);
+    if (keys.length > cap) {
+      keys.sort(function (a, b) { return rank[b] - rank[a]; });
+      for (i = 0; i < keys.length && Object.keys(this.inflight).length > cap && rank[keys[i]] >= 2; i++) { this.inflight[keys[i]].abort.abort(); delete this.inflight[keys[i]]; }
+    }
+    if (shrinkOnly) return;
+    // Only what the caches can hold beside the frame on the map is started: with a pending target far from it (a seek
+    // into a cooldown, a failed far seek) the ring and the drawn frame together exceed the budget by one, and a ring
+    // frame fetched into a full cache would evict another ring frame, whose landing would fetch it back, without end.
+    var ring = ringPlan(this._anchorIndex(), this.n, this.dir, r.ahead, r.behind), room = r.decoded - (ring.indexOf(shown) >= 0 ? 0 : 1);
+    for (i = 0; i < plan.length && Object.keys(this.inflight).length < cap; i++) {
       var idx = plan[i][0], kind = plan[i][1], key = this._key(idx, kind);
+      if (ring.indexOf(idx) >= room) continue;
       if (this.inflight[key] || this._isUnavailable(idx, kind) || (kind === 'dir' ? this.dcache : this.cache).has(key)) continue;
       if (kind === 'dir') this._ensureDir(idx); else this._ensure(idx).catch(function () {});
     }
@@ -2048,11 +2147,14 @@
   // (a frame that was loading when the user paused and played again) never schedules anything.
   Overlay.prototype.play = function () {
     if (this.playing || !this.manifest || this.frameIndex === null) return;
-    this.playing = true; this.dir = 1; this.playGen++; this._syncUI(); this._tick(this.playGen); this._persist();
+    this.playing = true; this.dir = 1; this.playGen++; this._due = Date.now(); this._syncUI();
+    this._prefetch();                                        // the ring grows to the speed's budget at once
+    this._tick(this.playGen); this._persist();
   };
   Overlay.prototype.pause = function () {
     this.playing = false; this.playGen++;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    this._prefetch(true);                                    // back to the paused budget (nothing new is started)
     this._syncUI(); this._persist();
   };
   // The state a reload restores (with the field the page saved): the valid time on the map, whether it
@@ -2070,19 +2172,23 @@
     var next = pending && !un(this.target) ? this.target                      // a seek or a slow frame: wait for it
       : nextAvailable(pending ? this.target : this.frameIndex, 1, this.n, un);
     if (next === null) { this.pause(); return; }
-    var t0 = Date.now();
-    this._goto(next).then(function () { self._after(t0, gen); }, function (err) {
+    this._goto(next).then(function () { self._after(gen); }, function (err) {
       if (err && err.outage) self._fail(null, err);
-      else if (err && (err.unavailable || err.name === 'AbortError')) self._after(t0, gen);   // skipped or superseded: move on
+      else if (err && (err.unavailable || err.name === 'AbortError')) self._after(gen);   // skipped or superseded: move on
       else self._fail(null, err);
     });
   };
-  Overlay.prototype._after = function (t0, gen) {
+  // The next frame is due one interval after the last one was DUE, not after it landed: timer latency and the
+  // particles' frames no longer add up (the snail showed 1.92 of 2 frames/s with everything cached). A frame that
+  // lands late (past its successor's due time) is followed by that successor at once, one back-to-back frame, and
+  // the cadence restarts from there (the due time never lies in the past); a frame is never skipped.
+  Overlay.prototype._after = function (gen) {
     var self = this;
     if (!this.playing || gen !== this.playGen) return;
     if (this.timer) clearTimeout(this.timer);
-    var wait = Math.max(0, this._interval() - (Date.now() - t0));
-    this.timer = setTimeout(function () { self.timer = null; self._tick(gen); }, wait);
+    var now = Date.now(), iv = this._interval();
+    this._due = Math.max(this._due + iv, now);
+    this.timer = setTimeout(function () { self.timer = null; self._tick(gen); }, Math.max(0, this._due - now));
   };
   // One available frame back or forward (the ribbon's arrow keys); it stops at the first and last available frame.
   Overlay.prototype.step = function (dir) {
@@ -2102,7 +2208,12 @@
   // A seek or step that did not land: an outage (3 transient failures in a row) shows the Retry state
   // like playback does; a single missing frame just leaves the hint in the valid-time line.
   Overlay.prototype._afterMiss = function (err) { if (err && err.outage) this._fail(null, err); else this._syncUI(); };
-  Overlay.prototype.setSpeed = function (v) { if (SPEEDS.indexOf(v) < 0) return; this.speed = v; save({ speed: v }); this._syncUI(); };
+  Overlay.prototype.setSpeed = function (v) {
+    if (SPEEDS.indexOf(v) < 0) return;
+    this.speed = v; save({ speed: v });
+    this._prefetch();                                        // the ring follows the speed at once (while playing)
+    this._syncUI();
+  };
   // Leaving the tab or the page refreshes the save, paused or not: a reload restores what was on the map
   // when the page was left (the 30-min rule counts from then, not from the last frame change).
   Overlay.prototype._bindDocument = function () {
@@ -2152,6 +2263,7 @@
   Overlay.prototype._bindMap = function () {
     var self = this;
     this._on('zoomend', function () { self._checkRes(); });
+    this._on('move', function () { if (self.layer) self.layer._drawStale(true); });   // a buffer tile a frame behind comes into view
     this._on('resize', function () { self._onSize(); });
     // The page sizes #map by script and has Leaflet re-read the size before invalidateSize(), so the map's own 'resize'
     // event does not fire on a window resize or a rotation: the window and the container are watched as well (as the
@@ -2346,7 +2458,7 @@
   Overlay.prototype._startDir = function (idx) {
     var key = this._key(idx, 'dir');
     if (this.dcache.has(key) || this.inflight[key] || this._isUnavailable(idx, 'dir')) return;
-    if (Object.keys(this.inflight).length >= MAX_INFLIGHT) {
+    if (Object.keys(this.inflight).length >= this._maxInflight()) {
       var plan = this._plan(this._anchorIndex()), rank = {}, i, k, worst = null, worstRank = -1;
       for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
       for (k in this.inflight) { var r = rank[k] === undefined ? 1e9 : rank[k]; if (r > worstRank) { worstRank = r; worst = k; } }
@@ -3031,6 +3143,7 @@
       forwardPixel: forwardPixel, snapToPixel: snapToPixel, pixelOf: pixelOf, pad3: pad3,
       ringPlan: ringPlan, nextAvailable: nextAvailable, stepAvailable: stepAvailable, nearestIndex: nearestIndex, dotMonth: dotMonth, restoreIndex: restoreIndex, SESSION_KEY: SESSION_KEY, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT, STALL_MS: STALL_MS, LATE_TRIES: LATE_TRIES,
+      PLAY_RING: PLAY_RING, ringFor: ringFor, tileInRange: tileInRange, STALE_TILE_MS: STALE_TILE_MS, STALE_MAX_MS: STALE_MAX_MS,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,

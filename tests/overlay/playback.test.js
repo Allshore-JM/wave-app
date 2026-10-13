@@ -82,6 +82,7 @@ function world(opts) {
   let st = (f, ms) => { const t = setTimeout(f, ms); if (t.unref) t.unref(); return t; }, ct = clearTimeout;
   if (opts && opts.fakeTimers) {                 // a test that must not depend on the machine's speed (G28 K-2)
     let now = 0, seq = 0; const q = new Map();
+    w.now = () => now;                             // the fake clock (a test pins Date.now to it: section 42's cadence)
     st = (f, ms) => { const id = ++seq; q.set(id, { f, at: now + (ms || 0) }); return id; };
     ct = (id) => { q.delete(id); };
     w.fade = async (ms) => {                       // the fake clock moves on; due timers run in order
@@ -186,14 +187,17 @@ test('outage then Retry with the drawn frame still cached ends in the ready stat
   await w.releaseAll();
   const i0 = o.frameIndex, key = (i) => `gfswave/0p25/v1/${A.run}/hs/f${String(A.frames[i].step).padStart(3, '0')}.png`;
   for (const i of [i0 + 10, i0 + 11, i0 + 12]) w.failNext['https://x/' + key(i)] = 'network';   // beyond the ring: an outage
-  o.seek(i0 + 10); await settle(); o.seek(i0 + 11); await settle(); o.seek(i0 + 12); await settle();
+  o.seek(i0 + 10); await settle(); o.seek(i0 + 11); await settle();
+  const nFetch = w.fetches.length; o.seek(i0 + 12); await settle();
   assert.equal(o.transientFails, 3);
   assert.equal(o.last && o.last.state, 'error');
+  assert.equal(w.fetches.length, nFetch + 1, 'the outage pause starts nothing beyond the failed frame (section 42: a pause only shrinks the ring)');
   // the panel's Retry button does exactly this
   o.unavailable = {}; o.transientFails = 0; o.mount('hs'); await settle();
   assert.equal(o.last && o.last.state, 'ready', 'Retry with the cached frame must render ready');
   assert.equal(o.frameIndex, i0); assert.equal(o.target, i0);
-  assert.ok(Object.keys(o.inflight).length >= 1, 'prefetch resumed');
+  const ring = w.I.ringPlan(i0, A.frames.length, 1);                      // section 42: the ring refills on every landing, so it
+  assert.ok(ring.every((i) => o.cache.has(o._key(i)) || o.inflight[o._key(i)]), 'the ring is complete or resumed');   // may be complete already
   o.unmount();
 }));
 
@@ -742,9 +746,13 @@ test('G10-A M60 / P3-5 / P3-4: a cached direction is not fetched again; untick b
   assert.equal(w.fetches.length, before, 'a cached direction is never downloaded again');
   // three field failures with direction successes in between still trip the outage
   const i0 = o.frameIndex, fkey = (i) => `gfswave/0p25/v1/${A.run}/hs/f${String(A.frames[i].step).padStart(3, '0')}.png`;
-  for (const i of [i0 + 10, i0 + 20, i0 + 30]) w.failNext['https://x/' + fkey(i)] = 'network';
+  // (section 42: a landed direction frame refills the ring around the target, and a ring frame that lands resets the
+  // counter, as any consecutive success does; so, as in a real outage, the ring frames around each target fail too)
+  for (const tg of [i0 + 10, i0 + 20, i0 + 30]) for (const i of w.I.ringPlan(tg, A.frames.length, 1)) w.failNext['https://x/' + fkey(i)] = 'network';
+  const before2 = w.fetches.length;
   o.seek(i0 + 10); await settle(); await w.releaseAll(); o.seek(i0 + 20); await settle(); await w.releaseAll(); o.seek(i0 + 30); await settle(); await w.releaseAll();
-  assert.equal(o.transientFails, 3, 'the counter follows the field frames only'); assert.equal(o.last && o.last.state, 'error');
+  assert.ok(o.transientFails >= 3, 'the counter follows the field frames only (' + o.transientFails + ')'); assert.equal(o.last && o.last.state, 'error');
+  assert.ok(w.fetches.length - before2 <= 40, 'no endless refetch around a target in a cooldown (' + (w.fetches.length - before2) + ' fetches)');
   o.unmount();
 }));
 
@@ -826,7 +834,7 @@ test('section 22: the live client plays a 209-frame run: every frame, seek to +3
   let wrapped = false;
   for (let k = 0; k < 12 && !wrapped; k++) {
     await new Promise((r) => setTimeout(r, 140)); await w.releaseAll(); await settle();
-    assert.ok(Object.keys(o.inflight).length <= w.I.MAX_INFLIGHT);
+    assert.ok(Object.keys(o.inflight).length <= o._maxInflight(), 'in flight ' + Object.keys(o.inflight).length);   // 4 at shark speed (section 42)
     if (o.frameIndex !== null && o.frameIndex < 5) wrapped = true;
   }
   o.pause();
@@ -1171,3 +1179,119 @@ test('G26 A-P3-7: a minute timer refreshes the run line while mounted (an idle p
   clearInterval(o.runTimer); o.unmount();
   assert.equal(o.lineTimer, null, 'cleared at Off');
 });
+
+
+// ---- plan section 42: the fast speeds reach their rate ----
+// The module's Date.now follows the harness's fake clock (w.now) for the cadence tests.
+async function onFakeClock(w, fn) {
+  const real = Date.now, base = Date.parse('2026-09-23T00:00:00Z');
+  Date.now = () => base + w.now();
+  try { await fn(); } finally { Date.now = real; }
+}
+
+test('section 42: the cadence is drift-free (each frame due one interval after the last was due); a late frame is followed by one back-to-back frame, never a skip', async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    const o = await mounted(w, A); await w.releaseAll();
+    const i0 = o.frameIndex, seen = [];
+    o.setSpeed(4); o.play(); await settle(); await w.releaseAll();
+    assert.equal(o._interval(), 125);
+    assert.equal(o.frameIndex, i0 + 1, 'play() shows the next frame at once');
+    for (let k = 0; k < 16; k++) {                                          // every frame cached or landing at once: 125 ms apart exactly
+      await w.fade(125); await settle(); await w.releaseAll(); await settle();
+      seen.push([w.now(), o.frameIndex]);
+    }
+    for (let k = 0; k < seen.length; k++) assert.equal(seen[k][1], (i0 + 2 + k) % A.frames.length, 'frame ' + k + ' at ' + seen[k][0]);
+    assert.equal(o._due - (Date.now() - w.now()), 17 * 125, 'the due time advanced by exactly one interval per frame');
+    // a frame whose decode is held 300 ms (two intervals and a half): its successor comes at once, the next one 125 ms later
+    let steps = 0;                                                          // no more releases: the playhead reaches the ring's pending decodes
+    while (o.target === o.frameIndex && steps < 12) { await w.fade(125); await settle(); steps++; }
+    const held = o.target;
+    assert.equal(held, o.frameIndex + 1, 'the picture waits for the frame'); assert.ok(steps < 12);
+    const heldUrl = 'https://x/gfswave/0p25/v1/' + A.run + '/hs/f' + String(A.frames[held].step).padStart(3, '0') + '.png';
+    const pending = w.pendingBitmaps.find((f) => f.blob.url === heldUrl); assert.ok(pending, 'its decode is pending');
+    await w.fade(300); await settle();
+    assert.equal(o.frameIndex, held - 1, 'still waiting: no frame skipped');
+    pending(); w.pendingBitmaps = w.pendingBitmaps.filter((f) => f !== pending); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, held, 'the late frame lands');
+    await w.fade(0); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, held + 1, 'its successor follows at once (one back-to-back frame)');
+    await w.fade(124); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, held + 1, 'the one after it waits a whole interval again');
+    await w.fade(1); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, held + 2);
+    o.pause(); o.unmount();
+  });
+});
+
+test('section 42: the ring follows the speed: shark fetches 4 at once and keeps up to 9 frames, a pause shrinks both back and never drops the target\'s own fetch; a landing refills the ring', async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    const o = await mounted(w, A);
+    // paused: a ring frame that lands starts the next one (the ring fills without another landing of the target)
+    assert.equal(Object.keys(o.inflight).length, 2);
+    await w.release(1);
+    assert.equal(Object.keys(o.inflight).length, 2, 'a third ring fetch started when the first landed');
+    await w.releaseAll();
+    const i0 = o.frameIndex, ring1 = w.I.ringPlan(i0, A.frames.length, 1);
+    assert.ok(ring1.every((i) => o.cache.has(o._key(i))), 'the paused ring is complete'); assert.equal(o.cache.size(), 5);
+    assert.deepEqual(o._ring(), w.I.PLAY_RING[1]);
+    o.setSpeed(4); o.play(); await settle();
+    assert.deepEqual(o._ring(), w.I.PLAY_RING[4]); assert.equal(o._maxInflight(), 4);
+    assert.equal(Object.keys(o.inflight).length, 4, 'four downloads at once at shark speed');
+    await w.releaseAll();
+    const target = o._anchorIndex(), ring4 = w.I.ringPlan(target, A.frames.length, 1, 6, 1);
+    assert.ok(ring4.every((i) => o.cache.has(o._key(i))), 'the shark ring is complete'); assert.ok(o.cache.size() <= 9 && o.cache.size() >= 8, 'cache ' + o.cache.size());
+    o.setSpeed(2); assert.equal(o._maxInflight(), 3); assert.equal(o._ring().decoded, 7);
+    o.pause(); await settle();
+    assert.equal(o.cache.size(), 5, 'back to the paused budget'); assert.ok(o.cache.has(o._key(o.frameIndex)), 'the drawn frame kept');
+    assert.ok(Object.keys(o.inflight).length <= 2);
+    // a pending far target with its fetch in flight, then shark play and a pause: the cap shrinks around it
+    o.seek(i0 + 40); await tick();
+    assert.ok(o.inflight[o._key(i0 + 40)], 'the target is in flight');
+    o.setSpeed(4); o.play(); await tick();
+    assert.ok(Object.keys(o.inflight).length <= 4 && Object.keys(o.inflight).length >= 3, 'the ring around the pending target started');
+    o.pause(); await tick();
+    assert.ok(Object.keys(o.inflight).length <= 2, 'in flight ' + Object.keys(o.inflight).length);
+    assert.ok(o.inflight[o._key(i0 + 40)], 'the target\'s own fetch (rank 0) survives the shrink');
+    o.unmount();
+    assert.equal(Object.keys(o.inflight).length, 0); assert.equal(o.cache.size(), 0);
+  });
+});
+
+test('section 42: with the animation on, shark keeps the field and direction frames of the ring and the pause keeps the target\'s direction fetch (rank 1)', async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    w.pointer = ptr(A); w.manifests[A.run] = A;
+    const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+    const i0 = o.frameIndex;
+    o.setSpeed(4); o.play(); await settle(); await w.releaseAll();
+    assert.ok(o.cache.size() <= 9 && o.dcache.size() <= 9, 'caches ' + o.cache.size() + ' / ' + o.dcache.size());
+    const ring4 = w.I.ringPlan(o._anchorIndex(), A.frames.length, 1, 6, 1);
+    assert.ok(ring4.every((i) => o.cache.has(o._key(i)) && o.dcache.has(o._key(i, 'dir'))), 'field and direction of every ring step');
+    o.pause(); await settle();
+    assert.ok(o.cache.size() <= 5 && o.dcache.size() <= 5);
+    o.seek(i0 + 40); await tick();                                            // field + direction of the target in flight (rank 0 / 1)
+    assert.ok(o.inflight[o._key(i0 + 40)] && o.inflight[o._key(i0 + 40, 'dir')]);
+    o.setSpeed(4); o.play(); await tick();
+    assert.ok(Object.keys(o.inflight).length <= 4);
+    o.pause(); await tick();
+    assert.ok(Object.keys(o.inflight).length <= 2);
+    assert.ok(o.inflight[o._key(i0 + 40)] && o.inflight[o._key(i0 + 40, 'dir')], 'both of the target\'s fetches survive');
+    o.unmount();
+  });
+});
+
+test('section 42: a far target in a cooldown with the drawn frame outside its ring: the ring is filled up to the budget and nothing is fetched back and forth', () => onRunDay(async () => {
+  const w = world();
+  const o = await mounted(w, A); await w.releaseAll();
+  const i0 = o.frameIndex, key = (i) => `gfswave/0p25/v1/${A.run}/hs/f${String(A.frames[i].step).padStart(3, '0')}.png`;
+  w.failNext['https://x/' + key(i0 + 40)] = 'network';
+  const before = w.fetches.length;
+  o.seek(i0 + 40); await settle(); await w.releaseAll(); await settle(); await w.releaseAll();
+  assert.equal(o.transientFails, 1); assert.equal(o.frameIndex, i0); assert.equal(o.target, i0 + 40);
+  assert.ok(w.fetches.length - before <= 5, 'fetches ' + (w.fetches.length - before));
+  assert.equal(o.cache.size(), 5); assert.ok(o.cache.has(o._key(i0)), 'the drawn frame kept');
+  assert.equal(Object.keys(o.inflight).length, 0, 'nothing left in flight: the ring is full up to the budget');
+  o.unmount();
+}));

@@ -287,6 +287,22 @@ the tab.
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.
+Fast playback (asset 2.15.0, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
+to 1920x1080 because (1) the ring of decoded frames follows the speed: paused and at 1x the G3/G4 budgets stand (the
+frame on the map, 2 ahead, 2 behind, at most 2 downloads at once, at most 5 decoded frames per kind); at 2x the ring is
+4 ahead / 1 behind with 3 downloads and 7 decoded, at 4x 6 ahead / 1 behind with 4 downloads and 9 decoded (the direction
+frames alike), so a step never waits for its own download and a ring frame is never evicted before it is drawn (at 4x
+the old 5-frame cache fetched every frame about 1.8 times); every landing refills the ring, not only the target's;
+a pause or a slower speed shrinks the caches and the downloads back to the budget at once, never dropping the target's
+own field or direction download; with a pending target far from the frame on the map (a seek into a cooldown) the
+ring is filled only up to the budget, so nothing is ever fetched back and forth; (2) the cadence is drift-free: each
+frame is due one interval after the last one was DUE, not after it landed (timer latency and the particles' frames no
+longer add up: the snail showed 1.92 of 2 frames/s with everything cached); a frame that lands late is followed by its
+successor at once, one back-to-back frame, never a skipped one; (3) a new frame draws the tiles in view first and the
+buffer tiles Leaflet keeps around the view in idle time (requestIdleCallback, else one task), and a drag that brings
+a buffer tile into view draws it at once; the readout samples the frame itself and the particles read only the land
+masks, so a buffer tile a frame behind is never read. A worker decode of the frames is on record for the case the
+1080p shark still falls short (plan section 42, step 3).
 Wave-height colours and contours (asset 2.7.6): wave height uses value knots so 0-3 m fills about half of the
 legend (owner-picked spectral palette; the knots stretch to whatever legend the manifest carries; a run whose legend is exactly 0-60 ft = 0-18.288 m uses the wider scale in `SCALES`: 0-30 ft unchanged, 40 ft pale pink, 50 ft rose, 60 ft deep purple, plan section 27); tp and wind keep
 linear scales. Contours (wave height and period, always on since asset 2.12.0; no checkbox) are light
@@ -303,7 +319,7 @@ particles with fading trails that flow along the dominant swell direction under 
 the wind under wind speed, on a canvas of their own under the forecast points (no pointer events; markers keep their
 taps). The directions come from the `pdir` / `wdir` frames of the same step, loaded through the frame scheduler
 beside the field frame (the target's field frame first, then its direction, then the ring of frames around it, never more
-than two downloads at once; `pdir` at the 0.5 degree frames at the default zoom 6 and wider and the 0.25 degree ones as
+downloads at once than the speed's budget, two when paused or at 1x; `pdir` at the 0.5 degree frames at the default zoom 6 and wider and the 0.25 degree ones as
 soon as the map is zoomed in, from 6.5 (back below 6.25), so near coasts the direction comes from the finer grid; `wdir`
 at 0.5 degrees only). Data per full 209-frame loop with Animation on (scaled from run 2026092518): wave height or period
 + direction about 53 MB on desktops at the default zoom, 85 MB zoomed in; 30 MB on phones at the default zoom, 62 MB zoomed

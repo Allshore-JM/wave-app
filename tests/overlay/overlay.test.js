@@ -791,3 +791,71 @@ test('the speed selector\'s table: snail 1x, fish 2x, shark 4x; an older or odd 
   assert.equal(I.assetUrl({ version: 'a b' }, 'fish.png'), '/overlay/fish.png?v=a%20b');
   assert.equal(I.assetUrl({}, 'snail.png'), '/overlay/snail.png', 'no version known (Node): a bare path');
 });
+
+
+// ---- plan section 42: the ring by speed, the cache cap, in-view tiles first ----
+test('section 42: ringFor: paused and 1x keep the G3/G4 budgets, fish and shark run further ahead with more downloads and room for the whole ring; ringPlan takes the counts', () => {
+  assert.deepEqual(I.ringFor(1, false), { ahead: 2, behind: 2, inflight: 2, decoded: 5 });
+  assert.deepEqual(I.ringFor(4, false), I.ringFor(1, false), 'paused: the same budget at every speed');
+  assert.deepEqual(I.ringFor(1, true), { ahead: 2, behind: 2, inflight: 2, decoded: 5 });
+  assert.deepEqual(I.ringFor(2, true), { ahead: 4, behind: 1, inflight: 3, decoded: 7 });
+  assert.deepEqual(I.ringFor(4, true), { ahead: 6, behind: 1, inflight: 4, decoded: 9 });
+  for (const sp of [2, 4]) { const r = I.ringFor(sp, true); assert.equal(r.decoded, 2 + r.ahead + r.behind, 'room for the ring and the drawn frame'); }
+  assert.deepEqual(I.ringFor(0.5, true), I.ringFor(1, false), 'an unknown speed: the paused budget');
+  assert.deepEqual(Array.from(I.ringPlan(10, 81, 1, 6, 1)), [10, 11, 12, 13, 14, 15, 16, 9]);
+  assert.deepEqual(Array.from(I.ringPlan(78, 81, 1, 6, 1)), [78, 79, 80, 0, 1, 2, 3, 77]);
+  assert.deepEqual(Array.from(I.ringPlan(10, 81, 1, 4, 1)), [10, 11, 12, 13, 14, 9]);
+  assert.deepEqual(Array.from(I.ringPlan(10, 81, 1)), [10, 11, 12, 9, 8], 'the defaults are the paused counts');
+});
+
+test('section 42: FrameCache.limit: a smaller cap drops the least recently used, never the frame on the map; a larger one keeps everything', () => {
+  const c = new I.FrameCache(3);
+  c.set('a', 1); c.set('b', 2); c.set('c', 3);
+  c.limit(9); c.set('d', 4); c.set('e', 5); c.set('f', 6);
+  assert.equal(c.size(), 6, 'the cap grew');
+  c.get('a');                                                                 // a is the most recently used now
+  c.limit(3, 'b');
+  assert.equal(c.size(), 3);
+  assert.deepEqual(['a', 'b', 'c', 'd', 'e', 'f'].map((k) => c.has(k)), [true, true, false, false, false, true], 'b kept (on the map), a and f the most recent');
+  c.limit(1, 'b'); assert.deepEqual(['a', 'b', 'f'].map((k) => c.has(k)), [false, true, false]);
+  c.limit(1, 'zz'); assert.equal(c.size(), 1);
+});
+
+test('section 42: a new frame draws the tiles in view first and the buffer tiles in the idle pass; a drag brings a stale tile in view and it is drawn at once; the final picture equals a full redraw', async () => {
+  const grabEl = () => { const el = { out: null, draws: 0, getContext: () => ({ clearRect() { el.out = null; el.draws++; }, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData(img) { el.out = img.data.slice(); el.draws++; } }) }; return el; };
+  const plant = (l) => { for (let x = 9; x <= 13; x++) for (let y = 9; y <= 13; y++) l._tiles[x + ':' + y + ':6'] = { el: grabEl(), coords: { x, y, z: 6 } }; };
+  const inView = (x, y) => x >= 10 && x <= 11 && y >= 10 && y <= 11;
+  let box = { min: { x: 256 * 10, y: 256 * 10 }, max: { x: 256 * 12, y: 256 * 12 } };
+  const map = { getZoom: () => 6, getZoomScale: (a, b) => Math.pow(2, a - b), getPixelBounds: () => box };
+  const l = new I.ModelGridLayer({ opacity: 1 }); l._map = map; l._tileZoom = 6; plant(l);
+  const f1 = frame(1440, 721, PATTERN), f2 = frame(1440, 721, (r, c) => 1 + ((r * 5 + c * 11) % 254)), f3 = frame(1440, 721, (r, c) => 1 + ((r + c * 2) % 254));
+  const lut = I.buildRamp(I.RAMPS.hs), entry = { step: 0, valid_utc: '2026-09-22T12:00:00Z' };
+  const counts = () => { const o = {}; for (const k in l._tiles) o[k] = l._tiles[k].el.draws; return o; };
+  assert.deepEqual(l._viewRange(), { z: 6, x0: 10, x1: 11, y0: 10, y1: 11 });
+  l.setFrame(f1, GRID, 'hs', HS, lut, entry);
+  for (const k in l._tiles) { const t = l._tiles[k]; assert.equal(t.el.draws, inView(t.coords.x, t.coords.y) ? 1 : 0, k + ' after setFrame'); }
+  await new Promise((r) => setTimeout(r, 10));                                // the idle pass (setTimeout 0 without requestIdleCallback)
+  for (const k in l._tiles) assert.equal(l._tiles[k].el.draws, 1, k + ' after the idle pass');
+  // two frames in a row before the idle pass: the buffer tiles are drawn once, with the newest frame
+  l.setFrame(f2, GRID, 'hs', HS, lut, entry); l.setFrame(f3, GRID, 'hs', HS, lut, entry);
+  for (const k in l._tiles) { const t = l._tiles[k]; assert.equal(t.el.draws, inView(t.coords.x, t.coords.y) ? 3 : 1, k + ' before the pass'); }
+  await new Promise((r) => setTimeout(r, 10));
+  for (const k in l._tiles) { const t = l._tiles[k]; assert.equal(t.el.draws, inView(t.coords.x, t.coords.y) ? 3 : 2, k + ' after the pass'); assert.equal(t.el._ovGen, l._gen); }
+  const full = new I.ModelGridLayer({ opacity: 1 }); plant(full);              // no map: every tile at once
+  full.setFrame(f3, GRID, 'hs', HS, lut, entry);
+  for (const k in l._tiles) assert.deepEqual(l._tiles[k].el.out, full._tiles[k].el.out, k + ' equals the full redraw');
+  // a drag: the view moves one tile right while the buffer tiles are stale; the two now in view are drawn at once
+  const f4 = frame(1440, 721, (r, c) => 1 + ((r * 3 + c) % 254));
+  l.setFrame(f4, GRID, 'hs', HS, lut, entry);
+  box = { min: { x: 256 * 11, y: 256 * 10 }, max: { x: 256 * 13, y: 256 * 12 } };
+  l._drawStale(true);
+  for (const k in l._tiles) { const t = l._tiles[k], x = t.coords.x, y = t.coords.y; assert.equal(t.el.draws, inView(x, y) ? 4 : (x === 12 && y >= 10 && y <= 11) ? 3 : 2, k + ' after the move'); }
+  l._cancelStale();                                                           // the layer leaves the map: nothing is drawn later
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(l._tiles['9:9:6'].el.draws, 2);
+  // a fractional zoom: the view is scaled to the tile zoom
+  map.getZoom = () => 6.4; box = { min: { x: 2560, y: 2560 }, max: { x: 3328, y: 3328 } };
+  assert.deepEqual(l._viewRange(), { z: 6, x0: 7, x1: 9, y0: 7, y1: 9 });
+  assert.equal(I.tileInRange({ x: 7, y: 9, z: 6 }, l._viewRange()), true); assert.equal(I.tileInRange({ x: 7, y: 9, z: 7 }, l._viewRange()), false, 'another zoom level');
+  const off = new I.ModelGridLayer({ opacity: 1 }); assert.equal(off._viewRange(), null, 'off a map: every tile is drawn at once');
+});

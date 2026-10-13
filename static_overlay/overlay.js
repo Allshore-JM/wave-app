@@ -842,7 +842,7 @@
   }
   // The page's query as typed: the forecast loader rewrites the address (replaceState with the station query only) before
   // this module is loaded, so the live search is joined with the navigation entry's original URL (its query survives the
-  // rewrite). The diagnostics ?ovdecode=main, ?ovlook=B|C and ?ovdebug=1 read it.
+  // rewrite). The diagnostics ?ovdecode=main and ?ovdebug=1 read it.
   function pageQuery() {
     var q = '';
     try { q = typeof location !== 'undefined' && location ? String(location.search || '') : ''; } catch (e) { q = ''; }
@@ -1409,17 +1409,11 @@
   var DIR_FIELDS = { hs: 'pdir', tp: 'pdir', wind: 'wdir' };
   var ANIM_BUDGET_MS = { desktop: 4, phone: 8 };           // animation time per animation frame (plan section 21)
   var PARTICLE_MIN = 150, PARTICLE_MAX = 3000;
-  // The particles' look (plan section 42, step 3): px2 = screen pixels per particle (density), the line widths (core over
-  // a dark halo) per field, the head's and the tail's opacities. A = the look before section 42; B and C denser and
-  // heavier for the owner's comparison on the test site (?ovlook=B / ?ovlook=C); the pick becomes the one look.
-  var LOOKS = {
-    A: { px2: 900, style: { wind: { width: 1.2, halo: 2.6 }, hs: { width: 1.5, halo: 3.2 }, tp: { width: 1.5, halo: 3.2 } }, head: 0.9, headHalo: 0.35, tail: 0.4, tailHalo: 0.18 },
-    B: { px2: 720, style: { wind: { width: 1.6, halo: 3.4 }, hs: { width: 2.0, halo: 4.0 }, tp: { width: 2.0, halo: 4.0 } }, head: 0.95, headHalo: 0.4, tail: 0.55, tailHalo: 0.25 },
-    C: { px2: 600, style: { wind: { width: 1.8, halo: 3.8 }, hs: { width: 2.2, halo: 4.4 }, tp: { width: 2.2, halo: 4.4 } }, head: 0.95, headHalo: 0.4, tail: 0.6, tailHalo: 0.28 },
-    D: { px2: 900, style: { wind: { width: 1.6, halo: 3.4 }, hs: { width: 2.0, halo: 4.0 }, tp: { width: 2.0, halo: 4.0 } }, head: 0.95, headHalo: 0.4, tail: 0.55, tailHalo: 0.25 }   // A's density, B's weight (the count is the cost)
-  };
-  function lookFor(search) { var m = /[?&]ovlook=([ABCD])(?:&|$)/.exec(search || ''); return LOOKS[m ? m[1] : 'A']; }
-  var LOOK = (function () { try { return lookFor(pageQuery()); } catch (e) { return LOOKS.A; } })();
+  // The particles' look (plan section 42, step 3; the owner's pick of 2026-10-13 from four candidates measured on the test
+  // site): px2 = screen pixels per particle (the density before section 42: its count is what the main thread pays for;
+  // +25 % cost the 1080p frame rate), the line widths (a light core over a dark halo) per field, heavier than before, and
+  // the head's and the tail's opacities, brighter than before.
+  var LOOK = { px2: 900, style: { wind: { width: 1.6, halo: 3.4 }, hs: { width: 2.0, halo: 4.0 }, tp: { width: 2.0, halo: 4.0 } }, head: 0.95, headHalo: 0.4, tail: 0.55, tailHalo: 0.25 };
   var PARTICLE_PX2 = LOOK.px2;
   var OV_DEBUG = (function () { try { return /[?&]ovdebug=1(?:&|$)/.test(pageQuery()); } catch (e) { return false; } })();
   var WATCHDOG_MS = 2000;                                  // the animator restarts itself when it should run and does not (iPad)
@@ -2230,7 +2224,7 @@
   Overlay.prototype._debugText = function () {
     var f = this.flow ? this.flow.debugState() : null, dec = frameDecoder ? (frameDecoder.dead ? 'dead' : (frameDecoder.worker ? 'worker' : 'idle')) : (decoderDead ? 'dead' : 'none');
     var o = { playing: this.playing, speed: this.speed, frame: this.frameIndex, target: this.target, res: this.res + '/' + this.dres, inflight: Object.keys(this.inflight).length,
-      cache: this.cache.size() + '/' + this.dcache.size(), decoder: dec, hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null, look: Object.keys(LOOKS).filter(function (k) { return LOOKS[k] === LOOK; })[0] };
+      cache: this.cache.size() + '/' + this.dcache.size(), decoder: dec, hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
     var lines = [], k;
     for (k in o) lines.push(k + ': ' + o[k]);
     if (f) for (k in f) lines.push('flow.' + k + ': ' + f[k]); else lines.push('flow: none');
@@ -3387,7 +3381,7 @@
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT, STALL_MS: STALL_MS, LATE_TRIES: LATE_TRIES,
       PLAY_RING: PLAY_RING, ringFor: ringFor, tileInRange: tileInRange, STALE_TILE_MS: STALE_TILE_MS, STALE_MAX_MS: STALE_MAX_MS,
       workerSource: workerSource, workerMain: workerMain, FrameDecoder: FrameDecoder, getDecoder: getDecoder, disposeDecoder: disposeDecoder, resetDecoder: resetDecoder, setDecoderForTest: setDecoderForTest,
-      decodeFrame: decodeFrame, nodeWindow: nodeWindow, windowCovers: windowCovers, LOOKS: LOOKS, LOOK: LOOK, lookFor: lookFor, WATCHDOG_MS: WATCHDOG_MS, isWebKit: isWebKit, OV_DEBUG: OV_DEBUG, PARTICLE_PX2: PARTICLE_PX2, FLOW_STYLE: FLOW_STYLE, pageQuery: pageQuery,
+      decodeFrame: decodeFrame, nodeWindow: nodeWindow, windowCovers: windowCovers, LOOK: LOOK, WATCHDOG_MS: WATCHDOG_MS, isWebKit: isWebKit, OV_DEBUG: OV_DEBUG, PARTICLE_PX2: PARTICLE_PX2, FLOW_STYLE: FLOW_STYLE, pageQuery: pageQuery,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,

@@ -875,3 +875,166 @@ test('section 42 (step 2 finding): FrameCache with the ring\'s ranks drops what 
   const d = new I.FrameCache(2); d.set('a', 1); d.set('b', 2); d.set('c', 3, 'a');
   assert.deepEqual(['a', 'b', 'c'].map((k) => d.has(k)), [true, false, true], 'no ranks: LRU, never keep, never the new one');
 });
+
+
+// ---- plan section 42 step 3: decoding off the main thread, the node window ----
+const FIX = (name) => { const buf = fs.readFileSync(path.join(__dirname, '..', 'fixtures', name)); return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength); };
+// The worker's source run in-process: a fake `self` whose postMessage resolves a promise.
+function runWorkerSource() {
+  const self = { posted: [], transfers: [] };
+  self.postMessage = (m, t) => { self.posted.push(m); self.transfers.push(t); if (self.waiting) { const w = self.waiting; self.waiting = null; w(m); } };
+  new Function('self', I.workerSource())(self);
+  self.ask = (msg) => new Promise((res) => { self.waiting = res; self.onmessage({ data: msg }); });
+  return self;
+}
+
+test('section 42: the worker source (the module\'s own functions) decodes the real frames byte for byte, hands back a PNG that is not our format raw, and reports garbage as a decode failure', async () => {
+  const crypto = require('node:crypto');
+  const self = runWorkerSource();
+  const src = I.workerSource();
+  assert.ok(/function parsePng\(/.test(src) && /function inflate\(/.test(src) && /function unfilter\(/.test(src) && /function decodePngGrey\(/.test(src) && /\(self\);\s*$/.test(src));
+  assert.ok(!/\bthis\./.test(src.replace(/self\.onmessage[\s\S]*$/, '')) , 'the decode functions use no closure state');
+  for (const [name, cols, rows, sha] of [['frame_hs_half.png', 720, 361, '5b70e09d7174f3b5940e5f30f9f04f6ed505f302e656a152288658ef599d0f7b'], ['frame_tp_full.png', 1440, 721, '50fa030639ad712dcd69d577c17061f5cca1b10b4c687653047d4b701c9984d5']]) {
+    const r = await self.ask({ id: 7, buf: FIX(name), expect: { cols, rows } });
+    assert.equal(r.id, 7); assert.equal(r.cols, cols); assert.equal(r.rows, rows); assert.equal(r.q.length, cols * rows);
+    assert.equal(crypto.createHash('sha256').update(r.q).digest('hex'), sha, name);
+    assert.equal(self.transfers[self.transfers.length - 1][0], r.q.buffer, 'the code array is transferred, not copied');
+  }
+  const rgb = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'), Buffer.from([0, 0, 0, 2, 0, 0, 0, 2, 8, 2, 0, 0, 0]), Buffer.alloc(4), Buffer.from([0, 0, 0, 0]), Buffer.from('IEND'), Buffer.alloc(4)]);
+  const ab = rgb.buffer.slice(rgb.byteOffset, rgb.byteOffset + rgb.byteLength);
+  const raw = await self.ask({ id: 8, buf: ab, expect: null });
+  assert.equal(raw.raw, ab, 'not our format: the body comes back for the canvas path'); assert.equal(self.transfers[self.transfers.length - 1][0], ab);
+  const bad = await self.ask({ id: 9, buf: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]).buffer, expect: null });
+  assert.match(bad.error, /decode failed/);
+  const wrong = await self.ask({ id: 10, buf: FIX('frame_hs_half.png'), expect: { cols: 1440, rows: 721 } });
+  assert.match(wrong.error, /decode failed/, 'another size is refused in the worker too');
+});
+
+// A fake Worker: runs the worker source in-process, delivering answers asynchronously; crash() kills it.
+class FakeWorker {
+  constructor(url) { FakeWorker.made.push(url); this.self = runWorkerSource(); this.terminated = false; this.onmessage = null; this.onerror = null;
+    this.self.postMessage = (m) => { if (!this.terminated) setImmediate(() => this.onmessage && this.onmessage({ data: m })); }; }
+  postMessage(msg) { if (FakeWorker.failPost) throw new Error('post failed'); this.self.onmessage({ data: msg }); }
+  terminate() { this.terminated = true; }
+  crash() { this.onerror && this.onerror({ message: 'boom' }); }
+}
+FakeWorker.made = []; FakeWorker.failPost = false;
+function withWorker(fn) {
+  const had = { Worker: global.Worker, location: global.location, warn: console.warn };
+  global.Worker = FakeWorker; const warned = []; console.warn = (...a) => warned.push(a.join(' '));
+  return Promise.resolve().then(() => fn(warned)).finally(() => { global.Worker = had.Worker; global.location = had.location; console.warn = had.warn; I.resetDecoder(); });
+}
+
+test('section 42: FrameDecoder: available only with Worker, Blob, createObjectURL and DecompressionStream and never with ?ovdecode=main; one worker per session, answers by id, disposal rejects as aborted', () => withWorker(async (warned) => {
+  assert.equal(typeof DecompressionStream, 'function', 'Node 24 has DecompressionStream');
+  global.location = { search: '?ovdecode=main' }; assert.equal(I.FrameDecoder.available(), false, 'the kill switch');
+  global.location = { search: '?x=1&ovdecode=main&y' }; assert.equal(I.FrameDecoder.available(), false);
+  global.location = { search: '?ovdecode=mainly' }; assert.equal(I.FrameDecoder.available(), true, 'only the exact value');
+  global.location = { search: '' }; assert.equal(I.FrameDecoder.available(), true);
+  const saveW = global.Worker; global.Worker = undefined; assert.equal(I.FrameDecoder.available(), false, 'no Worker: the main-thread path'); global.Worker = saveW;
+  const d = I.getDecoder(); assert.ok(d instanceof I.FrameDecoder); assert.equal(I.getDecoder(), d, 'one decoder');
+  const made = FakeWorker.made.length;
+  const [a, b] = await Promise.all([d.decode(FIX('frame_hs_half.png'), { cols: 720, rows: 361 }), d.decode(FIX('frame_tp_full.png'), { cols: 1440, rows: 721 })]);
+  assert.equal(FakeWorker.made.length, made + 1, 'one worker for both'); assert.ok(/^blob:/.test(String(FakeWorker.made[made])) || String(FakeWorker.made[made]).length > 0);
+  assert.equal(a.cols, 720); assert.equal(b.cols, 1440); assert.equal(Object.keys(d.pending).length, 0);
+  await assert.rejects(() => d.decode(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]).buffer, null), /decode failed/, 'the worker\'s error keeps its message (failureKind: permanent)');
+  const slow = d.decode(FIX('frame_hs_half.png'), { cols: 720, rows: 361 });
+  I.disposeDecoder();
+  await assert.rejects(() => slow, (e) => e.name === 'AbortError', 'disposal: pending decodes end as aborted');
+  assert.equal(d.worker, null); assert.equal(warned.length, 0);
+  assert.notEqual(I.getDecoder(), d, 'after Off a new mount gets a fresh decoder');
+}));
+
+test('section 42: a worker that dies ends its pending decodes with retry, stays dead for the session with one warning, and decodeFrame fetches once more for the main-thread path', () => withWorker(async (warned) => {
+  global.location = { search: '' };
+  const d = I.getDecoder();
+  const p = d.decode(FIX('frame_hs_half.png'), { cols: 720, rows: 361 });
+  const wk = d.worker; wk.crash();
+  await assert.rejects(() => p, (e) => e.retry === true && /died/.test(e.message));
+  assert.equal(d.dead, true); assert.equal(I.getDecoder(), null, 'dead for the session'); assert.equal(warned.length, 1); assert.match(warned[0], /main thread/);
+  await assert.rejects(() => d.decode(FIX('frame_hs_half.png'), null), (e) => e.retry === true);
+  // decodeFrame with a worker that dies on the first decode: the frame is fetched again and decoded on the main thread
+  I.resetDecoder();
+  const fetches = []; const realFetch = global.fetch;
+  global.fetch = (url) => { fetches.push(url); return Promise.resolve({ ok: true, headers: { get: () => null }, arrayBuffer: () => Promise.resolve(FIX('frame_hs_half.png')) }); };
+  try {
+    const d2 = I.getDecoder(); let bodies = 0;
+    const pr = I.decodeFrame('https://x/f.png', null, { cols: 720, rows: 361 }, () => { bodies++; });
+    await new Promise((r) => setImmediate(r)); d2.worker.crash();
+    const frame = await pr;
+    assert.equal(frame.cols, 720); assert.equal(frame.q.length, 720 * 361);
+    assert.deepEqual(fetches, ['https://x/f.png', 'https://x/f.png'], 'one more download'); assert.equal(bodies, 1, 'onBody once (the watchdog was already cleared)');
+    // dead for the session: the next decodeFrame goes straight to the main thread, one download
+    fetches.length = 0;
+    const f2 = await I.decodeFrame('https://x/g.png', null, { cols: 720, rows: 361 });
+    assert.equal(f2.cols, 720); assert.equal(fetches.length, 1);
+    // a PNG that is not our format: the worker hands the body back raw and the canvas path takes it (here: a stub that marks it)
+    I.resetDecoder(); fetches.length = 0;
+    const rgbBody = (() => { const rgb = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'), Buffer.from([0, 0, 0, 2, 0, 0, 0, 2, 8, 2, 0, 0, 0]), Buffer.alloc(4), Buffer.from([0, 0, 0, 0]), Buffer.from('IEND'), Buffer.alloc(4)]); return rgb.buffer.slice(rgb.byteOffset, rgb.byteOffset + rgb.byteLength); })();
+    global.fetch = (url) => { fetches.push(url); return Promise.resolve({ ok: true, headers: { get: () => null }, arrayBuffer: () => Promise.resolve(rgbBody) }); };
+    const hadCIB = global.createImageBitmap; global.createImageBitmap = () => Promise.reject(new Error('canvas path took it'));
+    try { await assert.rejects(() => I.decodeFrame('https://x/rgb.png', null, null), /canvas path took it/, 'raw from the worker goes to the canvas path, never out as a frame'); }
+    finally { if (hadCIB) global.createImageBitmap = hadCIB; else delete global.createImageBitmap; }
+    assert.ok(I.getDecoder() && !I.getDecoder().dead, 'the decoder is fine');
+    // an aborted signal is not retried
+    I.resetDecoder(); fetches.length = 0;
+    const d3 = I.getDecoder(), ctrl = new AbortController();
+    const pr3 = I.decodeFrame('https://x/h.png', ctrl.signal, { cols: 720, rows: 361 });
+    await new Promise((r) => setImmediate(r)); ctrl.abort(); d3.worker.crash();
+    await assert.rejects(() => pr3, (e) => e.retry === true); assert.equal(fetches.length, 1, 'no second download after an abort');
+  } finally { global.fetch = realFetch; }
+}));
+
+test('section 42: FrameDecoder: a postMessage that throws kills the decoder the same way; a worker answer for an unknown id is ignored', () => withWorker(async (warned) => {
+  global.location = { search: '' };
+  const d = I.getDecoder(); FakeWorker.failPost = true;
+  try { await assert.rejects(() => d.decode(FIX('frame_hs_half.png'), null), (e) => e.retry === true); } finally { FakeWorker.failPost = false; }
+  assert.equal(d.dead, true); assert.equal(warned.length, 1);
+  I.resetDecoder();
+  const e = I.getDecoder(); const p = e.decode(FIX('frame_hs_half.png'), { cols: 720, rows: 361 });
+  e.worker.onmessage({ data: { id: 999, q: new Uint8Array(1), cols: 1, rows: 1 } });
+  assert.equal((await p).cols, 720);
+}));
+
+test('section 42 C2: vectorNodes over a window gives the lattice the same vectors as the whole grid; nodes outside are absent; nodeWindow and windowCovers', () => {
+  const HALFG = { cols: 720, rows: 361, lon0: -180, lat0: 90, dlon: 0.5, dlat: -0.5 };
+  const hs = frame(1440, 721, (r, c) => 1 + ((r * 7 + c * 3) % 254)), l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+  const pdir = frame(720, 361, (r, c) => 1 + ((r * 3 + c) % 254));
+  const p = I.forwardPixel(21.5, -158, 6), view = { z: 6, w: 1200, h: 800, ox: p.x - 600, oy: p.y - 400, zt: 6 };
+  const full = I.vectorNodes('hs', l, pdir, HALFG, null, null);
+  const win = I.nodeWindow(view, HALFG, pdir);
+  assert.ok(win.r0 >= 0 && win.r1 < 361 && win.r1 > win.r0 && win.count < 720 && win.count > 0, JSON.stringify(win));
+  const part = I.vectorNodes('hs', l, pdir, HALFG, null, win);
+  assert.deepEqual(part.win, win);
+  let inside = 0, outsideAbsent = 0, outsideTotal = 0;
+  for (let j = 0; j < 361; j++) for (let i = 0; i < 720; i++) {
+    const k = j * 720 + i, inWin = j >= win.r0 && j <= win.r1 && (((i - win.c0) % 720) + 720) % 720 < win.count;
+    if (inWin) { inside++; assert.equal(part.M[k], full.M[k]); assert.equal(part.U[k], full.U[k]); assert.equal(part.V[k], full.V[k]); }
+    else { outsideTotal++; if (!part.M[k]) outsideAbsent++; }
+  }
+  assert.equal(outsideAbsent, outsideTotal, 'outside the window: absent'); assert.ok(inside < 0.25 * 720 * 361, 'a window is a fraction of the grid: ' + inside);
+  const vfFull = I.flowField(view, 8, full, HALFG, l, false), vfPart = I.flowField(view, 8, part, HALFG, l, false);
+  assert.deepEqual(Array.from(vfPart.u), Array.from(vfFull.u)); assert.deepEqual(Array.from(vfPart.v), Array.from(vfFull.v));
+  // reuse of the arrays across a window change: what left the window is absent again
+  const win2 = I.nodeWindow({ z: 6, w: 1200, h: 800, ox: p.x + 5000, oy: p.y - 400, zt: 6 }, HALFG, pdir);
+  const part2 = I.vectorNodes('hs', l, pdir, HALFG, part, win2);
+  for (let j = 0; j < 361; j++) for (let i = 0; i < 720; i++) { const k = j * 720 + i, inWin = j >= win2.r0 && j <= win2.r1 && (((i - win2.c0) % 720) + 720) % 720 < win2.count; if (!inWin) assert.equal(part2.M[k], 0); }
+  // the covering rule
+  assert.equal(I.windowCovers(null, win, 720), false);
+  assert.equal(I.windowCovers(win, win, 720), true);
+  assert.equal(I.windowCovers(win, { r0: win.r0, r1: win.r1, c0: win.c0 + 1, count: win.count }, 720), false, 'one column past the end');
+  assert.equal(I.windowCovers(win, { r0: win.r0 + 1, r1: win.r1, c0: win.c0 + 1, count: win.count - 2 }, 720), true);
+  assert.equal(I.windowCovers(win, { r0: win.r0 - 1, r1: win.r1, c0: win.c0, count: win.count }, 720), false, 'a row above');
+  assert.equal(I.windowCovers({ r0: 0, r1: 360, c0: 5, count: 720 }, { r0: 10, r1: 20, c0: 700, count: 100 }, 720), true, 'every column covers any arc');
+  assert.equal(I.windowCovers({ r0: 0, r1: 360, c0: 700, count: 50 }, { r0: 10, r1: 20, c0: 715, count: 30 }, 720), true, 'an arc across the seam');
+  assert.equal(I.windowCovers({ r0: 0, r1: 360, c0: 700, count: 50 }, { r0: 10, r1: 20, c0: 715, count: 40 }, 720), false);
+  // the margin: a view moved by a screen in any direction is still inside the window (no recompute per small pan)
+  const need = (dx, dy) => I.nodeWindow({ z: 6, w: 1200, h: 800, ox: view.ox + dx, oy: view.oy + dy, zt: 6 }, HALFG, pdir, 0);   // what a view needs (margin 0)
+  assert.ok(need(0, 0).count < win.count && need(0, 0).r1 - need(0, 0).r0 < win.r1 - win.r0, 'the computed window is wider than the need');
+  for (const [dx, dy] of [[1200, 0], [-1200, 0], [0, 800], [0, -800], [800, 600]]) assert.equal(I.windowCovers(win, need(dx, dy), 720), true, 'covered after a pan of ' + dx + ',' + dy);
+  assert.equal(I.windowCovers(win, need(2600, 0), 720), false, 'two screens away: recompute');
+  assert.equal(I.windowCovers(I.nodeWindow(view, HALFG, pdir, 0), need(600, 0), 720), false, 'without the margin a half-screen pan would recompute');
+  // zoomed out, three screens span the world: every column
+  const wide = I.nodeWindow({ z: 1, w: 1200, h: 800, ox: 0, oy: 0, zt: 1 }, HALFG, pdir);
+  assert.equal(wide.count, 720); assert.equal(wide.c0, 0);
+});

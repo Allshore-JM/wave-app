@@ -819,11 +819,87 @@
     });
   }
   var decodeCanvas = null;
-  // PNG -> Uint8Array of codes. Direct inflate where the browser has DecompressionStream, else the
-  // canvas path (needs CORS on the bucket for getImageData). `expect` = the manifest grid the frame
-  // must have: a body that is too large or a picture of another size is refused before decoding.
+  // ---- decoding off the main thread (plan section 42) ----
+  // A worker built from this module's own decode functions (their source text, so there is one asset and one version).
+  // The main thread still fetches (the download watchdog, LATE_TRIES and onBody are unchanged), hands the body over
+  // (transferred, not copied) and gets the code array back (transferred): no inflate pumping and no unfilter loop compete
+  // with the tile drawing, and the raw body and the inflated bytes never enter the page's heap. A PNG that is not our
+  // format comes back raw for the canvas path. A worker that dies ends its pending decodes with err.retry (decodeFrame
+  // then fetches each once more, from the edge cache, for the main-thread path) and stays dead for the session, with
+  // one console warning. Without Worker / Blob / createObjectURL / DecompressionStream, or with ?ovdecode=main in the
+  // page's address (a diagnostic), the main-thread path runs as before.
+  function workerMain(self) {
+    self.onmessage = function (e) {
+      var d = e.data;
+      decodePngGrey(d.buf, d.expect).then(function (frame) {
+        if (!frame) self.postMessage({ id: d.id, raw: d.buf }, [d.buf]);
+        else self.postMessage({ id: d.id, q: frame.q, cols: frame.cols, rows: frame.rows }, [frame.q.buffer]);
+      }, function (err) { self.postMessage({ id: d.id, error: String(err && err.message || err) }); });
+    };
+  }
+  function workerSource() {
+    return [parsePng, inflate, unfilter, decodePngGrey].map(function (f) { return f.toString(); }).join('\n') + '\n(' + workerMain.toString() + ')(self);\n';
+  }
+  function FrameDecoder() { this.worker = null; this.url = null; this.pending = {}; this.seq = 0; this.dead = false; }
+  FrameDecoder.available = function () {
+    try {
+      if (typeof location !== 'undefined' && location && /[?&]ovdecode=main(?:&|$)/.test(location.search)) return false;
+      return typeof Worker === 'function' && typeof Blob === 'function' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' && typeof DecompressionStream === 'function';
+    } catch (e) { return false; }
+  };
+  FrameDecoder.prototype._boot = function () {
+    var self = this;
+    this.url = URL.createObjectURL(new Blob([workerSource()], { type: 'text/javascript' }));
+    this.worker = new Worker(this.url);
+    this.worker.onmessage = function (e) {
+      var d = e.data, p = d && self.pending[d.id];
+      if (!p) return;
+      delete self.pending[d.id];
+      if (d.error) p.reject(new Error(d.error)); else p.resolve(d);
+    };
+    this.worker.onerror = function (ev) { self._die(String(ev && ev.message || 'worker error')); };
+  };
+  function retryError() { var e = new Error('decoder died'); e.retry = true; return e; }
+  FrameDecoder.prototype._die = function (why) {
+    this.dead = true; decoderDead = true;
+    this._drop(retryError);
+    this._release();
+    if (typeof console !== 'undefined' && console.warn) console.warn('overlay: frame decoding falls back to the main thread (' + why + ')');
+  };
+  FrameDecoder.prototype._drop = function (mkErr) { var p = this.pending; this.pending = {}; for (var k in p) p[k].reject(mkErr()); };
+  FrameDecoder.prototype._release = function () {
+    if (this.worker) { try { this.worker.terminate(); } catch (e) { /* gone */ } this.worker = null; }
+    if (this.url) { try { URL.revokeObjectURL(this.url); } catch (e) { /* gone */ } this.url = null; }
+  };
+  // buf: an ArrayBuffer (transferred: unusable afterwards). Resolves {q, cols, rows}, or {raw} (not our format).
+  FrameDecoder.prototype.decode = function (buf, expect) {
+    var self = this;
+    if (this.dead) return Promise.reject(retryError());
+    return new Promise(function (resolve, reject) {
+      try {
+        if (!self.worker) self._boot();
+        var id = ++self.seq; self.pending[id] = { resolve: resolve, reject: reject };
+        self.worker.postMessage({ id: id, buf: buf, expect: expect }, [buf]);
+      } catch (err) { self._die(String(err && err.message || err)); reject(retryError()); }
+    });
+  };
+  // Off: nothing left behind (the G3 teardown rule); pending decodes end as aborted.
+  FrameDecoder.prototype.dispose = function () { this._drop(abortError); this._release(); };
+  var frameDecoder = null, decoderDead = false;
+  function getDecoder() {
+    if (decoderDead || !FrameDecoder.available()) return null;
+    if (!frameDecoder) frameDecoder = new FrameDecoder();
+    return frameDecoder;
+  }
+  function disposeDecoder() { if (frameDecoder) { frameDecoder.dispose(); frameDecoder = null; } }
+  function resetDecoder() { disposeDecoder(); decoderDead = false; }   // tests only
+  function setDecoderForTest(d) { frameDecoder = d; decoderDead = false; }
+  // PNG -> Uint8Array of codes. Direct inflate where the browser has DecompressionStream (in the worker where it can
+  // run, else on the main thread), else the canvas path (needs CORS on the bucket for getImageData). `expect` = the
+  // manifest grid the frame must have: a body that is too large or a picture of another size is refused before decoding.
   // onBody(): called once the whole body has arrived, before the decode (the download watchdog stops there).
-  function decodeFrame(url, signal, expect, onBody) {
+  // mainOnly: the retry after a dead worker (one more download: the body went with the worker).
+  function decodeFrame(url, signal, expect, onBody, mainOnly) {
     var direct = typeof DecompressionStream === 'function' && typeof Response === 'function';
     return fetch(url, { signal: signal, mode: 'cors' }).then(function (r) {
       if (!r.ok) throw new Error('frame ' + r.status);
@@ -835,7 +911,15 @@
       var size = direct ? body.byteLength : body.size;
       if (size > MAX_FRAME_BYTES) throw new Error('frame decode failed');
       if (!direct) return decodeCanvas_(body, expect);
-      return decodePngGrey(body, expect).then(function (frame) { return frame || decodeCanvas_(new Blob([body]), expect); });
+      var dec = mainOnly ? null : getDecoder();
+      if (!dec) return decodePngGrey(body, expect).then(function (frame) { return frame || decodeCanvas_(new Blob([body]), expect); });
+      return dec.decode(body, expect).then(function (res) {
+        if (res.raw) return decodeCanvas_(new Blob([res.raw]), expect);
+        return { q: res.q, cols: res.cols, rows: res.rows };
+      }, function (err) {
+        if (err && err.retry && !(signal && signal.aborted)) return decodeFrame(url, signal, expect, null, true);
+        throw err;
+      });
     });
   }
   function decodeCanvas_(blob, expect) {
@@ -1311,7 +1395,20 @@
   // the target direction, then the ring interleaved, never more than MAX_INFLIGHT fetches in all).
   var DIR_FIELDS = { hs: 'pdir', tp: 'pdir', wind: 'wdir' };
   var ANIM_BUDGET_MS = { desktop: 4, phone: 8 };           // animation time per animation frame (plan section 21)
-  var PARTICLE_PX2 = 900, PARTICLE_MIN = 150, PARTICLE_MAX = 3000;
+  var PARTICLE_MIN = 150, PARTICLE_MAX = 3000;
+  // The particles' look (plan section 42, step 3): px2 = screen pixels per particle (density), the line widths (core over
+  // a dark halo) per field, the head's and the tail's opacities. A = the look before section 42; B and C denser and
+  // heavier for the owner's comparison on the test site (?ovlook=B / ?ovlook=C); the pick becomes the one look.
+  var LOOKS = {
+    A: { px2: 900, style: { wind: { width: 1.2, halo: 2.6 }, hs: { width: 1.5, halo: 3.2 }, tp: { width: 1.5, halo: 3.2 } }, head: 0.9, headHalo: 0.35, tail: 0.4, tailHalo: 0.18 },
+    B: { px2: 720, style: { wind: { width: 1.6, halo: 3.4 }, hs: { width: 2.0, halo: 4.0 }, tp: { width: 2.0, halo: 4.0 } }, head: 0.95, headHalo: 0.4, tail: 0.55, tailHalo: 0.25 },
+    C: { px2: 600, style: { wind: { width: 1.8, halo: 3.8 }, hs: { width: 2.2, halo: 4.4 }, tp: { width: 2.2, halo: 4.4 } }, head: 0.95, headHalo: 0.4, tail: 0.6, tailHalo: 0.28 }
+  };
+  function lookFor(search) { var m = /[?&]ovlook=([ABC])(?:&|$)/.exec(search || ''); return LOOKS[m ? m[1] : 'A']; }
+  var LOOK = (function () { try { return lookFor(typeof location !== 'undefined' && location ? location.search : ''); } catch (e) { return LOOKS.A; } })();
+  var PARTICLE_PX2 = LOOK.px2;
+  var OV_DEBUG = (function () { try { return typeof location !== 'undefined' && !!location && /[?&]ovdebug=1(?:&|$)/.test(location.search); } catch (e) { return false; } })();
+  var WATCHDOG_MS = 2000;                                  // the animator restarts itself when it should run and does not (iPad)
   var PARTICLE_PX_PER_S = 3;                               // screen px/s per m/s of wind, before the latitude stretch
   // Particle speed in screen px/s (before the Mercator stretch) from the field value under it: wind by
   // its speed; swell lines by the wave height (nothing under the 0.1 m floor) or by the peak period (the
@@ -1321,7 +1418,7 @@
     hs: function (v) { return v < 0.1 ? 0 : 8 + 3 * v; },
     tp: function (v) { return v < 3 ? 0 : 1.5 * v; }
   };
-  var FLOW_STYLE = { wind: { width: 1.2, halo: 2.6 }, hs: { width: 1.5, halo: 3.2 }, tp: { width: 1.5, halo: 3.2 } };
+  var FLOW_STYLE = LOOK.style;
   var TRAIL_POINTS = 10, TRAIL_EVERY_MS = 66;              // a particle's tail: its last 10 positions, one every 66 ms (~0.6 s), drawn fresh each frame
   var PARTICLE_LIFE_MS = { wind: [1000, 2500], hs: [2000, 4500], tp: [2000, 4500] };   // a particle lives this long (uniform), then respawns
   var CODE_SIN = new Float64Array(256), CODE_COS = new Float64Array(256);
@@ -1387,23 +1484,52 @@
   // direction grid or its parent) and the node's FROM direction; M marks the nodes that have both. The
   // lattice below interpolates these vectors, so a cyclone turns smoothly and slows to nothing at its eye
   // (blending directions alone snaps between neighbours there).
-  function vectorNodes(field, layer, dframe, dgrid, prev) {
+  // win (plan section 42): only the nodes in a window {r0, r1, c0, count} (rows inclusive, columns from c0 wrapping) are
+  // computed, the rest marked absent; null = every node. The animator asks for the window around its view plus a screen
+  // on every side (nodeWindow), so a step costs a few percent of the grid; a pan beyond it recomputes.
+  function vectorNodes(field, layer, dframe, dgrid, prev, win) {
     var cols = dframe.cols, rows = dframe.rows, n = cols * rows, reuse = prev && prev.cols === cols && prev.rows === rows;
     var U = reuse ? prev.U : new Float32Array(n), V = reuse ? prev.V : new Float32Array(n), M = reuse ? prev.M : new Uint8Array(n);
     var f = layer._frame, g = layer._grid, spd = FLOW_SPEED[field] || FLOW_SPEED.wind, lo = layer._lo, hi = layer._hi, q = dframe.q;
-    var colPos = new Float64Array(cols), codes = new Float64Array(cols), i, j;
+    var colPos = new Float64Array(cols), codes = new Float64Array(cols), i, j, ii;
+    var r0 = win ? Math.max(0, win.r0) : 0, r1 = win ? Math.min(rows - 1, win.r1) : rows - 1, c0 = win ? ((win.c0 % cols) + cols) % cols : 0, count = win ? Math.min(cols, win.count) : cols;
+    if (win && reuse) M.fill(0);
     for (i = 0; i < cols; i++) { var lng = dgrid.lon0 + i * dgrid.dlon; colPos[i] = ((((lng - g.lon0) / g.dlon) % f.cols) + f.cols) % f.cols; }
-    for (j = 0; j < rows; j++) {
+    for (j = r0; j <= r1; j++) {
       var lat = dgrid.lat0 + j * dgrid.dlat, r = (g.lat0 - lat) / -g.dlat, base = j * cols;
       if (r >= 0 && r <= f.rows - 1) sampleRow(f, layer._nearest, r, colPos, cols, codes, 0); else codes.fill(0);
-      for (i = 0; i < cols; i++) {
+      for (ii = 0; ii < count; ii++) {
+        i = c0 + ii; if (i >= cols) i -= cols;
         var d = q[base + i], c = codes[i];
         if (!d || d === 255 || !c) { M[base + i] = 0; U[base + i] = 0; V[base + i] = 0; continue; }
         var sp = spd(lo + (c - 1) / 254 * (hi - lo));
         M[base + i] = sp > 0 ? 1 : 0; U[base + i] = -sp * CODE_SIN[d]; V[base + i] = -sp * CODE_COS[d];   // FROM -> TOWARD
       }
     }
-    return { cols: cols, rows: rows, U: U, V: V, M: M };
+    return { cols: cols, rows: rows, U: U, V: V, M: M, win: win ? { r0: r0, r1: r1, c0: c0, count: count } : null };
+  }
+  // The node window for a view plus `margin` screens on every side (default 1: what the animator computes; 0: what a
+  // view needs, the coverage test), in direction-grid rows and columns (wrapping), with one node of margin for the
+  // lattice's bilinear neighbours.
+  function nodeWindow(view, dgrid, dframe, margin) {
+    var n = TILE * Math.pow(2, view.z), cols = dframe.cols, rows = dframe.rows, mg = margin === undefined ? 1 : margin;
+    var y0 = Math.max(0, view.oy - mg * view.h), y1 = Math.min(n, view.oy + (1 + mg) * view.h), x0 = view.ox - mg * view.w, x1 = view.ox + (1 + mg) * view.w;
+    var latTop = latOfWorldY(y0, n), latBot = latOfWorldY(y1, n);
+    var r0 = Math.floor((dgrid.lat0 - latTop) / -dgrid.dlat) - 1, r1 = Math.ceil((dgrid.lat0 - latBot) / -dgrid.dlat) + 1;
+    r0 = Math.max(0, Math.min(rows - 1, r0)); r1 = Math.max(0, Math.min(rows - 1, r1));
+    if (x1 - x0 >= n) return { r0: r0, r1: r1, c0: 0, count: cols };
+    var c0 = Math.floor(((((lngOfWorldX(x0, n) - dgrid.lon0) / dgrid.dlon) % cols) + cols) % cols) - 1;
+    var count = Math.min(cols, Math.ceil((x1 - x0) / n * 360 / Math.abs(dgrid.dlon)) + 4);
+    return { r0: r0, r1: r1, c0: ((c0 % cols) + cols) % cols, count: count };
+  }
+  // Does a computed window hold everything a wanted one needs?
+  function windowCovers(have, want, cols) {
+    if (!have) return false;
+    if (have.r0 > want.r0 || have.r1 < want.r1) return false;
+    if (have.count >= cols) return true;
+    if (want.count > have.count) return false;
+    var off = ((want.c0 - have.c0) % cols + cols) % cols;
+    return off + want.count <= have.count;
   }
   // The particles' screen lattice, every s px over the view: the node vectors interpolated bilinearly over
   // the present nodes (weight < 0.25: nothing), as screen velocities (x right, y down) times the Mercator
@@ -1442,6 +1568,11 @@
     return { s: s, cols: cols, rows: rows, u: u, v: v };
   }
   function nowMs() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
+  // Safari (incl. every iOS / iPadOS browser): WebKit without a Chromium or Firefox mark.
+  function isWebKit() {
+    try { var ua = typeof navigator !== 'undefined' && navigator ? String(navigator.userAgent || '') : ''; return /AppleWebKit/.test(ua) && !/Chrome|Chromium|CriOS|Edg\/|EdgiOS|OPR|Firefox|FxiOS/.test(ua); }
+    catch (e) { return false; }
+  }
 
   // The animation: particles with fading trails along the swell (wave height, peak period) or the wind
   // (wind speed) on one devicePixelRatio canvas in the ovAnimPane (owner: particles only). A plain
@@ -1457,6 +1588,8 @@
     this.vel = new Float64Array(2); this.vel2 = new Float64Array(2); this.hist = null; this.histN = null; this.histT = null;
     this.active = false; this.suspended = 0; this.dirty = false; this.rafId = null; this.lastT = 0;
     this.ema = 0; this.adaptAt = 0; this._listeners = [];
+    this.rate = 1;                                           // the playback speed: particles move x1 (paused, snail), x2, x4
+    this.lastFrameAt = 0; this.healed = 0; this.log = []; this.watch = null;   // the watchdog (plan section 42) and the debug readout
     this.setLayer(layer);
   }
   // The field layer the particles are gated by; when its tiles are redrawn for a coastline chunk that landed
@@ -1476,21 +1609,64 @@
     if (this.canvas) return;
     var self = this, map = this.map, pane = map.getPane('ovAnimPane');
     if (!pane) { pane = map.createPane('ovAnimPane'); pane.style.zIndex = 300; pane.style.pointerEvents = 'none'; }
-    var cv = document.createElement('canvas'); cv.className = 'ov-anim leaflet-zoom-hide';
-    pane.appendChild(cv); this.canvas = cv; this.ctx = cv.getContext('2d');
+    this._newCanvas(pane);
     // a zoom fires zoomstart + movestart, then zoomend + moveend: the counter rebuilds once, at the end
-    this._on('zoomstart', function () { self.suspend(); if (self.canvas) self.canvas.style.visibility = 'hidden'; });
-    this._on('zoomend', function () { if (self.canvas) self.canvas.style.visibility = ''; self.resume(true); });
-    this._on('movestart', function () { self.suspend(); });
-    this._on('moveend', function () { self.resume(true); });
+    this._on('zoomstart', function () { self._note('zoomstart'); self.suspend(); if (self.canvas) self.canvas.style.visibility = 'hidden'; });
+    // WebKit (the owner's iPad): the particles stayed off after a pinch zoom until a reload, which Chromium never
+    // reproduces; a canvas whose backing store Safari dropped during the zoom draws nothing, so the canvas is a fresh
+    // element after every zoom there (the old one released first).
+    this._on('zoomend', function () { self._note('zoomend'); if (self.canvas && isWebKit()) self._newCanvas(self.canvas.parentNode); if (self.canvas) self.canvas.style.visibility = ''; self.resume(true); });
+    this._on('movestart', function () { self._note('movestart'); self.suspend(); });
+    this._on('moveend', function () { self._note('moveend'); self.resume(true); });
     // a view reset (setView without animation, a jump of a screen or more, the site's single-world
     // clamp on a resize) recreates the tiles AFTER moveend: the flow is rebuilt once they exist
-    this._on('viewreset', function () { if (!self.suspended) self._rebuild(); });
-    this._on('resize', function () { self._rebuild(); });
+    this._on('viewreset', function () { self._note('viewreset'); if (!self.suspended) self._rebuild(); });
+    this._on('resize', function () { self._note('resize'); self._rebuild(); });
+    // the watchdog: every 2 s, an animator that should be running and is not is restarted (see _check)
+    this.watch = setInterval(function () { self._check(); }, WATCHDOG_MS);
+    if (this.watch && this.watch.unref) this.watch.unref();
+  };
+  FlowAnimator.prototype._newCanvas = function (pane) {
+    var old = this.canvas;
+    if (old) { try { old.width = 0; old.height = 0; } catch (e) { /* gone */ } if (old.remove) old.remove(); }
+    var cv = document.createElement('canvas'); cv.className = 'ov-anim leaflet-zoom-hide';
+    pane.appendChild(cv); this.canvas = cv; this.ctx = cv.getContext('2d'); this.v = null;   // placed afresh by the next rebuild
+  };
+  FlowAnimator.prototype._note = function (what) { this.log.push([what, Math.round(nowMs())]); if (this.log.length > 8) this.log.shift(); };
+  // The playback speed (1 paused or at 1x, 2 at 2x, 4 at 4x): the particles move that much faster, so at the fast
+  // speeds they keep pace with the time-lapse instead of drifting behind the storms; their tails keep their length on
+  // screen (the sampling interval shrinks with the rate) and their lifetimes stay in real time.
+  FlowAnimator.prototype.setRate = function (r) { this.rate = r > 0 ? r : 1; };
+  // Is anything that legitimately holds the animator in progress (a zoom or pan animation, a drag, a pinch)?
+  FlowAnimator.prototype._busy = function () {
+    var map = this.map;
+    try {
+      return !!(map._animatingZoom || (map._panAnim && map._panAnim._inProgress) || (map.dragging && map.dragging.moving && map.dragging.moving()) ||
+        (map.touchZoom && map.touchZoom._zooming) || (map.boxZoom && map.boxZoom._moved));
+    } catch (e) { return false; }
+  };
+  // The watchdog (plan section 42; the owner's iPad lost its particles after a pinch zoom until a reload): when the
+  // animator has its data and canvas, the page is visible and nothing is in progress on the map, yet the loop is not
+  // running, has not drawn a frame for WATCHDOG_MS, or sits behind a suspend that never ended, it is reset and rebuilt.
+  FlowAnimator.prototype._check = function () {
+    if (!this.canvas || !this.dir || !this.layer || !this.layer.hasFrame() || this.mode !== 'particles') return;
+    if ((typeof document !== 'undefined' && document.hidden) || reducedMotion() || this._busy()) return;
+    var stuck = this.suspended > 0, dead = !this.active || this.rafId === null || nowMs() - this.lastFrameAt > WATCHDOG_MS;
+    if (!stuck && !dead) return;
+    this.healed++; this._note(stuck ? 'heal:suspended' : 'heal:dead');
+    this.suspended = 0; this.dirty = false; this.stop(); this._rebuild();
+  };
+  // The ?ovdebug=1 readout's line (text only).
+  FlowAnimator.prototype.debugState = function () {
+    var cv = this.canvas;
+    return { active: this.active, suspended: this.suspended, dirty: this.dirty, raf: this.rafId !== null, frameAgeMs: this.lastFrameAt ? Math.round(nowMs() - this.lastFrameAt) : null,
+      canvas: cv ? cv.width + 'x' + cv.height + (cv.style && cv.style.visibility ? ' ' + cv.style.visibility : '') : 'none', dir: !!this.dir, entry: this.entry ? this.entry.step : null,
+      mode: this.mode, count: this.count, target: this.target, rate: this.rate, ema: Math.round(this.ema * 10) / 10, healed: this.healed, busy: this._busy(), log: this.log.map(function (e) { return e[0] + '@' + e[1]; }).join(' ') };
   };
   FlowAnimator.prototype.detach = function () {
     var self = this;
     this.stop();
+    if (this.watch) { clearInterval(this.watch); this.watch = null; }
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
     if (this.canvas) { if (this.canvas.remove) this.canvas.remove(); this.canvas = null; this.ctx = null; }
     this.setLayer(null);
@@ -1543,8 +1719,8 @@
     if (reducedMotion()) { this.mode = null; this.stop(); this.vf = null; this._clear(); return; }   // no animation at all
     this.mode = 'particles';
     var cellPx = TILE * Math.pow(2, v.z) * this.dgrid.dlon / 360;
-    if (!this.nodes || this.nodesFor !== this.dir || this.nodesFrame !== this.fframe) {       // once per step, not per pan
-      this.nodes = vectorNodes(this.field, this.layer, this.dir, this.dgrid, this.nodes); this.nodesFor = this.dir; this.nodesFrame = this.fframe;
+    if (!this.nodes || this.nodesFor !== this.dir || this.nodesFrame !== this.fframe || !windowCovers(this.nodes.win, nodeWindow(v, this.dgrid, this.dir, 0), this.dir.cols)) {   // once per step, or past the window
+      this.nodes = vectorNodes(this.field, this.layer, this.dir, this.dgrid, this.nodes, nodeWindow(v, this.dgrid, this.dir, 1)); this.nodesFor = this.dir; this.nodesFrame = this.fframe;
     }
     this.vf = flowField(v, cellPx >= 16 ? 8 : 4, this.nodes, this.dgrid, this.layer, !!this.layer._clip, this.vf);
     this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));   // follows the view
@@ -1588,7 +1764,7 @@
     this.rafId = null;
     if (!this.active || this.suspended || !this.dir || !this.canvas || (typeof document !== 'undefined' && document.hidden)) { this.active = false; return; }
     var dt = this.lastT ? Math.min(50, Math.max(0, t - this.lastT)) : 16; this.lastT = t;
-    var t0 = nowMs(); this._renderParticles(dt); this._adapt(nowMs() - t0, t);
+    var t0 = nowMs(); this.lastFrameAt = t0; this._renderParticles(dt); this._adapt(nowMs() - t0, t);
     var self = this; this.rafId = this.raf(function (tt) { self._frame(tt); });
   };
   // Frame-time adaptation (particles): fewer when a frame runs over the budget, back up when there is room.
@@ -1610,8 +1786,8 @@
   FlowAnimator.prototype._renderParticles = function (dt) {
     var ctx = this.ctx, v = this.v, vf = this.vf, P = this.particles, H = this.hist, HN = this.histN, HT = this.histT;
     if (!ctx || !v || !vf || !P) return;
-    var w = v.w, h = v.h, n = this.count, dts = dt / 1000, half = dts / 2, V1 = this.vel, V2 = this.vel2, i, k, q, m;
-    var style = FLOW_STYLE[this.field] || FLOW_STYLE.wind;
+    var w = v.w, h = v.h, n = this.count, dts = dt * this.rate / 1000, half = dts / 2, V1 = this.vel, V2 = this.vel2, i, k, q, m;
+    var style = LOOK.style[this.field] || LOOK.style.wind, every = TRAIL_EVERY_MS / this.rate;
     ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(0, 0, w, h);
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     // move, then the head segments (moveTo the old position, lineTo the new one) in one path
@@ -1625,14 +1801,14 @@
       var nx = x + V2[0] * dts, ny = y + V2[1] * dts;
       if (!(nx >= 0 && ny >= 0 && nx < w && ny < h)) { this._respawn(k, v); continue; }
       HT[i] += dt;
-      if (HT[i] >= TRAIL_EVERY_MS || HN[i] === 0) {                             // record the position the head leaves behind
+      if (HT[i] >= every || HN[i] === 0) {                                      // record the position the head leaves behind
         HT[i] = 0; m = HN[i]; q = (i * TRAIL_POINTS + (m % TRAIL_POINTS)) * 2; H[q] = x; H[q + 1] = y; HN[i] = m + 1 > 255 ? 255 - TRAIL_POINTS + ((m + 1) % TRAIL_POINTS) : m + 1;
       }
       ctx.moveTo(x, y); ctx.lineTo(nx, ny);
       P[k] = nx; P[k + 1] = ny; P[k + 2] = age + dt;
     }
-    ctx.lineWidth = style.halo; ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.stroke();
-    ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.stroke();
+    ctx.lineWidth = style.halo; ctx.strokeStyle = 'rgba(0,0,0,' + LOOK.headHalo + ')'; ctx.stroke();
+    ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,' + LOOK.head + ')'; ctx.stroke();
     // the tails: the recorded positions, oldest first, up to the current position
     ctx.beginPath();
     for (i = 0, k = 0; i < n; i++, k += 4) {
@@ -1641,8 +1817,8 @@
       for (q = start; q < m; q++) { var idx = (i * TRAIL_POINTS + (q % TRAIL_POINTS)) * 2; if (first) { ctx.moveTo(H[idx], H[idx + 1]); first = false; } else ctx.lineTo(H[idx], H[idx + 1]); }
       ctx.lineTo(P[k], P[k + 1]);
     }
-    ctx.lineWidth = style.halo; ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.stroke();
-    ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.stroke();
+    ctx.lineWidth = style.halo; ctx.strokeStyle = 'rgba(0,0,0,' + LOOK.tailHalo + ')'; ctx.stroke();
+    ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,' + LOOK.tail + ')'; ctx.stroke();
   };
 
   // ---- the timeline by time and the run's times (plan section 22) ----
@@ -2036,6 +2212,24 @@
   };
   // The step the ring is planned around: a pending seek / step target, else the frame on the map.
   Overlay.prototype._anchorIndex = function () { return this.target !== null ? this.target : this.frameIndex; };
+  // ?ovdebug=1: the animator's and the scheduler's state in the panel, once a second (the owner's iPad; text only).
+  Overlay.prototype._debugText = function () {
+    var f = this.flow ? this.flow.debugState() : null, dec = frameDecoder ? (frameDecoder.dead ? 'dead' : (frameDecoder.worker ? 'worker' : 'idle')) : (decoderDead ? 'dead' : 'none');
+    var o = { playing: this.playing, speed: this.speed, frame: this.frameIndex, target: this.target, res: this.res + '/' + this.dres, inflight: Object.keys(this.inflight).length,
+      cache: this.cache.size() + '/' + this.dcache.size(), decoder: dec, hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null, look: Object.keys(LOOKS).filter(function (k) { return LOOKS[k] === LOOK; })[0] };
+    var lines = [], k;
+    for (k in o) lines.push(k + ': ' + o[k]);
+    if (f) for (k in f) lines.push('flow.' + k + ': ' + f[k]); else lines.push('flow: none');
+    return lines.join('\n');
+  };
+  Overlay.prototype._debugOn = function () {
+    var self = this;
+    if (this.debugTimer) clearInterval(this.debugTimer);
+    var tick = function () { if (self.ui && self.ui.debug) self.ui.debug.textContent = self._debugText(); };
+    tick();
+    this.debugTimer = setInterval(tick, 1000);
+    if (this.debugTimer && this.debugTimer.unref) this.debugTimer.unref();
+  };
   // The ring's plan as ranks (key -> place: the target's field, its direction, then the ring interleaved): what the
   // decoded-frame caches keep when they are over their cap. null before any target.
   Overlay.prototype._rankMap = function () {
@@ -2173,14 +2367,19 @@
     if (this.playing || !this.manifest || this.frameIndex === null) return;
     this.playing = true; this.dir = 1; this.playGen++; this._due = Date.now(); this._syncUI();
     this._prefetch();                                        // the ring grows to the speed's budget at once
+    this._syncRate();
     this._tick(this.playGen); this._persist();
   };
   Overlay.prototype.pause = function () {
     this.playing = false; this.playGen++;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     this._prefetch(true);                                    // back to the paused budget (nothing new is started)
+    this._syncRate();
     this._syncUI(); this._persist();
   };
+  // The particles' pace follows the playback: x1 paused or at 1x, x2 at 2x, x4 at 4x (plan section 42).
+  Overlay.prototype._flowRate = function () { return this.playing ? this.speed : 1; };
+  Overlay.prototype._syncRate = function () { if (this.flow) this.flow.setRate(this._flowRate()); };
   // The state a reload restores (with the field the page saved): the valid time on the map, whether it
   // is playing (a visibility pause still counts as playing), and when this was written.
   Overlay.prototype._persist = function () {
@@ -2236,6 +2435,7 @@
     if (SPEEDS.indexOf(v) < 0) return;
     this.speed = v; save({ speed: v });
     this._prefetch();                                        // the ring follows the speed at once (while playing)
+    this._syncRate();
     this._syncUI();
   };
   // Leaving the tab or the page refreshes the save, paused or not: a reload restores what was on the map
@@ -2349,6 +2549,8 @@
     this.field = null;                                     // first: the pause below must not save the layer as still on
     this.pause();
     this.abortAll();
+    disposeDecoder();                                      // the decode worker goes with the layer (nothing runs after Off)
+    if (this.debugTimer) { clearInterval(this.debugTimer); this.debugTimer = null; }
     if (this.runTimer) { clearInterval(this.runTimer); this.runTimer = null; }
     if (this.lineTimer) { clearInterval(this.lineTimer); this.lineTimer = null; }
     if (this._onVis) { document.removeEventListener('visibilitychange', this._onVis); this._onVis = null; }
@@ -2446,6 +2648,7 @@
     if (!this.flow) { this.flow = new FlowAnimator(this.map, this.layer); this.flow.attach(); }
     this.flow.setLayer(this.layer);
     this.flow.setField(this.field);
+    this.flow.setRate(this._flowRate());
     this.dres = dirRes(this._dirDef(), this.map.getZoom(), this.dres);
   };
   // The direction frame for idx, delivered to the animator only if the LAYER shows that step of that run
@@ -3033,6 +3236,7 @@
     var unavail = mk('div', 'ov-warn'); unavail.hidden = true; body.appendChild(unavail); ui.unavail = unavail;
     var clipped = !!this.layer._clip;
     if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
+    if (OV_DEBUG) { ui.debug = mk('pre', 'ov-debug'); body.appendChild(ui.debug); this._debugOn(); }
     // (no settings row: fixed opacity, contours and the animation always on; owner, 2026-09-26)
     this._syncUI();
     // Clamp from the real layout: on phones the WHOLE sheet <= cap; on desktops the scroll box <= cap AND the top-left
@@ -3168,6 +3372,8 @@
       ringPlan: ringPlan, nextAvailable: nextAvailable, stepAvailable: stepAvailable, nearestIndex: nearestIndex, dotMonth: dotMonth, restoreIndex: restoreIndex, SESSION_KEY: SESSION_KEY, FrameCache: FrameCache, failureKind: failureKind, SPEEDS: SPEEDS, BASE_FPS: BASE_FPS,
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT, STALL_MS: STALL_MS, LATE_TRIES: LATE_TRIES,
       PLAY_RING: PLAY_RING, ringFor: ringFor, tileInRange: tileInRange, STALE_TILE_MS: STALE_TILE_MS, STALE_MAX_MS: STALE_MAX_MS,
+      workerSource: workerSource, workerMain: workerMain, FrameDecoder: FrameDecoder, getDecoder: getDecoder, disposeDecoder: disposeDecoder, resetDecoder: resetDecoder, setDecoderForTest: setDecoderForTest,
+      decodeFrame: decodeFrame, nodeWindow: nodeWindow, windowCovers: windowCovers, LOOKS: LOOKS, LOOK: LOOK, lookFor: lookFor, WATCHDOG_MS: WATCHDOG_MS, isWebKit: isWebKit, OV_DEBUG: OV_DEBUG, PARTICLE_PX2: PARTICLE_PX2, FLOW_STYLE: FLOW_STYLE,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,

@@ -840,10 +840,23 @@
   function workerSource() {
     return [parsePng, inflate, unfilter, decodePngGrey].map(function (f) { return f.toString(); }).join('\n') + '\n(' + workerMain.toString() + ')(self);\n';
   }
+  // The page's query as typed: the forecast loader rewrites the address (replaceState with the station query only) before
+  // this module is loaded, so the live search is joined with the navigation entry's original URL (its query survives the
+  // rewrite). The diagnostics ?ovdecode=main, ?ovlook=B|C and ?ovdebug=1 read it.
+  function pageQuery() {
+    var q = '';
+    try { q = typeof location !== 'undefined' && location ? String(location.search || '') : ''; } catch (e) { q = ''; }
+    try {
+      var nav = typeof performance !== 'undefined' && performance.getEntriesByType ? performance.getEntriesByType('navigation')[0] : null;
+      var u = nav && nav.name ? String(nav.name) : '', i = u.indexOf('?');
+      if (i >= 0) q += (q ? '&' : '?') + u.slice(i + 1).replace(/#[\s\S]*$/, '');
+    } catch (e) { /* no navigation entry */ }
+    return q;
+  }
   function FrameDecoder() { this.worker = null; this.url = null; this.pending = {}; this.seq = 0; this.dead = false; }
   FrameDecoder.available = function () {
     try {
-      if (typeof location !== 'undefined' && location && /[?&]ovdecode=main(?:&|$)/.test(location.search)) return false;
+      if (/[?&]ovdecode=main(?:&|$)/.test(pageQuery())) return false;
       return typeof Worker === 'function' && typeof Blob === 'function' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' && typeof DecompressionStream === 'function';
     } catch (e) { return false; }
   };
@@ -1405,9 +1418,9 @@
     C: { px2: 600, style: { wind: { width: 1.8, halo: 3.8 }, hs: { width: 2.2, halo: 4.4 }, tp: { width: 2.2, halo: 4.4 } }, head: 0.95, headHalo: 0.4, tail: 0.6, tailHalo: 0.28 }
   };
   function lookFor(search) { var m = /[?&]ovlook=([ABC])(?:&|$)/.exec(search || ''); return LOOKS[m ? m[1] : 'A']; }
-  var LOOK = (function () { try { return lookFor(typeof location !== 'undefined' && location ? location.search : ''); } catch (e) { return LOOKS.A; } })();
+  var LOOK = (function () { try { return lookFor(pageQuery()); } catch (e) { return LOOKS.A; } })();
   var PARTICLE_PX2 = LOOK.px2;
-  var OV_DEBUG = (function () { try { return typeof location !== 'undefined' && !!location && /[?&]ovdebug=1(?:&|$)/.test(location.search); } catch (e) { return false; } })();
+  var OV_DEBUG = (function () { try { return /[?&]ovdebug=1(?:&|$)/.test(pageQuery()); } catch (e) { return false; } })();
   var WATCHDOG_MS = 2000;                                  // the animator restarts itself when it should run and does not (iPad)
   var PARTICLE_PX_PER_S = 3;                               // screen px/s per m/s of wind, before the latitude stretch
   // Particle speed in screen px/s (before the Mercator stretch) from the field value under it: wind by
@@ -3373,7 +3386,7 @@
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT, STALL_MS: STALL_MS, LATE_TRIES: LATE_TRIES,
       PLAY_RING: PLAY_RING, ringFor: ringFor, tileInRange: tileInRange, STALE_TILE_MS: STALE_TILE_MS, STALE_MAX_MS: STALE_MAX_MS,
       workerSource: workerSource, workerMain: workerMain, FrameDecoder: FrameDecoder, getDecoder: getDecoder, disposeDecoder: disposeDecoder, resetDecoder: resetDecoder, setDecoderForTest: setDecoderForTest,
-      decodeFrame: decodeFrame, nodeWindow: nodeWindow, windowCovers: windowCovers, LOOKS: LOOKS, LOOK: LOOK, lookFor: lookFor, WATCHDOG_MS: WATCHDOG_MS, isWebKit: isWebKit, OV_DEBUG: OV_DEBUG, PARTICLE_PX2: PARTICLE_PX2, FLOW_STYLE: FLOW_STYLE,
+      decodeFrame: decodeFrame, nodeWindow: nodeWindow, windowCovers: windowCovers, LOOKS: LOOKS, LOOK: LOOK, lookFor: lookFor, WATCHDOG_MS: WATCHDOG_MS, isWebKit: isWebKit, OV_DEBUG: OV_DEBUG, PARTICLE_PX2: PARTICLE_PX2, FLOW_STYLE: FLOW_STYLE, pageQuery: pageQuery,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,

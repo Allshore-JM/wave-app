@@ -1038,3 +1038,20 @@ test('section 42 C2: vectorNodes over a window gives the lattice the same vector
   const wide = I.nodeWindow({ z: 1, w: 1200, h: 800, ox: 0, oy: 0, zt: 1 }, HALFG, pdir);
   assert.equal(wide.count, 720); assert.equal(wide.c0, 0);
 });
+
+
+test('section 42: pageQuery joins the live search with the navigation entry\'s original URL (the forecast loader rewrites the address before the module loads); the kill switch reads it', () => {
+  const hadLoc = global.location, hadPerf = Object.getOwnPropertyDescriptor(global, 'performance');
+  const setPerf = (entries) => Object.defineProperty(global, 'performance', { value: { now: () => 1, getEntriesByType: (t) => t === 'navigation' ? entries : [] }, configurable: true, writable: true });
+  try {
+    global.location = { search: '?station=51201' };
+    setPerf([{ name: 'https://wave-app-clean.onrender.com/?station=51201&ovlook=B&ovdebug=1#frag' }]);
+    assert.equal(I.pageQuery(), '?station=51201&station=51201&ovlook=B&ovdebug=1');
+    assert.equal(I.lookFor(I.pageQuery()), I.LOOKS.B);
+    assert.ok(/[?&]ovdebug=1(?:&|$)/.test(I.pageQuery()));
+    setPerf([{ name: 'https://x/?ovdecode=main' }]); assert.equal(I.FrameDecoder.available(), false, 'the kill switch from the original URL');
+    setPerf([{ name: 'https://x/' }]); global.location = { search: '' }; assert.equal(I.pageQuery(), '');
+    setPerf([]); global.location = { search: '?a=1' }; assert.equal(I.pageQuery(), '?a=1', 'no navigation entry');
+    global.location = undefined; setPerf([{ name: 'https://x/?ovlook=C' }]); assert.equal(I.pageQuery(), '?ovlook=C', 'no location');
+  } finally { global.location = hadLoc; if (hadPerf) Object.defineProperty(global, 'performance', hadPerf); else delete global.performance; }
+});

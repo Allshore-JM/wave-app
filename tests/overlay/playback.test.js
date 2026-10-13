@@ -1248,6 +1248,8 @@ test('section 42: the ring follows the speed: shark fetches 4 at once and keeps 
     o.setSpeed(2); assert.equal(o._maxInflight(), 3); assert.equal(o._ring().decoded, 7);
     o.pause(); await settle();
     assert.equal(o.cache.size(), 5, 'back to the paused budget'); assert.ok(o.cache.has(o._key(o.frameIndex)), 'the drawn frame kept');
+    const a0 = o._anchorIndex();                                                 // the shrink keeps the paused ring's near frames, not the LRU ones
+    for (const j of [a0, a0 + 1, a0 + 2, a0 - 1]) assert.ok(o.cache.has(o._key(j)), 'kept after the shrink: ' + (j - a0));
     assert.ok(Object.keys(o.inflight).length <= 2);
     // a pending far target with its fetch in flight, then shark play and a pause: the cap shrinks around it
     o.seek(i0 + 40); await tick();
@@ -1322,4 +1324,24 @@ test('section 42 (step 2 finding): a step whose frame is decoded keeps every rin
     assert.deepEqual(Object.keys(o.inflight).sort(), [T + 1, T + 4, T + 5].map((j) => o._key(j)).sort(), 'kept the nearest three, dropped T+6');
     o.inflight = {}; o.pause(); o.unmount();
   });
+});
+
+test('section 42 (step 2 finding): the cache never evicts a frame the ring still needs: with downloads faster than the playback (a phone at shark speed), no frame is downloaded twice, at 4x and at 1x', async () => {
+  for (const speed of [4, 1]) {
+    const w = world({ fakeTimers: true });
+    await onFakeClock(w, async () => {
+      w.pointer = ptr(A); w.manifests[A.run] = A;
+      const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+      o.seek(0); await settle(); await w.releaseAll();
+      const from = w.fetches.length;
+      o.setSpeed(speed); o.play(); await settle(); await w.releaseAll();
+      for (let k = 0; k < 40; k++) { await w.fade(o._interval()); await settle(); await w.releaseAll(); await settle(); }
+      o.pause();
+      const seen = {}, twice = [];
+      for (const u of w.fetches.slice(from).filter((x) => /\.png$/.test(x))) { if (seen[u]) twice.push(u.split('/').slice(-2).join('/')); seen[u] = true; }
+      assert.deepEqual(twice, [], speed + 'x: frames downloaded twice');
+      assert.ok(o.frameIndex >= 40, 'played on (' + o.frameIndex + ')');
+      o.unmount();
+    });
+  }
 });

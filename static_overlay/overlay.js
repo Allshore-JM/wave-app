@@ -1271,22 +1271,32 @@
   function reducedMotion() {
     try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch (e) { return false; }
   }
-  // Decoded frames, least recently used first out; the frame on the map is never evicted.
+  // Decoded frames, least recently used first out (with the ring's ranks: what the ring does not need first, then the
+  // ring's farthest); the frame on the map is never evicted.
   function FrameCache(max) { this.max = max; this.map = new Map(); }
   FrameCache.prototype.get = function (key) { var v = this.map.get(key); if (v) { this.map.delete(key); this.map.set(key, v); } return v || null; };
   FrameCache.prototype.has = function (key) { return this.map.has(key); };
   FrameCache.prototype.clear = function () { this.map.clear(); };
   FrameCache.prototype.size = function () { return this.map.size; };
-  FrameCache.prototype.set = function (key, frame, keep) {
+  FrameCache.prototype.set = function (key, frame, keep, rank) {
     this.map.delete(key); this.map.set(key, frame);
-    this._trim(key, keep);
+    this._trim(key, keep, rank);
   };
-  // A new cap (the ring grows with the speed and shrinks back on pause): the least recently used go, never keep.
-  FrameCache.prototype.limit = function (max, keep) { this.max = max; this._trim(null, keep); };
-  FrameCache.prototype._trim = function (key, keep) {
+  // A new cap (the ring grows with the speed and shrinks back on pause): over it, entries go as _trim says, never keep.
+  FrameCache.prototype.limit = function (max, keep, rank) { this.max = max; this._trim(null, keep, rank); };
+  // Over the cap. rank (key -> the entry's place in the ring's plan; undefined = the ring does not need it): first the
+  // entries the ring does not need, least recently used first (a frame that just landed outside the ring included), then
+  // the ring's farthest. A plain LRU dropped the frames fetched EARLY for the ring, the next ones, before the frames
+  // behind the playhead (plan section 42: a phone at shark speed downloaded 3 frames in 4 twice). Without rank: LRU,
+  // never the frame that just landed. Never keep (the frame on the map).
+  FrameCache.prototype._trim = function (key, keep, rank) {
     if (this.map.size <= this.max) return;
-    var keys = Array.from(this.map.keys());
-    for (var i = 0; i < keys.length && this.map.size > this.max; i++) if (keys[i] !== key && keys[i] !== keep) this.map.delete(keys[i]);
+    var all = Array.from(this.map.keys()), order;
+    if (rank) {
+      order = all.filter(function (k) { return k !== keep && rank[k] === undefined; })
+        .concat(all.filter(function (k) { return k !== keep && k !== key && rank[k] !== undefined; }).sort(function (a, b) { return rank[b] - rank[a]; }));
+    } else order = all.filter(function (k) { return k !== key && k !== keep; });
+    for (var i = 0; i < order.length && this.map.size > this.max; i++) this.map.delete(order[i]);
   };
 
   // ---- direction fields and the animation (plan section 21 phase C) ----
@@ -1953,7 +1963,7 @@
       // change) must neither be cached nor delivered.
       if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
       if (!dir) self.transientFails = 0;                                      // the outage counter follows the field frames only
-      cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null);
+      cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null, self._rankMap());
       self._prefetch();                                                        // the ring refills on every landing, not only the target's (plan section 42)
       return frame;
     }, function (err) {
@@ -2026,6 +2036,15 @@
   };
   // The step the ring is planned around: a pending seek / step target, else the frame on the map.
   Overlay.prototype._anchorIndex = function () { return this.target !== null ? this.target : this.frameIndex; };
+  // The ring's plan as ranks (key -> place: the target's field, its direction, then the ring interleaved): what the
+  // decoded-frame caches keep when they are over their cap. null before any target.
+  Overlay.prototype._rankMap = function () {
+    var a = this._anchorIndex(), rank = {}, plan, i;
+    if (a === null || !this.manifest) return null;
+    plan = this._plan(a);
+    for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
+    return rank;
+  };
   // Keep the ring (current, ahead, behind: the counts by speed, with the direction frames interleaved while the
   // Animation is on) decoded with at most the cap's fetches; drop fetches the ring no longer wants (direction,
   // field, resolution, Animation or the ring's size changed), and above the cap (a pause, a slower speed) the
@@ -2037,8 +2056,8 @@
     if (this.frameIndex === null || !this.manifest || !this.field) return;
     var r = this._ring(), cap = r.inflight, plan = this._plan(this._anchorIndex()), rank = {}, i, k, keys;
     var shown = this.frameIndex, keepF = this._key(shown), keepD = this._wantDir() ? this._key(shown, 'dir') : null;
-    this.cache.limit(r.decoded, keepF); this.dcache.limit(r.decoded, keepD);
     for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
+    this.cache.limit(r.decoded, keepF, rank); this.dcache.limit(r.decoded, keepD, rank);
     for (k in this.inflight) if (rank[k] === undefined) { this.inflight[k].abort.abort(); delete this.inflight[k]; }
     keys = Object.keys(this.inflight);
     if (keys.length > cap) {

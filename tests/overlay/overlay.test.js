@@ -859,3 +859,19 @@ test('section 42: a new frame draws the tiles in view first and the buffer tiles
   assert.equal(I.tileInRange({ x: 7, y: 9, z: 6 }, l._viewRange()), true); assert.equal(I.tileInRange({ x: 7, y: 9, z: 7 }, l._viewRange()), false, 'another zoom level');
   const off = new I.ModelGridLayer({ opacity: 1 }); assert.equal(off._viewRange(), null, 'off a map: every tile is drawn at once');
 });
+
+
+test('section 42 (step 2 finding): FrameCache with the ring\'s ranks drops what the ring does not need first (oldest first), then the ring\'s farthest; never the frame on the map; without ranks plain LRU', () => {
+  const c = new I.FrameCache(4), rank = { r0: 0, r1: 1, r2: 2, r3: 3, r4: 4 };
+  c.set('r4', 4); c.set('r3', 3); c.set('old', 9); c.set('r1', 1);           // r4 and r3 fetched first (oldest), 'old' outside the ring
+  c.set('r2', 2, 'r1', rank);                                                // over the cap: 'old' goes, not r4 (the LRU entry)
+  assert.deepEqual(['r1', 'r2', 'r3', 'r4', 'old'].map((k) => c.has(k)), [true, true, true, true, false]);
+  c.set('r0', 0, 'r1', rank);                                                // all in the ring: the farthest (r4) goes
+  assert.deepEqual(['r0', 'r1', 'r2', 'r3', 'r4'].map((k) => c.has(k)), [true, true, true, true, false]);
+  c.set('late', 7, 'r1', rank);                                              // a frame that lands outside the ring goes itself
+  assert.equal(c.has('late'), false); assert.equal(c.size(), 4);
+  c.limit(2, 'r3', rank);                                                    // the frame on the map stays even when far
+  assert.deepEqual(['r0', 'r1', 'r2', 'r3'].map((k) => c.has(k)), [true, false, false, true]);
+  const d = new I.FrameCache(2); d.set('a', 1); d.set('b', 2); d.set('c', 3, 'a');
+  assert.deepEqual(['a', 'b', 'c'].map((k) => d.has(k)), [true, false, true], 'no ranks: LRU, never keep, never the new one');
+});

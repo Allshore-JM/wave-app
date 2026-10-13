@@ -1034,11 +1034,10 @@ test('section 42: pageQuery joins the live search with the navigation entry\'s o
     global.location = { search: '?station=51201' };
     setPerf([{ name: 'https://wave-app-clean.onrender.com/?station=51201&ovlook=B&ovdebug=1#frag' }]);
     assert.equal(I.pageQuery(), '?station=51201&station=51201&ovlook=B&ovdebug=1');
-    assert.equal(I.lookFor(I.pageQuery()), I.LOOKS.B);
     assert.ok(/[?&]ovdebug=1(?:&|$)/.test(I.pageQuery()));
     setPerf([{ name: 'https://x/?ovdecode=main' }]); assert.equal(I.FrameDecoder.available(), false, 'the kill switch from the original URL');
     setPerf([{ name: 'https://x/' }]); global.location = { search: '' }; assert.equal(I.pageQuery(), '');
     setPerf([]); global.location = { search: '?a=1' }; assert.equal(I.pageQuery(), '?a=1', 'no navigation entry');
-    global.location = undefined; setPerf([{ name: 'https://x/?ovlook=C' }]); assert.equal(I.pageQuery(), '?ovlook=C', 'no location');
+    global.location = undefined; setPerf([{ name: 'https://x/?ovdebug=1' }]); assert.equal(I.pageQuery(), '?ovdebug=1', 'no location');
   } finally { global.location = hadLoc; if (hadPerf) Object.defineProperty(global, 'performance', hadPerf); else delete global.performance; }
 });

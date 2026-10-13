@@ -222,7 +222,7 @@ the tab.
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.
-Fast playback (assets 2.15.0-2.16.0, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
+Fast playback (assets 2.15.0-2.16.1, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
 to 1920x1080 because (1) the ring of decoded frames follows the speed: paused and at 1x the G3/G4 budgets stand (the
 frame on the map, 2 ahead, 2 behind, at most 2 downloads at once, at most 5 decoded frames per kind); at 2x the ring is
 4 ahead / 1 behind with 3 downloads and 7 decoded, at 4x 6 ahead / 1 behind with 4 downloads and 9 decoded (the direction
@@ -255,7 +255,8 @@ screen and their lifetimes stay in real time; their look (density, line weight, 
 visible, nothing in progress on the map, yet no frame drawn or a pause that never ended), and on WebKit (Safari, every
 iPad browser) the animation canvas is a fresh element after every zoom, since the iPad lost its particles after a pinch
 zoom until a reload (not reproducible in Chromium); `?ovdebug=1` writes the animator's and the scheduler's state into
-the panel once a second.
+the panel once a second. (2.16.1: these address parameters are read from the navigation entry's original URL as well,
+because the forecast loader rewrites the address to the station query before the overlay module loads.)
 Wave-height colours and contours (asset 2.7.6): wave height uses value knots so 0-3 m fills about half of the
 legend (owner-picked spectral palette; the knots stretch to whatever legend the manifest carries; a run whose legend is exactly 0-60 ft = 0-18.288 m uses the wider scale in `SCALES`: 0-30 ft unchanged, 40 ft pale pink, 50 ft rose, 60 ft deep purple, plan section 27); tp and wind keep
 linear scales. Contours (wave height and period, always on since asset 2.12.0; no checkbox) are light

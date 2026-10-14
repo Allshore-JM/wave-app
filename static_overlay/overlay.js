@@ -768,7 +768,7 @@
   function parsePng(buf, expect) {
     var u8 = new Uint8Array(buf), dv = new DataView(buf);
     if (u8.length < 8 || u8[0] !== 137 || u8[1] !== 80 || u8[2] !== 78 || u8[3] !== 71) throw new Error('frame decode failed');
-    var pos = 8, w = 0, h = 0, depth = 0, ctype = 0, interlace = 0, idat = [], total = 0;
+    var pos = 8, w = 0, h = 0, depth = 0, ctype = 0, interlace = 0, idat = [];
     while (pos + 8 <= u8.length) {
       var len = dv.getUint32(pos), type = String.fromCharCode(u8[pos + 4], u8[pos + 5], u8[pos + 6], u8[pos + 7]), start = pos + 8;
       if (start + len > u8.length) throw new Error('frame decode failed');
@@ -777,26 +777,41 @@
         // the manifest says how big a frame is: anything else is refused BEFORE it is inflated
         if (expect && (w !== expect.cols || h !== expect.rows)) throw new Error('frame decode failed');
       }
-      else if (type === 'IDAT') { idat.push(u8.subarray(start, start + len)); total += len; }
+      else if (type === 'IDAT') idat.push(u8.subarray(start, start + len));
       else if (type === 'IEND') break;
       pos = start + len + 4;
     }
     if (!w || !h || depth !== 8 || ctype !== 0 || interlace !== 0) return null;   // not our format: the canvas path handles it
-    var z = new Uint8Array(total), o = 0;
-    for (var i = 0; i < idat.length; i++) { z.set(idat[i], o); o += idat[i].length; }
-    return { w: w, h: h, z: z };
+    return { w: w, h: h, idat: idat };
   }
-  function inflate(z) {
-    var ds = new DecompressionStream('deflate'), writer = ds.writable.getWriter();
-    writer.write(z).catch(function () {}); writer.close().catch(function () {});
-    return new Response(ds.readable).arrayBuffer().then(function (b) { return new Uint8Array(b); });
+  // The zlib stream's IDAT pieces go to the browser's inflater as they are (no concatenated copy) and its output is read
+  // into ONE buffer of the expected size, (w + 1) * h bytes: more or fewer = a broken frame. The inflater's own chunks
+  // are collected in `spent` (when given) so the worker can hand them to the main thread (G29 B-P1-2: the decode's
+  // garbage in the worker's own heap was only collected at V8's external-memory trigger, ~65 MB).
+  function inflate(parts, size, spent) {
+    var ds = new DecompressionStream('deflate'), writer = ds.writable.getWriter(), reader = ds.readable.getReader();
+    var out = new Uint8Array(size), got = 0, i;
+    for (i = 0; i < parts.length; i++) writer.write(parts[i]).catch(function () {});
+    writer.close().catch(function () {});
+    function pump() {
+      return reader.read().then(function (r) {
+        if (r.done) { if (got !== size) throw new Error('frame decode failed'); return out; }
+        var c = r.value, n = c.length;
+        if (got + n > size) { try { reader.cancel().catch(function () {}); } catch (e) { /* closed */ } throw new Error('frame decode failed'); }
+        out.set(c, got); got += n;
+        if (spent && c.buffer && spent.indexOf(c.buffer) < 0) spent.push(c.buffer);
+        return pump();
+      });
+    }
+    return pump().catch(function (err) { throw /decode failed/.test(String(err && err.message)) ? err : new Error('frame decode failed'); });
   }
-  // PNG scanline filters 0..4 for one byte per pixel.
+  // PNG scanline filters 0..4 for one byte per pixel, IN PLACE: row y's pixels land at y * w, below the row's own bytes
+  // at y * (w + 1) + 1, so nothing unread is ever overwritten; the result is a view of the first w * h bytes (no copy).
   function unfilter(raw, w, h) {
-    var out = new Uint8Array(w * h), stride = w + 1, x, a, b, c, p, pa, pb, pc;
+    var out = raw, stride = w + 1, x, a, b, c, p, pa, pb, pc;
     for (var y = 0; y < h; y++) {
       var f = raw[y * stride], src = y * stride + 1, dst = y * w, up = dst - w;
-      if (f === 0) out.set(raw.subarray(src, src + w), dst);
+      if (f === 0) out.copyWithin(dst, src, src + w);
       else if (f === 1) for (x = 0; x < w; x++) out[dst + x] = (raw[src + x] + (x ? out[dst + x - 1] : 0)) & 255;
       else if (f === 2) for (x = 0; x < w; x++) out[dst + x] = (raw[src + x] + (y ? out[up + x] : 0)) & 255;
       else if (f === 3) for (x = 0; x < w; x++) out[dst + x] = (raw[src + x] + (((x ? out[dst + x - 1] : 0) + (y ? out[up + x] : 0)) >> 1)) & 255;
@@ -807,16 +822,14 @@
       }
       else throw new Error('frame decode failed');
     }
-    return out;
+    return out.subarray(0, w * h);
   }
-  function decodePngGrey(buf, expect) {
+  // spent (optional): every buffer the decode made beyond the code array goes in it (the worker hands them back).
+  function decodePngGrey(buf, expect, spent) {
     var p;
     try { p = parsePng(buf, expect); } catch (e) { return Promise.reject(e); }
     if (!p) return Promise.resolve(null);
-    return inflate(p.z).then(function (raw) {
-      if (raw.length !== (p.w + 1) * p.h) throw new Error('frame decode failed');
-      return { q: unfilter(raw, p.w, p.h), cols: p.w, rows: p.h };
-    });
+    return inflate(p.idat, (p.w + 1) * p.h, spent).then(function (raw) { return { q: unfilter(raw, p.w, p.h), cols: p.w, rows: p.h }; });
   }
   var decodeCanvas = null;
   // ---- decoding off the main thread (plan section 42) ----
@@ -830,10 +843,17 @@
   // page's address (a diagnostic), the main-thread path runs as before.
   function workerMain(self) {
     self.onmessage = function (e) {
-      var d = e.data;
-      decodePngGrey(d.buf, d.expect).then(function (frame) {
-        if (!frame) self.postMessage({ id: d.id, raw: d.buf }, [d.buf]);
-        else self.postMessage({ id: d.id, q: frame.q, cols: frame.cols, rows: frame.rows }, [frame.q.buffer]);
+      var d = e.data, spent = [];
+      decodePngGrey(d.buf, d.expect, spent).then(function (frame) {
+        if (!frame) { self.postMessage({ id: d.id, raw: d.buf }, [d.buf]); return; }
+        // The code array goes over transferred, and so does everything else the decode held (the body, the inflater's
+        // chunks): the worker keeps nothing, and that garbage is collected on the main thread, where it always was
+        // before the worker (G29 B-P1-2). A buffer the browser will not transfer: the code array goes alone.
+        var list = [frame.q.buffer], extra = [], i, b;
+        if (d.buf && d.buf.byteLength) { list.push(d.buf); extra.push(d.buf); }
+        for (i = 0; i < spent.length; i++) { b = spent[i]; if (b && b.byteLength && list.indexOf(b) < 0) { list.push(b); extra.push(b); } }
+        try { self.postMessage({ id: d.id, q: frame.q, cols: frame.cols, rows: frame.rows, spent: extra }, list); }
+        catch (err) { self.postMessage({ id: d.id, q: frame.q, cols: frame.cols, rows: frame.rows }, [frame.q.buffer]); }
       }, function (err) { self.postMessage({ id: d.id, error: String(err && err.message || err) }); });
     };
   }
@@ -848,8 +868,8 @@
     try { q = typeof location !== 'undefined' && location ? String(location.search || '') : ''; } catch (e) { q = ''; }
     try {
       var nav = typeof performance !== 'undefined' && performance.getEntriesByType ? performance.getEntriesByType('navigation')[0] : null;
-      var u = nav && nav.name ? String(nav.name) : '', i = u.indexOf('?');
-      if (i >= 0) q += (q ? '&' : '?') + u.slice(i + 1).replace(/#[\s\S]*$/, '');
+      var u = nav && nav.name ? String(nav.name).replace(/#[\s\S]*$/, '') : '', i = u.indexOf('?');   // a '?' in the fragment is no query
+      if (i >= 0) q += (q ? '&' : '?') + u.slice(i + 1);
     } catch (e) { /* no navigation entry */ }
     return q;
   }
@@ -924,6 +944,7 @@
       var size = direct ? body.byteLength : body.size;
       if (size > MAX_FRAME_BYTES) throw new Error('frame decode failed');
       if (!direct) return decodeCanvas_(body, expect);
+      if (signal && signal.aborted) throw abortError();                   // Off while the body arrived: no decoder is booted for it
       var dec = mainOnly ? null : getDecoder();
       if (!dec) return decodePngGrey(body, expect).then(function (frame) { return frame || decodeCanvas_(new Blob([body]), expect); });
       return dec.decode(body, expect).then(function (res) {
@@ -1319,6 +1340,7 @@
   var RETRY_AFTER_MS = 60 * 1000;                            // a transient fetch failure keeps a frame out for this long
   var MAX_TRANSIENT = 3;                                     // consecutive transient failures -> "unavailable" + Retry
   var STALL_MS = 5000;                                       // a frame DOWNLOAD slower than this (or 4 intervals) is asked again
+  var PAINT_FALLBACK_MS = 250;                               // a playback landing waits for the browser to render it, at most this long
   var LATE_TRIES = 3;                                        // download attempts before a stalling frame counts as a failure
   // A frame that does not exist (or cannot be decoded) is gone for the session; anything else (network
   // error, 403 from a bot check, 5xx, browser out of resources) is retried after a cooldown.
@@ -1375,24 +1397,26 @@
   FrameCache.prototype.has = function (key) { return this.map.has(key); };
   FrameCache.prototype.clear = function () { this.map.clear(); };
   FrameCache.prototype.size = function () { return this.map.size; };
-  FrameCache.prototype.set = function (key, frame, keep, rank) {
+  FrameCache.prototype.set = function (key, frame, keep, rank, keepValue) {
     this.map.delete(key); this.map.set(key, frame);
-    this._trim(key, keep, rank);
+    this._trim(key, keep, rank, keepValue);
   };
   // A new cap (the ring grows with the speed and shrinks back on pause): over it, entries go as _trim says, never keep.
-  FrameCache.prototype.limit = function (max, keep, rank) { this.max = max; this._trim(null, keep, rank); };
+  FrameCache.prototype.limit = function (max, keep, rank, keepValue) { this.max = max; this._trim(null, keep, rank, keepValue); };
   // Over the cap. rank (key -> the entry's place in the ring's plan; undefined = the ring does not need it): first the
   // entries the ring does not need, least recently used first (a frame that just landed outside the ring included), then
   // the ring's farthest. A plain LRU dropped the frames fetched EARLY for the ring, the next ones, before the frames
   // behind the playhead (plan section 42: a phone at shark speed downloaded 3 frames in 4 twice). Without rank: LRU,
-  // never the frame that just landed. Never keep (the frame on the map).
-  FrameCache.prototype._trim = function (key, keep, rank) {
+  // never the frame that just landed. Never keep (the key of the frame on the map) nor keepValue (the frame object
+  // itself: after a resolution change the drawn frame's key is the OTHER resolution's, G29 A-P3-1).
+  FrameCache.prototype._trim = function (key, keep, rank, keepValue) {
     if (this.map.size <= this.max) return;
-    var all = Array.from(this.map.keys()), order;
+    var self = this, order;
+    var all = Array.from(this.map.keys()).filter(function (k) { return k !== keep && (keepValue === undefined || keepValue === null || self.map.get(k) !== keepValue); });
     if (rank) {
-      order = all.filter(function (k) { return k !== keep && rank[k] === undefined; })
-        .concat(all.filter(function (k) { return k !== keep && k !== key && rank[k] !== undefined; }).sort(function (a, b) { return rank[b] - rank[a]; }));
-    } else order = all.filter(function (k) { return k !== key && k !== keep; });
+      order = all.filter(function (k) { return rank[k] === undefined; })
+        .concat(all.filter(function (k) { return k !== key && rank[k] !== undefined; }).sort(function (a, b) { return rank[b] - rank[a]; }));
+    } else order = all.filter(function (k) { return k !== key; });
     for (var i = 0; i < order.length && this.map.size > this.max; i++) this.map.delete(order[i]);
   };
 
@@ -1417,6 +1441,7 @@
   var PARTICLE_PX2 = LOOK.px2;
   var OV_DEBUG = (function () { try { return /[?&]ovdebug=1(?:&|$)/.test(pageQuery()); } catch (e) { return false; } })();
   var WATCHDOG_MS = 2000;                                  // the animator restarts itself when it should run and does not (iPad)
+  var BUSY_STUCK_MS = 10000;                               // a map "busy" this long in one go is a flag stuck true, not a gesture
   var PARTICLE_PX_PER_S = 3;                               // screen px/s per m/s of wind, before the latitude stretch
   // Particle speed in screen px/s (before the Mercator stretch) from the field value under it: wind by
   // its speed; swell lines by the wave height (nothing under the 0.1 m floor) or by the peak period (the
@@ -1428,6 +1453,7 @@
   };
   var FLOW_STYLE = LOOK.style;
   var TRAIL_POINTS = 10, TRAIL_EVERY_MS = 66;              // a particle's tail: its last 10 positions, one every 66 ms (~0.6 s), drawn fresh each frame
+  var TRAIL_SPAN_MS = (TRAIL_POINTS + 1) * TRAIL_EVERY_MS; // ... and never older than this in FLOW time (G29 B-P3-1; owner: the same length at every speed)
   var PARTICLE_LIFE_MS = { wind: [1000, 2500], hs: [2000, 4500], tp: [2000, 4500] };   // a particle lives this long (uniform), then respawns
   var CODE_SIN = new Float64Array(256), CODE_COS = new Float64Array(256);
   (function () { for (var q = 1; q < 255; q++) { var a = (q - 1) / 254 * 2 * Math.PI; CODE_SIN[q] = Math.sin(a); CODE_COS[q] = Math.cos(a); } })();
@@ -1518,7 +1544,8 @@
   }
   // The node window for a view plus `margin` screens on every side (default 1: what the animator computes; 0: what a
   // view needs, the coverage test), in direction-grid rows and columns (wrapping), with one node of margin for the
-  // lattice's bilinear neighbours.
+  // lattice's bilinear neighbours. The rows are clamped to the world (85.05 N / S): lattice points beyond it have no
+  // nodes, where the whole grid would still find some; the page never shows that band (84 N / 79 S, G29 A-P3-2).
   function nodeWindow(view, dgrid, dframe, margin) {
     var n = TILE * Math.pow(2, view.z), cols = dframe.cols, rows = dframe.rows, mg = margin === undefined ? 1 : margin;
     var y0 = Math.max(0, view.oy - mg * view.h), y1 = Math.min(n, view.oy + (1 + mg) * view.h), x0 = view.ox - mg * view.w, x1 = view.ox + (1 + mg) * view.w;
@@ -1576,10 +1603,17 @@
     return { s: s, cols: cols, rows: rows, u: u, v: v };
   }
   function nowMs() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
-  // Safari (incl. every iOS / iPadOS browser): WebKit without a Chromium or Firefox mark.
+  // Safari, and every browser on iOS / iPadOS (all of them WebKit): WebKit with an iOS mark (iPad / iPhone / iPod, or
+  // Chrome / Edge / Firefox for iOS: CriOS / EdgiOS / FxiOS), a Macintosh user agent on a touch screen (iPadOS asks for
+  // desktop pages as a Mac), or no Chromium / Firefox mark at all (K-11: the first rule left iOS Chrome / Edge / Firefox out).
   function isWebKit() {
-    try { var ua = typeof navigator !== 'undefined' && navigator ? String(navigator.userAgent || '') : ''; return /AppleWebKit/.test(ua) && !/Chrome|Chromium|CriOS|Edg\/|EdgiOS|OPR|Firefox|FxiOS/.test(ua); }
-    catch (e) { return false; }
+    try {
+      var nav = typeof navigator !== 'undefined' && navigator ? navigator : null, ua = nav ? String(nav.userAgent || '') : '';
+      if (!/AppleWebKit/.test(ua)) return false;
+      if (/iPad|iPhone|iPod|CriOS|EdgiOS|FxiOS/.test(ua)) return true;
+      if (/Macintosh/.test(ua) && typeof nav.maxTouchPoints === 'number' && nav.maxTouchPoints > 1) return true;
+      return !/Chrome|Chromium|Edg\/|OPR|Firefox/.test(ua);
+    } catch (e) { return false; }
   }
 
   // The animation: particles with fading trails along the swell (wave height, peak period) or the wind
@@ -1593,11 +1627,11 @@
     this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
     this.field = null; this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.mode = null;   // 'particles' while animating
     this.nodes = null; this.nodesFor = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0;
-    this.vel = new Float64Array(2); this.vel2 = new Float64Array(2); this.hist = null; this.histN = null; this.histT = null;
+    this.vel = new Float64Array(2); this.vel2 = new Float64Array(2); this.hist = null; this.histN = null; this.histT = null; this.histF = null; this.flowT = null;
     this.active = false; this.suspended = 0; this.dirty = false; this.rafId = null; this.lastT = 0;
     this.ema = 0; this.adaptAt = 0; this._listeners = [];
     this.rate = 1;                                           // the playback speed: particles move x1 (paused, snail), x2, x4
-    this.lastFrameAt = 0; this.healed = 0; this.log = []; this.watch = null;   // the watchdog (plan section 42) and the debug readout
+    this.lastFrameAt = 0; this.healed = 0; this.log = []; this.watch = null; this.busySince = 0;   // the watchdog (plan section 42) and the debug readout
     this.setLayer(layer);
   }
   // The field layer the particles are gated by; when its tiles are redrawn for a coastline chunk that landed
@@ -1623,7 +1657,7 @@
     // WebKit (the owner's iPad): the particles stayed off after a pinch zoom until a reload, which Chromium never
     // reproduces; a canvas whose backing store Safari dropped during the zoom draws nothing, so the canvas is a fresh
     // element after every zoom there (the old one released first).
-    this._on('zoomend', function () { self._note('zoomend'); if (self.canvas && isWebKit()) self._newCanvas(self.canvas.parentNode); if (self.canvas) self.canvas.style.visibility = ''; self.resume(true); });
+    this._on('zoomend', function () { self._note('zoomend'); if (self.canvas && self.canvas.parentNode && isWebKit()) self._newCanvas(self.canvas.parentNode); if (self.canvas) self.canvas.style.visibility = ''; self.resume(true); });
     this._on('movestart', function () { self._note('movestart'); self.suspend(); });
     this._on('moveend', function () { self._note('moveend'); self.resume(true); });
     // a view reset (setView without animation, a jump of a screen or more, the site's single-world
@@ -1634,18 +1668,24 @@
     this.watch = setInterval(function () { self._check(); }, WATCHDOG_MS);
     if (this.watch && this.watch.unref) this.watch.unref();
   };
+  // The new canvas's drawing context is taken FIRST: a browser that refuses one (Safari with its canvas memory used
+  // up, G29 B-P2-2) leaves the old canvas in place; without any context the animator draws nothing and the watchdog
+  // asks again (never an exception into the map's events or the playback).
   FlowAnimator.prototype._newCanvas = function (pane) {
-    var old = this.canvas;
+    var old = this.canvas, cv = document.createElement('canvas'), ctx = null;
+    cv.className = 'ov-anim leaflet-zoom-hide';
+    try { ctx = cv.getContext('2d') || null; } catch (e) { ctx = null; }
+    if (!ctx && old && this.ctx) return;
     if (old) { try { old.width = 0; old.height = 0; } catch (e) { /* gone */ } if (old.remove) old.remove(); }
-    var cv = document.createElement('canvas'); cv.className = 'ov-anim leaflet-zoom-hide';
-    pane.appendChild(cv); this.canvas = cv; this.ctx = cv.getContext('2d'); this.v = null;   // placed afresh by the next rebuild
+    pane.appendChild(cv); this.canvas = cv; this.ctx = ctx; this.v = null;   // placed afresh by the next rebuild
   };
   FlowAnimator.prototype._note = function (what) { this.log.push([what, Math.round(nowMs())]); if (this.log.length > 8) this.log.shift(); };
   // The playback speed (1 paused or at 1x, 2 at 2x, 4 at 4x): the particles move that much faster, so at the fast
   // speeds they keep pace with the time-lapse instead of drifting behind the storms; their tails keep their length on
   // screen (the sampling interval shrinks with the rate) and their lifetimes stay in real time.
   FlowAnimator.prototype.setRate = function (r) { this.rate = r > 0 ? r : 1; };
-  // Is anything that legitimately holds the animator in progress (a zoom or pan animation, a drag, a pinch)?
+  // Is anything that legitimately holds the animator in progress (a zoom or pan animation, a drag, a pinch)? (A flyTo
+  // sets none of these flags and would be healed mid-flight; the page never uses one.)
   FlowAnimator.prototype._busy = function () {
     var map = this.map;
     try {
@@ -1658,16 +1698,24 @@
   // running, has not drawn a frame for WATCHDOG_MS, or sits behind a suspend that never ended, it is reset and rebuilt.
   FlowAnimator.prototype._check = function () {
     if (!this.canvas || !this.dir || !this.layer || !this.layer.hasFrame() || this.mode !== 'particles') return;
-    if ((typeof document !== 'undefined' && document.hidden) || reducedMotion() || this._busy()) return;
+    if ((typeof document !== 'undefined' && document.hidden) || reducedMotion()) return;
+    // a gesture or an animation in progress holds the animator legitimately; held for BUSY_STUCK_MS in one go it is a
+    // Leaflet flag stuck true (G29 A-P3-3), which would otherwise keep a stuck iPad stuck for good
+    if (this._busy()) { if (!this.busySince) this.busySince = nowMs(); if (nowMs() - this.busySince < BUSY_STUCK_MS) return; } else this.busySince = 0;
     var stuck = this.suspended > 0, dead = !this.active || this.rafId === null || nowMs() - this.lastFrameAt > WATCHDOG_MS;
     if (!stuck && !dead) return;
-    this.healed++; this._note(stuck ? 'heal:suspended' : 'heal:dead');
+    this.healed++; this._note(stuck ? 'heal:suspended' : 'heal:dead'); this.busySince = 0;
+    // the pause that never ended may be a zoom whose zoomend never came: its canvas is still hidden (G29 B-P2-1); on
+    // WebKit, and wherever the canvas got no drawing context, the canvas is a fresh element, as after a zoom
+    if (this.canvas && this.canvas.parentNode && (!this.ctx || isWebKit())) this._newCanvas(this.canvas.parentNode);
+    if (this.canvas && this.canvas.style) this.canvas.style.visibility = '';
     this.suspended = 0; this.dirty = false; this.stop(); this._rebuild();
   };
   // The ?ovdebug=1 readout's line (text only).
   FlowAnimator.prototype.debugState = function () {
     var cv = this.canvas;
     return { active: this.active, suspended: this.suspended, dirty: this.dirty, raf: this.rafId !== null, frameAgeMs: this.lastFrameAt ? Math.round(nowMs() - this.lastFrameAt) : null,
+      ctx: !!this.ctx, ctxLost: !!(this.ctx && typeof this.ctx.isContextLost === 'function' && this.ctx.isContextLost()),
       canvas: cv ? cv.width + 'x' + cv.height + (cv.style && cv.style.visibility ? ' ' + cv.style.visibility : '') : 'none', dir: !!this.dir, entry: this.entry ? this.entry.step : null,
       mode: this.mode, count: this.count, target: this.target, rate: this.rate, ema: Math.round(this.ema * 10) / 10, healed: this.healed, busy: this._busy(), log: this.log.map(function (e) { return e[0] + '@' + e[1]; }).join(' ') };
   };
@@ -1715,7 +1763,7 @@
     if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; cv.style.width = v.w + 'px'; cv.style.height = v.h + 'px'; }
     var p = this.map.containerPointToLayerPoint([0, 0]);
     cv.style.transform = 'translate3d(' + p.x + 'px,' + p.y + 'px,0)';
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (this.ctx) this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   };
   FlowAnimator.prototype._clear = function () { if (this.ctx && this.v) { this.ctx.globalCompositeOperation = 'source-over'; this.ctx.clearRect(0, 0, this.v.w, this.v.h); } };
   // Everything that depends on the view or the data: the canvas placement, the node vectors (per step)
@@ -1741,12 +1789,13 @@
     this.count = this.target;
     this.particles = new Float32Array(PARTICLE_MAX * 4);                     // x, y, age (ms), life (ms) per particle
     this.hist = new Float32Array(PARTICLE_MAX * TRAIL_POINTS * 2); this.histN = new Uint8Array(PARTICLE_MAX); this.histT = new Float32Array(PARTICLE_MAX);
+    this.histF = new Float32Array(PARTICLE_MAX * TRAIL_POINTS); this.flowT = new Float32Array(PARTICLE_MAX);   // each point's flow time and the particle's flow clock
     for (var i = 0; i < PARTICLE_MAX; i++) { this._respawn(i * 4, v); this.particles[i * 4 + 2] = Math.random() * this._life()[0]; }
   };
   FlowAnimator.prototype._respawn = function (k, v) {
     var P = this.particles, life = this._life(); P[k] = Math.random() * v.w; P[k + 1] = Math.random() * v.h; P[k + 2] = 0;
     P[k + 3] = life[0] + Math.random() * (life[1] - life[0]);
-    this.histN[k >> 2] = 0; this.histT[k >> 2] = 0;                             // a fresh particle has no tail
+    this.histN[k >> 2] = 0; this.histT[k >> 2] = 0; this.flowT[k >> 2] = 0;     // a fresh particle has no tail
   };
   // Does the flow run at every lattice node around (x, y)? (A particle at a coast or a data edge respawns
   // before it can drift onto the undrawn side.)
@@ -1763,8 +1812,8 @@
     out[1] = (v[a] * (1 - fx) + v[b] * fx) * (1 - fy) + (v[c] * (1 - fx) + v[d] * fx) * fy;
   };
   FlowAnimator.prototype._start = function () {
-    if (this.rafId !== null || !this.dir || !this.canvas || !this.vf) return;
-    var self = this; this.active = true; this.lastT = 0;
+    if (this.rafId !== null || !this.dir || !this.canvas || !this.ctx || !this.vf) return;
+    var self = this; this.active = true; this.lastT = 0; this.lastFrameAt = nowMs();   // a loop just started is not a dead one (G29 B-P3-2)
     this.rafId = this.raf(function (t) { self._frame(t); });
   };
   FlowAnimator.prototype.stop = function () { this.active = false; if (this.rafId !== null) { this.caf(this.rafId); this.rafId = null; } };
@@ -1792,9 +1841,9 @@
   // One that ages out, leaves the map, or reaches a lattice cell where the flow stops (a coast, a data
   // edge, a flat sea) is respawned somewhere in the view.
   FlowAnimator.prototype._renderParticles = function (dt) {
-    var ctx = this.ctx, v = this.v, vf = this.vf, P = this.particles, H = this.hist, HN = this.histN, HT = this.histT;
+    var ctx = this.ctx, v = this.v, vf = this.vf, P = this.particles, H = this.hist, HN = this.histN, HT = this.histT, HF = this.histF, FT = this.flowT;
     if (!ctx || !v || !vf || !P) return;
-    var w = v.w, h = v.h, n = this.count, dts = dt * this.rate / 1000, half = dts / 2, V1 = this.vel, V2 = this.vel2, i, k, q, m;
+    var w = v.w, h = v.h, n = this.count, dtf = dt * this.rate, dts = dtf / 1000, half = dts / 2, V1 = this.vel, V2 = this.vel2, i, k, q, m;
     var style = LOOK.style[this.field] || LOOK.style.wind, every = TRAIL_EVERY_MS / this.rate;
     ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(0, 0, w, h);
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -1809,21 +1858,26 @@
       var nx = x + V2[0] * dts, ny = y + V2[1] * dts;
       if (!(nx >= 0 && ny >= 0 && nx < w && ny < h)) { this._respawn(k, v); continue; }
       HT[i] += dt;
-      if (HT[i] >= every || HN[i] === 0) {                                      // record the position the head leaves behind
-        HT[i] = 0; m = HN[i]; q = (i * TRAIL_POINTS + (m % TRAIL_POINTS)) * 2; H[q] = x; H[q + 1] = y; HN[i] = m + 1 > 255 ? 255 - TRAIL_POINTS + ((m + 1) % TRAIL_POINTS) : m + 1;
+      if (HT[i] >= every || HN[i] === 0) {                                      // record the position the head leaves behind, with its flow time
+        HT[i] = 0; m = HN[i]; q = (i * TRAIL_POINTS + (m % TRAIL_POINTS)) * 2; H[q] = x; H[q + 1] = y; HF[q >> 1] = FT[i]; HN[i] = m + 1 > 255 ? 255 - TRAIL_POINTS + ((m + 1) % TRAIL_POINTS) : m + 1;
       }
       ctx.moveTo(x, y); ctx.lineTo(nx, ny);
-      P[k] = nx; P[k + 1] = ny; P[k + 2] = age + dt;
+      P[k] = nx; P[k + 1] = ny; P[k + 2] = age + dt; FT[i] += dtf;
     }
     ctx.lineWidth = style.halo; ctx.strokeStyle = 'rgba(0,0,0,' + LOOK.headHalo + ')'; ctx.stroke();
     ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,' + LOOK.head + ')'; ctx.stroke();
-    // the tails: the recorded positions, oldest first, up to the current position
+    // the tails: the recorded positions, oldest first, up to the current position; a point older than TRAIL_SPAN_MS of
+    // flow is left out, so a slow particle loop (one point per frame at the fast speeds) draws no longer a tail
     ctx.beginPath();
     for (i = 0, k = 0; i < n; i++, k += 4) {
       m = HN[i]; if (m < 2 && !(m === 1)) continue;
-      var cnt = m < TRAIL_POINTS ? m : TRAIL_POINTS, start = m - cnt, first = true;
-      for (q = start; q < m; q++) { var idx = (i * TRAIL_POINTS + (q % TRAIL_POINTS)) * 2; if (first) { ctx.moveTo(H[idx], H[idx + 1]); first = false; } else ctx.lineTo(H[idx], H[idx + 1]); }
-      ctx.lineTo(P[k], P[k + 1]);
+      var cnt = m < TRAIL_POINTS ? m : TRAIL_POINTS, start = m - cnt, first = true, ft = FT[i];
+      for (q = start; q < m; q++) {
+        var idx = (i * TRAIL_POINTS + (q % TRAIL_POINTS)) * 2;
+        if (ft - HF[idx >> 1] > TRAIL_SPAN_MS) continue;
+        if (first) { ctx.moveTo(H[idx], H[idx + 1]); first = false; } else ctx.lineTo(H[idx], H[idx + 1]);
+      }
+      if (first) ctx.moveTo(P[k], P[k + 1]); else ctx.lineTo(P[k], P[k + 1]);
     }
     ctx.lineWidth = style.halo; ctx.strokeStyle = 'rgba(0,0,0,' + LOOK.tailHalo + ')'; ctx.stroke();
     ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,' + LOOK.tail + ')'; ctx.stroke();
@@ -2009,6 +2063,7 @@
     this.cache = new FrameCache(MAX_DECODED); this.inflight = {}; this.unavailable = {}; this.target = null; this.dir = 1; this.n = 0;
     this.playing = false; this.wasPlaying = false; this.timer = null; this.runTimer = null; this.ui = null; this._lutFor = null;
     this._due = 0;                                          // when the frame being shown was due (the drift-free cadence)
+    this._painting = false; this._paintWaiting = null; this._paintRaf = null; this._paintTask = null; this._paintFallback = null;   // the paint gate
     this.playGen = 0; this.transientFails = 0; this._staleShown = false; this._pendingRestore = null; this._onHide = null;
     // opts.coast: clip wave height / peak period to the coastlines published beside the frames
     this.coast = opts.coast ? coastStore(this.root + '/static/coast/v1') : null;
@@ -2147,7 +2202,7 @@
       // change) must neither be cached nor delivered.
       if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
       if (!dir) self.transientFails = 0;                                      // the outage counter follows the field frames only
-      cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null, self._rankMap());
+      cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null, self._rankMap(), dir ? (self.flow ? self.flow.dir : null) : (self.layer ? self.layer._frame : null));
       self._prefetch();                                                        // the ring refills on every landing, not only the target's (plan section 42)
       return frame;
     }, function (err) {
@@ -2233,7 +2288,11 @@
   Overlay.prototype._debugOn = function () {
     var self = this;
     if (this.debugTimer) clearInterval(this.debugTimer);
-    var tick = function () { if (self.ui && self.ui.debug) self.ui.debug.textContent = self._debugText(); };
+    var tick = function () {                                   // no readout element (a sheet without room): the timer stops; the next render brings it back
+      var d = self.ui && self.ui.debug;
+      if (d && d.isConnected !== false) d.textContent = self._debugText();
+      else if (self.debugTimer) { clearInterval(self.debugTimer); self.debugTimer = null; }
+    };
     tick();
     this.debugTimer = setInterval(tick, 1000);
     if (this.debugTimer && this.debugTimer.unref) this.debugTimer.unref();
@@ -2259,7 +2318,8 @@
     var r = this._ring(), cap = r.inflight, plan = this._plan(this._anchorIndex()), rank = {}, i, k, keys;
     var shown = this.frameIndex, keepF = this._key(shown), keepD = this._wantDir() ? this._key(shown, 'dir') : null;
     for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
-    this.cache.limit(r.decoded, keepF, rank); this.dcache.limit(r.decoded, keepD, rank);
+    var drawnF = this.layer ? this.layer._frame : null, drawnD = this.flow ? this.flow.dir : null;
+    this.cache.limit(r.decoded, keepF, rank, drawnF); this.dcache.limit(r.decoded, keepD, rank, drawnD);
     for (k in this.inflight) if (rank[k] === undefined) { this.inflight[k].abort.abort(); delete this.inflight[k]; }
     keys = Object.keys(this.inflight);
     if (keys.length > cap) {
@@ -2270,7 +2330,11 @@
     // Only what the caches can hold beside the frame on the map is started: with a pending target far from it (a seek
     // into a cooldown, a failed far seek) the ring and the drawn frame together exceed the budget by one, and a ring
     // frame fetched into a full cache would evict another ring frame, whose landing would fetch it back, without end.
-    var ring = ringPlan(this._anchorIndex(), this.n, this.dir, r.ahead, r.behind), room = r.decoded - (ring.indexOf(shown) >= 0 ? 0 : 1);
+    // The same reserve while the frame on the map (or the animator's direction) is the OTHER resolution's, kept by value
+    // beside the ring until the new one lands.
+    var ring = ringPlan(this._anchorIndex(), this.n, this.dir, r.ahead, r.behind);
+    var drawnInRing = ring.indexOf(shown) >= 0 && (!drawnF || this.cache.map.get(keepF) === drawnF) && (!keepD || !drawnD || this.dcache.map.get(keepD) === drawnD);
+    var room = r.decoded - (drawnInRing ? 0 : 1);
     for (i = 0; i < plan.length && Object.keys(this.inflight).length < cap; i++) {
       var idx = plan[i][0], kind = plan[i][1], key = this._key(idx, kind);
       if (ring.indexOf(idx) >= room) continue;
@@ -2373,7 +2437,7 @@
   // (a frame that was loading when the user paused and played again) never schedules anything.
   Overlay.prototype.play = function () {
     if (this.playing || !this.manifest || this.frameIndex === null) return;
-    this.playing = true; this.dir = 1; this.playGen++; this._due = Date.now(); this._syncUI();
+    this.playing = true; this.dir = 1; this.playGen++; this._due = Date.now(); this._paintClear(); this._syncUI();
     this._prefetch();                                        // the ring grows to the speed's budget at once
     this._syncRate();
     this._tick(this.playGen); this._persist();
@@ -2381,6 +2445,7 @@
   Overlay.prototype.pause = function () {
     this.playing = false; this.playGen++;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    this._paintClear();
     this._prefetch(true);                                    // back to the paused budget (nothing new is started)
     this._syncRate();
     this._syncUI(); this._persist();
@@ -2398,12 +2463,13 @@
   Overlay.prototype._tick = function (gen) {
     var self = this;
     if (!this.playing || gen !== this.playGen) return;
+    if (this._painting) { this._paintWaiting = function () { self._tick(gen); }; return; }   // the last landing is not on screen yet
     var un = function (j) { return self._isUnavailable(j); };
     var pending = this.target !== null && this.target !== this.frameIndex;
     var next = pending && !un(this.target) ? this.target                      // a seek or a slow frame: wait for it
       : nextAvailable(pending ? this.target : this.frameIndex, 1, this.n, un);
     if (next === null) { this.pause(); return; }
-    this._goto(next).then(function () { self._after(gen); }, function (err) {
+    this._goto(next).then(function () { self._paintWait(gen); self._after(gen); }, function (err) {
       if (err && err.outage) self._fail(null, err);
       else if (err && (err.unavailable || err.name === 'AbortError')) self._after(gen);   // skipped or superseded: move on
       else self._fail(null, err);
@@ -2411,8 +2477,31 @@
   };
   // The next frame is due one interval after the last one was DUE, not after it landed: timer latency and the
   // particles' frames no longer add up (the snail showed 1.92 of 2 frames/s with everything cached). A frame that
-  // lands late (past its successor's due time) is followed by that successor at once, one back-to-back frame, and
-  // the cadence restarts from there (the due time never lies in the past); a frame is never skipped.
+  // lands late (past its successor's due time) is followed by that successor as soon as it has been rendered (the
+  // paint gate below), one back-to-back frame, and the cadence restarts from there (the due time never lies in the
+  // past); a frame is never skipped.
+  // The paint gate (G29 B-P1-1): a landing is put on screen by the browser's next rendering update, which follows the
+  // animation-frame callbacks; a successor that was already decoded and due at once landed in the very next task,
+  // before that update, and replaced the late frame unseen (3-12 % of the frames at 1080p with particles, where the
+  // GPU renders only ~8 times a second). So after a landing the next tick runs from a task scheduled by the first
+  // animation frame after it (the update has completed by then), never earlier; without an animation frame for
+  // PAINT_FALLBACK_MS (a hidden or throttled page) it runs anyway, so playback never stalls where frames stop. Seeks,
+  // steps and scrubs are not gated; play, pause and Off clear it.
+  Overlay.prototype._paintWait = function (gen) {
+    var self = this;
+    this._paintClear();
+    if (typeof requestAnimationFrame !== 'function') return;
+    var done = function () { if (!self._painting) return; var w = self._paintWaiting; self._paintClear(); if (w && self.playing && gen === self.playGen) w(); };
+    this._painting = true;
+    this._paintRaf = requestAnimationFrame(function () { self._paintRaf = null; self._paintTask = setTimeout(done, 0); });
+    this._paintFallback = setTimeout(done, PAINT_FALLBACK_MS);
+  };
+  Overlay.prototype._paintClear = function () {
+    if (this._paintRaf !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this._paintRaf);
+    if (this._paintTask) clearTimeout(this._paintTask);
+    if (this._paintFallback) clearTimeout(this._paintFallback);
+    this._paintRaf = this._paintTask = this._paintFallback = null; this._painting = false; this._paintWaiting = null;
+  };
   Overlay.prototype._after = function (gen) {
     var self = this;
     if (!this.playing || gen !== this.playGen) return;
@@ -2666,7 +2755,7 @@
     var self = this, m = this.manifest, field = this.field, dres = this.dres;
     return this._ensure(idx, 'dir').then(function (frame) {
       if (self.flow && self.layer && self.layer.hasFrame() && self.layer.entry === m.frames[idx] && self.manifest === m && self.field === field && self.dres === dres && self._wantDir()) {
-        self.flow.setData(frame, dres === 'half' ? m.grid_half : m.grid, m.frames[idx]);
+        self._flowData(frame, dres === 'half' ? m.grid_half : m.grid, m.frames[idx]);
       }
     }).catch(function (err) {                                                // a missing direction frame: the field plays on without arrows
       if (err && !err.unavailable && err.name !== 'AbortError' && typeof console !== 'undefined' && console.warn) console.warn('overlay animation', err);
@@ -2711,9 +2800,15 @@
     var m = this.manifest, entry = m.frames[idx];
     if (!this._wantDir() || !this.layer.hasFrame() || this.layer.entry !== entry) { if (this.flow.entry !== entry) this.flow.clearData(); return; }
     var hit = this.dcache.get(this._key(idx, 'dir'));
-    if (hit) { this.flow.setData(hit, this.dres === 'half' ? m.grid_half : m.grid, entry); return; }
+    if (hit) { this._flowData(hit, this.dres === 'half' ? m.grid_half : m.grid, entry); return; }
     if (this.flow.entry !== entry) this.flow.clearData();
     if (this.target === null || this.target === idx) this._startDir(idx);
+  };
+  // The animator takes a direction; an exception in it (a refused canvas context, G29 B-P2-2) is logged once and never
+  // reaches the field's playback: the picture plays on without its particles.
+  Overlay.prototype._flowData = function (frame, grid, entry) {
+    try { this.flow.setData(frame, grid, entry); }
+    catch (e) { if (!this._flowWarned && typeof console !== 'undefined' && console.warn) { this._flowWarned = true; console.warn('overlay animation', e); } }
   };
   // Animation / contours on or off (no checkbox any more: both are on; kept for the scheduler's own transitions and tests).
   Overlay.prototype.setAnim = function (on) {
@@ -3168,7 +3263,9 @@
       this._say('Overlay unavailable: ' + st.message);
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
       e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.transientFails = 0; self.mount(self.field); } }));
-      host.appendChild(e); this._layoutSheet(); this._refocus(focusCls, host); return;
+      host.appendChild(e);
+      if (OV_DEBUG) { this.ui = { debug: mk('pre', 'ov-debug') }; host.appendChild(this.ui.debug); this._debugOn(); }   // the readout stays with the error (the owner's iPad)
+      this._layoutSheet(); this._refocus(focusCls, host); return;
     }
     var field = this.layer.field, f = m.fields[field], fdesc = (m.model && m.model.fields && m.model.fields[field]) || {};
     // The model's name as the head shows it: the manifest's up to " + " (the wind's own model), without the agency
@@ -3382,6 +3479,7 @@
       PLAY_RING: PLAY_RING, ringFor: ringFor, tileInRange: tileInRange, STALE_TILE_MS: STALE_TILE_MS, STALE_MAX_MS: STALE_MAX_MS,
       workerSource: workerSource, workerMain: workerMain, FrameDecoder: FrameDecoder, getDecoder: getDecoder, disposeDecoder: disposeDecoder, resetDecoder: resetDecoder, setDecoderForTest: setDecoderForTest,
       decodeFrame: decodeFrame, nodeWindow: nodeWindow, windowCovers: windowCovers, LOOK: LOOK, WATCHDOG_MS: WATCHDOG_MS, isWebKit: isWebKit, OV_DEBUG: OV_DEBUG, PARTICLE_PX2: PARTICLE_PX2, FLOW_STYLE: FLOW_STYLE, pageQuery: pageQuery,
+      PAINT_FALLBACK_MS: PAINT_FALLBACK_MS, BUSY_STUCK_MS: BUSY_STUCK_MS, TRAIL_SPAN_MS: TRAIL_SPAN_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,

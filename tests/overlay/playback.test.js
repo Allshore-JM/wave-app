@@ -80,25 +80,37 @@ function world(opts) {
   if (opts && opts.reduced) g.matchMedia = (q) => ({ matches: /reduced-motion/.test(q) });
   // timers never keep the test process alive (the module keeps a 30-min run-check interval while mounted)
   let st = (f, ms) => { const t = setTimeout(f, ms); if (t.unref) t.unref(); return t; }, ct = clearTimeout;
+  let si = (f, ms) => { const t = setInterval(f, ms); if (t.unref) t.unref(); return t; }, ci = clearInterval, raf, caf;
   if (opts && opts.fakeTimers) {                 // a test that must not depend on the machine's speed (G28 K-2)
     let now = 0, seq = 0; const q = new Map();
     w.now = () => now;                             // the fake clock (a test pins Date.now to it: section 42's cadence)
     st = (f, ms) => { const id = ++seq; q.set(id, { f, at: now + (ms || 0) }); return id; };
     ct = (id) => { q.delete(id); };
+    if (opts.fakeIntervals) {                      // intervals in the same queue (the teardown pin counts what is left after Off)
+      si = (f, ms) => { const id = ++seq; q.set(id, { f, at: now + (ms || 1), every: ms || 1 }); return id; };
+      ci = ct;
+    }
+    w.pendingTimers = () => q.size; w.timerSources = () => [...q.values()].map((x) => (x.every ? 'every ' + x.every + ' ' : '') + String(x.f).replace(/\s+/g, ' ').slice(0, 120));
     w.fade = async (ms) => {                       // the fake clock moves on; due timers run in order
       now += ms === undefined ? 330 : ms;
       for (;;) {
         const due = [...q].filter(([, x]) => x.at <= now).sort((a, b) => a[1].at - b[1].at)[0];
         if (!due) break;
-        q.delete(due[0]); due[1].f();
+        if (due[1].every) due[1].at += due[1].every; else q.delete(due[0]);
+        due[1].f();
         await Promise.resolve();
       }
     };
+    if (opts.raf) {                                // a fake animation frame: w.paint() runs the callbacks queued since (the paint gate)
+      w.rafQ = new Map();
+      raf = (f) => { const id = ++seq; w.rafQ.set(id, f); return id; };
+      caf = (id) => { w.rafQ.delete(id); };
+      w.paint = async () => { const cbs = [...w.rafQ.values()]; w.rafQ.clear(); for (const f of cbs) f(now); await w.fade(0); };
+    }
   }
-  const si = (f, ms) => { const t = setInterval(f, ms); if (t.unref) t.unref(); return t; };
   // DecompressionStream is shadowed so the module takes the canvas path, whose stages the harness can hold
-  const fn = new Function('L', 'document', 'sessionStorage', 'createImageBitmap', 'fetch', 'window', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'AbortController', 'DecompressionStream', src);
-  fn(g.L, g.document, g.sessionStorage, g.createImageBitmap, g.fetch, g.window, st, ct, si, clearInterval, AbortController, undefined);
+  const fn = new Function('L', 'document', 'sessionStorage', 'createImageBitmap', 'fetch', 'window', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'AbortController', 'DecompressionStream', 'requestAnimationFrame', 'cancelAnimationFrame', src);
+  fn(g.L, g.document, g.sessionStorage, g.createImageBitmap, g.fetch, g.window, st, ct, si, ci, AbortController, undefined, raf, caf);
   const I = g.AllshoreOverlay._internals, Overlay = I.Overlay;
   for (const k of ['render', '_syncUI', '_attribute', '_bindReadout', '_bindMap', '_bindDocument', '_unbindReadout', '_unattribute', '_removeSheet']) {
     if (k === '_bindDocument' && opts && opts.realDocument) continue;
@@ -1259,6 +1271,7 @@ test('section 42: the ring follows the speed: shark fetches 4 at once and keeps 
     o.pause(); await tick();
     assert.ok(Object.keys(o.inflight).length <= 2, 'in flight ' + Object.keys(o.inflight).length);
     assert.ok(o.inflight[o._key(i0 + 40)], 'the target\'s own fetch (rank 0) survives the shrink');
+    assert.ok(o.cache.has(o._key(o.frameIndex)) && o.cache.get(o._key(o.frameIndex)) === o.layer._frame, 'the frame on the map, outside the pending target\'s ring, survives the shrink (G29 P5)');
     o.unmount();
     assert.equal(Object.keys(o.inflight).length, 0); assert.equal(o.cache.size(), 0);
   });
@@ -1283,6 +1296,7 @@ test('section 42: with the animation on, shark keeps the field and direction fra
     o.pause(); await tick();
     assert.ok(Object.keys(o.inflight).length <= 2);
     assert.ok(o.inflight[o._key(i0 + 40)] && o.inflight[o._key(i0 + 40, 'dir')], 'both of the target\'s fetches survive');
+    assert.ok(o.dcache.has(o._key(o.frameIndex, 'dir')) && o.dcache.get(o._key(o.frameIndex, 'dir')) === o.flow.dir, 'the animator\'s direction, outside the ring, survives the shrink (G29 P7)');
     o.unmount();
   });
 });
@@ -1366,4 +1380,184 @@ test('section 42 step 3: the particles\' rate follows the playback (1 paused, th
     assert.equal(fake.disposed, 1, 'Off disposes the decoder'); assert.equal(o.flow, null);
     w.I.resetDecoder();
   });
+});
+
+// ---- G29 fix round ----
+test('G29 B-P1-1: the paint gate: a playback landing is not followed by the next until an animation frame has run after it (the browser has rendered it); rendering that keeps up leaves the cadence alone, slow rendering paces the landings one per render without a burst; the fallback; pause and Off leave nothing', async () => {
+  const w = world({ fakeTimers: true, raf: true });
+  await onFakeClock(w, async () => {
+    const o = await mounted(w, A); await w.releaseAll();
+    assert.equal(w.I.PAINT_FALLBACK_MS, 250);
+    o.setSpeed(4); o.play(); await settle(); await w.releaseAll(); await settle();
+    const i1 = o.frameIndex;                                                 // play's first landing (not gated), its render pending
+    assert.equal(o._painting, true); assert.equal(w.rafQ.size, 1, 'one animation frame asked for');
+    await w.fade(125); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, i1, 'due, but the last landing is not on screen yet: no landing');
+    assert.equal(o.timer, null, 'the due timer fired and the tick waits for the render, no second timer');
+    { const cbs = [...w.rafQ.values()]; w.rafQ.clear(); for (const f of cbs) f(w.now()); await settle(); }
+    assert.equal(o.frameIndex, i1, 'nothing lands inside the animation-frame callback itself (the rendering update comes after it)');
+    await w.fade(0); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, i1 + 1, 'the render releases exactly one landing (from a task after the animation frame)');
+    assert.equal(o._painting, true, 'and that landing waits for its own render');
+    // rendering that keeps up: the cadence is the plain 125 ms
+    const dueBefore = o._due;
+    for (let k = 0; k < 8; k++) {
+      await w.paint(); await settle();
+      assert.equal(o.frameIndex, i1 + 1 + k, 'a render alone lands nothing before the frame is due');
+      await w.fade(125); await settle(); await w.releaseAll(); await settle();
+      assert.equal(o.frameIndex, i1 + 2 + k, 'landing ' + k + ' at its due time');
+    }
+    assert.equal(o._due - dueBefore, 8 * 125, 'the due time advanced one interval per landing');
+    // rendering every 150 ms: one landing per render, never two (no catch-up burst), the cadence follows the renders
+    let idx = o.frameIndex;
+    for (let k = 0; k < 6; k++) {
+      await w.fade(150); await settle(); await w.releaseAll(); await settle();
+      assert.equal(o.frameIndex, idx, 'cycle ' + k + ': due, waiting for the render');
+      await w.paint(); await settle(); await w.releaseAll(); await settle();
+      assert.equal(o.frameIndex, idx + 1, 'cycle ' + k + ': exactly one landing per render'); idx++;
+    }
+    // no animation frame at all (a throttled page): the fallback lands the frame PAINT_FALLBACK_MS after the last landing
+    await w.fade(125); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, idx, 'due, no render');
+    await w.fade(125); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, idx + 1, 'the fallback landed it 250 ms after the last landing');
+    // pause and Off clear the gate and its timers
+    o.pause();
+    assert.equal(o._painting, false); assert.equal(o._paintWaiting, null); assert.equal(w.rafQ.size, 0, 'the animation frame is cancelled');
+    o.play(); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o._painting, true);
+    o.unmount(); await settle();
+    assert.equal(o._painting, false); assert.equal(w.rafQ.size, 0); assert.equal(w.pendingTimers(), 0, 'no timer of any kind left after Off');
+  });
+});
+
+test('G29 B-P1-1: without requestAnimationFrame (no rendering to wait for) the gate is off and the cadence is as before', async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    const o = await mounted(w, A); await w.releaseAll();
+    o.setSpeed(4); o.play(); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o._painting, false);
+    const i1 = o.frameIndex;
+    await w.fade(125); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, i1 + 1);
+    o.unmount();
+  });
+});
+
+test('G29 A-P3-1: after a resolution change the frame on the map and the animator\'s direction are kept by VALUE, not by their old key: a shrink or a landing over the cap never drops them, and a zoom back across the threshold draws them without a download', async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    // the field: wind at zoom 6 is half-resolution, zoom 8 full (a 1200-px map); shark fills 9 half frames
+    w.pointer = ptr(A); w.manifests[A.run] = A;
+    w.map.getZoom = () => 6;
+    const o = w.create(); o.mount('wind'); await settle(); await w.releaseAll();
+    assert.equal(o.res, 'half');
+    o.setSpeed(4); o.play(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll();
+    const drawn = o.layer._frame, drawnKey = o._key(o.frameIndex);
+    assert.ok(o.cache.size() >= 8 && o.cache.get(drawnKey) === drawn);
+    for (const k of [...o.cache.map.keys()]) if (k !== drawnKey) o.cache.get(k);                  // the drawn frame is now the least recently used
+    w.map.getZoom = () => 8; o._checkRes(); await settle();                                       // full resolution: the new target's fetch is pending
+    assert.equal(o.res, 'full'); assert.equal(o.layer._frame, drawn, 'the half frame stays on the map meanwhile');
+    o.pause(); await settle();                                                                      // the shrink 9 -> 5 (the half frames have no rank now)
+    assert.ok(o.cache.size() <= 6);
+    assert.ok([...o.cache.map.values()].includes(drawn), 'the frame on the map survives the shrink under its old-resolution key');
+    const url = 'https://x/gfswave/0p25/v1/' + A.run + '/half/wind/f' + String(A.frames[o.frameIndex].step).padStart(3, '0') + '.png';
+    const before = w.fetches.filter((u) => u === url).length;
+    w.map.getZoom = () => 6; o._checkRes(); await settle();                                        // back to half before the full frame landed
+    assert.equal(o.res, 'half'); assert.equal(o.layer._frame, drawn);
+    assert.equal(w.fetches.filter((u) => u === url).length, before, 'no download of the frame on the map: it was in the cache (its evicted ring neighbours are fetched, as before)');
+    o.unmount();
+  });
+  const w2 = world({ fakeTimers: true });
+  await onFakeClock(w2, async () => {
+    // the direction: pdir half at zoom 6, full from 6.5; a full landing over the cap must not drop the animator's half direction
+    w2.pointer = ptr(A); w2.manifests[A.run] = A;
+    const o = w2.create(); o.anim = true; o.mount('hs'); await settle(); await w2.releaseAll();
+    assert.equal(o.dres, 'half'); const dir = o.flow.dir, dirKey = o._key(o.frameIndex, 'dir');
+    assert.ok(dir && o.dcache.get(dirKey) === dir && o.dcache.size() === 5);
+    for (const k of [...o.dcache.map.keys()]) if (k !== dirKey) o.dcache.get(k);                 // the shown direction is the least recently used
+    w2.map.getZoom = () => 6.5; o._checkRes(); await settle();
+    assert.equal(o.dres, 'full'); assert.equal(o.flow.dir, dir, 'kept until the full one lands');
+    { const i = w2.pendingBitmaps.findIndex((f) => f.blob.url.includes('/pdir/') && f.blob.w === 1440); assert.ok(i >= 0, 'a full direction decode is pending'); w2.pendingBitmaps.splice(i, 1)[0](); await settle(); }   // one full direction lands: 6 > 5
+    assert.ok(o.dcache.size() <= 6);
+    assert.ok([...o.dcache.map.values()].includes(dir), 'the animator\'s direction survives the landing over the cap');
+    const url = 'https://x/gfswave/0p25/v1/' + A.run + '/half/pdir/f' + String(A.frames[o.frameIndex].step).padStart(3, '0') + '.png';
+    const before = w2.fetches.filter((u) => u === url).length;
+    w2.map.getZoom = () => 3.7; o._checkRes(); await settle();
+    assert.equal(o.dres, 'half'); assert.equal(o.flow.dir, dir, 'the same direction, no download');
+    assert.equal(w2.fetches.filter((u) => u === url).length, before, "the shown step's direction was in the cache");
+    o.unmount();
+  });
+});
+
+test('G29 G6: _startDir at shark speed honours the speed\'s download cap: with 3 ring downloads in flight the next step\'s direction joins them and nothing is aborted', async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    w.pointer = ptr(A); w.manifests[A.run] = A;
+    const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+    o.setSpeed(4); o.play(); await settle(); await w.releaseAll(); await settle();
+    const t = o.frameIndex + 1;
+    o.dcache.map.delete(o._key(t, 'dir'));
+    for (const k in o.inflight) o.inflight[k].abort.abort(); o.inflight = {};
+    const fakes = [t + 2, t + 3, t + 4].map((j) => { const r = { promise: Promise.resolve(), abort: new AbortController(), key: o._key(j), kind: 'field', aborted: false }; r.abort.signal.addEventListener('abort', () => { r.aborted = true; }); o.inflight[r.key] = r; return r; });
+    o._startDir(t); await tick();
+    assert.ok(o.inflight[o._key(t, 'dir')], 'the direction download started');
+    assert.equal(Object.keys(o.inflight).length, 4, 'four in flight at shark speed');
+    assert.deepEqual(fakes.map((r) => r.aborted), [false, false, false], 'no ring download aborted');
+    o.inflight = {}; o.unmount();
+  });
+});
+
+test("G29 B-P2-2: an exception inside the animator (a refused drawing surface) never reaches the field's playback: the frame lands, the state stays ready, one warning", async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    w.pointer = ptr(A); w.manifests[A.run] = A;
+    const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll();
+    const had = console.warn, warned = []; console.warn = (...a) => warned.push(a.join(' '));
+    try {
+      o.flow.setData = () => { throw new TypeError('Cannot read properties of null'); };
+      const i0 = o.frameIndex;
+      o.seek(i0 + 1); await settle(); await w.releaseAll(); await settle();
+      assert.equal(o.frameIndex, i0 + 1, 'the frame landed'); assert.equal(o.last.state, 'ready');
+      o.seek(i0 + 2); await settle(); await w.releaseAll(); await settle();
+      assert.equal(o.frameIndex, i0 + 2); assert.equal(warned.length, 1, 'warned once: ' + warned.join(' | '));
+    } finally { console.warn = had; }
+    o.unmount();
+  });
+});
+
+test('G29 G5: an animator created while playing takes the playback rate at once', async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    const o = await mounted(w, A); await w.releaseAll();
+    o.setSpeed(4); o.play(); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.flow, null);
+    o.setAnim(true); await settle();
+    assert.ok(o.flow); assert.equal(o.flow.rate, 4, 'a new animator runs at the speed');
+    o.unmount();
+  });
+});
+
+test('G29 L6/L7/G2/G4: Off leaves no timer, interval, idle pass or animation frame behind, also in debug mode; the readout\'s timer stops by itself when no readout element exists', async () => {
+  const hadLoc = global.location;
+  global.location = { search: '?ovdebug=1' };
+  const w = world({ fakeTimers: true, fakeIntervals: true, raf: true });
+  try {
+    await onFakeClock(w, async () => {
+      assert.equal(w.I.OV_DEBUG, true);
+      const o = await mounted(w, A); await w.releaseAll();
+      o.setSpeed(4); o.play(); await settle(); await w.releaseAll(); await settle();
+      for (let k = 0; k < 3; k++) { await w.paint(); await w.fade(125); await settle(); await w.releaseAll(); await settle(); }
+      o._debugOn(); assert.ok(o.debugTimer, 'the readout timer');
+      o._debugOn(); o._debugOn();                                               // renders: never a second interval
+      const n = w.pendingTimers();
+      await w.fade(1000);                                                        // no readout element (render is stubbed): the timer stops itself
+      assert.equal(o.debugTimer, null); assert.ok(w.pendingTimers() < n);
+      o._debugOn(); assert.ok(o.debugTimer);
+      o.unmount(); await settle();                                                // an aborted download clears its own watchdog a microtask later
+      assert.equal(o.debugTimer, null); assert.equal(o.runTimer, null); assert.equal(o.timer, null);
+      assert.deepEqual(w.timerSources(), [], 'nothing in the timer queue after Off'); assert.equal(w.rafQ.size, 0, 'no animation frame after Off');
+      await w.fade(60000); assert.equal(w.pendingTimers(), 0, 'and nothing appears later');
+    });
+  } finally { if (hadLoc === undefined) delete global.location; else global.location = hadLoc; }
 });

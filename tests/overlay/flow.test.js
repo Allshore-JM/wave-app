@@ -313,15 +313,20 @@ test('section 42: the watchdog restarts an animator that should run and does not
   const { fa, map } = animator('hs', l, pdir, HALF);
   assert.ok(fa.watch !== null, 'the watchdog timer exists');
   fa.pending(16);                                                              // one frame drawn: fresh
+  assert.ok(fa.lastFrameAt > 0, 'a frame records its time (G29 F11)');
   assert.equal(fa.active, true); fa._check(); assert.equal(fa.healed, 0, 'healthy: nothing');
+  fa.lastFrameAt = performance.now() - 3000; fa.stop(); fa._start(); fa._check(); assert.equal(fa.healed, 0, 'a loop just (re)started is not a dead one (G29 B-P3-2)');
+  assert.ok(performance.now() - fa.lastFrameAt < 1000);
   // a suspend that never ended
   fa.suspend(); assert.equal(fa.suspended, 1); assert.equal(fa.active, false);
   fa._check(); assert.equal(fa.healed, 1); assert.equal(fa.suspended, 0); assert.equal(fa.active, true); assert.match(fa.log[fa.log.length - 1][0], /heal:suspended/);
   // the loop stopped drawing (no frame for WATCHDOG_MS) although active
   fa.lastFrameAt = performance.now() - 3000; fa._check(); assert.equal(fa.healed, 2); assert.match(fa.log[fa.log.length - 1][0], /heal:dead/);
   fa.pending(16);
-  // not while something is in progress on the map
-  fa.suspend(); map._animatingZoom = true; fa._check(); assert.equal(fa.healed, 2, 'a zoom animation'); map._animatingZoom = false;
+  // not while something is in progress on the map; a map busy for BUSY_STUCK_MS in one go is a flag stuck true (G29 A-P3-3)
+  fa.suspend(); map._animatingZoom = true; fa._check(); assert.equal(fa.healed, 2, 'a zoom animation'); assert.ok(fa.busySince > 0);
+  fa.busySince = performance.now() - I.BUSY_STUCK_MS - 1; fa._check(); assert.equal(fa.healed, 3, 'busy for 10 s: healed anyway'); assert.equal(fa.busySince, 0); assert.equal(fa.suspended, 0);
+  fa.suspend(); fa._check(); assert.equal(fa.healed, 3, 'still busy: the next 10 s run from now'); map._animatingZoom = false; fa.healed = 2;   // still suspended: the original sequence goes on
   map.dragging = { moving: () => true }; fa._check(); assert.equal(fa.healed, 2, 'a drag'); map.dragging = null;
   map.touchZoom = { _zooming: true }; fa._check(); assert.equal(fa.healed, 2, 'a pinch'); map.touchZoom = null;
   map._panAnim = { _inProgress: true }; fa._check(); assert.equal(fa.healed, 2, 'a pan animation'); map._panAnim = null;
@@ -337,11 +342,18 @@ test('section 42: after a zoom the canvas is a fresh element on WebKit (the old 
   const saveNav = Object.getOwnPropertyDescriptor(global, 'navigator');
   const setNav = (v) => Object.defineProperty(global, 'navigator', { value: v, configurable: true, writable: true });
   try {
-    for (const [ua, fresh] of [['Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1', true],
+    for (const [ua, fresh, touch] of [['Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1', true],
       ['Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0', false],
-      ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0 Mobile/15E148 Safari/604.1', false]]) {
-      setNav({ userAgent: ua });
-      assert.equal(I.isWebKit(), fresh, ua.slice(0, 40));
+      ['Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/120.0 Mobile/15E148 Safari/604.1', true],   // Chrome on iOS is WebKit too (K-11)
+      ['Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/120.0 Mobile/15E148 Safari/605.1.15', true],
+      ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15', true, 5],            // iPadOS asking for desktop pages
+      ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15', true, 0],            // Safari on a Mac
+      ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36', true, 5],              // Chrome for iOS as a Mac
+      ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36', false, 0],             // Chrome on a Mac
+      ['Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36', false, 5],
+      ['Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0', false]]) {
+      setNav({ userAgent: ua, maxTouchPoints: touch });
+      assert.equal(I.isWebKit(), fresh, ua.slice(0, 60) + ' touch ' + touch);
       const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
       const { fa, events, canvas } = animator('hs', l, pdir, HALF);
       const made = []; const pane = { style: {}, appendChild(c) { made.push(c); } };
@@ -361,6 +373,97 @@ test('section 42: after a zoom the canvas is a fresh element on WebKit (the old 
   } finally { if (saveNav) Object.defineProperty(global, 'navigator', saveNav); else delete global.navigator; }
 });
 
+
+test('G29 B-P2-1: a zoom whose zoomend never comes leaves the canvas hidden; the heal shows it again (on WebKit: a fresh canvas)', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(180));
+  const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+  const { fa, events, canvas } = animator('hs', l, pdir, HALF);
+  fa.pending(16);
+  events.zoomstart.forEach((h) => h()); events.movestart.forEach((h) => h());
+  assert.equal(canvas.style.visibility, 'hidden'); assert.equal(fa.suspended, 2); assert.equal(fa.active, false);
+  fa._check();
+  assert.equal(fa.healed, 1); assert.equal(fa.suspended, 0); assert.equal(fa.active, true);
+  assert.equal(canvas.style.visibility, '', 'the heal shows the canvas again'); assert.equal(fa.canvas, canvas, 'the same canvas off WebKit');
+  // a flyTo-like move: suspended with none of the busy flags, healed after the watchdog's period (A-P3-3 a, accepted)
+  assert.equal(fa._busy(), false);
+  // a zoomend after the pane is gone (map.remove() during a zoom): no exception into Leaflet's dispatch (A-P3-4)
+  const saveNav = Object.getOwnPropertyDescriptor(global, 'navigator');
+  Object.defineProperty(global, 'navigator', { value: { userAgent: 'Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1' }, configurable: true, writable: true });
+  try { canvas.parentNode = null; events.zoomstart.forEach((h) => h()); events.zoomend.forEach((h) => h()); assert.equal(fa.canvas, canvas); }
+  finally { if (saveNav) Object.defineProperty(global, 'navigator', saveNav); else delete global.navigator; }
+});
+
+test('G29 B-P2-2: a refused 2D context never throws into the map events or the playback: the old canvas is kept; without any context the animator draws nothing and the watchdog asks again until it gets one', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(180));
+  const saveNav = Object.getOwnPropertyDescriptor(global, 'navigator');
+  Object.defineProperty(global, 'navigator', { value: { userAgent: 'Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1' }, configurable: true, writable: true });
+  try {
+    const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+    const { fa, events, canvas, ctx } = animator('hs', l, pdir, HALF);
+    const pane = { style: {}, appendChild(c) { pane.added = (pane.added || 0) + 1; c.parentNode = pane; } }; canvas.parentNode = pane;
+    let refuse = true; const made = [];
+    global.document.createElement = () => { const c = { style: {}, width: 0, height: 0, getContext: () => (refuse ? null : fakeCtx()), remove() { c.removed = true; } }; made.push(c); return c; };
+    fa.pending(16);
+    events.zoomstart.forEach((h) => h()); events.zoomend.forEach((h) => h());                  // WebKit: a fresh canvas is tried
+    assert.equal(made.length, 1); assert.equal(fa.canvas, canvas, 'refused: the old canvas stays'); assert.equal(fa.ctx, ctx); assert.equal(canvas.removed, undefined);
+    assert.equal(fa.active, true); assert.equal(fa.suspended, 0); assert.equal(fa.debugState().ctx, true);
+    fa.setData(frame(720, 361, () => code(90)), HALF, { step: 1 });                               // the playback's path: no throw
+    fa.detach();
+    // no context from the start (attach), on a NON-WebKit browser too: nothing drawn, no exception anywhere, the watchdog
+    // retries the canvas and heals once a context comes
+    Object.defineProperty(global, 'navigator', { value: { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36' }, configurable: true, writable: true });
+    assert.equal(I.isWebKit(), false);
+    const l2 = layer(hs, GRID, 'hs', HS); l2._tileZoom = 6;
+    const a2 = animator('hs', l2, pdir, HALF);                                                  // its canvas is the harness's (with a context) ...
+    global.document.createElement = () => { const c = { style: {}, width: 0, height: 0, getContext: () => (refuse ? null : fakeCtx()), remove() { c.removed = true; } }; made.push(c); return c; };   // (animator() re-made the document)
+    const bare = { style: {}, width: 0, height: 0, getContext: () => null, remove() {} };
+    a2.fa.stop(); a2.fa.canvas = bare; a2.fa.ctx = null; bare.parentNode = pane;
+    a2.fa._rebuild();
+    assert.equal(a2.fa.active, false, 'no context: the loop does not run'); assert.equal(a2.fa.debugState().ctx, false);
+    a2.fa._renderParticles(16); a2.fa._clear();                                                   // nothing throws
+    a2.fa._check(); assert.equal(a2.fa.healed, 1, 'dead: healed'); assert.equal(a2.fa.ctx, null, 'still refused'); assert.equal(a2.fa.active, false);
+    refuse = false;
+    a2.fa._check(); assert.equal(a2.fa.healed, 2); assert.ok(a2.fa.ctx, 'the retry got a context'); assert.equal(a2.fa.active, true, 'and the loop runs');
+    a2.fa.detach();
+  } finally { if (saveNav) Object.defineProperty(global, 'navigator', saveNav); else delete global.navigator; }
+});
+
+test('G29 B-P3-1 (owner: the same length at every speed): a tail never spans more than TRAIL_SPAN_MS of flow, so a slow particle loop at the fast rates draws tails of the same length as a fast one', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(270));   // from the west: particles run east
+  assert.equal(I.TRAIL_SPAN_MS, (I.TRAIL_POINTS + 1) * I.TRAIL_EVERY_MS);
+  const tailLength = (dt, rate) => {
+    const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+    const { fa } = animator('hs', l, pdir, HALF);
+    fa.setRate(rate);
+    const P = fa.particles; fa.count = 1; P[0] = 100; P[1] = 300; P[2] = 0; P[3] = 1e9;
+    fa.histN[0] = 0; fa.histT[0] = 0; fa.flowT[0] = 0;
+    let pts = [], paths = 0; const c = fa.ctx;
+    c.beginPath = () => { paths++; if (paths % 2 === 0) pts = []; }; c.moveTo = (x, y) => { if (paths % 2 === 0) pts.push([x, y]); }; c.lineTo = (x, y) => { if (paths % 2 === 0) pts.push([x, y]); };
+    for (let k = 0; k < Math.round(1500 / dt); k++) fa._renderParticles(dt);                 // 1.5 s of real time: the tail is full at every rate
+    let len = 0; for (let i = 1; i < pts.length; i++) len += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+    return { len, points: pts.length };
+  };
+  const ref = tailLength(1000 / 60, 1);
+  assert.ok(ref.points >= 9 && ref.len > 5, JSON.stringify(ref));
+  for (const hz of [60, 30, 15]) for (const rate of [1, 2, 4]) {
+    const t = tailLength(1000 / hz, rate), ratio = t.len / ref.len;
+    assert.ok(ratio > 0.7 && ratio < 1.2, hz + ' Hz at x' + rate + ': ' + ratio.toFixed(2) + ' of the 60 Hz x1 tail (' + t.points + ' points)');
+  }
+  // the old rule: at 30 Hz and x4 every frame recorded a point and ten points spanned twice the flow
+  const slow = tailLength(1000 / 30, 4);
+  assert.ok(slow.points < I.TRAIL_POINTS + 1, 'old points left out: ' + slow.points);
+  // every tail point too old (the flow clock far ahead): the path starts at the head with a moveTo, never a lineTo from another particle
+  const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+  const { fa } = animator('hs', l, pdir, HALF);
+  fa.count = 2; const P = fa.particles; P[0] = 100; P[1] = 300; P[2] = 0; P[3] = 1e9; P[4] = 400; P[5] = 300; P[6] = 0; P[7] = 1e9;
+  for (let k = 0; k < 20; k++) fa._renderParticles(16);
+  fa.flowT[1] += 1e6; fa.histT[1] = 0;                                     // no new point this frame: nothing of the tail is young enough
+  const ops = []; let paths = 0; const c = fa.ctx;
+  c.beginPath = () => { paths++; }; c.moveTo = () => { if (paths === 2) ops.push('moveTo'); }; c.lineTo = () => { if (paths === 2) ops.push('lineTo'); };
+  fa._renderParticles(16);
+  const second = ops.lastIndexOf('moveTo');
+  assert.ok(second > 0 && ops.slice(second).length === 1, "the second particle's tail is its head alone, started with a moveTo: " + ops.join(","));
+});
 
 test('section 42 C2: a pan beyond the node window recomputes the nodes (the lattice keeps its vectors), a small pan does not', () => {
   const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(270));

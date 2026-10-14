@@ -382,6 +382,24 @@ test('decodePngGrey reproduces the reference decode of real frames byte for byte
   await assert.rejects(() => I.decodePngGrey(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]).buffer), /decode failed/);
 });
 
+test('G29 B-P1-2: the inflated stream must be exactly (w + 1) * h bytes: a PNG whose zlib data is short or long is refused, also in the worker', async () => {
+  const zlib = require('node:zlib');
+  const png = (w, h, rawLen) => {
+    const raw = Buffer.alloc(rawLen, 1); for (let y = 0; y < Math.ceil(rawLen / (w + 1)); y++) raw[y * (w + 1)] = 0;
+    const chunk = (type, data) => Buffer.concat([Buffer.from([(data.length >>> 24) & 255, (data.length >>> 16) & 255, (data.length >>> 8) & 255, data.length & 255]), Buffer.from(type), data, Buffer.alloc(4)]);
+    const ihdr = Buffer.from([(w >>> 24) & 255, (w >>> 16) & 255, (w >>> 8) & 255, w & 255, (h >>> 24) & 255, (h >>> 16) & 255, (h >>> 8) & 255, h & 255, 8, 0, 0, 0, 0]);
+    const z = zlib.deflateSync(raw), parts = [chunk('IHDR', ihdr), chunk('IDAT', z.subarray(0, Math.floor(z.length / 2))), chunk('IDAT', z.subarray(Math.floor(z.length / 2))), chunk('IEND', Buffer.alloc(0))];
+    const b = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), ...parts]); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+  };
+  const ok = await I.decodePngGrey(png(40, 30, 41 * 30), { cols: 40, rows: 30 });
+  assert.equal(ok.cols, 40); assert.equal(ok.q.length, 1200); assert.equal(ok.q[0], 1, 'two IDAT pieces inflate as one stream');
+  await assert.rejects(() => I.decodePngGrey(png(40, 30, 41 * 30 - 7), { cols: 40, rows: 30 }), /decode failed/, 'short');
+  await assert.rejects(() => I.decodePngGrey(png(40, 30, 41 * 30 + 7), { cols: 40, rows: 30 }), /decode failed/, 'long');
+  const self = runWorkerSource();
+  assert.match((await self.ask({ id: 1, buf: png(40, 30, 41 * 30 - 7), expect: null })).error, /decode failed/);
+  assert.equal((await self.ask({ id: 2, buf: png(40, 30, 41 * 30), expect: null })).rows, 30);
+});
+
 test('decodePngGrey refuses a picture of another size before inflating it (hostile bucket)', async () => {
   const buf = fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'frame_hs_half.png'));
   const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
@@ -863,6 +881,20 @@ test('section 42 (step 2 finding): FrameCache with the ring\'s ranks drops what 
   assert.deepEqual(['a', 'b', 'c'].map((k) => d.has(k)), [true, false, true], 'no ranks: LRU, never keep, never the new one');
 });
 
+test('G29 C1 / A-P3-1: the frame on the map is kept when its key is outside the rank map, and by VALUE under any key (its old-resolution key after a zoom)', () => {
+  const rank = { r0: 0, r1: 1, r2: 2 }, drawn = { tag: 'drawn' };
+  const c = new I.FrameCache(5); c.set('old', drawn); c.set('x', 9); c.set('r2', 2); c.set('r1', 1); c.set('r0', 0);
+  c.limit(2, 'old', rank);                                                    // keep outside the rank map: unranked entries go first, never keep
+  assert.deepEqual(['old', 'x', 'r0', 'r1', 'r2'].map((k) => c.has(k)), [true, false, true, false, false]);
+  const d = new I.FrameCache(5); d.set('old', drawn); d.set('x', 9); d.set('r2', 2); d.set('r1', 1); d.set('r0', 0);
+  d.limit(2, 'r0', rank, drawn);                                              // the drawn frame under a key the ring does not want: kept by value
+  assert.deepEqual(['old', 'x', 'r0', 'r1', 'r2'].map((k) => d.has(k)), [true, false, true, false, false]);
+  d.set('r1', 1, 'r0', rank, drawn); d.set('r2', 2, 'r0', rank, drawn);       // landings over the cap drop the ring's farthest, never the drawn value
+  assert.ok(d.has('old') && d.has('r0')); assert.equal(d.get('old'), drawn);
+  d.limit(1, 'r0', rank, drawn); assert.ok(d.has('old') && d.has('r0'), 'two protected entries can exceed the cap by one'); assert.equal(d.size(), 2);
+  d.limit(1, 'r0', rank, null); assert.deepEqual(['old', 'r0'].map((k) => d.has(k)), [false, true], 'without the value nothing shields the old key');
+});
+
 
 // ---- plan section 42 step 3: decoding off the main thread, the node window ----
 const FIX = (name) => { const buf = fs.readFileSync(path.join(__dirname, '..', 'fixtures', name)); return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength); };
@@ -885,7 +917,12 @@ test('section 42: the worker source (the module\'s own functions) decodes the re
     const r = await self.ask({ id: 7, buf: FIX(name), expect: { cols, rows } });
     assert.equal(r.id, 7); assert.equal(r.cols, cols); assert.equal(r.rows, rows); assert.equal(r.q.length, cols * rows);
     assert.equal(crypto.createHash('sha256').update(r.q).digest('hex'), sha, name);
-    assert.equal(self.transfers[self.transfers.length - 1][0], r.q.buffer, 'the code array is transferred, not copied');
+    const list = self.transfers[self.transfers.length - 1];
+    assert.equal(list[0], r.q.buffer, 'the code array is transferred, not copied');
+    assert.ok(list.length >= 3 && r.spent.length === list.length - 1 && r.spent.every((b, i) => b === list[i + 1]), 'the body and the inflater\'s chunks go back with it (G29 B-P1-2): ' + list.length);
+    assert.ok(r.spent.some((b) => b.byteLength === fs.statSync(path.join(__dirname, '..', 'fixtures', name)).size), 'the body is among them');
+    assert.equal(new Set(list).size, list.length, 'no buffer twice in the transfer list');
+    assert.equal(r.q.byteLength, cols * rows); assert.equal(r.q.buffer.byteLength, (cols + 1) * rows, 'the code array is a view of the unfiltered buffer (no copy)');
   }
   const rgb = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.from([0, 0, 0, 13]), Buffer.from('IHDR'), Buffer.from([0, 0, 0, 2, 0, 0, 0, 2, 8, 2, 0, 0, 0]), Buffer.alloc(4), Buffer.from([0, 0, 0, 0]), Buffer.from('IEND'), Buffer.alloc(4)]);
   const ab = rgb.buffer.slice(rgb.byteOffset, rgb.byteOffset + rgb.byteLength);
@@ -901,11 +938,11 @@ test('section 42: the worker source (the module\'s own functions) decodes the re
 class FakeWorker {
   constructor(url) { FakeWorker.made.push(url); this.self = runWorkerSource(); this.terminated = false; this.onmessage = null; this.onerror = null;
     this.self.postMessage = (m) => { if (!this.terminated) setImmediate(() => this.onmessage && this.onmessage({ data: m })); }; }
-  postMessage(msg) { if (FakeWorker.failPost) throw new Error('post failed'); this.self.onmessage({ data: msg }); }
+  postMessage(msg, transfer) { if (FakeWorker.failPost) throw new Error('post failed'); FakeWorker.transfers.push(transfer); this.self.onmessage({ data: msg }); }
   terminate() { this.terminated = true; }
   crash() { this.onerror && this.onerror({ message: 'boom' }); }
 }
-FakeWorker.made = []; FakeWorker.failPost = false;
+FakeWorker.made = []; FakeWorker.failPost = false; FakeWorker.transfers = [];
 function withWorker(fn) {
   const had = { Worker: global.Worker, location: global.location, warn: console.warn };
   global.Worker = FakeWorker; const warned = []; console.warn = (...a) => warned.push(a.join(' '));
@@ -920,9 +957,10 @@ test('section 42: FrameDecoder: available only with Worker, Blob, createObjectUR
   global.location = { search: '' }; assert.equal(I.FrameDecoder.available(), true);
   const saveW = global.Worker; global.Worker = undefined; assert.equal(I.FrameDecoder.available(), false, 'no Worker: the main-thread path'); global.Worker = saveW;
   const d = I.getDecoder(); assert.ok(d instanceof I.FrameDecoder); assert.equal(I.getDecoder(), d, 'one decoder');
-  const made = FakeWorker.made.length;
-  const [a, b] = await Promise.all([d.decode(FIX('frame_hs_half.png'), { cols: 720, rows: 361 }), d.decode(FIX('frame_tp_full.png'), { cols: 1440, rows: 721 })]);
+  const made = FakeWorker.made.length, hsBuf = FIX('frame_hs_half.png'), nT = FakeWorker.transfers.length;
+  const [a, b] = await Promise.all([d.decode(hsBuf, { cols: 720, rows: 361 }), d.decode(FIX('frame_tp_full.png'), { cols: 1440, rows: 721 })]);
   assert.equal(FakeWorker.made.length, made + 1, 'one worker for both'); assert.ok(/^blob:/.test(String(FakeWorker.made[made])) || String(FakeWorker.made[made]).length > 0);
+  assert.deepEqual(FakeWorker.transfers[nT], [hsBuf], 'the body is transferred to the worker, not copied (G29 D3)');
   assert.equal(a.cols, 720); assert.equal(b.cols, 1440); assert.equal(Object.keys(d.pending).length, 0);
   await assert.rejects(() => d.decode(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9]).buffer, null), /decode failed/, 'the worker\'s error keeps its message (failureKind: permanent)');
   const slow = d.decode(FIX('frame_hs_half.png'), { cols: 720, rows: 361 });
@@ -969,6 +1007,10 @@ test('section 42: a worker that dies ends its pending decodes with retry, stays 
     const pr3 = I.decodeFrame('https://x/h.png', ctrl.signal, { cols: 720, rows: 361 });
     await new Promise((r) => setImmediate(r)); ctrl.abort(); d3.worker.crash();
     await assert.rejects(() => pr3, (e) => e.retry === true); assert.equal(fetches.length, 1, 'no second download after an abort');
+    // Off while the body arrived: no decoder is booted for it (G29 A-P3-4)
+    I.resetDecoder(); fetches.length = 0; const madeBefore = FakeWorker.made.length, c4 = new AbortController(); c4.abort();
+    await assert.rejects(() => I.decodeFrame('https://x/i.png', c4.signal, { cols: 720, rows: 361 }), (e) => e.name === 'AbortError');
+    assert.equal(FakeWorker.made.length, madeBefore, 'no worker made'); assert.equal(I.getDecoder().worker, null);
   } finally { global.fetch = realFetch; }
 }));
 
@@ -1026,6 +1068,52 @@ test('section 42 C2: vectorNodes over a window gives the lattice the same vector
   assert.equal(wide.count, 720); assert.equal(wide.c0, 0);
 });
 
+test('G29 W2 (reviewer A\'s property test): for random views (zooms 1-11, the dateline, world copies, the latitude limits, phone to 1080p) and the pans the window covers, the lattice from the window equals the whole grid at every point inside the world', () => {
+  function rng(seed) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
+  const rand = rng(7);
+  const WINDF = { lo: 0, hi: 41.15555555555556, legend: [0, 30.866666666666667], units: 'm/s', interpolation: 'bilinear' };
+  const hsFull = frame(1440, 721, (r, c) => ((r * 31 + c * 17) % 23 === 0) ? 0 : 1 + ((r * 7 + c * 3) % 254));
+  const windHalf = frame(720, 361, (r, c) => ((r + c) % 19 === 0) ? 0 : 1 + ((r * 5 + c * 11) % 254));
+  const pdirHalf = frame(720, 361, (r, c) => ((r * 3 + c) % 29 === 0) ? 0 : ((r + c) % 37 === 0) ? 255 : 1 + ((r * 3 + c * 5) % 254));
+  const pdirFull = frame(1440, 721, (r, c) => ((r * 3 + c) % 29 === 0) ? 0 : ((r + c) % 41 === 0) ? 255 : 1 + ((r * 13 + c * 5) % 254));
+  const mk = (fr, grid, field, fdef) => { const l = layer(fr, grid, field, fdef); l._tileZoom = 6; return l; };
+  const CASES = [
+    { field: 'hs', layer: mk(hsFull, GRID, 'hs', HS), dframe: pdirHalf, dgrid: HALF },
+    { field: 'hs', layer: mk(hsFull, GRID, 'hs', HS), dframe: pdirFull, dgrid: GRID },
+    { field: 'wind', layer: mk(windHalf, HALF, 'wind', WINDF), dframe: pdirHalf, dgrid: HALF }];
+  const SIZES = [[375, 667], [800, 600], [1200, 800], [1920, 1080], [1024, 1366]];
+  const fulls = CASES.map((c) => I.vectorNodes(c.field, c.layer, c.dframe, c.dgrid, null, null));
+  const view = (z, w, h, lat, lng) => { const p = I.forwardPixel(lat, lng, z); return { z, w, h, ox: p.x - w / 2, oy: p.y - h / 2, zt: Math.round(z) }; };
+  // differences at lattice points inside the world only (0 <= y <= n); beyond it there is no map (A-P3-2)
+  const sameInWorld = (fa, fb, v, s) => { const n = 256 * Math.pow(2, v.z); for (let i = 0; i < fa.u.length; i++) { if (fa.u[i] === fb.u[i] && fa.v[i] === fb.v[i]) continue; const y = v.oy + Math.floor(i / fa.cols) * s; if (y >= 0 && y <= n) return i; } return -1; };
+  let views = 0, pans = 0, prev = null;
+  for (let it = 0; it < 120; it++) {
+    const ci = Math.floor(rand() * CASES.length), C = CASES[ci], full = fulls[ci];
+    const zi = 1 + rand() * 10, z = rand() < 0.5 ? Math.round(zi) : Math.round(zi * 4) / 4;
+    const [w, h] = SIZES[Math.floor(rand() * SIZES.length)];
+    const lp = rand(), lat = lp < 0.15 ? 84 - rand() * 3 : lp < 0.3 ? -79 + rand() * 3 : -79 + rand() * 163;
+    const gp = rand(), lng = gp < 0.2 ? 180 - rand() * 2 : gp < 0.4 ? -180 + rand() * 2 : gp < 0.5 ? -360 + rand() * 720 : -180 + rand() * 360;
+    const v = view(z, w, h, lat, lng), s = (256 * Math.pow(2, v.z) * C.dgrid.dlon / 360) >= 16 ? 8 : 4;
+    const win = I.nodeWindow(v, C.dgrid, C.dframe, 1);
+    const reuse = prev && rand() < 0.5 && prev.cols === C.dframe.cols ? prev : null;
+    const part = I.vectorNodes(C.field, C.layer, C.dframe, C.dgrid, reuse, win); prev = part;
+    const a = I.flowField(v, s, full, C.dgrid, C.layer, false), b = I.flowField(v, s, part, C.dgrid, C.layer, false);
+    views++;
+    assert.equal(sameInWorld(a, b, v, s), -1, 'view ' + it + ' ' + JSON.stringify({ z, w, h, lat, lng, win }));
+    assert.ok(I.windowCovers(win, I.nodeWindow(v, C.dgrid, C.dframe, 0), C.dframe.cols), 'the view itself is covered');
+    for (let k = 0; k < 8; k++) {
+      const dz = rand() < 0.3 ? (rand() < 0.5 ? 0.25 : -0.25) * Math.floor(rand() * 4) : 0, dx = (rand() * 2.4 - 1.2) * w, dy = (rand() * 2.4 - 1.2) * h;
+      const v2 = { z: v.z + dz, w, h, ox: v.ox * Math.pow(2, dz) + dx, oy: v.oy * Math.pow(2, dz) + dy, zt: Math.round(v.z + dz) };
+      if (v2.z < 1 || v2.z > 11 || !I.windowCovers(win, I.nodeWindow(v2, C.dgrid, C.dframe, 0), C.dframe.cols)) continue;
+      const s2 = (256 * Math.pow(2, v2.z) * C.dgrid.dlon / 360) >= 16 ? 8 : 4;
+      const a2 = I.flowField(v2, s2, full, C.dgrid, C.layer, false), b2 = I.flowField(v2, s2, part, C.dgrid, C.layer, false);
+      pans++;
+      assert.equal(sameInWorld(a2, b2, v2, s2), -1, 'covered pan of view ' + it + ' ' + JSON.stringify({ dz, dx, dy }));
+    }
+  }
+  assert.ok(views === 120 && pans > 200, 'views ' + views + ' pans ' + pans);
+});
+
 
 test('section 42: pageQuery joins the live search with the navigation entry\'s original URL (the forecast loader rewrites the address before the module loads); the kill switch reads it', () => {
   const hadLoc = global.location, hadPerf = Object.getOwnPropertyDescriptor(global, 'performance');
@@ -1039,5 +1127,7 @@ test('section 42: pageQuery joins the live search with the navigation entry\'s o
     setPerf([{ name: 'https://x/' }]); global.location = { search: '' }; assert.equal(I.pageQuery(), '');
     setPerf([]); global.location = { search: '?a=1' }; assert.equal(I.pageQuery(), '?a=1', 'no navigation entry');
     global.location = undefined; setPerf([{ name: 'https://x/?ovdebug=1' }]); assert.equal(I.pageQuery(), '?ovdebug=1', 'no location');
+    setPerf([{ name: 'https://x/#/route?ovdebug=1' }]); assert.equal(I.pageQuery(), '', 'a ? inside the fragment is no query (G29 A-P3-4)');
+    global.location = { search: '?a=1' }; setPerf([{ name: 'https://x/?b=2#x?c=3' }]); assert.equal(I.pageQuery(), '?a=1&b=2');
   } finally { global.location = hadLoc; if (hadPerf) Object.defineProperty(global, 'performance', hadPerf); else delete global.performance; }
 });

@@ -335,3 +335,27 @@ Fix round 5d scope (overlay asset 2.16.6):
 Then the test site (MAX): the reviewer's live drills (R-1 on a throttled network, R-4 with real drags, R-5 in the error
 panel), the gate fuzz on the fixed code, and a 1080p shark pair against production. After that, the owner's go-ahead for
 production.
+## Fix round 5d (overlay asset 2.16.6)
+Built 2026-10-14 (Opus 5.5, HIGH) on `feat/overlay-fast` after df874e9: `static_overlay/overlay.js`, the overlay Node suites
+(`playback`, `flow`, `overlay`, `panel`), `app.py` (the version), the asset fixture, README. Every scope item of the re-check:
+1. **R-1 / R-2**: `_paintWait(gen)` returns unless the overlay is playing and `gen` is the current `playGen`, so a landing of
+   an older play, or one after a pause, arms nothing. The gate's `done` runs the waiter it holds; the waiter (a tick)
+   checks its own generation. Tests: the reviewer's scenario as a test (late landing, slow render, hide + show, each with
+   reduced motion switched on in between, and the control): playback goes on with something pending. Second test: a frame
+   that lands after a pause arms no gate (no animation frame, no fallback timer), and play then lands the next frame and
+   plays on.
+2. **R-4**: every map event restarts the stuck clock: `_note` (zoomstart / zoomend / movestart / moveend / viewreset /
+   resize) and new 'move' / 'zoom' listeners, so a moving drag or pinch never counts as stuck. A busy flag with no map event
+   for 10 s still heals and shows the canvas. Test: separate drags spanning checks, a hidden period then a new drag, a
+   moving drag, a moving pinch (none heal); a zoom flag stuck with no event (healed, canvas shown).
+3. **R-5**: `_syncUI` returns when there is no panel title. The error panel's `?ovdebug=1` readout alone is no panel.
+4. **R-6 pins**: D4 (a corrupt and a truncated deflate stream: 'frame decode failed', classed permanent); D8 (a refused
+   transfer list: the code array goes alone); R1 / R2 and R-5 (the panel harness loaded with `?ovdebug=1`: the error panel
+   carries the readout, `_syncUI` and `pause` do not throw there, and the readout's timer stops once its element is gone).
+5. README (the watchdog: "busy for 10 s with no map event in between"), asset 2.16.6, the fixture.
+- Suites: Node overlay 248 (was 243), pytest 1,068. Mutants of the fixes (scratch `fast/mut5.py`, the file restored from a
+  byte copy): 9 of 10 killed. N2 (`done` keeps its old generation check) survives as the redundant half of the R-1 fix:
+  undoing both halves (N3, the 2.16.5 gate) is killed.
+- The reviewer's gate fuzz on the fixed code (`g29/recheck/out6/`): 1,000 runs, 70,000 operations, 1,870 reduced-motion
+  toggles and 20,493 timed playback landings across the canvas, main-thread and worker modes: 0 failures. The fuzz counted
+  618 calls of `_paintWait` from an older play generation; each is now turned away at the guard and arms nothing.

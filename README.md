@@ -287,7 +287,7 @@ the tab.
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.
-Fast playback (assets 2.15.0-2.16.5, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
+Fast playback (assets 2.15.0-2.16.6, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
 to 1920x1080 because (1) the ring of decoded frames follows the speed: paused and at 1x the G3/G4 budgets stand (the
 frame on the map, 2 ahead, 2 behind, at most 2 downloads at once, at most 5 decoded frames per kind); at 2x the ring is
 4 ahead / 1 behind with 3 downloads and 7 decoded, at 4x 6 ahead / 1 behind with 4 downloads and 9 decoded (the downloads
@@ -335,8 +335,8 @@ owner's pick of 2026-10-13 from four measured candidates:
 the density of before (one particle per 30x30 px: a denser look cost the 1080p frame rate), 2-px cores over 4-px halos
 (wind 1.6 / 3.4) and brighter tails (55 % instead of 40 %). (7) A
 2-second watchdog restarts the animation when it should be running and is not (its data and canvas present, the page
-visible, nothing in progress on the map, yet no frame drawn or a pause that never ended; a map "busy" for 10 s in one go
-counts as a flag stuck true), shows the canvas again (a zoom whose zoomend never came left it hidden) and, on WebKit (Safari,
+visible, nothing in progress on the map, yet no frame drawn or a pause that never ended; a map "busy" for 10 s with no
+map event in between counts as a flag stuck true), shows the canvas again (a zoom whose zoomend never came left it hidden) and, on WebKit (Safari,
 and every browser on iOS / iPadOS, which are all WebKit), replaces the animation canvas by a fresh element, as after every
 zoom there, since the iPad lost its particles after a pinch zoom until a reload (not reproducible in Chromium); a browser
 that refuses the new canvas a drawing context (Safari with its canvas memory used up) keeps the old canvas, and without any

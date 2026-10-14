@@ -1667,6 +1667,9 @@
     // clamp on a resize) recreates the tiles AFTER moveend: the flow is rebuilt once they exist
     this._on('viewreset', function () { self._note('viewreset'); if (!self.suspended) self._rebuild(); });
     this._on('resize', function () { self._note('resize'); self._rebuild(); });
+    // a moving gesture or animation fires these continuously: the map is alive, not stuck (see _check)
+    var alive = function () { self.busySince = 0; };
+    this._on('move', alive); this._on('zoom', alive);
     // the watchdog: every 2 s, an animator that should be running and is not is restarted (see _check)
     this.watch = setInterval(function () { self._check(); }, WATCHDOG_MS);
     if (this.watch && this.watch.unref) this.watch.unref();
@@ -1682,7 +1685,9 @@
     if (old) { try { old.width = 0; old.height = 0; } catch (e) { /* gone */ } if (old.remove) old.remove(); }
     pane.appendChild(cv); this.canvas = cv; this.ctx = ctx; this.v = null;   // placed afresh by the next rebuild
   };
-  FlowAnimator.prototype._note = function (what) { this.log.push([what, Math.round(nowMs())]); if (this.log.length > 8) this.log.shift(); };
+  // A map event (a gesture or an animation starting or ending, a view reset, a resize) restarts the stuck clock (G29
+  // re-check R-4: separate gestures each spanning a 2-s check added up to "busy for 10 s").
+  FlowAnimator.prototype._note = function (what) { this.busySince = 0; this.log.push([what, Math.round(nowMs())]); if (this.log.length > 8) this.log.shift(); };
   // The playback speed (1 paused or at 1x, 2 at 2x, 4 at 4x): the particles move that much faster, so at the fast
   // speeds they keep pace with the time-lapse instead of drifting behind the storms; their tails keep their length on
   // screen (the sampling interval shrinks with the rate) and their lifetimes stay in real time.
@@ -1702,8 +1707,9 @@
   FlowAnimator.prototype._check = function () {
     if (!this.canvas || !this.dir || !this.layer || !this.layer.hasFrame() || this.mode !== 'particles') return;
     if ((typeof document !== 'undefined' && document.hidden) || reducedMotion()) return;
-    // a gesture or an animation in progress holds the animator legitimately; held for BUSY_STUCK_MS in one go it is a
-    // Leaflet flag stuck true (G29 A-P3-3), which would otherwise keep a stuck iPad stuck for good
+    // a gesture or an animation in progress holds the animator legitimately; "busy" for BUSY_STUCK_MS with no map event
+    // in between (every event restarts busySince) is a Leaflet flag stuck true (G29 A-P3-3), which would otherwise keep a
+    // stuck iPad stuck for good
     if (this._busy()) { if (!this.busySince) this.busySince = nowMs(); if (nowMs() - this.busySince < BUSY_STUCK_MS) return; } else this.busySince = 0;
     var stuck = this.suspended > 0, dead = !this.active || this.rafId === null || nowMs() - this.lastFrameAt > WATCHDOG_MS;
     if (!stuck && !dead) return;
@@ -2489,12 +2495,16 @@
   // GPU renders only ~8 times a second). So after a landing the next tick runs from a task scheduled by the first
   // animation frame after it (the update has completed by then), never earlier; without an animation frame for
   // PAINT_FALLBACK_MS (a hidden or throttled page) it runs anyway, so playback never stalls where frames stop. Seeks,
-  // steps and scrubs are not gated; play, pause and Off clear it.
+  // steps and scrubs are not gated; play, pause and Off clear it. Only the CURRENT play arms it: a frame that lands for an
+  // older play (a pause + play, or a hide + show, while it was loading) or after a pause arms nothing, since clearing
+  // the gate would drop the current play's waiting tick and leave playback stranded (G29 re-check R-1 / R-2). The gate
+  // runs the waiter it holds; the waiter (a tick) checks its own generation.
   Overlay.prototype._paintWait = function (gen) {
     var self = this;
+    if (!this.playing || gen !== this.playGen) return;
     this._paintClear();
     if (typeof requestAnimationFrame !== 'function') return;
-    var done = function () { if (!self._painting) return; var w = self._paintWaiting; self._paintClear(); if (w && self.playing && gen === self.playGen) w(); };
+    var done = function () { if (!self._painting) return; var w = self._paintWaiting; self._paintClear(); if (w) w(); };
     this._painting = true;
     this._paintRaf = requestAnimationFrame(function () { self._paintRaf = null; self._paintTask = setTimeout(done, 0); });
     this._paintFallback = setTimeout(done, PAINT_FALLBACK_MS);
@@ -3434,7 +3444,7 @@
   // thumb (at the target) and the unavailable-frame note.
   Overlay.prototype._syncUI = function () {
     var ui = this.ui;
-    if (!ui || !this.manifest || !this.layer) return;
+    if (!ui || !ui.title || !this.manifest || !this.layer) return;        // no panel (the error panel's ?ovdebug=1 readout alone: re-check R-5)
     if (ui.play) { ui.play.textContent = this.playing ? '❚❚' : '▶'; ui.play.setAttribute('aria-label', this.playing ? 'Pause' : 'Play'); }
     if (ui.host && ui.host.classList) ui.host.classList.toggle('ov-playing', !!this.playing);
     if (ui.speedSel) ui.speedSel.sync();

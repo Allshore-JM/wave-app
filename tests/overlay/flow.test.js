@@ -337,6 +337,34 @@ test('section 42: the watchdog restarts an animator that should run and does not
   fa.detach(); assert.equal(fa.watch, null, 'the timer is cleared on detach');
 });
 
+test('G29 re-check R-4: every map event restarts the stuck clock: separate gestures, a gesture after a hidden period and a long moving gesture never heal; a busy flag with no event for 10 s still does', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(180));
+  const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+  const { fa, map, events } = animator('hs', l, pdir, HALF);
+  const fire = (ev) => (events[ev] || []).slice().forEach((f) => f());
+  const longAgo = () => performance.now() - I.BUSY_STUCK_MS - 1;
+  fa.pending(16);
+  // separate drags, each spanning a check: the old rule added them up to "busy for 10 s"
+  map.dragging = { moving: () => true };
+  fire('movestart'); fa._check(); assert.ok(fa.busySince > 0);
+  fa.busySince = longAgo();                                                    // 10 s of checks that all saw a drag ...
+  fire('moveend'); fire('movestart'); fa._check();                             // ... but each was its own gesture
+  assert.equal(fa.healed, 0, 'a new gesture restarts the clock: no heal mid-drag');
+  // a check that returned early (hidden) left an old clock; the next drag starts afresh
+  fa.busySince = longAgo(); global.document.hidden = true; fa._check(); global.document.hidden = false;
+  fire('moveend'); fire('movestart'); fa._check(); assert.equal(fa.healed, 0, 'no heal at the first check of a new drag');
+  // one long drag that keeps moving fires 'move' all along; a pinch fires 'zoom'
+  fa.busySince = longAgo(); fire('move'); fa._check(); assert.equal(fa.healed, 0, 'a moving drag is alive');
+  map.dragging = null; map.touchZoom = { _zooming: true };
+  fa.busySince = longAgo(); fire('zoom'); fa._check(); assert.equal(fa.healed, 0, 'a moving pinch is alive');
+  map.touchZoom = null; fire('moveend'); assert.equal(fa.suspended, 0);
+  // a flag stuck true with no event for 10 s: healed, as before (G29 A-P3-3)
+  fire('zoomstart'); map._animatingZoom = true; fa._check(); assert.equal(fa.healed, 0, 'a zoom in progress');
+  fa.busySince = longAgo(); fa._check(); assert.equal(fa.healed, 1, 'busy for 10 s with no map event: healed');
+  assert.equal(fa.suspended, 0); assert.equal(fa.canvas.style.visibility, '', 'the canvas the zoom hid is shown');
+  map._animatingZoom = false; fa.detach();
+});
+
 test('section 42: after a zoom the canvas is a fresh element on WebKit (the old one released), the same element elsewhere; the map events are logged for the readout', () => {
   const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(180));
   const saveNav = Object.getOwnPropertyDescriptor(global, 'navigator');

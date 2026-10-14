@@ -1361,6 +1361,70 @@ test('section 42 (step 2 finding): the cache never evicts a frame the ring still
 });
 
 
+// G29 re-check R-1: shark playback, the animation on, the playhead waiting for a held frame T; reduced motion switched
+// on (read live, no event), then a pause + play (or a hide + show) while T decodes: the old play's _goto(T) waited for
+// T's direction too, the new one does not, so the old landing comes second. It must not touch the new play's gate.
+async function staleGateScenario(variant, o2) {
+  const w = world({ fakeTimers: true, raf: true, realDocument: !!o2.vis });
+  const out = {};
+  await onFakeClock(w, async () => {
+    w.pointer = ptr(A); w.manifests[A.run] = A;
+    const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseAll(); await w.paint(); await settle();
+    o.setSpeed(4); o.play(); await settle(); await w.releaseAll(); await settle();
+    for (let k = 0; k < 3; k++) { await w.paint(); await settle(); await w.fade(125); await settle(); await w.releaseAll(); await settle(); }
+    let guard = 0;                                                             // stop releasing: the playhead runs to a held frame
+    while (o.target === o.frameIndex && guard++ < 30) { await w.paint(); await settle(); await w.fade(125); await settle(); }
+    const T = o.target, stepT = String(A.frames[T].step).padStart(3, '0');
+    if (!o2.noReduced) w.g.matchMedia = (q) => ({ matches: /reduced-motion/.test(q) });
+    if (o2.vis) { w.doc.hidden = true; w.fire('doc', 'visibilitychange'); w.doc.hidden = false; w.fire('doc', 'visibilitychange'); }
+    else { o.pause(); o.play(); }
+    await settle();
+    await w.fade(variant === 'late' ? 200 : 10); await settle();
+    const i = w.pendingBitmaps.findIndex((f) => f.blob.url.endsWith('/hs/f' + stepT + '.png'));
+    assert.ok(i >= 0, 'T\'s field decode is held'); w.pendingBitmaps.splice(i, 1)[0](); await settle();
+    out.landed = o.frameIndex === T;
+    await w.fade(variant === 'late' ? 0 : 120); await settle();               // the next frame is due (late: at once)
+    const f0 = o.frameIndex;
+    for (let k = 0; k < 60; k++) { await w.paint(); await settle(); await w.fade(16); await settle(); if (w.pendingBitmaps.length) await w.releaseAll(); }
+    out.advanced = o.frameIndex - f0; out.playing = o.playing;
+    out.pending = o.timer !== null || !!o._paintWaiting || w.rafQ.size > 0;
+    o.unmount();
+  });
+  return out;
+}
+
+test('G29 re-check R-1: a frame of an older play landing after the new play\'s never strands playback (late landing, slow render, hide + show; reduced motion switched on in between)', async () => {
+  for (const [variant, o2] of [['late', {}], ['slowRender', {}], ['late', { vis: true }], ['late', { noReduced: true }]]) {
+    const r = await staleGateScenario(variant, o2);
+    const name = variant + (o2.vis ? ' + hide/show' : '') + (o2.noReduced ? ' (control)' : '');
+    if (!o2.noReduced) assert.ok(r.landed, name + ': the held frame landed (no direction to wait for)');
+    assert.equal(r.playing, true, name);
+    assert.ok(r.advanced >= 4, name + ': playback goes on (advanced ' + r.advanced + ' frames in ~1 s of renders)');
+    assert.ok(r.pending, name + ': something is pending (a due timer, a waiting tick or an animation frame)');
+  }
+});
+
+test('G29 re-check R-2 / G8: a frame that lands after a pause arms no gate (no animation frame, no fallback timer); play right after it lands its next frame from the play itself', async () => {
+  const w = world({ fakeTimers: true, raf: true });
+  await onFakeClock(w, async () => {
+    const o = await mounted(w, A); await w.releaseAll();
+    o.setSpeed(4); o.play(); await settle(); await w.releaseAll(); await settle();
+    let guard = 0;                                                             // stop releasing: the playhead runs to a held frame
+    while (o.target === o.frameIndex && guard++ < 30) { await w.paint(); await settle(); await w.fade(125); await settle(); }
+    const T = o.target; assert.notEqual(T, o.frameIndex, 'a frame is loading');
+    o.pause(); await settle();
+    await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, T, 'the frame the playback waited for still lands');
+    assert.equal(o._painting, false, 'paused: no gate'); assert.equal(w.rafQ.size, 0, 'no animation frame asked for');
+    assert.equal(o._paintFallback, null, 'no fallback timer while paused');
+    o.play(); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.frameIndex, T + 1, 'play lands the next frame at once (the first tick of a play is not gated)');
+    for (let k = 0; k < 4; k++) { await w.paint(); await settle(); await w.fade(125); await settle(); await w.releaseAll(); await settle(); }
+    assert.equal(o.frameIndex, T + 5, 'and plays on, one frame per interval');
+    o.unmount();
+  });
+});
+
 test('section 42 step 3: the particles\' rate follows the playback (1 paused, the speed while playing); Off disposes the decode worker; the readout is text only and runs only with ?ovdebug=1', async () => {
   const w = world({ fakeTimers: true });
   await onFakeClock(w, async () => {

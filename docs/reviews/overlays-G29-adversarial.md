@@ -280,3 +280,58 @@ Outcome of the step-5b items:
 - The drills (B-P2-1, B-P2-2, B-P3-2) behave as fixed; the iPad remains the owner's check with `?ovdebug=1`.
 Next: step 5c, a short fresh re-check (the paint gate under a fake-rAF fuzz, the main-thread decoder and the worker switch,
 the animator guards), then the owner's go-ahead for production (tag `prod-pre-fast` @ 908af0b, fast-forward).
+## Re-check of the fix round (step 5c)
+2026-10-14 (Opus 5.5, MAX): one fresh-context reviewer on `git diff 583455a..8cac824` and the test site (2.16.5). Report:
+scratch `g29/recheck/recheck-report.md`, with its scripts and logs beside it. The reviewer ran:
+- a fake-rAF fuzz of the paint gate (reviewer A's world plus a render model, landing hooks and gate invariants, three
+  decode modes; 1,300 runs, 87,000 operations, 29,374 playback landings without reduced-motion toggles);
+- hand checks of the cadence under fast, slow and absent rendering;
+- the decoder against Node's real DecompressionStream;
+- the busy rule's gesture scenarios, 29 real user agents and 54 mutants;
+- live drills on the test site (headless Edge, GPU).
+The author re-ran R-1's scenario on overlay.js @ 8cac824 and read every finding against the code.
+
+**0 P0, 0 P1, 3 P2, 3 P3.**
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| R-1 | P2 | **A landing of an older play generation replaces the current paint gate and strands playback.** `_paintWait(gen)` (2493) has no generation check and starts with `_paintClear()`, which also drops the CURRENT generation's stored waiter; its own `done` then refuses that waiter (`gen !== playGen`). The old chain (pause + play, or hide + show, while the playhead waits for a frame) lands the same frame AFTER the new one when it is longer: in production when the old `_goto` waited for the frame's direction and the new one does not, i.e. reduced motion was switched on in between (on an iPad: Settings > Reduce Motion while the overlay plays, then back). Then nothing is pending while `playing` stays true, until the viewer presses pause and play. Reproduced in Node (late landing, slow render, hide + show), by the fuzz (4-5 stalls per 300 runs with the toggle, none without), and live on the test site on the first try. Author: re-ran `r1_stale_gate.js` on 8cac824: the three variants stall (frame 15, playing, no timer / waiter / animation frame), the control plays on; with the guard all four play on (frame 54 after 5 s). | FIX (scope 1) |
+| R-4 | P2 | **The watchdog's "busy 10 s in one go" adds up separate gestures.** `_check` (1707) samples the busy flags every 2 s and resets `busySince` only when a check sees the map idle (or after a heal), so drags or pinches that each span a check add up, and a check that returns early (hidden page) leaves a stale `busySince` for the next gesture. False heals mid-gesture: 56 of 200 "active" and 190 of 200 "busy" 60-s gesture streams; live, real mouse drags took `flow.healed` 0 -> 2. A heal mid-pinch shows the canvas for the rest of the pinch, and `healed` / `heal:suspended` enter the `?ovdebug=1` readout the owner will read on the iPad. Author: code read; `resume` clamps the suspend counter at 0, so a false heal leaves no lasting state. | FIX (scope 2) |
+| R-5 | P2 | **Regression with `?ovdebug=1`: in the error panel every `_syncUI()` throws.** The fix round's error branch (3270) sets `this.ui = { debug }`; `_syncUI` (3435) guards only `!ui` and writes `ui.title`. Off (`unmount` -> `pause` -> `_syncUI`) then stops half-way: the picture, the run timer and the animator stay and the tab's saved field stays, so a reload brings the overlay back; a desktop resize and a zoom across the resolution threshold throw too (the latter inside Leaflet's zoomend dispatch). Live: reproduced, and the guard patched into the page fixed it. Author: code read (the other users of `this.ui` guard their own members). | FIX (scope 3) |
+| R-2 | P3 | A frame that lands after a pause arms the gate while paused (an animation frame and a 250-ms timer); harmless today (its `done` refuses the stale generation; play / pause / Off clear it), but it is what turns into R-1 when `play()` does not clear first (mutant G8). | FIX (R-1's guard) |
+| R-3 | P3 | Seeks are not gated: a seek made while playing can be replaced by the next playback landing before it is painted (11 of 200 near seeks at shark in the model); production behaves the same. | ACCEPT: not reachable from the page. Every seek path pauses first (`step`, `_scrubTo`, the ribbon keys), and the page never calls `seek()` (author: code read) |
+| R-6 | P3 | Suite gaps: 17 of 54 mutants survive the suites, and six of those describe real behaviour: G2 (`_paintWait` without its first clear) and G8 (`play()` without clearing) stall the fuzz; D4 (inflater errors keep their own message: a corrupt or truncated stream would be classed transient and retried every 60 s instead of permanent); D8 (no fallback for a refused transfer: a worker decode would never answer); R1 (the readout timer would not stop for a detached element); R2 (the error panel's readout: no harness loads the module with `?ovdebug=1`, which is how R-5 got through). | FIX: pins (scope 4) |
+
+Confirmed by the reviewer (evidence in the report):
+- **Paint gate.** The fuzz held its invariants in every run without the toggle: no unpainted landing, exactly one pending
+  continuation while playing, nothing after Off, caps, the drawn frame kept by value, no frame of another run, none
+  skipped. The detector caught three gate mutants in 25-33 of 40 runs. Cadence: renders every 16-33 ms give exactly 500 /
+  250 / 125 ms; renders every 130-200 ms at 4x give one landing per render, no burst; with no animation frame the 250-ms
+  fallback paces 4x at 250 ms.
+- **Decoder.** The fixtures are byte-identical; random images with all five filters match with the IDAT split into 1-byte
+  pieces, halves and empty pieces. Fourteen broken-stream kinds are refused as a permanent 'frame decode failed', and a
+  256-MB decompression bomb is refused in 4 ms. An abort before or while the body arrives works. The 2.16.5 switch was
+  checked in 15 address cases; live, the default boots no worker and `?ovdecode=worker` boots one. The worker's transfers
+  and its refused-transfer fallback give an identical picture.
+- **Animator, tails, user agents.** The animator guards hold (A1-A10 killed). Live hide / show: 0 unpainted of 139
+  landings. Tails span 600-733 ms of flow at 15-60 Hz and x1-x4. `isWebKit()` is right for 29 real user agents.
+- **Could not check:** the real iPad and Safari, Firefox, a 10-minute soak, and the worker's picture identity on 2.16.5
+  (b01 covered it on 2.16.4; the decode functions are unchanged).
+
+Fix round 5d scope (overlay asset 2.16.6):
+1. R-1 + R-2: `_paintWait(gen)` returns unless playing and `gen` = `playGen`, so a landing of an older play, or one after
+   a pause, arms nothing. `done` runs the waiter it holds (the waiter `_tick(gen)` checks its own generation), so even a
+   stale gate cannot drop the current one. Tests: the reviewer's scenarios (late landing, slow render, hide + show, with
+   the reduced-motion change); play right after a post-pause landing; nothing armed while paused.
+2. R-4: the stuck clock restarts with every map event: `_note` (zoomstart / zoomend / movestart / moveend / viewreset /
+   resize), plus 'move' and 'zoom', so a moving gesture never counts as stuck. A busy flag with no map event for 10 s still
+   heals. Tests: separate drags spanning checks; a hidden period then a new drag; a 12-s moving drag (none of these heal);
+   a flag stuck with no event, and a zoomstart without zoomend (these still heal).
+3. R-5: `_syncUI` returns when there is no panel title. Test: the panel harness loaded with `?ovdebug=1`: the error state
+   carries the readout, and `_syncUI` / `pause` do not throw.
+4. R-6 pins: D4 (a corrupt and a truncated deflate stream give 'frame decode failed', classed permanent); D8 (a refused
+   transfer sends the code array alone); R1 (the readout timer stops when its element is detached); G2 / G8 through item 1.
+5. README (the watchdog sentence); asset 2.16.6 and the fixture; mutants of the fixes.
+Then the test site (MAX): the reviewer's live drills (R-1 on a throttled network, R-4 with real drags, R-5 in the error
+panel), the gate fuzz on the fixed code, and a 1080p shark pair against production. After that, the owner's go-ahead for
+production.

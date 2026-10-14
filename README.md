@@ -287,41 +287,58 @@ the tab.
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.
-Fast playback (assets 2.15.0-2.16.3, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
+Fast playback (assets 2.15.0-2.16.4, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
 to 1920x1080 because (1) the ring of decoded frames follows the speed: paused and at 1x the G3/G4 budgets stand (the
 frame on the map, 2 ahead, 2 behind, at most 2 downloads at once, at most 5 decoded frames per kind); at 2x the ring is
-4 ahead / 1 behind with 3 downloads and 7 decoded, at 4x 6 ahead / 1 behind with 4 downloads and 9 decoded (the direction
-frames alike), so a step never waits for its own download and a ring frame is never evicted before it is drawn (at 4x
+4 ahead / 1 behind with 3 downloads and 7 decoded, at 4x 6 ahead / 1 behind with 4 downloads and 9 decoded (the downloads
+are one budget for field and direction frames together; the decoded cap is per kind), so a step never waits for its own
+download and a ring frame is never evicted before it is drawn (at 4x
 the old 5-frame cache fetched every frame about 1.8 times); every landing refills the ring, not only the target's;
 a pause or a slower speed shrinks the caches and the downloads back to the budget at once, never dropping the target's
 own field or direction download; a step whose frame is decoded already keeps every ring download ahead of it, and when a
 new target leaves too little room the farthest ring downloads go, never the nearest (2.15.1: the old rule reserved a slot
 for a decoded target and dropped the oldest download, usually the next frame needed); with a pending target far from the
 frame on the map (a seek into a cooldown) the ring is filled only up to the budget, so nothing is ever fetched back and
-forth; (2) the cadence is drift-free: each
+forth; the frame on the map (and the animator's direction) is kept by value as well as by key, so after a zoom across a
+resolution threshold the old-resolution frame still drawn is never evicted (2.16.4); (2) the cadence is drift-free: each
 frame is due one interval after the last one was DUE, not after it landed (timer latency and the particles' frames no
 longer add up: the snail showed 1.92 of 2 frames/s with everything cached); a frame that lands late is followed by its
-successor at once, one back-to-back frame, never a skipped one; (3) a new frame draws the tiles in view first and the
+successor as soon as the browser has rendered it, one back-to-back frame, never a skipped one: the PAINT GATE (2.16.4, G29):
+the tick after a landing runs from a task scheduled by the first animation frame after it, never before (a landing is put on
+screen by the rendering update that follows the animation-frame callbacks; a successor landed in the very next task replaced
+a late frame unseen, 3-12 % of the frames at 1080p where the GPU renders only ~8 times a second with particles), and without
+an animation frame for 250 ms it runs anyway; (3) a new frame draws the tiles in view first and the
 buffer tiles Leaflet keeps around the view in idle time (requestIdleCallback, else one task), and a drag that brings
 a buffer tile into view draws it at once; the readout samples the frame itself and the particles read only the land
 masks, so a buffer tile a frame behind is never read.
 Step 3 (asset 2.16.0): (4) the frames are DECODED OFF THE MAIN THREAD: a Web Worker built from the module's own decode
 functions (one asset, one version) inflates and unfilters each downloaded body (transferred, not copied) and hands the
-code array back; the main thread keeps the download, its watchdog and the late-frame rules. A worker that dies ends its
+code array back; the main thread keeps the download, its watchdog and the late-frame rules. The worker keeps nothing per
+frame (2.16.4, G29): the zlib pieces go to the inflater as they are, its output is read into one buffer of the expected size,
+the rows are unfiltered in place, and every buffer the decode held (the body, the inflater's chunks) goes back to the main
+thread with the code array, where that garbage was always collected before the worker (left in the worker's own heap it was
+collected only at V8's ~64 MB trigger, which broke the memory rule once the worker was counted). A worker that dies ends its
 pending decodes, which are downloaded once more (edge-cached) for the main-thread path, and stays off for the session
-(one console warning); without Worker / Blob / DecompressionStream, or with `?ovdecode=main` in the address (a
-diagnostic), the main thread decodes as before. (5) The particle lattice is rebuilt from the model nodes around the view
+(one console warning); without Worker / Blob / URL.createObjectURL / DecompressionStream, or with `?ovdecode=main` in the
+address (a diagnostic), the main thread decodes as before. (5) The particle lattice is rebuilt from the model nodes around the view
 plus a screen on every side, not the whole grid (the same vectors on screen; a pan beyond the margin recomputes).
 (6) Particles: their pace follows the playback speed (x2 at fish, x4 at shark; x1 paused or at snail), so at the fast
-speeds they keep up with the time-lapse instead of drifting behind the storms, while their tails keep their length on
-screen and their lifetimes stay in real time; their look is the owner's pick of 2026-10-13 from four measured candidates:
+speeds they keep up with the time-lapse instead of drifting behind the storms (on the hourly frames to +120 h; the 3-hourly
+frames after that move three times as far per step), while their tails span the same flow time at every speed and frame
+rate (a tail point older than 11 sampling intervals of flow is left out: a slow particle loop at the fast speeds drew tails
+up to twice as long, 2.16.4; owner: the same length everywhere) and their lifetimes stay in real time; their look is the
+owner's pick of 2026-10-13 from four measured candidates:
 the density of before (one particle per 30x30 px: a denser look cost the 1080p frame rate), 2-px cores over 4-px halos
 (wind 1.6 / 3.4) and brighter tails (55 % instead of 40 %). (7) A
 2-second watchdog restarts the animation when it should be running and is not (its data and canvas present, the page
-visible, nothing in progress on the map, yet no frame drawn or a pause that never ended), and on WebKit (Safari, every
-iPad browser) the animation canvas is a fresh element after every zoom, since the iPad lost its particles after a pinch
-zoom until a reload (not reproducible in Chromium); `?ovdebug=1` writes the animator's and the scheduler's state into
-the panel once a second. (2.16.1: these address parameters are read from the navigation entry's original URL as well,
+visible, nothing in progress on the map, yet no frame drawn or a pause that never ended; a map "busy" for 10 s in one go
+counts as a flag stuck true), shows the canvas again (a zoom whose zoomend never came left it hidden) and, on WebKit (Safari,
+and every browser on iOS / iPadOS, which are all WebKit), replaces the animation canvas by a fresh element, as after every
+zoom there, since the iPad lost its particles after a pinch zoom until a reload (not reproducible in Chromium); a browser
+that refuses the new canvas a drawing context (Safari with its canvas memory used up) keeps the old canvas, and without any
+context the animator draws nothing and the watchdog asks again, never an exception into the map's events or the playback
+(2.16.4, G29); `?ovdebug=1` writes the animator's and the scheduler's state into the panel once a second, in the error
+panel too. (2.16.1: these address parameters are read from the navigation entry's original URL as well,
 because the forecast loader rewrites the address to the station query before the overlay module loads.)
 Wave-height colours and contours (asset 2.7.6): wave height uses value knots so 0-3 m fills about half of the
 legend (owner-picked spectral palette; the knots stretch to whatever legend the manifest carries; a run whose legend is exactly 0-60 ft = 0-18.288 m uses the wider scale in `SCALES`: 0-30 ft unchanged, 40 ft pale pink, 50 ft rose, 60 ft deep purple, plan section 27); tp and wind keep

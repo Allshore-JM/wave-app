@@ -124,3 +124,48 @@ column and page + worker heap, in two machine states (quiet after >= 150-s idles
 background apps); the OS memory view; b01 identity, the heal and null-context drills re-run.
 Step 5c (MAX): a short fresh re-check (the paint gate under a fake-rAF fuzz, the worker hand-back, the animator guards);
 then the owner's go-ahead for production (tag `prod-pre-fast` @ 908af0b, fast-forward).
+
+## Fix round (step 5; overlay asset 2.16.4)
+Built 2026-10-13 (Fable 5.1, HIGH) on `feat/overlay-fast` after e4f0ba1; `static_overlay/overlay.js`, the three overlay Node
+suites, `tests/test_overlay_flag.py`, `app.py` (the version), the asset fixture, README. Every scope item above is done:
+1. **Paint gate** (`_paintWait` / `_paintClear`; `_tick` waits while `_painting`): after a playback landing the next tick runs
+   from a task scheduled by the first animation frame after it (the rendering update showing the landed frame has completed
+   by then), never earlier; `PAINT_FALLBACK_MS` 250 proceeds without an animation frame; the gate is off where
+   `requestAnimationFrame` does not exist; play, pause and Off clear it (seeks, steps and scrubs are not gated). Fake-rAF tests:
+   two landings never share a rendering frame, nothing lands inside the callback itself, a render that keeps up leaves the
+   125-ms cadence alone, a 150-ms render paces one landing per render with no burst, the fallback, nothing left after Off.
+2. **The worker keeps nothing**: `parsePng` returns the IDAT views (no concatenated copy); `inflate(parts, size, spent)` writes
+   them to the inflater as they are and reads its output into one `(w + 1) * h` buffer (more or fewer bytes = decode failed);
+   `unfilter` works in place (the code array is a view of the first `w * h` bytes); the worker's reply transfers the code
+   array's buffer AND the body and every inflater chunk (`spent`, dropped on the main thread; a transfer the browser refuses
+   falls back to the code array alone). The main-thread path gains the same (no second copy). Pinned: the fixtures byte for
+   byte through both paths, the transfer lists, short / long streams refused in both paths, the main -> worker body transfer (D3).
+3. B-P1-3: re-measured in step 5b.
+4. **B-P2-1**: the heal shows the canvas (`visibility = ''`; a fresh canvas on WebKit or when the canvas has no context).
+5. **B-P2-2**: `_newCanvas` takes the new context first and keeps the old canvas when it is refused; `_place`, `_start`,
+   `_clear`, `_renderParticles` do nothing without a context (the watchdog then retries the canvas every period); `_flowData`
+   wraps the animator's `setData` (one warning, the playback goes on); `debugState` reports `ctx` / `ctxLost`.
+6. **B-P3-2**: `_start` records `lastFrameAt`. 7. **A-P3-3 (b)**: `BUSY_STUCK_MS` 10 s: a map busy that long in one go counts
+   as stuck (reset after a heal); (a) a comment. 8. **A-P3-1**: `FrameCache.set/limit/_trim` take `keepValue` (the frame on
+   the map / the animator's direction by identity); `_prefetch` and the landing pass them; the room rule reserves a slot
+   while the drawn frame or direction is kept under another resolution's key. 9. **A-P3-4**: the zoomend parent guard;
+   `pageQuery` strips the fragment before the `?`; `decodeFrame` checks the abort before `getDecoder()`. 10. **A-P3-2**: the
+   comment on `nodeWindow`. 11. **K-11**: `isWebKit()` = AppleWebKit and (an iOS mark iPad / iPhone / iPod / CriOS / EdgiOS /
+   FxiOS, or a Macintosh UA with `maxTouchPoints > 1`, or no Chrome / Chromium / Edg / OPR / Firefox mark). 12. **B-P3-4**:
+   the readout is drawn in the error panel too; its timer stops when no connected readout element exists and the next render
+   restarts it. 13. **B-P3-1 (owner: same length)**: each tail point carries the particle's flow clock (`histF` / `flowT`);
+   points older than `TRAIL_SPAN_MS` = 11 x 66 ms of flow are left out, so the tail spans the same flow time at 60 / 30 / 15 Hz
+   and x1 / x2 / x4 (test: within 0.7-1.2 of the 60 Hz x1 tail in all nine cells; the old rule's 30 Hz x4 tail was ~1.8x).
+   14. README. 15. **A-P3-5 pins**: P5 / P7 / C1, W2 (A's property test, 120 views + their covered pans, adopted), D3, G6,
+   G5, F11, L6 / L7 / G2 / G4 (the fake-timer queue, intervals included, is empty after Off; the readout's timer stops itself).
+   16. The acceptance script: reviewer B's `w54_fast.js` (page + worker heap over flattened worker sessions) adopted into
+   `wind/verify5/vhl/`, plus the painted rule as a pass condition (`unpainted N/M (render p50)` on every line), the heap
+   lines reported for the relative rule, the GPU-readback `full` dropped from the pass condition (K-5). 17. Asset 2.16.4,
+   the fixture, needles.
+- Suites: Node overlay 243 (was 230), `tests/test_overlay_flag.py` 11, full pytest below. Mutation pass of the fixes (scratch
+  `fast/mut4.py`, 32 mutants, the file restored from a byte copy): 29 killed, 3 survive as double guards: M5 (`done` without
+  the generation check: the waiter `_tick(gen)` checks it), M9 (the room rule's value condition: a reachable refetch loop was
+  not found, kept as a defensive reserve during a resolution transition), M14 (the CriOS / EdgiOS / FxiOS marks: every iOS
+  user agent carries iPad / iPhone / iPod as well).
+- Found while testing: the gate's `done` nulled the waiter before reading it (fixed before the first run on the test site);
+  a test that iterated a Map while `get()` re-inserted keys never ended (a harness slip, not the module).

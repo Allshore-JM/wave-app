@@ -949,13 +949,15 @@ function withWorker(fn) {
   return Promise.resolve().then(() => fn(warned)).finally(() => { global.Worker = had.Worker; global.location = had.location; console.warn = had.warn; I.resetDecoder(); });
 }
 
-test('section 42: FrameDecoder: available only with Worker, Blob, createObjectURL and DecompressionStream and never with ?ovdecode=main; one worker per session, answers by id, disposal rejects as aborted', () => withWorker(async (warned) => {
+test('section 42 (owner 2026-10-14): FrameDecoder: the main thread decodes by default; the worker only with ?ovdecode=worker and Worker, Blob, createObjectURL and DecompressionStream; one worker per session, answers by id, disposal rejects as aborted', () => withWorker(async (warned) => {
   assert.equal(typeof DecompressionStream, 'function', 'Node 24 has DecompressionStream');
-  global.location = { search: '?ovdecode=main' }; assert.equal(I.FrameDecoder.available(), false, 'the kill switch');
-  global.location = { search: '?x=1&ovdecode=main&y' }; assert.equal(I.FrameDecoder.available(), false);
-  global.location = { search: '?ovdecode=mainly' }; assert.equal(I.FrameDecoder.available(), true, 'only the exact value');
-  global.location = { search: '' }; assert.equal(I.FrameDecoder.available(), true);
-  const saveW = global.Worker; global.Worker = undefined; assert.equal(I.FrameDecoder.available(), false, 'no Worker: the main-thread path'); global.Worker = saveW;
+  global.location = { search: '' }; assert.equal(I.FrameDecoder.available(), false, 'the main thread by default');
+  assert.equal(I.getDecoder(), null, 'no decoder, no worker by default');
+  global.location = { search: '?ovdecode=main' }; assert.equal(I.FrameDecoder.available(), false, 'the old switch: the main thread too');
+  global.location = { search: '?ovdecode=workers' }; assert.equal(I.FrameDecoder.available(), false, 'only the exact value');
+  global.location = { search: '?x=1&ovdecode=worker&y' }; assert.equal(I.FrameDecoder.available(), true);
+  global.location = { search: '?ovdecode=worker' }; assert.equal(I.FrameDecoder.available(), true);
+  const saveW = global.Worker; global.Worker = undefined; assert.equal(I.FrameDecoder.available(), false, 'no Worker: the main-thread path even when asked'); global.Worker = saveW;
   const d = I.getDecoder(); assert.ok(d instanceof I.FrameDecoder); assert.equal(I.getDecoder(), d, 'one decoder');
   const made = FakeWorker.made.length, hsBuf = FIX('frame_hs_half.png'), nT = FakeWorker.transfers.length;
   const [a, b] = await Promise.all([d.decode(hsBuf, { cols: 720, rows: 361 }), d.decode(FIX('frame_tp_full.png'), { cols: 1440, rows: 721 })]);
@@ -971,7 +973,7 @@ test('section 42: FrameDecoder: available only with Worker, Blob, createObjectUR
 }));
 
 test('section 42: a worker that dies ends its pending decodes with retry, stays dead for the session with one warning, and decodeFrame fetches once more for the main-thread path', () => withWorker(async (warned) => {
-  global.location = { search: '' };
+  global.location = { search: '?ovdecode=worker' };
   const d = I.getDecoder();
   const p = d.decode(FIX('frame_hs_half.png'), { cols: 720, rows: 361 });
   const wk = d.worker; wk.crash();
@@ -1015,7 +1017,7 @@ test('section 42: a worker that dies ends its pending decodes with retry, stays 
 }));
 
 test('section 42: FrameDecoder: a postMessage that throws kills the decoder the same way; a worker answer for an unknown id is ignored', () => withWorker(async (warned) => {
-  global.location = { search: '' };
+  global.location = { search: '?ovdecode=worker' };
   const d = I.getDecoder(); FakeWorker.failPost = true;
   try { await assert.rejects(() => d.decode(FIX('frame_hs_half.png'), null), (e) => e.retry === true); } finally { FakeWorker.failPost = false; }
   assert.equal(d.dead, true); assert.equal(warned.length, 1);
@@ -1123,7 +1125,10 @@ test('section 42: pageQuery joins the live search with the navigation entry\'s o
     setPerf([{ name: 'https://wave-app-clean.onrender.com/?station=51201&ovlook=B&ovdebug=1#frag' }]);
     assert.equal(I.pageQuery(), '?station=51201&station=51201&ovlook=B&ovdebug=1');
     assert.ok(/[?&]ovdebug=1(?:&|$)/.test(I.pageQuery()));
-    setPerf([{ name: 'https://x/?ovdecode=main' }]); assert.equal(I.FrameDecoder.available(), false, 'the kill switch from the original URL');
+    { const hadW = global.Worker; global.Worker = function () {};
+      setPerf([{ name: 'https://x/?ovdecode=worker' }]); assert.equal(I.FrameDecoder.available(), true, 'the worker switch from the original URL');
+      setPerf([{ name: 'https://x/' }]); assert.equal(I.FrameDecoder.available(), false, 'the main thread without it');
+      if (hadW === undefined) delete global.Worker; else global.Worker = hadW; }
     setPerf([{ name: 'https://x/' }]); global.location = { search: '' }; assert.equal(I.pageQuery(), '');
     setPerf([]); global.location = { search: '?a=1' }; assert.equal(I.pageQuery(), '?a=1', 'no navigation entry');
     global.location = undefined; setPerf([{ name: 'https://x/?ovdebug=1' }]); assert.equal(I.pageQuery(), '?ovdebug=1', 'no location');

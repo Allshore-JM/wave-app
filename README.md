@@ -222,7 +222,7 @@ the tab.
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.
-Fast playback (assets 2.15.0-2.16.4, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
+Fast playback (assets 2.15.0-2.16.5, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
 to 1920x1080 because (1) the ring of decoded frames follows the speed: paused and at 1x the G3/G4 budgets stand (the
 frame on the map, 2 ahead, 2 behind, at most 2 downloads at once, at most 5 decoded frames per kind); at 2x the ring is
 4 ahead / 1 behind with 3 downloads and 7 decoded, at 4x 6 ahead / 1 behind with 4 downloads and 9 decoded (the downloads
@@ -246,16 +246,20 @@ an animation frame for 250 ms it runs anyway; (3) a new frame draws the tiles in
 buffer tiles Leaflet keeps around the view in idle time (requestIdleCallback, else one task), and a drag that brings
 a buffer tile into view draws it at once; the readout samples the frame itself and the particles read only the land
 masks, so a buffer tile a frame behind is never read.
-Step 3 (asset 2.16.0): (4) the frames are DECODED OFF THE MAIN THREAD: a Web Worker built from the module's own decode
-functions (one asset, one version) inflates and unfilters each downloaded body (transferred, not copied) and hands the
-code array back; the main thread keeps the download, its watchdog and the late-frame rules. The worker keeps nothing per
+Step 3 (asset 2.16.0): (4) the frames could be DECODED OFF THE MAIN THREAD; since 2.16.5 (owner, 2026-10-14) the main thread
+decodes by default and the worker runs only with `?ovdecode=worker` in the address (a diagnostic): with the fix round's
+leaner decoder (the zlib pieces straight to the inflater, one output buffer, rows unfiltered in place) the main thread reaches
+the 1080p rate as well (7.9-8.0 frames/s at shark, idle and under a 25 % CPU load), and the worker's thread and isolate cost
+a fixed ~17-20 MB of the tab's memory, paused or not, for only 6-15 ms of main-thread time per frame. The worker, when asked
+for: a Web Worker built from the module's own decode functions (one asset, one version) inflates and unfilters each
+downloaded body (transferred, not copied) and hands the code array back; the main thread keeps the download, its watchdog
+and the late-frame rules. The worker keeps nothing per
 frame (2.16.4, G29): the zlib pieces go to the inflater as they are, its output is read into one buffer of the expected size,
 the rows are unfiltered in place, and every buffer the decode held (the body, the inflater's chunks) goes back to the main
 thread with the code array, where that garbage was always collected before the worker (left in the worker's own heap it was
 collected only at V8's ~64 MB trigger, which broke the memory rule once the worker was counted). A worker that dies ends its
 pending decodes, which are downloaded once more (edge-cached) for the main-thread path, and stays off for the session
-(one console warning); without Worker / Blob / URL.createObjectURL / DecompressionStream, or with `?ovdecode=main` in the
-address (a diagnostic), the main thread decodes as before. (5) The particle lattice is rebuilt from the model nodes around the view
+(one console warning); without Worker / Blob / URL.createObjectURL / DecompressionStream the main thread decodes. (5) The particle lattice is rebuilt from the model nodes around the view
 plus a screen on every side, not the whole grid (the same vectors on screen; a pan beyond the margin recomputes).
 (6) Particles: their pace follows the playback speed (x2 at fish, x4 at shark; x1 paused or at snail), so at the fast
 speeds they keep up with the time-lapse instead of drifting behind the storms (on the hourly frames to +120 h; the 3-hourly

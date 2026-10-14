@@ -832,15 +832,18 @@
     return inflate(p.idat, (p.w + 1) * p.h, spent).then(function (raw) { return { q: unfilter(raw, p.w, p.h), cols: p.w, rows: p.h }; });
   }
   var decodeCanvas = null;
-  // ---- decoding off the main thread (plan section 42) ----
-  // A worker built from this module's own decode functions (their source text, so there is one asset and one version).
+  // ---- decoding off the main thread: a diagnostic only (plan section 42) ----
+  // The frames are decoded on the MAIN THREAD by default (owner, 2026-10-14, step 5b: the worker's thread and isolate cost a
+  // fixed ~17-20 MB of the tab's memory, paused or not, and bought no frame rate at 1920x1080 once the fix round's leaner
+  // decoder was in: 7.9-8.0 frames/s at shark either way, idle and under load; it only freed 6-15 ms of main-thread time per
+  // frame). With ?ovdecode=worker in the page's address:
+  // a worker built from this module's own decode functions (their source text, so there is one asset and one version).
   // The main thread still fetches (the download watchdog, LATE_TRIES and onBody are unchanged), hands the body over
   // (transferred, not copied) and gets the code array back (transferred): no inflate pumping and no unfilter loop compete
   // with the tile drawing, and the raw body and the inflated bytes never enter the page's heap. A PNG that is not our
   // format comes back raw for the canvas path. A worker that dies ends its pending decodes with err.retry (decodeFrame
   // then fetches each once more, from the edge cache, for the main-thread path) and stays dead for the session, with
-  // one console warning. Without Worker / Blob / createObjectURL / DecompressionStream, or with ?ovdecode=main in the
-  // page's address (a diagnostic), the main-thread path runs as before.
+  // one console warning. Without Worker / Blob / createObjectURL / DecompressionStream the main-thread path runs.
   function workerMain(self) {
     self.onmessage = function (e) {
       var d = e.data, spent = [];
@@ -862,7 +865,7 @@
   }
   // The page's query as typed: the forecast loader rewrites the address (replaceState with the station query only) before
   // this module is loaded, so the live search is joined with the navigation entry's original URL (its query survives the
-  // rewrite). The diagnostics ?ovdecode=main and ?ovdebug=1 read it.
+  // rewrite). The diagnostics ?ovdecode=worker and ?ovdebug=1 read it.
   function pageQuery() {
     var q = '';
     try { q = typeof location !== 'undefined' && location ? String(location.search || '') : ''; } catch (e) { q = ''; }
@@ -876,7 +879,7 @@
   function FrameDecoder() { this.worker = null; this.url = null; this.pending = {}; this.seq = 0; this.dead = false; }
   FrameDecoder.available = function () {
     try {
-      if (/[?&]ovdecode=main(?:&|$)/.test(pageQuery())) return false;
+      if (!/[?&]ovdecode=worker(?:&|$)/.test(pageQuery())) return false;      // the main thread by default (owner, 2026-10-14)
       return typeof Worker === 'function' && typeof Blob === 'function' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' && typeof DecompressionStream === 'function';
     } catch (e) { return false; }
   };

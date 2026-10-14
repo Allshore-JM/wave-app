@@ -359,3 +359,50 @@ Built 2026-10-14 (Opus 5.5, HIGH) on `feat/overlay-fast` after df874e9: `static_
 - The reviewer's gate fuzz on the fixed code (`g29/recheck/out6/`): 1,000 runs, 70,000 operations, 1,870 reduced-motion
   toggles and 20,493 timed playback landings across the canvas, main-thread and worker modes: 0 failures. The fuzz counted
   618 calls of `_paintWait` from an older play generation; each is now turned away at the guard and arms nothing.
+## Test-site verification of fix round 5d
+2026-10-14 (Opus 5.5, MAX). `test` @ d87081c, a cherry-pick of d3a8637. The record conflict was resolved with the
+feature's file. The site files equal the feature branch's apart from the known test-only differences, and overlay Node
+passes 247/247 on the branch. Pushed 19:20 UTC.
+
+Render did not deploy it until 21:43 UTC. Its incident "Builds are not starting in all regions" ran from 19:32 to 21:44
+UTC, and from 20:41 UTC Render was "temporarily pausing deploys to free services". The push never registered an
+auto-deploy, and the owner's manual deploy waited at "Building..." with no log lines until Render's fix. After that, the
+five overlay assets were served equal to d3a8637 byte for byte, and the 2.16.5 URLs answered 404.
+
+The reviewer's own live drills, run on 2.16.6 (headless Edge with the GPU, a copy of its harness on port 9541; outputs in
+scratch `g29/recheck/v5d/out/`):
+- **R-4.** While playing at shark, six real 1.7-s mouse drags, 0.3 s apart, each spanning a watchdog check:
+  `flow.healed` stayed 0 (2.16.5: 0 -> 2, a heal mid-drag). The control, with no drags, also stayed 0.
+- **R-1.** The network was throttled to 300 KB/s + 250 ms with the cache off. Each try waits until the playhead is waiting
+  for a frame, then switches reduced motion on and pauses + plays in the same task. 8 tries, 0 stalls; each time playback
+  went on for 20+ frames in 10 s (2.16.5 stalled on the first try).
+- **R-5.** With `?ovdebug=1`, frame downloads were blocked while playing at shark until "Overlay unavailable". The readout
+  was in the error panel. A width-only resize, a zoom across the resolution threshold and a resize back threw nothing. Off
+  through the page's select removed the layer and its 24 tiles, stopped the run timer and the animator, and saved the
+  field as '' (2.16.5: TypeErrors, Off half-done). Without `?ovdebug=1` the result was the same.
+- **Regression drills.** Five hide / show cycles at shark: paused with the gate clear and no timer while hidden, resumed
+  when shown, 0 unpainted of 136 visible landings. The decoder: none by default, a worker only with `?ovdecode=worker`.
+  No console problem in any drill.
+
+Timed, 1080p wave-height shark (w54, production back to back after >= 155-s idles; run 2026101412 warmed for both
+Origins; every frame an edge HIT):
+
+| pair | production 2.14.12 | test 2.16.6 |
+|---|---|---|
+| D, fresh | 6.5 fps, gap 145/198, 0/183 unpainted, render p50 125 ms | 7.4 fps, 134/161, 0/211, 107 ms |
+| D, after a pan | 6.6 fps, 149/176, 0/185, 123 ms | 6.9 fps, 143/175, 0/195, 113 ms |
+| D2, fresh (production first) | 6.9 fps, 139/165, 0/194, 110 ms | 7.8 fps, 128/148, 0/220, 100 ms |
+
+These ran in the slower machine state of G29 B-P1-3, on both sites alike. The browser rendered every 100-125 ms (38-55 ms
+in step 5b), and production's own unchanged tile drawing took 82-93 ms per step (56-64 ms in step 5b). The owner's usual
+apps were open (ENERCALC, Acrobat, Autodesk, the ChatGPT app); the laptop was on AC with the CPU boosting. The particle
+loop adapted its count on both sites (1,958-2,155 of 2,304), as designed.
+
+In all three pairs 2.16.6 stays ahead of production (+0.3..+0.9 fps) with every frame painted and none skipped. The D2
+fresh pair meets the gap line (128/148 at 7.8 fps). Fix round 5d changes nothing on the per-frame path: one guard on the
+gate's install, the watchdog clock's resets, and the panel-title guard. The step-5b acceptance (all nine cells pass in the
+quiet state) stands, with the B-P1-3 awareness note.
+
+Cleanup: the drill browser stopped and its profile removed, the test origin's storage cleared by each drill, no
+measurement process left. Next: the owner's go-ahead for production (tag `prod-pre-fast` @ 908af0b; fast-forward
+`Live-Buoy-Update` to `feat/overlay-fast`; outside Render's maintenance window of 2026-10-15 01:00 UTC).

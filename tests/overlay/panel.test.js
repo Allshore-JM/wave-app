@@ -43,6 +43,7 @@ function manifest(extra) {
 
 function world(o) {
   o = o || {};
+  const loc0 = global.location; if (o.search) global.location = { search: o.search };   // the module reads ?ovdebug=1 at load
   const doc = new Document(), storage = memStorage(o.session);
   const ctl = doc.createElement('div'); ctl.classList.add('ov-ctl'); doc.body.appendChild(ctl); ctl.offsetHeight = o.ctlHeight || 0;
   const panel = doc.createElement('div'); panel.id = 'ovPanel'; ctl.appendChild(panel);
@@ -53,7 +54,8 @@ function world(o) {
     extend(p) { function C(x) { p.initialize.call(this, x); } C.prototype = Object.assign({ setOpacity() {}, addTo() { return this; } }, p); return C; } },
     DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} } };
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.js'), 'utf8');
-  new Function('L', 'document', 'sessionStorage', 'window', src)(L, doc, storage, win);
+  try { new Function('L', 'document', 'sessionStorage', 'window', src)(L, doc, storage, win); }
+  finally { if (o.search) { if (loc0 === undefined) delete global.location; else global.location = loc0; } }
   const I = win.AllshoreOverlay._internals;
   const map = { getContainer: () => container, getPane: () => ({}), getZoom: () => 6, on() {}, off() {}, removeLayer() {} };
   const ov = win.AllshoreOverlay.create(map, { base: 'https://x/gfswave/0p25/v1', panel, tz: 'Pacific/Honolulu', getUnit: () => o.unit || 'US',
@@ -995,3 +997,18 @@ test('fresh check N23 / N24: a sheet too short for anything but its head line ha
   const sh = s.container.querySelector('.ov-sheet');
   assert.equal(sh.querySelector('.ov-toggle'), null); assert.ok(headPlay(sh)); assert.equal(s.doc.activeElement, headPlay(sh));
 }));
+
+test('G29 re-check R-5 / R-6 (R1, R2): with ?ovdebug=1 the error panel carries the readout, and the panel updates, a pause and Off do not throw there; the readout\'s timer stops once its element is gone', async () => {
+  const w = world({ search: '?ovdebug=1' });
+  try {
+    withClock(() => w.ov.render({ state: 'error', message: 'frames cannot be loaded right now' }));
+    const pre = w.panel.querySelector('.ov-debug');
+    assert.ok(pre, 'the readout is in the error panel'); assert.ok(w.ov.debugTimer, 'and its timer runs');
+    assert.match(text(w.panel), /Overlay unavailable/);
+    assert.doesNotThrow(() => w.ov._syncUI(), 'a panel update (resize, seek, zoom) in the error state');
+    assert.doesNotThrow(() => w.ov.pause(), 'a pause (Off pauses first)');
+    pre.isConnected = false;                                                   // the page cleared the panel
+    await new Promise((r) => setTimeout(r, 1100));
+    assert.equal(w.ov.debugTimer, null, 'the timer stopped itself');
+  } finally { if (w.ov.debugTimer) clearInterval(w.ov.debugTimer); }
+});

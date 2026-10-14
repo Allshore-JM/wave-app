@@ -398,6 +398,25 @@ test('G29 B-P1-2: the inflated stream must be exactly (w + 1) * h bytes: a PNG w
   const self = runWorkerSource();
   assert.match((await self.ask({ id: 1, buf: png(40, 30, 41 * 30 - 7), expect: null })).error, /decode failed/);
   assert.equal((await self.ask({ id: 2, buf: png(40, 30, 41 * 30), expect: null })).rows, 30);
+  // G29 re-check R-6 (D4): a corrupt or truncated zlib stream is the same permanent decode failure, never a transient
+  // error retried every 60 s (the inflater's own errors are mapped)
+  const good = Buffer.from(png(40, 30, 41 * 30)), idatAt = good.indexOf('IDAT') + 4;
+  const corrupt = Buffer.from(good); for (let k = 2; k < 8; k++) corrupt[idatAt + k] ^= 0xa5;   // the deflate blocks after the zlib header
+  const ab = (b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+  for (const [name, buf] of [['corrupt', ab(corrupt)], ['truncated', ab(good.subarray(0, good.indexOf('IDAT', idatAt) - 4))]]) {
+    let err = null; try { await I.decodePngGrey(buf, { cols: 40, rows: 30 }); } catch (e) { err = e; }
+    assert.ok(err, name + ' refused'); assert.equal(err.message, 'frame decode failed', name);
+    assert.equal(I.failureKind(err), 'permanent', name + ': not retried');
+  }
+});
+
+test('G29 re-check R-6 (D8): a reply whose transfer list the browser refuses goes with the code array alone', async () => {
+  const self = runWorkerSource(), post = self.postMessage; let refused = 0;
+  self.postMessage = (m, t) => { if (t && t.length > 1) { refused++; throw new Error('DataCloneError'); } post(m, t); };
+  const r = await self.ask({ id: 3, buf: FIX('frame_hs_half.png'), expect: { cols: 720, rows: 361 } });
+  assert.equal(refused, 1, 'the long list was refused once');
+  assert.equal(r.id, 3); assert.equal(r.q.length, 720 * 361); assert.equal(r.spent, undefined);
+  assert.deepEqual(self.transfers[self.transfers.length - 1], [r.q.buffer], 'the code array alone');
 });
 
 test('decodePngGrey refuses a picture of another size before inflating it (hostile bucket)', async () => {

@@ -169,3 +169,193 @@ suites, `tests/test_overlay_flag.py`, `app.py` (the version), the asset fixture,
   user agent carries iPad / iPhone / iPod as well).
 - Found while testing: the gate's `done` nulled the waiter before reading it (fixed before the first run on the test site);
   a test that iterated a Map while `get()` re-inserted keys never ended (a harness slip, not the module).
+
+## Test-site re-measure of the fix round (step 5b)
+2026-10-14 (Opus 5.5, MAX). 2.16.4: `test` @ 2f61fdb (cherry-picks of e4f0ba1 + aecbe35; README merged cleanly), deployed
+03:43:52 UTC. 2.16.5 (the owner's decision below): `test` @ f4762e9 (cherry-pick of 8cac824), deployed 06:54:03 UTC. Each
+time the served overlay.js / overlay.css = the feature branch byte for byte and the previous version's URLs answer 404.
+Headless Edge with the GPU (Intel Iris Xe: canvas / compositing / raster enabled). The acceptance script = reviewer B's w54
+(page + worker heap) plus the painted rule (`unpainted N/M`: a landing followed by the next before any animation-frame
+callback ran). Production and test back to back after >= 155-s idles, the order alternated; runs 2026101318, 2026101400
+and 2026101406, each warmed for both Origins before use (every cell an edge HIT except the one noted). Logs: scratch
+`wind/verify5/out/s5b.log` and `w54_*.json` (table: `wind/verify5/table5b2.py`), `b01_identity.txt`, `b01p_decoder.txt`,
+`b07_stuckzoom_*.txt`, `b19_nullctx.txt`, `b04_longhide.txt`, `b23_workermem.txt`, `b24_4k.txt`.
+
+Functional drills (2.16.4; the decode functions are the same in 2.16.5):
+- Picture identity (B's b01): worker vs `?ovdecode=main`, wave height full + pdir half and wind half + wdir half at steps
+  0 / 57 / 120 / 384: every code array identical, 192 of 192 tiles' composed pixels identical. The rewritten decoder against
+  PRODUCTION's (2.14.12) on the same run and frames: 16 of 16 code arrays identical (b01p).
+- Stuck zoom (b07, Chromium and the Safari UA): zoomstart + movestart with no end, playing or paused, and a lone movestart:
+  healed within 1-2 s with the canvas VISIBLE after the heal (G29 B-P2-1 fixed); a real zoom afterwards normal; no console
+  problem.
+- Refused 2D context (b19, Safari UA, playing at 4x, the fresh canvas's getContext stubbed to null at a zoom): the old canvas
+  kept (ctx present), playback on, state ready, the readout present, 0 console problems (G29 B-P2-2 fixed; 2.16.3 went to
+  "Overlay unavailable").
+- 330 s hidden while playing (b04): healed 0, the first frame 89 ms after the page was shown, the overdue check after it.
+
+Timed cells (fps, gap p50/p90 ms, unpainted / landings, render p50 = the median gap between animation frames; heap = page
++ worker isolates, live after GC and peak, MB above the Off baseline). Q = the quiet machine (background CPU 8-23 %);
+O / O2 = a ~25 % CPU load proxy (3 busy threads; the owner's usual apps were not running); G = a GPU-bound diagnostic at
+3840x2160; M / M2 = 2.16.5 (background 0-38 %). The acceptance lines: shark gap p50 <= 130 and p90 <= 150, fish p50 <= 256,
+snail p50 <= 502, 0 skipped, 0 unpainted.
+
+| phase | run | cell | production 2.14.12 | test | live prod -> test (diff) | peak prod -> test |
+|---|---|---|---|---|---|---|
+| Q | 1318 | shark-1080-fresh | 7.4 fps, 133/140, 0/207, 55 ms | 2.16.4 worker: 8.0 fps, 124/141, 0/224, 43 ms | 26.3 -> 32.0 (+5.7) | 49.0 -> 53.2 |
+| Q | 1318 | shark-1080-pan | 7.7 fps, 129/141, 0/216, 53 ms | 2.16.4 worker: 8.0 fps, 125/136, 0/225, 41 ms | 27.6 -> 33.4 (+5.8) | 60.6 -> 49.2 |
+| Q | 1318 | shark-1280-fresh | 7.7 fps, 130/137, 0/215, 25 ms | 2.16.4 worker: 8.0 fps, 125/135, 0/225, 22 ms | 22.5 -> 27.6 (+5.1) | 38.6 -> 42.4 |
+| Q | 1318 | shark-1280-pan | 7.6 fps, 131/139, 0/214, 24 ms | 2.16.4 worker: 7.9 fps, 125/135, 0/224, 22 ms | 22.9 -> 28.7 (+5.8) | 39.1 -> 40.8 |
+| Q | 1318 | fish-1080-fresh | 3.9 fps, 254/266, 0/110, 50 ms | 2.16.4 worker: 4.0 fps, 250/261, 0/112, 46 ms | 26.2 -> 29.3 (+3.1) | 41.7 -> 43.2 |
+| Q | 1318 | snail-1080-fresh | 2.0 fps, 506/514, 0/55, 46 ms | 2.16.4 worker: 2.0 fps, 500/511, 0/56, 44 ms | 26.2 -> 26.7 (+0.5) | 38.1 -> 46.8 |
+| Q | 1318 | wind-shark-1080 | 7.6 fps, 132/139, 0/213, 53 ms | 2.16.4 worker: 8.0 fps, 125/135, 0/225, 40 ms | 18.7 -> 20.2 (+1.5) | 46.2 -> 42.7 |
+| Q | 1318 | phone-shark | 7.5 fps, 133/136, 0/135, 17 ms | 2.16.4 worker: 8.0 fps, 124/135, 0/144, 17 ms | 10.4 -> 12.9 (+2.5) | 20.3 -> 22.8 |
+| Q | 1318 | shark-1080-noanim | 7.5 fps, 133/139, 0/136, 17 ms | 2.16.4 worker: 8.0 fps, 126/138, 0/144, 17 ms | 22.2 -> 26.4 (+4.2) | 56.9 -> 42.3 |
+| O | 1318 | shark-1080-fresh | 7.6 fps, 128/146, 0/213, 64 ms | 2.16.4 worker: 7.9 fps, 126/144, 0/223, 39 ms | 26.8 -> 34.2 (+7.4) | 43.1 -> 46.8 |
+| O | 1318 | shark-1080-pan | 7.7 fps, 127/147, 0/215, 83 ms | 2.16.4 worker: 8.0 fps, 125/145, 0/224, 47 ms | 27.6 -> 34.2 (+6.6) | 45.9 -> 51.6 |
+| O | 1318 | wind-shark-1080 | 7.4 fps, 132/149, 0/208, 65 ms | 2.16.4 worker: 7.9 fps, 127/142, 0/223, 41 ms | 17.5 -> 20.2 (+2.7) | 41.9 -> 54.9 |
+| O | 1318 | fish-1080-fresh | 3.9 fps, 257/275, 0/110, 57 ms | 2.16.4 worker: 4.0 fps, 249/265, 0/112, 50 ms | 26.3 -> 29.4 (+3.1) | 36.8 -> 41.1 |
+| O | 1400 | shark-1280-fresh (test: the run was new and cold) | 7.6 fps, 131/147, 0/215, 26 ms | 2.16.4 worker: 7.0 fps, 128/243, 0/196, 24 ms | 21.9 -> 27.6 (+5.7) | 33.5 -> 43.2 |
+| O2 | 1400 | shark-1280-fresh | 7.7 fps, 130/144, 0/214, 24 ms | 2.16.4 worker: 8.0 fps, 126/137, 0/225, 21 ms | 21.9 -> 30.6 (+8.7) | 34.4 -> 39.7 |
+| G | 1400 | shark-2160-gpu (pair 1) | 3.6 fps, 280/293, 0/100, 12 ms | 2.16.4 worker: 4.0 fps, 252/270, 0/112, 236 ms | 59.7 -> 69.3 (+9.6) | 111.7 -> 121.0 |
+| G | 1400 | shark-2160-gpu (pair 2) | 3.6 fps, 271/282, 0/103, 12 ms | 2.16.4 worker: 4.1 fps, 245/262, 0/115, 229 ms | 61.0 -> 68.3 (+7.3) | 96.2 -> 122.9 |
+| M | 1400 | shark-1080-fresh | 7.6 fps, 132/139, 0/214, 53 ms | 2.16.5 main: 8.0 fps, 124/134, 0/225, 38 ms | 26.3 -> 31.7 (+5.4) | 46.3 -> 46.9 |
+| M | 1400 | shark-1080-pan | 7.6 fps, 131/139, 0/215, 51 ms | 2.16.5 main: 8.0 fps, 125/135, 0/223, 39 ms | 27.7 -> 33.3 (+5.6) | 41.9 -> 47.1 |
+| M | 1406 | shark-1280-fresh | 7.6 fps, 130/139, 0/213, 27 ms | 2.16.5 main: 8.0 fps, 126/136, 0/225, 22 ms | 21.8 -> 27.3 (+5.5) | 27.6 -> 37.6 |
+| M | 1406 | shark-1280-pan | 7.6 fps, 130/139, 0/215, 25 ms | 2.16.5 main: 7.9 fps, 125/134, 0/221, 22 ms | 23.7 -> 28.3 (+4.6) | 31.1 -> 37.3 |
+| M | 1406 | fish-1080-fresh | 3.9 fps, 255/266, 0/110, 49 ms | 2.16.5 main: 4.0 fps, 250/257, 0/112, 46 ms | 26.3 -> 28.9 (+2.6) | 51.6 -> 60.8 |
+| M | 1406 | snail-1080-fresh | 2.0 fps, 507/517, 0/55, 47 ms | 2.16.5 main: 2.0 fps, 502/510, 0/56, 45 ms | 26.3 -> 26.5 (+0.2) | 48.7 -> 49.3 |
+| M | 1406 | wind-shark-1080 | 7.6 fps, 131/141, 0/215, 59 ms | 2.16.5 main: 8.0 fps, 125/138, 0/224, 42 ms | 17.6 -> 19.9 (+2.3) | 43.5 -> 34.5 |
+| M | 1406 | phone-shark | 7.5 fps, 133/137, 0/137, 17 ms | 2.16.5 main: 8.0 fps, 124/133, 0/145, 17 ms | 10.3 -> 12.8 (+2.5) | 18.8 -> 22.2 |
+| M2 | 1406 | shark-1080-fresh | 7.4 fps, 132/149, 0/208, 55 ms | 2.16.5 main: 8.0 fps, 126/136, 0/224, 41 ms | 26.4 -> 31.7 (+5.3) | 58.8 -> 48.0 |
+
+Results on 2.16.4: every acceptance cell PASSES in both machine states: shark 1080p fresh 8.0 / 7.9 fps and pan 8.0 / 8.0
+(gap p90 136-145), 1280 fresh 8.0 and pan 7.9, fish 4.0, snail 2.0, wind 8.0 / 7.9, phone 8.0. 0 skipped and 0 UNPAINTED
+landings in every cell on both sites; fetches per frame 1.00-1.02; in flight never above the cap. Production in the same
+conditions: 7.4-7.7 fps (gap p50 127-133: its cadence drifts), 0 unpainted. The one failing test cell (O shark-1280-fresh,
+7.0 fps, p90 243) met run 2026101400 two minutes after it published: 403 of 432 frames MISS at the edge (p50 252 ms; K-2);
+re-run warm (O2): 8.0 fps, 126/137. At 4K (G) the GPU renders only every ~230 ms with test's particles, and test lands one
+frame per render (4.0-4.1 fps, 0 of 227 unpainted: the paint gate; 2.16.3 replaced frames unseen exactly here); production
+3.6 fps. The particle loop at 4K: production 9.8, test 7.3 particle frames/s (look D's strokes, GPU-bound). 4K is outside
+the owner's 1920x1080 target; its second pair's peak (122.9 MB with the worker) is 1.2 MB over production's highest + 10.
+The ~25 % CPU proxy did NOT reproduce the slower state reviewer B measured (both sites kept their quiet numbers under it), so
+B's state was not CPU-bound (GPU or thermal, K-4); the paint gate covers it by construction (one landing per render).
+
+Memory on 2.16.4 (owner decision 3, page + worker heap, same cell): test's live set +0.5..+8.7 MB above production's (max: O2
+shark-1280-fresh +8.7); peaks within production's range for the cell + 10 MB in every cell up to 1920x1080; the decode
+worker's own heap now 1.2-2.5 MB on average (G29: 33-37 MB, a sawtooth to ~65). The operating system's view (renderer
+private bytes during 1080p shark, a FRESH browser per measurement, alternating order) shows what the heap metric cannot:
+production 192-196 MB mean / 200-206 max; test 213-222 / 223-234; test with `?ovdecode=main` (no worker) 200-202 / 208-211.
+So the page itself costs ~+7 MB over production (the bigger ring at 4x) and the decode WORKER a fixed ~17-20 MB, also while
+paused (its thread and isolate; its V8 heap is only 2.4-5.5 MB committed). Worker vs main-thread decode at 1080p shark
+(ABBA): quiet, main 7.9 / 8.0 fps (125/135, 125/133), worker 8.0 / 8.0 (125/136, 126/137); under the ~25 % load, main 8.0 /
+7.9 (125/143, 126/144), worker 8.0 / 8.0 (125/143, 126/144); 0 unpainted in all eight. The worker saves 6-15 ms of
+main-thread time per frame (tasks 614-618 vs 663-667 ms per second quiet, 708-710 vs 786-833 loaded) and buys no frame rate.
+
+**Owner's decision (2026-10-14): decode on the MAIN THREAD by default; the worker only with `?ovdecode=worker` (a
+diagnostic).** Asset 2.16.5 @ 8cac824: `FrameDecoder.available()` is false unless the page's address carries
+`?ovdecode=worker` (the old `?ovdecode=main` now means the default); README; Node overlay 243 + flag tests 11; both mutants
+of the switch killed.
+
+2.16.5 on the test site (M / M2 rows): every acceptance cell PASSES. Shark 1080p fresh 8.0 fps (124-126 / 134-136) on two
+runs and pan 8.0 (125/135); 1280 fresh 8.0 (126/136) and pan 7.9 (125/134); fish 4.0 (250/257); snail 2.0 (502/510, on the
+502 line); wind 8.0 (125/138); phone 8.0 (124/133). 0 skipped and 0 unpainted in every cell (1,655 of 1,655 landings by the
+painted rule); fetches per frame 1.00-1.02; in flight never above the cap. Production in the same pairs: 7.4-7.6 fps at
+shark, fish 3.9, snail 2.0 (gap p50 507, over the line), phone 7.5, 0 unpainted. Memory rule (same cell, same metric): test's
+live set +0.2..+5.6 MB above production's; every peak within production's measured range for the cell + 10 MB (the closest:
+fish 60.8 against production's 36.8-51.6, i.e. 9.2 above its highest; phone 22.2 against 18.8-20.3; snail 49.3 against
+38.1-48.7; shark 1280 fresh 37.6 against 27.6-38.6). OS view (fresh browser, 1080p shark): production 187-196 MB mean /
+199-206 max (paused 177-186); main-thread decode (2.16.5, and 2.16.4 with `?ovdecode=main`) 200-203 / 208-211 (paused
+190-202.5), plus one start-of-playback sample at 223.7 (the first of its series; the rest <= 210). That is +8..+16 MB above
+production pair by pair (+9 on average; +5 on the heap metric), down from +17..+30 with the worker.
+
+Outcome of the step-5b items:
+- B-P1-1: FIXED. 0 unpainted of 6,229 test landings at 1920x1080 and below (2.16.4 with the worker 3,680, with `?ovdecode=main`
+  894, 2.16.5 1,655) and 0 of 227 at 4K, where the GPU renders every ~230 ms; production 0 of 4,461.
+- B-P1-2: FIXED. The worker keeps nothing (its heap 1.2-2.5 MB on average) and since 2.16.5 there is no worker by default;
+  the memory rule holds in every cell up to 1920x1080 on both versions.
+- B-P1-3: the line is reached on this laptop quiet and under a ~25 % CPU load (8.0 / 7.9 fps at 1080p shark on both decode
+  paths); reviewer B's slower state was not CPU-bound and was not reproduced. Where the browser renders slower than the
+  cadence, the paint gate lands one frame per render (4K, above), never a frame unseen. Owner awareness: on a hotter or busier
+  GPU the 1080p rate can fall below 8 fps; no frame is then skipped or replaced unseen.
+- The drills (B-P2-1, B-P2-2, B-P3-2) behave as fixed; the iPad remains the owner's check with `?ovdebug=1`.
+Next: step 5c, a short fresh re-check (the paint gate under a fake-rAF fuzz, the main-thread decoder and the worker switch,
+the animator guards), then the owner's go-ahead for production (tag `prod-pre-fast` @ 908af0b, fast-forward).
+## Re-check of the fix round (step 5c)
+2026-10-14 (Opus 5.5, MAX): one fresh-context reviewer on `git diff 583455a..8cac824` and the test site (2.16.5). Report:
+scratch `g29/recheck/recheck-report.md`, with its scripts and logs beside it. The reviewer ran:
+- a fake-rAF fuzz of the paint gate (reviewer A's world plus a render model, landing hooks and gate invariants, three
+  decode modes; 1,300 runs, 87,000 operations, 29,374 playback landings without reduced-motion toggles);
+- hand checks of the cadence under fast, slow and absent rendering;
+- the decoder against Node's real DecompressionStream;
+- the busy rule's gesture scenarios, 29 real user agents and 54 mutants;
+- live drills on the test site (headless Edge, GPU).
+The author re-ran R-1's scenario on overlay.js @ 8cac824 and read every finding against the code.
+
+**0 P0, 0 P1, 3 P2, 3 P3.**
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| R-1 | P2 | **A landing of an older play generation replaces the current paint gate and strands playback.** `_paintWait(gen)` (2493) has no generation check and starts with `_paintClear()`, which also drops the CURRENT generation's stored waiter; its own `done` then refuses that waiter (`gen !== playGen`). The old chain (pause + play, or hide + show, while the playhead waits for a frame) lands the same frame AFTER the new one when it is longer: in production when the old `_goto` waited for the frame's direction and the new one does not, i.e. reduced motion was switched on in between (on an iPad: Settings > Reduce Motion while the overlay plays, then back). Then nothing is pending while `playing` stays true, until the viewer presses pause and play. Reproduced in Node (late landing, slow render, hide + show), by the fuzz (4-5 stalls per 300 runs with the toggle, none without), and live on the test site on the first try. Author: re-ran `r1_stale_gate.js` on 8cac824: the three variants stall (frame 15, playing, no timer / waiter / animation frame), the control plays on; with the guard all four play on (frame 54 after 5 s). | FIX (scope 1) |
+| R-4 | P2 | **The watchdog's "busy 10 s in one go" adds up separate gestures.** `_check` (1707) samples the busy flags every 2 s and resets `busySince` only when a check sees the map idle (or after a heal), so drags or pinches that each span a check add up, and a check that returns early (hidden page) leaves a stale `busySince` for the next gesture. False heals mid-gesture: 56 of 200 "active" and 190 of 200 "busy" 60-s gesture streams; live, real mouse drags took `flow.healed` 0 -> 2. A heal mid-pinch shows the canvas for the rest of the pinch, and `healed` / `heal:suspended` enter the `?ovdebug=1` readout the owner will read on the iPad. Author: code read; `resume` clamps the suspend counter at 0, so a false heal leaves no lasting state. | FIX (scope 2) |
+| R-5 | P2 | **Regression with `?ovdebug=1`: in the error panel every `_syncUI()` throws.** The fix round's error branch (3270) sets `this.ui = { debug }`; `_syncUI` (3435) guards only `!ui` and writes `ui.title`. Off (`unmount` -> `pause` -> `_syncUI`) then stops half-way: the picture, the run timer and the animator stay and the tab's saved field stays, so a reload brings the overlay back; a desktop resize and a zoom across the resolution threshold throw too (the latter inside Leaflet's zoomend dispatch). Live: reproduced, and the guard patched into the page fixed it. Author: code read (the other users of `this.ui` guard their own members). | FIX (scope 3) |
+| R-2 | P3 | A frame that lands after a pause arms the gate while paused (an animation frame and a 250-ms timer); harmless today (its `done` refuses the stale generation; play / pause / Off clear it), but it is what turns into R-1 when `play()` does not clear first (mutant G8). | FIX (R-1's guard) |
+| R-3 | P3 | Seeks are not gated: a seek made while playing can be replaced by the next playback landing before it is painted (11 of 200 near seeks at shark in the model); production behaves the same. | ACCEPT: not reachable from the page. Every seek path pauses first (`step`, `_scrubTo`, the ribbon keys), and the page never calls `seek()` (author: code read) |
+| R-6 | P3 | Suite gaps: 17 of 54 mutants survive the suites, and six of those describe real behaviour: G2 (`_paintWait` without its first clear) and G8 (`play()` without clearing) stall the fuzz; D4 (inflater errors keep their own message: a corrupt or truncated stream would be classed transient and retried every 60 s instead of permanent); D8 (no fallback for a refused transfer: a worker decode would never answer); R1 (the readout timer would not stop for a detached element); R2 (the error panel's readout: no harness loads the module with `?ovdebug=1`, which is how R-5 got through). | FIX: pins (scope 4) |
+
+Confirmed by the reviewer (evidence in the report):
+- **Paint gate.** The fuzz held its invariants in every run without the toggle: no unpainted landing, exactly one pending
+  continuation while playing, nothing after Off, caps, the drawn frame kept by value, no frame of another run, none
+  skipped. The detector caught three gate mutants in 25-33 of 40 runs. Cadence: renders every 16-33 ms give exactly 500 /
+  250 / 125 ms; renders every 130-200 ms at 4x give one landing per render, no burst; with no animation frame the 250-ms
+  fallback paces 4x at 250 ms.
+- **Decoder.** The fixtures are byte-identical; random images with all five filters match with the IDAT split into 1-byte
+  pieces, halves and empty pieces. Fourteen broken-stream kinds are refused as a permanent 'frame decode failed', and a
+  256-MB decompression bomb is refused in 4 ms. An abort before or while the body arrives works. The 2.16.5 switch was
+  checked in 15 address cases; live, the default boots no worker and `?ovdecode=worker` boots one. The worker's transfers
+  and its refused-transfer fallback give an identical picture.
+- **Animator, tails, user agents.** The animator guards hold (A1-A10 killed). Live hide / show: 0 unpainted of 139
+  landings. Tails span 600-733 ms of flow at 15-60 Hz and x1-x4. `isWebKit()` is right for 29 real user agents.
+- **Could not check:** the real iPad and Safari, Firefox, a 10-minute soak, and the worker's picture identity on 2.16.5
+  (b01 covered it on 2.16.4; the decode functions are unchanged).
+
+Fix round 5d scope (overlay asset 2.16.6):
+1. R-1 + R-2: `_paintWait(gen)` returns unless playing and `gen` = `playGen`, so a landing of an older play, or one after
+   a pause, arms nothing. `done` runs the waiter it holds (the waiter `_tick(gen)` checks its own generation), so even a
+   stale gate cannot drop the current one. Tests: the reviewer's scenarios (late landing, slow render, hide + show, with
+   the reduced-motion change); play right after a post-pause landing; nothing armed while paused.
+2. R-4: the stuck clock restarts with every map event: `_note` (zoomstart / zoomend / movestart / moveend / viewreset /
+   resize), plus 'move' and 'zoom', so a moving gesture never counts as stuck. A busy flag with no map event for 10 s still
+   heals. Tests: separate drags spanning checks; a hidden period then a new drag; a 12-s moving drag (none of these heal);
+   a flag stuck with no event, and a zoomstart without zoomend (these still heal).
+3. R-5: `_syncUI` returns when there is no panel title. Test: the panel harness loaded with `?ovdebug=1`: the error state
+   carries the readout, and `_syncUI` / `pause` do not throw.
+4. R-6 pins: D4 (a corrupt and a truncated deflate stream give 'frame decode failed', classed permanent); D8 (a refused
+   transfer sends the code array alone); R1 (the readout timer stops when its element is detached); G2 / G8 through item 1.
+5. README (the watchdog sentence); asset 2.16.6 and the fixture; mutants of the fixes.
+Then the test site (MAX): the reviewer's live drills (R-1 on a throttled network, R-4 with real drags, R-5 in the error
+panel), the gate fuzz on the fixed code, and a 1080p shark pair against production. After that, the owner's go-ahead for
+production.
+## Fix round 5d (overlay asset 2.16.6)
+Built 2026-10-14 (Opus 5.5, HIGH) on `feat/overlay-fast` after df874e9: `static_overlay/overlay.js`, the overlay Node suites
+(`playback`, `flow`, `overlay`, `panel`), `app.py` (the version), the asset fixture, README. Every scope item of the re-check:
+1. **R-1 / R-2**: `_paintWait(gen)` returns unless the overlay is playing and `gen` is the current `playGen`, so a landing of
+   an older play, or one after a pause, arms nothing. The gate's `done` runs the waiter it holds; the waiter (a tick)
+   checks its own generation. Tests: the reviewer's scenario as a test (late landing, slow render, hide + show, each with
+   reduced motion switched on in between, and the control): playback goes on with something pending. Second test: a frame
+   that lands after a pause arms no gate (no animation frame, no fallback timer), and play then lands the next frame and
+   plays on.
+2. **R-4**: every map event restarts the stuck clock: `_note` (zoomstart / zoomend / movestart / moveend / viewreset /
+   resize) and new 'move' / 'zoom' listeners, so a moving drag or pinch never counts as stuck. A busy flag with no map event
+   for 10 s still heals and shows the canvas. Test: separate drags spanning checks, a hidden period then a new drag, a
+   moving drag, a moving pinch (none heal); a zoom flag stuck with no event (healed, canvas shown).
+3. **R-5**: `_syncUI` returns when there is no panel title. The error panel's `?ovdebug=1` readout alone is no panel.
+4. **R-6 pins**: D4 (a corrupt and a truncated deflate stream: 'frame decode failed', classed permanent); D8 (a refused
+   transfer list: the code array goes alone); R1 / R2 and R-5 (the panel harness loaded with `?ovdebug=1`: the error panel
+   carries the readout, `_syncUI` and `pause` do not throw there, and the readout's timer stops once its element is gone).
+5. README (the watchdog: "busy for 10 s with no map event in between"), asset 2.16.6, the fixture.
+- Suites: Node overlay 248 (was 243), pytest 1,068. Mutants of the fixes (scratch `fast/mut5.py`, the file restored from a
+  byte copy): 9 of 10 killed. N2 (`done` keeps its old generation check) survives as the redundant half of the R-1 fix:
+  undoing both halves (N3, the 2.16.5 gate) is killed.
+- The reviewer's gate fuzz on the fixed code (`g29/recheck/out6/`): 1,000 runs, 70,000 operations, 1,870 reduced-motion
+  toggles and 20,493 timed playback landings across the canvas, main-thread and worker modes: 0 failures. The fuzz counted
+  618 calls of `_paintWait` from an older play generation; each is now turned away at the guard and arms nothing.

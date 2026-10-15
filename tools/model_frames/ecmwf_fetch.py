@@ -1,0 +1,138 @@
+"""ECMWF open-data access for the ECMWF overlay job (plan section 43): run discovery + ranged GRIB record reads.
+
+Source: ECMWF's free real-time open data (CC BY 4.0), IFS 0.25 deg, mirrored on the AWS Open Data bucket
+`ecmwf-forecasts` (anonymous ListObjectsV2 + ranged GETs, like NOAA's bucket). Keys:
+  <YYYYMMDD>/<HH>z/ifs/0p25/<stream>/<YYYYMMDDHH>0000-<step>h-<stream>-fc.grib2   (+ .index)
+streams `wave` (swh, pp1d, mwd ...) and `oper` (10u, 10v ...). The .index is JSON lines, one per GRIB message, with
+`param`, `levtype`, `step`, `date`, `time`, `_offset`, `_length`. The same relative path is served by
+data.ecmwf.int/forecasts/, used as a second host for the ranged reads only.
+
+Runs: only the 00Z and 12Z cycles (owner decision 2026-10-14): they run to +360 h (3-hourly to 144, 6-hourly after:
+85 steps); 06Z/18Z stop at +144 h. Every step of a run appears at once ~7 h 34 min after the cycle.
+Completeness: every needed .grib2 AND .index of BOTH streams present in one listing per stream (the GFS rule).
+"""
+import json
+from datetime import datetime, timedelta, timezone
+
+import fetch as F
+
+S3 = "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com"
+HTTP = "https://data.ecmwf.int/forecasts"
+STEPS = list(range(0, 145, 3)) + list(range(150, 361, 6))
+STEP_SCHEDULE = [[0, 144, 3], [150, 360, 6]]    # [first, last, every] in hours, for the manifest
+CYCLES = (0, 12)
+WAVE_PARAMS = ("swh", "pp1d", "mwd")
+OPER_PARAMS = ("10u", "10v")
+STREAMS = {"wave": WAVE_PARAMS, "oper": OPER_PARAMS}
+
+NotReady = F.NotReady
+TransportError = F.TransportError
+
+
+def _prefix(run_dt, stream):
+    return f"{run_dt:%Y%m%d}/{run_dt:%H}z/ifs/0p25/{stream}/"
+
+
+def stem(run_dt, step, stream):
+    """Object key without the extension."""
+    return f"{_prefix(run_dt, stream)}{run_dt:%Y%m%d%H}0000-{step}h-{stream}-fc"
+
+
+def needed_keys(run_dt):
+    keys = []
+    for s in STEPS:
+        for stream in STREAMS:
+            k = stem(run_dt, s, stream)
+            keys += [k + ".grib2", k + ".index"]
+    return keys
+
+
+def missing_objects(run_dt):
+    present = set()
+    for stream in STREAMS:
+        present |= set(F.list_keys(_prefix(run_dt, stream), s3=S3))
+    return [k for k in needed_keys(run_dt) if k not in present]
+
+
+def run_is_complete(run_dt):
+    return not missing_objects(run_dt)
+
+
+def candidate_runs(now=None, lookback_cycles=4):
+    """The newest `lookback_cycles` 00Z / 12Z cycles at or before `now`, newest first."""
+    now = (now or datetime.now(timezone.utc)).replace(minute=0, second=0, microsecond=0)
+    cand = now.replace(hour=12 if now.hour >= 12 else 0)
+    return [cand - timedelta(hours=12 * k) for k in range(lookback_cycles)]
+
+
+def latest_complete_run(now=None, lookback_cycles=4):
+    """Newest 00Z/12Z cycle with every needed object present. Transport failures raise (never 'absent')."""
+    for cand in candidate_runs(now, lookback_cycles):
+        if run_is_complete(cand):
+            return cand
+    return None
+
+
+def parse_index(text):
+    """The .index's JSON lines -> list of dicts (blank lines skipped; a malformed line raises)."""
+    out = []
+    for line in text.splitlines():
+        if line.strip():
+            rec = json.loads(line)
+            if not isinstance(rec, dict):
+                raise ValueError("index line is not an object")
+            out.append(rec)
+    return out
+
+
+def select(index, params, run_dt, step, stream):
+    """{param: (offset, length)} for the requested params. Guards: each param exactly once, a surface record of
+    this cycle, step and stream, a sane span."""
+    hits = {}
+    for rec in index:
+        p = rec.get("param")
+        if p not in params:
+            continue
+        if p in hits:
+            raise RuntimeError(f"duplicate record for {p} in the {stream} index of step {step}")
+        if (str(rec.get("date")) != f"{run_dt:%Y%m%d}" or str(rec.get("time")) != f"{run_dt:%H}00"
+                or str(rec.get("step")) != str(step) or rec.get("stream") != stream or rec.get("levtype") != "sfc"
+                or rec.get("type") != "fc"):
+            raise RuntimeError(f"index record for {p} is not {stream} fc sfc {run_dt:%Y%m%d %H}z step {step}: {rec}")
+        off, n = rec.get("_offset"), rec.get("_length")
+        if not (isinstance(off, int) and isinstance(n, int) and off >= 0 and 0 < n < 64 * 2 ** 20):
+            raise RuntimeError(f"bad span for {p}: {off}/{n}")
+        hits[p] = (off, n)
+    missing = [p for p in params if p not in hits]
+    if missing:
+        raise RuntimeError(f"records not in the {stream} index of step {step}: {missing}")
+    return hits
+
+
+def _get(rel, rng=None):
+    """GET a relative path from the AWS mirror, then from data.ecmwf.int; the AWS error wins when both fail."""
+    first = None
+    for host in (S3, HTTP):
+        try:
+            return F._request(f"{host}/{rel}", rng=rng)
+        except (F.NotReady, F.TransportError) as exc:
+            first = first or exc
+    raise first
+
+
+def fetch_records(run_dt, step, stream, params):
+    """{param: GRIB message bytes} for one step of one stream (ranged reads from the .index's exact spans)."""
+    rel = stem(run_dt, step, stream)
+    _status, body = _get(rel + ".index")
+    spans = select(parse_index(body.decode()), params, run_dt, step, stream)
+    out = {}
+    for p, (off, n) in spans.items():
+        status, blob = _get(rel + ".grib2", rng=f"bytes={off}-{off + n - 1}")
+        if status != 206:
+            raise RuntimeError(f"expected 206 for {p} at step {step}, got {status}")
+        if len(blob) != n:
+            raise RuntimeError(f"short/long read for {p}: {len(blob)} != {n}")
+        if blob[:4] != b"GRIB" or blob[-4:] != b"7777":
+            raise RuntimeError(f"record {p} is not a single GRIB message")
+        out[p] = blob
+    return out

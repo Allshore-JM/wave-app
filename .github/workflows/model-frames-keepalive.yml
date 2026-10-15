@@ -1,5 +1,5 @@
 # Public-repo schedules are disabled after 60 days without repository activity. Re-enabling the
-# publishers (overlay frames and forecast points) twice a month keeps them alive during a quiet stretch
+# publishers (overlay frames, forecast points and the ECMWF frames) twice a month keeps them alive during a quiet stretch
 # (any ordinary commit also resets the timer). The real monitor is latest.json age: the site shows a
 # stale banner past 9 h.
 name: model-frames-keepalive
@@ -20,3 +20,4 @@ jobs:
           gh workflow enable model-frames-keepalive.yml --repo "$GITHUB_REPOSITORY"   # itself first: a failure below cannot stop it
           gh workflow enable model-frames.yml --repo "$GITHUB_REPOSITORY"
           gh workflow enable model-points.yml --repo "$GITHUB_REPOSITORY"
+          gh workflow enable model-ecmwf.yml --repo "$GITHUB_REPOSITORY"

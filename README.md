@@ -262,7 +262,7 @@ installed versions in the step summary; bump the pins deliberately. External cro
 most `schedule` ticks, so a Cloudflare Worker (`tools/model_frames/trigger/`, deployed by Cloudflare Workers Builds
 from this repository -- root directory `tools/model_frames/trigger`, build command `npm run build`, deploy command
 `npx wrangler deploy`) calls the workflow-dispatch API at :05, :15, ... UTC for every workflow in its `GH_WORKFLOW`
-list (the frames and the forecast-point product below); GitHub's own schedule stays on as a
+list (the GFS frames, the ECMWF frames and the forecast-point product below); GitHub's own schedule stays on as a
 fallback and a duplicate run short-circuits. The Worker needs the secret `GITHUB_TOKEN`, a fine-grained token for
 this repository with "Actions: read and write", entered under the Worker's Settings > Variables and Secrets (rotate
 it there; it is never in the repository). Runs it starts show the event `workflow_dispatch` with the token's owner
@@ -477,6 +477,37 @@ drop the guard as well.
 See tools/coast/README.md for the builder, the publish workflow and the LGPL notice. Review records: `docs/reviews/overlays-G*-adversarial.md`. Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full
 sentence ("Source: NOAA/NCEP GFS-Wave (WAVEWATCH III) and GFS via NOAA Open Data Dissemination; rendered by
 Allshore Surf. Not an official NWS product.").
+
+### ECMWF frames (plan section 43, the job)
+
+A second model for the overlays: `tools/model_frames/ecmwf.py` (GitHub Actions `model-ecmwf.yml`, its own concurrency
+group, cron every 10 minutes and dispatched by the trigger Worker with the others; re-enabled by the keepalive) renders
+ECMWF's free real-time open data (IFS, 0.25 degree, CC BY 4.0) through the SAME pipeline as the GFS job: `run.main` with
+another `Source` (discovery, one step's records, their decode, steps, manifest model block, bucket prefix). Encoding,
+encode ranges, legends, coastal fill (the same `fill_allow.png`: the grids are identical), guards, failure records and
+retention are shared, so the browser draws both models with the same code.
+
+- **Data**: the AWS Open Data mirror `ecmwf-forecasts` (anonymous listing + ranged GETs; data.ecmwf.int/forecasts serves
+  the same paths and is the second host for the reads). Per step the `wave` stream's `swh` (-> `hs`), `pp1d` (-> `tp`,
+  the PEAK period 1/fp, comparable with GFS-Wave's PERPW) and `mwd` (-> `pdir`: the MEAN wave direction, degrees true,
+  FROM; the free data has no peak direction and no swell partitions), and the `oper` stream's `10u`/`10v` (-> `wind`,
+  `wdir`). The `.index` (JSON lines) gives each record's exact byte span; every record's identity (param, surface level
+  0, step, cycle) and grid are checked after decoding (CCSDS packing: eccodes 2.48 in the pinned environment).
+- **Runs**: the 00Z and 12Z cycles only (owner, 2026-10-14), each to +360 h: every 3 h to +144 h, every 6 h to +360 h
+  (85 frames; the manifest's `frame_schedule` `[[0, 144, 3], [150, 360, 6]]`). ECMWF publishes every step of a cycle at
+  once about 7 h 34 min after it (00Z at ~07:34 UTC, 12Z at ~19:34 UTC); a run counts as complete only when every
+  `.grib2` and `.index` of both streams is listed.
+- **Grid**: ECMWF's columns start at 180 E (= -180 E), the site's column order, so there is no roll (central Oahu's
+  land cell sits at the GFS frames' row 274, column 88). ECMWF has said its open data moves to 0.1 degree; a 0.1-degree
+  message is regridded to the site grid (bilinear over present neighbours, nearest for `mwd`) so the frames and the
+  client never change (`decode.to_site_grid_ecmwf`). Finer frames would be a client redesign of their own.
+- **Bucket**: `ecmwf/0p25/v1/` with the GFS layout (`<RUN>/{half/}<field>/fNNN.png`, manifests, stats, `latest.json`,
+  `failed/`, `notready/`); the job never reads or writes the GFS prefix and prunes only its own runs (4 kept, ~50 MB
+  each). The manifest's `model` block credits ECMWF, links CC BY 4.0 and says the data was modified (quantised,
+  coast-filled, rendered by Allshore Surf). Stop it by disabling `model-ecmwf.yml` (and removing it from the keepalive
+  and the Worker's `GH_WORKFLOW`); the client shows ECMWF only where `MODEL_OVERLAY_MODELS` names it.
+- **Fixtures**: `tests/capture_ecmwf_fixtures.py` (network + eccodes) writes `tests/fixtures/ecmwf/` (the real index
+  files and each record's metadata and a few cell values) for `tests/model_frames/test_ecmwf.py`.
 
 ## Forecast points
 

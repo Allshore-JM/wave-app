@@ -76,11 +76,12 @@ def _request(url, rng=None, timeout=60, tries=4, method="GET"):
     raise TransportError(f"{url}: {last} after {tries} tries")
 
 
-def list_keys(prefix, max_keys=1000):
-    """Object keys under a prefix (ListObjectsV2, paginated)."""
+def list_keys(prefix, max_keys=1000, s3=S3):
+    """Object keys under a prefix (ListObjectsV2, paginated) of a public bucket (NOAA's by default; the ECMWF job
+    passes its own, plan section 43)."""
     keys, token = [], None
     while True:
-        url = f"{S3}/?list-type=2&prefix={prefix}&max-keys={max_keys}"
+        url = f"{s3}/?list-type=2&prefix={prefix}&max-keys={max_keys}"
         if token:
             from urllib.parse import quote
             url += "&continuation-token=" + quote(token, safe="")

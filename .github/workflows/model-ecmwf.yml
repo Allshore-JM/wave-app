@@ -1,0 +1,69 @@
+# Renders + publishes the newest COMPLETE ECMWF open-data run (IFS 0.25 deg, 00Z and 12Z to +360 h, 85 frames) as
+# overlay frames to R2 under ecmwf/0p25/v1/ (plan section 43). The same job code and pinned environment as model-frames
+# (eccodes 2.48 decodes ECMWF's CCSDS packing). ECMWF publishes every step of a cycle at once ~7 h 34 min after it
+# (00Z at ~07:34 UTC, 12Z at ~19:34 UTC); between those the job short-circuits in ~20 s, so it shares the 10-minute schedule.
+# Data: ECMWF open data, CC BY 4.0 (the manifest carries the credit and the licence link).
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: model-ecmwf
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: "comma list of forecast hours (blank = all 85: 3-hourly to 144, 6-hourly to 360). A subset is never published live."
+        default: ""
+      dry_run:
+        description: "no uploads (true/false)"
+        default: "false"
+      force:
+        description: "re-publish even if the run is current (true/false)"
+        default: "false"
+concurrency:
+  group: model-ecmwf
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60                    # an 85-step build takes a few minutes; a killed build leaves no failure record (G13a P3-1)
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+          cache-environment: true
+      - name: Record environment
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|eccodes|python-eccodes|numpy|pillow|boto3)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish ECMWF frames
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          STEPS: ${{ github.event.inputs.steps }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ -n "$STEPS" ] && ! [[ "$STEPS" =~ ^[0-9,]+$ ]]; then echo "bad steps input"; exit 2; fi
+          ARGS=()
+          [ -n "$STEPS" ] && ARGS+=(--steps "$STEPS" --dry-run)      # a subset is only ever a dry run
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          [ "$FORCE" = "true" ] && ARGS+=(--force)
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/ecmwf.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          if [ "$rc" -eq 3 ]; then echo "no complete run yet" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          exit "$rc"
+

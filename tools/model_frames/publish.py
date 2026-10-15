@@ -1,7 +1,8 @@
 """Object-storage side of the job: immutable frames, a versioned manifest, then the pointer.
 
 Layout (PREFIX = gfswave/0p25/v1 -- the version segment changes whenever the encoding or
-layout changes, so an immutable key is never rewritten with different bytes):
+layout changes, so an immutable key is never rewritten with different bytes; every function takes a
+`prefix`, default PREFIX: the ECMWF job publishes the same layout under ECMWF_PREFIX, plan section 43):
   <PREFIX>/<RUN>/<field>/f<HHH>.png                 full 1440x721      (immutable)
   <PREFIX>/<RUN>/half/<field>/f<HHH>.png            361x720 subsample  (immutable)
   <PREFIX>/<RUN>/manifest-<published>.json          one per publish    (immutable)
@@ -17,34 +18,39 @@ import time
 PREFIX = "gfswave/0p25/v1"
 IMMUTABLE = "public, max-age=31536000, immutable"
 POINTER = "public, max-age=300"
+ECMWF_PREFIX = "ecmwf/0p25/v1"
 LATEST_KEY = f"{PREFIX}/latest.json"
+
+
+def latest_key(prefix=PREFIX):
+    return f"{prefix}/latest.json"
 
 
 def run_key(run_dt):
     return run_dt.strftime("%Y%m%d%H")
 
 
-def frame_key(run, field, step, half=False):
-    return f"{PREFIX}/{run}/{'half/' if half else ''}{field}/f{step:03d}.png"
+def frame_key(run, field, step, half=False, prefix=PREFIX):
+    return f"{prefix}/{run}/{'half/' if half else ''}{field}/f{step:03d}.png"
 
 
-def manifest_key(run, published_utc, complete=True):
+def manifest_key(run, published_utc, complete=True, prefix=PREFIX):
     stamp = published_utc.replace("-", "").replace(":", "")
-    return f"{PREFIX}/{run}/{'manifest' if complete else 'partial'}-{stamp}.json"
+    return f"{prefix}/{run}/{'manifest' if complete else 'partial'}-{stamp}.json"
 
 
-def stats_key(run, published_utc):
+def stats_key(run, published_utc, prefix=PREFIX):
     stamp = published_utc.replace("-", "").replace(":", "")
-    return f"{PREFIX}/{run}/stats-{stamp}.json"
+    return f"{prefix}/{run}/stats-{stamp}.json"
 
 
-def files_template(run):
+def files_template(run, prefix=PREFIX):
     """Client builds frame URLs from this: {res} is "" (full) or "half/", {field}, {step:03d}."""
-    return f"{PREFIX}/{run}/{{res}}{{field}}/f{{step:03d}}.png"
+    return f"{prefix}/{run}/{{res}}{{field}}/f{{step:03d}}.png"
 
 
-def failed_key(run):
-    return f"{PREFIX}/failed/{run}.json"
+def failed_key(run, prefix=PREFIX):
+    return f"{prefix}/failed/{run}.json"
 
 
 def _is_missing(exc):
@@ -84,11 +90,11 @@ class Store:
             if not token:
                 return keys
 
-    def list_runs(self):
+    def list_runs(self, prefix=PREFIX):
         """{run: has_manifest} for every run prefix present."""
         runs = {}
-        for k in self.list_keys(PREFIX + "/"):
-            rest = k[len(PREFIX) + 1:]
+        for k in self.list_keys(prefix + "/"):
+            rest = k[len(prefix) + 1:]
             name = rest.split("/", 1)[0]
             if name.isdigit() and len(name) == 10:
                 runs.setdefault(name, False)
@@ -108,47 +114,47 @@ class Store:
         return self.delete_keys(self.list_keys(prefix), prefix)
 
 
-def publish_frame(store, run, field, step, encoded):
+def publish_frame(store, run, field, step, encoded, prefix=PREFIX):
     """The frame's PNGs, one per resolution the field publishes (encode.FIELDS[...]["resolutions"])."""
     if "full" in encoded:
-        store.put(frame_key(run, field, step), encoded["full"], "image/png", IMMUTABLE)
+        store.put(frame_key(run, field, step, prefix=prefix), encoded["full"], "image/png", IMMUTABLE)
     if "half" in encoded:
-        store.put(frame_key(run, field, step, half=True), encoded["half"], "image/png", IMMUTABLE)
+        store.put(frame_key(run, field, step, half=True, prefix=prefix), encoded["half"], "image/png", IMMUTABLE)
 
 
-def publish_manifest(store, run, manifest, stats=None):
+def publish_manifest(store, run, manifest, stats=None, prefix=PREFIX):
     """Write the (slim) manifest under a fresh immutable key, its stats sidecar first; flip the
     pointer ONLY for a complete run. The manifest stays slim (the custom domain serves it brotli-compressed):
     per-frame byte sizes and statistics live in the sidecar."""
     if stats is not None:
-        skey = stats_key(run, manifest["published_utc"])
+        skey = stats_key(run, manifest["published_utc"], prefix=prefix)
         store.put(skey, json.dumps(stats, separators=(",", ":"), sort_keys=True, allow_nan=False).encode(),
                   "application/json", IMMUTABLE)
         manifest = dict(manifest, stats=skey)
     body = json.dumps(manifest, separators=(",", ":"), sort_keys=True, allow_nan=False).encode()
-    mkey = manifest_key(run, manifest["published_utc"], complete=manifest["complete"])
+    mkey = manifest_key(run, manifest["published_utc"], complete=manifest["complete"], prefix=prefix)
     store.put(mkey, body, "application/json", IMMUTABLE)
     if not manifest["complete"]:
         return mkey, False
-    point_to(store, run, mkey, manifest)
+    point_to(store, run, mkey, manifest, prefix=prefix)
     return mkey, True
 
 
-def point_to(store, run, mkey, manifest):
+def point_to(store, run, mkey, manifest, prefix=PREFIX):
     """Flip latest.json to a COMPLETE manifest already stored under `mkey`."""
     if not manifest.get("complete"):
         raise ValueError("the pointer only ever names a complete run")
     pointer = {"run": run, "manifest": mkey, "complete": True, "encoding": manifest["encoding"],
                "published_utc": manifest["published_utc"], "frames": len(manifest["frames"])}
-    store.put(LATEST_KEY, json.dumps(pointer, separators=(",", ":"), sort_keys=True).encode(),
+    store.put(latest_key(prefix), json.dumps(pointer, separators=(",", ":"), sort_keys=True).encode(),
               "application/json", POINTER)
     return pointer
 
 
-def newest_manifest(store, run):
+def newest_manifest(store, run, prefix=PREFIX):
     """(key, parsed JSON) of the newest COMPLETE manifest published for `run`, or (None, None).
     Partial manifests (partial-*) never count. A manifest that cannot be read raises."""
-    keys = sorted(store.list_keys(f"{PREFIX}/{run}/manifest-"))
+    keys = sorted(store.list_keys(f"{prefix}/{run}/manifest-"))
     if not keys:
         return None, None
     body = store.get_json(keys[-1])
@@ -157,14 +163,14 @@ def newest_manifest(store, run):
     return keys[-1], body
 
 
-def prune(store, keep=4):
+def prune(store, keep=4, prefix=PREFIX):
     """Keep the newest `keep` COMPLETE runs (plus whatever latest.json names); delete every other
     run prefix, including manifest-less leftovers of crashed builds that are older than the
     newest complete run. Returns the runs actually deleted."""
     if keep < 1:
         raise ValueError("keep must be >= 1")
-    latest = store.get_json(LATEST_KEY) or {}
-    runs = store.list_runs()
+    latest = store.get_json(latest_key(prefix)) or {}
+    runs = store.list_runs(prefix)
     complete = sorted(r for r, ok in runs.items() if ok)
     protect = set(complete[-keep:]) | ({latest["run"]} if latest.get("run") else set())
     newest_complete = complete[-1] if complete else None
@@ -174,7 +180,7 @@ def prune(store, keep=4):
             continue
         if not runs[run] and newest_complete and run >= newest_complete:
             continue                                    # a build that may still be in progress
-        store.delete_prefix(f"{PREFIX}/{run}/")
+        store.delete_prefix(f"{prefix}/{run}/")
         deleted.append(run)
     return deleted
 
@@ -210,27 +216,27 @@ def redact(message, bucket=None, limit=500):
     return s[:limit]
 
 
-def notready_key(run):
-    return f"{PREFIX}/notready/{run}.json"
+def notready_key(run, prefix=PREFIX):
+    return f"{prefix}/notready/{run}.json"
 
 
-def record_notready(store, run, message):
+def record_notready(store, run, message, prefix=PREFIX):
     """Count NotReady exits for a run the listing called complete (an object that is listed but
     never served, or that vanished); the workflow summary warns once the count is high."""
-    prev = store.get_json(notready_key(run)) or {"run": run, "count": 0}
+    prev = store.get_json(notready_key(run, prefix)) or {"run": run, "count": 0}
     prev["count"] += 1
     prev["last_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     prev["last_error"] = redact(message, store.bucket)
-    store.put(notready_key(run), json.dumps(prev, sort_keys=True).encode(), "application/json", POINTER)
+    store.put(notready_key(run, prefix), json.dumps(prev, sort_keys=True).encode(), "application/json", POINTER)
     return prev
 
 
-def record_failure(store, run, message):
-    prev = store.get_json(failed_key(run)) or {"run": run, "attempts": 0}
+def record_failure(store, run, message, prefix=PREFIX):
+    prev = store.get_json(failed_key(run, prefix)) or {"run": run, "attempts": 0}
     prev["attempts"] += 1
     prev["last_attempt_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     prev["last_error"] = redact(message, store.bucket)
-    store.put(failed_key(run), json.dumps(prev, sort_keys=True).encode(), "application/json", POINTER)
+    store.put(failed_key(run, prefix), json.dumps(prev, sort_keys=True).encode(), "application/json", POINTER)
     return prev
 
 

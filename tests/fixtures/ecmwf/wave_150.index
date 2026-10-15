@@ -1,0 +1,13 @@
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "h1012", "_offset": 0, "_length": 818244}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "h1214", "_offset": 818244, "_length": 799336}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "h1417", "_offset": 1617580, "_length": 701933}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "h1721", "_offset": 2319513, "_length": 705525}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "h2125", "_offset": 3025038, "_length": 731434}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "h2530", "_offset": 3756472, "_length": 765158}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "wmb", "_offset": 4521630, "_length": 510062}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "mp2", "_offset": 5031692, "_length": 936642}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "swh", "_offset": 5968334, "_length": 771718}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "mwd", "_offset": 6740052, "_length": 975581}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "pp1d", "_offset": 7715633, "_length": 945470}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "mwp", "_offset": 8661103, "_length": 919075}
+{"date": "20261014", "time": "1200", "expver": "0001", "class": "od", "type": "fc", "stream": "wave", "step": "150", "levtype": "sfc", "domain": "g", "param": "cdww", "_offset": 9580178, "_length": 1030292}

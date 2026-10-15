@@ -1,9 +1,9 @@
 // Cloudflare Worker: dispatches the model workflows on a cron schedule. GitHub drops or
 // delays most of its own scheduled ticks (see .github/workflows/model-frames.yml), so this Worker
 // asks the GitHub API to start each workflow every ten minutes; the job itself decides in ~20 s
-// whether a new NOAA cycle is complete and short-circuits otherwise. GitHub's schedule stays on
+// whether a new model cycle is complete and short-circuits otherwise. GitHub's schedule stays on
 // as a fallback -- a duplicate run just short-circuits behind the concurrency group.
-// GH_WORKFLOW is one workflow file or a comma-separated list (the overlay frames and the forecast
+// GH_WORKFLOW is one workflow file or a comma-separated list (the overlay frames, the ECMWF frames and the forecast
 // points); every one is dispatched on every tick, and one that fails never holds back the others.
 //
 // Cron-only: no fetch handler and no public URL (workers_dev = false in wrangler.jsonc).

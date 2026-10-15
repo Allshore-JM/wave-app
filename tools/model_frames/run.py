@@ -7,6 +7,9 @@ Options:
                      --allow-partial; the pointer is never flipped for a subset.
   --force            re-publish even if the run is current or older than the live run
   --keep N           complete runs to retain (default 4)
+The ECMWF job (tools/model_frames/ecmwf.py, plan section 43) runs this same main with its own Source: another
+model's fetch and decode, steps, manifest model block and bucket prefix; everything else (encoding, fill, pipeline,
+guards, retention) is shared.
 Exit codes: 0 published / already current / newer run live / pointer repaired; 3 no complete run
 available or a needed object vanished mid-run (not an error for the schedule); 1 build/publish
 failure; 2 bad arguments, or a refusal to rewrite a published run's immutable frames with a
@@ -75,7 +78,46 @@ GRID_HALF = {"cols": 720, "rows": 361, "lon0": -180.0, "lat0": 90.0, "dlon": 0.5
              "registration": "center", "lon_periodic": True, "derivation": "full[::2, ::2]"}
 
 
-def build_and_publish(store, run_dt, steps, upload=True, log=print):
+class GfsSource:
+    """What the job needs from a model: discovery, one step's records, their decode into the site's fields, the
+    steps / schedule / manifest model block and the bucket prefix. The GFS source looks fetch / decode up at call
+    time (the tests replace those module functions)."""
+    name = "NOAA"                                       # in log lines: "NOAA listing failed"
+    tag = ""                                            # the step summary's run line: "### run ..." (ECMWF: "### ECMWF run ...")
+    prefix = P.PREFIX
+    model = MODEL
+    prune_legacy = True                                 # the one-time pre-v1 cleanup belongs to the GFS prefix
+
+    @property
+    def steps(self):
+        return F.STEPS
+
+    @property
+    def schedule(self):
+        return F.STEP_SCHEDULE
+
+    def latest_complete_run(self):
+        return F.latest_complete_run()
+
+    def fetch(self, run_dt, step):
+        return (F.fetch_records(F.wave_url(run_dt, step), list(WAVE_KEYS.values())),
+                F.fetch_records(F.atmos_url(run_dt, step), list(ATMOS_KEYS)))
+
+    def decode(self, records, run_dt, step):
+        """{hs, tp, pdir, wind, wdir} on the site grid."""
+        wave, atmos = records
+        grids = {name: D.decode(wave[key], key, run_dt, step)[0] for name, key in WAVE_KEYS.items()}
+        u, _ = D.decode(atmos[ATMOS_KEYS[0]], ATMOS_KEYS[0], run_dt, step)
+        v, _ = D.decode(atmos[ATMOS_KEYS[1]], ATMOS_KEYS[1], run_dt, step)
+        grids["wind"] = D.wind_speed(u, v)
+        grids["wdir"] = D.wind_dir_from(u, v)
+        return grids
+
+
+GFS = GfsSource()
+
+
+def build_and_publish(store, run_dt, steps, upload=True, log=print, src=GFS):
     run = P.run_key(run_dt)
     frames, stats_frames = [], []
     t0 = time.time()
@@ -86,8 +128,7 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
     pending, nxt = [], None
 
     def fetch(step):
-        return (F.fetch_records(F.wave_url(run_dt, step), list(WAVE_KEYS.values())),
-                F.fetch_records(F.atmos_url(run_dt, step), list(ATMOS_KEYS)))
+        return src.fetch(run_dt, step)
 
     def drain(limit):
         # the first upload failure is raised here (the build stops); at most `limit` uploads trail it. Each
@@ -107,13 +148,9 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
         nxt = fetch_pool.submit(fetch, steps[0]) if steps else None
         for n, step in enumerate(steps):
             t = time.time()
-            wave, atmos = nxt.result()
+            records = nxt.result()
             nxt = fetch_pool.submit(fetch, steps[n + 1]) if n + 1 < len(steps) else None
-            grids = {name: D.decode(wave[key], key, run_dt, step)[0] for name, key in WAVE_KEYS.items()}
-            u, _ = D.decode(atmos[ATMOS_KEYS[0]], ATMOS_KEYS[0], run_dt, step)
-            v, _ = D.decode(atmos[ATMOS_KEYS[1]], ATMOS_KEYS[1], run_dt, step)
-            grids["wind"] = D.wind_speed(u, v)
-            grids["wdir"] = D.wind_dir_from(u, v)
+            grids = src.decode(records, run_dt, step)
             entry = {"step": step, "valid_utc": (run_dt + timedelta(hours=step)).strftime("%Y-%m-%dT%H:%M:%SZ")}
             # on the MODEL grids the direction must exist wherever there are waves, and nowhere without a height
             # (the client draws particles only on drawn water with at least PDIR_WAVES_M of wave height); a calm
@@ -129,7 +166,7 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
             for name, enc in zip(names, encoded):
                 stat["fields"][name] = dict(enc["stats"], bytes_full=len(enc.get("full", b"")), bytes_half=len(enc.get("half", b"")))
                 if upload:
-                    pending.append(upload_pool.submit(P.publish_frame, store, run, name, step, enc))
+                    pending.append(upload_pool.submit(P.publish_frame, store, run, name, step, enc, src.prefix))
             if upload:
                 drain(UPLOAD_BACKLOG)
             frames.append(entry)
@@ -150,14 +187,14 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
         encode_pool.shutdown(wait=False, cancel_futures=True)
         if upload_pool is not None:
             upload_pool.shutdown(wait=False, cancel_futures=True)
-    complete = steps == F.STEPS and len(frames) == len(F.STEPS)
+    complete = steps == src.steps and len(frames) == len(src.steps)
     manifest = {
-        "schema": 3, "run": run, "files": {"template": P.files_template(run), "res": {"full": "", "half": "half/"}}, "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": MODEL,
+        "schema": 3, "run": run, "files": {"template": P.files_template(run, src.prefix), "res": {"full": "", "half": "half/"}}, "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": src.model,
         "encoding": E.ENCODING, "encoding_spec": E.ENCODING_SPEC,
         "grid": GRID_FULL, "grid_half": GRID_HALF,
         "fields": {n: {k: (list(f[k]) if isinstance(f[k], tuple) else f[k]) for k in FIELD_KEYS if k in f}
                    for n, f in E.FIELDS.items()},
-        "frame_schedule": F.STEP_SCHEDULE, "expected_frames": len(F.STEPS),
+        "frame_schedule": src.schedule, "expected_frames": len(src.steps),
         "frames": frames, "complete": complete,
         "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "build_seconds": round(time.time() - t0, 1),
@@ -166,7 +203,7 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print):
         manifest["fill"] = E.FILL_INFO
     stats = {"run": run, "frames": stats_frames}
     if upload:
-        P.publish_manifest(store, run, manifest, stats)
+        P.publish_manifest(store, run, manifest, stats, prefix=src.prefix)
     manifest["_stats"] = stats                      # in-memory only (never serialized to the bucket)
     return manifest
 
@@ -191,7 +228,7 @@ def ranges_key(fields):
     return tuple(out)
 
 
-def fill_guard(store, run, live, partial):
+def fill_guard(store, run, live, partial, src=GFS):
     """None to go ahead, else the exit code. A run already published (complete manifest) with a
     different fill OR different encode ranges (plan section 27, G19-B P1: frames decoded with the other
     range read 1.5x too high or too low) is never rebuilt: its frame keys are immutable and cached for a
@@ -199,7 +236,7 @@ def fill_guard(store, run, live, partial):
     failed, or latest.json was lost) and it is newer than the live run, the pointer is repaired to
     its existing manifest instead of failing on every tick."""
     try:
-        mkey, man = P.newest_manifest(store, run)
+        mkey, man = P.newest_manifest(store, run, prefix=src.prefix)
     except ValueError as exc:                                 # the content (json.JSONDecodeError is a ValueError)
         msg = f"run {run}: its published manifest is not a valid manifest ({exc.__class__.__name__}); not rewriting its frames"
         print(msg)
@@ -215,10 +252,10 @@ def fill_guard(store, run, live, partial):
         return None
     what = ("fill " + str(E.fill_key(man.get("fill")))) if not same_fill else "other encode ranges"
     usable = (man.get("run") == run and man.get("encoding") == E.ENCODING and man.get("complete") is True
-              and isinstance(man.get("frames"), list) and len(man["frames"]) == len(F.STEPS)
+              and isinstance(man.get("frames"), list) and len(man["frames"]) == len(src.steps)
               and isinstance(man.get("published_utc"), str))
     if not partial and usable and (not live or run > live):
-        P.point_to(store, run, mkey, man)
+        P.point_to(store, run, mkey, man, prefix=src.prefix)
         msg = f"run {run} already has a complete manifest built with {what}; pointer repaired to {mkey}"
         print(msg)
         _summary(msg)
@@ -230,8 +267,8 @@ def fill_guard(store, run, live, partial):
     return 2
 
 
-def _skip_failed(store, run):
-    rec = store.get_json(P.failed_key(run))
+def _skip_failed(store, run, src=GFS):
+    rec = store.get_json(P.failed_key(run, src.prefix))
     if not rec:
         return False
     if rec.get("attempts", 0) >= FAILED_MAX_ATTEMPTS:
@@ -240,10 +277,10 @@ def _skip_failed(store, run):
     return (datetime.now(timezone.utc) - last).total_seconds() < FAILED_RETRY_AFTER_S
 
 
-def main(argv=None):
+def main(argv=None, src=GFS):
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--steps", default=None, help=f"comma list of forecast hours, default all {len(F.STEPS)}")
+    ap.add_argument("--steps", default=None, help=f"comma list of forecast hours, default all {len(src.steps)}")
     ap.add_argument("--allow-partial", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--keep", type=int, default=4)
@@ -251,30 +288,31 @@ def main(argv=None):
     if a.keep < 1:
         print("--keep must be >= 1")
         return 2
-    steps = [int(s) for s in a.steps.split(",")] if a.steps else F.STEPS
-    if any(s not in F.STEPS for s in steps):
-        print(f"--steps must be forecast hours of the model output: hourly {F.STEP_SCHEDULE[0][0]}..{F.STEP_SCHEDULE[0][1]}, "
-              f"then every {F.STEP_SCHEDULE[1][2]} h to {F.STEP_SCHEDULE[1][1]}")
+    steps = [int(s) for s in a.steps.split(",")] if a.steps else src.steps
+    if any(s not in src.steps for s in steps):
+        sch = src.schedule
+        print(f"--steps must be forecast hours of the model output: every {sch[0][2]} h {sch[0][0]}..{sch[0][1]}, "
+              f"then every {sch[1][2]} h to {sch[1][1]}")
         return 2
-    partial = steps != F.STEPS
+    partial = steps != src.steps
     if partial and not a.dry_run and not a.allow_partial:
         print("a subset of steps is never published live; add --dry-run or --allow-partial")
         return 2
 
     try:
-        run_dt = F.latest_complete_run()
+        run_dt = src.latest_complete_run()
     except F.TransportError as exc:
-        print(f"NOAA listing failed: {exc}")
+        print(f"{src.name} listing failed: {exc}")
         return 1
     if run_dt is None:
-        print("no complete run on S3 in the last 48 h")
+        print(f"no complete {src.tag}run on S3 in the last 48 h")
         return 3
     run = P.run_key(run_dt)
 
     store = None
     if not a.dry_run:
         store = _store_from_env()
-        latest = store.get_json(P.LATEST_KEY) or {}
+        latest = store.get_json(P.latest_key(src.prefix)) or {}
         live = latest.get("run")
         if live == run and latest.get("complete") and not a.force:
             print(f"run {run} already live; nothing to do")
@@ -282,37 +320,38 @@ def main(argv=None):
         if live and run < live and not a.force:
             print(f"newer run {live} is live; not regressing to {run}")
             return 0
-        if not partial and not a.force and _skip_failed(store, run):
+        if not partial and not a.force and _skip_failed(store, run, src):
             print(f"run {run} failed recently; waiting before retrying")
             return 0
-        rc = fill_guard(store, run, live, partial)
+        rc = fill_guard(store, run, live, partial, src)
         if rc is not None:
             return rc
     print(f"publishing run {run} ({len(steps)} steps){' [dry-run]' if a.dry_run else ''}{' [partial]' if partial else ''}")
 
     try:
-        manifest = build_and_publish(store, run_dt, steps, upload=not a.dry_run)
+        manifest = build_and_publish(store, run_dt, steps, upload=not a.dry_run, src=src)
     except F.NotReady as exc:
         print(f"object vanished/not ready mid-run: {exc}")
         if store is not None and not partial:
-            rec = P.record_notready(store, run, exc)
+            rec = P.record_notready(store, run, exc, prefix=src.prefix)
             print(f"not-ready count for {run}: {rec['count']}")
             if rec["count"] >= NOTREADY_WARN:
                 _summary(f"WARNING: run {run} not ready {rec['count']} times in a row: {exc}")
         return 3
     except Exception as exc:                                  # noqa: BLE001
         if store is not None and not partial:
-            rec = P.record_failure(store, run, exc)
+            rec = P.record_failure(store, run, exc, prefix=src.prefix)
             print(f"build failed (attempt {rec['attempts']}): {exc!r}")
         raise
     print(json.dumps({k: manifest[k] for k in ("run", "complete", "build_seconds")}))
     if store is not None and manifest["complete"]:
-        print("pruned:", P.prune(store, keep=a.keep))
-        print("legacy objects removed:", P.prune_legacy(store))
+        print("pruned:", P.prune(store, keep=a.keep, prefix=src.prefix))
+        if src.prune_legacy:
+            print("legacy objects removed:", P.prune_legacy(store))
     tot = sum(v["bytes_full"] + v["bytes_half"] for f in manifest["_stats"]["frames"] for v in f["fields"].values())
     published = datetime.strptime(manifest["published_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     lag_h = (published - run_dt).total_seconds() / 3600
-    _summary(f"### run {run}: {len(manifest['frames'])} frames, complete={manifest['complete']}, "
+    _summary(f"### {src.tag}run {run}: {len(manifest['frames'])} frames, complete={manifest['complete']}, "
              f"{tot/1e6:.1f} MB stored, {manifest['build_seconds']} s, published {lag_h:.1f} h after the cycle")
     if E.FILL_INFO and manifest["_stats"]["frames"]:
         f0 = manifest["_stats"]["frames"][0]

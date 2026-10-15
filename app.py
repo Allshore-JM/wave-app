@@ -284,7 +284,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.17.0"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.17.1"           # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -344,6 +344,36 @@ def overlay_asset(name):
     if not _model_overlays_enabled() or name not in _OVERLAY_ASSETS:
         abort(404)                                            # the same default 404 the site gives any unknown path
     return _versioned_asset(_OVERLAY_DIR, _OVERLAY_ASSETS, name, OVERLAY_ASSET_VERSION)
+
+
+# The ECMWF notice the map credit links ("Overlay: ECMWF CC BY 4.0"; owner, G30-4): ECMWF's open-data terms
+# (https://apps.ecmwf.int/datasets/licences/general/) and CC BY 4.0 section 3(a) ask for the copyright, the source, the
+# licence with its link, ECMWF's disclaimer and an indication of the changes made. The same text as the ECMWF job's
+# manifest credit (tools/model_frames/ecmwf.py ATTRIBUTION), laid out for reading. Not behind the overlay flag (harmless).
+ECMWF_NOTICE = "\n".join([
+    "ECMWF data in the Allshore Surf map overlays (allshoresurf.com)",
+    "",
+    "© {year} European Centre for Medium-Range Weather Forecasts (ECMWF).",
+    "Source: www.ecmwf.int",
+    "Licence: This data is published under a Creative Commons Attribution 4.0 International (CC BY 4.0) licence:",
+    "https://creativecommons.org/licenses/by/4.0/",
+    "",
+    "The ECMWF overlays (wave height, peak period, mean wave direction, 10 m wind) are based on data and products of",
+    "ECMWF (IFS wave model ecWAM and IFS, open data at 0.25 degrees), modified by Allshore Surf: quantised to 8 bits,",
+    "calm water and sea ice left empty, filled along the coasts and rendered as map overlays.",
+    "",
+    "Disclaimer: ECMWF does not accept any liability whatsoever for any error or omission in the data, their",
+    "availability, or for any loss or damage arising from their use. ECMWF does not endorse this product.",
+    "",
+])
+
+
+@app.route("/notice/ecmwf")
+def ecmwf_notice():
+    """The ECMWF attribution notice (plain text, this year's copyright line)."""
+    resp = app.response_class(ECMWF_NOTICE.format(year=datetime.now(timezone.utc).year), mimetype="text/plain")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
 
 
 # ---------------------------------------------------------------------------------------------

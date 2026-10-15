@@ -192,12 +192,13 @@ def test_overlay_js_syntax_and_contract_strings():
                    "RIBBON_AXIS_PX", "_focusedPart", "_refocus", "_say", "'status'", "ov-sr", "_pendingFocus", "_focusLost", "hasPointerCapture", "SAY_FIRST_MS", "getComputedStyle",
                    "World_Hillshade", "mixBlendMode", "coastEdges", "_syncLook",
                    "_paintWait", "PAINT_FALLBACK_MS", "TRAIL_SPAN_MS", "BUSY_STUCK_MS", "maxTouchPoints", "_flowData", "copyWithin", "spent", "ovdecode=worker",   # section 42 / G29
-                   "MODEL_DEFS", "'ecmwf/0p25/v1'", "ov-model-sel", "'Forecast model'", "setModel", "_dropRun", "_carry", "_modelBase", "CC BY 4.0"):   # section 43
+                   "MODEL_DEFS", "'ecmwf/0p25/v1'", "ov-model-sel", "'Overlay model'", "setModel", "_dropRun", "_carry", "_modelBase", "CC BY 4.0",   # section 43
+                   "hasModel", "_switchT", "_fetchJson", "LOAD_STALL_MS", "/notice/ecmwf"):                                                      # G30 fix round
         assert needle in js, needle
     for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row
                  "'live since '", "next update about ", "'First frame'", "'Previous frame'", "'Next frame'", "'Last frame'",
                  "[0.5, 1, 2, 4]", "'Valid: '", "forecastSpanText", "-day forecast",
-                 "' h → +'", "'NOAA GFS-Wave'", "SHEET_OPEN_PX", "RIBBON_SWIPE_PX", "aria-live"):                                                                   # owner 2026-10-07: one summary line, no agency prefix                                                       # section 37: one play button, animals, the ribbon
+                 "' h → +'", "'NOAA GFS-Wave'", "SHEET_OPEN_PX", "RIBBON_SWIPE_PX", "aria-live", "'Forecast model'"):                                                                   # owner 2026-10-07: one summary line, no agency prefix                                                       # section 37: one play button, animals, the ribbon
         assert gone not in js, gone
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:
@@ -275,3 +276,19 @@ def test_overlay_models_env_and_the_page(monkeypatch):
     rec = G.run_scenarios(A)
     for name, old in GOLDEN.items():
         assert rec[name]["body"] == old["body"], name
+
+
+def test_the_ecmwf_notice_the_credit_links():
+    """G30-4 (owner: a notice, linked from the credit): ECMWF's terms and CC BY 4.0 section 3(a) - the copyright with this
+    year, the source, the licence and its link, ECMWF's disclaimer, no endorsement, and what Allshore Surf changed."""
+    from datetime import datetime, timezone
+    r = A.app.test_client().get("/notice/ecmwf")
+    assert r.status_code == 200 and r.mimetype == "text/plain" and r.headers["Cache-Control"] == "public, max-age=86400"
+    body = r.get_data(as_text=True)
+    for need in ("© %d European Centre for Medium-Range Weather Forecasts (ECMWF)." % datetime.now(timezone.utc).year,
+                 "Source: www.ecmwf.int", "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+                 "https://creativecommons.org/licenses/by/4.0/", "based on data and products of", "modified by Allshore Surf",
+                 "ECMWF does not accept any liability whatsoever", "ECMWF does not endorse this product"):
+        assert need in body, need
+    js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
+    assert 'href="/notice/ecmwf"' in js, "the credit's ECMWF link opens this notice"

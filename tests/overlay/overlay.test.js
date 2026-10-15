@@ -1183,6 +1183,11 @@ test('section 43: MODEL_DEFS (prefixes, cycles, stale lines, the 29-character cr
   }
   assert.match(D.ecmwf.attribution, /creativecommons\.org\/licenses\/by\/4\.0/); assert.match(D.ecmwf.attribution, /modified by Allshore Surf/);
   assert.deepEqual(I.modelList(['ecmwf', 'gfswave', 'ecmwf', 'x']), ['ecmwf', 'gfswave']);
+  assert.deepEqual(I.modelList(['constructor', 'toString', '__proto__', 'hasOwnProperty', 'gfswave']), ['gfswave'], 'own keys only (G30-9)');
+  assert.equal(I.hasModel('constructor'), false); assert.equal(I.hasModel('ecmwf'), true); assert.equal(I.hasModel(undefined), false);
+  assert.equal(D.gfswave.short, 'GFS'); assert.equal(D.ecmwf.short, 'ECMWF');
+  assert.match(D.ecmwf.attribution, /href="\/notice\/ecmwf"/, 'the credit opens the notice (G30-4)');
+  assert.equal(I.LOAD_STALL_MS, 15000);
   assert.deepEqual(I.modelList(undefined), ['gfswave']); assert.deepEqual(I.modelList([]), ['gfswave']); assert.deepEqual(I.modelList('ecmwf'), ['gfswave']);
   assert.equal(I.modelOf('ecmwf', ['gfswave', 'ecmwf']), 'ecmwf'); assert.equal(I.modelOf('ecmwf', ['gfswave']), 'gfswave'); assert.equal(I.modelOf(undefined, ['ecmwf']), 'ecmwf');
   const m = { run_utc: '2026-10-15T00:00:00Z', published_utc: '2026-10-15T07:36:30Z' }, now = Date.parse('2026-10-15T08:00:00Z');

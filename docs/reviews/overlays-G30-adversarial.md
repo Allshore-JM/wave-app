@@ -114,3 +114,25 @@ CONFIRMED, C9 CONFIRMED on warm runs.
    pre-existing): accepted pending the owner's iPad check.
 8. Merge production (1968990, throttling hotfix 2) into the branch (no rebase).
 Then: the test site (MAX), a short fresh re-check (MAX), production (tag `prod-pre-ecmwf`).
+
+## Fix round (asset 2.17.1, 2026-10-15, Opus 5.5 HIGH)
+Every item of the scope is built:
+- G30-1: the dropdown keeps the head line's height (coarse 28 px, fine no padding); both one-line branches (the short-sheet
+  early return and the `!opens` size fold) swap the dropdown for the summary span (`oneLine()` in render).
+- G30-14: the summary line ends with " · GFS" / " · ECMWF" when more than one model is offered (`MODEL_DEFS[*].short`), before
+  a pending seek's " · loading…".
+- G30-15: `_switchT` keeps the chosen time across consecutive switches; seek, step, play, Update and Off end it.
+- G30-2: the reduced-motion gate applies to reload restores only (`!carry && reducedMotion()`).
+- G30-3: the loading panel carries the dropdown (the focus stays on it); `_fetchJson` gives the pointer and the manifest a
+  15-s watchdog (`LOAD_STALL_MS`) that ends in the error panel ("no answer from the frame host"), cleared by an abort; the
+  model is saved by `_persist` when its first frame lands, and `setModel` pauses (saving the OLD model) before switching,
+  keeping the play state in the save (closes G30-5).
+- G30-4: `/notice/ecmwf` (app.py `ECMWF_NOTICE`, plain text, this year's copyright line, public 1 day) and the credit's
+  "ECMWF" links it.
+- G30-6: `update()` lands at a pending carry's time. G30-7: the aborted check before both `_adopt`s. G30-8: `_dropRun` and
+  `mount` leave the look alone while the field stays wind. G30-9: `hasModel` (own keys). G30-11: aria-label "Overlay model".
+  G30-13: Retry / Update >= 28 px on touch. G30-10: pins for the reviewers' survivors (banner, unavailable list, outage
+  count, a hidden tab's playback). G30-12 accepted pending the owner's iPad check.
+Tests: overlay Node 279 (+13), UI 393, pytest 1,133 (the notice); mutants of the fix 21: 20 killed (F17, the aborted check
+before `_adopt` in `_loadManifest`, is a second guard: the watchdog fetch already rejects on abort). Production merged in
+(944f055: throttling hotfix 2).

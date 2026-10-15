@@ -1016,13 +1016,13 @@ test('G29 re-check R-5 / R-6 (R1, R2): with ?ovdebug=1 the error panel carries t
 // ------------------------------- plan section 43: the model dropdown -------------------------------
 const twoModels = (w) => { w.ov.models = ['gfswave', 'ecmwf']; w.ov.model = 'gfswave'; return w; };
 
-test('section 43: with two models the open head line is a native select (the models in the page\'s order, the one in use selected, aria-label "Forecast model"); a change switches the model; _syncUI sets its value only', () => withClock(() => {
+test('section 43: with two models the open head line is a native select (the models in the page\'s order, the one in use selected, aria-label "Overlay model"); a change switches the model; _syncUI sets its value only', () => withClock(() => {
   const w = twoModels(world()), calls = [];
   w.ov.setModel = (k) => { calls.push(k); w.ov.model = k; };
   w.ov.render({ state: 'ready' });
   const head = w.panel.querySelector('.ov-head'), sel = head.children[1];
   assert.deepEqual(head.children.map((c) => c.className), ['ov-toggle', 'ov-title ov-model ov-model-sel']);
-  assert.equal(sel.tagName, 'SELECT'); assert.equal(sel.getAttribute('aria-label'), 'Forecast model'); assert.equal(sel.getAttribute('autocomplete'), 'off');
+  assert.equal(sel.tagName, 'SELECT'); assert.equal(sel.getAttribute('aria-label'), 'Overlay model', 'it changes the overlay, not the forecast table (G30-11)'); assert.equal(sel.getAttribute('autocomplete'), 'off');
   assert.deepEqual(sel.options.map((o) => [o.value, o.textContent]), [['gfswave', 'GFS-Wave (WAVEWATCH III)'], ['ecmwf', 'ECMWF IFS wave (ecWAM)']]);
   assert.equal(sel.value, 'gfswave'); assert.equal(w.ov.ui.modelSel, sel);
   assert.equal(all(w.panel, 'select').length, 1, 'the model dropdown is the only select (no speed dropdown)');
@@ -1083,4 +1083,49 @@ test('section 43: the focused dropdown keeps the focus through a render', () => 
   w.panel.querySelector('.ov-model-sel').focus();
   w.ov.render({ state: 'ready' });
   assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-model-sel'));
+}));
+
+// ------------------------------- G30 fix round (asset 2.17.1) -------------------------------
+test('G30-1/G30-14: every ONE-LINE head shows the summary line with the model (desktop size fold, the short sheet, the one-line sheet), never the dropdown; one model: no model name', () => withClock(() => {
+  const cases = [
+    ['desktop size fold', () => world({ ctlHeight: 900 }), (w) => w.panel],
+    ['sheet, no room for the details', () => sizedLayout(world({ dims: { w: 375, h: 240 } })), (w) => w.container.querySelector('.ov-sheet')],
+    ['one-line sheet (early return)', () => sizedLayout(world({ dims: { w: 812, h: 150 } })), (w) => w.container.querySelector('.ov-sheet')],
+  ];
+  for (const [name, make, host] of cases) {
+    for (const [model, tag] of [['gfswave', 'GFS'], ['ecmwf', 'ECMWF']]) {
+      const w = twoModels(make()); w.ov.model = model; w.ov.render({ state: 'ready' });
+      const h = host(w), head = h.querySelector('.ov-head');
+      assert.equal(all(h, 'select').length, 0, name + ': no dropdown in a one-line head');
+      assert.equal(w.ov.ui.collapsed, true, name); assert.equal(w.ov.ui.modelSel, null, name);
+      assert.equal(text(head.querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST · ' + tag, name + ' / ' + model);
+      assert.ok(headPlay(h), name + ': the play button in the head');
+      w.ov._syncUI();
+      assert.equal(text(head.querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST · ' + tag, name + ': a sync keeps the summary');
+    }
+    const one = make(); one.ov.render({ state: 'ready' });
+    assert.equal(text(host(one).querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST', name + ': one model, no model name');
+  }
+}));
+
+test('G30-14: the viewer\'s own fold names the model too; a pending seek keeps its state after the model', () => withClock(() => {
+  const w = twoModels(world()); w.ov.model = 'ecmwf'; w.ov.collapsed = true; w.ov.render({ state: 'ready' });
+  assert.equal(text(w.panel.querySelector('.ov-title')), 'Wed, Oct. 7, 03:00 PM HST · ECMWF');
+  w.ov.target = 5; w.ov._syncUI();
+  assert.match(text(w.panel.querySelector('.ov-title')), / · ECMWF · loading…$/);
+}));
+
+test('G30-3: with two models the loading panel keeps the dropdown (a slow model can be left); one model: the text alone; a focused dropdown keeps the focus', () => withClock(() => {
+  const w = twoModels(world()), calls = [];
+  w.ov.setModel = (k) => calls.push(k);
+  w.ov.render({ state: 'ready' });
+  w.panel.querySelector('.ov-model-sel').focus();
+  w.ov.render({ state: 'loading' });
+  const sel = w.panel.querySelector('.ov-model-sel');
+  assert.ok(sel, 'the dropdown while loading'); assert.equal(sel.value, 'gfswave');
+  assert.match(text(w.panel), /Loading model frame…/);
+  assert.equal(w.doc.activeElement, sel, 'the focus stays on the dropdown');
+  sel.value = 'ecmwf'; sel.dispatch('change'); assert.deepEqual(calls, ['ecmwf']);
+  const one = world(); one.ov.render({ state: 'loading' });
+  assert.equal(all(one.panel, 'select').length, 0); assert.equal(text(one.panel), 'Loading model frame…');
 }));

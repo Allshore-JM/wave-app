@@ -61,7 +61,11 @@ function world(opts) {
         return Promise.resolve(answer);
       }
       const mm = /(gfswave|ecmwf)\/0p25\/v1\/(\d{10})\/manifest-x\.json$/.exec(url);
-      if (mm) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(w.manifests[mm[1] + '/' + mm[2]] || w.manifests[mm[2]]) });
+      if (mm) {
+        const answer = { ok: true, status: 200, json: () => Promise.resolve(w.manifests[mm[1] + '/' + mm[2]] || w.manifests[mm[2]]) };
+        if (w.holdManifest) return new Promise((res) => { (w.heldManifests = w.heldManifests || []).push(() => res(answer)); });   // released by hand
+        return Promise.resolve(answer);
+      }
       if (w.hang[url] > 0) {                                                 // a download that never answers (until aborted)
         w.hang[url]--; (w.hung = w.hung || []).push({ url, signal: o && o.signal });
         return new Promise((res, rej) => { if (o && o.signal) o.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))); });
@@ -1661,13 +1665,16 @@ test('section 43: a model switch drops the old run at once (aborted downloads, e
   o.setModel('ecmwf');
   assert.equal(o.model, 'ecmwf'); assert.equal(o.manifest, null); assert.equal(o.cache.size(), 0); assert.equal(o.dcache.size(), 0);
   assert.deepEqual(Object.keys(o.inflight), []); assert.equal(o.playing, false); assert.equal(o.frameIndex, null); assert.equal(o.layer._frame, null);
-  assert.equal(JSON.parse(store.getItem(w.I.SESSION_KEY)).model, 'ecmwf', 'saved for the tab');
+  const sv = JSON.parse(store.getItem(w.I.SESSION_KEY));
+  assert.equal(sv.model, 'gfswave', 'nothing of ECMWF has landed: the tab still names GFS (G30-3: a reload is never trapped)');
+  assert.equal(sv.playing, true, 'and keeps the play state (G30-5)');
   await releaseRun(w, A.run);                                                 // the old decodes resolve into the void
   assert.equal(o.cache.size(), 0, 'no run-A frame in the cache'); assert.equal(o.layer._frame, null);
   await landed(w, E.run);
   assert.ok(w.fetches.includes('https://x/ecmwf/0p25/v1/latest.json'), 'the ECMWF pointer'); assert.ok(w.fetches.includes('https://x/' + eptr(E).manifest));
   assert.equal(o.manifest.run, E.run); assert.equal(o.frameIndex, want, 'the requested time, +33 h: E frame ' + want); assert.equal(tagOf(o), 0, 'an ECMWF frame on the map');
   assert.equal(o.playing, true, 'playback resumed'); assert.equal(o._carry, null, 'the carry is spent');
+  assert.equal(JSON.parse(store.getItem(w.I.SESSION_KEY)).model, 'ecmwf', 'saved for the tab when its first frame landed');
   for (const k of o.cache.map.keys()) assert.ok(k.startsWith('ecmwf/' + E.run + '/'), k);
   assert.equal(o._def().cycleMs, 12 * 3.6e6); assert.equal(o._def().staleS, 15 * 3600);
   done(o);
@@ -1812,4 +1819,149 @@ test('section 43: Off during a pending model switch leaves nothing behind', asyn
   assert.equal(o.layer, null); assert.equal(o._carry, null); assert.equal(o.manifest, null);
   await settle(); await w.releaseAll();
   assert.equal(o.cache.size(), 0); assert.equal(Object.keys(o.inflight).length, 0); assert.equal(w.pendingTimers(), 0, w.timerSources().join(' | '));
+});
+
+// ------------------------------- G30 fix round (asset 2.17.1) -------------------------------
+test('G30-2: under reduced motion a model switch keeps the viewer\'s own playback (as Update and a field switch do); a reload restore still does not resume', async () => {
+  const w = world({ reduced: true });
+  const o = await twoModels(w);
+  o.play(); await settle();
+  assert.equal(o.playing, true);
+  o.setModel('ecmwf');
+  await landed(w, E.run);
+  assert.equal(o.manifest.run, E.run); assert.equal(o.playing, true, 'still playing after the switch');
+  done(o);
+});
+
+test('G30-3: a pointer or manifest request that answers nothing ends in the error panel (whose dropdown leads back); the tab still names the old model', async () => {
+  for (const hold of ['holdPointer', 'holdManifest']) {
+    const store = memStore({}), w = world({ storage: store });
+    const o = await twoModels(w);
+    o._loadStallMs = 40;
+    w[hold] = true; o.setModel('ecmwf');
+    await new Promise((r) => setTimeout(r, 90)); await settle(); w[hold] = false;
+    assert.equal(o.last.state, 'error', hold); assert.equal(o.last.message, 'no answer from the frame host');
+    assert.equal(store.read().model, 'gfswave', hold + ': a reload would not be trapped on ECMWF');
+    o.setModel('gfswave');
+    await landed(w, A.run);
+    assert.equal(o.last.state, 'ready'); assert.equal(o.frameIndex, 10, hold + ': back at the carried time'); assert.equal(tagOf(o), 12);
+    done(o);
+  }
+});
+
+test('G30-3: the stall timer never outlives its request (a switch away, Off)', async () => {
+  const w = world({ fakeTimers: true, fakeIntervals: true });
+  const o = await twoModels(w);
+  w.holdPointer = true; o.setModel('ecmwf'); w.holdPointer = false;
+  assert.ok(w.timerSources().some((s) => /no answer from the frame host/.test(s)), 'the watchdog is armed');
+  o.unmount();
+  assert.ok(!w.timerSources().some((s) => /no answer from the frame host/.test(s)), 'Off cleared it');
+  assert.equal(w.pendingTimers(), 0, w.timerSources().join(' | '));
+});
+
+test('G30-7: an ECMWF manifest answering after a switch back is never adopted', async () => {
+  const w = world();
+  const o = await twoModels(w);
+  w.holdManifest = true; o.setModel('ecmwf'); await settle(); w.holdManifest = false;
+  assert.equal(w.heldManifests.length, 1, 'the ECMWF manifest is in flight');
+  o.setModel('gfswave');
+  await landed(w, A.run);
+  w.heldManifests.shift()(); await settle();
+  assert.equal(o.manifest.run, A.run); assert.equal(o.model, 'gfswave'); assert.equal(tagOf(o), 12); assert.equal(o.frameIndex, 10);
+  done(o);
+});
+
+test('G30-15: a round trip returns to the time the viewer chose (the 6-hourly part); once the viewer moves the time a switch starts from there', async () => {
+  const w = world();
+  const o = await twoModels(w);
+  o.seek(51); await settle(); await w.releaseAll();                           // A +153 h = E +165 h: between ECMWF's 162 and 168
+  assert.equal(o.frameIndex, 51);
+  o.setModel('ecmwf'); await landed(w, E.run);
+  assert.ok([162, 168].includes(E.frames[o.frameIndex].step), 'ECMWF lands on its nearest frame');
+  o.setModel('gfswave'); await landed(w, A.run);
+  assert.equal(o.frameIndex, 51, 'back at the chosen time, not at the ECMWF frame\'s time');
+  o.seek(54); await settle(); await w.releaseAll();                           // the viewer moves the time: A +162 h = E +174 h
+  o.setModel('ecmwf'); await landed(w, E.run);
+  assert.equal(E.frames[o.frameIndex].step, 174);
+  o.setModel('gfswave'); await landed(w, A.run);
+  o.play(); await settle(); o.pause();                                        // playing moves the time too
+  const at = o._anchorIndex();
+  o.setModel('ecmwf');
+  assert.equal(o._carry.t, Date.parse(A.frames[at].valid_utc));
+  done(o);
+});
+
+test('G30-6: Update while a switch is pending lands at the carried time', async () => {
+  const w = world();
+  const o = await twoModels(w);
+  w.pointers.ecmwf = { run: E.run, complete: false };
+  o.setModel('ecmwf'); await settle();
+  assert.equal(o.last.state, 'error'); assert.ok(o._carry);
+  o.newerRun = eptr(E);
+  o.update(); await landed(w, E.run);
+  assert.equal(o.manifest.run, E.run); assert.equal(o.frameIndex, 14, 'the carried time, not "now"');
+  done(o);
+});
+
+test('G30-8: a model switch on wind keeps the relief (no look change while nothing is drawn); on wave height the look follows as before', async () => {
+  for (const [field, want] of [['wind', 0], ['hs', 1]]) {
+    const w = world();
+    const o = await twoModels(w);
+    if (field === 'wind') { o.mount('wind'); await settle(); await w.releaseAll(); assert.equal(o.layer.field, 'wind'); }
+    const empty = []; const s0 = o._syncLook;
+    o._syncLook = function () { if (!this.layer || !this.layer.hasFrame()) empty.push(1); return s0.apply(this, arguments); };
+    o.setModel('ecmwf'); await landed(w, E.run);
+    assert.equal(empty.length >= want && (want === 0 ? empty.length === 0 : true), true, field + ': ' + empty.length);
+    assert.equal(o.layer.field, field); assert.equal(tagOf(o), 0);
+    done(o);
+  }
+});
+
+test('G30-10: a switch drops the old run\'s banner, unavailable list and outage count; a hidden tab\'s playback is carried (wasPlaying)', async () => {
+  const w = world(); w.manifests[B.run] = B;
+  const o = await twoModels(w);
+  o.newerRun = ptr(B); o.unavailable[o._key(12)] = true; o.transientFails = 2;
+  o.playing = false; o.wasPlaying = true;                                     // paused by a hidden tab
+  o.setModel('ecmwf');
+  assert.equal(o.newerRun, null, 'no GFS banner under ECMWF'); assert.deepEqual(o.unavailable, {}); assert.equal(o.transientFails, 0);
+  assert.equal(o.wasPlaying, false, 'the old run\'s visibility pause goes with it'); assert.equal(o._carry.playing, true, 'the hidden tab was playing');
+  await landed(w, E.run);
+  assert.equal(o.playing, true, 'a visible tab resumes the carried playback');
+  assert.equal(o.newerRun, null);
+  done(o);
+});
+
+test('G30-15: a step ends a run of switches too; Update starts a new one from its own landing', async () => {
+  const w = world();
+  const o = await twoModels(w);
+  o.seek(51); await settle(); await w.releaseAll();
+  o.setModel('ecmwf'); await landed(w, E.run);
+  o.setModel('gfswave'); await landed(w, A.run);
+  assert.equal(o.frameIndex, 51);
+  o.step(1); await settle(); await w.releaseAll();                            // the viewer moves the time: A 52 (+156 h)
+  assert.equal(o.frameIndex, 52);
+  o.setModel('ecmwf');
+  assert.equal(o._carry.t, Date.parse(A.frames[52].valid_utc), 'the stepped time, not the earlier chosen one');
+  await landed(w, E.run);
+  w.manifests['ecmwf/2026092212'] = Object.assign({}, E, { run: '2026092212', run_utc: '2026-09-22T12:00:00Z',
+    files: Object.assign({}, E.files, { template: 'ecmwf/0p25/v1/2026092212/{res}{field}/f{step:03d}.png' }) });
+  o.newerRun = Object.assign(eptr(E), { run: '2026092212', manifest: 'ecmwf/0p25/v1/2026092212/manifest-x.json' });
+  const before = o._switchT;
+  assert.ok(before !== null);
+  o.update(); await landed(w, '2026092212');
+  assert.equal(o._switchT, null, 'Update moved the time: a later switch starts from its landing');
+  done(o);
+});
+
+test('G30-15: a switch back before the first lands keeps the carried playback (the live state is paused by the switch)', async () => {
+  const w = world();
+  const o = await twoModels(w);
+  o.play(); await settle();
+  o.setModel('ecmwf');
+  assert.equal(o.playing, false); assert.equal(o._carry.playing, true);
+  o.setModel('gfswave');
+  assert.equal(o._carry.playing, true, 'still playing when it lands');
+  await landed(w, A.run); await w.releaseAll();
+  assert.equal(o.model, 'gfswave'); assert.equal(tagOf(o), 12); assert.equal(o.playing, true);
+  done(o);
 });

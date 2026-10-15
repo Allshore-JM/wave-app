@@ -10,6 +10,7 @@ three sea-ice cells (G30a F1: Arctic and Antarctic pack with swh ~0.007 m and a 
 import io
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -41,8 +42,10 @@ ELATEST = P.latest_key(EPRE)
 @pytest.fixture(autouse=True)
 def _aws_up():
     EF._aws_down_until[0] = 0.0
+    EF._aws_slow_until[0] = 0.0
     yield
     EF._aws_down_until[0] = 0.0
+    EF._aws_slow_until[0] = 0.0
 
 
 def _index(stream):
@@ -738,20 +741,43 @@ def test_other_errors_keep_the_short_ladder_and_404_is_not_ready_at_once(monkeyp
     assert sleeps == [] and len(calls) == 1
 
 
-def test_throttling_on_the_mirror_starts_no_cooldown_and_falls_back_two_at_a_time(monkeypatch):
+def test_a_throttled_mirror_read_goes_to_data_ecmwf_int_at_once_and_the_mirror_rests(monkeypatch):
+    # 2026-10-15 12Z: the mirror answered "503 Slow Down" to most reads for over half an hour while data.ecmwf.int
+    # answered at once; waiting out the ladder on the mirror made the build ~3 min a step (killed at 60 min).
     calls = []
 
-    def fake(url, rng=None, other_tries=None, **kw):
-        calls.append(url.split("/")[2])
+    def fake(url, rng=None, other_tries=None, throttle_waits=EF.THROTTLE_WAITS_S):
+        calls.append((url.split("/")[2], tuple(throttle_waits)))
         if url.startswith(EF.S3):
             raise EF.Throttled("503")
         assert EF.HTTP_SLOTS._value <= 1                       # this read holds one of the two slots
         return 206, b"ok"
     monkeypatch.setattr(EF, "_request", fake)
+    clock = [1000.0]
+    monkeypatch.setattr(EF.time, "monotonic", lambda: clock[0])
     assert EF._get("a") == (206, b"ok") and EF._aws_down_until[0] == 0.0       # throttling is not an outage
-    assert EF._get("b") == (206, b"ok") and calls == [
-        "ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "data.ecmwf.int"] * 2
+    assert calls == [("ecmwf-forecasts.s3.eu-central-1.amazonaws.com", ()),      # no ladder on the mirror
+                     ("data.ecmwf.int", EF.THROTTLE_WAITS_S)]                    # the ladder on the second host
+    assert EF._aws_slow_until[0] == 1000.0 + EF.AWS_THROTTLE_COOLDOWN_S
+    calls.clear(); clock[0] += EF.AWS_THROTTLE_COOLDOWN_S - 1
+    assert EF._get("b") == (206, b"ok") and [h for h, _ in calls] == ["data.ecmwf.int"]   # the mirror rests
+    calls.clear(); clock[0] += 2
+    EF._get("c")
+    assert [h for h, _ in calls] == ["ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "data.ecmwf.int"]   # then asked again
     assert EF.HTTP_SLOTS._value == 2
+
+
+def test_a_503_from_the_mirror_costs_no_pause(monkeypatch):
+    sleeps, calls = _script(monkeypatch, [503, (206, b"ok")])
+    assert EF._get("x", rng="bytes=0-1") == (206, b"ok")
+    assert sleeps == [] and [c.split("/")[2] for c in calls] == ["ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "data.ecmwf.int"]
+
+
+def test_throttled_on_both_hosts_is_throttled_after_the_ladder_on_data_ecmwf_int(monkeypatch):
+    sleeps, calls = _script(monkeypatch, [503] * 8)
+    with pytest.raises(EF.Throttled):
+        EF._get("x")
+    assert sleeps == list(EF.THROTTLE_WAITS_S) and len(calls) == 1 + 7
 
 
 def test_a_build_that_stays_throttled_exits_3_without_a_failure_record(monkeypatch, capsys, ecmwf_offline):
@@ -763,6 +789,24 @@ def test_a_build_that_stays_throttled_exits_3_without_a_failure_record(monkeypat
     monkeypatch.setattr(EF, "fetch_records", throttled)
     assert X.main([]) == 3
     assert P.failed_key("2026101412", EPRE) not in c.objects and P.notready_key("2026101412", EPRE) in c.objects
+
+
+def test_a_build_past_its_budget_exits_3_without_a_failure_record(monkeypatch, ecmwf_offline):
+    # a slow build stops quietly before the job's 60-min limit kills it (a kill is a failed run: a mail to the owner)
+    monkeypatch.setattr(EF, "latest_complete_run", lambda: RUN)
+    c = FakeClient(); _env(monkeypatch, c)
+    fetched = []
+    monkeypatch.setattr(EF, "fetch_records", lambda *a: fetched.append(a) or {})
+    monkeypatch.setattr(X, "BUILD_BUDGET_S", -1)
+    assert X.main([]) == 3 and fetched == []
+    assert P.failed_key("2026101412", EPRE) not in c.objects and P.notready_key("2026101412", EPRE) in c.objects
+    assert X._started[0] is None                                     # the clock is main()'s own
+
+
+def test_the_build_budget_is_under_the_job_limit():
+    wf = open(os.path.join(os.path.dirname(__file__), "..", "..", ".github", "workflows", "model-ecmwf.yml"), encoding="utf-8").read()
+    limit = int(re.search(r"timeout-minutes:\s*(\d+)", wf).group(1))
+    assert X.BUILD_BUDGET_S <= (limit - 10) * 60
 
 
 def test_a_throttled_listing_is_no_run_yet(monkeypatch, capsys):

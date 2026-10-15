@@ -508,12 +508,15 @@ retention are shared, so the browser draws both models with the same code.
   records are read at once (`READ_WORKERS`: the mirror is in Frankfurt; a run builds in ~2 min on GitHub's runner).
   The mirror gets two quick tries per read for an outage-type error before data.ecmwf.int; after such a failure it is
   skipped for 10 minutes (`AWS_COOLDOWN_S`). Run discovery lists the mirror only. THROTTLING is normal on both hosts
-  (the mirror's "503 Slow Down", data.ecmwf.int's 429; worst right after a cycle is released): a throttled read is
-  retried on the same host after 5, 10, 20, 30, 45, 60 s (or the server's Retry-After, at most 60 s), never counted as
-  an outage, and data.ecmwf.int is read two at a time. A read or a listing still throttled after that ends the tick
-  quietly (exit 3, `notready/` count, no failure record, no email); the next tick tries again. A real build failure
-  backs off 1 h, up to 6 times (GFS: 3 h, 3 times). The first live 00Z build (2026-10-15 07:36 UTC) failed on 429s
-  before this rule and went live 3 h late.
+  (the mirror's "503 Slow Down", data.ecmwf.int's 429; worst right after a cycle is released) and never counted as an
+  outage. A throttled MIRROR read goes to data.ecmwf.int at once and the mirror rests 5 minutes
+  (`AWS_THROTTLE_COOLDOWN_S`); on data.ecmwf.int (two reads at a time) a throttled read is retried after 5, 10, 20, 30,
+  45, 60 s (or the server's Retry-After, at most 60 s). A read or a listing still throttled after that ends the tick
+  quietly (exit 3, `notready/` count, no failure record, no email); the next tick tries again. A build still fetching 45
+  minutes after the job started (`BUILD_BUDGET_S`) also ends the tick quietly, before the job's 60-minute limit would
+  stop it. A real build failure backs off 1 h, up to 6 times (GFS: 3 h, 3 times). The first live 00Z build
+  (2026-10-15 07:36 UTC) failed on 429s before these rules and went live 3 h late; the 12Z build that day waited out
+  the throttle ladder on the mirror (~3 min a step) and was stopped at 60 minutes.
 - **Calm water and sea ice** (G30a F1): ecWAM keeps the sea-ice pack as wave points with a near-zero height and a
   meaningless "peak period" (up to its 29-s ceiling), where GFS-Wave leaves ice empty. The job leaves `hs`, `tp` and
   `pdir` empty wherever `swh` is below 0.1 m (`ecmwf.mask_calm`; the GFS job's calm line for directions): ~80k cells a

@@ -11,7 +11,7 @@
   'use strict';
 
   var SESSION_KEY = 'allshore.overlay.v1';
-  var STALE_AFTER_S = 9 * 3600;               // pointer older than this -> "stale" banner
+  var STALE_AFTER_S = 9 * 3600;               // pointer older than this -> "stale" banner (the GFS value; per model below)
   // A reload (e.g. another forecast point) restores the valid time and play state only from a recent
   // save, and only when the run still has a frame close to that time; the field itself is restored by
   // the page's bootstrap from the same session key.
@@ -24,6 +24,28 @@
   // coastline-clipped field is shown, " · GSHHG" follows, linking the LGPL notice published beside the
   // coast data (the only credit on the page: the panel carries no caption).
   var ATTRIBUTION = 'Overlay: <a href="https://polar.ncep.noaa.gov/waves/" target="_blank" rel="noopener">NOAA GFS-Wave</a>/GFS';
+  // The models the panel can show (plan section 43). Each publishes the same frame layout under its own bucket prefix
+  // (the GFS job and the ECMWF job share the pipeline); the page says which are offered (opts.models, from the
+  // MODEL_OVERLAY_MODELS setting), in order, the first being the default. cycleMs: a new run every so often ("Next
+  // Update"); staleS: the stale banner (ECMWF's 00Z / 12Z cycles land 12 h apart); table: how the "forecast table is on
+  // run X" note reads (the table is always GFS-Wave / SWAN); attribution: <= 29 visible characters (the GFS rule above).
+  // The ECMWF credit is the short form; the title carries the notice; the manifest's model block has the full text.
+  var MODEL_DEFS = {
+    gfswave: { prefix: 'gfswave/0p25/v1', label: 'GFS-Wave (WAVEWATCH III)', cycleMs: 6 * 3.6e6, staleS: 9 * 3600, table: 'cycle', attribution: ATTRIBUTION },
+    ecmwf: { prefix: 'ecmwf/0p25/v1', label: 'ECMWF IFS wave (ecWAM)', cycleMs: 12 * 3.6e6, staleS: 15 * 3600, table: 'model',
+      attribution: 'Overlay: <a href="https://www.ecmwf.int/en/forecasts/datasets/open-data" target="_blank" rel="noopener" ' +
+        'title="Based on data and products of ECMWF (CC BY 4.0), modified by Allshore Surf: quantised, calm water and sea ice left empty, coast-filled and rendered. ECMWF does not endorse this product.">ECMWF</a> ' +
+        '<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener license">CC BY 4.0</a>' }
+  };
+  var DEFAULT_MODEL = 'gfswave';
+  // The models offered, in the page's order: known keys only, deduplicated, never empty (the default alone).
+  function modelList(list) {
+    var out = [], i;
+    if (Array.isArray(list)) for (i = 0; i < list.length; i++) if (MODEL_DEFS[list[i]] && out.indexOf(list[i]) < 0) out.push(list[i]);
+    return out.length ? out : [DEFAULT_MODEL];
+  }
+  // The model a saved key names, when it is offered; else the first offered.
+  function modelOf(key, list) { return list.indexOf(key) >= 0 ? key : list[0]; }
   // Colour stops over the LEGEND POSITION (0..1). For wave height the position is not linear in the
   // value (KNOTS below): 0-3 m takes about half of the scale, with a hue change every 0.5-1 m.
   var RAMPS = {
@@ -2051,10 +2073,10 @@
   var CYCLE_MS = 6 * 3.6e6;                                // a new model cycle every 6 h
   // When this run went live ("Updated:"), and when the next one is expected ("Next Update:"): one cycle later with this
   // run's own publish lag (published_utc + 6 h), rounded up to 5 minutes; null without a usable publish time.
-  function runTimes(m, now, newer) {
+  function runTimes(m, now, newer, cycleMs) {
     var run = Date.parse(m.run_utc), pub = Date.parse(m.published_utc);
     if (!isFinite(run) || !isFinite(pub) || pub < run) return null;
-    var next = Math.ceil((pub + CYCLE_MS) / 3e5) * 3e5, status = newer ? 'newer' : next <= now ? 'shortly' : 'about';
+    var next = Math.ceil((pub + (cycleMs || CYCLE_MS)) / 3e5) * 3e5, status = newer ? 'newer' : next <= now ? 'shortly' : 'about';
     return { status: status, next: next, updated: localClock(pub, now),
       nextText: status === 'newer' ? 'a newer run is available' : status === 'shortly' ? 'expected shortly' : 'about ' + localClock(next, now) };
   }
@@ -2066,6 +2088,9 @@
     // configured base is the v1 prefix URL, so resolve keys against the bucket root.
     this.base = String(opts.base).replace(/\/+$/, '');
     this.root = this.base.replace(/\/gfswave\/0p25\/v1$/, '');
+    // The models offered and the one in use (the tab's save, when offered); every other model's base is its prefix under
+    // the same bucket root (the GFS base stays the configured one, byte for byte).
+    this.models = modelList(opts.models);
     this.field = null; this.layer = null; this.manifest = null; this.pointer = null; this.pointerAt = 0; this.newerRun = null;
     this.abort = null; this.readout = null; this.frameIndex = null; this.res = null; this.sheet = null; this.last = null;
     this._listeners = []; this._attributed = false; this.collapsed = undefined; this._touch = null; this._onVis = null;
@@ -2079,12 +2104,49 @@
     var s = saved();
     this.relief = null; this._base = 'imagery'; this._reliefFailed = 0;   // opts.baseLayer: the page's imagery (the wind swaps it)
     this.speed = speedOf(s.speed);
+    this.model = modelOf(s.model, this.models);
+    this._carry = null;                                      // the time and play state carried across a model switch
     // Contours (wave height, period) and the particle animation (every field) are always on (owner, 2026-09-26: no
     // checkboxes); the animation stays off under a reduced-motion setting and on runs without direction data.
     this.contours = true;
     this.anim = true;
     this.dcache = new FrameCache(MAX_DECODED); this.flow = null; this.dres = null;   // direction frames and their animator
   }
+  Overlay.prototype._def = function () { return MODEL_DEFS[this.model] || MODEL_DEFS[DEFAULT_MODEL]; };
+  // The pointer / manifest base of the model in use: the default model's is the configured base as given (as before
+  // the dropdown), another model's its prefix under the bucket root.
+  Overlay.prototype._modelBase = function () { return this.model === DEFAULT_MODEL ? this.base : this.root + '/' + this._def().prefix; };
+  // Everything of the run in hand goes: manifest, pointer, banner, caches, the frame on the map and its particles, the
+  // credit. Never one model's picture (or its time, its warnings) under another's name.
+  Overlay.prototype._dropRun = function () {
+    this.manifest = null; this.pointer = null; this.pointerAt = 0; this.newerRun = null; this.n = 0;
+    this.cache.clear(); this.dcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
+    this.transientFails = 0; this._staleShown = false; this.wasPlaying = false;
+    if (this.layer) this.layer.clear();
+    if (this.flow) this.flow.clearData();
+    if (this.readout) this.readout.hidden = true;
+    this._unattribute();
+    this._syncLook();
+  };
+  // The model dropdown (plan section 43): the choice is saved for the tab. Off: the next mount loads the new model.
+  // On: the requested time and the play state are carried (this._carry) into the ONE loading path, mount(): the old
+  // run goes first (abort, drop), so a decode of the old model can never land, be cached or be drawn; the carry is
+  // spent when a frame of the new model lands (a failed load keeps it for Retry, a field switch meanwhile, or a switch
+  // back); a switch while nothing is on the map keeps an earlier carry.
+  Overlay.prototype.setModel = function (key) {
+    if (!MODEL_DEFS[key] || this.models.indexOf(key) < 0 || key === this.model) return;
+    this.model = key;
+    save({ model: key });
+    if (!this.field) { this._dropRun(); return; }
+    var keep = this.frameIndex !== null ? this._anchorIndex() : null;
+    var t = keep !== null && this.manifest && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : null;
+    var playing = !!(this.playing || this.wasPlaying);
+    this.pause();                                            // playGen++: the old tick chain and its paint gate die
+    this.abortAll();
+    this._dropRun();
+    if (t !== null) this._carry = { t: t, playing: playing };
+    this.mount(this.field);
+  };
   // restore: true on the mount the page makes after a reload (the field was saved in this tab); the
   // saved valid time and play state are then reused when they are recent (restoreIndex), by this mount
   // or, if it never lands a frame, by the next one (another field picked meanwhile, Retry) until Off.
@@ -2095,7 +2157,7 @@
     // to the frame on the map, which is cached (G4 B1). Taken before anything aborts. Before any frame is on the map the
     // saved state decides, as before (a reload's restore, its play state included).
     var keep = this.manifest && this.frameIndex !== null ? (fieldName !== this.field ? this._anchorIndex() : this.frameIndex) : null;
-    var self = this, st = this._pendingRestore;
+    var self = this, st = this._pendingRestore, carry = this._carry;
     if (!this.map.getPane('modelPane')) {
       var pane = this.map.createPane('modelPane'); pane.style.zIndex = 250; pane.style.pointerEvents = 'none';
     }
@@ -2134,8 +2196,8 @@
       if (store !== undefined && self.layer._coast !== (store || null)) self.layer.setCoast(store);
       self.n = m.frames.length;
       var rIdx = prevValid === null && st ? restoreIndex(m, st, Date.now()) : null;
-      var idx = prevValid === null ? (rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(keep, self.n - 1) : nearestIndex(m, prevValid);
-      var resume = rIdx !== null && st.playing === true;
+      var idx = prevValid === null ? (carry ? nearestIndex(m, carry.t) : rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(keep, self.n - 1) : nearestIndex(m, prevValid);
+      var resume = carry ? carry.playing : rIdx !== null && st.playing === true;
       self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
       self._ensureFlow();
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
@@ -2155,12 +2217,12 @@
       });
     }).catch(function (err) { self._fail(sig, err); });
   };
-  // Cache / in-flight / unavailable keys carry the run: a decode that outlives an Update can never be
-  // taken for a frame of the new run.
+  // Cache / in-flight / unavailable keys carry the model and the run: a decode that outlives an Update or a model
+  // switch can never be taken for a frame of the new run (both models name their runs YYYYMMDDHH).
   // kind 'dir': the direction frame (pdir / wdir at its own resolution) of the same step.
   Overlay.prototype._key = function (idx, kind) {
     var dir = kind === 'dir';
-    return this.manifest.run + '/' + (dir ? this.dres : this.res) + '/' + (dir ? DIR_FIELDS[this.field] : this.field) + '/' + this.manifest.frames[idx].step;
+    return this.model + '/' + this.manifest.run + '/' + (dir ? this.dres : this.res) + '/' + (dir ? DIR_FIELDS[this.field] : this.field) + '/' + this.manifest.frames[idx].step;
   };
   // unavailable[key] is true (permanent) or a timestamp until which the frame is left alone (transient).
   Overlay.prototype._isUnavailable = function (idx, kind) {
@@ -2273,7 +2335,7 @@
         self.layer.setContours(self._contourCfg(), true);                        // (setFrame redraws with it)
         self.layer.setFrame(frame, half ? m.grid_half : m.grid, field, m.fields[field], self._lut(), m.frames[idx]);
       }
-      self.frameIndex = idx; self._pendingRestore = null;                     // a frame is on the map: the saved state is spent
+      self.frameIndex = idx; self._pendingRestore = null; self._carry = null;   // a frame is on the map: the saved state is spent
       self._persist();
       self._syncLook();
       self._attribute();
@@ -2287,7 +2349,7 @@
   // ?ovdebug=1: the animator's and the scheduler's state in the panel, once a second (the owner's iPad; text only).
   Overlay.prototype._debugText = function () {
     var f = this.flow ? this.flow.debugState() : null, dec = frameDecoder ? (frameDecoder.dead ? 'dead' : (frameDecoder.worker ? 'worker' : 'idle')) : (decoderDead ? 'dead' : 'none');
-    var o = { playing: this.playing, speed: this.speed, frame: this.frameIndex, target: this.target, res: this.res + '/' + this.dres, inflight: Object.keys(this.inflight).length,
+    var o = { model: this.model, playing: this.playing, speed: this.speed, frame: this.frameIndex, target: this.target, res: this.res + '/' + this.dres, inflight: Object.keys(this.inflight).length,
       cache: this.cache.size() + '/' + this.dcache.size(), decoder: dec, hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
     var lines = [], k;
     for (k in o) lines.push(k + ': ' + o[k]);
@@ -2364,7 +2426,7 @@
     var self = this;
     if (this.manifest && Date.now() - this.pointerAt < POINTER_RECHECK_MS) return Promise.resolve(this.manifest);
     var cached = this.manifest;
-    return fetch(this.base + '/latest.json', { signal: sig, cache: 'no-cache' }).then(function (r) {
+    return fetch(this._modelBase() + '/latest.json', { signal: sig, cache: 'no-cache' }).then(function (r) {
       if (!r.ok) throw new Error('latest ' + r.status);
       return r.json();
     }).catch(function (err) {
@@ -2372,6 +2434,7 @@
       if (cached && !(sig && sig.aborted)) { self.pointerAt = Date.now(); return null; }
       throw err;
     }).then(function (ptr) {
+      if (sig && sig.aborted) throw abortError();              // a model switch meanwhile: this pointer is the old model's
       if (ptr === null) return cached;
       if (!ptr || !ptr.complete || !ptr.run || !ptr.manifest || isNaN(Date.parse(ptr.published_utc))) throw new Error('published run is not complete');
       self.pointerAt = Date.now();
@@ -2409,9 +2472,10 @@
   };
   // Every RUN_CHECK_MS while mounted: a newer complete run only raises the "Update" banner.
   Overlay.prototype._checkRun = function () {
-    var self = this;
-    if (!this.manifest) return;
-    fetch(this.base + '/latest.json', { cache: 'no-cache' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (ptr) {
+    var self = this, model = this.model, m = this.manifest;
+    if (!m) return;
+    fetch(this._modelBase() + '/latest.json', { cache: 'no-cache' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (ptr) {
+      if (self.model !== model || self.manifest !== m) return;                // a model switch (or an Update) meanwhile: the answer is the old run's
       if (!ptr || !ptr.complete || !ptr.run || !ptr.manifest || isNaN(Date.parse(ptr.published_utc)) || !self.manifest) return;
       self.pointerAt = Date.now();
       var rerender = false;
@@ -2422,7 +2486,7 @@
       else self._refreshRunLine();                                             // "expected shortly", the weekday after midnight: in place
     }).catch(function () {});
   };
-  Overlay.prototype._isStale = function () { return !!this.pointer && (Date.now() - Date.parse(this.pointer.published_utc)) / 1000 > STALE_AFTER_S; };
+  Overlay.prototype._isStale = function () { return !!this.pointer && (Date.now() - Date.parse(this.pointer.published_utc)) / 1000 > this._def().staleS; };
   // "Update" on the banner: switch to the announced run at the nearest valid time, keep the play state.
   Overlay.prototype.update = function () {
     var self = this, ptr = this.newerRun;
@@ -2466,7 +2530,7 @@
   // is playing (a visibility pause still counts as playing), and when this was written.
   Overlay.prototype._persist = function () {
     if (!this.field || !this.manifest || this.frameIndex === null || !this.manifest.frames[this.frameIndex]) return;
-    save({ field: this.field, t: Date.parse(this.manifest.frames[this.frameIndex].valid_utc),
+    save({ field: this.field, model: this.model, t: Date.parse(this.manifest.frames[this.frameIndex].valid_utc),
       playing: !!(this.playing || this.wasPlaying), at: Date.now() });
   };
   Overlay.prototype._tick = function (gen) {
@@ -2569,9 +2633,10 @@
     return { w: c.clientWidth || s.x, h: c.clientHeight || s.y };
   };
   Overlay.prototype._attribution = function () {
-    if (!(this.layer && this.layer._masked() && this.coast)) return ATTRIBUTION;
+    var text = this._def().attribution;
+    if (!(this.layer && this.layer._masked() && this.coast)) return text;
     var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
-    return ATTRIBUTION + ' · <a href="' + url + '" target="_blank" rel="noopener license">GSHHG</a>';
+    return text + ' · <a href="' + url + '" target="_blank" rel="noopener license">GSHHG</a>';
   };
   Overlay.prototype._attribute = function () {
     var text = this._attribution();
@@ -2665,7 +2730,7 @@
     if (this.lineTimer) { clearInterval(this.lineTimer); this.lineTimer = null; }
     if (this._onVis) { document.removeEventListener('visibilitychange', this._onVis); this._onVis = null; }
     if (this._onHide) { if (window.removeEventListener) window.removeEventListener('pagehide', this._onHide); this._onHide = null; }
-    this._pendingRestore = null; this._pendingFocus = null;
+    this._pendingRestore = null; this._pendingFocus = null; this._carry = null;
     if (this.layer) { this.map.removeLayer(this.layer); this.layer = null; }
     this._syncLook();                                      // the page's imagery back, no blend
     if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
@@ -2948,7 +3013,7 @@
     var ui = this.ui;
     this._runLineAt = Date.now();
     if (!ui || !ui.runText || !this.manifest) return;
-    var t = runTimes(this.manifest, Date.now(), !!this.newerRun);
+    var t = runTimes(this.manifest, Date.now(), !!this.newerRun, this._def().cycleMs);
     this._runStatus = t && t.status;
     ui.runText.nodeValue = ui.runLabel + ' (UTC)' + ui.runTail;
     if (ui.updLine) ui.updLine.hidden = !t;
@@ -3275,6 +3340,7 @@
     if (st.state === 'error') {
       this._say('Overlay unavailable: ' + st.message);
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
+      if (this.models.length > 1) e.appendChild(this._modelSelect());         // a failing model must be escapable
       e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.transientFails = 0; self.mount(self.field); } }));
       host.appendChild(e);
       if (OV_DEBUG) { this.ui = { debug: mk('pre', 'ov-debug') }; host.appendChild(this.ui.debug); this._debugOn(); }   // the readout stays with the error (the owner's iPad)
@@ -3295,10 +3361,13 @@
     btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
     btn.addEventListener('click', function () { self.collapsed = !collapsed; self.render(st); });   // the focus follows (_refocus)
     head.appendChild(btn);
-    var title = mk('span', 'ov-title' + (!collapsed ? ' ov-model' : ''));
+    // Open, with more than one model offered: the head line is the model dropdown (its value is the model in use; its
+    // options the page's list); otherwise a text span (the model's name, or the folded summary line).
+    var modelSel = !collapsed && this.models.length > 1 ? this._modelSelect() : null;
+    var title = modelSel || mk('span', 'ov-title' + (!collapsed ? ' ov-model' : ''));
     head.appendChild(title);
     host.appendChild(head);
-    var ui = this.ui = { host: host, title: title, play: null, speedSel: null, slider: null, unavail: null,
+    var ui = this.ui = { host: host, title: title, modelSel: modelSel, play: null, speedSel: null, slider: null, unavail: null,
       ribbon: null, track: null, rb: null, layout: null, nowText: null, stateEl: null, ribbonW: 0,
       runText: null, updText: null, nextText: null, updLine: null, nextLine: null,
       label: label, modelName: modelName, collapsed: false, compact: compact };
@@ -3306,7 +3375,7 @@
     // it) it sits in the head instead, so playback is never out of reach.
     var playPause = function () { if (self.playing) self.pause(); else self.play(); };
     var headPlay = function () { ui.play = button('ov-play ov-play-head', '▶', 'Play', playPause); head.insertBefore(ui.play, title); };
-    var rt0 = runTimes(m, Date.now(), !!this.newerRun); this._runStatus = rt0 && rt0.status;
+    var rt0 = runTimes(m, Date.now(), !!this.newerRun, this._def().cycleMs); this._runStatus = rt0 && rt0.status;
     if (compact && cap - host.offsetHeight - 8 < 40) {           // a sheet too short for anything but its head line
       head.removeChild(btn); ui.collapsed = true; headPlay(); this._syncUI(); this._layoutSheet(); this._refocus(focusCls); return;
     }
@@ -3340,11 +3409,14 @@
     ui.updLine = line('ov-upd', 'Updated: '); ui.updText = ui.updLine.appendChild(document.createTextNode(''));
     ui.nextLine = line('ov-next', 'Next Update: '); ui.nextText = ui.nextLine.appendChild(document.createTextNode(''));
     var pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
-    ui.runTail = pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run' : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '';
+    // the forecast table is always GFS-Wave (or SWAN): under another model its run is named with its model
+    ui.runTail = pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run'
+      : pc && pc.run && this._def().table === 'model' ? ' — the forecast table is on GFS-Wave run ' + pc.run
+      : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '';
     ui.runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z');
     this._refreshRunLine();
     var age = (Date.now() - Date.parse(this.pointer.published_utc)) / 1000;
-    this._staleShown = age > STALE_AFTER_S;
+    this._staleShown = age > this._def().staleS;
     if (this._staleShown) body.appendChild(mk('div', 'ov-warn', 'Model overlay data is stale (published ' + Math.round(age / 3600) + ' h ago).'));
     if (this.newerRun) {
       var banner = mk('div', 'ov-warn', 'A newer run (' + String(this.newerRun.run).replace(/^(\d{8})(\d{2})$/, '$1 $2Z') + ') is available. ');
@@ -3399,7 +3471,21 @@
   };
   // Keyboard focus through a render (G26 B-2, re-check RC-6): the part of the panel that had it, by its class; its
   // successor in the new panel gets it back (else the play button, else the toggle). Never taken from outside the panel.
-  var FOCUS_PARTS = ['ov-toggle', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-details'];
+  // The model dropdown: a native select (its options are the offered models' labels, in order; the value is the model in
+  // use). A change switches the model (setModel); _syncUI only ever sets its value, never its text.
+  Overlay.prototype._modelSelect = function () {
+    var self = this, sel = mk('select', 'ov-title ov-model ov-model-sel');
+    sel.setAttribute('aria-label', 'Forecast model'); sel.setAttribute('autocomplete', 'off');
+    for (var i = 0; i < this.models.length; i++) {
+      var opt = mk('option', null, MODEL_DEFS[this.models[i]].label); opt.value = this.models[i];
+      if (this.models[i] === this.model) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.value = this.model;
+    sel.addEventListener('change', function () { var v = sel.value; if (v !== self.model) self.setModel(v); else sel.value = self.model; });
+    return sel;
+  };
+  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-details'];
   Overlay.prototype._focusedPart = function () {
     var a = typeof document !== 'undefined' ? document.activeElement : null, hosts = [this.opts.panel, this.sheet];
     if (!a || !a.classList) return null;
@@ -3450,7 +3536,8 @@
     if (ui.speedSel) ui.speedSel.sync();
     // The head line, desktop panel and phone sheet alike: open, the model's name (the time is in the ribbon's label);
     // folded, the one-line summary.
-    ui.title.textContent = ui.collapsed ? this._summaryLine() : ui.modelName;
+    if (ui.modelSel) { if (ui.modelSel.value !== this.model) ui.modelSel.value = this.model; }
+    else ui.title.textContent = ui.collapsed ? this._summaryLine() : ui.modelName;
     var si = this.target !== null ? this.target : this.frameIndex;
     if (ui.ribbon && ui.rb && si !== null) {
       var lb = this._ribbonLabel();
@@ -3502,6 +3589,7 @@
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
       ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk,
       frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes, TimelineState: TimelineState,
+      MODEL_DEFS: MODEL_DEFS, DEFAULT_MODEL: DEFAULT_MODEL, modelList: modelList, modelOf: modelOf, STALE_AFTER_S: STALE_AFTER_S, CYCLE_MS: CYCLE_MS,
       SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
       RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX, RIBBON_AXIS_PX: RIBBON_AXIS_PX,

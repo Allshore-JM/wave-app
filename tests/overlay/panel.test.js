@@ -1012,3 +1012,75 @@ test('G29 re-check R-5 / R-6 (R1, R2): with ?ovdebug=1 the error panel carries t
     assert.equal(w.ov.debugTimer, null, 'the timer stopped itself');
   } finally { if (w.ov.debugTimer) clearInterval(w.ov.debugTimer); }
 });
+
+// ------------------------------- plan section 43: the model dropdown -------------------------------
+const twoModels = (w) => { w.ov.models = ['gfswave', 'ecmwf']; w.ov.model = 'gfswave'; return w; };
+
+test('section 43: with two models the open head line is a native select (the models in the page\'s order, the one in use selected, aria-label "Forecast model"); a change switches the model; _syncUI sets its value only', () => withClock(() => {
+  const w = twoModels(world()), calls = [];
+  w.ov.setModel = (k) => { calls.push(k); w.ov.model = k; };
+  w.ov.render({ state: 'ready' });
+  const head = w.panel.querySelector('.ov-head'), sel = head.children[1];
+  assert.deepEqual(head.children.map((c) => c.className), ['ov-toggle', 'ov-title ov-model ov-model-sel']);
+  assert.equal(sel.tagName, 'SELECT'); assert.equal(sel.getAttribute('aria-label'), 'Forecast model'); assert.equal(sel.getAttribute('autocomplete'), 'off');
+  assert.deepEqual(sel.options.map((o) => [o.value, o.textContent]), [['gfswave', 'GFS-Wave (WAVEWATCH III)'], ['ecmwf', 'ECMWF IFS wave (ecWAM)']]);
+  assert.equal(sel.value, 'gfswave'); assert.equal(w.ov.ui.modelSel, sel);
+  assert.equal(all(w.panel, 'select').length, 1, 'the model dropdown is the only select (no speed dropdown)');
+  sel.value = 'ecmwf'; sel.dispatch('change');
+  assert.deepEqual(calls, ['ecmwf']);
+  const before = sel.options.length;
+  w.ov._syncUI();
+  assert.equal(sel.value, 'ecmwf'); assert.equal(sel.options.length, before, 'the options are untouched (never textContent)');
+  sel.value = 'gfswave'; w.ov._syncUI(); assert.equal(sel.value, 'ecmwf', 'the select follows the model in use');
+  sel.value = 'ecmwf'; sel.dispatch('change'); assert.deepEqual(calls, ['ecmwf'], 'the same key: no switch');
+}));
+
+test('section 43: folded, the head is the summary span (no dropdown); one model: the model name span as before; the sheet gets the select too', () => withClock(() => {
+  const f = twoModels(world()); f.ov.collapsed = true; f.ov.render({ state: 'ready' });
+  const head = f.panel.querySelector('.ov-head'), last = head.children[head.children.length - 1];
+  assert.deepEqual(head.children.map((c) => c.className), ['ov-toggle', 'ov-btn ov-play ov-play-head', 'ov-title'], 'the toggle, the head play button, the summary span');
+  assert.equal(all(f.panel, 'select').length, 0); assert.match(text(last), /^Wed, Oct\. 7, 03:00 PM HST/);
+  const one = world(); one.ov.render({ state: 'ready' });
+  assert.equal(all(one.panel, 'select').length, 0); assert.equal(text(one.panel.querySelector('.ov-head').children[1]), 'GFS-Wave (WAVEWATCH III)');
+  const s = twoModels(sizedLayout(world({ dims: { w: 375, h: 700 } }))); s.ov.render({ state: 'ready' });
+  const sh = s.container.querySelector('.ov-sheet');
+  assert.equal(sh.querySelector('.ov-head').children[1].tagName, 'SELECT', 'the phone sheet carries the dropdown');
+}));
+
+test('section 43: the error panel carries the dropdown before Retry (a failing model must be escapable), and only with two models', () => withClock(() => {
+  const w = twoModels(world()), calls = [];
+  w.ov.model = 'ecmwf'; w.ov.setModel = (k) => calls.push(k);
+  w.ov.render({ state: 'error', message: 'published run is not complete' });
+  const e = w.panel.querySelector('.ov-err');
+  assert.deepEqual(e.children.map((c) => c.tagName), ['#TEXT', 'SELECT', 'BUTTON']);
+  assert.equal(e.children[1].value, 'ecmwf', 'the failing model is the one selected');
+  e.children[1].value = 'gfswave'; e.children[1].dispatch('change');
+  assert.deepEqual(calls, ['gfswave']);
+  const one = world(); one.ov.render({ state: 'error', message: 'x' });
+  assert.equal(all(one.panel, 'select').length, 0);
+}));
+
+test('section 43: under ECMWF the run tail names the table\'s model, the stale line waits 15 h and Next Update is one 12-h cycle on; GFS unchanged', () => withClock(() => {
+  const g = twoModels(world({ pageCycle: { run: '2026100700' } })); g.ov.render({ state: 'ready' });
+  assert.equal(text(g.panel.querySelector('.ov-run')), 'Run: 2026-10-07 06Z (UTC) — the forecast table is on run 2026100700');
+  assert.match(text(g.panel.querySelector('.ov-next')), /^Next Update: about 7:35\sAM HST$/);
+  const e = twoModels(world({ pageCycle: { run: '2026100706' } })); e.ov.model = 'ecmwf'; e.ov.render({ state: 'ready' });
+  assert.equal(text(e.panel.querySelector('.ov-run')), 'Run: 2026-10-07 06Z (UTC) — the forecast table is on GFS-Wave run 2026100706', 'named even when the runs coincide');
+  assert.match(text(e.panel.querySelector('.ov-next')), /^Next Update: about 1:35\sPM HST$/);
+  const s = twoModels(world({ pageCycle: { model: 'SWAN' } })); s.ov.model = 'ecmwf'; s.ov.render({ state: 'ready' });
+  assert.match(text(s.panel.querySelector('.ov-run')), /PacIOOS SWAN run$/);
+  // stale: published 12 h ago -> a GFS banner (9 h), none for ECMWF (15 h)
+  for (const [model, want] of [['gfswave', true], ['ecmwf', false]]) {
+    const w = twoModels(world()); w.ov.model = model; w.ov.pointer = { published_utc: new Date(NOW - 12 * 3.6e6).toISOString() };
+    w.ov.render({ state: 'ready' });
+    assert.equal(all(w.panel, '.ov-warn').some((el) => /stale/.test(el.textContent)), want, model);
+    assert.equal(w.ov._isStale(), want);
+  }
+}));
+
+test('section 43: the focused dropdown keeps the focus through a render', () => withClock(() => {
+  const w = twoModels(world()); w.ov.render({ state: 'ready' });
+  w.panel.querySelector('.ov-model-sel').focus();
+  w.ov.render({ state: 'ready' });
+  assert.equal(w.doc.activeElement, w.panel.querySelector('.ov-model-sel'));
+}));

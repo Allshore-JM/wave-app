@@ -284,6 +284,18 @@ event (5 s at most), a deferred forecast table (3 s at most) and an idle moment,
 meanwhile. Off, a new tab, or a layer picked from Off starts without a saved time; switching layers while the saved
 one waits to be restored keeps the time; a page shown again from the back/forward cache writes its own state back to
 the tab.
+The model dropdown (asset 2.17.0, plan section 43): with `MODEL_OVERLAY_MODELS` set to a comma list of the models that have
+frames in the bucket (`gfswave`, `ecmwf`; the first is the default; unset = the GFS frames alone and no dropdown), the
+open panel's head line is a dropdown of the models and the ECMWF frames (job: the section below) can be chosen. Each model
+has its own prefix under the bucket root, its own pointer, run cadence ("Next Update" one cycle on: 6 h for GFS, 12 h for
+ECMWF), stale line (9 h / 15 h) and map credit ("Overlay: ECMWF CC BY 4.0", the notice in the link's title); the table note
+under ECMWF reads "the forecast table is on GFS-Wave run X". A switch keeps the requested time and the play state: the
+run in hand goes first (downloads aborted, caches and the picture dropped, never one model's picture under another's
+name), the new model loads through the one mount path, and the time and play state are carried to the first frame that
+lands (a failed load keeps them for Retry, a field switch meanwhile or a switch back). Cache keys carry the model and the
+run. The choice is saved for the tab (`model` in the session key beside the field and the speed); a new tab starts on the
+first offered model; a saved model that is no longer offered falls back to it. The error panel carries the dropdown too,
+so a failing model can be left. Frames, scales, legends, contours and particles are the same code for both models.
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.

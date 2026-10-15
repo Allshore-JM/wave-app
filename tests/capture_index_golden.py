@@ -55,6 +55,7 @@ def run_scenarios(app_module):
 
 if __name__ == "__main__":
     os.environ.pop("MODEL_OVERLAYS", None)
+    os.environ.pop("MODEL_OVERLAY_MODELS", None)                            # the overlay's model list (section 43)
     os.environ.pop("COAST_BASE", None)                                      # the map tools' explicit coast address
     os.environ.pop("POINTS_ROOT", None)                                     # forecast points: from the frames address below,
     os.environ["MODEL_FRAMES_BASE"] = "https://frames.example/gfswave/0p25/v1"   # as tests/test_overlay_flag.py replays it

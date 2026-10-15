@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu' };
+const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'] };
 function gatedScript() {
   const tpl = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
   const a = tpl.indexOf('{%- if model_overlays %}'), b = tpl.indexOf('{%- endif %}', a);
@@ -88,7 +88,7 @@ const settle = async () => { for (let i = 0; i < 6; i++) await new Promise((r) =
 // load event, then the (absent) deferred table, then the idle callback
 async function loadedAndIdle(p) { p.load(); p.advance(0); p.idle(); await settle(); }
 
-test('the template block is the whole bootstrap and holds no template syntax after the three substitutions', () => {
+test('the template block is the whole bootstrap and holds no template syntax after the four substitutions', () => {
   assert.ok(SRC.indexOf('Optional model overlays') >= 0 && SRC.indexOf("'allshore.overlay.v1'") >= 0);
   assert.ok(!/\{\{|\{%/.test(SRC), 'template syntax left in the script');
   assert.ok(SRC.indexOf('"https://frames.example/gfswave/0p25/v1"') >= 0 && SRC.indexOf('"9.9.9"') >= 0);
@@ -252,4 +252,11 @@ test('plan section 26: a new tab first opens shows Wave Height at "now", not pla
   assert.equal(p.read().field, ''); assert.equal(p.read().playing, false);
   const q = page({ raw: p.store.get(KEY) });
   assert.equal(q.sel.value, ''); await loadedAndIdle(q); assert.deepEqual(q.log, [], 'the next page of the tab stays Off');
+});
+
+test('section 43: the page hands the offered models to the module (MODEL_OVERLAY_MODELS, rendered as MODELS)', async () => {
+  const p = page({ complete: true });
+  p.sel.userPick('hs'); await settle();
+  assert.deepEqual(p.overlays[0].opts.models, ['gfswave']);
+  assert.ok(SRC.indexOf('var MODELS = ["gfswave"];') >= 0 && SRC.indexOf('models: MODELS') >= 0);
 });

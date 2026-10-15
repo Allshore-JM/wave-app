@@ -136,3 +136,38 @@ Every item of the scope is built:
 Tests: overlay Node 279 (+13), UI 393, pytest 1,133 (the notice); mutants of the fix 21: 20 killed (F17, the aborted check
 before `_adopt` in `_loadManifest`, is a second guard: the watchdog fetch already rejects on abort). Production merged in
 (944f055: throttling hotfix 2).
+
+## Test-site verification of the fix round (2026-10-15, Opus 5.5 MAX)
+`test` @ 3ae688c (2.17.1, a cherry-pick of 6f9ff0e; the G30 record taken from the feature) then 6eeb842 (2.17.2); the site
+files equal the feature's apart from the test-only logo; overlay Node 278/278 on the test branch; served assets = the commit,
+the previous version's URL 404. Headless Edge with the GPU, trusted keys / clicks / touch; scratch `ecmwf/v4/hl`
+(`v3_sizes.js`, `v4_g30fix.js`, `v5_probe.js`, the step-4 `v1_func.js` / `v2b_banner.js` / `w54e.js`).
+- **Found and fixed (2.17.2 @ 6eeb842):** 2.17.1's mouse-pointer dropdown was 20 px where production's head line is 18.4 px, so
+  a 1280x320 map still folded the sheet one size early (no ribbon, no time; production keeps them). Probed on the page, then
+  `height: 18px; box-sizing: border-box` (touch keeps min-height 28 px); CSS pin in panel.test.js.
+- **G30-1 / G30-14, production 2.16.6 vs test 2.17.2 at 15 sizes** (812x375, 667x375, 844x340, 800x360, 740x300, 667x260,
+  568x220, 844x390, 375x812 touch dpr 2; 1280x320/300/260/400/650 and 1920x1080 mouse): 15 of 15 identical — the ribbon
+  where production has it, the same head heights (28 px touch, 18.4 px mouse) and panel / sheet heights to 0.1 px; every
+  one-line head is [play]["Thu, Oct. 15, 01:00 PM HST · GFS"], "· ECMWF" after a switch; no sideways scroll.
+- **G30-3 / G30-5:** ECMWF's pointer held at the network: 30 samples of the loading panel, every one with the dropdown
+  (focused); the error panel "no answer from the frame host" at 15.5 s with the dropdown focused; the tab's save still GFS; a
+  reload restores GFS at the same time. Escape: 3 s into a held load the loading panel's dropdown (trusted ArrowUp) goes back
+  to GFS at the same time.
+- **G30-15:** GFS 21Z (between ECMWF's 6-hourly frames) -> ECMWF 18Z -> GFS 21Z again; a trusted ribbon step then a switch:
+  from the stepped time (00Z on both).
+- **G30-2:** prefers-reduced-motion emulated: a playing switch keeps playing, both ways.
+- **G30-8:** GFS wind on the relief, ECMWF frames slowed 2.5 s: 88 samples (55 with nothing drawn), never the imagery; the
+  relief after the landing.
+- **G30-4 / G30-11 / G30-13:** the credit "Overlay: ECMWF CC BY 4.0 · GSHHG" links `/notice/ecmwf` (new tab); the page 200
+  text/plain, public 1 day, with the copyright (this year), source, licence and link, the changes, ECMWF's disclaimer and no
+  endorsement; aria-label "Overlay model"; on a phone the error panel's Retry is 41x28 px, the dropdown 172x28 px.
+- **Regressions (the step-4 scripts on 2.17.2):** the paused switch (exact time, focus kept, no GFS frame after), decoded
+  frames = the bucket's PNGs (ECMWF and GFS, field and direction), the credit and run lines, playing switches both ways (no
+  frame of the old model started or drawn after the switch), the pending-scrub switch (requested 17Z -> ECMWF 18Z, not near
+  the drawn frame), Off/On, reload, the error path, the phone sheet, a new tab on GFS, the newer-run banner and Update with
+  real runs (ECMWF 00Z served first: no stale line at 12 h; "A newer run (20261015 12Z)"; a trusted Update), a switch while
+  the banner shows: all pass; console clean apart from the injected connection failure.
+- **Timed (GPU, both runs 12Z warm for the test Origin):** ECMWF shark 1080p 8.0 fps 125/135 ms, GFS 125/136, ECMWF phone
+  124/135; 0 skipped, 0 unpainted, fetch/frame 1.02, in flight within the cap; heap live +31.5 / +31.8 / +12.6 MB.
+- Cleanup: the test origin's storage emptied after every script; Edge stopped (profile removed, no process left).
+

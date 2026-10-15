@@ -19,6 +19,7 @@ shape (owner 2026-10-14).
 """
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -104,7 +105,11 @@ class EcmwfSource:
             return None
 
     def fetch(self, run_dt, step):
-        """Both streams at once (each reads its records at once, ecmwf_fetch.READ_WORKERS)."""
+        """Both streams at once (each reads its records at once, ecmwf_fetch.READ_WORKERS). A build still fetching
+        BUILD_BUDGET_S after main() started is given up as not ready (exit 3, the next tick starts again): the job's
+        60-min limit would kill it as a failure (and mail the owner)."""
+        if _started[0] is not None and time.monotonic() - _started[0] > BUILD_BUDGET_S:
+            raise EF.NotReady(f"build still running after {BUILD_BUDGET_S // 60} min (step {step}): giving up for this tick")
         with ThreadPoolExecutor(2) as pool:
             oper = pool.submit(EF.fetch_records, run_dt, step, "oper", EF.OPER_PARAMS)
             wave = EF.fetch_records(run_dt, step, "wave", EF.WAVE_PARAMS)
@@ -123,10 +128,18 @@ class EcmwfSource:
 
 
 SOURCE = EcmwfSource()
+# The build budget (2026-10-15 12Z: a throttled build ran into the job's 60-min limit): 45 min from main(), the rest of
+# the hour for the manifest, the pointer and the runner's own setup.
+BUILD_BUDGET_S = 45 * 60
+_started = [None]
 
 
 def main(argv=None):
-    return R.main(argv, src=SOURCE)
+    _started[0] = time.monotonic()
+    try:
+        return R.main(argv, src=SOURCE)
+    finally:
+        _started[0] = None
 
 
 if __name__ == "__main__":

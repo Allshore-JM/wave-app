@@ -32,11 +32,17 @@ STREAMS = {"wave": WAVE_PARAMS, "oper": OPER_PARAMS}
 AWS_TRIES = 2                                   # quick tries on the mirror for a NON-throttling error before the second host
 AWS_COOLDOWN_S = 600                            # after an AWS outage (not throttling), reads go straight to data.ecmwf.int this long
 _aws_down_until = [0.0]                         # (G30a F6: a failing mirror cost every request the whole ladder: > 60 min a run)
+# A THROTTLED mirror (2026-10-15 12Z: "503 Slow Down" on most reads for over half an hour after the release, while
+# data.ecmwf.int answered at once): the read goes to data.ecmwf.int straight away and the mirror is left alone this long.
+# The 12Z build that waited on the mirror instead published 16 of 85 steps in 37 min (the job's 60-min limit killed it).
+AWS_THROTTLE_COOLDOWN_S = 300
+_aws_slow_until = [0.0]
 # Throttling (2026-10-15: the first 00Z build failed at 07:41 UTC). The mirror answers "503 Slow Down" often (6 of ~20
 # requests in a quiet check), most of all right after a cycle is released; data.ecmwf.int answers 429 to several reads at
-# once. A throttled read is retried on the SAME host with a growing pause (Retry-After honoured, capped), never treated as an
-# outage; reads on data.ecmwf.int go two at a time. A read still throttled after the whole ladder on both hosts raises
-# Throttled, a NotReady: the job exits 3 and the next tick (10 min) starts again, with no failure record and no back-off.
+# once. Throttling is never an outage. A throttled MIRROR read moves to data.ecmwf.int at once (and the mirror rests
+# AWS_THROTTLE_COOLDOWN_S); on data.ecmwf.int (two reads at a time) a throttled read is retried with a growing pause
+# (Retry-After honoured, capped). A read still throttled there after the whole ladder raises Throttled, a NotReady: the
+# job exits 3 and the next tick (10 min) starts again, with no failure record and no back-off.
 THROTTLE_CODES = (429, 503)
 THROTTLE_WAITS_S = (5, 10, 20, 30, 45, 60)      # pauses between throttled tries of one read (~170 s in all)
 RETRY_AFTER_MAX_S = 60
@@ -150,10 +156,10 @@ def _retry_after(err):
         return None
 
 
-def _request(url, rng=None, other_tries=None):
-    """GET with ECMWF's retry policy: 403/404 -> NotReady at once; 429/503 -> retried after THROTTLE_WAITS_S (or the
-    server's Retry-After), then Throttled; any other HTTP or transport error -> `other_tries` tries (default
-    len(OTHER_WAITS_S) + 1), then TransportError."""
+def _request(url, rng=None, other_tries=None, throttle_waits=THROTTLE_WAITS_S):
+    """GET with ECMWF's retry policy: 403/404 -> NotReady at once; 429/503 -> retried after `throttle_waits` (or the
+    server's Retry-After), then Throttled (no waits: Throttled at the first 429/503); any other HTTP or transport error ->
+    `other_tries` tries (default len(OTHER_WAITS_S) + 1), then TransportError."""
     other_tries = len(OTHER_WAITS_S) + 1 if other_tries is None else other_tries
     throttled = others = 0
     while True:
@@ -163,10 +169,10 @@ def _request(url, rng=None, other_tries=None):
             if e.code in (403, 404):
                 raise F.NotReady(f"{e.code} {url}") from None
             if e.code in THROTTLE_CODES:
-                if throttled >= len(THROTTLE_WAITS_S):
+                if throttled >= len(throttle_waits):
                     raise Throttled(f"{url}: HTTP {e.code} (throttled) after {throttled + 1} tries") from None
                 wait = _retry_after(e)
-                time.sleep(THROTTLE_WAITS_S[throttled] if wait is None else wait)
+                time.sleep(throttle_waits[throttled] if wait is None else wait)
                 throttled += 1
                 continue
             last = f"HTTP {e.code}"
@@ -180,20 +186,24 @@ def _request(url, rng=None, other_tries=None):
 
 def _get(rel, rng=None):
     """GET a relative path from the AWS mirror, then from data.ecmwf.int (two reads at a time there); the first error
-    wins when both fail (a 404/403 is NotReady and a throttled read Throttled: the job exits 3). After an AWS outage
-    (not throttling) the mirror is skipped for AWS_COOLDOWN_S (its error is then not seen; the second host's is
-    raised)."""
+    wins when both fail (a 404/403 is NotReady and a throttled read Throttled: the job exits 3). The mirror gets no
+    throttle ladder: a throttled mirror read goes to data.ecmwf.int at once and the mirror is skipped for
+    AWS_THROTTLE_COOLDOWN_S; after an AWS outage it is skipped for AWS_COOLDOWN_S (its error is then not seen; the second
+    host's is raised)."""
     first = None
-    hosts = (HTTP,) if time.monotonic() < _aws_down_until[0] else (S3, HTTP)
+    now = time.monotonic()
+    hosts = (HTTP,) if now < max(_aws_down_until[0], _aws_slow_until[0]) else (S3, HTTP)
     for host in hosts:
         try:
             if host == S3:
-                return _request(f"{host}/{rel}", rng=rng, other_tries=AWS_TRIES)
+                return _request(f"{host}/{rel}", rng=rng, other_tries=AWS_TRIES, throttle_waits=())
             with HTTP_SLOTS:
                 return _request(f"{host}/{rel}", rng=rng)
         except (F.NotReady, F.TransportError) as exc:
             if host == S3 and isinstance(exc, F.TransportError):
                 _aws_down_until[0] = time.monotonic() + AWS_COOLDOWN_S
+            elif host == S3 and isinstance(exc, Throttled):
+                _aws_slow_until[0] = time.monotonic() + AWS_THROTTLE_COOLDOWN_S
             first = first or exc
     raise first
 

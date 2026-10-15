@@ -31,17 +31,21 @@
   // run X" note reads (the table is always GFS-Wave / SWAN); attribution: <= 29 visible characters (the GFS rule above).
   // The ECMWF credit is the short form; the title carries the notice; the manifest's model block has the full text.
   var MODEL_DEFS = {
-    gfswave: { prefix: 'gfswave/0p25/v1', label: 'GFS-Wave (WAVEWATCH III)', cycleMs: 6 * 3.6e6, staleS: 9 * 3600, table: 'cycle', attribution: ATTRIBUTION },
-    ecmwf: { prefix: 'ecmwf/0p25/v1', label: 'ECMWF IFS wave (ecWAM)', cycleMs: 12 * 3.6e6, staleS: 15 * 3600, table: 'model',
-      attribution: 'Overlay: <a href="https://www.ecmwf.int/en/forecasts/datasets/open-data" target="_blank" rel="noopener" ' +
+    gfswave: { prefix: 'gfswave/0p25/v1', label: 'GFS-Wave (WAVEWATCH III)', short: 'GFS', cycleMs: 6 * 3.6e6, staleS: 9 * 3600, table: 'cycle', attribution: ATTRIBUTION },
+    // the credit's "ECMWF" opens the site's notice (/notice/ecmwf: copyright, source, licence, ECMWF's disclaimer, what
+    // Allshore Surf changed; owner, G30-4: a notice, linked from the credit)
+    ecmwf: { prefix: 'ecmwf/0p25/v1', label: 'ECMWF IFS wave (ecWAM)', short: 'ECMWF', cycleMs: 12 * 3.6e6, staleS: 15 * 3600, table: 'model',
+      attribution: 'Overlay: <a href="/notice/ecmwf" target="_blank" rel="noopener" ' +
         'title="Based on data and products of ECMWF (CC BY 4.0), modified by Allshore Surf: quantised, calm water and sea ice left empty, coast-filled and rendered. ECMWF does not endorse this product.">ECMWF</a> ' +
         '<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener license">CC BY 4.0</a>' }
   };
   var DEFAULT_MODEL = 'gfswave';
+  // A model this file knows (own keys only: never 'constructor' or 'toString'; G30-9).
+  function hasModel(key) { return typeof key === 'string' && Object.prototype.hasOwnProperty.call(MODEL_DEFS, key); }
   // The models offered, in the page's order: known keys only, deduplicated, never empty (the default alone).
   function modelList(list) {
     var out = [], i;
-    if (Array.isArray(list)) for (i = 0; i < list.length; i++) if (MODEL_DEFS[list[i]] && out.indexOf(list[i]) < 0) out.push(list[i]);
+    if (Array.isArray(list)) for (i = 0; i < list.length; i++) if (hasModel(list[i]) && out.indexOf(list[i]) < 0) out.push(list[i]);
     return out.length ? out : [DEFAULT_MODEL];
   }
   // The model a saved key names, when it is offered; else the first offered.
@@ -1364,6 +1368,7 @@
   var RUN_CHECK_MS = 30 * 60 * 1000;                         // newer run -> banner only, never an automatic switch
   var RETRY_AFTER_MS = 60 * 1000;                            // a transient fetch failure keeps a frame out for this long
   var MAX_TRANSIENT = 3;                                     // consecutive transient failures -> "unavailable" + Retry
+  var LOAD_STALL_MS = 15000;                                 // a pointer / manifest request silent this long -> the error panel (G30-3)
   var STALL_MS = 5000;                                       // a frame DOWNLOAD slower than this (or 4 intervals) is asked again
   var PAINT_FALLBACK_MS = 250;                               // a playback landing waits for the browser to render it, at most this long
   var LATE_TRIES = 3;                                        // download attempts before a stalling frame counts as a failure
@@ -2106,13 +2111,16 @@
     this.speed = speedOf(s.speed);
     this.model = modelOf(s.model, this.models);
     this._carry = null;                                      // the time and play state carried across a model switch
+    this._switchT = null;                                    // the time the viewer chose, kept across consecutive switches (G30-15)
     // Contours (wave height, period) and the particle animation (every field) are always on (owner, 2026-09-26: no
     // checkboxes); the animation stays off under a reduced-motion setting and on runs without direction data.
     this.contours = true;
     this.anim = true;
     this.dcache = new FrameCache(MAX_DECODED); this.flow = null; this.dres = null;   // direction frames and their animator
   }
-  Overlay.prototype._def = function () { return MODEL_DEFS[this.model] || MODEL_DEFS[DEFAULT_MODEL]; };
+  Overlay.prototype._def = function () { return hasModel(this.model) ? MODEL_DEFS[this.model] : MODEL_DEFS[DEFAULT_MODEL]; };
+  // The wait for a pointer or manifest answer before the error panel (which has the dropdown) shows (G30-3).
+  Overlay.prototype._loadStallMs = LOAD_STALL_MS;
   // The pointer / manifest base of the model in use: the default model's is the configured base as given (as before
   // the dropdown), another model's its prefix under the bucket root.
   Overlay.prototype._modelBase = function () { return this.model === DEFAULT_MODEL ? this.base : this.root + '/' + this._def().prefix; };
@@ -2126,25 +2134,32 @@
     if (this.flow) this.flow.clearData();
     if (this.readout) this.readout.hidden = true;
     this._unattribute();
-    this._syncLook();
+    // Under wind the relief stays while the next model's wind loads (its landing calls _syncLook; Off restores the
+    // imagery): a switch never flashes the satellite map (G30-8).
+    if (this.field !== 'wind') this._syncLook();
   };
   // The model dropdown (plan section 43): the choice is saved for the tab. Off: the next mount loads the new model.
   // On: the requested time and the play state are carried (this._carry) into the ONE loading path, mount(): the old
   // run goes first (abort, drop), so a decode of the old model can never land, be cached or be drawn; the carry is
   // spent when a frame of the new model lands (a failed load keeps it for Retry, a field switch meanwhile, or a switch
   // back); a switch while nothing is on the map keeps an earlier carry.
+  // The time is the one the viewer chose: kept across consecutive switches until the viewer moves the time (seek, step,
+  // play, Update; G30-15), else the requested frame (a pending seek's target, else the frame on the map). The choice is
+  // saved for the tab when the new model's first frame lands (_persist), so a load that never ends cannot trap a reload on
+  // it (G30-3, G30-5); the old model's save keeps the play state meanwhile.
   Overlay.prototype.setModel = function (key) {
-    if (!MODEL_DEFS[key] || this.models.indexOf(key) < 0 || key === this.model) return;
-    this.model = key;
-    save({ model: key });
-    if (!this.field) { this._dropRun(); return; }
+    if (!hasModel(key) || this.models.indexOf(key) < 0 || key === this.model) return;
+    if (!this.field) { this.model = key; save({ model: key }); this._dropRun(); return; }
     var keep = this.frameIndex !== null ? this._anchorIndex() : null;
-    var t = keep !== null && this.manifest && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : null;
-    var playing = !!(this.playing || this.wasPlaying);
-    this.pause();                                            // playGen++: the old tick chain and its paint gate die
+    var shown = keep !== null && this.manifest && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : null;
+    var t = this._switchT !== null ? this._switchT : shown;
+    var playing = this.frameIndex === null && this._carry ? this._carry.playing : !!(this.playing || this.wasPlaying);
+    this.pause();                                            // playGen++: the old tick chain and its paint gate die (saves the OLD model)
+    if (playing && shown !== null) save({ playing: true });  // a reload before the new model lands resumes as it was
+    this.model = key;
     this.abortAll();
     this._dropRun();
-    if (t !== null) this._carry = { t: t, playing: playing };
+    if (t !== null) { this._carry = { t: t, playing: playing }; this._switchT = t; }
     this.mount(this.field);
   };
   // restore: true on the mount the page makes after a reload (the field was saved in this tab); the
@@ -2173,7 +2188,9 @@
     } else if (this.layer.field !== fieldName) {
       this.layer.clear();                                  // never one field's picture under another's label
       if (this.flow) this.flow.clearData();
-      this._syncLook();                                    // nothing drawn: the imagery, the waves' opacity
+      // nothing drawn: the imagery, the waves' opacity; wind -> wind (a model switch) keeps the relief while the next
+      // wind frame loads (G30-8: never a satellite flash under the wind; its landing calls _syncLook)
+      if (fieldName !== 'wind') this._syncLook();
     }
     this.render({ state: 'loading' });
     var prevValid = keep !== null && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : null;
@@ -2210,9 +2227,10 @@
         if (next === null) throw err;
         return self._goto(next, sig);
       }).then(function () {
-        // it was playing before the reload: keep playing, unless the viewer asks for reduced motion;
+        // it was playing before the reload: keep playing, unless the viewer asks for reduced motion (a model switch
+        // carries the viewer's own playback: it keeps playing, as Update and a field switch do; G30-2);
         // in a hidden tab it resumes when the tab is shown (the same path as the visibility pause)
-        if (!resume || sig.aborted || reducedMotion()) return;
+        if (!resume || sig.aborted || (!carry && reducedMotion())) return;
         if (document.hidden) { self.wasPlaying = true; self._persist(); } else self.play();
       });
     }).catch(function (err) { self._fail(sig, err); });
@@ -2426,10 +2444,7 @@
     var self = this;
     if (this.manifest && Date.now() - this.pointerAt < POINTER_RECHECK_MS) return Promise.resolve(this.manifest);
     var cached = this.manifest;
-    return fetch(this._modelBase() + '/latest.json', { signal: sig, cache: 'no-cache' }).then(function (r) {
-      if (!r.ok) throw new Error('latest ' + r.status);
-      return r.json();
-    }).catch(function (err) {
+    return this._fetchJson(this._modelBase() + '/latest.json', { cache: 'no-cache' }, sig, 'latest').catch(function (err) {
       // A failed re-read must not take away a validated run the session already holds: keep it and back off.
       if (cached && !(sig && sig.aborted)) { self.pointerAt = Date.now(); return null; }
       throw err;
@@ -2440,7 +2455,10 @@
       self.pointerAt = Date.now();
       if (self.manifest && self.manifest.run === ptr.run) { self.pointer = ptr; return self.manifest; }
       if (self.manifest && self.frameIndex !== null) { self.newerRun = ptr; return self.manifest; }   // a time position is pinned: banner only
-      return self._fetchManifest(ptr, sig).then(function (m) { self._adopt(m, ptr); return m; });
+      return self._fetchManifest(ptr, sig).then(function (m) {
+        if (sig && sig.aborted) throw abortError();            // a switch meanwhile: never adopt the old load's run (G30-7)
+        self._adopt(m, ptr); return m;
+      });
     });
   };
   Overlay.prototype._loadManifest = (function (inner) {
@@ -2450,16 +2468,35 @@
       var self = this;
       if (this.newerRun && this.manifest && this.frameIndex === null) {
         var ptr = this.newerRun;
-        return this._fetchManifest(ptr, sig).then(function (m) { self._adopt(m, ptr); self.pointerAt = Date.now(); return m; });
+        return this._fetchManifest(ptr, sig).then(function (m) {
+          if (sig && sig.aborted) throw abortError();
+          self._adopt(m, ptr); self.pointerAt = Date.now(); return m;
+        });
       }
       return inner.call(this, sig);
     };
   })(Overlay.prototype._loadManifest);
+  // A JSON answer (pointer, manifest) within _loadStallMs: a request that answers nothing by then is given up as an error
+  // (the error panel has the dropdown and Retry; G30-3). The signal's abort ends it at once; the timer never outlives it.
+  Overlay.prototype._fetchJson = function (url, init, sig, label) {
+    var ms = this._loadStallMs;
+    return new Promise(function (resolve, reject) {
+      var over = false, ctrl = typeof AbortController === 'function' ? new AbortController() : null, timer = null, opts = {}, k;
+      var finish = function (fn, v) { if (over) return; over = true; clearTimeout(timer); if (sig && sig.removeEventListener) sig.removeEventListener('abort', onAbort); fn(v); };
+      var onAbort = function () { if (ctrl) ctrl.abort(); finish(reject, abortError()); };
+      if (sig && sig.aborted) { reject(abortError()); return; }
+      if (sig && sig.addEventListener) sig.addEventListener('abort', onAbort);
+      for (k in init) opts[k] = init[k];
+      if (ctrl) opts.signal = ctrl.signal; else if (sig) opts.signal = sig;
+      timer = setTimeout(function () { if (ctrl) ctrl.abort(); finish(reject, new Error('no answer from the frame host')); }, ms);
+      fetch(url, opts).then(function (r) {
+        if (!r.ok) throw new Error(label + ' ' + r.status);
+        return r.json();
+      }).then(function (v) { finish(resolve, v); }, function (err) { finish(reject, err); });
+    });
+  };
   Overlay.prototype._fetchManifest = function (ptr, sig) {
-    return fetch(this.root + '/' + ptr.manifest, { signal: sig }).then(function (r) {
-      if (!r.ok) throw new Error('manifest ' + r.status);
-      return r.json();
-    }).then(function (m) {
+    return this._fetchJson(this.root + '/' + ptr.manifest, {}, sig, 'manifest').then(function (m) {
       validateManifest(m);
       if (m.run !== ptr.run) throw new Error('manifest/pointer run mismatch');
       return m;
@@ -2492,11 +2529,13 @@
     var self = this, ptr = this.newerRun;
     if (!ptr || !this.field) return;
     var wasPlaying = this.playing, keep = this.frameIndex !== null ? this._anchorIndex() : null; this.pause();   // the requested time while one is loading
-    var prevValid = keep !== null && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : Date.now();
+    var prevValid = keep !== null && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : this._carry ? this._carry.t : Date.now();
+    this._switchT = null;
     this.abortAll(); this.abort = new AbortController();
     var sig = this.abort.signal;
     this.render({ state: 'loading' });
     this._fetchManifest(ptr, sig).then(function (m) {
+      if (sig.aborted) throw abortError();
       if (!m.fields[self.field]) throw new Error('layer "' + self.field + '" is not in run ' + m.run);
       self._adopt(m, ptr); self.pointerAt = Date.now();
       self._ensureFlow();                                  // the new run may or may not carry direction data
@@ -2510,6 +2549,7 @@
   // (a frame that was loading when the user paused and played again) never schedules anything.
   Overlay.prototype.play = function () {
     if (this.playing || !this.manifest || this.frameIndex === null) return;
+    this._switchT = null;                                    // the time moves: a later switch starts from where it is
     this.playing = true; this.dir = 1; this.playGen++; this._due = Date.now(); this._paintClear(); this._syncUI();
     this._prefetch();                                        // the ring grows to the speed's budget at once
     this._syncRate();
@@ -2592,6 +2632,7 @@
     var self = this;
     this.pause();
     if (!this.manifest || this.frameIndex === null) return;
+    this._switchT = null;
     var base = this.target !== null ? this.target : this.frameIndex;
     var next = stepAvailable(base, dir, this.n, function (j) { return self._isUnavailable(j); });
     if (next !== null) { this.dir = dir; this._goto(next).catch(function (err) { self._afterMiss(err); }); }
@@ -2599,6 +2640,7 @@
   Overlay.prototype.seek = function (idx) {
     var self = this;
     if (!this.manifest || this.frameIndex === null) return;
+    this._switchT = null;
     idx = Math.max(0, Math.min(this.n - 1, idx | 0));
     this._goto(idx).catch(function (err) { self._afterMiss(err); });        // unavailable: the drawn frame stays, the hint says so
   };
@@ -2730,7 +2772,7 @@
     if (this.lineTimer) { clearInterval(this.lineTimer); this.lineTimer = null; }
     if (this._onVis) { document.removeEventListener('visibilitychange', this._onVis); this._onVis = null; }
     if (this._onHide) { if (window.removeEventListener) window.removeEventListener('pagehide', this._onHide); this._onHide = null; }
-    this._pendingRestore = null; this._pendingFocus = null; this._carry = null;
+    this._pendingRestore = null; this._pendingFocus = null; this._carry = null; this._switchT = null;
     if (this.layer) { this.map.removeLayer(this.layer); this.layer = null; }
     this._syncLook();                                      // the page's imagery back, no blend
     if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
@@ -3034,7 +3076,8 @@
     if (!m || idx === null || !m.frames[idx]) return '…';
     var fr = m.frames[idx], wd = ribbonFormatter(this.opts.tz).stamp(Date.parse(fr.valid_utc)).weekday;
     var state = !pending ? '' : this._isUnavailable(idx) ? ' · unavailable' : ' · loading…';
-    return (wd ? wd + ', ' : '') + dotMonth(this._validLocal(fr)) + state;
+    var model = this.models.length > 1 ? ' · ' + this._def().short : '';    // which model, when there is a choice (owner, G30-14)
+    return (wd ? wd + ', ' : '') + dotMonth(this._validLocal(fr)) + model + state;
   };
   function button(cls, text, label, onClick) {
     var b = mk('button', 'ov-btn ' + cls, text); b.type = 'button'; b.setAttribute('aria-label', label);
@@ -3336,7 +3379,13 @@
     // Nothing in the panel is a live region (its time changes on every frame while playing); the loading, error and
     // unavailable-frame messages are said once through the overlay's own status node (_say; G26 A-P3-5, re-check RC-7).
     // The focused ribbon's aria-valuetext has the time.
-    if (st.state === 'loading') { host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._say('Loading model frame…'); this._layoutSheet(); this._pendingFocus = focusCls; return; }
+    if (st.state === 'loading') {
+      // with a choice of models the dropdown stays while one loads: a slow or stuck model can be left (G30-3)
+      if (this.models.length > 1) { var lh = mk('div', 'ov-row ov-head'); lh.appendChild(this._modelSelect()); host.appendChild(lh); }
+      host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._say('Loading model frame…'); this._layoutSheet();
+      if (focusCls === 'ov-model-sel' && this.models.length > 1) this._refocus(focusCls, host); else this._pendingFocus = focusCls;
+      return;
+    }
     if (st.state === 'error') {
       this._say('Overlay unavailable: ' + st.message);
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
@@ -3375,9 +3424,16 @@
     // it) it sits in the head instead, so playback is never out of reach.
     var playPause = function () { if (self.playing) self.pause(); else self.play(); };
     var headPlay = function () { ui.play = button('ov-play ov-play-head', '▶', 'Play', playPause); head.insertBefore(ui.play, title); };
+    // A one-line head (folded by size) shows the summary line (the time and, with a choice, the model), not the dropdown:
+    // the model is changed in the open panel (G30-1; the viewer's own fold never builds the dropdown).
+    var oneLine = function () {
+      if (!ui.modelSel) return;
+      var span = mk('span', 'ov-title'); head.insertBefore(span, ui.modelSel); head.removeChild(ui.modelSel);
+      title = ui.title = span; ui.modelSel = null;
+    };
     var rt0 = runTimes(m, Date.now(), !!this.newerRun, this._def().cycleMs); this._runStatus = rt0 && rt0.status;
     if (compact && cap - host.offsetHeight - 8 < 40) {           // a sheet too short for anything but its head line
-      head.removeChild(btn); ui.collapsed = true; headPlay(); this._syncUI(); this._layoutSheet(); this._refocus(focusCls); return;
+      head.removeChild(btn); ui.collapsed = true; oneLine(); headPlay(); this._syncUI(); this._layoutSheet(); this._refocus(focusCls); return;
     }
     var wrap = mk('div', 'ov-body'); wrap.id = 'ovDetails'; host.appendChild(wrap);
     var tr = mk('div', 'ov-row ov-transport');
@@ -3455,6 +3511,7 @@
       ui.collapsed = true; ui.speedSel = null; ui.slider = null;
       ui.ribbon = ui.track = ui.rb = ui.nowText = ui.stateEl = null;
       ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
+      oneLine();
       if (title.classList) title.classList.remove('ov-model');
       headPlay();
     }
@@ -3475,7 +3532,7 @@
   // use). A change switches the model (setModel); _syncUI only ever sets its value, never its text.
   Overlay.prototype._modelSelect = function () {
     var self = this, sel = mk('select', 'ov-title ov-model ov-model-sel');
-    sel.setAttribute('aria-label', 'Forecast model'); sel.setAttribute('autocomplete', 'off');
+    sel.setAttribute('aria-label', 'Overlay model'); sel.setAttribute('autocomplete', 'off');
     for (var i = 0; i < this.models.length; i++) {
       var opt = mk('option', null, MODEL_DEFS[this.models[i]].label); opt.value = this.models[i];
       if (this.models[i] === this.model) opt.selected = true;
@@ -3589,7 +3646,8 @@
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
       ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk,
       frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes, TimelineState: TimelineState,
-      MODEL_DEFS: MODEL_DEFS, DEFAULT_MODEL: DEFAULT_MODEL, modelList: modelList, modelOf: modelOf, STALE_AFTER_S: STALE_AFTER_S, CYCLE_MS: CYCLE_MS,
+      MODEL_DEFS: MODEL_DEFS, DEFAULT_MODEL: DEFAULT_MODEL, modelList: modelList, modelOf: modelOf, hasModel: hasModel, STALE_AFTER_S: STALE_AFTER_S, CYCLE_MS: CYCLE_MS,
+      LOAD_STALL_MS: LOAD_STALL_MS,
       SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
       RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX, RIBBON_AXIS_PX: RIBBON_AXIS_PX,

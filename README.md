@@ -223,14 +223,21 @@ The model dropdown (asset 2.17.0, plan section 43): with `MODEL_OVERLAY_MODELS` 
 frames in the bucket (`gfswave`, `ecmwf`; the first is the default; unset = the GFS frames alone and no dropdown), the
 open panel's head line is a dropdown of the models and the ECMWF frames (job: the section below) can be chosen. Each model
 has its own prefix under the bucket root, its own pointer, run cadence ("Next Update" one cycle on: 6 h for GFS, 12 h for
-ECMWF), stale line (9 h / 15 h) and map credit ("Overlay: ECMWF CC BY 4.0", the notice in the link's title); the table note
-under ECMWF reads "the forecast table is on GFS-Wave run X". A switch keeps the requested time and the play state: the
-run in hand goes first (downloads aborted, caches and the picture dropped, never one model's picture under another's
-name), the new model loads through the one mount path, and the time and play state are carried to the first frame that
-lands (a failed load keeps them for Retry, a field switch meanwhile or a switch back). Cache keys carry the model and the
-run. The choice is saved for the tab (`model` in the session key beside the field and the speed); a new tab starts on the
-first offered model; a saved model that is no longer offered falls back to it. The error panel carries the dropdown too,
-so a failing model can be left. Frames, scales, legends, contours and particles are the same code for both models.
+ECMWF), stale line (9 h / 15 h) and map credit ("Overlay: ECMWF CC BY 4.0"; "ECMWF" opens the site's notice
+`/notice/ecmwf`: copyright, source, the CC BY 4.0 licence and link, ECMWF's disclaimer and what Allshore Surf changed); the
+table note under ECMWF reads "the forecast table is on GFS-Wave run X". A switch keeps the requested time and the play
+state (also under reduced motion: it is the viewer's own playback): the run in hand goes first (downloads aborted, caches
+and the picture dropped, never one model's picture under another's name; under wind the relief stays), the new model loads
+through the one mount path, and the time and play state are carried to the first frame that lands (a failed load keeps
+them for Retry, a field switch meanwhile or a switch back). The time is the one the viewer chose: consecutive switches
+return to it until the viewer moves the time (seek, step, play, Update). Cache keys carry the model and the run. The choice
+is saved for the tab (`model` in the session key beside the field and the speed) when the new model's first frame lands,
+so a load that never ends cannot trap a reload on it; a new tab starts on the first offered model; a saved model that is
+no longer offered falls back to it. The loading and error panels carry the dropdown too, and a pointer or manifest request
+silent for 15 s (`LOAD_STALL_MS`) ends in the error panel, so a slow or failing model can always be left. Every one-line
+head (the viewer's fold, a short map, a phone held sideways) shows the summary line with the model ("Thu, Oct. 15, 11:00
+AM HST · ECMWF"), never the dropdown; the dropdown keeps the head line's height. Frames, scales, legends, contours and
+particles are the same code for both models (asset 2.17.1: the G30 fix round, docs/reviews/overlays-G30-adversarial.md).
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.

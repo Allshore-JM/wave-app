@@ -12,7 +12,10 @@ Runs: only the 00Z and 12Z cycles (owner decision 2026-10-14): they run to +360 
 Completeness: every needed .grib2 AND .index of BOTH streams present in one listing per stream (the GFS rule).
 """
 import json
+import threading
 import time
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -26,9 +29,24 @@ CYCLES = (0, 12)
 WAVE_PARAMS = ("swh", "pp1d", "mwd")
 OPER_PARAMS = ("10u", "10v")
 STREAMS = {"wave": WAVE_PARAMS, "oper": OPER_PARAMS}
-AWS_TRIES = 2                                   # quick tries on the mirror before the second host (F._request: 4, ~20 s of back-off)
-AWS_COOLDOWN_S = 600                            # after an AWS transport failure, reads go straight to data.ecmwf.int this long
+AWS_TRIES = 2                                   # quick tries on the mirror for a NON-throttling error before the second host
+AWS_COOLDOWN_S = 600                            # after an AWS outage (not throttling), reads go straight to data.ecmwf.int this long
 _aws_down_until = [0.0]                         # (G30a F6: a failing mirror cost every request the whole ladder: > 60 min a run)
+# Throttling (2026-10-15: the first 00Z build failed at 07:41 UTC). The mirror answers "503 Slow Down" often (6 of ~20
+# requests in a quiet check), most of all right after a cycle is released; data.ecmwf.int answers 429 to several reads at
+# once. A throttled read is retried on the SAME host with a growing pause (Retry-After honoured, capped), never treated as an
+# outage; reads on data.ecmwf.int go two at a time. A read still throttled after the whole ladder on both hosts raises
+# Throttled, a NotReady: the job exits 3 and the next tick (10 min) starts again, with no failure record and no back-off.
+THROTTLE_CODES = (429, 503)
+THROTTLE_WAITS_S = (5, 10, 20, 30, 45, 60)      # pauses between throttled tries of one read (~170 s in all)
+RETRY_AFTER_MAX_S = 60
+OTHER_WAITS_S = (2, 4)                          # pauses between tries of any other transport error
+HTTP_SLOTS = threading.BoundedSemaphore(2)      # concurrent reads on data.ecmwf.int
+UA = "allshoresurf.com model frames (https://allshoresurf.com)"
+
+
+class Throttled(F.NotReady):
+    """Every try of a read was throttled (429 / 503) on every host: not ready now, try again next tick."""
 READ_WORKERS = 5                                # one step's records are read at once: the mirror is in Frankfurt, each read
                                                 # is latency- and per-connection-bound (sequential: ~8 s a step on the runner)
 
@@ -57,7 +75,7 @@ def needed_keys(run_dt):
 def missing_objects(run_dt):
     present = set()
     for stream in STREAMS:
-        present |= set(F.list_keys(_prefix(run_dt, stream), s3=S3))
+        present |= set(F.list_keys(_prefix(run_dt, stream), s3=S3, request=_request))
     return [k for k in needed_keys(run_dt) if k not in present]
 
 
@@ -116,15 +134,63 @@ def select(index, params, run_dt, step, stream):
     return hits
 
 
+def _open(url, rng=None, timeout=60):
+    """One HTTP attempt -> (status, body). Raises urllib's errors (the retry policy is _request's)."""
+    headers = {"User-Agent": UA}
+    if rng:
+        headers["Range"] = rng
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as r:
+        return r.status, r.read()
+
+
+def _retry_after(err):
+    try:
+        return min(RETRY_AFTER_MAX_S, max(0.0, float(err.headers.get("Retry-After"))))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _request(url, rng=None, other_tries=None):
+    """GET with ECMWF's retry policy: 403/404 -> NotReady at once; 429/503 -> retried after THROTTLE_WAITS_S (or the
+    server's Retry-After), then Throttled; any other HTTP or transport error -> `other_tries` tries (default
+    len(OTHER_WAITS_S) + 1), then TransportError."""
+    other_tries = len(OTHER_WAITS_S) + 1 if other_tries is None else other_tries
+    throttled = others = 0
+    while True:
+        try:
+            return _open(url, rng)
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404):
+                raise F.NotReady(f"{e.code} {url}") from None
+            if e.code in THROTTLE_CODES:
+                if throttled >= len(THROTTLE_WAITS_S):
+                    raise Throttled(f"{url}: HTTP {e.code} (throttled) after {throttled + 1} tries") from None
+                wait = _retry_after(e)
+                time.sleep(THROTTLE_WAITS_S[throttled] if wait is None else wait)
+                throttled += 1
+                continue
+            last = f"HTTP {e.code}"
+        except Exception as e:                       # noqa: BLE001 - timeouts, resets, DNS
+            last = repr(e)
+        others += 1
+        if others >= other_tries:
+            raise F.TransportError(f"{url}: {last} after {others} tries")
+        time.sleep(OTHER_WAITS_S[min(others - 1, len(OTHER_WAITS_S) - 1)])
+
+
 def _get(rel, rng=None):
-    """GET a relative path from the AWS mirror (AWS_TRIES quick tries), then from data.ecmwf.int; the first error wins
-    when both fail (a 404/403 is NotReady: the job exits 3). After an AWS transport failure the mirror is skipped for
-    AWS_COOLDOWN_S (its error is then not seen; the second host's is raised)."""
+    """GET a relative path from the AWS mirror, then from data.ecmwf.int (two reads at a time there); the first error
+    wins when both fail (a 404/403 is NotReady and a throttled read Throttled: the job exits 3). After an AWS outage
+    (not throttling) the mirror is skipped for AWS_COOLDOWN_S (its error is then not seen; the second host's is
+    raised)."""
     first = None
     hosts = (HTTP,) if time.monotonic() < _aws_down_until[0] else (S3, HTTP)
     for host in hosts:
         try:
-            return F._request(f"{host}/{rel}", rng=rng, tries=AWS_TRIES if host == S3 else 4)
+            if host == S3:
+                return _request(f"{host}/{rel}", rng=rng, other_tries=AWS_TRIES)
+            with HTTP_SLOTS:
+                return _request(f"{host}/{rel}", rng=rng)
         except (F.NotReady, F.TransportError) as exc:
             if host == S3 and isinstance(exc, F.TransportError):
                 _aws_down_until[0] = time.monotonic() + AWS_COOLDOWN_S

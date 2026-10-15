@@ -92,8 +92,16 @@ class EcmwfSource:
     steps = EF.STEPS
     schedule = EF.STEP_SCHEDULE
 
+    failed_retry_after_s = 3600         # a build that failed is retried after 1 h (GFS: 3 h), up to 6 times (GFS: 3):
+    failed_max_attempts = 6             # a cycle comes only every 12 h
+
     def latest_complete_run(self):
-        return EF.latest_complete_run()
+        """A throttled listing means "try again next tick", like no run yet (exit 3 or the stale alarm)."""
+        try:
+            return EF.latest_complete_run()
+        except EF.Throttled as exc:
+            print(f"ECMWF listing throttled ({exc}); trying again next tick")
+            return None
 
     def fetch(self, run_dt, step):
         """Both streams at once (each reads its records at once, ecmwf_fetch.READ_WORKERS)."""

@@ -76,7 +76,7 @@ def _request(url, rng=None, timeout=60, tries=4, method="GET"):
     raise TransportError(f"{url}: {last} after {tries} tries")
 
 
-def list_keys(prefix, max_keys=1000, s3=S3):
+def list_keys(prefix, max_keys=1000, s3=S3, request=None):
     """Object keys under a prefix (ListObjectsV2, paginated) of a public bucket (NOAA's by default; the ECMWF job
     passes its own, plan section 43)."""
     keys, token = [], None
@@ -85,7 +85,7 @@ def list_keys(prefix, max_keys=1000, s3=S3):
         if token:
             from urllib.parse import quote
             url += "&continuation-token=" + quote(token, safe="")
-        _status, body = _request(url)
+        _status, body = (request or _request)(url)
         root = ET.fromstring(body)
         keys += [c.find(_NS + "Key").text for c in root.findall(_NS + "Contents")]
         nxt = root.find(_NS + "NextContinuationToken")

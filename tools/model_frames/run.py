@@ -88,6 +88,8 @@ class GfsSource:
     model = MODEL
     prune_legacy = True                                 # the one-time pre-v1 cleanup belongs to the GFS prefix
     stale_fail_h = None                                 # GFS: "no complete run" stays exit 3 whatever the live run's age
+    failed_retry_after_s = FAILED_RETRY_AFTER_S
+    failed_max_attempts = FAILED_MAX_ATTEMPTS
 
     @property
     def steps(self):
@@ -325,10 +327,10 @@ def _skip_failed(store, run, src=GFS):
     rec = store.get_json(P.failed_key(run, src.prefix))
     if not rec:
         return False
-    if rec.get("attempts", 0) >= FAILED_MAX_ATTEMPTS:
+    if rec.get("attempts", 0) >= src.failed_max_attempts:
         return True
     last = datetime.strptime(rec["last_attempt_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - last).total_seconds() < FAILED_RETRY_AFTER_S
+    return (datetime.now(timezone.utc) - last).total_seconds() < src.failed_retry_after_s
 
 
 def main(argv=None, src=GFS):

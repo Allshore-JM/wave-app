@@ -86,13 +86,13 @@ def test_completeness_needs_every_object_of_both_streams_from_the_ecmwf_bucket(m
             prefix = url.split("prefix=", 1)[1].split("&", 1)[0]
             return 200, _listing_xml([k for k in keys if k.startswith(prefix) and k not in missing] + [prefix + "README.txt"])
         return fake
-    monkeypatch.setattr(F, "_request", listing())
+    monkeypatch.setattr(EF, "_request", listing())
     assert EF.run_is_complete(RUN) and len(asked) == 2
     gone = "20261014/12z/ifs/0p25/oper/20261014120000-357h-oper-fc.grib2"
     assert gone not in keys                                          # 357 h is not a step: the 6-hourly tail is 150, 156 .. 360
     for k in ("20261014/12z/ifs/0p25/wave/20261014120000-0h-wave-fc.index",
               "20261014/12z/ifs/0p25/oper/20261014120000-360h-oper-fc.grib2"):
-        monkeypatch.setattr(F, "_request", listing(missing=(k,)))
+        monkeypatch.setattr(EF, "_request", listing(missing=(k,)))
         assert EF.missing_objects(RUN) == [k]
 
 
@@ -160,7 +160,7 @@ def test_fetch_records_reads_the_exact_spans(monkeypatch):
             return 200, _index("wave").encode()
         a, b = (int(x) for x in rng.split("=")[1].split("-"))
         return 206, _grib(b - a + 1)
-    monkeypatch.setattr(F, "_request", fake)
+    monkeypatch.setattr(EF, "_request", fake)
     out = EF.fetch_records(RUN, 150, "wave", EF.WAVE_PARAMS)
     assert set(out) == set(EF.WAVE_PARAMS) and all(len(out[p]) == REC[p]["span"][1] for p in out)
     stem = f"{EF.S3}/{EF.stem(RUN, 150, 'wave')}"
@@ -180,7 +180,7 @@ def test_fetch_records_guards(monkeypatch, answer, match):
             return 200, _index("oper").encode()
         a, b = (int(x) for x in rng.split("=")[1].split("-"))
         return answer(b - a + 1)
-    monkeypatch.setattr(F, "_request", fake)
+    monkeypatch.setattr(EF, "_request", fake)
     with pytest.raises(RuntimeError, match=match):
         EF.fetch_records(RUN, 150, "oper", EF.OPER_PARAMS)
 
@@ -196,7 +196,7 @@ def test_fetch_falls_back_to_data_ecmwf_int_and_keeps_the_aws_error(monkeypatch)
             return 200, _index("oper").encode()
         a, b = (int(x) for x in rng.split("=")[1].split("-"))
         return 206, _grib(b - a + 1)
-    monkeypatch.setattr(F, "_request", aws_down)
+    monkeypatch.setattr(EF, "_request", aws_down)
     assert set(EF.fetch_records(RUN, 150, "oper", EF.OPER_PARAMS)) == {"10u", "10v"}
     assert hosts.count("data.ecmwf.int") == 3 and EF.HTTP == "https://data.ecmwf.int/forecasts"
 
@@ -206,7 +206,7 @@ def test_fetch_falls_back_to_data_ecmwf_int_and_keeps_the_aws_error(monkeypatch)
         if url.startswith(EF.S3):
             raise F.NotReady("404 aws")
         raise F.TransportError("ecmwf 503")
-    monkeypatch.setattr(F, "_request", both_gone)
+    monkeypatch.setattr(EF, "_request", both_gone)
     with pytest.raises(F.NotReady, match="404 aws"):                 # the job exits 3 (not ready), never "failed"
         EF.fetch_records(RUN, 150, "oper", EF.OPER_PARAMS)
 
@@ -548,19 +548,19 @@ def test_the_copyright_year_follows_the_clock(monkeypatch):
 def test_g30a_f6_a_failing_mirror_is_tried_twice_then_skipped_for_ten_minutes(monkeypatch):
     calls = []
 
-    def fake(url, rng=None, tries=4, **kw):
-        calls.append((url.split("/")[2], tries))
+    def fake(url, rng=None, other_tries=None, **kw):
+        calls.append((url.split("/")[2], other_tries))
         if url.startswith(EF.S3):
             raise F.TransportError("aws 503")
         return 200, _index("wave").encode()
-    monkeypatch.setattr(F, "_request", fake)
+    monkeypatch.setattr(EF, "_request", fake)
     clock = [1000.0]
     monkeypatch.setattr(EF.time, "monotonic", lambda: clock[0])
     EF._get("x.index")
-    assert calls == [("ecmwf-forecasts.s3.eu-central-1.amazonaws.com", 2), ("data.ecmwf.int", 4)]
+    assert calls == [("ecmwf-forecasts.s3.eu-central-1.amazonaws.com", 2), ("data.ecmwf.int", None)]
     calls.clear()
     EF._get("y.index")
-    assert calls == [("data.ecmwf.int", 4)]                                            # skipped while down
+    assert calls == [("data.ecmwf.int", None)]                                         # skipped while down
     clock[0] += EF.AWS_COOLDOWN_S + 1
     calls.clear()
     EF._get("z.index")
@@ -575,7 +575,7 @@ def test_an_aws_404_still_tries_the_second_host_without_a_cooldown(monkeypatch):
         if url.startswith(EF.S3):
             raise F.NotReady("404 aws")
         return 200, b"ok"
-    monkeypatch.setattr(F, "_request", fake)
+    monkeypatch.setattr(EF, "_request", fake)
     assert EF._get("a") == (200, b"ok") and EF._get("b") == (200, b"ok")
     assert calls == ["ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "data.ecmwf.int"] * 2
 
@@ -586,7 +586,7 @@ def test_record_trailer_span_cap_and_an_offset_of_zero(monkeypatch):
             return 200, _index("oper").encode()
         a, b = (int(x) for x in rng.split("=")[1].split("-"))
         return 206, _grib(b - a + 1)[:-4] + b"7776"
-    monkeypatch.setattr(F, "_request", fake)
+    monkeypatch.setattr(EF, "_request", fake)
     with pytest.raises(RuntimeError, match="not a single GRIB"):
         EF.fetch_records(RUN, 150, "oper", EF.OPER_PARAMS)
     idx = EF.parse_index(_index("wave"))
@@ -675,3 +675,118 @@ def test_g30a_r4_an_unreadable_pointer_without_a_run_is_a_failure(monkeypatch, c
             raise OSError("R2 down")
     _env(monkeypatch, Broken())
     assert X.main([]) == 1 and "could not read the live pointer (OSError)" in capsys.readouterr().out
+
+
+# ------------------------------- throttling (2026-10-15: the first 00Z build failed on HTTP 429) -----------------------------
+
+class _HTTPErr(Exception):
+    pass
+
+
+def _http_error(code, retry_after=None):
+    import urllib.error
+    hdrs = {"Retry-After": str(retry_after)} if retry_after is not None else {}
+    return urllib.error.HTTPError("u", code, "x", hdrs, None)
+
+
+def _script(monkeypatch, answers):
+    """EF._open answers in order: an int = that HTTP error, an Exception = raised, else (status, body)."""
+    sleeps, calls = [], []
+    monkeypatch.setattr(EF.time, "sleep", sleeps.append)
+
+    def fake(url, rng=None, timeout=60):
+        calls.append(url)
+        a = answers.pop(0)
+        if isinstance(a, int):
+            raise _http_error(a)
+        if isinstance(a, tuple) and isinstance(a[0], int) and a[0] >= 400:
+            raise _http_error(a[0], a[1])
+        if isinstance(a, BaseException):
+            raise a
+        return a
+    monkeypatch.setattr(EF, "_open", fake)
+    return sleeps, calls
+
+
+def test_a_throttled_read_is_retried_on_the_same_host_with_growing_pauses(monkeypatch):
+    sleeps, calls = _script(monkeypatch, [503, 503, 429, (206, b"ok")])
+    assert EF._request("https://h/x") == (206, b"ok")
+    assert sleeps == [5, 10, 20] and len(calls) == 4
+
+
+def test_retry_after_is_honoured_and_capped(monkeypatch):
+    sleeps, _ = _script(monkeypatch, [(503, 7), (429, 900), (200, b"ok")])
+    assert EF._request("https://h/x") == (200, b"ok") and sleeps == [7.0, 60]
+
+
+def test_a_read_throttled_through_the_ladder_is_throttled_a_not_ready(monkeypatch):
+    sleeps, calls = _script(monkeypatch, [503] * 7)
+    with pytest.raises(EF.Throttled) as e:
+        EF._request("https://h/x")
+    assert isinstance(e.value, F.NotReady) and not isinstance(e.value, F.TransportError)
+    assert sleeps == list(EF.THROTTLE_WAITS_S) and len(calls) == 7
+
+
+def test_other_errors_keep_the_short_ladder_and_404_is_not_ready_at_once(monkeypatch):
+    sleeps, _ = _script(monkeypatch, [500, ConnectionResetError("x"), 500])
+    with pytest.raises(F.TransportError, match="after 3 tries"):
+        EF._request("https://h/x")
+    assert sleeps == [2, 4]
+    sleeps, calls = _script(monkeypatch, [404])
+    with pytest.raises(F.NotReady):
+        EF._request("https://h/x")
+    assert sleeps == [] and len(calls) == 1
+
+
+def test_throttling_on_the_mirror_starts_no_cooldown_and_falls_back_two_at_a_time(monkeypatch):
+    calls = []
+
+    def fake(url, rng=None, other_tries=None, **kw):
+        calls.append(url.split("/")[2])
+        if url.startswith(EF.S3):
+            raise EF.Throttled("503")
+        assert EF.HTTP_SLOTS._value <= 1                       # this read holds one of the two slots
+        return 206, b"ok"
+    monkeypatch.setattr(EF, "_request", fake)
+    assert EF._get("a") == (206, b"ok") and EF._aws_down_until[0] == 0.0       # throttling is not an outage
+    assert EF._get("b") == (206, b"ok") and calls == [
+        "ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "data.ecmwf.int"] * 2
+    assert EF.HTTP_SLOTS._value == 2
+
+
+def test_a_build_that_stays_throttled_exits_3_without_a_failure_record(monkeypatch, capsys, ecmwf_offline):
+    monkeypatch.setattr(EF, "latest_complete_run", lambda: RUN)
+    c = FakeClient(); _env(monkeypatch, c)
+
+    def throttled(run_dt, step, stream, params):
+        raise EF.Throttled("429 everywhere")
+    monkeypatch.setattr(EF, "fetch_records", throttled)
+    assert X.main([]) == 3
+    assert P.failed_key("2026101412", EPRE) not in c.objects and P.notready_key("2026101412", EPRE) in c.objects
+
+
+def test_a_throttled_listing_is_no_run_yet(monkeypatch, capsys):
+    def throttled():
+        raise EF.Throttled("503 Slow Down")
+    monkeypatch.setattr(EF, "latest_complete_run", throttled)
+    assert X.main(["--dry-run"]) == 3 and "throttled" in capsys.readouterr().out
+
+
+def test_ecmwf_build_failures_back_off_one_hour_six_times_gfs_three_hours_three_times(monkeypatch):
+    c = FakeClient()
+    store = P.Store(c, "b")
+    now = datetime.now(timezone.utc)
+
+    def rec(prefix, attempts, ago_h):
+        c.objects[P.failed_key("2026101412", prefix)] = {"body": json.dumps(
+            {"attempts": attempts, "last_attempt_utc": (now - timedelta(hours=ago_h)).strftime("%Y-%m-%dT%H:%M:%SZ")}).encode(), "ct": "", "cc": ""}
+    rec(EPRE, 1, 1.1)
+    assert R._skip_failed(store, "2026101412", X.SOURCE) is False                    # retried after an hour
+    rec(EPRE, 5, 1.1)
+    assert R._skip_failed(store, "2026101412", X.SOURCE) is False
+    rec(EPRE, 6, 1.1)
+    assert R._skip_failed(store, "2026101412", X.SOURCE) is True                     # given up after six
+    rec(P.PREFIX, 1, 1.1)
+    assert R._skip_failed(store, "2026101412") is True                               # GFS unchanged: 3 h
+    rec(P.PREFIX, 3, 4)
+    assert R._skip_failed(store, "2026101412") is True                               # and 3 attempts

@@ -268,29 +268,57 @@ def fill_guard(store, run, live, partial, src=GFS):
     return 2
 
 
-def _no_run(src):
-    """G30a F2: a source whose files can move (ECMWF changes its path per resolution: 0p4-beta, then 0p25) must not
-    freeze silently with every workflow run green: once the live run is older than src.stale_fail_h (or there is
-    none), "no complete run" is a failure (exit 1, the workflow fails and GitHub mails the owner); before that it is
-    the usual exit 3. A listing failure already exits 1."""
-    try:
-        latest = _store_from_env().get_json(P.latest_key(src.prefix)) or {}
-    except Exception as exc:                                  # noqa: BLE001  transport: the next tick retries
-        print(f"could not read the live pointer ({exc.__class__.__name__})")
-        return 1
+STALE_ALARM_EVERY_H = 6                 # a stale source fails the workflow at most once in this many hours (GitHub mails each failure)
+
+
+def stale_alarm_key(prefix):
+    return f"{prefix}/stale-alarm.json"
+
+
+def _stale_check(store, src, latest, situation):
+    """G30a F2 / re-check R3: a source whose files can move (ECMWF changes its path per resolution: 0p4-beta, then
+    0p25) or stop must not freeze silently with every workflow run green. When the live run (`latest`, its pointer) was
+    published src.stale_fail_h or more hours ago, or nothing is live, this returns 1 (the workflow fails, GitHub mails the
+    owner) with a summary WARNING -- at most once every STALE_ALARM_EVERY_H (a small record under the prefix; between
+    alarms it returns None and the caller carries on as usual: exit 3 for "no run", 0 for "already live"). It is called
+    both when no complete run is found and when the newest complete run is the live one, so the alarm comes at
+    stale_fail_h, not when the discovery window (48 h) runs out. None while the live run is fresh."""
     try:
         pub = datetime.strptime(latest["published_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         age_h = (datetime.now(timezone.utc) - pub).total_seconds() / 3600
     except (KeyError, TypeError, ValueError):
         age_h = None
     if age_h is not None and age_h < src.stale_fail_h:
-        return 3
+        return None
+    key = stale_alarm_key(src.prefix)
+    rec = store.get_json(key) or {}
+    try:
+        last = datetime.strptime(rec["last_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        if (datetime.now(timezone.utc) - last).total_seconds() < STALE_ALARM_EVERY_H * 3600:
+            print(f"stale source already reported at {rec['last_utc']}; next alarm after {STALE_ALARM_EVERY_H} h")
+            return None
+    except (KeyError, TypeError, ValueError):
+        pass
     what = f"the live run {latest.get('run')} is {age_h:.0f} h old" if age_h is not None else "nothing is live"
-    msg = (f"no complete {src.tag}run found and {what} (limit {src.stale_fail_h} h): the source's files may have "
-           f"moved (a new path or resolution) or stopped")
+    msg = (f"{situation} and {what} (limit {src.stale_fail_h} h): the source's files may have moved (a new path "
+           f"or resolution) or stopped")
     print(msg)
     _summary("WARNING: " + msg)
+    store.put(key, json.dumps({"last_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                               "message": msg}, sort_keys=True).encode(), "application/json", P.POINTER)
     return 1
+
+
+def _no_run(src):
+    """No complete run found (a real run, src.stale_fail_h set): 1 when stale (see _stale_check), else 3. A pointer
+    that cannot be read is a failure (1): the next tick retries."""
+    try:
+        store = _store_from_env()
+        latest = store.get_json(P.latest_key(src.prefix)) or {}
+    except Exception as exc:                                  # noqa: BLE001
+        print(f"could not read the live pointer ({exc.__class__.__name__})")
+        return 1
+    return _stale_check(store, src, latest, f"no complete {src.tag}run found") or 3
 
 
 def _skip_failed(store, run, src=GFS):
@@ -345,6 +373,8 @@ def main(argv=None, src=GFS):
         live = latest.get("run")
         if live == run and latest.get("complete") and not a.force:
             print(f"run {run} already live; nothing to do")
+            if src.stale_fail_h:
+                return _stale_check(store, src, latest, f"no newer {src.tag}run than the live {run}") or 0
             return 0
         if live and run < live and not a.force:
             print(f"newer run {live} is live; not regressing to {run}")

@@ -500,7 +500,10 @@ retention are shared, so the browser draws both models with the same code.
   meaningless "peak period" (up to its 29-s ceiling), where GFS-Wave leaves ice empty. The job leaves `hs`, `tp` and
   `pdir` empty wherever `swh` is below 0.1 m (`ecmwf.mask_calm`; the GFS job's calm line for directions): ~80k cells a
   step, 99 % poleward of 55 degrees, where GFS's frame is empty on 89 % of them; the waves ecWAM carries into the marginal
-  ice zone stay (GFS draws most of the under-ice cells with 0.5 m or more). Wind is never masked.
+  ice zone stay (GFS draws most of the under-ice cells with 0.5 m or more). Wind is never masked. Two limits, both like GFS's:
+  waves of 0.1-0.4 m that ecWAM keeps under the pack can still carry a long period (f072 of run 2026101412: ~900 such
+  cells at 22 s or more, GFS 79), and the coastal fill (one cell from GSHHG land) can paint emptied coastal pack ice
+  from those neighbours (~3-4k cells a step poleward of 60 degrees).
 - **Runs**: the 00Z and 12Z cycles only (owner, 2026-10-14), each to +360 h: every 3 h to +144 h, every 6 h to +360 h
   (85 frames; the manifest's `frame_schedule` `[[0, 144, 3], [150, 360, 6]]`). ECMWF publishes every step of a cycle at
   once about 7 h 34 min after it (00Z at ~07:34 UTC, 12Z at ~19:34 UTC); a run counts as complete only when every
@@ -510,9 +513,11 @@ retention are shared, so the browser draws both models with the same code.
   message is regridded to the site grid (bilinear over present neighbours, nearest for `mwd`) so the frames and the
   client never change (`decode.to_site_grid_ecmwf`). Finer frames would be a client redesign of their own. The object
   paths carry the resolution (`ifs/0p25/`; ECMWF used a new segment per resolution before), so a switch needs the path
-  changed in `ecmwf_fetch._prefix` as well. Until then the job finds no run: once the live ECMWF run is more than 30 h
-  old (`stale_fail_h`; runs land every 12 h) "no complete run" is a FAILURE (exit 1, the workflow fails, GitHub mails),
-  not the usual quiet exit 3 (G30a F2).
+  changed in `ecmwf_fetch._prefix` as well. Until then the job finds no NEW run. Once the live ECMWF run was published
+  30 h ago or more (`stale_fail_h`; runs land every 12 h), whether the job then finds no complete run or only the live
+  one again, the run FAILS (exit 1, the workflow fails, GitHub mails) with a summary WARNING, at most once every 6 h
+  (`STALE_ALARM_EVERY_H`, record `ecmwf/0p25/v1/stale-alarm.json`); between alarms it exits as usual (G30a F2, R3).
+  An unreadable pointer while no run is found is a failure too.
 - **Bucket**: `ecmwf/0p25/v1/` with the GFS layout (`<RUN>/{half/}<field>/fNNN.png`, manifests, stats, `latest.json`,
   `failed/`, `notready/`); the job never reads or writes the GFS prefix and prunes only its own runs (4 kept, ~125 MB
   each). The manifest's `model` block carries ECMWF's notice block (G30a F4): "(c) <year> European Centre for

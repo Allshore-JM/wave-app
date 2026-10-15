@@ -405,7 +405,8 @@ def _man(c, run, stamp, body):
 def test_main_skips_a_live_ecmwf_run_and_never_reads_the_gfs_pointer(monkeypatch, capsys):
     monkeypatch.setattr(EF, "latest_complete_run", lambda: RUN)
     c = FakeClient(); _env(monkeypatch, c)
-    c.objects[ELATEST] = {"body": b'{"run":"2026101412","complete":true}', "ct": "", "cc": ""}
+    fresh = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    c.objects[ELATEST] = {"body": json.dumps({"run": "2026101412", "complete": True, "published_utc": fresh}).encode(), "ct": "", "cc": ""}
     c.objects[P.LATEST_KEY] = {"body": b'{"run":"2026101500","complete":true}', "ct": "", "cc": ""}   # a NEWER gfs run: irrelevant
     n = len(c.log)
     assert X.main([]) == 0 and "already live" in capsys.readouterr().out and len(c.log) == n
@@ -534,7 +535,8 @@ def test_g30a_f4_the_credit_carries_ecmwfs_notice_block():
     year = datetime.now(timezone.utc).year
     assert a.startswith(f"\u00a9 {year} European Centre for Medium-Range Weather Forecasts (ECMWF). Source: www.ecmwf.int.")
     for part in ("Licence: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)", "modified by Allshore Surf",
-                 "does not accept any liability", "does not endorse"):
+                 "ECMWF does not accept any liability whatsoever for any error or omission in the data, their availability, "
+                 "or for any loss or damage arising from their use", "does not endorse this product"):
         assert part in a, part
     assert X.SOURCE.model["fields"] == X.MODEL["fields"] and X.SOURCE.model["licence"] == X.LICENCE
 
@@ -636,3 +638,40 @@ def test_the_temporary_dry_run_plumbing_is_gone():
     """The branch-only runner proof (plan section 43, step 1) never reaches production."""
     assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "ecmwf-dryrun.yml"))
     assert not os.path.exists(os.path.join(ROOT, "tools", "model_frames", "ecmwf_dryrun_check.py"))
+
+
+def _ago(h):
+    return (datetime.now(timezone.utc) - timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_g30a_r3_the_alarm_also_fires_when_the_stale_run_is_still_the_newest(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(EF, "latest_complete_run", lambda: datetime(2026, 10, 13, 0, tzinfo=timezone.utc))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "s.md"))
+    c = FakeClient(); _env(monkeypatch, c)
+    c.objects[ELATEST] = {"body": json.dumps({"run": "2026101300", "complete": True, "published_utc": _ago(29)}).encode(), "ct": "", "cc": ""}
+    assert X.main([]) == 0 and R.stale_alarm_key(EPRE) not in c.objects              # 29 h: a slow day, not an alarm
+    c.objects[ELATEST] = {"body": json.dumps({"run": "2026101300", "complete": True, "published_utc": _ago(31)}).encode(), "ct": "", "cc": ""}
+    assert X.main([]) == 1 and "no newer ECMWF run than the live 2026101300" in capsys.readouterr().out
+    rec = json.loads(c.objects[R.stale_alarm_key(EPRE)]["body"])
+    assert rec["last_utc"] and "31 h old" in rec["message"] and c.objects[R.stale_alarm_key(EPRE)]["cc"] == P.POINTER
+    assert X.main([]) == 0 and "already reported" in capsys.readouterr().out          # throttled: one mail per 6 h, not 36
+    rec["last_utc"] = _ago(R.STALE_ALARM_EVERY_H + 0.1)
+    c.objects[R.stale_alarm_key(EPRE)]["body"] = json.dumps(rec).encode()
+    assert X.main([]) == 1                                                             # and again after 6 h
+    assert not any(k.startswith(P.PREFIX) for k in c.objects)                          # nothing under the GFS prefix
+
+
+def test_g30a_r3_the_no_run_alarm_is_throttled_too(monkeypatch, capsys):
+    monkeypatch.setattr(EF, "latest_complete_run", lambda: None)
+    c = FakeClient(); _env(monkeypatch, c)
+    assert X.main([]) == 1 and X.main([]) == 3 and "already reported" in capsys.readouterr().out
+
+
+def test_g30a_r4_an_unreadable_pointer_without_a_run_is_a_failure(monkeypatch, capsys):
+    monkeypatch.setattr(EF, "latest_complete_run", lambda: None)
+
+    class Broken(FakeClient):
+        def get_object(self, Bucket, Key):
+            raise OSError("R2 down")
+    _env(monkeypatch, Broken())
+    assert X.main([]) == 1 and "could not read the live pointer (OSError)" in capsys.readouterr().out

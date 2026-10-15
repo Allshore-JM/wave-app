@@ -33,10 +33,12 @@ jobs:
         shell: bash -l {0}
         run: |
           set -o pipefail
-          /usr/bin/time -v -o time.txt python tools/model_frames/ecmwf_dryrun_check.py | tee -a "$GITHUB_STEP_SUMMARY"
-          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          # the digest of steps 0/150/360 of run 2026101412 from the same records decoded on the author's machine
+          /usr/bin/time -v -o time.txt python tools/model_frames/ecmwf_dryrun_check.py --run 2026101412 --expect-digest 51dfc04e98c01582 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=ECMWF dry run resources::$(grep -E 'Maximum resident|Elapsed' time.txt | paste -sd ";" -)"
       - name: The job's own entry point, dry run of three steps
         shell: bash -l {0}
         run: |
           set -o pipefail
-          python tools/model_frames/ecmwf.py --dry-run --steps 0,150,360 | tee -a "$GITHUB_STEP_SUMMARY"
+          python tools/model_frames/ecmwf.py --dry-run --steps 0,150,360 | tee out.txt
+          echo "::notice title=ECMWF entry point::$(grep -E 'publishing run|complete' out.txt | paste -sd ";" -)"

@@ -49,14 +49,21 @@ def raw(blob):
     return np.where(v == mv, np.nan, v), info
 
 
+def json_round(d):
+    return ", ".join(f"{k} {v:.4f}" for k, v in d.items())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", default="")
     ap.add_argument("--digest-steps", default="0,150,360")
+    ap.add_argument("--run", default="", help="YYYYMMDDHH (default: the newest complete run)")
+    ap.add_argument("--expect-digest", default="", help="fail unless the digest of --digest-steps equals this")
     a = ap.parse_args()
     import eccodes
     print("eccodes", eccodes.codes_get_api_version())
-    run_dt = EF.latest_complete_run()
+    from datetime import datetime, timezone
+    run_dt = (datetime.strptime(a.run, "%Y%m%d%H").replace(tzinfo=timezone.utc) if a.run else EF.latest_complete_run())
     if run_dt is None:
         print("no complete ECMWF run")
         return 3
@@ -114,7 +121,15 @@ def main():
     print("max |decoded - eccodes| per field:", {k: round(v, 5) for k, v in worst.items()})
     print("pdir mismatch steps:", sum(1 for f in st if f["pdir_mask_mismatch"]), "filled hs:", st[0]["fields"]["hs"]["filled_points"])
     print("stored MB:", round(sum(len(b) for b in c.objects.values()) / 1e6, 1))
-    print(f"DIGEST steps {sorted(want & set(steps))}: {digest.hexdigest()[:16]}")
+    dig = digest.hexdigest()[:16]
+    print(f"DIGEST steps {sorted(want & set(steps))}: {dig}")
+    # annotations: shown on the public run page (GitHub hides logs and summaries from signed-out viewers)
+    print(f"::notice title=ECMWF dry run::run {run} {len(steps)} steps in {build_s:.0f} s; max diff {json_round(worst)}; "
+          f"pdir mismatch steps {sum(1 for f in st if f['pdir_mask_mismatch'])}; stored MB "
+          f"{sum(len(b) for b in c.objects.values()) / 1e6:.1f}; packing {sorted({p for p, _ in packing})}; digest {dig}")
+    if a.expect_digest and dig != a.expect_digest:
+        print(f"::error title=ECMWF digest::{dig} != expected {a.expect_digest}")
+        return 1
     print("OK")
     return 0
 

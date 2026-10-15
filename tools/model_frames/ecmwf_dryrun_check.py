@@ -103,8 +103,8 @@ def main():
             if res == "full":
                 qh = np.array(Image.open(io.BytesIO(c.objects[f"{P.ECMWF_PREFIX}/{run}/half/{name}/f{step:03d}.png"])))
                 assert np.array_equal(qh, q[::2, ::2]), (name, step, "half")
-            if step in want:
-                digest.update(c.objects[key])
+            if step in want:                                        # the decoded codes: PNG bytes depend on the zlib build
+                digest.update(np.ascontiguousarray(q, dtype=np.uint8).tobytes())
             t = truth[name] if res == "full" else truth[name][::2, ::2]
             model = ~np.isnan(t)
             assert np.all(q[model] > 0), (name, step, "a model cell was lost")

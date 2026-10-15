@@ -3910,6 +3910,7 @@
       // the map tools' swell exposure reads the coast data published beside the frames (plan section 29)
       if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshoreCoastBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/coast/v1';
       var VERSION = {{ overlay_asset_version|tojson }};
+      var MODELS = {{ overlay_models|tojson }};                 // the models the panel offers (MODEL_OVERLAY_MODELS); the first is the default
       var TZ = {{ forecast_tz_name|tojson }};
       var lastTz = TZ;                                          // the zone of the forecast on screen (the window announces each one)
       // (the model pane is created by the module on the first selection, so Off leaves the map's panes untouched)
@@ -3994,7 +3995,7 @@
           if (sel.value !== field) return;
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
             base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
-            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION
+            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS
           });
           overlay.mount(field, restore);
         }).catch(function (err) {

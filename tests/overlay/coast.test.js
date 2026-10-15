@@ -1104,7 +1104,7 @@ test('wind coastlines follow the mask: the tier-0 stand-in lines are replaced wh
 });
 
 test('the GSHHG credit follows the masks: wind with coastlines, hs/tp clipped; none without a store', () => {
-  const coast = I.decodeCoast(encodeCoast([[OAHU]], 5)), ctl = (l) => I.Overlay.prototype._attribution.call({ layer: l, coast: { url: 'https://x/static/coast/v1' } });
+  const coast = I.decodeCoast(encodeCoast([[OAHU]], 5)), ctl = (l) => I.Overlay.prototype._attribution.call({ layer: l, coast: { url: 'https://x/static/coast/v1' }, _def: () => I.MODEL_DEFS.gfswave });
   const w = layer(frame(1440, 721, () => 90), GRID, 'wind', WIND);
   assert.ok(!/GSHHG/.test(ctl(w)));
   w.setCoast(fakeStore([coast])); assert.ok(/GSHHG/.test(ctl(w)));

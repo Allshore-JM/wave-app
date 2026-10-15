@@ -16,6 +16,10 @@
 .ov-head { margin-top: 4px; flex-wrap: nowrap; }
 .ov-title { font-weight: 600; min-width: 0; }
 .ov-title.ov-model { font-weight: 500; color: #1d2b4f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the model dropdown (plan section 43): the head line itself when more than one model is offered */
+.ov-ctl select.ov-model-sel, .ov-sheet select.ov-model-sel { flex: 1 1 auto; min-width: 0; max-width: 100%; font: inherit; font-weight: 500; color: #1d2b4f;
+  background: #fff; border: 1px solid #0f8f8c; border-radius: 8px; padding: 2px 6px; margin: 0; }
+.ov-err select.ov-model-sel { display: block; margin: 4px 0; }
 .ov-meta { color: #3f4d6e; margin-top: 2px; }
 .ov-meta b { color: #1d2b4f; font-weight: 600; }
 .ov-model { color: #3f4d6e; }
@@ -87,7 +91,7 @@
 .ov-playing .ov-speed-btn[data-animal="fish"] .ov-animal,
 .ov-playing .ov-speed-btn[data-animal="shark"] .ov-animal { transform-origin: 72% 50%; animation: ov-sway 1.1s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .ov-animal { animation: none !important; } }
-@media (pointer: coarse) { .ov-play, .ov-speed-btn { min-width: 40px; min-height: 40px; } .ov-speed-opt { min-height: 44px; }
+@media (pointer: coarse) { .ov-play, .ov-speed-btn { min-width: 40px; min-height: 40px; } .ov-speed-opt { min-height: 44px; } select.ov-model-sel { min-height: 32px; }
   .ov-head .ov-play { width: 40px; height: 40px; min-width: 40px; }
   .ov-toggle { min-width: 28px; min-height: 28px; } .ov-timeline { height: 24px; } }   /* >= 24 px targets (G26 A-P3-4) */
 

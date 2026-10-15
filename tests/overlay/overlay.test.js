@@ -1155,3 +1155,26 @@ test('section 42: pageQuery joins the live search with the navigation entry\'s o
     global.location = { search: '?a=1' }; setPerf([{ name: 'https://x/?b=2#x?c=3' }]); assert.equal(I.pageQuery(), '?a=1&b=2');
   } finally { global.location = hadLoc; if (hadPerf) Object.defineProperty(global, 'performance', hadPerf); else delete global.performance; }
 });
+
+test('section 43: MODEL_DEFS (prefixes, cycles, stale lines, the 29-character credits), modelList and modelOf, runTimes per cycle', () => {
+  const D = I.MODEL_DEFS;
+  assert.deepEqual(Object.keys(D), ['gfswave', 'ecmwf']); assert.equal(I.DEFAULT_MODEL, 'gfswave');
+  assert.equal(D.gfswave.prefix, 'gfswave/0p25/v1'); assert.equal(D.ecmwf.prefix, 'ecmwf/0p25/v1');
+  assert.equal(D.gfswave.cycleMs, 6 * 3.6e6); assert.equal(D.ecmwf.cycleMs, 12 * 3.6e6);
+  assert.equal(D.gfswave.staleS, I.STALE_AFTER_S); assert.equal(D.gfswave.staleS, 9 * 3600); assert.equal(D.ecmwf.staleS, 15 * 3600);
+  assert.equal(D.gfswave.table, 'cycle'); assert.equal(D.ecmwf.table, 'model');
+  for (const k of Object.keys(D)) {
+    const visible = D[k].attribution.replace(/<[^>]+>/g, '');
+    assert.ok(visible.length <= 29, k + ': ' + visible); assert.ok(visible.startsWith('Overlay: '));
+    assert.ok(!/[<>"]/.test(D[k].label));
+  }
+  assert.match(D.ecmwf.attribution, /creativecommons\.org\/licenses\/by\/4\.0/); assert.match(D.ecmwf.attribution, /modified by Allshore Surf/);
+  assert.deepEqual(I.modelList(['ecmwf', 'gfswave', 'ecmwf', 'x']), ['ecmwf', 'gfswave']);
+  assert.deepEqual(I.modelList(undefined), ['gfswave']); assert.deepEqual(I.modelList([]), ['gfswave']); assert.deepEqual(I.modelList('ecmwf'), ['gfswave']);
+  assert.equal(I.modelOf('ecmwf', ['gfswave', 'ecmwf']), 'ecmwf'); assert.equal(I.modelOf('ecmwf', ['gfswave']), 'gfswave'); assert.equal(I.modelOf(undefined, ['ecmwf']), 'ecmwf');
+  const m = { run_utc: '2026-10-15T00:00:00Z', published_utc: '2026-10-15T07:36:30Z' }, now = Date.parse('2026-10-15T08:00:00Z');
+  assert.equal(I.runTimes(m, now, false).next, Date.parse('2026-10-15T13:40:00Z'), 'the default: one 6-h cycle, rounded up to 5 min');
+  assert.equal(I.runTimes(m, now, false, I.CYCLE_MS).next, Date.parse('2026-10-15T13:40:00Z'));
+  assert.equal(I.runTimes(m, now, false, I.MODEL_DEFS.ecmwf.cycleMs).next, Date.parse('2026-10-15T19:40:00Z'), 'ECMWF: 12 h');
+  assert.equal(I.runTimes(m, Date.parse('2026-10-15T19:41:00Z'), false, I.MODEL_DEFS.ecmwf.cycleMs).status, 'shortly');
+});

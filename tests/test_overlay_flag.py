@@ -32,6 +32,7 @@ GATED = re.compile(r"  <style>\n    /\* Optional model overlays.*?</script>\n\n"
 def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("COAST_BASE", raising=False)
     monkeypatch.delenv("POINTS_ROOT", raising=False)
+    monkeypatch.delenv("MODEL_OVERLAY_MODELS", raising=False)
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
     monkeypatch.setenv("MODEL_FRAMES_BASE", base)
     monkeypatch.setattr(A, "get_station_tz", lambda sid: "Pacific/Honolulu")
@@ -79,6 +80,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert "var VERSION = %s;" % json.dumps(A.OVERLAY_ASSET_VERSION) in body
         assert "version: VERSION" in body                                    # the module serves its illustrations at its version
         assert 'aria-label="Model overlay"' in body and "Model overlay <select" not in body   # no visible heading (section 37)
+        assert 'var MODELS = ["gfswave"];' in body and "models: MODELS" in body              # section 43: the offered models
         assert GATED.search(body) is not None, name
         # removing the gated block gives back exactly the golden page
         assert GATED.sub("", body, count=1) == old["body"], name
@@ -189,7 +191,8 @@ def test_overlay_js_syntax_and_contract_strings():
                    "_summaryLine", "stepAvailable", "ResizeObserver", "'orientationchange'", "ov-play-head", "dotMonth", "_ctlTop", "ovSpeedMenu", "lineTimer",
                    "RIBBON_AXIS_PX", "_focusedPart", "_refocus", "_say", "'status'", "ov-sr", "_pendingFocus", "_focusLost", "hasPointerCapture", "SAY_FIRST_MS", "getComputedStyle",
                    "World_Hillshade", "mixBlendMode", "coastEdges", "_syncLook",
-                   "_paintWait", "PAINT_FALLBACK_MS", "TRAIL_SPAN_MS", "BUSY_STUCK_MS", "maxTouchPoints", "_flowData", "copyWithin", "spent", "ovdecode=worker"):   # section 42 / G29
+                   "_paintWait", "PAINT_FALLBACK_MS", "TRAIL_SPAN_MS", "BUSY_STUCK_MS", "maxTouchPoints", "_flowData", "copyWithin", "spent", "ovdecode=worker",   # section 42 / G29
+                   "MODEL_DEFS", "'ecmwf/0p25/v1'", "ov-model-sel", "'Forecast model'", "setModel", "_dropRun", "_carry", "_modelBase", "CC BY 4.0"):   # section 43
         assert needle in js, needle
     for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row
                  "'live since '", "next update about ", "'First frame'", "'Previous frame'", "'Next frame'", "'Last frame'",
@@ -227,6 +230,7 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
         assert len(got) == 1, name
         want = (src.replace("{{ model_frames_base|tojson }}", json.dumps(base))
                    .replace("{{ overlay_asset_version|tojson }}", json.dumps(A.OVERLAY_ASSET_VERSION))
+                   .replace("{{ overlay_models|tojson }}", json.dumps(["gfswave"]))
                    .replace("{{ forecast_tz_name|tojson }}", json.dumps(tz)))
         assert got[0] == want, name
     node_src = open(os.path.join(HERE, "overlay", "bootstrap.test.js"), encoding="utf-8").read()
@@ -250,3 +254,24 @@ def test_rendered_inline_scripts_parse_with_flag_on(monkeypatch):
                 assert r.returncode == 0, (name, i, r.stderr[:300])
             finally:
                 os.remove(path)
+
+
+def test_overlay_models_env_and_the_page(monkeypatch):
+    """MODEL_OVERLAY_MODELS (section 43): a comma list in order, known names only, deduplicated; unset or useless -> the
+    GFS frames alone. The page carries the list; the flag-off page never does."""
+    _on(monkeypatch)
+    for env, want in (("", ["gfswave"]), ("gfswave", ["gfswave"]), ("gfswave,ecmwf", ["gfswave", "ecmwf"]), (" ECMWF , gfswave,ecmwf ,icon", ["ecmwf", "gfswave"]),
+                      ("icon,", ["gfswave"]), ("ecmwf", ["ecmwf"])):
+        monkeypatch.setenv("MODEL_OVERLAY_MODELS", env)
+        assert A._overlay_models() == want, env
+    assert A.OVERLAY_MODELS == ("gfswave", "ecmwf")
+    monkeypatch.setenv("MODEL_OVERLAY_MODELS", "gfswave,ecmwf")
+    rec = G.run_scenarios(A)
+    for name, old in GOLDEN.items():
+        body = rec[name]["body"]
+        assert 'var MODELS = ["gfswave", "ecmwf"];' in body, name
+        assert GATED.sub("", body, count=1) == old["body"], name
+    monkeypatch.delenv("MODEL_OVERLAYS", raising=False)                     # flag off: the env changes nothing
+    rec = G.run_scenarios(A)
+    for name, old in GOLDEN.items():
+        assert rec[name]["body"] == old["body"], name

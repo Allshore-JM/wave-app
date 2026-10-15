@@ -284,7 +284,8 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.16.6"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.17.0"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
                    # the speed selector's illustrations (plan section 37; the owner's art)
@@ -297,6 +298,17 @@ def _model_overlays_enabled() -> bool:
 
 def _model_frames_base() -> str:
     return os.environ.get("MODEL_FRAMES_BASE", "").rstrip("/")
+
+
+def _overlay_models() -> list:
+    """The models the panel offers, from MODEL_OVERLAY_MODELS (comma list, in order; the first is the default): known
+    names only, deduplicated; unset, empty or all unknown -> the GFS frames alone (no dropdown)."""
+    out = []
+    for name in os.environ.get("MODEL_OVERLAY_MODELS", "").split(","):
+        name = name.strip().lower()
+        if name in OVERLAY_MODELS and name not in out:
+            out.append(name)
+    return out or [OVERLAY_MODELS[0]]
 
 
 def _coast_base() -> str:
@@ -2924,7 +2936,7 @@ def _overlay_context(selected_station, selected_tz, payload):
     if not _model_overlays_enabled() or not base:
         return {"model_overlays": False}
     tz_name = (payload.get("tz_label") if payload else None) or _effective_tz_name(selected_station, selected_tz)
-    return {"model_overlays": True, "model_frames_base": base,
+    return {"model_overlays": True, "model_frames_base": base, "overlay_models": _overlay_models(),
             "overlay_asset_version": OVERLAY_ASSET_VERSION, "forecast_tz_name": tz_name}
 
 

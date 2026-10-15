@@ -609,6 +609,10 @@ test('G26 A-P2-3: a gesture the browser cancels (or a lost capture) is never a t
   assert.match(css, /\.ov-ribbon-pointer \{[^}]*drop-shadow\(1px 0 0 #1d2b4f\) drop-shadow\(-1px 0 0 #1d2b4f\)/);
   assert.match(css, /@media \(pointer: coarse\)[^@]*\.ov-toggle \{ min-width: 28px; min-height: 28px; \} \.ov-timeline \{ height: 24px; \}/);
   assert.match(css, /\.ov-sr \{[^}]*position: absolute; width: 1px; height: 1px;[^}]*overflow: hidden;/);
+  // G30-1: the model dropdown keeps the head line's height (18 px with a mouse, the toggle's 28 px on touch), or the panel
+  // folds one size early (phone landscape and short desktop maps lost the ribbon and the time)
+  assert.match(css, /\.ov-ctl select\.ov-model-sel, \.ov-sheet select\.ov-model-sel \{[^}]*padding: 0 4px;[^}]*height: 18px; box-sizing: border-box;/);
+  assert.match(css, /@media \(pointer: coarse\)[^@]*select\.ov-model-sel \{ min-height: 28px; \} \.ov-retry, \.ov-update \{ min-height: 28px; \}/);
 }));
 
 test('G26 B-1: on a desktop the room for the details is measured from where the control starts in the map (below the brand)', () => withClock(() => {

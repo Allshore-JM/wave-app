@@ -302,7 +302,8 @@ no longer offered falls back to it. The loading and error panels carry the dropd
 silent for 15 s (`LOAD_STALL_MS`) ends in the error panel, so a slow or failing model can always be left. Every one-line
 head (the viewer's fold, a short map, a phone held sideways) shows the summary line with the model ("Thu, Oct. 15, 11:00
 AM HST · ECMWF"), never the dropdown; the dropdown keeps the head line's height. Frames, scales, legends, contours and
-particles are the same code for both models (asset 2.17.1: the G30 fix round, docs/reviews/overlays-G30-adversarial.md).
+particles are the same code for both models (assets 2.17.1-2.17.2: the G30 fix round and its test-site check,
+docs/reviews/overlays-G30-adversarial.md).
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.

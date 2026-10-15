@@ -12,6 +12,7 @@ Runs: only the 00Z and 12Z cycles (owner decision 2026-10-14): they run to +360 
 Completeness: every needed .grib2 AND .index of BOTH streams present in one listing per stream (the GFS rule).
 """
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import fetch as F
@@ -24,6 +25,8 @@ CYCLES = (0, 12)
 WAVE_PARAMS = ("swh", "pp1d", "mwd")
 OPER_PARAMS = ("10u", "10v")
 STREAMS = {"wave": WAVE_PARAMS, "oper": OPER_PARAMS}
+READ_WORKERS = 5                                # one step's records are read at once: the mirror is in Frankfurt, each read
+                                                # is latency- and per-connection-bound (sequential: ~8 s a step on the runner)
 
 NotReady = F.NotReady
 TransportError = F.TransportError
@@ -125,8 +128,8 @@ def fetch_records(run_dt, step, stream, params):
     rel = stem(run_dt, step, stream)
     _status, body = _get(rel + ".index")
     spans = select(parse_index(body.decode()), params, run_dt, step, stream)
-    out = {}
-    for p, (off, n) in spans.items():
+    def read(item):
+        p, (off, n) = item
         status, blob = _get(rel + ".grib2", rng=f"bytes={off}-{off + n - 1}")
         if status != 206:
             raise RuntimeError(f"expected 206 for {p} at step {step}, got {status}")
@@ -134,5 +137,6 @@ def fetch_records(run_dt, step, stream, params):
             raise RuntimeError(f"short/long read for {p}: {len(blob)} != {n}")
         if blob[:4] != b"GRIB" or blob[-4:] != b"7777":
             raise RuntimeError(f"record {p} is not a single GRIB message")
-        out[p] = blob
-    return out
+        return p, blob
+    with ThreadPoolExecutor(min(READ_WORKERS, len(spans))) as pool:
+        return dict(pool.map(read, spans.items()))

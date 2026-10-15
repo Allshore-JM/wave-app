@@ -17,6 +17,7 @@ shape (owner 2026-10-14).
 """
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -59,8 +60,11 @@ class EcmwfSource:
         return EF.latest_complete_run()
 
     def fetch(self, run_dt, step):
-        return (EF.fetch_records(run_dt, step, "wave", EF.WAVE_PARAMS),
-                EF.fetch_records(run_dt, step, "oper", EF.OPER_PARAMS))
+        """Both streams at once (each reads its records at once, ecmwf_fetch.READ_WORKERS)."""
+        with ThreadPoolExecutor(2) as pool:
+            oper = pool.submit(EF.fetch_records, run_dt, step, "oper", EF.OPER_PARAMS)
+            wave = EF.fetch_records(run_dt, step, "wave", EF.WAVE_PARAMS)
+            return wave, oper.result()
 
     def decode(self, records, run_dt, step):
         """{hs, tp, pdir, wind, wdir} on the site grid (the GFS job's names and order)."""

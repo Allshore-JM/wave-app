@@ -3,13 +3,15 @@
 Real fixtures (tests/capture_ecmwf_fixtures.py, run 2026101412 step 150): the two .index files and, per record, the
 eccodes metadata and the values at a few cells. They pin the record identity (surface level 0, not GFS's 1), the
 grid (columns from 180 E = -180 E, so NO roll: central Oahu's land cell sits at the same (row, col) as in the GFS
-frames), the index spans, and the FROM convention of mwd (trade-wind swell south of Oahu from the ENE, as the wind).
+frames), the index spans, the FROM convention of mwd (trade-wind swell south of Oahu from the ENE, as the wind) and
+three sea-ice cells (G30a F1: Arctic and Antarctic pack with swh ~0.007 m and a 26-29 s "peak period", and waves of
+2.1 m under thin ice in the marginal ice zone).
 """
 import io
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -34,6 +36,13 @@ META = json.load(open(os.path.join(FIX, "meta_150.json"), encoding="utf-8"))
 REC = META["records"]
 EPRE = P.ECMWF_PREFIX
 ELATEST = P.latest_key(EPRE)
+
+
+@pytest.fixture(autouse=True)
+def _aws_up():
+    EF._aws_down_until[0] = 0.0
+    yield
+    EF._aws_down_until[0] = 0.0
 
 
 def _index(stream):
@@ -190,6 +199,8 @@ def test_fetch_falls_back_to_data_ecmwf_int_and_keeps_the_aws_error(monkeypatch)
     monkeypatch.setattr(F, "_request", aws_down)
     assert set(EF.fetch_records(RUN, 150, "oper", EF.OPER_PARAMS)) == {"10u", "10v"}
     assert hosts.count("data.ecmwf.int") == 3 and EF.HTTP == "https://data.ecmwf.int/forecasts"
+
+    EF._aws_down_until[0] = 0.0                                      # the AWS failure above started the cooldown
 
     def both_gone(url, rng=None, **kw):
         if url.startswith(EF.S3):
@@ -475,3 +486,153 @@ def test_the_ecmwf_workflow_mirrors_the_frames_workflow():
     assert tests.count('".github/workflows/model-ecmwf.yml"') == 2
     cfg = open(os.path.join(ROOT, "tools", "model_frames", "trigger", "wrangler.jsonc"), encoding="utf-8").read()
     assert '"GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml"' in cfg
+
+
+# ------------------------------- G30a fix round -----------------------------------
+
+def _cell(p, r, c):
+    return {(rr, cc): v for rr, cc, v in REC[p]["cells"]}[(r, c)]
+
+
+def test_g30a_f1_sea_ice_noise_is_left_empty_and_waves_under_thin_ice_are_kept():
+    cells = [(22, 1329), (638, 630), (596, 1042), (284, 87), (300, 0)]
+    grids = {n: np.full((721, 1440), np.nan, np.float32) for n in ("hs", "tp", "pdir")}
+    for r, c in cells:
+        grids["hs"][r, c], grids["tp"][r, c], grids["pdir"][r, c] = _cell("swh", r, c), _cell("pp1d", r, c), _cell("mwd", r, c)
+    grids["wind"] = np.full((721, 1440), 7.0, np.float32)
+    assert _cell("pp1d", 22, 1329) > 22 and _cell("swh", 22, 1329) < 0.01             # the noise the reviewer found
+    assert X.mask_calm(grids) == 2
+    for r, c in ((22, 1329), (638, 630)):                                              # the pack: empty, like GFS
+        assert np.isnan(grids["hs"][r, c]) and np.isnan(grids["tp"][r, c]) and np.isnan(grids["pdir"][r, c])
+    for r, c in ((596, 1042), (284, 87), (300, 0)):                                    # real waves (incl. 2.1 m under ice)
+        assert grids["hs"][r, c] == np.float32(_cell("swh", r, c)) and grids["tp"][r, c] == np.float32(_cell("pp1d", r, c))
+    assert np.all(grids["wind"] == 7.0) and all(grids[n].dtype == np.float32 for n in ("hs", "tp", "pdir"))
+
+
+def test_mask_calm_rule_edges_and_direction_wrap():
+    hs = np.array([[0.0999, 0.1, np.nan, 3.0, 2.0]], np.float32)
+    g = {"hs": hs, "tp": np.full((1, 5), 9.0, np.float32), "pdir": np.array([[10, 20, 30, 360.0002, -0.5]], np.float32)}
+    assert X.mask_calm(g) == 1                                                         # 0.0999 emptied; NaN was already empty
+    assert np.isnan(g["hs"][0, 0]) and g["hs"][0, 1] == np.float32(0.1) and np.isnan(g["tp"][0, 2]) and np.isnan(g["pdir"][0, 2])
+    assert 0 <= g["pdir"][0, 3] < 0.001 and abs(g["pdir"][0, 4] - 359.5) < 1e-4
+    assert X.CALM_M == R.PDIR_WAVES_M == 0.1
+
+
+def test_the_source_applies_the_calm_mask(monkeypatch):
+    monkeypatch.setattr(EF, "fetch_records", lambda run_dt, step, stream, params: {p: p.encode() for p in params})
+    hs = np.full((721, 1440), 2.0, np.float32)
+    hs[:40] = 0.02
+    other = np.full((721, 1440), 25.0, np.float32)
+    monkeypatch.setattr(D, "decode_ecmwf", lambda blob, p, run_dt, step: (hs if p == "swh" else other, {}))
+    g = X.SOURCE.decode(X.SOURCE.fetch(RUN, 0), RUN, 0)
+    assert np.isnan(g["tp"][:40]).all() and np.isnan(g["pdir"][:40]).all() and (g["tp"][40:] == 25.0).all()
+    assert (g["wind"][:40] > 0).all()                                                  # wind keeps the ice
+
+
+def test_g30a_f4_the_credit_carries_ecmwfs_notice_block():
+    a = X.SOURCE.model["attribution"]
+    year = datetime.now(timezone.utc).year
+    assert a.startswith(f"\u00a9 {year} European Centre for Medium-Range Weather Forecasts (ECMWF). Source: www.ecmwf.int.")
+    for part in ("Licence: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)", "modified by Allshore Surf",
+                 "does not accept any liability", "does not endorse"):
+        assert part in a, part
+    assert X.SOURCE.model["fields"] == X.MODEL["fields"] and X.SOURCE.model["licence"] == X.LICENCE
+
+def test_the_copyright_year_follows_the_clock(monkeypatch):
+    monkeypatch.setattr(X, "_now", lambda: datetime(2031, 1, 2, tzinfo=timezone.utc))
+    assert X.SOURCE.model["attribution"].startswith("© 2031 European Centre")
+
+
+def test_g30a_f6_a_failing_mirror_is_tried_twice_then_skipped_for_ten_minutes(monkeypatch):
+    calls = []
+
+    def fake(url, rng=None, tries=4, **kw):
+        calls.append((url.split("/")[2], tries))
+        if url.startswith(EF.S3):
+            raise F.TransportError("aws 503")
+        return 200, _index("wave").encode()
+    monkeypatch.setattr(F, "_request", fake)
+    clock = [1000.0]
+    monkeypatch.setattr(EF.time, "monotonic", lambda: clock[0])
+    EF._get("x.index")
+    assert calls == [("ecmwf-forecasts.s3.eu-central-1.amazonaws.com", 2), ("data.ecmwf.int", 4)]
+    calls.clear()
+    EF._get("y.index")
+    assert calls == [("data.ecmwf.int", 4)]                                            # skipped while down
+    clock[0] += EF.AWS_COOLDOWN_S + 1
+    calls.clear()
+    EF._get("z.index")
+    assert calls[0][0] == "ecmwf-forecasts.s3.eu-central-1.amazonaws.com"             # tried again afterwards
+
+
+def test_an_aws_404_still_tries_the_second_host_without_a_cooldown(monkeypatch):
+    calls = []
+
+    def fake(url, rng=None, **kw):
+        calls.append(url.split("/")[2])
+        if url.startswith(EF.S3):
+            raise F.NotReady("404 aws")
+        return 200, b"ok"
+    monkeypatch.setattr(F, "_request", fake)
+    assert EF._get("a") == (200, b"ok") and EF._get("b") == (200, b"ok")
+    assert calls == ["ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "data.ecmwf.int"] * 2
+
+
+def test_record_trailer_span_cap_and_an_offset_of_zero(monkeypatch):
+    def fake(url, rng=None, **kw):
+        if url.endswith(".index"):
+            return 200, _index("oper").encode()
+        a, b = (int(x) for x in rng.split("=")[1].split("-"))
+        return 206, _grib(b - a + 1)[:-4] + b"7776"
+    monkeypatch.setattr(F, "_request", fake)
+    with pytest.raises(RuntimeError, match="not a single GRIB"):
+        EF.fetch_records(RUN, 150, "oper", EF.OPER_PARAMS)
+    idx = EF.parse_index(_index("wave"))
+    first = [r for r in idx if r["_offset"] == 0][0]
+    assert EF.select(idx, (first["param"],), RUN, 150, "wave") == {first["param"]: (0, first["_length"])}
+    big = [dict(r, _length=64 * 2 ** 20) if r["param"] == "swh" else r for r in idx]
+    with pytest.raises(RuntimeError, match="bad span"):
+        EF.select(big, EF.WAVE_PARAMS, RUN, 150, "wave")
+
+
+def test_decode_ecmwf_enforces_the_record_identity(monkeypatch):
+    meta = dict(REC["swh"]["meta"])
+    monkeypatch.setattr(D, "_read", lambda blob, keys: (meta, np.full(721 * 1440, 9999.0)))
+    D.decode_ecmwf(b"x", "swh", RUN, 150)
+    for when, step, p in ((RUN, 144, "swh"), (RUN.replace(hour=0), 150, "swh"), (RUN, 150, "mwd")):
+        with pytest.raises(ValueError):
+            D.decode_ecmwf(b"x", p, when, step)
+
+
+def _pointer(c, published):
+    c.objects[ELATEST] = {"body": json.dumps({"run": "2026101300", "complete": True, "published_utc": published}).encode(), "ct": "", "cc": ""}
+
+
+def test_g30a_f2_a_long_stretch_without_a_run_fails_loudly(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(EF, "latest_complete_run", lambda: None)
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    now = datetime.now(timezone.utc)
+    c = FakeClient(); _env(monkeypatch, c)
+    _pointer(c, (now - timedelta(hours=20)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    assert X.main([]) == 3 and not summary.exists()                    # a healthy gap between runs
+    _pointer(c, (now - timedelta(hours=31)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    assert X.main([]) == 1 and "31 h old" in summary.read_text() and "WARNING" in summary.read_text()
+    c2 = FakeClient(); _env(monkeypatch, c2)
+    c2.objects[P.LATEST_KEY] = {"body": b'{"run":"2026101500","complete":true,"published_utc":"2026-10-15T05:00:00Z"}', "ct": "", "cc": ""}
+    assert X.main([]) == 1 and "nothing is live" in capsys.readouterr().out    # a live GFS pointer is not the ECMWF one
+    assert X.main(["--dry-run"]) == 3                                  # a dry run never fails on age
+
+
+def test_gfs_without_a_run_never_reads_the_store_and_keeps_its_messages(monkeypatch, capsys):
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: None)
+    monkeypatch.setattr(R, "_store_from_env", lambda: (_ for _ in ()).throw(AssertionError("store read")))
+    assert R.main([]) == 3 and "no complete run on S3 in the last 48 h" in capsys.readouterr().out
+    assert R.main(["--dry-run", "--steps", "0,2,121"]) == 2
+    assert "hourly 0..120, then every 3 h to 384" in capsys.readouterr().out
+
+
+def test_the_temporary_dry_run_plumbing_is_gone():
+    """The branch-only runner proof (plan section 43, step 1) never reaches production."""
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "ecmwf-dryrun.yml"))
+    assert not os.path.exists(os.path.join(ROOT, "tools", "model_frames", "ecmwf_dryrun_check.py"))

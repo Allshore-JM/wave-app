@@ -12,6 +12,7 @@ Runs: only the 00Z and 12Z cycles (owner decision 2026-10-14): they run to +360 
 Completeness: every needed .grib2 AND .index of BOTH streams present in one listing per stream (the GFS rule).
 """
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -25,6 +26,9 @@ CYCLES = (0, 12)
 WAVE_PARAMS = ("swh", "pp1d", "mwd")
 OPER_PARAMS = ("10u", "10v")
 STREAMS = {"wave": WAVE_PARAMS, "oper": OPER_PARAMS}
+AWS_TRIES = 2                                   # quick tries on the mirror before the second host (F._request: 4, ~20 s of back-off)
+AWS_COOLDOWN_S = 600                            # after an AWS transport failure, reads go straight to data.ecmwf.int this long
+_aws_down_until = [0.0]                         # (G30a F6: a failing mirror cost every request the whole ladder: > 60 min a run)
 READ_WORKERS = 5                                # one step's records are read at once: the mirror is in Frankfurt, each read
                                                 # is latency- and per-connection-bound (sequential: ~8 s a step on the runner)
 
@@ -113,12 +117,17 @@ def select(index, params, run_dt, step, stream):
 
 
 def _get(rel, rng=None):
-    """GET a relative path from the AWS mirror, then from data.ecmwf.int; the AWS error wins when both fail."""
+    """GET a relative path from the AWS mirror (AWS_TRIES quick tries), then from data.ecmwf.int; the first error wins
+    when both fail (a 404/403 is NotReady: the job exits 3). After an AWS transport failure the mirror is skipped for
+    AWS_COOLDOWN_S (its error is then not seen; the second host's is raised)."""
     first = None
-    for host in (S3, HTTP):
+    hosts = (HTTP,) if time.monotonic() < _aws_down_until[0] else (S3, HTTP)
+    for host in hosts:
         try:
-            return F._request(f"{host}/{rel}", rng=rng)
+            return F._request(f"{host}/{rel}", rng=rng, tries=AWS_TRIES if host == S3 else 4)
         except (F.NotReady, F.TransportError) as exc:
+            if host == S3 and isinstance(exc, F.TransportError):
+                _aws_down_until[0] = time.monotonic() + AWS_COOLDOWN_S
             first = first or exc
     raise first
 

@@ -10,6 +10,8 @@ Fields, with the GFS names the browser reads:
   tp    pp1d  peak wave period (1/fp of the 1-D spectrum): a true Tp, comparable with GFS-Wave's PERPW
   pdir  mwd   MEAN wave direction, degrees true, FROM (the free data has no peak direction; owner 2026-10-14:
               the particles follow it)
+  hs, tp and pdir are left empty where swh < 0.1 m: ecWAM keeps the sea-ice pack as near-zero waves with a noisy
+  period, which GFS-Wave leaves empty (mask_calm, G30a F1)
   wind, wdir  from 10u / 10v, as for GFS
 The grid is the site's (1440 x 721, 90 N .. 90 S, columns from 180 E = -180 E): no roll. A 0.1-deg grid (ECMWF has
 said the open data moves to it) is regridded to the site grid in decode.to_site_grid_ecmwf, so the frames keep their
@@ -18,6 +20,8 @@ shape (owner 2026-10-14).
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -28,11 +32,17 @@ import publish as P           # noqa: E402
 import run as R               # noqa: E402
 
 LICENCE = "https://creativecommons.org/licenses/by/4.0/"
+# ECMWF's open-data terms (CC BY 4.0 plus ECMWF's own): a copyright statement, the source, the licence statement with a
+# link, the disclaimer; CC BY asks for an indication of changes; nothing may suggest ECMWF endorses the product.
+ATTRIBUTION = ("© {year} European Centre for Medium-Range Weather Forecasts (ECMWF). Source: www.ecmwf.int. "
+               f"Licence: CC BY 4.0 ({LICENCE}). Based on data and products of ECMWF, modified by Allshore Surf: "
+               "quantised, calm water and sea ice left empty, coast-filled and rendered. ECMWF does not accept any "
+               "liability whatsoever for any error or omission in the data, their availability, or for any loss or "
+               "damage arising from their use, and does not endorse this product.")
+CALM_M = R.PDIR_WAVES_M                 # 0.1 m: below it the wave fields are left empty (see mask_calm)
 MODEL = {
     "name": "ECMWF IFS wave (ecWAM) + IFS", "grid": "global 0.25 deg (1440x721)",
-    "attribution": ("Based on data and products of the European Centre for Medium-Range Weather Forecasts (ECMWF), "
-                    f"open data under CC BY 4.0 ({LICENCE}); modified: quantised, coast-filled and rendered by "
-                    "Allshore Surf. ECMWF does not endorse this product."),
+    "attribution": ATTRIBUTION.format(year="2026"),         # the published copy carries the run's year (EcmwfSource.model_for)
     "licence": LICENCE,
     "fields": {
         "hs":   {"label": "Wave height", "grib": "swh", "definition": "Significant height of combined wind waves and swell"},
@@ -47,12 +57,38 @@ MODEL = {
 FIELD_PARAMS = {"hs": "swh", "tp": "pp1d", "pdir": "mwd"}
 
 
+def _now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
+def mask_calm(grids):
+    """G30a F1: ecWAM keeps sea-ice cells as wave points with a near-zero height (median ~0.04 m) and a meaningless
+    peak period (up to the 29-s ceiling), where GFS-Wave leaves them empty. The wave fields (hs, tp, pdir) are left
+    empty wherever swh is below CALM_M (0.1 m, the job's calm line for directions) or missing: on run 2026101412 that
+    empties ~78-82k cells a step, 99 % poleward of 55 deg, where GFS's frame is empty on 89 % of them, and keeps the
+    waves ecWAM carries into the marginal ice zone (GFS draws 72 % of the under-ice cells with >= 0.5 m). Directions
+    wrap to [0, 360) (mwd can read 360.0002). Wind is untouched. In place; returns the number of cells emptied."""
+    hs = grids["hs"]
+    calm = ~(hs >= CALM_M)                           # NaN compares False: missing counts as calm
+    emptied = int(np.count_nonzero(calm & ~np.isnan(hs)))
+    for name in ("hs", "tp", "pdir"):
+        grids[name] = np.where(calm, np.float32(np.nan), grids[name]).astype(np.float32)
+    grids["pdir"] = np.mod(grids["pdir"], np.float32(360.0)).astype(np.float32)
+    return emptied
+
+
 class EcmwfSource:
     name = "ECMWF"
     tag = "ECMWF "
     prefix = P.ECMWF_PREFIX
-    model = MODEL
     prune_legacy = False
+    stale_fail_h = 30                   # no complete run while the live one is older than this: fail loudly (G30a F2)
+
+    @property
+    def model(self):
+        """The manifest block, its copyright year the current UTC year (a run is published within hours of its cycle)."""
+        return dict(MODEL, attribution=ATTRIBUTION.format(year=_now().year))
     steps = EF.STEPS
     schedule = EF.STEP_SCHEDULE
 
@@ -70,6 +106,7 @@ class EcmwfSource:
         """{hs, tp, pdir, wind, wdir} on the site grid (the GFS job's names and order)."""
         wave, oper = records
         grids = {name: D.decode_ecmwf(wave[p], p, run_dt, step)[0] for name, p in FIELD_PARAMS.items()}
+        mask_calm(grids)
         u, _ = D.decode_ecmwf(oper["10u"], "10u", run_dt, step)
         v, _ = D.decode_ecmwf(oper["10v"], "10v", run_dt, step)
         grids["wind"] = D.wind_speed(u, v)

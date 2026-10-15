@@ -4,7 +4,7 @@
 
 tests/fixtures/ecmwf/wave_<step>.index, oper_<step>.index   the real .index files (JSON lines)
 tests/fixtures/ecmwf/meta_<step>.json   per record: eccodes metadata (decode._KEYS + gridType), the index span, and the
-                                        value at a few cells (sea, land/missing, both poles, both ends of a row)
+                                        value at a few cells (sea, land/missing, both poles, both ends of a row, sea ice)
 """
 import json
 import os
@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools", "model_frames"))
 import decode as D        # noqa: E402
 import ecmwf_fetch as EF  # noqa: E402
 
-CELLS = [(0, 0), (720, 1439), (300, 0), (300, 1439), (274, 88), (400, 720), (180, 300), (500, 1000), (284, 87)]
+CELLS = [(0, 0), (720, 1439), (300, 0), (300, 1439), (274, 88), (400, 720), (180, 300), (500, 1000), (284, 87),
+         (22, 1329), (638, 630), (596, 1042)]    # G30a F1: Arctic and Antarctic pack ice (swh ~0, pp1d noise), waves under ice
 
 
 def main(run, step):

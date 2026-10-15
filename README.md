@@ -492,7 +492,15 @@ retention are shared, so the browser draws both models with the same code.
   the PEAK period 1/fp, comparable with GFS-Wave's PERPW) and `mwd` (-> `pdir`: the MEAN wave direction, degrees true,
   FROM; the free data has no peak direction and no swell partitions), and the `oper` stream's `10u`/`10v` (-> `wind`,
   `wdir`). The `.index` (JSON lines) gives each record's exact byte span; every record's identity (param, surface level
-  0, step, cycle) and grid are checked after decoding (CCSDS packing: eccodes 2.48 in the pinned environment).
+  0, step, cycle) and grid are checked after decoding (CCSDS packing: eccodes 2.48 in the pinned environment). A step's
+  records are read at once (`READ_WORKERS`: the mirror is in Frankfurt; a run builds in ~2 min on GitHub's runner).
+  The mirror gets two quick tries per read before data.ecmwf.int; after a transport failure it is skipped for 10
+  minutes (`AWS_COOLDOWN_S`). Run discovery lists the mirror only.
+- **Calm water and sea ice** (G30a F1): ecWAM keeps the sea-ice pack as wave points with a near-zero height and a
+  meaningless "peak period" (up to its 29-s ceiling), where GFS-Wave leaves ice empty. The job leaves `hs`, `tp` and
+  `pdir` empty wherever `swh` is below 0.1 m (`ecmwf.mask_calm`; the GFS job's calm line for directions): ~80k cells a
+  step, 99 % poleward of 55 degrees, where GFS's frame is empty on 89 % of them; the waves ecWAM carries into the marginal
+  ice zone stay (GFS draws most of the under-ice cells with 0.5 m or more). Wind is never masked.
 - **Runs**: the 00Z and 12Z cycles only (owner, 2026-10-14), each to +360 h: every 3 h to +144 h, every 6 h to +360 h
   (85 frames; the manifest's `frame_schedule` `[[0, 144, 3], [150, 360, 6]]`). ECMWF publishes every step of a cycle at
   once about 7 h 34 min after it (00Z at ~07:34 UTC, 12Z at ~19:34 UTC); a run counts as complete only when every
@@ -500,14 +508,21 @@ retention are shared, so the browser draws both models with the same code.
 - **Grid**: ECMWF's columns start at 180 E (= -180 E), the site's column order, so there is no roll (central Oahu's
   land cell sits at the GFS frames' row 274, column 88). ECMWF has said its open data moves to 0.1 degree; a 0.1-degree
   message is regridded to the site grid (bilinear over present neighbours, nearest for `mwd`) so the frames and the
-  client never change (`decode.to_site_grid_ecmwf`). Finer frames would be a client redesign of their own.
+  client never change (`decode.to_site_grid_ecmwf`). Finer frames would be a client redesign of their own. The object
+  paths carry the resolution (`ifs/0p25/`; ECMWF used a new segment per resolution before), so a switch needs the path
+  changed in `ecmwf_fetch._prefix` as well. Until then the job finds no run: once the live ECMWF run is more than 30 h
+  old (`stale_fail_h`; runs land every 12 h) "no complete run" is a FAILURE (exit 1, the workflow fails, GitHub mails),
+  not the usual quiet exit 3 (G30a F2).
 - **Bucket**: `ecmwf/0p25/v1/` with the GFS layout (`<RUN>/{half/}<field>/fNNN.png`, manifests, stats, `latest.json`,
-  `failed/`, `notready/`); the job never reads or writes the GFS prefix and prunes only its own runs (4 kept, ~50 MB
-  each). The manifest's `model` block credits ECMWF, links CC BY 4.0 and says the data was modified (quantised,
-  coast-filled, rendered by Allshore Surf). Stop it by disabling `model-ecmwf.yml` (and removing it from the keepalive
+  `failed/`, `notready/`); the job never reads or writes the GFS prefix and prunes only its own runs (4 kept, ~125 MB
+  each). The manifest's `model` block carries ECMWF's notice block (G30a F4): "(c) <year> European Centre for
+  Medium-Range Weather Forecasts (ECMWF). Source: www.ecmwf.int. Licence: CC BY 4.0 (link)", what was modified
+  (quantised, calm water and sea ice left empty, coast-filled, rendered), ECMWF's liability disclaimer and that ECMWF
+  does not endorse the product. Stop it by disabling `model-ecmwf.yml` (and removing it from the keepalive
   and the Worker's `GH_WORKFLOW`); the client shows ECMWF only where `MODEL_OVERLAY_MODELS` names it.
 - **Fixtures**: `tests/capture_ecmwf_fixtures.py` (network + eccodes) writes `tests/fixtures/ecmwf/` (the real index
-  files and each record's metadata and a few cell values) for `tests/model_frames/test_ecmwf.py`.
+  files and each record's metadata and a few cell values, incl. three sea-ice cells) for `tests/model_frames/test_ecmwf.py`.
+  Review record: `docs/reviews/overlays-G30a-adversarial.md`.
 
 ## Forecast points
 

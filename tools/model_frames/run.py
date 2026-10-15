@@ -87,6 +87,7 @@ class GfsSource:
     prefix = P.PREFIX
     model = MODEL
     prune_legacy = True                                 # the one-time pre-v1 cleanup belongs to the GFS prefix
+    stale_fail_h = None                                 # GFS: "no complete run" stays exit 3 whatever the live run's age
 
     @property
     def steps(self):
@@ -267,6 +268,31 @@ def fill_guard(store, run, live, partial, src=GFS):
     return 2
 
 
+def _no_run(src):
+    """G30a F2: a source whose files can move (ECMWF changes its path per resolution: 0p4-beta, then 0p25) must not
+    freeze silently with every workflow run green: once the live run is older than src.stale_fail_h (or there is
+    none), "no complete run" is a failure (exit 1, the workflow fails and GitHub mails the owner); before that it is
+    the usual exit 3. A listing failure already exits 1."""
+    try:
+        latest = _store_from_env().get_json(P.latest_key(src.prefix)) or {}
+    except Exception as exc:                                  # noqa: BLE001  transport: the next tick retries
+        print(f"could not read the live pointer ({exc.__class__.__name__})")
+        return 1
+    try:
+        pub = datetime.strptime(latest["published_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        age_h = (datetime.now(timezone.utc) - pub).total_seconds() / 3600
+    except (KeyError, TypeError, ValueError):
+        age_h = None
+    if age_h is not None and age_h < src.stale_fail_h:
+        return 3
+    what = f"the live run {latest.get('run')} is {age_h:.0f} h old" if age_h is not None else "nothing is live"
+    msg = (f"no complete {src.tag}run found and {what} (limit {src.stale_fail_h} h): the source's files may have "
+           f"moved (a new path or resolution) or stopped")
+    print(msg)
+    _summary("WARNING: " + msg)
+    return 1
+
+
 def _skip_failed(store, run, src=GFS):
     rec = store.get_json(P.failed_key(run, src.prefix))
     if not rec:
@@ -291,7 +317,8 @@ def main(argv=None, src=GFS):
     steps = [int(s) for s in a.steps.split(",")] if a.steps else src.steps
     if any(s not in src.steps for s in steps):
         sch = src.schedule
-        print(f"--steps must be forecast hours of the model output: every {sch[0][2]} h {sch[0][0]}..{sch[0][1]}, "
+        first = "hourly" if sch[0][2] == 1 else f"every {sch[0][2]} h"
+        print(f"--steps must be forecast hours of the model output: {first} {sch[0][0]}..{sch[0][1]}, "
               f"then every {sch[1][2]} h to {sch[1][1]}")
         return 2
     partial = steps != src.steps
@@ -306,6 +333,8 @@ def main(argv=None, src=GFS):
         return 1
     if run_dt is None:
         print(f"no complete {src.tag}run on S3 in the last 48 h")
+        if src.stale_fail_h and not a.dry_run:
+            return _no_run(src)
         return 3
     run = P.run_key(run_dt)
 

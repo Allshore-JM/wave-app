@@ -18,7 +18,8 @@
 .ov-title.ov-model { font-weight: 500; color: #1d2b4f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* the model dropdown (plan section 43): the head line itself when more than one model is offered */
 .ov-ctl select.ov-model-sel, .ov-sheet select.ov-model-sel { flex: 1 1 auto; min-width: 0; max-width: 100%; font: inherit; font-weight: 500; color: #1d2b4f;
-  background: #fff; border: 1px solid #0f8f8c; border-radius: 8px; padding: 0 4px; margin: 0; line-height: 1.2; }
+  background: #fff; border: 1px solid #0f8f8c; border-radius: 8px; padding: 0 4px; margin: 0; line-height: 1.2;
+  height: 18px; box-sizing: border-box; }   /* the head line's height (the title span's 18.4 px); touch: min-height 28 px below (G30-1) */
 .ov-err select.ov-model-sel { display: block; margin: 4px 0; }
 .ov-meta { color: #3f4d6e; margin-top: 2px; }
 .ov-meta b { color: #1d2b4f; font-weight: 600; }

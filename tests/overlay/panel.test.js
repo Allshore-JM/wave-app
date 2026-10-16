@@ -613,6 +613,7 @@ test('G26 A-P2-3: a gesture the browser cancels (or a lost capture) is never a t
   // folds one size early (phone landscape and short desktop maps lost the ribbon and the time)
   assert.match(css, /\.ov-ctl select\.ov-model-sel, \.ov-sheet select\.ov-model-sel \{[^}]*padding: 0 4px; margin: -1px 0;/);
   assert.ok(!/select\.ov-model-sel \{[^}]*[^-]height: \d/.test(css), 'no fixed height: a larger minimum font grows the select unclipped (re-check R-1)');
+  assert.match(css, /\.ov-head \.ov-toggle \+ select\.ov-model-sel \{ margin: -0\.15em 0; \}/, 'beside the toggle the select never sets the head line\'s height, at any minimum font size (2.17.4)');
   assert.match(css, /@media \(pointer: coarse\)[^@]*select\.ov-model-sel \{ min-height: 28px; \} \.ov-retry, \.ov-update \{ min-height: 28px; \}/);
 }));
 

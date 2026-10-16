@@ -2642,6 +2642,7 @@
       if (t !== null) { this._carry = { t: t, playing: !!(this.playing || this.wasPlaying) }; this._switchT = t; }
     }
     this.pause();                                            // the model's play state is saved first (its field still set)
+    save({ field: 'sst' });                                  // ... then the field the page saved before this mount ran
     if (!this.map.getPane('modelPane')) {
       var pane = this.map.createPane('modelPane'); pane.style.zIndex = 250; pane.style.pointerEvents = 'none';
     }

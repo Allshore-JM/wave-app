@@ -53,6 +53,9 @@
   // Colour stops over the LEGEND POSITION (0..1). For wave height the position is not linear in the
   // value (KNOTS below): 0-3 m takes about half of the scale, with a hue change every 0.5-1 m.
   var RAMPS = {
+    // sea surface temperature over -2..35 C (plan section 44; provisional until the owner's pick from the preview sheet)
+    sst:  [[0,'#312e81'],[0.14,'#2563eb'],[0.3,'#06b6d4'],[0.42,'#14b8a6'],[0.52,'#22c55e'],[0.62,'#eab308'],[0.72,'#f97316'],
+           [0.82,'#dc2626'],[0.92,'#c026d3'],[1,'#fbcfe8']],
     hs:   [[0,'#1d3a8a'],[0.08,'#2563eb'],[0.17,'#0ea5e9'],[0.25,'#22d3ee'],[0.33,'#34d399'],[0.40,'#a3e635'],[0.47,'#facc15'],
            [0.58,'#fb923c'],[0.72,'#ef4444'],[0.87,'#c026d3'],[1,'#f5d0fe']],
     tp:   [[0,'#2a1f7a'],[0.25,'#2e7ed8'],[0.5,'#38c9a8'],[0.7,'#c8e63c'],[0.85,'#f7a52b'],[1,'#e8321f']],
@@ -73,7 +76,7 @@
     ink: [34, 38, 46], gain: 1.4                             // the coastline's colour and strength (coastEdges)
   };
   // Fixed opacity per field (owner, 2026-09-26: no slider): the waves over the imagery, the wind multiplied into the relief.
-  var FIXED_OPACITY = { hs: 0.65, tp: 0.65, wind: 1 };
+  var FIXED_OPACITY = { hs: 0.65, tp: 0.65, wind: 1, sst: 0.75 };
   // Leaflet fires a tile layer's 'load' when its last tile STARTS its 200-ms fade-in (G14 P1-1: removing the old
   // basemap then showed the bare map for ~200 ms): the old one leaves this long after.
   var BASE_FADE_MS = 300;
@@ -107,8 +110,25 @@
   var TICKS = {
     'hs|US': [0, 3, 6, 10, 15, 20], 'hs|Metric': [0, 1, 2, 3, 4, 6],
     'tp|US': [4, 8, 12, 16], 'tp|Metric': [4, 8, 12, 16],
-    'wind|US': [0, 20, 40], 'wind|Metric': [0, 25, 50, 75]
+    'wind|US': [0, 20, 40], 'wind|Metric': [0, 25, 50, 75],
+    'sst|US': [40, 50, 60, 70, 80], 'sst|Metric': [0, 5, 10, 15, 20, 25]
   };
+  // ---- sea surface temperature (plan section 44) ----
+  // An OBSERVATION beside the model fields: the newest NASA MUR day, published by tools/model_frames/sst.py as a tiered
+  // store (sst/v1/latest.json -> manifest -> one 0.25-degree frame on the model grid + 0.05- and 0.01-degree cells with
+  // a one-node apron and a per-cell code range). The layer samples it through a pluggable SOURCE (SstStore) that writes
+  // fractional codes over this one FIXED range into the layer's code buffer, so the tile composer, the land clip, the
+  // readout and the contours work unchanged. deg C throughout (the site unit only at the legend and the readout).
+  var SST_FDEF = { lo: -2, hi: 35, legend: [-2, 35], units: 'degC', interpolation: 'bilinear' };
+  var SST_PREFIX = 'sst/v1';
+  // The chunk tier drawn by tile zoom: below 5 the 0.25-degree frame (a 1-km node is a fraction of a pixel there), 5-7
+  // the 0.05-degree cells, 8 and closer the 0.01-degree cells (Leaflet rounds 7.5 up). A tile whose cells are not all
+  // in hand yet draws from the next coarser tier (the frame always is) and is redrawn when they land.
+  var SST_TIER_ZOOMS = [5, 8];
+  function sstTierFor(z, available) {
+    var t = z >= SST_TIER_ZOOMS[1] ? 2 : z >= SST_TIER_ZOOMS[0] ? 1 : 0;
+    return t < available ? t : available;
+  }
 
   // The tab's saved state; anything but a plain object (a corrupted or foreign value) counts as empty,
   // so the next write replaces it instead of failing on it for the rest of the tab's life.
@@ -170,6 +190,10 @@
   function unitOf(field, unit) {
     if (field === 'hs') return unit === 'Metric' ? { label: 'm', f: function (v) { return v; }, d: 1 } : { label: 'ft', f: function (v) { return v * 3.28084; }, d: 1 };
     if (field === 'tp') return { label: 's', f: function (v) { return v; }, d: 1 };
+    if (field === 'sst') {                                 // an affine unit: scale / offset / inv beside f (ticks, contours)
+      if (unit === 'Metric') return { label: '°C', f: function (v) { return v; }, inv: function (v) { return v; }, scale: 1, offset: 0, d: 1 };
+      return { label: '°F', f: function (v) { return v * 1.8 + 32; }, inv: function (v) { return (v - 32) / 1.8; }, scale: 1.8, offset: 32, d: 1 };
+    }
     return unit === 'Metric' ? { label: 'km/h', f: function (v) { return v * 3.6; }, d: 0 } : { label: 'mph', f: function (v) { return v * 2.23694; }, d: 0 };
   }
   function fmtTick(v) { var r = Math.round(v * 10) / 10; return String(Math.abs(r - Math.round(r)) < 1e-9 ? Math.round(r) : r); }
@@ -179,7 +203,7 @@
     var vals = (sc && sc.ticks && sc.ticks[um]) || TICKS[field + '|' + um] || [fdef.legend[0]];
     var out = vals.map(function (v, i) {
       var below = i === 0 && fdef.lo < fdef.legend[0] - 1e-9;          // values under the legend floor exist (Tp)
-      return { pos: legendPos(field, fdef.legend, v / per), label: (below ? '≤' : '') + fmtTick(v) };
+      return { pos: legendPos(field, fdef.legend, u.inv ? u.inv(v) : v / per), label: (below ? '≤' : '') + fmtTick(v) };
     });
     out.push({ pos: 1, label: Math.round(hi) + '+ ' + u.label });
     return out;
@@ -275,7 +299,7 @@
   // Tier 0 (~1 km, one file) serves tile zooms up to index.tier0.max_zoom; tier 1 (full resolution,
   // 5-degree cells) is fetched per cell in view for higher zooms, tier 0 standing in until it lands.
   // Wind is never clipped (owner decision: the full field over land).
-  var CLIP_FIELDS = { hs: true, tp: true, wind: false };
+  var CLIP_FIELDS = { hs: true, tp: true, wind: false, sst: true };
   var LAND_ALL = new Uint8Array(0);                        // sentinel: the tile is entirely land
   var LAND_READOUT = 128;                                  // composed alpha below this = "over land" for the readout
   var MAX_LAT = 85.0511287798;                             // Web-Mercator limit; the Antarctic ring closes through the pole
@@ -358,11 +382,14 @@
     var n = Math.pow(2, coords.z), xw = ((coords.x % n) + n) % n, s = TILE / n;
     return { z: coords.z, xw: xw, y: coords.y, n: n, x0: xw * s, y0: coords.y * s, x1: (xw + 1) * s, y1: (coords.y + 1) * s };
   }
-  // The 5-degree (cellDeg) tier-1 cells a tile touches, as "lat0_lon0" names (south-west corners).
-  function coastCellsForTile(coords, cellDeg) {
-    var b = tileBox(coords), lonW = b.x0 / TILE * 360 - 180, lonE = b.x1 / TILE * 360 - 180;
+  // The cellDeg-degree cells a tile touches, as "lat0_lon0" names (south-west corners on multiples of cellDeg from 0:
+  // the coast tier-1 cells, and the SST cells, which the job names by the same rule). padPx: the tile box grown by so
+  // many tile pixels on every side (the contour lattice samples one step outside the tile).
+  function coastCellsForTile(coords, cellDeg) { return cellsForTile(coords, cellDeg, 0); }
+  function cellsForTile(coords, cellDeg, padPx) {
+    var b = tileBox(coords), pad = (padPx || 0) / b.n, lonW = (b.x0 - pad) / TILE * 360 - 180, lonE = (b.x1 + pad) / TILE * 360 - 180;
     function lat(y) { return Math.atan(Math.sinh(Math.PI - 2 * Math.PI * y / TILE)) * 180 / Math.PI; }
-    var latN = lat(b.y0), latS = lat(b.y1), eps = 1e-9, out = [];
+    var latN = lat(Math.max(0, b.y0 - pad)), latS = lat(Math.min(TILE, b.y1 + pad)), eps = 1e-9, out = [];
     var i0 = Math.max(-Math.round(90 / cellDeg), Math.floor(latS / cellDeg)), i1 = Math.min(Math.round(90 / cellDeg) - 1, Math.floor((latN - eps) / cellDeg));
     var j0 = Math.max(-Math.round(180 / cellDeg), Math.floor(lonW / cellDeg)), j1 = Math.min(Math.round(180 / cellDeg) - 1, Math.floor((lonE - eps) / cellDeg));
     for (var i = i0; i <= i1; i++) for (var j = j0; j <= j1; j++) out.push((i * cellDeg) + '_' + (j * cellDeg));
@@ -529,7 +556,7 @@
   // ---- contour lines (pure; tested in Node) ----
   // Fields that can carry contours, and the interval in DISPLAY units per site unit (owner, 2026-09-25):
   // wave height every 2 ft / 0.5 m, peak period every 2 s; doubled below tile zoom 4.
-  var CONTOURS = { hs: { US: 2, Metric: 0.5 }, tp: { US: 2, Metric: 2 } };
+  var CONTOURS = { hs: { US: 2, Metric: 0.5 }, tp: { US: 2, Metric: 2 }, sst: { US: 2, Metric: 1 } };   // isotherms every 2 F / 1 C (owner, 2026-10-16)
   var CONTOUR_INK = 0.55;                                  // line opacity over the field colour ("light" lines)
   var CONTOUR_JUMP = 2;                                    // peak period: no lines where it jumps more than 2 s between neighbouring nodes
   var CONTOUR_BLOCK = 16;                                  // tiles are drawn in 16-px blocks; a block no level crosses is skipped
@@ -786,6 +813,288 @@
     this.chunks.clear(); this.bytes = 0;
   };
 
+  // ---- the sea surface temperature store (plan section 44) ----
+  // One per bucket root per page (like the coast stores): the decoded 0.25-degree frame, the manifest and the cell
+  // LRU survive a field switch (idle) and Off (abortAll keeps the frame and the manifest, drops the cells).
+  var SST_STORES = {};
+  function sstStore(root) { return SST_STORES[root] || (SST_STORES[root] = new SstStore(root)); }
+  var MAX_SST_INFLIGHT = 4;                                // cell downloads at once (the frames keep their own budget)
+  var MAX_SST_CHUNK_BYTES = 24 * 1024 * 1024;              // decoded cells kept (LRU; the cells the tiles on the map need are never evicted)
+  var MAX_SST_MANIFEST_BYTES = 2 * 1024 * 1024;            // a day's manifest is ~100 KB (one line per published cell)
+  var SST_PAD_PX = 4;                                      // cells asked for around a tile: the contour lattice's step (2 or 4 px)
+  var SST_MAX_CELL_PX = 2048;
+  function sstKey(k) { return typeof k === 'string' && k.length > 0 && k.length <= 200 && /^[A-Za-z0-9][A-Za-z0-9_./-]*$/.test(k) && k.indexOf('..') < 0; }
+  // The pointer the client can act on.
+  function validSstPointer(p) { return !!(p && p.format === 'sst-v1' && p.complete === true && typeof p.run === 'string' && /^\d{8}$/.test(p.run) && sstKey(p.manifest)); }
+  // The manifest the client can act on: the fixed range this file draws, a tier-0 frame on a grid validateGrid accepts
+  // (checked against the decoded frame), up to four chunk tiers whose geometry closes (px nodes = cell / res) with a
+  // one-node apron, every listed cell a [lo, hi, bytes] triple with lo < hi.
+  function validSstManifest(m) {
+    if (!m || m.format !== 'sst-v1' || m.complete !== true || typeof m.run !== 'string' || !/^\d{8}$/.test(m.run) || typeof m.day !== 'string' ||
+      !Array.isArray(m.range) || m.range.length !== 2 || m.range[0] !== SST_FDEF.lo || m.range[1] !== SST_FDEF.hi || m.units !== 'degC' ||
+      !m.tier0 || typeof m.tier0 !== 'object' || !sstKey(m.tier0.key) || !m.tier0.grid || typeof m.tier0.grid !== 'object' ||
+      !Array.isArray(m.tiers) || m.tiers.length > 4) return false;
+    for (var i = 0; i < m.tiers.length; i++) {
+      var t = m.tiers[i];
+      if (!t || typeof t !== 'object' || typeof t.name !== 'string' || !/^[a-z0-9]{1,8}$/.test(t.name) || !Number.isInteger(t.cell) || t.cell < 1 || t.cell > 90 ||
+        180 % t.cell !== 0 || 360 % t.cell !== 0 || typeof t.res !== 'number' || !(t.res > 0) || !Number.isInteger(t.px) || t.px < 2 || t.px > SST_MAX_CELL_PX ||
+        Math.abs(t.px * t.res - t.cell) > 1e-9 || t.apron !== 1 || !sstKey(t.dir) || !t.cells || typeof t.cells !== 'object' || Array.isArray(t.cells)) return false;
+      for (var name in t.cells) {
+        var c = t.cells[name];
+        if (!/^-?\d{1,3}_-?\d{1,3}$/.test(name) || !Array.isArray(c) || c.length !== 3 || typeof c[0] !== 'number' || typeof c[1] !== 'number' || !(c[0] < c[1]) || !Number.isInteger(c[2]) || c[2] < 1) return false;
+      }
+    }
+    return true;
+  }
+  function SstStore(root) {
+    this.root = root; this.status = 'idle'; this.pointer = null; this.manifest = null; this.frame = null; this.grid = null; this.tiers = [];
+    this.loading = null; this.loadAbort = null; this.failedAt = 0; this.loadedAt = 0; this.newer = null;
+    this.inflight = {}; this.queue = []; this.queued = {}; this.failed = {}; this.bytes = 0;
+    this.rev = 0; this.onChange = null; this.onNeeded = null; this.abort = null; this.retryTimer = null;
+    this._lon0 = new Float64Array(TILE + 2); this._fx = new Float64Array(TILE + 2); this._colPos = new Float64Array(TILE + 2);
+  }
+  SstStore.prototype.timeoutMs = 15000;                    // pointer + manifest + the frame slower than this: failed (Retry), like a stalled load
+  SstStore.prototype.retryMs = COAST_RETRY_MS;
+  SstStore.prototype.recheckMs = POINTER_RECHECK_MS;
+  SstStore.prototype._decode = function (url, sig, expect) { return decodeFrame(url, sig, expect); };   // the frames' decoder (tests replace it)
+  SstStore.prototype._json = function (url, sig, noCache, maxBytes) {
+    return fetch(url, noCache ? { signal: sig, mode: 'cors', cache: 'no-cache' } : { signal: sig, mode: 'cors' }).then(function (r) {
+      if (!r.ok) throw new Error('sst ' + r.status);
+      if (r.headers && r.headers.get && Number(r.headers.get('content-length') || 0) > maxBytes) throw new Error('unsupported sst manifest');
+      return r.json();
+    });
+  };
+  SstStore.prototype._pointer = function (sig) { return this._json(this.root + '/' + SST_PREFIX + '/latest.json', sig, true, 64 * 1024); };
+  // Resolves to the store when the frame is usable, to null otherwise (never rejects). A store already loaded re-reads
+  // the pointer when it is older than recheckMs or a recheck noted a newer day: the same run keeps everything, a newer
+  // run drops the day and loads afresh (the next mount shows the new day; no banner: plan section 44).
+  SstStore.prototype.load = function () {
+    var self = this;
+    if (this.loading) return this.loading;
+    if (this.status === 'ok' && !this.newer && Date.now() - this.loadedAt < this.recheckMs) return Promise.resolve(this);
+    if (this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
+    var was = this.status === 'ok' ? this.manifest : null;
+    this.status = 'loading';
+    var ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false;
+    var watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, this.timeoutMs);
+    this.loading = this._pointer(sig).then(function (ptr) {
+      if (!validSstPointer(ptr)) throw new Error('unsupported sst pointer');
+      if (was && was.run === ptr.run) return null;                         // the day on screen is still the newest
+      return self._json(self.root + '/' + ptr.manifest, sig, false, MAX_SST_MANIFEST_BYTES).then(function (m) {
+        if (!validSstManifest(m) || m.run !== ptr.run) throw new Error('unsupported sst manifest');
+        return self._decode(self.root + '/' + m.tier0.key, sig, { cols: m.tier0.grid.cols, rows: m.tier0.grid.rows }).then(function (frame) {
+          validateGrid(m.tier0.grid, frame, SST_FDEF);
+          return { ptr: ptr, m: m, frame: frame };
+        });
+      });
+    }).then(function (res) {
+      clearTimeout(watchdog);
+      if (self.loadAbort !== ctrl || sig.aborted) throw abortError();     // aborted or superseded: this load owns nothing any more
+      if (res) {
+        if (was) self._dropDay();
+        self.pointer = res.ptr; self.manifest = res.m; self.frame = res.frame; self.grid = res.m.tier0.grid;
+        self.tiers = res.m.tiers.slice().sort(function (a, b) { return b.res - a.res; }).map(function (t) {   // coarse first: tiers[0] = tier 1
+          return { name: t.name, cell: t.cell, res: t.res, px: t.px, n: t.px + 2, dir: t.dir, cells: t.cells, loaded: new Map() };
+        });
+      }
+      self.newer = null; self.loadedAt = Date.now();
+      self.status = 'ok'; self.loading = null; self.loadAbort = null;
+      return self;
+    }).catch(function () {
+      clearTimeout(watchdog);
+      if (self.loadAbort === ctrl) {
+        self.loading = null; self.loadAbort = null;
+        if (was) { self.status = 'ok'; self.loadedAt = Date.now(); }       // a failed re-read keeps the day on screen
+        else { self.status = sig.aborted && !timedOut ? 'idle' : 'failed'; if (self.status === 'failed') self.failedAt = Date.now(); }
+      }
+      return was ? self : null;
+    });
+    return this.loading;
+  };
+  // Every 30 minutes while shown: a newer day is only NOTED (adopted by the next load). Resolves true when there is one.
+  SstStore.prototype.recheck = function () {
+    var self = this;
+    if (this.status !== 'ok') return Promise.resolve(false);
+    return this._pointer(null).then(function (ptr) {
+      if (self.status === 'ok' && validSstPointer(ptr) && ptr.run > self.manifest.run) { self.newer = ptr; return true; }
+      return false;
+    }, function () { return false; });
+  };
+  SstStore.prototype._dropDay = function () {
+    this._stop();
+    this.pointer = null; this.manifest = null; this.frame = null; this.grid = null; this.tiers = []; this.bytes = 0; this.failed = {};
+  };
+  SstStore.prototype.available = function () { return this.status === 'ok' ? this.tiers.length : 0; };
+  SstStore.prototype._tier = function (t) { return t > 0 && t <= this.tiers.length ? this.tiers[t - 1] : null; };
+  // The tier a tile draws from now: the finest wanted at its zoom whose cells are all in hand (an unlisted cell is land,
+  // ice or a lake: nothing to fetch, nothing drawn), else the next coarser; 0 = the frame. Missing cells are requested,
+  // and so are the pad cells around the tile (never a condition for drawing).
+  SstStore.prototype.tierFor = function (coords) {
+    if (this.status !== 'ok') return 0;
+    for (var t = sstTierFor(coords.z, this.tiers.length); t > 0; t--) {
+      var T = this.tiers[t - 1], names = cellsForTile(coords, T.cell, 0), missing = [], all = true, i;
+      if (names.length > MAX_CELLS_PER_TILE) continue;
+      for (i = 0; i < names.length; i++) {
+        var nm = names[i];
+        if (!Object.prototype.hasOwnProperty.call(T.cells, nm)) continue;
+        var rec = T.loaded.get(nm);
+        if (rec) { T.loaded.delete(nm); T.loaded.set(nm, rec); continue; }          // LRU touch
+        all = false;
+        if (this.failed[T.name + '/' + nm] !== true) missing.push(nm);
+      }
+      if (missing.length) this.request(T, missing);
+      if (!all) continue;
+      var padded = cellsForTile(coords, T.cell, SST_PAD_PX), extra = [];
+      for (i = 0; i < padded.length; i++) if (Object.prototype.hasOwnProperty.call(T.cells, padded[i]) && !T.loaded.has(padded[i]) && this.failed[T.name + '/' + padded[i]] !== true) extra.push(padded[i]);
+      if (extra.length) this.request(T, extra);
+      return t;
+    }
+    return 0;
+  };
+  // Did a cell a tile reads (its own or a pad cell) land after the revision the tile was drawn at?
+  SstStore.prototype.landedAfter = function (coords, tier, rev) {
+    var T = this._tier(tier);
+    if (!T) return false;
+    var names = cellsForTile(coords, T.cell, SST_PAD_PX);
+    for (var i = 0; i < names.length; i++) { var rec = T.loaded.get(names[i]); if (rec && rec.rev > rev) return true; }
+    return false;
+  };
+  // The keys ("tier/name") of every cell the tiles on the map could read at their zoom (the eviction and the queue keep them).
+  SstStore.prototype.keysFor = function (coords, into) {
+    for (var t = sstTierFor(coords.z, this.tiers.length); t > 0; t--) {
+      var T = this.tiers[t - 1], names = cellsForTile(coords, T.cell, SST_PAD_PX);
+      for (var i = 0; i < names.length; i++) into[T.name + '/' + names[i]] = true;
+    }
+    return into;
+  };
+  SstStore.prototype.request = function (T, names) {
+    var fresh = {};
+    for (var i = 0; i < names.length; i++) {
+      var nm = names[i], key = T.name + '/' + nm, f = this.failed[key];
+      if (!Object.prototype.hasOwnProperty.call(T.cells, nm) || this.inflight[key] || T.loaded.has(nm) || f === true) continue;
+      if (typeof f === 'number' && f > Date.now()) { this._armRetry(f); continue; }
+      if (!this.queued[key]) { this.queue.push([T, nm]); this.queued[key] = true; }
+      fresh[key] = true;
+    }
+    this._pump(fresh);
+  };
+  SstStore.prototype._armRetry = CoastStore.prototype._armRetry;
+  SstStore.prototype._pump = function (fresh) {
+    var self = this, need = this.onNeeded ? this.onNeeded() : null;
+    while (this.queue.length && Object.keys(this.inflight).length < MAX_SST_INFLIGHT) {
+      var item = this.queue.shift(), T = item[0], nm = item[1], key = T.name + '/' + nm;
+      delete this.queued[key];
+      if (need && !need[key] && !(fresh && fresh[key])) continue;
+      if (!this.abort) this.abort = new AbortController();
+      (function (T, name, key, ctrl) {
+        self.inflight[key] = ctrl;
+        function mine() { return self.inflight[key] === ctrl; }
+        self._decode(self.root + '/' + T.dir + '/' + name + '.png', ctrl.signal, { cols: T.n, rows: T.n }).then(function (fr) {
+          if (ctrl.signal.aborted || !mine()) return;
+          if (!fr || fr.cols !== T.n || fr.rows !== T.n || !fr.q || fr.q.length !== T.n * T.n) throw new Error('frame decode failed');
+          delete self.inflight[key];
+          var ent = T.cells[name];
+          self.rev++;
+          T.loaded.set(name, { q: fr.q, lo: ent[0], hi: ent[1], bytes: fr.q.length, rev: self.rev });
+          self.bytes += fr.q.length; delete self.failed[key];
+          self._evict();
+          if (self.onChange) self.onChange();
+          self._pump();
+        }).catch(function (err) {
+          if (ctrl.signal.aborted || (err && err.name === 'AbortError') || !mine()) return;
+          delete self.inflight[key];
+          var kind = failureKind(err);
+          self.failed[key] = kind === 'permanent' ? true : Date.now() + self.retryMs;
+          if (self.failed[key] !== true) self._armRetry(self.failed[key]);
+          self.rev++;
+          if (self.onChange) self.onChange();
+          self._pump();
+        });
+      })(T, nm, key, this.abort);
+    }
+  };
+  // Over the cap: the least recently used cells go first, never one a tile on the map could read now.
+  SstStore.prototype._evict = function () {
+    if (this.bytes <= MAX_SST_CHUNK_BYTES) return;
+    var need = this.onNeeded ? this.onNeeded() : {};
+    for (var t = 0; t < this.tiers.length && this.bytes > MAX_SST_CHUNK_BYTES; t++) {
+      var T = this.tiers[t], it = T.loaded.keys(), k;
+      while (this.bytes > MAX_SST_CHUNK_BYTES && !(k = it.next()).done) {
+        if (need[T.name + '/' + k.value]) continue;
+        this.bytes -= T.loaded.get(k.value).bytes; T.loaded.delete(k.value);
+      }
+    }
+  };
+  SstStore.prototype._stop = function () {
+    if (this.abort) { this.abort.abort(); this.abort = null; }
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    this.inflight = {}; this.queue = []; this.queued = {};
+  };
+  // A field switch: downloads stop, the cells stay for the switch back.
+  SstStore.prototype.idle = function () { this._stop(); this.onChange = null; this.onNeeded = null; };
+  // Off: also the cells (the frame and the manifest stay: the next On is instant, the day re-checked by load()).
+  SstStore.prototype.abortAll = function () {
+    this.idle();
+    if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; }
+    if (this.status === 'loading') { this.status = this.manifest ? 'ok' : 'idle'; this.loading = null; }
+    for (var t = 0; t < this.tiers.length; t++) this.tiers[t].loaded.clear();
+    this.bytes = 0; this.failed = {};
+  };
+  // THE sampler of the store: fractional codes over SST_FDEF's range (0 = none) for an n x n lattice of pixel centres
+  // at world pixels (x0 + ox + i * step + 0.5, y0 + oy + j * step + 0.5), x0 / y0 the tile's origin at its zoom, into
+  // out[0..n*n). The tile (ox 0, oy 0, step 1, n TILE), the contour lattice (ox -s, oy -s, step s) and the readout
+  // (ox px, oy py, n 1) all read here, so they agree exactly. tier 0: the frame on the model grid (the frames' own
+  // sampler); a chunk tier: bilinear over the four nodes around the point within ITS cell (the apron keeps them inside;
+  // absent nodes, q 0, drop out as in sampleRow), in that cell's code space, then the fixed range. A cell not in hand
+  // (unlisted, or not loaded: a pad cell) is absent.
+  SstStore.prototype.sampleGrid = function (coords, ox, oy, step, n, out, tier) {
+    var nW = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE + ox, y0 = coords.y * TILE + oy, i, j, k = 0, lat, c;
+    var T = this._tier(tier);
+    if (!T) {
+      var f = this.frame, g = this.grid, cols = f.cols, rows = f.rows, colPos = this._colPos;
+      for (i = 0; i < n; i++) { c = ((x0 + i * step + 0.5) / nW * 360 - 180 - g.lon0) / g.dlon; colPos[i] = ((c % cols) + cols) % cols; }
+      for (j = 0; j < n; j++, k += n) {
+        lat = latOfWorldY(y0 + j * step + 0.5, nW);
+        var r = (g.lat0 - lat) / -g.dlat;
+        if (r >= 0 && r <= rows - 1) sampleRow(f, false, r, colPos, n, out, k); else out.fill(0, k, k + n);
+      }
+      return out;
+    }
+    var cell = T.cell, res = T.res, N = T.n, lon0s = this._lon0, fxs = this._fx, LO = SST_FDEF.lo, SC = 254 / (SST_FDEF.hi - SST_FDEF.lo);
+    for (i = 0; i < n; i++) {
+      var lon = lngOfWorldX(x0 + i * step + 0.5, nW);
+      lon = ((lon + 180) % 360 + 360) % 360 - 180;                               // world copies sample the one world
+      var lon0 = Math.floor(lon / cell) * cell;
+      lon0s[i] = lon0; fxs[i] = (lon - lon0) / res + 1;
+    }
+    for (j = 0; j < n; j++, k += n) {
+      lat = latOfWorldY(y0 + j * step + 0.5, nW);
+      if (!(lat > -90 && lat < 90)) { out.fill(0, k, k + n); continue; }
+      var lat0 = Math.floor(lat / cell) * cell, fy = (lat0 + cell - lat) / res;
+      var r0 = Math.floor(fy), r1 = r0 + 1 < N ? r0 + 1 : r0, fr = fy - r0, w0 = 1 - fr, b0 = r0 * N, b1 = r1 * N;
+      for (var i0 = 0; i0 < n;) {
+        var l0 = lon0s[i0], i1 = i0 + 1;
+        while (i1 < n && lon0s[i1] === l0) i1++;                                   // one run per cell column (at most a few per row)
+        var rec = T.loaded.get(lat0 + '_' + l0);
+        if (!rec) { out.fill(0, k + i0, k + i1); i0 = i1; continue; }
+        var q = rec.q, lo = rec.lo, span = (rec.hi - rec.lo) / 254;
+        for (i = i0; i < i1; i++) {
+          var fx = fxs[i], c0 = Math.floor(fx), c1 = c0 + 1 < N ? c0 + 1 : c0, fc = fx - c0;
+          var a = q[b0 + c0], b = q[b0 + c1], cc = q[b1 + c0], d = q[b1 + c1], w = 0, acc = 0, wt;
+          if (a) { wt = w0 * (1 - fc); acc += a * wt; w += wt; }
+          if (b) { wt = w0 * fc; acc += b * wt; w += wt; }
+          if (cc) { wt = fr * (1 - fc); acc += cc * wt; w += wt; }
+          if (d) { wt = fr * fc; acc += d * wt; w += wt; }
+          if (w < 0.25) { out[k + i] = 0; continue; }
+          var code = 1 + (lo + (acc / w - 1) * span - LO) * SC;
+          out[k + i] = code < 1 ? 1 : code > 255 ? 255 : code;
+        }
+        i0 = i1;
+      }
+    }
+    return out;
+  };
+
   // ---- frame decoding ----
   // Frames are 8-bit greyscale, non-interlaced PNGs. The direct path parses the chunks, lets the
   // browser inflate the zlib stream (DecompressionStream) and unfilters the rows into the 1 MB code
@@ -1025,6 +1334,7 @@
       this._one = new Float64Array(1); this._oneOut = new Float64Array(1);
       this._coast = null; this._clip = false; this.onRedraw = null;
       this._contour = null; this._F = null; this._sm = null; this._sv = null;
+      this._src = null; this._sq = null;                   // plan section 44: the SST store the tiles sample instead of the frame
       this._sc = new Float64Array(TILE / 2 + 2); this._sr = new Float64Array(TILE / 2 + 2); this._srow = new Float64Array(TILE / 2 + 2);
       this._pi = new Int32Array(TILE + 2); this._pt = new Float64Array(TILE + 2);
       this._gen = 0; this._staleQ = null;                   // plan section 42: which frame a tile shows (el._ovGen)
@@ -1041,7 +1351,36 @@
       this._gen++;
       this._redraw(true);
     },
-    clear: function () { this._frame = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._sm = null; this._redraw(); },
+    clear: function () { this._frame = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._sm = null; this.setSource(null, true); this._redraw(); },
+    // The SST store the tiles sample (plan section 44), or null (the frame again). The caller sets the store's tier-0
+    // frame with setFrame(SST_FDEF ...) beside it; a loaded store answers every tile from the finest tier in hand.
+    setSource: function (store, quiet) {
+      var self = this, prev = this._src;
+      if (prev && prev.onChange === this._onSrc) { prev.onChange = null; prev.onNeeded = null; }
+      this._src = store && store.status === 'ok' ? store : null;
+      if (this._src) {
+        this._onSrc = function () { self._redrawSrc(); };
+        this._src.onChange = this._onSrc;
+        this._src.onNeeded = function () { return self._srcNeeded(); };
+      }
+      if (!quiet) this._redraw();
+    },
+    // A cell landed or failed: the tiles whose tier changed, or whose cells (own or pad) landed since they were drawn.
+    _redrawSrc: function () {
+      var st = this._src;
+      if (!st || !this._frame) return;
+      for (var k in this._tiles) {
+        var t = this._tiles[k], el = t.el;
+        if (!el || !t.coords) continue;
+        if (st.tierFor(t.coords) !== el._ovSrcTier || st.landedAfter(t.coords, el._ovSrcTier, el._ovSrcRev)) this._draw(el, t.coords);
+      }
+    },
+    _srcNeeded: function () {
+      var st = this._src, need = {};
+      if (!st) return need;
+      for (var k in this._tiles) { var t = this._tiles[k]; if (t.coords) st.keysFor(t.coords, need); }
+      return need;
+    },
     hasFrame: function () { return !!this._frame; },
     // A loaded CoastStore (or null): from now on hs/tp tiles are clipped to its polygons.
     setCoast: function (store) {
@@ -1155,9 +1494,17 @@
     // The readout's value for the drawn pixel that contains (lat, lng) at tile zoom z: null where the
     // tile shows nothing (no data, land, or a tile that is not on the map yet).
     readoutAt: function (lat, lng, z) {
-      var p = pixelOf(lat, lng, z), ll = tilePixelLatLng(p, p.px, p.py), v = this.valueAt(ll.lat, ll.lng);
+      var p = pixelOf(lat, lng, z), t = this._tiles[p.x + ':' + p.y + ':' + p.z], v;
+      if (this._src) {                                       // the tile's own tier, the pixel's own sample
+        if (!this._frame || !t || !t.el || t.el._ovSrcTier === undefined) return null;
+        this._src.sampleGrid(p, p.px, p.py, 1, 1, this._oneOut, t.el._ovSrcTier);
+        v = this._oneOut[0] ? this._value(this._oneOut[0]) : null;
+      } else {
+        var ll = tilePixelLatLng(p, p.px, p.py);
+        v = this.valueAt(ll.lat, ll.lng);
+      }
       if (v === null || !this._clip) return v;
-      var t = this._tiles[p.x + ':' + p.y + ':' + p.z], land = t && t.el ? t.el._ovLand : undefined;
+      var land = t && t.el ? t.el._ovLand : undefined;
       if (land === undefined || land === LAND_ALL) return null;
       return land === null || 255 - land[p.py * TILE + p.px] >= LAND_READOUT ? v : null;
     },
@@ -1182,7 +1529,8 @@
     },
     // Codes for one Web-Mercator tile (pixel centres) into out[TILE*TILE]; 0 = transparent. Column
     // positions are periodic, so wrapped and unwrapped tile x (world copies) sample identically.
-    tileCodes: function (coords, out) {
+    tileCodes: function (coords, out, tier) {
+      if (this._src) return this._src.sampleGrid(coords, 0, 0, 1, TILE, out, tier || 0);
       var f = this._frame, g = this._grid, cols = f.cols, rows = f.rows;
       var n = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE, y0 = coords.y * TILE, colPos = this._colPos;
       for (var px = 0; px < TILE; px++) {
@@ -1203,11 +1551,13 @@
       el._ovGen = this._gen;
       if (!this._frame) { ctx.clearRect(0, 0, TILE, TILE); return; }
       var land = this._masked() ? this._landFor(el, coords) : null;
+      var tier = 0;
+      if (this._src) { tier = this._src.tierFor(coords); el._ovSrcTier = tier; el._ovSrcRev = this._src.rev; }
       if (this._clip && land === LAND_ALL) { ctx.clearRect(0, 0, TILE, TILE); return; }   // nothing but land: no sampling at all
-      var codes = this.tileCodes(coords, this._codes);
+      var codes = this.tileCodes(coords, this._codes, tier);
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
       composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data);
-      if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, img.data);
+      if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, img.data, false, tier);
       if (!this._clip && land && land !== LAND_ALL) {                          // the coastline under an unclipped field
         if (el._ovEdgesOf !== land) { el._ovEdges = coastEdges(land, WIND_LOOK.gain); el._ovEdgesOf = land; }
         applyEdges(el._ovEdges, img.data, WIND_LOOK.ink);
@@ -1218,9 +1568,9 @@
     // same pixels for every tile, so neighbouring tiles agree on their shared edges and world copies
     // match) and interpolated in between; a 16-px block is drawn only if its samples span a whole level.
     // all: draw every block (the tests compare it with the skipping).
-    _contours: function (coords, rgba, all) {
+    _contours: function (coords, rgba, all, tier) {
       var cfg = this._contour, fr = this._frame, g = this._grid, cols = fr.cols, rows = fr.rows, i, j;
-      var step = cfg.step * (coords.z < 4 ? 2 : 1), k = cfg.per / step, lo = this._lo, span = (this._hi - lo) / 254;
+      var step = cfg.step * (coords.z < 4 ? 2 : 1), k = cfg.per / step, koff = cfg.off ? cfg.off / step : 0, lo = this._lo, span = (this._hi - lo) / 254;
       var n = TILE * Math.pow(2, coords.z), cellPx = n * g.dlon / 360, s = cellPx >= 6 ? 4 : 2, m = TILE / s + 2;
       var prof = contourProfile(coords.z), core = prof[1], edge = prof[2];
       var x0 = coords.x * TILE, y0 = coords.y * TILE, cp = this._sc, rp = this._sr, row = this._srow, pi = this._pi, pt = this._pt;
@@ -1233,19 +1583,25 @@
         var lat = Math.atan(Math.sinh(Math.PI - 2 * Math.PI * (y0 + (j - 1) * s + 0.5) / n)) * 180 / Math.PI;
         rp[j] = (g.lat0 - lat) / -g.dlat;
       }
-      var sm = this._smooth(cp, rp, m), J = sm.jump ? sm.J : null, wide = cellPx < s;
-      for (j = 0; j < m; j++) {
-        var r = rp[j], o = j * m;
-        if (!(r >= 0 && r <= rows - 1)) { for (i = 0; i < m; i++) V[o + i] = NaN; continue; }
-        this._smoothRow(r, cp, m, row, sm.S);
-        var r0 = Math.floor(r);
-        for (i = 0; i < m; i++) V[o + i] = row[i] && !(J && jumpAt(J, cols, rows, r0, Math.floor(cp[i]), wide)) ? (lo + (row[i] - 1) * span) * k : NaN;
+      if (this._src) {                                       // the store's values on the lattice, unsmoothed (steps <= 0.1 C)
+        var Q = this._sq || (this._sq = new Float64Array((TILE / 2 + 2) * (TILE / 2 + 2)));
+        this._src.sampleGrid(coords, -s, -s, s, m, Q, tier || 0);
+        for (j = 0; j < m * m; j++) V[j] = Q[j] ? (lo + (Q[j] - 1) * span) * k + koff : NaN;
+      } else {
+        var sm = this._smooth(cp, rp, m), J = sm.jump ? sm.J : null, wide = cellPx < s;
+        for (j = 0; j < m; j++) {
+          var r = rp[j], o = j * m;
+          if (!(r >= 0 && r <= rows - 1)) { for (i = 0; i < m; i++) V[o + i] = NaN; continue; }
+          this._smoothRow(r, cp, m, row, sm.S);
+          var r0 = Math.floor(r);
+          for (i = 0; i < m; i++) V[o + i] = row[i] && !(J && jumpAt(J, cols, rows, r0, Math.floor(cp[i]), wide)) ? (lo + (row[i] - 1) * span) * k + koff : NaN;
+        }
       }
       var W2 = TILE + 2, F = this._F || (this._F = new Float64Array(W2 * W2)), B = CONTOUR_BLOCK;
       for (i = 0; i < W2; i++) { var fi = (i - 1) / s + 1; pi[i] = Math.floor(fi); pt[i] = fi - pi[i]; }   // pixel column i - 1 between samples pi, pi + 1
       var lut = this._lut, L0 = this._legend[0], sc = 255 / (this._legend[1] - L0);
       var ink = function (lv) {                                  // one ink per level, from the colour of the level's own value
-        var t = Math.round((lv / k - L0) * sc);
+        var t = Math.round(((lv - koff) / k - L0) * sc);
         t = t < 0 ? 0 : t > 255 ? 255 : t;
         return (0.299 * lut[t * 3] + 0.587 * lut[t * 3 + 1] + 0.114 * lut[t * 3 + 2]) > 170 ? 30 : 255;
       };
@@ -2859,7 +3215,8 @@
     var c = CONTOURS[this.field];
     if (!this.contours || !c) return null;
     var unit = this.opts.getUnit() === 'Metric' ? 'Metric' : 'US';
-    return { step: c[unit], per: unitOf(this.field, unit).f(1) };
+    var u = unitOf(this.field, unit);
+    return { step: c[unit], per: u.scale !== undefined ? u.scale : u.f(1), off: u.offset || 0 };
   };
   // The manifest field carrying this layer's direction (pdir under the wave fields, wdir under wind)
   // when the run publishes it as a circular FROM field; null otherwise (the Animation box is disabled).
@@ -3654,6 +4011,8 @@
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
       validCoastIndex: validCoastIndex,
+      SstStore: SstStore, sstStore: sstStore, validSstManifest: validSstManifest, validSstPointer: validSstPointer, sstTierFor: sstTierFor, SST_FDEF: SST_FDEF,
+      SST_TIER_ZOOMS: SST_TIER_ZOOMS, SST_PREFIX: SST_PREFIX, SST_PAD_PX: SST_PAD_PX, MAX_SST_INFLIGHT: MAX_SST_INFLIGHT, MAX_SST_CHUNK_BYTES: MAX_SST_CHUNK_BYTES, cellsForTile: cellsForTile,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,

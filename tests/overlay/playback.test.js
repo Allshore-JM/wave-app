@@ -523,10 +523,10 @@ test('contours and the animation are always on (no checkboxes; a tab\'s old "off
   assert.deepEqual([o._opacityFor('hs'), o._opacityFor('tp'), o._opacityFor('wind')], [0.65, 0.65, 1], 'fixed opacity; old slider saves ignored');
   assert.equal(o.setOpacity, undefined, 'no opacity setter');
   o.mount('hs'); await settle(); await w.releaseAll();
-  assert.deepEqual(o.layer._contour, { step: 2, per: 3.28084 }, 'the first frame is drawn with them');
+  assert.deepEqual(o.layer._contour, { step: 2, per: 3.28084, off: 0 }, 'the first frame is drawn with them');
   assert.ok(o._wantDir(), 'the direction (particles) is wanted from the start');
   unit = 'Metric'; o.refresh();
-  assert.deepEqual(o.layer._contour, { step: 0.5, per: 1 });
+  assert.deepEqual(o.layer._contour, { step: 0.5, per: 1, off: 0 });
   o.setContours(true); o.setAnim(true); o.setContours(false); o.setAnim(false); o.setContours(true); o.setAnim(true);
   const st = storage.read(); assert.equal(st.contours, false); assert.equal(st.anim, false, 'the setters write nothing (the old values stay as they were)');
   done(o);

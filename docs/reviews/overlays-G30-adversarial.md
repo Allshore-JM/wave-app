@@ -136,3 +136,83 @@ Every item of the scope is built:
 Tests: overlay Node 279 (+13), UI 393, pytest 1,133 (the notice); mutants of the fix 21: 20 killed (F17, the aborted check
 before `_adopt` in `_loadManifest`, is a second guard: the watchdog fetch already rejects on abort). Production merged in
 (944f055: throttling hotfix 2).
+
+## Test-site verification of the fix round (2026-10-15, Opus 5.5 MAX)
+`test` @ 3ae688c (2.17.1, a cherry-pick of 6f9ff0e; the G30 record taken from the feature) then 6eeb842 (2.17.2); the site
+files equal the feature's apart from the test-only logo; overlay Node 278/278 on the test branch; served assets = the commit,
+the previous version's URL 404. Headless Edge with the GPU, trusted keys / clicks / touch; scratch `ecmwf/v4/hl`
+(`v3_sizes.js`, `v4_g30fix.js`, `v5_probe.js`, the step-4 `v1_func.js` / `v2b_banner.js` / `w54e.js`).
+- **Found and fixed (2.17.2 @ 6eeb842):** 2.17.1's mouse-pointer dropdown was 20 px where production's head line is 18.4 px, so
+  a 1280x320 map still folded the sheet one size early (no ribbon, no time; production keeps them). Probed on the page, then
+  `height: 18px; box-sizing: border-box` (touch keeps min-height 28 px); CSS pin in panel.test.js.
+- **G30-1 / G30-14, production 2.16.6 vs test 2.17.2 at 15 sizes** (812x375, 667x375, 844x340, 800x360, 740x300, 667x260,
+  568x220, 844x390, 375x812 touch dpr 2; 1280x320/300/260/400/650 and 1920x1080 mouse): 15 of 15 identical — the ribbon
+  where production has it, the same head heights (28 px touch, 18.4 px mouse) and panel / sheet heights to 0.1 px; every
+  one-line head is [play]["Thu, Oct. 15, 01:00 PM HST · GFS"], "· ECMWF" after a switch; no sideways scroll.
+- **G30-3 / G30-5:** ECMWF's pointer held at the network: 30 samples of the loading panel, every one with the dropdown
+  (focused); the error panel "no answer from the frame host" at 15.5 s with the dropdown focused; the tab's save still GFS; a
+  reload restores GFS at the same time. Escape: 3 s into a held load the loading panel's dropdown (trusted ArrowUp) goes back
+  to GFS at the same time.
+- **G30-15:** GFS 21Z (between ECMWF's 6-hourly frames) -> ECMWF 18Z -> GFS 21Z again; a trusted ribbon step then a switch:
+  from the stepped time (00Z on both).
+- **G30-2:** prefers-reduced-motion emulated: a playing switch keeps playing, both ways.
+- **G30-8:** GFS wind on the relief, ECMWF frames slowed 2.5 s: 88 samples (55 with nothing drawn), never the imagery; the
+  relief after the landing.
+- **G30-4 / G30-11 / G30-13:** the credit "Overlay: ECMWF CC BY 4.0 · GSHHG" links `/notice/ecmwf` (new tab); the page 200
+  text/plain, public 1 day, with the copyright (this year), source, licence and link, the changes, ECMWF's disclaimer and no
+  endorsement; aria-label "Overlay model"; on a phone the error panel's Retry is 41x28 px, the dropdown 172x28 px.
+- **Regressions (the step-4 scripts on 2.17.2):** the paused switch (exact time, focus kept, no GFS frame after), decoded
+  frames = the bucket's PNGs (ECMWF and GFS, field and direction), the credit and run lines, playing switches both ways (no
+  frame of the old model started or drawn after the switch), the pending-scrub switch (requested 17Z -> ECMWF 18Z, not near
+  the drawn frame), Off/On, reload, the error path, the phone sheet, a new tab on GFS, the newer-run banner and Update with
+  real runs (ECMWF 00Z served first: no stale line at 12 h; "A newer run (20261015 12Z)"; a trusted Update), a switch while
+  the banner shows: all pass; console clean apart from the injected connection failure.
+- **Timed (GPU, both runs 12Z warm for the test Origin):** ECMWF shark 1080p 8.0 fps 125/135 ms, GFS 125/136, ECMWF phone
+  124/135; 0 skipped, 0 unpainted, fetch/frame 1.02, in flight within the cap; heap live +31.5 / +31.8 / +12.6 MB.
+- Cleanup: the test origin's storage emptied after every script; Edge stopped (profile removed, no process left).
+
+## Re-check of the fix round (2026-10-15/16, one fresh reviewer, Opus 5.5 MAX): 0 P0, 0 P1, 0 P2, 6 P3
+Scope: the client diff 2374454..6eeb842 and the test site (2.17.2). Evidence: G30-A's two-model fuzz adapted to the new rules
+plus five new invariants (chosen time across switches, the save only after a landing, no watchdog timer outliving its
+request, a way to the other model in every panel state, reduced motion): 9,400 seeds, 26,547 switches, no frame / cache /
+credit / banner / save of one model under the other, never stuck, a reload never trapped; 55 own mutants (40 killed, 9
+equivalent incl. F17, 6 behaviour-changing survivors = R-4/R-5 below); on the site 302 one-pixel height steps against
+production (mouse and touch) with identical folds and head heights, the watchdog at 14 s (lands) and 16 s (error at 15.3 s,
+the late answer never lands; the manifest likewise), the loading panel's dropdown by trusted click and keys (a 9-key burst),
+Tab order, the status node, the notice by a trusted click, reduced motion, timed parity (two back-to-back pairs, 8.0 fps,
+p50 125 ms, 0 unpainted). Claims R1-R10 CONFIRMED (R1 with R-1/R-3), R11 PARTLY (the author's 21 mutants not re-run).
+- **R-1 (P3, accessibility)** a browser minimum font size of 14 px or more clips the 18-px dropdown's label (production's
+  span grows). Fix proposed and measured in the page: `height: auto; margin: -1px 0` (the select out of the head's height):
+  plain dpr 1 head 18.39 = production, 16-px minimum font label whole with the head 23.19 = production, real 150 % head
+  17.73 = production.
+- **R-2 (P3)** a failed model switch on wind leaves the bare relief (and the blend) with nothing drawn under the error panel;
+  from wave height the same failure shows the imagery. Fix: `_fail` syncs the look when nothing is drawn.
+- **R-3 (P3)** at a real 150 % display scale borders snap to 0.667 px: the test head is 18.00 px vs production's 17.73 (no fold
+  changed in 181 heights); fixed by R-1's rule.
+- **R-4 (P3, tests)** `_switchT` not cleared by Off, and `_switchT = shown` instead of the chosen time, survive the suites.
+- **R-5 (P3, tests)** nothing pins that the watchdog or an abort cancels the network request itself (the signal given to fetch).
+- **R-6 (P3, docs)** the watchdog is a 15-s deadline per pointer / manifest request (headers and body), on every such load
+  (GFS's own first load, a field switch's re-read, Update), not "silence on a switch".
+- Pre-existing, not counted (also on 2374454 and production's Update path; G30-A saw the class): an Update racing a playback
+  landing, or an Update whose frames never answer, leaves the old run's picture of the same model with `frameIndex` null
+  under a ready or error panel. A switch is immune (`_dropRun`).
+
+## Fix round 2 (asset 2.17.3, 2026-10-16, Opus 5.5 HIGH; the owner also asked for the pre-existing Update race)
+- **R-1 / R-3** the dropdown's fixed height is gone: `margin: -1px 0` keeps it out of the head line's height and the browser
+  sizes it, so a larger minimum font grows it unclipped (as production's span does) and borders that snap at 150 % add
+  nothing. The touch rule (`min-height: 28px`) is unchanged.
+- **R-2** `_fail` syncs the look whenever nothing is drawn: a failed switch on wind gives the imagery back (the basemap
+  follows what is drawn, as everywhere else).
+- **Update race (pre-existing)** two parts. (a) `update()` drops the pending target at once, so a step or playback landing of
+  the run being replaced (its frame already decoded) can no longer pass `_goto`'s checks and put the old run's ready panel
+  over Update's loading one. (b) A load that fails with no frame of its run in hand clears the predecessor's picture, its
+  particles, the readout and the overlay credit: never a picture without its frame and run under the error panel.
+- **R-4 / R-5 pins**: the chosen time is what a run of switches keeps (never a snapped frame's) and Off ends it; the
+  watchdog and a switch away abort the signal fetch itself was given.
+- **R-6** README: the 15-s deadline covers every pointer / manifest request (switch, first load, a field switch's re-read,
+  Update), headers and body; a failed load leaves nothing of an earlier run; Update drops the pending step.
+- Tests: the three behaviour fixes each fail on 2.17.2 and pass on 2.17.3; the CSS pin asserts no fixed height. Overlay
+  Node 284, UI 393, pytest 1,133. Mutants: 11 of 11 killed (no clear / no look sync / clear with a frame on the map, which also pinned the outage's picture / Update keeping its target / Off keeping _switchT / _switchT = the shown frame / fetch given the outer signal / abort or watchdog not cancelling the request / the fixed height back).
+- Fuzz (the re-check's two-model fuzz against the new source): 1,350 runs, 3,626 switches on the main, canvas and worker decode paths (interactive and playback), 0 failures. The three seeds that failed "I1 drawn" on
+  2.17.2 (10459 main; 10624 main and canvas; 31762 main, interactive) pass.
+

@@ -611,7 +611,8 @@ test('G26 A-P2-3: a gesture the browser cancels (or a lost capture) is never a t
   assert.match(css, /\.ov-sr \{[^}]*position: absolute; width: 1px; height: 1px;[^}]*overflow: hidden;/);
   // G30-1: the model dropdown keeps the head line's height (18 px with a mouse, the toggle's 28 px on touch), or the panel
   // folds one size early (phone landscape and short desktop maps lost the ribbon and the time)
-  assert.match(css, /\.ov-ctl select\.ov-model-sel, \.ov-sheet select\.ov-model-sel \{[^}]*padding: 0 4px;[^}]*height: 18px; box-sizing: border-box;/);
+  assert.match(css, /\.ov-ctl select\.ov-model-sel, \.ov-sheet select\.ov-model-sel \{[^}]*padding: 0 4px; margin: -1px 0;/);
+  assert.ok(!/select\.ov-model-sel \{[^}]*[^-]height: \d/.test(css), 'no fixed height: a larger minimum font grows the select unclipped (re-check R-1)');
   assert.match(css, /@media \(pointer: coarse\)[^@]*select\.ov-model-sel \{ min-height: 28px; \} \.ov-retry, \.ov-update \{ min-height: 28px; \}/);
 }));
 

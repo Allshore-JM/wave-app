@@ -613,6 +613,21 @@ product) publishes the newest NASA JPL MUR SST v4.1 day as tiles; `sst_tiles.py`
   beyond the 2-pixel fill.
 - **Tests**: `tests/model_frames/test_sst.py` runs the same tiling code on a 20-pixels-per-degree synthetic world (the
   `Geo` lattice parameter). Review record: `docs/reviews/overlays-G31a-adversarial.md`.
+- **The client store** (asset 2.18.0, plan section 44 step 3; nothing on the page yet): `static_overlay/overlay.js` reads the
+  day through an `SstStore` (one per bucket root per page, like the coast stores): the pointer (`no-cache`, 15-s watchdog),
+  the manifest (validated: the fixed -2..35 range, the tier geometry px x res = cell, a one-node apron, every cell a
+  [lo, hi, bytes] triple), the 0.25-degree frame through the frames' own decoder, then cells on demand: a tile draws from
+  the finest tier its zoom wants (the frame below tile zoom 5, 0.05-degree cells from 5, 0.01-degree cells from 8) whose
+  cells are all in hand, the next coarser meanwhile, and is redrawn when they land; <= 4 cell downloads at once, a 24 MB
+  LRU that never drops a cell a tile on the map could read, 404 / undecodable = final, other failures a 60-s cooldown; the
+  pad cells one contour step around a tile are fetched too (never a condition for drawing). The store is a pluggable SOURCE
+  on the tile layer (`setSource`): its sampler writes fractional codes over the fixed range into the layer's code buffer,
+  bilinear over the four nodes around each pixel centre within its own cell (absent nodes drop out as in the frames), so
+  the composer, the land clip, the readout (= the drawn pixel: the tile records the tier it drew) and the contours are the
+  frames' code unchanged; the isotherms are traced on the unsmoothed values with the deg F offset carried as a level offset
+  (hs / tp contours are byte-identical). A world copy samples the one world; a point on a cell edge reads the same from
+  either side within the cells' quantisation (exactly when their ranges agree). `tests/overlay/sst.test.js` (14, incl. two
+  published cells of 2026-10-15 against ERDDAP's own values and the real seam between them).
 
 ## Forecast points
 

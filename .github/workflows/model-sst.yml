@@ -1,0 +1,66 @@
+# Publishes the newest NASA JPL MUR SST v4.1 day (GHRSST L4, 0.01 deg, daily, via NOAA CoastWatch ERDDAP) as sea
+# surface temperature tiles to R2 under sst/v1/ (plan section 44): t0 (0.25 deg globe), t1 (0.05 deg, 20-deg cells),
+# t2 (0.01 deg, 5-deg cells). A day reaches ERDDAP ~26 h after its 09Z time; the job runs hourly and, when the newest day
+# is already live, ends in seconds (a ~750 MB download and a ~2-minute build otherwise).
+# Data: free and redistributable; credit "NASA JPL MUR SST v4.1 (doi:10.5067/GHGMR-4FJ04) via NOAA CoastWatch ERDDAP".
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: model-sst
+on:
+  schedule:
+    - cron: "20 * * * *"
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "YYYYMMDD (blank = the newest MUR day on ERDDAP)"
+        default: ""
+      dry_run:
+        description: "no uploads (true/false)"
+        default: "false"
+      force:
+        description: "re-publish even if the day is live (true/false)"
+        default: "false"
+concurrency:
+  group: model-sst
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: sst
+          create-args: >-
+            python=3.11.16
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            h5py=3.14.0
+          cache-environment: true
+      - name: Record environment
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|numpy|pillow|boto3|h5py|hdf5)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish SST tiles
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          DAY: ${{ github.event.inputs.day }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ -n "$DAY" ] && ! [[ "$DAY" =~ ^[0-9]{8}$ ]]; then echo "bad day input"; exit 2; fi
+          ARGS=()
+          [ -n "$DAY" ] && ARGS+=(--day "$DAY")
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          [ "$FORCE" = "true" ] && ARGS+=(--force)
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/sst.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          exit "$rc"

@@ -561,6 +561,52 @@ retention are shared, so the browser draws both models with the same code.
   files and each record's metadata and a few cell values, incl. three sea-ice cells) for `tests/model_frames/test_ecmwf.py`.
   Review record: `docs/reviews/overlays-G30a-adversarial.md`.
 
+### Sea surface temperature tiles (plan section 44, the job)
+
+A daily observation layer beside the model overlays: `tools/model_frames/sst.py` (GitHub Actions `model-sst.yml`, its own
+concurrency group, cron hourly at :20, re-enabled by the keepalive; NOT dispatched by the 10-minute trigger Worker: a daily
+product) publishes the newest NASA JPL MUR SST v4.1 day as tiles; `sst_tiles.py` holds the tiling (pure numpy).
+
+- **Data**: MUR v4.1 (GHRSST L4, doi:10.5067/GHGMR-4FJ04): a gap-free daily analysis of satellite infrared and microwave
+  data and in-situ measurements on a 0.01-degree grid (36,000 x 17,999), the night-time "foundation" temperature (below
+  the daytime warm layer). Taken from NOAA CoastWatch's ERDDAP mirror (`erddap/files/jplMURSST41/`, anonymous HTTPS,
+  NetCDF-4 read with h5py: ~750 MB a day; a day's file appears ~26 h after its nominal 09Z time; ERDDAP revises the last
+  7 days daily, the job takes each new day once). Free and redistributable; credit "NASA JPL MUR SST v4.1 via NOAA
+  CoastWatch ERDDAP" (the manifest's `source` block). Nothing free is global, cloud-free AND hourly at this resolution
+  (hourly geostationary SST has cloud holes); the owner chose this daily analysis (2026-10-16).
+- **Values**: open sea (MUR mask 1); MUR's own analysed values on land-flagged pixels within 3 pixels (3 km) of open sea
+  (MUR extends its analysis smoothly over the coast: next to the sea those values differ from the sea pixel by 0.003-0.03
+  deg C, like two sea pixels; 2026-10-14 file); then two rings of the mean of valued neighbours over other land pixels,
+  so water the precise GSHHG coastline has inside MUR's coarser land mask gets a value (the client clips land with
+  GSHHG). Lakes (mask 5, incl. the Great Lakes) and ice-covered water (mask 9 / 13: sea-ice fraction 15 % or more in
+  every such pixel) stay empty, as the wave overlays leave ice empty. deg C = 25 + raw / 1000 (MUR stores kelvin as
+  int16 x 0.001 + 298.15).
+- **Tiers** (all on MUR's own 0.01-degree lattice, nothing resampled): `t0` the whole globe at 0.25 degree (the mean of
+  the 25 x 25 pixels centred on each node: the overlay frames' 1440 x 721 grid; fixed code range -2..35 deg C);
+  `t1` 0.05 degree (5 x 5 means) in 20-degree cells; `t2` every pixel in 5-degree cells. Cells are named by their
+  south-west corner on multiples of the cell size from 0 (`<lat0>_<lon0>`, the client's `coastCellsForTile` rule:
+  20-degree cells run -100..80) and hold n + 2 nodes a side, a one-node apron shared with the neighbours: row r / column
+  c is centred at lat = lat0 + cell - r * res, lon = lon0 + (c - 1) * res (rows north to south). Codes are 8-bit, 0 = no
+  value, v = lo + (code - 1) / 254 * (hi - lo) with lo / hi per cell (in the manifest, covering the apron so nothing
+  clamps); steps were at most 0.07 deg C (t2) and 0.10 deg C (t1) on 2026-10-14. A t1 / t0 node with no valued pixel
+  but land in its block takes the mean of its valued neighbour nodes (one ring).
+- **Bucket**: `sst/v1/<YYYYMMDD>/t0.png`, `t1/<cell>.png`, `t2/<cell>.png` (immutable), `stats-` and `manifest-<published>.json`,
+  then `sst/v1/latest.json` (`{format, day, run, manifest, published_utc, complete}`, max-age 300) LAST; `failed/<day>.json`
+  (a failed build backs off 1 h, up to 6 times); 3 days kept (`--keep`), pruning only `sst/v1/<8 digits>/`. One day:
+  1,837 t2 cells (79.5 MB), 152 t1 cells (5.1 MB), t0 221 KB; built in ~95 s here (download 24 s).
+- **Exit codes**: 0 published or nothing new; 1 a listing / download / build failure, or a stale source (the newest MUR day
+  more than 4 days old: the run fails, GitHub mails, at most once every 12 h, record `sst/v1/stale-alarm.json`);
+  2 bad arguments. `--dry-run`, `--local DIR` (write every object to a folder), `--file PATH --day YYYYMMDD` (a file on
+  disk), `--force`.
+- **Accuracy** (2026-10-14 tiles against NDBC's own water temperature that day, daily means, US coasts and Hawaii):
+  open-water buoys 129, median difference 0.24 deg C, RMS 0.58, 77 % within 0.5 and 91 % within 1 deg C (tiles 0.16
+  warmer on average); coastal and harbour stations 128, median 0.48, RMS 1.01, 52 % within 0.5 and 80 % within 1 (tiles
+  0.36 COLDER: shallow harbour water runs warmer than the foundation temperature; Honolulu Harbor 1.4, Kaneohe 1.0).
+  Hawaii's seven buoys all within 0.5 deg C (the largest, Waimea 51201, +0.50). No value at the Great Lakes (lakes are left empty) or in rivers and back-bays
+  beyond the 2-pixel fill.
+- **Tests**: `tests/model_frames/test_sst.py` runs the same tiling code on a 20-pixels-per-degree synthetic world (the
+  `Geo` lattice parameter). Review record: `docs/reviews/overlays-G31a-adversarial.md`.
+
 ## Forecast points
 
 Live on allshoresurf.com since 2026-10-03 (UI asset 1.15.2; rollback tag `prod-pre-point`). A visitor picks **Map tools

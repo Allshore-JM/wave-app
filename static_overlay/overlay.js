@@ -53,9 +53,10 @@
   // Colour stops over the LEGEND POSITION (0..1). For wave height the position is not linear in the
   // value (KNOTS below): 0-3 m takes about half of the scale, with a hue change every 0.5-1 m.
   var RAMPS = {
-    // sea surface temperature over -2..35 C (plan section 44; provisional until the owner's pick from the preview sheet)
-    sst:  [[0,'#312e81'],[0.14,'#2563eb'],[0.3,'#06b6d4'],[0.42,'#14b8a6'],[0.52,'#22c55e'],[0.62,'#eab308'],[0.72,'#f97316'],
-           [0.82,'#dc2626'],[0.92,'#c026d3'],[1,'#fbcfe8']],
+    // sea surface temperature over the legend position of -2..35 C (KNOTS.sst; plan section 44): the owner's pick B, a
+    // thermal scale (2026-10-16): deep purple, blue, teal, green, yellow, orange, red, dark red
+    sst:  [[0,'#2d004b'],[0.14,'#3f2a9b'],[0.26,'#2c6fbb'],[0.36,'#1fa1a8'],[0.46,'#3db56b'],[0.56,'#a6cf3a'],[0.66,'#f2d33a'],
+           [0.76,'#f39c2c'],[0.86,'#e0502a'],[0.94,'#b2182b'],[1,'#67001f']],
     hs:   [[0,'#1d3a8a'],[0.08,'#2563eb'],[0.17,'#0ea5e9'],[0.25,'#22d3ee'],[0.33,'#34d399'],[0.40,'#a3e635'],[0.47,'#facc15'],
            [0.58,'#fb923c'],[0.72,'#ef4444'],[0.87,'#c026d3'],[1,'#f5d0fe']],
     tp:   [[0,'#2a1f7a'],[0.25,'#2e7ed8'],[0.5,'#38c9a8'],[0.7,'#c8e63c'],[0.85,'#f7a52b'],[1,'#e8321f']],
@@ -86,7 +87,9 @@
   // legend range. The tiles stay linear in value (composeTile indexes a 256-entry LUT over the legend
   // range); only the colour each value gets, and where it sits on the legend, follow the knots.
   var KNOTS = {
-    hs: [[0, 0], [0.5, 0.08], [1, 0.17], [2, 0.33], [3, 0.47], [4, 0.58], [6, 0.72], [9, 0.87], [12, 1]]
+    hs: [[0, 0], [0.5, 0.08], [1, 0.17], [2, 0.33], [3, 0.47], [4, 0.58], [6, 0.72], [9, 0.87], [12, 1]],
+    // sea surface temperature: 15-30 C (the surf's water) takes 56 % of the scale, the cold end and the hottest seas the rest
+    sst: [[-2, 0], [5, 0.14], [10, 0.22], [15, 0.3], [20, 0.48], [25, 0.68], [30, 0.86], [35, 1]]
   };
   // Wider scales chosen by the manifest's legend (plan section 27): a run whose legend is exactly [0, top] uses
   // these knots, colours and ticks; any other legend uses KNOTS / RAMPS / TICKS (stretched to it). The wave-height
@@ -121,6 +124,27 @@
   // readout and the contours work unchanged. deg C throughout (the site unit only at the legend and the readout).
   var SST_FDEF = { lo: -2, hi: 35, legend: [-2, 35], units: 'degC', interpolation: 'bilinear' };
   var SST_PREFIX = 'sst/v1';
+  // <= 29 visible characters (the GFS rule): "Overlay: NASA MUR SST" (+ " · GSHHG" from the clip); the title has the source.
+  var SST_ATTRIBUTION = 'Overlay: <a href="https://podaac.jpl.nasa.gov/dataset/MUR-JPL-L4-GLOB-v4.1" target="_blank" rel="noopener" ' +
+    'title="NASA JPL MUR SST v4.1 (GHRSST L4, doi:10.5067/GHGMR-4FJ04) via NOAA CoastWatch ERDDAP; tiled and rendered by Allshore Surf">NASA MUR SST</a>';
+  var SST_HEAD = 'NASA MUR (1 km, daily)';                 // the open panel's head line (the source; the dropdown says what it is)
+  var SST_STALE_DAYS = 4;                                  // the job's own stale alarm (tools/model_frames/sst.py STALE_DAYS)
+  // The analysis day "YYYY-MM-DD" (a calendar day: no time zone applies) as "Thu, Oct. 15"; anything else as given.
+  function sstDayText(day) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day || ''));
+    if (!m) return String(day || '');
+    var d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], 12));
+    try {
+      var wd = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', weekday: 'short' }).format(d);
+      var md = new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(d);
+      return wd + ', ' + dotMonth(md);
+    } catch (e) { return String(day); }
+  }
+  // How old the day is in days (its nominal time is 09:00 UTC), or null.
+  function sstAgeDays(day, now) {
+    var t = Date.parse(String(day || '') + 'T09:00:00Z');
+    return isNaN(t) ? null : ((now === undefined ? Date.now() : now) - t) / 86400000;
+  }
   // The chunk tier drawn by tile zoom: below 5 the 0.25-degree frame (a 1-km node is a fraction of a pixel there), 5-7
   // the 0.05-degree cells, 8 and closer the 0.01-degree cells (Leaflet rounds 7.5 up). A tile whose cells are not all
   // in hand yet draws from the next coarser tier (the frame always is) and is redrawn when they land.
@@ -162,15 +186,16 @@
   }
   // Legend position (0..1) of a value in SI units, and back. A manifest whose legend is not 0..last knot
   // stretches the knots to it, so the bar, its ticks and the tiles agree and the legend top is the top colour.
-  function knotsFit(k, legend) { return legend[0] === 0 && legend[1] === k[k.length - 1][0]; }
+  // (the knots span k0..kl; wave height's start at 0, the temperature's at -2 C)
+  function knotsFit(k, legend) { return legend[0] === k[0][0] && legend[1] === k[k.length - 1][0]; }
   function legendPos(field, legend, v) {
     var k = knotsOf(field, legend);
-    if (k) return through(k, knotsFit(k, legend) ? v : (v - legend[0]) / (legend[1] - legend[0]) * k[k.length - 1][0], 0, 1);
+    if (k) { var k0 = k[0][0], kl = k[k.length - 1][0]; return through(k, knotsFit(k, legend) ? v : k0 + (v - legend[0]) / (legend[1] - legend[0]) * (kl - k0), 0, 1); }
     return Math.max(0, Math.min(1, (v - legend[0]) / (legend[1] - legend[0])));
   }
   function legendInv(field, legend, p) {
     var k = knotsOf(field, legend);
-    if (k) { var x = through(k, p, 1, 0); return knotsFit(k, legend) ? x : legend[0] + x / k[k.length - 1][0] * (legend[1] - legend[0]); }
+    if (k) { var x = through(k, p, 1, 0), k0 = k[0][0], kl = k[k.length - 1][0]; return knotsFit(k, legend) ? x : legend[0] + (x - k0) / (kl - k0) * (legend[1] - legend[0]); }
     return legend[0] + Math.max(0, Math.min(1, p)) * (legend[1] - legend[0]);
   }
   // The tiles' lookup: 256 entries LINEAR IN VALUE over the legend range (what composeTile indexes),
@@ -2462,6 +2487,10 @@
     this.playGen = 0; this.transientFails = 0; this._staleShown = false; this._pendingRestore = null; this._onHide = null;
     // opts.coast: clip wave height / peak period to the coastlines published beside the frames
     this.coast = opts.coast ? coastStore(this.root + '/static/coast/v1') : null;
+    // opts.sst: the sea surface temperature field is offered (plan section 44; the page's SST_OVERLAY setting). It is an
+    // OBSERVATION: mode 'obs' while it is shown (no run, no frames, no player, no model choice), 'model' otherwise.
+    this.sst = opts.sst ? sstStore(this.root) : null;
+    this.mode = 'model';
     var s = saved();
     this.relief = null; this._base = 'imagery'; this._reliefFailed = 0;   // opts.baseLayer: the page's imagery (the wind swaps it)
     this.speed = speedOf(s.speed);
@@ -2506,6 +2535,12 @@
   Overlay.prototype.setModel = function (key) {
     if (!hasModel(key) || this.models.indexOf(key) < 0 || key === this.model) return;
     if (!this.field) { this.model = key; save({ model: key }); this._dropRun(); return; }
+    if (this.mode === 'obs') {                               // (no dropdown on the observation's panel: only a call does this)
+      this.model = key; save({ model: key });
+      this.manifest = null; this.pointer = null; this.pointerAt = 0; this.newerRun = null; this.n = 0;
+      this.cache.clear(); this.dcache.clear(); this.unavailable = {};
+      return;
+    }
     var keep = this.frameIndex !== null ? this._anchorIndex() : null;
     var shown = keep !== null && this.manifest && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : null;
     var t = this._switchT !== null ? this._switchT : shown;
@@ -2522,7 +2557,9 @@
   // saved valid time and play state are then reused when they are recent (restoreIndex), by this mount
   // or, if it never lands a frame, by the next one (another field picked meanwhile, Retry) until Off.
   Overlay.prototype.mount = function (fieldName, restore) {
+    if (fieldName === 'sst') return this._mountObs(restore);
     if (restore) this._pendingRestore = saved();
+    if (this.mode === 'obs') this._leaveObs();
     // The time position survives a field change and even a run change (nearest valid time), like Update. A field switch
     // keeps the REQUESTED time (a scrub or step still loading) when there is one; Retry (the same field again) goes back
     // to the frame on the map, which is cached (G4 B1). Taken before anything aborts. Before any frame is on the map the
@@ -2590,6 +2627,66 @@
         if (document.hidden) { self.wasPlaying = true; self._persist(); } else self.play();
       });
     }).catch(function (err) { self._fail(sig, err); });
+  };
+  // ---- the observation (plan section 44): sea surface temperature ----
+  // Shown through the layer's SOURCE (the SstStore), never as a frame of a run: the model's manifest, its caches and its
+  // time stay (a switch back is instant and lands at the time the viewer had: the carry, as a model switch does), the
+  // player stops, the particles go, the panel shows the field's source, the scale and the analysis day. Errors take the
+  // frames' error panel (Retry mounts it again).
+  Overlay.prototype._mountObs = function (restore) {
+    var self = this;
+    if (restore) this._pendingRestore = saved();
+    if (this.mode !== 'obs' && this.manifest && this.frameIndex !== null && this.field) {
+      var keep = this._anchorIndex(), fr = this.manifest.frames[keep];
+      var t = this._switchT !== null ? this._switchT : fr ? Date.parse(fr.valid_utc) : null;
+      if (t !== null) { this._carry = { t: t, playing: !!(this.playing || this.wasPlaying) }; this._switchT = t; }
+    }
+    this.pause();                                            // the model's play state is saved first (its field still set)
+    if (!this.map.getPane('modelPane')) {
+      var pane = this.map.createPane('modelPane'); pane.style.zIndex = 250; pane.style.pointerEvents = 'none';
+    }
+    this.abortAll();
+    this.field = 'sst'; this.mode = 'obs'; this.frameIndex = null; this.target = null; this.wasPlaying = false;
+    this.abort = new AbortController();
+    var sig = this.abort.signal;
+    if (!this.layer) {
+      this.layer = new ModelGridLayer({ opacity: this._opacityFor('sst') }).addTo(this.map);
+      this._bindReadout();
+      this._bindMap();
+      this._bindDocument();
+    } else this.layer.clear();                               // never another field's picture under this label
+    this._ensureFlow();                                      // no direction field: the particles go
+    if (this.readout) this.readout.hidden = true;
+    this._unattribute();
+    this._syncLook();                                        // the imagery (the wind's relief goes)
+    if (!this.sst) { this._fail(sig, new Error('sea surface temperature is not offered')); return; }
+    this.render({ state: 'loading' });
+    var coastP = this.coast ? this.coast.load() : Promise.resolve(null);
+    Promise.all([this.sst.load(), coastP]).then(function (res) {
+      var st = res[0], coast = res[1];
+      if (sig.aborted || self.field !== 'sst' || self.mode !== 'obs' || !self.layer) throw abortError();
+      if (!st) throw new Error('sea surface temperature cannot be loaded right now');
+      if (self.layer._coast !== (coast || null)) self.layer.setCoast(coast);
+      self.layer.setSource(st, true);
+      self.layer.setContours(self.contours ? self._contourCfg() : null, true);
+      self.layer.setFrame(st.frame, st.grid, 'sst', SST_FDEF, self._sstLut(), null);
+      if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
+      self._attribute();
+      self._syncLook();
+      self.render({ state: 'ready' });
+    }).catch(function (err) { self._fail(sig, err); });
+  };
+  // Back to a model field: the layer samples frames again; the store stops its downloads (its cells stay).
+  Overlay.prototype._leaveObs = function () {
+    this.mode = 'model';
+    if (this.layer) this.layer.clear();                      // (clear() also detaches the source)
+    if (this.sst) this.sst.idle();
+    this._unattribute();
+  };
+  Overlay.prototype._sstLut = function () {
+    var key = 'sst|' + SST_FDEF.legend.join(',');
+    if (this._lutFor !== key) { this._lutCache = buildLut('sst', SST_FDEF.legend); this._lutFor = key; }
+    return this._lutCache;
   };
   // Cache / in-flight / unavailable keys carry the model and the run: a decode that outlives an Update or a model
   // switch can never be taken for a frame of the new run (both models name their runs YYYYMMDDHH).
@@ -2723,10 +2820,11 @@
   // ?ovdebug=1: the animator's and the scheduler's state in the panel, once a second (the owner's iPad; text only).
   Overlay.prototype._debugText = function () {
     var f = this.flow ? this.flow.debugState() : null, dec = frameDecoder ? (frameDecoder.dead ? 'dead' : (frameDecoder.worker ? 'worker' : 'idle')) : (decoderDead ? 'dead' : 'none');
-    var o = { model: this.model, playing: this.playing, speed: this.speed, frame: this.frameIndex, target: this.target, res: this.res + '/' + this.dres, inflight: Object.keys(this.inflight).length,
+    var o = { mode: this.mode, model: this.model, playing: this.playing, speed: this.speed, frame: this.frameIndex, target: this.target, res: this.res + '/' + this.dres, inflight: Object.keys(this.inflight).length,
       cache: this.cache.size() + '/' + this.dcache.size(), decoder: dec, hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
     var lines = [], k;
     for (k in o) lines.push(k + ': ' + o[k]);
+    if (this.sst) lines.push('sst: ' + this.sst.status + ' ' + (this.sst.manifest ? this.sst.manifest.run : '-') + ', cells ' + (this.sst.bytes / 1048576).toFixed(1) + ' MB, in flight ' + Object.keys(this.sst.inflight).length);
     if (f) for (k in f) lines.push('flow.' + k + ': ' + f[k]); else lines.push('flow: none');
     return lines.join('\n');
   };
@@ -2876,6 +2974,7 @@
   // Every RUN_CHECK_MS while mounted: a newer complete run only raises the "Update" banner.
   Overlay.prototype._checkRun = function () {
     var self = this, model = this.model, m = this.manifest;
+    if (this.mode === 'obs') { if (this.sst) this.sst.recheck(); return; }
     if (!m) return;
     fetch(this._modelBase() + '/latest.json', { cache: 'no-cache' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (ptr) {
       if (self.model !== model || self.manifest !== m) return;                // a model switch (or an Update) meanwhile: the answer is the old run's
@@ -2938,6 +3037,7 @@
   // The state a reload restores (with the field the page saved): the valid time on the map, whether it
   // is playing (a visibility pause still counts as playing), and when this was written.
   Overlay.prototype._persist = function () {
+    if (this.mode === 'obs') return;
     if (!this.field || !this.manifest || this.frameIndex === null || !this.manifest.frames[this.frameIndex]) return;
     save({ field: this.field, model: this.model, t: Date.parse(this.manifest.frames[this.frameIndex].valid_utc),
       playing: !!(this.playing || this.wasPlaying), at: Date.now() });
@@ -3044,7 +3144,7 @@
     return { w: c.clientWidth || s.x, h: c.clientHeight || s.y };
   };
   Overlay.prototype._attribution = function () {
-    var text = this._def().attribution;
+    var text = this.mode === 'obs' ? SST_ATTRIBUTION : this._def().attribution;
     if (!(this.layer && this.layer._masked() && this.coast)) return text;
     var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
     return text + ' · <a href="' + url + '" target="_blank" rel="noopener license">GSHHG</a>';
@@ -3142,7 +3242,9 @@
     if (this._onVis) { document.removeEventListener('visibilitychange', this._onVis); this._onVis = null; }
     if (this._onHide) { if (window.removeEventListener) window.removeEventListener('pagehide', this._onHide); this._onHide = null; }
     this._pendingRestore = null; this._pendingFocus = null; this._carry = null; this._switchT = null;
-    if (this.layer) { this.map.removeLayer(this.layer); this.layer = null; }
+    if (this.layer) { if (this.layer._src) this.layer.setSource(null, true); this.map.removeLayer(this.layer); this.layer = null; }
+    if (this.sst) this.sst.abortAll();                     // the day's frame and manifest stay for the next On
+    this.mode = 'model';
     this._syncLook();                                      // the page's imagery back, no blend
     if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
     if (this.flow) { this.flow.detach(); this.flow = null; }
@@ -3751,20 +3853,22 @@
     // The focused ribbon's aria-valuetext has the time.
     if (st.state === 'loading') {
       // with a choice of models the dropdown stays while one loads: a slow or stuck model can be left (G30-3)
-      if (this.models.length > 1) { var lh = mk('div', 'ov-row ov-head'); lh.appendChild(this._modelSelect()); host.appendChild(lh); }
-      host.appendChild(mk('div', 'ov-meta', 'Loading model frame…')); this._say('Loading model frame…'); this._layoutSheet();
-      if (focusCls === 'ov-model-sel' && this.models.length > 1) this._refocus(focusCls, host); else this._pendingFocus = focusCls;
+      var obs = this.mode === 'obs', lt = obs ? 'Loading sea surface temperature…' : 'Loading model frame…';
+      if (this.models.length > 1 && !obs) { var lh = mk('div', 'ov-row ov-head'); lh.appendChild(this._modelSelect()); host.appendChild(lh); }
+      host.appendChild(mk('div', 'ov-meta', lt)); this._say(lt); this._layoutSheet();
+      if (focusCls === 'ov-model-sel' && this.models.length > 1 && !obs) this._refocus(focusCls, host); else this._pendingFocus = focusCls;
       return;
     }
     if (st.state === 'error') {
       this._say('Overlay unavailable: ' + st.message);
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
-      if (this.models.length > 1) e.appendChild(this._modelSelect());         // a failing model must be escapable
+      if (this.models.length > 1 && this.mode !== 'obs') e.appendChild(this._modelSelect());   // a failing model must be escapable
       e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.transientFails = 0; self.mount(self.field); } }));
       host.appendChild(e);
       if (OV_DEBUG) { this.ui = { debug: mk('pre', 'ov-debug') }; host.appendChild(this.ui.debug); this._debugOn(); }   // the readout stays with the error (the owner's iPad)
       this._layoutSheet(); this._refocus(focusCls, host); return;
     }
+    if (this.mode === 'obs') { this._renderObs(st, host, compact, focusCls, mapH); return; }
     var field = this.layer.field, f = m.fields[field], fdesc = (m.model && m.model.fields && m.model.fields[field]) || {};
     // The model's name as the head shows it: the manifest's up to " + " (the wind's own model), without the agency
     // prefix ("NOAA/NCEP GFS-Wave (WAVEWATCH III)" -> "GFS-Wave (WAVEWATCH III)"; owner, 2026-10-07). NOAA stays in
@@ -3818,17 +3922,7 @@
     over.appendChild(this._buildTimeline(ui, m));
     wrap.appendChild(over);
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
-    // legend over the LEGEND range in the site's units (the encoding range is wider; extremes clamp)
-    var leg = mk('div', 'ov-legend'), cv = mk('canvas'); cv.width = 256; cv.height = 1; leg.appendChild(cv);
-    var lut = legendBar(field, f.legend), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);        // the bar is laid out by legend position
-    for (var i = 0; i < 256; i++) { im.data[i * 4] = lut[i * 3]; im.data[i * 4 + 1] = lut[i * 3 + 1]; im.data[i * 4 + 2] = lut[i * 3 + 2]; im.data[i * 4 + 3] = 255; }
-    ctx.putImageData(im, 0, 0);
-    var ticks = mk('div', 'ov-ticks'), tk = legendTicks(field, f, unit);
-    tk.forEach(function (t, k) {
-      var s = mk('span', k === 0 ? 'ov-first' : k === tk.length - 1 ? 'ov-last' : '', t.label);
-      s.style.left = (t.pos * 100).toFixed(2) + '%'; ticks.appendChild(s);
-    });
-    leg.appendChild(ticks); body.appendChild(leg);
+    body.appendChild(buildLegend(field, f, unit));
     // Run (UTC, with the forecast table's run when it differs), Updated and Next Update (the computer's own zone)
     var line = function (cls, name) { var d = mk('div', 'ov-meta ' + cls); d.appendChild(mk('b', null, name)); body.appendChild(d); return d; };
     var runLine = line('ov-run', 'Run: '); ui.runText = runLine.appendChild(document.createTextNode(''));
@@ -3896,6 +3990,63 @@
     }
     this._refocus(focusCls);                                   // after the last (re)build: on the control that had it
   };
+  // The legend over the LEGEND range in the site's units (the encoding range is wider; extremes clamp): the bar laid out by
+  // legend position, the ticks at their values' positions.
+  function buildLegend(field, f, unit) {
+    var leg = mk('div', 'ov-legend'), cv = mk('canvas'); cv.width = 256; cv.height = 1; leg.appendChild(cv);
+    var lut = legendBar(field, f.legend), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);
+    for (var i = 0; i < 256; i++) { im.data[i * 4] = lut[i * 3]; im.data[i * 4 + 1] = lut[i * 3 + 1]; im.data[i * 4 + 2] = lut[i * 3 + 2]; im.data[i * 4 + 3] = 255; }
+    ctx.putImageData(im, 0, 0);
+    var ticks = mk('div', 'ov-ticks'), tk = legendTicks(field, f, unit);
+    tk.forEach(function (t, k) {
+      var s = mk('span', k === 0 ? 'ov-first' : k === tk.length - 1 ? 'ov-last' : '', t.label);
+      s.style.left = (t.pos * 100).toFixed(2) + '%'; ticks.appendChild(s);
+    });
+    leg.appendChild(ticks);
+    return leg;
+  }
+  // The observation's panel (plan section 44; owner, 2026-10-16: one date line in place of the run lines; no model
+  // dropdown, no player, no timeline): head = the toggle and the source (folded: "SST · Thu, Oct. 15"); details = the
+  // scale in the site's unit and the analysis day, with a note when the day is old or the coastline is missing. The same
+  // fold rules as the frames' panel: open when the room allows, the viewer's fold kept, one line without a toggle when
+  // nothing more would fit.
+  Overlay.prototype._renderObs = function (st, host, compact, focusCls, mapH) {
+    var self = this, m = this.sst && this.sst.manifest, unit = this.opts.getUnit(), cap = Math.floor(mapH * 0.4);
+    var dayText = m ? sstDayText(m.day) : '…', summary = 'SST · ' + dayText;
+    var collapsed = this.collapsed !== undefined ? !!this.collapsed : false;
+    var head = mk('div', 'ov-row ov-head');
+    var btn = mk('button', 'ov-toggle', collapsed ? '▸' : '▾'); btn.type = 'button';
+    btn.setAttribute('aria-label', collapsed ? 'Show overlay details' : 'Hide overlay details');
+    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
+    btn.addEventListener('click', function () { self.collapsed = !collapsed; self.render(st); });
+    head.appendChild(btn);
+    var title = mk('span', 'ov-title' + (collapsed ? '' : ' ov-model'), collapsed ? summary : SST_HEAD);
+    head.appendChild(title);
+    host.appendChild(head);
+    this.ui = { host: host, title: title, obs: true, collapsed: collapsed, compact: compact };
+    var fold = function (keepToggle) {
+      if (!keepToggle && btn.parentNode) head.removeChild(btn);
+      title.textContent = summary; if (title.classList) title.classList.remove('ov-model');
+      self.ui.collapsed = true;
+    };
+    if (compact && cap - host.offsetHeight - 8 < 40) { fold(false); this._layoutSheet(); this._refocus(focusCls); return; }
+    var wrap = mk('div', 'ov-body'); wrap.id = 'ovDetails'; host.appendChild(wrap);
+    var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
+    body.appendChild(buildLegend('sst', SST_FDEF, unit));
+    var dl = mk('div', 'ov-meta ov-day'); dl.appendChild(mk('b', null, 'Day: ')); dl.appendChild(document.createTextNode(dayText + ' (daily analysis)'));
+    body.appendChild(dl);
+    var age = m ? sstAgeDays(m.day) : null;
+    if (age !== null && age > SST_STALE_DAYS) body.appendChild(mk('div', 'ov-warn', 'Sea surface temperature data is ' + Math.floor(age) + ' days old.'));
+    if (this.coast && !this.layer._clip) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
+    if (OV_DEBUG) { this.ui.debug = mk('pre', 'ov-debug'); body.appendChild(this.ui.debug); this._debugOn(); }
+    var ctl = compact ? host : (host.closest && host.closest('.ov-ctl')) || host, ctlTop = compact ? 0 : this._ctlTop(ctl);
+    var spare = function () { return compact ? cap - host.offsetHeight - 2 : mapH - self._stackHeight() - 10 - ctlTop - ctl.offsetHeight - 8; };
+    var room = compact ? cap - (host.offsetHeight - body.offsetHeight) - 2 : Math.min(cap, spare() + body.offsetHeight);
+    if (room < 40 || collapsed) { host.removeChild(wrap); fold(room >= 40); }   // the toggle only when opening would show the details
+    else body.style.maxHeight = room + 'px';
+    this._layoutSheet();
+    this._refocus(focusCls);
+  };
   // Keyboard focus through a render (G26 B-2, re-check RC-6): the part of the panel that had it, by its class; its
   // successor in the new panel gets it back (else the play button, else the toggle). Never taken from outside the panel.
   // The model dropdown: a native select (its options are the offered models' labels, in order; the value is the model in
@@ -3957,7 +4108,7 @@
   // thumb (at the target) and the unavailable-frame note.
   Overlay.prototype._syncUI = function () {
     var ui = this.ui;
-    if (!ui || !ui.title || !this.manifest || !this.layer) return;        // no panel (the error panel's ?ovdebug=1 readout alone: re-check R-5)
+    if (!ui || !ui.title || !this.manifest || !this.layer || ui.obs) return;   // no panel (the error panel's ?ovdebug=1 readout alone: re-check R-5); the observation's has no live parts
     if (ui.play) { ui.play.textContent = this.playing ? '❚❚' : '▶'; ui.play.setAttribute('aria-label', this.playing ? 'Pause' : 'Play'); }
     if (ui.host && ui.host.classList) ui.host.classList.toggle('ov-playing', !!this.playing);
     if (ui.speedSel) ui.speedSel.sync();
@@ -4012,7 +4163,7 @@
       LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
       validCoastIndex: validCoastIndex,
       SstStore: SstStore, sstStore: sstStore, validSstManifest: validSstManifest, validSstPointer: validSstPointer, sstTierFor: sstTierFor, SST_FDEF: SST_FDEF,
-      SST_TIER_ZOOMS: SST_TIER_ZOOMS, SST_PREFIX: SST_PREFIX, SST_PAD_PX: SST_PAD_PX, MAX_SST_INFLIGHT: MAX_SST_INFLIGHT, MAX_SST_CHUNK_BYTES: MAX_SST_CHUNK_BYTES, cellsForTile: cellsForTile,
+      SST_TIER_ZOOMS: SST_TIER_ZOOMS, SST_ATTRIBUTION: SST_ATTRIBUTION, SST_HEAD: SST_HEAD, SST_STALE_DAYS: SST_STALE_DAYS, sstDayText: sstDayText, sstAgeDays: sstAgeDays, buildLegend: buildLegend, SST_PREFIX: SST_PREFIX, SST_PAD_PX: SST_PAD_PX, MAX_SST_INFLIGHT: MAX_SST_INFLIGHT, MAX_SST_CHUNK_BYTES: MAX_SST_CHUNK_BYTES, cellsForTile: cellsForTile,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,

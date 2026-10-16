@@ -33,6 +33,7 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("COAST_BASE", raising=False)
     monkeypatch.delenv("POINTS_ROOT", raising=False)
     monkeypatch.delenv("MODEL_OVERLAY_MODELS", raising=False)
+    monkeypatch.delenv("SST_OVERLAY", raising=False)
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
     monkeypatch.setenv("MODEL_FRAMES_BASE", base)
     monkeypatch.setattr(A, "get_station_tz", lambda sid: "Pacific/Honolulu")
@@ -81,6 +82,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert "version: VERSION" in body                                    # the module serves its illustrations at its version
         assert 'aria-label="Model overlay"' in body and "Model overlay <select" not in body   # no visible heading (section 37)
         assert 'var MODELS = ["gfswave"];' in body and "models: MODELS" in body              # section 43: the offered models
+        assert "var SST = false;" in body and "sst: SST" in body and 'value="sst"' in body     # section 44: offered only with SST_OVERLAY=1 (the option is built by script)
         assert GATED.search(body) is not None, name
         # removing the gated block gives back exactly the golden page
         assert GATED.sub("", body, count=1) == old["body"], name
@@ -232,6 +234,7 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
         want = (src.replace("{{ model_frames_base|tojson }}", json.dumps(base))
                    .replace("{{ overlay_asset_version|tojson }}", json.dumps(A.OVERLAY_ASSET_VERSION))
                    .replace("{{ overlay_models|tojson }}", json.dumps(["gfswave"]))
+                   .replace("{{ overlay_sst|tojson }}", json.dumps(False))
                    .replace("{{ forecast_tz_name|tojson }}", json.dumps(tz)))
         assert got[0] == want, name
     node_src = open(os.path.join(HERE, "overlay", "bootstrap.test.js"), encoding="utf-8").read()
@@ -292,3 +295,23 @@ def test_the_ecmwf_notice_the_credit_links():
         assert need in body, need
     js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
     assert 'href="/notice/ecmwf"' in js, "the credit's ECMWF link opens this notice"
+
+
+def test_sst_overlay_env_and_the_page(monkeypatch):
+    """SST_OVERLAY (section 44): "1" offers "Sea surface temperature" (the page's SST, handed to the module); anything
+    else does not. The flag-off page never carries it; the flag-on page differs from the default only in that line."""
+    _on(monkeypatch)
+    for env, want in (("1", True), ("0", False), ("", False), ("true", False), ("yes", False)):
+        monkeypatch.setenv("SST_OVERLAY", env)
+        assert A._sst_overlay_enabled() is want, env
+    monkeypatch.setenv("SST_OVERLAY", "1")
+    on = G.run_scenarios(A)
+    monkeypatch.delenv("SST_OVERLAY")
+    off = G.run_scenarios(A)
+    for name in GOLDEN:
+        assert "var SST = true;" in on[name]["body"], name
+        assert on[name]["body"].replace("var SST = true;", "var SST = false;") == off[name]["body"], name
+    monkeypatch.delenv("MODEL_OVERLAYS")
+    monkeypatch.setenv("SST_OVERLAY", "1")
+    for name, rec in G.run_scenarios(A).items():
+        assert "var SST" not in rec["body"] and "Sea surface temperature" not in rec["body"], name

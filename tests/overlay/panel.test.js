@@ -1135,3 +1135,78 @@ test('G30-3: with two models the loading panel keeps the dropdown (a slow model 
   const one = world(); one.ov.render({ state: 'loading' });
   assert.equal(all(one.panel, 'select').length, 0); assert.equal(text(one.panel), 'Loading model frame…');
 }));
+
+// ---- section 44: the observation's panel (sea surface temperature) ----
+function obsWorld(o) {
+  const w = world(o);
+  w.ov.models = ['gfswave', 'ecmwf'];                                        // a choice of models exists: the observation still shows none
+  w.ov.mode = 'obs'; w.ov.field = 'sst'; w.ov.frameIndex = null;
+  w.ov.layer = { field: 'sst', _clip: true, hasFrame: () => true };
+  w.ov.sst = { status: 'ok', manifest: { day: (o && o.day) || '2026-10-06', run: '20261006' }, bytes: 0, inflight: {} };
+  return w;
+}
+test('section 44: the observation\'s panel: the source in the head, the scale in the site unit, ONE date line; no player, no timeline, no model dropdown', () => withClock(() => {
+  const w = obsWorld(); w.ov.render({ state: 'ready' });
+  const head = w.panel.querySelector('.ov-head');
+  assert.deepEqual(head.children.map((c) => c.className), ['ov-toggle', 'ov-title ov-model']);
+  assert.equal(text(head.children[1]), w.I.SST_HEAD);
+  for (const sel of ['.ov-play', '.ov-ribbon', '.ov-timeline', '.ov-speed', '.ov-transport', 'select', '.ov-run', '.ov-upd', '.ov-next']) assert.equal(all(w.panel, sel).length, 0, sel);
+  const ticks = w.panel.querySelector('.ov-ticks').children.map((s) => text(s));
+  assert.deepEqual(ticks, ['40', '50', '60', '70', '80', '95+ °F']);
+  const day = w.panel.querySelector('.ov-day');
+  assert.equal(text(day), 'Day: Tue, Oct. 6 (daily analysis)');
+  assert.equal(all(w.panel, '.ov-warn').length, 0, 'a day-old analysis is not stale');
+  w.ov._syncUI();                                                            // no live parts: nothing changes, nothing throws
+  assert.equal(text(head.children[1]), w.I.SST_HEAD);
+  const m = obsWorld({ unit: 'Metric' }); m.ov.render({ state: 'ready' });
+  assert.deepEqual(m.panel.querySelector('.ov-ticks').children.map((s) => text(s)), ['0', '5', '10', '15', '20', '25', '35+ °C']);
+}));
+
+test('section 44: folded, the head reads "SST · Tue, Oct. 6" with its toggle; an old analysis and a missing coastline are said; no room: one line without a toggle', () => withClock(() => {
+  const w = obsWorld(); w.ov.collapsed = true; w.ov.render({ state: 'ready' });
+  const head = w.panel.querySelector('.ov-head');
+  assert.deepEqual(head.children.map((c) => c.className), ['ov-toggle', 'ov-title']);
+  assert.equal(text(head.children[1]), 'SST · Tue, Oct. 6');
+  assert.equal(w.panel.querySelector('#ovDetails'), null);
+  w.panel.querySelector('.ov-toggle').dispatch('click');
+  assert.ok(w.panel.querySelector('#ovDetails'), 'the toggle opens it');
+  const old = obsWorld({ day: '2026-10-01' }); old.ov.layer._clip = false; old.ov.coast = { url: 'x' };
+  old.ov.render({ state: 'ready' });
+  const warns = all(old.panel, '.ov-warn').map((x) => text(x));
+  assert.ok(warns.some((x) => /6 days old/.test(x)), warns.join(' | ')); assert.ok(warns.some((x) => /Coastline data/.test(x)));
+  const tiny = sizedLayout(obsWorld({ dims: { w: 375, h: 150 } }));                // a phone sheet with no room beyond its head
+  tiny.ov.isCompact = () => true;
+  tiny.ov.render({ state: 'ready' });
+  const host = tiny.ov.ui.host, th = host.querySelector('.ov-head');
+  assert.deepEqual(th.children.map((c) => c.className), ['ov-title']);
+  assert.equal(text(th.children[0]), 'SST · Tue, Oct. 6');
+  const short = sizedLayout(obsWorld({ dims: { w: 1200, h: 90 } }));             // a desktop map too short for the details: no toggle that would open nothing
+  short.ov.isCompact = () => false;                                          // the top-left panel, not the sheet
+  short.ov.render({ state: 'ready' });
+  const sh = short.panel.querySelector('.ov-head');
+  assert.deepEqual(sh.children.map((c) => c.className), ['ov-title']);
+  assert.equal(short.panel.querySelector('#ovDetails'), null);
+  const roomy = sizedLayout(obsWorld({ dims: { w: 1200, h: 800 } })); roomy.ov.isCompact = () => false; roomy.ov.collapsed = true; roomy.ov.render({ state: 'ready' });
+  assert.deepEqual(roomy.panel.querySelector('.ov-head').children.map((c) => c.className), ['ov-toggle', 'ov-title'], "the viewer's fold keeps its toggle where opening shows the details");
+}));
+
+test('section 44: loading and error panels of the observation carry no model dropdown (two models offered); Retry remounts sst', () => withClock(() => {
+  const w = obsWorld(); w.ov.render({ state: 'loading' });
+  assert.equal(all(w.panel, 'select').length, 0); assert.equal(text(w.panel), 'Loading sea surface temperature…');
+  const mounts = []; w.ov.mount = (f) => mounts.push(f);
+  w.ov.render({ state: 'error', message: 'sea surface temperature cannot be loaded right now' });
+  assert.equal(all(w.panel, 'select').length, 0);
+  w.panel.querySelector('.ov-retry').dispatch('click');
+  assert.deepEqual(mounts, ['sst']);
+  const g = world(); g.ov.models = ['gfswave', 'ecmwf']; g.ov.render({ state: 'loading' });
+  assert.equal(all(g.panel, 'select').length, 1, 'the frames\' loading panel keeps it (G30-3)');
+}));
+
+test('section 44: sstDayText / sstAgeDays: a calendar day without a zone, "Oct." with a period, anything else as given', () => {
+  const I = world().I;
+  assert.equal(I.sstDayText('2026-10-15'), 'Thu, Oct. 15');
+  assert.equal(I.sstDayText('2026-05-01'), 'Fri, May 1');
+  assert.equal(I.sstDayText('x'), 'x'); assert.equal(I.sstDayText(null), '');
+  assert.equal(I.sstAgeDays('2026-10-15', Date.parse('2026-10-16T09:00:00Z')), 1);
+  assert.equal(I.sstAgeDays('nope'), null);
+});

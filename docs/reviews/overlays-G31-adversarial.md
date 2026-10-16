@@ -81,3 +81,19 @@ South Africa (checked against ERDDAP only).
 3. Isotherm contrast (G31-18): keep the light ink, or choose the ink by contrast per level.
 4. Kept cells (G31-9): clear the SST cells on leaving SST (the next visit re-decodes the view's cells from the browser cache,
    about 0.1-0.2 s), or keep them for an instant return.
+
+## Owner's decisions (2026-10-16)
+1. Readout precision: keep one decimal (G31-14 is fixed in the README and the credit's title only).
+2. Busy isotherms: double the SST interval below tile zoom 7 (2 C / 4 F; 1 C / 2 F from zoom 7 in) (G31-19).
+3. Isotherm contrast: keep the light lines (G31-18 accepted as designed).
+4. Kept cells: clear the SST cells on leaving SST; the day's frame and manifest stay (G31-9).
+
+## Fix round scope (step 7, overlay asset 2.18.3)
+G31-1 wrap the padded box across +-180; G31-2 a mount bypasses the store's cooldown; G31-3 per-request stall timers (no
+bytes for 15 s) for the pointer, the manifest and the frame; G31-4 a per-cell stall timer (transient: cooldown and retry);
+G31-5 level 0 drawn for SST; G31-6 all-land tiles ask for and need no cells; G31-7 the carried play state saved by
+`_mountObs`; G31-8 the carried time pins the model's run; G31-9 the cells cleared on leaving SST; G31-10 one
+least-recently-used order across tiers; G31-11 the status cleared by the SST panel; G31-12 "Map overlay"; G31-13 the first
+tick centred unless at the bar's edge; G31-14 README + the credit's title (foundation temperature, both-way coastal error);
+G31-15 the SST panel re-rendered when its day crosses the stale line; G31-16 the run-line timer cleared on entering SST;
+G31-17 repo tests for the reviewers' surviving mutants; G31-19 the SST interval doubled below tile zoom 7.

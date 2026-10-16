@@ -3908,6 +3908,7 @@
       if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshoreCoastBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/coast/v1';
       var VERSION = {{ overlay_asset_version|tojson }};
       var MODELS = {{ overlay_models|tojson }};                 // the models the panel offers (MODEL_OVERLAY_MODELS); the first is the default
+      var SST = {{ overlay_sst|tojson }};                       // "Sea surface temperature" offered (SST_OVERLAY; plan section 44)
       var TZ = {{ forecast_tz_name|tojson }};
       var lastTz = TZ;                                          // the zone of the forecast on screen (the window announces each one)
       // (the model pane is created by the module on the first selection, so Off leaves the map's panes untouched)
@@ -3919,7 +3920,8 @@
           // no visible heading (plan section 37): the select keeps its accessible name
           box.innerHTML = '<select id="ovField" autocomplete="off" aria-label="Model overlay">' +
             '<option value="">Off</option><option value="hs">Wave height</option>' +
-            '<option value="tp">Peak period</option><option value="wind">Wind speed</option></select>' +
+            '<option value="tp">Peak period</option><option value="wind">Wind speed</option>' +
+            (SST ? '<option value="sst">Sea surface temperature</option>' : '') + '</select>' +
             '<div id="ovPanel"></div>';
           L.DomEvent.disableClickPropagation(box);
           L.DomEvent.disableScrollPropagation(box);
@@ -3974,6 +3976,7 @@
       // brings it back; the module restores the time and play state from the same key. A new tab,
       // or a layer switched Off, starts Off; a layer picked from Off starts fresh (no saved time).
       var KEY = 'allshore.overlay.v1', FIELDS = { hs: 1, tp: 1, wind: 1 }, picked = false;
+      if (SST) FIELDS.sst = 1;                                  // a saved 'sst' with the setting off starts Off
       function stored() {
         try { var o = JSON.parse(sessionStorage.getItem(KEY) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
       }
@@ -3992,7 +3995,7 @@
           if (sel.value !== field) return;
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
             base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
-            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS
+            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST
           });
           overlay.mount(field, restore);
         }).catch(function (err) {

@@ -158,9 +158,16 @@ test('unitOf sst: deg F is affine (scale 1.8, offset 32, inverse), the ticks sit
   assert.deepEqual(us.map((t) => t.label), ['40', '50', '60', '70', '80', '95+ °F']);
   assert.ok(Math.abs(us[0].pos - I.legendPos('sst', I.SST_FDEF.legend, (40 - 32) / 1.8)) < 1e-12, 'a deg F tick is placed at its deg C value, not at v / 33.8');
   assert.deepEqual(si.map((t) => t.label), ['0', '5', '10', '15', '20', '25', '35+ °C']);
-  assert.ok(Math.abs(si[2].pos - 12 / 37) < 1e-12);
+  assert.ok(Math.abs(si[2].pos - I.legendPos('sst', I.SST_FDEF.legend, 10)) < 1e-12 && Math.abs(si[2].pos - 0.22) < 1e-12);   // the knots: 10 C at 0.22
   assert.equal(I.CLIP_FIELDS.sst, true); assert.deepEqual(I.CONTOURS.sst, { US: 2, Metric: 1 }); assert.equal(I.FIXED_OPACITY.sst, 0.75);
   assert.ok(I.RAMPS.sst.length > 5 && I.buildLut('sst', [LO, HI]).length === 768);
+  assert.equal(I.RAMPS.sst[0][1], '#2d004b'); assert.equal(I.RAMPS.sst[I.RAMPS.sst.length - 1][1], '#67001f');   // the owner's pick B (thermal)
+  // the knots: 15-30 C takes 56 % of the scale; -2 and 35 C are its ends; the bar and the tiles agree at a knot
+  assert.ok(Math.abs(I.legendPos('sst', [LO, HI], 30) - I.legendPos('sst', [LO, HI], 15) - 0.56) < 1e-12);
+  assert.equal(I.legendPos('sst', [LO, HI], LO), 0); assert.equal(I.legendPos('sst', [LO, HI], HI), 1);
+  assert.ok(Math.abs(I.legendInv('sst', [LO, HI], 0.48) - 20) < 1e-12);
+  // hs is unchanged by the knots rule written for a legend that starts below 0
+  assert.ok(Math.abs(I.legendPos('hs', [0, 12], 3) - 0.47) < 1e-12 && Math.abs(I.legendPos('hs', [0, 15], 3.75) - 0.47) < 1e-12);
 });
 
 test('SstStore.load: pointer -> manifest -> frame; a bad pointer fails with a cooldown; abort leaves idle; the frame is validated', async () => {
@@ -558,9 +565,9 @@ test('sampler: the absent rule (a point mostly over absent nodes is absent, else
 });
 
 test('contour ink: the level\'s colour is judged at the level\'s VALUE, with the deg F offset taken off (dark lines on light colours, light on dark)', async () => {
-  // a field around 17.3 C: green, dark enough for LIGHT isotherms (ink 255); a level read without the offset is
-  // judged 17.8 C warmer (32 F / 1.8), where the ramp turns pale pink, and would be inked dark
-  const cool = (lat, lon) => 17.3 + (lat - 21.15) * 8;                       // the z10 tile below spans 21.0-21.3 N: 16.1-18.5 C, the 62 and 64 F lines inside
+  // a field around 5 C: dark blue, dark enough for LIGHT isotherms (ink 255); a level read without the offset is
+  // judged 17.8 C warmer (32 F / 1.8), where the thermal ramp is light yellow-green, and would be inked dark
+  const cool = (lat, lon) => 5 + (lat - 21.15) * 8;                          // the z10 tile spans 21.0-21.3 N: 3.8-6.2 C, the 40 and 42 F lines inside
   const st = fakeStore(manifest(['20_-160', '20_-165'], [], cool), { fn: cool });
   assert.equal(await st.load(), st);
   const l = sstLayer(st), c = { z: 10, x: 56, y: 450 };

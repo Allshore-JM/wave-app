@@ -2046,3 +2046,79 @@ test('re-check R-5: the watchdog and a switch away cancel the pointer request it
   await landed(w, A.run);
   done(o);
 });
+
+// ---- section 44: the observation (sea surface temperature) beside the frames ----
+function sstFake(o, opts) {                              // the store's network replaced: pointer, manifest, frame, cells (held by hand)
+  opts = opts || {};
+  const st = o.sst, held = [];
+  const m = { format: 'sst-v1', day: '2026-09-21', run: '20260921', complete: true, units: 'degC', range: [-2, 35],
+    tier0: { key: 'sst/v1/20260921/B/t0.png', grid: GRID }, tiers: [] };
+  st._json = (url) => new Promise((res, rej) => { const go = () => (opts.fail ? rej(new Error('sst 503')) : res(url.endsWith('latest.json') ? { format: 'sst-v1', complete: true, run: m.run, manifest: 'sst/v1/x/manifest.json' } : m)); if (opts.hold) held.push(go); else go(); });
+  st._decode = () => Promise.resolve({ q: new Uint8Array(1440 * 721).fill(200), cols: 1440, rows: 721 });
+  return { held, m };
+}
+test('section 44: hs -> sst -> hs: the player stops, the layer samples the store (no particles, the SST credit), the model\'s time and play state come back; nothing of the observation is saved as a time', async () => {
+  const store = memStore({}), w = world({ storage: store });
+  const o = await mounted(w, A, { sst: true });
+  o.anim = true; o._ensureFlow();
+  o.seek(10); await settle(); await w.releaseAll();
+  o.play(); await settle();
+  const t10 = Date.parse(A.frames[o._anchorIndex()].valid_utc);
+  const fake = sstFake(o);
+  o.mount('sst'); await settle();
+  assert.equal(o.mode, 'obs'); assert.equal(o.field, 'sst'); assert.equal(o.playing, false); assert.equal(o.frameIndex, null);
+  assert.ok(o.layer._src === o.sst && o.layer.field === 'sst' && o.layer.hasFrame());
+  assert.equal(o.layer.fdef, w.I.SST_FDEF);
+  assert.equal(o.flow, null, 'no particles over the observation');
+  assert.deepEqual(o._carry, { t: t10, playing: true });
+  assert.ok(o._attribution().indexOf('NASA MUR SST') >= 0 && o._attribution().indexOf('GFS-Wave') < 0);
+  assert.equal(Object.keys(o.inflight).length, 0, 'the frames\' downloads stopped');
+  const savedBefore = JSON.stringify(JSON.parse(store.getItem(w.I.SESSION_KEY)));
+  o._persist(); o.pause();
+  assert.equal(JSON.stringify(JSON.parse(store.getItem(w.I.SESSION_KEY))), savedBefore, 'the observation writes no time over the model\'s');
+  let rechecks = 0; o.sst.recheck = () => { rechecks++; return Promise.resolve(false); };
+  o._checkRun(); assert.equal(rechecks, 1, 'the 30-min check only notes a newer day');
+  // back to the frames: at the carried time, playing again; the store stops (its cells stay), the layer leaves it
+  const cellCtl = new AbortController(); o.sst.abort = cellCtl; o.sst.inflight['t2/20_-160'] = cellCtl; o.sst.queue.push([{}, 'x']);   // a cell still downloading
+  const gotos = [], goto0 = o._goto; o._goto = function (idx, sig) { gotos.push(idx); return goto0.call(this, idx, sig); };
+  o.mount('hs'); await settle();
+  if (o.frameIndex === null) await w.releaseField();                         // the carried frame lands (from the kept cache, else decoded); then playback moves on
+  assert.equal(o.mode, 'model'); assert.equal(o.layer._src, null); assert.equal(o.sst.onChange, null);
+  assert.ok(cellCtl.signal.aborted && Object.keys(o.sst.inflight).length === 0 && o.sst.queue.length === 0, 'its downloads stop on leaving');
+  assert.equal(Date.parse(A.frames[gotos[0]].valid_utc), t10, 'the first frame asked for is the carried time');
+  assert.ok(o.frameIndex >= gotos[0]);
+  assert.equal(o.playing, true);
+  assert.equal(o.layer.field, 'hs');
+  assert.equal(fake.m.run, o.sst.manifest.run, 'the day stays for the next switch');
+  done(o);
+});
+
+test('section 44: a switch away while the observation loads never lets it land; a failure takes the error panel and Retry loads it; Off from it leaves nothing', async () => {
+  const w = world();
+  const o = await mounted(w, A, { sst: true });
+  const fake = sstFake(o, { hold: true });
+  o.mount('sst'); await settle();
+  assert.equal(o.last.state, 'loading');
+  o.mount('hs'); await settle(); await w.releaseAll();
+  for (let i = 0; i < 4; i++) { fake.held.splice(0).forEach((f) => f()); await settle(); }   // pointer, then manifest: each answer held
+  assert.equal(o.mode, 'model'); assert.equal(o.layer.field, 'hs'); assert.equal(o.layer._src, null, 'the late observation did not land');
+  // failure, then Retry
+  o.sst.status = 'idle'; o.sst.manifest = null; o.sst.failedAt = 0;
+  const bad = sstFake(o, { fail: true });
+  o.mount('sst'); await settle();
+  assert.equal(o.last.state, 'error'); assert.ok(/cannot be loaded/.test(o.last.message));
+  assert.equal(o.layer.hasFrame(), false, 'no picture under the error');
+  o.sst.status = 'idle'; o.sst.failedAt = 0; sstFake(o);
+  o.mount('sst'); await settle();
+  assert.equal(o.last.state, 'ready'); assert.ok(o.layer._src);
+  // setModel while it is shown: the choice is kept, the model's run dropped, the picture stays
+  o.models = ['gfswave', 'ecmwf'];
+  o.setModel('ecmwf');
+  assert.equal(o.model, 'ecmwf'); assert.equal(o.manifest, null); assert.ok(o.layer.hasFrame() && o.layer._src);
+  // Off
+  let aborted = 0; const ab = o.sst.abortAll.bind(o.sst); o.sst.abortAll = () => { aborted++; ab(); };
+  o.unmount();
+  assert.equal(o.mode, 'model'); assert.equal(o.layer, null); assert.equal(aborted, 1);
+  assert.ok(o.sst.manifest, 'the day stays for the next On');
+  void bad;
+});

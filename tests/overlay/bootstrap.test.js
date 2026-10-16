@@ -9,16 +9,17 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'] };
-function gatedScript() {
+const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false };
+function gatedScript(subs) {
+  subs = Object.assign({}, SUBS, subs || {});
   const tpl = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
   const a = tpl.indexOf('{%- if model_overlays %}'), b = tpl.indexOf('{%- endif %}', a);
   const block = tpl.slice(a, b), s = block.indexOf('<script>') + '<script>'.length, e = block.indexOf('</script>', s);
   let src = block.slice(s, e);
-  for (const k of Object.keys(SUBS)) src = src.split('{{ ' + k + '|tojson }}').join(JSON.stringify(SUBS[k]));
+  for (const k of Object.keys(subs)) src = src.split('{{ ' + k + '|tojson }}').join(JSON.stringify(subs[k]));
   return src;
 }
-const SRC = gatedScript();
+const SRC = gatedScript(), SRC_SST = gatedScript({ overlay_sst: true });
 const KEY = 'allshore.overlay.v1';
 
 function page(opt) {
@@ -38,7 +39,7 @@ function page(opt) {
     for (;;) { timers.sort((x, y) => x.at - y.at); const t = timers[0]; if (!t || t.at > end) break; timers.shift(); now = t.at; t.fn(); }
     now = end;
   }
-  const OPTS = ['', 'hs', 'tp', 'wind'];
+  const OPTS = opt.sst ? ['', 'hs', 'tp', 'wind', 'sst'] : ['', 'hs', 'tp', 'wind'];
   const sel = { _v: '', _ls: [], get value() { return this._v; }, set value(v) { v = String(v); this._v = OPTS.includes(v) ? v : ''; },
     addEventListener(ev, fn) { this._ls.push(fn); }, userPick(v) { this.value = v; this._ls.forEach((f) => f({})); } };
   const panel = { textContent: '' }, unit = { _ls: [], addEventListener(ev, fn) { this._ls.push(fn); } };
@@ -62,15 +63,16 @@ function page(opt) {
   }
   const window = { addEventListener: on('win'), requestIdleCallback: opt.noRIC ? undefined : (fn) => { idleQ.push(fn); },
     AllshoreOverlay: opt.assetsLoaded === false ? undefined : makeAO() };
-  const L = { Control: { extend: (p) => function () { this.onAdd = p.onAdd; } }, DomUtil: { create: () => ({ innerHTML: '' }) },
+  const boxes = [];
+  const L = { Control: { extend: (p) => function () { this.onAdd = p.onAdd; } }, DomUtil: { create: () => { const b = { innerHTML: '' }; boxes.push(b); return b; } },
     DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} }, TileLayer: opt.TileLayer };
   const map = { addControl: (c) => c.onAdd() };
   if (opt.layers) map.eachLayer = (fn) => opt.layers.forEach(fn);
   if (opt.zoom) { map.zoomControl = { tag: 'zoom' }; map.removed = []; map.removeControl = (c) => map.removed.push(c); }
-  new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', SRC)(
+  new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.sst ? SRC_SST : SRC)(
     window, document, sessionStorage, L, map, () => 'US', () => '', () => '', setTimeout);
   return {
-    log, store, sel, panel, overlays, listeners, map,
+    log, store, sel, panel, overlays, listeners, map, boxes,
     read: () => { try { return JSON.parse(store.get(KEY) || 'null'); } catch (e) { return store.get(KEY); } },
     load() { document.readyState = 'complete'; fire('win', 'load'); },
     idle() { idleQ.splice(0).forEach((f) => f({})); },
@@ -259,4 +261,29 @@ test('section 43: the page hands the offered models to the module (MODEL_OVERLAY
   p.sel.userPick('hs'); await settle();
   assert.deepEqual(p.overlays[0].opts.models, ['gfswave']);
   assert.ok(SRC.indexOf('var MODELS = ["gfswave"];') >= 0 && SRC.indexOf('models: MODELS') >= 0);
+});
+
+test('section 44: "Sea surface temperature" is offered only with SST_OVERLAY (SST); a saved sst without it starts Off; the module is told', async () => {
+  assert.ok(SRC.indexOf('var SST = false;') >= 0 && SRC_SST.indexOf('var SST = true;') >= 0 && SRC.indexOf('sst: SST') >= 0);
+  // the control's markup: the option only when offered
+  const off = page({ complete: true }), on = page({ complete: true, sst: true });
+  assert.ok(off.boxes.length && off.boxes[0].innerHTML.indexOf('value="sst"') < 0);
+  assert.ok(on.boxes[0].innerHTML.indexOf('<option value="sst">Sea surface temperature</option></select>') >= 0);
+  // a tab whose save says sst: restored with the setting on, Off without it
+  const p1 = page({ init: { field: 'sst' }, sst: true });
+  assert.equal(p1.sel.value, 'sst');
+  await loadedAndIdle(p1);
+  assert.deepEqual(p1.overlays[0].mounts, [['sst', true]]);
+  assert.equal(p1.overlays[0].opts.sst, true);
+  const p2 = page({ init: { field: 'sst' } });
+  assert.equal(p2.sel.value, '');
+  await loadedAndIdle(p2);
+  assert.equal(p2.overlays.length, 0, 'nothing mounted');
+  // a pick of sst and back: the module mounts each; the save follows the select
+  const p3 = page({ sst: true, init: { field: '' } });
+  p3.sel.userPick('sst'); await settle();
+  assert.deepEqual(p3.overlays[0].mounts, [['sst', false]]); assert.equal(p3.read().field, 'sst');
+  p3.sel.userPick('hs'); await settle();
+  assert.deepEqual(p3.overlays[0].mounts[1], ['hs', false]); assert.equal(p3.read().field, 'hs');
+  assert.equal(page({ sst: false, init: { field: '' } }).overlays.length, 0);
 });

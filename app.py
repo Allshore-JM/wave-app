@@ -284,7 +284,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.18.0"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.18.1"           # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -309,6 +309,13 @@ def _overlay_models() -> list:
         if name in OVERLAY_MODELS and name not in out:
             out.append(name)
     return out or [OVERLAY_MODELS[0]]
+
+
+def _sst_overlay_enabled() -> bool:
+    """SST_OVERLAY=1: the overlay dropdown offers "Sea surface temperature" (plan section 44: the daily NASA MUR tiles
+    published by tools/model_frames/sst.py under the frames bucket's sst/v1/). Off by default: the client ships first, the
+    setting goes on once a day is live."""
+    return os.environ.get("SST_OVERLAY", "0") == "1"
 
 
 def _coast_base() -> str:
@@ -2967,6 +2974,7 @@ def _overlay_context(selected_station, selected_tz, payload):
         return {"model_overlays": False}
     tz_name = (payload.get("tz_label") if payload else None) or _effective_tz_name(selected_station, selected_tz)
     return {"model_overlays": True, "model_frames_base": base, "overlay_models": _overlay_models(),
+            "overlay_sst": _sst_overlay_enabled(),
             "overlay_asset_version": OVERLAY_ASSET_VERSION, "forecast_tz_name": tz_name}
 
 

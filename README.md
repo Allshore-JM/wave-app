@@ -628,6 +628,18 @@ product) publishes the newest NASA JPL MUR SST v4.1 day as tiles; `sst_tiles.py`
   (hs / tp contours are byte-identical). A world copy samples the one world; a point on a cell edge reads the same from
   either side within the cells' quantisation (exactly when their ranges agree). `tests/overlay/sst.test.js` (14, incl. two
   published cells of 2026-10-15 against ERDDAP's own values and the real seam between them).
+- **The overlay field** (asset 2.18.1, plan section 44 step 4): env `SST_OVERLAY=1` adds "Sea surface temperature" to the
+  overlay dropdown (off by default: the client shipped first; a saved `sst` with the setting off starts Off). It is an
+  OBSERVATION: while it is shown the model dropdown, the play button, the ribbon, the overview slider and the Run /
+  Updated / Next Update lines go (the panel's mode `obs`); the head names the source ("NASA MUR (1 km, daily)"), the
+  details show the scale and ONE date line ("Day: Thu, Oct. 15 (daily analysis)"; a warning past 4 days old, the job's own
+  stale line); folded: "SST · Thu, Oct. 15". Units follow the site unit (deg F as an affine unit: the ticks 40-80 + "95+ °F",
+  the isotherms every 2 F; Metric 0-25 + "35+ °C", every 1 C); the legend's knots give 15-30 C 56 % of the bar; the scale is
+  the owner's pick B (2026-10-16), a thermal ramp from deep purple through blue, teal, green, yellow, orange and red to dark
+  red, over the imagery at 0.75 opacity, clipped at the GSHHG coastline. No particles. The credit reads "Overlay: NASA MUR
+  SST" (+ "· GSHHG"). A switch to it keeps the model's run, caches and time: back on a model field the picture returns at
+  the time the viewer had (the same carry as a model switch) and resumes playing if it was; the observation saves no time.
+  The 30-minute check only notes a newer day; the next switch to it shows the new one.
 
 ## Forecast points
 

@@ -54,6 +54,7 @@ function world(opts) {
     fetch: (url, o) => {
       w.fetches.push(url);
       if (o && o.signal && o.signal.aborted) return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      if (/latest\.json$|manifest-x\.json$/.test(url)) (w.jsonSignals = w.jsonSignals || []).push({ url, signal: o && o.signal });   // re-check R-5
       if (url.endsWith('latest.json')) {                                     // per model (w.pointers[prefix]), else the one pointer
         const pm = /(gfswave|ecmwf)\/0p25\/v1\/latest\.json$/.exec(url), pp = w.pointers && pm ? w.pointers[pm[1]] : undefined;
         const answer = { ok: true, status: 200, json: () => Promise.resolve(pp !== undefined ? pp : w.pointer) };
@@ -212,6 +213,7 @@ test('outage then Retry with the drawn frame still cached ends in the ready stat
   const nFetch = w.fetches.length; o.seek(i0 + 12); await settle();
   assert.equal(o.transientFails, 3);
   assert.equal(o.last && o.last.state, 'error');
+  assert.equal(o.frameIndex, i0); assert.ok(o.layer.hasFrame(), 'a frame of the run is on the map: the outage keeps its picture (fix round 2 clears only a picture without its frame)');
   assert.equal(w.fetches.length, nFetch + 1, 'the outage pause starts nothing beyond the failed frame (section 42: a pause only shrinks the ring)');
   // the panel's Retry button does exactly this
   o.unavailable = {}; o.transientFails = 0; o.mount('hs'); await settle();
@@ -1963,5 +1965,84 @@ test('G30-15: a switch back before the first lands keeps the carried playback (t
   assert.equal(o._carry.playing, true, 'still playing when it lands');
   await landed(w, A.run); await w.releaseAll();
   assert.equal(o.model, 'gfswave'); assert.equal(tagOf(o), 12); assert.equal(o.playing, true);
+  done(o);
+});
+
+// ------------------------------- G30 fix round 2 (asset 2.17.3) -------------------------------
+test('Update race (pre-existing, G30 re-check): a landing of the run being replaced, already decoded when Update starts, never lands over Update\'s loading panel', async () => {
+  const w = world(); w.manifests[B.run] = B;
+  const o = await twoModels(w);
+  assert.ok(o.cache.has(o._key(11)), 'frame 11 is decoded in the ring');
+  const step = o._goto(11).catch((e) => e);                                   // a step / playback landing, its frame in hand
+  o.newerRun = ptr(B);
+  w.holdManifest = true; o.update(); w.holdManifest = false;                  // the newer run's manifest is slow
+  await settle();
+  const err = await step;
+  assert.equal(err && err.name, 'AbortError', 'the old run\'s landing is superseded');
+  assert.equal(o.last.state, 'loading', 'Update\'s loading panel stays'); assert.equal(o.frameIndex, 10);
+  w.heldManifests.shift()(); await settle(); await w.releaseAll();
+  assert.equal(o.manifest.run, B.run); assert.equal(o.frameIndex, w.I.nearestIndex(B, Date.parse(A.frames[11].valid_utc)), 'the requested time');
+  assert.equal(o.last.state, 'ready');
+  done(o);
+});
+
+test('Update race (pre-existing): an Update whose frames never come leaves no picture of the old run (no picture without its frame and run)', async () => {
+  const w = world(); w.manifests[B.run] = B;
+  const o = await twoModels(w);
+  for (const f of B.frames) for (const half of [false, true]) w.failNext['https://x/' + w.I.frameKey(B, f, 'hs', half)] = 404;
+  o.newerRun = ptr(B);
+  o.update(); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.last.state, 'error'); assert.equal(o.frameIndex, null);
+  assert.equal(o.layer.hasFrame(), false, 'the old run\'s picture went with the failure');
+  done(o);
+});
+
+test('re-check R-2: a failed model switch on wind gives the page\'s imagery back (the basemap follows what is drawn)', async () => {
+  const w = world();
+  const o = await twoModels(w);
+  o.mount('wind'); await settle(); await w.releaseAll();
+  const looks = []; const s0 = o._syncLook;
+  o._syncLook = function () { looks.push(this.layer && this.layer.hasFrame()); return s0.apply(this, arguments); };
+  w.pointers.ecmwf = { run: E.run, complete: false };
+  o.setModel('ecmwf'); await settle();
+  assert.equal(o.last.state, 'error'); assert.equal(o.layer.hasFrame(), false);
+  assert.ok(looks.length >= 1 && looks[looks.length - 1] === false, 'the look synced with nothing drawn: ' + JSON.stringify(looks));
+  done(o);
+});
+
+test('re-check R-4: the chosen time is what a run of switches keeps (never a snapped frame\'s); Off ends it', async () => {
+  const w = world();
+  const o = await twoModels(w);
+  o.seek(51); await settle(); await w.releaseAll();
+  const T = Date.parse(A.frames[51].valid_utc);
+  o.setModel('ecmwf'); assert.equal(o._switchT, T); await landed(w, E.run);
+  o.setModel('gfswave'); assert.equal(o._switchT, T, 'still the chosen time, not the ECMWF frame\'s'); await landed(w, A.run);
+  o.setModel('ecmwf'); assert.equal(o._switchT, T); for (let i = 0; i < 4 && o.frameIndex === null; i++) await landed(w, E.run);
+  assert.notEqual(Date.parse(E.frames[o.frameIndex].valid_utc), T, 'ECMWF has no frame at the chosen time');
+  o.unmount(); assert.equal(o._switchT, null, 'Off ends the run of switches');
+  o.mount('hs'); await settle(); await w.releaseAll();
+  const onMap = Date.parse(o.manifest.frames[o.frameIndex].valid_utc);
+  o.setModel('gfswave');
+  assert.equal(o._switchT, onMap, 'after Off/On a switch starts from the frame on the map');
+  await landed(w, A.run);
+  done(o);
+});
+
+test('re-check R-5: the watchdog and a switch away cancel the pointer request itself (the signal fetch was given is aborted)', async () => {
+  const w = world();
+  const o = await twoModels(w);
+  o._loadStallMs = 40;
+  w.holdPointer = true; o.setModel('ecmwf'); await settle();
+  const a = w.jsonSignals.filter((x) => /ecmwf\/0p25\/v1\/latest\.json$/.test(x.url)).pop();
+  assert.ok(a && a.signal && !a.signal.aborted);
+  await new Promise((r) => setTimeout(r, 90)); await settle();
+  assert.equal(o.last.state, 'error'); assert.equal(a.signal.aborted, true, 'the watchdog cancelled the request');
+  w.holdPointer = false; o.setModel('gfswave'); await landed(w, A.run);
+  w.holdPointer = true; o.setModel('ecmwf'); await settle();
+  const b = w.jsonSignals.filter((x) => /ecmwf\/0p25\/v1\/latest\.json$/.test(x.url)).pop();
+  assert.notEqual(b, a); assert.equal(b.signal.aborted, false);
+  w.holdPointer = false; o.setModel('gfswave');
+  assert.equal(b.signal.aborted, true, 'a switch away cancelled the request');
+  await landed(w, A.run);
   done(o);
 });

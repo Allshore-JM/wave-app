@@ -197,3 +197,22 @@ p50 125 ms, 0 unpainted). Claims R1-R10 CONFIRMED (R1 with R-1/R-3), R11 PARTLY 
   landing, or an Update whose frames never answer, leaves the old run's picture of the same model with `frameIndex` null
   under a ready or error panel. A switch is immune (`_dropRun`).
 
+## Fix round 2 (asset 2.17.3, 2026-10-16, Opus 5.5 HIGH; the owner also asked for the pre-existing Update race)
+- **R-1 / R-3** the dropdown's fixed height is gone: `margin: -1px 0` keeps it out of the head line's height and the browser
+  sizes it, so a larger minimum font grows it unclipped (as production's span does) and borders that snap at 150 % add
+  nothing. The touch rule (`min-height: 28px`) is unchanged.
+- **R-2** `_fail` syncs the look whenever nothing is drawn: a failed switch on wind gives the imagery back (the basemap
+  follows what is drawn, as everywhere else).
+- **Update race (pre-existing)** two parts. (a) `update()` drops the pending target at once, so a step or playback landing of
+  the run being replaced (its frame already decoded) can no longer pass `_goto`'s checks and put the old run's ready panel
+  over Update's loading one. (b) A load that fails with no frame of its run in hand clears the predecessor's picture, its
+  particles, the readout and the overlay credit: never a picture without its frame and run under the error panel.
+- **R-4 / R-5 pins**: the chosen time is what a run of switches keeps (never a snapped frame's) and Off ends it; the
+  watchdog and a switch away abort the signal fetch itself was given.
+- **R-6** README: the 15-s deadline covers every pointer / manifest request (switch, first load, a field switch's re-read,
+  Update), headers and body; a failed load leaves nothing of an earlier run; Update drops the pending step.
+- Tests: the three behaviour fixes each fail on 2.17.2 and pass on 2.17.3; the CSS pin asserts no fixed height. Overlay
+  Node 284, UI 393, pytest 1,133. Mutants: 11 of 11 killed (no clear / no look sync / clear with a frame on the map, which also pinned the outage's picture / Update keeping its target / Off keeping _switchT / _switchT = the shown frame / fetch given the outer signal / abort or watchdog not cancelling the request / the fixed height back).
+- Fuzz (the re-check's two-model fuzz against the new source): 1,350 runs, 3,626 switches on the main, canvas and worker decode paths (interactive and playback), 0 failures. The three seeds that failed "I1 drawn" on
+  2.17.2 (10459 main; 10624 main and canvas; 31762 main, interactive) pass.
+

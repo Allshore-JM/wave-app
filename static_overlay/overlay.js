@@ -2434,6 +2434,16 @@
   Overlay.prototype._fail = function (sig, err) {
     if (sig && sig.aborted) return;
     if (err && err.name === 'AbortError') return;
+    // A load that failed with no frame of the run in hand (an Update whose frames never came): its predecessor's picture
+    // goes, never a picture without its frame and run; and the basemap follows what is drawn (a failed wind switch kept the
+    // bare relief: re-check R-2).
+    if (this.frameIndex === null && this.layer && this.layer.hasFrame()) {
+      this.layer.clear();
+      if (this.flow) this.flow.clearData();
+      if (this.readout) this.readout.hidden = true;
+      this._unattribute();
+    }
+    if (this.layer && !this.layer.hasFrame()) this._syncLook();
     this.pause();
     var msg = err && err.outage ? 'frames cannot be loaded right now' : err && err.message ? err.message : String(err);
     try { this.render({ state: 'error', message: msg }); } catch (e) { /* host gone */ }
@@ -2531,6 +2541,9 @@
     var wasPlaying = this.playing, keep = this.frameIndex !== null ? this._anchorIndex() : null; this.pause();   // the requested time while one is loading
     var prevValid = keep !== null && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : this._carry ? this._carry.t : Date.now();
     this._switchT = null;
+    // A landing of the run being replaced (a playback step or a seek decoded before the Update) must not pass _goto's checks
+    // and put the old run's ready panel over the Update's loading one (fresh check of G30: the old picture with no frame).
+    this.target = null;
     this.abortAll(); this.abort = new AbortController();
     var sig = this.abort.signal;
     this.render({ state: 'loading' });

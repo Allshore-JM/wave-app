@@ -3,17 +3,20 @@
 Source: MUR v4.1 (GHRSST L4, doi:10.5067/GHGMR-4FJ04) through NOAA CoastWatch's ERDDAP mirror (anonymous HTTPS; one
 NetCDF-4 file per day, ~750 MB, nominal 09Z, served ~26 h after it). Free and redistributable; credit "NASA JPL MUR
 SST v4.1 via NOAA CoastWatch ERDDAP". The tiles (sst_tiles.py) and the layout:
-  sst/v1/<YYYYMMDD>/t0.png                 the whole globe at 0.25 deg (1440 x 721)        (immutable)
-  sst/v1/<YYYYMMDD>/t1/<lat0>_<lon0>.png   0.05 deg, 20-deg cells (402 x 402)               (immutable)
-  sst/v1/<YYYYMMDD>/t2/<lat0>_<lon0>.png   0.01 deg, 5-deg cells (502 x 502)                (immutable)
+  sst/v1/<YYYYMMDD>/<BUILD>/t0.png               the whole globe at 0.25 deg (1440 x 721)        (immutable)
+  sst/v1/<YYYYMMDD>/<BUILD>/t1/<lat0>_<lon0>.png 0.05 deg, 20-deg cells (402 x 402)               (immutable)
+  sst/v1/<YYYYMMDD>/<BUILD>/t2/<lat0>_<lon0>.png 0.01 deg, 5-deg cells (502 x 502)                (immutable)
+  (BUILD = the build's start time, YYYYMMDDTHHMMSSZ: a tile's bytes depend on its cell's lo / hi in the manifest that
+  names it, so a day built again (--force, a code fix, ERDDAP's revision of the day) never reuses a cached key; G31a F2)
   sst/v1/<YYYYMMDD>/stats-<published>.json, manifest-<published>.json                       (immutable)
   sst/v1/latest.json  -> {format, day, run, manifest, published_utc, complete}   (max-age=300, written LAST)
   sst/v1/failed/<YYYYMMDD>.json, sst/v1/stale-alarm.json
-Exit codes: 0 published / nothing new; 1 failure (a listing, download or build error; a stale source, at most once in
-STALE_ALARM_EVERY_H); 2 bad arguments.
+Exit codes: 0 published / nothing new / a listing outage while the live day is fresh; 1 failure (a download or build
+error, recorded with a back-off; a stale live day, at most once in STALE_ALARM_EVERY_H); 2 bad arguments.
 """
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -44,6 +47,7 @@ SOURCE = {"name": "NASA JPL MUR SST v4.1 (GHRSST L4)", "doi": "10.5067/GHGMR-4FJ
 MAX_FILE_BYTES = 1_500_000_000          # a day is ~750 MB; anything far larger is not a MUR day
 MIN_FILE_BYTES = 300_000_000
 DOWNLOAD_TRIES = 4
+DOWNLOAD_DEADLINE_S = 40 * 60           # well inside the workflow's 60 minutes: a slow mirror is a recorded failure (G31a F3)
 CELL_WORKERS = 4
 UPLOAD_WORKERS = 8
 UPLOAD_BACKLOG = 64
@@ -73,8 +77,13 @@ def latest_key():
     return f"{PREFIX}/latest.json"
 
 
-def tile_key(day, tier, name=None):
-    return f"{day_dir(day)}/t0.png" if tier == "t0" else f"{day_dir(day)}/{tier}/{name}.png"
+def build_dir(day, build_id):
+    return f"{day_dir(day)}/{build_id}"
+
+
+def tile_key(day, tier, name=None, build_id=None):
+    base = build_dir(day, build_id)
+    return f"{base}/t0.png" if tier == "t0" else f"{base}/{tier}/{name}.png"
 
 
 def manifest_key(day, published):
@@ -126,24 +135,26 @@ def listing(get=_get):
         return parse_listing(r.read().decode("utf-8", "replace"))
 
 
-def download(name, size, dest, get=_get, tries=DOWNLOAD_TRIES, log=print):
-    """Stream the day's file to `dest`, resuming a cut transfer with a Range request; the result must be exactly the
-    listed size."""
+class DeadlineExceeded(Exception):
+    pass
+
+
+def download(name, size, dest, get=_get, tries=DOWNLOAD_TRIES, log=print, deadline_s=None, clock=time.monotonic):
+    """Stream the day's file to `dest`, one whole request per try: ERDDAP answers every Range request on /files/ with
+    416 ("Don't try to connect to .nc files as if they were local files", G31a F1), so a cut transfer starts again from
+    byte 0 (a day takes ~10 s on GitHub's runner). The result must be exactly the listed size; past `deadline_s` the
+    download is given up (a recorded failure with its back-off, never the workflow's 60-minute kill: G31a F3)."""
     if not (MIN_FILE_BYTES <= size <= MAX_FILE_BYTES):
         raise ValueError(f"{name}: listed size {size} is not a MUR day")
-    have = os.path.getsize(dest) if os.path.exists(dest) else 0
-    last = None
+    deadline_s = DOWNLOAD_DEADLINE_S if deadline_s is None else deadline_s
+    start, last, have = clock(), None, 0
     for attempt in range(1, tries + 1):
-        if have >= size:
-            break
+        have = 0
         try:
-            hdr = {"Range": f"bytes={have}-"} if have else {}
-            with get(f"{ERDDAP}/{name}", headers=hdr, timeout=300) as r, open(dest, "ab" if have else "wb") as fh:
-                if have and getattr(r, "status", 206) != 206:          # the server ignored the range: start again
-                    fh.seek(0)
-                    fh.truncate()
-                    have = 0
+            with get(f"{ERDDAP}/{name}", timeout=300) as r, open(dest, "wb") as fh:
                 while True:
+                    if clock() - start > deadline_s:
+                        raise DeadlineExceeded(f"{name}: not downloaded within {deadline_s} s ({have} of {size} bytes)")
                     chunk = r.read(1 << 22)
                     if not chunk:
                         break
@@ -151,13 +162,17 @@ def download(name, size, dest, get=_get, tries=DOWNLOAD_TRIES, log=print):
                     have += len(chunk)
                     if have > size:
                         raise ValueError(f"{name}: more bytes than listed")
-        except Exception as exc:                                       # noqa: BLE001 - resets, timeouts
+            if have == size:
+                return dest
+            last = IOError(f"ended at {have} of {size} bytes")
+        except (DeadlineExceeded, ValueError):
+            raise
+        except Exception as exc:                                       # noqa: BLE001 - resets, timeouts, HTTP errors
             last = exc
-            log(f"download attempt {attempt} stopped at {have} of {size} bytes: {exc.__class__.__name__}")
+        log(f"download attempt {attempt} stopped at {have} of {size} bytes: {last.__class__.__name__}")
+        if attempt < tries:
             time.sleep(min(30, 5 * attempt))
-    if have != size:
-        raise IOError(f"{name}: {have} of {size} bytes after {tries} tries ({last!r})")
-    return dest
+    raise IOError(f"{name}: {have} of {size} bytes after {tries} tries ({last!r})")
 
 
 def read_mur(path, day, geo=None):
@@ -231,9 +246,14 @@ def t0_grid(geo):
             "dlon": res, "dlat": -res, "registration": "center", "lon_periodic": True}
 
 
-def build(day, sst, mask, uploads, geo=None, file_name=None, log=print):
-    """Tiles of one day from its north-up (sst, mask) -> the manifest (pointer not written). `sst` is consumed (turned
-    into the value grid in place). The lattice follows the arrays (MUR: 100 pixels per degree)."""
+def build(day, arrays, uploads, geo=None, file_name=None, log=print, build_id=None):
+    """Tiles of one day from its north-up [sst, mask] -> the manifest (pointer not written). The list is emptied (the
+    caller keeps no reference, so the mask's ~650 MB go once the value grid is made: G31a F8) and `sst` is turned into
+    the value grid in place. The lattice follows the arrays (MUR: 100 pixels per degree). Tiles go under their own
+    build directory (see the layout)."""
+    sst, mask = arrays
+    arrays.clear()
+    build_id = build_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     px = sst.shape[1] // 360
     geo = geo or T.Geo(px)
     if sst.shape != (geo.rows, geo.cols):
@@ -269,14 +289,14 @@ def build(day, sst, mask, uploads, geo=None, file_name=None, log=print):
                     continue
                 (lat0, lon0), lo, hi, png, filled = r
                 cname = T.cell_name(lat0, lon0)
-                uploads.put(tile_key(day, name, cname), png)
+                uploads.put(tile_key(day, name, cname, build_id), png)
                 cells[cname] = [lo, hi, len(png)]
                 nbytes += len(png)
                 filled_px += filled
                 steps_.append((hi - lo) / 254.0)
             n = cell * geo.px // step
             tiers.append({"name": name, "cell": cell, "res": geo.res(step), "px": n, "apron": 1,
-                          "dir": f"{day_dir(day)}/{name}", "cells": cells})
+                          "dir": f"{build_dir(day, build_id)}/{name}", "cells": cells})
             stats["tiers"][name] = {"cells": len(cells), "bytes": nbytes, "max_step_c": round(max(steps_), 4),
                                     "mean_step_c": round(float(np.mean(steps_)), 4),
                                     "filled": filled_px if step == 1 else nfilled}
@@ -286,7 +306,7 @@ def build(day, sst, mask, uploads, geo=None, file_name=None, log=print):
         lo, hi = T.RANGE
         q0 = T.quantize(n0, lo, hi)
         png0 = E.to_png(q0)
-        uploads.put(tile_key(day, "t0"), png0)
+        uploads.put(tile_key(day, "t0", build_id=build_id), png0)
         fin = np.isfinite(n0)
         stats["tiers"]["t0"] = {"bytes": len(png0), "filled": f0, "nodes": int(fin.sum()),
                                 "clamped_low": int((n0[fin] < lo).sum()), "clamped_high": int((n0[fin] > hi).sum()),
@@ -300,7 +320,7 @@ def build(day, sst, mask, uploads, geo=None, file_name=None, log=print):
     if (grid["rows"], grid["cols"]) != n0.shape:
         raise ValueError("t0 grid does not match its nodes")
     manifest = {
-        "format": FORMAT, "day": iso_day(day), "run": day, "complete": True, "published_utc": published,
+        "format": FORMAT, "day": iso_day(day), "run": day, "build": build_id, "complete": True, "published_utc": published,
         "build_seconds": round(time.time() - t0, 1), "units": "degC", "range": list(T.RANGE),
         "source": dict(SOURCE, file=file_name, time_utc=f"{iso_day(day)}T09:00:00Z"),
         "encoding": "u8: code 0 = no value, else v = lo + (code - 1) / 254 * (hi - lo) deg C",
@@ -309,7 +329,7 @@ def build(day, sst, mask, uploads, geo=None, file_name=None, log=print):
                     "lon = lon0 + (c - 1) * res (rows north to south; a one-node apron shared with the neighbours)",
         "values": "open sea; MUR's own coastal values within 3 km of open sea; a 2-pixel mean fill over other land "
                   "(t2), a 1-node fill (t1, t0); lakes and ice-covered water left empty",
-        "tier0": {"key": tile_key(day, "t0"), "lo": T.RANGE[0], "hi": T.RANGE[1], "grid": grid},
+        "tier0": {"key": tile_key(day, "t0", build_id=build_id), "lo": T.RANGE[0], "hi": T.RANGE[1], "grid": grid},
         "tiers": tiers,
     }
     stats["build_seconds"] = manifest["build_seconds"]
@@ -358,6 +378,12 @@ def prune(store, keep=KEEP_DAYS):
             continue
         store.delete_prefix(f"{day_dir(d)}/")
         deleted.append(d)
+    oldest = min(protect) if protect else None
+    if oldest:                                                        # failure records of days older than every kept one
+        old = [k for k in store.list_keys(f"{PREFIX}/failed/")
+               if k.rsplit("/", 1)[-1][:8].isdigit() and k.rsplit("/", 1)[-1][:8] < oldest]
+        if old:
+            store.delete_keys(old, "failed records")
     return deleted
 
 
@@ -380,20 +406,21 @@ def skip_failed(store, day, now=None):
     return ((now or datetime.now(timezone.utc)) - last).total_seconds() < FAILED_RETRY_AFTER_S
 
 
-def stale_check(store, newest_day, now=None):
-    """1 when the newest MUR day is older than STALE_DAYS and no alarm went out in STALE_ALARM_EVERY_H (GitHub mails a
-    failed run), else None."""
+def stale_check(store, live_day, now=None, why=""):
+    """1 when the LIVE day (what the site shows; None = nothing published yet) is older than STALE_DAYS and no alarm
+    went out in STALE_ALARM_EVERY_H (GitHub mails a failed run), else None. Every quiet path ends here: nothing newer on
+    ERDDAP, a listing outage, a day that keeps failing (G31a F4, F6)."""
     now = now or datetime.now(timezone.utc)
-    age_d = (now - datetime.strptime(newest_day, "%Y%m%d").replace(tzinfo=timezone.utc)).total_seconds() / 86400
+    age_d = math.inf if not live_day else (now - datetime.strptime(live_day, "%Y%m%d").replace(tzinfo=timezone.utc)).total_seconds() / 86400
     if age_d <= STALE_DAYS:
         return None
     rec = store.get_json(stale_key()) or {}
     last = rec.get("last_alarm_utc")
     if last and (now - datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)).total_seconds() < STALE_ALARM_EVERY_H * 3600:
-        print(f"newest MUR day {newest_day} is {age_d:.1f} days old (alarm already sent)")
+        print(f"live day {live_day} is {age_d:.1f} days old (alarm already sent)")
         return None
-    store.put(stale_key(), json.dumps({"last_alarm_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "newest_day": newest_day}).encode(), JSON, P.POINTER)
-    _summary(f"STALE: the newest MUR day on ERDDAP is {newest_day} ({age_d:.1f} days old)")
+    store.put(stale_key(), json.dumps({"last_alarm_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "live_day": live_day}).encode(), JSON, P.POINTER)
+    _summary(f"STALE: the live SST day is {live_day or 'none'} ({age_d:.1f} days old){': ' + why if why else ''}")
     return 1
 
 
@@ -416,6 +443,16 @@ def main(argv=None, get=_get, store=None, reader=read_mur):
         print("bad arguments (--keep >= 1; --day YYYYMMDD; --file needs --day)")
         return 2
 
+    live = a.dry_run is False and a.local is None
+    latest = {}
+    if live:
+        if store is None:
+            store = _store_from_env()
+        latest = store.get_json(latest_key()) or {}
+    # the stale alarm watches the LIVE day on every quiet path, and only on scheduled runs (a manual --day is not a
+    # statement about freshness: G31a F5)
+    stale = (lambda why: (stale_check(store, latest.get("run"), why=why) or 0)) if live and not a.day else (lambda why: 0)
+
     if a.file:
         day, name, size = a.day, os.path.basename(a.file), os.path.getsize(a.file)
     else:
@@ -423,25 +460,21 @@ def main(argv=None, get=_get, store=None, reader=read_mur):
             days = listing(get)
         except Exception as exc:                                       # noqa: BLE001
             print(f"ERDDAP listing failed: {exc.__class__.__name__}: {exc}")
-            return 1
+            return stale("the ERDDAP listing fails") if live else 1
         if a.day:
             days = [d for d in days if d[0] == a.day]
         if not days:
             print("no MUR day file in the listing" + (f" for {a.day}" if a.day else ""))
-            return 1
+            return stale("no MUR day in the listing") if live and not a.day else 1
         day, name, size = days[-1]
 
-    live = a.dry_run is False and a.local is None
-    if live and store is None:
-        store = _store_from_env()
     if live:
-        latest = store.get_json(latest_key()) or {}
         if latest.get("run") and latest["run"] >= day and not a.force:
             print(f"day {latest['run']} is live; nothing newer ({day})")
-            return stale_check(store, day) or 0
+            return stale("nothing newer on ERDDAP")
         if not a.force and skip_failed(store, day):
             print(f"day {day} failed recently; waiting before retrying")
-            return 0
+            return stale(f"day {day} keeps failing")
     print(f"building MUR day {day} ({name}, {size / 1e6:.0f} MB){' [dry-run]' if not live else ''}")
 
     uploads = Uploads(store if live else None, local=a.local)
@@ -453,9 +486,7 @@ def main(argv=None, get=_get, store=None, reader=read_mur):
             t = time.time()
             path = download(name, size, os.path.join(tmp.name, name), get=get)
             print(f"downloaded {size / 1e6:.0f} MB in {time.time() - t:.0f} s")
-        sst, mask = reader(path, day)
-        manifest, stats = build(day, sst, mask, uploads, file_name=name)
-        del sst, mask
+        manifest, stats = build(day, list(reader(path, day)), uploads, file_name=name)
         if live:
             mkey, _ = publish_manifest(store, day, manifest, stats)
         elif a.local is not None:

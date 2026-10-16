@@ -95,6 +95,8 @@ def test_value_grid_keeps_sea_and_coastal_land_values_only():
     sst, mask, isl, mid, counts = valued_world()
     g = T.Geo(PXT)
     assert counts["coast_land"] > 0 and counts["lake"] > 0 and counts["ice"] > 0
+    assert counts["lake"] == int(((mask & 4) != 0).sum()) and counts["ice"] == int((mask == 9).sum()), \
+        "lake ice (13) counted once, as lake (G31a F9)"
     assert sst[mid] == T.FILLABLE, "a land value far from the sea is not used"
     r = np.nonzero(isl.any(axis=1))[0]
     c = np.nonzero(isl.any(axis=0))[0]
@@ -261,7 +263,10 @@ def built():
         seen[key] = body
         real_put(key, body, ctype, cache)
     up.put = put
-    manifest, stats = S.build("20261014", sst, mask, up, file_name="x.nc")
+    arrays = [sst, mask]
+    del sst, mask
+    manifest, stats = S.build("20261014", arrays, up, file_name="x.nc", build_id="20261015T110000Z")
+    assert arrays == [], "build takes the arrays over (G31a F8)"
     return manifest, stats, seen, src
 
 
@@ -273,7 +278,7 @@ def test_build_lists_every_tile_it_stored_with_its_range_and_size(built):
     assert names == ["t2", "t1"]
     total = 1
     for t in manifest["tiers"]:
-        assert t["apron"] == 1 and t["dir"] == f"sst/v1/20261014/{t['name']}"
+        assert t["apron"] == 1 and t["dir"] == f"sst/v1/20261014/20261015T110000Z/{t['name']}"
         assert t["px"] == round(t["cell"] / t["res"])
         for name, (lo, hi, nbytes) in t["cells"].items():
             body = seen[f"{t['dir']}/{name}.png"]
@@ -282,7 +287,8 @@ def test_build_lists_every_tile_it_stored_with_its_range_and_size(built):
             assert im.mode == "L" and im.size == (t["px"] + 2, t["px"] + 2)
         total += len(t["cells"])
     assert set(seen) == {k for k in seen if k.endswith(".png")} and len(seen) == total
-    assert manifest["tier0"]["key"] in seen
+    assert manifest["tier0"]["key"] in seen and manifest["tier0"]["key"] == "sst/v1/20261014/20261015T110000Z/t0.png"
+    assert manifest["build"] == "20261015T110000Z"
     assert stats["tiers"]["t2"]["cells"] == len(manifest["tiers"][0]["cells"])
 
 
@@ -335,7 +341,8 @@ def test_publish_writes_the_stats_then_the_manifest_then_the_pointer_last(built)
 
 # ------------------------------------------------------------------ the bucket
 def _day(fc, day, complete=True):
-    fc.objects[f"sst/v1/{day}/t0.png"] = {"body": b"x", "ct": "image/png", "cc": ""}
+    fc.objects[f"sst/v1/{day}/{day}T120000Z/t0.png"] = {"body": b"x", "ct": "image/png", "cc": ""}
+    fc.objects[f"sst/v1/{day}/{day}T120000Z/t2/0_0.png"] = {"body": b"x", "ct": "image/png", "cc": ""}
     if complete:
         fc.objects[f"sst/v1/{day}/manifest-x.json"] = {"body": b"{}", "ct": "", "cc": ""}
 
@@ -349,12 +356,15 @@ def test_prune_keeps_three_complete_days_and_the_live_one_and_never_touches_othe
     _day(fc, "20261001", complete=False)                       # an old crash leftover
     fc.objects["sst/v1/latest.json"] = {"body": json.dumps({"run": "20261009"}).encode(), "ct": "", "cc": ""}
     fc.objects["sst/v1/failed/20261007.json"] = {"body": b"{}", "ct": "", "cc": ""}
+    fc.objects["sst/v1/failed/20261011.json"] = {"body": b"{}", "ct": "", "cc": ""}
     fc.objects["gfswave/0p25/v1/2026101400/hs/f000.png"] = {"body": b"x", "ct": "", "cc": ""}
     deleted = S.prune(store, keep=3)
     assert deleted == ["20261001", "20261008"]
     left = {k.split("/")[2] for k in fc.objects if k.startswith("sst/v1/") and k.split("/")[2].isdigit()}
     assert left == {"20261009", "20261010", "20261011", "20261012", "20261013"}
-    assert "sst/v1/failed/20261007.json" in fc.objects and "gfswave/0p25/v1/2026101400/hs/f000.png" in fc.objects
+    assert "sst/v1/failed/20261007.json" not in fc.objects, "a failure record older than every kept day goes"
+    assert "sst/v1/failed/20261011.json" in fc.objects and "gfswave/0p25/v1/2026101400/hs/f000.png" in fc.objects
+    assert not [k for k in fc.objects if k.startswith("sst/v1/20261008/")], "a pruned day goes with its build directories"
 
 
 def test_parse_listing_keeps_only_mur_day_files_in_order():
@@ -388,38 +398,57 @@ class _Resp:
         return False
 
 
-def test_download_resumes_a_cut_transfer_and_insists_on_the_listed_size(tmp_path, monkeypatch):
+def test_download_restarts_from_byte_zero_and_insists_on_the_listed_size(tmp_path, monkeypatch):
+    """ERDDAP answers every Range request with 416 (G31a F1): a cut transfer starts again from byte 0, whole."""
     monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
     monkeypatch.setattr(S.time, "sleep", lambda s: None)
     data = bytes(range(256)) * 400
     calls = []
 
-    def get(url, headers=None, timeout=None):
+    def erddap(url, headers=None, timeout=None):
         calls.append(dict(headers or {}))
+        if headers and "Range" in headers:
+            raise IOError("HTTP Error 416: Requested Range Not Satisfiable")
         if len(calls) == 1:
             return _Resp(data, fail_after=30000)
-        start = int(headers["Range"].split("=")[1].rstrip("-"))
-        return _Resp(data[start:], status=206)
+        return _Resp(data)
     dest = str(tmp_path / "f.nc")
-    S.download("f.nc", len(data), dest, get=get, log=lambda *a: None)
-    assert open(dest, "rb").read() == data and calls[1] == {"Range": "bytes=30000-"}
+    S.download("f.nc", len(data), dest, get=erddap, log=lambda *a: None)
+    assert open(dest, "rb").read() == data and calls == [{}, {}], "no Range header, ever"
 
     calls.clear()
-    os.remove(dest)
-
-    def ignores_range(url, headers=None, timeout=None):
-        calls.append(dict(headers or {}))
-        if len(calls) == 1:
-            return _Resp(data, fail_after=500)
-        return _Resp(data, status=200)                          # the whole file again: the partial one is dropped
-    S.download("f.nc", len(data), dest, get=ignores_range, log=lambda *a: None)
-    assert open(dest, "rb").read() == data
-
-    os.remove(dest)
+    with pytest.raises(IOError):                                # cut every time: given up after `tries`
+        S.download("f.nc", len(data), dest, get=lambda *a, **k: _Resp(data, fail_after=500), tries=3,
+                   log=lambda *a: None)
     with pytest.raises(IOError):
         S.download("f.nc", len(data) + 5, dest, get=lambda *a, **k: _Resp(data), tries=2, log=lambda *a: None)
     with pytest.raises(ValueError):
-        S.download("f.nc", 5, dest, get=get)                    # a listed size no MUR day has
+        S.download("f.nc", len(data) - 5, dest, get=lambda *a, **k: _Resp(data), tries=2, log=lambda *a: None)
+    with pytest.raises(ValueError):
+        S.download("f.nc", 5, dest, get=erddap)                 # a listed size no MUR day has
+
+
+def test_download_gives_up_at_its_deadline_instead_of_the_workflow_timeout(tmp_path, monkeypatch):
+    """G31a F3: a slow mirror is a normal failure (recorded, backed off), never the 60-minute workflow kill."""
+    monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
+    monkeypatch.setattr(S.time, "sleep", lambda s: None)
+    data = b"x" * 100000
+    clock = [0.0]
+
+    class Slow(_Resp):
+        def read(self, n=-1):
+            clock[0] += 60.0                                   # a minute a chunk
+            return super().read(1000)
+    tries = []
+
+    def get(url, headers=None, timeout=None):
+        tries.append(1)
+        return Slow(data)
+    with pytest.raises(S.DeadlineExceeded):
+        S.download("f.nc", len(data), str(tmp_path / "f.nc"), get=get, deadline_s=600, clock=lambda: clock[0],
+                   log=lambda *a: None)
+    assert len(tries) == 1, "the deadline is not retried"
+    assert S.DOWNLOAD_DEADLINE_S <= 45 * 60
 
 
 def _listing_text(*days):
@@ -450,12 +479,48 @@ def test_main_does_nothing_when_the_newest_day_is_live_and_raises_the_stale_alar
     assert S.main([], get=_fake_get([old]), store=store) == 0, "...once in STALE_ALARM_EVERY_H"
 
 
+def test_main_never_regresses_the_pointer_and_stays_quiet_through_a_listing_outage(monkeypatch):
+    fc = FakeClient()
+    store = P.Store(fc, "b")
+    today = datetime.now(timezone.utc)
+    live = (today - timedelta(days=1)).strftime("%Y%m%d")
+    older = (today - timedelta(days=2)).strftime("%Y%m%d")
+    fc.objects[S.latest_key()] = {"body": json.dumps({"run": live}).encode(), "ct": "", "cc": ""}
+    assert S.main([], get=_fake_get([older]), store=store) == 0, "an older listed day never replaces the live one"
+
+    def down(url, headers=None, timeout=None):
+        raise IOError("HTTP Error 503")
+    assert S.main([], get=down, store=store) == 0, "a listing outage while the live day is fresh: no mail (G31a F4)"
+    assert S.stale_key() not in fc.objects
+    old = (today - timedelta(days=6)).strftime("%Y%m%d")
+    fc.objects[S.latest_key()] = {"body": json.dumps({"run": old}).encode(), "ct": "", "cc": ""}
+    assert S.main([], get=down, store=store) == 1, "...but the live day going stale still mails, once"
+    assert S.main([], get=down, store=store) == 0
+    assert S.main(["--dry-run"], get=down, store=store) == 1, "a dry run reports the outage itself"
+
+
+def test_a_manual_day_raises_no_stale_alarm_and_a_day_that_keeps_failing_does(monkeypatch):
+    fc = FakeClient()
+    store = P.Store(fc, "b")
+    today = datetime.now(timezone.utc)
+    live = (today - timedelta(days=6)).strftime("%Y%m%d")
+    fc.objects[S.latest_key()] = {"body": json.dumps({"run": live}).encode(), "ct": "", "cc": ""}
+    assert S.main(["--day", live], get=_fake_get([live]), store=store) == 0, "--day is not about freshness (G31a F5)"
+    assert S.stale_key() not in fc.objects
+    newer = (today - timedelta(days=1)).strftime("%Y%m%d")
+    for _ in range(S.FAILED_MAX_ATTEMPTS):
+        S.record_failure(store, newer, "boom")
+    assert S.main([], get=_fake_get([newer]), store=store) == 1, "a day that keeps failing ends in the alarm (G31a F6)"
+
+
 def test_main_waits_after_a_recent_failure_and_publishes_a_new_day_end_to_end(monkeypatch, tmp_path):
     fc = FakeClient()
     store = P.Store(fc, "b")
     day = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y%m%d")
+    prev = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y%m%d")
+    fc.objects[S.latest_key()] = {"body": json.dumps({"run": prev}).encode(), "ct": "", "cc": ""}
     S.record_failure(store, day, "boom")
-    assert S.main([], get=_fake_get([day]), store=store) == 0
+    assert S.main([], get=_fake_get([day]), store=store) == 0, "a fresh live day: the back-off is quiet"
     assert not [k for k in fc.objects if k.startswith(f"sst/v1/{day}/")]
 
     fc.objects.pop(S.failed_key(day))
@@ -480,7 +545,8 @@ def test_main_waits_after_a_recent_failure_and_publishes_a_new_day_end_to_end(mo
     for t in man["tiers"]:
         for name in t["cells"]:
             assert f"{t['dir']}/{name}.png" in fc.objects
-    assert fc.objects[f"sst/v1/{day}/t0.png"]["cc"] == P.IMMUTABLE
+    t0 = man["tier0"]["key"]
+    assert t0.startswith(f"sst/v1/{day}/") and t0.endswith("/t0.png") and fc.objects[t0]["cc"] == P.IMMUTABLE
 
 
 def test_main_records_a_failed_build_and_rejects_bad_arguments(monkeypatch):
@@ -552,6 +618,161 @@ def test_every_node_of_a_cell_picture_apron_included_reads_back_within_half_a_st
         assert np.max(np.abs(got[fin] - want[fin])) <= (hi - lo) / 508 + 1e-9, name   # the apron never clamps
         checked += 1
     assert checked == 6
+
+
+def test_a_day_built_again_never_reuses_a_tile_key(monkeypatch):
+    """G31a F2: a tile's bytes depend on its cell's lo / hi, so a rebuild (--force, a code fix) writes new keys."""
+    def keys(bid, bump):
+        sst, mask, _, _ = world()
+        sst[sst > T.FILLABLE] += bump
+        up = S.Uploads(None)
+        got = []
+        real = up.put
+        up.put = lambda key, body, *a, **k: (got.append(key), real(key, body, *a, **k))
+        man, _ = S.build("20261014", [sst, mask], up, log=lambda *a: None, build_id=bid)
+        return set(got), man
+    a, ma = keys("20261015T110000Z", 0)
+    b, mb = keys("20261015T120000Z", 7)
+    assert a and b and not (a & b)
+    assert all(k.startswith("sst/v1/20261014/20261015T110000Z/") for k in a)
+    assert ma["tiers"][0]["cells"]["10_20"] != mb["tiers"][0]["cells"]["10_20"]
+
+
+def test_every_tile_is_stored_before_build_returns_with_a_slow_bucket():
+    """The manifest must never name a tile still on its way (the drain before the manifest)."""
+    import threading
+    import time as _t
+    fc = FakeClient()
+    lock = threading.Lock()
+    real = fc.put_object
+
+    def slow(*a, **kw):
+        _t.sleep(0.002)
+        with lock:
+            return real(*a, **kw)
+    fc.put_object = slow
+    up = S.Uploads(P.Store(fc, "b"), workers=4, backlog=64)
+    sst, mask, _, _ = world()
+    man, _ = S.build("20261014", [sst, mask], up, log=lambda *a: None, build_id="B")
+    for t in man["tiers"]:
+        for name in t["cells"]:
+            assert f"{t['dir']}/{name}.png" in fc.objects
+    assert man["tier0"]["key"] in fc.objects
+    up.close()
+
+
+def test_coastal_node_means_take_valued_pixels_only():
+    sst, mask, isl, mid, _ = valued_world()
+    g = T.Geo(PXT)
+    step = 5
+    nodes, land = T.node_means(sst, g, step)
+    hits = 0
+    for a in range(nodes.shape[0]):
+        for k in range(nodes.shape[1]):
+            if land[a, k] == 0:
+                continue
+            c_lat_h, c_lon_h = 90 * PXT - step * a, -180 * PXT + step * k
+            px = [sst[g.row(c_lat_h + dy), g.col(c_lon_h + dx)] for dy in range(-2, 3) for dx in range(-2, 3)]
+            good = [T.to_c(v) for v in px if v > T.FILLABLE]
+            assert land[a, k] == sum(1 for v in px if v == T.FILLABLE)
+            if good:
+                assert nodes[a, k] == pytest.approx(np.mean(good)), (a, k)
+                hits += 1
+            else:
+                assert np.isnan(nodes[a, k])
+    assert hits > 10, "the island's coastal nodes were checked"
+
+
+@pytest.mark.parametrize("dy,dx", [(dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx])
+def test_node_fill_takes_each_neighbour_from_its_own_side(dy, dx):
+    nodes = np.full((5, 8), np.nan)
+    land = np.zeros((5, 8), dtype=np.int32)
+    nodes[2 + dy, 3 + dx] = 7.0
+    land[2, 3] = 1
+    land[2 - dy, 3 - dx] = 1                                    # the opposite side: two away from the value
+    land[2 - 2 * dy, 3 - 2 * dx] = 1
+    assert T.node_fill(nodes, land, passes=1) == 1
+    assert nodes[2, 3] == 7.0 and np.isnan(nodes[2 - dy, 3 - dx])
+
+
+def test_node_fill_does_not_wrap_across_the_poles():
+    nodes = np.full((5, 8), np.nan)
+    land = np.ones((5, 8), dtype=np.int32)
+    nodes[4, 3] = 1.0                                           # the south pole row
+    T.node_fill(nodes, land, passes=1)
+    assert np.isnan(nodes[0]).all(), "row 0 is not row 4's neighbour"
+    assert (nodes[3, 2:5] == 1.0).all() and nodes[4, 2] == 1.0 and nodes[4, 4] == 1.0
+    nodes = np.full((5, 8), np.nan)
+    nodes[0, 3] = 1.0                                           # the north pole row
+    T.node_fill(nodes, land, passes=1)
+    assert np.isnan(nodes[4]).all(), "row 4 is not row 0's neighbour"
+    assert (nodes[1, 2:5] == 1.0).all()
+
+
+def test_lake_ice_counts_as_lake_once():
+    sst, mask, _, _ = world()
+    lake = np.argwhere(mask == 5)
+    mask[tuple(lake[0])] = 13
+    mask[tuple(lake[1])] = 13
+    counts = T.value_grid(sst, mask)
+    assert counts["lake"] == int(((mask == 5) | (mask == 13)).sum())
+    assert counts["ice"] == int((mask == 9).sum())
+
+
+def _mur_file(path, g, lat_shift=0.0, fill=-32768, rows=None):
+    import h5py
+    with h5py.File(path, "w") as f:
+        f["lat"] = ((-90 + 1 / PXT) + np.arange(g.rows) / PXT + lat_shift).astype(np.float32)
+        f["lon"] = ((-180 + 1 / PXT) + np.arange(g.cols) / PXT).astype(np.float32)
+        when = datetime(2026, 10, 14, 9, tzinfo=timezone.utc)
+        f["time"] = np.array([int((when - datetime(1981, 1, 1, tzinfo=timezone.utc)).total_seconds())], dtype=np.int32)
+        n = rows or g.rows
+        d = f.create_dataset("analysed_sst", data=np.zeros((1, n, g.cols), dtype=np.int16))
+        d.attrs["scale_factor"] = np.array([0.001])
+        d.attrs["add_offset"] = np.array([298.15])
+        d.attrs["_FillValue"] = np.array([fill], dtype=np.int16)
+        f.create_dataset("mask", data=np.ones((1, n, g.cols), dtype=np.int8))
+
+
+def test_read_mur_refuses_other_axes_shapes_and_fill_values(tmp_path):
+    pytest.importorskip("h5py")
+    g = T.Geo(PXT)
+    path = str(tmp_path / "mur.nc")
+    _mur_file(path, g)
+    S.read_mur(path, "20261014", geo=g)
+    for kw in ({"lat_shift": 0.05}, {"fill": -999}, {"rows": g.rows - 1}):
+        _mur_file(path, g, **kw)
+        with pytest.raises(ValueError):
+            S.read_mur(path, "20261014", geo=g)
+
+
+def test_a_local_build_never_touches_the_bucket(tmp_path):
+    fc = FakeClient()
+    store = P.Store(fc, "b")
+    src = tmp_path / "x.nc"
+    src.write_bytes(b"x")
+    w = world()
+    out = tmp_path / "out"
+    assert S.main(["--local", str(out), "--file", str(src), "--day", "20261014"], store=store,
+                  reader=lambda path, d: (w[0].copy(), w[1].copy())) == 0
+    assert fc.objects == {}, "--local writes files only"
+    assert (out / "sst" / "v1" / "latest.json").exists()
+
+
+def test_coastal_fill_needs_one_valued_neighbour_and_the_pinned_constants():
+    b = np.full((5, 5), T.NONE, dtype=np.int16)
+    b[2, 2] = T.FILLABLE
+    b[1, 1] = raw_of(20.0)
+    v, n = T.coastal_fill(b, passes=1)
+    assert n == 1 and v[2, 2] == pytest.approx(20.0)
+    assert (T.COAST_PX, T.FILL_PASSES, T.NODE_FILL) == (3, 2, 1)
+    assert (S.STALE_DAYS, S.STALE_ALARM_EVERY_H, S.FAILED_MAX_ATTEMPTS, S.FAILED_RETRY_AFTER_S) == (4, 12, 6, 3600)
+
+
+def test_the_temporary_dry_run_workflow_is_gone():
+    wf = os.path.join(ROOT, ".github", "workflows")
+    assert not os.path.exists(os.path.join(wf, "sst-dryrun.yml"))
+    assert not os.path.exists(os.path.join(ROOT, "tools", "model_frames", "sst_dryrun_check.py"))
 
 
 # ------------------------------------------------------------------ the workflow

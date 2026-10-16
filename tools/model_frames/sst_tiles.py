@@ -105,8 +105,8 @@ def value_grid(sst, mask, band=1000):
         counts["sea"] += int(sea.sum())
         counts["coast_land"] += int(coast.sum())
         counts["fillable"] += int((land & ~coast).sum())
-        counts["lake"] += int(((mb & 4) != 0).sum())
-        counts["ice"] += int(((mb & 8) != 0).sum() + ((mb & 16) != 0).sum())
+        counts["lake"] += int(((mb & 4) != 0).sum())                  # open lake (5) and lake with ice (13)
+        counts["ice"] += int((((mb & 8) != 0) & ((mb & 4) == 0)).sum())  # sea with ice (9); lake ice counted as lake
         sb[land & ~coast] = FILLABLE
         sb[~(sea | coast | land)] = NONE
     return counts

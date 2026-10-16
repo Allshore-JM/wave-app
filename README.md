@@ -590,14 +590,21 @@ product) publishes the newest NASA JPL MUR SST v4.1 day as tiles; `sst_tiles.py`
   value, v = lo + (code - 1) / 254 * (hi - lo) with lo / hi per cell (in the manifest, covering the apron so nothing
   clamps); steps were at most 0.07 deg C (t2) and 0.10 deg C (t1) on 2026-10-14. A t1 / t0 node with no valued pixel
   but land in its block takes the mean of its valued neighbour nodes (one ring).
-- **Bucket**: `sst/v1/<YYYYMMDD>/t0.png`, `t1/<cell>.png`, `t2/<cell>.png` (immutable), `stats-` and `manifest-<published>.json`,
-  then `sst/v1/latest.json` (`{format, day, run, manifest, published_utc, complete}`, max-age 300) LAST; `failed/<day>.json`
-  (a failed build backs off 1 h, up to 6 times); 3 days kept (`--keep`), pruning only `sst/v1/<8 digits>/`. One day:
-  1,837 t2 cells (79.5 MB), 152 t1 cells (5.1 MB), t0 221 KB; built in ~95 s here (download 24 s).
-- **Exit codes**: 0 published or nothing new; 1 a listing / download / build failure, or a stale source (the newest MUR day
-  more than 4 days old: the run fails, GitHub mails, at most once every 12 h, record `sst/v1/stale-alarm.json`);
+- **Bucket**: `sst/v1/<YYYYMMDD>/<BUILD>/t0.png`, `t1/<cell>.png`, `t2/<cell>.png` (immutable; BUILD = the build's start,
+  `YYYYMMDDTHHMMSSZ`: a tile's bytes depend on its cell's lo / hi in the manifest that names it, so a day built again never
+  reuses a cached key), `sst/v1/<YYYYMMDD>/stats-` and `manifest-<published>.json` (the manifest's tier `dir` and `tier0.key`
+  name the build directory), then `sst/v1/latest.json` (`{format, day, run, manifest, published_utc, complete}`, max-age
+  300) LAST; `failed/<day>.json` (a failed build backs off 1 h, up to 6 times; pruned once older than every kept day);
+  3 days kept (`--keep`), pruning whole `sst/v1/<8 digits>/` directories only. One day: 1,837 t2 cells (79.5 MB), 152 t1
+  cells (5.1 MB), t0 221 KB; built in ~95 s here, 75 s on GitHub's runner (download 10 s, RSS 3.3 GB).
+- **Download**: one whole request per try (ERDDAP answers every Range request on `/files/` with 416, so a cut transfer
+  starts again from byte 0); 4 tries; the size must equal the listing's; given up after 40 minutes (a recorded failure with
+  its back-off, well inside the workflow's 60).
+- **Exit codes**: 0 published, nothing new, or a quiet outage (the ERDDAP listing fails, or a day keeps failing) while the
+  LIVE day is fresh; 1 a download / build failure, or the live day more than 4 days old (on any quiet path; the run fails,
+  GitHub mails, at most once every 12 h, record `sst/v1/stale-alarm.json`; nothing published yet counts as stale);
   2 bad arguments. `--dry-run`, `--local DIR` (write every object to a folder), `--file PATH --day YYYYMMDD` (a file on
-  disk), `--force`.
+  disk), `--force`; a run with `--day` never raises the stale alarm.
 - **Accuracy** (2026-10-14 tiles against NDBC's own water temperature that day, daily means, US coasts and Hawaii):
   open-water buoys 129, median difference 0.24 deg C, RMS 0.58, 77 % within 0.5 and 91 % within 1 deg C (tiles 0.16
   warmer on average); coastal and harbour stations 128, median 0.48, RMS 1.01, 52 % within 0.5 and 80 % within 1 (tiles

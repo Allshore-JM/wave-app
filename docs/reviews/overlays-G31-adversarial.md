@@ -97,3 +97,35 @@ least-recently-used order across tiers; G31-11 the status cleared by the SST pan
 tick centred unless at the bar's edge; G31-14 README + the credit's title (foundation temperature, both-way coastal error);
 G31-15 the SST panel re-rendered when its day crosses the stale line; G31-16 the run-line timer cleared on entering SST;
 G31-17 repo tests for the reviewers' surviving mutants; G31-19 the SST interval doubled below tile zoom 7.
+
+## Fix round (step 7, overlay asset 2.18.3)
+Every scope item is built:
+- G31-1: `cellsForTile` wraps a padded box across +-180 (pad 0, the coast rule, is unchanged); the date-line tiles now
+  request, watch and keep the cell beyond 180.
+- G31-2: `SstStore.load(force)`; `_mountObs` (a pick, Retry, On) loads with force, so only automatic re-loads keep the
+  60-s cooldown.
+- G31-3: the day's load re-arms its 15-s timer at each step (the pointer answers, the manifest answers, every chunk of the
+  frame's bytes). `decodeFrame` takes an optional progress callback (`readBody`); the model frames pass none and are
+  unchanged.
+- G31-4: each cell download has its own controller and stall timer (`cellStallMs` 15 s). When the timer fires, the slot is
+  freed at once and the cell gets a cooldown and a retry; the dropped download never lands.
+- G31-5: `contourTile(..., zero)`; the SST contour settings carry `zero: true` (the 0 C line is drawn).
+- G31-6: an all-land tile asks for no cells; `_redrawSrc` and `_srcNeeded` skip it.
+- G31-7: `_mountObs` saves the carried play state with the field.
+- G31-8: a carried time pins the model's run, in both the manifest loader and its wrapper.
+- G31-9: `SstStore.release()` runs on leaving SST (the cells go; the day's frame and manifest stay); Off = release + the
+  load's abort.
+- G31-10: a shared use clock across both tiers; `_evict` drops the oldest unneeded cells first.
+- G31-11: `_renderObs` clears the status.
+- G31-12: "Map overlay" (the select and the phone sheet).
+- G31-13: the first tick is left-aligned only below 3 % of the bar.
+- G31-14: README accuracy paragraph and the credit's title.
+- G31-15: the 30-min check re-renders the SST panel when its day crosses the stale line.
+- G31-16: `_mountObs` clears the run-line timer.
+- G31-17: new tests: a pad-only landing redraws its tile, and `_draw` traces the isotherms at its drawn tier.
+- G31-19: `coarseBelow: 7` for SST.
+
+Tests: `sst.test.js` +9 (25), `playback.test.js` +3 (101), `panel.test.js` +1 (60). Node overlay + UI 714 pass; pytest 1,178
+pass. The one failure in the full run (`test_job.py::test_an_upload_failure_stops_the_build_before_any_manifest_or_pointer`,
+a job test; the job is untouched) came while the mutation run loaded the machine, and it passes 3 of 3 alone.
+Mutation: 19 mutants, each undoing one fix (`scratchpad/sst/client/mut7.py`, run on a scratch copy): 19 killed.

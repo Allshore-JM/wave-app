@@ -126,8 +126,10 @@
   var SST_PREFIX = 'sst/v1';
   // <= 29 visible characters (the GFS rule): "Overlay: NASA MUR SST" (+ " · GSHHG" from the clip); the title has the source.
   var SST_ATTRIBUTION = 'Overlay: <a href="https://podaac.jpl.nasa.gov/dataset/MUR-JPL-L4-GLOB-v4.1" target="_blank" rel="noopener" ' +
-    'title="NASA JPL MUR SST v4.1 (GHRSST L4, doi:10.5067/GHGMR-4FJ04) via NOAA CoastWatch ERDDAP; tiled and rendered by Allshore Surf">NASA MUR SST</a>';
+    'title="NASA JPL MUR SST v4.1 (GHRSST L4, doi:10.5067/GHGMR-4FJ04) via NOAA CoastWatch ERDDAP; tiled and rendered by Allshore Surf. A daily night-time (foundation) temperature: the afternoon surf zone can be ' +
+    'warmer; near the coast it can be about 1 C off either way.">NASA MUR SST</a>';
   var SST_HEAD = 'NASA MUR (1 km, daily)';                 // the open panel's head line (the source; the dropdown says what it is)
+  var SST_COARSE_BELOW = 7;                                // SST isotherms every 2 C / 4 F below this tile zoom (owner, G31)
   var SST_STALE_DAYS = 4;                                  // the job's own stale alarm (tools/model_frames/sst.py STALE_DAYS)
   // The analysis day "YYYY-MM-DD" (a calendar day: no time zone applies) as "Thu, Oct. 15"; anything else as given.
   function sstDayText(day) {
@@ -416,8 +418,12 @@
     function lat(y) { return Math.atan(Math.sinh(Math.PI - 2 * Math.PI * y / TILE)) * 180 / Math.PI; }
     var latN = lat(Math.max(0, b.y0 - pad)), latS = lat(Math.min(TILE, b.y1 + pad)), eps = 1e-9, out = [];
     var i0 = Math.max(-Math.round(90 / cellDeg), Math.floor(latS / cellDeg)), i1 = Math.min(Math.round(90 / cellDeg) - 1, Math.floor((latN - eps) / cellDeg));
-    var j0 = Math.max(-Math.round(180 / cellDeg), Math.floor(lonW / cellDeg)), j1 = Math.min(Math.round(180 / cellDeg) - 1, Math.floor((lonE - eps) / cellDeg));
-    for (var i = i0; i <= i1; i++) for (var j = j0; j <= j1; j++) out.push((i * cellDeg) + '_' + (j * cellDeg));
+    // a padded box at the date line reaches past +-180: those cells are the other side's (the sampler wraps there too)
+    var J = Math.round(360 / cellDeg), jMin = -Math.round(180 / cellDeg), j0 = Math.floor(lonW / cellDeg), j1 = Math.floor((lonE - eps) / cellDeg), seen = {};
+    for (var i = i0; i <= i1; i++) for (var j = j0; j <= j1; j++) {
+      var nm = (i * cellDeg) + '_' + ((((j - jMin) % J) + J) % J + jMin) * cellDeg;
+      if (!seen[nm]) { seen[nm] = true; out.push(nm); }
+    }
     return out;
   }
   // Rings of every piece that reaches the tile, in tile pixel space (Float32Array x,y pairs), from the
@@ -605,7 +611,8 @@
   // Only RGB changes, never alpha (the readout's drawn-pixel rule and the coast clip stay exactly as
   // composed). No line beside NaN, at level 0, or where levels would be under minGapPx apart (they would
   // merge into a band). ink(level): 30 (dark) or 255 (light) for that level; else by the pixel's colour.
-  function contourTile(F, W, rgba, minGapPx, ink, x0, y0, x1, y1, core, edge) {
+  // zero: level 0 is a line too (SST's 0 C); wave height and period have no line at 0.
+  function contourTile(F, W, rgba, minGapPx, ink, x0, y0, x1, y1, core, edge, zero) {
     var S = W + 2, n = 0;
     if (x0 === undefined) { x0 = 0; y0 = 0; x1 = W; y1 = W; }
     if (core === undefined) { var last = CONTOUR_PROFILE[CONTOUR_PROFILE.length - 1]; core = last[1]; edge = last[2]; }
@@ -617,7 +624,7 @@
         var f = F[i], l = F[i - 1], r = F[i + 1], u = F[i - S], d = F[i + S];
         if (f !== f || l !== l || r !== r || u !== u || d !== d) continue;       // NaN anywhere: no line
         var lv = Math.round(f), df = f - lv;
-        if (lv === 0) continue;
+        if (lv === 0 && !zero) continue;
         var sx = df > 0 ? Math.max(f - l, f - r) : Math.max(l - f, r - f);          // slope toward the level, per axis
         var sy = df > 0 ? Math.max(f - u, f - d) : Math.max(u - f, d - f);
         if (sx < 0) sx = 0;
@@ -872,16 +879,19 @@
     return true;
   }
   function SstStore(root) {
+    this.clock = 0;
     this.root = root; this.status = 'idle'; this.pointer = null; this.manifest = null; this.frame = null; this.grid = null; this.tiers = [];
     this.loading = null; this.loadAbort = null; this.failedAt = 0; this.loadedAt = 0; this.newer = null;
     this.inflight = {}; this.queue = []; this.queued = {}; this.failed = {}; this.bytes = 0;
     this.rev = 0; this.onChange = null; this.onNeeded = null; this.abort = null; this.retryTimer = null;
     this._lon0 = new Float64Array(TILE + 2); this._fx = new Float64Array(TILE + 2); this._colPos = new Float64Array(TILE + 2);
   }
-  SstStore.prototype.timeoutMs = 15000;                    // pointer + manifest + the frame slower than this: failed (Retry), like a stalled load
+  SstStore.prototype.timeoutMs = 15000;                    // a load step silent this long (no answer, no bytes): failed (Retry)
+  SstStore.prototype.cellStallMs = 15000;                  // a cell download silent this long: given up, a cooldown and a retry
   SstStore.prototype.retryMs = COAST_RETRY_MS;
   SstStore.prototype.recheckMs = POINTER_RECHECK_MS;
-  SstStore.prototype._decode = function (url, sig, expect) { return decodeFrame(url, sig, expect); };   // the frames' decoder (tests replace it)
+  // The frames' decoder (tests replace it); onProgress is called as the body's bytes arrive (the stall timers).
+  SstStore.prototype._decode = function (url, sig, expect, onProgress) { return decodeFrame(url, sig, expect, null, false, onProgress); };
   SstStore.prototype._json = function (url, sig, noCache, maxBytes) {
     return fetch(url, noCache ? { signal: sig, mode: 'cors', cache: 'no-cache' } : { signal: sig, mode: 'cors' }).then(function (r) {
       if (!r.ok) throw new Error('sst ' + r.status);
@@ -893,21 +903,26 @@
   // Resolves to the store when the frame is usable, to null otherwise (never rejects). A store already loaded re-reads
   // the pointer when it is older than recheckMs or a recheck noted a newer day: the same run keeps everything, a newer
   // run drops the day and loads afresh (the next mount shows the new day; no banner: plan section 44).
-  SstStore.prototype.load = function () {
+  // force: a viewer's action (a pick, Retry, On) tries again at once; the cooldown only paces automatic re-loads.
+  SstStore.prototype.load = function (force) {
     var self = this;
     if (this.loading) return this.loading;
     if (this.status === 'ok' && !this.newer && Date.now() - this.loadedAt < this.recheckMs) return Promise.resolve(this);
-    if (this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
+    if (!force && this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
     var was = this.status === 'ok' ? this.manifest : null;
     this.status = 'loading';
-    var ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false;
-    var watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, this.timeoutMs);
+    var ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null;
+    // A slow link is not a dead one: each step (the pointer, the manifest, the frame's bytes) re-arms the timer (G31-3).
+    var kick = function () { clearTimeout(watchdog); watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, self.timeoutMs); };
+    kick();
     this.loading = this._pointer(sig).then(function (ptr) {
+      kick();
       if (!validSstPointer(ptr)) throw new Error('unsupported sst pointer');
       if (was && was.run === ptr.run) return null;                         // the day on screen is still the newest
       return self._json(self.root + '/' + ptr.manifest, sig, false, MAX_SST_MANIFEST_BYTES).then(function (m) {
+        kick();
         if (!validSstManifest(m) || m.run !== ptr.run) throw new Error('unsupported sst manifest');
-        return self._decode(self.root + '/' + m.tier0.key, sig, { cols: m.tier0.grid.cols, rows: m.tier0.grid.rows }).then(function (frame) {
+        return self._decode(self.root + '/' + m.tier0.key, sig, { cols: m.tier0.grid.cols, rows: m.tier0.grid.rows }, kick).then(function (frame) {
           validateGrid(m.tier0.grid, frame, SST_FDEF);
           return { ptr: ptr, m: m, frame: frame };
         });
@@ -963,7 +978,7 @@
         var nm = names[i];
         if (!Object.prototype.hasOwnProperty.call(T.cells, nm)) continue;
         var rec = T.loaded.get(nm);
-        if (rec) { T.loaded.delete(nm); T.loaded.set(nm, rec); continue; }          // LRU touch
+        if (rec) { rec.used = ++this.clock; continue; }                              // LRU touch (both tiers share the clock)
         all = false;
         if (this.failed[T.name + '/' + nm] !== true) missing.push(nm);
       }
@@ -1011,43 +1026,56 @@
       delete this.queued[key];
       if (need && !need[key] && !(fresh && fresh[key])) continue;
       if (!this.abort) this.abort = new AbortController();
-      (function (T, name, key, ctrl) {
-        self.inflight[key] = ctrl;
+      (function (T, name, key, all) {
+        // one controller per cell, aborted with the store's (idle / Off / a new day) or by its own stall timer (G31-4)
+        var ctrl = new AbortController(), timer = null;
+        var stop = function () { ctrl.abort(); };
+        var done = function () { clearTimeout(timer); if (all.signal.removeEventListener) all.signal.removeEventListener('abort', stop); };
         function mine() { return self.inflight[key] === ctrl; }
-        self._decode(self.root + '/' + T.dir + '/' + name + '.png', ctrl.signal, { cols: T.n, rows: T.n }).then(function (fr) {
-          if (ctrl.signal.aborted || !mine()) return;
-          if (!fr || fr.cols !== T.n || fr.rows !== T.n || !fr.q || fr.q.length !== T.n * T.n) throw new Error('frame decode failed');
+        // a failure: 404 / undecodable final, anything else (a stall too) a cooldown with a retry timer
+        var fail = function (kind) {
           delete self.inflight[key];
-          var ent = T.cells[name];
-          self.rev++;
-          T.loaded.set(name, { q: fr.q, lo: ent[0], hi: ent[1], bytes: fr.q.length, rev: self.rev });
-          self.bytes += fr.q.length; delete self.failed[key];
-          self._evict();
-          if (self.onChange) self.onChange();
-          self._pump();
-        }).catch(function (err) {
-          if (ctrl.signal.aborted || (err && err.name === 'AbortError') || !mine()) return;
-          delete self.inflight[key];
-          var kind = failureKind(err);
           self.failed[key] = kind === 'permanent' ? true : Date.now() + self.retryMs;
           if (self.failed[key] !== true) self._armRetry(self.failed[key]);
           self.rev++;
           if (self.onChange) self.onChange();
           self._pump();
+        };
+        // silent for cellStallMs (no answer, no bytes): the slot is freed at once and the download dropped
+        var kick = function () { clearTimeout(timer); timer = setTimeout(function () { if (!mine()) return; done(); ctrl.abort(); fail('transient'); }, self.cellStallMs); };
+        if (all.signal.addEventListener) all.signal.addEventListener('abort', stop);
+        self.inflight[key] = ctrl;
+        kick();
+        self._decode(self.root + '/' + T.dir + '/' + name + '.png', ctrl.signal, { cols: T.n, rows: T.n }, kick).then(function (fr) {
+          done();
+          if (ctrl.signal.aborted || !mine()) return;
+          if (!fr || fr.cols !== T.n || fr.rows !== T.n || !fr.q || fr.q.length !== T.n * T.n) throw new Error('frame decode failed');
+          delete self.inflight[key];
+          var ent = T.cells[name];
+          self.rev++;
+          T.loaded.set(name, { q: fr.q, lo: ent[0], hi: ent[1], bytes: fr.q.length, rev: self.rev, used: ++self.clock });
+          self.bytes += fr.q.length; delete self.failed[key];
+          self._evict();
+          if (self.onChange) self.onChange();
+          self._pump();
+        }).catch(function (err) {
+          done();
+          if (!mine() || ctrl.signal.aborted || (err && err.name === 'AbortError')) return;
+          fail(failureKind(err));
         });
       })(T, nm, key, this.abort);
     }
   };
-  // Over the cap: the least recently used cells go first, never one a tile on the map could read now.
+  // Over the cap: the least recently used cells go first, of either tier (G31-10), never one a tile on the map could read now.
   SstStore.prototype._evict = function () {
     if (this.bytes <= MAX_SST_CHUNK_BYTES) return;
-    var need = this.onNeeded ? this.onNeeded() : {};
-    for (var t = 0; t < this.tiers.length && this.bytes > MAX_SST_CHUNK_BYTES; t++) {
-      var T = this.tiers[t], it = T.loaded.keys(), k;
-      while (this.bytes > MAX_SST_CHUNK_BYTES && !(k = it.next()).done) {
-        if (need[T.name + '/' + k.value]) continue;
-        this.bytes -= T.loaded.get(k.value).bytes; T.loaded.delete(k.value);
-      }
+    var need = this.onNeeded ? this.onNeeded() : {}, all = [], t, i;
+    for (t = 0; t < this.tiers.length; t++) this.tiers[t].loaded.forEach(function (rec, nm) { all.push([rec.used || 0, t, nm]); });
+    all.sort(function (a, b) { return a[0] - b[0]; });
+    for (i = 0; i < all.length && this.bytes > MAX_SST_CHUNK_BYTES; i++) {
+      var T = this.tiers[all[i][1]], nm = all[i][2];
+      if (need[T.name + '/' + nm]) continue;
+      this.bytes -= T.loaded.get(nm).bytes; T.loaded.delete(nm);
     }
   };
   SstStore.prototype._stop = function () {
@@ -1057,13 +1085,18 @@
   };
   // A field switch: downloads stop, the cells stay for the switch back.
   SstStore.prototype.idle = function () { this._stop(); this.onChange = null; this.onNeeded = null; };
-  // Off: also the cells (the frame and the manifest stay: the next On is instant, the day re-checked by load()).
-  SstStore.prototype.abortAll = function () {
+  // A switch to a model field (owner, G31-9): downloads stop and the decoded cells go (they come back from the browser's
+  // cache in ~0.1-0.2 s); the day's frame and manifest stay.
+  SstStore.prototype.release = function () {
     this.idle();
-    if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; }
-    if (this.status === 'loading') { this.status = this.manifest ? 'ok' : 'idle'; this.loading = null; }
     for (var t = 0; t < this.tiers.length; t++) this.tiers[t].loaded.clear();
     this.bytes = 0; this.failed = {};
+  };
+  // Off: the same, and a load in progress stops (the next On is instant, the day re-checked by load()).
+  SstStore.prototype.abortAll = function () {
+    this.release();
+    if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; }
+    if (this.status === 'loading') { this.status = this.manifest ? 'ok' : 'idle'; this.loading = null; }
   };
   // THE sampler of the store: fractional codes over SST_FDEF's range (0 = none) for an n x n lattice of pixel centres
   // at world pixels (x0 + ox + i * step + 0.5, y0 + oy + j * step + 0.5), x0 / y0 the tile's origin at its zoom, into
@@ -1295,12 +1328,15 @@
   // manifest grid the frame must have: a body that is too large or a picture of another size is refused before decoding.
   // onBody(): called once the whole body has arrived, before the decode (the download watchdog stops there).
   // mainOnly: the retry after a dead worker (one more download: the body went with the worker).
-  function decodeFrame(url, signal, expect, onBody, mainOnly) {
+  // onProgress (the SST store only): called when the answer starts and as its bytes arrive.
+  function decodeFrame(url, signal, expect, onBody, mainOnly, onProgress) {
     var direct = typeof DecompressionStream === 'function' && typeof Response === 'function';
     return fetch(url, { signal: signal, mode: 'cors' }).then(function (r) {
       if (!r.ok) throw new Error('frame ' + r.status);
       var len = Number(r.headers.get('content-length') || 0);
       if (len > MAX_FRAME_BYTES) throw new Error('frame decode failed');
+      if (onProgress) onProgress();
+      if (onProgress && direct && r.body && r.body.getReader) return readBody(r.body.getReader(), onProgress);
       return direct ? r.arrayBuffer() : r.blob();
     }).then(function (body) {
       if (onBody) onBody();
@@ -1318,6 +1354,24 @@
         throw err;
       });
     });
+  }
+  // A response body read chunk by chunk (each chunk reports progress), as one ArrayBuffer; capped like a whole body.
+  function readBody(reader, onProgress) {
+    var parts = [], size = 0;
+    function next() {
+      return reader.read().then(function (c) {
+        if (c.done) {
+          var out = new Uint8Array(size), at = 0;
+          for (var i = 0; i < parts.length; i++) { out.set(parts[i], at); at += parts[i].length; }
+          return out.buffer;
+        }
+        size += c.value.length;
+        if (size > MAX_FRAME_BYTES) { try { reader.cancel(); } catch (e) { /* gone */ } throw new Error('frame decode failed'); }
+        parts.push(c.value); onProgress();
+        return next();
+      });
+    }
+    return next();
   }
   function decodeCanvas_(blob, expect) {
     return Promise.resolve(blob).then(function (blob) {
@@ -1396,16 +1450,18 @@
       if (!st || !this._frame) return;
       for (var k in this._tiles) {
         var t = this._tiles[k], el = t.el;
-        if (!el || !t.coords) continue;
+        if (!el || !t.coords || this._allLand(el)) continue;
         if (st.tierFor(t.coords) !== el._ovSrcTier || st.landedAfter(t.coords, el._ovSrcTier, el._ovSrcRev)) this._draw(el, t.coords);
       }
     },
     _srcNeeded: function () {
       var st = this._src, need = {};
       if (!st) return need;
-      for (var k in this._tiles) { var t = this._tiles[k]; if (t.coords) st.keysFor(t.coords, need); }
+      for (var k in this._tiles) { var t = this._tiles[k]; if (t.coords && !(t.el && this._allLand(t.el))) st.keysFor(t.coords, need); }
       return need;
     },
+    // A tile the coastline mask shows as land only (as last drawn): the source has nothing to give it.
+    _allLand: function (el) { return !!(this._clip && el._ovLand === LAND_ALL && el._ovLandKey); },
     hasFrame: function () { return !!this._frame; },
     // A loaded CoastStore (or null): from now on hs/tp tiles are clipped to its polygons.
     setCoast: function (store) {
@@ -1577,8 +1633,11 @@
       if (!this._frame) { ctx.clearRect(0, 0, TILE, TILE); return; }
       var land = this._masked() ? this._landFor(el, coords) : null;
       var tier = 0;
+      if (this._clip && land === LAND_ALL) {                 // nothing but land: no sampling at all, no cells asked for (G31-6)
+        if (this._src) { el._ovSrcTier = 0; el._ovSrcRev = this._src.rev; }
+        ctx.clearRect(0, 0, TILE, TILE); return;
+      }
       if (this._src) { tier = this._src.tierFor(coords); el._ovSrcTier = tier; el._ovSrcRev = this._src.rev; }
-      if (this._clip && land === LAND_ALL) { ctx.clearRect(0, 0, TILE, TILE); return; }   // nothing but land: no sampling at all
       var codes = this.tileCodes(coords, this._codes, tier);
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
       composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data);
@@ -1595,7 +1654,7 @@
     // all: draw every block (the tests compare it with the skipping).
     _contours: function (coords, rgba, all, tier) {
       var cfg = this._contour, fr = this._frame, g = this._grid, cols = fr.cols, rows = fr.rows, i, j;
-      var step = cfg.step * (coords.z < 4 ? 2 : 1), k = cfg.per / step, koff = cfg.off ? cfg.off / step : 0, lo = this._lo, span = (this._hi - lo) / 254;
+      var step = cfg.step * (coords.z < (cfg.coarseBelow || 4) ? 2 : 1), k = cfg.per / step, koff = cfg.off ? cfg.off / step : 0, lo = this._lo, span = (this._hi - lo) / 254;
       var n = TILE * Math.pow(2, coords.z), cellPx = n * g.dlon / 360, s = cellPx >= 6 ? 4 : 2, m = TILE / s + 2;
       var prof = contourProfile(coords.z), core = prof[1], edge = prof[2];
       var x0 = coords.x * TILE, y0 = coords.y * TILE, cp = this._sc, rp = this._sr, row = this._srow, pi = this._pi, pt = this._pt;
@@ -1660,7 +1719,7 @@
               F[orow + px + 1] = val;
             }
           }
-          contourTile(F, TILE, rgba, 3, ink, bx, by, bx + B, by + B, core, edge);
+          contourTile(F, TILE, rgba, 3, ink, bx, by, bx + B, by + B, core, edge, !!cfg.zero);
         }
       }
     },
@@ -2642,7 +2701,10 @@
       if (t !== null) { this._carry = { t: t, playing: !!(this.playing || this.wasPlaying) }; this._switchT = t; }
     }
     this.pause();                                            // the model's play state is saved first (its field still set)
-    save({ field: 'sst' });                                  // ... then the field the page saved before this mount ran
+    // ... then the field the page saved before this mount ran, and the play state the switch carries (a reload here and
+    // then a model field resumes as the in-tab switch back does; G31-7)
+    save({ field: 'sst', playing: !!(this._carry && this._carry.playing) });
+    if (this.lineTimer) { clearInterval(this.lineTimer); this.lineTimer = null; }   // the run line is not shown (G31-16)
     if (!this.map.getPane('modelPane')) {
       var pane = this.map.createPane('modelPane'); pane.style.zIndex = 250; pane.style.pointerEvents = 'none';
     }
@@ -2663,7 +2725,7 @@
     if (!this.sst) { this._fail(sig, new Error('sea surface temperature is not offered')); return; }
     this.render({ state: 'loading' });
     var coastP = this.coast ? this.coast.load() : Promise.resolve(null);
-    Promise.all([this.sst.load(), coastP]).then(function (res) {
+    Promise.all([this.sst.load(true), coastP]).then(function (res) {      // a viewer's pick or Retry: no cooldown (G31-2)
       var st = res[0], coast = res[1];
       if (sig.aborted || self.field !== 'sst' || self.mode !== 'obs' || !self.layer) throw abortError();
       if (!st) throw new Error('sea surface temperature cannot be loaded right now');
@@ -2681,7 +2743,7 @@
   Overlay.prototype._leaveObs = function () {
     this.mode = 'model';
     if (this.layer) this.layer.clear();                      // (clear() also detaches the source)
-    if (this.sst) this.sst.idle();
+    if (this.sst) this.sst.release();                        // the cells go; the day stays (owner, G31-9)
     this._unattribute();
   };
   Overlay.prototype._sstLut = function () {
@@ -2919,7 +2981,8 @@
       if (!ptr || !ptr.complete || !ptr.run || !ptr.manifest || isNaN(Date.parse(ptr.published_utc))) throw new Error('published run is not complete');
       self.pointerAt = Date.now();
       if (self.manifest && self.manifest.run === ptr.run) { self.pointer = ptr; return self.manifest; }
-      if (self.manifest && self.frameIndex !== null) { self.newerRun = ptr; return self.manifest; }   // a time position is pinned: banner only
+      // a time position is pinned (on the map, or carried through SST: G31-8): banner only
+      if (self.manifest && (self.frameIndex !== null || self._carry)) { self.newerRun = ptr; return self.manifest; }
       return self._fetchManifest(ptr, sig).then(function (m) {
         if (sig && sig.aborted) throw abortError();            // a switch meanwhile: never adopt the old load's run (G30-7)
         self._adopt(m, ptr); return m;
@@ -2931,7 +2994,7 @@
     // any more); a field change while On keeps the pinned run and the banner.
     return function (sig) {
       var self = this;
-      if (this.newerRun && this.manifest && this.frameIndex === null) {
+      if (this.newerRun && this.manifest && this.frameIndex === null && !this._carry) {
         var ptr = this.newerRun;
         return this._fetchManifest(ptr, sig).then(function (m) {
           if (sig && sig.aborted) throw abortError();
@@ -2975,7 +3038,12 @@
   // Every RUN_CHECK_MS while mounted: a newer complete run only raises the "Update" banner.
   Overlay.prototype._checkRun = function () {
     var self = this, model = this.model, m = this.manifest;
-    if (this.mode === 'obs') { if (this.sst) this.sst.recheck(); return; }
+    if (this.mode === 'obs') {
+      if (this.sst) this.sst.recheck();
+      var m = this.sst && this.sst.manifest, age = m ? sstAgeDays(m.day) : null;
+      if (this.last && this.last.state === 'ready' && (age !== null && age > SST_STALE_DAYS) !== !!this._sstStale) this.render(this.last);   // G31-15
+      return;
+    }
     if (!m) return;
     fetch(this._modelBase() + '/latest.json', { cache: 'no-cache' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (ptr) {
       if (self.model !== model || self.manifest !== m) return;                // a model switch (or an Update) meanwhile: the answer is the old run's
@@ -3319,7 +3387,9 @@
     if (!this.contours || !c) return null;
     var unit = this.opts.getUnit() === 'Metric' ? 'Metric' : 'US';
     var u = unitOf(this.field, unit);
-    return { step: c[unit], per: u.scale !== undefined ? u.scale : u.f(1), off: u.offset || 0 };
+    var cfg = { step: c[unit], per: u.scale !== undefined ? u.scale : u.f(1), off: u.offset || 0 };
+    if (this.field === 'sst') { cfg.coarseBelow = SST_COARSE_BELOW; cfg.zero = true; }   // 0 C is a line; 0 m / 0 s is not
+    return cfg;
   };
   // The manifest field carrying this layer's direction (pdir under the wave fields, wdir under wind)
   // when the run publishes it as a circular FROM field; null otherwise (the Animation box is disabled).
@@ -3479,7 +3549,7 @@
   Overlay.prototype._host = function () {
     if (this.isCompact()) {
       if (!this.sheet) {
-        var sh = mk('div', 'ov-sheet'); sh.setAttribute('role', 'region'); sh.setAttribute('aria-label', 'Model overlay');
+        var sh = mk('div', 'ov-sheet'); sh.setAttribute('role', 'region'); sh.setAttribute('aria-label', 'Map overlay');
         L.DomEvent.disableClickPropagation(sh); L.DomEvent.disableScrollPropagation(sh);
         this.map.getContainer().appendChild(sh); this.sheet = sh;
       }
@@ -4000,7 +4070,7 @@
     ctx.putImageData(im, 0, 0);
     var ticks = mk('div', 'ov-ticks'), tk = legendTicks(field, f, unit);
     tk.forEach(function (t, k) {
-      var s = mk('span', k === 0 ? 'ov-first' : k === tk.length - 1 ? 'ov-last' : '', t.label);
+      var s = mk('span', k === 0 && t.pos < 0.03 ? 'ov-first' : k === tk.length - 1 ? 'ov-last' : '', t.label);   // centred unless at the edge (G31-13)
       s.style.left = (t.pos * 100).toFixed(2) + '%'; ticks.appendChild(s);
     });
     leg.appendChild(ticks);
@@ -4030,6 +4100,7 @@
       title.textContent = summary; if (title.classList) title.classList.remove('ov-model');
       self.ui.collapsed = true;
     };
+    this._say('');                                           // shown: the "Loading..." status goes (G31-11)
     if (compact && cap - host.offsetHeight - 8 < 40) { fold(false); this._layoutSheet(); this._refocus(focusCls); return; }
     var wrap = mk('div', 'ov-body'); wrap.id = 'ovDetails'; host.appendChild(wrap);
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
@@ -4037,7 +4108,8 @@
     var dl = mk('div', 'ov-meta ov-day'); dl.appendChild(mk('b', null, 'Day: ')); dl.appendChild(document.createTextNode(dayText + ' (daily analysis)'));
     body.appendChild(dl);
     var age = m ? sstAgeDays(m.day) : null;
-    if (age !== null && age > SST_STALE_DAYS) body.appendChild(mk('div', 'ov-warn', 'Sea surface temperature data is ' + Math.floor(age) + ' days old.'));
+    this._sstStale = age !== null && age > SST_STALE_DAYS;
+    if (this._sstStale) body.appendChild(mk('div', 'ov-warn', 'Sea surface temperature data is ' + Math.floor(age) + ' days old.'));
     if (this.coast && !this.layer._clip) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
     if (OV_DEBUG) { this.ui.debug = mk('pre', 'ov-debug'); body.appendChild(this.ui.debug); this._debugOn(); }
     var ctl = compact ? host : (host.closest && host.closest('.ov-ctl')) || host, ctlTop = compact ? 0 : this._ctlTop(ctl);
@@ -4171,7 +4243,7 @@
       ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk,
       frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes, TimelineState: TimelineState,
       MODEL_DEFS: MODEL_DEFS, DEFAULT_MODEL: DEFAULT_MODEL, modelList: modelList, modelOf: modelOf, hasModel: hasModel, STALE_AFTER_S: STALE_AFTER_S, CYCLE_MS: CYCLE_MS,
-      LOAD_STALL_MS: LOAD_STALL_MS,
+      LOAD_STALL_MS: LOAD_STALL_MS, SST_COARSE_BELOW: SST_COARSE_BELOW, readBody: readBody,
       SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
       RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX, RIBBON_AXIS_PX: RIBBON_AXIS_PX,

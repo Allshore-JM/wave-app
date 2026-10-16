@@ -2141,3 +2141,49 @@ test('section 44: a switch away while the observation loads never lets it land; 
   assert.ok(o.sst.manifest, 'the day stays for the next On');
   void bad;
 });
+
+// ---- G31 fix round (plan section 44 step 7) ----
+test("G31-7 / G31-16 / G31-2: a switch to SST saves the carried play state, stops the run-line timer and loads without the store's cooldown", async () => {
+  const store = memStore({}), w = world({ storage: store });
+  const o = await mounted(w, A, { sst: true });
+  o.seek(12); await settle(); await w.releaseAll();
+  o.play(); await settle();
+  assert.ok(o.lineTimer, 'the model mount runs the run-line timer');
+  sstFake(o);
+  const loads = []; const l0 = o.sst.load.bind(o.sst); o.sst.load = (force) => { loads.push(force); return l0(force); };
+  o.mount('sst'); await settle();
+  const s = JSON.parse(store.getItem(w.I.SESSION_KEY));
+  assert.equal(s.field, 'sst'); assert.equal(s.playing, true, 'a reload then a model field resumes playing');
+  assert.equal(o.lineTimer, null);
+  assert.deepEqual(loads, [true], 'a pick is a viewer action: no cooldown');
+  done(o);
+});
+
+test('G31-8 / G31-9: a newer run announced by the banner stays an announcement through a visit to SST; leaving SST releases its cells', async () => {
+  const w = world(); w.manifests[B.run] = B;
+  const o = await mounted(w, A, { sst: true });
+  w.pointer = ptr(B); o.newerRun = w.pointer;
+  sstFake(o);
+  o.mount('sst'); await settle();
+  let released = 0; const r0 = o.sst.release.bind(o.sst); o.sst.release = () => { released++; r0(); };
+  o.pointerAt = 0;                                                          // the pointer is re-read on the way back too
+  o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(released, 1, 'the cells go when the observation does');
+  assert.equal(o.manifest.run, A.run, 'the pinned run stays');
+  assert.ok(o.newerRun && o.newerRun.run === B.run, 'and the newer one is still only announced');
+  done(o);
+});
+
+test('G31-15: on a tab left open on SST the 30-min check re-renders when the day crosses the stale line (and only then)', async () => {
+  const w = world();
+  const o = await mounted(w, A, { sst: true });
+  sstFake(o);
+  o.mount('sst'); await settle();
+  o.sst.recheck = () => Promise.resolve(false);
+  let renders = 0; const r0 = o.render.bind(o); o.render = (st) => { renders++; return r0(st); };
+  o._sstStale = false; o.sst.manifest.day = new Date(Date.now() - 2 * 86400e3).toISOString().slice(0, 10);
+  o._checkRun(); assert.equal(renders, 0, 'still fresh: nothing');
+  o.sst.manifest.day = new Date(Date.now() - 6 * 86400e3).toISOString().slice(0, 10);
+  o._checkRun(); assert.equal(renders, 1, 'now stale: the panel is drawn again');
+  done(o);
+});

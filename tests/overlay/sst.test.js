@@ -471,8 +471,8 @@ test('value contours: isotherms at whole deg C / even deg F (the offset), contin
   // hs: the Overlay's settings carry off 0 and the layer adds nothing
   const o = Object.create(I.Overlay.prototype); o.field = 'hs'; o.contours = true; o.opts = { getUnit: () => 'US' };
   assert.deepEqual(o._contourCfg(), { step: 2, per: 3.28084, off: 0 });
-  o.field = 'sst'; assert.deepEqual(o._contourCfg(), { step: 2, per: 1.8, off: 32 });
-  o.opts.getUnit = () => 'Metric'; assert.deepEqual(o._contourCfg(), { step: 1, per: 1, off: 0 });
+  o.field = 'sst'; assert.deepEqual(o._contourCfg(), { step: 2, per: 1.8, off: 32, coarseBelow: 7, zero: true });
+  o.opts.getUnit = () => 'Metric'; assert.deepEqual(o._contourCfg(), { step: 1, per: 1, off: 0, coarseBelow: 7, zero: true });
   o.field = 'wind'; assert.equal(o._contourCfg(), null);
 });
 
@@ -588,4 +588,140 @@ test('contour ink: the level\'s colour is judged at the level\'s VALUE, with the
   assert.ok(levels.length >= 2, 'levels in the tile: ' + levels);
   assert.ok(levels.every((lv) => lum((lv * 2 - 32) / 1.8) <= 170), "the premise: every level's own value is dark");
   assert.ok(levels.some((lv) => lum(lv * 2 / 1.8) > 170), 'the premise: read without the offset, some level is light');
+});
+
+// ---- G31 fix round (plan section 44 step 7) ----
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('G31-1: a padded tile at the date line lists the cell beyond +-180 (the coast rule, pad 0, does not); it is fetched, watched and kept', async () => {
+  const west = { z: 8, x: 0, y: 111 }, east = { z: 8, x: 255, y: 111 };
+  assert.deepEqual(I.cellsForTile(west, 5, 0), ['20_-180']);
+  assert.deepEqual(I.cellsForTile(east, 5, 0), ['20_175']);
+  assert.deepEqual(I.cellsForTile(west, 5, 4).sort(), ['20_-180', '20_175']);
+  assert.deepEqual(I.cellsForTile(east, 5, 4).sort(), ['20_-180', '20_175']);
+  assert.deepEqual(I.cellsForTile({ z: 8, x: 40, y: 111 }, 5, 4), I.cellsForTile({ z: 8, x: 40, y: 111 }, 5, 0), 'away from the date line nothing changes');
+  const st = fakeStore(manifest(['20_-180', '20_175'], ['20_-180', '20_160']));
+  assert.equal(await st.load(), st);
+  st.tierFor(west); await settle(); assert.equal(st.tierFor(west), 2); await settle();
+  assert.ok(st.fake.log.some((u) => u.endsWith('/t2/20_175.png')), 'the wrap cell is asked for');
+  const need = st.keysFor(west, {});
+  assert.ok(need['t2/20_175'], 'and kept while the tile is on the map');
+  const rev = st.rev; st.tiers[1].loaded.delete('20_175'); st.bytes = 0;
+  st.request(st.tiers[1], ['20_175']); await settle();
+  assert.equal(st.landedAfter(west, 2, rev), true, 'its landing redraws the west tile');
+});
+
+test('G31-2: after a failed load the cooldown paces automatic re-loads, but load(true) (a pick, Retry, On) asks at once', async () => {
+  let bad = true;
+  const m = manifest(['20_-160'], ['20_-160']);
+  const st = fakeStore(m, { pointer: () => (bad ? new Error('sst 503') : ptrOf(m)) });
+  st.retryMs = 60000;
+  assert.equal(await st.load(), null); assert.equal(st.status, 'failed');
+  const n = st.fake.log.length; bad = false;
+  assert.equal(await st.load(), null); assert.equal(st.fake.log.length, n, 'within the cooldown: no request');
+  assert.equal(await st.load(true), st); assert.equal(st.status, 'ok');
+});
+
+test('G31-3: the load times each step by its silence: three slow steps pass, one silent step fails; bytes arriving re-arm the timer', async () => {
+  const m = manifest(['20_-160'], ['20_-160']);
+  const slowStore = (stepMs, progressEvery) => {
+    const st = fakeStore(m); st.timeoutMs = 60;
+    const j0 = st._json, d0 = st._decode;
+    st._json = (...a) => j0(...a).then((v) => wait(stepMs).then(() => v));
+    st._decode = (url, sig, expect, prog) => {
+      if (!progressEvery) return wait(stepMs).then(() => d0(url, sig, expect));
+      return new Promise((res) => { let k = 0; const iv = setInterval(() => { if (prog) prog(); if (++k === 5) { clearInterval(iv); res(d0(url, sig, expect)); } }, progressEvery); });
+    };
+    return st;
+  };
+  const a = slowStore(40); assert.equal(await a.load(), a, '3 x 40 ms under a 60-ms stall timer');
+  const b = slowStore(90); assert.equal(await b.load(), null); assert.equal(b.status, 'failed', 'a 90-ms silent step');
+  const c = slowStore(40, 30); assert.equal(await c.load(), c, 'a 150-ms frame download that keeps sending bytes');
+});
+
+test('G31-4: a silent cell download frees its slot when its stall timer fires: a cooldown, a retry, and the stale answer never lands', async () => {
+  const st = fakeStore(manifest(['20_-160'], ['20_-160']), { hold: true });
+  st.cellStallMs = 30; st.retryMs = 40;
+  assert.equal(await st.load(), st);
+  const c = { z: 9, x: 31, y: 224 };
+  assert.equal(st.tierFor(c), 0); await settle();
+  assert.equal(Object.keys(st.inflight).length, 2, 'the 1-km cell and its 0.05-degree stand-in');
+  await wait(45);
+  assert.equal(Object.keys(st.inflight).length, 0, 'both slots freed');
+  assert.equal(typeof st.failed['t2/20_-160'], 'number', 'a cooldown, not a final failure');
+  await wait(50);
+  const before = st.fake.log.filter((u) => u.endsWith('/t2/20_-160.png')).length;
+  st.tierFor(c); await settle();
+  assert.equal(st.fake.log.filter((u) => u.endsWith('/t2/20_-160.png')).length, before + 1, 'asked again after the cooldown');
+  const stale = st.fake.held.shift(); stale.go(); await settle();
+  assert.equal(st.tiers[1].loaded.has('20_-160'), false, 'the dropped download did not land');
+  while (st.fake.held.length) { release(st); await settle(); }
+  assert.equal(st.tiers[1].loaded.has('20_-160'), true);
+});
+
+test('G31-5: level 0 is a line only where it is a value (SST 0 C), not for wave height / period', () => {
+  const W = 32, S = W + 2, F = new Float64Array(S * S);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) F[y * S + x] = (x - 16) / 4;      // levels -4..4, level 0 at x = 16
+  const run = (zero) => { const rgba = new Uint8ClampedArray(W * W * 4).fill(255); I.contourTile(F, W, rgba, 3, () => 0, 0, 0, W, W, undefined, undefined, zero);
+    let n = 0; for (let y = 0; y < W; y++) for (let x = 14; x <= 16; x++) if (rgba[(y * W + x) * 4] !== 255) n++; return n; };
+  assert.equal(run(false), 0, 'no line at level 0 (wave height)');
+  assert.ok(run(true) > W, 'a line at 0 C');
+});
+
+test('G31-6: a tile entirely on land asks for no cells and needs none', async () => {
+  const st = fakeStore(manifest(['20_-160'], ['20_-160']));
+  assert.equal(await st.load(), st);
+  const l = sstLayer(st), c = { z: 9, x: 31, y: 224 }, el = fakeEl();
+  l._clip = true; l._masked = () => true; l._landFor = (e) => { e._ovLand = I.LAND_ALL; e._ovLandKey = 'k'; return I.LAND_ALL; };
+  const n = st.fake.log.length;
+  l._draw(el, c); await settle();
+  assert.equal(st.fake.log.length, n, 'nothing fetched'); assert.equal(el._ovSrcTier, 0);
+  l._tiles = { a: { el, coords: c } };
+  assert.deepEqual(l._srcNeeded(), {}, 'and nothing kept for it');
+});
+
+test('G31-10: one least-recently-used order across both tiers (an older 1-km cell goes before a newer 0.05-degree one)', async () => {
+  const st = fakeStore(manifest(['20_-160'], ['20_-160']));
+  assert.equal(await st.load(), st);
+  const big = 13 * 1024 * 1024;
+  st.tiers[0].loaded.set('a', { bytes: big, used: 5 }); st.tiers[1].loaded.set('b', { bytes: big, used: 1 });
+  st.bytes = 2 * big; st.onNeeded = () => ({});
+  st._evict();
+  assert.equal(st.tiers[1].loaded.has('b'), false, 'the older (1-km) cell went'); assert.equal(st.tiers[0].loaded.has('a'), true);
+  st.release(); assert.equal(st.bytes, 0); assert.equal(st.tiers[0].loaded.size, 0); assert.ok(st.manifest && st.frame, 'release keeps the day');
+});
+
+test('G31-19: below tile zoom 7 the SST isotherms are drawn at twice the interval (2 C / 4 F); from zoom 7 at the interval', async () => {
+  const lin = (lat, lon) => 20 + (lat - 20) * 2;
+  const st = fakeStore(manifest(['20_-160'], ['20_-180', '20_-160'], lin), { fn: lin });
+  assert.equal(await st.load(), st);
+  const l = sstLayer(st);
+  const draw = (coords, cfg) => {
+    st.tierFor(coords);
+    l.setContours(cfg, true);
+    const codes = l.tileCodes(coords, new Float64Array(65536), 1), d = new Uint8ClampedArray(65536 * 4);
+    I.composeTile(codes, null, l._lut, LO, HI, LO, HI, d); l._contours(coords, d, true, 1); return d;
+  };
+  const z6 = { z: 6, x: 3, y: 27 }, z7 = { z: 7, x: 7, y: 55 };
+  st.tierFor(z6); st.tierFor(z7); await settle();
+  assert.deepEqual(draw(z6, { step: 1, per: 1, off: 0, coarseBelow: 7, zero: true }), draw(z6, { step: 2, per: 1, off: 0, zero: true }), 'zoom 6: every 2 C');
+  assert.deepEqual(draw(z7, { step: 1, per: 1, off: 0, coarseBelow: 7, zero: true }), draw(z7, { step: 1, per: 1, off: 0, zero: true }), 'zoom 7: every 1 C');
+  assert.notDeepEqual(draw(z6, { step: 1, per: 1, off: 0, zero: true }), draw(z6, { step: 2, per: 1, off: 0, zero: true }));
+});
+
+test('G31-17: a cell that only the pad reads redraws its tile when it lands; _draw traces the isotherms at the tier it drew', async () => {
+  const st = fakeStore(manifest(['20_-180', '20_175'], ['20_-180', '20_160']), { hold: true });
+  assert.equal(await st.load(), st);
+  const l = sstLayer(st), west = { z: 8, x: 0, y: 111 }, el = fakeEl();
+  l._tiles = { a: { el, coords: west } };
+  l.setContours({ step: 1, per: 1, off: 0, zero: true }, true);
+  const tiers = [], c0 = l._contours.bind(l); l._contours = (c, d, all, t) => { tiers.push(t); return c0(c, d, all, t); };
+  l._draw(el, west); assert.equal(el._ovSrcTier, 0);
+  while (st.fake.held.length && !st.fake.held[0].url.endsWith('/t2/20_175.png')) { release(st); await settle(); }
+  assert.equal(el._ovSrcTier, 2, 'its own cells landed: drawn at 1 km');
+  assert.equal(tiers[tiers.length - 1], 2, 'the isotherms traced at the same tier');
+  assert.ok(st.fake.held.some((h) => h.url.endsWith('/t2/20_175.png')), 'the pad cell beyond 180 is on its way');
+  let draws = 0; const d0 = l._draw.bind(l); l._draw = (e, c) => { draws++; return d0(e, c); };
+  while (st.fake.held.length) { release(st); await settle(); }
+  assert.equal(draws, 1, 'the pad landing redrew the tile');
 });

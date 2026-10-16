@@ -1210,3 +1210,15 @@ test('section 44: sstDayText / sstAgeDays: a calendar day without a zone, "Oct."
   assert.equal(I.sstAgeDays('2026-10-15', Date.parse('2026-10-16T09:00:00Z')), 1);
   assert.equal(I.sstAgeDays('nope'), null);
 });
+
+// ---- G31 fix round (plan section 44 step 7) ----
+test('G31-11 / G31-13: the SST panel clears the loading status; its first tick is centred on its mark, wave height keeps its 0 at the edge', () => withClock(() => {
+  const w = obsWorld(); w.ov.render({ state: 'loading' });
+  assert.match(w.ov._sayText, /Loading sea surface temperature/);
+  w.ov.render({ state: 'ready' });
+  assert.equal(w.ov._sayText, '', 'shown: the loading status goes');
+  const first = w.panel.querySelector('.ov-ticks').children[0];
+  assert.equal(text(first), '40'); assert.equal(first.className, '', 'not left-aligned: 40 F sits 13 % into the bar');
+  const hs = w.I.buildLegend('hs', { lo: 0, hi: 22.86, legend: [0, 18.288] }, 'US');
+  assert.equal(hs.querySelector('.ov-ticks').children[0].className, 'ov-first', 'wave height: 0 at the edge stays left-aligned');
+}));

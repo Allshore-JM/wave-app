@@ -2093,6 +2093,25 @@ test('section 44: hs -> sst -> hs: the player stops, the layer samples the store
   done(o);
 });
 
+test("section 44: a switch to the observation keeps the field the page saved (a reload comes back on it), with the model's time and play state beside it", async () => {
+  const store = memStore({}), w = world({ storage: store });
+  const o = await mounted(w, A, { sst: true });
+  o.seek(12); await settle(); await w.releaseAll();
+  o.play(); await settle();
+  const before = JSON.parse(store.getItem(w.I.SESSION_KEY));
+  assert.equal(before.field, 'hs'); assert.equal(before.playing, true);
+  sstFake(o);
+  // the page's change handler: remember('sst') runs before the mount (the module is loaded asynchronously)
+  store.setItem(w.I.SESSION_KEY, JSON.stringify(Object.assign({}, before, { field: 'sst' })));
+  o.mount('sst'); await settle();
+  assert.equal(o.mode, 'obs');
+  const after = JSON.parse(store.getItem(w.I.SESSION_KEY));
+  assert.equal(after.field, 'sst', 'a reload brings the observation back');
+  assert.equal(after.model, 'gfswave');
+  assert.equal(typeof after.t, 'number', "the model's time stays beside it");
+  done(o);
+});
+
 test('section 44: a switch away while the observation loads never lets it land; a failure takes the error panel and Retry loads it; Off from it leaves nothing', async () => {
   const w = world();
   const o = await mounted(w, A, { sst: true });

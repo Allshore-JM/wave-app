@@ -216,3 +216,39 @@ p50 125 ms, 0 unpainted). Claims R1-R10 CONFIRMED (R1 with R-1/R-3), R11 PARTLY 
 - Fuzz (the re-check's two-model fuzz against the new source): 1,350 runs, 3,626 switches on the main, canvas and worker decode paths (interactive and playback), 0 failures. The three seeds that failed "I1 drawn" on
   2.17.2 (10459 main; 10624 main and canvas; 31762 main, interactive) pass.
 
+## Test-site check of fix round 2 (2026-10-16, Opus 5.5 MAX): two more assets, 2.17.4 and 2.17.5
+Headless Edge with trusted input (scratch `g30/check2`), production (2.16.6) beside the test site. Served bytes = the repo
+for 2.17.3 (test @ fc64ec8), 2.17.4 (@ 369f0a0) and 2.17.5 (@ bff2047, live 02:40 UTC); each earlier version answers 404.
+- **The Update race on the live sites** (GFS, shark playback, the particle-direction frames slowed 600 ms, the newer run's
+  manifest held, a trusted click on Update; the "newer run" = the live run under another name): production 11 of 12 clicks
+  landed a frame of the run being replaced over Update's loading panel; the test site 0 of 12 (the panel stayed "Loading").
+  Both landed the new run at exactly the requested time 12 of 12 and resumed playback.
+- **An Update whose frames never come** (the new run's frames answer 404), paused and playing: production keeps the old run's
+  picture under the error panel (98,129 painted samples, frameIndex null); the test site clears it (0).
+- **R-2**: GFS wind on the relief, the ECMWF pointer refused: the error panel over the imagery (relief removed, no blend);
+  back to GFS: the relief alone once the designed fade has run.
+- **Sizes and folds** (2.17.3 and again 2.17.5): the 15 window sizes identical to production; one-pixel height scans 1280 x
+  300-480 mouse (181), 812 x 300-420 touch (121), emulated 1.5x (16): 0 layout or height differences, identical fold points.
+- **FOUND (P3, both fixed during the check)**: R-1's rule (-1px, measured by the re-check at 12 and 16 px only) let the
+  dropdown set the head's height at other minimum font sizes: the toggle sets it in production (1.2em + 2px padding + borders)
+  while the dropdown follows its font's natural line (about 1.34em for Segoe UI). Measured on 2.17.3: equal at 12 / 13 / 15 /
+  16 px, +0.2 px at 14, +0.41 at 18, +1 at 20, +1.2 at 24 (desktop and phone). 2.17.4 (@ 74680d0): beside the toggle an em
+  margin (`.ov-head .ov-toggle + select.ov-model-sel`), -0.15em, equal at every size by injection and on the site. But browsers
+  resolve that em against the 12-px font before the minimum font size enlarges the text (the margin measured -1.8 px at every
+  size), so only 0.4 px to spare at Chrome's 24-px maximum and short of Firefox's 72-px range: 2.17.5 (@ b340fcc) -0.5em (6 px).
+  The dropdown's box and label are unchanged (it stays centred on the line); the loading panel's row (no toggle) keeps -1px.
+- **2.17.5 against production**: minimum font 12 / 13 / 14 / 15 / 16 / 18 / 20 / 24 px head heights equal on the desktop
+  (18.39 / 19.59 / 20.8 / 22 / 23.19 / 25.59 / 28 / 32.8) and on the phone (14 / 18 / 24 px), panel heights equal; labels
+  whole (the dropdown 20-36 px tall where its line and borders need 16.4-30.8 px). A real 150 % scale (forced device scale factor): head 17.73 =
+  production (2.17.2: 18.00), and a 181-height scan at that scale: 0 differences.
+- **Timed** (2.17.3; 2.17.4 / 2.17.5 change one CSS margin and no script): 1080p shark, production GFS 125/135 and 125/135 ms,
+  test GFS 125/137, test ECMWF 125/140, ECMWF phone 126/133: 8 frames/s everywhere, 0 skipped, 0 unpainted, fetch/frame 1.02,
+  in flight at the cap; heap live test +31.8 MB against production +32.5 / +31.8. (Production's lines read "FAIL: model
+  undefined": 2.16.6 has one model and no `model` field, which the script expects; its timings meet the line.)
+- **Regressions**: the fix round's own checks again on 2.17.3 (hold 15.5 s with the dropdown and the focus kept, escape while
+  loading, round trip, reduced motion, wind relief through a slow switch, the notice, 28-px Retry) and the loading / error
+  panels on 2.17.5: all pass. The Update banner with real ECMWF runs: Update by a trusted click lands 2026101512 at the same
+  valid time, the banner goes with a switch, playback through a switch only ECMWF frames; the previous run (2026101500) now
+  shows the 15-h stale line (published 15.3 h before), as designed.
+- Cleanup: both origins' storage emptied after every script; every harness browser closed, profiles removed.
+

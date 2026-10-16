@@ -303,7 +303,7 @@ request (a switch, the first load, a field switch's re-read, Update) not complet
 (`LOAD_STALL_MS`), ends in the error panel, so a slow or failing model can always be left. Every one-line
 head (the viewer's fold, a short map, a phone held sideways) shows the summary line with the model ("Thu, Oct. 15, 11:00
 AM HST · ECMWF"), never the dropdown; the dropdown keeps the head line's height. Frames, scales, legends, contours and
-particles are the same code for both models (assets 2.17.1-2.17.3: the G30 fix rounds and their checks,
+particles are the same code for both models (assets 2.17.1-2.17.4: the G30 fix rounds and their checks,
 docs/reviews/overlays-G30-adversarial.md). A load that fails leaves nothing of an earlier run drawn and gives the page's
 imagery back (also after a failed switch on wind); an Update drops the pending step at once, so a frame of the run it
 replaces can never land over its loading panel.

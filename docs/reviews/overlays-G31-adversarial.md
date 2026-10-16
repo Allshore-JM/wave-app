@@ -129,3 +129,34 @@ Tests: `sst.test.js` +9 (25), `playback.test.js` +3 (101), `panel.test.js` +1 (6
 pass. The one failure in the full run (`test_job.py::test_an_upload_failure_stops_the_build_before_any_manifest_or_pointer`,
 a job test; the job is untouched) came while the mutation run loaded the machine, and it passes 3 of 3 alone.
 Mutation: 19 mutants, each undoing one fix (`scratchpad/sst/client/mut7.py`, run on a scratch copy): 19 killed.
+
+## Test-site verification of the fix round (2026-10-16, Opus 5.5 MAX)
+`test` @ bd1cb94 (cherry-picks of the record commits and 6b4df01; README kept as the test branch's), live 22:34 UTC: served
+overlay.js = the commit, the 2.18.2 URL 404, the page names the select "Map overlay". Headless Edge with the GPU and trusted
+input, reviewer B's own scripts re-run against 2.18.3 (their 2.18.2 logs and shots kept beside them for comparison):
+- G31-2: the pointer refused once, Retry clicked at once: ready (7 requests). 2.18.2: Retry dead for 60 s.
+- G31-3: first view on a slow link, cache cleared: 400 kbit/s ready 17.7 s, 250 kbit/s ready 19.7 s, 150 kbit/s ready 27.2 s.
+  2.18.2: errors at 250 and 150. Wave height on the same links: 20.9 / 23.7 / 29.7 s, as before. Unchanged and pre-existing:
+  on such links the 1.3-MB coastline file does not arrive within its own 15 s, so both fields show unclipped with the
+  "Coastline data could not be loaded" warning.
+- G31-4: a 1-km cell held by the network: given up after 16 s (slot freed, a cooldown), retried at +75 s, all 30 tiles at
+  1 km. 2.18.2: 30 tiles on the coarser tier for 200 s.
+- G31-5 / G31-19: Metric isotherms at 0 C now drawn (Weddell 12,192 line pixels, Fram 3,356, Labrador 660); zoom 5-6 lines every
+  2 C / 4 F, zoom 3 still 2 C / 4 F.
+- G31-1: the date line at 52 N, zoom 9: mean RGB step across the meridian 0.1 (max 3), less than one pixel inside (0.27);
+  2.18.2: 1.4 (max 260), the isotherm stopping short of it. Other cell edges unchanged at zoom 9-10.
+- G31-6: every tile drawn from the 0.25-degree frame next to a coast is a tile the coastline mask shows as all land (California
+  3/3, Nova Scotia 1/1, Argentina 1/1, inland Oahu at zoom 12 4/4).
+- G31-9: after a 26-place SST pan, wave height 46.5 MB (2.18.2: 64.1 with the cells kept, 46.3 after clearing them by hand);
+  a short check: 1.65 MB of cells -> 0 on leaving, the day's frame and manifest kept.
+- G31-7 / G31-8 / G31-15 / G31-16: play wave height -> SST: saved `playing: true`, the run-line timer stopped; a reload on SST
+  then wave height plays again from the carried time; a newer run announced (a fake pointer) survives a visit to SST with its
+  banner, its manifest never fetched; the day set 6 days back shows the stale line at the 30-min check.
+- G31-11 / G31-12 / G31-13: the screen-reader status empty once SST shows (2.18.2: "Loading sea surface temperature…"); the select
+  "Map overlay"; the gap between "40" and "50" 16.4 px at 1280 px (2.18.2: 9.9), 15.6 at 375 (9.4), 11 at 320 (4.4).
+- Regression: the step-5 parts on 2.18.3: tiers (on-screen = redrawn, readout = drawn: 0 mismatches at z4 / 6 / 7 / 9 / 10 / 12),
+  261 ERDDAP points within half a step, the five seams, isotherms RGB-only, units, every switch, reload, Off (0 requests after),
+  the error panel and Retry, loading, the phone sheet. Wave height at shark speed after the decodeFrame change: 82 landings in
+  12 s, 0 skipped, two downloads per landing (field + direction). Console on fresh page targets: no site messages (only Edge's
+  Tracking Prevention notes on the CDNs).
+- Test-origin storage emptied; the browser stopped by DevTools, its profile removed, no process left.

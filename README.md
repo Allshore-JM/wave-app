@@ -610,7 +610,10 @@ product) publishes the newest NASA JPL MUR SST v4.1 day as tiles; `sst_tiles.py`
   warmer on average); coastal and harbour stations 128, median 0.48, RMS 1.01, 52 % within 0.5 and 80 % within 1 (tiles
   0.36 COLDER: shallow harbour water runs warmer than the foundation temperature; Honolulu Harbor 1.4, Kaneohe 1.0).
   Hawaii's seven buoys all within 0.5 deg C (the largest, Waimea 51201, +0.50). No value at the Great Lakes (lakes are left empty) or in rivers and back-bays
-  beyond the 2-pixel fill.
+  beyond the 2-pixel fill. The coastal error goes BOTH ways: at open surf beaches the tiles can read warmer than the
+  water (2026-10-15, through the site's own readout: all four Gold Coast / Tweed surf buoys 0.6-1.1 deg C warmer; G31),
+  while harbours and bays read colder. MUR is a night-time "foundation" temperature: the afternoon surf zone can be
+  warmer. The readout keeps one decimal (owner, 2026-10-16); the credit's title says the above.
 - **Tests**: `tests/model_frames/test_sst.py` runs the same tiling code on a 20-pixels-per-degree synthetic world (the
   `Geo` lattice parameter). Review record: `docs/reviews/overlays-G31a-adversarial.md`.
 - **The client store** (asset 2.18.0, plan section 44 step 3; nothing on the page yet): `static_overlay/overlay.js` reads the
@@ -640,6 +643,14 @@ product) publishes the newest NASA JPL MUR SST v4.1 day as tiles; `sst_tiles.py`
   SST" (+ "· GSHHG"). A switch to it keeps the model's run, caches and time: back on a model field the picture returns at
   the time the viewer had (the same carry as a model switch) and resumes playing if it was; the observation saves no time.
   The 30-minute check only notes a newer day; the next switch to it shows the new one.
+- **G31 fix round** (asset 2.18.3; record `docs/reviews/overlays-G31-adversarial.md`): the day's load times each step by
+  stall (no answer or no bytes for 15 s), not one 15-s budget, so a slow link loads it; a viewer's pick, Retry or On tries
+  again at once (the 60-s cooldown only paces automatic re-loads); each cell download has its own 15-s stall timer (then a
+  cooldown and a retry); the tiles at the date line ask for the cells beyond it (their isotherms reach the 180 meridian);
+  tiles entirely on land ask for no cells; one least-recently-used order across both tiers; leaving SST clears the decoded
+  cells (owner; the day's frame and manifest stay); the isotherms every 2 C / 4 F below tile zoom 7 (owner), and the 0 C
+  line is drawn; a time carried through SST keeps the model's run (a newer one stays an Update banner) and, after a reload,
+  its play state; the stale line can appear on a tab left open on SST; the overlay select is named "Map overlay".
 
 ## Forecast points
 

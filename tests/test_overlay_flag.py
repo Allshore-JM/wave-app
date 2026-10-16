@@ -80,7 +80,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert '"https://frames.example/gfswave/0p25/v1"' in body           # trailing slash stripped
         assert "var VERSION = %s;" % json.dumps(A.OVERLAY_ASSET_VERSION) in body
         assert "version: VERSION" in body                                    # the module serves its illustrations at its version
-        assert 'aria-label="Model overlay"' in body and "Model overlay <select" not in body   # no visible heading (section 37)
+        assert 'aria-label="Map overlay"' in body and "Model overlay <select" not in body   # no visible heading (section 37)
         assert 'var MODELS = ["gfswave"];' in body and "models: MODELS" in body              # section 43: the offered models
         assert "var SST = false;" in body and "sst: SST" in body and 'value="sst"' in body     # section 44: offered only with SST_OVERLAY=1 (the option is built by script)
         assert GATED.search(body) is not None, name

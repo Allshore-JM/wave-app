@@ -22,9 +22,11 @@
 /* The negative margin keeps the select out of the row's height, with its own height left to the browser: a larger minimum
    font size grows it, unclipped, and borders that snap at a 150 % scale add nothing (G30-1, re-check R-1 / R-3). Beside the
    toggle the head line's height is the toggle's, as in production (1.2em + 2px padding + borders; touch: the 28-px minimum
-   below), while the select follows its font's natural line (about 1.34em for Segoe UI): an em margin keeps it out of that
-   height at every minimum font size (-1px still added 0.2-1.2 px at 14 / 18 / 20 / 24 px; check of fix round 2). */
-.ov-head .ov-toggle + select.ov-model-sel { margin: -0.15em 0; }
+   below), while the select follows its font's natural line (about 1.34em for Segoe UI): this margin keeps it out of that
+   height at every minimum font size (-1px still added 0.2-1.2 px at 14 / 18 / 20 / 24 px; check of fix round 2). The em is
+   the 12-px font's (browsers resolve it before a minimum font size enlarges the text), so 6 px, enough up to Firefox's
+   72-px minimum; the select stays centred on the line, so nothing moves on screen. */
+.ov-head .ov-toggle + select.ov-model-sel { margin: -0.5em 0; }
 .ov-err select.ov-model-sel { display: block; margin: 4px 0; }
 .ov-meta { color: #3f4d6e; margin-top: 2px; }
 .ov-meta b { color: #1d2b4f; font-weight: 600; }

@@ -171,3 +171,29 @@ the previous version's URL 404. Headless Edge with the GPU, trusted keys / click
   124/135; 0 skipped, 0 unpainted, fetch/frame 1.02, in flight within the cap; heap live +31.5 / +31.8 / +12.6 MB.
 - Cleanup: the test origin's storage emptied after every script; Edge stopped (profile removed, no process left).
 
+## Re-check of the fix round (2026-10-15/16, one fresh reviewer, Opus 5.5 MAX): 0 P0, 0 P1, 0 P2, 6 P3
+Scope: the client diff 2374454..6eeb842 and the test site (2.17.2). Evidence: G30-A's two-model fuzz adapted to the new rules
+plus five new invariants (chosen time across switches, the save only after a landing, no watchdog timer outliving its
+request, a way to the other model in every panel state, reduced motion): 9,400 seeds, 26,547 switches, no frame / cache /
+credit / banner / save of one model under the other, never stuck, a reload never trapped; 55 own mutants (40 killed, 9
+equivalent incl. F17, 6 behaviour-changing survivors = R-4/R-5 below); on the site 302 one-pixel height steps against
+production (mouse and touch) with identical folds and head heights, the watchdog at 14 s (lands) and 16 s (error at 15.3 s,
+the late answer never lands; the manifest likewise), the loading panel's dropdown by trusted click and keys (a 9-key burst),
+Tab order, the status node, the notice by a trusted click, reduced motion, timed parity (two back-to-back pairs, 8.0 fps,
+p50 125 ms, 0 unpainted). Claims R1-R10 CONFIRMED (R1 with R-1/R-3), R11 PARTLY (the author's 21 mutants not re-run).
+- **R-1 (P3, accessibility)** a browser minimum font size of 14 px or more clips the 18-px dropdown's label (production's
+  span grows). Fix proposed and measured in the page: `height: auto; margin: -1px 0` (the select out of the head's height):
+  plain dpr 1 head 18.39 = production, 16-px minimum font label whole with the head 23.19 = production, real 150 % head
+  17.73 = production.
+- **R-2 (P3)** a failed model switch on wind leaves the bare relief (and the blend) with nothing drawn under the error panel;
+  from wave height the same failure shows the imagery. Fix: `_fail` syncs the look when nothing is drawn.
+- **R-3 (P3)** at a real 150 % display scale borders snap to 0.667 px: the test head is 18.00 px vs production's 17.73 (no fold
+  changed in 181 heights); fixed by R-1's rule.
+- **R-4 (P3, tests)** `_switchT` not cleared by Off, and `_switchT = shown` instead of the chosen time, survive the suites.
+- **R-5 (P3, tests)** nothing pins that the watchdog or an abort cancels the network request itself (the signal given to fetch).
+- **R-6 (P3, docs)** the watchdog is a 15-s deadline per pointer / manifest request (headers and body), on every such load
+  (GFS's own first load, a field switch's re-read, Update), not "silence on a switch".
+- Pre-existing, not counted (also on 2374454 and production's Update path; G30-A saw the class): an Update racing a playback
+  landing, or an Update whose frames never answer, leaves the old run's picture of the same model with `frameIndex` null
+  under a ready or error panel. A switch is immune (`_dropRun`).
+

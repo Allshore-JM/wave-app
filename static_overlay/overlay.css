@@ -4,6 +4,8 @@
 /* The animation canvas (swell and wind particles): its own pane under the forecast points, no pointer events. */
 .leaflet-ovAnim-pane, .ov-anim { pointer-events: none; }
 .ov-anim { position: absolute; left: 0; top: 0; }
+.leaflet-ovIso-pane, .ov-iso { pointer-events: none; }
+.ov-iso { position: absolute; left: 0; top: 0; }
 
 /* The panel (plan section 37): the logo's palette. Ivory panel, navy text, teal controls, cream timeline, coral pointer.
    Contrast on the ivory: navy 12.9:1, meta navy 7.8:1, teal glyphs and borders 3.65:1 (UI components). */

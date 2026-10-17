@@ -195,7 +195,8 @@ def test_overlay_js_syntax_and_contract_strings():
                    "World_Hillshade", "mixBlendMode", "coastEdges", "_syncLook",
                    "_paintWait", "PAINT_FALLBACK_MS", "TRAIL_SPAN_MS", "BUSY_STUCK_MS", "maxTouchPoints", "_flowData", "copyWithin", "spent", "ovdecode=worker",   # section 42 / G29
                    "MODEL_DEFS", "'ecmwf/0p25/v1'", "ov-model-sel", "'Overlay model'", "setModel", "_dropRun", "_carry", "_modelBase", "CC BY 4.0",   # section 43
-                   "hasModel", "_switchT", "_fetchJson", "LOAD_STALL_MS", "/notice/ecmwf"):                                                      # G30 fix round
+                   "hasModel", "_switchT", "_fetchJson", "LOAD_STALL_MS", "/notice/ecmwf",                                                       # G30 fix round
+                   "IsobarLayer", "'ovIsoPane'", "traceIsolines", "isoSmooth", "placeLabels", "viewOf", "placeCanvas"):                      # section 46 step 3
         assert needle in js, needle
     for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row
                  "'live since '", "next update about ", "'First frame'", "'Previous frame'", "'Next frame'", "'Last frame'",

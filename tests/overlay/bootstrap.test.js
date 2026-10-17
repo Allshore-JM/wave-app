@@ -44,12 +44,22 @@ function page(opt) {
     addEventListener(ev, fn) { this._ls.push(fn); }, userPick(v) { this.value = v; this._ls.forEach((f) => f({})); } };
   const panel = { textContent: '' }, unit = { _ls: [], addEventListener(ev, fn) { this._ls.push(fn); } };
   let tableLoading = !!opt.deferredTable, scriptEl = null;
-  const idleQ = [];
+  const idleQ = [], byId = {};
+  function element(tag) {
+    const el = { tag, children: [], attrs: {}, _ls: {}, sheet: null, className: '', textContent: '',
+      addEventListener(ev, fn) { (this._ls[ev] = this._ls[ev] || []).push(fn); }, remove() {},
+      setAttribute(k, v) { this.attrs[k] = String(v); }, getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+      appendChild(c) { this.children.push(c); const reg = (x) => { if (x.id) byId[x.id] = x; (x.children || []).forEach(reg); }; reg(c); return c; },
+      fire(ev) { (this._ls[ev] || []).forEach((f) => f({ target: this })); } };
+    return el;
+  }
+  const gear = opt.settings ? element('div') : null;
+  if (gear) gear.appendChild(Object.assign(element('label'), { className: 'grid-setting' }));   // the page's own gridlines row
   const document = {
     hidden: !!opt.hidden, readyState: opt.complete ? 'complete' : 'loading',
-    getElementById: (id) => ({ ovField: sel, ovPanel: panel, unit })[id] || (id === 'forecastLoading' && tableLoading ? {} : null),
+    getElementById: (id) => ({ ovField: sel, ovPanel: panel, unit, settingsPanel: gear })[id] || byId[id] || (id === 'forecastLoading' && tableLoading ? {} : null),
     addEventListener: on('doc'), removeEventListener() {}, querySelector: () => null,
-    createElement: (tag) => ({ tag, addEventListener() {}, remove() {}, sheet: null }),
+    createElement: (tag) => element(tag),
     head: { appendChild: (el) => { if (el.tag === 'script') scriptEl = el; } }
   };
   const overlays = [];
@@ -57,12 +67,16 @@ function page(opt) {
     return { create: (m, o) => {
       const ov = { field: null, mounts: [], opts: o,
         mount(f, r) { this.field = f; this.mounts.push([f, r]); log.push('mount ' + f + ' ' + r); },
-        unmount() { this.field = null; log.push('unmount'); }, refresh() { log.push('refresh'); }, _persist() { log.push('persist'); } };
+        unmount() { this.field = null; log.push('unmount'); }, refresh() { log.push('refresh'); }, _persist() { log.push('persist'); },
+        setIsobars(v) { log.push('isobars ' + v); }, setParticleOpacity(v) { log.push('particles ' + v); } };
       overlays.push(ov); log.push('create'); return ov;
     } };
   }
+  const local = opt.local === undefined ? null : new Map(Object.entries(opt.local || {}));
+  const localStorage = opt.throwingLocal ? { getItem() { throw new Error('SecurityError'); }, setItem() { throw new Error('SecurityError'); } }
+    : local ? { getItem: (k) => (local.has(k) ? local.get(k) : null), setItem: (k, v) => local.set(k, String(v)) } : undefined;
   const window = { addEventListener: on('win'), requestIdleCallback: opt.noRIC ? undefined : (fn) => { idleQ.push(fn); },
-    AllshoreOverlay: opt.assetsLoaded === false ? undefined : makeAO() };
+    AllshoreOverlay: opt.assetsLoaded === false ? undefined : makeAO(), localStorage };
   const boxes = [];
   const L = { Control: { extend: (p) => function () { this.onAdd = p.onAdd; } }, DomUtil: { create: () => { const b = { innerHTML: '' }; boxes.push(b); return b; } },
     DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} }, TileLayer: opt.TileLayer };
@@ -72,7 +86,7 @@ function page(opt) {
   new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.sst ? SRC_SST : SRC)(
     window, document, sessionStorage, L, map, () => 'US', () => '', () => '', setTimeout);
   return {
-    log, store, sel, panel, overlays, listeners, map, boxes,
+    log, store, sel, panel, overlays, listeners, map, boxes, gear, local, byId,
     read: () => { try { return JSON.parse(store.get(KEY) || 'null'); } catch (e) { return store.get(KEY); } },
     load() { document.readyState = 'complete'; fire('win', 'load'); },
     idle() { idleQ.splice(0).forEach((f) => f({})); },
@@ -286,4 +300,70 @@ test('section 44: "Sea surface temperature" is offered only with SST_OVERLAY (SS
   p3.sel.userPick('hs'); await settle();
   assert.deepEqual(p3.overlays[0].mounts[1], ['hs', false]); assert.equal(p3.read().field, 'hs');
   assert.equal(page({ sst: false, init: { field: '' } }).overlays.length, 0);
+});
+
+// ---- the settings gear's overlay rows (plan section 46) ----
+const ISO_KEY = 'allshore.isobars.v1', PART_KEY = 'allshore.particles.v1';
+async function created(p) { await loadedAndIdle(p); assert.equal(p.overlays.length, 1, 'the module was made'); return p.overlays[0]; }
+
+test('section 46: two rows join the gear after its own rows (isobars on, particles at 100 %), and the module is made with them', async () => {
+  const p = page({ settings: true, local: {}, init: { field: 'wind' } });
+  const kids = p.gear.children;
+  assert.equal(kids.length, 3, 'the gridlines row, then the two overlay rows');
+  assert.equal(kids[0].className, 'grid-setting', 'appended after the page\'s rows');
+  const iso = p.byId.ovIsobars, part = p.byId.ovParticles;
+  assert.equal(iso.type, 'checkbox'); assert.equal(iso.checked, true);
+  assert.equal(kids[1].children[1].textContent, 'Pressure isobars (wind)');
+  assert.equal(part.type, 'range'); assert.deepEqual([part.min, part.max, part.step, part.value], ['0', '100', '5', '100']);
+  assert.equal(part.getAttribute('aria-valuetext'), '100%'); assert.equal(kids[2].getAttribute('for'), 'ovParticles');
+  assert.equal(kids[2].children[0].textContent, 'Particles');
+  const ov = await created(p);
+  assert.equal(ov.opts.isobars, true); assert.equal(ov.opts.particles, 1);
+});
+
+test('section 46: without the gear panel (or with the rows already there) nothing is added; the module still gets the saved values', async () => {
+  const p = page({ local: { [ISO_KEY]: '0', [PART_KEY]: '35' }, init: { field: 'hs' } });
+  assert.equal(p.gear, null); assert.equal(p.byId.ovIsobars, undefined);
+  const ov = await created(p);
+  assert.equal(ov.opts.isobars, false); assert.equal(ov.opts.particles, 0.35);
+});
+
+test('section 46: saved values: only "0" turns the isobars off; the particles take 0-100 in whole numbers, anything else is 100; no storage at all is the defaults', async () => {
+  const cases = [
+    [{}, true, 100], [{ [ISO_KEY]: '0' }, false, 100], [{ [ISO_KEY]: '1' }, true, 100], [{ [ISO_KEY]: 'false' }, true, 100],
+    [{ [PART_KEY]: '0' }, true, 0], [{ [PART_KEY]: '40' }, true, 40], [{ [PART_KEY]: '100' }, true, 100],
+    [{ [PART_KEY]: '150' }, true, 100], [{ [PART_KEY]: '-5' }, true, 100], [{ [PART_KEY]: '4.5' }, true, 100], [{ [PART_KEY]: 'abc' }, true, 100], [{ [PART_KEY]: '' }, true, 100]
+  ];
+  for (const [local, iso, part] of cases) {
+    const p = page({ settings: true, local, init: { field: 'hs' } });
+    assert.equal(p.byId.ovIsobars.checked, iso, JSON.stringify(local)); assert.equal(p.byId.ovParticles.value, String(part), JSON.stringify(local));
+    const ov = await created(p);
+    assert.equal(ov.opts.isobars, iso); assert.equal(ov.opts.particles, part / 100);
+  }
+  for (const opt of [{ settings: true }, { settings: true, throwingLocal: true }]) {         // no localStorage / one that throws
+    const p = page(Object.assign({ init: { field: 'hs' } }, opt));
+    assert.equal(p.byId.ovIsobars.checked, true); assert.equal(p.byId.ovParticles.value, '100');
+    p.byId.ovIsobars.checked = false; p.byId.ovIsobars.fire('change');                     // a change that cannot be stored never throws
+    p.byId.ovParticles.value = '30'; p.byId.ovParticles.fire('input');
+    const ov = await created(p);
+    assert.equal(ov.opts.isobars, false, 'the choice holds for the page'); assert.equal(ov.opts.particles, 0.3);
+  }
+});
+
+test('section 46: a change is stored at once and reaches the module once it exists; the slider says "off" at 0', async () => {
+  const p = page({ settings: true, local: {}, init: { field: '' } });           // Off: no module yet
+  const iso = p.byId.ovIsobars, part = p.byId.ovParticles;
+  iso.checked = false; iso.fire('change');
+  assert.equal(p.local.get(ISO_KEY), '0');
+  part.value = '0'; part.fire('input');
+  assert.equal(p.local.get(PART_KEY), '0'); assert.equal(part.getAttribute('aria-valuetext'), 'off');
+  assert.ok(!p.log.some((l) => /isobars|particles/.test(l)), 'nothing forwarded without the module');
+  p.sel.userPick('wind'); await settle();
+  const ov = p.overlays[0]; assert.equal(ov.opts.isobars, false); assert.equal(ov.opts.particles, 0, 'the module is made with the changed values');
+  iso.checked = true; iso.fire('change');
+  part.value = '55'; part.fire('input');
+  assert.equal(p.local.get(ISO_KEY), '1'); assert.equal(p.local.get(PART_KEY), '55'); assert.equal(part.getAttribute('aria-valuetext'), '55%');
+  assert.deepEqual(p.log.filter((l) => /isobars|particles/.test(l)), ['isobars true', 'particles 0.55']);
+  part.value = '250'; part.fire('input'); assert.equal(p.local.get(PART_KEY), '100', 'clamped');
+  assert.equal(p.log[p.log.length - 1], 'particles 1');
 });

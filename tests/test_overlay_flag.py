@@ -2,7 +2,7 @@
 
 Golden: tests/fixtures/index_golden.json captured by tests/capture_index_golden.py (fixed forecast
 payload + station list, no network). It is re-baselined ONLY by a commit that changes the flag-off page
-on purpose (last: the G28 re-check fixes: raised window caps, the touch disc and the forecast busy retry, UI 1.22.0, plan section 39 fix round 7c, 2026-10-12); never recapture it
+on purpose (last: the gear panel fits the map's height and scrolls inside, plan section 46 step 5, 2026-10-17); never recapture it
 after an overlay-only commit. Whatever the baseline, three invariants hold: flag off == golden with no
 '/overlay/' in it; flag on with no frames base == flag off; flag on == flag off + exactly the gated block.
 """
@@ -83,6 +83,9 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert 'aria-label="Map overlay"' in body and "Model overlay <select" not in body   # no visible heading (section 37)
         assert 'var MODELS = ["gfswave"];' in body and "models: MODELS" in body              # section 43: the offered models
         assert "var SST = false;" in body and "sst: SST" in body and 'value="sst"' in body     # section 44: offered only with SST_OVERLAY=1 (the option is built by script)
+        assert "'allshore.isobars.v1'" in body and "'allshore.particles.v1'" in body               # section 46: the gear's two rows, kept in this browser
+        assert "isobars: ISOBARS, particles: PARTICLES / 100" in body and "'ovIsobars'" in body and "'ovParticles'" in body
+        assert "overlay.setIsobars(ISOBARS)" in body and "overlay.setParticleOpacity(v / 100)" in body and "'Pressure isobars (wind)'" in body
         assert GATED.search(body) is not None, name
         # removing the gated block gives back exactly the golden page
         assert GATED.sub("", body, count=1) == old["body"], name
@@ -197,7 +200,8 @@ def test_overlay_js_syntax_and_contract_strings():
                    "MODEL_DEFS", "'ecmwf/0p25/v1'", "ov-model-sel", "'Overlay model'", "setModel", "_dropRun", "_carry", "_modelBase", "CC BY 4.0",   # section 43
                    "hasModel", "_switchT", "_fetchJson", "LOAD_STALL_MS", "/notice/ecmwf",                                                       # G30 fix round
                    "IsobarLayer", "'ovIsoPane'", "traceIsolines", "isoSmooth", "placeLabels", "viewOf", "placeCanvas",                        # section 46 step 3
-                   "PRES_FIELD", "pcache", "_wantPres", "_kindReady", "_startKind", "_syncIsobars", "setIsobars", "' hPa'"):                 # section 46 step 4
+                   "PRES_FIELD", "pcache", "_wantPres", "_kindReady", "_startKind", "_syncIsobars", "setIsobars", "' hPa'",                  # section 46 step 4
+                   "particleOpacityOf", "setParticleOpacity", "_paneOpacity", "opts.particles"):                                           # section 46 step 5
         assert needle in js, needle
     for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row
                  "'live since '", "next update about ", "'First frame'", "'Previous frame'", "'Next frame'", "'Last frame'",

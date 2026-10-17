@@ -506,3 +506,22 @@ test('section 42 C2: a pan beyond the node window recomputes the nodes (the latt
   assert.notEqual(fa.nodes.win, win0, 'three screens east: recomputed'); assert.notEqual(fa.nodes.win.c0, win0.c0);
   assert.ok(fa.vf.u.filter((x) => x !== 0).length > 0.9 * fa.vf.u.length, 'the lattice still has its vectors (stale nodes would be absent)');
 });
+
+test('section 46: the particles slider fades the whole pane by CSS opacity (the strokes\' colours untouched); full strength leaves no inline opacity; a pane made later takes the strength', () => {
+  const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(90));
+  const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
+  const { fa } = animator('hs', l, pdir, HALF);
+  assert.equal(fa.pane.style.opacity, '', 'full strength: the pane as before');
+  fa.setOpacity(0.4);
+  assert.equal(fa.pane.style.opacity, '0.4');
+  fa.setOpacity(1); assert.equal(fa.pane.style.opacity, '', 'back to full: no inline opacity');
+  for (const [v, want] of [[-3, '0'], [9, ''], [NaN, ''], ['0.3', ''], [0.25, '0.25']]) { fa.setOpacity(v); assert.equal(fa.pane.style.opacity, want, String(v)); }
+  // an animator whose pane is made after the strength is set (attach after setOpacity)
+  const map = { on() {}, off() {}, getPane: () => null, createPane: () => ({ style: {}, appendChild() {} }) };
+  const fb = new I.FlowAnimator(map, null); fb.setOpacity(0.5); assert.equal(fb.pane, null);
+  global.document = { createElement: () => ({ style: {}, getContext: () => fakeCtx(), remove() {} }), hidden: false };
+  fb.attach(); assert.equal(fb.pane.style.opacity, '0.5', 'applied at attach'); fb.detach();
+  assert.equal(I.particleOpacityOf(0.4), 0.4); assert.equal(I.particleOpacityOf(-1), 0); assert.equal(I.particleOpacityOf(2), 1);
+  assert.equal(I.particleOpacityOf(undefined), 1); assert.equal(I.particleOpacityOf('0'), 1); assert.equal(I.particleOpacityOf(Infinity), 1);
+  fa.detach();
+});

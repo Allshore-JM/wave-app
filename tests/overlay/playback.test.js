@@ -2448,3 +2448,38 @@ test('_syncIsobars hands the layer only the lines of the step the LAYER shows, a
   assert.equal(o.iso.entry, A.frames[i0], 'the shown step\'s lines are back');
   o.unmount();
 }));
+
+test('section 46: the particles slider: a strength fades the particles (the animator\'s opacity), 0 stops them as unticking Animation did, back above 0 fetches the shown step\'s direction; never saved', async () => {
+  const storage = memStore({}), w = world({ storage }); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseField();
+  assert.ok(o.flow && Object.keys(o.inflight).some(isDir), 'the direction of the shown step is on its way');
+  o.setParticleOpacity(0.4); await settle();
+  assert.equal(o.particleOpacity, 0.4); assert.equal(o.anim, true); assert.equal(o.flow.opacity, 0.4, 'the animator fades');
+  assert.ok(Object.keys(o.inflight).some(isDir), 'a fade keeps the direction download');
+  o.setParticleOpacity(0); await settle();
+  assert.equal(o.anim, false); assert.equal(o.flow, null, 'no animator at 0');
+  assert.ok(!Object.keys(o.inflight).some(isDir), 'direction fetches aborted'); assert.equal(o.dcache.size(), 0);
+  const before = w.fetches.length;
+  o.setParticleOpacity(0.6); await settle();
+  assert.equal(o.anim, true); assert.ok(o.flow); assert.equal(o.flow.opacity, 0.6, 'a new animator takes the strength');
+  assert.ok(w.fetches.slice(before).some((u) => u.includes('/half/pdir/f' + String(A.frames[o.frameIndex].step).padStart(3, '0'))), 'the shown step direction is fetched again');
+  for (const bad of [NaN, -1, 7, '0.5', null, undefined]) { o.setParticleOpacity(bad); assert.ok(o.particleOpacity >= 0 && o.particleOpacity <= 1, String(bad)); }
+  o.setParticleOpacity(-1); assert.equal(o.particleOpacity, 0); assert.equal(o.anim, false);
+  o.setParticleOpacity(7); assert.equal(o.particleOpacity, 1); assert.equal(o.anim, true);
+  o.setParticleOpacity('0.5'); assert.equal(o.particleOpacity, 1, 'only a number counts');
+  assert.deepEqual(Object.keys(storage.read()).filter((k) => /partic|opacit|anim|isobar/i.test(k)), [], 'the module saves nothing of it (the page keeps it)');
+  assert.equal(o.setOpacity, undefined, 'still no overlay opacity setter');
+  await w.releaseAll(); o.unmount();
+});
+
+test('section 46: the page\'s settings reach the module: opts.particles 0 starts with no particles (nothing animates, no direction frame); opts.isobars false starts without isobars; the defaults are on and full strength', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const mk = (extra) => new w.I.Overlay(w.map, Object.assign({ base: 'https://x/gfswave/0p25/v1', panel: {}, tz: 'UTC', getUnit: () => 'US', fmtTime: () => '', tzAbbr: () => '', pageCycle: () => null }, extra));
+  const d = mk({}); assert.equal(d.particleOpacity, 1); assert.equal(d.anim, true); assert.equal(d.isobars, true);
+  const half = mk({ particles: 0.35 }); assert.equal(half.particleOpacity, 0.35); assert.equal(half.anim, true);
+  const off = mk({ particles: 0, isobars: false }); assert.equal(off.anim, false); assert.equal(off.isobars, false);
+  off.mount('hs'); await settle(); await w.releaseAll();
+  assert.ok(off.layer.hasFrame(), 'the picture is there'); assert.equal(off.flow, null);
+  assert.ok(!w.fetches.some(isDir), 'no direction frame was ever asked for');
+  off.unmount();
+});

@@ -160,3 +160,27 @@ input, reviewer B's own scripts re-run against 2.18.3 (their 2.18.2 logs and sho
   12 s, 0 skipped, two downloads per landing (field + direction). Console on fresh page targets: no site messages (only Edge's
   Tracking Prevention notes on the CDNs).
 - Test-origin storage emptied; the browser stopped by DevTools, its profile removed, no process left.
+
+## Re-check of the fix round (2026-10-17, one fresh reviewer, Opus 5.5 MAX)
+**0 P0, 0 P1, 0 P2, 6 P3, 3 observations.** Every claim holds in ordinary use (R1-R6, R9-R16, R19 confirmed; R7 and R17
+partly; R8 confirmed with an edge regression). Evidence included: `cellsForTile` with pad 0 identical to c3bec41 in 2,667,252
+calls (zoom 0-18, world copies, 7 cell sizes) and the padded lists complete for 440,556 lattice reads; fake-clock tests through
+the real `decodeFrame` / `readBody` path (no timer left after success, failure, Off or supersession; a cell's slot freed at
+exactly 15 s; no abort listener left after 120 downloads); on the site, first views at 64 and 32 kbit/s (52.5 / 96.6 s), held
+cells and frames, tiles redrawn at 1 km when the full coastline shows sea in a tile the stand-in called land (Hood Canal,
+Bay of Kotor), the legend at 5 window sizes, a clean console.
+
+| ID | Sev | Finding | Author's check | Fix (fix round 2) |
+|---|---|---|---|---|
+| RC-1 | P3 | A SECOND page load on SST loses the play state: with no carry in memory, `_mountObs` saves `playing: false` over the saved `true`. | The reviewer's test (RC-R7b) fails on 6b4df01; one reload passes. | Save the play state only from a carry. |
+| RC-2 | P3 | A carried time pins a run that has since been pruned: SST picked while a seek was still loading (the carried frame never decoded), the tab left on SST until the run leaves the bucket (about a day): "frame 404", and Retry mounts the same pinned run although a newer one is known. New with G31-8 (2.18.2 adopted the newer run here). | Code read (the pin conditions have no escape); the reviewer's RC-R8c documents it. | Retry, with nothing on the map and a newer run known, frees the pin (the carried time stays). |
+| RC-3 | P3 | Browsers without DecompressionStream (Safari < 16.4, Firefox < 113) read bodies whole (`blob()`), so the stall timers become whole-body budgets: a cell still receiving bytes after 15 s is dropped. | The reviewer's e5 test (without DecompressionStream: dropped). | Read the body chunk by chunk wherever `r.body.getReader` exists; the canvas path gets a Blob. |
+| RC-4 | P3 | Test regression: the eviction test injects cells without `used`, so they always go first and "needed cells are never evicted" is no longer exercised (mutant M30 survives; it failed c3bec41's suite). | Read the test. | The injected cells are the most recently used. |
+| RC-5 | P3 | Test gaps: the repo kills 13 of the reviewer's 43 fix-round mutants (+1); `readBody` and the progress wiring, listener removal, timer clearing, the stall's ownership check, force vs the recent-load shortcut, the stale re-render boundary, the all-land checks, the LRU touch, `release` keeping failures, the 0 C wiring and the status on a folded sheet are unprotected. | The reviewer's mutation table. | Port the reviewer's fake-clock timer tests and readBody tests; pins for the rest. |
+| RC-6 | P3 | `readBody`'s `reader.cancel()` promise is not caught (an unhandled rejection when the stream has errored). | The reviewer's e4b test fails. | Catch it. |
+
+Observations: O-1 every caller now forces, so the failed-load cooldown only paces nothing (kept for future automatic loads; a
+comment); O-2 on the one-line folded sheet `_renderObs` returns before `_sstStale` is set, so a stale day re-renders that sheet
+every 30 min (harmless; set it before the early return); O-3 the credit title's "about 1 C" is shown to US viewers too (give
+both units). K-1 (real-timer margins in the new tests) graded real but low risk: G31-4's first check runs 8 setImmediate turns
+after a 30-ms stall timer was armed; no flake in 25 loaded runs; fixed by checking at once or with the fake clock.

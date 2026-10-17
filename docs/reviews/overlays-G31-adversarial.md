@@ -201,3 +201,28 @@ after a 30-ms stall timer was armed; no flake in 25 loaded runs; fixed by checki
   G31-4 test checks the slots before any timer can run.
 Tests: Node 736 pass; the SST suites 3 more runs clean. Mutation: 15 mutants (each fix undone, plus the readBody / progress /
 listener / timer / ownership wiring the re-check found unprotected): 15 killed.
+
+## Test-site check of fix round 2 (2026-10-17, Opus 5.5 MAX)
+`test` @ d85026c (cherry-picks of c80d442, 4d445ec and a52ac2d; README kept as the test branch's), pushed 00:51 UTC; the
+served overlay.js equals the repo from 00:53 UTC and the 2.18.3 URL answers 404. Headless Edge with the GPU, trusted keys
+and clicks (the re-check reviewer's harness, scratch `g31/recheck`).
+- RC-1: the reviewer's own script (`b1_reload2.js`): wave height playing, SST, then ONE and then TWO page loads (other
+  forecast points) on SST, then wave height: it resumes playing at the carried time after both (2.18.3: stopped after the
+  second load); the tab's saved state keeps `"playing": true` through both loads.
+- RC-2, live: wave height, a seek to a far frame held by DevTools (target 67, frame 7 on the map), SST by trusted keys (the
+  carry), a newer run announced (a stand-in pointer for run 2026101624 set by script), the pinned run's frames answered 404,
+  back to wave height by trusted keys: "frame 404" with 0 requests for the newer run; a trusted click on Retry: the page asks
+  for the newer run's manifest at once (the pin let go). The landing on the newer run is the playback test's (RC-2).
+- RC-3: a page without DecompressionStream (removed before the page's scripts ran): wave height drew; SST at Oahu z9 settled at
+  the 1-km tier on all 24 tiles, as with it; the readout at 40 points is identical to the normal path's (40 of 40).
+- O-3: the SST credit's title says "about 1 C (2 F) off either way".
+- Regressions: the step-5 smoke (every part) gives the same results as on 2.18.3: on-screen tiles = fresh redraws and readout =
+  drawn pixel at zooms 4, 6, 7, 9, 10 and 12 (0 mismatches; Kaena Pt's two all-land tiles at the 0.25-degree tier by design),
+  261 values within half a step of ERDDAP's (worst 0.998 of it), the five seams, isotherms (alpha unchanged), units, the
+  switches (wave height, ECMWF, wind, while playing), reload, new tab, Off (0 requests), the error panel with a trusted Retry,
+  the loading panel, the phone (long-press 82.8 °F, folded line). Redraws took 1.5-2x the 2.18.3 run's for wave height (code
+  unchanged) and SST alike, with the same ratio: the machine's state. Back to back in that state, wave height on production
+  (2.17.5) vs the test site (2.18.4): full redraw medians 73.9 / 48.5 ms vs 62.1 / 53.4 ms; 12 s of shark at z9 60 / 90 vs
+  79 / 93 frames, 0 skipped on either; the shark smoke at the default view 95 frames (p50 126, p90 159 ms), 0 skipped. A fresh
+  page target: only Edge's own Tracking Prevention notices for the two CDN files; no overlay error.
+- Cleanup: the test origin's storage emptied, the browser stopped, its profile removed.

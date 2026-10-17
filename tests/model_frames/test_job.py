@@ -1194,6 +1194,12 @@ def test_a_field_added_since_a_run_was_built_is_not_other_encode_ranges(monkeypa
     assert R.fill_guard(store, "2026092212", "2026092212", partial=False) is None
     a, b = R.shared_ranges(R.ranges_key(before), R.ranges_key(E.FIELDS))
     assert a == b and "pres" not in [t[0] for t in a] and len(a) == 5
+    # symmetric: a field the job no longer makes is not compared either (each side keeps only the shared names)
+    gone = dict(before, xtra={"lo": 0.0, "hi": 1.0})
+    a, b = R.shared_ranges(R.ranges_key(gone), R.ranges_key(E.FIELDS))
+    assert a == b and "xtra" not in [t[0] for t in a] + [t[0] for t in b]
+    _manifest(c, "2026092212", "20260922T183000Z", dict(old, fields=gone, published_utc="2026-09-22T18:30:00Z"))
+    assert R.fill_guard(store, "2026092212", "2026092212", partial=False) is None
     other = dict(before, wind=dict(before["wind"], hi=80 * E.KT))
     _manifest(c, "2026092212", "20260922T190000Z", dict(old, fields=other, published_utc="2026-09-22T19:00:00Z"))
     assert R.fill_guard(store, "2026092212", "2026092212", partial=False) == 2

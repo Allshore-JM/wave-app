@@ -234,7 +234,13 @@ both in degrees true the waves / wind come FROM, coded circularly (`q = 1 + roun
 the ordinary `u8-linear-v2` decode over 0-360, error <= 0.71 deg; the manifest marks them `circular`,
 `convention: from`, `interpolation: circular`). `pdir` is published full + half and takes the coastal fill
 by nearest model cell (never a mean of angles); `wdir` only at half resolution (`resolutions` per field in the
-manifest). The job records per step how many cells have at least 0.1 m of waves but no direction, or a direction
+manifest). `pres` (plan section 46) is the GFS sea-level pressure (PRMSL, the pressure reduced to mean sea level; not
+MSLET) in hPa, 900-1080 hPa (0.71 hPa a code), half resolution only and never filled: the client draws isobars from it
+over the wind overlay. About 52 KB a step (+11 MB a GFS run, +4.4 MB an ECMWF run); the run summary prints the run's
+lowest and highest pressure and how many cells clamped (a deeper typhoon eye than 900 hPa, or the reduction over the
+Antarctic plateau above 1080). A run published before `pres` existed may be rebuilt with `force`: the guard compares only
+the fields both manifests have, so the rebuild adds `half/pres/*` and rewrites the other fields byte for byte (a field
+whose range changed is still refused). The job records per step how many cells have at least 0.1 m of waves but no direction, or a direction
 without a height (`pdir_mask_mismatch` in the stats sidecar, on the model grids; a calm under 0.1 m, where no
 particle is drawn, is counted apart as `pdir_missing_calm`) and warns in the summary. The build is a pipeline with
 unchanged output bytes: the next step's records download while a step is decoded and encoded, the fields encode in
@@ -514,7 +520,7 @@ retention are shared, so the browser draws both models with the same code.
   the same paths and is the second host for the reads). Per step the `wave` stream's `swh` (-> `hs`), `pp1d` (-> `tp`,
   the PEAK period 1/fp, comparable with GFS-Wave's PERPW) and `mwd` (-> `pdir`: the MEAN wave direction, degrees true,
   FROM; the free data has no peak direction and no swell partitions), and the `oper` stream's `10u`/`10v` (-> `wind`,
-  `wdir`). The `.index` (JSON lines) gives each record's exact byte span; every record's identity (param, surface level
+  `wdir`) and `msl` (-> `pres`, Pa -> hPa; plan section 46). The `.index` (JSON lines) gives each record's exact byte span; every record's identity (param, surface level
   0, step, cycle) and grid are checked after decoding (CCSDS packing: eccodes 2.48 in the pinned environment). A step's
   records are read at once (`READ_WORKERS`: the mirror is in Frankfurt; a run builds in ~2 min on GitHub's runner).
   The mirror gets two quick tries per read for an outage-type error before data.ecmwf.int; after such a failure it is

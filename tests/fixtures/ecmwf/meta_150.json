@@ -184,6 +184,98 @@
     735598
    ]
   },
+  "msl": {
+   "cells": [
+    [
+     0,
+     0,
+     100192.5
+    ],
+    [
+     720,
+     1439,
+     101148.5
+    ],
+    [
+     300,
+     0,
+     101180.5
+    ],
+    [
+     300,
+     1439,
+     101180.5
+    ],
+    [
+     274,
+     88,
+     101972.5
+    ],
+    [
+     400,
+     720,
+     101360.5
+    ],
+    [
+     180,
+     300,
+     101476.5
+    ],
+    [
+     500,
+     1000,
+     102264.5
+    ],
+    [
+     284,
+     87,
+     101668.5
+    ],
+    [
+     22,
+     1329,
+     99340.5
+    ],
+    [
+     638,
+     630,
+     98596.5
+    ],
+    [
+     596,
+     1042,
+     99484.5
+    ]
+   ],
+   "meta": {
+    "Ni": 1440,
+    "Nj": 721,
+    "alternativeRowScanning": 0,
+    "dataDate": 20261014,
+    "dataTime": 1200,
+    "gridType": "regular_ll",
+    "iDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jDirectionIncrementInDegrees": 0.25,
+    "jPointsAreConsecutive": 0,
+    "jScansPositively": 0,
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "level": 0,
+    "longitudeOfFirstGridPointInDegrees": 180.0,
+    "missingValue": 9999,
+    "name": "Mean sea level pressure",
+    "packingType": "grid_ccsds",
+    "shortName": "msl",
+    "stepRange": "150",
+    "typeOfLevel": "meanSea",
+    "units": "Pa"
+   },
+   "span": [
+    1727831,
+    530405
+   ]
+  },
   "mwd": {
    "cells": [
     [

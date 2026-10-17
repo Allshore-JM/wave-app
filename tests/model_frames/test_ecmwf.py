@@ -200,8 +200,8 @@ def test_fetch_falls_back_to_data_ecmwf_int_and_keeps_the_aws_error(monkeypatch)
         a, b = (int(x) for x in rng.split("=")[1].split("-"))
         return 206, _grib(b - a + 1)
     monkeypatch.setattr(EF, "_request", aws_down)
-    assert set(EF.fetch_records(RUN, 150, "oper", EF.OPER_PARAMS)) == {"10u", "10v"}
-    assert hosts.count("data.ecmwf.int") == 3 and EF.HTTP == "https://data.ecmwf.int/forecasts"
+    assert set(EF.fetch_records(RUN, 150, "oper", EF.OPER_PARAMS)) == {"10u", "10v", "msl"}
+    assert hosts.count("data.ecmwf.int") == 4 and EF.HTTP == "https://data.ecmwf.int/forecasts"
 
     EF._aws_down_until[0] = 0.0                                      # the AWS failure above started the cooldown
 
@@ -228,6 +228,13 @@ def test_identity_of_the_real_records_and_the_gfs_table_untouched():
     with pytest.raises(ValueError):                                  # mwd delivered where swh was asked for
         D.check_identity(REC["mwd"]["meta"], "swh", RUN, 150, D.EXPECT_ECMWF)
     assert D.EXPECT["HTSGW:surface"] == ("swh", "surface", 1) and D.ECMWF_CIRCULAR == ("mwd",)
+    # plan section 46: the real msl record (captured with --params msl from data.ecmwf.int): mean sea level, Pa, CCSDS
+    m = REC["msl"]["meta"]
+    assert (m["shortName"], m["typeOfLevel"], m["level"], m["units"]) == ("msl", "meanSea", 0, "Pa")
+    assert REC["msl"]["span"] == [1727831, 530405]
+    assert all(95000 < v < 104000 for _, _, v in REC["msl"]["cells"])     # defined everywhere, land and poles too
+    with pytest.raises(ValueError):                                   # GFS's PRMSL key is not the ECMWF msl record
+        D.check_identity(m, "PRMSL:mean sea level", RUN, 150)
 
 
 def test_geometry_of_the_real_records_and_its_guards():
@@ -361,8 +368,9 @@ def test_complete_ecmwf_build_publishes_under_its_own_prefix_and_pointer(ecmwf_o
     assert c.objects[P.LATEST_KEY]["body"] == gfs_latest                         # the GFS pointer is never touched
     assert all(k.startswith(f"{EPRE}/2026101412/") for k in puts[:-1]) and puts[-1] == ELATEST
     assert puts[-2].startswith(f"{EPRE}/2026101412/manifest-") and puts[-3].startswith(f"{EPRE}/2026101412/stats-")
-    assert len(puts) == 85 * (4 * 2 + 1) + 3
+    assert len(puts) == 85 * (4 * 2 + 2) + 3
     assert f"{EPRE}/2026101412/half/wdir/f360.png" in puts and f"{EPRE}/2026101412/hs/f147.png" not in puts
+    assert f"{EPRE}/2026101412/half/pres/f360.png" in puts and f"{EPRE}/2026101412/pres/f360.png" not in puts
     latest = json.loads(c.objects[ELATEST]["body"])
     assert latest == {"run": "2026101412", "manifest": puts[-2], "complete": True, "encoding": E.ENCODING,
                       "published_utc": m["published_utc"], "frames": 85}
@@ -376,7 +384,10 @@ def test_complete_ecmwf_build_publishes_under_its_own_prefix_and_pointer(ecmwf_o
     assert man["fields"] == json.loads(json.dumps({n: {k: f[k] for k in R.FIELD_KEYS if k in f} for n, f in E.FIELDS.items()}))
     assert man["fill"] == E.FILL_INFO and man["grid"] == R.GRID_FULL and man["encoding"] == E.ENCODING
     # every field from its own record, in the GFS order
-    assert ecmwf_offline[:5] == [("swh", "swh", 0), ("pp1d", "pp1d", 0), ("mwd", "mwd", 0), ("10u", "10u", 0), ("10v", "10v", 0)]
+    assert ecmwf_offline[:6] == [("swh", "swh", 0), ("pp1d", "pp1d", 0), ("mwd", "mwd", 0), ("10u", "10u", 0), ("10v", "10v", 0),
+                                 ("msl", "msl", 0)]
+    assert man["model"]["fields"]["pres"] == {"label": "Sea-level pressure", "grib": "msl",
+                                              "definition": "IFS mean sea level pressure, hPa (the isobars drawn over the wind overlay)"}
 
 
 def test_a_partial_ecmwf_build_never_points(ecmwf_offline):
@@ -391,9 +402,11 @@ def test_ecmwf_wind_fields_come_from_10u_and_10v(monkeypatch):
     u = np.full((721, 1440), 3.0, np.float32)
     v = np.full((721, 1440), -4.0, np.float32)
     base = np.full((721, 1440), 1.0, np.float32)
-    monkeypatch.setattr(D, "decode_ecmwf", lambda blob, p, run_dt, step: ({"10u": u, "10v": v}.get(p, base), {}))
+    msl = np.full((721, 1440), 98765.0, np.float32)
+    monkeypatch.setattr(D, "decode_ecmwf", lambda blob, p, run_dt, step: ({"10u": u, "10v": v, "msl": msl}.get(p, base), {}))
     g = X.SOURCE.decode(X.SOURCE.fetch(RUN, 0), RUN, 0)
-    assert list(g) == ["hs", "tp", "pdir", "wind", "wdir"]
+    assert list(g) == ["hs", "tp", "pdir", "wind", "wdir", "pres"]
+    assert np.allclose(g["pres"], 987.65) and g["pres"].dtype == np.float32           # Pa -> hPa; never masked as calm
     assert np.allclose(g["wind"], 5.0) and np.allclose(g["wdir"], np.degrees(np.arctan2(-3.0, 4.0)) % 360)
 
 

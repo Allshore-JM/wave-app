@@ -1,0 +1,42 @@
+# TEMPORARY (plan section 46, step 1): proves the sea-level pressure field of both frame jobs on GitHub's runner with the
+# pinned environment (eccodes 2.48: GFS PRMSL complex packing, ECMWF msl CCSDS) before any merge. Runs on pushes to the
+# feature branch only, uploads nothing, needs no secrets.
+# REMOVE before the job-only merge, together with tools/model_frames/iso_dryrun_check.py.
+name: iso-dryrun
+on:
+  push:
+    branches: ["feat/isobars-geo"]
+    paths: ["tools/model_frames/**", ".github/workflows/iso-dryrun.yml"]
+permissions:
+  contents: read
+jobs:
+  dryrun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+          cache-environment: true
+      - name: Build steps of the newest GFS and ECMWF runs in memory and check every pressure frame against eccodes
+        shell: bash -l {0}
+        run: |
+          set -eo pipefail                 # a custom shell has no -e of its own
+          /usr/bin/time -v -o time.txt python tools/model_frames/iso_dryrun_check.py | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Pressure dry run resources::$(grep -E 'Maximum resident|Elapsed' time.txt | paste -sd ";" -)"
+      - name: The jobs' own entry points, dry runs
+        shell: bash -l {0}
+        run: |
+          set -eo pipefail                 # a custom shell has no -e of its own
+          python tools/model_frames/run.py --dry-run --steps 0,3 | tee gfs.txt
+          echo "::notice title=GFS entry point::$(grep -E 'publishing run|complete' gfs.txt | paste -sd ";" -); $(grep -E 'sea-level' "$GITHUB_STEP_SUMMARY" | tail -1)"
+          python tools/model_frames/ecmwf.py --dry-run --steps 0,150,360 | tee ec.txt
+          echo "::notice title=ECMWF entry point::$(grep -E 'publishing run|complete' ec.txt | paste -sd ";" -); $(grep -E 'sea-level' "$GITHUB_STEP_SUMMARY" | tail -1)"

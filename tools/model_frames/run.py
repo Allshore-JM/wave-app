@@ -39,7 +39,7 @@ import encode as E       # noqa: E402
 import publish as P      # noqa: E402
 
 WAVE_KEYS = {"hs": "HTSGW:surface", "tp": "PERPW:surface", "pdir": "DIRPW:surface"}
-ATMOS_KEYS = ("UGRD:10 m above ground", "VGRD:10 m above ground")
+ATMOS_KEYS = ("UGRD:10 m above ground", "VGRD:10 m above ground", "PRMSL:mean sea level")
 FAILED_RETRY_AFTER_S = 3 * 3600         # a cycle that failed to build is retried after 3 h, max 3 times
 FAILED_MAX_ATTEMPTS = 3
 NOTREADY_WARN = 6                       # NotReady exits in a row for one cycle before the summary warns
@@ -69,6 +69,8 @@ MODEL = {
                  "definition": "Primary (peak) wave direction from WAVEWATCH III: degrees true, the direction the dominant waves come FROM"},
         "wdir": {"label": "Wind direction", "grib": "UGRD/VGRD 10 m above ground",
                  "definition": "GFS 10 m wind direction: degrees true, the direction the wind blows FROM (atan2(-u, -v))"},
+        "pres": {"label": "Sea-level pressure", "grib": "PRMSL mean sea level",
+                 "definition": "GFS pressure reduced to mean sea level, hPa (the isobars drawn over the wind overlay)"},
     },
 }
 FIELD_KEYS = ("lo", "hi", "legend", "units", "interpolation", "resolutions", "circular", "convention")
@@ -107,13 +109,14 @@ class GfsSource:
                 F.fetch_records(F.atmos_url(run_dt, step), list(ATMOS_KEYS)))
 
     def decode(self, records, run_dt, step):
-        """{hs, tp, pdir, wind, wdir} on the site grid."""
+        """{hs, tp, pdir, wind, wdir, pres} on the site grid."""
         wave, atmos = records
         grids = {name: D.decode(wave[key], key, run_dt, step)[0] for name, key in WAVE_KEYS.items()}
         u, _ = D.decode(atmos[ATMOS_KEYS[0]], ATMOS_KEYS[0], run_dt, step)
         v, _ = D.decode(atmos[ATMOS_KEYS[1]], ATMOS_KEYS[1], run_dt, step)
         grids["wind"] = D.wind_speed(u, v)
         grids["wdir"] = D.wind_dir_from(u, v)
+        grids["pres"] = D.hpa(D.decode(atmos[ATMOS_KEYS[2]], ATMOS_KEYS[2], run_dt, step)[0])
         return grids
 
 
@@ -231,6 +234,14 @@ def ranges_key(fields):
     return tuple(out)
 
 
+def shared_ranges(a, b):
+    """The ranges of the fields BOTH keys have (plan section 46): a field added since a run was built (sea-level
+    pressure) is not "other encode ranges" -- a --force rebuild adds its frames and rewrites the others byte for byte.
+    A field whose lo / hi / circular differ still differs."""
+    names = {t[0] for t in a} & {t[0] for t in b}
+    return tuple(t for t in a if t[0] in names), tuple(t for t in b if t[0] in names)
+
+
 def fill_guard(store, run, live, partial, src=GFS):
     """None to go ahead, else the exit code. A run already published (complete manifest) with a
     different fill OR different encode ranges (plan section 27, G19-B P1: frames decoded with the other
@@ -250,7 +261,7 @@ def fill_guard(store, run, live, partial, src=GFS):
         return 1
     same_fill = E.fill_key(man.get("fill")) == E.fill_key(E.FILL_INFO) if mkey is not None else True
     old_ranges = ranges_key(man.get("fields")) if mkey is not None else None
-    same_ranges = old_ranges is None or old_ranges == ranges_key(E.FIELDS)
+    same_ranges = old_ranges is None or len(set(shared_ranges(old_ranges, ranges_key(E.FIELDS)))) == 1
     if mkey is None or (same_fill and same_ranges):
         return None
     what = ("fill " + str(E.fill_key(man.get("fill")))) if not same_fill else "other encode ranges"
@@ -425,6 +436,13 @@ def main(argv=None, src=GFS):
     _summary("field peaks: " + ", ".join(
         f"{n} {peaks[n] * site[n][0]:.1f} {site[n][1]} (top {E.FIELDS[n]['hi'] * site[n][0]:.1f} {site[n][1]}, {tops[n]} clamped cell-frames)"
         for n in tops))
+    pf = [f["fields"]["pres"] for f in manifest["_stats"]["frames"] if "pres" in f["fields"]]
+    lows = [p["min"] for p in pf if p.get("min") is not None]
+    highs = [p["max"] for p in pf if p.get("max") is not None]
+    if lows:                            # the isobars' range (plan section 46): a deep low or a strong high clamps
+        _summary(f"sea-level pressure {min(lows):.1f}-{max(highs):.1f} hPa (encode {E.FIELDS['pres']['lo']:.0f}-"
+                 f"{E.FIELDS['pres']['hi']:.0f}; {sum(p['clamped_low'] for p in pf)} low / "
+                 f"{sum(p['clamped_high'] for p in pf)} high clamped cell-frames)")
     bad = [f["step"] for f in manifest["_stats"]["frames"] if f.get("pdir_mask_mismatch")]
     if bad:
         _summary(f"WARNING: wave direction and wave height cover different cells at {len(bad)} steps (first f{bad[0]:03d})")

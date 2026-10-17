@@ -6,13 +6,13 @@ Frame format, encoding "u8-linear-v2" (machine-readable copy in the manifest's e
   q in 1..255      -> value = lo + (q - 1) / 254 * (hi - lo)
   q = 1  also means "<= lo" (clamped low), q = 255 also means ">= hi" (clamped high); the
   manifest carries clamped_low/high counts per frame and the readout must print "<= lo" / ">= hi".
-Encoding ranges are WIDER than the legend ranges the owner chose, so no ocean value is silently
-rewritten (G1: 5.5 % of ocean points have Tp below the 4 s legend floor). Legends: Hs 0-60 ft (18.288 m; the
-client's wider scale, plan section 27), Tp 4-22 s, wind 0-60 kt. Encode tops (plan section 27, owner): Hs 75 ft
-(22.86 m; run 2026092712 reached 62.6 ft where the old 15 m top clamped the readout at 49.2 ft), wind 120 kt (the
-same run reached 105 kt against the old 80 kt). The client decodes each run with its own manifest lo/hi, so runs
-built before and after a range change coexist; never --force-rebuild a run published under another range (its
-frames are cached as immutable for a year and would decode with the new range).
+Encoding ranges are WIDER than the legend ranges the owner chose, so no ocean value is silently rewritten (G1: 5.5
+% of ocean points have Tp below the 4 s legend floor). Legends: Hs 0-60 ft (18.288 m; the client's wider scale,
+plan section 27), Tp 4-22 s, wind 0-60 kt, sea-level pressure 900-1080 hPa (plan section 46). Encode tops (plan
+section 27, owner): Hs 75 ft (22.86 m; run 2026092712 reached 62.6 ft where the old 15 m top clamped the readout
+at 49.2 ft), wind 120 kt (the same run reached 105 kt against the old 80 kt). The client decodes each run with its
+own manifest lo/hi, so runs built before and after a range change coexist; never --force-rebuild a run published
+under another range (its frames are cached as immutable for a year and would decode with the new range).
 
 Stored as 8-bit greyscale PNG (1440x721). Half-resolution variant = exact subsample q[::2, ::2]
 (361x720): half pixel (i, j) IS full pixel (2i, 2j) -> lat 90 - 0.5 i, lon -180 + 0.5 j.
@@ -60,6 +60,12 @@ FIELDS = {
              "circular": True, "convention": "from"},
     "wdir": {"lo": 0.0, "hi": 360.0,    "legend": [0.0, 360.0],   "units": "deg", "interpolation": "circular", "fill": False, "resolutions": ("half",),
              "circular": True, "convention": "from"},
+    # Sea-level pressure in hPa (plan section 46): the isobars drawn over the wind overlay. Half resolution only (0.5 deg,
+    # like wdir); never filled. 900-1080 hPa = 0.709 hPa a code: GFS 2026101700 read 938.7 hPa (a Southern Ocean low at
+    # f384) to 1072.4 (the sea-level reduction over the Antarctic plateau); typhoons reach the 900s. A deeper eye clamps
+    # to code 1 (the run summary reports the lowest value and the clamped cells).
+    "pres": {"lo": 900.0, "hi": 1080.0, "legend": [900.0, 1080.0], "units": "hPa", "interpolation": "bilinear", "fill": False,
+             "resolutions": ("half",)},
 }
 FILL_CELLS = 4
 FILL_VERSION = 2                          # bump whenever the fill's output changes for the same input

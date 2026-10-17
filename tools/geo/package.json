@@ -1,0 +1,10 @@
+{
+  "name": "allshore-geo",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker: the visitor's approximate position from the IP address, for the site's first view (plan section 46)",
+  "scripts": {
+    "build": "node --check worker.js && node --test worker.test.js",
+    "deploy": "wrangler deploy"
+  }
+}

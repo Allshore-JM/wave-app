@@ -53,6 +53,8 @@ MODEL = {
                  "definition": "Mean wave direction from ECMWF ecWAM: degrees true, the direction the waves come FROM (a mean over the spectrum, not the peak)"},
         "wdir": {"label": "Wind direction", "grib": "10u/10v",
                  "definition": "IFS 10 m wind direction: degrees true, the direction the wind blows FROM (atan2(-u, -v))"},
+        "pres": {"label": "Sea-level pressure", "grib": "msl",
+                 "definition": "IFS mean sea level pressure, hPa (the isobars drawn over the wind overlay)"},
     },
 }
 FIELD_PARAMS = {"hs": "swh", "tp": "pp1d", "pdir": "mwd"}
@@ -116,7 +118,7 @@ class EcmwfSource:
             return wave, oper.result()
 
     def decode(self, records, run_dt, step):
-        """{hs, tp, pdir, wind, wdir} on the site grid (the GFS job's names and order)."""
+        """{hs, tp, pdir, wind, wdir, pres} on the site grid (the GFS job's names and order)."""
         wave, oper = records
         grids = {name: D.decode_ecmwf(wave[p], p, run_dt, step)[0] for name, p in FIELD_PARAMS.items()}
         mask_calm(grids)
@@ -124,6 +126,7 @@ class EcmwfSource:
         v, _ = D.decode_ecmwf(oper["10v"], "10v", run_dt, step)
         grids["wind"] = D.wind_speed(u, v)
         grids["wdir"] = D.wind_dir_from(u, v)
+        grids["pres"] = D.hpa(D.decode_ecmwf(oper["msl"], "msl", run_dt, step)[0])
         return grids
 
 

@@ -1,0 +1,18 @@
+{
+  // Cloudflare Worker answering the visitor's approximate position from the IP address (see worker.js).
+  // Deployed by Cloudflare Workers Builds from this repository (root directory tools/geo, build command
+  // `npm run build`, deploy command `npx wrangler deploy`); see DEPLOYMENT.md. No secrets.
+  "name": "allshore-geo",
+  "main": "worker.js",
+  "compatibility_date": "2025-07-01",
+  "workers_dev": false,
+  "routes": [
+    // a Custom Domain on the allshoresurf.com zone: Cloudflare creates the DNS record and the certificate
+    { "pattern": "geo.allshoresurf.com", "custom_domain": true }
+  ],
+  "vars": {
+    // extra origins allowed to read the answer from a page, comma-separated (the site's own are built in)
+    "ALLOW_ORIGINS": ""
+  },
+  "observability": { "enabled": false }
+}

@@ -16,6 +16,7 @@ EXPECT = {
     "DIRPW:surface":          ("dirpw", "surface",           1),   # primary (peak) wave direction, degrees true, FROM
     "UGRD:10 m above ground": ("10u",   "heightAboveGround", 10),
     "VGRD:10 m above ground": ("10v",   "heightAboveGround", 10),
+    "PRMSL:mean sea level":   ("prmsl", "meanSea",           0),    # pressure reduced to MSL, Pa (not MSLET, the Eta reduction)
 }
 
 
@@ -26,6 +27,7 @@ EXPECT_ECMWF = {
     "mwd":  ("mwd",  "surface",           0),   # MEAN wave direction, degrees true, FROM
     "10u":  ("10u",  "heightAboveGround", 10),
     "10v":  ("10v",  "heightAboveGround", 10),
+    "msl":  ("msl",  "meanSea",           0),   # mean sea level pressure, Pa (plan section 46)
 }
 ECMWF_CIRCULAR = ("mwd",)                       # angles: never interpolated linearly
 # The open data's grids: 0.25 deg today; ECMWF has said the tier moves to 0.1 deg (owner 2026-10-14: build on 0.25 deg,
@@ -172,6 +174,11 @@ def decode_ecmwf(blob, param, run_dt, step):
     meta, vals = _read(blob, _KEYS + ("gridType",))
     check_identity(meta, param, run_dt, step, EXPECT_ECMWF)
     return to_site_grid_ecmwf(vals, meta, circular=param in ECMWF_CIRCULAR), meta
+
+
+def hpa(p):
+    """Pressure in Pa -> hPa (float32); NaN stays NaN."""
+    return (np.asarray(p, dtype=np.float64) / 100.0).astype(np.float32)
 
 
 def wind_speed(u, v):

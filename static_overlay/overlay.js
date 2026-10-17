@@ -2124,6 +2124,8 @@
   // frame is on the map. It stops on Off, when unticked, in a hidden tab and while the map moves or
   // zooms (the canvas is hidden during a zoom and rebuilt on zoomend / moveend); under reduced motion
   // nothing animates at all (the checkbox says so).
+  // The particles' strength from the page's settings slider (plan section 46): 0..1, anything else is today's look (1).
+  function particleOpacityOf(v) { return typeof v === 'number' && isFinite(v) ? Math.max(0, Math.min(1, v)) : 1; }
   function FlowAnimator(map, layer) {
     this.map = map; this.layer = null; this._onLayerRedraw = null;
     this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
@@ -2133,6 +2135,7 @@
     this.active = false; this.suspended = 0; this.dirty = false; this.rafId = null; this.lastT = 0;
     this.ema = 0; this.adaptAt = 0; this._listeners = [];
     this.rate = 1;                                           // the playback speed: particles move x1 (paused, snail), x2, x4
+    this.opacity = 1; this.pane = null;                      // the settings slider's strength, applied to the whole pane
     this.lastFrameAt = 0; this.healed = 0; this.log = []; this.watch = null; this.busySince = 0;   // the watchdog (plan section 42) and the debug readout
     this.setLayer(layer);
   }
@@ -2153,6 +2156,7 @@
     if (this.canvas) return;
     var self = this, map = this.map, pane = map.getPane('ovAnimPane');
     if (!pane) { pane = map.createPane('ovAnimPane'); pane.style.zIndex = 300; pane.style.pointerEvents = 'none'; }
+    this.pane = pane; this._paneOpacity();
     this._newCanvas(pane);
     // a zoom fires zoomstart + movestart, then zoomend + moveend: the counter rebuilds once, at the end
     this._on('zoomstart', function () { self._note('zoomstart'); self.suspend(); if (self.canvas) self.canvas.style.visibility = 'hidden'; });
@@ -2191,6 +2195,10 @@
   // speeds they keep pace with the time-lapse instead of drifting behind the storms; their tails keep their length on
   // screen (the sampling interval shrinks with the rate) and their lifetimes stay in real time.
   FlowAnimator.prototype.setRate = function (r) { this.rate = r > 0 ? r : 1; };
+  // The settings slider fades the particles: one CSS opacity on their pane (one compositing layer, no per-frame cost, the
+  // strokes' own colours untouched); 1 leaves the pane exactly as before (no inline opacity).
+  FlowAnimator.prototype.setOpacity = function (k) { this.opacity = particleOpacityOf(k); this._paneOpacity(); };
+  FlowAnimator.prototype._paneOpacity = function () { if (this.pane && this.pane.style) this.pane.style.opacity = this.opacity < 1 ? String(this.opacity) : ''; };
   // Is anything that legitimately holds the animator in progress (a zoom or pan animation, a drag, a pinch)? (A flyTo
   // sets none of these flags and would be healed mid-flight; the page never uses one.)
   FlowAnimator.prototype._busy = function () {
@@ -2920,7 +2928,10 @@
     // Contours (wave height, period) and the particle animation (every field) are always on (owner, 2026-09-26: no
     // checkboxes); the animation stays off under a reduced-motion setting and on runs without direction data.
     this.contours = true;
-    this.anim = true;
+    // the particles' strength (the page's settings slider, plan section 46): 0 = no particles (nothing animates, no
+    // direction frames are fetched), 1 = today's look; never saved by the module (the page keeps it)
+    this.particleOpacity = particleOpacityOf(opts.particles);
+    this.anim = this.particleOpacity > 0;
     this.dcache = new FrameCache(MAX_DECODED); this.flow = null; this.dres = null;   // direction frames and their animator
     // The isobars (plan section 46): on unless the page says otherwise (its settings gear); the pressure frames' cache
     // and their layer (made under wind when the run has the field).
@@ -3799,6 +3810,7 @@
   Overlay.prototype._ensureFlow = function () {
     if (!this._wantDir()) { if (this.flow) { this.flow.detach(); this.flow = null; } return; }
     if (!this.flow) { this.flow = new FlowAnimator(this.map, this.layer); this.flow.attach(); }
+    this.flow.setOpacity(this.particleOpacity);
     this.flow.setLayer(this.layer);
     this.flow.setField(this.field);
     this.flow.setRate(this._flowRate());
@@ -3940,6 +3952,14 @@
     }
     if (this.flow && this.frameIndex !== null) this._syncFlow(this.frameIndex);
     this._prefetch();                                      // starts or drops the direction fetches (planned around a pending target)
+  };
+  // The page's particles slider: fades the particles; at 0 they stop altogether (the loop, the direction downloads and
+  // their cache, as setAnim(false)); back above 0 the shown step's direction is fetched again.
+  Overlay.prototype.setParticleOpacity = function (k) {
+    this.particleOpacity = particleOpacityOf(k);
+    var on = this.particleOpacity > 0;
+    if (on !== this.anim) this.setAnim(on);
+    if (this.flow) this.flow.setOpacity(this.particleOpacity);
   };
   Overlay.prototype.setContours = function (on) {
     this.contours = !!on;
@@ -4679,7 +4699,7 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
+    _internals: { particleOpacityOf: particleOpacityOf, contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
       CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, SCALES: SCALES, scaleFor: scaleFor, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,

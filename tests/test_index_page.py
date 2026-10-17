@@ -138,6 +138,9 @@ def test_phone_sheets_sit_above_the_map_controls_and_the_no_js_page_shows_its_co
     assert ".leaflet-container .leaflet-top.leaflet-right {" not in body, "the corner outranks the windows ONLY while the gear panel is open (owner: window buttons never under the legend)"
     assert "top: calc(var(--map-topright-h, 120px) + 8px) !important" in body[body.index(".fwin.fw-max {"):], "the maximised window starts below the legend corner"
     assert "function measureTopRight()" in body and "classList.toggle('settings-open', !panel.hidden || !!(tmenu && !tmenu.hidden))" in body
+    # plan section 46: the gear's panel (now with the overlay rows) never runs past the map's bottom edge: it scrolls inside
+    assert "panel.style.maxHeight = Math.max(120, Math.floor(room)) + 'px';" in body and "window.addEventListener('resize', fit);" in body
+    assert re.search(r"\.settings-panel \{[^}]*width: 260px;[^}]*overflow-y: auto;", body), "fixed width, scrolls inside"
     phone = body[body.index("@media (max-width: 500px), (max-height: 500px) {"):]
     sheet = re.search(r"\.fwin:not\(\.fw-min\) \{ z-index: (\d+); \}", phone).group(1)
     assert int(sheet) > int(corner) > 2100 and int(corner) == 2600

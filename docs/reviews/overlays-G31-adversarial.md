@@ -184,3 +184,20 @@ comment); O-2 on the one-line folded sheet `_renderObs` returns before `_sstStal
 every 30 min (harmless; set it before the early return); O-3 the credit title's "about 1 C" is shown to US viewers too (give
 both units). K-1 (real-timer margins in the new tests) graded real but low risk: G31-4's first check runs 8 setImmediate turns
 after a 30-ms stall timer was armed; no flake in 25 loaded runs; fixed by checking at once or with the fake clock.
+
+## Fix round 2 (overlay asset 2.18.4)
+- RC-1: `_mountObs` writes the play state only from a carry (a page loaded on SST keeps the saved one).
+- RC-2: the error panel's Retry is `Overlay._retry()`; with nothing on the map and a newer run known it marks the carry `free`,
+  and both pin checks honour it: the mount takes the newer run at the carried time.
+- RC-3: `decodeFrame` reads the body chunk by chunk wherever `r.body.getReader` exists (a Blob for the canvas path), so the stall
+  timers measure silence on browsers without DecompressionStream too.
+- RC-4: the eviction test injects its cells as the most recently used (needed cells are walked past again).
+- RC-5: `tests/overlay/sst_timers.test.js` (+ `sst_net.js`) ports the reviewer's fake-clock tests through the real `decodeFrame` /
+  `readBody` / inflate path (timers, listeners, stalls, supersession, re-entrancy, 120 downloads), readBody's cap / cancel /
+  errors, the frames' path unchanged, and a cell trickling for 20 s with and without DecompressionStream; RC-1 / RC-2 playback
+  tests; in the CI list.
+- RC-6: `readBody` catches a rejecting `cancel()`.
+- O-1 comment on the cooldown; O-2 `_sstStale` set before the folded early return; O-3 the credit title in both units; K-1 the
+  G31-4 test checks the slots before any timer can run.
+Tests: Node 736 pass; the SST suites 3 more runs clean. Mutation: 15 mutants (each fix undone, plus the readBody / progress /
+listener / timer / ownership wiring the re-check found unprotected): 15 killed.

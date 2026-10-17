@@ -127,7 +127,7 @@
   // <= 29 visible characters (the GFS rule): "Overlay: NASA MUR SST" (+ " · GSHHG" from the clip); the title has the source.
   var SST_ATTRIBUTION = 'Overlay: <a href="https://podaac.jpl.nasa.gov/dataset/MUR-JPL-L4-GLOB-v4.1" target="_blank" rel="noopener" ' +
     'title="NASA JPL MUR SST v4.1 (GHRSST L4, doi:10.5067/GHGMR-4FJ04) via NOAA CoastWatch ERDDAP; tiled and rendered by Allshore Surf. A daily night-time (foundation) temperature: the afternoon surf zone can be ' +
-    'warmer; near the coast it can be about 1 C off either way.">NASA MUR SST</a>';
+    'warmer; near the coast it can be about 1 C (2 F) off either way.">NASA MUR SST</a>';
   var SST_HEAD = 'NASA MUR (1 km, daily)';                 // the open panel's head line (the source; the dropdown says what it is)
   var SST_COARSE_BELOW = 7;                                // SST isotherms every 2 C / 4 F below this tile zoom (owner, G31)
   var SST_STALE_DAYS = 4;                                  // the job's own stale alarm (tools/model_frames/sst.py STALE_DAYS)
@@ -903,7 +903,8 @@
   // Resolves to the store when the frame is usable, to null otherwise (never rejects). A store already loaded re-reads
   // the pointer when it is older than recheckMs or a recheck noted a newer day: the same run keeps everything, a newer
   // run drops the day and loads afresh (the next mount shows the new day; no banner: plan section 44).
-  // force: a viewer's action (a pick, Retry, On) tries again at once; the cooldown only paces automatic re-loads.
+  // force: a viewer's action (a pick, Retry, On) tries again at once; the cooldown only paces automatic re-loads (none
+  // today: every caller is a mount; kept so a future automatic caller cannot hammer the bucket).
   SstStore.prototype.load = function (force) {
     var self = this;
     if (this.loading) return this.loading;
@@ -1336,7 +1337,9 @@
       var len = Number(r.headers.get('content-length') || 0);
       if (len > MAX_FRAME_BYTES) throw new Error('frame decode failed');
       if (onProgress) onProgress();
-      if (onProgress && direct && r.body && r.body.getReader) return readBody(r.body.getReader(), onProgress);
+      if (onProgress && r.body && r.body.getReader) {
+        return readBody(r.body.getReader(), onProgress).then(function (buf) { return direct ? buf : new Blob([buf]); });   // (RC-3)
+      }
       return direct ? r.arrayBuffer() : r.blob();
     }).then(function (body) {
       if (onBody) onBody();
@@ -1366,7 +1369,10 @@
           return out.buffer;
         }
         size += c.value.length;
-        if (size > MAX_FRAME_BYTES) { try { reader.cancel(); } catch (e) { /* gone */ } throw new Error('frame decode failed'); }
+        if (size > MAX_FRAME_BYTES) {
+          try { var c = reader.cancel(); if (c && c.catch) c.catch(function () {}); } catch (e) { /* gone */ }   // (RC-6)
+          throw new Error('frame decode failed');
+        }
         parts.push(c.value); onProgress();
         return next();
       });
@@ -2703,7 +2709,7 @@
     this.pause();                                            // the model's play state is saved first (its field still set)
     // ... then the field the page saved before this mount ran, and the play state the switch carries (a reload here and
     // then a model field resumes as the in-tab switch back does; G31-7)
-    save({ field: 'sst', playing: !!(this._carry && this._carry.playing) });
+    if (this._carry) save({ field: 'sst', playing: !!this._carry.playing }); else save({ field: 'sst' });   // (RC-1)
     if (this.lineTimer) { clearInterval(this.lineTimer); this.lineTimer = null; }   // the run line is not shown (G31-16)
     if (!this.map.getPane('modelPane')) {
       var pane = this.map.createPane('modelPane'); pane.style.zIndex = 250; pane.style.pointerEvents = 'none';
@@ -2745,6 +2751,14 @@
     if (this.layer) this.layer.clear();                      // (clear() also detaches the source)
     if (this.sst) this.sst.release();                        // the cells go; the day stays (owner, G31-9)
     this._unattribute();
+  };
+  // The error panel's Retry. A run pinned by a carried time that cannot be shown (e.g. pruned while SST was up) is let go:
+  // with nothing on the map and a newer run known, the mount takes the newer run at the carried time (re-check RC-2).
+  Overlay.prototype._retry = function () {
+    if (!this.field) return;
+    this.unavailable = {}; this.transientFails = 0;
+    if (this._carry && this.newerRun && this.frameIndex === null) this._carry.free = true;
+    this.mount(this.field);
   };
   Overlay.prototype._sstLut = function () {
     var key = 'sst|' + SST_FDEF.legend.join(',');
@@ -2982,7 +2996,7 @@
       self.pointerAt = Date.now();
       if (self.manifest && self.manifest.run === ptr.run) { self.pointer = ptr; return self.manifest; }
       // a time position is pinned (on the map, or carried through SST: G31-8): banner only
-      if (self.manifest && (self.frameIndex !== null || self._carry)) { self.newerRun = ptr; return self.manifest; }
+      if (self.manifest && (self.frameIndex !== null || (self._carry && !self._carry.free))) { self.newerRun = ptr; return self.manifest; }
       return self._fetchManifest(ptr, sig).then(function (m) {
         if (sig && sig.aborted) throw abortError();            // a switch meanwhile: never adopt the old load's run (G30-7)
         self._adopt(m, ptr); return m;
@@ -2994,7 +3008,7 @@
     // any more); a field change while On keeps the pinned run and the banner.
     return function (sig) {
       var self = this;
-      if (this.newerRun && this.manifest && this.frameIndex === null && !this._carry) {
+      if (this.newerRun && this.manifest && this.frameIndex === null && !(this._carry && !this._carry.free)) {
         var ptr = this.newerRun;
         return this._fetchManifest(ptr, sig).then(function (m) {
           if (sig && sig.aborted) throw abortError();
@@ -3934,7 +3948,7 @@
       this._say('Overlay unavailable: ' + st.message);
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
       if (this.models.length > 1 && this.mode !== 'obs') e.appendChild(this._modelSelect());   // a failing model must be escapable
-      e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { if (self.field) { self.unavailable = {}; self.transientFails = 0; self.mount(self.field); } }));
+      e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { self._retry(); }));
       host.appendChild(e);
       if (OV_DEBUG) { this.ui = { debug: mk('pre', 'ov-debug') }; host.appendChild(this.ui.debug); this._debugOn(); }   // the readout stays with the error (the owner's iPad)
       this._layoutSheet(); this._refocus(focusCls, host); return;
@@ -4101,14 +4115,14 @@
       self.ui.collapsed = true;
     };
     this._say('');                                           // shown: the "Loading..." status goes (G31-11)
+    var age = m ? sstAgeDays(m.day) : null;
+    this._sstStale = age !== null && age > SST_STALE_DAYS;   // also for the one-line sheet below (O-2)
     if (compact && cap - host.offsetHeight - 8 < 40) { fold(false); this._layoutSheet(); this._refocus(focusCls); return; }
     var wrap = mk('div', 'ov-body'); wrap.id = 'ovDetails'; host.appendChild(wrap);
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
     body.appendChild(buildLegend('sst', SST_FDEF, unit));
     var dl = mk('div', 'ov-meta ov-day'); dl.appendChild(mk('b', null, 'Day: ')); dl.appendChild(document.createTextNode(dayText + ' (daily analysis)'));
     body.appendChild(dl);
-    var age = m ? sstAgeDays(m.day) : null;
-    this._sstStale = age !== null && age > SST_STALE_DAYS;
     if (this._sstStale) body.appendChild(mk('div', 'ov-warn', 'Sea surface temperature data is ' + Math.floor(age) + ' days old.'));
     if (this.coast && !this.layer._clip) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
     if (OV_DEBUG) { this.ui.debug = mk('pre', 'ov-debug'); body.appendChild(this.ui.debug); this._debugOn(); }

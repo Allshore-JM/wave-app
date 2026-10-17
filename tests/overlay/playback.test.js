@@ -2187,3 +2187,51 @@ test('G31-15: on a tab left open on SST the 30-min check re-renders when the day
   o._checkRun(); assert.equal(renders, 1, 'now stale: the panel is drawn again');
   done(o);
 });
+
+// ---- G31 re-check, fix round 2 ----
+function reloadInto(storage) {                               // a new page in the same tab: a new world on the same sessionStorage
+  const w = world({ storage });
+  w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create({ sst: true });
+  sstFake(o);
+  return { w, o };
+}
+test('RC-1: play wave height -> SST -> TWO page loads on SST -> wave height: plays again at the carried time', async () => {
+  const storage = memStore({}), w = world({ storage });
+  const o = await mounted(w, A, { sst: true });
+  o.seek(12); await settle(); await w.releaseAll(); o.play(); await settle();
+  sstFake(o); o.mount('sst'); await settle();
+  assert.equal(storage.read().playing, true);
+  done(o);
+  const r1 = reloadInto(storage); r1.o.mount('sst', true); await settle();
+  assert.equal(storage.read().playing, true, 'a page loaded on SST keeps the saved play state');
+  done(r1.o);
+  const r2 = reloadInto(storage); r2.o.mount('sst', true); await settle();
+  r2.o.mount('hs'); await settle(); await r2.w.releaseAll();
+  assert.equal(r2.o.playing, true);
+  assert.equal(r2.o.manifest.frames[r2.o._anchorIndex()] !== undefined, true);
+  done(r2.o);
+});
+
+test('RC-2: a run pinned by the carried time and pruned while SST was up: the return fails; Retry takes the newer run at that time', async () => {
+  const w = world(); w.manifests[B.run] = B;
+  const o = await mounted(w, A, { sst: true });
+  await w.releaseAll();
+  o.seek(30); await settle();                                              // the decode of frame 30 is still pending
+  const t30 = Date.parse(A.frames[30].valid_utc);
+  w.pendingBitmaps.length = 0;
+  sstFake(o); o.mount('sst'); await settle();
+  assert.ok(o._carry);
+  const key = (m, i) => `https://x/gfswave/0p25/v1/${m.run}/hs/f${String(m.frames[i].step).padStart(3, '0')}.png`;
+  for (let i = 0; i < A.frames.length; i++) w.failNext[key(A, i)] = 404;   // run A pruned
+  w.pointer = ptr(B); o.pointerAt = 0;
+  o.mount('hs'); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.manifest.run, A.run, 'the carried time keeps its run (G31-8)');
+  assert.equal(o.last.state, 'error');
+  assert.equal(o.newerRun && o.newerRun.run, B.run);
+  o._retry(); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.manifest.run, B.run, 'Retry let the pruned run go');
+  assert.notEqual(o.frameIndex, null);
+  assert.equal(Math.abs(Date.parse(B.frames[o.frameIndex].valid_utc) - t30) <= 3 * 3600e3, true, 'at the carried time');
+  done(o);
+});

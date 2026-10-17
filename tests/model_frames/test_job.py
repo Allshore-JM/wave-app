@@ -299,9 +299,9 @@ def test_encoding_ranges_cover_legend_and_tp_floor():
                                                                         "wind": ("full", "half"), "pdir": ("full", "half"), "wdir": ("half",),
                                                                         "pres": ("half",)}
     pres = E.FIELDS["pres"]                                             # plan section 46: the isobars under the wind overlay
-    assert (pres["lo"], pres["hi"], pres["legend"], pres["units"]) == (900.0, 1080.0, [900.0, 1080.0], "hPa")
+    assert (pres["lo"], pres["hi"], pres["legend"], pres["units"]) == (920.0, 1060.0, [920.0, 1060.0], "hPa")
     assert pres["fill"] is False and "circular" not in pres and list(E.FIELDS)[-1] == "pres"
-    assert E.quantum(pres["lo"], pres["hi"]) < 0.71                    # half a code under a fifth of the 2-hPa interval
+    assert E.quantum(pres["lo"], pres["hi"]) < 0.56                    # owner 2026-10-17 (G32a A-1): 0.551 hPa a code
     assert "pres" not in E.FILL_INFO["fields"] and R.MODEL["fields"]["pres"]["label"] == "Sea-level pressure"
     for n in ("pdir", "wdir"):
         f = E.FIELDS[n]
@@ -503,7 +503,7 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     assert man["frame_schedule"] == [[0, 120, 1], [123, 384, 3]] and man["expected_frames"] == 209 and "frame_hours" not in man
     assert {n: f["interpolation"] for n, f in man["fields"].items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear",
                                                                        "pdir": "circular", "wdir": "circular", "pres": "bilinear"}
-    assert man["fields"]["pres"] == {"lo": 900.0, "hi": 1080.0, "legend": [900.0, 1080.0], "units": "hPa",
+    assert man["fields"]["pres"] == {"lo": 920.0, "hi": 1060.0, "legend": [920.0, 1060.0], "units": "hPa",
                                      "interpolation": "bilinear", "resolutions": ["half"]}
     assert man["fields"]["pdir"] == {"lo": 0.0, "hi": 360.0, "legend": [0.0, 360.0], "units": "deg", "interpolation": "circular",
                                      "resolutions": ["full", "half"], "circular": True, "convention": "from"}
@@ -1192,14 +1192,18 @@ def test_a_field_added_since_a_run_was_built_is_not_other_encode_ranges(monkeypa
     _manifest(c, "2026092212", "20260922T180000Z", old)
     store = P.Store(c, "b")
     assert R.fill_guard(store, "2026092212", "2026092212", partial=False) is None
-    a, b = R.shared_ranges(R.ranges_key(before), R.ranges_key(E.FIELDS))
-    assert a == b and "pres" not in [t[0] for t in a] and len(a) == 5
-    # symmetric: a field the job no longer makes is not compared either (each side keeps only the shared names)
-    gone = dict(before, xtra={"lo": 0.0, "hi": 1.0})
-    a, b = R.shared_ranges(R.ranges_key(gone), R.ranges_key(E.FIELDS))
-    assert a == b and "xtra" not in [t[0] for t in a] + [t[0] for t in b]
-    _manifest(c, "2026092212", "20260922T183000Z", dict(old, fields=gone, published_utc="2026-09-22T18:30:00Z"))
-    assert R.fill_guard(store, "2026092212", "2026092212", partial=False) is None
+    a, b = R.comparable_ranges(R.ranges_key(before), R.ranges_key(E.FIELDS))
+    assert a == b and "pres" not in [t[0] for t in a] and len(a) == 5 and R.ADDED_FIELDS == ("pres",)
+    # G32a A-2: only a field named in ADDED_FIELDS may be missing; anything else about the old block is "other ranges"
+    lost = {n: f for n, f in before.items() if n != "hs"}
+    renamed = dict(lost, Hs=dict(before["hs"]))
+    extra = dict(before, xtra={"lo": 0.0, "hi": 1.0})
+    for i, bad in enumerate(({}, lost, renamed, extra, {"hs": before["hs"]})):
+        a, b = R.comparable_ranges(R.ranges_key(bad), R.ranges_key(E.FIELDS))
+        assert a != b, i
+        _manifest(c, "2026092212", f"20260922T18{10 + i:02d}00Z", dict(old, fields=bad, published_utc=f"2026-09-22T18:{10 + i:02d}:00Z"))
+        assert R.fill_guard(store, "2026092212", "2026092212", partial=False) == 2, i
+    assert R.comparable_ranges(R.ranges_key(E.FIELDS), R.ranges_key(E.FIELDS))[0] == R.ranges_key(E.FIELDS)
     other = dict(before, wind=dict(before["wind"], hi=80 * E.KT))
     _manifest(c, "2026092212", "20260922T190000Z", dict(old, fields=other, published_utc="2026-09-22T19:00:00Z"))
     assert R.fill_guard(store, "2026092212", "2026092212", partial=False) == 2
@@ -1208,6 +1212,33 @@ def test_a_field_added_since_a_run_was_built_is_not_other_encode_ranges(monkeypa
     wider["pres"] = dict(wider["pres"], lo=940.0)
     _manifest(c, "2026092212", "20260922T200000Z", dict(old, fields=wider, published_utc="2026-09-22T20:00:00Z"))
     assert R.fill_guard(store, "2026092212", "2026092212", partial=False) == 2, "the new field's own range is compared too"
+
+
+def test_pressure_summary_reports_the_range_and_the_clamps():
+    """G32a A-3: the run summary's pressure line (and the encode stats it sums) are pinned."""
+    g = np.full((721, 1440), 1013.0)
+    g[0, :3] = 900.0                                                    # three cells under the 920 floor
+    g[1, :5] = 1075.0                                                   # five over the 1060 top
+    g[2, 0] = 925.5
+    st = E.encode_frame(g, "pres")["stats"]
+    assert (st["clamped_low"], st["clamped_high"], st["min"], st["max"], st["filled_points"]) == (3, 5, 900.0, 1075.0, 0)
+    frames = [{"fields": {"pres": st}}, {"fields": {"pres": dict(st, min=950.0, max=1030.0, clamped_low=0, clamped_high=1)}},
+              {"fields": {"hs": {}}}]
+    assert R.pressure_summary(frames) == ("sea-level pressure 900.0-1075.0 hPa (encode 920-1060; 3 low / 6 high clamped "
+                                          "cell-frames)")
+    assert R.pressure_summary([{"fields": {"hs": {}}}]) is None and R.pressure_summary([]) is None
+
+
+def test_the_gfs_pressure_is_the_record_over_100_exactly(monkeypatch):
+    """G32a A-4: the GFS source turns the PRMSL record (Pa) into hPa with nothing added (a bias of a fraction of a code
+    would hide inside the per-key constant test's half-quantum tolerance)."""
+    pa = np.linspace(92500.0, 105500.0, 721 * 1440, dtype=np.float32).reshape(721, 1440)
+    one = np.ones((721, 1440), np.float32)
+    monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None: (pa if key == "PRMSL:mean sea level" else one, {}))
+    keys = list(R.WAVE_KEYS.values())
+    g = R.GFS.decode(({k: b"x" for k in keys}, {k: b"x" for k in R.ATMOS_KEYS}), RUN, 0)
+    assert list(g)[-1] == "pres" and g["pres"].dtype == np.float32
+    assert np.array_equal(g["pres"], (pa.astype(np.float64) / 100.0).astype(np.float32))
 
 
 def test_the_five_older_fields_encode_exactly_as_before_the_pressure_field(monkeypatch):

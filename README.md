@@ -235,12 +235,14 @@ the ordinary `u8-linear-v2` decode over 0-360, error <= 0.71 deg; the manifest m
 `convention: from`, `interpolation: circular`). `pdir` is published full + half and takes the coastal fill
 by nearest model cell (never a mean of angles); `wdir` only at half resolution (`resolutions` per field in the
 manifest). `pres` (plan section 46) is the GFS sea-level pressure (PRMSL, the pressure reduced to mean sea level; not
-MSLET) in hPa, 900-1080 hPa (0.71 hPa a code), half resolution only and never filled: the client draws isobars from it
-over the wind overlay. About 52 KB a step (+11 MB a GFS run, +4.4 MB an ECMWF run); the run summary prints the run's
-lowest and highest pressure and how many cells clamped (a deeper typhoon eye than 900 hPa, or the reduction over the
-Antarctic plateau above 1080). A run published before `pres` existed may be rebuilt with `force`: the guard compares only
-the fields both manifests have, so the rebuild adds `half/pres/*` and rewrites the other fields byte for byte (a field
-whose range changed is still refused). The job records per step how many cells have at least 0.1 m of waves but no direction, or a direction
+MSLET) in hPa, 920-1060 hPa (0.55 hPa a code; owner 2026-10-17: a wider range moved the 2-hPa isobars noticeably in
+flat highs), half resolution only and never filled: the client draws isobars from it over the wind overlay. About 52 KB
+a step (+11 MB a GFS run, +4.4 MB an ECMWF run); the run summary prints the run's lowest and highest pressure and how
+many cells clamped (a typhoon eye deeper than 920 hPa loses its innermost rings; the reduction over the Antarctic plateau
+or a winter Siberian high above 1060 shows no lines inside the patch). A run published before `pres` existed may be
+rebuilt with `force`: the rebuild guard lets an old manifest lack only the fields in `run.ADDED_FIELDS` (`pres`), so the
+rebuild adds `half/pres/*` and rewrites the other fields byte for byte; a changed range, a missing, extra or renamed
+field, or an empty field block is still refused. The job records per step how many cells have at least 0.1 m of waves but no direction, or a direction
 without a height (`pdir_mask_mismatch` in the stats sidecar, on the model grids; a calm under 0.1 m, where no
 particle is drawn, is counted apart as `pdir_missing_calm`) and warns in the summary. The build is a pipeline with
 unchanged output bytes: the next step's records download while a step is decoded and encoded, the fields encode in

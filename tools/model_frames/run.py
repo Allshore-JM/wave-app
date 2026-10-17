@@ -234,12 +234,17 @@ def ranges_key(fields):
     return tuple(out)
 
 
-def shared_ranges(a, b):
-    """The ranges of the fields BOTH keys have (plan section 46): a field added since a run was built (sea-level
-    pressure) is not "other encode ranges" -- a --force rebuild adds its frames and rewrites the others byte for byte.
-    A field whose lo / hi / circular differ still differs."""
-    names = {t[0] for t in a} & {t[0] for t in b}
-    return tuple(t for t in a if t[0] in names), tuple(t for t in b if t[0] in names)
+ADDED_FIELDS = ("pres",)                # fields a run published before them may lack (plan section 46)
+
+
+def comparable_ranges(old, new):
+    """(old, new) ranges to compare for the rebuild guard. A field in ADDED_FIELDS that the OLD manifest lacks is left
+    out on both sides (plan section 46: a --force rebuild of a run published before sea-level pressure existed adds its
+    frames and rewrites the others byte for byte). Anything else stays: a field missing from the old block, an extra or
+    renamed one, an empty block, or a changed lo / hi / circular all compare unequal (G32a A-2)."""
+    old_names = {t[0] for t in old}
+    skip = {t[0] for t in new if t[0] in ADDED_FIELDS and t[0] not in old_names}
+    return tuple(old), tuple(t for t in new if t[0] not in skip)
 
 
 def fill_guard(store, run, live, partial, src=GFS):
@@ -261,7 +266,7 @@ def fill_guard(store, run, live, partial, src=GFS):
         return 1
     same_fill = E.fill_key(man.get("fill")) == E.fill_key(E.FILL_INFO) if mkey is not None else True
     old_ranges = ranges_key(man.get("fields")) if mkey is not None else None
-    same_ranges = old_ranges is None or len(set(shared_ranges(old_ranges, ranges_key(E.FIELDS)))) == 1
+    same_ranges = old_ranges is None or len(set(comparable_ranges(old_ranges, ranges_key(E.FIELDS)))) == 1
     if mkey is None or (same_fill and same_ranges):
         return None
     what = ("fill " + str(E.fill_key(man.get("fill")))) if not same_fill else "other encode ranges"
@@ -279,6 +284,20 @@ def fill_guard(store, run, live, partial, src=GFS):
     print(msg)
     _summary("WARNING: " + msg)
     return 2
+
+
+def pressure_summary(frames):
+    """The run summary's line for the isobars' field (plan section 46; None without pressure frames): the run's lowest
+    and highest sea-level pressure and how many cells of the 0.25-deg grid reached the encode range's ends (a deeper
+    typhoon eye, the reduction over the Antarctic plateau, a winter Siberian high)."""
+    pf = [f["fields"]["pres"] for f in frames if "pres" in f.get("fields", {})]
+    lows = [p["min"] for p in pf if p.get("min") is not None]
+    highs = [p["max"] for p in pf if p.get("max") is not None]
+    if not lows:
+        return None
+    f = E.FIELDS["pres"]
+    return (f"sea-level pressure {min(lows):.1f}-{max(highs):.1f} hPa (encode {f['lo']:.0f}-{f['hi']:.0f}; "
+            f"{sum(p['clamped_low'] for p in pf)} low / {sum(p['clamped_high'] for p in pf)} high clamped cell-frames)")
 
 
 STALE_ALARM_EVERY_H = 6                 # a stale source fails the workflow at most once in this many hours (GitHub mails each failure)
@@ -436,13 +455,9 @@ def main(argv=None, src=GFS):
     _summary("field peaks: " + ", ".join(
         f"{n} {peaks[n] * site[n][0]:.1f} {site[n][1]} (top {E.FIELDS[n]['hi'] * site[n][0]:.1f} {site[n][1]}, {tops[n]} clamped cell-frames)"
         for n in tops))
-    pf = [f["fields"]["pres"] for f in manifest["_stats"]["frames"] if "pres" in f["fields"]]
-    lows = [p["min"] for p in pf if p.get("min") is not None]
-    highs = [p["max"] for p in pf if p.get("max") is not None]
-    if lows:                            # the isobars' range (plan section 46): a deep low or a strong high clamps
-        _summary(f"sea-level pressure {min(lows):.1f}-{max(highs):.1f} hPa (encode {E.FIELDS['pres']['lo']:.0f}-"
-                 f"{E.FIELDS['pres']['hi']:.0f}; {sum(p['clamped_low'] for p in pf)} low / "
-                 f"{sum(p['clamped_high'] for p in pf)} high clamped cell-frames)")
+    line = pressure_summary(manifest["_stats"]["frames"])
+    if line:
+        _summary(line)
     bad = [f["step"] for f in manifest["_stats"]["frames"] if f.get("pdir_mask_mismatch")]
     if bad:
         _summary(f"WARNING: wave direction and wave height cover different cells at {len(bad)} steps (first f{bad[0]:03d})")

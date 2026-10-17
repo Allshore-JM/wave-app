@@ -29,6 +29,8 @@ def test_geo_worker_config_and_unit_tests():
     tests = open(os.path.join(ROOT, ".github", "workflows", "model-frames-tests.yml"), encoding="utf-8").read()
     assert tests.count('"tools/geo/**"') == 2
     if not shutil.which("node"):
+        if os.environ.get("CI"):                                        # G32a A-7: never a silent skip on the CI runner
+            pytest.fail("node is missing on the CI runner")
         pytest.skip("node not available")
     r = subprocess.run(["node", "--test", "worker.test.js"], cwd=GEO, capture_output=True, text=True)
     assert r.returncode == 0, (r.stdout[-2000:], r.stderr[-2000:])

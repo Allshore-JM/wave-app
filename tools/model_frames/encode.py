@@ -8,7 +8,7 @@ Frame format, encoding "u8-linear-v2" (machine-readable copy in the manifest's e
   manifest carries clamped_low/high counts per frame and the readout must print "<= lo" / ">= hi".
 Encoding ranges are WIDER than the legend ranges the owner chose, so no ocean value is silently rewritten (G1: 5.5
 % of ocean points have Tp below the 4 s legend floor). Legends: Hs 0-60 ft (18.288 m; the client's wider scale,
-plan section 27), Tp 4-22 s, wind 0-60 kt, sea-level pressure 900-1080 hPa (plan section 46). Encode tops (plan
+plan section 27), Tp 4-22 s, wind 0-60 kt, sea-level pressure 920-1060 hPa (plan section 46). Encode tops (plan
 section 27, owner): Hs 75 ft (22.86 m; run 2026092712 reached 62.6 ft where the old 15 m top clamped the readout
 at 49.2 ft), wind 120 kt (the same run reached 105 kt against the old 80 kt). The client decodes each run with its
 own manifest lo/hi, so runs built before and after a range change coexist; never --force-rebuild a run published
@@ -61,10 +61,12 @@ FIELDS = {
     "wdir": {"lo": 0.0, "hi": 360.0,    "legend": [0.0, 360.0],   "units": "deg", "interpolation": "circular", "fill": False, "resolutions": ("half",),
              "circular": True, "convention": "from"},
     # Sea-level pressure in hPa (plan section 46): the isobars drawn over the wind overlay. Half resolution only (0.5 deg,
-    # like wdir); never filled. 900-1080 hPa = 0.709 hPa a code: GFS 2026101700 read 938.7 hPa (a Southern Ocean low at
-    # f384) to 1072.4 (the sea-level reduction over the Antarctic plateau); typhoons reach the 900s. A deeper eye clamps
-    # to code 1 (the run summary reports the lowest value and the clamped cells).
-    "pres": {"lo": 900.0, "hi": 1080.0, "legend": [900.0, 1080.0], "units": "hPa", "interpolation": "bilinear", "fill": False,
+    # like wdir); never filled. 920-1060 hPa = 0.551 hPa a code (owner 2026-10-17, G32a A-1: 900-1080 at 0.709 hPa moved
+    # 6.4 % of real 2-hPa isobar points more than a 0.5-deg node, 920-1060 3.8 %). Every value read over the sea was
+    # 927-1056 hPa (GFS and ECMWF, 2026-10-16/17); a deeper typhoon eye loses its innermost rings, and the sea-level
+    # reduction over the Antarctic plateau / a winter Siberian high above 1060 shows no lines inside the patch. Clamps
+    # are counted per run (run.pressure_summary).
+    "pres": {"lo": 920.0, "hi": 1060.0, "legend": [920.0, 1060.0], "units": "hPa", "interpolation": "bilinear", "fill": False,
              "resolutions": ("half",)},
 }
 FILL_CELLS = 4

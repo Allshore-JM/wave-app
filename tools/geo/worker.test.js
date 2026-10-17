@@ -26,7 +26,10 @@ test("the site's origins get the visitor's position with CORS and no caching", (
 });
 
 test("another origin, or none, gets no CORS header (its page cannot read the answer)", () => {
-  for (const origin of ["https://evil.example", "https://allshoresurf.com.evil.example", "http://allshoresurf.com", null]) {
+  // G32a A-5: the opaque "null" origin (sandboxed frames, file pages), look-alike hosts, case and port variants
+  for (const origin of ["https://evil.example", "https://allshoresurf.com.evil.example", "http://allshoresurf.com", null,
+    "null", "https://evilallshoresurf.com", "https://allshoresurf.co", "https://ALLSHORESURF.COM", "https://allshoresurf.com:8443",
+    "https://allshoresurf.com/", "https://wave-app-clean.onrender.com.evil.example", "https://sub.allshoresurf.com"]) {
     const a = answer(req({ origin }), {});
     assert.equal(a.status, 200);
     assert.equal(a.headers["Access-Control-Allow-Origin"], undefined, String(origin));

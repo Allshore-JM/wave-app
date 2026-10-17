@@ -28,9 +28,18 @@ After the first deploy, check from a terminal:
 
     curl -s -H "Origin: https://allshoresurf.com" -D - https://geo.allshoresurf.com/
 
-200, `access-control-allow-origin: https://allshoresurf.com`, `cache-control: no-store` and the JSON body. Then set
-`GEO_BASE=https://geo.allshoresurf.com` on the Render service (test site first): the page asks the Worker only when
-that variable is set; without it the site opens as before (Hawaii, station 51201).
+200, `access-control-allow-origin: https://allshoresurf.com`, `cache-control: no-store` and the JSON body.
+
+Rate limit (G32a A-6): the Worker is public, and on the Workers Free plan every Worker of the account shares one daily
+request allowance (100,000 requests a day), the cron trigger `allshore-model-frames-trigger` included. A legitimate page
+asks once per fresh tab; a scripted flood could use the allowance up for the day. Add one rate-limiting rule (the free
+plan includes one): Security -> WAF -> Rate limiting rules -> Create rule: name `geo flood`, if
+`http.host eq "geo.allshoresurf.com"`, counting characteristic IP, 30 requests per 10 seconds, action Block for
+10 seconds. A blocked page simply opens as before (Hawaii, station 51201).
+
+`GEO_BASE`: the page code that asks this Worker ships with plan section 46's page step (step 7), not with this job-only
+merge. Set `GEO_BASE=https://geo.allshoresurf.com` on the Render service (test site first) only once that page code is
+deployed there; before that nothing reads the variable. Without it the site opens as before (Hawaii, station 51201).
 
 To stop it: unset `GEO_BASE` on Render (the page stops asking at once), or delete the Worker. If the Worker is down
 or slow, the page waits at most 2 s and then opens as before.

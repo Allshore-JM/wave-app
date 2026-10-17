@@ -13,6 +13,7 @@ const HS = { lo: 0, hi: 15, legend: [0, 12], units: 'm', interpolation: 'bilinea
 const WIND = { lo: 0, hi: 41.15555555555556, legend: [0, 30.866666666666667], units: 'm/s', interpolation: 'bilinear' };
 const PDIR = { lo: 0, hi: 360, legend: [0, 360], units: 'deg', interpolation: 'circular', resolutions: ['full', 'half'], circular: true, convention: 'from' };
 const WDIR = Object.assign({}, PDIR, { resolutions: ['half'] });
+const PRES = { lo: 920, hi: 1060, legend: [920, 1060], units: 'hPa', interpolation: 'bilinear', resolutions: ['half'] };
 
 // Every manifest carries the direction fields of phase B (the animation is off unless a test ticks it).
 // steps: the frame hours (default 0..240 every 3 h, the 81-frame runs published before plan section 22)
@@ -20,7 +21,7 @@ const FULL_HORIZON = [...Array(121).keys()].concat([...Array(88).keys()].map((i)
 function manifest(run, runUtc, tag, nodirs, steps) {
   const frames = [];
   for (const s of steps || [...Array(81).keys()].map((i) => 3 * i)) frames.push({ step: s, valid_utc: new Date(Date.parse(runUtc) + s * 3.6e6).toISOString().replace('.000Z', 'Z') });
-  const fields = nodirs ? { hs: HS, wind: WIND } : { hs: HS, wind: WIND, pdir: PDIR, wdir: WDIR };
+  const fields = nodirs ? { hs: HS, wind: WIND } : { hs: HS, wind: WIND, pdir: PDIR, wdir: WDIR, pres: PRES };
   return { schema: 3, run, run_utc: runUtc, encoding: 'u8-linear-v2', complete: true, fields, grid: GRID, grid_half: HALF, frames,
     files: { template: `gfswave/0p25/v1/${run}/{res}{field}/f{step:03d}.png`, res: { full: '', half: 'half/' } }, model: {}, tag };
 }
@@ -129,16 +130,23 @@ function world(opts) {
   Overlay.prototype._dims = () => ({ w: 1200, h: 800 });
   // the animator's DOM and drawing are neutralised (flow.test.js exercises them); its data flow stays real
   for (const k of ['attach', 'detach', '_rebuild', '_clear', 'stop', '_start']) I.FlowAnimator.prototype[k] = function () { (this.calls = this.calls || []).push(k); };
+  // the isobar layer likewise: no canvas, no animation frame; setData / clearData keep their data flow (entry, frame)
+  for (const k of ['attach', 'detach', '_schedule', '_clear', '_draw']) I.IsobarLayer.prototype[k] = function () { (this.calls = this.calls || []).push(k); };
   const map = { getPane: () => ({}), getZoom: () => 6, getSize: () => ({ x: 1200, y: 800 }), on() {}, off() {}, removeLayer() {},
     getContainer: () => ({ clientWidth: 1200, clientHeight: 800, classList: { add() {}, remove() {} }, style: { setProperty() {}, removeProperty() {} } }) };
   w.I = I; w.map = map; w.L = g.L;
-  // release one pending decode by kind: the direction frames are the half-size ones in these tests
-  w.releaseDir = async () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 720); assert.ok(i >= 0, 'a direction decode is pending'); w.pendingBitmaps.splice(i, 1)[0](); await settle(); };
-  w.releaseField = async () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 1440); assert.ok(i >= 0, 'a field decode is pending'); w.pendingBitmaps.splice(i, 1)[0](); await settle(); };
-  w.holdDir = () => { const i = w.pendingBitmaps.findIndex((f) => f.blob.w === 720); assert.ok(i >= 0); return w.pendingBitmaps.splice(i, 1)[0]; };
+  // release one pending decode by kind (told apart by the frame's URL: the direction and the pressure frames are both half-size)
+  const isDirUrl = (u) => /\/(pdir|wdir)\//.test(u), isPresUrl = (u) => /\/pres\//.test(u), isFieldUrl = (u) => !isDirUrl(u) && !isPresUrl(u);
+  const pick = (test, what) => { const i = w.pendingBitmaps.findIndex((f) => test(f.blob.url)); assert.ok(i >= 0, what + ' decode is pending'); return w.pendingBitmaps.splice(i, 1)[0]; };
+  w.releaseDir = async () => { pick(isDirUrl, 'a direction')(); await settle(); };
+  w.releaseField = async () => { pick(isFieldUrl, 'a field')(); await settle(); };
+  w.releasePres = async () => { pick(isPresUrl, 'a pressure')(); await settle(); };
+  w.holdDir = () => pick(isDirUrl, 'a direction');
+  w.holdPres = () => pick(isPresUrl, 'a pressure');
+  w.releaseUrl = async (test) => { pick(test, 'the named')(); await settle(); };   // a decode by its URL: never an orphan of an aborted fetch
   // The scheduler tests keep their original baseline (animation and contours off unless a test turns them on); the
   // page's defaults (both on) are pinned by their own test.
-  w.create = (extra) => { const o = g.AllshoreOverlay.create(map, Object.assign({ base: 'https://x/gfswave/0p25/v1', panel: {}, tz: 'UTC', getUnit: () => 'US', fmtTime: () => '', tzAbbr: () => '', pageCycle: () => null }, extra || {})); o.anim = false; o.contours = false; return o; };
+  w.create = (extra) => { const o = g.AllshoreOverlay.create(map, Object.assign({ base: 'https://x/gfswave/0p25/v1', panel: {}, tz: 'UTC', getUnit: () => 'US', fmtTime: () => '', tzAbbr: () => '', pageCycle: () => null }, extra || {})); o.anim = false; o.contours = false; o.isobars = false; return o; };
   w.release = async (n) => { for (let i = 0; i < (n === undefined ? 1 : n) && w.pendingBitmaps.length; i++) w.pendingBitmaps.shift()(); await settle(); };
   w.releaseAll = async () => { while (w.pendingBitmaps.length) { w.pendingBitmaps.shift()(); await settle(); } };
   return w;
@@ -2235,3 +2243,208 @@ test('RC-2: a run pinned by the carried time and pruned while SST was up: the re
   assert.equal(Math.abs(Date.parse(B.frames[o.frameIndex].valid_utc) - t30) <= 3 * 3600e3, true, 'at the carried time');
   done(o);
 });
+
+
+// ---- the isobars' pressure frames: the third frame kind (plan section 46) ----
+const isPres = (k) => k.indexOf('/pres/') >= 0;
+const presKey = (m, i) => `gfswave/0p25/v1/${m.run}/half/pres/f${String(m.frames[i].step).padStart(3, '0')}.png`;
+
+test('isobars on under wind: the pressure frame rides beside the field and direction frames, keys and caches by kind, one more in flight, the first picture alone', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.isobars = true;
+  o.mount('wind'); await settle();
+  assert.ok(o.iso, 'the isobar layer exists under wind'); assert.ok(o.iso.calls.includes('attach'));
+  assert.equal(o._maxInflight(), w.I.MAX_INFLIGHT + 1, 'one more download at once while the isobars ride along');
+  assert.equal(o._own(), 3);
+  assert.deepEqual(Object.keys(o.inflight).map((k) => k.split('/')[3]), ['wind'], 'the first picture is fetched alone');
+  await w.releaseField();
+  assert.ok(o.layer.hasFrame()); assert.equal(o.iso.frame, null);
+  const kinds = Object.keys(o.inflight).map((k) => k.split('/')[3]).sort();
+  assert.deepEqual(kinds.slice(0, 2), ['pres', 'wdir'], 'then its direction and its pressure: ' + kinds.join());
+  assert.ok(Object.keys(o.inflight).length <= o._maxInflight());
+  await w.releasePres();
+  assert.equal(o.iso.frame, o.pcache.get(o._key(o.frameIndex, 'pres')), 'the pressure frame delivered to the layer');
+  assert.equal(o.iso.entry, A.frames[o.frameIndex]); assert.equal(o.iso.fdef, A.fields.pres); assert.equal(o.iso.grid, A.grid_half);
+  const plan = o._plan(o.frameIndex);
+  assert.deepEqual(plan.slice(0, 3).map((p) => p[1]), ['field', 'dir', 'pres'], 'the target owns three ranks');
+  for (let i = 0; i < 12; i++) { o.seek((i * 7) % 81); await tick(); assert.ok(Object.keys(o.inflight).length <= o._maxInflight(), 'inflight ' + Object.keys(o.inflight).length); }
+  for (const k of o.cache.map.keys()) assert.ok(!isPres(k) && !isDir(k), 'field cache: ' + k);
+  for (const k of o.pcache.map.keys()) assert.ok(k.includes('/half/pres/'), 'pressure cache: ' + k);
+  assert.ok(o.pcache.size() <= w.I.MAX_DECODED);
+  await w.releaseAll(); await settle();
+  // the target's three fetches are the ones _trimInflight keeps room for
+  o.seek(70); await tick();
+  const keys = Object.keys(o.inflight);
+  assert.ok(keys.includes(o._key(70)) && keys.includes(o._key(70, 'dir')) && keys.includes(o._key(70, 'pres')), 'the target field, direction and pressure in flight: ' + keys.join());
+  assert.ok(keys.length <= o._maxInflight());
+  const iso = o.iso;
+  o.unmount();
+  assert.equal(o.iso, null); assert.equal(o.pcache.size(), 0); assert.equal(Object.keys(o.inflight).length, 0); assert.ok(iso.calls.includes('detach'));
+  await w.releaseAll(); assert.equal(o.pcache.size(), 0, 'late decodes resolve into the void');
+});
+
+test('a step waits for its pressure frame; a pressure frame that lands after the map moved on never reaches the layer (the newer target drops it)', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll();
+  const i0 = o.frameIndex; assert.ok(o.iso.frame); assert.equal(o.iso.entry, A.frames[i0]);
+  o.seek(i0 + 5); await settle();
+  await w.releaseField();
+  assert.equal(o.frameIndex, i0, 'waiting for the pressure of i0 + 5'); assert.ok(o.inflight[o._key(i0 + 5, 'pres')]);
+  assert.equal(o.iso.entry, A.frames[i0], 'the old lines stay with the old picture meanwhile');
+  const late = w.holdPres();
+  o.seek(i0 + 9); await settle();
+  assert.equal(o.inflight[o._key(i0 + 5, 'pres')], undefined, 'aborted');
+  late(); await settle();
+  assert.equal(o.pcache.has(o._key(i0 + 5, 'pres')), false, 'a late decode of an aborted fetch is dropped');
+  assert.equal(o.frameIndex, i0); assert.equal(o.iso.entry, A.frames[i0]);
+  await w.releaseAll(); await settle();
+  assert.equal(o.frameIndex, i0 + 9); assert.equal(o.iso.entry, A.frames[i0 + 9], 'the new step shows its own isobars'); assert.equal(o.iso.frame, o.pcache.get(o._key(i0 + 9, 'pres')));
+  o.unmount();
+}));
+
+test('a missing pressure frame never holds a step and is never an outage: the old lines are cleared, the wind plays on', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll();
+  const i0 = o.frameIndex; assert.ok(o.iso.frame);
+  w.failNext['https://x/' + presKey(A, i0 + 5)] = 404;
+  for (const i of [i0 + 6, i0 + 7, i0 + 8]) w.failNext['https://x/' + presKey(A, i)] = 'network';
+  o.seek(i0 + 5); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.frameIndex, i0 + 5, 'the step landed without its pressure');
+  assert.equal(o.iso.frame, null, "no lines: an older step's were cleared"); assert.ok(o.iso.calls.includes('_clear'));
+  assert.equal(o.unavailable[o._key(i0 + 5, 'pres')], true, 'permanent for the session');
+  for (const i of [6, 7, 8]) { o.seek(i0 + i); await settle(); await w.releaseAll(); await settle(); }
+  assert.equal(o.frameIndex, i0 + 8); assert.equal(o.transientFails, 0, 'pressure failures never count toward the outage rule');
+  assert.ok(!o.last || o.last.state !== 'error');
+  o.unmount();
+}));
+
+test('wave height and period never fetch pressure frames; leaving wind detaches the layer and aborts its fetches; a run without the field has no isobars', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.iso, null); assert.ok(!w.fetches.some(isPres), 'no pressure fetch under wave height');
+  o.mount('wind'); await settle(); await w.releaseField();
+  assert.ok(o.iso && Object.keys(o.inflight).some(isPres));
+  const n0 = w.fetches.length;
+  o.mount('hs'); await settle();
+  assert.equal(o.iso, null, 'detached'); assert.ok(!Object.keys(o.inflight).some(isPres), 'pressure fetches aborted');
+  await w.releaseAll(); await settle();
+  assert.ok(!w.fetches.slice(n0).some(isPres), 'no pressure fetch since the switch');
+  o.unmount();
+  const A0 = manifest(A.run, A.run_utc, 12, true); w.pointer = ptr(A0); w.manifests[A0.run] = A0;
+  const n = w.fetches.length;
+  const p = w.create(); p.isobars = true; p.mount('wind'); await settle(); await w.releaseAll();
+  assert.equal(p.iso, null); assert.equal(p._wantPres(), false); assert.equal(p._own(), 1);
+  assert.ok(!w.fetches.slice(n).some(isPres), 'a run without the field: nothing asked'); assert.equal(p._maxInflight(), w.I.MAX_INFLIGHT);
+  p.unmount();
+});
+
+test("setIsobars(false) drops the pressure fetches and cache at once; setIsobars(true) fetches the shown step's pressure first", () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll();
+  assert.ok(o.pcache.size() >= 2, 'the ring holds pressure frames'); o.seek(o.frameIndex + 10); await settle(); await w.releaseField();
+  assert.ok(Object.keys(o.inflight).some(isPres), 'the target pressure in flight');
+  o.setIsobars(false); await settle();
+  assert.equal(o.iso, null); assert.ok(!Object.keys(o.inflight).some(isPres), 'pressure fetches aborted'); assert.equal(o.pcache.size(), 0, 'the cache emptied');
+  assert.equal(o._maxInflight(), w.I.MAX_INFLIGHT, 'the cap is back to the field alone');
+  await w.releaseAll();
+  const before = w.fetches.length;
+  o.setIsobars(true); await settle();
+  assert.ok(o.iso);
+  assert.equal(w.fetches.slice(before)[0], 'https://x/' + presKey(A, o.frameIndex), 'the shown step pressure first');
+  await w.releaseAll(); assert.ok(o.iso.frame); assert.equal(o.iso.entry, A.frames[o.frameIndex]);
+  o.unmount();
+}));
+
+test('Update clears the pressure cache and the lines; a late pressure decode of the old run never lands', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A; w.manifests[B.run] = B;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll();
+  assert.ok(o.iso.frame); o.seek(o.frameIndex + 5); await settle(); await w.releaseField();
+  const late = w.holdPres();
+  w.pointer = ptr(B); o.newerRun = w.pointer; o.update(); await settle();
+  assert.equal(o.manifest.run, B.run); assert.equal(o.pcache.size(), 0); assert.equal(o.iso.frame, null, 'cleared with the run');
+  late(); await settle();
+  assert.equal(o.pcache.size(), 0, "the old run's decode is dropped");
+  await w.releaseAll(); await settle();
+  assert.ok(o.iso.frame && o.iso.entry === B.frames[o.frameIndex], "the new run's lines");
+  o.unmount();
+}));
+
+test("at shark speed the ring holds field, direction and pressure frames; the target's three are never evicted for a ring fetch", async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll();
+  o.setSpeed(4); assert.equal(o._maxInflight(), w.I.MAX_INFLIGHT + 1, 'paused: the paused ring + the pressure');
+  o.play(); assert.equal(o._maxInflight(), w.I.PLAY_RING[4].inflight + 1, 'shark: 4 + 1');
+  for (let k = 0; k < 10; k++) {
+    await new Promise((r) => setTimeout(r, 140)); await w.releaseAll(); await settle();
+    assert.ok(Object.keys(o.inflight).length <= o._maxInflight(), 'in flight ' + Object.keys(o.inflight).length);
+  }
+  o.pause(); await settle();
+  assert.ok(o.pcache.size() >= 2 && o.pcache.size() <= o._ring().decoded, 'pressure frames ride in the ring: ' + o.pcache.size());
+  // a full in-flight set of the target's own three fetches: nothing is evicted for a ring fetch
+  const i = o.frameIndex + 20; o.seek(i); await tick();
+  const own = [o._key(i), o._key(i, 'dir'), o._key(i, 'pres')];
+  for (const k of own) assert.ok(o.inflight[k], 'own fetch in flight: ' + k);
+  o._startKind(i + 1, 'pres'); o._startKind(i + 1, 'dir');
+  for (const k of own) assert.ok(o.inflight[k], 'own fetch kept: ' + k);
+  assert.ok(Object.keys(o.inflight).length <= o._maxInflight());
+  o.unmount();
+});
+
+test('pressure failures neither count toward the outage rule nor reset it (only field frames do)', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll();
+  const i0 = o.frameIndex;
+  // a pressure failure with the counter one short of the outage: still one short, no error panel
+  o.transientFails = 2;
+  w.failNext['https://x/' + presKey(A, i0 + 10)] = 'network';
+  o.seek(i0 + 10); await settle();
+  assert.equal(o.transientFails, 2, 'a pressure failure is not counted'); assert.ok(!o.last || o.last.state !== 'error', 'no outage from a pressure failure');
+  await w.releaseField(); await settle();                                    // the field lands: that resets the counter, as any field landing does
+  assert.equal(o.frameIndex, i0 + 10); assert.equal(o.transientFails, 0);
+  // a pressure LANDING with the counter raised: left alone (the mutant that reset it would hide a real outage)
+  o.transientFails = 2;
+  o.seek(i0 + 20); await settle();
+  assert.ok(o.inflight[o._key(i0 + 20, 'pres')] && o.inflight[o._key(i0 + 20)], 'field and pressure of the target in flight');
+  // the TARGET's pressure decode by its URL: the first pending pressure decode can be an orphan of a ring fetch the seek aborted
+  await w.releaseUrl((u) => u.endsWith(presKey(A, i0 + 20))); await settle();
+  assert.ok(o.pcache.has(o._key(i0 + 20, 'pres')), 'the pressure frame landed');
+  assert.equal(o.transientFails, 2, 'a pressure landing leaves the outage counter alone'); assert.equal(o.frameIndex, i0 + 10, 'the field is still held');
+  o.unmount();
+}));
+
+test('the pressure frame is always the half-resolution one, keyed so: at a zoom where the wind field is full-res too', async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  w.map.getZoom = () => 9;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll();
+  assert.equal(o.res, 'full', 'wind at zoom 9: full-resolution field');
+  const i = o.frameIndex;
+  assert.ok(o._key(i).includes('/full/wind/') && o._key(i, 'pres').includes('/half/pres/'), o._key(i, 'pres'));
+  const pres = w.fetches.filter(isPres);
+  assert.ok(pres.length >= 1 && pres.every((u) => u.includes('/half/pres/')), 'every pressure download is the half frame: ' + pres.join());
+  assert.ok(o.iso.frame && o.iso.frame.cols === 720, 'the layer holds a half frame');
+  o.unmount();
+});
+
+test('a manifest whose pressure field is not published at half resolution (or is not a pressure) has no isobars', async () => {
+  const w = world();
+  for (const bad of [Object.assign({}, PRES, { resolutions: ['full'] }), Object.assign({}, PRES, { units: 'Pa' }), Object.assign({}, PRES, { interpolation: 'circular', circular: true })]) {
+    const M = manifest(A.run, A.run_utc, 12); M.fields = Object.assign({}, M.fields, { pres: bad });
+    w.pointer = ptr(M); w.manifests[M.run] = M;
+    const n = w.fetches.length;
+    const o = w.create(); o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll();
+    assert.equal(o._presDef(), null); assert.equal(o.iso, null); assert.ok(!w.fetches.slice(n).some(isPres));
+    o.unmount();
+  }
+});
+
+test('_syncIsobars hands the layer only the lines of the step the LAYER shows, and clears another step\'s', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll();
+  const i0 = o.frameIndex; assert.equal(o.iso.entry, A.frames[i0]);
+  assert.ok(o.pcache.has(o._key(i0 + 1, 'pres')), 'the ring holds the next step\'s pressure');
+  o._syncIsobars(i0 + 1);                                                    // asked for a step the layer does not show
+  assert.equal(o.iso.frame, null, 'nothing of another step is delivered'); assert.equal(o.iso.entry, null, 'the shown step\'s lines were cleared');
+  o._syncIsobars(i0);
+  assert.equal(o.iso.entry, A.frames[i0], 'the shown step\'s lines are back');
+  o.unmount();
+}));

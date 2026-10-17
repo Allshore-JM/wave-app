@@ -1907,6 +1907,14 @@
   // direction frame has landed (the frames load through the same scheduler, target field first, then
   // the target direction, then the ring interleaved, never more than MAX_INFLIGHT fetches in all).
   var DIR_FIELDS = { hs: 'pdir', tp: 'pdir', wind: 'wdir' };
+  // The isobars (plan section 46): a THIRD frame kind, 'pres' = the run's sea-level pressure (half resolution only), loaded
+  // beside the wind frame and its direction, drawn by the IsobarLayer for the step on the map, never an older step's lines
+  // under a newer time (the same entry rule as the particles). Wind only (the owner); a run without the field has none.
+  var PRES_FIELD = 'pres', PRES_UNDER = { wind: true };
+  function presFieldOk(f) {
+    return !!(f && f.interpolation === 'bilinear' && f.units === 'hPa' && typeof f.lo === 'number' && typeof f.hi === 'number' && f.lo < f.hi &&
+      Array.isArray(f.resolutions) && f.resolutions.indexOf('half') >= 0 && !f.circular);
+  }
   var ANIM_BUDGET_MS = { desktop: 4, phone: 8 };           // animation time per animation frame (plan section 21)
   var PARTICLE_MIN = 150, PARTICLE_MAX = 3000;
   // The particles' look (plan section 42, step 3; the owner's pick of 2026-10-13 from four candidates measured on the test
@@ -2914,6 +2922,10 @@
     this.contours = true;
     this.anim = true;
     this.dcache = new FrameCache(MAX_DECODED); this.flow = null; this.dres = null;   // direction frames and their animator
+    // The isobars (plan section 46): on unless the page says otherwise (its settings gear); the pressure frames' cache
+    // and their layer (made under wind when the run has the field).
+    this.isobars = opts.isobars !== false;
+    this.pcache = new FrameCache(MAX_DECODED); this.iso = null;
   }
   Overlay.prototype._def = function () { return hasModel(this.model) ? MODEL_DEFS[this.model] : MODEL_DEFS[DEFAULT_MODEL]; };
   // The wait for a pointer or manifest answer before the error panel (which has the dropdown) shows (G30-3).
@@ -2925,10 +2937,11 @@
   // credit. Never one model's picture (or its time, its warnings) under another's name.
   Overlay.prototype._dropRun = function () {
     this.manifest = null; this.pointer = null; this.pointerAt = 0; this.newerRun = null; this.n = 0;
-    this.cache.clear(); this.dcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
+    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
     this.transientFails = 0; this._staleShown = false; this.wasPlaying = false;
     if (this.layer) this.layer.clear();
     if (this.flow) this.flow.clearData();
+    if (this.iso) this.iso.clearData();
     if (this.readout) this.readout.hidden = true;
     this._unattribute();
     // Under wind the relief stays while the next model's wind loads (its landing calls _syncLook; Off restores the
@@ -2950,7 +2963,7 @@
     if (this.mode === 'obs') {                               // (no dropdown on the observation's panel: only a call does this)
       this.model = key; save({ model: key });
       this.manifest = null; this.pointer = null; this.pointerAt = 0; this.newerRun = null; this.n = 0;
-      this.cache.clear(); this.dcache.clear(); this.unavailable = {};
+      this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.unavailable = {};
       return;
     }
     var keep = this.frameIndex !== null ? this._anchorIndex() : null;
@@ -2993,6 +3006,7 @@
     } else if (this.layer.field !== fieldName) {
       this.layer.clear();                                  // never one field's picture under another's label
       if (this.flow) this.flow.clearData();
+      if (this.iso) this.iso.clearData();
       // nothing drawn: the imagery, the waves' opacity; wind -> wind (a model switch) keeps the relief while the next
       // wind frame loads (G30-8: never a satellite flash under the wind; its landing calls _syncLook)
       if (fieldName !== 'wind') this._syncLook();
@@ -3022,6 +3036,7 @@
       var resume = carry ? carry.playing : rIdx !== null && st.playing === true;
       self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
       self._ensureFlow();
+      self._ensureIso();
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
       // "Next Update: about …" turns into "expected shortly" on an idle panel too (G26 A-P3-7): once a minute, in place
       if (!self.lineTimer) self.lineTimer = setInterval(function () { if (self.ui && self.ui.runText) self._refreshRunLine(); }, 60000);
@@ -3114,11 +3129,15 @@
   };
   // Cache / in-flight / unavailable keys carry the model and the run: a decode that outlives an Update or a model
   // switch can never be taken for a frame of the new run (both models name their runs YYYYMMDDHH).
-  // kind 'dir': the direction frame (pdir / wdir at its own resolution) of the same step.
+  // kind 'dir': the direction frame (pdir / wdir at its own resolution) of the same step; 'pres': its sea-level pressure
+  // frame (half resolution only); else the field frame.
   Overlay.prototype._key = function (idx, kind) {
-    var dir = kind === 'dir';
-    return this.model + '/' + this.manifest.run + '/' + (dir ? this.dres : this.res) + '/' + (dir ? DIR_FIELDS[this.field] : this.field) + '/' + this.manifest.frames[idx].step;
+    var res = kind === 'dir' ? this.dres : kind === 'pres' ? 'half' : this.res, name = kind === 'dir' ? DIR_FIELDS[this.field] : kind === 'pres' ? PRES_FIELD : this.field;
+    return this.model + '/' + this.manifest.run + '/' + res + '/' + name + '/' + this.manifest.frames[idx].step;
   };
+  Overlay.prototype._cacheOf = function (kind) { return kind === 'dir' ? this.dcache : kind === 'pres' ? this.pcache : this.cache; };
+  // The frames the target itself needs (its own fetches, ranks 0..own-1 of the plan: never evicted by a ring fetch).
+  Overlay.prototype._own = function () { return 1 + (this._wantDir() ? 1 : 0) + (this._wantPres() ? 1 : 0); };
   // unavailable[key] is true (permanent) or a timestamp until which the frame is left alone (transient).
   Overlay.prototype._isUnavailable = function (idx, kind) {
     var u = this.unavailable[this._key(idx, kind)];
@@ -3133,14 +3152,15 @@
   // then a new one. A 404 or a decode failure marks the frame unavailable for this session
   // (err.unavailable); an abort does not.
   Overlay.prototype._ensure = function (idx, kind) {
-    var dir = kind === 'dir', cache = dir ? this.dcache : this.cache;
+    kind = kind === 'dir' || kind === 'pres' ? kind : 'field';
+    var dir = kind === 'dir', pres = kind === 'pres', cache = this._cacheOf(kind);
     var self = this, key = this._key(idx, kind), hit = cache.get(key);
     if (hit) return Promise.resolve(hit);
     if (this.inflight[key]) return this.inflight[key].promise;
     if (this._isUnavailable(idx, kind)) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
     delete this.unavailable[key];                                            // an expired cooldown: try again
-    var m = this.manifest, ctrl = new AbortController(), rec, half = (dir ? this.dres : this.res) === 'half', kindName = dir ? 'dir' : 'field', url;
-    try { url = this.root + '/' + frameKey(m, m.frames[idx], dir ? DIR_FIELDS[this.field] : this.field, half); }
+    var m = this.manifest, ctrl = new AbortController(), rec, half = pres || (dir ? this.dres : this.res) === 'half', kindName = kind, url;
+    try { url = this.root + '/' + frameKey(m, m.frames[idx], dir ? DIR_FIELDS[this.field] : pres ? PRES_FIELD : this.field, half); }
     catch (e) { return Promise.reject(e); }                                  // never a throw: _prefetch runs from UI handlers (setSpeed, pause)
     function mine() { return self.inflight[key] === rec; }
     // The watchdog times the DOWNLOAD only (until the body has arrived): a decode that waits behind a busy page
@@ -3167,8 +3187,9 @@
       // A decode cannot be cancelled: one that outlives its abort (Update, Off, field or resolution
       // change) must neither be cached nor delivered.
       if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
-      if (!dir) self.transientFails = 0;                                      // the outage counter follows the field frames only
-      cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null, self._rankMap(), dir ? (self.flow ? self.flow.dir : null) : (self.layer ? self.layer._frame : null));
+      if (!dir && !pres) self.transientFails = 0;                             // the outage counter follows the field frames only
+      var drawn = dir ? (self.flow ? self.flow.dir : null) : pres ? (self.iso ? self.iso.frame : null) : (self.layer ? self.layer._frame : null);
+      cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null, self._rankMap(), drawn);
       self._prefetch();                                                        // the ring refills on every landing, not only the target's (plan section 42)
       return frame;
     }, function (err) {
@@ -3177,7 +3198,7 @@
       var kind_ = failureKind(err);
       self.unavailable[key] = kind_ === 'permanent' ? true : Date.now() + RETRY_AFTER_MS;
       err.unavailable = true;
-      if (kind_ === 'transient' && !dir && ++self.transientFails >= MAX_TRANSIENT) err.outage = true;   // the bucket, not one frame
+      if (kind_ === 'transient' && !dir && !pres && ++self.transientFails >= MAX_TRANSIENT) err.outage = true;   // the bucket, not one frame
       throw err;
     });
     rec = this.inflight[key] = { promise: p, abort: ctrl, key: key, kind: kindName };
@@ -3187,10 +3208,12 @@
   // on), then the ring ahead and behind, field and direction interleaved.
   // The ring budget for the moment: by speed while playing, the paused one otherwise.
   Overlay.prototype._ring = function () { return ringFor(this.speed, this.playing); };
-  Overlay.prototype._maxInflight = function () { return this._ring().inflight; };
+  // One more download at once while the isobars ride along (plan section 46): with three own frames a step and the paused
+  // cap of two, the target's pressure could start only after a landing (a second round trip per step at 1x, or a blink).
+  Overlay.prototype._maxInflight = function () { return this._ring().inflight + (this._wantPres() ? 1 : 0); };
   Overlay.prototype._plan = function (idx) {
-    var r = this._ring(), plan = ringPlan(idx, this.n, this.dir, r.ahead, r.behind), want = this._wantDir(), out = [];
-    for (var i = 0; i < plan.length; i++) { out.push([plan[i], 'field']); if (want) out.push([plan[i], 'dir']); }
+    var r = this._ring(), plan = ringPlan(idx, this.n, this.dir, r.ahead, r.behind), want = this._wantDir(), wantP = this._wantPres(), out = [];
+    for (var i = 0; i < plan.length; i++) { out.push([plan[i], 'field']); if (want) out.push([plan[i], 'dir']); if (wantP) out.push([plan[i], 'pres']); }
     return out;
   };
   // Keep the in-flight set to what the target needs: everything outside the new ring is dropped, and beside the
@@ -3202,9 +3225,9 @@
   Overlay.prototype._trimInflight = function (idx) {
     var rank = {}, plan = this._plan(idx), i, k;
     for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
-    var target = this._key(idx), dtarget = this._wantDir() ? this._key(idx, 'dir') : null, survivors = [];
+    var target = this._key(idx), dtarget = this._wantDir() ? this._key(idx, 'dir') : null, ptarget = this._wantPres() ? this._key(idx, 'pres') : null, survivors = [];
     var room = this._maxInflight() - (this.cache.has(target) ? 0 : 1);
-    for (k in this.inflight) if (rank[k] === undefined) { this.inflight[k].abort.abort(); delete this.inflight[k]; } else if (k === dtarget) room--; else if (k !== target) survivors.push(k);
+    for (k in this.inflight) if (rank[k] === undefined) { this.inflight[k].abort.abort(); delete this.inflight[k]; } else if (k === dtarget || k === ptarget) room--; else if (k !== target) survivors.push(k);
     survivors.sort(function (a, b) { return rank[a] - rank[b]; });
     while (survivors.length > Math.max(0, room)) { k = survivors.pop(); this.inflight[k].abort.abort(); delete this.inflight[k]; }
   };
@@ -3220,8 +3243,12 @@
     // frame as well (fetched beside the field frame); a missing or failed direction never holds it.
     // The FIRST picture of a field (after a mount or a field switch) never waits for it: the particles join when
     // their frame lands (G15 P2-1: with the animation always on, waiting made every first wind frame ~2x slower).
-    var pd = this._wantDir() && this.layer && this.layer.hasFrame() && !this._isUnavailable(idx) ? this._dirReady(idx) : null;
-    return (pd ? Promise.all([p, pd]).then(function (both) { return both[0]; }) : p).then(function (frame) {
+    var pd = this._wantDir() && this.layer && this.layer.hasFrame() && !this._isUnavailable(idx) ? this._kindReady(idx, 'dir') : null;
+    // The isobars likewise: a step waits for its pressure frame (the lines change with the picture, never a blink or an old
+    // set under a new time); the first picture does not; a missing or failed pressure frame never holds a step.
+    var pp = this._wantPres() && this.layer && this.layer.hasFrame() && !this._isUnavailable(idx) ? this._kindReady(idx, 'pres') : null;
+    var waits = [p]; if (pd) waits.push(pd); if (pp) waits.push(pp);
+    return (waits.length > 1 ? Promise.all(waits).then(function (all) { return all[0]; }) : p).then(function (frame) {
       if ((sig && sig.aborted) || self.target !== idx || !self.layer || self.manifest !== m || self.field !== field || self.res !== res) throw abortError();
       // the frame already on the map (Retry after an outage, a repeated seek): no redraw, but the same
       // state transition as a fresh landing, or the panel would stay on "Loading"
@@ -3236,6 +3263,7 @@
       self._attribute();
       if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
       self._syncFlow(idx);
+      self._syncIsobars(idx);
       self._prefetch();
     });
   };
@@ -3245,7 +3273,7 @@
   Overlay.prototype._debugText = function () {
     var f = this.flow ? this.flow.debugState() : null, dec = frameDecoder ? (frameDecoder.dead ? 'dead' : (frameDecoder.worker ? 'worker' : 'idle')) : (decoderDead ? 'dead' : 'none');
     var o = { mode: this.mode, model: this.model, playing: this.playing, speed: this.speed, frame: this.frameIndex, target: this.target, res: this.res + '/' + this.dres, inflight: Object.keys(this.inflight).length,
-      cache: this.cache.size() + '/' + this.dcache.size(), decoder: dec, hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
+      cache: this.cache.size() + '/' + this.dcache.size() + '/' + this.pcache.size(), decoder: dec, isobars: this.iso ? (this.iso.entry ? this.iso.entry.step : '-') + ' ' + this.iso.drawn.lines + 'l/' + this.iso.drawn.labels + 'p ' + this.iso.lastMs + 'ms' : (this.isobars ? 'none' : 'off'), hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
     var lines = [], k;
     for (k in o) lines.push(k + ': ' + o[k]);
     if (this.sst) lines.push('sst: ' + this.sst.status + ' ' + (this.sst.manifest ? this.sst.manifest.run : '-') + ', cells ' + (this.sst.bytes / 1048576).toFixed(1) + ' MB, in flight ' + Object.keys(this.sst.inflight).length);
@@ -3283,15 +3311,16 @@
   Overlay.prototype._prefetch = function (shrinkOnly) {
     if (this.frameIndex === null || !this.manifest || !this.field) return;
     var r = this._ring(), cap = r.inflight, plan = this._plan(this._anchorIndex()), rank = {}, i, k, keys;
-    var shown = this.frameIndex, keepF = this._key(shown), keepD = this._wantDir() ? this._key(shown, 'dir') : null;
+    var shown = this.frameIndex, keepF = this._key(shown), keepD = this._wantDir() ? this._key(shown, 'dir') : null, keepP = this._wantPres() ? this._key(shown, 'pres') : null;
     for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
-    var drawnF = this.layer ? this.layer._frame : null, drawnD = this.flow ? this.flow.dir : null;
-    this.cache.limit(r.decoded, keepF, rank, drawnF); this.dcache.limit(r.decoded, keepD, rank, drawnD);
+    var drawnF = this.layer ? this.layer._frame : null, drawnD = this.flow ? this.flow.dir : null, drawnP = this.iso ? this.iso.frame : null, own = this._own();
+    this.cache.limit(r.decoded, keepF, rank, drawnF); this.dcache.limit(r.decoded, keepD, rank, drawnD); this.pcache.limit(r.decoded, keepP, rank, drawnP);
+    cap = this._maxInflight();
     for (k in this.inflight) if (rank[k] === undefined) { this.inflight[k].abort.abort(); delete this.inflight[k]; }
     keys = Object.keys(this.inflight);
     if (keys.length > cap) {
       keys.sort(function (a, b) { return rank[b] - rank[a]; });
-      for (i = 0; i < keys.length && Object.keys(this.inflight).length > cap && rank[keys[i]] >= 2; i++) { this.inflight[keys[i]].abort.abort(); delete this.inflight[keys[i]]; }
+      for (i = 0; i < keys.length && Object.keys(this.inflight).length > cap && rank[keys[i]] >= own; i++) { this.inflight[keys[i]].abort.abort(); delete this.inflight[keys[i]]; }
     }
     if (shrinkOnly) return;
     // Only what the caches can hold beside the frame on the map is started: with a pending target far from it (a seek
@@ -3300,13 +3329,13 @@
     // The same reserve while the frame on the map (or the animator's direction) is the OTHER resolution's, kept by value
     // beside the ring until the new one lands.
     var ring = ringPlan(this._anchorIndex(), this.n, this.dir, r.ahead, r.behind);
-    var drawnInRing = ring.indexOf(shown) >= 0 && (!drawnF || this.cache.map.get(keepF) === drawnF) && (!keepD || !drawnD || this.dcache.map.get(keepD) === drawnD);
+    var drawnInRing = ring.indexOf(shown) >= 0 && (!drawnF || this.cache.map.get(keepF) === drawnF) && (!keepD || !drawnD || this.dcache.map.get(keepD) === drawnD) && (!keepP || !drawnP || this.pcache.map.get(keepP) === drawnP);
     var room = r.decoded - (drawnInRing ? 0 : 1);
     for (i = 0; i < plan.length && Object.keys(this.inflight).length < cap; i++) {
       var idx = plan[i][0], kind = plan[i][1], key = this._key(idx, kind);
       if (ring.indexOf(idx) >= room) continue;
-      if (this.inflight[key] || this._isUnavailable(idx, kind) || (kind === 'dir' ? this.dcache : this.cache).has(key)) continue;
-      if (kind === 'dir') this._ensureDir(idx); else this._ensure(idx).catch(function () {});
+      if (this.inflight[key] || this._isUnavailable(idx, kind) || this._cacheOf(kind).has(key)) continue;
+      if (kind === 'dir') this._ensureDir(idx); else if (kind === 'pres') this._ensurePres(idx); else this._ensure(idx).catch(function () {});
     }
   };
   Overlay.prototype._fail = function (sig, err) {
@@ -3318,6 +3347,7 @@
     if (this.frameIndex === null && this.layer && this.layer.hasFrame()) {
       this.layer.clear();
       if (this.flow) this.flow.clearData();
+      if (this.iso) this.iso.clearData();
       if (this.readout) this.readout.hidden = true;
       this._unattribute();
     }
@@ -3393,8 +3423,9 @@
   };
   Overlay.prototype._adopt = function (m, ptr) {
     this.manifest = m; this.pointer = ptr; this.newerRun = null; this.n = m.frames.length;
-    this.cache.clear(); this.dcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
+    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
     if (this.flow) this.flow.clearData();
+    if (this.iso) this.iso.clearData();
   };
   // Every RUN_CHECK_MS while mounted: a newer complete run only raises the "Update" banner.
   Overlay.prototype._checkRun = function () {
@@ -3678,12 +3709,13 @@
     this._syncLook();                                      // the page's imagery back, no blend
     if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
     if (this.flow) { this.flow.detach(); this.flow = null; }
+    if (this.iso) { this.iso.detach(); this.iso = null; }
     this._unattribute();
     this._unbindReadout();
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
     this._unbindSize();
     this._removeSheet();
-    this.cache.clear(); this.dcache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null;
+    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null;
     this.field = null; this.frameIndex = null; this.res = null; this.dres = null; this.last = null; this.collapsed = undefined;
     clear(this.opts.panel);
     if (this.opts.panel && this.opts.panel.classList) this.opts.panel.classList.remove('ov-playing');
@@ -3785,13 +3817,13 @@
       if (err && !err.unavailable && err.name !== 'AbortError' && typeof console !== 'undefined' && console.warn) console.warn('overlay animation', err);
     });
   };
-  // Settles when the direction frame of idx is decoded, unavailable, or its fetch has failed or been
-  // aborted (at the abort itself: a decode that cannot be cancelled must not hold the step); never
-  // rejects. What a step waits for beside its field frame.
-  Overlay.prototype._dirReady = function (idx) {
-    var key = this._key(idx, 'dir');
-    if (this.dcache.has(key) || this._isUnavailable(idx, 'dir')) return Promise.resolve();
-    if (!this.inflight[key]) this._startDir(idx);
+  // Settles when the frame of kind 'dir' / 'pres' of idx is decoded, unavailable, or its fetch has failed or been
+  // aborted (at the abort itself: a decode that cannot be cancelled must not hold the step); never rejects. What a
+  // step waits for beside its field frame.
+  Overlay.prototype._kindReady = function (idx, kind) {
+    var key = this._key(idx, kind);
+    if (this._cacheOf(kind).has(key) || this._isUnavailable(idx, kind)) return Promise.resolve();
+    if (!this.inflight[key]) this._startKind(idx, kind);
     var rec = this.inflight[key];
     if (!rec) return Promise.resolve();
     return new Promise(function (resolve) {
@@ -3800,20 +3832,83 @@
       if (rec.abort.signal.aborted) done(); else rec.abort.signal.addEventListener('abort', done);
     });
   };
-  // Start the direction frame of idx unless it is cached, in flight or unavailable. Ranked by the plan
-  // around the PENDING target (else the frame on the map): a full in-flight set gives up its
-  // lowest-ranked ring fetch, never the target's own field or direction fetch.
-  Overlay.prototype._startDir = function (idx) {
-    var key = this._key(idx, 'dir');
-    if (this.dcache.has(key) || this.inflight[key] || this._isUnavailable(idx, 'dir')) return;
+  Overlay.prototype._dirReady = function (idx) { return this._kindReady(idx, 'dir'); };
+  // Start the 'dir' / 'pres' frame of idx unless it is cached, in flight or unavailable. Ranked by the plan around the
+  // PENDING target (else the frame on the map): a full in-flight set gives up its lowest-ranked ring fetch, never one of
+  // the target's own fetches (its field, direction and pressure frames: ranks below _own()).
+  Overlay.prototype._startKind = function (idx, kind) {
+    var key = this._key(idx, kind);
+    if (this._cacheOf(kind).has(key) || this.inflight[key] || this._isUnavailable(idx, kind)) return;
     if (Object.keys(this.inflight).length >= this._maxInflight()) {
       var plan = this._plan(this._anchorIndex()), rank = {}, i, k, worst = null, worstRank = -1;
       for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
       for (k in this.inflight) { var r = rank[k] === undefined ? 1e9 : rank[k]; if (r > worstRank) { worstRank = r; worst = k; } }
-      if (worst === null || worstRank < 2) return;                          // only the target's own fetches are in flight (never evicted)
+      if (worst === null || worstRank < this._own()) return;                // only the target's own fetches are in flight (never evicted)
       this.inflight[worst].abort.abort(); delete this.inflight[worst];
     }
-    this._ensureDir(idx);
+    if (kind === 'dir') this._ensureDir(idx); else this._ensurePres(idx);
+  };
+  Overlay.prototype._startDir = function (idx) { this._startKind(idx, 'dir'); };
+  // ---- the isobars (plan section 46) ----
+  // The run's pressure field, when it can be drawn: in the manifest, usable, with a valid half grid (memoised per
+  // manifest like the direction's). A run published before the field existed has none: no lines, no message.
+  Overlay.prototype._presDef = function () {
+    var m = this.manifest, f = m ? m.fields[PRES_FIELD] : null;
+    if (!presFieldOk(f)) return null;
+    if (this._presGridFor !== m || this._presGridField !== f) {
+      this._presGridFor = m; this._presGridField = f;
+      try { validateGrid(m.grid_half, { cols: m.grid_half.cols, rows: m.grid_half.rows, q: { length: m.grid_half.cols * m.grid_half.rows } }, f); this._presGridOk = true; }
+      catch (e) { this._presGridOk = false; }
+    }
+    return this._presGridOk ? f : null;
+  };
+  Overlay.prototype._wantPres = function () { return !!(this.isobars && this.layer && PRES_UNDER[this.field] && this._presDef()); };
+  // The isobar layer exists exactly while the isobars are wanted (the setting on, wind shown, the run has the field).
+  Overlay.prototype._ensureIso = function () {
+    if (!this._wantPres()) { if (this.iso) { this.iso.detach(); this.iso = null; } return; }
+    if (!this.iso) { this.iso = new IsobarLayer(this.map); this.iso.attach(); }
+  };
+  // The pressure frame for idx, delivered to the layer only if the LAYER shows that step of that run at this field (its
+  // frame entry); a failure is swallowed: the wind plays on without its isobars.
+  Overlay.prototype._ensurePres = function (idx) {
+    var self = this, m = this.manifest, field = this.field;
+    return this._ensure(idx, 'pres').then(function (frame) {
+      if (self.iso && self.layer && self.layer.hasFrame() && self.layer.entry === m.frames[idx] && self.manifest === m && self.field === field && self._wantPres()) {
+        self._isoData(frame, m.grid_half, m.frames[idx], m.fields[PRES_FIELD]);
+      }
+    }).catch(function (err) {
+      if (err && !err.unavailable && err.name !== 'AbortError' && typeof console !== 'undefined' && console.warn) console.warn('overlay isobars', err);
+    });
+  };
+  // The frame idx is on the map: the layer draws its pressure if decoded; another step's lines are cleared at once
+  // (never old lines under a new time); the fetch starts only when no other target is pending (that target's own
+  // frames come first and bring their pressure when they land).
+  Overlay.prototype._syncIsobars = function (idx) {
+    if (!this.iso) return;
+    var m = this.manifest, entry = m.frames[idx];
+    if (!this._wantPres() || !this.layer.hasFrame() || this.layer.entry !== entry) { if (this.iso.entry !== entry) this.iso.clearData(); return; }
+    var hit = this.pcache.get(this._key(idx, 'pres'));
+    if (hit) { this._isoData(hit, m.grid_half, entry, m.fields[PRES_FIELD]); return; }
+    if (this.iso.entry !== entry) this.iso.clearData();
+    if (this.target === null || this.target === idx) this._startKind(idx, 'pres');
+  };
+  // The layer takes a pressure frame; an exception in it (a refused canvas context) is logged once and never reaches the
+  // playback: the wind plays on without its isobars.
+  Overlay.prototype._isoData = function (frame, grid, entry, fdef) {
+    try { this.iso.setData(frame, grid, entry, fdef); }
+    catch (e) { if (!this._isoWarned && typeof console !== 'undefined' && console.warn) { this._isoWarned = true; console.warn('overlay isobars', e); } }
+  };
+  // The page's setting (the gear): off drops the pressure downloads and frames at once; on fetches the shown step's.
+  Overlay.prototype.setIsobars = function (on) {
+    this.isobars = !!on;
+    if (!this.manifest || !this.field || !this.layer) return;
+    this._ensureIso();
+    if (!this.isobars) {
+      for (var k in this.inflight) if (this.inflight[k].kind === 'pres') { this.inflight[k].abort.abort(); delete this.inflight[k]; }
+      this.pcache.clear();
+    }
+    if (this.iso && this.frameIndex !== null) this._syncIsobars(this.frameIndex);
+    this._prefetch();                                      // starts or drops the pressure fetches (planned around a pending target)
   };
   // The frame idx is on the map: the animator shows its direction if decoded; a direction of ANOTHER step
   // is cleared (never an old direction under a new time), the same step's (another resolution) stays until
@@ -3868,6 +3963,10 @@
       var u = unitOf(layer.field, self.opts.getUnit()), f = layer.fdef;
       var txt = u.f(v).toFixed(u.d) + ' ' + u.label;
       if (v <= f.lo + 1e-9 && f.lo > 0) txt = '≤ ' + txt; else if (v >= f.hi - 1e-9) txt = '≥ ' + txt;   // "<=" only where values below lo exist (Tp)
+      if (self.iso && self.iso.frame && self.iso.entry === layer.entry) {    // the isobars' pressure at the cursor (the shown step's frame)
+        var hpa = self.iso.valueAt(latlng.lat, latlng.lng);
+        if (hpa !== null) txt += ' · ' + Math.round(hpa) + ' hPa';
+      }
       el.textContent = txt; el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false;
     }
     var hoverable = !window.matchMedia || window.matchMedia('(hover: hover) and (pointer: fine)').matches;
@@ -4599,7 +4698,7 @@
       SstStore: SstStore, sstStore: sstStore, validSstManifest: validSstManifest, validSstPointer: validSstPointer, sstTierFor: sstTierFor, SST_FDEF: SST_FDEF,
       SST_TIER_ZOOMS: SST_TIER_ZOOMS, SST_ATTRIBUTION: SST_ATTRIBUTION, SST_HEAD: SST_HEAD, SST_STALE_DAYS: SST_STALE_DAYS, sstDayText: sstDayText, sstAgeDays: sstAgeDays, buildLegend: buildLegend, SST_PREFIX: SST_PREFIX, SST_PAD_PX: SST_PAD_PX, MAX_SST_INFLIGHT: MAX_SST_INFLIGHT, MAX_SST_CHUNK_BYTES: MAX_SST_CHUNK_BYTES, cellsForTile: cellsForTile,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
-      IsobarLayer: IsobarLayer, isoSmooth: isoSmooth, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
+      IsobarLayer: IsobarLayer, isoSmooth: isoSmooth, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
       ISO_LABEL_MIN_PX: ISO_LABEL_MIN_PX, ISO_LABEL_FIRST_PX: ISO_LABEL_FIRST_PX, ISO_LABEL_EVERY_PX: ISO_LABEL_EVERY_PX, ISO_LABEL_EDGE_PX: ISO_LABEL_EDGE_PX,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,

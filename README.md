@@ -60,7 +60,8 @@ the Node tests in `tests/ui/`. `/api/forecast` also reports `model` (the model a
 12 SWAN stations) and `swan_available`; `?compact=1` asks for the window's table.
 
 The page (2026-09-26, plan sections 25 and 26): the map is the page — the brand sits on it top-left above the
-model-overlay selector, the settings gear (Time Zone, Units, lat/long gridlines) top-right under the layer legend, the
+model-overlay selector, the settings gear (Time Zone, Units, lat/long gridlines; with the model overlays also "Pressure
+isobars (wind)" and a "Particles" slider, plan section 46: see below) top-right under the layer legend, the
 credits behind an (i) beside the Home button; the forecast window's heading is the station picker with favourites
 (expanded and minimised); the live-buoy panel is a second floating window (`#liveBuoyPanel`, `createLiveWindow` in the
 module: dragged, resized, minimised to a chip at the bottom-right or a bar above the forecast bar on phones, closed
@@ -242,6 +243,12 @@ particles are the same code for both models (assets 2.17.1-2.17.5: the G30 fix r
 docs/reviews/overlays-G30-adversarial.md). A load that fails leaves nothing of an earlier run drawn and gives the page's
 imagery back (also after a failed switch on wind); an Update drops the pending step at once, so a frame of the run it
 replaces can never land over its loading panel.
+The settings gear's overlay rows (asset 2.19.2, plan section 46): "Pressure isobars (wind)" turns the isobars over the
+wind overlay on or off (on by default; localStorage `allshore.isobars.v1`, "0" = off), and the "Particles" slider
+(0-100, localStorage `allshore.particles.v1`) fades the particles: 100 is the look before it, lower values fade the
+whole particle layer by one CSS opacity, 0 turns them off (nothing animates and no direction frames are fetched).
+Both are remembered in this browser and apply to every field and model; the rows are built by the overlay script, so
+they exist exactly when the overlays do. The gear's panel keeps its 260-px width and, on a short map, scrolls inside.
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.

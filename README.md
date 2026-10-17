@@ -322,7 +322,10 @@ Fast playback (assets 2.15.0-2.16.6, plan section 42): the fish and the shark re
 to 1920x1080 because (1) the ring of decoded frames follows the speed: paused and at 1x the G3/G4 budgets stand (the
 frame on the map, 2 ahead, 2 behind, at most 2 downloads at once, at most 5 decoded frames per kind); at 2x the ring is
 4 ahead / 1 behind with 3 downloads and 7 decoded, at 4x 6 ahead / 1 behind with 4 downloads and 9 decoded (the downloads
-are one budget for field and direction frames together; the decoded cap is per kind), so a step never waits for its own
+are one budget for field and direction frames together; the decoded cap is per kind; with the isobars on under wind
+a third kind, the step's half-resolution pressure frame, rides beside them through the same scheduler and the download
+budget grows by one while it is wanted, 3 paused and at 1x up to 5 at 4x, so the target's three downloads start together
+rather than the pressure waiting for a landing: asset 2.19.1, plan section 46), so a step never waits for its own
 download and a ring frame is never evicted before it is drawn (at 4x
 the old 5-frame cache fetched every frame about 1.8 times); every landing refills the ring, not only the target's;
 a pause or a slower speed shrinks the caches and the downloads back to the budget at once, never dropping the target's

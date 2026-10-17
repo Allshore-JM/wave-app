@@ -236,8 +236,8 @@ the ordinary `u8-linear-v2` decode over 0-360, error <= 0.71 deg; the manifest m
 by nearest model cell (never a mean of angles); `wdir` only at half resolution (`resolutions` per field in the
 manifest). `pres` (plan section 46) is the GFS sea-level pressure (PRMSL, the pressure reduced to mean sea level; not
 MSLET) in hPa, 920-1060 hPa (0.55 hPa a code; owner 2026-10-17: a wider range moved the 2-hPa isobars noticeably in
-flat highs), half resolution only and never filled: the client draws isobars from it over the wind overlay. About 52 KB
-a step (+11 MB a GFS run, +4.4 MB an ECMWF run); the run summary prints the run's lowest and highest pressure and how
+flat highs), half resolution only and never filled: the client draws isobars from it over the wind overlay. About 57 KB
+a step (+12 MB a GFS run, +4.9 MB an ECMWF run); the run summary prints the run's lowest and highest pressure and how
 many cells clamped (a typhoon eye deeper than 920 hPa loses its innermost rings; the reduction over the Antarctic plateau
 or a winter Siberian high above 1060 shows no lines inside the patch). A run published before `pres` existed may be
 rebuilt with `force`: the rebuild guard lets an old manifest lack only the fields in `run.ADDED_FIELDS` (`pres`), so the

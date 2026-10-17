@@ -654,6 +654,9 @@ def test_the_temporary_dry_run_plumbing_is_gone():
     """The branch-only runner proof (plan section 43, step 1) never reaches production."""
     assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "ecmwf-dryrun.yml"))
     assert not os.path.exists(os.path.join(ROOT, "tools", "model_frames", "ecmwf_dryrun_check.py"))
+    # plan section 46, step 1: the pressure field's runner proof likewise
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "iso-dryrun.yml"))
+    assert not os.path.exists(os.path.join(ROOT, "tools", "model_frames", "iso_dryrun_check.py"))
 
 
 def _ago(h):

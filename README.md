@@ -651,6 +651,11 @@ product) publishes the newest NASA JPL MUR SST v4.1 day as tiles; `sst_tiles.py`
   cells (owner; the day's frame and manifest stay); the isotherms every 2 C / 4 F below tile zoom 7 (owner), and the 0 C
   line is drawn; a time carried through SST keeps the model's run (a newer one stays an Update banner) and, after a reload,
   its play state; the stale line can appear on a tab left open on SST; the overlay select is named "Map overlay".
+- **G31 re-check, fix round 2** (asset 2.18.4): a page loaded on SST keeps the saved play state (only a carried state writes
+  it); Retry with nothing on the map and a newer run known lets a carried time's pinned run go (a run pruned while SST was
+  up); bodies are read chunk by chunk wherever the browser streams them, so the stall timers measure silence on browsers
+  without DecompressionStream too; a rejected `cancel()` is caught. `tests/overlay/sst_timers.test.js` (with `sst_net.js`: a
+  fake clock and a held network of real PNG bytes) drives the real `decodeFrame` / `readBody` path.
 
 ## Forecast points
 

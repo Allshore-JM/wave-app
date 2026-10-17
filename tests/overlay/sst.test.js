@@ -270,8 +270,8 @@ test('SstStore: a 404 is final (the tile keeps the coarser tier for good), a net
   l._tiles['14:112:8'] = { el: fakeEl(), coords: z8 };
   const need = st.onNeeded();
   assert.ok(need['t2/20_-160'] && need['t1/20_-160'] && need['t2/20_-165'] && !need['t2/20_-170']);
-  st.tiers[1].loaded.set('20_-170', { q: new Uint8Array(1), lo: 0, hi: 1, bytes: 30e6, rev: 0 }); st.bytes += 30e6;
-  st.tiers[1].loaded.set('15_-160', { q: new Uint8Array(1), lo: 0, hi: 1, bytes: 30e6, rev: 0 }); st.bytes += 30e6;
+  st.tiers[1].loaded.set('20_-170', { q: new Uint8Array(1), lo: 0, hi: 1, bytes: 30e6, rev: 0, used: ++st.clock }); st.bytes += 30e6;
+  st.tiers[1].loaded.set('15_-160', { q: new Uint8Array(1), lo: 0, hi: 1, bytes: 30e6, rev: 0, used: ++st.clock }); st.bytes += 30e6;
   st._evict();
   assert.ok(st.tiers[1].loaded.has('20_-160') && !st.tiers[1].loaded.has('20_-170'), 'the oldest unneeded cell went first');
   assert.ok(st.bytes <= I.MAX_SST_CHUNK_BYTES + 30e6);
@@ -644,8 +644,8 @@ test('G31-4: a silent cell download frees its slot when its stall timer fires: a
   st.cellStallMs = 30; st.retryMs = 40;
   assert.equal(await st.load(), st);
   const c = { z: 9, x: 31, y: 224 };
-  assert.equal(st.tierFor(c), 0); await settle();
-  assert.equal(Object.keys(st.inflight).length, 2, 'the 1-km cell and its 0.05-degree stand-in');
+  assert.equal(st.tierFor(c), 0);
+  assert.equal(Object.keys(st.inflight).length, 2, 'the 1-km cell and its 0.05-degree stand-in (checked before any timer can run)');
   await wait(45);
   assert.equal(Object.keys(st.inflight).length, 0, 'both slots freed');
   assert.equal(typeof st.failed['t2/20_-160'], 'number', 'a cooldown, not a final failure');

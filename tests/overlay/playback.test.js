@@ -2477,9 +2477,14 @@ test('section 46: the page\'s settings reach the module: opts.particles 0 starts
   const mk = (extra) => new w.I.Overlay(w.map, Object.assign({ base: 'https://x/gfswave/0p25/v1', panel: {}, tz: 'UTC', getUnit: () => 'US', fmtTime: () => '', tzAbbr: () => '', pageCycle: () => null }, extra));
   const d = mk({}); assert.equal(d.particleOpacity, 1); assert.equal(d.anim, true); assert.equal(d.isobars, true);
   const half = mk({ particles: 0.35 }); assert.equal(half.particleOpacity, 0.35); assert.equal(half.anim, true);
+  half.mount('hs'); await settle(); await w.releaseAll();
+  assert.ok(half.flow, 'particles at 35 %'); assert.equal(half.flow.opacity, 0.35, 'an animator made by a mount takes the strength');
+  half.mount('wind'); await settle(); await w.releaseAll();
+  assert.equal(half.flow.opacity, 0.35, 'and after a field switch'); half.unmount();
   const off = mk({ particles: 0, isobars: false }); assert.equal(off.anim, false); assert.equal(off.isobars, false);
+  const n0 = w.fetches.length;
   off.mount('hs'); await settle(); await w.releaseAll();
   assert.ok(off.layer.hasFrame(), 'the picture is there'); assert.equal(off.flow, null);
-  assert.ok(!w.fetches.some(isDir), 'no direction frame was ever asked for');
+  assert.ok(!w.fetches.slice(n0).some(isDir), 'no direction frame was ever asked for');
   off.unmount();
 });

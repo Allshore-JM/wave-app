@@ -858,6 +858,8 @@
     }
     .sr-star:focus-visible { outline: 2px solid #0d6efd; outline-offset: -2px; border-radius: 3px; }
     .sr-star:disabled { color: #ced4da; cursor: default; }
+    .sr-star.sr-default { color: #1d6fd6; }                                   /* the default station (plan section 46): a blue star */
+    .station-results li.is-default .fav-select::before { content: "\2605"; color: #1d6fd6; margin-right: 6px; }   /* a default point in My points */
     .station-results li.sr-empty { display: block; padding: 8px 10px; color: #6c757d; cursor: default; white-space: normal; }
     /* My points (plan section 31): a heading, then each point with Rename and Remove */
     .station-results li.sr-head { display: block; padding: 6px 10px 2px; font-size: .72rem; font-weight: 700; color: #5b6770; text-transform: uppercase; letter-spacing: .03em; }
@@ -3658,6 +3660,32 @@
       function writeFavs(arr) { try { localStorage.setItem(FAV_KEY, JSON.stringify(arr.slice(0, 100))); } catch (e) {} }
       function isFav(sid) { return readFavs().indexOf(sid) !== -1; }
       function toggleFav(sid) { let f = readFavs(); if (f.indexOf(sid) !== -1) f = f.filter(function (x) { return x !== sid; }); else f.unshift(sid); writeFavs(f); }
+      function removeFav(sid) { writeFavs(readFavs().filter(function (x) { return x !== sid; })); }
+
+      // The default station (plan section 46): the one a new tab opens on, wherever the visitor is (the <head>, the
+      // forecast module and the map's first view read it). One at a time: the star cycles empty -> gold (a favorite)
+      // -> blue (the default) -> empty (neither). {id, lat, lon, name, at}; the position lets the map open there.
+      const DEFAULT_KEY = 'allshore.defaultStation.v1';
+      function readDefault() {
+        try { const d = JSON.parse(localStorage.getItem(DEFAULT_KEY)); return d && typeof d === 'object' && typeof d.id === 'string' && d.id ? d : null; }
+        catch (e) { return null; }
+      }
+      function defaultId() { const d = readDefault(); return d ? d.id : null; }
+      function isDefault(sid) { return !!sid && defaultId() === sid; }
+      function positionOf(sid) {
+        if (isPoint(sid)) { const pt = window.AllshoreForecast && window.AllshoreForecast.parsePointId(sid); return pt ? { lat: pt.lat, lon: pt.lon } : null; }
+        const list = typeof forecastStationsData !== 'undefined' && Array.isArray(forecastStationsData) ? forecastStationsData : [];
+        for (let i = 0; i < list.length; i++) {
+          if (String(list[i].id) === sid) { const lat = Number(list[i].lat), lon = Number(list[i].lon); return Number.isFinite(lat) && Number.isFinite(lon) ? { lat: lat, lon: lon } : null; }
+        }
+        return null;
+      }
+      function writeDefault(sid) {
+        const c = bySid.get(sid), pos = positionOf(sid), d = { id: sid, name: c ? c.label : sid, at: Date.now() };
+        if (pos) { d.lat = pos.lat; d.lon = pos.lon; }
+        try { localStorage.setItem(DEFAULT_KEY, JSON.stringify(d)); return true; } catch (e) { return false; }
+      }
+      function clearDefault() { try { localStorage.removeItem(DEFAULT_KEY); } catch (e) {} }
 
       // Enhance: reveal the favorites box, hide the native select, point the label at the trigger.
       field.classList.add('js-picker');
@@ -3673,12 +3701,18 @@
         currentEl.title = c ? c.label : (sid || '');                                      // the whole label, also after a rename (G22 A-14)
         const P = points(), pt = isPoint(sid);
         const fav = !!c && (pt ? !!(P && P.store.has(sid)) : isFav(sid));         // for a point the star is "kept in My points"
-        favToggle.textContent = fav ? '★' : '☆';
-        favToggle.disabled = !c || (pt && !P) || (pt && !fav && !!(P && P.refused(sid)));   // no forecast there: nothing to keep (G22 A-13)
+        const dflt = !!c && isDefault(sid);                                        // the blue star: the default (plan section 46)
+        favToggle.textContent = fav || dflt ? '★' : '☆';
+        favToggle.classList.toggle('sr-default', dflt);
+        favToggle.disabled = !c || (pt && !P) || (pt && !fav && !dflt && !!(P && P.refused(sid)));   // no forecast there: nothing to keep (G22 A-13)
+        const what = pt ? 'point' : 'station';
         favToggle.setAttribute('aria-label', !c ? 'No station selected'
+          : dflt ? 'Default ' + what + ' (click to clear it): ' + c.label
           : pt && !fav && favToggle.disabled ? 'No forecast here, nothing to keep: ' + c.label
-          : pt ? (fav ? 'Remove this point from My points: ' : 'Keep this point in My points: ') + c.label
-          : (fav ? 'Remove current station from favorites: ' : 'Add current station to favorites: ') + c.label);
+          : fav ? (pt ? 'Kept in My points' : 'Favorite') + ' (click to make it the default ' + what + '): ' + c.label
+          : pt ? 'Keep this point in My points: ' + c.label
+          : 'Add current station to favorites: ' + c.label);
+        favToggle.title = !c ? '' : dflt ? 'Default' : fav ? 'Favorite' : '';
       }
 
       // The list is position: fixed (it escapes the window's overflow): placed from the trigger's box, below it
@@ -3712,12 +3746,13 @@
         else { close(); trigger.focus(); }
       }
       function renderPoints() {
-        const P = points(), list = P ? P.store.list() : [];
+        const P = points(), dId = defaultId(), list = P ? P.store.list().slice().sort(function (a, b) { return (b.id === dId) - (a.id === dId); }) : [];
         if (!list.length) return 0;
         head('My points');
         list.forEach(function (p) {
           const label = window.AllshoreForecast.pointLabel(p);
           const li = document.createElement('li');
+          if (p.id === dId) { li.className = 'is-default'; li.title = 'Default point'; }
           const pick = document.createElement('button');
           pick.type = 'button'; pick.className = 'fav-select'; pick.dataset.sid = p.id; writeLabel(pick, label); pick.title = label;
           pick.addEventListener('click', function () { selectStation(p.id); });
@@ -3738,7 +3773,9 @@
             e.stopPropagation();
             if (p.name && !window.confirm('Remove "' + p.name + '" from My points?')) return;   // a name is the visitor's own work (G22 B-18)
             const idx = Array.prototype.slice.call(results.querySelectorAll('.fav-select')).indexOf(pick);
-            const gone = P.store.remove(p.id); P.sync(); renderFavs();
+            const gone = P.store.remove(p.id);
+            if (gone && isDefault(p.id)) clearDefault();                         // a removed point is no longer the default either
+            P.sync(); refreshCurrent(); renderFavs();
             announce(gone ? 'Removed point ' + window.AllshoreForecast.fmtPoint(p.lat, p.lon) : 'This browser could not change My points (its storage is switched off).');
             refocus(idx);
           });
@@ -3751,7 +3788,9 @@
       function renderFavs() {
         results.textContent = '';
         const npts = renderPoints();
-        const favs = readFavs().map(function (s) { return bySid.get(s); }).filter(function (c) { return c && !isPoint(c.sid); });
+        const dId = defaultId();
+        const favs = readFavs().map(function (s) { return bySid.get(s); }).filter(function (c) { return c && !isPoint(c.sid); })
+          .sort(function (a, b) { return (b.sid === dId) - (a.sid === dId); });                         // the default first
         if (!favs.length) {
           if (npts) return;
           const li = document.createElement('li');
@@ -3770,16 +3809,19 @@
           pick.textContent = c.label; pick.title = c.label;
           pick.addEventListener('click', function () { selectStation(c.sid); });
           const star = document.createElement('button');
+          const dflt = c.sid === dId;
           star.type = 'button';
-          star.className = 'sr-star';
+          star.className = dflt ? 'sr-star sr-default' : 'sr-star';
           star.textContent = '★';
-          star.setAttribute('aria-label', 'Remove favorite: ' + c.label);
+          star.title = dflt ? 'Default' : 'Favorite';
+          star.setAttribute('aria-label', (dflt ? 'Remove the default station: ' : 'Remove favorite: ') + c.label);
           star.addEventListener('click', function (e) {
             e.stopPropagation();
             const rows = Array.prototype.slice.call(results.querySelectorAll('.fav-select'));
             const idx = rows.indexOf(pick);
-            toggleFav(c.sid); refreshCurrent(); renderFavs();
-            announce('Removed favorite ' + c.sid);
+            removeFav(c.sid); if (isDefault(c.sid)) clearDefault();                 // a removed favorite is no longer the default either
+            refreshCurrent(); renderFavs();
+            announce((dflt ? 'Removed the default station ' : 'Removed favorite ') + c.sid);
             refocus(idx);
           });
           li.appendChild(pick); li.appendChild(star);
@@ -3794,11 +3836,28 @@
         e.preventDefault();
         const sid = select.value;
         if (!bySid.has(sid)) return;
-        if (isPoint(sid)) {                                                     // a point: kept in My points, or not
+        // the cycle (plan section 46): empty -> gold (a favorite / kept in My points) -> blue (the default) -> empty
+        if (isDefault(sid)) {                                                   // blue -> empty: neither the default nor kept
+          clearDefault();
+          if (isPoint(sid)) {
+            const P = points();
+            if (P && P.store.has(sid)) { const r = P.store.remove(sid) ? 'removed' : 'unremoved'; P.say(r, sid); P.sync(); }
+          } else removeFav(sid);
+          refreshCurrent(); if (!results.hidden) renderFavs();
+          announce((isPoint(sid) ? 'The point is no longer the default nor kept: ' : 'No longer the default nor a favorite: ') + sid);
+          return;
+        }
+        const goldNow = isPoint(sid) ? !!(points() && points().store.has(sid)) : isFav(sid);
+        if (goldNow) {                                                          // gold -> blue: the default (the old one keeps its gold)
+          if (!writeDefault(sid)) { announce('This browser could not keep a default (its storage is switched off).'); return; }
+          refreshCurrent(); if (!results.hidden) renderFavs();
+          announce('Default ' + (isPoint(sid) ? 'point' : 'station') + ': ' + sid + '. The site opens here.');
+          return;
+        }
+        if (isPoint(sid)) {                                                     // empty -> gold for a point: kept in My points
           const P = points(); if (!P) return;
-          const kept = P.store.has(sid);
-          if (!kept && P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }
-          const r = kept ? (P.store.remove(sid) ? 'removed' : 'unremoved') : P.store.add(sid);
+          if (P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }
+          const r = P.store.add(sid);
           P.say(r, sid);                                                        // full or not saved: said in the window too (G22 B-3)
           if (r === 'full') return;
           if (r === 'added' && typeof showPointLayer === 'function') showPointLayer();   // a kept point shows on the map (G22 R-A15)
@@ -3806,11 +3865,10 @@
           if (!results.hidden) renderFavs();
           return;
         }
-        const wasFav = isFav(sid);
-        if (!wasFav && readFavs().length >= 100) { announce('Favorites are full (100). Remove one to add more.'); return; }
+        if (readFavs().length >= 100) { announce('Favorites are full (100). Remove one to add more.'); return; }
         toggleFav(sid); refreshCurrent();
         if (!results.hidden) renderFavs();
-        announce((wasFav ? 'Removed favorite ' : 'Added favorite ') + sid);
+        announce('Added favorite ' + sid + '. Click the star again to make it the default.');
       });
 
       // The trigger button toggles the panel; native button activation handles Enter/Space/click.
@@ -3846,6 +3904,10 @@
       document.addEventListener('click', function (e) { if (!field.contains(e.target)) close(); });
       // a map pick changes the select from outside: the label and the star follow
       document.addEventListener('allshore:station', function (e) { var d = e.detail || {}; if (bySid.has(String(d.sid))) select.value = String(d.sid); refreshCurrent(); });
+      // a forecast on screen (also the visitor's area, chosen without a pick: plan section 46): the star follows it
+      document.addEventListener('allshore:forecast', function () { refreshCurrent(); });
+      // another tab changed the favorites or the default: this one follows
+      window.addEventListener('storage', function (e) { if (!e.key || e.key === DEFAULT_KEY || e.key === FAV_KEY) { refreshCurrent(); if (!results.hidden) renderFavs(); } });
       // My points changed (added, renamed, removed): the options are new
       document.addEventListener('allshore:points', function () {
         const a = document.activeElement, inList = !!(a && results.contains(a));
@@ -4134,7 +4196,8 @@
       // without storage nothing can be kept, and the store must say so ('unsaved'), not pretend (G22 A-7)
       var storage; try { storage = window.localStorage; storage.getItem('x'); } catch (e) { storage = { getItem: function () { return null; }, setItem: function () { throw new Error('no storage'); } }; }
       var store = F.createPointStore(storage), refusedIds = {};
-      var cur = (new URLSearchParams(location.search).get('station') || '').trim() || (window.__initial || {}).station || '';
+      var dflt0 = null; try { dflt0 = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); } catch (e) {}
+      var cur = (new URLSearchParams(location.search).get('station') || '').trim() || (dflt0 && typeof dflt0.id === 'string' ? dflt0.id : '') || (window.__initial || {}).station || '';
       var served = select.querySelector('option[data-point]');                    // the no-script page's own option: the optgroup takes over
       if (served && served.parentNode) served.parentNode.removeChild(served);
       function sync() {

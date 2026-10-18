@@ -2395,7 +2395,8 @@
   // views trace a coarse grid), smoothed by ISO_BLUR passes of a [1, 2, 1] kernel (smooth curves, a little less exact
   // around deep lows: the readout keeps the exact value), traced by marching squares into ONE polyline per isobar,
   // projected to the screen and stroked thin and faint; at most one small pill per line, rotated along it, from zoom
-  // ISO_LABEL_MIN_Z (none at the whole-world view); H and L at the highs' and lows' centres with their pressure. Pure
+  // ISO_LABEL_MIN_Z (none at the whole-world view); H and L at the highs' and lows' centres with their pressure, found on
+  // the frame's own codes (the exact centre and central pressure, also of a compact typhoon the smoothing flattens). Pure
   // functions below; IsobarLayer draws them on one view-sized canvas in the ovIsoPane (above the field's colours, under the
   // particles, outside the model pane's multiply blend).
   // The interval (Windy's spacing): every 8 hPa while the view shows the whole world (any screen width) or at zoom <= 2.9,
@@ -2565,41 +2566,77 @@
     for (i = 0; i < cnt; i++) if (!seen[i]) walk(i, true);
     return out;
   }
-  // The highs' and lows' centres on the traced grid: a node lower (L) or higher (H) than every node within `rad` nodes
-  // (ties to the earlier node), at least `depth` hPa (default ISO_HL_MIN_HPA) from the mean of the square's border, not
-  // within `rad` of the window's edge (except across the date line of a whole-world window), and not at the field's
-  // clamped ends. -> [{type: 'H' | 'L', i, j, v}]
-  function findExtrema(g, rad, lo, hi, depth) {
-    var V = g.V, R = g.R, C = g.C, wrap = g.wrap, m = wrap ? C - 1 : C, out = [], i, j;
-    if (rad < 1) rad = 1;
+  // The highs' and lows' centres from the frame's own codes (G32 fix-round verification: on the smoothed grid a compact
+  // typhoon read "L 1000" for 958 hPa and two tropical cyclones had no mark at the world view): a node lower (L) or higher
+  // (H) than every node within `rad` grid nodes (ties to the earlier node in raster order; rows beyond the grid's ends are
+  // simply absent, so a centre near the map's edge counts; columns wrap), at least `depth` hPa from the mean of that
+  // square's border, and not at the field's clamped ends. `win` = the view's node window (nodeWindow): only its nodes are
+  // candidates, their squares read the frame beyond it. Blocks of B x B nodes (2B - 1 <= rad) sift the candidates: a node
+  // that is the extreme of its square is the extreme of its block, and its block is no worse than the 8 around it (they lie
+  // inside the square), so only those blocks' extreme nodes get the exact test (the same answer as testing every node).
+  // -> [{type: 'H' | 'L', r, c, v}] (r, c = grid row and column, v = the node's pressure in hPa)
+  function findCentres(frame, fdef, win, rad, depth) {
+    var Q = frame.q, cols = frame.cols, rows = frame.rows, k = (fdef.hi - fdef.lo) / 254, out = [];
+    if (!(rad >= 1)) rad = 1;
     if (!(depth > 0)) depth = ISO_HL_MIN_HPA;
-    function at(ii, jj) { if (wrap) jj = ((jj % m) + m) % m; else if (jj < 0 || jj >= C) return NaN; return ii < 0 || ii >= R ? NaN : V[ii * C + jj]; }
-    for (i = rad; i < R - rad; i++) {
-      for (j = wrap ? 0 : rad; j < (wrap ? m : C - rad); j++) {
-        var v = V[i * C + j];
-        if (v !== v || v <= lo + 0.6 || v >= hi - 0.6) continue;
-        var isMin = true, isMax = true, di, dj, x;
-        for (di = -1; di <= 1 && (isMin || isMax); di++) for (dj = -1; dj <= 1; dj++) {
-          if (!di && !dj) continue;
-          x = at(i + di, j + dj); if (x !== x) { isMin = isMax = false; break; }
-          if (x < v || (x === v && (di < 0 || (!di && dj < 0)))) isMin = false;
-          if (x > v || (x === v && (di < 0 || (!di && dj < 0)))) isMax = false;
-        }
-        if (!isMin && !isMax) continue;
-        var ring = 0, rn = 0;
-        for (di = -rad; di <= rad && (isMin || isMax); di++) {
-          for (dj = -rad; dj <= rad; dj++) {
-            x = at(i + di, j + dj);
-            if (x !== x) continue;
-            if (x < v || (x === v && (di < 0 || (!di && dj < 0)))) isMin = false;
-            if (x > v || (x === v && (di < 0 || (!di && dj < 0)))) isMax = false;
-            if (Math.abs(di) === rad || Math.abs(dj) === rad) { ring += x; rn++; }
+    var r0 = Math.max(win.r0, 0), r1 = Math.min(win.r1, rows - 1), n = Math.min(win.count, cols), wrap = n >= cols;
+    var B = Math.max(1, Math.min(8, Math.floor((rad + 1) / 2))), nbR = Math.ceil((r1 - r0 + 1) / B), nbC = Math.ceil(n / B);
+    if (nbR < 1 || nbC < 1) return out;
+    var bmin = new Uint8Array(nbR * nbC), bmax = new Uint8Array(nbR * nbC), imin = new Int32Array(nbR * nbC), imax = new Int32Array(nbR * nbC);
+    var r, jj, c, q, b;
+    for (r = r0; r <= r1; r++) {
+      var bi0 = Math.floor((r - r0) / B) * nbC;
+      for (jj = 0; jj < n; jj++) {
+        c = (win.c0 + jj) % cols; q = Q[r * cols + c];
+        if (!q) continue;
+        b = bi0 + Math.floor(jj / B);
+        if (!bmin[b] || q < bmin[b]) { bmin[b] = q; imin[b] = r * cols + c; }
+        if (q > bmax[b]) { bmax[b] = q; imax[b] = r * cols + c; }
+      }
+    }
+    function exact(idx, wantMin) {                            // the whole rad-square, ring by ring outward (most fail early)
+      var rr0 = Math.floor(idx / cols), cc0 = idx % cols, v = Q[idx];
+      if (v <= 2 || v >= 254) return;                         // the clamped ends (and a code next to them) are no centre
+      var sum = 0, cnt = 0;
+      for (var d = 1; d <= rad; d++) {
+        var last = d === rad;
+        for (var dr = -d; dr <= d; dr++) {
+          var rr = rr0 + dr;
+          if (rr < 0 || rr >= rows) continue;
+          var step = dr === -d || dr === d ? 1 : 2 * d;
+          for (var dc = -d; dc <= d; dc += step) {
+            var x = Q[rr * cols + ((cc0 + dc) % cols + cols) % cols];
+            if (!x) continue;
+            var early = dr < 0 || (!dr && dc < 0);
+            if (wantMin ? (x < v || (x === v && early)) : (x > v || (x === v && early))) return;
+            if (last) { sum += x; cnt++; }
           }
         }
-        if (!rn) continue;
-        ring /= rn;
-        if (isMin && ring - v >= depth) out.push({ type: 'L', i: i, j: j, v: v });
-        else if (isMax && v - ring >= depth) out.push({ type: 'H', i: i, j: j, v: v });
+      }
+      if (!cnt) return;
+      var ring = sum / cnt;
+      if (wantMin ? (ring - v) * k >= depth : (v - ring) * k >= depth) out.push({ type: wantMin ? 'L' : 'H', r: rr0, c: cc0, v: fdef.lo + (v - 1) * k });
+    }
+    for (var bi = 0; bi < nbR; bi++) {
+      for (var bj = 0; bj < nbC; bj++) {
+        b = bi * nbC + bj;
+        if (!bmin[b]) continue;
+        var lo = true, hi = true;
+        for (var di = -1; di <= 1; di++) {
+          var ni = bi + di;
+          if (ni < 0 || ni >= nbR) continue;
+          for (var dj = -1; dj <= 1; dj++) {
+            if (!di && !dj) continue;
+            var nj = bj + dj;
+            if (nj < 0 || nj >= nbC) { if (!wrap) continue; nj = (nj + nbC) % nbC; }
+            var o = ni * nbC + nj;
+            if (!bmin[o]) continue;
+            if (bmin[o] < bmin[b]) lo = false;
+            if (bmax[o] > bmax[b]) hi = false;
+          }
+        }
+        if (lo) exact(imin[b], true);
+        if (hi) exact(imax[b], false);
       }
     }
     return out;
@@ -2631,16 +2668,15 @@
     }
     return out;
   }
-  // The H / L centres in container pixels, every world copy, kept ISO_HL_EDGE_PX inside the view: [{type, x, y, text}]
-  // (text = the pressure rounded to the hPa).
-  function projectExtrema(ext, g, grid, view) {
-    var pr = isoProjector(g, grid, view), out = [], e = ISO_HL_EDGE_PX;
-    for (var q = 0; q < pr.offs.length; q++) {
-      for (var k = 0; k < ext.length; k++) {
-        var x = pr.offs[q] + ext[k].j * pr.dx, y = pr.Y[ext[k].i];
-        if (x < e || y < e || x > view.w - e || y > view.h - e) continue;
-        out.push({ type: ext[k].type, x: x, y: y, text: String(Math.round(ext[k].v)) });
-      }
+  // The H / L centres in container pixels, every world copy the view shows, kept ISO_HL_EDGE_PX inside the view:
+  // [{type, x, y, text}] (text = the pressure rounded to the hPa).
+  function projectCentres(cs, grid, view) {
+    var n = TILE * Math.pow(2, view.z), out = [], e = ISO_HL_EDGE_PX;
+    for (var i = 0; i < cs.length; i++) {
+      var lng = grid.lon0 + cs[i].c * grid.dlon, x0 = (lng + 180) / 360 * n - view.ox;
+      var y = forwardPixel(grid.lat0 + cs[i].r * grid.dlat, 0, view.z).y - view.oy;
+      if (y < e || y > view.h - e) continue;
+      for (var x = x0 - Math.floor((x0 - e) / n) * n; x <= view.w - e; x += n) out.push({ type: cs[i].type, x: x, y: y, text: String(Math.round(cs[i].v)) });
     }
     return out;
   }
@@ -2830,9 +2866,9 @@
     sampleRow(f, false, r, cp, 1, out, 0);
     return out[0] ? this.fdef.lo + (out[0] - 1) / 254 * (this.fdef.hi - this.fdef.lo) : null;
   };
-  // One redraw: the window under the view plus a margin (so a high or low near the edge sees its whole neighbourhood),
-  // the interval for the zoom and the view's width, the lines, the H / L marks, the pills (only from ISO_LABEL_MIN_Z and
-  // never while the whole world is in view).
+  // One redraw: the nodes under the view, the interval for the zoom and the view's width, the lines (smoothed), the H / L
+  // marks (from the frame's own codes: exact centres and pressures), the pills (only from ISO_LABEL_MIN_Z and never while
+  // the whole world is in view).
   IsobarLayer.prototype._draw = function () {
     if (!this.canvas || !this.ctx) return;
     var v = viewOf(this.map, null);
@@ -2841,12 +2877,11 @@
     if (!this.frame || !this.grid || !this.fdef) { this.drawn = { lines: 0, labels: 0, hl: 0 }; return; }
     var t0 = nowMs(), ctx = this.ctx, grid = this.grid, worldPx = TILE * Math.pow(2, v.z);
     var span = v.w / worldPx * 360, interval = isoInterval(v.z, span);
-    var mg = Math.min(0.5, (ISO_HL_PX + 8) / Math.max(1, Math.min(v.w, v.h)));
-    var g = isoValues(this.frame, this.fdef, nodeWindow(v, grid, this.frame, mg), isoStride(v.z, grid.dlon), this.S);
+    var win = nodeWindow(v, grid, this.frame, 0), nodePx = worldPx * Math.abs(grid.dlon) / 360;
+    var g = isoValues(this.frame, this.fdef, win, isoStride(v.z, grid.dlon), this.S);
     this.S = g.scratch;
     var paths = projectIsolines(traceIsolines(g.V, g.R, g.C, interval), g, grid, v);
-    var nodePx = worldPx * Math.abs(grid.dlon) / 360 * g.stride;
-    var marks = projectExtrema(findExtrema(g, Math.round(ISO_HL_PX / nodePx), this.fdef.lo, this.fdef.hi, Math.max(ISO_HL_MIN_HPA, interval / 4)), g, grid, v);
+    var marks = projectCentres(findCentres(this.frame, this.fdef, win, Math.max(1, Math.round(ISO_HL_PX / nodePx)), Math.max(ISO_HL_MIN_HPA, interval / 4)), grid, v);
     var labels = [];
     if (v.z >= ISO_LABEL_MIN_Z && span < ISO_WORLD_DEG) {
       ctx.font = ISO_STYLE.font;
@@ -4864,7 +4899,7 @@
       SST_TIER_ZOOMS: SST_TIER_ZOOMS, SST_ATTRIBUTION: SST_ATTRIBUTION, SST_HEAD: SST_HEAD, SST_STALE_DAYS: SST_STALE_DAYS, sstDayText: sstDayText, sstAgeDays: sstAgeDays, buildLegend: buildLegend, SST_PREFIX: SST_PREFIX, SST_PAD_PX: SST_PAD_PX, MAX_SST_INFLIGHT: MAX_SST_INFLIGHT, MAX_SST_CHUNK_BYTES: MAX_SST_CHUNK_BYTES, cellsForTile: cellsForTile,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
-      projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findExtrema: findExtrema, projectExtrema: projectExtrema, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
+      projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
       ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_MIN_HPA: ISO_HL_MIN_HPA, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,
       ISO_LABEL_MIN_PX: ISO_LABEL_MIN_PX, ISO_LABEL_AT: ISO_LABEL_AT, ISO_LABEL_EDGE_PX: ISO_LABEL_EDGE_PX,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,

@@ -22,6 +22,7 @@
   'use strict';
 
   var SETTINGS_KEY = 'allshore.settings.v1';   // localStorage {tz, unit}
+  var DEFAULT_KEY = 'allshore.defaultStation.v1';   // localStorage {id, lat, lon, name, at}: the viewer's default station (the blue star, plan section 46)
   var WINDOW_KEY = 'allshore.forecastWin.v1';  // sessionStorage {x, y, w, h, mode, prev}
   var LIVE_WINDOW_KEY = 'allshore.liveWin.v1'; // the live-buoy window's (the same shape)
   var TIDE_WINDOW_KEY = 'allshore.tideWin.v1'; // the tide-station window's (plan section 38)
@@ -43,13 +44,15 @@
   var SKY_FILL = { night: 'rgba(30,60,110,0.10)' };   // the plot's night bands (the table's tint); daylight runs first light to last light
 
   // ---- pure state helpers ----
-  // The state a page starts from: the URL wins, then the viewer's saved settings (tz, unit only),
-  // then what the server rendered. tz '' means Buoy Local; an explicit empty tz in the URL counts.
-  function resolveInitialState(search, stored, server) {
+  // The state a page starts from: the URL wins, then the viewer's default station (dflt, the blue star; station only),
+  // then the viewer's saved settings (tz, unit only), then what the server rendered. tz '' means Buoy Local; an
+  // explicit empty tz in the URL counts.
+  function resolveInitialState(search, stored, server, dflt) {
     var p = new URLSearchParams(search || ''), st = stored || {}, sv = server || {};
     var unit = p.has('unit') ? p.get('unit') : (typeof st.unit === 'string' ? st.unit : sv.unit);
+    var ds = dflt && typeof dflt === 'object' && typeof dflt.id === 'string' ? dflt.id.trim() : '';
     return {
-      station: (p.get('station') || '').trim() || sv.station || '51201',   // a link with white space after the id (G22 A-17)
+      station: (p.get('station') || '').trim() || ds || sv.station || '51201',   // a link with white space after the id (G22 A-17)
       tz: p.has('tz') ? p.get('tz') : (typeof st.tz === 'string' ? st.tz : (sv.tz || '')),
       unit: isUnit(unit) ? unit : 'US',
       model: (p.get('model') || sv.model || 'GFS').toUpperCase() === 'SWAN' ? 'SWAN' : 'GFS',
@@ -342,7 +345,8 @@
     }
     // A forecast the page already rendered (render=full): cached and shown, no fetch.
     function seed(d) { if (!(d.error && !d.table_html)) { cache.set(keyOf(state), { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim(); } apply(d); }
-    return { load: load, seed: seed, prefetch: prefetch, state: state, cache: cache, sync: sync };
+    function started() { return seq > 0; }                                     // has any load been asked for (also from the cache)?
+    return { load: load, seed: seed, prefetch: prefetch, state: state, cache: cache, sync: sync, started: started };
   }
 
   // ---- the graphs ----
@@ -838,7 +842,9 @@
     }
     var session = opts.storage || safeStorage('sessionStorage'), local = opts.settings || safeStorage('localStorage');
     var initial = opts.initial || {}, swanStations = initial.swan_stations || [];
-    var state = resolveInitialState((win.location && win.location.search) || '', readJson(local, SETTINGS_KEY), initial);
+    var search = (win.location && win.location.search) || '', dflt = readJson(local, DEFAULT_KEY);
+    if (typeof dflt.id !== 'string' || !dflt.id.trim()) dflt = null;
+    var state = resolveInitialState(search, readJson(local, SETTINGS_KEY), initial, dflt);
     // the table's Detailed | Summary mode (plan section 35): the tab's own preference, never in the address bar; each
     // mode keeps its own scroll position (the summary opens at its top, the detailed table where it was left)
     var tableMode = readTableMode(session), summaryAvail = false, revealPending = false, revealedFor = null;
@@ -907,9 +913,12 @@
       var e = earlyBox && earlyBox.forecast; if (earlyBox) earlyBox.forecast = null; earlyBox = null;
       return e && e.q === q && e.p && typeof e.p.then === 'function' ? e.p : null;
     }
+    // while the first load waits for the head's station (the geo race, plan section 46) the address bar is left alone:
+    // it must not name the server's station meanwhile (a reload within the race would then fix it)
+    var holdUrl = false;
     var loader = createLoader({ fetch: opts.fetch || function (u, o) { return win.fetch(u, o); }, takeEarly: takeEarly, now: function () { return Date.now(); },
       wait: opts.wait || function (ms) { return new Promise(function (res) { if (win.setTimeout) win.setTimeout(res, ms); else setTimeout(res, ms); }); },
-      replaceState: function (url) { try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations,
+      replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false; try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
             clear: function () {                                              // a failed load leaves nothing of the last forecast (G22 B-7, R-A9, R-A10)
@@ -1064,6 +1073,14 @@
     });
     var settings = createSettings({ button: $('settingsBtn'), panel: $('settingsPanel'), document: doc, focusFirst: function () { if (els.tz && els.tz.focus) els.tz.focus(); } });
     // start
+    // Without a station in the address or a default, the <head> may be choosing the station nearest the visitor's IP
+    // address (window.__early.station, plan section 46): the first load waits for it (its request has started by
+    // then), and so does the address bar. A load the viewer caused meanwhile (a pick, a setting) wins: the race's
+    // answer is then dropped.
+    var urlStation = ''; try { urlStation = (new URLSearchParams(search).get('station') || '').trim(); } catch (e) {}
+    var earlyStation = opts.early && opts.early.station;
+    var deferred = !initial.inline && !urlStation && !dflt && !!earlyStation && typeof earlyStation.then === 'function';
+    holdUrl = deferred;
     syncSelects();
     setTableMode(tableMode);                                                     // the buttons show the tab's preference before the first forecast
     setView(state.view);
@@ -1071,6 +1088,9 @@
       loader.seed({ table_html: initial.error ? null : (els.table.innerHTML.trim() || null), graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
         error: initial.error || null, model: initial.model, swan_available: initial.swan_available, wind_complete: initial.wind_complete,
         point: initial.point || null, final: !!initial.final, reason: initial.reason || null, summary_html: initial.summary_html || null });
+    } else if (deferred) {
+      earlyStation.then(function (sid) { return typeof sid === 'string' && sid.trim() ? sid.trim() : '51201'; }, function () { return '51201'; })
+        .then(function (sid) { if (loader.started()) return; state.station = sid; syncSelects(); holdUrl = false; loader.load({}); });
     } else loader.load({});
     app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, setView: setView, setTableMode: setTableMode,
       tableMode: function () { return tableMode; }, expand: expand, minimise: minimise, note: note, els: els };
@@ -1090,7 +1110,7 @@
     getMode: function () { return app ? app.window.mode : null; },
     getState: function () { return app ? Object.assign({}, app.state) : null; },
     _internals: {
-      SETTINGS_KEY: SETTINGS_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
+      SETTINGS_KEY: SETTINGS_KEY, DEFAULT_KEY: DEFAULT_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,

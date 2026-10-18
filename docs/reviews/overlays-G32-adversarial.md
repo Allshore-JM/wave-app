@@ -131,3 +131,188 @@ Release: overlay 2.19.3, UI 1.23.1, fixtures, the golden in its own commit; the 
 pressure run and an Update to a run with pressure if published, B's t18 / t26 scripts, the wide cell back to back with
 production); a short fresh re-check at MAX (the fixes touch `update`, `_mountObs`, `_goto`'s wait, the tracer, the head and
 the first view).
+
+## Fix round (step 11, Opus 5.5 HIGH, 2026-10-18; overlay 2.19.3, UI 1.23.1)
+
+### The owner's presentation request (with the step-11 go)
+"The pressure callouts are way too pronounced ... never more than one pressure display on an isobar ... the callouts are
+also too large ... at full global extent the map is way too busy ... Windy also presents smoother isobars, that is a better
+presentation, even if less accurate ... high and low centers designated with H and L ... the isobar lines slightly fainter
+... generally I want a similar appearance [to windy.com]". Windy studied at 1400x850 (zoom 2, 3, 5, 7: scratch
+iso/v9/shots/w_z*.png): thin semi-transparent white lines, smooth; no line labels at the world view; one small pill per line
+from about zoom 4, rotated along it; H / L as plain letters with the pressure under them; 4-hPa spacing to about zoom 6,
+2 hPa from zoom 7. Built (static_overlay/overlay.js, the isobar block):
+- Node spacing by screen: one traced node per `stride` grid nodes so traced nodes are at least ISO_NODE_PX 7 px apart (zoom 6:
+  every node, zoom 4: every 2nd, zoom 3: every 3rd); each traced node = the mean of its stride x stride block, centred on the
+  node (an even stride counts the block's end rows / columns half); a whole-world window takes a stride that divides the 720
+  columns (the seam column is the first again).
+- Smoothing: ISO_BLUR 2 passes of [1, 2, 1] across and down (missing nodes left out, wrap across the date line in a
+  whole-world window). Replaces `isoSmooth` (the half-code bound). Measured on the real PRMSL fixture (|lat| <= 60, 2 hPa):
+  the true isobars of the large systems (lines >= 30 nodes) lie within 1 node (55 km) of ours for 95.0 % of their points and
+  within 2 nodes for 98.6 %; the coded field's 1,745 lines become 488 (the truth has 1,715: most of the difference are small
+  rings from mountain pressure reductions and 8-bit terraces); mean turn per vertex 0.112 rad (raw codes 0.386): smooth.
+  One pass measured 97.3 % / 99.4 % with 608 lines (0.157 rad); two chosen for the look the owner asked for.
+- Interval: ISO_INTERVAL [[2.9, 8], [5.9, 4], [99, 2]] (Windy's 4 hPa to zoom ~6; the step-9 rule had 2 hPa from zoom 5)
+  and 8 hPa whenever the view spans >= ISO_WORLD_DEG 300 deg of longitude (owner call 1, any screen width).
+- Labels: at most ONE pill per polyline (each isobar is one polyline in the window), tried at 50 %, 35 %, 65 %, 20 %, 80 % of
+  its length inside the view, rotated along the line (text kept upright), 9-px semibold text in a white capsule at 82 %;
+  none on a line under ISO_LABEL_MIN_PX 120 px in view; only from ISO_LABEL_MIN_Z 4 and never while the whole world is in
+  view; clear of the H / L marks and of each other (4-px gap; each box filed in every 32-px cell it covers: B-2).
+- H / L: a node lower / higher than every node within ~ISO_HL_PX 110 px on screen (ties to the earlier node), at least
+  max(1 hPa, interval / 4) from the mean of that square's border, not at the window edge (the window is the view plus a
+  margin of 118 px so a centre near the view's edge sees its whole neighbourhood) and not at the field's clamped ends: an
+  "H" / "L" (15 px, white with a soft shadow) and the pressure rounded to the hPa under it, in every world copy.
+- Lines: one stroke of all halos (rgba(0,0,0,0.14), 2.4 px) then one of all cores (rgba(255,255,255,0.72), 1.2 px; were
+  0.35 / 2.6 and 0.85 / 1.2); no cut under the pills.
+- The tracer's storage typed (crossing points in Float64Array / Int32Array, two neighbour slots per point, one output
+  buffer): identical output to the previous tracer on 900 random fields (74,149 lines; scratch g32/fix/tracecmp.js).
+- Cost (Node, the real fixture, scratch g32/author/bench2.js): the 1920-px world view 7.4 ms and 3.0 MB per redraw (was
+  19.8 ms / 18.6 MB; target ~8 ms / <= 5 MB), the 1280-px world 4.6 ms / 2.0 MB (13.6 / 9.9), the z6 default view 1.4 ms /
+  0.5 MB (1.8 / 1.1).
+
+### The fifteen G32 items
+1. `_mountObs` calls `_ensureIso()` and empties the pressure cache (wind -> SST: no isobar layer, no frames); `_fail` clears
+   the lines whenever no frame of the run is on the map.
+2. `update()` calls `_ensureIso()` (an Update to the first run with pressure draws the shown step's lines).
+3. Done by the redesign (above): 8 hPa at the world view, typed buffers, ~3 MB / 7 ms.
+4. A step waits at most PRES_WAIT_MS 1,000 ms for its pressure (`capWait`), then lands without lines; `_ensurePres` delivers
+   the late frame to the step on the map.
+5. Labels filed in every cell they cover (`keep`), pinned by a 40-view property test (4,800 lines, no overlap, no pill on a
+   mark, edge distance kept, one pill per line).
+6. The world-view timing test is a soft ceiling (100 ms; the time is logged).
+7. Pins: S7 (`_kindReady` settles at the abort), T9 (rows between nodes), T11/T12 (gap, length in view: the label tests), L1
+   (no redraw of the frame already drawn), L6 (DPR capped at 2), L7 (`valueAt` below the grid), S17 (`_hpaAt`: the readout's
+   pressure only from the step on the map; extracted from the readout closure so it can be tested), S2 (no pressure or
+   direction download for a step whose field frame is unavailable: `_prefetch` now skips them; `_goto` already did).
+8. README: the isobars' look, the spacing, the 1-s cap, the one-frame window (A-P3-5); the page fixes.
+9. `measureTopRight` counts the tools bar in `--map-topright-w` while it is shown: the wide box narrows beside the bar and
+   `onLayout`'s overlap test no longer minimises it.
+10. `saveMapView` keeps nothing while the map is `geo-pending`, and the first-view block forgets the synchronous Hawaii view
+    when it starts waiting (`forgetMapView`): a reload during the race asks again.
+11. `act` ignores events inside `.leaflet-control, .ov-sheet`; acting on the map removes `geo-pending` at once; the four map
+    listeners are no longer `once` (an ignored event must not use them up) and are removed when the race ends.
+12. One id rule (`/^[A-Za-z0-9_-]{1,32}$/` on the trimmed id) in the head, the module (`DEFAULT_ID`), the first view, the
+    picker's `readDefault` (returns the trimmed id) and the My points block.
+13. `forgetRetiredDefault(list)` after the station list loads: a default neither in the list nor a point id is removed and the
+    window says so once ("... is no longer offered, so it was cleared: the site will open near you next time"; again on the
+    first `allshore:forecast` if the window was not up); an empty or failed list decides nothing.
+14. `Promise.resolve(earlyStation)`.
+15. The module dispatches `allshore:stationshown` after the deferred `syncSelects()`; the picker refreshes its chip on it.
+Tests: overlay Node 390 + 2 (isobars 25, playback + 6), UI Node + 7 (window, firstview, early, mypoints), page pins.
+
+## Test-site verification of the fix round (step 11, Opus 5.5 MAX, 2026-10-18)
+
+### Found and fixed during it
+- **V11-1 (overlay 2.19.4 @ fa04b91):** the H / L marks were read on the smoothed grid. At the world view a 956-hPa typhoon
+  read "L 1000", and a 991-hPa East Pacific hurricane and a 986-hPa South Pacific cyclone had no mark. The marks now come
+  from the frame's own codes: the exact centre and central pressure.
+- **V11-2 (overlay 2.19.5):** at zoom 4 a 997.7-hPa low, 10 hPa deep, in the Bering Sea (55 N, 174.5 E) had no L.
+  - Cause: three minima lie along one trough, 8 deg apart each: B 997.7, A 997.7 one row north of B, C 997.2. The rule
+    "lowest within ~110 px, ties to the earlier node" dropped A because of C, and dropped B only because of its 8-bit tie
+    with A.
+  - Tried first and rejected: candidates from every 3x3 extreme, with suppression. It gave 78 marks at the 1920-px world
+    view (the radius rule gave 26) and took 26 ms, so it was too busy and too slow.
+  - Built instead:
+    - An equal code counts against a node only among its 8 neighbours, where the first in raster order stands.
+    - A candidate's patch of equal codes (8-connected) is taken once for its kind, with one mark at the patch's middle.
+      There is no mark for a patch that runs down to a lower value (a shelf), holds more than 4,096 nodes or spans half
+      the world.
+    - Of two candidates of one kind within the radius of each other (they are always equal), the first in raster order
+      stands.
+  - Measured on the stored fixture and on the test site's frame of the finding (run 2026101806 f011):
+    - Marks per view are within +2 of the radius rule (1920-px world view 28 vs 26 and 29 vs 28; 1280-px 19/19, 17/17;
+      North Pacific z3 15/13, 13/13).
+    - Flat-topped highs now sit at their patches' middles, 1-2 deg from before.
+    - B is marked.
+    - Time at the world view 3.7-5.3 ms (the radius rule 2.7-4.6 ms), under 0.5 ms from zoom 4.
+  - Tests:
+    - An independent brute force equals the code on 36 random fields x 2-3 windows x 4 radii, including plateaus, holes,
+      seams and the poles. It uses sliding-window square extremes and breadth-first patches.
+    - New pins: the B / A / C trough, a shelf, one mark per patch, the 4,096-node and half-world limits at their
+      boundaries, two equal lows across the date line, and a radius wider than the world.
+    - Mutants: 23 of 25 killed. The two survivors are equivalent:
+      - deepest-first versus raster order (two candidates within the radius of each other are equal);
+      - the radius clamp (a radius of 360 nodes already covers the whole world).
+  - Found while testing:
+    - The first build compared every kept centre with every candidate, which took seconds on an artificial whole-world
+      radius-1 window. Kept centres are now looked up by bands of radius + 1 rows and columns.
+    - Patches are now followed whole and marked per kind, so no patch is followed twice.
+
+### Results on the test site (overlay 2.19.5, test @ b93e2e3, live 17:38 UTC; served files = the commit, 2.19.4 404)
+Headless Edge with the GPU (Iris Xe through ANGLE D3D11), trusted input. Scripts are in scratch g32/v11/s.
+- **Look (v1_look desk / wide / phone):** GFS 2026101812, shown step 6; ECMWF 2026101800, step 18.
+  - At 9 desktop, 5 wide and 3 phone views per model, the drawn layer = an independent rebuild of it. No pill overlaps,
+    sits on a mark, comes within 8 px of the edge, is off its line, or has a bad text; no line has two pills.
+  - Every strong raw low or high in view (>= 4 hPa from its 110-px square) has its mark: none missed.
+  - The readout's "· N hPa" = the exact value at 10 points per model.
+  - The old mark-position check (built for marks at nodes) flagged 8 desktop marks. A replay on the same frames
+    explains each one: an equal-valued node the check finds first, or a deeper node just past the candidate's radius
+    once the mark sits at its patch's middle. Two examples: the Bering Sea pair (B 998 / C 997) in the 12Z run, both
+    marked, and a 987-hPa Kara Sea low, 27 hPa deep, at the 1920-px world view that 2.19.4 missed.
+- **Marks:** 4 frames x 3 screen sizes x 10 views, 1,039 drawn vs 909 under 2.19.4 (+14 %); the world views changed by
+  +0 to +2.
+  - In view (4 frames x 2 sizes x 7 views): 50 are the same centre moved to its patch's middle, and 126 are new.
+  - Of the new ones, 44 are at least 6 hPa deep, 46 are 3-6 hPa and 36 under 3 hPa; 0 were lost.
+- **Scheduler (v2):**
+  - A (wind -> SST -> wind): PASS.
+  - B: a step whose pressure frame is held lands at 1,042 ms without lines, and the lines come when the frame does:
+    PASS.
+  - C refined (v2c): for a step whose wind frame answers 404, the direction and pressure frames start 32-47 ms before
+    the 404 arrives (asked in the same ring pass). None start after it, through a seek onto the step and shark
+    playback across it: PASS x2. The first C script expected no extras at all, which parallel ring requests cannot give.
+- **Page (v3):** all PASS.
+  - P1: the tools bar narrows the wide box at 1280 / 1440 / 1920 / 2560 px (the window ends 16 px left of the bar)
+    and the box comes back when the bar closes.
+  - P2: a reload during the race asks again and opens at the visitor's area.
+  - P3a: a click on the gear during the race is not "moving the map", so the map goes to the visitor's area. The
+    first script delayed the answer 2.2 s, past the head's 2-s cap; re-run at 1.4 s.
+  - P3b: a drag during the race stays.
+  - P4: the default-id rule, three cases.
+  - P5: a retired default is cleared with the note, and the next visit uses the IP.
+  - P6: the chip names the race's station at 1,764 ms, before the table at 4,458 ms.
+- **Update (GFS 06Z -> 12Z):**
+  - t18, while playing at shark with isobars: 201 landings on the new run; every drawn frame carried its own lines; no
+    draw of another run or step; largest gap 145 ms; playback continued: PASS.
+  - t26, STRIP=1 (the old run made to look pressure-free): lines right after the Update, following the steps, and
+    kept through wave height -> wind: PASS.
+- **Timed cells** (G29's acceptance script plus pressure counting): GFS 2026101812, frames warm at the edge for both
+  Origins, browser cache off, PREGC=1, 155-s idles, production 2.18.4 run back to back with each test cell, GPU.
+  Every cell passes: 8 frames/s at shark (2 at snail), 0 skipped, 0 unpainted, in flight never over the cap, one
+  pressure download per landing under wind and none under wave height.
+
+  | Cell | Site | Gap p50/p90 (ms) | Render p50 | Main ms/s (script) | Live / peak MB |
+  |---|---|---|---|---|---|
+  | wind shark 1920x1080, whole-world view (G32 B-13) | test | 125/136 | 81 | 898 (90) | +29.8 / +58.2 |
+  | | production | 125/135 | 31 | 808 (29) | +26.2 / +47.1 |
+  | wind shark 1920x1080 (z6) | test | 125/134 | 40 | 598 (37) | +22.7 / +38.9 |
+  | | production | 125/136 | 40 | 565 (28) | +19.9 / +29.6 |
+  | wave height shark 1920x1080 | test | 125/137 | 40 | 657 (27) | +31.8 / +45.7 |
+  | | production | 125/135 | 40 | 658 (28) | +31.8 / +48.5 |
+  | wind shark phone, whole-world view | test | 126/135 | 17 | 314 (56) | +13.6 / +23.3 |
+  | | production | 126/134 | 17 | 253 (25) | +10.8 / +24.1 |
+  | wind shark phone (z6) | test | 124/135 | 17 | 274 (29) | +13.7 / +26.0 |
+  | | production | 123/134 | 17 | 229 (24) | +10.9 / +21.5 |
+  | wind shark 1280x800 | test | 125/134 | 21 | 447 (38) | +18.2 / +32.7 |
+  | | production | 125/133 | 21 | 403 (32) | +15.4 / +23.8 |
+  | wind snail 1920x1080 | test | 501/507 | 42 | 193 (29) | +20.2 / +27.8 |
+  | | production | 500/508 | 42 | 182 (26) | +17.6 / +25.8 |
+
+  - The G32 B-13 cell now passes: on 2.19.2 it ran 7.6 frames/s with p90 150-151 ms, a render p50 of 126-127 ms and
+    peaks of +156 / +182 MB.
+  - The isobars cost about 8 ms of main-thread script per landing at the whole-world view, and about 1 ms at zoom 6.
+- **The whole-world cell again** (production, test, test, production): test peaks +53.0 and +48.9 MB with live +29.8,
+  against production peaks +44.9 and +43.3 with live +25.8 / +25.4. All at 8 frames/s, p90 at most 137 ms, every
+  frame painted.
+  - Over the three pairs, test peaks are +48.9 to +58.2 against production +43.3 to +47.1 this session. One sample is
+    1.1 MB above production's range + 10. It is within the rule against G32's production samples (+45.9 / +53.6).
+    Owner awareness.
+- **ECMWF Update (00Z -> 12Z, published 19:44 UTC):**
+  - t26, STRIP=1 (the 00Z run made to look pressure-free): no isobar layer before the Update; lines right after it,
+    following the steps; wave height -> wind keeps them: PASS.
+  - t26 without STRIP (00Z with pressure): PASS.
+- **Fresh-tab console smoke:** GFS wind playing, ECMWF (lines + H / L), SST, wave height, wind again, Off (no canvas,
+  no layer). No console error or warning.
+- The free test service restarted at about 19:46 UTC (healthz uptime 71 s at 19:47); one page load answered 503 during
+  the switch, and the next loads gave 200 in 0.2-0.6 s. Not related to the overlay, which runs in the browser.
+- Cleanup: both origins' storage emptied in the browser profile, and the browser closed by DevTools (no process left);
+  profile removed.

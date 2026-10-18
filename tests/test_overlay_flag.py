@@ -2,7 +2,7 @@
 
 Golden: tests/fixtures/index_golden.json captured by tests/capture_index_golden.py (fixed forecast
 payload + station list, no network). It is re-baselined ONLY by a commit that changes the flag-off page
-on purpose (last: the picker's star cycle (Favorite / Default), plan section 46 step 8, 2026-10-18); never recapture it
+on purpose (last: the G32 fix round: the first view, the default-station rule, the tools bar in the wide box, 2026-10-18); never recapture it
 after an overlay-only commit. Whatever the baseline, three invariants hold: flag off == golden with no
 '/overlay/' in it; flag on with no frames base == flag off; flag on == flag off + exactly the gated block.
 """
@@ -201,7 +201,7 @@ def test_overlay_js_syntax_and_contract_strings():
                    "_paintWait", "PAINT_FALLBACK_MS", "TRAIL_SPAN_MS", "BUSY_STUCK_MS", "maxTouchPoints", "_flowData", "copyWithin", "spent", "ovdecode=worker",   # section 42 / G29
                    "MODEL_DEFS", "'ecmwf/0p25/v1'", "ov-model-sel", "'Overlay model'", "setModel", "_dropRun", "_carry", "_modelBase", "CC BY 4.0",   # section 43
                    "hasModel", "_switchT", "_fetchJson", "LOAD_STALL_MS", "/notice/ecmwf",                                                       # G30 fix round
-                   "IsobarLayer", "'ovIsoPane'", "traceIsolines", "isoSmooth", "placeLabels", "viewOf", "placeCanvas",                        # section 46 step 3
+                   "IsobarLayer", "'ovIsoPane'", "traceIsolines", "isoBlur", "findExtrema", "placeLabels", "viewOf", "placeCanvas", "PRES_WAIT_MS",                        # section 46 step 3
                    "PRES_FIELD", "pcache", "_wantPres", "_kindReady", "_startKind", "_syncIsobars", "setIsobars", "' hPa'",                  # section 46 step 4
                    "particleOpacityOf", "setParticleOpacity", "_paneOpacity", "opts.particles"):                                           # section 46 step 5
         assert needle in js, needle

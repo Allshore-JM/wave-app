@@ -1091,3 +1091,33 @@ test('section 46: a pick (or any load) before the race answers wins and the answ
   const d = boot({ search: '', early: { station: 'HNL01' } });                 // not a promise: ignored
   assert.equal(d.fs_.calls.length, 1); assert.equal(d.fs_.param(d.fs_.last(), 'station'), '51201');
 });
+
+// ---- G32 fix round: one id rule for the default (A-P3-2), Promise.resolve on the race (A-P3-4), the chip at once (B-12) ----
+test('G32: the default station follows the one id rule (trimmed, 1-32 letters / digits / _ / -), a point id included', () => {
+  const F = load(fakeWindow()), I = F._internals, sv = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  assert.equal(String(I.DEFAULT_ID), String(/^[A-Za-z0-9_-]{1,32}$/));
+  for (const bad of [{ id: 'HNL 01' }, { id: 'a'.repeat(33) }, { id: 'x<y' }, { id: '51201;' }]) assert.equal(I.resolveInitialState('', {}, sv, bad).station, '51201', JSON.stringify(bad));
+  assert.equal(I.resolveInitialState('', {}, sv, { id: ' pt_21667N_158054W ' }).station, 'pt_21667N_158054W');
+  assert.equal(I.resolveInitialState('', {}, sv, { id: 'NW-HFO51' }).station, 'NW-HFO51');
+  let resolveSid; const race = new Promise((r) => { resolveSid = r; });
+  const b = boot({ search: '', local: { 'allshore.defaultStation.v1': { id: 'HNL 01' } }, early: { station: race } });
+  assert.equal(b.fs_.calls.length, 0, 'a default the rule refuses does not count: the race decides');
+  resolveSid('46001');
+});
+
+test('G32: the race\'s station is named at once (allshore:stationshown before its load), and a bare thenable race works (Promise.resolve)', async () => {
+  let resolveSid; const race = new Promise((r) => { resolveSid = r; });
+  const b = boot({ search: '', early: { station: race } });
+  const seen = [];
+  b.doc.addEventListener('allshore:stationshown', (e) => { seen.push([e.detail.station, b.fs_.calls.length, b.doc.getElementById('station').value]); });
+  await settle(); assert.deepEqual(seen, []);
+  resolveSid('46001'); await settle();
+  assert.deepEqual(seen, [['46001', 0, '46001']], 'once, with the select already on it and before the load started');
+  assert.equal(b.fs_.calls.length, 1);
+  const thenable = { then(ok) { setTimeout(() => ok('46001'), 0); } };
+  const c = boot({ search: '', early: { station: thenable } });
+  await settle(); await new Promise((r) => setTimeout(r, 5)); await settle();
+  assert.equal(c.fs_.calls.length, 1); assert.equal(c.fs_.param(c.fs_.last(), 'station'), '46001');
+  const late = boot({ search: '', early: { station: race } });               // an already-settled race: the same path
+  await settle(); assert.equal(late.fs_.param(late.fs_.last(), 'station'), '46001');
+});

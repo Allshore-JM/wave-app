@@ -1910,6 +1910,7 @@
   // The isobars (plan section 46): a THIRD frame kind, 'pres' = the run's sea-level pressure (half resolution only), loaded
   // beside the wind frame and its direction, drawn by the IsobarLayer for the step on the map, never an older step's lines
   // under a newer time (the same entry rule as the particles). Wind only (the owner); a run without the field has none.
+  var PRES_WAIT_MS = 1000;                                  // the longest a step waits for its pressure frame (G32)
   var PRES_FIELD = 'pres', PRES_UNDER = { wind: true };
   function presFieldOk(f) {
     return !!(f && f.interpolation === 'bilinear' && f.units === 'hPa' && typeof f.lo === 'number' && typeof f.hi === 'number' && f.lo < f.hi &&
@@ -2388,72 +2389,100 @@
     ctx.lineWidth = style.width; ctx.strokeStyle = 'rgba(255,255,255,' + LOOK.tail + ')'; ctx.stroke();
   };
 
-  // ---- isobars (plan section 46): the sea-level pressure frame as labelled lines over the wind overlay ----
-  // The frame is the job's half-resolution `pres` field (hPa, 0.5 deg, 8-bit codes over 920-1060). Per view: the nodes
-  // under the view are smoothed where the field is flat (isoSmooth: the 8-bit terraces go, no line moves past its node values),
-  // traced by marching squares into ONE polyline per isobar (segments joined through the grid edges they share),
-  // projected to the screen and stroked white on a dark halo, with the pressure in small pills along the longer lines
-  // (Windy's look). Pure functions below; IsobarLayer draws them on one view-sized canvas in the ovIsoPane (above the
-  // field's colours, under the particles, outside the model pane's multiply blend).
-  // The interval by map zoom (2 hPa from zoom 5, wider further out: every 4 hPa, every 8 hPa at the widest views).
-  var ISO_INTERVAL = [[2.9, 8], [4.9, 4], [99, 2]];
-  var ISO_STRIDE_PX = 4;                                    // grid nodes closer than this on screen: every other node is traced
-  var ISO_LABEL_MIN_PX = 150, ISO_LABEL_FIRST_PX = 175, ISO_LABEL_EVERY_PX = 350, ISO_LABEL_EDGE_PX = 8, ISO_LABEL_GRID_PX = 32, ISO_LABEL_GAP_PX = 4;
-  var ISO_STYLE = { halo: 'rgba(0,0,0,0.35)', haloW: 2.6, core: 'rgba(255,255,255,0.85)', coreW: 1.2,
-    font: 'bold 10px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif', pill: '#ffffff', pillEdge: 'rgba(0,0,0,0.25)', text: '#1d2b4f', padX: 5, h: 14, r: 4 };
+  // ---- isobars (plan section 46): the sea-level pressure frame as lines over the wind overlay, in Windy's manner ----
+  // The frame is the job's half-resolution `pres` field (hPa, 0.5 deg, 8-bit codes over 920-1060). Per view (owner G32:
+  // Windy as the model): the nodes under the view are averaged into blocks about ISO_NODE_PX apart on screen (the widest
+  // views trace a coarse grid), smoothed by ISO_BLUR passes of a [1, 2, 1] kernel (smooth curves, a little less exact
+  // around deep lows: the readout keeps the exact value), traced by marching squares into ONE polyline per isobar,
+  // projected to the screen and stroked thin and faint; at most one small pill per line, rotated along it, from zoom
+  // ISO_LABEL_MIN_Z (none at the whole-world view); H and L at the highs' and lows' centres with their pressure. Pure
+  // functions below; IsobarLayer draws them on one view-sized canvas in the ovIsoPane (above the field's colours, under the
+  // particles, outside the model pane's multiply blend).
+  // The interval (Windy's spacing): every 8 hPa while the view shows the whole world (any screen width) or at zoom <= 2.9,
+  // every 4 hPa to zoom 5.9, every 2 hPa beyond.
+  var ISO_INTERVAL = [[2.9, 8], [5.9, 4], [99, 2]];
+  var ISO_WORLD_DEG = 300;                                  // a view this many degrees of longitude wide shows the whole world
+  var ISO_NODE_PX = 7;                                      // the traced grid's spacing on screen, at least
+  var ISO_BLUR = 2;                                         // [1, 2, 1] passes over the traced grid
+  var ISO_LABEL_MIN_Z = 4, ISO_LABEL_MIN_PX = 120, ISO_LABEL_EDGE_PX = 8, ISO_LABEL_GRID_PX = 32, ISO_LABEL_GAP_PX = 4;
+  var ISO_LABEL_AT = [0.5, 0.35, 0.65, 0.2, 0.8];          // where along a line's visible length its one pill may sit, in turn
+  var ISO_HL_PX = 110, ISO_HL_MIN_HPA = 1, ISO_HL_EDGE_PX = 14;   // H / L: the neighbourhood radius on screen, the least depth
+  var ISO_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  var ISO_STYLE = { halo: 'rgba(0,0,0,0.14)', haloW: 2.4, core: 'rgba(255,255,255,0.72)', coreW: 1.2,
+    font: '600 9px ' + ISO_FONT, pill: 'rgba(255,255,255,0.82)', text: '#1d2b4f', padX: 4, h: 11, r: 5.5,
+    hlFont: '600 15px ' + ISO_FONT, hlValueFont: '500 10px ' + ISO_FONT, hlText: 'rgba(255,255,255,0.96)', hlShadow: 'rgba(0,0,0,0.55)', hlBlur: 3 };
   var ISO_CASES = [                                         // marching squares: corner bits a=8 (top left) b=4 (top right) c=2 (bottom right) d=1 (bottom left)
     [], [['L', 'B']], [['B', 'R']], [['L', 'R']], [['T', 'R']], null, [['T', 'B']], [['T', 'L']],
     [['T', 'L']], [['T', 'B']], null, [['T', 'R']], [['L', 'R']], [['B', 'R']], [['L', 'B']], []];
-  function isoInterval(z) {
+  // spanDeg (optional): the view's width in degrees of longitude; the whole world gets the widest interval.
+  function isoInterval(z, spanDeg) {
+    if (spanDeg >= ISO_WORLD_DEG) return ISO_INTERVAL[0][1];
     for (var i = 0; i < ISO_INTERVAL.length; i++) if (z <= ISO_INTERVAL[i][0]) return ISO_INTERVAL[i][1];
     return ISO_INTERVAL[ISO_INTERVAL.length - 1][1];
   }
-  // Every other node where one grid cell is under ISO_STRIDE_PX on screen (only the widest views: 0.5 deg < 4 px).
-  function isoStride(z, dlon) { return TILE * Math.pow(2, z) * Math.abs(dlon) / 360 < ISO_STRIDE_PX ? 2 : 1; }
-  // The isobars' smoothing: the contours' [1, 2, 1]^2 kernel held within half a code of the node, but only where every
-  // present neighbour is within one code of it (the flat highs and cols, where the 8-bit terraces would bend a line
-  // across whole cells); elsewhere the node keeps its own value (the kernel's bias on curved, steep fields moved real
-  // isobars further than the codes did). Measured on a real GFS PRMSL frame (|lat| <= 60, every 2 hPa): 2.2 % of the
-  // true isobars' points more than a 0.5-deg node from the traced line (raw codes 2.8 %, the contours' rule 4.6 %), and
-  // as many small closed rings as the true field has. Fills nodes r0..r1-1, c0..c1-1 of S (columns periodic).
-  function isoSmooth(q, cols, rows, S, r0, r1, c0, c1) {
-    var v = 0, acc = 0, w = 0, flat = true;
-    function add(x, wt) { if (x && flat) { if (x - v > 1 || v - x > 1) flat = false; else { acc += x * wt; w += wt; } } }
-    for (var r = r0; r < r1; r++) {
-      var up = r > 0 ? (r - 1) * cols : -1, mid = r * cols, dn = r + 1 < rows ? (r + 1) * cols : -1;
-      for (var c = c0; c < c1; c++) {
-        v = q[mid + c];
-        if (!v) { S[mid + c] = 0; continue; }
-        var cl = c ? c - 1 : cols - 1, cr = c + 1 < cols ? c + 1 : 0;
-        acc = 4 * v; w = 4; flat = true;
-        add(q[mid + cl], 2); add(q[mid + cr], 2);
-        if (up >= 0) { add(q[up + c], 2); add(q[up + cl], 1); add(q[up + cr], 1); }
-        if (dn >= 0) { add(q[dn + c], 2); add(q[dn + cl], 1); add(q[dn + cr], 1); }
-        if (!flat) { S[mid + c] = v; continue; }
-        var sv = acc / w;
-        S[mid + c] = sv < v - 0.5 ? v - 0.5 : sv > v + 0.5 ? v + 0.5 : sv;
-      }
-    }
+  // One traced node per `stride` grid nodes, so that traced nodes are at least ISO_NODE_PX apart on screen.
+  function isoStride(z, dlon) {
+    var px = TILE * Math.pow(2, z) * Math.abs(dlon) / 360;
+    return Math.max(1, Math.ceil(ISO_NODE_PX / px - 1e-6));
   }
-  // The window's pressures in hPa (NaN where the frame has no value): nodes rows r0..r1 and columns c0.. (count of them,
-  // wrapping; a whole-world window gets one more column so the cell across the date line is traced too), every
-  // `stride`-th node, after isoSmooth (S: a reusable Float32Array of the frame's size, filled in the window only).
-  function isoValues(frame, fdef, win, stride, S) {
-    var cols = frame.cols, rows = frame.rows, st = stride || 1, r0 = win.r0, r1 = win.r1, c0 = win.c0;
-    var count = win.count >= cols ? cols + 1 : win.count;
-    if (!S || S.length !== cols * rows) S = new Float32Array(cols * rows);
-    if (count > cols) isoSmooth(frame.q, cols, rows, S, r0, r1 + 1, 0, cols);
-    else if (c0 + count <= cols) isoSmooth(frame.q, cols, rows, S, r0, r1 + 1, c0, c0 + count);
-    else { isoSmooth(frame.q, cols, rows, S, r0, r1 + 1, c0, cols); isoSmooth(frame.q, cols, rows, S, r0, r1 + 1, 0, c0 + count - cols); }
-    var R = Math.floor((r1 - r0) / st) + 1, C = Math.floor((count - 1) / st) + 1, V = new Float64Array(R * C), lo = fdef.lo, k = (fdef.hi - fdef.lo) / 254;
-    for (var i = 0; i < R; i++) {
-      var base = (r0 + i * st) * cols;
-      for (var j = 0; j < C; j++) {
-        var s = S[base + (c0 + j * st) % cols];
-        V[i * C + j] = s ? lo + (s - 1) * k : NaN;
+  // The window's pressures (hPa) on the traced grid: node (i, j) = the mean of the present codes in the stride x stride
+  // block centred on grid node (r0 + i * stride, c0 + j * stride) (columns wrap; NaN where the block has none), then
+  // ISO_BLUR passes of [1, 2, 1] across and down (weights renormalised around missing nodes). A whole-world window gets
+  // a stride that divides the grid's columns plus one more column, the first again (the date line traced across).
+  // scratch: buffers kept between redraws (returned). -> {V, R, C, r0, c0, stride, wrap, scratch}
+  function isoValues(frame, fdef, win, stride, scratch) {
+    var cols = frame.cols, rows = frame.rows, q = frame.q, st = stride || 1, r0 = win.r0, r1 = win.r1, c0 = win.c0;
+    var wrap = win.count >= cols;
+    if (wrap) { while (cols % st) st++; c0 = 0; }
+    var count = wrap ? cols + 1 : win.count;
+    var R = Math.floor((r1 - r0) / st) + 1, C = wrap ? cols / st + 1 : Math.floor((count - 1) / st) + 1, N = R * C;
+    var sc = scratch && scratch.V && scratch.V.length >= N ? scratch : { V: new Float64Array(N * 2), T: new Float64Array(N * 2) };
+    var V = sc.V, lo = fdef.lo, k = (fdef.hi - fdef.lo) / 254, h = Math.floor(st / 2), half = st % 2 === 0, i, j;
+    for (i = 0; i < R; i++) {
+      var rc = r0 + i * st;
+      for (j = 0; j < C; j++) {
+        var cc = c0 + j * st, acc = 0, n = 0;
+        for (var di = -h; di <= h; di++) {                   // an even stride: the block's end rows / columns count half
+          var rr = rc + di; if (rr < 0 || rr >= rows) continue;
+          var base = rr * cols, wi = half && (di === h || di === -h) ? 0.5 : 1;
+          for (var dj = -h; dj <= h; dj++) {
+            var x = q[base + (((cc + dj) % cols) + cols) % cols];
+            if (x) { var wt = half && (dj === h || dj === -h) ? wi * 0.5 : wi; acc += x * wt; n += wt; }
+          }
+        }
+        V[i * C + j] = n ? lo + (acc / n - 1) * k : NaN;
       }
     }
-    return { V: V, R: R, C: C, r0: r0, c0: c0, stride: st, S: S };
+    for (var p = 0; p < ISO_BLUR; p++) isoBlur(V, sc.T, R, C, wrap);
+    if (wrap) for (i = 0; i < R; i++) V[i * C + C - 1] = V[i * C];
+    return { V: V, R: R, C: C, r0: r0, c0: c0, stride: st, wrap: wrap, scratch: sc };
+  }
+  // One [1, 2, 1] pass across then down, missing nodes (NaN) left out and stay missing; wrap: the last column is the first
+  // again (whole-world windows), so neighbours continue across the date line.
+  function isoBlur(V, T, R, C, wrap) {
+    var i, j, m = wrap ? C - 1 : C;
+    for (i = 0; i < R; i++) {
+      for (j = 0; j < m; j++) {
+        var c = V[i * C + j];
+        if (c !== c) { T[i * C + j] = NaN; continue; }
+        var jl = j - 1, jr = j + 1, acc = 2 * c, w = 2, x;
+        if (wrap) { if (jl < 0) jl = m - 1; if (jr >= m) jr = 0; }
+        if (jl >= 0) { x = V[i * C + jl]; if (x === x) { acc += x; w++; } }
+        if (jr < m) { x = V[i * C + jr]; if (x === x) { acc += x; w++; } }
+        T[i * C + j] = acc / w;
+      }
+      if (wrap) T[i * C + C - 1] = T[i * C];
+    }
+    for (i = 0; i < R; i++) {
+      for (j = 0; j < C; j++) {
+        var v = T[i * C + j];
+        if (v !== v) { V[i * C + j] = NaN; continue; }
+        var a2 = 2 * v, w2 = 2, y;
+        if (i > 0) { y = T[(i - 1) * C + j]; if (y === y) { a2 += y; w2++; } }
+        if (i + 1 < R) { y = T[(i + 1) * C + j]; if (y === y) { a2 += y; w2++; } }
+        V[i * C + j] = a2 / w2;
+      }
+    }
   }
   // Marching squares over V (R x C, row-major) at every multiple of `interval`: -> [{level, pts: [x0, y0, x1, y1, ...]
   // in node units (x = column, y = row of V), closed}]. A node counts as "high" when >= the level; a saddle cell is
@@ -2461,26 +2490,40 @@
   // segments are joined through their edges into one polyline per isobar: open lines start at an edge only one segment
   // uses (the window's border or a missing node), the rest are closed loops.
   function traceIsolines(V, R, C, interval) {
-    var adj = new Map(), pts = new Map(), i, j, out = [];
+    var out = [], i, j, NN = R * C;
+    // Crossing points, one per (edge, level): index n -> X[n], Y[n], its two neighbours A0[n] / A1[n] (an edge is
+    // shared by at most two cells, so a point never has more), and its level index K[n]. Typed storage, grown by doubling.
+    var cap = 1024, X = new Float64Array(cap), Y = new Float64Array(cap), A0 = new Int32Array(cap), A1 = new Int32Array(cap), K = new Int32Array(cap), cnt = 0;
+    var ids = new Map();
+    function grow() {
+      cap *= 2;
+      var x = new Float64Array(cap); x.set(X); X = x; x = new Float64Array(cap); x.set(Y); Y = x;
+      var y = new Int32Array(cap); y.set(A0); A0 = y; y = new Int32Array(cap); y.set(A1); A1 = y; y = new Int32Array(cap); y.set(K); K = y;
+    }
     function eid(side, i, j) {                               // the edge of cell (i, j) on that side: 2 * node + (0 horizontal, 1 vertical)
       if (side === 'T') return (i * C + j) * 2;
       if (side === 'B') return ((i + 1) * C + j) * 2;
       if (side === 'L') return (i * C + j) * 2 + 1;
       return (i * C + j + 1) * 2 + 1;                         // 'R'
     }
-    function point(side, i, j, L, a, b, c, d) {               // the crossing on that edge, linear between its two nodes
+    function point(key, lk, side, i, j, L, a, b, c, d) {      // the crossing on that edge, linear between its two nodes
+      var n = ids.get(key);
+      if (n !== undefined) return n;
+      if (cnt === cap) grow();
+      n = cnt++; ids.set(key, n); A0[n] = -1; A1[n] = -1; K[n] = lk;
       var t;
-      if (side === 'T') { t = (L - a) / (b - a); return [j + t, i]; }
-      if (side === 'B') { t = (L - d) / (c - d); return [j + t, i + 1]; }
-      if (side === 'L') { t = (L - a) / (d - a); return [j, i + t]; }
-      t = (L - b) / (c - b); return [j + 1, i + t];
+      if (side === 'T') { t = (L - a) / (b - a); X[n] = j + t; Y[n] = i; }
+      else if (side === 'B') { t = (L - d) / (c - d); X[n] = j + t; Y[n] = i + 1; }
+      else if (side === 'L') { t = (L - a) / (d - a); X[n] = j; Y[n] = i + t; }
+      else { t = (L - b) / (c - b); X[n] = j + 1; Y[n] = i + t; }
+      return n;
     }
-    function link(k1, k2) {
-      var x = adj.get(k1); if (x) x.push(k2); else adj.set(k1, [k2]);
-      x = adj.get(k2); if (x) x.push(k1); else adj.set(k2, [k1]);
+    function link(n1, n2) {
+      if (A0[n1] < 0) A0[n1] = n2; else A1[n1] = n2;
+      if (A0[n2] < 0) A0[n2] = n1; else A1[n2] = n1;
     }
     var kmin = Infinity, kmax = -Infinity;
-    for (i = 0; i < V.length; i++) if (V[i] === V[i]) { var kk = V[i] / interval; if (kk < kmin) kmin = kk; if (kk > kmax) kmax = kk; }
+    for (i = 0; i < NN; i++) if (V[i] === V[i]) { var kk = V[i] / interval; if (kk < kmin) kmin = kk; if (kk > kmax) kmax = kk; }
     if (!(kmax >= kmin)) return out;
     kmin = Math.floor(kmin); kmax = Math.ceil(kmax);
     var span = kmax - kmin + 1;                               // key = edge * span + level index
@@ -2490,123 +2533,188 @@
         if (a !== a || b !== b || c !== c || d !== d) continue;
         var mn = Math.min(a, b, c, d), mx = Math.max(a, b, c, d);
         for (var k = Math.ceil(mn / interval); k * interval <= mx; k++) {
-          var L = k * interval, cs = (a >= L ? 8 : 0) | (b >= L ? 4 : 0) | (c >= L ? 2 : 0) | (d >= L ? 1 : 0), segs = ISO_CASES[cs];
+          var L = k * interval, cs = (a >= L ? 8 : 0) | (b >= L ? 4 : 0) | (c >= L ? 2 : 0) | (d >= L ? 1 : 0), segs = ISO_CASES[cs], lk = k - kmin;
           if (segs === null) {                                // saddles: 5 = b and d high, 10 = a and c high
             var high = (a + b + c + d) / 4 >= L;
             segs = (cs === 5) === high ? [['T', 'L'], ['B', 'R']] : [['T', 'R'], ['L', 'B']];
           }
           for (var s = 0; s < segs.length; s++) {
-            var e1 = eid(segs[s][0], i, j) * span + (k - kmin), e2 = eid(segs[s][1], i, j) * span + (k - kmin);
-            if (!pts.has(e1)) pts.set(e1, point(segs[s][0], i, j, L, a, b, c, d));
-            if (!pts.has(e2)) pts.set(e2, point(segs[s][1], i, j, L, a, b, c, d));
-            link(e1, e2);
+            var n1 = point(eid(segs[s][0], i, j) * span + lk, lk, segs[s][0], i, j, L, a, b, c, d);
+            var n2 = point(eid(segs[s][1], i, j) * span + lk, lk, segs[s][1], i, j, L, a, b, c, d);
+            link(n1, n2);
           }
         }
       }
     }
-    var seen = new Set();
+    var seen = new Uint8Array(cnt), buf = new Float64Array(64);
     function walk(start, closedLoop) {
-      var line = [], prev = -1, cur = start;
-      while (cur !== undefined && !seen.has(cur)) {
-        seen.add(cur);
-        var p = pts.get(cur); line.push(p[0], p[1]);
-        var nb = adj.get(cur), next;
-        for (var n = 0; n < nb.length; n++) if (nb[n] !== prev && !seen.has(nb[n])) { next = nb[n]; break; }
+      var m = 0, prev = -1, cur = start;
+      while (cur >= 0 && !seen[cur]) {
+        seen[cur] = 1;
+        if (m + 4 > buf.length) { var nb = new Float64Array(buf.length * 2); nb.set(buf); buf = nb; }
+        buf[m++] = X[cur]; buf[m++] = Y[cur];
+        var next = -1, o = A0[cur];
+        if (o >= 0 && o !== prev && !seen[o]) next = o;
+        else { o = A1[cur]; if (o >= 0 && o !== prev && !seen[o]) next = o; }
         prev = cur; cur = next;
       }
-      if (closedLoop && line.length >= 4) line.push(line[0], line[1]);
-      out.push({ level: (start % span + kmin) * interval, pts: line, closed: !!closedLoop });
+      if (closedLoop && m >= 4) { buf[m++] = buf[0]; buf[m++] = buf[1]; }
+      out.push({ level: (K[start] + kmin) * interval, pts: buf.slice(0, m), closed: !!closedLoop });
     }
-    adj.forEach(function (nb, key) { if (nb.length === 1 && !seen.has(key)) walk(key, false); });
-    adj.forEach(function (nb, key) { if (!seen.has(key)) walk(key, true); });
+    for (i = 0; i < cnt; i++) if (!seen[i] && A1[i] < 0) walk(i, false);   // open lines start where one segment ends
+    for (i = 0; i < cnt; i++) if (!seen[i]) walk(i, true);
     return out;
   }
-  // Node units of an isoValues window -> container pixels of the view, once per world copy the view shows: [{level,
-  // xy: Float64Array, closed}]. Longitudes are unwrapped from the window's first column (the date line falls out); rows are
-  // projected exactly at the nodes and linearly between them (sub-pixel at the zooms where 0.5 deg spans many pixels).
-  function projectIsolines(lines, g, grid, view) {
-    var n = TILE * Math.pow(2, view.z), out = [], dlon = grid.dlon * g.stride, dlat = grid.dlat * g.stride;
-    var lonA = grid.lon0 + g.c0 * grid.dlon, xA = (lonA + 180) / 360 * n, dx = dlon / 360 * n;
+  // The highs' and lows' centres on the traced grid: a node lower (L) or higher (H) than every node within `rad` nodes
+  // (ties to the earlier node), at least `depth` hPa (default ISO_HL_MIN_HPA) from the mean of the square's border, not
+  // within `rad` of the window's edge (except across the date line of a whole-world window), and not at the field's
+  // clamped ends. -> [{type: 'H' | 'L', i, j, v}]
+  function findExtrema(g, rad, lo, hi, depth) {
+    var V = g.V, R = g.R, C = g.C, wrap = g.wrap, m = wrap ? C - 1 : C, out = [], i, j;
+    if (rad < 1) rad = 1;
+    if (!(depth > 0)) depth = ISO_HL_MIN_HPA;
+    function at(ii, jj) { if (wrap) jj = ((jj % m) + m) % m; else if (jj < 0 || jj >= C) return NaN; return ii < 0 || ii >= R ? NaN : V[ii * C + jj]; }
+    for (i = rad; i < R - rad; i++) {
+      for (j = wrap ? 0 : rad; j < (wrap ? m : C - rad); j++) {
+        var v = V[i * C + j];
+        if (v !== v || v <= lo + 0.6 || v >= hi - 0.6) continue;
+        var isMin = true, isMax = true, di, dj, x;
+        for (di = -1; di <= 1 && (isMin || isMax); di++) for (dj = -1; dj <= 1; dj++) {
+          if (!di && !dj) continue;
+          x = at(i + di, j + dj); if (x !== x) { isMin = isMax = false; break; }
+          if (x < v || (x === v && (di < 0 || (!di && dj < 0)))) isMin = false;
+          if (x > v || (x === v && (di < 0 || (!di && dj < 0)))) isMax = false;
+        }
+        if (!isMin && !isMax) continue;
+        var ring = 0, rn = 0;
+        for (di = -rad; di <= rad && (isMin || isMax); di++) {
+          for (dj = -rad; dj <= rad; dj++) {
+            x = at(i + di, j + dj);
+            if (x !== x) continue;
+            if (x < v || (x === v && (di < 0 || (!di && dj < 0)))) isMin = false;
+            if (x > v || (x === v && (di < 0 || (!di && dj < 0)))) isMax = false;
+            if (Math.abs(di) === rad || Math.abs(dj) === rad) { ring += x; rn++; }
+          }
+        }
+        if (!rn) continue;
+        ring /= rn;
+        if (isMin && ring - v >= depth) out.push({ type: 'L', i: i, j: j, v: v });
+        else if (isMax && v - ring >= depth) out.push({ type: 'H', i: i, j: j, v: v });
+      }
+    }
+    return out;
+  }
+  // The projection of an isoValues window: node row -> container y (exact at the nodes, linear between), node column ->
+  // x per world copy the view shows (longitudes unwrapped from the window's first column: the date line falls out).
+  function isoProjector(g, grid, view) {
+    var n = TILE * Math.pow(2, view.z), dlat = grid.dlat * g.stride;
+    var lonA = grid.lon0 + g.c0 * grid.dlon, xA = (lonA + 180) / 360 * n, dx = grid.dlon * g.stride / 360 * n;
     var Y = new Float64Array(g.R);
     for (var i = 0; i < g.R; i++) Y[i] = forwardPixel(grid.lat0 + g.r0 * grid.dlat + i * dlat, 0, view.z).y - view.oy;
-    var spanX = (g.C - 1) * dx, ks = [];
+    var spanX = (g.C - 1) * dx, offs = [];
     if (spanX >= n - 1e-6) {                                  // the whole world: every copy the view touches
-      for (var k = Math.floor((view.ox - xA - spanX) / n); k * n + xA <= view.ox + view.w; k++) ks.push(k);
-    } else ks.push(Math.round((view.ox + view.w / 2 - (xA + spanX / 2)) / n));
-    for (var q = 0; q < ks.length; q++) {
-      var off = xA + ks[q] * n - view.ox;
+      for (var k = Math.floor((view.ox - xA - spanX) / n); k * n + xA <= view.ox + view.w; k++) offs.push(xA + k * n - view.ox);
+    } else offs.push(xA + Math.round((view.ox + view.w / 2 - (xA + spanX / 2)) / n) * n - view.ox);
+    return { Y: Y, dx: dx, offs: offs, y: function (yy) { var r = Math.floor(yy), fr = yy - r; return fr > 0 && r + 1 < g.R ? Y[r] + (Y[r + 1] - Y[r]) * fr : Y[Math.min(Math.max(r, 0), g.R - 1)]; } };
+  }
+  // Node units of an isoValues window -> container pixels of the view, once per world copy the view shows: [{level,
+  // xy: Float64Array, closed}].
+  function projectIsolines(lines, g, grid, view) {
+    var pr = isoProjector(g, grid, view), out = [];
+    for (var q = 0; q < pr.offs.length; q++) {
+      var off = pr.offs[q];
       for (var l = 0; l < lines.length; l++) {
         var p = lines[l].pts, xy = new Float64Array(p.length);
-        for (var m = 0; m < p.length; m += 2) {
-          var y = p[m + 1], r = Math.floor(y), fr = y - r;
-          xy[m] = off + p[m] * dx;
-          xy[m + 1] = fr > 0 && r + 1 < g.R ? Y[r] + (Y[r + 1] - Y[r]) * fr : Y[Math.min(r, g.R - 1)];
-        }
+        for (var m = 0; m < p.length; m += 2) { xy[m] = off + p[m] * pr.dx; xy[m + 1] = pr.y(p[m + 1]); }
         out.push({ level: lines[l].level, xy: xy, closed: lines[l].closed });
       }
     }
     return out;
   }
-  // Pills along the projected lines: a line drawn over at least ISO_LABEL_MIN_PX of the view gets one at
-  // ISO_LABEL_FIRST_PX and every ISO_LABEL_EVERY_PX after (one in the middle when shorter than that); a pill that would
-  // overlap another (a 32-px bucket grid of the placed boxes) or come within ISO_LABEL_EDGE_PX of the view's edge is
-  // skipped. measure(text) -> width in px. -> [{x, y, w, h, text}] (x, y = the pill's centre; upright).
-  function placeLabels(paths, view, measure) {
-    var out = [], grid = new Map(), G = ISO_LABEL_GRID_PX, cache = {};
+  // The H / L centres in container pixels, every world copy, kept ISO_HL_EDGE_PX inside the view: [{type, x, y, text}]
+  // (text = the pressure rounded to the hPa).
+  function projectExtrema(ext, g, grid, view) {
+    var pr = isoProjector(g, grid, view), out = [], e = ISO_HL_EDGE_PX;
+    for (var q = 0; q < pr.offs.length; q++) {
+      for (var k = 0; k < ext.length; k++) {
+        var x = pr.offs[q] + ext[k].j * pr.dx, y = pr.Y[ext[k].i];
+        if (x < e || y < e || x > view.w - e || y > view.h - e) continue;
+        out.push({ type: ext[k].type, x: x, y: y, text: String(Math.round(ext[k].v)) });
+      }
+    }
+    return out;
+  }
+  // At most ONE pill per line (owner G32): a line drawn over at least ISO_LABEL_MIN_PX of the view gets its pill at the
+  // first of ISO_LABEL_AT (fractions of its length inside the view) where the pill fits: inside the view by
+  // ISO_LABEL_EDGE_PX, clear of the H / L marks and of every pill already placed (ISO_LABEL_GAP_PX apart; a grid of
+  // ISO_LABEL_GRID_PX buckets, each box filed in every bucket it covers). The pill is rotated along the line, its text
+  // kept upright. measure(text) -> width in px. -> [{x, y, w, h, a, text}] (x, y = the pill's centre, a = its angle).
+  function placeLabels(paths, view, measure, marks) {
+    var out = [], grid = new Map(), G = ISO_LABEL_GRID_PX, P = ISO_LABEL_GAP_PX, cache = {}, hb = [];
     function width(t) { return cache[t] === undefined ? (cache[t] = measure(t)) : cache[t]; }
+    function key(gx, gy) { return (gx + 4096) * 8192 + (gy + 4096); }
     function hits(b) {
-      for (var gx = Math.floor((b.x0 - G) / G); gx <= Math.floor((b.x1 + G) / G); gx++) {
-        for (var gy = Math.floor((b.y0 - G) / G); gy <= Math.floor((b.y1 + G) / G); gy++) {
-          var cell = grid.get(gx + ',' + gy);
+      for (var gx = Math.floor((b.x0 - P) / G); gx <= Math.floor((b.x1 + P) / G); gx++) {
+        for (var gy = Math.floor((b.y0 - P) / G); gy <= Math.floor((b.y1 + P) / G); gy++) {
+          var cell = grid.get(key(gx, gy));
           if (!cell) continue;
           for (var i = 0; i < cell.length; i++) {
             var o = cell[i];
-            if (b.x0 < o.x1 + ISO_LABEL_GAP_PX && o.x0 < b.x1 + ISO_LABEL_GAP_PX && b.y0 < o.y1 + ISO_LABEL_GAP_PX && o.y0 < b.y1 + ISO_LABEL_GAP_PX) return true;
+            if (b.x0 < o.x1 + P && o.x0 < b.x1 + P && b.y0 < o.y1 + P && o.y0 < b.y1 + P) return true;
           }
         }
       }
       return false;
     }
     function keep(b) {
-      var gx = Math.floor(b.x0 / G), gy = Math.floor(b.y0 / G), key = gx + ',' + gy, cell = grid.get(key);
-      if (cell) cell.push(b); else grid.set(key, [b]);
-    }
-    for (var l = 0; l < paths.length; l++) {
-      var xy = paths[l].xy, seg = [], len = 0, m, inView = 0;
-      for (m = 2; m < xy.length; m += 2) {
-        var d = Math.hypot(xy[m] - xy[m - 2], xy[m + 1] - xy[m - 1]);
-        seg.push(d); len += d;
-        if (xy[m] >= 0 && xy[m] <= view.w && xy[m + 1] >= 0 && xy[m + 1] <= view.h) inView += d;
+      for (var gx = Math.floor(b.x0 / G); gx <= Math.floor(b.x1 / G); gx++) {
+        for (var gy = Math.floor(b.y0 / G); gy <= Math.floor(b.y1 / G); gy++) {
+          var kk = key(gx, gy), cell = grid.get(kk);
+          if (cell) cell.push(b); else grid.set(kk, [b]);
+        }
       }
+    }
+    for (var h = 0; marks && h < marks.length; h++) keep(markBox(marks[h]));
+    for (var l = 0; l < paths.length; l++) {
+      var xy = paths[l].xy, inView = 0, m;
+      for (m = 2; m < xy.length; m += 2) if (isoSegIn(xy, m, view)) inView += Math.hypot(xy[m] - xy[m - 2], xy[m + 1] - xy[m - 1]);
       if (inView < ISO_LABEL_MIN_PX) continue;
-      var text = String(paths[l].level), w = width(text) + 2 * ISO_STYLE.padX, h = ISO_STYLE.h, at = [];
-      if (len < ISO_LABEL_EVERY_PX) at.push(len / 2);
-      else for (var s = ISO_LABEL_FIRST_PX; s < len; s += ISO_LABEL_EVERY_PX) at.push(s);
-      for (var a = 0; a < at.length; a++) {
-        var walked = 0, x = null, y = null;
-        for (m = 0; m < seg.length; m++) {
-          if (walked + seg[m] >= at[a]) {
-            var t = seg[m] ? (at[a] - walked) / seg[m] : 0;
-            x = xy[2 * m] + (xy[2 * m + 2] - xy[2 * m]) * t; y = xy[2 * m + 1] + (xy[2 * m + 3] - xy[2 * m + 1]) * t;
+      var text = String(paths[l].level), w = width(text) + 2 * ISO_STYLE.padX, hh = ISO_STYLE.h;
+      for (var a = 0; a < ISO_LABEL_AT.length; a++) {
+        var target = inView * ISO_LABEL_AT[a], walked = 0, x = null, y = null, ang = 0;
+        for (m = 2; m < xy.length; m += 2) {
+          if (!isoSegIn(xy, m, view)) continue;
+          var dx = xy[m] - xy[m - 2], dy = xy[m + 1] - xy[m - 1], d = Math.hypot(dx, dy);
+          if (walked + d >= target) {
+            var t = d ? (target - walked) / d : 0;
+            x = xy[m - 2] + dx * t; y = xy[m - 1] + dy * t; ang = Math.atan2(dy, dx);
             break;
           }
-          walked += seg[m];
+          walked += d;
         }
         if (x === null) continue;
-        var b = { x0: x - w / 2, x1: x + w / 2, y0: y - h / 2, y1: y + h / 2 };
+        if (ang > Math.PI / 2) ang -= Math.PI; else if (ang <= -Math.PI / 2) ang += Math.PI;   // upright text
+        var ca = Math.abs(Math.cos(ang)), sa = Math.abs(Math.sin(ang)), hw = (w * ca + hh * sa) / 2, hv = (w * sa + hh * ca) / 2;
+        var b = { x0: x - hw, x1: x + hw, y0: y - hv, y1: y + hv };
         if (b.x0 < ISO_LABEL_EDGE_PX || b.y0 < ISO_LABEL_EDGE_PX || b.x1 > view.w - ISO_LABEL_EDGE_PX || b.y1 > view.h - ISO_LABEL_EDGE_PX) continue;
         if (hits(b)) continue;
         keep(b);
-        out.push({ x: x, y: y, w: w, h: h, text: text });
+        out.push({ x: x, y: y, w: w, h: hh, a: ang, text: text });
+        break;
       }
     }
     return out;
   }
-  // One canvas pass: every line halo first, then every core (two strokes), then the pills (the line cleared under each).
-  // A line is drawn as quadratic curves through the midpoints of its segments, with its points as control points: the
-  // corners where it crosses the 0.5-deg cells (about 11 px at zoom 4) are rounded off, never moved by more than half a
-  // segment; an open line still starts and ends at its own ends.
-  function drawIsobars(ctx, paths, labels, st) {
+  // A segment ending at xy[m] lies inside the view (both ends).
+  function isoSegIn(xy, m, view) {
+    return xy[m] >= 0 && xy[m] <= view.w && xy[m + 1] >= 0 && xy[m + 1] <= view.h && xy[m - 2] >= 0 && xy[m - 2] <= view.w && xy[m - 1] >= 0 && xy[m - 1] <= view.h;
+  }
+  // The box an H / L mark covers (the letter above, the pressure below its centre).
+  function markBox(k) { return { x0: k.x - 16, x1: k.x + 16, y0: k.y - 15, y1: k.y + 16 }; }
+  // One canvas pass: every line halo first, then every core (two strokes), then the pills (rotated along their lines,
+  // drawn over them), then the H / L marks. A line is drawn as quadratic curves through the midpoints of its segments,
+  // with its points as control points (a smooth curve that keeps an open line's ends).
+  function drawIsobars(ctx, paths, labels, st, marks) {
     st = st || ISO_STYLE;
     ctx.beginPath();
     for (var l = 0; l < paths.length; l++) {
@@ -2626,19 +2734,30 @@
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     ctx.strokeStyle = st.halo; ctx.lineWidth = st.haloW; ctx.stroke();
     ctx.strokeStyle = st.core; ctx.lineWidth = st.coreW; ctx.stroke();
-    if (!labels.length) return;
-    ctx.font = st.font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    for (var i = 0; i < labels.length; i++) {
-      var b = labels[i], x0 = b.x - b.w / 2, y0 = b.y - b.h / 2, r = Math.min(st.r, b.h / 2);
-      ctx.clearRect(x0, y0, b.w, b.h);
-      ctx.beginPath();
-      ctx.moveTo(x0 + r, y0); ctx.lineTo(x0 + b.w - r, y0); ctx.quadraticCurveTo(x0 + b.w, y0, x0 + b.w, y0 + r);
-      ctx.lineTo(x0 + b.w, y0 + b.h - r); ctx.quadraticCurveTo(x0 + b.w, y0 + b.h, x0 + b.w - r, y0 + b.h);
-      ctx.lineTo(x0 + r, y0 + b.h); ctx.quadraticCurveTo(x0, y0 + b.h, x0, y0 + b.h - r);
-      ctx.lineTo(x0, y0 + r); ctx.quadraticCurveTo(x0, y0, x0 + r, y0); ctx.closePath();
-      ctx.fillStyle = st.pill; ctx.fill();
-      ctx.strokeStyle = st.pillEdge; ctx.lineWidth = 1; ctx.stroke();
-      ctx.fillStyle = st.text; ctx.fillText(b.text, b.x, b.y + 0.5);
+    if (labels && labels.length) {
+      ctx.font = st.font; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (var i = 0; i < labels.length; i++) {
+        var b = labels[i], x0 = -b.w / 2, y0 = -b.h / 2, r = Math.min(st.r, b.h / 2);
+        ctx.save(); ctx.translate(b.x, b.y); if (b.a) ctx.rotate(b.a);
+        ctx.beginPath();
+        ctx.moveTo(x0 + r, y0); ctx.lineTo(x0 + b.w - r, y0); ctx.quadraticCurveTo(x0 + b.w, y0, x0 + b.w, y0 + r);
+        ctx.lineTo(x0 + b.w, y0 + b.h - r); ctx.quadraticCurveTo(x0 + b.w, y0 + b.h, x0 + b.w - r, y0 + b.h);
+        ctx.lineTo(x0 + r, y0 + b.h); ctx.quadraticCurveTo(x0, y0 + b.h, x0, y0 + b.h - r);
+        ctx.lineTo(x0, y0 + r); ctx.quadraticCurveTo(x0, y0, x0 + r, y0); ctx.closePath();
+        ctx.fillStyle = st.pill; ctx.fill();
+        ctx.fillStyle = st.text; ctx.fillText(b.text, 0, 0.5);
+        ctx.restore();
+      }
+    }
+    if (marks && marks.length) {
+      ctx.save();
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = st.hlText;
+      ctx.shadowColor = st.hlShadow; ctx.shadowBlur = st.hlBlur;
+      for (var h = 0; h < marks.length; h++) {
+        ctx.font = st.hlFont; ctx.fillText(marks[h].type, marks[h].x, marks[h].y - 5);
+        ctx.font = st.hlValueFont; ctx.fillText(marks[h].text, marks[h].x, marks[h].y + 9);
+      }
+      ctx.restore();
     }
   }
 
@@ -2649,7 +2768,7 @@
   function IsobarLayer(map) {
     this.map = map; this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
     this.frame = null; this.grid = null; this.entry = null; this.fdef = null; this.S = null;
-    this.pending = null; this._listeners = []; this.lastMs = 0; this.drawn = { lines: 0, labels: 0 };
+    this.pending = null; this._listeners = []; this.lastMs = 0; this.drawn = { lines: 0, labels: 0, hl: 0 };
   }
   IsobarLayer.prototype.raf = FlowAnimator.prototype.raf;
   IsobarLayer.prototype.caf = FlowAnimator.prototype.caf;
@@ -2695,7 +2814,7 @@
     if (this.pending !== null) { this.caf(this.pending); this.pending = null; }
     this._clear();
   };
-  IsobarLayer.prototype._clear = function () { if (this.ctx && this.v) this.ctx.clearRect(0, 0, this.v.w, this.v.h); this.drawn = { lines: 0, labels: 0 }; };
+  IsobarLayer.prototype._clear = function () { if (this.ctx && this.v) this.ctx.clearRect(0, 0, this.v.w, this.v.h); this.drawn = { lines: 0, labels: 0, hl: 0 }; };
   IsobarLayer.prototype._schedule = function () {
     var self = this;
     if (this.pending !== null || !this.canvas) return;
@@ -2711,20 +2830,30 @@
     sampleRow(f, false, r, cp, 1, out, 0);
     return out[0] ? this.fdef.lo + (out[0] - 1) / 254 * (this.fdef.hi - this.fdef.lo) : null;
   };
+  // One redraw: the window under the view plus a margin (so a high or low near the edge sees its whole neighbourhood),
+  // the interval for the zoom and the view's width, the lines, the H / L marks, the pills (only from ISO_LABEL_MIN_Z and
+  // never while the whole world is in view).
   IsobarLayer.prototype._draw = function () {
     if (!this.canvas || !this.ctx) return;
     var v = viewOf(this.map, null);
     this.v = v; this.dpr = placeCanvas(this.canvas, this.ctx, this.map, v);
     this.ctx.clearRect(0, 0, v.w, v.h);
-    if (!this.frame || !this.grid || !this.fdef) { this.drawn = { lines: 0, labels: 0 }; return; }
-    var t0 = nowMs(), ctx = this.ctx, st = isoStride(v.z, this.grid.dlon);
-    var g = isoValues(this.frame, this.fdef, nodeWindow(v, this.grid, this.frame, 0), st, this.S);
-    this.S = g.S;
-    var paths = projectIsolines(traceIsolines(g.V, g.R, g.C, isoInterval(v.z)), g, this.grid, v);
-    ctx.font = ISO_STYLE.font;
-    var labels = placeLabels(paths, v, function (t) { return ctx.measureText(t).width; });
-    drawIsobars(ctx, paths, labels, ISO_STYLE);
-    this.drawn = { lines: paths.length, labels: labels.length };
+    if (!this.frame || !this.grid || !this.fdef) { this.drawn = { lines: 0, labels: 0, hl: 0 }; return; }
+    var t0 = nowMs(), ctx = this.ctx, grid = this.grid, worldPx = TILE * Math.pow(2, v.z);
+    var span = v.w / worldPx * 360, interval = isoInterval(v.z, span);
+    var mg = Math.min(0.5, (ISO_HL_PX + 8) / Math.max(1, Math.min(v.w, v.h)));
+    var g = isoValues(this.frame, this.fdef, nodeWindow(v, grid, this.frame, mg), isoStride(v.z, grid.dlon), this.S);
+    this.S = g.scratch;
+    var paths = projectIsolines(traceIsolines(g.V, g.R, g.C, interval), g, grid, v);
+    var nodePx = worldPx * Math.abs(grid.dlon) / 360 * g.stride;
+    var marks = projectExtrema(findExtrema(g, Math.round(ISO_HL_PX / nodePx), this.fdef.lo, this.fdef.hi, Math.max(ISO_HL_MIN_HPA, interval / 4)), g, grid, v);
+    var labels = [];
+    if (v.z >= ISO_LABEL_MIN_Z && span < ISO_WORLD_DEG) {
+      ctx.font = ISO_STYLE.font;
+      labels = placeLabels(paths, v, function (t) { return ctx.measureText(t).width; }, marks);
+    }
+    drawIsobars(ctx, paths, labels, ISO_STYLE, marks);
+    this.drawn = { lines: paths.length, labels: labels.length, hl: marks.length };
     this.lastMs = Math.round((nowMs() - t0) * 10) / 10;
   };
 
@@ -3098,6 +3227,7 @@
       this._bindDocument();
     } else this.layer.clear();                               // never another field's picture under this label
     this._ensureFlow();                                      // no direction field: the particles go
+    this._ensureIso(); this.pcache.clear();                  // no pressure under SST: the isobars and their frames go (G32 A-P1-1)
     if (this.readout) this.readout.hidden = true;
     this._unattribute();
     this._syncLook();                                        // the imagery (the wind's relief goes)
@@ -3257,7 +3387,9 @@
     var pd = this._wantDir() && this.layer && this.layer.hasFrame() && !this._isUnavailable(idx) ? this._kindReady(idx, 'dir') : null;
     // The isobars likewise: a step waits for its pressure frame (the lines change with the picture, never a blink or an old
     // set under a new time); the first picture does not; a missing or failed pressure frame never holds a step.
-    var pp = this._wantPres() && this.layer && this.layer.hasFrame() && !this._isUnavailable(idx) ? this._kindReady(idx, 'pres') : null;
+    // A slow pressure frame holds the step at most PRES_WAIT_MS (owner, G32): the step then lands without lines and they
+    // appear when the frame arrives (_ensurePres delivers it to the step on the map).
+    var pp = this._wantPres() && this.layer && this.layer.hasFrame() && !this._isUnavailable(idx) ? capWait(this._kindReady(idx, 'pres'), PRES_WAIT_MS) : null;
     var waits = [p]; if (pd) waits.push(pd); if (pp) waits.push(pp);
     return (waits.length > 1 ? Promise.all(waits).then(function (all) { return all[0]; }) : p).then(function (frame) {
       if ((sig && sig.aborted) || self.target !== idx || !self.layer || self.manifest !== m || self.field !== field || self.res !== res) throw abortError();
@@ -3279,6 +3411,11 @@
     });
   };
   // The step the ring is planned around: a pending seek / step target, else the frame on the map.
+  // `p` or PRES_WAIT_MS, whichever settles first (never rejects: _kindReady never does); the timer is cleared with p.
+  function capWait(p, ms) {
+    var tm = null;
+    return Promise.race([p.then(function () { if (tm !== null) clearTimeout(tm); }), new Promise(function (r) { tm = setTimeout(r, ms); })]);
+  }
   Overlay.prototype._anchorIndex = function () { return this.target !== null ? this.target : this.frameIndex; };
   // ?ovdebug=1: the animator's and the scheduler's state in the panel, once a second (the owner's iPad; text only).
   Overlay.prototype._debugText = function () {
@@ -3346,6 +3483,7 @@
       var idx = plan[i][0], kind = plan[i][1], key = this._key(idx, kind);
       if (ring.indexOf(idx) >= room) continue;
       if (this.inflight[key] || this._isUnavailable(idx, kind) || this._cacheOf(kind).has(key)) continue;
+      if (kind !== 'field' && this._isUnavailable(idx)) continue;   // never the extras of a step that cannot be shown
       if (kind === 'dir') this._ensureDir(idx); else if (kind === 'pres') this._ensurePres(idx); else this._ensure(idx).catch(function () {});
     }
   };
@@ -3362,6 +3500,7 @@
       if (this.readout) this.readout.hidden = true;
       this._unattribute();
     }
+    if (this.iso && (this.frameIndex === null || !this.layer || !this.layer.hasFrame())) this.iso.clearData();   // no picture, no lines (G32)
     if (this.layer && !this.layer.hasFrame()) this._syncLook();
     this.pause();
     var msg = err && err.outage ? 'frames cannot be loaded right now' : err && err.message ? err.message : String(err);
@@ -3479,6 +3618,7 @@
       if (!m.fields[self.field]) throw new Error('layer "' + self.field + '" is not in run ' + m.run);
       self._adopt(m, ptr); self.pointerAt = Date.now();
       self._ensureFlow();                                  // the new run may or may not carry direction data
+      self._ensureIso();                                   // ... or pressure (G32 A-P2-1)
       return self._goto(nearestIndex(m, prevValid), sig).then(function () { if (wasPlaying) self.play(); });
     }).catch(function (err) { self._fail(sig, err); });
   };
@@ -3968,6 +4108,13 @@
 
   // Readout: hover only on hover-capable pointers, long-press (450 ms) on touch; a plain tap shows
   // nothing. Marker events are unaffected (the pane has no pointer events); controls are ignored.
+  // The isobars' pressure at a point, rounded to the hPa (the readout's "· 1004 hPa"): only from the pressure frame of the
+  // step on the map (never another step's lines' frame), else null.
+  Overlay.prototype._hpaAt = function (lat, lng) {
+    if (!this.iso || !this.iso.frame || !this.layer || this.iso.entry !== this.layer.entry) return null;
+    var v = this.iso.valueAt(lat, lng);
+    return v === null ? null : Math.round(v);
+  };
   Overlay.prototype._bindReadout = function () {
     var self = this, map = this.map, el = mk('div', 'ov-readout'); el.hidden = true;
     map.getContainer().appendChild(el); this.readout = el;
@@ -3983,10 +4130,8 @@
       var u = unitOf(layer.field, self.opts.getUnit()), f = layer.fdef;
       var txt = u.f(v).toFixed(u.d) + ' ' + u.label;
       if (v <= f.lo + 1e-9 && f.lo > 0) txt = '≤ ' + txt; else if (v >= f.hi - 1e-9) txt = '≥ ' + txt;   // "<=" only where values below lo exist (Tp)
-      if (self.iso && self.iso.frame && self.iso.entry === layer.entry) {    // the isobars' pressure at the cursor (the shown step's frame)
-        var hpa = self.iso.valueAt(latlng.lat, latlng.lng);
-        if (hpa !== null) txt += ' · ' + Math.round(hpa) + ' hPa';
-      }
+      var hpa = self._hpaAt(latlng.lat, latlng.lng);
+      if (hpa !== null) txt += ' · ' + hpa + ' hPa';
       el.textContent = txt; el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false;
     }
     var hoverable = !window.matchMedia || window.matchMedia('(hover: hover) and (pointer: fine)').matches;
@@ -4718,9 +4863,10 @@
       SstStore: SstStore, sstStore: sstStore, validSstManifest: validSstManifest, validSstPointer: validSstPointer, sstTierFor: sstTierFor, SST_FDEF: SST_FDEF,
       SST_TIER_ZOOMS: SST_TIER_ZOOMS, SST_ATTRIBUTION: SST_ATTRIBUTION, SST_HEAD: SST_HEAD, SST_STALE_DAYS: SST_STALE_DAYS, sstDayText: sstDayText, sstAgeDays: sstAgeDays, buildLegend: buildLegend, SST_PREFIX: SST_PREFIX, SST_PAD_PX: SST_PAD_PX, MAX_SST_INFLIGHT: MAX_SST_INFLIGHT, MAX_SST_CHUNK_BYTES: MAX_SST_CHUNK_BYTES, cellsForTile: cellsForTile,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
-      IsobarLayer: IsobarLayer, isoSmooth: isoSmooth, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
-      projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
-      ISO_LABEL_MIN_PX: ISO_LABEL_MIN_PX, ISO_LABEL_FIRST_PX: ISO_LABEL_FIRST_PX, ISO_LABEL_EVERY_PX: ISO_LABEL_EVERY_PX, ISO_LABEL_EDGE_PX: ISO_LABEL_EDGE_PX,
+      IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
+      projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findExtrema: findExtrema, projectExtrema: projectExtrema, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
+      ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_MIN_HPA: ISO_HL_MIN_HPA, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,
+      ISO_LABEL_MIN_PX: ISO_LABEL_MIN_PX, ISO_LABEL_AT: ISO_LABEL_AT, ISO_LABEL_EDGE_PX: ISO_LABEL_EDGE_PX,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,
       ANIM_BUDGET_MS: ANIM_BUDGET_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS, dirGridsOk: dirGridsOk,

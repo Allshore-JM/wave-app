@@ -935,7 +935,9 @@ def test_no_home_button_and_the_forecast_window_opens_between_the_corners(client
     assert ".forecast-win { right: 16px; bottom: 16px; width: min(1180px, calc(100vw - 32px)); height: min(60vh, 720px); }" in body
     fn = body[body.index("function measureTopRight() {"):]
     fn = fn[:fn.index("// Esri imagery.")]
-    assert "if (r.width > 0 && !c.classList.contains('tools-bar')) w = Math.max(w, base.right - r.left);" in fn
+    # the tools bar counts while it is shown: the wide box narrows beside it instead of being minimised (owner, G32 B-1); a
+    # hidden bar measures 0 wide; the box's right edge (W - w - 16) is then always left of the bar's left edge (W - w)
+    assert "if (r.width > 0) w = Math.max(w, base.right - r.left);" in fn and "tools-bar" not in fn
     assert "document.documentElement.style.setProperty('--map-topright-w', Math.round(w) + 'px');" in fn
     assert "new ResizeObserver(function () { measureTopRight(); }).observe(trCorner);" in fn
 
@@ -959,11 +961,17 @@ def test_geo_base_reaches_the_head_and_the_first_view_block_is_in_place(client, 
     fv = body[body.index("// ---- first view"):body.index("// ---- end first view ----")]
     for needle in ("el.classList.add('geo-pending');", "enforceSingleWorld();", "if (hadView) return;", "var place = window.__early && window.__early.place;",
                    "['pointerdown', 'wheel', 'keydown', 'touchstart']", "document.addEventListener('allshore:station', act, { once: true });",
-                   "z = Math.floor(fit * 10) / 10;"):
+                   "z = Math.floor(fit * 10) / 10;", "forgetMapView();", "t.closest('.leaflet-control, .ov-sheet')", "acted = true; el.classList.remove('geo-pending');"):
         assert needle in fv, needle
     assert "\n    enforceSingleWorld();\n" not in body, "the first view is set inside the block, not before it"
     assert ".leaflet-container.geo-pending .leaflet-map-pane { visibility: hidden; }" in body
     assert "window.addEventListener('resize', enforceSingleWorld);" in body
+    # no view is kept while the race runs (a reload then asks again: G32 B-6); a retired default is forgotten (A-P3-3)
+    save = body[body.index("function saveMapView(map) {"):]
+    assert save.index("if (map.getContainer && map.getContainer().classList.contains('geo-pending')) return;") < save.index("sessionStorage.setItem(")
+    assert "function forgetMapView() { try { sessionStorage.removeItem(mapKey); } catch (e) { /* storage blocked */ } }" in body
+    assert "forgetRetiredDefault(forecastStationsData);" in body
+    assert "document.addEventListener('allshore:stationshown', function () { refreshCurrent(); });" in body
     monkeypatch.setenv("GEO_BASE", "https://geo.example.test/")
     assert A._geo_base() == "https://geo.example.test"
     on = client.get("/?station=51201").get_data(as_text=True)
@@ -974,7 +982,7 @@ def test_geo_base_reaches_the_head_and_the_first_view_block_is_in_place(client, 
     for needle in ("var DEFAULT_KEY = 'allshore.defaultStation.v1';", "function resolveInitialState(search, stored, server, dflt)",
                    "function started() { return seq > 0; }", "var deferred = !initial.inline && !urlStation && !dflt && !!earlyStation && typeof earlyStation.then === 'function';",
                    "holdUrl = deferred;", "replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false;",
-                   ".then(function (sid) { if (loader.started()) return; state.station = sid; syncSelects(); holdUrl = false; loader.load({}); });"):
+                   "Promise.resolve(earlyStation).then(", "if (loader.started()) return;", "state.station = sid; syncSelects(); holdUrl = false;", "loader.load({});"):
         assert needle in js, needle
 
 
@@ -994,6 +1002,6 @@ def test_the_star_cycles_through_favorite_and_default(client):
                    "if (!e.key || e.key === DEFAULT_KEY || e.key === FAV_KEY)",
                    "typeof forecastStationsData !== 'undefined' && Array.isArray(forecastStationsData)"):
         assert needle in picker, needle
-    assert "(dflt0 && typeof dflt0.id === 'string' ? dflt0.id : '')" in body
+    assert "var cur = (new URLSearchParams(location.search).get('station') || '').trim() || dflt0Id || (window.__initial || {}).station || '';" in body
     # one key, three readers + the writer
-    assert body.count("'allshore.defaultStation.v1'") == 4
+    assert body.count("'allshore.defaultStation.v1'") == 6   # + forgetRetiredDefault's read and removal (G32 A-P3-3)

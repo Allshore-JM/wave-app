@@ -135,6 +135,12 @@ for the map: the tab's own view (sessionStorage) > the default station's positio
 the module ask for one and the same query (tests/ui/early.test.js); the module's first load waits for the head's answer
 (`window.__early.station`) and a load the viewer causes meanwhile wins. Env `GEO_BASE` (e.g. `https://geo.allshoresurf.com`)
 turns it on; unset, the page opens as before. The Home view button is gone (its saved view is no longer read).
+G32 fix round (UI asset 1.23.1): while the race runs nothing is kept as the tab's view (a reload then asks again); a
+pointer, wheel, key or touch on a control over the map (the overlay panel, the gear, the legend, the overlay's sheet) is not
+"moving the map", and moving the map shows it at once; the default station's id follows one rule everywhere (trimmed, 1-32
+letters, digits, `_` or `-`: a NOAA id or a point's `pt_` id); a default the station list no longer has (and not a point) is
+forgotten once the list is in, and the window says so once; the chip names the race's station as soon as the race answers.
+While a map tool's bar is open, the wide forecast window narrows to leave it free (owner) instead of being minimised.
 
 ## Map tools (static_ui/tools.js)
 
@@ -345,6 +351,18 @@ wind overlay on or off (on by default; localStorage `allshore.isobars.v1`, "0" =
 whole particle layer by one CSS opacity, 0 turns them off (nothing animates and no direction frames are fetched).
 Both are remembered in this browser and apply to every field and model; the rows are built by the overlay script, so
 they exist exactly when the overlays do. The gear's panel keeps its 260-px width and, on a short map, scrolls inside.
+The isobars' look (asset 2.19.3, the G32 fix round; the owner asked for Windy's look): the pressure field under the view is
+averaged into blocks at least 7 px apart on screen and smoothed twice by a [1, 2, 1] kernel, so the lines are smooth and the
+small rings of mountain pressure reductions and 8-bit terraces go (on a real GFS frame the large systems' lines stay within
+55 km of the true isobars for 95 % of their points and within 110 km for 98.6 %; deep lows read a little shallower in the
+lines, the readout's "· 1004 hPa" stays the exact value at the cursor). Spacing: every 8 hPa while the whole world is in
+view (any screen width) or to zoom 2.9, every 4 hPa to zoom 5.9, every 2 hPa beyond. Each isobar has at most one small
+pill (9-px text), rotated along the line, from zoom 4 and never while the whole world is in view; highs and lows are marked
+H and L with their pressure where a node is the lowest or highest within ~110 px on screen and at least 1 hPa (a quarter
+of the interval at the wider views) from its surroundings. Lines are thin and faint (a 1.2-px white line at 72 %). A step
+waits at most 1 s for its pressure frame (owner, G32): a slower one lands without lines, which appear when the frame
+arrives. One frame (at most ~16 ms) of the previous step's lines can show under the new picture when the browser paints
+between a landing and the next animation frame (G32 A-P3-5, accepted).
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.

@@ -22,7 +22,10 @@
   'use strict';
 
   var SETTINGS_KEY = 'allshore.settings.v1';   // localStorage {tz, unit}
-  var DEFAULT_KEY = 'allshore.defaultStation.v1';   // localStorage {id, lat, lon, name, at}: the viewer's default station (the blue star, plan section 46)
+  var DEFAULT_KEY = 'allshore.defaultStation.v1';
+  // The one rule for a default station's id (the <head>, this module, the map's first view and the picker: G32 A-P3-2):
+  // trimmed, 1-32 letters, digits, '_' or '-' (a NOAA id or a forecast point's pt_ id).
+  var DEFAULT_ID = /^[A-Za-z0-9_-]{1,32}$/;   // localStorage {id, lat, lon, name, at}: the viewer's default station (the blue star, plan section 46)
   var WINDOW_KEY = 'allshore.forecastWin.v1';  // sessionStorage {x, y, w, h, mode, prev}
   var LIVE_WINDOW_KEY = 'allshore.liveWin.v1'; // the live-buoy window's (the same shape)
   var TIDE_WINDOW_KEY = 'allshore.tideWin.v1'; // the tide-station window's (plan section 38)
@@ -50,7 +53,7 @@
   function resolveInitialState(search, stored, server, dflt) {
     var p = new URLSearchParams(search || ''), st = stored || {}, sv = server || {};
     var unit = p.has('unit') ? p.get('unit') : (typeof st.unit === 'string' ? st.unit : sv.unit);
-    var ds = dflt && typeof dflt === 'object' && typeof dflt.id === 'string' ? dflt.id.trim() : '';
+    var ds = dflt && typeof dflt === 'object' && typeof dflt.id === 'string' && DEFAULT_ID.test(dflt.id.trim()) ? dflt.id.trim() : '';
     return {
       station: (p.get('station') || '').trim() || ds || sv.station || '51201',   // a link with white space after the id (G22 A-17)
       tz: p.has('tz') ? p.get('tz') : (typeof st.tz === 'string' ? st.tz : (sv.tz || '')),
@@ -843,7 +846,7 @@
     var session = opts.storage || safeStorage('sessionStorage'), local = opts.settings || safeStorage('localStorage');
     var initial = opts.initial || {}, swanStations = initial.swan_stations || [];
     var search = (win.location && win.location.search) || '', dflt = readJson(local, DEFAULT_KEY);
-    if (typeof dflt.id !== 'string' || !dflt.id.trim()) dflt = null;
+    if (typeof dflt.id !== 'string' || !DEFAULT_ID.test(dflt.id.trim())) dflt = null;
     var state = resolveInitialState(search, readJson(local, SETTINGS_KEY), initial, dflt);
     // the table's Detailed | Summary mode (plan section 35): the tab's own preference, never in the address bar; each
     // mode keeps its own scroll position (the summary opens at its top, the detailed table where it was left)
@@ -1089,8 +1092,14 @@
         error: initial.error || null, model: initial.model, swan_available: initial.swan_available, wind_complete: initial.wind_complete,
         point: initial.point || null, final: !!initial.final, reason: initial.reason || null, summary_html: initial.summary_html || null });
     } else if (deferred) {
-      earlyStation.then(function (sid) { return typeof sid === 'string' && sid.trim() ? sid.trim() : '51201'; }, function () { return '51201'; })
-        .then(function (sid) { if (loader.started()) return; state.station = sid; syncSelects(); holdUrl = false; loader.load({}); });
+      Promise.resolve(earlyStation).then(function (sid) { return typeof sid === 'string' && sid.trim() ? sid.trim() : '51201'; }, function () { return '51201'; })   // (G32 A-P3-4)
+        .then(function (sid) {
+          if (loader.started()) return;
+          state.station = sid; syncSelects(); holdUrl = false;
+          // the picker names the race's station at once, not the server's 51201 until the forecast is in (G32 B-12)
+          try { doc.dispatchEvent(new CustomEvent('allshore:stationshown', { detail: { station: sid } })); } catch (e) { /* old browser */ }
+          loader.load({});
+        });
     } else loader.load({});
     app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, setView: setView, setTableMode: setTableMode,
       tableMode: function () { return tableMode; }, expand: expand, minimise: minimise, note: note, els: els };
@@ -1110,7 +1119,7 @@
     getMode: function () { return app ? app.window.mode : null; },
     getState: function () { return app ? Object.assign({}, app.state) : null; },
     _internals: {
-      SETTINGS_KEY: SETTINGS_KEY, DEFAULT_KEY: DEFAULT_KEY, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
+      SETTINGS_KEY: SETTINGS_KEY, DEFAULT_KEY: DEFAULT_KEY, DEFAULT_ID: DEFAULT_ID, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,

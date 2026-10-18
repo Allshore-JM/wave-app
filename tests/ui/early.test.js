@@ -121,20 +121,45 @@ test('section 46: a saved default station (the blue star) starts its request at 
 });
 
 test('section 46: with GEO set and no station, the Worker is asked without credentials, the nearest station of the list is chosen, its request started, and station / place resolve to it', async () => {
-  let pos = { lat: 21.3, lon: -157.86, city: 'Honolulu' };
+  let pos = { lat: 13.48, lon: 144.75, city: 'Hagatna' };
   const h = runHead('', { unit: 'Metric' }, undefined, { geo: GEO, stations: LIST, geoAnswer: () => ok(pos) });
   assert.equal(h.early, undefined, 'no forecast request before the answer');
   assert.deepEqual(h.fetches.map((f) => [f[0], f[1] && f[1].credentials]), [[GEO + '/', 'omit']], 'the Worker asked once, without credentials');
   assert.equal(typeof h.w.station.then, 'function'); assert.equal(typeof h.w.place.then, 'function');
   assert.deepEqual(h.timers.map((t) => t.ms), [2000], 'the 2-s cap');
   const sid = await h.w.station, place = await h.w.place;
-  assert.equal(sid, 'HNL01'); assert.deepEqual(Object.assign({}, place), { lat: 21.3, lon: -157.86, sid: 'HNL01', slat: 21.25, slon: -157.8 });
-  assert.equal(h.early.q, moduleQuery('', { unit: 'Metric' }, 'HNL01'), 'the head asks for exactly the module\'s deferred first query');
+  assert.equal(sid, '52200'); assert.deepEqual(Object.assign({}, place), { lat: 13.48, lon: 144.75, sid: '52200', slat: 13.7, slon: 144.8 });
+  assert.equal(h.early.q, moduleQuery('', { unit: 'Metric' }, '52200'), 'the head asks for exactly the module\'s deferred first query');
   assert.deepEqual(h.urls, [GEO + '/', '/api/forecast?' + h.early.q]);
   // the date line is no seam: a visitor at 179.98 E is nearest the station at 179.5 W (0.52 deg), not the ones at 179.4 E (0.58) or 170 E
   pos = { lat: -17.6, lon: 179.98 };
   const dl = runHead('', undefined, undefined, { geo: GEO, stations: LIST.concat([{ id: 'FAR', lat: -17.5, lon: 170 }]), geoAnswer: () => ok(pos) });
   assert.equal(await dl.w.station, 'XFJ2');
+});
+
+test('an Oahu visitor opens on Waimea Bay 51201 though another station is nearer (owner, 2026-10-18); the map fits it; off the island (and without 51201 in the list) the nearest', async () => {
+  const L2 = LIST.concat([{ id: '51211', name: 'Pearl Harbor Entrance', lat: 21.3, lon: -157.96 }, { id: '51208', name: 'Hanalei', lat: 22.28, lon: -159.57 },
+    { id: '51203', name: 'Kaumalapau', lat: 20.79, lon: -157.0 }]);
+  const at = async (pos, list) => {
+    const h = runHead('', undefined, undefined, { geo: GEO, stations: list || L2, geoAnswer: () => ok(pos) });
+    const sid = await h.w.station, place = await h.w.place;
+    return { sid, place: place && Object.assign({}, place), q: h.early && h.early.q };
+  };
+  for (const [name, lat, lon] of [['Mililani', 21.4504, -158.015], ['Honolulu', 21.3069, -157.8583], ['Kailua', 21.4022, -157.7394], ['Haleiwa', 21.5928, -158.1034],
+    ['Kapolei', 21.3356, -158.0581], ['Hawaii Kai', 21.2906, -157.7012], ['the box, south-west corner', 21.2, -158.32], ['the box, north-east corner', 21.76, -157.6]]) {
+    const r = await at({ lat, lon, city: name });
+    assert.equal(r.sid, '51201', name);
+    assert.deepEqual(r.place, { lat, lon, sid: '51201', slat: 21.673, slon: -158.117 }, name + ': the first view fits Waimea Bay');
+    assert.equal(r.q, moduleQuery('', {}, '51201'), name + ': the module\'s deferred first query');
+  }
+  // from Mililani 51211 is nearer (about 18 km against 26 km): the preference is the island's, not the distance
+  const noWaimea = L2.filter((s) => s.id !== '51201');
+  assert.equal((await at({ lat: 21.4504, lon: -158.015 }, noWaimea)).sid, '51211', 'no 51201 in the list: the nearest');
+  assert.equal((await at({ lat: 21.4504, lon: -158.015 }, L2.concat([{ id: '51201', lat: 'x', lon: -158 }]).filter((s, i, a) => s.id !== '51201' || i === a.length - 1))).sid, '51211', 'a 51201 without a position: the nearest');
+  for (const [name, lat, lon, want] of [['Lihue, Kauai', 21.9789, -159.3711, '51208'], ['Molokai', 21.09, -157.02, '51203'], ['just south of the box', 21.19, -157.9, 'HNL01'],
+    ['just east of the box', 21.33, -157.59, 'HNL01'], ['Guam', 13.48, 144.75, '52200']]) {
+    assert.equal((await at({ lat, lon })).sid, want, name);
+  }
 });
 
 test('section 46: every failure lands on 51201 after the race: a slow Worker (the 2-s cap), a refused / broken / empty answer, a failed station list, a list that is not a list; late answers change nothing', async () => {

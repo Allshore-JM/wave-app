@@ -91,7 +91,9 @@ page golden (`tests/fixtures/index_golden.json`) was re-baselined at this restru
 
 A fresh tab opens at the visitor's own area: the head asks the geo Worker (`tools/geo`, `GET https://geo.allshoresurf.com/`,
 Cloudflare's `request.cf` position for the IP address: the ISP's city; nothing is stored anywhere) and the station list, picks
-the station nearest that position (haversine, so the date line is no seam) and starts its forecast request; the map opens
+the station nearest that position (haversine, so the date line is no seam) and starts its forecast request (a visitor on Oahu,
+inside a box around the island, 21.2-21.76 N and 158.32-157.6 W with no other island in it, gets Waimea Bay 51201, the
+forecast most Oahu surfers want, though another station may be nearer: owner, 2026-10-18; `PREFER` in the head); the map opens
 centred on the visitor at zoom 6, zoomed out until that station is in view (15 % padding; never below the map's minimum
 zoom), and the forecast window loads the station. The Worker's answer and the list are raced against a 2-s cap; while it runs
 the map pane is hidden (no Hawaii tiles paint; the navy background shows under the controls) and a visitor who moves the map
@@ -101,7 +103,10 @@ since the address is written after the first load, and every link) > the viewer'
 favourites picker, localStorage `allshore.defaultStation.v1`: its position at zoom 6) > the IP's nearest station > 51201;
 the picker's star cycles: empty, then gold (a favorite; for a point: kept in My points), then blue (the default: one
 at a time, listed first; a new default leaves the old one a favorite), then empty again (neither); removing the
-default's favorite row or its point clears it as the default too;
+default's favorite row or its point clears it as the default too; in the dropdown every saved row (Favorites and My
+points) carries a Favorite | Default choice with the row's state pressed (gold / blue, as the star) and a ✕ that removes
+it from the list (owner, 2026-10-18: a favorite can be made the default, or the default kept as a favorite only, from
+within the dropdown; a line under the rows says what Default does);
 for the map: the tab's own view (sessionStorage) > the default station's position > the IP position > Hawaii. The head and
 the module ask for one and the same query (tests/ui/early.test.js); the module's first load waits for the head's answer
 (`window.__early.station`) and a load the viewer causes meanwhile wins. Env `GEO_BASE` (e.g. `https://geo.allshoresurf.com`)

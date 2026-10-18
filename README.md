@@ -128,6 +128,9 @@ or picks a station meanwhile keeps what they did. Every failure (no Worker, a sl
 from the sea) lands on today's behaviour: Hawaii and 51201. Precedence: a station in the address (`?station=`: every reload,
 since the address is written after the first load, and every link) > the viewer's default station (the blue star in the
 favourites picker, localStorage `allshore.defaultStation.v1`: its position at zoom 6) > the IP's nearest station > 51201;
+the picker's star cycles: empty, then gold (a favorite; for a point: kept in My points), then blue (the default: one
+at a time, listed first; a new default leaves the old one a favorite), then empty again (neither); removing the
+default's favorite row or its point clears it as the default too;
 for the map: the tab's own view (sessionStorage) > the default station's position > the IP position > Hawaii. The head and
 the module ask for one and the same query (tests/ui/early.test.js); the module's first load waits for the head's answer
 (`window.__early.station`) and a load the viewer causes meanwhile wins. Env `GEO_BASE` (e.g. `https://geo.allshoresurf.com`)

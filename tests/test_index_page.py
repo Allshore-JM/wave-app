@@ -413,10 +413,10 @@ def test_my_points_on_the_page(client):
     assert "const pt = window.AllshoreForecast && window.AllshoreForecast.parsePointId(sid);" in body   # focusStation
     assert "document.addEventListener('allshore:points', function () {" in body and "the list was rebuilt under the focus (G22 R-A16)" in body
     assert "ren.type = 'button'; ren.className = 'pt-act';" in body and "rem.setAttribute('aria-label', 'Remove point: ' + label);" in body
-    assert "const r = kept ? (P.store.remove(sid) ? 'removed' : 'unremoved') : P.store.add(sid);" in body
+    assert "const r = P.store.add(sid);" in body and "if (P && P.store.has(sid)) { const r = P.store.remove(sid) ? 'removed' : 'unremoved'; P.say(r, sid); P.sync(); }" in body   # keep / let go (section 46: the blue click lets it go)
     assert "if (r === 'added' && typeof showPointLayer === 'function') showPointLayer();" in body            # the star shows the layer (R-A15)
     assert "function showPointLayer() { if (!map.hasLayer(pointLayer)) { pointLayer.addTo(map); saveLayerVisibility(); } }" in body   # (X34)
-    assert "if (!kept && P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }" in body
+    assert "if (P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }" in body
     # names and provider labels in tooltips are text (G22 K-8, A-20); point markers pass a tool's click on (B-8)
     assert "mk.bindTooltip(textTip(p.label)," in body and "marker.bindTooltip(textTip(label)," in body
     assert body.count("bindTooltip(") == 5 and "mk.bindTooltip(s.id," in body                     # the third: a station id; the fourth: a tide station; the fifth: a wind station
@@ -976,3 +976,24 @@ def test_geo_base_reaches_the_head_and_the_first_view_block_is_in_place(client, 
                    "holdUrl = deferred;", "replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false;",
                    ".then(function (sid) { if (loader.started()) return; state.station = sid; syncSelects(); holdUrl = false; loader.load({}); });"):
         assert needle in js, needle
+
+
+def test_the_star_cycles_through_favorite_and_default(client):
+    """Plan section 46 (owner): the picker's star cycles empty -> gold (Favorite) -> blue (Default) -> empty; one default at
+    a time (localStorage allshore.defaultStation.v1, the key the head, the module and the first view read), listed first;
+    removing a favorite row or a point clears it as default too; a forecast without a pick and another tab's change
+    refresh the star. The behaviour is pinned by tests/ui/mypoints.test.js; here the markup and the key names."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert ".sr-star.sr-default { color: #1d6fd6; }" in body
+    assert '.station-results li.is-default .fav-select::before { content: "\\2605"; color: #1d6fd6;' in body
+    picker = body[body.index("(function initStationPicker() {"):body.index("// the picker just made the forecast bar taller")]
+    for needle in ("const DEFAULT_KEY = 'allshore.defaultStation.v1';", "function writeDefault(sid) {", "function clearDefault() {",
+                   "favToggle.classList.toggle('sr-default', dflt);", "if (isDefault(sid)) {", "if (goldNow) {",
+                   "removeFav(c.sid); if (isDefault(c.sid)) clearDefault();", "if (gone && isDefault(p.id)) clearDefault();",
+                   "document.addEventListener('allshore:forecast', function () { refreshCurrent(); });",
+                   "if (!e.key || e.key === DEFAULT_KEY || e.key === FAV_KEY)",
+                   "typeof forecastStationsData !== 'undefined' && Array.isArray(forecastStationsData)"):
+        assert needle in picker, needle
+    assert "(dflt0 && typeof dflt0.id === 'string' ? dflt0.id : '')" in body
+    # one key, three readers + the writer
+    assert body.count("'allshore.defaultStation.v1'") == 4

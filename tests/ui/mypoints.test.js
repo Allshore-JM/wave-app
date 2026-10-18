@@ -390,3 +390,107 @@ test('the overlay\'s and the live panel\'s zone label: a nautical zone as the wi
   assert.equal(tzAbbr(iso, 'Pacific/Honolulu'), 'HST', 'a civil zone keeps its own abbreviation');
   assert.equal(new Function('window', TPL.slice(a, b + 6) + '\nreturn tzAbbr;')({})(iso, 'Etc/GMT+8'), 'GMT-8', 'before the module loads: Intl');
 });
+
+// ---- the default station: the star's third state (plan section 46) ----
+const DKEY = 'allshore.defaultStation.v1', FKEY = 'allshore.favStations.v1';
+const readD = (b) => { try { return JSON.parse(b.local.m.get(DKEY) || 'null'); } catch (e) { return 'corrupt'; } };
+const readF = (b) => { try { return JSON.parse(b.local.m.get(FKEY) || '[]'); } catch (e) { return 'corrupt'; } };
+const starState = (b) => b.star.disabled ? 'disabled' : b.star.textContent === '☆' ? 'empty' : b.star.classList.contains('sr-default') ? 'blue' : 'gold';
+
+test('the star cycles empty -> gold (a favorite) -> blue (the default, with its position) -> empty (neither); labels say which', async () => {
+  global.forecastStationsData = [{ id: '51201', name: 'Waimea', lat: 21.673, lon: -158.117 }, { id: '46001', name: 'Gulf', lat: 56.3, lon: -148.0 }];
+  try {
+    const b = boot(); await settle(); b.last().release(payload('51201')); await settle();
+    assert.equal(starState(b), 'empty'); assert.match(b.star.getAttribute('aria-label'), /^Add current station to favorites/);
+    b.star.click();
+    assert.equal(starState(b), 'gold'); assert.deepEqual(readF(b), ['51201']); assert.equal(readD(b), null);
+    assert.equal(b.star.title, 'Favorite'); assert.match(b.star.getAttribute('aria-label'), /^Favorite \(click to make it the default station\)/);
+    assert.match(b.status.textContent, /Click the star again to make it the default/);
+    b.star.click();
+    assert.equal(starState(b), 'blue'); assert.equal(b.star.title, 'Default');
+    const d = readD(b); assert.equal(d.id, '51201'); assert.equal(d.lat, 21.673); assert.equal(d.lon, -158.117); assert.equal(d.name, '51201 — Waimea Bay, HI'); assert.ok(Number.isFinite(d.at));
+    assert.deepEqual(readF(b), ['51201'], 'still a favorite while it is the default');
+    assert.match(b.star.getAttribute('aria-label'), /^Default station \(click to clear it\)/); assert.match(b.status.textContent, /The site opens here/);
+    b.star.click();
+    assert.equal(starState(b), 'empty'); assert.equal(readD(b), null); assert.deepEqual(readF(b), [], 'neither the default nor a favorite');
+    b.star.click(); assert.equal(starState(b), 'gold', 'and round again');
+  } finally { delete global.forecastStationsData; }
+});
+
+test('one default at a time: a new default leaves the old one a favorite; the default is listed first with a blue star; its row star clears both', async () => {
+  const b = boot({ local: { [FKEY]: JSON.stringify(['46001']) } }); await settle(); b.last().release(payload('51201')); await settle();
+  b.doc.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: '46001', source: 'picker' } })); await settle(); b.last().release(payload('46001')); await settle();
+  assert.equal(starState(b), 'gold'); b.star.click(); assert.equal(readD(b).id, '46001');
+  assert.equal(readD(b).lat, undefined, 'no station list here: kept without a position (the site still opens on the station)');
+  b.doc.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: '51201', source: 'picker' } })); await settle(); b.last().release(payload('51201')); await settle();
+  assert.equal(starState(b), 'empty'); b.star.click(); b.star.click();
+  assert.equal(readD(b).id, '51201'); assert.deepEqual(readF(b).sort(), ['46001', '51201'], 'the old default stays a favorite');
+  b.openPicker();
+  const rows = b.results.children.filter((li) => li.children[0] && li.children[0].classList.contains('fav-select'));
+  assert.deepEqual(rows.map((li) => li.children[0].dataset.sid), ['51201', '46001'], 'the default first');
+  assert.ok(rows[0].children[1].classList.contains('sr-default')); assert.equal(rows[0].children[1].title, 'Default');
+  assert.ok(!rows[1].children[1].classList.contains('sr-default')); assert.match(rows[0].children[1].getAttribute('aria-label'), /^Remove the default station/);
+  rows[0].children[1].click();
+  assert.equal(readD(b), null); assert.deepEqual(readF(b), ['46001'], 'the row star clears both'); assert.equal(starState(b), 'empty');
+  assert.match(b.status.textContent, /^Removed the default station 51201/);
+  const left = b.results.children.filter((li) => li.children[0] && li.children[0].classList.contains('fav-select'));
+  assert.deepEqual(left.map((li) => li.children[0].dataset.sid), ['46001']);
+  left[0].children[1].click(); assert.deepEqual(readF(b), []); assert.match(b.status.textContent, /^Removed favorite 46001/);
+  // the default is listed first also when it is the OLDER favorite (the list is newest first otherwise)
+  const c = boot({ local: { [FKEY]: JSON.stringify(['51201', '46001']), [DKEY]: JSON.stringify({ id: '46001' }) } }); await settle(); c.last().release(payload('51201')); await settle();
+  c.openPicker();
+  assert.deepEqual(c.results.children.filter((li) => li.children[0] && li.children[0].classList.contains('fav-select')).map((li) => li.children[0].dataset.sid), ['46001', '51201']);
+});
+
+test('a point can be the default: kept (gold), then blue with its position from the id; listed first and marked in My points; the blue click or ✕ clears the default and lets it go', async () => {
+  const b = boot({ local: { 'allshore.points.v1': JSON.stringify([{ id: 'pt_20000N_160000W' }, { id: 'pt_21700N_158200W', name: 'Reef' }]) } });
+  await settle(); b.last().release(payload('51201')); await settle();
+  b.doc.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: 'pt_21700N_158200W', source: 'picker' } })); await settle(); b.last().release(payload('pt_21700N_158200W')); await settle();
+  assert.equal(starState(b), 'gold'); assert.match(b.star.getAttribute('aria-label'), /^Kept in My points \(click to make it the default point\)/);
+  b.star.click();
+  assert.equal(starState(b), 'blue'); assert.deepEqual([readD(b).id, readD(b).lat, readD(b).lon], ['pt_21700N_158200W', 21.7, -158.2]);
+  assert.match(b.star.getAttribute('aria-label'), /^Default point \(click to clear it\)/);
+  b.openPicker();
+  const ptRows = b.results.children.filter((li) => li.children[0] && li.children[0].classList.contains('fav-select') && li.children[0].dataset.sid.indexOf('pt_') === 0);
+  assert.equal(ptRows[0].children[0].dataset.sid, 'pt_21700N_158200W', 'the default point first'); assert.ok(ptRows[0].classList.contains('is-default')); assert.equal(ptRows[0].title, 'Default point');
+  assert.ok(!ptRows[1].classList.contains('is-default'));
+  ptRows[0].children[2].click();                                                // ✕ (a named point: confirmed)
+  assert.equal(readD(b), null, 'a removed point is no longer the default'); assert.deepEqual(b.stored(), ['pt_20000N_160000W']);
+  b.doc.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: 'pt_20000N_160000W', source: 'picker' } })); await settle(); b.last().release(payload('pt_20000N_160000W')); await settle();
+  b.star.click(); assert.equal(readD(b).id, 'pt_20000N_160000W');
+  b.star.click(); assert.equal(readD(b), null); assert.deepEqual(b.stored(), [], 'the blue click lets the point go too'); assert.equal(starState(b), 'empty');
+});
+
+test('the star follows a forecast that came without a pick (the visitor\'s area) and another tab\'s default; a damaged default is no default', async () => {
+  const b = boot({ local: { [FKEY]: JSON.stringify(['51201']) } }); await settle(); b.last().release(payload('51201')); await settle();
+  assert.equal(starState(b), 'gold');
+  b.local.m.set(DKEY, JSON.stringify({ id: '51201' }));
+  b.winListeners.storage.forEach((fn) => fn({ key: DKEY })); assert.equal(starState(b), 'blue', 'another tab made it the default');
+  b.local.m.set(DKEY, '{oops');
+  b.doc.dispatchEvent(new CustomEvent('allshore:forecast', { detail: { station: '51201', ok: true } })); assert.equal(starState(b), 'gold', 'a forecast refreshes the star; damaged = none');
+  b.local.m.set(DKEY, JSON.stringify({ id: 7 })); b.winListeners.storage.forEach((fn) => fn({ key: null })); assert.equal(starState(b), 'gold');
+  b.star.click(); assert.equal(readD(b).id, '51201', 'gold -> blue over a damaged record');
+});
+
+test('a default the page opens on: the module loads it (the address names it after the load); a default point not kept still gets its option and title', async () => {
+  const b = boot({ local: { [DKEY]: JSON.stringify({ id: '46001', name: 'Gulf' }) } }); await settle();
+  assert.equal(b.last().station, '46001', 'the first request is the default'); assert.equal(b.station(), '46001');
+  b.last().release(payload('46001')); await settle();
+  assert.match(b.win.location.search, /station=46001/); assert.equal(b.select.value, '46001'); assert.equal(starState(b), 'blue');
+  const c = boot({ local: { [DKEY]: JSON.stringify({ id: 'pt_20000N_160000W' }) } }); await settle();
+  assert.equal(c.last().station, 'pt_20000N_160000W');
+  assert.ok(c.select.options.some((o) => o.value === 'pt_20000N_160000W'), 'the default point has an option (cur)');
+  c.last().release(payload('pt_20000N_160000W')); await settle();
+  assert.equal(c.select.value, 'pt_20000N_160000W'); assert.equal(starState(c), 'blue');
+  const l = boot({ search: '?station=51201', local: { [DKEY]: JSON.stringify({ id: '46001' }) } }); await settle();
+  assert.equal(l.last().station, '51201', 'the address wins');
+});
+
+test('a default that cannot be stored (storage refusing it) is not shown as one and the visitor is told; the favorite stays', async () => {
+  const m = new Map([[FKEY, JSON.stringify(['51201'])]]);
+  const local = { m, getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { if (k === DKEY) { const e = new Error('QuotaExceededError'); e.name = 'QuotaExceededError'; throw e; } m.set(k, String(v)); }, removeItem: (k) => m.delete(k) };
+  const b = boot({ localStorage: local }); await settle(); b.last().release(payload('51201')); await settle();
+  assert.equal(starState(b), 'gold'); b.star.click();
+  assert.equal(starState(b), 'gold', 'still gold'); assert.equal(m.has(DKEY), false); assert.deepEqual(JSON.parse(m.get(FKEY)), ['51201']);
+  assert.match(b.status.textContent, /could not keep a default/);
+});

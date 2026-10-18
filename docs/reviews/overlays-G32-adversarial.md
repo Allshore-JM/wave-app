@@ -316,3 +316,151 @@ Headless Edge with the GPU (Iris Xe through ANGLE D3D11), trusted input. Scripts
   the switch, and the next loads gave 200 in 0.2-0.6 s. Not related to the overlay, which runs in the browser.
 - Cleanup: both origins' storage emptied in the browser profile, and the browser closed by DevTools (no process left);
   profile removed.
+
+## Short fresh re-check of the fix round (Opus 5.5 MAX, 2026-10-18)
+Target: `cfbd966..7f876e7` (overlay 2.19.5, UI 1.23.1) and the test site at b93e2e3. Two fresh reviewers worked from the brief
+in scratch `g32/recheck/brief.md`:
+- R1 checked code and data, with no browser. Report: `g32/recheck/r1/recheck-r1-report.md`.
+- R2 worked on the test site with trusted mouse, keyboard and touch input in its own headless Edge. Report:
+  `g32/recheck/r2/recheck-r2-report.md`; screenshots in `r2/shots`.
+
+**Result:** R1 0 P0, 0 P1, 2 P2, 8 P3; R2 0 P0, 1 P1, 2 P2, 4 P3 + 2 notes. Combined and de-duplicated: **0 P0, 1 P1 (fixed
+during the re-check), 3 P2, 10 P3, 2 owner-awareness notes.**
+
+### What held
+- **RC1, the look.** Held.
+  - R1: the typed tracer equals the previous one on 1,800 cases; the block means and blur are bit-exact against an
+    independent version on 3,840 cases; switch points tabulated.
+  - R1: pills on 630 real views: 0 overlaps, none on a mark or an edge, one per line.
+  - R2: in 114 views (both models, three sizes) drawn = rebuild, with no pill defects. Smooth lines across the date line.
+- **RC2, H / L as written.** The code does exactly what its rule says.
+  - R1's own implementation (a different method throughout) matches `findCentres` on 4.75 M synthetic centres and 59,976
+    real-frame views. The block prefilter and the bands lookup are exact.
+  - Of the marks lost against 2.19.4, all 2,141 are shelves.
+- **The rule itself fails the owner's "sensible H and L, real centres, nothing silly"** in the ways listed under Findings.
+- **RC3, the fifteen G32 items.** Held (one corner of the 1-s cap: P3), except item 13 for point defaults (F3, P1, fixed).
+- **Other confirmations.**
+  - The readout equals an exact value at 120 of 120 trusted hovers.
+  - In shark playback every landing showed its own lines: 0 other-step lines, no blank frames, during drags, wheel zooms
+    and pinches.
+  - The gear, the wide window box beside every tool's bar at 1280-2560 px, and the IP open with the real Worker all held,
+    as did 37 intercepted cases.
+  - Failure paths, Updates in both directions, reduced motion: held. No leaks; clean consoles.
+  - R1's three-kind scheduler fuzz: 3,000 runs, about 289,000 operations; a late pressure frame always reached the step on
+    the map, never another step.
+- **Timing.** R2's one slow cell (1920 z4 at shark) was R1's CPU load; it ran 8.0 frames/s on both sites once R1 was done.
+
+### Findings
+| Id | Severity | From | Finding |
+|---|---|---|---|
+| F3 | P1, fixed | R2 (the author found it at the same time) | `forgetRetiredDefault` (item 13) erased a forecast-point default whenever the station list arrived before forecast.js had run: the point test needs `window.AllshoreForecast`. R2 measured it: deleted in 8 of 9 cold loads, and 6 of 6 with forecast.js held 1.5 s. Every point-default visitor would be hit on the first visit after each UI release. |
+| H-1 | P2 | R2 F1 | H marks are fixed to mountains, from the sea-level pressure reduction over high ground. In the default Hawaii view an "H" sits on the Big Island at every sampled step of both models (GFS 27 of 27, ECMWF 29 of 29), often as the only mark. At zoom 6's radius there are 61 permanent sites per model (Taiwan, Luzon, New Guinea, Java, Ethiopia, Tibet, Hispaniola, ...). H and L pairs sit on mountain slopes, e.g. 37 px apart in Ethiopia / Sudan at the world view. |
+| H-2 | P2 | R1 P2-1, R2 F5 | A low below about 921 hPa (codes 1-2) is never a centre. Live: ECMWF 12Z's super typhoon east of Luzon is code 1 from f045 to f099 and has no L at any zoom; GFS's 928-hPa copy has one. The readout at the eye says "920 hPa" where it should say "≤ 920". The same rule would drop a winter Siberian high of 1060 hPa or more. |
+| H-3 | P2 | R1 P2-2, R2 F6 | Deep, broad highs and lows lose their mark when zoomed in, because the depth is measured against a ring at 110 px: 5 nodes at zoom 6, 2 at 7, 1 from 8. Unmarked deep centres: highs 9.5 % at zoom 6-6.5, 15 % at 7-9; lows 40 % at 8-9. A ring at 8 nodes or more fixes 2,808 of 2,857 (marks +0.6 %). |
+| H-4 | P3 | R1 P3-1, R2 F4 | About half the marks new in 2.19.5 are one-code "shoulders" or dimples. Examples: two H's inside one 1028 high; "L 1009" three times along the monsoon trough. 12.6 % of all marks stand 0.55 hPa or less above their saddle, and in playback 1-2 marks appear or vanish per step. A higher minimum depth doesn't separate them; a prominence (saddle) rule does, and keeps V11-2's B (1.1 hPa above its saddle). |
+| H-5 | P3 | R1 P3-2 | H and L marks overlap: 546 pairs under 32 px, all over mountains. There is no mark-to-mark rule. |
+| H-6 | P3 | R1 P3-4 | Two marks of equal pressure can sit 87-110 px apart (320 pairs): the near rule compares nodes, the marks sit at patch middles. |
+| H-7 | P3 | R2 F2 | A strong low in view goes unmarked when its equal twin within the radius is kept but drawn off screen. |
+| H-8 | P3 | R2 F7 | A deep cyclone's L and value are illegible inside the packed rings and particles. |
+| S-1 | P3 | R1 P3-3 | The 1-s pressure cap restarts on every new goto of the same step (a zoom across the half / full threshold, a re-issued tick), giving waits of 1.3-1.8 s. |
+| P-1 | P3 | R1 P3-5 | `forgetRetiredDefault` would delete valid defaults if `/stations.json` ever serves `get_station_list`'s 10-buoy fallback list (latent). |
+| D-1 | P3 | R1 P3-6, P3-8 | A comment is misplaced. 11 of 68 mutants survive the repo suites (test gaps), and 5 more die only on source-text pins. |
+| O-0 | P3, confirm | R1 P3-7 | The 4 -> 2 hPa switch is at zoom 5.9 (Windy's spacing, from the step-11 request); owner call 1's text says 4.9. |
+
+Owner-awareness notes from R2:
+- O1: one pill per polyline is not one per isobar; 9 % of pills share an isobar that leaves the view and comes back.
+- O2: marks can sit under the logo and the panels.
+
+### The author's checks
+Scratch `g32/recheck/author`: my own PNG decoder (node:zlib) plus the module's `findCentres` / `projectCentres`, fed exactly
+the layer's inputs.
+- **H-1.** The Big Island H at 19.5 N 155.5 W is in every sampled step of both models at zooms 5-6; Kauai gets one in a
+  few steps.
+  - Its prominence above the saddle to a higher node is 4.4-7.2 hPa. Taiwan's is 1.7-5.5 hPa and Luzon's 3.3-5.0 hPa,
+    which is as much as many real highs. A prominence threshold alone cannot remove these marks; it needs high ground.
+- **H-2.** The ECMWF f072 / f096 eye is code 1, about 85 hPa below its ring 8 nodes out, with no L at any zoom. GFS f072
+  draws "L 928".
+- **H-3.** Confirmed, with R1's narrative zooms corrected. R1's examples used a 60-px "near the centre" test, while the
+  mark sits at the patch's middle.
+  - The Tasman high keeps its H to zoom 5.5 (83 px off-centre) and loses it from zoom 6.
+  - The 969-hPa Greenland Sea low and the 976-hPa low at 56 S keep their L at zoom 6 and lose it from zoom 7.
+  - R1's percentages test by patch identity, not by distance, so they stand.
+- **F3.** I found this independently in the local browser check of the owner's requests (below). It was fixed in 11c37e0:
+  a `pt_` default is judged once the page has parsed, and kept if the module never comes. On the test site a default point
+  was kept and opened in 5 of 5 loads with the cache off and 5 of 5 with forecast.js held 1.5 s.
+- **S-1, P-1, D-1.** Confirmed by reading the code:
+  - `capWait` makes a fresh timer per `_goto`;
+  - `get_station_list` falls back to `DEFAULT_STATIONS`;
+  - the comment sits above `capWait`.
+
+### The owner's requests during the re-check (2026-10-18), on the test site
+- 7d127c7: a visitor on Oahu opens on Waimea Bay 51201. Each saved row in the dropdown gets a Favorite | Default choice and
+  a ✕.
+- 11c37e0: F3 fixed. Saved rows wrap on phones, so a point's coordinates are never cut.
+- Goldens: 03ea062, ce210da.
+- feat/isobars-geo was fast-forwarded to ce210da; test is at 939ac4e (live 23:08:46 UTC).
+
+Verified on the test site (headless Edge, trusted input, scratch `iso/v9/v12_oahu.js`):
+- The real geo Worker (Mililani) opens on 51201 on desktop and phone, the map on the visitor with Waimea Bay in view.
+- Intercepted locations: Honolulu, Haleiwa and Kailua open on 51201; Lihue 51208, Hilo 51206, San Francisco 46237.
+- The dropdown worked by clicks, Tab / Shift+Tab / Enter and phone taps.
+- On the phone the labels are whole, the halves are 44 px and there is no sideways scroll.
+- No console problems. Storage emptied afterwards.
+- Suites: pytest 1,189; Node UI 427 and overlay 397.
+
+### The owner's calls (2026-10-18, all four as recommended)
+1. H-1, mountains: no H or L over high ground. A static elevation map is built once from NOAA's model terrain; no mark
+   where the terrain is above about 500 m (threshold tuned on real runs). Lowland and ocean systems are unchanged.
+2. H-3 / H-4, the rule: rank by prominence. A mark needs at least about 1 hPa above the saddle to any stronger neighbour;
+   one mark per 110-px area, and the most prominent wins.
+3. H-2, typhoons below 920 hPa: the clamped eye gets "L ≤920" and the hover reads "≤ 920 hPa". The same holds at the
+   top: "H ≥1060".
+4. O-0, the spacing: keep zoom 6 (Windy's): 8 hPa at the world view, 4 hPa to zoom 5.9, 2 hPa beyond.
+
+### Fix round 3 scope (overlay asset 2.20.0)
+Client (`static_overlay/overlay.js`):
+1. **H and L by prominence** (call 2; fixes H-3, H-4, H-6, H-7). One pass per kind over the view's window plus a margin:
+   nodes in code order, union-find over 8-neighbours, merge-tree persistence. A centre's prominence is the level at which
+   it joins a stronger centre minus its own code; the strongest in the window is unbounded.
+   - A mark needs prominence >= 2 codes (1.1 hPa: keeps V11-2's B and drops one-code shoulders).
+   - The patch rules stay (at most 4,096 nodes, under half the world's width); the mark sits at the patch middle.
+   - Exclusivity is greedy by prominence, then depth, then raster order: a centre is dropped when a kept centre of its kind
+     lies within `rad` nodes of its patch middle.
+   - Exclusivity runs only among centres whose marks are drawn in the view, so a twin kept off screen no longer hides a
+     visible one.
+   - The 110-px ring-depth test goes, so a broad high keeps its H at every zoom.
+2. **High ground** (call 1; H-1, H-5). A static 0.5-degree mask, `static_overlay/terrain_half.png`:
+   - A node is high when the highest NOAA GFS model terrain (HGT:surface, 0.25 degrees, public domain) over its footprint
+     is at or above the threshold.
+   - Built once by `tools/model_frames/make_terrain_mask.py` and versioned and pinned with the overlay assets.
+   - No mark on a high node. Without the mask (it failed to load) the marks are drawn as before.
+   - Then a cross-kind pass: an H and an L whose boxes overlap keep the more prominent.
+   - Threshold: chosen on the 22 live frames to remove the persistent sites (R2's 61 per model) while keeping lowland
+     systems; reported with the counts.
+3. **Clamped ends** (call 3; H-2).
+   - A patch at code 1 or 255 can be a centre when it is compact (at most 16 nodes) and within 70 degrees of the equator;
+     its text is "≤920" or "≥1060". Codes 2 and 254 are ordinary values.
+   - The readout writes "≤ 920 hPa" / "≥ 1060 hPa" within half a code of the clamp.
+4. **Legibility** (H-8): a mark clears the line strokes under its box, as a pill does.
+5. **The pressure cap** (S-1): the 1-s wait is kept per step. A re-issued goto of the same step waits only the rest of it,
+   and the record is cleared when the step lands or the target changes.
+6. **Tests:** the new rule pinned against an independent implementation (persistence by brute force); the Big Island,
+   typhoon, Tasman high and V11-2 cases on real frames (fixtures); R1's eleven surviving mutants, adapted to the new rule
+   where they apply; the cap's timer after Off.
+
+Page (`templates/index.html`):
+7. P-1: `forgetRetiredDefault` decides only on a list of 100 entries or more (734 today; the server's fallback has 10).
+8. D-1: the comment moved; the source-text-only page pins (P2 / P5 / P7 / P11 / P12) become behaviour tests where the
+   harness allows (P2: a real `closest()` over two classes).
+
+Docs: README (the H / L rule, the high-ground mask, ≤920 / ≥1060, the cap); call 4 recorded (zoom 5.9 stays).
+
+Accepted, no change: O1 (one pill per polyline: an isobar leaving and re-entering the view gets two), O2 (a mark under a
+panel is simply hidden by it).
+
+Release:
+- overlay 2.20.0 with the mask asset and the fixtures; the golden in its own commit (the template).
+- The test site at MAX: the H / L survey on both models (Big Island, typhoon, broad highs at zoom 6-9, dimples, V11-2's
+  B), the whole-world timed cell against production, playback.
+- A short fresh check at MAX (a new rule).
+- Then step 12.

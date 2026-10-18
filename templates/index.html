@@ -597,7 +597,7 @@
       background: linear-gradient(135deg, transparent 50%, #b0bac4 50%, #b0bac4 60%, transparent 60%, transparent 75%, #b0bac4 75%);
     }
     /* minimised: the header bar alone; on desktops the forecast chip is parked at the bottom-left beside the
-       Home button and the live-buoy chip at the bottom-right; each takes at most half the width, so they never meet */
+       (i) button and the live-buoy chip at the bottom-right; each takes at most half the width, so they never meet */
     .fwin.fw-min { height: auto !important; min-height: 0; min-width: 0; }   /* a chip shrinks below the window minimum (the chips never meet) */
     /* a station chip gives its subtitle up before the station's name (G27 B-P2-2). (An expanded station window may cover
        the parked forecast chip's two buttons, whose title stays clickable: G27 B-P3-8, accepted; a chip drawn above the
@@ -633,6 +633,17 @@
       width: calc(100vw - 16px) !important; height: auto !important;
     }
     .fwin.fw-max .fw-resize, .fwin.fw-max .fw-edge { display: none; }
+    /* desktops from 1280 px (owner, plan section 46): the expanded forecast window opens between the top-left controls
+       (the logo and the overlay panel: --map-topleft-r) and the top-right ones (the layer legend and the gear:
+       --map-topright-w), from 96 px down to the bottom; narrower desktops keep the bottom-right box. The raised rules
+       above still lift its bottom over parked chips (their heights give way here: top and bottom set the height). A
+       dragged or resized window keeps its own geometry (inline). */
+    @media (min-width: 1280px) and (min-height: 501px) {
+      .forecast-win:not(.fw-min):not(.fw-max) {
+        left: calc(var(--map-topleft-r, 360px) + 16px); right: calc(var(--map-topright-w, 170px) + 16px); top: 96px; width: auto; height: auto; }
+      .live-chip .forecast-win:not(.fw-min):not(.fw-max), .tide-chip .forecast-win:not(.fw-min):not(.fw-max),
+      .live-chip.tide-chip .forecast-win:not(.fw-min):not(.fw-max), body.wind-chip .fwin.forecast-win:not(.fw-min):not(.fw-max) { height: auto; }
+    }
     /* the compact table inside the window: the body is the scroll box, the header stays frozen. The table is as wide
        as its window (its nowrap cells keep it at least its natural width: the body scrolls sideways below that) and
        its text grows a little in a wide window (plan section 35). */
@@ -724,32 +735,6 @@
     .attr-btn { font: italic 700 15px/26px Georgia, serif; text-align: center; color: #0b2536; cursor: pointer; }
     .leaflet-container:not(.attr-open) .leaflet-control-attribution { display: none; }
     .leaflet-container.attr-open .leaflet-control-attribution { max-width: min(80vw, 640px); }
-
-    /* Home View map control (Phase 3b) */
-    .home-control { position: relative; }
-    .home-btn {
-      font-size: 18px; line-height: 26px; text-align: center;
-      font-weight: 700; color: #0b2536; cursor: pointer;
-    }
-    .home-menu {
-      position: absolute; bottom: 0; left: 34px;
-      background: #fff; border: 1px solid rgba(0,0,0,0.2); border-radius: 6px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.28); padding: 6px; min-width: 190px; z-index: 1000;
-      /* Never exceed the (short, overflow:hidden) map — scroll instead. */
-      max-height: 300px; overflow-y: auto;
-    }
-    @media (max-width: 576px) { .home-menu { max-height: 170px; } }
-    /* the menu opens above the minimised forecast chip parked beside the Home button (desktops) */
-    @media (min-width: 501px) and (min-height: 501px) { .home-menu { bottom: 62px; } }   /* clear of the chip (G18b) */
-    .home-menu-title {
-      font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
-      color: #607d92; font-weight: 700; padding: 2px 8px 6px;
-    }
-    .home-menu button {
-      display: block; width: 100%; text-align: left; background: none; border: none;
-      padding: 7px 8px; border-radius: 4px; font-size: 0.85rem; color: #1d2b36; cursor: pointer;
-    }
-    .home-menu button:hover { background: #eef3f8; }
 
     /* Visible keyboard focus (a11y) */
     a:focus-visible, button:focus-visible, select:focus-visible,
@@ -1201,28 +1186,9 @@
     const DEFAULT_MAP_CENTER = [21.3, -157.9];
     const DEFAULT_MAP_ZOOM = 6;
 
-    // ---- Home View (Phase 3b): the user's saved default map focus ----
-    const homeViewKey = 'allshore.mapHome.v1';
-    const HOME_PRESETS = {
-      Hawaii:     { lat: 21.3, lng: -157.9, z: 6 },
-      California: { lat: 36.0, lng: -122.0, z: 6 },
-      Florida:    { lat: 27.5, lng: -80.0,  z: 6 },
-      Europe:     { lat: 46.0, lng: -8.0,   z: 5 },
-    };
-    function loadHomeView() {
-      try {
-        const v = JSON.parse(localStorage.getItem(homeViewKey));
-        if (v && Number.isFinite(v.lat) && Number.isFinite(v.lng) && Number.isFinite(v.z)) return v;
-      } catch (e) {}
-      return null;
-    }
-    function saveHomeView(v) { try { localStorage.setItem(homeViewKey, JSON.stringify(v)); } catch (e) {} }
-    function clearHomeView() { try { localStorage.removeItem(homeViewKey); } catch (e) {} }
     function normLng(lng) { return ((lng + 540) % 360) - 180; }
-    // Explicit Home actions also align the in-session view (sessionStorage has
-    // higher precedence), so the choice persists within the tab AND on reload.
-    function writeSessionView(v) { try { sessionStorage.setItem(mapKey, JSON.stringify(v)); } catch (e) {} }
-    function clearSessionView() { try { sessionStorage.removeItem(mapKey); } catch (e) {} }
+    // The Home view button is gone (owner, plan section 46): the view it saved is no longer read, and its key is removed.
+    try { localStorage.removeItem('allshore.mapHome.v1'); } catch (e) {}
 
     // As close as Esri's imagery stays sharp (owner, 2026-10-10: close enough to tell overlapping tide, wind, buoy and
     // forecast markers apart): zoom 18 is ~0.6 m per pixel; the imagery runs out a little earlier in a few remote places
@@ -1445,13 +1411,22 @@
     })();
     // The height of that corner (legend + gear): the maximised forecast window starts below it, so its header buttons
     // never land under the legend (owner). Measured at load and on every resize (enforceSingleWorld).
+    // Its WIDTH (legend + gear; the map tools' result bar under them left out): the expanded forecast window's default box
+    // ends left of it on desktops (plan section 46). A ResizeObserver follows the corner (the legend's notes, a font change).
     function measureTopRight() {
       const box = map.getContainer(), base = box.getBoundingClientRect();
-      let h = 0;
+      let h = 0, w = 0;
       box.querySelectorAll('.leaflet-top.leaflet-right .leaflet-control').forEach(function (c) {
-        const r = c.getBoundingClientRect(); if (r.height > 0) h = Math.max(h, r.bottom - base.top);
+        const r = c.getBoundingClientRect();
+        if (r.height > 0) h = Math.max(h, r.bottom - base.top);
+        if (r.width > 0 && !c.classList.contains('tools-bar')) w = Math.max(w, base.right - r.left);
       });
       document.documentElement.style.setProperty('--map-topright-h', Math.round(h) + 'px');
+      document.documentElement.style.setProperty('--map-topright-w', Math.round(w) + 'px');
+    }
+    if (window.ResizeObserver) {
+      const trCorner = map.getContainer().querySelector('.leaflet-top.leaflet-right');
+      if (trCorner) new ResizeObserver(function () { measureTopRight(); }).observe(trCorner);
     }
 
     // Esri imagery.
@@ -1469,57 +1444,7 @@
       }
     ).addTo(map);
 
-    // --- Home View control: set/jump/reset the default map focus ---
-    const HomeControl = L.Control.extend({
-      options: { position: 'bottomleft' },
-      onAdd: function () {
-        const container = L.DomUtil.create('div', 'leaflet-bar home-control');
-        const btn = L.DomUtil.create('a', 'home-btn', container);
-        btn.href = '#';
-        btn.title = 'Home view';
-        btn.setAttribute('role', 'button');
-        btn.setAttribute('aria-label', 'Home view menu');
-        btn.innerHTML = '⌂';
-        const menu = L.DomUtil.create('div', 'home-menu', container);
-        menu.style.display = 'none';
-        menu.innerHTML =
-          '<div class="home-menu-title">Home view</div>' +
-          '<button type="button" data-home="set">Set current view as home</button>' +
-          '<button type="button" data-preset="Hawaii">Hawaii</button>' +
-          '<button type="button" data-preset="California">California</button>' +
-          '<button type="button" data-preset="Florida">Florida</button>' +
-          '<button type="button" data-preset="Europe">Europe</button>' +
-          '<button type="button" data-home="reset">Reset to default</button>';
-        L.DomEvent.disableClickPropagation(container);
-        L.DomEvent.disableScrollPropagation(container);
-        L.DomEvent.on(btn, 'click', function (e) {
-          L.DomEvent.preventDefault(e);
-          menu.style.display = (menu.style.display === 'none') ? 'block' : 'none';
-        });
-        L.DomEvent.on(menu, 'click', function (e) {
-          const t = e.target.closest('button');
-          if (!t) return;
-          L.DomEvent.preventDefault(e);
-          if (t.dataset.preset && HOME_PRESETS[t.dataset.preset]) {
-            const p = HOME_PRESETS[t.dataset.preset];
-            saveHomeView(p); writeSessionView(p);
-            map.setView([p.lat, p.lng], Math.min(MAX_MAP_ZOOM, Math.max(p.z, MIN_MAP_ZOOM)), { animate: true });
-          } else if (t.dataset.home === 'set') {
-            const c = map.getCenter();
-            const v = { lat: c.lat, lng: normLng(c.lng), z: map.getZoom() };
-            saveHomeView(v); writeSessionView(v);
-          } else if (t.dataset.home === 'reset') {
-            clearHomeView(); clearSessionView();
-            map.setView(DEFAULT_MAP_CENTER, Math.max(DEFAULT_MAP_ZOOM, MIN_MAP_ZOOM), { animate: true });
-          }
-          menu.style.display = 'none';
-        });
-        return container;
-      }
-    });
-    map.addControl(new HomeControl());
-
-    // The map credits behind an (i) beside Home (bottom-left): Leaflet's attribution control moves to that corner
+    // The map credits behind an (i) at the bottom-left: Leaflet's attribution control moves to that corner
     // and shows only while the (i) is open (the overlay adds and removes its own line through the control).
     const AttrToggle = L.Control.extend({
       options: { position: 'bottomleft' },
@@ -1539,10 +1464,6 @@
     });
     map.addControl(new AttrToggle());
     if (map.attributionControl) map.attributionControl.setPosition('bottomleft');
-    // Dismiss the Home menu when interacting with the map (outside-click UX).
-    map.on('movestart click', function () {
-      document.querySelectorAll('.home-menu').forEach(function (m) { m.style.display = 'none'; });
-    });
 
     // --- Stable map sizing, single-world zoom floor, and continuous east/west wrap ---
     // ---- map extent (tests/ui/mapclamp.test.js runs this block: keep it self-contained between the markers) ----
@@ -1636,12 +1557,11 @@
       if (lastEnforcedWidth === w) { clampMapLatitude(); refreshWrappedMarkerCopies(true); return; }
       lastEnforcedWidth = w;
 
-      // Precedence: in-session view (sessionStorage) > saved Home View
-      // (localStorage) > hard default. Lets each user open to their region.
+      // Precedence: the in-session view (sessionStorage) > the hard default.
       const saved = loadMapView && loadMapView();
       const validSaved =
         saved && Number.isFinite(saved.lat) && Number.isFinite(saved.lng) && Number.isFinite(saved.z);
-      const view = validSaved ? saved : loadHomeView();
+      const view = validSaved ? saved : null;
 
       if (view) {
         const safeZoom = Math.min(MAX_MAP_ZOOM, Math.max(view.z, MIN_MAP_ZOOM));

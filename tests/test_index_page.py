@@ -243,7 +243,6 @@ def test_g18b_pins(client):
         ".live-chip .forecast-win:not(.fw-min):not(.fw-max) { bottom: 70px; }",
         "document.body.classList.toggle('live-chip', !!(d.open && d.mode === 'min'));",
         "onMode: function () { if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld(); },",
-        ".home-menu { bottom: 62px; }",
     ):
         assert needle in body, needle
     gear = body[body.index("const SettingsControl = L.Control.extend({"):]
@@ -652,6 +651,14 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
         h = min(WIND_CONTENT_PX, H - CORNER_PX - w_reserve)
         right = W - w_right - gap
         return (right - (ww - gap), top, right, top + h)
+    wb = re.search(r"@media \(min-width: (\d+)px\) and \(min-height: 501px\) \{\n\s+\.forecast-win:not\(\.fw-min\):not\(\.fw-max\) \{\n"
+                   r"\s+left: calc\(var\(--map-topleft-r, 360px\) \+ (\d+)px\); right: calc\(var\(--map-topright-w, 170px\) \+ (\d+)px\); "
+                   r"top: (\d+)px; width: auto; height: auto; \}", body)
+    assert wb, "the wide forecast box"
+    WIDE_MIN, WIDE_L, WIDE_R, WIDE_TOP = (int(g) for g in wb.groups())
+    assert WIDE_MIN == 1280
+    def wide(W, H, tl, tr, bottom):                      # the wide box: between the corners, from WIDE_TOP to `bottom`
+        return (tl + WIDE_L, WIDE_TOP, W - tr - WIDE_R, H - bottom)
     def minus(rect, cut):                                # rect minus cut: up to four rectangles
         l, t, r, b = rect
         cl, ct, cr, cb = cut
@@ -670,16 +677,21 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
             parts = [q for p in parts for q in minus(p, c)]
         return any(p[2] - p[0] >= 24 and p[3] - p[1] >= 24 for p in parts)
     ORDER = ["forecast", "live", "tide", "wind"]         # the page order: a later window lies above an earlier one
+    # plan section 46: from 1280 px the forecast window opens between the top-left controls (the logo alone 204 px, with
+    # the overlay panel 360 px: --map-topleft-r) and the legend + gear (--map-topright-w, about 150-200 px), from 96 px down
     for W in (520, 600, 768, 820, 900, 956, 1024, 1180, 1280, 1366, 1440, 1536, 1600, 1920, 2560):
         for H in (501, 560, 600, 700, 768, 800, 864, 900, 1024, 1080, 1200, 1440):
+          for TL, TR in (((360, 170),) if W < 1280 else ((204, 150), (360, 150), (204, 200), (360, 200))):
             b = {n: box(r, W, H) for n, r in rules.items()}
+            if W >= 1280:
+                b["forecast"] = wide(W, H, TL, TR, 16)
             b["wind"] = wind_box(W, H, b)
             for front in ORDER:
                 stack = [n for n in ORDER if n != front] + [front]      # bottom to top
                 for i, n in enumerate(stack[:-1]):
                     if front == "forecast" and n == "wind" and H < 570:
                         continue                         # a short desktop screen: Escape closes it (known since 5b)
-                    assert clickable(b[n], [b[x] for x in stack[i + 1:]]), (W, H, "front", front, "hidden", n, b)
+                    assert clickable(b[n], [b[x] for x in stack[i + 1:]]), (W, H, TL, TR, "front", front, "hidden", n, b)
     # only the forecast and wind windows open: the wind window keeps its full width at the margin (the rule is for the
     # live / tide window)
     full = wind_box(1920, 1080, {"forecast": box(rules["forecast"], 1920, 1080)})
@@ -761,6 +773,8 @@ def test_live_and_tide_raised_together_keep_every_window_clickable(client):
             live = box(18, bot, min(820, W - 136), min(0.76 * H, 800, H - 34 - WW_CHIP - CORNER), W, H)
             tide = box(18, bot, min(880, W - 76), min(0.70 * H, 760, H - 66 - WW_CHIP - CORNER), W, H)
             fc = box(16, 30 + WW_CHIP, min(1180, W - 32), min(0.60 * H, 720, H - 102 - WW_CHIP - CORNER), W, H)
+            if W >= 1280:                                                          # the wide box (plan section 46), raised
+                fc = (360 + 16, 96, W - 170 - 16, H - 30 - WW_CHIP)
             wins = {"forecast": fc, "live": live, "tide": tide}
             for front in ("forecast", "live", "tide"):
                 stack = [n for n in ("forecast", "live", "tide") if n != front] + [front]
@@ -772,6 +786,8 @@ def test_live_and_tide_raised_together_keep_every_window_clickable(client):
     for W in (1180, 1280, 1366, 1440, 1536, 1920, 2560):                          # C / D: the live / the tide window parked
         for H in (501, 560, 600, 640, 700, 768, 800, 840, 900, 1024, 1080, 1440):
             fc = box(16, 70, min(1180, W - 32), min(0.60 * H, 720, H - 142 - CORNER), W, H)
+            if W >= 1280:                                                          # the wide box (plan section 46), raised
+                fc = (360 + 16, 96, W - 170 - 16, H - 70)
             tide = box(18, 26 + LW_CHIP, min(880, W - 76), min(0.70 * H, 760, H - 34 - LW_CHIP - CORNER), W, H)
             live = box(18, 26 + TW_CHIP, min(820, W - 136), min(0.76 * H, 800, H - 34 - TW_CHIP - CORNER), W, H)
             for label, station in (("C", ("tide", tide)), ("D", ("live", live))):
@@ -892,3 +908,33 @@ def test_wind_stations_on_the_page(client):
     assert "windDetailSeq" not in body                                              # the module keeps the sequence (winds.js)
     # owner, 2026-10-10: no "zoom in" text in the legend at any zoom (tide and wind layers alike)
     assert "zoom in to see" not in body and "zoom in for more" not in body and "hiddenInView" not in body
+
+
+def test_no_home_button_and_the_forecast_window_opens_between_the_corners(client):
+    """Plan section 46 (owner): the Home view button is gone (the (i) stays bottom-left; the view it saved is no longer
+    read and its key is removed); from 1280 px the expanded forecast window opens right of the logo / overlay panel and
+    left of the legend / gear, from 96 px down; a parked chip still raises its bottom (the raised rules' heights give
+    way there, so top + bottom decide), maximised / minimised / phones / narrower desktops are unchanged, and the
+    corner's width is measured without the map tools' result bar, also on a resize of the corner."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    for gone in ("home-control", "home-btn", "home-menu", "HomeControl", "loadHomeView", "saveHomeView", "HOME_PRESETS",
+                 "data-preset", "Home view menu", "writeSessionView", "clearSessionView"):
+        assert gone not in body, gone
+    assert "try { localStorage.removeItem('allshore.mapHome.v1'); } catch (e) {}" in body
+    assert "const view = validSaved ? saved : null;" in body
+    assert "map.addControl(new AttrToggle());" in body and "options: { position: 'bottomleft' }," in body
+    css = body[body.index("@media (min-width: 1280px) and (min-height: 501px) {"):]
+    css = css[:css.index("\n    }\n")]
+    assert "top: 96px; width: auto; height: auto; }" in css
+    for raised in (".live-chip .forecast-win:not(.fw-min):not(.fw-max)", ".tide-chip .forecast-win:not(.fw-min):not(.fw-max)",
+                   ".live-chip.tide-chip .forecast-win:not(.fw-min):not(.fw-max)", "body.wind-chip .fwin.forecast-win:not(.fw-min):not(.fw-max)"):
+        assert raised in css, raised
+    assert css.rstrip().endswith("{ height: auto; }")
+    # the wide box comes after every raised rule (same specificity, the later one wins)
+    assert body.index("@media (min-width: 1280px) and (min-height: 501px) {") > body.index("body.wind-chip .fwin.forecast-win:not(.fw-min):not(.fw-max) {")
+    assert ".forecast-win { right: 16px; bottom: 16px; width: min(1180px, calc(100vw - 32px)); height: min(60vh, 720px); }" in body
+    fn = body[body.index("function measureTopRight() {"):]
+    fn = fn[:fn.index("// Esri imagery.")]
+    assert "if (r.width > 0 && !c.classList.contains('tools-bar')) w = Math.max(w, base.right - r.left);" in fn
+    assert "document.documentElement.style.setProperty('--map-topright-w', Math.round(w) + 'px');" in fn
+    assert "new ResizeObserver(function () { measureTopRight(); }).observe(trCorner);" in fn

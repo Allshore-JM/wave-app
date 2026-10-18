@@ -478,6 +478,7 @@ test('the dropdown (owner, 2026-10-18): a favorite becomes the default with one 
     assert.deepEqual(rows.map(sidOf), ['46001', '51201'], 'newest first, no default yet');
     for (const li of rows) {
       assert.deepEqual(li.children.map((x) => x.className), ['fav-select', 'sr-seg', 'pt-act sr-rem'], 'the label, the choice, then ✕');
+      assert.ok(li.classList.contains('sr-saved'), 'a saved row (phones put its buttons on a line of their own)');
       assert.equal(seg(li, 'fav').getAttribute('aria-pressed'), 'true'); assert.equal(seg(li, 'dflt').getAttribute('aria-pressed'), 'false');
       assert.equal(seg(li, 'fav').textContent, 'Favorite'); assert.equal(seg(li, 'dflt').textContent, 'Default');
       assert.match(li.children[1].getAttribute('aria-label'), /^Station \d{5} — /); assert.equal(li.children[1].getAttribute('role'), 'group');
@@ -512,6 +513,7 @@ test('the dropdown: a point becomes the default from its row (the position from 
   const ptRows = () => b.results.children.filter((li) => li.children[0] && li.children[0].classList.contains('fav-select') && sidOf(li).indexOf('pt_') === 0);
   let r = ptRows().find((li) => sidOf(li) === 'pt_21700N_158200W');
   assert.deepEqual(r.children.slice(1).map((x) => x.className), ['sr-seg', 'pt-act pt-ren', 'pt-act sr-rem'], 'the label, the choice, Rename, ✕');
+  assert.ok(r.classList.contains('sr-saved'));
   assert.match(r.children[1].getAttribute('aria-label'), /^Point /);
   seg(r, 'dflt').click();
   assert.deepEqual([readD(b).id, readD(b).lat, readD(b).lon], ['pt_21700N_158200W', 21.7, -158.2]);

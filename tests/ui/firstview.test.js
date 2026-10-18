@@ -192,7 +192,7 @@ function runForget(stored, list, opts) {
   const localStorage = { getItem: (k) => (k in store ? store[k] : null), removeItem: (k) => { if (opts.blocked) throw new Error('blocked'); delete store[k]; } };
   const F = { parsePointId: (id) => (/^pt_\d+[NS]_\d+[EW]$/.test(id) ? { lat: 1, lon: 2 } : null), note: (m, sid) => notes.push([m, sid]) };
   const window = { AllshoreForecast: opts.noApp ? undefined : F };
-  const document = { addEventListener: (ev, fn, o) => { (docL[ev] = docL[ev] || []).push({ fn, o }); } };
+  const document = { readyState: opts.readyState, addEventListener: (ev, fn, o) => { (docL[ev] = docL[ev] || []).push({ fn, o }); } };
   new Function('localStorage', 'window', 'document', FR + '\nforgetRetiredDefault(' + JSON.stringify(list) + ');')(localStorage, window, document);
   return { store, notes, docL, window, F };
 }
@@ -204,6 +204,23 @@ test('a default the station list still has, or a forecast point, is kept and not
     assert.notEqual(r.store['allshore.defaultStation.v1'], undefined, JSON.stringify(d)); assert.deepEqual(r.notes, []);
   }
   const none = runForget(undefined, LIST2); assert.deepEqual(none.notes, []);
+});
+
+test('a default POINT is never erased before forecast.js has run (the list can land first: the head asks for it): decided once the page has parsed, kept when the app never comes', () => {
+  const P = { id: 'pt_21700N_158200W', lat: 21.7, lon: -158.2 };
+  const r = runForget(P, LIST2, { noApp: true, readyState: 'loading' });
+  assert.notEqual(r.store['allshore.defaultStation.v1'], undefined, 'kept while the app is not up'); assert.deepEqual(r.notes, []);
+  const l = r.docL.DOMContentLoaded; assert.ok(l && l.length === 1 && l[0].o.once, 'decided once the page has parsed');
+  r.window.AllshoreForecast = r.F; l[0].fn();
+  assert.notEqual(r.store['allshore.defaultStation.v1'], undefined, 'a real point stays the default'); assert.deepEqual(r.notes, []);
+  const late = runForget(P, LIST2, { noApp: true, readyState: 'interactive' });  // parsed, and still no app: kept, nothing waits
+  assert.notEqual(late.store['allshore.defaultStation.v1'], undefined); assert.deepEqual(late.notes, []); assert.equal(late.docL.DOMContentLoaded, undefined);
+  const bad = runForget({ id: 'pt_bad' }, LIST2, { noApp: true, readyState: 'loading' });   // an id the app refuses goes once it decides
+  assert.notEqual(bad.store['allshore.defaultStation.v1'], undefined, 'not before the app has looked');
+  bad.window.AllshoreForecast = bad.F; bad.docL.DOMContentLoaded[0].fn();
+  assert.equal(bad.store['allshore.defaultStation.v1'], undefined); assert.equal(bad.notes.length, 1); assert.equal(bad.notes[0][1], 'pt_bad');
+  const app = runForget(P, LIST2, { readyState: 'loading' });                 // with the app already up: decided at once
+  assert.notEqual(app.store['allshore.defaultStation.v1'], undefined); assert.equal(app.docL.DOMContentLoaded, undefined);
 });
 
 test('a default the list no longer has (or one the id rule refuses) is forgotten once the list is in, and the window says so once; an empty or failed list decides nothing', () => {

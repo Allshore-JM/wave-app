@@ -261,13 +261,13 @@ test('the whole-world redraw of a real frame stays cheap (1920x1080, the world i
   const { png } = realFrames();
   const fr = await I.decodePngGrey(png, { cols: 720, rows: 361 });
   const z = Math.log2(1920 / 256), n = 256 * Math.pow(2, z), view = { z, w: 1920, h: 1080, ox: 0, oy: n / 2 - 540 };
-  const span = view.w / n * 360, mg = Math.min(0.5, (I.ISO_HL_PX + 8) / 1080);
+  const span = view.w / n * 360;
   let best = Infinity, lines = 0, scratch = null;
   for (let k = 0; k < 5; k++) {
     const t0 = performance.now();
-    const g = I.isoValues(fr, PRES, I.nodeWindow(view, HALF, fr, mg), I.isoStride(view.z, 0.5), scratch); scratch = g.scratch;
+    const g = I.isoValues(fr, PRES, I.nodeWindow(view, HALF, fr, 0), I.isoStride(view.z, 0.5), scratch); scratch = g.scratch;
     const paths = I.projectIsolines(I.traceIsolines(g.V, g.R, g.C, I.isoInterval(view.z, span)), g, HALF, view);
-    I.projectExtrema(I.findExtrema(g, Math.round(I.ISO_HL_PX / (n * 0.5 / 360 * g.stride)), PRES.lo, PRES.hi, 2), g, HALF, view);
+    I.projectCentres(I.findCentres(fr, PRES, I.nodeWindow(view, HALF, fr, 0), Math.round(I.ISO_HL_PX / (n * 0.5 / 360)), 2), HALF, view);
     best = Math.min(best, performance.now() - t0); lines = paths.length;
   }
   console.log(`whole world 1920x1080 (zoom ${z.toFixed(3)}, 8 hPa): ${best.toFixed(1)} ms, ${lines} paths`);
@@ -334,36 +334,102 @@ test('labels never overlap each other or the H / L marks (every grid cell a pill
   assert.ok(placed > 400, `${placed} pills placed in 40 crowded views`);
 });
 
-// ---- highs and lows ----
-test('findExtrema: one L at a low, one H at a high, nothing on a slope or in a dimple shallower than the depth; window edges and clamped values skipped', () => {
-  const R = 41, C = 61, mk = (fn) => ({ V: grid(R, C, fn), R, C, wrap: false, r0: 0, c0: 0, stride: 1 });
-  const lowHigh = mk((i, j) => 1012 - 18 * Math.exp(-((i - 20) ** 2 + (j - 15) ** 2) / 30) + 14 * Math.exp(-((i - 20) ** 2 + (j - 45) ** 2) / 40));
-  const e = I.findExtrema(lowHigh, 8, PRES.lo, PRES.hi, 1);
-  assert.deepEqual(e.map((x) => [x.type, x.i, x.j]), [['L', 20, 15], ['H', 20, 45]]);
-  assert.ok(near(e[0].v, 994, 0.01) && near(e[1].v, 1026, 0.01));
-  assert.deepEqual(I.findExtrema(mk((i, j) => 1000 + 0.3 * j + 0.1 * i), 8, PRES.lo, PRES.hi, 1), [], 'a slope');
-  const dimple = (i, j) => 1012 - 0.5 * Math.exp(-((i - 20) ** 2 + (j - 30) ** 2) / 30);
-  assert.deepEqual(I.findExtrema(mk(dimple), 8, PRES.lo, PRES.hi, 1), [], 'a 0.5-hPa dimple');
-  assert.equal(I.findExtrema(mk(dimple), 8, PRES.lo, PRES.hi, 0.2).length, 1, 'found at a smaller depth');
-  assert.deepEqual(I.findExtrema(mk((i, j) => 1012 - 18 * Math.exp(-((i - 3) ** 2 + (j - 30) ** 2) / 30)), 8, PRES.lo, PRES.hi, 1), [], 'within the radius of the window edge');
-  assert.deepEqual(I.findExtrema(mk((i, j) => Math.min(1060, 1040 + 30 * Math.exp(-((i - 20) ** 2 + (j - 30) ** 2) / 30))), 8, PRES.lo, PRES.hi, 1), [], 'a clamped high');
-  const flatBottom = mk((i, j) => 1012 - 18 * Math.exp(-((i - 20) ** 2 + (j - 30) ** 2) / 30));
-  flatBottom.V[20 * C + 31] = flatBottom.V[20 * C + 30];
-  assert.equal(I.findExtrema(flatBottom, 8, PRES.lo, PRES.hi, 1).length, 1, 'two equal lowest nodes: one L (the earlier)');
+// ---- highs and lows: from the frame's own codes (exact centres and pressures) ----
+// An independent brute force: every node of the window tested against its whole rad-square (ties to the earlier node in
+// raster order, rows beyond the grid absent, columns wrapping) and the depth against the square's border mean.
+function bruteCentres(fr, win, rad, depth) {
+  const Q = fr.q, cols = fr.cols, rows = fr.rows, k = (PRES.hi - PRES.lo) / 254, out = [];
+  for (let r = Math.max(0, win.r0); r <= Math.min(rows - 1, win.r1); r++) for (let jj = 0; jj < Math.min(win.count, cols); jj++) {
+    const c = (win.c0 + jj) % cols, v = Q[r * cols + c]; if (!v || v <= 2 || v >= 254) continue;
+    let mn = true, mx = true, sum = 0, cnt = 0;
+    for (let dr = -rad; dr <= rad; dr++) { const rr = r + dr; if (rr < 0 || rr >= rows) continue;
+      for (let dc = -rad; dc <= rad; dc++) { if (!dr && !dc) continue; const x = Q[rr * cols + (((c + dc) % cols) + cols) % cols]; if (!x) continue;
+        const early = dr < 0 || (!dr && dc < 0);
+        if (x < v || (x === v && early)) mn = false; if (x > v || (x === v && early)) mx = false;
+        if (Math.abs(dr) === rad || Math.abs(dc) === rad) { sum += x; cnt++; } } }
+    if (!cnt) continue; const ring = sum / cnt;
+    if (mn && (ring - v) * k >= depth) out.push('L' + r + ',' + c); else if (mx && (v - ring) * k >= depth) out.push('H' + r + ',' + c);
+  }
+  return out.sort();
+}
+const key = (e) => e.type + e.r + ',' + e.c;
+
+test('findCentres = an independent test of every node (random smooth fields with noise, plateaus and holes; windows that wrap, cross the seam or touch the poles; radii 1-14)', () => {
+  let seed = 3; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  let runs = 0, found = 0;
+  for (let t = 0; t < 36; t++) {
+    const cx = [], n = 3 + Math.floor(rnd() * 3);
+    for (let i = 0; i < n; i++) cx.push([rnd() * 361, rnd() * 720, (rnd() - 0.5) * 50, 20 + rnd() * 200]);
+    const plateau = t % 4 === 0, noise = rnd() * 3;
+    const fr = codeFrame((r, c) => { let v = 1012; for (const [a, b, d, s] of cx) { const dc = Math.min(Math.abs(c - b), 720 - Math.abs(c - b)); v += d * Math.exp(-((r - a) ** 2 + dc ** 2) / (2 * s)); }
+      v += noise * Math.sin(r * 1.7 + c * 2.3); const q = Math.max(1, Math.min(255, 1 + Math.round((v - PRES.lo) / (PRES.hi - PRES.lo) * 254)));
+      return plateau ? q - (q % 2) || 1 : q; });
+    if (t % 5 === 0) for (let h = 0; h < 40; h++) fr.q[Math.floor(rnd() * 361) * 720 + Math.floor(rnd() * 720)] = 0;   // holes
+    const wins = [{ r0: Math.floor(rnd() * 250), r1: 0, c0: Math.floor(rnd() * 720), count: 40 + Math.floor(rnd() * 160) }, { r0: 330, r1: 360, c0: 700, count: 60 }];
+    wins[0].r1 = Math.min(360, wins[0].r0 + 20 + Math.floor(rnd() * 80));
+    if (t % 9 === 0) wins.push({ r0: 0, r1: 360, c0: 0, count: 720 });   // the whole world (small radii only: the brute force is slow)
+    for (const win of wins) for (const rad of [1, 3, 7, 14]) {
+      if (win.count === 720 && rad > 3) continue;
+      const depth = rad === 1 ? 0.3 : 1 + rnd() * 2;
+      const got = I.findCentres(fr, PRES, win, rad, depth).map(key).sort(), want = bruteCentres(fr, win, rad, depth);
+      assert.deepEqual(got, want, `t ${t}, window ${JSON.stringify(win)}, rad ${rad}`);
+      runs++; found += got.length;
+    }
+  }
+  assert.ok(found > 100, `${found} centres in ${runs} runs`);
 });
 
-test('findExtrema: a low on the date line of a whole-world window is found once; projectExtrema draws it in every world copy, rounded to the hPa, away from the edges', () => {
-  const fr = frameOf((r, c) => { const dc = Math.min(c, 720 - c); return 1013 - 25 * Math.exp(-((r - 120) ** 2 + dc ** 2) / 200); });
+test('findCentres: the exact centre and pressure of a compact deep low the smoothed lines flatten (a typhoon); none on a slope, in a dimple shallower than the depth, or at a clamped value', () => {
+  const k = (PRES.hi - PRES.lo) / 254;
+  const ty = codeFrame((r, c) => Math.max(1, Math.round(1 + (1010 - 52 * Math.exp(-((r - 150) ** 2 + (c - 640) ** 2) / 3) - PRES.lo) / k)));   // ~1-node radius, 958 hPa
+  const win = { r0: 100, r1: 200, c0: 560, count: 160 };
+  const e = I.findCentres(ty, PRES, win, 10, 1);
+  assert.deepEqual(e.map((x) => [x.type, x.r, x.c]), [['L', 150, 640]]);
+  assert.ok(near(e[0].v, 958, k), `the central pressure ${e[0].v.toFixed(1)}`);
+  const g = I.isoValues(ty, PRES, win, 3, null), sm = Math.min(...Array.from(g.V.subarray(0, g.R * g.C)).filter((x) => x === x));
+  assert.ok(sm > 990, `the smoothed field at that view reads ${sm.toFixed(1)}: the lines alone would hide it`);
+  assert.deepEqual(I.findCentres(codeFrame((r, c) => 60 + Math.floor(c / 4) + Math.floor(r / 5)), PRES, { r0: 100, r1: 200, c0: 300, count: 160 }, 10, 1), [], 'a slope');
+  const dim = codeFrame((r, c) => 100 - (Math.abs(r - 150) <= 1 && Math.abs(c - 640) <= 1 ? 1 : 0));
+  assert.deepEqual(I.findCentres(dim, PRES, win, 10, 1), [], 'one code deep (0.55 hPa)');
+  assert.equal(I.findCentres(dim, PRES, win, 10, 0.3).length, 1, 'found at a smaller depth');
+  assert.deepEqual(I.findCentres(codeFrame((r, c) => (Math.abs(r - 150) < 3 && Math.abs(c - 640) < 3 ? 255 : 200)), PRES, win, 10, 1), [], 'a clamped high');
+  assert.deepEqual(I.findCentres(codeFrame((r, c) => (Math.abs(r - 150) < 3 && Math.abs(c - 640) < 3 ? 1 : 60)), PRES, win, 10, 1), [], 'a clamped low');
+  const plateau = codeFrame((r, c) => (Math.abs(r - 150) <= 2 && Math.abs(c - 640) <= 2 ? 80 : 100));
+  const p = I.findCentres(plateau, PRES, win, 10, 1);
+  assert.deepEqual(p.map((x) => [x.type, x.r, x.c]), [['L', 148, 638]], 'a flat-bottomed low: one L, at its first node');
+});
+
+test('findCentres: a centre near the grid\'s end counts (the square is cut by the grid, not the window); one on the date line of a whole-world window is found once; projectCentres draws it in every world copy', () => {
+  const south = codeFrame((r, c) => Math.round(1 + (1010 - 60 * Math.exp(-((r - 340) ** 2 + (c - 200) ** 2) / 80) - PRES.lo) / ((PRES.hi - PRES.lo) / 254)));
+  const s = I.findCentres(south, PRES, { r0: 300, r1: 345, c0: 150, count: 100 }, 40, 2);
+  assert.deepEqual(s.map((x) => [x.type, x.r, x.c]), [['L', 340, 200]], '80 S, 40 nodes from the grid\'s end: still a centre');
+  const fr = codeFrame((r, c) => { const dc = Math.min(c, 720 - c); return 150 - Math.floor(40 * Math.exp(-((r - 120) ** 2 + dc ** 2) / 200)); });   // a unique lowest node at 30 N, 180
   const view = { z: 1.5, w: 2000, h: 700, ox: -300, oy: 0 }, n = 256 * Math.pow(2, 1.5);
-  const g = I.isoValues(fr, PRES, I.nodeWindow(view, HALF, fr, 0.2), I.isoStride(view.z, 0.5), null);
-  const e = I.findExtrema(g, 6, PRES.lo, PRES.hi, 1);
-  assert.equal(e.length, 1); assert.equal(e[0].type, 'L'); assert.equal(e[0].j, 0, 'at the date line column');
-  const marks = I.projectExtrema(e, g, HALF, view);
+  const e = I.findCentres(fr, PRES, I.nodeWindow(view, HALF, fr, 0), 40, 1);
+  assert.equal(e.length, 1); assert.equal(e[0].type, 'L'); assert.deepEqual([e[0].r, e[0].c], [120, 0]);
+  const marks = I.projectCentres(e, HALF, view);
   assert.ok(marks.length >= 2, `${marks.length} copies in view`);
   for (let k = 1; k < marks.length; k++) assert.ok(near(marks[k].x - marks[k - 1].x, n, 1e-6));
   assert.ok(marks.every((m) => m.text === String(Math.round(e[0].v)) && m.y === marks[0].y && m.x >= I.ISO_HL_EDGE_PX && m.x <= view.w - I.ISO_HL_EDGE_PX));
-  const pc = I.forwardPixel(30, 180, 1.5);
-  assert.ok(near(marks[0].y, pc.y - view.oy, 1), 'at 30 N');
+  const pc = I.forwardPixel(30, -180, 1.5);
+  assert.ok(near(marks[0].y, pc.y - view.oy, 1e-9), 'at 30 N'); assert.ok(near(((marks[0].x + view.ox - pc.x) % n + n) % n, 0, 1e-6), 'at 180');
+  assert.deepEqual(I.projectCentres([{ type: 'H', r: 0, c: 0, v: 1030 }], HALF, view).length, 0, 'beyond the view: nothing');
+});
+
+test('on the real GFS frame the world view marks the deep centres with their own pressure (a 956-hPa typhoon, a 946-hPa Southern Ocean low)', async () => {
+  const { png } = realFrames();
+  const fr = await I.decodePngGrey(png, { cols: 720, rows: 361 });
+  const z = Math.log2(1920 / 256), n = 256 * Math.pow(2, z), view = { z, w: 1920, h: 1080, ox: 0, oy: n / 2 - 540 };
+  view.ox = (-170 + 180) / 360 * n - 960;
+  const e = I.findCentres(fr, PRES, I.nodeWindow(view, HALF, fr, 0), Math.round(I.ISO_HL_PX / (n * 0.5 / 360)), 2);
+  const at = (type, lat, lng) => e.find((x) => x.type === type && Math.abs(90 - x.r * 0.5 - lat) <= 1 && Math.abs(((-180 + x.c * 0.5 - lng + 540) % 360) - 180) <= 1);
+  const ty = at('L', 13.5, 142), so = at('L', -54, 77);
+  assert.ok(ty && Math.round(ty.v) === 956, 'the typhoon: ' + JSON.stringify(ty));
+  assert.ok(so && Math.round(so.v) === 946, 'the Southern Ocean low: ' + JSON.stringify(so));
+  for (const x of e) {                                                     // each the extreme of its own square in the raw codes
+    const want = bruteCentres(fr, { r0: x.r, r1: x.r, c0: x.c, count: 1 }, Math.round(I.ISO_HL_PX / (n * 0.5 / 360)), 2);
+    assert.deepEqual(want, [key(x)]);
+  }
 });
 
 // ---- the canvas layer ----

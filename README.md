@@ -282,10 +282,14 @@ small rings of mountain pressure reductions and 8-bit terraces go (on a real GFS
 lines, the readout's "· 1004 hPa" stays the exact value at the cursor). Spacing: every 8 hPa while the whole world is in
 view (any screen width) or to zoom 2.9, every 4 hPa to zoom 5.9, every 2 hPa beyond. Each isobar has at most one small
 pill (9-px text), rotated along the line, from zoom 4 and never while the whole world is in view; highs and lows are marked
-H and L with their pressure, found on the frame's own values (not the smoothed lines): a node that is the lowest or highest
-within ~110 px on screen and at least 1 hPa (a quarter of the interval at the wider views) from its surroundings, so a compact
-typhoon keeps its real centre and central pressure (asset 2.19.4: on the smoothed field a 956-hPa typhoon read "L 1000" at the
-world view and two tropical cyclones had no mark). Lines are thin and faint (a 1.2-px white line at 72 %). A step
+H and L with their pressure, found on the frame's own values (not the smoothed lines): a node that nothing within ~110 px
+on screen undercuts (L) or overtops (H) and that is at least 1 hPa (a quarter of the interval at the wider views) from its
+surroundings; a flat-bottomed centre is marked once, at the middle of its patch of equal values (no mark for a patch that runs
+down to a lower value, holds more than 4,096 nodes or spans half the world); of two equal centres within ~110 px of each
+other only one is marked. So a compact typhoon keeps its real centre and central pressure (asset 2.19.4: on the smoothed
+field a 956-hPa typhoon read "L 1000" at the world view and two tropical cyclones had no mark), and a second low along a
+trough keeps its L (asset 2.19.5: a 998-hPa low 10 hPa deep in the Bering Sea had none: a low of the same pressure 8 deg away
+hid it). Lines are thin and faint (a 1.2-px white line at 72 %). A step
 waits at most 1 s for its pressure frame (owner, G32): a slower one lands without lines, which appear when the frame
 arrives. One frame (at most ~16 ms) of the previous step's lines can show under the new picture when the browser paints
 between a landing and the next animation frame (G32 A-P3-5, accepted).

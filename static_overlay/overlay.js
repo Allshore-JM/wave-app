@@ -2567,55 +2567,75 @@
     return out;
   }
   // The highs' and lows' centres from the frame's own codes (G32 fix-round verification: on the smoothed grid a compact
-  // typhoon read "L 1000" for 958 hPa and two tropical cyclones had no mark at the world view): a node lower (L) or higher
-  // (H) than every node within `rad` grid nodes (ties to the earlier node in raster order; rows beyond the grid's ends are
-  // simply absent, so a centre near the map's edge counts; columns wrap), at least `depth` hPa from the mean of that
-  // square's border, and not at the field's clamped ends. `win` = the view's node window (nodeWindow): only its nodes are
-  // candidates, their squares read the frame beyond it. Blocks of B x B nodes (2B - 1 <= rad) sift the candidates: a node
-  // that is the extreme of its square is the extreme of its block, and its block is no worse than the 8 around it (they lie
-  // inside the square), so only those blocks' extreme nodes get the exact test (the same answer as testing every node).
-  // -> [{type: 'H' | 'L', r, c, v}] (r, c = grid row and column, v = the node's pressure in hPa)
+  // typhoon read "L 1000" for 958 hPa and two tropical cyclones had no mark at the world view):
+  // 1. candidates: a node of the view's window (`win`, nodeWindow) that no node within `rad` grid nodes undercuts (L) /
+  //    overtops (H) (rows beyond the grid's ends absent, columns wrapping); an equal code counts against it only as one of
+  //    its 8 neighbours, where the earlier node in raster order stands; at least `depth` hPa below / above the mean of the
+  //    ring `rad` nodes out; never at the field's clamped ends;
+  // 2. a candidate's patch of equal codes (8-connected) is taken for its kind (one mark per patch) and marks nothing when
+  //    it touches a lower (L) / higher (H) node (a shelf), holds more than ISO_PATCH_MAX nodes or spans half the world's
+  //    columns (it may wrap); else the centre sits at the patch's middle;
+  // 3. two candidates of one kind within `rad` nodes of each other are equal (neither undercuts the other): the first in
+  //    raster order stands, the other is dropped.
+  // (With equal codes counted against a node across the whole square, a trough with minima B, A equal to B and C lower
+  // than A, 8 deg apart each, kept only C: C, lower and within the radius, took A, and A's tie took B.)
+  // Blocks of B x B nodes (2B - 1 <= rad) sift the candidates: a candidate is its block's extreme and its block is no worse
+  // than the 8 around it (they lie inside its square), so only such blocks' extreme-valued nodes are tested (the same answer
+  // as testing every node). -> [{type: 'H' | 'L', r, c, v}] (r, c = grid row and column, fractional for a patch's middle)
+  var ISO_PATCH_MAX = 4096;                                 // the largest patch that marks a centre
   function findCentres(frame, fdef, win, rad, depth) {
-    var Q = frame.q, cols = frame.cols, rows = frame.rows, k = (fdef.hi - fdef.lo) / 254, out = [];
+    var Q = frame.q, cols = frame.cols, rows = frame.rows, k = (fdef.hi - fdef.lo) / 254, cands = [], out = [];
     if (!(rad >= 1)) rad = 1;
+    if (rad > cols >> 1) rad = cols >> 1;                   // a square wider than the world would meet itself
     if (!(depth > 0)) depth = ISO_HL_MIN_HPA;
     var r0 = Math.max(win.r0, 0), r1 = Math.min(win.r1, rows - 1), n = Math.min(win.count, cols), wrap = n >= cols;
     var B = Math.max(1, Math.min(8, Math.floor((rad + 1) / 2))), nbR = Math.ceil((r1 - r0 + 1) / B), nbC = Math.ceil(n / B);
     if (nbR < 1 || nbC < 1) return out;
-    var bmin = new Uint8Array(nbR * nbC), bmax = new Uint8Array(nbR * nbC), imin = new Int32Array(nbR * nbC), imax = new Int32Array(nbR * nbC);
-    var r, jj, c, q, b;
+    var bmin = new Uint8Array(nbR * nbC), bmax = new Uint8Array(nbR * nbC), r, jj, c, v, b;
     for (r = r0; r <= r1; r++) {
       var bi0 = Math.floor((r - r0) / B) * nbC;
       for (jj = 0; jj < n; jj++) {
-        c = (win.c0 + jj) % cols; q = Q[r * cols + c];
-        if (!q) continue;
+        v = Q[r * cols + (win.c0 + jj) % cols];
+        if (!v) continue;
         b = bi0 + Math.floor(jj / B);
-        if (!bmin[b] || q < bmin[b]) { bmin[b] = q; imin[b] = r * cols + c; }
-        if (q > bmax[b]) { bmax[b] = q; imax[b] = r * cols + c; }
+        if (!bmin[b] || v < bmin[b]) bmin[b] = v;
+        if (v > bmax[b]) bmax[b] = v;
       }
     }
-    function exact(idx, wantMin) {                            // the whole rad-square, ring by ring outward (most fail early)
-      var rr0 = Math.floor(idx / cols), cc0 = idx % cols, v = Q[idx];
+    function test(r, c, v, low) {
       if (v <= 2 || v >= 254) return;                         // the clamped ends (and a code next to them) are no centre
-      var sum = 0, cnt = 0;
-      for (var d = 1; d <= rad; d++) {
+      var dr, dc, rr, cc, x, sum = 0, cnt = 0;
+      for (dr = -1; dr <= 1; dr++) {                          // its 8 neighbours: an equal one earlier in raster order stands
+        rr = r + dr;
+        if (rr < 0 || rr >= rows) continue;
+        for (dc = -1; dc <= 1; dc++) {
+          if (!dr && !dc) continue;
+          cc = c + dc;
+          x = Q[rr * cols + (cc < 0 ? cc + cols : cc >= cols ? cc - cols : cc)];
+          if (!x) continue;
+          if (low ? x < v : x > v) return;
+          if (x === v && (dr < 0 || (!dr && dc < 0))) return;
+          if (rad === 1) { sum += x; cnt++; }                 // the ring is the 8 neighbours
+        }
+      }
+      for (var d = 2; d <= rad; d++) {                        // the rest of the square, ring by ring outward
         var last = d === rad;
-        for (var dr = -d; dr <= d; dr++) {
-          var rr = rr0 + dr;
+        for (dr = -d; dr <= d; dr++) {
+          rr = r + dr;
           if (rr < 0 || rr >= rows) continue;
-          var step = dr === -d || dr === d ? 1 : 2 * d;
-          for (var dc = -d; dc <= d; dc += step) {
-            var x = Q[rr * cols + ((cc0 + dc) % cols + cols) % cols];
+          var base = rr * cols, step = dr === -d || dr === d ? 1 : 2 * d;
+          for (dc = -d; dc <= d; dc += step) {
+            cc = c + dc;
+            x = Q[base + (cc < 0 ? cc + cols : cc >= cols ? cc - cols : cc)];
             if (!x) continue;
-            var early = dr < 0 || (!dr && dc < 0);
-            if (wantMin ? (x < v || (x === v && early)) : (x > v || (x === v && early))) return;
+            if (low ? x < v : x > v) return;
             if (last) { sum += x; cnt++; }
           }
         }
       }
       if (!cnt) return;
       var ring = sum / cnt;
-      if (wantMin ? (ring - v) * k >= depth : (v - ring) * k >= depth) out.push({ type: wantMin ? 'L' : 'H', r: rr0, c: cc0, v: fdef.lo + (v - 1) * k });
+      if (low ? (ring - v) * k >= depth : (v - ring) * k >= depth) cands.push({ type: low ? 'L' : 'H', r: r, c: c, q: v });
     }
     for (var bi = 0; bi < nbR; bi++) {
       for (var bj = 0; bj < nbC; bj++) {
@@ -2635,11 +2655,71 @@
             if (bmax[o] > bmax[b]) hi = false;
           }
         }
-        if (lo) exact(imin[b], true);
-        if (hi) exact(imax[b], false);
+        if (!lo && !hi) continue;
+        for (r = r0 + bi * B; r < Math.min(r0 + bi * B + B, r1 + 1); r++) {
+          for (jj = bj * B; jj < Math.min(bj * B + B, n); jj++) {
+            c = (win.c0 + jj) % cols; v = Q[r * cols + c];
+            if (lo && v === bmin[b]) test(r, c, v, true);
+            if (hi && v === bmax[b]) test(r, c, v, false);
+          }
+        }
       }
     }
-    return out;
+    var marks = null;                                         // per node: 1 = in a patch taken for a low, 2 = for a high
+    // a candidate's whole patch, followed node by node (column offsets unwrapped from the candidate's column) and taken for
+    // its kind, so no patch is followed twice; null for a shelf, a patch over ISO_PATCH_MAX nodes or one spanning half the
+    // columns, else its middle
+    function patch(cd) {
+      if (!marks) marks = new Uint8Array(rows * cols);
+      var low = cd.type === 'L', bit = low ? 1 : 2, stack = [cd.r, 0], sr = 0, sc = 0, m = 0, cmin = 0, cmax = 0, shelf = false;
+      marks[cd.r * cols + cd.c] |= bit;
+      while (stack.length) {
+        var pc = stack.pop(), pr = stack.pop();
+        sr += pr; sc += pc; m++;
+        if (pc < cmin) cmin = pc; else if (pc > cmax) cmax = pc;
+        for (var i = -1; i <= 1; i++) {
+          var qr = pr + i;
+          if (qr < 0 || qr >= rows) continue;
+          for (var j = -1; j <= 1; j++) {
+            if (!i && !j) continue;
+            var qc = pc + j, key = qr * cols + (((cd.c + qc) % cols) + cols) % cols, y = Q[key];
+            if (!y) continue;
+            if (low ? y < cd.q : y > cd.q) shelf = true;
+            else if (y === cd.q && !(marks[key] & bit)) { marks[key] |= bit; stack.push(qr, qc); }
+          }
+        }
+      }
+      if (shelf || m > ISO_PATCH_MAX || cmax - cmin >= cols >> 1) return null;
+      return { r: sr / m, c: ((cd.c + sc / m) % cols + cols) % cols };
+    }
+    cands.sort(function (a, b) { return a.type !== b.type ? (a.type < b.type ? -1 : 1) : a.r - b.r || a.c - b.c; });
+    // the kept centres by bands of rad + 1 rows and columns (the last column band takes the rest: every band is at least
+    // rad + 1 wide, so a centre within rad sits in the same band or a neighbouring one, across the date line too)
+    var W = rad + 1, nbc = Math.max(1, Math.floor(cols / W)), bands = {};
+    function bandOf(type, br, bc) { return type + br + ',' + (((bc % nbc) + nbc) % nbc); }
+    for (var i = 0; i < cands.length; i++) {
+      var cd = cands[i], near = false, br = Math.floor(cd.r / W), bc = Math.min(nbc - 1, Math.floor(cd.c / W));
+      if (marks && marks[cd.r * cols + cd.c] & (cd.type === 'L' ? 1 : 2)) continue;
+      for (var di = -1; di <= 1 && !near; di++) {
+        for (var dj = -1; dj <= 1 && !near; dj++) {
+          var list = bands[bandOf(cd.type, br + di, bc + dj)];
+          for (var j = 0; list && j < list.length && !near; j++) {
+            var e = list[j];
+            if (Math.abs(e.r0 - cd.r) > rad) continue;
+            var dcol = Math.abs(e.c0 - cd.c);
+            if (dcol > cols / 2) dcol = cols - dcol;
+            if (dcol <= rad) near = true;
+          }
+        }
+      }
+      if (near) continue;
+      var pt = patch(cd);
+      if (!pt) continue;
+      var kept = { type: cd.type, r: pt.r, c: pt.c, v: fdef.lo + (cd.q - 1) * k, r0: cd.r, c0: cd.c }, key = bandOf(cd.type, br, bc);
+      out.push(kept);
+      (bands[key] || (bands[key] = [])).push(kept);
+    }
+    return out.map(function (e) { return { type: e.type, r: e.r, c: e.c, v: e.v }; });
   }
   // The projection of an isoValues window: node row -> container y (exact at the nodes, linear between), node column ->
   // x per world copy the view shows (longitudes unwrapped from the window's first column: the date line falls out).
@@ -4899,7 +4979,7 @@
       SST_TIER_ZOOMS: SST_TIER_ZOOMS, SST_ATTRIBUTION: SST_ATTRIBUTION, SST_HEAD: SST_HEAD, SST_STALE_DAYS: SST_STALE_DAYS, sstDayText: sstDayText, sstAgeDays: sstAgeDays, buildLegend: buildLegend, SST_PREFIX: SST_PREFIX, SST_PAD_PX: SST_PAD_PX, MAX_SST_INFLIGHT: MAX_SST_INFLIGHT, MAX_SST_CHUNK_BYTES: MAX_SST_CHUNK_BYTES, cellsForTile: cellsForTile,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
-      projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
+      projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
       ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_MIN_HPA: ISO_HL_MIN_HPA, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,
       ISO_LABEL_MIN_PX: ISO_LABEL_MIN_PX, ISO_LABEL_AT: ISO_LABEL_AT, ISO_LABEL_EDGE_PX: ISO_LABEL_EDGE_PX,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,

@@ -35,26 +35,61 @@
     window.__early.stations.catch(function () {});
     // ---- early forecast (tests/ui/early.test.js runs this block: keep it self-contained between the markers) ----
     // The forecast window's first request, started here instead of after the page and its module have loaded.
-    // Same rule as the module's resolveInitialState + queryFor (the address, then the viewer's saved settings);
-    // the module uses the response only when its own query is identical, so a mismatch costs one request, never
-    // a wrong forecast. Not for ?render=full (the table is in the page).
+    // Same rule as the module's resolveInitialState + queryFor (the address, then the viewer's default station (the
+    // blue star, localStorage allshore.defaultStation.v1), then the viewer's saved settings); the module uses the
+    // response only when its own query is identical, so a mismatch costs one request, never a wrong forecast. Not for
+    // ?render=full (the table is in the page). Without a station in the address or a default, and with the geo Worker
+    // configured (GEO, plan section 46), the station is the one nearest the visitor's IP position: the Worker's answer
+    // and the station list (on its way already) are raced against a 2-s cap, then the request starts; the module's
+    // first load waits for window.__early.station (the id), the map's first view reads window.__early.place (the
+    // position with that station). Every failure lands on 51201, as before.
     (function () {
       try {
         var p = new URLSearchParams(location.search), st = {}, swan = {{ initial_state.swan_stations|tojson }};
+        var GEO = {{ geo_base|tojson }};
         if (p.get('render') === 'full') return;
         try { var o = JSON.parse(localStorage.getItem('allshore.settings.v1') || '{}'); if (o && typeof o === 'object') st = o; } catch (e) {}
+        var dflt = '';
+        try { var d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); if (d && typeof d === 'object' && typeof d.id === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(d.id)) dflt = d.id; } catch (e) {}
         var unit = p.has('unit') ? p.get('unit') : (typeof st.unit === 'string' ? st.unit : 'US');
-        var station = p.get('station') || '51201';
-        var q = new URLSearchParams({
-          station: station,
-          tz: p.has('tz') ? p.get('tz') : (typeof st.tz === 'string' ? st.tz : ''),
-          unit: unit === 'Metric' ? 'Metric' : 'US',
-          model: (p.get('model') || 'GFS').toUpperCase() === 'SWAN' && swan.indexOf(station) >= 0 ? 'SWAN' : 'GFS',   // the loader's normalise()
-          compact: '1'
-        }).toString();
-        var f = fetch('/api/forecast?' + q);
-        f.catch(function () {});
-        window.__early.forecast = { q: q, p: f };
+        function start(station) {
+          var q = new URLSearchParams({
+            station: station,
+            tz: p.has('tz') ? p.get('tz') : (typeof st.tz === 'string' ? st.tz : ''),
+            unit: unit === 'Metric' ? 'Metric' : 'US',
+            model: (p.get('model') || 'GFS').toUpperCase() === 'SWAN' && swan.indexOf(station) >= 0 ? 'SWAN' : 'GFS',   // the loader's normalise()
+            compact: '1'
+          }).toString();
+          var f = fetch('/api/forecast?' + q);
+          f.catch(function () {});
+          window.__early.forecast = { q: q, p: f };
+          return station;
+        }
+        var fixed = (p.get('station') || '').trim() || dflt;
+        if (fixed || !GEO) { start(fixed || '51201'); return; }
+        // the visitor's area: the Worker (request.cf: the ISP's city, never stored anywhere) and the station list
+        function num(v, lim) { return typeof v === 'number' && isFinite(v) && Math.abs(v) <= lim ? v : null; }
+        function nearest(pos, list) {
+          var lat = num(pos && pos.lat, 90), lon = num(pos && pos.lon, 180);
+          if (lat === null || lon === null || !Array.isArray(list)) return null;
+          var best = null, bd = Infinity, R = Math.PI / 180;
+          for (var i = 0; i < list.length; i++) {
+            var s = list[i], la = s ? num(s.lat, 90) : null, lo = s ? num(s.lon, 180) : null;
+            if (la === null || lo === null || !s.id) continue;
+            var dLat = Math.sin((la - lat) * R / 2), dLon = Math.sin((lo - lon) * R / 2);   // haversine: the date line is no seam
+            var h = dLat * dLat + Math.cos(lat * R) * Math.cos(la * R) * dLon * dLon;
+            if (h < bd) { bd = h; best = { lat: lat, lon: lon, sid: String(s.id), slat: la, slon: lo }; }
+          }
+          return best;
+        }
+        var geo = fetch(GEO + '/', { credentials: 'omit' }).then(function (r) { if (!r.ok) throw new Error('geo ' + r.status); return r.json(); });
+        geo.catch(function () {});
+        var list = window.__early.stations.then(function (r) { return r.clone().json(); });   // the map reads the original later
+        var found = Promise.all([geo, list]).then(function (v) { return nearest(v[0], v[1]); });
+        var cap = new Promise(function (res) { setTimeout(function () { res(null); }, 2000); });
+        var place = Promise.race([found, cap]).catch(function () { return null; });
+        window.__early.place = place;
+        window.__early.station = place.then(function (pl) { return start(pl && pl.sid ? pl.sid : '51201'); });
       } catch (e) {}
     })();
     // ---- end early forecast ----
@@ -738,6 +773,9 @@
     .attr-btn { font: italic 700 15px/26px Georgia, serif; text-align: center; color: #0b2536; cursor: pointer; }
     .leaflet-container:not(.attr-open) .leaflet-control-attribution { display: none; }
     .leaflet-container.attr-open .leaflet-control-attribution { max-width: min(80vw, 640px); }
+    /* the first view waits for the visitor's area (plan section 46): nothing of Hawaii paints meanwhile (the navy
+       background shows under the controls, at most ~2 s) */
+    .leaflet-container.geo-pending .leaflet-map-pane { visibility: hidden; }
 
     /* Visible keyboard focus (a11y) */
     a:focus-visible, button:focus-visible, select:focus-visible,
@@ -3522,7 +3560,66 @@
     // ---------------- (end of the wind stations block) ----------------
 
     window.addEventListener('resize', enforceSingleWorld);
-    enforceSingleWorld();
+    // ---- first view (tests/ui/firstview.test.js runs this block: keep it self-contained between the markers) ----
+    // Where the site opens (plan section 46): the tab's own view (sessionStorage) > the visitor's default station (the
+    // blue star: its position at the default zoom) > the visitor's area from the IP address (the head's geo race,
+    // window.__early.place: the position with the nearest station; the map zooms out until the station is in view) >
+    // Hawaii. A link to a station opens the map as before. While the race is pending the map pane is hidden
+    // (geo-pending: no Hawaii tiles paint), at most ~2 s; a visitor who moves the map or picks a station first keeps
+    // what they did. The session view is read BEFORE the first view is set (setting one saves it).
+    (function firstView() {
+      var hadView = false;
+      try { var sv = loadMapView(); hadView = !!(sv && Number.isFinite(sv.lat) && Number.isFinite(sv.lng) && Number.isFinite(sv.z)); } catch (e) {}
+      enforceSingleWorld();                              // the synchronous first view: the tab's own, else Hawaii
+      if (hadView) return;
+      var fixed = '', dflt = null;
+      try { fixed = (new URLSearchParams(location.search).get('station') || '').trim(); } catch (e) {}
+      try { var d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); if (d && typeof d === 'object' && typeof d.id === 'string' && d.id) dflt = d; } catch (e) {}
+      function show(lat, lon, z) {
+        map.setView([clampLat(lat), normLng(lon)], Math.min(MAX_MAP_ZOOM, Math.max(z, MIN_MAP_ZOOM)), { animate: false });
+        clampMapLatitude(); refreshWrappedMarkerCopies(true);
+        try { saveMapView(map); } catch (e) {}
+      }
+      if (fixed) return;
+      function onEarth(lat, lon) { return Number.isFinite(lat) && Math.abs(lat) <= 90 && Number.isFinite(lon) && Math.abs(lon) <= 180; }
+      if (dflt) { if (onEarth(dflt.lat, dflt.lon)) show(dflt.lat, dflt.lon, DEFAULT_MAP_ZOOM); return; }
+      var place = window.__early && window.__early.place;
+      if (!place || typeof place.then !== 'function') return;   // no geo Worker configured: Hawaii, as before
+      // the largest zoom at which a point is inside a w x h map centred on another (Mercator: the world is 256 px wide
+      // at zoom 0; the half-spans from the centre, so a far northern or southern station counts as it is drawn)
+      function fitZoom(clat, clon, lat, lon, w, h) {
+        var merc = function (la) { var sn = Math.sin(Math.max(-85, Math.min(85, la)) * Math.PI / 180); return Math.log((1 + sn) / (1 - sn)) / 2; };
+        var dx = Math.abs(clon - lon) / 360, dy = Math.abs(merc(clat) - merc(lat)) / (2 * Math.PI);
+        var zx = dx > 0 ? Math.log(w / (2 * dx * 256)) / Math.LN2 : Infinity, zy = dy > 0 ? Math.log(h / (2 * dy * 256)) / Math.LN2 : Infinity;
+        return Math.min(zx, zy);
+      }
+      // the view centred on the visitor at the default zoom, lowered until the nearest station is in view (the span
+      // times 1.3 fits the map: 15 % padding; the zoom a tenth below the fit, so the map's zoomSnap never rounds it up
+      // out of view)
+      function geoView(pl) {
+        var z = DEFAULT_MAP_ZOOM;
+        if (Number.isFinite(pl.slat) && Number.isFinite(pl.slon)) {
+          var slon = pl.slon; if (slon - pl.lon > 180) slon -= 360; else if (pl.lon - slon > 180) slon += 360;   // the station on the visitor's side of the date line
+          var sz = map.getSize(), fit = fitZoom(clampLat(pl.lat), pl.lon, pl.slat, slon, sz.x / 1.3, sz.y / 1.3);
+          if (fit < z) z = Math.floor(fit * 10) / 10;
+        }
+        return { lat: pl.lat, lon: pl.lon, z: z };
+      }
+      var el = map.getContainer(), acted = false, done = false, timer = null;
+      function act() { acted = true; }
+      ['pointerdown', 'wheel', 'keydown', 'touchstart'].forEach(function (ev) { el.addEventListener(ev, act, { once: true, passive: true }); });
+      document.addEventListener('allshore:station', act, { once: true });
+      el.classList.add('geo-pending');
+      function finish(pl) {
+        if (done) return;
+        done = true; clearTimeout(timer); el.classList.remove('geo-pending');
+        if (!pl || acted || typeof pl !== 'object' || !onEarth(pl.lat, pl.lon)) return;
+        var v = geoView(pl); show(v.lat, v.lon, v.z);
+      }
+      timer = setTimeout(function () { finish(null); }, 2500);   // the head's own cap is 2 s: this guards a promise that never settles
+      place.then(finish, function () { finish(null); });
+    })();
+    // ---- end first view ----
 
     // ---------------- Favorite-station picker ----------------
     // Progressive enhancement over the native <select id="station">: the trigger

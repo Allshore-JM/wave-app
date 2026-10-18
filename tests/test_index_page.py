@@ -938,3 +938,41 @@ def test_no_home_button_and_the_forecast_window_opens_between_the_corners(client
     assert "if (r.width > 0 && !c.classList.contains('tools-bar')) w = Math.max(w, base.right - r.left);" in fn
     assert "document.documentElement.style.setProperty('--map-topright-w', Math.round(w) + 'px');" in fn
     assert "new ResizeObserver(function () { measureTopRight(); }).observe(trCorner);" in fn
+
+
+def test_geo_base_reaches_the_head_and_the_first_view_block_is_in_place(client, monkeypatch):
+    """Plan section 46 (owner: the site opens where the visitor is, from the IP address, nothing fixed): env GEO_BASE
+    (the geo Worker, tools/geo) reaches the head's early block as GEO; empty = the page opens as before. The head's
+    rule and the module's are pinned by tests/ui/early.test.js and tests/ui/window.test.js; the first-view block by
+    tests/ui/firstview.test.js. Here: the plumbing, the markers, the CSS that hides the map pane while the race runs,
+    and the module's deferral (never a fetch before the head's answer)."""
+    monkeypatch.delenv("GEO_BASE", raising=False)
+    assert A._geo_base() == ""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert 'var GEO = "";' in body
+    head = body[body.index("// ---- early forecast"):body.index("// ---- end early forecast ----")]
+    for needle in ("window.__early.place = place;", "window.__early.station = place.then(function (pl) { return start(pl && pl.sid ? pl.sid : '51201'); });",
+                   "fetch(GEO + '/', { credentials: 'omit' })", "setTimeout(function () { res(null); }, 2000);",
+                   "'allshore.defaultStation.v1'", "if (fixed || !GEO) { start(fixed || '51201'); return; }", "r.clone().json()"):
+        assert needle in head, needle
+    assert body.index("// ---- first view") < body.index("// ---------------- Favorite-station picker") and "// ---- end first view ----" in body
+    fv = body[body.index("// ---- first view"):body.index("// ---- end first view ----")]
+    for needle in ("el.classList.add('geo-pending');", "enforceSingleWorld();", "if (hadView) return;", "var place = window.__early && window.__early.place;",
+                   "['pointerdown', 'wheel', 'keydown', 'touchstart']", "document.addEventListener('allshore:station', act, { once: true });",
+                   "z = Math.floor(fit * 10) / 10;"):
+        assert needle in fv, needle
+    assert "\n    enforceSingleWorld();\n" not in body, "the first view is set inside the block, not before it"
+    assert ".leaflet-container.geo-pending .leaflet-map-pane { visibility: hidden; }" in body
+    assert "window.addEventListener('resize', enforceSingleWorld);" in body
+    monkeypatch.setenv("GEO_BASE", "https://geo.example.test/")
+    assert A._geo_base() == "https://geo.example.test"
+    on = client.get("/?station=51201").get_data(as_text=True)
+    assert 'var GEO = "https://geo.example.test";' in on
+    assert on.replace('var GEO = "https://geo.example.test";', 'var GEO = "";') == body, "GEO_BASE changes one line of the page"
+    monkeypatch.delenv("GEO_BASE")
+    js = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static_ui", "forecast.js"), encoding="utf-8").read()
+    for needle in ("var DEFAULT_KEY = 'allshore.defaultStation.v1';", "function resolveInitialState(search, stored, server, dflt)",
+                   "function started() { return seq > 0; }", "var deferred = !initial.inline && !urlStation && !dflt && !!earlyStation && typeof earlyStation.then === 'function';",
+                   "holdUrl = deferred;", "replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false;",
+                   ".then(function (sid) { if (loader.started()) return; state.station = sid; syncSelects(); holdUrl = false; loader.load({}); });"):
+        assert needle in js, needle

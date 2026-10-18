@@ -326,6 +326,13 @@ def _coast_base() -> str:
     return os.environ.get("COAST_BASE", "").rstrip("/")
 
 
+def _geo_base() -> str:
+    """The geo Worker (tools/geo, plan section 46): env GEO_BASE, e.g. https://geo.allshoresurf.com. With it the page
+    opens at the visitor's area (the station nearest the IP address) when the address names no station and the
+    visitor set no default; empty = the page opens as before (Hawaii, 51201)."""
+    return os.environ.get("GEO_BASE", "").strip().rstrip("/")
+
+
 def _versioned_asset(directory: str, assets: dict, name: str, version: str):
     """A whitelisted static file, immutable at a versioned URL (?v=): only the version this build
     ships is served (any other ?v is a 404 nothing may cache); the path must stay inside `directory`."""
@@ -387,7 +394,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.22.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.23.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -2939,6 +2946,7 @@ def index():
         ui_asset_version=UI_ASSET_VERSION,
         icon_version=ICON_VERSION,
         coast_base=_coast_base(),
+        geo_base=_geo_base(),
         site_origin=SITE_ORIGIN,
         site_title=SITE_TITLE,
         site_description=SITE_DESCRIPTION,

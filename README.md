@@ -87,6 +87,23 @@ card in the page flow with a Go button in the window's toolbar. The map fills th
 minimised bar) and re-applies its stored view only when the width changes (a phone keyboard must not snap it back). The
 page golden (`tests/fixtures/index_golden.json`) was re-baselined at this restructure (see `tests/test_overlay_flag.py`).
 
+## Where the site opens (plan section 46, UI asset 1.23.0)
+
+A fresh tab opens at the visitor's own area: the head asks the geo Worker (`tools/geo`, `GET https://geo.allshoresurf.com/`,
+Cloudflare's `request.cf` position for the IP address: the ISP's city; nothing is stored anywhere) and the station list, picks
+the station nearest that position (haversine, so the date line is no seam) and starts its forecast request; the map opens
+centred on the visitor at zoom 6, zoomed out until that station is in view (15 % padding; never below the map's minimum
+zoom), and the forecast window loads the station. The Worker's answer and the list are raced against a 2-s cap; while it runs
+the map pane is hidden (no Hawaii tiles paint; the navy background shows under the controls) and a visitor who moves the map
+or picks a station meanwhile keeps what they did. Every failure (no Worker, a slow or refused answer, a VPN exit on land far
+from the sea) lands on today's behaviour: Hawaii and 51201. Precedence: a station in the address (`?station=`: every reload,
+since the address is written after the first load, and every link) > the viewer's default station (the blue star in the
+favourites picker, localStorage `allshore.defaultStation.v1`: its position at zoom 6) > the IP's nearest station > 51201;
+for the map: the tab's own view (sessionStorage) > the default station's position > the IP position > Hawaii. The head and
+the module ask for one and the same query (tests/ui/early.test.js); the module's first load waits for the head's answer
+(`window.__early.station`) and a load the viewer causes meanwhile wins. Env `GEO_BASE` (e.g. `https://geo.allshoresurf.com`)
+turns it on; unset, the page opens as before. The Home view button is gone (its saved view is no longer read).
+
 ## Map tools (static_ui/tools.js)
 
 A ruler button left of the settings gear (plan section 29) opens three tools. While one is active, map clicks, and clicks

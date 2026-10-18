@@ -11,19 +11,31 @@ const html = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'inde
 const a = html.indexOf('// ---- early forecast'), b = html.indexOf('// ---- end early forecast ----');
 assert.ok(a > 0 && b > a, 'the early forecast block is marked in the template');
 const SWAN = ['51201', '51202'];
-const BLOCK = html.slice(html.indexOf('\n', a) + 1, b).replace('{{ initial_state.swan_stations|tojson }}', JSON.stringify(SWAN));
+const RAW = html.slice(html.indexOf('\n', a) + 1, b).replace('{{ initial_state.swan_stations|tojson }}', JSON.stringify(SWAN));
+const block = (geo) => RAW.replace('{{ geo_base|tojson }}', JSON.stringify(geo || ''));
+const BLOCK = block('');
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'static_ui', 'forecast.js'), 'utf8');
 const w = {}; new Function('window', 'URLSearchParams', SRC)(w, URLSearchParams);
 const I = w.AllshoreForecast._internals;
 
-function runHead(search, stored, storage) {
-  const urls = [];
-  const ctx = { URLSearchParams, JSON, location: { search }, window: { __early: {} },
-    localStorage: storage || { getItem: (k) => (k === 'allshore.settings.v1' && stored !== undefined ? (typeof stored === 'string' ? stored : JSON.stringify(stored)) : null) },
-    fetch: (u) => { urls.push(u); return Promise.resolve({}); } };
-  vm.runInNewContext(BLOCK, ctx);
-  return { early: ctx.window.__early.forecast, urls };
+// opts: geo (the GEO base), dflt (the saved default station), geoAnswer (a function returning the Worker's response
+// promise), stations (the list the stations request answers with, or a rejection), fetchOpts recorded per request
+function runHead(search, stored, storage, opts) {
+  opts = opts || {};
+  const urls = [], fetches = [], timers = [];
+  const keys = { 'allshore.settings.v1': stored, 'allshore.defaultStation.v1': opts.dflt };
+  const stationsP = opts.stationsReject ? Promise.reject(new TypeError('Failed to fetch'))
+    : Promise.resolve({ clone: () => ({ json: () => Promise.resolve(opts.stations === undefined ? [] : opts.stations) }), json: () => Promise.resolve(opts.stations || []) });
+  stationsP.catch(() => {});
+  const ctx = { URLSearchParams, JSON, location: { search }, window: { __early: { stations: stationsP } },
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    localStorage: storage || { getItem: (k) => (k in keys && keys[k] !== undefined ? (typeof keys[k] === 'string' ? keys[k] : JSON.stringify(keys[k])) : null) },
+    fetch: (u, o) => { urls.push(u); fetches.push([u, o]); if (opts.geoAnswer && u === (opts.geo || '') + '/') return opts.geoAnswer(); return Promise.resolve({}); } };
+  vm.runInNewContext(block(opts.geo), ctx);
+  return { get early() { return ctx.window.__early.forecast; }, urls, fetches, timers, ctx, w: ctx.window.__early,
+    fire: (ms) => timers.filter((t) => t.ms === ms).forEach((t) => t.fn()) };
 }
+const settle = () => new Promise((r) => setImmediate(r)).then(() => new Promise((r) => setImmediate(r))).then(() => new Promise((r) => setImmediate(r)));
 // what the server hands the module for a GET with this address (index(): tz '' / unit US / model GFS by default)
 function server(search) {
   const p = new URLSearchParams(search);
@@ -66,4 +78,92 @@ test('the head swallows its own rejection (offline): no unhandled rejection', as
   vm.runInNewContext(BLOCK, ctx);
   assert.equal(typeof rejected, 'function', 'a catch handler is attached at once');
   await new Promise((r) => setTimeout(r, 10));
+});
+
+// ---- plan section 46: the default station and the visitor's area (the geo Worker) ----
+const GEO = 'https://geo.example.test';
+const LIST = [{ id: '51201', name: 'Waimea', lat: 21.673, lon: -158.117 }, { id: 'HNL01', name: 'Diamond Head', lat: 21.25, lon: -157.8 },
+  { id: '46001', name: 'Gulf of Alaska', lat: 56.3, lon: -148.0 }, { id: '52200', name: 'Guam', lat: 13.7, lon: 144.8 },
+  { id: 'XFJ1', name: 'Fiji west', lat: -17.5, lon: 179.4 }, { id: 'XFJ2', name: 'Fiji east', lat: -17.5, lon: -179.5 }];
+const ok = (body) => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+function moduleQuery(search, stored, sid, dflt) {
+  const s0 = I.resolveInitialState(search, stored || {}, server(search), dflt);
+  if (sid) s0.station = sid;
+  if (s0.model === 'SWAN' && SWAN.indexOf(s0.station) < 0) s0.model = 'GFS';
+  return I.queryFor(s0);
+}
+
+test('section 46: with GEO empty nothing changes (no geo request, no station promise), whatever the storage holds', () => {
+  for (const [search, stored] of CASES) {
+    const h = runHead(search, stored, undefined, { geo: '', stations: LIST });
+    assert.ok(!h.urls.some((u) => u.includes('geo.')), search); assert.equal(h.w.station, undefined); assert.equal(h.w.place, undefined);
+    assert.equal(h.timers.length, 0, 'no cap timer');
+  }
+});
+
+test('section 46: a saved default station (the blue star) starts its request at once, before the saved settings and without the Worker; the address still wins; a bad default is ignored', () => {
+  const dflt = { id: 'HNL01', lat: 21.25, lon: -157.8, name: 'Diamond Head', at: 1 };
+  let h = runHead('', { tz: 'UTC', unit: 'Metric' }, undefined, { geo: GEO, dflt, stations: LIST });
+  assert.equal(h.early.q, moduleQuery('', { tz: 'UTC', unit: 'Metric' }, null, dflt)); assert.ok(h.early.q.startsWith('station=HNL01&'));
+  assert.deepEqual(h.urls, ['/api/forecast?' + h.early.q], 'no geo request'); assert.equal(h.w.station, undefined);
+  h = runHead('?station=46001', undefined, undefined, { geo: GEO, dflt, stations: LIST });
+  assert.ok(h.early.q.startsWith('station=46001&'), 'the address wins over the default'); assert.equal(h.urls.length, 1);
+  h = runHead('?station=HNL01&model=SWAN', undefined, undefined, { geo: GEO, dflt: { id: '51201' }, stations: LIST });
+  assert.equal(h.early.q, moduleQuery('?station=HNL01&model=SWAN', {}, null, { id: '51201' }), 'SWAN off a SWAN station normalised as before');
+  for (const bad of [{ id: 'HNL 01' }, { id: '' }, { id: 7 }, { id: 'a'.repeat(33) }, 'HNL01', [], { lat: 1 }, '{bad json']) {
+    const g = runHead('', undefined, undefined, { geo: '', dflt: bad, stations: LIST });
+    assert.ok(g.early.q.startsWith('station=51201&'), JSON.stringify(bad));
+  }
+  const dash = runHead('', undefined, undefined, { geo: GEO, dflt: { id: 'NW-HFO51' }, stations: LIST });   // NOAA ids carry dashes
+  assert.ok(dash.early.q.startsWith('station=NW-HFO51&')); assert.equal(dash.urls.length, 1);
+});
+
+test('section 46: with GEO set and no station, the Worker is asked without credentials, the nearest station of the list is chosen, its request started, and station / place resolve to it', async () => {
+  let pos = { lat: 21.3, lon: -157.86, city: 'Honolulu' };
+  const h = runHead('', { unit: 'Metric' }, undefined, { geo: GEO, stations: LIST, geoAnswer: () => ok(pos) });
+  assert.equal(h.early, undefined, 'no forecast request before the answer');
+  assert.deepEqual(h.fetches.map((f) => [f[0], f[1] && f[1].credentials]), [[GEO + '/', 'omit']], 'the Worker asked once, without credentials');
+  assert.equal(typeof h.w.station.then, 'function'); assert.equal(typeof h.w.place.then, 'function');
+  assert.deepEqual(h.timers.map((t) => t.ms), [2000], 'the 2-s cap');
+  const sid = await h.w.station, place = await h.w.place;
+  assert.equal(sid, 'HNL01'); assert.deepEqual(Object.assign({}, place), { lat: 21.3, lon: -157.86, sid: 'HNL01', slat: 21.25, slon: -157.8 });
+  assert.equal(h.early.q, moduleQuery('', { unit: 'Metric' }, 'HNL01'), 'the head asks for exactly the module\'s deferred first query');
+  assert.deepEqual(h.urls, [GEO + '/', '/api/forecast?' + h.early.q]);
+  // the date line is no seam: a visitor at 179.98 E is nearest the station at 179.5 W (0.52 deg), not the ones at 179.4 E (0.58) or 170 E
+  pos = { lat: -17.6, lon: 179.98 };
+  const dl = runHead('', undefined, undefined, { geo: GEO, stations: LIST.concat([{ id: 'FAR', lat: -17.5, lon: 170 }]), geoAnswer: () => ok(pos) });
+  assert.equal(await dl.w.station, 'XFJ2');
+});
+
+test('section 46: every failure lands on 51201 after the race: a slow Worker (the 2-s cap), a refused / broken / empty answer, a failed station list, a list that is not a list; late answers change nothing', async () => {
+  const slow = runHead('', undefined, undefined, { geo: GEO, stations: LIST, geoAnswer: () => new Promise(() => {}) });
+  await settle(); assert.equal(slow.early, undefined, 'still waiting');
+  slow.fire(2000); assert.equal(await slow.w.station, '51201'); assert.equal(await slow.w.place, null);
+  assert.ok(slow.early.q.startsWith('station=51201&'));
+  const cases = [
+    () => Promise.reject(new TypeError('Failed to fetch')), () => Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) }),
+    () => Promise.resolve({ ok: true, json: () => Promise.reject(new SyntaxError('bad json')) }), () => ok({ lat: null, lon: -157 }),
+    () => ok({ lat: '21.3', lon: -157 }), () => ok({ lat: 95, lon: 0 }), () => ok({ lat: 21, lon: 181 }), () => ok(null), () => ok('Honolulu')];
+  for (const geoAnswer of cases) {
+    const h = runHead('', undefined, undefined, { geo: GEO, stations: LIST, geoAnswer });
+    assert.equal(await h.w.station, '51201', String(geoAnswer)); assert.equal(await h.w.place, null); assert.equal(h.urls.length, 2);
+  }
+  for (const stations of [[], [{ id: 'X', lat: 'a', lon: 1 }], [{ lat: 21, lon: -157 }], 'nope', null]) {
+    const h = runHead('', undefined, undefined, { geo: GEO, stations, geoAnswer: () => ok({ lat: 21.3, lon: -157.86 }) });
+    assert.equal(await h.w.station, '51201', JSON.stringify(stations));
+  }
+  const rej = runHead('', undefined, undefined, { geo: GEO, stationsReject: true, geoAnswer: () => ok({ lat: 21.3, lon: -157.86 }) });
+  assert.equal(await rej.w.station, '51201');
+  // a late answer after the cap changes nothing (the request for 51201 is the one the module takes)
+  let late = null; const lateH = runHead('', undefined, undefined, { geo: GEO, stations: LIST, geoAnswer: () => new Promise((r) => { late = r; }) });
+  lateH.fire(2000); assert.equal(await lateH.w.station, '51201'); const q0 = lateH.early.q;
+  late({ ok: true, json: () => Promise.resolve({ lat: 21.3, lon: -157.86 }) }); await settle();
+  assert.equal(lateH.early.q, q0); assert.equal(lateH.urls.length, 2);
+});
+
+test('section 46: a station in the address, or ?render=full, never asks the Worker even with GEO set', () => {
+  const h = runHead('?station=46001', undefined, undefined, { geo: GEO, stations: LIST, geoAnswer: () => ok({ lat: 1, lon: 1 }) });
+  assert.deepEqual(h.urls, ['/api/forecast?' + h.early.q]); assert.equal(h.w.station, undefined);
+  const f = runHead('?render=full', undefined, undefined, { geo: GEO, stations: LIST, geoAnswer: () => ok({ lat: 1, lon: 1 }) });
+  assert.deepEqual(f.urls, []); assert.equal(f.w.station, undefined);
 });

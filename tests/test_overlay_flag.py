@@ -34,6 +34,7 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("POINTS_ROOT", raising=False)
     monkeypatch.delenv("MODEL_OVERLAY_MODELS", raising=False)
     monkeypatch.delenv("SST_OVERLAY", raising=False)
+    monkeypatch.delenv("GEO_BASE", raising=False)
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
     monkeypatch.setenv("MODEL_FRAMES_BASE", base)
     monkeypatch.setattr(A, "get_station_tz", lambda sid: "Pacific/Honolulu")
@@ -43,6 +44,7 @@ def test_flag_off_page_is_byte_identical(monkeypatch):
     monkeypatch.delenv("COAST_BASE", raising=False)                     # a developer's COAST_BASE would change the page
     monkeypatch.delenv("MODEL_OVERLAYS", raising=False)
     monkeypatch.delenv("POINTS_ROOT", raising=False)
+    monkeypatch.delenv("GEO_BASE", raising=False)                       # the geo Worker (section 46): the golden has GEO ""
     monkeypatch.setenv("MODEL_FRAMES_BASE", "https://frames.example/gfswave/0p25/v1")
     rec = G.run_scenarios(A)
     for name, old in GOLDEN.items():

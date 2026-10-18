@@ -1019,3 +1019,75 @@ test('section 39: Escape closes an open wind window first, then the tide window,
   windOpen = true;
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['wind', 'tide', 'live', 'wind'], 'a parked forecast window: the wind window still first');
 });
+
+// ---- plan section 46: the default station and the first load deferred behind the geo race ----
+test('section 46: resolveInitialState takes the default station after the address and before the server; a bad default is ignored; three-argument callers unchanged', () => {
+  const F = load(fakeWindow()), I = F._internals, sv = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  assert.equal(I.resolveInitialState('', {}, sv, { id: 'HNL01', lat: 21.25, lon: -157.8 }).station, 'HNL01');
+  assert.equal(I.resolveInitialState('?station=46001', {}, sv, { id: 'HNL01' }).station, '46001', 'the address wins');
+  assert.equal(I.resolveInitialState('?station=%20', {}, sv, { id: ' HNL01 ' }).station, 'HNL01', 'white space trimmed');
+  for (const bad of [null, undefined, {}, { id: '' }, { id: 7 }, 'HNL01', { id: '   ' }]) assert.equal(I.resolveInitialState('', {}, sv, bad).station, '51201', JSON.stringify(bad));
+  assert.deepEqual(I.resolveInitialState('?station=51201&unit=Metric', { tz: 'UTC' }, sv), { station: '51201', tz: 'UTC', unit: 'Metric', model: 'GFS', view: 'Table' });
+  assert.equal(I.DEFAULT_KEY, 'allshore.defaultStation.v1');
+});
+
+test('section 46: init with a saved default station loads it at once (no deferral even with a station promise); the address still wins', async () => {
+  let resolveSid; const race = new Promise((r) => { resolveSid = r; });
+  const b = boot({ search: '', local: { 'allshore.defaultStation.v1': { id: 'HNL01', lat: 21.25, lon: -157.8, name: 'Diamond Head', at: 1 } }, early: { station: race } });
+  assert.equal(b.fs_.calls.length, 1, 'loaded at once'); assert.equal(b.fs_.param(b.fs_.last(), 'station'), 'HNL01'); assert.equal(b.app.state.station, 'HNL01');
+  resolveSid('46001'); await settle();
+  assert.equal(b.fs_.calls.length, 1, 'the race is ignored'); assert.equal(b.app.state.station, 'HNL01');
+  const c = boot({ search: '?station=46001', local: { 'allshore.defaultStation.v1': { id: 'HNL01' } } });
+  assert.equal(c.fs_.param(c.fs_.last(), 'station'), '46001');
+  const d = boot({ search: '', local: { 'allshore.defaultStation.v1': { id: '' } }, early: {} });      // an empty default: the server's station
+  assert.equal(d.fs_.param(d.fs_.last(), 'station'), '51201');
+});
+
+test('section 46: without a station or default, the first load waits for the head\'s station promise, then loads that station once (taking the head\'s own request); a rejected or senseless race loads 51201', async () => {
+  let resolveSid; const race = new Promise((r) => { resolveSid = r; });
+  const b = boot({ search: '', early: { station: race } });
+  await settle();
+  assert.equal(b.fs_.calls.length, 0, 'nothing fetched before the race'); assert.equal(b.win.history.urls.length, 0, 'the address untouched');
+  b.app.setView('Graph'); b.app.setView('Table'); await settle();
+  assert.equal(b.win.history.urls.length, 0, 'a view switch writes no address while the race runs');
+  resolveSid('46001'); await settle();
+  assert.equal(b.app.state.station, '46001'); assert.equal(b.fs_.calls.length, 1, 'one load'); assert.equal(b.fs_.param(b.fs_.last(), 'station'), '46001');
+  assert.equal(b.doc.getElementById('station').value, '46001', 'the select follows (a station the page lists)');
+  b.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
+  assert.ok(b.win.history.urls[b.win.history.urls.length - 1].includes('station=46001'), 'the address names the station after the load');
+  // the head starts the chosen station's request on the SAME early object before it resolves the promise: the load takes it
+  let r2; const race2 = new Promise((r) => { r2 = r; });
+  const early2 = { station: race2 };
+  const c = boot({ search: '', early: early2 });
+  await settle(); assert.equal(c.fs_.calls.length, 0);
+  early2.forecast = { q: 'station=46001&tz=&unit=US&model=GFS&compact=1', p: Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload({ station: '46001', swan_available: false })) }) };
+  r2('46001'); await settle();
+  assert.equal(c.fs_.calls.length, 0, 'the head\'s request is used'); assert.equal(c.app.state.station, '46001');
+  assert.equal(c.doc.getElementById('stationCurrent').textContent, '46001 — Gulf of Alaska');
+  const d = boot({ search: '', early: { station: Promise.reject(new Error('no geo')) } });
+  await settle(); assert.equal(d.fs_.calls.length, 1); assert.equal(d.fs_.param(d.fs_.last(), 'station'), '51201');
+  const e = boot({ search: '', early: { station: Promise.resolve(42) } });
+  await settle(); assert.equal(e.fs_.param(e.fs_.last(), 'station'), '51201');
+  const f = boot({ search: '', early: { station: Promise.resolve('  ') } });
+  await settle(); assert.equal(f.fs_.param(f.fs_.last(), 'station'), '51201');
+});
+
+test('section 46: a pick (or any load) before the race answers wins and the answer is dropped; no promise at all = the synchronous load as before', async () => {
+  let resolveSid; const race = new Promise((r) => { resolveSid = r; });
+  const b = boot({ search: '', early: { station: race } });
+  await settle(); assert.equal(b.fs_.calls.length, 0);
+  b.doc.fire('allshore:station', { detail: { sid: '46001', source: 'picker' } }); await settle();
+  assert.equal(b.fs_.calls.length, 1); assert.equal(b.fs_.param(b.fs_.last(), 'station'), '46001');
+  resolveSid('HNL01'); await settle();
+  assert.equal(b.fs_.calls.length, 1, 'the race\'s answer loads nothing'); assert.equal(b.app.state.station, '46001');
+  b.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
+  assert.ok(b.win.history.urls.length >= 1 && b.win.history.urls[b.win.history.urls.length - 1].includes('station=46001'), 'the pick reaches the address once its forecast lands');
+  let r2; const race2 = new Promise((r) => { r2 = r; });
+  const u = boot({ search: '', early: { station: race2 } });
+  await settle(); u.page.unit.value = 'Metric'; u.page.unit.dispatch('change'); await settle();   // a setting change before the answer: a load too
+  assert.equal(u.fs_.calls.length, 1); r2('HNL01'); await settle(); assert.equal(u.fs_.calls.length, 1); assert.equal(u.app.state.station, '51201');
+  const c = boot({ search: '', early: {} });
+  assert.equal(c.fs_.calls.length, 1); assert.equal(c.fs_.param(c.fs_.last(), 'station'), '51201');
+  const d = boot({ search: '', early: { station: 'HNL01' } });                 // not a promise: ignored
+  assert.equal(d.fs_.calls.length, 1); assert.equal(d.fs_.param(d.fs_.last(), 'station'), '51201');
+});

@@ -971,6 +971,9 @@ def test_geo_base_reaches_the_head_and_the_first_view_block_is_in_place(client, 
     assert save.index("if (map.getContainer && map.getContainer().classList.contains('geo-pending')) return;") < save.index("sessionStorage.setItem(")
     assert "function forgetMapView() { try { sessionStorage.removeItem(mapKey); } catch (e) { /* storage blocked */ } }" in body
     assert "forgetRetiredDefault(forecastStationsData);" in body
+    # a default point is decided only once forecast.js has run (the list can land first: found 2026-10-18)
+    assert "if (id.indexOf('pt_') === 0 && !(F && F.parsePointId)) {" in body
+    assert "if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { forgetRetiredDefault(list); }, { once: true });" in body
     assert "document.addEventListener('allshore:stationshown', function () { refreshCurrent(); });" in body
     monkeypatch.setenv("GEO_BASE", "https://geo.example.test/")
     assert A._geo_base() == "https://geo.example.test"
@@ -1027,7 +1030,10 @@ def test_the_star_cycles_through_favorite_and_default(client):
     for css in ('.sr-seg button.seg-fav[aria-pressed="true"] { background: #fff3cd; color: #6b4e00; font-weight: 600; }',
                 '.sr-seg button.seg-dflt[aria-pressed="true"] { background: #1d6fd6; color: #fff; font-weight: 600; }',
                 ".sr-seg button { min-height: 44px; padding: 0 10px; }",                         # phone targets
-                "max-height: 340px; overflow-y: auto; min-width: 260px; max-width: 420px;"):
+                "max-height: 340px; overflow-y: auto; min-width: 260px; max-width: 420px;",
+                ".station-results li.sr-saved { flex-wrap: wrap; }",                       # phones: the label whole on its line
+                ".station-results li.sr-saved .fav-select { flex: 1 0 100%; }",
+                ".station-results li.sr-saved .sr-seg { margin-left: auto; }"):
         assert css in body, css
     # one key, three readers + the writer
     assert body.count("'allshore.defaultStation.v1'") == 6   # + forgetRetiredDefault's read and removal (G32 A-P3-3)

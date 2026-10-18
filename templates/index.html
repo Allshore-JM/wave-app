@@ -904,6 +904,11 @@
       .station-results .fav-select { min-height: 44px; }
       .sr-star, .pt-act { min-width: 44px; min-height: 44px; }
       .sr-seg button { min-height: 44px; padding: 0 10px; }
+      /* a saved row on phones: the label whole on its own line (a point's coordinates are never cut), then Favorite | Default
+         and the row's buttons below it, on the right */
+      .station-results li.sr-saved { flex-wrap: wrap; }
+      .station-results li.sr-saved .fav-select { flex: 1 0 100%; }
+      .station-results li.sr-saved .sr-seg { margin-left: auto; }
     }
 
   </style>
@@ -1904,6 +1909,12 @@
       let d = null; try { d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); } catch (e) { return; }
       if (!d || typeof d !== 'object') return;
       const id = typeof d.id === 'string' ? d.id.trim() : '', F = window.AllshoreForecast;
+      if (id.indexOf('pt_') === 0 && !(F && F.parsePointId)) {
+        // a point, and the list landed before forecast.js ran (it often does: the head asks for the list): decide once the
+        // page has parsed; without the app even then, keep it (a default is never erased unseen)
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { forgetRetiredDefault(list); }, { once: true });
+        return;
+      }
       if (id && /^[A-Za-z0-9_-]{1,32}$/.test(id) && (list.some(function (s) { return s && String(s.id) === id; }) || (F && F.parsePointId && F.parsePointId(id)))) return;
       try { localStorage.removeItem('allshore.defaultStation.v1'); } catch (e) { return; }
       const msg = 'Your default station' + (id ? ' (' + id + ')' : '') + ' is no longer offered, so it was cleared: the site will open near you next time.';
@@ -3842,7 +3853,8 @@
         list.forEach(function (p) {
           const label = window.AllshoreForecast.pointLabel(p);
           const li = document.createElement('li');
-          if (p.id === dId) { li.className = 'is-default'; li.title = 'Default point'; }
+          li.className = p.id === dId ? 'sr-saved is-default' : 'sr-saved';
+          if (p.id === dId) li.title = 'Default point';
           const pick = document.createElement('button');
           pick.type = 'button'; pick.className = 'fav-select'; pick.dataset.sid = p.id; writeLabel(pick, label); pick.title = label;
           pick.addEventListener('click', function () { selectStation(p.id); });
@@ -3902,7 +3914,8 @@
         favs.forEach(function (c) {
           const li = document.createElement('li');
           const dflt = c.sid === dId;
-          if (dflt) { li.className = 'is-default'; li.title = 'Default station'; }
+          li.className = dflt ? 'sr-saved is-default' : 'sr-saved';
+          if (dflt) li.title = 'Default station';
           const pick = document.createElement('button');
           pick.type = 'button';
           pick.className = 'fav-select';

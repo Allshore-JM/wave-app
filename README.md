@@ -106,7 +106,8 @@ at a time, listed first; a new default leaves the old one a favorite), then empt
 default's favorite row or its point clears it as the default too; in the dropdown every saved row (Favorites and My
 points) carries a Favorite | Default choice with the row's state pressed (gold / blue, as the star) and a ✕ that removes
 it from the list (owner, 2026-10-18: a favorite can be made the default, or the default kept as a favorite only, from
-within the dropdown; a line under the rows says what Default does);
+within the dropdown; a line under the rows says what Default does; on phones the buttons sit on a line of their own under
+the name, so a point's coordinates are never cut);
 for the map: the tab's own view (sessionStorage) > the default station's position > the IP position > Hawaii. The head and
 the module ask for one and the same query (tests/ui/early.test.js); the module's first load waits for the head's answer
 (`window.__early.station`) and a load the viewer causes meanwhile wins. Env `GEO_BASE` (e.g. `https://geo.allshoresurf.com`)
@@ -115,7 +116,8 @@ G32 fix round (UI asset 1.23.1): while the race runs nothing is kept as the tab'
 pointer, wheel, key or touch on a control over the map (the overlay panel, the gear, the legend, the overlay's sheet) is not
 "moving the map", and moving the map shows it at once; the default station's id follows one rule everywhere (trimmed, 1-32
 letters, digits, `_` or `-`: a NOAA id or a point's `pt_` id); a default the station list no longer has (and not a point) is
-forgotten once the list is in, and the window says so once; the chip names the race's station as soon as the race answers.
+forgotten once the list is in, and the window says so once (a `pt_` default is judged only once forecast.js has run: the
+list often lands first, and a default point was erased that way until 2026-10-18); the chip names the race's station as soon as the race answers.
 While a map tool's bar is open, the wide forecast window narrows to leave it free (owner) instead of being minimised.
 
 ## Map tools (static_ui/tools.js)

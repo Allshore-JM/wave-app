@@ -25,7 +25,7 @@ function runHead(search, stored, storage, opts) {
   const urls = [], fetches = [], timers = [];
   const keys = { 'allshore.settings.v1': stored, 'allshore.defaultStation.v1': opts.dflt };
   const stationsP = opts.stationsReject ? Promise.reject(new TypeError('Failed to fetch'))
-    : Promise.resolve({ clone: () => ({ json: () => Promise.resolve(opts.stations === undefined ? [] : opts.stations) }), json: () => Promise.resolve(opts.stations || []) });
+    : Promise.resolve({ clone: () => ({ json: () => Promise.resolve(opts.stations === undefined ? [] : opts.stations) }), json: () => Promise.reject(new TypeError('body used: the map reads it later; the head must clone')) });
   stationsP.catch(() => {});
   const ctx = { URLSearchParams, JSON, location: { search }, window: { __early: { stations: stationsP } },
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },

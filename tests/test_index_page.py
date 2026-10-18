@@ -412,7 +412,7 @@ def test_my_points_on_the_page(client):
     assert "rebuildPointMarkers(true);" in body and "rebuildPointMarkers(false);" in body
     assert "const pt = window.AllshoreForecast && window.AllshoreForecast.parsePointId(sid);" in body   # focusStation
     assert "document.addEventListener('allshore:points', function () {" in body and "the list was rebuilt under the focus (G22 R-A16)" in body
-    assert "ren.type = 'button'; ren.className = 'pt-act';" in body and "rem.setAttribute('aria-label', 'Remove point: ' + label);" in body
+    assert "ren.type = 'button'; ren.className = 'pt-act pt-ren';" in body and "rem.setAttribute('aria-label', 'Remove point: ' + label);" in body
     assert "const r = P.store.add(sid);" in body and "if (P && P.store.has(sid)) { const r = P.store.remove(sid) ? 'removed' : 'unremoved'; P.say(r, sid); P.sync(); }" in body   # keep / let go (section 46: the blue click lets it go)
     assert "if (r === 'added' && typeof showPointLayer === 'function') showPointLayer();" in body            # the star shows the layer (R-A15)
     assert "function showPointLayer() { if (!map.hasLayer(pointLayer)) { pointLayer.addTo(map); saveLayerVisibility(); } }" in body   # (X34)
@@ -986,6 +986,18 @@ def test_geo_base_reaches_the_head_and_the_first_view_block_is_in_place(client, 
         assert needle in js, needle
 
 
+def test_an_oahu_visitor_opens_on_waimea_bay(client, monkeypatch):
+    """Owner, 2026-10-18: a visitor whose IP places them on Oahu opens on Waimea Bay 51201, though another station may
+    be nearer (Mililani -> 51211 before); anywhere else the nearest station. The behaviour is pinned by
+    tests/ui/early.test.js; here the rule's place in the head's early block."""
+    monkeypatch.setenv("GEO_BASE", "https://geo.allshoresurf.com")
+    body = client.get("/").get_data(as_text=True)
+    head = body[body.index("// ---- early forecast"):body.index("// ---- end early forecast ----")]
+    assert "var PREFER = [{ box: [21.2, 21.76, -158.32, -157.6], id: '51201' }];" in head
+    assert "var pref = preferred(lat, lon, list);" in head and "if (pref) return pref;" in head
+    assert head.index("function preferred(") < head.index("function nearest(")
+
+
 def test_the_star_cycles_through_favorite_and_default(client):
     """Plan section 46 (owner): the picker's star cycles empty -> gold (Favorite) -> blue (Default) -> empty; one default at
     a time (localStorage allshore.defaultStation.v1, the key the head, the module and the first view read), listed first;
@@ -1003,5 +1015,19 @@ def test_the_star_cycles_through_favorite_and_default(client):
                    "typeof forecastStationsData !== 'undefined' && Array.isArray(forecastStationsData)"):
         assert needle in picker, needle
     assert "var cur = (new URLSearchParams(location.search).get('station') || '').trim() || dflt0Id || (window.__initial || {}).station || '';" in body
+    # the dropdown's saved rows (owner, 2026-10-18): Favorite | Default, the row's state pressed, then ✕
+    for needle in ("function choice(sid, label, dflt, point) {", "[['seg-fav', 'Favorite', false], ['seg-dflt', 'Default', true]].forEach(function (t) {",
+                   "b.setAttribute('aria-pressed', on ? 'true' : 'false');", "if (on) return;",
+                   "li.appendChild(pick); li.appendChild(choice(c.sid, c.label, dflt, false)); li.appendChild(rem);",
+                   "li.appendChild(pick); li.appendChild(choice(p.id, label, p.id === dId, true)); li.appendChild(ren); li.appendChild(rem);",
+                   "rem.type = 'button'; rem.className = 'pt-act sr-rem'; rem.textContent = '✕';",
+                   "li.textContent = 'Default: the site opens on it every visit. ✕ removes it from the list.';",
+                   "s.left = Math.max(8, Math.min(r.left, vw - 8 - 420)) + 'px';"):
+        assert needle in picker, needle
+    for css in ('.sr-seg button.seg-fav[aria-pressed="true"] { background: #fff3cd; color: #6b4e00; font-weight: 600; }',
+                '.sr-seg button.seg-dflt[aria-pressed="true"] { background: #1d6fd6; color: #fff; font-weight: 600; }',
+                ".sr-seg button { min-height: 44px; padding: 0 10px; }",                         # phone targets
+                "max-height: 340px; overflow-y: auto; min-width: 260px; max-width: 420px;"):
+        assert css in body, css
     # one key, three readers + the writer
     assert body.count("'allshore.defaultStation.v1'") == 6   # + forgetRetiredDefault's read and removal (G32 A-P3-3)

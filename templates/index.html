@@ -39,8 +39,9 @@
     // blue star, localStorage allshore.defaultStation.v1), then the viewer's saved settings); the module uses the
     // response only when its own query is identical, so a mismatch costs one request, never a wrong forecast. Not for
     // ?render=full (the table is in the page). Without a station in the address or a default, and with the geo Worker
-    // configured (GEO, plan section 46), the station is the one nearest the visitor's IP position: the Worker's answer
-    // and the station list (on its way already) are raced against a 2-s cap, then the request starts; the module's
+    // configured (GEO, plan section 46), the station is the one nearest the visitor's IP position (on Oahu: Waimea Bay,
+    // see PREFER): the Worker's answer and the station list (on its way already) are raced against a 2-s cap, then the
+    // request starts; the module's
     // first load waits for window.__early.station (the id), the map's first view reads window.__early.place (the
     // position with that station). Every failure lands on 51201, as before.
     (function () {
@@ -69,9 +70,25 @@
         if (fixed || !GEO) { start(fixed || '51201'); return; }
         // the visitor's area: the Worker (request.cf: the ISP's city, never stored anywhere) and the station list
         function num(v, lim) { return typeof v === 'number' && isFinite(v) && Math.abs(v) <= lim ? v : null; }
+        // a visitor on Oahu opens on Waimea Bay, the forecast most Oahu surfers want (owner, 2026-10-18), though another
+        // station may be nearer; a box around the island (no other island in it). Anywhere else: the nearest station.
+        var PREFER = [{ box: [21.2, 21.76, -158.32, -157.6], id: '51201' }];          // [lat min, lat max, lon min, lon max]
+        function preferred(lat, lon, list) {
+          for (var k = 0; k < PREFER.length; k++) {
+            var b = PREFER[k].box;
+            if (lat < b[0] || lat > b[1] || lon < b[2] || lon > b[3]) continue;
+            for (var j = 0; j < list.length; j++) {
+              var t = list[j], tla = t ? num(t.lat, 90) : null, tlo = t ? num(t.lon, 180) : null;
+              if (t && String(t.id) === PREFER[k].id && tla !== null && tlo !== null) return { lat: lat, lon: lon, sid: PREFER[k].id, slat: tla, slon: tlo };
+            }
+          }
+          return null;
+        }
         function nearest(pos, list) {
           var lat = num(pos && pos.lat, 90), lon = num(pos && pos.lon, 180);
           if (lat === null || lon === null || !Array.isArray(list)) return null;
+          var pref = preferred(lat, lon, list);
+          if (pref) return pref;
           var best = null, bd = Infinity, R = Math.PI / 180;
           for (var i = 0; i < list.length; i++) {
             var s = list[i], la = s ? num(s.lat, 90) : null, lo = s ? num(s.lon, 180) : null;
@@ -837,7 +854,7 @@
       margin: 0; padding: 4px 0; list-style: none;
       background: #fff; border: 1px solid #ced4da; border-radius: .375rem;
       box-shadow: 0 6px 18px rgba(0,0,0,.18);
-      max-height: 340px; overflow-y: auto; min-width: 260px; max-width: 360px;
+      max-height: 340px; overflow-y: auto; min-width: 260px; max-width: 420px;
     }
     .station-results li { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
     .tools-bar-body .tools-msg { color: #8a3b00; }
@@ -858,6 +875,16 @@
     .sr-star.sr-default { color: #1d6fd6; }                                   /* the default station (plan section 46): a blue star */
     .station-results li.is-default .fav-select::before { content: "\2605"; color: #1d6fd6; margin-right: 6px; }   /* a default point in My points */
     .station-results li.sr-empty { display: block; padding: 8px 10px; color: #6c757d; cursor: default; white-space: normal; }
+    /* a saved row's choice (owner, 2026-10-18): Favorite | Default, the row's state pressed (gold / blue as the star), then ✕ */
+    .sr-seg { flex: 0 0 auto; display: inline-flex; border: 1px solid #ced4da; border-radius: 999px; overflow: hidden; }
+    .sr-seg button { border: 0; background: #fff; padding: 2px 8px; min-height: 26px; font: inherit; font-size: .74rem; line-height: 1.2; color: #495057; cursor: pointer; }
+    .sr-seg button + button { border-left: 1px solid #ced4da; }
+    .sr-seg button:hover { background: #f1f3f5; }
+    .sr-seg button.seg-fav[aria-pressed="true"] { background: #fff3cd; color: #6b4e00; font-weight: 600; }
+    .sr-seg button.seg-dflt[aria-pressed="true"] { background: #1d6fd6; color: #fff; font-weight: 600; }
+    .sr-seg button[aria-pressed="true"] { cursor: default; }
+    .sr-seg button:focus-visible { outline: 2px solid #0d6efd; outline-offset: -2px; }
+    .station-results li.sr-hint { display: block; padding: 4px 10px 6px; font-size: .72rem; color: #6c757d; cursor: default; white-space: normal; }
     /* My points (plan section 31): a heading, then each point with Rename and Remove */
     .station-results li.sr-head { display: block; padding: 6px 10px 2px; font-size: .72rem; font-weight: 700; color: #5b6770; text-transform: uppercase; letter-spacing: .03em; }
     .pt-act {
@@ -873,6 +900,7 @@
       .station-results { max-height: 50vh; max-width: none; }
       .station-results .fav-select { min-height: 44px; }
       .sr-star, .pt-act { min-width: 44px; min-height: 44px; }
+      .sr-seg button { min-height: 44px; padding: 0 10px; }
     }
 
   </style>
@@ -3746,7 +3774,7 @@
       function place() {
         const r = trigger.getBoundingClientRect(), s = results.style, vw = window.innerWidth, vh = window.innerHeight;
         if (vw <= 576) { s.left = '8px'; s.width = (vw - 16) + 'px'; }
-        else { s.width = ''; s.left = Math.max(8, Math.min(r.left, vw - 8 - 360)) + 'px'; }
+        else { s.width = ''; s.left = Math.max(8, Math.min(r.left, vw - 8 - 420)) + 'px'; }
         const below = vh - r.bottom - 8, above = r.top - 8;
         if (below >= 220 || below >= above) { s.top = (r.bottom + 2) + 'px'; s.bottom = 'auto'; s.maxHeight = Math.max(120, Math.min(340, below)) + 'px'; }
         else { s.bottom = (vh - r.top + 2) + 'px'; s.top = 'auto'; s.maxHeight = Math.max(120, Math.min(340, above)) + 'px'; }
@@ -3765,6 +3793,39 @@
       }
 
       function head(text) { const li = document.createElement('li'); li.className = 'sr-head'; li.setAttribute('role', 'presentation'); li.textContent = text; results.appendChild(li); }
+      // A saved row's choice (owner, 2026-10-18: "the selection between favorite, default and clear, should be intuitive and
+      // available from within the dropdown"): Favorite | Default, the row's state pressed; the row's ✕ clears it. The trigger's
+      // star keeps its cycle (empty -> gold -> blue -> empty) for the station on screen.
+      function choice(sid, label, dflt, point) {
+        const seg = document.createElement('span');
+        seg.className = 'sr-seg';
+        seg.setAttribute('role', 'group');
+        seg.setAttribute('aria-label', (point ? 'Point ' : 'Station ') + label);
+        [['seg-fav', 'Favorite', false], ['seg-dflt', 'Default', true]].forEach(function (t) {
+          const b = document.createElement('button'), on = t[2] === dflt;
+          b.type = 'button'; b.className = t[0]; b.textContent = t[1];
+          b.setAttribute('aria-pressed', on ? 'true' : 'false');
+          b.title = t[2] ? (on ? 'The default: the site opens here on every visit' : 'Make it the default: the site opens here on every visit')
+            : (on ? 'A favorite' : 'Keep it as a favorite only (not the default)');
+          b.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (on) return;                                                       // already so: nothing changes
+            if (t[2]) {
+              if (!writeDefault(sid)) { announce('This browser could not keep a default (its storage is switched off).'); return; }
+              announce('Default ' + (point ? 'point' : 'station') + ': ' + label + '. The site opens here.');
+            } else {
+              clearDefault();
+              announce((point ? 'Kept in My points' : 'Kept as a favorite') + ', no longer the default: ' + label);
+            }
+            refreshCurrent(); renderFavs();
+            const again = results.querySelector('.fav-select[data-sid="' + sid + '"]');   // the row moved (the default is first)
+            const to = again && again.parentNode ? again.parentNode.querySelector('.' + t[0]) : null;
+            if (to) to.focus();
+          });
+          seg.appendChild(b);
+        });
+        return seg;
+      }
       // Keep keyboard focus in the panel after a row went away: the next row's pick button (or close if none left).
       function refocus(idx) {
         const next = results.querySelectorAll('.fav-select');
@@ -3783,18 +3844,18 @@
           pick.type = 'button'; pick.className = 'fav-select'; pick.dataset.sid = p.id; writeLabel(pick, label); pick.title = label;
           pick.addEventListener('click', function () { selectStation(p.id); });
           const ren = document.createElement('button');
-          ren.type = 'button'; ren.className = 'pt-act'; ren.textContent = '✎'; ren.title = 'Rename'; ren.setAttribute('aria-label', 'Rename point: ' + label);
+          ren.type = 'button'; ren.className = 'pt-act pt-ren'; ren.textContent = '✎'; ren.title = 'Rename'; ren.setAttribute('aria-label', 'Rename point: ' + label);
           ren.addEventListener('click', function (e) {
             e.stopPropagation();
             const name = window.prompt('A name for this point (40 characters at most; its coordinates stay in the label):', p.name || '');
             if (name === null) return;
             P.store.rename(p.id, name); P.sync(); renderFavs();
             const again = results.querySelector('.fav-select[data-sid="' + p.id + '"]');
-            if (again && again.parentNode) again.parentNode.querySelector('.pt-act').focus();
+            if (again && again.parentNode) again.parentNode.querySelector('.pt-ren').focus();
             announce('Renamed point ' + window.AllshoreForecast.fmtPoint(p.lat, p.lon));
           });
           const rem = document.createElement('button');
-          rem.type = 'button'; rem.className = 'pt-act'; rem.textContent = '✕'; rem.title = 'Remove'; rem.setAttribute('aria-label', 'Remove point: ' + label);
+          rem.type = 'button'; rem.className = 'pt-act sr-rem'; rem.textContent = '✕'; rem.title = 'Remove'; rem.setAttribute('aria-label', 'Remove point: ' + label);
           rem.addEventListener('click', function (e) {
             e.stopPropagation();
             if (p.name && !window.confirm('Remove "' + p.name + '" from My points?')) return;   // a name is the visitor's own work (G22 B-18)
@@ -3805,7 +3866,7 @@
             announce(gone ? 'Removed point ' + window.AllshoreForecast.fmtPoint(p.lat, p.lon) : 'This browser could not change My points (its storage is switched off).');
             refocus(idx);
           });
-          li.appendChild(pick); li.appendChild(ren); li.appendChild(rem);
+          li.appendChild(pick); li.appendChild(choice(p.id, label, p.id === dId, true)); li.appendChild(ren); li.appendChild(rem);
           results.appendChild(li);
         });
         return list.length;
@@ -3813,6 +3874,15 @@
 
       function renderFavs() {
         results.textContent = '';
+        renderSaved();
+        if (results.querySelector('.sr-seg')) {
+          const li = document.createElement('li');
+          li.className = 'sr-hint'; li.setAttribute('role', 'presentation');
+          li.textContent = 'Default: the site opens on it every visit. ✕ removes it from the list.';
+          results.appendChild(li);
+        }
+      }
+      function renderSaved() {
         const npts = renderPoints();
         const dId = defaultId();
         const favs = readFavs().map(function (s) { return bySid.get(s); }).filter(function (c) { return c && !isPoint(c.sid); })
@@ -3828,20 +3898,19 @@
         if (npts) head('Favorites');
         favs.forEach(function (c) {
           const li = document.createElement('li');
+          const dflt = c.sid === dId;
+          if (dflt) { li.className = 'is-default'; li.title = 'Default station'; }
           const pick = document.createElement('button');
           pick.type = 'button';
           pick.className = 'fav-select';
           pick.dataset.sid = c.sid;
           pick.textContent = c.label; pick.title = c.label;
           pick.addEventListener('click', function () { selectStation(c.sid); });
-          const star = document.createElement('button');
-          const dflt = c.sid === dId;
-          star.type = 'button';
-          star.className = dflt ? 'sr-star sr-default' : 'sr-star';
-          star.textContent = '★';
-          star.title = dflt ? 'Default' : 'Favorite';
-          star.setAttribute('aria-label', (dflt ? 'Remove the default station: ' : 'Remove favorite: ') + c.label);
-          star.addEventListener('click', function (e) {
+          const rem = document.createElement('button');
+          rem.type = 'button'; rem.className = 'pt-act sr-rem'; rem.textContent = '✕';
+          rem.title = 'Remove from favorites';
+          rem.setAttribute('aria-label', (dflt ? 'Remove the default station: ' : 'Remove favorite: ') + c.label);
+          rem.addEventListener('click', function (e) {
             e.stopPropagation();
             const rows = Array.prototype.slice.call(results.querySelectorAll('.fav-select'));
             const idx = rows.indexOf(pick);
@@ -3850,7 +3919,7 @@
             announce((dflt ? 'Removed the default station ' : 'Removed favorite ') + c.sid);
             refocus(idx);
           });
-          li.appendChild(pick); li.appendChild(star);
+          li.appendChild(pick); li.appendChild(choice(c.sid, c.label, dflt, false)); li.appendChild(rem);
           results.appendChild(li);
         });
       }

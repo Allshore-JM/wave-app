@@ -50,7 +50,7 @@
         if (p.get('render') === 'full') return;
         try { var o = JSON.parse(localStorage.getItem('allshore.settings.v1') || '{}'); if (o && typeof o === 'object') st = o; } catch (e) {}
         var dflt = '';
-        try { var d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); if (d && typeof d === 'object' && typeof d.id === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(d.id)) dflt = d.id; } catch (e) {}
+        try { var d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); if (d && typeof d === 'object' && typeof d.id === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(d.id.trim())) dflt = d.id.trim(); } catch (e) {}
         var unit = p.has('unit') ? p.get('unit') : (typeof st.unit === 'string' ? st.unit : 'US');
         function start(station) {
           var q = new URLSearchParams({
@@ -1277,6 +1277,8 @@
     }
 
     function saveMapView(map) {
+      // while the first view waits for the visitor's area (geo-pending) nothing is kept: a reload then asks again (G32 B-6)
+      if (map.getContainer && map.getContainer().classList.contains('geo-pending')) return;
       const v = { c: map.getCenter(), z: map.getZoom() };
 
       const safeLat = clampLat(v.c.lat);
@@ -1298,6 +1300,7 @@
         return null;
       }
     }
+    function forgetMapView() { try { sessionStorage.removeItem(mapKey); } catch (e) { /* storage blocked */ } }
 
     // ---- Leaflet Map ----
     // No maxBounds here. Latitude is clamped manually; longitude wraps continuously.
@@ -1462,7 +1465,7 @@
       box.querySelectorAll('.leaflet-top.leaflet-right .leaflet-control').forEach(function (c) {
         const r = c.getBoundingClientRect();
         if (r.height > 0) h = Math.max(h, r.bottom - base.top);
-        if (r.width > 0 && !c.classList.contains('tools-bar')) w = Math.max(w, base.right - r.left);
+        if (r.width > 0) w = Math.max(w, base.right - r.left);   // the tools bar too while shown: the wide box narrows beside it (owner, G32 B-1)
       });
       document.documentElement.style.setProperty('--map-topright-h', Math.round(h) + 'px');
       document.documentElement.style.setProperty('--map-topright-w', Math.round(w) + 'px');
@@ -1862,8 +1865,24 @@
       .then(stations => {
         forecastStationsData = stations || [];
         rebuildForecastMarkers(true);
+        forgetRetiredDefault(forecastStationsData);
         if (pendingFocusStation) { const sid = pendingFocusStation; pendingFocusStation = null; focusStation(sid); }
       });
+
+    // A default station the list no longer has (and not a forecast point) is forgotten once the list is in: the next
+    // visit opens near the visitor again; the window says so once (G32 A-P3-3 / B-7). An empty or failed list decides nothing.
+    function forgetRetiredDefault(list) {
+      if (!Array.isArray(list) || !list.length) return;
+      let d = null; try { d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); } catch (e) { return; }
+      if (!d || typeof d !== 'object') return;
+      const id = typeof d.id === 'string' ? d.id.trim() : '', F = window.AllshoreForecast;
+      if (id && /^[A-Za-z0-9_-]{1,32}$/.test(id) && (list.some(function (s) { return s && String(s.id) === id; }) || (F && F.parsePointId && F.parsePointId(id)))) return;
+      try { localStorage.removeItem('allshore.defaultStation.v1'); } catch (e) { return; }
+      const msg = 'Your default station' + (id ? ' (' + id + ')' : '') + ' is no longer offered, so it was cleared: the site will open near you next time.';
+      function tell() { if (window.AllshoreForecast && window.AllshoreForecast.note) window.AllshoreForecast.note(msg, id || null); }
+      tell();
+      document.addEventListener('allshore:forecast', tell, { once: true });          // the window may not be up yet
+    }
 
     // With JS the page never submits the form (every change applies in place); a favourites pick asks
     // the map to recentre on the station.
@@ -3576,7 +3595,7 @@
       if (hadView) return;
       var fixed = '', dflt = null;
       try { fixed = (new URLSearchParams(location.search).get('station') || '').trim(); } catch (e) {}
-      try { var d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); if (d && typeof d === 'object' && typeof d.id === 'string' && d.id) dflt = d; } catch (e) {}
+      try { var d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); if (d && typeof d === 'object' && typeof d.id === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(d.id.trim())) dflt = d; } catch (e) {}
       function show(lat, lon, z) {
         map.setView([clampLat(lat), normLng(lon)], Math.min(MAX_MAP_ZOOM, Math.max(z, MIN_MAP_ZOOM)), { animate: false });
         clampMapLatitude(); refreshWrappedMarkerCopies(true);
@@ -3607,14 +3626,23 @@
         }
         return { lat: pl.lat, lon: pl.lon, z: z };
       }
-      var el = map.getContainer(), acted = false, done = false, timer = null;
-      function act() { acted = true; }
-      ['pointerdown', 'wheel', 'keydown', 'touchstart'].forEach(function (ev) { el.addEventListener(ev, act, { once: true, passive: true }); });
+      var el = map.getContainer(), acted = false, done = false, timer = null, EVS = ['pointerdown', 'wheel', 'keydown', 'touchstart'];
+      // the visitor acts on the MAP (not on a control on it: the overlay panel, the gear, the legend, the overlay's sheet:
+      // G32 B-8): what they do stays, and the map shows at once
+      function act(e) {
+        var t = e && e.target;
+        if (t && t.closest && t.closest('.leaflet-control, .ov-sheet')) return;
+        if (acted) return;
+        acted = true; el.classList.remove('geo-pending');
+      }
+      EVS.forEach(function (ev) { el.addEventListener(ev, act, { passive: true }); });
       document.addEventListener('allshore:station', act, { once: true });
       el.classList.add('geo-pending');
+      forgetMapView();                                   // the synchronous Hawaii view is not the tab's own: a reload during the race asks again (G32 B-6)
       function finish(pl) {
         if (done) return;
         done = true; clearTimeout(timer); el.classList.remove('geo-pending');
+        if (el.removeEventListener) EVS.forEach(function (ev) { el.removeEventListener(ev, act, { passive: true }); });
         if (!pl || acted || typeof pl !== 'object' || !onEarth(pl.lat, pl.lon)) return;
         var v = geoView(pl); show(v.lat, v.lon, v.z);
       }
@@ -3667,7 +3695,8 @@
       // -> blue (the default) -> empty (neither). {id, lat, lon, name, at}; the position lets the map open there.
       const DEFAULT_KEY = 'allshore.defaultStation.v1';
       function readDefault() {
-        try { const d = JSON.parse(localStorage.getItem(DEFAULT_KEY)); return d && typeof d === 'object' && typeof d.id === 'string' && d.id ? d : null; }
+        // the head's, the module's and the first view's rule (G32 A-P3-2): a trimmed id of 1-32 letters, digits, '_' or '-'
+        try { const d = JSON.parse(localStorage.getItem(DEFAULT_KEY)); return d && typeof d === 'object' && typeof d.id === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(d.id.trim()) ? Object.assign({}, d, { id: d.id.trim() }) : null; }
         catch (e) { return null; }
       }
       function defaultId() { const d = readDefault(); return d ? d.id : null; }
@@ -3906,6 +3935,7 @@
       document.addEventListener('allshore:station', function (e) { var d = e.detail || {}; if (bySid.has(String(d.sid))) select.value = String(d.sid); refreshCurrent(); });
       // a forecast on screen (also the visitor's area, chosen without a pick: plan section 46): the star follows it
       document.addEventListener('allshore:forecast', function () { refreshCurrent(); });
+      document.addEventListener('allshore:stationshown', function () { refreshCurrent(); });   // the IP race's station, before its forecast (G32 B-12)
       // another tab changed the favorites or the default: this one follows
       window.addEventListener('storage', function (e) { if (!e.key || e.key === DEFAULT_KEY || e.key === FAV_KEY) { refreshCurrent(); if (!results.hidden) renderFavs(); } });
       // My points changed (added, renamed, removed): the options are new
@@ -4197,7 +4227,8 @@
       var storage; try { storage = window.localStorage; storage.getItem('x'); } catch (e) { storage = { getItem: function () { return null; }, setItem: function () { throw new Error('no storage'); } }; }
       var store = F.createPointStore(storage), refusedIds = {};
       var dflt0 = null; try { dflt0 = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); } catch (e) {}
-      var cur = (new URLSearchParams(location.search).get('station') || '').trim() || (dflt0 && typeof dflt0.id === 'string' ? dflt0.id : '') || (window.__initial || {}).station || '';
+      var dflt0Id = dflt0 && typeof dflt0.id === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(dflt0.id.trim()) ? dflt0.id.trim() : '';
+      var cur = (new URLSearchParams(location.search).get('station') || '').trim() || dflt0Id || (window.__initial || {}).station || '';
       var served = select.querySelector('option[data-point]');                    // the no-script page's own option: the optgroup takes over
       if (served && served.parentNode) served.parentNode.removeChild(served);
       function sync() {

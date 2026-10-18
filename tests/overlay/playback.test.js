@@ -2488,3 +2488,99 @@ test('section 46: the page\'s settings reach the module: opts.particles 0 starts
   assert.ok(!w.fetches.slice(n0).some(isDir), 'no direction frame was ever asked for');
   off.unmount();
 });
+
+// ---- G32 fix round ----
+test('G32 (owner): a step waits at most PRES_WAIT_MS for its pressure frame, then lands without lines; the lines come when the frame does', () => onRunDay(async () => {
+  const w = world({ fakeTimers: true }); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  const i0 = o.frameIndex; assert.ok(o.iso.frame); assert.equal(w.I.PRES_WAIT_MS, 1000);
+  o.seek(i0 + 5); await settle();
+  await w.releaseField(); await settle();
+  assert.equal(o.frameIndex, i0, 'the field is in, the pressure held: waiting');
+  await w.fade(999); await settle();
+  assert.equal(o.frameIndex, i0, 'still waiting at 999 ms');
+  await w.fade(1); await settle();
+  assert.equal(o.frameIndex, i0 + 5, 'landed at 1 s without its pressure');
+  assert.equal(o.iso.frame, null, "no other step's lines under the new picture");
+  assert.ok(o.inflight[o._key(i0 + 5, 'pres')], 'its pressure still on its way');
+  await w.releasePres(); await settle();
+  assert.equal(o.iso.entry, A.frames[i0 + 5], 'the lines appear when the frame arrives');
+  assert.equal(o.iso.frame, o.pcache.get(o._key(i0 + 5, 'pres')));
+  // a pressure frame that comes in time: the step lands with it, the fake clock never moved (no wait for the cap)
+  const t = w.now();
+  o.seek(i0 + 7); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.frameIndex, i0 + 7); assert.equal(o.iso.entry, A.frames[i0 + 7]); assert.equal(w.now(), t);
+  o.unmount();
+}));
+
+test('G32 (S2): a step whose field frame cannot be shown asks for none of its extras (pressure, direction) when it is the target or in the ring', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = true; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  const i0 = o.frameIndex, bad = i0 + 4, n0 = w.fetches.length;              // outside the first ring (i0 +- 2)
+  assert.ok(!w.fetches.some((u) => u.indexOf(presKey(A, bad)) >= 0), 'not fetched yet');
+  o.unavailable[o._key(bad)] = true;                                       // the state a 404 of its field frame leaves
+  o.seek(i0 + 3); await settle(); await w.releaseAll(); await settle();     // the ring around i0 + 3 holds i0 + 4
+  o.seek(bad); await settle(); await w.releaseAll(); await settle();
+  const pk = presKey(A, bad), step = String(A.frames[bad].step).padStart(3, '0');
+  assert.ok(!w.fetches.slice(n0).some((u) => u.indexOf(pk) >= 0), 'no pressure download for it');
+  assert.ok(!w.fetches.slice(n0).some((u) => /\/wdir\//.test(u) && u.indexOf('/f' + step + '.png') >= 0), 'no direction download for it');
+  assert.ok(w.fetches.slice(n0).some((u) => isPres(u)), 'the other steps still bring their pressure');
+  o.unmount();
+}));
+
+test('G32 (S7): what a step waits for settles at the abort of its fetch, not at a decode that cannot be cancelled', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  const i = o.frameIndex + 3;
+  o._startKind(i, 'pres'); await settle();
+  const rec = o.inflight[o._key(i, 'pres')]; assert.ok(rec);
+  let done = false; o._kindReady(i, 'pres').then(() => { done = true; });
+  await settle(); assert.equal(done, false, 'waiting for the held decode');
+  rec.abort.abort(); delete o.inflight[o._key(i, 'pres')];
+  await settle(); assert.equal(done, true, 'settled at the abort');
+  o.unmount(); await w.releaseAll();
+}));
+
+test('G32 (S17): the readout\'s pressure only from the pressure frame of the step on the map', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  o.iso.valueAt = () => 1003.6;
+  assert.equal(o._hpaAt(21, -158), 1004, 'rounded to the hPa');
+  o.iso.entry = A.frames[(o.frameIndex + 4) % A.frames.length];
+  assert.equal(o._hpaAt(21, -158), null, "another step's frame: none");
+  o.iso.entry = o.layer.entry; o.iso.valueAt = () => null;
+  assert.equal(o._hpaAt(21, -158), null, 'outside the grid: none');
+  o.iso.frame = null; assert.equal(o._hpaAt(21, -158), null);
+  o.unmount();
+}));
+
+test('G32 (A-P1-1 / B-5): wind -> sea surface temperature leaves no isobar layer and no pressure frames; Update to a run with pressure draws the shown step\'s lines (A-P2-1)', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  const iso = o.iso; assert.ok(iso && iso.frame && o.pcache.size() > 0);
+  o.sst = { load: () => new Promise(() => {}), idle() {}, abortAll() {} };  // an SST store that never answers: the switch itself is what counts
+  o.mount('sst'); await settle();
+  assert.equal(o.iso, null, 'the isobar layer detached'); assert.ok(iso.calls.includes('detach'));
+  assert.equal(o.pcache.size(), 0, 'its frames dropped');
+  o.unmount();
+  // Update: a run without pressure -> a run with it
+  const A0 = manifest(A.run, A.run_utc, 12, true); w.pointer = ptr(A0); w.manifests[A0.run] = A0;
+  const p = w.create(); p.anim = false; p.isobars = true; p.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  assert.equal(p.iso, null, 'no pressure in the first run: no layer');
+  w.pointer = ptr(B); w.manifests[B.run] = B; p.newerRun = w.pointer;
+  p.update(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.equal(p.manifest, B); assert.ok(p.iso, 'the new run has pressure: the layer is made');
+  assert.equal(p.iso.entry, B.frames[p.frameIndex], "the shown step's lines");
+  p.unmount();
+}));
+
+test('G32: a failed load with no frame of the run on the map clears the lines too', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.iso.frame);
+  o.frameIndex = null;                                                     // what an Update or a switch leaves before its first frame
+  o.layer.clear(); assert.equal(o.layer.hasFrame(), false); assert.ok(o.iso.frame, 'the lines are still there');
+  o._fail(null, new Error('frames cannot be loaded right now'));
+  assert.equal(o.iso.frame, null); assert.ok(o.iso.calls.includes('_clear'));
+  o.unmount();
+}));

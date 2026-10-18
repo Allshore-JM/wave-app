@@ -21,21 +21,25 @@ const clampLat = (lat) => Math.max(-79, Math.min(84, lat)), normLng = (lng) => (
 // or anything else), size (the map's size)
 function run(opts) {
   opts = opts || {};
-  const log = { views: [], saved: 0, clamped: 0, rebuilt: 0, enforced: 0, timers: [], classes: new Set(), listeners: {}, docListeners: {} };
+  const log = { views: [], saved: 0, clamped: 0, rebuilt: 0, enforced: 0, forgot: 0, timers: [], classes: new Set(), listeners: {}, removed: {}, docListeners: {} };
   const el = { classList: { add: (c) => log.classes.add(c), remove: (c) => log.classes.delete(c), contains: (c) => log.classes.has(c) },
-    addEventListener: (ev, fn, o) => { (log.listeners[ev] = log.listeners[ev] || []).push({ fn, o }); } };
+    addEventListener: (ev, fn, o) => { (log.listeners[ev] = log.listeners[ev] || []).push({ fn, o }); },
+    removeEventListener: (ev, fn) => { log.removed[ev] = (log.removed[ev] || 0) + 1; log.listeners[ev] = (log.listeners[ev] || []).filter((l) => l.fn !== fn); } };
   const map = { setView: (ll, z, o) => { log.views.push({ lat: ll[0], lng: ll[1], z, animate: o && o.animate }); },
     getSize: () => ({ x: (opts.size || [1280, 800])[0], y: (opts.size || [1280, 800])[1] }), getContainer: () => el };
   const storage = { 'allshore.defaultStation.v1': opts.dflt === undefined ? null : (typeof opts.dflt === 'string' ? opts.dflt : JSON.stringify(opts.dflt)) };
   const fn = new Function('loadMapView', 'enforceSingleWorld', 'location', 'localStorage', 'map', 'clampLat', 'normLng', 'MAX_MAP_ZOOM', 'MIN_MAP_ZOOM', 'DEFAULT_MAP_ZOOM',
-    'clampMapLatitude', 'refreshWrappedMarkerCopies', 'saveMapView', 'window', 'document', 'setTimeout', 'clearTimeout', 'URLSearchParams', BLOCK);
+    'clampMapLatitude', 'refreshWrappedMarkerCopies', 'saveMapView', 'window', 'document', 'setTimeout', 'clearTimeout', 'URLSearchParams', 'forgetMapView', BLOCK);
   fn(() => (opts.session === undefined ? null : opts.session), () => { log.enforced++; }, { search: opts.search || '' },
     { getItem: (k) => (k in storage ? storage[k] : null) }, map, clampLat, normLng, MAX_Z, MIN_Z, DEFAULT_Z,
     () => { log.clamped++; }, () => { log.rebuilt++; }, () => { log.saved++; },
     { __early: opts.early === undefined ? (opts.place === undefined ? undefined : { place: opts.place }) : opts.early },
     { addEventListener: (ev, fn2, o) => { (log.docListeners[ev] = log.docListeners[ev] || []).push({ fn: fn2, o }); } },
-    (fn2, ms) => { log.timers.push({ fn: fn2, ms, cleared: false }); return log.timers.length; }, (id) => { if (log.timers[id - 1]) log.timers[id - 1].cleared = true; }, URLSearchParams);
-  return { log, el, map, act: (ev) => (log.listeners[ev] || []).forEach((l) => l.fn({})), station: () => (log.docListeners['allshore:station'] || []).forEach((l) => l.fn({})),
+    (fn2, ms) => { log.timers.push({ fn: fn2, ms, cleared: false }); return log.timers.length; }, (id) => { if (log.timers[id - 1]) log.timers[id - 1].cleared = true; }, URLSearchParams,
+    () => { log.forgot++; });
+  // act(ev, inControl): the event's target is the map, or (inControl) a control on it (closest() finds a .leaflet-control)
+  const target = (inControl) => ({ closest: (sel) => (inControl && /leaflet-control|ov-sheet/.test(sel) ? {} : null) });
+  return { log, el, map, act: (ev, inControl) => (log.listeners[ev] || []).slice().forEach((l) => l.fn({ target: target(inControl) })), station: () => (log.docListeners['allshore:station'] || []).forEach((l) => l.fn({})),
     pending: () => log.classes.has('geo-pending') };
 }
 const settle = () => new Promise((r) => setImmediate(r)).then(() => new Promise((r) => setImmediate(r)));
@@ -81,10 +85,12 @@ test('the visitor\'s area: the pane is hidden while the race runs, then the view
   const r = run({ place });
   assert.equal(r.pending(), true, 'hidden at once'); assert.deepEqual(r.log.views, []);
   assert.deepEqual(Object.keys(r.log.listeners).sort(), ['keydown', 'pointerdown', 'touchstart', 'wheel']);
-  assert.ok(r.log.listeners.wheel[0].o.once && r.log.listeners.wheel[0].o.passive);
+  assert.ok(r.log.listeners.wheel[0].o.passive);
+  assert.equal(r.log.forgot, 1, 'the synchronous Hawaii view is forgotten: a reload during the race asks again (G32 B-6)');
   assert.deepEqual(r.log.timers.map((t) => t.ms), [2500]);
   resolve({ lat: 21.3, lon: -157.86, sid: 'HNL01', slat: 21.25, slon: -157.8 }); await settle();
   assert.equal(r.pending(), false); assert.equal(r.log.timers[0].cleared, true);
+  assert.deepEqual(Object.keys(r.log.listeners).filter((ev) => r.log.listeners[ev].length), [], 'the map listeners go with the answer');
   assert.deepEqual(r.log.views, [{ lat: 21.3, lng: -157.86, z: 6, animate: false }]);
   assert.equal(r.log.saved, 1); assert.equal(r.log.clamped, 1); assert.equal(r.log.rebuilt, 1);
   assert.ok(inView(r.log.views[0], 21.25, -157.8, [1280, 800], PAD));
@@ -143,10 +149,73 @@ test('a visitor who acts first (a pointer, wheel, key or touch on the map, or a 
   assert.ok(run({ place: new Promise(() => {}) }).log.docListeners['allshore:station'][0].o.once, 'the pick listener is once');
 });
 
+test('acting on the map shows it at once; a pointer, wheel, key or touch on a control (the overlay panel, the gear, the sheet) is not acting (G32 B-8)', async () => {
+  for (const ev of ['pointerdown', 'wheel', 'keydown', 'touchstart']) {
+    let resolve; const r = run({ place: new Promise((res) => { resolve = res; }) });
+    r.act(ev, true);
+    assert.equal(r.pending(), true, ev + ' on a control: still waiting');
+    r.act(ev);
+    assert.equal(r.pending(), false, ev + ' on the map: shown at once');
+    resolve({ lat: 21.3, lon: -157.86, sid: 'HNL01', slat: 21.25, slon: -157.8 }); await settle();
+    assert.deepEqual(r.log.views, [], ev + ': the map stays where the visitor put it');
+  }
+  let resolve; const c = run({ place: new Promise((res) => { resolve = res; }) });
+  c.act('pointerdown', true); c.act('wheel', true);
+  resolve({ lat: 21.3, lon: -157.86, sid: 'HNL01', slat: 21.25, slon: -157.8 }); await settle();
+  assert.deepEqual(c.log.views, [{ lat: 21.3, lng: -157.86, z: 6, animate: false }], "only controls touched: the visitor's area still opens");
+});
+
+test("the forgotten view: only while the race decides (not with the tab's own view, a link, a default, or without the Worker)", async () => {
+  for (const opts of [{ session: { lat: 10, lng: 20, z: 5 }, place: new Promise(() => {}) }, { search: '?station=46001', place: new Promise(() => {}) },
+    { dflt: { id: 'HNL01', lat: 21, lon: -157 }, place: new Promise(() => {}) }, {}, { early: { place: null } }]) {
+    const r = run(opts); await settle(); assert.equal(r.log.forgot, 0, JSON.stringify(Object.keys(opts)));
+  }
+});
+
 test('without the geo Worker (no place, or no __early at all) the map opens as before: Hawaii, nothing hidden, no listeners', async () => {
   for (const opts of [{}, { early: {} }, { early: { place: null } }, { early: { place: 'soon' } }, { early: { place: {} } }]) {
     const r = run(opts); await settle();
     assert.equal(r.log.enforced, 1); assert.deepEqual(r.log.views, []); assert.equal(r.pending(), false);
     assert.deepEqual(Object.keys(r.log.listeners), []); assert.equal(r.log.timers.length, 0);
   }
+});
+
+// ---- a retired default station (G32 A-P3-3 / B-7): forgotten once the station list is in, said once in the window ----
+const FR = (() => {
+  const s = html.indexOf('    function forgetRetiredDefault(list) {'), e = html.indexOf('\n    }\n', s);
+  assert.ok(s > 0 && e > s, 'forgetRetiredDefault is in the template');
+  return html.slice(s, e + 6);
+})();
+function runForget(stored, list, opts) {
+  opts = opts || {};
+  const store = { 'allshore.defaultStation.v1': stored === undefined ? null : JSON.stringify(stored) }, notes = [], docL = {};
+  const localStorage = { getItem: (k) => (k in store ? store[k] : null), removeItem: (k) => { if (opts.blocked) throw new Error('blocked'); delete store[k]; } };
+  const F = { parsePointId: (id) => (/^pt_\d+[NS]_\d+[EW]$/.test(id) ? { lat: 1, lon: 2 } : null), note: (m, sid) => notes.push([m, sid]) };
+  const window = { AllshoreForecast: opts.noApp ? undefined : F };
+  const document = { addEventListener: (ev, fn, o) => { (docL[ev] = docL[ev] || []).push({ fn, o }); } };
+  new Function('localStorage', 'window', 'document', FR + '\nforgetRetiredDefault(' + JSON.stringify(list) + ');')(localStorage, window, document);
+  return { store, notes, docL, window, F };
+}
+const LIST2 = [{ id: '51201' }, { id: '46026' }, { id: 'NW-HFO51' }];
+
+test('a default the station list still has, or a forecast point, is kept and nothing is said', () => {
+  for (const d of [{ id: '46026' }, { id: ' 46026 ' }, { id: 'NW-HFO51' }, { id: 'pt_21667N_158054W' }]) {
+    const r = runForget(d, LIST2);
+    assert.notEqual(r.store['allshore.defaultStation.v1'], undefined, JSON.stringify(d)); assert.deepEqual(r.notes, []);
+  }
+  const none = runForget(undefined, LIST2); assert.deepEqual(none.notes, []);
+});
+
+test('a default the list no longer has (or one the id rule refuses) is forgotten once the list is in, and the window says so once; an empty or failed list decides nothing', () => {
+  const r = runForget({ id: 'OLD99', lat: 1, lon: 2 }, LIST2);
+  assert.equal(r.store['allshore.defaultStation.v1'], undefined, 'forgotten');
+  assert.equal(r.notes.length, 1); assert.ok(/OLD99/.test(r.notes[0][0]) && /next time/.test(r.notes[0][0])); assert.equal(r.notes[0][1], 'OLD99');
+  assert.ok(r.docL['allshore:forecast'][0].o.once, 'said again once when the window is up');
+  const bad = runForget({ id: 'x y' }, LIST2); assert.equal(bad.store['allshore.defaultStation.v1'], undefined);
+  for (const list of [[], null, 'x']) { const k = runForget({ id: 'OLD99' }, list); assert.notEqual(k.store['allshore.defaultStation.v1'], undefined, JSON.stringify(list)); assert.deepEqual(k.notes, []); }
+  const blocked = runForget({ id: 'OLD99' }, LIST2, { blocked: true }); assert.deepEqual(blocked.notes, [], 'storage refuses: nothing said');
+  const early = runForget({ id: 'OLD99' }, LIST2, { noApp: true });
+  assert.deepEqual(early.notes, []); assert.equal(early.store['allshore.defaultStation.v1'], undefined, 'forgotten before the window is up');
+  early.window.AllshoreForecast = early.F; early.docL['allshore:forecast'][0].fn();
+  assert.equal(early.notes.length, 1, 'said when the window is up');
 });

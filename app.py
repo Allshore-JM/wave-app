@@ -284,7 +284,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.19.2"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.19.3"           # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -394,7 +394,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.23.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.23.1"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",

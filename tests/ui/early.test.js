@@ -116,6 +116,8 @@ test('section 46: a saved default station (the blue star) starts its request at 
   }
   const dash = runHead('', undefined, undefined, { geo: GEO, dflt: { id: 'NW-HFO51' }, stations: LIST });   // NOAA ids carry dashes
   assert.ok(dash.early.q.startsWith('station=NW-HFO51&')); assert.equal(dash.urls.length, 1);
+  const padded = runHead('', undefined, undefined, { geo: GEO, dflt: { id: ' HNL01 ' }, stations: LIST });   // the one id rule: trimmed (G32 A-P3-2)
+  assert.ok(padded.early.q.startsWith('station=HNL01&')); assert.equal(padded.early.q, moduleQuery('', {}, null, { id: ' HNL01 ' }));
 });
 
 test('section 46: with GEO set and no station, the Worker is asked without credentials, the nearest station of the list is chosen, its request started, and station / place resolve to it', async () => {

@@ -494,3 +494,17 @@ test('a default that cannot be stored (storage refusing it) is not shown as one 
   assert.equal(starState(b), 'gold', 'still gold'); assert.equal(m.has(DKEY), false); assert.deepEqual(JSON.parse(m.get(FKEY)), ['51201']);
   assert.match(b.status.textContent, /could not keep a default/);
 });
+
+test('G32: the picker reads a default by the one id rule (trimmed; spaces inside refused) and renames its chip on allshore:stationshown (the IP race, before the forecast)', async () => {
+  const b = boot({ local: { [FKEY]: JSON.stringify(['51201']) } }); await settle(); b.last().release(payload('51201')); await settle();
+  b.local.m.set(DKEY, JSON.stringify({ id: ' 51201 ' }));
+  b.winListeners.storage.forEach((fn) => fn({ key: DKEY })); assert.equal(starState(b), 'blue', 'trimmed: the default');
+  b.local.m.set(DKEY, JSON.stringify({ id: '512 01' }));
+  b.winListeners.storage.forEach((fn) => fn({ key: DKEY })); assert.equal(starState(b), 'gold', 'a space inside: no default');
+  const sel = b.doc.getElementById('station'), cur = b.doc.getElementById('stationCurrent'), before = cur.textContent;
+  const other = Array.from(sel.querySelectorAll('option')).map((o) => o.value).find((v) => v && v !== sel.value);
+  sel.value = other;
+  assert.equal(cur.textContent, before, 'nothing renames the chip yet');
+  b.doc.dispatchEvent(new CustomEvent('allshore:stationshown', { detail: { station: other } }));
+  assert.notEqual(cur.textContent, before, 'renamed at once'); assert.ok(cur.textContent.indexOf(other) === 0, cur.textContent);
+});

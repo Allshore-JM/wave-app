@@ -335,26 +335,82 @@ test('labels never overlap each other or the H / L marks (every grid cell a pill
 });
 
 // ---- highs and lows: from the frame's own codes (exact centres and pressures) ----
-// An independent brute force: every node of the window tested against its whole rad-square (ties to the earlier node in
-// raster order, rows beyond the grid absent, columns wrapping) and the depth against the square's border mean.
+// An independent brute force of the rule: every node's rad-square extremes by sliding passes (columns wrap, rows end at the
+// grid, missing nodes left out); ties only among the 8 neighbours (the earlier node in raster order stands); the depth
+// against the square's border mean; then in raster order: a node of a patch already taken for its kind is skipped, one
+// within rad of a kept centre of its kind is dropped, else its whole patch is gathered breadth first (no mark for a shelf,
+// a patch over ISO_PATCH_MAX nodes or one spanning half the columns) and the mark sits at the patch's middle.
 function bruteCentres(fr, win, rad, depth) {
-  const Q = fr.q, cols = fr.cols, rows = fr.rows, k = (PRES.hi - PRES.lo) / 254, out = [];
-  for (let r = Math.max(0, win.r0); r <= Math.min(rows - 1, win.r1); r++) for (let jj = 0; jj < Math.min(win.count, cols); jj++) {
-    const c = (win.c0 + jj) % cols, v = Q[r * cols + c]; if (!v || v <= 2 || v >= 254) continue;
-    let mn = true, mx = true, sum = 0, cnt = 0;
-    for (let dr = -rad; dr <= rad; dr++) { const rr = r + dr; if (rr < 0 || rr >= rows) continue;
-      for (let dc = -rad; dc <= rad; dc++) { if (!dr && !dc) continue; const x = Q[rr * cols + (((c + dc) % cols) + cols) % cols]; if (!x) continue;
-        const early = dr < 0 || (!dr && dc < 0);
-        if (x < v || (x === v && early)) mn = false; if (x > v || (x === v && early)) mx = false;
-        if (Math.abs(dr) === rad || Math.abs(dc) === rad) { sum += x; cnt++; } } }
-    if (!cnt) continue; const ring = sum / cnt;
-    if (mn && (ring - v) * k >= depth) out.push('L' + r + ',' + c); else if (mx && (v - ring) * k >= depth) out.push('H' + r + ',' + c);
+  const Q = fr.q, cols = fr.cols, rows = fr.rows, k = (PRES.hi - PRES.lo) / 254, wrapC = (c) => ((c % cols) + cols) % cols;
+  const r0 = Math.max(0, win.r0), r1 = Math.min(rows - 1, win.r1), n = Math.min(win.count, cols);
+  const R0 = Math.max(0, r0 - rad), R1 = Math.min(rows - 1, r1 + rad), rlo = [], rhi = [];
+  for (let r = R0; r <= R1; r++) {                           // each row's extremes over +-rad columns, per window column
+    const lo = new Float64Array(n), hi = new Float64Array(n);
+    for (let jj = 0; jj < n; jj++) {
+      let a = Infinity, b = -Infinity;
+      for (let dc = -rad; dc <= rad; dc++) { const x = Q[r * cols + wrapC(win.c0 + jj + dc)]; if (x) { if (x < a) a = x; if (x > b) b = x; } }
+      lo[jj] = a; hi[jj] = b;
+    }
+    rlo.push(lo); rhi.push(hi);
   }
-  return out.sort();
+  const cands = [];
+  for (let r = r0; r <= r1; r++) for (let jj = 0; jj < n; jj++) {
+    const c = wrapC(win.c0 + jj), v = Q[r * cols + c];
+    if (!v || v <= 2 || v >= 254) continue;
+    let a = Infinity, b = -Infinity;
+    for (let rr = Math.max(R0, r - rad); rr <= Math.min(R1, r + rad); rr++) { a = Math.min(a, rlo[rr - R0][jj]); b = Math.max(b, rhi[rr - R0][jj]); }
+    if (a !== v && b !== v) continue;
+    let tie = false;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      if ((dr < 0 || (!dr && dc < 0)) && r + dr >= 0 && Q[(r + dr) * cols + wrapC(c + dc)] === v) tie = true;
+    }
+    if (tie) continue;
+    let sum = 0, cnt = 0;
+    for (let dr = -rad; dr <= rad; dr++) {
+      if (r + dr < 0 || r + dr >= rows) continue;
+      for (let dc = -rad; dc <= rad; dc++) { if (Math.abs(dr) !== rad && Math.abs(dc) !== rad) continue; const x = Q[(r + dr) * cols + wrapC(c + dc)]; if (x) { sum += x; cnt++; } }
+    }
+    if (!cnt) continue;
+    if (a === v && (sum / cnt - v) * k >= depth) cands.push({ type: 'L', r, c, q: v });
+    if (b === v && (v - sum / cnt) * k >= depth) cands.push({ type: 'H', r, c, q: v });
+  }
+  cands.sort((x, y) => (x.type !== y.type ? (x.type < y.type ? -1 : 1) : x.r - y.r || x.c - y.c));
+  const taken = { H: new Set(), L: new Set() }, kept = [], byRow = new Map();   // the kept centres by kind and candidate row
+  for (const cd of cands) {
+    if (taken[cd.type].has(cd.r * cols + cd.c)) continue;
+    let near = false;
+    for (let rr = cd.r - rad; rr <= cd.r + rad && !near; rr++) {
+      near = (byRow.get(cd.type + rr) || []).some((e) => Math.min(Math.abs(e.c0 - cd.c), cols - Math.abs(e.c0 - cd.c)) <= rad);
+    }
+    if (near) continue;
+    const low = cd.type === 'L', seen = new Map([[cd.r * cols + cd.c, 0]]), queue = [[cd.r, cd.c, 0]];
+    let shelf = false;
+    for (let h = 0; h < queue.length; h++) {
+      const [r, c, off] = queue[h];
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        const rr = r + dr; if ((!dr && !dc) || rr < 0 || rr >= rows) continue;
+        const key = rr * cols + wrapC(c + dc), y = Q[key];
+        if (!y) continue;
+        if (low ? y < cd.q : y > cd.q) shelf = true;
+        else if (y === cd.q && !seen.has(key)) { seen.set(key, off + dc); queue.push([rr, wrapC(c + dc), off + dc]); }
+      }
+    }
+    for (const key of seen.keys()) taken[cd.type].add(key);
+    if (shelf || seen.size > I.ISO_PATCH_MAX) continue;
+    const offs = [...seen.values()];
+    if (Math.max(...offs) - Math.min(...offs) >= cols >> 1) continue;
+    let sr = 0, sc = 0;
+    for (const [key, off] of seen) { sr += Math.floor(key / cols); sc += off; }
+    const e = { type: cd.type, r: sr / seen.size, c: ((cd.c + sc / seen.size) % cols + cols) % cols, r0: cd.r, c0: cd.c };
+    kept.push(e);
+    if (!byRow.has(cd.type + cd.r)) byRow.set(cd.type + cd.r, []);
+    byRow.get(cd.type + cd.r).push(e);
+  }
+  return kept.map((e) => e.type + e.r + ',' + e.c).sort();
 }
 const key = (e) => e.type + e.r + ',' + e.c;
 
-test('findCentres = an independent test of every node (random smooth fields with noise, plateaus and holes; windows that wrap, cross the seam or touch the poles; radii 1-14)', () => {
+test('findCentres = an independent brute force of the rule (random smooth fields with noise, plateaus and holes; windows that wrap, cross the seam or touch the poles; radii 1-14)', () => {
   let seed = 3; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
   let runs = 0, found = 0;
   for (let t = 0; t < 36; t++) {
@@ -385,6 +441,7 @@ test('findCentres: the exact centre and pressure of a compact deep low the smoot
   const win = { r0: 100, r1: 200, c0: 560, count: 160 };
   const e = I.findCentres(ty, PRES, win, 10, 1);
   assert.deepEqual(e.map((x) => [x.type, x.r, x.c]), [['L', 150, 640]]);
+  assert.deepEqual(I.findCentres(ty, PRES, win, 1000, 1).map((x) => [x.type, x.r, x.c]), [['L', 150, 640]], 'a radius wider than the world: half the world');
   assert.ok(near(e[0].v, 958, k), `the central pressure ${e[0].v.toFixed(1)}`);
   const g = I.isoValues(ty, PRES, win, 3, null), sm = Math.min(...Array.from(g.V.subarray(0, g.R * g.C)).filter((x) => x === x));
   assert.ok(sm > 990, `the smoothed field at that view reads ${sm.toFixed(1)}: the lines alone would hide it`);
@@ -396,7 +453,37 @@ test('findCentres: the exact centre and pressure of a compact deep low the smoot
   assert.deepEqual(I.findCentres(codeFrame((r, c) => (Math.abs(r - 150) < 3 && Math.abs(c - 640) < 3 ? 1 : 60)), PRES, win, 10, 1), [], 'a clamped low');
   const plateau = codeFrame((r, c) => (Math.abs(r - 150) <= 2 && Math.abs(c - 640) <= 2 ? 80 : 100));
   const p = I.findCentres(plateau, PRES, win, 10, 1);
-  assert.deepEqual(p.map((x) => [x.type, x.r, x.c]), [['L', 148, 638]], 'a flat-bottomed low: one L, at its first node');
+  assert.deepEqual(p.map((x) => [x.type, x.r, x.c]), [['L', 150, 640]], 'a flat-bottomed low: one L, at its middle');
+});
+
+test('findCentres: a trough with lows B, A (equal to B, a row above it) and C (deeper), 8 deg apart each: C and B get an L, A (beside the deeper C) none (G32 verification V11-2)', () => {
+  const dips = [[100, 340, 120], [99, 324, 121], [100, 308, 121]];      // C, A, B (codes; each the tip of a cone 6 nodes wide)
+  const fr = codeFrame((r, c) => { let q = 170; for (const [a, b, v] of dips) { const d = Math.max(Math.abs(r - a), Math.abs(c - b)); if (d <= 6) q = Math.min(q, v + 3 * d); } return q; });
+  const e = I.findCentres(fr, PRES, { r0: 80, r1: 120, c0: 280, count: 90 }, 19, 1);
+  assert.deepEqual(e.map((x) => [x.type, x.r, x.c]).sort(), [['L', 100, 308], ['L', 100, 340]]);
+  assert.ok(near(e.find((x) => x.c === 308).v, PRES.lo + 120 * (PRES.hi - PRES.lo) / 254, 1e-9), 'B with its own pressure');
+  const pair = codeFrame((r, c) => (r === 150 && (c === 714 || c === 3) ? 80 : 100));        // two equal lows 9 columns apart across the date line
+  assert.deepEqual(I.findCentres(pair, PRES, { r0: 140, r1: 160, c0: 700, count: 30 }, 10, 1).map((x) => [x.type, x.r, x.c]), [['L', 150, 3]], 'one L, the first in raster order');
+});
+
+test('findCentres: a flat floor that runs down to a lower node is a shelf (no mark); a patch takes one mark however many of its nodes qualify; a patch over ISO_PATCH_MAX nodes or spanning half the world marks nothing', () => {
+  const floor = codeFrame((r, c) => (r === 150 && c >= 600 && c <= 630 ? 100 : r === 150 && c === 631 ? 99 : 130));
+  assert.deepEqual(I.findCentres(floor, PRES, { r0: 140, r1: 160, c0: 590, count: 50 }, 10, 1).map((x) => [x.type, x.r, x.c]), [['L', 150, 631]], 'the low end only');
+  const vee = codeFrame((r, c) => ((r === 150 && (c === 640 || c === 642)) || (r === 151 && c === 641) ? 80 : 100));   // two nodes qualify
+  const one = I.findCentres(vee, PRES, { r0: 140, r1: 160, c0: 630, count: 20 }, 1, 1);
+  assert.equal(one.length, 1, 'one mark for the patch');
+  assert.ok(near(one[0].r, 451 / 3, 1e-12) && one[0].c === 641, 'at its middle: ' + JSON.stringify(one[0]));
+  const square = (side) => codeFrame((r, c) => (r >= 100 && r < 100 + side && c >= 300 && c < 300 + side ? 80 : 100));
+  const s60 = I.findCentres(square(60), PRES, { r0: 90, r1: 170, c0: 290, count: 80 }, 5, 1);
+  assert.deepEqual(s60.map((x) => [x.type, x.r, x.c]), [['L', 129.5, 329.5]], '3,600 nodes: one L at the middle');
+  assert.equal(64 * 64, I.ISO_PATCH_MAX);
+  assert.deepEqual(I.findCentres(square(64), PRES, { r0: 90, r1: 175, c0: 290, count: 90 }, 5, 1).map((x) => [x.type, x.r, x.c]), [['L', 131.5, 331.5]], 'ISO_PATCH_MAX nodes: still one');
+  assert.deepEqual(I.findCentres(square(70), PRES, { r0: 90, r1: 180, c0: 290, count: 90 }, 5, 1), [], '4,900 nodes: none');
+  const band = (len) => codeFrame((r, c) => (r === 150 && c >= 100 && c < 100 + len ? 80 : 100));
+  assert.deepEqual(I.findCentres(band(300), PRES, { r0: 140, r1: 160, c0: 90, count: 40 }, 5, 1).map((x) => [x.type, x.r, x.c]), [['L', 150, 249.5]], 'a band 150 deg long');
+  assert.deepEqual(I.findCentres(band(400), PRES, { r0: 140, r1: 160, c0: 90, count: 40 }, 5, 1), [], 'a band 200 deg long');
+  assert.equal(I.findCentres(band(360), PRES, { r0: 140, r1: 160, c0: 90, count: 40 }, 5, 1).length, 1, '360 nodes: spans 359 columns');
+  assert.deepEqual(I.findCentres(band(361), PRES, { r0: 140, r1: 160, c0: 90, count: 40 }, 5, 1), [], '361 nodes: spans half the columns');
 });
 
 test('findCentres: a centre near the grid\'s end counts (the square is cut by the grid, not the window); one on the date line of a whole-world window is found once; projectCentres draws it in every world copy', () => {
@@ -426,10 +513,7 @@ test('on the real GFS frame the world view marks the deep centres with their own
   const ty = at('L', 13.5, 142), so = at('L', -54, 77);
   assert.ok(ty && Math.round(ty.v) === 956, 'the typhoon: ' + JSON.stringify(ty));
   assert.ok(so && Math.round(so.v) === 946, 'the Southern Ocean low: ' + JSON.stringify(so));
-  for (const x of e) {                                                     // each the extreme of its own square in the raw codes
-    const want = bruteCentres(fr, { r0: x.r, r1: x.r, c0: x.c, count: 1 }, Math.round(I.ISO_HL_PX / (n * 0.5 / 360)), 2);
-    assert.deepEqual(want, [key(x)]);
-  }
+  assert.deepEqual(e.map(key).sort(), bruteCentres(fr, I.nodeWindow(view, HALF, fr, 0), Math.round(I.ISO_HL_PX / (n * 0.5 / 360)), 2), 'every mark = the brute force');
 });
 
 // ---- the canvas layer ----

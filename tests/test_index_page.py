@@ -232,7 +232,7 @@ def test_g18b_pins(client):
         "liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; focusMapAfterClose('liveBuoyPanel'); } });",
         "if (fwEl && fwEl.classList.contains('fw-min') && fwEl.offsetHeight > 0) phoneBarH = fwEl.offsetHeight;",
         "document.documentElement.style.setProperty('--fw-bar-h', phoneBarH + 'px');",
-        "function open() { renderFavs(); place(); results.hidden = false;",
+        "function open() { seen = new Map(); renderFavs(); place(); results.hidden = false;",
         "if (below >= 220 || below >= above) { s.top = (r.bottom + 2) + 'px'; s.bottom = 'auto';",
         "if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();",
         ".fwin.live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 136px)); height: min(76vh, 800px); z-index: 2000; }",
@@ -424,7 +424,7 @@ def test_my_points_on_the_page(client):
     # the no-script page names the point in its select (B-5); the script takes that option over
     assert '<option value="pt_21667N_158054W" data-point selected>21.667N 158.054W</option>' in body
     assert client.get("/?station=51201").get_data(as_text=True).count('<option value="pt_') == 0
-    assert ".sr-star, .pt-act { min-width: 44px; min-height: 44px; }" in body                   # phone targets
+    assert ".sr-star, .pt-act, .sr-ic { min-width: 44px; min-height: 44px; }" in body                   # phone targets
     assert "createPane" not in body                                                              # (the overlay's pin: no pane from the page)
     # the page names the point in its title (the server renders the shell; the window fills in the coordinates)
     assert '<span id="stationCurrent" class="station-current">pt_21667N_158054W</span>' in body
@@ -1009,9 +1009,9 @@ def test_the_star_cycles_through_favorite_and_default(client):
     refresh the star. The behaviour is pinned by tests/ui/mypoints.test.js; here the markup and the key names."""
     body = client.get("/?station=51201").get_data(as_text=True)
     assert ".sr-star.sr-default { color: #1d6fd6; }" in body
-    assert '.station-results li.is-default .fav-select::before { content: "\\2605"; color: #1d6fd6;' in body
+    assert '.fav-select::before' not in body                                    # the default shows by its shaka, not a mark before the name
     picker = body[body.index("(function initStationPicker() {"):body.index("// the picker just made the forecast bar taller")]
-    for needle in ("const DEFAULT_KEY = 'allshore.defaultStation.v1';", "function writeDefault(sid) {", "function clearDefault() {",
+    for needle in ("const DEFAULT_KEY = 'allshore.defaultStation.v1';", "function writeDefault(sid, label) {", "function clearDefault() {",
                    "favToggle.classList.toggle('sr-default', dflt);", "if (isDefault(sid)) {", "if (goldNow) {",
                    "removeFav(c.sid); if (isDefault(c.sid)) clearDefault();", "if (gone && isDefault(p.id)) clearDefault();",
                    "document.addEventListener('allshore:forecast', function () { refreshCurrent(); });",
@@ -1019,22 +1019,21 @@ def test_the_star_cycles_through_favorite_and_default(client):
                    "typeof forecastStationsData !== 'undefined' && Array.isArray(forecastStationsData)"):
         assert needle in picker, needle
     assert "var cur = (new URLSearchParams(location.search).get('station') || '').trim() || dflt0Id || (window.__initial || {}).station || '';" in body
-    # the dropdown's saved rows (owner, 2026-10-18): Favorite | Default, the row's state pressed, then ✕
-    for needle in ("function choice(sid, label, dflt, point) {", "[['seg-fav', 'Favorite', false], ['seg-dflt', 'Default', true]].forEach(function (t) {",
-                   "b.setAttribute('aria-pressed', on ? 'true' : 'false');", "if (on) return;",
-                   "li.appendChild(pick); li.appendChild(choice(c.sid, c.label, dflt, false)); li.appendChild(rem);",
-                   "li.appendChild(pick); li.appendChild(choice(p.id, label, p.id === dId, true)); li.appendChild(ren); li.appendChild(rem);",
-                   "rem.type = 'button'; rem.className = 'pt-act sr-rem'; rem.textContent = '✕';",
-                   "li.textContent = 'Default: the site opens on it every visit. ✕ removes it from the list.';",
+    # the dropdown's saved rows (owner, 2026-10-18/19): the shaka (the default), the star (a favorite), ✕ (remove); hollow when
+    # off, coloured when on (the shaka skin toned, the owner's own drawing); no hint line under the rows
+    for needle in ("function toggles(sid, label, point, p) {", "sk.title = 'Default: site opens here';", "st.title = 'Favorite';",
+                   "sk.setAttribute('aria-pressed', dflt ? 'true' : 'false');", "st.setAttribute('aria-pressed', fav ? 'true' : 'false');",
+                   "rem.title = 'Remove';", "const acts = toggles(c.sid, c.label, false, null);", "const acts = toggles(p.id, label, true, p);",
                    "s.left = Math.max(8, Math.min(r.left, vw - 8 - 420)) + 'px';"):
         assert needle in picker, needle
-    for css in ('.sr-seg button.seg-fav[aria-pressed="true"] { background: #fff3cd; color: #6b4e00; font-weight: 600; }',
-                '.sr-seg button.seg-dflt[aria-pressed="true"] { background: #1d6fd6; color: #fff; font-weight: 600; }',
-                ".sr-seg button { min-height: 44px; padding: 0 10px; }",                         # phone targets
+    assert "sr-hint" not in body and "function choice(" not in picker and "sr-seg" not in body
+    for css in ('.sr-fav[aria-pressed="true"] { color: #f0ad00; }',
+                '.sr-dflt[aria-pressed="true"] .sk-h { fill: #f3c79c; stroke: #a86a43; }',
+                ".sr-star, .pt-act, .sr-ic { min-width: 44px; min-height: 44px; }",            # phone targets
                 "max-height: 340px; overflow-y: auto; min-width: 260px; max-width: 420px;",
                 ".station-results li.sr-saved { flex-wrap: wrap; }",                       # phones: the label whole on its line
                 ".station-results li.sr-saved .fav-select { flex: 1 0 100%; }",
-                ".station-results li.sr-saved .sr-seg { margin-left: auto; }"):
+                ".station-results li.sr-saved .sr-acts { margin-left: auto; }"):
         assert css in body, css
     # one key, three readers + the writer
     assert body.count("'allshore.defaultStation.v1'") == 6   # + forgetRetiredDefault's read and removal (G32 A-P3-3)

@@ -2411,6 +2411,7 @@
   var ISO_HL_PROM_CODES = 2, ISO_HL_PROM_CAP = 255;         // a mark's least prominence (codes: 1.1 hPa); "never absorbed"
   var ISO_CLAMP_PATCH_MAX = 16, ISO_CLAMP_LAT = 70;         // a clamped-end centre: a compact patch, away from the poles
   var ISO_TERRAIN_M = 400, TERRAIN_M_PER_CODE = 20;         // no H / L on ground this high (terrain_half.png: 20 m per code)
+  var ISO_STRONG_LOW_HPA = 15, ISO_TERRAIN_CAP_M = 2000;    // ...except a low this prominent over ground lower than this (owner, V3-1)
   var ISO_PROM_NODES_MAX = 16000;                           // the prominence pass runs on blocks coarse enough for this many
   var ISO_HL_CLEAR_PX = 2;                                  // the lines are cleared this far around a mark's box
   var ISO_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -2677,7 +2678,9 @@
   // 3. no mark on high ground: opts.terrain (the half grid's terrain codes, terrain_half.png) at or above opts.terrainMin
   //    at the patch's first node in raster order or at its middle (never at the candidate that found the patch: which one
   //    does depends on the view) (the sea-level pressure both models reduce from the surface leaves a fixed bump
-  //    on every mountain node: an "H" on the Big Island at every step, H / L pairs on mountain slopes);
+  //    on every mountain node: an "H" on the Big Island at every step, H / L pairs on mountain slopes); EXCEPT a low
+  //    at least opts.strongLowHpa prominent whose ground at both nodes is below opts.terrainCap (a typhoon crossing
+  //    Taiwan: 31-48 hPa; the mountain bumps measured at most 11-14 hPa, all highs) (owner, fix round 4);
   // 4. prominence (prominenceMap over the window widened by opts.margin nodes, on blocks of opts.stride nodes, coarsened
   //    until the window holds at most opts.promNodesMax blocks when that is given: how far the field must rise (L) /
   //    fall (H) from the centre before a stronger centre is reached): at least ISO_HL_PROM_CODES; the strongest centre of
@@ -2801,6 +2804,8 @@
     }
     var terrain = opts.terrain && opts.terrain.length === rows * cols ? opts.terrain : null, tmin = opts.terrainMin > 0 ? opts.terrainMin : 1;
     function high(rr, cc) { return !!terrain && terrain[Math.round(rr) * cols + (((Math.round(cc) % cols) + cols) % cols)] >= tmin; }
+    var strongHpa = opts.strongLowHpa > 0 ? opts.strongLowHpa : 0, tcap = opts.terrainCap > 0 ? opts.terrainCap : 0;
+    function lowGround(rr, cc) { return tcap > 0 && terrain[Math.round(rr) * cols + (((Math.round(cc) % cols) + cols) % cols)] < tcap; }
     var mg = Math.max(0, Math.floor(opts.margin || 0)), stride = Math.max(1, Math.floor(opts.stride || 1)), sc0 = opts.scratch || {};
     if (opts.promNodesMax > 0) {                              // coarser blocks for a large window (the world view): the pass stays cheap
       var pw = (r1 - r0 + 1 + 2 * mg) * Math.min(cols, n + 2 * mg);
@@ -2820,8 +2825,13 @@
       if (marks && marks[cd.r * cols + cd.c] & (cd.type === 'L' ? 1 : 2)) { if (trace) trace(cd, 'taken'); continue; }
       var pt = patch(cd);
       if (!pt) { if (trace) trace(cd, 'patch'); continue; }
-      if (high(pt.fr, pt.fc) || high(pt.r, pt.c)) { if (trace) trace(cd, 'terrain'); continue; }
-      var prom = promOf(cd);
+      var prom = -1;
+      if (high(pt.fr, pt.fc) || high(pt.r, pt.c)) {             // high ground: only a strong low below the cap marks
+        if (!(cd.type === 'L' && strongHpa > 0 && lowGround(pt.fr, pt.fc) && lowGround(pt.r, pt.c) && (prom = promOf(cd)) * k >= strongHpa - 1e-9)) {
+          if (trace) trace(cd, 'terrain'); continue;
+        }
+      }
+      if (prom < 0) prom = promOf(cd);
       if (prom < ISO_HL_PROM_CODES) { if (trace) trace(cd, 'prominence ' + prom); continue; }
       var clamp = cd.q === 1 ? -1 : cd.q === 255 ? 1 : 0;
       out.push({ type: cd.type, r: pt.r, c: pt.c, v: fdef.lo + (cd.q - 1) * k, q: cd.q, prom: prom, clamp: clamp });
@@ -3102,7 +3112,8 @@
     var paths = projectIsolines(traceIsolines(g.V, g.R, g.C, interval), g, grid, v);
     var rad = Math.max(1, Math.round(ISO_HL_PX / nodePx));
     var marks = projectCentres(findCentres(this.frame, this.fdef, win, rad, { stride: stride, margin: Math.max(2 * rad, 16), grid: grid,
-      terrain: this.terrain, terrainMin: ISO_TERRAIN_M / TERRAIN_M_PER_CODE, promNodesMax: ISO_PROM_NODES_MAX, scratch: this.P }), grid, v);
+      terrain: this.terrain, terrainMin: ISO_TERRAIN_M / TERRAIN_M_PER_CODE, strongLowHpa: ISO_STRONG_LOW_HPA, terrainCap: ISO_TERRAIN_CAP_M / TERRAIN_M_PER_CODE,
+      promNodesMax: ISO_PROM_NODES_MAX, scratch: this.P }), grid, v);
     var labels = [];
     if (v.z >= ISO_LABEL_MIN_Z && span < ISO_WORLD_DEG) {
       ctx.font = ISO_STYLE.font;
@@ -5157,7 +5168,7 @@
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
-      ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,
+      ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_STRONG_LOW_HPA: ISO_STRONG_LOW_HPA, ISO_TERRAIN_CAP_M: ISO_TERRAIN_CAP_M, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,
       ISO_LABEL_MIN_PX: ISO_LABEL_MIN_PX, ISO_LABEL_AT: ISO_LABEL_AT, ISO_LABEL_EDGE_PX: ISO_LABEL_EDGE_PX,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,

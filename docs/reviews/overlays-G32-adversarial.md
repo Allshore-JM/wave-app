@@ -541,3 +541,162 @@ Overlay 2.20.0 (js, css, the three animals, `terrain_half.png`); the golden re-c
 Next: the test site at MAX (the H / L survey on both models live incl. the Big Island, the typhoon, broad highs at zoom
 6-9; the whole-world timed cell vs production; playback; the per-step cap; the terrain asset served), a short fresh check
 at MAX (a new rule), then step 12.
+
+## Test-site verification of fix round 3 (Opus 5.5 MAX, 2026-10-19)
+`test` @ 9a24257 (cherry-picks of 39e6992, e083c10, 32e6418, 636e446, 414bebe; the site files equal feat/isobars-geo's apart
+from the test branch's three logo lines). Pushed 02:51 UTC; the new instance answered from 02:52:28 with 0 failed requests
+across the switch (polls every 2 s). The six overlay assets (overlay.js, overlay.css, the three animals, terrain_half.png)
+are byte-identical to the commit, immutable, nosniff, with their types; the 2.19.5 URLs answer 404; the UI assets stay 1.23.1.
+Live runs: GFS 2026101818 (209 frames) and ECMWF 2026101812 (85), both with `pres` 920-1060 hPa. GFS 18Z is new to the rule
+(it was tuned on R1's 22 frames of the 12Z runs). Scripts and outputs: scratch g32/v3 (s/, out/, shots/).
+
+### The rule on the live runs (Node, every pressure frame of both runs: 294)
+- **The oracle:** the module that the test site serves equals the test file's independent brute force at the layer's own
+  inputs (radius, the coarsened stride, margin, the 400-m mask) in 256 of 256 cases (8 steps x 16 views x 2 models; 1,601
+  centres).
+- **Invariants of the drawn marks**, every frame at 16 views (23,254 marks): 0 with a prominence under 2 codes, 0 on high
+  ground, 0 pairs of one kind within 110 px, 0 H / L boxes overlapping, 0 within the edge margin, 0 wrong texts; the 116
+  clamped marks all sit on code 1.
+- **Mountain sites** (R2's method: the whole grid at zoom 6's radius, a site = a mark within 1 node in at least 70 % of a
+  run's steps): GFS 32 -> 0, ECMWF 50 -> 0.
+- **The default Hawaii view** (1280x800, zoom 6): the Big Island H in 209 of 209 GFS steps and 85 of 85 ECMWF steps without
+  the mask -> 0 with it; Kauai 4 -> 0 and 23 -> 0; marks in view 1.36 -> 0.34 and 1.42 -> 0.15 per step.
+- **The typhoon:** GFS's (928.8 hPa at its deepest) is marked at its centre at zoom 4 and 6 at every step until it reaches
+  Taiwan. ECMWF's is at code 1 in steps 42-105 and reads "L ≤920" at its centre at zoom 4 and 6 in each of them.
+- **Marks per frame** (the averages): world 1920 px 20.0, world 1280 px 14.2, North Pacific z4 5.4, Atlantic z4 4.8,
+  W Pacific z4 5.2, Hawaii z6 0.3, Oahu z9 0.
+
+### On the test site (headless Edge with the GPU, trusted input)
+- **The layer = its rebuild** (s/check.js): 36 views at 1280x800 (GFS f010 and f116, ECMWF f072, 12 views each) and 12 on a
+  375x812 phone. Lines, pills and marks are counted equal everywhere. With a 1-px anti-aliasing tolerance the canvas has
+  0 pixels of ink the rebuild lacks and 0 the other way, in every view.
+  - An exact pixel match is not possible across rasterizers. Every exact difference equals a control's: the same rebuild
+    drawn on a canvas read on the CPU. A canvas Chrome has read back is drawn on the CPU from then on.
+- **The page's centres = the Node brute force** on the same frame bytes in 36 of 36 desktop and 12 of 12 phone views
+  (226 centres). The page's decoded terrain mask has the Node decode's checksum (707475197).
+- **The cleared boxes (H-8):** every mark's box holds only its own text, in every view. The lines ran under 1-10 boxes per
+  view (up to 924 line pixels): the clearing is what removes them.
+- **The typhoon** (ECMWF f072): "L ≤920" at zoom 3-8; the readout on the eye node reads "≤ 920 hPa" at zoom 8 by a mouse
+  hover and by a phone long-press.
+- **Taiwan** (ECMWF, zoom 6): f120 "L 935" east of the island, f126 no mark (969.6 hPa over the island: the 400-m rule), f135
+  "L 983" over the strait.
+- **The terrain asset:** asked once per page (field and model switches, ~40 views). Refused by interception: the marks are
+  drawn as before (the Big Island "H 1020" is back), the layer = its rebuild without a mask, the debug line says no-terrain,
+  and the only console line is the refused request. Allowed again: Off -> wind asks once more, it loads, and the H goes.
+- **S-1, the pressure wait per step:** one step's pressure frame held, the step sought, and the zoom taken across 7.5
+  600 ms later (the wind switches to full resolution and the goto is issued again). The step landed 1,003 and 1,045 ms
+  after the first goto (2.19.5: ~1.6 s); a control without the zoom landed at 1,015 ms. There were no lines while the
+  frame was held, and they came on release. Off during a wait left nothing behind and logged no error.
+- **Playback** (shark, 1920x1080, a cold edge): 148 landings at zoom 6 and 171 at the whole-world view; 0 frames showed
+  another step's lines or marks, and 0 blinks. The world view drew 13-27 marks a step; the isobar redraw (the H / L pass
+  included) took p50 13.6 ms, max 28.2.
+- **The page:** P-1: a stored default "OLD99" is kept when the server's 10-buoy fallback list arrives (served by
+  interception), with no note; with the real 734-entry list it is cleared and the window says so. A fresh-tab smoke (GFS
+  wind playing, ECMWF, SST, wave height, wind, Off) logged no console problem, and Off leaves no layer or canvas.
+
+- **Timed cells** (G29's acceptance script with pressure counting, as in step 11; overlay 2.20.0): GFS 2026101818, warm
+  at the edge for both Origins (production's was 1,244 of 1,254 cold before), browser cache off, PREGC=1, 155-s idles,
+  GPU, production 2.18.4 back to back. Every test cell runs at 8 frames/s (2 at snail) with 0 skipped, 0 unpainted, in
+  flight never over the cap, and one pressure download per landing under wind (none under wave height).
+
+  | Cell | Site | Gap p50/p90 (ms) | Render p50 | Main ms/s (script) | Live / peak MB |
+  |---|---|---|---|---|---|
+  | wind shark 1920x1080, whole-world view (G32 B-13) | test | 125/133 | 80 | 905 (112) | +30.5 / +51.8 |
+  | | production | 125/133 | 32 | 793 (28) | +25.5 / +39.6 |
+  | the same, second pair (production first) | production | 125/133 | 30 | 792 (27) | +25.5 / +40.4 |
+  | | test | 125/134 | 78 | 905 (113) | +31.4 / +60.4 |
+  | wind shark 1920x1080 (z6) | test | 125/136 | 40 | 599 (48) | +23.4 / +38.1 |
+  | | production (7.7 fps: one 1.3-s fetch stall) | 125/134 | 39 | 523 (27) | +20.5 / +28.9 |
+  | wind shark phone, whole-world view | test | 127/134 | 17 | 313 (71) | +14.5 / +24.3 |
+  | | production | 129/134 | 17 | 230 (21) | +10.9 / +23.1 |
+  | wind shark phone (z6) | test | 126/135 | 17 | 249 (25) | +14.5 / +26.5 |
+  | | production | 126/134 | 17 | 210 (19) | +10.9 / +21.7 |
+  | wind shark 1280x800 | test | 126/133 | 21 | 444 (43) | +18.7 / +34.0 |
+  | | production | 125/133 | 21 | 397 (31) | +15.4 / +23.8 |
+  | wave height shark 1920x1080 (no isobars: the control) | test | 125/134 | 38 | 653 (27) | +31.8 / +45.7 |
+  | | production | 126/137 | 38 | 641 (27) | +31.8 / +45.7 |
+
+  - Live sets are within production + 10 MB in every cell (largest +5.9).
+  - The isobars cost about 10.5 ms of script per landing at the whole-world view (step 11: about 7.6) and 2.6 ms at z6
+    (step 11: about 1.1).
+  - Peaks are single GC-timed samples:
+    - the whole-world cell is +51.8 and +60.4 against production's +39.6 / +40.4 (this session's range + 10 = +50.4);
+    - the 1280 cell is +34.0 against +33.8.
+    - Step 11 (2.19.5) had the same pattern in the same cells (+48.9 to +58.2 against +43.3 to +47.1).
+    - The new H / L pass allocates what 2.19.5's did per redraw: 0.59 vs 0.56 MB at the whole-world view
+      (scratch g32/v3/bench_hl.js). So the peaks are GC timing, not fix round 3. Owner awareness, as in step 11.
+  - The wave-height control is identical on both sites (+45.7 / +31.8), so the machine was in the same state for both.
+  - 2.20.1 (V3-3, below) adds no measurable cost: the H / L pass within run-to-run noise at every view in Node, with
+    allocation equal or lower. These cells stand for it.
+
+### Findings
+- **V3-3 (P2, found and fixed: overlay 2.20.1 @ 063afc4): a broad flat high lost its H at zoom 8-9.**
+  - Cause: the zoom-9 window is a few nodes high, and a broad high's patch of equal codes ran out of it. Every node
+    inside deferred to an equal neighbour earlier in raster order, back to the patch's first node outside the window,
+    so no candidate was left (traced, scratch g32/v3/trace_z9.js).
+  - Out of sample on the live runs (156 deep highs and 423 deep lows, >= 4 hPa prominent, 20 frames), at zoom 6 / 7 /
+    8 / 9:
+    - 2.20.0: highs 100 / 100 / 98.7 / 89.1 %, lows 100 / 100 / 100 / 99.8 %;
+    - 2.19.5: highs 69 / 1.3 / 0 / 0 %, lows 99.8 / 91.5 / 49 / 49 %;
+    - 2.20.1: 100 % for both at every zoom (scratch g32/v3/broad.js).
+  - Fix: the tie rule counts an equal neighbour only inside the window. The terrain test and the clamp's latitude use the
+    patch's first node in raster order and its middle, not the candidate that found it (which one does depends on the
+    view).
+  - The test file's oracle states the same rule, with three pins (a cut window keeps the mark; the terrain and the
+    clamp's latitude follow the first node).
+  - Verification: the new test file fails on 2.20.0 (both pins plus the random brute-force test). Mutants 9 of 10
+    killed; the wrap shortcut is equivalent. The oracle = the module in 256 of 256 cases; 23,255 marks, 0 violations.
+    pytest 1,190, Node overlay 410, UI 430.
+- **V3-4 (P3, efficiency): the H / L pass costs about 10x 2.19.5's at zoom 6.** Warm in Node: 0.85 ms vs 0.15-0.3 ms
+  at 1920x1080; in the browser about 1.5 ms more per landing.
+  - In a CPU profile, the prominence pass takes 44 % and `patch` 41 %. Most of `patch`'s share is allocating and zeroing
+    a whole-grid `Uint8Array(rows * cols)` (260 KB) on every call, whatever the window size.
+  - Inside the frame budget (8 fps held). A later improvement: keep that array in the layer's scratch and clear only the
+    nodes it touched.
+- **V3-1 (owner's call, not a defect of the build): a typhoon crossing a mountainous island loses its L.** The 400-m mask
+  removes real centres too. On the live runs the typhoon is unmarked while over Taiwan for about 10 h: GFS steps 114-123,
+  963-985 hPa; ECMWF steps 123-132, 961-980 hPa. The same holds for Luzon, Hispaniola, Japan or New Guinea.
+  - The mountain artefacts the mask exists for are at most 11 hPa prominent (GFS) and 13.8 hPa (ECMWF); p99 9.4 / 10.5.
+    The typhoon over Taiwan is 31-48 hPa prominent.
+  - An exception "over high ground a mark needs >= 15 hPa of prominence" brings back 0 artefact marks on either run, and
+    keeps the typhoon. It also brings back other marks: 912 over the GFS run and 191 over ECMWF.
+    - Some are real (the Scandinavian high over 1,520 m).
+    - Many are reductions over plateaus that move with temperature: a 1,046-hPa "high" over Tibet at 5,100 m, the
+      Antarctic plateau at 3,720 m, the Altai at 2,380 m.
+    - A height cap (for example the exception only below 2,000 m: Taiwan's nodes are 620-1,880 m) would keep the
+      islands and drop the plateaus.
+  - Measured with scratch g32/v3/terrain_prom.js; no code changed.
+  - Options for the owner:
+    - (a) keep the rule as it is;
+    - (b) mark a centre over high ground when it is at least 15 hPa prominent and the ground is below 2,000 m (islands
+      and coastal ranges; not the plateaus);
+    - (c) the same for lows only. Every persistent mountain site on both live runs is a high (GFS 32 H / 0 L, ECMWF
+      50 H / 0 L, scratch g32/v3/persist_kind.js). At >= 15 hPa this brings back 0 artefacts and 83 (GFS) / 26
+      (ECMWF) low marks over the runs, the typhoon among them; 8 / 2 of those sit over 2,000 m or more (plateau
+      lows), so 75 / 24 remain with the height cap.
+- **V3-2 (P3, owner awareness): near a clamped eye the readout's value is an upper bound.** The frame stores everything
+  below 920 hPa as 920. The readout interpolates between the eye node and its neighbours, so 2-3 px off the node it reads
+  920-941 hPa while the truth is lower. The "≤" shows only within half a code of the node.
+  - Option: show "≤" whenever one of the four nodes around the cursor is clamped.
+
+### 2.20.1 on the test site (test @ f8d59bd: the cherry-pick of 063afc4; live 04:27:23 UTC)
+- The free instance was waking from idle when the deploy began (one `/healthz` poll timed out at 04:26:24, the page took
+  14.5 s); the switch itself had no failed request. The six assets are byte-identical to the commit; 2.20.0's URL 404.
+- The four V3-3 cases (GFS f046, f092 and f246, ECMWF f027) show their H at the view's centre at zoom 7, 8 and 9. The layer
+  = its rebuild, there is no stray ink and every box is clean. The page = the Node oracle in 12 of 12 views.
+- Regression, the desktop check again (GFS f010 and f116, ECMWF f072, 12 views each): all 36 views pass; 149 mark boxes
+  clean (lines ran under 75 of them); 0 invariant violations. The page = the Node oracle in 36 of 36 views (193 centres).
+  - The typhoon "L ≤920" at zoom 4-8, and "≤ 920 hPa" on the eye node at zoom 8.
+  - Taiwan as before (V3-1). The terrain asset asked once.
+- Playback (shark, 1920x1080, the edge warm): 201 landings at zoom 6 and 201 at the whole-world view, 8.04 frames/s, gaps
+  125 / 134 ms; 0 frames with another step's lines or marks, 0 blinks; 13-26 marks a step at the whole-world view.
+- The page smoke again: P-1 kept / cleared as designed, the phone long-press "≤ 920 hPa" at zoom 8, a fresh tab with no
+  console problem, and Off leaves nothing.
+- Cleanup: the browser closed by DevTools and its profile removed. The test origin's storage was emptied by the last
+  script; production's lived only in that removed profile.
+- Sheet for the owner: scratch g32/v3/shots/isobars_fix3_test_site.jpg.
+
+### Next
+- The owner's call on V3-1 (below are the options).
+- A short fresh check at MAX: a new rule (fix round 3) plus the V3-3 change to the candidates.
+- Then step 12.

@@ -368,9 +368,10 @@ function bruteCentres(fr, win, rad, opts) {
     let a = Infinity, b = -Infinity;
     for (let rr = Math.max(R0, r - rad); rr <= Math.min(R1, r + rad); rr++) { a = Math.min(a, rlo[rr - R0][jj]); b = Math.max(b, rhi[rr - R0][jj]); }
     if (a !== v && b !== v) continue;
-    let tie = false;
+    let tie = false;                                          // an equal neighbour earlier in raster order, inside the window
+    const inWin = (rr, cc) => rr >= r0 && rr <= r1 && (n >= cols || wrapC(cc - win.c0) < n);
     for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
-      if ((dr < 0 || (!dr && dc < 0)) && r + dr >= 0 && Q[(r + dr) * cols + wrapC(c + dc)] === v) tie = true;
+      if ((dr < 0 || (!dr && dc < 0)) && r + dr >= 0 && Q[(r + dr) * cols + wrapC(c + dc)] === v && inWin(r + dr, wrapC(c + dc))) tie = true;
     }
     if (tie) continue;
     if (a === v && v !== 255) cands.push({ type: 'L', r, c, q: v });
@@ -434,12 +435,14 @@ function bruteCentres(fr, win, rad, opts) {
     if (shelf || seen.size > I.ISO_PATCH_MAX) continue;
     const offs = [...seen.values()];
     if (Math.max(...offs) - Math.min(...offs) >= cols >> 1) continue;
+    let fk = Infinity; for (const key of seen.keys()) if (key < fk) fk = key;   // the patch's first node in raster order
+    const fr0 = Math.floor(fk / cols), fc0 = fk % cols;
     const clamp = cd.q === 1 ? -1 : cd.q === 255 ? 1 : 0;
-    if (clamp && (seen.size > I.ISO_CLAMP_PATCH_MAX || Math.abs(90 - cd.r * 0.5) > I.ISO_CLAMP_LAT)) continue;
+    if (clamp && (seen.size > I.ISO_CLAMP_PATCH_MAX || Math.abs(90 - fr0 * 0.5) > I.ISO_CLAMP_LAT)) continue;
     let sr = 0, sc = 0;
     for (const [key, off] of seen) { sr += Math.floor(key / cols); sc += off; }
     const mr = sr / seen.size, mc = ((cd.c + sc / seen.size) % cols + cols) % cols;
-    if (high(cd.r, cd.c) || high(mr, mc)) continue;
+    if (high(fr0, fc0) || high(mr, mc)) continue;
     const prom = prominence(cd);
     if (prom < I.ISO_HL_PROM_CODES) continue;
     kept.push({ type: cd.type, r: mr, c: mc, q: cd.q, prom, clamp, v: PRES.lo + (cd.q - 1) * k });
@@ -579,6 +582,35 @@ test('the world\'s prominence blocks meet across the seam: a stride that does no
     assert.ok(a.length > 100, 'centres found: ' + a.length);
     assert.deepEqual(a, b, 'rad ' + rad + ': stride 7 is computed as 6 (blocks of 7 would lose ' + a.filter((k) => !b.includes(k)).length + ' and add ' + b.filter((k) => !a.includes(k)).length + ')');
   }
+});
+
+test('a broad flat high whose patch runs out of a small window keeps its mark: an equal neighbour counts against a candidate only inside the window (zoom 8-9: the patch\'s first node lay outside; fix round 3 test-site verification V3-3)', () => {
+  // a 10 x 10 plateau at 1030 hPa (rows 100-109, columns 300-309), falling 2 hPa a node outside it: one H at its middle
+  const fr = frameOf((r, c) => { const d = Math.max(Math.max(100 - r, r - 109, 0), Math.max(300 - c, c - 309, 0)); return 1030 - 2 * d; });
+  const at = (win) => I.findCentres(fr, PRES, win, 1, OPTS(1)).map((x) => x.type + x.r + ',' + x.c);
+  const whole = at({ r0: 80, r1: 130, c0: 280, count: 50 });
+  assert.deepEqual(whole, ['H104.5,304.5'], 'the whole patch in the window');
+  for (const win of [{ r0: 103, r1: 130, c0: 280, count: 50 }, { r0: 105, r1: 108, c0: 302, count: 5 }, { r0: 80, r1: 130, c0: 304, count: 30 }, { r0: 101, r1: 101, c0: 305, count: 1 }]) {
+    assert.deepEqual(at(win), whole, 'a window that cuts the patch: the same mark ' + JSON.stringify(win));
+    assert.deepEqual(bruteCentres(fr, win, 1, { margin: 16, stride: 1 }), bruteCentres(fr, { r0: 80, r1: 130, c0: 280, count: 50 }, 1, { margin: 16, stride: 1 }), 'the oracle agrees ' + JSON.stringify(win));
+  }
+});
+
+test('the terrain test uses the patch\'s first node in raster order and its middle, never the candidate that found the patch (which depends on the window)', () => {
+  const fr = frameOf((r, c) => { const d = Math.max(Math.max(100 - r, r - 109, 0), Math.max(300 - c, c - 309, 0)); return 1030 - 2 * d; });
+  const cut = { r0: 103, r1: 130, c0: 280, count: 50 }, whole = { r0: 80, r1: 130, c0: 280, count: 50 };
+  const tA = new Uint8Array(720 * 361); tA[103 * 720 + 300] = 30;            // high ground under the cut window's own candidate only
+  const at = (win, terrain) => I.findCentres(fr, PRES, win, 1, OPTS(1, { terrain, terrainMin: 25 })).map((x) => x.type + x.r + ',' + x.c);
+  assert.deepEqual(at(whole, tA), ['H104.5,304.5']); assert.deepEqual(at(cut, tA), ['H104.5,304.5'], 'the cut window marks it too');
+  const tB = new Uint8Array(720 * 361); tB[100 * 720 + 300] = 30;            // high ground under the patch's first node
+  assert.deepEqual(at(whole, tB), []); assert.deepEqual(at(cut, tB), [], 'the cut window drops it too');
+  // the clamp's latitude limit likewise: a compact code-1 patch (3 x 3 nodes, rows 39-41 = 70.5-69.5 N) is poleward of
+  // ISO_CLAMP_LAT by its first node (70.5 N): no mark through either window (a cut window's own candidate sits at 69.5 N)
+  const clampFr = frameOf((r, c) => (r >= 39 && r <= 41 && c >= 100 && c <= 102 ? 900 : 940 + 4 * Math.max(Math.abs(r - 40), Math.abs(c - 101))));
+  const ends = (win) => I.findCentres(clampFr, PRES, win, 1, OPTS(1)).filter((x) => x.clamp).map((x) => x.type + x.r + ',' + x.c);
+  assert.equal(I.ISO_CLAMP_LAT, 70);
+  assert.deepEqual(ends({ r0: 30, r1: 60, c0: 90, count: 30 }), [], 'the whole patch in view: poleward of 70 N');
+  assert.deepEqual(ends({ r0: 41, r1: 60, c0: 90, count: 30 }), [], 'a window from 69.5 N: still none');
 });
 
 test('findCentres: no mark on high ground (the terrain codes at or above terrainMin, at the candidate or at the patch\'s middle); without a terrain, or one of another size, the marks stay', () => {

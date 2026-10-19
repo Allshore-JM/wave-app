@@ -367,17 +367,19 @@ view (any screen width) or to zoom 2.9, every 4 hPa to zoom 5.9, every 2 hPa bey
 pill (9-px text), rotated along the line, from zoom 4 and never while the whole world is in view; highs and lows are marked
 H and L with their pressure, found on the frame's own values (not the smoothed lines) and chosen by PROMINENCE (asset
 2.20.0, the G32 re-check; owner's calls 2026-10-18): a node that nothing within ~110 px on screen undercuts (L) or overtops
-(H), whose patch of equal values is marked once at its middle (no mark for a patch that runs down to a lower value, holds
+(H), whose patch of equal values is marked once at its middle (also when the patch runs out of the view at zoom 8-9: asset
+2.20.1; no mark for a patch that runs down to a lower value, holds
 more than 4,096 nodes or spans half the world), and whose basin must rise (L) / fall (H) at least 1.1 hPa (two codes)
 before a stronger centre is reached (the merge tree of the frame's codes over the view and a margin, on the lines' node
 spacing at wide views, coarsened so that a window holds at most 16,000 blocks; the strongest centre of a region always
 counts); one mark per ~110 px among the marks in view, the most prominent first (a twin beyond the view's edge hides
 nothing). No mark on high ground: `terrain_half.png` (NOAA GFS's model terrain on the half grid, the highest 0.25-degree
 node of each half node's footprint, built once by `tools/model_frames/make_terrain_mask.py`, 20 m per code) at or above
-400 m — the sea-level pressure both models reduce from the surface leaves a fixed bump on every mountain node (an "H" on
+400 m at the patch's first node or its middle — the sea-level pressure both models reduce from the surface leaves a fixed
+bump on every mountain node (an "H" on
 the Big Island at every step before; on 22 live frames 400 m leaves no persistent mountain mark on either model, 500 m
 left Guadalcanal, Socotra and New Britain). A real centre over high ground (a Mongolian winter high, a Kansas low above
-400 m) has no mark either. A typhoon below the stored range (920 hPa) marks "L ≤920" when its clamped patch is
+400 m, a typhoon while it crosses Taiwan or Luzon) has no mark either. A typhoon below the stored range (920 hPa) marks "L ≤920" when its clamped patch is
 compact and within 70° of the equator (a high above 1,060 "H ≥1060"; the polar plateaus never), and the hover reads
 "≤ 920 hPa" there. The lines are cleared under each mark's box, so an L stays legible inside packed rings. So a compact
 typhoon keeps its real centre and central pressure (asset 2.19.4: on the smoothed field a 956-hPa typhoon read "L 1000" at

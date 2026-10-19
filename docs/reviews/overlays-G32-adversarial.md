@@ -714,3 +714,79 @@ site on both live runs is a high). Fix round 4 (overlay 2.20.2) scope:
 - On the live runs: the typhoon keeps its L over Taiwan (GFS steps 114-123, ECMWF 123-132), the persistent mountain sites
   stay 0, the low marks returned counted (expected about 75 / 24 over the runs).
 - README; asset 2.20.2 + the pin; the test site at MAX; then the short fresh check at MAX; then step 12.
+
+## Fix round 4 and the dropdown redesign (Opus 5.5 HIGH, 2026-10-19)
+
+### The rule (overlay 2.20.2 @ 1ab1f31)
+- `findCentres` takes `strongLowHpa` and `terrainCap`; the layer passes `ISO_STRONG_LOW_HPA` (15 hPa) and
+  `ISO_TERRAIN_CAP_M` (2,000 m, code 100). The names differ from the plan text above (ISO_TERRAIN_LOW_HPA /
+  ISO_TERRAIN_LOW_MAX_M); the values are the owner's.
+- Over high ground (the patch's first node or its middle at or above 400 m) a candidate marks only when it is an L, its
+  prominence times the code step is at least 15 hPa, and the ground at BOTH nodes is below the cap. Highs over high ground,
+  weaker lows, and lows over 2,000 m or more stay unmarked. Without the two options the rule is fix round 3's.
+- A low alone in its region has the cap prominence (never absorbed), so it counts as strong. On the live frames this
+  marked no mountain site (below).
+- The test file's oracle states the same rule. New pins: 800 m and 1,980 m marked, 2,000 m not; no exception without either
+  option; a high never; a 10-hPa low beside a deeper one not (alone it would be the region's only low); 28 codes marked and
+  27 not (15 hPa = 27.2 codes); either node over the cap, none. The random oracle test runs the exception in its
+  variants (none, some, every low; caps over and under the ground). The layer test: a 20-hPa low over 800 m keeps its L,
+  2,200 m takes it.
+
+### The dropdown and the top of the window (owner, 2026-10-18/19; template only, UI asset unchanged)
+- Every saved row: the label, then the shaka (title "Default: site opens here"), the star ("Favorite"), Rename for a kept
+  point, and the cross ("Remove"). Off: hollow and grey; on: the shaka skin toned (#f3c79c, edge #a86a43; the owner's own
+  drawing, traced to a 24-unit SVG path from the owner's image: scratch g32/v4/trace_shaka.py, build_shaka.py), the star
+  gold. The hint line under the rows is gone.
+- The toggles are independent. A default need not be a favorite (it stays listed); a point let go with the star stays
+  listed while it is the default, and its label still opens it. A row keeps its place until the list closes, also once
+  both toggles are off (one click undoes a slip); the next opening lists the default first.
+- The top of the forecast window (owner: "use the shaka at the top of the window as well for the default") @ 554bed8:
+  the shaka before the star in the trigger box, the same pair as the rows (aria-pressed toggles). The three-step star cycle
+  (empty, gold, blue) is gone; the star no longer touches the default. A named point let go with the star is asked first
+  and keeps its name for the way back on this page. The top star is grey when hollow (it was gold), as the rows.
+
+### Suites and mutants
+- pytest 1,190; Node 841 (UI + overlay). Mutation: 16 of 16 targeted mutants killed (the rule's type, both-node and cap
+  conditions, the boundary, the layer's options; the picker's per-opening rows, default-first, focus, ✕, option-less
+  points, the name round trip, aria-pressed, Rename only when kept).
+- LESSON: a failing `assert.equal` on two fake-DOM nodes made Node run out of memory printing the diff (it looked like an
+  infinite loop): compare DOM nodes with `assert.ok(a === b)`.
+
+## Test-site verification of fix round 4 and the dropdown (Opus 5.5 MAX, 2026-10-19)
+test @ 692d584 (cherry-picks of 1ab1f31, 882da39, 554bed8, 0a135e6; site files = the feature branch except the three
+test-logo lines), pushed 06:18:39 UTC; the new instance answered from 06:20:06 UTC (the old one until 06:20:03), no poll
+failed across the switch (the one failed poll, before the push, was the free instance waking up). The six overlay assets
+at `?v=2.20.2` = the commit byte for byte, immutable; 2.20.1 answers 404.
+
+### The rule on the live runs (Node; GFS 2026101900 is out of sample, ECMWF 2026101812)
+- The module = the test file's oracle at the layer's own inputs in 256 of 256 frame x view cases (1,557 centres).
+- Lows back over high ground (whole grid, zoom-6 radius): GFS 52 at 39 sites, ECMWF 26 at 23 sites; 0 highs; no site on
+  25 % of the steps or more. Persistent mountain sites with the rule: 0 on both models; the Big Island H 0 of 209 / 0 of 85.
+- Over 294 frames x 16 views: 23,456 marks, 302 over high ground, every one a strong L below the cap; 0 other
+  invariant violations.
+- The typhoon over Taiwan: ECMWF f123 961 hPa (860 m), f126 970 hPa (1,880 m), f129 975 hPa, f132 980 hPa all marked; the
+  GFS 00Z run has moved past Taiwan (the saved 18Z run kept its L at f114-f123).
+
+### On the test site (headless Edge with the GPU, trusted input)
+- The look, desktop 1280x800 and phone 375x812 (GFS f007, f116; ECMWF f072; 12 / 4 views): every view = its independent
+  re-render (0 stray or missing ink), mark boxes clean, 0 invariant violations, strong lows counted apart (GFS f116: the
+  Pacific z3, the Bolivian lowlands z5, the world view). Taiwan at zoom 6: f120 "L935", f126 "L970" (2.20.1: none),
+  f135 "L983". The typhoon "L≤920" at zoom 4-8. The terrain asset asked once.
+- Playback (shark, 1920x1080, the new GFS run streamed from a cold edge): 0 frames with another step's lines, 0 blinks.
+- The top pair and the dropdown, 31 checks, all pass: hollow grey at first; the star gold with no default; the shaka
+  skin toned (computed fill rgb(243, 199, 156)) with the position; the star off leaves the default; the row shows the same
+  states and titles, no hint line; the default first; a row shaka moves the default with the rows in place and the focus
+  kept; a row star off keeps the row until the list closes; ✕ clears both; Shift+Tab from the name reaches the star then
+  the shaka, Space toggles, Escape closes the list; phones 375x812 and 360x640: the bar and the full screen keep a point's
+  coordinates whole, 44-px targets, no sideways scroll, taps on both toggles; no console problem.
+- Timed cells (GPU, the edge warmed for the test origin, the browser cache off, 155-s idles, a forced collection before
+  play; GFS 2026101900, shark 4x): wind 1920x1080 8 of 8 frames/s, gaps 126 / 136 ms, 0 of 226 unpainted, 0 skipped,
+  pressure 1.02 downloads a landing, in flight <= 5 / 5, heap peak +35.8 / live +23.1 MB; the whole-world view 8 of 8,
+  125 / 134 ms, 0 of 224 unpainted, render p50 84 ms, peak +54.5 / live +31.3 MB; phone 375x812 8 of 8, 125 / 134 ms,
+  0 of 145 unpainted, peak +25.7 / live +14.1 MB. The same as fix round 3's test cells (the rule adds one comparison per
+  candidate over high ground).
+- The test branch's suite: 931 passed, 5 failed = the test site's own logo lines against the page snapshot (4 snapshot
+  tests) and the reef module's numpy import (known).
+
+### Next
+- A short fresh check at MAX (the new rule and the picker's new state), then step 12 (production).

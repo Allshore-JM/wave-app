@@ -413,7 +413,7 @@ def test_my_points_on_the_page(client):
     assert "const pt = window.AllshoreForecast && window.AllshoreForecast.parsePointId(sid);" in body   # focusStation
     assert "document.addEventListener('allshore:points', function () {" in body and "the list was rebuilt under the focus (G22 R-A16)" in body
     assert "ren.type = 'button'; ren.className = 'pt-act pt-ren';" in body and "rem.setAttribute('aria-label', 'Remove point: ' + label);" in body
-    assert "const r = P.store.add(sid);" in body and "if (P && P.store.has(sid)) { const r = P.store.remove(sid) ? 'removed' : 'unremoved'; P.say(r, sid); P.sync(); }" in body   # keep / let go (section 46: the blue click lets it go)
+    assert "const r = P.store.add(sid, goneNames.get(sid) || '');" in body and "P.say(P.store.remove(sid) ? 'removed' : 'unremoved', sid); P.sync();" in body   # the top star keeps / lets go (owner, 2026-10-19)
     assert "if (r === 'added' && typeof showPointLayer === 'function') showPointLayer();" in body            # the star shows the layer (R-A15)
     assert "function showPointLayer() { if (!map.hasLayer(pointLayer)) { pointLayer.addTo(map); saveLayerVisibility(); } }" in body   # (X34)
     assert "if (P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }" in body
@@ -1002,17 +1002,28 @@ def test_an_oahu_visitor_opens_on_waimea_bay(client, monkeypatch):
     assert head.index("function preferred(") < head.index("function nearest(")
 
 
-def test_the_star_cycles_through_favorite_and_default(client):
-    """Plan section 46 (owner): the picker's star cycles empty -> gold (Favorite) -> blue (Default) -> empty; one default at
-    a time (localStorage allshore.defaultStation.v1, the key the head, the module and the first view read), listed first;
-    removing a favorite row or a point clears it as default too; a forecast without a pick and another tab's change
-    refresh the star. The behaviour is pinned by tests/ui/mypoints.test.js; here the markup and the key names."""
+def test_the_shaka_and_the_star_set_the_default_and_the_favorites(client):
+    """Plan section 46 (owner, 2026-10-18/19): the top of the forecast window and every saved row carry the same independent
+    toggles: the shaka (the default, one at a time: localStorage allshore.defaultStation.v1, the key the head, the module
+    and the first view read; listed first) and the star (a favorite; for a point: kept in My points); a row's ✕ and a removed
+    point clear the default too; a forecast without a pick and another tab's change refresh the pair. The behaviour is pinned
+    by tests/ui/mypoints.test.js; here the markup and the key names."""
     body = client.get("/?station=51201").get_data(as_text=True)
-    assert ".sr-star.sr-default { color: #1d6fd6; }" in body
+    assert "sr-default" not in body                                             # no blue star any more: the default is the shaka
+    top = body[body.index('<div class="station-trigger">'):body.index('id="stationTrigger"')]
+    assert top.index('id="stationDefaultToggle"') < top.index('id="stationFavToggle"'), "the shaka, then the star, then the name"
+    for needle in ('id="stationDefaultToggle" class="sr-star sr-dflt" aria-pressed="false"', 'title="Default: site opens here"',
+                   'id="stationFavToggle" class="sr-star" aria-pressed="false"', 'title="Favorite">☆</button>'):
+        assert needle in top, needle
+    assert '.sr-star[aria-pressed="false"] { color: #6c757d; }' in body     # hollow and grey when off, as each saved row
+    assert ".sr-dflt:disabled svg { opacity: .35; }" in body
     assert '.fav-select::before' not in body                                    # the default shows by its shaka, not a mark before the name
     picker = body[body.index("(function initStationPicker() {"):body.index("// the picker just made the forecast bar taller")]
     for needle in ("const DEFAULT_KEY = 'allshore.defaultStation.v1';", "function writeDefault(sid, label) {", "function clearDefault() {",
-                   "favToggle.classList.toggle('sr-default', dflt);", "if (isDefault(sid)) {", "if (goldNow) {",
+                   "const dflToggle = document.getElementById('stationDefaultToggle');", "if (dflToggle) dflToggle.innerHTML = SHAKA;",
+                   "favToggle.setAttribute('aria-pressed', fav ? 'true' : 'false');", "dflToggle.setAttribute('aria-pressed', dflt ? 'true' : 'false');",
+                   "if (dflToggle) dflToggle.addEventListener('click', function (e) {", "if (isDefault(sid)) { clearDefault();",
+                   "const r = P.store.add(sid, goneNames.get(sid) || '');",
                    "removeFav(c.sid); if (isDefault(c.sid)) clearDefault();", "if (gone && isDefault(p.id)) clearDefault();",
                    "document.addEventListener('allshore:forecast', function () { refreshCurrent(); });",
                    "if (!e.key || e.key === DEFAULT_KEY || e.key === FAV_KEY)",

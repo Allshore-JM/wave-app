@@ -148,7 +148,7 @@ function buildPage(win) {
   const header = el('div', 'fwHeader', w);
   // the favourites picker is the window's heading: the station field with its trigger, label and native select
   const field = el('div', 'fwTitle', header); const picker = el('div', null, field);
-  const trig = el('div', null, picker); el('button', 'stationFavToggle', trig); const trigger = el('button', 'stationTrigger', trig); el('span', 'stationCurrent', trigger);
+  const trig = el('div', null, picker); el('button', 'stationDefaultToggle', trig); el('button', 'stationFavToggle', trig); const trigger = el('button', 'stationTrigger', trig); el('span', 'stationCurrent', trigger);
   el('ul', 'stationResults', picker).hidden = true;
   const sel = el('select', 'station', field);
   [['51201', '51201 — Waimea Bay, HI'], ['46001', '46001 — Gulf of Alaska']].forEach(([v, t]) => { const o = el('option', null, sel); o.value = v; o.textContent = t; });

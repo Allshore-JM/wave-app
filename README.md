@@ -289,17 +289,29 @@ small rings of mountain pressure reductions and 8-bit terraces go (on a real GFS
 lines, the readout's "· 1004 hPa" stays the exact value at the cursor). Spacing: every 8 hPa while the whole world is in
 view (any screen width) or to zoom 2.9, every 4 hPa to zoom 5.9, every 2 hPa beyond. Each isobar has at most one small
 pill (9-px text), rotated along the line, from zoom 4 and never while the whole world is in view; highs and lows are marked
-H and L with their pressure, found on the frame's own values (not the smoothed lines): a node that nothing within ~110 px
-on screen undercuts (L) or overtops (H) and that is at least 1 hPa (a quarter of the interval at the wider views) from its
-surroundings; a flat-bottomed centre is marked once, at the middle of its patch of equal values (no mark for a patch that runs
-down to a lower value, holds more than 4,096 nodes or spans half the world); of two equal centres within ~110 px of each
-other only one is marked. So a compact typhoon keeps its real centre and central pressure (asset 2.19.4: on the smoothed
-field a 956-hPa typhoon read "L 1000" at the world view and two tropical cyclones had no mark), and a second low along a
-trough keeps its L (asset 2.19.5: a 998-hPa low 10 hPa deep in the Bering Sea had none: a low of the same pressure 8 deg away
-hid it). Lines are thin and faint (a 1.2-px white line at 72 %). A step
-waits at most 1 s for its pressure frame (owner, G32): a slower one lands without lines, which appear when the frame
-arrives. One frame (at most ~16 ms) of the previous step's lines can show under the new picture when the browser paints
-between a landing and the next animation frame (G32 A-P3-5, accepted).
+H and L with their pressure, found on the frame's own values (not the smoothed lines) and chosen by PROMINENCE (asset
+2.20.0, the G32 re-check; owner's calls 2026-10-18): a node that nothing within ~110 px on screen undercuts (L) or overtops
+(H), whose patch of equal values is marked once at its middle (no mark for a patch that runs down to a lower value, holds
+more than 4,096 nodes or spans half the world), and whose basin must rise (L) / fall (H) at least 1.1 hPa (two codes)
+before a stronger centre is reached (the merge tree of the frame's codes over the view and a margin, on the lines' node
+spacing at wide views, coarsened so that a window holds at most 16,000 blocks; the strongest centre of a region always
+counts); one mark per ~110 px among the marks in view, the most prominent first (a twin beyond the view's edge hides
+nothing). No mark on high ground: `terrain_half.png` (NOAA GFS's model terrain on the half grid, the highest 0.25-degree
+node of each half node's footprint, built once by `tools/model_frames/make_terrain_mask.py`, 20 m per code) at or above
+400 m — the sea-level pressure both models reduce from the surface leaves a fixed bump on every mountain node (an "H" on
+the Big Island at every step before; on 22 live frames 400 m leaves no persistent mountain mark on either model, 500 m
+left Guadalcanal, Socotra and New Britain). A real centre over high ground (a Mongolian winter high, a Kansas low above
+400 m) has no mark either. A typhoon below the stored range (920 hPa) marks "L ≤920" when its clamped patch is
+compact and within 70° of the equator (a high above 1,060 "H ≥1060"; the polar plateaus never), and the hover reads
+"≤ 920 hPa" there. The lines are cleared under each mark's box, so an L stays legible inside packed rings. So a compact
+typhoon keeps its real centre and central pressure (asset 2.19.4: on the smoothed field a 956-hPa typhoon read "L 1000" at
+the world view), a second low along a trough keeps its L (2.19.5), broad highs keep their H at every zoom and one-code
+dimples mark nothing (2.20.0; before, a depth against a ring 110 px out lost the Tasman high's H from zoom 6 and marked
+dimples 0.55 hPa deep). Lines are thin and faint (a 1.2-px white line at 72 %). A step waits at most 1 s for its pressure
+frame (owner, G32), counted per step (a goto of the same step issued again, as a zoom across the half / full threshold
+does, waits only the rest): a slower one lands without lines, which appear when the frame arrives. One frame (at most
+~16 ms) of the previous step's lines can show under the new picture when the browser paints between a landing and the
+next animation frame (G32 A-P3-5, accepted).
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.

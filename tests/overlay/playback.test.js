@@ -38,7 +38,7 @@ async function onRunDay(fn) {
 
 // One world per test: stubs, a fresh module evaluation, and a controller with the DOM parts neutralised.
 function world(opts) {
-  const w = { pendingBitmaps: [], fetches: [], failNext: {}, hang: {}, pointer: null, manifests: {}, pendingCoast: [], coastAnswer: () => ({ ok: false, status: 500 }) };
+  const w = { pendingBitmaps: [], fetches: [], failNext: {}, hang: {}, pointer: null, manifests: {}, pendingCoast: [], coastAnswer: () => ({ ok: false, status: 500 }), pendingTerrain: [] };
   const reg = { doc: {}, win: {} };
   const on = (t) => (ev, fn) => { (reg[t][ev] = reg[t][ev] || []).push(fn); };
   const off = (t) => (ev, fn) => { reg[t][ev] = (reg[t][ev] || []).filter((f) => f !== fn); };
@@ -53,6 +53,12 @@ function world(opts) {
     sessionStorage: (opts && opts.storage) || { getItem() { return null; }, setItem() {} },
     createImageBitmap: (blob) => new Promise((res) => { const f = () => res({ width: blob.w, height: blob.h, tag: blob.tag, close() {} }); f.blob = blob; w.pendingBitmaps.push(f); }),
     fetch: (url, o) => {
+      // the isobars' terrain asset (fix round 3): its own list, outside w.fetches (the frame-request pins); pending until
+      // w.releaseTerrain() answers it (decoded by the canvas fake: code 1 everywhere, the tag at node 0)
+      if (url.indexOf('/overlay/terrain_half.png') >= 0) {
+        if (w.terrainAnswer) return Promise.resolve(w.terrainAnswer);                                   // a canned failure
+        return new Promise((res) => { w.pendingTerrain.push(() => res({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: 720, h: 361, tag: 1, url }) })); });
+      }
       w.fetches.push(url);
       if (o && o.signal && o.signal.aborted) return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
       if (/latest\.json$|manifest-x\.json$/.test(url)) (w.jsonSignals = w.jsonSignals || []).push({ url, signal: o && o.signal });   // re-check R-5
@@ -136,12 +142,13 @@ function world(opts) {
     getContainer: () => ({ clientWidth: 1200, clientHeight: 800, classList: { add() {}, remove() {} }, style: { setProperty() {}, removeProperty() {} } }) };
   w.I = I; w.map = map; w.L = g.L;
   // release one pending decode by kind (told apart by the frame's URL: the direction and the pressure frames are both half-size)
-  const isDirUrl = (u) => /\/(pdir|wdir)\//.test(u), isPresUrl = (u) => /\/pres\//.test(u), isFieldUrl = (u) => !isDirUrl(u) && !isPresUrl(u);
+  const isDirUrl = (u) => /\/(pdir|wdir)\//.test(u), isPresUrl = (u) => /\/pres\//.test(u), isFieldUrl = (u) => !isDirUrl(u) && !isPresUrl(u) && !/terrain_half/.test(u);
   const pick = (test, what) => { const i = w.pendingBitmaps.findIndex((f) => test(f.blob.url)); assert.ok(i >= 0, what + ' decode is pending'); return w.pendingBitmaps.splice(i, 1)[0]; };
   w.releaseDir = async () => { pick(isDirUrl, 'a direction')(); await settle(); };
   w.releaseField = async () => { pick(isFieldUrl, 'a field')(); await settle(); };
   w.releasePres = async () => { pick(isPresUrl, 'a pressure')(); await settle(); };
   w.holdDir = () => pick(isDirUrl, 'a direction');
+  w.releaseTerrain = async () => { while (w.pendingTerrain.length) w.pendingTerrain.shift()(); await settle(); const i = w.pendingBitmaps.findIndex((f) => /terrain_half/.test(f.blob.url)); if (i >= 0) w.pendingBitmaps.splice(i, 1)[0](); await settle(); };
   w.holdPres = () => pick(isPresUrl, 'a pressure');
   w.releaseUrl = async (test) => { pick(test, 'the named')(); await settle(); };   // a decode by its URL: never an orphan of an aborted fetch
   // The scheduler tests keep their original baseline (animation and contours off unless a test turns them on); the
@@ -2511,6 +2518,93 @@ test('G32 (owner): a step waits at most PRES_WAIT_MS for its pressure frame, the
   o.seek(i0 + 7); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
   assert.equal(o.frameIndex, i0 + 7); assert.equal(o.iso.entry, A.frames[i0 + 7]); assert.equal(w.now(), t);
   o.unmount();
+}));
+
+test('fix round 3 (re-check S-1): the pressure wait is counted per step: a goto of the same step issued again (a resolution change) waits only the rest of the second; the record goes at the landing', () => onRunDay(async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    w.pointer = ptr(A); w.manifests[A.run] = A;
+    const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+    const i0 = o.frameIndex; assert.ok(o.iso.frame);
+    o.seek(i0 + 5); await settle(); await w.releaseField(); await settle();
+    assert.equal(o.frameIndex, i0, 'the field is in, the pressure held: waiting');
+    assert.ok(o._presWait && o._presWait.key === o._key(i0 + 5, 'pres') && o._presWait.timer !== null, 'the wait record for the step');
+    await w.fade(600); await settle();
+    o._goto(i0 + 5).catch(() => {}); await settle();                        // as _checkRes does when the zoom crosses a resolution threshold
+    await w.fade(399); await settle();
+    assert.equal(o.frameIndex, i0, 'still waiting at 999 ms after the FIRST goto');
+    await w.fade(1); await settle();
+    assert.equal(o.frameIndex, i0 + 5, 'landed 1 s after the first goto (2.19.5: 1.6 s, the second goto started a new second)');
+    assert.equal(o._presWait, null, 'the record is spent at the landing');
+    await w.releasePres(); await settle();
+    assert.equal(o.iso.entry, A.frames[i0 + 5], 'the lines come with the frame');
+    // another step starts its own second (its own field frame released: the ring's frames are pending too)
+    o.seek(i0 + 9); await settle();
+    const step = 'f' + String(A.frames[i0 + 9].step).padStart(3, '0') + '.png';
+    await w.releaseUrl((u) => /\/wind\//.test(u) && u.endsWith(step)); await settle();
+    assert.equal(o._presWait.key, o._key(i0 + 9, 'pres'));
+    await w.fade(999); await settle(); assert.equal(o.frameIndex, i0 + 5);
+    await w.fade(1); await settle(); assert.equal(o.frameIndex, i0 + 9);
+    o.unmount();
+  });
+}));
+
+test('fix round 3 (R1 S3): Off while a step waits for its pressure leaves no cap timer behind', () => onRunDay(async () => {
+  const w = world({ fakeTimers: true, fakeIntervals: true }); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  const i0 = o.frameIndex;
+  o.seek(i0 + 5); await settle(); await w.releaseField(); await settle();
+  assert.ok(o._presWait && o._presWait.timer !== null, 'waiting with a timer');
+  o.unmount(); await settle();
+  assert.equal(o._presWait, null);
+  assert.equal(w.pendingTimers(), 0, 'no timer of any kind left after Off: ' + w.timerSources().join(' | '));
+  await w.fade(5000); await settle();
+  assert.equal(o.iso, null); assert.equal(o.layer, null);
+}));
+
+test('fix round 3 (re-check H-2): the readout says "<= 920" / ">= 1060" within half a code of the stored range\'s ends (a typhoon\'s clamped eye), else the rounded value; nothing from another step\'s frame', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  const half = (1060 - 920) / 254 / 2;
+  o.iso.valueAt = () => 1003.6; assert.equal(o._hpaText(21, -158), '1004');
+  o.iso.valueAt = () => 920; assert.equal(o._hpaText(21, -158), '\u2264 920');
+  o.iso.valueAt = () => 920 + half - 0.01; assert.equal(o._hpaText(21, -158), '\u2264 920');
+  o.iso.valueAt = () => 920 + half + 0.01; assert.equal(o._hpaText(21, -158), '920', 'past half a code: a value');
+  o.iso.valueAt = () => 1060 - half + 0.01; assert.equal(o._hpaText(21, -158), '\u2265 1060');
+  o.iso.valueAt = () => 1059.5; assert.equal(o._hpaText(21, -158), '1060', 'not quite at the top: the rounded value');
+  o.iso.entry = A.frames[(o.frameIndex + 4) % A.frames.length]; assert.equal(o._hpaText(21, -158), null, "another step's frame: none");
+  o.iso.entry = o.layer.entry; o.iso.valueAt = () => null; assert.equal(o._hpaText(21, -158), null);
+  o.unmount();
+}));
+
+test('fix round 3 (re-check H-1): the isobar layer asks for the terrain asset once per page (never through the frame scheduler) and keeps it; a layer made later takes it from the module; a failed load leaves the marks without it and is asked again', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.isobars = true; o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.iso); assert.equal(o.iso.terrain, null, 'no terrain yet');
+  assert.equal(w.pendingTerrain.length, 1, 'one request for terrain_half.png');
+  assert.ok(!w.fetches.some((u) => /terrain_half/.test(u)) && Object.keys(o.inflight).every((k) => !/terrain/.test(k)), 'outside the frame scheduler');
+  await w.releaseTerrain(); await settle();
+  assert.ok(o.iso.terrain instanceof Uint8Array && o.iso.terrain.length === 720 * 361, 'the half grid');
+  const first = o.iso;
+  o.mount('hs'); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.iso, null, 'no layer under wave height');
+  o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.iso && o.iso !== first);
+  assert.equal(w.pendingTerrain.length, 0, 'not asked again');
+  assert.ok(o.iso.terrain && o.iso.terrain.length === 720 * 361, 'the module keeps it for every later layer');
+  o.unmount();
+  // a failed load: no terrain, the next layer asks again
+  const w3 = world(); w3.pointer = ptr(A); w3.manifests[A.run] = A; w3.terrainAnswer = { ok: false, status: 503 };
+  const o3 = w3.create(); o3.anim = false; o3.isobars = true;
+  o3.mount('wind'); await settle(); await w3.releaseAll(); await settle();
+  assert.equal(o3.iso.terrain, null, 'a 503: no terrain'); assert.equal(w3.pendingTerrain.length, 0);
+  o3.mount('hs'); await settle(); await w3.releaseAll(); await settle();
+  w3.terrainAnswer = null;
+  o3.mount('wind'); await settle(); await w3.releaseAll(); await settle();
+  assert.equal(w3.pendingTerrain.length, 1, 'asked again after a failure');
+  await w3.releaseTerrain(); await settle();
+  assert.ok(o3.iso.terrain && o3.iso.terrain.length === 720 * 361);
+  o3.unmount();
 }));
 
 test('G32 (S2): a step whose field frame cannot be shown asks for none of its extras (pressure, direction) when it is the target or in the ring', () => onRunDay(async () => {

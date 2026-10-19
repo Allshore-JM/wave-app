@@ -1905,7 +1905,7 @@
     // A default station the list no longer has (and not a forecast point) is forgotten once the list is in: the next
     // visit opens near the visitor again; the window says so once (G32 A-P3-3 / B-7). An empty or failed list decides nothing.
     function forgetRetiredDefault(list) {
-      if (!Array.isArray(list) || !list.length) return;
+      if (!Array.isArray(list) || list.length < 100) return;   // a degraded list (the server's 10-buoy fallback) decides nothing (G32 re-check P-1)
       let d = null; try { d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); } catch (e) { return; }
       if (!d || typeof d !== 'object') return;
       const id = typeof d.id === 'string' ? d.id.trim() : '', F = window.AllshoreForecast;

@@ -378,8 +378,10 @@ node of each half node's footprint, built once by `tools/model_frames/make_terra
 400 m at the patch's first node or its middle — the sea-level pressure both models reduce from the surface leaves a fixed
 bump on every mountain node (an "H" on
 the Big Island at every step before; on 22 live frames 400 m leaves no persistent mountain mark on either model, 500 m
-left Guadalcanal, Socotra and New Britain). A real centre over high ground (a Mongolian winter high, a Kansas low above
-400 m, a typhoon while it crosses Taiwan or Luzon) has no mark either. A typhoon below the stored range (920 hPa) marks "L ≤920" when its clamped patch is
+left Guadalcanal, Socotra and New Britain). One exception (asset 2.20.2, the owner's call): a LOW at least 15 hPa prominent
+over ground below 2,000 m at both nodes keeps its L, so a typhoon crossing Taiwan or Luzon stays marked (on the same 294
+live frames: 78 GFS and 26 ECMWF lows back, none persistent, no high; the mountain bumps were at most 11-14 hPa, all
+highs). A high over high ground (a Mongolian winter high) and a weaker low there have no mark. A typhoon below the stored range (920 hPa) marks "L ≤920" when its clamped patch is
 compact and within 70° of the equator (a high above 1,060 "H ≥1060"; the polar plateaus never), and the hover reads
 "≤ 920 hPa" there. The lines are cleared under each mark's box, so an L stays legible inside packed rings. So a compact
 typhoon keeps its real centre and central pressure (asset 2.19.4: on the smoothed field a 956-hPa typhoon read "L 1000" at

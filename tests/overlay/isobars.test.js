@@ -442,8 +442,12 @@ function bruteCentres(fr, win, rad, opts) {
     let sr = 0, sc = 0;
     for (const [key, off] of seen) { sr += Math.floor(key / cols); sc += off; }
     const mr = sr / seen.size, mc = ((cd.c + sc / seen.size) % cols + cols) % cols;
-    if (high(fr0, fc0) || high(mr, mc)) continue;
-    const prom = prominence(cd);
+    let prom = null;
+    if (high(fr0, fc0) || high(mr, mc)) {                     // only a strong low over ground below the cap keeps its mark
+      const lowG = (r, c) => opts.terrainCap > 0 && terrain[Math.round(r) * cols + wrapC(Math.round(c))] < opts.terrainCap;
+      if (!(low && opts.strongLowHpa > 0 && lowG(fr0, fc0) && lowG(mr, mc) && (prom = prominence(cd)) * k >= opts.strongLowHpa - 1e-9)) continue;
+    }
+    if (prom === null) prom = prominence(cd);
     if (prom < I.ISO_HL_PROM_CODES) continue;
     kept.push({ type: cd.type, r: mr, c: mc, q: cd.q, prom, clamp, v: PRES.lo + (cd.q - 1) * k });
   }
@@ -470,7 +474,8 @@ test('findCentres = an independent brute force of the rule (random smooth fields
     if (t % 9 === 0) wins.push({ r0: 0, r1: 360, c0: 0, count: 720 });   // the whole world (small radii only: the brute force is slow)
     for (const win of wins) for (const rad of [1, 3, 7, 14]) {
       if (win.count === 720 && rad > 3) continue;
-      const o = OPTS(rad, { margin: t % 3 === 0 ? 0 : Math.max(2 * rad, 16), terrain: t % 2 ? terrain : null, terrainMin: 25 });
+      const o = OPTS(rad, { margin: t % 3 === 0 ? 0 : Math.max(2 * rad, 16), terrain: t % 2 ? terrain : null, terrainMin: 25,
+        strongLowHpa: [0, 2, 6][t % 3], terrainCap: [0, 35, 28, 31][t % 4] });   // the strong-low exception: none, some, every low; caps over / under the ground
       const got = I.findCentres(fr, PRES, win, rad, o).map(key).sort(), want = bruteCentres(fr, win, rad, o);
       assert.deepEqual(got, want, `t ${t}, window ${JSON.stringify(win)}, rad ${rad}`);
       runs++; found += got.length; for (const g of got) proms.add(g.split(' p')[1].split(' ')[0]);
@@ -626,6 +631,39 @@ test('findCentres: no mark on high ground (the terrain codes at or above terrain
   const wide = codeFrame((r, c) => 120 + (Math.abs(r - 150) <= 1 && Math.abs(c - 640) <= 6 ? 8 : 0));     // a 3 x 13 flat top: the candidate at its left, the middle at 640
   const t2 = new Uint8Array(720 * 361); t2[150 * 720 + 640] = 30;
   assert.deepEqual(I.findCentres(wide, PRES, win, 10, OPTS(10, { terrain: t2, terrainMin: 25 })), [], 'high at the middle: no mark');
+});
+
+test('fix round 4 (owner, V3-1): over high ground only a STRONG LOW keeps its mark: at least strongLowHpa prominent and the ground at both nodes below terrainCap; a high never; the layer passes 15 hPa and 2,000 m', () => {
+  assert.equal(I.ISO_STRONG_LOW_HPA, 15); assert.equal(I.ISO_TERRAIN_CAP_M, 2000);
+  const k = (PRES.hi - PRES.lo) / 254, win = { r0: 100, r1: 200, c0: 560, count: 160 };
+  const cone = (depth, sign) => codeFrame((r, c) => Math.max(1, Math.min(255, Math.round(1 + (1010 + sign * depth * Math.exp(-((r - 150) ** 2 + (c - 640) ** 2) / 30) - PRES.lo) / k))));
+  const ground = (code) => { const t = new Uint8Array(720 * 361); for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) t[(150 + dr) * 720 + 640 + dc] = code; return t; };
+  const rule = (extra) => OPTS(10, Object.assign({ terrainMin: I.ISO_TERRAIN_M / I.TERRAIN_M_PER_CODE, strongLowHpa: I.ISO_STRONG_LOW_HPA, terrainCap: I.ISO_TERRAIN_CAP_M / I.TERRAIN_M_PER_CODE }, extra));
+  const marks = (fr, extra) => I.findCentres(fr, PRES, win, 10, rule(extra)).map((x) => x.type + x.c);
+  const deep = cone(40, -1);                                                     // a 40-hPa low (the typhoon over Taiwan: 31-48)
+  assert.deepEqual(marks(deep, { terrain: ground(40) }), ['L640'], '800 m: marked');
+  assert.deepEqual(marks(deep, { terrain: ground(99) }), ['L640'], '1,980 m: marked');
+  assert.deepEqual(marks(deep, { terrain: ground(100) }), [], '2,000 m: not (the cap is "below")');
+  assert.deepEqual(marks(deep, { terrain: ground(40), strongLowHpa: 0 }), [], 'without the exception: the 400-m rule as before');
+  assert.deepEqual(marks(deep, { terrain: ground(40), terrainCap: 0 }), [], 'without a cap: none either');
+  assert.deepEqual(marks(cone(40, 1), { terrain: ground(40) }), [], 'a high as strong: never');
+  // beside a deeper low (60 nodes west) a low's prominence is its own depth (alone in its region it is never absorbed)
+  const deeper = (r, c) => 150 - Math.round(80 * Math.exp(-((r - 150) ** 2 + (c - 580) ** 2) / 30));
+  const pit = (codes) => codeFrame((r, c) => deeper(r, c) - (Math.abs(r - 150) <= 1 && Math.abs(c - 640) <= 1 ? codes : 0));
+  assert.deepEqual(marks(pit(18), { terrain: ground(40) }), ['L580'], 'a 10-hPa low over 800 m (the mountain bumps measured at most 11-14 hPa, all highs): not');
+  assert.deepEqual(marks(pit(18), { terrain: null }).sort(), ['L580', 'L640'], 'the same low over the sea: marked');
+  // the boundary: prominence * k against 15 hPa, both sides of it
+  const at = (codes) => pit(codes);
+  const need = Math.ceil(15 / k - 1e-9);
+  assert.deepEqual(marks(at(need), { terrain: ground(40) }).sort(), ['L580', 'L640'], `${need} codes (${(need * k).toFixed(2)} hPa): marked`);
+  assert.deepEqual(marks(at(need - 1), { terrain: ground(40) }), ['L580'], `${need - 1} codes (${((need - 1) * k).toFixed(2)} hPa): not`);
+  // both nodes: a patch whose first node lies under the cap and middle over it (or the reverse) marks nothing
+  const flat = codeFrame((r, c) => 150 - (Math.abs(r - 150) <= 1 && Math.abs(c - 640) <= 6 ? 40 : 0));   // a 3 x 13 floor: first node (149, 634), middle (150, 640)
+  const g2 = new Uint8Array(720 * 361).fill(40); g2[150 * 720 + 640] = 120;
+  assert.deepEqual(marks(flat, { terrain: g2 }), [], 'the middle over the cap');
+  const g3 = new Uint8Array(720 * 361).fill(40); g3[149 * 720 + 634] = 120;
+  assert.deepEqual(marks(flat, { terrain: g3 }), [], 'the first node over the cap');
+  assert.deepEqual(marks(flat, { terrain: new Uint8Array(720 * 361).fill(40) }), ['L640'], 'both under: marked');
 });
 
 test('findCentres: a trough with lows B, A (equal to B, a row above it) and C (deeper), 8 deg apart each: C and B get an L, A (beside the deeper C) none (G32 verification V11-2); two equal lows within the radius both come out, projectCentres keeps the more prominent (the earlier root)', () => {
@@ -868,12 +906,16 @@ test('the layer (fix round 3): the terrain hides a mark on high ground; setTerra
   // the terrain: high ground under the low's node -> no mark; the pills and lines stay
   const q = new Uint8Array(720 * 361), r = Math.round((90 - 30) / 0.5), c = Math.round((-150 + 180) / 0.5);
   for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) q[(r + dr) * 720 + c + dc] = 40;    // 800 m
-  const n0 = il.scheduled;
-  il.setTerrain(q); assert.equal(il.scheduled, n0 + 1, 'a redraw scheduled'); il.pendingFn();
+  il.setTerrain(q); il.pendingFn();
+  assert.equal(il.drawn.hl, 1, 'a 20-hPa low over 800 m keeps its L (fix round 4: the layer passes the strong-low rule)');
+  const q2 = new Uint8Array(720 * 361);
+  for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) q2[(r + dr) * 720 + c + dc] = 110;  // 2,200 m: over the cap
+  const n0 = il.scheduled, nFills2 = ctx.fills.length;
+  il.setTerrain(q2); assert.equal(il.scheduled, n0 + 1, 'a redraw scheduled'); il.pendingFn();
   assert.equal(il.drawn.hl, 0, 'no mark on high ground'); assert.ok(il.drawn.lines > 0);
-  assert.equal(ctx.fills.length, nFillsBefore + ctx.fills.slice(nFillsBefore).length);
-  assert.ok(!ctx.fills.slice(nFillsBefore).includes('destination-out'), 'nothing cleared without a mark');
-  il.setTerrain(q); assert.equal(il.scheduled, n0 + 1, 'the same terrain again: no redraw');
+  assert.ok(nFillsBefore > 0);
+  assert.ok(!ctx.fills.slice(nFills2).includes('destination-out'), 'nothing cleared without a mark');
+  il.setTerrain(q2); assert.equal(il.scheduled, n0 + 1, 'the same terrain again: no redraw');
   il.setTerrain(new Uint8Array(5)); assert.equal(il.terrain, null, 'another size: none');
   il.pendingFn(); assert.equal(il.drawn.hl, 1, 'the mark is back');
 });

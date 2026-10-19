@@ -789,4 +789,89 @@ at `?v=2.20.2` = the commit byte for byte, immutable; 2.20.1 answers 404.
   tests) and the reef module's numpy import (known).
 
 ### Next
-- A short fresh check at MAX (the new rule and the picker's new state), then step 12 (production).
+- A short fresh check at MAX (the new rule and the picker's new state), then step 12 (production). (Done: below.)
+
+## Short fresh check of fix round 4 and the dropdown (Opus 5.5 MAX, 2026-10-19)
+One fresh-context reviewer (code + data + the test site with trusted input; brief scratch g32/v4/fr4check/brief.md, report
+fr4check-report.md, scripts in its `s`, outputs in `out`) on feat/isobars-geo @ ad5efab / test @ 692d584. Before launching
+it the author measured K-1 (below) and gave it to the reviewer with a proposed fix. **0 P0, 0 P1, 3 P2 (K-1, R1, U1), 11
+P3.**
+
+### The author's own finding (K-1, P2, CONFIRMED by the reviewer)
+The strength test read the prominence the H / L pass already computes, which is measured inside the VIEW's window (and on
+coarsened blocks at wide views). A low alone in a zoomed-in window gets the cap prominence and so passed as "15 hPa
+prominent". Over 294 live frames x 22 high-ground places x zooms 5-10 (1280x800, the page's own inputs), the exception
+drew 508 / 447 / 337 / 92 / 17 / 3 marks, of which 365 / 367 / 302 / 79 / 13 / 1 are under 15 hPa over the whole grid
+(median 6.6 hPa): e.g. a 1,006-hPa Sudan low (460 m, 5.5 hPa) at zooms 5-7 over Ethiopia in most frames. The reviewer's
+own 40 random places: from zoom 7 on every mark the exception adds is weak. On the live test site (GFS 2026101900, 180
+views at zooms 5-7) 28 of 31 such marks were weak; a 4-degree pan made "L 1007" at Durban (5.0 hPa) appear and go.
+
+### The reviewer's findings
+- R1 (P2, CONFIRMED on a prototype): the proposed fix counted its exploration cap (20,000 nodes) as strong: that re-admits
+  K-1's own example (11 of 37,061 high-ground low patches, all cap hits: the Sudan / Ethiopia low in 5 ECMWF frames, a
+  Zambia low). Counted as WEAK: 0 wrong decisions against the whole-grid prominence (no strong low needs 20,000 nodes).
+- R2 (P3, CONFIRMED on a prototype): with only the strength test replaced, the coarse windowed prominence still feeds the
+  >= 2-codes check and the declutter order: a 984-hPa Yukon low (31.4 hPa) has no L at zoom 3. A strong low takes
+  max(window, search) for those: 0 strong lows lost in 3,892 views.
+- R3 (P3, CONFIRMED): today 5 near-threshold strong lows over high ground (15.4-16 hPa) lose their L at zooms 2.3-4.5
+  (coarse blocks read 1-3 codes low; the 994-hPa Bolivian lowlands low unmarked from the world view to zoom 4). R1 + R2
+  cure it. The Taiwan typhoon keeps its L in every view tested.
+- R4 (P3, CONFIRMED): the test oracle transliterates the module's exception on the same windowed prominence (it pins the
+  implementation and reproduces K-1); one new pin states K-1 as expected ("alone in its region it is never absorbed").
+- R5 (P3, CONFIRMED): README "on the same 294 live frames: 78 GFS and 26 ECMWF lows back" (78 was the 18Z GFS run; the
+  current run gives 52); "a weaker low there has no mark" is false from zoom 5 (K-1).
+- U1 (P2, CONFIRMED on the test site): on phones the 44-px top shaka takes a named point's NAME in the bar and the
+  full-screen header: 360 px: 0 px of name for every name ("— 21.667N 158.054W"); 375 px: 15 px ("B..") vs 59 with the
+  star alone; 390: 30 vs 74; 414: 54 vs 86-98. Coordinates stay whole; the author's phone check used an unnamed point.
+- U2 (P3, CONFIRMED on the site): after a ✕ a row added in the same opening lands mid-list: `listed()` ranks by
+  `seen.size`, which shrinks on `seen.delete()`.
+- U3 (P3, CONFIRMED on the site): the top shaka is enabled while a linked point's forecast loads: one click made a land
+  point (Denver) the default before its refusal; every new visit then opens on land (the old cycle had the same race).
+- U4 (P3, CONFIRMED in code): the two name memories (rows: `seen.p`; top: `goneNames`) do not meet: a named point let go
+  with one star and kept with the other comes back unnamed.
+- U5 (P3, CONFIRMED fake DOM): the 'allshore:points' focus restore maps the focused button by its INDEX in the row;
+  Rename appears / disappears with "kept", so another tab's change moves the focus from Rename to ✕ (Enter then removes the
+  row and clears the default) or back.
+- U6 (P3, CONFIRMED fake DOM): with storage refusing writes the row star announces "Added favorite" and stays hollow
+  (`writeFavs` swallows the error; the old top star had the same pattern).
+- U7 (P3, CONFIRMED): test gaps: the row star's 100-favorite guard (without it a 101st favorite silently drops the oldest),
+  its refused-point check, `listed()`'s `seen.p` update; 2 harmless survivors.
+- U8 (P3, CONFIRMED by computation): the shaka's on / off states differ in luminance only by the fill: #f3c79c is 1.56:1
+  on white (1.40:1 on the hover background), under WCAG 1.4.11's 3:1.
+- U9 (P3, pre-existing, CONFIRMED fake DOM): the favorites / default 'storage' listener rebuilds an open list without
+  restoring the focus.
+- Held up: pytest 1,190, Node 841; the record's 52 / 26 lows back; rule mutants 12 / 14 (2 equivalent); picker mutants
+  24 / 29 by behaviour (5 = U7); the author's site checks (titles, colours, 44-px targets, Tab order, coordinates whole, no
+  console problem); the shaka trace follows the owner's drawing; the clamped ends (no code-1 patch over 400-2,000 m; 16
+  clamped H over Tibet, none marked). Not checked: real phones, Safari, screen readers; U5 across two live tabs.
+
+### The author's check of the findings
+K-1 was the author's own measurement (scratch g32/v4/verify/strong_zoom.js) and the reviewer's agrees to within 3 marks
+(it reads the patch's own node, not the rounded middle). U1 seen on the reviewer's screenshot (fr4_phone375_bar.png:
+"B.. — 21.667N 158.054W"). U2, U3, U4, U5, U6 and U9 are evident in the code (the rank from `seen.size`; the shaka's
+disabled rule without a "served" state; two maps; `acts.indexOf(a)`; `writeFavs`' empty catch; the storage listener's bare
+`renderFavs()`). U8: luminance recomputed (1.56:1). R1 / R2 concern the proposed fix: adopted as stated.
+
+### The owner's calls (2026-10-19)
+- U1: "Pair in the open window": on phones the bar (and the full-screen header) shows the name only; the shaka and the
+  star sit in the opened window's toolbar row.
+- U8: "A. Light (keep)": the skin tone stays #f3c79c (accepted; the star beside it and aria-pressed carry the state).
+
+### Fix round 5 scope (overlay 2.20.3; template, golden in its own commit)
+1. The strength test (K-1, R1, R2, R3): a view-independent minimax search from the candidate's patch over the whole grid
+   (8 neighbours, columns wrap, rows clamped): the heap's minimum is popped; it stops at a node lower than the patch (or an
+   equal code outside it with an earlier raster key) -> prominence = the popped level minus the patch's code; strong when
+   the POPPED level reaches the patch's code + ceil(15 / k) (28 codes); 20,000 explored nodes = weak. A strong low's
+   prominence for the >= 2-codes check and the declutter = max(window, search). The result reset per candidate; cached
+   per frame and patch (pans and zooms then cost nothing).
+2. The test oracle (R4): an independent whole-grid minimax prominence for the strong test (not the windowed one); pins:
+   a weak low alone in a zoomed-in window is not marked at any zoom; the same strong low at every zoom; the cap is weak; the
+   R2 case; the popped-level and reset pitfalls; the K-1 pin removed.
+3. README (R5) with the numbers measured under the new rule.
+4. U1 (owner): a second pair in the forecast window's toolbar, shown only in phone mode; the trigger box's pair hidden
+   there; one state for both pairs.
+5. U2 a rank counter; U3 a point's toggles disabled until its forecast has been served on this page (unless kept or the
+   default); U4 one name memory for rows and top; U5 + U9 focus restored by the button's role and the row's id, for both
+   listeners; U6 a refused write says so and changes nothing; U7 the three tests.
+6. Then the test site at MAX (the reviewer's K-1 and site_names scripts: 0 weak additions, names whole on phones), and a
+   short fresh check of the search at MAX if the build changes anything beyond this scope.

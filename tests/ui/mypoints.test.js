@@ -556,6 +556,14 @@ test('a default the page opens on: the module loads it (the address names it aft
   assert.equal(c.select.value, 'pt_20000N_160000W'); assert.equal(starState(c), 'blue');
   const l = boot({ search: '?station=51201', local: { [DKEY]: JSON.stringify({ id: '46001' }) } }); await settle();
   assert.equal(l.last().station, '51201', 'the address wins');
+  // the block reads the default by the one id rule (G32 re-check D-1, R1's P11): padding is trimmed, a space inside refuses it
+  const p = boot({ local: { [DKEY]: JSON.stringify({ id: ' pt_20000N_160000W ' }) } }); await settle();
+  assert.ok(p.select.options.some((o) => o.value === 'pt_20000N_160000W'), 'a padded default point: its option under the trimmed id');
+  assert.ok(!p.select.options.some((o) => /^\s|\s$/.test(o.value)), 'no padded option');
+  p.last().release(payload('pt_20000N_160000W')); await settle(); assert.equal(p.select.value, 'pt_20000N_160000W');
+  const q = boot({ local: { [DKEY]: JSON.stringify({ id: 'pt_20000N 160000W' }) } }); await settle();
+  assert.equal(q.last().station, '51201', 'a default with a space inside is no default: the server\'s station');
+  assert.ok(!q.select.options.some((o) => /pt_20000N/.test(o.value)), 'and gets no option');
 });
 
 test('a default that cannot be stored (storage refusing it) is not shown as one and the visitor is told; the favorite stays', async () => {

@@ -37,9 +37,10 @@ function run(opts) {
     { addEventListener: (ev, fn2, o) => { (log.docListeners[ev] = log.docListeners[ev] || []).push({ fn: fn2, o }); } },
     (fn2, ms) => { log.timers.push({ fn: fn2, ms, cleared: false }); return log.timers.length; }, (id) => { if (log.timers[id - 1]) log.timers[id - 1].cleared = true; }, URLSearchParams,
     () => { log.forgot++; });
-  // act(ev, inControl): the event's target is the map, or (inControl) a control on it (closest() finds a .leaflet-control)
-  const target = (inControl) => ({ closest: (sel) => (inControl && /leaflet-control|ov-sheet/.test(sel) ? {} : null) });
-  return { log, el, map, act: (ev, inControl) => (log.listeners[ev] || []).slice().forEach((l) => l.fn({ target: target(inControl) })), station: () => (log.docListeners['allshore:station'] || []).forEach((l) => l.fn({})),
+  // act(ev, cls): the event's target is the map, or (cls) an element of that class on it; closest(sel) matches the
+  // selector's classes for real, so the block must name each class it means (G32 re-check D-1: R1's P2)
+  const target = (cls) => ({ closest: (sel) => (cls && sel.split(',').map((x) => x.trim().replace(/^\./, '')).indexOf(cls) >= 0 ? {} : null) });
+  return { log, el, map, act: (ev, cls) => (log.listeners[ev] || []).slice().forEach((l) => l.fn({ target: target(cls) })), station: () => (log.docListeners['allshore:station'] || []).forEach((l) => l.fn({})),
     pending: () => log.classes.has('geo-pending') };
 }
 const settle = () => new Promise((r) => setImmediate(r)).then(() => new Promise((r) => setImmediate(r)));
@@ -152,15 +153,17 @@ test('a visitor who acts first (a pointer, wheel, key or touch on the map, or a 
 test('acting on the map shows it at once; a pointer, wheel, key or touch on a control (the overlay panel, the gear, the sheet) is not acting (G32 B-8)', async () => {
   for (const ev of ['pointerdown', 'wheel', 'keydown', 'touchstart']) {
     let resolve; const r = run({ place: new Promise((res) => { resolve = res; }) });
-    r.act(ev, true);
-    assert.equal(r.pending(), true, ev + ' on a control: still waiting');
+    r.act(ev, 'leaflet-control'); r.act(ev, 'ov-sheet');
+    assert.equal(r.pending(), true, ev + ' on a control or the overlay\'s sheet: still waiting');
+    r.act(ev, 'leaflet-marker-icon');
+    assert.equal(r.pending(), false, ev + ' on a marker on the map (no control): acting');
     r.act(ev);
     assert.equal(r.pending(), false, ev + ' on the map: shown at once');
     resolve({ lat: 21.3, lon: -157.86, sid: 'HNL01', slat: 21.25, slon: -157.8 }); await settle();
     assert.deepEqual(r.log.views, [], ev + ': the map stays where the visitor put it');
   }
   let resolve; const c = run({ place: new Promise((res) => { resolve = res; }) });
-  c.act('pointerdown', true); c.act('wheel', true);
+  c.act('pointerdown', 'leaflet-control'); c.act('wheel', 'ov-sheet');
   resolve({ lat: 21.3, lon: -157.86, sid: 'HNL01', slat: 21.25, slon: -157.8 }); await settle();
   assert.deepEqual(c.log.views, [{ lat: 21.3, lng: -157.86, z: 6, animate: false }], "only controls touched: the visitor's area still opens");
 });
@@ -239,4 +242,59 @@ test('a default the list no longer has (or one the id rule refuses) is forgotten
   assert.deepEqual(early.notes, []); assert.equal(early.store['allshore.defaultStation.v1'], undefined, 'forgotten before the window is up');
   early.window.AllshoreForecast = early.F; early.docL['allshore:forecast'][0].fn();
   assert.equal(early.notes.length, 1, 'said when the window is up');
+});
+
+// ---- the page helpers the first view and the wide box rely on, run from the template (G32 re-check D-1: R1's P5 / P7 /
+// P12 were killed only by source-text pins; these drive the code) ----
+function cutFn(start) {
+  const s = html.indexOf(start), e = html.indexOf('\n    }\n', s);
+  assert.ok(s > 0 && e > s, 'in the template: ' + start);
+  return html.slice(s, e + 6);
+}
+
+test('saveMapView keeps nothing while the first view waits for the visitor\'s area (geo-pending); otherwise the clamped view under mapKey (R1 P5)', () => {
+  const SRC = cutFn('    function saveMapView(map) {');
+  const run = (pending) => {
+    const store = {};
+    const map = { getContainer: () => ({ classList: { contains: (c) => pending && c === 'geo-pending' } }), getCenter: () => ({ lat: 88, lng: -158 }), getZoom: () => 3 };
+    new Function('clampLat', 'mapKey', 'sessionStorage', 'MAX_MAP_ZOOM', 'MIN_MAP_ZOOM', 'mapArg', SRC + '\nsaveMapView(mapArg);')(clampLat, 'mapView', { setItem: (k, v) => { store[k] = v; } }, MAX_Z, MIN_Z, map);
+    return store;
+  };
+  assert.deepEqual(run(true), {}, 'geo-pending: nothing kept');
+  assert.deepEqual(JSON.parse(run(false).mapView), { lat: 84, lng: -158, z: 3 }, 'not pending: the view, its latitude clamped');
+});
+
+test('measureTopRight counts the map tools\' bar while it shows (the wide box narrows beside it, G32 B-1) and leaves a hidden one out (R1 P7)', () => {
+  const SRC = cutFn('    function measureTopRight() {');
+  const rect = (left, top, right, bottom) => ({ left, top, right, bottom, width: right - left, height: bottom - top });
+  const run = (barRect) => {
+    const set = {};
+    const controls = [{ r: rect(1110, 10, 1270, 100), cls: 'leaflet-control' }, { r: rect(1230, 110, 1270, 150), cls: 'leaflet-control' }, { r: barRect, cls: 'leaflet-control tools-bar' }]
+      .map((c) => ({ getBoundingClientRect: () => c.r, classList: { contains: (x) => c.cls.split(' ').indexOf(x) >= 0 } }));
+    const map = { getContainer: () => ({ getBoundingClientRect: () => rect(0, 0, 1280, 800), querySelectorAll: (sel) => { assert.equal(sel, '.leaflet-top.leaflet-right .leaflet-control'); return controls; } }) };
+    new Function('map', 'document', SRC + '\nmeasureTopRight();')(map, { documentElement: { style: { setProperty: (k, v) => { set[k] = v; } } } });
+    return set;
+  };
+  assert.deepEqual(run(rect(970, 160, 1270, 400)), { '--map-topright-h': '400px', '--map-topright-w': '310px' }, 'the bar shown: width and height reach it');
+  assert.deepEqual(run(rect(970, 160, 970, 160)), { '--map-topright-h': '150px', '--map-topright-w': '170px' }, 'the bar hidden (no size): the legend and the gear alone');
+});
+
+test('the stations list, once in, is kept, drawn, judged for a retired default and used for a pending focus, in that order (R1 P12)', async () => {
+  const s = html.indexOf("    earlyFetch('stations', '/stations.json')"), e = html.indexOf('\n      });\n', s);
+  assert.ok(s > 0 && e > s, 'the stations load is in the template');
+  const SRC = html.slice(s, e + 10);
+  const run = async (list) => {
+    const calls = [];
+    const out = new Function('earlyFetch', 'rebuildForecastMarkers', 'forgetRetiredDefault', 'focusStation',
+      'var forecastStationsData = null, pendingFocusStation = "HNL01";\n' + SRC + '\nreturn function () { return { data: forecastStationsData, pending: pendingFocusStation }; };')(
+      (name, url) => { calls.push(['fetch', name, url]); return Promise.resolve({ json: () => Promise.resolve(list) }); },
+      (force) => calls.push(['rebuild', force]), (l) => calls.push(['forget', l]), (sid) => calls.push(['focus', sid]));
+    await settle();
+    return { calls, state: out() };
+  };
+  const r = await run(LIST2);
+  assert.deepEqual(r.calls, [['fetch', 'stations', '/stations.json'], ['rebuild', true], ['forget', LIST2], ['focus', 'HNL01']]);
+  assert.equal(r.state.data, LIST2); assert.equal(r.state.pending, null, 'the pending focus is spent');
+  const n = await run(null);
+  assert.deepEqual(n.calls.slice(1), [['rebuild', true], ['forget', []], ['focus', 'HNL01']], 'a null body: an empty list (which decides nothing)');
 });

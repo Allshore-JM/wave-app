@@ -1031,3 +1031,19 @@ after every script. Production untouched (1a0d06e). feat/isobars-geo fast-forwar
 NEXT: the owner's go-ahead for step 12 (tag prod-pre-iso at 1a0d06e; fast-forward Live-Buoy-Update to feat/isobars-geo;
 production GEO_BASE needs its own go-ahead). The scope's short fresh check of the search is conditional on changes beyond
 the scope: none were made.
+
+## Production (step 12, 2026-10-19)
+
+- Owner's go-ahead ("proceed", Opus 5.5 MEDIUM). Rollback tag `prod-pre-iso` @ 1a0d06e pushed; `Live-Buoy-Update`
+  fast-forwarded 1a0d06e..95db4c1. Last old answer 22:39:10 UTC, first new one 22:39:12; 50 polls across the switch,
+  0 failed.
+- Assets: the six overlay assets at 2.20.3 and the UI assets at 1.23.1 equal the commit; the 2.20.2 URLs answer 404.
+- Page: `VERSION = "2.20.3"`, `#fwPair` present, test-only logo count 0, `var GEO = ""` (production GEO_BASE unset: the
+  site opens as before; the IP open needs the owner's own go-ahead). The three page probes (51201, 51201 graph, 51003)
+  show the same change set as each other.
+- Browser smoke on allshoresurf.com (GPU headless Edge): the overlay mounts at 2.20.3; wind isobars drawn; the GFS
+  typhoon over Taiwan (f103) keeps its L at zooms 4, 6 and 9, and the layer's marks equal `projectCentres`; desktop:
+  the shaka + star pair in the trigger box, none in the toolbar; phone 375x812: no pair in the bar, the toolbar pair
+  44 px, no sideways scroll; 0 console problems. 8 of 8 checks pass. Storage emptied.
+- CI on 95db4c1: tests, client-tests and the trigger Worker's build green; the geo Worker's build was running.
+- Rollback: re-push `prod-pre-iso`.

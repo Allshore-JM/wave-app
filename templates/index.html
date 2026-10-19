@@ -36,7 +36,7 @@
     // ---- early forecast (tests/ui/early.test.js runs this block: keep it self-contained between the markers) ----
     // The forecast window's first request, started here instead of after the page and its module have loaded.
     // Same rule as the module's resolveInitialState + queryFor (the address, then the viewer's default station (the
-    // blue star, localStorage allshore.defaultStation.v1), then the viewer's saved settings); the module uses the
+    // shaka, localStorage allshore.defaultStation.v1), then the viewer's saved settings); the module uses the
     // response only when its own query is identical, so a mismatch costs one request, never a wrong forecast. Not for
     // ?render=full (the table is in the page). Without a station in the address or a default, and with the geo Worker
     // configured (GEO, plan section 46), the station is the one nearest the visitor's IP position (on Oahu: Waimea Bay,
@@ -873,9 +873,10 @@
       min-width: 32px; min-height: 32px; border: 0; background: none; padding: 0 2px;
       font-size: 1.05rem; line-height: 1; color: #f0ad00; cursor: pointer;
     }
+    .sr-star[aria-pressed="false"] { color: #6c757d; }                        /* the top pair as each saved row (owner, 2026-10-19): hollow and grey when off */
     .sr-star:focus-visible { outline: 2px solid #0d6efd; outline-offset: -2px; border-radius: 3px; }
     .sr-star:disabled { color: #ced4da; cursor: default; }
-    .sr-star.sr-default { color: #1d6fd6; }                                   /* the default station (plan section 46): a blue star */
+    .sr-dflt:disabled svg { opacity: .35; }                                   /* the top shaka without a station or a forecast */
     .station-results li.sr-empty { display: block; padding: 8px 10px; color: #6c757d; cursor: default; white-space: normal; }
     /* a saved row's toggles (owner, 2026-10-18): the shaka (the default: the site opens here), the star (a favorite) and
        the cross (remove); hollow and grey when off, coloured when on (the shaka skin toned, the star gold) */
@@ -973,7 +974,8 @@
             <label for="station" class="form-label sr-only">Station</label>
             <div class="station-picker">
               <div class="station-trigger">
-                <button type="button" id="stationFavToggle" class="sr-star" aria-label="Favorite the current station">☆</button>
+                <button type="button" id="stationDefaultToggle" class="sr-star sr-dflt" aria-pressed="false" aria-label="Default station, the site opens here" title="Default: site opens here"></button>
+                <button type="button" id="stationFavToggle" class="sr-star" aria-pressed="false" aria-label="Favorite the current station" title="Favorite">☆</button>
                 <button type="button" id="stationTrigger" class="station-open" aria-expanded="false" aria-controls="stationResults">
                   <span id="stationCurrent" class="station-current">{{ selected_station }}</span>
                   <span class="station-caret" aria-hidden="true">▾</span>
@@ -3626,7 +3628,7 @@
     window.addEventListener('resize', enforceSingleWorld);
     // ---- first view (tests/ui/firstview.test.js runs this block: keep it self-contained between the markers) ----
     // Where the site opens (plan section 46): the tab's own view (sessionStorage) > the visitor's default station (the
-    // blue star: its position at the default zoom) > the visitor's area from the IP address (the head's geo race,
+    // shaka: its position at the default zoom) > the visitor's area from the IP address (the head's geo race,
     // window.__early.place: the position with the nearest station; the map zooms out until the station is in view) >
     // Hawaii. A link to a station opens the map as before. While the race is pending the map pane is hidden
     // (geo-pending: no Hawaii tiles paint), at most ~2 s; a visitor who moves the map or picks a station first keeps
@@ -3705,6 +3707,7 @@
       const select = document.getElementById('station');
       const trigger = document.getElementById('stationTrigger');
       const favToggle = document.getElementById('stationFavToggle');
+      const dflToggle = document.getElementById('stationDefaultToggle');       // the shaka beside it (owner, 2026-10-19): the default
       const currentEl = document.getElementById('stationCurrent');
       const results = document.getElementById('stationResults');
       const status = document.getElementById('stationStatus');
@@ -3734,8 +3737,9 @@
       function removeFav(sid) { writeFavs(readFavs().filter(function (x) { return x !== sid; })); }
 
       // The default station (plan section 46): the one a new tab opens on, wherever the visitor is (the <head>, the
-      // forecast module and the map's first view read it). One at a time: the star cycles empty -> gold (a favorite)
-      // -> blue (the default) -> empty (neither). {id, lat, lon, name, at}; the position lets the map open there.
+      // forecast module and the map's first view read it). One at a time, set and cleared with the shaka (owner,
+      // 2026-10-19: beside the star at the top of the window and on every saved row; the star is the favorite, apart
+      // from it). {id, lat, lon, name, at}; the position lets the map open there.
       const DEFAULT_KEY = 'allshore.defaultStation.v1';
       function readDefault() {
         // the head's, the module's and the first view's rule (G32 A-P3-2): a trimmed id of 1-32 letters, digits, '_' or '-'
@@ -3773,18 +3777,25 @@
         currentEl.title = c ? c.label : (sid || '');                                      // the whole label, also after a rename (G22 A-14)
         const P = points(), pt = isPoint(sid);
         const fav = !!c && (pt ? !!(P && P.store.has(sid)) : isFav(sid));         // for a point the star is "kept in My points"
-        const dflt = !!c && isDefault(sid);                                        // the blue star: the default (plan section 46)
-        favToggle.textContent = fav || dflt ? '★' : '☆';
-        favToggle.classList.toggle('sr-default', dflt);
-        favToggle.disabled = !c || (pt && !P) || (pt && !fav && !dflt && !!(P && P.refused(sid)));   // no forecast there: nothing to keep (G22 A-13)
+        const dflt = !!c && isDefault(sid);                                        // the shaka: the default (plan section 46)
         const what = pt ? 'point' : 'station';
+        // the top pair (owner, 2026-10-19), as each saved row: the star a favorite (hollow / gold), the shaka the default
+        // (hollow / skin toned); independent toggles
+        favToggle.textContent = fav ? '★' : '☆';
+        favToggle.setAttribute('aria-pressed', fav ? 'true' : 'false');
+        favToggle.disabled = !c || (pt && !P) || (pt && !fav && !!(P && P.refused(sid)));   // no forecast there: nothing to keep (G22 A-13)
         favToggle.setAttribute('aria-label', !c ? 'No station selected'
-          : dflt ? 'Default ' + what + ' (click to clear it): ' + c.label
           : pt && !fav && favToggle.disabled ? 'No forecast here, nothing to keep: ' + c.label
-          : fav ? (pt ? 'Kept in My points' : 'Favorite') + ' (click to make it the default ' + what + '): ' + c.label
-          : pt ? 'Keep this point in My points: ' + c.label
-          : 'Add current station to favorites: ' + c.label);
-        favToggle.title = !c ? '' : dflt ? 'Default' : fav ? 'Favorite' : '';
+          : (pt ? 'Kept in My points: ' : 'Favorite: ') + c.label);
+        favToggle.title = !c || favToggle.disabled ? '' : 'Favorite';
+        if (dflToggle) {
+          dflToggle.setAttribute('aria-pressed', dflt ? 'true' : 'false');
+          dflToggle.disabled = !c || (pt && !dflt && !!(P && P.refused(sid)));   // no forecast there: not a place to open on
+          dflToggle.setAttribute('aria-label', !c ? 'No station selected'
+            : dflToggle.disabled ? 'No forecast here, it cannot be the default: ' + c.label
+            : 'Default ' + what + ', the site opens here: ' + c.label);
+          dflToggle.title = !c || dflToggle.disabled ? '' : 'Default: site opens here';
+        }
       }
 
       // The list is position: fixed (it escapes the window's overflow): placed from the trigger's box, below it
@@ -3814,11 +3825,13 @@
       // A saved row (owner, 2026-10-18): the label, then toggles that are hollow when off and coloured when on: the shaka
       // (the default: "Default: site opens here"), the star (a favorite, or kept in My points) and the cross ("Remove").
       // A row stays listed, in its place, until the list closes, also once both toggles are off, so a slip is undone with
-      // one more click; the next opening lists the default first. The trigger's star keeps its cycle.
+      // one more click; the next opening lists the default first. The top of the window has the same pair for the station
+      // on screen (dflToggle, favToggle).
       // the owner's own drawing (2026-10-19), traced: the hand's outline, then the knuckle and wrist lines
       const SHAKA = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">'
         + '<path class="sk-h" d="M2.2 3.16C2.56 3.14 3.1 3.2 3.51 3.38C3.92 3.56 4.39 3.94 4.69 4.24C4.99 4.54 5.0 4.59 5.3 5.18C5.6 5.77 6.16 7.22 6.46 7.78C6.76 8.34 6.92 8.36 7.09 8.52C7.26 8.68 7.34 8.77 7.5 8.74C7.66 8.71 7.7 8.72 8.05 8.33C8.4 7.94 9.25 6.79 9.62 6.42C9.99 6.05 10.08 6.18 10.29 6.13C10.5 6.08 10.67 6.08 10.86 6.11C11.05 6.14 11.25 6.19 11.43 6.28C11.61 6.37 11.79 6.41 11.96 6.66C12.13 6.91 12.24 7.65 12.45 7.78C12.66 7.91 12.95 7.46 13.24 7.42C13.53 7.38 13.94 7.45 14.2 7.56C14.45 7.67 14.64 7.84 14.77 8.07C14.9 8.3 14.91 8.75 14.97 8.92C15.03 9.09 14.99 9.08 15.12 9.07C15.25 9.06 15.54 8.88 15.75 8.86C15.96 8.84 16.18 8.86 16.38 8.94C16.58 9.02 16.78 9.13 16.95 9.33C17.12 9.53 17.16 10.12 17.38 10.15C17.6 10.18 17.65 10.04 18.25 9.49C18.85 8.94 20.4 7.32 20.98 6.83C21.56 6.34 21.46 6.55 21.72 6.52C21.98 6.49 22.35 6.59 22.53 6.66C22.71 6.73 22.72 6.82 22.78 6.93C22.84 7.04 22.87 7.15 22.88 7.29C22.89 7.43 22.87 7.62 22.82 7.78C22.77 7.94 23.18 7.56 22.57 8.25C21.96 8.94 19.92 11.0 19.17 11.9C18.42 12.8 18.37 13.16 18.07 13.67C17.77 14.18 17.63 14.54 17.38 14.95C17.12 15.36 16.8 15.82 16.54 16.14C16.27 16.46 16.18 16.57 15.79 16.89C15.4 17.22 14.52 17.75 14.2 18.09C13.88 18.43 13.96 18.59 13.89 18.93C13.82 19.27 13.83 19.89 13.77 20.15C13.71 20.41 13.78 20.38 13.51 20.49C13.24 20.6 12.7 20.75 12.16 20.8C11.62 20.85 10.89 20.86 10.25 20.8C9.61 20.74 8.91 20.62 8.31 20.45C7.71 20.28 6.98 19.96 6.64 19.8C6.3 19.64 6.33 19.62 6.24 19.46C6.15 19.3 6.01 19.23 6.09 18.82C6.17 18.41 6.6 17.48 6.7 17.01C6.8 16.55 6.89 16.46 6.68 16.03C6.47 15.6 5.76 14.94 5.42 14.42C5.08 13.9 4.85 13.42 4.65 12.9C4.45 12.38 4.35 12.0 4.2 11.31C4.05 10.62 3.93 9.5 3.75 8.76C3.57 8.02 3.37 7.4 3.14 6.87C2.91 6.34 2.72 6.04 2.39 5.58C2.06 5.12 1.35 4.43 1.14 4.14C0.93 3.84 1.11 3.92 1.14 3.81C1.17 3.7 1.15 3.6 1.33 3.49C1.51 3.38 1.84 3.18 2.2 3.16Z"/>'
         + '<path class="sk-c" d="M7.66 8.7Q8.24 8.77 8.54 9.19M12.2 7.72Q11.88 9.53 11.08 10.37M14.95 9.19Q14.24 10.84 13.53 11.57M17.3 10.17Q17.14 11.99 15.83 12.81M6.66 15.97Q7.11 16.26 7.72 16.46M13.26 18.05Q13.86 18.04 14.49 17.74"/></svg>';
+      if (dflToggle) dflToggle.innerHTML = SHAKA;                                // the top's shaka: the same drawing (a fixed string)
       let seen = new Map();                                                       // sid -> {rank, p}: the rows listed since the list opened
       function listed(sid, p) { if (!seen.has(sid)) seen.set(sid, { rank: seen.size, p: p || null }); else if (p) seen.get(sid).p = p; }
       function byRank(a, b) { return seen.get(a).rank - seen.get(b).rank; }
@@ -3996,46 +4009,47 @@
         });
       }
 
-      favToggle.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && !results.hidden) { e.stopPropagation(); close(); trigger.focus(); }
+      [favToggle, dflToggle].forEach(function (b) {
+        if (b) b.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && !results.hidden) { e.stopPropagation(); close(); trigger.focus(); }
+        });
       });
+      // The top pair (owner, 2026-10-19), as each saved row: the star keeps the station on screen as a favorite (a point: in
+      // My points) or lets it go; the shaka makes it the default or clears it. A point let go with the star keeps its name
+      // for this page, so a second click brings it back as it was.
+      const goneNames = new Map();
       favToggle.addEventListener('click', function (e) {
         e.preventDefault();
-        const sid = select.value;
-        if (!bySid.has(sid)) return;
-        // the cycle (plan section 46): empty -> gold (a favorite / kept in My points) -> blue (the default) -> empty
-        if (isDefault(sid)) {                                                   // blue -> empty: neither the default nor kept
-          clearDefault();
-          if (isPoint(sid)) {
-            const P = points();
-            if (P && P.store.has(sid)) { const r = P.store.remove(sid) ? 'removed' : 'unremoved'; P.say(r, sid); P.sync(); }
-          } else removeFav(sid);
-          refreshCurrent(); if (!results.hidden) renderFavs();
-          announce((isPoint(sid) ? 'The point is no longer the default nor kept: ' : 'No longer the default nor a favorite: ') + sid);
-          return;
-        }
-        const goldNow = isPoint(sid) ? !!(points() && points().store.has(sid)) : isFav(sid);
-        if (goldNow) {                                                          // gold -> blue: the default (the old one keeps its gold)
-          if (!writeDefault(sid)) { announce('This browser could not keep a default (its storage is switched off).'); return; }
-          refreshCurrent(); if (!results.hidden) renderFavs();
-          announce('Default ' + (isPoint(sid) ? 'point' : 'station') + ': ' + sid + '. The site opens here.');
-          return;
-        }
-        if (isPoint(sid)) {                                                     // empty -> gold for a point: kept in My points
+        const sid = select.value, c = bySid.get(sid);
+        if (!c) return;
+        if (isPoint(sid)) {
           const P = points(); if (!P) return;
-          if (P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }
-          const r = P.store.add(sid);
-          P.say(r, sid);                                                        // full or not saved: said in the window too (G22 B-3)
-          if (r === 'full') return;
-          if (r === 'added' && typeof showPointLayer === 'function') showPointLayer();   // a kept point shows on the map (G22 R-A15)
-          P.sync();
-          if (!results.hidden) renderFavs();
-          return;
-        }
-        if (readFavs().length >= 100) { announce('Favorites are full (100). Remove one to add more.'); return; }
-        toggleFav(sid); refreshCurrent();
-        if (!results.hidden) renderFavs();
-        announce('Added favorite ' + sid + '. Click the star again to make it the default.');
+          if (P.store.has(sid)) {                                               // kept -> let go (a named point: asked first)
+            const p = P.store.get(sid);
+            if (p && p.name && !window.confirm('Remove "' + p.name + '" from My points?')) return;   // a name is the visitor's own work (G22 B-18)
+            if (p && p.name) goneNames.set(sid, p.name);
+            P.say(P.store.remove(sid) ? 'removed' : 'unremoved', sid); P.sync();
+          } else {
+            if (P.refused(sid)) { announce('There is no forecast here, so the point is not kept.'); return; }
+            const r = P.store.add(sid, goneNames.get(sid) || '');
+            P.say(r, sid);                                                      // full or not saved: said in the window too (G22 B-3)
+            if (r === 'full') return;
+            if (r === 'added' && typeof showPointLayer === 'function') showPointLayer();   // a kept point shows on the map (G22 R-A15)
+            P.sync();
+          }
+        } else if (isFav(sid)) { removeFav(sid); announce('Removed from favorites: ' + c.label); }
+        else if (readFavs().length >= 100) { announce('Favorites are full (100). Remove one to add more.'); return; }
+        else { toggleFav(sid); announce('Added favorite: ' + c.label); }
+        refreshCurrent(); if (!results.hidden) renderFavs();
+      });
+      if (dflToggle) dflToggle.addEventListener('click', function (e) {
+        e.preventDefault();
+        const sid = select.value, c = bySid.get(sid);
+        if (!c) return;
+        if (isDefault(sid)) { clearDefault(); announce('No longer the default: ' + c.label); }
+        else if (!writeDefault(sid)) { announce('This browser could not keep a default (its storage is switched off).'); return; }
+        else announce('Default ' + (isPoint(sid) ? 'point' : 'station') + ': ' + c.label + '. The site opens here.');
+        refreshCurrent(); if (!results.hidden) renderFavs();
       });
 
       // The trigger button toggles the panel; native button activation handles Enter/Space/click.

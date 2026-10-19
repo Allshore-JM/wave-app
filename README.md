@@ -99,15 +99,15 @@ zoom), and the forecast window loads the station. The Worker's answer and the li
 the map pane is hidden (no Hawaii tiles paint; the navy background shows under the controls) and a visitor who moves the map
 or picks a station meanwhile keeps what they did. Every failure (no Worker, a slow or refused answer, a VPN exit on land far
 from the sea) lands on today's behaviour: Hawaii and 51201. Precedence: a station in the address (`?station=`: every reload,
-since the address is written after the first load, and every link) > the viewer's default station (the blue star in the
-favourites picker, localStorage `allshore.defaultStation.v1`: its position at zoom 6) > the IP's nearest station > 51201;
-the picker's star cycles: empty, then gold (a favorite; for a point: kept in My points), then blue (the default: one
-at a time, listed first; a new default leaves the old one a favorite), then empty again (neither); removing the
-default's favorite row or its point clears it as the default too; in the dropdown every saved row (Favorites and My
-points) carries a Favorite | Default choice with the row's state pressed (gold / blue, as the star) and a ✕ that removes
-it from the list (owner, 2026-10-18: a favorite can be made the default, or the default kept as a favorite only, from
-within the dropdown; a line under the rows says what Default does; on phones the buttons sit on a line of their own under
-the name, so a point's coordinates are never cut);
+since the address is written after the first load, and every link) > the viewer's default station (the shaka in the
+favourites picker, localStorage `allshore.defaultStation.v1`: its position at zoom 6) > the IP's nearest station > 51201.
+The default and the favorites (owner, 2026-10-18/19): the top of the forecast window and every saved row of the dropdown
+(Favorites and My points) carry the same toggles, hollow and grey when off: the shaka ("Default: site opens here"; the
+owner's own drawing, skin toned when on; one default at a time, listed first at the next opening) and the star
+("Favorite", gold when on; for a point: kept in My points); each row also has a ✕ ("Remove") that clears both. The two
+are independent: a default need not be a favorite (it stays listed). A row stays in its place until the list closes,
+also once both are off, so a slip is one click back. On phones a row's buttons sit on a line of their own under the
+name, so a point's coordinates are never cut;
 for the map: the tab's own view (sessionStorage) > the default station's position > the IP position > Hawaii. The head and
 the module ask for one and the same query (tests/ui/early.test.js); the module's first load waits for the head's answer
 (`window.__early.station`) and a load the viewer causes meanwhile wins. Env `GEO_BASE` (e.g. `https://geo.allshoresurf.com`)

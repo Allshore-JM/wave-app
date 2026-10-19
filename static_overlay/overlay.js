@@ -2412,6 +2412,7 @@
   var ISO_CLAMP_PATCH_MAX = 16, ISO_CLAMP_LAT = 70;         // a clamped-end centre: a compact patch, away from the poles
   var ISO_TERRAIN_M = 400, TERRAIN_M_PER_CODE = 20;         // no H / L on ground this high (terrain_half.png: 20 m per code)
   var ISO_STRONG_LOW_HPA = 15, ISO_TERRAIN_CAP_M = 2000;    // ...except a low this prominent over ground lower than this (owner, V3-1)
+  var ISO_STRONG_NODES_MAX = 20000;                         // a strength search needing more nodes than this counts weak
   var ISO_PROM_NODES_MAX = 16000;                           // the prominence pass runs on blocks coarse enough for this many
   var ISO_HL_CLEAR_PX = 2;                                  // the lines are cleared this far around a mark's box
   var ISO_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
@@ -2680,7 +2681,10 @@
   //    does depends on the view) (the sea-level pressure both models reduce from the surface leaves a fixed bump
   //    on every mountain node: an "H" on the Big Island at every step, H / L pairs on mountain slopes); EXCEPT a low
   //    at least opts.strongLowHpa prominent whose ground at both nodes is below opts.terrainCap (a typhoon crossing
-  //    Taiwan: 31-48 hPa; the mountain bumps measured at most 11-14 hPa, all highs) (owner, fix round 4);
+  //    Taiwan: 31-48 hPa; the mountain bumps measured at most 11-14 hPa, all highs) (owner, fix round 4), its strength
+  //    judged over the WHOLE grid by strongLowSearch, never by the view's window (fix round 5: a low alone in a zoomed-in
+  //    window has the window's cap prominence), searching at most opts.strongNodesMax nodes (else weak); a strong low's
+  //    prominence for rule 4 and the declutter is the greater of the window's and the search's;
   // 4. prominence (prominenceMap over the window widened by opts.margin nodes, on blocks of opts.stride nodes, coarsened
   //    until the window holds at most opts.promNodesMax blocks when that is given: how far the field must rise (L) /
   //    fall (H) from the centre before a stronger centre is reached): at least ISO_HL_PROM_CODES; the strongest centre of
@@ -2691,6 +2695,50 @@
   // than the 8 around it (they lie inside its square), so only such blocks' extreme-valued nodes are tested (the same answer
   // as testing every node). -> [{type: 'H' | 'L', r, c, v, q, prom, clamp}] (r, c = grid row and column, fractional for a
   // patch's middle; q the code; prom in codes; clamp -1 / 1 at the field's ends, else 0)
+  // The strength of a low over high ground (fix round 5, K-1): a minimax search from its patch over the WHOLE grid (8
+  // neighbours, columns wrap, rows end at the poles), level by level: a queue per code, and since the greatest code along
+  // the way only rises each node is queued once, at its final level. It ends at the first node taken that is lower than the
+  // patch, or of its code and earlier than the patch's first node in raster order (of two equal patches the one with the
+  // earlier first node counts as the lower: the merge tree's tie) -> prominence = that level minus the patch's code, strong
+  // when that reaches need. It is strong once the level being TAKEN reaches the patch's code + need (a node merely queued
+  // that high proves nothing: a lower node can still come at a lesser level) and weak once it has taken `cap` nodes without
+  // an answer (no real strong low needs 20,000). Independent of the view. first = the patch's first node (rows x cols +
+  // column); ss = reusable arrays (seen, next, head, gen). -> { prom: codes (the prominence when weak; need when strong:
+  // all it proves; the cap when nothing lower can be reached at all), strong }
+  function strongLowSearch(frame, first, need, cap, ss) {
+    var Q = frame.q, cols = frame.cols, rows = frame.rows, N = cols * rows, v0 = Q[first];
+    if (!ss.seen || ss.seen.length !== N) { ss.seen = new Uint32Array(N); ss.next = new Int32Array(N); ss.gen = 0; }
+    if (!ss.head) ss.head = new Int32Array(256);
+    if (ss.gen >= 0xfffffff0) { ss.seen.fill(0); ss.gen = 0; }
+    var seen = ss.seen, next = ss.next, head = ss.head, gen = ++ss.gen, taken = 0;
+    head.fill(-1);
+    seen[first] = gen; next[first] = -1; head[v0] = first;
+    for (var d = v0; d < 256; d++) {
+      if (head[d] < 0) continue;
+      if (d - v0 >= need) return { prom: need, strong: true };   // all it proves
+      while (head[d] >= 0) {
+        var x = head[d], cx = Q[x];
+        head[d] = next[x];
+        if (cx < v0 || (cx === v0 && x < first)) return { prom: d - v0, strong: false };
+        if (taken >= cap) return { prom: d - v0, strong: false };
+        taken++;
+        var r = (x / cols) | 0, c = x - r * cols;
+        for (var dr = -1; dr <= 1; dr++) {
+          var rr = r + dr;
+          if (rr < 0 || rr >= rows) continue;
+          for (var dc = -1; dc <= 1; dc++) {
+            if (!dr && !dc) continue;
+            var cc = c + dc, y = rr * cols + (cc < 0 ? cc + cols : cc >= cols ? cc - cols : cc), cy = Q[y];
+            if (!cy || seen[y] === gen) continue;
+            seen[y] = gen;
+            var lv = cy > d ? cy : d;
+            next[y] = head[lv]; head[lv] = y;
+          }
+        }
+      }
+    }
+    return { prom: ISO_HL_PROM_CAP, strong: true };           // nothing lower anywhere it could reach
+  }
   var ISO_PATCH_MAX = 4096;                                 // the largest patch that marks a centre
   function findCentres(frame, fdef, win, rad, opts) {
     opts = opts || {};
@@ -2807,6 +2855,14 @@
     var strongHpa = opts.strongLowHpa > 0 ? opts.strongLowHpa : 0, tcap = opts.terrainCap > 0 ? opts.terrainCap : 0;
     function lowGround(rr, cc) { return tcap > 0 && terrain[Math.round(rr) * cols + (((Math.round(cc) % cols) + cols) % cols)] < tcap; }
     var mg = Math.max(0, Math.floor(opts.margin || 0)), stride = Math.max(1, Math.floor(opts.stride || 1)), sc0 = opts.scratch || {};
+    var need = Math.ceil(strongHpa / k - 1e-9), scap = opts.strongNodesMax > 0 ? Math.floor(opts.strongNodesMax) : ISO_STRONG_NODES_MAX;
+    function strongOf(pt) {                                   // once per frame and patch (pans and zooms then cost nothing)
+      var S = sc0.S || (sc0.S = {});
+      if (S.q !== Q || S.need !== need || S.cap !== scap) { S.q = Q; S.need = need; S.cap = scap; S.m = new Map(); }
+      var key = pt.fr * cols + pt.fc, got = S.m.get(key);
+      if (!got) { got = strongLowSearch(frame, key, need, scap, S); S.m.set(key, got); }
+      return got;
+    }
     if (opts.promNodesMax > 0) {                              // coarser blocks for a large window (the world view): the pass stays cheap
       var pw = (r1 - r0 + 1 + 2 * mg) * Math.min(cols, n + 2 * mg);
       while (pw / (stride * stride) > opts.promNodesMax) stride++;
@@ -2825,13 +2881,14 @@
       if (marks && marks[cd.r * cols + cd.c] & (cd.type === 'L' ? 1 : 2)) { if (trace) trace(cd, 'taken'); continue; }
       var pt = patch(cd);
       if (!pt) { if (trace) trace(cd, 'patch'); continue; }
-      var prom = -1;
+      var sres = null;                                        // this candidate's strength search (none unless over high ground)
       if (high(pt.fr, pt.fc) || high(pt.r, pt.c)) {             // high ground: only a strong low below the cap marks
-        if (!(cd.type === 'L' && strongHpa > 0 && lowGround(pt.fr, pt.fc) && lowGround(pt.r, pt.c) && (prom = promOf(cd)) * k >= strongHpa - 1e-9)) {
+        if (!(cd.type === 'L' && strongHpa > 0 && lowGround(pt.fr, pt.fc) && lowGround(pt.r, pt.c) && (sres = strongOf(pt)).strong)) {
           if (trace) trace(cd, 'terrain'); continue;
         }
       }
-      if (prom < 0) prom = promOf(cd);
+      var prom = promOf(cd);
+      if (sres) prom = Math.max(prom, Math.min(ISO_HL_PROM_CAP, sres.prom));   // the window's coarse blocks can read a strong low shallow
       if (prom < ISO_HL_PROM_CODES) { if (trace) trace(cd, 'prominence ' + prom); continue; }
       var clamp = cd.q === 1 ? -1 : cd.q === 255 ? 1 : 0;
       out.push({ type: cd.type, r: pt.r, c: pt.c, v: fdef.lo + (cd.q - 1) * k, q: cd.q, prom: prom, clamp: clamp });
@@ -5168,7 +5225,7 @@
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
-      ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_STRONG_LOW_HPA: ISO_STRONG_LOW_HPA, ISO_TERRAIN_CAP_M: ISO_TERRAIN_CAP_M, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,
+      ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_STRONG_LOW_HPA: ISO_STRONG_LOW_HPA, ISO_TERRAIN_CAP_M: ISO_TERRAIN_CAP_M, ISO_STRONG_NODES_MAX: ISO_STRONG_NODES_MAX, strongLowSearch: strongLowSearch, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,
       ISO_LABEL_MIN_PX: ISO_LABEL_MIN_PX, ISO_LABEL_AT: ISO_LABEL_AT, ISO_LABEL_EDGE_PX: ISO_LABEL_EDGE_PX,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,

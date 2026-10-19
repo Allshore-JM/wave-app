@@ -232,7 +232,7 @@ def test_g18b_pins(client):
         "liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; focusMapAfterClose('liveBuoyPanel'); } });",
         "if (fwEl && fwEl.classList.contains('fw-min') && fwEl.offsetHeight > 0) phoneBarH = fwEl.offsetHeight;",
         "document.documentElement.style.setProperty('--fw-bar-h', phoneBarH + 'px');",
-        "function open() { seen = new Map(); renderFavs(); place(); results.hidden = false;",
+        "function open() { seen = new Map(); nextRank = 0; renderFavs(); place(); results.hidden = false;",
         "if (below >= 220 || below >= above) { s.top = (r.bottom + 2) + 'px'; s.bottom = 'auto';",
         "if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();",
         ".fwin.live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 136px)); height: min(76vh, 800px); z-index: 2000; }",
@@ -411,7 +411,7 @@ def test_my_points_on_the_page(client):
     assert ".my-pt { background: #fff; border: 2.5px solid #d6007a;" in body
     assert "rebuildPointMarkers(true);" in body and "rebuildPointMarkers(false);" in body
     assert "const pt = window.AllshoreForecast && window.AllshoreForecast.parsePointId(sid);" in body   # focusStation
-    assert "document.addEventListener('allshore:points', function () {" in body and "the list was rebuilt under the focus (G22 R-A16)" in body
+    assert "document.addEventListener('allshore:points', function () {" in body and "focusBack(m);                                                             // (G22 R-A16)" in body
     assert "ren.type = 'button'; ren.className = 'pt-act pt-ren';" in body and "rem.setAttribute('aria-label', 'Remove point: ' + label);" in body
     assert "const r = P.store.add(sid, goneNames.get(sid) || '');" in body and "P.say(P.store.remove(sid) ? 'removed' : 'unremoved', sid); P.sync();" in body   # the top star keeps / lets go (owner, 2026-10-19)
     assert "if (r === 'added' && typeof showPointLayer === 'function') showPointLayer();" in body            # the star shows the layer (R-A15)
@@ -1021,11 +1021,15 @@ def test_the_shaka_and_the_star_set_the_default_and_the_favorites(client):
     picker = body[body.index("(function initStationPicker() {"):body.index("// the picker just made the forecast bar taller")]
     for needle in ("const DEFAULT_KEY = 'allshore.defaultStation.v1';", "function writeDefault(sid, label) {", "function clearDefault() {",
                    "const dflToggle = document.getElementById('stationDefaultToggle');", "if (dflToggle) dflToggle.innerHTML = SHAKA;",
-                   "favToggle.setAttribute('aria-pressed', fav ? 'true' : 'false');", "dflToggle.setAttribute('aria-pressed', dflt ? 'true' : 'false');",
-                   "if (dflToggle) dflToggle.addEventListener('click', function (e) {", "if (isDefault(sid)) { clearDefault();",
+                   "b.setAttribute('aria-pressed', fav ? 'true' : 'false');", "b.setAttribute('aria-pressed', dflt ? 'true' : 'false');",
+                   "[favToggle, fwFav].forEach(function (b) {", "[dflToggle, fwDflt].forEach(function (b) {",
+                   "[dflToggle, fwDflt].forEach(function (b) { if (b) b.addEventListener('click', dflClick); });",
+                   "[favToggle, fwFav].forEach(function (b) { if (b) b.addEventListener('click', favClick); });",
+                   "if (isDefault(sid)) { if (!clearDefault()) { announce(DFLT_REFUSED); return; }",
                    "const r = P.store.add(sid, goneNames.get(sid) || '');",
-                   "removeFav(c.sid); if (isDefault(c.sid)) clearDefault();", "if (gone && isDefault(p.id)) clearDefault();",
-                   "document.addEventListener('allshore:forecast', function () { refreshCurrent(); });",
+                   "if (isFav(c.sid) && !removeFav(c.sid)) { announce(FAV_REFUSED); return; }",
+                   "if (isDefault(c.sid) && !clearDefault()) { announce(DFLT_REFUSED); return; }", "if (gone && isDefault(p.id)) clearDefault();",
+                   "if (d.ok && d.station) served.add(String(d.station));",
                    "if (!e.key || e.key === DEFAULT_KEY || e.key === FAV_KEY)",
                    "typeof forecastStationsData !== 'undefined' && Array.isArray(forecastStationsData)"):
         assert needle in picker, needle
@@ -1048,3 +1052,23 @@ def test_the_shaka_and_the_star_set_the_default_and_the_favorites(client):
         assert css in body, css
     # one key, three readers + the writer
     assert body.count("'allshore.defaultStation.v1'") == 6   # + forgetRetiredDefault's read and removal (G32 A-P3-3)
+    # fix round 5 (the short fresh check): phones get the pair in the window's toolbar (owner, U1), the trigger's pair hidden
+    # there; one state for both; a point's pair waits for its forecast (U3); one name memory (U4); the focus restored by
+    # role and row (U5, U9); refused writes said (U6); a rank counter (U2). Behaviour: tests/ui/mypoints.test.js.
+    bar = body[body.index('<div id="fwToolbar" class="fw-toolbar">'):body.index('id="viewBar"')]
+    for needle in ('<span id="fwPair" class="fw-pair" role="group" aria-label="This station">',
+                   'id="fwDefaultToggle" class="sr-star sr-dflt" aria-pressed="false"', 'id="fwFavToggle" class="sr-star" aria-pressed="false"'):
+        assert needle in bar, needle
+    assert bar.index('id="fwDefaultToggle"') < bar.index('id="fwFavToggle"'), "the shaka, then the star"
+    assert ".fw-pair { display: none; align-items: center; }" in body
+    phone = body[body.index("@media (max-width: 500px), (max-height: 500px) {"):]
+    phone = phone[:phone.index("\n    }")]
+    assert ".station-trigger .sr-star { display: none; }" in phone and ".fw-pair.on { display: inline-flex; }" in phone, "phones only"
+    for needle in ("if (fwDflt) fwDflt.innerHTML = SHAKA;", "if (fwPair) fwPair.classList.add('on');",
+                   "const served = new Set();", "const goneNames = new Map();", "let seen = new Map(), nextRank = 0;",
+                   "seen.set(sid, { rank: nextRank++, p: p || null })", "seen = new Map(); nextRank = 0;",
+                   "const ROLES = ['fav-select', 'sr-dflt', 'sr-fav', 'pt-ren', 'sr-rem'];", "function focusMark() {", "function focusBack(m) {",
+                   "const m = focusMark(); refreshCurrent(); if (!results.hidden) renderFavs(); focusBack(m);",
+                   "return writeFavs(f);", "localStorage.setItem(FAV_KEY, JSON.stringify(arr.slice(0, 100))); return true; } catch (e) { return false; }"):
+        assert needle in picker, needle
+    assert "rank: seen.size" not in picker and "acts.indexOf(a)" not in picker

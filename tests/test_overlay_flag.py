@@ -129,7 +129,7 @@ def test_asset_route_versioning_headers_and_containment(monkeypatch):
     assert r.get_data() == c.get("/no/such/path").get_data()
     _on(monkeypatch)
     for name, ct in (("overlay.js", "application/javascript"), ("overlay.css", "text/css"), ("snail.png", "image/png"),
-                     ("fish.png", "image/png"), ("shark.png", "image/png")):
+                     ("fish.png", "image/png"), ("shark.png", "image/png"), ("terrain_half.png", "image/png")):
         r = c.get("/overlay/%s?v=%s" % (name, v))
         assert r.status_code == 200 and r.headers["Content-Type"].startswith(ct)
         if name.endswith(".png"):
@@ -163,17 +163,39 @@ def test_asset_version_bumped_with_the_assets():
     assert pinned["version"] == A.OVERLAY_ASSET_VERSION, "OVERLAY_ASSET_VERSION changed: update tests/fixtures/overlay_assets.json"
     assert pinned["sha256"] == h.hexdigest(), ("static_overlay/* changed: bump OVERLAY_ASSET_VERSION in app.py and "
                                               "update tests/fixtures/overlay_assets.json (version + sha256 of the js, the css "
-                                              "and the three PNGs)")
+                                              "and the PNGs)")
 
 
-OVERLAY_IMAGES = ("snail.png", "fish.png", "shark.png")
+OVERLAY_ANIMALS = ("snail.png", "fish.png", "shark.png")
+OVERLAY_IMAGES = OVERLAY_ANIMALS + ("terrain_half.png",)
+
+
+def test_terrain_mask_is_the_half_grid_as_8_bit_grey():
+    """The isobars' high-ground mask (section 46, fix round 3): tools/model_frames/make_terrain_mask.py -> the frames' half
+    grid (720 x 361), one grey byte per node (20 m each), small enough for one immutable fetch; the Big Island high, the sea 0."""
+    import struct
+    raw = open(os.path.join(STATIC, "terrain_half.png"), "rb").read()
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+    w, h, depth, ctype = struct.unpack(">IIBB", raw[16:26])
+    assert (w, h, depth, ctype) == (720, 361, 8, 0), (w, h, depth, ctype)
+    assert len(raw) < 120000, len(raw)
+    try:
+        from PIL import Image
+    except ImportError:                                    # the CI job without Pillow pins the header only
+        return
+    import io as _io
+    px = Image.open(_io.BytesIO(raw)).load()
+    node = lambda lat, lon: px[int(round((lon + 180) / 0.5)) % 720, int(round((90 - lat) / 0.5))]   # noqa: E731
+    assert node(19.5, -155.5) * 20 >= 2000, "the Big Island"
+    assert node(32.0, 88.0) * 20 >= 4000, "Tibet"
+    assert node(21.0, -157.5) * 20 < 500 and node(52.5, 5.0) == 0 and node(0.0, -140.0) == 0, "the sea"
 
 
 def test_speed_illustrations_are_small_transparent_square_pngs():
     """The owner's art for the speed selector (section 37): RGBA PNGs, square, small enough for an immutable
     first-load fetch of three icons."""
     import struct
-    for name in OVERLAY_IMAGES:
+    for name in OVERLAY_ANIMALS:
         raw = open(os.path.join(STATIC, name), "rb").read()
         assert raw[:8] == b"\x89PNG\r\n\x1a\n", name
         w, h, depth, ctype = struct.unpack(">IIBB", raw[16:26])
@@ -203,12 +225,13 @@ def test_overlay_js_syntax_and_contract_strings():
                    "hasModel", "_switchT", "_fetchJson", "LOAD_STALL_MS", "/notice/ecmwf",                                                       # G30 fix round
                    "IsobarLayer", "'ovIsoPane'", "traceIsolines", "isoBlur", "findCentres", "projectCentres", "placeLabels", "viewOf", "placeCanvas", "PRES_WAIT_MS",                        # section 46 step 3
                    "PRES_FIELD", "pcache", "_wantPres", "_kindReady", "_startKind", "_syncIsobars", "setIsobars", "' hPa'",                  # section 46 step 4
-                   "particleOpacityOf", "setParticleOpacity", "_paneOpacity", "opts.particles"):                                           # section 46 step 5
+                   "particleOpacityOf", "setParticleOpacity", "_paneOpacity", "opts.particles",                                            # section 46 step 5
+                   "prominenceMap", "ISO_HL_PROM_CODES", "'terrain_half.png'", "ISO_TERRAIN_M", "setTerrain", "_hpaText", "destination-out", "_presWait", "ISO_CLAMP_PATCH_MAX"):   # fix round 3
         assert needle in js, needle
     for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row
                  "'live since '", "next update about ", "'First frame'", "'Previous frame'", "'Next frame'", "'Last frame'",
                  "[0.5, 1, 2, 4]", "'Valid: '", "forecastSpanText", "-day forecast",
-                 "' h → +'", "'NOAA GFS-Wave'", "SHEET_OPEN_PX", "RIBBON_SWIPE_PX", "aria-live", "'Forecast model'"):                                                                   # owner 2026-10-07: one summary line, no agency prefix                                                       # section 37: one play button, animals, the ribbon
+                 "' h → +'", "'NOAA GFS-Wave'", "SHEET_OPEN_PX", "RIBBON_SWIPE_PX", "aria-live", "'Forecast model'", "ISO_HL_MIN_HPA"):                                                                   # owner 2026-10-07: one summary line, no agency prefix                                                       # section 37: one play button, animals, the ribbon
         assert gone not in js, gone
     assert "innerHTML" not in js                                             # every label is text (manifest strings never HTML)
     if NODE:

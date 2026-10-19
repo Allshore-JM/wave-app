@@ -2407,7 +2407,12 @@
   var ISO_BLUR = 2;                                         // [1, 2, 1] passes over the traced grid
   var ISO_LABEL_MIN_Z = 4, ISO_LABEL_MIN_PX = 120, ISO_LABEL_EDGE_PX = 8, ISO_LABEL_GRID_PX = 32, ISO_LABEL_GAP_PX = 4;
   var ISO_LABEL_AT = [0.5, 0.35, 0.65, 0.2, 0.8];          // where along a line's visible length its one pill may sit, in turn
-  var ISO_HL_PX = 110, ISO_HL_MIN_HPA = 1, ISO_HL_EDGE_PX = 14;   // H / L: the neighbourhood radius on screen, the least depth
+  var ISO_HL_PX = 110, ISO_HL_EDGE_PX = 14;                 // H / L: the neighbourhood radius on screen, the edge margin
+  var ISO_HL_PROM_CODES = 2, ISO_HL_PROM_CAP = 255;         // a mark's least prominence (codes: 1.1 hPa); "never absorbed"
+  var ISO_CLAMP_PATCH_MAX = 16, ISO_CLAMP_LAT = 70;         // a clamped-end centre: a compact patch, away from the poles
+  var ISO_TERRAIN_M = 400, TERRAIN_M_PER_CODE = 20;         // no H / L on ground this high (terrain_half.png: 20 m per code)
+  var ISO_PROM_NODES_MAX = 16000;                           // the prominence pass runs on blocks coarse enough for this many
+  var ISO_HL_CLEAR_PX = 2;                                  // the lines are cleared this far around a mark's box
   var ISO_FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   var ISO_STYLE = { halo: 'rgba(0,0,0,0.14)', haloW: 2.4, core: 'rgba(255,255,255,0.72)', coreW: 1.2,
     font: '600 9px ' + ISO_FONT, pill: 'rgba(255,255,255,0.82)', text: '#1d2b4f', padX: 4, h: 11, r: 5.5,
@@ -2566,28 +2571,127 @@
     for (i = 0; i < cnt; i++) if (!seen[i]) walk(i, true);
     return out;
   }
+  // The prominence of every local extreme of the frame over a window (rows R0..R1, columns C0 .. C0 + count - 1, wrapping;
+  // the whole world when count covers every column), read on blocks of `s` x `s` nodes (a block = its extreme code; lows:
+  // the least, highs: the greatest, stored flipped so that "lower" always means "stronger"): the blocks are added in code
+  // order into 8-connected components (union-find); a component born at a block is a centre; when a block joins two
+  // components the weaker (the shallower minimum; between equals the later in the GRID's raster order, whatever the
+  // window's start: the same answer from every view) is absorbed, and its prominence is the joining code minus its own.
+  // Equal-code blocks joined at their own code are one set with one representative (the earliest), whose prominence is
+  // the set's. -> { at(r, c): the prominence in codes of the block holding the frame's node (r, c) (ISO_HL_PROM_CAP for a
+  // centre never absorbed: the strongest of its region; 0 for a block beside a stronger one), -1 outside the window or
+  // where no node is present }. `scratch` (optional) holds the typed arrays between calls.
+  // The window's blocks of s x s nodes: each block's least and greatest present code (0 = none), one scan for both kinds.
+  // -> {R0, R1, C0, count, s, bR, bC, min, max} (count = cols and s a divisor of cols when the window is the whole world).
+  function blockExtremes(frame, R0, R1, C0, count, s, scratch) {
+    var Q = frame.q, cols = frame.cols, rows = frame.rows;
+    R0 = Math.max(0, R0); R1 = Math.min(rows - 1, R1);
+    if (R1 < R0 || !(s >= 1) || !(count >= 1)) return null;
+    if (count >= cols) { count = cols; while (cols % s) s--; }           // the world's blocks must meet across the seam
+    var bR = Math.ceil((R1 - R0 + 1) / s), bC = Math.ceil(count / s), N = bR * bC, sc = scratch || {};
+    if (!sc.bmin || sc.bmin.length < N) { sc.bmin = new Uint8Array(N); sc.bmax = new Uint8Array(N); }
+    var bmin = sc.bmin, bmax = sc.bmax;
+    bmin.fill(0, 0, N); bmax.fill(0, 0, N);
+    for (var r = R0; r <= R1; r++) {
+      var bi0 = Math.floor((r - R0) / s) * bC, base = r * cols;
+      for (var j = 0; j < count; j++) {
+        var v = Q[base + (C0 + j) % cols];
+        if (!v) continue;
+        var bk = bi0 + Math.floor(j / s);
+        if (!bmin[bk] || v < bmin[bk]) bmin[bk] = v;
+        if (v > bmax[bk]) bmax[bk] = v;
+      }
+    }
+    return { R0: R0, R1: R1, C0: C0, count: count, s: s, bR: bR, bC: bC, min: bmin, max: bmax };
+  }
+  function prominenceMap(frame, R0, R1, C0, count, s, low, scratch, blocks) {
+    var cols = frame.cols, none = { at: function () { return -1; } };
+    var bx = blocks || blockExtremes(frame, R0, R1, C0, count, s, scratch);
+    if (!bx) return none;
+    R0 = bx.R0; R1 = bx.R1; C0 = bx.C0; count = bx.count; s = bx.s;
+    var wrap = count >= cols, bR = bx.bR, bC = bx.bC, N = bR * bC, i, j;
+    var sc = scratch || {};
+    if (!sc.val || sc.val.length < N) {
+      sc.val = new Uint8Array(N); sc.order = new Int32Array(N); sc.parent = new Int32Array(N); sc.born = new Int32Array(N); sc.prom = new Int16Array(N); sc.alias = new Int32Array(N);
+    }
+    var val = sc.val, order = sc.order, parent = sc.parent, born = sc.born, prom = sc.prom, alias = sc.alias, cnt = new Int32Array(257);
+    parent.fill(-1, 0, N); born.fill(-1, 0, N); prom.fill(-1, 0, N); alias.fill(-1, 0, N);
+    var src = low ? bx.min : bx.max;                                       // highs flipped: "lower" always means "stronger"
+    for (i = 0; i < N; i++) val[i] = src[i] ? (low ? src[i] : 256 - src[i]) : 0;
+    // a's block is earlier than b's in the grid's raster order (rows, then the GLOBAL column: a window may start anywhere)
+    function earlier(a, b) {
+      var ra = Math.floor(a / bC), rb = Math.floor(b / bC);
+      if (ra !== rb) return ra < rb;
+      return (C0 + (a - ra * bC) * s) % cols < (C0 + (b - rb * bC) * s) % cols;
+    }
+    var n = 0;                                                             // counting sort by code, stable in raster order
+    for (i = 0; i < N; i++) if (val[i]) cnt[val[i] + 1]++;
+    for (i = 1; i < 257; i++) cnt[i] += cnt[i - 1];
+    for (i = 0; i < N; i++) if (val[i]) { order[cnt[val[i]]++] = i; n++; }
+    function find(x) { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+    for (var k = 0; k < n; k++) {
+      i = order[k]; parent[i] = i;
+      var t = val[i], bi = Math.floor(i / bC), bj = i - bi * bC;
+      for (var di = -1; di <= 1; di++) {
+        var ni = bi + di;
+        if (ni < 0 || ni >= bR) continue;
+        for (var dj = -1; dj <= 1; dj++) {
+          if (!di && !dj) continue;
+          var nj = bj + dj;
+          if (nj < 0 || nj >= bC) { if (!wrap) continue; nj = (nj + bC) % bC; }
+          j = ni * bC + nj;
+          if (parent[j] < 0) continue;                                     // not yet added: a weaker code, or absent
+          var ra = find(i), rb = find(j);
+          if (ra === rb) continue;
+          var st = val[ra] < val[rb] || (val[ra] === val[rb] && earlier(ra, rb)) ? ra : rb, wk = st === ra ? rb : ra;
+          prom[wk] = t - val[wk]; parent[wk] = st;                          // the roots are their components' minima
+          if (val[wk] === t && val[st] === t) alias[wk] = st;               // two equal-code sets met at their own code: one set
+        }
+      }
+      born[i] = find(i);
+    }
+    return { at: function (rr, cc) {
+      if (rr < R0 || rr > R1) return -1;
+      var jj = ((cc - C0) % cols + cols) % cols;
+      if (jj >= count) return -1;
+      var b = Math.floor((rr - R0) / s) * bC + Math.floor(jj / s), o = born[b];
+      if (o < 0) return -1;
+      if (val[o] !== val[b]) return 0;                                      // it joined a stronger block's component at once
+      while (alias[o] >= 0) o = alias[o];                                   // its equal-code set's representative
+      return prom[o] < 0 ? ISO_HL_PROM_CAP : prom[o];
+    } };
+  }
   // The highs' and lows' centres from the frame's own codes (G32 fix-round verification: on the smoothed grid a compact
-  // typhoon read "L 1000" for 958 hPa and two tropical cyclones had no mark at the world view):
+  // typhoon read "L 1000" for 958 hPa and two tropical cyclones had no mark at the world view), chosen by PROMINENCE (the
+  // G32 re-check: a depth against a ring 110 px out marked one-code dimples and lost broad highs when zoomed in; owner's
+  // call, 2026-10-18):
   // 1. candidates: a node of the view's window (`win`, nodeWindow) that no node within `rad` grid nodes undercuts (L) /
   //    overtops (H) (rows beyond the grid's ends absent, columns wrapping); an equal code counts against it only as one of
-  //    its 8 neighbours, where the earlier node in raster order stands; at least `depth` hPa below / above the mean of the
-  //    ring `rad` nodes out; never at the field's clamped ends;
+  //    its 8 neighbours, where the earlier node in raster order stands;
   // 2. a candidate's patch of equal codes (8-connected) is taken for its kind (one mark per patch) and marks nothing when
   //    it touches a lower (L) / higher (H) node (a shelf), holds more than ISO_PATCH_MAX nodes or spans half the world's
-  //    columns (it may wrap); else the centre sits at the patch's middle;
-  // 3. two candidates of one kind within `rad` nodes of each other are equal (neither undercuts the other): the first in
-  //    raster order stands, the other is dropped.
-  // (With equal codes counted against a node across the whole square, a trough with minima B, A equal to B and C lower
-  // than A, 8 deg apart each, kept only C: C, lower and within the radius, took A, and A's tie took B.)
+  //    columns (it may wrap); at the field's clamped ends (code 1: a typhoon below 920 hPa; code 255: a high above 1060)
+  //    only a compact patch (ISO_CLAMP_PATCH_MAX nodes) within ISO_CLAMP_LAT degrees of the equator marks, as "<=920" /
+  //    ">=1060" (the polar plateaus' clamped patches never); the centre sits at the patch's middle;
+  // 3. no mark on high ground: opts.terrain (the half grid's terrain codes, terrain_half.png) at or above opts.terrainMin
+  //    at the candidate or at the middle (the sea-level pressure both models reduce from the surface leaves a fixed bump
+  //    on every mountain node: an "H" on the Big Island at every step, H / L pairs on mountain slopes);
+  // 4. prominence (prominenceMap over the window widened by opts.margin nodes, on blocks of opts.stride nodes, coarsened
+  //    until the window holds at most opts.promNodesMax blocks when that is given: how far the field must rise (L) /
+  //    fall (H) from the centre before a stronger centre is reached): at least ISO_HL_PROM_CODES; the strongest centre of
+  //    a region always counts.
+  // One mark per ISO_HL_PX on screen, the most prominent first, is decided on the DRAWN marks (projectCentres), so a
+  // twin kept off screen never hides one in view.
   // Blocks of B x B nodes (2B - 1 <= rad) sift the candidates: a candidate is its block's extreme and its block is no worse
   // than the 8 around it (they lie inside its square), so only such blocks' extreme-valued nodes are tested (the same answer
-  // as testing every node). -> [{type: 'H' | 'L', r, c, v}] (r, c = grid row and column, fractional for a patch's middle)
+  // as testing every node). -> [{type: 'H' | 'L', r, c, v, q, prom, clamp}] (r, c = grid row and column, fractional for a
+  // patch's middle; q the code; prom in codes; clamp -1 / 1 at the field's ends, else 0)
   var ISO_PATCH_MAX = 4096;                                 // the largest patch that marks a centre
-  function findCentres(frame, fdef, win, rad, depth) {
+  function findCentres(frame, fdef, win, rad, opts) {
+    opts = opts || {};
     var Q = frame.q, cols = frame.cols, rows = frame.rows, k = (fdef.hi - fdef.lo) / 254, cands = [], out = [];
     if (!(rad >= 1)) rad = 1;
     if (rad > cols >> 1) rad = cols >> 1;                   // a square wider than the world would meet itself
-    if (!(depth > 0)) depth = ISO_HL_MIN_HPA;
     var r0 = Math.max(win.r0, 0), r1 = Math.min(win.r1, rows - 1), n = Math.min(win.count, cols), wrap = n >= cols;
     var B = Math.max(1, Math.min(8, Math.floor((rad + 1) / 2))), nbR = Math.ceil((r1 - r0 + 1) / B), nbC = Math.ceil(n / B);
     if (nbR < 1 || nbC < 1) return out;
@@ -2603,8 +2707,8 @@
       }
     }
     function test(r, c, v, low) {
-      if (v <= 2 || v >= 254) return;                         // the clamped ends (and a code next to them) are no centre
-      var dr, dc, rr, cc, x, sum = 0, cnt = 0;
+      if (low ? v === 255 : v === 1) return;                 // the far end of the range is no centre of this kind
+      var dr, dc, rr, cc, x;
       for (dr = -1; dr <= 1; dr++) {                          // its 8 neighbours: an equal one earlier in raster order stands
         rr = r + dr;
         if (rr < 0 || rr >= rows) continue;
@@ -2615,11 +2719,9 @@
           if (!x) continue;
           if (low ? x < v : x > v) return;
           if (x === v && (dr < 0 || (!dr && dc < 0))) return;
-          if (rad === 1) { sum += x; cnt++; }                 // the ring is the 8 neighbours
         }
       }
       for (var d = 2; d <= rad; d++) {                        // the rest of the square, ring by ring outward
-        var last = d === rad;
         for (dr = -d; dr <= d; dr++) {
           rr = r + dr;
           if (rr < 0 || rr >= rows) continue;
@@ -2627,15 +2729,11 @@
           for (dc = -d; dc <= d; dc += step) {
             cc = c + dc;
             x = Q[base + (cc < 0 ? cc + cols : cc >= cols ? cc - cols : cc)];
-            if (!x) continue;
-            if (low ? x < v : x > v) return;
-            if (last) { sum += x; cnt++; }
+            if (x && (low ? x < v : x > v)) return;
           }
         }
       }
-      if (!cnt) return;
-      var ring = sum / cnt;
-      if (low ? (ring - v) * k >= depth : (v - ring) * k >= depth) cands.push({ type: low ? 'L' : 'H', r: r, c: c, q: v });
+      cands.push({ type: low ? 'L' : 'H', r: r, c: c, q: v });
     }
     for (var bi = 0; bi < nbR; bi++) {
       for (var bj = 0; bj < nbC; bj++) {
@@ -2665,10 +2763,11 @@
         }
       }
     }
+    if (!cands.length) return out;
     var marks = null;                                         // per node: 1 = in a patch taken for a low, 2 = for a high
     // a candidate's whole patch, followed node by node (column offsets unwrapped from the candidate's column) and taken for
     // its kind, so no patch is followed twice; null for a shelf, a patch over ISO_PATCH_MAX nodes or one spanning half the
-    // columns, else its middle
+    // columns, a clamped patch that is not compact or lies poleward of ISO_CLAMP_LAT; else its middle
     function patch(cd) {
       if (!marks) marks = new Uint8Array(rows * cols);
       var low = cd.type === 'L', bit = low ? 1 : 2, stack = [cd.r, 0], sr = 0, sc = 0, m = 0, cmin = 0, cmax = 0, shelf = false;
@@ -2690,36 +2789,40 @@
         }
       }
       if (shelf || m > ISO_PATCH_MAX || cmax - cmin >= cols >> 1) return null;
+      if (cd.q === (low ? 1 : 255)) {
+        var lat = opts.grid ? opts.grid.lat0 + cd.r * opts.grid.dlat : 0;
+        if (m > ISO_CLAMP_PATCH_MAX || Math.abs(lat) > ISO_CLAMP_LAT) return null;
+      }
       return { r: sr / m, c: ((cd.c + sc / m) % cols + cols) % cols };
     }
-    cands.sort(function (a, b) { return a.type !== b.type ? (a.type < b.type ? -1 : 1) : a.r - b.r || a.c - b.c; });
-    // the kept centres by bands of rad + 1 rows and columns (the last column band takes the rest: every band is at least
-    // rad + 1 wide, so a centre within rad sits in the same band or a neighbouring one, across the date line too)
-    var W = rad + 1, nbc = Math.max(1, Math.floor(cols / W)), bands = {};
-    function bandOf(type, br, bc) { return type + br + ',' + (((bc % nbc) + nbc) % nbc); }
-    for (var i = 0; i < cands.length; i++) {
-      var cd = cands[i], near = false, br = Math.floor(cd.r / W), bc = Math.min(nbc - 1, Math.floor(cd.c / W));
-      if (marks && marks[cd.r * cols + cd.c] & (cd.type === 'L' ? 1 : 2)) continue;
-      for (var di = -1; di <= 1 && !near; di++) {
-        for (var dj = -1; dj <= 1 && !near; dj++) {
-          var list = bands[bandOf(cd.type, br + di, bc + dj)];
-          for (var j = 0; list && j < list.length && !near; j++) {
-            var e = list[j];
-            if (Math.abs(e.r0 - cd.r) > rad) continue;
-            var dcol = Math.abs(e.c0 - cd.c);
-            if (dcol > cols / 2) dcol = cols - dcol;
-            if (dcol <= rad) near = true;
-          }
-        }
-      }
-      if (near) continue;
-      var pt = patch(cd);
-      if (!pt) continue;
-      var kept = { type: cd.type, r: pt.r, c: pt.c, v: fdef.lo + (cd.q - 1) * k, r0: cd.r, c0: cd.c }, key = bandOf(cd.type, br, bc);
-      out.push(kept);
-      (bands[key] || (bands[key] = [])).push(kept);
+    var terrain = opts.terrain && opts.terrain.length === rows * cols ? opts.terrain : null, tmin = opts.terrainMin > 0 ? opts.terrainMin : 1;
+    function high(rr, cc) { return !!terrain && terrain[Math.round(rr) * cols + (((Math.round(cc) % cols) + cols) % cols)] >= tmin; }
+    var mg = Math.max(0, Math.floor(opts.margin || 0)), stride = Math.max(1, Math.floor(opts.stride || 1)), sc0 = opts.scratch || {};
+    if (opts.promNodesMax > 0) {                              // coarser blocks for a large window (the world view): the pass stays cheap
+      var pw = (r1 - r0 + 1 + 2 * mg) * Math.min(cols, n + 2 * mg);
+      while (pw / (stride * stride) > opts.promNodesMax) stride++;
     }
-    return out.map(function (e) { return { type: e.type, r: e.r, c: e.c, v: e.v }; });
+    var pm = { L: null, H: null }, blocks = null;
+    function promOf(cd) {
+      var low = cd.type === 'L';
+      if (!blocks) blocks = blockExtremes(frame, r0 - mg, r1 + mg, (((win.c0 - mg) % cols) + cols) % cols, n + 2 * mg, stride, sc0.B || (sc0.B = {}));
+      if (!pm[cd.type]) pm[cd.type] = prominenceMap(frame, 0, 0, 0, 0, stride, low, sc0[cd.type] || (sc0[cd.type] = {}), blocks);
+      return pm[cd.type].at(cd.r, cd.c);
+    }
+    cands.sort(function (a, b) { return a.type !== b.type ? (a.type < b.type ? -1 : 1) : a.r - b.r || a.c - b.c; });
+    var trace = opts.trace || null;                           // (tests, debugging: why a candidate marks nothing)
+    for (var i = 0; i < cands.length; i++) {
+      var cd = cands[i];
+      if (marks && marks[cd.r * cols + cd.c] & (cd.type === 'L' ? 1 : 2)) { if (trace) trace(cd, 'taken'); continue; }
+      var pt = patch(cd);
+      if (!pt) { if (trace) trace(cd, 'patch'); continue; }
+      if (high(cd.r, cd.c) || high(pt.r, pt.c)) { if (trace) trace(cd, 'terrain'); continue; }
+      var prom = promOf(cd);
+      if (prom < ISO_HL_PROM_CODES) { if (trace) trace(cd, 'prominence ' + prom); continue; }
+      var clamp = cd.q === 1 ? -1 : cd.q === 255 ? 1 : 0;
+      out.push({ type: cd.type, r: pt.r, c: pt.c, v: fdef.lo + (cd.q - 1) * k, q: cd.q, prom: prom, clamp: clamp });
+    }
+    return out;
   }
   // The projection of an isoValues window: node row -> container y (exact at the nodes, linear between), node column ->
   // x per world copy the view shows (longitudes unwrapped from the window's first column: the date line falls out).
@@ -2748,15 +2851,31 @@
     }
     return out;
   }
-  // The H / L centres in container pixels, every world copy the view shows, kept ISO_HL_EDGE_PX inside the view:
-  // [{type, x, y, text}] (text = the pressure rounded to the hPa).
+  // The H / L centres in container pixels, every world copy the view shows, kept ISO_HL_EDGE_PX inside the view, then one
+  // mark per ISO_HL_PX among the drawn ones: the most prominent first (then the deeper, then the first found), a mark of
+  // the same kind within ISO_HL_PX of a kept one or of the other kind whose box overlaps a kept one's goes.
+  // -> [{type, x, y, text}] (text = the pressure rounded to the hPa; "<=920" / ">=1060" at the field's clamped ends).
   function projectCentres(cs, grid, view) {
-    var n = TILE * Math.pow(2, view.z), out = [], e = ISO_HL_EDGE_PX;
+    var n = TILE * Math.pow(2, view.z), all = [], e = ISO_HL_EDGE_PX;
     for (var i = 0; i < cs.length; i++) {
-      var lng = grid.lon0 + cs[i].c * grid.dlon, x0 = (lng + 180) / 360 * n - view.ox;
-      var y = forwardPixel(grid.lat0 + cs[i].r * grid.dlat, 0, view.z).y - view.oy;
+      var ce = cs[i], lng = grid.lon0 + ce.c * grid.dlon, x0 = (lng + 180) / 360 * n - view.ox;
+      var y = forwardPixel(grid.lat0 + ce.r * grid.dlat, 0, view.z).y - view.oy;
       if (y < e || y > view.h - e) continue;
-      for (var x = x0 - Math.floor((x0 - e) / n) * n; x <= view.w - e; x += n) out.push({ type: cs[i].type, x: x, y: y, text: String(Math.round(cs[i].v)) });
+      var text = ce.clamp < 0 ? '\u2264' + Math.round(ce.v) : ce.clamp > 0 ? '\u2265' + Math.round(ce.v) : String(Math.round(ce.v));
+      var prom = ce.prom === undefined ? ISO_HL_PROM_CAP : ce.prom, depth = ce.q === undefined ? 0 : (ce.type === 'L' ? 256 - ce.q : ce.q);
+      for (var x = x0 - Math.floor((x0 - e) / n) * n; x <= view.w - e; x += n) all.push({ type: ce.type, x: x, y: y, text: text, prom: prom, depth: depth, i: i });
+    }
+    all.sort(function (p, q) { return q.prom - p.prom || q.depth - p.depth || p.i - q.i || p.x - q.x; });
+    var kept = [], out = [];
+    for (var j = 0; j < all.length; j++) {
+      var m = all[j], taken = false, mb = markBox(m);
+      for (var h = 0; h < kept.length && !taken; h++) {
+        var o = kept[h];
+        if (o.type === m.type) { if (Math.hypot(o.x - m.x, o.y - m.y) <= ISO_HL_PX) taken = true; }
+        else { var ob = markBox(o); if (mb.x0 < ob.x1 + ISO_LABEL_GAP_PX && ob.x0 < mb.x1 + ISO_LABEL_GAP_PX && mb.y0 < ob.y1 + ISO_LABEL_GAP_PX && ob.y0 < mb.y1 + ISO_LABEL_GAP_PX) taken = true; }
+      }
+      if (taken) continue;
+      kept.push(m); out.push({ type: m.type, x: m.x, y: m.y, text: m.text });
     }
     return out;
   }
@@ -2827,9 +2946,17 @@
   }
   // The box an H / L mark covers (the letter above, the pressure below its centre).
   function markBox(k) { return { x0: k.x - 16, x1: k.x + 16, y0: k.y - 15, y1: k.y + 16 }; }
+  // A rounded rectangle's path (a pill, a mark's clearing).
+  function roundRectPath(ctx, x0, y0, w, h, r) {
+    ctx.moveTo(x0 + r, y0); ctx.lineTo(x0 + w - r, y0); ctx.quadraticCurveTo(x0 + w, y0, x0 + w, y0 + r);
+    ctx.lineTo(x0 + w, y0 + h - r); ctx.quadraticCurveTo(x0 + w, y0 + h, x0 + w - r, y0 + h);
+    ctx.lineTo(x0 + r, y0 + h); ctx.quadraticCurveTo(x0, y0 + h, x0, y0 + h - r);
+    ctx.lineTo(x0, y0 + r); ctx.quadraticCurveTo(x0, y0, x0 + r, y0); ctx.closePath();
+  }
   // One canvas pass: every line halo first, then every core (two strokes), then the pills (rotated along their lines,
-  // drawn over them), then the H / L marks. A line is drawn as quadratic curves through the midpoints of its segments,
-  // with its points as control points (a smooth curve that keeps an open line's ends).
+  // drawn over them), then the H / L marks, the lines cleared under each mark's box (ISO_HL_CLEAR_PX around it) so a mark
+  // stays legible inside a deep cyclone's packed rings (G32 re-check H-8). A line is drawn as quadratic curves through the
+  // midpoints of its segments, with its points as control points (a smooth curve that keeps an open line's ends).
   function drawIsobars(ctx, paths, labels, st, marks) {
     st = st || ISO_STYLE;
     ctx.beginPath();
@@ -2855,17 +2982,18 @@
       for (var i = 0; i < labels.length; i++) {
         var b = labels[i], x0 = -b.w / 2, y0 = -b.h / 2, r = Math.min(st.r, b.h / 2);
         ctx.save(); ctx.translate(b.x, b.y); if (b.a) ctx.rotate(b.a);
-        ctx.beginPath();
-        ctx.moveTo(x0 + r, y0); ctx.lineTo(x0 + b.w - r, y0); ctx.quadraticCurveTo(x0 + b.w, y0, x0 + b.w, y0 + r);
-        ctx.lineTo(x0 + b.w, y0 + b.h - r); ctx.quadraticCurveTo(x0 + b.w, y0 + b.h, x0 + b.w - r, y0 + b.h);
-        ctx.lineTo(x0 + r, y0 + b.h); ctx.quadraticCurveTo(x0, y0 + b.h, x0, y0 + b.h - r);
-        ctx.lineTo(x0, y0 + r); ctx.quadraticCurveTo(x0, y0, x0 + r, y0); ctx.closePath();
+        ctx.beginPath(); roundRectPath(ctx, x0, y0, b.w, b.h, r);
         ctx.fillStyle = st.pill; ctx.fill();
         ctx.fillStyle = st.text; ctx.fillText(b.text, 0, 0.5);
         ctx.restore();
       }
     }
     if (marks && marks.length) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out'; ctx.fillStyle = '#000'; ctx.beginPath();
+      for (var g = 0; g < marks.length; g++) { var mb = markBox(marks[g]), e = ISO_HL_CLEAR_PX; roundRectPath(ctx, mb.x0 - e, mb.y0 - e, mb.x1 - mb.x0 + 2 * e, mb.y1 - mb.y0 + 2 * e, 7); }
+      ctx.fill();
+      ctx.restore();
       ctx.save();
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = st.hlText;
       ctx.shadowColor = st.hlShadow; ctx.shadowBlur = st.hlBlur;
@@ -2883,7 +3011,7 @@
   // the event (never on the stack of a frame landing); it is hidden while the map zooms.
   function IsobarLayer(map) {
     this.map = map; this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
-    this.frame = null; this.grid = null; this.entry = null; this.fdef = null; this.S = null;
+    this.frame = null; this.grid = null; this.entry = null; this.fdef = null; this.S = null; this.P = {}; this.terrain = null;
     this.pending = null; this._listeners = []; this.lastMs = 0; this.drawn = { lines: 0, labels: 0, hl: 0 };
   }
   IsobarLayer.prototype.raf = FlowAnimator.prototype.raf;
@@ -2917,7 +3045,14 @@
     if (this.pending !== null) { this.caf(this.pending); this.pending = null; }
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
     if (this.canvas) { if (this.canvas.remove) this.canvas.remove(); this.canvas = null; this.ctx = null; }
-    this.frame = null; this.grid = null; this.entry = null; this.fdef = null; this.S = null; this.v = null;
+    this.frame = null; this.grid = null; this.entry = null; this.fdef = null; this.S = null; this.P = {}; this.v = null;
+  };
+  // The half grid's terrain codes (terrain_half.png; null = none: marks over high ground as well): a redraw if a frame is on.
+  IsobarLayer.prototype.setTerrain = function (q) {
+    var t = q && q.length === 720 * 361 ? q : null;
+    if (t === this.terrain) return;
+    this.terrain = t;
+    if (this.frame) this._schedule();
   };
   // The pressure frame of the step on the map (half grid, the manifest's `pres` field definition, its manifest entry).
   IsobarLayer.prototype.setData = function (frame, grid, entry, fdef) {
@@ -2947,8 +3082,8 @@
     return out[0] ? this.fdef.lo + (out[0] - 1) / 254 * (this.fdef.hi - this.fdef.lo) : null;
   };
   // One redraw: the nodes under the view, the interval for the zoom and the view's width, the lines (smoothed), the H / L
-  // marks (from the frame's own codes: exact centres and pressures), the pills (only from ISO_LABEL_MIN_Z and never while
-  // the whole world is in view).
+  // marks (from the frame's own codes: exact centres and pressures; by prominence, on the lines' stride, none on high
+  // ground), the pills (only from ISO_LABEL_MIN_Z and never while the whole world is in view).
   IsobarLayer.prototype._draw = function () {
     if (!this.canvas || !this.ctx) return;
     var v = viewOf(this.map, null);
@@ -2958,10 +3093,12 @@
     var t0 = nowMs(), ctx = this.ctx, grid = this.grid, worldPx = TILE * Math.pow(2, v.z);
     var span = v.w / worldPx * 360, interval = isoInterval(v.z, span);
     var win = nodeWindow(v, grid, this.frame, 0), nodePx = worldPx * Math.abs(grid.dlon) / 360;
-    var g = isoValues(this.frame, this.fdef, win, isoStride(v.z, grid.dlon), this.S);
+    var stride = isoStride(v.z, grid.dlon), g = isoValues(this.frame, this.fdef, win, stride, this.S);
     this.S = g.scratch;
     var paths = projectIsolines(traceIsolines(g.V, g.R, g.C, interval), g, grid, v);
-    var marks = projectCentres(findCentres(this.frame, this.fdef, win, Math.max(1, Math.round(ISO_HL_PX / nodePx)), Math.max(ISO_HL_MIN_HPA, interval / 4)), grid, v);
+    var rad = Math.max(1, Math.round(ISO_HL_PX / nodePx));
+    var marks = projectCentres(findCentres(this.frame, this.fdef, win, rad, { stride: stride, margin: Math.max(2 * rad, 16), grid: grid,
+      terrain: this.terrain, terrainMin: ISO_TERRAIN_M / TERRAIN_M_PER_CODE, promNodesMax: ISO_PROM_NODES_MAX, scratch: this.P }), grid, v);
     var labels = [];
     if (v.z >= ISO_LABEL_MIN_Z && span < ISO_WORLD_DEG) {
       ctx.font = ISO_STYLE.font;
@@ -3504,7 +3641,14 @@
     // set under a new time); the first picture does not; a missing or failed pressure frame never holds a step.
     // A slow pressure frame holds the step at most PRES_WAIT_MS (owner, G32): the step then lands without lines and they
     // appear when the frame arrives (_ensurePres delivers it to the step on the map).
-    var pp = this._wantPres() && this.layer && this.layer.hasFrame() && !this._isUnavailable(idx) ? capWait(this._kindReady(idx, 'pres'), PRES_WAIT_MS) : null;
+    // The wait is counted per step: a goto of the same step issued again (a zoom across the half / full threshold, a
+    // re-issued tick) waits only the rest of it (G32 re-check S-1); the record goes when the step lands or the target changes.
+    var pp = null;
+    if (this._wantPres() && this.layer && this.layer.hasFrame() && !this._isUnavailable(idx)) {
+      var pkey = this._key(idx, 'pres'), now = Date.now();
+      if (!this._presWait || this._presWait.key !== pkey) this._presWait = { key: pkey, since: now, timer: null };
+      pp = capWait(this._kindReady(idx, 'pres'), Math.max(0, PRES_WAIT_MS - (now - this._presWait.since)), this._presWait);
+    } else this._presWait = null;
     var waits = [p]; if (pd) waits.push(pd); if (pp) waits.push(pp);
     return (waits.length > 1 ? Promise.all(waits).then(function (all) { return all[0]; }) : p).then(function (frame) {
       if ((sig && sig.aborted) || self.target !== idx || !self.layer || self.manifest !== m || self.field !== field || self.res !== res) throw abortError();
@@ -3516,6 +3660,7 @@
         self.layer.setFrame(frame, half ? m.grid_half : m.grid, field, m.fields[field], self._lut(), m.frames[idx]);
       }
       self.frameIndex = idx; self._pendingRestore = null; self._carry = null;   // a frame is on the map: the saved state is spent
+      self._presWait = null;
       self._persist();
       self._syncLook();
       self._attribute();
@@ -3525,18 +3670,20 @@
       self._prefetch();
     });
   };
-  // The step the ring is planned around: a pending seek / step target, else the frame on the map.
-  // `p` or PRES_WAIT_MS, whichever settles first (never rejects: _kindReady never does); the timer is cleared with p.
-  function capWait(p, ms) {
+  // `p` or `ms`, whichever settles first (never rejects: _kindReady never does); the timer is cleared with p, and kept in
+  // `rec.timer` (the step's wait record) so that Off can clear it too.
+  function capWait(p, ms, rec) {
     var tm = null;
-    return Promise.race([p.then(function () { if (tm !== null) clearTimeout(tm); }), new Promise(function (r) { tm = setTimeout(r, ms); })]);
+    function done() { if (tm !== null) { clearTimeout(tm); tm = null; } if (rec && rec.timer !== null) rec.timer = null; }
+    return Promise.race([p.then(done), new Promise(function (r) { tm = setTimeout(function () { tm = null; if (rec) rec.timer = null; r(); }, ms); if (rec) rec.timer = tm; })]);
   }
+  // The step the ring is planned around: a pending seek / step target, else the frame on the map.
   Overlay.prototype._anchorIndex = function () { return this.target !== null ? this.target : this.frameIndex; };
   // ?ovdebug=1: the animator's and the scheduler's state in the panel, once a second (the owner's iPad; text only).
   Overlay.prototype._debugText = function () {
     var f = this.flow ? this.flow.debugState() : null, dec = frameDecoder ? (frameDecoder.dead ? 'dead' : (frameDecoder.worker ? 'worker' : 'idle')) : (decoderDead ? 'dead' : 'none');
     var o = { mode: this.mode, model: this.model, playing: this.playing, speed: this.speed, frame: this.frameIndex, target: this.target, res: this.res + '/' + this.dres, inflight: Object.keys(this.inflight).length,
-      cache: this.cache.size() + '/' + this.dcache.size() + '/' + this.pcache.size(), decoder: dec, isobars: this.iso ? (this.iso.entry ? this.iso.entry.step : '-') + ' ' + this.iso.drawn.lines + 'l/' + this.iso.drawn.labels + 'p ' + this.iso.lastMs + 'ms' : (this.isobars ? 'none' : 'off'), hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
+      cache: this.cache.size() + '/' + this.dcache.size() + '/' + this.pcache.size(), decoder: dec, isobars: this.iso ? (this.iso.entry ? this.iso.entry.step : '-') + ' ' + this.iso.drawn.lines + 'l/' + this.iso.drawn.labels + 'p/' + this.iso.drawn.hl + 'm ' + this.iso.lastMs + 'ms' + (this.iso.terrain ? ' terrain' : ' no-terrain') : (this.isobars ? 'none' : 'off'), hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
     var lines = [], k;
     for (k in o) lines.push(k + ': ' + o[k]);
     if (this.sst) lines.push('sst: ' + this.sst.status + ' ' + (this.sst.manifest ? this.sst.manifest.run : '-') + ', cells ' + (this.sst.bytes / 1048576).toFixed(1) + ' MB, in flight ' + Object.keys(this.sst.inflight).length);
@@ -3955,6 +4102,7 @@
     if (this.abort) { this.abort.abort(); this.abort = null; }
     for (var k in this.inflight) this.inflight[k].abort.abort();
     this.inflight = {};
+    if (this._presWait) { if (this._presWait.timer !== null) clearTimeout(this._presWait.timer); this._presWait = null; }
   };
   Overlay.prototype.unmount = function () {
     var self = this;
@@ -4133,8 +4281,23 @@
   // The isobar layer exists exactly while the isobars are wanted (the setting on, wind shown, the run has the field).
   Overlay.prototype._ensureIso = function () {
     if (!this._wantPres()) { if (this.iso) { this.iso.detach(); this.iso = null; } return; }
-    if (!this.iso) { this.iso = new IsobarLayer(this.map); this.iso.attach(); }
+    if (!this.iso) {
+      var self = this, iso = this.iso = new IsobarLayer(this.map);
+      iso.attach();
+      loadTerrain(this.opts).then(function (q) { if (self.iso === iso) iso.setTerrain(q); });
+    }
   };
+  // The half grid's terrain (the asset terrain_half.png, one fetch per page: the marks of every later layer share it); null
+  // when it cannot be had (the marks are then drawn over high ground too; asked again by the next layer).
+  var terrainPromise = null;
+  function loadTerrain(opts) {
+    if (!terrainPromise) {
+      terrainPromise = new Promise(function (res) { res(decodeFrame(assetUrl(opts, 'terrain_half.png'), null, { cols: 720, rows: 361 }, null, true)); })
+        .then(function (f) { return f && f.q && f.q.length === 720 * 361 ? f.q : null; })
+        .catch(function () { terrainPromise = null; return null; });
+    }
+    return terrainPromise;
+  }
   // The pressure frame for idx, delivered to the layer only if the LAYER shows that step of that run at this field (its
   // frame entry); a failure is swallowed: the wind plays on without its isobars.
   Overlay.prototype._ensurePres = function (idx) {
@@ -4230,6 +4393,16 @@
     var v = this.iso.valueAt(lat, lng);
     return v === null ? null : Math.round(v);
   };
+  // The readout's text for it: "<= 920" / ">= 1060" within half a code of the field's clamped ends (the stored range;
+  // a typhoon's eye below 920 hPa reads "<= 920", not "920"), else the rounded value.
+  Overlay.prototype._hpaText = function (lat, lng) {
+    var h = this._hpaAt(lat, lng);
+    if (h === null) return null;
+    var f = this.iso.fdef, v = this.iso.valueAt(lat, lng), half = (f.hi - f.lo) / 254 / 2;
+    if (v <= f.lo + half) return '≤ ' + Math.round(f.lo);
+    if (v >= f.hi - half) return '≥ ' + Math.round(f.hi);
+    return String(h);
+  };
   Overlay.prototype._bindReadout = function () {
     var self = this, map = this.map, el = mk('div', 'ov-readout'); el.hidden = true;
     map.getContainer().appendChild(el); this.readout = el;
@@ -4245,7 +4418,7 @@
       var u = unitOf(layer.field, self.opts.getUnit()), f = layer.fdef;
       var txt = u.f(v).toFixed(u.d) + ' ' + u.label;
       if (v <= f.lo + 1e-9 && f.lo > 0) txt = '≤ ' + txt; else if (v >= f.hi - 1e-9) txt = '≥ ' + txt;   // "<=" only where values below lo exist (Tp)
-      var hpa = self._hpaAt(latlng.lat, latlng.lng);
+      var hpa = self._hpaText(latlng.lat, latlng.lng);
       if (hpa !== null) txt += ' · ' + hpa + ' hPa';
       el.textContent = txt; el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false;
     }
@@ -4980,7 +5153,7 @@
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
-      ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_MIN_HPA: ISO_HL_MIN_HPA, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,
+      ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,
       ISO_LABEL_MIN_PX: ISO_LABEL_MIN_PX, ISO_LABEL_AT: ISO_LABEL_AT, ISO_LABEL_EDGE_PX: ISO_LABEL_EDGE_PX,
       vectorNodes: vectorNodes, flowField: flowField, FLOW_SPEED: FLOW_SPEED, dirFieldOk: dirFieldOk, dirRes: dirRes, DIR_FIELDS: DIR_FIELDS, PARTICLE_LIFE_MS: PARTICLE_LIFE_MS,
       latOfWorldY: latOfWorldY, lngOfWorldX: lngOfWorldX, PARTICLE_PX_PER_S: PARTICLE_PX_PER_S, PARTICLE_MIN: PARTICLE_MIN, PARTICLE_MAX: PARTICLE_MAX,

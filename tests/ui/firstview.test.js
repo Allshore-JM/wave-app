@@ -197,6 +197,7 @@ function runForget(stored, list, opts) {
   return { store, notes, docL, window, F };
 }
 const LIST2 = [{ id: '51201' }, { id: '46026' }, { id: 'NW-HFO51' }];
+for (let i = 0; i < 120; i++) LIST2.push({ id: 'ST' + (1000 + i) });       // a real list (734 today); under 100 entries nothing is decided
 
 test('a default the station list still has, or a forecast point, is kept and nothing is said', () => {
   for (const d of [{ id: '46026' }, { id: ' 46026 ' }, { id: 'NW-HFO51' }, { id: 'pt_21667N_158054W' }]) {
@@ -229,7 +230,10 @@ test('a default the list no longer has (or one the id rule refuses) is forgotten
   assert.equal(r.notes.length, 1); assert.ok(/OLD99/.test(r.notes[0][0]) && /next time/.test(r.notes[0][0])); assert.equal(r.notes[0][1], 'OLD99');
   assert.ok(r.docL['allshore:forecast'][0].o.once, 'said again once when the window is up');
   const bad = runForget({ id: 'x y' }, LIST2); assert.equal(bad.store['allshore.defaultStation.v1'], undefined);
-  for (const list of [[], null, 'x']) { const k = runForget({ id: 'OLD99' }, list); assert.notEqual(k.store['allshore.defaultStation.v1'], undefined, JSON.stringify(list)); assert.deepEqual(k.notes, []); }
+  for (const list of [[], null, 'x', LIST2.slice(0, 99), [{ id: '51201' }, { id: '51202' }, { id: '51203' }, { id: '51204' }, { id: '51205' }, { id: '51206' }, { id: '51207' }, { id: '51208' }, { id: '51209' }, { id: '51210' }]]) {
+    const k = runForget({ id: 'OLD99' }, list); assert.notEqual(k.store['allshore.defaultStation.v1'], undefined, 'kept: ' + (Array.isArray(list) ? list.length + ' entries' : JSON.stringify(list))); assert.deepEqual(k.notes, []);   // the 10-buoy fallback list decides nothing (G32 re-check P-1)
+  }
+  assert.equal(runForget({ id: 'OLD99' }, LIST2.slice(0, 100)).store['allshore.defaultStation.v1'], undefined, '100 entries: judged');
   const blocked = runForget({ id: 'OLD99' }, LIST2, { blocked: true }); assert.deepEqual(blocked.notes, [], 'storage refuses: nothing said');
   const early = runForget({ id: 'OLD99' }, LIST2, { noApp: true });
   assert.deepEqual(early.notes, []); assert.equal(early.store['allshore.defaultStation.v1'], undefined, 'forgotten before the window is up');

@@ -971,6 +971,7 @@ def test_geo_base_reaches_the_head_and_the_first_view_block_is_in_place(client, 
     assert save.index("if (map.getContainer && map.getContainer().classList.contains('geo-pending')) return;") < save.index("sessionStorage.setItem(")
     assert "function forgetMapView() { try { sessionStorage.removeItem(mapKey); } catch (e) { /* storage blocked */ } }" in body
     assert "forgetRetiredDefault(forecastStationsData);" in body
+    assert "if (!Array.isArray(list) || list.length < 100) return;" in body   # the server's 10-buoy fallback list decides nothing (G32 re-check P-1)
     # a default point is decided only once forecast.js has run (the list can land first: found 2026-10-18)
     assert "if (id.indexOf('pt_') === 0 && !(F && F.parsePointId)) {" in body
     assert "if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { forgetRetiredDefault(list); }, { once: true });" in body

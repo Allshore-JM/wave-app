@@ -464,3 +464,80 @@ Release:
   B), the whole-world timed cell against production, playback.
 - A short fresh check at MAX (a new rule).
 - Then step 12.
+
+## Fix round 3 (Fable 5.1 HIGH, 2026-10-18; overlay 2.20.0)
+feat/isobars-geo @ 39e6992 (the code), e083c10 (the golden, its own commit), 32e6418, 636e446 (the page pins by
+behaviour), 414bebe (the mutants' test gaps pinned). The owner's four calls of the re-check built as scoped; the deviations are named.
+
+### The eight items
+1. **H / L by prominence** (`findCentres`, `prominenceMap`, `projectCentres`). Candidates by the square test (no node undercuts
+   / overtops within `rad` nodes; an equal code counts only among the 8 neighbours, the earlier in raster order stands) and the
+   patch rules (8-connected equal codes; a shelf, a patch over 4,096 nodes or one spanning half the world marks nothing).
+   Prominence = the merge tree of the window widened by `margin` = max(2 rad, 16) nodes: a counting sort by code, union-find
+   over 8-neighbour blocks, the weaker centre absorbed at level t with prominence t - its code; the strongest of the window
+   is unbounded (`ISO_HL_PROM_CAP`). Ties by the GLOBAL raster order (`earlier()`), never the window's, so a view never changes
+   a centre's rank; equal-code sets share one representative (an absorbed member had come back with 0: found by a test).
+   A mark needs ISO_HL_PROM_CODES 2 codes (1.1 hPa). DEVIATION (cost): the pass runs on blocks of the lines' stride, coarsened
+   until the window holds at most ISO_PROM_NODES_MAX 16,000 blocks (`blockExtremes` = one scan for both kinds); the 1920-px
+   world view 10.3 -> 6.5 ms for the whole H / L pass (2.19.5: 3.5 ms).
+   Exclusivity on the DRAWN marks in `projectCentres`: sorted by prominence, then depth, then index; a mark of the same kind
+   within ISO_HL_PX 110 px of a kept one is dropped; an H and an L whose boxes (+ ISO_LABEL_GAP_PX) overlap keep the more
+   prominent. A twin beyond the view hides nothing (H-6, H-7). The 110-px ring-depth test is gone (H-3).
+2. **High ground** (`static_overlay/terrain_half.png`, 720 x 361, 8-bit, 20 m a code = the highest 0.25-degree node of the
+   NOAA GFS model terrain (HGT:surface, f000, run 2026101818) over each half node's 3 x 3 footprint; built by
+   `tools/model_frames/make_terrain_mask.py`, served through `_OVERLAY_ASSETS`, pinned raw with the other assets). A
+   candidate at or above ISO_TERRAIN_M / 20 at its own node or at its patch's middle marks nothing. Loaded once per page by
+   `loadTerrain` (outside the frame scheduler; a failure resets the cache and the marks draw as before), `IsobarLayer.
+   setTerrain`. THRESHOLD: 400 m, not the owner's "about 500": on the 22 live frames of the re-check 500 m still left
+   Guadalcanal, Socotra and New Britain; 400 m leaves no persistent mountain site on either model (GFS 47 -> 0, ECMWF 71 ->
+   0 of R2's sites). The Big Island "H" (11 of 11 GFS and 10 of 10 ECMWF steps at the default view) is gone (H-1).
+3. **Clamped ends** (H-2): a compact patch (at most ISO_CLAMP_PATCH_MAX 16 nodes) of code 1 / 255 within ISO_CLAMP_LAT 70
+   degrees of the equator is a centre with the text "≤920" / "≥1060" (codes 2 and 254 ordinary); `_hpaText` writes
+   "≤ 920 hPa" / "≥ 1060 hPa" within half a code of the range's ends.
+4. **Legibility** (H-8): `drawIsobars` clears a rounded box (ISO_HL_CLEAR_PX 2 around the mark box) with `destination-out`
+   before the letters, the way a pill does (`roundRectPath` shared).
+5. **The pressure cap per step** (S-1): `_presWait = {key, since, timer}`; a goto of the same step issued again (a zoom across
+   the half / full threshold) waits only the rest of the second; the record goes at the landing, on a target change and in
+   `abortAll()` (R1 S3: no timer after Off).
+6. **Tests**: `tests/overlay/isobars.test.js` rewritten around an INDEPENDENT oracle (`bruteCentres`: the square test, patches,
+   clamps, terrain and a Dijkstra-minimax prominence on its own block reduction with a binary heap; `refValues` for the
+   block means and the blur): random fields, windows across the seam and the poles, strides 2-7, margins; the reviewers'
+   cases on the real PRMSL frame; the layer's own inputs (R1 H25 / H26); R1's test gaps H22, H24, L3, L5, L6, L12, S3; the
+   terrain layer and the cleared boxes; 36 tests. `playback.test.js` + 4 (the cap per step on a fake clock, the timer after
+   Off, the clamp readout, the terrain wiring incl. a 503; the harness keeps the terrain request out of `w.fetches`).
+   Flag tests: the sixth asset served and pinned, the mask's geometry, the needles (`ISO_HL_MIN_HPA` gone).
+7. **P-1**: `forgetRetiredDefault` decides only on a list of 100 entries or more (`tests/ui/firstview.test.js`: a 123-entry
+   list judges, 99 and the 10-buoy fallback keep; `test_index_page.py` pins the floor).
+8. **D-1**: the comment moved; R1's five source-text-only page pins (P2 P5 P7 P11 P12) are behaviour tests: the firstview
+   harness's `closest()` matches real classes (a marker on the map counts as acting; `.leaflet-control` and `.ov-sheet`
+   do not); `saveMapView`, `measureTopRight` and the stations-load call site run from the template (nothing kept while
+   geo-pending; the tools bar counted while shown and left out when hidden; the list kept, drawn, judged, then the pending
+   focus spent); the My points block trims a padded default and refuses one with a space. The five mutants die on the Node
+   suites alone (scratch g32/fix3/mut_d1.py).
+README: the H / L paragraph (prominence, the 400-m mask, ≤920, the cleared boxes, the per-step cap). Accepted as scoped:
+O1 (one pill per polyline), O2 (a mark under a panel).
+
+### Measured on R1's 22 live frames (scratch g32/fix3/survey.js, both models, the re-check's views)
+- Persistent mountain sites (R2's 61 per model at zoom 6): 0 on both models at 400 m.
+- The typhoon (ECMWF code 1): "L ≤920" at every zoom; GFS's 928-hPa copy "L 928".
+- Broad systems: the Tasman high keeps its H at zoom 5-7 and beyond, the Greenland Sea low its L to zoom 9, the 56 S low at
+  6-9, the NW Pacific high at 6 (H-3 cases of the re-check).
+- Marks per frame: the 1920-px world view 27.4 -> 19.8, the tropics at zoom 4 14.4 -> 5.2, Hawaii zoom 6 1.7 -> 0.1 (the
+  Big Island H gone; a real centre draws when there is one).
+- Same-kind pairs under 110 px and H / L pairs under 32 px: 0 (were H-4 / H-6).
+
+### Suites and mutants
+pytest 1,190 passed (full run); Node overlay 408, UI 430. Mutants on a scratch copy (scratch
+g32/fix3/mut_fix3.py, --test-force-exit + a subprocess timeout): 37 mutants of the new rule (prominence ties / alias / at(), the flip, 4- vs 8-connectivity, the cap, the margin, the threshold, the coarsening; the clamp patch limit / latitude / texts; the terrain at the middle / threshold / size; the pixel pass order, the same-kind and cross-kind rules, the clamp text, the depth; the cleared boxes; the layer's terrain / redraw / radius; the per-step cap, its clearing at the landing and at Off, the readout clamp and call site, the terrain fetched once and dropped on failure; the page's floor) + the five D-1 page mutants: 33 killed by behaviour tests after five test gaps were pinned (P5 the world stride: blocks of 7 across the seam lost 58 of 165 real-frame centres; C6 the inclusive threshold; C7 a high terrain of another size; L3 the rounded radius at zoom 4.5; O1 the S-1 test re-issued the goto without a res change, so the first goto's own timer landed the step under the mutant too: it now re-issues as `_checkRes` does), 1 by a needle (O5 the readout's `_hpaText` call site: the readout closure is not driven by the Node harness), 2 equivalent (C1 a code-255 "low" is the window's maximum, prominence 0 or a patch too large to be a centre; O3 on Off the aborted pressure load resolves the race and `capWait`'s `done` clears the timer, the S3 test shows 0 timers either way); the five page mutants 5 of 5 by behaviour. Commits 414bebe (the pins).
+
+### Owner awareness
+- A real centre over high ground gets no mark either (a Mongolian winter high, a Kansas low above 400 m): the mask
+  cannot tell a reduction bump from a real system.
+- The H / L pass costs ~3 ms more than 2.19.5 at the 1920-px world view (6.5 vs 3.5 ms); the timed cell measures it.
+- A deep but narrow low that rises less than 1.1 hPa before meeting a stronger centre has no L (the prominence rule).
+
+### Release
+Overlay 2.20.0 (js, css, the three animals, `terrain_half.png`); the golden re-captured once (the template's floor).
+Next: the test site at MAX (the H / L survey on both models live incl. the Big Island, the typhoon, broad highs at zoom
+6-9; the whole-world timed cell vs production; playback; the per-step cap; the terrain asset served), a short fresh check
+at MAX (a new rule), then step 12.

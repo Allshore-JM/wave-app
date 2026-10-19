@@ -2667,14 +2667,16 @@
   // call, 2026-10-18):
   // 1. candidates: a node of the view's window (`win`, nodeWindow) that no node within `rad` grid nodes undercuts (L) /
   //    overtops (H) (rows beyond the grid's ends absent, columns wrapping); an equal code counts against it only as one of
-  //    its 8 neighbours, where the earlier node in raster order stands;
+  //    its 8 neighbours inside the window, where the earlier node in raster order stands (a patch that runs out of the
+  //    window keeps a candidate inside it: a broad flat high at zoom 9, G32 fix-round-3 verification);
   // 2. a candidate's patch of equal codes (8-connected) is taken for its kind (one mark per patch) and marks nothing when
   //    it touches a lower (L) / higher (H) node (a shelf), holds more than ISO_PATCH_MAX nodes or spans half the world's
   //    columns (it may wrap); at the field's clamped ends (code 1: a typhoon below 920 hPa; code 255: a high above 1060)
   //    only a compact patch (ISO_CLAMP_PATCH_MAX nodes) within ISO_CLAMP_LAT degrees of the equator marks, as "<=920" /
   //    ">=1060" (the polar plateaus' clamped patches never); the centre sits at the patch's middle;
   // 3. no mark on high ground: opts.terrain (the half grid's terrain codes, terrain_half.png) at or above opts.terrainMin
-  //    at the candidate or at the middle (the sea-level pressure both models reduce from the surface leaves a fixed bump
+  //    at the patch's first node in raster order or at its middle (never at the candidate that found the patch: which one
+  //    does depends on the view) (the sea-level pressure both models reduce from the surface leaves a fixed bump
   //    on every mountain node: an "H" on the Big Island at every step, H / L pairs on mountain slopes);
   // 4. prominence (prominenceMap over the window widened by opts.margin nodes, on blocks of opts.stride nodes, coarsened
   //    until the window holds at most opts.promNodesMax blocks when that is given: how far the field must rise (L) /
@@ -2709,16 +2711,16 @@
     function test(r, c, v, low) {
       if (low ? v === 255 : v === 1) return;                 // the far end of the range is no centre of this kind
       var dr, dc, rr, cc, x;
-      for (dr = -1; dr <= 1; dr++) {                          // its 8 neighbours: an equal one earlier in raster order stands
-        rr = r + dr;
+      for (dr = -1; dr <= 1; dr++) {                          // its 8 neighbours: an equal one earlier in raster order
+        rr = r + dr;                                          // and inside the window stands
         if (rr < 0 || rr >= rows) continue;
         for (dc = -1; dc <= 1; dc++) {
           if (!dr && !dc) continue;
-          cc = c + dc;
-          x = Q[rr * cols + (cc < 0 ? cc + cols : cc >= cols ? cc - cols : cc)];
+          cc = c + dc; cc = cc < 0 ? cc + cols : cc >= cols ? cc - cols : cc;
+          x = Q[rr * cols + cc];
           if (!x) continue;
           if (low ? x < v : x > v) return;
-          if (x === v && (dr < 0 || (!dr && dc < 0))) return;
+          if (x === v && (dr < 0 || (!dr && dc < 0)) && rr >= r0 && rr <= r1 && (wrap || (cc - win.c0 + cols) % cols < n)) return;
         }
       }
       for (var d = 2; d <= rad; d++) {                        // the rest of the square, ring by ring outward
@@ -2771,7 +2773,8 @@
     function patch(cd) {
       if (!marks) marks = new Uint8Array(rows * cols);
       var low = cd.type === 'L', bit = low ? 1 : 2, stack = [cd.r, 0], sr = 0, sc = 0, m = 0, cmin = 0, cmax = 0, shelf = false;
-      marks[cd.r * cols + cd.c] |= bit;
+      var first = cd.r * cols + cd.c;                         // the patch's first node in raster order (rows, global columns)
+      marks[first] |= bit;
       while (stack.length) {
         var pc = stack.pop(), pr = stack.pop();
         sr += pr; sc += pc; m++;
@@ -2784,16 +2787,17 @@
             var qc = pc + j, key = qr * cols + (((cd.c + qc) % cols) + cols) % cols, y = Q[key];
             if (!y) continue;
             if (low ? y < cd.q : y > cd.q) shelf = true;
-            else if (y === cd.q && !(marks[key] & bit)) { marks[key] |= bit; stack.push(qr, qc); }
+            else if (y === cd.q && !(marks[key] & bit)) { marks[key] |= bit; stack.push(qr, qc); if (key < first) first = key; }
           }
         }
       }
       if (shelf || m > ISO_PATCH_MAX || cmax - cmin >= cols >> 1) return null;
+      var fr = Math.floor(first / cols), fc = first - fr * cols;
       if (cd.q === (low ? 1 : 255)) {
-        var lat = opts.grid ? opts.grid.lat0 + cd.r * opts.grid.dlat : 0;
+        var lat = opts.grid ? opts.grid.lat0 + fr * opts.grid.dlat : 0;
         if (m > ISO_CLAMP_PATCH_MAX || Math.abs(lat) > ISO_CLAMP_LAT) return null;
       }
-      return { r: sr / m, c: ((cd.c + sc / m) % cols + cols) % cols };
+      return { r: sr / m, c: ((cd.c + sc / m) % cols + cols) % cols, fr: fr, fc: fc };
     }
     var terrain = opts.terrain && opts.terrain.length === rows * cols ? opts.terrain : null, tmin = opts.terrainMin > 0 ? opts.terrainMin : 1;
     function high(rr, cc) { return !!terrain && terrain[Math.round(rr) * cols + (((Math.round(cc) % cols) + cols) % cols)] >= tmin; }
@@ -2816,7 +2820,7 @@
       if (marks && marks[cd.r * cols + cd.c] & (cd.type === 'L' ? 1 : 2)) { if (trace) trace(cd, 'taken'); continue; }
       var pt = patch(cd);
       if (!pt) { if (trace) trace(cd, 'patch'); continue; }
-      if (high(cd.r, cd.c) || high(pt.r, pt.c)) { if (trace) trace(cd, 'terrain'); continue; }
+      if (high(pt.fr, pt.fc) || high(pt.r, pt.c)) { if (trace) trace(cd, 'terrain'); continue; }
       var prom = promOf(cd);
       if (prom < ISO_HL_PROM_CODES) { if (trace) trace(cd, 'prominence ' + prom); continue; }
       var clamp = cd.q === 1 ? -1 : cd.q === 255 ? 1 : 0;

@@ -875,3 +875,69 @@ disabled rule without a "served" state; two maps; `acts.indexOf(a)`; `writeFavs`
    listeners; U6 a refused write says so and changes nothing; U7 the three tests.
 6. Then the test site at MAX (the reviewer's K-1 and site_names scripts: 0 weak additions, names whole on phones), and a
    short fresh check of the search at MAX if the build changes anything beyond this scope.
+
+## Fix round 5 (Opus 5.5 HIGH, 2026-10-19)
+feat/isobars-geo @ d3073d1 (code), eaf2a26 (golden), then the mutant pins; overlay asset 2.20.3; NOT on test or production yet.
+
+### The rule (K-1, R1-R3)
+- `strongLowSearch(frame, first, need, cap, ss)`: from the patch's FIRST node over the whole grid (8 neighbours, columns
+  wrap, rows end at the poles), level by level: a queue per code, and since the greatest code along the way only rises,
+  each node is queued once at its final level (no heap). It ends at the first node TAKEN that is lower than the patch, or
+  of its code and earlier than the patch's first node in raster order -> weak, prominence = that level minus the patch's
+  code. It is strong once the level being taken reaches the code + need (need = ceil(15 hPa / k) = 28 codes); a node
+  merely queued that high proves nothing. More than `ISO_STRONG_NODES_MAX` = 20,000 nodes taken counts weak (R1). A strong
+  result reports `need` (all it proves; the cap when nothing lower can be reached at all).
+- In `findCentres` the search runs only for a low over high ground below the cap, once per frame and patch (`strongOf`:
+  a Map on the layer's scratch keyed by the patch's first node, reset when the frame's codes, need or cap change), and a
+  strong low's prominence for the 2-code check and the declutter is max(window, search) (R2). `sres` is set per candidate.
+- Saved live frames (scratch g32/v4/verify/strong_zoom.js: 294 frames x 22 high-ground places x zooms 5-10): drawn marks
+  the exception adds 508 / 447 / 337 / 92 / 17 / 3 -> 145 / 80 / 35 / 13 / 4 / 2; under 15 hPa over the whole grid
+  365 / 367 / 302 / 79 / 13 / 1 -> 0. The script still flags 3 / 2 / 1 at zooms 5-7: one low (ECMWF f120, 998.3 hPa,
+  45.25 N 106.25 W, 1,240 m), which an independent threshold flood finds 30 codes (16.5 hPa) prominent; the script reads
+  the prominence at the rounded middle of a two-node patch, a node off the patch (scratch g32/fix5/check_case.js).
+- Lows back over high ground (whole-grid window, zoom-6 radius; scratch g32/v3/strong_low.js): GFS 2026101900 52, ECMWF
+  2026101812 26, GFS 2026101818 77 (78 before: one low the window counted strong is weak over the grid); 0 highs; 0
+  persistent sites; the Taiwan typhoon keeps its L at every step it did.
+
+### The oracle and the pins (R4)
+- The test file's brute force judges the strength by threshold floods over the whole grid (from the patch's first node,
+  one flood per level up to code + need - 1; nothing shared with the module's search); its random test passes
+  `strongNodesMax: 1e9` so the cap never decides there (the cap has its own pin).
+- New pins: a WEAK low (12 codes) over 800 m alone in a zoomed-in window is never marked at zooms 3-10, centred or panned
+  (over the sea the window's cap prominence marks it: the K-1 case); a STRONG low (40 codes) is marked at zooms 2.3-10
+  with prominence >= need; the R2 ridge case (a stride-6 window reads 0 codes; over high ground the mark keeps `need`, over
+  the sea the coarse rule drops it as before, at stride 1 its own 100 codes); the cap (weak below the nodes it needs); the
+  taken level (a wall of 200 beside the pit proves nothing while a 10-code saddle leads lower); ties (an equal patch earlier
+  in raster order is lower, a later one not); the per-candidate reset; the per-frame cache (one search, the same result
+  object for another window, a new frame searches again); the date line; a patch cut by the window (the search starts at
+  its first node). The K-1 comment is gone.
+
+### README (R5)
+The strong-low paragraph states the whole-grid judgement and the measured numbers above.
+
+### The picker (U1-U7, U9)
+- U1 (owner): `#fwPair` (the shaka and the star) at the start of `#fwToolbar`; the CSS shows it only in phone mode
+  (`max-width: 500px` or `max-height: 500px`), where the trigger box's pair is hidden: the bar and the full-screen header
+  show the name alone. One state: `refreshCurrent` writes both pairs; the same handlers (`favClick`, `dflClick`); Escape
+  on any of the four closes the list.
+- U2: ranks from a counter reset at each opening, never `seen.size`.
+- U3: `served` = the stations whose forecast this page showed ('allshore:forecast' with `ok`); a point not kept, not the
+  default and not served has its pair off ("Waiting for this point's forecast").
+- U4: one `goneNames` Map for the rows and the top; the rows' star records the name when it lets a point go and uses the
+  memory first when it keeps it again.
+- U5 + U9: `focusMark` / `focusBack`: the focused control's role (`fav-select`, `sr-dflt`, `sr-fav`, `pt-ren`, `sr-rem`)
+  and its row's id, restored after both listeners' rebuilds (Rename going away puts the focus on the row's label, never on
+  ✕).
+- U6: `writeFavs`, `toggleFav`, `removeFav`, `clearDefault` return whether the browser stored it; every caller says
+  "This browser could not change the favorites (its storage is switched off)." and changes nothing.
+- U7 + new tests: tests/ui/mypoints.test.js +7 (the pair; U2; U3 with a refusal, a kept point, the default; U4 both ways
+  and a default point; U5/U9; U6 rows, ✕, top star, a row adding; U7 the 100 guard, the refused point, seen.p after a
+  rename); page pins for the markup, the phone CSS and the new lines.
+
+### Checks
+- Suites: Node 855 (isobars 47, mypoints 34); pytest 1,190 (the 4 golden tests fail at the code
+  commit by design, pass after the re-capture).
+- On the pre-fix template the U1-U6 tests fail (6 of 7; U7 pins existing behaviour).
+- Mutants (scratch g32/fix5/mut5.py, a scratch worktree, after pytest): search 15 / 15 killed (S8 columns wrap and S15
+  the patch's first node survived the first pass: pinned); picker 19 / 20 (P6 and P10 survived the first pass: pinned;
+  P2 = the counter not reset at an opening, equivalent: ranks are compared within one opening only).

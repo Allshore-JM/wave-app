@@ -941,3 +941,93 @@ The strong-low paragraph states the whole-grid judgement and the measured number
 - Mutants (scratch g32/fix5/mut5.py, a scratch worktree, after pytest): search 15 / 15 killed (S8 columns wrap and S15
   the patch's first node survived the first pass: pinned); picker 19 / 20 (P6 and P10 survived the first pass: pinned;
   P2 = the counter not reset at an opening, equivalent: ranks are compared within one opening only).
+
+## Test-site verification of fix round 5 (Opus 5.5 MAX, 2026-10-19)
+test @ 631bef1 (cherry-picks of d3073d1, eaf2a26, 3ed0b3c; the record file left off the test branch; site files = the
+feature's but the 3 test-logo lines). Test-branch suites: Node 854 (the known one less), pytest 931 + the 5 known failures
+(4 page snapshots on the logo lines, the reef module's numpy import). Pushed 20:49:23 UTC; the old instance answered until
+20:50:37, the new one from 20:50:40: 52 polls (robots, healthz, the page) 0 failed. Served: the six overlay assets at
+?v=2.20.3 = the commit (immutable, nosniff), the 2.20.2 URLs 404; the UI assets 1.23.1 unchanged; the page names 2.20.3 and
+carries #fwPair. GPU headless Edge (scratch g32/v4/verify: hl on port 9651; s/v5_*.js; out/v5_*), trusted mouse, keys and
+touch; the live runs GFS 2026101912 and ECMWF 2026101912 (out of sample: newer than every frame the rule was tuned or tested on).
+
+### The rule
+- K-1 on the site (s/v5_k1.js: the short fresh check's 180 views over high ground (10 steps x 6 places x zooms 5-7) + 72 at
+  zooms 8-10, the page's own module at the layer's inputs, an independent in-page threshold flood for each low): drawn lows
+  over 400+ m under 15 hPa: 0 (2.20.2: 28 of 31 on the same places); layer counts = projectCentres in every view.
+- The served module on today's 294 frames (fix5/oracle_live.js): = the test file's brute force (now with the flood) in 256
+  of 256 frame x view cases (1,688 centres; the oracle has no node cap, so the 20,000-node cap changed no answer there);
+  23,608 marks, 295 over high ground, all strong lows; 0 persistent mountain sites on either model; the Big Island H 0.
+- The rule per low (fix5/taiwan_scan.js, the whole-world window at the zoom-6 radius, every frame): 22,827 lows over 400+ m;
+  marked if and only if both nodes are under 2,000 m and an independent flood finds 28+ codes: 22,827 agree, 0 disagree
+  (111 kept, 22,716 dropped, 7,393 of them over the cap).
+- The positive control: today's typhoon crosses Taiwan (GFS f102-f104 over 1,000 m, 972-975 hPa; ECMWF f096 / f099, 960 /
+  972 hPa): on the site its L is drawn at every zoom 3-10 on both models (s/v5_typhoon.js: 40 of 40; flood 28+ codes;
+  window prominence 65-91 codes at zoom 3, 79-82 at zoom 4 (the cap on ECMWF f096), the cap from zoom 5). The weak lows that
+  follow it over the hills of south-east China (996-1,009 hPa, at most 26 codes = 14.3 hPa) have no L.
+- Cost: the H / L pass per new frame (Node, warm, the layer's inputs, fix5/hl_cost.js): whole world 1920 10.1 -> 11.3 ms p50
+  (11.8 -> 13.7 p90; 3.7 searches per frame on average, at most 11), 1280 world, Asia z3, W Pacific z4 unchanged, Hawaii z6
+  +0.2 ms.
+
+### The picker
+- Phones (s/v5_names.js, the short fresh check's six names, 360 / 375 / 390 / 414 px + a landscape 812x375): the bar and
+  the full-screen header without the pair, the coordinates whole everywhere; the name in the bar 86-88 px at 360 (2.20.2:
+  0), 103 at 375 (15), 118 at 390 (30), 142 at 414 (54): names up to 12 characters whole on every phone, 15 from 390 px,
+  20 at 414; longer names are cut, never the coordinates. Full screen the toolbar pair at the toolbar's start, 44 x 44 px
+  (32 on the landscape phone), the shaka first, in the trigger pair's state; desktop 1280x800: no toolbar pair; a short
+  window (1280x480, the window's phone mode) the phone rule. 133 of 133.
+- Interaction (s/v5_pair.js): desktop: the fix-round-4 sequence (hollow / gold / skin tone, titles, row buttons, Shift+Tab,
+  Space, Escape) with the toolbar pair following every change; U2 on the site (a row added after a ✕ goes last). Phones
+  375 / 360 / 812x375 with a NAMED kept point: no pair in the bar; full screen the toolbar shaka makes it the default (skin
+  tone, its position), the toolbar star asks and lets it go, keeps it again WITH its name; the list opened from full screen;
+  its row star lets it go and the toolbar star brings it back named (U4); minimised: the bar without the pair; no sideways
+  scroll. 51 of 51.
+- U3 (s/v5_u3.js, the point's /api/forecast held by the DevTools Fetch domain, the head's early request included): a linked
+  point not kept has both toggles off while its forecast loads ("Waiting for this point's forecast: 21.700N 158.200W"), a
+  trusted click stores nothing (2.20.2: the shaka was enabled 122 ms after load); released, both act; the default point and a
+  kept point act while loading; a land point is refused: off, "No forecast here". Desktop and the phone's toolbar pair: 18 of 18.
+
+### Regressions
+- The look (s/b1_look.js): 36 desktop and 12 phone views (both models) = their re-renders, no flagged view; the ECMWF
+  typhoon (938 hPa) L at zooms 4 / 6 / 8, the hover "938 hPa" over its eye; the terrain asset once per page.
+- Playback with isobars (s/b4_play.js, 1920x1080, wind at shark): 0 frames with another step's lines or marks, 0 blinks.
+- Console: no problems in any fresh page (only the checks' own canvas readbacks warn).
+### Timed playback (wind at shark speed, GPU headless Edge, frames warm at the edge for both origins, a collected heap
+before play, 150-s idles, the test site and production back to back; scratch g32/v4/verify run5.sh / run5b.sh / run5c.sh,
+out/v5_cells*.log)
+The machine changed state during the session: the browser's own render time per frame ran 34-87 ms (as in fix round 4) in
+some runs and 95-158 ms in others (the owner's apps open: AutoCAD LT, Chrome; AC power, total CPU 9-17 %), on BOTH sites
+alike. In the slow state production misses the frame-rate line too.
+
+| cell | site | render p50 | fps | gap p50 / p90 ms | unpainted | heap peak / live (MB over Off) |
+|---|---|---|---|---|---|---|
+| 1080p, the default view | test 2.20.3 | 40 / 43 | 8.0 / 8.0 | 125/135, 126/135 | 0 | +40.7 / +27.3, +39.6 / +25.5 |
+| | production 2.18.4 | 42 / 40 | 8.0 / 7.5 | 124/138, 125/135 | 0 | +30.7 / +19.9, +32.2 / +20.0 |
+| | test (slow state) | 104 | 7.8 | 126/155 | 0 | +46.8 / +28.4 |
+| | production (slow state) | 95 | 7.9 | 123/155 | 0 | +41.8 / +21.6 |
+| whole world (zoom 2.9) | test | 84 / 87 | 8.0 / 7.9 | 125/135, 125/135 | 0 | +57.0 / +33.5, +58.7 / +33.5 |
+| | production | 34 / 110 | 8.0 / 7.4 | 125/135, 131/162 | 0 | +39.6 / +26.8, +44.4 / +25.8 |
+| | test (slow state) | 143 / 129 | 4.9 / 5.6 | 200/250, 169/224 | 0 | +77.5 / +33.8, +98.8 / +34.0 |
+| | production (slow state) | 158 / 158 | 5.5 / 5.4 | 181/218, 185/235 | 0 | +51.4 / +26.9, +56.1 / +27.2 |
+| phone 375x812 | test | 17 | 8.0 | 124/142 | 0 | +29.0 / +16.8 |
+| | production | 17 | 8.0 | 126/142 | 0 | +22.5 / +11.0 |
+
+- In the fast state every test cell passes (8 frames/s, p50 <= 130, p90 <= 150, every landing painted, 0 skipped); its
+  tile redraw (48.4-51.6 ms at 1080p, 75.3-76.6 at the whole world) and render time equal fix round 4's 2.20.2 (48.4,
+  75.9; 38, 84 ms). In the slow state both sites miss the line.
+- Live set: test 5.5-7.7 MB over production in every pair (the isobars, the pressure ring, the search's 2 MB of reusable
+  arrays): within the owner's +10 MB.
+- Peaks: within production's range + 10 MB at 1080p (both states) and at the whole world in the fast state (+57.0 / +58.7
+  vs production's +39.6-56.1). In the slow state the whole-world peaks (+77.5, +98.8) exceed it: the main thread is busy 71-
+  85 % there and the collector runs late. Not from fix round 5: the H / L pass allocates the same per new frame as 2.20.2's
+  (fix5/alloc.js, Node, a large semi-space: whole world 114-312 KB vs 141-298 KB, Hawaii z6 296-305 vs 264 KB; the
+  search reuses its arrays, a Map and a result object per patch are all it adds) and fix round 4's 2.20.2 whole-world peak
+  in the fast state was +54.5. Owner awareness: on a machine whose GPU is busy, the whole-world wind view at shark speed
+  plays at ~5 frames/s on both sites, and the page's heap can peak ~40 MB higher than production's before it is collected.
+
+### Cleanup and the next step
+The headless Edge stopped by DevTools (its throwaway profile removed, no process left); the test origin's storage emptied
+after every script. Production untouched (1a0d06e). feat/isobars-geo fast-forwards production (41 commits, 28 files).
+NEXT: the owner's go-ahead for step 12 (tag prod-pre-iso at 1a0d06e; fast-forward Live-Buoy-Update to feat/isobars-geo;
+production GEO_BASE needs its own go-ahead). The scope's short fresh check of the search is conditional on changes beyond
+the scope: none were made.

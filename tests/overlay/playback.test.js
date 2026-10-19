@@ -2530,7 +2530,12 @@ test('fix round 3 (re-check S-1): the pressure wait is counted per step: a goto 
     assert.equal(o.frameIndex, i0, 'the field is in, the pressure held: waiting');
     assert.ok(o._presWait && o._presWait.key === o._key(i0 + 5, 'pres') && o._presWait.timer !== null, 'the wait record for the step');
     await w.fade(600); await settle();
-    o._goto(i0 + 5).catch(() => {}); await settle();                        // as _checkRes does when the zoom crosses a resolution threshold
+    // as _checkRes does when the zoom crosses a resolution threshold: the res changes, so the first goto's own continuation
+    // dies on its res check and the re-issued goto must carry the wait (2.19.5 started a new second here)
+    o.res = 'full'; o._prefetch(); o._goto(i0 + 5).catch(() => {}); await settle();
+    const step5 = 'f' + String(A.frames[i0 + 5].step).padStart(3, '0') + '.png';
+    await w.releaseUrl((u) => /\/wind\//.test(u) && !/\/half\//.test(u) && u.endsWith(step5)); await settle();
+    assert.equal(o.frameIndex, i0, 'the full-res field is in too, the pressure still held');
     await w.fade(399); await settle();
     assert.equal(o.frameIndex, i0, 'still waiting at 999 ms after the FIRST goto');
     await w.fade(1); await settle();

@@ -226,7 +226,7 @@ def test_overlay_js_syntax_and_contract_strings():
                    "IsobarLayer", "'ovIsoPane'", "traceIsolines", "isoBlur", "findCentres", "projectCentres", "placeLabels", "viewOf", "placeCanvas", "PRES_WAIT_MS",                        # section 46 step 3
                    "PRES_FIELD", "pcache", "_wantPres", "_kindReady", "_startKind", "_syncIsobars", "setIsobars", "' hPa'",                  # section 46 step 4
                    "particleOpacityOf", "setParticleOpacity", "_paneOpacity", "opts.particles",                                            # section 46 step 5
-                   "prominenceMap", "ISO_HL_PROM_CODES", "'terrain_half.png'", "ISO_TERRAIN_M", "setTerrain", "_hpaText", "destination-out", "_presWait", "ISO_CLAMP_PATCH_MAX"):   # fix round 3
+                   "prominenceMap", "ISO_HL_PROM_CODES", "'terrain_half.png'", "ISO_TERRAIN_M", "setTerrain", "_hpaText", "self._hpaText(latlng.lat, latlng.lng)", "destination-out", "_presWait", "ISO_CLAMP_PATCH_MAX"):   # fix round 3 (the readout's call site: its closure is not driven by the Node harness)
         assert needle in js, needle
     for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row
                  "'live since '", "next update about ", "'First frame'", "'Previous frame'", "'Next frame'", "'Last frame'",

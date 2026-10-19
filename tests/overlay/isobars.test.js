@@ -558,6 +558,27 @@ test('findCentres: promNodesMax coarsens the prominence blocks for a large windo
   assert.equal(withoutTerrain.length, want.length + 1, 'the terrain removed that one (the layer passes it)');
   const rawDepth = I.projectCentres(I.findCentres(fr, PRES, I.nodeWindow(v2, HALF, fr, 0), rad2 + 3, { stride: I.isoStride(4, 0.5), margin: Math.max(2 * rad2, 16), grid: HALF, terrain, terrainMin: I.ISO_TERRAIN_M / I.TERRAIN_M_PER_CODE, promNodesMax: I.ISO_PROM_NODES_MAX }), HALF, v2);
   assert.notEqual(rawDepth.length, want.length, 'the radius is the layer\'s own (R1 H26)');
+  // the layer ROUNDS ISO_HL_PX / nodePx (zoom 4.5 at 20 N 150 W: 13.66 -> 14, where 13 draws another set of marks)
+  const z3 = 4.5, x3 = I.ISO_HL_PX / (256 * Math.pow(2, z3) * 0.5 / 360), rad3 = Math.round(x3);
+  assert.notEqual(rad3, Math.floor(x3));
+  const L3 = isoLayer({ w: 1280, h: 800 }, z3, 20, -150);
+  L3.il.setData(fr, HALF, { step: 0 }, PRES); L3.il.pendingFn();
+  const p3 = I.forwardPixel(20, -150, z3), v3 = { z: z3, w: 1280, h: 800, ox: p3.x - 640, oy: p3.y - 400 };
+  const cs = (rad) => I.projectCentres(I.findCentres(fr, PRES, I.nodeWindow(v3, HALF, fr, 0), rad, { stride: I.isoStride(z3, 0.5), margin: Math.max(2 * rad, 16), grid: HALF, promNodesMax: I.ISO_PROM_NODES_MAX }), HALF, v3);
+  assert.notEqual(cs(rad3).length, cs(rad3 - 1).length, '(the floor would draw another number of marks here)');
+  assert.equal(L3.il.drawn.hl, cs(rad3).length, 'the layer rounds its radius');
+});
+
+test('the world\'s prominence blocks meet across the seam: a stride that does not divide the 720 columns is lowered (7 -> 6), so stride 7 = stride 6 at the world view of the real frame', async () => {
+  const { png } = realFrames();
+  const fr = await I.decodePngGrey(png, { cols: 720, rows: 361 });
+  const win = { r0: 0, r1: 360, c0: 0, count: 720 };
+  for (const rad of [3, 7]) {
+    const r = (s) => I.findCentres(fr, PRES, win, rad, { stride: s, margin: Math.max(2 * rad, 16), grid: HALF }).map(key).sort();
+    const a = r(7), b = r(6);
+    assert.ok(a.length > 100, 'centres found: ' + a.length);
+    assert.deepEqual(a, b, 'rad ' + rad + ': stride 7 is computed as 6 (blocks of 7 would lose ' + a.filter((k) => !b.includes(k)).length + ' and add ' + b.filter((k) => !a.includes(k)).length + ')');
+  }
 });
 
 test('findCentres: no mark on high ground (the terrain codes at or above terrainMin, at the candidate or at the patch\'s middle); without a terrain, or one of another size, the marks stay', () => {
@@ -567,7 +588,9 @@ test('findCentres: no mark on high ground (the terrain codes at or above terrain
   assert.deepEqual(I.findCentres(bump, PRES, win, 10, OPTS(10, { terrain, terrainMin: 25 })).map((x) => [x.type, x.c]), [['H', 600]], 'the mountain high goes');
   assert.deepEqual(I.findCentres(bump, PRES, win, 10, OPTS(10, { terrain, terrainMin: 31 })).map((x) => [x.type, x.c]).sort((p, q) => p[1] - q[1]), [['H', 600], ['H', 640]], 'below the threshold: kept');
   assert.equal(I.findCentres(bump, PRES, win, 10, OPTS(10)).length, 2, 'no terrain: both');
+  assert.deepEqual(I.findCentres(bump, PRES, win, 10, OPTS(10, { terrain, terrainMin: 30 })).map((x) => [x.type, x.c]), [['H', 600]], 'at the threshold exactly: high ground (the rule is "at or above")');
   assert.equal(I.findCentres(bump, PRES, win, 10, OPTS(10, { terrain: new Uint8Array(10), terrainMin: 25 })).length, 2, 'a terrain of another size is ignored');
+  assert.equal(I.findCentres(bump, PRES, win, 10, OPTS(10, { terrain: new Uint8Array(720 * 361 + 1).fill(255), terrainMin: 25 })).length, 2, 'also one that would call every node high');
   const wide = codeFrame((r, c) => 120 + (Math.abs(r - 150) <= 1 && Math.abs(c - 640) <= 6 ? 8 : 0));     // a 3 x 13 flat top: the candidate at its left, the middle at 640
   const t2 = new Uint8Array(720 * 361); t2[150 * 720 + 640] = 30;
   assert.deepEqual(I.findCentres(wide, PRES, win, 10, OPTS(10, { terrain: t2, terrainMin: 25 })), [], 'high at the middle: no mark');

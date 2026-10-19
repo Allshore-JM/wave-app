@@ -704,6 +704,13 @@ test('U4: one name memory: a named point let go with its row\'s star and kept ag
   b.star.click(); assert.deepEqual(b.stored(), []);
   b.openPicker(); seg(b.row(pt), 'fav').click();
   assert.deepEqual(b.stored(), [pt + '=Reef'], 'and by the row\'s star after the top let it go');
+  // a default point let go by the top star before the list opened: its row knows no name of its own (only the memory does)
+  const c = boot({ station: pt, local: { 'allshore.points.v1': JSON.stringify([{ id: pt, name: 'Reef' }]), [DKEY]: JSON.stringify({ id: pt }) } }); await settle();
+  c.last().release(payload(pt)); await settle();
+  c.star.click(); assert.deepEqual(c.stored(), []);
+  c.openPicker(); assert.ok(c.row(pt), 'the default point is listed');
+  seg(c.row(pt), 'fav').click();
+  assert.deepEqual(c.stored(), [pt + '=Reef'], 'its row\'s star brings it back named, from the shared memory');
 });
 
 test('U5 + U9: a rebuild under the focus puts it back on the same control of the same row by its role (Rename going away: its row\'s label, never ✕); another tab\'s favorite or default change restores the focus too', async () => {
@@ -738,6 +745,12 @@ test('U6: a write the browser refuses says so and changes nothing: the rows\' st
   b.status.textContent = '';
   b.star.click();
   assert.match(b.status.textContent, /could not change the favorites/); assert.equal(starState(b), 'empty'); assert.deepEqual(readF(b), ['46001']);
+  // a row's star adding (the default, not a favorite) under the same refusal
+  const c = boot({ local: { [DKEY]: JSON.stringify({ id: '46001' }) }, storageOpts: { throwOnWrite: true } }); await settle(); c.last().release(payload('51201')); await settle();
+  c.openPicker();
+  seg(c.row('46001'), 'fav').click();
+  assert.match(c.status.textContent, /could not change the favorites/); assert.deepEqual(readF(c), []);
+  assert.equal(seg(c.row('46001'), 'fav').getAttribute('aria-pressed'), 'false', 'still hollow, and said why');
 });
 
 test('U7: the row star\'s 100-favorite guard (the 101st never drops the oldest), its refused-point check, and a renamed point let go keeps its new name in its row', async () => {

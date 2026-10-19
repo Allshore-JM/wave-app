@@ -805,6 +805,21 @@ test('fix round 5: each candidate takes its own search (a strong low before it i
   assert.notEqual(scratch.S.m.get(109 * 720 + 639), once, 'a new frame: searched again');
 });
 
+test('fix round 5: the search crosses the date line (a weak low beside the seam whose deeper neighbour lies across it) and starts at the patch\'s FIRST node, also when the window cuts the patch (the candidate below its top rows)', () => {
+  const need = Math.ceil(15 / k5 - 1e-9);
+  // a pit (100) at column 2, a 10-code saddle (110) over columns 719..1, a deeper low (60) at 715-717; the rest of the world 200
+  const fr = codeFrame((r, c) => (r !== 150 ? 200 : c === 2 ? 100 : (c === 719 || c === 0 || c === 1) ? 110 : (c >= 715 && c <= 718) ? 60 : 200));
+  assert.deepEqual(I.strongLowSearch(fr, 150 * 720 + 2, need, 1e9, {}), { prom: 10, strong: false }, 'weak: across the seam at 10 codes (never the long way round over 200)');
+  // a strong low 5 rows tall (148-152) whose top rows lie above a window starting at row 150: the candidate is (150, 638), the
+  // patch's first node (148, 638); a search from the candidate would meet that first node as an equal, earlier one and say weak
+  const tall = codeFrame((r, c) => (r >= 148 && r <= 152 && c >= 638 && c <= 641 ? 100 : 180));
+  const ter = new Uint8Array(720 * 361); for (let r = 146; r <= 154; r++) for (let c = 636; c <= 643; c++) ter[r * 720 + c] = 40;
+  const win = { r0: 150, r1: 200, c0: 600, count: 100 };
+  const marks = I.findCentres(tall, PRES, win, 3, strongRule({ terrain: ter, margin: 16 }));
+  assert.deepEqual(marks.map((m) => [m.type, m.r, m.c]), [['L', 150, 639.5]], 'marked at the patch\'s middle');
+  assert.ok(marks[0].prom >= need);
+});
+
 test('findCentres: a trough with lows B, A (equal to B, a row above it) and C (deeper), 8 deg apart each: C and B get an L, A (beside the deeper C) none (G32 verification V11-2); two equal lows within the radius both come out, projectCentres keeps the more prominent (the earlier root)', () => {
   const dips = [[100, 340, 120], [99, 324, 121], [100, 308, 121]];      // C, A, B (codes; each the tip of a cone 6 nodes wide)
   const fr = codeFrame((r, c) => { let q = 170; for (const [a, b, v] of dips) { const d = Math.max(Math.abs(r - a), Math.abs(c - b)); if (d <= 6) q = Math.min(q, v + 3 * d); } return q; });

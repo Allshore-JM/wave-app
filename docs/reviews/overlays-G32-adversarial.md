@@ -700,3 +700,17 @@ Live runs: GFS 2026101818 (209 frames) and ECMWF 2026101812 (85), both with `pre
 - The owner's call on V3-1 (below are the options).
 - A short fresh check at MAX: a new rule (fix round 3) plus the V3-3 change to the candidates.
 - Then step 12.
+
+### The owner's call on V3-1 (2026-10-19)
+"Lows only, if strong": a low over high ground keeps its mark when it is at least 15 hPa prominent and the ground is
+below 2,000 m (at the patch's first node and its middle); highs over high ground stay masked (every persistent mountain
+site on both live runs is a high). Fix round 4 (overlay 2.20.2) scope:
+- `findCentres`: for an L whose first node or middle is high ground (>= 400 m), the prominence is computed and the mark
+  kept when it is at least ISO_TERRAIN_LOW_HPA (15 hPa, in codes) and both nodes are below ISO_TERRAIN_LOW_MAX_M (2,000 m);
+  an H on high ground, or an L below the threshold or above the cap, marks nothing as before.
+- The test file's oracle states the same rule; pins: a deep low over mid-height ground is marked, a shallow one is not,
+  a deep low over >= 2,000 m is not, a deep high over mid-height ground is not; the threshold and the cap at their
+  boundaries.
+- On the live runs: the typhoon keeps its L over Taiwan (GFS steps 114-123, ECMWF 123-132), the persistent mountain sites
+  stay 0, the low marks returned counted (expected about 75 / 24 over the runs).
+- README; asset 2.20.2 + the pin; the test site at MAX; then the short fresh check at MAX; then step 12.

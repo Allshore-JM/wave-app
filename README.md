@@ -136,7 +136,10 @@ owner's own drawing, skin toned when on; one default at a time, listed first at 
 ("Favorite", gold when on; for a point: kept in My points); each row also has a ✕ ("Remove") that clears both. The two
 are independent: a default need not be a favorite (it stays listed). A row stays in its place until the list closes,
 also once both are off, so a slip is one click back. On phones a row's buttons sit on a line of their own under the
-name, so a point's coordinates are never cut;
+name, so a point's coordinates are never cut, and the window's own pair moves from the name's box to the open window's
+toolbar (owner, fix round 5): the bar and the full-screen header show the name whole; one state for both pairs. A point's
+pair waits for its forecast on the page (a linked point still loading cannot become the default); a write the browser
+refuses (storage switched off) is said and changes nothing; a point let go with either star comes back with its name;
 for the map: the tab's own view (sessionStorage) > the default station's position > the IP position > Hawaii. The head and
 the module ask for one and the same query (tests/ui/early.test.js); the module's first load waits for the head's answer
 (`window.__early.station`) and a load the viewer causes meanwhile wins. Env `GEO_BASE` (e.g. `https://geo.allshoresurf.com`)
@@ -379,9 +382,13 @@ node of each half node's footprint, built once by `tools/model_frames/make_terra
 bump on every mountain node (an "H" on
 the Big Island at every step before; on 22 live frames 400 m leaves no persistent mountain mark on either model, 500 m
 left Guadalcanal, Socotra and New Britain). One exception (asset 2.20.2, the owner's call): a LOW at least 15 hPa prominent
-over ground below 2,000 m at both nodes keeps its L, so a typhoon crossing Taiwan or Luzon stays marked (on the same 294
-live frames: 78 GFS and 26 ECMWF lows back, none persistent, no high; the mountain bumps were at most 11-14 hPa, all
-highs). A high over high ground (a Mongolian winter high) and a weaker low there have no mark. A typhoon below the stored range (920 hPa) marks "L ≤920" when its clamped patch is
+over ground below 2,000 m at both nodes keeps its L, so a typhoon crossing Taiwan or Luzon stays marked; the mountain bumps
+were at most 11-14 hPa, all highs. Its strength is judged over the WHOLE grid (asset 2.20.3, `strongLowSearch`: a minimax
+search from the low's patch up to 15 hPa, cached per frame and patch; more than 20,000 nodes counts weak), never by the
+view: before, a weak low alone in a zoomed-in window counted as strong (about 1,100 weak marks at zooms 5-10 over 294
+live frames, none now). On the GFS 2026101900 and ECMWF 2026101812 runs (294 frames) the exception brings back 52 GFS and
+26 ECMWF lows (77 on the GFS 18Z run before it), none persistent, no high. A high over high ground (a Mongolian winter
+high) and a weaker low there have no mark, at any zoom. A typhoon below the stored range (920 hPa) marks "L ≤920" when its clamped patch is
 compact and within 70° of the equator (a high above 1,060 "H ≥1060"; the polar plateaus never), and the hover reads
 "≤ 920 hPa" there. The lines are cleared under each mark's box, so an L stays legible inside packed rings. So a compact
 typhoon keeps its real centre and central pressure (asset 2.19.4: on the smoothed field a 956-hPa typhoon read "L 1000" at

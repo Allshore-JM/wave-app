@@ -60,10 +60,12 @@ function boot(opts) {
   const server = opts.station || '51201';
   if (server.indexOf('pt_') === 0) { const o = el('option', null, select, { 'data-point': '' }); o.value = server; o.textContent = 'served'; }   // the no-script option (G22 B-5)
   if (opts.unknown) { const o = el('option', null, select, { 'data-unknown': '' }); o.value = server; o.textContent = server; }   // an id that is no station (G22 R-B12)
-  [['51201', '51201 — Waimea Bay, HI'], ['46001', '46001 — Gulf of Alaska']].forEach(([v, t]) => { const o = el('option', null, select); o.value = v; o.textContent = t; });
+  (opts.stations || [['51201', '51201 — Waimea Bay, HI'], ['46001', '46001 — Gulf of Alaska']]).forEach(([v, t]) => { const o = el('option', null, select); o.value = v; o.textContent = t; });
   select.selectedIndex = Math.max(0, select.options.findIndex((o) => o.value === server));
   el('span', 'fwCycle', header); el('span', 'fwBusy', header).hidden = true; el('button', 'fwMin', header); el('button', 'fwMax', header);
   const toolbar = el('div', 'fwToolbar', w);
+  const pair = el('span', 'fwPair', toolbar, { class: 'fw-pair' });             // phones: the pair in the toolbar (owner, U1)
+  const fwShaka = el('button', 'fwDefaultToggle', pair, { class: 'sr-star sr-dflt' }), fwStar = el('button', 'fwFavToggle', pair, { class: 'sr-star' });
   const viewBar = el('div', 'viewBar', toolbar); ['Table', 'Graph'].forEach((v) => el('button', null, viewBar, { 'data-view': v }));
   const modelBar = el('div', 'modelBar', toolbar); ['GFS', 'SWAN'].forEach((v) => el('button', null, modelBar, { 'data-model': v }));
   const rangeBar = el('div', 'rangeBar', toolbar); ['0', '7', '3'].forEach((v) => el('button', null, rangeBar, { 'data-days': v }));
@@ -114,7 +116,7 @@ function boot(opts) {
   new Function(...env, 'var liveWin = null, liveDetailSeq = 0, tideWin = null, windWin = null;\n' + INIT.replace('var liveWin', 'var _unused'))(...args());
   const app = F._internals.app();
   const P = win.__allshorePoints;
-  return { doc, win, F, app, P, calls, markers, events, confirms, winListeners, layerShown, local, select, star, shaka, trigger, current, results, status, errBox, note, table,
+  return { doc, win, F, app, P, calls, markers, events, confirms, winListeners, layerShown, local, select, star, shaka, trigger, current, results, status, errBox, note, table, pair, fwShaka, fwStar,
     last: () => calls[calls.length - 1],
     station: () => app.state.station,
     stored: () => P.store.list().map((p) => p.id + (p.name ? '=' + p.name : '')),
@@ -641,4 +643,121 @@ test('G32: the picker reads a default by the one id rule (trimmed; spaces inside
   assert.equal(cur.textContent, before, 'nothing renames the chip yet');
   b.doc.dispatchEvent(new CustomEvent('allshore:stationshown', { detail: { station: other } }));
   assert.notEqual(cur.textContent, before, 'renamed at once'); assert.ok(cur.textContent.indexOf(other) === 0, cur.textContent);
+});
+// ---- fix round 5 (the short fresh check's U1-U7, U9) ----
+const pairState = (s, sh) => [s.disabled ? 'disabled' : s.textContent, s.getAttribute('aria-pressed'), sh.disabled ? 'disabled' : sh.getAttribute('aria-pressed'), s.getAttribute('aria-label'), sh.getAttribute('aria-label')];
+
+test('U1 (owner): phones get the shaka and the star in the window\'s toolbar; one state for both pairs; either pair acts for both', async () => {
+  const b = boot(); await settle(); b.last().release(payload('51201')); await settle();
+  assert.ok(b.pair.classList.contains('on'), 'the toolbar pair is switched on (the CSS shows it on phones only)');
+  assert.match(b.fwShaka.innerHTML, /<svg/); assert.equal(b.fwShaka.innerHTML, b.shaka.innerHTML, 'the same drawing');
+  assert.deepEqual(pairState(b.fwStar, b.fwShaka), pairState(b.star, b.shaka));
+  b.fwStar.click();
+  assert.deepEqual(readF(b), ['51201']); assert.equal(starState(b), 'gold'); assert.deepEqual(pairState(b.fwStar, b.fwShaka), pairState(b.star, b.shaka));
+  b.fwShaka.click();
+  assert.equal(readD(b).id, '51201'); assert.equal(shakaOn(b), true); assert.equal(b.fwShaka.getAttribute('aria-pressed'), 'true');
+  b.shaka.click(); b.star.click();
+  assert.equal(readD(b), null); assert.deepEqual(readF(b), []);
+  assert.deepEqual(pairState(b.fwStar, b.fwShaka), pairState(b.star, b.shaka), 'the top pair acted: the toolbar\'s follows');
+  b.openPicker(); b.fwStar.focus();
+  b.fwStar.fire('keydown', { key: 'Escape' }); assert.equal(b.results.hidden, true, 'Escape on the toolbar pair closes the list'); assert.ok(b.doc.activeElement === b.trigger);
+});
+
+test('U2: a row added after a ✕ in the same opening goes to the end of the list (a counter, never the shrunk size)', async () => {
+  const st = [['51201', '51201 — Waimea Bay, HI'], ['46001', '46001 — Gulf of Alaska'], ['41001', '41001 — East Hatteras']];
+  const b = boot({ stations: st, local: { [FKEY]: JSON.stringify(['46001', '41001']) } }); await settle(); b.last().release(payload('51201')); await settle();
+  b.openPicker();
+  assert.deepEqual(favRows(b).map(sidOf), ['46001', '41001']);
+  favRows(b)[0].querySelector('.sr-rem').click();
+  assert.deepEqual(favRows(b).map(sidOf), ['41001']);
+  b.star.click();                                                                // the station on screen becomes a favorite
+  assert.deepEqual(favRows(b).map(sidOf), ['41001', '51201'], 'the new row last, not mid-list');
+});
+
+test('U3: a point\'s toggles wait for its forecast on this page (a linked point, not kept, not the default); a refusal keeps them off; a kept point or the default is known good', async () => {
+  const pt = 'pt_21700N_158200W';
+  const b = boot({ station: pt }); await settle();
+  assert.equal(b.last().station, pt);
+  assert.equal(b.star.disabled, true); assert.equal(b.shaka.disabled, true); assert.equal(b.fwShaka.disabled, true);
+  assert.match(b.shaka.getAttribute('aria-label'), /^Waiting for this point's forecast: /);
+  b.shaka.click(); assert.equal(readD(b), null, 'no default from a point still loading');
+  b.last().release(payload(pt)); await settle();
+  assert.equal(b.star.disabled, false); assert.equal(b.shaka.disabled, false); assert.equal(b.fwStar.disabled, false);
+  const c = boot({ station: 'pt_39700N_105000W' }); await settle(); c.last().release(LAND('pt_39700N_105000W')); await settle();
+  assert.equal(c.shaka.disabled, true); assert.match(c.shaka.getAttribute('aria-label'), /^No forecast here, it cannot be the default: /);
+  assert.equal(c.star.disabled, true); assert.match(c.star.getAttribute('aria-label'), /^No forecast here, nothing to keep: /);
+  const d = boot({ station: pt, local: { 'allshore.points.v1': JSON.stringify([{ id: pt }]) } }); await settle();
+  assert.equal(d.shaka.disabled, false, 'a kept point: its toggles act before the forecast lands'); assert.equal(d.star.disabled, false);
+  const e = boot({ station: pt, local: { [DKEY]: JSON.stringify({ id: pt }) } }); await settle();
+  assert.equal(e.shaka.disabled, false, 'the default point: the shaka can clear it at once');
+});
+
+test('U4: one name memory: a named point let go with its row\'s star and kept again with the top star comes back named (and the reverse)', async () => {
+  const pt = 'pt_21700N_158200W';
+  const b = boot({ station: pt, local: { 'allshore.points.v1': JSON.stringify([{ id: pt, name: 'Reef' }]) } }); await settle();
+  b.last().release(payload(pt)); await settle();
+  b.openPicker();
+  seg(b.row(pt), 'fav').click();
+  assert.deepEqual(b.stored(), [], 'let go (asked first)'); assert.match(b.confirms.pop(), /Remove "Reef"/);
+  b.star.click();
+  assert.deepEqual(b.stored(), [pt + '=Reef'], 'kept again by the top star, with its name');
+  b.star.click(); assert.deepEqual(b.stored(), []);
+  b.openPicker(); seg(b.row(pt), 'fav').click();
+  assert.deepEqual(b.stored(), [pt + '=Reef'], 'and by the row\'s star after the top let it go');
+});
+
+test('U5 + U9: a rebuild under the focus puts it back on the same control of the same row by its role (Rename going away: its row\'s label, never ✕); another tab\'s favorite or default change restores the focus too', async () => {
+  const pts = [{ id: 'pt_20000N_150000W', name: 'One' }];
+  const b = boot({ local: { 'allshore.points.v1': JSON.stringify(pts), [FKEY]: JSON.stringify(['46001']) } }); await settle(); b.last().release(payload('51201')); await settle();
+  b.openPicker();
+  b.row('pt_20000N_150000W').querySelector('.pt-ren').focus();
+  b.local.m.set('allshore.points.v1', '[]');                                       // another tab let it go: no Rename now
+  b.winListeners.storage.forEach((fn) => fn({ key: 'allshore.points.v1' }));
+  const r = b.row('pt_20000N_150000W');
+  assert.ok(r, 'still listed'); assert.equal(r.querySelector('.pt-ren'), null);
+  assert.ok(b.doc.activeElement === r.children[0], 'on the row\'s label, not on ✕');
+  seg(r, 'fav').focus();
+  b.local.m.set('allshore.points.v1', JSON.stringify(pts));                       // kept again over there: Rename is back
+  b.winListeners.storage.forEach((fn) => fn({ key: 'allshore.points.v1' }));
+  assert.ok(b.doc.activeElement === seg(b.row('pt_20000N_150000W'), 'fav'), 'the same star, though Rename came back before it');
+  seg(b.row('46001'), 'dflt').focus();
+  b.local.m.set(DKEY, JSON.stringify({ id: '46001' }));                           // another tab made 46001 the default
+  b.winListeners.storage.forEach((fn) => fn({ key: DKEY }));
+  assert.equal(seg(b.row('46001'), 'dflt').getAttribute('aria-pressed'), 'true');
+  assert.ok(b.doc.activeElement === seg(b.row('46001'), 'dflt'), 'the favorites\' listener restores the focus (U9)');
+});
+
+test('U6: a write the browser refuses says so and changes nothing: the rows\' star and ✕, the top star', async () => {
+  const b = boot({ local: { [FKEY]: JSON.stringify(['46001']) }, storageOpts: { throwOnWrite: true } }); await settle(); b.last().release(payload('51201')); await settle();
+  b.openPicker();
+  seg(b.row('46001'), 'fav').click();
+  assert.match(b.status.textContent, /could not change the favorites/); assert.deepEqual(readF(b), ['46001']);
+  assert.equal(seg(b.row('46001'), 'fav').getAttribute('aria-pressed'), 'true', 'still a favorite');
+  b.row('46001').querySelector('.sr-rem').click();
+  assert.match(b.status.textContent, /could not change the favorites/); assert.ok(b.row('46001'), 'the row stays');
+  b.status.textContent = '';
+  b.star.click();
+  assert.match(b.status.textContent, /could not change the favorites/); assert.equal(starState(b), 'empty'); assert.deepEqual(readF(b), ['46001']);
+});
+
+test('U7: the row star\'s 100-favorite guard (the 101st never drops the oldest), its refused-point check, and a renamed point let go keeps its new name in its row', async () => {
+  const full = []; for (let i = 0; i < 100; i++) full.push('X' + i);
+  const b = boot({ local: { [FKEY]: JSON.stringify(full), [DKEY]: JSON.stringify({ id: '46001' }) } }); await settle(); b.last().release(payload('51201')); await settle();
+  b.openPicker();
+  seg(b.row('46001'), 'fav').click();
+  assert.match(b.status.textContent, /Favorites are full \(100\)/); assert.deepEqual(readF(b), full, 'nothing dropped');
+  const land = 'pt_39700N_105000W';
+  const c = boot({ station: land, local: { [DKEY]: JSON.stringify({ id: land }) } }); await settle(); c.last().release(LAND(land)); await settle();
+  c.openPicker();
+  seg(c.row(land), 'fav').click();
+  assert.match(c.status.textContent, /no forecast here, so the point is not kept/i); assert.deepEqual(c.stored(), []);
+  const pt = 'pt_20000N_150000W';
+  const d = boot({ local: { 'allshore.points.v1': JSON.stringify([{ id: pt, name: 'Old' }]) }, prompt: 'New' }); await settle(); d.last().release(payload('51201')); await settle();
+  d.openPicker();
+  d.row(pt).querySelector('.pt-ren').click();
+  assert.deepEqual(d.stored(), [pt + '=New']);
+  seg(d.row(pt), 'fav').click();
+  assert.deepEqual(d.stored(), []);
+  assert.match(d.row(pt).children[0].textContent, /New/, 'the row shows the name it had when let go (seen.p follows the store)');
+  seg(d.row(pt), 'fav').click(); assert.deepEqual(d.stored(), [pt + '=New']);
 });

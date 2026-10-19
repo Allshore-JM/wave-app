@@ -347,6 +347,12 @@ test('labels never overlap each other or the H / L marks (every grid cell a pill
 // reduction): the first block popped that is stronger (a lesser code, or an equal code whose index is below the
 // candidate's own root block: the earliest block of its equal-code set) ends it, the prominence = that path's greatest
 // code minus the candidate's; none -> the cap. Nothing shared with the module's merge tree.
+// The strong-low test over high ground (fix round 5) is judged over the WHOLE grid, never the window: threshold floods
+// from the patch's first node (no queue, nothing shared with the module's search) at each level from the patch's code up
+// to its code + need - 1; a flood over the nodes coded at most that level reaching a node lower than the patch, or of its
+// code and earlier than the patch's first node in raster order, makes the low weak; else strong, with the prominence
+// `need` (the cap when the last flood holds everything it can reach), and the mark's prominence is the greater of the
+// window's and that. (The module also gives up after strongNodesMax nodes: the random test sets it out of reach.)
 function bruteCentres(fr, win, rad, opts) {
   opts = opts || {};
   const Q = fr.q, cols = fr.cols, rows = fr.rows, k = (PRES.hi - PRES.lo) / 254, wrapC = (c) => ((c % cols) + cols) % cols;
@@ -414,6 +420,26 @@ function bruteCentres(fr, win, rad, opts) {
     }
     return I.ISO_HL_PROM_CAP;
   };
+  const globalStrong = (fk, need) => {
+    const v0 = Q[fk];
+    for (let L = v0; L < v0 + need; L++) {
+      const seen = new Uint8Array(rows * cols), st = [fk]; seen[fk] = 1;
+      let lower = false, beyond = false;
+      while (st.length && !lower) {
+        const x = st.pop(), r = Math.floor(x / cols), c = x - r * cols;
+        if (Q[x] < v0 || (Q[x] === v0 && x < fk)) { lower = true; break; }
+        for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+          const rr = r + dr; if ((!dr && !dc) || rr < 0 || rr >= rows) continue;
+          const y = rr * cols + wrapC(c + dc);
+          if (!Q[y] || seen[y]) continue;
+          if (Q[y] <= L) { seen[y] = 1; st.push(y); } else beyond = true;
+        }
+      }
+      if (lower) return { strong: false };
+      if (L === v0 + need - 1) return { strong: true, prom: beyond ? need : I.ISO_HL_PROM_CAP };
+    }
+    return { strong: true, prom: need };
+  };
   const terrain = opts.terrain && opts.terrain.length === rows * cols ? opts.terrain : null, tmin = opts.terrainMin || 1;
   const high = (r, c) => !!terrain && terrain[Math.round(r) * cols + wrapC(Math.round(c))] >= tmin;
   const taken = { H: new Set(), L: new Set() }, kept = [];
@@ -442,12 +468,16 @@ function bruteCentres(fr, win, rad, opts) {
     let sr = 0, sc = 0;
     for (const [key, off] of seen) { sr += Math.floor(key / cols); sc += off; }
     const mr = sr / seen.size, mc = ((cd.c + sc / seen.size) % cols + cols) % cols;
-    let prom = null;
+    let strongProm = null;
     if (high(fr0, fc0) || high(mr, mc)) {                     // only a strong low over ground below the cap keeps its mark
       const lowG = (r, c) => opts.terrainCap > 0 && terrain[Math.round(r) * cols + wrapC(Math.round(c))] < opts.terrainCap;
-      if (!(low && opts.strongLowHpa > 0 && lowG(fr0, fc0) && lowG(mr, mc) && (prom = prominence(cd)) * k >= opts.strongLowHpa - 1e-9)) continue;
+      if (!(low && opts.strongLowHpa > 0 && lowG(fr0, fc0) && lowG(mr, mc))) continue;
+      const g = globalStrong(fk, Math.ceil(opts.strongLowHpa / k - 1e-9));
+      if (!g.strong) continue;
+      strongProm = g.prom;
     }
-    if (prom === null) prom = prominence(cd);
+    let prom = prominence(cd);
+    if (strongProm !== null) prom = Math.max(prom, strongProm);
     if (prom < I.ISO_HL_PROM_CODES) continue;
     kept.push({ type: cd.type, r: mr, c: mc, q: cd.q, prom, clamp, v: PRES.lo + (cd.q - 1) * k });
   }
@@ -475,7 +505,7 @@ test('findCentres = an independent brute force of the rule (random smooth fields
     for (const win of wins) for (const rad of [1, 3, 7, 14]) {
       if (win.count === 720 && rad > 3) continue;
       const o = OPTS(rad, { margin: t % 3 === 0 ? 0 : Math.max(2 * rad, 16), terrain: t % 2 ? terrain : null, terrainMin: 25,
-        strongLowHpa: [0, 2, 6][t % 3], terrainCap: [0, 35, 28, 31][t % 4] });   // the strong-low exception: none, some, every low; caps over / under the ground
+        strongLowHpa: [0, 2, 6][t % 3], terrainCap: [0, 35, 28, 31][t % 4], strongNodesMax: 1e9 });   // the strong-low exception: none, some, every low; caps over / under the ground
       const got = I.findCentres(fr, PRES, win, rad, o).map(key).sort(), want = bruteCentres(fr, win, rad, o);
       assert.deepEqual(got, want, `t ${t}, window ${JSON.stringify(win)}, rad ${rad}`);
       runs++; found += got.length; for (const g of got) proms.add(g.split(' p')[1].split(' ')[0]);
@@ -647,7 +677,7 @@ test('fix round 4 (owner, V3-1): over high ground only a STRONG LOW keeps its ma
   assert.deepEqual(marks(deep, { terrain: ground(40), strongLowHpa: 0 }), [], 'without the exception: the 400-m rule as before');
   assert.deepEqual(marks(deep, { terrain: ground(40), terrainCap: 0 }), [], 'without a cap: none either');
   assert.deepEqual(marks(cone(40, 1), { terrain: ground(40) }), [], 'a high as strong: never');
-  // beside a deeper low (60 nodes west) a low's prominence is its own depth (alone in its region it is never absorbed)
+  // beside a deeper low (60 nodes west) a low's prominence is its own depth (over the whole grid: fix round 5)
   const deeper = (r, c) => 150 - Math.round(80 * Math.exp(-((r - 150) ** 2 + (c - 580) ** 2) / 30));
   const pit = (codes) => codeFrame((r, c) => deeper(r, c) - (Math.abs(r - 150) <= 1 && Math.abs(c - 640) <= 1 ? codes : 0));
   assert.deepEqual(marks(pit(18), { terrain: ground(40) }), ['L580'], 'a 10-hPa low over 800 m (the mountain bumps measured at most 11-14 hPa, all highs): not');
@@ -664,6 +694,115 @@ test('fix round 4 (owner, V3-1): over high ground only a STRONG LOW keeps its ma
   const g3 = new Uint8Array(720 * 361).fill(40); g3[149 * 720 + 634] = 120;
   assert.deepEqual(marks(flat, { terrain: g3 }), [], 'the first node over the cap');
   assert.deepEqual(marks(flat, { terrain: new Uint8Array(720 * 361).fill(40) }), ['L640'], 'both under: marked');
+});
+
+// ---- fix round 5 (the short fresh check's K-1, R1-R4): the strong-low test over the whole grid, whatever the view ----
+// A weak low far from a deeper one, over high ground, at the layer's own inputs for zooms 3-10 (window, radius, stride,
+// margin, the block cap): before, a window holding the weak low alone gave it the cap prominence ("never absorbed") and it
+// marked from zoom 5 on (K-1: 1,100 such marks on 294 live frames).
+const k5 = (PRES.hi - PRES.lo) / 254;
+function viewInputs(lat, lng, z, w, h) {
+  const n = 256 * Math.pow(2, z), x = (lng + 180) / 360 * n, s = Math.sin(lat * Math.PI / 180);
+  const y = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n, v = { z, w, h, ox: x - w / 2, oy: y - h / 2 };
+  const fr = { cols: 720, rows: 361 }, nodePx = n * 0.5 / 360, rad = Math.max(1, Math.round(I.ISO_HL_PX / nodePx));
+  return { win: I.nodeWindow(v, HALF, fr, 0), rad, stride: I.isoStride(z, 0.5), margin: Math.max(2 * rad, 16) };
+}
+const strongRule = (extra) => Object.assign({ grid: HALF, terrainMin: I.ISO_TERRAIN_M / I.TERRAIN_M_PER_CODE, strongLowHpa: I.ISO_STRONG_LOW_HPA,
+  terrainCap: I.ISO_TERRAIN_CAP_M / I.TERRAIN_M_PER_CODE, promNodesMax: I.ISO_PROM_NODES_MAX }, extra || {});
+// two lows 60 deg apart along 20 N: a deep one (over the sea) at column 120 and the test low at column 600 over 800 m
+const lowR = 140, deepC = 120, testC = 600;
+function twoLows(testDepthCodes) {
+  return codeFrame((r, c) => {
+    const d1 = Math.hypot(r - lowR, Math.min(Math.abs(c - deepC), 720 - Math.abs(c - deepC)));
+    const d2 = Math.hypot(r - lowR, Math.min(Math.abs(c - testC), 720 - Math.abs(c - testC)));
+    return Math.max(1, 180 - Math.round(90 * Math.exp(-d1 * d1 / 40)) - Math.round(testDepthCodes * Math.exp(-d2 * d2 / 16)));
+  });
+}
+const groundAt = (code, r, c, w) => { const t = new Uint8Array(720 * 361); for (let dr = -w; dr <= w; dr++) for (let dc = -w; dc <= w; dc++) t[(r + dr) * 720 + c + dc] = code; return t; };
+const latOf = (r) => 90 - r * 0.5, lngOf = (c) => c * 0.5 - 180;
+
+test('fix round 5: a WEAK low over high ground (12 codes, 6.6 hPa) alone in a zoomed-in window is never marked, at any zoom 3-10, centred or panned; over the sea the same low marks wherever the view keeps it apart (the coarse views\' rule, unchanged)', () => {
+  const fr = twoLows(12), ter = groundAt(40, lowR, testC, 3);
+  const g = I.strongLowSearch(fr, lowR * 720 + testC, Math.ceil(15 / k5 - 1e-9), 1e9, {});
+  assert.deepEqual(g, { prom: 12, strong: false }, 'the search: 12 codes, weak');
+  let views = 0, alone = 0;
+  for (const z of [3, 4, 5, 6, 7, 8, 9, 10]) for (const dx of [0, 0.3, -0.3]) {
+    const vi = viewInputs(latOf(lowR), lngOf(testC) + dx * 1280 * 360 / (256 * Math.pow(2, z)), z, 1280, 800);
+    const o = strongRule({ terrain: ter, stride: vi.stride, margin: vi.margin });
+    const marks = I.findCentres(fr, PRES, vi.win, vi.rad, o).filter((m) => Math.abs(m.c - testC) < 3);
+    assert.deepEqual(marks, [], `z ${z} dx ${dx}: no mark`);
+    const sea = I.findCentres(fr, PRES, vi.win, vi.rad, Object.assign({}, o, { terrain: null })).filter((m) => Math.abs(m.c - testC) < 3);
+    if (sea.length && sea[0].prom === I.ISO_HL_PROM_CAP) alone++;
+    views++;
+  }
+  assert.ok(alone >= 10, `the window held the weak low alone (cap prominence) in ${alone} of ${views} views: the case K-1 marked`);
+});
+
+test('fix round 5: a STRONG low over high ground (40 codes, 22 hPa) is marked at every zoom 2.3-10, centred or panned, and keeps the strong prominence for the 2-code check and the declutter (R2: the coarse blocks read it shallow)', () => {
+  const fr = twoLows(40), ter = groundAt(40, lowR, testC, 3), need = Math.ceil(15 / k5 - 1e-9);
+  assert.deepEqual(I.strongLowSearch(fr, lowR * 720 + testC, need, 1e9, {}), { prom: need, strong: true });
+  for (const z of [2.3, 3, 3.5, 4, 4.5, 5, 6, 7, 8, 9, 10]) for (const dx of [0, 0.3, -0.3]) {
+    const vi = viewInputs(latOf(lowR), lngOf(testC) + dx * 1280 * 360 / (256 * Math.pow(2, z)), z, 1280, 800);
+    const marks = I.findCentres(fr, PRES, vi.win, vi.rad, strongRule({ terrain: ter, stride: vi.stride, margin: vi.margin })).filter((m) => Math.abs(m.c - testC) < 3);
+    assert.equal(marks.length, 1, `z ${z} dx ${dx}: marked`);
+    assert.ok(marks[0].prom >= need, `z ${z} dx ${dx}: prominence ${marks[0].prom} >= ${need}`);
+  }
+});
+
+test('fix round 5 (R2): a strong low whose coarse window blocks merge it with a deeper neighbour across a narrow ridge (window prominence 0) keeps its mark over high ground with the prominence `need`; over the sea the coarse rule drops it as before; at stride 1 it carries its own prominence', () => {
+  const fr = codeFrame((r, c) => (r >= 149 && r <= 151 && c >= 638 && c <= 641 ? 100 : r >= 149 && r <= 151 && c >= 646 && c <= 651 ? 60 : 200));
+  const ter = groundAt(40, 150, 639, 3), need = Math.ceil(15 / k5 - 1e-9), win = { r0: 100, r1: 200, c0: 600, count: 100 };
+  const at = (stride, terrain) => I.findCentres(fr, PRES, win, 3, strongRule({ terrain, stride, margin: 16 })).filter((m) => m.c < 645).map((m) => m.prom);
+  assert.deepEqual(at(6, null), [], 'over the sea at stride 6: the blocks read 0 codes (the coarse views\' rule)');
+  assert.deepEqual(at(6, ter), [need], 'over high ground: the search\'s strength carries it');
+  assert.deepEqual(at(1, ter), [100], 'at stride 1: its own prominence (up the ridge to 200)');
+});
+
+test('fix round 5 (R1): a search that needs more than strongNodesMax nodes counts WEAK (the default ISO_STRONG_NODES_MAX = 20,000); the same low with room enough is strong', () => {
+  assert.equal(I.ISO_STRONG_NODES_MAX, 20000);
+  const fr = twoLows(40), ter = groundAt(40, lowR, testC, 3), need = Math.ceil(15 / k5 - 1e-9), first = lowR * 720 + testC;
+  const g = I.strongLowSearch(fr, first, need, 1e9, {});
+  assert.equal(g.strong, true);
+  let taken = 0; for (let m = 1; m <= 2000; m *= 2) { if (I.strongLowSearch(fr, first, need, m, {}).strong) { taken = m; break; } }
+  assert.ok(taken > 4, 'the search takes more than a handful of nodes to prove 28 codes: ' + taken);
+  assert.equal(I.strongLowSearch(fr, first, need, taken / 2, {}).strong, false, 'half that: weak');
+  const win = { r0: 100, r1: 180, c0: 560, count: 80 };
+  assert.deepEqual(I.findCentres(fr, PRES, win, 10, strongRule({ terrain: ter, strongNodesMax: taken / 2, margin: 16 })).filter((m) => m.c === testC), [], 'the cap: no mark');
+  assert.equal(I.findCentres(fr, PRES, win, 10, strongRule({ terrain: ter, margin: 16 })).filter((m) => m.c === testC).length, 1, 'the default cap: marked');
+});
+
+test('fix round 5: the search decides on the level it TAKES, never on one merely queued (a high wall beside the patch proves nothing while a lower node lies beyond a 10-code saddle); an equal patch earlier in raster order counts lower, a later one not', () => {
+  const need = Math.ceil(15 / k5 - 1e-9);
+  // the pit (100) at (150, 640): a wall of 200 to the north, a 110 saddle to the south, a deeper low (50) beyond it; the rest 200
+  const fr = codeFrame((r, c) => (r === 150 && c === 640 ? 100 : r === 151 && c >= 639 && c <= 641 ? 110 : r >= 152 && r <= 154 && c >= 639 && c <= 641 ? 50 : 200));
+  assert.deepEqual(I.strongLowSearch(fr, 150 * 720 + 640, need, 1e9, {}), { prom: 10, strong: false }, 'weak: 10 codes up to the saddle');
+  assert.deepEqual(I.findCentres(fr, PRES, { r0: 140, r1: 160, c0: 620, count: 40 }, 1, strongRule({ terrain: groundAt(40, 150, 640, 0), margin: 16 })).filter((m) => m.r === 150), [], 'no mark');
+  // two equal pits (100) behind a 150 rim, nothing lower anywhere: from the later one the earlier is "lower" (prominence 50), from the earlier one nothing is
+  const eq = codeFrame((r, c) => ((r === 120 && c === 40) || (r === 200 && c === 600) ? 100 : 150));
+  assert.deepEqual(I.strongLowSearch(eq, 200 * 720 + 600, 80, 1e9, {}), { prom: 50, strong: false }, 'the later patch: up to the rim, then the earlier one');
+  assert.deepEqual(I.strongLowSearch(eq, 120 * 720 + 40, 80, 1e9, {}), { prom: I.ISO_HL_PROM_CAP, strong: true }, 'the earlier patch: nothing lower anywhere (the cap)');
+  assert.deepEqual(I.strongLowSearch(eq, 120 * 720 + 40, 40, 1e9, {}), { prom: 40, strong: true }, 'with need 40: strong at the rim\'s level, prominence need');
+});
+
+test('fix round 5: each candidate takes its own search (a strong low before it in raster order lends nothing to a one-code dimple over the sea); one search per frame and patch on the layer\'s scratch, a new frame searches again', () => {
+  // the strong low over high ground at (110, 640); a dimple one code deep at (190, 640) beside a deeper low 6 nodes east, over the sea
+  const fr = codeFrame((r, c) => {
+    if (Math.abs(r - 110) <= 1 && Math.abs(c - 640) <= 1) return 120;
+    if (r === 190 && c === 640) return 179;
+    if (r === 190 && c === 646) return 150;
+    return 180;
+  });
+  const win = { r0: 100, r1: 200, c0: 600, count: 80 }, ter = groundAt(40, 110, 640, 2), scratch = {};
+  const got = I.findCentres(fr, PRES, win, 3, strongRule({ terrain: ter, margin: 16, scratch }));
+  assert.deepEqual(got.map((m) => [m.r, m.c]).sort((a, b) => a[0] - b[0] || a[1] - b[1]), [[110, 640], [190, 646]], 'the strong low and the deeper low; the dimple (1 code) none');
+  assert.equal(scratch.S.m.size, 1, 'one search, for the low over high ground');
+  const once = scratch.S.m.get(109 * 720 + 639);
+  assert.ok(once && once.strong, 'cached under the patch\'s first node');
+  I.findCentres(fr, PRES, { r0: 90, r1: 130, c0: 610, count: 60 }, 7, strongRule({ terrain: ter, margin: 16, scratch }));
+  assert.equal(scratch.S.m.get(109 * 720 + 639), once, 'another window (a pan, a zoom): the same result object, no new search');
+  const fr2 = { q: fr.q.slice(), cols: 720, rows: 361 };
+  I.findCentres(fr2, PRES, win, 3, strongRule({ terrain: ter, margin: 16, scratch }));
+  assert.notEqual(scratch.S.m.get(109 * 720 + 639), once, 'a new frame: searched again');
 });
 
 test('findCentres: a trough with lows B, A (equal to B, a row above it) and C (deeper), 8 deg apart each: C and B get an L, A (beside the deeper C) none (G32 verification V11-2); two equal lows within the radius both come out, projectCentres keeps the more prominent (the earlier root)', () => {

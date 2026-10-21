@@ -1,7 +1,8 @@
 # Coastline data for the overlay's land clip (tools/coast). On push: unit tests only. On manual
 # dispatch: tests, then download GSHHG 2.3.7 (the GMT project's release asset, pinned by sha256),
 # build both tiers, run --check, and (only when `upload` is true) publish to the frames bucket
-# under static/coast/v1/ with immutable caching, index.json written last.
+# under static/coast/v1/ with immutable caching, index.json written last. Input `set`: "coast" (the land set,
+# static/coast/v1) or "lakes" (the Great Lakes water set for the lake overlay, static/coast/lakes-v1; plan section 50).
 # Secrets for the upload: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: coast-build
 on:
@@ -10,6 +11,9 @@ on:
     paths: ["tools/coast/**", "tests/coast/**", "tests/conftest.py", "static_overlay/**", "tests/overlay/**", "static_ui/**", "tests/ui/**", "templates/index.html", ".github/workflows/coast-build.yml"]
   workflow_dispatch:
     inputs:
+      set:
+        description: "coast (land, static/coast/v1) or lakes (Great Lakes water, static/coast/lakes-v1)"
+        default: "coast"
       upload:
         description: "publish to R2 under static/coast/v1 (true/false)"
         default: "false"
@@ -58,9 +62,14 @@ jobs:
           echo "28600e8f7a08645aab43079326df6504212ec5ccb2b4bcf3b5f4f12ed60e82bc  gshhg-bin-2.3.7.zip" | sha256sum -c -
       - name: Build and check
         shell: bash
+        env:
+          SET: ${{ github.event.inputs.set }}
         run: |
+          case "$SET" in coast|lakes) ;; *) echo "set must be coast or lakes"; exit 2;; esac
+          OUT=build/coast/v1; ARGS=()
+          [ "$SET" = "lakes" ] && { OUT=build/coast/lakes-v1; ARGS+=(--lakes); }
           rc=0
-          /usr/bin/time -v -o time.txt python tools/coast/build_coast.py --zip gshhg-bin-2.3.7.zip --out build/coast/v1 | tee build.log || rc=$?
+          /usr/bin/time -v -o time.txt python tools/coast/build_coast.py "${ARGS[@]}" --zip gshhg-bin-2.3.7.zip --out "$OUT" | tee build.log || rc=$?
           { echo '```'; cat build.log; grep -E "Maximum resident|Elapsed" time.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
       - name: Upload to R2
@@ -72,9 +81,11 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           REPLACE: ${{ github.event.inputs.replace }}
+          SET: ${{ github.event.inputs.set }}
         run: |
           rc=0
           ARGS=(--out build/coast/v1 --upload static/coast/v1)
+          [ "$SET" = "lakes" ] && ARGS=(--out build/coast/lakes-v1 --upload static/coast/lakes-v1)
           [ "$REPLACE" = "true" ] && ARGS+=(--replace)
           python tools/coast/build_coast.py "${ARGS[@]}" | tee upload.log || rc=$?
           tail -3 upload.log >> "$GITHUB_STEP_SUMMARY"

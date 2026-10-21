@@ -24,6 +24,14 @@ coast-v1 file layout (little-endian):
         per ring: n, then n pairs zz(dx) zz(dy); the first pair is relative to (minx, miny),
                   each next pair to the previous vertex; rings are implicitly closed.
 
+The Great Lakes set (plan section 50, `--lakes`): the same format and tiers, holding WATER instead of land, for the
+overlay's Great Lakes layer only. GSHHG level 2 (lakes) polygons of at least LAKE_MIN_KM2 inside LAKE_BOX (GSHHG's
+Superior + Michigan + Huron + St Clair polygon, Erie, Ontario), counter-clockwise, and the level-3 islands they contain
+(Isle Royale, Manitoulin, ...) CLOCKWISE in the same cells: under the client's nonzero fill an island cancels its lake.
+Its index carries "kind": "lakes" and its own format key; --check validates it with lake probes and the lakes' area.
+  python tools/coast/build_coast.py --lakes --zip gshhg-bin-2.3.7.zip --out build/coast/lakes-v1   (published under
+         static/coast/lakes-v1)
+
 Usage:
   python tools/coast/build_coast.py --zip gshhg-bin-2.3.7.zip --out build/coast/v1
   python tools/coast/build_coast.py --check build/coast/v1
@@ -86,8 +94,38 @@ def read_gshhg(buf, levels=LAND_LEVELS):
         if level in levels:
             pts = np.frombuffer(buf, dtype=">i4", count=2 * n, offset=off).reshape(n, 2).astype(np.float64) / 1e6
             yield {"id": pid, "level": level, "area_km2": area / 10.0 ** (flag >> 26),
-                   "greenwich": (flag >> 16) & 3, "x": pts[:, 0].copy(), "y": pts[:, 1].copy()}
+                   "greenwich": (flag >> 16) & 3, "container": _cont, "x": pts[:, 0].copy(), "y": pts[:, 1].copy()}
         off += 8 * n
+
+
+# The Great Lakes set (plan section 50): lakes = GSHHG level 2, their islands = level 3.
+LAKE_LEVELS = (2, 3)
+LAKE_BOX = (41.0, 49.5, -93.0, -75.5)                 # south, north, west, east: GLWU's water lies in 41.38-49.01 N, 92.11-76.13 W
+LAKE_MIN_KM2 = 10000.0                                # the three GSHHG polygons of the five Great Lakes (+ St Clair)
+LAKES_FORMAT_KEY = "coast-v1-lakes|q=%d|levels=%s|box=%s|min_lake=%g|min_area=%g|tier0=%s/%d/%g|tier1=%s/%d/%g" % (
+    Q, ",".join(map(str, LAKE_LEVELS)), ",".join("%g" % v for v in LAKE_BOX), LAKE_MIN_KM2, MIN_RING_AREA,
+    TIER0["res"], TIER0["cell"], TIER0["min_area_km2"], TIER1["res"], TIER1["cell"], TIER1["min_area_km2"])
+LAKES_TIER0_FILE = "lakes-i.bin"
+# (lon, lat, water?): each lake, islands (Isle Royale, Manitoulin, Beaver Island), the land between and lakes left out.
+LAKE_PROBES = [(-87.5, 47.5, True), (-87.0, 43.5, True), (-82.5, 44.6, True), (-81.5, 42.2, True), (-77.8, 43.6, True),
+               (-82.7, 42.45, True), (-88.9, 48.0, False), (-82.2, 45.8, False), (-85.5, 45.65, False),
+               (-88.0, 42.0, False), (-84.5, 43.0, False), (-79.4, 44.4, False), (-73.3, 44.5, False)]
+LAKES_SQDEG = (26.5, 30.0)                            # the three lakes' net water area: 28.19 sq deg (~246,500 km2) in 2.3.7
+
+
+def lake_polys(polys):
+    """The lakes (level 2, >= LAKE_MIN_KM2, inside LAKE_BOX) and the level-3 islands they contain."""
+    s, n, w, e = LAKE_BOX
+    lakes = []
+    for p in polys:
+        if p["level"] != 2 or p["area_km2"] < LAKE_MIN_KM2:
+            continue
+        x = np.where(p["x"] > 180.0, p["x"] - 360.0, p["x"])
+        if p["y"].min() >= s and p["y"].max() <= n and x.min() >= w and x.max() <= e:
+            lakes.append(p)
+    ids = {p["id"] for p in lakes}
+    islands = [p for p in polys if p["level"] == 3 and p["container"] in ids]
+    return lakes, islands
 
 
 # ---------------------------------------------------------------- ring geometry
@@ -299,6 +337,65 @@ def build_tier(polys, cell, min_area_km2, q=Q):
     return cells
 
 
+def build_lake_tier(polys, cell, min_area_km2, q=Q):
+    """build_tier for the Great Lakes set: lake rings counter-clockwise, island rings reversed (clockwise).
+    -> (cells, lake ids, island count)."""
+    lakes, islands = lake_polys(polys)
+    cells, nisl = {}, 0
+    for p, cw in [(p, False) for p in lakes] + [(p, True) for p in islands]:
+        if cw and p["area_km2"] < min_area_km2:
+            continue
+        nisl += cw
+        for x, y in normalize_ring(p["x"], p["y"]):
+            if cw:
+                x, y = x[::-1].copy(), y[::-1].copy()
+            for lat0, lon0, cx, cy in split_cells(x, y, cell):
+                r = quantize_ring(cx, cy, q)
+                if r is not None:
+                    cells.setdefault((lat0, lon0), []).append([r])
+    return cells, [p["id"] for p in lakes], nisl
+
+
+def build_lakes(zip_path, out_dir, log=print):
+    """The Great Lakes set (see the module docstring): the same files and index as build(), plus "kind": "lakes"."""
+    t0 = time.time()
+    z = zipfile.ZipFile(zip_path)
+    os.makedirs(os.path.join(out_dir, TIER1["dir"]), exist_ok=True)
+    index = {"format": "coast-v1", "kind": "lakes", "format_key": LAKES_FORMAT_KEY, "source": SOURCE, "license": LICENSE,
+             "q": Q, "lake_levels": list(LAKE_LEVELS), "lake_box": list(LAKE_BOX),
+             "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+             "source_sha256": hashlib.sha256(open(zip_path, "rb").read()).hexdigest()}
+    cells0, ids0, nisl0 = build_lake_tier(list(read_gshhg(z.read("gshhs_%s.b" % TIER0["res"]), LAKE_LEVELS)),
+                                          TIER0["cell"], TIER0["min_area_km2"])
+    pieces0 = [pc for key in sorted(cells0) for pc in cells0[key]]
+    body = encode_file(pieces0, TIER0["cell"])
+    open(os.path.join(out_dir, LAKES_TIER0_FILE), "wb").write(body)
+    index["tier0"] = {"file": LAKES_TIER0_FILE, "res": TIER0["res"], "cell": TIER0["cell"], "max_zoom": TIER0["max_zoom"],
+                      "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(), "lakes": ids0, "islands": nisl0,
+                      "pieces": len(pieces0), "vertices": sum(len(r[0]) for pc in pieces0 for r in pc)}
+    cells1, ids1, nisl1 = build_lake_tier(list(read_gshhg(z.read("gshhs_%s.b" % TIER1["res"]), LAKE_LEVELS)),
+                                          TIER1["cell"], TIER1["min_area_km2"])
+    listing, digests, total_bytes, total_verts = {}, {}, 0, 0
+    for (lat0, lon0) in sorted(cells1):
+        pieces = cells1[(lat0, lon0)]
+        body = encode_file(pieces, TIER1["cell"])
+        name = cell_name(lat0, lon0)
+        open(os.path.join(out_dir, TIER1["dir"], name + ".bin"), "wb").write(body)
+        nv = sum(len(r[0]) for pc in pieces for r in pc)
+        listing[name] = [len(body), nv]
+        digests[name] = hashlib.sha256(body).hexdigest()
+        total_bytes += len(body)
+        total_verts += nv
+    index["tier1"] = {"dir": TIER1["dir"], "res": TIER1["res"], "cell": TIER1["cell"], "min_zoom": TIER1["min_zoom"],
+                      "cells": listing, "bytes": total_bytes, "vertices": total_verts, "sha256": cells_digest(digests),
+                      "lakes": ids1, "islands": nisl1}
+    log("lakes: tier 0 %d lakes, %d islands, %d bytes; tier 1 %d lakes, %d islands, %d cells, %d bytes (%.1fs)" % (
+        len(ids0), nisl0, index["tier0"]["bytes"], len(ids1), nisl1, len(listing), total_bytes, time.time() - t0))
+    with open(os.path.join(out_dir, "index.json"), "w") as fh:
+        json.dump(index, fh, separators=(",", ":"), sort_keys=True)
+    return index
+
+
 def cell_name(lat0, lon0):
     return "%d_%d" % (lat0, lon0)
 
@@ -354,8 +451,9 @@ def cells_digest(digests):
 
 # ---------------------------------------------------------------- check
 
-def check_file(buf, cell_expected=None, cell_box=None):
-    """Problems (strings) for one coast-v1 file; cell_box = (lat0, lon0, cell) for tier-1 cells."""
+def check_file(buf, cell_expected=None, cell_box=None, ccw_only=True):
+    """Problems (strings) for one coast-v1 file; cell_box = (lat0, lon0, cell) for tier-1 cells. The lakes set holds
+    clockwise island rings (ccw_only=False: only zero-area rings are refused)."""
     problems = []
     try:
         d = decode_file(buf)
@@ -368,8 +466,11 @@ def check_file(buf, cell_expected=None, cell_box=None):
         for ix, iy in pc["rings"]:
             if len(ix) < 3:
                 problems.append("piece %d: ring with %d vertices" % (k, len(ix)))
-            if signed_area(ix.astype(np.float64), iy.astype(np.float64)) <= 0:
+            a = signed_area(ix.astype(np.float64), iy.astype(np.float64))
+            if ccw_only and a <= 0:
                 problems.append("piece %d: ring not counter-clockwise" % k)
+            elif a == 0:
+                problems.append("piece %d: zero-area ring" % k)
             if ix.min() < -180 * q or ix.max() > 180 * q or iy.min() < -90 * q or iy.max() > 90 * q:
                 problems.append("piece %d: coordinates out of range" % k)
             if cell_box is not None:
@@ -415,6 +516,8 @@ WORLD_MIN_CELLS = 1000                                  # a real build has ~1,47
 
 def check(out_dir, log=print):
     index = json.load(open(os.path.join(out_dir, "index.json")))
+    if index.get("kind") == "lakes":
+        return check_lakes(out_dir, index, log)
     problems = []
     if index.get("format") != "coast-v1" or index.get("q") != Q:
         problems.append("index format/q")
@@ -469,6 +572,57 @@ def check(out_dir, log=print):
         problems.append("tier 1: content hash != index (tier1.sha256)")
     log("check: tier 0 %d pieces / %d vertices / %d B; tier 1 %d cells / %d vertices / %d B; %d problems" % (
         t0["pieces"], t0["vertices"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"], len(problems)))
+    for p in problems[:50]:
+        log("  " + p)
+    return problems
+
+
+def check_lakes(out_dir, index, log=print):
+    """--check for the Great Lakes set: format and key, sizes and hashes, every piece inside its cell, no zero-area
+    ring, the lake probes (water, islands, land) in both tiers, and the net water area."""
+    problems = []
+    if index.get("format") != "coast-v1" or index.get("q") != Q:
+        problems.append("index format/q")
+    if index.get("format_key") != LAKES_FORMAT_KEY:
+        problems.append("index format_key %r != this builder's %r" % (index.get("format_key"), LAKES_FORMAT_KEY))
+    t0 = index["tier0"]
+    buf = open(os.path.join(out_dir, t0["file"]), "rb").read()
+    if len(buf) != t0["bytes"] or hashlib.sha256(buf).hexdigest() != t0["sha256"]:
+        problems.append("tier 0 size/hash mismatch")
+    problems += ["tier 0: " + p for p in check_file(buf, t0["cell"], ccw_only=False)]
+    d0 = decode_file(buf)
+    t1 = index["tier1"]
+    real = len(t0.get("lakes", [])) == 3               # a real GSHHG build; a synthetic test archive holds other lakes
+    for lon, lat, water in (LAKE_PROBES if real else []):
+        if point_in_pieces(lon, lat, d0["pieces"]) != water:
+            problems.append("tier 0: probe %s,%s should be %s" % (lon, lat, "water" if water else "land"))
+    present = set(n[:-4] for n in os.listdir(os.path.join(out_dir, t1["dir"])) if n.endswith(".bin"))
+    if present != set(t1["cells"]):
+        problems.append("tier 1: files %d vs index %d" % (len(present), len(t1["cells"])))
+    area1, digests = 0.0, {}
+    for name, (nbytes, nverts) in t1["cells"].items():
+        buf = open(os.path.join(out_dir, t1["dir"], name + ".bin"), "rb").read()
+        digests[name] = hashlib.sha256(buf).hexdigest()
+        if len(buf) != nbytes:
+            problems.append("tier 1 %s: size mismatch" % name)
+        lat0, lon0 = (int(v) for v in name.split("_"))
+        problems += ["tier 1 %s: %s" % (name, p) for p in check_file(buf, t1["cell"], (lat0, lon0, t1["cell"]), ccw_only=False)]
+        try:
+            d = decode_file(buf)
+        except Exception:                             # noqa: BLE001  (already reported by check_file)
+            continue
+        if sum(len(r[0]) for pc in d["pieces"] for r in pc["rings"]) != nverts:
+            problems.append("tier 1 %s: vertex count != index" % name)
+        area1 += sum(signed_area(ix / Q, iy / Q) for pc in d["pieces"] for ix, iy in pc["rings"])
+        for lon, lat, water in (LAKE_PROBES if real else []):
+            if lat0 <= lat < lat0 + t1["cell"] and lon0 <= lon < lon0 + t1["cell"] and point_in_pieces(lon, lat, d["pieces"]) != water:
+                problems.append("tier 1 %s: probe %s,%s should be %s" % (name, lon, lat, "water" if water else "land"))
+    if real and not LAKES_SQDEG[0] < area1 < LAKES_SQDEG[1]:
+        problems.append("tier 1: net water area %.2f sq deg outside %s" % (area1, LAKES_SQDEG))
+    if present == set(t1["cells"]) and t1.get("sha256") != cells_digest(digests):
+        problems.append("tier 1: content hash != index (tier1.sha256)")
+    log("check (lakes): tier 0 %d pieces / %d B; tier 1 %d cells / %d vertices / %d B; net water %.2f sq deg; %d problems" % (
+        t0["pieces"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"], area1, len(problems)))
     for p in problems[:50]:
         log("  " + p)
     return problems
@@ -568,6 +722,7 @@ def main(argv=None):
     ap.add_argument("--check", metavar="DIR", help="validate a built directory")
     ap.add_argument("--upload", metavar="PREFIX", help="upload --out to the R2 bucket under PREFIX")
     ap.add_argument("--replace", action="store_true", help="allow overwriting a different build under PREFIX (immutable objects!)")
+    ap.add_argument("--lakes", action="store_true", help="build the Great Lakes water set instead of the land set")
     a = ap.parse_args(argv)
     if a.check:
         return 1 if check(a.check) else 0
@@ -580,7 +735,7 @@ def main(argv=None):
         return 0 if upload(a.out, a.upload.strip("/"), replace=a.replace) else 1
     if not (a.zip and a.out):
         ap.error("--zip and --out are required to build")
-    build(a.zip, a.out)
+    (build_lakes if a.lakes else build)(a.zip, a.out)
     return 1 if check(a.out) else 0
 
 

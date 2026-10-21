@@ -19,12 +19,12 @@ import build_coast as B  # noqa: E402
 Q = B.Q
 
 
-def gshhg_record(pid, level, pts_deg, area_km2=10.0, greenwich=0, p=1):
+def gshhg_record(pid, level, pts_deg, area_km2=10.0, greenwich=0, p=1, container=-1):
     pts = np.round(np.asarray(pts_deg, np.float64) * 1e6).astype(np.int64)
     flag = level | (15 << 8) | (greenwich << 16) | (1 << 24) | (p << 26)
     xs, ys = pts[:, 0], pts[:, 1]
     head = B.GSHHG_HEADER.pack(pid, len(pts), flag, int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max()),
-                               int(round(area_km2 * 10 ** p)), int(round(area_km2 * 10 ** p)), -1, -1)
+                               int(round(area_km2 * 10 ** p)), int(round(area_km2 * 10 ** p)), container, -1)
     return head + b"".join(struct.pack(">ii", int(x), int(y)) for x, y in pts)
 
 
@@ -238,7 +238,8 @@ def test_coast_workflow_is_pinned():
     pip = re.findall(r"pip install ([^\n]+)", text)
     assert pip and all(re.fullmatch(r"[a-z0-9-]+==[0-9][0-9A-Za-z.]*", p) for line in pip for p in line.split()), pip
     assert "28600e8f7a08645aab43079326df6504212ec5ccb2b4bcf3b5f4f12ed60e82bc" in text      # source archive pinned by hash
-    assert "workflow_dispatch" in text and "--upload static/coast/v1" in text
+    assert "workflow_dispatch" in text and "static/coast/v1" in text and "static/coast/lakes-v1" in text
+    assert 'ARGS+=(--lakes)' in text and 'case "$SET" in coast|lakes)' in text
 
 
 # ---------------------------------------------------------------- G5 additions
@@ -379,3 +380,68 @@ def test_redact_and_reader_guards():
     with pytest.raises(ValueError):
         list(B.read_gshhg(good + bytes(other_version)))                                   # version changes between records
     assert list(B.read_gshhg(gshhg_record(2, 1, [(10, 10), (11, 10), (11, 11)]) + good)) != []
+
+
+# ---------------------------------------------------------------- the Great Lakes set (plan section 50)
+
+def lakes_zip(path):
+    """A great lake (id 10, 60,000 km2, across the -85 cell line) with an island (level 3, container 10) that crosses
+    the same line; a small lake (5,000 km2); a big lake outside the box with its own island; land (ignored)."""
+    sq = lambda x0, y0, x1, y1: [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    body = (gshhg_record(10, 2, sq(-88.0 + 360, 43.0, -83.0 + 360, 46.0), area_km2=60000)
+            + gshhg_record(11, 3, sq(-85.4 + 360, 44.0, -84.6 + 360, 44.6), area_km2=3000, container=10)
+            + gshhg_record(12, 2, sq(-80.0, 44.0, -79.5, 44.4), area_km2=5000)
+            + gshhg_record(13, 2, sq(-100.0, 50.0, -97.0, 53.0), area_km2=24000)
+            + gshhg_record(14, 3, sq(-99.0, 51.0, -98.0, 52.0), area_km2=700, container=13)
+            + gshhg_record(15, 1, sq(-90.0, 40.0, -70.0, 50.0), area_km2=1e6))
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("gshhs_i.b", body)
+        z.writestr("gshhs_f.b", body)
+    return path
+
+
+def _water(out, lon, lat):
+    index = json.load(open(os.path.join(out, "index.json")))
+    rings = []
+    for name in index["tier1"]["cells"]:
+        for pc in B.decode_file(open(os.path.join(out, "f", name + ".bin"), "rb").read())["pieces"]:
+            rings += [(ix, iy) for ix, iy in pc["rings"]]
+    return winding(np.array([lon * Q]), np.array([lat * Q]), rings)[0] != 0
+
+
+def test_lakes_set_keeps_the_great_lakes_and_cuts_their_islands(tmp_path):
+    zp = lakes_zip(str(tmp_path / "g.zip"))
+    out = str(tmp_path / "lakes-v1")
+    index = B.build_lakes(zp, out, log=lambda *a: None)
+    assert B.check(out, log=lambda *a: None) == []
+    assert index["kind"] == "lakes" and index["format_key"] == B.LAKES_FORMAT_KEY != B.FORMAT_KEY
+    assert index["tier0"]["file"] == "lakes-i.bin" and index["tier1"]["lakes"] == [10] and index["tier1"]["islands"] == 1
+    assert set(index["tier1"]["cells"]) == {"40_-90", "40_-85", "45_-90", "45_-85"}
+    assert _water(out, -87.0, 44.5) and _water(out, -84.0, 45.5) and _water(out, -85.6, 44.3)
+    assert not _water(out, -85.2, 44.3) and not _water(out, -84.8, 44.3)       # the island, on both sides of the cell line
+    assert not _water(out, -79.7, 44.2) and not _water(out, -98.5, 51.5)       # a small lake, a lake outside the box
+    t0 = B.decode_file(open(os.path.join(out, "lakes-i.bin"), "rb").read())
+    areas = sorted(B.signed_area(ix / Q, iy / Q) for pc in t0["pieces"] for ix, iy in pc["rings"])
+    assert areas[0] < 0 < areas[-1]                                          # island rings clockwise, the lake counter-clockwise
+    assert B.main(["--lakes", "--zip", zp, "--out", str(tmp_path / "again")]) == 0
+
+
+def test_lakes_check_catches_a_land_set_key_and_a_corrupt_cell(tmp_path):
+    out = str(tmp_path / "lakes-v1")
+    B.build_lakes(lakes_zip(str(tmp_path / "g.zip")), out, log=lambda *a: None)
+    ip = os.path.join(out, "index.json")
+    index = json.load(open(ip))
+    json.dump(dict(index, format_key=B.FORMAT_KEY), open(ip, "w"))
+    assert any("format_key" in p for p in B.check(out, log=lambda *a: None))
+    json.dump(index, open(ip, "w"))
+    name = os.path.join(out, "f", "45_-85.bin")
+    raw = bytearray(open(name, "rb").read()); raw[-1] = 0x81
+    open(name, "wb").write(bytes(raw))
+    assert B.check(out, log=lambda *a: None)
+
+
+def test_land_set_check_still_refuses_clockwise_rings(tmp_path):
+    ring = (np.array([0, 0, 10, 10], np.int64) * Q, np.array([0, 10, 10, 0], np.int64) * Q)   # clockwise
+    buf = B.encode_file([[ring]], 30)
+    assert any("counter-clockwise" in p for p in B.check_file(buf, 30))
+    assert B.check_file(buf, 30, ccw_only=False) == []

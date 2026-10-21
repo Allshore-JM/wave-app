@@ -694,6 +694,13 @@ lakes under the GFS model selection (plan section 50's client steps).
 - **Bucket**: `glwu/v1/` (`<RUN>/<field>/fNNN.png`, `bull/`, `winds.json`, manifests, stats, `latest.json`, `failed/`,
   `notready/`); 4 runs kept. The other prefixes are never touched. The rebuild guard compares this source's fields and
   fill. Stop it by disabling `model-glwu.yml` (and removing it from the keepalive and the Worker's `GH_WORKFLOW`).
+- **The lake shores**: `tools/coast/build_coast.py --lakes` builds `static/coast/lakes-v1/` (coast-v1 format, the same
+  tiers; `"kind": "lakes"` in its index): GSHHG's three Great Lakes polygons (level 2, >= 10,000 km2 in the lake box:
+  Superior + Michigan + Huron + St Clair, Erie, Ontario) counter-clockwise and the 139 islands they contain (level 3)
+  CLOCKWISE, so under the browser's nonzero fill an island cancels its lake. 9.6 KB overview file + 7 cells (53 KB);
+  `--check` uses lake probes and the net water area (28.19 sq deg, ~246,500 km2). Published by the coast-build
+  workflow's dispatch with `set: lakes`. The frames (2-node fill) colour 99.68 % of that water (the rest: narrow
+  channels and harbours the model does not resolve); the land set is unchanged.
 - **Fixtures**: `tests/capture_glwu_fixtures.py` (network + eccodes) writes `tests/fixtures/glwu/` (four steps' `.idx`
   lines, step 0's metadata with eccodes' coordinates at a few nodes, one bulletin) for `tests/model_frames/test_glwu.py`.
 

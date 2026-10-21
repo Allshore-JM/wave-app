@@ -613,7 +613,7 @@ def test_trigger_worker_config_and_unit_tests():
     cfg = open(os.path.join(trigger, "wrangler.jsonc"), encoding="utf-8").read()
     assert '"workers_dev": false' in cfg
     assert re.search(r'"crons":\s*\["5,15,25,35,45,55 \* \* \* \*"\]', cfg)
-    for k, v in (("GH_REPO", "Allshore-JM/wave-app"), ("GH_WORKFLOW", "model-frames.yml,model-points.yml,model-ecmwf.yml"), ("GH_REF", "Live-Buoy-Update")):
+    for k, v in (("GH_REPO", "Allshore-JM/wave-app"), ("GH_WORKFLOW", "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml"), ("GH_REF", "Live-Buoy-Update")):
         assert f'"{k}": "{v}"' in cfg, k
     js = open(os.path.join(trigger, "worker.js"), encoding="utf-8").read()
     assert "async fetch" not in js and "GITHUB_TOKEN" in js and "/dispatches" in js
@@ -628,7 +628,7 @@ def test_workflows_pin_actions_and_packages():
     test workflow by exact version (G4 item 15)."""
     import re
     wf = os.path.join(ROOT, ".github", "workflows")
-    for name in ("model-frames.yml", "model-ecmwf.yml", "model-frames-tests.yml", "model-frames-keepalive.yml"):
+    for name in ("model-frames.yml", "model-ecmwf.yml", "model-glwu.yml", "model-frames-tests.yml", "model-frames-keepalive.yml"):
         text = open(os.path.join(wf, name), encoding="utf-8").read()
         uses = re.findall(r"uses:[ ]*([^ \n]+)", text)
         assert all(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}", u) for u in uses), (name, uses)

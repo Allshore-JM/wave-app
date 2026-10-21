@@ -19,6 +19,7 @@ PREFIX = "gfswave/0p25/v1"
 IMMUTABLE = "public, max-age=31536000, immutable"
 POINTER = "public, max-age=300"
 ECMWF_PREFIX = "ecmwf/0p25/v1"
+GLWU_PREFIX = "glwu/v1"                 # the Great Lakes frames (plan section 50)
 LATEST_KEY = f"{PREFIX}/latest.json"
 
 

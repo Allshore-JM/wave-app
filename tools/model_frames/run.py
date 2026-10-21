@@ -123,11 +123,27 @@ class GfsSource:
 GFS = GfsSource()
 
 
+def src_fields(src):
+    """The fields a source publishes (encode.FIELDS by default; the Great Lakes source: a subset at one resolution)."""
+    return getattr(src, "fields", None) or E.FIELDS
+
+
+def src_fill(src):
+    """The source's fill block for the manifest and the rebuild guard (encode.FILL_INFO by default)."""
+    return getattr(src, "fill_info", E.FILL_INFO)
+
+
 def build_and_publish(store, run_dt, steps, upload=True, log=print, src=GFS):
+    """Optional Source hooks (plan section 50; the defaults are the GFS / ECMWF behaviour, byte for byte): `fields`,
+    `fill_info`, `encode(grid, name)`, `grid_blocks()` (the manifest's grid blocks + the files' resolution map) and
+    `before_manifest(store, run_dt, run, upload)` (extra objects published after every frame and before the manifest;
+    returns keys to add to the manifest)."""
     run = P.run_key(run_dt)
     frames, stats_frames = [], []
     t0 = time.time()
-    if E.FILL_INFO:
+    fields, fill_info = src_fields(src), src_fill(src)
+    encode = getattr(src, "encode", None) or E.encode_frame
+    if fill_info and encode is E.encode_frame:
         E.fill_allow()                              # load + verify the mask once, before the encode threads
     fetch_pool, encode_pool = ThreadPoolExecutor(1), ThreadPoolExecutor(ENCODE_WORKERS)
     upload_pool = ThreadPoolExecutor(UPLOAD_WORKERS) if upload else None
@@ -168,7 +184,7 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print, src=GFS):
             calm = int(np.count_nonzero(np.isnan(pd_) & (hs_ < PDIR_WAVES_M)))
             stat = {"step": step, "fields": {}, "pdir_mask_mismatch": mismatch, "pdir_missing_calm": calm}
             names = list(grids)
-            encoded = list(encode_pool.map(lambda name: E.encode_frame(grids[name], name), names))
+            encoded = list(encode_pool.map(lambda name: encode(grids[name], name), names))
             for name, enc in zip(names, encoded):
                 stat["fields"][name] = dict(enc["stats"], bytes_full=len(enc.get("full", b"")), bytes_half=len(enc.get("half", b"")))
                 if upload:
@@ -177,11 +193,12 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print, src=GFS):
                 drain(UPLOAD_BACKLOG)
             frames.append(entry)
             stats_frames.append(stat)
-            filled = " ".join(f"{n}={stat['fields'][n]['filled_points']}" for n in (E.FILL_INFO or {}).get("fields", []))
+            filled = " ".join(f"{n}={stat['fields'][n]['filled_points']}" for n in (fill_info or {}).get("fields", []))
             log(f"f{step:03d} done in {time.time() - t:.1f}s" + (f" (filled {filled})" if filled else "")
                 + (f" WARNING pdir/hs mask mismatch {mismatch}" if mismatch else ""))
         if upload:
             drain(0)                                # every frame is stored before the manifest and the pointer
+        extra = src.before_manifest(store, run_dt, run, upload) if hasattr(src, "before_manifest") else {}
     except BaseException:
         for f in pending:
             f.cancel()
@@ -194,19 +211,22 @@ def build_and_publish(store, run_dt, steps, upload=True, log=print, src=GFS):
         if upload_pool is not None:
             upload_pool.shutdown(wait=False, cancel_futures=True)
     complete = steps == src.steps and len(frames) == len(src.steps)
+    blocks = src.grid_blocks() if hasattr(src, "grid_blocks") else {
+        "res": {"full": "", "half": "half/"}, "grid": GRID_FULL, "grid_half": GRID_HALF}
     manifest = {
-        "schema": 3, "run": run, "files": {"template": P.files_template(run, src.prefix), "res": {"full": "", "half": "half/"}}, "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": src.model,
+        "schema": 3, "run": run, "files": {"template": P.files_template(run, src.prefix), "res": blocks["res"]}, "run_utc": run_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "model": src.model,
         "encoding": E.ENCODING, "encoding_spec": E.ENCODING_SPEC,
-        "grid": GRID_FULL, "grid_half": GRID_HALF,
+        **{k: v for k, v in blocks.items() if k != "res"},
         "fields": {n: {k: (list(f[k]) if isinstance(f[k], tuple) else f[k]) for k in FIELD_KEYS if k in f}
-                   for n, f in E.FIELDS.items()},
+                   for n, f in fields.items()},
         "frame_schedule": src.schedule, "expected_frames": len(src.steps),
         "frames": frames, "complete": complete,
         "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "build_seconds": round(time.time() - t0, 1),
     }
-    if E.FILL_INFO:
-        manifest["fill"] = E.FILL_INFO
+    if fill_info:
+        manifest["fill"] = fill_info
+    manifest.update(extra)
     stats = {"run": run, "frames": stats_frames}
     if upload:
         P.publish_manifest(store, run, manifest, stats, prefix=src.prefix)
@@ -264,9 +284,10 @@ def fill_guard(store, run, live, partial, src=GFS):
     except Exception as exc:                                  # noqa: BLE001  transport: the next tick retries
         print(f"run {run}: could not read its published manifest ({exc.__class__.__name__}); retrying next tick")
         return 1
-    same_fill = E.fill_key(man.get("fill")) == E.fill_key(E.FILL_INFO) if mkey is not None else True
+    fill_info = src_fill(src)
+    same_fill = E.fill_key(man.get("fill")) == E.fill_key(fill_info) if mkey is not None else True
     old_ranges = ranges_key(man.get("fields")) if mkey is not None else None
-    same_ranges = old_ranges is None or len(set(comparable_ranges(old_ranges, ranges_key(E.FIELDS)))) == 1
+    same_ranges = old_ranges is None or len(set(comparable_ranges(old_ranges, ranges_key(src_fields(src))))) == 1
     if mkey is None or (same_fill and same_ranges):
         return None
     what = ("fill " + str(E.fill_key(man.get("fill")))) if not same_fill else "other encode ranges"
@@ -280,7 +301,7 @@ def fill_guard(store, run, live, partial, src=GFS):
         _summary(msg)
         return 0
     msg = (f"run {run} was published with {what}; refusing to rewrite its frames "
-           f"with fill {E.fill_key(E.FILL_INFO)} and the current encode ranges")
+           f"with fill {E.fill_key(fill_info)} and the current encode ranges")
     print(msg)
     _summary("WARNING: " + msg)
     return 2
@@ -378,8 +399,8 @@ def main(argv=None, src=GFS):
     if any(s not in src.steps for s in steps):
         sch = src.schedule
         first = "hourly" if sch[0][2] == 1 else f"every {sch[0][2]} h"
-        print(f"--steps must be forecast hours of the model output: {first} {sch[0][0]}..{sch[0][1]}, "
-              f"then every {sch[1][2]} h to {sch[1][1]}")
+        then = f", then every {sch[1][2]} h to {sch[1][1]}" if len(sch) > 1 else ""
+        print(f"--steps must be forecast hours of the model output: {first} {sch[0][0]}..{sch[0][1]}{then}")
         return 2
     partial = steps != src.steps
     if partial and not a.dry_run and not a.allow_partial:
@@ -444,12 +465,14 @@ def main(argv=None, src=GFS):
     lag_h = (published - run_dt).total_seconds() / 3600
     _summary(f"### {src.tag}run {run}: {len(manifest['frames'])} frames, complete={manifest['complete']}, "
              f"{tot/1e6:.1f} MB stored, {manifest['build_seconds']} s, published {lag_h:.1f} h after the cycle")
-    if E.FILL_INFO and manifest["_stats"]["frames"]:
+    fill_info = src_fill(src)
+    if fill_info and manifest["_stats"]["frames"]:
         f0 = manifest["_stats"]["frames"][0]
-        _summary(f"coastal fill (v{E.FILL_VERSION}, {E.FILL_CELLS} cells) at f{f0['step']:03d}: " +
-                 ", ".join(f"{n} {f0['fields'][n]['filled_points']} cells" for n in E.FILL_INFO["fields"]))
+        _summary(f"coastal fill (v{fill_info['version']}, {fill_info['cells']} cells) at f{f0['step']:03d}: " +
+                 ", ".join(f"{n} {f0['fields'][n]['filled_points']} cells" for n in fill_info["fields"]))
     # how often a field reached its encode top (the readout then says ">= top"): the ranges are chosen to make this rare
-    tops = {n: sum(f["fields"].get(n, {}).get("clamped_high", 0) or 0 for f in manifest["_stats"]["frames"]) for n in ("hs", "tp", "wind")}
+    tops = {n: sum(f["fields"].get(n, {}).get("clamped_high", 0) or 0 for f in manifest["_stats"]["frames"])
+            for n in ("hs", "tp", "wind") if n in src_fields(src)}
     peaks = {n: max((f["fields"].get(n, {}).get("max") or 0) for f in manifest["_stats"]["frames"]) for n in ("hs", "tp", "wind")}
     site = {"hs": (1 / 0.3048, "ft"), "tp": (1.0, "s"), "wind": (1 / E.KT, "kt")}
     _summary("field peaks: " + ", ".join(

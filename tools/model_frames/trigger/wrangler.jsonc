@@ -14,7 +14,7 @@
   },
   "vars": {
     "GH_REPO": "Allshore-JM/wave-app",
-    "GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml",
+    "GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml",
     "GH_REF": "Live-Buoy-Update"
   },
   "observability": { "enabled": true }

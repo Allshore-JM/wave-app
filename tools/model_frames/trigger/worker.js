@@ -3,8 +3,8 @@
 // asks the GitHub API to start each workflow every ten minutes; the job itself decides in ~20 s
 // whether a new model cycle is complete and short-circuits otherwise. GitHub's schedule stays on
 // as a fallback -- a duplicate run just short-circuits behind the concurrency group.
-// GH_WORKFLOW is one workflow file or a comma-separated list (the overlay frames, the ECMWF frames and the forecast
-// points); every one is dispatched on every tick, and one that fails never holds back the others.
+// GH_WORKFLOW is one workflow file or a comma-separated list (the overlay frames, the ECMWF frames, the Great Lakes
+// frames and the forecast points); every one is dispatched on every tick, and one that fails never holds back the others.
 //
 // Cron-only: no fetch handler and no public URL (workers_dev = false in wrangler.jsonc).
 // Secret GITHUB_TOKEN: a fine-grained token for the repository with "Actions: read and write",

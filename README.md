@@ -656,6 +656,47 @@ retention are shared, so the browser draws both models with the same code.
   files and each record's metadata and a few cell values, incl. three sea-ice cells) for `tests/model_frames/test_ecmwf.py`.
   Review record: `docs/reviews/overlays-G30a-adversarial.md`.
 
+### Great Lakes frames (plan section 50, the job)
+
+The GFS-Wave frames have no Great Lakes data. `tools/model_frames/glwu.py` (GitHub Actions `model-glwu.yml`, its own
+concurrency group, cron every 10 minutes and dispatched by the trigger Worker with the others; re-enabled by the
+keepalive) renders NOAA's Great Lakes Wave Unstructured run (GLWU: WAVEWATCH III on an unstructured mesh, written on the
+NDFD 2.5-km Lambert grid) through the same pipeline (`run.main` with a third `Source`). The browser draws it over the
+lakes under the GFS model selection (plan section 50's client steps).
+
+- **Data**: NCEP's operational long run on NOMADS (no AWS mirror exists): `glwu.YYYYMMDD/glwu.grlc_2p5km.tCCz.grib2`,
+  cycles 01/07/13/19Z, hourly to +149 h (150 frames; `frame_schedule` `[[0, 149, 1]]`), posted ~26 minutes after the
+  cycle hour. A run counts as complete when its `.idx` lists every needed record of every step. Each step's records
+  WIND, WDIR, UGRD, VGRD, HTSGW, PERPW, DIRPW are adjacent: ONE ranged read a step (~300 KB). Fields: `hs` = HTSGW,
+  `tp` = PERPW (1/fp, the GFS-Wave encoding: a true peak period), `pdir` = DIRPW (peak direction, FROM). The waves are
+  driven by the NWS forecasters' NDFD winds, not GFS: on the lakes they can disagree with the GFS wind animation.
+- **NOMADS politeness**: every request goes through one pacer (one at a time, 0.6 s apart: under NOMADS' ~120 a minute);
+  429/503 are retried after 5-60 s (or Retry-After), then the tick ends quietly (exit 3, `notready/`, no failure record);
+  a build still running after 20 minutes (`BUILD_BUDGET_S`) ends the tick quietly too. A real failure backs off 30
+  minutes, up to 6 times. A live run 18 h old or more (three missed cycles) fails the workflow once every 6 h
+  (`stale-alarm.json`). A whole run is ~150 GETs + 72 bulletins, ~4 minutes on this machine.
+- **Grid**: every message's identity (shortName, surface level 1, step, cycle) and grid (Lambert 581x361, LoV 265, one
+  standard parallel 25 N, 2539.703 m, scanning mode 64, sphere R 6371229 m) are checked. `decode.lambert_colrow` is the
+  spherical Lambert projection; each build checks it against eccodes' own coordinates (within 1e-4 of a cell; measured
+  3e-12). Each node of the browser grid (`decode.GLWU_GRID`: 0.02 deg, 831x401, 49.2..41.2 N, 92.4..75.8 W,
+  centre-registered, not periodic) takes its NEAREST GLWU cell (no averaging: every value is the model's). Land is the
+  GRIB's missing value (44,863 water cells). A water cell with a height but no period (ice-covered, or flat calm) is
+  left empty in all three fields. A nearest-water fill of 2 nodes (`glwu.FILL_CELLS`, ~3-4 km) carries the colour to
+  the lake shores, where the browser clips it to GSHHG's lake polygons. Same encoding and encode ranges as the global
+  frames (one resolution, "full"): ~63 KB a step, ~10 MB a run.
+- **Forecast tables**: after the frames, the job reads each station's bulletin (`bulls.tCCz/glwu.<id>.bull`, the
+  GFS-Wave "day & hour" layout; 72 stations in `glwu_fetch.STATIONS`: the 45xxx buoys, C-MAN / NOS sites and named
+  beaches; the rip-current points left out), checks it (station, position within 0.02 deg, cycle, 150 rows) and stores
+  it as `glwu/v1/<RUN>/bull/<id>.bull`; up to 7 may be missing (left out), more fails the build. The NDFD wind at each
+  station (its own GLWU cell, else the nearest water cell within 3) goes to `glwu/v1/<RUN>/winds.json` (m/s and degrees
+  FROM per step; 45195 on Lake Champlain lies outside the grid: no wind). Both are stored before the manifest (keys
+  `bulletins`, `winds`), so the pointer never names a run without them. The site reads them from R2, never NOMADS.
+- **Bucket**: `glwu/v1/` (`<RUN>/<field>/fNNN.png`, `bull/`, `winds.json`, manifests, stats, `latest.json`, `failed/`,
+  `notready/`); 4 runs kept. The other prefixes are never touched. The rebuild guard compares this source's fields and
+  fill. Stop it by disabling `model-glwu.yml` (and removing it from the keepalive and the Worker's `GH_WORKFLOW`).
+- **Fixtures**: `tests/capture_glwu_fixtures.py` (network + eccodes) writes `tests/fixtures/glwu/` (four steps' `.idx`
+  lines, step 0's metadata with eccodes' coordinates at a few nodes, one bulletin) for `tests/model_frames/test_glwu.py`.
+
 ### Sea surface temperature tiles (plan section 44, the job)
 
 A daily observation layer beside the model overlays: `tools/model_frames/sst.py` (GitHub Actions `model-sst.yml`, its own

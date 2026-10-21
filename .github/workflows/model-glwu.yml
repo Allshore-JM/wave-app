@@ -1,0 +1,69 @@
+# Renders + publishes the newest COMPLETE NOAA GLWU run (Great Lakes Wave Unstructured, 01/07/13/19Z, hourly to +149 h,
+# 150 frames) as Great Lakes overlay frames to R2 under glwu/v1/, with the run's point bulletins and station winds for the
+# Great Lakes forecast tables (plan section 50). The same job code and pinned environment as model-frames (eccodes 2.48
+# decodes GLWU's Lambert grid). GLWU is on NOMADS only: every request is paced (tools/model_frames/glwu_fetch.py). A cycle
+# is posted ~26 min after its hour; between cycles the job short-circuits in a few seconds (one .idx request).
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: model-glwu
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      steps:
+        description: "comma list of forecast hours (blank = all 150: hourly 0..149). A subset is never published live."
+        default: ""
+      dry_run:
+        description: "no uploads (true/false)"
+        default: "false"
+      force:
+        description: "re-publish even if the run is current (true/false)"
+        default: "false"
+concurrency:
+  group: model-glwu
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30                    # a build takes ~5 min (paced NOMADS reads); the job's own budget stops at 20 min
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+          cache-environment: true
+      - name: Record environment
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|eccodes|python-eccodes|numpy|pillow|boto3)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish Great Lakes frames
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          STEPS: ${{ github.event.inputs.steps }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ -n "$STEPS" ] && ! [[ "$STEPS" =~ ^[0-9,]+$ ]]; then echo "bad steps input"; exit 2; fi
+          ARGS=()
+          [ -n "$STEPS" ] && ARGS+=(--steps "$STEPS" --dry-run)      # a subset is only ever a dry run
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          [ "$FORCE" = "true" ] && ARGS+=(--force)
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/glwu.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          if [ "$rc" -eq 3 ]; then echo "no complete run yet" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          exit "$rc"
+

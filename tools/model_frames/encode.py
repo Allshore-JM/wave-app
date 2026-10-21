@@ -219,24 +219,25 @@ def to_png(q):
     return buf.getvalue()
 
 
-def encode_frame(grid, name, fill=None, allow=None):
+def encode_frame(grid, name, fill=None, allow=None, cells=FILL_CELLS, resolutions=None):
     """-> {'full': png bytes, 'half': png bytes, 'stats': {...}} for one field ('full' / 'half' only for
-    the field's resolutions). The coastal fill (default: FIELDS[name]["fill"]) runs before
+    the field's resolutions, or `resolutions`). The coastal fill (default: FIELDS[name]["fill"]) runs before
     quantisation and before the half subsample; the stats describe the MODEL values only, plus how
-    many cells the fill added. `allow` defaults to fill_allow()."""
+    many cells the fill added. `allow` defaults to fill_allow() (the global grid's mask); `cells` rings."""
     f = FIELDS[name]
     lo, hi = f["lo"], f["hi"]
+    res = f["resolutions"] if resolutions is None else resolutions
     g = np.asarray(grid, dtype=np.float64)
     if f["fill"] if fill is None else fill:
-        filled, added = fill_coast(g, allow=fill_allow() if allow is None else allow, method=FILL_METHODS[name])
+        filled, added = fill_coast(g, cells=cells, allow=fill_allow() if allow is None else allow, method=FILL_METHODS[name])
     else:
         filled, added = g, np.zeros(g.shape, bool)
     q = quantize_circular(filled) if f.get("circular") else quantize(filled, lo, hi)
     valid = ~np.isnan(g)
     out = {}
-    if "full" in f["resolutions"]:
+    if "full" in res:
         out["full"] = to_png(q)
-    if "half" in f["resolutions"]:
+    if "half" in res:
         out["half"] = to_png(half_res(q))
     return dict(out, **{
         "stats": {

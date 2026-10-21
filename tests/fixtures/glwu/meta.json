@@ -1,0 +1,750 @@
+{
+ "nodes": [
+  [
+   0,
+   0,
+   41.53070800000001,
+   267.363984
+  ],
+  [
+   580,
+   0,
+   40.52092166445686,
+   284.16511685534323
+  ],
+  [
+   0,
+   360,
+   49.19553222762931,
+   267.56256098899894
+  ],
+  [
+   580,
+   360,
+   48.15881174805113,
+   285.7512892613727
+  ],
+  [
+   290,
+   180,
+   45.10341131059131,
+   276.2397805775223
+  ],
+  [
+   100,
+   250,
+   46.8366271474721,
+   270.58050400202166
+  ],
+  [
+   400,
+   60,
+   42.30553198838345,
+   279.1716950866945
+  ],
+  [
+   517,
+   112,
+   43.12752321462204,
+   282.78350337376673
+  ]
+ ],
+ "records": {
+  "DIRPW:surface": {
+   "DxInMetres": 2539.703,
+   "DyInMetres": 2539.703,
+   "LaDInDegrees": 25.0,
+   "Latin1InDegrees": 25.0,
+   "Latin2InDegrees": 25.0,
+   "LoVInDegrees": 265.0,
+   "Nx": 581,
+   "Ny": 361,
+   "cells": [
+    [
+     290,
+     180,
+     9999.0
+    ],
+    [
+     100,
+     250,
+     9999.0
+    ],
+    [
+     400,
+     60,
+     74.2
+    ],
+    [
+     1,
+     1,
+     9999.0
+    ]
+   ],
+   "dataDate": 20261021,
+   "dataTime": 1900,
+   "gridType": "lambert",
+   "iScansNegatively": 0,
+   "jPointsAreConsecutive": 0,
+   "jScansPositively": 1,
+   "latitudeOfFirstGridPointInDegrees": 41.530708,
+   "level": 1,
+   "longitudeOfFirstGridPointInDegrees": 267.363984,
+   "missingValue": 9999,
+   "name": "Primary wave direction",
+   "shapeOfTheEarth": 6,
+   "shortName": "dirpw",
+   "stepRange": "0",
+   "typeOfLevel": "surface",
+   "units": "Degree true"
+  },
+  "HTSGW:surface": {
+   "DxInMetres": 2539.703,
+   "DyInMetres": 2539.703,
+   "LaDInDegrees": 25.0,
+   "Latin1InDegrees": 25.0,
+   "Latin2InDegrees": 25.0,
+   "LoVInDegrees": 265.0,
+   "Nx": 581,
+   "Ny": 361,
+   "cells": [
+    [
+     290,
+     180,
+     9999.0
+    ],
+    [
+     100,
+     250,
+     9999.0
+    ],
+    [
+     400,
+     60,
+     0.17
+    ],
+    [
+     1,
+     1,
+     9999.0
+    ]
+   ],
+   "dataDate": 20261021,
+   "dataTime": 1900,
+   "gridType": "lambert",
+   "iScansNegatively": 0,
+   "jPointsAreConsecutive": 0,
+   "jScansPositively": 1,
+   "latitudeOfFirstGridPointInDegrees": 41.530708,
+   "level": 1,
+   "longitudeOfFirstGridPointInDegrees": 267.363984,
+   "missingValue": 9999,
+   "name": "Significant height of combined wind waves and swell",
+   "shapeOfTheEarth": 6,
+   "shortName": "swh",
+   "stepRange": "0",
+   "typeOfLevel": "surface",
+   "units": "m"
+  },
+  "PERPW:surface": {
+   "DxInMetres": 2539.703,
+   "DyInMetres": 2539.703,
+   "LaDInDegrees": 25.0,
+   "Latin1InDegrees": 25.0,
+   "Latin2InDegrees": 25.0,
+   "LoVInDegrees": 265.0,
+   "Nx": 581,
+   "Ny": 361,
+   "cells": [
+    [
+     290,
+     180,
+     9999.0
+    ],
+    [
+     100,
+     250,
+     9999.0
+    ],
+    [
+     400,
+     60,
+     3.67
+    ],
+    [
+     1,
+     1,
+     9999.0
+    ]
+   ],
+   "dataDate": 20261021,
+   "dataTime": 1900,
+   "gridType": "lambert",
+   "iScansNegatively": 0,
+   "jPointsAreConsecutive": 0,
+   "jScansPositively": 1,
+   "latitudeOfFirstGridPointInDegrees": 41.530708,
+   "level": 1,
+   "longitudeOfFirstGridPointInDegrees": 267.363984,
+   "missingValue": 9999,
+   "name": "Primary wave mean period",
+   "shapeOfTheEarth": 6,
+   "shortName": "perpw",
+   "stepRange": "0",
+   "typeOfLevel": "surface",
+   "units": "s"
+  },
+  "UGRD:surface": {
+   "DxInMetres": 2539.703,
+   "DyInMetres": 2539.703,
+   "LaDInDegrees": 25.0,
+   "Latin1InDegrees": 25.0,
+   "Latin2InDegrees": 25.0,
+   "LoVInDegrees": 265.0,
+   "Nx": 581,
+   "Ny": 361,
+   "cells": [
+    [
+     290,
+     180,
+     9999.0
+    ],
+    [
+     100,
+     250,
+     9999.0
+    ],
+    [
+     400,
+     60,
+     -2.27
+    ],
+    [
+     1,
+     1,
+     9999.0
+    ]
+   ],
+   "dataDate": 20261021,
+   "dataTime": 1900,
+   "gridType": "lambert",
+   "iScansNegatively": 0,
+   "jPointsAreConsecutive": 0,
+   "jScansPositively": 1,
+   "latitudeOfFirstGridPointInDegrees": 41.530708,
+   "level": 1,
+   "longitudeOfFirstGridPointInDegrees": 267.363984,
+   "missingValue": 9999,
+   "name": "U component of wind",
+   "shapeOfTheEarth": 6,
+   "shortName": "u",
+   "stepRange": "0",
+   "typeOfLevel": "surface",
+   "units": "m s**-1"
+  },
+  "VGRD:surface": {
+   "DxInMetres": 2539.703,
+   "DyInMetres": 2539.703,
+   "LaDInDegrees": 25.0,
+   "Latin1InDegrees": 25.0,
+   "Latin2InDegrees": 25.0,
+   "LoVInDegrees": 265.0,
+   "Nx": 581,
+   "Ny": 361,
+   "cells": [
+    [
+     290,
+     180,
+     9999.0
+    ],
+    [
+     100,
+     250,
+     9999.0
+    ],
+    [
+     400,
+     60,
+     -1.8800003051757812
+    ],
+    [
+     1,
+     1,
+     9999.0
+    ]
+   ],
+   "dataDate": 20261021,
+   "dataTime": 1900,
+   "gridType": "lambert",
+   "iScansNegatively": 0,
+   "jPointsAreConsecutive": 0,
+   "jScansPositively": 1,
+   "latitudeOfFirstGridPointInDegrees": 41.530708,
+   "level": 1,
+   "longitudeOfFirstGridPointInDegrees": 267.363984,
+   "missingValue": 9999,
+   "name": "V component of wind",
+   "shapeOfTheEarth": 6,
+   "shortName": "v",
+   "stepRange": "0",
+   "typeOfLevel": "surface",
+   "units": "m s**-1"
+  },
+  "WDIR:surface": {
+   "DxInMetres": 2539.703,
+   "DyInMetres": 2539.703,
+   "LaDInDegrees": 25.0,
+   "Latin1InDegrees": 25.0,
+   "Latin2InDegrees": 25.0,
+   "LoVInDegrees": 265.0,
+   "Nx": 581,
+   "Ny": 361,
+   "cells": [
+    [
+     290,
+     180,
+     9999.0
+    ],
+    [
+     100,
+     250,
+     9999.0
+    ],
+    [
+     400,
+     60,
+     50.370000000000005
+    ],
+    [
+     1,
+     1,
+     9999.0
+    ]
+   ],
+   "dataDate": 20261021,
+   "dataTime": 1900,
+   "gridType": "lambert",
+   "iScansNegatively": 0,
+   "jPointsAreConsecutive": 0,
+   "jScansPositively": 1,
+   "latitudeOfFirstGridPointInDegrees": 41.530708,
+   "level": 1,
+   "longitudeOfFirstGridPointInDegrees": 267.363984,
+   "missingValue": 9999,
+   "name": "Wind direction",
+   "shapeOfTheEarth": 6,
+   "shortName": "wdir",
+   "stepRange": "0",
+   "typeOfLevel": "surface",
+   "units": "Degree true"
+  },
+  "WIND:surface": {
+   "DxInMetres": 2539.703,
+   "DyInMetres": 2539.703,
+   "LaDInDegrees": 25.0,
+   "Latin1InDegrees": 25.0,
+   "Latin2InDegrees": 25.0,
+   "LoVInDegrees": 265.0,
+   "Nx": 581,
+   "Ny": 361,
+   "cells": [
+    [
+     290,
+     180,
+     9999.0
+    ],
+    [
+     100,
+     250,
+     9999.0
+    ],
+    [
+     400,
+     60,
+     2.95
+    ],
+    [
+     1,
+     1,
+     9999.0
+    ]
+   ],
+   "dataDate": 20261021,
+   "dataTime": 1900,
+   "gridType": "lambert",
+   "iScansNegatively": 0,
+   "jPointsAreConsecutive": 0,
+   "jScansPositively": 1,
+   "latitudeOfFirstGridPointInDegrees": 41.530708,
+   "level": 1,
+   "longitudeOfFirstGridPointInDegrees": 267.363984,
+   "missingValue": 9999,
+   "name": "Wind speed",
+   "shapeOfTheEarth": 6,
+   "shortName": "ws",
+   "stepRange": "0",
+   "typeOfLevel": "surface",
+   "units": "m s**-1"
+  }
+ },
+ "run": "2026102119",
+ "stations": {
+  "0Y2W3": [
+   91391,
+   3.5100000000000002,
+   198.82
+  ],
+  "45001": [
+   180841,
+   3.59,
+   302.42
+  ],
+  "45002": [
+   107687,
+   5.69,
+   220.0
+  ],
+  "45003": [
+   113033,
+   4.6000000000000005,
+   200.01
+  ],
+  "45004": [
+   168680,
+   3.6,
+   269.95
+  ],
+  "45005": [
+   15455,
+   2.48,
+   40.24
+  ],
+  "45006": [
+   158700,
+   2.6,
+   260.0
+  ],
+  "45007": [
+   35049,
+   4.1,
+   199.99
+  ],
+  "45008": [
+   85164,
+   3.89,
+   199.93
+  ],
+  "45012": [
+   78362,
+   1.31,
+   47.26
+  ],
+  "45014": [
+   91376,
+   3.59,
+   207.17000000000002
+  ],
+  "45022": [
+   110635,
+   4.39,
+   246.86
+  ],
+  "45023": [
+   158157,
+   4.01,
+   259.99
+  ],
+  "45024": [
+   70502,
+   4.6000000000000005,
+   210.0
+  ],
+  "45025": [
+   150031,
+   3.0500000000000003,
+   274.8
+  ],
+  "45026": [
+   17054,
+   1.5,
+   251.3
+  ],
+  "45027": [
+   144688,
+   1.95,
+   196.25
+  ],
+  "45028": [
+   142948,
+   1.56,
+   212.31
+  ],
+  "45029": [
+   42046,
+   3.13,
+   200.76
+  ],
+  "45132": [
+   38732,
+   2.59,
+   77.82000000000001
+  ],
+  "45135": [
+   83608,
+   1.5,
+   30.43
+  ],
+  "45136": [
+   194810,
+   1.51,
+   317.72
+  ],
+  "45137": [
+   121807,
+   5.68,
+   222.29
+  ],
+  "45139": [
+   63187,
+   1.54,
+   39.45
+  ],
+  "45142": [
+   50416,
+   2.2,
+   40.0
+  ],
+  "45143": [
+   106136,
+   2.54,
+   219.06
+  ],
+  "45147": [
+   35197,
+   1.0,
+   29.51
+  ],
+  "45149": [
+   65424,
+   2.58,
+   191.4
+  ],
+  "45154": [
+   132791,
+   3.1,
+   230.5
+  ],
+  "45159": [
+   78308,
+   1.49,
+   127.60000000000001
+  ],
+  "45160": [
+   67831,
+   1.49,
+   69.99
+  ],
+  "45161": [
+   49014,
+   3.73,
+   189.99
+  ],
+  "45163": [
+   75249,
+   3.24,
+   200.02
+  ],
+  "45165": [
+   14264,
+   2.08,
+   42.18
+  ],
+  "45167": [
+   33541,
+   3.6,
+   30.04
+  ],
+  "45168": [
+   28682,
+   2.22,
+   221.54
+  ],
+  "45169": [
+   14315,
+   3.5300000000000002,
+   22.96
+  ],
+  "45170": [
+   10651,
+   1.3800000000000001,
+   307.63
+  ],
+  "45171": [
+   144253,
+   2.07,
+   151.43
+  ],
+  "45172": [
+   146043,
+   3.16,
+   260.01
+  ],
+  "45173": [
+   140795,
+   1.5,
+   239.93
+  ],
+  "45174": [
+   19923,
+   3.98,
+   139.92000000000002
+  ],
+  "45195": null,
+  "BARN6": [
+   39369,
+   2.1,
+   29.66
+  ],
+  "C58W3": [
+   73954,
+   3.6,
+   181.58
+  ],
+  "CAPEVINCEN": [
+   93498,
+   2.06,
+   7.3500000000000005
+  ],
+  "DISW3": [
+   151117,
+   2.1,
+   260.01
+  ],
+  "ELONGPOINT": [
+   43428,
+   3.5300000000000002,
+   40.72
+  ],
+  "GSLM4": [
+   75832,
+   3.16,
+   207.37
+  ],
+  "IndDunesNP": [
+   7158,
+   1.1500000000000001,
+   4.19
+  ],
+  "IndDunesSP": [
+   8324,
+   1.52,
+   318.85
+  ],
+  "LITTLESABL": [
+   61787,
+   4.5,
+   200.01
+  ],
+  "LSCM4": [
+   35775,
+   1.0,
+   50.97
+  ],
+  "N_GREENBAY": [
+   111733,
+   4.1,
+   210.82
+  ],
+  "N_HAMLIN": [
+   76018,
+   1.0,
+   50.03
+  ],
+  "N_MICHIGAN": [
+   122221,
+   5.16,
+   219.98000000000002
+  ],
+  "N_OLCOTT": [
+   73668,
+   1.6300000000000001,
+   57.47
+  ],
+  "OLCN6": [
+   67281,
+   2.6,
+   40.04
+  ],
+  "OSGN6": [
+   76068,
+   2.16,
+   353.09000000000003
+  ],
+  "PILM4": [
+   184308,
+   2.47,
+   301.95
+  ],
+  "ROAM4": [
+   173820,
+   2.0100000000000002,
+   269.72
+  ],
+  "RPRN6": [
+   67899,
+   2.1,
+   32.410000000000004
+  ],
+  "SBIO1": [
+   13117,
+   1.8900000000000001,
+   39.97
+  ],
+  "SBLM4": [
+   70016,
+   2.27,
+   186.93
+  ],
+  "SGNW3": [
+   62912,
+   3.77,
+   185.02
+  ],
+  "SODUSBAY": [
+   70825,
+   2.09,
+   18.18
+  ],
+  "STDM4": [
+   157040,
+   3.6,
+   269.91
+  ],
+  "STURGEONPT": [
+   49843,
+   1.5,
+   19.64
+  ],
+  "S_GREENBAY": [
+   96613,
+   4.07,
+   209.99
+  ],
+  "Silver_Bch": [
+   20543,
+   1.5,
+   238.54
+  ],
+  "WhihalaBch": [
+   10052,
+   2.58,
+   101.58
+  ],
+  "YGNN6": [
+   64364,
+   2.6,
+   30.0
+  ]
+ },
+ "water_cells": 44863
+}

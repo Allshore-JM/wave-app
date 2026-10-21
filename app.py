@@ -124,6 +124,7 @@ import time
 import logging
 import threading
 import hashlib
+import tempfile
 import socket
 from requests.adapters import HTTPAdapter
 try:
@@ -166,6 +167,46 @@ def _build_http_session() -> requests.Session:
 
 
 HTTP = _build_http_session()
+
+# Extra trusted roots for hosts whose chain ends at a root some servers' lists lack. PacIOOS
+# (www.pacioos.hawaii.edu, the SWAN tables) is signed through InCommon's chain that ends at
+# "emSign Root CA - G1": in Mozilla's list (certifi has it) but missing from the list our Render
+# servers verified against in October 2026 ("unable to get local issuer certificate"), so every
+# SWAN download failed. The root is a copy of certifi's entry (SHA-256 40f6af03...c8d00367).
+_EXTRA_CA_FILES = (
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "certs", "emsign_root_ca_g1.pem"),
+)
+_CA_BUNDLE = {"path": None}
+_CA_BUNDLE_LOCK = threading.Lock()
+
+
+def _ca_bundle():
+    """certifi's list plus _EXTRA_CA_FILES in one file (written once per process to the temp directory,
+    named by its content). Passed as verify= so neither a missing root nor a REQUESTS_CA_BUNDLE /
+    CURL_CA_BUNDLE setting on the host can leave these hosts unverifiable. Any failure -> True
+    (requests' own default: the behaviour before this existed)."""
+    with _CA_BUNDLE_LOCK:
+        if _CA_BUNDLE["path"]:
+            return _CA_BUNDLE["path"]
+        try:
+            import certifi
+            parts = [open(certifi.where(), encoding="utf-8").read()]
+            for f in _EXTRA_CA_FILES:
+                parts.append(open(f, encoding="utf-8").read())
+            text = "\n".join(x.rstrip("\n") + "\n" for x in parts)
+            name = "allshore-ca-%s.pem" % hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            path = os.path.join(tempfile.gettempdir(), name)
+            if not os.path.exists(path):
+                tmp = "%s.%d.tmp" % (path, os.getpid())
+                with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(text)
+                os.replace(tmp, path)
+            _CA_BUNDLE["path"] = path
+            return path
+        except Exception as exc:
+            logger.warning("could not build the CA bundle, using the default list: %r", exc)
+            return True
+
 
 # Single lock guarding the in-memory caches (gunicorn serves multiple threads).
 _CACHE_LOCK = threading.Lock()
@@ -2003,7 +2044,7 @@ def _parse_swan_uncached(station_id: str, target_tz_name: str | None = None):
 
     swan_url = f"{SWAN_TABLE_BASE}/buoy.{cdip_id}.table"
     try:
-        resp = HTTP.get(swan_url, timeout=15)
+        resp = HTTP.get(swan_url, timeout=15, verify=_ca_bundle())
     except Exception as exc:
         logger.warning("could not download SWAN table for %s: %r", station_id, exc)
         return None, None, None, None, 'UTC', f"Could not download SWAN forecast for {station_id}"

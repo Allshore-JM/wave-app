@@ -622,3 +622,7 @@ def test_the_real_grid_is_the_documented_one():
     assert GL.GRID == D.GLWU_GRID == {"cols": 831, "rows": 401, "lon0": -92.4, "lat0": 49.2, "dlon": 0.02, "dlat": -0.02,
                                        "registration": "center", "lon_periodic": False}
     assert GL.ALLOW_ALL.shape == (401, 831) and GL.CALM_M == 0.1 and GL.FILL_CELLS == 2
+
+
+def test_the_temporary_dry_run_workflow_is_gone():
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "glwu-dryrun.yml"))

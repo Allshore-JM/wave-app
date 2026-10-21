@@ -671,26 +671,36 @@ lakes under the GFS model selection (plan section 50's client steps).
   `tp` = PERPW (1/fp, the GFS-Wave encoding: a true peak period), `pdir` = DIRPW (peak direction, FROM). The waves are
   driven by the NWS forecasters' NDFD winds, not GFS: on the lakes they can disagree with the GFS wind animation.
 - **NOMADS politeness**: every request goes through one pacer (one at a time, 0.6 s apart: under NOMADS' ~120 a minute);
-  429/503 are retried after 5-60 s (or Retry-After), then the tick ends quietly (exit 3, `notready/`, no failure record);
-  a build still running after 20 minutes (`BUILD_BUDGET_S`) ends the tick quietly too. A real failure backs off 30
-  minutes, up to 6 times. A live run 18 h old or more (three missed cycles) fails the workflow once every 6 h
-  (`stale-alarm.json`). A whole run is ~150 GETs + 72 bulletins, ~4 minutes on this machine.
+  429/503 are retried after 5-60 s (or Retry-After, at most 60 s). GLWU has no second host, so throttling, an outage
+  (timeouts, 5xx) and a file still being written (a short read, HTTP 416) all end the tick quietly: exit 3, a
+  `notready/` count, no failure record and no mail (G33a P2-2). A long outage is reported by the stale alarm: a live run
+  18 h old or more (three missed cycles) fails the workflow once every 6 h (`stale-alarm.json`). A build still running
+  after 20 minutes (`BUILD_BUDGET_S`) ends the tick quietly too. A real failure backs off 30 minutes, up to 6 times. A
+  whole run is ~150 GETs + 72 bulletins, ~4 minutes on this machine.
 - **Grid**: every message's identity (shortName, surface level 1, step, cycle) and grid (Lambert 581x361, LoV 265, one
   standard parallel 25 N, 2539.703 m, scanning mode 64, sphere R 6371229 m) are checked. `decode.lambert_colrow` is the
   spherical Lambert projection; each build checks it against eccodes' own coordinates (within 1e-4 of a cell; measured
   3e-12). Each node of the browser grid (`decode.GLWU_GRID`: 0.02 deg, 831x401, 49.2..41.2 N, 92.4..75.8 W,
   centre-registered, not periodic) takes its NEAREST GLWU cell (no averaging: every value is the model's). Land is the
-  GRIB's missing value (44,863 water cells). A water cell with a height but no period (ice-covered, or flat calm) is
-  left empty in all three fields. A nearest-water fill of 2 nodes (`glwu.FILL_CELLS`, ~3-4 km) carries the colour to
+  GRIB's missing value (44,863 water cells). A water cell without a period (WAVEWATCH III leaves the period undefined
+  on ice-covered and inactive points) is left empty in all three fields. Calm water (`hs` below 0.1 m, `glwu.CALM_M`)
+  keeps its height but gets no period or direction (owner 2026-10-21, G33a P2-1: GLWU writes a period over flat-calm
+  water, often half the lakes on a quiet day, and those cells carried the map's longest periods; particles never draw
+  there anyway). A nearest-water fill of 2 nodes (`glwu.FILL_CELLS`, ~3-4 km) carries the colour to
   the lake shores, where the browser clips it to GSHHG's lake polygons. Same encoding and encode ranges as the global
   frames (one resolution, "full"): ~63 KB a step, ~10 MB a run.
 - **Forecast tables**: after the frames, the job reads each station's bulletin (`bulls.tCCz/glwu.<id>.bull`, the
   GFS-Wave "day & hour" layout; 72 stations in `glwu_fetch.STATIONS`: the 45xxx buoys, C-MAN / NOS sites and named
   beaches; the rip-current points left out), checks it (station, position within 0.02 deg, cycle, 150 rows) and stores
-  it as `glwu/v1/<RUN>/bull/<id>.bull`; up to 7 may be missing (left out), more fails the build. The NDFD wind at each
+  it as `glwu/v1/<RUN>/bull/<id>.bull`. A bulletin that is missing, bad or unreachable is left out (once NOMADS
+  throttles, the rest are not asked for) and the site's table then uses the newest kept run that has it; bulletins never
+  hold the frames back (G33a P2-3): more than 7 left out is a summary WARNING. A partial (`--steps`) build stores no
+  bulletins or winds (immutable keys). The NDFD wind at each
   station (its own GLWU cell, else the nearest water cell within 3) goes to `glwu/v1/<RUN>/winds.json` (m/s and degrees
   FROM per step; 45195 on Lake Champlain lies outside the grid: no wind). Both are stored before the manifest (keys
   `bulletins`, `winds`), so the pointer never names a run without them. The site reads them from R2, never NOMADS.
+  Conventions: the frames' `pdir` and `winds.json` are FROM; the stored bulletins keep the WW3 bulletin convention
+  (direction TO), which the site's bulletin parser turns into FROM (+180), as for GFS-Wave.
 - **Bucket**: `glwu/v1/` (`<RUN>/<field>/fNNN.png`, `bull/`, `winds.json`, manifests, stats, `latest.json`, `failed/`,
   `notready/`); 4 runs kept. The other prefixes are never touched. The rebuild guard compares this source's fields and
   fill. Stop it by disabling `model-glwu.yml` (and removing it from the keepalive and the Worker's `GH_WORKFLOW`).
@@ -700,7 +710,10 @@ lakes under the GFS model selection (plan section 50's client steps).
   CLOCKWISE, so under the browser's nonzero fill an island cancels its lake. 9.6 KB overview file + 7 cells (53 KB);
   `--check` uses lake probes and the net water area (28.19 sq deg, ~246,500 km2). Published by the coast-build
   workflow's dispatch with `set: lakes`. The frames (2-node fill) colour 99.68 % of that water (the rest: narrow
-  channels and harbours the model does not resolve); the land set is unchanged.
+  channels and harbours GLWU does not model, e.g. the Bay of Quinte and the Thousand Islands, which stay uncoloured);
+  the land set is unchanged. A build from the pinned GSHHG 2.3.7 archive is always held to the real checks (3 lakes,
+  >= 100 islands, probes in both tiers, the area), whatever it produced (G33a P2-4). In winter the fill can colour up
+  to ~3 km over an ice edge.
 - **Fixtures**: `tests/capture_glwu_fixtures.py` (network + eccodes) writes `tests/fixtures/glwu/` (four steps' `.idx`
   lines, step 0's metadata with eccodes' coordinates at a few nodes, one bulletin) for `tests/model_frames/test_glwu.py`.
 

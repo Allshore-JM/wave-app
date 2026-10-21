@@ -111,7 +111,7 @@ STATIONS = {
     "WhihalaBch": (41.76, -87.50),
     "YGNN6": (43.26, -79.06),
 }
-BULLETIN_MAX_MISSING = 7                        # more bulletins than this missing or bad fails the build (about 10 %)
+BULLETIN_MAX_MISSING = 7                        # more bulletins than this left out is a summary WARNING (about 10 %)
 
 _PACE = threading.Lock()
 _last = [0.0]
@@ -164,14 +164,15 @@ def _paced_open(url, rng=None):
 
 
 def request(url, rng=None):
-    """GET through the pacer: 403/404 -> NotReady; 429/503 -> retried after THROTTLE_WAITS_S (or Retry-After), then
-    Throttled; any other error -> len(OTHER_WAITS_S) + 1 tries, then TransportError."""
+    """GET through the pacer: 403/404/416 -> NotReady (416: a range past the end of a file NOMADS is still writing);
+    429/503 -> retried after THROTTLE_WAITS_S (or Retry-After, at most RETRY_AFTER_MAX_S), then Throttled; any other
+    error -> len(OTHER_WAITS_S) + 1 tries, then TransportError."""
     throttled = others = 0
     while True:
         try:
             return _paced_open(url, rng)
         except urllib.error.HTTPError as e:
-            if e.code in (403, 404):
+            if e.code in (403, 404, 416):
                 raise F.NotReady(f"{e.code} {url}") from None
             if e.code in THROTTLE_CODES:
                 if throttled >= len(THROTTLE_WAITS_S):
@@ -280,8 +281,8 @@ def fetch_step(run_dt, recs, step):
     """{"VAR:level": GRIB message} for the step's records WIND..DIRPW (one ranged read)."""
     lo, hi = span(recs, step)
     status, blob = request(grib_url(run_dt), rng=f"bytes={lo}-{hi}")
-    if status != 206 or len(blob) != hi - lo + 1:
-        raise RuntimeError(f"step {step}: expected 206 with {hi - lo + 1} bytes, got {status} / {len(blob)}")
+    if status != 206 or len(blob) != hi - lo + 1:                     # the GRIB is still being written: try next tick
+        raise F.NotReady(f"step {step}: expected 206 with {hi - lo + 1} bytes, got {status} / {len(blob)}")
     msgs = split_messages(blob)
     if len(msgs) != len(RECORDS):
         raise RuntimeError(f"step {step}: {len(msgs)} messages in the range, expected {len(RECORDS)}")

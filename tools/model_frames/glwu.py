@@ -12,8 +12,14 @@ frames have no lake data). Per run:
   glwu/v1/<RUN>/manifest-*.json, stats-*.json, then glwu/v1/latest.json (the pointer, last)
 Fields: hs = HTSGW, tp = PERPW (1/fp, the GFS-Wave encoding), pdir = DIRPW (peak direction, FROM). Each browser node
 takes its nearest GLWU cell (no averaging: every value is the model's); the model's land cells are its missing values.
-A water cell with a height but no period (ice-covered, or flat calm) is left empty. A nearest-water fill of
-FILL_CELLS nodes carries the colour to the lake shores, where the browser clips it (GSHHG lake polygons).
+A water cell without a period (WAVEWATCH III leaves it undefined on ice-covered and inactive points) is left empty in all
+three fields. Calm water (hs below CALM_M) keeps its height but has no period or direction (owner 2026-10-21, G33a P2-1:
+GLWU writes a period over flat-calm water, and on quiet days those cells carried the map's longest periods). A
+nearest-water fill of FILL_CELLS nodes carries the colour to the lake shores, where the browser clips it (GSHHG lake
+polygons). Conventions: pdir and the winds in winds.json are FROM; the stored bulletins keep the WW3 bulletin
+convention (direction TO), which the site's bulletin parser turns into FROM (+180), as for GFS-Wave.
+NOMADS failures never fail the workflow on every tick: throttling and an outage end the tick quietly (exit 3, a
+`notready/` count; the stale alarm at 18 h mails the owner), and bulletins never hold the frames back (G33a P2-2/P2-3).
 """
 import json
 import os
@@ -48,7 +54,8 @@ MODEL = {
 FIELD_NAMES = ("hs", "tp", "pdir")
 FIELDS = {n: dict(E.FIELDS[n], resolutions=("full",)) for n in FIELD_NAMES}
 WAVE_KEYS = {"hs": "HTSGW:surface", "tp": "PERPW:surface", "pdir": "DIRPW:surface"}
-FILL_CELLS = 2                          # nodes of 0.02 deg (~3-4 km) past the model's water: the lake shores the browser clips to
+FILL_CELLS = 2                          # nodes of 0.02 deg (~3-4 km) past the model's water: colours 99.68 % of GSHHG's lake water
+CALM_M = 0.1                            # below this height a lake cell has no period or direction (the ECMWF job's calm line)
 FILL_INFO = {
     "version": 1, "fields": sorted(FIELD_NAMES), "cells": FILL_CELLS,
     "methods": {n: E.FILL_METHODS[n] for n in sorted(FIELD_NAMES)}, "mask": "glwu-model-water",
@@ -132,12 +139,15 @@ class GlwuSource:
         self._winds = {}
         self._checked = False
 
+    where = "on NOMADS in the last 24 h"
+
     def latest_complete_run(self):
-        """A throttled NOMADS means "try again next tick", like no run yet."""
+        """A throttled or unreachable NOMADS means "try again next tick", like no run yet (exit 3; the stale alarm
+        covers a long outage): GLWU has no second host, and failing every 10 minutes would mail the owner each time."""
         try:
             run_dt, recs = G.latest_complete_run()
-        except G.Throttled as exc:
-            print(f"NOMADS throttled the GLWU listing ({exc}); trying again next tick")
+        except (G.Throttled, G.TransportError) as exc:
+            print(f"NOMADS did not answer the GLWU listing ({exc}); trying again next tick")
             return None
         if run_dt is not None:
             self._start(run_dt, recs)
@@ -150,9 +160,12 @@ class GlwuSource:
     def fetch(self, run_dt, step):
         if _started[0] is not None and time.monotonic() - _started[0] > BUILD_BUDGET_S:
             raise G.NotReady(f"build still running after {BUILD_BUDGET_S // 60} min (step {step}): giving up for this tick")
-        if self._run != run_dt:
-            self._start(run_dt, G.fetch_idx(run_dt))
-        return G.fetch_step(run_dt, self._recs, step)
+        try:
+            if self._run != run_dt:
+                self._start(run_dt, G.fetch_idx(run_dt))
+            return G.fetch_step(run_dt, self._recs, step)
+        except G.TransportError as exc:                     # an outage mid-build: not ready (exit 3), not a failure
+            raise G.NotReady(f"NOMADS did not answer step {step}: {exc}") from None
 
     def grid_blocks(self):
         return {"res": {"full": ""}, "grid": dict(GRID)}
@@ -163,7 +176,7 @@ class GlwuSource:
     def decode(self, records, run_dt, step):
         """{hs, tp, pdir} on the browser grid; the step's station winds are kept for winds.json."""
         if self._index is None:
-            self._index = D.glwu_index()
+            self._index = D.glwu_index(GRID)
         flat, inside = self._index
         src = {}
         for name, key in WAVE_KEYS.items():
@@ -174,7 +187,8 @@ class GlwuSource:
             else:
                 vals, _meta = D.decode_glwu(records[key], key, run_dt, step)
             src[name] = vals
-        blank = np.isnan(src["hs"]) | np.isnan(src["tp"])   # land, or water without a period (ice-covered, flat calm)
+        blank = np.isnan(src["hs"]) | np.isnan(src["tp"])   # land, or water without a period (ice-covered, inactive)
+        calm = blank | (src["hs"] < CALM_M)                 # NaN compares False: blank cells are already in
         ws, _ = D.decode_glwu(records["WIND:surface"], "WIND:surface", run_dt, step)
         wd, _ = D.decode_glwu(records["WDIR:surface"], "WDIR:surface", run_dt, step)
         if self._cells is None:
@@ -184,7 +198,7 @@ class GlwuSource:
                              for sid, i in self._cells.items()}
         grids = {}
         for name in FIELD_NAMES:
-            v = np.where(blank, np.nan, src[name])
+            v = np.where(blank if name == "hs" else calm, np.nan, src[name])
             g = np.where(inside, v[flat], np.nan).astype(np.float32)
             if name == "pdir":
                 g = np.mod(g, np.float32(360.0)).astype(np.float32)
@@ -193,15 +207,26 @@ class GlwuSource:
 
     def before_manifest(self, store, run_dt, run, upload):
         """The run's bulletins and station winds, stored before the manifest (the pointer never names a run without
-        them). Up to BULLETIN_MAX_MISSING bulletins may be missing or bad (logged, left out); more fails the build."""
-        ids, bad = [], []
+        them). A bulletin that is missing, bad or unreachable is left out (the site's table then uses the newest kept run
+        that has it); they never hold the frames back (G33a P2-3): more than BULLETIN_MAX_MISSING left out is a summary
+        WARNING, not a failure. Once NOMADS throttles, the remaining bulletins are not asked for. A partial build (a
+        --steps subset) stores neither: their keys are immutable and a later full build would need them."""
+        if len(self._winds) != len(G.STEPS):
+            print("partial build: no bulletins or winds stored")
+            return {}
+        ids, bad, throttled = [], [], False
         for sid in G.STATIONS:
+            if throttled:
+                bad.append(f"{sid}: not asked (NOMADS throttled)")
+                continue
             try:
                 text = G.fetch_bulletin(run_dt, sid)
                 check_bulletin(text, sid, run_dt)
-            except G.Throttled:
-                raise
-            except (G.NotReady, ValueError) as exc:
+            except G.Throttled as exc:
+                throttled = True
+                bad.append(f"{sid}: {exc}")
+                continue
+            except (G.NotReady, G.TransportError, ValueError) as exc:
                 bad.append(str(exc))
                 continue
             if upload:
@@ -211,7 +236,7 @@ class GlwuSource:
         for line in bad:
             print("bulletin left out:", line)
         if len(bad) > G.BULLETIN_MAX_MISSING:
-            raise RuntimeError(f"{len(bad)} bulletins missing or bad (limit {G.BULLETIN_MAX_MISSING}): {bad[:3]}")
+            R._summary(f"WARNING: {len(bad)} of {len(G.STATIONS)} GLWU bulletins left out (first: {bad[0]})")
         steps = sorted(self._winds)
         cells = self._cells or {}
         winds = {"run": run, "steps": steps, "units": {"speed": "m/s", "dir": "deg true, FROM"},

@@ -106,6 +106,8 @@ LAKES_FORMAT_KEY = "coast-v1-lakes|q=%d|levels=%s|box=%s|min_lake=%g|min_area=%g
     Q, ",".join(map(str, LAKE_LEVELS)), ",".join("%g" % v for v in LAKE_BOX), LAKE_MIN_KM2, MIN_RING_AREA,
     TIER0["res"], TIER0["cell"], TIER0["min_area_km2"], TIER1["res"], TIER1["cell"], TIER1["min_area_km2"])
 LAKES_TIER0_FILE = "lakes-i.bin"
+GSHHG_SHA256 = "28600e8f7a08645aab43079326df6504212ec5ccb2b4bcf3b5f4f12ed60e82bc"   # gshhg-bin-2.3.7.zip (coast-build pins it too)
+LAKES_COUNT, LAKES_MIN_ISLANDS = 3, 100               # a real build: the three lake polygons and their islands (139 in 2.3.7)
 # (lon, lat, water?): each lake, islands (Isle Royale, Manitoulin, Beaver Island), the land between and lakes left out.
 LAKE_PROBES = [(-87.5, 47.5, True), (-87.0, 43.5, True), (-82.5, 44.6, True), (-81.5, 42.2, True), (-77.8, 43.6, True),
                (-82.7, 42.45, True), (-88.9, 48.0, False), (-82.2, 45.8, False), (-85.5, 45.65, False),
@@ -592,7 +594,12 @@ def check_lakes(out_dir, index, log=print):
     problems += ["tier 0: " + p for p in check_file(buf, t0["cell"], ccw_only=False)]
     d0 = decode_file(buf)
     t1 = index["tier1"]
-    real = len(t0.get("lakes", [])) == 3               # a real GSHHG build; a synthetic test archive holds other lakes
+    real = index.get("source_sha256") == GSHHG_SHA256  # built from GSHHG 2.3.7 (G33a P2-4: never judged from the result)
+    if real:
+        for tier, t in (("tier 0", t0), ("tier 1", index["tier1"])):
+            if len(t.get("lakes", [])) != LAKES_COUNT or t.get("islands", 0) < LAKES_MIN_ISLANDS:
+                problems.append("%s: %d lakes and %d islands, expected %d lakes and >= %d islands" % (
+                    tier, len(t.get("lakes", [])), t.get("islands", 0), LAKES_COUNT, LAKES_MIN_ISLANDS))
     for lon, lat, water in (LAKE_PROBES if real else []):
         if point_in_pieces(lon, lat, d0["pieces"]) != water:
             problems.append("tier 0: probe %s,%s should be %s" % (lon, lat, "water" if water else "land"))

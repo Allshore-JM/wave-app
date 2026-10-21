@@ -3,11 +3,13 @@ name: model-frames-tests
 on:
   push:
     branches: ["**"]                       # branches only: a rollback tag on an old commit is not a new test run
-    paths: ["tools/model_frames/**", "tools/geo/**", "tests/model_frames/**", "tests/conftest.py", ".github/workflows/model-frames-tests.yml",
+    paths: ["tools/model_frames/**", "tools/geo/**", "tests/model_frames/**", "tests/fixtures/glwu/**", "tests/fixtures/ecmwf/**",
+            "tests/conftest.py", ".github/workflows/model-frames-tests.yml",
             ".github/workflows/model-frames.yml", ".github/workflows/model-points.yml", ".github/workflows/model-ecmwf.yml", ".github/workflows/model-glwu.yml", ".github/workflows/model-frames-keepalive.yml",
             ".github/workflows/model-sst.yml"]
   pull_request:
-    paths: ["tools/model_frames/**", "tools/geo/**", "tests/model_frames/**", "tests/conftest.py", ".github/workflows/model-frames.yml",
+    paths: ["tools/model_frames/**", "tools/geo/**", "tests/model_frames/**", "tests/fixtures/glwu/**", "tests/fixtures/ecmwf/**",
+            "tests/conftest.py", ".github/workflows/model-frames.yml",
             ".github/workflows/model-points.yml", ".github/workflows/model-ecmwf.yml", ".github/workflows/model-glwu.yml", ".github/workflows/model-frames-keepalive.yml",
             ".github/workflows/model-sst.yml"]
 permissions:

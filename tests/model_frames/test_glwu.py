@@ -159,12 +159,20 @@ def test_request_paces_throttles_and_maps_errors(monkeypatch):
     G._last[0] = 0.0
     assert G.request("u", rng="bytes=0-9") == (206, b"ok") and calls == ["bytes=0-9"] * 3
     assert 5 in sleeps and 7.0 in sleeps                                  # the ladder, then the server's Retry-After
-    monkeypatch.setattr(G, "_open", lambda url, rng=None, timeout=60: (_ for _ in ()).throw(err(404)))
-    with pytest.raises(F.NotReady):
-        G.request("u")
+    for code in (403, 404, 416):                                         # 403: a NOMADS block; 416: a file still being written
+        monkeypatch.setattr(G, "_open", lambda url, rng=None, timeout=60, code=code: (_ for _ in ()).throw(err(code)))
+        with pytest.raises(F.NotReady):
+            G.request("u")
+    sleeps.clear()
+    seq[:] = [err(429, {"Retry-After": "999"}), (206, b"ok")]
+    monkeypatch.setattr(G, "_open", opener)
+    G.request("u")
+    assert [x for x in sleeps if x >= 1] == [G.RETRY_AFTER_MAX_S] == [60]   # a huge Retry-After is capped (the rest: the pacer)
+    sleeps.clear()
     monkeypatch.setattr(G, "_open", lambda url, rng=None, timeout=60: (_ for _ in ()).throw(err(429)))
     with pytest.raises(G.Throttled):
         G.request("u")
+    assert [x for x in sleeps if x >= 1] == list(G.THROTTLE_WAITS_S) == [5, 10, 20, 30, 45, 60]   # the whole ladder first
     monkeypatch.setattr(G, "_open", lambda url, rng=None, timeout=60: (_ for _ in ()).throw(err(500)))
     with pytest.raises(F.TransportError):
         G.request("u")
@@ -201,8 +209,11 @@ def test_fetch_step_reads_one_range_into_seven_messages(monkeypatch):
     assert seen == [(G.grib_url(RUN), f"bytes={lo}-{lo + len(body) - 1}")]
     assert G.grib_url(RUN).endswith("/glwu.20261021/glwu.grlc_2p5km.t19z.grib2")
     monkeypatch.setattr(G, "request", lambda url, rng=None: (200, body))
-    with pytest.raises(RuntimeError):
-        G.fetch_step(RUN, recs, 1)                                       # not a partial answer
+    with pytest.raises(F.NotReady):
+        G.fetch_step(RUN, recs, 1)                                       # not a partial answer: still being written
+    monkeypatch.setattr(G, "request", lambda url, rng=None: (206, body[:-5]))
+    with pytest.raises(F.NotReady):
+        G.fetch_step(RUN, recs, 1)                                       # short
 
 
 # ------------------------------- grid, identity, projection, regrid ---------------------------
@@ -282,6 +293,7 @@ def _lake_values(step=0):
     tp = np.where(water, 4.0, np.nan).ravel()
     ice = 170 * NX + 300
     tp[ice] = np.nan
+    hs[160 * NX + 200:160 * NX + 260] = 0.05                              # calm water: a height, a period the job drops
     pdir = np.where(water, 365.0, np.nan).ravel()                         # wraps to 5
     ws = np.where(water, 6.0, np.nan).ravel()
     wd = np.where(water, 359.6, np.nan).ravel()
@@ -304,6 +316,11 @@ def test_decode_regrids_blanks_ice_wraps_directions_and_samples_winds(monkeypatc
     np.testing.assert_allclose(grids["hs"][~np.isnan(want)], want[~np.isnan(want)], rtol=1e-6)
     at_ice = flat == ice
     assert at_ice.any() and np.isnan(grids["hs"][at_ice]).all() and np.isnan(grids["pdir"][at_ice]).all()
+    calm = inside & (vals["HTSGW:surface"][flat] == 0.05)
+    assert calm.any() and (grids["hs"][calm] == np.float32(0.05)).all()   # calm water keeps its height (owner, G33a P2-1)
+    assert np.isnan(grids["tp"][calm]).all() and np.isnan(grids["pdir"][calm]).all()
+    waves = inside & (vals["HTSGW:surface"][flat] >= GL.CALM_M) & ~at_ice
+    assert not np.isnan(grids["tp"][waves]).any() and not np.isnan(grids["pdir"][waves]).any()
     assert np.nanmin(grids["pdir"]) == np.nanmax(grids["pdir"]) == 5.0
     assert src._winds[0] == {"in": [6.0, 0], "off": None}                 # 359.6 rounds to 360 = 0; Lake Champlain: no cell
     src.decode({k: b"" for k in G.RECORDS}, RUN, 1)
@@ -348,6 +365,9 @@ def test_bulletin_check():
         GL.check_bulletin(BULL, "45002", RUN)
     with pytest.raises(ValueError):
         GL.check_bulletin("\n".join(BULL.splitlines()[:-10]), "45007", RUN)
+    extra = BULL.replace(rows[-1], rows[-1] + "\n" + rows[-1])
+    with pytest.raises(ValueError):
+        GL.check_bulletin(extra, "45007", RUN)                            # one row too many
     with pytest.raises(ValueError):
         GL.check_bulletin(BULL.replace("(42.67N  87.03W)", "(42.77N  87.03W)"), "45007", RUN)
 
@@ -360,9 +380,14 @@ def _bulletin_for(sid, run_dt=RUN):
 
 # ------------------------------- the whole job, offline -----------------------------------------
 
+COARSE = dict(D.GLWU_GRID, cols=167, rows=81, dlon=0.1, dlat=-0.1)
+
+
 @pytest.fixture
 def offline_glwu(monkeypatch):
     vals, _ice = _lake_values()
+    monkeypatch.setattr(GL, "GRID", COARSE)
+    monkeypatch.setattr(GL, "ALLOW_ALL", np.ones((COARSE["rows"], COARSE["cols"]), bool))
     monkeypatch.setattr(D, "decode_glwu", _fake_decode(vals))
     monkeypatch.setattr(G, "latest_complete_run", lambda now=None: (RUN, G.parse_idx(_full_idx())))
     monkeypatch.setattr(G, "fetch_step", lambda run_dt, recs, step: {k: b"x" for k in G.RECORDS})
@@ -386,7 +411,7 @@ def test_complete_build_publishes_frames_bulletins_winds_manifest_then_pointer(o
     last_frame = max(puts.index(k) for k in frames)
     assert all(puts.index(k) > last_frame for k in bulls) and puts.index(f"{GPRE}/{run}/winds.json") > last_frame
     man = json.loads(c.objects[puts[-2]]["body"])
-    assert man["grid"] == D.GLWU_GRID and "grid_half" not in man and man["files"]["res"] == {"full": ""}
+    assert man["grid"] == COARSE and "grid_half" not in man and man["files"]["res"] == {"full": ""}
     assert man["files"]["template"] == f"{GPRE}/{run}/{{res}}{{field}}/f{{step:03d}}.png"
     assert set(man["fields"]) == {"hs", "tp", "pdir"} and man["fields"]["hs"]["resolutions"] == ["full"]
     assert man["fields"]["tp"]["lo"] == E.FIELDS["tp"]["lo"] and man["fields"]["pdir"]["circular"] is True
@@ -421,23 +446,63 @@ def test_missing_bulletins_are_left_out_up_to_the_limit(offline_glwu, monkeypatc
     assert "bulletin left out" in capsys.readouterr().out
 
 
-def test_too_many_bad_bulletins_fail_the_build_before_the_pointer(offline_glwu, monkeypatch):
+def test_bad_bulletins_never_hold_the_frames_back(offline_glwu, monkeypatch):
     c = FakeClient()
     _env(monkeypatch, c)
+    summary = []
+    monkeypatch.setattr(R, "_summary", lambda line: summary.append(line))
     monkeypatch.setattr(G, "fetch_bulletin", lambda run_dt, sid: _bulletin_for(sid, run_dt - timedelta(hours=6)))
-    with pytest.raises(RuntimeError):
-        GL.main([])
-    assert GLATEST not in c.objects and P.failed_key("2026102119", GPRE) in c.objects
-    assert not any("/manifest-" in k for k in c.objects)
+    assert GL.main([]) == 0                                              # every bulletin is from another cycle
+    man = json.loads(c.objects[json.loads(c.objects[GLATEST]["body"])["manifest"]]["body"])
+    assert man["bulletins"]["ids"] == [] and len(man["frames"]) == 150
+    assert any(l.startswith("WARNING: 72 of 72 GLWU bulletins left out") for l in summary)
+    assert P.failed_key("2026102119", GPRE) not in c.objects
 
 
-def test_throttled_bulletins_or_steps_are_not_ready(offline_glwu, monkeypatch):
+def test_unreachable_and_throttled_bulletins_are_left_out(offline_glwu, monkeypatch):
     c = FakeClient()
     _env(monkeypatch, c)
-    monkeypatch.setattr(G, "fetch_bulletin", lambda run_dt, sid: (_ for _ in ()).throw(G.Throttled("429")))
+    asked = []
+
+    def fetch(run_dt, sid):
+        asked.append(sid)
+        if sid == "45002":
+            raise F.TransportError("reset")
+        if sid == "45008":
+            raise G.Throttled("429")
+        return _bulletin_for(sid, run_dt)
+    monkeypatch.setattr(G, "fetch_bulletin", fetch)
+    assert GL.main([]) == 0
+    order = list(G.STATIONS)
+    assert asked == order[:order.index("45008") + 1]                      # nothing asked after NOMADS throttled
+    man = json.loads(c.objects[json.loads(c.objects[GLATEST]["body"])["manifest"]]["body"])
+    assert man["bulletins"]["ids"] == sorted(s for s in order[:order.index("45008")] if s != "45002")
+
+
+def test_an_outage_mid_build_is_not_ready(offline_glwu, monkeypatch):
+    c = FakeClient()
+    _env(monkeypatch, c)
+    monkeypatch.setattr(G, "fetch_step", lambda run_dt, recs, step: (_ for _ in ()).throw(F.TransportError("502")))
     assert GL.main([]) == 3
     assert GLATEST not in c.objects and P.failed_key("2026102119", GPRE) not in c.objects
     assert json.loads(c.objects[P.notready_key("2026102119", GPRE)]["body"])["count"] == 1
+
+
+def test_a_partial_build_stores_no_bulletins_or_winds(offline_glwu, monkeypatch):
+    c = FakeClient()
+    _env(monkeypatch, c)
+    assert GL.main(["--steps", "0,1", "--allow-partial"]) == 0
+    assert not any(k.endswith(".bull") or k.endswith("winds.json") for k in c.objects)
+    part = [k for k in c.objects if "/partial-" in k]
+    assert part and "bulletins" not in json.loads(c.objects[part[0]]["body"])
+
+
+def test_build_budget_ends_the_tick_quietly(monkeypatch):
+    monkeypatch.setattr(GL, "_started", [GL.time.monotonic() - GL.BUILD_BUDGET_S - 1])
+    assert GL.BUILD_BUDGET_S == 20 * 60
+    with pytest.raises(F.NotReady):
+        GL.GlwuSource().fetch(RUN, 7)
+    assert (GL.GlwuSource.failed_retry_after_s, GL.GlwuSource.failed_max_attempts, GL.GlwuSource.stale_fail_h) == (1800, 6, 18)
 
 
 def test_no_run_and_a_stale_live_run(monkeypatch, capsys):
@@ -445,9 +510,13 @@ def test_no_run_and_a_stale_live_run(monkeypatch, capsys):
     _env(monkeypatch, c)
     monkeypatch.setattr(G, "latest_complete_run", lambda now=None: (None, None))
     assert GL.main([]) == 1                                              # nothing live at all: the stale alarm, once
+    assert "no complete GLWU run on NOMADS in the last 24 h" in capsys.readouterr().out
     assert GL.main([]) == 3                                              # then exit 3 until the next alarm
     monkeypatch.setattr(G, "latest_complete_run", lambda now=None: (_ for _ in ()).throw(G.Throttled("429")))
-    assert GL.main([]) == 3 and "throttled" in capsys.readouterr().out
+    assert GL.main([]) == 3 and "did not answer" in capsys.readouterr().out
+    monkeypatch.setattr(G, "latest_complete_run", lambda now=None: (_ for _ in ()).throw(F.TransportError("502")))
+    assert GL.main([]) == 3                                              # an outage: quiet until the stale alarm
+    assert "did not answer" in capsys.readouterr().out and P.failed_key("2026102119", GPRE) not in c.objects
 
 
 def test_steps_argument_and_dry_run(offline_glwu, monkeypatch, capsys):
@@ -491,3 +560,65 @@ def test_stations_are_valid_site_ids_inside_their_lakes():
     assert all(re.fullmatch(r"[A-Za-z0-9_-]{1,32}", s) for s in G.STATIONS)          # the site's station-id rule
     for sid, (lat, lon) in G.STATIONS.items():
         assert 41.0 < lat < 49.2 and -92.5 < lon < -73.0, sid
+
+
+# ------------------------------- the decode glue, the station-wind guard ------------------------
+
+class _FakeEccodes:
+    """Just enough of eccodes for decode_glwu: one handle per message, keys from a dict."""
+    def __init__(self, meta, values, lats=None, lons=None):
+        self.meta, self.values, self.lats, self.lons = meta, values, lats, lons
+
+    def codes_new_from_message(self, blob):
+        return 1
+
+    def codes_get(self, h, k):
+        return self.meta[k]
+
+    def codes_get_values(self, h):
+        return self.values
+
+    def codes_get_array(self, h, k):
+        return self.lats if k == "latitudes" else self.lons
+
+    def codes_release(self, h):
+        pass
+
+
+def test_decode_glwu_glue_maps_missing_and_enforces_identity_grid_and_size(monkeypatch):
+    meta = dict(META["records"]["HTSGW:surface"])
+    vals = np.full(NX * NY, 9999.0)
+    vals[5] = 1.25
+    monkeypatch.setitem(sys.modules, "eccodes", _FakeEccodes(meta, vals, np.zeros(3), np.ones(3)))
+    out, m = D.decode_glwu(b"", "HTSGW:surface", RUN, 0)
+    assert out[5] == 1.25 and np.isnan(out[6]) and np.count_nonzero(~np.isnan(out)) == 1
+    _, _, (la, lo) = D.decode_glwu(b"", "HTSGW:surface", RUN, 0, coords=True)
+    assert la.tolist() == [0, 0, 0] and lo.tolist() == [1, 1, 1]
+    for bad in ({"shortName": "perpw"}, {"stepRange": "3"}, {"Nx": 580}, {"LoVInDegrees": 262.5}):
+        monkeypatch.setitem(sys.modules, "eccodes", _FakeEccodes(dict(meta, **bad), vals))
+        with pytest.raises(ValueError):
+            D.decode_glwu(b"", "HTSGW:surface", RUN, 0)
+    monkeypatch.setitem(sys.modules, "eccodes", _FakeEccodes(meta, vals[:-1]))
+    with pytest.raises(ValueError):
+        D.decode_glwu(b"", "HTSGW:surface", RUN, 0)                       # a value array of the wrong size
+
+
+def test_a_station_without_a_wind_value_at_a_step_reads_none(monkeypatch):
+    vals, _ice = _lake_values()
+    lat, lon = _inverse_lcc(300.0, 175.0)
+    monkeypatch.setattr(G, "STATIONS", {"in": (float(lat), float(lon))})
+    src = GL.GlwuSource()
+    monkeypatch.setattr(D, "decode_glwu", _fake_decode(vals))
+    src.decode({k: b"" for k in G.RECORDS}, RUN, 0)
+    later = dict(vals, **{"WIND:surface": np.where(np.isnan(vals["WIND:surface"]), np.nan, np.nan)})
+    later["WIND:surface"] = vals["WIND:surface"].copy()
+    later["WIND:surface"][src._cells["in"]] = np.nan                     # the cell's wind missing at a later step
+    monkeypatch.setattr(D, "decode_glwu", _fake_decode(later))
+    src.decode({k: b"" for k in G.RECORDS}, RUN, 1)
+    assert src._winds[0]["in"] == [6.0, 0] and src._winds[1]["in"] is None    # never a NaN in winds.json
+
+
+def test_the_real_grid_is_the_documented_one():
+    assert GL.GRID == D.GLWU_GRID == {"cols": 831, "rows": 401, "lon0": -92.4, "lat0": 49.2, "dlon": 0.02, "dlat": -0.02,
+                                       "registration": "center", "lon_periodic": False}
+    assert GL.ALLOW_ALL.shape == (401, 831) and GL.CALM_M == 0.1 and GL.FILL_CELLS == 2

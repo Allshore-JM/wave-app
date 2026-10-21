@@ -445,3 +445,25 @@ def test_land_set_check_still_refuses_clockwise_rings(tmp_path):
     buf = B.encode_file([[ring]], 30)
     assert any("counter-clockwise" in p for p in B.check_file(buf, 30))
     assert B.check_file(buf, 30, ccw_only=False) == []
+
+
+def test_lakes_check_runs_its_real_checks_whenever_built_from_gshhg_2_3_7(tmp_path, monkeypatch):
+    """G33a P2-4: a build from the pinned archive is judged by the probes, the lake count and the area whatever it
+    produced; the synthetic archive stands in for the real one here and fails all three."""
+    wf = open(os.path.join(ROOT, ".github", "workflows", "coast-build.yml"), encoding="utf-8").read()
+    assert B.GSHHG_SHA256 in wf                                              # the archive the workflow downloads
+    zp = lakes_zip(str(tmp_path / "g.zip"))
+    import hashlib
+    monkeypatch.setattr(B, "GSHHG_SHA256", hashlib.sha256(open(zp, "rb").read()).hexdigest())
+    out = str(tmp_path / "lakes-v1")
+    B.build_lakes(zp, out, log=lambda *a: None)
+    problems = B.check(out, log=lambda *a: None)
+    assert any("1 lakes and 1 islands" in p for p in problems)
+    assert any(p.startswith("tier 0: probe") for p in problems) and any(p.startswith("tier 1 ") and "probe" in p for p in problems)
+    assert any("net water area" in p for p in problems)
+
+
+def test_lakes_check_refuses_a_zero_area_ring():
+    flat = (np.array([0, 1, 2], np.int64) * Q, np.array([0, 0, 0], np.int64) * Q)
+    buf = B.encode_file([[flat]], 30)
+    assert any("zero-area" in p for p in B.check_file(buf, 30, ccw_only=False))

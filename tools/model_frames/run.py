@@ -413,7 +413,7 @@ def main(argv=None, src=GFS):
         print(f"{src.name} listing failed: {exc}")
         return 1
     if run_dt is None:
-        print(f"no complete {src.tag}run on S3 in the last 48 h")
+        print(f"no complete {src.tag}run {getattr(src, 'where', 'on S3 in the last 48 h')}")
         if src.stale_fail_h and not a.dry_run:
             return _no_run(src)
         return 3

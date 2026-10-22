@@ -715,7 +715,26 @@ lakes under the GFS model selection (plan section 50's client steps).
   >= 100 islands, probes in both tiers, the area), whatever it produced (G33a P2-4). In winter the fill can colour up
   to ~3 km over an ice edge.
 - **Fixtures**: `tests/capture_glwu_fixtures.py` (network + eccodes) writes `tests/fixtures/glwu/` (four steps' `.idx`
-  lines, step 0's metadata with eccodes' coordinates at a few nodes, one bulletin) for `tests/model_frames/test_glwu.py`.
+  lines, step 0's metadata with eccodes' coordinates at a few nodes, one bulletin) for `tests/model_frames/test_glwu.py`;
+  `tests/fixtures/glwu/{latest.json, manifest.json, hs_f000.png, tp_f000.png, pdir_f000.png, f000_samples.json}` are
+  the published run 2026102119's pointer, manifest, three step-0 frames and 60 node values decoded independently, for
+  `tests/overlay/lake.test.js`.
+- **The browser (overlay asset 2.21.0, the client core; the page flag, the credit, the readout text and the lake
+  tables follow)**: under the GFS model's wave height and period the lake frame of the SAME VALID TIME rides beside the
+  step's own frames as two more frame kinds in the scheduler (`'lake'`, `'lakedir'`; keys `glwu/<run>/...`, their own
+  caches, one more download at once each, the same per-step wait cap as the pressure frame: a slow or missing lake frame
+  never holds a step more than a second, the lake joins when it arrives, never an old lake under a new time). One
+  `ModelGridLayer` draws both: the tiles of the lakes' box take their lake water coverage from `static/coast/lakes-v1`
+  (`_lakeFor`, cached per tile like the land mask), `sampleLake` writes the lake frame's codes there (bilinear over the
+  present nodes, not periodic, nothing beyond the grid), and `composeTile`'s alpha is the larger of the ocean fraction
+  and the lake coverage; the readout and the particles' lattice use the same rule, so the readout is the drawn pixel
+  across the shore and `lakeAt` tells the page where lake water shows nothing ("no data"). Contours read the composite
+  lattice. The particles take the lake direction frame through `FlowAnimator.setLakeData` (the lake vectors on the
+  lake grid, `lakeWindow` / `lakeVectorNodes`; a lake point with no lake vector gets none). Under ECMWF only the mask
+  applies: its own 0.25-degree lake cells show through (the GFS frames hold 0 over the lakes, so without a lake run the
+  lakes are blank). A newer lake run noted by the run check takes over at the next step (its old fetches aborted, its
+  caches afresh). Measured on the real frames: the lake pass 0.6-0.7 ms per tile with full coverage, the lake vectors
+  ~4.5 ms per step when the whole grid is in view.
 
 ### Sea surface temperature tiles (plan section 44, the job)
 

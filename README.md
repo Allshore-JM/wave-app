@@ -758,6 +758,24 @@ lakes under the GFS model selection (plan section 50's client steps).
   lakes during playback asks for the shown step's lake frames at once (the next steps wait for theirs up to the step
   cap). The particles' lake vectors are read per lattice point from the frames (no arrays over the lake grid: about
   3 MB less while the lakes are in view).
+- **The G33 fix round (overlay asset 2.21.5)**:
+  - **The view gate.** It compares the reach with the one it last acted on (`_lakeGateNear`), so a resolution change's
+    step in the same zoom cannot hide the transition. It also acts while a step is still pending (an Update's first
+    landing, the error panel): leaving the lakes aborts the lake fetches, empties both lake caches, and drops the drawn
+    lake and the animator's lake data (`_dropLakes`).
+  - **Lake runs.** The lake data carries its run, and the animator takes a lake direction only beside the height frame of
+    the same run: after a newer lake run is adopted, the old run's lake stays drawn until the step lands, never mixed with
+    the new run's directions. The store's 30-minute re-read keeps the run in hand usable (no blank lake on a Retry). A
+    newer run it finds goes through the scheduler's one adoption path. An older pointer is ignored.
+  - **Retries.** A lake run or lakes coast set that failed is asked again at a landing once its cooldown has passed. No
+    lake frame is fetched while the coast set has failed (it could not be drawn).
+  - **Calm water.** Under peak period, calm water reads "calm" on hover: the shown step's lake height there is present and
+    under 0.2 m. That height frame is fetched on demand, one per hovered step, and never drawn. "No data" stays for
+    everything else: past +149 h, no lake run, ice, and channels GLWU does not model (the Thousand Islands, the St Marys
+    River, the Niagara River, the Keweenaw waterway).
+  - **The credit.** "Lakes: NOAA GLWU" shows only while the lake water is on screen, not within the one-screen fetch
+    margin.
+  - **The tables.** A newest manifest without a bulletin list sends the tables to the kept runs.
 - **The lake tables** (UI asset 1.24.0): the 72 stations (`glwu_stations.json`: name, position and nearest civil zone,
   built by `tools/build_glwu_stations.py` from `glwu_fetch.STATIONS`, NDBC's station table and names written there for
   NOAA's 14 beach points) join the station list, the map and the picker after the GFS ones; they live in their OWN file,

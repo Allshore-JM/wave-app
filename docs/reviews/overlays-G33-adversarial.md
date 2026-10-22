@@ -159,3 +159,45 @@ but no repo test would notice a regression):
     above; mutants on the fixes; README; the asset pin.
 11. Records: B-3's corrected note and B-4's corrected step-6 entry (the blank lake pixels are unmodelled channels) in the
     plan and memory.
+
+## Fix round (step 8, overlay asset 2.21.5)
+Every scope item was built. The changes, by item:
+- **F1, F1b.** `_syncLakeGate` compares the reach with `_lakeGateNear`, the reach it last acted on. That state is seeded
+  by the first `_lakeNearNow` and re-seeded when a lake run loads (its grid is judged afresh). The gate acts whatever
+  `frameIndex` is. Out of reach, `_dropLakes` aborts the lake fetches (a waiting step lands at once), empties both
+  caches, and drops the drawn lake, the animator's lake data and the hover's height frame.
+- **F2.** The lake data carries `run`. `_flowLakeData` gives the animator a direction only beside the drawn height frame of
+  the store's current run.
+- **F3, N1.** `LakeStore.load` keeps status 'ok' while it re-reads with a run in hand. `abortAll` always clears the load's
+  promise. A same or older pointer keeps the run in hand.
+  - FOUND BY THE FUZZ: a re-read that found a newer run swapped it in itself, outside the scheduler's adoption. The newer
+    run now waits in `next`, and `_loadLakes` adopts it through `_adoptLake`.
+- **B-1.**
+  - `_wantLake` is false while the lakes coast set has failed.
+  - `_retryLakes` asks a failed lake run or coast set again at a landing once its cooldown has passed.
+  - The coast set's arrival starts the shown step's lake frames.
+  - A failed coast set drops the lakes. FOUND BY THE FUZZ: the downloads must then be re-trimmed to the smaller cap
+    (`_prefetch`).
+- **B-2.** `_lakeWord`: under peak period, lake water without a value reads "calm" where the shown step's lake height is
+  present and under `LAKE_CALM_M` = 0.2 m. The height frame is fetched on demand, one per step, and never drawn or
+  cached as a lake frame; until it lands the hover reads "…". `layer.lakeCodeAt` samples it exactly as the tile samples
+  its own.
+- **B-5.** The credit needs `_lakeOnScreen` (the drawn lake grid meets the view itself). The gate re-credits on every move.
+- **N3** (`app.py`). A newest manifest without a `bulletins` block lists no station, and the kept runs are tried.
+- **Tests.**
+  - `tests/overlay/lake.test.js` +4: store F3 / N1 / L4 and a re-read's newer run in `next`; S4; the word; `lakeCodeAt`.
+  - `tests/overlay/playback.test.js` +14: F1 (pending and on the error panel), F1b, F2, F3 with the re-read's adoption,
+    B-1 (lake run, coast set, the cap), B-2, B-5, G2, G6, G18, G21 / P7. One existing test now goes through
+    `_loadLakes`.
+  - `tests/test_parse_glwu.py` +2: N3, Q6.
+  - Pytest 1,243 passed, Node 904 passed.
+- **Reviewer A's scripts on the fixed code.**
+  - `repro.js` / `repro_f3.js`: F1, F1b, F2 and F3 no longer reproduce.
+  - `extra.js`: 8 of 8 pass.
+  - The fuzz: 1,300 seeds (800 lake-only, 500 all-kind), 0 failures after the two fuzz-found fixes. The seeds that had
+    failed on the first patch all pass, and seed 100357 passes at 8d18c4b as well.
+- **Mutation.** 31 mutants on scratch copies (`g33/fix/mut8.py`): 29 killed, 2 equivalent.
+  - The coast set's arrival start is redundant: the lake store's own callback starts the same frames while the set loads.
+  - `lakeCodeAt`'s coverage test is redundant: `sampleLake` writes only under coverage.
+  - The reviewer's eight test-gap mutants (S4, L4, G2, G6, G18, G21, P7, Q6) are all killed, as is N3.
+- **Records.** B-3's corrected note and B-4's corrected step-6 entry are in the plan and memory.

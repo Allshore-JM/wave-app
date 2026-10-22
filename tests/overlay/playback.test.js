@@ -2953,7 +2953,8 @@ test('section 50: a lake run taken by the store\'s own re-read (a mount\'s load)
   o.seek(i0 + 20); await settle(); holdUrl(w, `gfswave/0p25/v1/${A.run}/hs/f${String(A.frames[i0 + 20].step).padStart(3, '0')}.png`)(); await settle();
   const late = holdUrl(w, lakeFile(A, i0 + 20));
   w.lakePointer = lptr(LB); w.lakeManifests[LB.run] = LB; o.lake.loadedAt = 0;
-  assert.equal(await o.lake.load(), o.lake); assert.equal(o.lake.manifest.run, LB.run, 'the re-read took the newer run at once');
+  o._loadLakes(o.manifest); await settle(); await settle();                        // a mount's load: the re-read finds the newer run
+  assert.equal(o.lake.manifest.run, LB.run, "the re-read's newer run is taken at once, through the adoption path (G33)"); assert.equal(o.lake.next, null);
   late(); await settle();
   assert.equal(o.lcache.has('glwu/' + LA.run + '/lake/hs/' + (A.frames[i0 + 20].step - 1)), false, 'the old run\'s decode is dropped');
   assert.equal(o.frameIndex, i0 + 20, 'the dropped decode let the step land bare'); assert.equal(o.layer._lake, null);
@@ -3046,5 +3047,230 @@ test('section 50 (step 6b): a step waiting for its lake frames lands at once whe
   assert.ok(o.inflight[o._key(i0 + 5, 'lake')], 'the shown step\'s lake frame asked for again');
   await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
   assert.ok(o.layer._lake && o.layer._lake.entry === A.frames[i0 + 5], 'the lake joins the picture'); assert.equal(w.now(), t);
+  o.unmount();
+}));
+
+// ---- G33 (plan section 50 step 8): the lake state machine's fixes and the reviewer's test gaps ----
+const pad3 = (n) => String(n).padStart(3, '0');
+const LAKES_IDX = { format: 'coast-v1', q: 10000, kind: 'lakes', tier0: { file: 'lakes-i.bin', cell: 30, max_zoom: 6 }, tier1: { dir: 'f', cell: 5, min_zoom: 7, cells: {} } };
+const lakesCoastOk = (url) => url.endsWith('/lakes-v1/index.json') ? { ok: true, status: 200, json: () => Promise.resolve(LAKES_IDX) } : coastOk(url);
+const lakeFetches = (o) => Object.keys(o.inflight).filter(isLake);
+
+test('G33 F1: the view gate acts while a step is pending (an Update’s first landing): leaving the lakes aborts the target’s lake fetches and drops the drawn lake and the animator’s lake data at once; their late decodes are never cached', () => onRunDay(async () => {
+  const w = world(); const o = await lakeMounted(w, { anim: true }); w.orig._bindMap.call(o);
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.layer._lake && o.flow.ldir, 'the step drawn with its lake and lake direction');
+  w.manifests[B.run] = B; o.newerRun = ptr(B); o.update(); await settle();
+  assert.equal(o.frameIndex, null); assert.ok(lakeFetches(o).length > 0, 'the Update target’s lake fetches started');
+  w.setView(21.3, -157.9); await settle();
+  assert.deepEqual(lakeFetches(o), [], 'no lake fetch left out of reach');
+  assert.ok(Object.keys(o.inflight).length <= o._maxInflight(), 'in flight within the cap');
+  assert.equal(o.layer._lake, null, 'the old picture’s lake dropped'); assert.equal(o.flow.ldir, null, 'the animator’s lake data dropped');
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.lcache.size(), 0); assert.equal(o.ldcache.size(), 0, 'the late lake decodes were never cached');
+  assert.equal(o.manifest, B); assert.ok(o.frameIndex !== null, 'the new run’s step landed');
+  o.unmount();
+}));
+
+test('G33 F1: on the error panel of a failed Update, leaving the lakes aborts the pending target’s lake fetches (no wait left running, nothing cached out of reach)', () => onRunDay(async () => {
+  const w = world(); const o = await lakeMounted(w, { anim: true }); w.orig._bindMap.call(o);
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  const t = Date.parse(A.frames[o.frameIndex].valid_utc); let best = 0;
+  for (let i = 0; i < B.frames.length; i++) if (Math.abs(Date.parse(B.frames[i].valid_utc) - t) < Math.abs(Date.parse(B.frames[best].valid_utc) - t)) best = i;
+  w.manifests[B.run] = B; o.newerRun = ptr(B);
+  w.failNext[`https://x/gfswave/0p25/v1/${B.run}/hs/f${pad3(B.frames[best].step)}.png`] = 404;
+  o.update(); await settle(); await settle();
+  assert.equal(o.frameIndex, null); assert.ok(o.last && o.last.state === 'error', 'the error panel: ' + JSON.stringify(o.last));
+  w.setView(21.3, -157.9); await settle();
+  assert.deepEqual(lakeFetches(o), []); assert.ok(!o._lakeWait || o._lakeWait.timer === null, 'no lake wait timer left running');
+  await w.releaseAll(); await settle();
+  assert.equal(o.lcache.size(), 0); assert.equal(o.ldcache.size(), 0);
+  o.unmount();
+}));
+
+test('G33 F1b: a zoom that changes the resolution AND takes the lakes out of reach while a newer lake run waits: the resolution change’s goto adopts the run, and the gate still drops the old lake at once', () => onRunDay(async () => {
+  const w = world(); w.view = { lat: -40, lng: 150 }; w.map.getZoom = () => 3;
+  const o = await lakeMounted(w, { anim: true }); w.orig._bindMap.call(o);
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.res, 'half'); assert.ok(o._wantLake() && o.layer._lake, 'zoom 3: the lakes lie within one screen of the Pacific view');
+  w.lakePointer = lptr(LB); w.lakeManifests[LB.run] = LB; o._checkRun(); await settle(); await settle();
+  assert.ok(o.lake.next && o.lake.next.m.run === LB.run, 'a newer lake run noted');
+  w.map.getZoom = () => 6; w.fire('map', 'zoomend'); w.fire('map', 'moveend'); await settle();
+  assert.equal(o.res, 'full'); assert.equal(o.lake.manifest.run, LB.run, 'adopted by the resolution change’s goto');
+  assert.equal(o._wantLake(), false);
+  assert.equal(o.layer._lake, null, 'the old run’s lake dropped at once'); assert.equal(o.flow.ldir, null); assert.deepEqual(lakeFetches(o), []);
+  o.unmount();
+}));
+
+test('G33 F2: after a lake-run adoption the new run’s lake direction of the shown step never reaches the animator beside the old run’s lake heights; it joins with the new run’s height frame', () => onRunDay(async () => {
+  const w = world(); const o = await lakeMounted(w, { anim: true });
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  const S = o.frameIndex, runTag = (f) => f.q[0];                                   // the harness tags every decoded frame with its run's hour
+  assert.equal(runTag(o.layer._lake.frame), 13); assert.equal(runTag(o.flow.ldir), 13);
+  w.lakePointer = lptr(LB); w.lakeManifests[LB.run] = LB; o._checkRun(); await settle(); await settle();
+  o.seek(S + 1); await settle();
+  assert.equal(o.lake.manifest.run, LB.run, 'adopted'); assert.equal(o.frameIndex, S); assert.equal(runTag(o.layer._lake.frame), 13, 'the old run’s lake stays drawn until the step lands');
+  o._ensureLakeDir(S); await settle();                                             // the ring’s fetch of the shown step’s direction from the new run
+  await w.releaseUrl((u) => u.indexOf(`/glwu/v1/${LB.run}/pdir/f${pad3(LB.frames[o._lakeIndex(S)].step)}`) >= 0);
+  assert.ok(o.flow.ldir === null || runTag(o.flow.ldir) === runTag(o.layer._lake.frame), 'never two lake runs in the animator');
+  assert.ok(o.ldcache.has(o._key(S, 'lakedir')), 'the direction is cached for the new run’s height frame');
+  o._ensureLake(S); await settle();
+  await w.releaseUrl((u) => u.indexOf(`/glwu/v1/${LB.run}/hs/f${pad3(LB.frames[o._lakeIndex(S)].step)}`) >= 0);
+  assert.equal(runTag(o.layer._lake.frame), 19, 'the new run’s height frame drawn for the step'); assert.equal(runTag(o.flow.ldir), 19, '... and its direction with it');
+  o.unmount();
+}));
+
+test('G33 F3: a mount 30 minutes on (Retry, the same field) keeps the drawn lake while the store re-reads its pointer; a newer run found by the re-read is taken through the adoption path', () => onRunDay(async () => {
+  const w = world(); const o = await lakeMounted(w);
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  const drawn = o.layer._lake; assert.ok(drawn);
+  o.lake.loadedAt = 0; w.holdLakePointer = true;
+  o.mount('hs'); await settle();
+  assert.equal(o.lake.status, 'ok', 'the run in hand stays usable'); assert.equal(o._wantLake(), true);
+  await w.releaseAll(); await settle();
+  assert.ok(o.layer._lake, 'the same frame landed with its lake (never a blank lake on Retry)');
+  w.lakePointer = lptr(LB); w.lakeManifests[LB.run] = LB;
+  w.heldLakePointers.shift()(); w.holdLakePointer = false; await settle(); await settle();
+  assert.equal(o.lake.manifest.run, LB.run, 'the re-read’s newer run adopted'); assert.equal(o.lake.next, null);
+  assert.ok(lakeFetches(o).every((k) => k.indexOf('glwu/' + LB.run + '/') === 0), 'only the new run’s lake fetches: ' + lakeFetches(o).join());
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.layer._lake && o.layer._lake.run === LB.run, 'the new run’s lake drawn');
+  o.unmount();
+}));
+
+test('G33 B-1: a lake run that failed at the mount is asked again at a landing once its cooldown has passed (never within it); the lakes then join', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A; w.lakePointer = null;          // the pointer 404s
+  const o = w.create({ glwu: true }); o.mount('hs'); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.lake.status, 'failed'); assert.equal(o.layer._lake, null);
+  w.lakePointer = lptr(LA); w.lakeManifests[LA.run] = LA;
+  const asked = () => w.fetches.filter((u) => /\/glwu\/v1\/latest\.json$/.test(u)).length, n0 = asked();
+  o.seek(o.frameIndex + 1); await settle(); await w.releaseAll(); await settle();
+  assert.equal(asked(), n0, 'within the cooldown: not asked'); assert.equal(o.lake.status, 'failed');
+  o.lake.failedAt = Date.now() - o.lake.retryMs - 1;
+  o.seek(o.frameIndex + 1); await settle(); await w.releaseAll(); await settle();
+  assert.equal(asked(), n0 + 1, 'asked again at the landing'); assert.equal(o.lake.status, 'ok');
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.layer._lake && o.layer._lake.entry === A.frames[o.frameIndex], 'the shown step’s lake drawn');
+  o.unmount();
+}));
+
+test('G33 B-1: with the lakes coast set failed no lake frame is fetched (it could not be drawn); a landing after its cooldown asks for the set again, and its arrival starts the shown step’s lake frames', () => onRunDay(async () => {
+  const w = world(); const o = await lakeMounted(w);
+  while (w.pendingCoast.length) w.pendingCoast.shift()(); await settle();                         // the harness answers 500
+  assert.equal(o.lakeCoast.status, 'failed'); assert.equal(o._wantLake(), false);
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.frameIndex !== null); assert.ok(!w.fetches.some(isLakeFrameUrl), 'no lake frame fetched while the set has failed');
+  w.coastAnswer = lakesCoastOk; o.lakeCoast.failedAt = Date.now() - o.lakeCoast.retryMs - 1;
+  o.seek(o.frameIndex + 1); await settle(); await w.releaseAll(); await settle();
+  assert.ok(w.pendingCoast.length > 0, 'the set asked for again at the landing');
+  while (w.pendingCoast.length) w.pendingCoast.shift()(); await settle();
+  assert.equal(o.lakeCoast.status, 'ok'); assert.equal(o.layer._lakeMask, true); assert.equal(o._wantLake(), true);
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.layer._lake && o.layer._lake.entry === A.frames[o.frameIndex], 'the shown step’s lake drawn once the set is in');
+  o.unmount();
+}));
+
+test('G33 B-2: under peak period the hover’s word fetches the shown step’s lake height frame once (never drawn), then says "calm" where the height is under 0.2 m', () => onRunDay(async () => {
+  const w = world(); const o = await lakeMounted(w, { field: 'tp', manifest: Object.assign({}, A, { fields: Object.assign({}, A.fields, { tp: TPH }) }) });
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.layer._lake); o.layer.lakeCodeAt = () => 1;                         // the sampled height: code 1 (0 m)
+  const S = o.frameIndex, hsUrl = `/glwu/v1/${LA.run}/hs/f${pad3(LA.frames[o._lakeIndex(S)].step)}.png`;
+  let ready = 0;
+  assert.equal(o._lakeWord(45, -87, 7, () => ready++), '…');
+  assert.equal(w.fetches.filter((u) => u.endsWith(hsUrl)).length, 1, 'the step’s lake height frame asked for');
+  await settle(); await w.releaseUrl((u) => u.endsWith(hsUrl));
+  assert.equal(ready, 1, 'the readout is told when it lands'); assert.equal(o._lakeWord(45, -87, 7, null), 'calm');
+  o._lakeWord(45, -87, 7, null); assert.equal(w.fetches.filter((u) => u.endsWith(hsUrl)).length, 1, 'once per step');
+  assert.ok(o.layer._lake.frame !== o._lakeHs.frame, 'never drawn'); assert.equal(o.lcache.has('glwu/' + LA.run + '/lake/hs/' + LA.frames[o._lakeIndex(S)].step), false, 'nor cached as a lake frame');
+  o.unmount(); assert.equal(o._lakeHs, null);
+}));
+
+test('G33 B-5: the lakes credit shows only while the drawn lake frame’s water is on screen, not within the fetch margin alone; re-judged on every move', () => onRunDay(async () => {
+  const w = world(); w.coastAnswer = lakesCoastOk;
+  const o = await lakeMounted(w); w.orig._bindMap.call(o);
+  while (w.pendingCoast.length) w.pendingCoast.shift()(); await settle();
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.layer._lakeMask, true); assert.ok(o.layer._lake);
+  const credits = []; o._attributed = 'x'; o._attribute = function () { credits.push(this._attribution()); };
+  assert.ok(/GLWU/.test(o._attribution()), 'on the lakes: credited');
+  w.setView(44.8, -54.2); await settle();                                          // the view's west edge ~67 W: the lakes off screen, within one screen
+  assert.equal(o._wantLake(), true, 'still within the fetch margin');
+  assert.ok(credits.length && !/GLWU/.test(credits[credits.length - 1]), 'off screen: no lake credit ' + JSON.stringify(credits));
+  w.setView(44.8, -84.2); await settle();
+  assert.ok(/GLWU/.test(credits[credits.length - 1]), 'back on the lakes: credited again');
+  o.unmount();
+}));
+
+test('G33 test gaps G2: the lake wait is counted per step across a resolution change (a re-issued goto of the same step waits only the rest of the second)', () => {
+  const w = world({ fakeTimers: true });
+  return onFakeClock(w, async () => {
+    const o = await lakeMounted(w); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+    const S = o.frameIndex, T = S + 5;
+    o.seek(T); await settle();
+    await w.releaseUrl((u) => u.endsWith(`gfswave/0p25/v1/${A.run}/hs/f${pad3(A.frames[T].step)}.png`));
+    assert.equal(o.frameIndex, S); assert.equal(o.target, T); assert.ok(o._lakeWait, 'waiting for its held lake frames');
+    await w.fade(600); await settle();
+    o.res = 'half'; o._goto(T).catch(() => {}); await settle();                    // the resolution change re-issues the goto
+    await w.releaseUrl((u) => u.endsWith(`gfswave/0p25/v1/${A.run}/half/hs/f${pad3(A.frames[T].step)}.png`));
+    assert.equal(o.frameIndex, S, 'still waiting for the lake');
+    await w.fade(401); await settle();
+    assert.equal(o.frameIndex, T, 'landed at 1,001 ms, not 1,600');
+    o.unmount();
+  });
+});
+
+test('G33 test gaps G6: a lake landing never resets the outage counter (the field frames own it)', () => onRunDay(async () => {
+  const w = world(); const o = await lakeMounted(w); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  const S = o.frameIndex, url = (i) => `https://x/gfswave/0p25/v1/${A.run}/hs/f${pad3(A.frames[i].step)}.png`;
+  for (const i of [S + 20, S + 30]) { w.failNext[url(i)] = 'network'; o.seek(i); await settle(); await settle(); }
+  assert.equal(o.transientFails, 2);
+  o.seek(S + 1); await settle();
+  let released = 0;
+  for (let i = w.pendingBitmaps.length - 1; i >= 0; i--) if (/\/glwu\/v1\//.test(w.pendingBitmaps[i].blob.url)) { w.pendingBitmaps.splice(i, 1)[0](); released++; }
+  await settle(); await settle();
+  assert.ok(released > 0 && o.lcache.size() + o.ldcache.size() > 0, 'lake frames landed'); assert.equal(o.transientFails, 2, 'the counter untouched');
+  o.unmount();
+}));
+
+test('G33 test gaps G18: at shark speed the lake caches follow the ring: no lake frame is downloaded twice', () => {
+  const w = world({ fakeTimers: true, raf: true });
+  return onFakeClock(w, async () => {
+    const o = await lakeMounted(w); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+    o.setSpeed(4); o.play(); await settle();
+    for (let k = 0; k < 60; k++) { await w.fade(125); await w.releaseAll(); await w.paint(); await settle(); }
+    const lake = w.fetches.filter(isLakeFrameUrl), seen = {}; let dup = 0;
+    for (const u of lake) { if (seen[u]) dup++; seen[u] = true; }
+    assert.ok(o.frameIndex > 20 && lake.length > 40, lake.length + ' lake fetches, frame ' + o.frameIndex);
+    assert.equal(dup, 0, 'no lake frame fetched twice');
+    o.pause(); o.unmount();
+  });
+});
+
+test('G33 test gaps G21 / P7: with a canvas on the animator a cached step lands with ONE rebuild (the lake rides in it; setLakeData never rebuilds for another step’s data)', () => onRunDay(async () => {
+  const w = world(); const o = await lakeMounted(w, { anim: true });
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  const S = o.frameIndex;
+  for (const i of [S + 1, S + 2]) { o.seek(i); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle(); }
+  assert.ok(o.lcache.size() >= 3 && o.ldcache.size() >= 3);
+  o.flow.canvas = {};                                                               // the harness animator has none: setLakeData's rebuild condition made reachable
+  const before = o.flow.calls.filter((c) => c === '_rebuild').length;
+  o.seek(S + 1); await settle(); await settle();
+  assert.equal(o.frameIndex, S + 1); assert.equal(o.flow.calls.filter((c) => c === '_rebuild').length - before, 1, 'one rebuild');
+  o.unmount();
+}));
+
+test('G33 B-1: when the lakes coast set fails with the ring in flight, the lake share of the download cap goes with the lake fetches (in flight never above the new cap)', () => onRunDay(async () => {
+  const w = world(); const o = await lakeMounted(w, { anim: true });
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  o.seek(50); await settle();                                                        // the last step with a lake frame: the ring ahead has none
+  await w.releaseUrl((u) => u.endsWith(`gfswave/0p25/v1/${A.run}/hs/f${pad3(A.frames[50].step)}.png`));
+  await w.releaseUrl((u) => u.indexOf(`/pdir/f${pad3(A.frames[50].step)}`) >= 0 && u.indexOf('/glwu/') < 0);
+  for (let i = 0; i < 3 && o.frameIndex !== 50; i++) { const j = w.pendingBitmaps.findIndex((f) => /\/glwu\//.test(f.blob.url)); if (j < 0) break; w.pendingBitmaps.splice(j, 1)[0](); await settle(); }
+  const capBefore = o._maxInflight();
+  assert.ok(capBefore > w.I.MAX_INFLIGHT && Object.keys(o.inflight).length > w.I.MAX_INFLIGHT, 'the lake share in use: ' + Object.keys(o.inflight).join());
+  while (w.pendingCoast.length) w.pendingCoast.shift()(); await settle();            // the lakes coast set fails (the harness answers 500)
+  assert.equal(o.lakeCoast.status, 'failed'); assert.equal(o._maxInflight(), w.I.MAX_INFLIGHT);
+  assert.deepEqual(lakeFetches(o), []);
+  assert.ok(Object.keys(o.inflight).length <= o._maxInflight(), 'trimmed to the new cap: ' + Object.keys(o.inflight).join());
   o.unmount();
 }));

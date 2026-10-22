@@ -370,12 +370,22 @@ def test_bulletin_check():
         GL.check_bulletin(extra, "45007", RUN)                            # one row too many
     with pytest.raises(ValueError):
         GL.check_bulletin(BULL.replace("(42.67N  87.03W)", "(42.77N  87.03W)"), "45007", RUN)
+    # the 01Z and 07Z cycles: NOAA space-pads the hour ("Cycle : 20261022  1 UTC"), and "1" is not "11" (2026-10-22)
+    for hour in (1, 7):
+        run = datetime(2026, 10, 22, hour, tzinfo=timezone.utc)
+        text = BULL.replace("Cycle    : 20261021 19 UTC", f"Cycle    : 20261022 {hour:2d} UTC")
+        assert f"20261022  {hour} UTC" in text
+        GL.check_bulletin(text, "45007", run)
+        with pytest.raises(ValueError):
+            GL.check_bulletin(text, "45007", run.replace(hour=hour + 10))
+        with pytest.raises(ValueError):
+            GL.check_bulletin(text, "45007", run.replace(day=21))
 
 
 def _bulletin_for(sid, run_dt=RUN):
     lat, lon = G.STATIONS[sid]
     text = re.sub(r"Location : 45007\s+\([^)]*\)", f"Location : {sid}   ({lat:.2f}N  {-lon:.2f}W)", BULL)
-    return text.replace("Cycle    : 20261021 19 UTC", f"Cycle    : {run_dt:%Y%m%d %H} UTC")
+    return text.replace("Cycle    : 20261021 19 UTC", f"Cycle    : {run_dt:%Y%m%d} {run_dt.hour:2d} UTC")   # NOAA's spelling
 
 
 # ------------------------------- the whole job, offline -----------------------------------------

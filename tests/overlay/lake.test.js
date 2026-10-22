@@ -522,6 +522,49 @@ test('the layer\'s lake coverage: from the lakes coast set (an island cuts its l
   l.setLakeCoast(null); assert.equal(l._lakeCoast, null); assert.equal(store.onChange, null);
 });
 
+// The published Great Lakes set (static/coast/lakes-v1, built 2026-10-22): its overview is lakes-i.bin. Step 6 found the
+// store asking for world-i.bin there (404: no lake coverage, the lakes never drawn on the site).
+test('the published lakes coast set: the store asks for index.json and lakes-i.bin (never world-i.bin), loads the real files, and the layer\'s coverage marks lake water and leaves the islands and the land; an index naming another overview is refused', async () => {
+  const idx = JSON.parse(fs.readFileSync(path.join(FIX, 'lakes_index.json'), 'utf8')), bin = fs.readFileSync(path.join(FIX, 'lakes-i.bin'));
+  const asked = [];
+  global.fetch = (url) => {
+    asked.push(url);
+    const host = url.slice(0, 9);
+    if (url.endsWith('/index.json')) {
+      const body = host === 'https://y' ? { ...idx, tier0: { ...idx.tier0, file: 'world-i.bin' } } : idx;   // y: an index naming the land overview
+      return Promise.resolve({ ok: true, status: 200, headers: { get: () => '1084' }, json: () => Promise.resolve(body) });
+    }
+    if (url.endsWith('/lakes-i.bin') || (host === 'https://z' && url.endsWith('/world-i.bin'))) {
+      return Promise.resolve({ ok: true, status: 200, headers: { get: () => String(bin.length) }, arrayBuffer: () => Promise.resolve(bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.length)) });
+    }
+    return Promise.resolve({ ok: false, status: 404 });
+  };
+  try {
+    assert.equal(I.LAKES_TIER0, 'lakes-i.bin'); assert.equal(I.COAST_TIER0, 'world-i.bin');
+    const base = 'https://x/static/coast/lakes-v1', st = I.coastStore(base, I.LAKES_TIER0);
+    assert.equal(st.file, 'lakes-i.bin');
+    assert.equal(await st.load(), st); assert.equal(st.status, 'ok');
+    assert.deepEqual(asked.slice().sort(), [base + '/index.json', base + '/lakes-i.bin'], 'never ' + base + '/world-i.bin');
+    assert.equal(st.index.kind, 'lakes'); assert.equal(st.tier1Zoom(6), false); assert.equal(st.tier1Zoom(7), true);
+    const l = layer(globalFrame(PATTERN), 'hs', HS, null);
+    l.setLakeCoast(st);
+    assert.equal(l._lakeMask, true);
+    const cov = (lat, lon) => { const p = I.pixelOf(lat, lon, 6), c = l._lakeFor(tileEl(), { z: 6, x: p.x, y: p.y }); return c ? c[p.py * TILE + p.px] : 0; };
+    for (const [name, lat, lon] of [['Superior', 47.7, -87.5], ['Michigan', 43.8, -87.0], ['Huron', 44.8, -82.4], ['Erie', 42.2, -81.2], ['Ontario', 43.7, -77.9], ['Georgian Bay', 45.3, -80.9]]) {
+      assert.equal(cov(lat, lon), 255, name + ': lake water');
+    }
+    for (const [name, lat, lon] of [['Isle Royale', 48.0, -88.9], ['Manitoulin', 45.75, -82.2], ['Lansing', 42.73, -84.55], ['Toronto inland', 43.75, -79.6], ['Lake Nipigon (not in the set)', 49.8, -88.5]]) {
+      assert.equal(cov(lat, lon), 0, name + ': no lake water');
+    }
+    const y = I.coastStore('https://y/static/coast/lakes-v1', I.LAKES_TIER0);
+    assert.equal(await y.load(), null, 'an index naming another overview: refused'); assert.equal(y.status, 'failed');
+    const z = I.coastStore('https://z/static/coast/v1');
+    assert.equal(z.file, 'world-i.bin', 'the land set keeps its overview by default');
+    assert.equal(await z.load(), null, 'the lakes index (naming lakes-i.bin) beside a world-i.bin download: refused');
+    assert.ok(asked.indexOf('https://z/static/coast/v1/world-i.bin') >= 0);
+  } finally { delete global.fetch; }
+});
+
 async function realFrame(name) {
   const buf = fs.readFileSync(path.join(FIX, name));
   return I.decodePngGrey(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
@@ -555,9 +598,10 @@ test('the published run 2026102119: the three f000 frames decode to the lake gri
 });
 
 test('the credit names the lakes while a lake frame is drawn under the model (never under SST); the readout says "no data" on lake water that shows nothing', () => {
-  const D = I.MODEL_DEFS.gfswave, credit = (mode, hasLake) => I.Overlay.prototype._attribution.call({ mode, layer: { hasLake: () => hasLake, _masked: () => false }, coast: null, _def: () => D });
+  const D = I.MODEL_DEFS.gfswave, credit = (mode, hasLake, mask) => I.Overlay.prototype._attribution.call({ mode, layer: { hasLake: () => hasLake, _lakeMask: mask !== false, _masked: () => false }, coast: null, _def: () => D });
   assert.equal(credit('model', true), D.attribution + I.LAKE_ATTRIBUTION);
   assert.equal(credit('model', false), D.attribution);
+  assert.equal(credit('model', true, false), D.attribution, 'a lake frame without the lakes coverage (the set not loaded): nothing drawn, no credit');
   assert.ok(credit('obs', true).indexOf('GLWU') < 0, 'SST: no lake credit');
   assert.equal(I.LAKE_ATTRIBUTION.replace(/<[^>]+>/g, ''), ' · Lakes: NOAA GLWU');
   assert.match(I.LAKE_ATTRIBUTION, /NDFD winds/); assert.match(I.LAKE_ATTRIBUTION, /Not an official NWS product/);

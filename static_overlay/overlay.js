@@ -697,9 +697,12 @@
   // Coast data for one base URL (index.json + tier 0 up front, tier-1 chunks on demand). One per URL
   // per page: the decoded tier 0 (~3 MB) and the chunk LRU survive Off/On.
   var COAST_STORES = {};
-  function coastStore(url) { return COAST_STORES[url] || (COAST_STORES[url] = new CoastStore(url)); }
-  function CoastStore(url) {
-    this.url = url; this.status = 'idle'; this.index = null; this.tier0 = null; this.loading = null; this.failedAt = 0;
+  var COAST_TIER0 = 'world-i.bin', LAKES_TIER0 = 'lakes-i.bin';   // the tier-0 overview files the two published sets carry
+  // file: the set's tier-0 overview (the land set's world-i.bin; the Great Lakes set's lakes-i.bin): fetched beside
+  // index.json, which must name the same file (a set is never mixed with another set's overview).
+  function coastStore(url, file) { return COAST_STORES[url] || (COAST_STORES[url] = new CoastStore(url, file)); }
+  function CoastStore(url, file) {
+    this.url = url; this.file = file || COAST_TIER0; this.status = 'idle'; this.index = null; this.tier0 = null; this.loading = null; this.failedAt = 0;
     this.chunks = new Map(); this.bytes = 0; this.inflight = {}; this.queue = []; this.queued = {}; this.failed = {};
     this.rev = 0; this.onChange = null; this.onNeeded = null; this.abort = null; this.retryTimer = null;
   }
@@ -729,7 +732,7 @@
         if (r.headers && r.headers.get && Number(r.headers.get('content-length') || 0) > MAX_INDEX_BYTES) throw new Error('unsupported coast index');
         return r.json();
       }),
-      fetch(base + '/world-i.bin', { signal: sig, mode: 'cors' }).then(function (r) {
+      fetch(base + '/' + self.file, { signal: sig, mode: 'cors' }).then(function (r) {
         if (!r.ok) throw new Error('coast ' + r.status);
         if (Number(r.headers.get('content-length') || 0) > MAX_COAST_BYTES) throw new Error('coast decode failed');
         return r.arrayBuffer();
@@ -738,7 +741,7 @@
       clearTimeout(watchdog);
       if (self.loadAbort !== ctrl || sig.aborted) throw abortError();     // aborted or superseded: this load owns nothing any more
       var idx = res[0];
-      if (!validCoastIndex(idx)) throw new Error('unsupported coast index');
+      if (!validCoastIndex(idx) || (typeof idx.tier0.file === 'string' && idx.tier0.file !== self.file)) throw new Error('unsupported coast index');
       self.tier0 = decodeCoast(res[1]); self.index = idx; self.hasTier1 = Object.keys(idx.tier1.cells).length > 0;
       self.status = 'ok'; self.loading = null; self.loadAbort = null;
       return self;
@@ -3810,7 +3813,7 @@
     // The Great Lakes (plan section 50; the page's GLWU_OVERLAY setting): the lake run's store, the lakes coast set, and
     // the two lake frame kinds' caches; _lakeWait = the step's wait record for its lake frames (capped like the pressure's).
     this.lake = opts.glwu ? lakeStore(this.root) : null;
-    this.lakeCoast = opts.glwu ? coastStore(this.root + '/static/coast/lakes-v1') : null;
+    this.lakeCoast = opts.glwu ? coastStore(this.root + '/static/coast/lakes-v1', LAKES_TIER0) : null;
     this.lcache = new FrameCache(MAX_DECODED); this.ldcache = new FrameCache(MAX_DECODED); this._lakeWait = null;
   }
   Overlay.prototype._def = function () { return hasModel(this.model) ? MODEL_DEFS[this.model] : MODEL_DEFS[DEFAULT_MODEL]; };
@@ -4066,6 +4069,7 @@
     if (this.lakeCoast) this.lakeCoast.load().then(function (store) {
       if (!self.layer || !store || self.layer._lakeCoast === store) return;
       self.layer.setLakeCoast(store);
+      self._attribute();                                     // the lakes' credit appears with their coverage
     }, function () {});
     if (!this.lake || !this._def().lakes) return;
     this.lake.load().then(function (st) {
@@ -4664,7 +4668,7 @@
   };
   Overlay.prototype._attribution = function () {
     var text = this.mode === 'obs' ? SST_ATTRIBUTION : this._def().attribution;
-    if (this.mode !== 'obs' && this.layer && this.layer.hasLake()) text += LAKE_ATTRIBUTION;   // a lake frame drawn (plan section 50)
+    if (this.mode !== 'obs' && this.layer && this.layer.hasLake() && this.layer._lakeMask) text += LAKE_ATTRIBUTION;   // a lake frame drawn: the frame AND the lakes' coverage (plan section 50)
     if (!(this.layer && this.layer._masked() && this.coast)) return text;
     var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
     return text + ' · <a href="' + url + '" target="_blank" rel="noopener license">GSHHG</a>';
@@ -5806,7 +5810,7 @@
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
       LakeStore: LakeStore, lakeStore: lakeStore, validLakeManifest: validLakeManifest, validLakePointer: validLakePointer, validLakeGridDef: validLakeGridDef, validateLakeGrid: validateLakeGrid,
       lakeFieldOk: lakeFieldOk, lakeFieldMatches: lakeFieldMatches, sampleLake: sampleLake, lakeBoxOf: lakeBoxOf, lakeBoxHits: lakeBoxHits, lakeWindow: lakeWindow, lakeVectorNodes: lakeVectorNodes,
-      LAKE_PREFIX: LAKE_PREFIX, LAKE_ATTRIBUTION: LAKE_ATTRIBUTION, LAKE_UNDER: LAKE_UNDER, LAKE_DIR_FIELD: LAKE_DIR_FIELD, LAKE_BOX: LAKE_BOX, lakeFull: lakeFull,
+      COAST_TIER0: COAST_TIER0, LAKES_TIER0: LAKES_TIER0, LAKE_PREFIX: LAKE_PREFIX, LAKE_ATTRIBUTION: LAKE_ATTRIBUTION, LAKE_UNDER: LAKE_UNDER, LAKE_DIR_FIELD: LAKE_DIR_FIELD, LAKE_BOX: LAKE_BOX, lakeFull: lakeFull,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
       ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_STRONG_LOW_HPA: ISO_STRONG_LOW_HPA, ISO_TERRAIN_CAP_M: ISO_TERRAIN_CAP_M, ISO_STRONG_NODES_MAX: ISO_STRONG_NODES_MAX, strongLowSearch: strongLowSearch, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,

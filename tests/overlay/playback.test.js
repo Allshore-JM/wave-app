@@ -2725,12 +2725,31 @@ async function lakeMounted(w, opts) {
   return o;
 }
 const TPH = { lo: 1, hi: 30, legend: [4, 22], units: 's', interpolation: 'bilinear' };
+
+test('section 50 (step 6): the lakes credit comes with the lakes coverage: a lake frame drawn before the lakes set lands is not credited; the set landing credits it at once', () => onRunDay(async () => {
+  const w = world();
+  const LIDX = { format: 'coast-v1', q: 10000, kind: 'lakes', tier0: { file: 'lakes-i.bin', cell: 30, max_zoom: 6 }, tier1: { dir: 'f', cell: 5, min_zoom: 7, cells: {} } };
+  w.coastAnswer = (url) => url.endsWith('/lakes-v1/index.json') ? { ok: true, status: 200, json: () => Promise.resolve(LIDX) } : coastOk(url);
+  const o = await lakeMounted(w, {}), credits = [];
+  o._attribute = function () { credits.push(this._attribution()); };      // the harness stubs the map control: record what each call credits
+  await w.releaseField(); await w.releaseLake(); await settle();
+  assert.ok(o.layer._lake, 'the lake frame is set'); assert.equal(o.layer._lakeMask, false, 'the lakes set has not landed');
+  assert.ok(credits.length > 0 && credits.every((c) => !/GLWU/.test(c)), 'no lakes credit without their coverage: ' + JSON.stringify(credits));
+  assert.ok(w.pendingCoast.length > 0, 'the lakes set is still on its way');
+  while (w.pendingCoast.length) w.pendingCoast.shift()();
+  await settle();
+  assert.equal(o.layer._lakeMask, true, 'the lakes coverage is on the layer');
+  assert.ok(/GLWU/.test(credits[credits.length - 1]), 'credited as soon as the set lands: ' + JSON.stringify(credits));
+}));
 const holdUrl = (w, tail) => { const i = w.pendingBitmaps.findIndex((f) => f.blob.url.endsWith(tail)); assert.ok(i >= 0, 'a decode of ' + tail + ' is pending'); return w.pendingBitmaps.splice(i, 1)[0]; };
 const lakeFile = (m, i, field) => `glwu/v1/${LA.run}/${field || 'hs'}/f${String(m.frames[i].step - 1).padStart(3, '0')}.png`;
 
 test('section 50: under GFS wave height the lake frames ride beside the field and direction frames: keys and caches by kind, one more in flight each, the first picture alone, the landing draws them', () => onRunDay(async () => {
   const w = world(); const o = await lakeMounted(w, { anim: true });
   assert.ok(o.lake && o.lakeCoast, 'the lake store and the lakes coast set exist with opts.glwu');
+  assert.equal(o.lakeCoast.file, "lakes-i.bin", "the lakes set's own overview (step 6: world-i.bin was asked for)");
+  const lakeCoastUrls = w.fetches.filter((u) => u.indexOf('lakes-v1') >= 0);
+  assert.ok(lakeCoastUrls.some((u) => u.endsWith('/lakes-v1/lakes-i.bin')) && !lakeCoastUrls.some((u) => u.endsWith('world-i.bin')), lakeCoastUrls.join());
   assert.equal(o.lake.status, 'ok'); assert.equal(o.lake.manifest.run, LA.run);
   assert.equal(o._wantLake(), true); assert.equal(o._wantLakeDir(), true);
   assert.equal(o._maxInflight(), w.I.MAX_INFLIGHT + 2, 'one more download at once per lake kind');

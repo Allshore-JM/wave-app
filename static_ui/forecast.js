@@ -228,11 +228,13 @@
     };
   }
 
-  // "GFS · run 20260926 12 UTC" / "SWAN · updated 20260925 23 UTC" for the window's header.
+  // "GFS · run 20260926 12 UTC" / "SWAN · updated 20260925 23 UTC" / "GLWU · run 20261021 19 UTC" (a Great Lakes station,
+  // plan section 50: the server's cycle reads "NOAA GLWU 20261021 19 UTC") for the window's header.
   function shortCycle(model, header) {
     var c = header && header.cycle ? String(header.cycle) : '';
     if (!c) return model || '';
     if (model === 'SWAN') { var m = /updated\s+(.*)$/i.exec(c); return 'SWAN · updated ' + (m ? m[1] : c); }
+    if (model === 'GLWU') return 'GLWU · run ' + c.replace(/^NOAA GLWU\s+/, '');
     return (model || 'GFS') + ' · run ' + c;
   }
   // The graph's label strings -> Date (the old page's rule: "8/30/25 6:00 AM", else the browser's parser).
@@ -935,7 +937,7 @@
             apply: function (d, st, retry) {
               var avail = typeof d.swan_available === 'boolean' ? d.swan_available : swanStations.indexOf(st.station) >= 0;
               if (els.modelBar) { els.modelBar.hidden = !avail; pressed(els.modelBar, 'data-model', st.model); }
-              var label = opts.stationLabel ? opts.stationLabel(st.station) : st.station, cyc = shortCycle(st.model, d.graph_header);
+              var label = opts.stationLabel ? opts.stationLabel(st.station) : st.station, cyc = shortCycle(d.model === 'GLWU' ? 'GLWU' : st.model, d.graph_header);
               var age = d.point && Number.isFinite(d.point.age_hours) ? d.point.age_hours : null;
               if (age !== null && age >= STALE_H) cyc += ' · ' + Math.round(age) + ' h old';   // a point's run NOAA stopped feeding (plan section 31)
               writeLabel(els.title, label); text(els.cycle, cyc);

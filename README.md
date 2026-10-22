@@ -77,7 +77,7 @@ Contributions are welcome! If you want to add new features, improve the parsing 
 like the overlay assets: any other `?v` is a 404 with `no-store`. Bump `UI_ASSET_VERSION` on every change to `static_ui/*`
 and update `tests/fixtures/ui_assets.json` (version + sha256); `tests/test_ui_module.py` checks the route, the pin, and runs
 the Node tests in `tests/ui/`. `/api/forecast` also reports `model` (the model actually used: SWAN falls back to GFS off the
-12 SWAN stations) and `swan_available`; `?compact=1` asks for the window's table.
+12 SWAN stations; a Great Lakes station is always `GLWU`) and `swan_available`; `?compact=1` asks for the window's table.
 
 The page (2026-09-26, plan sections 25 and 26): the map is the page — the brand sits on it top-left above the
 model-overlay selector, the settings gear (Time Zone, Units, lat/long gridlines; with the model overlays also "Pressure
@@ -735,6 +735,25 @@ lakes under the GFS model selection (plan section 50's client steps).
   lakes are blank). A newer lake run noted by the run check takes over at the next step (its old fetches aborted, its
   caches afresh). Measured on the real frames: the lake pass 0.6-0.7 ms per tile with full coverage, the lake vectors
   ~4.5 ms per step when the whole grid is in view.
+- **The page (overlay asset 2.21.1)**: env `GLWU_OVERLAY=1` hands the setting to the module (`var GLWU` in the gated
+  block -> `create({glwu: GLWU})`; off by default, the flag-off page untouched); the stores exist only then. While a
+  lake frame is drawn the map credit reads "... · Lakes: NOAA GLWU" (its title names the NDFD winds); a hover over lake
+  water that shows nothing (past +149 h, no lake run, ice) reads "no data". The overlay's run line says "the forecast
+  table is a NOAA GLWU (Great Lakes) run" while a lake station's table is on the page.
+- **The lake tables** (UI asset 1.24.0): the 72 stations (`glwu_stations.json`: name, position and nearest civil zone,
+  built by `tools/build_glwu_stations.py` from `glwu_fetch.STATIONS`, NDBC's station table and names written there for
+  NOAA's 14 beach points) join the station list, the map and the picker after the GFS ones; they live in their OWN file,
+  so `station_list.json` / `station_coords.json` / `station_timezones.json` and the forecast-point zone rule stay as
+  reviewed. `resolve_model` makes a lake station's model `GLWU` (and never anywhere else); `parse_glwu` reads the
+  bucket, never NOMADS: the pointer and manifest (5 min; a pointer that cannot be read keeps the last good run 6 h),
+  the station's bulletin of the newest run that lists it, else of the kept runs before it (6, 12, 18 h back; the
+  Cycle line names the run read: "Cycle : NOAA GLWU 20261021 19 UTC", the window says "GLWU · run ..."), and that run's
+  `winds.json` for the Wind column. The text goes through the GFS bulletin parser itself (`_parse_bull_text`, the same
+  layout: 150 hourly rows, directions turned TO -> FROM, the site-wide swell order). The cache keeps a lake table the
+  full 30 min (a run's winds never heal; 45195 on Lake Champlain has none) and `wind_complete` is true for them.
+- **Bulletin cycle hour** (job fix, 2026-10-22): NOAA writes the 01Z and 07Z cycles' hour space-padded ("Cycle :
+  20261022  1 UTC"); the job's check wanted two digits and dropped every bulletin of those runs (run 2026102201 was
+  published with none). `glwu.BULL_CYCLE_RE` takes one or two digits and compares the hour as a number.
 
 ### Sea surface temperature tiles (plan section 44, the job)
 

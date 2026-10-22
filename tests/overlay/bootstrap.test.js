@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false };
+const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_glwu: false };
 function gatedScript(subs) {
   subs = Object.assign({}, SUBS, subs || {});
   const tpl = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
@@ -19,7 +19,7 @@ function gatedScript(subs) {
   for (const k of Object.keys(subs)) src = src.split('{{ ' + k + '|tojson }}').join(JSON.stringify(subs[k]));
   return src;
 }
-const SRC = gatedScript(), SRC_SST = gatedScript({ overlay_sst: true });
+const SRC = gatedScript(), SRC_SST = gatedScript({ overlay_sst: true }), SRC_GLWU = gatedScript({ overlay_glwu: true });
 const KEY = 'allshore.overlay.v1';
 
 function page(opt) {
@@ -83,7 +83,7 @@ function page(opt) {
   const map = { addControl: (c) => c.onAdd() };
   if (opt.layers) map.eachLayer = (fn) => opt.layers.forEach(fn);
   if (opt.zoom) { map.zoomControl = { tag: 'zoom' }; map.removed = []; map.removeControl = (c) => map.removed.push(c); }
-  new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.sst ? SRC_SST : SRC)(
+  new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.sst ? SRC_SST : opt.glwu ? SRC_GLWU : SRC)(
     window, document, sessionStorage, L, map, () => 'US', () => '', () => '', setTimeout);
   return {
     log, store, sel, panel, overlays, listeners, map, boxes, gear, local, byId,
@@ -300,6 +300,25 @@ test('section 44: "Sea surface temperature" is offered only with SST_OVERLAY (SS
   p3.sel.userPick('hs'); await settle();
   assert.deepEqual(p3.overlays[0].mounts[1], ['hs', false]); assert.equal(p3.read().field, 'hs');
   assert.equal(page({ sst: false, init: { field: '' } }).overlays.length, 0);
+});
+
+test('section 50: the Great Lakes setting (GLWU) reaches the module; the page reads a Great Lakes table\'s cycle as model GLWU', async () => {
+  assert.ok(SRC.indexOf('var GLWU = false;') >= 0 && SRC_GLWU.indexOf('var GLWU = true;') >= 0 && SRC.indexOf('glwu: GLWU') >= 0);
+  const on = page({ glwu: true, init: { field: 'hs' } });
+  await loadedAndIdle(on);
+  assert.equal(on.overlays[0].opts.glwu, true);
+  const off = page({ init: { field: 'hs' } });
+  await loadedAndIdle(off);
+  assert.equal(off.overlays[0].opts.glwu, false);
+  // pageCycle: the window's meta line names the run; a GLWU one is another model altogether, as a SWAN one
+  const pc = on.overlays[0].opts.pageCycle, meta = on.byId.forecastMeta || null;
+  assert.equal(typeof pc, 'function');
+  const src = SRC.slice(SRC.indexOf('function pageCycle()'), SRC.indexOf('var sel = document.getElementById'));
+  const run = (text) => new Function('document', src + '; return pageCycle();')({ getElementById: (id) => (id === 'forecastMeta' ? { textContent: text } : null) });
+  assert.deepEqual(run('Cycle : NOAA GLWU 20261021 19 UTC | Location : 45007'), { model: 'GLWU' });
+  assert.deepEqual(run('Cycle : PacIOOS SWAN updated 20261021 23 UTC | x'), { model: 'SWAN' });
+  assert.deepEqual(run('Cycle : 20261021 18 UTC | Location : 51201'), { run: '2026102118' });
+  void meta;
 });
 
 // ---- the settings gear's overlay rows (plan section 46) ----

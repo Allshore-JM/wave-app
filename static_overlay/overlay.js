@@ -1240,6 +1240,22 @@
     var b = tileBox(coords);
     return !(b.x1 < bb.x0 || b.x0 > bb.x1 || b.y1 < bb.y0 || b.y0 > bb.y1);
   }
+  // Are the lakes in or near the view (plan section 50, step 6b)? The lake grid's box (its node centres: the frames hold
+  // nothing beyond them) against the view widened by `screens` of its own width and height on every side, in world
+  // pixels at the view's zoom, any world copy. The lake frames are fetched only while this holds: off the lakes nothing
+  // of them is downloaded, decoded or kept (the owner's call: a pan onto the lakes during playback then waits for its
+  // first lake frames, up to the step cap).
+  var LAKE_NEAR_SCREENS = 1;
+  function lakeNearView(view, g, screens) {
+    if (!view || !g || !(view.w > 0) || !(view.h > 0)) return false;
+    var sc = Math.pow(2, view.z), n = TILE * sc, mg = screens === undefined ? LAKE_NEAR_SCREENS : screens;
+    var a = worldXY(g.lon0, g.lat0), b = worldXY(g.lon0 + (g.cols - 1) * g.dlon, g.lat0 + (g.rows - 1) * g.dlat);
+    var bx0 = Math.min(a[0], b[0]) * sc, bx1 = Math.max(a[0], b[0]) * sc, by0 = Math.min(a[1], b[1]) * sc, by1 = Math.max(a[1], b[1]) * sc;
+    var x0 = view.ox - mg * view.w, x1 = view.ox + (1 + mg) * view.w, y0 = view.oy - mg * view.h, y1 = view.oy + (1 + mg) * view.h;
+    if (by1 < y0 || by0 > y1) return false;
+    for (var k = Math.floor((x0 - bx1) / n); k <= Math.ceil((x1 - bx0) / n); k++) if (bx0 + k * n <= x1 && bx1 + k * n >= x0) return true;
+    return false;
+  }
   // THE lake sampler: codes of the lake frame lf (grid lg) for an n x n lattice of pixel centres at world pixels
   // (x0 + ox + i * step + 0.5, y0 + oy + j * step + 0.5) of the tile coords, written to out[j * n + i] ONLY where the
   // tile's lake coverage (lake[py * TILE + px], the pixel clamped into the tile: the contour lattice reaches one step
@@ -2376,53 +2392,27 @@
     var off = ((want.c0 - have.c0) % cols + cols) % cols;
     return off + want.count <= have.count;
   }
-  // The lake grid's node window for a view plus `margin` screens on every side (plan section 50): rows and columns of
-  // the lake grid (not periodic: no wrap; the columns of every world copy the view shows, united), with one node of
-  // margin for the lattice's bilinear neighbours; null when the view (plus the margin) holds no lake node at all.
-  function lakeWindow(view, g, margin) {
-    var n = TILE * Math.pow(2, view.z), cols = g.cols, rows = g.rows, mg = margin === undefined ? 1 : margin;
-    var y0 = Math.max(0, view.oy - mg * view.h), y1 = Math.min(n, view.oy + (1 + mg) * view.h), x0 = view.ox - mg * view.w, x1 = view.ox + (1 + mg) * view.w;
-    var latTop = latOfWorldY(y0, n), latBot = latOfWorldY(y1, n);
-    var r0 = Math.floor((g.lat0 - latTop) / -g.dlat) - 1, r1 = Math.ceil((g.lat0 - latBot) / -g.dlat) + 1;
-    if (r1 < 0 || r0 > rows - 1) return null;
-    r0 = Math.max(0, r0); r1 = Math.min(rows - 1, r1);
-    var lonW = lngOfWorldX(x0, n), lonE = lngOfWorldX(x1, n), L0 = g.lon0, L1 = g.lon0 + (cols - 1) * g.dlon, cmin = cols, cmax = -1;
-    for (var k = Math.floor((lonW - L1) / 360); k <= Math.ceil((lonE - L0) / 360); k++) {
-      var a = Math.max(lonW, L0 + k * 360), b = Math.min(lonE, L1 + k * 360);
-      if (!(a <= b)) continue;
-      var c0 = Math.max(0, Math.floor((a - k * 360 - L0) / g.dlon) - 1), c1 = Math.min(cols - 1, Math.ceil((b - k * 360 - L0) / g.dlon) + 1);
-      if (c0 < cmin) cmin = c0; if (c1 > cmax) cmax = c1;
-    }
-    if (cmax < cmin) return null;
-    return { r0: r0, r1: r1, c0: cmin, count: cmax - cmin + 1 };
-  }
-  // The lake flow's vectors on the lake grid's nodes (vectorNodes for the lake frames: the field frame lf and the
-  // direction frame ld share the grid, so the field value is the node's own code, no sampling); win as nodeWindow's,
-  // without wrapping (the lake grid is not periodic).
-  function lakeVectorNodes(field, lf, lo, hi, ld, lg, prev, win) {
-    var cols = lg.cols, rows = lg.rows, n = cols * rows, reuse = prev && prev.cols === cols && prev.rows === rows;
-    var U = reuse ? prev.U : new Float32Array(n), V = reuse ? prev.V : new Float32Array(n), M = reuse ? prev.M : new Uint8Array(n);
-    var spd = FLOW_SPEED[field] || FLOW_SPEED.wind, q = ld.q, fq = lf.q, i, j;
-    var r0 = win ? Math.max(0, win.r0) : 0, r1 = win ? Math.min(rows - 1, win.r1) : rows - 1, c0 = win ? Math.max(0, win.c0) : 0, c1 = win ? Math.min(cols - 1, win.c0 + win.count - 1) : cols - 1;
-    if (reuse) M.fill(0);
-    for (j = r0; j <= r1; j++) {
-      var base = j * cols;
-      for (i = c0; i <= c1; i++) {
-        var d = q[base + i], c = fq[base + i];
-        if (!d || d === 255 || !c) { M[base + i] = 0; U[base + i] = 0; V[base + i] = 0; continue; }
-        var sp = spd(lo + (c - 1) / 254 * (hi - lo));
-        M[base + i] = sp > 0 ? 1 : 0; U[base + i] = -sp * CODE_SIN[d]; V[base + i] = -sp * CODE_COS[d];
-      }
-    }
-    return { cols: cols, rows: rows, U: U, V: V, M: M, win: win ? { r0: r0, r1: r1, c0: c0, count: c1 - c0 + 1 } : null };
+  // One lake node's vector for the particles (plan section 50, step 6b: read per lattice point straight from the two
+  // lake frames, which share one grid, so a node's value is its own code; nothing is kept per node): FROM -> TOWARD at
+  // the field's speed, rounded to single precision like the model's node vectors (vectorNodes keeps Float32); false
+  // without a direction, without a value, or at no speed.
+  var LV = new Float64Array(2);
+  function lakeVec(LF, LD, spd, lo, hi, idx, out) {
+    var d = LD[idx], c = LF[idx];
+    if (!d || d === 255 || !c) return false;
+    var sp = spd(lo + (c - 1) / 254 * (hi - lo));
+    if (!(sp > 0)) return false;
+    out[0] = Math.fround(-sp * CODE_SIN[d]); out[1] = Math.fround(-sp * CODE_COS[d]);
+    return true;
   }
   // The particles' screen lattice, every s px over the view: the node vectors interpolated bilinearly over
   // the present nodes (weight < 0.25: nothing), as screen velocities (x right, y down) times the Mercator
   // stretch min(sec lat, 3); nothing where the field is not drawn (clipped fields: the layer's tile land
-  // masks, the readout's own rule, so swell particles never run over land). lake (plan section 50): {nodes, grid},
-  // the lake frames' vectors: a lattice point on lake water (the tiles' lake coverage, the same alpha rule as the
-  // pixels) reads them instead (nothing where they are absent: a blank lake gets no particles); on lake water with no
-  // lake vectors (the model's own lake cells, ECMWF) the model's nodes serve, the land gate lifted there.
+  // masks, the readout's own rule, so swell particles never run over land). lake (plan section 50): {field, lf, ld,
+  // grid, lo, hi}, the step's lake field and direction frames: a lattice point on lake water (the tiles' lake coverage,
+  // the same alpha rule as the pixels) reads their nodes instead (lakeVec per node, nothing where they are absent: a
+  // blank lake gets no particles); on lake water with no lake frames (the model's own lake cells, ECMWF) the model's
+  // nodes serve, the land gate lifted there.
   function flowField(view, s, nodes, dgrid, layer, clip, prev, lake) {
     var cols = Math.ceil(view.w / s) + 1, rows = Math.ceil(view.h / s) + 1, n = TILE * Math.pow(2, view.z), reuse = prev && prev.cols === cols && prev.rows === rows;
     var u = reuse ? prev.u : new Float32Array(cols * rows), v = reuse ? prev.v : new Float32Array(cols * rows);
@@ -2430,7 +2420,8 @@
     var nc = nodes.cols, nr = nodes.rows, U = nodes.U, V = nodes.V, M = nodes.M, cp = new Float64Array(cols), i, j;
     for (i = 0; i < cols; i++) cp[i] = ((((lngOfWorldX(view.ox + i * s, n) - dgrid.lon0) / dgrid.dlon) % nc) + nc) % nc;
     var scale = Math.pow(2, view.z - view.zt), tiles = clip ? layer._tiles : null, lakes = !!(tiles && layer._lakeMask), lastKey = null, lastMask, lastLake = null;
-    var LN = lake ? lake.nodes : null, lg = lake ? lake.grid : null, lcols = lg ? lg.cols : 0, lrows = lg ? lg.rows : 0;
+    var LF = lake ? lake.lf.q : null, LD = lake ? lake.ld.q : null, lg = lake ? lake.grid : null, lcols = lg ? lg.cols : 0, lrows = lg ? lg.rows : 0;
+    var lspd = lake ? (FLOW_SPEED[lake.field] || FLOW_SPEED.wind) : null, llo = lake ? lake.lo : 0, lhi = lake ? lake.hi : 0;
     var lfx = lake ? new Float64Array(cols) : null;
     if (lake) for (i = 0; i < cols; i++) { var ln = lngOfWorldX(view.ox + i * s, n); lfx[i] = ((((ln + 180) % 360) + 360) % 360 - 180 - lg.lon0) / lg.dlon; }
     for (j = 0; j < rows; j++) {
@@ -2451,15 +2442,15 @@
           if (pa < LAND_READOUT) continue;
           onLake = lk >= LAND_READOUT;
         }
-        if (onLake && LN) {                                                     // the lake frames' own vectors, or nothing
+        if (onLake && LF) {                                                     // the lake frames' own vectors, or nothing
           var lx = lfx[i];
           if (!(lfy >= 0 && lfy <= lrows - 1 && lx >= 0 && lx <= lcols - 1)) continue;
           var lc0 = Math.floor(lx), lc1 = lc0 + 1 < lcols ? lc0 + 1 : lc0, lfc = lx - lc0;
           var la = lb0 + lc0, lb = lb0 + lc1, lc = lb1 + lc0, ld = lb1 + lc1, lwt = 0, lX = 0, lY = 0, lw;
-          if (LN.M[la]) { lw = lw0 * (1 - lfc); lX += LN.U[la] * lw; lY += LN.V[la] * lw; lwt += lw; }
-          if (LN.M[lb]) { lw = lw0 * lfc; lX += LN.U[lb] * lw; lY += LN.V[lb] * lw; lwt += lw; }
-          if (LN.M[lc]) { lw = lfr * (1 - lfc); lX += LN.U[lc] * lw; lY += LN.V[lc] * lw; lwt += lw; }
-          if (LN.M[ld]) { lw = lfr * lfc; lX += LN.U[ld] * lw; lY += LN.V[ld] * lw; lwt += lw; }
+          if (lakeVec(LF, LD, lspd, llo, lhi, la, LV)) { lw = lw0 * (1 - lfc); lX += LV[0] * lw; lY += LV[1] * lw; lwt += lw; }
+          if (lakeVec(LF, LD, lspd, llo, lhi, lb, LV)) { lw = lw0 * lfc; lX += LV[0] * lw; lY += LV[1] * lw; lwt += lw; }
+          if (lakeVec(LF, LD, lspd, llo, lhi, lc, LV)) { lw = lfr * (1 - lfc); lX += LV[0] * lw; lY += LV[1] * lw; lwt += lw; }
+          if (lakeVec(LF, LD, lspd, llo, lhi, ld, LV)) { lw = lfr * lfc; lX += LV[0] * lw; lY += LV[1] * lw; lwt += lw; }
           if (lwt < 0.25) continue;
           u[base + i] = k * lX / lwt; v[base + i] = -k * lY / lwt;
           continue;
@@ -2521,7 +2512,7 @@
     this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
     this.field = null; this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.mode = null;   // 'particles' while animating
     this.nodes = null; this.nodesFor = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0;
-    this.ldir = null; this.lframe = null; this.lgrid = null; this.lentry = null; this.lnodes = null; this.lnodesFor = null; this.lnodesFrame = null;   // the lake frames (plan section 50)
+    this.ldir = null; this.lframe = null; this.lgrid = null; this.lentry = null;   // the lake frames (plan section 50)
     this.vel = new Float64Array(2); this.vel2 = new Float64Array(2); this.hist = null; this.histN = null; this.histT = null; this.histF = null; this.flowT = null;
     this.active = false; this.suspended = 0; this.dirty = false; this.rafId = null; this.lastT = 0;
     this.ema = 0; this.adaptAt = 0; this._listeners = [];
@@ -2625,7 +2616,7 @@
       ctx: !!this.ctx, ctxLost: !!(this.ctx && typeof this.ctx.isContextLost === 'function' && this.ctx.isContextLost()),
       canvas: cv ? cv.width + 'x' + cv.height + (cv.style && cv.style.visibility ? ' ' + cv.style.visibility : '') : 'none', dir: !!this.dir, entry: this.entry ? this.entry.step : null,
       mode: this.mode, count: this.count, target: this.target, rate: this.rate, ema: Math.round(this.ema * 10) / 10, healed: this.healed, busy: this._busy(),
-      lake: this.ldir ? (this.lentry ? this.lentry.step : '?') + (this.lnodes ? ' nodes' : '') : 'none', log: this.log.map(function (e) { return e[0] + '@' + e[1]; }).join(' ') };
+      lake: this.ldir ? (this.lentry ? this.lentry.step : '?') : 'none', log: this.log.map(function (e) { return e[0] + '@' + e[1]; }).join(' ') };
   };
   FlowAnimator.prototype.detach = function () {
     var self = this;
@@ -2662,7 +2653,7 @@
     this._dropLake();
     if (shown && !this.suspended && this.canvas) this._rebuild();
   };
-  FlowAnimator.prototype._dropLake = function () { this.ldir = null; this.lframe = null; this.lgrid = null; this.lentry = null; this.lnodes = null; this.lnodesFor = null; this.lnodesFrame = null; };
+  FlowAnimator.prototype._dropLake = function () { this.ldir = null; this.lframe = null; this.lgrid = null; this.lentry = null; };
   // Nested suspends (a zoom fires zoomstart + movestart; a hidden tab adds one): the last resume runs the
   // rebuild any of them asked for, so a zoom that ended while the tab was hidden is not drawn stale.
   FlowAnimator.prototype.suspend = function () { this.suspended++; this.stop(); };
@@ -2692,18 +2683,10 @@
     if (!this.nodes || this.nodesFor !== this.dir || this.nodesFrame !== this.fframe || !windowCovers(this.nodes.win, nodeWindow(v, this.dgrid, this.dir, 0), this.dir.cols)) {   // once per step, or past the window
       this.nodes = vectorNodes(this.field, this.layer, this.dir, this.dgrid, this.nodes, nodeWindow(v, this.dgrid, this.dir, 1)); this.nodesFor = this.dir; this.nodesFrame = this.fframe;
     }
-    // the lake frames of THIS step, while the layer draws that lake frame (plan section 50); their nodes over the view's
-    // window of the lake grid (none in view: no lake vectors, the lake points stay still)
+    // the lake frames of THIS step, while the layer draws that lake frame (plan section 50): the lattice reads their
+    // nodes per point (step 6b: nothing is kept per lake node)
     var lake = null, ll = this.layer._lake;
-    if (this.ldir && this.lframe && this.lentry === this.entry && ll && ll.frame === this.lframe) {
-      var lw0 = lakeWindow(v, this.lgrid, 0);
-      if (lw0) {
-        if (!this.lnodes || this.lnodesFor !== this.ldir || this.lnodesFrame !== this.lframe || !windowCovers(this.lnodes.win, lw0, this.lgrid.cols)) {
-          this.lnodes = lakeVectorNodes(this.field, this.lframe, this.layer._lo, this.layer._hi, this.ldir, this.lgrid, this.lnodes, lakeWindow(v, this.lgrid, 1)); this.lnodesFor = this.ldir; this.lnodesFrame = this.lframe;
-        }
-        lake = { nodes: this.lnodes, grid: this.lgrid };
-      }
-    }
+    if (this.ldir && this.lframe && this.lentry === this.entry && ll && ll.frame === this.lframe) lake = { field: this.field, lf: this.lframe, ld: this.ldir, grid: this.lgrid, lo: this.layer._lo, hi: this.layer._hi };
     this.vf = flowField(v, cellPx >= 16 ? 8 : 4, this.nodes, this.dgrid, this.layer, !!this.layer._clip, this.vf, lake);
     this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));   // follows the view
     if (!this.particles) this._seed(v); else if (this.count > this.target) this.count = this.target;
@@ -3814,7 +3797,7 @@
     // the two lake frame kinds' caches; _lakeWait = the step's wait record for its lake frames (capped like the pressure's).
     this.lake = opts.glwu ? lakeStore(this.root) : null;
     this.lakeCoast = opts.glwu ? coastStore(this.root + '/static/coast/lakes-v1', LAKES_TIER0) : null;
-    this.lcache = new FrameCache(MAX_DECODED); this.ldcache = new FrameCache(MAX_DECODED); this._lakeWait = null;
+    this.lcache = new FrameCache(MAX_DECODED); this.ldcache = new FrameCache(MAX_DECODED); this._lakeWait = null; this._lakeNear = null;
   }
   Overlay.prototype._def = function () { return hasModel(this.model) ? MODEL_DEFS[this.model] : MODEL_DEFS[DEFAULT_MODEL]; };
   // The wait for a pointer or manifest answer before the error panel (which has the dropdown) shows (G30-3).
@@ -4046,10 +4029,30 @@
     return fr ? lk.indexOf(Date.parse(fr.valid_utc)) : -1;
   };
   // The lake frames ride under the model that carries them (GFS), under wave height and period, when the lake run's
-  // field shares the model's code space (one lo / hi: the tiles write lake codes beside model codes).
+  // field shares the model's code space (one lo / hi: the tiles write lake codes beside model codes), and only while
+  // the lakes are in or near the view (step 6b; _lakeNearNow is cached until the view changes).
   Overlay.prototype._wantLake = function () {
     return !!(this.lake && this.lake.status === 'ok' && this.mode === 'model' && this._def().lakes && this.layer && this.field && LAKE_UNDER[this.field] &&
-      this.manifest && lakeFieldMatches(this.lake.manifest.fields[this.field], this.manifest.fields[this.field]));
+      this.manifest && lakeFieldMatches(this.lake.manifest.fields[this.field], this.manifest.fields[this.field]) && this._lakeNearNow());
+  };
+  Overlay.prototype._lakeNearNow = function () {
+    if (this._lakeNear === null) {
+      var g = this.lake ? (this.lake.grid || (this.lake.manifest && this.lake.manifest.grid)) : null;
+      this._lakeNear = !!(g && this.map && lakeNearView(viewOf(this.map, this.layer), g, LAKE_NEAR_SCREENS));
+    }
+    return this._lakeNear;
+  };
+  // The view moved (moveend / zoomend / viewreset / a resize): when the lakes come within reach the shown step's lake
+  // frames are asked for at once and the ring follows; when they leave it, every lake fetch is dropped and the lake
+  // caches emptied (nothing of the lakes is on screen), the drawn lake frame and the animator's lake data with them.
+  Overlay.prototype._syncLakeGate = function () {
+    if (!this.lake) return;
+    var was = this._lakeNear; this._lakeNear = null;
+    var now = this._lakeNearNow();
+    if (was === null || was === now || !this.layer || !this.manifest || this.frameIndex === null || this.mode !== 'model') return;
+    this._syncLake(this.frameIndex);                       // in reach: the shown step's lake frames start; out of it: the layer's and the animator's lake go
+    this._prefetch();                                      // the ring follows, or (out of reach) the lake fetches are no longer planned: aborted
+    if (!now) { this.lcache.clear(); this.ldcache.clear(); }
   };
   Overlay.prototype._wantLakeDir = function () { return this._wantLake() && this._wantDir(); };
   // A newer lake run (noted by the run check): the old run's lake fetches in flight go (ring fetches, or a target's own,
@@ -4058,7 +4061,7 @@
   Overlay.prototype._adoptLake = function () {
     if (!this.lake || !this.lake.next) return false;
     for (var k in this.inflight) { var kd = this.inflight[k].kind; if (kd === 'lake' || kd === 'lakedir') { this.inflight[k].abort.abort(); delete this.inflight[k]; } }
-    this.lake.adoptNewer();
+    this.lake.adoptNewer(); this._lakeNear = null;         // the grid may have changed with the run
     this.lcache.clear(); this.ldcache.clear();
     return true;
   };
@@ -4073,6 +4076,7 @@
     }, function () {});
     if (!this.lake || !this._def().lakes) return;
     this.lake.load().then(function (st) {
+      self._lakeNear = null;
       if (!st || self.manifest !== m || !self.layer || self.frameIndex === null || self.mode !== 'model') return;
       self._syncLake(self.frameIndex);
       self._prefetch();
@@ -4329,7 +4333,7 @@
       cache: this.cache.size() + '/' + this.dcache.size() + '/' + this.pcache.size(), decoder: dec, isobars: this.iso ? (this.iso.entry ? this.iso.entry.step : '-') + ' ' + this.iso.drawn.lines + 'l/' + this.iso.drawn.labels + 'p/' + this.iso.drawn.hl + 'm ' + this.iso.lastMs + 'ms' + (this.iso.terrain ? ' terrain' : ' no-terrain') : (this.isobars ? 'none' : 'off'), hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
     var lines = [], k;
     for (k in o) lines.push(k + ': ' + o[k]);
-    if (this.lake) lines.push('lake: ' + this.lake.status + ' ' + (this.lake.manifest ? this.lake.manifest.run : '-') + (this.lake.next ? ' next ' + this.lake.next.m.run : '') + ', drawn ' + (this.layer && this.layer._lake ? this.layer._lake.entry.step : '-') + ', cache ' + this.lcache.size() + '/' + this.ldcache.size());
+    if (this.lake) lines.push('lake: ' + this.lake.status + ' ' + (this.lake.manifest ? this.lake.manifest.run : '-') + (this.lake.next ? ' next ' + this.lake.next.m.run : '') + (this._lakeNear === false ? ' (off the view)' : '') + ', drawn ' + (this.layer && this.layer._lake ? this.layer._lake.entry.step : '-') + ', cache ' + this.lcache.size() + '/' + this.ldcache.size());
     if (this.sst) lines.push('sst: ' + this.sst.status + ' ' + (this.sst.manifest ? this.sst.manifest.run : '-') + ', cells ' + (this.sst.bytes / 1048576).toFixed(1) + ' MB, in flight ' + Object.keys(this.sst.inflight).length);
     if (f) for (k in f) lines.push('flow.' + k + ': ' + f[k]); else lines.push('flow: none');
     return lines.join('\n');
@@ -4696,7 +4700,9 @@
   Overlay.prototype._on = function (ev, fn) { this.map.on(ev, fn); this._listeners.push([ev, fn]); };
   Overlay.prototype._bindMap = function () {
     var self = this;
-    this._on('zoomend', function () { self._checkRes(); });
+    this._on('zoomend', function () { self._checkRes(); self._syncLakeGate(); });
+    this._on('moveend', function () { self._syncLakeGate(); });
+    this._on('viewreset', function () { self._syncLakeGate(); });
     this._on('move', function () { if (self.layer) self.layer._drawStale(true); });   // a buffer tile a frame behind comes into view
     this._on('resize', function () { self._onSize(); });
     // The page sizes #map by script and has Leaflet re-read the size before invalidateSize(), so the map's own 'resize'
@@ -4719,7 +4725,7 @@
     if (key === this._sizeKey) return;                       // the map's event, the window and the observer report one change
     var hChanged = this._sizeH !== undefined && h !== this._sizeH;
     this._sizeKey = key; this._sizeH = h;
-    this._sizeAttribution(); this._checkRes();
+    this._sizeAttribution(); this._checkRes(); this._syncLakeGate();
     if (!this.last) return;
     var compactNow = this.isCompact(), wasCompact = !!this.sheet;
     // a desktop height change re-renders too: the room for the details (and the fold) follows the map's height (G26 B-1)
@@ -4782,7 +4788,7 @@
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
     this._unbindSize();
     this._removeSheet();
-    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null;
+    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null; this._lakeNear = null;
     this.field = null; this.frameIndex = null; this.res = null; this.dres = null; this.last = null; this.collapsed = undefined;
     clear(this.opts.panel);
     if (this.opts.panel && this.opts.panel.classList) this.opts.panel.classList.remove('ov-playing');
@@ -5809,7 +5815,7 @@
       SST_TIER_ZOOMS: SST_TIER_ZOOMS, SST_ATTRIBUTION: SST_ATTRIBUTION, SST_HEAD: SST_HEAD, SST_STALE_DAYS: SST_STALE_DAYS, sstDayText: sstDayText, sstAgeDays: sstAgeDays, buildLegend: buildLegend, SST_PREFIX: SST_PREFIX, SST_PAD_PX: SST_PAD_PX, MAX_SST_INFLIGHT: MAX_SST_INFLIGHT, MAX_SST_CHUNK_BYTES: MAX_SST_CHUNK_BYTES, cellsForTile: cellsForTile,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
       LakeStore: LakeStore, lakeStore: lakeStore, validLakeManifest: validLakeManifest, validLakePointer: validLakePointer, validLakeGridDef: validLakeGridDef, validateLakeGrid: validateLakeGrid,
-      lakeFieldOk: lakeFieldOk, lakeFieldMatches: lakeFieldMatches, sampleLake: sampleLake, lakeBoxOf: lakeBoxOf, lakeBoxHits: lakeBoxHits, lakeWindow: lakeWindow, lakeVectorNodes: lakeVectorNodes,
+      lakeFieldOk: lakeFieldOk, lakeFieldMatches: lakeFieldMatches, sampleLake: sampleLake, lakeBoxOf: lakeBoxOf, lakeBoxHits: lakeBoxHits, lakeNearView: lakeNearView, LAKE_NEAR_SCREENS: LAKE_NEAR_SCREENS, lakeVec: lakeVec,
       COAST_TIER0: COAST_TIER0, LAKES_TIER0: LAKES_TIER0, LAKE_PREFIX: LAKE_PREFIX, LAKE_ATTRIBUTION: LAKE_ATTRIBUTION, LAKE_UNDER: LAKE_UNDER, LAKE_DIR_FIELD: LAKE_DIR_FIELD, LAKE_BOX: LAKE_BOX, lakeFull: lakeFull,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,

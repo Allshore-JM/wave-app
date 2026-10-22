@@ -330,45 +330,44 @@ test('LakeStore.recheck notes a newer run into next (its manifest fetched once);
   assert.equal(await p2, st); assert.equal(calls.length, m + 1); assert.equal(st.manifest.run, '2026102207'); assert.equal(st.next, null);
 });
 
-test('lakeWindow: the lake grid\'s rows and columns under the view (plus the margin), null off the lakes, a world copy the same, a view wider than the world every column; windowCovers', () => {
-  const view = { z: 7, w: 512, h: 256, ox: SUPERIOR.x * TILE, oy: SUPERIOR.y * TILE, zt: 7 };
-  const w0 = I.lakeWindow(view, LG, 0), w1 = I.lakeWindow(view, LG, 1);
-  assert.ok(w0 && w1);
-  assert.ok(w0.r0 >= 0 && w0.r1 <= LG.rows - 1 && w0.c0 >= 0 && w0.c0 + w0.count <= LG.cols);
-  // the view's corners lie inside the window (with the node of margin)
-  for (const [px, py] of [[0, 0], [511, 0], [0, 255], [511, 255]]) {
-    const ll = I.tilePixelLatLng({ z: 7, x: SUPERIOR.x, y: SUPERIOR.y }, px, py), r = (LG.lat0 - ll.lat) / -LG.dlat, c = (ll.lng - LG.lon0) / LG.dlon;
-    assert.ok(r >= w0.r0 - 1e-9 && r <= w0.r1 + 1e-9 && c >= w0.c0 - 1e-9 && c <= w0.c0 + w0.count - 1 + 1e-9, 'corner ' + px + ',' + py + ' in ' + JSON.stringify(w0));
-  }
-  assert.ok(I.windowCovers(w1, w0, LG.cols) && !I.windowCovers(w0, w1, LG.cols), 'the margin window covers the view\'s');
-  assert.ok(w1.r0 <= w0.r0 && w1.r1 >= w0.r1 && w1.c0 <= w0.c0 && w1.c0 + w1.count >= w0.c0 + w0.count);
-  assert.deepEqual(I.lakeWindow(Object.assign({}, view, { ox: view.ox + 128 * TILE }), LG, 0), w0, 'a world copy');
-  assert.deepEqual(I.lakeWindow(Object.assign({}, view, { ox: view.ox - 128 * TILE }), LG, 0), w0);
-  assert.equal(I.lakeWindow({ z: 7, w: 512, h: 256, ox: 2000, oy: 14000, zt: 7 }, LG, 1), null, 'Hawaii: no lake node');
-  assert.equal(I.lakeWindow({ z: 7, w: 512, h: 256, ox: SUPERIOR.x * TILE, oy: 60 * TILE, zt: 7 }, LG, 0), null, 'south of the grid');
-  assert.equal(I.lakeWindow({ z: 7, w: 512, h: 256, ox: 50 * TILE, oy: SUPERIOR.y * TILE, zt: 7 }, LG, 1), null, 'the Atlantic at the lakes\' latitude: rows but no column');
-  const wide = I.lakeWindow({ z: 2, w: 2000, h: 300, ox: 0, oy: 300, zt: 2 }, LG, 0);
-  assert.ok(wide && wide.c0 === 0 && wide.count === LG.cols, 'a view wider than the world: every column');
+test('lakeNearView (step 6b): the lakes in or near the view (one screen on every side), any world copy, never beyond; off the lakes false', () => {
+  const sc = 128, n = TILE * sc, px = (lng, lat) => I.worldXY(lng, lat).map((v) => v * sc);   // zoom 7 world pixels
+  const at = (lat, lng, w, h) => { const c = px(lng, lat); return { z: 7, w: w || 1200, h: h || 800, ox: c[0] - (w || 1200) / 2, oy: c[1] - (h || 800) / 2, zt: 7 }; };
+  assert.equal(I.lakeNearView(at(44.8, -84.2), LG), true, 'over the lakes');
+  assert.equal(I.lakeNearView(at(21.3, -157.9), LG), false, 'Hawaii');
+  assert.equal(I.lakeNearView(at(44.8, -84.2 - 360), LG), true, 'a world copy to the west');
+  assert.equal(I.lakeNearView(at(44.8, -84.2 + 720), LG), true, 'two copies to the east');
+  // the margin: the grid's east edge is -92.4 + 830 * 0.02 = -75.8 E; a view whose widened box ends just inside / outside it
+  const east = px(-75.8, 45)[0];
+  const justIn = { z: 7, w: 1200, h: 800, ox: east + 1200 - 1, oy: px(-80, 45)[1] - 400, zt: 7 };   // x0 - w = east - 1: inside by a pixel
+  const justOut = Object.assign({}, justIn, { ox: east + 1200 + 1 });
+  assert.equal(I.lakeNearView(justIn, LG), true); assert.equal(I.lakeNearView(justOut, LG), false);
+  assert.equal(I.lakeNearView(justIn, LG, 0), false, 'without the margin the same view misses');
+  assert.equal(I.lakeNearView(Object.assign({}, justIn, { ox: east - 1 }), LG, 0), true);
+  // the north edge: the grid's first row is 49.2 N; a view ending (with its margin) above it
+  const north = px(-84, 49.2)[1];
+  assert.equal(I.lakeNearView({ z: 7, w: 1200, h: 800, ox: px(-84, 45)[0] - 600, oy: north - 800 - 800 - 1, zt: 7 }, LG), false);
+  assert.equal(I.lakeNearView({ z: 7, w: 1200, h: 800, ox: px(-84, 45)[0] - 600, oy: north - 800 - 800 + 1, zt: 7 }, LG), true);
+  // the south edge: the grid's last row is 49.2 - 400 * 0.02 = 41.2 N (every node counts); a view whose widened box starts just below / above it
+  const south = px(-84, LG.lat0 + (LG.rows - 1) * LG.dlat)[1];
+  assert.equal(I.lakeNearView({ z: 7, w: 1200, h: 800, ox: px(-84, 45)[0] - 600, oy: south + 1 + 800, zt: 7 }, LG), false);
+  assert.equal(I.lakeNearView({ z: 7, w: 1200, h: 800, ox: px(-84, 45)[0] - 600, oy: south - 1 + 800, zt: 7 }, LG), true);
+  assert.equal(I.lakeNearView(null, LG), false); assert.equal(I.lakeNearView(at(44.8, -84.2), null), false);
+  assert.equal(I.lakeNearView(Object.assign({}, at(44.8, -84.2), { w: 0 }), LG), false);
+  assert.equal(I.LAKE_NEAR_SCREENS, 1);
 });
 
-test('lakeVectorNodes: FROM -> TOWARD vectors of the field\'s speed on the lake nodes, absent without a direction or a value, only inside the window', () => {
-  const lf = lakeFrame(lakeFn, HS, (r, c) => c === 300), dirCode = (deg) => 1 + Math.round(deg * 254 / 360);
-  const ld = { q: new Uint8Array(LG.cols * LG.rows), cols: LG.cols, rows: LG.rows };
-  for (let r = 0; r < LG.rows; r++) for (let c = 0; c < LG.cols; c++) ld.q[r * LG.cols + c] = c === 301 ? 0 : c === 302 ? 255 : dirCode((r + c) % 360);
-  const win = { r0: 100, r1: 110, c0: 290, count: 20 }, nodes = I.lakeVectorNodes('hs', lf, HS.lo, HS.hi, ld, LG, null, win);
-  assert.equal(nodes.cols, LG.cols); assert.equal(nodes.rows, LG.rows); assert.deepEqual(nodes.win, win);
-  let present = 0;
-  for (let r = 95; r <= 115; r++) for (let c = 285; c <= 315; c++) {
-    const i = r * LG.cols + c, inWin = r >= 100 && r <= 110 && c >= 290 && c < 310;
-    if (!inWin || c === 300 || c === 301 || c === 302) { assert.equal(nodes.M[i], 0, 'absent at ' + r + ',' + c); continue; }
-    const v = HS.lo + (lf.q[i] - 1) / 254 * (HS.hi - HS.lo), sp = I.FLOW_SPEED.hs(v), ang = (ld.q[i] - 1) / 254 * 2 * Math.PI;
-    assert.equal(nodes.M[i], 1); assert.ok(Math.abs(nodes.U[i] + sp * Math.sin(ang)) < 1e-4 && Math.abs(nodes.V[i] + sp * Math.cos(ang)) < 1e-4, 'vector at ' + r + ',' + c);
-    present++;
-  }
-  assert.ok(present > 150);
-  const again = I.lakeVectorNodes('hs', lf, HS.lo, HS.hi, ld, LG, nodes, { r0: 200, r1: 201, c0: 10, count: 2 });
-  assert.equal(again.U, nodes.U, 'the arrays are reused'); assert.equal(again.M[105 * LG.cols + 295], 0, 'the old window is cleared');
-  assert.equal(again.M[200 * LG.cols + 10], 1);
+test('lakeVec (step 6b): one lake node\'s TOWARD vector at the field\'s speed, single precision; false without a direction, a value or any speed', () => {
+  const lf = { q: new Uint8Array([0, 10, 10, 1, 10]) }, ld = { q: new Uint8Array([5, 0, 255, 5, 1 + Math.round(90 * 254 / 360)]) }, out = new Float64Array(2);
+  const spd = (v) => v < 0.1 ? 0 : 8 + 3 * v;                                   // FLOW_SPEED.hs
+  assert.equal(I.lakeVec(lf.q, ld.q, spd, HS.lo, HS.hi, 0, out), false, 'no value');
+  assert.equal(I.lakeVec(lf.q, ld.q, spd, HS.lo, HS.hi, 1, out), false, 'no direction');
+  assert.equal(I.lakeVec(lf.q, ld.q, spd, HS.lo, HS.hi, 2, out), false, 'direction code 255 is none');
+  assert.equal(I.lakeVec(lf.q, ld.q, spd, HS.lo, HS.hi, 3, out), false, 'calm (code 1 = 0 m): no speed');
+  assert.equal(I.lakeVec(lf.q, ld.q, spd, HS.lo, HS.hi, 4, out), true);
+  const sp = spd(HS.lo + 9 / 254 * (HS.hi - HS.lo)), a = (ld.q[4] - 1) / 254 * 2 * Math.PI;   // the direction code's own angle (65 = 90.7 deg)
+  assert.equal(out[0], Math.fround(-sp * Math.sin(a))); assert.equal(out[1], Math.fround(-sp * Math.cos(a)));
+  assert.ok(out[0] < 0 && Math.abs(out[1]) < 0.02 * Math.abs(out[0]), 'from the east: toward the west (code 65 is 90.7 deg: a trace of v)');
 });
 
 test('flowField: a lattice point on lake water reads the lake vectors (nothing where they are absent); on lake water without lake vectors the model\'s nodes (the land gate lifted); the pixels\' alpha rule', () => {
@@ -379,8 +378,8 @@ test('flowField: a lattice point on lake water reads the lake vectors (nothing w
   const el = { _ovLand: landCov, _ovLake: cov }, el2 = { _ovLand: landCov, _ovLake: null };
   const lay = { _tiles: { [key(SUPERIOR)]: { el, coords: SUPERIOR }, '33:44:7': { el: el2, coords: { z: 7, x: 33, y: 44 } } }, _lakeMask: true, _frame: gf, _grid: GRID, _nearest: false, _lo: HS.lo, _hi: HS.hi, _clip: true };
   const view = { z: 7, w: 512, h: 256, ox: SUPERIOR.x * TILE, oy: SUPERIOR.y * TILE, zt: 7 };
-  const nodes = I.vectorNodes('hs', lay, gd, GRID, null, null), lnodes = I.lakeVectorNodes('hs', lf, HS.lo, HS.hi, ld, LG, null, I.lakeWindow(view, LG, 1));
-  const withLake = I.flowField(view, 4, nodes, GRID, lay, true, null, { nodes: lnodes, grid: LG });
+  const nodes = I.vectorNodes('hs', lay, gd, GRID, null, null), lake = { field: 'hs', lf, ld, grid: LG, lo: HS.lo, hi: HS.hi };
+  const withLake = I.flowField(view, 4, nodes, GRID, lay, true, null, lake);
   const noLake = I.flowField(view, 4, nodes, GRID, lay, true, null, null);
   const at = (f, px, py) => { const i = Math.floor(py / 4) * f.cols + Math.floor(px / 4); return [f.u[i], f.v[i]]; };
   // on lake water: the lake vector (from the north: toward the south = +v), not the model's (from the east: -u)
@@ -407,7 +406,7 @@ test('flowField: a lattice point on lake water reads the lake vectors (nothing w
   // without the lake mask on the layer the lake coverage is ignored (the land rule alone: all land here)
   assert.ok(at(withLake, 8, 128)[1] > 0, 'a lake point with a vector');
   lay._lakeMask = false;
-  const off = I.flowField(view, 4, nodes, GRID, lay, true, null, { nodes: lnodes, grid: LG });
+  const off = I.flowField(view, 4, nodes, GRID, lay, true, null, lake);
   assert.deepEqual(at(off, 8, 128), [0, 0], 'the lake coverage is ignored without the layer\'s lake mask: all land here');
 });
 
@@ -430,7 +429,7 @@ test('FlowAnimator: the lake direction rides only while it is the step on the ma
     fa.setLakeData(ld, lf, LG, entryA);                                           // before the step's own direction: stored, no rebuild
     assert.equal(rebuilds, 0); assert.equal(fa.lentry, entryA);
     fa.setData(gd, GRID, entryA);                                                 // the step's direction: one rebuild, the lake rides in it
-    assert.equal(rebuilds, 1); assert.ok(fa.lnodes, 'lake nodes computed');
+    assert.equal(rebuilds, 1);
     assert.ok(Math.abs(at(8, 128)[0]) < 1e-6 && at(8, 128)[1] > 0, 'a lake point moves with the lake direction (from the north): ' + at(8, 128));
     fa.setData({ q: gd.q.slice(), cols: gd.cols, rows: gd.rows }, GRID, entryB);  // the next step's own direction (a new frame object, as every decode is): step A's lake is not drawn
     assert.ok(at(8, 128)[0] < 0 && Math.abs(at(8, 128)[1]) < 0.05 * Math.abs(at(8, 128)[0]), 'another step\'s lake is not used: the model\'s nodes serve: ' + at(8, 128));
@@ -442,7 +441,7 @@ test('FlowAnimator: the lake direction rides only while it is the step on the ma
     assert.ok(at(8, 128)[1] > 0, 'with the layer drawing that step\'s lake frame the lake vectors return');
     fa.setLakeData(ld2, lf, LG, entryB); assert.equal(rebuilds, n + 2, 'the same data again: nothing');
     const m = rebuilds; fa.clearLakeData();
-    assert.equal(rebuilds, m + 1); assert.equal(fa.ldir, null); assert.equal(fa.lnodes, null); assert.ok(at(8, 128)[0] < 0, 'back to the model\'s nodes');
+    assert.equal(rebuilds, m + 1); assert.equal(fa.ldir, null); assert.ok(at(8, 128)[0] < 0, 'back to the model\'s nodes');
     fa.clearLakeData(); assert.equal(rebuilds, m + 1, 'nothing to clear: no rebuild');
     fa.setLakeData(ld, lf, LG, entryB); fa.clearData(); assert.equal(fa.ldir, ld, 'a step change leaves the lake data in place (the landing sets the lake first; unused until its step is on)'); assert.equal(fa.entry, null);
     fa.detach();
@@ -637,6 +636,60 @@ test('the published run 2026102119: the three f000 frames decode to the lake gri
   let same = 0, diff = 0;
   for (let i = 0; i < frames.tp.q.length; i += 7) { if (!!frames.tp.q[i] === !!frames.pdir.q[i]) same++; else diff++; }
   assert.equal(diff, 0, 'period and direction share their cells'); assert.ok(same > 40000);
+});
+
+// The step-4 lake particle path, for the parity test: vectors kept per lake node (Float32 U / V, M), the lattice bilinear over them.
+function oldLakeNodes(lf, ld, lo, hi) {
+  const n = LG.cols * LG.rows, U = new Float32Array(n), V = new Float32Array(n), M = new Uint8Array(n), spd = (v) => v < 0.1 ? 0 : 8 + 3 * v;
+  for (let i = 0; i < n; i++) {
+    const d = ld.q[i], c = lf.q[i];
+    if (!d || d === 255 || !c) continue;
+    const sp = spd(lo + (c - 1) / 254 * (hi - lo)), a = (d - 1) / 254 * 2 * Math.PI;
+    M[i] = sp > 0 ? 1 : 0; U[i] = -sp * Math.sin(a); V[i] = -sp * Math.cos(a);
+  }
+  return { U, V, M };
+}
+function oldLakeLattice(view, s, N) {
+  const cols = Math.ceil(view.w / s) + 1, rows = Math.ceil(view.h / s) + 1, n = TILE * Math.pow(2, view.z), u = new Float32Array(cols * rows), v = new Float32Array(cols * rows);
+  const lfx = new Float64Array(cols);
+  for (let i = 0; i < cols; i++) { const ln = (view.ox + i * s) / n * 360 - 180; lfx[i] = ((((ln + 180) % 360) + 360) % 360 - 180 - LG.lon0) / LG.dlon; }
+  for (let j = 0; j < rows; j++) {
+    const lat = Math.atan(Math.sinh(Math.PI - 2 * Math.PI * (view.oy + j * s) / n)) * 180 / Math.PI, k = Math.min(3, 1 / Math.max(1e-6, Math.cos(lat * Math.PI / 180)));
+    const lfy = (LG.lat0 - lat) / -LG.dlat, lr0 = Math.floor(lfy), lr1 = lr0 + 1 < LG.rows ? lr0 + 1 : lr0, lfr = lfy - lr0, lw0 = 1 - lfr, lb0 = lr0 * LG.cols, lb1 = lr1 * LG.cols;
+    for (let i = 0; i < cols; i++) {
+      if (view.oy + j * s >= (SUPERIOR.y + 1) * TILE || view.ox + i * s >= (SUPERIOR.x + 2) * TILE) continue;   // the tiles the test provides (the lattice's gate)
+      const lx = lfx[i];
+      if (!(lfy >= 0 && lfy <= LG.rows - 1 && lx >= 0 && lx <= LG.cols - 1)) continue;
+      const lc0 = Math.floor(lx), lc1 = lc0 + 1 < LG.cols ? lc0 + 1 : lc0, lfc = lx - lc0;
+      const la = lb0 + lc0, lb = lb0 + lc1, lc = lb1 + lc0, ld = lb1 + lc1; let lwt = 0, lX = 0, lY = 0, lw;
+      if (N.M[la]) { lw = lw0 * (1 - lfc); lX += N.U[la] * lw; lY += N.V[la] * lw; lwt += lw; }
+      if (N.M[lb]) { lw = lw0 * lfc; lX += N.U[lb] * lw; lY += N.V[lb] * lw; lwt += lw; }
+      if (N.M[lc]) { lw = lfr * (1 - lfc); lX += N.U[lc] * lw; lY += N.V[lc] * lw; lwt += lw; }
+      if (N.M[ld]) { lw = lfr * lfc; lX += N.U[ld] * lw; lY += N.V[ld] * lw; lwt += lw; }
+      if (lwt < 0.25) continue;
+      u[j * cols + i] = k * lX / lwt; v[j * cols + i] = -k * lY / lwt;
+    }
+  }
+  return { u, v, cols, rows };
+}
+
+test('the published run 2026102119 (step 6b): the lattice read per point from the lake frames equals the step-4 per-node path bit for bit over two tiles of Lake Superior', async () => {
+  const hs = await realFrame('hs_f000.png'), pdir = await realFrame('pdir_f000.png');
+  const gf = globalFrame(PATTERN), gd = { q: new Uint8Array(GRID.cols * GRID.rows).fill(1 + Math.round(90 * 254 / 360)), cols: GRID.cols, rows: GRID.rows };
+  const full = I.lakeFull(), landCov = new Uint8Array(TILE * TILE).fill(255), tiles = {};
+  for (const x of [32, 33]) tiles[x + ':44:7'] = { el: { _ovLand: landCov, _ovLake: full }, coords: { z: 7, x, y: 44 } };
+  const lay = { _tiles: tiles, _lakeMask: true, _frame: gf, _grid: GRID, _nearest: false, _lo: HS.lo, _hi: HS.hi, _clip: true };
+  const view = { z: 7, w: 512, h: 256, ox: SUPERIOR.x * TILE, oy: SUPERIOR.y * TILE, zt: 7 };
+  const nodes = I.vectorNodes('hs', lay, gd, GRID, null, null);
+  const got = I.flowField(view, 4, nodes, GRID, lay, true, null, { field: 'hs', lf: hs, ld: pdir, grid: LG, lo: HS.lo, hi: HS.hi });
+  const ref = oldLakeLattice(view, 4, oldLakeNodes(hs, pdir, HS.lo, HS.hi));
+  assert.equal(got.cols, ref.cols); assert.equal(got.rows, ref.rows);
+  let moving = 0, still = 0;
+  for (let i = 0; i < ref.u.length; i++) {
+    assert.ok(Object.is(got.u[i], ref.u[i]) && Object.is(got.v[i], ref.v[i]), 'lattice point ' + i + ': ' + got.u[i] + ',' + got.v[i] + ' vs ' + ref.u[i] + ',' + ref.v[i]);
+    if (ref.u[i] || ref.v[i]) moving++; else still++;
+  }
+  assert.ok(moving > 2000 && still > 100, moving + ' moving, ' + still + ' still');
 });
 
 test('the credit names the lakes while a lake frame is drawn under the model (never under SST); the readout says "no data" on lake water that shows nothing', () => {

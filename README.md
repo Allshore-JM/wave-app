@@ -731,8 +731,8 @@ lakes under the GFS model selection (plan section 50's client steps).
   present nodes, not periodic, nothing beyond the grid), and `composeTile`'s alpha is the larger of the ocean fraction
   and the lake coverage; the readout and the particles' lattice use the same rule, so the readout is the drawn pixel
   across the shore and `lakeAt` tells the page where lake water shows nothing ("no data"). Contours read the composite
-  lattice. The particles take the lake direction frame through `FlowAnimator.setLakeData` (the lake vectors on the
-  lake grid, `lakeWindow` / `lakeVectorNodes`; a lake point with no lake vector gets none). Under ECMWF only the mask
+  lattice. The particles take the lake direction frame through `FlowAnimator.setLakeData` (the lattice reads the two
+  lake frames per point, `lakeVec`; a lake point with no lake vector gets none). Under ECMWF only the mask
   applies: its own 0.25-degree lake cells show through (the GFS frames hold 0 over the lakes, so without a lake run the
   lakes are blank). A newer lake run noted by the run check takes over at the next step (its old fetches aborted, its
   caches afresh). Measured on the real frames: the lake pass 0.6-0.7 ms per tile with full coverage, the lake vectors
@@ -751,6 +751,13 @@ lakes under the GFS model selection (plan section 50's client steps).
   coverage was looked at (2.21.2 drew only the tiles that also held sea, e.g. Lake Ontario's). The coverage now
   comes first and the shortcut applies only without lake water; `composeTile` reads the all-land marker as alpha 0, so
   lake pixels take their coverage. Both the lake frames (GFS) and ECMWF's own lake cells were affected.
+- **Only near the view (overlay asset 2.21.4, step 6b)**: the lake frames are fetched only while the lake grid's box
+  lies within one screen of the view (`lakeNearView`, re-judged on moveend / zoomend / viewreset and a resize); away
+  from the lakes nothing of them is downloaded, decoded or kept (the step-6 Hawaii cell had paid +9 MB and +72 ms/s of
+  main thread for lake frames nobody saw), and the lake caches are emptied when the view leaves them. A pan onto the
+  lakes during playback asks for the shown step's lake frames at once (the next steps wait for theirs up to the step
+  cap). The particles' lake vectors are read per lattice point from the frames (no arrays over the lake grid: about
+  3 MB less while the lakes are in view).
 - **The lake tables** (UI asset 1.24.0): the 72 stations (`glwu_stations.json`: name, position and nearest civil zone,
   built by `tools/build_glwu_stations.py` from `glwu_fetch.STATIONS`, NDBC's station table and names written there for
   NOAA's 14 beach points) join the station list, the map and the picker after the GFS ones; they live in their OWN file,

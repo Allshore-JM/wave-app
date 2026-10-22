@@ -51,7 +51,7 @@ async function onRunDay(fn) {
 function world(opts) {
   const w = { pendingBitmaps: [], fetches: [], failNext: {}, hang: {}, pointer: null, manifests: {}, pendingCoast: [], coastAnswer: () => ({ ok: false, status: 500 }), pendingTerrain: [],
     lakePointer: null, lakeManifests: {} };
-  const reg = { doc: {}, win: {} };
+  const reg = { doc: {}, win: {}, map: {} };
   const on = (t) => (ev, fn) => { (reg[t][ev] = reg[t][ev] || []).push(fn); };
   const off = (t) => (ev, fn) => { reg[t][ev] = (reg[t][ev] || []).filter((f) => f !== fn); };
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.js'), 'utf8');
@@ -149,8 +149,10 @@ function world(opts) {
   const fn = new Function('L', 'document', 'sessionStorage', 'createImageBitmap', 'fetch', 'window', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'AbortController', 'DecompressionStream', 'requestAnimationFrame', 'cancelAnimationFrame', src);
   fn(g.L, g.document, g.sessionStorage, g.createImageBitmap, g.fetch, g.window, st, ct, si, ci, AbortController, undefined, raf, caf);
   const I = g.AllshoreOverlay._internals, Overlay = I.Overlay;
+  w.orig = {};                                                             // the stubbed methods' originals (a test may bind the real one)
   for (const k of ['render', '_syncUI', '_attribute', '_bindReadout', '_bindMap', '_bindDocument', '_unbindReadout', '_unattribute', '_removeSheet']) {
     if (k === '_bindDocument' && opts && opts.realDocument) continue;
+    w.orig[k] = Overlay.prototype[k];
     Overlay.prototype[k] = function (st) { if (k === 'render') { this.last = st; this.ui = null; } };
   }
   Overlay.prototype._dims = () => ({ w: 1200, h: 800 });
@@ -158,8 +160,13 @@ function world(opts) {
   for (const k of ['attach', 'detach', '_rebuild', '_clear', 'stop', '_start']) I.FlowAnimator.prototype[k] = function () { (this.calls = this.calls || []).push(k); };
   // the isobar layer likewise: no canvas, no animation frame; setData / clearData keep their data flow (entry, frame)
   for (const k of ['attach', 'detach', '_schedule', '_clear', '_draw']) I.IsobarLayer.prototype[k] = function () { (this.calls = this.calls || []).push(k); };
-  const map = { getPane: () => ({}), getZoom: () => 6, getSize: () => ({ x: 1200, y: 800 }), on() {}, off() {}, removeLayer() {},
+  // the map's view: centred on the Great Lakes (the lake tests) unless a test sets w.view before the mount or moves it
+  // (w.setView fires moveend: only an Overlay bound with the real _bindMap hears it)
+  w.view = { lat: 44.8, lng: -84.2 };
+  const map = { getPane: () => ({}), getZoom: () => 6, getSize: () => ({ x: 1200, y: 800 }), on: on('map'), off: off('map'), removeLayer() {},
+    getPixelBounds: () => { const sc = Math.pow(2, map.getZoom()), p = I.worldXY(w.view.lng, w.view.lat), x = p[0] * sc - 600, y = p[1] * sc - 400; return { min: { x, y }, max: { x: x + 1200, y: y + 800 } }; },
     getContainer: () => ({ clientWidth: 1200, clientHeight: 800, classList: { add() {}, remove() {} }, style: { setProperty() {}, removeProperty() {} } }) };
+  w.setView = (lat, lng) => { w.view = { lat, lng }; w.fire('map', 'moveend'); };
   w.I = I; w.map = map; w.L = g.L;
   // release one pending decode by kind (told apart by the frame's URL: the direction and the pressure frames are both half-size)
   const isLakeUrl = (u) => /\/glwu\//.test(u), isLakeDirUrl = (u) => isLakeUrl(u) && /\/pdir\//.test(u), isLakeFieldUrl = (u) => isLakeUrl(u) && !isLakeDirUrl(u);
@@ -2981,5 +2988,63 @@ test('section 50: the landing sets the step\'s lake before its particles: one an
   o.update(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
   assert.equal(o.manifest.run, B.run); assert.ok(o.layer._lake && o.layer._lake.entry === B.frames[o.frameIndex], 'the new run\'s step draws its lake');
   for (const k of o.lcache.map.keys()) assert.ok(k.indexOf('glwu/' + LA.run + '/lake/hs/') === 0);
+  o.unmount();
+}));
+
+const isLakeFrameUrl = (u) => /\/glwu\/v1\/\d{10}\/(hs|tp|pdir)\//.test(u);
+test('section 50 (step 6b): the lake frames are fetched only while the lakes are in or near the view: nothing of them off the lakes; a pan onto them asks for the shown step\'s at once and the ring follows; a pan away drops the fetches and empties the lake caches; a world copy counts', () => onRunDay(async () => {
+  const w = world(); w.view = { lat: 21.3, lng: -157.9 };                      // Hawaii
+  const o = await lakeMounted(w, { anim: true }); w.orig._bindMap.call(o);
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.lake.status, 'ok', 'the lake run is read (its pointer and manifest only)');
+  assert.equal(o._wantLake(), false); assert.equal(o._wantLakeDir(), false); assert.equal(o._maxInflight(), w.I.MAX_INFLIGHT, 'no extra download slot');
+  assert.ok(!w.fetches.some(isLakeFrameUrl), 'no lake frame asked for off the lakes: ' + w.fetches.filter(isLakeFrameUrl).join());
+  assert.equal(o.layer._lake, null); assert.equal(o.flow.ldir, null);
+  const i0 = o.frameIndex; assert.ok(o._lakeIndex(i0) >= 0, 'the step would have a lake frame');
+  assert.deepEqual(o._plan(i0).slice(0, 2).map((p) => p[1]), ['field', 'dir'], 'the plan holds no lake kind');
+  assert.equal(w.listeners('map', 'moveend'), 1); assert.equal(w.listeners('map', 'zoomend'), 1); assert.equal(w.listeners('map', 'viewreset'), 1);
+  // onto the lakes: the shown step's lake frames start at once
+  w.setView(44.8, -84.2); await settle();
+  assert.equal(o._wantLake(), true); assert.equal(o._maxInflight(), w.I.MAX_INFLIGHT + 2);
+  const keys = Object.keys(o.inflight);
+  assert.ok(keys.includes(o._key(i0, 'lake')) && keys.includes(o._key(i0, 'lakedir')), 'the shown step\'s lake frames: ' + keys.join());
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.layer._lake && o.layer._lake.entry === A.frames[i0], 'the lake drawn under the shown step'); assert.equal(o.flow.lentry, A.frames[i0]);
+  assert.ok(o.lcache.size() > 1 && o.ldcache.size() > 1, 'the ring follows: ' + o.lcache.size() + ' / ' + o.ldcache.size());
+  // away again: every lake fetch aborted, the caches emptied, the picture's lake and the animator's gone
+  o.seek(i0 + 1); await settle(); await w.releaseField(); await settle();
+  assert.equal(o.frameIndex, i0 + 1); const before = w.fetches.filter(isLakeFrameUrl).length;
+  assert.ok(Object.keys(o.inflight).some(isLake), 'a lake fetch of the ring in flight');
+  w.setView(21.3, -157.9); await settle();
+  assert.equal(o._wantLake(), false);
+  assert.ok(!Object.keys(o.inflight).some(isLake), 'lake fetches aborted: ' + Object.keys(o.inflight).join());
+  assert.equal(o.lcache.size(), 0); assert.equal(o.ldcache.size(), 0);
+  assert.equal(o.layer._lake, null); assert.equal(o.flow.ldir, null); assert.equal(o.flow.lentry, null);
+  o.seek(i0 + 3); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.frameIndex, i0 + 3); assert.equal(o.layer._lake, null);
+  assert.equal(w.fetches.filter(isLakeFrameUrl).length, before, 'no lake frame for the next steps');
+  // the same view again: nothing to do (no event-driven churn)
+  const n1 = w.fetches.length; w.fire('map', 'moveend'); w.fire('map', 'zoomend'); await settle(); assert.equal(w.fetches.length, n1);
+  // a world copy of the lakes counts
+  w.setView(44.8, -84.2 - 360); await settle(); assert.equal(o._wantLake(), true);
+  assert.ok(Object.keys(o.inflight).includes(o._key(i0 + 3, 'lake')), 'the shown step\'s lake frame from the copy');
+  o.unmount(); assert.equal(o._lakeNear, null);
+}));
+
+test('section 50 (step 6b): a step waiting for its lake frames lands at once when the lakes leave the view (the wait settles on the aborted fetch, the clock never moves); back on the lakes the shown step\'s lake frames are asked for', () => onRunDay(async () => {
+  const w = world({ fakeTimers: true }); const o = await lakeMounted(w); w.orig._bindMap.call(o);
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  const i0 = o.frameIndex; assert.ok(o.layer._lake && o.layer._lake.entry === A.frames[i0]);
+  o.seek(i0 + 5); await settle(); await w.releaseField(); await settle();
+  assert.equal(o.frameIndex, i0, 'the field is in, the lake held: waiting'); assert.ok(o.inflight[o._key(i0 + 5, 'lake')]);
+  const t = w.now();
+  w.setView(21.3, -157.9); await settle();
+  assert.equal(o.frameIndex, i0 + 5, 'landed at once without its lake'); assert.equal(w.now(), t);
+  assert.equal(o.layer._lake, null); assert.equal(o.lcache.size(), 0); assert.ok(!o.inflight[o._key(i0 + 5, 'lake')]);
+  assert.equal(o._lakeWait, null, 'no lake wait left over');
+  w.setView(44.8, -84.2); await settle();
+  assert.ok(o.inflight[o._key(i0 + 5, 'lake')], 'the shown step\'s lake frame asked for again');
+  await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.layer._lake && o.layer._lake.entry === A.frames[i0 + 5], 'the lake joins the picture'); assert.equal(w.now(), t);
   o.unmount();
 }));

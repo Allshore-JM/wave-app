@@ -327,6 +327,29 @@ def test_decode_regrids_blanks_ice_wraps_directions_and_samples_winds(monkeypatc
     assert sum(1 for c in calls if c[2]) == 1
 
 
+def test_period_and_direction_fill_never_enters_calm_water(monkeypatch):
+    """Step 6b (S6-4): calm cells keep their height and no period / direction THROUGH the fill (the fill only enters
+    cells without a height); hs still fills everywhere around the water; encode before decode is refused."""
+    vals, _ice = _lake_values()
+    monkeypatch.setattr(D, "decode_glwu", _fake_decode(vals))
+    monkeypatch.setattr(G, "STATIONS", {})
+    src = GL.GlwuSource()
+    with pytest.raises(RuntimeError, match="before decode"):
+        src.encode(np.full((401, 831), np.nan, np.float32), "tp")
+    grids = src.decode({k: b"" for k in G.RECORDS}, RUN, 0)
+    flat, inside = D.glwu_index()
+    calm = inside & (vals["HTSGW:surface"][flat] == 0.05)
+    assert calm.any() and (src._nowater == np.isnan(grids["hs"])).all() and not src._nowater[calm].any()
+    out = {n: np.array(Image.open(io.BytesIO(src.encode(grids[n], n)["full"]))) for n in ("hs", "tp", "pdir")}
+    assert (out["hs"][calm] > 0).all(), "calm water keeps its height"
+    assert (out["tp"][calm] == 0).all() and (out["pdir"][calm] == 0).all(), "and gets no period or direction from the fill"
+    land_filled = np.isnan(grids["hs"]) & (out["hs"] > 0)             # the land cells the height's fill reached
+    assert land_filled.sum() > 1000
+    assert (out["tp"][land_filled] > 0).mean() > 0.9, "the period fills the same shore cells (except past a calm cell)"
+    assert not (np.isnan(grids["tp"]) & ~np.isnan(grids["hs"]) & (out["tp"] > 0)).any(), "no period on any cell with a height and none in the model"
+    assert GL.FILL_INFO["version"] == 2 and "calm" in GL.FILL_INFO["limit"]
+
+
 def test_station_cells_prefers_its_own_cell_then_the_nearest_water(monkeypatch):
     lat, lon = _inverse_lcc(200.0, 100.0)
     monkeypatch.setattr(G, "STATIONS", {"a": (float(lat), float(lon)), "far": (44.49, -73.34)})
@@ -416,6 +439,11 @@ def test_complete_build_publishes_frames_bulletins_winds_manifest_then_pointer(o
     assert puts[-1] == GLATEST and puts[-2].startswith(f"{GPRE}/{run}/manifest-") and puts[-3].startswith(f"{GPRE}/{run}/stats-")
     frames = [k for k in puts if k.endswith(".png")]
     assert len(frames) == 150 * 3 and f"{GPRE}/{run}/hs/f149.png" in frames and not any("/half/" in k for k in frames)
+    # the published frames: calm water with a height and no period (step 6b, S6-4), through the whole pipeline
+    flat, inside = D.glwu_index(COARSE)
+    calm = inside & (_lake_values()[0]["HTSGW:surface"][flat] == 0.05)
+    png = lambda n: np.array(Image.open(io.BytesIO(c.objects[f"{GPRE}/{run}/{n}/f000.png"]["body"])))
+    assert calm.any() and (png("hs")[calm] > 0).all() and (png("tp")[calm] == 0).all() and (png("pdir")[calm] == 0).all()
     bulls = [k for k in puts if k.endswith(".bull")]
     assert len(bulls) == len(G.STATIONS) == 72
     last_frame = max(puts.index(k) for k in frames)

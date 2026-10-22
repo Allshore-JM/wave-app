@@ -57,9 +57,9 @@ WAVE_KEYS = {"hs": "HTSGW:surface", "tp": "PERPW:surface", "pdir": "DIRPW:surfac
 FILL_CELLS = 2                          # nodes of 0.02 deg (~3-4 km) past the model's water: colours 99.68 % of GSHHG's lake water
 CALM_M = 0.1                            # below this height a lake cell has no period or direction (the ECMWF job's calm line)
 FILL_INFO = {
-    "version": 1, "fields": sorted(FIELD_NAMES), "cells": FILL_CELLS,
+    "version": 2, "fields": sorted(FIELD_NAMES), "cells": FILL_CELLS,
     "methods": {n: E.FILL_METHODS[n] for n in sorted(FIELD_NAMES)}, "mask": "glwu-model-water",
-    "limit": f"within {FILL_CELLS} nodes of the model's water",
+    "limit": f"within {FILL_CELLS} nodes of the model's water; the period and the direction never into calm water",
     "note": "nearshore values are the nearest model cell's; clipped to the lake shores in the browser",
 }
 GRID = D.GLWU_GRID
@@ -140,6 +140,7 @@ class GlwuSource:
         self._cells = None
         self._winds = {}
         self._checked = False
+        self._nowater = None                 # the step's browser-grid cells without a height (the period's fill mask)
 
     where = "on NOMADS in the last 24 h"
 
@@ -173,7 +174,18 @@ class GlwuSource:
         return {"res": {"full": ""}, "grid": dict(GRID)}
 
     def encode(self, grid, name):
-        return E.encode_frame(grid, name, fill=True, allow=ALLOW_ALL, cells=FILL_CELLS, resolutions=("full",))
+        """The height fills everywhere within FILL_CELLS nodes of the model's water; the period and the direction only
+        into cells WITHOUT a height (land, ice, beyond the grid), so calm water keeps its height and no period or
+        direction through the fill as well (plan section 50 step 6b, S6-4: the fill had copied a neighbour's period into
+        766 calm cells of a frame). The mask is the step's, set by decode (the pipeline decodes a step, then encodes its
+        fields, then the next step)."""
+        if name == "hs":
+            allow = ALLOW_ALL
+        else:
+            if self._nowater is None:
+                raise RuntimeError(f"GlwuSource.encode({name}) before decode: the fill mask comes from the step's heights")
+            allow = self._nowater
+        return E.encode_frame(grid, name, fill=True, allow=allow, cells=FILL_CELLS, resolutions=("full",))
 
     def decode(self, records, run_dt, step):
         """{hs, tp, pdir} on the browser grid; the step's station winds are kept for winds.json."""
@@ -205,6 +217,7 @@ class GlwuSource:
             if name == "pdir":
                 g = np.mod(g, np.float32(360.0)).astype(np.float32)
             grids[name] = g
+        self._nowater = np.isnan(grids["hs"])
         return grids
 
     def before_manifest(self, store, run_dt, run, upload):

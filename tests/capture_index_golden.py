@@ -57,6 +57,7 @@ if __name__ == "__main__":
     os.environ.pop("MODEL_OVERLAYS", None)
     os.environ.pop("MODEL_OVERLAY_MODELS", None)                            # the overlay's model list (section 43)
     os.environ.pop("SST_OVERLAY", None)                                     # the sea surface temperature field (section 44)
+    os.environ.pop("GLWU_OVERLAY", None)                                    # the Great Lakes waves (section 50)
     os.environ.pop("COAST_BASE", None)                                      # the map tools' explicit coast address
     os.environ.pop("GEO_BASE", None)                                        # the geo Worker (section 46): the golden has GEO ""
     os.environ.pop("POINTS_ROOT", None)                                     # forecast points: from the frames address below,

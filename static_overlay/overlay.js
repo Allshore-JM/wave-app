@@ -1168,6 +1168,9 @@
   // horizon, or without a lake run, the lakes are blank (the GFS frames hold 0 there) and the readout says so. Under
   // ECMWF only the mask applies: its own 0.25-degree lake cells show through (owner, 2026-10-21).
   var LAKE_PREFIX = 'glwu/v1';
+  // the credit while a lake frame is drawn (after the model's own); the title names the winds that drive it
+  var LAKE_ATTRIBUTION = ' · Lakes: <a href="https://polar.ncep.noaa.gov/waves/" target="_blank" rel="noopener" ' +
+    'title="Great Lakes waves: NOAA/NCEP Great Lakes Wave Unstructured (GLWU, WAVEWATCH III) driven by the NWS forecasters\u2019 NDFD winds, rendered by Allshore Surf. Not an official NWS product.">NOAA GLWU</a>';
   var LAKE_UNDER = { hs: true, tp: true };                 // the fields the lake mask and frames apply to (never wind, SST)
   var LAKE_DIR_FIELD = 'pdir';
   var MAX_LAKE_MANIFEST_BYTES = 256 * 1024;                // a run's manifest is ~13 KB
@@ -4661,6 +4664,7 @@
   };
   Overlay.prototype._attribution = function () {
     var text = this.mode === 'obs' ? SST_ATTRIBUTION : this._def().attribution;
+    if (this.mode !== 'obs' && this.layer && this.layer.hasLake()) text += LAKE_ATTRIBUTION;   // a lake frame drawn (plan section 50)
     if (!(this.layer && this.layer._masked() && this.coast)) return text;
     var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
     return text + ' · <a href="' + url + '" target="_blank" rel="noopener license">GSHHG</a>';
@@ -5054,10 +5058,13 @@
     var pressTimer = null, lastTouch = 0;
     function overControl(ev) { var t = ev && ev.target; return !!(t && t.closest && t.closest('.leaflet-control, .ov-sheet')); }
     function show(latlng, pt) {
-      var layer = self.layer, v = null;
+      var layer = self.layer, v = null, z = 0;
       if (layer && layer.fdef) {
-        var z = typeof layer._tileZoom === 'number' ? layer._tileZoom : Math.round(map.getZoom());
+        z = typeof layer._tileZoom === 'number' ? layer._tileZoom : Math.round(map.getZoom());
         v = layer.readoutAt(latlng.lat, latlng.lng, z);            // the drawn pixel (its centre, its land mask), not the raw cursor point
+      }
+      if ((v === null || v === undefined) && layer && layer.fdef && layer.lakeAt(latlng.lat, latlng.lng, z)) {   // plan section 50 (owner)
+        el.textContent = 'no data'; el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return;
       }
       if (v === null || v === undefined) { el.hidden = true; return; }
       var u = unitOf(layer.field, self.opts.getUnit()), f = layer.fdef;
@@ -5560,6 +5567,7 @@
     var pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
     // the forecast table is always GFS-Wave (or SWAN): under another model its run is named with its model
     ui.runTail = pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run'
+      : pc && pc.model === 'GLWU' ? ' — the forecast table is a NOAA GLWU (Great Lakes) run'
       : pc && pc.run && this._def().table === 'model' ? ' — the forecast table is on GFS-Wave run ' + pc.run
       : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '';
     ui.runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z');
@@ -5798,7 +5806,7 @@
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
       LakeStore: LakeStore, lakeStore: lakeStore, validLakeManifest: validLakeManifest, validLakePointer: validLakePointer, validLakeGridDef: validLakeGridDef, validateLakeGrid: validateLakeGrid,
       lakeFieldOk: lakeFieldOk, lakeFieldMatches: lakeFieldMatches, sampleLake: sampleLake, lakeBoxOf: lakeBoxOf, lakeBoxHits: lakeBoxHits, lakeWindow: lakeWindow, lakeVectorNodes: lakeVectorNodes,
-      LAKE_PREFIX: LAKE_PREFIX, LAKE_UNDER: LAKE_UNDER, LAKE_DIR_FIELD: LAKE_DIR_FIELD, LAKE_BOX: LAKE_BOX, lakeFull: lakeFull,
+      LAKE_PREFIX: LAKE_PREFIX, LAKE_ATTRIBUTION: LAKE_ATTRIBUTION, LAKE_UNDER: LAKE_UNDER, LAKE_DIR_FIELD: LAKE_DIR_FIELD, LAKE_BOX: LAKE_BOX, lakeFull: lakeFull,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
       ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_STRONG_LOW_HPA: ISO_STRONG_LOW_HPA, ISO_TERRAIN_CAP_M: ISO_TERRAIN_CAP_M, ISO_STRONG_NODES_MAX: ISO_STRONG_NODES_MAX, strongLowSearch: strongLowSearch, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,

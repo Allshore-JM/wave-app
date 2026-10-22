@@ -2,7 +2,7 @@
 
 Golden: tests/fixtures/index_golden.json captured by tests/capture_index_golden.py (fixed forecast
 payload + station list, no network). It is re-baselined ONLY by a commit that changes the flag-off page
-on purpose (last: the shaka and the star in the window's toolbar on phones, 2026-10-19); never recapture it
+on purpose (last: UI 1.24.0, the Great Lakes stations' window label, 2026-10-22); never recapture it
 after an overlay-only commit. Whatever the baseline, three invariants hold: flag off == golden with no
 '/overlay/' in it; flag on with no frames base == flag off; flag on == flag off + exactly the gated block.
 """
@@ -34,6 +34,7 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("POINTS_ROOT", raising=False)
     monkeypatch.delenv("MODEL_OVERLAY_MODELS", raising=False)
     monkeypatch.delenv("SST_OVERLAY", raising=False)
+    monkeypatch.delenv("GLWU_OVERLAY", raising=False)
     monkeypatch.delenv("GEO_BASE", raising=False)
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
     monkeypatch.setenv("MODEL_FRAMES_BASE", base)
@@ -85,6 +86,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert 'aria-label="Map overlay"' in body and "Model overlay <select" not in body   # no visible heading (section 37)
         assert 'var MODELS = ["gfswave"];' in body and "models: MODELS" in body              # section 43: the offered models
         assert "var SST = false;" in body and "sst: SST" in body and 'value="sst"' in body     # section 44: offered only with SST_OVERLAY=1 (the option is built by script)
+        assert "var GLWU = false;" in body and "glwu: GLWU" in body and "return { model: 'GLWU' }" in body   # section 50: the Great Lakes under GFS (GLWU_OVERLAY=1)
         assert "'allshore.isobars.v1'" in body and "'allshore.particles.v1'" in body               # section 46: the gear's two rows, kept in this browser
         assert "isobars: ISOBARS, particles: PARTICLES / 100" in body and "'ovIsobars'" in body and "'ovParticles'" in body
         assert "overlay.setIsobars(ISOBARS)" in body and "overlay.setParticleOpacity(v / 100)" in body and "'Pressure isobars (wind)'" in body
@@ -266,6 +268,7 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
                    .replace("{{ overlay_asset_version|tojson }}", json.dumps(A.OVERLAY_ASSET_VERSION))
                    .replace("{{ overlay_models|tojson }}", json.dumps(["gfswave"]))
                    .replace("{{ overlay_sst|tojson }}", json.dumps(False))
+                   .replace("{{ overlay_glwu|tojson }}", json.dumps(False))
                    .replace("{{ forecast_tz_name|tojson }}", json.dumps(tz)))
         assert got[0] == want, name
     node_src = open(os.path.join(HERE, "overlay", "bootstrap.test.js"), encoding="utf-8").read()
@@ -326,6 +329,23 @@ def test_the_ecmwf_notice_the_credit_links():
         assert need in body, need
     js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
     assert 'href="/notice/ecmwf"' in js, "the credit's ECMWF link opens this notice"
+
+
+def test_glwu_overlay_env_and_the_page(monkeypatch):
+    """GLWU_OVERLAY (section 50): "1" hands the Great Lakes setting to the module (the page's GLWU); the flag-on page
+    differs from the default only in that line; the flag-off page never carries it."""
+    _on(monkeypatch)
+    monkeypatch.setenv("GLWU_OVERLAY", "1")
+    on = G.run_scenarios(A)
+    monkeypatch.delenv("GLWU_OVERLAY")
+    off = G.run_scenarios(A)
+    for name in GOLDEN:
+        assert "var GLWU = true;" in on[name]["body"], name
+        assert on[name]["body"].replace("var GLWU = true;", "var GLWU = false;") == off[name]["body"], name
+    monkeypatch.delenv("MODEL_OVERLAYS")
+    monkeypatch.setenv("GLWU_OVERLAY", "1")
+    for name, rec in G.run_scenarios(A).items():
+        assert "var GLWU" not in rec["body"], name
 
 
 def test_sst_overlay_env_and_the_page(monkeypatch):

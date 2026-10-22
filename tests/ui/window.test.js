@@ -188,8 +188,10 @@ test('graphs: parseLabel and rangeWindow (the old page\'s rules)', () => {
   assert.deepEqual(I.rangeWindow(385, 7), { min: 0, max: 167 }); assert.deepEqual(I.rangeWindow(385, 0), { min: 0, max: 384 }); assert.deepEqual(I.rangeWindow(10, 3), { min: 0, max: 9 });
 });
 
-test('shortCycle for GFS and SWAN headers', () => {
+test('shortCycle for GFS, SWAN and GLWU headers', () => {
   const I = load(fakeWindow())._internals;
+  assert.equal(I.shortCycle('GLWU', { cycle: 'NOAA GLWU 20261021 19 UTC' }), 'GLWU · run 20261021 19 UTC');   // a Great Lakes station (plan section 50)
+  assert.equal(I.shortCycle('GLWU', { cycle: '' }), 'GLWU');
   assert.equal(I.shortCycle('GFS', { cycle: '20260926 12 UTC' }), 'GFS · run 20260926 12 UTC');
   assert.equal(I.shortCycle('SWAN', { cycle: 'PacIOOS SWAN updated 20260925 23 UTC' }), 'SWAN · updated 20260925 23 UTC');
   assert.equal(I.shortCycle('GFS', null), 'GFS'); assert.equal(I.shortCycle('SWAN', { cycle: '' }), 'SWAN');
@@ -301,6 +303,17 @@ test('init: a map pick loads the station with Buoy Local and expands; a picker p
   b.doc.fire('allshore:station', { detail: { sid: '51201', source: 'picker' } }); await settle();
   assert.equal(b.app.state.tz, 'Pacific/Honolulu', 'a favourites pick keeps the time zone');
   assert.equal(b.win.localStorage.read('allshore.settings.v1').tz, 'Pacific/Honolulu');
+});
+
+test('a Great Lakes station (plan section 50): the header says "GLWU · run ...", the model bar hides, and the state keeps the requested model (no model in the address)', async () => {
+  const b = boot({});
+  await settle(); b.fs_.last().release(payload()); await settle();
+  b.doc.fire('allshore:station', { detail: { sid: '45007', source: 'picker' } }); await settle();
+  b.fs_.last().release(payload({ station: '45007', model: 'GLWU', swan_available: false, graph_header: { cycle: 'NOAA GLWU 20261021 19 UTC', location: '45007 (42.67N 87.03W)', tz: 'America/New_York' } })); await settle();
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'GLWU · run 20261021 19 UTC');
+  assert.equal(b.doc.getElementById('modelBar').hidden, true);
+  assert.equal(b.app.state.model, 'GFS', "the request's model stays: the address never carries model=GLWU");
+  assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'GFS', 'the request names its own model, never GLWU (the server answers GLWU for a lake station)');
 });
 
 test('init: units and model changes refetch and are remembered; the view switches without a fetch; Escape closes the live panel first, then minimises with focus returned', async () => {

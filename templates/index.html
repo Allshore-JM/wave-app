@@ -4243,6 +4243,7 @@
       var VERSION = {{ overlay_asset_version|tojson }};
       var MODELS = {{ overlay_models|tojson }};                 // the models the panel offers (MODEL_OVERLAY_MODELS); the first is the default
       var SST = {{ overlay_sst|tojson }};                       // "Sea surface temperature" offered (SST_OVERLAY; plan section 44)
+      var GLWU = {{ overlay_glwu|tojson }};                     // the Great Lakes waves under GFS (GLWU_OVERLAY; plan section 50)
       var TZ = {{ forecast_tz_name|tojson }};
       // The settings gear's two overlay rows (plan section 46), remembered in this browser: the pressure isobars over the
       // wind overlay (on unless turned off) and the particles' strength (100 = today's look, 0 = no particles).
@@ -4296,13 +4297,14 @@
         return loading;
       }
       // The run the page's forecast is on ("Cycle : YYYYMMDD HH UTC" in the table or the Graph header),
-      // read when asked so a deferred table counts; a SWAN page is a different model altogether.
+      // read when asked so a deferred table counts; a SWAN or a Great Lakes (GLWU) page is a different model altogether.
       function pageCycle() {
         var els = [document.getElementById('forecastMeta'), document.getElementById('forecastTable'), document.getElementById('graphs')], txt = '';
         for (var i = 0; i < els.length; i++) if (els[i]) txt += ' ' + (els[i].textContent || '');
         var m = /Cycle\s*:\s*([^|\n]*)/.exec(txt);
         if (!m) return null;
         if (/SWAN/.test(m[1])) return { model: 'SWAN' };
+        if (/GLWU/.test(m[1])) return { model: 'GLWU' };
         var r = /(\d{8})\s+(\d{2})\s+UTC/.exec(m[1]);
         return r ? { run: r[1] + r[2] } : null;
       }
@@ -4336,7 +4338,7 @@
           if (sel.value !== field) return;
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
             base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
-            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST,
+            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST, glwu: GLWU,
             isobars: ISOBARS, particles: PARTICLES / 100
           });
           overlay.mount(field, restore);

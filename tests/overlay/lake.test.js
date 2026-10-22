@@ -553,3 +553,28 @@ test('the published run 2026102119: the three f000 frames decode to the lake gri
   for (let i = 0; i < frames.tp.q.length; i += 7) { if (!!frames.tp.q[i] === !!frames.pdir.q[i]) same++; else diff++; }
   assert.equal(diff, 0, 'period and direction share their cells'); assert.ok(same > 40000);
 });
+
+test('the credit names the lakes while a lake frame is drawn under the model (never under SST); the readout says "no data" on lake water that shows nothing', () => {
+  const D = I.MODEL_DEFS.gfswave, credit = (mode, hasLake) => I.Overlay.prototype._attribution.call({ mode, layer: { hasLake: () => hasLake, _masked: () => false }, coast: null, _def: () => D });
+  assert.equal(credit('model', true), D.attribution + I.LAKE_ATTRIBUTION);
+  assert.equal(credit('model', false), D.attribution);
+  assert.ok(credit('obs', true).indexOf('GLWU') < 0, 'SST: no lake credit');
+  assert.equal(I.LAKE_ATTRIBUTION.replace(/<[^>]+>/g, ''), ' · Lakes: NOAA GLWU');
+  assert.match(I.LAKE_ATTRIBUTION, /NDFD winds/); assert.match(I.LAKE_ATTRIBUTION, /Not an official NWS product/);
+  // the readout: the real _bindReadout on a fake map; the layer answers per point
+  const made = [], handlers = {};
+  const mkEl = () => { const e = { hidden: false, style: {}, textContent: '', className: '', remove() {} }; made.push(e); return e; };
+  const hadDoc = global.document; global.document = { createElement: mkEl };
+  try {
+    const container = { appendChild() {}, addEventListener() {}, removeEventListener() {} };
+    const ctx = { map: { getContainer: () => container, getZoom: () => 7 }, opts: { getUnit: () => 'US' }, _listeners: [],
+      _on(ev, fn) { handlers[ev] = fn; }, _hpaText: () => null,
+      layer: { fdef: HS, field: 'hs', _tileZoom: 7, readoutAt: (lat) => (lat > 45 ? 1.5 : null), lakeAt: (lat) => lat > 40 } };
+    I.Overlay.prototype._bindReadout.call(ctx);
+    const el = ctx.readout, move = (lat) => handlers.mousemove({ latlng: { lat, lng: -87 }, containerPoint: { x: 10, y: 20 }, originalEvent: { pointerType: 'mouse', target: null } });
+    move(46); assert.equal(el.hidden, false); assert.equal(el.textContent, '4.9 ft', 'a value');
+    move(42); assert.equal(el.hidden, false); assert.equal(el.textContent, 'no data', 'blank lake water');
+    move(30); assert.equal(el.hidden, true, 'land / nothing: no label');
+    ctx.layer.lakeAt = () => false; move(42); assert.equal(el.hidden, true);
+  } finally { global.document = hadDoc; }
+});

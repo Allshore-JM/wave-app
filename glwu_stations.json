@@ -1,0 +1,434 @@
+{
+ "0Y2W3": {
+  "lat": 44.79,
+  "lon": -87.31,
+  "name": "Sturgeon Bay CG Station, WI",
+  "tz": "America/Chicago"
+ },
+ "45001": {
+  "lat": 48.06,
+  "lon": -87.79,
+  "name": "MID SUPERIOR- 60 NM North Northeast Hancock, MI",
+  "tz": "America/New_York"
+ },
+ "45002": {
+  "lat": 45.34,
+  "lon": -86.41,
+  "name": "NORTH MICHIGAN- Halfway between North Manitou and Washington Islands.",
+  "tz": "America/New_York"
+ },
+ "45003": {
+  "lat": 45.35,
+  "lon": -82.84,
+  "name": "NORTH HURON - 32NM Northeast of Alpena, MI",
+  "tz": "America/New_York"
+ },
+ "45004": {
+  "lat": 47.58,
+  "lon": -86.58,
+  "name": "EAST SUPERIOR -70 NM NE Marquette, MI",
+  "tz": "America/New_York"
+ },
+ "45005": {
+  "lat": 41.68,
+  "lon": -82.4,
+  "name": "WEST ERIE - 16 NM NW of Lorain, OH",
+  "tz": "America/New_York"
+ },
+ "45006": {
+  "lat": 47.33,
+  "lon": -89.79,
+  "name": "WEST SUPERIOR - 30NM NE of Outer Island, WI",
+  "tz": "America/New_York"
+ },
+ "45007": {
+  "lat": 42.67,
+  "lon": -87.03,
+  "name": "SOUTH MICHIGAN - 43NM East Southeast of Milwaukee, WI",
+  "tz": "America/New_York"
+ },
+ "45008": {
+  "lat": 44.28,
+  "lon": -82.42,
+  "name": "SOUTH HURON - 43NM East of Oscoda, MI",
+  "tz": "America/New_York"
+ },
+ "45012": {
+  "lat": 43.62,
+  "lon": -77.41,
+  "name": "EAST Lake Ontario - 20NM North Northeast of Rochester, NY",
+  "tz": "America/New_York"
+ },
+ "45014": {
+  "lat": 44.8,
+  "lon": -87.76,
+  "name": "GB17 - South Green Bay, WI",
+  "tz": "America/Chicago"
+ },
+ "45022": {
+  "lat": 45.4,
+  "lon": -85.09,
+  "name": "Little Traverse Bay Buoy, MI",
+  "tz": "America/New_York"
+ },
+ "45023": {
+  "lat": 47.27,
+  "lon": -88.61,
+  "name": "North Entry Buoy, North Keweenaw Peninsula, MI",
+  "tz": "America/New_York"
+ },
+ "45024": {
+  "lat": 43.98,
+  "lon": -86.56,
+  "name": "Ludington Buoy, MI",
+  "tz": "America/New_York"
+ },
+ "45025": {
+  "lat": 46.97,
+  "lon": -88.4,
+  "name": "South Entry Buoy, South Keweenaw Peninsula, MI",
+  "tz": "America/New_York"
+ },
+ "45026": {
+  "lat": 41.98,
+  "lon": -86.62,
+  "name": "Cook Nuclear Plant Buoy, Stevensville, MI",
+  "tz": "America/New_York"
+ },
+ "45027": {
+  "lat": 46.86,
+  "lon": -91.93,
+  "name": "McQuade Harbor Nearshore, MN",
+  "tz": "America/Chicago"
+ },
+ "45028": {
+  "lat": 46.81,
+  "lon": -91.84,
+  "name": "Western Lake Superior",
+  "tz": "America/Chicago"
+ },
+ "45029": {
+  "lat": 42.9,
+  "lon": -86.27,
+  "name": "Holland Buoy, MI",
+  "tz": "America/New_York"
+ },
+ "45132": {
+  "lat": 42.46,
+  "lon": -81.21,
+  "name": "Port Stanley",
+  "tz": "America/New_York"
+ },
+ "45135": {
+  "lat": 43.78,
+  "lon": -76.87,
+  "name": "Prince Edward Pt",
+  "tz": "America/New_York"
+ },
+ "45136": {
+  "lat": 48.53,
+  "lon": -86.95,
+  "name": "Slate Island",
+  "tz": "America/New_York"
+ },
+ "45137": {
+  "lat": 45.54,
+  "lon": -81.02,
+  "name": "Georgian Bay",
+  "tz": "America/New_York"
+ },
+ "45139": {
+  "lat": 43.25,
+  "lon": -79.54,
+  "name": "West Lake Ontario - Grimsby",
+  "tz": "America/New_York"
+ },
+ "45142": {
+  "lat": 42.74,
+  "lon": -79.29,
+  "name": "Port Colborne",
+  "tz": "America/New_York"
+ },
+ "45143": {
+  "lat": 44.94,
+  "lon": -80.63,
+  "name": "South Georgian Bay",
+  "tz": "America/New_York"
+ },
+ "45147": {
+  "lat": 42.43,
+  "lon": -82.68,
+  "name": "Lake St Clair",
+  "tz": "America/New_York"
+ },
+ "45149": {
+  "lat": 43.54,
+  "lon": -82.08,
+  "name": "Southern Lake Huron",
+  "tz": "America/New_York"
+ },
+ "45154": {
+  "lat": 46.05,
+  "lon": -82.64,
+  "name": "North Channel East",
+  "tz": "America/New_York"
+ },
+ "45159": {
+  "lat": 43.77,
+  "lon": -78.98,
+  "name": "NW Lake Ontario Ajax",
+  "tz": "America/New_York"
+ },
+ "45160": {
+  "lat": 43.42,
+  "lon": -79.63,
+  "name": "16-Mile Creek",
+  "tz": "America/New_York"
+ },
+ "45161": {
+  "lat": 43.18,
+  "lon": -86.36,
+  "name": "Muskegon Buoy, MI",
+  "tz": "America/New_York"
+ },
+ "45163": {
+  "lat": 43.99,
+  "lon": -83.59,
+  "name": "Saginaw Bay Buoy, MI",
+  "tz": "America/New_York"
+ },
+ "45165": {
+  "lat": 41.7,
+  "lon": -83.26,
+  "name": "Toledo Water Intake Buoy, Oregon, OH",
+  "tz": "America/New_York"
+ },
+ "45167": {
+  "lat": 42.19,
+  "lon": -80.14,
+  "name": "Erie Nearshore Buoy, Erie, PA",
+  "tz": "America/New_York"
+ },
+ "45168": {
+  "lat": 42.4,
+  "lon": -86.33,
+  "name": "South Haven Buoy, MI",
+  "tz": "America/New_York"
+ },
+ "45169": {
+  "lat": 41.59,
+  "lon": -81.79,
+  "name": "Lakewood Buoy, OH",
+  "tz": "America/New_York"
+ },
+ "45170": {
+  "lat": 41.76,
+  "lon": -86.97,
+  "name": "Michigan City Buoy, IN",
+  "tz": "America/Chicago"
+ },
+ "45171": {
+  "lat": 46.72,
+  "lon": -87.41,
+  "name": "Granite Island Buoy, Granite Island, MI",
+  "tz": "America/New_York"
+ },
+ "45172": {
+  "lat": 46.74,
+  "lon": -85.98,
+  "name": "Grand Marais Buoy, Grand Marais, MI",
+  "tz": "America/New_York"
+ },
+ "45173": {
+  "lat": 46.57,
+  "lon": -86.57,
+  "name": "Munising Buoy, Munising, MI",
+  "tz": "America/New_York"
+ },
+ "45174": {
+  "lat": 42.13,
+  "lon": -87.66,
+  "name": "Wilmette Buoy, IL",
+  "tz": "America/Chicago"
+ },
+ "45195": {
+  "lat": 44.49,
+  "lon": -73.34,
+  "name": "Schuyler Reef, NY",
+  "tz": "America/New_York"
+ },
+ "BARN6": {
+  "lat": 42.35,
+  "lon": -79.59,
+  "name": "Barcelona Harbor, NY",
+  "tz": "America/New_York"
+ },
+ "C58W3": {
+  "lat": 44.15,
+  "lon": -87.56,
+  "name": "Two Rivers CG Station, WI",
+  "tz": "America/Chicago"
+ },
+ "CAPEVINCEN": {
+  "lat": 44.1,
+  "lon": -76.39,
+  "name": "Cape Vincent, NY",
+  "tz": "America/New_York"
+ },
+ "DISW3": {
+  "lat": 47.08,
+  "lon": -90.73,
+  "name": "Devils Island, WI",
+  "tz": "America/Chicago"
+ },
+ "ELONGPOINT": {
+  "lat": 42.53,
+  "lon": -79.79,
+  "name": "East of Long Point, Lake Erie",
+  "tz": "America/New_York"
+ },
+ "GSLM4": {
+  "lat": 44.02,
+  "lon": -83.54,
+  "name": "Gravelly Shoal Light, MI",
+  "tz": "America/New_York"
+ },
+ "IndDunesNP": {
+  "lat": 41.63,
+  "lon": -87.21,
+  "name": "Indiana Dunes National Park, IN",
+  "tz": "America/Chicago"
+ },
+ "IndDunesSP": {
+  "lat": 41.67,
+  "lon": -87.07,
+  "name": "Indiana Dunes State Park, IN",
+  "tz": "America/Chicago"
+ },
+ "LITTLESABL": {
+  "lat": 43.65,
+  "lon": -86.59,
+  "name": "Little Sable Point, MI",
+  "tz": "America/New_York"
+ },
+ "LSCM4": {
+  "lat": 42.47,
+  "lon": -82.76,
+  "name": "Lake St. Clair Light, MI",
+  "tz": "America/New_York"
+ },
+ "N_GREENBAY": {
+  "lat": 45.53,
+  "lon": -87.02,
+  "name": "North Green Bay, MI",
+  "tz": "America/New_York"
+ },
+ "N_HAMLIN": {
+  "lat": 43.59,
+  "lon": -77.99,
+  "name": "Hamlin Beach, NY",
+  "tz": "America/New_York"
+ },
+ "N_MICHIGAN": {
+  "lat": 45.87,
+  "lon": -86.08,
+  "name": "Northern Lake Michigan, MI",
+  "tz": "America/New_York"
+ },
+ "N_OLCOTT": {
+  "lat": 43.57,
+  "lon": -78.79,
+  "name": "Olcott Beach, NY",
+  "tz": "America/New_York"
+ },
+ "OLCN6": {
+  "lat": 43.34,
+  "lon": -78.72,
+  "name": "Olcott Harbor, NY",
+  "tz": "America/New_York"
+ },
+ "OSGN6": {
+  "lat": 43.46,
+  "lon": -76.51,
+  "name": "Oswego, NY",
+  "tz": "America/New_York"
+ },
+ "PILM4": {
+  "lat": 48.22,
+  "lon": -88.37,
+  "name": "Passage Island, MI",
+  "tz": "America/New_York"
+ },
+ "ROAM4": {
+  "lat": 47.87,
+  "lon": -89.31,
+  "name": "Rock of Ages, MI",
+  "tz": "America/New_York"
+ },
+ "RPRN6": {
+  "lat": 43.26,
+  "lon": -77.6,
+  "name": "Rochester Coast Guard, NY",
+  "tz": "America/New_York"
+ },
+ "SBIO1": {
+  "lat": 41.63,
+  "lon": -82.84,
+  "name": "South Bass Island, OH",
+  "tz": "America/New_York"
+ },
+ "SBLM4": {
+  "lat": 43.81,
+  "lon": -83.72,
+  "name": "Saginaw Bay Light #1, MI",
+  "tz": "America/New_York"
+ },
+ "SGNW3": {
+  "lat": 43.75,
+  "lon": -87.69,
+  "name": "Sheboygan, WI",
+  "tz": "America/Chicago"
+ },
+ "SODUSBAY": {
+  "lat": 43.29,
+  "lon": -76.97,
+  "name": "Sodus Bay, NY",
+  "tz": "America/New_York"
+ },
+ "STDM4": {
+  "lat": 47.18,
+  "lon": -87.22,
+  "name": "Stannard Rock, MI",
+  "tz": "America/New_York"
+ },
+ "STURGEONPT": {
+  "lat": 42.7,
+  "lon": -79.04,
+  "name": "Sturgeon Point, NY",
+  "tz": "America/New_York"
+ },
+ "S_GREENBAY": {
+  "lat": 44.98,
+  "lon": -87.5,
+  "name": "South Green Bay, WI",
+  "tz": "America/Chicago"
+ },
+ "Silver_Bch": {
+  "lat": 42.11,
+  "lon": -86.51,
+  "name": "Silver Beach, St. Joseph, MI",
+  "tz": "America/New_York"
+ },
+ "WhihalaBch": {
+  "lat": 41.76,
+  "lon": -87.5,
+  "name": "Whihala Beach, Whiting, IN",
+  "tz": "America/Chicago"
+ },
+ "YGNN6": {
+  "lat": 43.26,
+  "lon": -79.06,
+  "name": "Niagara Coast Guard Station, NY",
+  "tz": "America/New_York"
+ }
+}

@@ -325,7 +325,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.21.0"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.21.1"           # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -436,7 +436,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.23.1"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.24.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -1045,18 +1045,38 @@ SWAN_STATIONS = {
     "51213": "cdip239",  # Kaumalapau Southwest, Lanai
 }
 
-VALID_MODELS = ("GFS", "SWAN")
+VALID_MODELS = ("GFS", "SWAN", "GLWU")
+
+# The Great Lakes stations (plan section 50): NOAA's GLWU model publishes a bulletin for each (the 45xxx buoys, C-MAN / NOS
+# sites, named beach points); the GLWU job stores them in the frames bucket (glwu/v1/<RUN>/bull/<id>.bull) with the
+# NDFD winds at each station (winds.json). Names, positions and nearest civil zones in glwu_stations.json (built by
+# tools/build_glwu_stations.py), kept OUT of station_list.json / station_coords.json / station_timezones.json: the
+# forecast-point time-zone rule reads every coordinate there, as reviewed.
+def _load_glwu_stations() -> dict:
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "glwu_stations.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(k): v for k, v in data.items()
+                if isinstance(v, dict) and isinstance(v.get("name"), str) and isinstance(v.get("tz"), str)
+                and isinstance(v.get("lat"), (int, float)) and isinstance(v.get("lon"), (int, float))}
+    except Exception:
+        return {}
+
+
+GLWU_STATIONS = _load_glwu_stations()
 
 
 def resolve_model(station_id: str, requested: str | None) -> str:
     """Validate a requested forecast model for a station.
 
-    "SWAN" is honored only for stations with a PacIOOS bulletin; anything else
-    (unknown values, uncovered stations, absent param) silently resolves to
-    "GFS" so stale ?model=SWAN URLs degrade gracefully.
+    A Great Lakes station is always "GLWU" (the only model with lake data). "SWAN" is honored only for stations with
+    a PacIOOS bulletin; anything else (unknown values, uncovered stations, absent param, "GLWU" off the lakes)
+    silently resolves to "GFS" so stale ?model=SWAN URLs degrade gracefully.
     """
+    if station_id in GLWU_STATIONS:
+        return "GLWU"
     model = (requested or "GFS").strip().upper()
-    if model not in VALID_MODELS:
+    if model not in VALID_MODELS or model == "GLWU":
         return "GFS"
     if model == "SWAN" and station_id not in SWAN_STATIONS:
         return "GFS"
@@ -1168,7 +1188,8 @@ def get_station_tz(station_id: str):
         return None
     m = load_station_timezones()
     k = str(station_id).strip()
-    return m.get(k) or m.get(k.upper())
+    lake = GLWU_STATIONS.get(k)                       # a Great Lakes station's zone (plan section 50)
+    return m.get(k) or m.get(k.upper()) or (lake["tz"] if lake else None)
 
 def load_station_metadata():
     """Fetch NDBC station_table for names and coarse lat/lon; fallback to defaults."""
@@ -1226,6 +1247,10 @@ def get_station_list() -> list[tuple[str, str]]:
             info = meta.get(sid_str)
             name = info['name'] if info and 'name' in info else sid_str
             stations.append((sid_str, name))
+        listed = {sid for sid, _ in stations}
+        for sid, info in GLWU_STATIONS.items():      # the Great Lakes stations follow (plan section 50)
+            if sid not in listed:
+                stations.append((sid, info["name"]))
         if stations:
             return stations
     except Exception:
@@ -1257,6 +1282,9 @@ def get_stations_data():
         if sid in coords_map:
             lat = coords_map[sid]['lat']
             lon = coords_map[sid]['lon']
+        lake = GLWU_STATIONS.get(sid)
+        if lake:                                     # a Great Lakes station: its own file's name and position
+            name, lat, lon = lake["name"], lake["lat"], lake["lon"]
         if (lat is None or lon is None) and sid in DEFAULT_STATIONS:
             fallback_info = DEFAULT_STATIONS[sid]
             lat = fallback_info.get('lat')
@@ -1706,7 +1734,7 @@ def _cached_forecast(key):
     return None
 
 
-def _forecast_singleflight(key, build):
+def _forecast_singleflight(key, build, ttl=None):
     """Cached forecast lookup with one build per key at a time.
 
     Two identical cold requests (a reload while the first is still fetching NOAA) used to
@@ -1730,7 +1758,7 @@ def _forecast_singleflight(key, build):
             if data and not data[-1]:
                 with _CACHE_LOCK:
                     _FORECAST_CACHE[key] = {"ts": time.time(), "data": data,
-                                            "ttl": _forecast_entry_ttl(data)}
+                                            "ttl": ttl or _forecast_entry_ttl(data)}
                     _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
             return data
         finally:
@@ -1772,8 +1800,15 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
     # GFS wind for the Wind table columns -- pinned to the SAME cycle as this
     # bull so the two can never skew across a run rollover. {} on failure.
     wind_map = get_station_wind(station_id, date_str, run_str)
+    return _parse_bull_text(resp.text, station_id, target_tz_name, date_str, run_str, wind_map)
 
-    lines = resp.text.splitlines()
+
+def _parse_bull_text(text: str, station_id: str, target_tz_name: str | None, date_str: str, run_str: str,
+                     wind_map: dict):
+    """The text half of _parse_bull_uncached (a WAVEWATCH III station bulletin: GFS-Wave's, and the Great Lakes
+    GLWU run's, plan section 50, which writes the same layout). date_str / run_str: the run's YYYYMMDD / HH when the
+    Cycle line cannot be read; wind_map: {UTC hour: (m/s, deg FROM)}. Returns the parse_bull() 6-tuple."""
+    lines = text.splitlines()
     # Headers
     cycle_line = next((l for l in lines if l.lower().strip().startswith("cycle")), lines[0] if lines else "")
     location_line = next((l for l in lines if l.lower().strip().startswith("location")), lines[1] if len(lines) > 1 else "")
@@ -2018,6 +2053,133 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
         return cycle_str, location_str, model_run_str, None, effective_tz_name, "No data rows parsed from .bull file."
 
     return cycle_str, location_str, model_run_str, rank_rows(rows), effective_tz_name, None
+
+# ------------------------- Great Lakes (GLWU) bulletins -------------------------
+# Plan section 50: the Great Lakes stations' tables come from NOAA's GLWU bulletins, which the GLWU job copies into the
+# frames bucket for each run (the site never asks NOMADS): glwu/v1/latest.json -> the run's manifest (bulletins.ids,
+# winds) -> glwu/v1/<RUN>/bull/<id>.bull and glwu/v1/<RUN>/winds.json (the NDFD wind at each station, every hour, m/s
+# and degrees FROM). A station whose bulletin the newest run left out (missing or bad on NOMADS) is read from the
+# newest kept run that has it (the cycle line says which). Objects through _points_fetch (one attempt, a wall clock).
+GLWU_PREFIX = "glwu/v1"
+_GLWU_RUN = {"ts": 0.0, "run": None, "manifest": None, "good": 0.0}
+_GLWU_RUN_TTL = 5 * 60                # the pointer moves every 6 h (cycles 01/07/13/19Z, ~30 min after)
+_GLWU_RUN_KEEP = 6 * 3600             # a pointer that cannot be read: the last good run serves this long
+_GLWU_LOCK = threading.Lock()
+_GLWU_WINDS = OrderedDict()           # run -> {station: [[m/s, deg] | None per step]}, the last few runs
+_GLWU_KEPT_BACK = (6, 12, 18)         # the job keeps 4 runs: the newest and three cycles before it
+_GLWU_MAX_BYTES = {"pointer": 64 * 1024, "manifest": 256 * 1024, "bull": 256 * 1024, "winds": 2 * 1024 * 1024}
+GLWU_UNAVAILABLE = "Great Lakes forecasts are not available on this server"
+_GLWU_CYCLE_RE = re.compile(r"Cycle\s*:\s*(?:NOAA GLWU\s+)?(\d{8})\s+(\d{1,2})\s*UTC")
+_GLWU_RUN_RE = re.compile(r"^\d{10}$")
+
+
+def _glwu_json(root, key, kind):
+    return json.loads(_points_fetch(f"{root}/{key}", _GLWU_MAX_BYTES[kind]).decode("utf-8"))
+
+
+def _glwu_latest(root):
+    """(run, manifest) of the newest published lake run (cached _GLWU_RUN_TTL; a failed read keeps the last good one
+    for _GLWU_RUN_KEEP), or (None, None)."""
+    now = time.time()
+    with _GLWU_LOCK:
+        if _GLWU_RUN["run"] and now - _GLWU_RUN["ts"] < _GLWU_RUN_TTL:
+            return _GLWU_RUN["run"], _GLWU_RUN["manifest"]
+    try:
+        ptr = _glwu_json(root, f"{GLWU_PREFIX}/latest.json?ts={int(now // _GLWU_RUN_TTL)}", "pointer")
+        run, key = ptr.get("run"), ptr.get("manifest")
+        if not (ptr.get("complete") is True and isinstance(run, str) and _GLWU_RUN_RE.match(run) and isinstance(key, str)
+                and key.startswith(f"{GLWU_PREFIX}/{run}/") and ".." not in key):
+            raise ValueError("unsupported GLWU pointer")
+        with _GLWU_LOCK:
+            if _GLWU_RUN["run"] == run and _GLWU_RUN["manifest"]:
+                _GLWU_RUN.update(ts=now, good=now)
+                return run, _GLWU_RUN["manifest"]
+        man = _glwu_json(root, key, "manifest")
+        if man.get("run") != run or not isinstance(man.get("bulletins"), dict):
+            raise ValueError("unsupported GLWU manifest")
+        with _GLWU_LOCK:
+            _GLWU_RUN.update(ts=now, good=now, run=run, manifest=man)
+        return run, man
+    except Exception as exc:
+        logger.warning("GLWU pointer / manifest unreadable: %r", exc)
+        with _GLWU_LOCK:
+            if _GLWU_RUN["run"] and now - _GLWU_RUN["good"] < _GLWU_RUN_KEEP:
+                _GLWU_RUN["ts"] = now                 # asked again after the TTL, not on every request
+                return _GLWU_RUN["run"], _GLWU_RUN["manifest"]
+        return None, None
+
+
+def _glwu_winds(root, run, station_id):
+    """{naive UTC hour: (m/s, deg FROM)} for the station from the run's winds.json ({} without one: the Wind column
+    stays blank, the waves never wait for it)."""
+    with _GLWU_LOCK:
+        doc = _GLWU_WINDS.get(run)
+        if doc is not None:
+            _GLWU_WINDS.move_to_end(run)
+    if doc is None:
+        try:
+            doc = _glwu_json(root, f"{GLWU_PREFIX}/{run}/winds.json", "winds")
+            if doc.get("run") != run or not isinstance(doc.get("steps"), list) or not isinstance(doc.get("stations"), dict):
+                raise ValueError("unsupported GLWU winds")
+        except Exception as exc:
+            logger.warning("GLWU winds for %s unreadable: %r", run, exc)
+            return {}
+        with _GLWU_LOCK:
+            _GLWU_WINDS[run] = doc
+            while len(_GLWU_WINDS) > 4:
+                _GLWU_WINDS.popitem(last=False)
+    run_dt = datetime.strptime(run, "%Y%m%d%H")
+    out = {}
+    for step, cell in zip(doc["steps"], doc["stations"].get(station_id) or []):
+        if isinstance(step, int) and isinstance(cell, list) and len(cell) == 2:
+            out[run_dt + timedelta(hours=step)] = (cell[0], cell[1])
+    return out
+
+
+def _glwu_bulletin(root, run, station_id):
+    """The station's bulletin of that run, its Cycle line rewritten "Cycle : NOAA GLWU YYYYMMDD HH UTC" (NOAA writes
+    the 01Z / 07Z hours space-padded), or None when the run has none (404) or it is not the station's / the run's."""
+    try:
+        text = _points_fetch(f"{root}/{GLWU_PREFIX}/{run}/bull/{station_id}.bull", _GLWU_MAX_BYTES["bull"]).decode("ascii", "replace")
+    except Exception as exc:
+        if "HTTP 404" not in str(exc):
+            logger.warning("GLWU bulletin %s / %s unreadable: %r", run, station_id, exc)
+        return None
+    loc = re.search(r"Location\s*:\s*(\S+)", text)
+    cyc = _GLWU_CYCLE_RE.search(text)
+    if not loc or loc.group(1) != station_id or not cyc or cyc.group(1) != run[:8] or int(cyc.group(2)) != int(run[8:]):
+        logger.warning("GLWU bulletin %s / %s is not that station's or that run's", run, station_id)
+        return None
+    return text[:cyc.start()] + f"Cycle : NOAA GLWU {run[:8]} {run[8:]} UTC" + text[cyc.end():]
+
+
+def parse_glwu(station_id: str, target_tz_name: str | None = None):
+    """Cached Great Lakes forecast (the parse_bull() 6-tuple), keyed (station, tz, "GLWU"). A run's winds never change,
+    so a gap in the Wind column does not shorten the cache (as the GFS .spec lagging its bulletin does)."""
+    key = (station_id, target_tz_name or "", "GLWU")
+    return _forecast_singleflight(key, lambda: _parse_glwu_uncached(station_id, target_tz_name),
+                                  ttl=_FORECAST_CACHE_TTL)
+
+
+def _parse_glwu_uncached(station_id: str, target_tz_name: str | None = None):
+    if station_id not in GLWU_STATIONS:
+        return None, None, None, None, 'UTC', f"No Great Lakes forecast for {station_id}"
+    root = _points_root()
+    if not root:
+        return None, None, None, None, 'UTC', GLWU_UNAVAILABLE
+    latest, man = _glwu_latest(root)
+    if not latest:
+        return None, None, None, None, 'UTC', "Could not reach the Great Lakes forecast (NOAA GLWU)"
+    newest = datetime.strptime(latest, "%Y%m%d%H")
+    ids = (man.get("bulletins") or {}).get("ids") or []
+    # the newest run when it lists the station, then the kept runs before it
+    runs = ([latest] if station_id in ids else []) + [(newest - timedelta(hours=h)).strftime("%Y%m%d%H") for h in _GLWU_KEPT_BACK]
+    for run in runs:
+        text = _glwu_bulletin(root, run, station_id)
+        if text is None:
+            continue
+        return _parse_bull_text(text, station_id, target_tz_name, run[:8], run[8:], _glwu_winds(root, run, station_id))
+    return None, None, None, None, 'UTC', f"No Great Lakes forecast found for {station_id}"
 
 # --------------------------- PacIOOS SWAN parser --------------------------------
 
@@ -2767,7 +2929,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         else:
             point = out["point"] = {k: v for k, v in point.items() if not k.startswith("_")}
     else:
-        parser = parse_swan if model == "SWAN" else parse_bull
+        parser = parse_swan if model == "SWAN" else parse_glwu if model == "GLWU" else parse_bull
         cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parser(
             station, tz or None
         )
@@ -2782,8 +2944,9 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     # anywhere in the run (a series costs no width). The classic (non-compact) table keeps all six for old clients.
     present = _swell_groups(rows) or [0]
     week = _swell_groups(rows, days=7) or present
-    # every row has wind (a transient NOAA miss leaves gaps: the page keeps such a forecast for a minute only)
-    out["wind_complete"] = all(len(r) > 21 and r[20] is not None for r in rows)
+    # every row has wind (a transient NOAA miss leaves gaps: the page keeps such a forecast for a minute only); a Great
+    # Lakes run's winds are fixed with the run (a gap never heals by asking again: 45195 on Lake Champlain has none)
+    out["wind_complete"] = model == "GLWU" or all(len(r) > 21 and r[20] is not None for r in rows)
 
     # single map marker if coords JSON has it
     coords_map = load_station_coords()
@@ -2796,6 +2959,8 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     elif sid_str in coords_map:
         out["lat"] = coords_map[sid_str]['lat']
         out["lon"] = coords_map[sid_str]['lon']
+    elif sid_str in GLWU_STATIONS:
+        out["lat"], out["lon"] = GLWU_STATIONS[sid_str]["lat"], GLWU_STATIONS[sid_str]["lon"]
     sky_lat, sky_lon = out["lat"], out["lon"]
     if sky_lat is None:
         sky_lat, sky_lon = _parse_header_coords(location_str)        # the bulletin's own "(21.67N 158.12W)"
@@ -3016,6 +3181,12 @@ def _effective_tz_name(station_id: str, requested_tz: str | None) -> str:
     return "UTC"
 
 
+def _glwu_overlay_enabled() -> bool:
+    """GLWU_OVERLAY=1: the overlay draws the Great Lakes waves (NOAA GLWU, plan section 50: glwu/v1/ frames under the
+    GFS model's wave height and period). Off by default: the client ships first, the setting goes on after the test site."""
+    return os.environ.get("GLWU_OVERLAY", "0") == "1"
+
+
 def _overlay_context(selected_station, selected_tz, payload):
     """Template variables for the optional overlays; empty (and no work) when the feature is off.
     Off means the flag unset OR no frames base configured (nothing to point the browser at)."""
@@ -3024,7 +3195,7 @@ def _overlay_context(selected_station, selected_tz, payload):
         return {"model_overlays": False}
     tz_name = (payload.get("tz_label") if payload else None) or _effective_tz_name(selected_station, selected_tz)
     return {"model_overlays": True, "model_frames_base": base, "overlay_models": _overlay_models(),
-            "overlay_sst": _sst_overlay_enabled(),
+            "overlay_sst": _sst_overlay_enabled(), "overlay_glwu": _glwu_overlay_enabled(),
             "overlay_asset_version": OVERLAY_ASSET_VERSION, "forecast_tz_name": tz_name}
 
 

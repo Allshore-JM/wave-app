@@ -251,3 +251,102 @@ Timed cells (PREGC, frames warm at the edge for both Origins, 45-s idles; test 2
 - Every live set is within production + 10 MB (+8.1, +6.0, -0.5, +6.4). Every peak is within production's range + 10.
 - The first lakes pair ran in a slower machine state on both sites: renders of 100-140 ms, long tasks 48 % / 29 %.
 - No GPU stall (K-1) in the phone cell this time.
+
+## Re-check of the fix round (2026-10-22, Opus 5.5 MAX)
+One fresh reviewer, on the code (`8d18c4b..1d844de`) and the test site (test @ 6308ef3, overlay 2.21.5) with trusted input.
+Report: scratch `g33/recheck/recheck-report.md`. Nothing was changed on any branch, the test site, production or the bucket.
+
+**0 P0, 0 P1, 0 P2, 7 P3, plus 3 notes.**
+
+### Findings
+- **P3-1 (a regression from F3): a lake run already in hand is adopted a second time.**
+  - `LakeStore.load` captures `was` (the run in hand) when the re-read starts. With `next` already set by the run check,
+    a mount re-reads, and the mount's own `_goto` adopts `next` before the pointer answers. The answer is newer than
+    `was` but not newer than the run now in hand, so it goes back into `next`, and `_loadLakes` adopts it again.
+  - The second adoption aborts the lake fetches, empties both lake caches and drops the drawn lake.
+  - Site (`s/rc.js double`): the older run served at load, the newer one noted, then a trusted field switch: two
+    adoptions 323 ms apart, the drawn lake blanked once, 20 lake frame requests instead of about 10. At 8d18c4b: one.
+  - Trigger: a page left 30 minutes after a new lake run published, then a field switch, Retry or Off/On.
+- **P3-2 (a new path from F1b): the lake callback leaves the gate's state null.**
+  - `_loadLakes`'s callback sets `_lakeGateNear = null` before its early returns (an Update pending, another manifest).
+    The next move out of reach then finds `was === null` and only records it.
+  - Site (`updatepan`): a re-read answering during a pending Update, then a move to Hawaii: 2 lake fetches still in
+    flight (4 in flight against a cap of 2), the old picture's lake still drawn, 1 + 1 lake frames cached out of reach.
+- **P3-3 (a gap F1 did not close; also at 8d18c4b): under wind and under SST, leaving the lakes keeps their frames.**
+  - Under wind nothing seeds the gate (wind wants no lake frames); under SST the gate records the reach but returns
+    before acting (`mode !== 'model'`). A field switch does not empty the lake caches.
+  - Node (`mine.js windPanOut`, `sstPanOut`): wave height on the lakes, then wind or SST, a move to Hawaii, back to wave
+    height: 5 + 5 lake frames (about 3.2 MB; up to 9 + 9 at shark speed) still cached out of reach.
+  - The reviewer's stricter fuzz (`fuzz2.js`: "no lake frame cached out of reach" as a hard check, SST added) fails 9 of
+    1,300 seeds, all on this.
+- **P3-4 (new with B-2): the readout's re-show starts the next step's height frame during playback.**
+  - When the hover's height frame lands, `onReady` re-runs the readout, which asks for the CURRENT step's frame. If the
+    step has moved on, a new fetch starts, and so on.
+  - Site (`hoverslow`, height frames delayed 300 ms): one trusted move 1 s into shark playback, then the cursor at rest:
+    23 height frames in 8 s and "…" in all 81 samples. With a warm edge (about 60 ms) it does not start. 8 fps held.
+- **P3-5: the lakes credit follows the lake grid's box, not lake water.**
+  - `_lakeOnScreen` tests the grid's node box (41.2-49.2 N, 92.4-75.8 W): most of Michigan's Lower Peninsula, eastern
+    Wisconsin and southern Ontario.
+  - Site (`credit`): Lansing MI and Madison WI at zoom 10 are credited with no lake pixel on screen.
+- **P3-6 (new about B-1): a lakes coast set retry fetches lake frames while it loads.**
+  - `_wantLake` blocks lake frames only while the coast set's status is `failed`; a retry sets `loading`.
+  - Site (`coastretry`): the coast index 404 at load, a retry 62 s later that hangs: 18 lake frame requests over 5
+    steps, all dropped when the retry fails again.
+- **P3-7: test strength.** 34 new mutants of the fix round on scratch copies: 18 killed, 16 survived. 9 survivors are
+  behaviour changes no test notices:
+  - R03: the gate's `_prefetch` after a drop (reviewer A's fuzz on that mutant: 9 of 200 seeds over the cap).
+  - R13: the lake callback's `_lakeNear = null` (a move during the first lake load: the lakes never come).
+  - R27 / R28: the readout's re-show through `_bindReadout` (the B-2 tests call `_lakeWord` with their own callback).
+  - R06 / R08: `_dropLakes` / `_dropLakeHs` keep or never abort the hover's height frame.
+  - R12: a failed coast set keeps the caches and the drawn lake (only the cap re-trim is tested).
+  - R14: a failed re-read is asked again at every mount.
+  - R22: the height frame's grid is not validated.
+  - Equivalent or harmless: R04 (anchor not found), R07, R09, R23, R26, R30, R33.
+
+### Notes
+- N-1: the author's site check of B-2 moved the mouse a second time before reading "calm", so it never tested the
+  re-show. The reviewer did: with a 1-s height frame, "…" at 500 ms, then "calm" at 2.5 s with no further move.
+- N-2: `g33/fix/mut8_out.txt` lists 3 survivors; it predates the last B-1 test. At 1d844de that mutant is killed (the
+  reviewer's R29), so the fix-round record's 29 killed / 2 equivalent stands.
+- N-3: the hover's height fetch has no stall watchdog: a hung frame reads "…" until the step changes.
+
+### What held
+- Suites at 1d844de: Node 904, pytest 1,243 (the fix round's counts).
+- Reviewer A's reproductions of F1, F1's 404 variant, F1b, F2 and F3 no longer reproduce; A's `extra.js` 8 / 8.
+- A's fuzz over 2,700 seeds (1,400 new): 0 failures. The stricter fuzz with "F1 during a pending Update" as a hard
+  check: 0 such failures.
+- Site: a newer lake run adopted during 1x playback with 24 trusted drags on and off the lakes: 85 landings, none with
+  another time's lake, none bare, no two-run particle pairing, nothing held at the out-of-reach checkpoints.
+- "calm" by mouse hover (1280x800), by long-press on a 375x812 phone, and at world copies +-360.
+- The real run 2026102219: every water node without a period has a height of 0.09 m or less. Of 3.1 M sub-node samples
+  with no period, 43 read "no data" at 0.20-0.34 m (boundary pixels): within K-4.
+- The credit through peak period, wind, SST, wave height, Off, ECMWF and GFS: right in 9 of 9.
+- N3 and Q6 (`app.py`) hold. Console clean everywhere; the harness browser had no sign-in before or after.
+- Not covered: a timed pair against production and memory; a real newer lake run (staged with the 01Z pointer); iPad,
+  WebKit and real touch hardware; K-1; a real slow network for P3-4; a real partial GLWU build.
+
+### The author's checks
+- The reviewer's Node reproductions (`g33/recheck/fuzz/mine.js`) re-run on 1d844de's own `overlay.js` (from git) with the
+  repository's fixtures: P3-1 (both the quick and the slow-pointer case: the drawn lake dropped and 10 lake frames
+  fetched again), P3-2, P3-3 (wind and SST), P3-4 and P3-6 reproduce exactly. The R13 case holds on the real code.
+- P3-5 in the code: `_lakeOnScreen` = `lakeNearView(view, ll.grid, 0)`, the grid's box.
+- P3-6 in the code: `CoastStore.load` sets `loading` on a retry and keeps `failedAt`; `_wantLake` tests `failed` only.
+
+## Fix round 2 scope (overlay asset 2.21.6)
+1. P3-1: the re-read judges its answer against the run in hand when it answers (at the pointer and at the result).
+   `adoptNewer` refuses a run that is not newer than the one in hand. `_adoptLake` aborts and empties only when an
+   adoption happened.
+2. P3-2 and P3-3: leaving the lakes drops everything of them whatever the mode or the gate's history: whenever the gate
+   finds the lakes out of reach and anything is held (a lake fetch, either lake cache, the drawn lake, the animator's
+   lake data, the hover's height frame), `_dropLakes` runs, and `_prefetch` re-trims in model mode. The lake callback
+   re-judges the reach at once instead of leaving it null. The in-reach start keeps its transition rule.
+3. P3-4: the hover's height frame re-shows the readout only while it is still the shown step's. N-3: a stall watchdog
+   (15 s) turns a hung height frame into "no data".
+4. P3-5: the credit follows lake water on screen: a tile in view whose lake coverage reaches into the visible part, with
+   a lake frame drawn.
+5. P3-6: no lake frames while the lakes coast set loads again after a failure. The first load keeps its no-wait start;
+   the coast set's arrival starts the shown step's frames (now load-bearing, so pinned).
+6. Tests: one per finding, and the reviewer's gaps R03, R13, R27 / R28, R06 / R08, R12, R14 and R22. The reviewer's
+   stricter fuzz run on the fixed code (0 failures required); mutants on the fixes; the asset pin.
+7. Then a short test-site check at MAX: the reviewer's site scenarios (`s/rc.js double`, `updatepan`, `hoverslow`,
+   `credit`, `coastretry`) and the regression set, and a timed lakes pair against production.

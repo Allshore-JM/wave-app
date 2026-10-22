@@ -565,6 +565,48 @@ test('the published lakes coast set: the store asks for index.json and lakes-i.b
   } finally { delete global.fetch; }
 });
 
+// Step 6 found the lakes blank in every tile the LAND set shows as nothing but land (the Great Lakes are land there):
+// the all-land shortcut (G31-6) cleared those tiles before the lake coverage was looked at, and composeTile turned the
+// LAND_ALL sentinel into NaN alpha. Such a tile draws its lake water (from the lake frame, or the model's own cells).
+test('a tile of nothing but land in the land set draws its lake water: the lake frame (GFS) or the model\'s own cells (ECMWF); readout = drawn there; composeTile with LAND_ALL', () => {
+  const D = (deg) => Math.round(deg * 10000), sq2 = (x0, y0, x1, y1) => [D(x0), D(y0), D(x1), D(y0), D(x1), D(y1), D(x0), D(y1)];
+  const landSet = I.decodeCoast(encodeCoast([[sq2(-95, 40, -75, 50)]], 30));            // the whole region land (the lakes are land in coast v1)
+  const lakeSet = I.decodeCoast(encodeCoast([[sq2(-89.5, 47.3, -87.5, 48.7), rev(sq2(-88.5, 47.8, -88.3, 48))]], 30));
+  const store = (set) => ({ status: 'ok', rev: 0, onChange: null, onNeeded: null, tier0: set, index: { tier0: { max_zoom: 6 }, tier1: { cell: 5, cells: {} } }, tier1Zoom: () => false, setsFor: () => ({ sets: [set], complete: true }) });
+  let put = null, cleared = 0;
+  const canvas = () => ({ getContext: () => ({ clearRect() { cleared++; }, createImageData: () => ({ data: new Uint8ClampedArray(TILE * TILE * 4) }), putImageData(img) { put = img; } }) });
+  const px = (lat, lon) => { const p = I.pixelOf(lat, lon, 7); return p.py * TILE + p.px; };
+  const lf = lakeFrame(lakeFn, HS), data = { frame: lf, grid: LG, entry: { step: 12, valid_utc: '2026-10-22T07:00:00Z' }, lo: HS.lo, hi: HS.hi };
+  for (const withLakeFrame of [true, false]) {
+    const l = layer(globalFrame(PATTERN), 'hs', HS, null);
+    l.setCoast(store(landSet)); l.setLakeCoast(store(lakeSet));
+    l.setFrame(globalFrame(PATTERN), GRID, 'hs', HS, I.buildLut('hs', HS.legend), data.entry, withLakeFrame ? data : null);
+    assert.equal(l._clip, true); assert.equal(l._lakeMask, true);
+    const el = canvas(); put = null; cleared = 0;
+    l._draw(el, SUPERIOR);
+    assert.equal(el._ovLand, I.LAND_ALL, 'the tile is nothing but land in the land set');
+    assert.ok(el._ovLake && el._ovLake[px(48.5, -89)] === 255, 'its lake coverage was computed');
+    assert.ok(put, 'the tile was drawn (not cleared by the all-land shortcut)'); assert.equal(cleared, 0);
+    const a = (lat, lon) => put.data[px(lat, lon) * 4 + 3];
+    if (withLakeFrame) assert.equal(a(48.5, -89), 255, 'lake water drawn from the lake frame');
+    else {
+      const codes = l.tileCodes(SUPERIOR, new Float64Array(TILE * TILE), 0, el._ovLake);
+      assert.equal(a(48.5, -89), codes[px(48.5, -89)] ? 255 : 0, 'lake water drawn from the model\'s own codes where it has them');
+    }
+    assert.equal(a(47.9, -88.4), 0, 'the island stays blank'); assert.equal(a(47.15, -89.8), 0, 'the land stays blank');
+    l._tiles[key(SUPERIOR)] = { el, coords: SUPERIOR };
+    const v = l.readoutAt(48.5, -89, 7);
+    assert.equal(v === null, a(48.5, -89) < I.LAND_READOUT, 'readout = drawn on the lake (' + v + ')');
+    assert.equal(l.readoutAt(47.15, -89.8, 7), null, 'no readout on land');
+  }
+  // composeTile: LAND_ALL means alpha 0 except where the lake coverage says water
+  const codes = new Float64Array(4).fill(100), lake = new Uint8Array([0, 255, 128, 0]), d = new Uint8ClampedArray(16);
+  I.composeTile(codes, I.LAND_ALL, I.buildLut('hs', HS.legend), HS.lo, HS.hi, HS.legend[0], HS.legend[1], d, lake);
+  assert.deepEqual([d[3], d[7], d[11], d[15]], [0, 255, 128, 0]);
+  I.composeTile(codes, I.LAND_ALL, I.buildLut('hs', HS.legend), HS.lo, HS.hi, HS.legend[0], HS.legend[1], d, null);
+  assert.deepEqual([d[3], d[7], d[11], d[15]], [0, 0, 0, 0], 'without lakes: nothing');
+});
+
 async function realFrame(name) {
   const buf = fs.readFileSync(path.join(FIX, name));
   return I.decodePngGrey(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));

@@ -744,6 +744,11 @@ lakes under the GFS model selection (plan section 50's client steps).
   `index.json` (the land set `world-i.bin`, the Great Lakes set `lakes-i.bin`) and refuses an index that names another
   file. 2.21.1 asked for `world-i.bin` under `lakes-v1/` (404): no lake coverage, so the lakes were never drawn; the
   step-6 test site found it, and `tests/overlay/lake.test.js` now loads the published index and overview.
+- **Lake water in all-land tiles (overlay asset 2.21.3)**: the land set counts the Great Lakes as land, so most tiles
+  over the lakes are "nothing but land" there; the draw's all-land shortcut (G31-6) cleared them before the lake
+  coverage was looked at (2.21.2 drew only the tiles that also held sea, e.g. Lake Ontario's). The coverage now
+  comes first and the shortcut applies only without lake water; `composeTile` reads the all-land marker as alpha 0, so
+  lake pixels take their coverage. Both the lake frames (GFS) and ECMWF's own lake cells were affected.
 - **The lake tables** (UI asset 1.24.0): the 72 stations (`glwu_stations.json`: name, position and nearest civil zone,
   built by `tools/build_glwu_stations.py` from `glwu_fetch.STATIONS`, NDBC's station table and names written there for
   NOAA's 14 beach points) join the station list, the map and the picker after the GFS ones; they live in their OWN file,

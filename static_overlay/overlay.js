@@ -31,7 +31,8 @@
   // run X" note reads (the table is always GFS-Wave / SWAN); attribution: <= 29 visible characters (the GFS rule above).
   // The ECMWF credit is the short form; the title carries the notice; the manifest's model block has the full text.
   var MODEL_DEFS = {
-    gfswave: { prefix: 'gfswave/0p25/v1', label: 'GFS-Wave (WAVEWATCH III)', short: 'GFS', cycleMs: 6 * 3.6e6, staleS: 9 * 3600, table: 'cycle', attribution: ATTRIBUTION },
+    // lakes: the Great Lakes wave frames (NOAA GLWU, plan section 50) are drawn under this model's wave height and period
+    gfswave: { prefix: 'gfswave/0p25/v1', label: 'GFS-Wave (WAVEWATCH III)', short: 'GFS', cycleMs: 6 * 3.6e6, staleS: 9 * 3600, table: 'cycle', attribution: ATTRIBUTION, lakes: true },
     // the credit's "ECMWF" opens the site's notice (/notice/ecmwf: copyright, source, licence, ECMWF's disclaimer, what
     // Allshore Surf changed; owner, G30-4: a notice, linked from the credit)
     ecmwf: { prefix: 'ecmwf/0p25/v1', label: 'ECMWF IFS wave (ecWAM)', short: 'ECMWF', cycleMs: 12 * 3.6e6, staleS: 15 * 3600, table: 'model',
@@ -541,11 +542,14 @@
     return mask;
   }
   // Codes -> RGBA for one tile: colour from the ramp over the legend range, alpha 255 (no data: 0)
-  // times the ocean fraction (255 - land).
-  function composeTile(codes, land, lut, lo, hi, L0, L1, d) {
+  // times the ocean fraction (255 - land). lake (plan section 50): the tile's Great Lakes water coverage (0..255 per
+  // pixel, or null): the lakes are land in the coastline set, so a lake pixel's alpha is its lake coverage instead
+  // (the larger of the two: one alpha rule, shared with the readout and the particles).
+  function composeTile(codes, land, lut, lo, hi, L0, L1, d, lake) {
     var scale = 255 / (L1 - L0);
     for (var i = 0, k = 0; i < codes.length; i++, k += 4) {
       var code = codes[i], a = land ? 255 - land[i] : 255;
+      if (lake && lake[i] > a) a = lake[i];
       if (!code || !a) { d[k + 3] = 0; continue; }
       var t = Math.round((lo + (code - 1) / 254 * (hi - lo) - L0) * scale);
       t = t < 0 ? 0 : t > 255 ? 255 : t;
@@ -1154,6 +1158,213 @@
     return out;
   };
 
+  // ---- the Great Lakes (plan section 50) ----
+  // NOAA's GLWU model gives the Great Lakes waves GFS-Wave masks: hourly frames to +149 h on their own 0.02-degree
+  // grid (not periodic, one resolution), published under glwu/v1 with the SAME encoding and ranges as the model's
+  // hs / tp / pdir, so one colour table, one legend and one code space serve both. Under the GFS wave height and
+  // period, the lake frame of the SAME VALID TIME rides beside the step's own frames (two more frame kinds in the
+  // scheduler, 'lake' and 'lakedir'); the tiles sample it where the lakes coast set (static/coast/lakes-v1, GSHHG
+  // level 2 water with its islands cut out) says lake water, the global frame everywhere else. Past the lake run's
+  // horizon, or without a lake run, the lakes are blank (the GFS frames hold 0 there) and the readout says so. Under
+  // ECMWF only the mask applies: its own 0.25-degree lake cells show through (owner, 2026-10-21).
+  var LAKE_PREFIX = 'glwu/v1';
+  var LAKE_UNDER = { hs: true, tp: true };                 // the fields the lake mask and frames apply to (never wind, SST)
+  var LAKE_DIR_FIELD = 'pdir';
+  var MAX_LAKE_MANIFEST_BYTES = 256 * 1024;                // a run's manifest is ~13 KB
+  var MAX_LAKE_NODES = 1 << 20;                            // the published grid is 831 x 401; a frame is decoded against it
+  var LAKE_BOX = { latS: 40, latN: 50, lonW: -95, lonE: -75 };   // the Great Lakes; a grid outside it is not this product
+  var LAKE_FULL = null;                                    // a whole tile of lake water (one shared 255 array)
+  function lakeFull() { if (!LAKE_FULL) { LAKE_FULL = new Uint8Array(TILE * TILE); LAKE_FULL.fill(255); } return LAKE_FULL; }
+  // The lake grid the client can draw: centre-registered, not periodic, rows south-down, within the Great Lakes box,
+  // a bounded size (the frames are decoded against it).
+  function validLakeGridDef(g) {
+    if (!g || typeof g !== 'object' || g.registration !== 'center' || g.lon_periodic !== false) return false;
+    if (!(Number.isInteger(g.cols) && Number.isInteger(g.rows) && g.cols >= 2 && g.rows >= 2 && g.cols * g.rows <= MAX_LAKE_NODES)) return false;
+    if (!(typeof g.lat0 === 'number' && typeof g.lon0 === 'number' && typeof g.dlat === 'number' && typeof g.dlon === 'number' && g.dlat < 0 && g.dlon > 0)) return false;
+    var latS = g.lat0 + (g.rows - 1) * g.dlat, lonE = g.lon0 + (g.cols - 1) * g.dlon;
+    return isFinite(latS) && isFinite(lonE) && g.lat0 <= LAKE_BOX.latN && latS >= LAKE_BOX.latS && g.lon0 >= LAKE_BOX.lonW && lonE <= LAKE_BOX.lonE;
+  }
+  // A decoded lake frame must be that grid (validateGrid's rule for the global grid).
+  function validateLakeGrid(grid, frame) {
+    var ok = validLakeGridDef(grid) && frame && frame.cols === grid.cols && frame.rows === grid.rows && frame.q && frame.q.length === grid.cols * grid.rows;
+    if (!ok) throw new Error('lake frame does not match the lake grid');
+  }
+  function validLakePointer(p) {
+    return !!(p && p.complete === true && p.encoding === ENCODING && typeof p.run === 'string' && /^\d{10}$/.test(p.run) && sstKey(p.manifest) && p.manifest.indexOf(LAKE_PREFIX + '/') === 0);
+  }
+  // A lake field the client can draw beside the model's: the same lo / hi (one code space; the manifest promises it) and
+  // the full resolution; the direction field as a model's direction field.
+  function lakeFieldOk(f) {
+    return !!(f && typeof f.lo === 'number' && typeof f.hi === 'number' && f.lo < f.hi && Array.isArray(f.resolutions) && f.resolutions.indexOf('full') >= 0 &&
+      f.legend && f.legend[0] < f.legend[1]);
+  }
+  function validLakeManifest(m) {
+    if (!m || m.schema !== 3 || m.encoding !== ENCODING || m.complete !== true) return false;
+    if (typeof m.run !== 'string' || !/^\d{10}$/.test(m.run) || typeof m.run_utc !== 'string' || isNaN(Date.parse(m.run_utc))) return false;
+    if (!m.fields || typeof m.fields !== 'object' || !lakeFieldOk(m.fields.hs) || !lakeFieldOk(m.fields.tp) || !dirFieldOk(m.fields[LAKE_DIR_FIELD]) ||
+      m.fields[LAKE_DIR_FIELD].resolutions.indexOf('full') < 0) return false;
+    if (!validLakeGridDef(m.grid)) return false;
+    var t = m.files && m.files.template, res = m.files && m.files.res;
+    if (!(typeof t === 'string' && t.indexOf('{res}') >= 0 && t.indexOf('{field}') >= 0 && t.indexOf('{step:03d}') >= 0 && res && typeof res.full === 'string' &&
+      sstKey(t.replace(/\{[^}]*\}/g, 'x')) && t.indexOf(LAKE_PREFIX + '/') === 0)) return false;
+    if (!Array.isArray(m.frames) || !m.frames.length || m.frames.length > 512) return false;
+    for (var i = 0; i < m.frames.length; i++) {
+      var fr = m.frames[i], prev = i ? m.frames[i - 1] : null;
+      if (!fr || !Number.isInteger(fr.step) || fr.step < 0 || typeof fr.valid_utc !== 'string' || isNaN(Date.parse(fr.valid_utc))) return false;
+      if (prev && !(fr.step > prev.step && Date.parse(fr.valid_utc) > Date.parse(prev.valid_utc))) return false;
+    }
+    return true;
+  }
+  // Do the model's field and the lake's share one code space (the tiles write lake codes beside model codes)?
+  function lakeFieldMatches(lf, mf) { return !!(lf && mf && lf.lo === mf.lo && lf.hi === mf.hi); }
+  // The lakes' box in zoom-0 world pixels: the union of the coast set's tier-0 pieces (nothing outside it is lake water).
+  function lakeBoxOf(store) {
+    var t0 = store && store.tier0, box = t0 && t0.box;
+    if (!box || !t0.n) return null;
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (var p = 0; p < t0.n; p++) {
+      var k = p * 4;
+      if (box[k] < x0) x0 = box[k]; if (box[k + 1] < y0) y0 = box[k + 1]; if (box[k + 2] > x1) x1 = box[k + 2]; if (box[k + 3] > y1) y1 = box[k + 3];
+    }
+    return x0 < x1 && y0 < y1 ? { x0: x0, y0: y0, x1: x1, y1: y1 } : null;
+  }
+  // Does a tile (any world copy) touch the box?
+  function lakeBoxHits(coords, bb) {
+    if (!bb) return false;
+    var b = tileBox(coords);
+    return !(b.x1 < bb.x0 || b.x0 > bb.x1 || b.y1 < bb.y0 || b.y0 > bb.y1);
+  }
+  // THE lake sampler: codes of the lake frame lf (grid lg) for an n x n lattice of pixel centres at world pixels
+  // (x0 + ox + i * step + 0.5, y0 + oy + j * step + 0.5) of the tile coords, written to out[j * n + i] ONLY where the
+  // tile's lake coverage (lake[py * TILE + px], the pixel clamped into the tile: the contour lattice reaches one step
+  // outside it) is above 0; everything else is left as it is. Bilinear over the present nodes with sampleRow's absent
+  // rule (w < 0.25: 0), NOT periodic (c1 = min(c0 + 1, cols - 1)); a point beyond the grid's nodes is 0. Longitudes are
+  // wrapped into the one world, so world copies sample identically. The tile (0, 0, 1, TILE), the contour lattice
+  // (-s, -s, s, m) and the readout (px, py, 1, 1) all read here, so the readout is the drawn pixel.
+  function sampleLake(lf, lg, coords, ox, oy, step, n, out, lake) {
+    var nW = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE + ox, y0 = coords.y * TILE + oy, cols = lf.cols, rows = lf.rows, q = lf.q, i, j, k = 0;
+    var fx = LAKE_FX.length >= n ? LAKE_FX : (LAKE_FX = new Float64Array(n)), px = LAKE_PX.length >= n ? LAKE_PX : (LAKE_PX = new Int32Array(n));
+    for (i = 0; i < n; i++) {
+      var lon = lngOfWorldX(x0 + i * step + 0.5, nW);
+      lon = ((lon + 180) % 360 + 360) % 360 - 180;
+      fx[i] = (lon - lg.lon0) / lg.dlon;
+      var p = ox + i * step; px[i] = p < 0 ? 0 : p >= TILE ? TILE - 1 : p;
+    }
+    for (j = 0; j < n; j++, k += n) {
+      var p2 = oy + j * step, py = (p2 < 0 ? 0 : p2 >= TILE ? TILE - 1 : p2) * TILE;
+      var fy = (lg.lat0 - latOfWorldY(y0 + j * step + 0.5, nW)) / -lg.dlat, inRow = fy >= 0 && fy <= rows - 1;
+      var r0 = Math.floor(fy), r1 = r0 + 1 < rows ? r0 + 1 : r0, fr = fy - r0, w0 = 1 - fr, b0 = r0 * cols, b1 = r1 * cols;
+      for (i = 0; i < n; i++) {
+        if (!lake[py + px[i]]) continue;
+        var cpos = fx[i];
+        if (!inRow || !(cpos >= 0 && cpos <= cols - 1)) { out[k + i] = 0; continue; }
+        var c0 = Math.floor(cpos), c1 = c0 + 1 < cols ? c0 + 1 : c0, fc = cpos - c0;
+        var a = q[b0 + c0], b = q[b0 + c1], c = q[b1 + c0], d = q[b1 + c1], w = 0, acc = 0, wt;
+        if (a) { wt = w0 * (1 - fc); acc += a * wt; w += wt; }
+        if (b) { wt = w0 * fc; acc += b * wt; w += wt; }
+        if (c) { wt = fr * (1 - fc); acc += c * wt; w += wt; }
+        if (d) { wt = fr * fc; acc += d * wt; w += wt; }
+        out[k + i] = w < 0.25 ? 0 : acc / w;
+      }
+    }
+    return out;
+  }
+  var LAKE_FX = new Float64Array(TILE), LAKE_PX = new Int32Array(TILE);
+  // The lake run's pointer and manifest (never a frame: the scheduler decodes those like the model's). One per bucket
+  // root per page; the manifest survives a field switch and Off (abortAll only stops a load in progress). A newer run is
+  // NOTED by recheck() and fetched into `next`; the scheduler adopts it between landings (adoptNewer), never under a
+  // frame in flight, so no step mixes two lake runs.
+  var LAKE_STORES = {};
+  function lakeStore(root) { return LAKE_STORES[root] || (LAKE_STORES[root] = new LakeStore(root)); }
+  function LakeStore(root) {
+    this.root = root; this.status = 'idle'; this.pointer = null; this.manifest = null; this.grid = null; this.byValid = new Map();
+    this.loading = null; this.loadAbort = null; this.failedAt = 0; this.loadedAt = 0; this.next = null; this.checking = null;
+  }
+  LakeStore.prototype.timeoutMs = 15000;                   // a pointer / manifest step silent this long fails the load (= LOAD_STALL_MS, defined later)
+  LakeStore.prototype.retryMs = COAST_RETRY_MS;
+  LakeStore.prototype.recheckMs = POINTER_RECHECK_MS;
+  LakeStore.prototype._json = SstStore.prototype._json;
+  LakeStore.prototype._pointer = function (sig) { return this._json(this.root + '/' + LAKE_PREFIX + '/latest.json', sig, true, 64 * 1024); };
+  LakeStore.prototype._manifest = function (ptr, sig) {
+    var self = this;
+    return this._json(this.root + '/' + ptr.manifest, sig, false, MAX_LAKE_MANIFEST_BYTES).then(function (m) {
+      if (!validLakeManifest(m) || m.run !== ptr.run) throw new Error('unsupported lake manifest');
+      return m;
+    });
+  };
+  LakeStore.prototype._take = function (ptr, m) {
+    this.pointer = ptr; this.manifest = m; this.grid = m.grid; this.next = null;
+    var by = this.byValid = new Map();
+    for (var i = 0; i < m.frames.length; i++) by.set(Date.parse(m.frames[i].valid_utc), i);
+  };
+  // Resolves to the store when a run is in hand, to null otherwise (never rejects). A store already loaded re-reads the
+  // pointer when it is older than recheckMs (the same run keeps everything; a newer run is taken at once when nothing
+  // is drawn from the old one: the caller mounts afresh); force: a viewer's action tries again at once.
+  LakeStore.prototype.load = function (force) {
+    var self = this;
+    if (this.loading) return this.loading;
+    if (this.status === 'ok' && !this.next && Date.now() - this.loadedAt < this.recheckMs) return Promise.resolve(this);
+    if (!force && this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
+    var was = this.status === 'ok' ? this.manifest : null;
+    this.status = 'loading';
+    var ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null;
+    var kick = function () { clearTimeout(watchdog); watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, self.timeoutMs); };
+    kick();
+    this.loading = this._pointer(sig).then(function (ptr) {
+      kick();
+      if (!validLakePointer(ptr)) throw new Error('unsupported lake pointer');
+      if (was && was.run === ptr.run) return null;
+      if (self.next && self.next.m.run === ptr.run) return self.next;
+      return self._manifest(ptr, sig).then(function (m) { return { ptr: ptr, m: m }; });
+    }).then(function (res) {
+      clearTimeout(watchdog);
+      if (self.loadAbort !== ctrl || sig.aborted) throw abortError();
+      if (res) self._take(res.ptr, res.m);
+      self.loadedAt = Date.now();
+      self.status = 'ok'; self.loading = null; self.loadAbort = null;
+      return self;
+    }).catch(function () {
+      clearTimeout(watchdog);
+      if (self.loadAbort === ctrl) {
+        self.loading = null; self.loadAbort = null;
+        if (was) { self.status = 'ok'; self.loadedAt = Date.now(); }
+        else { self.status = sig.aborted && !timedOut ? 'idle' : 'failed'; if (self.status === 'failed') self.failedAt = Date.now(); }
+      }
+      return was ? self : null;
+    });
+    return this.loading;
+  };
+  // While a run is in hand: a newer run's manifest is fetched into `next` (resolves true), never swapped in here.
+  LakeStore.prototype.recheck = function () {
+    var self = this;
+    if (this.status !== 'ok' || this.loading) return Promise.resolve(false);
+    if (this.checking) return this.checking;
+    this.checking = this._pointer(null).then(function (ptr) {
+      if (self.status !== 'ok' || !validLakePointer(ptr) || !(ptr.run > self.manifest.run)) return false;
+      if (self.next && self.next.m.run === ptr.run) return true;
+      return self._manifest(ptr, null).then(function (m) {
+        if (self.status === 'ok' && self.manifest && m.run > self.manifest.run) { self.next = { ptr: ptr, m: m }; return true; }
+        return false;
+      });
+    }).catch(function () { return false; }).then(function (r) { self.checking = null; return r; });
+    return this.checking;
+  };
+  // The newer run takes over (the scheduler calls this with no lake frame in flight and clears its lake caches).
+  LakeStore.prototype.adoptNewer = function () {
+    if (!this.next) return false;
+    this._take(this.next.ptr, this.next.m);
+    this.loadedAt = Date.now();
+    return true;
+  };
+  // The lake frame index of a valid time (ms), or -1 (the hourly lake run covers every GFS time to +120 h and the
+  // 3-hourly ones to +147 h exactly; nothing past +149 h).
+  LakeStore.prototype.indexOf = function (validMs) { var i = this.byValid.get(validMs); return i === undefined ? -1 : i; };
+  // Off: a load in progress stops; the run in hand stays for the next On.
+  LakeStore.prototype.abortAll = function () {
+    if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; }
+    if (this.status === 'loading') { this.status = this.manifest ? 'ok' : 'idle'; this.loading = null; }
+  };
+
   // ---- frame decoding ----
   // Frames are 8-bit greyscale, non-interlaced PNGs. The direct path parses the chunks, lets the
   // browser inflate the zlib stream (DecompressionStream) and unfilters the rows into the 1 MB code
@@ -1420,6 +1631,7 @@
       this._coast = null; this._clip = false; this.onRedraw = null;
       this._contour = null; this._F = null; this._sm = null; this._sv = null;
       this._src = null; this._sq = null;                   // plan section 44: the SST store the tiles sample instead of the frame
+      this._lake = null; this._lakeCoast = null; this._lakeMask = false; this._lakeBox = null; this._lq = null;   // plan section 50: the Great Lakes
       this._sc = new Float64Array(TILE / 2 + 2); this._sr = new Float64Array(TILE / 2 + 2); this._srow = new Float64Array(TILE / 2 + 2);
       this._pi = new Int32Array(TILE + 2); this._pt = new Float64Array(TILE + 2);
       this._gen = 0; this._staleQ = null;                   // plan section 42: which frame a tile shows (el._ovGen)
@@ -1428,15 +1640,106 @@
     // copy of the frame is dropped). quiet: only set it, for the draw that follows.
     setContours: function (cfg, quiet) { this._contour = cfg; if (!cfg) this._sm = null; if (!quiet) this._redraw(); },
     // frame {q, cols, rows}; grid = the manifest grid for that resolution; fdef = the manifest field
-    setFrame: function (frame, grid, fieldName, fdef, lut, entry) {
+    // lake (plan section 50): the step's lake frame {frame, grid, entry, lo, hi}, drawn in the same redraw, or none.
+    setFrame: function (frame, grid, fieldName, fdef, lut, entry, lake) {
       validateGrid(grid, frame, fdef);
+      if (lake) { validateLakeGrid(lake.grid, lake.frame); if (lake.lo !== fdef.lo || lake.hi !== fdef.hi) throw new Error('lake frame is not in the field\u2019s code space'); }
       this._frame = frame; this._grid = grid; this._lut = lut; this.field = fieldName; this.fdef = fdef; this.entry = entry || null;
       this._nearest = fdef.interpolation === 'nearest'; this._lo = fdef.lo; this._hi = fdef.hi; this._legend = fdef.legend;
       this._clip = !!(this._coast && CLIP_FIELDS[fieldName]);
+      this._lakeMask = !!(this._lakeCoast && LAKE_UNDER[fieldName]);
+      this._lake = lake || null;
       this._gen++;
       this._redraw(true);
     },
-    clear: function () { this._frame = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._sm = null; this.setSource(null, true); this._redraw(); },
+    clear: function () { this._frame = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._lakeMask = false; this._lake = null; this._sm = null; this.setSource(null, true); this._redraw(); },
+    // The lake frame drawn under the frame on the map (plan section 50): data {frame, grid, entry, lo, hi} or null. It
+    // must share the field's code space (lo / hi; the scheduler checks the manifests, this is the last line). quiet: only
+    // set it, for the setFrame that follows (one redraw); else the tiles with lake water are redrawn and the particles told.
+    // Returns whether anything changed.
+    setLake: function (data, quiet) {
+      var cur = this._lake;
+      if (data) {
+        validateLakeGrid(data.grid, data.frame);
+        if (this.fdef && (data.lo !== this.fdef.lo || data.hi !== this.fdef.hi)) throw new Error('lake frame is not in the field\u2019s code space');
+        if (cur && cur.frame === data.frame && cur.entry === data.entry) return false;
+      } else if (!cur) return false;
+      this._lake = data || null;
+      if (!quiet) this._redrawLake(false);
+      return true;
+    },
+    hasLake: function () { return !!(this._lake && this._frame); },
+    // The lakes coast set (or null): from now on the tiles of the lake box know their lake water; LAKE_UNDER fields show
+    // the lake frame (or the model's own lake cells) there.
+    setLakeCoast: function (store) {
+      var self = this, prev = this._lakeCoast;
+      if (prev && prev.onChange === this._onLakeCoast) { prev.onChange = null; prev.onNeeded = null; }
+      this._lakeCoast = store && store.status === 'ok' ? store : null;
+      this._lakeBox = this._lakeCoast ? lakeBoxOf(this._lakeCoast) : null;
+      this._lakeMask = !!(this._lakeCoast && LAKE_UNDER[this.field]);
+      if (this._lakeCoast) {
+        this._onLakeCoast = function () { self._redrawLakeIncomplete(); };
+        this._lakeCoast.onChange = this._onLakeCoast;
+        this._lakeCoast.onNeeded = function () { return self._lakeCellsNeeded(); };
+      }
+      this._redrawLake(true);
+    },
+    // The tile's lake water coverage (0..255 per pixel; null = none; a whole tile of water = the shared 255 array), computed
+    // once per tile element like the land mask, from the lakes coast set; null outside the lakes' box without asking it.
+    _lakeFor: function (el, coords) {
+      var st = this._lakeCoast;
+      if (!st || !lakeBoxHits(coords, this._lakeBox)) { el._ovLake = null; el._ovLakeKey = null; return null; }
+      var key = coords.z + '/' + tileBox(coords).xw + '/' + coords.y;
+      if (el._ovLakeKey === key && (el._ovLakeFinal || el._ovLakeRev === st.rev)) return el._ovLake;
+      var got = st.setsFor(coords);
+      if (!got.complete && el._ovLakeKey === key && el._ovLakeFinal === false) { el._ovLakeRev = st.rev; return el._ovLake; }
+      var m = got.sets.length ? maskState(rasterise(landPathsForTile(coords, got.sets), TILE)) : null;
+      el._ovLake = m === LAND_ALL ? lakeFull() : m;
+      el._ovLakeKey = key; el._ovLakeFinal = got.complete; el._ovLakeRev = st.rev;
+      return el._ovLake;
+    },
+    // Redraw the tiles that show lake water (all: every tile in the lakes' box, for a coast set that just arrived).
+    _redrawLake: function (all) {
+      if (!this._frame) return;
+      var drawn = false;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.el || !t.coords) continue;
+        if (all ? !lakeBoxHits(t.coords, this._lakeBox) : !t.el._ovLake) continue;
+        this._draw(t.el, t.coords); drawn = true;
+      }
+      if (drawn && this.onRedraw) this.onRedraw();
+    },
+    _redrawLakeIncomplete: function () {
+      if (!this._lakeCoast || !this._lakeMask || !this._frame) return;
+      var changed = false;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.el || !t.coords || t.el._ovLakeFinal !== false) continue;
+        var before = t.el._ovLake, after = this._lakeFor(t.el, t.coords);
+        if (after !== before) { this._draw(t.el, t.coords); changed = true; }
+      }
+      if (changed && this.onRedraw) this.onRedraw();
+    },
+    _lakeCellsNeeded: function () {
+      var st = this._lakeCoast, need = {};
+      if (!st || !this._lakeMask) return need;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.coords || !lakeBoxHits(t.coords, this._lakeBox) || !st.tier1Zoom(t.coords.z)) continue;
+        var names = coastCellsForTile(t.coords, st.index.tier1.cell);
+        if (names.length > MAX_CELLS_PER_TILE) continue;
+        for (var i = 0; i < names.length; i++) need[names[i]] = true;
+      }
+      return need;
+    },
+    // Lake water under the drawn pixel that contains (lat, lng) at tile zoom z (the readout: "no data" where readoutAt
+    // is null there); false off the lakes, off the map, or under a field without the lake mask.
+    lakeAt: function (lat, lng, z) {
+      if (!this._lakeMask || !this._frame) return false;
+      var p = pixelOf(lat, lng, z), t = this._tiles[p.x + ':' + p.y + ':' + p.z], lk = t && t.el ? t.el._ovLake : null;
+      return !!(lk && lk[p.py * TILE + p.px] >= LAND_READOUT);
+    },
     // The SST store the tiles sample (plan section 44), or null (the frame again). The caller sets the store's tier-0
     // frame with setFrame(SST_FDEF ...) beside it; a loaded store answers every tile from the finest tier in hand.
     setSource: function (store, quiet) {
@@ -1582,9 +1885,14 @@
     // tile shows nothing (no data, land, or a tile that is not on the map yet).
     readoutAt: function (lat, lng, z) {
       var p = pixelOf(lat, lng, z), t = this._tiles[p.x + ':' + p.y + ':' + p.z], v;
+      var lake = this._lakeMask && t && t.el ? t.el._ovLake : null, lk = lake ? lake[p.py * TILE + p.px] : 0, i = p.py * TILE + p.px;
       if (this._src) {                                       // the tile's own tier, the pixel's own sample
         if (!this._frame || !t || !t.el || t.el._ovSrcTier === undefined) return null;
         this._src.sampleGrid(p, p.px, p.py, 1, 1, this._oneOut, t.el._ovSrcTier);
+        v = this._oneOut[0] ? this._value(this._oneOut[0]) : null;
+      } else if (this._lake && lk) {                         // the lake frame's sample, as the tile drew it (plan section 50)
+        this._oneOut[0] = 0;
+        sampleLake(this._lake.frame, this._lake.grid, p, p.px, p.py, 1, 1, this._oneOut, lake);
         v = this._oneOut[0] ? this._value(this._oneOut[0]) : null;
       } else {
         var ll = tilePixelLatLng(p, p.px, p.py);
@@ -1592,8 +1900,10 @@
       }
       if (v === null || !this._clip) return v;
       var land = t && t.el ? t.el._ovLand : undefined;
-      if (land === undefined || land === LAND_ALL) return null;
-      return land === null || 255 - land[p.py * TILE + p.px] >= LAND_READOUT ? v : null;
+      if (land === undefined) return null;
+      var a = land === LAND_ALL ? 0 : land === null ? 255 : 255 - land[i];
+      if (lk > a) a = lk;
+      return a >= LAND_READOUT ? v : null;
     },
     createTile: function (coords, done) {
       var el = document.createElement('canvas'); el.width = TILE; el.height = TILE;
@@ -1616,7 +1926,8 @@
     },
     // Codes for one Web-Mercator tile (pixel centres) into out[TILE*TILE]; 0 = transparent. Column
     // positions are periodic, so wrapped and unwrapped tile x (world copies) sample identically.
-    tileCodes: function (coords, out, tier) {
+    // lake (plan section 50): the tile's lake water coverage; the lake frame's codes replace the model's there.
+    tileCodes: function (coords, out, tier, lake) {
       if (this._src) return this._src.sampleGrid(coords, 0, 0, 1, TILE, out, tier || 0);
       var f = this._frame, g = this._grid, cols = f.cols, rows = f.rows;
       var n = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE, y0 = coords.y * TILE, colPos = this._colPos;
@@ -1631,6 +1942,7 @@
         if (r >= 0 && r <= rows - 1) this._codeRow(r, colPos, TILE, out, k); else out.fill(0, k, k + TILE);
         k += TILE;
       }
+      if (lake && this._lake) sampleLake(this._lake.frame, this._lake.grid, coords, 0, 0, 1, TILE, out, lake);
       return out;
     },
     _draw: function (el, coords) {
@@ -1644,10 +1956,11 @@
         ctx.clearRect(0, 0, TILE, TILE); return;
       }
       if (this._src) { tier = this._src.tierFor(coords); el._ovSrcTier = tier; el._ovSrcRev = this._src.rev; }
-      var codes = this.tileCodes(coords, this._codes, tier);
+      var lake = this._lakeMask ? this._lakeFor(el, coords) : null;
+      var codes = this.tileCodes(coords, this._codes, tier, lake);
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
-      composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data);
-      if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, img.data, false, tier);
+      composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data, lake);
+      if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, img.data, false, tier, lake);
       if (!this._clip && land && land !== LAND_ALL) {                          // the coastline under an unclipped field
         if (el._ovEdgesOf !== land) { el._ovEdges = coastEdges(land, WIND_LOOK.gain); el._ovEdgesOf = land; }
         applyEdges(el._ovEdges, img.data, WIND_LOOK.ink);
@@ -1658,7 +1971,7 @@
     // same pixels for every tile, so neighbouring tiles agree on their shared edges and world copies
     // match) and interpolated in between; a 16-px block is drawn only if its samples span a whole level.
     // all: draw every block (the tests compare it with the skipping).
-    _contours: function (coords, rgba, all, tier) {
+    _contours: function (coords, rgba, all, tier, lake) {
       var cfg = this._contour, fr = this._frame, g = this._grid, cols = fr.cols, rows = fr.rows, i, j;
       var step = cfg.step * (coords.z < (cfg.coarseBelow || 4) ? 2 : 1), k = cfg.per / step, koff = cfg.off ? cfg.off / step : 0, lo = this._lo, span = (this._hi - lo) / 254;
       var n = TILE * Math.pow(2, coords.z), cellPx = n * g.dlon / 360, s = cellPx >= 6 ? 4 : 2, m = TILE / s + 2;
@@ -1686,6 +1999,12 @@
           var r0 = Math.floor(r);
           for (i = 0; i < m; i++) V[o + i] = row[i] && !(J && jumpAt(J, cols, rows, r0, Math.floor(cp[i]), wide)) ? (lo + (row[i] - 1) * span) * k + koff : NaN;
         }
+      }
+      if (lake && this._lake) {                              // the lake frame's values on the lattice where the tile shows lake water, unsmoothed
+        var LQ = this._lq || (this._lq = new Float64Array((TILE / 2 + 2) * (TILE / 2 + 2)));
+        LQ.fill(-1, 0, m * m);
+        sampleLake(this._lake.frame, this._lake.grid, coords, -s, -s, s, m, LQ, lake);
+        for (j = 0; j < m * m; j++) if (LQ[j] >= 0) V[j] = LQ[j] ? (lo + (LQ[j] - 1) * span) * k + koff : NaN;
       }
       var W2 = TILE + 2, F = this._F || (this._F = new Float64Array(W2 * W2)), B = CONTOUR_BLOCK;
       for (i = 0; i < W2; i++) { var fi = (i - 1) / s + 1; pi[i] = Math.floor(fi); pt[i] = fi - pi[i]; }   // pixel column i - 1 between samples pi, pi + 1
@@ -2051,29 +2370,93 @@
     var off = ((want.c0 - have.c0) % cols + cols) % cols;
     return off + want.count <= have.count;
   }
+  // The lake grid's node window for a view plus `margin` screens on every side (plan section 50): rows and columns of
+  // the lake grid (not periodic: no wrap; the columns of every world copy the view shows, united), with one node of
+  // margin for the lattice's bilinear neighbours; null when the view (plus the margin) holds no lake node at all.
+  function lakeWindow(view, g, margin) {
+    var n = TILE * Math.pow(2, view.z), cols = g.cols, rows = g.rows, mg = margin === undefined ? 1 : margin;
+    var y0 = Math.max(0, view.oy - mg * view.h), y1 = Math.min(n, view.oy + (1 + mg) * view.h), x0 = view.ox - mg * view.w, x1 = view.ox + (1 + mg) * view.w;
+    var latTop = latOfWorldY(y0, n), latBot = latOfWorldY(y1, n);
+    var r0 = Math.floor((g.lat0 - latTop) / -g.dlat) - 1, r1 = Math.ceil((g.lat0 - latBot) / -g.dlat) + 1;
+    if (r1 < 0 || r0 > rows - 1) return null;
+    r0 = Math.max(0, r0); r1 = Math.min(rows - 1, r1);
+    var lonW = lngOfWorldX(x0, n), lonE = lngOfWorldX(x1, n), L0 = g.lon0, L1 = g.lon0 + (cols - 1) * g.dlon, cmin = cols, cmax = -1;
+    for (var k = Math.floor((lonW - L1) / 360); k <= Math.ceil((lonE - L0) / 360); k++) {
+      var a = Math.max(lonW, L0 + k * 360), b = Math.min(lonE, L1 + k * 360);
+      if (!(a <= b)) continue;
+      var c0 = Math.max(0, Math.floor((a - k * 360 - L0) / g.dlon) - 1), c1 = Math.min(cols - 1, Math.ceil((b - k * 360 - L0) / g.dlon) + 1);
+      if (c0 < cmin) cmin = c0; if (c1 > cmax) cmax = c1;
+    }
+    if (cmax < cmin) return null;
+    return { r0: r0, r1: r1, c0: cmin, count: cmax - cmin + 1 };
+  }
+  // The lake flow's vectors on the lake grid's nodes (vectorNodes for the lake frames: the field frame lf and the
+  // direction frame ld share the grid, so the field value is the node's own code, no sampling); win as nodeWindow's,
+  // without wrapping (the lake grid is not periodic).
+  function lakeVectorNodes(field, lf, lo, hi, ld, lg, prev, win) {
+    var cols = lg.cols, rows = lg.rows, n = cols * rows, reuse = prev && prev.cols === cols && prev.rows === rows;
+    var U = reuse ? prev.U : new Float32Array(n), V = reuse ? prev.V : new Float32Array(n), M = reuse ? prev.M : new Uint8Array(n);
+    var spd = FLOW_SPEED[field] || FLOW_SPEED.wind, q = ld.q, fq = lf.q, i, j;
+    var r0 = win ? Math.max(0, win.r0) : 0, r1 = win ? Math.min(rows - 1, win.r1) : rows - 1, c0 = win ? Math.max(0, win.c0) : 0, c1 = win ? Math.min(cols - 1, win.c0 + win.count - 1) : cols - 1;
+    if (reuse) M.fill(0);
+    for (j = r0; j <= r1; j++) {
+      var base = j * cols;
+      for (i = c0; i <= c1; i++) {
+        var d = q[base + i], c = fq[base + i];
+        if (!d || d === 255 || !c) { M[base + i] = 0; U[base + i] = 0; V[base + i] = 0; continue; }
+        var sp = spd(lo + (c - 1) / 254 * (hi - lo));
+        M[base + i] = sp > 0 ? 1 : 0; U[base + i] = -sp * CODE_SIN[d]; V[base + i] = -sp * CODE_COS[d];
+      }
+    }
+    return { cols: cols, rows: rows, U: U, V: V, M: M, win: win ? { r0: r0, r1: r1, c0: c0, count: c1 - c0 + 1 } : null };
+  }
   // The particles' screen lattice, every s px over the view: the node vectors interpolated bilinearly over
   // the present nodes (weight < 0.25: nothing), as screen velocities (x right, y down) times the Mercator
   // stretch min(sec lat, 3); nothing where the field is not drawn (clipped fields: the layer's tile land
-  // masks, the readout's own rule, so swell particles never run over land).
-  function flowField(view, s, nodes, dgrid, layer, clip, prev) {
+  // masks, the readout's own rule, so swell particles never run over land). lake (plan section 50): {nodes, grid},
+  // the lake frames' vectors: a lattice point on lake water (the tiles' lake coverage, the same alpha rule as the
+  // pixels) reads them instead (nothing where they are absent: a blank lake gets no particles); on lake water with no
+  // lake vectors (the model's own lake cells, ECMWF) the model's nodes serve, the land gate lifted there.
+  function flowField(view, s, nodes, dgrid, layer, clip, prev, lake) {
     var cols = Math.ceil(view.w / s) + 1, rows = Math.ceil(view.h / s) + 1, n = TILE * Math.pow(2, view.z), reuse = prev && prev.cols === cols && prev.rows === rows;
     var u = reuse ? prev.u : new Float32Array(cols * rows), v = reuse ? prev.v : new Float32Array(cols * rows);
     if (reuse) { u.fill(0); v.fill(0); }
     var nc = nodes.cols, nr = nodes.rows, U = nodes.U, V = nodes.V, M = nodes.M, cp = new Float64Array(cols), i, j;
     for (i = 0; i < cols; i++) cp[i] = ((((lngOfWorldX(view.ox + i * s, n) - dgrid.lon0) / dgrid.dlon) % nc) + nc) % nc;
-    var scale = Math.pow(2, view.z - view.zt), tiles = clip ? layer._tiles : null, lastKey = null, lastMask;
+    var scale = Math.pow(2, view.z - view.zt), tiles = clip ? layer._tiles : null, lakes = !!(tiles && layer._lakeMask), lastKey = null, lastMask, lastLake = null;
+    var LN = lake ? lake.nodes : null, lg = lake ? lake.grid : null, lcols = lg ? lg.cols : 0, lrows = lg ? lg.rows : 0;
+    var lfx = lake ? new Float64Array(cols) : null;
+    if (lake) for (i = 0; i < cols; i++) { var ln = lngOfWorldX(view.ox + i * s, n); lfx[i] = ((((ln + 180) % 360) + 360) % 360 - 180 - lg.lon0) / lg.dlon; }
     for (j = 0; j < rows; j++) {
       var lat = latOfWorldY(view.oy + j * s, n), r = (dgrid.lat0 - lat) / -dgrid.dlat, base = j * cols;
       if (!(r >= 0 && r <= nr - 1)) continue;
       var k = Math.min(3, 1 / Math.max(1e-6, Math.cos(lat * Math.PI / 180)));
       var r0 = Math.floor(r), r1 = r0 + 1 < nr ? r0 + 1 : r0, fr = r - r0, w0 = 1 - fr, b0 = r0 * nc, b1 = r1 * nc;
       var Y = (view.oy + j * s) / scale, ty = Math.floor(Y / TILE), py = Math.floor(Y - ty * TILE);
+      var lfy = lake ? (lg.lat0 - lat) / -lg.dlat : -1, lr0 = Math.floor(lfy), lr1 = lr0 + 1 < lrows ? lr0 + 1 : lr0, lfr = lfy - lr0, lw0 = 1 - lfr, lb0 = lr0 * lcols, lb1 = lr1 * lcols;
       for (i = 0; i < cols; i++) {
+        var onLake = false;
         if (tiles) {                                                            // drawn water only (alpha >= LAND_READOUT)
           var X = (view.ox + i * s) / scale, tx = Math.floor(X / TILE), px = Math.floor(X - tx * TILE), key = tx + ':' + ty + ':' + view.zt;
-          if (key !== lastKey) { var t = tiles[key]; lastKey = key; lastMask = t && t.el ? t.el._ovLand : undefined; }
-          if (lastMask === undefined || lastMask === LAND_ALL) continue;
-          if (lastMask !== null && 255 - lastMask[py * TILE + px] < LAND_READOUT) continue;
+          if (key !== lastKey) { var t = tiles[key]; lastKey = key; lastMask = t && t.el ? t.el._ovLand : undefined; lastLake = lakes && t && t.el ? t.el._ovLake : null; }
+          if (lastMask === undefined) continue;
+          var pa = lastMask === LAND_ALL ? 0 : lastMask === null ? 255 : 255 - lastMask[py * TILE + px], lk = lastLake ? lastLake[py * TILE + px] : 0;
+          if (lk > pa) pa = lk;
+          if (pa < LAND_READOUT) continue;
+          onLake = lk >= LAND_READOUT;
+        }
+        if (onLake && LN) {                                                     // the lake frames' own vectors, or nothing
+          var lx = lfx[i];
+          if (!(lfy >= 0 && lfy <= lrows - 1 && lx >= 0 && lx <= lcols - 1)) continue;
+          var lc0 = Math.floor(lx), lc1 = lc0 + 1 < lcols ? lc0 + 1 : lc0, lfc = lx - lc0;
+          var la = lb0 + lc0, lb = lb0 + lc1, lc = lb1 + lc0, ld = lb1 + lc1, lwt = 0, lX = 0, lY = 0, lw;
+          if (LN.M[la]) { lw = lw0 * (1 - lfc); lX += LN.U[la] * lw; lY += LN.V[la] * lw; lwt += lw; }
+          if (LN.M[lb]) { lw = lw0 * lfc; lX += LN.U[lb] * lw; lY += LN.V[lb] * lw; lwt += lw; }
+          if (LN.M[lc]) { lw = lfr * (1 - lfc); lX += LN.U[lc] * lw; lY += LN.V[lc] * lw; lwt += lw; }
+          if (LN.M[ld]) { lw = lfr * lfc; lX += LN.U[ld] * lw; lY += LN.V[ld] * lw; lwt += lw; }
+          if (lwt < 0.25) continue;
+          u[base + i] = k * lX / lwt; v[base + i] = -k * lY / lwt;
+          continue;
         }
         var cpos = cp[i], c0 = Math.floor(cpos), c1 = c0 + 1 === nc ? 0 : c0 + 1, fc = cpos - c0;
         var a = b0 + c0, b = b0 + c1, c = b1 + c0, d = b1 + c1, w = 0, x = 0, y = 0, wt;
@@ -2132,6 +2515,7 @@
     this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
     this.field = null; this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.mode = null;   // 'particles' while animating
     this.nodes = null; this.nodesFor = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0;
+    this.ldir = null; this.lframe = null; this.lgrid = null; this.lentry = null; this.lnodes = null; this.lnodesFor = null; this.lnodesFrame = null;   // the lake frames (plan section 50)
     this.vel = new Float64Array(2); this.vel2 = new Float64Array(2); this.hist = null; this.histN = null; this.histT = null; this.histF = null; this.flowT = null;
     this.active = false; this.suspended = 0; this.dirty = false; this.rafId = null; this.lastT = 0;
     this.ema = 0; this.adaptAt = 0; this._listeners = [];
@@ -2234,7 +2618,8 @@
     return { active: this.active, suspended: this.suspended, dirty: this.dirty, raf: this.rafId !== null, frameAgeMs: this.lastFrameAt ? Math.round(nowMs() - this.lastFrameAt) : null,
       ctx: !!this.ctx, ctxLost: !!(this.ctx && typeof this.ctx.isContextLost === 'function' && this.ctx.isContextLost()),
       canvas: cv ? cv.width + 'x' + cv.height + (cv.style && cv.style.visibility ? ' ' + cv.style.visibility : '') : 'none', dir: !!this.dir, entry: this.entry ? this.entry.step : null,
-      mode: this.mode, count: this.count, target: this.target, rate: this.rate, ema: Math.round(this.ema * 10) / 10, healed: this.healed, busy: this._busy(), log: this.log.map(function (e) { return e[0] + '@' + e[1]; }).join(' ') };
+      mode: this.mode, count: this.count, target: this.target, rate: this.rate, ema: Math.round(this.ema * 10) / 10, healed: this.healed, busy: this._busy(),
+      lake: this.ldir ? (this.lentry ? this.lentry.step : '?') + (this.lnodes ? ' nodes' : '') : 'none', log: this.log.map(function (e) { return e[0] + '@' + e[1]; }).join(' ') };
   };
   FlowAnimator.prototype.detach = function () {
     var self = this;
@@ -2244,6 +2629,7 @@
     if (this.canvas) { if (this.canvas.remove) this.canvas.remove(); this.canvas = null; this.ctx = null; }
     this.setLayer(null);
     this.dir = null; this.dgrid = null; this.fframe = null; this.vf = null; this.nodes = null; this.nodesFor = null; this.particles = null; this.v = null;
+    this._dropLake();
   };
   FlowAnimator.prototype.setField = function (field) { if (this.field !== field) { this.field = field; this.particles = null; this.clearData(); } };
   // The direction frame of the step on the map (the caller checks it is that step's; entry = the
@@ -2255,6 +2641,22 @@
   FlowAnimator.prototype.clearData = function () {
     this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.vf = null; this.nodes = null; this.nodesFor = null; this.stop(); this._clear();
   };
+  // The lake frames of a step (plan section 50): its direction frame, the lake field frame the layer draws (the
+  // vectors' magnitude) and their grid; used only while they are the step on the map's (lentry === entry), so a
+  // step change (clearData, setData) never carries them over. Set before the step's own direction (the landing sets
+  // the lake first: one rebuild), they ride along with it; delivered later, they rebuild at once.
+  FlowAnimator.prototype.setLakeData = function (dir, lframe, grid, entry) {
+    if (this.ldir === dir && this.lframe === lframe) { this.lentry = entry || null; return; }
+    this.ldir = dir; this.lframe = lframe; this.lgrid = grid; this.lentry = entry || null;
+    if (this.dir && this.entry === this.lentry && !this.suspended && this.canvas) this._rebuild();
+  };
+  FlowAnimator.prototype.clearLakeData = function () {
+    if (!this.ldir) return;
+    var shown = this.dir && this.entry === this.lentry;
+    this._dropLake();
+    if (shown && !this.suspended && this.canvas) this._rebuild();
+  };
+  FlowAnimator.prototype._dropLake = function () { this.ldir = null; this.lframe = null; this.lgrid = null; this.lentry = null; this.lnodes = null; this.lnodesFor = null; this.lnodesFrame = null; };
   // Nested suspends (a zoom fires zoomstart + movestart; a hidden tab adds one): the last resume runs the
   // rebuild any of them asked for, so a zoom that ended while the tab was hidden is not drawn stale.
   FlowAnimator.prototype.suspend = function () { this.suspended++; this.stop(); };
@@ -2284,7 +2686,19 @@
     if (!this.nodes || this.nodesFor !== this.dir || this.nodesFrame !== this.fframe || !windowCovers(this.nodes.win, nodeWindow(v, this.dgrid, this.dir, 0), this.dir.cols)) {   // once per step, or past the window
       this.nodes = vectorNodes(this.field, this.layer, this.dir, this.dgrid, this.nodes, nodeWindow(v, this.dgrid, this.dir, 1)); this.nodesFor = this.dir; this.nodesFrame = this.fframe;
     }
-    this.vf = flowField(v, cellPx >= 16 ? 8 : 4, this.nodes, this.dgrid, this.layer, !!this.layer._clip, this.vf);
+    // the lake frames of THIS step, while the layer draws that lake frame (plan section 50); their nodes over the view's
+    // window of the lake grid (none in view: no lake vectors, the lake points stay still)
+    var lake = null, ll = this.layer._lake;
+    if (this.ldir && this.lframe && this.lentry === this.entry && ll && ll.frame === this.lframe) {
+      var lw0 = lakeWindow(v, this.lgrid, 0);
+      if (lw0) {
+        if (!this.lnodes || this.lnodesFor !== this.ldir || this.lnodesFrame !== this.lframe || !windowCovers(this.lnodes.win, lw0, this.lgrid.cols)) {
+          this.lnodes = lakeVectorNodes(this.field, this.lframe, this.layer._lo, this.layer._hi, this.ldir, this.lgrid, this.lnodes, lakeWindow(v, this.lgrid, 1)); this.lnodesFor = this.ldir; this.lnodesFrame = this.lframe;
+        }
+        lake = { nodes: this.lnodes, grid: this.lgrid };
+      }
+    }
+    this.vf = flowField(v, cellPx >= 16 ? 8 : 4, this.nodes, this.dgrid, this.layer, !!this.layer._clip, this.vf, lake);
     this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));   // follows the view
     if (!this.particles) this._seed(v); else if (this.count > this.target) this.count = this.target;
     if (!same) this._clear();                                                    // a moved view starts clean (a new step keeps the tails)
@@ -3390,6 +3804,11 @@
     // and their layer (made under wind when the run has the field).
     this.isobars = opts.isobars !== false;
     this.pcache = new FrameCache(MAX_DECODED); this.iso = null;
+    // The Great Lakes (plan section 50; the page's GLWU_OVERLAY setting): the lake run's store, the lakes coast set, and
+    // the two lake frame kinds' caches; _lakeWait = the step's wait record for its lake frames (capped like the pressure's).
+    this.lake = opts.glwu ? lakeStore(this.root) : null;
+    this.lakeCoast = opts.glwu ? coastStore(this.root + '/static/coast/lakes-v1') : null;
+    this.lcache = new FrameCache(MAX_DECODED); this.ldcache = new FrameCache(MAX_DECODED); this._lakeWait = null;
   }
   Overlay.prototype._def = function () { return hasModel(this.model) ? MODEL_DEFS[this.model] : MODEL_DEFS[DEFAULT_MODEL]; };
   // The wait for a pointer or manifest answer before the error panel (which has the dropdown) shows (G30-3).
@@ -3401,10 +3820,10 @@
   // credit. Never one model's picture (or its time, its warnings) under another's name.
   Overlay.prototype._dropRun = function () {
     this.manifest = null; this.pointer = null; this.pointerAt = 0; this.newerRun = null; this.n = 0;
-    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
+    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
     this.transientFails = 0; this._staleShown = false; this.wasPlaying = false;
     if (this.layer) this.layer.clear();
-    if (this.flow) this.flow.clearData();
+    if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
     if (this.iso) this.iso.clearData();
     if (this.readout) this.readout.hidden = true;
     this._unattribute();
@@ -3427,7 +3846,7 @@
     if (this.mode === 'obs') {                               // (no dropdown on the observation's panel: only a call does this)
       this.model = key; save({ model: key });
       this.manifest = null; this.pointer = null; this.pointerAt = 0; this.newerRun = null; this.n = 0;
-      this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.unavailable = {};
+      this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {};
       return;
     }
     var keep = this.frameIndex !== null ? this._anchorIndex() : null;
@@ -3469,7 +3888,7 @@
       this._bindDocument();
     } else if (this.layer.field !== fieldName) {
       this.layer.clear();                                  // never one field's picture under another's label
-      if (this.flow) this.flow.clearData();
+      if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
       if (this.iso) this.iso.clearData();
       // nothing drawn: the imagery, the waves' opacity; wind -> wind (a model switch) keeps the relief while the next
       // wind frame loads (G30-8: never a satellite flash under the wind; its landing calls _syncLook)
@@ -3501,6 +3920,7 @@
       self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
       self._ensureFlow();
       self._ensureIso();
+      self._loadLakes(m);
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
       // "Next Update: about …" turns into "expected shortly" on an idle panel too (G26 A-P3-7): once a minute, in place
       if (!self.lineTimer) self.lineTimer = setInterval(function () { if (self.ui && self.ui.runText) self._refreshRunLine(); }, 60000);
@@ -3596,13 +4016,132 @@
   // switch can never be taken for a frame of the new run (both models name their runs YYYYMMDDHH).
   // kind 'dir': the direction frame (pdir / wdir at its own resolution) of the same step; 'pres': its sea-level pressure
   // frame (half resolution only); else the field frame.
+  // kinds 'lake' / 'lakedir' (plan section 50): the lake run's field / direction frame of the SAME VALID TIME, keyed by
+  // the lake run (never a model key; 'glwu/-' names no frame: a step without a lake frame).
   Overlay.prototype._key = function (idx, kind) {
+    if (kind === 'lake' || kind === 'lakedir') {
+      var li = this._lakeIndex(idx), lm = this.lake ? this.lake.manifest : null;
+      return li < 0 || !lm ? 'glwu/-' : 'glwu/' + lm.run + '/' + kind + '/' + (kind === 'lake' ? this.field : LAKE_DIR_FIELD) + '/' + lm.frames[li].step;
+    }
     var res = kind === 'dir' ? this.dres : kind === 'pres' ? 'half' : this.res, name = kind === 'dir' ? DIR_FIELDS[this.field] : kind === 'pres' ? PRES_FIELD : this.field;
     return this.model + '/' + this.manifest.run + '/' + res + '/' + name + '/' + this.manifest.frames[idx].step;
   };
-  Overlay.prototype._cacheOf = function (kind) { return kind === 'dir' ? this.dcache : kind === 'pres' ? this.pcache : this.cache; };
-  // The frames the target itself needs (its own fetches, ranks 0..own-1 of the plan: never evicted by a ring fetch).
-  Overlay.prototype._own = function () { return 1 + (this._wantDir() ? 1 : 0) + (this._wantPres() ? 1 : 0); };
+  Overlay.prototype._cacheOf = function (kind) { return kind === 'dir' ? this.dcache : kind === 'pres' ? this.pcache : kind === 'lake' ? this.lcache : kind === 'lakedir' ? this.ldcache : this.cache; };
+  // The frames the target itself needs (its own fetches, ranks 0..own-1 of the plan: never evicted by a ring fetch);
+  // idx: the target (the plan's anchor by default), whose lake frames count only when it has them.
+  Overlay.prototype._own = function (idx) {
+    var a = idx === undefined ? this._anchorIndex() : idx, lk = a !== null && this._lakeIndex(a) >= 0;
+    return 1 + (this._wantDir() ? 1 : 0) + (this._wantPres() ? 1 : 0) + (lk && this._wantLake() ? 1 : 0) + (lk && this._wantLakeDir() ? 1 : 0);
+  };
+  // ---- the Great Lakes (plan section 50) ----
+  // The lake frame index of the model frame idx (the same valid time), -1 without one (no lake run, past its horizon).
+  Overlay.prototype._lakeIndex = function (idx) {
+    var lk = this.lake, fr = lk && lk.status === 'ok' && this.manifest ? this.manifest.frames[idx] : null;
+    return fr ? lk.indexOf(Date.parse(fr.valid_utc)) : -1;
+  };
+  // The lake frames ride under the model that carries them (GFS), under wave height and period, when the lake run's
+  // field shares the model's code space (one lo / hi: the tiles write lake codes beside model codes).
+  Overlay.prototype._wantLake = function () {
+    return !!(this.lake && this.lake.status === 'ok' && this.mode === 'model' && this._def().lakes && this.layer && this.field && LAKE_UNDER[this.field] &&
+      this.manifest && lakeFieldMatches(this.lake.manifest.fields[this.field], this.manifest.fields[this.field]));
+  };
+  Overlay.prototype._wantLakeDir = function () { return this._wantLake() && this._wantDir(); };
+  // A newer lake run (noted by the run check): the old run's lake fetches in flight go (ring fetches, or a target's own,
+  // which the step asks for again from the new run), its caches too, and the new run serves from the next step on. The
+  // lake frame drawn stays until that step lands (never a blank in between; never two runs under one step).
+  Overlay.prototype._adoptLake = function () {
+    if (!this.lake || !this.lake.next) return false;
+    for (var k in this.inflight) { var kd = this.inflight[k].kind; if (kd === 'lake' || kd === 'lakedir') { this.inflight[k].abort.abort(); delete this.inflight[k]; } }
+    this.lake.adoptNewer();
+    this.lcache.clear(); this.ldcache.clear();
+    return true;
+  };
+  // The lake run and the lakes coast set load beside the model's run (never holding the first draw): a lake run that
+  // arrives after the first frame is on the map is fetched for it at once; the coast set is given to the layer.
+  Overlay.prototype._loadLakes = function (m) {
+    var self = this;
+    if (this.lakeCoast) this.lakeCoast.load().then(function (store) {
+      if (!self.layer || !store || self.layer._lakeCoast === store) return;
+      self.layer.setLakeCoast(store);
+    }, function () {});
+    if (!this.lake || !this._def().lakes) return;
+    this.lake.load().then(function (st) {
+      if (!st || self.manifest !== m || !self.layer || self.frameIndex === null || self.mode !== 'model') return;
+      self._syncLake(self.frameIndex);
+      self._prefetch();
+    }, function () {});
+  };
+  // The lake frame drawn for the step idx, if decoded (for setFrame: one redraw with the step's own frame).
+  Overlay.prototype._lakeHit = function (idx) {
+    if (!this._wantLake() || this._lakeIndex(idx) < 0) return null;
+    var f = this.lcache.get(this._key(idx, 'lake')), m = this.manifest, lm = this.lake.manifest;
+    return f ? { frame: f, grid: lm.grid, entry: m.frames[idx], lo: m.fields[this.field].lo, hi: m.fields[this.field].hi } : null;
+  };
+  // The frame idx is on the map: the layer draws its lake frame if decoded (the shore's tiles only, when it changed) and
+  // the animator takes its lake direction; another step's lake frame is cleared at once (never an old lake under a new
+  // time); the fetches start only when no other target is pending (that target's own frames come first).
+  Overlay.prototype._syncLake = function (idx) {
+    if (!this.layer) return;
+    var m = this.manifest, entry = m.frames[idx], want = this._wantLake() && this._lakeIndex(idx) >= 0;
+    if (!want || !this.layer.hasFrame() || this.layer.entry !== entry) {
+      if (this.layer._lake) { this.layer.setLake(null); this._attribute(); }
+      if (this.flow) this.flow.clearLakeData();
+      return;
+    }
+    var hit = this.lcache.get(this._key(idx, 'lake'));
+    if (hit) this._lakeData(hit, entry);
+    else {
+      if (this.layer._lake) { this.layer.setLake(null); this._attribute(); }
+      if (this.flow) this.flow.clearLakeData();
+      if (this.target === null || this.target === idx) this._startKind(idx, 'lake');
+    }
+    if (!this._wantLakeDir()) { if (this.flow) this.flow.clearLakeData(); return; }
+    var dh = this.ldcache.get(this._key(idx, 'lakedir'));
+    if (dh) this._flowLakeData(dh, entry);
+    else {
+      if (this.flow && this.flow.lentry !== entry) this.flow.clearLakeData();
+      if (this.target === null || this.target === idx) this._startKind(idx, 'lakedir');
+    }
+  };
+  // The layer takes a lake frame for the step on the map (its own entry), and the animator the step's lake direction
+  // when it is decoded already; an exception (a refused canvas context) is logged once and never reaches the playback.
+  Overlay.prototype._lakeData = function (frame, entry) {
+    var m = this.manifest, lm = this.lake.manifest, f = m.fields[this.field];
+    try {
+      if (this.layer.setLake({ frame: frame, grid: lm.grid, entry: entry, lo: f.lo, hi: f.hi })) this._attribute();
+    } catch (e) { if (!this._lakeWarned && typeof console !== 'undefined' && console.warn) { this._lakeWarned = true; console.warn('overlay lakes', e); } return; }
+    if (!this._wantLakeDir()) return;
+    var dh = this.ldcache.get(this._key(this.frameIndex !== null && m.frames[this.frameIndex] === entry ? this.frameIndex : this.n, 'lakedir'));
+    if (dh) this._flowLakeData(dh, entry);
+  };
+  Overlay.prototype._flowLakeData = function (dir, entry) {
+    var ll = this.layer ? this.layer._lake : null;
+    if (!this.flow || !ll || ll.entry !== entry) return;
+    try { this.flow.setLakeData(dir, ll.frame, ll.grid, entry); }
+    catch (e) { if (!this._flowWarned && typeof console !== 'undefined' && console.warn) { this._flowWarned = true; console.warn('overlay animation', e); } }
+  };
+  // The lake field / direction frame for idx, delivered only if the LAYER still shows that step of that run at this field
+  // and the lake run is the one it was asked for; a failure is swallowed: the lakes stay blank for the step.
+  Overlay.prototype._ensureLake = function (idx) {
+    var self = this, m = this.manifest, lm = this.lake ? this.lake.manifest : null, field = this.field;
+    return this._ensure(idx, 'lake').then(function (frame) {
+      if (self.layer && self.layer.hasFrame() && self.layer.entry === m.frames[idx] && self.manifest === m && self.lake && self.lake.manifest === lm && self.field === field && self._wantLake()) {
+        self._lakeData(frame, m.frames[idx]);
+      }
+    }).catch(function (err) {
+      if (err && !err.unavailable && err.name !== 'AbortError' && typeof console !== 'undefined' && console.warn) console.warn('overlay lakes', err);
+    });
+  };
+  Overlay.prototype._ensureLakeDir = function (idx) {
+    var self = this, m = this.manifest, lm = this.lake ? this.lake.manifest : null, field = this.field;
+    return this._ensure(idx, 'lakedir').then(function (frame) {
+      if (self.layer && self.layer.hasFrame() && self.layer.entry === m.frames[idx] && self.manifest === m && self.lake && self.lake.manifest === lm && self.field === field && self._wantLakeDir()) {
+        self._flowLakeData(frame, m.frames[idx]);
+      }
+    }).catch(function (err) {
+      if (err && !err.unavailable && err.name !== 'AbortError' && typeof console !== 'undefined' && console.warn) console.warn('overlay lakes', err);
+    });
+  };
   // unavailable[key] is true (permanent) or a timestamp until which the frame is left alone (transient).
   Overlay.prototype._isUnavailable = function (idx, kind) {
     var u = this.unavailable[this._key(idx, kind)];
@@ -3617,16 +4156,21 @@
   // then a new one. A 404 or a decode failure marks the frame unavailable for this session
   // (err.unavailable); an abort does not.
   Overlay.prototype._ensure = function (idx, kind) {
-    kind = kind === 'dir' || kind === 'pres' ? kind : 'field';
-    var dir = kind === 'dir', pres = kind === 'pres', cache = this._cacheOf(kind);
+    kind = kind === 'dir' || kind === 'pres' || kind === 'lake' || kind === 'lakedir' ? kind : 'field';
+    var dir = kind === 'dir', pres = kind === 'pres', lake = kind === 'lake' || kind === 'lakedir', cache = this._cacheOf(kind);
     var self = this, key = this._key(idx, kind), hit = cache.get(key);
     if (hit) return Promise.resolve(hit);
     if (this.inflight[key]) return this.inflight[key].promise;
     if (this._isUnavailable(idx, kind)) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
     delete this.unavailable[key];                                            // an expired cooldown: try again
-    var m = this.manifest, ctrl = new AbortController(), rec, half = pres || (dir ? this.dres : this.res) === 'half', kindName = kind, url;
-    try { url = this.root + '/' + frameKey(m, m.frames[idx], dir ? DIR_FIELDS[this.field] : pres ? PRES_FIELD : this.field, half); }
-    catch (e) { return Promise.reject(e); }                                  // never a throw: _prefetch runs from UI handlers (setSpeed, pause)
+    var m = this.manifest, lm = lake && this.lake ? this.lake.manifest : null, ctrl = new AbortController(), rec, half = pres || (dir ? this.dres : this.res) === 'half', kindName = kind, url, grid;
+    try {
+      if (lake) {                                                            // the lake run's frame of the same valid time, on the lake grid
+        var li = this._lakeIndex(idx);
+        if (li < 0 || !lm) throw new Error('no lake frame for this time');
+        url = this.root + '/' + frameKey(lm, lm.frames[li], kind === 'lake' ? this.field : LAKE_DIR_FIELD, false); grid = lm.grid;
+      } else { url = this.root + '/' + frameKey(m, m.frames[idx], dir ? DIR_FIELDS[this.field] : pres ? PRES_FIELD : this.field, half); grid = half ? m.grid_half : m.grid; }
+    } catch (e) { return Promise.reject(e); }                                // never a throw: _prefetch runs from UI handlers (setSpeed, pause)
     function mine() { return self.inflight[key] === rec; }
     // The watchdog times the DOWNLOAD only (until the body has arrived): a decode that waits behind a busy page
     // (fast playback on a large screen) is late, never missing. A download that stalls (one took 6.5 s at G4) is
@@ -3636,8 +4180,10 @@
       ctrl.signal.addEventListener('abort', onOuter);
       var watchdog = setTimeout(function () { stalled = true; inner.abort(); }, Math.max(STALL_MS, 4 * self._interval()));
       function done() { clearTimeout(watchdog); ctrl.signal.removeEventListener('abort', onOuter); }
-      return decodeFrame(url, inner.signal, half ? m.grid_half : m.grid, function () { clearTimeout(watchdog); }).then(function (frame) {
-        done(); return frame;
+      return decodeFrame(url, inner.signal, grid, function () { clearTimeout(watchdog); }).then(function (frame) {
+        done();
+        if (lake) { try { validateLakeGrid(grid, frame); } catch (e) { throw new Error('frame decode failed: ' + e.message); } }   // (a 'decode' failure: permanent)
+        return frame;
       }, function (err) {
         done();
         if (stalled && !ctrl.signal.aborted && self.manifest === m) {
@@ -3651,19 +4197,20 @@
       if (mine()) delete self.inflight[key];
       // A decode cannot be cancelled: one that outlives its abort (Update, Off, field or resolution
       // change) must neither be cached nor delivered.
-      if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
-      if (!dir && !pres) self.transientFails = 0;                             // the outage counter follows the field frames only
-      var drawn = dir ? (self.flow ? self.flow.dir : null) : pres ? (self.iso ? self.iso.frame : null) : (self.layer ? self.layer._frame : null);
+      if (ctrl.signal.aborted || self.manifest !== m || (lake && (!self.lake || self.lake.manifest !== lm))) throw abortError();
+      if (!dir && !pres && !lake) self.transientFails = 0;                     // the outage counter follows the field frames only
+      var drawn = dir ? (self.flow ? self.flow.dir : null) : pres ? (self.iso ? self.iso.frame : null) : kind === 'lake' ? (self.layer && self.layer._lake ? self.layer._lake.frame : null) :
+        kind === 'lakedir' ? (self.flow ? self.flow.ldir : null) : (self.layer ? self.layer._frame : null);
       cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null, self._rankMap(), drawn);
       self._prefetch();                                                        // the ring refills on every landing, not only the target's (plan section 42)
       return frame;
     }, function (err) {
       if (mine()) delete self.inflight[key];
-      if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
+      if (ctrl.signal.aborted || self.manifest !== m || (lake && (!self.lake || self.lake.manifest !== lm))) throw abortError();
       var kind_ = failureKind(err);
       self.unavailable[key] = kind_ === 'permanent' ? true : Date.now() + RETRY_AFTER_MS;
       err.unavailable = true;
-      if (kind_ === 'transient' && !dir && !pres && ++self.transientFails >= MAX_TRANSIENT) err.outage = true;   // the bucket, not one frame
+      if (kind_ === 'transient' && !dir && !pres && !lake && ++self.transientFails >= MAX_TRANSIENT) err.outage = true;   // the bucket, not one frame
       throw err;
     });
     rec = this.inflight[key] = { promise: p, abort: ctrl, key: key, kind: kindName };
@@ -3675,10 +4222,14 @@
   Overlay.prototype._ring = function () { return ringFor(this.speed, this.playing); };
   // One more download at once while the isobars ride along (plan section 46): with three own frames a step and the paused
   // cap of two, the target's pressure could start only after a landing (a second round trip per step at 1x, or a blink).
-  Overlay.prototype._maxInflight = function () { return this._ring().inflight + (this._wantPres() ? 1 : 0); };
+  // ... and one more per lake frame kind while the lakes ride along (plan section 50), for the same reason.
+  Overlay.prototype._maxInflight = function () { return this._ring().inflight + (this._wantPres() ? 1 : 0) + (this._wantLake() ? 1 : 0) + (this._wantLakeDir() ? 1 : 0); };
   Overlay.prototype._plan = function (idx) {
-    var r = this._ring(), plan = ringPlan(idx, this.n, this.dir, r.ahead, r.behind), want = this._wantDir(), wantP = this._wantPres(), out = [];
-    for (var i = 0; i < plan.length; i++) { out.push([plan[i], 'field']); if (want) out.push([plan[i], 'dir']); if (wantP) out.push([plan[i], 'pres']); }
+    var r = this._ring(), plan = ringPlan(idx, this.n, this.dir, r.ahead, r.behind), want = this._wantDir(), wantP = this._wantPres(), wantL = this._wantLake(), wantLD = this._wantLakeDir(), out = [];
+    for (var i = 0; i < plan.length; i++) {
+      out.push([plan[i], 'field']); if (want) out.push([plan[i], 'dir']); if (wantP) out.push([plan[i], 'pres']);
+      if (wantL && this._lakeIndex(plan[i]) >= 0) { out.push([plan[i], 'lake']); if (wantLD) out.push([plan[i], 'lakedir']); }
+    }
     return out;
   };
   // Keep the in-flight set to what the target needs: everything outside the new ring is dropped, and beside the
@@ -3691,8 +4242,9 @@
     var rank = {}, plan = this._plan(idx), i, k;
     for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
     var target = this._key(idx), dtarget = this._wantDir() ? this._key(idx, 'dir') : null, ptarget = this._wantPres() ? this._key(idx, 'pres') : null, survivors = [];
+    var lk = this._lakeIndex(idx) >= 0, ltarget = lk && this._wantLake() ? this._key(idx, 'lake') : null, ldtarget = lk && this._wantLakeDir() ? this._key(idx, 'lakedir') : null;
     var room = this._maxInflight() - (this.cache.has(target) ? 0 : 1);
-    for (k in this.inflight) if (rank[k] === undefined) { this.inflight[k].abort.abort(); delete this.inflight[k]; } else if (k === dtarget || k === ptarget) room--; else if (k !== target) survivors.push(k);
+    for (k in this.inflight) if (rank[k] === undefined) { this.inflight[k].abort.abort(); delete this.inflight[k]; } else if (k === dtarget || k === ptarget || k === ltarget || k === ldtarget) room--; else if (k !== target) survivors.push(k);
     survivors.sort(function (a, b) { return rank[a] - rank[b]; });
     while (survivors.length > Math.max(0, room)) { k = survivors.pop(); this.inflight[k].abort.abort(); delete this.inflight[k]; }
   };
@@ -3702,6 +4254,7 @@
   Overlay.prototype._goto = function (idx, sig) {
     var self = this, m = this.manifest, field = this.field, res = this.res;
     this.target = idx; this._syncUI();
+    this._adoptLake();                                     // a newer lake run takes over from this step on (plan section 50)
     this._trimInflight(idx);
     var p = this._ensure(idx);
     // With Animation on, the picture and its particles change together: the step waits for its direction
@@ -3721,7 +4274,17 @@
       if (!this._presWait || this._presWait.key !== pkey) this._presWait = { key: pkey, since: now, timer: null };
       pp = capWait(this._kindReady(idx, 'pres'), Math.max(0, PRES_WAIT_MS - (now - this._presWait.since)), this._presWait);
     } else this._presWait = null;
-    var waits = [p]; if (pd) waits.push(pd); if (pp) waits.push(pp);
+    // The lake frames likewise (plan section 50): a landing paints with its own lake frame (never an old lake under a new
+    // time, never a lake blinking in after the step); the first picture does not wait; a missing, failed or slow lake
+    // frame (the same cap, counted per step) never holds a step: it lands bare, the lake joins when the frame arrives.
+    var pl = null;
+    if (this._wantLake() && this._lakeIndex(idx) >= 0 && this.layer && this.layer.hasFrame() && !this._isUnavailable(idx)) {
+      var lkey = this._key(idx, 'lake'), lnow = Date.now(), lwaits = [this._kindReady(idx, 'lake')];
+      if (this._wantLakeDir()) lwaits.push(this._kindReady(idx, 'lakedir'));
+      if (!this._lakeWait || this._lakeWait.key !== lkey) this._lakeWait = { key: lkey, since: lnow, timer: null };
+      pl = capWait(Promise.all(lwaits), Math.max(0, PRES_WAIT_MS - (lnow - this._lakeWait.since)), this._lakeWait);
+    } else this._lakeWait = null;
+    var waits = [p]; if (pd) waits.push(pd); if (pp) waits.push(pp); if (pl) waits.push(pl);
     return (waits.length > 1 ? Promise.all(waits).then(function (all) { return all[0]; }) : p).then(function (frame) {
       if ((sig && sig.aborted) || self.target !== idx || !self.layer || self.manifest !== m || self.field !== field || self.res !== res) throw abortError();
       // the frame already on the map (Retry after an outage, a repeated seek): no redraw, but the same
@@ -3729,14 +4292,15 @@
       if (self.layer._frame !== frame) {
         var half = res === 'half';
         self.layer.setContours(self._contourCfg(), true);                        // (setFrame redraws with it)
-        self.layer.setFrame(frame, half ? m.grid_half : m.grid, field, m.fields[field], self._lut(), m.frames[idx]);
+        self.layer.setFrame(frame, half ? m.grid_half : m.grid, field, m.fields[field], self._lut(), m.frames[idx], self._lakeHit(idx));   // the step's lake frame rides in the one redraw
       }
       self.frameIndex = idx; self._pendingRestore = null; self._carry = null;   // a frame is on the map: the saved state is spent
-      self._presWait = null;
+      self._presWait = null; self._lakeWait = null;
       self._persist();
       self._syncLook();
       self._attribute();
       if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
+      self._syncLake(idx);                                                       // before the particles: the lake direction rides in the step's one rebuild
       self._syncFlow(idx);
       self._syncIsobars(idx);
       self._prefetch();
@@ -3758,6 +4322,7 @@
       cache: this.cache.size() + '/' + this.dcache.size() + '/' + this.pcache.size(), decoder: dec, isobars: this.iso ? (this.iso.entry ? this.iso.entry.step : '-') + ' ' + this.iso.drawn.lines + 'l/' + this.iso.drawn.labels + 'p/' + this.iso.drawn.hl + 'm ' + this.iso.lastMs + 'ms' + (this.iso.terrain ? ' terrain' : ' no-terrain') : (this.isobars ? 'none' : 'off'), hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
     var lines = [], k;
     for (k in o) lines.push(k + ': ' + o[k]);
+    if (this.lake) lines.push('lake: ' + this.lake.status + ' ' + (this.lake.manifest ? this.lake.manifest.run : '-') + (this.lake.next ? ' next ' + this.lake.next.m.run : '') + ', drawn ' + (this.layer && this.layer._lake ? this.layer._lake.entry.step : '-') + ', cache ' + this.lcache.size() + '/' + this.ldcache.size());
     if (this.sst) lines.push('sst: ' + this.sst.status + ' ' + (this.sst.manifest ? this.sst.manifest.run : '-') + ', cells ' + (this.sst.bytes / 1048576).toFixed(1) + ' MB, in flight ' + Object.keys(this.sst.inflight).length);
     if (f) for (k in f) lines.push('flow.' + k + ': ' + f[k]); else lines.push('flow: none');
     return lines.join('\n');
@@ -3794,9 +4359,12 @@
     if (this.frameIndex === null || !this.manifest || !this.field) return;
     var r = this._ring(), cap = r.inflight, plan = this._plan(this._anchorIndex()), rank = {}, i, k, keys;
     var shown = this.frameIndex, keepF = this._key(shown), keepD = this._wantDir() ? this._key(shown, 'dir') : null, keepP = this._wantPres() ? this._key(shown, 'pres') : null;
+    var shownL = this._lakeIndex(shown) >= 0, keepL = shownL && this._wantLake() ? this._key(shown, 'lake') : null, keepLD = shownL && this._wantLakeDir() ? this._key(shown, 'lakedir') : null;
     for (i = 0; i < plan.length; i++) rank[this._key(plan[i][0], plan[i][1])] = i;
     var drawnF = this.layer ? this.layer._frame : null, drawnD = this.flow ? this.flow.dir : null, drawnP = this.iso ? this.iso.frame : null, own = this._own();
+    var drawnL = this.layer && this.layer._lake ? this.layer._lake.frame : null, drawnLD = this.flow ? this.flow.ldir : null;
     this.cache.limit(r.decoded, keepF, rank, drawnF); this.dcache.limit(r.decoded, keepD, rank, drawnD); this.pcache.limit(r.decoded, keepP, rank, drawnP);
+    this.lcache.limit(r.decoded, keepL, rank, drawnL); this.ldcache.limit(r.decoded, keepLD, rank, drawnLD);
     cap = this._maxInflight();
     for (k in this.inflight) if (rank[k] === undefined) { this.inflight[k].abort.abort(); delete this.inflight[k]; }
     keys = Object.keys(this.inflight);
@@ -3811,14 +4379,15 @@
     // The same reserve while the frame on the map (or the animator's direction) is the OTHER resolution's, kept by value
     // beside the ring until the new one lands.
     var ring = ringPlan(this._anchorIndex(), this.n, this.dir, r.ahead, r.behind);
-    var drawnInRing = ring.indexOf(shown) >= 0 && (!drawnF || this.cache.map.get(keepF) === drawnF) && (!keepD || !drawnD || this.dcache.map.get(keepD) === drawnD) && (!keepP || !drawnP || this.pcache.map.get(keepP) === drawnP);
+    var drawnInRing = ring.indexOf(shown) >= 0 && (!drawnF || this.cache.map.get(keepF) === drawnF) && (!keepD || !drawnD || this.dcache.map.get(keepD) === drawnD) && (!keepP || !drawnP || this.pcache.map.get(keepP) === drawnP) &&
+      (!keepL || !drawnL || this.lcache.map.get(keepL) === drawnL) && (!keepLD || !drawnLD || this.ldcache.map.get(keepLD) === drawnLD);
     var room = r.decoded - (drawnInRing ? 0 : 1);
     for (i = 0; i < plan.length && Object.keys(this.inflight).length < cap; i++) {
       var idx = plan[i][0], kind = plan[i][1], key = this._key(idx, kind);
       if (ring.indexOf(idx) >= room) continue;
       if (this.inflight[key] || this._isUnavailable(idx, kind) || this._cacheOf(kind).has(key)) continue;
       if (kind !== 'field' && this._isUnavailable(idx)) continue;   // never the extras of a step that cannot be shown
-      if (kind === 'dir') this._ensureDir(idx); else if (kind === 'pres') this._ensurePres(idx); else this._ensure(idx).catch(function () {});
+      if (kind === 'dir') this._ensureDir(idx); else if (kind === 'pres') this._ensurePres(idx); else if (kind === 'lake') this._ensureLake(idx); else if (kind === 'lakedir') this._ensureLakeDir(idx); else this._ensure(idx).catch(function () {});
     }
   };
   Overlay.prototype._fail = function (sig, err) {
@@ -3829,7 +4398,7 @@
     // bare relief: re-check R-2).
     if (this.frameIndex === null && this.layer && this.layer.hasFrame()) {
       this.layer.clear();
-      if (this.flow) this.flow.clearData();
+      if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
       if (this.iso) this.iso.clearData();
       if (this.readout) this.readout.hidden = true;
       this._unattribute();
@@ -3907,8 +4476,8 @@
   };
   Overlay.prototype._adopt = function (m, ptr) {
     this.manifest = m; this.pointer = ptr; this.newerRun = null; this.n = m.frames.length;
-    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
-    if (this.flow) this.flow.clearData();
+    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
+    if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
     if (this.iso) this.iso.clearData();
   };
   // Every RUN_CHECK_MS while mounted: a newer complete run only raises the "Update" banner.
@@ -3921,6 +4490,7 @@
       return;
     }
     if (!m) return;
+    if (this.lake && this._def().lakes) this.lake.recheck();                    // a newer lake run is taken between landings (_goto)
     fetch(this._modelBase() + '/latest.json', { cache: 'no-cache' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (ptr) {
       if (self.model !== model || self.manifest !== m) return;                // a model switch (or an Update) meanwhile: the answer is the old run's
       if (!ptr || !ptr.complete || !ptr.run || !ptr.manifest || isNaN(Date.parse(ptr.published_utc)) || !self.manifest) return;
@@ -4175,6 +4745,7 @@
     for (var k in this.inflight) this.inflight[k].abort.abort();
     this.inflight = {};
     if (this._presWait) { if (this._presWait.timer !== null) clearTimeout(this._presWait.timer); this._presWait = null; }
+    if (this._lakeWait) { if (this._lakeWait.timer !== null) clearTimeout(this._lakeWait.timer); this._lakeWait = null; }
   };
   Overlay.prototype.unmount = function () {
     var self = this;
@@ -4191,6 +4762,8 @@
     this._pendingRestore = null; this._pendingFocus = null; this._carry = null; this._switchT = null;
     if (this.layer) { if (this.layer._src) this.layer.setSource(null, true); this.map.removeLayer(this.layer); this.layer = null; }
     if (this.sst) this.sst.abortAll();                     // the day's frame and manifest stay for the next On
+    if (this.lake) this.lake.abortAll();                   // the lake run stays for the next On
+    if (this.lakeCoast) this.lakeCoast.abortAll();
     this.mode = 'model';
     this._syncLook();                                      // the page's imagery back, no blend
     if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
@@ -4201,7 +4774,7 @@
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
     this._unbindSize();
     this._removeSheet();
-    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null;
+    this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null;
     this.field = null; this.frameIndex = null; this.res = null; this.dres = null; this.last = null; this.collapsed = undefined;
     clear(this.opts.panel);
     if (this.opts.panel && this.opts.panel.classList) this.opts.panel.classList.remove('ov-playing');
@@ -4333,7 +4906,7 @@
       if (worst === null || worstRank < this._own()) return;                // only the target's own fetches are in flight (never evicted)
       this.inflight[worst].abort.abort(); delete this.inflight[worst];
     }
-    if (kind === 'dir') this._ensureDir(idx); else this._ensurePres(idx);
+    if (kind === 'dir') this._ensureDir(idx); else if (kind === 'pres') this._ensurePres(idx); else if (kind === 'lake') this._ensureLake(idx); else this._ensureLakeDir(idx);
   };
   Overlay.prototype._startDir = function (idx) { this._startKind(idx, 'dir'); };
   // ---- the isobars (plan section 46) ----
@@ -4437,8 +5010,8 @@
     if (!this.manifest || !this.field || !this.layer) return;
     this._ensureFlow();
     if (!this.anim) {                                      // the direction downloads stop at once, before or after the first frame
-      for (var k in this.inflight) if (this.inflight[k].kind === 'dir') { this.inflight[k].abort.abort(); delete this.inflight[k]; }
-      this.dcache.clear();
+      for (var k in this.inflight) if (this.inflight[k].kind === 'dir' || this.inflight[k].kind === 'lakedir') { this.inflight[k].abort.abort(); delete this.inflight[k]; }
+      this.dcache.clear(); this.ldcache.clear();
     }
     if (this.flow && this.frameIndex !== null) this._syncFlow(this.frameIndex);
     this._prefetch();                                      // starts or drops the direction fetches (planned around a pending target)
@@ -5223,6 +5796,9 @@
       SstStore: SstStore, sstStore: sstStore, validSstManifest: validSstManifest, validSstPointer: validSstPointer, sstTierFor: sstTierFor, SST_FDEF: SST_FDEF,
       SST_TIER_ZOOMS: SST_TIER_ZOOMS, SST_ATTRIBUTION: SST_ATTRIBUTION, SST_HEAD: SST_HEAD, SST_STALE_DAYS: SST_STALE_DAYS, sstDayText: sstDayText, sstAgeDays: sstAgeDays, buildLegend: buildLegend, SST_PREFIX: SST_PREFIX, SST_PAD_PX: SST_PAD_PX, MAX_SST_INFLIGHT: MAX_SST_INFLIGHT, MAX_SST_CHUNK_BYTES: MAX_SST_CHUNK_BYTES, cellsForTile: cellsForTile,
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
+      LakeStore: LakeStore, lakeStore: lakeStore, validLakeManifest: validLakeManifest, validLakePointer: validLakePointer, validLakeGridDef: validLakeGridDef, validateLakeGrid: validateLakeGrid,
+      lakeFieldOk: lakeFieldOk, lakeFieldMatches: lakeFieldMatches, sampleLake: sampleLake, lakeBoxOf: lakeBoxOf, lakeBoxHits: lakeBoxHits, lakeWindow: lakeWindow, lakeVectorNodes: lakeVectorNodes,
+      LAKE_PREFIX: LAKE_PREFIX, LAKE_UNDER: LAKE_UNDER, LAKE_DIR_FIELD: LAKE_DIR_FIELD, LAKE_BOX: LAKE_BOX, lakeFull: lakeFull,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
       ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_STRONG_LOW_HPA: ISO_STRONG_LOW_HPA, ISO_TERRAIN_CAP_M: ISO_TERRAIN_CAP_M, ISO_STRONG_NODES_MAX: ISO_STRONG_NODES_MAX, strongLowSearch: strongLowSearch, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,

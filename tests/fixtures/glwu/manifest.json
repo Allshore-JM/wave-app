@@ -1,0 +1,811 @@
+{
+ "build_seconds": 153.6,
+ "bulletins": {
+  "dir": "glwu/v1/2026102119/bull",
+  "ids": [
+   "0Y2W3",
+   "45001",
+   "45002",
+   "45003",
+   "45004",
+   "45005",
+   "45006",
+   "45007",
+   "45008",
+   "45012",
+   "45014",
+   "45022",
+   "45023",
+   "45024",
+   "45025",
+   "45026",
+   "45027",
+   "45028",
+   "45029",
+   "45132",
+   "45135",
+   "45136",
+   "45137",
+   "45139",
+   "45142",
+   "45143",
+   "45147",
+   "45149",
+   "45154",
+   "45159",
+   "45160",
+   "45161",
+   "45163",
+   "45165",
+   "45167",
+   "45168",
+   "45169",
+   "45170",
+   "45171",
+   "45172",
+   "45173",
+   "45174",
+   "45195",
+   "BARN6",
+   "C58W3",
+   "CAPEVINCEN",
+   "DISW3",
+   "ELONGPOINT",
+   "GSLM4",
+   "IndDunesNP",
+   "IndDunesSP",
+   "LITTLESABL",
+   "LSCM4",
+   "N_GREENBAY",
+   "N_HAMLIN",
+   "N_MICHIGAN",
+   "N_OLCOTT",
+   "OLCN6",
+   "OSGN6",
+   "PILM4",
+   "ROAM4",
+   "RPRN6",
+   "SBIO1",
+   "SBLM4",
+   "SGNW3",
+   "SODUSBAY",
+   "STDM4",
+   "STURGEONPT",
+   "S_GREENBAY",
+   "Silver_Bch",
+   "WhihalaBch",
+   "YGNN6"
+  ]
+ },
+ "complete": true,
+ "encoding": "u8-linear-v2",
+ "encoding_spec": {
+  "bilinear_missing": "treat q=0 as absent neighbour",
+  "circular_fields": "fields with circular: true are not clamped: q = 1 + (round(v * 254 / 360) mod 254), code 1 = 0 = 360 deg, 255 unused",
+  "clamp": "both",
+  "formula": "value = lo + (q - 1) / 254 * (hi - lo)",
+  "high_code_means": ">= hi",
+  "low_code_means": "<= lo",
+  "max_code": 255,
+  "min_code": 1,
+  "missing": 0
+ },
+ "expected_frames": 150,
+ "fields": {
+  "hs": {
+   "hi": 22.86,
+   "interpolation": "bilinear",
+   "legend": [
+    0.0,
+    18.288
+   ],
+   "lo": 0.0,
+   "resolutions": [
+    "full"
+   ],
+   "units": "m"
+  },
+  "pdir": {
+   "circular": true,
+   "convention": "from",
+   "hi": 360.0,
+   "interpolation": "circular",
+   "legend": [
+    0.0,
+    360.0
+   ],
+   "lo": 0.0,
+   "resolutions": [
+    "full"
+   ],
+   "units": "deg"
+  },
+  "tp": {
+   "hi": 30.0,
+   "interpolation": "bilinear",
+   "legend": [
+    4.0,
+    22.0
+   ],
+   "lo": 1.0,
+   "resolutions": [
+    "full"
+   ],
+   "units": "s"
+  }
+ },
+ "files": {
+  "res": {
+   "full": ""
+  },
+  "template": "glwu/v1/2026102119/{res}{field}/f{step:03d}.png"
+ },
+ "fill": {
+  "cells": 2,
+  "fields": [
+   "hs",
+   "pdir",
+   "tp"
+  ],
+  "limit": "within 2 nodes of the model's water",
+  "mask": "glwu-model-water",
+  "methods": {
+   "hs": "mean",
+   "pdir": "nearest",
+   "tp": "nearest"
+  },
+  "note": "nearshore values are the nearest model cell's; clipped to the lake shores in the browser",
+  "version": 1
+ },
+ "frame_schedule": [
+  [
+   0,
+   149,
+   1
+  ]
+ ],
+ "frames": [
+  {
+   "step": 0,
+   "valid_utc": "2026-10-21T19:00:00Z"
+  },
+  {
+   "step": 1,
+   "valid_utc": "2026-10-21T20:00:00Z"
+  },
+  {
+   "step": 2,
+   "valid_utc": "2026-10-21T21:00:00Z"
+  },
+  {
+   "step": 3,
+   "valid_utc": "2026-10-21T22:00:00Z"
+  },
+  {
+   "step": 4,
+   "valid_utc": "2026-10-21T23:00:00Z"
+  },
+  {
+   "step": 5,
+   "valid_utc": "2026-10-22T00:00:00Z"
+  },
+  {
+   "step": 6,
+   "valid_utc": "2026-10-22T01:00:00Z"
+  },
+  {
+   "step": 7,
+   "valid_utc": "2026-10-22T02:00:00Z"
+  },
+  {
+   "step": 8,
+   "valid_utc": "2026-10-22T03:00:00Z"
+  },
+  {
+   "step": 9,
+   "valid_utc": "2026-10-22T04:00:00Z"
+  },
+  {
+   "step": 10,
+   "valid_utc": "2026-10-22T05:00:00Z"
+  },
+  {
+   "step": 11,
+   "valid_utc": "2026-10-22T06:00:00Z"
+  },
+  {
+   "step": 12,
+   "valid_utc": "2026-10-22T07:00:00Z"
+  },
+  {
+   "step": 13,
+   "valid_utc": "2026-10-22T08:00:00Z"
+  },
+  {
+   "step": 14,
+   "valid_utc": "2026-10-22T09:00:00Z"
+  },
+  {
+   "step": 15,
+   "valid_utc": "2026-10-22T10:00:00Z"
+  },
+  {
+   "step": 16,
+   "valid_utc": "2026-10-22T11:00:00Z"
+  },
+  {
+   "step": 17,
+   "valid_utc": "2026-10-22T12:00:00Z"
+  },
+  {
+   "step": 18,
+   "valid_utc": "2026-10-22T13:00:00Z"
+  },
+  {
+   "step": 19,
+   "valid_utc": "2026-10-22T14:00:00Z"
+  },
+  {
+   "step": 20,
+   "valid_utc": "2026-10-22T15:00:00Z"
+  },
+  {
+   "step": 21,
+   "valid_utc": "2026-10-22T16:00:00Z"
+  },
+  {
+   "step": 22,
+   "valid_utc": "2026-10-22T17:00:00Z"
+  },
+  {
+   "step": 23,
+   "valid_utc": "2026-10-22T18:00:00Z"
+  },
+  {
+   "step": 24,
+   "valid_utc": "2026-10-22T19:00:00Z"
+  },
+  {
+   "step": 25,
+   "valid_utc": "2026-10-22T20:00:00Z"
+  },
+  {
+   "step": 26,
+   "valid_utc": "2026-10-22T21:00:00Z"
+  },
+  {
+   "step": 27,
+   "valid_utc": "2026-10-22T22:00:00Z"
+  },
+  {
+   "step": 28,
+   "valid_utc": "2026-10-22T23:00:00Z"
+  },
+  {
+   "step": 29,
+   "valid_utc": "2026-10-23T00:00:00Z"
+  },
+  {
+   "step": 30,
+   "valid_utc": "2026-10-23T01:00:00Z"
+  },
+  {
+   "step": 31,
+   "valid_utc": "2026-10-23T02:00:00Z"
+  },
+  {
+   "step": 32,
+   "valid_utc": "2026-10-23T03:00:00Z"
+  },
+  {
+   "step": 33,
+   "valid_utc": "2026-10-23T04:00:00Z"
+  },
+  {
+   "step": 34,
+   "valid_utc": "2026-10-23T05:00:00Z"
+  },
+  {
+   "step": 35,
+   "valid_utc": "2026-10-23T06:00:00Z"
+  },
+  {
+   "step": 36,
+   "valid_utc": "2026-10-23T07:00:00Z"
+  },
+  {
+   "step": 37,
+   "valid_utc": "2026-10-23T08:00:00Z"
+  },
+  {
+   "step": 38,
+   "valid_utc": "2026-10-23T09:00:00Z"
+  },
+  {
+   "step": 39,
+   "valid_utc": "2026-10-23T10:00:00Z"
+  },
+  {
+   "step": 40,
+   "valid_utc": "2026-10-23T11:00:00Z"
+  },
+  {
+   "step": 41,
+   "valid_utc": "2026-10-23T12:00:00Z"
+  },
+  {
+   "step": 42,
+   "valid_utc": "2026-10-23T13:00:00Z"
+  },
+  {
+   "step": 43,
+   "valid_utc": "2026-10-23T14:00:00Z"
+  },
+  {
+   "step": 44,
+   "valid_utc": "2026-10-23T15:00:00Z"
+  },
+  {
+   "step": 45,
+   "valid_utc": "2026-10-23T16:00:00Z"
+  },
+  {
+   "step": 46,
+   "valid_utc": "2026-10-23T17:00:00Z"
+  },
+  {
+   "step": 47,
+   "valid_utc": "2026-10-23T18:00:00Z"
+  },
+  {
+   "step": 48,
+   "valid_utc": "2026-10-23T19:00:00Z"
+  },
+  {
+   "step": 49,
+   "valid_utc": "2026-10-23T20:00:00Z"
+  },
+  {
+   "step": 50,
+   "valid_utc": "2026-10-23T21:00:00Z"
+  },
+  {
+   "step": 51,
+   "valid_utc": "2026-10-23T22:00:00Z"
+  },
+  {
+   "step": 52,
+   "valid_utc": "2026-10-23T23:00:00Z"
+  },
+  {
+   "step": 53,
+   "valid_utc": "2026-10-24T00:00:00Z"
+  },
+  {
+   "step": 54,
+   "valid_utc": "2026-10-24T01:00:00Z"
+  },
+  {
+   "step": 55,
+   "valid_utc": "2026-10-24T02:00:00Z"
+  },
+  {
+   "step": 56,
+   "valid_utc": "2026-10-24T03:00:00Z"
+  },
+  {
+   "step": 57,
+   "valid_utc": "2026-10-24T04:00:00Z"
+  },
+  {
+   "step": 58,
+   "valid_utc": "2026-10-24T05:00:00Z"
+  },
+  {
+   "step": 59,
+   "valid_utc": "2026-10-24T06:00:00Z"
+  },
+  {
+   "step": 60,
+   "valid_utc": "2026-10-24T07:00:00Z"
+  },
+  {
+   "step": 61,
+   "valid_utc": "2026-10-24T08:00:00Z"
+  },
+  {
+   "step": 62,
+   "valid_utc": "2026-10-24T09:00:00Z"
+  },
+  {
+   "step": 63,
+   "valid_utc": "2026-10-24T10:00:00Z"
+  },
+  {
+   "step": 64,
+   "valid_utc": "2026-10-24T11:00:00Z"
+  },
+  {
+   "step": 65,
+   "valid_utc": "2026-10-24T12:00:00Z"
+  },
+  {
+   "step": 66,
+   "valid_utc": "2026-10-24T13:00:00Z"
+  },
+  {
+   "step": 67,
+   "valid_utc": "2026-10-24T14:00:00Z"
+  },
+  {
+   "step": 68,
+   "valid_utc": "2026-10-24T15:00:00Z"
+  },
+  {
+   "step": 69,
+   "valid_utc": "2026-10-24T16:00:00Z"
+  },
+  {
+   "step": 70,
+   "valid_utc": "2026-10-24T17:00:00Z"
+  },
+  {
+   "step": 71,
+   "valid_utc": "2026-10-24T18:00:00Z"
+  },
+  {
+   "step": 72,
+   "valid_utc": "2026-10-24T19:00:00Z"
+  },
+  {
+   "step": 73,
+   "valid_utc": "2026-10-24T20:00:00Z"
+  },
+  {
+   "step": 74,
+   "valid_utc": "2026-10-24T21:00:00Z"
+  },
+  {
+   "step": 75,
+   "valid_utc": "2026-10-24T22:00:00Z"
+  },
+  {
+   "step": 76,
+   "valid_utc": "2026-10-24T23:00:00Z"
+  },
+  {
+   "step": 77,
+   "valid_utc": "2026-10-25T00:00:00Z"
+  },
+  {
+   "step": 78,
+   "valid_utc": "2026-10-25T01:00:00Z"
+  },
+  {
+   "step": 79,
+   "valid_utc": "2026-10-25T02:00:00Z"
+  },
+  {
+   "step": 80,
+   "valid_utc": "2026-10-25T03:00:00Z"
+  },
+  {
+   "step": 81,
+   "valid_utc": "2026-10-25T04:00:00Z"
+  },
+  {
+   "step": 82,
+   "valid_utc": "2026-10-25T05:00:00Z"
+  },
+  {
+   "step": 83,
+   "valid_utc": "2026-10-25T06:00:00Z"
+  },
+  {
+   "step": 84,
+   "valid_utc": "2026-10-25T07:00:00Z"
+  },
+  {
+   "step": 85,
+   "valid_utc": "2026-10-25T08:00:00Z"
+  },
+  {
+   "step": 86,
+   "valid_utc": "2026-10-25T09:00:00Z"
+  },
+  {
+   "step": 87,
+   "valid_utc": "2026-10-25T10:00:00Z"
+  },
+  {
+   "step": 88,
+   "valid_utc": "2026-10-25T11:00:00Z"
+  },
+  {
+   "step": 89,
+   "valid_utc": "2026-10-25T12:00:00Z"
+  },
+  {
+   "step": 90,
+   "valid_utc": "2026-10-25T13:00:00Z"
+  },
+  {
+   "step": 91,
+   "valid_utc": "2026-10-25T14:00:00Z"
+  },
+  {
+   "step": 92,
+   "valid_utc": "2026-10-25T15:00:00Z"
+  },
+  {
+   "step": 93,
+   "valid_utc": "2026-10-25T16:00:00Z"
+  },
+  {
+   "step": 94,
+   "valid_utc": "2026-10-25T17:00:00Z"
+  },
+  {
+   "step": 95,
+   "valid_utc": "2026-10-25T18:00:00Z"
+  },
+  {
+   "step": 96,
+   "valid_utc": "2026-10-25T19:00:00Z"
+  },
+  {
+   "step": 97,
+   "valid_utc": "2026-10-25T20:00:00Z"
+  },
+  {
+   "step": 98,
+   "valid_utc": "2026-10-25T21:00:00Z"
+  },
+  {
+   "step": 99,
+   "valid_utc": "2026-10-25T22:00:00Z"
+  },
+  {
+   "step": 100,
+   "valid_utc": "2026-10-25T23:00:00Z"
+  },
+  {
+   "step": 101,
+   "valid_utc": "2026-10-26T00:00:00Z"
+  },
+  {
+   "step": 102,
+   "valid_utc": "2026-10-26T01:00:00Z"
+  },
+  {
+   "step": 103,
+   "valid_utc": "2026-10-26T02:00:00Z"
+  },
+  {
+   "step": 104,
+   "valid_utc": "2026-10-26T03:00:00Z"
+  },
+  {
+   "step": 105,
+   "valid_utc": "2026-10-26T04:00:00Z"
+  },
+  {
+   "step": 106,
+   "valid_utc": "2026-10-26T05:00:00Z"
+  },
+  {
+   "step": 107,
+   "valid_utc": "2026-10-26T06:00:00Z"
+  },
+  {
+   "step": 108,
+   "valid_utc": "2026-10-26T07:00:00Z"
+  },
+  {
+   "step": 109,
+   "valid_utc": "2026-10-26T08:00:00Z"
+  },
+  {
+   "step": 110,
+   "valid_utc": "2026-10-26T09:00:00Z"
+  },
+  {
+   "step": 111,
+   "valid_utc": "2026-10-26T10:00:00Z"
+  },
+  {
+   "step": 112,
+   "valid_utc": "2026-10-26T11:00:00Z"
+  },
+  {
+   "step": 113,
+   "valid_utc": "2026-10-26T12:00:00Z"
+  },
+  {
+   "step": 114,
+   "valid_utc": "2026-10-26T13:00:00Z"
+  },
+  {
+   "step": 115,
+   "valid_utc": "2026-10-26T14:00:00Z"
+  },
+  {
+   "step": 116,
+   "valid_utc": "2026-10-26T15:00:00Z"
+  },
+  {
+   "step": 117,
+   "valid_utc": "2026-10-26T16:00:00Z"
+  },
+  {
+   "step": 118,
+   "valid_utc": "2026-10-26T17:00:00Z"
+  },
+  {
+   "step": 119,
+   "valid_utc": "2026-10-26T18:00:00Z"
+  },
+  {
+   "step": 120,
+   "valid_utc": "2026-10-26T19:00:00Z"
+  },
+  {
+   "step": 121,
+   "valid_utc": "2026-10-26T20:00:00Z"
+  },
+  {
+   "step": 122,
+   "valid_utc": "2026-10-26T21:00:00Z"
+  },
+  {
+   "step": 123,
+   "valid_utc": "2026-10-26T22:00:00Z"
+  },
+  {
+   "step": 124,
+   "valid_utc": "2026-10-26T23:00:00Z"
+  },
+  {
+   "step": 125,
+   "valid_utc": "2026-10-27T00:00:00Z"
+  },
+  {
+   "step": 126,
+   "valid_utc": "2026-10-27T01:00:00Z"
+  },
+  {
+   "step": 127,
+   "valid_utc": "2026-10-27T02:00:00Z"
+  },
+  {
+   "step": 128,
+   "valid_utc": "2026-10-27T03:00:00Z"
+  },
+  {
+   "step": 129,
+   "valid_utc": "2026-10-27T04:00:00Z"
+  },
+  {
+   "step": 130,
+   "valid_utc": "2026-10-27T05:00:00Z"
+  },
+  {
+   "step": 131,
+   "valid_utc": "2026-10-27T06:00:00Z"
+  },
+  {
+   "step": 132,
+   "valid_utc": "2026-10-27T07:00:00Z"
+  },
+  {
+   "step": 133,
+   "valid_utc": "2026-10-27T08:00:00Z"
+  },
+  {
+   "step": 134,
+   "valid_utc": "2026-10-27T09:00:00Z"
+  },
+  {
+   "step": 135,
+   "valid_utc": "2026-10-27T10:00:00Z"
+  },
+  {
+   "step": 136,
+   "valid_utc": "2026-10-27T11:00:00Z"
+  },
+  {
+   "step": 137,
+   "valid_utc": "2026-10-27T12:00:00Z"
+  },
+  {
+   "step": 138,
+   "valid_utc": "2026-10-27T13:00:00Z"
+  },
+  {
+   "step": 139,
+   "valid_utc": "2026-10-27T14:00:00Z"
+  },
+  {
+   "step": 140,
+   "valid_utc": "2026-10-27T15:00:00Z"
+  },
+  {
+   "step": 141,
+   "valid_utc": "2026-10-27T16:00:00Z"
+  },
+  {
+   "step": 142,
+   "valid_utc": "2026-10-27T17:00:00Z"
+  },
+  {
+   "step": 143,
+   "valid_utc": "2026-10-27T18:00:00Z"
+  },
+  {
+   "step": 144,
+   "valid_utc": "2026-10-27T19:00:00Z"
+  },
+  {
+   "step": 145,
+   "valid_utc": "2026-10-27T20:00:00Z"
+  },
+  {
+   "step": 146,
+   "valid_utc": "2026-10-27T21:00:00Z"
+  },
+  {
+   "step": 147,
+   "valid_utc": "2026-10-27T22:00:00Z"
+  },
+  {
+   "step": 148,
+   "valid_utc": "2026-10-27T23:00:00Z"
+  },
+  {
+   "step": 149,
+   "valid_utc": "2026-10-28T00:00:00Z"
+  }
+ ],
+ "grid": {
+  "cols": 831,
+  "dlat": -0.02,
+  "dlon": 0.02,
+  "lat0": 49.2,
+  "lon0": -92.4,
+  "lon_periodic": false,
+  "registration": "center",
+  "rows": 401
+ },
+ "model": {
+  "attribution": "Source: NOAA/NCEP Great Lakes Wave Unstructured (GLWU) model via NOMADS; rendered by Allshore Surf. Not an official NWS product.",
+  "cycle_h": 6,
+  "fields": {
+   "hs": {
+    "definition": "Significant height of combined wind waves and swell",
+    "grib": "HTSGW",
+    "label": "Wave height"
+   },
+   "pdir": {
+    "definition": "Primary (peak) wave direction from WAVEWATCH III: degrees true, the direction the dominant waves come FROM",
+    "grib": "DIRPW",
+    "label": "Wave direction"
+   },
+   "tp": {
+    "definition": "Peak wave period Tp = 1/fp from WAVEWATCH III (GRIB table name 'Primary wave mean period')",
+    "grib": "PERPW",
+    "label": "Peak period"
+   }
+  },
+  "grid": "Great Lakes 2.5 km Lambert (581x361), nearest cell on 0.02 deg",
+  "horizon_h": 149,
+  "ice": "NIC ice concentration, November to May; an ice-covered cell has no period and is left empty",
+  "name": "NOAA/NCEP GLWU (WAVEWATCH III)",
+  "winds": "NDFD (NWS forecaster grids)"
+ },
+ "published_utc": "2026-10-22T00:28:53Z",
+ "run": "2026102119",
+ "run_utc": "2026-10-21T19:00:00Z",
+ "schema": 3,
+ "stats": "glwu/v1/2026102119/stats-20261022T002853Z.json",
+ "winds": "glwu/v1/2026102119/winds.json"
+}

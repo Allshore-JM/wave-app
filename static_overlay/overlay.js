@@ -548,7 +548,7 @@
   function composeTile(codes, land, lut, lo, hi, L0, L1, d, lake) {
     var scale = 255 / (L1 - L0);
     for (var i = 0, k = 0; i < codes.length; i++, k += 4) {
-      var code = codes[i], a = land ? 255 - land[i] : 255;
+      var code = codes[i], a = land === LAND_ALL ? 0 : land ? 255 - land[i] : 255;   // LAND_ALL: a tile of nothing but land (its lakes' water comes from lake)
       if (lake && lake[i] > a) a = lake[i];
       if (!code || !a) { d[k + 3] = 0; continue; }
       var t = Math.round((lo + (code - 1) / 254 * (hi - lo) - L0) * scale);
@@ -1956,13 +1956,13 @@
       el._ovGen = this._gen;
       if (!this._frame) { ctx.clearRect(0, 0, TILE, TILE); return; }
       var land = this._masked() ? this._landFor(el, coords) : null;
+      var lake = this._lakeMask ? this._lakeFor(el, coords) : null;     // first: the land set counts the Great Lakes as land (step 6)
       var tier = 0;
-      if (this._clip && land === LAND_ALL) {                 // nothing but land: no sampling at all, no cells asked for (G31-6)
+      if (this._clip && land === LAND_ALL && !lake) {        // nothing but land and no lake water: no sampling at all, no cells asked for (G31-6)
         if (this._src) { el._ovSrcTier = 0; el._ovSrcRev = this._src.rev; }
         ctx.clearRect(0, 0, TILE, TILE); return;
       }
       if (this._src) { tier = this._src.tierFor(coords); el._ovSrcTier = tier; el._ovSrcRev = this._src.rev; }
-      var lake = this._lakeMask ? this._lakeFor(el, coords) : null;
       var codes = this.tileCodes(coords, this._codes, tier, lake);
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
       composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data, lake);

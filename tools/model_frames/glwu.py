@@ -67,7 +67,9 @@ ALLOW_ALL = np.ones((GRID["rows"], GRID["cols"]), bool)
 STATION_SEARCH = 3                      # a station's wind: its own GLWU cell, else the nearest water cell within this many
 BULL_ROW_RE = re.compile(r"^\s*\|\s*\d{1,2}\s+\d{1,2}\s*\|")      # "| 21 23 |", "| 22  0 |": hours are space-padded
 BULL_LOC_RE = re.compile(r"Location\s*:\s*(\S+)\s+\(([\d.]+)N\s+([\d.]+)W\)")
-BULL_CYCLE_RE = re.compile(r"Cycle\s*:\s*(\d{8})\s+(\d{2})\s*UTC")
+# NOAA writes the cycle hour space-padded: "Cycle : 20261022  1 UTC" for 01Z (and 07Z): a two-digit pattern rejected
+# every bulletin of those runs (found 2026-10-22: run 2026102201 was published with none).
+BULL_CYCLE_RE = re.compile(r"Cycle\s*:\s*(\d{8})\s+(\d{1,2})\s*UTC")
 BUILD_BUDGET_S = 20 * 60
 
 
@@ -90,7 +92,7 @@ def check_bulletin(text, sid, run_dt):
     if abs(lat - want[0]) > 0.02 or abs(lon - want[1]) > 0.02:
         raise ValueError(f"{sid}: at {lat:.2f} {lon:.2f}, expected {want[0]:.2f} {want[1]:.2f}")
     cyc = BULL_CYCLE_RE.search(text)
-    if not cyc or cyc.group(1) + cyc.group(2) != f"{run_dt:%Y%m%d%H}":
+    if not cyc or cyc.group(1) != f"{run_dt:%Y%m%d}" or int(cyc.group(2)) != run_dt.hour:
         raise ValueError(f"{sid}: not the {run_dt:%Y%m%d %H}Z bulletin")
     rows = sum(1 for line in text.splitlines() if BULL_ROW_RE.match(line))
     if rows != len(G.STEPS):

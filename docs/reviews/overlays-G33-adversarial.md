@@ -201,3 +201,53 @@ Every scope item was built. The changes, by item:
   - `lakeCodeAt`'s coverage test is redundant: `sampleLake` writes only under coverage.
   - The reviewer's eight test-gap mutants (S4, L4, G2, G6, G18, G21, P7, Q6) are all killed, as is N3.
 - **Records.** B-3's corrected note and B-4's corrected step-6 entry are in the plan and memory.
+
+## Test-site verification of the fix round (2026-10-22, Opus 5.5 MAX)
+The site: `test` @ 6308ef3 (the cherry-pick of 1d844de; README kept as test's, no record), live from 21:20 UTC. The served
+`overlay.js` / `overlay.css` 2.21.5 = the repo; the 2.21.4 URL answers 404. The overlay Node suites on the test branch:
+465 passed.
+
+The method: headless Chrome with the GPU and its own profile (the sign-in check found no account), on the live runs (GFS
+2026102212, lake 2026102219). Each scenario was staged with DevTools Fetch interception on the frames host (scratch
+`glwu/v6/s/v16_g33.js`, outputs `glwu/v6/out/v16_g33_*.txt`). Results:
+- **F1, pending.** `update()` with its frames held: frameIndex null, the target's lake fetches in flight. The view then
+  moved to Hawaii. The lake fetches went at once, the drawn lake and the lake particles were dropped, and in flight 2 = the
+  new cap 2. Released: the new run's step landed, both lake caches 0, 0 lake requests after the move.
+- **F1, error panel.** The Update's first frame answered 404. Leaving the lakes left 0 lake fetches and no running wait
+  timer.
+- **F1b.** At zoom 3 over the Pacific (-40, 150) the older lake run 2026102201 was drawn and the newer one noted
+  (`next`). A setView to zoom 6 (half to full resolution) adopted 2026102219 and dropped the drawn lake, the particles' lake
+  data and every lake fetch in the same event.
+- **F2.** The older run drawn with its particles, the newer one noted, 9 s of 1x playback through the adoption: 38
+  animator lake updates, 0 pairing a direction with another run's heights. At the end the layer and the animator both
+  hold 2026102219.
+- **F3, N1.** A remount 30 min on with the lake pointer held: status ok, the lake kept on the landing. The pointer then
+  answered an OLDER run (01Z): the run in hand stayed (2026102219), `next` null. Answered with the same run: unchanged.
+- **B-1, lake pointer.** The pointer answered 503 at the page load: no lakes, 0 lake frame requests over 3 steps, a
+  landing inside the cooldown asked nothing. After 61 s a landing asked again (1 request) and the lakes joined.
+- **B-1, coast set.** The lakes coast set's index answered 404: the same, with the coast set retried after 61 s.
+- **B-2, the hover.**
+  - On a calm interior node off Ontario's north shore (43.80, -78.52; 33,634 calm interior nodes at the shown step), a
+    trusted hover under peak period read "calm"; the same point under wave height read "0.0 ft".
+  - At the Thousand Islands (z10) the probe found, among lake-coverage pixels with no period, 463 without a lake height
+    (channels) and 282 with one. A hover read "no data" on a channel pixel and "calm" on a calm pixel.
+  - (A first probe at 44.33, -75.93 had read stale text from a hidden readout: the point is off the lake coverage.)
+- **B-5, the credit.** On the lakes: "Lakes: NOAA GLWU". With the view at (44.8, -54.2), the lakes off screen but within
+  one screen (lake frames still wanted): no lake credit. Back on the lakes: credited.
+- **Regression.** Lakes drawn 83,020 of 83,298 px, no stale tile, readout = drawn at 350 / 350 samples. 30,691 drawn
+  pixels outside the lake coverage, as at step 6: the Atlantic in the north-east tile. Shark for 8 s over the lakes: 65
+  landings, 0 with another step's lake. ECMWF: 0 lake frame requests, 83,298 of 83,298 lake pixels from its own cells.
+- **Console.** Clean in every part. Storage of both origins emptied; the browser stopped and its profile removed.
+
+Timed cells (PREGC, frames warm at the edge for both Origins, 45-s idles; test 2.21.5 vs production 2.20.3):
+
+| cell | test fps (p50/p90 ms) | unpainted | live MB test / prod | peak MB test / prod | lake steps own / bare / wrong |
+|---|---|---|---|---|---|
+| lakes shark 1080p (1) | 8 (124/145) | 0/226 | +35.1 / +27.0 | +63.5 / +60.0 | 154 / 0 / 0 |
+| lakes shark 1080p (2) | 8 (125/136) | 0/224 | +35.2 / +29.2 | +49.3 / +40.0 | 152 / 0 / 0 |
+| Hawaii shark 1080p | 8 (126/135) | 0/224 | +31.9 / +32.4 | +45.7 / +48.7 | (lakes out of reach: none fetched) |
+| phone lakes shark | 8 (126/134) | 0/144 | +20.2 / +13.8 | +29.0 / +22.0 | 126 / 0 / 0 |
+
+- Every live set is within production + 10 MB (+8.1, +6.0, -0.5, +6.4). Every peak is within production's range + 10.
+- The first lakes pair ran in a slower machine state on both sites: renders of 100-140 ms, long tasks 48 % / 29 %.
+- No GPU stall (K-1) in the phone cell this time.

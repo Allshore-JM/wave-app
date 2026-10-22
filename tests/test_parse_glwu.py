@@ -246,3 +246,28 @@ def test_the_overlay_setting(monkeypatch):
     assert A._overlay_context("51201", None, None)["overlay_glwu"] is True
     monkeypatch.delenv("GLWU_OVERLAY")
     assert A._overlay_context("51201", None, None)["overlay_glwu"] is False
+
+
+def test_g33_n3_a_newest_manifest_without_bulletins_tries_the_kept_runs(bucket):
+    """G33 N3: a newest manifest with no bulletins block (only a partial build lacks it) lists no station: the kept runs
+    are tried and the table is served, never "Could not reach"."""
+    older = "2026102113"
+    publish(bucket, older, ["45007"], winds={"45007": [[5.0, 270]] * 150})
+    bucket.put(f"glwu/v1/{RUN}/manifest-x.json", {"run": RUN, "complete": True})          # no bulletins block
+    point_to(bucket, RUN)
+    cycle, location, model_run, rows, tz, err = A.parse_glwu("45007")
+    assert err is None and rows and len(rows) == 150
+    assert "20261021 13 UTC" in cycle
+
+
+def test_g33_q6_a_wind_cell_of_another_length_is_dropped(bucket):
+    """G33 Q6: only [speed, direction] pairs join the Wind column; a 3-long (or 1-long) cell leaves that hour blank."""
+    cells = [[5.0, 270]] * 150
+    cells[0] = [5.0, 270, 1]
+    cells[1] = [5.0]
+    publish(bucket, RUN, ["45007"], winds={"45007": cells})
+    point_to(bucket, RUN)
+    winds = A._glwu_winds("https://models.test", RUN, "45007")
+    run_dt = datetime.strptime(RUN, "%Y%m%d%H")
+    assert run_dt not in winds and run_dt.replace(hour=20) not in winds
+    assert len(winds) == 148

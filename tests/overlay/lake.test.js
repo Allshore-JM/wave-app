@@ -327,7 +327,9 @@ test('LakeStore.recheck notes a newer run into next (its manifest fetched once);
   const r5 = st.recheck(); const NEWEST = Object.assign({}, NEWER, { run: '2026102207', manifest: 'glwu/v1/2026102207/manifest-x.json' });
   last().res(NEWEST); await settle(); last().res(Object.assign({}, M2, { run: '2026102207', run_utc: '2026-10-22T07:00:00Z' })); await settle(); assert.equal(await r5, true);
   const m = calls.length, p2 = st.load(); assert.equal(calls.length, m + 1); last().res(NEWEST); await settle();
-  assert.equal(await p2, st); assert.equal(calls.length, m + 1); assert.equal(st.manifest.run, '2026102207'); assert.equal(st.next, null);
+  assert.equal(await p2, st); assert.equal(calls.length, m + 1);
+  assert.equal(st.manifest.run, '2026102201', 'G33: a re-read never swaps the run in hand ...'); assert.equal(st.next.m.run, '2026102207', '... it waits in next for the scheduler');
+  assert.equal(st.adoptNewer(), true); assert.equal(st.manifest.run, '2026102207'); assert.equal(st.next, null);
 });
 
 test('lakeNearView (step 6b): the lakes in or near the view (one screen on every side), any world copy, never beyond; off the lakes false', () => {
@@ -692,9 +694,10 @@ test('the published run 2026102119 (step 6b): the lattice read per point from th
   assert.ok(moving > 2000 && still > 100, moving + ' moving, ' + still + ' still');
 });
 
-test('the credit names the lakes while a lake frame is drawn under the model (never under SST); the readout says "no data" on lake water that shows nothing', () => {
-  const D = I.MODEL_DEFS.gfswave, credit = (mode, hasLake, mask) => I.Overlay.prototype._attribution.call({ mode, layer: { hasLake: () => hasLake, _lakeMask: mask !== false, _masked: () => false }, coast: null, _def: () => D });
+test('the credit names the lakes while a lake frame is drawn under the model and the lakes are on screen (never under SST); the readout says "no data" on lake water that shows nothing', () => {
+  const D = I.MODEL_DEFS.gfswave, credit = (mode, hasLake, mask, onScreen) => I.Overlay.prototype._attribution.call({ mode, layer: { hasLake: () => hasLake, _lakeMask: mask !== false, _masked: () => false }, coast: null, _def: () => D, _lakeOnScreen: () => onScreen !== false });
   assert.equal(credit('model', true), D.attribution + I.LAKE_ATTRIBUTION);
+  assert.equal(credit('model', true, true, false), D.attribution, 'G33 B-5: the lakes off screen (within the fetch margin only): no lake credit');
   assert.equal(credit('model', false), D.attribution);
   assert.equal(credit('model', true, false), D.attribution, 'a lake frame without the lakes coverage (the set not loaded): nothing drawn, no credit');
   assert.ok(credit('obs', true).indexOf('GLWU') < 0, 'SST: no lake credit');
@@ -707,7 +710,7 @@ test('the credit names the lakes while a lake frame is drawn under the model (ne
   try {
     const container = { appendChild() {}, addEventListener() {}, removeEventListener() {} };
     const ctx = { map: { getContainer: () => container, getZoom: () => 7 }, opts: { getUnit: () => 'US' }, _listeners: [],
-      _on(ev, fn) { handlers[ev] = fn; }, _hpaText: () => null,
+      _on(ev, fn) { handlers[ev] = fn; }, _hpaText: () => null, _lakeWord: I.Overlay.prototype._lakeWord,
       layer: { fdef: HS, field: 'hs', _tileZoom: 7, readoutAt: (lat) => (lat > 45 ? 1.5 : null), lakeAt: (lat) => lat > 40 } };
     I.Overlay.prototype._bindReadout.call(ctx);
     const el = ctx.readout, move = (lat) => handlers.mousemove({ latlng: { lat, lng: -87 }, containerPoint: { x: 10, y: 20 }, originalEvent: { pointerType: 'mouse', target: null } });
@@ -716,4 +719,75 @@ test('the credit names the lakes while a lake frame is drawn under the model (ne
     move(30); assert.equal(el.hidden, true, 'land / nothing: no label');
     ctx.layer.lakeAt = () => false; move(42); assert.equal(el.hidden, true);
   } finally { global.document = hadDoc; }
+});
+
+// ---- G33 (plan section 50 step 8) ----
+const NEWER = Object.assign({}, PTR, { run: '2026102201', manifest: 'glwu/v1/2026102201/manifest-x.json' });
+const MAN2 = Object.assign({}, MAN, { run: '2026102201', run_utc: '2026-10-22T01:00:00Z', frames: MAN.frames.map((f) => ({ step: f.step, valid_utc: new Date(Date.parse('2026-10-22T01:00:00Z') + f.step * 3.6e6).toISOString().replace('.000Z', 'Z') })) });
+
+test('G33 F3 / N1 / L4: a re-read keeps the run in hand usable (status ok while the pointer is out; abortAll leaves no stale load); an older pointer keeps the run; a newer one waits in next; the watchdog restarts at the pointer answer', async () => {
+  const { st, calls, last } = heldStore();
+  const p = st.load(); last().res(PTR); await settle(); last().res(MAN); await settle(); await p;
+  st.loadedAt = 0;
+  const p2 = st.load();
+  assert.equal(st.status, 'ok', 'F3: usable while the pointer is re-read'); assert.ok(st.loading);
+  st.abortAll(); assert.equal(st.loading, null); assert.equal(st.status, 'ok');
+  last().res(PTR); await settle(); assert.equal(await p2, st);
+  const n = calls.length, p3 = st.load(); assert.equal(calls.length, n + 1, 'a load after the abort asks again (no stale promise)');
+  last().res(Object.assign({}, PTR, { run: '2026102113', manifest: 'glwu/v1/2026102113/manifest-x.json' })); await settle();
+  assert.equal(await p3, st); assert.equal(calls.length, n + 1, 'N1: no manifest asked for an older run'); assert.equal(st.manifest.run, '2026102119'); assert.equal(st.next, null);
+  st.loadedAt = 0; const p4 = st.load(); last().res(NEWER); await settle(); last().res(MAN2); await settle();
+  assert.equal(await p4, st); assert.equal(st.manifest.run, '2026102119'); assert.equal(st.next.m.run, '2026102201', 'a newer run waits in next');
+  // L4: the watchdog counts from the pointer's answer, not the load's start
+  const d = heldStore(); d.st.timeoutMs = 200;
+  const pd = d.st.load(); await new Promise((r) => setTimeout(r, 120)); d.last().res(PTR); await settle();
+  await new Promise((r) => setTimeout(r, 140)); d.last().res(MAN); await settle();
+  assert.equal(await pd, d.st, 'the manifest 260 ms after the start but 140 ms after the pointer: loaded'); assert.equal(d.st.status, 'ok');
+});
+
+test("G33 S4: sampleLake reads nothing west of the grid's first column (a negative column position), as nothing east of its last", () => {
+  const lf = lakeFrame(lakeFn, HS), out = new Float64Array(1), full = I.lakeFull();
+  for (const frac of [0.3, 0.6, 0.9]) {
+    const p = I.pixelOf(45, LG.lon0 - frac * LG.dlon, 14);
+    out[0] = -1; I.sampleLake(lf, LG, p, p.px, p.py, 1, 1, out, full);
+    assert.equal(out[0], 0, 'west of the grid by ' + frac + ' of a cell');
+  }
+  const q = I.pixelOf(45, LG.lon0 + 0.2 * LG.dlon, 14);
+  out[0] = -1; I.sampleLake(lf, LG, q, q.px, q.py, 1, 1, out, full); assert.ok(out[0] > 0, 'just inside: a value');
+});
+
+test('G33 B-2: the readout’s word on lake water without a value: "calm" under peak period where the step’s lake height is present and under 0.2 m; "no data" otherwise; "…" while the height frame loads', () => {
+  const E = { step: 3, valid_utc: '2026-10-21T22:00:00Z' }, code = (v) => toCode(v, HS);
+  const ctx = (o) => Object.assign({
+    field: 'tp', frameIndex: 0, _lakeIndex: () => 0, _dropLakeHs() {},
+    layer: { _lake: { run: MAN.run, entry: E }, entry: E, lakeCodeAt: () => code(0.05) },
+    lake: { manifest: MAN }, _lakeHs: { key: MAN.run + '/' + MAN.frames[0].step, frame: {}, failed: false }
+  }, o || {});
+  const word = (c) => I.Overlay.prototype._lakeWord.call(c, 45, -87, 7, null);
+  assert.equal(word(ctx()), 'calm');
+  const big = ctx(); big.layer.lakeCodeAt = () => code(0.5); assert.equal(word(big), 'no data', 'a height but over 0.2 m: not calm');
+  const none = ctx(); none.layer.lakeCodeAt = () => 0; assert.equal(word(none), 'no data', 'no height (a channel GLWU does not model, ice)');
+  assert.equal(word(ctx({ field: 'hs' })), 'no data', 'under wave height a calm cell shows its height: the word only for missing data');
+  const old = ctx(); old.layer._lake = { run: '2026102113', entry: E }; assert.equal(word(old), 'no data', 'a lake frame of another run');
+  assert.equal(word(ctx({ _lakeIndex: () => -1 })), 'no data', 'past the lake run');
+  assert.equal(word(ctx({ _lakeHs: { key: MAN.run + '/' + MAN.frames[0].step, frame: null, failed: false } })), '…', 'loading');
+  assert.equal(word(ctx({ _lakeHs: { key: MAN.run + '/' + MAN.frames[0].step, frame: null, failed: true } })), 'no data', 'the height frame failed');
+  assert.equal(I.LAKE_CALM_M, 0.2);
+});
+
+test('G33 B-2: lakeCodeAt samples another lake frame at the drawn pixel exactly as the tile samples its own (the hover height); 0 off the lake water or without the lake mask', () => {
+  const lf = lakeFrame(lakeFn, HS), gf = globalFrame(PATTERN), cov = coverage(100, 6);
+  const lake = { frame: lf, grid: LG, entry: { step: 12, valid_utc: '2026-10-22T07:00:00Z' }, lo: HS.lo, hi: HS.hi };
+  const { l, el } = shoreLayer(gf, 'hs', HS, lake, cov);
+  l._draw(el, SUPERIOR);
+  const codes = l.tileCodes(SUPERIOR, new Float64Array(TILE * TILE), 0, cov);
+  let on = 0, off = 0;
+  for (let py = 0; py < TILE; py += 5) for (let px = 0; px < TILE; px += 3) {
+    const i = py * TILE + px, ll = I.tilePixelLatLng(SUPERIOR, px, py), c = l.lakeCodeAt(lf, LG, ll.lat + 1e-7, ll.lng - 1e-7, 7);
+    if (cov[i]) { assert.ok(Math.abs(c - codes[i]) < 1e-9, px + ',' + py + ': ' + c + ' vs ' + codes[i]); on++; } else { assert.equal(c, 0); off++; }
+  }
+  assert.ok(on > 500 && off > 1000, on + ' on, ' + off + ' off');
+  const ll = I.tilePixelLatLng(SUPERIOR, 50, 128);
+  l._lakeMask = false; assert.equal(l.lakeCodeAt(lf, LG, ll.lat, ll.lng, 7), 0, 'no lake mask: nothing');
+  l._lakeMask = true; assert.equal(l.lakeCodeAt(lf, LG, ll.lat, ll.lng, 8), 0, 'a tile not on the map: nothing');
 });

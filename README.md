@@ -687,8 +687,10 @@ lakes under the GFS model selection (plan section 50's client steps).
   keeps its height but gets no period or direction (owner 2026-10-21, G33a P2-1: GLWU writes a period over flat-calm
   water, often half the lakes on a quiet day, and those cells carried the map's longest periods; particles never draw
   there anyway). A nearest-water fill of 2 nodes (`glwu.FILL_CELLS`, ~3-4 km) carries the colour to
-  the lake shores, where the browser clips it to GSHHG's lake polygons. Same encoding and encode ranges as the global
-  frames (one resolution, "full"): ~63 KB a step, ~10 MB a run.
+  the lake shores, where the browser clips it to GSHHG's lake polygons; the period's and the direction's fill enters
+  only cells without a height (fill version 2, plan section 50 step 6b: the first fill had copied a neighbour's period
+  into calm cells). Same encoding and encode ranges as the global frames (one resolution, "full"): ~63 KB a step,
+  ~10 MB a run.
 - **Forecast tables**: after the frames, the job reads each station's bulletin (`bulls.tCCz/glwu.<id>.bull`, the
   GFS-Wave "day & hour" layout; 72 stations in `glwu_fetch.STATIONS`: the 45xxx buoys, C-MAN / NOS sites and named
   beaches; the rip-current points left out), checks it (station, position within 0.02 deg, cycle, 150 rows) and stores

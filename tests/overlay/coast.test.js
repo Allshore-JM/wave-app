@@ -1112,3 +1112,51 @@ test('the GSHHG credit follows the masks: wind with coastlines, hs/tp clipped; n
   try { assert.ok(!/GSHHG/.test(ctl(w)), 'no lines drawn: no credit'); } finally { I.OUTLINE_FIELDS.wind = true; }
   const h = layer(frame(1440, 721, () => 90), GRID, 'hs', HS); h.setCoast(fakeStore([coast])); assert.ok(/GSHHG/.test(ctl(h)));
 });
+
+// G34 B-6: the coastline's tier 0 is given up only after timeoutMs with no byte arriving: a slow but moving download (a
+// 0.7-Mbit/s phone link takes ~15 s for its 1.33 MB) goes on; a stalled one still fails.
+test('CoastStore: the stall timer is re-armed by every chunk of the tier-0 file; a download with no byte for timeoutMs fails (G34 B-6)', async () => {
+  const idx = { format: 'coast-v1', q: 10000, tier0: { file: 'world-i.bin', cell: 30, max_zoom: 6 }, tier1: { dir: 'f', cell: 5, min_zoom: 7, cells: {} } };
+  const body = new Uint8Array(encodeCoast([[ISLAND]], 30));
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  function streaming(gapMs, chunks) {               // the body in `chunks` pieces, one every gapMs
+    return (url, init) => {
+      if (url.endsWith('index.json')) return Promise.resolve({ ok: true, status: 200, headers: { get: () => '100' }, json: () => Promise.resolve(idx) });
+      let i = 0; const size = Math.ceil(body.length / chunks);
+      const reader = { read: () => new Promise((res, rej) => {
+        const t = setTimeout(() => { if (i * size >= body.length) res({ done: true }); else { res({ done: false, value: body.subarray(i * size, (i + 1) * size) }); i++; } }, gapMs);
+        init.signal.addEventListener('abort', () => { clearTimeout(t); rej(Object.assign(new Error('aborted'), { name: 'AbortError' })); }, { once: true });
+      }), cancel() {} };
+      return Promise.resolve({ ok: true, status: 200, headers: { get: () => String(body.length) }, body: { getReader: () => reader } });
+    };
+  }
+  try {
+    global.fetch = streaming(30, 6);                // 7 x 30 ms = 210 ms in all, never 80 ms without a byte
+    const s = new I.CoastStore('https://slow/static/coast/v1'); s.timeoutMs = 80;
+    assert.equal(await s.load(), s, 'slow but moving: loaded');
+    assert.equal(s.status, 'ok'); assert.ok(s.tier0.pieces > 0 || s.tier0.n > 0 || s.tier0, 'decoded');
+    global.fetch = streaming(120, 2);               // the first chunk after 120 ms: stalled
+    const t = new I.CoastStore('https://stalled/static/coast/v1'); t.timeoutMs = 80;
+    assert.equal(await t.load(), null, 'no byte for 80 ms: given up'); assert.equal(t.status, 'failed');
+    await wait(5);
+  } finally {
+    delete global.fetch;
+  }
+});
+
+// G34 B-6: the page's location aids wait for the overlay's first picture; settled() resolves once the first mount drew a
+// picture, failed or went Off, after the coastline's tier 0 has landed or been given up.
+test('Overlay.settled(): resolves once, on the first ready / error / Off, after the coastline load in flight', async () => {
+  const ov = Object.create(I.Overlay.prototype);
+  let coastDone; ov.coast = { loading: new Promise((r) => { coastDone = r; }) };
+  const states = []; ov.settled().then((s) => states.push(s));
+  ov._noteSettled('ready'); await new Promise((r) => setImmediate(r));
+  assert.deepEqual(states, [], 'the coastline still loading: not yet');
+  coastDone(null); await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+  assert.deepEqual(states, ['ready']);
+  ov._noteSettled('error'); await new Promise((r) => setImmediate(r));
+  assert.equal(ov.settled(), ov.settled(), 'one promise'); assert.deepEqual(states, ['ready'], 'once');
+  const late = Object.create(I.Overlay.prototype); late.coast = null;
+  late._noteSettled('off');
+  assert.equal(await late.settled(), 'off', 'asked after it settled: resolved all the same');
+});

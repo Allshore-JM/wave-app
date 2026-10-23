@@ -719,7 +719,8 @@
   // Resolves to the store when tier 0 is usable, to null otherwise (never rejects). The load has its
   // own abort (Off), so a field change while it runs simply keeps waiting for it; after a failure the
   // next loads answer null at once for retryMs (no second 15 s wait on the first frame), then retry.
-  CoastStore.prototype.timeoutMs = 15000;                  // a coast download slower than this fails (unclipped + warning), like a stalled frame
+  CoastStore.prototype.timeoutMs = 15000;                  // a coast download that receives no byte for this long fails (unclipped + warning); a slow
+                                                           // but moving one goes on (G34 B-6: 15 s in total failed on a 0.7-Mbit/s phone link)
   CoastStore.prototype.retryMs = COAST_RETRY_MS;
   CoastStore.prototype.load = function () {
     var self = this;
@@ -727,17 +728,21 @@
     if (this.loading) return this.loading;
     if (this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
     this.status = 'loading';
-    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false;
-    var watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, this.timeoutMs);
+    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null, ms = this.timeoutMs;
+    var arm = function () { clearTimeout(watchdog); watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, ms); };
+    arm();
     this.loading = Promise.all([
       fetch(base + '/index.json', { signal: sig, mode: 'cors' }).then(function (r) {
         if (!r.ok) throw new Error('coast ' + r.status);
         if (r.headers && r.headers.get && Number(r.headers.get('content-length') || 0) > MAX_INDEX_BYTES) throw new Error('unsupported coast index');
+        arm();
         return r.json();
       }),
       fetch(base + '/' + self.file, { signal: sig, mode: 'cors' }).then(function (r) {
         if (!r.ok) throw new Error('coast ' + r.status);
         if (Number(r.headers.get('content-length') || 0) > MAX_COAST_BYTES) throw new Error('coast decode failed');
+        arm();
+        if (r.body && r.body.getReader) return readBody(r.body.getReader(), arm, MAX_COAST_BYTES, 'coast decode failed');   // every chunk re-arms the timer
         return r.arrayBuffer();
       })
     ]).then(function (res) {
@@ -1599,9 +1604,10 @@
       });
     });
   }
-  // A response body read chunk by chunk (each chunk reports progress), as one ArrayBuffer; capped like a whole body.
-  function readBody(reader, onProgress) {
-    var parts = [], size = 0;
+  // A response body read chunk by chunk (each chunk reports progress), as one ArrayBuffer; capped like a whole body (a
+  // frame's cap and message unless given).
+  function readBody(reader, onProgress, limit, msg) {
+    var parts = [], size = 0, cap = limit || MAX_FRAME_BYTES;
     function next() {
       return reader.read().then(function (c) {
         if (c.done) {
@@ -1610,9 +1616,9 @@
           return out.buffer;
         }
         size += c.value.length;
-        if (size > MAX_FRAME_BYTES) {
+        if (size > cap) {
           try { var c = reader.cancel(); if (c && c.catch) c.catch(function () {}); } catch (e) { /* gone */ }   // (RC-6)
-          throw new Error('frame decode failed');
+          throw new Error(msg || 'frame decode failed');
         }
         parts.push(c.value); onProgress();
         return next();
@@ -1867,7 +1873,7 @@
         if (!t.el || !t.coords) continue;
         if (!this._lakeOut) {                                  // detached: every tile lets its mask go (V7-5), whatever field is shown
           var had = !!t.el._ovLo;
-          t.el._ovLo = null; t.el._ovLoKey = null;
+          t.el._ovLo = null; t.el._ovLoKey = null; t.el._ovLoEdges = null; t.el._ovLoEdgesOf = null;   // the edge cache holds the mask too (G34 F-A3)
           if (had && drawn) this._draw(t.el, t.coords);
           continue;
         }
@@ -4944,6 +4950,7 @@
   };
   Overlay.prototype.unmount = function () {
     var self = this;
+    this._noteSettled('off');                              // Off before a first picture: nothing to wait for any more
     this._closeMenus();
     this.field = null;                                     // first: the pause below must not save the layer as still on
     this.pause();
@@ -5740,7 +5747,22 @@
   // Head: the details toggle and the model's name (collapsed: the field and the time on the map). Then #ovDetails: the
   // transport row (the ONE play/pause button, the timeline, the speed selector; outside the scroll box, so the speed
   // menu is never clipped) and the scroll box (legend, Run / Updated / Next Update, warnings).
+  // A promise of the first picture: it resolves once the first mount has drawn a picture or failed (or the overlay went
+  // Off) and the coastline's tier 0 has landed or been given up. The page's location aids start their downloads after it,
+  // so on a slow link the coastline is not starved (G34 B-6).
+  Overlay.prototype.settled = function () {
+    var self = this;
+    return this._settledP || (this._settledP = new Promise(function (res) { self._settleFn = res; }));
+  };
+  Overlay.prototype._noteSettled = function (state) {
+    if (this._settledNoted) return;
+    this._settledNoted = true;
+    this.settled();
+    var done = this._settleFn, cp = this.coast && this.coast.loading;
+    Promise.resolve(cp).then(function () { done(state); }, function () { done(state); });
+  };
   Overlay.prototype.render = function (st) {
+    if (st && (st.state === 'ready' || st.state === 'error')) this._noteSettled(st.state);
     var focusCls = this._focusedPart();                       // before the menu closes (a hidden option loses the focus)
     // a part that had the focus before a loading panel (nothing to focus there) gets it back now, unless the focus went
     // somewhere else meanwhile (fresh check F2: Retry, Update)

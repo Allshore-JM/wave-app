@@ -68,7 +68,8 @@ function page(opt) {
       const ov = { field: null, mounts: [], opts: o,
         mount(f, r) { this.field = f; this.mounts.push([f, r]); log.push('mount ' + f + ' ' + r); },
         unmount() { this.field = null; log.push('unmount'); }, refresh() { log.push('refresh'); }, _persist() { log.push('persist'); },
-        setIsobars(v) { log.push('isobars ' + v); }, setParticleOpacity(v) { log.push('particles ' + v); } };
+        setIsobars(v) { log.push('isobars ' + v); }, setParticleOpacity(v) { log.push('particles ' + v); },
+        settled() { return this._sp || (this._sp = new Promise((r) => { this.settle = r; })); } };
       overlays.push(ov); log.push('create'); return ov;
     } };
   }
@@ -86,7 +87,7 @@ function page(opt) {
   new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.sst ? SRC_SST : opt.glwu ? SRC_GLWU : SRC)(
     window, document, sessionStorage, L, map, () => 'US', () => '', () => '', setTimeout);
   return {
-    log, store, sel, panel, overlays, listeners, map, boxes, gear, local, byId,
+    log, store, sel, panel, overlays, listeners, map, boxes, gear, local, byId, win: window,
     read: () => { try { return JSON.parse(store.get(KEY) || 'null'); } catch (e) { return store.get(KEY); } },
     load() { document.readyState = 'complete'; fire('win', 'load'); },
     idle() { idleQ.splice(0).forEach((f) => f({})); },
@@ -397,4 +398,19 @@ test('section 51: lake outlines have no setting: an old saved "0" is removed fro
   assert.equal('lakeOutlines' in ov.opts, false);
   const q = page({ settings: true, throwingLocal: true, init: { field: 'wind' } });   // a storage that throws never breaks it
   assert.equal('lakeOutlines' in (await created(q)).opts, false);
+});
+
+test('G34 B-6: the location aids wait for the first picture: a promise while a layer is restored, settled by the overlay, by Off, or nothing to wait for', async () => {
+  let p = page({ init: { field: 'hs' } });
+  const w = p.win.__allshoreOverlayWait;
+  assert.ok(w && typeof w.then === 'function', 'a layer on its way: a promise');
+  let done = false; w.then(() => { done = true; });
+  await loadedAndIdle(p);
+  assert.deepEqual(p.log, ['create', 'mount hs true']); await settle(); assert.equal(done, false, 'mounted, no picture yet');
+  p.overlays[0].settle('ready'); await settle(); assert.equal(done, true, 'the first picture: settled');
+  p = page({ init: { field: '' } });
+  assert.equal(p.win.__allshoreOverlayWait, null, 'Off saved: nothing to wait for');
+  p = page({ init: { field: 'hs' } });
+  let off = false; p.win.__allshoreOverlayWait.then(() => { off = true; });
+  p.sel.userPick(''); await settle(); assert.equal(off, true, 'Off before the restore: settled at once');
 });

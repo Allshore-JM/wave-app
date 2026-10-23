@@ -1396,7 +1396,7 @@ Windows: a station chip gives its subtitle up before the station's name. An expa
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
 
-## Location aids (plan section 51, UI asset 1.25.1, overlay asset 2.22.1)
+## Location aids (plan section 51, UI asset 1.25.2, overlay asset 2.22.2)
 
 Two rows in the settings gear, both on for a new visitor, each remembered in this browser (localStorage, "0" = off); the
 lakes' shores under wind are always drawn (owner, 2026-10-23: no row):
@@ -1407,18 +1407,26 @@ lakes' shores under wind are always drawn (owner, 2026-10-23: no row):
 | City names | `allshore.places.v1` | each place's own zoom (Natural Earth `min_zoom`; GeoNames towns 8 / 9 / 10 by size) | Natural Earth populated places + GeoNames `cities1000` (CC BY 4.0) |
 | Lake outlines (always, no row) | - | tile zoom 4, under the wind overlay only | GSHHG lakes of 100 km² or more (see Model overlays) |
 
-`static_ui/places.js` (`window.AllshorePlaces.create(map, {base, storage})`) draws the borders on 256-px canvas tiles in
+`static_ui/places.js` (`window.AllshorePlaces.create(map, {base, storage, waitFor})`) draws the borders on 256-px canvas tiles in
 the pane `placesLinePane` (z 340: above the particles, below the gridlines and the forecast points) as a light 1-px line
 over a dark halo, and the names as text spans in `placesLabelPane` (z 620: above the station icons, below the tooltips; a
 name takes no tap, so an icon under it stays clickable), thinned per view so no two overlap (largest places first; a name
 only where its dot and its whole text lie on the map, before the dot when the text would run off the right edge; never
-under the map's controls, the overlay's sheet or the gridline labels; at most 120, 60 on maps under 600 px wide), hidden
-while zooming and rebuilt after a move or when a control or the overlay's sheet changes size. Nothing is fetched before
-the page's load event (+ 1.5 s), while both rows are off, or below zoom 3 (2 for names). The data comes from
-`static/places/v2/` beside the model frames (derived in the overlay's gated block), or from env `PLACES_BASE`:
-`index.json`, the world tier (`world-lines.bin`, `world-places.bin`, used to map zoom 7) and 10-degree cells
-`c/<lat>_<lon>.l.bin` / `.p.bin` from zoom 8 (on demand, two at a time, 6 MB kept). The credits "Borders: Natural Earth"
-and "Places: GeoNames CC BY 4.0" join the map's (i) while their rows are on and their data has loaded.
+under the map's controls and their open panels, the overlay's sheet, the gridline labels, the map tools' fan and labels,
+or the floating windows (the forecast, live-buoy, tide and wind windows, their bars and chips); at most 120, 60 on maps
+under 600 px wide), measured in the font they are drawn in (a browser's minimum font size included), hidden while
+zooming and rebuilt after a move or when any of those obstacles opens, closes, moves or changes size. The line layer is
+on the map only while Borders is on, and a tile with no line keeps a 1x1 canvas. Nothing is fetched before the page's
+load event (+ 1.5 s) and the overlay's first picture (drawn or failed, the coastline in or given up; at most 30 s), so
+on a slow phone link the overlay's coastline is not starved; nor while both rows are off, or below zoom 3 (2 for
+names). Every request asks for a low priority, and a download is given up only after 15 s with no byte arriving. The
+data comes from `static/places/v2/` beside the model frames (derived in the overlay's gated block), or from env
+`PLACES_BASE`: `index.json`, the world tier (`world-lines.bin`, `world-places.bin`, used to map zoom 7; two units, so
+one failing keeps the other) and 10-degree cells `c/<lat>_<lon>.l.bin` / `.p.bin` from zoom 8 (on demand, two at a
+time, 6 MB of decoded data kept, never a cell the view uses); every file's length is checked against the index. The
+credits "Borders: Natural Earth" and "Places: GeoNames CC BY 4.0" join the map's (i) while their rows are on and their
+data has loaded. A wind station without a recent reading is drawn as a hollow grey ring, so it never reads as a town's
+dot (G34). The overlay's coastline loader follows the same stall rule (15 s with no byte, not 15 s in all).
 Built and published by `tools/places/build_places.py` (coast-build workflow, `set: places`; `tools/places/README.md`).
 
 ## Wind stations (plan section 39, UI asset 1.22.0)

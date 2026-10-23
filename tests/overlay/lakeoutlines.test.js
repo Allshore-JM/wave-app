@@ -186,9 +186,11 @@ test('V7-5: the set taken away under another field (wave height, SST): every til
   assert.ok(el._ovLo, 'a mask under wind');
   l.setFrame(FR, GRID, 'hs', HS, I.buildLut('hs', HS.legend), { step: 3 });
   assert.ok(el._ovLo, 'the switch to wave height alone keeps it until the set is taken away');
+  assert.ok(el._ovLoEdgesOf === el._ovLo && el._ovLoEdges, 'the edge cache holds the mask');
   const drawn = []; const draw0 = l._draw; l._draw = function (e, c) { drawn.push(key(c)); return draw0.call(this, e, c); };
   l.setLakeOutlineCoast(null);
   assert.equal(el._ovLo, null, 'the mask let go'); assert.equal(el._ovLoKey, null);
+  assert.equal(el._ovLoEdges, null, 'the edge list too'); assert.equal(el._ovLoEdgesOf, null, 'and the edge cache’s mask (G34 F-A3)');
   assert.deepEqual(drawn, [], 'wave height draws no lake line: nothing to redraw');
 });
 

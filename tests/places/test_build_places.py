@@ -836,3 +836,33 @@ def test_real_gates_check_the_name_pass(tmp_path, real_gates):
 def test_the_format_key_names_the_name_pass():
     assert "|namefix=25/2/Starsy Oskol>Stary Oskol" in P.FORMAT_KEY
 
+
+
+# ---- G34 reviewer A's surviving mutants, pinned ----
+def test_the_name_pass_compares_names_case_folded():
+    """B04: the edit distance is taken on lower-cased names (letters, not case): 'Tarin Kowt' -> 'Tarinkot' is two
+    edits folded, three as written; a case-sensitive pass would lose such real fixes and the range gate would not notice."""
+    gn = {30: ("Tarinkot", 32.63, 65.87)}
+    p = [ne_place("Tarin Kowt", "Tarinkot", 32.63, 65.87, 30)]
+    assert P.edits("Tarin Kowt", "Tarinkot") == 3 and P.edits("tarin kowt", "tarinkot") == 2
+    assert P.fix_names(p, gn, hand={})["agreed"] == 1 and p[0]["name"] == "Tarinkot"
+
+
+def test_the_name_pass_gates_are_pinned():
+    """B11 / B12: the real-build gates of the name pass (the G34a F2 lesson: a gate nobody pins can be emptied)."""
+    assert P.NAME_FIX_RANGE == (220, 250)
+    assert set(P.NAME_PROBES) == {("Shenyang", True), ("Shenyeng", False), ("Nizhnevartovsk", True), ("Poitiers", True),
+                                  ("Stary Oskol", True), ("Starsy Oskol", False), ("København", True), ("Montréal", True)}
+
+
+def test_the_name_pass_runs_before_the_dedupe(tmp_path, monkeypatch):
+    """B06: the dedupe sees the corrected names (a GeoNames town under the fixed name is then a twin of the place)."""
+    seen = []
+    orig = P.dedupe
+
+    def spy(ne, gn, *a, **k):
+        seen.extend(p["name"] for p in ne)
+        return orig(ne, gn, *a, **k)
+    monkeypatch.setattr(P, "dedupe", spy)
+    build(tmp_path)
+    assert "Shenyang" in seen and "Shenyeng" not in seen

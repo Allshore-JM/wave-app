@@ -207,7 +207,7 @@ test('the store: index + tier 0 at load; tier 0 up to zoom 7; from zoom 8 the ti
 });
 
 test('the store: at most two cell downloads at once; a 404 is final (tier 0 stays), a 503 is asked again after the cooldown; idle stops the queue', async () => {
-  const cells = {}; ['40_-120', '40_-110', '40_-100', '40_-90'].forEach((n) => { cells[n] = [10, 0]; });
+  const cells = {}; ['40_-120', '40_-110', '40_-100', '40_-90'].forEach((n) => { cells[n] = [CELL_A.byteLength, 0]; });
   const idx = { ...INDEX, tier1: { ...INDEX.tier1, cells } };
   const f = fakeFetch({ ...TIER0, hold: true, 'index.json': { json: idx }, 'c/40_-120.l.bin': CELL_A, 'c/40_-110.l.bin': 'down' });
   const st = new I.PlacesStore(BASE, f);
@@ -228,7 +228,7 @@ test('the store: at most two cell downloads at once; a 404 is final (tier 0 stay
   st.request(['40_-120.l']); assert.equal(st.queue.length, 0, 'already decoded');
   // a cell file of another cell size is refused for good (tier 0 there)
   const other = encodeLines([[0, [[[D(-79), D(-78)], [D(41), D(41)], 0]]]], 5);
-  const g = fakeFetch({ ...TIER0, 'index.json': { json: { ...INDEX, tier1: { ...INDEX.tier1, cells: { '40_-80': [10, 0] } } } }, 'c/40_-80.l.bin': other });
+  const g = fakeFetch({ ...TIER0, 'index.json': { json: { ...INDEX, tier1: { ...INDEX.tier1, cells: { '40_-80': [other.byteLength, 0] } } } }, 'c/40_-80.l.bin': other });
   const so = new I.PlacesStore(BASE, g); await so.load(); so.request(['40_-80.l']); await settle();
   assert.equal(so.failed['40_-80.l'], true); assert.equal(so.cells.size, 0);
   st.queue.push('40_-90x'); st.idle(); assert.equal(st.queue.length, 0); assert.equal(st.retryTimer, null);
@@ -300,9 +300,10 @@ test('create(): its own panes (lines z 340, names z 620 above the station icons,
   assert.deepEqual(map.credits, ['+Borders', '+Places:'], 'credited once loaded');
   pl.set('borders', false);
   assert.equal(s.m.get('allshore.borders.v1'), '0'); assert.equal(s.m.has('allshore.states.v1'), false);
-  assert.ok(map.hasLayer(pl.layer), 'places still on: the layer stays'); assert.deepEqual(map.credits.slice(2), ['-Borders'], 'the borders credit goes once');
+  assert.ok(!map.hasLayer(pl.layer), 'Borders off: the line layer goes, City names alone draws no tile (G34 B-7)'); assert.deepEqual(map.credits.slice(2), ['-Borders'], 'the borders credit goes once');
+  assert.equal(pl.labels.hidden, false, 'the names stay');
   pl.set('places', false);
-  assert.ok(!map.hasLayer(pl.layer), 'both off: the layer goes'); assert.equal(s.m.get('allshore.places.v1'), '0'); assert.deepEqual(map.credits.slice(3), ['-Places:']);
+  assert.ok(!map.hasLayer(pl.layer), 'both off: no layer'); assert.equal(s.m.get('allshore.places.v1'), '0'); assert.deepEqual(map.credits.slice(3), ['-Places:']);
   pl.set('borders', true); assert.ok(map.hasLayer(pl.layer)); assert.equal(s.m.get('allshore.borders.v1'), '1'); assert.deepEqual(map.credits.slice(4), ['+Borders'], 'loaded: credited at once');
   pl.set('states', true); assert.equal(s.m.has('allshore.states.v1'), false, 'not a setting any more');
   pl.set('nope', true); assert.equal(s.m.has('nope'), false);
@@ -538,7 +539,8 @@ test('create(): the labels: text spans at the layer points, the largest first, t
 test('create(): a label never sits under a control (the station icons are no obstacle); a crowd thins to the larger places; a cell landing rebuilds the labels once', async () => {
   const { M, flush } = loadWithFrames();
   const crop = fs.readFileSync(path.join(FIX, 'world-places-crop.bin')), cell = fs.readFileSync(path.join(FIX, '20_-160.p.bin'));
-  const f = fakeFetch({ ...TIER0, hold: true, 'world-places.bin': ab(crop), 'c/20_-160.p.bin': ab(cell) });
+  const idx = { ...INDEX, tier1: { ...INDEX.tier1, cells: { ...INDEX.tier1.cells, '20_-160': [0, cell.length] } } };
+  const f = fakeFetch({ ...TIER0, hold: true, 'index.json': { json: idx }, 'world-places.bin': ab(crop), 'c/20_-160.p.bin': ab(cell) });
   const map = fakeMap(10, 21.33, -157.86), pl = M.create(map, { base: BASE, L: fakeL(map), document: oahuDoc(), storage: storage(), fetch: f, whenReady: (go) => go() });
   while (f.held.length) f.held.shift()(); await settle(); while (f.held.length) f.held.shift()(); await settle(); flush();
   const shown = () => pl.labels.children.filter((s) => !s.hidden).map((s) => s.textContent);
@@ -556,14 +558,16 @@ test('create(): a label never sits under a control (the station icons are no obs
   assert.ok(!shown().includes('Honolulu') && shown().length > 3, 'blocked by the control');
   ctl.hidden = true; pl.update(); assert.ok(shown().includes('Honolulu'), 'a hidden control blocks nothing');
   map.controls.length = 0; pl.update(); assert.ok(shown().includes('Honolulu'));
-  assert.equal(map.lastSel, I.BLOCKED_SELECTOR, 'the rects asked for: controls, the sheet, the gridline labels');
+  assert.equal(map.lastSel, I.BLOCKED_SELECTOR, 'the rects asked for: controls and their panels, the sheet, the gridline labels, the fan and labels of the map tools');
+  ['.leaflet-control', '.settings-panel', '.ov-sheet', '.graticule-label', '.tools-fan', '.tools-label', '.tools-ring-label'].forEach((c) => assert.ok(I.BLOCKED_SELECTOR.split(', ').includes(c), c));
+  assert.equal(I.FLOAT_SELECTOR, '.fwin', 'and the floating windows (G34 B-1)');
   assert.ok(!/marker/.test(I.BLOCKED_SELECTOR), 'never the station icons: the names are drawn above them');
 });
 
 test('create(): near the right edge a name is drawn to the left of its dot (class place-left), never cut; a control corner or the overlay sheet changing size lays the names out again (V7-1, V7-4)', async () => {
   const ros = [], mos = [], q = [];
   const win = { requestAnimationFrame: (fn) => { q.push(fn); return q.length; },
-    ResizeObserver: class { constructor(cb) { this.cb = cb; this.els = []; ros.push(this); } observe(e) { this.els.push(e); } },
+    ResizeObserver: class { constructor(cb) { this.cb = cb; this.els = []; ros.push(this); } observe(e) { this.els.push(e); } unobserve(e) { this.els = this.els.filter((x) => x !== e); } },
     MutationObserver: class { constructor(cb) { this.cb = cb; mos.push(this); } observe(t, o) { this.target = t; this.opts = o; } } };
   const M = load(win), flush = () => { while (q.length) q.shift()(); };
   const crop = fs.readFileSync(path.join(FIX, 'world-places-crop.bin'));
@@ -580,11 +584,19 @@ test('create(): near the right edge a name is drawn to the left of its dot (clas
   assert.equal(hnl.style.left, Math.round(lp.x) + 'px', 'the span sits at the dot; CSS moves its text before it');
   // the observers: the four corners watched; a sheet added to the container is watched too; a size change re-lays
   assert.equal(ros.length, 1); assert.deepEqual(ros[0].els.map((e) => e.c), ['tl', 'tr', 'bl', 'br']);
-  assert.equal(mos.length, 1); assert.deepEqual(mos[0].opts, { childList: true });
-  const sheet = { cls: 'ov-sheet' }; map.sheets.push(sheet);
-  mos[0].cb([]); assert.ok(ros[0].els.includes(sheet), 'the overlay sheet watched once it is there');
-  mos[0].cb([]); assert.equal(ros[0].els.filter((e) => e === sheet).length, 1, 'once');
+  assert.equal(mos.length, 1, 'no floating window on this page: one observer'); assert.deepEqual(mos[0].opts, { childList: true, subtree: true });
+  const sheet = { className: 'ov-sheet' }; map.sheets.push(sheet);
+  mos[0].cb([{ addedNodes: [sheet], removedNodes: [] }]); assert.ok(ros[0].els.includes(sheet), 'the overlay sheet watched once it is there');
+  mos[0].cb([{ addedNodes: [sheet], removedNodes: [] }]); assert.equal(ros[0].els.filter((e) => e === sheet).length, 1, 'once');
   flush();
+  mos[0].cb([{ addedNodes: [{ className: 'leaflet-tile' }, { className: 'place-label' }], removedNodes: [] }]);
+  assert.equal(q.length, 0, 'a tile or a name of its own coming lays nothing out');
+  mos[0].cb([{ addedNodes: [], removedNodes: [sheet] }]);
+  assert.ok(!ros[0].els.includes(sheet), 'a sheet that goes is let go (G34 F-A4)'); assert.equal(q.length, 1, 'and the names laid out again');
+  flush();
+  mos[0].cb([{ addedNodes: [{ className: 'leaflet-marker-icon tools-fan leaflet-zoom-animated' }], removedNodes: [] }]);
+  assert.equal(q.length, 1, 'the fan of a map tool coming lays the names out again (G34 B-2)'); flush();
+  mos[0].cb([{ addedNodes: [], removedNodes: [{ className: 'leaflet-tooltip tools-label' }] }]); assert.equal(q.length, 1, 'a tool label going too'); flush();
   const p = map.latLngToContainerPoint([21.303, -157.858]);
   map.controls.push({ hidden: false, getBoundingClientRect: () => ({ left: p.x - 80 + 10, top: p.y - 8 + 20, right: p.x + 10 + 10, bottom: p.y + 8 + 20 }) });
   assert.ok(!hnl.hidden, 'nothing re-laid yet');
@@ -616,4 +628,197 @@ test('create(): a narrow map keeps at most 60 labels, a wide one 120', async () 
     const n = pl.labels.children.filter((s) => !s.hidden).length;
     assert.ok(n === cap, sx + ' px wide: ' + n + ' labels (cap ' + cap + ')');
   }
+});
+
+// ---- G34 fix round ----
+test('G34 F-A1: a header that claims more than the stream holds is refused before anything is sized by it', () => {
+  const buf = new ArrayBuffer(60), dv = new DataView(buf), u8 = new Uint8Array(buf);
+  u8.set([76, 78, 83, 49], 0); dv.setUint16(4, 10, true); dv.setUint16(6, 1, true); dv.setUint32(8, 10000, true);
+  dv.setUint32(12, 5e6, true); dv.setUint32(16, 5e6, true); dv.setUint32(20, 5e6, true);
+  assert.throws(() => I.decodeLines(buf), /counts do not match the stream/, 'the count check comes first (not "stream shorter than its counts" after sizing 277 MB)');
+});
+
+test('G34 B-5: the tier-0 lines and places are two units: one failing keeps the other; the failed one is asked again after its cooldown, not the index', async () => {
+  const answers = { ...TIER0, 'world-places.bin': 'down' }, f = fakeFetch(answers);
+  const st = new I.PlacesStore(BASE, f);
+  assert.equal(await st.load(), st, 'the lines usable');
+  assert.equal(st.ok('l'), true); assert.equal(st.ok('p'), false); assert.equal(st.unit.p.status, 'failed');
+  assert.deepEqual(st.placesFor(-160, 20, -150, 25, 6), { sets: [], complete: false });
+  assert.deepEqual(st.linesFor({ z: 4, x: 2, y: 5 }), { sets: [st.lines0], complete: true });
+  const n = f.asked.length;
+  assert.equal(await st.load(), st); assert.equal(f.asked.length, n, 'inside the cooldown: nothing asked');
+  answers['world-places.bin'] = PLACES0; st.unit.p.failedAt -= I.RETRY_MS + 1;
+  assert.equal(await st.load(), st); assert.equal(st.ok('p'), true);
+  assert.deepEqual(f.asked.slice(n), [BASE + '/world-places.bin'], 'only the failed file again, not the index');
+  const g = fakeFetch({ ...TIER0, 'world-lines.bin': 'down' }), s2 = new I.PlacesStore(BASE, g);
+  assert.equal(await s2.load(), s2); assert.equal(s2.ok('l'), false); assert.equal(s2.ok('p'), true, 'the reverse');
+  const h = fakeFetch({ 'index.json': { json: INDEX } }), s3 = new I.PlacesStore(BASE, h);
+  assert.equal(await s3.load(), null, 'neither kind: null'); assert.equal(s3.status, 'ok', 'the index kept');
+  // on the page: the borders credited, no names and no places credit
+  const map = fakeMap(6), pl = P.create(map, { base: BASE, L: fakeL(map), document: fakeDoc(), storage: storage(), fetch: fakeFetch({ ...TIER0, 'world-places.bin': 'down' }), whenReady: (go) => go() });
+  await settle(); pl.update();
+  assert.deepEqual(map.credits, ['+Borders'], 'only the kind that loaded is credited'); assert.equal(pl.labels.hidden, true);
+});
+
+test('G34 F-A2: a file of another length than the index gives is refused (a tier-0 file: its unit fails; a cell: for good)', async () => {
+  const idx = { ...INDEX, tier0: { lines: { file: 'world-lines.bin', bytes: LINES0.byteLength + 1 }, places: { file: 'world-places.bin', bytes: PLACES0.byteLength } },
+    tier1: { ...INDEX.tier1, cells: { '40_-120': [CELL_A.byteLength - 1, 0] } } };
+  const f = fakeFetch({ ...TIER0, 'index.json': { json: idx }, 'c/40_-120.l.bin': CELL_A });
+  const st = new I.PlacesStore(BASE, f);
+  assert.equal(await st.load(), st); assert.equal(st.ok('l'), false, 'the lines cut or grown: refused'); assert.equal(st.ok('p'), true, 'the places of the right length');
+  const idx2 = { ...idx, tier0: { ...idx.tier0, lines: { file: 'world-lines.bin', bytes: LINES0.byteLength } } };
+  const s2 = new I.PlacesStore(BASE, fakeFetch({ ...TIER0, 'index.json': { json: idx2 }, 'c/40_-120.l.bin': CELL_A }));
+  await s2.load(); s2.request(['40_-120.l']); await settle();
+  assert.equal(s2.failed['40_-120.l'], true, 'a cell of another length: final'); assert.equal(s2.cells.size, 0);
+  assert.equal(I.expectOf(10), 10); assert.equal(I.expectOf(0), 0); assert.equal(I.expectOf(1.5), 0); assert.equal(I.expectOf('10'), 0); assert.equal(I.expectOf(undefined), 0);
+});
+
+test('G34 B-6: afterWait starts once the overlay promise settles, at once without one, and after WAIT_MAX_MS at the latest; create() waits for it after the page load', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let n = 0;
+  I.afterWait(null, () => n++); I.afterWait(() => null, () => n++); I.afterWait(() => { throw new Error('x'); }, () => n++);
+  assert.equal(n, 3, 'nothing to wait for: at once');
+  let res; const p = new Promise((r) => { res = r; });
+  I.afterWait(() => p, () => n++); assert.equal(n, 3); res(); await settle(); assert.equal(n, 4, 'when it settles');
+  t.mock.timers.tick(I.WAIT_MAX_MS); assert.equal(n, 4, 'once');
+  I.afterWait(() => new Promise(() => {}), () => n++); t.mock.timers.tick(I.WAIT_MAX_MS - 1); assert.equal(n, 4); t.mock.timers.tick(1); assert.equal(n, 5, 'the cap');
+  I.afterWait(() => Promise.reject(new Error('no')), () => n++); await settle(); assert.equal(n, 6, 'a failure starts it too');
+  assert.equal(I.WAIT_MAX_MS, 30000);
+  const map = fakeMap(6), f = fakeFetch(TIER0); let go; const wait = new Promise((r) => { go = r; });
+  P.create(map, { base: BASE, L: fakeL(map), document: { ...fakeDoc(), readyState: 'complete' }, storage: storage(), fetch: f, waitFor: () => wait });
+  t.mock.timers.tick(1500); await settle();
+  assert.equal(f.asked.length, 0, 'the load + 1.5 s passed: still waiting for the overlay');
+  go(); await settle(); assert.deepEqual(f.asked.slice(0, 1), [BASE + '/index.json'], 'then the downloads');
+});
+
+test('G34 B-6 / F-A6: the tier-0 stall timer is re-armed by every chunk (a slow but moving link loads), a download with no byte for STALL_MS is given up; every request asks for a low priority', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const inits = [], pending = [];
+  function streamFetch() {
+    return (url, init) => {
+      inits.push(init);
+      const name = url.split('/static/places/v1/')[1], a = TIER0[name];
+      if (a.json) return Promise.resolve({ ok: true, status: 200, headers: { get: () => '100' }, json: () => Promise.resolve(a.json) });
+      const u8 = new Uint8Array(a), half = u8.length >> 1, parts = [u8.subarray(0, half), u8.subarray(half)];
+      let i = 0;
+      const reader = { read: () => new Promise((res, rej) => {
+        pending.push(() => res(i < parts.length ? { done: false, value: parts[i++] } : { done: true }));
+        init.signal.addEventListener('abort', () => rej(new Error('aborted')), { once: true });
+      }), cancel() {} };
+      return Promise.resolve({ ok: true, status: 200, headers: { get: () => String(u8.length) }, body: { getReader: () => reader } });
+    };
+  }
+  const step = async () => { const now = pending.splice(0); now.forEach((fn) => fn()); await settle(); };
+  const st = new I.PlacesStore(BASE, streamFetch()), loading = st.load();
+  await settle();
+  for (let k = 0; k < 3; k++) { t.mock.timers.tick(I.STALL_MS - 1000); await step(); }     // 42 s in all, a byte every 14 s
+  assert.equal(await loading, st, 'loaded'); assert.equal(st.ok('l') && st.ok('p'), true);
+  assert.ok(inits.every((o) => o.priority === 'low' && o.mode === 'cors'), 'low priority');
+  pending.length = 0;
+  const s2 = new I.PlacesStore(BASE, streamFetch()), l2 = s2.load();
+  await settle(); await step();                                  // the first chunks, then nothing
+  t.mock.timers.tick(I.STALL_MS); await settle();
+  assert.equal(await l2, null, 'no byte for 15 s: given up'); assert.equal(s2.unit.l.status, 'failed'); assert.equal(s2.unit.p.status, 'failed');
+});
+
+test('G34 B-4: the cells are kept by their decoded size; a cell the current view uses is never evicted; the measured widths are bounded', async () => {
+  const st = new I.PlacesStore(BASE, fakeFetch(TIER0));
+  st.view = 3;
+  for (let i = 0; i < 10; i++) { st.cells.set('c' + i, { bytes: 1 << 20, used: i < 8 ? 2 : 3 }); st.bytes += 1 << 20; }
+  st._trim();
+  assert.ok(st.bytes <= I.MAX_CELL_BYTES_KEPT); assert.ok(!st.cells.has('c0') && st.cells.has('c4') && st.cells.has('c9'), 'the oldest first');
+  st.view = 4; for (const [, c] of st.cells) c.used = 4;
+  for (let i = 10; i < 14; i++) { st.cells.set('c' + i, { bytes: 1 << 20, used: 4 }); st.bytes += 1 << 20; }
+  st._trim();
+  assert.equal(st.cells.size, 10, 'all in the current view: none evicted (over the cap for that view)');
+  st.newView(); assert.equal(st.view, 5);
+  const lines = I.decodeLines(CELL_A), places = I.decodePlaces(PLACES0);
+  assert.equal(I.decodedBytes(lines), lines.box.byteLength + lines.xy.byteLength + lines.lineStart.byteLength + lines.vertStart.byteLength + lines.mz.byteLength + lines.kind.byteLength);
+  assert.ok(I.decodedBytes(places) > places.name.reduce((a, s) => a + 2 * s.length, 0), 'names counted');
+  // a landing cell carries its decoded size and the view it came for; a touch moves it to the view in use
+  const idx = { ...INDEX, tier1: { ...INDEX.tier1, cells: { '40_-120': [CELL_A.byteLength, 0] } } };
+  const s2 = new I.PlacesStore(BASE, fakeFetch({ ...TIER0, 'index.json': { json: idx }, 'c/40_-120.l.bin': CELL_A }));
+  await s2.load(); s2.view = 7; s2.request(['40_-120.l']); await settle();
+  const c = s2.cells.get('40_-120.l');
+  assert.equal(c.bytes, I.decodedBytes(c.data)); assert.equal(c.used, 7);
+  s2.view = 9; s2.linesFor(tileOf(42, -119, 8)); assert.equal(c.used, 9);
+  assert.ok(I.WIDTH_CACHE_MAX >= 1000);
+  const map = fakeMap(6), pl = P.create(map, { base: BASE, L: fakeL(map), document: oahuDoc(), storage: storage(), fetch: fakeFetch(TIER0), whenReady: () => {} });
+  for (let i = 0; i < I.WIDTH_CACHE_MAX + 10; i++) pl.textWidth('n' + i, false);
+  assert.equal(pl.textWidth('abc', false), 18, 'still measured after the cache started again');
+});
+
+test('G34 B-7 / F-A5 / M25 / M40: a tile without a line keeps a 1x1 canvas, one with a line is grown; a line within 3 px of the tile is drawn (its halo bleeds in); both kinds off stops the downloads', async () => {
+  // a second line 2 px above the top edge of tile row 24 at zoom 6 (beside the 40 N line)
+  const yNear = I.yToLat((24 * 256 - 2) / 64);
+  const lines = encodeLines([[0, [[[D(-120), D(-110)], [D(40), D(40)], 0]]], [0, [[[D(-120), D(-110)], [D(yNear), D(yNear)], 0]]]]);
+  const map = fakeMap(4), f = fakeFetch({ ...TIER0, 'world-lines.bin': lines }), strokes = [];
+  const mkCanvas = () => { const c = { width: 0, height: 0, style: {} }; c.getContext = () => ({ setTransform() {}, clearRect() {}, setLineDash() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() { strokes.push(c); }, measureText: (s) => ({ width: s.length * 6 }) }); return c; };
+  const pl = P.create(map, { base: BASE, L: fakeL(map), document: fakeDoc(mkCanvas), storage: storage({ 'allshore.places.v1': '0' }), fetch: f, whenReady: (go) => go() });
+  await settle();
+  const border = pl.layer.createTile.call(pl.layer, tileOf(40, -115, 4)), sea = pl.layer.createTile.call(pl.layer, tileOf(-40, 60, 4));
+  assert.equal(border.width, 256, 'a tile with a line: full size'); assert.equal(sea.width, 1, 'a tile with none: 1x1');
+  assert.equal(border.style.width, '256px'); assert.equal(sea.style.width, '256px');
+  // the tile just south of that line at zoom 6: the line lies under 3 px above its top edge
+  const below = { z: 6, x: tileOf(yNear, -115, 6).x, y: 24 };
+  const yLine = I.latToY(yNear) * 64, top = below.y * 256;
+  assert.ok(top - yLine > 0 && top - yLine < 3, 'the line is ' + (top - yLine).toFixed(2) + ' px outside the tile');
+  map.zoom = 6; strokes.length = 0;
+  const edge = pl.layer.createTile.call(pl.layer, below);
+  assert.ok(strokes.includes(edge), 'drawn: the 3-px margin at the call site'); assert.equal(edge.width, 256);
+  // both off: queued and running cell downloads stop (M25)
+  pl.store.queue.push('x.l'); let aborted = 0; pl.store.inflight['y.l'] = { abort: () => aborted++ };
+  pl.set('borders', false);
+  assert.equal(pl.store.queue.length, 0); assert.equal(aborted, 1); assert.deepEqual(pl.store.inflight, {}, 'City names was off already: both off now');
+});
+
+test('G34 B-8: the names are measured in the font they are drawn in (a hidden probe of each kind)', async () => {
+  const fonts = [];
+  const doc = {
+    defaultView: { getComputedStyle: (e) => ({ fontSize: '14px', fontFamily: 'system-ui, sans-serif', fontWeight: /capital/.test(e.className) ? '700' : '600', fontStyle: 'normal', lineHeight: '14px' }) },
+    createElement: (tag) => {
+      const e = el(tag);
+      e.removeChild = function (c) { this.children = this.children.filter((x) => x !== c); };
+      if (tag === 'canvas') e.getContext = () => ({ set font(v) { this._f = v; }, get font() { return this._f; }, measureText(s) { fonts.push(this._f); return { width: s.length * 8 }; } });
+      return e;
+    }
+  };
+  const map = fakeMap(6, 21.3, -157.9), pl = P.create(map, { base: BASE, L: fakeL(map), document: doc, storage: storage(), fetch: fakeFetch(TIER0), whenReady: (go) => go() });
+  await settle(); pl.update();
+  assert.equal(pl.labels.children.filter((c) => c.style.visibility === 'hidden').length, 0, 'the probes removed');
+  fonts.length = 0; pl.textWidth('Zzzq', false); pl.textWidth('Zzzr', true);
+  assert.deepEqual(fonts, ['600 14px system-ui, sans-serif', '700 14px system-ui, sans-serif'], 'the drawn font, not the 11-px constant');
+  // without getComputedStyle: the constants
+  const map2 = fakeMap(6), fonts2 = [];
+  const doc2 = { createElement: (tag) => { const e = el(tag); if (tag === 'canvas') e.getContext = () => ({ set font(v) { this._f = v; }, measureText(s) { fonts2.push(this._f); return { width: 1 }; } }); return e; } };
+  const pl2 = P.create(map2, { base: BASE, L: fakeL(map2), document: doc2, storage: storage(), fetch: fakeFetch(TIER0), whenReady: (go) => go() });
+  await settle(); pl2.update(); pl2.textWidth('Hilo', false);
+  assert.deepEqual(fonts2, [I.LABEL_FONT]);
+  // the label height follows the font: two names 24 px apart fit at the 14-px default, not at a 20-px line
+  const items = () => [{ x: 100, y: 100, w: 30 }, { x: 100, y: 124, w: 30 }];
+  assert.equal(I.thin(items(), [], 10, { x: 800, y: 600 }).length, 2);
+  assert.equal(I.thin(items(), [], 10, { x: 800, y: 600 }, 20).length, 1);
+});
+
+test('G34 B-1: the floating windows (outside the map container) are obstacles while shown; a window opening, closing or moving lays the names out again', async () => {
+  const ros = [], mos = [], q = [];
+  const win = { requestAnimationFrame: (fn) => { q.push(fn); return q.length; },
+    ResizeObserver: class { constructor(cb) { this.cb = cb; this.els = []; ros.push(this); } observe(e) { this.els.push(e); } unobserve() {} },
+    MutationObserver: class { constructor(cb) { this.cb = cb; this.t = []; mos.push(this); } observe(tg, o) { this.t.push([tg, o]); } } };
+  const M = load(win), flush = () => { while (q.length) q.shift()(); };
+  const crop = fs.readFileSync(path.join(FIX, 'world-places-crop.bin'));
+  const map = fakeMap(6, 21.3, -157.9);
+  const p = map.latLngToContainerPoint([21.303, -157.858]);
+  const fwin = { className: 'fwin forecast-win fw-min', hidden: false, getBoundingClientRect: () => ({ left: p.x - 20 + 10, top: p.y - 10 + 20, right: p.x + 120 + 10, bottom: p.y + 10 + 20 }) };
+  const shut = { className: 'fwin live-win', hidden: true, getBoundingClientRect: () => ({ left: 0, top: 0, right: 2000, bottom: 2000 }) };
+  const doc = { ...oahuDoc(), querySelectorAll: (sel) => (sel === '.fwin' ? [fwin, shut] : []) };
+  const pl = M.create(map, { base: BASE, L: fakeL(map), document: doc, storage: storage(), fetch: fakeFetch({ ...TIER0, 'world-places.bin': ab(crop) }), whenReady: (go) => go() });
+  await settle(); flush();
+  const shown = () => pl.labels.children.filter((s) => !s.hidden).map((s) => s.textContent);
+  assert.ok(!shown().includes('Honolulu') && shown().includes('Hilo'), 'under the forecast bar: Honolulu goes (a hidden window blocks nothing)');
+  assert.ok(ros[0].els.includes(fwin) && ros[0].els.includes(shut), 'the windows watched for size');
+  const attrMo = mos.find((m) => m.t.some(([tg]) => tg === fwin));
+  assert.ok(attrMo, 'and for their class / style / hidden'); assert.deepEqual(attrMo.t[0][1], { attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+  fwin.hidden = true; attrMo.cb([]); assert.equal(q.length, 1, 'a window closing lays the names out again'); flush();
+  assert.ok(shown().includes('Honolulu'));
 });

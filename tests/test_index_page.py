@@ -1091,7 +1091,10 @@ def test_location_aids_on_the_page(client, monkeypatch):
     r = client.get("/ui/places.js?v=" + A.UI_ASSET_VERSION)
     assert r.status_code == 200 and "AllshorePlaces" in r.get_data(as_text=True)
     for needle in (
-        "pl = window.AllshorePlaces.create(map, { base: \"\" || window.__allshorePlacesBase || '', storage: st || undefined });",
+        "pl = window.AllshorePlaces.create(map, { base: \"\" || window.__allshorePlacesBase || '', storage: st || undefined,",
+        "waitFor: function () { return window.__allshoreOverlayWait || null; } });",   # the overlay's first picture first (G34 B-6)
+        # a wind station without a recent reading: a hollow grey ring, never a town's white dot (G34 B-3)
+        ".wind-none .wind-ring { left: 15px; top: 15px; width: 10px; height: 10px; background: transparent; border: 2px solid #b8c1cb;",
         "if (!pl) { box.closest('.place-setting').hidden = true; return; }",
         "box.addEventListener('change', function () { pl.set(id, box.checked); });",
         'font: 600 11px/14px system-ui, -apple-system, "Segoe UI", sans-serif;',

@@ -378,6 +378,25 @@ test('lake outlines (plan section 51): under wind below zoom 4 nothing is asked;
   await settle();
 });
 
+test('lake outlines (V7-5): wind -> SST takes the set from the layer at once (its masks go, no zoom needed); back to wind gives it back', async () => {
+  const w = world();
+  const lakeIdx = { ...COAST_INDEX, tier0: { ...COAST_INDEX.tier0, file: 'lakeoutlines-i.bin' } };
+  w.coastAnswer = (url) => (url.indexOf('/lakeoutlines-v1/') >= 0 && url.endsWith('index.json') ? { ok: true, status: 200, json: () => Promise.resolve(lakeIdx) } : coastOk(url));
+  const A3 = { ...A, fields: { hs: HS, wind: { lo: 0, hi: 41.2, legend: [0, 30.9], units: 'm/s', interpolation: 'bilinear' } } };
+  w.pointer = ptr(A3); w.manifests[A3.run] = A3;
+  w.map.getZoom = () => 4.6;
+  const o = w.create({ coast: true, sst: true });
+  o.mount('wind'); w.orig._bindMap.call(o);
+  for (let i = 0; i < 6; i++) { while (w.pendingCoast.length) w.pendingCoast.shift()(); await settle(); }
+  assert.ok(o.layer._lakeOut && o.layer._lakeOut === o.lakeOutCoast, 'wind at zoom 4.6: the set on the layer');
+  sstFake(o); o.mount('sst'); await settle();
+  assert.equal(o.layer._lakeOut, null, 'SST: the set taken from the layer at once');
+  o.mount('wind');
+  for (let i = 0; i < 4; i++) { while (w.pendingCoast.length) w.pendingCoast.shift()(); await settle(); }
+  assert.equal(o.layer._lakeOut, o.lakeOutCoast, 'back to wind: given back');
+  o.unmount();
+});
+
 test('coast: the first draw waits for the coastlines, a failed coast load draws unclipped, Off aborts a pending load', async () => {
   const w = world();
   w.coastAnswer = coastOk;

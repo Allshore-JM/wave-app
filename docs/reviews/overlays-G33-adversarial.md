@@ -350,3 +350,35 @@ Report: scratch `g33/recheck/recheck-report.md`. Nothing was changed on any bran
    stricter fuzz run on the fixed code (0 failures required); mutants on the fixes; the asset pin.
 7. Then a short test-site check at MAX: the reviewer's site scenarios (`s/rc.js double`, `updatepan`, `hoverslow`,
    `credit`, `coastretry`) and the regression set, and a timed lakes pair against production.
+
+## Fix round 2 (overlay asset 2.21.6)
+Every item of the fix round 2 scope was built:
+- **P3-1.** `LakeStore.load` judges a re-read's pointer and its result against the run in hand when they arrive (a run
+  adopted while the read was out is never put back into `next`). `adoptNewer` refuses a run that is not newer than the
+  one in hand and forgets it; `_adoptLake` aborts and empties only when an adoption happened.
+- **P3-2 / P3-3.** `_syncLakeGate`: out of reach, `_dropLakes` runs whenever anything of the lakes is held (`_lakeHeld`: a
+  lake fetch, either cache, the drawn lake, the animator's lake data, the hover's height frame), under any field or mode,
+  and `_prefetch` re-trims the downloads in model mode. Back in reach after being out of it, the shown step's lake frames
+  start (unchanged). `_loadLakes`'s callback re-judges the reach at once with the run's grid.
+- **P3-4 / N-3.** The hover's height frame tells the readout only while it is still the shown step's (`_lakeHsKey`); a
+  failed frame tells it too ("no data"). A frame silent for `LOAD_STALL_MS` (15 s) is given up whatever its decode does
+  next; `_dropLakeHs` clears the timer.
+- **P3-5.** `_lakeOnScreen` also needs `layer.lakeWaterInView(map)`: a tile at the tile zoom wholly in view with a lake
+  mask counts at once; a tile at the view's edge counts by its coverage pixels inside the view.
+- **P3-6.** `_wantLake` is false while the lakes coast set loads again after a failure (`failedAt > 0`); its first load is
+  unchanged, and its arrival starts the shown step's lake frames.
+- **Found by the fuzz in this round:** the first version re-trimmed the downloads only when something of the lakes was
+  held, but leaving the lakes shrinks the cap anyway: a ring filling the larger cap stayed above it (reviewer A's fuzz
+  9 of 1,200 seeds, the stricter fuzz 19 of 1,300). Now any change of reach re-trims; a test pins it (it fails on the
+  first version).
+- **Tests** (`tests/overlay/playback.test.js` +12, `lake.test.js` context): P3-1 (both adoption paths and the refusal),
+  P3-2, P3-3 (wind and SST), P3-5 (Lansing at zoom 10, an edge tile, a tile of another zoom level), P3-6, the readout through `_bindReadout` (R27 /
+  R28 / P3-4), N-3 / R22 (fake clock: a hung download, a decode that never ends and its late landing, a 404, an invalid grid), and the gaps R03, R13, R06 / R08 / R12, R14. Two existing credit tests now plant a
+  tile of lake water (the old rule needed none). The 7 behaviour tests fail on 2.21.5 and pass on 2.21.6.
+- Suites: Node 916, pytest 1,243 (and the pin / page / table files again on the final code: 61).
+- Mutation (`g33/fix9/mut9.py`, scratch copies, after the suites): 29 mutants, 27 killed. The 2 survivors are backup guards: the store refuses the run in hand at the pointer, at
+  the result and in `adoptNewer` (removing the result-stage check alone changes nothing), and the drop-whatever-the-gate-saw
+  rule (the callback's re-judged reach already makes every drop a transition).
+- The reviewer's stricter fuzz (`g33/recheck/fuzz/fuzz2.js`) on the fixed code: lake 1..800 and all 100001..100500, 0 failures (was 9 of 1,300 on
+  2.21.5); reviewer A's fuzz 1..800, 7001..7400 and 300001..300300, 0 failures. The reviewer's seven reproductions
+  (`mine.js`) all hold.

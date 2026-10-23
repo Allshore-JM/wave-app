@@ -759,7 +759,7 @@ test("G33 S4: sampleLake reads nothing west of the grid's first column (a negati
 test('G33 B-2: the readout’s word on lake water without a value: "calm" under peak period where the step’s lake height is present and under 0.2 m; "no data" otherwise; "…" while the height frame loads', () => {
   const E = { step: 3, valid_utc: '2026-10-21T22:00:00Z' }, code = (v) => toCode(v, HS);
   const ctx = (o) => Object.assign({
-    field: 'tp', frameIndex: 0, _lakeIndex: () => 0, _dropLakeHs() {},
+    field: 'tp', frameIndex: 0, _lakeIndex: () => 0, _dropLakeHs() {}, _lakeHsKey: I.Overlay.prototype._lakeHsKey,
     layer: { _lake: { run: MAN.run, entry: E }, entry: E, lakeCodeAt: () => code(0.05) },
     lake: { manifest: MAN }, _lakeHs: { key: MAN.run + '/' + MAN.frames[0].step, frame: {}, failed: false }
   }, o || {});

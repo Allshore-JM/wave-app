@@ -776,14 +776,15 @@ lakes under the GFS model selection (plan section 50's client steps).
   - **The credit.** "Lakes: NOAA GLWU" shows only while the lake water is on screen, not within the one-screen fetch
     margin.
   - **The tables.** A newest manifest without a bulletin list sends the tables to the kept runs.
-- **The G33 re-check fix round (overlay asset 2.21.6)**:
+- **The G33 re-check fix round (overlay assets 2.21.6 and 2.21.7)**:
   - **One adoption per lake run.** The store judges a re-read's answer against the run in hand when it answers, and
     never takes the run in hand a second time (a page left past a new lake run blinked its lakes and downloaded them
     again at the next field switch).
   - **Out of reach is out of reach.** Leaving the lakes drops every lake fetch, frame and drawn lake under any field or
     mode (wind and SST included), and the view gate's state is re-judged at once when a lake run loads.
   - **The hover.** The height frame re-shows the readout only while it is still the shown step's (no fetch chain during
-    playback on a slow connection); a height frame silent for 15 s reads "no data".
+    playback on a slow connection); one that lands after playback moved on shows the hovered step's word in place of
+    "…" without asking for another frame (2.21.7); a height frame silent for 15 s reads "no data".
   - **The credit** counts lake water in the view (a tile's lake coverage in its visible part), not the lake grid's box
     (which holds most of Michigan's Lower Peninsula).
   - **Coast retries.** No lake frame is fetched while the lakes coast set loads again after a failure; its arrival starts

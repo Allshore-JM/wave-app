@@ -5174,13 +5174,21 @@
     if (this.field !== 'tp' || !ll || !lm || ll.run !== lm.run || this.frameIndex === null || L.entry !== ll.entry || !lm.fields.hs) return 'no data';
     var key = this._lakeHsKey();
     if (key === null) return 'no data';
-    var li = this._lakeIndex(this.frameIndex), h = this._lakeHs, self = this;
+    var li = this._lakeIndex(this.frameIndex), h = this._lakeHs, self = this, fh = lm.fields.hs;
+    var word = function (frame) {                          // calm: the hovered point's lake height present and under LAKE_CALM_M
+      var c = frame ? L.lakeCodeAt(frame, lm.grid, lat, lng, z) : 0;
+      return c && fh.lo + (c - 1) / 254 * (fh.hi - fh.lo) < LAKE_CALM_M ? 'calm' : 'no data';
+    };
     if (!h || h.key !== key) {
       this._dropLakeHs();
       var ctrl = new AbortController(), rec = this._lakeHs = { key: key, frame: null, failed: false, abort: ctrl, timer: null };
-      // the readout is told only while the frame is still the shown step's: a re-show for a step played on since would
-      // ask for that step's frame, and so on (G33 re-check P3-4); a frame silent for LOAD_STALL_MS reads "no data" (N-3)
-      var tell = function () { if (onReady && self._lakeHs === rec && self._lakeHsKey() === rec.key) onReady(); };
+      // the readout re-shows while the frame is still the shown step's; for a step played on since it is handed the word of
+      // the hovered point and step instead (a re-show would ask for the new step's frame, and so on: G33 re-check P3-4);
+      // a frame silent for LOAD_STALL_MS reads "no data" (N-3)
+      var tell = function () {
+        if (!onReady || self._lakeHs !== rec) return;
+        if (self._lakeHsKey() === rec.key) onReady(); else onReady(word(rec.frame));
+      };
       rec.timer = setTimeout(function () {             // given up whatever the decode does next (one past its download cannot be cancelled)
         rec.timer = null; ctrl.abort();
         if (self._lakeHs === rec && !rec.frame && !rec.failed) { rec.failed = true; rec.abort = null; tell(); }
@@ -5198,8 +5206,7 @@
       return '…';
     }
     if (!h.frame) return h.failed ? 'no data' : '…';
-    var c = L.lakeCodeAt(h.frame, lm.grid, lat, lng, z), fh = lm.fields.hs;
-    return c && fh.lo + (c - 1) / 254 * (fh.hi - fh.lo) < LAKE_CALM_M ? 'calm' : 'no data';
+    return word(h.frame);
   };
   // The shown step's lake height frame key (run/step), or null without a lake frame for it.
   Overlay.prototype._lakeHsKey = function () {
@@ -5219,7 +5226,11 @@
       }
       last = { latlng: latlng, pt: pt };
       if ((v === null || v === undefined) && layer && layer.fdef && layer.lakeAt(latlng.lat, latlng.lng, z)) {   // plan section 50 (owner): "no data" / "calm" (G33 B-2)
-        el.textContent = self._lakeWord(latlng.lat, latlng.lng, z, function () { if (!el.hidden && last) show(last.latlng, last.pt); });
+        el.textContent = self._lakeWord(latlng.lat, latlng.lng, z, function (w) {
+          if (el.hidden || !last) return;
+          if (w === undefined) show(last.latlng, last.pt);            // the shown step's frame landed: shown afresh
+          else if (el.textContent === '…') el.textContent = w;        // the hovered step's word (playback moved on); never over other text
+        });
         el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return;
       }
       if (v === null || v === undefined) { el.hidden = true; return; }

@@ -360,3 +360,182 @@ trusted mouse / touch / keys. Scripts and outputs: scratch `places/v7b` (`s/b*.j
 - **V7b-2 (P3 nit)**: the published `static/places/v2/LICENSE.txt` heading still names `static/places/v1`
   (`tools/places/LICENSE-PLACES.txt`); the objects are immutable, so the fix goes with the next data version.
 - Nothing else: every check above as designed.
+
+## G34: two fresh reviewers (2026-10-23, Opus 5.5 MAX; reviewer A on Fable 5.1)
+Target: `feat/location-aids` @ da7fed5 (`git diff 5e4946e..da7fed5`: the builders (G34a-reviewed), the data v2 name
+pass (never reviewed before), `static_ui/places.js`, the lake outlines in `static_overlay/overlay.js`, the page) and the
+test site @ 7651473 (UI 1.25.1, overlay 2.22.1), production (11369c8, UI 1.24.0, overlay 2.21.7) for comparison.
+Brief: scratch `g34/brief.md` (owner decisions 1-11, claims C1-C10, known items K-1..K-12). Reviewer A (code and data,
+own detached worktree, no browser): `g34/a/g34-a-report.md`. Reviewer B (the test site with trusted mouse / touch /
+keys, headless Chrome 155 + GPU, its own profile, never signed in): `g34/b/g34-b-report.md`. Nothing on any branch,
+site or bucket was changed by either.
+
+**Result: 0 P0, 0 P1, 2 P2, 12 P3** (A 0/0/0/7, B 0/0/2/6; A's F-A5 = B-7, counted once; B-3 is owner awareness).
+
+### What held
+- **Formats (A, C1):** A's own Python decoders, written from the writers, read the PUBLISHED v2 tier 0 and all 503
+  tier-1 files exactly as `decodeLines` / `decodePlaces` do (every piece, line, vertex, place, name, rank, zoom,
+  population, flag: 0 mismatches). Fuzz: every truncation of a lines file throws; bad varints, a stream ending inside a
+  varint, lon 180, lat 91, rank 256, an empty name, invalid UTF-8, a name-count mismatch all throw; no input hangs.
+  Exceptions: F-A1, F-A2.
+- **Lines per tile (A, C2):** `cellsForTile` = A's reference on 20,000 random tiles (zoom 2-18, three world copies,
+  the latitude limits); `tilePaths` = A's reference (own projection, box test, dateline cut, sub-pixel skip) on 6,000
+  tiles over 27 real files, 0 mismatches; another world copy gives byte-identical paths; no published line reaches
+  +-180 (the date-line guard is a safety net).
+- **Names (A, C3; B):** `thin` = A's O(n^2) reference of the documented rule in 4,000 random runs (0 differences;
+  drawn boxes never off the map, never within 8 px of each other or 4 px of a blocked rect); `candidatesFor` = a brute
+  force over copies -4..4 in 600 views; `placeShown` exact at every snapped zoom; the page's CSS = the module's
+  constants. On the site (B): 98 views at six screen sizes (desktop 1280x800 and 1920x1080, tablet, three phones, a
+  phone on its side): 0 overlapping names, 0 cut by the map's edge, 0 under a map control or the overlay's sheet (the
+  only names under something: B-1); drawn widths = `textWidth` to 0.0 px with the default font settings (Vietnamese,
+  Nepali combining marks, Greek, Hebrew, Polish, Icelandic places); Fiji the same in the copies at 180 and -180.
+- **Lifecycle, store, credits (A, C4-C6):** one layout per burst of view events, hidden on zoomstart; the store's 45
+  staged checks (one request set per load, the 60-s cooldown, the watchdog, <= 2 cells in flight, 404 final, the retry
+  timer, `idle()`, hostile index entries never requested); credits balanced over 200 toggles and only with data.
+- **Lake outlines (A, C7; B):** masks only on lake tiles at tile zoom >= 4, re-attached tiles pixel-identical, world
+  copies identical, loads that resolve after an unmount / a zoom to 3 / a field change attach nothing, three syncs
+  while loading attach once; wave height / period / SST tiles byte-identical with a stale wind mask on the element. On
+  the site under GFS and ECMWF wind: Okeechobee, Caspian, Baikal, Victoria, Titicaca, Superior outlined on their shores.
+  Exception: F-A3.
+- **Page and data v2 (A, C8-C9):** the page diff as claimed (names by `textContent`, constant credits); v1 -> v2:
+  134,171 records in both, exactly 235 names changed (all Natural Earth places), no other field, every lines file
+  byte-identical; A's own derivation of the rule = the published change set; the pins = the published index;
+  `--check` on the downloaded published set: 0 problems.
+- **On the site (B):** first visit (the places index at the load event + 1.5 s, 491 KB, after the forecast); every
+  settings combination kept across reloads and new tabs, the retired keys removed, phone taps, keyboard order Time Zone
+  -> Units -> gridlines -> Borders -> City names -> isobars -> particles with the focus ring, the names' box aria-hidden;
+  print hides the names, forced colours keep them readable; a tap or click through a name reaches the icon, forecast
+  point or map under it, long-press readouts work, tooltips show above names; the (i) credits box makes the names step
+  aside; six failure paths (all refused, a held index, one cell 500 retried by its timer without input, a damaged cell
+  refused with the tier-0 stand-in, the lake-outline set refused, offline then online); moving the map costs nothing
+  above run-to-run noise.
+- **Timed playback (B, after A's DONE; GPU, 1920x1080 shark, a collected heap before play, every frame warm at the
+  edge for both Origins, three Latin-square rounds of production / test / test with Borders and City names off):**
+  Great Lakes z7 wind (lake outlines, borders, names, isobars) 8.0 fps in all nine runs; Europe z5 wave height 7.40 /
+  7.37 / 7.37 fps on average, all three alike (the machine's slow state: render p50 76-114 ms on every variant; the
+  location aids cost nothing measurable); 0 skipped, 0 unpainted; live memory within production + 10 MB (Europe +2.6,
+  Great Lakes +8.2 at the maxima), peaks within production's range + 10 MB.
+- Suites in A's worktree: pytest 1,295, Node 951. Console clean in every check of B's.
+
+### Findings
+- **B-6 (P2) on a slow phone connection the places download makes the overlay's coastline fail: wave height is drawn
+  over the land.** The places tier 0 (491 KB) starts at the load event + 1.5 s, the same moment the overlay downloads
+  its coastline (`static/coast/v1/world-i.bin`, 1.33 MB, a 15-s total budget). At 100 KB/s and 150 ms (DevTools
+  throttling, phone 375x812, fresh storage, browser cache off, two runs each): production's coastline loads in
+  13.6 / 13.7 s; the test site's is aborted at 15.0 s both times (the places files ran 6.6 -> 15.2 s beside it), its
+  store fails for 60 s (a zoom inside the cooldown asks nothing) and wave height covers Oahu, Maui and the Big Island
+  with the "Coastline data could not be loaded" note; with Borders and City names stored off before the visit the
+  test site loads it in 13.8 / 13.5 s. Thresholds: production still loads it at 90 KB/s (14.9 s), the test site needs
+  about 130 KB/s. So between ~90 and ~125 KB/s (0.7-1.0 Mbit/s) the release turns a clipped first view into an
+  unclipped one. (Below ~90 KB/s production's own coastline already fails: the 15-s budget counts the whole download.)
+- **B-1 (P2) names drawn under the floating windows and open panels, cut by their edges.** `BLOCKED_SELECTOR` holds
+  the map controls, the overlay's sheet and the gridline labels only. The forecast window's bar (fixed over the map's
+  bottom-left on every load, outside the map container) is not an obstacle: names fully or half under it in 13 of 35
+  views at 1280x800 ("Havana" half under it at Florida z7, "Long Branch" -> "...ranch" at NYC z10, "Buenos Aires" at
+  the world view), 11 of 18 at 1920x1080, 8 of 12 on a tablet (phones none: the sheet covers that band). Opened over
+  the map (NYC z9, 1280x800, names fully under + cut): the gear panel 6 + 3, the tools menu 6 + 3, a live-buoy window
+  55 + 5, a tide window 48 + 5, a wind window 55 + 6, the forecast window opened 65 + 9. Nothing re-lays the names when
+  these open, close, move or resize (the gear panel and tools menu overflow their control without resizing its corner).
+- **B-2 (P3) names over the map tools' graphics.** The names' pane (620) sits above the tools' pane (590): names are
+  drawn over the swell-exposure fan and its compass letters (Rockaway z10: 7 names on the disc, "New York" on its "N";
+  Ocean Beach z10: 9), and the distance tool's labels (tooltips, 650) cut the names under them ("Pear...", "Joint Base
+  Pea..." across Oahu).
+- **B-3 (P3, owner awareness) a town's dot looks like a wind station without a recent reading.** The names' dot is a
+  4-px white dot with a dark ring; a wind station with no recent reading is an 8-px white dot with a grey ring (26 of
+  the 34 wind markers at Oahu z10). Labelled and unlabelled white dots sit side by side, so a station reads as a town
+  whose name was thinned, and the reverse.
+- **B-4 (P3) the places store passes the plan's 10-MB budget in a long session; its cap never bites.** The LRU counts
+  FILE bytes against 6 MB, but the whole tier 1 is 4.29 MB of files, so nothing is ever evicted; decoded the data is
+  about 3.4x its files (Float64 positions, one string per name, a width-cache entry per measured name). 48 dense cells
+  at zoom 9: test 23.1 MB vs production 10.3 MB (overlay Off, after GC); 45 surf regions: 17.6 vs 10.5. Not a leak (it
+  stops at the data set's size), but a visitor who browsed ~50 cells before pressing play holds ~13 MB more than the
+  memory rule's cells measured.
+- **B-5 (P3) one failed tier-0 file takes both kinds away, silently.** The index and both world files load as one
+  unit: with only `world-places.bin` refused the borders are gone too, both rows still ticked, until a zoom after the
+  60-s cooldown.
+- **B-7 = F-A5 (P3) the border layer holds a full-resolution canvas for every tile, also where there is no line, and
+  stays on the map while only City names is on.** `sync()` adds the layer for either kind; `createTile` always allocates
+  256 x dpr squared (1 MB at dpr 2). The default Hawaii z6 view (no line in it) holds 8 canvases / 8.4 MB on a phone,
+  20 / 21 MB on a tablet, 30 / 31.5 MB at an iPad Pro size; Borders off + City names on: still 12 blank canvases
+  (12.6 MB) on the phone at Europe z5. Canvas backing stores are outside the heap the memory rule measures.
+- **B-8 (P3) with a browser minimum font size the names overlap and can run off the map.** Widths are measured on a
+  canvas at the fixed `LABEL_FONT` (11 px), which a minimum font size does not touch, while the text renders at the
+  minimum: with Chrome's "Minimum font size" 14 px every name is 12-47 px wider than its box; overlapping names at Oahu
+  z10, US east z6, NYC z10 (9 pairs), Europe z5, Tokyo z10; on a phone "Dresden" ends past the right edge. (Minimum
+  font sizes are supported since section 43.)
+- **F-A1 (P3) `decodeLines` allocates by the header before it validates the stream.** A 60-byte file whose header
+  claims 5 million pieces / lines / vertices makes it allocate ~277 MB before throwing. Only a compromised origin could
+  serve it (immutable objects over HTTPS), but on a phone it is a tab crash. `decodePlaces` already checks first.
+- **F-A2 (P3) a places file cut inside its last name decodes; no file's length is compared with the index.** 9 of
+  3,176 truncations of a cell and 19 of the last 20 lengths of `world-places.bin` return a shortened last name;
+  single-bit damage inside a lines file usually decodes to shifted points (a delta format without a checksum). The
+  index gives every file's byte count and the client never compares it.
+- **F-A3 (P3) after the lake-outline set is let go the masks live on through the edge cache.** The detach branch of
+  `setLakeOutlineCoast` clears `_ovLo` / `_ovLoKey` but not `_ovLoEdges` / `_ovLoEdgesOf` (= the 64-KB mask): Great
+  Lakes z6 under wave height keeps 11-21 masks (0.7-1.3 MB) until the tiles go. (The author's and both earlier checks'
+  "0 masks" counted `_ovLo` only.)
+- **F-A4 (P3) the ResizeObserver never lets a replaced overlay sheet go.** Every phone Off -> On or compact switch
+  re-creates the sheet; each old one stays observed (50 replacements -> 50 observed elements; a few KB each).
+- **F-A6 (P3, wording) the tier-0 "15-s stall" is one 15-s budget for the three files together**: a visitor slower
+  than ~35 KB/s never gets borders or names (each try aborts at 15 s, retried only by a zoom after 60 s).
+- **F-A7 (P3 nit) the places test fixtures are v1 crops:** `world-places-crop.bin` holds 10 names v2 renamed; its
+  README says places-v1 (the cell and lake fixtures are byte-identical to v1 and v2).
+- **Mutant survivors worth pinning (A: 82 mutants, 66 killed, 16 survived; none hides a shipped defect):** M25
+  `store.idle()` not called when both kinds go off; M40 the call site's 3-px tile margin; B04 a case-sensitive edit
+  distance in the name pass (the real build would lose 5 fixes, e.g. Tarin Kowt -> Tarinkot, and the 220-250 gate would
+  not notice); B11 / B12 `NAME_FIX_RANGE` and `NAME_PROBES` unpinned; B06 the name pass moved after the dedupe. The other
+  10 are equivalent or cost-only (A's report lists each).
+- **Observations, no action:** the "236 places" of owner decision 10 vs the index's 234 agreed is two "Granada" names
+  carrying an invisible left-to-right mark that `clean_name` strips (for the builder NAME == NAME_EN already: 234 + the
+  hand fix = 235); three GeoNames towns sit at a tier-0 place's exact position with another name (the thinning keeps the
+  larger, same dot); credits follow the rows and the data, not the view; dense metro views fill the 120 cap; the lines
+  are subtle by design; K-4 reproduced (a pan never retries a failed load).
+
+### Author's verification
+- F-A1, F-A2 and F-A3 confirmed in the code: `decodeLines` sizes six arrays from the header's counts and checks the
+  stream's length only at the end; nothing compares a body's length with the index's byte counts; the detach branch
+  nulls `_ovLo` and `_ovLoKey` only.
+- F-A4 (`watchSheets` marks and observes, nothing unobserves), B-7 / F-A5 (`sync()` adds the layer for either kind,
+  `createTile` always allocates), B-4 (`MAX_CELL_BYTES_KEPT` 6 MB of file bytes against 4.29 MB for the whole tier 1),
+  B-8 (`measureText` with the fixed `LABEL_FONT` / `LABEL_H`) and B-1 (`BLOCKED_SELECTOR` = controls, sheet, gridline
+  labels) confirmed in the code.
+- B-6: the mechanism is in B's request timings (the coastline download and the two places files running together from
+  6.5 s, the coastline cancelled at its 15-s budget in both test runs, loaded in both production runs and both aids-off
+  runs); not re-run.
+
+### Owner's calls (2026-10-23, AskUserQuestion, all recommended)
+- **B-6 slow links: "Wait + patient coastline".** The borders and names wait until the overlay's coastline and first
+  picture have landed or failed (at most ~30 s) and download at low priority; the coastline's 15-s limit counts only
+  time with no data arriving (also helps links slower than production's own ~0.7 Mbit/s limit).
+- **B-2 map tools: "Names avoid the tool".** While a tool shows its fan or its labels, the names are laid out around
+  them.
+- **B-3 dots: "Grey out no-reading stations".** A wind station without a recent reading becomes a hollow grey ring;
+  the town dots stay. The owner sees it on the test site before it ships.
+
+### Fix round scope (step 9; UI 1.25.2, overlay 2.22.2)
+1. **B-6:** the places start after the window's load + 1.5 s AND the overlay's coastline tier 0 and first picture
+   (landed or failed), capped at 30 s; with the overlay Off or not mounting, the load + 1.5 s rule as now; the places
+   files fetched with `priority: 'low'` where supported. The overlay's coast store reads its tier-0 file and index with a
+   stall timer (15 s with no bytes, not 15 s in total) where `r.body.getReader` exists (the SST store's pattern); the
+   places store's tier-0 watchdog the same (F-A6).
+2. **B-1:** the visible floating windows (`.fwin:not([hidden])`, their bars and chips) and the open gear and tools panels
+   become blocked rects, queried from the document and clipped to the map; the names are laid out again when one opens,
+   closes, moves or resizes (a ResizeObserver on each, a MutationObserver on their class / style / hidden).
+3. **B-2:** the tools' fan (`.tools-fan`) and their labels (`.tools-label`) become blocked rects while shown; the names
+   are laid out again when the tools pane's children change.
+4. **B-3:** `.wind-none` draws a hollow grey ring (template CSS: the golden re-captured in its own commit).
+5. **B-4:** the cell LRU counts decoded bytes (typed arrays + 2 x the name characters) against 6 MB and never evicts a
+   cell the view needs; the width cache goes with its cell.
+6. **B-5:** the tier-0 lines and places load as two units (a names failure keeps the borders, and the reverse), each
+   with its own credit.
+7. **B-7 / F-A5:** the line layer on the map only while Borders is on; a 1x1 canvas for a tile without a path.
+8. **B-8:** widths measured with the rendered font (a hidden `.place-label` probe's computed font and line height, and a
+   capital's, read at start and on resize).
+9. **F-A1** the count check before any allocation; **F-A2** every body's length compared with the index's byte count (a
+   cell: final; tier 0: a failed load); **F-A3** the detach also clears `_ovLoEdges` / `_ovLoEdgesOf`; **F-A4** removed
+   sheets unobserved; **F-A6** the wording; **F-A7** the places fixtures re-cropped from v2, their README.
+10. Pins for the survivors M25, M40 (places tests) and B04, B11, B12, B06 (builder tests only; the builder code on
+    production unchanged).
+11. Then the test site at MAX (B's slow-link runs at 100 / 90 / 60 KB/s, test against production; every fix live; the
+    owner's look at the grey ring), a short fresh re-check at MAX (the fixes touch the overlay's coastline loader and the
+    places store), then step 10.

@@ -1,6 +1,7 @@
 """Borders and place names for the map's location aids (plan section 51), built from Natural Earth and GeoNames.
 
-Two kinds of data, each in two tiers, all published under static/places/v1/ on the frames bucket:
+Two kinds of data, each in two tiers, all published under static/places/v2/ on the frames bucket (v1: the first build,
+2026-10-23, without the name pass; kept, the objects are immutable):
 
   <out>/index.json              what exists, the sources and their hashes, the counts
   <out>/world-lines.bin         tier 0 (tile zoom <= 7): country borders + the state/province borders Natural Earth
@@ -15,6 +16,11 @@ control, frontier: LINE_CLASSES) and 10m admin-1 lines as kind 1, each line with
 client shows a line from the zoom Natural Earth intends. State lines across water ("boundary indicator") are left
 out. Lines are cut at the antimeridian and at every 10-degree cell line with the exact crossing point in both runs,
 so neighbouring pieces join without a gap.
+
+Names (V7-3, owner 2026-10-23: "fix spelling errors only"): a Natural Earth place keeps its NAME (local spellings:
+Kobenhavn stays), except where its NAME_EN is spelled exactly as GeoNames spells the place (its GEONAMESID entry,
+within NAME_FIX_KM) and differs from NAME by at most NAME_FIX_EDITS letters (Natural Earth typos and transliteration
+variants: Shenyeng -> Shenyang, Poitier -> Poitiers); plus the hand list NAME_FIXES. The index counts both.
 
 Places: Natural Earth populated places (min_zoom from Natural Earth) and GeoNames cities1000 towns (feature codes
 GN_CODES, population >= GN_MIN_POP, no " / " in the name; min_zoom 8 / 9 / 10 by population, GN_ZOOM10). A GeoNames town
@@ -36,9 +42,9 @@ places-v1 (little-endian): header 36 B: b"PLC1", u16 cell_deg, u16 0, u32 q, u32
   UTF-8, joined by "\\n" (in record order; a name holds no control character and at most NAME_MAX bytes).
 
 Usage:
-  python tools/places/build_places.py --ne DIR --geonames cities1000.zip --out build/places/v1
-  python tools/places/build_places.py --check build/places/v1
-  python tools/places/build_places.py --out build/places/v1 --upload static/places/v1   (env R2_ACCOUNT_ID
+  python tools/places/build_places.py --ne DIR --geonames cities1000.zip --out build/places/v2
+  python tools/places/build_places.py --check build/places/v2
+  python tools/places/build_places.py --out build/places/v2 --upload static/places/v2   (env R2_ACCOUNT_ID
          R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; refuses a prefix holding a different build, --replace overrides)
 LICENSE.txt (tools/places/LICENSE-PLACES.txt: Natural Earth public domain, GeoNames CC BY 4.0) is published beside the data.
 """
@@ -100,16 +106,20 @@ FLAG_CAPITAL, FLAG_GEONAMES = 1, 2
 DEDUPE_KM = 5.0                                      # a Natural Earth place this close with one of the town's alternate names
 DEDUPE_NAME_KM = 15.0                                # ... or this close with its own name (Natural Earth points sit up to ~15 km off)
 GN_TWIN_KM = 2.0                                     # GeoNames towns of one folded name closer than this: the larger kept
+NAME_FIX_KM = 25.0                                   # V7-3: a place's GeoNames entry (by GEONAMESID) counts only this close
+NAME_FIX_EDITS = 2                                   # ... and NAME_EN replaces NAME only within this many letters
+NAME_FIXES = {"Starsy Oskol": "Stary Oskol"}         # Natural Earth typos the agreement rule misses (GeoNames: "Staryy Oskol")
 CELL_CAP = 8000
 NAME_MAX = 60                                        # UTF-8 bytes
 LICENSE_FILE = os.path.join(HERE, "LICENSE-PLACES.txt")
 LICENSE = "Natural Earth: public domain; GeoNames: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); notice in LICENSE.txt"
 FORMAT_KEY = ("places-v1|q=%d/%d|cell=%d|split=%d|simplify=%g|admin0=%s|admin1=%s|ne=%s|gn=%s/%d/%s|dedupe=id+names/%g|"
-              "twin=%g|slash=1|cap=%d|name=%d|rank=%s"
+              "twin=%g|slash=1|cap=%d|name=%d|rank=%s|namefix=%g/%d/%s"
               % (Q, TIER0_Q, CELL, MZ_SPLIT, SIMPLIFY_DEG, ";".join("%s:%d" % kv for kv in sorted(ADMIN0_CLASSES.items())),
                  ";".join("%s:%d" % kv for kv in sorted(ADMIN1_CLASSES.items())), NE_COMMIT, ",".join(sorted(GN_CODES)),
                  GN_MIN_POP, ",".join("%d:%d" % z for z in GN_ZOOM10), DEDUPE_KM, GN_TWIN_KM, CELL_CAP, NAME_MAX,
-                 ",".join("%d:%d" % r for r in RANK_POP)))
+                 ",".join("%d:%d" % r for r in RANK_POP), NAME_FIX_KM, NAME_FIX_EDITS,
+                 ";".join("%s>%s" % kv for kv in sorted(NAME_FIXES.items()))))
 # A real build (the pinned Natural Earth files): their counts, and landmarks that must come through.
 NE_PLACES_RANGE = (7000, 7600)
 GN_MIN_KEPT = 120000
@@ -126,9 +136,12 @@ TWIN_PROBES = [("tokyo", "tokyo", 20), ("newyork", "newyorkcity", 20), ("stpeter
 # The parts of a real build that depend only on the pinned Natural Earth files and this code: any change of their bytes
 # must be deliberate (update the pin). Tier 0 = world-lines.bin + world-places.bin (index tier0.sha256); tier-1 lines =
 # cells_digest over the .l files.
-PIN_TIER0_SHA256 = "a6577a601e8bad7c3383373314a36414ca3c77d39e679eec792db2dece2b994d"
+PIN_TIER0_SHA256 = "1c226275066a7be89afba3876fa9e171c569cb04ddd6813ed7571bec25709162"
 PIN_LINES1_SHA256 = "f2c45438b7186f1b62b95ca5c74f82d5a246ab0ab5b8ec258d2fa217b5848877"
 CELLS_RANGE = (270, 310)                             # tier-1 cells of a real build
+NAME_FIX_RANGE = (220, 250)                          # names the agreement rule fixes in a real build (236 measured)
+NAME_PROBES = [("Shenyang", True), ("Shenyeng", False), ("Nizhnevartovsk", True), ("Poitiers", True), ("Stary Oskol", True),
+               ("Starsy Oskol", False), ("København", True), ("Montréal", True)]   # (Natural Earth name, present)
 
 
 # ---------------------------------------------------------------- names
@@ -454,7 +467,7 @@ def read_ne_places(path):
         mz10 = min(255, max(0, int(round(float(mz) * 10)))) if mz is not None else MZ_SPLIT
         gid = prop(p, "GEONAMESID")
         lat, lon = qpos(lat, lon)
-        out.append({"name": name, "lat": lat, "lon": lon, "pop": pop, "mz10": mz10,
+        out.append({"name": name, "name_en": clean_name(prop(p, "NAME_EN")), "lat": lat, "lon": lon, "pop": pop, "mz10": mz10,
                     "rank": rank_of(pop, cap, state), "flags": FLAG_CAPITAL if cap else 0,
                     "gnid": int(gid) if gid and int(gid) > 0 else None,
                     "keys": {fold(name), fold(prop(p, "NAMEASCII"))} - {""}})
@@ -490,6 +503,52 @@ def read_geonames(zip_path):
                     "id": int(f[0]) if f[0].isdigit() else None, "alt": f[3],
                     "keys": {fold(name), fold(f[2])} - {""}})
     return out, "%04d-%02d-%02d" % member.date_time[:3], slashes
+
+
+def read_geonames_names(zip_path):
+    """-> {geonameid: (name, lat, lon)} for every row of cities1000 (the name pass reads any row, not only the towns kept)."""
+    out = {}
+    for line in zipfile.ZipFile(zip_path).read("cities1000.txt").decode("utf-8").split("\n"):
+        f = line.rstrip("\r").split("\t")
+        if len(f) < 6 or not f[0].isdigit():
+            continue
+        try:
+            out[int(f[0])] = (clean_name(f[1]), float(f[4]), float(f[5]))
+        except ValueError:
+            continue
+    return out
+
+
+def edits(a, b):
+    """The Levenshtein distance (insertions, deletions, substitutions)."""
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def fix_names(ne, gnames, km=NAME_FIX_KM, max_edits=NAME_FIX_EDITS, hand=NAME_FIXES):
+    """V7-3: correct Natural Earth spelling errors in place (see the module docstring). A fixed place keeps its old
+    folded name among its dedupe keys. -> {"agreed": n, "hand": n}."""
+    stats = {"agreed": 0, "hand": 0}
+    for p in ne:
+        old, new = p["name"], None
+        if old in hand:
+            new = hand[old]
+            stats["hand"] += 1
+        else:
+            en, g = p.get("name_en"), gnames.get(p.get("gnid")) if p.get("gnid") else None
+            if (en and en != old and g and g[0] == en and haversine_km(p["lat"], p["lon"], g[1], g[2]) <= km
+                    and edits(old.lower(), en.lower()) <= max_edits):
+                new = en
+                stats["agreed"] += 1
+        if new:
+            p["name"] = new
+            p["keys"] = (set(p["keys"]) | {fold(new)}) - {""}
+    return stats
 
 
 def qpos(lat, lon, q=Q):
@@ -649,6 +708,7 @@ def build(ne_dir, gn_zip, out_dir, log=print):
     open(os.path.join(out_dir, LINES_TIER0), "wb").write(body_l)
     d0 = decode_lines(body_l)
     ne = read_ne_places(src["places"])
+    fixes = fix_names(ne, read_geonames_names(gn_zip))
     gn, gn_date, gn_slashes = read_geonames(gn_zip)
     gn_kept, gn_stats = dedupe(ne, gn)
     index["sources"]["geonames"]["date"] = gn_date
@@ -689,7 +749,8 @@ def build(ne_dir, gn_zip, out_dir, log=print):
                       "lines_sha256": C.cells_digest({k: v for k, v in digests.items() if k.endswith(".l")})}
     index["counts"] = {"admin0_lines": len(a0), "admin1_lines": len(a1), "ne_places": len(ne), "geonames_read": len(gn),
                        "geonames_slashes": gn_slashes, "geonames_kept": len(gn_kept), "geonames_dupes_id": gn_stats["id"],
-                       "geonames_dupes_name": gn_stats["name"], "geonames_twins": gn_stats["twin"], "capped": capped}
+                       "geonames_dupes_name": gn_stats["name"], "geonames_twins": gn_stats["twin"], "capped": capped,
+                       "name_fixes_agreed": fixes["agreed"], "name_fixes_hand": fixes["hand"]}
     big = sorted(listing.items(), key=lambda kv: -max(kv[1]))[:5]
     log("tier 1: %d cells, %d B; largest %s; counts %s (%.1fs)" % (len(listing), total, big, index["counts"], time.time() - t0))
     with open(os.path.join(out_dir, "index.json"), "w") as fh:
@@ -908,6 +969,13 @@ def real_checks(index, tier0_places, cell_places, lines0, lines1, lines1_sha):
             if any(np.any((np.abs(ix / q - lon) <= PROBE_DEG) & (np.abs(iy / q - lat) <= PROBE_DEG))
                    for ix, iy in found.get(kind, ())):
                 problems.append("probe: %s has a kind-%d line near %s,%s, where none belongs" % (tier, kind, lon, lat))
+    if not NAME_FIX_RANGE[0] <= counts.get("name_fixes_agreed", -1) <= NAME_FIX_RANGE[1] or counts.get("name_fixes_hand") != len(NAME_FIXES):
+        problems.append("counts: %s names fixed by agreement (expected %d-%d), %s by hand (expected %d)" % (
+            counts.get("name_fixes_agreed"), NAME_FIX_RANGE[0], NAME_FIX_RANGE[1], counts.get("name_fixes_hand"), len(NAME_FIXES)))
+    ne_names = {p["name"] for p in tier0_places} | {p["name"] for ps in cell_places.values() for p in ps if not p["flags"] & FLAG_GEONAMES}
+    for name, present in NAME_PROBES:
+        if (name in ne_names) != present:
+            problems.append("name probe: Natural Earth place %r %s" % (name, "missing" if present else "still there"))
     for where, key, max_rank, max_mz in PLACE_PROBES:
         pool = tier0_places if where == "tier0" else cell_places.get(where, [])
         if not any(fold(p["name"]) == key and p["rank"] <= max_rank and p["mz10"] <= max_mz for p in pool):

@@ -1,8 +1,15 @@
-# Borders and place names (static/places/v1)
+# Borders and place names (static/places/v2)
 
 `build_places.py` builds the data behind the map's location aids (plan section 51): country and state/province
 borders from Natural Earth, and place names from Natural Earth plus GeoNames towns. The browser loads the tier-0 files
 once and the 10-degree cells around the view from zoom 8. The file formats are described at the top of the script.
+
+`static/places/v2/` (2026-10-23) = the first build `v1` plus a name pass (V7-3, the owner's "fix spelling errors only"):
+a Natural Earth place keeps its own spelling (København, Montréal), except where its English name `NAME_EN` is spelled
+exactly as GeoNames spells the same place (its `GEONAMESID` entry, within 25 km) and differs by at most 2 letters
+(Shenyeng -> Shenyang, Poitier -> Poitiers, Bogota -> Bogotá), plus a hand list (Starsy Oskol -> Stary Oskol). The
+real build fixes 234 + 1 names and changes nothing else (the lines are byte-identical to v1). `v1` stays published
+(immutable) for pages that still point at it.
 
 ## Sources
 
@@ -50,12 +57,12 @@ same zoom that share an end point are joined. A few hundred source fragments are
 
 ```bash
 mkdir -p src/ne
-python tools/places/build_places.py --ne src/ne --geonames src/cities1000.zip --out build/places/v1
-python tools/places/build_places.py --check build/places/v1
+python tools/places/build_places.py --ne src/ne --geonames src/cities1000.zip --out build/places/v2
+python tools/places/build_places.py --check build/places/v2
 ```
 
 The workflow `coast-build` with input `set: places` downloads the sources, builds, checks and (with `upload: true`)
-publishes under `static/places/v1/`.
+publishes under `static/places/v2/`.
 
 `--check` validates the format key, every file's header (q, cell size), the sizes and hashes, every piece inside its
 cell, the names and the rank order, and logs whether the real-build gates ran. The gates run only for a build from the
@@ -67,12 +74,14 @@ pinned Natural Earth files:
 - **Line probes, in both tiers:** borders near 49 N 100 W, San Diego and the Rhine at Schaffhausen; state lines at
   42 N 120 W and the Four Corners; the Kashmir line of control as kind 2; no state line across Chesapeake Bay.
 - **Place probes:** Honolulu, Tokyo and Paris in tier 0, Hale‘iwa and Kailua in cell `20_-160`.
+- **Names:** 220 to 250 names fixed by the agreement rule, every hand fix applied; Shenyang, Nizhnevartovsk, Poitiers,
+  Stary Oskol, København and Montréal present, Shenyeng and Starsy Oskol gone.
 - **Twin probes:** Tokyo, New York, St. Petersburg, København, Jakarta and Buenos Aires each exist, with no GeoNames
   twin within 20 km.
 
 `--upload` refuses a build without the real-build gates, and a prefix that holds a different build. It prints the
 published and local tier-0 and tier-1 hashes when it refuses. Browsers and the edge keep every object for a year, so
-`static/places/v1/` is published once. A refresh (a newer GeoNames file, a rule change) goes under a new prefix
+each prefix (`static/places/v1/`, `v2/`) is published once. A refresh (a newer GeoNames file, a rule change) goes under a new prefix
 together with a client release that points at it.
 
 The real build of 2026-10-23 (GeoNames file of 2026-10-23) had these sizes:

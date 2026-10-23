@@ -4,9 +4,9 @@
 # under static/coast/v1/ with immutable caching, index.json written last. Input `set`: "coast" (the land set,
 # static/coast/v1), "lakes" (the Great Lakes water set for the lake overlay, static/coast/lakes-v1; plan section 50),
 # "lakeoutlines" (every lake >= 100 km2, drawn under the wind overlay, static/coast/lakeoutlines-v1; plan section 51) or
-# "places" (Natural Earth borders and places + GeoNames towns, static/places/v1, tools/places/build_places.py; plan
+# "places" (Natural Earth borders and places + GeoNames towns, static/places/v2, tools/places/build_places.py; plan
 # section 51: the Natural Earth files are pinned by commit and sha256, GeoNames' cities1000.zip changes daily and its
-# sha256 and date are recorded in the index).
+# sha256 and date are recorded in the index; v2 = v1 + the name pass of V7-3, v1 stays immutable).
 # Secrets for the upload: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: coast-build
 on:
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       set:
-        description: "coast (land, static/coast/v1), lakes (Great Lakes water, static/coast/lakes-v1), lakeoutlines (every lake, static/coast/lakeoutlines-v1) or places (borders and names, static/places/v1)"
+        description: "coast (land, static/coast/v1), lakes (Great Lakes water, static/coast/lakes-v1), lakeoutlines (every lake, static/coast/lakeoutlines-v1) or places (borders and names, static/places/v2)"
         default: "coast"
       upload:
         description: "publish to R2 under the set's prefix (true/false)"
@@ -91,7 +91,7 @@ jobs:
           case "$SET" in coast|lakes|lakeoutlines|places) ;; *) echo "set must be coast, lakes, lakeoutlines or places"; exit 2;; esac
           rc=0
           if [ "$SET" = "places" ]; then
-            CMD=(python tools/places/build_places.py --ne src/ne --geonames src/cities1000.zip --out build/places/v1)
+            CMD=(python tools/places/build_places.py --ne src/ne --geonames src/cities1000.zip --out build/places/v2)
           elif [ "$SET" = "coast" ]; then
             CMD=(python tools/coast/build_coast.py --zip gshhg-bin-2.3.7.zip --out build/coast/v1)
           else
@@ -115,7 +115,7 @@ jobs:
           case "$SET" in
             coast) CMD=(python tools/coast/build_coast.py --out build/coast/v1 --upload static/coast/v1);;
             lakes|lakeoutlines) CMD=(python tools/coast/build_coast.py --out "build/coast/$SET-v1" --upload "static/coast/$SET-v1");;
-            places) CMD=(python tools/places/build_places.py --out build/places/v1 --upload static/places/v1);;
+            places) CMD=(python tools/places/build_places.py --out build/places/v2 --upload static/places/v2);;
             *) echo "set must be coast, lakes, lakeoutlines or places"; exit 2;;
           esac
           [ "$REPLACE" = "true" ] && CMD+=(--replace)

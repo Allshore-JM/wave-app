@@ -10,15 +10,19 @@ Two kinds of data, each in two tiers, all published under static/places/v1/ on t
   <out>/c/<lat>_<lon>.p.bin     tier 1: the Natural Earth places from zoom 7.5 and the GeoNames towns in the cell
                                 (<lat>_<lon> = the cell's south-west corner; a cell without lines or places has no file)
 
-Lines: Natural Earth 10m admin-0 land boundary lines (ADMIN0_CLASSES) as kind 0 and 10m admin-1 lines (ADMIN1_CLASSES)
-as kind 1, each line with Natural Earth's MIN_ZOOM (x 10) so the client shows a line from the zoom Natural Earth
-intends. Lines are cut at the antimeridian and at every 10-degree cell line with the exact crossing point in both runs,
+Lines: Natural Earth 10m admin-0 land boundary lines as kind 0 (settled) or kind 2 (disputed, indefinite, line of
+control, frontier: LINE_CLASSES) and 10m admin-1 lines as kind 1, each line with Natural Earth's MIN_ZOOM (x 10) so the
+client shows a line from the zoom Natural Earth intends. State lines across water ("boundary indicator") are left
+out. Lines are cut at the antimeridian and at every 10-degree cell line with the exact crossing point in both runs,
 so neighbouring pieces join without a gap.
 
 Places: Natural Earth populated places (min_zoom from Natural Earth) and GeoNames cities1000 towns (feature codes
-GN_CODES, population >= GN_MIN_POP; min_zoom 8 / 9 / 10 by population, GN_ZOOM10), a GeoNames town dropped when a
-Natural Earth place of the same name lies within DEDUPE_KM. Rank 0 national capital, 1 state capital, 2-5 by
-population (RANK_POP); records sorted by rank, then population. At most CELL_CAP places per cell (the largest kept).
+GN_CODES, population >= GN_MIN_POP, no " / " in the name; min_zoom 8 / 9 / 10 by population, GN_ZOOM10). A GeoNames town
+is dropped when it IS a Natural Earth place (its id is the place's GEONAMESID), or when a Natural Earth place within
+DEDUPE_NAME_KM has its name or ascii name, or one within DEDUPE_KM one of its alternate names (all folded), or when
+a larger GeoNames town of the same folded name lies within GN_TWIN_KM. Rank 0 national capital, 1 state capital, 2-5
+by population (RANK_POP); records sorted by rank, then population. At most CELL_CAP places per cell (the largest
+kept).
 
 Tier 0 stores positions in 1/TIER0_Q degree, tier 1 in 1/Q degree (each file's header carries its q).
 
@@ -68,18 +72,24 @@ LINES_TIER0, PLACES_TIER0, CELL_DIR = "world-lines.bin", "world-places.bin", "c"
 LINES_HEADER = struct.Struct("<4sHHIIIIiiii")       # magic cell kinds q pieces lines vertices bbox[4]
 PLACES_HEADER = struct.Struct("<4sHHIIIiiii")       # magic cell 0 q count stream_bytes bbox[4]
 LINES_MAGIC, PLACES_MAGIC = b"LNS1", b"PLC1"
-KIND_ADMIN0, KIND_ADMIN1 = 0, 1
-ADMIN0_CLASSES = ("International boundary (verify)", "Disputed (please verify)", "Indefinite (please verify)",
-                  "Line of control (please verify)", "Indeterminant frontier")
+KIND_ADMIN0, KIND_ADMIN1, KIND_DISPUTED = 0, 1, 2
+KINDS = (KIND_ADMIN0, KIND_ADMIN1, KIND_DISPUTED)
+# Admin-0 classes -> kind. Settled borders are kind 0; disputed, indefinite, ceasefire and frontier lines kind 2 (the
+# client draws them differently). Overlay limits, lease limits and unrecognised lines are left out.
+ADMIN0_CLASSES = {"International boundary (verify)": KIND_ADMIN0, "Disputed (please verify)": KIND_DISPUTED,
+                  "Indefinite (please verify)": KIND_DISPUTED, "Line of control (please verify)": KIND_DISPUTED,
+                  "Indeterminant frontier": KIND_DISPUTED}
 # Natural Earth classes an admin-1 line by the highest boundary it also marks (a US state line on a census-region edge is
-# "statistical", an Italian province line on a region edge is "region"): every class is a state/province line.
-ADMIN1_CLASSES = ("Admin-1 boundary", "Admin-1 region boundary", "Admin-1 statistical boundary",
-                  "Admin-1 statistical meta bounds", "Admin-1 boundary indicator")
+# "statistical", an Italian province line on a region edge is "region"): every class is a state/province line. The
+# "boundary indicator" lines (US state lines across Chesapeake Bay, Long Island Sound, the Columbia mouth ...) cross open
+# water and are left out (owner, G34a F5).
+ADMIN1_CLASSES = {"Admin-1 boundary": KIND_ADMIN1, "Admin-1 region boundary": KIND_ADMIN1,
+                  "Admin-1 statistical boundary": KIND_ADMIN1, "Admin-1 statistical meta bounds": KIND_ADMIN1}
 NE_COMMIT = "ca96624a56bd078437bca8184e78163e5039ad19"   # nvkelso/natural-earth-vector (2022-06-02, v5.1.2 data)
 NE_FILES = {
     "admin0": ("ne_10m_admin_0_boundary_lines_land.geojson", "74d9c16229c095fde65943a9919e337682f044bcebccb120764f38edf3b70f4a"),
     "admin1": ("ne_10m_admin_1_states_provinces_lines.geojson", "1a1f30ccaaf4cc9c4bde34266f0b8cbb955d3a4cf254b756912255f2ec7c75b6"),
-    "places": ("ne_10m_populated_places_simple.geojson", "fd3fa867a320cbd5c5b6bb5bc550afeec2939fb2cef688e508007282a55ac42f"),
+    "places": ("ne_10m_populated_places.geojson", "9b8e3de09048ef00dfc70357dbb9fa324493f214b5e0ae4daf1aa79a8d10116b"),
 }
 GN_FILE = "cities1000.zip"                           # changes daily: its sha256 and date are recorded in the index
 GN_CODES = frozenset(("PPLC", "PPLA", "PPLA2", "PPLA3", "PPLA4", "PPLA5", "PPL", "PPLF", "PPLG", "PPLL", "PPLR"))
@@ -87,23 +97,38 @@ GN_MIN_POP = 1000
 GN_ZOOM10 = ((20000, 80), (5000, 90), (0, 100))      # population -> the zoom (x 10) from which a GeoNames town shows
 RANK_POP = ((1000000, 2), (100000, 3), (10000, 4))   # population -> rank; smaller towns rank 5
 FLAG_CAPITAL, FLAG_GEONAMES = 1, 2
-DEDUPE_KM = 5.0
+DEDUPE_KM = 5.0                                      # a Natural Earth place this close with one of the town's alternate names
+DEDUPE_NAME_KM = 15.0                                # ... or this close with its own name (Natural Earth points sit up to ~15 km off)
+GN_TWIN_KM = 2.0                                     # GeoNames towns of one folded name closer than this: the larger kept
 CELL_CAP = 8000
 NAME_MAX = 60                                        # UTF-8 bytes
 LICENSE_FILE = os.path.join(HERE, "LICENSE-PLACES.txt")
 LICENSE = "Natural Earth: public domain; GeoNames: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); notice in LICENSE.txt"
-FORMAT_KEY = ("places-v1|q=%d/%d|cell=%d|split=%d|simplify=%g|admin0=%s|admin1=%s|ne=%s|gn=%s/%d/%s|dedupe=%g|cap=%d|name=%d|rank=%s"
-              % (Q, TIER0_Q, CELL, MZ_SPLIT, SIMPLIFY_DEG, ";".join(ADMIN0_CLASSES), ";".join(ADMIN1_CLASSES), NE_COMMIT,
-                 ",".join(sorted(GN_CODES)), GN_MIN_POP, ",".join("%d:%d" % z for z in GN_ZOOM10), DEDUPE_KM, CELL_CAP,
-                 NAME_MAX, ",".join("%d:%d" % r for r in RANK_POP)))
+FORMAT_KEY = ("places-v1|q=%d/%d|cell=%d|split=%d|simplify=%g|admin0=%s|admin1=%s|ne=%s|gn=%s/%d/%s|dedupe=id+names/%g|"
+              "twin=%g|slash=1|cap=%d|name=%d|rank=%s"
+              % (Q, TIER0_Q, CELL, MZ_SPLIT, SIMPLIFY_DEG, ";".join("%s:%d" % kv for kv in sorted(ADMIN0_CLASSES.items())),
+                 ";".join("%s:%d" % kv for kv in sorted(ADMIN1_CLASSES.items())), NE_COMMIT, ",".join(sorted(GN_CODES)),
+                 GN_MIN_POP, ",".join("%d:%d" % z for z in GN_ZOOM10), DEDUPE_KM, GN_TWIN_KM, CELL_CAP, NAME_MAX,
+                 ",".join("%d:%d" % r for r in RANK_POP)))
 # A real build (the pinned Natural Earth files): their counts, and landmarks that must come through.
 NE_PLACES_RANGE = (7000, 7600)
 GN_MIN_KEPT = 120000
 LINE_PROBES = [(KIND_ADMIN0, -100.0, 49.0), (KIND_ADMIN0, -117.1, 32.54), (KIND_ADMIN1, -120.0, 42.0),
-               (KIND_ADMIN1, -109.05, 37.0), (KIND_ADMIN0, 8.6, 47.6)]   # (kind, lon, lat): a vertex of that kind within PROBE_DEG
+               (KIND_ADMIN1, -109.05, 37.0), (KIND_ADMIN0, 8.6, 47.6),
+               (KIND_DISPUTED, 74.5, 34.4)]   # (kind, lon, lat): a vertex of that kind within PROBE_DEG (last: Kashmir LoC)
+NO_LINE_PROBES = [(KIND_ADMIN1, -76.1, 37.6)]      # (kind, lon, lat): no vertex of that kind here (Chesapeake Bay)
 PROBE_DEG = 0.3
 PLACE_PROBES = [("tier0", "honolulu", 1, 60), ("tier0", "tokyo", 0, 20), ("tier0", "paris", 0, 30),
                 ("20_-160", "haleiwa", 5, 100), ("20_-160", "kailua", 4, 80)]   # (where, folded name, max rank, max mz10)
+# (Natural Earth name, GeoNames name, km): the place must exist, and no GeoNames twin of it may lie this close (G34a F1).
+TWIN_PROBES = [("tokyo", "tokyo", 20), ("newyork", "newyorkcity", 20), ("stpetersburg", "saintpetersburg", 20),
+               ("kobenhavn", "copenhagen", 20), ("jakarta", "jakarta", 20), ("buenosaires", "buenosaires", 20)]
+# The parts of a real build that depend only on the pinned Natural Earth files and this code: any change of their bytes
+# must be deliberate (update the pin). Tier 0 = world-lines.bin + world-places.bin (index tier0.sha256); tier-1 lines =
+# cells_digest over the .l files.
+PIN_TIER0_SHA256 = "a6577a601e8bad7c3383373314a36414ca3c77d39e679eec792db2dece2b994d"
+PIN_LINES1_SHA256 = "f2c45438b7186f1b62b95ca5c74f82d5a246ab0ab5b8ec258d2fa217b5848877"
+CELLS_RANGE = (270, 310)                             # tier-1 cells of a real build
 
 
 # ---------------------------------------------------------------- names
@@ -118,9 +143,13 @@ def clean_name(s):
     return s
 
 
+FOLD_LETTERS = str.maketrans({"ø": "o", "æ": "ae", "œ": "oe", "ł": "l", "đ": "d", "ð": "d", "þ": "th", "ı": "i",
+                               "ħ": "h", "ŧ": "t", "ŋ": "ng"})   # letters NFKD does not split into base + accent
+
+
 def fold(s):
     """Lower-case letters only, accents and apostrophes removed: the name key of the dedupe and the probes."""
-    s = unicodedata.normalize("NFKD", str(s or "").casefold())
+    s = unicodedata.normalize("NFKD", str(s or "").casefold().translate(FOLD_LETTERS))
     return re.sub(r"[^a-z0-9]", "", "".join(ch for ch in s if not unicodedata.combining(ch)))
 
 
@@ -137,8 +166,9 @@ def rank_of(pop, capital=False, state_capital=False):
 
 # ---------------------------------------------------------------- lines
 
-def read_lines(path, classes, kind):
-    """-> [(x, y, kind, mz10)] for every LineString part of the features whose FEATURECLA is in classes."""
+def read_lines(path, classes):
+    """-> [(x, y, kind, mz10)] for every LineString part of the features whose FEATURECLA is a key of classes (the
+    value is the line's kind)."""
     data = json.load(open(path, encoding="utf-8"))
     out = []
     for f in data.get("features", []):
@@ -146,6 +176,7 @@ def read_lines(path, classes, kind):
         g = f.get("geometry")
         if not g or p.get("FEATURECLA") not in classes:
             continue
+        kind = classes[p["FEATURECLA"]]
         mz = p.get("MIN_ZOOM")
         mz10 = 0 if mz is None else min(255, max(0, int(round(float(mz) * 10))))
         parts = [g["coordinates"]] if g["type"] == "LineString" else g["coordinates"] if g["type"] == "MultiLineString" else []
@@ -374,7 +405,7 @@ def decode_lines(buf):
     try:
         for _ in range(n_pieces):
             minx, miny = (int(v) for v in unzz(vals[i:i + 2])); w, h, kind, nl = (int(v) for v in vals[i + 2:i + 6]); i += 6
-            if kind not in (KIND_ADMIN0, KIND_ADMIN1):
+            if kind not in KINDS:
                 raise ValueError("unknown line kind %d" % kind)
             lines, px, py = [], minx, miny
             for _ in range(nl):
@@ -396,8 +427,14 @@ def decode_lines(buf):
 
 # ---------------------------------------------------------------- places
 
+def prop(p, key):
+    """A Natural Earth property by its upper-case name (the full file), else its lower-case name (the simple file)."""
+    v = p.get(key)
+    return p.get(key.lower()) if v is None else v
+
+
 def read_ne_places(path):
-    """-> [place] from the Natural Earth populated places (name, lat, lon, pop, mz10, rank, flags)."""
+    """-> [place] from the Natural Earth populated places (name, lat, lon, pop, mz10, rank, flags, GeoNames id)."""
     data = json.load(open(path, encoding="utf-8"))
     out = []
     for f in data.get("features", []):
@@ -406,28 +443,33 @@ def read_ne_places(path):
         if g.get("type") != "Point":
             continue
         lon, lat = (float(v) for v in g["coordinates"][:2])
-        name = clean_name(p.get("name") or p.get("nameascii"))
+        name = clean_name(prop(p, "NAME") or prop(p, "NAMEASCII"))
         if not name or not (math.isfinite(lat) and math.isfinite(lon)):
             continue
-        pop = max(0, int(p.get("pop_max") or 0))
-        cap = int(p.get("adm0cap") or 0) == 1 or str(p.get("featurecla", "")).startswith("Admin-0 capital")
-        state = str(p.get("featurecla", "")).startswith("Admin-1 capital")
-        mz = p.get("min_zoom")
+        pop = max(0, int(prop(p, "POP_MAX") or 0))
+        cla = str(prop(p, "FEATURECLA") or "")
+        cap = int(prop(p, "ADM0CAP") or 0) == 1 or cla.startswith("Admin-0 capital")
+        state = cla.startswith("Admin-1 capital")
+        mz = prop(p, "MIN_ZOOM")
         mz10 = min(255, max(0, int(round(float(mz) * 10)))) if mz is not None else MZ_SPLIT
+        gid = prop(p, "GEONAMESID")
         lat, lon = qpos(lat, lon)
         out.append({"name": name, "lat": lat, "lon": lon, "pop": pop, "mz10": mz10,
                     "rank": rank_of(pop, cap, state), "flags": FLAG_CAPITAL if cap else 0,
-                    "keys": {fold(name), fold(p.get("nameascii"))} - {""}})
+                    "gnid": int(gid) if gid and int(gid) > 0 else None,
+                    "keys": {fold(name), fold(prop(p, "NAMEASCII"))} - {""}})
     return out
 
 
 def read_geonames(zip_path):
-    """-> ([place], file date) from cities1000.zip: feature class P, codes GN_CODES, population >= GN_MIN_POP."""
+    """-> ([place], file date, names left out for " / ") from cities1000.zip: feature class P, codes GN_CODES,
+    population >= GN_MIN_POP. Rows are split on "\\n" only (str.splitlines would also split inside a row on U+2028,
+    U+2029 or U+0085 and lose the town)."""
     z = zipfile.ZipFile(zip_path)
     member = z.getinfo("cities1000.txt")
-    out = []
-    for line in z.read(member).decode("utf-8").splitlines():
-        f = line.split("\t")
+    out, slashes = [], 0
+    for line in z.read(member).decode("utf-8").split("\n"):
+        f = line.rstrip("\r").split("\t")
         if len(f) < 15 or f[6] != "P" or f[7] not in GN_CODES:
             continue
         try:
@@ -437,13 +479,17 @@ def read_geonames(zip_path):
         name = clean_name(f[1])
         if pop < GN_MIN_POP or not name or not (-90 <= lat <= 90 and -180 <= lon <= 180):
             continue
+        if " / " in name:                            # merged areas ("Aliamanu / Salt Lakes / Foster Village")
+            slashes += 1
+            continue
         mz10 = next(z10 for lim, z10 in GN_ZOOM10 if pop >= lim)
         lat, lon = qpos(lat, lon)
         out.append({"name": name, "lat": lat, "lon": lon, "pop": pop, "mz10": mz10,
                     "rank": rank_of(pop, f[7] == "PPLC", f[7] == "PPLA"),
                     "flags": FLAG_GEONAMES | (FLAG_CAPITAL if f[7] == "PPLC" else 0),
+                    "id": int(f[0]) if f[0].isdigit() else None, "alt": f[3],
                     "keys": {fold(name), fold(f[2])} - {""}})
-    return out, "%04d-%02d-%02d" % member.date_time[:3]
+    return out, "%04d-%02d-%02d" % member.date_time[:3], slashes
 
 
 def qpos(lat, lon, q=Q):
@@ -458,30 +504,60 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 6371.0 * 2 * math.asin(min(1.0, math.sqrt(a)))
 
 
-def dedupe(ne, gn, km=DEDUPE_KM):
-    """GeoNames towns without a Natural Earth place of the same (folded) name within km. -> (kept, dropped count)."""
+def grid_near(grid, lat, lon, km):
+    """Every entry of a 0.1-degree grid that can lie within km of (lat, lon): enough buckets of latitude (11.1 km each)
+    and of longitude (11.1 km x cos(latitude) each, so more of them towards the poles), longitude wrapped."""
+    gy, gx = math.floor(lat * 10), math.floor(lon * 10)
+    ry = int(math.ceil(km / 11.1)) + 1
+    rx = min(1800, int(math.ceil(km / (11.1 * max(math.cos(math.radians(min(abs(lat) + 0.2 * ry, 90.0))), 1e-3)))) + 1)
+    for dy in range(-ry, ry + 1):
+        for dx in range(-rx, rx + 1):
+            yield from grid.get((gy + dy, (gx + dx) % 3600), ())
+
+
+def grid_add(grid, p):
+    grid.setdefault((math.floor(p["lat"] * 10), math.floor(p["lon"] * 10) % 3600), []).append(p)
+
+
+def alt_keys(g):
+    """The folded alternate names of a GeoNames row (computed only when a Natural Earth place is near)."""
+    return {k for k in (fold(a) for a in str(g.get("alt") or "").split(",")) if len(k) >= 2}
+
+
+def dedupe(ne, gn, km=DEDUPE_KM, name_km=DEDUPE_NAME_KM, twin_km=GN_TWIN_KM):
+    """The GeoNames towns that are not a Natural Earth place: not its GEONAMESID, no Natural Earth place within name_km
+    of the same name or ascii name, none within km named as one of the town's alternate names (all folded); then, of
+    GeoNames towns with one folded name within twin_km of each other, the first by rank and population.
+    -> (kept, {"id", "name", "twin": counts})."""
+    ids = {p["gnid"] for p in ne if p.get("gnid")}
     grid = {}
     for p in ne:
-        grid.setdefault((math.floor(p["lat"] * 10), math.floor(p["lon"] * 10) % 3600), []).append(p)
-    kept, dropped = [], 0
+        grid_add(grid, p)
+    stats = {"id": 0, "name": 0, "twin": 0}
+    first = []
     for g in gn:
-        gy, gx = math.floor(g["lat"] * 10), math.floor(g["lon"] * 10)
-        hit = False
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                for p in grid.get((gy + dy, (gx + dx) % 3600), ()):
-                    if p["keys"] & g["keys"] and haversine_km(p["lat"], p["lon"], g["lat"], g["lon"]) <= km:
-                        hit = True
-                        break
-                if hit:
-                    break
-            if hit:
-                break
-        if hit:
-            dropped += 1
-        else:
-            kept.append(g)
-    return kept, dropped
+        if g.get("id") is not None and g["id"] in ids:
+            stats["id"] += 1
+            continue
+        near = [(p, haversine_km(p["lat"], p["lon"], g["lat"], g["lon"]))
+                for p in grid_near(grid, g["lat"], g["lon"], max(km, name_km))]
+        same = any(d <= name_km and p["keys"] & g["keys"] for p, d in near)
+        if not same and any(d <= km for p, d in near):
+            alt = alt_keys(g)
+            same = any(d <= km and p["keys"] & alt for p, d in near)
+        if same:
+            stats["name"] += 1
+            continue
+        first.append(g)
+    kept, seen = [], {}
+    for g in sorted(first, key=lambda g: (g["rank"], -g["pop"], g["name"], g["lat"], g["lon"])):
+        if any(t["keys"] & g["keys"] and haversine_km(t["lat"], t["lon"], g["lat"], g["lon"]) <= twin_km
+               for t in grid_near(seen, g["lat"], g["lon"], twin_km)):
+            stats["twin"] += 1
+            continue
+        grid_add(seen, g)
+        kept.append(g)
+    return kept, stats
 
 
 def sort_places(places):
@@ -565,16 +641,16 @@ def build(ne_dir, gn_zip, out_dir, log=print):
              "sources": {"natural_earth": {"commit": NE_COMMIT,
                                            "files": {f: sha(open(src[k], "rb").read()) for k, (f, _h) in NE_FILES.items()}},
                          "geonames": {"file": GN_FILE, "sha256": sha(open(gn_zip, "rb").read())}}}
-    a0 = read_lines(src["admin0"], ADMIN0_CLASSES, KIND_ADMIN0)
-    a1 = read_lines(src["admin1"], ADMIN1_CLASSES, KIND_ADMIN1)
+    a0 = read_lines(src["admin0"], ADMIN0_CLASSES)
+    a1 = read_lines(src["admin1"], ADMIN1_CLASSES)
     lines0 = a0 + [l for l in a1 if l[3] < MZ_SPLIT]
     cells0 = cell_lines(lines0, SIMPLIFY_DEG, q=TIER0_Q)
     body_l = encode_lines(pieces_of(cells0), q=TIER0_Q)
     open(os.path.join(out_dir, LINES_TIER0), "wb").write(body_l)
     d0 = decode_lines(body_l)
     ne = read_ne_places(src["places"])
-    gn, gn_date = read_geonames(gn_zip)
-    gn_kept, gn_dropped = dedupe(ne, gn)
+    gn, gn_date, gn_slashes = read_geonames(gn_zip)
+    gn_kept, gn_stats = dedupe(ne, gn)
     index["sources"]["geonames"]["date"] = gn_date
     tier0_places = sort_places([p for p in ne if p["mz10"] < MZ_SPLIT])
     body_p = encode_places(tier0_places, q=TIER0_Q)
@@ -609,9 +685,11 @@ def build(ne_dir, gn_zip, out_dir, log=print):
         listing[name] = [lb, pb]
         total += lb + pb
     index["tier1"] = {"dir": CELL_DIR, "cell": CELL, "min_zoom": TIER1_MIN_ZOOM, "cells": listing, "bytes": total,
-                      "sha256": C.cells_digest(digests)}
+                      "sha256": C.cells_digest(digests),
+                      "lines_sha256": C.cells_digest({k: v for k, v in digests.items() if k.endswith(".l")})}
     index["counts"] = {"admin0_lines": len(a0), "admin1_lines": len(a1), "ne_places": len(ne), "geonames_read": len(gn),
-                       "geonames_kept": len(gn_kept), "geonames_dupes": gn_dropped, "capped": capped}
+                       "geonames_slashes": gn_slashes, "geonames_kept": len(gn_kept), "geonames_dupes_id": gn_stats["id"],
+                       "geonames_dupes_name": gn_stats["name"], "geonames_twins": gn_stats["twin"], "capped": capped}
     big = sorted(listing.items(), key=lambda kv: -max(kv[1]))[:5]
     log("tier 1: %d cells, %d B; largest %s; counts %s (%.1fs)" % (len(listing), total, big, index["counts"], time.time() - t0))
     with open(os.path.join(out_dir, "index.json"), "w") as fh:
@@ -712,9 +790,14 @@ def check(out_dir, log=print):
     if t0.get("sha256") != tier0_digest(sha(bl), sha(bp)):
         problems.append("tier 0: content hash != index (tier0.sha256)")
     lines_found = {}                                  # kind -> [(ix, iy)] for the probes (tier 1)
+    lines0 = {}                                       # the same for tier 0
     try:
         dl = decode_lines(bl)
+        if dl["q"] != TIER0_Q or dl["cell"] != CELL:
+            problems.append("tier 0 lines: header q %d / cell %d, expected %d / %d" % (dl["q"], dl["cell"], TIER0_Q, CELL))
         problems += ["tier 0 lines: " + p for p in check_lines(dl)]
+        for pc in dl["pieces"]:
+            lines0.setdefault(pc["kind"], []).extend((l[0], l[1]) for l in pc["lines"])
         if sum(len(pc["lines"]) for pc in dl["pieces"]) != t0["lines"]["lines"]:
             problems.append("tier 0 lines: line count != index")
     except ValueError as exc:
@@ -723,6 +806,8 @@ def check(out_dir, log=print):
     try:
         dp = decode_places(bp)
         tier0_places = dp["places"]
+        if dp["q"] != TIER0_Q:
+            problems.append("tier 0 places: header q %d, expected %d" % (dp["q"], TIER0_Q))
         problems += ["tier 0 places: " + p for p in check_places(dp, tier0=True)]
         if len(tier0_places) != t0["places"]["count"]:
             problems.append("tier 0 places: count != index")
@@ -752,11 +837,15 @@ def check(out_dir, log=print):
             try:
                 if ext == ".l":
                     d = decode_lines(buf)
+                    if d["q"] != Q or d["cell"] != t1["cell"]:
+                        problems.append("tier 1 %s.l: header q %d / cell %d" % (name, d["q"], d["cell"]))
                     problems += ["tier 1 %s.l: %s" % (name, p) for p in check_lines(d, (lat0, lon0, t1["cell"]))]
                     for pc in d["pieces"]:
                         lines_found.setdefault(pc["kind"], []).extend((l[0], l[1]) for l in pc["lines"])
                 else:
                     d = decode_places(buf)
+                    if d["q"] != Q:
+                        problems.append("tier 1 %s.p: header q %d" % (name, d["q"]))
                     problems += ["tier 1 %s.p: %s" % (name, p) for p in check_places(d, (lat0, lon0, t1["cell"]))]
                     cell_places[name] = d["places"]
             except ValueError as exc:
@@ -765,27 +854,75 @@ def check(out_dir, log=print):
             break
     if present == expect and t1.get("sha256") != C.cells_digest(digests):
         problems.append("tier 1: content hash != index (tier1.sha256)")
-    files = index.get("sources", {}).get("natural_earth", {}).get("files", {})
-    real = all(files.get(f) == h for f, h in NE_FILES.values())   # the pinned Natural Earth files (never judged from the result)
+    lines1 = C.cells_digest({k: v for k, v in digests.items() if k.endswith(".l")})
+    if present == expect and t1.get("lines_sha256") != lines1:
+        problems.append("tier 1: lines hash != index (tier1.lines_sha256)")
+    real = is_real(index)
     if real:
-        counts = index.get("counts", {})
-        if not NE_PLACES_RANGE[0] <= counts.get("ne_places", 0) <= NE_PLACES_RANGE[1]:
-            problems.append("counts: %s Natural Earth places, expected %d-%d" % (counts.get("ne_places"), *NE_PLACES_RANGE))
-        if counts.get("geonames_kept", 0) < GN_MIN_KEPT:
-            problems.append("counts: %s GeoNames towns kept, expected >= %d" % (counts.get("geonames_kept"), GN_MIN_KEPT))
-        for kind, lon, lat in LINE_PROBES:
-            near = any(np.any((np.abs(ix / Q - lon) <= PROBE_DEG) & (np.abs(iy / Q - lat) <= PROBE_DEG))
-                       for ix, iy in lines_found.get(kind, ()))
-            if not near:
-                problems.append("probe: no kind-%d border vertex within %g degree of %s,%s" % (kind, PROBE_DEG, lon, lat))
-        for where, key, max_rank, max_mz in PLACE_PROBES:
-            pool = tier0_places if where == "tier0" else cell_places.get(where, [])
-            if not any(fold(p["name"]) == key and p["rank"] <= max_rank and p["mz10"] <= max_mz for p in pool):
-                problems.append("probe: no place %r (rank <= %d, min_zoom <= %d) in %s" % (key, max_rank, max_mz, where))
-    log("check: tier 0 %d B lines + %d B places (%d); tier 1 %d cells %d B; %d problems" % (
-        len(bl), len(bp), len(tier0_places), len(t1["cells"]), t1.get("bytes", 0), len(problems)))
+        problems += real_checks(index, tier0_places, cell_places, lines0, lines_found, lines1)
+    log("check: tier 0 %d B lines + %d B places (%d); tier 1 %d cells %d B; real-build gates %s; %d problems" % (
+        len(bl), len(bp), len(tier0_places), len(t1["cells"]), t1.get("bytes", 0), "on" if real else "OFF", len(problems)))
     for p in problems[:50]:
         log("  " + p)
+    return problems
+
+
+def is_real(index):
+    """Built from the pinned Natural Earth files (never judged from the result)."""
+    files = index.get("sources", {}).get("natural_earth", {}).get("files", {})
+    return all(files.get(f) == h for f, h in NE_FILES.values())
+
+
+def degrees(places, q):
+    return [(p["lat"] / q, p["lon"] / q, p) for p in places]
+
+
+def real_checks(index, tier0_places, cell_places, lines0, lines1, lines1_sha):
+    """The gates of a real build. Counts come from the DECODED files, not from the index (G34a F2)."""
+    problems = []
+    counts = index.get("counts", {})
+    t1 = index["tier1"]
+    if PIN_TIER0_SHA256 and index["tier0"].get("sha256") != PIN_TIER0_SHA256:
+        problems.append("pin: tier 0 %s != the pinned %s (a deliberate change updates PIN_TIER0_SHA256)" % (
+            str(index["tier0"].get("sha256"))[:12], PIN_TIER0_SHA256[:12]))
+    if PIN_LINES1_SHA256 and lines1_sha != PIN_LINES1_SHA256:
+        problems.append("pin: tier-1 lines %s != the pinned %s (a deliberate change updates PIN_LINES1_SHA256)" % (
+            lines1_sha[:12], PIN_LINES1_SHA256[:12]))
+    ne_cells = sum(1 for ps in cell_places.values() for p in ps if not p["flags"] & FLAG_GEONAMES)
+    gn_cells = sum(1 for ps in cell_places.values() for p in ps if p["flags"] & FLAG_GEONAMES)
+    ne_all = len(tier0_places) + ne_cells
+    if not NE_PLACES_RANGE[0] <= ne_all <= NE_PLACES_RANGE[1] or ne_all != counts.get("ne_places"):
+        problems.append("counts: %d Natural Earth places decoded (index %s), expected %d-%d and equal" % (
+            ne_all, counts.get("ne_places"), *NE_PLACES_RANGE))
+    if gn_cells < GN_MIN_KEPT or gn_cells != counts.get("geonames_kept", 0) - counts.get("capped", 0):
+        problems.append("counts: %d GeoNames towns decoded, expected >= %d and kept - capped (%s)" % (
+            gn_cells, GN_MIN_KEPT, counts.get("geonames_kept", 0) - counts.get("capped", 0)))
+    if not CELLS_RANGE[0] <= len(t1["cells"]) <= CELLS_RANGE[1]:
+        problems.append("counts: %d tier-1 cells, expected %d-%d" % (len(t1["cells"]), *CELLS_RANGE))
+    for tier, found, q in (("tier 0", lines0, TIER0_Q), ("tier 1", lines1, Q)):
+        for kind, lon, lat in LINE_PROBES:
+            if not any(np.any((np.abs(ix / q - lon) <= PROBE_DEG) & (np.abs(iy / q - lat) <= PROBE_DEG))
+                       for ix, iy in found.get(kind, ())):
+                problems.append("probe: %s has no kind-%d border vertex within %g degree of %s,%s" % (tier, kind, PROBE_DEG, lon, lat))
+        for kind, lon, lat in NO_LINE_PROBES:
+            if any(np.any((np.abs(ix / q - lon) <= PROBE_DEG) & (np.abs(iy / q - lat) <= PROBE_DEG))
+                   for ix, iy in found.get(kind, ())):
+                problems.append("probe: %s has a kind-%d line near %s,%s, where none belongs" % (tier, kind, lon, lat))
+    for where, key, max_rank, max_mz in PLACE_PROBES:
+        pool = tier0_places if where == "tier0" else cell_places.get(where, [])
+        if not any(fold(p["name"]) == key and p["rank"] <= max_rank and p["mz10"] <= max_mz for p in pool):
+            problems.append("probe: no place %r (rank <= %d, min_zoom <= %d) in %s" % (key, max_rank, max_mz, where))
+    every = degrees(tier0_places, TIER0_Q) + [x for ps in cell_places.values() for x in degrees(ps, Q)]
+    for ne_key, gn_key, km in TWIN_PROBES:
+        ne = [x for x in every if not x[2]["flags"] & FLAG_GEONAMES and fold(x[2]["name"]) == ne_key]
+        if not ne:
+            problems.append("twin probe: no Natural Earth place %r" % ne_key)
+            continue
+        for lat, lon, _p in ne:
+            for glat, glon, g in every:
+                if g["flags"] & FLAG_GEONAMES and fold(g["name"]) == gn_key and haversine_km(lat, lon, glat, glon) <= km:
+                    problems.append("twin probe: GeoNames %r %.1f km from Natural Earth %r" % (
+                        g["name"], haversine_km(lat, lon, glat, glon), ne_key))
     return problems
 
 
@@ -807,6 +944,9 @@ def main(argv=None):
             ap.error("--upload needs --out")
         if check(a.out):
             print("refusing to upload a directory that fails --check")
+            return 1
+        if not is_real(json.load(open(os.path.join(a.out, "index.json")))):
+            print("refusing to upload a build whose Natural Earth sources are not the pinned ones (real-build gates off)")
             return 1
         return 0 if C.upload(a.out, a.upload.strip("/"), replace=a.replace, files=files_of,
                              license_file=LICENSE_FILE) else 1

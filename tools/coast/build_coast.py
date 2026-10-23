@@ -160,6 +160,10 @@ LAKEOUT_PROBES = [(-80.8, 26.95, True), (51.0, 42.0, True), (108.0, 53.5, True),
                   (-88.9, 48.0, False), (-82.2, 45.8, False), (107.4, 53.15, False), (-85.6, 11.5, False),
                   (-122.1, 42.94, False), (-59.9, -3.13, False), (-100.0, 40.0, False), (-150.0, 30.0, False)]
 LAKEOUT_SQDEG = (200.0, 213.0)                        # the net water area of a real build: 206.37 sq deg in 2.3.7
+# The exact bytes of a real build (deterministic from the pinned archive and this code; G34a F2): a deliberate change
+# updates these pins.
+LAKEOUT_PIN_TIER0_SHA256 = "806fd4539996638d5cbd6d1b5694268b96f4dd69a6b61f39639e3fe610874b0c"
+LAKEOUT_PIN_TIER1_SHA256 = "826939b5f51df950e1de1500b950ce52a4c12040e9a8ef591a7d6f7a91ab2870"
 
 
 def lake_outline_polys(polys):
@@ -644,8 +648,9 @@ def check(out_dir, log=print):
         problems.append("tier 1: land area %.0f sq deg, expected ~%.0f" % (area1, WORLD_LAND_SQDEG))
     if present == set(t1["cells"]) and t1.get("sha256") != cells_digest(digests):
         problems.append("tier 1: content hash != index (tier1.sha256)")
-    log("check: tier 0 %d pieces / %d vertices / %d B; tier 1 %d cells / %d vertices / %d B; %d problems" % (
-        t0["pieces"], t0["vertices"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"], len(problems)))
+    log("check: tier 0 %d pieces / %d vertices / %d B; tier 1 %d cells / %d vertices / %d B; real-build gates %s; %d problems" % (
+        t0["pieces"], t0["vertices"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"],
+        "on" if world else "OFF", len(problems)))
     for p in problems[:50]:
         log("  " + p)
     return problems
@@ -677,6 +682,10 @@ def check_lake_outlines(out_dir, index, log=print):
                     tier, n, t.get("islands", 0), LAKEOUT_COUNT[0], LAKEOUT_COUNT[1], LAKEOUT_MIN_ISLANDS))
             if t.get("river_lakes_dropped", 0) < 1 and not LAKEOUT_RIVER_LAKES:
                 problems.append("%s: no river-lake left out" % tier)
+        for tier, t, pin in (("tier 0", t0, LAKEOUT_PIN_TIER0_SHA256), ("tier 1", t1, LAKEOUT_PIN_TIER1_SHA256)):
+            if pin and t.get("sha256") != pin:
+                problems.append("pin: %s %s != the pinned %s (a deliberate change updates LAKEOUT_PIN_TIER%s_SHA256)" % (
+                    tier, str(t.get("sha256"))[:12], pin[:12], tier[-1]))
         return problems
     return _check_water(out_dir, index, log, "lakeoutlines", LAKEOUT_FORMAT_KEY, LAKEOUT_PROBES, counts, LAKEOUT_SQDEG)
 
@@ -731,8 +740,9 @@ def _check_water(out_dir, index, log, kind, key, probes, counts, sqdeg):
         problems.append("tier 1: net water area %.2f sq deg outside %s" % (area1, sqdeg))
     if present == set(t1["cells"]) and t1.get("sha256") != cells_digest(digests):
         problems.append("tier 1: content hash != index (tier1.sha256)")
-    log("check (%s): tier 0 %d pieces / %d B; tier 1 %d cells / %d vertices / %d B; net water %.2f sq deg; %d problems" % (
-        kind, t0["pieces"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"], area1, len(problems)))
+    log("check (%s): tier 0 %d pieces / %d B; tier 1 %d cells / %d vertices / %d B; net water %.2f sq deg; "
+        "real-build gates %s; %d problems" % (kind, t0["pieces"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"],
+                                              area1, "on" if real else "OFF", len(problems)))
     for p in problems[:50]:
         log("  " + p)
     return problems
@@ -801,8 +811,10 @@ def upload(out_dir, prefix, replace=False, log=print, s3=None, bucket=None, file
         existing = published_index(s3, bucket, prefix)
         if existing is not None and not same_build(existing, index):
             if not replace:
-                log("refusing: %s/ already holds a different build (tier0 %s vs %s); use a new prefix, or --replace" % (
-                    prefix, str(existing.get("tier0", {}).get("sha256"))[:12], index["tier0"]["sha256"][:12]))
+                log("refusing: %s/ already holds a different build (published tier0 %s tier1 %s, this build tier0 %s "
+                    "tier1 %s); use a new prefix, or --replace" % (
+                        prefix, str(existing.get("tier0", {}).get("sha256"))[:12], str(existing.get("tier1", {}).get("sha256"))[:12],
+                        str(index["tier0"].get("sha256"))[:12], str(index["tier1"].get("sha256"))[:12]))
                 return False
             log("REPLACING a different build under %s/ (--replace)" % prefix)
         data_files = [] if (existing is not None and same_build(existing, index)) else files(index)
@@ -848,6 +860,9 @@ def main(argv=None):
             ap.error("--upload needs --out")
         if check(a.out):
             print("refusing to upload a directory that fails --check")
+            return 1
+        if json.load(open(os.path.join(a.out, "index.json"))).get("source_sha256") != GSHHG_SHA256:
+            print("refusing to upload a build that is not from the pinned GSHHG archive (real-build gates off)")
             return 1
         return 0 if upload(a.out, a.upload.strip("/"), replace=a.replace) else 1
     if not (a.zip and a.out):

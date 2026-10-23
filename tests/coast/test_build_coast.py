@@ -353,6 +353,7 @@ def test_upload_publishes_licence_first_index_last_and_refuses_a_different_build
     n = len(s3.log)
     assert B.upload(out, "static/coast/v1", log=msgs.append, s3=s3, bucket="b") is False     # refused on the content hash alone
     assert len(s3.log) == n
+    assert any("tier1 %s, this build" % idx["tier1"]["sha256"][:12] in m and "tier1 111111111111" in m for m in msgs)
     legacy = dict(idx); legacy["tier1"] = {k: v for k, v in idx["tier1"].items() if k != "sha256"}
     assert B.same_build(legacy, idx) and not B.same_build(idx, legacy)                        # a published index from before the hash: cell map only; a hash-less LOCAL index never passes
     idx["tier0"]["sha256"] = "0" * 64
@@ -504,6 +505,7 @@ def outlines_zip(path):
             + gshhg_record(22, 3, sq(26.0, 61.0, 26.2, 61.2), area_km2=30, container=20)
             + gshhg_record(23, 2, sq(30.0, 50.0, 30.1, 50.1), area_km2=50)
             + river(gshhg_record(24, 2, sq(10.0, 0.0, 14.0, 1.0), area_km2=2000))
+            + gshhg_record(27, 3, sq(11.0, 0.2, 11.5, 0.6), area_km2=150, container=24)   # an island of the river-lake
             + gshhg_record(25, 2, sq(179.0, 66.0, 181.0, 67.0), area_km2=300)
             + gshhg_record(26, 1, sq(0.0, 40.0, 40.0, 70.0), area_km2=1e6))
     with zipfile.ZipFile(path, "w") as z:
@@ -534,6 +536,7 @@ def test_lake_outline_set_keeps_big_lakes_worldwide_drops_rivers_and_cuts_big_is
     assert not _water(out, 24.3, 60.7)                                             # the 150 km2 island is cut out
     assert _water(out, 26.1, 61.1)                                                 # the 30 km2 island is not
     assert not _water(out, 30.05, 50.05) and not _water(out, 12.0, 0.5)            # a small lake, a river-lake
+    assert not _water(out, 11.25, 0.4)                                             # a river-lake's island never draws as a lake
     assert _water(out, 179.5, 66.5) and _water(out, -179.5, 66.5)                  # across the antimeridian
     assert not _water(out, 5.0, 45.0)                                              # land is not water
     t0 = B.decode_file(open(os.path.join(out, "lakeoutlines-i.bin"), "rb").read())
@@ -548,7 +551,7 @@ def test_lake_outline_river_switch_and_island_limit_are_the_constants(tmp_path, 
     polys = list(B.read_gshhg(zipfile.ZipFile(zp).read("gshhs_f.b"), B.LAKE_LEVELS))
     lakes, islands, dropped = B.lake_outline_polys(polys)
     assert sorted(p["id"] for p in lakes) == [20, 24, 25] and dropped == 0
-    assert sorted(p["id"] for p in islands) == [21, 22]
+    assert sorted(p["id"] for p in islands) == [21, 22, 27]
 
 
 def test_lake_outline_check_runs_the_real_gates_when_built_from_gshhg_2_3_7(tmp_path, monkeypatch):
@@ -562,6 +565,9 @@ def test_lake_outline_check_runs_the_real_gates_when_built_from_gshhg_2_3_7(tmp_
     assert any(p.startswith("tier 0: probe") for p in problems)
     assert any("should be water but its cell" in p for p in problems)            # Okeechobee's cell is absent here
     assert any("net water area" in p for p in problems)
+    assert any(p.startswith("pin: tier 0") for p in problems) and any(p.startswith("pin: tier 1") for p in problems)
+    monkeypatch.setattr(B, "LAKEOUT_PIN_TIER0_SHA256", None)
+    monkeypatch.setattr(B, "LAKEOUT_PIN_TIER1_SHA256", None)
     monkeypatch.setattr(B, "LAKEOUT_PROBES", [])
     monkeypatch.setattr(B, "LAKEOUT_COUNT", (2, 2))
     monkeypatch.setattr(B, "LAKEOUT_MIN_ISLANDS", 1)
@@ -612,3 +618,29 @@ def test_upload_takes_a_file_list_and_a_licence(tmp_path):
                     license_file=str(lic)) is True
     assert s3b.log == ["p/LICENSE.txt", "p/lakeoutlines-i.bin", "p/index.json"]
     assert s3b.objects["p/LICENSE.txt"]["body"] == b"another notice"
+
+
+def test_upload_needs_the_pinned_archive_and_check_says_whether_the_gates_ran(tmp_path, capsys, monkeypatch):
+    out = str(tmp_path / "lakeoutlines-v1")
+    B.build_lakes(outlines_zip(str(tmp_path / "g.zip")), out, log=lambda *a: None, kind="lakeoutlines")
+    assert B.check(out, log=print) == []
+    assert "real-build gates OFF" in capsys.readouterr().out
+    assert B.main(["--out", out, "--upload", "static/coast/lakeoutlines-v1"]) == 1        # refused before touching boto3
+    assert "not from the pinned GSHHG archive" in capsys.readouterr().out
+    land = str(tmp_path / "v1")
+    B.build(fixture_zip(str(tmp_path / "f.zip")), land, log=lambda *a: None)
+    B.check(land, log=print)
+    assert "real-build gates OFF" in capsys.readouterr().out
+
+
+def test_upload_refusal_names_both_tiers(tmp_path):
+    out = str(tmp_path / "lakeoutlines-v1")
+    B.build_lakes(outlines_zip(str(tmp_path / "g.zip")), out, log=lambda *a: None, kind="lakeoutlines")
+    s3 = FakeS3()
+    assert B.upload(out, "p", log=lambda *a: None, s3=s3, bucket="b") is True
+    idx = json.load(open(os.path.join(out, "index.json")))
+    idx["tier1"]["sha256"] = "f" * 64
+    json.dump(idx, open(os.path.join(out, "index.json"), "w"))
+    msgs = []
+    assert B.upload(out, "p", log=msgs.append, s3=s3, bucket="b") is False
+    assert any("tier1 ffffffffffff" in m and "published tier0" in m for m in msgs)

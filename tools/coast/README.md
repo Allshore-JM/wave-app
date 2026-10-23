@@ -22,11 +22,13 @@ Two more sets use the same format and tiers, holding lake WATER instead of land:
 - `static/coast/lakeoutlines-v1/` (`--set lakeoutlines`, plan section 51): every GSHHG lake of at least 100 km²
   worldwide, with the islands of at least 100 km² inside them cut out (clockwise rings). The map draws its edge as a thin
   line under the wind overlay. River-lakes are left out: GSHHG flags the wide reaches of the Amazon, Lena, Congo, Ob,
-  Paraná, Mekong and other rivers this way, and they would draw as twin lines along the rivers. The first real build had
+  Paraná, Mekong and other rivers this way, and they would draw as twin lines along the rivers. A few real lakes inside
+  such a reach go with them (Poyang inside the Yangtze, Lac Saint-Pierre, two Volga reservoirs). The first real build had
   1,400 lakes and 51 islands in tier 1, 50 river-lakes left out, a 203 KB tier 0 and 415 cells (1.2 MB). Its `--check`
   tests the lake and island counts, at least one river-lake left out, 21 water and land probes (Okeechobee, the Caspian,
   Baikal, Victoria, Titicaca, Tahoe, Taupo, Isle Royale, Olkhon, Ometepe, Crater Lake under the limit, an Amazon reach and
-  others) and the net water area (206.4 square degrees).
+  others), the net water area (206.4 square degrees) and the exact sha256 of both tiers, pinned in the script
+  (`LAKEOUT_PIN_TIER0_SHA256`, `LAKEOUT_PIN_TIER1_SHA256`): both depend only on the pinned archive and the code.
 
 ## Build and publish
 
@@ -36,7 +38,9 @@ vertex counts, ring orientation and cell containment, the world land area within
 degrees, and eleven land/water landmark probes); with `upload` true it also publishes `LICENSE.txt`,
 the data files and `index.json` (last) to the frames bucket under `static/coast/v1/` with immutable
 caching, then reads the index back. The objects are never touched by the frame job's pruning, which
-only deletes 10-digit run folders. The upload refuses a prefix that already holds a different build:
+only deletes 10-digit run folders. `--check` logs whether the real-build gates ran (they run only for a
+build from the pinned archive), and `--upload` refuses a build that is not from it. The upload also refuses a
+prefix that already holds a different build, and prints the published and local hashes of both tiers:
 browsers and the edge cache keep every object for a year, so a changed build goes under a new prefix
 (`static/coast/v2/`) together with a client release that reads it. The `replace` input (or `--replace`)
 overrides that guard only when you have decided to accept a year of mixed caches.

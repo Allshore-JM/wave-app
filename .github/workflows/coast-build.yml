@@ -72,13 +72,13 @@ jobs:
           set -eo pipefail
           mkdir -p src/ne
           NE=https://raw.githubusercontent.com/nvkelso/natural-earth-vector/ca96624a56bd078437bca8184e78163e5039ad19/geojson
-          for f in ne_10m_admin_0_boundary_lines_land ne_10m_admin_1_states_provinces_lines ne_10m_populated_places_simple; do
+          for f in ne_10m_admin_0_boundary_lines_land ne_10m_admin_1_states_provinces_lines ne_10m_populated_places; do
             curl -sSfL -o "src/ne/$f.geojson" "$NE/$f.geojson"
           done
           ( cd src/ne && sha256sum -c - <<'EOF'
           74d9c16229c095fde65943a9919e337682f044bcebccb120764f38edf3b70f4a  ne_10m_admin_0_boundary_lines_land.geojson
           1a1f30ccaaf4cc9c4bde34266f0b8cbb955d3a4cf254b756912255f2ec7c75b6  ne_10m_admin_1_states_provinces_lines.geojson
-          fd3fa867a320cbd5c5b6bb5bc550afeec2939fb2cef688e508007282a55ac42f  ne_10m_populated_places_simple.geojson
+          9b8e3de09048ef00dfc70357dbb9fa324493f214b5e0ae4daf1aa79a8d10116b  ne_10m_populated_places.geojson
           EOF
           )
           curl -sSfL -o src/cities1000.zip https://download.geonames.org/export/dump/cities1000.zip

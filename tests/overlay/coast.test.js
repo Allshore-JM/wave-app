@@ -1160,3 +1160,18 @@ test('Overlay.settled(): resolves once, on the first ready / error / Off, after 
   late._noteSettled('off');
   assert.equal(await late.settled(), 'off', 'asked after it settled: resolved all the same');
 });
+
+test('Overlay: the first ready / error render and Off (unmount) note the first picture', async () => {
+  const within = (p) => Promise.race([p, new Promise((r) => setTimeout(() => r('pending'), 200))]);
+  for (const st of ['ready', 'error']) {
+    const ov = Object.create(I.Overlay.prototype); ov.coast = null;
+    try { ov.render({ state: st }); } catch (e) { /* the stub has no panel: only the first line matters */ }
+    assert.equal(await within(ov.settled()), st);
+  }
+  const ld = Object.create(I.Overlay.prototype); ld.coast = null;
+  try { ld.render({ state: 'loading' }); } catch (e) { /* as above */ }
+  assert.equal(await within(ld.settled()), 'pending', 'loading is no picture');
+  const off = Object.create(I.Overlay.prototype); off.coast = null;
+  try { off.unmount(); } catch (e) { /* as above */ }
+  assert.equal(await within(off.settled()), 'off');
+});

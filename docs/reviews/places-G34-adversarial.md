@@ -539,3 +539,42 @@ site or bucket was changed by either.
 11. Then the test site at MAX (B's slow-link runs at 100 / 90 / 60 KB/s, test against production; every fix live; the
     owner's look at the grey ring), a short fresh re-check at MAX (the fixes touch the overlay's coastline loader and the
     places store), then step 10.
+
+## Fix round (step 9, 2026-10-23, Opus 5.5 HIGH)
+`feat/location-aids` @ fb78252 (code + tests), 0330f9d (the golden, its own commit), then the survivor pins and this
+section. UI asset 1.25.2, overlay asset 2.22.2. Not on the test site yet.
+- **B-6** (owner: wait + patient coastline): `Overlay.settled()` resolves once the first mount has drawn a picture or
+  failed, or the overlay went Off, after the coastline's tier 0 has landed or been given up; the gated block keeps it
+  as `window.__allshoreOverlayWait` (a promise only while a layer is restored or picked; settled at once by Off or an
+  asset failure). `AllshorePlaces.create(map, {waitFor})` starts its downloads after the load + 1.5 s AND that promise,
+  at most 30 s (`afterWait`, `WAIT_MAX_MS`). Every places request asks for `priority: 'low'`. The overlay's coast store
+  (`CoastStore.load`) and the places store give a download up only after 15 s with no byte (`readBody` with a cap and
+  a message / `readAll`, each chunk re-arming the timer), not after 15 s in all (also F-A6).
+- **B-1**: `.fwin` windows (queried from the document, hidden ones skipped) and `.settings-panel` (the gear and tools
+  menus) are blocked rects; a ResizeObserver on each and a MutationObserver on their class / style / hidden lay the
+  names out again.
+- **B-2** (owner: names avoid the tool): `.tools-fan`, `.tools-label` and `.tools-ring-label` are blocked rects; a
+  subtree childList observer on the map container schedules a layout only when such a node (or an overlay sheet) comes
+  or goes (a tile or a name of its own never does).
+- **B-3** (owner): `.wind-none .wind-ring` is a hollow grey ring (border 2 px #b8c1cb with a dark outline inside and out,
+  same 10-px box and tap target).
+- **B-4**: the LRU counts decoded bytes (`decodedBytes`: typed arrays + 2 x the name characters + 32 a name) against
+  6 MB; a cell used by the current view (`store.view`, advanced on movestart / zoomstart / viewreset) is never evicted;
+  the width cache starts again past 8,000 entries. (Deviation from the scope's "the width cache goes with its cell": a
+  size cap does the same for memory without tracking which cell a name came from.)
+- **B-5**: `PlacesStore.unit.l` / `unit.p`: the tier-0 lines and places load as two units after the index; `ok(kind)`
+  gates the drawing and each credit; a failed unit is asked again after its cooldown without the index.
+- **B-7 / F-A5**: the line layer is on the map only while Borders is on; a tile without a line keeps a 1x1 backing
+  store, grown when a line comes into it.
+- **B-8**: a hidden probe of each label kind gives the computed font and line height (read at the first layout and
+  again after a map resize); the widths and `thin`'s box height (new 5th argument) follow it.
+- **F-A1** the count check before any allocation; **F-A2** every file's length against the index (a cell: final; a
+  tier-0 file: its unit fails); **F-A3** the lake-outline detach also clears `_ovLoEdges` / `_ovLoEdgesOf`; **F-A4** a
+  removed sheet is unobserved; **F-A7** `world-places-crop.bin` re-cropped from the published v2 file (the same 494
+  records, the corrected names), `places_expect.json` and the README with it.
+- Pins: M25 (both off stops the downloads), M40 (a line within 3 px of a tile is drawn), B04 (the case-folded edit
+  distance: Tarin Kowt -> Tarinkot), B11 / B12 (`NAME_FIX_RANGE`, `NAME_PROBES`), B06 (the dedupe sees the corrected
+  names).
+- Tests: pytest 1,298 passed; Node 962 + the survivor pins (places 37, coast 44 tests in their files). Mutants of the
+  fix round (scratch `g34/fix/mut9.py`, on a copy): 33, all killed after four pins (a move's new view, the credits per
+  unit, the render and Off notes of the first picture).

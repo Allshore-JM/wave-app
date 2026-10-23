@@ -658,6 +658,11 @@ test('G34 B-5: the tier-0 lines and places are two units: one failing keeps the 
   const map = fakeMap(6), pl = P.create(map, { base: BASE, L: fakeL(map), document: fakeDoc(), storage: storage(), fetch: fakeFetch({ ...TIER0, 'world-places.bin': 'down' }), whenReady: (go) => go() });
   await settle(); pl.update();
   assert.deepEqual(map.credits, ['+Borders'], 'only the kind that loaded is credited'); assert.equal(pl.labels.hidden, true);
+  const map2 = fakeMap(6);
+  P.create(map2, { base: BASE, L: fakeL(map2), document: fakeDoc(), storage: storage(), fetch: fakeFetch({ ...TIER0, 'world-lines.bin': 'down' }), whenReady: (go) => go() });
+  await settle(); assert.deepEqual(map2.credits, ['+Places:'], 'and the reverse');
+  // a move begins a new view (the cells it uses are kept while it lasts)
+  const v = pl.store.view; map.fire('movestart'); assert.equal(pl.store.view, v + 1); map.fire('zoomstart'); assert.equal(pl.store.view, v + 2);
 });
 
 test('G34 F-A2: a file of another length than the index gives is refused (a tier-0 file: its unit fails; a cell: for good)', async () => {

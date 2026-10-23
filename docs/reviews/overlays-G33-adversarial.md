@@ -382,3 +382,55 @@ Every item of the fix round 2 scope was built:
 - The reviewer's stricter fuzz (`g33/recheck/fuzz/fuzz2.js`) on the fixed code: lake 1..800 and all 100001..100500, 0 failures (was 9 of 1,300 on
   2.21.5); reviewer A's fuzz 1..800, 7001..7400 and 300001..300300, 0 failures. The reviewer's seven reproductions
   (`mine.js`) all hold.
+
+## Test-site verification of fix round 2 (2026-10-23, Opus 5.5 MAX)
+`test` @ 7177a6c (2.21.6, live 00:16:49 UTC), then @ 984979e (2.21.7, live 00:37:42 UTC: 63 polls across the switch, 0
+failed). The served `overlay.js` / `overlay.css` = the commit; the older version's URL answers 404. Headless Chrome with the
+GPU, trusted input, DevTools Fetch interception; the reviewer's own site scenarios (`g33/recheck/s/rc.js`) and the author's
+(`glwu/v6/s/v16_g33.js`). Live runs: GFS 2026102218, lakes 2026102219 (the older 2026102201 staged by its pointer).
+
+**Found and fixed on the test site (2.21.7 @ 0b0e04f on the feature branch):** with the fetch chain gone, a hover's height
+frame landing just after playback moved to the next step was no longer shown: the readout stayed "…" until the next mouse
+move (2.21.5 showed "calm" there on a warm edge). It now shows the word of the hovered point and step in place of "…",
+never over other text, and still asks for no other step's frame. A test pins both (the first assertion fails on 2.21.6);
+mutants 29 / 31 killed (the same 2 backup guards).
+
+The reviewer's scenarios, 2.21.5 (their report) against 2.21.6 / 2.21.7:
+| scenario | 2.21.5 | fix round 2 |
+|---|---|---|
+| double (a noted run, then a field switch) | 2 adoptions, the lake blanked once, 20 lake frame requests | 1 adoption, no blank, 10 requests; also with a slow pointer (`doubleslow`) |
+| updatepan (a re-read answers during a pending Update, then away) | 2 lake fetches out of reach, 4 in flight vs cap 2, the old lake drawn, 1 + 1 cached | the gate set (true) after the answer; away: 0 lake fetches, 2 in flight = cap, nothing drawn or cached |
+| hoverslow (300-ms height frames, shark, cursor at rest) | 23 height frames in 8 s, "…" throughout | 0-1 height frame; "calm" 76 of 80 samples (2.21.7); 65 landings = the cursor off the map |
+| hoverplay (warm edge) | "calm", 0 extra frames | 2.21.6: "…" 78 of 78 samples (the defect above); 2.21.7: "calm" 70 of 71 |
+| credit | Lansing MI and Madison WI at zoom 10 credited with no lake water | not credited; every view with lake water on screen credited (incl. lakes pushed east, 4,479 px) |
+| coastretry (the coast set fails, its retry hangs) | 18 lake frames over 5 steps, dropped | 0 |
+| adoptpan (24 trusted drags, a newer run adopted during 1x playback) | 85 landings, 0 wrong / bare / mixed, checkpoints clean | 90 landings, the same (the in-drag samples are the gate acting at moveend, as before) |
+| phone long-press, world copies +-360, credit through 9 switches | pass | pass |
+
+Also on the site:
+- **P3-3 by trusted field switches:** wave height on the lakes (5 + 5 lake frames), then wind or SST, then the view to
+  Hawaii: both lake caches emptied, no lake fetch; back to wave height there: nothing asked (2.21.5 kept 5 + 5).
+- **The author's G33 parts:** F1 (pending and error panel), F1b, F2 (38 animator updates, 0 mixed), F3 (older and same
+  pointer), B-1 (lake pointer 503; coast index 404, its retry after the cooldown joins the lakes), B-2 and the channels,
+  B-5 (the credit off screen within the margin), smoke (83,020 of 83,298 lake pixels, readout = drawn 350 / 350, shark 65
+  landings 0 wrong, ECMWF 0 lake frame requests): all pass.
+- Console clean in every part; the harness browsers had no sign-in before or after; the test origin's storage emptied.
+
+Timed cells (PREGC, edges warm for both Origins, 45-s idles; test 2.21.7 against production 2.20.3):
+| cell | test fps (p50/p90 ms) | unpainted | live MB test / prod | peak MB test / prod | lake steps own / bare / wrong |
+|---|---|---|---|---|---|
+| lakes shark 1080p (1) | 8 (125/155) | 0/226 | +35.0 / +29.2 | +69.2 / +50.7 | 164 / 0 / 0 |
+| lakes shark 1080p (2) | 8 (122/152) | 0/225 | +37.6 / +29.2 | +77.3 / +66.4 | 163 / 0 / 0 |
+| lakes shark 1080p (3, 90-s idles) | 8 (124/154) | 0/224 | +36.3 / +29.8 | +68.7 / +46.8 | 162 / 0 / 0 |
+| Hawaii shark 1080p | 7 (142/175) | 0/197 | +35.4 / +35.4 | +58.3 / +53.4 | (out of reach: no lake frame fetched) |
+| phone lakes shark | 8 (123/147) | 0/146 | +20.4 / +13.3 | +42.6 / +32.5 | 130 / 0 / 0 |
+
+- Production in the same cells: lakes 8 fps (125/153, 125/148, 125/146), Hawaii 6.7 fps (144/180), phone 8 (125/144).
+- The machine was in its slower state (renders over 100 ms on both sites): production missed the 150-ms p90 line in 1 of
+  its 3 lakes cells and at Hawaii; the test site missed it in all 3 lakes cells, by 2-5 ms, and at Hawaii, where it was
+  equal to or better than production. Every frame painted, 8 fps held over the lakes on both sites.
+- The difference over the lakes is the lakes' drawing (setFrame +7-15 ms, main thread +90-160 ms/s), as at step 6. The new
+  credit check costs 0.005-0.12 ms a call at 1920x1080 (`glwu/v6/s/v18_cost.js`).
+- Memory against the owner's line: every live set within production + 10 MB (+5.8, +8.4, +6.5, 0.0, +7.1). Two peaks sit
+  just over production's range + 10 (77.3 against 76.4; the phone 42.6 against 42.5): GC timing (K-2).
+- At Hawaii the test site now equals production in memory (+35.4 MB both; step 6 had paid +9 MB before the view gate).

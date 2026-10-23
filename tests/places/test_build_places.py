@@ -800,6 +800,12 @@ def test_fix_names_only_where_geonames_agrees_close_by_and_within_two_letters():
     two = [ne_place("Shenyxxg", "Shenyang")]                                       # two letters off: fixed
     assert P.fix_names(two, gn3, hand={})["agreed"] == 1 and two[0]["name"] == "Shenyang"
     assert P.fix_names(three, gn3, hand={})["agreed"] == 0 and three[0]["name"] == "Shxnyxxg"
+    # NAME_EN within 2 letters but GeoNames spells the place otherwise (the real Starsy Oskol case): kept without the hand list
+    oskol = [ne_place("Starsy Oskol", "Stary Oskol", 51.3, 37.8, 26)]
+    assert P.fix_names(oskol, {26: ("Staryy Oskol", 51.3, 37.8)}, hand={})["agreed"] == 0 and oskol[0]["name"] == "Starsy Oskol"
+    # a name already equal to NAME_EN is no fix
+    same = [ne_place("Bogotá", "Bogotá", 4.6, -74.08, 21)]
+    assert P.fix_names(same, gn, hand={}) == {"agreed": 0, "hand": 0}
 
 
 def test_read_geonames_names_reads_every_row(tmp_path):

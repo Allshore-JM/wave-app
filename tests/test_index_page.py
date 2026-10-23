@@ -1075,16 +1075,17 @@ def test_the_shaka_and_the_star_set_the_default_and_the_favorites(client):
 
 
 def test_location_aids_on_the_page(client, monkeypatch):
-    """Plan section 51: the three gear rows after the gridlines row (on by default; hidden when the module cannot run),
-    the module's script after the map tools' with the base from PLACES_BASE or the frames' neighbour, the label CSS in
-    the module's font, the labels left out of print."""
+    """Plan section 51: the two gear rows after the gridlines row ("Borders" for country and state lines together,
+    "City names"; on by default; hidden when the module cannot run; owner, 2026-10-23), the module's script after the map
+    tools' with the base from PLACES_BASE or the frames' neighbour, the label CSS in the module's font (and the text before
+    the dot near the right edge), the labels left out of print."""
     monkeypatch.delenv("PLACES_BASE", raising=False)
     body = client.get("/?station=51201").get_data(as_text=True)
     grid = body.index('id="gridlines"')
-    rows = [body.index('id="%s" checked' % k) for k in ("borders", "states", "places")]
-    assert grid < rows[0] < rows[1] < rows[2] < body.index('</div>', rows[2])
-    for label in ("Country borders", "State/province borders", "City names"):
-        assert label in body
+    rows = [body.index('id="%s" checked' % k) for k in ("borders", "places")]
+    assert grid < rows[0] < rows[1] < body.index('</div>', rows[1])
+    assert '<span class="form-check-label">Borders</span>' in body and '<span class="form-check-label">City names</span>' in body
+    assert 'id="states"' not in body and "Country borders" not in body and "State/province" not in body
     tag = body.index('<script src="/ui/places.js?v=%s"></script>' % A.UI_ASSET_VERSION)
     assert body.index('<script src="/ui/tools.js?v=') < tag < body.index("Cloudflare Web Analytics")
     r = client.get("/ui/places.js?v=" + A.UI_ASSET_VERSION)
@@ -1095,6 +1096,10 @@ def test_location_aids_on_the_page(client, monkeypatch):
         "box.addEventListener('change', function () { pl.set(id, box.checked); });",
         'font: 600 11px/14px system-ui, -apple-system, "Segoe UI", sans-serif;',
         ".place-labels { display: none !important; }",
+        ".place-label.place-left { transform: translate(-100%, -50%); padding-left: 0; padding-right: 6px; }",
+        ".place-label.place-left::before { left: auto; right: -2px; }",
+        "var ids = ['borders', 'places'], pl = null;",
+        "try { st && st.removeItem('allshore.states.v1'); } catch (e) {}",
     ):
         assert needle in body, needle
     # the module's measuring font = the page's label font

@@ -472,6 +472,9 @@
     }
     .place-label.place-capital { font-weight: 700; }
     .place-label.place-capital::before { left: -2.5px; width: 5px; height: 5px; margin-top: -2.5px; }
+    .place-label.place-left { transform: translate(-100%, -50%); padding-left: 0; padding-right: 6px; }   /* the text before the dot */
+    .place-label.place-left::before { left: auto; right: -2px; }
+    .place-label.place-capital.place-left::before { left: auto; right: -2.5px; }
     /* Colored dot next to each layer-control label (doubles as the legend) */
     .lc-dot {
       display: inline-block; width: 11px; height: 11px; border-radius: 50%;
@@ -975,8 +978,7 @@
               {% endfor %}
             </select>
             <label class="grid-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="gridlines" checked> <span class="form-check-label">Lat/long gridlines</span></label>
-            <label class="grid-setting place-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="borders" checked> <span class="form-check-label">Country borders</span></label>
-            <label class="grid-setting place-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="states" checked> <span class="form-check-label">State/province borders</span></label>
+            <label class="grid-setting place-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="borders" checked> <span class="form-check-label">Borders</span></label>
             <label class="grid-setting place-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="places" checked> <span class="form-check-label">City names</span></label>
           </div>
       </div>
@@ -4262,14 +4264,14 @@
       var SST = {{ overlay_sst|tojson }};                       // "Sea surface temperature" offered (SST_OVERLAY; plan section 44)
       var GLWU = {{ overlay_glwu|tojson }};                     // the Great Lakes waves under GFS (GLWU_OVERLAY; plan section 50)
       var TZ = {{ forecast_tz_name|tojson }};
-      // The settings gear's overlay rows (plan sections 46, 51), remembered in this browser: the pressure isobars and the
-      // lakes' shores under the wind overlay (each on unless turned off) and the particles' strength (100 = today's look,
-      // 0 = no particles).
-      var ISO_KEY = 'allshore.isobars.v1', PART_KEY = 'allshore.particles.v1', LAKEOUT_KEY = 'allshore.lakeOutlines.v1';
+      // The settings gear's overlay rows (plan section 46), remembered in this browser: the pressure isobars under the wind
+      // overlay (on unless turned off) and the particles' strength (100 = today's look, 0 = no particles). The lakes'
+      // shores under wind are always drawn (plan section 51; the row and its key are gone: owner, 2026-10-23).
+      var ISO_KEY = 'allshore.isobars.v1', PART_KEY = 'allshore.particles.v1';
       function readPref(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
       function writePref(k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} }
+      try { window.localStorage.removeItem('allshore.lakeOutlines.v1'); } catch (e) {}
       var ISOBARS = readPref(ISO_KEY) !== '0';
-      var LAKE_OUTLINES = readPref(LAKEOUT_KEY) !== '0';
       var PARTICLES = (function (v) { return /^\d{1,3}$/.test(v || '') && +v <= 100 ? +v : 100; })(readPref(PART_KEY));
       var lastTz = TZ;                                          // the zone of the forecast on screen (the window announces each one)
       // (the model pane is created by the module on the first selection, so Off leaves the map's panes untouched)
@@ -4358,7 +4360,7 @@
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
             base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
             fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST, glwu: GLWU,
-            isobars: ISOBARS, particles: PARTICLES / 100, lakeOutlines: LAKE_OUTLINES
+            isobars: ISOBARS, particles: PARTICLES / 100
           });
           overlay.mount(field, restore);
         }).catch(function (err) {
@@ -4410,10 +4412,6 @@
         var iso = document.createElement('input'); iso.type = 'checkbox'; iso.id = 'ovIsobars'; iso.className = 'form-check-input'; iso.checked = ISOBARS;
         var t1 = document.createElement('span'); t1.className = 'form-check-label'; t1.textContent = 'Pressure isobars (wind)';
         row1.appendChild(iso); row1.appendChild(t1); gear.appendChild(row1);
-        var row3 = document.createElement('label'); row3.className = 'ov-setting form-check mb-0 mt-2';
-        var lks = document.createElement('input'); lks.type = 'checkbox'; lks.id = 'ovLakeOutlines'; lks.className = 'form-check-input'; lks.checked = LAKE_OUTLINES;
-        var t3 = document.createElement('span'); t3.className = 'form-check-label'; t3.textContent = 'Lake outlines (wind)';
-        row3.appendChild(lks); row3.appendChild(t3); gear.appendChild(row3);
         var row2 = document.createElement('label'); row2.className = 'ov-setting ov-range mb-0 mt-2'; row2.setAttribute('for', 'ovParticles');
         var t2 = document.createElement('span'); t2.textContent = 'Particles';
         var part = document.createElement('input'); part.type = 'range'; part.id = 'ovParticles';
@@ -4424,10 +4422,6 @@
         iso.addEventListener('change', function () {
           ISOBARS = !!iso.checked; writePref(ISO_KEY, ISOBARS ? '1' : '0');
           if (overlay) overlay.setIsobars(ISOBARS);
-        });
-        lks.addEventListener('change', function () {
-          LAKE_OUTLINES = !!lks.checked; writePref(LAKEOUT_KEY, LAKE_OUTLINES ? '1' : '0');
-          if (overlay) overlay.setLakeOutlines(LAKE_OUTLINES);
         });
         part.addEventListener('input', function () {
           var v = Math.max(0, Math.min(100, Math.round(+part.value) || 0));
@@ -4707,13 +4701,14 @@
       }
     });
   </script>
-  <!-- Location aids (static_ui/places.js, plan section 51): country / state borders and city names, each a gear row. -->
+  <!-- Location aids (static_ui/places.js, plan section 51): borders (country and state lines) and city names, each a gear row. -->
   <script src="/ui/places.js?v={{ ui_asset_version }}"></script>
   <script>
     (function initPlaces() {
-      var ids = ['borders', 'states', 'places'], pl = null;
+      var ids = ['borders', 'places'], pl = null;
       try {
         var st = null; try { st = window.localStorage; } catch (e) {}
+        try { st && st.removeItem('allshore.states.v1'); } catch (e) {}   // the state lines follow "Borders" now (owner, 2026-10-23)
         if (window.AllshorePlaces) pl = window.AllshorePlaces.create(map, { base: {{ places_base|tojson }} || window.__allshorePlacesBase || '', storage: st || undefined });
       } catch (e) { console.error('places', e); }
       ids.forEach(function (id) {

@@ -845,6 +845,8 @@
       this.chunks.delete(k); this.bytes -= c.bytes;
     }
   };
+  // Nothing wants the cells any more (the lake outlines not shown): the queue goes; a download under way finishes.
+  CoastStore.prototype.dropQueue = function () { this.queue = []; this.queued = {}; };
   // Off: stop everything and drop the chunks (cheap to re-fetch from the edge cache); tier 0 stays.
   CoastStore.prototype.abortAll = function () {
     if (this.abort) { this.abort.abort(); this.abort = null; }
@@ -1859,13 +1861,18 @@
         this._lakeOut.onChange = this._onLakeOut;
         this._lakeOut.onNeeded = function () { return self._lakeOutCellsNeeded(); };
       }
-      if (!this._frame || !OUTLINE_FIELDS[this.field]) return;
+      var drawn = !!(this._frame && OUTLINE_FIELDS[this.field]);
       for (var k in this._tiles) {
         var t = this._tiles[k];
-        if (!t.el || !t.coords || t.coords.z < LAKE_OUTLINE_MIN_ZOOM) continue;
-        var had = !!t.el._ovLo;
+        if (!t.el || !t.coords) continue;
+        if (!this._lakeOut) {                                  // detached: every tile lets its mask go (V7-5), whatever field is shown
+          var had = !!t.el._ovLo;
+          t.el._ovLo = null; t.el._ovLoKey = null;
+          if (had && drawn) this._draw(t.el, t.coords);
+          continue;
+        }
+        if (!drawn || t.coords.z < LAKE_OUTLINE_MIN_ZOOM) continue;
         t.el._ovLoKey = null;
-        if (!this._lakeOut) { t.el._ovLo = null; if (!had) continue; }
         this._draw(t.el, t.coords);
       }
     },
@@ -3902,9 +3909,8 @@
     this.lake = opts.glwu ? lakeStore(this.root) : null;
     this.lakeCoast = opts.glwu ? coastStore(this.root + '/static/coast/lakes-v1', LAKES_TIER0) : null;
     this.lcache = new FrameCache(MAX_DECODED); this.ldcache = new FrameCache(MAX_DECODED); this._lakeWait = null; this._lakeNear = null;
-    // The lakes' shores under wind (plan section 51; the page's settings gear, on unless turned off): its own coast set,
-    // loaded only when first wanted (wind, tile zoom 4 or more).
-    this.lakeOutlines = opts.lakeOutlines !== false;
+    // The lakes' shores under wind (plan section 51; always on: owner, 2026-10-23): its own coast set, loaded only when
+    // first wanted (wind, tile zoom 4 or more).
     this.lakeOutCoast = opts.coast ? coastStore(this.root + '/' + LAKEOUT_PREFIX, LAKEOUT_TIER0) : null;
     this._lakeGateNear = null; this._lakeHs = null;        // the reach the view gate last acted on (G33 F1b); the hover's lake height frame (B-2)
   }
@@ -4072,6 +4078,7 @@
     } else this.layer.clear();                               // never another field's picture under this label
     this._ensureFlow();                                      // no direction field: the particles go
     this._ensureIso(); this.pcache.clear();                  // no pressure under SST: the isobars and their frames go (G32 A-P1-1)
+    this._syncLakeOutlines();                                // no lake outlines under SST: the set and its masks go (V7-5)
     if (this.readout) this.readout.hidden = true;
     this._unattribute();
     this._syncLook();                                        // the imagery (the wind's relief goes)
@@ -5162,27 +5169,26 @@
     try { this.iso.setData(frame, grid, entry, fdef); }
     catch (e) { if (!this._isoWarned && typeof console !== 'undefined' && console.warn) { this._isoWarned = true; console.warn('overlay isobars', e); } }
   };
-  // The lakes' shores (plan section 51) are wanted under an outlined field (wind) at tile zoom 4 or more, with the setting
-  // on; the set loads then (never holding a draw) and is given to the layer. Off, or the setting off: the layer drops it.
+  // The lakes' shores (plan section 51) are wanted under an outlined field (wind) at tile zoom 4 or more; the set loads
+  // then (never holding a draw) and is given to the layer. Not wanted (another field, SST, a lower zoom): the layer
+  // drops it, the tiles their masks, the set its queued cells (V7-5); it is given back when wanted again.
   Overlay.prototype._wantLakeOutline = function () {
-    return !!(this.lakeOutlines && this.lakeOutCoast && this.layer && this.mode !== 'obs' && OUTLINE_FIELDS[this.field] &&
+    return !!(this.lakeOutCoast && this.layer && this.mode !== 'obs' && OUTLINE_FIELDS[this.field] &&
       Math.round(this.map.getZoom()) >= LAKE_OUTLINE_MIN_ZOOM);
   };
   Overlay.prototype._syncLakeOutlines = function () {
     var self = this, st = this.lakeOutCoast;
     if (!this.layer || !st) return;
-    if (!this.lakeOutlines) { if (this.layer._lakeOut) this.layer.setLakeOutlineCoast(null); return; }
-    if (!this._wantLakeOutline() || this.layer._lakeOut === st) return;
+    if (!this._wantLakeOutline()) {
+      if (this.layer._lakeOut) this.layer.setLakeOutlineCoast(null);
+      st.dropQueue();
+      return;
+    }
+    if (this.layer._lakeOut === st) return;
     st.load().then(function (store) {
-      if (!store || !self.layer || !self.lakeOutlines || self.layer._lakeOut === store) return;
+      if (!store || !self.layer || self.layer._lakeOut === store || !self._wantLakeOutline()) return;
       self.layer.setLakeOutlineCoast(store);
     }, function () {});
-  };
-  // The page's setting (the gear): off drops the lines (and the set's downloads) at once; on draws them where wanted.
-  Overlay.prototype.setLakeOutlines = function (on) {
-    this.lakeOutlines = !!on;
-    this._syncLakeOutlines();
-    if (!this.lakeOutlines && this.lakeOutCoast) this.lakeOutCoast.abortAll();
   };
   // The page's setting (the gear): off drops the pressure downloads and frames at once; on fetches the shown step's.
   Overlay.prototype.setIsobars = function (on) {

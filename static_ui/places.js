@@ -7,14 +7,17 @@
  * relief alike; world copies come with the grid layer. Kinds: 0 settled country border, 2 disputed / indefinite / line of
  * control (dashed), 1 state or province line (thinner, dashed). A country line shows from tile zoom 3, a state line from
  * zoom 5, and each line from its own Natural Earth zoom too.
- * Names: text spans in a second pane (z 360: above the gridlines, below the forecast circles and the markers), placed at
- * the map's layer points (they ride along with a pan) and rebuilt after every move or zoom: every place whose own zoom
- * is reached (Natural Earth places at Natural Earth's min_zoom; GeoNames towns from zoom 8, 9 or 10 by size, set by the
- * builder), the largest first, each label kept only where it overlaps neither another label nor a map control, a marker
- * or a gridline label; at most 120 labels (60 on a narrow map).
+ * Names: text spans in a second pane (z 620: above the station icons of the marker pane, below the tooltips; a name
+ * takes no tap, so an icon under it stays clickable; owner, 2026-10-23), placed at the map's layer points (they ride
+ * along with a pan) and rebuilt after every move or zoom and when a map control or the overlay's sheet changes size:
+ * every place whose own zoom is reached (Natural Earth places at Natural Earth's min_zoom; GeoNames towns from zoom 8, 9
+ * or 10 by size, set by the builder), the largest first, each label kept only where its dot and its whole text lie on
+ * the map (to the left of the dot when the right runs off) and it overlaps neither another label nor a map control, the
+ * overlay's sheet or a gridline label; at most 120 labels (60 on a narrow map).
  * Nothing is fetched before the page has loaded, nor while every kind is off or the map is below the first wanted zoom.
- * Settings (localStorage, '0' = off; anything else, or nothing, = on): 'allshore.borders.v1', 'allshore.states.v1',
- * 'allshore.places.v1'. Credits join the map's attribution while a kind is on.
+ * Settings (localStorage, '0' = off; anything else, or nothing, = on): 'allshore.borders.v1' (country and state lines
+ * together, one "Borders" setting: owner, 2026-10-23), 'allshore.places.v1'. Credits join the map's attribution while a
+ * kind is on and its data has loaded.
  *
  * window.AllshorePlaces = { create(map, opts), _internals }. Nothing touches the DOM at load (Node-testable).
  */
@@ -23,7 +26,7 @@
 
   var TILE = 256;
   var LAT_MAX = 85.05112878;                         // Web Mercator's edge
-  var KEYS = { borders: 'allshore.borders.v1', states: 'allshore.states.v1', places: 'allshore.places.v1' };
+  var KEYS = { borders: 'allshore.borders.v1', places: 'allshore.places.v1' };
   var KIND_ADMIN0 = 0, KIND_ADMIN1 = 1, KIND_DISPUTED = 2;
   var BORDER_ZOOM = 3, STATE_ZOOM = 5, PLACES_ZOOM = 2;   // tile zoom from which each kind is drawn (owner, 2026-10-23)
   var TIER0_MAX_ZOOM = 7;                            // tile zoom up to which the world files serve (tier 1 from 8)
@@ -43,6 +46,8 @@
   var LABEL_FONT = '600 11px system-ui, -apple-system, "Segoe UI", sans-serif', CAPITAL_FONT = '700 11px system-ui, -apple-system, "Segoe UI", sans-serif';
   var LABEL_H = 14, LABEL_GAP = 4, DOT_R = 3, LABEL_DX = 6;   // text height; gap between boxes; the dot's reach; dot -> text
   var LABEL_MAX = 120, LABEL_MAX_NARROW = 60, NARROW_PX = 600, VIEW_MARGIN_PX = 40, BUCKET = 32;
+  var LABEL_PANE_Z = 620;                            // above the marker pane (600), below the tooltips (650)
+  var BLOCKED_SELECTOR = '.leaflet-control, .ov-sheet, .graticule-label';
   var CHAR_PX = 6.2;                                 // the width estimate without a canvas
   var CREDIT_BORDERS = 'Borders: <a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener" title="Made with Natural Earth (public domain)">Natural Earth</a>';
   var CREDIT_PLACES = 'Places: <a href="https://www.geonames.org/" target="_blank" rel="noopener" title="Town names from GeoNames (and Natural Earth), modified: filtered and ranked">GeoNames</a> <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>';
@@ -297,7 +302,7 @@
   function kindsAt(z, on) {
     var k = {};
     if (on.borders && z >= BORDER_ZOOM) { k[KIND_ADMIN0] = true; k[KIND_DISPUTED] = true; }
-    if (on.states && z >= STATE_ZOOM) k[KIND_ADMIN1] = true;
+    if (on.borders && z >= STATE_ZOOM) k[KIND_ADMIN1] = true;
     return k;
   }
   // A line shows from its own Natural Earth zoom: tile zoom z serves map zooms below z + 0.5.
@@ -380,9 +385,15 @@
   }
   // The labels kept: in order, each whose box (the dot and the text to its right, grown by the gap) overlaps neither a
   // kept one nor a blocked rect, up to `max`. items: [{x, y, w, ...}] in container px; blocked: [{left, top, right, bottom}].
-  function thin(items, blocked, max) {
+  // With the map's size {x, y} a label is kept only where its dot and its whole text lie on the map; when the text runs
+  // off the right it goes to the left of the dot (item.side 'L'), else it stays right ('R').
+  function thin(items, blocked, max, size) {
     var kept = [], grid = {}, i, j;
-    function boxOf(it) { return { left: it.x - DOT_R - LABEL_GAP, top: it.y - LABEL_H / 2 - LABEL_GAP, right: it.x + LABEL_DX + it.w + LABEL_GAP, bottom: it.y + LABEL_H / 2 + LABEL_GAP }; }
+    function boxOf(it, left) {
+      return left ? { left: it.x - LABEL_DX - it.w - LABEL_GAP, top: it.y - LABEL_H / 2 - LABEL_GAP, right: it.x + DOT_R + LABEL_GAP, bottom: it.y + LABEL_H / 2 + LABEL_GAP }
+                  : { left: it.x - DOT_R - LABEL_GAP, top: it.y - LABEL_H / 2 - LABEL_GAP, right: it.x + LABEL_DX + it.w + LABEL_GAP, bottom: it.y + LABEL_H / 2 + LABEL_GAP };
+    }
+    function fits(r) { return !size || (r.left + LABEL_GAP >= 0 && r.top + LABEL_GAP >= 0 && r.right - LABEL_GAP <= size.x && r.bottom - LABEL_GAP <= size.y); }
     function file(r) {
       for (var gy = Math.floor(r.top / BUCKET); gy <= Math.floor(r.bottom / BUCKET); gy++) {
         for (var gx = Math.floor(r.left / BUCKET); gx <= Math.floor(r.right / BUCKET); gx++) (grid[gx + ',' + gy] = grid[gx + ',' + gy] || []).push(r);
@@ -400,9 +411,10 @@
     }
     for (i = 0; i < blocked.length; i++) file(blocked[i]);
     for (i = 0; i < items.length && kept.length < max; i++) {
-      var r = boxOf(items[i]);
+      var r = boxOf(items[i], false), side = 'R';
+      if (!fits(r)) { r = boxOf(items[i], true); side = 'L'; if (!fits(r)) continue; }
       if (!free(r)) continue;
-      file(r); kept.push(items[i]);
+      file(r); items[i].side = side; kept.push(items[i]);
     }
     return kept;
   }
@@ -417,11 +429,11 @@
     var L = opts.L || root.L, doc = opts.document || root.document;
     var storage = opts.storage || { getItem: function () { return null; }, setItem: function () {} };
     if (!L || !map || !doc) return null;
-    var on = { borders: readOn(storage, KEYS.borders), states: readOn(storage, KEYS.states), places: readOn(storage, KEYS.places) };
+    var on = { borders: readOn(storage, KEYS.borders), places: readOn(storage, KEYS.places) };
     var store = opts.base ? new PlacesStore(opts.base, opts.fetch) : null, started = false;
     if (!map.getPane('placesLinePane')) { var pane = map.createPane('placesLinePane'); pane.style.zIndex = 340; pane.style.pointerEvents = 'none'; }
     var lpane = map.getPane('placesLabelPane');
-    if (!lpane) { lpane = map.createPane('placesLabelPane'); lpane.style.zIndex = 360; lpane.style.pointerEvents = 'none'; }
+    if (!lpane) { lpane = map.createPane('placesLabelPane'); lpane.style.zIndex = LABEL_PANE_Z; lpane.style.pointerEvents = 'none'; }
     var Layer = L.GridLayer.extend({
       createTile: function (coords) {
         var c = doc.createElement('canvas'), dpr = Math.min(2, root.devicePixelRatio || 1);
@@ -433,8 +445,8 @@
     });
     var layer = new Layer({ pane: 'placesLinePane', tileSize: TILE, updateWhenZooming: false, keepBuffer: 1, noWrap: false });
     // the data is wanted once the page may download, with a kind on, from the zoom its first kind shows
-    function firstZoom() { return on.places ? PLACES_ZOOM : on.borders ? BORDER_ZOOM : STATE_ZOOM; }
-    function wanted() { return !!(started && store && (on.borders || on.states || on.places) && Math.round(map.getZoom()) >= firstZoom()); }
+    function firstZoom() { return on.places ? PLACES_ZOOM : BORDER_ZOOM; }
+    function wanted() { return !!(started && store && (on.borders || on.places) && Math.round(map.getZoom()) >= firstZoom()); }
     function paint(c, coords) {
       var ctx = c.getContext && c.getContext('2d');
       c._plComplete = true;
@@ -471,11 +483,12 @@
       if (measure) { measure.font = bold ? CAPITAL_FONT : LABEL_FONT; var m = measure.measureText(name); if (m && m.width > 0) w = m.width; }
       return (widths[key] = w);
     }
-    // the rects (container px) labels keep clear of: the map's controls, the overlay's sheet, the gridline labels, the markers
+    // the rects (container px) labels keep clear of: the map's controls, the overlay's sheet, the gridline labels (the
+    // station icons are no obstacle: the names are drawn above them)
     function blockedRects() {
       var c = map.getContainer(), base = c.getBoundingClientRect ? c.getBoundingClientRect() : { left: 0, top: 0 }, size = map.getSize(), out = [];
       if (!c.querySelectorAll) return out;
-      Array.prototype.forEach.call(c.querySelectorAll('.leaflet-control, .ov-sheet, .graticule-label, .leaflet-marker-icon'), function (el) {
+      Array.prototype.forEach.call(c.querySelectorAll(BLOCKED_SELECTOR), function (el) {
         if (el.hidden || !el.getBoundingClientRect) return;
         var r = el.getBoundingClientRect();
         if (r.right <= r.left || r.bottom <= r.top) return;
@@ -498,10 +511,10 @@
         var cd = cands[i], p = map.latLngToContainerPoint([cd.lat, cd.lon]);
         items.push({ x: p.x, y: p.y, w: textWidth(cd.name, !!(cd.flags & FLAG_CAPITAL)), cand: cd });
       }
-      var kept = thin(items, blockedRects(), size.x < NARROW_PX ? LABEL_MAX_NARROW : LABEL_MAX), used = 0;
+      var kept = thin(items, blockedRects(), size.x < NARROW_PX ? LABEL_MAX_NARROW : LABEL_MAX, size), used = 0;
       for (i = 0; i < kept.length; i++) {
         var it = kept[i], el = pool[used] || (pool[used] = box.appendChild(doc.createElement('span'))), lp = map.latLngToLayerPoint([it.cand.lat, it.cand.lon]);
-        el.className = 'place-label' + (it.cand.flags & FLAG_CAPITAL ? ' place-capital' : '');
+        el.className = 'place-label' + (it.cand.flags & FLAG_CAPITAL ? ' place-capital' : '') + (it.side === 'L' ? ' place-left' : '');
         el.textContent = it.cand.name;
         el.style.left = Math.round(lp.x) + 'px'; el.style.top = Math.round(lp.y) + 'px';
         el.hidden = false;
@@ -512,6 +525,17 @@
     var frame = null;
     function schedule() { if (frame !== null) return; frame = (root.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () { frame = null; update(); }); }
     if (store) store.onChange = function () { redraw(true); if (!labelsComplete) schedule(); };
+    // a map control or the overlay's sheet changing size (a panel opened or folded, the sheet coming or going) moves
+    // the space the names may use: lay them out again (V7-1)
+    var RO = root.ResizeObserver, MO = root.MutationObserver, cont = map.getContainer();
+    if (RO) {
+      var ro = new RO(function () { schedule(); });
+      var corners = map._controlCorners || {};
+      for (var ck in corners) if (corners[ck]) ro.observe(corners[ck]);
+      var watchSheets = function () { Array.prototype.forEach.call(cont.querySelectorAll ? cont.querySelectorAll('.ov-sheet') : [], function (el) { if (!el._plObserved) { el._plObserved = true; ro.observe(el); } }); };
+      watchSheets();
+      if (MO) new MO(function () { watchSheets(); schedule(); }).observe(cont, { childList: true });
+    }
     // the credits, changed only on a change (Leaflet counts add / remove calls)
     var credited = { borders: false, places: false };
     function credit(kind, text, want) {
@@ -519,13 +543,18 @@
       credited[kind] = want;
       if (want) map.attributionControl.addAttribution(text); else map.attributionControl.removeAttribution(text);
     }
+    // a kind is credited while it is on and its data has loaded (nothing is credited that cannot be drawn: V7-6)
+    function credits() {
+      var ok = !!(store && store.status === 'ok');
+      credit('borders', CREDIT_BORDERS, ok && on.borders); credit('places', CREDIT_PLACES, ok && on.places);
+    }
     function sync() {
-      var any = on.borders || on.states || on.places;
+      var any = on.borders || on.places;
       if (any && !map.hasLayer(layer)) layer.addTo(map);
       if (!any && map.hasLayer(layer)) map.removeLayer(layer);
       if (!any && store) store.idle();
-      credit('borders', CREDIT_BORDERS, !!(on.borders || on.states)); credit('places', CREDIT_PLACES, !!on.places);
-      if (wanted() && store.status !== 'ok' && !store.loading) store.load().then(function (s) { if (s) { redraw(false); update(); } });   // one redraw per load
+      credits();
+      if (wanted() && store.status !== 'ok' && !store.loading) store.load().then(function (s) { if (s) { credits(); redraw(false); update(); } });   // one redraw per load
     }
     function set(kind, v) {
       if (!Object.prototype.hasOwnProperty.call(KEYS, kind)) return;
@@ -550,6 +579,7 @@
                   TIER0_MAX_ZOOM: TIER0_MAX_ZOOM, STYLE: STYLE, DRAW_ORDER: DRAW_ORDER, MAX_INFLIGHT: MAX_INFLIGHT, MAX_CELL_BYTES_KEPT: MAX_CELL_BYTES_KEPT, RETRY_MS: RETRY_MS,
                   FLAG_CAPITAL: FLAG_CAPITAL, FLAG_GEONAMES: FLAG_GEONAMES, LABEL_FONT: LABEL_FONT, CAPITAL_FONT: CAPITAL_FONT, LABEL_H: LABEL_H, LABEL_GAP: LABEL_GAP, DOT_R: DOT_R, LABEL_DX: LABEL_DX,
                   LABEL_MAX: LABEL_MAX, LABEL_MAX_NARROW: LABEL_MAX_NARROW, NARROW_PX: NARROW_PX, VIEW_MARGIN_PX: VIEW_MARGIN_PX, BUCKET: BUCKET, CHAR_PX: CHAR_PX,
+                  LABEL_PANE_Z: LABEL_PANE_Z, BLOCKED_SELECTOR: BLOCKED_SELECTOR,
                   CREDIT_BORDERS: CREDIT_BORDERS, CREDIT_PLACES: CREDIT_PLACES,
                   lonToX: lonToX, latToY: latToY, yToLat: yToLat, decodeLines: decodeLines, decodePlaces: decodePlaces, readVarints: readVarints, unzz: unzz, validIndex: validIndex,
                   cellName: cellName, cellsForBox: cellsForBox, cellsForTile: cellsForTile, PlacesStore: PlacesStore, kindsAt: kindsAt, lineShown: lineShown, tilePaths: tilePaths,

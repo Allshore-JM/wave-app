@@ -368,6 +368,14 @@ def _coast_base() -> str:
     return os.environ.get("COAST_BASE", "").rstrip("/")
 
 
+def _places_base() -> str:
+    """An explicit home for the location aids' data (tools/places: borders and city names, plan section 51): env
+    PLACES_BASE. Without it the page takes static/places/v1 beside the model frames, derived inside the overlay's
+    gated block like the coast data (so the frames address never changes a page with the overlay off). Neither = the
+    gear rows still show, nothing is drawn."""
+    return os.environ.get("PLACES_BASE", "").strip().rstrip("/")
+
+
 def _geo_base() -> str:
     """The geo Worker (tools/geo, plan section 46): env GEO_BASE, e.g. https://geo.allshoresurf.com. With it the page
     opens at the visitor's area (the station nearest the IP address) when the address names no station and the
@@ -436,11 +444,12 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.24.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.25.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
-              "winds.js": "application/javascript", "basemap.js": "application/javascript"}
+              "winds.js": "application/javascript", "basemap.js": "application/javascript",
+              "places.js": "application/javascript"}
 
 
 @app.route("/ui/<name>")
@@ -3155,6 +3164,7 @@ def index():
         ui_asset_version=UI_ASSET_VERSION,
         icon_version=ICON_VERSION,
         coast_base=_coast_base(),
+        places_base=_places_base(),
         geo_base=_geo_base(),
         site_origin=SITE_ORIGIN,
         site_title=SITE_TITLE,

@@ -1396,6 +1396,28 @@ Windows: a station chip gives its subtitle up before the station's name. An expa
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
 
+## Location aids (plan section 51, UI asset 1.25.0, overlay asset 2.22.0)
+
+Four rows in the settings gear, all on for a new visitor, each remembered in this browser (localStorage, "0" = off):
+
+| Row | Key | Shows from | Source |
+|---|---|---|---|
+| Country borders | `allshore.borders.v1` | map zoom 3 (each line from its own Natural Earth zoom) | Natural Earth admin-0 lines (public domain); disputed lines dashed |
+| State/province borders | `allshore.states.v1` | map zoom 5 | Natural Earth admin-1 lines, dashed and fainter |
+| City names | `allshore.places.v1` | each place's own zoom (Natural Earth `min_zoom`; GeoNames towns 8 / 9 / 10 by size) | Natural Earth populated places + GeoNames `cities1000` (CC BY 4.0) |
+| Lake outlines (wind) | `allshore.lakeOutlines.v1` | tile zoom 4, under the wind overlay only | GSHHG lakes of 100 km² or more (see Model overlays) |
+
+`static_ui/places.js` (`window.AllshorePlaces.create(map, {base, storage})`) draws the borders on 256-px canvas tiles in
+the pane `placesLinePane` (z 340: above the particles, below the gridlines and the forecast points) as a light 1-px line
+over a dark halo, and the names as text spans in `placesLabelPane` (z 360), thinned per view so no two overlap (largest
+places first; never under the map's controls, markers or the gridline labels; at most 120, 60 on maps under 600 px wide),
+hidden while zooming and rebuilt after a move. Nothing is fetched before the page's load event (+ 1.5 s), while every
+row is off, or below zoom 3 (2 for names). The data comes from `static/places/v1/` beside the model frames (derived in the
+overlay's gated block), or from env `PLACES_BASE`: `index.json`, the world tier (`world-lines.bin`, `world-places.bin`,
+used to map zoom 7) and 10-degree cells `c/<lat>_<lon>.l.bin` / `.p.bin` from zoom 8 (on demand, two at a time, 6 MB
+kept). The credits "Borders: Natural Earth" and "Places: GeoNames CC BY 4.0" join the map's (i) while their rows are on.
+Built and published by `tools/places/build_places.py` (coast-build workflow, `set: places`; `tools/places/README.md`).
+
 ## Wind stations (plan section 39, UI asset 1.22.0)
 
 Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from four public-domain NOAA / NWS

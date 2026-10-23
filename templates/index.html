@@ -458,6 +458,20 @@
       position: absolute; font: 600 11px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; color: #fff; white-space: nowrap;
       text-shadow: 0 0 2px rgba(0,0,0,.9), 0 0 4px rgba(0,0,0,.6);
     }
+    /* city names (static_ui/places.js, plan section 51): the font must equal the module's LABEL_FONT (widths are measured
+       with it); a span sits at its place, the dot on the point and the text 6 px to its right */
+    .place-labels { position: absolute; left: 0; top: 0; pointer-events: none; }
+    .place-label {
+      position: absolute; transform: translate(0, -50%); padding-left: 6px; white-space: nowrap;
+      font: 600 11px/14px system-ui, -apple-system, "Segoe UI", sans-serif; color: #fff;
+      text-shadow: 0 0 2px rgba(0,0,0,.9), 0 0 4px rgba(0,0,0,.6);
+    }
+    .place-label::before {
+      content: ""; position: absolute; left: -2px; top: 50%; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%;
+      background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.55);
+    }
+    .place-label.place-capital { font-weight: 700; }
+    .place-label.place-capital::before { left: -2.5px; width: 5px; height: 5px; margin-top: -2.5px; }
     /* Colored dot next to each layer-control label (doubles as the legend) */
     .lc-dot {
       display: inline-block; width: 11px; height: 11px; border-radius: 50%;
@@ -776,6 +790,7 @@
     @media print {
       #map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .tide-win, .sr-star, .station-caret, .tools-host, .tools-bar { display: none !important; }
       .wind-win { display: none !important; }
+      .place-labels { display: none !important; }
       .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
       .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
       #forecastTable[hidden] { display: block !important; } #graphs, #forecastSummary { display: none !important; }   /* the charts are not printable: the detailed table is */
@@ -960,6 +975,9 @@
               {% endfor %}
             </select>
             <label class="grid-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="gridlines" checked> <span class="form-check-label">Lat/long gridlines</span></label>
+            <label class="grid-setting place-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="borders" checked> <span class="form-check-label">Country borders</span></label>
+            <label class="grid-setting place-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="states" checked> <span class="form-check-label">State/province borders</span></label>
+            <label class="grid-setting place-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="places" checked> <span class="form-check-label">City names</span></label>
           </div>
       </div>
     </form>
@@ -4237,6 +4255,8 @@
       var BASE = {{ model_frames_base|tojson }};
       // the map tools' swell exposure reads the coast data published beside the frames (plan section 29)
       if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshoreCoastBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/coast/v1';
+      // the location aids' borders and city names, also beside the frames (plan section 51)
+      if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshorePlacesBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/places/v1';
       var VERSION = {{ overlay_asset_version|tojson }};
       var MODELS = {{ overlay_models|tojson }};                 // the models the panel offers (MODEL_OVERLAY_MODELS); the first is the default
       var SST = {{ overlay_sst|tojson }};                       // "Sea surface temperature" offered (SST_OVERLAY; plan section 44)
@@ -4686,6 +4706,24 @@
         if (t) t.click();
       }
     });
+  </script>
+  <!-- Location aids (static_ui/places.js, plan section 51): country / state borders and city names, each a gear row. -->
+  <script src="/ui/places.js?v={{ ui_asset_version }}"></script>
+  <script>
+    (function initPlaces() {
+      var ids = ['borders', 'states', 'places'], pl = null;
+      try {
+        var st = null; try { st = window.localStorage; } catch (e) {}
+        if (window.AllshorePlaces) pl = window.AllshorePlaces.create(map, { base: {{ places_base|tojson }} || window.__allshorePlacesBase || '', storage: st || undefined });
+      } catch (e) { console.error('places', e); }
+      ids.forEach(function (id) {
+        var box = document.getElementById(id);
+        if (!box) return;
+        if (!pl) { box.closest('.place-setting').hidden = true; return; }
+        box.checked = pl.on(id);
+        box.addEventListener('change', function () { pl.set(id, box.checked); });
+      });
+    })();
   </script>
   <!-- Cloudflare Web Analytics (cookieless page-view/visit counting) -->
   <script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "5cb8e83a86034ae2a3980001b33c0b31"}'></script>

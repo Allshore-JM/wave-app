@@ -3501,7 +3501,17 @@ test('G33 re-check R27 / R28 / P3-4: the readout shows "calm" when the hover\'s 
   assert.equal(o.frameIndex, S + 3);
   const n = hsFramesOf(w).length;
   await w.releaseUrl((u) => u.endsWith(hsUrl(S + 2)));
-  assert.equal(hsFramesOf(w).length, n, 'no height frame of another step asked for by the landing'); assert.equal(o.readout.textContent, '…');
+  assert.equal(hsFramesOf(w).length, n, 'no height frame of another step asked for by the landing');
+  assert.equal(o.readout.textContent, 'calm', 'the hovered step\'s word (2.21.6 left "…" until the next move)');
+  // the same, but the readout shows another value meanwhile (the cursor moved onto water with a value): never overwritten
+  o.seek(S + 4); await settle(); await w.releaseAll(); await settle(); await w.releaseAll(); await settle();
+  r.move(45, -87); assert.equal(o.readout.textContent, '…');
+  L.lakeAt = () => false; L.readoutAt = () => 1.5; r.move(45.5, -86); const shown = o.readout.textContent;
+  assert.ok(/ s$/.test(shown), 'a period value shown: ' + shown);
+  o.seek(S + 5); await settle();
+  for (let k = 0; k < 10; k++) { const j = w.pendingBitmaps.findIndex((f) => !isHt(f.blob.url)); if (j < 0) break; w.pendingBitmaps.splice(j, 1)[0](); await settle(); }
+  await w.releaseUrl((u) => u.endsWith(hsUrl(S + 4)));
+  assert.equal(o.readout.textContent, shown, 'the late word never replaces another value');
   o.unmount();
 }));
 

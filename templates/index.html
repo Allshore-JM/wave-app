@@ -534,7 +534,8 @@
     .wind-hollow.wind-calm .wind-ring, .wind-hollow.wind-none .wind-ring { background: transparent; pointer-events: none; }
     .wind-calm .wind-ring { left: 11px; top: 11px; width: 18px; height: 18px; background: rgba(255,255,255,.9); border: 2px solid currentColor; }
     .wind-calm .wind-num { color: #1d2b4f; text-shadow: none; font-size: 11px; }
-    .wind-none .wind-ring { left: 16px; top: 16px; width: 8px; height: 8px; background: #fff; border: 1.5px solid #8a96a3; box-shadow: none; }
+    /* no recent reading: a hollow grey ring, so it never reads as a town's white dot (G34 B-3) */
+    .wind-none .wind-ring { left: 15px; top: 15px; width: 10px; height: 10px; background: transparent; border: 2px solid #b8c1cb; box-shadow: 0 0 0 1px rgba(0,0,0,.45), inset 0 0 0 1px rgba(0,0,0,.45); }
     .wind-none .wind-num { display: none; }
     .wind-flag.wind-calm, .wind-cur-dot.wind-calm { color: #8a96a3; }
     .wind-flag.wind-light, .wind-cur-dot.wind-light { color: #339af0; }
@@ -4356,7 +4357,7 @@
         } catch (e) {}
       }
       function choose(field, restore) {
-        if (!field) { panel.textContent = ''; if (overlay) overlay.unmount(); return; }
+        if (!field) { panel.textContent = ''; if (overlay) overlay.unmount(); settleFirst(); return; }
         panel.textContent = 'Loading…';
         loadAssets().then(function () {
           if (sel.value !== field) return;
@@ -4366,8 +4367,10 @@
             isobars: ISOBARS, particles: PARTICLES / 100
           });
           overlay.mount(field, restore);
+          if (overlay.settled) overlay.settled().then(settleFirst, settleFirst);
         }).catch(function (err) {
           if (sel.value === field) panel.textContent = 'Overlay unavailable: ' + err.message;
+          settleFirst();
         });
       }
       // First open of a tab (nothing saved yet): Wave Height at "now", not playing (plan section 26); a saved
@@ -4376,6 +4379,11 @@
       var again = saved0 === null ? 'hs' : stored().field;
       sel.value = typeof again === 'string' && FIELDS.hasOwnProperty(again) ? again : '';    // (autocomplete="off": never the browser's form restore)
       var shown = sel.value;                                     // what the select showed before a change
+      // The location aids wait for the first picture before they download, so on a slow link the coastline is not starved
+      // (G34 B-6): a promise while a picture is on its way, settled by the overlay (or a failure, or Off).
+      var firstDone = null;
+      window.__allshoreOverlayWait = sel.value ? new Promise(function (res) { firstDone = res; }) : null;
+      var settleFirst = function () { if (firstDone) { var d = firstDone; firstDone = null; d(); } };
       sel.addEventListener('change', function () {
         // Switching layers while the saved one waits to be restored is a field switch like any other: the
         // saved time comes along. A layer picked from Off starts fresh (no saved time).
@@ -4712,7 +4720,8 @@
       try {
         var st = null; try { st = window.localStorage; } catch (e) {}
         try { st && st.removeItem('allshore.states.v1'); } catch (e) {}   // the state lines follow "Borders" now (owner, 2026-10-23)
-        if (window.AllshorePlaces) pl = window.AllshorePlaces.create(map, { base: {{ places_base|tojson }} || window.__allshorePlacesBase || '', storage: st || undefined });
+        if (window.AllshorePlaces) pl = window.AllshorePlaces.create(map, { base: {{ places_base|tojson }} || window.__allshorePlacesBase || '', storage: st || undefined,
+          waitFor: function () { return window.__allshoreOverlayWait || null; } });   // the overlay's first picture first (G34 B-6)
       } catch (e) { console.error('places', e); }
       ids.forEach(function (id) {
         var box = document.getElementById(id);

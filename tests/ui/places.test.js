@@ -93,11 +93,13 @@ test('the cells of a tile: 10-degree south-west corners, world copies wrapped, t
   assert.ok(edge.some((n) => n.endsWith('_-180')) && edge.every((n) => n.endsWith('_-180') || n.endsWith('_-170')), 'the first tile (-180..-168.75): ' + edge);
 });
 
-test('the zoom gates: countries from tile zoom 3, states from 5, each line from its own zoom (tile zoom z serves map zooms below z + 0.5)', () => {
-  const both = { borders: true, states: true };
-  assert.deepEqual(I.kindsAt(2, both), {}); assert.deepEqual(I.kindsAt(3, both), { 0: true, 2: true }); assert.deepEqual(I.kindsAt(4, both), { 0: true, 2: true });
-  assert.deepEqual(I.kindsAt(5, both), { 0: true, 1: true, 2: true });
-  assert.deepEqual(I.kindsAt(6, { borders: false, states: true }), { 1: true }); assert.deepEqual(I.kindsAt(6, { borders: true, states: false }), { 0: true, 2: true });
+test('the zoom gates: one Borders setting: countries from tile zoom 3, states from 5, each line from its own zoom (tile zoom z serves map zooms below z + 0.5)', () => {
+  const on = { borders: true };
+  assert.deepEqual(I.kindsAt(2, on), {}); assert.deepEqual(I.kindsAt(3, on), { 0: true, 2: true }); assert.deepEqual(I.kindsAt(4, on), { 0: true, 2: true });
+  assert.deepEqual(I.kindsAt(5, on), { 0: true, 1: true, 2: true });
+  assert.deepEqual(I.kindsAt(6, { borders: false }), {}, 'off: no line of any kind');
+  assert.deepEqual(I.kindsAt(6, { borders: false, states: true }), {}, 'a stray states flag draws nothing');
+  assert.deepEqual(Object.keys(I.KEYS).sort(), ['borders', 'places'], 'two settings: Borders and City names');
   assert.equal(I.lineShown(74, 7), true); assert.equal(I.lineShown(75, 7), false); assert.equal(I.lineShown(75, 8), true);
   assert.equal(I.lineShown(0, 0), true); assert.equal(I.lineShown(34, 3), true); assert.equal(I.lineShown(35, 3), false, 'zoom 3.5 rounds to tile zoom 4');
 });
@@ -270,7 +272,8 @@ function fakeMap(z, lat, lon, sx, sy) {
       const c = this._wpx(), x0 = (c.x - size.x / 2) / c.n, x1 = (c.x + size.x / 2) / c.n, y0 = (c.y - size.y / 2) / c.n, y1 = (c.y + size.y / 2) / c.n;
       return { getWest: () => x0 / 256 * 360 - 180, getEast: () => x1 / 256 * 360 - 180, getNorth: () => I.yToLat(y0), getSouth: () => I.yToLat(y1) };
     },
-    getContainer: () => ({ getBoundingClientRect: () => ({ left: 10, top: 20 }), querySelectorAll: () => controls }),
+    sheets: [],
+    getContainer() { const mm = this; return { getBoundingClientRect: () => ({ left: 10, top: 20 }), querySelectorAll: (sel) => { if (sel === '.ov-sheet') return mm.sheets; mm.lastSel = sel; return controls; } }; },
     attributionControl: { addAttribution: (t) => credits.push('+' + t.slice(0, 7)), removeAttribution: (t) => credits.push('-' + t.slice(0, 7)) } };
   return m;
 }
@@ -279,44 +282,54 @@ function fakeL(map) {
 }
 function storage(init) { const m = new Map(Object.entries(init || {})); return { m, getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) }; }
 
-test('create(): its own pane (z 340, no pointer events); both kinds on by default; nothing fetched before the page is ready, below zoom 3, or with both kinds off; the settings stored', async () => {
+test('create(): its own panes (lines z 340, names z 620 above the station icons, no pointer events); both settings on by default; nothing fetched before the page is ready, below zoom 3, or with both off; the settings stored; credits only once the data has loaded', async () => {
   const map = fakeMap(6), f = fakeFetch(TIER0);
   let start = null;
   const s = storage();
   const pl = P.create(map, { base: BASE, L: fakeL(map), document: fakeDoc(), storage: s, fetch: f, whenReady: (go) => { start = go; } });
   assert.equal(map.panes.placesLinePane.style.zIndex, 340); assert.equal(map.panes.placesLinePane.style.pointerEvents, 'none');
-  assert.equal(map.panes.placesLabelPane.style.zIndex, 360); assert.equal(map.panes.placesLabelPane.style.pointerEvents, 'none');
+  assert.equal(map.panes.placesLabelPane.style.zIndex, 620); assert.equal(map.panes.placesLabelPane.style.pointerEvents, 'none');
+  assert.ok(I.LABEL_PANE_Z > 600 && I.LABEL_PANE_Z < 650, 'above the marker pane (600), below the tooltips (650)');
   assert.equal(map.panes.placesLabelPane.children[0], pl.labels); assert.equal(pl.labels.attrs['aria-hidden'], 'true');
-  assert.equal(pl.on('borders'), true); assert.equal(pl.on('states'), true); assert.equal(pl.on('places'), true);
+  assert.equal(pl.on('borders'), true); assert.equal(pl.on('places'), true); assert.equal(pl.on('states'), false, 'no states setting of its own');
   assert.ok(map.hasLayer(pl.layer));
   assert.equal(f.asked.length, 0, 'nothing before the page is ready');
-  assert.deepEqual(map.credits, ['+Borders', '+Places:'], 'the credits at once');
+  assert.deepEqual(map.credits, [], 'no credit before the data has loaded (V7-6)');
   start(); await settle();
   assert.deepEqual(f.asked, [BASE + '/index.json', BASE + '/world-lines.bin', BASE + '/world-places.bin']);
-  pl.set('borders', false); pl.set('states', false);
-  assert.equal(s.m.get('allshore.borders.v1'), '0'); assert.equal(s.m.get('allshore.states.v1'), '0');
+  assert.deepEqual(map.credits, ['+Borders', '+Places:'], 'credited once loaded');
+  pl.set('borders', false);
+  assert.equal(s.m.get('allshore.borders.v1'), '0'); assert.equal(s.m.has('allshore.states.v1'), false);
   assert.ok(map.hasLayer(pl.layer), 'places still on: the layer stays'); assert.deepEqual(map.credits.slice(2), ['-Borders'], 'the borders credit goes once');
   pl.set('places', false);
-  assert.ok(!map.hasLayer(pl.layer), 'every kind off: the layer goes'); assert.equal(s.m.get('allshore.places.v1'), '0'); assert.deepEqual(map.credits.slice(3), ['-Places:']);
-  pl.set('states', true); assert.ok(map.hasLayer(pl.layer)); assert.equal(s.m.get('allshore.states.v1'), '1'); assert.deepEqual(map.credits.slice(4), ['+Borders']);
+  assert.ok(!map.hasLayer(pl.layer), 'both off: the layer goes'); assert.equal(s.m.get('allshore.places.v1'), '0'); assert.deepEqual(map.credits.slice(3), ['-Places:']);
+  pl.set('borders', true); assert.ok(map.hasLayer(pl.layer)); assert.equal(s.m.get('allshore.borders.v1'), '1'); assert.deepEqual(map.credits.slice(4), ['+Borders'], 'loaded: credited at once');
+  pl.set('states', true); assert.equal(s.m.has('allshore.states.v1'), false, 'not a setting any more');
   pl.set('nope', true); assert.equal(s.m.has('nope'), false);
-  // a fresh page at zoom 2 with the saved settings: nothing until zoom 3 (borders) / 5 (states only) / 2 (places)
+  // a fresh page at zoom 1 with the saved settings: nothing with both off; borders alone from zoom 3; places from 2
   const map2 = fakeMap(1), f2 = fakeFetch(TIER0);
-  const pl2 = P.create(map2, { base: BASE, L: fakeL(map2), document: fakeDoc(), storage: storage({ 'allshore.borders.v1': '0', 'allshore.places.v1': '0' }), fetch: f2, whenReady: (go) => go() });
-  assert.equal(pl2.on('borders'), false); assert.equal(pl2.on('states'), true); assert.equal(pl2.on('places'), false);
-  await settle(); assert.equal(f2.asked.length, 0);
-  map2.zoom = 4; map2.fire('zoomend'); await settle(); assert.equal(f2.asked.length, 0, 'states only: not before zoom 5');
-  map2.zoom = 5; map2.fire('zoomend'); await settle(); assert.equal(f2.asked.length, 3);
+  const pl2 = P.create(map2, { base: BASE, L: fakeL(map2), document: fakeDoc(), storage: storage({ 'allshore.borders.v1': '0', 'allshore.places.v1': '0', 'allshore.states.v1': '1' }), fetch: f2, whenReady: (go) => go() });
+  assert.equal(pl2.on('borders'), false); assert.equal(pl2.on('places'), false);
+  await settle(); map2.zoom = 6; map2.fire('zoomend'); await settle(); assert.equal(f2.asked.length, 0, 'both off: nothing at any zoom (an old states key changes nothing)');
+  assert.equal(map2.hasLayer(pl2.layer), false);
+  const map2b = fakeMap(1), f2b = fakeFetch(TIER0);
+  P.create(map2b, { base: BASE, L: fakeL(map2b), document: fakeDoc(), storage: storage({ 'allshore.places.v1': '0' }), fetch: f2b, whenReady: (go) => go() });
+  map2b.zoom = 2; map2b.fire('zoomend'); await settle(); assert.equal(f2b.asked.length, 0, 'borders alone: not before zoom 3');
+  map2b.zoom = 3; map2b.fire('zoomend'); await settle(); assert.equal(f2b.asked.length, 3);
   const map3 = fakeMap(1), f3 = fakeFetch(TIER0);
-  P.create(map3, { base: BASE, L: fakeL(map3), document: fakeDoc(), storage: storage({ 'allshore.borders.v1': '0', 'allshore.states.v1': '0' }), fetch: f3, whenReady: (go) => go() });
+  P.create(map3, { base: BASE, L: fakeL(map3), document: fakeDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: f3, whenReady: (go) => go() });
   await settle(); assert.equal(f3.asked.length, 0, 'places only: not at zoom 1');
   map3.zoom = 2; map3.fire('zoomend'); await settle(); assert.equal(f3.asked.length, 3, 'places from zoom 2');
   // a storage that throws: on, and changes never throw
   const pl3 = P.create(fakeMap(6), { base: BASE, L: fakeL(fakeMap(6)), document: fakeDoc(), storage: { getItem() { throw new Error('x'); }, setItem() { throw new Error('x'); } }, whenReady: () => {} });
   assert.equal(pl3.on('borders'), true); pl3.set('borders', false); assert.equal(pl3.on('borders'), false);
-  // without a base the rows still work and nothing loads
-  const pl4 = P.create(fakeMap(6), { L: fakeL(fakeMap(6)), document: fakeDoc(), whenReady: (go) => go() });
-  assert.equal(pl4.store, null); assert.equal(pl4.wanted(), false);
+  // without a base the rows still work, nothing loads, and nothing is credited (V7-6)
+  const map4 = fakeMap(6), pl4 = P.create(map4, { L: fakeL(map4), document: fakeDoc(), whenReady: (go) => go() });
+  assert.equal(pl4.store, null); assert.equal(pl4.wanted(), false); await settle(); assert.deepEqual(map4.credits, []);
+  // a load that fails: nothing credited
+  const map5 = fakeMap(6), f5 = fakeFetch({ 'index.json': 'down' });
+  P.create(map5, { base: BASE, L: fakeL(map5), document: fakeDoc(), storage: storage(), fetch: f5, whenReady: (go) => go() });
+  await settle(); assert.ok(f5.asked.length >= 1); assert.deepEqual(map5.credits, [], 'no data: no credit');
 });
 
 test('create(): tiles painted from the store: halo and core strokes for a tile with a border, a blank tile while loading, redrawn when the data lands', async () => {
@@ -435,6 +448,38 @@ test('the thinning: no two kept labels overlap, the larger place wins, blocked r
   assert.equal(I.thin(crowd, [], 120)[0], crowd[0]);
 });
 
+test('the thinning with the map size: a name is kept only with its dot and whole text on the map; past the right edge it goes left of its dot; the left box is kept clear like the right one (V7-4)', () => {
+  const it = (x, y, w, name) => ({ x, y, w, name }), size = { x: 800, y: 600 };
+  const k = I.thin([it(100, 100, 40, 'inside'), it(770, 200, 40, 'right edge'), it(-2, 300, 40, 'dot off the left'), it(30, 400, 900, 'too long'),
+    it(400, 5, 40, 'top edge'), it(400, 597, 40, 'bottom edge'), it(805, 250, 20, 'dot off the right'), it(3, 500, 30, 'dot at the left edge')], [], 120, size);
+  assert.deepEqual(k.map((i) => i.name + ':' + i.side), ['inside:R', 'right edge:L', 'dot at the left edge:R']);
+  const exact = I.thin([it(800 - I.LABEL_DX - 40, 300, 40, 'flush right')], [], 120, size);
+  assert.deepEqual(exact.map((i) => i.side), ['R'], 'the text ending exactly on the edge stays right');
+  assert.deepEqual(I.thin([it(800 - I.LABEL_DX - 40 + 1, 300, 40, 'one over')], [], 120, size).map((i) => i.side), ['L']);
+  assert.deepEqual(I.thin([it(I.LABEL_DX + 40, 300, 40, 'flush left')], [], 120, size).map((i) => i.side), ['R'], 'right first');
+  // the left box blocks a later name: a name whose right box meets the first one's left box is thinned
+  const two = I.thin([it(780, 300, 60, 'big'), it(700, 300, 20, 'small')], [], 120, size);
+  assert.deepEqual(two.map((i) => i.name), ['big'], 'big went left (720..780); small at 700..726 meets it');
+  // without a size (the old callers) no fit rule applies
+  assert.deepEqual(I.thin([it(-50, -50, 10, 'off')], [], 120).map((i) => i.name), ['off']);
+  // a crowd: every kept box on the map and clear of the others (the side's own box)
+  const crowd = []; let seed = 11;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  for (let i = 0; i < 600; i++) crowd.push(it(Math.floor(rnd() * 840) - 20, Math.floor(rnd() * 640) - 20, 20 + Math.floor(rnd() * 80), 'p' + i));
+  const kept = I.thin(crowd, [], 120, size);
+  const box = (i) => i.side === 'L' ? { left: i.x - I.LABEL_DX - i.w, right: i.x + I.DOT_R, top: i.y - I.LABEL_H / 2, bottom: i.y + I.LABEL_H / 2 }
+                                    : { left: i.x - I.DOT_R, right: i.x + I.LABEL_DX + i.w, top: i.y - I.LABEL_H / 2, bottom: i.y + I.LABEL_H / 2 };
+  assert.ok(kept.some((i) => i.side === 'L') && kept.length > 30);
+  for (let a = 0; a < kept.length; a++) {
+    const ra = box(kept[a]);
+    assert.ok(ra.left >= 0 && ra.top >= 0 && ra.right <= 800 && ra.bottom <= 600, 'on the map: ' + kept[a].name + JSON.stringify(ra));
+    for (let b = a + 1; b < kept.length; b++) {
+      const rb = box(kept[b]), g = I.LABEL_GAP * 2;
+      assert.ok(!(ra.left - g < rb.right && ra.right + g > rb.left && ra.top - g < rb.bottom && ra.bottom + g > rb.top), kept[a].name + ' vs ' + kept[b].name);
+    }
+  }
+});
+
 test('the store: tier-0 places at every zoom; from tile zoom 8 the view\'s .p cells (a cell with no places file is never asked); labels rebuilt when a cell lands', async () => {
   const f = fakeFetch({ ...TIER0, 'c/20_-160.p.bin': CELL_P });
   const st = new I.PlacesStore(BASE, f); await st.load();
@@ -490,7 +535,7 @@ test('create(): the labels: text spans at the layer points, the largest first, t
   assert.equal(pl.labels.children.filter((s) => !s.hidden).length <= 120, true);
 });
 
-test('create(): a label never sits under a control or a marker; a crowd thins to the larger places; a cell landing rebuilds the labels once', async () => {
+test('create(): a label never sits under a control (the station icons are no obstacle); a crowd thins to the larger places; a cell landing rebuilds the labels once', async () => {
   const { M, flush } = loadWithFrames();
   const crop = fs.readFileSync(path.join(FIX, 'world-places-crop.bin')), cell = fs.readFileSync(path.join(FIX, '20_-160.p.bin'));
   const f = fakeFetch({ ...TIER0, hold: true, 'world-places.bin': ab(crop), 'c/20_-160.p.bin': ab(cell) });
@@ -511,6 +556,40 @@ test('create(): a label never sits under a control or a marker; a crowd thins to
   assert.ok(!shown().includes('Honolulu') && shown().length > 3, 'blocked by the control');
   ctl.hidden = true; pl.update(); assert.ok(shown().includes('Honolulu'), 'a hidden control blocks nothing');
   map.controls.length = 0; pl.update(); assert.ok(shown().includes('Honolulu'));
+  assert.equal(map.lastSel, I.BLOCKED_SELECTOR, 'the rects asked for: controls, the sheet, the gridline labels');
+  assert.ok(!/marker/.test(I.BLOCKED_SELECTOR), 'never the station icons: the names are drawn above them');
+});
+
+test('create(): near the right edge a name is drawn to the left of its dot (class place-left), never cut; a control corner or the overlay sheet changing size lays the names out again (V7-1, V7-4)', async () => {
+  const ros = [], mos = [], q = [];
+  const win = { requestAnimationFrame: (fn) => { q.push(fn); return q.length; },
+    ResizeObserver: class { constructor(cb) { this.cb = cb; this.els = []; ros.push(this); } observe(e) { this.els.push(e); } },
+    MutationObserver: class { constructor(cb) { this.cb = cb; mos.push(this); } observe(t, o) { this.target = t; this.opts = o; } } };
+  const M = load(win), flush = () => { while (q.length) q.shift()(); };
+  const crop = fs.readFileSync(path.join(FIX, 'world-places-crop.bin'));
+  const f = fakeFetch({ ...TIER0, 'world-places.bin': ab(crop) });
+  // Honolulu 20 px from the right edge at zoom 6 (45.5 px a degree): its 48-px name cannot run right
+  const map = fakeMap(6, 21.3, -157.858 - 380 / (256 * 64 / 360));
+  const corners = { topleft: { c: 'tl' }, topright: { c: 'tr' }, bottomleft: { c: 'bl' }, bottomright: { c: 'br' } };
+  map._controlCorners = corners;
+  const pl = M.create(map, { base: BASE, L: fakeL(map), document: oahuDoc(), storage: storage(), fetch: f, whenReady: (go) => go() });
+  await settle(); flush();
+  const hnl = pl.labels.children.find((sp) => sp.textContent === 'Honolulu' && !sp.hidden);
+  assert.ok(hnl, 'Honolulu shown'); assert.equal(hnl.className, 'place-label place-left');
+  const lp = map.latLngToLayerPoint([21.303, -157.858]);
+  assert.equal(hnl.style.left, Math.round(lp.x) + 'px', 'the span sits at the dot; CSS moves its text before it');
+  // the observers: the four corners watched; a sheet added to the container is watched too; a size change re-lays
+  assert.equal(ros.length, 1); assert.deepEqual(ros[0].els.map((e) => e.c), ['tl', 'tr', 'bl', 'br']);
+  assert.equal(mos.length, 1); assert.deepEqual(mos[0].opts, { childList: true });
+  const sheet = { cls: 'ov-sheet' }; map.sheets.push(sheet);
+  mos[0].cb([]); assert.ok(ros[0].els.includes(sheet), 'the overlay sheet watched once it is there');
+  mos[0].cb([]); assert.equal(ros[0].els.filter((e) => e === sheet).length, 1, 'once');
+  flush();
+  const p = map.latLngToContainerPoint([21.303, -157.858]);
+  map.controls.push({ hidden: false, getBoundingClientRect: () => ({ left: p.x - 80 + 10, top: p.y - 8 + 20, right: p.x + 10 + 10, bottom: p.y + 8 + 20 }) });
+  assert.ok(!hnl.hidden, 'nothing re-laid yet');
+  ros[0].cb([]); flush();
+  assert.ok(!pl.labels.children.some((sp) => sp.textContent === 'Honolulu' && !sp.hidden), 'a panel grew over it: laid out again, Honolulu goes');
 });
 
 test('the places decoder refuses a longitude of exactly 180 (the builder stores it as -180)', () => {

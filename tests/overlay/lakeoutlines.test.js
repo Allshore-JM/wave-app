@@ -178,28 +178,42 @@ test('redraws: the set arriving redraws the outlined tiles from zoom 4, its remo
   assert.deepEqual(st3.onNeeded(), {}, 'wave height: none');
 });
 
-// the Overlay's gate: wind, a tile zoom of 4 or more, the setting on, a model field (not SST)
+test('V7-5: the set taken away under another field (wave height, SST): every tile lets its mask go, none is redrawn; under wind the masked ones are redrawn', () => {
+  const l = layer('wind'), st = store(SET);
+  l._tiles[key(LAKE_T)] = { el: canvas(), coords: LAKE_T };
+  l.setLakeOutlineCoast(st);
+  const el = l._tiles[key(LAKE_T)].el;
+  assert.ok(el._ovLo, 'a mask under wind');
+  l.setFrame(FR, GRID, 'hs', HS, I.buildLut('hs', HS.legend), { step: 3 });
+  assert.ok(el._ovLo, 'the switch to wave height alone keeps it until the set is taken away');
+  const drawn = []; const draw0 = l._draw; l._draw = function (e, c) { drawn.push(key(c)); return draw0.call(this, e, c); };
+  l.setLakeOutlineCoast(null);
+  assert.equal(el._ovLo, null, 'the mask let go'); assert.equal(el._ovLoKey, null);
+  assert.deepEqual(drawn, [], 'wave height draws no lake line: nothing to redraw');
+});
+
+// the Overlay's gate: wind, a tile zoom of 4 or more, a model field (not SST); always on (owner, 2026-10-23)
 function overlay(o) {
   const ov = Object.create(I.Overlay.prototype);
   let loads = 0, zoom = o.zoom === undefined ? 6 : o.zoom;
-  const st = { status: 'idle', file: I.LAKEOUT_TIER0, aborted: 0, load() { loads++; this.status = 'ok'; return Promise.resolve(o.fail ? null : this); }, abortAll() { this.aborted++; } };
+  const st = { status: 'idle', file: I.LAKEOUT_TIER0, aborted: 0, dropped: 0, load() { loads++; this.status = 'ok'; return Promise.resolve(o.fail ? null : this); }, abortAll() { this.aborted++; }, dropQueue() { this.dropped++; } };
   const given = [];
-  Object.assign(ov, { lakeOutlines: o.on !== false, lakeOutCoast: st, mode: o.mode || 'model', field: o.field || 'wind',
+  Object.assign(ov, { lakeOutCoast: st, mode: o.mode || 'model', field: o.field || 'wind',
     map: { getZoom: () => zoom },
     layer: { _lakeOut: null, setLakeOutlineCoast(s) { this._lakeOut = s; given.push(s); } } });
   return { ov, st, given, loads: () => loads, setZoom: (z) => { zoom = z; } };
 }
 const settle = async () => { for (let i = 0; i < 4; i++) await new Promise((r) => setImmediate(r)); };
 
-test('the Overlay: the set loads and reaches the layer only under wind at tile zoom 4+ with the setting on; the setting off detaches it and stops its downloads', async () => {
+test('the Overlay: the set loads and reaches the layer only under wind at tile zoom 4+ (no setting: always on); not wanted any more, it is taken from the layer and its queue dropped (V7-5)', async () => {
   let t = overlay({});
   t.ov._syncLakeOutlines(); await settle();
   assert.equal(t.loads(), 1); assert.deepEqual(t.given, [t.st]);
   t.ov._syncLakeOutlines(); await settle();
   assert.equal(t.loads(), 1, 'already on the layer: nothing more');
-  for (const o of [{ field: 'hs' }, { field: 'tp' }, { zoom: 3.4 }, { mode: 'obs' }, { on: false }]) {
+  for (const o of [{ field: 'hs' }, { field: 'tp' }, { field: 'sst', mode: 'obs' }, { zoom: 3.4 }, { mode: 'obs' }, { on: false, field: 'wind' }]) {
     t = overlay(o); t.ov._syncLakeOutlines(); await settle();
-    assert.equal(t.loads(), 0, JSON.stringify(o)); assert.deepEqual(t.given, []);
+    assert.equal(t.loads(), o.on === false ? 1 : 0, JSON.stringify(o)); assert.deepEqual(t.given, o.on === false ? [t.st] : [], 'an old "off" option is no setting any more');
   }
   t = overlay({ zoom: 3.5 }); t.ov._syncLakeOutlines(); await settle();
   assert.equal(t.loads(), 1, 'zoom 3.5: tile zoom 4');
@@ -208,14 +222,18 @@ test('the Overlay: the set loads and reaches the layer only under wind at tile z
   assert.equal(t.loads(), 1, 'zooming in loads it');
   t = overlay({ fail: true }); t.ov._syncLakeOutlines(); await settle();
   assert.deepEqual(t.given, [], 'a failed load gives the layer nothing');
-  // the setting
-  t = overlay({}); t.ov._syncLakeOutlines(); await settle();
-  t.ov.setLakeOutlines(false);
-  assert.equal(t.ov.lakeOutlines, false); assert.deepEqual(t.given, [t.st, null]); assert.equal(t.st.aborted, 1);
-  t.ov.setLakeOutlines(true); await settle();
-  assert.deepEqual(t.given, [t.st, null, t.st], 'back on: given again');
-  // a late answer after the setting went off is not given
-  t = overlay({}); t.ov._syncLakeOutlines(); t.ov.lakeOutlines = false; await settle();
+  assert.equal(I.Overlay.prototype.setLakeOutlines, undefined, 'no setting');
+  // not wanted any more (another field, SST, a lower zoom): taken from the layer, the queue dropped; given back after
+  for (const leave of [(x) => { x.ov.field = 'hs'; }, (x) => { x.ov.mode = 'obs'; x.ov.field = 'sst'; }, (x) => { x.setZoom(3); }]) {
+    t = overlay({}); t.ov._syncLakeOutlines(); await settle();
+    leave(t); t.ov._syncLakeOutlines();
+    assert.deepEqual(t.given, [t.st, null]); assert.equal(t.st.dropped, 1); assert.equal(t.st.aborted, 0, 'decoded data stays (cheap to give back)');
+    t.ov._syncLakeOutlines(); assert.deepEqual(t.given, [t.st, null], 'already off the layer: given nothing'); assert.equal(t.st.dropped, 2);
+    t.ov.field = 'wind'; t.ov.mode = 'model'; t.setZoom(6); t.ov._syncLakeOutlines(); await settle();
+    assert.deepEqual(t.given, [t.st, null, t.st], 'wanted again: given back');
+  }
+  // a late answer after it stopped being wanted is not given
+  t = overlay({}); t.ov._syncLakeOutlines(); t.ov.field = 'hs'; await settle();
   assert.deepEqual(t.given, []);
   // without a layer or a store: nothing
   t = overlay({}); t.ov.layer = null; t.ov._syncLakeOutlines(); await settle(); assert.equal(t.loads(), 0);

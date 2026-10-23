@@ -1,6 +1,6 @@
 /* Country and state/province borders and city names on the map (plan section 51).
  *
- * Data: static/places/v1 on the frames bucket (tools/places/build_places.py): index.json, tier 0 (world-lines.bin and
+ * Data: static/places/v2 on the frames bucket (tools/places/build_places.py): index.json, tier 0 (world-lines.bin and
  * world-places.bin, for tile zoom 7 and below) and tier 1 (10-degree cells c/<lat>_<lon>.l.bin / .p.bin, from tile zoom 8).
  * Lines: an L.GridLayer of 256-px canvas tiles in its own pane (z 340: above the model overlay and its particles, below
  * the gridlines and the forecast markers), a dark halo under a light core, so they read on the imagery and the wind's
@@ -421,7 +421,7 @@
   function readOn(storage, key) { try { return storage.getItem(key) !== '0'; } catch (e) { return true; } }
   function writeOn(storage, key, on) { try { storage.setItem(key, on ? '1' : '0'); } catch (e) {} }
 
-  // opts: base (the static/places/v1 URL), storage (localStorage-like), L, document, fetch, whenReady (fn(start): calls
+  // opts: base (the static/places/v2 URL), storage (localStorage-like), L, document, fetch, whenReady (fn(start): calls
   // start once the page may download; default: the window's load event + START_DELAY_MS).
   // Returns {on(kind), set(kind, on), layer, labels, store, redraw, update, wanted}.
   function create(map, opts) {

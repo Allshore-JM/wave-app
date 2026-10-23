@@ -4261,7 +4261,7 @@
       // the map tools' swell exposure reads the coast data published beside the frames (plan section 29)
       if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshoreCoastBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/coast/v1';
       // the location aids' borders and city names, also beside the frames (plan section 51)
-      if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshorePlacesBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/places/v1';
+      if (/\/gfswave\/0p25\/v1$/.test(BASE)) window.__allshorePlacesBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/places/v2';
       var VERSION = {{ overlay_asset_version|tojson }};
       var MODELS = {{ overlay_models|tojson }};                 // the models the panel offers (MODEL_OVERLAY_MODELS); the first is the default
       var SST = {{ overlay_sst|tojson }};                       // "Sea surface temperature" offered (SST_OVERLAY; plan section 44)

@@ -239,7 +239,8 @@ def test_coast_workflow_is_pinned():
     assert pip and all(re.fullmatch(r"[a-z0-9-]+==[0-9][0-9A-Za-z.]*", p) for line in pip for p in line.split()), pip
     assert "28600e8f7a08645aab43079326df6504212ec5ccb2b4bcf3b5f4f12ed60e82bc" in text      # source archive pinned by hash
     assert "workflow_dispatch" in text and "static/coast/v1" in text and "static/coast/lakes-v1" in text
-    assert 'ARGS+=(--lakes)' in text and 'case "$SET" in coast|lakes)' in text
+    assert 'case "$SET" in coast|lakes|lakeoutlines|places)' in text and '--set "$SET"' in text
+    assert 'lakes|lakeoutlines) CMD=(python tools/coast/build_coast.py --out "build/coast/$SET-v1" --upload "static/coast/$SET-v1")' in text
 
 
 # ---------------------------------------------------------------- G5 additions
@@ -467,3 +468,147 @@ def test_lakes_check_refuses_a_zero_area_ring():
     flat = (np.array([0, 1, 2], np.int64) * Q, np.array([0, 0, 0], np.int64) * Q)
     buf = B.encode_file([[flat]], 30)
     assert any("zero-area" in p for p in B.check_file(buf, 30, ccw_only=False))
+
+
+# ---------------------------------------------------------------- the lake-outline set (plan section 51)
+
+def test_land_and_lakes_sets_are_byte_identical_to_before_the_lake_outline_refactor(tmp_path):
+    """Pinned from the builder before section 51 touched it (5e4946e): the synthetic land and Great Lakes builds."""
+    i1 = B.build(fixture_zip(str(tmp_path / "g.zip")), str(tmp_path / "v1"), log=lambda *a: None)
+    i2 = B.build_lakes(lakes_zip(str(tmp_path / "l.zip")), str(tmp_path / "lk"), log=lambda *a: None)
+    assert [i1["tier0"]["sha256"], i1["tier1"]["sha256"]] == [
+        "01336722539066789393660816a99b224622d220ced7692e4b875a9f82aad543",
+        "eb77872495467452e6f82ca632a531e07992aee5cf6bb14c287ce27ced1ac3d4"]
+    assert [i2["tier0"]["sha256"], i2["tier1"]["sha256"]] == [
+        "e5d236026f8f22df56727520ef5536e429e14556b232066991a651f1433c52dd",
+        "86f29908810447f6012e89a86ab93ad8731543fad550ab92f54131cc517c66ec"]
+    assert B.LAKES_FORMAT_KEY == ("coast-v1-lakes|q=10000|levels=2,3|box=41,49.5,-93,-75.5|min_lake=10000|min_area=1e-12|"
+                                  "tier0=i/30/0.1|tier1=f/5/0")
+    assert set(i2) >= {"lake_box", "lake_levels"} and isinstance(i2["tier1"]["lakes"], list)
+    assert "river_lakes_dropped" not in i2["tier1"] and "min_lake_km2" not in i2
+
+
+def river(rec):
+    """Set GSHHG's river-lake flag (bit 25) on a record."""
+    rec = bytearray(rec)
+    struct.pack_into(">I", rec, 8, struct.unpack_from(">I", rec, 8)[0] | (1 << 25))
+    return bytes(rec)
+
+
+def outlines_zip(path):
+    """A 5,000 km2 lake (id 20, across the 25 E cell line) with a 150 km2 island and a 30 km2 island, a 50 km2 lake, a
+    2,000 km2 river-lake, a 300 km2 lake across the antimeridian and land (ignored)."""
+    sq = lambda x0, y0, x1, y1: [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    body = (gshhg_record(20, 2, sq(23.0, 60.0, 27.0, 62.0), area_km2=5000)
+            + gshhg_record(21, 3, sq(24.0, 60.5, 24.6, 61.0), area_km2=150, container=20)
+            + gshhg_record(22, 3, sq(26.0, 61.0, 26.2, 61.2), area_km2=30, container=20)
+            + gshhg_record(23, 2, sq(30.0, 50.0, 30.1, 50.1), area_km2=50)
+            + river(gshhg_record(24, 2, sq(10.0, 0.0, 14.0, 1.0), area_km2=2000))
+            + gshhg_record(25, 2, sq(179.0, 66.0, 181.0, 67.0), area_km2=300)
+            + gshhg_record(26, 1, sq(0.0, 40.0, 40.0, 70.0), area_km2=1e6))
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("gshhs_i.b", body)
+        z.writestr("gshhs_f.b", body)
+    return path
+
+
+def test_read_gshhg_reports_the_river_lake_flag():
+    polys = list(B.read_gshhg(gshhg_record(1, 2, [(10, 10), (11, 10), (11, 11)])
+                              + river(gshhg_record(2, 2, [(10, 10), (11, 10), (11, 11)])), levels=(2,)))
+    assert [p["river"] for p in polys] == [0, 1]
+    assert abs(polys[1]["area_km2"] - 10.0) < 1e-9                                # the river bit does not touch the area scale
+
+
+def test_lake_outline_set_keeps_big_lakes_worldwide_drops_rivers_and_cuts_big_islands(tmp_path):
+    zp = outlines_zip(str(tmp_path / "g.zip"))
+    out = str(tmp_path / "lakeoutlines-v1")
+    index = B.build_lakes(zp, out, log=lambda *a: None, kind="lakeoutlines")
+    assert B.check(out, log=lambda *a: None) == []
+    assert index["kind"] == "lakeoutlines" and index["format_key"] == B.LAKEOUT_FORMAT_KEY
+    assert len({B.LAKEOUT_FORMAT_KEY, B.LAKES_FORMAT_KEY, B.FORMAT_KEY}) == 3
+    assert index["tier0"]["file"] == "lakeoutlines-i.bin" and os.path.exists(os.path.join(out, "lakeoutlines-i.bin"))
+    assert index["min_lake_km2"] == 100.0 and index["min_island_km2"] == 100.0 and index["river_lakes"] is False
+    for t in (index["tier0"], index["tier1"]):
+        assert t["lakes"] == 2 and t["islands"] == 1 and t["river_lakes_dropped"] == 1
+    assert _water(out, 23.5, 61.5) and _water(out, 26.5, 61.5)                     # the lake, on both sides of 25 E
+    assert not _water(out, 24.3, 60.7)                                             # the 150 km2 island is cut out
+    assert _water(out, 26.1, 61.1)                                                 # the 30 km2 island is not
+    assert not _water(out, 30.05, 50.05) and not _water(out, 12.0, 0.5)            # a small lake, a river-lake
+    assert _water(out, 179.5, 66.5) and _water(out, -179.5, 66.5)                  # across the antimeridian
+    assert not _water(out, 5.0, 45.0)                                              # land is not water
+    t0 = B.decode_file(open(os.path.join(out, "lakeoutlines-i.bin"), "rb").read())
+    areas = sorted(B.signed_area(ix / Q, iy / Q) for pc in t0["pieces"] for ix, iy in pc["rings"])
+    assert areas[0] < 0 < areas[-1]                                                # the island clockwise
+
+
+def test_lake_outline_river_switch_and_island_limit_are_the_constants(tmp_path, monkeypatch):
+    monkeypatch.setattr(B, "LAKEOUT_RIVER_LAKES", True)
+    monkeypatch.setattr(B, "LAKEOUT_ISLAND_MIN_KM2", 10.0)
+    zp = outlines_zip(str(tmp_path / "g.zip"))
+    polys = list(B.read_gshhg(zipfile.ZipFile(zp).read("gshhs_f.b"), B.LAKE_LEVELS))
+    lakes, islands, dropped = B.lake_outline_polys(polys)
+    assert sorted(p["id"] for p in lakes) == [20, 24, 25] and dropped == 0
+    assert sorted(p["id"] for p in islands) == [21, 22]
+
+
+def test_lake_outline_check_runs_the_real_gates_when_built_from_gshhg_2_3_7(tmp_path, monkeypatch):
+    import hashlib
+    zp = outlines_zip(str(tmp_path / "g.zip"))
+    monkeypatch.setattr(B, "GSHHG_SHA256", hashlib.sha256(open(zp, "rb").read()).hexdigest())
+    out = str(tmp_path / "lakeoutlines-v1")
+    B.build_lakes(zp, out, log=lambda *a: None, kind="lakeoutlines")
+    problems = B.check(out, log=lambda *a: None)
+    assert any("2 lakes and 1 islands, expected 1300-1600 lakes" in p for p in problems)
+    assert any(p.startswith("tier 0: probe") for p in problems)
+    assert any("should be water but its cell" in p for p in problems)            # Okeechobee's cell is absent here
+    assert any("net water area" in p for p in problems)
+    monkeypatch.setattr(B, "LAKEOUT_PROBES", [])
+    monkeypatch.setattr(B, "LAKEOUT_COUNT", (2, 2))
+    monkeypatch.setattr(B, "LAKEOUT_MIN_ISLANDS", 1)
+    monkeypatch.setattr(B, "LAKEOUT_SQDEG", (8.0, 10.5))
+    assert B.check(out, log=lambda *a: None) == []                                # the same build passes gates that fit it
+    idx = json.load(open(os.path.join(out, "index.json")))
+    idx["tier1"]["river_lakes_dropped"] = 0
+    json.dump(idx, open(os.path.join(out, "index.json"), "w"))
+    assert any("no river-lake left out" in p for p in B.check(out, log=lambda *a: None))
+
+
+def test_lake_outline_check_refuses_another_sets_key_and_an_unknown_kind(tmp_path):
+    out = str(tmp_path / "lakeoutlines-v1")
+    B.build_lakes(outlines_zip(str(tmp_path / "g.zip")), out, log=lambda *a: None, kind="lakeoutlines")
+    ip = os.path.join(out, "index.json")
+    index = json.load(open(ip))
+    json.dump(dict(index, format_key=B.LAKES_FORMAT_KEY), open(ip, "w"))
+    assert any("format_key" in p for p in B.check(out, log=lambda *a: None))
+    json.dump(dict(index, kind="rivers"), open(ip, "w"))
+    assert B.check(out, log=lambda *a: None) == ["index kind 'rivers' unknown"]
+
+
+def test_set_option_builds_each_set_and_lakes_stays_an_alias(tmp_path):
+    zl, zo = lakes_zip(str(tmp_path / "l.zip")), outlines_zip(str(tmp_path / "o.zip"))
+    assert B.main(["--set", "lakeoutlines", "--zip", zo, "--out", str(tmp_path / "o")]) == 0
+    assert json.load(open(str(tmp_path / "o" / "index.json")))["kind"] == "lakeoutlines"
+    assert B.main(["--lakes", "--zip", zl, "--out", str(tmp_path / "a")]) == 0
+    assert B.main(["--set", "lakes", "--zip", zl, "--out", str(tmp_path / "b")]) == 0
+    a = json.load(open(str(tmp_path / "a" / "index.json"))); b = json.load(open(str(tmp_path / "b" / "index.json")))
+    assert a["kind"] == b["kind"] == "lakes" and a["tier0"]["sha256"] == b["tier0"]["sha256"]
+    with pytest.raises(SystemExit):
+        B.main(["--lakes", "--set", "lakeoutlines", "--zip", zl, "--out", str(tmp_path / "c")])
+    with pytest.raises(SystemExit):
+        B.main(["--set", "rivers", "--zip", zl, "--out", str(tmp_path / "d")])
+
+
+def test_upload_takes_a_file_list_and_a_licence(tmp_path):
+    out = str(tmp_path / "lakeoutlines-v1")
+    B.build_lakes(outlines_zip(str(tmp_path / "g.zip")), out, log=lambda *a: None, kind="lakeoutlines")
+    s3 = FakeS3()
+    assert B.upload(out, "static/coast/lakeoutlines-v1", log=lambda *a: None, s3=s3, bucket="b") is True
+    assert "static/coast/lakeoutlines-v1/lakeoutlines-i.bin" in s3.objects                   # the default list follows the index
+    assert b"GNU LESSER GENERAL PUBLIC LICENSE" in s3.objects["static/coast/lakeoutlines-v1/LICENSE.txt"]["body"]
+    lic = tmp_path / "LIC.txt"
+    lic.write_bytes(b"another notice")
+    s3b = FakeS3()
+    assert B.upload(out, "p", log=lambda *a: None, s3=s3b, bucket="b", files=lambda ix: [ix["tier0"]["file"]],
+                    license_file=str(lic)) is True
+    assert s3b.log == ["p/LICENSE.txt", "p/lakeoutlines-i.bin", "p/index.json"]
+    assert s3b.objects["p/LICENSE.txt"]["body"] == b"another notice"

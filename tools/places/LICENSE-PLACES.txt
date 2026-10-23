@@ -1,0 +1,20 @@
+Map borders and place names on allshoresurf.com (static/places/v1)
+==================================================================
+
+These files are derived from two sources. They were converted, cut into 10-degree cells, simplified (the world file
+only), filtered and de-duplicated by Allshore Surf with tools/places/build_places.py in the wave-app repository.
+
+1. Natural Earth (https://www.naturalearthdata.com/)
+   Files: ne_10m_admin_0_boundary_lines_land, ne_10m_admin_1_states_provinces_lines, ne_10m_populated_places_simple,
+   from github.com/nvkelso/natural-earth-vector at commit ca96624a56bd078437bca8184e78163e5039ad19.
+   Natural Earth data is in the public domain; no permission is needed to use it. Credit: "Made with Natural Earth."
+   Boundaries are shown as Natural Earth draws them and imply no position on any disputed border.
+
+2. GeoNames (https://www.geonames.org/)
+   File: cities1000.zip (towns with at least 1,000 inhabitants) from download.geonames.org/export/dump/; the date and
+   sha256 of the copy used are recorded in index.json.
+   GeoNames data is licensed under the Creative Commons Attribution 4.0 International licence (CC BY 4.0):
+   https://creativecommons.org/licenses/by/4.0/
+   Attribution: GeoNames (www.geonames.org). Changes made: only populated places with the feature codes and population
+   listed in index.json are kept, names are cut to 60 bytes, towns within 5 km of a Natural Earth place of the same name
+   are left out, and positions are rounded to 0.0001 degree. The data is provided as is, without warranty.

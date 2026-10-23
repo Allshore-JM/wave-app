@@ -15,6 +15,19 @@ format by `build_coast.py`; see its docstring for the file layout.
 Land is GSHHG level 1 plus level 5 (the Antarctic ice front). Lakes count as land: GFS-Wave has
 no wave data on lakes or most inland seas.
 
+Two more sets use the same format and tiers, holding lake WATER instead of land:
+
+- `static/coast/lakes-v1/` (`--set lakes`, plan section 50): the five Great Lakes and their islands, for the Great
+  Lakes wave layer.
+- `static/coast/lakeoutlines-v1/` (`--set lakeoutlines`, plan section 51): every GSHHG lake of at least 100 km²
+  worldwide, with the islands of at least 100 km² inside them cut out (clockwise rings). The map draws its edge as a thin
+  line under the wind overlay. River-lakes are left out: GSHHG flags the wide reaches of the Amazon, Lena, Congo, Ob,
+  Paraná, Mekong and other rivers this way, and they would draw as twin lines along the rivers. The first real build had
+  1,400 lakes and 51 islands in tier 1, 50 river-lakes left out, a 203 KB tier 0 and 415 cells (1.2 MB). Its `--check`
+  tests the lake and island counts, at least one river-lake left out, 21 water and land probes (Okeechobee, the Caspian,
+  Baikal, Victoria, Titicaca, Tahoe, Taupo, Isle Royale, Olkhon, Ometepe, Crater Lake under the limit, an Amazon reach and
+  others) and the net water area (206.4 square degrees).
+
 ## Build and publish
 
 Run the `coast-build` workflow by hand (Actions, coast-build, Run workflow). With `upload` false it

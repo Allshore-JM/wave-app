@@ -253,3 +253,110 @@ page with the golden (`test_overlay_models_env_and_the_page` fails at test 98497
    owner's dispatches (check, then publish), the bucket verified; then the page's base `static/places/v2`.
 7. Tests for each item (unit + the page harness), mutants, UI 1.25.1, the golden re-captured in its own commit, README.
    Then the test site (MAX), then G34.
+
+### Fix round 7b (2026-10-23, Opus 5.5 HIGH)
+The scope above, with two owner comments given with the go: **one "Borders" row** for country and state lines (the
+states row and its key `allshore.states.v1` go; the key is removed on load), and **lake outlines always on** under wind
+(the gear row "Lake outlines (wind)", its setter and its key `allshore.lakeOutlines.v1` go; the key is removed on load).
+- 2cd46e8 (UI 1.25.1, overlay 2.22.1): names in `placesLabelPane` z 620 (above the marker pane, under the tooltips),
+  `BLOCKED_SELECTOR` = controls, the overlay's sheet, the gridline labels; `thin(items, blocked, max, size)` keeps a name
+  only when its dot and whole text lie on the map, else tries the text left of the dot (`place-left`), else leaves it
+  out; a ResizeObserver on the control corners and every `.ov-sheet` (found by a MutationObserver on the map container)
+  lays the names out again; credits only while the store is `ok`; `KEYS` = borders and places. Overlay:
+  `_syncLakeOutlines` detaches the set when not wanted (another field, SST, tile zoom under 4) and drops its queue
+  (`CoastStore.dropQueue`); `setLakeOutlineCoast(null)` clears every tile's mask under any field; `_mountObs` syncs.
+- b4286eb the golden (own commit); bebcb0b a playback pin (wind -> SST lets the set go).
+- 0578b8d data v2: the builder's name pass (`NAME_FIX_KM` 25, `NAME_FIX_EDITS` 2, the hand list Starsy Oskol ->
+  Stary Oskol; `read_geonames_names`, `edits`, `fix_names`; counts `name_fixes_agreed` / `name_fixes_hand`, real-build
+  gate 220-250, `NAME_PROBES`, `FORMAT_KEY` `namefix=`), coast-build `set: places` to `static/places/v2`, the page's
+  base `static/places/v2`; bf25e67 pins (GeoNames agreement, the no-op case).
+- Suites: Node 951, pytest 1,295; mutants: client 27 of 27, name pass 12 of 12. A local real build v2 against v1:
+  134,171 places, exactly 235 names changed (234 by agreement + 1 by hand), no other field changed, border lines
+  byte-identical, `--check` 0 problems.
+- Data v2 published (owner: "go ahead. use my browser to run any required tasks"): rollback tag `prod-pre-places-v2`
+  @ 51590bf; `Live-Buoy-Update` fast-forwarded to 11369c8 (job only: the builder, its tests, its README, the workflow's
+  places lines; the page unchanged, CI green). coast-build #460 (`set: places`, upload false, 18:21 UTC) = the local v2
+  build in every size and count (tier 0 341,711 + 144,202 B, 285 cells 4,287,982 B, name fixes 234 + 1, real-build gates
+  on, 0 problems); #461 (upload true) green at 18:27:54 UTC. The bucket: `index.json` = the local build but `built_utc`
+  (tier-0 sha 1c226275..., 285 cells), the two world files and three cells byte-identical, a cell without lines 404,
+  immutable + nosniff + CORS; decoded: Shenyang, Stary Oskol, København in; Shenyeng, Starsy Oskol out. (P3 nit: the
+  published `LICENSE.txt` heading still says "static/places/v1"; fix with the next data version.)
+
+## Test-site verification of fix round 7b (2026-10-23, Opus 5.5 MAX)
+`test` @ 7651473 (cherry-picks of 2cd46e8, b4286eb, bebcb0b, 0578b8d; the builder files and the workflow left out of
+`test` (they never run there), README kept as the test site's own). Pushed 18:43:43 UTC, live 18:44:43 (one failed
+request at 18:44:13: the idle free instance waking, before the switch); the served `places.js`, `forecast.js`,
+`tools.js`, `graticule.js`, `winds.js`, `tides.js`, `livelist.js`, `basemap.js` (UI 1.25.1) and `overlay.js` /
+`overlay.css` (2.22.1) = the commit; the 1.25.0 / 2.22.0 URLs 404. Site files = `feat/location-aids` except the test
+site's 3 logo lines. The test branch's suites for the touched files: Node 255 of 255; the page and flag tests 47 passed
+and the 4 known failures (the logo goldens and `test_overlay_models_env_and_the_page`). Headless Chrome 155 with the GPU, its own profile (sign-in check 0),
+trusted mouse / touch / keys. Scripts and outputs: scratch `places/v7b` (`s/b*.js`, `out/b*.txt`, `shots/`).
+
+### What held
+- **First visit with the two retired keys stored** (`b1`): both removed on load; the data only from `static/places/v2`
+  (index at 2,391 ms = the load event at 882 ms + 1.5 s, then the two world files: 3 requests, 491 KB, none from v1);
+  gear rows: Lat/long gridlines, Borders, City names, Pressure isobars (wind), Particles (no states row, no lake-outline
+  row); credits "Borders: Natural Earth" and "Places: GeoNames CC BY 4.0" once the data is in; by trusted clicks Borders
+  off -> every line gone (19 inked tiles -> 0 at US east z6, state lines included), its credit gone, stored "0"; City
+  names off -> names and their credit gone, the line layer off with both; both back on -> all back.
+- **Names** (`b2`, the independent re-run of the documented rule from the Python decoder's v2 places): 23 desktop views
+  and the same 23 on the phone (375x812, cap 60) = the page exactly (names, places within 1 px, capitals, side of the
+  dot, widths), no overlaps, none under a control, none off the map's edge. Names now drawn over station icons: the
+  default view (Hawaii z6) shows Honolulu and Hilo (step 7: none); Oahu z9 14, Honolulu z11 21, New York z9 61 names over
+  icons. Text before the dot where the right runs off (Sevastopol, Vienna, Zagreb, Winnipeg on desktop; Kailua-Kona,
+  Boston, Providence on the phone); "off the map" leaves out at most a few edge places per view.
+- **Laid out again on a panel change, the map unmoved** (`b3`, trusted clicks): folding the overlay panel frees names
+  (Japan z6: Seoul, Pyongyang, Hamhung, Wonsan, Sinuiju), opening it takes them back, the overlay Off frees six, wave
+  height again takes them back, the map tools' bar opens and closes; on the phone the sheet folded (four names freed),
+  gone (Off: six) and back; after each change the page = the re-run with the new controls; 0 layouts in 8 s at rest.
+- **Playback** (`b4`): 15 s of shark (wave height, wind; desktop 1920x1080 and the phone): 0 label layouts, 0 writes to
+  the names' pane (the observers watch sizes, not the panel's text).
+- **The icons keep the pointer** (`b7`, `b7f`): at 2,280 desktop points and 1,125 phone points inside both a name and an
+  icon, the element hit is the same with the names shown and hidden (0 names hit); 38 trusted clicks and 36 trusted taps
+  as A/B pairs (names shown / hidden): the same target and window every time; hovers show the icon's tooltip over the
+  name; clicks and taps on tide icons, wind flags and live-buoy dots under names open their windows.
+- **Lake outlines always on under wind, let go when not wanted** (`b5`): eight lake views under GFS wind and two under
+  ECMWF: every changed pixel on an edge of the tile's lake mask, round the named lake; let go through the layer's own
+  path (`setLakeOutlineCoast(null)`) every mask is cleared, and given back the tiles are pixel-identical to before;
+  wind -> wave height / period / SST: the set off the layer, 0 masks, an empty queue, 0 lake-outline downloads while
+  browsing three lake views; wind at zoom 3.4: off (masks 0), back at 6: on (21 masks); Off: chunks dropped. A fresh
+  visit under wave height asks nothing of the set (`b5a`).
+- **Nothing else changed** (`b6`): the test site's model tiles = production (2.21.7) pixel for pixel for wave height,
+  period and SST at Great Lakes z6 and Okeechobee z8 (same run, valid time, lake run, SST day: 144 tiles, 0 different);
+  under wind every one of the 51,086 / 2,630 differing pixels lies on a lake-mask edge.
+- **Credits only with data** (`b8`, DevTools Fetch refusing `static/places/v2`): no credit, no line, no name, the rows
+  stay; the data back: after the 60-s cooldown the next zoom loads it (credits, 19 inked tiles, 58 names); the index and
+  lines answering but the places file refused: still no credit. A trace of the store (`b8d`): one failure, the next try
+  only after 60 s, a zoom inside the new cooldown asks nothing.
+- **Border gates on the v2 data** (`b9`): the 25 landmark cases as the rules say; the one Borders row takes the state,
+  country and disputed lines away together (alpha 155 / 192 / 163 -> 0) and back.
+- **The corrected names on the page** (`b10`): Shenyang (z6, z9), Stary Oskol (z8, z10), Poitiers, Nizhnevartovsk;
+  local spellings kept: København, Montréal.
+- **Playback** (`w54p.js`: a collected heap before play, GPU, run 2026102312 warmed at the edge for both Origins;
+  production 2.21.7): today's machine state is slow (production itself 7.1-7.8 frames/s at Europe 1080p shark; step 7:
+  8.0). Europe z5 wave height shark 1080p, test / production ABBA: 6.2, 6.5 / 7.1, 7.1; then three interleaved rounds:
+  production 7.1 / 7.4 / 7.8, test 6.6 / 7.7 / 7.6, the test site with borders and names off 7.5 / 7.6 / 6.5: run-to-run
+  noise (the browser's render time per frame 88-118 ms for the same page). The names' new stacking costs nothing
+  measurable: names above the icons 7.2 / 7.4, at step 7's level (pane z 360) 7.5 / 7.0, names off 7.1 / 7.5, borders and
+  names off 7.7 / 7.6. Great Lakes z7 wind shark 1080p (lake outlines, isobars): test 7.7 / 8.0, production 8.0 / 8.0.
+  Every run: 0 skipped, 0 unpainted landings, in flight within the cap, every lake step with its own lake frame. Memory
+  (page heap incl. array buffers, after GC, against the overlay Off): live test +39-48 MB, production +36-44 MB (within
+  production + 10 in every cell); peaks within production's range + 10 MB (test as served +67-81, production +65-76).
+- **Overlay off** (`b12`, the feature branch's page served locally with `MODEL_OVERLAYS` unset): without a data address
+  the Borders and City names rows show, nothing is requested or drawn, and no credit (step 7: both credits shown); with
+  `PLACES_BASE` = a local CORS relay of the published `static/places/v2`: borders (34,681 line pixels at Europe z5) and
+  56 names (step 7: 66; the names that ran off the map's edges are left out now), credited; console clean.
+- **Owner's sheet** (`shots/places_fix7b_test_site.jpg`): the default Hawaii view, Oahu z9 and Honolulu z11 (names over
+  the station icons), US east z6, the Great Lakes under wind (lake outlines, borders, names, isobars), the gear, three
+  phone views (names left of their dots at the right edge).
+- Console: clean in every check (the only lines: the refusals staged in `b8`, my own canvas readbacks, and two 503s of a
+  METAR history when my A/B taps asked the same airport's 24 hours many times: the route's designed busy answer, retried
+  by the window).
+
+### Findings
+- **V7b-1 (owner awareness)**: with the names above the icons (decision D) a name can cover part of a wind flag's speed
+  number or a buoy dot (Oahu z9: "Pearl City" over a "13"); the icons stay clickable and their tooltips show under any
+  name (the A/B checks above).
+- **V7b-2 (P3 nit)**: the published `static/places/v2/LICENSE.txt` heading still names `static/places/v1`
+  (`tools/places/LICENSE-PLACES.txt`); the objects are immutable, so the fix goes with the next data version.
+- Nothing else: every check above as designed.

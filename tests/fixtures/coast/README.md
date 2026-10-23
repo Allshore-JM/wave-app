@@ -8,3 +8,5 @@ see tools/coast/LICENSE-GSHHG.txt) used by tests/ui/tools.test.js:
 - `land_parity.json`: 500 points round Oahu with their land / water answer on `oahu-t1.bin`; the server's
   `point_forecast.land_parity` (tests/test_point_forecast.py) and the page's `inLand` (tests/ui/tools.test.js) must both give
   them (G22 re-check R-A24/25).
+- `lakeoutlines_index.json` and `lakeoutlines-i.bin`: the published `static/coast/lakeoutlines-v1/` index and tier-0 overview
+  (built 2026-10-23, plan section 51), used by tests/overlay/lakeoutlines.test.js.

@@ -90,6 +90,8 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert "'allshore.isobars.v1'" in body and "'allshore.particles.v1'" in body               # section 46: the gear's two rows, kept in this browser
         assert "isobars: ISOBARS, particles: PARTICLES / 100" in body and "'ovIsobars'" in body and "'ovParticles'" in body
         assert "overlay.setIsobars(ISOBARS)" in body and "overlay.setParticleOpacity(v / 100)" in body and "'Pressure isobars (wind)'" in body
+        assert "'allshore.lakeOutlines.v1'" in body and "lakeOutlines: LAKE_OUTLINES" in body and "'ovLakeOutlines'" in body   # section 51: the lakes' shores under wind
+        assert "overlay.setLakeOutlines(LAKE_OUTLINES)" in body and "'Lake outlines (wind)'" in body
         assert GATED.search(body) is not None, name
         # removing the gated block gives back exactly the golden page
         assert GATED.sub("", body, count=1) == old["body"], name
@@ -228,7 +230,8 @@ def test_overlay_js_syntax_and_contract_strings():
                    "IsobarLayer", "'ovIsoPane'", "traceIsolines", "isoBlur", "findCentres", "projectCentres", "placeLabels", "viewOf", "placeCanvas", "PRES_WAIT_MS",                        # section 46 step 3
                    "PRES_FIELD", "pcache", "_wantPres", "_kindReady", "_startKind", "_syncIsobars", "setIsobars", "' hPa'",                  # section 46 step 4
                    "particleOpacityOf", "setParticleOpacity", "_paneOpacity", "opts.particles",                                            # section 46 step 5
-                   "prominenceMap", "ISO_HL_PROM_CODES", "'terrain_half.png'", "ISO_TERRAIN_M", "setTerrain", "_hpaText", "self._hpaText(latlng.lat, latlng.lng)", "destination-out", "_presWait", "ISO_CLAMP_PATCH_MAX"):   # fix round 3 (the readout's call site: its closure is not driven by the Node harness)
+                   "prominenceMap", "ISO_HL_PROM_CODES", "'terrain_half.png'", "ISO_TERRAIN_M", "setTerrain", "_hpaText", "self._hpaText(latlng.lat, latlng.lng)", "destination-out", "_presWait", "ISO_CLAMP_PATCH_MAX",
+                   "LAKEOUT_TIER0", "'lakeoutlines-i.bin'", "'static/coast/lakeoutlines-v1'", "setLakeOutlineCoast", "_lakeOutFor", "_syncLakeOutlines", "setLakeOutlines", "self._syncLakeOutlines(); });"):   # section 51 step 3   # fix round 3 (the readout's call site: its closure is not driven by the Node harness)
         assert needle in js, needle
     for gone in ("'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row
                  "'live since '", "next update about ", "'First frame'", "'Previous frame'", "'Next frame'", "'Last frame'",

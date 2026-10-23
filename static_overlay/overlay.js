@@ -698,6 +698,9 @@
   // per page: the decoded tier 0 (~3 MB) and the chunk LRU survive Off/On.
   var COAST_STORES = {};
   var COAST_TIER0 = 'world-i.bin', LAKES_TIER0 = 'lakes-i.bin';   // the tier-0 overview files the two published sets carry
+  // The lake-outline set (plan section 51): every lake of 100 km2 or more, its shore drawn as a line under the wind overlay
+  // like the coastline, from this tile zoom on.
+  var LAKEOUT_TIER0 = 'lakeoutlines-i.bin', LAKEOUT_PREFIX = 'static/coast/lakeoutlines-v1', LAKE_OUTLINE_MIN_ZOOM = 4;
   // file: the set's tier-0 overview (the land set's world-i.bin; the Great Lakes set's lakes-i.bin): fetched beside
   // index.json, which must name the same file (a set is never mixed with another set's overview).
   function coastStore(url, file) { return COAST_STORES[url] || (COAST_STORES[url] = new CoastStore(url, file)); }
@@ -1657,6 +1660,7 @@
       this._contour = null; this._F = null; this._sm = null; this._sv = null;
       this._src = null; this._sq = null;                   // plan section 44: the SST store the tiles sample instead of the frame
       this._lake = null; this._lakeCoast = null; this._lakeMask = false; this._lakeBox = null; this._lq = null;   // plan section 50: the Great Lakes
+      this._lakeOut = null;                                // plan section 51: the lake-outline set (lines under OUTLINE_FIELDS)
       this._sc = new Float64Array(TILE / 2 + 2); this._sr = new Float64Array(TILE / 2 + 2); this._srow = new Float64Array(TILE / 2 + 2);
       this._pi = new Int32Array(TILE + 2); this._pt = new Float64Array(TILE + 2);
       this._gen = 0; this._staleQ = null;                   // plan section 42: which frame a tile shows (el._ovGen)
@@ -1844,6 +1848,63 @@
       this._redraw();
       if (this.onRedraw) this.onRedraw();
     },
+    // The lake-outline set (plan section 51), or null: from now on the tiles of an outlined field (wind) carry the lakes'
+    // shores as lines, drawn like the coastline. Without it the tiles that had lines are redrawn without them.
+    setLakeOutlineCoast: function (store) {
+      var self = this, prev = this._lakeOut;
+      if (prev && prev.onChange === this._onLakeOut) { prev.onChange = null; prev.onNeeded = null; }
+      this._lakeOut = store && store.status === 'ok' ? store : null;
+      if (this._lakeOut) {
+        this._onLakeOut = function () { self._redrawLakeOutIncomplete(); };
+        this._lakeOut.onChange = this._onLakeOut;
+        this._lakeOut.onNeeded = function () { return self._lakeOutCellsNeeded(); };
+      }
+      if (!this._frame || !OUTLINE_FIELDS[this.field]) return;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.el || !t.coords || t.coords.z < LAKE_OUTLINE_MIN_ZOOM) continue;
+        var had = !!t.el._ovLo;
+        t.el._ovLoKey = null;
+        if (!this._lakeOut) { t.el._ovLo = null; if (!had) continue; }
+        this._draw(t.el, t.coords);
+      }
+    },
+    // The tile's lake water (0..255 per pixel) from the lake-outline set: null below LAKE_OUTLINE_MIN_ZOOM and where no lake
+    // piece touches the tile (nothing rasterised), LAND_ALL inside a lake (no shore to draw); computed once per tile element.
+    _lakeOutFor: function (el, coords) {
+      var st = this._lakeOut;
+      if (!st || coords.z < LAKE_OUTLINE_MIN_ZOOM) { el._ovLo = null; el._ovLoKey = null; return null; }
+      var key = coords.z + '/' + tileBox(coords).xw + '/' + coords.y;
+      if (el._ovLoKey === key && (el._ovLoFinal || el._ovLoRev === st.rev)) return el._ovLo;
+      var got = st.setsFor(coords);
+      if (!got.complete && el._ovLoKey === key && el._ovLoFinal === false) { el._ovLoRev = st.rev; return el._ovLo; }
+      var paths = got.sets.length ? landPathsForTile(coords, got.sets) : [];
+      el._ovLo = paths.length ? maskState(rasterise(paths, TILE)) : null;
+      el._ovLoKey = key; el._ovLoFinal = got.complete; el._ovLoRev = st.rev;
+      return el._ovLo;
+    },
+    // A tier-1 lake chunk landed (or failed): the tiles drawn from the tier-0 stand-in are redrawn when their mask changed.
+    _redrawLakeOutIncomplete: function () {
+      if (!this._lakeOut || !this._frame || !OUTLINE_FIELDS[this.field]) return;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.el || !t.coords || t.el._ovLoFinal !== false) continue;
+        var before = t.el._ovLo, after = this._lakeOutFor(t.el, t.coords);
+        if (after !== before) this._draw(t.el, t.coords);
+      }
+    },
+    _lakeOutCellsNeeded: function () {
+      var st = this._lakeOut, need = {};
+      if (!st || !OUTLINE_FIELDS[this.field]) return need;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.coords || t.coords.z < LAKE_OUTLINE_MIN_ZOOM || !st.tier1Zoom(t.coords.z)) continue;
+        var names = coastCellsForTile(t.coords, st.index.tier1.cell);
+        if (names.length > MAX_CELLS_PER_TILE) continue;
+        for (var i = 0; i < names.length; i++) need[names[i]] = true;
+      }
+      return need;
+    },
     // Every tile, or (split: a new frame while playing, plan section 42) first the tiles inside the map's pixel bounds,
     // synchronously, and the buffer tiles Leaflet keeps around the view (keepBuffer 1: up to about as many again after a
     // pan) in idle time afterwards (_drawStale), so a step's main-thread cost is the visible tiles' alone. A tile a
@@ -2022,6 +2083,13 @@
       if (!this._clip && land && land !== LAND_ALL) {                          // the coastline under an unclipped field
         if (el._ovEdgesOf !== land) { el._ovEdges = coastEdges(land, WIND_LOOK.gain); el._ovEdgesOf = land; }
         applyEdges(el._ovEdges, img.data, WIND_LOOK.ink);
+      }
+      if (this._lakeOut && OUTLINE_FIELDS[this.field]) {                    // the lakes' shores, the same line (plan section 51)
+        var lo = this._lakeOutFor(el, coords);
+        if (lo && lo !== LAND_ALL) {
+          if (el._ovLoEdgesOf !== lo) { el._ovLoEdges = coastEdges(lo, WIND_LOOK.gain); el._ovLoEdgesOf = lo; }
+          applyEdges(el._ovLoEdges, img.data, WIND_LOOK.ink);
+        }
       }
       ctx.putImageData(img, 0, 0);
     },
@@ -3834,6 +3902,10 @@
     this.lake = opts.glwu ? lakeStore(this.root) : null;
     this.lakeCoast = opts.glwu ? coastStore(this.root + '/static/coast/lakes-v1', LAKES_TIER0) : null;
     this.lcache = new FrameCache(MAX_DECODED); this.ldcache = new FrameCache(MAX_DECODED); this._lakeWait = null; this._lakeNear = null;
+    // The lakes' shores under wind (plan section 51; the page's settings gear, on unless turned off): its own coast set,
+    // loaded only when first wanted (wind, tile zoom 4 or more).
+    this.lakeOutlines = opts.lakeOutlines !== false;
+    this.lakeOutCoast = opts.coast ? coastStore(this.root + '/' + LAKEOUT_PREFIX, LAKEOUT_TIER0) : null;
     this._lakeGateNear = null; this._lakeHs = null;        // the reach the view gate last acted on (G33 F1b); the hover's lake height frame (B-2)
   }
   Overlay.prototype._def = function () { return hasModel(this.model) ? MODEL_DEFS[this.model] : MODEL_DEFS[DEFAULT_MODEL]; };
@@ -3928,6 +4000,7 @@
     // field spilling onto land and then snapping back is the wrong picture), later draws never do.
     // Wind draws the coastlines as lines only: it never waits for them, they join when loaded.
     var waitCoast = !!CLIP_FIELDS[fieldName], coastP = this.coast && (waitCoast || OUTLINE_FIELDS[fieldName]) ? this.coast.load() : Promise.resolve(null);
+    this._syncLakeOutlines();
     if (!waitCoast) coastP.then(function (store) {                           // (not tied to this mount's signal: an Update meanwhile keeps them)
       if (!self.layer || !store || self.layer._coast === store) return;
       self.layer.setCoast(store);
@@ -4801,7 +4874,7 @@
   Overlay.prototype._on = function (ev, fn) { this.map.on(ev, fn); this._listeners.push([ev, fn]); };
   Overlay.prototype._bindMap = function () {
     var self = this;
-    this._on('zoomend', function () { self._checkRes(); self._syncLakeGate(); });
+    this._on('zoomend', function () { self._checkRes(); self._syncLakeGate(); self._syncLakeOutlines(); });
     this._on('moveend', function () { self._syncLakeGate(); });
     this._on('viewreset', function () { self._syncLakeGate(); });
     this._on('move', function () { if (self.layer) self.layer._drawStale(true); });   // a buffer tile a frame behind comes into view
@@ -4879,6 +4952,7 @@
     if (this.sst) this.sst.abortAll();                     // the day's frame and manifest stay for the next On
     if (this.lake) this.lake.abortAll();                   // the lake run stays for the next On
     if (this.lakeCoast) this.lakeCoast.abortAll();
+    if (this.lakeOutCoast) this.lakeOutCoast.abortAll();
     this.mode = 'model';
     this._syncLook();                                      // the page's imagery back, no blend
     if (this.coast) this.coast.abortAll();                 // the decoded coastlines stay for the next On
@@ -5087,6 +5161,28 @@
   Overlay.prototype._isoData = function (frame, grid, entry, fdef) {
     try { this.iso.setData(frame, grid, entry, fdef); }
     catch (e) { if (!this._isoWarned && typeof console !== 'undefined' && console.warn) { this._isoWarned = true; console.warn('overlay isobars', e); } }
+  };
+  // The lakes' shores (plan section 51) are wanted under an outlined field (wind) at tile zoom 4 or more, with the setting
+  // on; the set loads then (never holding a draw) and is given to the layer. Off, or the setting off: the layer drops it.
+  Overlay.prototype._wantLakeOutline = function () {
+    return !!(this.lakeOutlines && this.lakeOutCoast && this.layer && this.mode !== 'obs' && OUTLINE_FIELDS[this.field] &&
+      Math.round(this.map.getZoom()) >= LAKE_OUTLINE_MIN_ZOOM);
+  };
+  Overlay.prototype._syncLakeOutlines = function () {
+    var self = this, st = this.lakeOutCoast;
+    if (!this.layer || !st) return;
+    if (!this.lakeOutlines) { if (this.layer._lakeOut) this.layer.setLakeOutlineCoast(null); return; }
+    if (!this._wantLakeOutline() || this.layer._lakeOut === st) return;
+    st.load().then(function (store) {
+      if (!store || !self.layer || !self.lakeOutlines || self.layer._lakeOut === store) return;
+      self.layer.setLakeOutlineCoast(store);
+    }, function () {});
+  };
+  // The page's setting (the gear): off drops the lines (and the set's downloads) at once; on draws them where wanted.
+  Overlay.prototype.setLakeOutlines = function (on) {
+    this.lakeOutlines = !!on;
+    this._syncLakeOutlines();
+    if (!this.lakeOutlines && this.lakeOutCoast) this.lakeOutCoast.abortAll();
   };
   // The page's setting (the gear): off drops the pressure downloads and frames at once; on fetches the shown step's.
   Overlay.prototype.setIsobars = function (on) {
@@ -5973,7 +6069,7 @@
       FlowAnimator: FlowAnimator, sampleRow: sampleRow, viewOf: viewOf, placeCanvas: placeCanvas,
       LakeStore: LakeStore, lakeStore: lakeStore, validLakeManifest: validLakeManifest, validLakePointer: validLakePointer, validLakeGridDef: validLakeGridDef, validateLakeGrid: validateLakeGrid,
       lakeFieldOk: lakeFieldOk, lakeFieldMatches: lakeFieldMatches, sampleLake: sampleLake, lakeBoxOf: lakeBoxOf, lakeBoxHits: lakeBoxHits, lakeNearView: lakeNearView, LAKE_NEAR_SCREENS: LAKE_NEAR_SCREENS, lakeVec: lakeVec,
-      COAST_TIER0: COAST_TIER0, LAKES_TIER0: LAKES_TIER0, LAKE_PREFIX: LAKE_PREFIX, LAKE_ATTRIBUTION: LAKE_ATTRIBUTION, LAKE_UNDER: LAKE_UNDER, LAKE_DIR_FIELD: LAKE_DIR_FIELD, LAKE_CALM_M: LAKE_CALM_M, LAKE_BOX: LAKE_BOX, lakeFull: lakeFull,
+      COAST_TIER0: COAST_TIER0, LAKES_TIER0: LAKES_TIER0, LAKEOUT_TIER0: LAKEOUT_TIER0, LAKEOUT_PREFIX: LAKEOUT_PREFIX, LAKE_OUTLINE_MIN_ZOOM: LAKE_OUTLINE_MIN_ZOOM, LAKE_PREFIX: LAKE_PREFIX, LAKE_ATTRIBUTION: LAKE_ATTRIBUTION, LAKE_UNDER: LAKE_UNDER, LAKE_DIR_FIELD: LAKE_DIR_FIELD, LAKE_CALM_M: LAKE_CALM_M, LAKE_BOX: LAKE_BOX, lakeFull: lakeFull,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
       ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_STRONG_LOW_HPA: ISO_STRONG_LOW_HPA, ISO_TERRAIN_CAP_M: ISO_TERRAIN_CAP_M, ISO_STRONG_NODES_MAX: ISO_STRONG_NODES_MAX, strongLowSearch: strongLowSearch, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,

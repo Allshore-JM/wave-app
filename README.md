@@ -361,6 +361,13 @@ wind overlay on or off (on by default; localStorage `allshore.isobars.v1`, "0" =
 whole particle layer by one CSS opacity, 0 turns them off (nothing animates and no direction frames are fetched).
 Both are remembered in this browser and apply to every field and model; the rows are built by the overlay script, so
 they exist exactly when the overlays do. The gear's panel keeps its 260-px width and, on a short map, scrolls inside.
+Lake outlines (asset 2.22.0, plan section 51): under the wind overlay the shores of every lake of 100 km² or more
+(and of the islands of 100 km² or more in them) are drawn as the same thin line as the coastline, from tile zoom 4. They
+come from `static/coast/lakeoutlines-v1/` (built by `tools/coast/build_coast.py --set lakeoutlines`, see tools/coast/README.md;
+overview file `lakeoutlines-i.bin`, full-resolution 5° cells from tile zoom 7), loaded the first time wind is shown at zoom 4
+or more and never holding a draw. The gear row "Lake outlines (wind)" turns them off (on by default; localStorage
+`allshore.lakeOutlines.v1`, "0" = off). Wind is never clipped, so the readout is unchanged; wave height, period and SST are
+untouched. River-lakes (wide river reaches GSHHG marks as lakes) are not outlined.
 The isobars' look (asset 2.19.3, the G32 fix round; the owner asked for Windy's look): the pressure field under the view is
 averaged into blocks at least 7 px apart on screen and smoothed twice by a [1, 2, 1] kernel, so the lines are smooth and the
 small rings of mountain pressure reductions and 8-bit terraces go (on a real GFS frame the large systems' lines stay within

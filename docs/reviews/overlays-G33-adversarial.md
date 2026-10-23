@@ -434,3 +434,13 @@ Timed cells (PREGC, edges warm for both Origins, 45-s idles; test 2.21.7 against
 - Memory against the owner's line: every live set within production + 10 MB (+5.8, +8.4, +6.5, 0.0, +7.1). Two peaks sit
   just over production's range + 10 (77.3 against 76.4; the phone 42.6 against 42.5): GC timing (K-2).
 - At Hawaii the test site now equals production in memory (+35.4 MB both; step 6 had paid +9 MB before the view gate).
+
+## Production (step 9, 2026-10-23)
+- 01:12 UTC: tag `prod-pre-glwu` @ 34a0101; `Live-Buoy-Update` fast-forwarded to 5e4946e (overlay 2.21.7, UI 1.24.0). The page
+  probes differ only by the versions, the 72 lake station options and the GLWU wiring; the lake tables live (GLWU, the 19Z run,
+  150 rows, wind complete); GFS stations unchanged; CI green.
+- 01:19 UTC: `GLWU_OVERLAY=1` set on the production service by the owner. On allshoresurf.com (headless Chrome, GPU): lakes drawn
+  83,020 of 83,298 px, readout = drawn 350 / 350, shark 65 landings 0 with another step's lake, ECMWF its own cells with 0 lake
+  frame requests; "calm" and the channels; the credit only with lake water on screen; leaving the lakes under wind and SST empties
+  the lake caches; phone: lakes drawn, long-press values, "no data" past +149 h, 45007's table (150 rows) without sideways
+  scroll; console clean. Rollback: unset `GLWU_OVERLAY` (overlay only) or re-push `prod-pre-glwu`.

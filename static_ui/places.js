@@ -1,0 +1,378 @@
+/* Country and state/province borders and city names on the map (plan section 51).
+ *
+ * Data: static/places/v1 on the frames bucket (tools/places/build_places.py): index.json, tier 0 (world-lines.bin and
+ * world-places.bin, for tile zoom 7 and below) and tier 1 (10-degree cells c/<lat>_<lon>.l.bin / .p.bin, from tile zoom 8).
+ * Lines: an L.GridLayer of 256-px canvas tiles in its own pane (z 340: above the model overlay and its particles, below
+ * the gridlines and the forecast markers), a dark halo under a light core, so they read on the imagery and the wind's
+ * relief alike; world copies come with the grid layer. Kinds: 0 settled country border, 2 disputed / indefinite / line of
+ * control (dashed), 1 state or province line (thinner, dashed). A country line shows from tile zoom 3, a state line from
+ * zoom 5, and each line from its own Natural Earth zoom too. Nothing is fetched before the page has loaded, nor while
+ * both kinds are off or the map is below zoom 3.
+ * Settings (localStorage, '0' = off; anything else, or nothing, = on): 'allshore.borders.v1', 'allshore.states.v1'.
+ *
+ * window.AllshorePlaces = { create(map, opts), _internals }. Nothing touches the DOM at load (Node-testable).
+ */
+(function (root) {
+  'use strict';
+
+  var TILE = 256;
+  var LAT_MAX = 85.05112878;                         // Web Mercator's edge
+  var KEYS = { borders: 'allshore.borders.v1', states: 'allshore.states.v1' };
+  var KIND_ADMIN0 = 0, KIND_ADMIN1 = 1, KIND_DISPUTED = 2;
+  var BORDER_ZOOM = 3, STATE_ZOOM = 5;               // tile zoom from which each kind is drawn (owner, 2026-10-23)
+  var TIER0_MAX_ZOOM = 7;                            // tile zoom up to which the world files serve (tier 1 from 8)
+  var LINES_MAGIC = 'LNS1', LINES_HEADER = 40;
+  var MAX_INDEX_BYTES = 1 << 20, MAX_TIER0_BYTES = 4 << 20, MAX_CELL_BYTES = 2 << 20;
+  var MAX_CELL_BYTES_KEPT = 6 << 20;                 // decoded cells kept (LRU by file bytes)
+  var MAX_INFLIGHT = 2;
+  var STALL_MS = 15000, RETRY_MS = 60000, START_DELAY_MS = 1500;
+  // the lines' look: [halo width, halo colour, core width, core colour, dash] per kind (CSS px)
+  var STYLE = {};
+  STYLE[KIND_ADMIN0] = { halo: 2.5, haloInk: 'rgba(0,0,0,0.35)', core: 1, coreInk: 'rgba(255,255,255,0.55)', dash: null };
+  STYLE[KIND_DISPUTED] = { halo: 2.5, haloInk: 'rgba(0,0,0,0.35)', core: 1, coreInk: 'rgba(255,255,255,0.55)', dash: [6, 4] };
+  STYLE[KIND_ADMIN1] = { halo: 2, haloInk: 'rgba(0,0,0,0.3)', core: 1, coreInk: 'rgba(255,255,255,0.45)', dash: [4, 3] };
+  var DRAW_ORDER = [KIND_ADMIN1, KIND_DISPUTED, KIND_ADMIN0];   // countries over states
+
+  // ---- projection (zoom-0 world pixels, as Leaflet's EPSG:3857 at zoom 0) ----
+  function lonToX(lon) { return (lon + 180) / 360 * TILE; }
+  function latToY(lat) {
+    var s = Math.sin(Math.max(-LAT_MAX, Math.min(LAT_MAX, lat)) * Math.PI / 180);
+    return TILE * (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI));
+  }
+  function yToLat(y) { var n = Math.PI - 2 * Math.PI * y / TILE; return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))); }
+
+  // ---- lines-v1 (tools/places/build_places.py; little-endian header, then one LEB128 stream) ----
+  // -> {cell, kinds, q, n (pieces), kind Uint8Array(n), box Float64Array(4n) [x0, y0, x1, y1] (zoom-0 px, y0 north),
+  //     lineStart Int32Array(n + 1), vertStart Int32Array(lines + 1), mz Uint8Array(lines), xy Float64Array(2 vertices)}.
+  // Throws on anything that does not add up (a damaged or foreign file never draws).
+  function readVarints(u8, start, out) {
+    var n = 0, v = 0, mul = 1, len = 0;
+    for (var i = start; i < u8.length; i++) {
+      var b = u8[i];
+      v += (b & 0x7f) * mul; mul *= 128; len++;
+      if (len > 5) throw new Error('lines-v1: varint longer than 5 bytes');
+      if (b < 0x80) { out[n++] = v; v = 0; mul = 1; len = 0; }
+    }
+    if (len) throw new Error('lines-v1: stream ends inside a varint');
+    return n;
+  }
+  function unzz(v) { return v % 2 ? -(v + 1) / 2 : v / 2; }
+  function decodeLines(buf) {
+    if (!buf || buf.byteLength < LINES_HEADER) throw new Error('lines-v1: file too short');
+    var dv = new DataView(buf), u8 = new Uint8Array(buf);
+    if (String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) !== LINES_MAGIC) throw new Error('lines-v1: not a lines file');
+    var cell = dv.getUint16(4, true), kinds = dv.getUint16(6, true), q = dv.getUint32(8, true);
+    var np = dv.getUint32(12, true), nl = dv.getUint32(16, true), nv = dv.getUint32(20, true);
+    if (!(q === 1000 || q === 10000) || !(cell >= 1 && cell <= 90) || nv > 5e6 || nl > nv || np > nl) throw new Error('lines-v1: bad header');
+    var vals = new Float64Array(buf.byteLength - LINES_HEADER), count = readVarints(u8, LINES_HEADER, vals), i = 0;
+    var kind = new Uint8Array(np), box = new Float64Array(4 * np), lineStart = new Int32Array(np + 1), vertStart = new Int32Array(nl + 1);
+    var mz = new Uint8Array(nl), xy = new Float64Array(2 * nv), li = 0, vi = 0;
+    function take() { if (i >= count) throw new Error('lines-v1: stream shorter than its counts'); return vals[i++]; }
+    for (var p = 0; p < np; p++) {
+      var minx = unzz(take()), miny = unzz(take()), w = take(), h = take(), k = take(), lines = take();
+      if (k !== KIND_ADMIN0 && k !== KIND_ADMIN1 && k !== KIND_DISPUTED) throw new Error('lines-v1: unknown kind ' + k);
+      if (minx < -180 * q || minx + w > 180 * q || miny < -90 * q || miny + h > 90 * q) throw new Error('lines-v1: out of range');
+      kind[p] = k; lineStart[p] = li;
+      box[4 * p] = lonToX(minx / q); box[4 * p + 2] = lonToX((minx + w) / q);
+      box[4 * p + 1] = latToY((miny + h) / q); box[4 * p + 3] = latToY(miny / q);
+      var px = minx, py = miny;
+      for (var j = 0; j < lines; j++) {
+        if (li >= nl) throw new Error('lines-v1: more lines than the header says');
+        var n = take(), z = take();
+        if (n < 2 || vi + n > nv || z > 255) throw new Error('lines-v1: bad line');
+        vertStart[li] = vi; mz[li] = z;
+        for (var t = 0; t < n; t++) {
+          px += unzz(take()); py += unzz(take());
+          xy[2 * vi] = lonToX(px / q); xy[2 * vi + 1] = latToY(py / q); vi++;
+        }
+        li++;
+      }
+    }
+    lineStart[np] = li; vertStart[li] = vi;
+    if (i !== count || li !== nl || vi !== nv) throw new Error('lines-v1: counts do not match the stream');
+    return { cell: cell, kinds: kinds, q: q, n: np, kind: kind, box: box, lineStart: lineStart, vertStart: vertStart, mz: mz, xy: xy };
+  }
+
+  // ---- the index ----
+  function validIndex(idx) {
+    if (!idx || idx.format !== 'places-v1' || !idx.tier0 || !idx.tier1) return false;
+    var t0 = idx.tier0, t1 = idx.tier1;
+    return !!(t0.lines && typeof t0.lines.file === 'string' && /^[A-Za-z0-9_.-]+\.bin$/.test(t0.lines.file) &&
+      t1.cell === 10 && typeof t1.dir === 'string' && /^[A-Za-z0-9_-]+$/.test(t1.dir) &&
+      t1.cells && typeof t1.cells === 'object' && !Array.isArray(t1.cells));
+  }
+  function cellName(lat0, lon0) { return lat0 + '_' + lon0; }
+  // The 10-degree cells a tile touches (coords in Leaflet's unwrapped tile grid: x wrapped onto the world).
+  function cellsForTile(coords, cell) {
+    var n = Math.pow(2, coords.z), xw = ((coords.x % n) + n) % n, size = TILE * n;
+    var lonW = xw / n * 360 - 180, lonE = (xw + 1) / n * 360 - 180;
+    var latN = yToLat(coords.y * TILE * TILE / size), latS = yToLat((coords.y + 1) * TILE * TILE / size);
+    var out = [];
+    for (var la = Math.floor(latS / cell) * cell; la < latN; la += cell) {
+      if (la < -90 || la >= 90) continue;
+      for (var lo = Math.floor(lonW / cell) * cell; lo < lonE; lo += cell) out.push(cellName(la, lo));
+    }
+    return out;
+  }
+
+  // ---- the store: the index and tier 0 at once, the cells on demand ----
+  function PlacesStore(base, fetchFn) {
+    this.base = base; this.fetch = fetchFn || (root.fetch && root.fetch.bind(root));
+    this.status = 'idle'; this.index = null; this.lines0 = null; this.loading = null; this.failedAt = 0;
+    this.cells = new Map(); this.bytes = 0; this.inflight = {}; this.failed = {}; this.queue = [];
+    this.rev = 0; this.onChange = null; this.abort = null; this.retryTimer = null;
+  }
+  PlacesStore.prototype._get = function (url, kind, limit, signal) {
+    return this.fetch(url, { mode: 'cors', signal: signal }).then(function (r) {
+      if (!r.ok) { var e = new Error('places ' + r.status); e.status = r.status; throw e; }
+      if (r.headers && r.headers.get && Number(r.headers.get('content-length') || 0) > limit) throw new Error('places: file too large');
+      return kind === 'json' ? r.json() : r.arrayBuffer();
+    }).then(function (body) {
+      if (kind !== 'json' && body.byteLength > limit) throw new Error('places: file too large');
+      return body;
+    });
+  };
+  // Resolves to the store (tier 0 usable) or null (never rejects); after a failure null for RETRY_MS, then a retry.
+  PlacesStore.prototype.load = function () {
+    var self = this;
+    if (this.status === 'ok') return Promise.resolve(this);
+    if (this.loading) return this.loading;
+    if (this.status === 'failed' && Date.now() - this.failedAt < RETRY_MS) return Promise.resolve(null);
+    this.status = 'loading';
+    var ctrl = typeof AbortController === 'function' ? new AbortController() : null, sig = ctrl ? ctrl.signal : undefined;
+    this.abort = ctrl;
+    var watchdog = setTimeout(function () { if (ctrl) ctrl.abort(); }, STALL_MS);
+    this.loading = this._get(this.base + '/index.json', 'json', MAX_INDEX_BYTES, sig).then(function (idx) {
+      if (!validIndex(idx)) throw new Error('places: unsupported index');
+      return self._get(self.base + '/' + idx.tier0.lines.file, 'bin', MAX_TIER0_BYTES, sig).then(function (b) { return [idx, b]; });
+    }).then(function (res) {
+      clearTimeout(watchdog);
+      if (self.abort !== ctrl) throw new Error('superseded');
+      self.lines0 = decodeLines(res[1]); self.index = res[0];
+      self.status = 'ok'; self.loading = null; self.abort = null; self.rev++;
+      return self;
+    }).catch(function () {
+      clearTimeout(watchdog);
+      if (self.abort === ctrl) { self.loading = null; self.abort = null; self.status = 'failed'; self.failedAt = Date.now(); }
+      return null;
+    });
+    return this.loading;
+  };
+  // The decoded line sets a tile draws, and whether they are final: tier 0 up to TIER0_MAX_ZOOM; from tile zoom 8 the
+  // tile's cells (a cell the index does not list has no lines; one still loading or unservable keeps tier 0).
+  PlacesStore.prototype.linesFor = function (coords) {
+    if (this.status !== 'ok') return { sets: [], complete: false };
+    if (coords.z <= TIER0_MAX_ZOOM) return { sets: [this.lines0], complete: true };
+    var names = cellsForTile(coords, this.index.tier1.cell), sets = [], missing = [], standIn = false;
+    for (var i = 0; i < names.length; i++) {
+      var nm = names[i], entry = this.index.tier1.cells[nm];
+      if (!Object.prototype.hasOwnProperty.call(this.index.tier1.cells, nm) || !entry || !entry[0]) continue;
+      var c = this.cells.get(nm);
+      if (c) { this.cells.delete(nm); this.cells.set(nm, c); sets.push(c.lines); }
+      else if (this.failed[nm] === true) standIn = true;
+      else missing.push(nm);
+    }
+    if (missing.length) { this.request(missing); return { sets: [this.lines0], complete: false }; }
+    return { sets: standIn ? [this.lines0] : sets, complete: true };
+  };
+  PlacesStore.prototype.request = function (names) {
+    var now = Date.now();
+    for (var i = 0; i < names.length; i++) {
+      var nm = names[i], f = this.failed[nm];
+      if (this.inflight[nm] || this.cells.has(nm) || f === true || this.queue.indexOf(nm) >= 0) continue;
+      if (typeof f === 'number' && f > now) { this._armRetry(f); continue; }
+      this.queue.push(nm);
+    }
+    this._pump();
+  };
+  PlacesStore.prototype._armRetry = function (until) {
+    var self = this;
+    if (this.retryTimer) return;
+    this.retryTimer = setTimeout(function () { self.retryTimer = null; self.rev++; if (self.onChange) self.onChange(); }, Math.max(0, until - Date.now()) + 50);
+  };
+  PlacesStore.prototype._pump = function () {
+    var self = this;
+    while (this.queue.length && Object.keys(this.inflight).length < MAX_INFLIGHT) {
+      (function (nm) {
+        var ctrl = typeof AbortController === 'function' ? new AbortController() : null, done = false;
+        var timer = setTimeout(function () { if (!done && ctrl) ctrl.abort(); }, STALL_MS);
+        self.inflight[nm] = ctrl || true;
+        self._get(self.base + '/' + self.index.tier1.dir + '/' + nm + '.l.bin', 'bin', MAX_CELL_BYTES, ctrl ? ctrl.signal : undefined).then(function (b) {
+          var lines = decodeLines(b);
+          if (lines.cell !== self.index.tier1.cell) throw new Error('places: a cell of another size');
+          return { lines: lines, bytes: b.byteLength };
+        }).then(function (c) {
+          done = true; clearTimeout(timer);
+          if (self.inflight[nm] !== (ctrl || true)) return;
+          delete self.inflight[nm];
+          self.cells.set(nm, c); self.bytes += c.bytes; self._trim();
+          self.rev++; if (self.onChange) self.onChange(); self._pump();
+        }, function (err) {
+          done = true; clearTimeout(timer);
+          if (self.inflight[nm] !== (ctrl || true)) return;
+          delete self.inflight[nm];
+          // a missing or undecodable cell is final (tier 0 stays there); anything else is asked again after a cooldown
+          self.failed[nm] = err && (err.status === 404 || err.status === 403 || /lines-v1|another size|too large/.test(err.message || '')) ? true : Date.now() + RETRY_MS;
+          if (typeof self.failed[nm] === 'number') self._armRetry(self.failed[nm]);
+          self.rev++; if (self.onChange) self.onChange(); self._pump();
+        });
+      })(this.queue.shift());
+    }
+  };
+  PlacesStore.prototype._trim = function () {
+    var it = this.cells.keys();
+    while (this.bytes > MAX_CELL_BYTES_KEPT && this.cells.size > 1) {
+      var k = it.next().value, c = this.cells.get(k);
+      this.cells.delete(k); this.bytes -= c.bytes;
+    }
+  };
+  // Stop downloading (both kinds turned off): queued and running cell fetches go; what is decoded stays.
+  PlacesStore.prototype.idle = function () {
+    for (var k in this.inflight) { var a = this.inflight[k]; if (a && a.abort) a.abort(); }
+    this.inflight = {}; this.queue = [];
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+  };
+
+  // ---- drawing ----
+  // Which kinds a tile at zoom z draws, from the settings.
+  function kindsAt(z, on) {
+    var k = {};
+    if (on.borders && z >= BORDER_ZOOM) { k[KIND_ADMIN0] = true; k[KIND_DISPUTED] = true; }
+    if (on.states && z >= STATE_ZOOM) k[KIND_ADMIN1] = true;
+    return k;
+  }
+  // A line shows from its own Natural Earth zoom: tile zoom z serves map zooms below z + 0.5.
+  function lineShown(mz10, z) { return mz10 < z * 10 + 5; }
+  // The polylines of a tile as tile-local CSS px, per kind: pieces whose box meets the tile (grown by `margin` px) at
+  // the tile's wrapped world x, lines of the kinds wanted and shown at this zoom; a segment wider than half the world
+  // (none after the builder's cut at +-180) is never drawn.
+  function tilePaths(coords, sets, kinds, margin) {
+    var n = Math.pow(2, coords.z), scale = n, xw = ((coords.x % n) + n) % n, ox = xw * TILE, oy = coords.y * TILE;
+    var m = (margin || 0) / n, bx0 = xw * TILE / n - m, bx1 = (xw + 1) * TILE / n + m, by0 = coords.y * TILE / n - m, by1 = (coords.y + 1) * TILE / n + m;
+    var out = {}, half = TILE / 2;
+    for (var s = 0; s < sets.length; s++) {
+      var c = sets[s];
+      for (var p = 0; p < c.n; p++) {
+        var k = c.kind[p];
+        if (!kinds[k]) continue;
+        var b = 4 * p;
+        if (c.box[b + 2] < bx0 || c.box[b] > bx1 || c.box[b + 3] < by0 || c.box[b + 1] > by1) continue;
+        for (var l = c.lineStart[p]; l < c.lineStart[p + 1]; l++) {
+          if (!lineShown(c.mz[l], coords.z)) continue;
+          var v0 = c.vertStart[l], v1 = c.vertStart[l + 1], pts = [], lx = NaN, ly = NaN;
+          for (var v = v0; v < v1; v++) {
+            var wx = c.xy[2 * v], wy = c.xy[2 * v + 1];
+            if (v > v0 && Math.abs(wx - c.xy[2 * v - 2]) > half) { if (pts.length >= 4) (out[k] = out[k] || []).push(pts); pts = []; lx = NaN; }
+            var x = wx * scale - ox, y = wy * scale - oy;
+            if (Math.abs(x - lx) < 0.25 && Math.abs(y - ly) < 0.25) continue;      // sub-pixel steps add nothing
+            pts.push(x, y); lx = x; ly = y;
+          }
+          if (pts.length >= 4) (out[k] = out[k] || []).push(pts);
+        }
+      }
+    }
+    return out;
+  }
+  function strokePaths(ctx, list) {
+    ctx.beginPath();
+    for (var i = 0; i < list.length; i++) {
+      var pts = list[i];
+      ctx.moveTo(pts[0], pts[1]);
+      for (var j = 2; j < pts.length; j += 2) ctx.lineTo(pts[j], pts[j + 1]);
+    }
+    ctx.stroke();
+  }
+  // halos first (every kind), then the cores, so a core is never covered by another line's halo
+  function drawTile(ctx, paths) {
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    for (var pass = 0; pass < 2; pass++) {
+      for (var i = 0; i < DRAW_ORDER.length; i++) {
+        var k = DRAW_ORDER[i], list = paths[k];
+        if (!list || !list.length) continue;
+        var st = STYLE[k];
+        ctx.setLineDash(st.dash || []);
+        ctx.lineWidth = pass ? st.core : st.halo; ctx.strokeStyle = pass ? st.coreInk : st.haloInk;
+        strokePaths(ctx, list);
+      }
+    }
+    ctx.setLineDash([]);
+  }
+  function readOn(storage, key) { try { return storage.getItem(key) !== '0'; } catch (e) { return true; } }
+  function writeOn(storage, key, on) { try { storage.setItem(key, on ? '1' : '0'); } catch (e) {} }
+
+  // opts: base (the static/places/v1 URL), storage (localStorage-like), L, document, fetch, whenReady (fn(start): calls
+  // start once the page may download; default: the window's load event + START_DELAY_MS).
+  // Returns {on(kind), set(kind, on), layer, store, redraw}.
+  function create(map, opts) {
+    opts = opts || {};
+    var L = opts.L || root.L, doc = opts.document || root.document;
+    var storage = opts.storage || { getItem: function () { return null; }, setItem: function () {} };
+    if (!L || !map || !doc) return null;
+    var on = { borders: readOn(storage, KEYS.borders), states: readOn(storage, KEYS.states) };
+    var store = opts.base ? new PlacesStore(opts.base, opts.fetch) : null, started = false;
+    if (!map.getPane('placesLinePane')) { var pane = map.createPane('placesLinePane'); pane.style.zIndex = 340; pane.style.pointerEvents = 'none'; }
+    var Layer = L.GridLayer.extend({
+      createTile: function (coords) {
+        var c = doc.createElement('canvas'), dpr = Math.min(2, root.devicePixelRatio || 1);
+        c.width = TILE * dpr; c.height = TILE * dpr; c.style.width = TILE + 'px'; c.style.height = TILE + 'px';
+        c._plDpr = dpr;
+        paint(c, coords);
+        return c;
+      }
+    });
+    var layer = new Layer({ pane: 'placesLinePane', tileSize: TILE, updateWhenZooming: false, keepBuffer: 1, noWrap: false });
+    // the data is wanted once the page may download, with a kind on, from the zoom its first kind shows
+    function wanted() { return !!(started && store && (on.borders || on.states) && Math.round(map.getZoom()) >= (on.borders ? BORDER_ZOOM : STATE_ZOOM)); }
+    function paint(c, coords) {
+      var ctx = c.getContext && c.getContext('2d');
+      c._plComplete = true;
+      if (!ctx) return;
+      var dpr = c._plDpr || 1;
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, c.width, c.height);
+      var kinds = kindsAt(coords.z, on);
+      if (!store || store.status !== 'ok' || (!kinds[0] && !kinds[1] && !kinds[2])) { c._plComplete = store ? store.status === 'ok' : true; return; }
+      var got = store.linesFor(coords);
+      c._plComplete = got.complete;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawTile(ctx, tilePaths(coords, got.sets, kinds, 3));
+    }
+    function redraw(onlyIncomplete) {
+      for (var k in layer._tiles) {
+        var t = layer._tiles[k];
+        if (!t.el || !t.coords) continue;
+        if (onlyIncomplete && t.el._plComplete) continue;
+        paint(t.el, t.coords);
+      }
+    }
+    if (store) store.onChange = function () { redraw(true); };
+    function sync() {
+      var any = on.borders || on.states;
+      if (any && !map.hasLayer(layer)) layer.addTo(map);
+      if (!any && map.hasLayer(layer)) map.removeLayer(layer);
+      if (!any && store) store.idle();
+      if (wanted() && store.status !== 'ok' && !store.loading) store.load().then(function (s) { if (s) redraw(false); });   // one redraw per load
+    }
+    function set(kind, v) {
+      if (!Object.prototype.hasOwnProperty.call(KEYS, kind)) return;
+      on[kind] = !!v; writeOn(storage, KEYS[kind], on[kind]);
+      sync(); redraw(false);
+    }
+    map.on('zoomend', sync);
+    var whenReady = opts.whenReady || function (start) {
+      var go = function () { setTimeout(start, START_DELAY_MS); };
+      if (doc.readyState === 'complete') go(); else if (root.addEventListener) root.addEventListener('load', go, { once: true });
+    };
+    whenReady(function () { started = true; sync(); });
+    sync();
+    return { on: function (kind) { return !!on[kind]; }, set: set, layer: layer, store: store, redraw: redraw, wanted: wanted };
+  }
+
+  root.AllshorePlaces = {
+    create: create,
+    _internals: { KEYS: KEYS, KIND_ADMIN0: KIND_ADMIN0, KIND_ADMIN1: KIND_ADMIN1, KIND_DISPUTED: KIND_DISPUTED, BORDER_ZOOM: BORDER_ZOOM, STATE_ZOOM: STATE_ZOOM,
+                  TIER0_MAX_ZOOM: TIER0_MAX_ZOOM, STYLE: STYLE, DRAW_ORDER: DRAW_ORDER, MAX_INFLIGHT: MAX_INFLIGHT, MAX_CELL_BYTES_KEPT: MAX_CELL_BYTES_KEPT, RETRY_MS: RETRY_MS,
+                  lonToX: lonToX, latToY: latToY, yToLat: yToLat, decodeLines: decodeLines, readVarints: readVarints, unzz: unzz, validIndex: validIndex,
+                  cellName: cellName, cellsForTile: cellsForTile, PlacesStore: PlacesStore, kindsAt: kindsAt, lineShown: lineShown, tilePaths: tilePaths,
+                  drawTile: drawTile, readOn: readOn, writeOn: writeOn }
+  };
+})(typeof window !== 'undefined' ? window : this);

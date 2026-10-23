@@ -1072,3 +1072,39 @@ def test_the_shaka_and_the_star_set_the_default_and_the_favorites(client):
                    "return writeFavs(f);", "localStorage.setItem(FAV_KEY, JSON.stringify(arr.slice(0, 100))); return true; } catch (e) { return false; }"):
         assert needle in picker, needle
     assert "rank: seen.size" not in picker and "acts.indexOf(a)" not in picker
+
+
+def test_location_aids_on_the_page(client, monkeypatch):
+    """Plan section 51: the three gear rows after the gridlines row (on by default; hidden when the module cannot run),
+    the module's script after the map tools' with the base from PLACES_BASE or the frames' neighbour, the label CSS in
+    the module's font, the labels left out of print."""
+    monkeypatch.delenv("PLACES_BASE", raising=False)
+    body = client.get("/?station=51201").get_data(as_text=True)
+    grid = body.index('id="gridlines"')
+    rows = [body.index('id="%s" checked' % k) for k in ("borders", "states", "places")]
+    assert grid < rows[0] < rows[1] < rows[2] < body.index('</div>', rows[2])
+    for label in ("Country borders", "State/province borders", "City names"):
+        assert label in body
+    tag = body.index('<script src="/ui/places.js?v=%s"></script>' % A.UI_ASSET_VERSION)
+    assert body.index('<script src="/ui/tools.js?v=') < tag < body.index("Cloudflare Web Analytics")
+    r = client.get("/ui/places.js?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and "AllshorePlaces" in r.get_data(as_text=True)
+    for needle in (
+        "pl = window.AllshorePlaces.create(map, { base: \"\" || window.__allshorePlacesBase || '', storage: st || undefined });",
+        "if (!pl) { box.closest('.place-setting').hidden = true; return; }",
+        "box.addEventListener('change', function () { pl.set(id, box.checked); });",
+        'font: 600 11px/14px system-ui, -apple-system, "Segoe UI", sans-serif;',
+        ".place-labels { display: none !important; }",
+    ):
+        assert needle in body, needle
+    # the module's measuring font = the page's label font
+    js = open(os.path.join(os.path.dirname(__file__), "..", "static_ui", "places.js"), encoding="utf-8").read()
+    assert "LABEL_FONT = '600 11px system-ui, -apple-system, \"Segoe UI\", sans-serif'" in js
+    assert "createPane" not in body.split("<script src=\"/ui/places.js")[1].split("</script>", 2)[1]
+    monkeypatch.setenv("PLACES_BASE", "https://example.test/places/v1/")
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert "base: \"https://example.test/places/v1\" || window.__allshorePlacesBase" in body
+    # with the overlay on, the gated block derives the base beside the frames (the coast data's rule)
+    tpl = open(os.path.join(os.path.dirname(__file__), "..", "templates", "index.html"), encoding="utf-8").read()
+    gated = tpl[tpl.index("{%- if model_overlays %}"):]
+    assert r"window.__allshorePlacesBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/places/v1';" in gated

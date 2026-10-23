@@ -36,6 +36,7 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("SST_OVERLAY", raising=False)
     monkeypatch.delenv("GLWU_OVERLAY", raising=False)
     monkeypatch.delenv("GEO_BASE", raising=False)
+    monkeypatch.delenv("PLACES_BASE", raising=False)
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
     monkeypatch.setenv("MODEL_FRAMES_BASE", base)
     monkeypatch.setattr(A, "get_station_tz", lambda sid: "Pacific/Honolulu")
@@ -46,6 +47,7 @@ def test_flag_off_page_is_byte_identical(monkeypatch):
     monkeypatch.delenv("MODEL_OVERLAYS", raising=False)
     monkeypatch.delenv("POINTS_ROOT", raising=False)
     monkeypatch.delenv("GEO_BASE", raising=False)                       # the geo Worker (section 46): the golden has GEO ""
+    monkeypatch.delenv("PLACES_BASE", raising=False)                    # the location aids (section 51): the golden derives it
     monkeypatch.setenv("MODEL_FRAMES_BASE", "https://frames.example/gfswave/0p25/v1")
     rec = G.run_scenarios(A)
     for name, old in GOLDEN.items():

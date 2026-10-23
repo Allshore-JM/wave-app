@@ -60,6 +60,7 @@ if __name__ == "__main__":
     os.environ.pop("GLWU_OVERLAY", None)                                    # the Great Lakes waves (section 50)
     os.environ.pop("COAST_BASE", None)                                      # the map tools' explicit coast address
     os.environ.pop("GEO_BASE", None)                                        # the geo Worker (section 46): the golden has GEO ""
+    os.environ.pop("PLACES_BASE", None)                                     # the location aids' explicit address (section 51)
     os.environ.pop("POINTS_ROOT", None)                                     # forecast points: from the frames address below,
     os.environ["MODEL_FRAMES_BASE"] = "https://frames.example/gfswave/0p25/v1"   # as tests/test_overlay_flag.py replays it
     import app

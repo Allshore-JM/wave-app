@@ -27,4 +27,23 @@ function encodeLines(pieces, cell, q) {
   u8.set(body, 40);
   return buf;
 }
-module.exports = { encodeLines, leb, zz };
+// A places-v1 encoder (the builder's encode_places): places [{lat, lon (degrees), rank, mz10, pop, flags, name}] in order.
+function encodePlaces(places, cell, q) {
+  cell = cell || 10; q = q || 10000;
+  const body = [];
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const p of places) {
+    const la = Math.round(p.lat * q), lo = Math.round((p.lon >= 180 ? -180 : p.lon) * q);
+    bx0 = Math.min(bx0, lo); by0 = Math.min(by0, la); bx1 = Math.max(bx1, lo); by1 = Math.max(by1, la);
+    body.push(...leb(zz(la)), ...leb(zz(lo)), ...leb(p.rank), ...leb(p.mz10), ...leb(p.pop), ...leb(p.flags));
+  }
+  if (!places.length) bx0 = by0 = bx1 = by1 = 0;
+  const names = Buffer.from(places.map((p) => p.name).join('\n'), 'utf8');
+  const buf = new ArrayBuffer(36 + body.length + names.length), dv = new DataView(buf), u8 = new Uint8Array(buf);
+  u8.set([80, 76, 67, 49], 0); dv.setUint16(4, cell, true); dv.setUint16(6, 0, true); dv.setUint32(8, q, true);
+  dv.setUint32(12, places.length, true); dv.setUint32(16, body.length, true);
+  [bx0, by0, bx1, by1].forEach((v, i) => dv.setInt32(20 + i * 4, v, true));
+  u8.set(body, 36); u8.set(names, 36 + body.length);
+  return buf;
+}
+module.exports = { encodeLines, encodePlaces, leb, zz };

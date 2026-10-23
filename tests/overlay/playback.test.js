@@ -359,6 +359,25 @@ function coastOk(url) {
   return { ok: true, status: 200, headers: { get: () => String(b.byteLength) }, arrayBuffer: () => Promise.resolve(b) };
 }
 
+test('lake outlines (plan section 51): under wind below zoom 4 nothing is asked; zooming in to 4 asks the set when the zoom ends; Off aborts its pending load', async () => {
+  const w = world();
+  w.coastAnswer = coastOk;
+  const A3 = { ...A, fields: { hs: HS, wind: { lo: 0, hi: 41.2, legend: [0, 30.9], units: 'm/s', interpolation: 'bilinear' } } };
+  w.pointer = ptr(A3); w.manifests[A3.run] = A3;
+  w.map.getZoom = () => 3.2;
+  const o = w.create({ coast: true });
+  o.mount('wind'); w.orig._bindMap.call(o); await settle();
+  const lakeAsks = () => w.fetches.filter((u) => u.indexOf('/static/coast/lakeoutlines-v1/') >= 0).length;
+  assert.equal(lakeAsks(), 0, 'zoom 3: nothing asked');
+  w.map.getZoom = () => 4.6; w.fire('map', 'zoomend'); await settle();
+  assert.equal(lakeAsks(), 2, 'index.json and the overview, asked when the zoom ends');
+  assert.equal(o.lakeOutCoast.status, 'loading');
+  o.unmount();
+  assert.equal(o.lakeOutCoast.status, 'idle', 'Off aborts the pending load');
+  while (w.pendingCoast.length) w.pendingCoast.shift()();
+  await settle();
+});
+
 test('coast: the first draw waits for the coastlines, a failed coast load draws unclipped, Off aborts a pending load', async () => {
   const w = world();
   w.coastAnswer = coastOk;
@@ -383,7 +402,9 @@ test('coast: the first draw waits for the coastlines, a failed coast load draws 
   assert.equal(o.layer._clip, false); assert.ok(o.layer._frame, JSON.stringify(o.last));
   o.mount('tp'); await settle(); await w.releaseAll(); await settle();                       // back to a clipped field: the store is already there
   assert.equal(o.layer._clip, true);
-  assert.equal(w.fetches.filter((u) => u.indexOf('/static/coast/') >= 0).length, 2);        // never fetched again
+  assert.equal(w.fetches.filter((u) => u.indexOf('/static/coast/v1/') >= 0).length, 2);     // never fetched again
+  assert.deepEqual(w.fetches.filter((u) => u.indexOf('/static/coast/lakeoutlines-v1/') >= 0).map((u) => u.split('/').pop()).sort(),
+    ['index.json', 'lakeoutlines-i.bin'], 'the lake-outline set: asked once, under wind (plan section 51)');
   o.unmount();
   assert.equal(o.coast.status, 'ok');                                                          // the decoded coastlines survive Off
   // a fresh page whose coast data is unreachable: the frame still lands, unclipped

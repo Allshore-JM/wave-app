@@ -68,7 +68,7 @@ function page(opt) {
       const ov = { field: null, mounts: [], opts: o,
         mount(f, r) { this.field = f; this.mounts.push([f, r]); log.push('mount ' + f + ' ' + r); },
         unmount() { this.field = null; log.push('unmount'); }, refresh() { log.push('refresh'); }, _persist() { log.push('persist'); },
-        setIsobars(v) { log.push('isobars ' + v); }, setParticleOpacity(v) { log.push('particles ' + v); } };
+        setIsobars(v) { log.push('isobars ' + v); }, setParticleOpacity(v) { log.push('particles ' + v); }, setLakeOutlines(v) { log.push('lakeoutlines ' + v); } };
       overlays.push(ov); log.push('create'); return ov;
     } };
   }
@@ -325,19 +325,22 @@ test('section 50: the Great Lakes setting (GLWU) reaches the module; the page re
 const ISO_KEY = 'allshore.isobars.v1', PART_KEY = 'allshore.particles.v1';
 async function created(p) { await loadedAndIdle(p); assert.equal(p.overlays.length, 1, 'the module was made'); return p.overlays[0]; }
 
-test('section 46: two rows join the gear after its own rows (isobars on, particles at 100 %), and the module is made with them', async () => {
+test('sections 46 and 51: three rows join the gear after its own rows (isobars on, lake outlines on, particles at 100 %), and the module is made with them', async () => {
   const p = page({ settings: true, local: {}, init: { field: 'wind' } });
   const kids = p.gear.children;
-  assert.equal(kids.length, 3, 'the gridlines row, then the two overlay rows');
+  assert.equal(kids.length, 4, 'the gridlines row, then the three overlay rows');
   assert.equal(kids[0].className, 'grid-setting', 'appended after the page\'s rows');
   const iso = p.byId.ovIsobars, part = p.byId.ovParticles;
   assert.equal(iso.type, 'checkbox'); assert.equal(iso.checked, true);
   assert.equal(kids[1].children[1].textContent, 'Pressure isobars (wind)');
   assert.equal(part.type, 'range'); assert.deepEqual([part.min, part.max, part.step, part.value], ['0', '100', '5', '100']);
-  assert.equal(part.getAttribute('aria-valuetext'), '100%'); assert.equal(kids[2].getAttribute('for'), 'ovParticles');
-  assert.equal(kids[2].children[0].textContent, 'Particles');
+  assert.equal(part.getAttribute('aria-valuetext'), '100%'); assert.equal(kids[3].getAttribute('for'), 'ovParticles');
+  assert.equal(kids[3].children[0].textContent, 'Particles');
+  const lk = p.byId.ovLakeOutlines;
+  assert.equal(kids[2].children[0], lk); assert.equal(lk.type, 'checkbox'); assert.equal(lk.checked, true);
+  assert.equal(kids[2].children[1].textContent, 'Lake outlines (wind)');
   const ov = await created(p);
-  assert.equal(ov.opts.isobars, true); assert.equal(ov.opts.particles, 1);
+  assert.equal(ov.opts.isobars, true); assert.equal(ov.opts.particles, 1); assert.equal(ov.opts.lakeOutlines, true);
 });
 
 test('section 46: without the gear panel (or with the rows already there) nothing is added; the module still gets the saved values', async () => {
@@ -385,4 +388,26 @@ test('section 46: a change is stored at once and reaches the module once it exis
   assert.deepEqual(p.log.filter((l) => /isobars|particles/.test(l)), ['isobars true', 'particles 0.55']);
   part.value = '250'; part.fire('input'); assert.equal(p.local.get(PART_KEY), '100', 'clamped');
   assert.equal(p.log[p.log.length - 1], 'particles 1');
+});
+
+// ---- the lake outlines row (plan section 51) ----
+const LAKEOUT_KEY = 'allshore.lakeOutlines.v1';
+test('section 51: lake outlines: only "0" turns them off; a change is stored at once and reaches the module once it exists', async () => {
+  for (const [local, on] of [[{}, true], [{ [LAKEOUT_KEY]: '0' }, false], [{ [LAKEOUT_KEY]: '1' }, true], [{ [LAKEOUT_KEY]: 'no' }, true]]) {
+    const p = page({ settings: true, local, init: { field: 'wind' } });
+    assert.equal(p.byId.ovLakeOutlines.checked, on, JSON.stringify(local));
+    const ov = await created(p);
+    assert.equal(ov.opts.lakeOutlines, on, JSON.stringify(local));
+  }
+  const p = page({ settings: true, local: {}, init: { field: '' } });
+  const lk = p.byId.ovLakeOutlines;
+  lk.checked = false; lk.fire('change');
+  assert.equal(p.local.get(LAKEOUT_KEY), '0'); assert.ok(!p.log.some((l) => /lakeoutlines/.test(l)), 'nothing forwarded without the module');
+  p.sel.userPick('wind'); await settle();
+  assert.equal(p.overlays[0].opts.lakeOutlines, false, 'the module is made with the changed value');
+  lk.checked = true; lk.fire('change');
+  assert.equal(p.local.get(LAKEOUT_KEY), '1'); assert.equal(p.log[p.log.length - 1], 'lakeoutlines true');
+  const q = page({ settings: true, throwingLocal: true, init: { field: 'wind' } });
+  q.byId.ovLakeOutlines.checked = false; q.byId.ovLakeOutlines.fire('change');            // a storage that throws never breaks it
+  assert.equal((await created(q)).opts.lakeOutlines, false);
 });

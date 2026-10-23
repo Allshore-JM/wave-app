@@ -29,8 +29,16 @@ overlay's Great Lakes layer only. GSHHG level 2 (lakes) polygons of at least LAK
 Superior + Michigan + Huron + St Clair polygon, Erie, Ontario), counter-clockwise, and the level-3 islands they contain
 (Isle Royale, Manitoulin, ...) CLOCKWISE in the same cells: under the client's nonzero fill an island cancels its lake.
 Its index carries "kind": "lakes" and its own format key; --check validates it with lake probes and the lakes' area.
-  python tools/coast/build_coast.py --lakes --zip gshhg-bin-2.3.7.zip --out build/coast/lakes-v1   (published under
-         static/coast/lakes-v1)
+  python tools/coast/build_coast.py --set lakes --zip gshhg-bin-2.3.7.zip --out build/coast/lakes-v1   (published under
+         static/coast/lakes-v1; --lakes is the same as --set lakes)
+
+The lake-outline set (plan section 51, `--set lakeoutlines`): the same format and tiers, holding the WATER of every GSHHG
+level-2 lake of at least LAKEOUT_MIN_KM2 worldwide (river-lakes, GSHHG's wide river reaches, left out) and, clockwise in
+the same cells, the level-3 islands of at least LAKEOUT_ISLAND_MIN_KM2 inside them. The client draws the edge of this
+water as a thin line under the wind overlay, through the same mask-to-edge path as the sea coastline (lakes are land in
+the land set, so the two never draw the same shore). Index "kind": "lakeoutlines", tier-0 file lakeoutlines-i.bin.
+  python tools/coast/build_coast.py --set lakeoutlines --zip gshhg-bin-2.3.7.zip --out build/coast/lakeoutlines-v1
+         (published under static/coast/lakeoutlines-v1)
 
 Usage:
   python tools/coast/build_coast.py --zip gshhg-bin-2.3.7.zip --out build/coast/v1
@@ -94,7 +102,8 @@ def read_gshhg(buf, levels=LAND_LEVELS):
         if level in levels:
             pts = np.frombuffer(buf, dtype=">i4", count=2 * n, offset=off).reshape(n, 2).astype(np.float64) / 1e6
             yield {"id": pid, "level": level, "area_km2": area / 10.0 ** (flag >> 26),
-                   "greenwich": (flag >> 16) & 3, "container": _cont, "x": pts[:, 0].copy(), "y": pts[:, 1].copy()}
+                   "greenwich": (flag >> 16) & 3, "river": (flag >> 25) & 1, "container": _cont,
+                   "x": pts[:, 0].copy(), "y": pts[:, 1].copy()}
         off += 8 * n
 
 
@@ -128,6 +137,54 @@ def lake_polys(polys):
     ids = {p["id"] for p in lakes}
     islands = [p for p in polys if p["level"] == 3 and p["container"] in ids]
     return lakes, islands
+
+
+# The lake-outline set (plan section 51): every lake >= LAKEOUT_MIN_KM2 worldwide, river-lakes left out, and the islands
+# >= LAKEOUT_ISLAND_MIN_KM2 inside the lakes kept. River-lakes (GSHHG flag bit 25: the Amazon, Lena, Congo, Ob, Parana,
+# Mekong ...) are wide river reaches that would draw as twin lines along the rivers.
+LAKEOUT_MIN_KM2 = 100.0
+LAKEOUT_ISLAND_MIN_KM2 = 100.0
+LAKEOUT_RIVER_LAKES = False
+LAKEOUT_TIER0_FILE = "lakeoutlines-i.bin"
+LAKEOUT_FORMAT_KEY = ("coast-v1-lakeoutlines|q=%d|levels=%s|min_lake=%g|min_island=%g|river_lakes=%d|min_area=%g|"
+                      "tier0=%s/%d|tier1=%s/%d" % (Q, ",".join(map(str, LAKE_LEVELS)), LAKEOUT_MIN_KM2, LAKEOUT_ISLAND_MIN_KM2,
+                                                   int(LAKEOUT_RIVER_LAKES), MIN_RING_AREA, TIER0["res"], TIER0["cell"],
+                                                   TIER1["res"], TIER1["cell"]))
+# A real build (GSHHG 2.3.7): 1,365 lakes in tier 0 and 1,400 in tier 1, 53 and 51 islands, 49 and 50 river-lakes left out.
+LAKEOUT_COUNT = (1300, 1600)
+LAKEOUT_MIN_ISLANDS = 45
+# (lon, lat, water?): lakes of every size class, islands cut out of them, a lake below the size limit, land and sea.
+LAKEOUT_PROBES = [(-80.8, 26.95, True), (51.0, 42.0, True), (108.0, 53.5, True), (33.0, -1.0, True),
+                  (-69.4, -15.8, True), (-87.5, 47.5, True), (-120.04, 39.09, True), (175.9, -38.8, True),
+                  (-112.5, 41.1, True), (6.5, 46.43, True), (-98.0, 53.0, True), (31.5, 61.0, True), (34.6, -12.0, True),
+                  (-88.9, 48.0, False), (-82.2, 45.8, False), (107.4, 53.15, False), (-85.6, 11.5, False),
+                  (-122.1, 42.94, False), (-59.9, -3.13, False), (-100.0, 40.0, False), (-150.0, 30.0, False)]
+LAKEOUT_SQDEG = (200.0, 213.0)                        # the net water area of a real build: 206.37 sq deg in 2.3.7
+# The exact bytes of a real build (deterministic from the pinned archive and this code; G34a F2): a deliberate change
+# updates these pins.
+LAKEOUT_PIN_TIER0_SHA256 = "806fd4539996638d5cbd6d1b5694268b96f4dd69a6b61f39639e3fe610874b0c"
+LAKEOUT_PIN_TIER1_SHA256 = "826939b5f51df950e1de1500b950ce52a4c12040e9a8ef591a7d6f7a91ab2870"
+
+
+def lake_outline_polys(polys):
+    """Every lake >= LAKEOUT_MIN_KM2 (river-lakes only if LAKEOUT_RIVER_LAKES) and the islands >= LAKEOUT_ISLAND_MIN_KM2
+    they contain. -> (lakes, islands, river-lakes left out)."""
+    big = [p for p in polys if p["level"] == 2 and p["area_km2"] >= LAKEOUT_MIN_KM2]
+    lakes = [p for p in big if LAKEOUT_RIVER_LAKES or not p.get("river")]
+    ids = {p["id"] for p in lakes}
+    islands = [p for p in polys if p["level"] == 3 and p["container"] in ids and p["area_km2"] >= LAKEOUT_ISLAND_MIN_KM2]
+    return lakes, islands, len(big) - len(lakes)
+
+
+# The water sets (--set): selection, format key, tier-0 file name and the index fields that describe the selection.
+LAKE_SPECS = {
+    "lakes": {"select": lake_polys, "key": LAKES_FORMAT_KEY, "tier0": LAKES_TIER0_FILE, "lake_list": True,
+              "extra": {"lake_box": list(LAKE_BOX)}},
+    "lakeoutlines": {"select": lake_outline_polys, "key": LAKEOUT_FORMAT_KEY, "tier0": LAKEOUT_TIER0_FILE,
+                     "lake_list": False,
+                     "extra": {"min_lake_km2": LAKEOUT_MIN_KM2, "min_island_km2": LAKEOUT_ISLAND_MIN_KM2,
+                               "river_lakes": bool(LAKEOUT_RIVER_LAKES)}},
+}
 
 
 # ---------------------------------------------------------------- ring geometry
@@ -339,10 +396,13 @@ def build_tier(polys, cell, min_area_km2, q=Q):
     return cells
 
 
-def build_lake_tier(polys, cell, min_area_km2, q=Q):
-    """build_tier for the Great Lakes set: lake rings counter-clockwise, island rings reversed (clockwise).
-    -> (cells, lake ids, island count)."""
-    lakes, islands = lake_polys(polys)
+def build_lake_tier(polys, cell, min_area_km2, q=Q, select=None):
+    """build_tier for a water set (the Great Lakes, the lake outlines): lake rings counter-clockwise, island rings
+    reversed (clockwise). select(polys) -> (lakes, islands[, river-lakes left out]); default the Great Lakes.
+    -> (cells, lake ids, island count, river-lakes left out)."""
+    chosen = (select or lake_polys)(polys)
+    lakes, islands = chosen[0], chosen[1]
+    dropped = chosen[2] if len(chosen) > 2 else 0
     cells, nisl = {}, 0
     for p, cw in [(p, False) for p in lakes] + [(p, True) for p in islands]:
         if cw and p["area_km2"] < min_area_km2:
@@ -355,28 +415,37 @@ def build_lake_tier(polys, cell, min_area_km2, q=Q):
                 r = quantize_ring(cx, cy, q)
                 if r is not None:
                     cells.setdefault((lat0, lon0), []).append([r])
-    return cells, [p["id"] for p in lakes], nisl
+    return cells, [p["id"] for p in lakes], nisl, dropped
 
 
-def build_lakes(zip_path, out_dir, log=print):
-    """The Great Lakes set (see the module docstring): the same files and index as build(), plus "kind": "lakes"."""
+def build_lakes(zip_path, out_dir, log=print, kind="lakes"):
+    """A water set (see the module docstring): the same files and index as build(), plus "kind" ("lakes": the Great
+    Lakes; "lakeoutlines": every lake >= LAKEOUT_MIN_KM2)."""
+    spec = LAKE_SPECS[kind]
     t0 = time.time()
     z = zipfile.ZipFile(zip_path)
     os.makedirs(os.path.join(out_dir, TIER1["dir"]), exist_ok=True)
-    index = {"format": "coast-v1", "kind": "lakes", "format_key": LAKES_FORMAT_KEY, "source": SOURCE, "license": LICENSE,
-             "q": Q, "lake_levels": list(LAKE_LEVELS), "lake_box": list(LAKE_BOX),
-             "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-             "source_sha256": hashlib.sha256(open(zip_path, "rb").read()).hexdigest()}
-    cells0, ids0, nisl0 = build_lake_tier(list(read_gshhg(z.read("gshhs_%s.b" % TIER0["res"]), LAKE_LEVELS)),
-                                          TIER0["cell"], TIER0["min_area_km2"])
+    index = {"format": "coast-v1", "kind": kind, "format_key": spec["key"], "source": SOURCE, "license": LICENSE,
+             "q": Q, "lake_levels": list(LAKE_LEVELS)}
+    index.update(spec["extra"])
+    index.update({"built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                  "source_sha256": hashlib.sha256(open(zip_path, "rb").read()).hexdigest()})
+    lake_list = spec["lake_list"]                      # the Great Lakes index lists the lake ids; the outlines count them
+
+    def lakes_entry(ids):
+        return ids if lake_list else len(ids)
+    cells0, ids0, nisl0, riv0 = build_lake_tier(list(read_gshhg(z.read("gshhs_%s.b" % TIER0["res"]), LAKE_LEVELS)),
+                                                TIER0["cell"], TIER0["min_area_km2"], select=spec["select"])
     pieces0 = [pc for key in sorted(cells0) for pc in cells0[key]]
     body = encode_file(pieces0, TIER0["cell"])
-    open(os.path.join(out_dir, LAKES_TIER0_FILE), "wb").write(body)
-    index["tier0"] = {"file": LAKES_TIER0_FILE, "res": TIER0["res"], "cell": TIER0["cell"], "max_zoom": TIER0["max_zoom"],
-                      "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(), "lakes": ids0, "islands": nisl0,
-                      "pieces": len(pieces0), "vertices": sum(len(r[0]) for pc in pieces0 for r in pc)}
-    cells1, ids1, nisl1 = build_lake_tier(list(read_gshhg(z.read("gshhs_%s.b" % TIER1["res"]), LAKE_LEVELS)),
-                                          TIER1["cell"], TIER1["min_area_km2"])
+    open(os.path.join(out_dir, spec["tier0"]), "wb").write(body)
+    index["tier0"] = {"file": spec["tier0"], "res": TIER0["res"], "cell": TIER0["cell"], "max_zoom": TIER0["max_zoom"],
+                      "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest(), "lakes": lakes_entry(ids0),
+                      "islands": nisl0, "pieces": len(pieces0), "vertices": sum(len(r[0]) for pc in pieces0 for r in pc)}
+    if not lake_list:
+        index["tier0"]["river_lakes_dropped"] = riv0
+    cells1, ids1, nisl1, riv1 = build_lake_tier(list(read_gshhg(z.read("gshhs_%s.b" % TIER1["res"]), LAKE_LEVELS)),
+                                                TIER1["cell"], TIER1["min_area_km2"], select=spec["select"])
     listing, digests, total_bytes, total_verts = {}, {}, 0, 0
     for (lat0, lon0) in sorted(cells1):
         pieces = cells1[(lat0, lon0)]
@@ -390,9 +459,11 @@ def build_lakes(zip_path, out_dir, log=print):
         total_verts += nv
     index["tier1"] = {"dir": TIER1["dir"], "res": TIER1["res"], "cell": TIER1["cell"], "min_zoom": TIER1["min_zoom"],
                       "cells": listing, "bytes": total_bytes, "vertices": total_verts, "sha256": cells_digest(digests),
-                      "lakes": ids1, "islands": nisl1}
-    log("lakes: tier 0 %d lakes, %d islands, %d bytes; tier 1 %d lakes, %d islands, %d cells, %d bytes (%.1fs)" % (
-        len(ids0), nisl0, index["tier0"]["bytes"], len(ids1), nisl1, len(listing), total_bytes, time.time() - t0))
+                      "lakes": lakes_entry(ids1), "islands": nisl1}
+    if not lake_list:
+        index["tier1"]["river_lakes_dropped"] = riv1
+    log("%s: tier 0 %d lakes, %d islands, %d bytes; tier 1 %d lakes, %d islands, %d cells, %d bytes (%.1fs)" % (
+        kind, len(ids0), nisl0, index["tier0"]["bytes"], len(ids1), nisl1, len(listing), total_bytes, time.time() - t0))
     with open(os.path.join(out_dir, "index.json"), "w") as fh:
         json.dump(index, fh, separators=(",", ":"), sort_keys=True)
     return index
@@ -520,6 +591,11 @@ def check(out_dir, log=print):
     index = json.load(open(os.path.join(out_dir, "index.json")))
     if index.get("kind") == "lakes":
         return check_lakes(out_dir, index, log)
+    if index.get("kind") == "lakeoutlines":
+        return check_lake_outlines(out_dir, index, log)
+    if index.get("kind") is not None:
+        log("check: unknown kind %r" % index.get("kind"))
+        return ["index kind %r unknown" % index.get("kind")]
     problems = []
     if index.get("format") != "coast-v1" or index.get("q") != Q:
         problems.append("index format/q")
@@ -572,8 +648,9 @@ def check(out_dir, log=print):
         problems.append("tier 1: land area %.0f sq deg, expected ~%.0f" % (area1, WORLD_LAND_SQDEG))
     if present == set(t1["cells"]) and t1.get("sha256") != cells_digest(digests):
         problems.append("tier 1: content hash != index (tier1.sha256)")
-    log("check: tier 0 %d pieces / %d vertices / %d B; tier 1 %d cells / %d vertices / %d B; %d problems" % (
-        t0["pieces"], t0["vertices"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"], len(problems)))
+    log("check: tier 0 %d pieces / %d vertices / %d B; tier 1 %d cells / %d vertices / %d B; real-build gates %s; %d problems" % (
+        t0["pieces"], t0["vertices"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"],
+        "on" if world else "OFF", len(problems)))
     for p in problems[:50]:
         log("  " + p)
     return problems
@@ -582,11 +659,45 @@ def check(out_dir, log=print):
 def check_lakes(out_dir, index, log=print):
     """--check for the Great Lakes set: format and key, sizes and hashes, every piece inside its cell, no zero-area
     ring, the lake probes (water, islands, land) in both tiers, and the net water area."""
+    def counts(t0, t1):
+        problems = []
+        for tier, t in (("tier 0", t0), ("tier 1", t1)):
+            if len(t.get("lakes", [])) != LAKES_COUNT or t.get("islands", 0) < LAKES_MIN_ISLANDS:
+                problems.append("%s: %d lakes and %d islands, expected %d lakes and >= %d islands" % (
+                    tier, len(t.get("lakes", [])), t.get("islands", 0), LAKES_COUNT, LAKES_MIN_ISLANDS))
+        return problems
+    return _check_water(out_dir, index, log, "lakes", LAKES_FORMAT_KEY, LAKE_PROBES, counts, LAKES_SQDEG)
+
+
+def check_lake_outlines(out_dir, index, log=print):
+    """--check for the lake-outline set: as check_lakes, with the worldwide gates of a real build (the lake count band,
+    the islands, at least one river-lake left out, the probes and the net water area)."""
+    def counts(t0, t1):
+        problems = []
+        for tier, t in (("tier 0", t0), ("tier 1", t1)):
+            n = t.get("lakes", 0)
+            n = n if isinstance(n, int) else -1
+            if not LAKEOUT_COUNT[0] <= n <= LAKEOUT_COUNT[1] or t.get("islands", 0) < LAKEOUT_MIN_ISLANDS:
+                problems.append("%s: %d lakes and %d islands, expected %d-%d lakes and >= %d islands" % (
+                    tier, n, t.get("islands", 0), LAKEOUT_COUNT[0], LAKEOUT_COUNT[1], LAKEOUT_MIN_ISLANDS))
+            if t.get("river_lakes_dropped", 0) < 1 and not LAKEOUT_RIVER_LAKES:
+                problems.append("%s: no river-lake left out" % tier)
+        for tier, t, pin in (("tier 0", t0, LAKEOUT_PIN_TIER0_SHA256), ("tier 1", t1, LAKEOUT_PIN_TIER1_SHA256)):
+            if pin and t.get("sha256") != pin:
+                problems.append("pin: %s %s != the pinned %s (a deliberate change updates LAKEOUT_PIN_TIER%s_SHA256)" % (
+                    tier, str(t.get("sha256"))[:12], pin[:12], tier[-1]))
+        return problems
+    return _check_water(out_dir, index, log, "lakeoutlines", LAKEOUT_FORMAT_KEY, LAKEOUT_PROBES, counts, LAKEOUT_SQDEG)
+
+
+def _check_water(out_dir, index, log, kind, key, probes, counts, sqdeg):
+    """The body of check_lakes / check_lake_outlines. counts(tier0, tier1) -> problems of a real build; sqdeg = the
+    net water area band of a real build ((None, None) = not pinned yet)."""
     problems = []
     if index.get("format") != "coast-v1" or index.get("q") != Q:
         problems.append("index format/q")
-    if index.get("format_key") != LAKES_FORMAT_KEY:
-        problems.append("index format_key %r != this builder's %r" % (index.get("format_key"), LAKES_FORMAT_KEY))
+    if index.get("format_key") != key:
+        problems.append("index format_key %r != this builder's %r" % (index.get("format_key"), key))
     t0 = index["tier0"]
     buf = open(os.path.join(out_dir, t0["file"]), "rb").read()
     if len(buf) != t0["bytes"] or hashlib.sha256(buf).hexdigest() != t0["sha256"]:
@@ -596,11 +707,8 @@ def check_lakes(out_dir, index, log=print):
     t1 = index["tier1"]
     real = index.get("source_sha256") == GSHHG_SHA256  # built from GSHHG 2.3.7 (G33a P2-4: never judged from the result)
     if real:
-        for tier, t in (("tier 0", t0), ("tier 1", index["tier1"])):
-            if len(t.get("lakes", [])) != LAKES_COUNT or t.get("islands", 0) < LAKES_MIN_ISLANDS:
-                problems.append("%s: %d lakes and %d islands, expected %d lakes and >= %d islands" % (
-                    tier, len(t.get("lakes", [])), t.get("islands", 0), LAKES_COUNT, LAKES_MIN_ISLANDS))
-    for lon, lat, water in (LAKE_PROBES if real else []):
+        problems += counts(t0, t1)
+    for lon, lat, water in (probes if real else []):
         if point_in_pieces(lon, lat, d0["pieces"]) != water:
             problems.append("tier 0: probe %s,%s should be %s" % (lon, lat, "water" if water else "land"))
     present = set(n[:-4] for n in os.listdir(os.path.join(out_dir, t1["dir"])) if n.endswith(".bin"))
@@ -621,15 +729,20 @@ def check_lakes(out_dir, index, log=print):
         if sum(len(r[0]) for pc in d["pieces"] for r in pc["rings"]) != nverts:
             problems.append("tier 1 %s: vertex count != index" % name)
         area1 += sum(signed_area(ix / Q, iy / Q) for pc in d["pieces"] for ix, iy in pc["rings"])
-        for lon, lat, water in (LAKE_PROBES if real else []):
+        for lon, lat, water in (probes if real else []):
             if lat0 <= lat < lat0 + t1["cell"] and lon0 <= lon < lon0 + t1["cell"] and point_in_pieces(lon, lat, d["pieces"]) != water:
                 problems.append("tier 1 %s: probe %s,%s should be %s" % (name, lon, lat, "water" if water else "land"))
-    if real and not LAKES_SQDEG[0] < area1 < LAKES_SQDEG[1]:
-        problems.append("tier 1: net water area %.2f sq deg outside %s" % (area1, LAKES_SQDEG))
+    for lon, lat, water in (probes if real else []):
+        name = cell_name(int(np.floor(lat / t1["cell"])) * t1["cell"], int(np.floor(lon / t1["cell"])) * t1["cell"])
+        if water and name not in t1["cells"]:
+            problems.append("tier 1: probe %s,%s should be water but its cell %s is absent" % (lon, lat, name))
+    if real and sqdeg[0] is not None and not sqdeg[0] < area1 < sqdeg[1]:
+        problems.append("tier 1: net water area %.2f sq deg outside %s" % (area1, sqdeg))
     if present == set(t1["cells"]) and t1.get("sha256") != cells_digest(digests):
         problems.append("tier 1: content hash != index (tier1.sha256)")
-    log("check (lakes): tier 0 %d pieces / %d B; tier 1 %d cells / %d vertices / %d B; net water %.2f sq deg; %d problems" % (
-        t0["pieces"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"], area1, len(problems)))
+    log("check (%s): tier 0 %d pieces / %d B; tier 1 %d cells / %d vertices / %d B; net water %.2f sq deg; "
+        "real-build gates %s; %d problems" % (kind, t0["pieces"], t0["bytes"], len(t1["cells"]), t1["vertices"], t1["bytes"],
+                                              area1, "on" if real else "OFF", len(problems)))
     for p in problems[:50]:
         log("  " + p)
     return problems
@@ -682,28 +795,32 @@ def same_build(a, b):
     return ta.get("sha256") is None or ta["sha256"] == tb["sha256"]
 
 
-def upload(out_dir, prefix, replace=False, log=print, s3=None, bucket=None):
+def upload(out_dir, prefix, replace=False, log=print, s3=None, bucket=None, files=None, license_file=None):
     """Upload LICENSE.txt + the tier files + index.json (last) under <prefix>/ with immutable
     caching. A prefix that already holds the same build gets only LICENSE.txt and index.json
     refreshed; one that holds a different build is refused unless replace=True (the objects are
-    immutable for a year in browsers and at the edge: a changed build belongs under a new prefix)."""
+    immutable for a year in browsers and at the edge: a changed build belongs under a new prefix).
+    files(index) -> the data files' relative paths (default: the coast-v1 layout); license_file: the
+    notice published as LICENSE.txt (default tools/coast/LICENSE-GSHHG.txt)."""
     s3 = s3 or r2_client()
     bucket = bucket or os.environ["R2_BUCKET"]
     immutable = "public, max-age=31536000, immutable"
     index = json.load(open(os.path.join(out_dir, "index.json")))
+    files = files or (lambda ix: [ix["tier0"]["file"]] + ["%s/%s.bin" % (ix["tier1"]["dir"], n) for n in sorted(ix["tier1"]["cells"])])
     try:
         existing = published_index(s3, bucket, prefix)
         if existing is not None and not same_build(existing, index):
             if not replace:
-                log("refusing: %s/ already holds a different build (tier0 %s vs %s); use a new prefix, or --replace" % (
-                    prefix, str(existing.get("tier0", {}).get("sha256"))[:12], index["tier0"]["sha256"][:12]))
+                log("refusing: %s/ already holds a different build (published tier0 %s tier1 %s, this build tier0 %s "
+                    "tier1 %s); use a new prefix, or --replace" % (
+                        prefix, str(existing.get("tier0", {}).get("sha256"))[:12], str(existing.get("tier1", {}).get("sha256"))[:12],
+                        str(index["tier0"].get("sha256"))[:12], str(index["tier1"].get("sha256"))[:12]))
                 return False
             log("REPLACING a different build under %s/ (--replace)" % prefix)
-        data_files = [] if (existing is not None and same_build(existing, index)) else \
-            [index["tier0"]["file"]] + ["%s/%s.bin" % (index["tier1"]["dir"], n) for n in sorted(index["tier1"]["cells"])]
+        data_files = [] if (existing is not None and same_build(existing, index)) else files(index)
         if not data_files:
             log("%s/ already holds this build: refreshing LICENSE.txt and index.json only" % prefix)
-        s3.put_object(Bucket=bucket, Key="%s/LICENSE.txt" % prefix, Body=open(LICENSE_FILE, "rb").read(),
+        s3.put_object(Bucket=bucket, Key="%s/LICENSE.txt" % prefix, Body=open(license_file or LICENSE_FILE, "rb").read(),
                       ContentType="text/plain; charset=utf-8", CacheControl=immutable)
         for i, rel in enumerate(data_files):
             s3.put_object(Bucket=bucket, Key="%s/%s" % (prefix, rel), Body=open(os.path.join(out_dir, rel), "rb").read(),
@@ -729,8 +846,13 @@ def main(argv=None):
     ap.add_argument("--check", metavar="DIR", help="validate a built directory")
     ap.add_argument("--upload", metavar="PREFIX", help="upload --out to the R2 bucket under PREFIX")
     ap.add_argument("--replace", action="store_true", help="allow overwriting a different build under PREFIX (immutable objects!)")
-    ap.add_argument("--lakes", action="store_true", help="build the Great Lakes water set instead of the land set")
+    ap.add_argument("--set", choices=("coast",) + tuple(LAKE_SPECS), default=None,
+                    help="what to build: coast (land, default), lakes (the Great Lakes water) or lakeoutlines (every lake)")
+    ap.add_argument("--lakes", action="store_true", help="the same as --set lakes")
     a = ap.parse_args(argv)
+    kind = "lakes" if a.lakes and a.set in (None, "lakes") else (a.set or "coast")
+    if a.lakes and a.set not in (None, "lakes"):
+        ap.error("--lakes means --set lakes")
     if a.check:
         return 1 if check(a.check) else 0
     if a.upload:
@@ -739,10 +861,16 @@ def main(argv=None):
         if check(a.out):
             print("refusing to upload a directory that fails --check")
             return 1
+        if json.load(open(os.path.join(a.out, "index.json"))).get("source_sha256") != GSHHG_SHA256:
+            print("refusing to upload a build that is not from the pinned GSHHG archive (real-build gates off)")
+            return 1
         return 0 if upload(a.out, a.upload.strip("/"), replace=a.replace) else 1
     if not (a.zip and a.out):
         ap.error("--zip and --out are required to build")
-    (build_lakes if a.lakes else build)(a.zip, a.out)
+    if kind == "coast":
+        build(a.zip, a.out)
+    else:
+        build_lakes(a.zip, a.out, kind=kind)
     return 1 if check(a.out) else 0
 
 

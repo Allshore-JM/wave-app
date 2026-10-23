@@ -2,20 +2,24 @@
 # dispatch: tests, then download GSHHG 2.3.7 (the GMT project's release asset, pinned by sha256),
 # build both tiers, run --check, and (only when `upload` is true) publish to the frames bucket
 # under static/coast/v1/ with immutable caching, index.json written last. Input `set`: "coast" (the land set,
-# static/coast/v1) or "lakes" (the Great Lakes water set for the lake overlay, static/coast/lakes-v1; plan section 50).
+# static/coast/v1), "lakes" (the Great Lakes water set for the lake overlay, static/coast/lakes-v1; plan section 50),
+# "lakeoutlines" (every lake >= 100 km2, drawn under the wind overlay, static/coast/lakeoutlines-v1; plan section 51) or
+# "places" (Natural Earth borders and places + GeoNames towns, static/places/v1, tools/places/build_places.py; plan
+# section 51: the Natural Earth files are pinned by commit and sha256, GeoNames' cities1000.zip changes daily and its
+# sha256 and date are recorded in the index).
 # Secrets for the upload: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: coast-build
 on:
   push:
     branches: ["**"]                       # branches only: a rollback tag on an old commit is not a new test run
-    paths: ["tools/coast/**", "tests/coast/**", "tests/conftest.py", "static_overlay/**", "tests/overlay/**", "static_ui/**", "tests/ui/**", "templates/index.html", ".github/workflows/coast-build.yml"]
+    paths: ["tools/coast/**", "tests/coast/**", "tools/places/**", "tests/places/**", "tests/conftest.py", "static_overlay/**", "tests/overlay/**", "static_ui/**", "tests/ui/**", "templates/index.html", ".github/workflows/coast-build.yml"]
   workflow_dispatch:
     inputs:
       set:
-        description: "coast (land, static/coast/v1) or lakes (Great Lakes water, static/coast/lakes-v1)"
+        description: "coast (land, static/coast/v1), lakes (Great Lakes water, static/coast/lakes-v1), lakeoutlines (every lake, static/coast/lakeoutlines-v1) or places (borders and names, static/places/v1)"
         default: "coast"
       upload:
-        description: "publish to R2 under static/coast/v1 (true/false)"
+        description: "publish to R2 under the set's prefix (true/false)"
         default: "false"
       replace:
         description: "overwrite a DIFFERENT build under the same prefix (true/false; objects are immutable for a year)"
@@ -35,7 +39,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install numpy==2.2.6 pytest==9.1.1
-      - run: python -m pytest -q tests/coast
+      - run: python -m pytest -q tests/coast tests/places
   client-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -57,19 +61,43 @@ jobs:
           python-version: "3.11"
       - run: pip install numpy==2.2.6 boto3==1.43.98
       - name: Download GSHHG 2.3.7
+        if: github.event.inputs.set != 'places'
         run: |
           curl -sSfL -o gshhg-bin-2.3.7.zip https://github.com/GenericMappingTools/gshhg-gmt/releases/download/2.3.7/gshhg-bin-2.3.7.zip
           echo "28600e8f7a08645aab43079326df6504212ec5ccb2b4bcf3b5f4f12ed60e82bc  gshhg-bin-2.3.7.zip" | sha256sum -c -
+      - name: Download Natural Earth (pinned) and GeoNames cities1000
+        if: github.event.inputs.set == 'places'
+        shell: bash
+        run: |
+          set -eo pipefail
+          mkdir -p src/ne
+          NE=https://raw.githubusercontent.com/nvkelso/natural-earth-vector/ca96624a56bd078437bca8184e78163e5039ad19/geojson
+          for f in ne_10m_admin_0_boundary_lines_land ne_10m_admin_1_states_provinces_lines ne_10m_populated_places; do
+            curl -sSfL -o "src/ne/$f.geojson" "$NE/$f.geojson"
+          done
+          ( cd src/ne && sha256sum -c - <<'EOF'
+          74d9c16229c095fde65943a9919e337682f044bcebccb120764f38edf3b70f4a  ne_10m_admin_0_boundary_lines_land.geojson
+          1a1f30ccaaf4cc9c4bde34266f0b8cbb955d3a4cf254b756912255f2ec7c75b6  ne_10m_admin_1_states_provinces_lines.geojson
+          9b8e3de09048ef00dfc70357dbb9fa324493f214b5e0ae4daf1aa79a8d10116b  ne_10m_populated_places.geojson
+          EOF
+          )
+          curl -sSfL -o src/cities1000.zip https://download.geonames.org/export/dump/cities1000.zip
+          sha256sum src/cities1000.zip
       - name: Build and check
         shell: bash
         env:
           SET: ${{ github.event.inputs.set }}
         run: |
-          case "$SET" in coast|lakes) ;; *) echo "set must be coast or lakes"; exit 2;; esac
-          OUT=build/coast/v1; ARGS=()
-          [ "$SET" = "lakes" ] && { OUT=build/coast/lakes-v1; ARGS+=(--lakes); }
+          case "$SET" in coast|lakes|lakeoutlines|places) ;; *) echo "set must be coast, lakes, lakeoutlines or places"; exit 2;; esac
           rc=0
-          /usr/bin/time -v -o time.txt python tools/coast/build_coast.py "${ARGS[@]}" --zip gshhg-bin-2.3.7.zip --out "$OUT" | tee build.log || rc=$?
+          if [ "$SET" = "places" ]; then
+            CMD=(python tools/places/build_places.py --ne src/ne --geonames src/cities1000.zip --out build/places/v1)
+          elif [ "$SET" = "coast" ]; then
+            CMD=(python tools/coast/build_coast.py --zip gshhg-bin-2.3.7.zip --out build/coast/v1)
+          else
+            CMD=(python tools/coast/build_coast.py --set "$SET" --zip gshhg-bin-2.3.7.zip --out "build/coast/$SET-v1")
+          fi
+          /usr/bin/time -v -o time.txt "${CMD[@]}" | tee build.log || rc=$?
           { echo '```'; cat build.log; grep -E "Maximum resident|Elapsed" time.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
       - name: Upload to R2
@@ -84,9 +112,13 @@ jobs:
           SET: ${{ github.event.inputs.set }}
         run: |
           rc=0
-          ARGS=(--out build/coast/v1 --upload static/coast/v1)
-          [ "$SET" = "lakes" ] && ARGS=(--out build/coast/lakes-v1 --upload static/coast/lakes-v1)
-          [ "$REPLACE" = "true" ] && ARGS+=(--replace)
-          python tools/coast/build_coast.py "${ARGS[@]}" | tee upload.log || rc=$?
+          case "$SET" in
+            coast) CMD=(python tools/coast/build_coast.py --out build/coast/v1 --upload static/coast/v1);;
+            lakes|lakeoutlines) CMD=(python tools/coast/build_coast.py --out "build/coast/$SET-v1" --upload "static/coast/$SET-v1");;
+            places) CMD=(python tools/places/build_places.py --out build/places/v1 --upload static/places/v1);;
+            *) echo "set must be coast, lakes, lakeoutlines or places"; exit 2;;
+          esac
+          [ "$REPLACE" = "true" ] && CMD+=(--replace)
+          "${CMD[@]}" | tee upload.log || rc=$?
           tail -3 upload.log >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"

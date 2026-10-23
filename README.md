@@ -1415,7 +1415,7 @@ only where its dot and its whole text lie on the map, before the dot when the te
 under the map's controls, the overlay's sheet or the gridline labels; at most 120, 60 on maps under 600 px wide), hidden
 while zooming and rebuilt after a move or when a control or the overlay's sheet changes size. Nothing is fetched before
 the page's load event (+ 1.5 s), while both rows are off, or below zoom 3 (2 for names). The data comes from
-`static/places/v1/` beside the model frames (derived in the overlay's gated block), or from env `PLACES_BASE`:
+`static/places/v2/` beside the model frames (derived in the overlay's gated block), or from env `PLACES_BASE`:
 `index.json`, the world tier (`world-lines.bin`, `world-places.bin`, used to map zoom 7) and 10-degree cells
 `c/<lat>_<lon>.l.bin` / `.p.bin` from zoom 8 (on demand, two at a time, 6 MB kept). The credits "Borders: Natural Earth"
 and "Places: GeoNames CC BY 4.0" join the map's (i) while their rows are on and their data has loaded.

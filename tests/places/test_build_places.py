@@ -204,10 +204,10 @@ def line_feature(coords, cla, mz=0, multi=False):
             "geometry": {"type": "MultiLineString" if multi else "LineString", "coordinates": coords}}
 
 
-def point_feature(name, lat, lon, pop, mz, cla="Populated place", cap=0, ascii_name=None, gnid=0):
-    """A feature of the full Natural Earth places file (upper-case properties, GEONAMESID)."""
+def point_feature(name, lat, lon, pop, mz, cla="Populated place", cap=0, ascii_name=None, gnid=0, name_en=None):
+    """A feature of the full Natural Earth places file (upper-case properties, GEONAMESID, NAME_EN)."""
     props = {"NAME": name, "NAMEASCII": ascii_name or name, "POP_MAX": pop, "MIN_ZOOM": mz, "FEATURECLA": cla,
-             "ADM0CAP": cap, "GEONAMESID": gnid}
+             "ADM0CAP": cap, "GEONAMESID": gnid, "NAME_EN": name_en if name_en is not None else name}
     if mz is None:
         del props["MIN_ZOOM"]
     return {"type": "Feature", "properties": props, "geometry": {"type": "Point", "coordinates": [lon, lat]}}
@@ -249,7 +249,8 @@ def sources(tmp_path):
         point_feature("Smalltown", 21.40, -157.75, 20_000, 8.1),
         point_feature("Midzoom", 45.0, 5.0, 50_000, 7.5),                            # exactly the split: a cell, not tier 0
         point_feature("Ganzhou", 25.85, 114.93, 2_000_000, 5),
-        point_feature("København", 55.6761, 12.5683, 1_200_000, 3, ascii_name="Kobenhavn"),
+        point_feature("København", 55.6761, 12.5683, 1_200_000, 3, ascii_name="Kobenhavn", name_en="Copenhagen"),
+        point_feature("Shenyeng", 41.805, 123.43, 6_000_000, 4, gnid=20, name_en="Shenyang"),     # a Natural Earth typo (V7-3)
     ])
     rows = [gn_row(1, "Wahiawā", 21.5028, -158.0236, "PPL", 17_821, "Wahiawa"),       # NE's Wahiawa, same name
             gn_row(2, "Hale‘iwa", 21.5928, -158.1034, "PPL", 3_970, "Hale'iwa"),
@@ -269,7 +270,8 @@ def sources(tmp_path):
             gn_row(16, "Makakilo", 21.355, -158.09, "PPL", 1_500),                         # a GeoNames twin 0.6 km away
             gn_row(17, "Aliamanu / Salt Lakes", 21.36, -157.91, "PPLS", 12_000),
             gn_row(18, "Aliamanu / Foster", 21.36, -157.92, "PPL", 12_000),               # " / ": a merged area
-            gn_row(19, "Linesep", -20.0, 30.0, "PPL", 3_000, alt="A B,C")]
+            gn_row(19, "Linesep", -20.0, 30.0, "PPL", 3_000, alt="A B,C"),
+            gn_row(20, "Shenyang", 41.79668, 123.42917, "PPLA", 6_255_921)]                 # Shenyeng's GEONAMESID
     gz = tmp_path / "cities1000.zip"
     with zipfile.ZipFile(gz, "w") as z:
         z.writestr(zipfile.ZipInfo("cities1000.txt", date_time=(2026, 10, 22, 3, 4, 5)), "\n".join(rows) + "\n")
@@ -292,7 +294,7 @@ def test_read_geonames_filters_ranks_and_keeps_rows_whole(tmp_path):
     assert date == "2026-10-22" and slashes == 1
     by = {g["name"]: g for g in gn}
     assert sorted(by) == ["Capital Ville", "Copenhagen", "Edge Town", "Five Thousand", "Ganzhou", "Hale‘iwa", "Kailua",
-                          "Linesep", "Makakilo", "Thousand", "Twenty Thousand", "Urban Honolulu", "Wahiawā"]
+                          "Linesep", "Makakilo", "Shenyang", "Thousand", "Twenty Thousand", "Urban Honolulu", "Wahiawā"]
     assert [by[n]["mz10"] for n in ("Thousand", "Five Thousand", "Twenty Thousand")] == [100, 90, 80]
     assert by["Capital Ville"]["rank"] == 0 and by["Capital Ville"]["flags"] == P.FLAG_CAPITAL | P.FLAG_GEONAMES
     assert [by[n]["mz10"] for n in ("Kailua", "Wahiawā", "Hale‘iwa")] == [80, 90, 100]
@@ -392,7 +394,8 @@ def test_build_and_check_on_synthetic_sources(tmp_path):
     assert index["sources"]["natural_earth"]["commit"] == P.NE_COMMIT and index["sources"]["geonames"]["date"] == "2026-10-22"
     c = index["counts"]
     assert (c["ne_places"], c["geonames_read"], c["geonames_slashes"], c["geonames_dupes_id"], c["geonames_dupes_name"],
-            c["geonames_twins"], c["geonames_kept"]) == (7, 14, 1, 1, 3, 1, 9)
+            c["geonames_twins"], c["geonames_kept"]) == (8, 15, 1, 2, 3, 1, 9)
+    assert (c["name_fixes_agreed"], c["name_fixes_hand"]) == (1, 0)
     mid = P.decode_places(open(os.path.join(out, "c", "40_0.p.bin"), "rb").read())
     assert [(p["name"], p["mz10"]) for p in mid["places"]] == [("Midzoom", 75)]
     straight0 = [l for pc in P.decode_lines(open(os.path.join(out, P.LINES_TIER0), "rb").read())["pieces"]
@@ -405,7 +408,7 @@ def test_build_and_check_on_synthetic_sources(tmp_path):
     assert all(l[2] < P.MZ_SPLIT for pc in dl["pieces"] for l in pc["lines"])  # the zoom-8.6 state line is not in tier 0
     dp = P.decode_places(open(os.path.join(out, P.PLACES_TIER0), "rb").read())
     assert dp["q"] == P.TIER0_Q
-    assert [p["name"] for p in dp["places"]] == ["Capital", "Honolulu", "Ganzhou", "København", "Wahiawa"]
+    assert [p["name"] for p in dp["places"]] == ["Capital", "Honolulu", "Shenyang", "Ganzhou", "København", "Wahiawa"]   # V7-3
     cells = index["tier1"]["cells"]
     assert {"0_0", "0_10", "10_20", "60_170", "60_-180", "30_-120", "40_-120", "30_-110", "20_-160", "10_10"} <= set(cells)
     assert "30_-80" not in cells                                                   # the state line across water is left out
@@ -539,7 +542,9 @@ def monkeypatch_real(out):
 def real_gates(monkeypatch):
     """The real gates set up to fit the synthetic world, so a test can break one thing at a time."""
     monkeypatch.setattr(P, "PIN_TIER0_SHA256", None); monkeypatch.setattr(P, "PIN_LINES1_SHA256", None)
-    monkeypatch.setattr(P, "NE_PLACES_RANGE", (7, 7)); monkeypatch.setattr(P, "GN_MIN_KEPT", 6)
+    monkeypatch.setattr(P, "NE_PLACES_RANGE", (8, 8)); monkeypatch.setattr(P, "GN_MIN_KEPT", 6)
+    monkeypatch.setattr(P, "NAME_FIX_RANGE", (1, 1)); monkeypatch.setattr(P, "NAME_FIXES", {})
+    monkeypatch.setattr(P, "NAME_PROBES", [("Shenyang", True), ("Shenyeng", False), ("København", True)])
     monkeypatch.setattr(P, "CELLS_RANGE", (1, 100))
     monkeypatch.setattr(P, "LINE_PROBES", [(1, -120.0, 42.0), (0, 15.0, 5.0), (2, 1.0, 1.0)])
     monkeypatch.setattr(P, "NO_LINE_PROBES", [(1, -76.1, 37.6)])
@@ -712,7 +717,8 @@ def test_main_needs_its_inputs(tmp_path):
 
 def test_places_workflow_is_pinned():
     text = open(os.path.join(ROOT, ".github", "workflows", "coast-build.yml"), encoding="utf-8").read()
-    assert P.NE_COMMIT in text and "static/places/v1" in text and "static/coast/lakeoutlines-v1" in text
+    assert P.NE_COMMIT in text and "static/places/v2" in text and "static/coast/lakeoutlines-v1" in text
+    assert "--upload static/places/v2" in text and "--upload static/places/v1" not in text   # v1 is immutable: a new prefix
     for f, h in P.NE_FILES.values():
         assert f in text and h in text                                          # every Natural Earth file pinned by hash
     assert P.NE_FILES["places"][0] == "ne_10m_populated_places.geojson"         # the full file: it carries GEONAMESID
@@ -755,3 +761,72 @@ def test_small_details_the_mutants_found():
     bad = two[:P.LINES_HEADER.size + 4] + bytes([3]) + two[P.LINES_HEADER.size + 5:]
     with pytest.raises(ValueError):
         P.decode_lines(bad)                                                       # kind 3 does not exist
+
+
+# ---------------------------------------------------------------- V7-3: the name pass (owner 2026-10-23)
+
+def ne_place(name, name_en, lat=41.8, lon=123.43, gnid=20):
+    return {"name": name, "name_en": name_en, "lat": lat, "lon": lon, "gnid": gnid, "keys": {P.fold(name)}}
+
+
+def test_edits_is_the_levenshtein_distance():
+    assert P.edits("", "") == 0 and P.edits("abc", "") == 3 and P.edits("", "ab") == 2
+    assert P.edits("shenyeng", "shenyang") == 1 and P.edits("poitier", "poitiers") == 1 and P.edits("kitten", "sitting") == 3
+    assert P.edits("ab", "ba") == 2 and P.edits("antwerpen", "antwerp") == 2
+
+
+def test_fix_names_only_where_geonames_agrees_close_by_and_within_two_letters():
+    gn = {20: ("Shenyang", 41.79668, 123.42917), 21: ("Bogotá", 4.61, -74.08), 22: ("Copenhagen", 55.68, 12.59),
+          23: ("Juarez", 23.22, -106.42), 24: ("Shenyang", 39.9, 116.4), 25: ("Poitiers", 46.58, 0.34)}
+    ne = [ne_place("Shenyeng", "Shenyang"),                                       # a typo: fixed
+          ne_place("Bogota", "Bogotá", 4.6, -74.08, 21),                          # an accent: fixed
+          ne_place("København", "Copenhagen", 55.6761, 12.5683, 22),              # an exonym (> 2 letters): kept
+          ne_place("Mazatlán", "Juarez", 23.22, -106.42, 23),                     # NAME_EN wrong, GeoNames disagrees: kept
+          ne_place("Shenyeng", "Shenyang", 41.8, 123.43, 24),                     # GeoNames agrees but 300 km away (a wrong id): kept
+          ne_place("Poitier", "Poitiers", 46.58, 0.34, None),                     # no GeoNames id: kept
+          ne_place("Poitier", "", 46.58, 0.34, 25),                               # no NAME_EN: kept
+          ne_place("Poitier", "Poitiers", 46.58, 0.34, 99),                       # an id GeoNames does not have: kept
+          ne_place("Starsy Oskol", "Stary Oskol", 51.3, 37.8, None)]              # the hand list
+    stats = P.fix_names(ne, gn, hand={"Starsy Oskol": "Stary Oskol"})
+    assert [p["name"] for p in ne] == ["Shenyang", "Bogotá", "København", "Mazatlán", "Shenyeng", "Poitier", "Poitier", "Poitier", "Stary Oskol"]
+    assert stats == {"agreed": 2, "hand": 1}
+    assert ne[0]["keys"] == {"shenyeng", "shenyang"}, "the old folded name stays a dedupe key"
+    edge = [ne_place("Shenyeng", "Shenyang", 41.79668 + 25.0 / 111.2, 123.42917, 20)]   # exactly 25 km north
+    assert P.fix_names(edge, gn, hand={})["agreed"] == 1
+    far = [ne_place("Shenyeng", "Shenyang", 41.79668 + 25.2 / 111.2, 123.42917, 20)]
+    assert P.fix_names(far, gn, hand={})["agreed"] == 0
+    three = [ne_place("Shxnyxxg", "Shenyang")]                                     # three letters off: kept
+    gn3 = {20: ("Shenyang", 41.79668, 123.42917)}
+    two = [ne_place("Shenyxxg", "Shenyang")]                                       # two letters off: fixed
+    assert P.fix_names(two, gn3, hand={})["agreed"] == 1 and two[0]["name"] == "Shenyang"
+    assert P.fix_names(three, gn3, hand={})["agreed"] == 0 and three[0]["name"] == "Shxnyxxg"
+
+
+def test_read_geonames_names_reads_every_row(tmp_path):
+    rows = [gn_row(1, "Wahiawā", 21.5, -158.02, "PPL", 17_821), gn_row(4, "Neighbourhood", 21.30, -157.85, "PPLX", 50_000),
+            gn_row(5, "Tiny", 21.35, -157.90, "PPL", 999), gn_row(6, "Nowhere", 0.5, 0.5, "PPL", 5_000, fclass="A"), "bad\trow"]
+    gz = tmp_path / "c.zip"
+    with zipfile.ZipFile(gz, "w") as z:
+        z.writestr("cities1000.txt", "\n".join(rows) + "\n")
+    names = P.read_geonames_names(str(gz))
+    assert names == {1: ("Wahiawā", 21.5, -158.02), 4: ("Neighbourhood", 21.3, -157.85), 5: ("Tiny", 21.35, -157.9), 6: ("Nowhere", 0.5, 0.5)}
+
+
+def test_real_gates_check_the_name_pass(tmp_path, real_gates):
+    index, out = build(tmp_path)
+    monkeypatch_real(out)
+    real_gates.setattr(P, "PIN_TIER0_SHA256", index["tier0"]["sha256"]); real_gates.setattr(P, "PIN_LINES1_SHA256", index["tier1"]["lines_sha256"])
+    assert P.check(out, **QUIET) == []
+    real_gates.setattr(P, "NAME_FIX_RANGE", (2, 5))
+    assert any(p.startswith("counts: 1 names fixed by agreement") for p in P.check(out, **QUIET))
+    real_gates.setattr(P, "NAME_FIX_RANGE", (1, 1)); real_gates.setattr(P, "NAME_FIXES", {"X": "Y"})
+    assert any("by hand (expected 1)" in p for p in P.check(out, **QUIET))
+    real_gates.setattr(P, "NAME_FIXES", {})
+    real_gates.setattr(P, "NAME_PROBES", [("Shenyeng", True), ("Shenyang", False)])
+    probs = P.check(out, **QUIET)
+    assert "name probe: Natural Earth place 'Shenyeng' missing" in probs and "name probe: Natural Earth place 'Shenyang' still there" in probs
+
+
+def test_the_format_key_names_the_name_pass():
+    assert "|namefix=25/2/Starsy Oskol>Stary Oskol" in P.FORMAT_KEY
+

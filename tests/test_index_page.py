@@ -1112,4 +1112,4 @@ def test_location_aids_on_the_page(client, monkeypatch):
     # with the overlay on, the gated block derives the base beside the frames (the coast data's rule)
     tpl = open(os.path.join(os.path.dirname(__file__), "..", "templates", "index.html"), encoding="utf-8").read()
     gated = tpl[tpl.index("{%- if model_overlays %}"):]
-    assert r"window.__allshorePlacesBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/places/v1';" in gated
+    assert r"window.__allshorePlacesBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/places/v2';" in gated

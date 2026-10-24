@@ -70,6 +70,23 @@ def test_merge_keeps_the_newest_runs_and_recomputes():
     assert doc["removed"] == []
 
 
+def test_sea_ice_regions_are_kept():
+    """Owner (2026-10-24): a point that may be blank because of sea ice stays on the list."""
+    for lat, lon in ((72.0, -140.0), (-62.0, -58.0), (50.0, -123.0), (-50.0, 10.0), (39.0, 119.5), (45.5, 142.0),
+                     (47.5, -60.0), (46.2, 36.5), (45.5, 502.0)):
+        assert T.ice_region(lat, lon), (lat, lon)
+    for lat, lon in ((38.56, -76.41), (48.33, -123.16), (41.0, -72.0), (21.67, -158.12), (49.9, -123.0), (36.9, 119.5),
+                     ("x", 0), (None, None)):
+        assert not T.ice_region(lat, lon), (lat, lon)
+    coords = {"Alaska_NS3": {"lat": 72.0, "lon": -140.0}, "44062": {"lat": 38.56, "lon": -76.41}}
+    r = T.split_ice({"blank": ["44062", "Alaska_NS3", "nocoord"], "absent": ["x"], "scanned": 3}, coords)
+    assert r["blank"] == ["44062", "nocoord"] and r["ice"] == ["Alaska_NS3"] and r["absent"] == ["x"]
+    # an ice-blank station in both runs is never removed
+    runs = {"2026102406": T.split_ice({"blank": ["44062", "Alaska_NS3"]}, coords),
+            "2026102412": T.split_ice({"blank": ["44062", "Alaska_NS3"]}, coords)}
+    assert T.removed_ids(runs) == ["44062"]
+
+
 def test_apply_keeps_the_order_and_drops_only_the_removed():
     assert T.apply_removal(["3FYT", "44061", "44062", "51201", "44063"], ["44062", "44061", "nope"]) == ["3FYT", "51201", "44063"]
 
@@ -85,6 +102,8 @@ def test_the_committed_file_and_the_list_agree():
     for s in doc["removed"]:
         assert s not in ids and s in coords, s
     assert {"44061", "44062", "44039", "44087"} <= set(doc["removed"])
+    assert "Alaska_NS3" in ids and "Alaska_NS3" not in doc["removed"], "blank under sea ice: kept (owner)"
+    assert all("Alaska_NS3" in r.get("ice", []) for r in doc["runs"].values())
     assert A.BLANK_STATIONS == frozenset(doc["removed"])
 
 

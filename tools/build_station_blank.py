@@ -9,8 +9,14 @@ The rule (the parser's own cells, app._parse_bull_text): a bulletin is BLANK whe
 combined height above zero (the Hst cell: NOAA writes a literal 0 there for sheltered points, and empty swell cells) or
 a swell group with its three numbers. A missing bulletin (404) or a failed download is ABSENT and never counts.
 
+A station that may be blank because of SEA ICE is never removed (owner, 2026-10-24): the model masks iced water, so an
+Arctic or a frozen-sea point is blank in winter and carries waves again when the ice goes. Such a blank station is
+recorded under "ice" instead of "blank" when it lies in a sea-ice region: poleward of ICE_LAT in either hemisphere, or
+inside ICE_BOXES (the lower-latitude seas that freeze in winter).
+
 This tool reads the listed stations' bulletins of one run, records which were blank, and writes station_blank.json:
-  {"rule": ..., "runs": {"YYYYMMDDHH": {"blank": [...], "absent": [...], "scanned": N}, ...}, "removed": [...]}
+  {"rule": ..., "runs": {"YYYYMMDDHH": {"blank": [...], "ice": [...], "absent": [...], "scanned": N}, ...},
+   "removed": [...]}
 where "removed" = the ids blank in BOTH of the two newest recorded runs (one cycle's hiccup removes nothing; the runs
 are at least 6 h apart by their names). `--apply` then rewrites station_list.json without them (the coordinates and
 time-zone tables stay whole: the point time-zone rule reads every coordinate; section 32).
@@ -39,7 +45,16 @@ NOMADS = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
 PROBE_STATION = "51201"
 KEEP_RUNS = 4                 # runs remembered in the file
 NOMADS_PACE_S = 0.6           # NOMADS: 120 requests a minute per address
+# sea-ice regions: |lat| >= ICE_LAT, or inside a box (south, north, west, east) of a lower-latitude sea that freezes
+ICE_LAT = 50.0
+ICE_BOXES = {
+    "Bohai and the northern Yellow Sea": (37.0, 41.5, 117.0, 125.5),
+    "Sea of Okhotsk, Tatar Strait, Hokkaido": (41.5, 50.0, 130.0, 160.0),
+    "Gulf of St Lawrence, Newfoundland, Labrador": (43.0, 50.0, -70.0, -50.0),
+    "Sea of Azov": (45.0, 47.5, 34.5, 39.5),
+}
 RULE = ("blank = no data row of the run has a combined height (Hst) above zero or a swell group with three numbers; "
+        "a blank station in a sea-ice region (|lat| >= 50 or a freezing sea's box) is recorded as ice and never removed; "
         "removed = blank in both of the two newest recorded runs; a missing bulletin never counts")
 ROW_RE = re.compile(r"^\s*\|\s*\d{1,2}\s+\d{1,2}\s*\|")
 NUM_RE = re.compile(r"^-?\d+(\.\d+)?$")
@@ -68,6 +83,30 @@ def classify(text):
             if len(t) >= 3 and all(NUM_RE.match(x) for x in t[:3]):
                 return "data"
     return "blank" if rows else None
+
+
+def ice_region(lat, lon):
+    """True where winter sea ice can blank a GFS-Wave point (the model masks iced water)."""
+    try:
+        lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return False
+    if abs(lat) >= ICE_LAT:
+        return True
+    lon = (lon + 180.0) % 360.0 - 180.0
+    return any(s <= lat <= n and w <= lon <= e for s, n, w, e in ICE_BOXES.values())
+
+
+def split_ice(result, coords):
+    """Move the blank stations of a sea-ice region from result["blank"] to result["ice"] (kept on the list).
+    coords: {id: {"lat", "lon"}}; a station without coordinates stays blank."""
+    blank, ice = [], []
+    for s in result.get("blank", []):
+        c = coords.get(s) or {}
+        (ice if ice_region(c.get("lat"), c.get("lon")) else blank).append(s)
+    out = dict(result)
+    out["blank"], out["ice"] = sorted(blank), sorted(set(result.get("ice", [])) | set(ice))
+    return out
 
 
 def removed_ids(runs):
@@ -211,6 +250,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     with open(LIST_PATH, encoding="utf-8") as f:
         ids = [str(s) for s in json.load(f)]
+    with open(os.path.join(ROOT, "station_coords.json"), encoding="utf-8") as f:
+        coords = json.load(f)
     doc = {}
     if os.path.exists(OUT_PATH):
         with open(OUT_PATH, encoding="utf-8") as f:
@@ -220,12 +261,12 @@ def main(argv=None):
     if not re.fullmatch(r"\d{10}", run):
         raise SystemExit("--run must be YYYYMMDDHH")
     print(f"scanning {len(ids)} stations of run {run}", file=sys.stderr)
-    result = tar_scan(http, run, ids) or scan(http, run, ids, a.workers)
+    result = split_ice(tar_scan(http, run, ids) or scan(http, run, ids, a.workers), coords)
     doc = merge(doc, run, result)
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=1)
         f.write("\n")
-    print(f"run {run}: blank {len(result['blank'])}, absent {len(result['absent'])}, failed {len(result['failed'])} "
+    print(f"run {run}: blank {len(result['blank'])}, ice (kept) {len(result['ice'])}, absent {len(result['absent'])}, failed {len(result['failed'])} "
           f"of {result['scanned']}; removed (two newest runs {sorted(doc['runs'])[-2:]}): {len(doc['removed'])}", file=sys.stderr)
     print(" ".join(result["blank"]), file=sys.stderr)
     if a.apply:

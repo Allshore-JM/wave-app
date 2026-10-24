@@ -1,5 +1,5 @@
 {
- "rule": "blank = no data row of the run has a combined height (Hst) above zero or a swell group with three numbers; removed = blank in both of the two newest recorded runs; a missing bulletin never counts",
+ "rule": "blank = no data row of the run has a combined height (Hst) above zero or a swell group with three numbers; a blank station in a sea-ice region (|lat| >= 50 or a freezing sea's box) is recorded as ice and never removed; removed = blank in both of the two newest recorded runs; a missing bulletin never counts",
  "runs": {
   "2026102406": {
    "blank": [
@@ -13,14 +13,16 @@
     "44064",
     "44072",
     "44087",
-    "46088",
-    "Alaska_NS3"
+    "46088"
    ],
    "absent": [],
    "failed": [],
    "scanned": 734,
    "scanned_utc": "2026-10-24T20:59:40Z",
-   "source": "aws tar"
+   "source": "aws tar",
+   "ice": [
+    "Alaska_NS3"
+   ]
   },
   "2026102412": {
    "blank": [
@@ -34,14 +36,16 @@
     "44064",
     "44072",
     "44087",
-    "46088",
-    "Alaska_NS3"
+    "46088"
    ],
    "absent": [],
    "failed": [],
    "scanned": 734,
    "scanned_utc": "2026-10-24T21:01:18Z",
-   "source": "aws tar"
+   "source": "aws tar",
+   "ice": [
+    "Alaska_NS3"
+   ]
   }
  },
  "removed": [
@@ -55,7 +59,6 @@
   "44064",
   "44072",
   "44087",
-  "46088",
-  "Alaska_NS3"
+  "46088"
  ]
 }

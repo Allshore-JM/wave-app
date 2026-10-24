@@ -1436,6 +1436,18 @@ beside the coastline and is given up only after 5 s with no byte (the owner's ca
 since 2.22.4). A row turned on while the other row's file is still loading starts its own file at once (UI 1.25.4), with a full 15 s for its first byte (UI 1.25.5).
 Built and published by `tools/places/build_places.py` (coast-build workflow, `set: places`; `tools/places/README.md`).
 
+## A live buoy on a forecast point (plan section 52, UI asset 1.25.6)
+
+138 of the live buoys are forecast points too (the same NDBC id), many within a few hundred metres, and the live dot is
+drawn over the forecast dot. The live window then offers **Forecast for this point** and the forecast window **Live
+buoy**: the station with the same id (the live id without its source) within 400 km, else the nearest within 1 km; a
+twin farther than 1 km (NOAA's forecast point for a moved buoy lies 30-320 km from it) is named with its distance
+("Forecast point 41041 · 19 mi away"); none, no button. On touch screens the forecast dots take taps 8 px beyond their
+edge (the map's canvas renderer `tolerance`) and each live dot up to 8 px beyond its own, halved toward the nearest other
+icon (live dots, tide icons, wind flags, My points, forecast dots other than its twin: a buoy's own wind flag keeps the
+dot as it was); a mouse hits as before. On phones the window opened or touched last is the one on top. The block is
+`// ---- buoy links` in `templates/index.html` (`tests/ui/buoylinks.test.js` runs it).
+
 ## Wind stations (plan section 39, UI asset 1.22.0)
 
 Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from four public-domain NOAA / NWS

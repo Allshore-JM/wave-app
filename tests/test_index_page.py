@@ -1119,3 +1119,31 @@ def test_location_aids_on_the_page(client, monkeypatch):
     tpl = open(os.path.join(os.path.dirname(__file__), "..", "templates", "index.html"), encoding="utf-8").read()
     gated = tpl[tpl.index("{%- if model_overlays %}"):]
     assert r"window.__allshorePlacesBase = BASE.replace(/\/gfswave\/0p25\/v1$/, '') + '/static/places/v2';" in gated
+
+
+def test_buoy_links_on_the_page(client):
+    """Plan section 52 B: the live window's "Forecast for this point" (first in its body) and the forecast window's
+    "Live buoy" (after the phone pair in the toolbar), both hidden until a link is found; the forecast dots' touch
+    tolerance on the map's canvas renderer; the live dots' per-dot touch pad; on phones the window opened or touched
+    last on top; the link button left out of print. The behaviour is in tests/ui/buoylinks.test.js."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    lw = body.index('<div id="lwLinks" class="lw-links" hidden>')
+    assert body.index('<div id="lwBody" class="fw-body">') < lw < body.index('id="liveBuoyLoading"')
+    fw = body.index('<button type="button" id="fwLive" class="btn btn-sm btn-outline-primary" hidden>Live buoy</button>')
+    assert body.index('id="fwPair"') < fw < body.index('id="viewBar"')
+    for needle in (
+        "preferCanvas: true,",
+        "renderer: L.canvas({ tolerance: (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ? 8 : 0 }),",
+        "@media (pointer: coarse) { .live-buoy-dot::after { content: ''; position: absolute; inset: calc(-2px - var(--live-tap, 0px)); border-radius: 50%; } }",
+        ".live-buoy-dot { position: relative; }",
+        "#fwLive { display: none !important; }",
+        "    // ---- buoy links (plan section 52; tests/ui/buoylinks.test.js runs this block) ----",
+        "    // ---- end buoy links ----",
+        "const LINK_KM = 1.0, LINK_ID_KM = 400;",
+        "const LIVE_TAP_MAX = 8;",
+    ):
+        assert needle in body, needle
+    assert body.index(".fwin:not(.fw-min) { z-index: 3500; }") < body.index(".fwin.fw-front:not(.fw-min) { z-index: 3510; }")
+    # the block sits outside every template cut the page harnesses use (after the tide block, before the wind block)
+    a = body.index("    // ---- buoy links (plan section 52")
+    assert body.index("    map.on('zoomend', clampMapLatitude);") < a < body.index("    // ---------------- Wind stations (plan section 39)")

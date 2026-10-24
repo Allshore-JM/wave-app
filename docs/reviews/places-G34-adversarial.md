@@ -795,3 +795,34 @@ report in scratch `g34/recheck/`). **0 P0, 0 P1, 1 P2, 5 P3.**
 6. Versions + fixtures; the golden only if the template changes (its own commit); README (the slow-link behaviour).
 7. Then the test site at MAX (the K-2 runs re-measured against production at 60 / 45 / 30 KB/s and the trickle; R-2 live:
    one file held, Borders off), a short fresh check at MAX (the first-draw path changed), then step 10.
+
+## Fix round 2 (2026-10-24, Opus 5.5 HIGH)
+`feat/location-aids` @ e8f8eb5 (code + tests), df3150f (the golden, its own commit: the version strings only), then this
+section. UI asset 1.25.3, overlay asset 2.22.3. Not on the test site yet.
+- **R-1** (owner: "Draw at 15 s, clip later"): `mount` computes the first index as soon as the manifest is in and asks for
+  that frame at once, beside the coastline; the first draw of wave height / period / SST (also `_mountObs`) waits for the
+  coastline at most `COAST_FIRST_MS` (15 s; `_coastFirst`), then draws unclipped and the panel says "Coastline still
+  loading; the field is shown without coastline clipping until it arrives." (`coastNote`); `_coastLate` clips whatever
+  clipped or outlined field is on the map the moment the coastline lands and re-renders the panel (the note goes, or turns
+  into "could not be loaded"). `settled()` already waited for the coastline (`_noteSettled`), so the places still never
+  take its line; their cap is now 120 s (`WAIT_MAX_MS`). **Found while wiring it:** a frame's watchdog limits the WHOLE
+  download to 5 s (section 41's late frames); sharing a slow link with the coastline, a desktop's full-resolution first
+  frame (169 KB) would have been cut below ~68 KB/s (alone: ~34 KB/s, already the case on production). The first frame of a
+  mount (nothing on the map) is now given up only after 5 s with no byte arriving (the chunks re-arm its watchdog); every
+  later frame keeps the total limit.
+- **R-2**: `PlacesStore.load(kinds)` fetches only the tier-0 files of the rows that are on (Borders off: no lines file); a
+  unit that lands calls `onUnit(kind)`: the page credits it and draws that kind at once (lines: a redraw; names: a layout,
+  not during a zoom, whose end lays them out); `update()` keeps `labelsComplete` false while the places file is loading;
+  a kind turned on later (or during a load) fetches its file.
+- **R-4**: a coastline load that fails aborts its own controller after the status is read (the tier-0 download stops when
+  its index fails); its timer is not re-armed once the load has settled.
+- **R-5**: `decodePlaces` turns a TextDecoder error into `places-v1: names are not UTF-8` (final, never asked again).
+- **R-6**: pins for R2 (the 1.5-s idle with nothing to wait for), R5 (the coastline's own byte cap), R7 / R8 (`readAll`'s cap
+  and cancel), R12 (a cell's chunks re-arm its stall timer), R16 (each name's bytes), R18 (the width cache starts again),
+  R19 / R20 / R21 (a re-probe after a resize, the probe's line height, widths dropped on a new font), R27 (the panels
+  watched), R33 (a failed unit asked again after its cooldown), R39 (the overlay script failing settles the wait), R43 /
+  R44 (the 15-s constants). The module returns `fontUsed()` for the probe's pins.
+- Tests: Node 979 (+16), pytest 1,298. Mutants (scratch `g34/fix2/mut_fix2.py`, on a copy): the reviewer's 15 real survivors
+  re-applied (R33 re-anchored on the new `sync()`): 15 killed; 19 of the fix round's own: 18 killed after one more test (a
+  kind turned on during a load); F16 (`labelsComplete` true while the places load) is equivalent: the unit's own landing
+  lays the names out.

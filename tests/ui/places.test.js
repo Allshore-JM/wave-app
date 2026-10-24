@@ -991,3 +991,16 @@ test('re-check R-16 / R-18: the decoded size counts each name exactly; the width
   const c1 = calls; pl.textWidth('first', false);
   assert.equal(calls, c1 + 1, 'the cache started again: measured anew');
 });
+
+test('re-check R-2: Borders turned on while the names file is still loading: its file is fetched once that load ends', async () => {
+  const map = fakeMap(6), f = fakeFetch({ ...TIER0, hold: true });
+  const pl = P.create(map, { base: BASE, L: fakeL(map), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: f, whenReady: (go) => go() });
+  f.held.shift()(); await settle();                                     // the index; the places file now on its way
+  assert.deepEqual(f.asked, [BASE + '/index.json', BASE + '/world-places.bin']);
+  pl.set('borders', true); await settle();
+  assert.equal(f.asked.length, 2, 'a load is running: nothing new yet');
+  f.held.shift()(); await settle();                                     // the places file lands, the load ends
+  assert.deepEqual(f.asked.slice(2), [BASE + '/world-lines.bin'], 'then the lines file');
+  f.held.shift()(); await settle();
+  assert.equal(pl.store.ok('l'), true); assert.deepEqual(map.credits, ['+Places:', '+Borders']);
+});

@@ -4,8 +4,8 @@ NOAA's GFS-Wave station list also writes out the edges of regional and coastal m
 0.25-2 degrees; on the map they drew boxes around ocean areas. `station_list.json` (the select, the picker, the markers)
 keeps the buoys and the named points only. `station_coords.json` and `station_timezones.json` stay whole: they are lookup
 tables, and the forecast-point time-zone rule reads every coordinate (dropping the boundary points there would move
-point time zones). Since 2026-10-24 (plan section 52 C) it also leaves out the 12 stations whose bulletin is blank
-(sheltered water the model has no sea for), found by tools/build_station_blank.py and named in station_blank.json
+point time zones). Since 2026-10-24 (plan section 52 C) it also leaves out the 11 stations whose bulletin is blank
+(sheltered water the model has no sea for; a station blank under sea ice stays), found by tools/build_station_blank.py and named in station_blank.json
 (tests/test_station_blank_tool.py).
 """
 import json
@@ -34,7 +34,7 @@ def load(name):
 
 def test_the_list_has_no_boundary_points():
     ids = [str(s) for s in load("station_list.json")]
-    assert len(ids) == 722 and len(set(ids)) == 722
+    assert len(ids) == 723 and len(set(ids)) == 723
     assert not [s for s in ids if boundary(s)]
 
 

@@ -992,15 +992,45 @@ test('re-check R-16 / R-18: the decoded size counts each name exactly; the width
   assert.equal(calls, c1 + 1, 'the cache started again: measured anew');
 });
 
-test('re-check R-2: Borders turned on while the names file is still loading: its file is fetched once that load ends', async () => {
+test('V2-2: Borders turned on while the names file is still loading: its file is fetched at once, beside it, and drawn and credited as it lands; nothing asked twice', async () => {
   const map = fakeMap(6), f = fakeFetch({ ...TIER0, hold: true });
   const pl = P.create(map, { base: BASE, L: fakeL(map), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: f, whenReady: (go) => go() });
   f.held.shift()(); await settle();                                     // the index; the places file now on its way
   assert.deepEqual(f.asked, [BASE + '/index.json', BASE + '/world-places.bin']);
+  const loading = pl.store.loading;
   pl.set('borders', true); await settle();
-  assert.equal(f.asked.length, 2, 'a load is running: nothing new yet');
-  f.held.shift()(); await settle();                                     // the places file lands, the load ends
-  assert.deepEqual(f.asked.slice(2), [BASE + '/world-lines.bin'], 'then the lines file');
+  assert.deepEqual(f.asked.slice(2), [BASE + '/world-lines.bin'], 'the lines file at once (fix round 2: only once the names file had landed)');
+  assert.equal(pl.store.loading, loading, 'within the load in progress');
+  pl.set('borders', true); map.fire('zoomend'); await settle();
+  assert.equal(f.asked.length, 3, 'asked once');
+  f.held[1](); f.held.splice(1, 1); await settle();                     // the lines land first
+  assert.equal(pl.store.ok('l'), true); assert.equal(pl.store.ok('p'), false);
+  assert.deepEqual(map.credits, ['+Borders'], 'the borders credited while the names still load');
+  assert.notEqual(pl.store.loading, null, 'the load waits for the names file too');
+  f.held.shift()(); await settle();                                     // the names file lands, the load ends
+  assert.equal(pl.store.ok('p'), true); assert.equal(pl.store.loading, null);
+  assert.deepEqual(map.credits, ['+Borders', '+Places:']);
+  assert.equal(f.asked.length, 3, 'still nothing asked twice');
+});
+
+test('V2-2: a kind asked for while the index is still loading starts its file right after the index; an index that fails resets both kinds', async () => {
+  const f = fakeFetch({ ...TIER0, hold: true });
+  const st = new I.PlacesStore(BASE, f);
+  const p1 = st.load(['p']);
+  st.load(['l']);
+  assert.deepEqual(f.asked, [BASE + '/index.json'], 'nothing before the index');
+  assert.equal(st.unit.l.status, 'loading'); assert.equal(st.unit.p.status, 'loading');
   f.held.shift()(); await settle();
-  assert.equal(pl.store.ok('l'), true); assert.deepEqual(map.credits, ['+Places:', '+Borders']);
+  assert.deepEqual(f.asked.slice(1).sort(), [BASE + '/world-lines.bin', BASE + '/world-places.bin'], 'both files after the index');
+  while (f.held.length) { f.held.shift()(); await settle(); }
+  assert.equal(await p1, st, 'the first call resolves once both kinds are in');
+  assert.equal(st.ok('l'), true); assert.equal(st.ok('p'), true);
+  // an index answering 503: the load fails and both kinds go back to idle (asked again after the cooldown)
+  const f2 = fakeFetch({ ...TIER0, 'index.json': 'down', hold: true });
+  const st2 = new I.PlacesStore(BASE, f2);
+  const q = st2.load(['p']); st2.load(['l']);
+  f2.held.shift()(); await settle();
+  assert.equal(await q, null);
+  assert.equal(st2.status, 'failed'); assert.equal(st2.unit.l.status, 'idle'); assert.equal(st2.unit.p.status, 'idle');
+  assert.equal(st2.loading, null);
 });

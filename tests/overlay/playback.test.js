@@ -527,7 +527,7 @@ function stream(o, reads) {
   return { ok: true, status: 200, headers: { get: () => null }, blob: never, arrayBuffer: never,
     body: { getReader: () => ({ read: () => new Promise((res, rej) => { reads.push(res); aborted(rej); }), cancel() {} }) } };
 }
-test('re-check R-1: the first frame of a mount gives up only after STALL_MS with no byte arriving (it shares a slow link with the coastline); a later frame keeps the total limit (section 41)', async () => {
+test('re-check R-1 / V2-1: a frame download (the first of a mount or a later one) gives up only after STALL_MS with no byte arriving; a slow but moving download goes on', async () => {
   const w = world({ fakeTimers: true });
   w.pointer = ptr(A); w.manifests[A.run] = A;
   const reads = [];
@@ -554,9 +554,56 @@ test('re-check R-1: the first frame of a mount gives up only after STALL_MS with
   const u = w2.fetches.slice(before).filter((x) => x.indexOf('/hs/') >= 0)[0];
   assert.ok(u, 'the far frame asked for');
   const n0 = w2.fetches.filter((x) => x === u).length;
-  await w2.fade(4000); while (reads2.length) reads2.shift()({ done: false, value: new Uint8Array(10) }); await settle();
-  await w2.fade(1500); await settle();
-  assert.equal(w2.fetches.filter((x) => x === u).length, n0 + 1, 'past the limit in all: asked again although bytes came');
+  for (let t = 0; t < 4; t++) { await w2.fade(4000); while (reads2.length) reads2.shift()({ done: false, value: new Uint8Array(10) }); await settle(); }
+  assert.equal(w2.fetches.filter((x) => x === u).length, n0, '16 s of a slow but moving later download: never asked again (V2-1; section 41 cut it at 5 s in all)');
+  await w2.fade(5000); await settle();
+  assert.equal(w2.fetches.filter((x) => x === u).length, n0 + 1, 'no byte for STALL_MS: asked again (a hung download still is)');
+  o2.unmount();
+});
+
+test('V2-1: with the coastline still loading after the unclipped first picture, ring frames sharing the slow link and still receiving bytes are asked once, never marked unavailable', async () => {
+  const w = world({ fakeTimers: true });
+  w.coastAnswer = coastOk;
+  w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create({ coast: true });
+  o.coast.timeoutMs = 600000;                                    // the fake coast sends nothing: its own stall must not fire
+  const I = w.g.AllshoreOverlay._internals;
+  o.mount('hs'); await settle();
+  const first = w.fetches.filter((u) => u.indexOf('/hs/') >= 0);
+  assert.equal(first.length, 1, 'the first frame asked beside the coastline');
+  const reads = [];
+  w.streams = (url, oo) => (url.indexOf('/hs/') >= 0 && url !== first[0] ? stream(oo, reads) : null);
+  await w.release(1);
+  await w.fade(I.COAST_FIRST_MS); for (let i = 0; i < 4 && !o.layer._frame; i++) await settle();
+  assert.ok(o.layer._frame, 'the unclipped first picture'); assert.equal(o.coast.status, 'loading');
+  const ring = [...new Set(w.fetches.filter((u) => u.indexOf('/hs/') >= 0 && u !== first[0]))];
+  assert.ok(ring.length >= 1, 'the ring asked beside the loading coastline');
+  for (let t = 0; t < 16; t++) { await w.fade(1000); while (reads.length) reads.shift()({ done: false, value: new Uint8Array(10) }); await settle(); }
+  assert.deepEqual(ring.map((u) => w.fetches.filter((x) => x === u).length), ring.map(() => 1), 'each asked once (2.22.3: three times, then a cooldown)');
+  assert.equal(Object.keys(o.unavailable).length, 0); assert.equal(o.transientFails, 0);
+  o.unmount();
+});
+
+test("V2-1: the shown step's direction frame still arriving after 5 s is kept (its particles come), and a hung one is still asked again", async () => {
+  const w = world({ fakeTimers: true }); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const reads = [];
+  w.streams = (url, oo) => (/\/pdir\//.test(url) ? stream(oo, reads) : null);
+  const o = w.create(); o.anim = true; o.mount('hs'); await settle(); await w.releaseField();
+  const dirs = () => w.fetches.filter((u) => /\/pdir\//.test(u));
+  const shownDir = dirs()[0];
+  assert.ok(shownDir, 'the shown step direction asked');
+  for (let t = 0; t < 12; t++) { await w.fade(1000); while (reads.length) reads.shift()({ done: false, value: new Uint8Array(10) }); await settle(); }
+  assert.equal(w.fetches.filter((u) => u === shownDir).length, 1, '12 s of a moving direction download: asked once');
+  assert.ok(!Object.keys(o.unavailable).length, 'nothing marked unavailable');
+  o.unmount();
+  // a direction download that sends nothing: asked again after STALL_MS, three tries, then the cooldown (unchanged)
+  const w2 = world({ fakeTimers: true }); w2.pointer = ptr(A); w2.manifests[A.run] = A;
+  w2.streams = (url, oo) => (/\/pdir\//.test(url) ? stream(oo, []) : null);
+  const o2 = w2.create(); o2.anim = true; o2.mount('hs'); await settle(); await w2.releaseField();
+  const d2 = w2.fetches.filter((u) => /\/pdir\//.test(u))[0];
+  for (let t = 0; t < 4; t++) { await w2.fade(w2.I.STALL_MS); await settle(); }
+  assert.equal(w2.fetches.filter((u) => u === d2).length, w2.I.LATE_TRIES, 'a hung download: LATE_TRIES attempts');
+  assert.ok(Object.keys(o2.unavailable).some((k) => /pdir/.test(k)), 'then the cooldown');
   o2.unmount();
 });
 

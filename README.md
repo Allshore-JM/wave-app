@@ -409,6 +409,8 @@ next animation frame (G32 A-P3-5, accepted).
 Late frames (asset 2.14.12): the 5-s watchdog (or 4 playback intervals) times a frame's download only; a download that
 stalls is asked again at once, three attempts in all, and only then is the frame left out for a minute and listed as
 "Unavailable frames are skipped". A frame that is merely slow (a busy page at fast speeds) is waited for, never listed.
+Since asset 2.22.4 the watchdog counts only the time with no byte arriving (every chunk re-arms it), for every frame: on a
+slow link (30-45 KB/s) a direction or full-resolution frame that is still arriving is no longer thrown away after 5 s in all.
 Fast playback (assets 2.15.0-2.16.6, plan section 42): the fish and the shark reach their rates (4 and 8 frames/s) on screens up
 to 1920x1080 because (1) the ring of decoded frames follows the speed: paused and at 1x the G3/G4 budgets stand (the
 frame on the map, 2 ahead, 2 behind, at most 2 downloads at once, at most 5 decoded frames per kind); at 2x the ring is
@@ -1429,7 +1431,8 @@ data has loaded. A wind station without a recent reading is drawn as a hollow gr
 dot (G34). The overlay's coastline loader follows the same stall rule (15 s with no byte, not 15 s in all), and the first
 picture of wave height, period or SST waits for it at most 15 s: on a slower link the field is drawn without coastline
 clipping and a "Coastline still loading" note, and clipped the moment the coastline lands; its first frame downloads
-beside the coastline and is given up only after 5 s with no byte (the owner's call after the G34 re-check).
+beside the coastline and is given up only after 5 s with no byte (the owner's call after the G34 re-check; every frame
+since 2.22.4). A row turned on while the other row's file is still loading starts its own file at once (UI 1.25.4).
 Built and published by `tools/places/build_places.py` (coast-build workflow, `set: places`; `tools/places/README.md`).
 
 ## Wind stations (plan section 39, UI asset 1.22.0)

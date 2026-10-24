@@ -489,3 +489,32 @@ test('a flag whose dot changes keeps no stale marker (R57) and the dot search wr
   wrap.api.rebuildWindMarkers(true); await flush();
   assert.ok(flagOf(markerOf(wrap, 'Edge')).classList.contains('wind-hollow'), '2 px apart across 180: hollow');
 });
+
+// ---- plan section 52 D: a stalled feed in the legend (the NWS API stopped on 2026-10-22; MADIS is its backup)
+const STALL = cut('    const WIND_STALL_S = 3 * 3600;', '    function windNoteWanted(on) {');
+const stallNote = new Function(STALL + '\nreturn windStallNote;')();
+
+test("the stall note: the NWS feed's newest reading over 3 h old, the feed not loading, and no fresh MADIS row covering it", () => {
+  const now = 1792876500, t = now - 4 * 3600;
+  const base = { now, stale_s: 7200, newest: { nws: t }, rows: [['nws:001HE', now - 60, 6.5, 9.7, 25]], fed_by: {} };
+  const note = stallNote(base, []);
+  assert.ok(note.startsWith('NWS feed stalled since '), note);
+  assert.equal(note, 'NWS feed stalled since ' + new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }));
+  assert.equal(stallNote(Object.assign({}, base, { newest: { nws: now - 3 * 3600 } }), []), '', '3 h exactly: not yet');
+  assert.equal(stallNote(Object.assign({}, base, { newest: { nws: now - 3 * 3600 - 1 } }), []).slice(0, 16), 'NWS feed stalled');
+  assert.equal(stallNote(Object.assign({}, base, { newest: {} }), []), '', 'unknown (a restart during the stall): no note');
+  assert.equal(stallNote(Object.assign({}, base, { newest: { coops: t } }), []), '', 'another feed: no note (only the NWS one has a backup to tell)');
+  assert.equal(stallNote(base, ['nws']), '', 'the NWS feed still loading after a deploy: not stalled');
+  assert.equal(stallNote(Object.assign({}, base, { fed_by: { 'nws:001HE': 'madis' } }), []), '', 'MADIS fills its stations: no note');
+  assert.ok(stallNote(Object.assign({}, base, { fed_by: { 'nws:001HE': 'madis' }, rows: [['nws:001HE', now - 7201, 1, null, 1]] }), []).length > 0,
+    'only old MADIS rows: the note');
+  assert.ok(stallNote(Object.assign({}, base, { fed_by: { 'coops:1612340': 'ndbc' }, rows: [['coops:1612340', now - 60, 1, null, 1]] }), []).length > 0,
+    'an NDBC relay is not the NWS backup');
+  assert.equal(stallNote(null, []), ''); assert.equal(stallNote({}, null), '');
+});
+
+test('the stall note in the page: after the flags are repainted, guarded, behind the feed\'s own note; the credit names MADIS', () => {
+  assert.ok(TPL.includes("            refreshWindFlags();\n            try { windStallText = windStallNote(payload, missing); } catch (e) { windStallText = ''; }   // never the flags' repaint\n            syncWindNote();"));
+  assert.ok(TPL.includes('      return windFeedNote || windStallText;'));
+  assert.ok(TPL.includes(' · <a href="https://madis.ncep.noaa.gov/" target="_blank" rel="noopener">NOAA MADIS</a>\';'));
+});

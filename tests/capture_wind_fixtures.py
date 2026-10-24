@@ -90,6 +90,27 @@ def main():
     page["@graph"] = keep
     page.pop("pagination", None)
     save("nws_stations.json", json.dumps(page, indent=1).encode())
+    save("madis_hi.html", madis_cut(get_slow(W.MADIS_HI_URL)))
+
+
+MADIS_KEEP = ("001HE", "016HE", "029HI", "PHNL", "PHJR")
+
+
+def madis_cut(raw):
+    """The MADIS viewer's answer (plan section 52 D) cut to the HTML around the table, its header and the lines of
+    MADIS_KEEP (the airports are listed twice: the newest record wins)."""
+    out = []
+    for line in raw.decode("latin-1").splitlines(keepends=True):
+        cells = [c.strip() for c in line.replace("<h3><PRE>", "").split(",")]
+        if len(cells) < 3 or cells[0] == "STAID" or cells[0] in MADIS_KEEP:
+            out.append(line)
+    return "".join(out).encode("latin-1")
+
+
+def get_slow(url):
+    req = urllib.request.Request(url, headers=W.HEADERS)
+    with urllib.request.urlopen(req, timeout=90) as r:
+        return r.read()
 
 
 def get_nws(url):

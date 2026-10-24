@@ -992,3 +992,220 @@ def test_healthz_reports_the_wind_feeds_without_touching_warm(bg):
     w = c.get("/healthz").get_json()["wind"]
     assert w["missing"] == [] and w["memo"]["complete"] is True and w["memo"]["current"] is True and w["memo"]["bytes"] > 100
     assert w["history_entries"] == 0 and w["errors"] == 0
+
+
+# ------------------------------------------------------------------ the MADIS backup and the stall note (plan section 52 D)
+
+MADIS_T = calendar.timegm((2026, 10, 24, 21, 10, 0))                      # 001HE's report in the fixture
+
+
+@pytest.fixture
+def madis_clock(monkeypatch):
+    t = F.FrozenTime(MADIS_T + 300)
+    monkeypatch.setattr(B, "time", t)
+    return t
+
+
+def madis_fetch(body=None):
+    return FakeFetch({W.MADIS_HI_URL: fx("madis_hi.html") if body is None else body})
+
+
+def test_parse_madis_csv_the_real_answer():
+    """The viewer's answer as captured (tests/capture_wind_fixtures.py cuts it): K -> C, the altimeter in hPa, missing
+    values left out, the newest of a station's records, ids upper case."""
+    o = W.parse_madis_csv(fx("madis_hi.html").decode("latin-1"))
+    assert sorted(o) == ["001HE", "016HE", "029HI", "PHJR", "PHNL"]
+    assert o["001HE"] == {"t": MADIS_T, "s": 6.5, "g": 9.7, "d": 25, "at": 22.1, "dp": 20.9, "rh": 93}, "no altimeter: no p"
+    assert o["029HI"] == {"t": MADIS_T - 600, "s": 1.0, "g": 2.6, "d": 225, "at": 24.7, "dp": 21.7, "rh": 83, "p": 1016.5}
+    assert o["PHJR"]["t"] == MADIS_T + 300 and o["PHJR"]["d"] == 40, "listed twice: the newer record (the older has no direction)"
+    assert o["PHNL"]["g"] is None, "a gust of -99999 is none"
+
+
+MADIS_HEAD = (" STAID     ,OBDATE    ,OBTIME,PVDR     ,SUBPVDR    ,TD           ,D,RH           ,D,T            ,D,DD"
+              "           ,D,FF           ,D,FFGUST       ,D,ALTSE        ,D,\n")
+
+
+def madis_line(sid, ff="5.0", ffq="S", dd="90.0", ddq="S", t="295.15", tq="S", time="21:10"):
+    return (" %s ,10/24/2026,%s,MesoWest  ,HECO       ,   290.15,S, 70.0,S, %s,%s, %s,%s, %s,%s, 7.0,S, 101500.0,S,\n"
+            % (sid, time, t, tq, dd, ddq, ff, ffq))
+
+
+def test_parse_madis_csv_quality_control_and_shapes():
+    L = madis_line
+    o = W.parse_madis_csv("<PRE>" + MADIS_HEAD + L("AAA01") + L("BBB01", ffq="X") + L("CCC01", ddq="B") + L("DDD01", tq="X")
+                          + L("EEE01", ff="-99999.0", ffq="Z") + L("FFF01", ff="0.0", dd="270.0") + L("bad id!")
+                          + L("GGG01", time="2x:10") + "</PRE>")
+    assert sorted(o) == ["AAA01", "CCC01", "DDD01", "FFF01"], "a rejected or missing speed: no reading; a bad id or time: skipped"
+    assert o["AAA01"] == {"t": MADIS_T, "s": 5.0, "g": 7.0, "d": 90, "at": 22.0, "dp": 17.0, "rh": 70, "p": 1015.0}
+    assert o["CCC01"]["d"] is None and o["DDD01"].get("at") is None, "a rejected value (QC X or B) is left out"
+    assert o["FFF01"]["s"] == 0.0 and o["FFF01"]["d"] is None, "calm: no direction"
+    # a record 10+ minutes in the future is dropped (a bad clock upstream)
+    assert W.parse_madis_csv("<PRE>" + MADIS_HEAD + L("AAA01") + "</PRE>", now=MADIS_T - 601) == {}
+    assert "AAA01" in W.parse_madis_csv("<PRE>" + MADIS_HEAD + L("AAA01") + "</PRE>", now=MADIS_T - 599)
+    # columns found by name: another order reads the same
+    swapped = MADIS_HEAD.replace("FF           ,D,FFGUST", "FFGUST       ,D,FF")
+    assert W.parse_madis_csv("<PRE>" + swapped + L("AAA01") + "</PRE>")["AAA01"]["s"] == 7.0
+    # an error page / no header: a failed answer (keep-last)
+    for bad in ("", "<html><body>Service unavailable</body></html>", " FOO,BAR\n AAA,1\n", " STAID,OBDATE,OBTIME\n"):
+        with pytest.raises(ValueError):
+            W.parse_madis_csv(bad)
+    assert W.parse_madis_csv("<PRE>" + MADIS_HEAD + "</PRE>") == {}, "the header and no station: an empty answer, not a failure"
+
+
+def test_madis_provider_relays_the_nws_stations_and_keeps_readings(madis_clock):
+    p = W.MadisProvider(NWS_IDS, madis_fetch())
+    lst, ver, _ = p.list_stations_versioned()
+    assert [e["id"] for e in lst] == ["madis:001HE", "madis:029HI"], "only the snapshot's NWS stations (not 016HE, not the airports)"
+    assert all(e["alias_of"] == "nws:" + e["id"].split(":")[1] for e in lst)
+    assert lst[0]["wind"] == [6.5, 9.7, 25] and lst[0]["name"] == NWS_IDS["001HE"]["name"]
+    assert p.row("001HE") == {"t": MADIS_T, "s": 6.5, "g": 9.7, "d": 25, "at": 22.1, "dp": 20.9, "rh": 93}
+    assert p.row("nope") is None
+    r = p.row("001HE")
+    r["s"] = 99
+    assert p.row("001HE")["s"] == 6.5, "a copy"
+    # a later answer without 029HI keeps its reading; 6 hours on it is dropped
+    p._fetch = madis_fetch(fx("madis_hi.html").replace(b" 029HI", b" XXXXX"))
+    assert {e["local_id"] for e in p._fetch_stations()} == {"001HE", "029HI"}
+    madis_clock.now = MADIS_T + W.MADIS_KEEP_S + 601
+    assert p._fetch_stations() == []
+    # an unreadable answer raises (the base class keeps the last list)
+    p._fetch = madis_fetch(b"<html>Service unavailable</html>")
+    with pytest.raises(ValueError):
+        p._fetch_stations()
+    assert p.source == "MADIS" and p.list_ttl_sec == W.MADIS_TTL_S == 300 and p.attribution_text.endswith(W.ATTRIBUTION["madis"])
+    assert p.extra_keys == ("wind", "alias_of")
+
+
+def test_make_providers_with_the_madis_backup():
+    fetch, slow = FakeFetch(), FakeFetch()
+    provs = W.make_providers(STATIONS, fetch)
+    assert [p.source for p in provs] == ["NDBC", "METAR", "COOPS", "NWS"], "without a url: as before"
+    provs = W.make_providers(STATIONS, fetch, madis_url="https://madis.test/x", madis_fetch=slow)
+    m = provs[4]
+    assert m.source == "MADIS" and m.url == "https://madis.test/x" and m._fetch is slow and sorted(m.stations) == sorted(NWS_IDS)
+    assert W.make_providers(STATIONS, fetch, madis_url="u")[4]._fetch is fetch
+
+
+def test_build_latest_madis_relay_fed_by_and_newest():
+    def nws(local, t, s):
+        return {"id": "nws:" + local, "wind": [s, None, 90], "latest_time": W.iso_z(t)}
+
+    def madis(local, t, s):
+        return {"id": "madis:" + local, "wind": [s, 1.0, 45], "latest_time": W.iso_z(t), "alias_of": "nws:" + local}
+    lists = {"nws": [nws("001HE", MADIS_T - 7200, 3.0), nws("029HI", MADIS_T + 60, 4.0)],
+             "madis": [madis("001HE", MADIS_T, 6.5), madis("029HI", MADIS_T, 1.0)]}
+    d = W.build_latest(STATIONS, lists, MADIS_T + 300, {"nws": MADIS_T - 7200, "coops": None})
+    rows = {r[0]: r for r in d["rows"]}
+    assert rows["nws:001HE"] == ["nws:001HE", MADIS_T, 6.5, 1.0, 45], "the newer MADIS report wins"
+    assert rows["nws:029HI"] == ["nws:029HI", MADIS_T + 60, 4.0, None, 90], "the NWS API's own when it is newer"
+    assert d["fed_by"] == {"nws:001HE": "madis"} and d["newest"] == {"nws": MADIS_T - 7200}
+    # the NWS feed with no list at all (a stall past its keep time): every station from MADIS
+    d = W.build_latest(STATIONS, {"nws": [], "madis": lists["madis"]}, MADIS_T)
+    assert d["fed_by"] == {"nws:001HE": "madis", "nws:029HI": "madis"} and d["newest"] == {} and "nws:001HE" not in d["missing"]
+    # a gauge's NDBC relay is named too; of two relays of one station the newer wins, whatever the order
+    nd = {"id": "ndbc:OOUH1", "wind": [2.0, 3.0, 10], "latest_time": W.iso_z(MADIS_T), "alias_of": "coops:1612340"}
+    old = dict(nd, id="ndbc:OLD", latest_time=W.iso_z(MADIS_T - 60), wind=[9.0, 9.0, 9])
+    for order in ([nd, old], [old, nd]):
+        d = W.build_latest(STATIONS, {"coops": [], "ndbc": order}, MADIS_T)
+        assert d["fed_by"] == {"coops:1612340": "ndbc"} and d["rows"][0][2] == 2.0
+    assert W.build_latest(STATIONS, {}, 0)["fed_by"] == {} and W.build_latest(STATIONS, {}, 0)["newest"] == {}
+
+
+def test_paced_feeds_remember_their_newest_reading(clock):
+    fetch = FakeFetch(nws_table())
+    p = W.NwsProvider(NWS_IDS, fetch, per_refresh=10)
+    assert p.newest_t() is None and p.status()["newest_age_s"] is None
+    newest = max(r["t"] for r in W.parse_nws_observations(json.loads(fx("nws_obs.json"))))
+    clock.now = newest + 600
+    p._fetch_stations()
+    assert p.newest_t() == newest and p.status()["newest_age_s"] == 600
+    # the readings age out after keep_s; the newest time stays (the stall note's "since")
+    clock.now = newest + W.NWS_KEEP_S + 10
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
+    assert p._fetch_stations() == [] and p.newest_t() == newest
+
+
+def madis_svc(fetch, now, rows):
+    svc = W.WindHistory(STATIONS, fetch, now=Clock(now))
+    svc.madis = lambda local: dict(rows[local]) if local in rows else None
+    return svc
+
+
+def test_history_nws_falls_back_on_madis():
+    fetch = history_fetch()
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
+    madis = {"001HE": {"t": MADIS_T, "s": 6.5, "g": 9.7, "d": 25, "at": 22.1, "dp": 20.9, "rh": 93}}
+    assert W.WindHistory(STATIONS, fetch, now=Clock(MADIS_T + 300)).history("nws:001HE")[1]["note"] == W.NO_HISTORY, "no backup: as before"
+    status, p = madis_svc(fetch, MADIS_T + 300, madis).history("nws:001HE")
+    assert status == "ok" and p["via"] == "madis" and p["note"] is None and p["source"] == W.ATTRIBUTION["madis"]
+    assert p["t"] == [MADIS_T] and p["s"] == [6.5] and p["g"] == [9.7] and p["d"] == [25]
+    assert p["at"] == [22.1] and p["rh"] == [93] and p["conditions"]["at"] == [MADIS_T, 22.1]
+    # the NWS API with older rows: MADIS's newer report is added after them
+    rows = W.parse_nws_observations(json.loads(fx("nws_history.json")))
+    newest = max(r["t"] for r in rows)
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = fx("nws_history.json")
+    madis["001HE"]["t"] = newest + 600
+    p = madis_svc(fetch, newest + 900, madis).history("nws:001HE")[1]
+    assert p["via"] == "nws+madis" and p["t"][-1] == newest + 600 and p["t"][:-1] == sorted(r["t"] for r in rows)
+    assert p["source"] == W.ATTRIBUTION["nws"] + "; the latest reading: " + W.ATTRIBUTION["madis"]
+    # MADIS older than the API's newest row: not added; older than 24 h: never
+    madis["001HE"]["t"] = newest - 60
+    assert madis_svc(fetch, newest + 900, madis).history("nws:001HE")[1]["via"] is None
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
+    madis["001HE"]["t"] = MADIS_T - W.HISTORY_S - 1
+    assert madis_svc(fetch, MADIS_T, madis).history("nws:001HE")[1]["note"] == W.NO_HISTORY
+    # the API failing: MADIS answers when it has the station, else the failure stands
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = IOError("timeout")
+    fetch.table[W.NWS_API + "/stations/029HI/observations?"] = IOError("timeout")
+    madis["001HE"]["t"] = MADIS_T
+    svc = madis_svc(fetch, MADIS_T + 60, madis)
+    assert svc.history("nws:001HE")[1]["via"] == "madis"
+    assert svc.history("nws:029HI")[0] == "error"
+
+
+def test_app_wires_the_madis_backup(monkeypatch):
+    assert A.WIND_WARM_ORDER == ["NDBC", "METAR", "MADIS", "COOPS", "NWS"]
+    assert A.WIND_MADIS_URL == W.MADIS_HI_URL, "on by default (env WIND_MADIS_URL; empty = off)"
+    calls = []
+
+    class Resp:
+        def __init__(self, status, chunks):
+            self.status_code, self.chunks = status, chunks
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def iter_content(self, n):
+            return iter(self.chunks)
+    monkeypatch.setattr(A.requests, "get", lambda url, **k: calls.append((url, k)) or Resp(200, [b"ab", b"cd"]))
+    assert A._madis_fetch("https://m.test/x", 10, {"User-Agent": "u"}) == b"abcd"
+    assert calls[0][1]["timeout"] == A.WIND_MADIS_TIMEOUT == (10, 45) and calls[0][1]["headers"] == {"User-Agent": "u"}
+    with pytest.raises(RuntimeError):
+        A._madis_fetch("u", 3, None)                                       # over the cap
+    monkeypatch.setattr(A.requests, "get", lambda url, **k: Resp(503, []))
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        A._madis_fetch("u", 10, None)
+    # _winds(): the provider built with the slow fetch, its rows handed to the history service
+    monkeypatch.setattr(A, "_WINDS", {"svc": None, "list": None, "providers": None, "stations": None})
+    w = A._winds()
+    m = [p for p in w["providers"] if p.source == "MADIS"][0]
+    assert m._fetch is A._madis_fetch and w["svc"].madis == m.row and m.url == A.WIND_MADIS_URL
+    monkeypatch.setattr(A, "WIND_MADIS_URL", "")
+    monkeypatch.setattr(A, "_WINDS", {"svc": None, "list": None, "providers": None, "stations": None})
+    w = A._winds()
+    assert [p.source for p in w["providers"]] == ["NDBC", "METAR", "COOPS", "NWS"] and w["svc"].madis is None
+
+
+def test_the_table_and_healthz_name_the_rows_madis_gave(winds, madis_clock):
+    provs, fetch, _, c = winds
+    provs.append(W.MadisProvider(NWS_IDS, madis_fetch()))
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
+    d = c.get("/api/wind/latest").get_json()
+    assert d["fed_by"] == {"nws:001HE": "madis", "nws:029HI": "madis"}, "the NWS API brought nothing: MADIS feeds both"
+    assert {r[0]: r for r in d["rows"]}["nws:001HE"][1:] == [MADIS_T, 6.5, 9.7, 25]
+    assert "nws" not in d["newest"] and "coops" in d["newest"], "the NWS feed never brought a reading; CO-OPS did"
+    h = A._wind_health(_time.time())
+    assert h["fed_by"] == {"madis": 2} and any(s["source"] == "MADIS" for s in h["providers"])

@@ -998,3 +998,22 @@ Owner awareness (no change proposed):
    once slow downloads are kept).
 4. Mutants of the changes, the suites, the golden in its own commit, README; then the test site (MAX: the slow-link frame
    runs on both sites again, the late toggle live), a short fresh check (MAX), step 10.
+
+## Fix round 3 (2026-10-24, Opus 5.5 HIGH)
+`feat/location-aids` @ 27fdce5 (code + tests), d38a3cc (the golden, its own commit: the version strings only), then a pin
+and this section. UI asset 1.25.4, overlay asset 2.22.4. Not on the test site yet.
+- **V2-1** (owner: "No data for 5 s, every frame"): `_ensure`'s watchdog re-arms on every chunk for every attempt, every kind
+  (field, direction, pressure, lake), whether or not a picture is on the map; a download sending nothing for 5 s is still
+  asked again (three tries, then the 60-s cooldown and the outage rule, unchanged). The old rule's pin ("a later frame keeps
+  the total limit") rewritten to the new one; the verification's reproduction (ring frames beside the loading coastline,
+  still receiving bytes: asked once, never unavailable, the outage counter 0) and a direction-frame case (kept while bytes
+  arrive; a hung one asked LATE_TRIES times, then the cooldown) added. README's late-frames paragraph.
+- **V2-2** (owner: "Start it at once"): `PlacesStore.load(kinds)` during a load starts the files of the kinds not yet
+  loading beside it (`_unitLoad`: after the shared index, under the load's abort and stall timer); the load in progress
+  resolves only when every unit started in it, also one added meanwhile, has landed or failed; an index failure resets
+  every kind it was loading. The page's `sync()` asks for a wanted kind that is neither loaded nor loading, also while a load
+  runs. Deviation from the scope's wording: turning every row off still leaves a tier-0 load in progress to finish (as
+  before; aborting it would put the store in its 60-s failure cooldown and turning a row back on would show nothing).
+- Tests: Node 983 (+4), pytest 1,282 + the page tests 60 after the golden. Mutants (scratch `g34/fix3/mut_fix3.py`, on a
+  copy): 10; 9 killed at first, P3 (the load not waiting for a unit added meanwhile) killed after one more test (the first
+  file landing before the added one).

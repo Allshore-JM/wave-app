@@ -1033,4 +1033,15 @@ test('V2-2: a kind asked for while the index is still loading starts its file ri
   assert.equal(await q, null);
   assert.equal(st2.status, 'failed'); assert.equal(st2.unit.l.status, 'idle'); assert.equal(st2.unit.p.status, 'idle');
   assert.equal(st2.loading, null);
+  // the first file landing before the one added meanwhile: the load stays in progress until both are in
+  const f3 = fakeFetch({ ...TIER0, hold: true });
+  const st3 = new I.PlacesStore(BASE, f3);
+  let done = false; st3.load(['p']).then(() => { done = true; });
+  f3.held.shift()(); await settle();                                    // the index; the places file on its way
+  st3.load(['l']); await settle();                                      // the lines file asked beside it
+  assert.equal(f3.asked.length, 3);
+  f3.held.shift()(); await settle();                                    // the places file lands first
+  assert.equal(done, false, 'the load waits for the lines file added meanwhile'); assert.notEqual(st3.loading, null);
+  f3.held.shift()(); await settle();
+  assert.equal(done, true); assert.equal(st3.loading, null); assert.equal(st3.ok('l'), true);
 });

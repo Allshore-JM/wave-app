@@ -1191,3 +1191,24 @@ canvas result).
    sst_timers test re-pointed; K-9's comment in `decodeFrame` corrected (the overlay asset bumped for it).
 4. The record's pytest count corrected; README if anything it says changes; golden in its own commit; then a short
    test-site check (MAX: the reviewer's `late_live.js` corner + the smoke) and step 10.
+
+## Fix round 4 (2026-10-24, Opus 5.5 HIGH)
+`feat/location-aids` @ bfc8483 (code + tests), 828a572 (the golden, its own commit: the version strings only), then this
+section. UI asset 1.25.5, overlay asset 2.22.5. Not on the test site yet.
+- **F-1**: `PlacesStore.load()` restarts the load's stall timer when a file joins a load in progress (`if (need.length &&
+  this._arm) this._arm();`), so the late file has a full STALL_MS for its first byte, also when the other file has been
+  silent almost that long. Pinned by the fix check's scenario (silence 14.8 s, the late file asked, 300 ms later not
+  aborted, it lands; the silent file given up STALL_MS after the late file's last byte, K-3 unchanged).
+- **F-2**: a test with three cases for an added file: silent after its first chunk (given up by the load's timer, the load
+  settles), moving with a chunk every 10 s for 40 s while the other file is silent (kept, it lands; the silent file given
+  up STALL_MS after its last byte), and a kind inside its 60-s cooldown (not asked by a load in progress, asked once when
+  the cooldown is over, within the same load).
+- **F-3**: a test that a streamed frame body without DecompressionStream reaches the canvas decode as a `Blob` holding
+  exactly its bytes and decodes to the same codes as the direct path. The stale sst_timers test is re-pointed (with a
+  progress callback: the stream, as every model frame since 2.22.4; without one, i.e. the retry after a dead worker:
+  `arrayBuffer()`), and `decodeFrame`'s comment is corrected (K-9). The overlay asset is bumped for the comment.
+- The README's location-aids sentence gains the full first-byte window.
+- Record correction: fix round 3's "pytest 1,282 + the page tests 60" counted 44 page tests twice. The full suite after its
+  golden was 1,298.
+- Tests: Node 985 (+3), pytest 1,298 (all, after the golden). Mutants (scratch `g34/fix4/mut_fix4.py`, on a copy, each
+  against every overlay + ui test file): F1 (no re-arm), R1, R2, R3, Q2 — 5 of 5 killed, each by the new tests.

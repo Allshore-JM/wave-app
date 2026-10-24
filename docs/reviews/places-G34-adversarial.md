@@ -578,3 +578,143 @@ section. UI asset 1.25.2, overlay asset 2.22.2. Not on the test site yet.
 - Tests: pytest 1,298 passed; Node 962 + the survivor pins (places 37, coast 44 tests in their files). Mutants of the
   fix round (scratch `g34/fix/mut9.py`, on a copy): 33, all killed after four pins (a move's new view, the credits per
   unit, the render and Off notes of the first picture).
+
+## Test-site verification of the G34 fixes (2026-10-23/24, Opus 5.5 MAX)
+`test` @ 5f5cf12 (cherry-picks of fb78252, 0330f9d and 431a139's test pins; README and this record kept off the test branch;
+the site files = the feature branch's except the three test-only logo lines), pushed 23:43:34 UTC, live from 23:45:01 UTC. 30 polls across the switch, 0 failed. Served `places.js` / `forecast.js` / `tools.js` / `graticule.js`
+(UI 1.25.2) and `overlay.js` / `overlay.css` (2.22.2) = the commit; the 1.25.1 / 2.22.1 URLs answer 404. Headless Chrome
+with the GPU (scratch `g34/v9`: reviewer B's harness on port 9771, profile prefix `chromeprof-v9-`, B's scripts with a
+storage clear at the start of each run; outputs in `out/`). Production (2.21.7 / UI 1.24.0, no location aids) measured in
+the same runs where it compares.
+
+### B-6: slow links (`s/17_slow.js`, throttled by DevTools, 150-ms latency, a fresh visit each)
+| link | test 2.22.2 | production 2.21.7 |
+|---|---|---|
+| 100 KB/s | coastline in 13.8 s (6.6 -> 20.4 s), clip on; places index at 21.4 s (after the coastline and the first picture); places file in at 27.6 s, lines file at 32.2 s; the name on screen by 35 s | coastline in 13.6 s, clip on |
+| 90 KB/s | coastline in 15.1 s (7.4 -> 22.5 s: past 15 s in total, kept by the no-progress rule), clip on; places from 23.7 s | coastline cancelled at 15 s (`ERR_ABORTED`), "Coastline data could not be loaded", wave height over the land |
+| 60 KB/s | coastline in 22.2 s (10.4 -> 32.6 s), clip on; places from 33.9 s | cancelled at 15 s, the same warning |
+| 30 KB/s | the coastline still loading at the 30-s cap (load 20.3 s + 1.5 s + 30 s): the places index asked at 51.8 s, the places file in at 66.7 s, the lines file and the coastline still loading at 76 s; both complete by ~84 s, the coastline clipped, the names drawn | (not run: fails from 90 KB/s) |
+The test site keeps its coastline on every link production loses it on; the places never take the line before the
+overlay's coastline and first picture, except past the 30-s cap.
+
+### B-1: names clear of the floating windows and the open panels
+- `s/05_windows.js` at 1280x800 (trusted clicks on a live buoy, a tide station, a wind station and the forecast chip; the
+  gear and tools menus opened): names under something: 0 in every state (start 109 names, gear 104, tools menu 106, live
+  window 54, tide window 64, wind window 53, the forecast window open 43). B before: gear 6 + 3, tools 6 + 3, live 55 + 5,
+  tide 48 + 5, wind 55 + 6, forecast 65 + 9 (covered + partial). Console clean.
+- `s/02_views.js` with the storage cleared (B's 05 run had left the forecast window open in that tab: names under it
+  are left out, as designed) at 1280x800, 1920x1080, a 1024x768 tablet and the 375x812 phone: 0 overlapping pairs, 0 cut,
+  0 covered, 0 partial in every view. The names B found covered are the ones left out (e.g. Havana, Myrtle Beach, Buenos
+  Aires, Johannesburg, São Paulo, Petropavlovsk-Kamchatsky); totals 1,075 -> 1,050 (1280), 996 -> 982 (1080), 437 -> 415
+  (tablet), 188 = 188 (phone); a freed place sometimes takes another name (Tokyo z10: Kawara, Kotsubaki); views B had
+  clean give the same names.
+- Layout churn: 0 label writes over 10 s at rest and over 8 s of shark playback (51 frames).
+- The names come back (`s/v9_return.js`, 1280x800, trusted clicks and keys, the map never moved): Europe z5 53 names ->
+  the gear panel open 50 (Chișinău, Kyiv, Sevastopol left out) -> closed 53, the same set; the tools menu open 52 ->
+  Escape 53; San Francisco z10 66 -> the swell-exposure fan and bar 43 (three other names find room) -> the tool's x 66,
+  the same set; New York z9 107 -> a live-buoy window (44025) 57 -> Escape 107; the forecast window expanded 45 ->
+  minimised 107, the same set each time; 0 overlaps / cut / covered / partial in every state; console clean.
+
+### B-2: names avoid the map tools (`s/08_tools.js`, 1280x800)
+Swell exposure at San Francisco, Haleiwa and New York (fan, its labels, the range rings' labels, and hovering a wedge),
+Measure distance, Measure area and a forecast point: 0 names overlapping any tool element (B: 1 to 9 per state).
+
+### B-3: the grey no-reading ring (`s/v9_ring.js`)
+`.wind-none .wind-ring` on the test site: transparent, `2px solid rgb(184, 193, 203)` with dark 1-px outlines inside and
+out, the same 10-px box; production: a white 8-px dot with a 1-px grey edge. Oahu z10: 27 of 36 wind markers are
+no-reading rings (Honolulu z11 44 of 51, Maui z10 40 of 43). A trusted click (desktop) on Kaluanui Ridge's ring and a
+tap (phone) on Lyon's open their wind windows. Sheet for the owner: scratch `g34/v9/shots/g34_fix_grey_ring.jpg`.
+
+### Failure paths (`s/10_fail.js`, DevTools interception)
+- Every places file refused on a first visit: no lines, no names, no credits, rows kept; allowed again, nothing asked
+  inside the 60-s cooldown; the first view change after it draws both (44,029 line px, 54 names, both credits).
+- The index held 20 s: the watchdog fails it at 15 s; a late answer is ignored.
+- B-5: `world-places.bin` refused while the index and `world-lines.bin` answer: units `ok/failed`, the borders drawn and
+  credited, no names, no places credit.
+- A cell answering 500 (Biscay z9, `40_0.p`): 7 names from tier 0 and the other cells; 62 s later, with no input, the
+  retry timer brings it (45 names). A cell answering 200 with damaged bytes (`40_0.l`): final, tier 0 drawn instead, no
+  console noise, never asked again.
+- The lake-outline set refused under wind: no outlines; 62 s later + a zoom: attached, 21 tile masks.
+- Offline after the data loaded, then browsing at zoom 9 (Rome): tier 0 only (3 names), the two cells in their
+  cooldown; online again: 65 s later, with no input, both cells landed (66 names).
+- 2b (`world-places.bin` held 8 s) does not discriminate here: the harness's settle waits for the store.
+
+### Load order on a normal link (`s/v9_order.js`, fresh visits)
+| case | load | coastline | first frame | settled() | places index |
+|---|---|---|---|---|---|
+| desktop 1280x800 | 414 ms | 745-754 | 1,105-1,112 | 1,246 ('ready') | 1,920 (load + 1,506) |
+| phone 375x812 | 400 | 663-678 | 854-864 | 990 ('ready') | 1,903 (load + 1,503) |
+| overlay saved Off | 437 | - | - | - | 1,950 (load + 1,513, nothing to wait for) |
+On a normal link the wait costs nothing: the overlay settles before the 1.5-s idle ends.
+
+### B-4: memory after a long browse (`s/12_memory.js`, overlay Off, JS heap + array buffers after a GC)
+| browse | test | production | difference | B on 2.22.1 |
+|---|---|---|---|---|
+| dense (48 dense views, Europe / US / Japan at z9-10) | 19.5 MB (store: 74 cells, 5.94 MB decoded, tier 0 2.75 MB) | 10.4 MB | +9.1 MB | +12.8 MB |
+| surf spots (45 views) | 17.0 MB (78 cells, 3.22 MB decoded) | 10.5 MB | +6.5 MB | +7.1 MB |
+The store's count stays under its 6-MB cap (decoded bytes) and the cells of the view are kept.
+
+### Model tiles = production (`s/b6_identity.js`, the same run 2026102318, valid 2026-10-25 06Z, lake run 2026102319)
+Wave height, peak period and SST at the Great Lakes z6 and Okeechobee z8: 144 tiles, 0 different from production.
+Wind (192 tiles in all): differs only on lake edges (the lake outlines; 51,086 + 2,630 px, 0 off a lake edge, 21 + 4 tiles
+with a mask). Console clean.
+
+### B-7 / F-A5 and F-A3: canvases and lake masks (`s/18b_canvas.js`, `s/18_confirm.js`)
+Backing memory of the border-line layer (B on 2.22.1 -> now):
+| device | Hawaii z6 (the default view: no line) | Europe z5 |
+|---|---|---|
+| phone 375x812 dpr 2 | 8.4 MB -> 0 (8 canvases of 1x1) | 12.6 -> 11.5 MB (11 tiles with a line) |
+| tablet 1024x768 dpr 2 | 21 -> 0 | 21 -> 15.7 (15) |
+| iPad Pro 1366x1024 dpr 2 | 31.5 -> 0 | 31.5 -> 26.2 (25) |
+| desktop 1920x1080 dpr 1 | 12.6 -> 0 | 11.8 -> 7.9 (30) |
+Borders off with City names on: 12.6 MB -> no line layer on the map (0 canvases); map zoom 2.2 (no tile draws a line):
+6.3 MB -> six 1x1 canvases. F-A3: after wind -> wave height at the Great Lakes z6 the 21 tiles' edge caches held their
+masks (1,344 KB) on 2.22.1; now 0.
+
+### B-8: minimum font size (`hl/hl_start_minfont.js` + `s/16_minfont.js`, a 14-px minimum in the browser's settings)
+The names render at 14 px and are now measured at 14 px: the widest name's DOM width minus the module's measured width is
+0 px in every view (B on 2.22.1: 12.6 to 46.9 px). 1280x800, seven views (Hawaii z6, Oahu z10, US east z6, New York z10,
+Europe z5, Tokyo z10, world z3): 342 names, 0 overlapping pairs (B: 13), 0 cut, 0 under something (B: 17). Phone
+375x812: 91 names, 0 overlapping (B: 8), 0 cut (B: 1), 0 under something (B: 1). Fewer names where they are wider, as
+designed. Console clean.
+
+### Timed playback (`w54p.js`, PREGC, frames warm at the edge for both Origins, GPU)
+Run 2026102318, warmed for both Origins (1,463 requests each), PREGC, ABBA per cell, 20-s idles, 1920x1080:
+| cell | production 2.21.7 | test 2.22.2 |
+|---|---|---|
+| Europe z5 wave height shark | 8.0 fps (gap p50/p90 125/135 ms); 6.8 (125/135, one 4.5-s stall in production's own run) | 8.0 (125/134); 8.0 (126/135) |
+| Great Lakes z7 wind shark | 8.0 (125/134); 7.7 (125/135, max 596) | 8.0 (126/135); 7.7 (125/136, max 708) |
+The second pair of the wind cell shared one slow stretch at the edge (edge answers up to 1.35 / 1.46 s in both runs).
+0 skipped and 0 unpainted landings in every run; frames fetched once each (1.02 per landing); in flight never over the
+cap. Memory (page heap + array buffers vs Off): Europe live +39.1 / +39.1 MB vs production +39.2 / +39.1, peaks +60.2 /
++60.4 vs +60.6 / +60.1; Great Lakes wind live +36.6 / +36.3 vs +33.4 / +33.2 (+3.2 MB: the lake outlines' masks at
+zoom 7, new in this release), peaks +62.6 / +69.8 vs +60.5 / +60.3: inside the owner's rule (live <= production + 10,
+peaks <= production's range + 10). Main thread: Europe 772 / 779 ms/s vs production 768 (and 674 in its stalled run);
+wind 611 / 632 vs 607 / 619. The test page's starting heap is 3.1 MB larger (the places' tier 0, decoded).
+
+### Console smoke (a fresh page target)
+A new page target (no log replayed from earlier pages), the storage empty, at 1280x800: the first visit (UI 1.25.2,
+wave height restored, 2 names at the default view), Europe z5, Biscay z9, Oahu z11, the world at z3, wind, the Great
+Lakes z6 under wind, SST, Off, wave height again, the gear's Borders and City names off and on (trusted clicks), the
+forecast window expanded and minimised, the swell-exposure tool at San Francisco and its x, a reload (66 names at the
+saved view): 0 console errors, warnings or exceptions. The harness browser stopped, its profile removed, no process
+left; the storage of the test and production origins emptied; the in-app browser pane was not used.
+
+### Findings
+Every G34 item holds on the test site, and nothing measured is worse than production. One new P3:
+- **V9-1 (P3): on a slow link the names wait for the borders file.** `PlacesStore.load` resolves after BOTH tier-0 units
+  have landed or failed (`Promise.all`), and the page draws once per load ("one redraw per load", `sync()`): a unit that
+  lands first draws nothing. The places file (144 KB) usually lands first and the names then wait for the lines file
+  (342 KB): measured in `s/17_slow.js`, places in -> lines in = 27.6 -> 32.2 s at 100 KB/s, 30.8 -> 36.3 s at 90, 44.6 ->
+  53.9 s at 60, 66.7 -> ~84 s at 30 (the names appeared only after the lines); a stalled lines file holds the names up to
+  the 15-s no-progress limit. On a normal link both land within ~10 ms (`s/v9_order.js`: 1,924-1,931 and 1,925-1,930 ms),
+  so nothing changes there. B-5 made a FAILED unit independent; a SLOW one still holds the other. Fix (small): the unit's
+  success branch tells the page (`onChange`) when the other unit is still loading, so each kind draws as it lands (one
+  extra redraw, slow links only); a test with one file held.
+Owner awareness (no change proposed):
+- Where a town and a no-reading wind station share a spot, the town's dot sits inside the grey ring (Kēōkea, Maui z10:
+  it reads as a target symbol). It follows from names drawn above the station icons (owner decision D, step 7).
+- With a floating window or a panel open, the names under it are left out and others take the free room. The set
+  returns exactly when it closes.
+- On links slower than about 40 KB/s the 30-s cap starts the places while the overlay's coastline is still loading; both
+  still complete (measured at 30 KB/s: the coastline and the names by ~84 s).

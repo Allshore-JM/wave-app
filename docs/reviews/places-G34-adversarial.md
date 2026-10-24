@@ -826,3 +826,153 @@ section. UI asset 1.25.3, overlay asset 2.22.3. Not on the test site yet.
   re-applied (R33 re-anchored on the new `sync()`): 15 killed; 19 of the fix round's own: 18 killed after one more test (a
   kind turned on during a load); F16 (`labelsComplete` true while the places load) is equivalent: the unit's own landing
   lays the names out.
+
+## Test-site verification of fix round 2 (2026-10-24, Opus 5.5 MAX)
+`test` @ d316c15 (cherry-picks of e8f8eb5 as 5ce723c, the golden df3150f as d25f8de, and 99a314f's test as d316c15; README and
+this record kept off the test branch; the site files = the feature branch's except the three test-only logo lines), pushed
+03:33:01 UTC, live from 03:34:16 UTC. The first poll (03:33:06) timed out: the free test instance was waking from idle, and
+the next poll (03:33:31) was answered by the old instance; across the switch itself (03:34:10 old -> 03:34:16 new) 0 failed.
+Served `places.js` / `forecast.js` / `tools.js` / `graticule.js` / `basemap.js` (UI 1.25.3) and `overlay.js` / `overlay.css`
+(2.22.3) = the commit; the 1.25.2 / 2.22.2 URLs answer 404; the served code carries `COAST_FIRST_MS = 15000`,
+`STALL_MS = 5000`, `WAIT_MAX_MS = 120000`. Headless Chrome with the GPU (scratch `g34/fix2v`: the re-check reviewer's harness
+on port 9791, profile prefix `chromeprof-f2v-`; `s/k2_first.js` with the note / clip-landing fields added, `s/k2x.js` its
+variant with the desktop, the field and the frame counts, `s/r2_live.js`, the v9 regression scripts; outputs in `out/`).
+Production (overlay 2.21.7 / UI 1.24.0, no location aids) measured in the same runs, run 2026102318 on both.
+
+### R-1: the first picture on a slow link (`s/k2_first.js`, `run_k2.sh`; phone 375x812 dpr 2, cache off, storage empty = wave height restored, DevTools throttling with 150-ms latency, ABBA order)
+| link | test 2.22.3: first picture (unclipped, "Coastline still loading") -> clipped | production 2.21.7 (unclipped, "could not be loaded", never clipped) | 2.22.2 (re-check: the clipped picture) |
+|---|---|---|---|
+| 60 KB/s | 26.3 / 26.3 s -> 46.1 / 46.3 s | 28.5 / 26.4 s | 34.0 s |
+| 45 KB/s | 29.6 / 30.6 s -> 69.6 / 69.4 s | 29.9 / 30.0 s | 48.8 / 49.1 s |
+| 30 KB/s | 36.0 / 36.3 s -> 76.5 / 76.8 s | 37.3 / 37.1 s | 82.9 / 83.0 s |
+| the coastline alone trickling at 150 B/s (the rest fast) | 16.6 s; the note stays (the coastline would take ~2.5 h); the names at 122.6 s (load 0.8 s + 1.5 s + the 120-s cap) | 15.8 s | none in 121 s |
+The first picture is now within ~1.5 s of production's at every speed (it was 7-46 s later), and the test site still keeps the
+coastline: the note goes and the field is clipped when the coastline lands. The first frame is asked right after the
+manifest, beside the coastline (60 KB/s: the coastline at 10.4 s, the frame at 11.2 s, landed 13.0 s, drawn at 26.3 s = the
+15-s wait counted from the manifest). The places still wait for the overlay's `settled()` (the coastline): their index is asked at
+the clip (within 0.1 s) in every run. The clip lands later than 2.22.2's clipped picture at 60 and 45 KB/s (46 vs 34 s,
+69.5 vs 49 s): after the first picture the ring (its field and direction frames) downloads beside the coastline (see V2-1).
+
+### The note and the clip on landing, by field (`s/k2x.js`, the coastline alone at 50 KB/s: it lands after the 15-s wait, the rest fast)
+| field | test 2.22.3 | production 2.21.7 |
+|---|---|---|
+| wave height (phone) | drawn at 16.3 s unclipped with the note; clipped and the note gone at 27.1 s; settled 27.1 s, the names 27.3 s | drawn at 15.6 s unclipped, "could not be loaded" |
+| wave height (desktop 1280x800) | 16.5 s -> clipped 27.3 s | (not run) |
+| peak period | 16.4 s -> 27.2 s | 16.0 s, the warning |
+| SST (the observation path, `_mountObs`) | 15.9 s -> 27.1 s | 15.5 s, the warning |
+| wind (never clipped) | drawn at 1.3 s, no note; the coastline outlines join at 27.1 s | 1.0 s; no outlines (the coastline cancelled at 15 s) |
+Every frame asked once (10 / 10 / 5 / 15 distinct requests, 0 repeated), particles on in every wave run.
+
+### The patient first frame (`s/k2x.js`, desktop 1280x800 at 45 KB/s: the full-resolution 143-KB frame)
+The first frame (`hs/f010`, 142,736 B) took 6.4 s (16.9 -> 23.3 s) beside the coastline and was kept, asked once: the old
+5-s total limit would have cut it. Production asks it only after its coastline is cancelled (30.8 -> 34.4 s, alone on the link).
+
+### Frame downloads after the first picture on a slow link (`s/k2x.js`, every frame kind counted; both sites watched 30-60 s after the picture)
+| run | test 2.22.3 | production 2.21.7 |
+|---|---|---|
+| phone, 30 KB/s | the shown step's direction (`pdir` +10 h) and the next frame (`hs` +11 h) both cut at 5 s three times (36-51 s), then marked unavailable; nothing more asked until the coastline landed at 76.4 s; the panel's re-render then shows "Unavailable frames are skipped: +11 h"; no particles | 17 requests for 10 frames, 9 cut: `pdir` +10 h three times (unavailable: no particles for the shown step either), +12 h three times (unavailable), +11 h and +9 h cut before they got through; the field frames all landed |
+| desktop, 45 KB/s | the first frame (143 KB) kept by the patient rule (6.4 s); then `pdir` +10 h and the full-resolution `hs` +11 h cut three times each, both unavailable, "+11 h" in the panel at 59.2 s; ends without particles | 15 requests for 9 frames, 7 cut: `hs` +11 h three times (unavailable, no note: no re-render), +12 h, +9 h, +8 h cut once or twice; the direction frames landed: particles on |
+| desktop, 30 KB/s | as at 45 KB/s (the note at 83.5 s, no particles) | (not run) |
+| the coastline alone slow (50 KB/s), the rest fast | 0 cut, 10 frames once each | 0 cut |
+Section 41's frame watchdog limits each download to 5 s in all (`Math.max(STALL_MS, 4 x interval)`, three tries, then a
+60-s cooldown); only the first frame of a mount has the no-byte rule (fix round 2). On these links an 84-KB direction frame
+or a 143-KB full-resolution frame sharing the line needs more than 5 s, so production already throws such downloads away
+(the frames were still arriving: each cut costs up to 5 s of the link). Fix round 2 adds the coastline to the shared line
+after the first picture, so on the test site the next field frame and the shown step's direction frame are cut where
+production's got through (desktop 45 KB/s: the test site ends without particles, production with them). Nothing asks a
+failed shown step's direction again when its cooldown ends (pre-existing): the particles return only when the visitor
+plays, steps or seeks. Reproduced in Node on a scratch copy of the playback suite (`node/repo/tests/overlay/ring_cut.test.js`,
+last test: the coastline loading after the unclipped first picture, two ring frames still receiving bytes): on 2.22.3 both
+are asked 3 times and marked unavailable, `transientFails` 2 (one more field failure and a seek or step shows the Retry
+state). Two candidates tried on that copy: (a) the no-byte rule for every frame download (`patient = true`): the reproduction
+passes, 169 of 170 playback tests pass, the one failing being the pin of the old rule ("a later frame keeps the total limit");
+(b) the no-byte rule only while the coastline is loading: the reproduction passes, 170 of 170. Every hung-download test
+(no byte at all) passes under both.
+
+### R-2: each kind loads and draws on its own (`s/r2_live.js`, desktop 1280x800, the overlay saved Off, cache off; a slow file by a DevTools per-URL rule at 3,000 B/s)
+| case | test 2.22.3 |
+|---|---|
+| `world-lines.bin` slowed (342 KB, ~115 s), both rows on, Europe z5 | the names (55) and the Places credit at 2.7 s; the lines (19 tiles) and the Borders credit when the file landed, 117.3 s (2.22.2, V9-1: the names waited for the lines file) |
+| `world-places.bin` slowed (145 KB, ~48 s), both rows on, Europe z5 | the lines (19 tiles) and the Borders credit at 2.8 s; the names at 51.1 s |
+| Borders off, City names on | `world-lines.bin` never asked; the names at 3.2 s; only the Places credit |
+| City names off, Borders on | `world-places.bin` never asked; only the Borders credit |
+| Borders off, `world-places.bin` slowed, Borders clicked on (trusted) at 6.4 s, Europe z5 | `world-lines.bin` asked at 51.0 s, when the places file landed; the lines drawn and credited at 51.5 s (V2-2) |
+At the default Hawaii view the same runs give the same request order and credits (no border line falls in that view).
+
+### Load order on a normal link (`s/v9_order.js`, fresh visits, cache on)
+| case | load | coastline | first frame | settled() | places index |
+|---|---|---|---|---|---|
+| desktop 1280x800 | 423 ms | 568-572 | 766-771 | 887 ('ready') | 1,923 (load + 1,500) |
+| phone 375x812 | 266 | 394-398 | 575-595 | 643 ('ready') | 1,769 (load + 1,503) |
+| overlay saved Off | 270 | - | - | - | 1,778 (load + 1,508, nothing to wait for) |
+The first frame is asked at load + 343 ms on the desktop and load + 309 ms on the phone (2.22.2, the same script: load +
+691 and + 454 ms): it no longer waits for the coastline. On a normal link the places still start at load + 1.5 s, after the
+overlay has settled. Names and credits as before; console clean.
+
+### Regression (the G34 fix-round verification's scripts, same views)
+- Names layout (`s/02_views.js`, storage cleared): 35 views at 1280x800 and 35 on the phone: 1,050 and 312 names, 0
+  overlapping pairs, 0 cut, 0 covered, 0 partial; the name count of every view equal to the G34 fix-round run's.
+- The names come back (`s/v9_return.js`): Europe z5 53 -> gear 50 -> 53 (the same set), tools menu 52 -> 53, San Francisco
+  z10 66 -> the exposure fan 43 -> 66, New York z9 107 -> a live window 57 -> 107, the forecast window 45 -> 107; 0 overlaps
+  / cut / covered in every state. Windows and panels (`s/05_windows.js`): 0 names under any of them (start 109, gear 104,
+  tools 106, live 53, tide 64, wind 52, forecast 43). Tools (`s/08_tools.js`): 0 names over the fan, its labels, the
+  rings' labels, a measure label or a forecast point.
+- The grey no-reading ring (`s/v9_ring.js`): as before (transparent 2-px grey ring; production's white dot); a trusted
+  click (desktop) and a tap (phone) open their wind windows.
+- Failure paths (`s/10_fail.js`): every case as in the G34 fix-round run (refused, held index, the partial B-5 case, a cell
+  500 then healed by the timer, a damaged cell final, the lake-outline set refused then attached, offline then healed),
+  with the same counts.
+- Model tiles = production (`s/b6_identity.js`, run 2026102318, valid 2026-10-25 10Z, lake run 2026102401): wave height,
+  period and SST at the Great Lakes z6 and Okeechobee z8, 144 tiles, 0 different; wind differs only on lake edges (51,086 +
+  2,630 px, 0 off a lake edge, 21 + 4 masked tiles).
+
+### Timed playback (`w54p.js`, PREGC, frames warm at the edge for both Origins (1,463 HIT each), GPU, ABBA per cell, 20-s idles, 1920x1080)
+| cell | production 2.21.7 | test 2.22.3 |
+|---|---|---|
+| Europe z5 wave height shark | 7.2 fps (gap p50/p90 125/175 ms, max 831: the run's lake frames cold at the edge, 238 MISS); 8.0 (125/133) | 7.8 (125/134; 242 MISS); 7.9 (125/137) |
+| Great Lakes z7 wind shark | 7.9 (125/134); 7.9 (125/135) | 8.0 (126/135); 7.9 (125/135) |
+0 skipped and 0 unpainted landings in every run; frames fetched once each (1.02 per landing; Europe's lake steps drew their
+own lake frames, 0 bare / wrong); in flight never over the cap. The cold lake frames (the Europe view's one-screen margin
+reaches the Great Lakes; the warm-up script covers the GFS frames only) hit the first run of each site alike. Memory (page
+heap + array buffers vs Off): Europe live +39.2 / +39.2 MB vs production +39.2 / +39.2, peaks +64.0 / +61.3 vs +59.3 /
++61.0; Great Lakes wind live +36.5 / +36.4 vs +33.2 / +33.2 (+3.3 MB: the lake outlines' masks, as in the G34 fix-round
+verification), peaks +62.0 / +75.4 vs +59.9 / +60.8: the +75.4 is one sample (the next highest +66.5; medians +46.7 / +48.0
+vs +44.0 / +42.4), 4.6 MB over production's range + 10; repeated below. Main thread: Europe 819 / 804 ms/s vs 750 / 787;
+wind 657 / 633 vs 618 / 630.
+
+### Timed playback, the Great Lakes wind cell repeated (ABBA, the same run, warm)
+production 7.8 / 8.0 fps (gap p90 139 / 135 ms), test 8.0 / 8.0 (136 / 133); 0 skipped, 0 unpainted; live +33.2 / +34.1 vs
++36.5 / +36.6 MB; peaks production +73.3 / +59.3, test +62.1 / +63.0. Over the four runs of each site, production's peaks
+range +59.3 to +73.3: every test peak (+62.0 to +75.4) lies within that range + 10, and the live sets within production +
+3.4 MB (the lake outlines' masks).
+
+### Console smoke (a fresh page target)
+A new page target, the storage empty, 1280x800: the first visit (UI 1.25.3, wave height restored, 2 names), Europe z5, Biscay
+z9, Oahu z11, the world at z3, wind, the Great Lakes z6 under wind, SST, Off, wave height, the gear's Borders and City names
+off and on (trusted clicks), the forecast window expanded and minimised, the swell-exposure tool and its x, a reload (66
+names at the saved view): 0 console errors, warnings or exceptions. Afterwards the harness browser was stopped, its profile
+removed, no process left; the test and production origins' storage emptied; the in-app browser pane was not used.
+
+### Findings
+Fix round 2 does what the owner chose: the first picture on a slow link now comes as soon as production's (it was 7-46 s
+later, and never while the coastline trickled), it is clipped when the coastline lands, the note says what is happening,
+and each location-aid kind draws as its own file lands. Two findings:
+- **V2-1 (P2): on a slow link, frame downloads that are still arriving are thrown away after 5 s.** Section 41's watchdog
+  limits each frame download to 5 s in all; only the first frame of a mount has the no-byte rule. Production already loses
+  frames this way at 45 KB/s on a desktop (full-resolution frames) and at 30 KB/s on a phone (the 84-KB direction
+  frames: the shown step's particles); with the coastline now loading beside the ring after the first picture, the test
+  site also loses the next field frame and, on the desktop at 45 KB/s, the shown step's direction frame (no particles, where
+  production has them), and the panel's re-render at the clip shows "Unavailable frames are skipped: +11 h". A failed shown
+  step's direction is not asked again when its cooldown ends (pre-existing): the particles return only on play, step or
+  seek. Candidates (scratch, above): (a) the no-byte rule for every frame download, which also ends production's cuts; (b)
+  only while the coastline loads, which ends the new cuts only.
+- **V2-2 (P3): a kind turned on during a slow load waits for that load.** `PlacesStore.load` returns the load in progress, so
+  a row turned on meanwhile starts its file only when the other file has landed (45 s at 3,000 B/s); the re-sync then
+  fetches it at once. A second load beside the first (its own controller and stall timer) would start it immediately.
+Owner awareness (no change proposed):
+- After the unclipped first picture the ring's field and direction frames share the slow link with the coastline, so the
+  clip lands later than 2.22.2's clipped picture at 60 and 45 KB/s (46 vs 34 s, 69.5 vs 49 s) and earlier at 30 KB/s (76.6
+  vs 83 s, where 2.22.2's 30-s places cap also took the link). Holding the ring while paused until the coastline lands would
+  bring the clip back to about 2.22.2's time, at the cost of a ring that is not ready when play is pressed during that time.
+- When the frame is fast but the coastline slow (the coastline alone at 50 KB/s), the frame is in hand after ~1.2 s and the
+  picture still waits the full 15 s, as decided.

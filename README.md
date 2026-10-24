@@ -940,8 +940,8 @@ The three sections below describe the job, the reader and the page in detail.
 
 ## The forecast-station list (plan section 32)
 
-`station_list.json` (the station dropdown, the picker and the map's forecast markers via `/stations.json`) holds 734
-points: 461 numbered buoys and 273 named points (more buoys and platforms such as the BSH, LF and TF sets, the forecast
+`station_list.json` (the station dropdown, the picker and the map's forecast markers via `/stations.json`) holds 722
+points: 450 numbered buoys and 272 named points (more buoys and platforms such as the BSH, LF and TF sets, the forecast
 offices' own points numbered below 51 such as HNL01 or MIA01, the OPC and TPC offshore points, the Pacific islands, the
 African and Indian Ocean coastal points, and others). Since 2026-10-03 (owner) it leaves out the 3,302 BOUNDARY points
 of regional and coastal models, which drew boxes around ocean areas on the map: the NWPS edges of each NWS office
@@ -949,6 +949,18 @@ of regional and coastal models, which drew boxes around ocean areas on the map: 
 other models' edges (`BKMG` Indonesia, `CDIP` Scripps' Southern California model, `KNY`, `MDG`, `SYC`) and the older
 office sets numbered 51 and up (KEY, MIA, SJU, BER, MLB, PCB, SRH, CRP, LIX, TBW, JXFL, LCH, CHS, HGX, CCTX, MOB, BRO,
 JAX, MNE, HNL; HNL51-68 are the boxes around Oahu and Kauai). `tests/test_station_list.py` holds the rule.
+- Blank bulletins (plan section 52, owner 2026-10-24): NOAA also lists points inside sheltered water the 0.25-degree
+  wave model has no sea for (Long Island Sound, Chesapeake Bay, the Potomac at Alexandria, the Strait of Juan de Fuca,
+  an iced Beaufort Sea point), whose bulletins have 385 rows with a literal 0 for the combined height and empty swell
+  cells; the site showed a table of blank cells with only the wind column. `tools/build_station_blank.py` reads every
+  listed station's bulletin of one run (NOAA's AWS tar of the run, `gfswave.tHHz.bull_tar`; else the per-station files,
+  paced), records the blank ones in `station_blank.json`, and with `--apply` rewrites `station_list.json` without the
+  ids blank in BOTH of the two newest recorded runs (one cycle's hiccup removes nothing; a missing bulletin never
+  counts; the file keeps the newest four scans). Removed on 2026-10-24 (runs 2026102406 + 2026102412): 44039, 44040,
+  44043, 44058, 44061, 44062, 44063, 44064, 44072, 44087, 46088, Alaska_NS3. An old link to a removed station still
+  opens: `/api/forecast` answers the note "No model data at this point (sheltered water ...)" as final (no Retry), from
+  the committed file, without asking NOAA. A removed station comes back only by a re-run with `--apply` (never on its
+  own). The coordinates and zone tables stay whole (the point time-zone rule).
 - Source of the rule: NOAA's own point list for GFS-Wave (`parm/wave/wave_gfs.buoys.full` in NOAA-EMC/global-workflow)
   gives each point a TYPE. Every removed id is a boundary type there (3,118 `IBP` for NCEP models, 184 `BPT` for other
   models); the kept ones are data points (`DAT`, `XDT`) and virtual buoys (`VBY`), with one exception kept on purpose:

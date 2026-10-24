@@ -366,6 +366,12 @@
     .forecast-buoy-dot {
       background: #FFD600;
     }
+    /* touch screens: a live dot takes taps up to --live-tap px beyond its edge (set per dot by liveTargets(): half the way
+       to the nearest other icon, 8 px at most; plan section 52) */
+    .live-buoy-dot { position: relative; }
+    @media (pointer: coarse) { .live-buoy-dot::after { content: ''; position: absolute; inset: calc(-2px - var(--live-tap, 0px)); border-radius: 50%; } }
+    /* a live buoy on a forecast point: each window links to the other (plan section 52) */
+    .lw-links { margin: -2px 0 10px; }
 
     /* Async forecast loading (Phase 2b) */
     .forecast-loading {
@@ -790,6 +796,7 @@
       #map, #pageHead, .fw-btn, .fw-resize, .fw-edge, .live-win, .tide-win, .sr-star, .station-caret, .tools-host, .tools-bar { display: none !important; }
       .wind-win { display: none !important; }
       .place-labels { display: none !important; }
+      #fwLive { display: none !important; }
       .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
       .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
       #forecastTable[hidden] { display: block !important; } #graphs, #forecastSummary { display: none !important; }   /* the charts are not printable: the detailed table is */
@@ -828,6 +835,7 @@
       .fw-maxbtn { display: none; }
       /* the full-screen windows cover the map's controls (the top-right corner is z 2600): their own header buttons stay reachable */
       .fwin:not(.fw-min) { z-index: 3500; }
+      .fwin.fw-front:not(.fw-min) { z-index: 3510; }   /* full screen: the window opened or touched last is on top (a link between the windows: plan section 52) */
       .fwin:not(.fw-min) {
         left: 0 !important; top: 0 !important; right: 0 !important; bottom: 0 !important;
         width: 100vw !important; height: 100vh !important; height: 100dvh !important;
@@ -1022,6 +1030,7 @@
           <button type="button" id="fwDefaultToggle" class="sr-star sr-dflt" aria-pressed="false" aria-label="Default station, the site opens here" title="Default: site opens here"></button>
           <button type="button" id="fwFavToggle" class="sr-star" aria-pressed="false" aria-label="Favorite the current station" title="Favorite">☆</button>
         </span>
+        <button type="button" id="fwLive" class="btn btn-sm btn-outline-primary" hidden>Live buoy</button>
         <div class="btn-group btn-group-sm" role="group" aria-label="View" id="viewBar">
           <button type="button" class="btn btn-outline-secondary{% if selected_view != 'Graph' %} active{% endif %}" data-view="Table" aria-pressed="{{ 'false' if selected_view == 'Graph' else 'true' }}">Table</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_view == 'Graph' %} active{% endif %}" data-view="Graph" aria-pressed="{{ 'true' if selected_view == 'Graph' else 'false' }}">Graph</button>
@@ -1094,6 +1103,7 @@
     </div>
 
     <div id="lwBody" class="fw-body">
+      <div id="lwLinks" class="lw-links" hidden><button type="button" id="lwForecast" class="btn btn-sm btn-outline-primary">Forecast for this point</button></div>
       <div id="liveBuoyLoading" class="text-muted">
         <span class="spinner" style="vertical-align:middle;"></span>
         Loading live buoy data&hellip;
@@ -1371,6 +1381,9 @@
       // instead of thousands of individual SVG <path> nodes, which sharply
       // reduces layout/repaint overhead during pan/zoom.
       preferCanvas: true,
+      // touch screens: a forecast dot takes taps up to 8 px beyond its edge (Leaflet adds the renderer's tolerance to
+      // every path's hit radius); mice exact as before (plan section 52)
+      renderer: L.canvas({ tolerance: (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ? 8 : 0 }),
       worldCopyJump: false,
       zoomControl: false,                    // the keys, the wheel and pinching zoom (plan section 24)
       minZoom: 1,
@@ -1753,7 +1766,7 @@
 
     let lastForecastSig = null;
     let lastLiveSig = null;
-    let liveDrawn = [];                              // the drawn live markers: { marker, lat, lng } (their Tab stops)
+    let liveDrawn = [];                              // the drawn live markers: { marker, lat, lng, s, active, pad } (their Tab stops, touch pads)
     let refreshTimer = null;
     // the tide layer's state (plan section 38; the functions are with rebuildLiveBuoyMarkers below)
     const TIDE_MIN_ZOOM = 9;                        // the stations show from this map zoom (fractional zooms: >=)
@@ -1927,6 +1940,7 @@
       .then(stations => {
         forecastStationsData = stations || [];
         rebuildForecastMarkers(true);
+        if (typeof syncBuoyLinks === 'function') syncBuoyLinks();
         forgetRetiredDefault(forecastStationsData);
         if (pendingFocusStation) { const sid = pendingFocusStation; pendingFocusStation = null; focusStation(sid); }
       });
@@ -1980,6 +1994,7 @@
       return chartJsPromise;
     }
     let activeLiveBuoyId = null;
+    let liveShownStation = null;                // the buoy the live window shows (its forecast link: plan section 52)
     // Monotonic id of the latest detail-panel request. Every loader captures it on entry
     // and stops (no DOM writes) once a newer request or a panel close has bumped it, so an
     // older buoy's response can never overwrite the buoy currently shown.
@@ -2047,6 +2062,8 @@
       lastNoRecentStation = null;
       lastGenericBuoy = null;
       lastGenericSpectra = null;
+      liveShownStation = station;
+      if (typeof syncBuoyLinks === 'function') syncBuoyLinks();   // "Forecast for this point" (plan section 52)
 
       if (liveWin) liveWin.open(); else panel.hidden = false;
     }
@@ -3002,6 +3019,7 @@
     function liveTabStops() {
       if (!liveDrawn.length || !map.latLngToContainerPoint || !map.hasLayer(liveBuoyLayer)) return;
       setTabStops(liveDrawn.map(function (d) { return d.marker; }), function (m, i) { return map.latLngToContainerPoint([liveDrawn[i].lat, liveDrawn[i].lng]); });
+      if (typeof liveTargets === 'function') liveTargets();
     }
     function rebuildLiveBuoyMarkers(force = false) {
       const vis = visibleCopies(liveStationsData);
@@ -3023,7 +3041,7 @@
           zIndexOffset: 500,
           autoPanOnFocus: false                                   // a focused marker never pans the map (G27 re-check RC-3)
         }).addTo(liveBuoyLayer);
-        liveDrawn.push({ marker: marker, lat: s.lat, lng: c.lng });
+        liveDrawn.push({ marker: marker, lat: s.lat, lng: c.lng, s: s, active: s.id === activeLiveBuoyId });
 
         marker.bindTooltip(textTip(label), {                       // a provider's station name: text, never HTML (G22 A-20)
           permanent: false,
@@ -3034,16 +3052,20 @@
 
         marker.on('click', function (e) {
           if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map
-          activeLiveBuoyId = s.id;
-          rebuildLiveBuoyMarkers(true);
-          saveMapView(map);
-          saveLayerVisibility();
-          loadLiveBuoyDetails(s);
+          openLiveBuoy(s);
         });
       });
       refocusMarker(liveDrawn.map(function (d) { return d.marker; }), focusKey, 'l:');
       liveTabStops();
     }
+    function openLiveBuoy(s) {                        // a click on its dot, or the forecast window's "Live buoy"
+      activeLiveBuoyId = s.id;
+      rebuildLiveBuoyMarkers(true);
+      saveMapView(map);
+      saveLayerVisibility();
+      loadLiveBuoyDetails(s);
+    }
+
 
 
     // ---------------- Tide stations (plan section 38) ----------------
@@ -3225,6 +3247,7 @@
       });
     }
     function tideTargets() {
+      if (typeof liveTargets === 'function') liveTargets();   // the live dots' pads after every round (plan section 52)
       if (!tideDrawn.length || !map.latLngToContainerPoint) return;
       const pts = tideDrawn.map(function (d) {
         const p = map.latLngToContainerPoint([d.s.lat, d.lng]);
@@ -3336,6 +3359,117 @@
     // Wire map movement after all wrapped-marker state and rebuild functions exist.
     map.on('moveend', handleMapMoveEnd);
     map.on('zoomend', clampMapLatitude);
+
+    // ---- buoy links (plan section 52; tests/ui/buoylinks.test.js runs this block) ----
+    // A live buoy and a forecast point at one spot (138 of the 563 live buoys are forecast points too, 39 within 0.5 km;
+    // the dot sits on the forecast dot on touch screens): the live window offers "Forecast for this point" and the
+    // forecast window "Live buoy". The same station id (the live id without its source, e.g. ndbc:41113 -> 41113) within
+    // LINK_ID_KM is the link (NOAA's forecast point for a moved buoy can lie 30-320 km from it: the button then says how
+    // far), else the nearest within LINK_KM; none -> no button.
+    const LINK_KM = 1.0, LINK_ID_KM = 400;
+    const linkCache = { lists: [null, null], fwd: new Map(), back: new Map() };
+    function linkKm(a, b) {
+      const r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+      const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+      return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
+    }
+    function linkKey(id) { const t = String(id || ''), i = t.indexOf(':'); return (i >= 0 ? t.slice(i + 1) : t).toUpperCase(); }
+    // the station of `list` linked to `from` ({id, lat, lon}): {s, km} or null
+    function linkFor(from, list) {
+      const at = from && { lat: Number(from.lat), lon: Number(from.lon) };
+      if (!at || !Number.isFinite(at.lat) || !Number.isFinite(at.lon) || !Array.isArray(list)) return null;
+      const want = linkKey(from.id);
+      let same = null, near = null;
+      for (let i = 0; i < list.length; i++) {
+        const s = list[i], lat = Number(s && s.lat), lon = Number(s && s.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+        const km = linkKm(at, { lat: lat, lon: lon });
+        if (want && linkKey(s.id) === want && km <= LINK_ID_KM && (!same || km < same.km)) same = { s: s, km: km };
+        else if (km <= LINK_KM && (!near || km < near.km)) near = { s: s, km: km };
+      }
+      return same || near;
+    }
+    function linkCached(map_, key, compute) {
+      if (linkCache.lists[0] !== forecastStationsData || linkCache.lists[1] !== liveStationsData) {
+        linkCache.lists = [forecastStationsData, liveStationsData]; linkCache.fwd.clear(); linkCache.back.clear();
+      }
+      if (!map_.has(key)) map_.set(key, compute());
+      return map_.get(key);
+    }
+    // a live buoy's forecast point / a forecast station's live buoy ({s, km} or null; never for one of My points)
+    function forecastLinkFor(live) { return live ? linkCached(linkCache.fwd, String(live.id), function () { return linkFor(live, forecastStationsData); }) : null; }
+    function liveLinkFor(sid) {
+      if (!sid || /^pt_/.test(String(sid))) return null;
+      return linkCached(linkCache.back, String(sid), function () {
+        const f = forecastStationsData.filter(function (s) { return s && String(s.id) === String(sid); })[0];
+        return f ? linkFor(f, liveStationsData) : null;
+      });
+    }
+    function linkAway(km) {                           // "319 km away" in the site's unit
+      const us = getSelectedUnit() !== 'Metric', v = us ? km / 1.609344 : km;
+      return (v < 10 ? v.toFixed(1) : String(Math.round(v))) + (us ? ' mi' : ' km') + ' away';
+    }
+    function linkText(lead, near, link) {             // a twin within LINK_KM: the plain words; farther: its id and distance
+      return link.km <= LINK_KM ? near : lead + ' ' + linkKey(link.s.id) + ' \u00b7 ' + linkAway(link.km);
+    }
+    function openForecastStation(f) {                 // as a click on its dot: the forecast window loads it (Buoy Local)
+      document.getElementById('station').value = f.id;
+      saveLayerVisibility();
+      document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: String(f.id), source: 'map' } }));
+    }
+    let fwStationId = null, lwLink = null, fwLink = null;
+    function syncBuoyLinks() {
+      const lb = document.getElementById('lwForecast'), lw = document.getElementById('lwLinks'), fb = document.getElementById('fwLive');
+      lwLink = liveShownStation ? forecastLinkFor(liveShownStation) : null;
+      if (lw && lb) {
+        lw.hidden = !lwLink;
+        if (lwLink) { lb.textContent = linkText('Forecast point', 'Forecast for this point', lwLink); lb.title = 'Forecast point ' + lwLink.s.id; }
+      }
+      fwLink = liveLinkFor(fwStationId);
+      if (fb) {
+        fb.hidden = !fwLink;
+        if (fwLink) { fb.textContent = linkText('Live buoy', 'Live buoy', fwLink); fb.title = 'Live buoy ' + buoyDisplayLabel(fwLink.s); }
+      }
+    }
+    // keyboard activation (a click without a pointer) moves the focus into the window it opened
+    function linkFocus(e, headerId) { if (e && e.detail === 0 && typeof focusWindowHeader === 'function') focusWindowHeader(headerId); }
+    (function wireBuoyLinks() {
+      const lb = document.getElementById('lwForecast'), fb = document.getElementById('fwLive'), unit = document.getElementById('unit');
+      if (lb) lb.addEventListener('click', function (e) { if (lwLink) { openForecastStation(lwLink.s); linkFocus(e, 'fwHeader'); } });
+      if (fb) fb.addEventListener('click', function (e) { if (fwLink) { openLiveBuoy(fwLink.s); linkFocus(e, 'lwHeader'); } });
+      document.addEventListener('allshore:station', function (e) { const d = e.detail || {}; if (d.sid) { fwStationId = String(d.sid); syncBuoyLinks(); } });
+      document.addEventListener('allshore:forecast', function (e) { const d = e.detail || {}; if (d.station) { fwStationId = String(d.station); syncBuoyLinks(); } });
+      if (unit) unit.addEventListener('change', syncBuoyLinks);
+    })();
+    // Touch screens: each live dot takes taps up to half the way to the nearest other icon (8 px at most): other live
+    // dots, tide icons, wind flags (a flag on the buoy itself leaves the dot as it was), My points and the forecast dots
+    // other than its own twin (that one is a button away: the live window's link). Mice: nothing (the CSS pad is coarse only).
+    const LIVE_TAP_MAX = 8;
+    function liveDotAt(d) {                           // the dot's centre: the icon sits right of its coordinate
+      const p = map.latLngToContainerPoint([d.lat, d.lng]), size = d.active ? 15 : 11, anchor = Math.round(size / 2 - (d.active ? 8 : 7));
+      return { x: p.x + size / 2 - anchor, y: p.y, h: size / 2 };
+    }
+    function liveTargets() {
+      if (!liveDrawn.length || !map.latLngToContainerPoint || !(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)) return;
+      const others = [], pt = function (lat, lng) { const q = map.latLngToContainerPoint([lat, lng]); return { x: q.x, y: q.y }; };
+      if (typeof tideDrawn !== 'undefined') tideDrawn.forEach(function (d) { const q = pt(d.s.lat, d.lng); others.push({ x: q.x + (d.off ? d.off[0] : 0), y: q.y + (d.off ? d.off[1] : 0) }); });
+      if (typeof windDrawn !== 'undefined') windDrawn.forEach(function (d) { others.push(pt(d.s.lat, d.lng)); });
+      if (map.hasLayer(pointLayer)) visibleCopies(savedPointsData).forEach(function (c) { others.push(pt(c.s.lat, c.lng)); });
+      const fc = map.hasLayer(forecastLayer) ? visibleCopies(forecastStationsData) : [];
+      const dots = liveDrawn.map(liveDotAt);
+      liveDrawn.forEach(function (d, i) {
+        const p = dots[i], twin = forecastLinkFor(d.s), twinId = twin && twin.km <= LINK_KM ? String(twin.s.id) : null;
+        let c = Infinity;
+        const near = function (q) { c = Math.min(c, Math.hypot(q.x - p.x, q.y - p.y)); };
+        dots.forEach(function (q, j) { if (j !== i) near(q); });
+        others.forEach(near);
+        fc.forEach(function (f) { if (String(f.s.id) !== twinId) near(pt(f.s.lat, f.lng)); });
+        const pad = Math.max(0, Math.min(LIVE_TAP_MAX, Math.floor(c / 2 - p.h)));
+        const el = d.marker.getElement && d.marker.getElement();
+        if (el && el.style && el.style.setProperty && d.pad !== pad) { el.style.setProperty('--live-tap', pad + 'px'); d.pad = pad; }
+      });
+    }
+    // ---- end buoy links ----
 
     // ---------------- Wind stations (plan section 39) ----------------
     // The station list (/api/wind/stations, a committed snapshot) is asked for the first time the layer is ticked at
@@ -4209,6 +4343,7 @@
         onStations: function (stations, info) {
           liveStationsData = stations || [];
           rebuildLiveBuoyMarkers(!info.same);        // an unchanged list keeps its markers (no rebuild, no flash)
+          if (typeof syncBuoyLinks === 'function') syncBuoyLinks();
           if (!marked && liveStationsData.length) {
             marked = true;
             try { performance.mark('allshore:live-first-markers', { detail: { cached: !!info.cached, partial: !!info.partial } }); } catch (e) {}

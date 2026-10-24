@@ -1077,8 +1077,8 @@ def test_the_shaka_and_the_star_set_the_default_and_the_favorites(client):
 def test_location_aids_on_the_page(client, monkeypatch):
     """Plan section 51: the two gear rows after the gridlines row ("Borders" for country and state lines together,
     "City names"; on by default; hidden when the module cannot run; owner, 2026-10-23), the module's script after the map
-    tools' with the base from PLACES_BASE or the frames' neighbour, the label CSS in the module's font (and the text before
-    the dot near the right edge), the labels left out of print."""
+    tools' with the base from PLACES_BASE or the frames' neighbour, the label CSS in the module's font with the text centred
+    on its place and no dot (plan section 52), the labels left out of print."""
     monkeypatch.delenv("PLACES_BASE", raising=False)
     body = client.get("/?station=51201").get_data(as_text=True)
     grid = body.index('id="gridlines"')
@@ -1099,15 +1099,18 @@ def test_location_aids_on_the_page(client, monkeypatch):
         "box.addEventListener('change', function () { pl.set(id, box.checked); });",
         'font: 600 11px/14px system-ui, -apple-system, "Segoe UI", sans-serif;',
         ".place-labels { display: none !important; }",
-        ".place-label.place-left { transform: translate(-100%, -50%); padding-left: 0; padding-right: 6px; }",
-        ".place-label.place-left::before { left: auto; right: -2px; }",
+        "position: absolute; transform: translate(-50%, -50%); white-space: nowrap;",   # the name centred on its place
         "var ids = ['borders', 'places'], pl = null;",
         "try { st && st.removeItem('allshore.states.v1'); } catch (e) {}",
     ):
         assert needle in body, needle
+    # no dot before a name and no left-side variant (section 52): neither in the page's CSS nor in the module
+    for gone in (".place-label::before", "place-left", "padding-left: 6px"):
+        assert gone not in body, gone
     # the module's measuring font = the page's label font
     js = open(os.path.join(os.path.dirname(__file__), "..", "static_ui", "places.js"), encoding="utf-8").read()
     assert "LABEL_FONT = '600 11px system-ui, -apple-system, \"Segoe UI\", sans-serif'" in js
+    assert "DOT_R" not in js and "LABEL_DX" not in js and "place-left" not in js
     assert "createPane" not in body.split("<script src=\"/ui/places.js")[1].split("</script>", 2)[1]
     monkeypatch.setenv("PLACES_BASE", "https://example.test/places/v1/")
     body = client.get("/?station=51201").get_data(as_text=True)

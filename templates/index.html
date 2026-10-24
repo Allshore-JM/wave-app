@@ -458,23 +458,15 @@
       position: absolute; font: 600 11px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; color: #fff; white-space: nowrap;
       text-shadow: 0 0 2px rgba(0,0,0,.9), 0 0 4px rgba(0,0,0,.6);
     }
-    /* city names (static_ui/places.js, plan section 51): the font must equal the module's LABEL_FONT (widths are measured
-       with it); a span sits at its place, the dot on the point and the text 6 px to its right */
+    /* city names (static_ui/places.js, plan sections 51 and 52): the font must equal the module's LABEL_FONT (widths are
+       measured with it); a span sits at its place with the text centred on it (no dot: a city is an area, not a point) */
     .place-labels { position: absolute; left: 0; top: 0; pointer-events: none; }
     .place-label {
-      position: absolute; transform: translate(0, -50%); padding-left: 6px; white-space: nowrap;
+      position: absolute; transform: translate(-50%, -50%); white-space: nowrap;
       font: 600 11px/14px system-ui, -apple-system, "Segoe UI", sans-serif; color: #fff;
       text-shadow: 0 0 2px rgba(0,0,0,.9), 0 0 4px rgba(0,0,0,.6);
     }
-    .place-label::before {
-      content: ""; position: absolute; left: -2px; top: 50%; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%;
-      background: #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.55);
-    }
     .place-label.place-capital { font-weight: 700; }
-    .place-label.place-capital::before { left: -2.5px; width: 5px; height: 5px; margin-top: -2.5px; }
-    .place-label.place-left { transform: translate(-100%, -50%); padding-left: 0; padding-right: 6px; }   /* the text before the dot */
-    .place-label.place-left::before { left: auto; right: -2px; }
-    .place-label.place-capital.place-left::before { left: auto; right: -2.5px; }
     /* Colored dot next to each layer-control label (doubles as the legend) */
     .lc-dot {
       display: inline-block; width: 11px; height: 11px; border-radius: 50%;

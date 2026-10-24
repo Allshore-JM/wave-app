@@ -1398,7 +1398,7 @@ Windows: a station chip gives its subtitle up before the station's name. An expa
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
 
-## Location aids (plan section 51, UI asset 1.25.3, overlay asset 2.22.3)
+## Location aids (plan section 51, UI asset 1.25.3, overlay asset 2.22.3; names centred since UI 1.25.6, plan section 52)
 
 Two rows in the settings gear, both on for a new visitor, each remembered in this browser (localStorage, "0" = off); the
 lakes' shores under wind are always drawn (owner, 2026-10-23: no row):
@@ -1412,8 +1412,9 @@ lakes' shores under wind are always drawn (owner, 2026-10-23: no row):
 `static_ui/places.js` (`window.AllshorePlaces.create(map, {base, storage, waitFor})`) draws the borders on 256-px canvas tiles in
 the pane `placesLinePane` (z 340: above the particles, below the gridlines and the forecast points) as a light 1-px line
 over a dark halo, and the names as text spans in `placesLabelPane` (z 620: above the station icons, below the tooltips; a
-name takes no tap, so an icon under it stays clickable), thinned per view so no two overlap (largest places first; a name
-only where its dot and its whole text lie on the map, before the dot when the text would run off the right edge; never
+name takes no tap, so an icon under it stays clickable), each name centred on its place with no dot (a city is an area,
+not a point; owner, plan section 52), thinned per view so no two overlap (largest places first; a name only where its
+whole text lies on the map: one that would run off an edge is left out, never shifted; never
 under the map's controls and their open panels, the overlay's sheet, the gridline labels, the map tools' fan and labels,
 or the floating windows (the forecast, live-buoy, tide and wind windows, their bars and chips); at most 120, 60 on maps
 under 600 px wide), measured in the font they are drawn in (a browser's minimum font size included), hidden while

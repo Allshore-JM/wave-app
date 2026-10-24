@@ -2281,7 +2281,7 @@
   var RETRY_AFTER_MS = 60 * 1000;                            // a transient fetch failure keeps a frame out for this long
   var MAX_TRANSIENT = 3;                                     // consecutive transient failures -> "unavailable" + Retry
   var LOAD_STALL_MS = 15000;                                 // a pointer / manifest request silent this long -> the error panel (G30-3)
-  var STALL_MS = 5000;                                       // a frame DOWNLOAD slower than this (or 4 intervals) is asked again
+  var STALL_MS = 5000;                                       // a frame DOWNLOAD with no byte for this long (or 4 intervals) is asked again
   var PAINT_FALLBACK_MS = 250;                               // a playback landing waits for the browser to render it, at most this long
   var LATE_TRIES = 3;                                        // download attempts before a stalling frame counts as a failure
   // A frame that does not exist (or cannot be decoded) is gone for the session; anything else (network
@@ -4380,15 +4380,16 @@
     // The watchdog times the DOWNLOAD only (until the body has arrived): a decode that waits behind a busy page
     // (fast playback on a large screen) is late, never missing. A download that stalls (one took 6.5 s at G4) is
     // asked again at once, LATE_TRIES times in all; only then does it count as a failure ("frame stalled").
-    // The first picture of a mount (nothing on the map yet) downloads beside the coastline on a slow link: its watchdog
-    // counts only the time with no byte arriving, so a slow but moving download goes on (re-check R-1).
-    var patient = kind === 'field' && !(this.layer && this.layer.hasFrame());
+    // It counts only the time with no byte arriving (every chunk re-arms it): on a slow link a download that is still
+    // moving goes on, whatever its kind and whether a picture is on the map (the first picture beside the coastline,
+    // re-check R-1; every frame, the owner's call after fix round 2's verification, V2-1: the 5 s in all had thrown away
+    // direction and full-resolution frames still arriving at 30-45 KB/s).
     function attempt(n) {
       var inner = new AbortController(), stalled = false, onOuter = function () { inner.abort(); }, limit = Math.max(STALL_MS, 4 * self._interval());
       ctrl.signal.addEventListener('abort', onOuter);
       var stall = function () { stalled = true; inner.abort(); }, watchdog = setTimeout(stall, limit);
       function done() { clearTimeout(watchdog); ctrl.signal.removeEventListener('abort', onOuter); }
-      var progress = patient ? function () { clearTimeout(watchdog); watchdog = setTimeout(stall, limit); } : undefined;
+      var progress = function () { clearTimeout(watchdog); watchdog = setTimeout(stall, limit); };
       return decodeFrame(url, inner.signal, grid, function () { clearTimeout(watchdog); }, false, progress).then(function (frame) {
         done();
         if (lake) { try { validateLakeGrid(grid, frame); } catch (e) { throw new Error('frame decode failed: ' + e.message); } }   // (a 'decode' failure: permanent)

@@ -244,43 +244,56 @@
   // Resolves to the store once the index is in and each tier-0 file wanted has landed or failed (null when neither kind
   // is usable); never rejects. One stall timer for the load: it fires only after STALL_MS with no byte arriving (a slow
   // but moving link is not given up: G34 B-6 / F-A6). After a failure the index, or a unit, answers null for RETRY_MS;
-  // a load after that asks for it again.
+  // a load after that asks for it again. A kind asked for while a load runs (a row turned on meanwhile) starts its file
+  // at once beside it, under the same abort and stall timer, and the load in progress then waits for it too (V2-2).
   PlacesStore.prototype.load = function (kinds) {
     var self = this, now = Date.now(), want = kinds || ['l', 'p'];
-    if (this.loading) return this.loading;
+    var need = ['l', 'p'].filter(function (k) { var u = self.unit[k]; return want.indexOf(k) >= 0 && u.status !== 'ok' && u.status !== 'loading' && !(u.status === 'failed' && now - u.failedAt < RETRY_MS); });
+    if (this.loading) { need.forEach(function (k) { self._unitLoad(k); }); return this.loading; }
     if (this.status === 'failed' && now - this.failedAt < RETRY_MS) return Promise.resolve(null);
-    var need = ['l', 'p'].filter(function (k) { var u = self.unit[k]; return want.indexOf(k) >= 0 && u.status !== 'ok' && !(u.status === 'failed' && now - u.failedAt < RETRY_MS); });
     if (this.status === 'ok' && !need.length) return Promise.resolve(this.ok('l') || this.ok('p') ? this : null);
     if (this.status !== 'ok') this.status = 'loading';
-    need.forEach(function (k) { self.unit[k].status = 'loading'; });
     var ctrl = typeof AbortController === 'function' ? new AbortController() : null, sig = ctrl ? ctrl.signal : undefined, timer = null;
     var arm = function () { clearTimeout(timer); timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, STALL_MS); };
     this.abort = ctrl; arm();
-    var idxP = this.status === 'ok' ? Promise.resolve(this.index) : this._get(this.base + '/index.json', 'json', MAX_INDEX_BYTES, sig, 0, arm).then(function (idx) {
+    this._sig = sig; this._arm = arm; this._units = []; this._kinds = [];
+    this._idxP = this.status === 'ok' ? Promise.resolve(this.index) : this._get(this.base + '/index.json', 'json', MAX_INDEX_BYTES, sig, 0, arm).then(function (idx) {
       if (!validIndex(idx)) throw new Error('places: unsupported index');
       self.index = idx; self.status = 'ok';
       return idx;
     });
-    this.loading = idxP.then(function (idx) {
-      return Promise.all(need.map(function (k) {
-        var meta = k === 'l' ? idx.tier0.lines : idx.tier0.places, u = self.unit[k];
-        return self._get(self.base + '/' + meta.file, 'bin', MAX_TIER0_BYTES, sig, expectOf(meta.bytes), arm).then(function (b) {
-          var data = k === 'l' ? decodeLines(b) : decodePlaces(b);
-          if (k === 'l') self.lines0 = data; else self.places0 = data;
-          u.status = 'ok'; self.rev++;
-          if (self.onUnit) self.onUnit(k);                  // drawn and credited as it lands (re-check R-2)
-        }).catch(function () { u.status = 'failed'; u.failedAt = Date.now(); });
-      }));
-    }).then(function () {
-      clearTimeout(timer); self.loading = null; self.abort = null;
+    need.forEach(function (k) { self._unitLoad(k); });
+    // every unit started in this load, also one added while it ran
+    var all = function () { var n = self._units.length; return Promise.all(self._units).then(function () { return self._units.length > n ? all() : null; }); };
+    this.loading = all().then(function () {
+      clearTimeout(timer); self.loading = null; self.abort = null; self._units = []; self._kinds = [];
       return self.ok('l') || self.ok('p') ? self : null;
     }, function () {
       clearTimeout(timer); self.loading = null; self.abort = null;
       self.status = 'failed'; self.failedAt = Date.now();
-      need.forEach(function (k) { self.unit[k].status = 'idle'; });
+      self._kinds.forEach(function (k) { if (self.unit[k].status === 'loading') self.unit[k].status = 'idle'; });
+      self._units = []; self._kinds = [];
       return null;
     });
     return this.loading;
+  };
+  // One kind's tier-0 file within the load in progress: after the index, under the load's abort and stall timer. A failed
+  // file marks only its unit; an index that fails rejects (the load's failure).
+  PlacesStore.prototype._unitLoad = function (k) {
+    var self = this, u = this.unit[k], sig = this._sig, arm = this._arm;
+    u.status = 'loading'; this._kinds.push(k);
+    var p = this._idxP.then(function (idx) {
+      var meta = k === 'l' ? idx.tier0.lines : idx.tier0.places;
+      return self._get(self.base + '/' + meta.file, 'bin', MAX_TIER0_BYTES, sig, expectOf(meta.bytes), arm).then(function (b) {
+        var data = k === 'l' ? decodeLines(b) : decodePlaces(b);
+        if (k === 'l') self.lines0 = data; else self.places0 = data;
+        u.status = 'ok'; self.rev++;
+        if (self.onUnit) self.onUnit(k);                  // drawn and credited as it lands (re-check R-2)
+      }).catch(function () { u.status = 'failed'; u.failedAt = Date.now(); });
+    });
+    p.catch(function () {});                                // a unit added after the index failed: the load's own handler reports it
+    this._units.push(p);
+    return p;
   };
   // The cells (of one kind, 'l' lines or 'p' places) among names that exist: decoded ones returned (LRU-touched),
   // missing ones requested; -> {sets: [decoded], missing: n, standIn: a cell the bucket cannot serve}.
@@ -705,7 +718,9 @@
       if (!any && store) store.idle();
       credits();
       // only the files of the kinds that are on (Borders off downloads no lines: re-check R-2); each draws as it lands
-      if (wanted() && !store.loading && units().some(function (k) { return !store.ok(k); })) store.load(units()).then(function () {
+      // a kind turned on during a load starts its file at once beside it (V2-2); nothing new asked: no second call
+      var miss = wanted() ? units().filter(function (k) { return !store.ok(k) && !(store.loading && store.unit[k].status === 'loading'); }) : [];
+      if (miss.length) store.load(units()).then(function () {
         credits();
         if (store.status === 'ok' && units().some(function (k) { return store.unit[k].status === 'idle'; })) sync();   // a kind turned on meanwhile
       });

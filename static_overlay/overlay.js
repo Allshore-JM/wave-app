@@ -1583,7 +1583,7 @@
   // manifest grid the frame must have: a body that is too large or a picture of another size is refused before decoding.
   // onBody(): called once the whole body has arrived, before the decode (the download watchdog stops there).
   // mainOnly: the retry after a dead worker (one more download: the body went with the worker).
-  // onProgress (the SST store only): called when the answer starts and as its bytes arrive.
+  // onProgress (every frame download of _ensure, the SST store): called when the answer starts and as its bytes arrive.
   function decodeFrame(url, signal, expect, onBody, mainOnly, onProgress) {
     var direct = typeof DecompressionStream === 'function' && typeof Response === 'function';
     return fetch(url, { signal: signal, mode: 'cors' }).then(function (r) {

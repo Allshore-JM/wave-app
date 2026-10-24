@@ -1432,7 +1432,7 @@ dot (G34). The overlay's coastline loader follows the same stall rule (15 s with
 picture of wave height, period or SST waits for it at most 15 s: on a slower link the field is drawn without coastline
 clipping and a "Coastline still loading" note, and clipped the moment the coastline lands; its first frame downloads
 beside the coastline and is given up only after 5 s with no byte (the owner's call after the G34 re-check; every frame
-since 2.22.4). A row turned on while the other row's file is still loading starts its own file at once (UI 1.25.4).
+since 2.22.4). A row turned on while the other row's file is still loading starts its own file at once (UI 1.25.4), with a full 15 s for its first byte (UI 1.25.5).
 Built and published by `tools/places/build_places.py` (coast-build workflow, `set: places`; `tools/places/README.md`).
 
 ## Wind stations (plan section 39, UI asset 1.22.0)

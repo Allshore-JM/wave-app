@@ -245,11 +245,17 @@
   // is usable); never rejects. One stall timer for the load: it fires only after STALL_MS with no byte arriving (a slow
   // but moving link is not given up: G34 B-6 / F-A6). After a failure the index, or a unit, answers null for RETRY_MS;
   // a load after that asks for it again. A kind asked for while a load runs (a row turned on meanwhile) starts its file
-  // at once beside it, under the same abort and stall timer, and the load in progress then waits for it too (V2-2).
+  // at once beside it, under the same abort and stall timer, and the load in progress then waits for it too (V2-2). A
+  // file joining restarts the stall timer: it gets a full STALL_MS for its first byte, also when the other file has been
+  // silent almost that long (fix check F-1).
   PlacesStore.prototype.load = function (kinds) {
     var self = this, now = Date.now(), want = kinds || ['l', 'p'];
     var need = ['l', 'p'].filter(function (k) { var u = self.unit[k]; return want.indexOf(k) >= 0 && u.status !== 'ok' && u.status !== 'loading' && !(u.status === 'failed' && now - u.failedAt < RETRY_MS); });
-    if (this.loading) { need.forEach(function (k) { self._unitLoad(k); }); return this.loading; }
+    if (this.loading) {
+      if (need.length && this._arm) this._arm();
+      need.forEach(function (k) { self._unitLoad(k); });
+      return this.loading;
+    }
     if (this.status === 'failed' && now - this.failedAt < RETRY_MS) return Promise.resolve(null);
     if (this.status === 'ok' && !need.length) return Promise.resolve(this.ok('l') || this.ok('p') ? this : null);
     if (this.status !== 'ok') this.status = 'loading';

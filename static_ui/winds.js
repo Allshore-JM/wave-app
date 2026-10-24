@@ -472,6 +472,8 @@
       // station; the units and the arrows' meaning need no sentence); then the notes, then the source
       var lines = ['Times in ' + zoneAt(now()) + '.'];
       if (d.via === 'ndbc') lines.push('Readings from NDBC’s copy of this gauge (NOAA CO-OPS did not answer).');
+      if (d.via === 'madis') lines.push('The NWS API has no readings of this station in the last 24 hours: its latest report from NOAA MADIS.');
+      if (d.via === 'nws+madis') lines.push('The latest reading from NOAA MADIS (the NWS API has none newer).');
       if (d.note) lines.push(d.note + (/[.!?]$/.test(d.note) ? '' : '.'));
       if (latest() && flagState(latest(), now(), st.unit, staleS()).stale) lines.push('The latest reading is more than ' + Math.round(staleS() / 3600) + ' hours old.');
       lines.forEach(function (t) { els.meta.appendChild(el('div', '', t)); });

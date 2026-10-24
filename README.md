@@ -1466,7 +1466,7 @@ dot as it was); a mouse hits as before. On phones the window opened or touched l
 
 ## Wind stations (plan section 39, UI asset 1.22.0)
 
-Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from four public-domain NOAA / NWS
+Live wind readings on the map's "Wind stations" layer and a station's last 24 hours, from five public-domain NOAA / NWS
 feeds (attribution requested, given in the map credits while the layer is on and in the window): NOAA NDBC buoys,
 C-MAN and other fixed stations; the weather sensors of NOAA CO-OPS tide gauges; airports reporting METAR through
 the NWS Aviation Weather Center (within 30 km of a coastline, or at sea: offshore platforms); and, for Hawaii (step 5c,
@@ -1511,7 +1511,21 @@ naming the site as aviationweather.gov asks):
   a minute, `WIND_NWS_WORKERS` at a time, so every station is asked about every 12 minutes; the newest row with a wind
   speed is the reading (the top of an hour is often a gust-only row); speeds converted from the row's unit code,
   MADIS-rejected values dropped, a calm row has no direction; an answer without a wind row keeps the station's reading
-  until it is 6 h old; a 403 or 429 stops the slice and pauses the feed for 2 min). They ride on the live-buoy
+  until it is 6 h old; a 403 or 429 stops the slice and pauses the feed for 2 min), and **NOAA MADIS as the NWS
+  stations' backup** (plan section 52, 2026-10-24: the NWS API's observations stopped updating nationwide on
+  2026-10-22 13:20 UTC while MADIS, its upstream, kept the data; every NWS flag read "No recent reading"): one GET of
+  MADIS's public surface viewer every 5 minutes (`WIND_MADIS_URL`, default the Hawaii query of
+  `madisXmlPublicDir`; the newest report of each of ~300 Hawaii stations in the last hour, CSV in an HTML page, 4-15 s,
+  its own fetch with a 45-s read timeout), parsed by its header's column names (K to C, the altimeter in hPa, -99999
+  missing, QC X / B dropped); the snapshot's NWS stations among them become relay entries (`alias_of: "nws:<id>"`), and
+  the merged table takes the newer of a station's NWS API reading and its MADIS one (the gauges' NDBC-relay rule); a
+  MADIS reading is kept 6 h. The table says which rows a relay gave (`fed_by`, counted in `/healthz` `wind.fed_by`) and
+  each paced feed's newest reading ever (`newest`); the legend notes "NWS feed stalled since <time>" when the NWS feed's
+  newest is over 3 h old and no fresh MADIS row covers its stations (unknown after a restart: no note). A station's
+  window falls back on its latest MADIS report (one row, with temperature, dew point, humidity and pressure; "via
+  MADIS") when the NWS API has nothing newer. MADIS asks users to notify NOAA before placing its data on web pages: the
+  providers used here (APRSWXNET / CWOP, RAWS, HADS, MesoWest incl. HECO, U-HAWAII) are its public, full-distribution
+  category. They ride on the live-buoy
   scheduler's pass (`_wind_tick` after the buoy part; a failure there never reaches the buoys) with the same keep-last
   rule and fork reset but a refresh runner of their own (`WIND_REFRESH_WORKERS`, default 2: a slow or hung agency never
   holds one of the live buoys' workers, G28 A-5), and are NOT in the live-buoy list, memo, warm-up or golden;
@@ -1614,3 +1628,4 @@ be read counts as "the tile exists". The station layers draw every station from 
 | `WIND_NWS_WORKERS` | `2` | Stations asked at once by the NWS API feed (1-8). |
 | `WIND_REFRESH_WORKERS` | `2` | The wind feeds' own refresh threads (1-4), apart from the live buoys' `LIVE_REFRESH_WORKERS`. |
 | `WIND_NWS_PER_REFRESH` | `25` | Stations the NWS API feed asks per minute, in turn (1-500); 25 of Hawaii's ~300 = every station about every 12 minutes. |
+| `WIND_MADIS_URL` | the Hawaii query of MADIS's public viewer | The NWS stations' MADIS backup (plan section 52); empty = off. |

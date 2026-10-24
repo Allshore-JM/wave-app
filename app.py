@@ -444,7 +444,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.25.6"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.25.7"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -787,7 +787,12 @@ try:
     WIND_NWS_PER_REFRESH = max(1, min(500, int(float(os.environ.get("WIND_NWS_PER_REFRESH", str(wind_sources.NWS_PER_REFRESH))))))
 except (TypeError, ValueError, OverflowError):
     WIND_NWS_PER_REFRESH = wind_sources.NWS_PER_REFRESH
-WIND_WARM_ORDER = ["NDBC", "METAR", "COOPS", "NWS"]   # cheap single-file feeds first; CO-OPS and NWS ask every station
+# NOAA MADIS's public surface viewer as the NWS stations' backup (plan section 52 D): env WIND_MADIS_URL, default
+# wind_sources.MADIS_HI_URL; "" = off. The viewer answers in 4-15 s: its own fetch (_madis_fetch), not the 8-s one.
+WIND_MADIS_URL = os.environ.get("WIND_MADIS_URL", wind_sources.MADIS_HI_URL).strip()
+WIND_MADIS_TIMEOUT = (10, 45)     # connect, read
+WIND_STALL_NOTE_S = 3 * 3600      # (the page's rule) a feed's newest reading older than this: the legend says it stalled
+WIND_WARM_ORDER = ["NDBC", "METAR", "MADIS", "COOPS", "NWS"]   # single-request feeds first; CO-OPS and NWS ask every station
 WIND_OFF = "Wind stations are not available on this server"
 _WINDS = {"svc": None, "list": None, "providers": None, "stations": None}
 _WINDS_LOCK = threading.Lock()
@@ -806,9 +811,26 @@ def _winds():
             _WINDS["stations"] = stations
             _WINDS["list"] = _json_payload_and_etag(wind_sources.client_list(doc))
             _WINDS["providers"] = wind_sources.make_providers(stations, _points_fetch, WIND_COOPS_WORKERS, WIND_COOPS_PER_REFRESH,
-                                                              WIND_NWS_WORKERS, WIND_NWS_PER_REFRESH)
+                                                              WIND_NWS_WORKERS, WIND_NWS_PER_REFRESH,
+                                                              madis_url=WIND_MADIS_URL or None, madis_fetch=_madis_fetch)
             _WINDS["svc"] = wind_sources.WindHistory(stations, _points_fetch, coops_bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
+            madis = [p for p in _WINDS["providers"] if p.source == "MADIS"]
+            _WINDS["svc"].madis = madis[0].row if madis else None
         return _WINDS
+
+
+def _madis_fetch(url: str, max_bytes: int, headers=None) -> bytes:
+    """MADIS's viewer: a 200 body of at most max_bytes, one attempt, WIND_MADIS_TIMEOUT (the wind runner's thread, never
+    a request); raises otherwise (the provider keeps its last list)."""
+    with requests.get(url, headers=dict(headers or {}), timeout=WIND_MADIS_TIMEOUT, stream=True) as resp:
+        if resp.status_code != 200:
+            raise RuntimeError("HTTP %s" % resp.status_code)
+        buf = bytearray()
+        for chunk in resp.iter_content(65536):
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                raise RuntimeError("answer over %d bytes" % max_bytes)
+        return bytes(buf)
 
 
 def get_wind_providers():
@@ -844,9 +866,15 @@ def _wind_memo_bytes(key, providers, snaps):
                 return _WIND_MEMO["payload"], _WIND_MEMO["etag"]
         t0 = time.monotonic()
         lists = {p.source.lower(): (snap[0] if snap is not None else None) for p, snap in zip(providers, snaps)}
-        payload, etag = _json_payload_and_etag(wind_sources.build_latest(_winds()["stations"], lists, time.time()))
+        newest = {p.source.lower(): p.newest_t() for p in providers if hasattr(p, "newest_t")}
+        doc = wind_sources.build_latest(_winds()["stations"], lists, time.time(), newest)
+        fed = {}
+        for src in doc["fed_by"].values():
+            fed[src] = fed.get(src, 0) + 1
+        payload, etag = _json_payload_and_etag(doc)
         with _CACHE_LOCK:
-            _WIND_MEMO.update(key=key, payload=payload, etag=etag, built_ts=time.time(), build_s=time.monotonic() - t0)
+            _WIND_MEMO.update(key=key, payload=payload, etag=etag, built_ts=time.time(), build_s=time.monotonic() - t0,
+                              fed=fed)
     return payload, etag
 
 
@@ -929,6 +957,8 @@ def _wind_health(now):
                      "sources": sum(1 for k in (memo.get("key") or ()) if k[1] is not None),
                      "current": memo.get("key") == current,
                      "complete": bool(memo.get("key")) and all(v is not None for _, v in memo["key"])},
+            # the rows a relay gave in the table served (a gauge's NDBC copy, an NWS station's MADIS one: section 52 D)
+            "fed_by": dict(memo.get("fed") or {}),
             "ticks": bg["ticks"], "prebuilds": bg["prebuilds"], "errors": bg["errors"], "last_error": bg["last_error"],
             "history_entries": w["svc"].entries(),
             # the wind feeds' own runner (G28 A-5): reported, never part of `ok` (the buoys do not wait for it)

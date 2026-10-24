@@ -1,5 +1,5 @@
 """Live wind stations (plan section 39): the latest wind reading of every station on the map's wind layer and a
-station's last 24 hours, from four public-domain NOAA / NWS feeds.
+station's last 24 hours, from five public-domain NOAA / NWS feeds.
 
 The stations are a committed snapshot (wind_stations.json, built by tools/wind/fetch_stations.py): ids "coops:1612340"
 (a NOAA tide gauge's weather sensors), "ndbc:51003" (NDBC buoys, C-MAN and other fixed stations), "metar:PHNL"
@@ -10,13 +10,17 @@ or None when calm or variable}; a HISTORY row may also carry the weather the sam
 and water temperature C, dp dew point C, rh humidity %, p pressure hPa, pt its 3-hour change hPa, vis visibility km,
 wx weather words), step 5d: the window shows the current conditions and a 24-hour temperature chart.
 
-The latest readings come from four BuoyProvider subclasses (buoy_sources: the section-36 stale-while-revalidate
+The latest readings come from five BuoyProvider subclasses (buoy_sources: the section-36 stale-while-revalidate
 lists, keep-last on a failed fetch, the shared refresh runner and the fork reset) kept in a list of their OWN
 (app.get_wind_providers): never in the live-buoy list, so the live memo, route and golden stay as they are.
   NDBC   one GET of data/latest_obs/latest_obs.txt (every station with a wind speed now; ~5-minute file)
   METAR  one GET of aviationweather.gov's metars.cache.csv.gz (the last ~80 minutes of reports, whole knots)
   COOPS  one datagetter request per gauge (product=wind&date=latest, 6-minute readings), a few at a time, PACED
   NWS    one api.weather.gov request per station (its newest observations of the last 2 hours), PACED the same way
+  MADIS  one GET of NOAA MADIS's public surface viewer (the newest report of every Hawaii station in the last hour):
+         the NWS stations' BACKUP (plan section 52 D; the NWS API's ingest stalled nationwide on 2026-10-22 while MADIS,
+         its upstream, kept the data). Its entries are relays (alias_of "nws:<id>"): the merged table takes the newer
+         of a station's NWS reading and its MADIS one, as it takes a gauge's NDBC relay.
 The merged answer (build_latest) is a columnar table the page draws its flags from. A station's history comes from
 WindHistory (the tide service's cache / per-key lock / busy core): NDBC realtime2/<ID>.txt cut at 24 h, CO-OPS
 product=wind&range=24, the METAR API's hours=24 and the NWS API's observations?start= each behind a token bucket
@@ -60,7 +64,9 @@ ATTRIBUTION = {"ndbc": "NOAA National Data Buoy Center (ndbc.noaa.gov)",
                "coops": "NOAA CO-OPS (tidesandcurrents.noaa.gov)",
                "metar": "NWS Aviation Weather Center METAR (aviationweather.gov)",
                "nws": "NWS API observations (api.weather.gov): HECO / HELCO / MECO, University of Hawaii, RAWS, CWOP and "
-                      "other networks via MADIS"}
+                      "other networks via MADIS",
+               "madis": "NOAA MADIS (madis.ncep.noaa.gov): HECO / HELCO / MECO, University of Hawaii, RAWS, CWOP and "
+                        "other networks"}
 KT_MS = 0.514444                               # one knot in m/s (METAR speeds are whole knots)
 MAX_SPEED_MS = 120.0                           # above this a reading is garbage (the record gust is ~113 m/s)
 STALE_S = 2 * 3600                             # a reading older than this is drawn grey (airports report hourly)
@@ -94,6 +100,16 @@ WX_DEADLINE_S = 10.0                           # a gauge's weather products: one
 NDBC_KEEP_S = 6 * 3600                         # an NDBC reading kept this long after its station's newest line had no wind (B-4)
 WIND_REFRESH_WORKERS = 2                       # the wind feeds' own refresh threads (never the live buoys' workers: A-5)
 NWS_QC_REJECTED = ("X", "B")                   # MADIS quality control: rejected / subjectively bad values are dropped
+# NOAA MADIS's public surface viewer (no account: the "public" categories, which hold every provider the NWS stations
+# come from): the newest record of each Hawaii station in the last 59 minutes, as CSV in an HTML <PRE>; ~53 KB, 4-15 s
+MADIS_HI_URL = ("https://madis-data.ncep.noaa.gov/madisPublic1/cgi-bin/madisXmlPublicDir?rdr=&time=0&minbck=-59"
+                "&minfwd=0&recwin=3&timefilter=0&dfltrsel=2&state=HI&latll=0.0&lonll=0.0&latur=90.0&lonur=0.0&stanam="
+                "&stasel=0&pvdrsel=0&varsel=2&qctype=0&qcsel=0&xml=5&csvmiss=0")
+MADIS_MAX = 2 * 1024 * 1024
+MADIS_TTL_S = 300                              # the viewer is asked every 5 minutes (one request)
+MADIS_KEEP_S = 6 * 3600                        # a MADIS reading kept this long (a station missing from one answer keeps it)
+MADIS_MISSING = -99999.0
+MADIS_VARS = ("TD", "RH", "T", "DD", "FF", "FFGUST", "ALTSE")   # dew point K, humidity %, air K, direction, speed m/s, gust m/s, altimeter Pa
 NWS_UNITS = {"wmoUnit:km_h-1": 1 / 3.6, "wmoUnit:m_s-1": 1.0, "wmoUnit:[kn_i]": KT_MS, "wmoUnit:mi_h-1": 0.44704}
 NWS_TEMP_UNITS = {"wmoUnit:degC": (1.0, 0.0), "wmoUnit:degF": (5 / 9, -32 * 5 / 9), "wmoUnit:K": (1.0, -273.15)}
 NWS_PRESSURE_UNITS = {"wmoUnit:Pa": 0.01, "wmoUnit:hPa": 1.0, "wmoUnit:mbar": 1.0}
@@ -549,6 +565,62 @@ def _nws_temp(q):
 
 # ---------------------------------------------------------------------------------------------- the snapshot
 
+def parse_madis_csv(text, now=None):
+    """MADIS's surface viewer answer (xml=5: CSV lines in an HTML <PRE>) -> {station id: reading with weather}. The
+    columns are found by the header line's names (STAID, OBDATE MM/DD/YYYY, OBTIME HH:MM UTC, then each variable
+    followed by its QC descriptor); -99999 is missing; a value whose QC is X or B (rejected) is dropped. A station
+    listed twice keeps its newest record; a record more than 10 minutes in the future is dropped. Raises ValueError
+    when the answer holds no header (an error page, a changed format)."""
+    head, out = None, {}
+    for raw in text.splitlines():
+        line = re.sub(r"<[^>]*>", "", raw).strip()
+        if not line or "," not in line:
+            continue
+        cells = [c.strip() for c in line.split(",")]
+        if head is None:
+            if cells[0] == "STAID":
+                head = {}
+                for i, name in enumerate(cells):
+                    if name and name != "D" and name not in head:
+                        head[name] = i
+                if not all(k in head for k in ("STAID", "OBDATE", "OBTIME", "FF")):
+                    raise ValueError("MADIS: the header lacks STAID / OBDATE / OBTIME / FF")
+            continue
+        try:
+            t = calendar.timegm(datetime.strptime(cells[head["OBDATE"]] + " " + cells[head["OBTIME"]], "%m/%d/%Y %H:%M").timetuple())
+        except (ValueError, IndexError):
+            continue
+        if now is not None and t > now + 600:
+            continue
+
+        def val(name):
+            i = head.get(name)
+            if i is None or i + 1 >= len(cells):
+                return None
+            try:
+                v = float(cells[i])
+            except ValueError:
+                return None
+            if v <= MADIS_MISSING or not math.isfinite(v) or cells[i + 1] in NWS_QC_REJECTED:
+                return None
+            return v
+        sid = cells[head["STAID"]].upper()
+        if not re.fullmatch(r"[A-Z0-9]{3,8}", sid):
+            continue
+        r = reading(t, val("FF"), val("FFGUST"), val("DD"))
+        if r is None:
+            continue
+        k = lambda v: None if v is None else v - 273.15
+        alt = val("ALTSE")
+        at, dp = _temp(k(val("T"))), _temp(k(val("TD")))
+        r = with_weather(r, at=at, dp=dp, rh=_pct(val("RH")), p=_hpa(alt / 100.0 if alt is not None else None))
+        if sid not in out or out[sid]["t"] < r["t"]:
+            out[sid] = r
+    if head is None:
+        raise ValueError("MADIS: no table in the answer")
+    return out
+
+
 def load_stations(path):
     """wind_stations.json -> ({id: station dict}, the document). Fields per row are named in the file's "fields"."""
     with open(path, encoding="utf-8") as f:
@@ -693,6 +765,7 @@ class PacedProvider(WindProvider):
         self._cursor = 0                        # the next station to ask (round robin over _ids)
         self._readings = {}                     # local id -> the latest reading kept
         self._paused_until = 0.0
+        self._newest_t = None                   # the newest reading the feed ever brought (kept past keep_s: the stall note)
 
     def _slice(self):
         """The next per_refresh stations in turn (all of them when there are fewer)."""
@@ -743,6 +816,8 @@ class PacedProvider(WindProvider):
                     self._readings.pop(local, None)                    # the agency: no data for the station now
                 else:
                     self._readings[local] = r
+                    if self._newest_t is None or r["t"] > self._newest_t:
+                        self._newest_t = r["t"]
         if refused:
             if skipped:
                 self._cursor = self._ids.index(skipped[0])             # the stations not asked go first after the pause
@@ -763,8 +838,13 @@ class PacedProvider(WindProvider):
         s = super().status(now)
         now = buoy_sources.time.time() if now is None else now
         s.update(readings=len(self._readings), per_refresh=self.per_refresh, cursor=self._cursor,
-                 paused_s=round(max(0.0, self._paused_until - now), 1))
+                 paused_s=round(max(0.0, self._paused_until - now), 1),
+                 newest_age_s=round(now - self._newest_t) if self._newest_t is not None else None)
         return s
+
+    def newest_t(self):
+        """The newest reading's time this feed ever brought (epoch s), None before the first."""
+        return self._newest_t
 
 
 class CoopsWindProvider(PacedProvider):
@@ -831,15 +911,56 @@ class NwsProvider(PacedProvider):
         return local, (max(rows, key=lambda r: r["t"]) if rows else NO_NEW), None
 
 
+class MadisProvider(WindProvider):
+    """The NWS stations' backup (plan section 52 D): one GET of NOAA MADIS's public surface viewer, the newest report
+    of every station of the state in the last hour; the snapshot's NWS stations among them become relay entries
+    (alias_of "nws:<id>"), so the merged table shows the newer of a station's NWS API reading and its MADIS one. Each
+    station keeps its last MADIS reading until a newer one comes or it is MADIS_KEEP_S old; the weather of the report
+    (air, dew point, humidity, altimeter) is kept for the station's window (row()). A failed or unreadable answer
+    raises (keep-last). fetch: a slower one than the other feeds' (the viewer takes 4-15 s to answer)."""
+    source = "MADIS"
+    source_name = "NOAA MADIS"
+    source_url = "https://madis.ncep.noaa.gov"
+    attribution_text = "Source: " + ATTRIBUTION["madis"]
+    list_ttl_sec = MADIS_TTL_S
+
+    def __init__(self, stations, fetch, url=MADIS_HI_URL):
+        super().__init__(stations, fetch)
+        self.url = url
+        self._kept = {}                         # local id -> the latest reading (with weather)
+
+    def _fetch_stations(self):
+        now = buoy_sources.time.time()
+        body = self._fetch(self.url, MADIS_MAX, HEADERS)
+        obs = parse_madis_csv(body.decode("latin-1"), now)
+        for local, r in obs.items():
+            old = self._kept.get(local)
+            if local in self.stations and (old is None or r["t"] > old["t"]):
+                self._kept[local] = r
+        cut = now - MADIS_KEEP_S
+        for local in [k for k, r in self._kept.items() if r["t"] < cut]:
+            del self._kept[local]
+        return [self._entry(local, r, {"alias_of": "nws:" + local}) for local, r in sorted(self._kept.items())]
+
+    def row(self, local):
+        """The station's latest MADIS reading with its weather (a copy), or None."""
+        r = self._kept.get(local)
+        return dict(r) if r else None
+
+
 def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER_REFRESH, nws_workers=2,
-                   nws_per_refresh=NWS_PER_REFRESH):
-    """The four providers over the snapshot's stations, in warm order (cheap, quick feeds first)."""
+                   nws_per_refresh=NWS_PER_REFRESH, madis_url=None, madis_fetch=None):
+    """The providers over the snapshot's stations, in warm order (cheap, quick feeds first); with madis_url the NWS
+    stations' MADIS backup too (its own fetch: the viewer is slow)."""
     groups = by_source(stations)
     aliases = {st["alias"]: st for sid, st in stations.items() if st.get("alias") and sid.startswith("coops:")}
-    return [NdbcWindProvider(groups.get("ndbc", {}), fetch, aliases),
-            MetarProvider(groups.get("metar", {}), fetch),
-            CoopsWindProvider(groups.get("coops", {}), fetch, coops_workers, coops_per_refresh),
-            NwsProvider(groups.get("nws", {}), fetch, nws_workers, nws_per_refresh)]
+    out = [NdbcWindProvider(groups.get("ndbc", {}), fetch, aliases),
+           MetarProvider(groups.get("metar", {}), fetch),
+           CoopsWindProvider(groups.get("coops", {}), fetch, coops_workers, coops_per_refresh),
+           NwsProvider(groups.get("nws", {}), fetch, nws_workers, nws_per_refresh)]
+    if madis_url:
+        out.append(MadisProvider(groups.get("nws", {}), madis_fetch or fetch, madis_url))
+    return out
 
 
 # ---------------------------------------------------------------------------------------------- the merged table
@@ -847,34 +968,41 @@ def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER
 FIELDS = ["id", "t", "s", "g", "d"]
 
 
-def build_latest(stations, lists, now):
+def build_latest(stations, lists, now, newest=None):
     """The page's table of latest readings. lists: {src: the provider's snapshot list (lean entries), or None for a
     provider with no list yet (it contributes nothing; the route names it as partial)}. rows: [id, t, s, g, d] per
-    station with a reading, in id order; a gauge takes its NDBC relay's reading (alias_of) when it has no CO-OPS
-    reading or the relay's is newer (NDBC keeps updating while CO-OPS cannot be asked).
+    station with a reading, in id order; a station takes its relay's reading (alias_of: a gauge's NDBC copy, an NWS
+    station's MADIS one) when it has no reading of its own or the relay's is newer (a relay keeps updating while its
+    primary cannot be asked or has stalled). fed_by: {id: the relay's source} for the rows a relay gave.
+    newest: {src: the newest reading time the feed ever brought} (the page notes a stalled feed); None leaves it empty.
     missing: the snapshot ids of the sources that HAVE a list (even an empty one) but no reading now."""
     rows, have, relays = {}, set(), {}
     listed = {src for src, lst in lists.items() if lst is not None}
-    for lst in lists.values():
+    for src, lst in lists.items():
         for e in lst or []:
             w = e.get("wind")
             t = buoy_sources._z_epoch({"time_utc": e.get("latest_time")})
             if not isinstance(w, (list, tuple)) or len(w) != 3 or t is None:
                 continue
             if e.get("alias_of"):
-                relays[e["alias_of"]] = (int(t), w)
+                old = relays.get(e["alias_of"])
+                if old is None or int(t) > old[0]:
+                    relays[e["alias_of"]] = (int(t), w, src)
                 continue
             sid = e["id"]
             if sid in stations:
                 rows[sid] = [sid, int(t), w[0], w[1], w[2]]
                 have.add(sid)
-    for sid, (t, w) in relays.items():
+    fed = {}
+    for sid, (t, w, src) in relays.items():
         if sid in stations and (sid not in rows or t > rows[sid][1]):
             rows[sid] = [sid, t, w[0], w[1], w[2]]
             have.add(sid)
+            fed[sid] = src
     missing = sorted(sid for sid in stations if sid not in have and sid.split(":", 1)[0] in listed)
     return {"now": int(now), "stale_s": STALE_S, "fields": list(FIELDS), "units": {"s": "m/s", "g": "m/s", "d": "deg"},
-            "rows": [rows[k] for k in sorted(rows)], "missing": missing}
+            "rows": [rows[k] for k in sorted(rows)], "missing": missing, "fed_by": {k: fed[k] for k in sorted(fed)},
+            "newest": {k: int(v) for k, v in sorted((newest or {}).items()) if v is not None}}
 
 
 # ---------------------------------------------------------------------------------------------- history
@@ -932,6 +1060,7 @@ class WindHistory:
         self.coops_bucket = coops_bucket or TokenBucket(COOPS_ON_DEMAND_PER_MIN, burst=COOPS_ON_DEMAND_BURST)
         self.ndbc_bucket = ndbc_bucket or TokenBucket(NDBC_HISTORY_PER_MIN)
         self._cap = cap
+        self.madis = None                     # local id -> the station's latest MADIS reading or None (plan section 52 D)
         self._reset_locks()
         self._cache = OrderedDict()           # key -> (expires, status, payload)
         _SERVICES.add(self)
@@ -1151,7 +1280,19 @@ class WindHistory:
         elif src == "metar":
             rows = self._metar(local, since)
         elif src == "nws":
-            rows = self._nws(local, since)
+            try:
+                rows = self._nws(local, since)
+            except WindBusy:
+                raise
+            except WindError:
+                if not (self.madis and self.madis(local)):
+                    raise
+                rows = []
+            m = self.madis(local) if self.madis else None
+            # the NWS API had nothing newer (its ingest stalled: 2026-10-22): MADIS's latest report of the station
+            if m and m["t"] >= since and (not rows or m["t"] > max(r["t"] for r in rows)):
+                via = "madis" if not rows else "nws+madis"
+                rows = rows + [m]
         else:
             self._take(self.coops_bucket, "CO-OPS")                    # the wind rows; the products take theirs as they go
             try:
@@ -1179,7 +1320,8 @@ class WindHistory:
                "units": {"s": "m/s", "g": "m/s", "d": "deg", "at": "degC", "wt": "degC", "dp": "degC", "rh": "%",
                          "p": "hPa", "pt": "hPa/3h", "vis": "km"}, "stale_s": STALE_S, "now": int(now),
                "t": [r["t"] for r in rows], "s": [r["s"] for r in rows], "g": [r["g"] for r in rows],
-               "d": [r["d"] for r in rows], "source": ATTRIBUTION[via or src], "via": via, "note": note}
+               "d": [r["d"] for r in rows], "source": ATTRIBUTION[via or src] if via != "nws+madis" else
+               ATTRIBUTION["nws"] + "; the latest reading: " + ATTRIBUTION["madis"], "via": via, "note": note}
         for k in WX_FIELDS + WX_FLAGS:                                 # only the fields some row carries
             if any(r.get(k) is not None for r in rows):
                 out[k] = [r.get(k) for r in rows]

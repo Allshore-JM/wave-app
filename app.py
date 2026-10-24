@@ -1075,6 +1075,22 @@ def _load_glwu_stations() -> dict:
 GLWU_STATIONS = _load_glwu_stations()
 
 
+# The forecast stations whose GFS-Wave bulletin is blank (sheltered water the 0.25-degree model has no sea for:
+# Long Island Sound, Chesapeake Bay ...; plan section 52 C): taken off station_list.json by tools/build_station_blank.py
+# (--apply), the ids kept here so an old link still answers, with a note, instead of a table of empty cells.
+def _load_blank_stations() -> frozenset:
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "station_blank.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        return frozenset(str(s) for s in data.get("removed", []) if isinstance(s, str))
+    except Exception:
+        return frozenset()
+
+
+BLANK_STATIONS = _load_blank_stations()
+BLANK_STATION_NOTE = "No model data at this point (sheltered water the wave model has no sea for)."
+
+
 def resolve_model(station_id: str, requested: str | None) -> str:
     """Validate a requested forecast model for a station.
 
@@ -2921,6 +2937,12 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     if not _STATION_RE.fullmatch(station):
         out["error"] = "Invalid station id"
         out["final"] = True                                    # asking again gives the same answer: no Retry
+        return out
+
+    if station in BLANK_STATIONS:                              # a station taken off the list for its blank bulletin
+        out["error"] = BLANK_STATION_NOTE                      # (section 52 C): an old link gets the note, no Retry
+        out["final"] = True
+        out["reason"] = "sheltered"
         return out
 
     model = resolve_model(station, model)

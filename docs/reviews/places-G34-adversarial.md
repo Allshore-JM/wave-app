@@ -1122,3 +1122,72 @@ process left; the in-app browser pane was not used.
 **Findings:** none. Fix round 3 does what the owner chose: no download that is still receiving data is cut, on any frame,
 and a row turned on mid-load starts at once. A download that never answers is retried and given up exactly as before.
 The first picture, the names, windows, tools, failure paths, tiles, playback and memory are unchanged from fix round 2.
+
+## Short fresh check of fix round 3 (2026-10-24, Opus 5.5 MAX)
+One fresh-context reviewer (session model, MAX) on `git diff c318c00..3118a93` and the test site @ a50c7de (UI 1.25.4,
+overlay 2.22.4) with trusted input; brief `<SCRATCH>\g34\fix3check\brief.md`, report `fix3check-report.md`, scripts in
+`s/`, outputs in `out/`. **0 P0, 0 P1, 0 P2, 3 P3.**
+
+### Findings
+- **F-1 (P3) a row turned on just before the other tier-0 file's 15-s silence runs out is given up with it.** V2-2 adds
+  the late file under the load's ONE no-progress timer (`_unitLoad` takes `_sig` / `_arm`; `load()`'s loading branch
+  adds the unit without re-arming it). With the other file dead-silent (a stalled connection), a row turned on within one
+  first-byte time of the deadline is aborted with it before its first byte, marked failed (the 60-s cooldown), and stays
+  empty until a view change after the cooldown. UI 1.25.3 handled the same click: the load ended, the follow-up `sync()`
+  started the file in a new load, names drawn 0.3 s after the abort. Live on the test site (`s/late_live.js`, the files
+  served by a local stand-in through `Fetch.continueRequest({url})`): City names clicked 14.66 s into the silence of
+  world-lines.bin -> both files aborted at 15.01 s (the places file with 0 bytes sent), the store `ok[failed,failed]`, 0
+  names, a zoom inside the cooldown asked for nothing; the click at 10 s drew 52 names 0.8 s later. Suggested fix: re-arm
+  the shared timer when a file joins the load (`if (need.length && this._arm) this._arm();`); tried on a copy: the late
+  file lands, places.test.js 45/45.
+- **F-2 (P3, tests) the "join the load in progress" branch is pinned only for its start and its landing.** Mutants R1 (a
+  kind inside its cooldown re-asked by a load in progress), R2 (an added unit outside the load's abort) and R3 (outside
+  its stall timer) survive every overlay + ui test file; R2 + R3 together leave the load in progress forever after a
+  stalled late file (`s/pl_r2demo.js`: no names until a reload), unnoticed by the suite.
+- **F-3 (P3, tests) every model frame now takes the streamed path, but no test reads a model frame's streamed body to the
+  end.** Mutant Q2 (the canvas path handed the ArrayBuffer instead of `new Blob([buf])`: the overlay dead on a browser
+  without DecompressionStream) survives everything; `tests/overlay/sst_timers.test.js:298` still pins "the model frames
+  (no progress callback) read arrayBuffer()" (stale since this round, like K-9's comment in `decodeFrame`). Live the path
+  is right: decoded with DecompressionStream removed.
+- Record nit: fix round 3's "pytest 1,282 + 60 page tests" counted 44 page tests twice; the full suite after the golden
+  is 1,298.
+
+### Checked and held (the reviewer's evidence)
+Every frame kind (field, direction, pressure, lake, lake direction; the first picture's own frame; the canvas path with
+DecompressionStream removed) stopping MID-BODY (`s/stallsrv.js`: a local stand-in with the real frame's length + CORS,
+reached by `Fetch.continueRequest({url})`) is aborted 5.0 s after its last byte, asked again, three tries, then the
+cooldown (production: 5 s in all). Chunks 4.9 s apart never cut, 5.1 s apart cut; `limit` is always 5 s (the
+4-interval term is dead since section 41, pre-existing). Off, a field switch, a model switch and a far seek during a
+trickle close the download at once; playback waits across a trickling frame at 1x and 4x and goes on. The byte cap now
+cuts an oversized body at once. One body read per frame at 1080p shark (465 of 466 frames streamed; production all by
+`arrayBuffer()`): nothing measurable. At 45 KB/s with wind + isobars, the Great Lakes (lake frames) and ECMWF the test
+site asks every frame once, 0 given up, where production gives up 8-23 and marks 2-6. The late toggle by real clicks
+(desktop) and taps (phone), both directions: the new file asked at the click, drawn 0.8-0.9 s later. The store's
+concurrency in Node (`s/pl_race.js`): no window between the stall's abort and the load settling that an input event can
+reach; on / off / on during one load and an index failure with added units as designed; `all()` terminates. Regression:
+load order, places failure paths, model tiles = production, console clean on a fresh target. Suites: Node 982 / 982,
+pytest 1,298 / 1,298.
+
+Not covered: real (non-DevTools) slow links with the CDN's HTTP/2 / HTTP/3 stream scheduling (a frame queued behind the
+coastline could get no byte for 5 s and be cut, as the old rule cut it: never worse than before); Safari / Firefox /
+iPad; the `?ovdecode=worker` retry path (pre-existing); Update during a trickle (read, not driven: it calls the same
+`abortAll()` as Off).
+
+### The author's check
+F-1's reproductions re-run on f258ab4 (`s/pl_late.js` at 14.8 s: both files aborted at 15 s, places failed with its
+cooldown, nothing asked in 50 s of zooming; at 10 s: places ok; the page-level script on c318c00's places.js: drawn at
+15.3 s): confirmed. F-2 and F-3 confirmed by reading the tests (no test adds a unit to a load that then stalls, sits in a
+cooldown or aborts; no streamed model-frame body is read to the end in the playback world, and the SST tests swallow the
+canvas result).
+
+### Fix round 4 scope (proposed: UI 1.25.5, overlay 2.22.5)
+1. F-1: `load()` re-arms the load's stall timer when a file joins it; a pin with the scenario above (the late file lands;
+   the silent file is given up STALL_MS after the late file's last byte, K-3 unchanged).
+2. F-2: tests for an added unit inside its cooldown (not asked; asked once the cooldown is over, still inside the load),
+   one whose file goes silent (given up by the load's timer, the load settles) and one whose bytes keep the shared timer
+   alive; R1-R3 must die.
+3. F-3: a test that reads a streamed model frame's body to the end through `_ensure` on the canvas path (a real `Blob`
+   holding the body's bytes reaches the canvas decode) and on the direct path (the codes); Q2 must die. The stale
+   sst_timers test re-pointed; K-9's comment in `decodeFrame` corrected (the overlay asset bumped for it).
+4. The record's pytest count corrected; README if anything it says changes; golden in its own commit; then a short
+   test-site check (MAX: the reviewer's `late_live.js` corner + the smoke) and step 10.

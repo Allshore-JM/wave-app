@@ -1,0 +1,61 @@
+{
+ "rule": "blank = no data row of the run has a combined height (Hst) above zero or a swell group with three numbers; removed = blank in both of the two newest recorded runs; a missing bulletin never counts",
+ "runs": {
+  "2026102406": {
+   "blank": [
+    "44039",
+    "44040",
+    "44043",
+    "44058",
+    "44061",
+    "44062",
+    "44063",
+    "44064",
+    "44072",
+    "44087",
+    "46088",
+    "Alaska_NS3"
+   ],
+   "absent": [],
+   "failed": [],
+   "scanned": 734,
+   "scanned_utc": "2026-10-24T20:59:40Z",
+   "source": "aws tar"
+  },
+  "2026102412": {
+   "blank": [
+    "44039",
+    "44040",
+    "44043",
+    "44058",
+    "44061",
+    "44062",
+    "44063",
+    "44064",
+    "44072",
+    "44087",
+    "46088",
+    "Alaska_NS3"
+   ],
+   "absent": [],
+   "failed": [],
+   "scanned": 734,
+   "scanned_utc": "2026-10-24T21:01:18Z",
+   "source": "aws tar"
+  }
+ },
+ "removed": [
+  "44039",
+  "44040",
+  "44043",
+  "44058",
+  "44061",
+  "44062",
+  "44063",
+  "44064",
+  "44072",
+  "44087",
+  "46088",
+  "Alaska_NS3"
+ ]
+}

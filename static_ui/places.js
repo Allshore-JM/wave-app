@@ -11,9 +11,10 @@
  * takes no tap, so an icon under it stays clickable; owner, 2026-10-23), placed at the map's layer points (they ride
  * along with a pan) and rebuilt after every move or zoom and when a map control or the overlay's sheet changes size:
  * every place whose own zoom is reached (Natural Earth places at Natural Earth's min_zoom; GeoNames towns from zoom 8, 9
- * or 10 by size, set by the builder), the largest first, each label kept only where its dot and its whole text lie on
- * the map (to the left of the dot when the right runs off) and it overlaps neither another label nor a map control, the
- * overlay's sheet or a gridline label; at most 120 labels (60 on a narrow map).
+ * or 10 by size, set by the builder), the largest first, each name centred on its place (a city is an area, not a point:
+ * no dot; plan section 52), kept only where the whole text lies on the map (never shifted: a name that would run off an
+ * edge is dropped) and it overlaps neither another label nor a map control, the overlay's sheet or a gridline label; at
+ * most 120 labels (60 on a narrow map).
  * Nothing is fetched before the page has loaded and the overlay's first picture has settled (at most 30 s: on a slow
  * link the overlay's coastline comes first, G34 B-6), nor while every kind is off or the map is below the first wanted
  * zoom; every download asks for a low priority. A download is given up only after 15 s in which no byte arrived. The
@@ -54,7 +55,7 @@
   var DRAW_ORDER = [KIND_ADMIN1, KIND_DISPUTED, KIND_ADMIN0];   // countries over states
   // the labels' look (the page's .place-label CSS must match LABEL_FONT: the widths are measured with it)
   var LABEL_FONT = '600 11px system-ui, -apple-system, "Segoe UI", sans-serif', CAPITAL_FONT = '700 11px system-ui, -apple-system, "Segoe UI", sans-serif';
-  var LABEL_H = 14, LABEL_GAP = 4, DOT_R = 3, LABEL_DX = 6;   // text height; gap between boxes; the dot's reach; dot -> text
+  var LABEL_H = 14, LABEL_GAP = 4;                           // text height; gap between boxes
   var LABEL_MAX = 120, LABEL_MAX_NARROW = 60, NARROW_PX = 600, VIEW_MARGIN_PX = 40, BUCKET = 32;
   var LABEL_PANE_Z = 620;                            // above the marker pane (600), below the tooltips (650)
   var BLOCKED_SELECTOR = '.leaflet-control, .settings-panel, .ov-sheet, .graticule-label, .tools-fan, .tools-label, .tools-ring-label';
@@ -481,16 +482,16 @@
     out.sort(function (a, b) { return a.rank - b.rank || b.pop - a.pop || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || a.lon - b.lon; });
     return out;
   }
-  // The labels kept: in order, each whose box (the dot and the text to its right, grown by the gap) overlaps neither a
+  // The labels kept: in order, each whose box (the text centred on the place, grown by the gap) overlaps neither a
   // kept one nor a blocked rect, up to `max`. items: [{x, y, w, ...}] in container px; blocked: [{left, top, right, bottom}].
-  // With the map's size {x, y} a label is kept only where its dot and its whole text lie on the map; when the text runs
-  // off the right it goes to the left of the dot (item.side 'L'), else it stays right ('R').
+  // With the map's size {x, y} a label is kept only where its whole text lies on the map; a name that would run off an
+  // edge is dropped, never shifted (owner, plan section 52: cities are areas, the name sits over the place).
   // h: the labels' height (the drawn font's line; LABEL_H by default).
   function thin(items, blocked, max, size, h) {
     var kept = [], grid = {}, i, j, hh = (h || LABEL_H) / 2;
-    function boxOf(it, left) {
-      return left ? { left: it.x - LABEL_DX - it.w - LABEL_GAP, top: it.y - hh - LABEL_GAP, right: it.x + DOT_R + LABEL_GAP, bottom: it.y + hh + LABEL_GAP }
-                  : { left: it.x - DOT_R - LABEL_GAP, top: it.y - hh - LABEL_GAP, right: it.x + LABEL_DX + it.w + LABEL_GAP, bottom: it.y + hh + LABEL_GAP };
+    function boxOf(it) {
+      var hw = it.w / 2;
+      return { left: it.x - hw - LABEL_GAP, top: it.y - hh - LABEL_GAP, right: it.x + hw + LABEL_GAP, bottom: it.y + hh + LABEL_GAP };
     }
     function fits(r) { return !size || (r.left + LABEL_GAP >= 0 && r.top + LABEL_GAP >= 0 && r.right - LABEL_GAP <= size.x && r.bottom - LABEL_GAP <= size.y); }
     function file(r) {
@@ -510,10 +511,9 @@
     }
     for (i = 0; i < blocked.length; i++) file(blocked[i]);
     for (i = 0; i < items.length && kept.length < max; i++) {
-      var r = boxOf(items[i], false), side = 'R';
-      if (!fits(r)) { r = boxOf(items[i], true); side = 'L'; if (!fits(r)) continue; }
-      if (!free(r)) continue;
-      file(r); items[i].side = side; kept.push(items[i]);
+      var r = boxOf(items[i]);
+      if (!fits(r) || !free(r)) continue;
+      file(r); kept.push(items[i]);
     }
     return kept;
   }
@@ -659,7 +659,7 @@
       var kept = thin(items, blockedRects(), size.x < NARROW_PX ? LABEL_MAX_NARROW : LABEL_MAX, size, font.h), used = 0;
       for (i = 0; i < kept.length; i++) {
         var it = kept[i], el = pool[used] || (pool[used] = box.appendChild(doc.createElement('span'))), lp = map.latLngToLayerPoint([it.cand.lat, it.cand.lon]);
-        el.className = 'place-label' + (it.cand.flags & FLAG_CAPITAL ? ' place-capital' : '') + (it.side === 'L' ? ' place-left' : '');
+        el.className = 'place-label' + (it.cand.flags & FLAG_CAPITAL ? ' place-capital' : '');
         el.textContent = it.cand.name;
         el.style.left = Math.round(lp.x) + 'px'; el.style.top = Math.round(lp.y) + 'px';
         el.hidden = false;
@@ -757,7 +757,7 @@
     _internals: { KEYS: KEYS, WAIT_MAX_MS: WAIT_MAX_MS, WIDTH_CACHE_MAX: WIDTH_CACHE_MAX, STALL_MS: STALL_MS, FLOAT_SELECTOR: FLOAT_SELECTOR, RELAY_CLASSES: RELAY_CLASSES,
                   afterWait: afterWait, hasClass: hasClass, readAll: readAll, expectOf: expectOf, decodedBytes: decodedBytes, KIND_ADMIN0: KIND_ADMIN0, KIND_ADMIN1: KIND_ADMIN1, KIND_DISPUTED: KIND_DISPUTED, BORDER_ZOOM: BORDER_ZOOM, STATE_ZOOM: STATE_ZOOM, PLACES_ZOOM: PLACES_ZOOM,
                   TIER0_MAX_ZOOM: TIER0_MAX_ZOOM, STYLE: STYLE, DRAW_ORDER: DRAW_ORDER, MAX_INFLIGHT: MAX_INFLIGHT, MAX_CELL_BYTES_KEPT: MAX_CELL_BYTES_KEPT, RETRY_MS: RETRY_MS,
-                  FLAG_CAPITAL: FLAG_CAPITAL, FLAG_GEONAMES: FLAG_GEONAMES, LABEL_FONT: LABEL_FONT, CAPITAL_FONT: CAPITAL_FONT, LABEL_H: LABEL_H, LABEL_GAP: LABEL_GAP, DOT_R: DOT_R, LABEL_DX: LABEL_DX,
+                  FLAG_CAPITAL: FLAG_CAPITAL, FLAG_GEONAMES: FLAG_GEONAMES, LABEL_FONT: LABEL_FONT, CAPITAL_FONT: CAPITAL_FONT, LABEL_H: LABEL_H, LABEL_GAP: LABEL_GAP,
                   LABEL_MAX: LABEL_MAX, LABEL_MAX_NARROW: LABEL_MAX_NARROW, NARROW_PX: NARROW_PX, VIEW_MARGIN_PX: VIEW_MARGIN_PX, BUCKET: BUCKET, CHAR_PX: CHAR_PX,
                   LABEL_PANE_Z: LABEL_PANE_Z, BLOCKED_SELECTOR: BLOCKED_SELECTOR,
                   CREDIT_BORDERS: CREDIT_BORDERS, CREDIT_PLACES: CREDIT_PLACES,

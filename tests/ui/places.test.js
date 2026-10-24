@@ -431,7 +431,7 @@ test('the thinning: no two kept labels overlap, the larger place wins, blocked r
   const items = [it(100, 100, 50, 'big'), it(110, 104, 30, 'under big'), it(300, 100, 20, 'free'), it(100, 130, 50, 'below big'), it(100, 118, 50, 'touching big')];
   const kept = I.thin(items, [], 10).map((i) => i.name);
   assert.deepEqual(kept, ['big', 'free', 'below big'], 'under and touching overlap (the gap counts)');
-  const box = (i) => ({ left: i.x - I.DOT_R - I.LABEL_GAP, top: i.y - I.LABEL_H / 2 - I.LABEL_GAP, right: i.x + I.LABEL_DX + i.w + I.LABEL_GAP, bottom: i.y + I.LABEL_H / 2 + I.LABEL_GAP });
+  const box = (i) => ({ left: i.x - i.w / 2 - I.LABEL_GAP, top: i.y - I.LABEL_H / 2 - I.LABEL_GAP, right: i.x + i.w / 2 + I.LABEL_GAP, bottom: i.y + I.LABEL_H / 2 + I.LABEL_GAP });
   // a crowd: brute-force check that nothing kept overlaps
   const crowd = []; let seed = 7;
   const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
@@ -449,28 +449,29 @@ test('the thinning: no two kept labels overlap, the larger place wins, blocked r
   assert.equal(I.thin(crowd, [], 120)[0], crowd[0]);
 });
 
-test('the thinning with the map size: a name is kept only with its dot and whole text on the map; past the right edge it goes left of its dot; the left box is kept clear like the right one (V7-4)', () => {
-  const it = (x, y, w, name) => ({ x, y, w, name }), size = { x: 800, y: 600 };
-  const k = I.thin([it(100, 100, 40, 'inside'), it(770, 200, 40, 'right edge'), it(-2, 300, 40, 'dot off the left'), it(30, 400, 900, 'too long'),
-    it(400, 5, 40, 'top edge'), it(400, 597, 40, 'bottom edge'), it(805, 250, 20, 'dot off the right'), it(3, 500, 30, 'dot at the left edge')], [], 120, size);
-  assert.deepEqual(k.map((i) => i.name + ':' + i.side), ['inside:R', 'right edge:L', 'dot at the left edge:R']);
-  const exact = I.thin([it(800 - I.LABEL_DX - 40, 300, 40, 'flush right')], [], 120, size);
-  assert.deepEqual(exact.map((i) => i.side), ['R'], 'the text ending exactly on the edge stays right');
-  assert.deepEqual(I.thin([it(800 - I.LABEL_DX - 40 + 1, 300, 40, 'one over')], [], 120, size).map((i) => i.side), ['L']);
-  assert.deepEqual(I.thin([it(I.LABEL_DX + 40, 300, 40, 'flush left')], [], 120, size).map((i) => i.side), ['R'], 'right first');
-  // the left box blocks a later name: a name whose right box meets the first one's left box is thinned
-  const two = I.thin([it(780, 300, 60, 'big'), it(700, 300, 20, 'small')], [], 120, size);
-  assert.deepEqual(two.map((i) => i.name), ['big'], 'big went left (720..780); small at 700..726 meets it');
+test('the thinning with the map size: a name is centred on its place and kept only with its whole text on the map; a name that would run off an edge is dropped, never shifted (plan section 52; was V7-4)', () => {
+  const it = (x, y, w, name) => ({ x, y, w, name }), size = { x: 800, y: 600 }, hh = I.LABEL_H / 2;
+  const k = I.thin([it(100, 100, 40, 'inside'), it(790, 200, 40, 'right edge'), it(18, 300, 40, 'left edge'), it(400, 400, 900, 'too long'),
+    it(400, 5, 40, 'top edge'), it(400, 597, 40, 'bottom edge'), it(805, 250, 20, 'off the right'), it(-2, 450, 30, 'off the left'),
+    it(20, 500, 40, 'flush left'), it(780, 550, 40, 'flush right'), it(400, hh, 40, 'flush top'), it(400, 600 - hh, 40, 'flush bottom')], [], 120, size);
+  assert.deepEqual(k.map((i) => i.name), ['inside', 'flush left', 'flush right', 'flush top', 'flush bottom']);
+  assert.ok(k.every((i) => i.side === undefined), 'no side: the text is never moved off its place');
+  assert.deepEqual(I.thin([it(19, 300, 40, 'one over left')], [], 120, size), [], 'one pixel over the left edge: dropped');
+  assert.deepEqual(I.thin([it(781, 300, 40, 'one over right')], [], 120, size), [], 'one pixel over the right edge: dropped');
+  // a centred box blocks a later name: a name whose box meets the first one's is thinned
+  const two = I.thin([it(400, 300, 60, 'big'), it(440, 300, 20, 'small')], [], 120, size);
+  assert.deepEqual(two.map((i) => i.name), ['big'], 'big spans 370..430; small at 430..450 meets it through the gap');
+  assert.deepEqual(I.thin([it(400, 300, 60, 'big'), it(449, 300, 20, 'clear')], [], 120, size).map((i) => i.name), ['big', 'clear'], 'a full gap apart: both');
   // without a size (the old callers) no fit rule applies
   assert.deepEqual(I.thin([it(-50, -50, 10, 'off')], [], 120).map((i) => i.name), ['off']);
-  // a crowd: every kept box on the map and clear of the others (the side's own box)
+  // a crowd: every kept box on the map and clear of the others
   const crowd = []; let seed = 11;
   const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
   for (let i = 0; i < 600; i++) crowd.push(it(Math.floor(rnd() * 840) - 20, Math.floor(rnd() * 640) - 20, 20 + Math.floor(rnd() * 80), 'p' + i));
   const kept = I.thin(crowd, [], 120, size);
-  const box = (i) => i.side === 'L' ? { left: i.x - I.LABEL_DX - i.w, right: i.x + I.DOT_R, top: i.y - I.LABEL_H / 2, bottom: i.y + I.LABEL_H / 2 }
-                                    : { left: i.x - I.DOT_R, right: i.x + I.LABEL_DX + i.w, top: i.y - I.LABEL_H / 2, bottom: i.y + I.LABEL_H / 2 };
-  assert.ok(kept.some((i) => i.side === 'L') && kept.length > 30);
+  const box = (i) => ({ left: i.x - i.w / 2, right: i.x + i.w / 2, top: i.y - hh, bottom: i.y + hh });
+  assert.ok(kept.length > 30, String(kept.length));
+  assert.ok(crowd.some((c) => box(c).left < 0 || box(c).right > 800) && kept.every((i) => box(i).left >= 0 && box(i).right <= 800), 'names over an edge were dropped');
   for (let a = 0; a < kept.length; a++) {
     const ra = box(kept[a]);
     assert.ok(ra.left >= 0 && ra.top >= 0 && ra.right <= 800 && ra.bottom <= 600, 'on the map: ' + kept[a].name + JSON.stringify(ra));
@@ -512,7 +513,7 @@ test('create(): the labels: text spans at the layer points, the largest first, t
   assert.equal(hnl.innerHTML, undefined, 'text only');
   map.zoom = 6.7; map.fire('zoomstart'); assert.equal(pl.labels.hidden, true);
   map.fire('zoomend'); flush(); assert.equal(pl.labels.hidden, false);
-  assert.deepEqual(shown(), ['Honolulu', 'Hilo', 'Wailuku', 'Lihue'], 'zoom 6.7: Wahiawa and Kailua-Kona are shown by their zoom but their labels sit under Honolulu and Hilo (thinned)');
+  assert.deepEqual(shown(), ['Honolulu', 'Hilo', 'Wailuku', 'Lihue', 'Kailua-Kona'], 'zoom 6.7: Wahiawa is shown by its zoom but its centred label meets Honolulu (thinned); Kailua-Kona, centred, clears Hilo');
   map.zoom = 6.69; map.fire('zoomend'); flush();
   assert.ok(!shown().includes('Lihue'), 'zoom 6.69 is zoom 66 (the floor): Lihue waits for 67');
   map.zoom = 6.7; map.fire('zoomend'); flush();
@@ -564,7 +565,7 @@ test('create(): a label never sits under a control (the station icons are no obs
   assert.ok(!/marker/.test(I.BLOCKED_SELECTOR), 'never the station icons: the names are drawn above them');
 });
 
-test('create(): near the right edge a name is drawn to the left of its dot (class place-left), never cut; a control corner or the overlay sheet changing size lays the names out again (V7-1, V7-4)', async () => {
+test('create(): a name is centred on its place (no dot, no side class); one that would run off the right edge is left out; a control corner or the overlay sheet changing size lays the names out again (V7-1, section 52)', async () => {
   const ros = [], mos = [], q = [];
   const win = { requestAnimationFrame: (fn) => { q.push(fn); return q.length; },
     ResizeObserver: class { constructor(cb) { this.cb = cb; this.els = []; ros.push(this); } observe(e) { this.els.push(e); } unobserve(e) { this.els = this.els.filter((x) => x !== e); } },
@@ -572,16 +573,16 @@ test('create(): near the right edge a name is drawn to the left of its dot (clas
   const M = load(win), flush = () => { while (q.length) q.shift()(); };
   const crop = fs.readFileSync(path.join(FIX, 'world-places-crop.bin'));
   const f = fakeFetch({ ...TIER0, 'world-places.bin': ab(crop) });
-  // Honolulu 20 px from the right edge at zoom 6 (45.5 px a degree): its 48-px name cannot run right
-  const map = fakeMap(6, 21.3, -157.858 - 380 / (256 * 64 / 360));
+  // Honolulu 60 px from the right edge at zoom 6 (45.5 px a degree): its 48-px name, centred, fits with 36 px to spare
+  const map = fakeMap(6, 21.3, -157.858 - 340 / (256 * 64 / 360));
   const corners = { topleft: { c: 'tl' }, topright: { c: 'tr' }, bottomleft: { c: 'bl' }, bottomright: { c: 'br' } };
   map._controlCorners = corners;
   const pl = M.create(map, { base: BASE, L: fakeL(map), document: oahuDoc(), storage: storage(), fetch: f, whenReady: (go) => go() });
   await settle(); flush();
   const hnl = pl.labels.children.find((sp) => sp.textContent === 'Honolulu' && !sp.hidden);
-  assert.ok(hnl, 'Honolulu shown'); assert.equal(hnl.className, 'place-label place-left');
+  assert.ok(hnl, 'Honolulu shown'); assert.equal(hnl.className, 'place-label', 'no side class: the text is centred by the CSS');
   const lp = map.latLngToLayerPoint([21.303, -157.858]);
-  assert.equal(hnl.style.left, Math.round(lp.x) + 'px', 'the span sits at the dot; CSS moves its text before it');
+  assert.equal(hnl.style.left, Math.round(lp.x) + 'px', 'the span sits on the place; CSS centres its text there');
   // the observers: the four corners watched; a sheet added to the container is watched too; a size change re-lays
   assert.equal(ros.length, 1); assert.deepEqual(ros[0].els.map((e) => e.c), ['tl', 'tr', 'bl', 'br']);
   assert.equal(mos.length, 1, 'no floating window on this page: one observer'); assert.deepEqual(mos[0].opts, { childList: true, subtree: true });
@@ -602,6 +603,12 @@ test('create(): near the right edge a name is drawn to the left of its dot (clas
   assert.ok(!hnl.hidden, 'nothing re-laid yet');
   ros[0].cb([]); flush();
   assert.ok(!pl.labels.children.some((sp) => sp.textContent === 'Honolulu' && !sp.hidden), 'a panel grew over it: laid out again, Honolulu goes');
+  // 20 px from the edge the centred 48-px name would run 4 px off the map: left out, never shifted
+  const map2 = fakeMap(6, 21.3, -157.858 - 380 / (256 * 64 / 360)); map2._controlCorners = corners;
+  const pl2 = M.create(map2, { base: BASE, L: fakeL(map2), document: oahuDoc(), storage: storage(), fetch: fakeFetch({ ...TIER0, 'world-places.bin': ab(crop) }), whenReady: (go) => go() });
+  await settle(); flush();
+  assert.ok(!pl2.labels.children.some((sp) => sp.textContent === 'Honolulu' && !sp.hidden), 'Honolulu over the right edge: left out');
+  assert.ok(pl2.labels.children.every((sp) => sp.hidden || !/place-left/.test(sp.className)), 'no place-left class anywhere');
 });
 
 test('the places decoder refuses a longitude of exactly 180 (the builder stores it as -180)', () => {

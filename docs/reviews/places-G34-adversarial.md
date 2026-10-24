@@ -976,3 +976,25 @@ Owner awareness (no change proposed):
   bring the clip back to about 2.22.2's time, at the cost of a ring that is not ready when play is pressed during that time.
 - When the frame is fast but the coastline slow (the coastline alone at 50 KB/s), the frame is in hand after ~1.2 s and the
   picture still waits the full 15 s, as decided.
+
+### Owner's calls (2026-10-24, AskUserQuestion)
+- V2-1: "No data for 5 s, every frame": a frame download (any kind: field, direction, pressure, lake; the first or a later
+  one) is given up only after 5 s with no byte arriving; a hung download is still asked again after 5 s (LATE_TRIES, the
+  cooldown and the outage rule unchanged). This also ends production's existing slow-link cuts.
+- V2-2: "Start it at once": a kind turned on while the other kind's file is still loading starts its own file at once.
+- The ring beside the coastline after the first picture: "Keep as is" (the ring loads at once; the clip later than 2.22.2's).
+
+### Fix round 3 scope (UI 1.25.4, overlay 2.22.4)
+1. `_ensure`'s watchdog: the no-byte rule for every attempt (the progress callback re-arms it per chunk); the comment and the
+   README's section-41 text; the pin of the old rule rewritten (a later frame still receiving bytes is kept; a hung one is
+   asked again after STALL_MS); the reproduction from the verification (the coastline loading after the unclipped first
+   picture, two ring frames still receiving bytes: asked once, never unavailable) and the same for a direction frame.
+2. `PlacesStore.load(kinds)` while a load is in progress: the files of the kinds not yet loading start at once beside it
+   (the index shared; each extra file with the store's abort and a no-progress stall timer; no file asked twice); the
+   page's `sync()` asks for a wanted kind that is idle even while another load runs; `idle()` / everything off stops both;
+   tests (a kind turned on during a slow load starts its file at once and is drawn and credited as it lands; no duplicate
+   request; Off during both loads leaves nothing in flight).
+3. Left as is (on record): a failed shown step's direction is asked again only on play, step or seek (pre-existing; rare
+   once slow downloads are kept).
+4. Mutants of the changes, the suites, the golden in its own commit, README; then the test site (MAX: the slow-link frame
+   runs on both sites again, the late toggle live), a short fresh check (MAX), step 10.

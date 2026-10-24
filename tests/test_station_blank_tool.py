@@ -88,6 +88,13 @@ def test_the_committed_file_and_the_list_agree():
     assert A.BLANK_STATIONS == frozenset(doc["removed"])
 
 
+def test_the_server_reads_the_removed_ids_only(tmp_path):
+    f = tmp_path / "b.json"
+    f.write_text(json.dumps({"runs": {"2026102412": {"blank": ["44062", "46088"]}}, "removed": ["44062", 7]}), encoding="utf-8")
+    assert A._load_blank_stations(str(f)) == frozenset(["44062"]), "removed, never a run's own blank list; strings only"
+    assert A._load_blank_stations(str(tmp_path / "missing.json")) == frozenset()
+
+
 @pytest.fixture
 def client():
     A.app.config["TESTING"] = True

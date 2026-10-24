@@ -1078,9 +1078,9 @@ GLWU_STATIONS = _load_glwu_stations()
 # The forecast stations whose GFS-Wave bulletin is blank (sheltered water the 0.25-degree model has no sea for:
 # Long Island Sound, Chesapeake Bay ...; plan section 52 C): taken off station_list.json by tools/build_station_blank.py
 # (--apply), the ids kept here so an old link still answers, with a note, instead of a table of empty cells.
-def _load_blank_stations() -> frozenset:
+def _load_blank_stations(path: str | None = None) -> frozenset:
     try:
-        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "station_blank.json"), encoding="utf-8") as f:
+        with open(path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "station_blank.json"), encoding="utf-8") as f:
             data = json.load(f)
         return frozenset(str(s) for s in data.get("removed", []) if isinstance(s, str))
     except Exception:

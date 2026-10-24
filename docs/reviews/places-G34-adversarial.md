@@ -1212,3 +1212,34 @@ section. UI asset 1.25.5, overlay asset 2.22.5. Not on the test site yet.
   golden was 1,298.
 - Tests: Node 985 (+3), pytest 1,298 (all, after the golden). Mutants (scratch `g34/fix4/mut_fix4.py`, on a copy, each
   against every overlay + ui test file): F1 (no re-arm), R1, R2, R3, Q2 — 5 of 5 killed, each by the new tests.
+
+## Test-site verification of fix round 4 (2026-10-24, Opus 5.5 MAX)
+`test` @ 419aa87 (cherry-picks of bfc8483 as 5b1ade4 and the golden 828a572 as 419aa87; README kept as the test branch's;
+the site files = the feature branch's except the three test-only logo lines and the test branch's own reef module),
+pushed 17:54:42 UTC, UI 1.25.5 served from 17:55:59 UTC (one poll timed out while the free instance woke; the rest
+answered). All 15 served files (overlay 2.22.5: js, css, 4 PNGs; UI 1.25.5: 9 files) = the commit; the 2.22.4 / 1.25.4
+URLs answer 404. Headless Chrome with the GPU (scratch `g34/fix4v`: the fix check's harness and scripts on port 9821,
+profile prefix `chromeprof-f4v-`; its local stand-in `s/stallsrv.js` on 127.0.0.1:9812).
+- **F-1, the corner, live** (`s/late_live.js`: world-lines.bin answered with its headers and 20,000 B and then nothing,
+  world-places.bin answered after a 600-ms first byte, City names clicked in the gear):
+
+  | click after the lines file's last byte | the places file | names | the silent lines file |
+  |---|---|---|---|
+  | 14.67 s (1.25.4: both aborted at 15.01 s, 0 names, nothing in 70 s) | asked at once, headers 15.36 s, in full | 52 at 15.43 s, Places credit | given up at 30.39 s |
+  | 14.97 s (30 ms before the old deadline) | asked at once, in full at 15.58 s | 52 at 15.73 s | given up at 30.62 s |
+  | 10 s (control) | in full at 10.66 s | 52 at 10.82 s | given up at 25.66 s |
+
+  The silent file is given up STALL_MS after the late file's last byte (K-3, as designed); a zoom afterwards adds names
+  (56); 0 problems.
+- **The late toggle by trusted input** (`s/r2_live.js`, Europe z5, the other file at 3,000 B/s): desktop clicks and phone
+  taps (375x812), Borders and City names: the new row's file asked at the click, drawn and credited 0.8 s later, the slow
+  row when its file lands (51.3 s / 116.6-117.3 s); each places file asked once in every run; 0 problems.
+- **F-3's path live** (`s/midbody.js` with DecompressionStream removed by an init script): a frame delivered in three
+  parts over 6 s asked once and decoded into the cache; one stopping after 40,000 B given up 5.0 s after its last byte,
+  three tries, then the cooldown.
+- Load order on a normal link unchanged (the first frame asked 651-746 ms after navigation, the places 1.5 s after the
+  load event and after `settled()`); console smoke on a fresh page target (UI 1.25.5): 0 errors, warnings or exceptions.
+- Afterwards both origins' storage was emptied, the browser stopped and its profile removed, the stand-in stopped by
+  PID, no harness process left.
+
+**Findings:** none.

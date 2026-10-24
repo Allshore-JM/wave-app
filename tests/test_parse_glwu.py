@@ -106,8 +106,9 @@ def test_the_station_list_and_the_map_carry_the_lake_stations(monkeypatch):
     monkeypatch.setattr(A, "stations_data_cache", None)
     lst = A.get_station_list()
     ids = [s for s, _ in lst]
-    assert ids[:734] == [str(s) for s in json.load(open(os.path.join(ROOT, "station_list.json"), encoding="utf-8"))]
-    assert ids[734:] == list(A.GLWU_STATIONS) and len(ids) == 806
+    listed = [str(s) for s in json.load(open(os.path.join(ROOT, "station_list.json"), encoding="utf-8"))]
+    assert ids[:len(listed)] == listed
+    assert ids[len(listed):] == list(A.GLWU_STATIONS) and len(ids) == len(listed) + 72
     assert dict(lst)["45007"] == A.GLWU_STATIONS["45007"]["name"], "the lake file's name, not NDBC's live text"
     data = {d["id"]: d for d in A.get_stations_data()}
     assert data["IndDunesNP"] == {"id": "IndDunesNP", "name": "Indiana Dunes National Park, IN", "lat": 41.63, "lon": -87.21}

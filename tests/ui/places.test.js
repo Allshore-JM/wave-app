@@ -1045,3 +1045,96 @@ test('V2-2: a kind asked for while the index is still loading starts its file ri
   f3.held.shift()(); await settle();
   assert.equal(done, true); assert.equal(st3.loading, null); assert.equal(st3.ok('l'), true);
 });
+
+// A fetch whose tier-0 files the test drives: answer() the headers, chunk(n) n bytes (all that is left without n), end();
+// an abort rejects the request, or the read in progress / the next one (as browsers do).
+function ctlFetch() {
+  const files = {}, asked = [];
+  const fetch = (url, init) => {
+    const name = url.split('/static/places/v1/')[1]; asked.push(name);
+    const a = TIER0[name];
+    if (a.json) return Promise.resolve({ ok: true, status: 200, headers: { get: () => '100' }, json: () => Promise.resolve(a.json) });
+    const u8 = new Uint8Array(a), f = files[name] = { aborted: false, sent: 0, waiting: null };
+    return new Promise((resolve, reject) => {
+      init.signal.addEventListener('abort', () => {
+        f.aborted = true; const e = new Error('aborted');
+        if (f.waiting) { const w = f.waiting; f.waiting = null; w.rej(e); } else reject(e);
+      }, { once: true });
+      f.answer = () => resolve({ ok: true, status: 200, headers: { get: () => String(u8.length) }, body: { getReader: () => ({
+        read: () => new Promise((res, rej) => { if (f.aborted) rej(new Error('aborted')); else f.waiting = { res, rej }; }), cancel() {} }) } });
+      f.chunk = (n) => {
+        const w = f.waiting; f.waiting = null;
+        const part = u8.subarray(f.sent, n == null ? u8.length : Math.min(u8.length, f.sent + n)); f.sent += part.length;
+        w.res({ done: false, value: part });
+      };
+      f.end = () => { const w = f.waiting; f.waiting = null; w.res({ done: true }); };
+    });
+  };
+  return { fetch, files, asked };
+}
+
+test('fix check F-1: a file joining a load restarts its stall timer: turned on just before the other file\'s 15-s silence runs out, it still loads; the silent file is given up STALL_MS after the late file\'s last byte', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const c = ctlFetch(), st = new I.PlacesStore(BASE, c.fetch);
+  const loading = st.load(['l']); await settle();
+  const lf = c.files['world-lines.bin']; lf.answer(); await settle(); lf.chunk(10); await settle();   // headers + 10 B, then nothing
+  t.mock.timers.tick(I.STALL_MS - 200); await settle();
+  assert.equal(st.load(['l', 'p']), loading, 'within the load in progress'); await settle();
+  assert.deepEqual(c.asked, ['index.json', 'world-lines.bin', 'world-places.bin']);
+  t.mock.timers.tick(300); await settle();                                    // past the silent file's first deadline
+  const pf = c.files['world-places.bin'];
+  assert.equal(pf.aborted, false, 'the late file keeps a full STALL_MS for its first byte'); assert.equal(lf.aborted, false);
+  pf.answer(); await settle(); pf.chunk(); await settle(); pf.end(); await settle();
+  assert.equal(st.ok('p'), true); assert.notEqual(st.loading, null, 'the silent lines file still in the load');
+  t.mock.timers.tick(I.STALL_MS); await settle();
+  assert.equal(lf.aborted, true); assert.equal(st.unit.l.status, 'failed');
+  assert.equal(await loading, st); assert.equal(st.loading, null);
+});
+
+test('fix check F-2: a file added to a load runs under its abort and its stall timer: silent, it is given up and the load settles; moving, it keeps the load alive and lands; a kind inside its cooldown is not asked until the cooldown is over', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  // (b) the added file goes silent after its first chunk; the lines file finishes: the places file is given up by the
+  // load's timer STALL_MS after the last byte of either file, and the load settles (no load left in progress forever)
+  {
+    const c = ctlFetch(), st = new I.PlacesStore(BASE, c.fetch), loading = st.load(['l']); await settle();
+    const lf = c.files['world-lines.bin']; lf.answer(); await settle(); lf.chunk(10); await settle();
+    st.load(['l', 'p']); await settle();
+    const pf = c.files['world-places.bin']; pf.answer(); await settle(); pf.chunk(10); await settle();   // then nothing
+    lf.chunk(); await settle(); lf.end(); await settle();
+    assert.equal(st.ok('l'), true); assert.notEqual(st.loading, null);
+    t.mock.timers.tick(I.STALL_MS); await settle();
+    assert.equal(pf.aborted, true, 'the added file is under the load\'s abort'); assert.equal(st.unit.p.status, 'failed');
+    assert.equal(st.loading, null, 'the load settled'); assert.equal(await loading, st);
+  }
+  // (c) the lines file silent, the added places file moving (a chunk every 10 s for 40 s): its bytes keep the shared timer
+  // alive, it lands; the silent lines file is given up STALL_MS after the places file's last byte (K-3)
+  {
+    const c = ctlFetch(), st = new I.PlacesStore(BASE, c.fetch), loading = st.load(['l']); await settle();
+    const lf = c.files['world-lines.bin']; lf.answer(); await settle(); lf.chunk(10); await settle();
+    st.load(['l', 'p']); await settle();
+    const pf = c.files['world-places.bin']; pf.answer(); await settle();
+    for (let i = 0; i < 4; i++) { t.mock.timers.tick(10000); await settle(); assert.equal(pf.aborted, false, 'moving: never cut (' + i + ')'); pf.chunk(10); await settle(); }
+    pf.chunk(); await settle(); pf.end(); await settle();
+    assert.equal(st.ok('p'), true); assert.equal(lf.aborted, false);
+    t.mock.timers.tick(I.STALL_MS); await settle();
+    assert.equal(lf.aborted, true); assert.equal(st.unit.l.status, 'failed'); assert.equal(await loading, st);
+  }
+  // (a) the places unit inside its 60-s cooldown: a load issued while the lines file loads does not ask it; one issued
+  // after the cooldown (the lines file still moving, the same load) asks it once
+  {
+    const c = ctlFetch(), st = new I.PlacesStore(BASE, c.fetch);
+    st.unit.p.status = 'failed'; st.unit.p.failedAt = Date.now();
+    const loading = st.load(['l', 'p']); await settle();
+    const lf = c.files['world-lines.bin']; lf.answer(); await settle(); lf.chunk(10); await settle();
+    assert.deepEqual(c.asked, ['index.json', 'world-lines.bin'], 'the places file sits out its cooldown');
+    st.load(['l', 'p']); await settle();
+    assert.deepEqual(c.asked, ['index.json', 'world-lines.bin'], 'not asked by a load in progress either');
+    for (let i = 0; i < 7; i++) { t.mock.timers.tick(10000); await settle(); lf.chunk(10); await settle(); }   // 70 s, the lines still moving
+    assert.equal(st.load(['l', 'p']), loading, 'the same load'); await settle();
+    assert.deepEqual(c.asked, ['index.json', 'world-lines.bin', 'world-places.bin'], 'asked once the cooldown is over');
+    st.load(['l', 'p']); await settle(); assert.equal(c.asked.length, 3, 'once');
+    const pf = c.files['world-places.bin']; pf.answer(); await settle(); pf.chunk(); await settle(); pf.end(); await settle();
+    lf.chunk(); await settle(); lf.end(); await settle();
+    assert.equal(await loading, st); assert.equal(st.ok('l') && st.ok('p'), true);
+  }
+});

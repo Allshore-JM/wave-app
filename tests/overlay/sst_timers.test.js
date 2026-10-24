@@ -295,7 +295,7 @@ function fakeFetch(buf, log) {
     return { ok: true, status: 200, headers: resp.headers, get body() { log.push('body'); return resp.body; }, arrayBuffer: () => { log.push('arrayBuffer'); return resp.arrayBuffer(); }, blob: () => { log.push('blob'); return resp.blob(); } };
   };
 }
-test('decodeFrame: the model frames (no progress callback) read arrayBuffer() and never the stream; the SST path reads the stream, same codes', async () => {
+test('decodeFrame: a download with a progress callback (every model frame since 2.22.4, the SST store) reads the stream; a call without one (the retry after a dead worker) reads arrayBuffer(); the same codes', async () => {
   const P = png(64, 32, (x, y) => (x + y) % 200 + 1);
   const run = async (withProgress) => {
     const log = []; const J = loadOverlay(FILE, { fetch: fakeFetch(P, log) });
@@ -304,8 +304,37 @@ test('decodeFrame: the model frames (no progress callback) read arrayBuffer() an
     return { log, prog, q: Buffer.from(fr.q).toString('base64') };
   };
   const model = await run(false), sst = await run(true);
-  assert.deepEqual(model.log, ['fetch', 'arrayBuffer', 'onBody'], 'the frames path as before the fix round');
+  assert.deepEqual(model.log, ['fetch', 'arrayBuffer', 'onBody'], 'without a progress callback: arrayBuffer()');
   assert.deepEqual(sst.log.slice(0, 2), ['fetch', 'body']); assert.ok(sst.prog >= 2); assert.equal(sst.q, model.q);
+});
+test('decodeFrame without DecompressionStream: a streamed frame body reaches the canvas decode as a Blob holding exactly its bytes, and decodes to the same codes (fix check F-3)', async () => {
+  const P = png(64, 32, (x, y) => (x * 3 + y) % 200 + 1);
+  const ref = await loadOverlay(FILE, { fetch: fakeFetch(P, []) }).decodeFrame('https://x/f.png', null, { cols: 64, rows: 32 }, null, false, () => {});
+  const seen = [];
+  const doc = { hidden: false, addEventListener() {}, removeEventListener() {},
+    createElement() {
+      let bmp = null;
+      return { width: 0, height: 0, getContext() {
+        return { clearRect() {}, drawImage(b) { bmp = b; },
+          getImageData(x, y, w, h) { const d = new Uint8ClampedArray(w * h * 4); for (let i = 0; i < w * h; i++) d[i * 4] = bmp.q[i]; return { data: d }; } };
+      } };
+    } };
+  const had = globalThis.createImageBitmap;
+  globalThis.createImageBitmap = async (blob) => {
+    seen.push(blob instanceof Blob);
+    const bytes = Buffer.from(await blob.arrayBuffer());
+    assert.ok(bytes.equals(Buffer.from(P)), 'the Blob holds the body as it arrived');
+    return { width: ref.cols, height: ref.rows, q: ref.q, close() {} };
+  };
+  try {
+    const log = [], J = loadOverlay(FILE, { fetch: fakeFetch(P, log), DecompressionStream: undefined, document: doc });
+    let prog = 0;
+    const fr = await J.decodeFrame('https://x/f.png', null, { cols: 64, rows: 32 }, () => log.push('onBody'), false, () => { prog++; });
+    assert.deepEqual(seen, [true], 'createImageBitmap got a Blob');
+    assert.ok(log.includes('body') && !log.includes('blob') && !log.includes('arrayBuffer'), JSON.stringify(log));
+    assert.ok(prog >= 2);
+    assert.equal(Buffer.from(fr.q).toString('base64'), Buffer.from(ref.q).toString('base64'));
+  } finally { if (had === undefined) delete globalThis.createImageBitmap; else globalThis.createImageBitmap = had; }
 });
 test('decodeFrame without DecompressionStream (older Safari / Firefox): the SST path still reports progress chunk by chunk (re-check RC-3)', async () => {
   const P = png(64, 32, (x, y) => (x + y) % 200 + 1), log = [];

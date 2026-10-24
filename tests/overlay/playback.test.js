@@ -73,6 +73,7 @@ function world(opts) {
       }
       w.fetches.push(url);
       if (o && o.signal && o.signal.aborted) return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      if (w.streams) { const sr = w.streams(url, o); if (sr) return Promise.resolve(sr); }   // a hand-made streamed answer (re-check R-1)
       if (/latest\.json$|manifest-x\.json$/.test(url)) (w.jsonSignals = w.jsonSignals || []).push({ url, signal: o && o.signal });   // re-check R-5
       if (/\/glwu\/v1\/latest\.json$/.test(url)) {                          // the lake run's pointer (plan section 50): none = no lake run
         if (!w.lakePointer) return Promise.resolve({ ok: false, status: 404 });
@@ -406,16 +407,14 @@ test('coast: the first draw waits for the coastlines, a failed coast load draws 
   o.mount('hs'); await settle();
   assert.equal(o.coast.status, 'loading');
   assert.equal(w.fetches.filter((u) => u.indexOf('/static/coast/') >= 0).length, 2);        // index + tier 0, beside latest.json/manifest/frame
+  assert.ok(w.fetches.some((u) => u.indexOf('/hs/') >= 0), 'the first frame is asked for beside the coastline (re-check R-1)');
   await w.release(1);                                                                          // the frame is decoded...
   assert.equal(o.layer._frame, null);                                                          // ...but not drawn: the coastlines are still loading
   while (w.pendingCoast.length) w.pendingCoast.shift()();
-  await settle();
+  for (let i = 0; i < 4 && !o.layer._frame; i++) await settle();
   assert.equal(o.coast.status, 'ok');
-  assert.equal(o.layer._coast, o.coast); assert.equal(o.layer._clip, false);                 // clipping is decided per drawn field
-  assert.equal(o.layer._frame, null);                                                          // the frame fetch starts only now
-  for (let i = 0; i < 4 && !w.pendingBitmaps.length; i++) await settle();
-  await w.release(1);
-  assert.ok(o.layer._frame && o.last.state === 'ready', JSON.stringify([!!o.layer._frame, o.last]));
+  assert.equal(o.layer._coast, o.coast);
+  assert.ok(o.layer._frame && o.last.state === 'ready', JSON.stringify([!!o.layer._frame, o.last]));   // drawn at once: the frame came beside it
   assert.equal(o.layer._clip, true);
   o.mount('wind'); await settle(); await w.releaseAll(); await settle();                     // wind: never clipped, no coast wait (ring prefetches are released too)
   assert.equal(o.layer._clip, false); assert.ok(o.layer._frame, JSON.stringify(o.last));
@@ -453,6 +452,123 @@ test('coast: the first draw waits for the coastlines, a failed coast load draws 
   assert.equal(o3.coast.status, 'loading');
   assert.equal(w3.fetches.filter((u) => u.indexOf('/static/coast/') >= 0).length, 4);
   o3.unmount();
+});
+
+test('re-check R-1: the first picture waits for the coastline at most COAST_FIRST_MS, then is drawn unclipped and clipped the moment the coastline lands; settled() waits for both; the note', async () => {
+  const w = world({ fakeTimers: true });
+  w.coastAnswer = coastOk;
+  w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create({ coast: true }), I = w.g.AllshoreOverlay._internals;
+  o.coast.timeoutMs = 60000;                                   // a slow but moving coastline (the harness sends no byte: the no-progress limit stands aside)
+  assert.equal(I.COAST_FIRST_MS, 15000);
+  let settled = null; o.settled().then((s) => { settled = s; });
+  o.mount('hs'); await settle();
+  assert.equal(o.coast.status, 'loading');
+  assert.ok(w.fetches.some((u) => u.indexOf('/hs/') >= 0), 'the frame is asked for at once, beside the coastline');
+  await w.release(1);
+  assert.equal(o.layer._frame, null, 'decoded but not drawn: the coastline is loading');
+  await w.fade(I.COAST_FIRST_MS - 1); await settle();
+  assert.equal(o.layer._frame, null, 'not before 15 s');
+  await w.fade(1); for (let i = 0; i < 4 && !o.layer._frame; i++) await settle();
+  assert.ok(o.layer._frame, 'drawn at 15 s'); assert.equal(o.layer._clip, false, 'unclipped'); assert.equal(o.last.state, 'ready');
+  assert.equal(o.layer._coast, null);
+  o._noteSettled('ready');                                     // (the harness stubs render: the call render('ready') makes)
+  await settle(); assert.equal(settled, null, 'settled() also waits for the coastline (the names do not take its line)');
+  assert.equal(I.coastNote(o.coast), 'Coastline still loading; the field is shown without coastline clipping until it arrives.');
+  let renders = 0; const r0 = o.render.bind(o); o.render = (st) => { renders++; return r0(st); };
+  while (w.pendingCoast.length) w.pendingCoast.shift()();
+  for (let i = 0; i < 4 && !o.layer._clip; i++) await settle();
+  assert.equal(o.coast.status, 'ok'); assert.equal(o.layer._coast, o.coast); assert.equal(o.layer._clip, true, 'clipped the moment it lands');
+  for (let i = 0; i < 4 && settled === null; i++) await settle();
+  assert.ok(renders >= 1, 'the panel follows (the note goes)'); assert.equal(settled, 'ready');
+  // the coastline given up after the unclipped draw: the warning says so
+  const w2 = world({ fakeTimers: true });
+  w2.coastAnswer = () => ({ ok: false, status: 503 });
+  w2.pointer = ptr(A); w2.manifests[A.run] = A;
+  const o2 = w2.create({ coast: true }); let s2 = null; o2.settled().then((s) => { s2 = s; });
+  o2.mount('hs'); await settle(); await w2.release(1);
+  await w2.fade(I.COAST_FIRST_MS); for (let i = 0; i < 4 && !o2.layer._frame; i++) await settle();
+  assert.ok(o2.layer._frame); assert.equal(o2.layer._clip, false);
+  o2._noteSettled('ready');
+  while (w2.pendingCoast.length) w2.pendingCoast.shift()();
+  for (let i = 0; i < 4 && s2 === null; i++) await settle();
+  assert.equal(o2.coast.status, 'failed'); assert.equal(o2.layer._clip, false); assert.equal(s2, 'ready');
+  assert.equal(I.coastNote(o2.coast), 'Coastline data could not be loaded; the field is shown without coastline clipping.');
+  // a coastline landing before 15 s: drawn clipped at once, no unclipped picture first
+  const w3 = world({ fakeTimers: true });
+  w3.coastAnswer = coastOk;
+  w3.pointer = ptr(A); w3.manifests[A.run] = A;
+  const o3 = w3.create({ coast: true }); o3.coast.timeoutMs = 60000;
+  o3.mount('hs'); await settle(); await w3.release(1);
+  await w3.fade(5000); await settle(); assert.equal(o3.layer._frame, null);
+  while (w3.pendingCoast.length) w3.pendingCoast.shift()();
+  for (let i = 0; i < 4 && !o3.layer._frame; i++) await settle();
+  assert.ok(o3.layer._frame); assert.equal(o3.layer._clip, true, 'the first picture is the clipped one');
+  // a field switch to wind during the wait: no wait, and the coastline joins as outlines when it lands
+  const w4 = world({ fakeTimers: true });
+  w4.coastAnswer = coastOk;
+  w4.pointer = ptr(A); w4.manifests[A.run] = A;
+  const o4 = w4.create({ coast: true }); o4.coast.timeoutMs = 60000;
+  o4.mount('hs'); await settle();
+  o4.mount('wind'); await settle(); await w4.releaseAll(); for (let i = 0; i < 4 && !o4.layer._frame; i++) await settle();
+  assert.ok(o4.layer._frame, 'wind never waits'); assert.equal(o4.layer._clip, false);
+  await w4.fade(I.COAST_FIRST_MS); await settle();
+  assert.equal(o4.field, 'wind', 'the old wait drew nothing of hs');
+  while (w4.pendingCoast.length) w4.pendingCoast.shift()();
+  for (let i = 0; i < 4 && o4.layer._coast !== o4.coast; i++) await settle();
+  assert.equal(o4.layer._coast, o4.coast, 'the coastline joins the wind (outlines)'); assert.equal(o4.layer._clip, false);
+  o4.unmount(); o.unmount(); o2.unmount(); o3.unmount();
+});
+
+// a streamed answer read chunk by chunk at the test's command; like a real fetch, an abort errors the body
+function stream(o, reads) {
+  const aborted = (rej) => { if (o && o.signal) o.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))); };
+  const never = () => new Promise((res, rej) => aborted(rej));
+  return { ok: true, status: 200, headers: { get: () => null }, blob: never, arrayBuffer: never,
+    body: { getReader: () => ({ read: () => new Promise((res, rej) => { reads.push(res); aborted(rej); }), cancel() {} }) } };
+}
+test('re-check R-1: the first frame of a mount gives up only after STALL_MS with no byte arriving (it shares a slow link with the coastline); a later frame keeps the total limit (section 41)', async () => {
+  const w = world({ fakeTimers: true });
+  w.pointer = ptr(A); w.manifests[A.run] = A;
+  const reads = [];
+  w.streams = (url, o) => (url.indexOf('/hs/') >= 0 ? stream(o, reads) : null);
+  const o = w.create();
+  o.mount('hs'); await settle();
+  const first = w.fetches.filter((u) => u.indexOf('/hs/') >= 0);
+  assert.equal(first.length, 1, 'one first frame asked');
+  for (let t = 0; t < 4; t++) { await w.fade(4000); while (reads.length) reads.shift()({ done: false, value: new Uint8Array(10) }); await settle(); }
+  assert.equal(w.fetches.filter((u) => u === first[0]).length, 1, '16 s of a slow but moving download: never asked again');
+  await w.fade(5000); await settle();
+  assert.equal(w.fetches.filter((u) => u === first[0]).length, 2, 'no byte for STALL_MS: asked again');
+  o.unmount();
+  // a later frame (a picture on the map): the whole download within the limit, as before (section 41's late frames)
+  const w2 = world({ fakeTimers: true });
+  w2.pointer = ptr(A); w2.manifests[A.run] = A;
+  const o2 = w2.create();
+  o2.mount('hs'); await settle(); await w2.release(1); await settle();
+  assert.ok(o2.layer._frame, 'the first picture');
+  const reads2 = [];
+  w2.streams = (url, o) => (url.indexOf('/hs/') >= 0 ? stream(o, reads2) : null);
+  const far = (o2.frameIndex + Math.floor(o2.n / 2)) % o2.n, before = w2.fetches.length;   // a frame outside the (looping) ring
+  o2.seek(far); await settle();
+  const u = w2.fetches.slice(before).filter((x) => x.indexOf('/hs/') >= 0)[0];
+  assert.ok(u, 'the far frame asked for');
+  const n0 = w2.fetches.filter((x) => x === u).length;
+  await w2.fade(4000); while (reads2.length) reads2.shift()({ done: false, value: new Uint8Array(10) }); await settle();
+  await w2.fade(1500); await settle();
+  assert.equal(w2.fetches.filter((x) => x === u).length, n0 + 1, 'past the limit in all: asked again although bytes came');
+  o2.unmount();
+});
+
+test('re-check R-4: a coastline load whose index fails stops its tier-0 download at once (Off could not stop it any more)', async () => {
+  const w = world();
+  const idxUrl = 'https://x/static/coast/v1/index.json', binUrl = 'https://x/static/coast/v1/world-i.bin';
+  w.failNext[idxUrl] = 503; w.hang[binUrl] = 1;
+  const o = w.create({ coast: true });
+  const p = o.coast.load(); const st = await p;
+  assert.equal(st, null); assert.equal(o.coast.status, 'failed');
+  assert.equal(w.hung.length, 1); assert.equal(w.hung[0].url, binUrl);
+  assert.equal(w.hung[0].signal.aborted, true, 'the tier-0 download is stopped with the failed load');
 });
 
 test('coast: a download that hangs past the watchdog fails the coast load; the frame draws unclipped with the store failed', async () => {

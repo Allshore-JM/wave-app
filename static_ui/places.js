@@ -43,7 +43,8 @@
   var MAX_CELL_BYTES_KEPT = 6 << 20;                 // decoded cells kept, by their decoded size (a cell the view uses stays)
   var MAX_INFLIGHT = 2;
   var STALL_MS = 15000, RETRY_MS = 60000, START_DELAY_MS = 1500;   // STALL_MS: no byte for this long gives a download up
-  var WAIT_MAX_MS = 30000;                           // the longest the first download waits for the overlay (G34 B-6)
+  var WAIT_MAX_MS = 120000;                          // the longest the first download waits for the overlay's first picture and its
+                                                     // coastline (G34 B-6; 120 s: owner, re-check R-1)
   var WIDTH_CACHE_MAX = 8000;                        // measured name widths kept (the cache starts again beyond)
   // the lines' look: [halo width, halo colour, core width, core colour, dash] per kind (CSS px)
   var STYLE = {};
@@ -138,7 +139,9 @@
     if (!(q === 1000 || q === 10000) || !(cell >= 1 && cell <= 90) || count > 1e6 || PLACES_HEADER + nstream > buf.byteLength) throw new Error('places-v1: bad header');
     var vals = new Float64Array(nstream), n = readVarints(u8, PLACES_HEADER, PLACES_HEADER + nstream, vals);
     if (n !== 6 * count) throw new Error('places-v1: counts do not match the stream');
-    var text = new TextDecoder('utf-8', { fatal: true }).decode(u8.subarray(PLACES_HEADER + nstream));
+    var text;
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(u8.subarray(PLACES_HEADER + nstream)); }
+    catch (e) { throw new Error('places-v1: names are not UTF-8'); }    // a damaged file is final, never asked again (re-check R-5)
     var names = count ? text.split('\n') : (text === '' ? [] : null);
     if (!names || names.length !== count) throw new Error('places-v1: names do not match the count');
     var lat = new Float64Array(count), lon = new Float64Array(count), rank = new Uint8Array(count), mz = new Uint8Array(count), pop = new Float64Array(count), flags = new Uint8Array(count);
@@ -214,7 +217,7 @@
     this.status = 'idle'; this.index = null; this.lines0 = null; this.places0 = null; this.loading = null; this.failedAt = 0;
     this.unit = { l: { status: 'idle', failedAt: 0 }, p: { status: 'idle', failedAt: 0 } };
     this.cells = new Map(); this.bytes = 0; this.inflight = {}; this.failed = {}; this.queue = []; this.view = 0;
-    this.rev = 0; this.onChange = null; this.abort = null; this.retryTimer = null;
+    this.rev = 0; this.onChange = null; this.onUnit = null; this.abort = null; this.retryTimer = null;
   }
   // A kind's tier 0 is usable.
   PlacesStore.prototype.ok = function (kind) { return this.status === 'ok' && !!this.unit[kind] && this.unit[kind].status === 'ok'; };
@@ -242,11 +245,11 @@
   // is usable); never rejects. One stall timer for the load: it fires only after STALL_MS with no byte arriving (a slow
   // but moving link is not given up: G34 B-6 / F-A6). After a failure the index, or a unit, answers null for RETRY_MS;
   // a load after that asks for it again.
-  PlacesStore.prototype.load = function () {
-    var self = this, now = Date.now();
+  PlacesStore.prototype.load = function (kinds) {
+    var self = this, now = Date.now(), want = kinds || ['l', 'p'];
     if (this.loading) return this.loading;
     if (this.status === 'failed' && now - this.failedAt < RETRY_MS) return Promise.resolve(null);
-    var need = ['l', 'p'].filter(function (k) { var u = self.unit[k]; return u.status !== 'ok' && !(u.status === 'failed' && now - u.failedAt < RETRY_MS); });
+    var need = ['l', 'p'].filter(function (k) { var u = self.unit[k]; return want.indexOf(k) >= 0 && u.status !== 'ok' && !(u.status === 'failed' && now - u.failedAt < RETRY_MS); });
     if (this.status === 'ok' && !need.length) return Promise.resolve(this.ok('l') || this.ok('p') ? this : null);
     if (this.status !== 'ok') this.status = 'loading';
     need.forEach(function (k) { self.unit[k].status = 'loading'; });
@@ -265,6 +268,7 @@
           var data = k === 'l' ? decodeLines(b) : decodePlaces(b);
           if (k === 'l') self.lines0 = data; else self.places0 = data;
           u.status = 'ok'; self.rev++;
+          if (self.onUnit) self.onUnit(k);                  // drawn and credited as it lands (re-check R-2)
         }).catch(function () { u.status = 'failed'; u.failedAt = Date.now(); });
       }));
     }).then(function () {
@@ -620,7 +624,7 @@
       return out;
     }
     function update() {
-      if (!on.places || !store || !store.ok('p')) { box.hidden = true; labelsComplete = true; return; }
+      if (!on.places || !store || !store.ok('p')) { box.hidden = true; labelsComplete = !(on.places && store && store.unit.p.status === 'loading'); return; }
       if (!probed) probeFont();
       box.hidden = false;
       var zoom = map.getZoom(), z = Math.round(zoom), zoom10 = Math.floor(zoom * 10 + 1e-6), size = map.getSize(), b = map.getBounds();
@@ -647,6 +651,12 @@
     var frame = null;
     function schedule() { if (frame !== null) return; frame = (root.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () { frame = null; update(); }); }
     if (store) store.onChange = function () { redraw(true); if (!labelsComplete) schedule(); };
+    // a tier-0 file that lands is drawn and credited at once, without waiting for the other one (re-check R-2); the names
+    // not during a zoom (their box is hidden: the zoom's end lays them out)
+    if (store) store.onUnit = function (kind) {
+      credits();
+      if (kind === 'l') redraw(false); else if (!map._animatingZoom) update();
+    };
     // What moves the space the names may use lays them out again (V7-1, G34 B-1 / B-2): a map control or the overlay's
     // sheet changing size, the sheet or a map tool's fan or labels coming or going, a floating window or a control's
     // panel opening, closing, moving or changing size. A sheet that goes is let go by the observer (G34 F-A4).
@@ -694,8 +704,13 @@
       if (!on.borders && map.hasLayer(layer)) map.removeLayer(layer);
       if (!any && store) store.idle();
       credits();
-      if (wanted() && !store.loading && !(store.ok('l') && store.ok('p'))) store.load().then(function (s) { if (s) { credits(); redraw(false); update(); } });   // one redraw per load
+      // only the files of the kinds that are on (Borders off downloads no lines: re-check R-2); each draws as it lands
+      if (wanted() && !store.loading && units().some(function (k) { return !store.ok(k); })) store.load(units()).then(function () {
+        credits();
+        if (store.status === 'ok' && units().some(function (k) { return store.unit[k].status === 'idle'; })) sync();   // a kind turned on meanwhile
+      });
     }
+    function units() { var u = []; if (on.borders) u.push('l'); if (on.places) u.push('p'); return u; }
     function set(kind, v) {
       if (!Object.prototype.hasOwnProperty.call(KEYS, kind)) return;
       on[kind] = !!v; writeOn(storage, KEYS[kind], on[kind]);
@@ -712,7 +727,8 @@
     };
     whenReady(function () { started = true; sync(); });
     sync();
-    return { on: function (kind) { return !!on[kind]; }, set: set, layer: layer, labels: box, store: store, redraw: redraw, update: update, wanted: wanted, textWidth: textWidth };
+    return { on: function (kind) { return !!on[kind]; }, set: set, layer: layer, labels: box, store: store, redraw: redraw, update: update, wanted: wanted, textWidth: textWidth,
+             fontUsed: function () { return font; } };
   }
 
   root.AllshorePlaces = {

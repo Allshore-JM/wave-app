@@ -338,6 +338,8 @@
   var MAX_COAST_INFLIGHT = 2;
   var MIN_PIECE_PX = 0.5;                                  // a piece smaller than this in both directions is not drawn
   var COAST_RETRY_MS = 60 * 1000;
+  var COAST_FIRST_MS = 15000;                           // the first picture waits for the coastline at most this long; then it is drawn
+                                                        // unclipped and clipped when the coastline lands (owner, G34 re-check R-1)
   // World pixel coordinates at zoom 0 (0..256), lat clamped to the Mercator limit.
   function worldXY(lon, lat) {
     var s = Math.sin(Math.max(-MAX_LAT, Math.min(MAX_LAT, lat)) * Math.PI / 180);
@@ -728,8 +730,8 @@
     if (this.loading) return this.loading;
     if (this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
     this.status = 'loading';
-    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null, ms = this.timeoutMs;
-    var arm = function () { clearTimeout(watchdog); watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, ms); };
+    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null, ms = this.timeoutMs, over = false;
+    var arm = function () { if (over) return; clearTimeout(watchdog); watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, ms); };
     arm();
     this.loading = Promise.all([
       fetch(base + '/index.json', { signal: sig, mode: 'cors' }).then(function (r) {
@@ -746,7 +748,7 @@
         return r.arrayBuffer();
       })
     ]).then(function (res) {
-      clearTimeout(watchdog);
+      over = true; clearTimeout(watchdog);
       if (self.loadAbort !== ctrl || sig.aborted) throw abortError();     // aborted or superseded: this load owns nothing any more
       var idx = res[0];
       if (!validCoastIndex(idx) || (typeof idx.tier0.file === 'string' && idx.tier0.file !== self.file)) throw new Error('unsupported coast index');
@@ -754,16 +756,22 @@
       self.status = 'ok'; self.loading = null; self.loadAbort = null;
       return self;
     }).catch(function () {
-      clearTimeout(watchdog);
+      over = true; clearTimeout(watchdog);
       if (self.loadAbort === ctrl) {
         self.loading = null; self.loadAbort = null;
         self.status = sig.aborted && !timedOut ? 'idle' : 'failed';
         if (self.status === 'failed') self.failedAt = Date.now();
       }
+      ctrl.abort();                                        // the other file stops too (its index failed: re-check R-4)
       return null;
     });
     return this.loading;
   };
+  // The panel's note for a clipped field drawn without its coastline: still loading (re-check R-1), or given up.
+  function coastNote(store) {
+    return store && store.status === 'loading' ? 'Coastline still loading; the field is shown without coastline clipping until it arrives.'
+      : 'Coastline data could not be loaded; the field is shown without coastline clipping.';
+  }
   CoastStore.prototype.tier1Zoom = function (z) { return this.status === 'ok' && this.hasTier1 && z > this.index.tier0.max_zoom; };
   // The decoded sets a tile should be rasterised from, and whether they are the final ones. Missing
   // tier-1 chunks are requested; until they land the tile uses tier 0 (complete: false). A cell the
@@ -4018,18 +4026,24 @@
       self.layer.setCoast(store);
       if (self.layer.hasFrame()) self._attribute();
     }, function () {});
+    var idx = null, resume = false;
     this._loadManifest(sig).then(function (m) {
       if (!m.fields[fieldName] || !RAMPS[fieldName]) throw new Error('layer "' + fieldName + '" is not in this run');
-      return (waitCoast ? coastP : Promise.resolve(undefined)).then(function (store) { return [m, store]; });
+      if (sig.aborted || !self.layer) throw abortError();
+      self.n = m.frames.length;
+      var rIdx = prevValid === null && st ? restoreIndex(m, st, Date.now()) : null;
+      idx = prevValid === null ? (carry ? nearestIndex(m, carry.t) : rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(keep, self.n - 1) : nearestIndex(m, prevValid);
+      resume = carry ? carry.playing : rIdx !== null && st.playing === true;
+      self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
+      if (!waitCoast) return [m, undefined];
+      // the first frame downloads beside the coastline; the first draw waits for the coastline at most COAST_FIRST_MS
+      // (owner, G34 re-check R-1: on a slow link the waves come unclipped, then clipped when the coastline lands)
+      self._ensure(idx).catch(function () {});
+      return self._coastFirst(coastP).then(function (store) { return [m, store]; });
     }).then(function (ms) {
       var m = ms[0], store = ms[1];
       if (sig.aborted || !self.layer) throw abortError();
       if (store !== undefined && self.layer._coast !== (store || null)) self.layer.setCoast(store);
-      self.n = m.frames.length;
-      var rIdx = prevValid === null && st ? restoreIndex(m, st, Date.now()) : null;
-      var idx = prevValid === null ? (carry ? nearestIndex(m, carry.t) : rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(keep, self.n - 1) : nearestIndex(m, prevValid);
-      var resume = carry ? carry.playing : rIdx !== null && st.playing === true;
-      self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
       self._ensureFlow();
       self._ensureIso();
       self._loadLakes(m);
@@ -4091,11 +4105,12 @@
     if (!this.sst) { this._fail(sig, new Error('sea surface temperature is not offered')); return; }
     this.render({ state: 'loading' });
     var coastP = this.coast ? this.coast.load() : Promise.resolve(null);
-    Promise.all([this.sst.load(true), coastP]).then(function (res) {      // a viewer's pick or Retry: no cooldown (G31-2)
+    Promise.all([this.sst.load(true), this._coastFirst(coastP)]).then(function (res) {      // a viewer's pick or Retry: no cooldown (G31-2); the
+                                                                         // coastline waited for at most COAST_FIRST_MS (re-check R-1)
       var st = res[0], coast = res[1];
       if (sig.aborted || self.field !== 'sst' || self.mode !== 'obs' || !self.layer) throw abortError();
       if (!st) throw new Error('sea surface temperature cannot be loaded right now');
-      if (self.layer._coast !== (coast || null)) self.layer.setCoast(coast);
+      if (coast !== undefined && self.layer._coast !== (coast || null)) self.layer.setCoast(coast);
       self.layer.setSource(st, true);
       self.layer.setContours(self.contours ? self._contourCfg() : null, true);
       self.layer.setFrame(st.frame, st.grid, 'sst', SST_FDEF, self._sstLut(), null);
@@ -4365,12 +4380,16 @@
     // The watchdog times the DOWNLOAD only (until the body has arrived): a decode that waits behind a busy page
     // (fast playback on a large screen) is late, never missing. A download that stalls (one took 6.5 s at G4) is
     // asked again at once, LATE_TRIES times in all; only then does it count as a failure ("frame stalled").
+    // The first picture of a mount (nothing on the map yet) downloads beside the coastline on a slow link: its watchdog
+    // counts only the time with no byte arriving, so a slow but moving download goes on (re-check R-1).
+    var patient = kind === 'field' && !(this.layer && this.layer.hasFrame());
     function attempt(n) {
-      var inner = new AbortController(), stalled = false, onOuter = function () { inner.abort(); };
+      var inner = new AbortController(), stalled = false, onOuter = function () { inner.abort(); }, limit = Math.max(STALL_MS, 4 * self._interval());
       ctrl.signal.addEventListener('abort', onOuter);
-      var watchdog = setTimeout(function () { stalled = true; inner.abort(); }, Math.max(STALL_MS, 4 * self._interval()));
+      var stall = function () { stalled = true; inner.abort(); }, watchdog = setTimeout(stall, limit);
       function done() { clearTimeout(watchdog); ctrl.signal.removeEventListener('abort', onOuter); }
-      return decodeFrame(url, inner.signal, grid, function () { clearTimeout(watchdog); }).then(function (frame) {
+      var progress = patient ? function () { clearTimeout(watchdog); watchdog = setTimeout(stall, limit); } : undefined;
+      return decodeFrame(url, inner.signal, grid, function () { clearTimeout(watchdog); }, false, progress).then(function (frame) {
         done();
         if (lake) { try { validateLakeGrid(grid, frame); } catch (e) { throw new Error('frame decode failed: ' + e.message); } }   // (a 'decode' failure: permanent)
         return frame;
@@ -5754,6 +5773,30 @@
     var self = this;
     return this._settledP || (this._settledP = new Promise(function (res) { self._settleFn = res; }));
   };
+  // The first draw of a clipped field waits for the coastline at most COAST_FIRST_MS (owner, G34 re-check R-1). Resolves
+  // to the store, to null (given up), or to undefined: still loading, the field is drawn unclipped with a note and
+  // _coastLate clips it the moment the coastline lands (the download goes on: only 15 s with no byte gives it up).
+  Overlay.prototype._coastFirst = function (coastP) {
+    var self = this;
+    if (!this.coast || this.coast.status !== 'loading') return coastP;
+    return new Promise(function (res) {
+      var timer = setTimeout(function () { timer = null; res(undefined); self._coastLate(coastP); }, COAST_FIRST_MS);
+      coastP.then(function (store) { if (timer === null) return; clearTimeout(timer); timer = null; res(store); });
+    });
+  };
+  // A coastline that lands after the first picture: the clipped or outlined field on the map takes it, and the panel's
+  // note follows (gone, or "could not be loaded"). Not tied to one mount: whatever is shown when it lands takes it.
+  Overlay.prototype._coastLate = function (coastP) {
+    var self = this;
+    coastP.then(function (store) {
+      if (!self.layer || !self.field) return;
+      if (store && self.layer._coast !== store && (CLIP_FIELDS[self.field] || OUTLINE_FIELDS[self.field])) {
+        self.layer.setCoast(store);
+        if (self.layer.hasFrame()) self._attribute();
+      }
+      if (self.last && self.last.state === 'ready') self.render(self.last);
+    });
+  };
   Overlay.prototype._noteSettled = function (state) {
     if (this._settledNoted) return;
     this._settledNoted = true;
@@ -5873,7 +5916,7 @@
     }
     var unavail = mk('div', 'ov-warn'); unavail.hidden = true; body.appendChild(unavail); ui.unavail = unavail;
     var clipped = !!this.layer._clip;
-    if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
+    if (CLIP_FIELDS[field] && this.coast && !clipped) body.appendChild(mk('div', 'ov-warn', coastNote(this.coast)));
     if (OV_DEBUG) { ui.debug = mk('pre', 'ov-debug'); body.appendChild(ui.debug); this._debugOn(); }
     // (no settings row: fixed opacity, contours and the animation always on; owner, 2026-09-26)
     this._syncUI();
@@ -5967,7 +6010,7 @@
     var dl = mk('div', 'ov-meta ov-day'); dl.appendChild(mk('b', null, 'Day: ')); dl.appendChild(document.createTextNode(dayText + ' (daily analysis)'));
     body.appendChild(dl);
     if (this._sstStale) body.appendChild(mk('div', 'ov-warn', 'Sea surface temperature data is ' + Math.floor(age) + ' days old.'));
-    if (this.coast && !this.layer._clip) body.appendChild(mk('div', 'ov-warn', 'Coastline data could not be loaded; the field is shown without coastline clipping.'));
+    if (this.coast && !this.layer._clip) body.appendChild(mk('div', 'ov-warn', coastNote(this.coast)));
     if (OV_DEBUG) { this.ui.debug = mk('pre', 'ov-debug'); body.appendChild(this.ui.debug); this._debugOn(); }
     var ctl = compact ? host : (host.closest && host.closest('.ov-ctl')) || host, ctlTop = compact ? 0 : this._ctlTop(ctl);
     var spare = function () { return compact ? cap - host.offsetHeight - 2 : mapH - self._stackHeight() - 10 - ctlTop - ctl.offsetHeight - 8; };
@@ -6076,7 +6119,7 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { particleOpacityOf: particleOpacityOf, contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
+    _internals: { coastNote: coastNote, COAST_FIRST_MS: COAST_FIRST_MS, particleOpacityOf: particleOpacityOf, contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
       CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, SCALES: SCALES, scaleFor: scaleFor, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,

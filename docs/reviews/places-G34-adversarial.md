@@ -718,3 +718,80 @@ Owner awareness (no change proposed):
   returns exactly when it closes.
 - On links slower than about 40 KB/s the 30-s cap starts the places while the overlay's coastline is still loading; both
   still complete (measured at 30 KB/s: the coastline and the names by ~84 s).
+
+## Re-check of the fix round (2026-10-24, Opus 5.5 MAX, one fresh reviewer)
+One fresh-context reviewer (code `git diff 44ce96a..431a139` + the test site @ 5f5cf12 with trusted input; brief and
+report in scratch `g34/recheck/`). **0 P0, 0 P1, 1 P2, 5 P3.**
+
+### What held
+- C1 the wait chain in every path (code read; live on a normal link: SST, ECMWF wave height and wind restored, a field no
+  longer offered, Off saved, a switch to period and Off during the wait): the places' index at load + 1,502-1,512 ms every
+  time; the 30-s cap fires at load + 31.5 s; `settleFirst` idempotent.
+- C2: a coastline with no byte for 15 s is still given up (16.1 s, as production); places requests at priority Low, the
+  overlay's at High.
+- C3 / C4: 35 views at 1920x1080 and 35 on the phone, 0 overlapping / cut / covered / partial names; the forecast window
+  expanded, resized and minimised: none under it, the same set back; phone playback (sheet up, shark, wave height and
+  wind): 0 label writes, 0 ResizeObserver callbacks.
+- C5 the ring's look; C6 one 24,000-px drag at Paris z9: 9 cells, 2.1 MB decoded, the final view's cells in 0.5 s; C9 at a
+  24-px minimum font: widths exact, 0 glyph overlaps; C10 F-A1 fuzz (4,000 hostile headers refused in < 0.35 ms), F-A2
+  truncations refused, F-A3 / F-A4 live; C11 pytest 1,298 and Node 964 / 964.
+
+### Findings
+- **R-1 (P2) on a slow link the first wave picture waits for the whole coastline.** `mount` requests the first frame only
+  after `coastP` resolves (overlay.js ~4021-4045; `_mountObs` likewise); before G34 the coastline was given up after 15 s in
+  all and the picture came unclipped with the warning; with the patient coastline it comes after the whole 1.33 MB, and
+  never while the file trickles. Below ~44 KB/s the places' 30-s cap starts the places on the same link. First wave
+  picture, phone, DevTools throttling with 150-ms latency, test (clipped) / production (unclipped + warning): 60 KB/s 34.0 /
+  26.7 s (+7.3); 45 KB/s 48.8, 49.1 / 30.5, 30.1 s (+18.6); 30 KB/s 82.9, 83.0 / 37.3, 37.2 s (+45.7; the cap costs ~17 s,
+  the names before the picture); the coastline alone at 150 B/s: no picture at 121 s / 16.1 s. Caveat: DevTools throttling
+  ignores request priority.
+- **R-2 (P3) the author's V9-1 fix is not enough, and the wait reaches Borders-off users.** `update()` sets
+  `labelsComplete = true` while the places are not usable (places.js ~623), so an `onChange` per unit lays nothing out;
+  with the places file held it would draw borders without their credit; it breaks the pin at tests/ui/places.test.js ~336.
+  Live: world-lines.bin at 2 KB/s held the names for 150 s although the places file landed at 4.7 s; with Borders OFF the
+  lines file is still downloaded (`need` ignores which kinds are on, places.js ~249) and still holds the names.
+- **R-3 (P3, owner awareness) a no-reading ring looks the same hollow or not.** `.wind-none .wind-ring` (index.html ~533)
+  overrides the hollow look; `.wind-hollow.wind-none` keeps `pointer-events: none`: one ring opens the wind window, an
+  identical one beside a forecast point or a My point passes the tap to the dot (G28's rule). Rare (72 no-reading
+  stations, 9 hollow, 0 both in six views).
+- **R-4 (P3, pre-existing) the coastline's tier-0 download is not stopped when its index fails** (overlay.js ~734-764: the
+  catch clears the watchdog and `loadAbort` but never aborts; each chunk re-arms the timer; Off cannot stop it).
+- **R-5 (P3, pre-existing) a cell with invalid UTF-8 names is asked for again every 60 s** (the TextDecoder's TypeError
+  does not match the final-failure pattern, places.js ~351).
+- **R-6 (P3, tests) 26 of the reviewer's 49 mutants survive, 15 of them real gaps:** R33 the page never retrying a failed
+  unit; R19 / R20 / R21 the font probe after a resize, its line height, the width cache on a font change; R27 the panels
+  not watched; R12 a cell's stall timer not re-armed by its chunks; R7 / R8 / R5 the streamed byte caps; R2 the 1.5-s idle;
+  R39 `settleFirst` on an asset failure (survives pytest too); R43 / R44 the 15-s constants; R16 / R18 weakly asserted.
+- Outside the fix round (noted): two timing-sensitive tests (an SST store test, fan placement) failed once each under CPU
+  load; at a 24-px minimum font the overlay's own timeline ribbon is garbled (section 43's area).
+
+### Author's verification
+- R-1: confirmed in the code: `(waitCoast ? coastP : ...)` sits between the manifest and `_goto`, so the frame is not even
+  requested until the coastline lands; the author's own 17_slow data agree (30 KB/s: no picture at 76 s).
+- R-2: confirmed (`update()`'s early return sets `labelsComplete = true`; `onChange` schedules only when it is false;
+  `need` filters by status only). R-3: confirmed in the CSS (specificity: the later `.wind-none .wind-ring` sets the box,
+  border and shadow; `.wind-hollow.wind-none .wind-ring` only the background and pointer-events). R-4 and R-5: confirmed
+  in the code.
+
+### Owner's calls (2026-10-24, AskUserQuestion)
+- **R-1: "Draw at 15 s, clip later" (recommended).** The waves appear after at most ~15 s without the coast clip and with
+  a "Coastline still loading" note; the coastline keeps downloading and the picture is clipped the moment it lands; the
+  first frame downloads beside the coastline; the city names wait until the coastline is done or given up (at most 120 s).
+- **R-3: "Keep as is".** Both no-reading rings look the same (rare); recorded as owner awareness.
+
+### Fix round 2 scope (UI 1.25.3, overlay 2.22.3)
+1. **R-1:** in `mount` (and `_mountObs`) the first frame is requested as soon as the manifest is in; the first draw waits
+   for the coastline's tier 0 at most 15 s from the mount, then draws unclipped with the note; the coastline lands ->
+   `setCoast` + one redraw + the attribution, the note goes; it fails -> today's warning. The download stays patient (15 s
+   with no byte gives it up). `settled()` resolves when the first picture is drawn (or failed / Off) AND the coastline has
+   landed or been given up; the places' cap becomes 120 s. Tests with fake timers (the 15-s draw, the clip on landing, a
+   failure after the unclipped draw, a superseded mount, Off, a model / field switch, SST, settled's order, the cap).
+2. **R-2:** only the units of the kinds that are on are loaded (turning a kind on later loads its unit); each unit draws
+   and credits its own kind as it lands (names laid out even when the last layout found the places unusable), not while
+   a zoom animates; the pin at tests/ui/places.test.js ~336 updated; tests with each file held, both orders, Borders off.
+3. **R-4:** the catch aborts its own controller; `arm` does nothing once the load has settled; a test.
+4. **R-5:** `decodePlaces` turns a TextDecoder error into `places-v1: names are not UTF-8` (final); a test.
+5. **R-6:** pins for R33, R19, R20, R21, R27, R12, R7, R8, R5, R2, R39, R43, R44, R16, R18.
+6. Versions + fixtures; the golden only if the template changes (its own commit); README (the slow-link behaviour).
+7. Then the test site at MAX (the K-2 runs re-measured against production at 60 / 45 / 30 KB/s and the trickle; R-2 live:
+   one file held, Borders off), a short fresh check at MAX (the first-draw path changed), then step 10.

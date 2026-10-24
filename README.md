@@ -1396,7 +1396,7 @@ Windows: a station chip gives its subtitle up before the station's name. An expa
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
 
-## Location aids (plan section 51, UI asset 1.25.2, overlay asset 2.22.2)
+## Location aids (plan section 51, UI asset 1.25.3, overlay asset 2.22.3)
 
 Two rows in the settings gear, both on for a new visitor, each remembered in this browser (localStorage, "0" = off); the
 lakes' shores under wind are always drawn (owner, 2026-10-23: no row):
@@ -1417,16 +1417,19 @@ or the floating windows (the forecast, live-buoy, tide and wind windows, their b
 under 600 px wide), measured in the font they are drawn in (a browser's minimum font size included), hidden while
 zooming and rebuilt after a move or when any of those obstacles opens, closes, moves or changes size. The line layer is
 on the map only while Borders is on, and a tile with no line keeps a 1x1 canvas. Nothing is fetched before the page's
-load event (+ 1.5 s) and the overlay's first picture (drawn or failed, the coastline in or given up; at most 30 s), so
+load event (+ 1.5 s) and the overlay's first picture and its coastline (both drawn, in, failed or given up; at most 120 s), so
 on a slow phone link the overlay's coastline is not starved; nor while both rows are off, or below zoom 3 (2 for
 names). Every request asks for a low priority, and a download is given up only after 15 s with no byte arriving. The
 data comes from `static/places/v2/` beside the model frames (derived in the overlay's gated block), or from env
-`PLACES_BASE`: `index.json`, the world tier (`world-lines.bin`, `world-places.bin`, used to map zoom 7; two units, so
-one failing keeps the other) and 10-degree cells `c/<lat>_<lon>.l.bin` / `.p.bin` from zoom 8 (on demand, two at a
+`PLACES_BASE`: `index.json`, the world tier (`world-lines.bin`, `world-places.bin`, used to map zoom 7; only the file of
+a row that is on is fetched, each drawn and credited as it lands, and one failing keeps the other) and 10-degree cells `c/<lat>_<lon>.l.bin` / `.p.bin` from zoom 8 (on demand, two at a
 time, 6 MB of decoded data kept, never a cell the view uses); every file's length is checked against the index. The
 credits "Borders: Natural Earth" and "Places: GeoNames CC BY 4.0" join the map's (i) while their rows are on and their
 data has loaded. A wind station without a recent reading is drawn as a hollow grey ring, so it never reads as a town's
-dot (G34). The overlay's coastline loader follows the same stall rule (15 s with no byte, not 15 s in all).
+dot (G34). The overlay's coastline loader follows the same stall rule (15 s with no byte, not 15 s in all), and the first
+picture of wave height, period or SST waits for it at most 15 s: on a slower link the field is drawn without coastline
+clipping and a "Coastline still loading" note, and clipped the moment the coastline lands; its first frame downloads
+beside the coastline and is given up only after 5 s with no byte (the owner's call after the G34 re-check).
 Built and published by `tools/places/build_places.py` (coast-build workflow, `set: places`; `tools/places/README.md`).
 
 ## Wind stations (plan section 39, UI asset 1.22.0)

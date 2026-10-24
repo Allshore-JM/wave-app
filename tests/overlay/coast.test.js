@@ -1175,3 +1175,14 @@ test('Overlay: the first ready / error render and Off (unmount) note the first p
   try { off.unmount(); } catch (e) { /* as above */ }
   assert.equal(await within(off.settled()), 'off');
 });
+
+test('G34 re-check R-5 / R-44: the coastline is read with its own byte cap (not the frame cap) and given up after 15 s with no byte', async () => {
+  let cancelled = 0, i = 0;
+  const reader = { read: () => Promise.resolve(i++ < 3 ? { done: false, value: new Uint8Array(6) } : { done: true }), cancel: () => { cancelled++; return Promise.resolve(); } };
+  await assert.rejects(I.readBody(reader, () => {}, 10, 'coast decode failed'), /coast decode failed/);
+  assert.equal(cancelled, 1);
+  i = 0; const ok = { read: () => Promise.resolve(i++ < 2 ? { done: false, value: new Uint8Array(5) } : { done: true }), cancel() {} };
+  assert.equal((await I.readBody(ok, () => {}, 10, 'x')).byteLength, 10);
+  assert.equal(I.CoastStore.prototype.timeoutMs, 15000);
+  assert.equal(I.COAST_FIRST_MS, 15000);
+});

@@ -98,7 +98,8 @@ function page(opt) {
     tableArrives() { tableLoading = false; },
     pageshow(persisted) { fire('win', 'pageshow', { persisted }); },
     unitChange() { unit._ls.forEach((f) => f({})); },
-    assetsArrive() { window.AllshoreOverlay = makeAO(); if (scriptEl && scriptEl.onload) scriptEl.onload(); }
+    assetsArrive() { window.AllshoreOverlay = makeAO(); if (scriptEl && scriptEl.onload) scriptEl.onload(); },
+    assetsFail() { if (scriptEl && scriptEl.onerror) scriptEl.onerror(); }
   };
 }
 const settle = async () => { for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r)); };
@@ -413,4 +414,13 @@ test('G34 B-6: the location aids wait for the first picture: a promise while a l
   p = page({ init: { field: 'hs' } });
   let off = false; p.win.__allshoreOverlayWait.then(() => { off = true; });
   p.sel.userPick(''); await settle(); assert.equal(off, true, 'Off before the restore: settled at once');
+});
+
+test('G34 re-check R-39: the overlay script failing to load settles the wait at once (the location aids do not wait 120 s for a picture that cannot come)', async () => {
+  const p = page({ assetsLoaded: false, init: { field: 'hs' } });
+  let done = false; p.win.__allshoreOverlayWait.then(() => { done = true; });
+  await loadedAndIdle(p); await settle();
+  assert.equal(done, false, 'the script on its way');
+  p.assetsFail(); await settle();
+  assert.equal(done, true, 'settled by the failure');
 });

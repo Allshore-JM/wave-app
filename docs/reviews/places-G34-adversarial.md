@@ -1014,6 +1014,6 @@ and this section. UI asset 1.25.4, overlay asset 2.22.4. Not on the test site ye
   every kind it was loading. The page's `sync()` asks for a wanted kind that is neither loaded nor loading, also while a load
   runs. Deviation from the scope's wording: turning every row off still leaves a tier-0 load in progress to finish (as
   before; aborting it would put the store in its 60-s failure cooldown and turning a row back on would show nothing).
-- Tests: Node 983 (+4), pytest 1,282 + the page tests 60 after the golden. Mutants (scratch `g34/fix3/mut_fix3.py`, on a
+- Tests: Node 982 (+3), pytest 1,282 + the page tests 60 after the golden. Mutants (scratch `g34/fix3/mut_fix3.py`, on a
   copy): 10; 9 killed at first, P3 (the load not waiting for a unit added meanwhile) killed after one more test (the first
   file landing before the added one).

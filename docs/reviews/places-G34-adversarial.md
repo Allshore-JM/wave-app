@@ -1243,3 +1243,19 @@ profile prefix `chromeprof-f4v-`; its local stand-in `s/stallsrv.js` on 127.0.0.
   PID, no harness process left.
 
 **Findings:** none.
+
+## Production (step 10, 2026-10-24, Opus 5.5 MEDIUM)
+Owner: "proceed with the production merge". Pre-merge capture of production (UI 1.24.0, overlay 2.21.7; scratch
+`places/prod10/probe.sh pre`); rollback tag `prod-pre-places` @ 11369c8 pushed; `Live-Buoy-Update` fast-forwarded
+11369c8..b6ac83e at 18:13:33 UTC; UI 1.25.5 served from 18:14:46 UTC, 12 polls across the switch, 0 failed.
+- All 15 served files (overlay 2.22.5: js, css, 4 PNGs; UI 1.25.5: 9 files incl. the new places.js) = the repo; the
+  2.21.7 / 1.24.0 URLs answer 404 at the origin.
+- The three page probes (51201, 51201 graph, 51003) = the test site's pages except its three test-only logo lines; the
+  test-only logo count 0; the gear's Borders row and places.js present.
+- `/healthz` ok; CI on b6ac83e: tests and client-tests green.
+- Headless Chrome on allshoresurf.com, desktop 1280x800 and phone 375x812, wave height restored at Europe z5: names
+  (53 / 16), border lines (19 / 11 tile canvases), credits "Places: GeoNames CC BY 4.0" and "Borders: Natural Earth",
+  both rows on; wind at the Great Lakes z6: lake outlines on 21 / 8 tiles (none under wave height); 0 console problems.
+  Storage emptied, browser stopped.
+
+Rollback: re-push `prod-pre-places` to `Live-Buoy-Update`. **Plan section 51 complete.**

@@ -1017,3 +1017,108 @@ and this section. UI asset 1.25.4, overlay asset 2.22.4. Not on the test site ye
 - Tests: Node 982 (+3), pytest 1,282 + the page tests 60 after the golden. Mutants (scratch `g34/fix3/mut_fix3.py`, on a
   copy): 10; 9 killed at first, P3 (the load not waiting for a unit added meanwhile) killed after one more test (the first
   file landing before the added one).
+
+## Test-site verification of fix round 3 (2026-10-24, Opus 5.5 MAX)
+`test` @ a50c7de (cherry-picks of 27fdce5 as 29dd448, the golden d38a3cc as 1932545, and 67a19d6's test pin as a50c7de;
+README and this record kept off the test branch; the site files = the feature branch's except the three test-only logo
+lines; Node on the test branch 981 of 981), pushed 05:21:17 UTC, live from 05:22:42 UTC. The first poll timed out (the free
+instance waking from idle; the next polls were answered by the old instance), 0 failed across the switch. Served
+`places.js` / `forecast.js` / `tools.js` / `graticule.js` / `basemap.js` / `livelist.js` / `tides.js` / `winds.js` (UI
+1.25.4) and `overlay.js` / `overlay.css` (2.22.4) = the commit; the 1.25.3 / 2.22.3 URLs answer 404. Headless Chrome with
+the GPU (scratch `g34/fix3v`: the same harness on port 9801, profile prefix `chromeprof-f3v-`; `s/k2x.js` with a PLAY
+option, `s/r2_live.js` with the reverse toggle; outputs in `out/`). Production (2.21.7 / UI 1.24.0) measured in the same
+runs.
+
+**V2-1, frame downloads on a slow link** (`s/k2x.js`, DevTools throttling, 150 ms latency, both sites in the same batch;
+the page watched 30-60 s after its first picture, then the same with playback pressed at the first picture):
+
+| link, view | site | frames asked (distinct) | given up | asked twice or more | marked unavailable | particles at the end | coastline |
+|---|---|---|---|---|---|---|---|
+| 30 KB/s, phone | test | 10 (10) | 0 | none | 0 | on | clipped at 89.3 s |
+| | production | 17 (10) | 9 | 4 frames | 2 | off | failed (unclipped) |
+| 45 KB/s, desktop | test | 10 (10) | 0 | none | 0 | on | clipped at 72.0 s |
+| | production | 15 (9) | 7 | 4 frames | 1 | on | failed |
+| 30 KB/s, desktop | test | 10 (10) | 0 | none | 0 | on | clipped at 107.7 s |
+| | production | 8 (3) | 7 | 3 frames | 2 | off | failed |
+| 30 KB/s, phone, playing | test | 33 (33) | 1 cancelled | none | 0 | on, 14 steps landed | clipped at 123.6 s |
+| | production | 29 (17) | 19 | 6 frames | 6 | off, 6 steps | failed |
+| 45 KB/s, desktop, playing | test | 20 (20) | 1 cancelled | none | 0 | on, 7 steps landed | clipped at 82.2 s |
+| | production | 21 (12) | 13 | 5 frames | 3 | off, 0 steps | failed; "Unavailable frames are skipped: +7 h" at 49.5 s, "Overlay unavailable: frames cannot be loaded right now" at 68.2 s |
+
+The test site never gives up on a download that is still receiving data, at any speed, while paused or playing. The one
+"failed" request in each playing run is the shown step's direction frame cancelled when playback moved on to the next
+step (`net::ERR_ABORTED`, the superseded-download rule of section 41; never asked again, nothing marked). Production
+still cuts the same downloads (the pre-existing section-41 limit, unchanged there until this release).
+
+**The first picture is unchanged** (`s/k2_first.js`, the K-2 runs of fix round 2 on 2.22.4):
+
+| link | first picture 2.22.4 (2.22.3) | coastline note shown | clipped 2.22.4 (2.22.3) |
+|---|---|---|---|
+| 60 KB/s | 26.2 s (26.3) | at the picture | 44.9 s (46) |
+| 45 KB/s | 29.4 s (29.6-30.6) | at the picture | 59.6 s (69.5) |
+| coastline at 150 B/s, the rest free | 16.4 s (16.6) | at the picture | never (the coastline trickles); names at the 120-s cap (122.7 s) |
+| coastline alone at 50 KB/s, wave height | 16.5 s (16) | at the picture | 27.2 s (27) |
+| the same, sea surface temperature | 16.0 s (16) | at the picture | 27.2 s (27) |
+
+At 45 KB/s the coastline now lands 10 s sooner: the frames beside it are no longer downloaded twice.
+
+**V2-2, a row turned on while the other row's file is loading** (`s/r2_live.js` at Europe zoom 5, the slow file served at
+3,000 B/s by Fetch interception, the row clicked on 3 s after that file started):
+
+| case | slow file | the new row's file asked | the new row drawn + credited | the slow row drawn |
+|---|---|---|---|---|
+| Borders off, then clicked on | world-places.bin (2.6-51 s) | world-lines.bin at 6.4 s, the click's second | 7.3 s ("Borders") | names at 51.4 s |
+| City names off, then clicked on | world-lines.bin (2.3-116 s) | world-places.bin at 6.4 s | 7.3 s ("Places") | lines at 116.2 s |
+
+On 2.22.3 the new row waited for the slow file (45 s in the first case). The per-kind checks of fix round 2 are unchanged:
+each row is drawn and credited as its own file lands (lines alone slowed: names 2.7 s, lines 117.3 s; places alone
+slowed: lines 2.7 s, names 51.4 s), a row that is off downloads nothing (Borders off: no lines file in 60 s; City names
+off: no places file), no problems in any run.
+
+**A download that never answers is still given up after 5 s** (`s/hang.js`, desktop 1280x800, wave height, the NEXT
+step's frame `2026102400/hs/f008.png` held at the request stage by the Fetch domain and never answered; both sites):
+
+| site | requests for the held frame | each given up after | marked unavailable | playing |
+|---|---|---|---|---|
+| test (2.22.4) | 3, at 0, 5.0 and 10.0 s | 5.0 s, no byte (aborted by the page) | 15.2 s | the step skipped at 15.3 s with "Unavailable frames are skipped: +8 h", then 2 frames a second to step 60, no outage |
+| production (2.21.7) | 3, at 0, 4.8 and 9.8 s | 5.0 s | 15.2 s | the same at 15.3 s |
+
+So the new rule still guards a dead download exactly as before: only a download that keeps receiving data is no longer
+cut.
+
+**Regression** (fix round 2's scripts on 2.22.4): the load order on a normal link unchanged (two samples: the first
+frame 594-833 ms after navigation, the places 1.5 s after the load event and after `settled()`; 2.22.3 575-766 ms);
+names in 35 desktop and 35 phone views identical to fix round 2's run (0 overlaps / cut / covered; one desktop view (PNW
+zoom 7) shows Roseburg as well: the minimised forecast chip is 8 px narrower with today's run text, so the name now fits
+beside it); return (gear, tools, exposure fan, live and forecast windows: the same names come back) identical; windows
+and panels 0 names covered; tools 0 overlaps; the grey no-reading ring and its click / tap identical; failure paths
+identical (only the shown step differs); wave height, peak period and SST tiles = production (144 tiles at the Great
+Lakes and Okeechobee), the 48 wind tiles differ only on lake edges (51,086 and 2,630 pixels, as before); 0 console
+problems in every script.
+
+**Timed playback** (`w54p.js`, PREGC, GFS run 2026102400 warmed at the edge for both Origins first (1,463 requests each),
+GPU, ABBA per cell, 20-s idles, 1920x1080, production 2.21.7 vs test 2.22.4):
+
+| cell | production | test |
+|---|---|---|
+| Europe z5 wave height shark | 7.9 fps (gap p50/p90 125/135 ms); 8.0 (125/136) | 8.0 (125/134); 8.0 (125/133) |
+| Great Lakes z7 wind shark | 7.8 (126/135); 8.0 (125/136) | 8.0 (124/136); 8.0 (125/136) |
+
+0 skipped and 0 unpainted landings in every run; frames fetched once each (1.02 per landing, as on production; lake
+steps in the Europe view drew their own lake frames, 160-164 of 160-164, 0 bare / wrong; under wind no lake frames on
+either site, by design). Memory (page heap + array buffers vs Off): Europe live +39.3 / +39.2 MB vs production +39.2 /
++39.2, peaks +65.6 / +64.2 vs +66.4 / +56.9; Great Lakes wind live +36.4 / +36.3 vs +33.3 / +33.1 (+3.1 MB: the lake
+outlines' masks, as before), peaks +63.1 / +67.3 vs +59.9 / +60.1: inside the owner's rule (live within production + 10,
+peaks within production's range + 10). Main thread Europe 793 / 800 ms/s vs 815 / 789; wind 660 / 659 vs 627 / 636.
+
+**Console smoke** (a fresh page target, UI 1.25.4, storage empty, 1280x800: the first visit with wave height restored,
+Europe z5, Biscay z9, Oahu z11, the world at z3, wind, the Great Lakes z6 under wind, SST, Off, wave height, the gear's
+Borders and City names off and on, the forecast window expanded and minimised, the swell-exposure tool and its x, a
+reload (66 names)): 0 console errors, warnings or exceptions.
+
+Afterwards both origins' storage was emptied, the harness browser stopped and its profile removed, no browser or script
+process left; the in-app browser pane was not used.
+
+**Findings:** none. Fix round 3 does what the owner chose: no download that is still receiving data is cut, on any frame,
+and a row turned on mid-load starts at once. A download that never answers is retried and given up exactly as before.
+The first picture, the names, windows, tools, failure paths, tiles, playback and memory are unchanged from fix round 2.

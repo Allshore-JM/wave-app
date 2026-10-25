@@ -24,6 +24,17 @@ class _Resp:
         self.status_code = 200
         self.text = text
         self.headers = {}
+        self.raw = None
+
+    def __enter__(self):                       # the GFS bulletin is read by a capped, streamed GET (section 53)
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def iter_content(self, n=65536, **k):
+        b = self.text.encode()
+        return (b[i:i + n] for i in range(0, len(b), n))
 
 
 @pytest.fixture(autouse=True)

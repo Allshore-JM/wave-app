@@ -138,3 +138,32 @@ Items 1-8 of the scope, Opus 5.5 HIGH:
 8. F9 (server half): D26 (two stations at different times, both orders), D27 (a report 601 s ahead dropped by the
    provider), D15 (a used-up NWS budget answers busy with a MADIS row present).
 pytest 1,320 (full run, goldens included); mutants (scratch `polish/mut7a.py`, a scratch copy) 26 of 26 killed.
+
+## Fix round, page and client (step 7b, 943f6f9 + golden 10988b8 + 685f7c2; UI 1.25.8)
+Items 9-24 of the scope, Opus 5.5 HIGH:
+9. F2 = B-1: `NearestCanvas` (the map's renderer): a click and the hover go to the NEAREST interactive path holding the point
+   (ties: the later drawn; a dragged path is passed over on a click; a path without a point wins only alone).
+10. B-7: every touch rule on `(any-pointer: coarse)` (the renderer's reach, the live / tide / wind / My points pads, the
+    link buttons); the query's `change` resets the reach and redraws the markers.
+11. B-11: `tools.js` takes `map.mouseEventToLatLng(e.originalEvent)` (the event's latlng when that is not usable).
+12. B-12: the twin forecast dot is left out of the live pad only within the dot's radius + 3 px.
+13. K-3: `requestLiveTargets()` runs one pass after the round of rebuilds (a microtask).
+14. Decision 3: `fwBack` / `lwBack` (a window opened by the other's link links back while it shows that station); the alias
+    table `LINK_ALIAS` (CDIP 163, MI M2..M6) + the CMEMS `6200NNN` rule.
+15. Decision 4: `linkMove` pans to a station farther than 1 km, on the world copy in view.
+16. F7: the plain words to 2 km (`LINK_PLAIN_KM`); `linkAway` rounds before the 10 test.
+17. B-5: 44-px link buttons on touch screens; at <= 400 px "Forecast point · 19 mi".
+18. B-6: `aria-label` in words for a far link; the title = the station's name (else none).
+19. B-2: Escape: the window holding the focus, else the one in front (the forecast window only with a station window open),
+    then wind, tide, live.
+20. B-8: the head forgets a stored default in `retired_stations` (the server's 11) and the page says so once
+    (`tellOnPage`); favorites no longer offered are dropped with a note (a list under 100 decides nothing); the forecast
+    event carries the answer's lat / lon, so a removed station's sheltered note offers its live buoy.
+21. Decision 2: the stall note when fewer than half of the NWS stations are fresh and the feed's own newest is over 3 h old
+    (unknown after a restart: "NWS feed: no recent readings"), the time in the stations' zone, named.
+22. K-2: `lonePoints` draws a reading that stands alone as a dot (speed, gust, air, water); the disclaimer under the source.
+23. F9 page half: pins for B25 / B26, behaviour tests for B19 / B23.
+24. The forecast station list: a refused answer asked for once more after 4 s.
+Suites: pytest 1,320, Node 1,011 + the new ones (nearest 4, buoylinks 13, window +1, winds +1, tools-ui +1, mypoints +1,
+early +1, firstview +1); the rendered page's six inline scripts parse. Mutants (scratch `polish/mut7b.py`): 43, 41 killed at
+first, the 2 survivors (the twin test was beyond 1 km; the test machine's own zone is Hawaii) pinned @ 685f7c2: 43 of 43.

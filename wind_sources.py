@@ -66,7 +66,14 @@ ATTRIBUTION = {"ndbc": "NOAA National Data Buoy Center (ndbc.noaa.gov)",
                "nws": "NWS API observations (api.weather.gov): HECO / HELCO / MECO, University of Hawaii, RAWS, CWOP and "
                       "other networks via MADIS",
                "madis": "NOAA MADIS (madis.ncep.noaa.gov): HECO / HELCO / MECO, University of Hawaii, RAWS, CWOP and "
-                        "other networks"}
+                        "other networks",
+               "nws+madis": "NWS API observations (api.weather.gov) and, for the latest reading, NOAA MADIS "
+                            "(madis.ncep.noaa.gov): HECO / HELCO / MECO, University of Hawaii, RAWS, CWOP and other networks"}
+# NOAA's restrictions page for MADIS asks pages that show mesonet observations to carry an accuracy disclaimer: shown in
+# the window of every NWS-network station (HECO / UH / RAWS / CWOP ...), whichever feed brought the reading (G35).
+MESONET_DISCLAIMER = ("NOAA and its data providers disclaim liability of any kind whatsoever, including, without "
+                      "limitation, liability for quality, performance, merchantability and fitness for a particular "
+                      "purpose arising out of the use or inability to use the data.")
 KT_MS = 0.514444                               # one knot in m/s (METAR speeds are whole knots)
 MAX_SPEED_MS = 120.0                           # above this a reading is garbage (the record gust is ~113 m/s)
 STALE_S = 2 * 3600                             # a reading older than this is drawn grey (airports report hourly)
@@ -101,7 +108,7 @@ NDBC_KEEP_S = 6 * 3600                         # an NDBC reading kept this long 
 WIND_REFRESH_WORKERS = 2                       # the wind feeds' own refresh threads (never the live buoys' workers: A-5)
 NWS_QC_REJECTED = ("X", "B")                   # MADIS quality control: rejected / subjectively bad values are dropped
 # NOAA MADIS's public surface viewer (no account: the "public" categories, which hold every provider the NWS stations
-# come from): the newest record of each Hawaii station in the last 59 minutes, as CSV in an HTML <PRE>; ~53 KB, 4-15 s
+# come from): the newest record of each Hawaii station in the last 59 minutes, as CSV in an HTML <PRE>; ~53 KB, 4-40 s
 MADIS_HI_URL = ("https://madis-data.ncep.noaa.gov/madisPublic1/cgi-bin/madisXmlPublicDir?rdr=&time=0&minbck=-59"
                 "&minfwd=0&recwin=3&timefilter=0&dfltrsel=2&state=HI&latll=0.0&lonll=0.0&latur=90.0&lonur=0.0&stanam="
                 "&stasel=0&pvdrsel=0&varsel=2&qctype=0&qcsel=0&xml=5&csvmiss=0")
@@ -109,7 +116,6 @@ MADIS_MAX = 2 * 1024 * 1024
 MADIS_TTL_S = 300                              # the viewer is asked every 5 minutes (one request)
 MADIS_KEEP_S = 6 * 3600                        # a MADIS reading kept this long (a station missing from one answer keeps it)
 MADIS_MISSING = -99999.0
-MADIS_VARS = ("TD", "RH", "T", "DD", "FF", "FFGUST", "ALTSE")   # dew point K, humidity %, air K, direction, speed m/s, gust m/s, altimeter Pa
 NWS_UNITS = {"wmoUnit:km_h-1": 1 / 3.6, "wmoUnit:m_s-1": 1.0, "wmoUnit:[kn_i]": KT_MS, "wmoUnit:mi_h-1": 0.44704}
 NWS_TEMP_UNITS = {"wmoUnit:degC": (1.0, 0.0), "wmoUnit:degF": (5 / 9, -32 * 5 / 9), "wmoUnit:K": (1.0, -273.15)}
 NWS_PRESSURE_UNITS = {"wmoUnit:Pa": 0.01, "wmoUnit:hPa": 1.0, "wmoUnit:mbar": 1.0}
@@ -565,13 +571,15 @@ def _nws_temp(q):
 
 # ---------------------------------------------------------------------------------------------- the snapshot
 
-def parse_madis_csv(text, now=None):
+def parse_madis_csv(text, now=None, stats=None):
     """MADIS's surface viewer answer (xml=5: CSV lines in an HTML <PRE>) -> {station id: reading with weather}. The
     columns are found by the header line's names (STAID, OBDATE MM/DD/YYYY, OBTIME HH:MM UTC, then each variable
-    followed by its QC descriptor); -99999 is missing; a value whose QC is X or B (rejected) is dropped. A station
-    listed twice keeps its newest record; a record more than 10 minutes in the future is dropped. Raises ValueError
-    when the answer holds no header (an error page, a changed format)."""
-    head, out = None, {}
+    followed by its QC descriptor: TD dew point K, RH %, T air K, DD direction, FF / FFGUST m/s, ALTSE altimeter Pa);
+    -99999 is missing; a value whose QC is X or B (rejected) is dropped. A station listed twice keeps its newest record;
+    a record more than 10 minutes in the future is dropped. stats (a dict, optional) gets "rows": the station records
+    read (a valid time and id) and "wind": the stations with a wind reading. Raises ValueError when the answer holds no
+    header (an error page, a changed format)."""
+    head, out, rows = None, {}, 0
     for raw in text.splitlines():
         line = re.sub(r"<[^>]*>", "", raw).strip()
         if not line or "," not in line:
@@ -607,6 +615,7 @@ def parse_madis_csv(text, now=None):
         sid = cells[head["STAID"]].upper()
         if not re.fullmatch(r"[A-Z0-9]{3,8}", sid):
             continue
+        rows += 1
         r = reading(t, val("FF"), val("FFGUST"), val("DD"))
         if r is None:
             continue
@@ -618,6 +627,8 @@ def parse_madis_csv(text, now=None):
             out[sid] = r
     if head is None:
         raise ValueError("MADIS: no table in the answer")
+    if stats is not None:
+        stats.update(rows=rows, wind=len(out))
     return out
 
 
@@ -917,7 +928,7 @@ class MadisProvider(WindProvider):
     (alias_of "nws:<id>"), so the merged table shows the newer of a station's NWS API reading and its MADIS one. Each
     station keeps its last MADIS reading until a newer one comes or it is MADIS_KEEP_S old; the weather of the report
     (air, dew point, humidity, altimeter) is kept for the station's window (row()). A failed or unreadable answer
-    raises (keep-last). fetch: a slower one than the other feeds' (the viewer takes 4-15 s to answer)."""
+    raises (keep-last). fetch: a slower one than the other feeds' (the viewer takes 4-40 s to answer)."""
     source = "MADIS"
     source_name = "NOAA MADIS"
     source_url = "https://madis.ncep.noaa.gov"
@@ -928,15 +939,24 @@ class MadisProvider(WindProvider):
         super().__init__(stations, fetch)
         self.url = url
         self._kept = {}                         # local id -> the latest reading (with weather)
+        self._newest_t = None                   # the newest reading MADIS ever brought (G35 F5: the stall rule, /healthz)
+        self._last_rows = self._last_wind = None   # the last answer's station records / those with a wind reading
 
     def _fetch_stations(self):
         now = buoy_sources.time.time()
         body = self._fetch(self.url, MADIS_MAX, HEADERS)
-        obs = parse_madis_csv(body.decode("latin-1"), now)
+        stats = {}
+        obs = parse_madis_csv(body.decode("latin-1"), now, stats)
+        self._last_rows, self._last_wind = stats.get("rows"), stats.get("wind")
+        if stats.get("rows") and not stats.get("wind"):
+            # seen 2026-10-24 (G35 F5): an answer whose every wind field is -99999; the kept readings stay, but say so
+            _log.warning("MADIS: %d station records and not one wind reading (the kept readings stay)", stats["rows"])
         for local, r in obs.items():
             old = self._kept.get(local)
             if local in self.stations and (old is None or r["t"] > old["t"]):
                 self._kept[local] = r
+                if self._newest_t is None or r["t"] > self._newest_t:
+                    self._newest_t = r["t"]
         cut = now - MADIS_KEEP_S
         for local in [k for k, r in self._kept.items() if r["t"] < cut]:
             del self._kept[local]
@@ -946,6 +966,17 @@ class MadisProvider(WindProvider):
         """The station's latest MADIS reading with its weather (a copy), or None."""
         r = self._kept.get(local)
         return dict(r) if r else None
+
+    def status(self, now=None):
+        s = super().status(now)
+        now = buoy_sources.time.time() if now is None else now
+        s.update(readings=len(self._kept), last_rows=self._last_rows, last_wind=self._last_wind,
+                 newest_age_s=round(now - self._newest_t) if self._newest_t is not None else None)
+        return s
+
+    def newest_t(self):
+        """The newest reading's time MADIS ever brought (epoch s), None before the first."""
+        return self._newest_t
 
 
 def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER_REFRESH, nws_workers=2,
@@ -1320,8 +1351,9 @@ class WindHistory:
                "units": {"s": "m/s", "g": "m/s", "d": "deg", "at": "degC", "wt": "degC", "dp": "degC", "rh": "%",
                          "p": "hPa", "pt": "hPa/3h", "vis": "km"}, "stale_s": STALE_S, "now": int(now),
                "t": [r["t"] for r in rows], "s": [r["s"] for r in rows], "g": [r["g"] for r in rows],
-               "d": [r["d"] for r in rows], "source": ATTRIBUTION[via or src] if via != "nws+madis" else
-               ATTRIBUTION["nws"] + "; the latest reading: " + ATTRIBUTION["madis"], "via": via, "note": note}
+               "d": [r["d"] for r in rows], "source": ATTRIBUTION[via or src], "via": via, "note": note}
+        if src == "nws":                                               # mesonet observations: NOAA's disclaimer
+            out["disclaimer"] = MESONET_DISCLAIMER
         for k in WX_FIELDS + WX_FLAGS:                                 # only the fields some row carries
             if any(r.get(k) is not None for r in rows):
                 out[k] = [r.get(k) for r in rows]

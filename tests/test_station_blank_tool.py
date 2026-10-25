@@ -65,9 +65,37 @@ def test_merge_keeps_the_newest_runs_and_recomputes():
         doc = T.merge(doc, r, {"blank": ["44062", r[-2:]], "absent": [], "failed": [], "scanned": 734})
     assert sorted(doc["runs"]) == ["2026102306", "2026102312", "2026102318", "2026102400"]
     assert doc["removed"] == ["44062"] and doc["rule"] == T.RULE
-    # a re-scan of a recorded run replaces it
+    # a re-scan of a recorded run replaces it; a removed station NOT read in it (no "back") stays removed (G35 F1)
     doc = T.merge(doc, "2026102400", {"blank": [], "absent": [], "failed": [], "scanned": 734})
+    assert doc["removed"] == ["44062"]
+    # back (with data) in one of the two newest runs: still removed; in both: back on the list
+    doc = T.merge(doc, "2026102400", {"blank": [], "back": ["44062"], "scanned": 734})
+    assert doc["removed"] == ["44062"], "one cycle restores nothing"
+    doc = T.merge(doc, "2026102406", {"blank": [], "back": ["44062"], "scanned": 734})
     assert doc["removed"] == []
+
+
+def test_a_removed_station_is_read_every_time_and_stays_removed_until_back_twice():
+    """G35 F1: the scan reads the listed ids AND the removed ones, so the next run never forgets them."""
+    before = ["44061", "44062", "46088"]
+    listed = ["3FYT", "51201", "44061"]                     # 44061 listed again by hand: read once
+    assert T.scan_ids(listed, before) == ["3FYT", "51201", "44061", "44062", "46088"]
+    r = {"blank": ["44062"], "absent": ["46088"], "failed": [], "scanned": 5}
+    assert T.came_back(r, before) == ["44061"], "absent never counts as data"
+    assert T.came_back({"blank": [], "failed": ["44062"]}, before) == ["44061", "46088"]
+    # the file's next two scans of a still-blank removed station keep it removed (old semantics forgot it)
+    doc = {"runs": {}, "removed": ["44062"]}
+    for run in ("2026102500", "2026102506"):
+        res = {"blank": ["44062"], "absent": [], "failed": [], "scanned": 723}
+        res["back"] = T.came_back(res, doc["removed"])
+        doc = T.merge(doc, run, res)
+        assert doc["removed"] == ["44062"], run
+    # a removed station absent (404) in both newest runs stays removed: a missing bulletin restores nothing
+    doc = T.merge(doc, "2026102512", {"blank": [], "absent": ["44062"], "back": []})
+    doc = T.merge(doc, "2026102518", {"blank": [], "absent": ["44062"], "back": []})
+    assert doc["removed"] == ["44062"]
+    # fewer than two runs: what was removed stays removed
+    assert T.removed_ids({"2026102500": {"blank": []}}, ["44062"]) == ["44062"]
 
 
 def test_sea_ice_regions_are_kept():
@@ -91,11 +119,32 @@ def test_apply_keeps_the_order_and_drops_only_the_removed():
     assert T.apply_removal(["3FYT", "44061", "44062", "51201", "44063"], ["44062", "44061", "nope"]) == ["3FYT", "51201", "44063"]
 
 
+def test_apply_restores_a_comeback_at_its_old_place():
+    order = ["3FYT", "13130", "44039", "44040", "44058", "51201", "Alaska_NS3"]   # station_coords.json's order
+    listed = ["3FYT", "13130", "44058", "51201", "Alaska_NS3"]
+    assert T.apply_removal(listed, ["44040"], ["44039"], order) == ["3FYT", "13130", "44039", "44058", "51201", "Alaska_NS3"]
+    assert T.apply_removal(listed, [], ["44040", "44039"], order) == [
+        "3FYT", "13130", "44039", "44040", "44058", "51201", "Alaska_NS3"]
+    assert T.apply_removal(listed, [], ["zzz"], order)[-1] == "zzz", "an id without a place goes last"
+    assert T.apply_removal(listed, ["44039"], ["44039"], order) == listed, "still removed wins"
+    assert T.apply_removal(listed, [], ["51201"], order) == listed, "never twice"
+    # the real files: the list is station_coords.json's order filtered, so a comeback lands where it was
+    coords = list(json.load(open(os.path.join(ROOT, "station_coords.json"), encoding="utf-8")))
+    ids = json.load(open(os.path.join(ROOT, "station_list.json"), encoding="utf-8"))
+    pos = {s: i for i, s in enumerate(coords)}
+    assert [pos[s] for s in ids] == sorted(pos[s] for s in ids), "the list keeps the coordinates' order"
+
+
 def test_the_committed_file_and_the_list_agree():
     """station_blank.json names the removed ids; none is in station_list.json; all keep their coordinates and zones."""
     with open(os.path.join(ROOT, "station_blank.json"), encoding="utf-8") as f:
         doc = json.load(f)
-    assert doc["removed"] == T.removed_ids(doc["runs"]) and len(doc["removed"]) >= 10
+    assert doc["removed"] == T.removed_ids(doc["runs"], doc["removed"]) and len(doc["removed"]) >= 10
+    # every removed id was READ in both of the two newest runs (G35 F1): blank, back, ice, absent or failed there
+    for run in sorted(doc["runs"])[-2:]:
+        r = doc["runs"][run]
+        seen = set().union(*(r.get(k, []) for k in ("blank", "back", "ice", "absent", "failed")))
+        assert set(doc["removed"]) <= seen, run
     assert all(re.fullmatch(r"\d{10}", r) for r in doc["runs"]) and len(doc["runs"]) <= T.KEEP_RUNS
     ids = set(json.load(open(os.path.join(ROOT, "station_list.json"), encoding="utf-8")))
     coords = json.load(open(os.path.join(ROOT, "station_coords.json"), encoding="utf-8"))
@@ -130,6 +179,8 @@ def test_a_removed_station_answers_the_note_without_a_table(client, monkeypatch)
     assert d["error"] == A.BLANK_STATION_NOTE and d["final"] is True and d["reason"] == "sheltered"
     assert d["table_html"] is None and d["graph_data"] is None and d["model"] == "GFS"
     assert calls == [], "no bulletin asked for"
+    pos = A.load_station_coords()["44062"]                 # where it was: the page offers its live buoy (G35 B-8)
+    assert (d["lat"], d["lon"]) == (pos["lat"], pos["lon"])
     # the page itself renders (the old link opens), the id in the select as an unknown option
     body = client.get("/?station=44062").get_data(as_text=True)
     assert '<option value="44062" data-unknown selected>44062</option>' in body

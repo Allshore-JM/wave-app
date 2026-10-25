@@ -1076,6 +1076,34 @@ def test_madis_provider_relays_the_nws_stations_and_keeps_readings(madis_clock):
     assert p.extra_keys == ("wind", "alias_of")
 
 
+def test_madis_provider_newest_counts_and_a_windless_answer(madis_clock, caplog):
+    """G35 F5: the feed's newest reading (two stations at different times: the newer is kept, D26's pattern), its counts
+    in /healthz, and a warning when an answer has station records but not one wind reading."""
+    p = W.MadisProvider(NWS_IDS, madis_fetch())
+    assert p.newest_t() is None and p.status()["newest_age_s"] is None and p.status()["readings"] == 0
+    p._fetch_stations()
+    assert p.newest_t() == MADIS_T, "001HE at MADIS_T, 029HI 10 min before: the newer"
+    st = p.status(MADIS_T + 300)
+    assert st["readings"] == 2 and st["newest_age_s"] == 300 and st["last_rows"] >= 5 and st["last_wind"] == 5
+    p._fetch = madis_fetch(("<PRE>" + MADIS_HEAD + madis_line("001HE", ff="-99999.0", ffq="Z")
+                            + madis_line("029HI", ff="-99999.0", ffq="Z") + "</PRE>").encode())
+    with caplog.at_level("WARNING", logger=W.__name__):
+        assert {e["local_id"] for e in p._fetch_stations()} == {"001HE", "029HI"}, "the kept readings stay"
+    assert any("not one wind reading" in r.getMessage() for r in caplog.records)
+    assert p.status()["last_rows"] == 2 and p.status()["last_wind"] == 0 and p.newest_t() == MADIS_T
+    # the newest time is the newest EVER: an older answer later does not move it back
+    p._fetch = madis_fetch(("<PRE>" + MADIS_HEAD + madis_line("029HI", time="21:05") + "</PRE>").encode())
+    p._fetch_stations()
+    assert p.newest_t() == MADIS_T
+
+
+def test_madis_provider_drops_a_report_from_the_future(madis_clock):
+    """G35 D27: the provider passes its clock to the parser (a record 10+ minutes ahead of it is a bad clock)."""
+    madis_clock.now = MADIS_T - 601
+    p = W.MadisProvider(NWS_IDS, madis_fetch())
+    assert {e["local_id"] for e in p._fetch_stations()} == {"029HI"}, "001HE's report lies 601 s ahead"
+
+
 def test_make_providers_with_the_madis_backup():
     fetch, slow = FakeFetch(), FakeFetch()
     provs = W.make_providers(STATIONS, fetch)
@@ -1119,6 +1147,16 @@ def test_paced_feeds_remember_their_newest_reading(clock):
     clock.now = newest + 600
     p._fetch_stations()
     assert p.newest_t() == newest and p.status()["newest_age_s"] == 600
+    # two stations at different times: the newer is the feed's newest (G35 D26: never the older)
+    older = newest - 1800
+    fetch.table[W.NWS_API + "/stations/029HI/observations?"] = json.dumps({"@graph": [{
+        "timestamp": W.iso_z(older), "windSpeed": {"unitCode": "wmoUnit:km_h-1", "value": 10.0, "qualityControl": "V"},
+        "windDirection": {"unitCode": "wmoUnit:degree_(angle)", "value": 90.0, "qualityControl": "V"},
+        "windGust": {"unitCode": "wmoUnit:km_h-1", "value": None, "qualityControl": "Z"}}]}).encode()
+    for order in (["029HI", "001HE"], ["001HE", "029HI"]):
+        q = W.NwsProvider({k: NWS_IDS[k] for k in order}, fetch, per_refresh=10)
+        q._fetch_stations()
+        assert q.newest_t() == newest, order
     # the readings age out after keep_s; the newest time stays (the stall note's "since")
     clock.now = newest + W.NWS_KEEP_S + 10
     fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
@@ -1138,6 +1176,7 @@ def test_history_nws_falls_back_on_madis():
     assert W.WindHistory(STATIONS, fetch, now=Clock(MADIS_T + 300)).history("nws:001HE")[1]["note"] == W.NO_HISTORY, "no backup: as before"
     status, p = madis_svc(fetch, MADIS_T + 300, madis).history("nws:001HE")
     assert status == "ok" and p["via"] == "madis" and p["note"] is None and p["source"] == W.ATTRIBUTION["madis"]
+    assert p["disclaimer"] == W.MESONET_DISCLAIMER, "mesonet observations: NOAA's disclaimer, whichever feed"
     assert p["t"] == [MADIS_T] and p["s"] == [6.5] and p["g"] == [9.7] and p["d"] == [25]
     assert p["at"] == [22.1] and p["rh"] == [93] and p["conditions"]["at"] == [MADIS_T, 22.1]
     # the NWS API with older rows: MADIS's newer report is added after them
@@ -1147,7 +1186,8 @@ def test_history_nws_falls_back_on_madis():
     madis["001HE"]["t"] = newest + 600
     p = madis_svc(fetch, newest + 900, madis).history("nws:001HE")[1]
     assert p["via"] == "nws+madis" and p["t"][-1] == newest + 600 and p["t"][:-1] == sorted(r["t"] for r in rows)
-    assert p["source"] == W.ATTRIBUTION["nws"] + "; the latest reading: " + W.ATTRIBUTION["madis"]
+    assert p["source"] == W.ATTRIBUTION["nws+madis"] and p["source"].count("HECO") == 1, "the networks named once (G35 B-13)"
+    assert p["disclaimer"] == W.MESONET_DISCLAIMER
     # MADIS older than the API's newest row: not added; older than 24 h: never
     madis["001HE"]["t"] = newest - 60
     assert madis_svc(fetch, newest + 900, madis).history("nws:001HE")[1]["via"] is None
@@ -1161,6 +1201,13 @@ def test_history_nws_falls_back_on_madis():
     svc = madis_svc(fetch, MADIS_T + 60, madis)
     assert svc.history("nws:001HE")[1]["via"] == "madis"
     assert svc.history("nws:029HI")[0] == "error"
+    # the NWS budget used up: busy (asked again in a moment), never MADIS's one row cached as ok (G35 D15)
+    svc = madis_svc(fetch, MADIS_T + 60, madis)
+    svc.nws_bucket = W.TokenBucket(rate=1, now=lambda: 0.0)
+    assert svc.nws_bucket.take()
+    assert svc.history("nws:001HE") == ("busy", {"error": W.BUSY})
+    # the disclaimer is for mesonet observations only
+    assert "disclaimer" not in madis_svc(history_fetch(), MADIS_T, {}).history("ndbc:51003")[1]
 
 
 def test_app_wires_the_madis_backup(monkeypatch):
@@ -1169,6 +1216,8 @@ def test_app_wires_the_madis_backup(monkeypatch):
     calls = []
 
     class Resp:
+        raw = None                                                         # (no socket to shut down)
+
         def __init__(self, status, chunks):
             self.status_code, self.chunks = status, chunks
 
@@ -1180,14 +1229,27 @@ def test_app_wires_the_madis_backup(monkeypatch):
 
         def iter_content(self, n):
             return iter(self.chunks)
-    monkeypatch.setattr(A.requests, "get", lambda url, **k: calls.append((url, k)) or Resp(200, [b"ab", b"cd"]))
+    monkeypatch.setattr(A._POINT_HTTP, "get", lambda url, **k: calls.append((url, k)) or Resp(200, [b"ab", b"cd"]))
     assert A._madis_fetch("https://m.test/x", 10, {"User-Agent": "u"}) == b"abcd"
     assert calls[0][1]["timeout"] == A.WIND_MADIS_TIMEOUT == (10, 45) and calls[0][1]["headers"] == {"User-Agent": "u"}
-    with pytest.raises(RuntimeError):
+    assert calls[0][1]["stream"] is True and A.WIND_MADIS_MAX_S == 90
+    with pytest.raises(IOError, match="too large"):
         A._madis_fetch("u", 3, None)                                       # over the cap
-    monkeypatch.setattr(A.requests, "get", lambda url, **k: Resp(503, []))
-    with pytest.raises(RuntimeError, match="HTTP 503"):
+    monkeypatch.setattr(A._POINT_HTTP, "get", lambda url, **k: Resp(503, []))
+    with pytest.raises(IOError, match="HTTP 503"):
         A._madis_fetch("u", 10, None)
+
+    class Slow(Resp):                                                      # G35 F3: an answer that trickles is cut at
+        def iter_content(self, n):                                         # WIND_MADIS_MAX_S (it held a wind worker)
+            for _ in range(50):
+                _time.sleep(0.02)
+                yield b"a"
+    monkeypatch.setattr(A, "WIND_MADIS_MAX_S", 0.1)
+    monkeypatch.setattr(A._POINT_HTTP, "get", lambda url, **k: Slow(200, []))
+    t0 = _time.time()
+    with pytest.raises(IOError, match="too slow"):
+        A._madis_fetch("u", 1000, None)
+    assert _time.time() - t0 < 0.8
     # _winds(): the provider built with the slow fetch, its rows handed to the history service
     monkeypatch.setattr(A, "_WINDS", {"svc": None, "list": None, "providers": None, "stations": None})
     w = A._winds()

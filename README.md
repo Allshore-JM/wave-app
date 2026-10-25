@@ -963,8 +963,10 @@ JAX, MNE, HNL; HNL51-68 are the boxes around Oahu and Kauai). `tests/test_statio
   blank under ice now). Removed on 2026-10-24 (runs 2026102406 + 2026102412): 44039, 44040, 44043, 44058, 44061,
   44062, 44063, 44064, 44072, 44087, 46088. An old link to a removed station still
   opens: `/api/forecast` answers the note "No model data at this point (sheltered water ...)" as final (no Retry), from
-  the committed file, without asking NOAA. A removed station comes back only by a re-run with `--apply` (never on its
-  own). The coordinates and zone tables stay whole (the point time-zone rule).
+  the committed file, without asking NOAA. Every scan also reads the removed stations' bulletins (G35 F1): one with data
+  again in both of the two newest scans comes back at its old place with `--apply` (never on its own), and the
+  console names it; one still blank, absent or failed stays removed. The removed station's answer carries its
+  coordinates (`lat`, `lon`). The coordinates and zone tables stay whole (the point time-zone rule).
 - Source of the rule: NOAA's own point list for GFS-Wave (`parm/wave/wave_gfs.buoys.full` in NOAA-EMC/global-workflow)
   gives each point a TYPE. Every removed id is a boundary type there (3,118 `IBP` for NCEP models, 184 `BPT` for other
   models); the kept ones are data points (`DAT`, `XDT`) and virtual buoys (`VBY`), with one exception kept on purpose:
@@ -1515,15 +1517,17 @@ naming the site as aviationweather.gov asks):
   stations' backup** (plan section 52, 2026-10-24: the NWS API's observations stopped updating nationwide on
   2026-10-22 13:20 UTC while MADIS, its upstream, kept the data; every NWS flag read "No recent reading"): one GET of
   MADIS's public surface viewer every 5 minutes (`WIND_MADIS_URL`, default the Hawaii query of
-  `madisXmlPublicDir`; the newest report of each of ~300 Hawaii stations in the last hour, CSV in an HTML page, 4-15 s,
-  its own fetch with a 45-s read timeout), parsed by its header's column names (K to C, the altimeter in hPa, -99999
+  `madisXmlPublicDir`; the newest report of each of ~300 Hawaii stations in the last hour, CSV in an HTML page, 4-40 s,
+  its own fetch with a 45-s read timeout and 90 s for the whole answer), parsed by its header's column names (K to C, the altimeter in hPa, -99999
   missing, QC X / B dropped); the snapshot's NWS stations among them become relay entries (`alias_of: "nws:<id>"`), and
   the merged table takes the newer of a station's NWS API reading and its MADIS one (the gauges' NDBC-relay rule); a
   MADIS reading is kept 6 h. The table says which rows a relay gave (`fed_by`, counted in `/healthz` `wind.fed_by`) and
-  each paced feed's newest reading ever (`newest`); the legend notes "NWS feed stalled since <time>" when the NWS feed's
+  each paced feed's and MADIS's newest reading ever (`newest`; `/healthz` adds MADIS's kept readings and the last
+  answer's station and wind counts, and an answer with stations but no wind at all is logged); the legend notes "NWS feed stalled since <time>" when the NWS feed's
   newest is over 3 h old and no fresh MADIS row covers its stations (unknown after a restart: no note). A station's
   window falls back on its latest MADIS report (one row, with temperature, dew point, humidity and pressure; "via
-  MADIS") when the NWS API has nothing newer. MADIS asks users to notify NOAA before placing its data on web pages: the
+  MADIS") when the NWS API has nothing newer. Every NWS-network station's window carries NOAA's accuracy disclaimer
+  for mesonet observations (`disclaimer`; MADIS's restrictions page asks for one). MADIS asks users to notify NOAA before placing its data on web pages: the
   providers used here (APRSWXNET / CWOP, RAWS, HADS, MesoWest incl. HECO, U-HAWAII) are its public, full-distribution
   category. They ride on the live-buoy
   scheduler's pass (`_wind_tick` after the buoy part; a failure there never reaches the buoys) with the same keep-last

@@ -1990,19 +1990,21 @@
     }
 
     // Plot forecast stations (the head's request first; a refused or broken answer is asked for once more after a few
-    // seconds: without the list the map has no forecast dots for the session)
+    // seconds: without the list the map has no forecast dots for the session). Only the answer is asked for again: a
+    // fault in the code that uses the list is logged, never a reason to fetch it twice (re-check R1)
     const STATIONS_RETRY_MS = 4000;
     function loadForecastStations(retries) {
       earlyFetch('stations', '/stations.json')
         .then(r => { if (r && r.ok === false) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(stations => {
-          forecastStationsData = stations || [];
-          rebuildForecastMarkers(true);
-          if (typeof syncBuoyLinks === 'function') syncBuoyLinks();
-          forgetRetiredDefault(forecastStationsData);
-          if (pendingFocusStation) { const sid = pendingFocusStation; pendingFocusStation = null; focusStation(sid); }
-        })
-        .catch(function () { if (retries > 0) setTimeout(function () { loadForecastStations(retries - 1); }, STATIONS_RETRY_MS); });
+        .then(function (stations) {
+          try {
+            forecastStationsData = stations || [];
+            rebuildForecastMarkers(true);
+            if (typeof syncBuoyLinks === 'function') syncBuoyLinks();
+            forgetRetiredDefault(forecastStationsData);
+            if (pendingFocusStation) { const sid = pendingFocusStation; pendingFocusStation = null; focusStation(sid); }
+          } catch (e) { console.error('forecast stations:', e); }
+        }, function () { if (retries > 0) setTimeout(function () { loadForecastStations(retries - 1); }, STATIONS_RETRY_MS); });
     }
     loadForecastStations(1);
 
@@ -2016,9 +2018,14 @@
       else document.addEventListener('allshore:forecast', tell, { once: true });
     }
     function retiredDefaultNote(id) { return 'Your default station' + (id ? ' (' + id + ')' : '') + ' is no longer offered, so it was cleared: the site will open near you next time.'; }
-    function forgetRetiredDefault(list) {
-      const early = window.__early && window.__early.retired;   // a removed station the head already forgot (G35 B-8)
+    // a removed station the head already forgot (G35 B-8): said at page start, whether or not the station list ever
+    // lands (re-check F-2: it was said only from a list that loaded, so two failed list requests lost it)
+    function tellHeadRetired() {
+      const early = window.__early && window.__early.retired;
       if (early) { window.__early.retired = null; tellOnPage(retiredDefaultNote(early)); }
+    }
+    tellHeadRetired();
+    function forgetRetiredDefault(list) {
       if (!Array.isArray(list) || list.length < 100) return;   // a degraded list (the server's 10-buoy fallback) decides nothing (G32 re-check P-1)
       let d = null; try { d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); } catch (e) { return; }
       if (!d || typeof d !== 'object') return;
@@ -3127,6 +3134,7 @@
       liveTabStops();
     }
     function openLiveBuoy(s) {                        // a click on its dot, or the forecast window's "Live buoy"
+      if (typeof forgetLiveBack === 'function') forgetLiveBack();   // the link sets its own back link after this (re-check R1-3)
       activeLiveBuoyId = s.id;
       rebuildLiveBuoyMarkers(true);
       saveMapView(map);
@@ -3329,7 +3337,11 @@
         // a wind flag on the same spot: no pad (the flag's ring disc around the icon opens the wind window: owner, 2026-10-10)
         // (the same gauge by its id: the two snapshots place some gauges 1-2 m apart, several pixels at zoom 18: G28 A-10)
         const tid = 'coops:' + tideDrawn[i].s.id;
-        const shared = flags.some(function (q) { return (q.id === tid && q.o === tideDrawn[i].o) || (Math.abs(q.x - p.x) < 2 && Math.abs(q.y - p.y) < 2); });
+        const mine = function (q) { return (q.id === tid && q.o === tideDrawn[i].o) || (Math.abs(q.x - p.x) < 2 && Math.abs(q.y - p.y) < 2); };
+        const shared = flags.some(mine);
+        // another station's wind flag counts like any other icon: the pad stops half-way to it, as a live dot's does
+        // (re-check O-1: a tap on a wind ring 12-22 px away opened the tide window)
+        flags.forEach(function (q) { if (!mine(q)) c = Math.min(c, Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y))); });
         const pad = shared ? 0 : Math.max(0, Math.min(10, Math.floor(c / 2 - p.h)));
         const el = tideDrawn[i].marker.getElement && tideDrawn[i].marker.getElement();
         if (el && el.style && el.style.setProperty && tideDrawn[i].pad !== pad) { el.style.setProperty('--tide-tap', pad + 'px'); tideDrawn[i].pad = pad; }
@@ -3438,7 +3450,8 @@
     // from (G35 decision 3: two buoys at one spot made a round trip land on the other); a link to a station farther than
     // LINK_KM moves the map there (decision 4).
     const LINK_KM = 1.0, LINK_ID_KM = 400, LINK_PLAIN_KM = 2.0;   // within LINK_PLAIN_KM the plain words: the same spot to a visitor (F7)
-    const LINK_ALIAS = { 'cdip:163': '52201', 'mi-ie:m2': '62091', 'mi-ie:m3': '62092', 'mi-ie:m4': '62093', 'mi-ie:m5': '62094', 'mi-ie:m6': '62095' };
+    const LINK_ALIAS = { 'cdip:163': '52201', 'mi-ie:m2': '62091', 'mi-ie:m3': '62092', 'mi-ie:m4': '62093', 'mi-ie:m5': '62094', 'mi-ie:m6': '62095',
+      'cefas:8': '62304', 'cefas:10': '62144', 'cefas:305': '62146' };   // CEFAS Sandettie Light Vessel, Clipper, Lomond (owner, 2026-10-25)
     const linkCache = { lists: [null, null], fwd: new Map(), back: new Map() };
     function linkKm(a, b) {
       const r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
@@ -3494,18 +3507,23 @@
       return (r < 10 ? r.toFixed(1) : String(Math.round(v))) + (words ? (us ? ' miles' : ' kilometres') : (us ? ' mi' : ' km')) + ' away';
     }
     function linkNarrow() { return !!(window.matchMedia && window.matchMedia('(max-width: 400px)').matches); }   // a phone held upright (B-5)
-    function linkText(lead, near, link) {             // within LINK_PLAIN_KM the plain words; farther: its id and distance (narrow: the distance only)
+    // a linked station as its window names it: a forecast point by its id, a live buoy as the live window does (its NDBC
+    // number, else its name: a CMEMS buoy is "6200024", never its file id IR_TS_MO_6200024: re-check R1-4)
+    function linkLabel(link, live) { return live ? String(buoyDisplayLabel(link.s) || '') : linkKey(link.s.id); }
+    function linkText(lead, near, link, live) {       // within LINK_PLAIN_KM the plain words; farther: its name and distance (narrow: the distance only)
       if (link.km <= LINK_PLAIN_KM) return near;
       if (linkNarrow()) return lead + ' · ' + linkAway(link.km).replace(/ away$/, '');
-      return lead + ' ' + linkKey(link.s.id) + ' · ' + linkAway(link.km);
+      return lead + ' ' + linkLabel(link, live) + ' · ' + linkAway(link.km);
     }
     // what a screen reader says (B-6): the far link in words, the near one its text; the title adds the station's name
-    function linkDescribe(b, lead, link) {
+    // when the label is not the name already
+    function linkDescribe(b, lead, link, live) {
       if (!b.setAttribute) return;
+      const label = linkLabel(link, live);
       if (link.km <= LINK_PLAIN_KM) b.removeAttribute('aria-label');
-      else b.setAttribute('aria-label', lead + ' ' + linkKey(link.s.id) + ', ' + linkAway(link.km, true));
+      else b.setAttribute('aria-label', lead + ' ' + label + ', ' + linkAway(link.km, true));
       const name = link.s.name ? String(link.s.name).trim() : '';
-      b.title = name && name.toUpperCase() !== linkKey(link.s.id) ? name : '';
+      b.title = name && name.toUpperCase() !== label.trim().toUpperCase() ? name : '';
     }
     function linkMove(link) {                         // a link farther than LINK_KM: the map moves to the station (decision 4)
       if (!link || link.km <= LINK_KM || !map.panTo || !map.getCenter) return;
@@ -3534,12 +3552,27 @@
       fwLink = fwBack ? { s: fwBack.live, km: fwBack.km } : liveLinkFor(fwStationId);
       if (fb) {
         fb.hidden = !fwLink;
-        if (fwLink) { fb.textContent = linkText('Live buoy', 'Live buoy', fwLink); linkDescribe(fb, 'Live buoy', fwLink); }
+        if (fwLink) { fb.textContent = linkText('Live buoy', 'Live buoy', fwLink, true); linkDescribe(fb, 'Live buoy', fwLink, true); }
       }
     }
     // the focus goes into the window the link opened, whatever pressed it: a pressed button keeps the focus in Chrome,
     // and it lay in the window now behind, so Escape acted on that one (G35 B-2, test-site check V7-2)
     function linkFocus(headerId) { if (typeof focusWindowHeader === 'function') focusWindowHeader(headerId); }
+    // a back link lives as long as the window it was made for (re-check R1-3): a live window opened from its dot (a
+    // click, or Enter / Space on it) has none, and a closed one keeps none (else the buoy's own dot, later, showed the
+    // link back to the forecast it first came from)
+    function forgetLiveBack() { lwBack = null; }
+    // the live window closed: the focus goes back to the "Live buoy" that opened it when that is still on screen (as
+    // the forecast window gives it back to its link: re-check F-4), else to the map as before; only when the focus was
+    // in the closed window or nowhere
+    function liveWindowClosed() {
+      const back = lwBack, fb = document.getElementById('fwLive'), w = document.getElementById('liveBuoyPanel');
+      lwBack = null;
+      const a = document.activeElement, mine = !a || a === document.body || (w && w.contains && w.contains(a));
+      const shown = fb && !fb.hidden && fb.getClientRects && fb.getClientRects().length > 0;
+      if (back && mine && shown) { try { fb.focus({ preventScroll: true }); return; } catch (e) {} }
+      if (typeof focusMapAfterClose === 'function') focusMapAfterClose('liveBuoyPanel');
+    }
     (function wireBuoyLinks() {
       const lb = document.getElementById('lwForecast'), fb = document.getElementById('fwLive'), unit = document.getElementById('unit');
       if (lb) lb.addEventListener('click', function () {
@@ -3552,8 +3585,9 @@
         if (!fwLink) return;
         const link = fwLink, f = forecastStationsData.filter(function (s) { return s && String(s.id) === fwStationId; })[0] ||
           (fwStationAt && fwStationAt.id === fwStationId ? fwStationAt : null);
+        linkMove(link); openLiveBuoy(link.s);           // (a dot's own open forgets any back link: R1-3)
         lwBack = f ? { id: String(link.s.id), f: f, km: link.km } : null;
-        linkMove(link); openLiveBuoy(link.s); linkFocus('lwHeader');
+        syncBuoyLinks(); linkFocus('lwHeader');
       });
       document.addEventListener('allshore:station', function (e) { const d = e.detail || {}; if (d.sid) { fwStationId = String(d.sid); syncBuoyLinks(); } });
       document.addEventListener('allshore:forecast', function (e) {
@@ -3572,8 +3606,12 @@
     // Touch screens: each live dot takes taps up to half the way to the nearest other icon (8 px at most): other live
     // dots, tide icons, wind flags (a flag on the buoy itself leaves the dot as it was), My points and the forecast dots;
     // its own twin forecast dot only while it lies under the dot itself (zoomed in until the two part, it counts like
-    // any other icon: G35 B-12). Touch screens: (any-pointer: coarse), whichever pointer is the primary one (B-7), so a
-    // mouse on a touch-screen computer gets the pads too (owner, 2026-10-25: kept); without a touch screen: nothing.
+    // any other icon: G35 B-12). "Under" = its centre within LIVE_TWIN_UNDER px of the dot's edge: the live dot is drawn
+    // 6.5 px (7.5 when opened) right of its position (commit baa40a8, so a mouse can click both), so the twin shows
+    // mostly beside it, and on a touch screen the dot's pad takes that yellow dot too; its forecast is one tap further,
+    // through "Forecast for this point" (re-check F-1, owner 2026-10-25: kept as built). Touch screens: (any-pointer:
+    // coarse), whichever pointer is the primary one (B-7), so a mouse on a touch-screen computer gets the pads too
+    // (owner, 2026-10-25: kept); without a touch screen: nothing.
     const LIVE_TAP_MAX = 8, LIVE_TWIN_UNDER = 3;
     function liveDotAt(d) {                           // the dot's centre: the icon sits right of its coordinate
       const p = map.latLngToContainerPoint([d.lat, d.lng]), size = d.active ? 15 : 11, anchor = Math.round(size / 2 - (d.active ? 8 : 7));
@@ -3798,7 +3836,12 @@
           },
           onStatus: function (code, text) { windFeedNote = text || ''; syncWindNote(); }
         });
-      } else feed.stop();
+      } else {
+        feed.stop();
+        // what the stopped feed brought is forgotten: ticked again, the note waits for new readings instead of showing
+        // a stall worked out from old ones (re-check F-3)
+        windLastFeed = null; windStallText = '';
+      }
     }
     // the note: the list's and the feed's state at the gate; never a zoom hint, below zoom 9 or for the flags the
     // thinning holds back (owner, 2026-10-10: it is understood that stations appear when zoomed in)
@@ -4936,7 +4979,7 @@
         window.addEventListener('resize', syncForecastChip);
       })();
       if (window.AllshoreForecast && window.AllshoreForecast.createLiveWindow) {
-        liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; focusMapAfterClose('liveBuoyPanel'); } });
+        liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; liveWindowClosed(); } });
         document.addEventListener('allshore:livewin', function (e) {
           var d = e.detail || {};
           document.body.classList.toggle('live-chip', !!(d.open && d.mode === 'min'));   // the forecast window's default box rises above a parked chip

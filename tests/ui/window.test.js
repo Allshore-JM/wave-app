@@ -445,6 +445,14 @@ test('G16-B P2-1: every forecast that lands is announced with the table\'s zone,
   b.page.tz.value = 'UTC'; b.page.tz.dispatch('change'); await settle(); b.fs_.last().release(payload({ tz_label: 'UTC', model: 'SWAN' })); await settle();
   assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table', ok: true, point: null, final: false, reason: null, lat: null, lon: null });
   assert.equal(b.doc.getElementById('fwCycle').title, 'SWAN · updated 20260926 12 UTC'.replace('updated ', 'updated ').replace('SWAN · updated 20260926 12 UTC', b.doc.getElementById('fwCycle').textContent), 'titles carry the full text');
+  // the answer's position goes with the event (a removed station's sheltered note offers its live buoy: G35 B-8; re-check F12)
+  b.page.tz.value = ''; b.page.tz.dispatch('change'); await settle();
+  b.fs_.last().release(payload({ table_html: null, error: 'No model data', final: true, reason: 'sheltered', lat: 38.56, lon: -76.41 })); await settle();
+  const last = seen[seen.length - 1];
+  assert.equal(last.lat, 38.56); assert.equal(last.lon, -76.41); assert.equal(last.final, true); assert.equal(last.reason, 'sheltered'); assert.equal(last.ok, false);
+  b.page.tz.value = 'UTC'; b.page.tz.dispatch('change'); await settle();
+  b.fs_.last().release(payload({ lat: 'x', lon: Infinity })); await settle();
+  assert.equal(seen[seen.length - 1].lat, null, 'not a number: null'); assert.equal(seen[seen.length - 1].lon, null);
 });
 
 // ---- G16 reviewer A ----
@@ -1073,6 +1081,12 @@ test('G35 B-2: Escape acts on the window holding the focus, else the one in fron
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['live', 'tide']); assert.equal(app.window.mode, 'min', 'the forecast window in front (a link): minimised first');
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['live', 'tide', 'wind'], 'then the fixed order');
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['live', 'tide', 'wind'], 'nothing open: nothing');
+  // re-check F10: the forecast window in front (a link opened it) but no station window open and the focus elsewhere:
+  // Escape leaves it alone (only the window holding the focus is minimised)
+  app.expand(); win.document.activeElement = null; page.w.classList.add('fw-front');
+  win.document.fire('keydown', { key: 'Escape' }); assert.equal(app.window.mode, 'normal', 'in front, alone, not focused: left alone');
+  win.document.activeElement = inside(page.w);
+  win.document.fire('keydown', { key: 'Escape' }); assert.equal(app.window.mode, 'min', 'the focus in it: minimised');
 });
 
 // ---- plan section 46: the default station and the first load deferred behind the geo race ----

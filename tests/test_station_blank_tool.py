@@ -135,6 +135,82 @@ def test_apply_restores_a_comeback_at_its_old_place():
     assert [pos[s] for s in ids] == sorted(pos[s] for s in ids), "the list keeps the coordinates' order"
 
 
+def _tool_dir(tmp_path, listed, removed, coords_ids):
+    """A scratch copy of the tool's three files: the list, the coordinates (the list's order) and the blank file."""
+    (tmp_path / "station_list.json").write_text(json.dumps(listed), encoding="utf-8")
+    (tmp_path / "station_coords.json").write_text(
+        json.dumps({s: {"lat": 38.5, "lon": -76.4} for s in coords_ids}), encoding="utf-8")
+    (tmp_path / "station_blank.json").write_text(json.dumps({"rule": "", "runs": {}, "removed": removed}), encoding="utf-8")
+    return tmp_path
+
+
+def _run_main(monkeypatch, d, run, blank, apply):
+    """The tool's real main() with the network faked: the tar answers 'blank' for `blank`, data for the rest."""
+    asked = []
+
+    def fake_tar(http, r, ids):
+        asked[:] = list(ids)
+        return {"blank": sorted(s for s in ids if s in blank), "absent": [], "failed": [], "scanned": len(ids),
+                "source": "fake"}
+
+    monkeypatch.setattr(T, "ROOT", str(d))
+    monkeypatch.setattr(T, "LIST_PATH", str(d / "station_list.json"))
+    monkeypatch.setattr(T, "OUT_PATH", str(d / "station_blank.json"))
+    monkeypatch.setattr(T, "tar_scan", fake_tar)
+    monkeypatch.setattr(T, "newest_run", lambda http: run)
+    monkeypatch.setattr(T, "_session", lambda: None)
+    assert T.main(["--run", run] + (["--apply"] if apply else [])) == 0
+    doc = json.loads((d / "station_blank.json").read_text(encoding="utf-8"))
+    lst = json.loads((d / "station_list.json").read_text(encoding="utf-8"))
+    return doc, lst, asked
+
+
+@pytest.mark.parametrize("steps", [
+    # (run, --apply?) ; 44062 has data again from the first run on and stays so (re-check R1-1's four orders)
+    [("2026102418", False), ("2026102500", True), ("2026102506", False), ("2026102512", True)],
+    [("2026102418", True), ("2026102500", False), ("2026102506", True), ("2026102512", False), ("2026102518", True)],
+    [("2026102418", True), ("2026102500", True), ("2026102506", True)],
+    [("2026102418", False), ("2026102500", False), ("2026102506", False), ("2026102512", True)],
+], ids=["scan-then-apply", "apply-then-scan", "every-run-apply", "scans-then-one-apply"])
+def test_a_comeback_is_never_lost_whatever_the_order_of_scans_and_apply(tmp_path, monkeypatch, steps):
+    """Re-check R1-1: a removed station back with data in both newest runs waits in "restore" (scanned every run)
+    until --apply puts it back at its old place; before the fix a plain scan completing the comeback lost it."""
+    order = ["3FYT", "44061", "44062", "51201"]
+    d = _tool_dir(tmp_path, ["3FYT", "51201"], ["44061", "44062"], order)
+    for run, apply in steps:
+        doc, lst, asked = _run_main(monkeypatch, d, run, {"44061"}, apply)
+        assert "44062" in asked, (run, "every run reads it")
+        assert ("44062" in doc["removed"]) + ("44062" in doc["restore"]) + ("44062" in lst) == 1, (run, doc, lst)
+        assert doc["removed"] == ["44061"] or run == steps[0][0], "44061 stays blank: stays removed"
+        assert "44061" not in lst and "44061" in asked
+    assert lst == ["3FYT", "44062", "51201"], "back at its old place"
+    assert doc["restore"] == [] and doc["removed"] == ["44061"]
+    # and later scans keep it listed (it is a listed station now) without a trace in "restore"
+    doc, lst, _ = _run_main(monkeypatch, d, "2026102600", {"44061"}, False)
+    assert lst == ["3FYT", "44062", "51201"] and doc["restore"] == []
+
+
+def test_a_station_waiting_to_come_back_that_goes_blank_again_is_removed_again(tmp_path, monkeypatch):
+    d = _tool_dir(tmp_path, ["51201"], ["44062"], ["44062", "51201"])
+    for run in ("2026102418", "2026102500"):
+        doc, lst, _ = _run_main(monkeypatch, d, run, set(), False)
+    assert doc["restore"] == ["44062"] and doc["removed"] == [] and lst == ["51201"]
+    doc, lst, asked = _run_main(monkeypatch, d, "2026102506", {"44062"}, False)
+    assert "44062" in asked and doc["restore"] == ["44062"], "one blank run: still waiting"
+    doc, lst, _ = _run_main(monkeypatch, d, "2026102512", {"44062"}, True)
+    assert doc["removed"] == ["44062"] and doc["restore"] == [] and lst == ["51201"], "blank in both: removed again"
+
+
+def test_a_station_put_back_by_hand_leaves_restore(tmp_path, monkeypatch):
+    d = _tool_dir(tmp_path, ["51201"], ["44062"], ["44062", "51201"])
+    for run in ("2026102418", "2026102500"):
+        doc, _, _ = _run_main(monkeypatch, d, run, set(), False)
+    assert doc["restore"] == ["44062"]
+    (d / "station_list.json").write_text(json.dumps(["44062", "51201"]), encoding="utf-8")
+    doc, lst, _ = _run_main(monkeypatch, d, "2026102506", set(), False)
+    assert doc["restore"] == [] and lst == ["44062", "51201"]
+
+
 def test_the_committed_file_and_the_list_agree():
     """station_blank.json names the removed ids; none is in station_list.json; all keep their coordinates and zones."""
     with open(os.path.join(ROOT, "station_blank.json"), encoding="utf-8") as f:
@@ -150,6 +226,13 @@ def test_the_committed_file_and_the_list_agree():
     coords = json.load(open(os.path.join(ROOT, "station_coords.json"), encoding="utf-8"))
     for s in doc["removed"]:
         assert s not in ids and s in coords, s
+    # every id a recorded run named blank or back is accounted for: listed, removed, or waiting in "restore"
+    # (re-check R1-1: never on neither list)
+    restore = set(doc.get("restore", []))
+    assert restore.isdisjoint(ids) and restore.isdisjoint(doc["removed"]) and restore <= set(coords)
+    for run, r in doc["runs"].items():
+        for s in set(r.get("blank", [])) | set(r.get("back", [])):
+            assert s in ids or s in doc["removed"] or s in restore, (run, s)
     assert {"44061", "44062", "44039", "44087"} <= set(doc["removed"])
     assert "Alaska_NS3" in ids and "Alaska_NS3" not in doc["removed"], "blank under sea ice: kept (owner)"
     assert all("Alaska_NS3" in r.get("ice", []) for r in doc["runs"].values())

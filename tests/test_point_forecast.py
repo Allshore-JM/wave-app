@@ -1360,11 +1360,12 @@ def test_points_fetch_caps_the_body_and_refuses_other_statuses(monkeypatch):
     monkeypatch.setattr(A._POINT_HTTP, "get", get)
     monkeypatch.setattr(A, "_POINT_FETCH_MAX_S", 8)
     # a timer that fires once the body is read touches nothing: the socket may be the pool's again (G22 R2-8)
-    fired = []
+    fired, intervals = [], []
 
     class Hold:
         def __init__(self, t, fn):
             fired.append(fn)
+            intervals.append(t)
             self.daemon = False
 
         def start(self):
@@ -1375,8 +1376,12 @@ def test_points_fetch_caps_the_body_and_refuses_other_statuses(monkeypatch):
     monkeypatch.setattr(A.threading, "Timer", Hold)
     seen["resp"] = Resp(200, [b"ab"])
     assert A._points_fetch("https://bucket/x", 9) == b"ab"
+    assert intervals[-1] == A._POINT_FETCH_MAX_S == 8, "the socket cut fires at the caller's max_s (re-check A3)"
     fired[-1]()
     assert seen["resp"].sock.down == 0
+    seen["resp"] = Resp(200, [b"ab"])
+    assert A._madis_fetch("https://madis/x", 9) == b"ab" and intervals[-1] == A.WIND_MADIS_MAX_S == 90
+    assert seen["timeout"] == A.WIND_MADIS_TIMEOUT
     seen["resp"] = Resp(200, [b"ab", b"cde"])
     with pytest.raises(IOError, match="too large"):
         A._points_fetch("https://bucket/x", 4)

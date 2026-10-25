@@ -966,8 +966,10 @@ JAX, MNE, HNL; HNL51-68 are the boxes around Oahu and Kauai). `tests/test_statio
   the committed file, without asking NOAA. A visitor's stored default among them opens like no default (the page's head
   forgets it before the forecast module reads it, from `retired_stations` the server renders: the 11 ids) and says so
   once; a favorite the site no longer offers is dropped with a note. Every scan also reads the removed stations' bulletins (G35 F1): one with data
-  again in both of the two newest scans comes back at its old place with `--apply` (never on its own), and the
-  console names it; one still blank, absent or failed stays removed. The removed station's answer carries its
+  again in both of the two newest scans leaves "removed" for "restore" in `station_blank.json`, is scanned every run
+  while it waits there, and comes back at its old place with the next `--apply` (never on its own; the console names
+  it; a plain scan never loses it: re-check R1-1); one still blank, absent or failed stays removed, and one waiting in
+  "restore" that is blank in both newest scans again goes back to "removed". The removed station's answer carries its
   coordinates (`lat`, `lon`). The coordinates and zone tables stay whole (the point time-zone rule).
 - Source of the rule: NOAA's own point list for GFS-Wave (`parm/wave/wave_gfs.buoys.full` in NOAA-EMC/global-workflow)
   gives each point a TYPE. Every removed id is a boundary type there (3,118 `IBP` for NCEP models, 184 `BPT` for other
@@ -1461,27 +1463,38 @@ Built and published by `tools/places/build_places.py` (coast-build workflow, `se
 138 of the live buoys are forecast points too (the same NDBC id), many within a few hundred metres, and the live dot is
 drawn over the forecast dot. The live window then offers **Forecast for this point** and the forecast window **Live
 buoy**: the station with the same id (the live id without its source, or the id a small alias table gives a buoy
-another network lists under its own number: CDIP 163 = NDBC 52201, the Marine Institute's M2..M6 = 62091..62095, CMEMS
-`*_TS_MO_6200NNN` = 62NNN) within 400 km, else the nearest within 1 km; a twin farther than 2 km (NOAA's forecast point
+another network lists under its own number: CDIP 163 = NDBC 52201, the Marine Institute's M2..M6 = 62091..62095, CEFAS
+8 / 10 / 305 (Sandettie Light Vessel, Clipper, Lomond) = 62304 / 62144 / 62146, CMEMS `*_TS_MO_6200NNN` = 62NNN) within
+400 km, else the nearest within 1 km; a twin farther than 2 km (NOAA's forecast point
 for a moved buoy lies 30-320 km from it) is named with its distance ("Forecast point 41041 · 19 mi away"; "Forecast
 point · 19 mi" on screens 400 px wide or less; a screen reader hears "Forecast point 41041, 19 miles away"); none, no
-button. A window opened by the other's link links back to where the visitor came from (two buoys at one spot made a
-round trip land on the other: G35 decision 3), and a link to a station farther than 1 km moves the map there (decision
+button. A far live buoy is named as its window names it (its NDBC number, else its name: a CMEMS buoy "6200024", never
+its file id). A window opened by the other's link links back to where the visitor came from (two buoys at one spot made
+a round trip land on the other: G35 decision 3) for as long as that window stays open (a live window closed, or opened
+from its own dot, has its own link again); closing a live window opened by "Live buoy" gives the focus back to that
+button when it shows. A link to a station farther than 1 km moves the map there (decision
 4). A removed station (section 52 C) has no dot, but its answer carries its position, so its sheltered note offers the
 live buoy of the same id. On touch screens (`(any-pointer: coarse)`: any touch screen, whatever pointer is the primary
 one; the rules follow the query when a pointer comes or goes) the forecast dots take taps 8 px beyond their edge (the
 map's canvas renderer `tolerance`), and the renderer gives a tap to the NEAREST dot holding it (Leaflet's own canvas
 gives it to the last drawn: a neighbour drawn later stole a tap on a dot's own centre; the `// ---- nearest path`
 block, `tests/ui/nearest.test.js`); each live dot takes taps up to 8 px beyond its own, halved toward the nearest other
-icon (live dots, tide icons, wind flags, My points, forecast dots; its own twin only while it lies under the dot: a buoy's
-own wind flag keeps the dot as it was), one pass per round of rebuilds. On a computer without a touch screen a mouse
+icon (live dots, tide icons, wind flags, My points, forecast dots; its own twin only while it lies within 3 px of the
+dot's edge: a buoy's own wind flag keeps the dot as it was), one pass per round of rebuilds. The live dot is drawn ~7 px
+to the right of its position (so the two dots can both be clicked with a mouse), so its twin forecast dot shows mostly
+beside it; on a touch screen the live dot's pad takes that yellow dot too, and its forecast is one tap further, through
+"Forecast for this point" (owner, 2026-10-25: kept as built). A tide icon's pad stops half-way to another station's wind
+flag, as a live dot's does (a flag on its own gauge leaves it no pad). On a computer without a touch screen a mouse
 hits as before; on one WITH a touch screen (many Windows laptops) the mouse gets the touch reach too (owner, 2026-10-25:
 kept; the nearest icon still wins). The map tools take the tap's own position (Leaflet hands a click on a canvas dot the
 dot's position). The link buttons are 44 px tall on touch screens. On phones the window opened or touched last is the one
 on top; a link moves the focus into the window it opened, and Escape acts on the window holding the focus, else the one
 in front, then wind, tide, live. The forecast window's notes (a removed default or favorite cleared, a point not kept)
 sit between its toolbar and its table, so the table's scroll to the current hour never hides them; several are kept, one
-per line. The wind legend's stall note is worked out again when the wind station list lands. The block is `// ---- buoy links` in `templates/index.html`
+per line; a removed default the page's head forgot is said at page start, whether or not the station list loads. The
+wind legend's stall note is worked out again when the wind station list lands, and forgotten when the wind feed stops
+(the layer unticked, the map below the stations' zoom). The station list is asked for once more only when its answer is
+refused or broken; a fault in the code that uses it is logged. The block is `// ---- buoy links` in `templates/index.html`
 (`tests/ui/buoylinks.test.js` runs it).
 
 ## Wind stations (plan section 39, UI asset 1.22.0)

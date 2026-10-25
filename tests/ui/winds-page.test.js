@@ -532,6 +532,26 @@ test('the stall note is worked out again when the station list lands after the r
   w.bad(); assert.equal(w.text(), '', 'a throwing rule leaves no note (never the repaint)');
 });
 
+test('re-check F-3: the feed stopped (the layer unticked, the map below the gate): the stall note and the readings it came from are forgotten, so ticked again (or a list landing meanwhile) shows no old note', () => {
+  const now = 1792876500;
+  const SYNC = cut('    function syncWindFeed(on) {', '    function windNoteWanted(on) {');
+  const make = new Function('let windStationsData = [{ id: "nws:016HE", tz: "Pacific/Honolulu" }, { id: "nws:011HI", tz: "Pacific/Honolulu" }];\n' +
+    'let windReadings = {}, windStaleS = 7200, windFeedNote = "", feedLog = [], handlers = null;\n' +
+    'const windFeed = { start(h) { feedLog.push("start"); handlers = h; }, stop() { feedLog.push("stop"); } };\n' +
+    'function ensureWindFeed() { return windFeed; } function refreshWindFlags() {} function syncWindNote() {}\n' + SYNC +
+    '\nreturn { sync: syncWindFeed, data: (p) => handlers.onData(p, { readings: {}, partial: [] }), list: (l) => { windStationsData = l; workOutWindStall(); }, ' +
+    'text: () => windStallText, last: () => windLastFeed, log: () => feedLog };');
+  const w = make();
+  w.sync(true); w.data({ now, stale_s: 7200, newest: { nws: now - 4 * 3600 }, rows: [], fed_by: {} });
+  assert.ok(w.text().startsWith('NWS feed stalled since '), w.text());
+  w.sync(false);
+  assert.equal(w.text(), '', 'stopped: no note kept'); assert.equal(w.last(), null, 'nor the readings it was worked out from');
+  w.list([{ id: 'nws:016HE', tz: 'Pacific/Honolulu' }]); assert.equal(w.text(), '', 'the list landing while off works nothing out');
+  w.sync(true); assert.equal(w.text(), '', 'ticked again: nothing until new readings');
+  w.data({ now, stale_s: 7200, newest: { nws: now - 60 }, rows: [], fed_by: {} }); assert.equal(w.text(), '', 'the new readings decide');
+  assert.deepEqual(w.log(), ['start', 'stop', 'start']);
+});
+
 test('the stall note in the page: after the flags are repainted, guarded, behind the feed\'s own note; the credit names MADIS', () => {
   assert.ok(TPL.includes("            refreshWindFlags();\n            windLastFeed = { payload: payload, missing: missing };\n            workOutWindStall();\n            syncWindNote();"));
   assert.ok(TPL.includes("        windListNote = '';\n        workOutWindStall();\n        rebuildWindMarkers(true);"), 'worked out again when the station list lands (V7-4)');

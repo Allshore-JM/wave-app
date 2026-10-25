@@ -963,7 +963,9 @@ JAX, MNE, HNL; HNL51-68 are the boxes around Oahu and Kauai). `tests/test_statio
   blank under ice now). Removed on 2026-10-24 (runs 2026102406 + 2026102412): 44039, 44040, 44043, 44058, 44061,
   44062, 44063, 44064, 44072, 44087, 46088. An old link to a removed station still
   opens: `/api/forecast` answers the note "No model data at this point (sheltered water ...)" as final (no Retry), from
-  the committed file, without asking NOAA. Every scan also reads the removed stations' bulletins (G35 F1): one with data
+  the committed file, without asking NOAA. A visitor's stored default among them opens like no default (the page's head
+  forgets it before the forecast module reads it, from `retired_stations` the server renders: the 11 ids) and says so
+  once; a favorite the site no longer offers is dropped with a note. Every scan also reads the removed stations' bulletins (G35 F1): one with data
   again in both of the two newest scans comes back at its old place with `--apply` (never on its own), and the
   console names it; one still blank, absent or failed stays removed. The removed station's answer carries its
   coordinates (`lat`, `lon`). The coordinates and zone tables stay whole (the point time-zone rule).
@@ -1454,17 +1456,29 @@ beside the coastline and is given up only after 5 s with no byte (the owner's ca
 since 2.22.4). A row turned on while the other row's file is still loading starts its own file at once (UI 1.25.4), with a full 15 s for its first byte (UI 1.25.5).
 Built and published by `tools/places/build_places.py` (coast-build workflow, `set: places`; `tools/places/README.md`).
 
-## A live buoy on a forecast point (plan section 52, UI asset 1.25.6)
+## A live buoy on a forecast point (plan section 52, UI asset 1.25.8)
 
 138 of the live buoys are forecast points too (the same NDBC id), many within a few hundred metres, and the live dot is
 drawn over the forecast dot. The live window then offers **Forecast for this point** and the forecast window **Live
-buoy**: the station with the same id (the live id without its source) within 400 km, else the nearest within 1 km; a
-twin farther than 1 km (NOAA's forecast point for a moved buoy lies 30-320 km from it) is named with its distance
-("Forecast point 41041 · 19 mi away"); none, no button. On touch screens the forecast dots take taps 8 px beyond their
-edge (the map's canvas renderer `tolerance`) and each live dot up to 8 px beyond its own, halved toward the nearest other
-icon (live dots, tide icons, wind flags, My points, forecast dots other than its twin: a buoy's own wind flag keeps the
-dot as it was); a mouse hits as before. On phones the window opened or touched last is the one on top. The block is
-`// ---- buoy links` in `templates/index.html` (`tests/ui/buoylinks.test.js` runs it).
+buoy**: the station with the same id (the live id without its source, or the id a small alias table gives a buoy
+another network lists under its own number: CDIP 163 = NDBC 52201, the Marine Institute's M2..M6 = 62091..62095, CMEMS
+`*_TS_MO_6200NNN` = 62NNN) within 400 km, else the nearest within 1 km; a twin farther than 2 km (NOAA's forecast point
+for a moved buoy lies 30-320 km from it) is named with its distance ("Forecast point 41041 · 19 mi away"; "Forecast
+point · 19 mi" on screens 400 px wide or less; a screen reader hears "Forecast point 41041, 19 miles away"); none, no
+button. A window opened by the other's link links back to where the visitor came from (two buoys at one spot made a
+round trip land on the other: G35 decision 3), and a link to a station farther than 1 km moves the map there (decision
+4). A removed station (section 52 C) has no dot, but its answer carries its position, so its sheltered note offers the
+live buoy of the same id. On touch screens (`(any-pointer: coarse)`: any touch screen, whatever pointer is the primary
+one; the rules follow the query when a pointer comes or goes) the forecast dots take taps 8 px beyond their edge (the
+map's canvas renderer `tolerance`), and the renderer gives a tap to the NEAREST dot holding it (Leaflet's own canvas
+gives it to the last drawn: a neighbour drawn later stole a tap on a dot's own centre; the `// ---- nearest path`
+block, `tests/ui/nearest.test.js`); each live dot takes taps up to 8 px beyond its own, halved toward the nearest other
+icon (live dots, tide icons, wind flags, My points, forecast dots; its own twin only while it lies under the dot: a buoy's
+own wind flag keeps the dot as it was), one pass per round of rebuilds; a mouse hits as before. The map tools take the
+tap's own position (Leaflet hands a click on a canvas dot the dot's position). The link buttons are 44 px tall on touch
+screens. On phones the window opened or touched last is the one on top; Escape acts on the window holding the focus,
+else the one in front, then wind, tide, live. The block is `// ---- buoy links` in `templates/index.html`
+(`tests/ui/buoylinks.test.js` runs it).
 
 ## Wind stations (plan section 39, UI asset 1.22.0)
 
@@ -1523,8 +1537,11 @@ naming the site as aviationweather.gov asks):
   the merged table takes the newer of a station's NWS API reading and its MADIS one (the gauges' NDBC-relay rule); a
   MADIS reading is kept 6 h. The table says which rows a relay gave (`fed_by`, counted in `/healthz` `wind.fed_by`) and
   each paced feed's and MADIS's newest reading ever (`newest`; `/healthz` adds MADIS's kept readings and the last
-  answer's station and wind counts, and an answer with stations but no wind at all is logged); the legend notes "NWS feed stalled since <time>" when the NWS feed's
-  newest is over 3 h old and no fresh MADIS row covers its stations (unknown after a restart: no note). A station's
+  answer's station and wind counts, and an answer with stations but no wind at all is logged); the legend notes "NWS feed stalled since <time>" when most NWS flags are
+  grey (owner, 2026-10-24: fewer than half of the snapshot's NWS stations have a reading within the stale time, from the
+  API or MADIS) and the NWS feed itself has brought nothing for 3 h, the time in the stations' own zone, named ("Oct 22,
+  3:20 AM HST"); after a restart during the outage the feed's newest time is unknown and the note reads "NWS feed: no
+  recent readings". A reading that stands alone in the window's charts (one MADIS report) is drawn as a dot. A station's
   window falls back on its latest MADIS report (one row, with temperature, dew point, humidity and pressure; "via
   MADIS") when the NWS API has nothing newer. Every NWS-network station's window carries NOAA's accuracy disclaimer
   for mesonet observations (`disclaimer`; MADIS's restrictions page asks for one). MADIS asks users to notify NOAA before placing its data on web pages: the

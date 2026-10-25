@@ -514,6 +514,8 @@ test("the stall note (owner, G35 decision 2): most NWS flags grey (fewer than ha
   assert.equal(stallNote(base, ['nws'], ST), '', 'the NWS feed still loading after a deploy: not stalled');
   assert.equal(stallNote(base, [], []), '', 'no NWS stations: nothing to tell');
   assert.equal(stallNote(base, [], null), ''); assert.equal(stallNote(null, [], ST), ''); assert.equal(stallNote({}, null, ST), '');
+  const ny = stallNote(base, [], [{ id: 'nws:016HE', tz: 'America/New_York' }]);
+  assert.ok(/ EDT$/.test(ny), "the stations' zone, not the computer's: " + ny);
   const badZone = stallNote(base, [], [{ id: 'nws:016HE', tz: 'Not/AZone' }]);
   assert.ok(badZone.startsWith('NWS feed stalled since '), 'an unknown zone: the computer\'s, named: ' + badZone);
 });

@@ -230,12 +230,14 @@ test('touch pads: half the way to the nearest other icon (8 px at most); a flag 
 });
 
 test('B-12: the twin counts like any icon once the two dots part (zoomed in); B19: an earlier dot counts for a later one; B23: a forecast copy is measured where it is drawn', () => {
-  const L = at('ndbc:41113', 28.400, -80.534), twin = { id: '41113', lat: 28.400, lon: -80.5115 };   // 16 px from the dot's centre
+  // at 80 N a pixel of this fake map is 19 m: the twin 16 px from the dot's centre is 0.43 km away (a twin: within 1 km)
+  const L = at('ndbc:41113', 80, 10), twin = { id: '41113', lat: 80, lon: 10.0225 };
   const b = boot({ forecast: [twin], live: [L.s], drawn: [L] });
+  assert.ok(b.api.forecastLinkFor(L.s).km < b.api.LINK_KM, 'still its twin');
   b.api.liveTargets();
   assert.equal(L.marker.style.props['--live-tap'], '2px', 'apart: half the way (floor(8 - 5.5))');
-  const near = { id: '41113', lat: 28.400, lon: -80.5293 };                  // 1.2 px from the dot's centre: under it
-  const L2 = at('ndbc:41113', 28.400, -80.534), c = boot({ forecast: [near], live: [L2.s], drawn: [L2] });
+  const near = { id: '41113', lat: 80, lon: 10.0077 };                        // 1.2 px from the dot's centre: under it
+  const L2 = at('ndbc:41113', 80, 10), c = boot({ forecast: [near], live: [L2.s], drawn: [L2] });
   c.api.liveTargets(); assert.equal(L2.marker.style.props['--live-tap'], '8px', 'under the dot: left out');
   const first = at('ndbc:A', 10, 10), second = at('ndbc:B', 10, 10.012);         // 12 px apart
   const d = boot({ live: [first.s, second.s], drawn: [first, second] });

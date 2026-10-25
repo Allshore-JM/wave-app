@@ -809,6 +809,7 @@
       #fwLive { display: none !important; }
       .forecast-win { position: static; width: auto; height: auto; box-shadow: none; border: 0; }
       .forecast-win.fw-min .fw-toolbar, .forecast-win.fw-min .fw-body { display: block; }   /* a minimised window still prints its table */
+      .forecast-win.fw-min > #fwNote:not([hidden]) { display: block; }   /* and its notes, now outside the body (fix round 7c, V7c-1) */
       #forecastTable[hidden] { display: block !important; } #graphs, #forecastSummary { display: none !important; }   /* the charts are not printable: the detailed table is */
       .fw-body { overflow: visible; }
     }

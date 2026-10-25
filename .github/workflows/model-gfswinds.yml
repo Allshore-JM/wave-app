@@ -1,0 +1,62 @@
+# Publishes the GFS 10 m winds of every GFS-Wave forecast station to R2 under gfswave/winds/v1/ (plan section 53 B), from
+# NOAA's spectra archive on AWS (gfs.YYYYMMDD/HH/wave/station/gfswave.tHHz.spec_tar.gz, ~1.7 GB, streamed once per
+# run). The site's forecast table reads its Wind column there first and NOMADS's .spec second. Between cycles the job
+# short-circuits in a few seconds (a few HEADs). The same pinned environment as the other publishers (one cached env).
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: model-gfswinds
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      run:
+        description: "YYYYMMDDHH (blank = the newest complete run, if not live yet)"
+        default: ""
+      dry_run:
+        description: "no uploads (true/false)"
+        default: "false"
+concurrency:
+  group: model-gfswinds
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30                    # a build streams ~1.7 GB; the job's own budget stops at 20 min
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+          cache-environment: true
+      - name: Record environment
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|boto3)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish GFS station winds
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          RUN: ${{ github.event.inputs.run }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          if [ -n "$RUN" ] && ! [[ "$RUN" =~ ^[0-9]{10}$ ]]; then echo "bad run input"; exit 2; fi
+          ARGS=()
+          [ -n "$RUN" ] && ARGS+=(--run "$RUN")
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/gfs_winds.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          if [ "$rc" -eq 3 ]; then echo "no complete run yet" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          exit "$rc"

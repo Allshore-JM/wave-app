@@ -119,3 +119,22 @@ Page and client (7b):
 24. Outside section 52, cheap: the head's early `/stations.json` fetch gets a catch and one retry.
 Then the test site (MAX) and a short fresh re-check (the fixes touch the hit-test and link code), then production after the
 owner's word on the NOAA notification.
+
+## Fix round, server and tool (step 7a, d99e343)
+Items 1-8 of the scope, Opus 5.5 HIGH:
+1. F1: `tools/build_station_blank.py` scans the listed ids and the removed ones (`scan_ids`); each run records `back`
+   (removed ids read with data: not blank, absent or failed); `removed_ids(runs, before)` = blank in both of the two newest
+   runs, plus the ids removed before that are not back in both; `--apply` restores a comeback at its place in
+   `station_coords.json`'s order (the list keeps that order: pinned) and names it. The committed file's rule text updated.
+2. F3: `_madis_fetch` = `_capped_get(url, cap, headers, (10, 45), 90 s)`, the points fetch's socket-shutdown cut, shared.
+3. F5: `MadisProvider` keeps `_newest_t` (so `newest.madis` reaches the page) and `status()` gains `readings`,
+   `last_rows`, `last_wind`, `newest_age_s`; `parse_madis_csv(stats=)` counts records and wind readings; an answer with
+   records and no wind logs a warning (the kept readings stay).
+4. B-13: `ATTRIBUTION["nws+madis"]` names the networks once.
+5. NOAA's accuracy disclaimer (`MESONET_DISCLAIMER`, the restrictions page's wording) in the history answer of every NWS
+   station (`disclaimer`), whichever feed; the page shows it in 7b.
+6. B-8 (server half): the removed-station answer carries `lat` / `lon`.
+7. F8: docstrings, "4-40 s", `MADIS_VARS` and `WIND_STALL_NOTE_S` removed.
+8. F9 (server half): D26 (two stations at different times, both orders), D27 (a report 601 s ahead dropped by the
+   provider), D15 (a used-up NWS budget answers busy with a MADIS row present).
+pytest 1,320 (full run, goldens included); mutants (scratch `polish/mut7a.py`, a scratch copy) 26 of 26 killed.

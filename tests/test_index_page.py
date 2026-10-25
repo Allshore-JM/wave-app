@@ -407,6 +407,9 @@ def test_my_points_on_the_page(client):
     assert body.index('<div id="fwToolbar"') < body.index('<div id="fwNote"') < body.index('<div id="fwBody"')
     assert ".forecast-win > #fwNote { flex: 0 0 auto; margin: 8px 10px 0; white-space: pre-line; }" in body
     assert ".fwin.fw-min > #fwNote { display: none; }" in body and ".fw-body > #fwNote" not in body
+    printing = body[body.index("    @media print {\n      #map, #pageHead"):]
+    printing = printing[:printing.index("\n    }\n")]
+    assert ".forecast-win.fw-min > #fwNote:not([hidden]) { display: block; }" in printing   # a minimised window prints its notes too (V7c-1)
     assert "function tellOnPage(msg) {" in body and "tellOnPage(retiredDefaultNote(early));" in body
     # a link moves the focus into the window it opened, whatever pressed it (V7-2); the stall note again when the list lands (V7-4)
     assert "function linkFocus(headerId) { if (typeof focusWindowHeader === 'function') focusWindowHeader(headerId); }" in body

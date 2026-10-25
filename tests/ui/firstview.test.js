@@ -185,8 +185,8 @@ test('without the geo Worker (no place, or no __early at all) the map opens as b
 
 // ---- a retired default station (G32 A-P3-3 / B-7): forgotten once the station list is in, said once in the window ----
 const FR = (() => {
-  const s = html.indexOf('    function forgetRetiredDefault(list) {'), e = html.indexOf('\n    }\n', s);
-  assert.ok(s > 0 && e > s, 'forgetRetiredDefault is in the template');
+  const s = html.indexOf('    function tellOnPage(msg, id) {'), f = html.indexOf('    function forgetRetiredDefault(list) {'), e = html.indexOf('\n    }\n', f);
+  assert.ok(s > 0 && f > s && e > f, 'tellOnPage .. forgetRetiredDefault are in the template');
   return html.slice(s, e + 6);
 })();
 function runForget(stored, list, opts) {
@@ -194,7 +194,7 @@ function runForget(stored, list, opts) {
   const store = { 'allshore.defaultStation.v1': stored === undefined ? null : JSON.stringify(stored) }, notes = [], docL = {};
   const localStorage = { getItem: (k) => (k in store ? store[k] : null), removeItem: (k) => { if (opts.blocked) throw new Error('blocked'); delete store[k]; } };
   const F = { parsePointId: (id) => (/^pt_\d+[NS]_\d+[EW]$/.test(id) ? { lat: 1, lon: 2 } : null), note: (m, sid) => notes.push([m, sid]) };
-  const window = { AllshoreForecast: opts.noApp ? undefined : F };
+  const window = { AllshoreForecast: opts.noApp ? undefined : F, __early: opts.early };
   const document = { readyState: opts.readyState, addEventListener: (ev, fn, o) => { (docL[ev] = docL[ev] || []).push({ fn, o }); } };
   new Function('localStorage', 'window', 'document', FR + '\nforgetRetiredDefault(' + JSON.stringify(list) + ');')(localStorage, window, document);
   return { store, notes, docL, window, F };
@@ -244,6 +244,15 @@ test('a default the list no longer has (or one the id rule refuses) is forgotten
   assert.equal(early.notes.length, 1, 'said when the window is up');
 });
 
+test('a removed default the head already forgot (G35 B-8): said once when the list lands, whatever the list', () => {
+  for (const list of [LIST2, []]) {
+    const r = runForget(undefined, list, { early: { retired: '44062' } });
+    assert.equal(r.notes.length, 1, 'said'); assert.ok(/44062/.test(r.notes[0][0]) && /near you next time/.test(r.notes[0][0])); assert.equal(r.notes[0][1], '44062');
+    assert.equal(r.window.__early.retired, null, 'once');
+  }
+  assert.deepEqual(runForget(undefined, LIST2, { early: { retired: null } }).notes, []);
+});
+
 // ---- the page helpers the first view and the wide box rely on, run from the template (G32 re-check D-1: R1's P5 / P7 /
 // P12 were killed only by source-text pins; these drive the code) ----
 function cutFn(start) {
@@ -279,22 +288,34 @@ test('measureTopRight counts the map tools\' bar while it shows (the wide box na
   assert.deepEqual(run(rect(970, 160, 970, 160)), { '--map-topright-h': '150px', '--map-topright-w': '170px' }, 'the bar hidden (no size): the legend and the gear alone');
 });
 
-test('the stations list, once in, is kept, drawn, judged for a retired default and used for a pending focus, in that order (R1 P12)', async () => {
-  const s = html.indexOf("    earlyFetch('stations', '/stations.json')"), e = html.indexOf('\n      });\n', s);
+test('the stations list, once in, is kept, drawn, judged for a retired default and used for a pending focus, in that order (R1 P12); a refused answer is asked for once more (G35)', async () => {
+  const s = html.indexOf('    const STATIONS_RETRY_MS'), e = html.indexOf('    loadForecastStations(1);\n', s);
   assert.ok(s > 0 && e > s, 'the stations load is in the template');
-  const SRC = html.slice(s, e + 10);
-  const run = async (list) => {
-    const calls = [];
-    const out = new Function('earlyFetch', 'rebuildForecastMarkers', 'forgetRetiredDefault', 'focusStation',
+  const SRC = html.slice(s, e + '    loadForecastStations(1);\n'.length);
+  const run = async (answers) => {
+    const calls = [], timers = [];
+    const out = new Function('earlyFetch', 'rebuildForecastMarkers', 'forgetRetiredDefault', 'focusStation', 'setTimeout',
       'var forecastStationsData = null, pendingFocusStation = "HNL01";\n' + SRC + '\nreturn function () { return { data: forecastStationsData, pending: pendingFocusStation }; };')(
-      (name, url) => { calls.push(['fetch', name, url]); return Promise.resolve({ json: () => Promise.resolve(list) }); },
-      (force) => calls.push(['rebuild', force]), (l) => calls.push(['forget', l]), (sid) => calls.push(['focus', sid]));
+      (name, url) => { calls.push(['fetch', name, url]); const a = answers.shift(); return a instanceof Error ? Promise.reject(a) : Promise.resolve(a); },
+      (force) => calls.push(['rebuild', force]), (l) => calls.push(['forget', l]), (sid) => calls.push(['focus', sid]),
+      (fn, ms) => { timers.push({ fn, ms }); return timers.length; });
     await settle();
-    return { calls, state: out() };
+    return { calls, timers, state: out };
   };
-  const r = await run(LIST2);
+  const body = (list) => ({ json: () => Promise.resolve(list) });
+  const r = await run([body(LIST2)]);
   assert.deepEqual(r.calls, [['fetch', 'stations', '/stations.json'], ['rebuild', true], ['forget', LIST2], ['focus', 'HNL01']]);
-  assert.equal(r.state.data, LIST2); assert.equal(r.state.pending, null, 'the pending focus is spent');
-  const n = await run(null);
+  assert.equal(r.state().data, LIST2); assert.equal(r.state().pending, null, 'the pending focus is spent'); assert.equal(r.timers.length, 0);
+  const n = await run([body(null)]);
   assert.deepEqual(n.calls.slice(1), [['rebuild', true], ['forget', []], ['focus', 'HNL01']], 'a null body: an empty list (which decides nothing)');
+  for (const bad of [new TypeError('Failed to fetch'), { ok: false, status: 503, json: () => Promise.resolve(LIST2) }]) {
+    const t = await run([bad, body(LIST2)]);
+    assert.deepEqual(t.calls, [['fetch', 'stations', '/stations.json']], 'nothing drawn from a refused answer');
+    assert.equal(t.timers.length, 1); assert.equal(t.timers[0].ms, 4000);
+    t.timers[0].fn(); await settle();
+    assert.deepEqual(t.calls.slice(1), [['fetch', 'stations', '/stations.json'], ['rebuild', true], ['forget', LIST2], ['focus', 'HNL01']], 'asked once more');
+  }
+  const twice = await run([new TypeError('x'), new TypeError('y')]);
+  twice.timers[0].fn(); await settle();
+  assert.equal(twice.timers.length, 1, 'once more, not for ever'); assert.equal(twice.state().data, null);
 });

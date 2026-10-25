@@ -774,3 +774,28 @@ test('U7: the row star\'s 100-favorite guard (the 101st never drops the oldest),
   assert.match(d.row(pt).children[0].textContent, /New/, 'the row shows the name it had when let go (seen.p follows the store)');
   seg(d.row(pt), 'fav').click(); assert.deepEqual(d.stored(), [pt + '=New']);
 });
+
+// ---- G35 B-8: favorites the site no longer offers (removed for a blank bulletin) are dropped once, with a note ----
+test('a favorite no longer offered is dropped from storage with a note; points and offered stations stay; a short list decides nothing', async () => {
+  const many = [['51201', '51201 — Waimea Bay, HI'], ['46001', '46001 — Gulf of Alaska']];
+  for (let i = 0; i < 120; i++) many.push(['ST' + (1000 + i), 'ST' + (1000 + i)]);
+  const notes = [];
+  globalThis.tellOnPage = (m, id) => notes.push([m, id]);
+  try {
+    const favs = ['44062', '46001', 'pt_21700N_158200W', '46088'];
+    const b = boot({ stations: many, local: { 'allshore.favStations.v1': JSON.stringify(favs) } }); await settle();
+    assert.deepEqual(JSON.parse(b.local.getItem('allshore.favStations.v1')), ['46001', 'pt_21700N_158200W'], 'the two removed stations go');
+    assert.equal(notes.length, 1); assert.equal(notes[0][0], 'Your favorites 44062, 46088 are no longer offered, so they were removed from your favorites.');
+    notes.length = 0;
+    boot({ stations: many, local: { 'allshore.favStations.v1': JSON.stringify(['44062']) } }); await settle();
+    assert.equal(notes[0][0], 'Your favorite 44062 is no longer offered, so it was removed from your favorites.');
+    notes.length = 0;
+    const c = boot({ stations: many, local: { 'allshore.favStations.v1': JSON.stringify(['46001']) } }); await settle();
+    assert.deepEqual(notes, [], 'nothing removed: nothing said'); assert.deepEqual(JSON.parse(c.local.getItem('allshore.favStations.v1')), ['46001']);
+    const d = boot({ local: { 'allshore.favStations.v1': JSON.stringify(['44062', '51201']) } }); await settle();
+    assert.deepEqual(JSON.parse(d.local.getItem('allshore.favStations.v1')), ['44062', '51201'], 'a list of 2 (the server\'s fallback): nothing decided');
+    assert.deepEqual(notes, []);
+    const e = boot({ stations: many, local: { 'allshore.favStations.v1': JSON.stringify(['44062']) }, storageOpts: { throwOnWrite: true } }); await settle();
+    assert.deepEqual(notes, [], 'storage refuses: nothing said'); assert.deepEqual(JSON.parse(e.local.getItem('allshore.favStations.v1')), ['44062']);
+  } finally { delete globalThis.tellOnPage; }
+});

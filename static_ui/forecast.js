@@ -964,7 +964,8 @@
               // ok: a forecast is on screen (a refused point - land, busy - is not; the page saves a new point only then)
               // final: the answer will not change (a point on land, sheltered water, no model data: the star cannot keep it)
               try { doc.dispatchEvent(new CustomEvent('allshore:forecast', { detail: { station: st.station, tz: d.tz_label || '', model: st.model, view: state.view,
-                ok: !!d.table_html, point: d.point || null, final: !!d.final, reason: d.reason || null } })); } catch (e) {}
+                ok: !!d.table_html, point: d.point || null, final: !!d.final, reason: d.reason || null,
+                lat: typeof d.lat === 'number' && isFinite(d.lat) ? d.lat : null, lon: typeof d.lon === 'number' && isFinite(d.lon) ? d.lon : null } })); } catch (e) {}
             } }, saved: function () { return readJson(local, SETTINGS_KEY); } }, state);
     function syncSelects() {
       if (els.station && els.station.value !== state.station) els.station.value = state.station;
@@ -1069,12 +1070,23 @@
       syncSelects();                                                            // the selects show the new state at once, not after the fetch
       expand();
     });
+    // Escape acts on the window holding the focus, else on the one in front (.fw-front: the window touched or opened
+    // last), else the station windows in a fixed order: wind, tide, live (G35 B-2: after a link put the forecast window
+    // in front, Escape closed the live window behind it). The forecast window is minimised, never closed.
+    var stationWins = [[$('windWin'), opts.windOpen, opts.closeWindPanel], [$('tideWin'), opts.tideOpen, opts.closeTidePanel],
+      [$('liveBuoyPanel'), opts.liveOpen, opts.closeLivePanel]];
     doc.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
-      if (opts.windOpen && opts.windOpen()) { if (opts.closeWindPanel) opts.closeWindPanel(); return; }   // the wind window first (section 39),
-      if (opts.tideOpen && opts.tideOpen()) { if (opts.closeTidePanel) opts.closeTidePanel(); return; }   // then the tide window, then the live one
-      if (opts.liveOpen && opts.liveOpen()) { if (opts.closeLivePanel) opts.closeLivePanel(); return; }
-      if (fw.mode !== 'min' && els.win.contains(doc.activeElement)) minimise();
+      var act = doc.activeElement, i, w;
+      var open = function (w) { return !!(w[1] && w[1]()); };
+      var holds = function (el) { return !!(el && act && el.contains && el.contains(act)); };
+      var inFront = function (el) { return !!(el && el.classList && el.classList.contains('fw-front')); };
+      var fwOpen = fw.mode !== 'min';
+      if (fwOpen && holds(els.win)) { minimise(); return; }
+      for (i = 0; i < stationWins.length; i++) { w = stationWins[i]; if (open(w) && holds(w[0])) { if (w[2]) w[2](); return; } }
+      if (fwOpen && inFront(els.win) && stationWins.some(open)) { minimise(); return; }
+      for (i = 0; i < stationWins.length; i++) { w = stationWins[i]; if (open(w) && inFront(w[0])) { if (w[2]) w[2](); return; } }
+      for (i = 0; i < stationWins.length; i++) { w = stationWins[i]; if (open(w)) { if (w[2]) w[2](); return; } }
     });
     var settings = createSettings({ button: $('settingsBtn'), panel: $('settingsPanel'), document: doc, focusFirst: function () { if (els.tz && els.tz.focus) els.tz.focus(); } });
     // start

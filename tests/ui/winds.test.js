@@ -702,3 +702,20 @@ test('an NWS station fed by NOAA MADIS (plan section 52 D): the window says wher
   assert.ok(meta.includes('The latest reading from NOAA MADIS (the NWS API has none newer).'), meta.join(' | '));
   assert.equal(s.els.meta.querySelector('a').getAttribute('href'), 'https://www.weather.gov/wrh/timeseries?site=016HE', 'the station page as before');
 });
+
+test('G35 K-2: a reading that stands alone (one MADIS report) is drawn as a dot in both charts; the mesonet disclaimer under the source', async () => {
+  const s = viewSetup();
+  s.view.load(HNL, { unit: 'US' });
+  s.answers[0].res(resp(200, history({ id: 'nws:011HI', src: 'nws', kind: 'mesonet', t: [T0 - 600], s: [4.2], g: [null], d: [90], at: [24.0],
+    via: 'madis', source: 'NOAA MADIS', disclaimer: 'NOAA and its data providers disclaim liability of any kind whatsoever.' }))); await flush();
+  assert.equal(s.q('.wind-dot').length, 1, 'the speed: a dot'); assert.equal(s.q('.wind-gust-dot').length, 0, 'no gust: none');
+  assert.equal(s.els.temp.querySelectorAll('.wind-air-dot').length, 1, 'the air temperature: a dot (it was an empty frame)');
+  const metaLines = s.els.meta.children.map((c) => c.textContent);
+  assert.equal(metaLines[metaLines.length - 1], 'NOAA and its data providers disclaim liability of any kind whatsoever.', 'last, after the source');
+  assert.ok(s.els.meta.children[s.els.meta.children.length - 1].classList.contains('wind-disclaimer'));
+  // a long series: no dots (every reading has a neighbour), no disclaimer without one in the answer
+  const t = viewSetup(); t.view.load(HNL, { unit: 'US' }); t.answers[0].res(resp(200, history())); await flush();
+  assert.equal(t.q('.wind-dot').length, 0); assert.equal(t.els.meta.querySelectorAll('.wind-disclaimer').length, 0);
+  const I2 = I.lonePoints([{ t: 0, s: 1 }, { t: 600, s: 2 }, { t: 600 + 3 * 3600, s: 3 }, { t: 9e9, s: null }], 's');
+  assert.deepEqual(I2.map((r) => r.s), [3], 'a reading past the gap stands alone');
+});

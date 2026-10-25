@@ -1144,3 +1144,18 @@ test('Forecast point: Escape with the favourites list open on a minimised window
   E.key('Escape', row);
   assert.equal(E.s.tool, null, 'the list closed: Escape reaches the tool again (B-13)');
 });
+
+test('a tool takes the tap\'s own position, not the canvas dot\'s Leaflet hands the click (G35 B-11); without the map\'s helper the event\'s', () => {
+  const E = makeEnv(); E.pick('distance');
+  const dot = { lat: 21.6, lng: -158.1 }, tap = { lat: 21.6003, lng: -158.1004 };
+  E.map.mouseEventToLatLng = (ev) => ev.at;
+  E.map.fire('click', { latlng: dot, originalEvent: { pointerType: 'touch', at: tap } });
+  assert.deepEqual([E.s.pts[0].lat, E.s.pts[0].lng], [tap.lat, tap.lng], 'where the finger was');
+  const second = { lat: 21.9, lng: -157.8 };
+  E.map.mouseEventToLatLng = () => ({ lat: NaN, lng: 1 });
+  E.map.fire('click', { latlng: second, originalEvent: { pointerType: 'mouse' } });
+  assert.deepEqual([E.s.pts[1].lat, E.s.pts[1].lng], [second.lat, second.lng], 'no usable position: the event\'s');
+  delete E.map.mouseEventToLatLng;
+  E.map.fire('click', { latlng: { lat: 21.2, lng: -157.5 }, originalEvent: { pointerType: 'mouse' } });
+  assert.equal(E.s.pts.length, 3);
+});

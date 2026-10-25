@@ -379,6 +379,18 @@
     });
     return d;
   }
+  // The readings of a series that stand alone (no neighbour within GAP_S with a value): a path draws nothing for
+  // them, so they are drawn as dots (G35 K-2: a window with one reading showed an empty temperature chart).
+  function lonePoints(rows, key) {
+    var out = [];
+    rows.forEach(function (r, i) {
+      if (!num(r[key])) return;
+      var a = rows[i - 1], b = rows[i + 1];
+      var joinA = a && num(a[key]) && r.t - a.t <= GAP_S, joinB = b && num(b[key]) && b.t - r.t <= GAP_S;
+      if (!joinA && !joinB) out.push(r);
+    });
+    return out;
+  }
   // One direction arrow per slot at most: the reading nearest each slot's middle, within half a slot.
   function arrowSlots(rows, t0, t1, plotW) {
     var n = Math.max(1, Math.floor(plotW / ARROW_SLOT)), span = (t1 - t0) / n, out = [], j = 0;
@@ -485,6 +497,8 @@
         line.appendChild(a);
       } else line.appendChild(doc.createTextNode(d.source || src));
       els.meta.appendChild(line);
+      // mesonet observations: NOAA's disclaimer (MADIS's restrictions page asks pages showing them to carry one: G35)
+      if (d.disclaimer) els.meta.appendChild(el('div', 'wind-disclaimer', String(d.disclaimer)));
     }
     function writeTable() {
       if (!els.table) return;
@@ -550,6 +564,8 @@
       var gust = linePath(rows, 'g', x, y), speed = linePath(rows, 's', x, y);
       if (gust) svg.appendChild(svgEl('path', { 'class': 'wind-gust', d: gust, fill: 'none', stroke: COLORS.gust, 'stroke-width': 1.3, 'stroke-dasharray': '4 3' }));
       if (speed) svg.appendChild(svgEl('path', { 'class': 'wind-speed', d: speed, fill: 'none', stroke: COLORS.speed, 'stroke-width': 2, 'stroke-linejoin': 'round' }));
+      lonePoints(rows, 'g').forEach(function (r) { svg.appendChild(svgEl('circle', { 'class': 'wind-dot wind-gust-dot', cx: x(r.t).toFixed(1), cy: y(r.g).toFixed(1), r: 2, fill: COLORS.gust })); });
+      lonePoints(rows, 's').forEach(function (r) { svg.appendChild(svgEl('circle', { 'class': 'wind-dot', cx: x(r.t).toFixed(1), cy: y(r.s).toFixed(1), r: 2.5, fill: COLORS.speed })); });
       var last = rows.length ? rows[rows.length - 1] : null;
       if (last) svg.appendChild(svgEl('circle', { 'class': 'wind-last', cx: x(last.t).toFixed(1), cy: y(last.s).toFixed(1), r: 3.5, fill: COLORS.speed, stroke: '#fff', 'stroke-width': 1.5 }));
       if (!rows.length) {
@@ -608,6 +624,8 @@
       var water = linePath(rows, 'wt', x, yc), air = linePath(rows, 'at', x, yc);
       if (water) svg.appendChild(svgEl('path', { 'class': 'wind-water', d: water, fill: 'none', stroke: COLORS.water, 'stroke-width': 1.6, 'stroke-dasharray': '5 3' }));
       if (air) svg.appendChild(svgEl('path', { 'class': 'wind-air', d: air, fill: 'none', stroke: COLORS.air, 'stroke-width': 2, 'stroke-linejoin': 'round' }));
+      lonePoints(rows, 'wt').forEach(function (r) { svg.appendChild(svgEl('circle', { 'class': 'wind-dot wind-water-dot', cx: x(r.t).toFixed(1), cy: yc(r.wt).toFixed(1), r: 2.5, fill: COLORS.water })); });
+      lonePoints(rows, 'at').forEach(function (r) { svg.appendChild(svgEl('circle', { 'class': 'wind-dot wind-air-dot', cx: x(r.t).toFixed(1), cy: yc(r.at).toFixed(1), r: 2.5, fill: COLORS.air })); });
       var legend = svgEl('text', { 'class': 'wind-tlegend', x: W - MARGIN.r, y: TEMP_MARGIN.t - 3, 'text-anchor': 'end', 'font-size': 10 });
       if (air) { var a = svgEl('tspan', { fill: COLORS.air }); a.textContent = 'Air'; legend.appendChild(a); }
       if (air && water) { var sep = svgEl('tspan', { fill: COLORS.muted }); sep.textContent = ' · '; legend.appendChild(sep); }
@@ -809,7 +827,7 @@
       TABLE_MAX: TABLE_MAX, READOUT_NEAR_S: READOUT_NEAR_S, MIN_WIDTH: MIN_WIDTH, REFRESH_MS: REFRESH_MS, TICK_MS: TICK_MS,
       READOUT_NARROW: READOUT_NARROW,
       RETRY_MAX: RETRY_MAX, RETRY_MAX_S: RETRY_MAX_S, TOUCH_MOUSE_MS: TOUCH_MOUSE_MS, MSG: MSG,
-      zoneClock: zoneClock, hourMarks: hourMarks, niceStep: niceStep, historyRows: historyRows, linePath: linePath,
+      zoneClock: zoneClock, hourMarks: hourMarks, niceStep: niceStep, historyRows: historyRows, linePath: linePath, lonePoints: lonePoints,
       arrowSlots: arrowSlots, nearest: nearest, sourceLink: sourceLink, clockText: clockText, hourText: hourText,
       dateText: dateText, stampText: stampText, TEMP_H: TEMP_H, WX_NUM: WX_NUM, tempValue: tempValue, tempText: tempText,
       pressText: pressText, distText: distText, trendText: trendText, conditionsText: conditionsText

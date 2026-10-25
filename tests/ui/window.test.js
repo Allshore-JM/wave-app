@@ -332,9 +332,9 @@ test('init: units and model changes refetch and are remembered; the view switche
   assert.equal(b.win.history.urls[b.win.history.urls.length - 1], '?station=51201&model=SWAN&view=Graph', 'Metric is the saved setting now: not named');
   b.page.trigger.focus(); b.app.expand(); assert.equal(b.doc.activeElement, b.page.header);
   b.page.live.style.display = 'block';
-  b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.closes.length, 1); assert.equal(b.app.window.mode, 'normal', 'the live panel closed first');
-  b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.app.window.mode, 'min'); assert.equal(b.doc.activeElement, b.page.trigger, 'focus back on the opener');
-  b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.app.window.mode, 'min');
+  b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.closes.length, 0); assert.equal(b.app.window.mode, 'min', 'the window holding the focus first (G35 B-2)');
+  assert.equal(b.doc.activeElement, b.page.trigger, 'focus back on the opener');
+  b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.closes.length, 1, 'then the open live panel'); assert.equal(b.app.window.mode, 'min');
   b.doc.activeElement = b.page.gear; b.app.expand(); b.doc.activeElement = b.page.gear;   // the gear is outside the window (the select is inside it now)
   b.doc.fire('keydown', { key: 'Escape' }); assert.equal(b.app.window.mode, 'normal', 'Escape outside the window leaves it alone');
 });
@@ -424,9 +424,9 @@ test('G16-B P2-1: every forecast that lands is announced with the table\'s zone,
   const b = boot({}); const seen = [];
   b.doc.addEventListener('allshore:forecast', (e) => seen.push(e.detail));
   await settle(); b.fs_.last().release(payload({ tz_label: 'Pacific/Honolulu' })); await settle();
-  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table', ok: true, point: null, final: false, reason: null }]);
+  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table', ok: true, point: null, final: false, reason: null, lat: null, lon: null }]);
   b.page.tz.value = 'UTC'; b.page.tz.dispatch('change'); await settle(); b.fs_.last().release(payload({ tz_label: 'UTC', model: 'SWAN' })); await settle();
-  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table', ok: true, point: null, final: false, reason: null });
+  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table', ok: true, point: null, final: false, reason: null, lat: null, lon: null });
   assert.equal(b.doc.getElementById('fwCycle').title, 'SWAN · updated 20260926 12 UTC'.replace('updated ', 'updated ').replace('SWAN · updated 20260926 12 UTC', b.doc.getElementById('fwCycle').textContent), 'titles carry the full text');
 });
 
@@ -835,7 +835,7 @@ test('a forecast point: its answer is announced with ok and point; an old run sa
   await settle();
   const pt = { id: 'pt_21667N_158054W', lat: 21.667, lon: -158.054, cell_lat: 21.6667, cell_lon: -158.1667, cell_km: 11.6, grid: 'g16', run: '2026100206', age_hours: 9.4 };
   b.fs_.last().release(payload({ station: 'pt_21667N_158054W', swan_available: false, point: pt })); await settle();
-  assert.deepEqual(seen[0], { station: 'pt_21667N_158054W', tz: '', model: 'GFS', view: 'Table', ok: true, point: pt, final: false, reason: null });
+  assert.deepEqual(seen[0], { station: 'pt_21667N_158054W', tz: '', model: 'GFS', view: 'Table', ok: true, point: pt, final: false, reason: null, lat: null, lon: null });
   assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC', 'a run of normal age: no note');
   assert.equal(b.doc.getElementById('modelBar').hidden, true, 'no SWAN for a point');
   b.app.loader.cache.clear(); b.app.loader.load({ unit: 'Metric' }); await settle();
@@ -973,14 +973,16 @@ test('section 38: Escape closes an open tide window first, then the live window,
     closeLivePanel: () => { order.push('live'); liveOpen = false; }, liveOpen: () => liveOpen,
     closeTidePanel: () => { order.push('tide'); tideOpen = false; }, tideOpen: () => tideOpen });
   await settle(); fs_.last().release(payload()); await settle();
-  app.expand(); win.document.activeElement = page.header;
+  app.expand(); win.document.activeElement = null;                         // the focus on the map
   tideOpen = true; liveOpen = true;
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['tide']); assert.equal(app.window.mode, 'normal');
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['tide', 'live']); assert.equal(app.window.mode, 'normal');
-  win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['tide', 'live']); assert.equal(app.window.mode, 'min', 'then the forecast window');
+  win.document.fire('keydown', { key: 'Escape' }); assert.equal(app.window.mode, 'normal', 'nothing in front, no focus in it: left alone');
+  win.document.activeElement = page.header;
+  win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['tide', 'live']); assert.equal(app.window.mode, 'min', 'the focus in it: minimised');
   const b = boot({}); await settle(); b.fs_.last().release(payload()); await settle();
-  b.app.expand(); b.win.document.activeElement = b.page.header; b.page.live.style.display = 'block';
-  b.win.document.fire('keydown', { key: 'Escape' }); assert.equal(b.closes.length, 1, 'without tide options the old order holds');
+  b.app.expand(); b.win.document.activeElement = null; b.page.live.style.display = 'block';
+  b.win.document.fire('keydown', { key: 'Escape' }); assert.equal(b.closes.length, 1, 'without tide options the live panel still closes');
 });
 
 // ---- plan section 39: the wind-station window, a fourth window from the same factory ----
@@ -1023,14 +1025,37 @@ test('section 39: Escape closes an open wind window first, then the tide window,
     closeTidePanel: () => { order.push('tide'); tideOpen = false; }, tideOpen: () => tideOpen,
     closeWindPanel: () => { order.push('wind'); windOpen = false; }, windOpen: () => windOpen });
   await settle(); fs_.last().release(payload()); await settle();
-  app.expand(); win.document.activeElement = page.header;
+  app.expand(); win.document.activeElement = null;                         // the focus on the map
   windOpen = true; tideOpen = true; liveOpen = true;
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['wind']); assert.equal(app.window.mode, 'normal');
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['wind', 'tide']);
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['wind', 'tide', 'live']); assert.equal(app.window.mode, 'normal');
+  win.document.activeElement = page.header;
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['wind', 'tide', 'live']); assert.equal(app.window.mode, 'min', 'then the forecast window');
   windOpen = true;
   win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['wind', 'tide', 'live', 'wind'], 'a parked forecast window: the wind window still first');
+});
+
+test('G35 B-2: Escape acts on the window holding the focus, else the one in front (.fw-front), else the fixed order', async () => {
+  const win = fakeWindow(), page = buildPage(win), F = load(win), fs_ = fetchStub(), order = [];
+  win.Chart = fakeChart();
+  const open = { wind: true, tide: true, live: true };
+  const app = F.init({ window: win, initial: { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: true, swan_stations: ['51201'] },
+    stationLabel: (sid) => sid, loadChartJs: () => Promise.resolve(), fetch: fs_.fetch,
+    closeLivePanel: () => { order.push('live'); open.live = false; }, liveOpen: () => open.live,
+    closeTidePanel: () => { order.push('tide'); open.tide = false; }, tideOpen: () => open.tide,
+    closeWindPanel: () => { order.push('wind'); open.wind = false; }, windOpen: () => open.wind });
+  await settle(); fs_.last().release(payload()); await settle();
+  app.expand();
+  const inside = (w) => { const x = win.document.createElement('button'); w.appendChild(x); return x; };
+  win.document.activeElement = inside(page.live);
+  win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['live'], 'the focus in the live window: it closes, not the wind window');
+  win.document.activeElement = null; page.tide.classList.add('fw-front');
+  win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['live', 'tide'], 'nothing focused: the one in front');
+  page.tide.classList.remove('fw-front'); page.w.classList.add('fw-front');
+  win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['live', 'tide']); assert.equal(app.window.mode, 'min', 'the forecast window in front (a link): minimised first');
+  win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['live', 'tide', 'wind'], 'then the fixed order');
+  win.document.fire('keydown', { key: 'Escape' }); assert.deepEqual(order, ['live', 'tide', 'wind'], 'nothing open: nothing');
 });
 
 // ---- plan section 46: the default station and the first load deferred behind the geo race ----

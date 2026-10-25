@@ -299,3 +299,80 @@ Code @ b44ba4b, golden @ 75b1ab6 (feat/map-polish, pushed; not on test yet: test
 - Mutants (scratch polish/mut7c.py, on a scratch copy after pytest): 15 of 17 killed. W3 (no guard) was killed only after
   its test's stand-in list was made a real array. The 2 survivors are equivalent: N2 (repeats in the waiting list are
   removed again when shown) and W4 (no feed check: the guard catches it).
+
+## Test-site verification of fix round 7c (UI 1.25.9, 2026-10-25)
+`test` @ 703e37e: cherry-picks of b44ba4b and 75b1ab6; the test branch keeps its own README. UI 1.25.9 was served from
+03:34:26 UTC, with 0 failed requests across the switch (12 polls). All nine UI files served = the commit, and the
+1.25.8 URLs answer 404. The site files equal the feature branch except the test site's three logo lines.
+
+The checks ran in headless Chrome with the GPU, its own profile, never signed in, using trusted mouse, touch and keys.
+Scripts are in scratch polish/v7: v2e, v2g, v2h-v2j, v13e, v13f, v9b, v9c, and the step-7 regression scripts; outputs
+are in out7c/.
+
+Suites on the test branch:
+- Node: 1,012 pass (the feature branch has 1,013; test lacks one production manifest test).
+- pytest: 971 pass, plus the same 5 known failures as at step 7 (the test logo goldens and the reef module's numpy
+  import).
+
+Answers: the forecast answers for 13 stations and variants are identical before and after the deploy on the same runs
+(GFS 2026102418, GLWU 2026102501, SWAN 23 UTC). The removed stations' answers are identical too.
+
+### V7-2: the focus after a link (fixed)
+- **One window at a time** (v2e; desktop click and key, phone tap and key): after "Live buoy" the focus is in the live
+  window's header, and Escape closes the live window while the forecast window stays. At step 7 the focus stayed on
+  the button, and Escape minimised the forecast window behind.
+- **Both windows already open** (v2g; 1280x800, 1920x1080, iPad, mouse and touch): the window behind was brought
+  forward by a press on a visible part of it, then its link was pressed. The focus went into the window the link
+  brought forward, and Escape acted on that window. 12 of 12 checks pass.
+
+### V7-3: the notes (fixed)
+v13e ran at 1280x800, phone 375x812, phone 360x640 and iPad 1024x1366: 19 of 19 checks at each size, 76 in all.
+- **Kept together:** a removed default (44062) and removed favourites (44062, 46088) are both said, one per line, each
+  once. At step 7 the second replaced the first.
+- **Position:** the notes sit between the toolbar and the body, on top at their centre. They stay in view while the
+  table is scrolled to the current hour (scroll position 198-218 px), and the table's frozen header sits at the body's
+  top.
+- **Minimised:** the notes are not drawn in the chip, and the chip's box is the same with or without notes.
+- **Graph view:** the notes stay above the charts.
+- **Another station:** the notes go and the body moves up again.
+- **Points:** section 31's "My points is full (50)" note shows on the point's forecast, in view above the scrolled
+  table.
+- **Two more scripts:** b13b shows both notes together, desktop and phone, with 44062 or 46088 as the default; b13
+  (the removed points) is unchanged.
+
+### V7-4: the stall note when the readings arrive first (fixed)
+- v9b: 9 of 9 order cases pass. At step 7 the three readings-first cases had no note.
+- v9c: the 147 and 146 of 294 thresholds pass with the readings first, and the real answer shows no note in either
+  order.
+- v9_stall: 15 of 15 rule cases pass.
+
+### V7-1
+The two corrected template comments are in the served page; the README change lives on the feature branch (the test
+branch keeps its own README).
+
+### Regression
+- **b2_links at 1280x800:** the only differences from reviewer B's run on 1.25.7 are the intended ones: the 44-px
+  buttons (7b), the focus after "Live buoy" (7c) and the Escape order that follows from it.
+- **v13c (46088's note offers its live buoy), desktop and phone:** identical to step 7.
+- **b15 (the link buttons' layout), four sizes:** identical to step 7, except the far link's distance to 41002: the
+  buoy's reported position moved, 203 to 215 mi.
+- **v12 (the station-list retry):** identical.
+- **b12:** after a full round, a fresh page target's console is empty.
+
+### Findings
+- V7c-1 (P3): printing a MINIMISED forecast window prints its toolbar and table but no longer its notes. In 1.25.8 the
+  notes were inside the printed body; an open window prints them in both versions. The notes are about settings, not
+  the forecast. Fix options: one print rule (`.forecast-win.fw-min > #fwNote:not([hidden]) { display: block; }`), or
+  accept.
+- Owner awareness: the notes stay above the table until another station is opened; there is no close button. On a
+  360x640 phone, two notes take 122 px (19 % of the screen). They are one-time notes: a removed default or favourite,
+  or a point not kept.
+- Not a regression: going through the live window's controls with Tab, the browser leaves the page once after the last
+  control (the page body has the focus) before the map. The pre-7c build run locally does the same (2 of 2 runs), and
+  7c changes no tab order. A run that starts on the last control goes straight to the map.
+- Unrelated observation: right after the deploy restart, NWS station 011HI had no MADIS reading. MADIS's public viewer
+  answers only the last hour, so a reading kept in memory before the restart is not there afterwards until the station
+  reports again.
+
+Cleanup: the storage of both origins was emptied, the browser stopped and its profile removed, the temporary pre-7c
+worktree and the two local servers removed, and the in-app browser pane was not used.

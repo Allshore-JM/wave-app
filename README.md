@@ -813,6 +813,34 @@ lakes under the GFS model selection (plan section 50's client steps).
   20261022  1 UTC"); the job's check wanted two digits and dropped every bulletin of those runs (run 2026102201 was
   published with none). `glwu.BULL_CYCLE_RE` takes one or two digits and compares the hour as a number.
 
+### GFS station winds (plan section 53, the job)
+
+The forecast table's Wind column is GFS's 10 m wind at the station: one quoted point line per hour in the station's
+WAVEWATCH III spectra file. NOAA's AWS copy keeps those only inside the run's `gfswave.tHHz.spec_tar.gz` (about 1.7 GB,
+a gzip of 918 members of 7.75 MB). The job `tools/model_frames/gfs_winds.py` (workflow `model-gfswinds.yml`, every 10
+minutes and by dispatch, also through the trigger Worker) streams that archive once per run: gzip, then tar in stream
+mode, one member in memory at a time. It keeps every step's point line with the site's own parse rule, so the values
+equal what the site read from NOMADS's `.spec`.
+
+- **Objects** under `gfswave/winds/v1/` (immutable but the pointer, which is written last):
+  - `<RUN>/winds.bin`: count x 385 x 2 little-endian uint16, speed in 0.01 m/s and direction (FROM, degrees true) in
+    0.1 deg; 65535 = missing. The `.spec` prints 2 and 1 decimals, so the values round-trip exactly.
+  - `<RUN>/index.json`: `format` gfswinds-v1, `run`, `steps` 0..384, `stations` (id -> slot), `count`,
+    `record_bytes` 1540, `missing`, `units`, `sha256` of winds.bin, `members`, `left_out`, `built_utc`, `source`.
+  - `latest.json`: `run`, `published_utc`, `index`, `stations`, `steps` (max-age 300).
+- **Discovery**: the last four 6-hour cycles, newest first, by a HEAD of each archive (at least 1 GB). NOAA writes the
+  archive whole or not at all, about 5.5 hours after the cycle.
+- **Exit codes**: 0 published or already live; 3 no complete run yet, NOAA not serving it, or the 20-minute build
+  budget ran out (the next tick retries); 1 a failure (recorded under `failed/<RUN>.json`, retried after an hour, at
+  most 6 times) or the stale alarm (the live run 18 h old or more, at most once every 6 h).
+- **Checks**: every member a regular file `./gfswave.<id>.spec` of 1 B to 32 MB, once each, at least 500 members.
+  A changed layout fails loudly.
+- **Retention**: 4 runs (the SWAN tables' wind back-fill reads a run 6 to 12 hours old).
+- **Cost**: run 2026102512 on GitHub's runner took 67 s at a maximum RSS of 67 MB; it published 1,413,720 B for 918
+  stations. Writes per run: 3.
+- **Local**: `python tools/model_frames/gfs_winds.py --dry-run [--run RUN] [--out DIR]` builds without publishing and
+  can write the two files to DIR; `--local DIR --run RUN` builds from a downloaded archive.
+
 ### Sea surface temperature tiles (plan section 44, the job)
 
 A daily observation layer beside the model overlays: `tools/model_frames/sst.py` (GitHub Actions `model-sst.yml`, its own

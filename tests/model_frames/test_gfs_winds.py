@@ -133,7 +133,16 @@ def test_point_winds_read_the_first_quoted_line_after_each_time():
                    datetime(2026, 10, 25, 14): (5.02, 14.5)}
 
 
+def test_point_winds_of_a_real_member():
+    """The archive's first member of run 2026102512 (13130, cut after 40 steps): hourly from the run's hour."""
+    got = W.spec_point_winds(open(os.path.join(FIX, "gfswave_13130_member.spec"), "rb").read())
+    hours = sorted(got)
+    assert len(got) == 40 and hours == [datetime(2026, 10, 25, 12) + timedelta(hours=h) for h in range(40)]
+    assert got[hours[0]] == (11.07, 49.5) and got[hours[-1]] == (3.99, 12.7)
+
+
 def test_point_winds_match_the_sites_parser_on_the_repo_fixture_and_a_real_member():
+    pytest.importorskip("flask")                                       # the job's CI installs no site packages
     sys.path.insert(0, ROOT)
     import app                                                          # noqa: E402  the site's own parser
     for path in (os.path.join(ROOT, "tests", "fixtures", "gfswave_spec_sample.spec"),
@@ -163,7 +172,7 @@ def test_a_station_record_round_trips_and_marks_missing_steps():
 
 
 def test_values_round_trip_exactly_at_the_files_precision():
-    for u in (0.0, 0.01, 12.34, 99.99, 655.34):
+    for u in (0.0, 0.01, 0.29, 0.57, 1.15, 12.34, 99.99, 655.34):      # 0.29 * 100 = 28.999...: rounded, not floored
         for d in (0.0, 0.1, 71.6, 359.9, 360.0):
             rec, _ = W.encode_station({datetime(2026, 10, 25, 12): (u, d)}, RUN_DT)
             assert W.decode_record(rec)[0] == (u, d), (u, d)

@@ -262,6 +262,7 @@ test('window: on a phone nothing drags or resizes and geometry is left to CSS; a
 function boot(opts) {
   const win = fakeWindow(opts), page = buildPage(win), F = load(win), fs_ = fetchStub(), Chart = fakeChart();
   win.Chart = Chart;
+  if (opts && opts.beforeInit) opts.beforeInit(F);
   const closes = [];
   const app = F.init({ window: win, initial: Object.assign({ station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: true, swan_stations: ['51201', '51202'] }, (opts && opts.initial) || {}),
     stationLabel: (sid) => { const o = page.sel.options.find((x) => x.value === sid); return o ? o.textContent : sid; },
@@ -286,6 +287,22 @@ test('init: fetches the URL\'s station into the minimised window; the first fore
   assert.equal(b.Chart.made.length, 0, 'minimised: no charts yet');
   b.app.expand(); await settle(); assert.equal(b.Chart.made.length, 3, 'expanded in Graph view: charts built');
   assert.equal(b.win.history.urls[b.win.history.urls.length - 1], '?station=51201&view=Graph');
+});
+
+test('notes (test-site check V7-3): the page notes wait for the first forecast, then show one per line, each once; a note said before init is kept; another station clears them', async () => {
+  const b = boot({ search: '?station=51201', beforeInit: (F) => { F.note('Said before init.'); F.note(''); } });
+  const el = b.doc.getElementById('fwNote');
+  b.F.note('First.'); b.F.note('Second.'); b.F.note('First.');
+  assert.equal(el.hidden, true, 'nothing shown before a forecast has landed');
+  await settle(); b.fs_.last().release(payload()); await settle();
+  assert.equal(el.hidden, false); assert.equal(el.textContent, 'Said before init.\nFirst.\nSecond.', 'kept together, in order, each once');
+  b.F.note('Third.', '51201'); b.F.note('Second.', null);
+  assert.equal(el.textContent, 'Said before init.\nFirst.\nSecond.\nThird.', 'the station on screen adds a line; a repeat is not added');
+  b.doc.fire('allshore:station', { detail: { sid: '46001', source: 'picker' } }); await settle();
+  b.fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
+  assert.equal(el.hidden, true, 'another station: its notes are gone'); assert.equal(el.textContent, '');
+  b.F.note('Now.'); assert.equal(el.textContent, 'Now.', 'once a forecast is up, a note shows at once on the station on screen');
+  b.F.note('Other.', '51201'); assert.equal(el.textContent, 'Other.', "a note for another station replaces the screen's");
 });
 
 test('init: a map pick loads the station with Buoy Local and expands; a picker pick keeps the time zone; the selects follow the state', async () => {

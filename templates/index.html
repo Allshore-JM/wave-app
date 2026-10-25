@@ -644,9 +644,13 @@
        at offset 0 (Chromium paints a sticky table header at a negative offset short of the scroll box's padding: the
        scrolled rows showed through a few pixels above it). The spacing goes to the parts around the table. */
     .forecast-win .fw-body { padding: 0 0 8px; }
-    .forecast-win .fw-body > #fwNote, .forecast-win .fw-body > #fwError, .forecast-win .fw-body > #forecastMeta,
+    .forecast-win .fw-body > #fwError, .forecast-win .fw-body > #forecastMeta,
     .forecast-win .fw-body > #forecastSummary, .forecast-win .fw-body > #graphs { margin-left: 10px; margin-right: 10px; }
-    .forecast-win .fw-body > #fwNote, .forecast-win .fw-body > #fwError { margin-top: 8px; }
+    .forecast-win .fw-body > #fwError { margin-top: 8px; }
+    /* the note line sits between the toolbar and the scrolling body, so the table's scroll to the current hour never hides
+       it (test-site check V7-3); several notes one per line */
+    .forecast-win > #fwNote { flex: 0 0 auto; margin: 8px 10px 0; white-space: pre-line; }
+    .fwin.fw-min > #fwNote { display: none; }
     .forecast-win #forecastMeta { padding-top: 8px; }
     #forecastTable > .text-muted { padding: 8px 10px; }
     .fw-meta { color: #5a6b7a; font-size: .85rem; margin-bottom: 6px; }
@@ -1065,8 +1069,8 @@
           {% endif %}
         </noscript>
       </div>
+      <div id="fwNote" class="fw-note" role="status" hidden></div>
       <div id="fwBody" class="fw-body" tabindex="0" aria-busy="false">
-        <div id="fwNote" class="fw-note" role="status" hidden></div>
         <div id="fwError" class="alert alert-warning py-2 mb-2"{% if not error %} hidden{% endif %}>{{ error or '' }}</div>
         <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz|zone_label }}{% endif %}</div>
 
@@ -1379,7 +1383,8 @@
 
     // ---- nearest path (tests/ui/nearest.test.js runs this block) ----
     // Touch screens: a forecast dot takes taps up to COARSE_TOL px beyond its edge (Leaflet adds the renderer's tolerance
-    // to every path's hit radius); mice exact as before (plan section 52). A touch screen is (any-pointer: coarse),
+    // to every path's hit radius); a mouse exact as before on a computer without a touch screen (plan section 52), with
+    // the reach on one that has (owner, 2026-10-25: kept). A touch screen is (any-pointer: coarse),
     // whichever pointer is the primary one: an iPad with a keyboard, a touch laptop (G35 B-7); the tolerance follows the
     // query when a pointer comes or goes. Leaflet's canvas gives a click to the LAST drawn path holding it, so with the
     // tolerance a later neighbour stole a tap on a dot's own centre (F2 = B-1): this renderer gives clicks and hover to the
@@ -2002,16 +2007,17 @@
 
     // A default station the list no longer has (and not a forecast point) is forgotten once the list is in: the next
     // visit opens near the visitor again; the window says so once (G32 A-P3-3 / B-7). An empty or failed list decides nothing.
-    // a note in the forecast window, now or when it is up
-    function tellOnPage(msg, id) {
-      function tell() { if (window.AllshoreForecast && window.AllshoreForecast.note) window.AllshoreForecast.note(msg, id || null); }
-      tell();
-      document.addEventListener('allshore:forecast', tell, { once: true });          // the window may not be up yet
+    // a note in the forecast window, on the forecast on screen (the module keeps it for the first one to land, and keeps
+    // several together: test-site check V7-3); before forecast.js has run, on the first forecast
+    function tellOnPage(msg) {
+      function tell() { if (window.AllshoreForecast && window.AllshoreForecast.note) window.AllshoreForecast.note(msg, null); }
+      if (window.AllshoreForecast && window.AllshoreForecast.note) tell();
+      else document.addEventListener('allshore:forecast', tell, { once: true });
     }
     function retiredDefaultNote(id) { return 'Your default station' + (id ? ' (' + id + ')' : '') + ' is no longer offered, so it was cleared: the site will open near you next time.'; }
     function forgetRetiredDefault(list) {
       const early = window.__early && window.__early.retired;   // a removed station the head already forgot (G35 B-8)
-      if (early) { window.__early.retired = null; tellOnPage(retiredDefaultNote(early), early); }
+      if (early) { window.__early.retired = null; tellOnPage(retiredDefaultNote(early)); }
       if (!Array.isArray(list) || list.length < 100) return;   // a degraded list (the server's 10-buoy fallback) decides nothing (G32 re-check P-1)
       let d = null; try { d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); } catch (e) { return; }
       if (!d || typeof d !== 'object') return;
@@ -2024,7 +2030,7 @@
       }
       if (id && /^[A-Za-z0-9_-]{1,32}$/.test(id) && (list.some(function (s) { return s && String(s.id) === id; }) || (F && F.parsePointId && F.parsePointId(id)))) return;
       try { localStorage.removeItem('allshore.defaultStation.v1'); } catch (e) { return; }
-      tellOnPage(retiredDefaultNote(id), id || null);
+      tellOnPage(retiredDefaultNote(id));
     }
 
     // With JS the page never submits the form (every change applies in place); a favourites pick asks
@@ -3530,22 +3536,23 @@
         if (fwLink) { fb.textContent = linkText('Live buoy', 'Live buoy', fwLink); linkDescribe(fb, 'Live buoy', fwLink); }
       }
     }
-    // keyboard activation (a click without a pointer) moves the focus into the window it opened
-    function linkFocus(e, headerId) { if (e && e.detail === 0 && typeof focusWindowHeader === 'function') focusWindowHeader(headerId); }
+    // the focus goes into the window the link opened, whatever pressed it: a pressed button keeps the focus in Chrome,
+    // and it lay in the window now behind, so Escape acted on that one (G35 B-2, test-site check V7-2)
+    function linkFocus(headerId) { if (typeof focusWindowHeader === 'function') focusWindowHeader(headerId); }
     (function wireBuoyLinks() {
       const lb = document.getElementById('lwForecast'), fb = document.getElementById('fwLive'), unit = document.getElementById('unit');
-      if (lb) lb.addEventListener('click', function (e) {
+      if (lb) lb.addEventListener('click', function () {
         if (!lwLink) return;
         const link = lwLink;
         fwBack = liveShownStation ? { sid: String(link.s.id), live: liveShownStation, km: link.km } : null;
-        linkMove(link); openForecastStation(link.s); linkFocus(e, 'fwHeader');
+        linkMove(link); openForecastStation(link.s); linkFocus('fwHeader');
       });
-      if (fb) fb.addEventListener('click', function (e) {
+      if (fb) fb.addEventListener('click', function () {
         if (!fwLink) return;
         const link = fwLink, f = forecastStationsData.filter(function (s) { return s && String(s.id) === fwStationId; })[0] ||
           (fwStationAt && fwStationAt.id === fwStationId ? fwStationAt : null);
         lwBack = f ? { id: String(link.s.id), f: f, km: link.km } : null;
-        linkMove(link); openLiveBuoy(link.s); linkFocus(e, 'lwHeader');
+        linkMove(link); openLiveBuoy(link.s); linkFocus('lwHeader');
       });
       document.addEventListener('allshore:station', function (e) { const d = e.detail || {}; if (d.sid) { fwStationId = String(d.sid); syncBuoyLinks(); } });
       document.addEventListener('allshore:forecast', function (e) {
@@ -3564,8 +3571,8 @@
     // Touch screens: each live dot takes taps up to half the way to the nearest other icon (8 px at most): other live
     // dots, tide icons, wind flags (a flag on the buoy itself leaves the dot as it was), My points and the forecast dots;
     // its own twin forecast dot only while it lies under the dot itself (zoomed in until the two part, it counts like
-    // any other icon: G35 B-12). Touch screens: (any-pointer: coarse), whichever pointer is the primary one (B-7). Mice:
-    // nothing (the CSS pad is coarse only).
+    // any other icon: G35 B-12). Touch screens: (any-pointer: coarse), whichever pointer is the primary one (B-7), so a
+    // mouse on a touch-screen computer gets the pads too (owner, 2026-10-25: kept); without a touch screen: nothing.
     const LIVE_TAP_MAX = 8, LIVE_TWIN_UNDER = 3;
     function liveDotAt(d) {                           // the dot's centre: the icon sits right of its coordinate
       const p = map.latLngToContainerPoint([d.lat, d.lng]), size = d.active ? 15 : 11, anchor = Math.round(size / 2 - (d.active ? 8 : 7));
@@ -3625,6 +3632,7 @@
                    src: String(r[I.src] || ''), tz: r[I.tz] || 'UTC', alias: r[I.alias] ? String(r[I.alias]) : null };
         }).filter(function (st) { return Number.isFinite(st.lat) && Number.isFinite(st.lon); });
         windListNote = '';
+        workOutWindStall();
         rebuildWindMarkers(true);
       }, function () {
         windListPromise = null;                       // asked again on a pan or zoom WIND_LIST_RETRY_MS later
@@ -3783,7 +3791,8 @@
             windReadings = fresh;
             if (payload && Number.isFinite(payload.stale_s)) windStaleS = payload.stale_s;
             refreshWindFlags();
-            try { windStallText = windStallNote(payload, missing, windStationsData); } catch (e) { windStallText = ''; }   // never the flags' repaint
+            windLastFeed = { payload: payload, missing: missing };
+            workOutWindStall();
             syncWindNote();
           },
           onStatus: function (code, text) { windFeedNote = text || ''; syncWindNote(); }
@@ -3798,7 +3807,13 @@
     // and only catching up after a restart says nothing). The time in the NWS stations' own zone, named (G35 F4 = B-9);
     // after a server restart during an outage the feed's newest time is unknown: the note says so without one (B-15).
     const WIND_STALL_S = 3 * 3600;
-    let windStallText = '';
+    let windStallText = '', windLastFeed = null;
+    // worked out from the last readings against the station list, again when the list lands: the readings can come first,
+    // and an empty list said nothing until the next readings, 5 minutes later (test-site check V7-4)
+    function workOutWindStall() {
+      if (!windLastFeed) return;
+      try { windStallText = windStallNote(windLastFeed.payload, windLastFeed.missing, windStationsData); } catch (e) { windStallText = ''; }   // never the flags' repaint
+    }
     function windStallNote(payload, partial, stations) {
       const now = payload ? payload.now : null;
       if (!Number.isFinite(now) || (partial || []).indexOf('nws') >= 0 || !Array.isArray(stations)) return '';
@@ -4067,7 +4082,7 @@
         if (keep.length === f.length || !writeFavs(keep)) return;
         const gone = f.filter(function (x) { return keep.indexOf(x) < 0; }), one = gone.length === 1;
         if (typeof tellOnPage === 'function') tellOnPage((one ? 'Your favorite ' + gone[0] + ' is' : 'Your favorites ' + gone.join(', ') + ' are') +
-          ' no longer offered, so ' + (one ? 'it was' : 'they were') + ' removed from your favorites.', null);
+          ' no longer offered, so ' + (one ? 'it was' : 'they were') + ' removed from your favorites.');
       })();
 
       // The default station (plan section 46): the one a new tab opens on, wherever the visitor is (the <head>, the

@@ -185,7 +185,7 @@ test('without the geo Worker (no place, or no __early at all) the map opens as b
 
 // ---- a retired default station (G32 A-P3-3 / B-7): forgotten once the station list is in, said once in the window ----
 const FR = (() => {
-  const s = html.indexOf('    function tellOnPage(msg, id) {'), f = html.indexOf('    function forgetRetiredDefault(list) {'), e = html.indexOf('\n    }\n', f);
+  const s = html.indexOf('    function tellOnPage(msg) {'), f = html.indexOf('    function forgetRetiredDefault(list) {'), e = html.indexOf('\n    }\n', f);
   assert.ok(s > 0 && f > s && e > f, 'tellOnPage .. forgetRetiredDefault are in the template');
   return html.slice(s, e + 6);
 })();
@@ -222,7 +222,7 @@ test('a default POINT is never erased before forecast.js has run (the list can l
   const bad = runForget({ id: 'pt_bad' }, LIST2, { noApp: true, readyState: 'loading' });   // an id the app refuses goes once it decides
   assert.notEqual(bad.store['allshore.defaultStation.v1'], undefined, 'not before the app has looked');
   bad.window.AllshoreForecast = bad.F; bad.docL.DOMContentLoaded[0].fn();
-  assert.equal(bad.store['allshore.defaultStation.v1'], undefined); assert.equal(bad.notes.length, 1); assert.equal(bad.notes[0][1], 'pt_bad');
+  assert.equal(bad.store['allshore.defaultStation.v1'], undefined); assert.equal(bad.notes.length, 1); assert.equal(bad.notes[0][1], null, 'a note for no station in particular');
   const app = runForget(P, LIST2, { readyState: 'loading' });                 // with the app already up: decided at once
   assert.notEqual(app.store['allshore.defaultStation.v1'], undefined); assert.equal(app.docL.DOMContentLoaded, undefined);
 });
@@ -230,8 +230,8 @@ test('a default POINT is never erased before forecast.js has run (the list can l
 test('a default the list no longer has (or one the id rule refuses) is forgotten once the list is in, and the window says so once; an empty or failed list decides nothing', () => {
   const r = runForget({ id: 'OLD99', lat: 1, lon: 2 }, LIST2);
   assert.equal(r.store['allshore.defaultStation.v1'], undefined, 'forgotten');
-  assert.equal(r.notes.length, 1); assert.ok(/OLD99/.test(r.notes[0][0]) && /next time/.test(r.notes[0][0])); assert.equal(r.notes[0][1], 'OLD99');
-  assert.ok(r.docL['allshore:forecast'][0].o.once, 'said again once when the window is up');
+  assert.equal(r.notes.length, 1); assert.ok(/OLD99/.test(r.notes[0][0]) && /next time/.test(r.notes[0][0])); assert.equal(r.notes[0][1], null);
+  assert.equal(r.docL['allshore:forecast'], undefined, 'with the app up it is told once, and it keeps the note for the first forecast (test-site check V7-3)');
   const bad = runForget({ id: 'x y' }, LIST2); assert.equal(bad.store['allshore.defaultStation.v1'], undefined);
   for (const list of [[], null, 'x', LIST2.slice(0, 99), [{ id: '51201' }, { id: '51202' }, { id: '51203' }, { id: '51204' }, { id: '51205' }, { id: '51206' }, { id: '51207' }, { id: '51208' }, { id: '51209' }, { id: '51210' }]]) {
     const k = runForget({ id: 'OLD99' }, list); assert.notEqual(k.store['allshore.defaultStation.v1'], undefined, 'kept: ' + (Array.isArray(list) ? list.length + ' entries' : JSON.stringify(list))); assert.deepEqual(k.notes, []);   // the 10-buoy fallback list decides nothing (G32 re-check P-1)
@@ -240,6 +240,7 @@ test('a default the list no longer has (or one the id rule refuses) is forgotten
   const blocked = runForget({ id: 'OLD99' }, LIST2, { blocked: true }); assert.deepEqual(blocked.notes, [], 'storage refuses: nothing said');
   const early = runForget({ id: 'OLD99' }, LIST2, { noApp: true });
   assert.deepEqual(early.notes, []); assert.equal(early.store['allshore.defaultStation.v1'], undefined, 'forgotten before the window is up');
+  assert.equal(early.docL['allshore:forecast'].length, 1); assert.ok(early.docL['allshore:forecast'][0].o.once);
   early.window.AllshoreForecast = early.F; early.docL['allshore:forecast'][0].fn();
   assert.equal(early.notes.length, 1, 'said when the window is up');
 });
@@ -247,7 +248,7 @@ test('a default the list no longer has (or one the id rule refuses) is forgotten
 test('a removed default the head already forgot (G35 B-8): said once when the list lands, whatever the list', () => {
   for (const list of [LIST2, []]) {
     const r = runForget(undefined, list, { early: { retired: '44062' } });
-    assert.equal(r.notes.length, 1, 'said'); assert.ok(/44062/.test(r.notes[0][0]) && /near you next time/.test(r.notes[0][0])); assert.equal(r.notes[0][1], '44062');
+    assert.equal(r.notes.length, 1, 'said'); assert.ok(/44062/.test(r.notes[0][0]) && /near you next time/.test(r.notes[0][0])); assert.equal(r.notes[0][1], null);
     assert.equal(r.window.__early.retired, null, 'once');
   }
   assert.deepEqual(runForget(undefined, LIST2, { early: { retired: null } }).notes, []);

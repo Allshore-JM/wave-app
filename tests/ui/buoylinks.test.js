@@ -108,8 +108,8 @@ test('the live window: "Forecast for this point" for a twin, the id and distance
   assert.equal(E.station.value, '41113');
   const ev = b.events.filter((e) => e.type === 'allshore:station').pop();
   assert.deepEqual(ev.detail, { sid: '41113', source: 'map' }, 'as a click on its dot (Buoy Local, the window expands)');
-  assert.deepEqual(b.focused, [], 'a pointer click leaves the focus'); assert.deepEqual(b.pans, [], 'a twin: the map stays');
-  E.lwForecast.click(0); assert.deepEqual(b.focused, ['fwHeader'], 'a keyboard press moves it into the forecast window');
+  assert.deepEqual(b.focused, ['fwHeader'], 'a pointer click moves the focus into the forecast window (V7-2)'); assert.deepEqual(b.pans, [], 'a twin: the map stays');
+  E.lwForecast.click(0); assert.deepEqual(b.focused, ['fwHeader', 'fwHeader'], 'a keyboard press too');
   A.setLive(liveFar); A.syncBuoyLinks();
   assert.equal(E.lwForecast.textContent, 'Forecast point 41041 · 19 mi away', '10 and over: whole units');
   assert.equal(E.lwForecast.getAttribute('aria-label'), 'Forecast point 41041, 19 miles away', 'in words for a screen reader (B-6)');
@@ -143,8 +143,9 @@ test('the forecast window: "Live buoy" follows the station shown (a pick or a fo
   assert.equal(E.fwLive.hidden, true, 'nothing shown yet');
   b.fire('allshore:forecast', { station: '41113' });
   assert.equal(E.fwLive.hidden, false); assert.equal(E.fwLive.textContent, 'Live buoy'); assert.equal(E.fwLive.title, 'Canaveral Nearshore, FL');
-  E.fwLive.click(); assert.deepEqual(b.opened, [BUOY]); assert.deepEqual(b.focused, []);
-  E.fwLive.click(0); assert.deepEqual(b.focused, ['lwHeader']);
+  E.fwLive.click(); assert.deepEqual(b.opened, [BUOY]);
+  assert.deepEqual(b.focused, ['lwHeader'], 'a pointer click moves the focus into the live window: Escape then closes it, not the window behind (V7-2)');
+  E.fwLive.click(0); assert.deepEqual(b.focused, ['lwHeader', 'lwHeader']);
   b.fire('allshore:station', { sid: '51201' }); assert.equal(E.fwLive.hidden, true, 'no live buoy near 51201 in this list');
   b.fire('allshore:station', { sid: 'pt_28400N_80534W' }); assert.equal(E.fwLive.hidden, true, 'one of My points: never');
   b.fire('allshore:station', { sid: 'NOPE' }); assert.equal(E.fwLive.hidden, true, 'not in the list: never');

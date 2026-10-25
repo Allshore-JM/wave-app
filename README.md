@@ -1456,7 +1456,7 @@ beside the coastline and is given up only after 5 s with no byte (the owner's ca
 since 2.22.4). A row turned on while the other row's file is still loading starts its own file at once (UI 1.25.4), with a full 15 s for its first byte (UI 1.25.5).
 Built and published by `tools/places/build_places.py` (coast-build workflow, `set: places`; `tools/places/README.md`).
 
-## A live buoy on a forecast point (plan section 52, UI asset 1.25.8)
+## A live buoy on a forecast point (plan section 52, UI asset 1.25.9)
 
 138 of the live buoys are forecast points too (the same NDBC id), many within a few hundred metres, and the live dot is
 drawn over the forecast dot. The live window then offers **Forecast for this point** and the forecast window **Live
@@ -1474,10 +1474,14 @@ map's canvas renderer `tolerance`), and the renderer gives a tap to the NEAREST 
 gives it to the last drawn: a neighbour drawn later stole a tap on a dot's own centre; the `// ---- nearest path`
 block, `tests/ui/nearest.test.js`); each live dot takes taps up to 8 px beyond its own, halved toward the nearest other
 icon (live dots, tide icons, wind flags, My points, forecast dots; its own twin only while it lies under the dot: a buoy's
-own wind flag keeps the dot as it was), one pass per round of rebuilds; a mouse hits as before. The map tools take the
-tap's own position (Leaflet hands a click on a canvas dot the dot's position). The link buttons are 44 px tall on touch
-screens. On phones the window opened or touched last is the one on top; Escape acts on the window holding the focus,
-else the one in front, then wind, tide, live. The block is `// ---- buoy links` in `templates/index.html`
+own wind flag keeps the dot as it was), one pass per round of rebuilds. On a computer without a touch screen a mouse
+hits as before; on one WITH a touch screen (many Windows laptops) the mouse gets the touch reach too (owner, 2026-10-25:
+kept; the nearest icon still wins). The map tools take the tap's own position (Leaflet hands a click on a canvas dot the
+dot's position). The link buttons are 44 px tall on touch screens. On phones the window opened or touched last is the one
+on top; a link moves the focus into the window it opened, and Escape acts on the window holding the focus, else the one
+in front, then wind, tide, live. The forecast window's notes (a removed default or favorite cleared, a point not kept)
+sit between its toolbar and its table, so the table's scroll to the current hour never hides them; several are kept, one
+per line. The wind legend's stall note is worked out again when the wind station list lands. The block is `// ---- buoy links` in `templates/index.html`
 (`tests/ui/buoylinks.test.js` runs it).
 
 ## Wind stations (plan section 39, UI asset 1.22.0)

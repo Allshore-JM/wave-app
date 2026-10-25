@@ -520,8 +520,21 @@ test("the stall note (owner, G35 decision 2): most NWS flags grey (fewer than ha
   assert.ok(badZone.startsWith('NWS feed stalled since '), 'an unknown zone: the computer\'s, named: ' + badZone);
 });
 
+test('the stall note is worked out again when the station list lands after the readings (test-site check V7-4); guarded', () => {
+  const now = 1792876500;
+  const make = new Function('let windStationsData = [];\n' + STALL + '\nreturn { feed: (p, m) => { windLastFeed = { payload: p, missing: m }; workOutWindStall(); }, list: (l) => { windStationsData = l; workOutWindStall(); }, text: () => windStallText, bad: () => { windStationsData = Object.assign([], { filter: () => { throw new Error("x"); } }); workOutWindStall(); } };');
+  const w = make();
+  w.list([]); assert.equal(w.text(), '', 'no readings yet: nothing worked out');
+  const payload = { now, stale_s: 7200, newest: { nws: now - 4 * 3600 }, rows: [], fed_by: {} };
+  w.feed(payload, []); assert.equal(w.text(), '', 'readings before the list: no stations to judge');
+  w.list([{ id: 'nws:016HE', tz: 'Pacific/Honolulu' }, { id: 'nws:011HI', tz: 'Pacific/Honolulu' }]);
+  assert.ok(w.text().startsWith('NWS feed stalled since '), 'the list lands: the note at once, not 5 minutes later: ' + w.text());
+  w.bad(); assert.equal(w.text(), '', 'a throwing rule leaves no note (never the repaint)');
+});
+
 test('the stall note in the page: after the flags are repainted, guarded, behind the feed\'s own note; the credit names MADIS', () => {
-  assert.ok(TPL.includes("            refreshWindFlags();\n            try { windStallText = windStallNote(payload, missing, windStationsData); } catch (e) { windStallText = ''; }   // never the flags' repaint\n            syncWindNote();"));
+  assert.ok(TPL.includes("            refreshWindFlags();\n            windLastFeed = { payload: payload, missing: missing };\n            workOutWindStall();\n            syncWindNote();"));
+  assert.ok(TPL.includes("        windListNote = '';\n        workOutWindStall();\n        rebuildWindMarkers(true);"), 'worked out again when the station list lands (V7-4)');
   assert.ok(TPL.includes('      return windFeedNote || windStallText;'));
   assert.ok(TPL.includes(' · <a href="https://madis.ncep.noaa.gov/" target="_blank" rel="noopener">NOAA MADIS</a>\';'));
 });

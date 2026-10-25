@@ -160,6 +160,7 @@ function buildPage(win) {
   const modelBar = el('div', 'modelBar', toolbar); ['GFS', 'SWAN'].forEach((v) => el('button', null, modelBar, { 'data-model': v }));
   const modeBar = el('div', 'modeBar', toolbar); modeBar.hidden = true; ['detailed', 'summary'].forEach((v) => el('button', null, modeBar, { 'data-mode': v }));
   const rangeBar = el('div', 'rangeBar', toolbar); ['0', '7', '3'].forEach((v) => el('button', null, rangeBar, { 'data-days': v }));
+  el('div', 'fwNote', w).hidden = true;             // between the toolbar and the body, as the page (test-site check V7-3)
   const body = el('div', 'fwBody', w); body.clientHeight = 400;
   el('div', 'fwError', body).hidden = true; el('div', 'forecastMeta', body);
   const table = el('div', 'forecastTable', body); el('div', 'forecastLoading', table);

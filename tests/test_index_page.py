@@ -402,6 +402,15 @@ def test_my_points_on_the_page(client):
     assert "window.__allshorePoints = { store: store, sync: sync, add: add, say: say, refused: function (id) { return !!refusedIds[id]; } };" in block
     assert "window.addEventListener('storage', function (e) { if (!e.key || e.key === 'allshore.points.v1') sync(); });" in block
     assert '<div id="fwNote" class="fw-note" role="status" hidden></div>' in body
+    # the notes sit between the toolbar and the scrolling body: the table's scroll to the current hour never hides them
+    # (test-site check V7-3); several kept, one per line
+    assert body.index('<div id="fwToolbar"') < body.index('<div id="fwNote"') < body.index('<div id="fwBody"')
+    assert ".forecast-win > #fwNote { flex: 0 0 auto; margin: 8px 10px 0; white-space: pre-line; }" in body
+    assert ".fwin.fw-min > #fwNote { display: none; }" in body and ".fw-body > #fwNote" not in body
+    assert "function tellOnPage(msg) {" in body and "tellOnPage(retiredDefaultNote(early));" in body
+    # a link moves the focus into the window it opened, whatever pressed it (V7-2); the stall note again when the list lands (V7-4)
+    assert "function linkFocus(headerId) { if (typeof focusWindowHeader === 'function') focusWindowHeader(headerId); }" in body
+    assert "        windListNote = '';\n        workOutWindStall();\n        rebuildWindMarkers(true);" in body
     assert block.index("window.__allshorePoints =") < block.rindex("try { sync(); } catch (e) {}")      # damaged storage cannot stop the window (G22 R-A13)
     assert "if (cur !== asked && d && d.table_html) return { ok: false, cancel: true };" in block           # a late answer (G22 R-A6)
     assert "if (d.ok && refusedIds[d.station]) { delete refusedIds[d.station]; sync(); return; }" in block   # a refusal forgotten (R-A8)

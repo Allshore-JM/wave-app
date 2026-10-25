@@ -69,7 +69,7 @@ function boot(opts) {
   const viewBar = el('div', 'viewBar', toolbar); ['Table', 'Graph'].forEach((v) => el('button', null, viewBar, { 'data-view': v }));
   const modelBar = el('div', 'modelBar', toolbar); ['GFS', 'SWAN'].forEach((v) => el('button', null, modelBar, { 'data-model': v }));
   const rangeBar = el('div', 'rangeBar', toolbar); ['0', '7', '3'].forEach((v) => el('button', null, rangeBar, { 'data-days': v }));
-  const body = el('div', 'fwBody', w); const note = el('div', 'fwNote', body); note.hidden = true;
+  const note = el('div', 'fwNote', w); note.hidden = true; const body = el('div', 'fwBody', w);
   const errBox = el('div', 'fwError', body); errBox.hidden = true; el('div', 'forecastMeta', body);
   const table = el('div', 'forecastTable', body); el('div', 'forecastLoading', table);
   const graphs = el('div', 'graphs', body); graphs.hidden = true;

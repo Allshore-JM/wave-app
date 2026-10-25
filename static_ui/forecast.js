@@ -830,7 +830,7 @@
   // opts: initial (window.__initial), stationLabel(sid) -> text, loadChartJs() -> Promise, closeLivePanel(),
   //       liveOpen() -> bool, closeTidePanel(), tideOpen() -> bool, closeWindPanel(), windOpen() -> bool, fetch,
   //       document, window, storage (session), settings (local), onMode(mode).
-  var app = null;
+  var app = null, earlyNotes = [];                                             // notes said before init (kept for it)
   function init(opts) {
     opts = opts || {};
     var win = opts.window || window, doc = opts.document || win.document;
@@ -902,14 +902,22 @@
         m.appendChild(doc.createTextNode(String(pair[1] == null ? '' : pair[1])));
       });
     }
-    // A line of news for the visitor in the window (a point that could not be kept, G22 B-3): shown until another
-    // station or point is on screen.
-    var noteFor = null;
+    // A line of news for the visitor in the window (a point that could not be kept, G22 B-3; a removed default or
+    // favorites, G35 B-8): shown until another station or point is on screen. Several for the station on screen are kept,
+    // one per line, each once (a second replaced the first: test-site check V7-3). A note for no station in particular,
+    // said before any forecast is on screen, waits for the first one to land.
+    var noteFor = null, noteLines = [], notePending = [], landed = false;
     function note(msg, sid) {
       if (!els.note) return;
-      noteFor = msg ? (sid || state.station) : null;
-      els.note.textContent = msg || '';
-      els.note.hidden = !msg;
+      if (msg && !sid && !landed) { if (notePending.indexOf(String(msg)) < 0) notePending.push(String(msg)); return; }
+      if (!msg) { noteFor = null; noteLines = []; }
+      else {
+        var key = sid || state.station;
+        if (key !== noteFor) { noteFor = key; noteLines = []; }
+        if (noteLines.indexOf(String(msg)) < 0) noteLines.push(String(msg));
+      }
+      els.note.textContent = noteLines.join('\n');
+      els.note.hidden = !noteLines.length;
     }
     // the <head>'s early request (window.__early.forecast = {q, p}): taken once, by the first load, and only
     // for exactly the same query; any other first query fetches as usual (the early response is dropped)
@@ -942,6 +950,7 @@
               if (age !== null && age >= STALE_H) cyc += ' · ' + Math.round(age) + ' h old';   // a point's run NOAA stopped feeding (plan section 31)
               writeLabel(els.title, label); text(els.cycle, cyc);
               if (noteFor !== null && noteFor !== st.station) note(null);
+              if (!landed) { landed = true; notePending.splice(0).forEach(function (m) { note(m, null); }); }   // the notes that waited for a forecast
               if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = cyc;
               setMeta(d.graph_header);
               if (d.table_html) els.table.innerHTML = d.table_html;           // the server's own table (build_html_table)
@@ -1117,6 +1126,7 @@
     } else loader.load({});
     app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, setView: setView, setTableMode: setTableMode,
       tableMode: function () { return tableMode; }, expand: expand, minimise: minimise, note: note, els: els };
+    earlyNotes.splice(0).forEach(function (n) { note(n[0], n[1]); });
     return app;
   }
 
@@ -1127,7 +1137,7 @@
     load: function (next) { return app ? app.loader.load(next) : Promise.resolve(null); },
     // a station's forecast fetched and kept, not shown (a map pick goes back to Buoy Local, as allshore:station does)
     prefetch: function (sid) { return app ? app.loader.prefetch({ station: String(sid), tz: '' }) : Promise.reject(new Error('no forecast window')); },
-    note: function (msg, sid) { if (app) app.note(msg, sid); },
+    note: function (msg, sid) { if (app) app.note(msg, sid); else if (msg) earlyNotes.push([msg, sid]); },   // said before init: kept for it
     expand: function () { if (app) app.expand(); },
     minimise: function () { if (app) app.minimise(); },
     getMode: function () { return app ? app.window.mode : null; },

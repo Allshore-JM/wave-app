@@ -57,7 +57,7 @@ Once deployed, navigate to the provided URL to access the app. The site will all
 - `static_ui/forecast.js` — the forecast window's client module (see below); `static_ui/tools.js` — the map tools,
   including the Forecast point tool; `static_overlay/` — the optional model overlays.
 - `gfs_bulletins.py` + `gfs_bull_index.json` — the GFS station bulletins from NOAA's run archive on AWS (see "GFS
-  bulletins: where they come from"); `tools/build_bull_index.py` builds and checks the index.
+  bulletins and winds: where they come from"); `tools/build_bull_index.py` builds and checks the index.
 - `point_forecast.py` — reads the forecast-point product for one ocean point: the water / land test, the model cell,
   the rows and the swell rank (see "Forecast points: the reader").
 - `tools/model_frames/points.py` and `pointfmt.py` — the GitHub Actions job that publishes the forecast-point product,
@@ -943,7 +943,7 @@ product) publishes the newest NASA JPL MUR SST v4.1 day as tiles; `sst_tiles.py`
   without DecompressionStream too; a rejected `cancel()` is caught. `tests/overlay/sst_timers.test.js` (with `sst_net.js`: a
   fake clock and a held network of real PNG bytes) drives the real `decodeFrame` / `readBody` path.
 
-## GFS bulletins: where they come from (plan sections 40 and 53)
+## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 
 The forecast table of a GFS station is NOAA's GFS-Wave station bulletin (`gfswave.<id>.bull`) of the newest run.
 NOMADS refused the production server's address on 2026-10-11 and every table said "No recent run found"; since then
@@ -972,8 +972,19 @@ the bulletins come from the run's bulletin archive:
 - **`/healthz` -> `gfs.bulletins`**: whether the archive and NOMADS are used, the index (members, archive size, a load
   error), the archive reads by outcome (`ok`, `unknown`, `missing`, `layout`, `content`, `transport`), the NOMADS
   fallbacks, the last error and the last run served from the archive. Reported only, never part of `ok`.
-- **Diagnostics** (env): `BULL_ARCHIVE=0` reads NOMADS alone; `NOMADS_DISABLED=1` never asks NOMADS (the archive only;
-  the Wind column then has no source).
+- **The Wind column** (and the SWAN tables' wind back-fill): the GFS station winds job's table in the frames bucket
+  first (`gfswave/winds/v1/<RUN>/index.json` + `winds.bin`, see "GFS station winds" under Model overlays; the bucket's
+  address is the forecast points', from `MODEL_FRAMES_BASE` or `POINTS_ROOT`), NOMADS's per-station `.spec` second.
+  A run's table is read once per process (two objects, ~1.4 MB) and the last 4 runs are held; it must be whole (its
+  index's run, layout, slots and the sha256 of winds.bin), else NOMADS serves and the run is asked again after a
+  minute. A run the job has not published yet (about 10 to 20 minutes after the bulletin archive) is asked again after
+  two minutes; meanwhile NOMADS's `.spec` serves as before. The values are the `.spec`'s own, so the table and the
+  graphs are the same from either source.
+- **`/healthz` -> `gfs.winds`**: whether the table is read, the runs held, and counts of stations served from it
+  (`r2`), from NOMADS (`nomads`), stations not in a run (`not_in_run`), runs not published yet (`run_missing`) and
+  errors (`last_error`). Reported only.
+- **Diagnostics** (env): `BULL_ARCHIVE=0` reads NOMADS alone for the bulletins; `GFS_WINDS=0` reads NOMADS alone for
+  the Wind column; `NOMADS_DISABLED=1` never asks NOMADS (the archive and the winds table only).
 
 ## Forecast points
 

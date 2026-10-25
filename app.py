@@ -123,6 +123,7 @@ import time
 import logging
 import threading
 import hashlib
+import struct
 import tempfile
 import socket
 from requests.adapters import HTTPAdapter
@@ -1533,6 +1534,121 @@ _WIND_CACHE_MAX = 128          # the 12 SWAN points hold two runs each (the back
 _WIND_PAST_RUN_TTL = 6 * 3600  # a past cycle's spec never changes (the SWAN back-fill, plan section 27)
 _WIND_INFLIGHT = {}         # key -> Lock: collapse concurrent cold misses (singleflight)
 
+# The stations' GFS winds published by the GFS winds job (plan section 53 B/C) under gfswave/winds/v1/<RUN>/ in the
+# frames bucket: winds.bin (count x 385 x 2 uint16 LE: 0.01 m/s, 0.1 deg FROM; 65535 missing) + index.json (station ->
+# slot, sha256). The values are the .spec's own (2 and 1 decimals), so a station read from here equals what the .spec
+# parser gives. Asked FIRST; NOMADS's .spec stays the fallback (a run the job has not published yet, a station not in it,
+# a damaged object). GFS_WINDS=0 skips it (a diagnostic).
+GFS_WINDS = os.environ.get("GFS_WINDS", "1") != "0"
+GFSWINDS_PREFIX = "gfswave/winds/v1"
+_GFS_WINDS_STEPS = 385
+_GFS_WINDS_RECORD = _GFS_WINDS_STEPS * 4
+_GFS_WINDS_MAX = {"index": 512 * 1024, "winds": 8 * 1024 * 1024}
+_GFS_WINDS_KEEP_RUNS = 4               # the job keeps 4; the SWAN back-fill reads a run 6-12 h old
+_GFS_WINDS_MISS_TTL = 120              # a run the job has not published yet (404): asked again after this
+_GFS_WINDS_ERR_TTL = 60                # any other failure
+_GFS_WINDS_LOCK = threading.Lock()
+_GFS_WINDS_RUNS = OrderedDict()        # run -> {"stations": {sid: slot}, "body": bytes}
+_GFS_WINDS_FAILED = {}                 # run -> monotonic time before which it is not asked again
+_GFS_WINDS_INFLIGHT = {}               # run -> Lock (singleflight)
+_GFS_WINDS_STATS = {"r2": 0, "nomads": 0, "not_in_run": 0, "run_missing": 0, "errors": 0, "last_error": None,
+                    "last_run": None}
+
+
+def _gfs_winds_note(key, detail=None, run=None):
+    with _GFS_WINDS_LOCK:
+        _GFS_WINDS_STATS[key] += 1
+        if detail:
+            _GFS_WINDS_STATS["last_error"] = detail
+        if run:
+            _GFS_WINDS_STATS["last_run"] = run
+
+
+def _gfs_winds_check(index, body, run):
+    """None when (index, body) are a whole gfswinds-v1 table of that run, else what is wrong."""
+    if not isinstance(index, dict) or index.get("format") != "gfswinds-v1" or index.get("run") != run:
+        return "not a gfswinds-v1 index of this run"
+    st, count = index.get("stations"), index.get("count")
+    if (index.get("steps") != list(range(_GFS_WINDS_STEPS)) or index.get("record_bytes") != _GFS_WINDS_RECORD
+            or index.get("missing") != 65535):
+        return "another layout"
+    if not isinstance(st, dict) or not isinstance(count, int) or count != len(st):
+        return "a bad station list"
+    if sorted(v for v in st.values() if isinstance(v, int) and not isinstance(v, bool)) != list(range(count)):
+        return "bad slots"
+    if len(body) != count * _GFS_WINDS_RECORD:
+        return f"winds.bin is {len(body)} B for {count} stations"
+    if hashlib.sha256(body).hexdigest() != index.get("sha256"):
+        return "winds.bin does not match its index"
+    return None
+
+
+def _gfs_winds_run(date_str: str, run_str: str):
+    """The run's winds table from the bucket ({"stations", "body"}), or None (no bucket here, GFS_WINDS=0, not published
+    yet, unreadable: the caller reads NOMADS). One read per run per process (the last _GFS_WINDS_KEEP_RUNS kept)."""
+    root = _points_root()
+    if not GFS_WINDS or not root:
+        return None
+    run = f"{date_str}{run_str}"
+    with _GFS_WINDS_LOCK:
+        table = _GFS_WINDS_RUNS.get(run)
+        if table is not None:
+            _GFS_WINDS_RUNS.move_to_end(run)
+            return table
+        if time.monotonic() < _GFS_WINDS_FAILED.get(run, 0):
+            return None
+        lock = _GFS_WINDS_INFLIGHT.setdefault(run, threading.Lock())
+    with lock:
+        with _GFS_WINDS_LOCK:
+            table = _GFS_WINDS_RUNS.get(run)
+            if table is not None or time.monotonic() < _GFS_WINDS_FAILED.get(run, 0):
+                return table
+        try:
+            index = json.loads(_points_fetch(f"{root}/{GFSWINDS_PREFIX}/{run}/index.json",
+                                             _GFS_WINDS_MAX["index"]).decode("utf-8"))
+            body = _points_fetch(f"{root}/{GFSWINDS_PREFIX}/{run}/winds.bin", _GFS_WINDS_MAX["winds"])
+            bad = _gfs_winds_check(index, body, run)
+            if bad:
+                raise ValueError(bad)
+        except Exception as exc:
+            missing = getattr(exc, "status", None) in (403, 404)
+            wait = _GFS_WINDS_MISS_TTL if missing else _GFS_WINDS_ERR_TTL
+            with _GFS_WINDS_LOCK:
+                _GFS_WINDS_FAILED[run] = time.monotonic() + wait
+                _GFS_WINDS_INFLIGHT.pop(run, None)
+            if missing:
+                _gfs_winds_note("run_missing")
+            else:
+                logger.warning("GFS winds %s unreadable: %r", run, exc)
+                _gfs_winds_note("errors", f"{run}: {exc!r}"[:300])
+            return None
+        table = {"stations": dict(index["stations"]), "body": body}
+        with _GFS_WINDS_LOCK:
+            _GFS_WINDS_RUNS[run] = table
+            while len(_GFS_WINDS_RUNS) > _GFS_WINDS_KEEP_RUNS:
+                _GFS_WINDS_RUNS.popitem(last=False)
+            _GFS_WINDS_FAILED.pop(run, None)
+            _GFS_WINDS_INFLIGHT.pop(run, None)
+        return table
+
+
+def _gfs_winds_station(table, station_id: str, date_str: str, run_str: str):
+    """{naive UTC datetime: (u10 m/s, dir FROM)} of the station from the run's table (the same floats the .spec parser
+    gives: 809 / 100 == 8.09), or None when the station is not in it."""
+    slot = table["stations"].get(station_id)
+    if slot is None:
+        return None
+    vals = struct.unpack_from(f"<{_GFS_WINDS_STEPS * 2}H", table["body"], slot * _GFS_WINDS_RECORD)
+    base = datetime.strptime(date_str + run_str, "%Y%m%d%H")
+    return {base + timedelta(hours=h): (vals[2 * h] / 100, vals[2 * h + 1] / 10)
+            for h in range(_GFS_WINDS_STEPS) if vals[2 * h] != 65535}
+
+
+def _gfs_winds_health():
+    with _GFS_WINDS_LOCK:
+        return {"enabled": GFS_WINDS and bool(_points_root()), "runs_held": list(_GFS_WINDS_RUNS),
+                **_GFS_WINDS_STATS}
+
 # Bounds on the streaming .spec download so a stuck/corrupt/huge NOMADS response
 # can never hold a worker indefinitely or exhaust memory. Real spec ~7.75MB.
 _WIND_FETCH_MAX_S = 45              # total wall-clock for the whole download
@@ -1624,7 +1740,8 @@ def _parse_spec_wind_text(lines):
 
 def get_station_wind(station_id: str, date_str: str | None = None,
                      run_str: str | None = None, keep_s: int | None = None) -> dict:
-    """Cached GFS wind time series for a station, from its gfswave .spec file.
+    """Cached GFS wind time series for a station: from the GFS winds job's table in the frames bucket (plan section 53),
+    else from its gfswave .spec file on NOMADS.
 
     Pass (date_str, run_str) to pin the exact cycle (the GFS parser does, so
     bull and spec always come from the same run); omitted -> latest cycle.
@@ -1662,6 +1779,18 @@ def get_station_wind(station_id: str, date_str: str | None = None,
             if cached is not None:
                 return cached
 
+            table = _gfs_winds_run(date_str, run_str)       # the GFS winds job's table first (plan section 53)
+            wind = _gfs_winds_station(table, station_id, date_str, run_str) if table is not None else None
+            if wind is not None:
+                _gfs_winds_note("r2", run=f"{date_str}{run_str}")
+                ttl = keep_s or _WIND_CACHE_TTL
+                with _CACHE_LOCK:
+                    _WIND_CACHE[key] = {"ts": time.time(), "data": wind, "ttl": ttl}
+                    _evict_oldest(_WIND_CACHE, _WIND_CACHE_MAX)
+                    _WIND_INFLIGHT.pop(key, None)
+                return wind
+            if table is not None:
+                _gfs_winds_note("not_in_run")
             url = (f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/"
                    f"bulls.t{run_str}z/gfswave.{station_id}.spec")
             wind = {}
@@ -1688,6 +1817,8 @@ def get_station_wind(station_id: str, date_str: str | None = None,
             except Exception as exc:
                 logger.warning("wind spec fetch failed for %s: %r", station_id, exc)
                 wind = {}
+            if wind:
+                _gfs_winds_note("nomads")
 
             ttl = (keep_s or _WIND_CACHE_TTL) if wind else _WIND_NEG_TTL
             with _CACHE_LOCK:
@@ -5107,6 +5238,9 @@ def _live_after_fork():
     global _LIVE_BG_LOCK, _LIVE_BUILD_LOCK, _TZ_FINDER_LOCK, _CACHE_LOCK, _LIVE_STOP, _LIVE_WAKE, _BUOY_PROVIDERS_LOCK
     global _TIDES_LOCK, _WINDS_LOCK, _WIND_BUILD_LOCK
     gfs_bulletins.STATS.lock = threading.Lock()   # the bulletin counters (plan section 53)
+    global _GFS_WINDS_LOCK
+    _GFS_WINDS_LOCK = threading.Lock()            # the GFS winds tables (plan section 53)
+    _GFS_WINDS_INFLIGHT.clear()
     _TIDES_LOCK = threading.Lock()                # the tide service resets its own locks (tide_sources)
     _WINDS_LOCK = threading.Lock()                # the wind history service and providers reset their own
     _WIND_BUILD_LOCK = threading.Lock()
@@ -5223,7 +5357,7 @@ def healthz():
                    "workers": getattr(runner, "workers", None)},
         "rss_kb": _rss_kb(),
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "gfs": {"bulletins": _bull_health()},     # GFS bulletins from AWS / NOMADS (section 53): reported only
+        "gfs": {"bulletins": _bull_health(), "winds": _gfs_winds_health()},   # section 53: reported only
         "wind": _wind_health(now),                # the wind feeds (section 39): reported, never part of `ok`
     }
     resp = jsonify(body)

@@ -18,6 +18,7 @@ import threading
 import xml.etree.ElementTree as ET
 import buoy_sources
 import point_forecast
+import gfs_bulletins
 import sky
 import tide_sources
 import wind_sources
@@ -102,18 +103,16 @@ stations_data_cache = None
 
 # NOAA URLs
 NOAA_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
-# NOAA's copy of the same GFS directory tree on AWS Open Data (NODD). It carries every station .bull byte for
-# byte (checked 2026-10-11) a minute or two after NOMADS, with no per-address rate limit; NOMADS refused the
-# production server's address on 2026-10-11 and every GFS forecast said "No recent run found." The run probe and
-# the .bull are asked here first, NOMADS second. It has no per-station .spec, so the Wind column still reads NOMADS.
+# NOAA's copy of the same GFS directory tree on AWS Open Data (NODD), no per-address rate limit. NOMADS refused the
+# production server's address on 2026-10-11 and every GFS forecast said "No recent run found" (section 40). From the
+# 2026-10-22 18Z run on the copy holds only run ARCHIVES under wave/station/ (the per-station .bull files answer 404
+# there), so the bulletins are read from the run's bulletin archive by byte range (gfs_bulletins, plan section 53),
+# NOMADS's per-station files second. The run probe asks for the archive first.
 NOAA_BUCKET = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
 # NOMADS_DISABLED=1 skips NOMADS entirely (a diagnostic: shows what the site serves while NOMADS refuses us).
 NOMADS_DISABLED = os.environ.get("NOMADS_DISABLED", "") == "1"
-
-
-def _bull_bases():
-    """Where a GFS-Wave station bulletin is asked for, in order."""
-    return (NOAA_BUCKET,) if NOMADS_DISABLED else (NOAA_BUCKET, NOAA_BASE)
+# BULL_ARCHIVE=0 skips the archive (a diagnostic: the bulletins and the run probe from NOMADS alone).
+BULL_ARCHIVE = os.environ.get("BULL_ARCHIVE", "1") != "0"
 
 
 def _host(url: str) -> str:
@@ -538,12 +537,26 @@ def _points_fetch(url: str, max_bytes: int, headers=None) -> bytes:
     return _capped_get(url, max_bytes, headers, _POINT_FETCH_TIMEOUT, _POINT_FETCH_MAX_S)
 
 
-def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float) -> bytes:
+class HTTPStatusError(IOError):
+    """A capped fetch answered with another status than the one asked for; `status` keeps the number."""
+
+    def __init__(self, status):
+        super().__init__(f"HTTP {status}")
+        self.status = status
+
+
+def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float, session=None, byte_range=None) -> bytes:
     """A whole 200 body of at most max_bytes within about max_s seconds from the request, or an exception. A body that
     trickles is cut by shutting its socket down: closing the response from another thread would wait for the reader's
     lock, i.e. for the whole body (G22 R-A2). A short body is urllib3's IncompleteRead. Headers that trickle are not
     cut. On Linux, where the service runs, the shutdown wakes a blocked read at once; on Windows such a read may last
-    to the read timeout."""
+    to the read timeout. With `byte_range` = (start, end) the request asks for those bytes (inclusive) and the answer
+    must be a 206 of exactly that length (a 200 = the server ignored the range: refused). Another status raises
+    HTTPStatusError. `session` defaults to the points' session (one attempt, no retry adapter)."""
+    if byte_range is not None:
+        start, end = byte_range
+        headers = dict(headers or {}, Range=f"bytes={start}-{end}")
+        max_bytes = end - start + 1
     deadline = time.monotonic() + max_s
     held = {"sock": None, "late": False, "done": False}
     guard = threading.Lock()
@@ -565,15 +578,15 @@ def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float) -> byt
     killer.start()
     try:
         extra = {"headers": dict(headers)} if headers else {}        # the point callers make the call as before
-        with _POINT_HTTP.get(url, timeout=timeout, stream=True, **extra) as resp:
+        with (session or _POINT_HTTP).get(url, timeout=timeout, stream=True, **extra) as resp:
             with guard:
                 held["sock"] = getattr(getattr(resp.raw, "_connection", None), "sock", None)
                 late = held["late"]
             if late:
                 cut()                                                # the time ran out while the headers came
             try:
-                if resp.status_code != 200:
-                    raise IOError(f"HTTP {resp.status_code}")
+                if resp.status_code != (200 if byte_range is None else 206):
+                    raise HTTPStatusError(resp.status_code)
                 body = bytearray()
                 for chunk in resp.iter_content(65536):
                     body += chunk
@@ -581,6 +594,8 @@ def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float) -> byt
                         raise IOError("body too large")
                     if time.monotonic() > deadline:
                         raise IOError("too slow")
+                if byte_range is not None and len(body) != max_bytes:
+                    raise IOError(f"{len(body)} bytes of the {max_bytes} asked for")
                 return bytes(body)
             finally:
                 with guard:                                          # before the connection goes back to the pool (G22 R2-8)
@@ -1427,27 +1442,47 @@ def sitemap_xml():
 
 def _detect_latest_run():
     """
-    Find the most recent available GFS wave run by probing 18/12/06/00 of today and yesterday.
-    Up to 8 serial HEAD requests; wrapped by the cached get_latest_run() below.
+    Find the most recent available GFS wave run by probing 18/12/06/00 of today and yesterday: per cycle the run's
+    bulletin archive on AWS first (a HEAD; NOAA writes it whole or not at all), then NOMADS's bulletin of 51201.
+    An archive of another length than the committed index's still counts (the bulletins then come from NOMADS, and
+    /healthz says the layout looks changed). Wrapped by the cached get_latest_run() below.
     """
     now = datetime.utcnow()
     run_hours = [18, 12, 6, 0]
     seen = {}                                     # host -> the last answer (a status or an error), for the log
+    use_archive = BULL_ARCHIVE and bool(gfs_bulletins.INDEX)
     for delta_day in [0, 1]:
         check_date = now - timedelta(days=delta_day)
         yyyymmdd = check_date.strftime("%Y%m%d")
         for hour in run_hours:
             run_str = f"{hour:02d}"
-            for base in _bull_bases():            # a run counts when either copy has the bulletin
-                test_file = f"{base}/gfs.{yyyymmdd}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.51201.bull"
+            probes = []
+            if use_archive:
+                probes.append(("archive", gfs_bulletins.archive_url(yyyymmdd, run_str, NOAA_BUCKET)))
+            if not NOMADS_DISABLED:
+                probes.append(("nomads", f"{NOAA_BASE}/gfs.{yyyymmdd}/{run_str}/wave/station/bulls.t{run_str}z/"
+                                         "gfswave.51201.bull"))
+            for kind, test_file in probes:        # a run counts when either has it
                 try:
                     resp = HTTP.head(test_file, timeout=10)
-                    if resp.status_code == 200:
-                        return yyyymmdd, run_str
-                    seen[_host(base)] = f"HTTP {resp.status_code}"
                 except Exception as exc:
                     logger.debug("run probe failed for %s: %r", test_file, exc)
-                    seen[_host(base)] = type(exc).__name__
+                    seen[_host(test_file)] = type(exc).__name__
+                    continue
+                if resp.status_code != 200:
+                    seen[_host(test_file)] = f"HTTP {resp.status_code}"
+                    continue
+                if kind == "archive":
+                    try:
+                        length = int(resp.headers.get("Content-Length") or 0)
+                    except (TypeError, ValueError):
+                        length = 0
+                    if length != gfs_bulletins.ARCHIVE_BYTES:
+                        detail = (f"{yyyymmdd} {run_str}Z archive is {length} B, the index "
+                                  f"{gfs_bulletins.ARCHIVE_BYTES} B")
+                        gfs_bulletins.STATS.note("layout", detail)
+                        logger.warning("run probe: %s: the bulletins may come from NOMADS", detail)
+                return yyyymmdd, run_str
     logger.warning("run probe: no GFS-wave run found (last answers: %s)",
                    ", ".join(f"{h} {a}" for h, a in seen.items()) or "none")
     return None, None
@@ -1820,6 +1855,65 @@ def _forecast_singleflight(key, build, ttl=None):
                 _FORECAST_INFLIGHT.pop(key, None)
 
 
+_BULL_HTTP = requests.Session()        # the archive reads: one attempt each (NOMADS second, not a retry)
+_BULL_RANGE_TIMEOUT = (3, 10)          # connect, read
+_BULL_RANGE_MAX_S = 15                 # whole read of one bulletin (52.6 KB)
+_BULL_NOMADS_TIMEOUT = (5, 15)
+_BULL_NOMADS_MAX_S = 30
+_BULL_MAX_BYTES = gfs_bulletins.MAX_SIZE
+
+
+def _bull_range(url: str, start: int, end: int) -> bytes:
+    return _capped_get(url, end - start + 1, None, _BULL_RANGE_TIMEOUT, _BULL_RANGE_MAX_S, session=_BULL_HTTP,
+                       byte_range=(start, end))
+
+
+def _fetch_bulletin(date_str: str, run_str: str, station_id: str):
+    """(text, None) of the station's bulletin for that run, or (None, the error text). The run's archive on AWS first
+    (one byte-range read, its ustar header and the text checked: gfs_bulletins), NOMADS's per-station file second
+    (at most 256 KB, the same text check). The errors as before: "Could not download" when nothing answered, "No .bull
+    file found" when a server answered without the bulletin."""
+    answered = False
+    if BULL_ARCHIVE:
+        text, reason, detail = gfs_bulletins.archive_bulletin(date_str, run_str, station_id, _bull_range,
+                                                             base=NOAA_BUCKET)
+        if text is not None:
+            return text, None
+        answered = reason in ("missing", "layout", "content")
+        (logger.debug if reason == "unknown" else logger.warning)(
+            ".bull for %s: not from the AWS archive (%s: %s)", station_id, reason, detail)
+    if not NOMADS_DISABLED:
+        url = f"{NOAA_BASE}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
+        try:
+            body = _capped_get(url, _BULL_MAX_BYTES, None, _BULL_NOMADS_TIMEOUT, _BULL_NOMADS_MAX_S, session=HTTP)
+        except HTTPStatusError as exc:
+            answered = True
+            logger.warning(".bull for %s: HTTP %s from %s (run %s %sZ)", station_id, exc.status, _host(url),
+                           date_str, run_str)
+        except Exception as exc:
+            logger.warning("could not download .bull for %s from %s: %r", station_id, _host(url), exc)
+        else:
+            answered = True
+            text = body.decode("ascii", errors="replace")
+            bad = gfs_bulletins.check_text(text, station_id, date_str, run_str, min_rows=0)
+            if bad is None:
+                gfs_bulletins.STATS.nomads_used()
+                return text, None
+            logger.warning(".bull for %s from %s refused: %s (run %s %sZ)", station_id, _host(url), bad,
+                           date_str, run_str)
+    if not answered:
+        return None, f"Could not download .bull for {station_id}"
+    return None, f"No .bull file found for {station_id}"
+
+
+def _bull_health():
+    """The bulletin sources for /healthz (plan section 53): reported, never part of `ok`."""
+    return {"archive": BULL_ARCHIVE, "nomads": not NOMADS_DISABLED,
+            "index": {"members": len(gfs_bulletins.INDEX), "archive_bytes": gfs_bulletins.ARCHIVE_BYTES,
+                      "error": gfs_bulletins.INDEX_ERROR},
+            **gfs_bulletins.STATS.snapshot()}
+
+
 def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
     """
     Fetch and parse .bull for station. Returns:
@@ -1832,29 +1926,14 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
     if not date_str:
         return None, None, None, None, 'UTC', "No recent run found."
 
-    resp, answered = None, False
-    for base in _bull_bases():                    # NOAA's AWS copy first, then NOMADS
-        bull_url = f"{base}/gfs.{date_str}/{run_str}/wave/station/bulls.t{run_str}z/gfswave.{station_id}.bull"
-        try:
-            r = HTTP.get(bull_url, timeout=15)
-        except Exception as exc:
-            logger.warning("could not download .bull for %s from %s: %r", station_id, _host(base), exc)
-            continue
-        answered = True
-        if r.status_code == 200 and r.text:
-            resp = r
-            break
-        logger.warning(".bull for %s: HTTP %s from %s (run %s %sZ)", station_id, r.status_code, _host(base),
-                       date_str, run_str)
-    if resp is None:
-        if not answered:
-            return None, None, None, None, 'UTC', f"Could not download .bull for {station_id}"
-        return None, None, None, None, 'UTC', f"No .bull file found for {station_id}"
+    text, error = _fetch_bulletin(date_str, run_str, station_id)
+    if text is None:
+        return None, None, None, None, 'UTC', error
 
     # GFS wind for the Wind table columns -- pinned to the SAME cycle as this
     # bull so the two can never skew across a run rollover. {} on failure.
     wind_map = get_station_wind(station_id, date_str, run_str)
-    return _parse_bull_text(resp.text, station_id, target_tz_name, date_str, run_str, wind_map)
+    return _parse_bull_text(text, station_id, target_tz_name, date_str, run_str, wind_map)
 
 
 def _parse_bull_text(text: str, station_id: str, target_tz_name: str | None, date_str: str, run_str: str,
@@ -5027,6 +5106,7 @@ def _live_after_fork():
     flag of the service starts clean (buoy_sources resets the providers and the runner itself)."""
     global _LIVE_BG_LOCK, _LIVE_BUILD_LOCK, _TZ_FINDER_LOCK, _CACHE_LOCK, _LIVE_STOP, _LIVE_WAKE, _BUOY_PROVIDERS_LOCK
     global _TIDES_LOCK, _WINDS_LOCK, _WIND_BUILD_LOCK
+    gfs_bulletins.STATS.lock = threading.Lock()   # the bulletin counters (plan section 53)
     _TIDES_LOCK = threading.Lock()                # the tide service resets its own locks (tide_sources)
     _WINDS_LOCK = threading.Lock()                # the wind history service and providers reset their own
     _WIND_BUILD_LOCK = threading.Lock()
@@ -5143,6 +5223,7 @@ def healthz():
                    "workers": getattr(runner, "workers", None)},
         "rss_kb": _rss_kb(),
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "gfs": {"bulletins": _bull_health()},     # GFS bulletins from AWS / NOMADS (section 53): reported only
         "wind": _wind_health(now),                # the wind feeds (section 39): reported, never part of `ok`
     }
     resp = jsonify(body)

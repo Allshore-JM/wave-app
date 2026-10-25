@@ -56,6 +56,8 @@ Once deployed, navigate to the provided URL to access the app. The site will all
 - `templates/index.html` — Jinja2 template containing the HTML structure for the home page: the map (the page), the Leaflet map and the forecast window (see below); Bootstrap for styling.
 - `static_ui/forecast.js` — the forecast window's client module (see below); `static_ui/tools.js` — the map tools,
   including the Forecast point tool; `static_overlay/` — the optional model overlays.
+- `gfs_bulletins.py` + `gfs_bull_index.json` — the GFS station bulletins from NOAA's run archive on AWS (see "GFS
+  bulletins: where they come from"); `tools/build_bull_index.py` builds and checks the index.
 - `point_forecast.py` — reads the forecast-point product for one ocean point: the water / land test, the model cell,
   the rows and the swell rank (see "Forecast points: the reader").
 - `tools/model_frames/points.py` and `pointfmt.py` — the GitHub Actions job that publishes the forecast-point product,
@@ -908,6 +910,38 @@ product) publishes the newest NASA JPL MUR SST v4.1 day as tiles; `sst_tiles.py`
   up); bodies are read chunk by chunk wherever the browser streams them, so the stall timers measure silence on browsers
   without DecompressionStream too; a rejected `cancel()` is caught. `tests/overlay/sst_timers.test.js` (with `sst_net.js`: a
   fake clock and a held network of real PNG bytes) drives the real `decodeFrame` / `readBody` path.
+
+## GFS bulletins: where they come from (plan sections 40 and 53)
+
+The forecast table of a GFS station is NOAA's GFS-Wave station bulletin (`gfswave.<id>.bull`) of the newest run.
+NOMADS refused the production server's address on 2026-10-11 and every table said "No recent run found"; since then
+the site reads NOAA's copy on AWS Open Data (`noaa-gfs-bdp-pds`, no per-address limit) first. From the 2026-10-22 18Z
+run on, that copy keeps only run ARCHIVES under `gfs.YYYYMMDD/HH/wave/station/` (the per-station files answer 404), so
+the bulletins come from the run's bulletin archive:
+
+- **The archive**: `gfswave.tHHz.bull_tar`, 49,356,800 B, 918 members `./gfswave.<id>.bull` of 52,063 B, each behind
+  a small pax header (access and change times only) and its own 512-byte ustar header. NOAA writes it whole or not at
+  all, about a minute after NOMADS's files. Its layout has been the same in every run checked (member order, names,
+  sizes, offsets).
+- **The index**: `gfs_bull_index.json` (committed) gives each station's data offset and size; `gfs_bulletins.py` reads
+  one bulletin with ONE byte-range request of `[offset - 512, offset + size)` and checks the member's ustar header (name,
+  size, checksum: proof the layout still holds) and the text (Location = the station, Cycle = the run, at least 100 table
+  rows). Build or check the index with `tools/build_bull_index.py RUN` / `--check RUN [RUN ...]` (the build streams one
+  run's archive; the check reads six members of each run by range).
+- **The order**: the archive first; NOMADS's per-station file second (at most 256 KB; the same station and run check)
+  when the archive is missing, damaged or unreachable, or the station is not in the index. The error texts are unchanged
+  ("Could not download .bull ..." when nothing answered, "No .bull file found ..." when a server answered without it).
+- **The run probe** (cached 30 min, failures 2 min): per cycle, newest first (18/12/06/00Z today, then yesterday), a
+  HEAD of the run's archive, then NOMADS's 51201 bulletin. An archive of another length than the index's still counts
+  (the bulletins then come from NOMADS) and is reported.
+- **When NOAA changes the archive**: every read is refused by the header check and served from NOMADS; `/healthz` ->
+  `gfs.bulletins.layout_suspect` names the run and what differed. The repair: build the index from a new run, check it
+  against a few others, run the tests, commit.
+- **`/healthz` -> `gfs.bulletins`**: whether the archive and NOMADS are used, the index (members, archive size, a load
+  error), the archive reads by outcome (`ok`, `unknown`, `missing`, `layout`, `content`, `transport`), the NOMADS
+  fallbacks, the last error and the last run served from the archive. Reported only, never part of `ok`.
+- **Diagnostics** (env): `BULL_ARCHIVE=0` reads NOMADS alone; `NOMADS_DISABLED=1` never asks NOMADS (the archive only;
+  the Wind column then has no source).
 
 ## Forecast points
 

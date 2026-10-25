@@ -1,5 +1,6 @@
 {
-  // Cloudflare Worker that dispatches the model workflows (overlay frames, forecast points, ECMWF frames) on a cron (see worker.js).
+  // Cloudflare Worker that dispatches the model workflows (overlay frames, forecast points, ECMWF frames, Great Lakes
+  // frames, GFS station winds) on a cron (see worker.js).
   // Deployed by Cloudflare Workers Builds from this repository (root directory
   // tools/model_frames/trigger, build command `npm run build`, deploy command `npx wrangler deploy`).
   // The GITHUB_TOKEN secret is set in the dashboard and survives every deploy.

@@ -14,12 +14,16 @@ Arctic or a frozen-sea point is blank in winter and carries waves again when the
 recorded under "ice" instead of "blank" when it lies in a sea-ice region: poleward of ICE_LAT in either hemisphere, or
 inside ICE_BOXES (the lower-latitude seas that freeze in winter).
 
-This tool reads the listed stations' bulletins of one run, records which were blank, and writes station_blank.json:
-  {"rule": ..., "runs": {"YYYYMMDDHH": {"blank": [...], "ice": [...], "absent": [...], "scanned": N}, ...},
-   "removed": [...]}
-where "removed" = the ids blank in BOTH of the two newest recorded runs (one cycle's hiccup removes nothing; the runs
-are at least 6 h apart by their names). `--apply` then rewrites station_list.json without them (the coordinates and
-time-zone tables stay whole: the point time-zone rule reads every coordinate; section 32).
+This tool reads the bulletins of one run for the listed stations AND the ones it removed before (so a removed station
+is checked every time: G35 F1), records which were blank, and writes station_blank.json:
+  {"rule": ..., "runs": {"YYYYMMDDHH": {"blank": [...], "ice": [...], "absent": [...], "back": [...], "scanned": N},
+   ...}, "removed": [...]}
+where "back" = the removed stations found WITH data in that run, and "removed" = the ids blank in BOTH of the two newest
+recorded runs, plus the ids removed before that are not back in both (one cycle's hiccup neither removes nor restores;
+the runs are at least 6 h apart by their names; a missing bulletin never counts). `--apply` then rewrites
+station_list.json from the listed and the previously removed ids minus "removed": a station back in both runs returns
+at its old place (station_coords.json's order, the list's original order) and is named on the console. The coordinates
+and time-zone tables stay whole (the point time-zone rule reads every coordinate; section 32).
 
 Run (network: the run's bulletin tar from NOAA's AWS copy (one ~50 MB file holding every station's bulletin), else the
 per-station files: AWS first, NOMADS second, paced):
@@ -55,7 +59,8 @@ ICE_BOXES = {
 }
 RULE = ("blank = no data row of the run has a combined height (Hst) above zero or a swell group with three numbers; "
         "a blank station in a sea-ice region (|lat| >= 50 or a freezing sea's box) is recorded as ice and never removed; "
-        "removed = blank in both of the two newest recorded runs; a missing bulletin never counts")
+        "removed = blank in both of the two newest recorded runs, or removed before and not back (with data) in both; "
+        "a missing bulletin never counts")
 ROW_RE = re.compile(r"^\s*\|\s*\d{1,2}\s+\d{1,2}\s*\|")
 NUM_RE = re.compile(r"^-?\d+(\.\d+)?$")
 
@@ -109,27 +114,51 @@ def split_ice(result, coords):
     return out
 
 
-def removed_ids(runs):
-    """The ids blank in both of the two newest recorded runs (by run name); none with fewer than two runs."""
+def removed_ids(runs, before=()):
+    """The ids blank in both of the two newest recorded runs (by run name), plus the ids of `before` (removed earlier)
+    that are not back (scanned with data) in both; with fewer than two runs only `before`."""
     names = sorted(runs)[-2:]
     if len(names) < 2:
-        return []
+        return sorted(set(before))
     a, b = (set(runs[n].get("blank", [])) for n in names)
-    return sorted(a & b)
+    back = set(runs[names[0]].get("back", [])) & set(runs[names[1]].get("back", []))
+    return sorted((a & b) | (set(before) - back))
+
+
+def scan_ids(listed, before):
+    """The ids one run's scan reads: the listed ones, then the removed ones not on the list."""
+    have = set(listed)
+    return list(listed) + [s for s in before if s not in have]
+
+
+def came_back(result, before):
+    """The removed ids found with data in a scan: read (not absent, not failed) and not blank."""
+    seen = set(result.get("blank", [])) | set(result.get("absent", [])) | set(result.get("failed", []))
+    return sorted(s for s in before if s not in seen)
 
 
 def merge(doc, run, result):
-    """Record one run's scan into the file's document (the newest KEEP_RUNS kept) and recompute 'removed'."""
+    """Record one run's scan into the file's document (the newest KEEP_RUNS kept) and recompute 'removed' (the ids
+    removed before stay unless back in both of the two newest runs)."""
     runs = dict(doc.get("runs") or {})
     runs[run] = result
     runs = {k: runs[k] for k in sorted(runs)[-KEEP_RUNS:]}
-    return {"rule": RULE, "runs": runs, "removed": removed_ids(runs)}
+    return {"rule": RULE, "runs": runs, "removed": removed_ids(runs, doc.get("removed") or ())}
 
 
-def apply_removal(ids, removed):
-    """The station list without the removed ids, order kept."""
+def apply_removal(ids, removed, restore=(), order=()):
+    """The station list without the removed ids, order kept; the ids of `restore` (back on the list) inserted at their
+    place in `order` (station_coords.json's keys: the list's original order), else at the end."""
     gone = set(removed)
-    return [s for s in ids if str(s) not in gone]
+    out = [str(s) for s in ids if str(s) not in gone]
+    pos = {s: i for i, s in enumerate(order)}
+    for s in restore:
+        if s in gone or s in out:
+            continue
+        p = pos.get(s)
+        at = next((i for i, t in enumerate(out) if p is not None and pos.get(t, -1) > p), len(out))
+        out.insert(at, s)
+    return out
 
 
 # ---- network (never under test: the functions above are the rule)
@@ -256,12 +285,15 @@ def main(argv=None):
     if os.path.exists(OUT_PATH):
         with open(OUT_PATH, encoding="utf-8") as f:
             doc = json.load(f)
+    before = [str(s) for s in doc.get("removed") or []]
     http = _session()
     run = a.run or newest_run(http)
     if not re.fullmatch(r"\d{10}", run):
         raise SystemExit("--run must be YYYYMMDDHH")
-    print(f"scanning {len(ids)} stations of run {run}", file=sys.stderr)
-    result = split_ice(tar_scan(http, run, ids) or scan(http, run, ids, a.workers), coords)
+    todo = scan_ids(ids, before)
+    print(f"scanning {len(todo)} stations of run {run} ({len(ids)} listed, {len(todo) - len(ids)} removed)", file=sys.stderr)
+    result = split_ice(tar_scan(http, run, todo) or scan(http, run, todo, a.workers), coords)
+    result["back"] = came_back(result, before)
     doc = merge(doc, run, result)
     with open(OUT_PATH, "w", encoding="utf-8") as f:
         json.dump(doc, f, indent=1)
@@ -269,8 +301,13 @@ def main(argv=None):
     print(f"run {run}: blank {len(result['blank'])}, ice (kept) {len(result['ice'])}, absent {len(result['absent'])}, failed {len(result['failed'])} "
           f"of {result['scanned']}; removed (two newest runs {sorted(doc['runs'])[-2:]}): {len(doc['removed'])}", file=sys.stderr)
     print(" ".join(result["blank"]), file=sys.stderr)
+    if result["back"]:
+        print("removed before, with data in this run: " + " ".join(result["back"]), file=sys.stderr)
     if a.apply:
-        kept = apply_removal(ids, doc["removed"])
+        restore = [s for s in before if s not in set(doc["removed"])]
+        kept = apply_removal(ids, doc["removed"], restore, list(coords))
+        if restore:
+            print("back on the list: " + " ".join(restore), file=sys.stderr)
         with open(LIST_PATH, "w", encoding="utf-8") as f:
             json.dump(kept, f, indent=2)
             f.write("\n")

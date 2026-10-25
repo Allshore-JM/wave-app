@@ -1,5 +1,5 @@
 {
- "rule": "blank = no data row of the run has a combined height (Hst) above zero or a swell group with three numbers; a blank station in a sea-ice region (|lat| >= 50 or a freezing sea's box) is recorded as ice and never removed; removed = blank in both of the two newest recorded runs; a missing bulletin never counts",
+ "rule": "blank = no data row of the run has a combined height (Hst) above zero or a swell group with three numbers; a blank station in a sea-ice region (|lat| >= 50 or a freezing sea's box) is recorded as ice and never removed; removed = blank in both of the two newest recorded runs, or removed before and not back (with data) in both; a missing bulletin never counts",
  "runs": {
   "2026102406": {
    "blank": [

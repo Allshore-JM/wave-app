@@ -534,11 +534,17 @@ _POINT_HTTP = requests.Session()      # no retry adapter: a point's objects are 
 def _points_fetch(url: str, max_bytes: int, headers=None) -> bytes:
     """A whole 200 body of at most max_bytes within about _POINT_FETCH_MAX_S from the request, or an exception
     (point_forecast turns it into its message). `headers` go with the request (the wind feeds name the site in a
-    User-Agent). A body that trickles is cut by shutting its socket down: closing the
-    response from another thread would wait for the reader's lock, i.e. for the whole body (G22 R-A2). A short body
-    is urllib3's IncompleteRead. Headers that trickle are not cut (R2 sends them at once). On Linux, where the
-    service runs, the shutdown wakes a blocked read at once; on Windows such a read may last to the read timeout."""
-    deadline = time.monotonic() + _POINT_FETCH_MAX_S
+    User-Agent). See _capped_get."""
+    return _capped_get(url, max_bytes, headers, _POINT_FETCH_TIMEOUT, _POINT_FETCH_MAX_S)
+
+
+def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float) -> bytes:
+    """A whole 200 body of at most max_bytes within about max_s seconds from the request, or an exception. A body that
+    trickles is cut by shutting its socket down: closing the response from another thread would wait for the reader's
+    lock, i.e. for the whole body (G22 R-A2). A short body is urllib3's IncompleteRead. Headers that trickle are not
+    cut. On Linux, where the service runs, the shutdown wakes a blocked read at once; on Windows such a read may last
+    to the read timeout."""
+    deadline = time.monotonic() + max_s
     held = {"sock": None, "late": False, "done": False}
     guard = threading.Lock()
 
@@ -554,12 +560,12 @@ def _points_fetch(url: str, max_bytes: int, headers=None) -> bytes:
             except OSError:
                 pass
 
-    killer = threading.Timer(_POINT_FETCH_MAX_S, cut)
+    killer = threading.Timer(max_s, cut)
     killer.daemon = True
     killer.start()
     try:
         extra = {"headers": dict(headers)} if headers else {}        # the point callers make the call as before
-        with _POINT_HTTP.get(url, timeout=_POINT_FETCH_TIMEOUT, stream=True, **extra) as resp:
+        with _POINT_HTTP.get(url, timeout=timeout, stream=True, **extra) as resp:
             with guard:
                 held["sock"] = getattr(getattr(resp.raw, "_connection", None), "sock", None)
                 late = held["late"]
@@ -788,10 +794,10 @@ try:
 except (TypeError, ValueError, OverflowError):
     WIND_NWS_PER_REFRESH = wind_sources.NWS_PER_REFRESH
 # NOAA MADIS's public surface viewer as the NWS stations' backup (plan section 52 D): env WIND_MADIS_URL, default
-# wind_sources.MADIS_HI_URL; "" = off. The viewer answers in 4-15 s: its own fetch (_madis_fetch), not the 8-s one.
+# wind_sources.MADIS_HI_URL; "" = off. The viewer answers in 4-40 s: its own fetch (_madis_fetch), not the 8-s one.
 WIND_MADIS_URL = os.environ.get("WIND_MADIS_URL", wind_sources.MADIS_HI_URL).strip()
 WIND_MADIS_TIMEOUT = (10, 45)     # connect, read
-WIND_STALL_NOTE_S = 3 * 3600      # (the page's rule) a feed's newest reading older than this: the legend says it stalled
+WIND_MADIS_MAX_S = 90.0           # the whole answer (it takes 4-40 s)
 WIND_WARM_ORDER = ["NDBC", "METAR", "MADIS", "COOPS", "NWS"]   # single-request feeds first; CO-OPS and NWS ask every station
 WIND_OFF = "Wind stations are not available on this server"
 _WINDS = {"svc": None, "list": None, "providers": None, "stations": None}
@@ -820,22 +826,15 @@ def _winds():
 
 
 def _madis_fetch(url: str, max_bytes: int, headers=None) -> bytes:
-    """MADIS's viewer: a 200 body of at most max_bytes, one attempt, WIND_MADIS_TIMEOUT (the wind runner's thread, never
-    a request); raises otherwise (the provider keeps its last list)."""
-    with requests.get(url, headers=dict(headers or {}), timeout=WIND_MADIS_TIMEOUT, stream=True) as resp:
-        if resp.status_code != 200:
-            raise RuntimeError("HTTP %s" % resp.status_code)
-        buf = bytearray()
-        for chunk in resp.iter_content(65536):
-            buf.extend(chunk)
-            if len(buf) > max_bytes:
-                raise RuntimeError("answer over %d bytes" % max_bytes)
-        return bytes(buf)
+    """MADIS's viewer: a 200 body of at most max_bytes, one attempt, WIND_MADIS_TIMEOUT per read and WIND_MADIS_MAX_S in
+    all (G35 F3: a trickling answer would otherwise hold one of the wind runner's two workers); the wind runner's
+    thread, never a request; raises otherwise (the provider keeps its last list)."""
+    return _capped_get(url, max_bytes, headers, WIND_MADIS_TIMEOUT, WIND_MADIS_MAX_S)
 
 
 def get_wind_providers():
-    """The wind feeds (NDBC, METAR, CO-OPS, NWS), built once with the snapshot; [] when wind stations are off or the
-    snapshot cannot be read (the scheduler then has nothing to do)."""
+    """The wind feeds (NDBC, METAR, CO-OPS, NWS and, unless WIND_MADIS_URL is "", MADIS), built once with the
+    snapshot; [] when wind stations are off or the snapshot cannot be read (the scheduler then has nothing to do)."""
     if not WIND_ENABLED:
         return []
     try:
@@ -2973,6 +2972,9 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         out["error"] = BLANK_STATION_NOTE                      # (section 52 C): an old link gets the note, no Retry
         out["final"] = True
         out["reason"] = "sheltered"
+        pos = load_station_coords().get(station)               # where it was: the page offers its live buoy (G35 B-8)
+        if pos:
+            out["lat"], out["lon"] = pos["lat"], pos["lon"]
         return out
 
     model = resolve_model(station, model)

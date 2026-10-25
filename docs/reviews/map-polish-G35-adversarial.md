@@ -273,3 +273,29 @@ scratch `polish/v7`); both origins' storage emptied afterwards, the browser stop
    readings before the list.
 4. V7-1: README and the two template comments.
 5. Pins, mutants, README, the record; then the test-site check (MAX) and the short fresh re-check (MAX).
+
+## Fix round 7c (UI 1.25.9, 2026-10-25)
+Code @ b44ba4b, golden @ 75b1ab6 (feat/map-polish, pushed; not on test yet: test is still 01ac49e = UI 1.25.8).
+- V7-2: both links call `linkFocus(header)` on every activation (mouse, touch or key), so the focus moves into the window
+  the link opened and Escape acts on that window. Test: a pointer click focuses the opened window's header.
+- V7-3: `#fwNote` now sits between the toolbar and the scrolling body (`.forecast-win > #fwNote`, `white-space:
+  pre-line`, hidden when minimised), so the scroll to the current hour cannot hide it. `note()` keeps the notes of the
+  station on screen together, one per line, each once. Another station's forecast clears them. The page's notes (no
+  station of their own: a removed default, removed favorites) wait for the first forecast and are then shown on it. A note
+  told before forecast.js's `init` is kept for it. `tellOnPage(msg)` tells the module at once when it is there, and
+  otherwise once when the window comes up.
+- V7-4: the last wind readings are kept (`windLastFeed`), and `workOutWindStall()` runs again when the station list
+  lands. A list that lands after the readings now shows the note at once.
+- V7-1: the README touch paragraph and the two template comments now say a mouse on a touch-screen computer gets the
+  touch reach (owner: kept).
+- Tests:
+  - window.test.js: the notes test (wait, order, once, before init, another station);
+  - firstview.test.js: notes with no station; a listener only without the app;
+  - winds-page.test.js: list after readings, the guard, the new pins;
+  - buoylinks.test.js: pointer focus;
+  - test_index_page.py: note position, CSS, `tellOnPage`, `linkFocus`, the list-landed call.
+- Suites: Node 1,013 pass. pytest 1,316 pass + the 4 golden tests, which pass after the re-capture (52 of 52 in the
+  overlay-flag and page files).
+- Mutants (scratch polish/mut7c.py, on a scratch copy after pytest): 15 of 17 killed. W3 (no guard) was killed only after
+  its test's stand-in list was made a real array. The 2 survivors are equivalent: N2 (repeats in the waiting list are
+  removed again when shown) and W4 (no feed check: the guard catches it).

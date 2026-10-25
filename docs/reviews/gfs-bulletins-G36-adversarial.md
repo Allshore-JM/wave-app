@@ -64,8 +64,10 @@ no job workflow). Every NOAA answer below is run 2026102512 unless named.
 - **The 18Z run switch with NOMADS off:** NOAA's 18Z bulletin archive appeared between 23:24:36
   and 23:25:39 UTC, its spectra archive by 23:32:58. The production winds job (the trigger's 23:36 dispatch) published
   2026102518 at 23:37:44. The test site's run check (cached up to 30 minutes) moved to 18Z at 23:40:18. The winds
-  were out 2.5 minutes before the switch, so the 18Z tables had wind at once. A switch before the publish would leave
-  the Wind column blank for at most 5 minutes with NOMADS off (the plan's stated limit; not seen this time).
+  were out 2.5 minutes before the switch, so the 18Z tables had wind at once. With NOMADS off, a switch before the
+  publish leaves the new run's Wind column blank until the job has published it (12.5 minutes after the archive this
+  time; the site's run check can move at any moment in the 30 minutes after the archive appears), plus up to 5 minutes
+  for the blank answer's short cache. Not seen this time.
   After the switch, with NOMADS still off:
   - 30 of 30 listed GFS stations on 18Z: 385 rows, wind in every row;
   - the 12 SWAN tables built under 18Z (a fresh cache key, `tz=UTC`): all 2,100 wind cells = my own decoding of the

@@ -490,3 +490,29 @@ Page and client:
     - UI 1.25.10 and its fixture; the golden in its own commit; README.
 
 Then the test site (MAX) with R2's scripts for the changed parts, and the owner's go-ahead for production.
+
+## Fix round 7d (the re-check's fixes, 2026-10-25)
+Code 0a4ccf6, golden de011a3 (`feat/map-polish`). Not on the test site yet.
+
+| Item | Done |
+|---|---|
+| R1-1 | `station_blank.json` gains `restore`: the ids that left `removed` and are not on the list. Each run scans them; `--apply` puts them back at their old place and empties it; one blank in both newest runs again goes back to `removed`. Tests drive `main()` with the network faked through the four run orders (two lost the comeback before: confirmed on the old tool), a hand re-add, a renewed blank, and the committed-file invariant. |
+| R1-2 | A MADIS answer with no station records logs a warning; the kept readings stay. |
+| R1-3 | `openLiveBuoy` forgets the back link (a dot's click, or Enter / Space on it); the "Live buoy" handler sets it after the open; the live window's close (`liveWindowClosed`) forgets it. |
+| R1-4 | `linkLabel`: a far live buoy is named by `buoyDisplayLabel` (the live window's own rule; the test harness now runs the template's function, not a stub); text, aria-label and the title rule use it. |
+| F-1 | The twin rule's comment and the README say that on touch screens the live dot's pad takes the yellow twin drawn beside it (the 6.5 / 7.5-px offset of baa40a8); owner: kept. |
+| F-2 | `tellHeadRetired()` runs at page start. |
+| F-3 | `syncWindFeed(false)` forgets `windLastFeed` and `windStallText`. |
+| F-4 | `liveWindowClosed`: the focus goes back to "Live buoy" when it opened the window, is shown, and the focus was in the closed window or nowhere; else the map rule as before. |
+| O-1 | `tideTargets` measures the drawn wind flags of other stations too (Chebyshev, half-way); a flag on its own gauge still means pad 0. |
+| Aliases | `cefas:8` -> 62304, `cefas:10` -> 62144, `cefas:305` -> 62146 (live positions checked: 6.6-13 km from the points, so the far text and the pan apply). |
+| Station list | Only a refused or broken answer is asked for again; a fault in the code that uses the list is logged. |
+| Tests | A3 (timer interval = `max_s`: points 8 s, MADIS 90 s), W3, W6, F10, F12, N15, N20, plus one per item. |
+
+No `static_ui` file changed, so the UI asset stays 1.25.9 (the standing rule: template-only changes do not bump); the
+scope's "1.25.10" does not apply. The golden moves only in the page's script.
+
+Suites: pytest 1,327, Node 1,020. Mutants: 28 of 29 of this round's killed (O2, counting a gauge's own flag, is
+equivalent: a flag on its own gauge sets the pad to 0 whatever the distance); R1's survivors T9, T10, W3, W6, N15, N19,
+N20 re-run against the fixed code: all killed by behaviour tests (T8, A3, F10, F12 by this round's own mutants B6, A3,
+E1, E2).

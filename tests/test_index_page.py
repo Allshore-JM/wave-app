@@ -843,7 +843,7 @@ def test_wind_stations_on_the_page(client):
         "if (window.ResizeObserver && typeof map !== 'undefined' && map && map.getContainer) {",
         "const WIND_DOT_HIT_PX = 8, WIND_DOT_HIT_TOUCH_PX = 12;", "if (dot && flag.classList) flag.classList.add('wind-hollow');",
         "function windTapPx() { return windTouch() ? WIND_DOT_HIT_TOUCH_PX : WIND_DOT_HIT_PX; }",
-        "function windTouch() { return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); }",
+        "function windTouch() { return !!(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches); }   // any touch screen (G35 B-7)",
         "if (typeof rebuildWindMarkers === 'function') rebuildWindMarkers(false);   // a flag over a new point turns hollow (B-5)",
         "const hit = windDotHit(drawn, e && e.originalEvent);", "if (hit) { pickDot(hit); return; }",
         "let windByKey = new Map();", "windByKey.forEach(function (d) { windLayer.removeLayer(d.marker); });",
@@ -852,7 +852,7 @@ def test_wind_stations_on_the_page(client):
         "windView.load(station, { unit: getSelectedUnit(), zone: windZone(station), reading: windReading(station.id) });",
         ".leaflet-marker-icon.wind-marker { background: transparent; border: 0; cursor: pointer; pointer-events: none; }",
         ".wind-arrow path { fill: currentColor; stroke: #fff; stroke-width: 1.2; paint-order: stroke; pointer-events: auto; }",
-        "@media (pointer: coarse) { .wind-ring::after { content: ''; position: absolute; inset: calc(-1 * var(--wind-disc, 13px)); border-radius: 50%; } }",
+        "@media (any-pointer: coarse) { .wind-ring::after { content: ''; position: absolute; inset: calc(-1 * var(--wind-disc, 13px)); border-radius: 50%; } }",
         ".wind-hollow .wind-ring { left: 13px; top: 13px; width: 14px; height: 14px; background: transparent; border: 2px solid currentColor;",
         ".fw-titles strong { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }",
         "if (!map.hasLayer(windLayer) || !on) return '';", "wind: saved.wind !== false", "wind: map.hasLayer(windLayer)",
@@ -1051,7 +1051,7 @@ def test_the_shaka_and_the_star_set_the_default_and_the_favorites(client):
                 ".station-results li.sr-saved .sr-acts { margin-left: auto; }"):
         assert css in body, css
     # one key, three readers + the writer
-    assert body.count("'allshore.defaultStation.v1'") == 6   # + forgetRetiredDefault's read and removal (G32 A-P3-3)
+    assert body.count("'allshore.defaultStation.v1'") == 7   # + forgetRetiredDefault's read and removal (G32 A-P3-3), the head's removal of a removed station (G35 B-8)
     # fix round 5 (the short fresh check): phones get the pair in the window's toolbar (owner, U1), the trigger's pair hidden
     # there; one state for both; a point's pair waits for its forecast (U3); one name memory (U4); the focus restored by
     # role and row (U5, U9); refused writes said (U6); a rank counter (U2). Behaviour: tests/ui/mypoints.test.js.
@@ -1133,14 +1133,17 @@ def test_buoy_links_on_the_page(client):
     assert body.index('id="fwPair"') < fw < body.index('id="viewBar"')
     for needle in (
         "preferCanvas: true,",
-        "renderer: L.canvas({ tolerance: (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ? 8 : 0 }),",
-        "@media (pointer: coarse) { .live-buoy-dot::after { content: ''; position: absolute; inset: calc(-2px - var(--live-tap, 0px)); border-radius: 50%; } }",
+        "renderer: mapRenderer,", "const mapRenderer = new NearestCanvas({ tolerance: coarsePointer() ? COARSE_TOL : 0 });",
+        "@media (any-pointer: coarse) { .live-buoy-dot::after { content: ''; position: absolute; inset: calc(-2px - var(--live-tap, 0px)); border-radius: 50%; } }",
         ".live-buoy-dot { position: relative; }",
         "#fwLive { display: none !important; }",
         "    // ---- buoy links (plan section 52; tests/ui/buoylinks.test.js runs this block) ----",
         "    // ---- end buoy links ----",
-        "const LINK_KM = 1.0, LINK_ID_KM = 400;",
-        "const LIVE_TAP_MAX = 8;",
+        "const LINK_KM = 1.0, LINK_ID_KM = 400, LINK_PLAIN_KM = 2.0;",
+        "const LIVE_TAP_MAX = 8, LIVE_TWIN_UNDER = 3;",
+        "    // ---- nearest path (tests/ui/nearest.test.js runs this block) ----",
+        "@media (any-pointer: coarse) { #lwForecast, #fwLive { min-height: 44px; } }",
+        "var RETIRED = {{ retired_stations|tojson }};".replace("{{ retired_stations|tojson }}", '["44039", "44040", "44043", "44058", "44061", "44062", "44063", "44064", "44072", "44087", "46088"]'),
     ):
         assert needle in body, needle
     assert body.index(".fwin:not(.fw-min) { z-index: 3500; }") < body.index(".fwin.fw-front:not(.fw-min) { z-index: 3510; }")

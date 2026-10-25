@@ -11,7 +11,8 @@ const html = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'inde
 const a = html.indexOf('// ---- early forecast'), b = html.indexOf('// ---- end early forecast ----');
 assert.ok(a > 0 && b > a, 'the early forecast block is marked in the template');
 const SWAN = ['51201', '51202'];
-const RAW = html.slice(html.indexOf('\n', a) + 1, b).replace('{{ initial_state.swan_stations|tojson }}', JSON.stringify(SWAN));
+const RAW = html.slice(html.indexOf('\n', a) + 1, b).replace('{{ initial_state.swan_stations|tojson }}', JSON.stringify(SWAN))
+  .replace('{{ retired_stations|tojson }}', JSON.stringify(['44062', '46088']));
 const block = (geo) => RAW.replace('{{ geo_base|tojson }}', JSON.stringify(geo || ''));
 const BLOCK = block('');
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'static_ui', 'forecast.js'), 'utf8');
@@ -193,4 +194,20 @@ test('section 46: a station in the address, or ?render=full, never asks the Work
   assert.deepEqual(h.urls, ['/api/forecast?' + h.early.q]); assert.equal(h.w.station, undefined);
   const f = runHead('?render=full', undefined, undefined, { geo: GEO, stations: LIST, geoAnswer: () => ok({ lat: 1, lon: 1 }) });
   assert.deepEqual(f.urls, []); assert.equal(f.w.station, undefined);
+});
+
+test('a stored default the site has removed (RETIRED, the server\'s station_blank.json) opens like no default: forgotten in the head, before the module reads it (G35 B-8)', () => {
+  const mk = (id) => {
+    const store = { 'allshore.defaultStation.v1': JSON.stringify({ id }) }, removed = [];
+    return { removed, store, getItem: (k) => (k in store ? store[k] : null), removeItem: (k) => { removed.push(k); delete store[k]; } };
+  };
+  const s1 = mk('44062'), h = runHead('', undefined, s1);
+  assert.deepEqual(s1.removed, ['allshore.defaultStation.v1']); assert.equal(h.w.retired, '44062', 'the page says so once');
+  assert.equal(new URLSearchParams(h.early.q).get('station'), '51201', 'no geo: the old fallback');
+  const s2 = mk('46088'), g = runHead('', undefined, s2, { geo: 'https://geo.test' });
+  assert.ok(g.urls.indexOf('https://geo.test/') >= 0, 'with geo: the visitor\'s area, as without a default');
+  const s3 = mk('46026'), k = runHead('', undefined, s3);
+  assert.deepEqual(s3.removed, []); assert.equal(k.w.retired, undefined); assert.equal(new URLSearchParams(k.early.q).get('station'), '46026');
+  const s4 = mk('44062'), a = runHead('?station=44062', undefined, s4);
+  assert.equal(new URLSearchParams(a.early.q).get('station'), '44062', 'a link still opens the removed station (its note)');
 });

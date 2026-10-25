@@ -48,10 +48,14 @@
       try {
         var p = new URLSearchParams(location.search), st = {}, swan = {{ initial_state.swan_stations|tojson }};
         var GEO = {{ geo_base|tojson }};
+        var RETIRED = {{ retired_stations|tojson }};                              // removed for a blank bulletin (section 52 C)
         if (p.get('render') === 'full') return;
         try { var o = JSON.parse(localStorage.getItem('allshore.settings.v1') || '{}'); if (o && typeof o === 'object') st = o; } catch (e) {}
         var dflt = '';
         try { var d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); if (d && typeof d === 'object' && typeof d.id === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(d.id.trim())) dflt = d.id.trim(); } catch (e) {}
+        // a default the site no longer offers opens like no default, near the visitor: forgotten here, before the module
+        // and the map read it (the page says so once: G35 B-8)
+        if (dflt && RETIRED.indexOf(dflt) >= 0) { try { localStorage.removeItem('allshore.defaultStation.v1'); } catch (e) {} window.__early.retired = dflt; dflt = ''; }
         var unit = p.has('unit') ? p.get('unit') : (typeof st.unit === 'string' ? st.unit : 'US');
         function start(station) {
           var q = new URLSearchParams({
@@ -186,6 +190,7 @@
     .wind-table caption { caption-side: top; font-size: 11.5px; color: #5a6b7a; padding: 0 0 4px; }
     #windMeta { font-size: 11.5px; color: #5a6b7a; line-height: 1.35; margin-top: 8px; }
     #windMeta div + div { margin-top: 2px; }
+    #windMeta .wind-disclaimer { margin-top: 6px; font-size: 10.5px; color: #6b7a88; }   /* NOAA's for mesonet observations (G35) */
     /* the day strip (static_ui/tides.js, after tide-forecast.com's layout): one table, the label column stuck to the
        left while the days scroll sideways; a closed day is one narrow column, an open day two halves (AM | PM) */
     .tide-strip { font-variant-numeric: tabular-nums; }
@@ -369,9 +374,10 @@
     /* touch screens: a live dot takes taps up to --live-tap px beyond its edge (set per dot by liveTargets(): half the way
        to the nearest other icon, 8 px at most; plan section 52) */
     .live-buoy-dot { position: relative; }
-    @media (pointer: coarse) { .live-buoy-dot::after { content: ''; position: absolute; inset: calc(-2px - var(--live-tap, 0px)); border-radius: 50%; } }
+    @media (any-pointer: coarse) { .live-buoy-dot::after { content: ''; position: absolute; inset: calc(-2px - var(--live-tap, 0px)); border-radius: 50%; } }
     /* a live buoy on a forecast point: each window links to the other (plan section 52) */
     .lw-links { margin: -2px 0 10px; }
+    @media (any-pointer: coarse) { #lwForecast, #fwLive { min-height: 44px; } }   /* finger-sized (G35 B-5) */
 
     /* Async forecast loading (Phase 2b) */
     .forecast-loading {
@@ -493,7 +499,7 @@
     .lc-note:empty { display: none; }
     .my-pt { background: #fff; border: 2.5px solid #d6007a; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,.45); cursor: pointer; }
     .my-pt.my-pt-unkept { background: transparent; border-style: dashed; }       /* the point on screen, not in My points */
-    @media (pointer: coarse) { .my-pt::after { content: ''; position: absolute; inset: -12px; } }   /* a finger-sized target (G22 B-20) */
+    @media (any-pointer: coarse) { .my-pt::after { content: ''; position: absolute; inset: -12px; } }   /* a finger-sized target (G22 B-20) */
     .leaflet-container.tools-active .my-pt { cursor: crosshair; }
     /* a tide station (plan section 38): a sine wave in a white disc, shown from zoom 9 (one empty div per marker: the
        glyph is a CSS background, so 300 markers parse no SVG each); the station on screen in its window gets a coral rim */
@@ -501,7 +507,7 @@
     .tide-icon.tide-icon-active { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='9' fill='%23fff' stroke='%23ff6b5a' stroke-width='2'/%3E%3Cpath d='M3 10 C4.3 4.5 6.2 4.5 7.5 10 S10.7 15.5 12 10 S15.2 4.5 17 10' fill='none' stroke='%230f8f8c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"); }
     /* a finger-sized target: 10 px around the icon, cut to half the gap to the nearest drawn icon (--tide-tap, set by
        the page after every redraw) so no target covers another icon's centre (G27 re-check RC-1) */
-    @media (pointer: coarse) { .tide-icon::after { content: ''; position: absolute; inset: calc(-1 * var(--tide-tap, 10px)); } }
+    @media (any-pointer: coarse) { .tide-icon::after { content: ''; position: absolute; inset: calc(-1 * var(--tide-tap, 10px)); } }
     .leaflet-container.tools-active .tide-icon { cursor: crosshair; }
     /* a wind station (plan section 39): a flag built by static_ui/winds.js inside a 40-px marker (the class name
        replaces Leaflet's leaflet-div-icon: no white box): the ring at the station, the arrow pointing the way the wind
@@ -521,7 +527,7 @@
     .wind-arrow path { fill: currentColor; stroke: #fff; stroke-width: 1.2; paint-order: stroke; pointer-events: auto; }
     .wind-ring { position: absolute; left: 15px; top: 15px; width: 10px; height: 10px; border-radius: 50%; background: currentColor;
                  border: 1.5px solid #fff; box-sizing: border-box; box-shadow: 0 0 0 1px rgba(0,0,0,.35); pointer-events: auto; }
-    @media (pointer: coarse) { .wind-ring::after { content: ''; position: absolute; inset: calc(-1 * var(--wind-disc, 13px)); border-radius: 50%; } }
+    @media (any-pointer: coarse) { .wind-ring::after { content: ''; position: absolute; inset: calc(-1 * var(--wind-disc, 13px)); border-radius: 50%; } }
     .wind-num { position: absolute; transform: translate(-50%, -50%); font: 700 12px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
                 color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 0 3px #000; white-space: nowrap; pointer-events: auto; }
     .wind-hollow .wind-ring { left: 13px; top: 13px; width: 14px; height: 14px; background: transparent; border: 2px solid currentColor;
@@ -1371,6 +1377,49 @@
     }
     function forgetMapView() { try { sessionStorage.removeItem(mapKey); } catch (e) { /* storage blocked */ } }
 
+    // ---- nearest path (tests/ui/nearest.test.js runs this block) ----
+    // Touch screens: a forecast dot takes taps up to COARSE_TOL px beyond its edge (Leaflet adds the renderer's tolerance
+    // to every path's hit radius); mice exact as before (plan section 52). A touch screen is (any-pointer: coarse),
+    // whichever pointer is the primary one: an iPad with a keyboard, a touch laptop (G35 B-7); the tolerance follows the
+    // query when a pointer comes or goes. Leaflet's canvas gives a click to the LAST drawn path holding it, so with the
+    // tolerance a later neighbour stole a tap on a dot's own centre (F2 = B-1): this renderer gives clicks and hover to the
+    // NEAREST path holding the point (ties: the later drawn, as before).
+    const COARSE_TOL = 8;
+    const coarseQuery = window.matchMedia ? window.matchMedia('(any-pointer: coarse)') : null;
+    function coarsePointer() { return !!(coarseQuery && coarseQuery.matches); }
+    function nearestPath(r, point, e) {
+      const click = !!e && (e.type === 'click' || e.type === 'preclick');
+      let best = null, bd = Infinity;
+      for (let o = r._drawFirst; o; o = o.next) {
+        const l = o.layer;
+        if (!l.options.interactive || !l._containsPoint(point)) continue;
+        if (click && r._map._draggableMoved(l)) continue;
+        const d = l._point ? point.distanceTo(l._point) : Infinity;
+        if (d <= bd) { bd = d; best = l; }
+      }
+      return best;
+    }
+    const NearestCanvas = L.Canvas.extend({
+      _onClick: function (e) {
+        const l = nearestPath(this, this._map.mouseEventToLayerPoint(e), e);
+        this._fireEvent(l ? [l] : false, e);
+      },
+      _handleMouseHover: function (e, point) {
+        if (this._mouseHoverThrottled) return;
+        const l = nearestPath(this, point, null);
+        if (l !== this._hoveredLayer) {
+          this._handleMouseOut(e);
+          if (l) { L.DomUtil.addClass(this._container, 'leaflet-interactive'); this._fireEvent([l], e, 'mouseover'); this._hoveredLayer = l; }
+        }
+        this._fireEvent(this._hoveredLayer ? [this._hoveredLayer] : false, e);
+        this._mouseHoverThrottled = true;
+        const self = this;
+        setTimeout(function () { self._mouseHoverThrottled = false; }, 32);
+      }
+    });
+    // ---- end nearest path ----
+    const mapRenderer = new NearestCanvas({ tolerance: coarsePointer() ? COARSE_TOL : 0 });
+
     // ---- Leaflet Map ----
     // No maxBounds here. Latitude is clamped manually; longitude wraps continuously.
     const map = L.map('map', {
@@ -1378,9 +1427,7 @@
       // instead of thousands of individual SVG <path> nodes, which sharply
       // reduces layout/repaint overhead during pan/zoom.
       preferCanvas: true,
-      // touch screens: a forecast dot takes taps up to 8 px beyond its edge (Leaflet adds the renderer's tolerance to
-      // every path's hit radius); mice exact as before (plan section 52)
-      renderer: L.canvas({ tolerance: (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ? 8 : 0 }),
+      renderer: mapRenderer,                 // the nearest dot takes a tap; touch screens a wider reach (above)
       worldCopyJump: false,
       zoomControl: false,                    // the keys, the wheel and pinching zoom (plan section 24)
       minZoom: 1,
@@ -1391,6 +1438,11 @@
       zoomSnap: 0.1,
       zoomDelta: 0.5,
       wheelPxPerZoomLevel: 80
+    });
+    // a touch screen attached or detached (a keyboard case, a mouse): the dots' reach and the pads follow (G35 B-7)
+    if (coarseQuery && coarseQuery.addEventListener) coarseQuery.addEventListener('change', function () {
+      mapRenderer.options.tolerance = coarsePointer() ? COARSE_TOL : 0;
+      refreshWrappedMarkerCopies(true);
     });
     // The credits stay (Esri's terms, the overlay's NOAA / GSHHG line); the "Leaflet" prefix goes (plan section 26).
     if (map.attributionControl) map.attributionControl.setPrefix(false);
@@ -1931,20 +1983,35 @@
       return early || fetch(url);
     }
 
-    // Plot forecast stations
-    earlyFetch('stations', '/stations.json')
-      .then(r => r.json())
-      .then(stations => {
-        forecastStationsData = stations || [];
-        rebuildForecastMarkers(true);
-        if (typeof syncBuoyLinks === 'function') syncBuoyLinks();
-        forgetRetiredDefault(forecastStationsData);
-        if (pendingFocusStation) { const sid = pendingFocusStation; pendingFocusStation = null; focusStation(sid); }
-      });
+    // Plot forecast stations (the head's request first; a refused or broken answer is asked for once more after a few
+    // seconds: without the list the map has no forecast dots for the session)
+    const STATIONS_RETRY_MS = 4000;
+    function loadForecastStations(retries) {
+      earlyFetch('stations', '/stations.json')
+        .then(r => { if (r && r.ok === false) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(stations => {
+          forecastStationsData = stations || [];
+          rebuildForecastMarkers(true);
+          if (typeof syncBuoyLinks === 'function') syncBuoyLinks();
+          forgetRetiredDefault(forecastStationsData);
+          if (pendingFocusStation) { const sid = pendingFocusStation; pendingFocusStation = null; focusStation(sid); }
+        })
+        .catch(function () { if (retries > 0) setTimeout(function () { loadForecastStations(retries - 1); }, STATIONS_RETRY_MS); });
+    }
+    loadForecastStations(1);
 
     // A default station the list no longer has (and not a forecast point) is forgotten once the list is in: the next
     // visit opens near the visitor again; the window says so once (G32 A-P3-3 / B-7). An empty or failed list decides nothing.
+    // a note in the forecast window, now or when it is up
+    function tellOnPage(msg, id) {
+      function tell() { if (window.AllshoreForecast && window.AllshoreForecast.note) window.AllshoreForecast.note(msg, id || null); }
+      tell();
+      document.addEventListener('allshore:forecast', tell, { once: true });          // the window may not be up yet
+    }
+    function retiredDefaultNote(id) { return 'Your default station' + (id ? ' (' + id + ')' : '') + ' is no longer offered, so it was cleared: the site will open near you next time.'; }
     function forgetRetiredDefault(list) {
+      const early = window.__early && window.__early.retired;   // a removed station the head already forgot (G35 B-8)
+      if (early) { window.__early.retired = null; tellOnPage(retiredDefaultNote(early), early); }
       if (!Array.isArray(list) || list.length < 100) return;   // a degraded list (the server's 10-buoy fallback) decides nothing (G32 re-check P-1)
       let d = null; try { d = JSON.parse(localStorage.getItem('allshore.defaultStation.v1') || 'null'); } catch (e) { return; }
       if (!d || typeof d !== 'object') return;
@@ -1957,10 +2024,7 @@
       }
       if (id && /^[A-Za-z0-9_-]{1,32}$/.test(id) && (list.some(function (s) { return s && String(s.id) === id; }) || (F && F.parsePointId && F.parsePointId(id)))) return;
       try { localStorage.removeItem('allshore.defaultStation.v1'); } catch (e) { return; }
-      const msg = 'Your default station' + (id ? ' (' + id + ')' : '') + ' is no longer offered, so it was cleared: the site will open near you next time.';
-      function tell() { if (window.AllshoreForecast && window.AllshoreForecast.note) window.AllshoreForecast.note(msg, id || null); }
-      tell();
-      document.addEventListener('allshore:forecast', tell, { once: true });          // the window may not be up yet
+      tellOnPage(retiredDefaultNote(id), id || null);
     }
 
     // With JS the page never submits the form (every change applies in place); a favourites pick asks
@@ -3016,7 +3080,7 @@
     function liveTabStops() {
       if (!liveDrawn.length || !map.latLngToContainerPoint || !map.hasLayer(liveBuoyLayer)) return;
       setTabStops(liveDrawn.map(function (d) { return d.marker; }), function (m, i) { return map.latLngToContainerPoint([liveDrawn[i].lat, liveDrawn[i].lng]); });
-      if (typeof liveTargets === 'function') liveTargets();
+      if (typeof requestLiveTargets === 'function') requestLiveTargets();
     }
     function rebuildLiveBuoyMarkers(force = false) {
       const vis = visibleCopies(liveStationsData);
@@ -3244,7 +3308,7 @@
       });
     }
     function tideTargets() {
-      if (typeof liveTargets === 'function') liveTargets();   // the live dots' pads after every round (plan section 52)
+      if (typeof requestLiveTargets === 'function') requestLiveTargets();   // the live dots' pads after every round (plan section 52)
       if (!tideDrawn.length || !map.latLngToContainerPoint) return;
       const pts = tideDrawn.map(function (d) {
         const p = map.latLngToContainerPoint([d.s.lat, d.lng]);
@@ -3360,10 +3424,14 @@
     // ---- buoy links (plan section 52; tests/ui/buoylinks.test.js runs this block) ----
     // A live buoy and a forecast point at one spot (138 of the 563 live buoys are forecast points too, 39 within 0.5 km;
     // the dot sits on the forecast dot on touch screens): the live window offers "Forecast for this point" and the
-    // forecast window "Live buoy". The same station id (the live id without its source, e.g. ndbc:41113 -> 41113) within
-    // LINK_ID_KM is the link (NOAA's forecast point for a moved buoy can lie 30-320 km from it: the button then says how
-    // far), else the nearest within LINK_KM; none -> no button.
-    const LINK_KM = 1.0, LINK_ID_KM = 400;
+    // forecast window "Live buoy". The same station (the live id without its source, e.g. ndbc:41113 -> 41113, or the id
+    // LINK_ALIAS gives a buoy another network lists under its own number: CDIP 163 is NDBC 52201) within LINK_ID_KM is the
+    // link (NOAA's forecast point for a moved buoy can lie 30-320 km from it: the button then says how far), else the
+    // nearest within LINK_KM; none -> no button. A window opened by the other's link links back to where the visitor came
+    // from (G35 decision 3: two buoys at one spot made a round trip land on the other); a link to a station farther than
+    // LINK_KM moves the map there (decision 4).
+    const LINK_KM = 1.0, LINK_ID_KM = 400, LINK_PLAIN_KM = 2.0;   // within LINK_PLAIN_KM the plain words: the same spot to a visitor (F7)
+    const LINK_ALIAS = { 'cdip:163': '52201', 'mi-ie:m2': '62091', 'mi-ie:m3': '62092', 'mi-ie:m4': '62093', 'mi-ie:m5': '62094', 'mi-ie:m6': '62095' };
     const linkCache = { lists: [null, null], fwd: new Map(), back: new Map() };
     function linkKm(a, b) {
       const r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
@@ -3371,17 +3439,25 @@
       return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
     }
     function linkKey(id) { const t = String(id || ''), i = t.indexOf(':'); return (i >= 0 ? t.slice(i + 1) : t).toUpperCase(); }
+    // the id a station is linked by: its alias (another network's number of the same buoy), else its id without the
+    // source; CMEMS lists WMO buoys in the 7-digit form (cmems:GL_TS_MO_6200163 is WMO 62163)
+    function linkId(id) {
+      const t = String(id || ''), a = LINK_ALIAS[t.toLowerCase()];
+      if (a) return a;
+      const w = /^cmems:[A-Z]{2}_TS_MO_6200(\d{3})$/i.exec(t);
+      return w ? '62' + w[1] : linkKey(t);
+    }
     // the station of `list` linked to `from` ({id, lat, lon}): {s, km} or null
     function linkFor(from, list) {
       const at = from && { lat: Number(from.lat), lon: Number(from.lon) };
       if (!at || !Number.isFinite(at.lat) || !Number.isFinite(at.lon) || !Array.isArray(list)) return null;
-      const want = linkKey(from.id);
+      const want = linkId(from.id);
       let same = null, near = null;
       for (let i = 0; i < list.length; i++) {
         const s = list[i], lat = Number(s && s.lat), lon = Number(s && s.lon);
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
         const km = linkKm(at, { lat: lat, lon: lon });
-        if (want && linkKey(s.id) === want && km <= LINK_ID_KM && (!same || km < same.km)) same = { s: s, km: km };
+        if (want && linkId(s.id) === want && km <= LINK_ID_KM && (!same || km < same.km)) same = { s: s, km: km };
         else if (km <= LINK_KM && (!near || km < near.km)) near = { s: s, km: km };
       }
       return same || near;
@@ -3393,66 +3469,115 @@
       if (!map_.has(key)) map_.set(key, compute());
       return map_.get(key);
     }
+    // where a station shown in the forecast window without a dot of its own was (a removed one: its answer has its
+    // position, so the sheltered note can offer its live buoy: G35 B-8)
+    let fwStationAt = null;
     // a live buoy's forecast point / a forecast station's live buoy ({s, km} or null; never for one of My points)
     function forecastLinkFor(live) { return live ? linkCached(linkCache.fwd, String(live.id), function () { return linkFor(live, forecastStationsData); }) : null; }
     function liveLinkFor(sid) {
       if (!sid || /^pt_/.test(String(sid))) return null;
       return linkCached(linkCache.back, String(sid), function () {
-        const f = forecastStationsData.filter(function (s) { return s && String(s.id) === String(sid); })[0];
+        const f = forecastStationsData.filter(function (s) { return s && String(s.id) === String(sid); })[0] ||
+          (fwStationAt && fwStationAt.id === String(sid) ? fwStationAt : null);
         return f ? linkFor(f, liveStationsData) : null;
       });
     }
-    function linkAway(km) {                           // "319 km away" in the site's unit
-      const us = getSelectedUnit() !== 'Metric', v = us ? km / 1.609344 : km;
-      return (v < 10 ? v.toFixed(1) : String(Math.round(v))) + (us ? ' mi' : ' km') + ' away';
+    function linkAway(km, words) {                    // "319 km away" in the site's unit ("319 kilometres away" for a screen reader)
+      const us = getSelectedUnit() !== 'Metric', v = us ? km / 1.609344 : km, r = Math.round(v * 10) / 10;
+      return (r < 10 ? r.toFixed(1) : String(Math.round(v))) + (words ? (us ? ' miles' : ' kilometres') : (us ? ' mi' : ' km')) + ' away';
     }
-    function linkText(lead, near, link) {             // a twin within LINK_KM: the plain words; farther: its id and distance
-      return link.km <= LINK_KM ? near : lead + ' ' + linkKey(link.s.id) + ' \u00b7 ' + linkAway(link.km);
+    function linkNarrow() { return !!(window.matchMedia && window.matchMedia('(max-width: 400px)').matches); }   // a phone held upright (B-5)
+    function linkText(lead, near, link) {             // within LINK_PLAIN_KM the plain words; farther: its id and distance (narrow: the distance only)
+      if (link.km <= LINK_PLAIN_KM) return near;
+      if (linkNarrow()) return lead + ' · ' + linkAway(link.km).replace(/ away$/, '');
+      return lead + ' ' + linkKey(link.s.id) + ' · ' + linkAway(link.km);
+    }
+    // what a screen reader says (B-6): the far link in words, the near one its text; the title adds the station's name
+    function linkDescribe(b, lead, link) {
+      if (!b.setAttribute) return;
+      if (link.km <= LINK_PLAIN_KM) b.removeAttribute('aria-label');
+      else b.setAttribute('aria-label', lead + ' ' + linkKey(link.s.id) + ', ' + linkAway(link.km, true));
+      const name = link.s.name ? String(link.s.name).trim() : '';
+      b.title = name && name.toUpperCase() !== linkKey(link.s.id) ? name : '';
+    }
+    function linkMove(link) {                         // a link farther than LINK_KM: the map moves to the station (decision 4)
+      if (!link || link.km <= LINK_KM || !map.panTo || !map.getCenter) return;
+      const lat = Number(link.s.lat), lon = Number(link.s.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      const c = map.getCenter();
+      map.panTo([lat, lon + 360 * Math.round((c.lng - lon) / 360)]);   // the copy of the world on screen
     }
     function openForecastStation(f) {                 // as a click on its dot: the forecast window loads it (Buoy Local)
       document.getElementById('station').value = f.id;
       saveLayerVisibility();
       document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: String(f.id), source: 'map' } }));
     }
-    let fwStationId = null, lwLink = null, fwLink = null;
+    // fwBack: the forecast window opened by the live window's link ({sid, live, km}: its "Live buoy" goes back to that
+    // buoy while it shows that station); lwBack: the live window opened by the forecast window's link ({id, f, km})
+    let fwStationId = null, lwLink = null, fwLink = null, fwBack = null, lwBack = null;
     function syncBuoyLinks() {
       const lb = document.getElementById('lwForecast'), lw = document.getElementById('lwLinks'), fb = document.getElementById('fwLive');
-      lwLink = liveShownStation ? forecastLinkFor(liveShownStation) : null;
+      if (lwBack && !(liveShownStation && String(liveShownStation.id) === lwBack.id)) lwBack = null;
+      lwLink = !liveShownStation ? null : lwBack ? { s: lwBack.f, km: lwBack.km } : forecastLinkFor(liveShownStation);
       if (lw && lb) {
         lw.hidden = !lwLink;
-        if (lwLink) { lb.textContent = linkText('Forecast point', 'Forecast for this point', lwLink); lb.title = 'Forecast point ' + lwLink.s.id; }
+        if (lwLink) { lb.textContent = linkText('Forecast point', 'Forecast for this point', lwLink); linkDescribe(lb, 'Forecast point', lwLink); }
       }
-      fwLink = liveLinkFor(fwStationId);
+      if (fwBack && fwBack.sid !== fwStationId) fwBack = null;
+      fwLink = fwBack ? { s: fwBack.live, km: fwBack.km } : liveLinkFor(fwStationId);
       if (fb) {
         fb.hidden = !fwLink;
-        if (fwLink) { fb.textContent = linkText('Live buoy', 'Live buoy', fwLink); fb.title = 'Live buoy ' + buoyDisplayLabel(fwLink.s); }
+        if (fwLink) { fb.textContent = linkText('Live buoy', 'Live buoy', fwLink); linkDescribe(fb, 'Live buoy', fwLink); }
       }
     }
     // keyboard activation (a click without a pointer) moves the focus into the window it opened
     function linkFocus(e, headerId) { if (e && e.detail === 0 && typeof focusWindowHeader === 'function') focusWindowHeader(headerId); }
     (function wireBuoyLinks() {
       const lb = document.getElementById('lwForecast'), fb = document.getElementById('fwLive'), unit = document.getElementById('unit');
-      if (lb) lb.addEventListener('click', function (e) { if (lwLink) { openForecastStation(lwLink.s); linkFocus(e, 'fwHeader'); } });
-      if (fb) fb.addEventListener('click', function (e) { if (fwLink) { openLiveBuoy(fwLink.s); linkFocus(e, 'lwHeader'); } });
+      if (lb) lb.addEventListener('click', function (e) {
+        if (!lwLink) return;
+        const link = lwLink;
+        fwBack = liveShownStation ? { sid: String(link.s.id), live: liveShownStation, km: link.km } : null;
+        linkMove(link); openForecastStation(link.s); linkFocus(e, 'fwHeader');
+      });
+      if (fb) fb.addEventListener('click', function (e) {
+        if (!fwLink) return;
+        const link = fwLink, f = forecastStationsData.filter(function (s) { return s && String(s.id) === fwStationId; })[0] ||
+          (fwStationAt && fwStationAt.id === fwStationId ? fwStationAt : null);
+        lwBack = f ? { id: String(link.s.id), f: f, km: link.km } : null;
+        linkMove(link); openLiveBuoy(link.s); linkFocus(e, 'lwHeader');
+      });
       document.addEventListener('allshore:station', function (e) { const d = e.detail || {}; if (d.sid) { fwStationId = String(d.sid); syncBuoyLinks(); } });
-      document.addEventListener('allshore:forecast', function (e) { const d = e.detail || {}; if (d.station) { fwStationId = String(d.station); syncBuoyLinks(); } });
+      document.addEventListener('allshore:forecast', function (e) {
+        const d = e.detail || {};
+        if (!d.station) return;
+        fwStationId = String(d.station);
+        if (Number.isFinite(d.lat) && Number.isFinite(d.lon) && !(fwStationAt && fwStationAt.id === fwStationId)) {
+          fwStationAt = { id: fwStationId, lat: d.lat, lon: d.lon };
+          linkCache.back.delete(fwStationId);             // asked before the answer came: ask again
+        }
+        syncBuoyLinks();
+      });
       if (unit) unit.addEventListener('change', syncBuoyLinks);
+      if (typeof window.addEventListener === 'function') window.addEventListener('resize', syncBuoyLinks);   // the narrow text
     })();
     // Touch screens: each live dot takes taps up to half the way to the nearest other icon (8 px at most): other live
-    // dots, tide icons, wind flags (a flag on the buoy itself leaves the dot as it was), My points and the forecast dots
-    // other than its own twin (that one is a button away: the live window's link). Mice: nothing (the CSS pad is coarse only).
-    const LIVE_TAP_MAX = 8;
+    // dots, tide icons, wind flags (a flag on the buoy itself leaves the dot as it was), My points and the forecast dots;
+    // its own twin forecast dot only while it lies under the dot itself (zoomed in until the two part, it counts like
+    // any other icon: G35 B-12). Touch screens: (any-pointer: coarse), whichever pointer is the primary one (B-7). Mice:
+    // nothing (the CSS pad is coarse only).
+    const LIVE_TAP_MAX = 8, LIVE_TWIN_UNDER = 3;
     function liveDotAt(d) {                           // the dot's centre: the icon sits right of its coordinate
       const p = map.latLngToContainerPoint([d.lat, d.lng]), size = d.active ? 15 : 11, anchor = Math.round(size / 2 - (d.active ? 8 : 7));
       return { x: p.x + size / 2 - anchor, y: p.y, h: size / 2 };
     }
     function liveTargets() {
-      if (!liveDrawn.length || !map.latLngToContainerPoint || !(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)) return;
+      if (!liveDrawn.length || !map.latLngToContainerPoint || !(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches)) return;
       const others = [], pt = function (lat, lng) { const q = map.latLngToContainerPoint([lat, lng]); return { x: q.x, y: q.y }; };
       if (typeof tideDrawn !== 'undefined') tideDrawn.forEach(function (d) { const q = pt(d.s.lat, d.lng); others.push({ x: q.x + (d.off ? d.off[0] : 0), y: q.y + (d.off ? d.off[1] : 0) }); });
       if (typeof windDrawn !== 'undefined') windDrawn.forEach(function (d) { others.push(pt(d.s.lat, d.lng)); });
       if (map.hasLayer(pointLayer)) visibleCopies(savedPointsData).forEach(function (c) { others.push(pt(c.s.lat, c.lng)); });
-      const fc = map.hasLayer(forecastLayer) ? visibleCopies(forecastStationsData) : [];
+      const fc = map.hasLayer(forecastLayer) ? visibleCopies(forecastStationsData).map(function (f) { return { id: String(f.s.id), q: pt(f.s.lat, f.lng) }; }) : [];
       const dots = liveDrawn.map(liveDotAt);
       liveDrawn.forEach(function (d, i) {
         const p = dots[i], twin = forecastLinkFor(d.s), twinId = twin && twin.km <= LINK_KM ? String(twin.s.id) : null;
@@ -3460,11 +3585,22 @@
         const near = function (q) { c = Math.min(c, Math.hypot(q.x - p.x, q.y - p.y)); };
         dots.forEach(function (q, j) { if (j !== i) near(q); });
         others.forEach(near);
-        fc.forEach(function (f) { if (String(f.s.id) !== twinId) near(pt(f.s.lat, f.lng)); });
+        fc.forEach(function (f) {
+          if (f.id === twinId && Math.hypot(f.q.x - p.x, f.q.y - p.y) <= p.h + LIVE_TWIN_UNDER) return;   // its twin, under the dot
+          near(f.q);
+        });
         const pad = Math.max(0, Math.min(LIVE_TAP_MAX, Math.floor(c / 2 - p.h)));
         const el = d.marker.getElement && d.marker.getElement();
         if (el && el.style && el.style.setProperty && d.pad !== pad) { el.style.setProperty('--live-tap', pad + 'px'); d.pad = pad; }
       });
+    }
+    // one pass per round of rebuilds (G35 K-3: the live, wind and tide rebuilds each asked for one): the round's
+    // rebuilds ask, the pass runs once after them, before the page is painted
+    let liveTargetsDue = false;
+    function requestLiveTargets() {
+      if (liveTargetsDue) return;
+      liveTargetsDue = true;
+      Promise.resolve().then(function () { liveTargetsDue = false; liveTargets(); });
     }
     // ---- end buoy links ----
 
@@ -3552,7 +3688,7 @@
     const WIND_DOT_HIT_PX = 8, WIND_DOT_HIT_TOUCH_PX = 12;
     const WIND_DISC_PX = 13, WIND_RING_R = 5;              // the touch disc beyond the ring (CSS), the ring's radius
     const WIND_DOT_R = { forecast: 4, point: 7 };           // the dots' drawn radii: the circle marker (3 + stroke), My point (14 px)
-    function windTouch() { return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches); }
+    function windTouch() { return !!(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches); }   // any touch screen (G35 B-7)
     function windTapPx() { return windTouch() ? WIND_DOT_HIT_TOUCH_PX : WIND_DOT_HIT_PX; }
     function windHollowSet(copies) {
       const out = new Map();
@@ -3647,7 +3783,7 @@
             windReadings = fresh;
             if (payload && Number.isFinite(payload.stale_s)) windStaleS = payload.stale_s;
             refreshWindFlags();
-            try { windStallText = windStallNote(payload, missing); } catch (e) { windStallText = ''; }   // never the flags' repaint
+            try { windStallText = windStallNote(payload, missing, windStationsData); } catch (e) { windStallText = ''; }   // never the flags' repaint
             syncWindNote();
           },
           onStatus: function (code, text) { windFeedNote = text || ''; syncWindNote(); }
@@ -3657,17 +3793,29 @@
     // the note: the list's and the feed's state at the gate; never a zoom hint, below zoom 9 or for the flags the
     // thinning holds back (owner, 2026-10-10: it is understood that stations appear when zoomed in)
     // A feed that stopped bringing readings (the NWS API's ingest stalled nationwide on 2026-10-22): the legend says so
-    // while no fresh reading of its backup fills its stations (NOAA MADIS for the NWS stations; plan section 52 D).
-    // payload.newest.nws: the newest reading the feed ever brought (unknown after a server restart: no note then).
+    // when most NWS flags are grey (owner, 2026-10-24: fewer than half of the NWS stations have a fresh reading, from
+    // the API or its backup NOAA MADIS) and the feed itself has brought nothing for WIND_STALL_S (a feed that is alive
+    // and only catching up after a restart says nothing). The time in the NWS stations' own zone, named (G35 F4 = B-9);
+    // after a server restart during an outage the feed's newest time is unknown: the note says so without one (B-15).
     const WIND_STALL_S = 3 * 3600;
     let windStallText = '';
-    function windStallNote(payload, partial) {
-      const t = payload && payload.newest ? payload.newest.nws : null, now = payload ? payload.now : null;
-      if (!Number.isFinite(t) || !Number.isFinite(now) || now - t <= WIND_STALL_S || (partial || []).indexOf('nws') >= 0) return '';
-      const fed = payload.fed_by || {}, stale = Number.isFinite(payload.stale_s) ? payload.stale_s : 7200;
-      const fresh = (payload.rows || []).some(function (r) { return fed[r[0]] === 'madis' && now - r[1] <= stale; });
-      if (fresh) return '';
-      return 'NWS feed stalled since ' + new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    function windStallNote(payload, partial, stations) {
+      const now = payload ? payload.now : null;
+      if (!Number.isFinite(now) || (partial || []).indexOf('nws') >= 0 || !Array.isArray(stations)) return '';
+      const nws = stations.filter(function (s) { return s && String(s.id).indexOf('nws:') === 0; });
+      if (!nws.length) return '';
+      const t = payload.newest ? payload.newest.nws : null;
+      if (Number.isFinite(t) && now - t <= WIND_STALL_S) return '';
+      const stale = Number.isFinite(payload.stale_s) ? payload.stale_s : 7200, ids = new Set(nws.map(function (s) { return String(s.id); }));
+      let fresh = 0;
+      (payload.rows || []).forEach(function (r) { if (r && ids.has(String(r[0])) && now - r[1] <= stale) fresh++; });
+      if (fresh * 2 >= nws.length) return '';
+      if (!Number.isFinite(t)) return 'NWS feed: no recent readings';
+      const o = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' };
+      let when;
+      try { when = new Date(t * 1000).toLocaleString('en-US', Object.assign({ timeZone: nws[0].tz || undefined }, o)); }
+      catch (e) { when = new Date(t * 1000).toLocaleString('en-US', o); }
+      return 'NWS feed stalled since ' + when;
     }
     function windNoteWanted(on) {
       if (!map.hasLayer(windLayer) || !on) return '';
@@ -3910,6 +4058,17 @@
       function removeFav(sid) { return writeFavs(readFavs().filter(function (x) { return x !== sid; })); }
       const FAV_REFUSED = 'This browser could not change the favorites (its storage is switched off).';
       const DFLT_REFUSED = 'This browser could not keep a default (its storage is switched off).';
+      // favorites the site no longer offers (removed for a blank bulletin: section 52 C) are dropped once, with a note
+      // (G35 B-8: they stayed in storage, never listed nor explained); a list cut short (the server's fallback) decides
+      // nothing
+      (function dropRetiredFavs() {
+        if (select.options.length < 100) return;
+        const f = readFavs(), keep = f.filter(function (x) { return isPoint(x) || bySid.has(x); });
+        if (keep.length === f.length || !writeFavs(keep)) return;
+        const gone = f.filter(function (x) { return keep.indexOf(x) < 0; }), one = gone.length === 1;
+        if (typeof tellOnPage === 'function') tellOnPage((one ? 'Your favorite ' + gone[0] + ' is' : 'Your favorites ' + gone.join(', ') + ' are') +
+          ' no longer offered, so ' + (one ? 'it was' : 'they were') + ' removed from your favorites.', null);
+      })();
 
       // The default station (plan section 46): the one a new tab opens on, wherever the visitor is (the <head>, the
       // forecast module and the map's first view read it). One at a time, set and cleared with the shaka (owner,

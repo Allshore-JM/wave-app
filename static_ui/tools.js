@@ -1581,7 +1581,13 @@
     }
     var pressUi = false;
     doc.addEventListener('pointerdown', function (e) { pressUi = onUi(e); }, true);
-    map.on('click', function (e) { if (s.tool && !pressUi && !onUi(e.originalEvent)) click(e.latlng, e.originalEvent); });
+    // the tap's own position: Leaflet hands a click on a small canvas dot the DOT's position (its _fireDOMEvent), so a
+    // tool tap near a forecast dot jumped onto it, up to its touch reach away (G35 B-11)
+    function tapLatLng(e) {
+      try { if (e.originalEvent && map.mouseEventToLatLng) { var ll = map.mouseEventToLatLng(e.originalEvent); if (ll && isFinite(ll.lat) && isFinite(ll.lng)) return ll; } } catch (x) { /* the event's own */ }
+      return e.latlng;
+    }
+    map.on('click', function (e) { if (s.tool && !pressUi && !onUi(e.originalEvent)) click(tapLatLng(e), e.originalEvent); });
     map.on('dblclick', function () { if (s.tool === 'distance' || s.tool === 'area') finish(); });
     // A tap also sends compatibility mouse events (a mousemove first), which must not start or move the readout, as in
     // the overlay's readout (lastTouch). Seen in capture, so a control that stops the event's bubbling still counts.

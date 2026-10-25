@@ -22,4 +22,5 @@ jobs:
           gh workflow enable model-points.yml --repo "$GITHUB_REPOSITORY"
           gh workflow enable model-ecmwf.yml --repo "$GITHUB_REPOSITORY"
           gh workflow enable model-glwu.yml --repo "$GITHUB_REPOSITORY"
+          gh workflow enable model-gfswinds.yml --repo "$GITHUB_REPOSITORY"
           gh workflow enable model-sst.yml --repo "$GITHUB_REPOSITORY"

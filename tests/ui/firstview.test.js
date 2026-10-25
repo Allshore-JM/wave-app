@@ -196,7 +196,7 @@ function runForget(stored, list, opts) {
   const F = { parsePointId: (id) => (/^pt_\d+[NS]_\d+[EW]$/.test(id) ? { lat: 1, lon: 2 } : null), note: (m, sid) => notes.push([m, sid]) };
   const window = { AllshoreForecast: opts.noApp ? undefined : F, __early: opts.early };
   const document = { readyState: opts.readyState, addEventListener: (ev, fn, o) => { (docL[ev] = docL[ev] || []).push({ fn, o }); } };
-  new Function('localStorage', 'window', 'document', FR + '\nforgetRetiredDefault(' + JSON.stringify(list) + ');')(localStorage, window, document);
+  new Function('localStorage', 'window', 'document', FR + (opts.noList ? '' : '\nforgetRetiredDefault(' + JSON.stringify(list) + ');'))(localStorage, window, document);
   return { store, notes, docL, window, F };
 }
 const LIST2 = [{ id: '51201' }, { id: '46026' }, { id: 'NW-HFO51' }];
@@ -245,13 +245,18 @@ test('a default the list no longer has (or one the id rule refuses) is forgotten
   assert.equal(early.notes.length, 1, 'said when the window is up');
 });
 
-test('a removed default the head already forgot (G35 B-8): said once when the list lands, whatever the list', () => {
-  for (const list of [LIST2, []]) {
-    const r = runForget(undefined, list, { early: { retired: '44062' } });
-    assert.equal(r.notes.length, 1, 'said'); assert.ok(/44062/.test(r.notes[0][0]) && /near you next time/.test(r.notes[0][0])); assert.equal(r.notes[0][1], null);
+test('a removed default the head already forgot (G35 B-8): said once at page start, whether or not the list ever lands (re-check F-2)', () => {
+  for (const [list, noList] of [[LIST2, false], [[], false], [null, true]]) {
+    const r = runForget(undefined, list, { early: { retired: '44062' }, noList });
+    assert.equal(r.notes.length, 1, 'said' + (noList ? ' with no list at all (two failed requests)' : '')); assert.ok(/44062/.test(r.notes[0][0]) && /near you next time/.test(r.notes[0][0])); assert.equal(r.notes[0][1], null);
     assert.equal(r.window.__early.retired, null, 'once');
   }
+  const later = runForget(undefined, LIST2, { early: { retired: '44062' }, noApp: true, noList: true });
+  assert.deepEqual(later.notes, [], 'before the window is up: nothing yet');
+  assert.equal(later.docL['allshore:forecast'].length, 1, 'kept for the first forecast');
+  later.window.AllshoreForecast = later.F; later.docL['allshore:forecast'][0].fn(); assert.equal(later.notes.length, 1);
   assert.deepEqual(runForget(undefined, LIST2, { early: { retired: null } }).notes, []);
+  assert.ok(html.indexOf('    tellHeadRetired();\n    function forgetRetiredDefault(list) {') > 0, 'called at page start, not from the list');
 });
 
 // ---- the page helpers the first view and the wide box rely on, run from the template (G32 re-check D-1: R1's P5 / P7 /
@@ -319,4 +324,22 @@ test('the stations list, once in, is kept, drawn, judged for a retired default a
   const twice = await run([new TypeError('x'), new TypeError('y')]);
   twice.timers[0].fn(); await settle();
   assert.equal(twice.timers.length, 1, 'once more, not for ever'); assert.equal(twice.state().data, null);
+  // a fault in the code that uses the list is logged, never a reason to ask for the list again (re-check R1)
+  const logged = [], oldErr = console.error;
+  console.error = (...a) => logged.push(a);
+  try {
+    const boom = await (async () => {
+      const calls = [], timers = [];
+      new Function('earlyFetch', 'rebuildForecastMarkers', 'forgetRetiredDefault', 'focusStation', 'setTimeout',
+        'var forecastStationsData = null, pendingFocusStation = null;\n' + SRC)(
+        (name, url) => { calls.push(['fetch', name, url]); return Promise.resolve(body(LIST2)); },
+        () => { throw new TypeError('a drawing fault'); }, () => calls.push(['forget']), () => {},
+        (fn, ms) => { timers.push({ fn, ms }); return timers.length; });
+      await settle();
+      return { calls, timers };
+    })();
+    assert.deepEqual(boom.calls, [['fetch', 'stations', '/stations.json']], 'asked once');
+    assert.equal(boom.timers.length, 0, 'no second request for a consumer\'s fault');
+    assert.equal(logged.length, 1); assert.ok(/a drawing fault/.test(String(logged[0][1])));
+  } finally { console.error = oldErr; }
 });

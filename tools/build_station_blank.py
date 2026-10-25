@@ -14,16 +14,19 @@ Arctic or a frozen-sea point is blank in winter and carries waves again when the
 recorded under "ice" instead of "blank" when it lies in a sea-ice region: poleward of ICE_LAT in either hemisphere, or
 inside ICE_BOXES (the lower-latitude seas that freeze in winter).
 
-This tool reads the bulletins of one run for the listed stations AND the ones it removed before (so a removed station
-is checked every time: G35 F1), records which were blank, and writes station_blank.json:
+This tool reads the bulletins of one run for the listed stations, the ones it removed before and the ones waiting to
+come back (so every one of them is checked every time: G35 F1, re-check R1-1), records which were blank, and writes
+station_blank.json:
   {"rule": ..., "runs": {"YYYYMMDDHH": {"blank": [...], "ice": [...], "absent": [...], "back": [...], "scanned": N},
-   ...}, "removed": [...]}
-where "back" = the removed stations found WITH data in that run, and "removed" = the ids blank in BOTH of the two newest
+   ...}, "removed": [...], "restore": [...]}
+where "back" = the removed stations found WITH data in that run, "removed" = the ids blank in BOTH of the two newest
 recorded runs, plus the ids removed before that are not back in both (one cycle's hiccup neither removes nor restores;
-the runs are at least 6 h apart by their names; a missing bulletin never counts). `--apply` then rewrites
-station_list.json from the listed and the previously removed ids minus "removed": a station back in both runs returns
-at its old place (station_coords.json's order, the list's original order) and is named on the console. The coordinates
-and time-zone tables stay whole (the point time-zone rule reads every coordinate; section 32).
+the runs are at least 6 h apart by their names; a missing bulletin never counts), and "restore" = the ids that left
+"removed" and are not on the list yet: they wait there, scanned every run, whatever the order of the plain scans and
+the --apply runs, and one that is blank in both newest runs again goes back to "removed". `--apply` then rewrites
+station_list.json from the listed ids minus "removed" plus "restore" (each at its old place: station_coords.json's
+order, the list's original order; named on the console) and empties "restore". The coordinates and time-zone tables
+stay whole (the point time-zone rule reads every coordinate; section 32).
 
 Run (network: the run's bulletin tar from NOAA's AWS copy (one ~50 MB file holding every station's bulletin), else the
 per-station files: AWS first, NOMADS second, paced):
@@ -60,6 +63,7 @@ ICE_BOXES = {
 RULE = ("blank = no data row of the run has a combined height (Hst) above zero or a swell group with three numbers; "
         "a blank station in a sea-ice region (|lat| >= 50 or a freezing sea's box) is recorded as ice and never removed; "
         "removed = blank in both of the two newest recorded runs, or removed before and not back (with data) in both; "
+        "restore = left removed, not on the list yet: scanned every run until --apply puts it back; "
         "a missing bulletin never counts")
 ROW_RE = re.compile(r"^\s*\|\s*\d{1,2}\s+\d{1,2}\s*\|")
 NUM_RE = re.compile(r"^-?\d+(\.\d+)?$")
@@ -137,13 +141,19 @@ def came_back(result, before):
     return sorted(s for s in before if s not in seen)
 
 
-def merge(doc, run, result):
+def merge(doc, run, result, listed=()):
     """Record one run's scan into the file's document (the newest KEEP_RUNS kept) and recompute 'removed' (the ids
-    removed before stay unless back in both of the two newest runs)."""
+    removed before stay unless back in both of the two newest runs) and 'restore': the ids that left 'removed' and are
+    not on the list yet. They wait there, scanned every run, until --apply puts them back (re-check R1-1: a comeback
+    completed by a plain scan was on neither list and never scanned again); one that is blank in both newest runs again
+    is removed again."""
     runs = dict(doc.get("runs") or {})
     runs[run] = result
     runs = {k: runs[k] for k in sorted(runs)[-KEEP_RUNS:]}
-    return {"rule": RULE, "runs": runs, "removed": removed_ids(runs, doc.get("removed") or ())}
+    before = set(doc.get("removed") or ())
+    removed = removed_ids(runs, before)
+    restore = (set(doc.get("restore") or ()) | (before - set(removed))) - set(removed) - set(listed)
+    return {"rule": RULE, "runs": runs, "removed": removed, "restore": sorted(restore)}
 
 
 def apply_removal(ids, removed, restore=(), order=()):
@@ -286,25 +296,24 @@ def main(argv=None):
         with open(OUT_PATH, encoding="utf-8") as f:
             doc = json.load(f)
     before = [str(s) for s in doc.get("removed") or []]
+    waiting = [str(s) for s in doc.get("restore") or [] if str(s) not in set(ids)]
     http = _session()
     run = a.run or newest_run(http)
     if not re.fullmatch(r"\d{10}", run):
         raise SystemExit("--run must be YYYYMMDDHH")
-    todo = scan_ids(ids, before)
-    print(f"scanning {len(todo)} stations of run {run} ({len(ids)} listed, {len(todo) - len(ids)} removed)", file=sys.stderr)
+    todo = scan_ids(ids, before + waiting)
+    print(f"scanning {len(todo)} stations of run {run} ({len(ids)} listed, {len(before)} removed, "
+          f"{len(waiting)} waiting to come back)", file=sys.stderr)
     result = split_ice(tar_scan(http, run, todo) or scan(http, run, todo, a.workers), coords)
     result["back"] = came_back(result, before)
-    doc = merge(doc, run, result)
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent=1)
-        f.write("\n")
+    doc = merge(doc, run, result, ids)
     print(f"run {run}: blank {len(result['blank'])}, ice (kept) {len(result['ice'])}, absent {len(result['absent'])}, failed {len(result['failed'])} "
           f"of {result['scanned']}; removed (two newest runs {sorted(doc['runs'])[-2:]}): {len(doc['removed'])}", file=sys.stderr)
     print(" ".join(result["blank"]), file=sys.stderr)
     if result["back"]:
         print("removed before, with data in this run: " + " ".join(result["back"]), file=sys.stderr)
     if a.apply:
-        restore = [s for s in before if s not in set(doc["removed"])]
+        restore = doc["restore"]
         kept = apply_removal(ids, doc["removed"], restore, list(coords))
         if restore:
             print("back on the list: " + " ".join(restore), file=sys.stderr)
@@ -312,6 +321,12 @@ def main(argv=None):
             json.dump(kept, f, indent=2)
             f.write("\n")
         print(f"station_list.json: {len(ids)} -> {len(kept)}", file=sys.stderr)
+        doc["restore"] = sorted(set(restore) - set(kept))
+    elif doc["restore"]:
+        print("waiting to come back (run with --apply): " + " ".join(doc["restore"]), file=sys.stderr)
+    with open(OUT_PATH, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=1)
+        f.write("\n")
     return 0
 
 

@@ -948,7 +948,11 @@ class MadisProvider(WindProvider):
         stats = {}
         obs = parse_madis_csv(body.decode("latin-1"), now, stats)
         self._last_rows, self._last_wind = stats.get("rows"), stats.get("wind")
-        if stats.get("rows") and not stats.get("wind"):
+        if not stats.get("rows"):
+            # seen 2026-10-25 on the test site (re-check R1-2): the header and no station record at all; the kept
+            # readings stay, but say so
+            _log.warning("MADIS: an answer with no station records (the kept readings stay)")
+        elif not stats.get("wind"):
             # seen 2026-10-24 (G35 F5): an answer whose every wind field is -99999; the kept readings stay, but say so
             _log.warning("MADIS: %d station records and not one wind reading (the kept readings stay)", stats["rows"])
         for local, r in obs.items():

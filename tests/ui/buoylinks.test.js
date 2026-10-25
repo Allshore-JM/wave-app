@@ -12,9 +12,16 @@ const TPL = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index
 const A = TPL.indexOf('    // ---- buoy links (plan section 52'), B = TPL.indexOf('    // ---- end buoy links ----');
 assert.ok(A > 0 && B > A, 'the block markers');
 const BLOCK = TPL.slice(A, B);
+// the live window's own naming, from the template (re-check R1-4: the far link names a buoy as its window does)
+const buoyDisplayLabel = (() => {
+  const s = TPL.indexOf('    function buoyDisplayLabel(s) {'), e = TPL.indexOf('\n    }\n', s);
+  assert.ok(s > 0 && e > s, 'buoyDisplayLabel in the template');
+  return new Function(TPL.slice(s, e + 6) + '\nreturn buoyDisplayLabel;')();
+})();
 
 function el(id) {
-  const e = { id, hidden: true, textContent: '', title: '', value: '', listeners: {}, attrs: {}, sets: 0,
+  const e = { id, hidden: true, textContent: '', title: '', value: '', listeners: {}, attrs: {}, sets: 0, focusCalls: 0,
+    focus() { this.focusCalls++; }, getClientRects() { return this.hidden ? [] : [{}]; }, contains(x) { return x === this; },
     addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); },
     setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; }, getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
     click(detail) { (this.listeners.click || []).forEach((fn) => fn({ detail: detail === undefined ? 1 : detail })); } };
@@ -27,10 +34,11 @@ function marker() {
 }
 
 function boot(opt = {}) {
-  const els = {}; ['lwForecast', 'lwLinks', 'fwLive', 'unit', 'station'].forEach((id) => { els[id] = el(id); });
+  const els = {}; ['lwForecast', 'lwLinks', 'fwLive', 'unit', 'station', 'liveBuoyPanel'].forEach((id) => { els[id] = el(id); });
   els.unit.value = opt.unit || 'US';
   const docL = {}, events = [], focused = [], opened = [], pans = [], winL = {};
   const document = {
+    activeElement: opt.active === undefined ? null : opt.active, body: { id: 'body' },
     getElementById: (id) => els[id] || null,
     addEventListener: (t, fn) => { (docL[t] = docL[t] || []).push(fn); },
     dispatchEvent: (e) => { events.push(e); (docL[e.type] || []).forEach((fn) => fn(e)); },
@@ -50,18 +58,23 @@ function boot(opt = {}) {
   const env = {
     forecastStationsData: opt.forecast || [], liveStationsData: opt.live || [], liveDrawn: opt.drawn || [],
     tideDrawn: opt.tides || [], windDrawn: opt.winds || [], savedPointsData: opt.points || [], liveShownStation: null,
+    mapFocus: [], focusMapAfterClose: function (id) { env.mapFocus.push(id); },
   };
+  const hooks = {};
   const copies = opt.copies || ((list) => list.map((s) => ({ s, lng: s.lon, o: 0 })));
   const api = new Function('document', 'window', 'CustomEvent', 'map', 'env', 'forecastLayer', 'pointLayer',
     'getSelectedUnit', 'buoyDisplayLabel', 'saveLayerVisibility', 'openLiveBuoy', 'focusWindowHeader', 'visibleCopies',
     'with (env) {\n' + BLOCK + '\nreturn { linkFor, linkKey, linkId, linkAway, forecastLinkFor, liveLinkFor, syncBuoyLinks, liveTargets, requestLiveTargets,\n' +
+    '  forgetLiveBack, liveWindowClosed,\n' +
     '  LINK_KM, LINK_ID_KM, LINK_PLAIN_KM, LIVE_TAP_MAX, setLive: function (s) { env.liveShownStation = s; } };\n}')(
     document, window, CustomEvent, map, env, 'forecast', 'points',
-    () => els.unit.value, (s) => String(s.id).replace(/^ndbc:/, ''), () => {},
-    (s) => { opened.push(s); env.liveShownStation = s; (docL['__live'] || []).forEach((fn) => fn()); },   // the page shows it and syncs
+    () => els.unit.value, buoyDisplayLabel, () => {},
+    (s) => { if (hooks.forget) hooks.forget(); opened.push(s); env.liveShownStation = s; (docL['__live'] || []).forEach((fn) => fn()); },   // as the page's openLiveBuoy: forgets the back link, shows it, syncs
     (id) => focused.push(id), copies);
   docL.__live = [() => api.syncBuoyLinks()];
-  return { api, els, env, events, focused, opened, pans, layers, media, center, winL,
+  hooks.forget = api.forgetLiveBack;
+  return { api, els, env, events, focused, opened, pans, layers, media, center, winL, document,
+    dotOpen: (s) => { hooks.forget(); opened.push(s); env.liveShownStation = s; api.syncBuoyLinks(); },   // a click (or Enter) on its dot
     fire: (t, d) => (docL[t] || []).forEach((fn) => fn({ detail: d })) };
 }
 
@@ -191,6 +204,73 @@ test('decision 4: a link to a station farther than 1 km moves the map there, on 
   A.setLive(BUOY); A.syncBuoyLinks(); E.lwForecast.click(); assert.equal(b.pans.length, 2, 'a twin: no move');
 });
 
+test('re-check R1-3: a back link lives as long as its window: closing the live window, or opening the buoy from its dot, forgets it', () => {
+  // live buoy LB; forecast A 0.8 km away, B 0.3 km away: LB's own link is B; opened from A's "Live buoy", its link goes back to A
+  const LB = { id: 'ndbc:46247', lat: 36.0, lon: -122.0, name: 'Asymmetric' };
+  const FA = { id: 'FA1', lat: 36.0072, lon: -122.0 }, FB = { id: 'FB1', lat: 36.0027, lon: -122.0 };
+  const b = boot({ forecast: [FA, FB], live: [LB] }), A = b.api, E = b.els;
+  const fromA = () => { b.fire('allshore:forecast', { station: 'FA1' }); assert.equal(E.fwLive.hidden, false); E.fwLive.click(); };
+  fromA(); E.lwForecast.click(); assert.equal(E.station.value, 'FA1', 'the way back to where the visitor came from');
+  fromA(); A.liveWindowClosed();
+  A.setLive(LB); A.syncBuoyLinks(); E.lwForecast.click(); assert.equal(E.station.value, 'FB1', 'closed: its own link (before: back to FA1)');
+  fromA(); b.dotOpen(LB); E.lwForecast.click(); assert.equal(E.station.value, 'FB1', 'opened from its dot: its own link');
+  fromA(); b.dotOpen({ id: 'ndbc:other', lat: 10, lon: 10 }); b.dotOpen(LB); E.lwForecast.click();
+  assert.equal(E.station.value, 'FB1', 'another buoy, then back: its own link');
+});
+
+test('re-check F-4: closing a live window opened by "Live buoy" gives the focus back to that link when it shows; else the map, as before', () => {
+  const b = boot({ forecast: [TWIN], live: [BUOY] }), A = b.api, E = b.els;
+  b.fire('allshore:forecast', { station: '41113' }); E.fwLive.click();
+  A.liveWindowClosed(); assert.equal(E.fwLive.focusCalls, 1, 'the focus nowhere: back to the link'); assert.deepEqual(b.env.mapFocus, []);
+  A.liveWindowClosed(); assert.equal(E.fwLive.focusCalls, 1, 'once: the back link is spent'); assert.deepEqual(b.env.mapFocus, ['liveBuoyPanel']);
+  E.fwLive.click(); b.document.activeElement = E.liveBuoyPanel;               // in the closed window
+  A.liveWindowClosed(); assert.equal(E.fwLive.focusCalls, 2);
+  E.fwLive.click(); E.fwLive.hidden = true; b.document.activeElement = null;  // its window minimised or the link gone: the map
+  A.liveWindowClosed(); assert.equal(E.fwLive.focusCalls, 2); assert.deepEqual(b.env.mapFocus, ['liveBuoyPanel', 'liveBuoyPanel']);
+  E.fwLive.hidden = false; E.fwLive.click(); b.document.activeElement = E.unit;   // the focus elsewhere (the gear): the link takes nothing
+  A.liveWindowClosed(); assert.equal(E.fwLive.focusCalls, 2); assert.equal(b.env.mapFocus.length, 3, 'the map rule decides (it leaves outside focus alone)');
+  b.dotOpen(BUOY); b.document.activeElement = null; A.liveWindowClosed();
+  assert.equal(E.fwLive.focusCalls, 2, 'a window its dot opened: the map'); assert.equal(b.env.mapFocus.length, 4);
+});
+
+test('re-check R1-4: a far link to a live buoy names it as the live window does (a CMEMS buoy its platform number, never the file id); a forecast point by its id', () => {
+  const cm = { id: 'cmems:IR_TS_MO_6200024', lat: 51.69, lon: -10.55, name: '6200024' };
+  const f = { id: '62024', lat: 51.69 + 2.1 / 111.195, lon: -10.55, name: 'M4 Porcupine' };
+  const nd = { id: 'ndbc:41041', lat: 14.33, lon: -46.08, name: 'North Equatorial One' }, fnd = { id: '41041', lat: 14.6, lon: -46.0 };
+  const b = boot({ forecast: [f, fnd], live: [cm, nd] }), A = b.api, E = b.els;
+  b.fire('allshore:forecast', { station: '62024' });
+  assert.equal(E.fwLive.textContent, 'Live buoy 6200024 · 1.3 mi away', 'its name, as its window shows it');
+  assert.equal(E.fwLive.getAttribute('aria-label'), 'Live buoy 6200024, 1.3 miles away'); assert.equal(E.fwLive.title, '', 'the name is the label: no title');
+  b.fire('allshore:forecast', { station: '41041' });
+  assert.equal(E.fwLive.textContent, 'Live buoy 41041 · 19 mi away'); assert.equal(E.fwLive.title, 'North Equatorial One', 'the NDBC number, its name in the title');
+  A.setLive(cm); A.syncBuoyLinks();
+  assert.equal(E.lwForecast.textContent, 'Forecast point 62024 · 1.3 mi away', 'the forecast side: the id'); assert.equal(E.lwForecast.title, 'M4 Porcupine');
+});
+
+test('the CEFAS aliases (owner, 2026-10-25): Sandettie Light Vessel, Clipper and Lomond link to their forecast points both ways', () => {
+  const pairs = [[{ id: 'cefas:8', lat: 51.1, lon: 1.8, name: 'Sandettie Light Vessel' }, { id: '62304', lat: 51.1, lon: 1.9 }],
+    [{ id: 'cefas:10', lat: 53.4583, lon: 1.7308, name: 'Clipper' }, { id: '62144', lat: 53.4, lon: 1.7 }],
+    [{ id: 'cefas:305', lat: 57.2, lon: 2.2, name: 'Lomond' }, { id: '62146', lat: 57.1, lon: 2.1 }]];
+  const b = boot({ forecast: pairs.map((p) => p[1]), live: pairs.map((p) => p[0]) }), A = b.api;
+  for (const [live, f] of pairs) {
+    assert.equal(A.linkId(live.id), f.id);
+    assert.equal(A.linkFor(live, b.env.forecastStationsData).s, f, live.id);
+    assert.equal(A.linkFor(f, b.env.liveStationsData).s, live, f.id + ' back');
+  }
+  assert.equal(A.linkId('CEFAS:8'), '62304', 'any case'); assert.equal(A.linkId('cefas:9'), '9', 'another CEFAS number: its own');
+});
+
+test('re-check N15 / N20: a link between 1 and 2 km moves the map although it says "Forecast for this point"; within 2 km no aria-label (a far one\'s is removed)', () => {
+  const live = { id: 'ndbc:46014', lat: 39.235, lon: -123.974 };
+  const at = (km) => ({ id: '46014', lat: 39.235 + km / 111.195, lon: -123.974 });
+  const b = boot({ forecast: [at(5)], live: [live] }), A = b.api, E = b.els;
+  A.setLive(live); A.syncBuoyLinks(); assert.ok(E.lwForecast.getAttribute('aria-label'), 'far: a label');
+  b.env.forecastStationsData = [at(1.5)]; A.syncBuoyLinks();
+  assert.equal(E.lwForecast.textContent, 'Forecast for this point'); assert.equal(E.lwForecast.getAttribute('aria-label'), null, 'within 2 km: the text says it');
+  E.lwForecast.click(); assert.equal(b.pans.length, 1, '1.5 km: the map moves (past LINK_KM)'); assert.ok(Math.abs(b.pans[0][0] - (39.235 + 1.5 / 111.195)) < 1e-9);
+  b.env.forecastStationsData = [at(0.9)]; A.syncBuoyLinks(); E.lwForecast.click(); assert.equal(b.pans.length, 1, '0.9 km: it stays');
+});
+
 test('the links follow new lists (the cache is keyed by the lists themselves)', () => {
   const b = boot({ forecast: [TWIN], live: [] }), A = b.api;
   b.fire('allshore:forecast', { station: '41113' }); assert.equal(b.els.fwLive.hidden, true, 'no live list yet');
@@ -277,6 +357,10 @@ test('the page wiring: the block between its markers, the two buttons, the canva
   assert.ok(/marker\.on\('click', function \(e\) \{\n\s+if \(window\.AllshoreTools[^\n]+\n\s+openLiveBuoy\(s\);\n/.test(TPL), 'the dot opens the buoy through openLiveBuoy');
   assert.ok(TPL.includes("liveShownStation = station;\n      if (typeof syncBuoyLinks === 'function') syncBuoyLinks();"));
   assert.ok(TPL.includes("      if (typeof requestLiveTargets === 'function') requestLiveTargets();   // the live dots' pads after every round (plan section 52)"));
-  assert.ok(TPL.includes("          rebuildForecastMarkers(true);\n          if (typeof syncBuoyLinks === 'function') syncBuoyLinks();"), 'B25: after the forecast list lands');
+  assert.ok(TPL.includes("            rebuildForecastMarkers(true);\n            if (typeof syncBuoyLinks === 'function') syncBuoyLinks();"), 'B25: after the forecast list lands');
+  assert.ok(TPL.includes("        liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; liveWindowClosed(); } });"),
+    'the live window\'s close goes through the block (R1-3, F-4)');
+  assert.ok(TPL.includes("    function openLiveBuoy(s) {                        // a click on its dot, or the forecast window's \"Live buoy\"\n      if (typeof forgetLiveBack === 'function') forgetLiveBack();"),
+    'a dot\'s own open forgets the back link (R1-3)');
   assert.ok(TPL.includes("          rebuildLiveBuoyMarkers(!info.same);        // an unchanged list keeps its markers (no rebuild, no flash)\n          if (typeof syncBuoyLinks === 'function') syncBuoyLinks();"), 'B26: after the live list lands');
 });

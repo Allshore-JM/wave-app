@@ -348,7 +348,24 @@ test('step 5 F3: a tide icon with a wind flag on the same spot keeps only its ow
   const b = boot({ zoom: 9, list, windDrawn: [{ s: { lat: 30 }, lng: -150.001 }, { s: { lat: 40 }, lng: -149.970 }] });   // 1 px east of the gauge: the same spot; 30 px east of Lone: not
   b.api.rebuildTideMarkers(true); await flush();
   const pad = (n) => byTitle(b, n).el.style.props['--tide-tap'];
-  assert.equal(pad('Lone'), '10px'); assert.equal(pad('Gauge with wind'), '0px');
+  assert.equal(pad('Lone'), '6px', 'another station\'s flag 30 px away: half-way to it (re-check O-1)'); assert.equal(pad('Gauge with wind'), '0px');
+});
+
+test('re-check O-1: a tide icon\'s pad stops half-way to another station\'s wind flag, as a live dot\'s does; its own gauge\'s flag still means no pad', async () => {
+  // 1 px = 1/1000 degree at zoom 9: flags east of each icon at 16, 24, 40 px, and one on a gauge beside another flag
+  const list = { fields: FIELDS, stations: [['A', 'Flag 16', 40, -150, 'R', 'UTC', true], ['B', 'Flag 24', 30, -150, 'R', 'UTC', true],
+    ['C', 'Flag 40', 20, -150, 'R', 'UTC', true], ['D', 'Own and other', 10, -150, 'R', 'UTC', true]] };
+  const windDrawn = [{ s: { lat: 40, id: 'metar:X1' }, lng: -149.984 }, { s: { lat: 30, id: 'metar:X2' }, lng: -149.976 },
+    { s: { lat: 20, id: 'metar:X3' }, lng: -149.960 }, { s: { lat: 10, id: 'coops:D' }, lng: -150, o: 0 }, { s: { lat: 10, id: 'metar:X4' }, lng: -149.984 }];
+  const b = boot({ zoom: 9, list, windDrawn });
+  b.api.rebuildTideMarkers(true); await flush();
+  const pad = (n) => byTitle(b, n).el.style.props['--tide-tap'];
+  assert.equal(pad('Flag 16'), '0px', '16 px: 8 - 9, none'); assert.equal(pad('Flag 24'), '3px', '24 px: 12 - 9');
+  assert.equal(pad('Flag 40'), '10px', '40 px: 20 - 9, capped at 10');
+  assert.equal(pad('Own and other'), '0px', 'its own gauge\'s flag: no pad, whatever else is near');
+  for (const [n, dx] of [['Flag 16', 16], ['Flag 24', 24], ['Flag 40', 40]]) {
+    assert.ok(9 + parseInt(pad(n), 10) < dx, n + ': the target stops short of the flag\'s centre');
+  }
 });
 
 test('G27 re-check RC-4: the nudge tests the square boxes; beside the opened (larger) icon too; no icon lands on a third; by importance; tooltips follow', async () => {

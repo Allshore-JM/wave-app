@@ -1081,12 +1081,15 @@ def test_madis_provider_newest_counts_and_a_windless_answer(madis_clock, caplog)
     in /healthz, and a warning when an answer has station records but not one wind reading."""
     p = W.MadisProvider(NWS_IDS, madis_fetch())
     assert p.newest_t() is None and p.status()["newest_age_s"] is None and p.status()["readings"] == 0
-    p._fetch_stations()
+    with caplog.at_level("WARNING", logger=W.__name__):
+        p._fetch_stations()
+    assert not [r for r in caplog.records if r.name == W.__name__], "a good answer warns of nothing (re-check W3)"
     assert p.newest_t() == MADIS_T, "001HE at MADIS_T, 029HI 10 min before: the newer"
     st = p.status(MADIS_T + 300)
     assert st["readings"] == 2 and st["newest_age_s"] == 300 and st["last_rows"] >= 5 and st["last_wind"] == 5
     p._fetch = madis_fetch(("<PRE>" + MADIS_HEAD + madis_line("001HE", ff="-99999.0", ffq="Z")
                             + madis_line("029HI", ff="-99999.0", ffq="Z") + "</PRE>").encode())
+    caplog.clear()
     with caplog.at_level("WARNING", logger=W.__name__):
         assert {e["local_id"] for e in p._fetch_stations()} == {"001HE", "029HI"}, "the kept readings stay"
     assert any("not one wind reading" in r.getMessage() for r in caplog.records)
@@ -1095,6 +1098,20 @@ def test_madis_provider_newest_counts_and_a_windless_answer(madis_clock, caplog)
     p._fetch = madis_fetch(("<PRE>" + MADIS_HEAD + madis_line("029HI", time="21:05") + "</PRE>").encode())
     p._fetch_stations()
     assert p.newest_t() == MADIS_T
+
+
+def test_madis_provider_warns_of_an_answer_with_no_station_records(madis_clock, caplog):
+    """Re-check R1-2 (seen on the test site 2026-10-25 04:50 UTC, `last_rows 0`): the header and not one record. The
+    kept readings stay, and the log says so (before: silent, no error, no warning)."""
+    p = W.MadisProvider(NWS_IDS, madis_fetch())
+    p._fetch_stations()
+    p._fetch = madis_fetch(("<PRE>" + MADIS_HEAD + "</PRE>").encode())
+    caplog.clear()
+    with caplog.at_level("WARNING", logger=W.__name__):
+        assert {e["local_id"] for e in p._fetch_stations()} == {"001HE", "029HI"}, "the kept readings stay"
+    msgs = [r.getMessage() for r in caplog.records if r.name == W.__name__]
+    assert msgs == ["MADIS: an answer with no station records (the kept readings stay)"], msgs
+    assert p.status()["last_rows"] == 0 and p.status()["readings"] == 2
 
 
 def test_madis_provider_drops_a_report_from_the_future(madis_clock):
@@ -1190,7 +1207,10 @@ def test_history_nws_falls_back_on_madis():
     assert p["disclaimer"] == W.MESONET_DISCLAIMER
     # MADIS older than the API's newest row: not added; older than 24 h: never
     madis["001HE"]["t"] = newest - 60
-    assert madis_svc(fetch, newest + 900, madis).history("nws:001HE")[1]["via"] is None
+    p = madis_svc(fetch, newest + 900, madis).history("nws:001HE")[1]
+    assert p["via"] is None and p["disclaimer"] == W.MESONET_DISCLAIMER, "the NWS API's rows alone: the disclaimer too (W6)"
+    p = W.WindHistory(STATIONS, fetch, now=Clock(newest + 900)).history("nws:001HE")[1]
+    assert p["via"] is None and p["t"] and p["disclaimer"] == W.MESONET_DISCLAIMER, "no MADIS at all: the same"
     fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
     madis["001HE"]["t"] = MADIS_T - W.HISTORY_S - 1
     assert madis_svc(fetch, MADIS_T, madis).history("nws:001HE")[1]["note"] == W.NO_HISTORY

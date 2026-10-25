@@ -229,7 +229,7 @@ def test_g18b_pins(client):
     parked live chip (its resize corner stays reachable)."""
     body = client.get("/?station=51201").get_data(as_text=True)
     for needle in (
-        "liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; focusMapAfterClose('liveBuoyPanel'); } });",
+        "liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; liveWindowClosed(); } });",
         "if (fwEl && fwEl.classList.contains('fw-min') && fwEl.offsetHeight > 0) phoneBarH = fwEl.offsetHeight;",
         "document.documentElement.style.setProperty('--fw-bar-h', phoneBarH + 'px');",
         "function open() { seen = new Map(); nextRank = 0; renderFavs(); place(); results.hidden = false;",
@@ -877,7 +877,7 @@ def test_wind_stations_on_the_page(client):
         "zIndexOffset: active ? 350 : 300, autoPanOnFocus: false", "keyOpens(marker, 'w:' + s.id + '#' + c.o, 'wwHeader');",
         "refocusMarker(windDrawn.map(function (d) { return d.marker; }), focusKey, 'w:');",
         "if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map\n          const hit = windDotHit(drawn, e && e.originalEvent);",
-        "windFeed = window.AllshoreWinds.createWindFeed({", "feed.start({", "} else feed.stop();", "syncWindFeed(on);",
+        "windFeed = window.AllshoreWinds.createWindFeed({", "feed.start({", "        feed.stop();\n        // what the stopped feed brought is forgotten", "windLastFeed = null; windStallText = '';", "syncWindFeed(on);",
         ".wind-arrow { position: absolute; left: 0; top: 0; transform-origin: 20px 20px;",
         ".wind-num { position: absolute; transform: translate(-50%, -50%);", ".wind-flag.wind-stale, .wind-cur-dot.wind-stale { color: #9aa3ad; }",
         ".wind-marker-active .wind-ring { box-shadow: 0 0 0 2.5px #ff6b5a; }", ".leaflet-container.tools-active .wind-marker { cursor: crosshair; }",

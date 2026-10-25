@@ -5,7 +5,8 @@
   app.WIND_ENABLED on themselves, so no test ever reaches NOAA or aviationweather.gov.
 * NOAA's GFS bulletin archive (plan section 53) is never reached: app._BULL_HTTP.get refuses (the archive read then
   fails as a transport error and the bulletin comes from the test's own fake NOMADS, i.e. app.HTTP.get, as before).
-  The bulletin-source tests install their own fake archive on top.
+  The bulletin-source tests install their own fake archive on top. The GFS winds tables in the frames bucket are not
+  read either (app.GFS_WINDS off); tests/test_gfs_winds_reader.py switches them on over a fake bucket.
 * The provider refresh runners (the live buoys' and the wind feeds') are INLINE for every test (a refresh scheduled by
   list_stations_versioned runs in the calling thread, at once), so the fetch schedule of the
   live-stations golden replay (tests/fixtures/live_stations_golden.json, captured on the
@@ -49,4 +50,9 @@ def _no_bulletin_archive(monkeypatch):
         def refuse(url, **k):
             raise ConnectionError("tests do not reach NOAA's bulletin archive")
         monkeypatch.setattr(app._BULL_HTTP, "get", refuse)
+    if app is not None and hasattr(app, "GFS_WINDS"):
+        monkeypatch.setattr(app, "GFS_WINDS", False)          # the GFS winds tables (section 53): their tests switch on
+        with app._GFS_WINDS_LOCK:
+            app._GFS_WINDS_RUNS.clear()
+            app._GFS_WINDS_FAILED.clear()
     yield

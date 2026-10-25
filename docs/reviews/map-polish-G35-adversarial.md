@@ -167,3 +167,109 @@ Items 9-24 of the scope, Opus 5.5 HIGH:
 Suites: pytest 1,320, Node 1,011 + the new ones (nearest 4, buoylinks 13, window +1, winds +1, tools-ui +1, mypoints +1,
 early +1, firstview +1); the rendered page's six inline scripts parse. Mutants (scratch `polish/mut7b.py`): 43, 41 killed at
 first, the 2 survivors (the twin test was beyond 1 km; the test machine's own zone is Hawaii) pinned @ 685f7c2: 43 of 43.
+
+## Test-site verification of the G35 fixes (step 7, UI 1.25.8)
+`test` @ 01ac49e (cherry-picks of 7a and 7b: d99e343, 943f6f9, 10988b8, 685f7c2; README kept as test's), pushed 02:15:59 UTC
+2026-10-25, UI 1.25.8 served from 02:17:09 (12 polls, all 200). Served UI assets = the commit, immutable; the 1.25.7 URL
+404; the page carries `RETIRED`, `NearestCanvas` and ten `(any-pointer: coarse)` rules. The test branch's suites: Node
+1,010 passed; pytest 971 passed + its 5 known failures (four overlay goldens against test's logo page, the numpy import).
+Opus 5.5 MAX. Headless Chrome 155 with the GPU, its own profile, never signed in; trusted mouse, touch and keys (scripts in
+scratch `polish/v7`); both origins' storage emptied afterwards, the browser stopped.
+
+### Server and tool
+- Answers before (02:13 UTC, the old code) and after (02:27, the new code) on the same runs (GFS 20261024 18 UTC, GLWU 01Z,
+  SWAN 23Z): the 13 forecast answers identical; the removed stations' answers now carry their position (44062 38.56 /
+  -76.41, 46088 48.33 / -123.16, 44039 41.14 / -72.66); every NWS station's history answer carries NOAA's mesonet
+  disclaimer; /healthz MADIS readings 273, last_rows 313, last_wind 293, newest_age_s 1,100, no error; /api/wind/latest
+  `newest.madis` present, `fed_by` madis 273 (NDBC relays 0 after the restart: every gauge had a fresh CO-OPS reading).
+- The blank tool on a scratch copy against run 2026102418: 734 bulletins (723 listed + the 11 removed) from NOAA's AWS
+  tar: blank 11, ice 1 (Alaska_NS3), absent 0, failed 0, back 0; "removed" the same 11; the list unchanged.
+- The CMEMS rule over the live lists: 33 CMEMS buoys numbered 6200NNN, 17 with a forecast point 62NNN 0.0-17.8 km away.
+
+### The page (desktop 1280x800, phones 360x640 / 375x812, iPads 820x1180 / 1024x1366)
+- B-7: under phone and iPad emulation `(any-pointer: coarse)` true, the reach 8, the nearest-path renderer, live pads up
+  to 8 px, the link buttons 44 px. DevTools cannot emulate `any-pointer`, so the query's change listener was not driven,
+  and this laptop's own touch screen keeps the touch rules on at desktop size too (V7-1).
+- B-1 (`v2_shadow.js`): every forecast dot that a later-drawn dot's reach covers, in eight views (Kaneohe z10, Oahu z9,
+  San Francisco z9 / z10, Hawaii z6, the northeast z7, Southern California z8, the Gulf z6), tapped at its centre, 3 px
+  away from and 2 px toward that dot: 57 taps; 14 fell on a live dot, tide icon or wind flag drawn over the spot and
+  opened that window (the owner's rule: the live dot wins its spot, the forecast is one tap away through its link); every
+  canvas tap opened the dot nearest to it but for ties within 0.75 px (re-run of Hawaii z6 and the Gulf z6 with the
+  distances logged: 31 of 35 nearest, the 4 others ties: three at 42363 / 42394, two stations 0.0 px apart, and one
+  between 51207 and 51210, 1 px apart). Production (no reach): 51203 and 51207 at Hawaii z6 open 51213 / 51210 from their
+  own centres; on test they open themselves.
+- B-11 (`b16_tools.js`, phone): Measure distance, one tap 4 / 9 / 14 px beside forecast dot 13130: the vertex at the tap,
+  as on production (1.25.7 put it on the dot).
+- B-12 (`b5_taps.js`, iPad z13 at 41113, the live dot and its twin 11.5 px apart): the live pad 0 there, the forecast dot
+  opens from its centre and up to 9 px around (production: its centre only, nothing from 6 px).
+- Desktop clicks on this touch laptop (`b5_taps.js`, Oahu z10, 528 clicks 0-11 px from 16 icons): test opened an icon at
+  every press (the touch reach, V7-1), production nothing from about 4 px; no click opened an icon farther than the
+  nearest except the designed cases (a live dot over its twin; a tide icon and a wind flag at one gauge).
+- Links (`b3_reach.js`, trusted clicks): far links (decision 4) 41002 "Forecast point 41002 · 213 mi away" (Metric "343 km
+  away"; the buoy has moved since step 5's 203 mi), 41046 168 mi, 42058 90 mi, 51001 73 mi, 46085 71 mi: the map moves
+  onto the forecast point (41002: 35.35 / -74.71 -> 32.32 / -75.36) and the forecast window links back ("Live buoy 41002
+  · 213 mi away", the station's name as the title); plain words to 2 km with the map moved beyond 1 km (41009 1.6 km,
+  46026 1.7 km); the alias table: CDIP 163 -> "Forecast point 52201 · 2.7 mi away", the Marine Institute's M2 -> "Forecast
+  for this point" (62091); round trips (decision 3): 44088 -> 44014 -> back to 44088 (step 5: 44014's own buoy), K13a ->
+  K13 -> K13a, 46026 -> 46026 -> 46026; no button for aodn:Wooli, Draugen, 44085, 41120, Tantabiddi.
+- Link buttons (`v15_layout.js`): 44 px tall; at 360 / 375 px "Live buoy · 213 mi" / "Forecast point · 213 mi", wider
+  "Live buoy 41002 · 213 mi away"; a screen reader hears "Live buoy 41002, 213 miles away" (the plain near words have no
+  aria-label); the title is the station's name; no sideways scroll of the page.
+- Escape (`v2e_escape.js`, `v2f_escape.js`): right after "Forecast for this point" by click, tap and key, and after "Live
+  buoy" by key; not after "Live buoy" by click or tap (V7-2).
+- Removed stations (`b13b_default.js`, `b13_blank_ui.js`, `v13c_46088.js`, desktop and phone): a stored default 44062 or
+  46088 -> the site opens near the visitor (51201), `?station=51201`, the default removed, the note written (V7-3);
+  favorites [44062, 41113] -> [41113]. An old link `?station=44062` (plain, `&model=SWAN`, `&render=full`): the sheltered
+  note, no Retry, no table, the id as an unknown option, the star and the shaka disabled, no dot. Alaska_NS3 listed with
+  its table. 46088's note offers "Live buoy": the live window opens 46088 and the map moves there (1.4 km off the forecast
+  point), and its "Forecast for this point" goes back to 46088's note; 44062 (no live buoy with waves) has no button.
+- Wind windows during the NWS API stall (`v14_windwin.js`): NWS flags with a MADIS reading Oahu 28 / 29, Maui 36 / 40, the
+  Big Island 49 / 58, Kauai 13 / 13 (ages 16-82 min); one window of each kind (utility 016HE, mesonet 011HI, RAWS OFRH1,
+  CWOP F0803 calm): the single reading drawn as dots (speed, the gust where reported, air temperature), the current
+  reading and the weather line, the "latest report from NOAA MADIS" note, one source line, NOAA's disclaimer line. A
+  rewritten "nws+madis" history (`v14b_mixed.js`, six openings, US and Metric): filled in 1.6 s, "The latest reading from
+  NOAA MADIS (the NWS API has none newer).", both sources named (one empty read in the first run did not come back).
+- The stall note (`v9_stall.js`, `v9b_race.js`, /api/wind/latest rewritten by DevTools Fetch): with the station list
+  first, every case as designed: the real answer (273 of 294 NWS stations fresh through MADIS) none; the feed 4 h quiet
+  with no NWS rows "NWS feed stalled since Oct 24, 12:52 PM HST" (in HST also with the computer in New York or London);
+  the real MADIS rows none; exactly half fresh (147 / 294) none, one under (146) the note; 3 h - 60 s none, 3 h + 60 s the
+  note; every NWS row stale_s + 60 s old the note, - 60 s none; a restart (no newest) or a non-numeric newest "NWS feed:
+  no recent readings"; a newest in the future or no `now` none; NWS partial: the feed's own "loading more…"; below the
+  gate and with the layer off nothing. With the readings first, no note (V7-4).
+- The station list asked again (`v12_stations.js`): a failed (network) or 503 first request, the second 4.2-4.4 s later
+  and the 795 stations drawn; both failing: two requests, no third, no dots, the select keeps the server's options.
+- K-3 (`v17_rebuild.js`, two rounds, test against production, the deferred pad pass included): one pass per rebuild (step
+  5: three); the North Sea z6 phone (157 live dots) 5.1 ms against 4.1 (step 5: 9.2), the other views equal; real drags:
+  no long task on either site.
+- A fresh page target through a full round on the desktop and the phone (`b12_console.js`): 0 console problems.
+
+### Findings
+- V7-1 (owner decision): this laptop has a touch screen (navigator.maxTouchPoints 10, `any-pointer: coarse` true,
+  `pointer: coarse` false), as many Windows laptops do, so with a MOUSE the touch rules apply: forecast dots open from
+  ~11 px (production 3), the live / tide / wind / My points pads, 44-px link buttons. Computers without a touch screen are
+  unchanged. OWNER (2026-10-25, AskUserQuestion): keep the larger targets; correct the README and the two template
+  comments that say "a mouse hits as before".
+- V7-2 (P3): after a click or tap on the forecast window's "Live buoy" the focus stays on that button (Chrome focuses a
+  pressed button), in the window now BEHIND the live window, so Escape minimises the forecast window and leaves the live
+  window in front (G35 B-2 half fixed; the keyboard path is right). Fix: the link moves the focus into the live window's
+  header on every activation, as the forecast window's expand() does for its own link.
+- V7-3 (P3): the window's one-time notes (#fwNote: a removed default cleared, removed favorites dropped, and section 31's
+  "this point is not kept") are the first child of the scrolling body, and the now-row reveal (section 35) scrolls them out
+  of sight (229 px on the desktop, 271 px on the phone; seen only after scrolling the table to its top); and two notes of
+  one load replace each other (a removed default and a removed favorite: only the default is told). Fix: the note line
+  outside the scrolling body (between the toolbar and the body); the notes of one station kept together.
+- V7-4 (P3): the stall note is worked out only when the readings arrive; when they arrive before the wind station list
+  (a first visit: the list is ~230 KB, the readings ~100 KB) it is worked out against an empty list and stays empty until
+  the next readings, 5 minutes later. Fix: worked out again when the station list lands.
+- Owner awareness: six spots hold two or three forecast stations at exactly the same position (41036 / 41064 / 41159,
+  41111 / 41115, 46079 / 46105, 46094 / 46097, 63110 / 63111, AGULHAS_FA / FAPLATFORM): a tap there opens one of them
+  (the later drawn, as on production); the others stay reachable through the station picker.
+
+### Fix round 7c scope (UI 1.25.9)
+1. V7-2: the "Live buoy" link focuses the live window's header on every activation; a pointer-click test.
+2. V7-3: `#fwNote` between the toolbar and the body (CSS: margins; hidden when minimised; printed as before); `note()` keeps
+   a second message for the same station (no duplicate when a message is told again); window / page tests; the golden.
+3. V7-4: the last readings kept; the stall note worked out again when the wind station list lands; a page test with the
+   readings before the list.
+4. V7-1: README and the two template comments.
+5. Pins, mutants, README, the record; then the test-site check (MAX) and the short fresh re-check (MAX).

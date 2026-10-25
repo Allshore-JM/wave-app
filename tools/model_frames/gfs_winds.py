@@ -62,7 +62,9 @@ FAILED_MAX_ATTEMPTS = 6
 UA = {"User-Agent": "allshoresurf.com GFS winds job (https://allshoresurf.com)"}
 NAME_RE = re.compile(r"\./gfswave\.([A-Za-z0-9_-]{1,32})\.spec")
 # A datetime line, any blank lines, then the first quoted line: '51201     '  21.67-158.12  472.7  8.09  71.6 ...
-POINT_RE = re.compile(rb"^[ \t]*(\d{8})[ \t]+(\d{6})[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*'[^'\n]*'([^\n]*)", re.M)
+POINT_LINE_MAX = 400                         # bytes after the quoted name; real point lines are ~62 B (G36a P3-4)
+POINT_RE = re.compile(rb"^[ \t]*(\d{8})[ \t]+(\d{6})[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*'[^'\n]{0,64}'"
+                      rb"([^\n]{0,%d})(?=\r?\n|\Z)" % POINT_LINE_MAX, re.M)
 FLOAT_RE = re.compile(rb"-?\d+\.\d+")
 
 
@@ -72,6 +74,11 @@ class NotReady(Exception):
 
 class TransportError(Exception):
     """The download failed after its tries: a failure record."""
+
+
+class BudgetExceeded(Exception):
+    """The build ran past BUILD_BUDGET_S: exit 3 (counted under notready/), the next tick tries again. Its own class:
+    a stalled socket's socket.timeout IS TimeoutError on Python 3.10+, and a stall is a failure (G36a P2-1)."""
 
 
 class GfsWindsSource:
@@ -123,7 +130,8 @@ def head_size(url, tries=3, opener=urllib.request.urlopen):
             last = f"HTTP {e.code}"
         except Exception as e:                       # noqa: BLE001 - timeouts, resets, DNS
             last = repr(e)
-        time.sleep(2 * (attempt + 1))
+        if attempt + 1 < tries:
+            time.sleep(2 * (attempt + 1))
     raise TransportError(f"HEAD {url}: {last} after {tries} tries")
 
 
@@ -193,12 +201,16 @@ class _Counting:
 
 def build(stream, run_dt, deadline=None, log=print):
     """(winds.bin bytes, index document without sha256) from one archive stream (gzip of a tar). ValueError for a
-    member the job cannot trust (name, type, size), TimeoutError past `deadline` (time.monotonic())."""
-    tf = tarfile.open(fileobj=gzip.GzipFile(fileobj=stream), mode="r|")
+    member the job cannot trust (name, type, size, another run's times), BudgetExceeded past `deadline`
+    (time.monotonic()). The gzip stream is read to its end, so its CRC32 and length are checked (G36a P3-2)."""
+    gz = gzip.GzipFile(fileobj=stream)
+    tf = tarfile.open(fileobj=gz, mode="r|")
+    base = run_dt.replace(tzinfo=None)
+    shifted = 0
     body, stations, left_out, members = bytearray(), {}, [], 0
     for m in tf:
         if deadline is not None and time.monotonic() > deadline:
-            raise TimeoutError("the build budget ran out")
+            raise BudgetExceeded("the build budget ran out")
         hit = NAME_RE.fullmatch(m.name)
         if not m.isreg() or not hit:
             raise ValueError(f"{m.name}: not a regular file ./gfswave.<id>.spec")
@@ -211,15 +223,23 @@ def build(stream, run_dt, deadline=None, log=print):
         if len(data) != m.size:
             raise ValueError(f"{m.name}: {len(data)} of {m.size} bytes")
         members += 1
-        rec, present = encode_station(spec_point_winds(data), run_dt)
+        winds = spec_point_winds(data)
+        if winds and min(winds) != base:                 # members start at the run's hour (G36a P3-3)
+            shifted += 1
+        rec, present = encode_station(winds, run_dt)
         if present == 0:
             left_out.append(sid)
             continue
         stations[sid] = len(stations)
         body += rec
     tf.close()
+    while gz.read(1 << 20):                              # to the gzip trailer: CRC32 + ISIZE checked, a cut raises
+        if deadline is not None and time.monotonic() > deadline:
+            raise BudgetExceeded("the build budget ran out")
     if members < MIN_MEMBERS:
         raise ValueError(f"{members} members: not a whole spectra archive")
+    if shifted * 10 > members:                           # another run's archive under this run's name
+        raise ValueError(f"{shifted} of {members} members do not start at the run {run_name(run_dt)}")
     log(f"{run_name(run_dt)}: {members} members, {len(stations)} stations with wind, {len(left_out)} without")
     doc = {"format": FORMAT, "run": run_name(run_dt), "steps": list(range(STEPS)), "stations": stations,
            "count": len(stations), "record_bytes": RECORD_BYTES, "missing": MISSING,
@@ -273,6 +293,12 @@ def prune(store, keep=KEEP):
             continue                                 # a later build may still be writing
         store.delete_prefix(f"{PREFIX}/{run}/")
         deleted.append(run)
+    oldest = min(protect) if protect else None
+    if oldest:                                           # their records go too (G36a P3-7)
+        old = [k for d in ("failed", "notready") for k in store.list_keys(f"{PREFIX}/{d}/")
+               if k.rsplit("/", 1)[-1][:10].isdigit() and k.rsplit("/", 1)[-1][:10] < oldest]
+        if old:
+            store.delete_keys(old, "old records")
     return deleted
 
 
@@ -296,6 +322,13 @@ def _summary(line):
     if path:
         with open(path, "a") as fh:
             fh.write(line + "\n")
+
+
+def _not_now(store, latest, live, situation):
+    """Exit 3 for a run that cannot be built now (not served, budget, waiting after a failure), unless the live run is
+    stale: then the alarm (1, at most once every 6 h). Without it the job could stay stale with every run green
+    (G36a P2-2)."""
+    return (_stale(store, latest, situation) or 3) if live else 3
 
 
 def _stale(store, latest, situation):
@@ -336,6 +369,9 @@ def main(argv=None, opener=urllib.request.urlopen, head=None, store=None, now=No
         print(f"local build: {doc['count']} stations, {len(body)} B (nothing published)")
         return 0
     live = not a.dry_run
+    if live and a.out:
+        print("--out only with --dry-run or --local")
+        return 2
     if live and store is None:
         store = _store_from_env()
     latest = (store.get_json(P.latest_key(PREFIX)) or {}) if live else {}
@@ -355,6 +391,13 @@ def main(argv=None, opener=urllib.request.urlopen, head=None, store=None, now=No
         print("no complete GFS spectra archive in the last 4 cycles")
         return (_stale(store, latest, "no complete GFS winds run found") or 3) if live else 3
     run = run_name(run_dt)
+    if live and a.run:
+        if latest.get("run", "") > run:
+            print(f"{run} is older than the live run {latest['run']}: refused (the pointer never moves back)")
+            return 2
+        if store.get_json(index_key(run)) is not None:
+            print(f"{run} is already published: its objects are immutable, nothing rewritten")
+            return 0
     if live and not a.run:
         if latest.get("run") == run:
             print(f"{run} already live")
@@ -364,7 +407,7 @@ def main(argv=None, opener=urllib.request.urlopen, head=None, store=None, now=No
             return 0
         if _skip_failed(store, run):
             print(f"{run} failed recently: waiting before another try")
-            return 3
+            return _not_now(store, latest, live, f"the newest GFS winds run {run} keeps failing")
     print(f"{run}: building from {S3}/{archive_key(run_dt)} ({size} B)")
     try:
         raw = open_archive(f"{S3}/{archive_key(run_dt)}", opener)
@@ -375,11 +418,13 @@ def main(argv=None, opener=urllib.request.urlopen, head=None, store=None, now=No
         print(f"{run}: not served yet ({exc})")
         if live:
             P.record_notready(store, run, str(exc), PREFIX)
-        return 3
-    except TimeoutError as exc:
+        return _not_now(store, latest, live, f"the newest GFS winds run {run} is not served")
+    except BudgetExceeded as exc:
         print(f"{run}: {exc} after {time.monotonic() - t0:.0f} s; the next tick tries again")
-        return 3
-    except Exception as exc:                         # noqa: BLE001 - a layout change, a cut stream, a dead socket
+        if live:
+            P.record_notready(store, run, str(exc), PREFIX)
+        return _not_now(store, latest, live, f"the newest GFS winds run {run} cannot be built in time")
+    except Exception as exc:                         # noqa: BLE001 - a layout change, a cut stream, a stalled socket
         print(f"{run}: build failed: {exc.__class__.__name__}: {exc}")
         if live:
             P.record_failure(store, run, f"{exc.__class__.__name__}: {exc}", PREFIX)

@@ -833,8 +833,12 @@ equal what the site read from NOMADS's `.spec`.
 - **Exit codes**: 0 published or already live; 3 no complete run yet, NOAA not serving it, or the 20-minute build
   budget ran out (the next tick retries); 1 a failure (recorded under `failed/<RUN>.json`, retried after an hour, at
   most 6 times) or the stale alarm (the live run 18 h old or more, at most once every 6 h).
-- **Checks**: every member a regular file `./gfswave.<id>.spec` of 1 B to 32 MB, once each, at least 500 members.
-  A changed layout fails loudly.
+- **Checks**: every member a regular file `./gfswave.<id>.spec` of 1 B to 32 MB, once each, at least 500 members;
+  at least 90 % of them start at the run's hour (another run's archive under this run's name is refused); the gzip
+  stream is read to its end, so its CRC and length are checked. A changed layout fails loudly. A stalled download
+  (60 s without a byte) is a failure; only the build budget is an exit 3. While a newer run cannot be built (not
+  served, over budget, waiting after failures) the job still raises the stale alarm once the live run is 18 h old.
+- **`--run RUN`** never moves the pointer back to an older run and never rewrites a published run.
 - **Retention**: 4 runs (the SWAN tables' wind back-fill reads a run 6 to 12 hours old).
 - **Cost**: run 2026102512 on GitHub's runner took 67 s at a maximum RSS of 67 MB; it published 1,413,720 B for 918
   stations. Writes per run: 3.

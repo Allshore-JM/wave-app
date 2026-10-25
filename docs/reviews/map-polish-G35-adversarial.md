@@ -376,3 +376,117 @@ branch keeps its own README).
 
 Cleanup: the storage of both origins was emptied, the browser stopped and its profile removed, the temporary pre-7c
 worktree and the two local servers removed, and the in-app browser pane was not used.
+
+## Re-check of the fix rounds (cf49ebb..954153c, 2026-10-25)
+Two fresh-context reviewers at MAX, on `feat/map-polish` @ 954153c (fix rounds 7a, 7b, 7c and the 7c print rule) and the
+test site @ 72bf2ae (UI 1.25.9):
+- R1, code and data (Opus 5.5), no browser.
+- R2, the test site and the owner's use (Opus 5.5), headless Chrome with trusted input.
+Brief: scratch `g35/recheck/brief.md` (owner decisions 1-10, claims R1-R22, known items K-1..K-9). Reports: scratch
+`g35/recheck/r1/recheck-r1-report.md`, `g35/recheck/r2/recheck-r2-report.md`.
+
+**Result: 0 P0, 0 P1, 0 P2, 8 P3 (R1 4 + a test-gap group, R2 4), plus three pre-existing items outside section 52.**
+Nothing found that the fix rounds broke for visitors.
+
+### R1: code and data — 0 P0, 0 P1, 0 P2, 4 P3 + one P3 group of test gaps
+| # | Finding | Author's check |
+|---|---|---|
+| R1-1 (P3) | The blank tool can lose a comeback, the mirror of G35 F1. A removed station with data again in both newest runs leaves `removed`. If the scan that completes this is a plain scan (no `--apply`), the station is not listed and not removed, so no later run scans it or restores it. | Confirmed by running the tool's real `main()` offline (R1's `blank_sim.py`): lost in 2 of 4 run orders (`--apply` then a scan; several scans then `--apply`). |
+| R1-2 (P3) | MADIS's empty answer (a header, no records) is silent: the kept readings stay, but there is no warning and no error. Seen live on the test site at 04:50 UTC (`last_rows 0`); back to 321 rows by 05:20. | Confirmed offline (R1's `madis_empty.py`: `{}`, no log line, `last_error` None). The F5 warning covers only "records and no wind". |
+| R1-3 (P3) | A back link outlives its window: closing the live window keeps `lwBack`, so a later tap on the same buoy's own dot shows the link back to the forecast it first came from. Visible only on 6 asymmetric pairs (e.g. 46247 -> 46026, 41038 -> 41110). | Confirmed by reading: `closeLiveBuoyPanel` and the live window's `onClose` clear nothing. `syncBuoyLinks` drops `lwBack` only when ANOTHER buoy is shown, and the dot click (and Enter / Space on a dot, which fires the same click) reopens through the same `openLiveBuoy`. |
+| R1-4 (P3) | A far link to a CMEMS buoy shows CMEMS's file id: "Live buoy IR_TS_MO_6200024 · 1.3 mi away" (and the aria-label). The live window calls the buoy "6200024" (its name). 6 forecast stations show it: 62024, 62082, 62084, 62146, 62163, 62170. | Confirmed: `linkText` / `linkDescribe` use `linkKey(id)`. Every CMEMS buoy in the live list has its platform code as its name (6200024, Gullfaks C ...). |
+| R1-5 (P3) | Test gaps: 6 mutants survive and 4 more are caught only by a hash pin or the golden. A3: the socket-cut timer at 8 s instead of `max_s`. W3: the windless warning inverted. W6: no disclaimer for an NWS-API-only window. F10: Escape minimising a forecast window in front with no station window. F12: the forecast event without lat / lon. N15: 1-2 km links not moving the map. N20: an aria-label from 1 km. T8-T10: the blank tool's `main()` untested. | Agreed. A3 can't be told apart with a real socket on Windows (the loop's own deadline cuts a trickle; a stalled read lasts to the read timeout), so the timer's interval is pinned directly. |
+
+R1's observations (not counted):
+- The station list's `.catch` also catches errors thrown by the code that uses the list, and asks for the list again for them.
+- One-time notes can be lost on a failed reload, and the head's forgotten default is said only once the list lands.
+- Same-buoy pairs that the alias table does not cover: CEFAS 8 Sandettie Light Vessel / 62304, CEFAS 10 Clipper /
+  62144, CEFAS 305 Lomond / 62146.
+- The overlay's controls still key on `(pointer: coarse)`.
+
+R1 confirmed held:
+- `NearestCanvas` matched a brute force on the real Leaflet 1.9.4 canvas over 500,000 random clicks and 4,000 hover runs.
+- The links matched an independent reproduction on all 563 live buoys and 795 forecast stations.
+- The stall note matched an independent reading of decision 6 on 5,000 payloads.
+- `_capped_get` on real sockets: cut at `max_s`, capped, short bodies.
+- Suites: pytest 1,320, Node 1,013, and the changed Node suites with the clock in UTC and EST5EDT.
+- Mutants: 88; 72 killed by tests, 5 by a pin, 5 by the golden, 6 survived (two equivalent).
+
+### R2: the test site and the owner's use — 0 P0, 0 P1, 0 P2, 4 P3
+| # | Finding | Author's check |
+|---|---|---|
+| F-1 (P3, owner's call) | The twin margin (R9) covers a forecast dot you can see. An older design choice (May 2026) draws the live dot 6.5-7.5 px right of its coordinate "so both can be clicked", so a twin at the buoy's spot is drawn as a yellow dot mostly visible beside the cyan one. The "radius + 3 px" rule counts it as under the live dot, so on touch screens the live dot's pad covers it and a tap on the yellow dot opens the LIVE window (production opens the forecast). Seen at Oahu z10 (51201, 51211, 51212) and the North Sea z7 (62145, 62305, BSH03). Over the real lists, of the 94 twins within 1 km: 94 covered at z6-z7, 55 at z10, the 14 co-located ones at every zoom. | Confirmed: `liveTargets` skips a twin within `p.h + LIVE_TWIN_UNDER` (5.5 + 3 px); the anchor offset is in `createLiveBuoyIcon` (`centerOffsetPx`, commit baa40a8). R2's 4x crop shows most of the yellow dot beside the cyan one. |
+| F-2 (P3) | A removed default's one-time note is lost when `/stations.json` fails twice. The head removes the default from storage at once, but the note is told only from `forgetRetiredDefault`, which runs only on a successful list. Reproduced at 4 sizes. | Confirmed by reading (R1 saw the same). |
+| F-3 (P3) | An old stall note comes back when the wind layer is ticked again (or the list lands while it is off): the note worked out from the last readings shows until the new readings land (110 ms here, 3 s with the readings held). Older than 7c; 7c's work-out on the list landing adds a way in. | Confirmed: `syncWindFeed(false)` stops the feed but keeps `windStallText` and `windLastFeed`. |
+| F-4 (P3, accessibility) | Closing a live window opened by "Live buoy" puts the focus on the map, not back on the link. The forecast window does return the focus to its link. Since 7c mouse and touch users get this too. | Confirmed: the live window's `onClose` always calls `focusMapAfterClose`. |
+
+R2 also saw R1-3 and R1-4 on the site:
+- after closing the live window, 41159's own dot still links to 41036;
+- forecast 62170's link reads "Live buoy NO_TS_MO_6200170 · 11 mi away".
+
+Pre-existing, the same on production (not counted):
+- O-1: a tide icon's touch pad is measured against tide icons only, so it covers wind rings 12-22 px away. A tap on a
+  wind ring's own centre opens the tide window (Florida z9 KFPR, KVRB, KMLB, KX26; Oahu z10 061HI).
+- O-2: at 1280x800 the live window covers the minimised forecast window's expand button.
+- O-3: buoy 41002 has not reported since 10/03.
+
+R2 confirmed held:
+- 404 trusted taps per site in 8 views: test never opened nothing where production opened something; every difference
+  is the touch reach or F-1.
+- Hover goes to the nearest dot. The `change` listener was driven by re-keying the rules to `(pointer: coarse)`; a
+  simulated computer without a touch screen clicks as production.
+- 210 link, focus and Escape checks (click, tap, Enter, Space; 6 sizes; two and three windows): 0 fails.
+- The notes at 7 sizes, also with the geo lookup moved to New York.
+- The stall rule's edges; R17, R18, R10 and R8.
+- Layout at 7 sizes: no sideways scroll, no overlaps, 44-px links.
+- A fresh page's console after a full round: 0 problems.
+- Timed playback (after R1's DONE; run 2026102500, edge warmed):
+  - 1920x1080 shark: test 7.9 / 8.0 fps, production 8.0 / 8.0, 0 unpainted.
+  - Live heap: +32.0 / +32.1 MB on test vs +31.8 / +32.0 on production; peaks +50.4 / +48.5 vs +47.2 / +47.4 (within
+    the 57.4-MB line).
+  - North Sea phone pair: 8.0 fps on both.
+
+Not covered by either reviewer: a real iPad (K-6), a real computer without a touch screen, a screen reader's speech,
+real printing, a link pair across the date line (none in the lists).
+
+### The owner's decisions (2026-10-25)
+- **F-1, keep as built.** On touch screens the live dot takes the spot, including the yellow twin drawn beside it (the
+  May 2026 offset). The forecast is one tap away through "Forecast for this point". The rule's comment and the README
+  say so (a twin within 3 px of the dot's edge counts as under it).
+- **O-1, fix now.** A tide icon's touch area stops half-way to a nearby wind flag, as the live dots already do.
+- **Aliases, add the three:** CEFAS 8 Sandettie -> 62304, CEFAS 10 Clipper -> 62144, CEFAS 305 Lomond -> 62146.
+
+### Fix round 7d scope (UI 1.25.10)
+Server and tool:
+1. R1-1: `station_blank.json` keeps a `restore` list: the ids that left `removed` but are not on the list yet.
+   - They are scanned every run, `--apply` puts them back at their place and empties the list, and an id that goes
+     blank again in both newest runs becomes removed again.
+   - A test drives `main()` with the network faked through R1's four run orders.
+   - A committed-file invariant: every id in a recorded run's blank / back is listed, removed or waiting in `restore`.
+   - README, docstring and rule text.
+2. R1-2: a MADIS answer with no station records logs a warning (the kept readings stay).
+3. R1-5 server gaps:
+   - A3: the timer's interval pinned to `max_s`.
+   - W3: the log cleared before the windless answer, and no warning after a good one.
+   - W6: an NWS-API-only window carries the disclaimer.
+
+Page and client:
+4. R1-3: `lwBack` cleared when the live window closes and when a dot opens it (a click, or Enter / Space on the dot).
+5. R1-4: a far link to a CMEMS buoy names it as the live window does (its name, the platform number), in the text, the
+   aria-label and the title rule.
+6. F-1: the comment and README wording only (owner: keep).
+7. F-2: the head's removed-default note told at page start, not after the station list.
+8. F-3: the stall note and the kept readings forgotten when the wind feed stops.
+9. F-4: closing a live window opened by "Live buoy" gives the focus back to that link when it is still shown; else to
+   the map, as now.
+10. O-1: `tideTargets` measures the drawn wind flags (other than its own gauge's) too.
+11. The three aliases.
+12. R1's observation: a fault in the code that uses the station list is logged and does not ask for the list again;
+    only a refused or broken answer is asked for once more.
+13. Tests:
+    - one for each item;
+    - R1-5's page gaps: F10, F12, N15, N20;
+    - R1's surviving mutants re-run;
+    - UI 1.25.10 and its fixture; the golden in its own commit; README.
+
+Then the test site (MAX) with R2's scripts for the changed parts, and the owner's go-ahead for production.

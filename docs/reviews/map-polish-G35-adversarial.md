@@ -516,3 +516,44 @@ Suites: pytest 1,327, Node 1,020. Mutants: 28 of 29 of this round's killed (O2, 
 equivalent: a flag on its own gauge sets the pad to 0 whatever the distance); R1's survivors T9, T10, W3, W6, N15, N19,
 N20 re-run against the fixed code: all killed by behaviour tests (T8, A3, F10, F12 by this round's own mutants B6, A3,
 E1, E2).
+
+## Test-site verification of fix round 7d (2026-10-25)
+`test` @ 163e4a8 (cherry-picks of 0a4ccf6 and the golden de011a3; README kept as test's own; site files = the feature
+branch except test's three logo lines), served from 16:39:29 UTC (pushed 16:38:17; robots and `/healthz` answered
+throughout). The page carries the fix; the UI assets (1.25.9) are byte-identical to the repo. Headless Chrome 155 with
+its own profile, never signed in (scratch `fix7d/v`, R2's scripts on port 9893), trusted mouse, touch and keys.
+
+| Item | On the site |
+|---|---|
+| O-1 | Florida z9 iPad (108 taps): the centre taps on the KX26, KMLB, KVRB and KFPR wind rings open their wind station (on the previous build: the tide window); seven taps between a tide icon and a nearer ring now go to the ring (the nearest). Oahu z10 (77 taps): the three taps near 061HI go to it. Every other tap as on the previous build. |
+| R1-3 | Forecast 41036 -> "Live buoy" -> ndbc:41159, whose own link is 41159: the back link to 41036 while that window is open; after closing it, the buoy's dot opens a window whose link goes to 41159 (before: to 41036); a dot press with the window still open forgets the back link too. Desktop and phone. |
+| F-4 | Closing that window (x, or Escape) puts the focus on "Live buoy"; a second Escape then minimises the forecast window. With the forecast window parked meanwhile, the focus goes to the map. |
+| R1-4 | 62170: "Live buoy 6200170 · 11 mi away", aria "Live buoy 6200170, 11 miles away", the live window titled "6200170" (before: the file id NO_TS_MO_6200170); phone: "Live buoy · 11 mi" with the name in the label. 62024's buoy now lies 1.7 km off: plain "Live buoy". |
+| Aliases | cefas:8 / 10 / 305 open windows linking to 62304 / 62144 / 62146 (4.3, 4.2, 7.9 mi; the link moves the map). From the forecast side 62304 links to Sandettie; 62144 and 62146 link to CMEMS copies of the same buoys, which lie nearer the points (0 and 11.1 km; the CEFAS dots 6.8 and 12.7 km): the rule's choice. |
+| F-3 | R2's stall script, desktop and phone: an untick and a re-tick with the healthy readings 3 s late shows no old note (before: the stall note again until the readings landed); the list landing while the layer is off holds no stall text; every other case as before. |
+| F-2 | R2's notes script, desktop and phone (23 + 23): with the station list refused twice, the removed default's note is said with the favorites' one (before: lost); late list, New York, plain unchanged. |
+| Station list | A normal load asks for `/stations.json` once (the head's request); a refused first answer (503) is asked for once more 4.1 s later; the forecast dots are drawn both ways. |
+| Blank tool | The real tool on a scratch copy, run 2026102506 from NOAA's AWS tar: 734 scanned (723 listed, 11 removed), the same 11 blank, Alaska_NS3 under ice, `restore` empty, the list unchanged. |
+| MADIS | `/healthz`: 298 records, 281 with wind, 277 stations fed, no error (the NWS API still stalled: 0 readings). The empty-answer warning is a log line (not seen from here; tested). |
+
+Regression: R2's link / focus / Escape matrix (t3_links) at desktop click, desktop Enter, iPad tap, iPad Space, phone 375 and
+phone 360 taps: 36 checks each. The four cells run before the buoy list snapshot was refreshed failed one check each:
+"map moved back to the live buoy", because NDBC now places 41002 at 35.56 N, 74.79 W (R2's snapshot had 35.40 N) and the
+map went to the new place. With the snapshot refreshed, desktop click, iPad tap and both phones pass 36 of 36. A fresh page
+after a full round on desktop and phone (notes, Graph view, links, the far link, the alias, 46088, a MADIS-fed wind window, a
+tide window, the distance tool): 0 console problems.
+
+Tide pads: in six dense views (Florida Keys z9 / z10, Florida z9, Chesapeake z9, San Francisco z10, Oahu z10; iPad), every
+drawn pad (663) matches an independent computation of the rule; for 124 of them the nearest icon is another station's wind
+flag. The pass costs 0.1-1.2 ms median per call against production's 0-1.0 ms (max 3.0 vs 1.8 ms with 263 tide icons and
+84 flags at Chesapeake z9). Test branch: pytest 978 passed + the 5 known failures (the logo goldens,
+the numpy import), Node 520. API smoke: 51201 / 41036 / 62304 tables, 44062 the sheltered note (final).
+
+Owner awareness:
+- O-1's pad is a square that shrinks on every side, so between two tide icons with a wind flag nearer to one of them, a tap
+  exactly half-way can open nothing (Florida z9: two of the 82 taps both runs share, 12.6 and 13.1 px from either centre, 3.6-4.1 px outside
+  the icons).
+- A wind flag within 4-6 px of a tide icon is under the icon itself (Florida KCOF 2.2 px, Oahu 080HI 3.6, 017HE 5.8): a
+  tap there opens the tide window, on every build.
+- The live list carries CEFAS Clipper and Lomond twice: the CEFAS feed's dot and a CMEMS copy (6200144, 6200146) 6.8 and
+  6.0 km away from it (too far apart to merge; older than this section).

@@ -277,3 +277,48 @@ queries identical to production on the same runs.
 4. F-4's tests; the reviewer's 12 survivors and new mutants re-run (scratch copy, after pytest).
 5. F-5 and F-6.
 Then the test site (MAX) and a short fresh check (MAX: the probe changes again), then step 8.
+
+## Fix round 2, 2026-10-26
+
+Opus 5.5, effort HIGH, on `feat/gfs-bulletins` @ e34ded1 (one commit over 2e00593: app.py, the bulletin tool, README,
+three test files; no client file). Every item of the scope:
+
+- **F-1** `_probe_head` asks a 429/500/502/503/504 answer once more (`_PROBE_RETRY_STATUS`). In the archive loop only a
+  404 means "not there, try the older cycle"; any other status (a refusal, a 5xx asked twice, no answer) stops the
+  archive scan, so an older run is never served as the newest. In the NOMADS loop 403 and 404 mean "not there"
+  (NOMADS answers 403 for a cycle it has not written); anything else stops asking NOMADS for this probe. With nothing
+  confirmed the probe fails and the kept run is served.
+- **F-2** `_capped_get`'s second attempt after a dropped connection gets each part of its timeouts clipped to the time
+  left (`_clip_timeout`: at most the time left, at least 0.1 s); the docstring and README say the cap covers both.
+- **F-3** A probe budget `_PROBE_BUDGET_S` 15 s: no HEAD starts past it (the probe records `out of time` and serves
+  what it found, else fails) and every HEAD's timeouts are clipped to it. `get_latest_run` takes the probe lock
+  without blocking when it holds a run younger than `_RUN_KEEP` (`_held_run`): a caller that finds a probe running gets
+  that run at once; only a process with no run (or one older than 12 h) waits for the probe.
+- **F-4** Tests with urllib3's real exception chains for a reset, an abort and a broken pipe (asked again) and for
+  connect and read timeouts (not asked again); the second attempt inside the time left (fake clock); the
+  `Content-Range` prefix refused for a range of the same start and another end; a 403 archive HEAD stops the scan; the
+  stats lock replaced in a forked child; a `content` refusal never sets `last_layout_read`; the tool surviving
+  `IncompleteRead`, `ValueError` and `TimeoutError`; the R2 winds read retried end to end through the real
+  `_points_fetch`.
+- **F-5** `tools/build_bull_index.py`: `UNREADABLE = (URLError, OSError, http.client.HTTPException, ValueError)` at the
+  HEAD and at every member: one line, no traceback.
+- **F-6** README (the probe paragraph: the held run, one retry for a dropped connection or a 5xx, the 15-s budget, the
+  404/403 rule; the dropped-connection bullet: the timeouts clipped); `_probe_head`'s unreachable `return` removed;
+  `/healthz` gains `gfs.run` = `{run, failed, probe_age_s, good_run, good_age_s}` (the run served, whether the last
+  probe failed, the age of the last good probe). The record's "apart from the three logo lines" wording stands
+  corrected by F-6 above (the measured files are identical).
+
+Tests: the full suite 1,528 passed (299.6 s). Mutants (scratch `g36/fix2/mut8.py`, on a scratch copy, after pytest):
+25: the re-check's survivors (D1, D2, D3, D8, C6, P11, W5, R4, F3, S3, T2/T3 as one) plus C6b (the retry given a fresh
+deadline) and the new code's 13 (N1-N13: the 5xx retry dropped, the archive/NOMADS stop rules widened or narrowed, no
+budget in either loop, HEAD timeouts not clipped, callers always or never waiting, the held run ignoring `_RUN_KEEP`,
+`/healthz` `failed` constant, 503 left out of the retry statuses, a 5xx asked again on the second attempt too). 24
+killed on the first pass; N10 (the held run ignoring `_RUN_KEEP`) survived and is now pinned (a run older than 12 h
+while a probe runs: the caller waits); 25 of 25 killed.
+Re-runs on the fixed code: F-1 (a 503 on the newest archive's HEAD once: the newest found; twice with NOMADS off: the
+probe fails and the kept run is served, 06Z never asked); F-2 (a 4-s cap with a held-then-dropped read: the second
+attempt's read timeout is 2.5 s, not 10).
+
+Next: the test site (MAX: a 503 stand-in for F-1, the budget and the held run against a slow local host, `/healthz`
+`gfs.run`, the answers = production), a short fresh check (MAX: the probe changed again), then step 8 production and the
+job-only KEEP 8 push.

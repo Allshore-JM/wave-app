@@ -1679,8 +1679,10 @@ naming the site as aviationweather.gov asks):
   (`MadisSeries`, ~64 bytes a reading, a few MB in all); after a start the server asks the 24 hours it has not seen by
   OBSERVATION time, twelve 2-hour windows (`time=YYYYMMDD_HH00&minbck=-119`: the records observed in (T - 2 h, T]),
   newest first, one request a refresh, a refresh due 30 s after the last while windows remain (the live poll keeps its
-  5-minute turn), so the 24 hours fill in about 12-20 minutes; a window that fails 3 times is given up (its hours stay
-  missing); live polls more than 50 minutes apart (failures, or answers with no wind at all, seen
+  5-minute turn), so the 24 hours fill in about 12-20 minutes; MADIS answers a window only when its query is done
+  (20-55 s), so the windows have their own fetch limits (`WIND_MADIS_WINDOW_TIMEOUT` 100 s a read, 120 s in all; the
+  live poll keeps 45 s and 90 s: on the test site 2026-10-26 windows were cut at 45 s and saved only by the retry); a
+  window that fails 3 times is given up (its hours stay missing); live polls more than 50 minutes apart (failures, or answers with no wind at all, seen
   2026-10-24 and 2026-10-26) queue the hours between them again. The window's rows are
   the NWS API's and MADIS's, one per time, the NWS API's where both have one ("via" "madis" or "nws+madis"; the window
   says "Readings from NOAA MADIS (the NWS API has none in the last 24 hours)." or "Readings from the NWS API and NOAA

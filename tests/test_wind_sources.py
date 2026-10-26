@@ -1357,6 +1357,26 @@ def test_madis_history_prunes_after_25_hours_and_keeps_only_snapshot_stations(li
     assert p.hist("001HE", 0) == []
 
 
+def test_madis_windows_use_their_own_fetch(live_clock):
+    """Step 2 V2-1: the windows go through window_fetch (the app's has a longer read timeout: MADIS answers a window
+    only when its query is done), the live poll through fetch; without window_fetch both use fetch."""
+    live_fetch, win_fetch = madis_hist_fetch(), madis_hist_fetch()
+    p = W.MadisProvider(NWS_IDS, live_fetch, backfill=True, window_fetch=win_fetch)
+    p._fetch_stations()
+    for i in range(3):
+        live_clock.now = LIVE_T + 30 * (i + 1)
+        p._fetch_stations()
+    assert [u for u, _, _ in live_fetch.calls] == [W.MADIS_HI_URL], "the live poll: fetch"
+    assert len(win_fetch.calls) == 3 and all(u != W.MADIS_HI_URL for u, _, _ in win_fetch.calls), "the windows: window_fetch"
+    assert all(h == W.HEADERS and n == W.MADIS_MAX for _, n, h in win_fetch.calls)
+    one = madis_hist_fetch()
+    q = W.MadisProvider(NWS_IDS, one, backfill=True)
+    q._fetch_stations()
+    live_clock.now += 30
+    q._fetch_stations()
+    assert [u == W.MADIS_HI_URL for u, _, _ in one.calls] == [True, False], "no window_fetch: the one fetch for both"
+
+
 def test_madis_without_backfill_is_the_live_poll_alone(live_clock):
     """The provider's default (the tests above section 55 build it so): every refresh is the live poll, nothing is
     queued, filling() is False; the history still keeps what the polls bring."""
@@ -1451,6 +1471,9 @@ def test_make_providers_with_the_madis_backup():
     m = provs[4]
     assert m.source == "MADIS" and m.url == "https://madis.test/x" and m._fetch is slow and sorted(m.stations) == sorted(NWS_IDS)
     assert m.backfill is True, "the app's MADIS back-fills the 24 hours (plan section 55)"
+    assert m._wfetch is slow, "no window fetch given: the MADIS fetch"
+    win = FakeFetch()
+    assert W.make_providers(STATIONS, fetch, madis_url="u", madis_fetch=slow, madis_window_fetch=win)[4]._wfetch is win
     assert W.make_providers(STATIONS, fetch, madis_url="u")[4]._fetch is fetch
     assert W.make_providers(STATIONS, fetch, madis_url="u", madis_backfill=False)[4].backfill is False
 
@@ -1583,6 +1606,11 @@ def test_app_wires_the_madis_backup(monkeypatch):
     assert A._madis_fetch("https://m.test/x", 10, {"User-Agent": "u"}) == b"abcd"
     assert calls[0][1]["timeout"] == A.WIND_MADIS_TIMEOUT == (10, 45) and calls[0][1]["headers"] == {"User-Agent": "u"}
     assert calls[0][1]["stream"] is True and A.WIND_MADIS_MAX_S == 90
+    # the back-fill windows (plan section 55, step 2 V2-1): a longer read timeout and whole-answer limit
+    calls.clear()
+    assert A._madis_window_fetch("https://m.test/w", 10, {"User-Agent": "u"}) == b"abcd"
+    assert calls[0][1]["timeout"] == A.WIND_MADIS_WINDOW_TIMEOUT == (10, 100) and A.WIND_MADIS_WINDOW_MAX_S == 120
+    assert calls[0][1]["stream"] is True and calls[0][1]["headers"] == {"User-Agent": "u"}
     with pytest.raises(IOError, match="too large"):
         A._madis_fetch("u", 3, None)                                       # over the cap
     monkeypatch.setattr(A._POINT_HTTP, "get", lambda url, **k: Resp(503, []))
@@ -1607,6 +1635,7 @@ def test_app_wires_the_madis_backup(monkeypatch):
     assert m._fetch is A._madis_fetch and w["svc"].madis == m.row and m.url == A.WIND_MADIS_URL
     # plan section 55: the 24 hours and the filling flag handed over too; the provider back-fills
     assert w["svc"].madis_hist == m.hist and w["svc"].madis_filling == m.filling and m.backfill is True
+    assert m._wfetch is A._madis_window_fetch, "the windows: their own fetch (step 2 V2-1)"
     monkeypatch.setattr(A, "WIND_MADIS_URL", "")
     monkeypatch.setattr(A, "_WINDS", {"svc": None, "list": None, "providers": None, "stations": None})
     w = A._winds()

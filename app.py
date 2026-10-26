@@ -888,6 +888,10 @@ except (TypeError, ValueError, OverflowError):
 WIND_MADIS_URL = os.environ.get("WIND_MADIS_URL", wind_sources.MADIS_HI_URL).strip()
 WIND_MADIS_TIMEOUT = (10, 45)     # connect, read
 WIND_MADIS_MAX_S = 90.0           # the whole answer (it takes 4-40 s)
+# the back-fill's 2-hour windows (plan section 55): MADIS sends nothing until its query is done (20-55 s seen; on the
+# test site two tries of one window were cut by the 45-s read timeout above), so their own, longer limits
+WIND_MADIS_WINDOW_TIMEOUT = (10, 100)
+WIND_MADIS_WINDOW_MAX_S = 120.0
 WIND_WARM_ORDER = ["NDBC", "METAR", "MADIS", "COOPS", "NWS"]   # single-request feeds first; CO-OPS and NWS ask every station
 WIND_OFF = "Wind stations are not available on this server"
 _WINDS = {"svc": None, "list": None, "providers": None, "stations": None}
@@ -908,7 +912,8 @@ def _winds():
             _WINDS["list"] = _json_payload_and_etag(wind_sources.client_list(doc))
             _WINDS["providers"] = wind_sources.make_providers(stations, _points_fetch, WIND_COOPS_WORKERS, WIND_COOPS_PER_REFRESH,
                                                               WIND_NWS_WORKERS, WIND_NWS_PER_REFRESH,
-                                                              madis_url=WIND_MADIS_URL or None, madis_fetch=_madis_fetch)
+                                                              madis_url=WIND_MADIS_URL or None, madis_fetch=_madis_fetch,
+                                                              madis_window_fetch=_madis_window_fetch)
             _WINDS["svc"] = wind_sources.WindHistory(stations, _points_fetch, coops_bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
             madis = [p for p in _WINDS["providers"] if p.source == "MADIS"]
             _WINDS["svc"].madis = madis[0].row if madis else None
@@ -923,6 +928,12 @@ def _madis_fetch(url: str, max_bytes: int, headers=None) -> bytes:
     all (G35 F3: a trickling answer would otherwise hold one of the wind runner's two workers); the wind runner's
     thread, never a request; raises otherwise (the provider keeps its last list)."""
     return _capped_get(url, max_bytes, headers, WIND_MADIS_TIMEOUT, WIND_MADIS_MAX_S)
+
+
+def _madis_window_fetch(url: str, max_bytes: int, headers=None) -> bytes:
+    """A back-fill window of MADIS's viewer (plan section 55): as _madis_fetch with WIND_MADIS_WINDOW_TIMEOUT and
+    WIND_MADIS_WINDOW_MAX_S (the viewer answers a window only when its query is done)."""
+    return _capped_get(url, max_bytes, headers, WIND_MADIS_WINDOW_TIMEOUT, WIND_MADIS_WINDOW_MAX_S)
 
 
 def get_wind_providers():

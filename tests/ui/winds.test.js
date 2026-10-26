@@ -688,18 +688,25 @@ test('fix round 7c pins: "or more" in whole units (R1-N7), Calm in the short rea
   assert.equal(f.calls.length, 1, 'fresh: neither a show nor a tab show asks again');
 });
 
-test('an NWS station fed by NOAA MADIS (plan section 52 D): the window says where the reading came from', async () => {
+test('an NWS station fed by NOAA MADIS (plan sections 52 D and 55): the window says where the readings came from', async () => {
   const s = viewSetup();
   const st = { id: 'nws:016HE', name: 'HECO Paakea Rd', tz: 'Pacific/Honolulu', kind: 'utility' };
   s.view.load(st); s.answers[0].res(resp(200, history({ id: 'nws:016HE', kind: 'utility', src: 'nws', alias: null, t: [T0 - 600], s: [2.9], g: [5.6], d: [346],
     at: [28.2], via: 'madis', source: 'NOAA MADIS (madis.ncep.noaa.gov)' }))); await flush();
   let meta = s.els.meta.children.map((e) => e.textContent);
-  assert.ok(meta.includes('The NWS API has no readings of this station in the last 24 hours: its latest report from NOAA MADIS.'), meta.join(' | '));
+  assert.ok(meta.includes('Readings from NOAA MADIS (the NWS API has none in the last 24 hours).'), meta.join(' | '));
   assert.ok(!meta.some((t) => /NDBC/.test(t)));
+  assert.ok(!meta.includes('The earlier hours are still loading.'), 'not filling: no such line');
   s.view.load(st); s.answers[1].res(resp(200, history({ id: 'nws:016HE', kind: 'utility', src: 'nws', alias: null, t: [T0 - 7200, T0 - 600], s: [2.0, 2.9], g: [null, 5.6], d: [300, 346],
     via: 'nws+madis', source: 'NWS API; the latest reading: NOAA MADIS' }))); await flush();
   meta = s.els.meta.children.map((e) => e.textContent);
-  assert.ok(meta.includes('The latest reading from NOAA MADIS (the NWS API has none newer).'), meta.join(' | '));
+  assert.ok(meta.includes('Readings from the NWS API and NOAA MADIS.'), meta.join(' | '));
+  // the server still asking MADIS for the hours before it started: the window says so (plan section 55)
+  s.view.load(st); s.answers[2].res(resp(200, history({ id: 'nws:016HE', kind: 'utility', src: 'nws', alias: null, t: [T0 - 600], s: [2.9], g: [5.6], d: [346],
+    via: 'madis', filling: true, source: 'NOAA MADIS (madis.ncep.noaa.gov)' }))); await flush();
+  meta = s.els.meta.children.map((e) => e.textContent);
+  assert.ok(meta.includes('The earlier hours are still loading.'), meta.join(' | '));
+  assert.ok(meta.indexOf('Readings from NOAA MADIS (the NWS API has none in the last 24 hours).') < meta.indexOf('The earlier hours are still loading.'));
   assert.equal(s.els.meta.querySelector('a').getAttribute('href'), 'https://www.weather.gov/wrh/timeseries?site=016HE', 'the station page as before');
 });
 

@@ -1121,6 +1121,302 @@ def test_madis_provider_drops_a_report_from_the_future(madis_clock):
     assert {e["local_id"] for e in p._fetch_stations()} == {"029HI"}, "001HE's report lies 601 s ahead"
 
 
+# ------------------------------------------------------------------ 24 hours of MADIS readings (plan section 55)
+
+LIVE_T = calendar.timegm((2026, 10, 26, 21, 48, 0))          # madis_live.html: every record received in the hour before
+WINDOW_END = calendar.timegm((2026, 10, 26, 9, 0, 0))        # madis_window.html: the records observed in (07:00, 09:00]
+
+
+@pytest.fixture
+def live_clock(monkeypatch):
+    t = F.FrozenTime(LIVE_T)
+    monkeypatch.setattr(B, "time", t)
+    return t
+
+
+def test_parse_madis_rows_every_record_of_a_station():
+    """The live poll's answer (receipt time, every record): a station's records ascending, one per time; the newest
+    view (parse_madis_csv) is the last of them."""
+    st = {}
+    o = W.parse_madis_rows(fx("madis_live.html").decode("latin-1"), LIVE_T, st)
+    assert sorted(o) == ["001HE", "011HI", "016HE", "029HI", "AU956", "PHNL"] and st == {"rows": 49, "wind": 6}
+    t = [r["t"] for r in o["001HE"]]
+    assert t == [LIVE_T - 3480 + 600 * i for i in range(5)], "20:50 .. 21:30 UTC, 10 minutes apart"
+    assert o["001HE"][-1] == {"t": LIVE_T - 1080, "s": 2.6, "g": 5.5, "d": 44, "at": 22.5, "dp": 20.3, "rh": 88}
+    assert o["AU956"][-1]["s"] == 0.0 and o["AU956"][-1]["d"] is None, "calm: no direction"
+    assert W.parse_madis_csv(fx("madis_live.html").decode("latin-1"), LIVE_T) == {k: v[-1] for k, v in o.items()}
+    w = W.parse_madis_rows(fx("madis_window.html").decode("latin-1"))
+    assert [len(w[k]) for k in ("001HE", "029HI", "AU956")] == [12, 24, 18]
+    assert w["001HE"][0]["t"] == WINDOW_END - 6600 and w["001HE"][-1]["t"] == WINDOW_END, "(end - 2 h, end]"
+    # a station's two lines of one time: the later line (a corrected report); out of order lines come back sorted
+    L = madis_line
+    o = W.parse_madis_rows("<PRE>" + MADIS_HEAD + L("AAA01", time="21:20") + L("AAA01", time="21:10", ff="3.0")
+                           + L("AAA01", time="21:10", ff="4.0") + "</PRE>")
+    assert [(r["t"], r["s"]) for r in o["AAA01"]] == [(MADIS_T, 4.0), (MADIS_T + 600, 5.0)]
+
+
+def test_madis_window_url_keeps_the_query_and_asks_by_observation_time():
+    u = W.madis_window_url(W.MADIS_HI_URL, WINDOW_END)
+    base, q = u.split("?", 1)
+    assert base == W.MADIS_HI_URL.split("?", 1)[0]
+    pairs = [p.split("=", 1) for p in q.split("&")]
+    d = dict(pairs)
+    assert len(d) == len(pairs), "each parameter once"
+    assert (d["time"], d["minbck"], d["minfwd"], d["recwin"], d["timefilter"]) == ("20261026_0900", "-119", "0", "4", "0")
+    live = dict(p.split("=", 1) for p in W.MADIS_HI_URL.split("?", 1)[1].split("&"))
+    assert {k: v for k, v in d.items() if k not in ("time", "minbck", "minfwd", "recwin", "timefilter")} == \
+        {k: v for k, v in live.items() if k not in ("time", "minbck", "minfwd", "recwin", "timefilter")}, "state, variables, CSV form"
+    assert (live["time"], live["recwin"], live["timefilter"]) == ("0", "4", "1"), "the live poll: every record by receipt time"
+    # across 00Z: the date moves with the hour
+    assert "time=20261027_0000" in W.madis_window_url(W.MADIS_HI_URL, calendar.timegm((2026, 10, 27, 0, 0, 0)))
+    assert "time=20261026_2200" in W.madis_window_url(W.MADIS_HI_URL, calendar.timegm((2026, 10, 26, 22, 0, 0)))
+    # a url without those parameters gets them
+    assert W.madis_window_url("https://madis.test/x?state=HI", WINDOW_END) == \
+        "https://madis.test/x?state=HI&time=20261026_0900&minbck=-119&minfwd=0&recwin=4&timefilter=0"
+
+
+def test_madis_series_keeps_readings_in_order():
+    ser = W.MadisSeries()
+    assert ser.add({"t": 200, "s": 2.0, "g": None, "d": 90, "at": 20.5, "rh": 70}) is True
+    assert ser.add({"t": 100, "s": 1.0, "g": 1.5, "d": None}) is True
+    assert ser.add({"t": 300, "s": 3.0, "g": None, "d": 10, "p": 1013.2}) is True
+    assert ser.add({"t": 200, "s": 2.5, "g": 3.0, "d": 95}) is False, "a time already held: replaced"
+    assert len(ser) == 3 and list(ser.t) == [100.0, 200.0, 300.0]
+    assert ser.rows(0) == [{"t": 100, "s": 1.0, "g": 1.5, "d": None},
+                           {"t": 200, "s": 2.5, "g": 3.0, "d": 95},
+                           {"t": 300, "s": 3.0, "g": None, "d": 10, "p": 1013.2}]
+    assert isinstance(ser.rows(300)[0]["d"], int) and isinstance(ser.rows(300)[0]["t"], int)
+    assert [r["t"] for r in ser.rows(150)] == [200, 300]
+    assert ser.prune(250) == 2 and ser.rows(0) == [{"t": 300, "s": 3.0, "g": None, "d": 10, "p": 1013.2}]
+    assert len(ser.v) == len(ser.t) * len(W.MADIS_HIST_FIELDS)
+    r = {"t": 400, "s": 1.0, "g": None, "d": None, "rh": 55}
+    ser.add(r)
+    assert ser.rows(400)[0] == r and isinstance(ser.rows(400)[0]["rh"], int)
+
+
+def madis_hist_fetch(windows=None):
+    """The live poll's answer and, per window end (epoch), the window's answer (default: madis_window.html for every
+    window)."""
+    table = {W.MADIS_HI_URL: fx("madis_live.html")}
+    top = LIVE_T // 3600 * 3600
+    for k in range(W.MADIS_BACKFILL_WINDOWS + 2):
+        end = top - k * W.MADIS_WINDOW_S
+        body = (windows or {}).get(end, fx("madis_window.html") if end == WINDOW_END else ("<PRE>" + MADIS_HEAD + "</PRE>").encode())
+        table[W.madis_window_url(W.MADIS_HI_URL, end)] = body
+    return FakeFetch(table)
+
+
+def window_end_of(url):
+    q = dict(p.split("=", 1) for p in url.split("?", 1)[1].split("&"))
+    return calendar.timegm(time_strptime(q["time"]))
+
+
+def time_strptime(s):
+    import datetime as _dt
+    return _dt.datetime.strptime(s, "%Y%m%d_%H%M").timetuple()
+
+
+def test_madis_backfill_order_one_request_a_refresh_and_the_ttl(live_clock):
+    """After a start: the live poll first, then the 12 two-hour windows of the 24 hours before it, newest first, one a
+    refresh, each refresh due 30 s after the last; the live poll keeps its turn every 270 s; then back to 5 minutes."""
+    fetch = madis_hist_fetch()
+    p = W.MadisProvider(NWS_IDS, fetch, backfill=True)
+    assert p.filling() is True and p.status()["backfill"] == "0 of 0", "nothing asked yet: filling"
+    assert p.refresh_due()
+    p.refresh()
+    assert [u for u, _, _ in fetch.calls] == [W.MADIS_HI_URL]
+    top = LIVE_T // 3600 * 3600
+    assert [w[0] for w in p._bf] == [top - 7200 * k for k in range(12)], "21:00 .. 23:00 the day before, newest first"
+    assert p._bf[-1][0] > LIVE_T - W.HISTORY_S and p._bf[-1][0] - 7200 < LIVE_T - W.HISTORY_S, "the 24 hours, no more"
+    assert p.status()["backfill"] == "0 of 12" and p.filling()
+    live_clock.now = LIVE_T + 29
+    assert not p.refresh_due()
+    asked = []
+    for i in range(20):
+        live_clock.now = LIVE_T + 30 * (i + 1)
+        assert p.refresh_due(), i
+        n = len(fetch.calls)
+        p.schedule_refresh()                              # the scheduler's path (inline in the tests)
+        assert len(fetch.calls) == n + 1, "one request a refresh"
+        asked.append(fetch.calls[-1][0])
+        if not p._bf:
+            break
+    windows = [window_end_of(u) for u in asked if u != W.MADIS_HI_URL]
+    assert windows == [top - 7200 * k for k in range(12)], "every window once, newest first"
+    lives = [i for i, u in enumerate(asked) if u == W.MADIS_HI_URL]
+    assert lives == [8], "the live poll's turn 270 s after the last (the 9th refresh, 270 s on)"
+    assert p.status()["backfill"] == "done" and p.status()["backfill_left"] == 0 and not p.filling()
+    live_clock.now += 30
+    assert not p.refresh_due(), "done: the live poll's 5 minutes again"
+    live_clock.now += W.MADIS_TTL_S
+    assert p.refresh_due()
+    assert p.list_ttl_sec == W.MADIS_TTL_S
+    # the history: the live readings and the window's, snapshot stations only
+    assert [r["t"] for r in p.hist("001HE", 0)][:12] == [WINDOW_END - 6600 + 600 * i for i in range(12)]
+    assert len(p.hist("001HE", 0)) == 17 and len(p.hist("029HI", 0)) == 33
+    assert p.hist("016HE", 0) == [] and p.hist("PHNL", 0) == [], "not the snapshot's NWS stations: not kept"
+    st = p.status(LIVE_T + 600)
+    assert st["hist_stations"] == 2 and st["hist_rows"] == 50 and st["hist_oldest_age_s"] == LIVE_T + 600 - (WINDOW_END - 6900)
+
+
+def test_madis_backfill_failures_are_retried_then_given_up(live_clock, caplog):
+    top = LIVE_T // 3600 * 3600
+    fetch = madis_hist_fetch({top - 7200: IOError("timeout")})
+    p = W.MadisProvider(NWS_IDS, fetch, backfill=True)
+    p.refresh()
+    with caplog.at_level("INFO", logger=W.__name__):
+        for i in range(1, 40):
+            live_clock.now = LIVE_T + 30 * i
+            p.schedule_refresh()
+            if not p._bf:
+                break
+    asked = [window_end_of(u) for u, _, _ in fetch.calls if u != W.MADIS_HI_URL]
+    assert asked.count(top - 7200) == W.MADIS_BACKFILL_TRIES == 3 and asked[:4] == [top, top - 7200, top - 7200, top - 7200]
+    st = p.status()
+    assert st["backfill"] == "done" and st["backfill_gave_up"] == 1
+    assert any("given up after 3 tries" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+    assert p.list_stations_versioned()[0], "a failed window never empties the list"
+    assert p._last_error is None, "a failed window is not a failed refresh"
+
+
+def test_madis_live_failure_keeps_the_list_and_the_backfill_goes_on(live_clock):
+    fetch = madis_hist_fetch()
+    p = W.MadisProvider(NWS_IDS, fetch, backfill=True)
+    p.refresh()
+    v = p.list_stations_versioned()[1]
+    fetch.table[W.MADIS_HI_URL] = IOError("down")
+    live_clock.now = LIVE_T + 300
+    p.schedule_refresh()                                  # the live poll's turn: it fails, the list is kept
+    assert p._last_error and p.list_stations_versioned()[1] == v
+    live_clock.now += 30
+    assert p.refresh_due(), "the windows go on 30 s later (the live poll waits for its retry)"
+    n = len(fetch.calls)
+    p.schedule_refresh()
+    assert fetch.calls[n][0] != W.MADIS_HI_URL and p._last_error is None
+
+
+def test_madis_gap_between_live_polls_is_asked_again(live_clock):
+    """Live polls further apart than MADIS_GAP_S (failures, a stalled runner): the hours between them are queued."""
+    fetch = madis_hist_fetch()
+    p = W.MadisProvider(NWS_IDS, fetch, backfill=True)
+    p.refresh()
+    p._bf = []                                            # the start's back-fill done
+    live_clock.now = LIVE_T + W.MADIS_GAP_S - 60
+    p._live_tried = LIVE_T - 600                          # the live poll's turn
+    p._fetch_stations()
+    assert p._bf == [], "a poll within 50 minutes of the last: no gap"
+    live_clock.now = LIVE_T + 4 * 3600 + 120
+    p._live_tried = LIVE_T                                # the polls failed for hours: the last one that answered
+    p._live_ok = LIVE_T + W.MADIS_GAP_S - 60
+    p._fetch_stations()
+    top = (LIVE_T + 4 * 3600 + 120) // 3600 * 3600
+    assert [w[0] for w in p._bf] == [top, top - 7200], "the hours since the last good poll (an hour's margin)"
+    assert p.filling()
+
+
+def test_madis_history_prunes_after_25_hours_and_keeps_only_snapshot_stations(live_clock):
+    fetch = madis_hist_fetch()
+    p = W.MadisProvider(NWS_IDS, fetch, backfill=True)
+    p.refresh()
+    p._take(W.parse_madis_rows(fx("madis_window.html").decode("latin-1")), LIVE_T)
+    assert len(p.hist("001HE", 0)) == 17
+    live_clock.now = WINDOW_END + W.MADIS_HIST_S - 1800      # the window's first hour past the cut
+    p._prune(live_clock.now)
+    assert [r["t"] for r in p.hist("001HE", 0)][0] == WINDOW_END - 1800, "older than 25 h: dropped"
+    live_clock.now = LIVE_T + W.MADIS_HIST_S + 1
+    p._prune(live_clock.now)
+    assert p.hist("001HE", 0) == [] and p.status()["hist_stations"] == 0 and p.status()["hist_oldest_age_s"] is None
+    # a reading older than the cut never enters
+    assert p._take({"001HE": [{"t": LIVE_T, "s": 1.0, "g": None, "d": 10}]}, live_clock.now) == 0
+    assert p.hist("001HE", 0) == []
+
+
+def test_madis_without_backfill_is_the_live_poll_alone(live_clock):
+    """The provider's default (the tests above section 55 build it so): every refresh is the live poll, nothing is
+    queued, filling() is False; the history still keeps what the polls bring."""
+    fetch = madis_hist_fetch()
+    p = W.MadisProvider(NWS_IDS, fetch)
+    for i in range(3):
+        live_clock.now = LIVE_T + 30 * i
+        p._fetch_stations()
+    assert [u for u, _, _ in fetch.calls] == [W.MADIS_HI_URL] * 3 and p._bf == [] and p.filling() is False
+    assert p.status()["backfill"] is None and len(p.hist("001HE", 0)) == 5
+
+
+def test_madis_history_memory_stays_small():
+    """~300 stations x 288 five-minute readings (more than MADIS brings: ~48k): well under 12 MB."""
+    import tracemalloc
+    tracemalloc.start()
+    base = tracemalloc.get_traced_memory()[0]
+    store = {}
+    for k in range(300):
+        ser = store[k] = W.MadisSeries()
+        for i in range(288):
+            ser.add({"t": 1_793_000_000 + 300 * i, "s": 3.4, "g": 5.1, "d": 90, "at": 24.1, "dp": 19.0, "rh": 73, "p": 1014.2})
+    used = tracemalloc.get_traced_memory()[0] - base
+    tracemalloc.stop()
+    assert sum(len(s) for s in store.values()) == 86_400
+    assert used < 8 * 1024 * 1024, used
+
+
+def madis_hist_svc(fetch, now, latest, hist, filling=False):
+    svc = madis_svc(fetch, now, latest)
+    svc.madis_hist = lambda local, since: [dict(r) for r in hist.get(local, []) if r["t"] >= since]
+    svc.madis_filling = lambda: filling
+    return svc
+
+
+def test_history_merges_the_madis_hours_with_the_nws_api():
+    fetch = history_fetch()
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
+    w = W.parse_madis_rows(fx("madis_window.html").decode("latin-1"))
+    live = W.parse_madis_rows(fx("madis_live.html").decode("latin-1"))
+    hist = {"001HE": w["001HE"] + live["001HE"]}
+    latest = {"001HE": live["001HE"][-1]}
+    status, p = madis_hist_svc(fetch, LIVE_T, latest, hist).history("nws:001HE")
+    assert status == "ok" and p["via"] == "madis" and p["source"] == W.ATTRIBUTION["madis"] and p["note"] is None
+    assert p["t"] == [r["t"] for r in hist["001HE"]] and len(p["t"]) == 17, "MADIS's 24 hours, the latest once"
+    assert p["at"][0] == w["001HE"][0]["at"] and "filling" not in p
+    assert p["disclaimer"] == W.MESONET_DISCLAIMER
+    # the NWS API's rows join: one row per time, the API's where both have one
+    rows = W.parse_nws_observations(json.loads(fx("nws_history.json")))
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = fx("nws_history.json")
+    newest = max(r["t"] for r in rows)
+    both = dict(rows[0], s=99.0)
+    hist2 = {"001HE": [both, dict(rows[0], t=newest + 300, s=1.2)]}
+    p = madis_hist_svc(fetch, newest + 900, {}, hist2).history("nws:001HE")[1]
+    assert p["via"] == "nws+madis" and p["t"] == sorted({r["t"] for r in rows} | {newest + 300})
+    assert p["s"][p["t"].index(rows[0]["t"])] == rows[0]["s"] != 99.0, "a time both have: the NWS API's reading"
+    assert p["source"] == W.ATTRIBUTION["nws+madis"] and "latest reading" not in p["source"]
+    # the cap: the newest HISTORY_ROWS
+    many = {"001HE": [{"t": LIVE_T - 60 * i, "s": 1.0, "g": None, "d": 10} for i in range(400)]}
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
+    p = madis_hist_svc(fetch, LIVE_T, {}, many).history("nws:001HE")[1]
+    assert len(p["t"]) == W.HISTORY_ROWS and p["t"][-1] == LIVE_T
+
+
+def test_history_while_madis_is_filling_says_so_and_is_asked_again_in_a_minute():
+    fetch = history_fetch()
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
+    live = W.parse_madis_rows(fx("madis_live.html").decode("latin-1"))
+    svc = madis_hist_svc(fetch, LIVE_T, {}, {"001HE": live["001HE"]}, filling=True)
+    status, p = svc.history("nws:001HE")
+    assert status == "ok" and p["filling"] is True and p["via"] == "madis"
+    assert svc._cache[("h", "nws:001HE")][0] == LIVE_T + svc.error_ttl, "cached a minute (then the hours MADIS added)"
+    svc.madis_filling = lambda: False
+    svc._cache.clear()
+    svc.history("nws:001HE")
+    assert svc._cache[("h", "nws:001HE")][0] == LIVE_T + svc.ok_ttl
+    # filling, nothing from MADIS yet and the NWS API down: the failure stands (no empty "ok")
+    fetch.table[W.NWS_API + "/stations/001HE/observations?"] = IOError("timeout")
+    svc = madis_hist_svc(fetch, LIVE_T, {}, {}, filling=True)
+    assert svc.history("nws:001HE")[0] == "error"
+    # other kinds never ask MADIS
+    svc = madis_hist_svc(fetch, LIVE_T, {}, {"001HE": live["001HE"]}, filling=True)
+    svc.madis_hist = lambda *a: (_ for _ in ()).throw(AssertionError("asked"))
+    svc.history("metar:PHNL")
+
+
 def test_make_providers_with_the_madis_backup():
     fetch, slow = FakeFetch(), FakeFetch()
     provs = W.make_providers(STATIONS, fetch)
@@ -1128,7 +1424,9 @@ def test_make_providers_with_the_madis_backup():
     provs = W.make_providers(STATIONS, fetch, madis_url="https://madis.test/x", madis_fetch=slow)
     m = provs[4]
     assert m.source == "MADIS" and m.url == "https://madis.test/x" and m._fetch is slow and sorted(m.stations) == sorted(NWS_IDS)
+    assert m.backfill is True, "the app's MADIS back-fills the 24 hours (plan section 55)"
     assert W.make_providers(STATIONS, fetch, madis_url="u")[4]._fetch is fetch
+    assert W.make_providers(STATIONS, fetch, madis_url="u", madis_backfill=False)[4].backfill is False
 
 
 def test_build_latest_madis_relay_fed_by_and_newest():
@@ -1205,10 +1503,16 @@ def test_history_nws_falls_back_on_madis():
     assert p["via"] == "nws+madis" and p["t"][-1] == newest + 600 and p["t"][:-1] == sorted(r["t"] for r in rows)
     assert p["source"] == W.ATTRIBUTION["nws+madis"] and p["source"].count("HECO") == 1, "the networks named once (G35 B-13)"
     assert p["disclaimer"] == W.MESONET_DISCLAIMER
-    # MADIS older than the API's newest row: not added; older than 24 h: never
+    # MADIS older than the API's newest row: added in its place (plan section 55: one row per time); at a time the API
+    # has: the API's row (MADIS adds nothing); older than 24 h: never
     madis["001HE"]["t"] = newest - 60
     p = madis_svc(fetch, newest + 900, madis).history("nws:001HE")[1]
-    assert p["via"] is None and p["disclaimer"] == W.MESONET_DISCLAIMER, "the NWS API's rows alone: the disclaimer too (W6)"
+    assert p["via"] == "nws+madis" and p["t"] == sorted([r["t"] for r in rows] + [newest - 60])
+    madis["001HE"]["t"] = newest
+    p = madis_svc(fetch, newest + 900, madis).history("nws:001HE")[1]
+    i = p["t"].index(newest)
+    assert p["via"] is None and p["s"][i] == next(r["s"] for r in rows if r["t"] == newest), "the NWS API's row wins a tie"
+    assert p["disclaimer"] == W.MESONET_DISCLAIMER, "the NWS API's rows alone: the disclaimer too (W6)"
     p = W.WindHistory(STATIONS, fetch, now=Clock(newest + 900)).history("nws:001HE")[1]
     assert p["via"] is None and p["t"] and p["disclaimer"] == W.MESONET_DISCLAIMER, "no MADIS at all: the same"
     fetch.table[W.NWS_API + "/stations/001HE/observations?"] = b'{"@graph": []}'
@@ -1275,10 +1579,13 @@ def test_app_wires_the_madis_backup(monkeypatch):
     w = A._winds()
     m = [p for p in w["providers"] if p.source == "MADIS"][0]
     assert m._fetch is A._madis_fetch and w["svc"].madis == m.row and m.url == A.WIND_MADIS_URL
+    # plan section 55: the 24 hours and the filling flag handed over too; the provider back-fills
+    assert w["svc"].madis_hist == m.hist and w["svc"].madis_filling == m.filling and m.backfill is True
     monkeypatch.setattr(A, "WIND_MADIS_URL", "")
     monkeypatch.setattr(A, "_WINDS", {"svc": None, "list": None, "providers": None, "stations": None})
     w = A._winds()
     assert [p.source for p in w["providers"]] == ["NDBC", "METAR", "COOPS", "NWS"] and w["svc"].madis is None
+    assert w["svc"].madis_hist is None and w["svc"].madis_filling is None
 
 
 def test_the_table_and_healthz_name_the_rows_madis_gave(winds, madis_clock):
@@ -1291,3 +1598,6 @@ def test_the_table_and_healthz_name_the_rows_madis_gave(winds, madis_clock):
     assert "nws" not in d["newest"] and "coops" in d["newest"], "the NWS feed never brought a reading; CO-OPS did"
     h = A._wind_health(_time.time())
     assert h["fed_by"] == {"madis": 2} and any(s["source"] == "MADIS" for s in h["providers"])
+    ms = [s for s in h["providers"] if s["source"] == "MADIS"][0]
+    assert ms["hist_stations"] == 2 and ms["hist_rows"] == 2 and ms["hist_oldest_age_s"] is not None
+    assert ms["backfill"] is None and ms["backfill_left"] == 0 and ms["backfill_gave_up"] == 0, "built without back-fill here"

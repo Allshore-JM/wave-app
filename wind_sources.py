@@ -1027,17 +1027,19 @@ class MadisProvider(WindProvider):
     observation time, one 2-hour window a refresh (refresh_due: MADIS_BACKFILL_TTL_S after the last while windows
     remain), newest first. A failed or unreadable LIVE answer raises (keep-last); a failed window is tried again,
     MADIS_BACKFILL_TRIES times in all, then given up. fetch: a slower one than the other feeds' (the viewer takes 4-40 s
-    to answer; a window 35-55 s)."""
+    to answer); window_fetch (default fetch): slower still for the windows, which MADIS answers only when its query is
+    done (20-55 s seen; on the test site 2026-10-26 two tries were cut by the live fetch's 45-s read timeout)."""
     source = "MADIS"
     source_name = "NOAA MADIS"
     source_url = "https://madis.ncep.noaa.gov"
     attribution_text = "Source: " + ATTRIBUTION["madis"]
     list_ttl_sec = MADIS_TTL_S
 
-    def __init__(self, stations, fetch, url=MADIS_HI_URL, backfill=False):
+    def __init__(self, stations, fetch, url=MADIS_HI_URL, backfill=False, window_fetch=None):
         super().__init__(stations, fetch)
         self.url = url
         self.backfill = backfill
+        self._wfetch = window_fetch or fetch    # the back-fill windows' fetch (a longer read timeout)
         self._kept = {}                         # local id -> the latest reading (with weather)
         self._newest_t = None                   # the newest reading MADIS ever brought (G35 F5: the stall rule, /healthz)
         self._last_rows = self._last_wind = None   # the last answer's station records / those with a wind reading
@@ -1090,7 +1092,7 @@ class MadisProvider(WindProvider):
     def _window(self, now):
         end, tries = self._bf[0]
         try:
-            body = self._fetch(madis_window_url(self.url, end), MADIS_MAX, HEADERS)
+            body = self._wfetch(madis_window_url(self.url, end), MADIS_MAX, HEADERS)
             obs = parse_madis_rows(body.decode("latin-1"), now)
         except Exception as e:
             self._bf[0][1] = tries = tries + 1
@@ -1209,10 +1211,11 @@ class MadisProvider(WindProvider):
 
 
 def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER_REFRESH, nws_workers=2,
-                   nws_per_refresh=NWS_PER_REFRESH, madis_url=None, madis_fetch=None, madis_backfill=True):
+                   nws_per_refresh=NWS_PER_REFRESH, madis_url=None, madis_fetch=None, madis_backfill=True,
+                   madis_window_fetch=None):
     """The providers over the snapshot's stations, in warm order (cheap, quick feeds first); with madis_url the NWS
     stations' MADIS backup too (its own fetch: the viewer is slow), which also back-fills their 24 hours (plan section
-    55) unless madis_backfill is False."""
+    55) unless madis_backfill is False (madis_window_fetch: the windows' fetch, default madis_fetch)."""
     groups = by_source(stations)
     aliases = {st["alias"]: st for sid, st in stations.items() if st.get("alias") and sid.startswith("coops:")}
     out = [NdbcWindProvider(groups.get("ndbc", {}), fetch, aliases),
@@ -1220,7 +1223,8 @@ def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER
            CoopsWindProvider(groups.get("coops", {}), fetch, coops_workers, coops_per_refresh),
            NwsProvider(groups.get("nws", {}), fetch, nws_workers, nws_per_refresh)]
     if madis_url:
-        out.append(MadisProvider(groups.get("nws", {}), madis_fetch or fetch, madis_url, backfill=madis_backfill))
+        out.append(MadisProvider(groups.get("nws", {}), madis_fetch or fetch, madis_url, backfill=madis_backfill,
+                                 window_fetch=madis_window_fetch))
     return out
 
 

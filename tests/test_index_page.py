@@ -348,6 +348,8 @@ def test_legend_button_in_the_top_right_row(client):
     assert "collapsed: false" in body                                        # the list itself is always expanded (in its panel)
     # the row below the longitude labels at the map's top edge (owner): labels at 4 px, about 13 px tall; the row from 26 px
     assert ".leaflet-top.leaflet-right .leaflet-control-settings { margin-top: 26px; }" in body
+    # no line gap under the buttons (their hosts as tall as they are): every panel opens 4 px below its button
+    assert "vertical-align: top;   /* no line gap under the button" in body[body.index("    .icon-btn {"):]
     # the corner: its own controls only (the layer control inside the open panel never counts)
     assert "box.querySelectorAll('.leaflet-top.leaflet-right > .leaflet-control')" in body
     assert "'.leaflet-top.leaflet-right .leaflet-control'" not in body

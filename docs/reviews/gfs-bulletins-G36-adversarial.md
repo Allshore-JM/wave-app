@@ -395,3 +395,50 @@ ran on the test branch at 254857d (the code after the first fix round), the same
   the probe stays marked failed (asked again after 2 minutes).
 - **Cleanup**: the browser closed over DevTools, its profile removed; the test and production origins' storage emptied;
   the local stand-ins ended with their scripts.
+
+## Short fresh check of fix round 2, 2026-10-26
+
+One fresh reviewer (Opus 5.5, effort MAX), 05:32-06:04 UTC, on `2e00593..42ec2d3` in its own detached worktrees (42ec2d3,
+and 2e00593 for the "before" runs; both removed) and on the test site @ d5db21e across the 00Z run switch; report:
+scratch `g36/fix2check/fix2check-report.md`, its scripts and logs under `g36/fix2check/work`. **0 P0, 0 P1, 0 P2, 4 P3.**
+
+What held up (the reviewer's own evidence): the full suite (1,528 passed); on a local real-HTTP stand-in for both NOAA
+hosts, every archive answer other than 404 (403, 301, 410, 501, a 5xx twice, two drops) stops the archive scan, nothing
+older is asked and the held run is served, a 503 once finds the newest, NOMADS's 403/404 move on and its 503 twice stops
+it; the old code (2e00593) served the older cycle as a success in every one of those cases; the retry stays inside its
+cap (8.02 s for 8, 15.00 s for 15, 6.02 s with 6 s of probe left); the budget stops a slow probe at 15.0 s after 4
+HEADs; four callers: a run held 1 h or 11.9 h -> the prober 15.0 s, the others the held run in 0.0 s, 12.1 h or nothing
+held -> all wait; the tool against 14 raw-socket cases never printed a traceback; real exception chains from requests
+2.32.3 / urllib3 2.4.0 have the tests' shapes; NOAA's real answers (00Z archive 200 at 05:27:54 with the index's size,
+06Z 404, NOMADS 00Z 200, 06Z 403); the test site switched to 00Z by itself at 05:41:23 (3.0 s, 0 transport, 0 NOMADS
+fallbacks, all wind from R2, `gfs.run` right before, at and after the switch); 49 of its own queries (30 GFS stations
+outside the author's set, classic, Metric, UTC, SWAN, Great Lakes, a point, a removed station) identical to production
+on 00Z, 42 at once and the other 7 once the test site's pre-switch cache entries (K-3) had expired; K-2 behaves as
+recorded.
+
+| # | Finding | Outcome |
+|---|---|---|
+| F1 | The new tests pin less than "25 of 25 mutants" suggests: of the reviewer's 55 mutants on the four bulletin test files 15 non-equivalent ones survive, and 14 of them applied together pass the whole suite (1,528). Unpinned: 429/500/502/504 in `_PROBE_RETRY_STATUS` (only 503 is tested); the probe's retry re-clipped to the time left; the archive taking a 301/400/410 and NOMADS any 3xx/4xx as "not there"; the `/healthz` `gfs.run` fields (the one test has value = good and failed = True); `_capped_get`'s retry body within the same `max_s`; the Content-Range end (near-equivalent: the length is checked). Author: nine of the same kind (429 or 504 not asked again, the retry's first clip kept, archive 301/400/410 and NOMADS 3xx/4xx as "not there", `failed` always true, `run` = `good_run`, the retry's body given a fresh `max_s`, the Content-Range end unchecked), each against the bulletin, wind and point-forecast test files (254 tests): all nine survive; all nine together pass the whole suite (1,528) | FIX (tests) |
+| F2 | `_probe_head`'s second attempt (after a drop or a 429/5xx) has no deadline check, so a retry can start past the 15-s budget (with 0.1-s timeouts). Cost in practice: one HEAD of ~0.2 s after a slow connect; same outcome. Author: reproduced in-process (deadline 1 s behind, a 503 first: a second HEAD with (0.1, 0.1) whose 200 is taken). | FIX: no retry once the deadline has passed; a clocked test |
+| F3 | Wording: README and both probe docstrings say "a 429 / 5xx" is asked again (only 429/500/502/503/504 are; a 501 stops at once); the README's "only a process that holds no run yet waits" leaves out a run older than 12 h; `/healthz` `gfs.run`'s "the run served is then the one kept" leaves out that `run` is null past 12 h; app.py's "as app.HTTP's adapter did" (that adapter retries twice, with a pause); the tool prints a garbage status line with its CRLF, so its "one line" is two (author: reproduced, "not readable on AWS (HELLO THERE\r\n)"); the record's description of the Content-Range test (a different start, 15360 vs 1536, not a different end). | FIX: the wording; the tool prints `str(exc).strip()` |
+| F4 | Latent: the probe takes an archive 403 as a refusal (stop), the bulletin reader as "missing" (gfs_bulletins.py's docstring: "403: S3 for a key that is not there"). NOAA's bucket answers 404 for a missing key today (it allows public listing; the reviewer's HEAD on 06Z: 404). If it ever answered 403, every probe between 3 h and ~5.3 h after a cycle would stop at the unwritten newest archive and lean on NOMADS (K-2 for hours, for a process with nothing held and NOMADS down). Author: confirmed by reading both. | FIX: the comments made to agree (the probe's on purpose: a 403 can be a refusal of the site's address; the reader's counter only) |
+
+Not checked by the reviewer: the stand-ins on Linux (they ran on Windows over plain HTTP); a real NOAA 5xx (none
+occurred); the trickle case (K-1) and DNS stalls, which no read timeout bounds.
+
+### Fix round 3 scope (proposed; the owner's call: this round, or production with these P3s on record)
+1. F2: `_probe_head` asks once more only while the probe has time left (the same "at least 1 s left" rule as
+   `_capped_get`, one shared constant); clocked tests: a 503 and a drop answered past the deadline make one HEAD only, and
+   the archive scan then stops.
+2. F1: tests that pin what the reviewer's survivors changed: the retry for each of 429/500/502/503/504 and none for a
+   501; a first HEAD dropped late gives the retry the time left; archive 301 / 410 stop the scan, NOMADS 301 and a 500
+   twice stop NOMADS; `/healthz` `gfs.run` with `failed` false, with the kept run expired (`run` null, `good_run` set) and
+   before any probe; a retry whose body trickles past the original `max_s` is cut at it; a `Content-Range` of the same
+   start and another end refused. The reviewer's 55 mutants re-run.
+3. F3: the README's probe paragraph and `/healthz` line, both probe docstrings, the comment on `_PROBE_RETRY_STATUS`; the
+   tool prints `str(exc).strip()`; this record corrects fix round 2's Content-Range sentence (above).
+4. F4: the probe's comment says why an archive 403 stops the scan (S3 answers 403 for a missing key only without public
+   listing; NOAA's bucket lists publicly and answers 404, so a 403 more likely refuses the site's address), the reader's
+   docstring that its 403 = `missing` is a counter only (both outcomes fall back to NOMADS).
+Then the test site (MAX: the reviewer's fake-clock probe edge and stand-ins against the site's code, `/healthz`, the
+answers unchanged), then step 8 production and the job-only KEEP 8 push.

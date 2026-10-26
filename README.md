@@ -81,9 +81,18 @@ and update `tests/fixtures/ui_assets.json` (version + sha256); `tests/test_ui_mo
 the Node tests in `tests/ui/`. `/api/forecast` also reports `model` (the model actually used: SWAN falls back to GFS off the
 12 SWAN stations; a Great Lakes station is always `GLWU`) and `swan_available`; `?compact=1` asks for the window's table.
 
+The top-right controls (plan section 54, UI 1.26.0) are one row of three buttons: Legend (a key), Tools, Settings. The
+layer legend (Leaflet's layer control: the layers and their notes) lives in the key's panel, closed on every load and
+never remembered; the panel opens and closes like the gear's (an outside press, another button or Escape, which puts
+the focus back on the key). While the legend is closed, a dot on the key says a legend note exists (the live list
+loading, a tide or wind list unavailable, the NWS feed stalled) and the key's label reads "Legend · <note>". Each button
+names itself at once on mouse hover and on keyboard focus (never on touch, never while its own panel is open). The
+corner's measured height and width (`--map-topright-h`, `--map-topright-w`) count only the corner's own controls (the
+row, and the map tools' bar while shown), so the legend inside its panel never moves a window.
+
 The page (2026-09-26, plan sections 25 and 26): the map is the page — the brand sits on it top-left above the
 model-overlay selector, the settings gear (Time Zone, Units, lat/long gridlines; with the model overlays also "Pressure
-isobars (wind)" and a "Particles" slider, plan section 46: see below) top-right under the layer legend, the
+isobars (wind)" and a "Particles" slider, plan section 46: see below) top-right, the
 credits behind an (i) at the bottom-left (the Home view button is gone: plan section 46); the forecast window's heading is the station picker with favourites
 (expanded and minimised); the live-buoy panel is a second floating window (`#liveBuoyPanel`, `createLiveWindow` in the
 module: dragged, resized, minimised to a chip at the bottom-right or a bar above the forecast bar on phones, closed
@@ -92,8 +101,8 @@ from any mode; `sessionStorage 'allshore.liveWin.v1'`); the tide-station window 
 phone bar above the live bar; both station windows can be open at once, the one touched last on top). The forecast is a floating window (`#forecastWin`) that starts minimised in
 a new tab (a chip at the bottom-left on desktops, a bar along the bottom edge in phone mode = a viewport 500 px or
 less wide OR tall; expanded it is a window on desktops and full-screen in phone mode; on desktops 1280 px and wider
-it opens between the top-left controls (the logo and the overlay panel, measured: `--map-topleft-r`) and the layer
-legend and gear (`--map-topright-w`, measured without the map tools' result bar), from 96 px down to 16 px above the
+it opens between the top-left controls (the logo and the overlay panel, measured: `--map-topleft-r`) and the
+top-right row of buttons (`--map-topright-w`; the map tools' bar counts while shown), from 96 px down to 16 px above the
 bottom edge, its bottom raised over parked chips; narrower desktops keep the bottom-right box; plan section 46), holds the View (Table / Graph) and Model (GFS / SWAN, only on SWAN stations) controls
 in its toolbar, and is dragged by its header, resized from any edge or corner (the bottom-right grip also takes the arrow keys), maximised below the map's top-right controls and minimised;
 Escape closes the tide window first, then the live-buoy panel, then minimises the window. Every change (a marker or favourites pick, model, view,

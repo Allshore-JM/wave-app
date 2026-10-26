@@ -10,7 +10,7 @@
  * Page contract (templates/index.html): #forecastWin #fwHeader #fwTitle #fwCycle #fwBusy #fwMin #fwMax
  * #viewBar[data-view] #modelBar[data-model] #rangeBar[data-days] #modeBar[data-mode] #fwBody #fwError #forecastMeta
  * #forecastTable (#forecastLoading inside it until the first forecast lands) #forecastSummary #graphs (.chart-box > canvas
- * #heightChart #periodChart #directionChart) #fwResize; #settingsBtn #settingsPanel #tz #unit #station
+ * #heightChart #periodChart #directionChart) #fwResize; #settingsBtn #settingsPanel #legendBtn #legendPanel #tz #unit #station
  * #stationTrigger #stationCurrent (the favourites picker is the window's heading; #fwTitle is its field);
  * #liveBuoyPanel #lwHeader #lwMin #lwClose #lwResize (createLiveWindow); #tideWin #twHeader #twMin #twClose #twResize
  * (createTideWindow, plan section 38). The page dispatches 'allshore:station' {sid, source} on a
@@ -1098,6 +1098,11 @@
       for (i = 0; i < stationWins.length; i++) { w = stationWins[i]; if (open(w)) { if (w[2]) w[2](); return; } }
     });
     var settings = createSettings({ button: $('settingsBtn'), panel: $('settingsPanel'), document: doc, focusFirst: function () { if (els.tz && els.tz.focus) els.tz.focus(); } });
+    // the layer legend's panel under its key button (plan section 54): the same toggle; closed on every load, never remembered
+    var legend = createSettings({ button: $('legendBtn'), panel: $('legendPanel'), document: doc, focusFirst: function () {
+      var lp = $('legendPanel'), first = lp && lp.querySelector ? lp.querySelector('input') : null;
+      if (first && first.focus) first.focus();
+    } });
     // start
     // Without a station in the address or a default, the <head> may be choosing the station nearest the visitor's IP
     // address (window.__early.station, plan section 46): the first load waits for it (its request has started by
@@ -1124,7 +1129,7 @@
           loader.load({});
         });
     } else loader.load({});
-    app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, setView: setView, setTableMode: setTableMode,
+    app = { state: state, loader: loader, window: fw, graphs: graphs, settings: settings, legend: legend, setView: setView, setTableMode: setTableMode,
       tableMode: function () { return tableMode; }, expand: expand, minimise: minimise, note: note, els: els };
     earlyNotes.splice(0).forEach(function (n) { note(n[0], n[1]); });
     return app;

@@ -45,7 +45,13 @@ function boot(o) {
   w.__early = o.early === undefined ? { live: Promise.resolve(resp(FULL)), stations: null } : o.early;
   const noteEl = { textContent: '' };
   const docListeners = {};
+  // the legend's key button (plan section 54): its label and its dot follow the notes
+  const legendDot = { hidden: true };
+  const legendAttrs = { 'data-tip': 'Legend', 'aria-label': 'Legend' };
+  const legendBtn = { getAttribute: (k) => legendAttrs[k], setAttribute: (k, v) => { legendAttrs[k] = String(v); },
+    querySelector: (sel) => (sel === '.legend-dot' ? legendDot : null) };
   const document = { visibilityState: o.visibility || 'visible',
+    getElementById: (id) => (id === 'legendBtn' ? legendBtn : null),
     querySelector: (sel) => (sel.indexOf('[data-live-note]') >= 0 ? noteEl : null),
     addEventListener: (t, fn) => { (docListeners[t] = docListeners[t] || []).push(fn); } };
   const fetchCalls = [];
@@ -68,7 +74,7 @@ function boot(o) {
     "\nreturn { get liveStationsData() { return liveStationsData; }, get liveNoteText() { return liveNoteText; }, paintLiveNote, addLiveBuoyLayer };";
   const api = new Function('window', 'document', 'fetch', 'performance', 'console', 'earlyFetch', 'rebuildLiveBuoyMarkers', 'measureTopRight', 'layersControl', 'AbortController', code)(
     w, document, fetch, performance, console, earlyFetch, rebuildLiveBuoyMarkers, measureTopRight, layersControl, AbortController);
-  return { w, api, noteEl, document, docListeners, fetchCalls, marks, warns, earlyCalls, rebuilds, measures, updates, stored, layersControl };
+  return { w, api, noteEl, document, docListeners, fetchCalls, marks, warns, earlyCalls, rebuilds, measures, updates, stored, layersControl, legendDot, legendAttrs };
 }
 
 test('the head request is taken once and nulled; no own request; markers rebuilt once; one performance mark', async () => {
@@ -271,4 +277,26 @@ test('a 503 without the retry flag (another failure) is shown at once, not retri
   await w.run(FULL[1]);
   assert.equal(w.calls.length, 1);
   assert.deepEqual(w.errors, ['Service unavailable']);
+});
+
+test('the legend key shows a dot and the note in its label while a note exists (plan section 54)', async () => {
+  const b = boot({ early: { live: new Promise(() => {}) } });
+  assert.equal(b.legendDot.hidden, true, 'no note yet: no dot');
+  assert.equal(b.legendAttrs['data-tip'], 'Legend');
+  await new Promise((r) => setTimeout(r, 350));
+  assert.equal(b.noteEl.textContent, 'loading…');
+  assert.equal(b.legendDot.hidden, false, 'a note: the dot');
+  assert.equal(b.legendAttrs['data-tip'], 'Legend · Live buoys: loading…');
+  assert.equal(b.legendAttrs['aria-label'], b.legendAttrs['data-tip'], 'the label read aloud = the hover label');
+  b.layersControl._update();
+  assert.equal(b.legendDot.hidden, false, 'kept through a rebuild of the list');
+});
+
+test('the dot goes when the note goes', async () => {
+  const b = boot();
+  await flush();
+  assert.equal(b.noteEl.textContent, '');
+  assert.equal(b.legendDot.hidden, true);
+  assert.equal(b.legendAttrs['data-tip'], 'Legend');
+  assert.equal(b.legendAttrs['aria-label'], 'Legend');
 });

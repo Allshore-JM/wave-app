@@ -137,9 +137,9 @@ def test_phone_sheets_sit_above_the_map_controls_and_the_no_js_page_shows_its_co
     corner = re.search(r"\.leaflet-container\.settings-open \.leaflet-top\.leaflet-right \{ z-index: (\d+); \}", body).group(1)
     assert ".leaflet-container .leaflet-top.leaflet-right {" not in body, "the corner outranks the windows ONLY while the gear panel is open (owner: window buttons never under the legend)"
     assert "top: calc(var(--map-topright-h, 120px) + 8px) !important" in body[body.index(".fwin.fw-max {"):], "the maximised window starts below the legend corner"
-    assert "function measureTopRight()" in body and "classList.toggle('settings-open', !panel.hidden || !!(tmenu && !tmenu.hidden))" in body
+    assert "function measureTopRight()" in body and "classList.toggle('settings-open', panels.some(function (p) { return !p.hidden; }) || !!(tmenu && !tmenu.hidden))" in body
     # plan section 46: the gear's panel (now with the overlay rows) never runs past the map's bottom edge: it scrolls inside
-    assert "panel.style.maxHeight = Math.max(120, Math.floor(room)) + 'px';" in body and "window.addEventListener('resize', fit);" in body
+    assert "p.style.maxHeight = Math.max(120, Math.floor(room)) + 'px';" in body and "window.addEventListener('resize', fit);" in body
     assert re.search(r"\.settings-panel \{[^}]*width: 260px;[^}]*overflow-y: auto;", body), "fixed width, scrolls inside"
     phone = body[body.index("@media (max-width: 500px), (max-height: 500px) {"):]
     sheet = re.search(r"\.fwin:not\(\.fw-min\) \{ z-index: (\d+); \}", phone).group(1)
@@ -236,7 +236,7 @@ def test_g18b_pins(client):
         "if (below >= 220 || below >= above) { s.top = (r.bottom + 2) + 'px'; s.bottom = 'auto';",
         "if (window.innerWidth <= 500 || window.innerHeight <= 500) enforceSingleWorld();",
         ".fwin.live-win { right: 18px; bottom: 18px; width: min(820px, calc(100vw - 136px)); height: min(76vh, 800px); z-index: 2000; }",
-        "new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['hidden'] });",
+        "panels.forEach(function (p) { new MutationObserver(sync).observe(p, { attributes: true, attributeFilter: ['hidden'] }); });",
         ".fw-maxbtn { display: none; }",
         "options: { position: 'topleft' },",
         ".fwin.fw-min { height: auto !important; min-height: 0; min-width: 0; }",
@@ -327,6 +327,45 @@ def test_search_and_sharing_metadata(client):
         assert A.app.test_client().get("/robots.txt", base_url=host).get_data(as_text=True) == "User-agent: *\nDisallow: /\n"
     sm = A.app.test_client().get("/sitemap.xml")
     assert sm.headers["Content-Type"].startswith("application/xml") and "<loc>https://allshoresurf.com/</loc>" in sm.get_data(as_text=True)
+
+
+def test_legend_button_in_the_top_right_row(client):
+    """Plan section 54: the layer legend is a key button, first in one row with the tools and the gear (owner: Legend,
+    Tools, Settings); Leaflet's layer control moves into the key's panel (closed on load, the gear's toggle); a dot and
+    the notes in the key's label while a legend note exists; quick hover / focus labels, never on touch or over an open
+    panel; the corner's measure counts its own controls only."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    assert body.index('id="legendHost"') < body.index('id="toolsHost"') < body.index('id="settingsHost"')
+    assert ('<button type="button" id="legendBtn" class="icon-btn" aria-label="Legend" aria-expanded="false" '
+            'aria-controls="legendPanel" data-tip="Legend">') in body
+    assert '<div id="legendPanel" class="settings-panel legend-panel" hidden role="group" aria-label="Legend"></div>' in body
+    assert '<span class="legend-dot" hidden></span>' in body
+    assert 'aria-controls="toolsMenu" data-tip="Tools">' in body and 'aria-controls="settingsPanel" data-tip="Settings">' in body
+    # the row: legend first, then the tools, then the gear; the layer control into the legend's panel
+    on_add = body[body.index("const SettingsControl = L.Control.extend({"):]
+    assert on_add.index("if (legend) c.appendChild(legend);") < on_add.index("if (tools) c.appendChild(tools);") < on_add.index("if (host) c.appendChild(host);")
+    assert "lc = layersControl.getContainer && layersControl.getContainer();" in body and "if (lp && lc) lp.appendChild(lc);" in body
+    assert "collapsed: false" in body                                        # the list itself is always expanded (in its panel)
+    # the corner: its own controls only (the layer control inside the open panel never counts)
+    assert "box.querySelectorAll('.leaflet-top.leaflet-right > .leaflet-control')" in body
+    assert "'.leaflet-top.leaflet-right .leaflet-control'" not in body
+    # the dot and the label from the three notes, painted with every note
+    fn = body[body.index("    function syncLegendNote() {"):]
+    fn = fn[:fn.index("\n    }\n") + 6]
+    for needle in ("[['Live buoys', liveNoteText], ['Tide stations', tideNoteText], ['Wind stations', windNoteText]]",
+                   "btn.setAttribute('data-tip', tip); btn.setAttribute('aria-label', tip);", "if (dot) dot.hidden = !notes.length;"):
+        assert needle in fn, needle
+    assert body.count("      syncLegendNote();\n      const el = document.querySelector('.leaflet-control-layers [data-") == 3
+    # CSS: hidden without JS; the panel as wide as the list; the dot gone while open; quick labels
+    for needle in ("html:not(.js) .legend-host { display: none; }",
+                   ".settings-panel.legend-panel { width: auto; min-width: 180px; max-width: calc(100vw - 16px); padding: 6px 10px; }",
+                   '#legendBtn[aria-expanded="true"] .legend-dot { display: none; }',
+                   "@media (hover: hover) { .icon-btn[data-tip]:hover::after { display: block; } }",
+                   ".icon-btn[data-tip]:focus-visible::after { display: block; }",
+                   '.icon-btn[data-tip][aria-expanded="true"]::after { display: none !important; }',
+                   "#settingsBtn[data-tip]::after { left: auto; right: 0; transform: none; }"):
+        assert needle in body, needle
+    assert ".icon-btn[data-tip]:hover::after { display: block; }" not in body.replace("@media (hover: hover) { .icon-btn[data-tip]:hover::after { display: block; } }", "")
 
 
 def test_map_tools_beside_the_gear(client, monkeypatch):
@@ -635,12 +674,12 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
     # overlay is a sheet: --map-topleft-r, B-7); while the live or tide window is open, its right edge WW_GAP in from the
     # margin (--ww-gap) and, when its top does not show WW_ABOVE above one of them, WW_OUT wider than that window
     # (--ww-min-w): every open window keeps a strip to click whichever is in front (B-13; the page measures both).
-    m = re.search(r"\.fwin\.wind-win \{ right: calc\((\d+)px \+ var\(--ww-gap, 0px\)\); top: calc\(var\(--map-topright-h, 120px\) \+ (\d+)px\); "
+    m = re.search(r"\.fwin\.wind-win \{ right: calc\((\d+)px \+ var\(--ww-gap, 0px\)\); top: calc\(var\(--ww-top, var\(--map-topright-h, 120px\)\) \+ (\d+)px\); "
                   r"bottom: auto; height: auto;\n"
                   r"\s+--ww-w: min\(calc\(100vw - (\d+)px\), max\(var\(--ww-min-w, 0px\), min\((\d+)px, calc\(100vw - \3px\), "
                   r"calc\(100vw - (\d+)px - var\(--map-topleft-r, 0px\)\)\)\)\);\n"
                   r"\s+width: calc\(var\(--ww-w\) - var\(--ww-gap, 0px\)\);\n"
-                  r"\s+max-height: calc\(100vh - var\(--map-topright-h, 120px\) - (\d+)px - var\(--chips-h, 0px\)\); z-index: 2000; \}", body)
+                  r"\s+max-height: calc\(100vh - var\(--ww-top, var\(--map-topright-h, 120px\)\) - (\d+)px - var\(--chips-h, 0px\)\); z-index: 2000; \}", body)
     assert m, "the wind window's box"
     w_right, w_gap, w_margin, w_px, w_left_gap, w_reserve = (int(g) for g in m.groups())
     k = re.search(r"var WW_GAP = (\d+), WW_OUT = (\d+), WW_ABOVE = (\d+);", body)
@@ -650,17 +689,24 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
                    "root.style.setProperty('--ww-gap', (open ? WW_GAP : 0) + 'px');",
                    "if (minW) root.style.setProperty('--ww-min-w', minW + 'px'); else root.style.removeProperty('--ww-min-w');"):
         assert needle in body, needle
-    CORNER_PX, WIND_CONTENT_PX = 180, 540
+    # the corner: the row of buttons alone ~50 px (plan section 54); 180 px = the map tools' bar shown, or the old legend
+    WIND_CONTENT_PX = 540
     def topleft_r(W):
         return 204 if W < 576 else 360
-    def wind_box(W, H, others):
-        top = CORNER_PX + w_gap
+    # from 1280 px (the wide forecast box from 96 px down) the wind window's top is floored (--ww-top): with the row alone
+    # (~50 px, plan section 54) it would start above the forecast window and, with every window open, hide it whole
+    fl = re.search(r"\.fwin\.wind-win \{ --ww-top: max\(var\(--map-topright-h, 120px\), (\d+)px\); \}", body)
+    assert fl, "the wind window's floor on wide screens"
+    WW_FLOOR = int(fl.group(1))
+    def wind_box(W, H, others, corner=180):
+        corner = max(corner, WW_FLOOR) if W >= 1280 else corner
+        top = corner + w_gap
         base = min(w_px, W - w_margin, W - w_left_gap - topleft_r(W))
         open_ = [o for o in ("live", "tide") if o in others]
         stick = [others[o][2] - others[o][0] + OUT for o in open_ if others[o][1] - top < ABOVE]
         ww = min(W - w_margin, max(max(stick or [0]), base))
         gap = GAP if open_ else 0
-        h = min(WIND_CONTENT_PX, H - CORNER_PX - w_reserve)
+        h = min(WIND_CONTENT_PX, H - corner - w_reserve)
         right = W - w_right - gap
         return (right - (ww - gap), top, right, top + h)
     wb = re.search(r"@media \(min-width: (\d+)px\) and \(min-height: 501px\) \{\n\s+\.forecast-win:not\(\.fw-min\):not\(\.fw-max\) \{\n"
@@ -671,17 +717,16 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
     assert WIDE_MIN == 1280
     def wide(W, H, tl, tr, bottom):                      # the wide box: between the corners, from WIDE_TOP to `bottom`
         return (tl + WIDE_L, WIDE_TOP, W - tr - WIDE_R, H - bottom)
-    def minus(rect, cut):                                # rect minus cut: up to four rectangles
-        l, t, r, b = rect
+    def minus(rect, cut):                                # rect minus cut: up to four rectangles, each as large as it can be
+        l, t, r, b = rect                                # (they overlap: a free corner is never split into two thin strips)
         cl, ct, cr, cb = cut
         if cr <= l or cl >= r or cb <= t or ct >= b:
             return [rect]
         out = []
         if ct > t: out.append((l, t, r, ct))
         if cb < b: out.append((l, cb, r, b))
-        top, bot = max(t, ct), min(b, cb)
-        if cl > l: out.append((l, top, cl, bot))
-        if cr < r: out.append((cr, top, r, bot))
+        if cl > l: out.append((l, t, cl, b))
+        if cr < r: out.append((cr, t, r, b))
         return out
     def clickable(rect, above):                          # a 24 x 24 px area of rect outside every window above it
         parts = [rect]
@@ -690,20 +735,22 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
         return any(p[2] - p[0] >= 24 and p[3] - p[1] >= 24 for p in parts)
     ORDER = ["forecast", "live", "tide", "wind"]         # the page order: a later window lies above an earlier one
     # plan section 46: from 1280 px the forecast window opens between the top-left controls (the logo alone 204 px, with
-    # the overlay panel 360 px: --map-topleft-r) and the legend + gear (--map-topright-w, about 150-200 px), from 96 px down
+    # the overlay panel 360 px: --map-topleft-r) and the top-right row (--map-topright-w, about 136 px; up to ~200 with the old
+    # legend or ~300 with the tools bar: plan section 54), from 96 px down
     for W in (520, 600, 768, 820, 900, 956, 1024, 1180, 1280, 1366, 1440, 1536, 1600, 1920, 2560):
         for H in (501, 560, 600, 700, 768, 800, 864, 900, 1024, 1080, 1200, 1440):
-          for TL, TR in (((360, 170),) if W < 1280 else ((204, 150), (360, 150), (204, 200), (360, 200))):
+          for TL, TR in (((360, 170),) if W < 1280 else ((204, 136), (360, 136), (204, 150), (360, 150), (204, 200), (360, 200))):
+           for CORNER in (50, 180):                       # the row alone (section 54), or the tools bar under it
             b = {n: box(r, W, H) for n, r in rules.items()}
             if W >= 1280:
                 b["forecast"] = wide(W, H, TL, TR, 16)
-            b["wind"] = wind_box(W, H, b)
+            b["wind"] = wind_box(W, H, b, CORNER)
             for front in ORDER:
                 stack = [n for n in ORDER if n != front] + [front]      # bottom to top
                 for i, n in enumerate(stack[:-1]):
                     if front == "forecast" and n == "wind" and H < 570:
                         continue                         # a short desktop screen: Escape closes it (known since 5b)
-                    assert clickable(b[n], [b[x] for x in stack[i + 1:]]), (W, H, TL, TR, "front", front, "hidden", n, b)
+                    assert clickable(b[n], [b[x] for x in stack[i + 1:]]), (W, H, TL, TR, CORNER, "front", front, "hidden", n, b)
     # only the forecast and wind windows open: the wind window keeps its full width at the margin (the rule is for the
     # live / tide window)
     full = wind_box(1920, 1080, {"forecast": box(rules["forecast"], 1920, 1080)})
@@ -885,7 +932,7 @@ def test_wind_stations_on_the_page(client):
         'id="wwHeader"', 'id="wwMin"', 'id="wwClose"', 'id="wwBody"', 'id="wwResize"', 'id="windCurrent"', 'id="windChart"', 'id="windArrows"',
         'id="windTable"', 'id="windMeta"', 'id="windRetry"', 'id="windConditions"', 'id="windTemp"',
         "current: $('windCurrent'), conditions: $('windConditions'), chart: $('windChart'), arrows: $('windArrows'),\n               temp: $('windTemp'), table: $('windTable'), meta: $('windMeta') },",
-        ".fwin.wind-win { right: calc(18px + var(--ww-gap, 0px)); top: calc(var(--map-topright-h, 120px) + 8px); bottom: auto; height: auto;",
+        ".fwin.wind-win { right: calc(18px + var(--ww-gap, 0px)); top: calc(var(--ww-top, var(--map-topright-h, 120px)) + 8px); bottom: auto; height: auto;",
         ".fwin.wind-win { max-height: none; }                       /* the full screen, like the others; its bar never capped (B-2) */",
         "window.addEventListener('resize', syncWindWidth);",
         "['allshore:livewin', 'allshore:tidewin', 'allshore:windwin'].forEach(function (n) { document.addEventListener(n, syncWindWidth); });",

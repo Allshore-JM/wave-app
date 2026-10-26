@@ -91,7 +91,10 @@ def test_another_members_bytes_at_the_offset_are_a_layout_change(arch):
     st = GB.Stats()
     text, reason, detail = GB.archive_bulletin(RUN[:8], RUN[8:], "41113", ranged(moved), index=index, stats=st)
     assert text is None and reason == "layout" and "another member" in detail
-    assert st.snapshot()["layout_suspect"] and st.snapshot()["reads"]["layout"] == 1
+    snap = st.snapshot()
+    assert snap["reads"]["layout"] == 1 and "another member" in snap["last_layout_read"]
+    assert snap["last_layout_read"][:2] == "20" and snap["last_layout_read"].split(" ")[0].endswith("Z")
+    assert snap["layout_suspect"] is None, "the probe's verdict on the archive's size is kept apart"
 
 
 @pytest.mark.parametrize("where,value,expect", [
@@ -228,3 +231,188 @@ def test_a_long_answer_is_a_transport_failure_too(arch):
     text, why, _ = GB.archive_bulletin(RUN[:8], RUN[8:], "51201", lambda u, a, b: data[a:b + 2], index=index,
                                        stats=GB.Stats())
     assert text is None and why == "transport"
+
+
+# ---------------- G36 fixes (plan section 53, step 7) ----------------
+
+import urllib.error  # noqa: E402
+
+
+def hdr(name="./gfswave.41113.bull", size=52063, patch=()):
+    """A ustar header block as tarfile writes it, with byte patches and the checksum made right again."""
+    ti = tarfile.TarInfo(name)
+    ti.size = size
+    b = bytearray(ti.tobuf(format=tarfile.USTAR_FORMAT))
+    assert len(b) == 512
+    for at, value in patch:
+        b[at:at + len(value)] = value
+    b[148:156] = b" " * 8
+    b[148:156] = f"{sum(b):06o}\0 ".encode()
+    return bytes(b)
+
+
+def test_a_header_tarfile_writes_passes():
+    assert GB.check_header(hdr(), "41113", 52063) is None
+
+
+@pytest.mark.parametrize("block,sid,size,expect", [
+    (hdr(patch=[(345, b"x")]), "41113", 52063, "name with a prefix"),
+    (hdr("./gfswave.141113.bull"), "41113", 52063, "another member"),        # the name is compared whole
+    (hdr("./gfswave.41113.bull"), "1113", 52063, "another member"),
+    (hdr("../gfswave.41113.bull"), "41113", 52063, "another member"),
+    (hdr(size=52064), "41113", 52063, "another size"),                         # larger
+    (hdr(size=52062), "41113", 52063, "another size"),                         # smaller
+    (hdr(patch=[(124, b"00000145539\0")]), "41113", 52063, "bad number field"),   # a 9 is no octal digit
+    (hdr(patch=[(124, b"+0000145537\0")]), "41113", 52063, "bad number field"),   # int() would take the sign
+    (hdr(patch=[(124, b"0o000145537\0")]), "41113", 52063, "bad number field"),   # and a 0o prefix
+])
+def test_every_header_field_is_checked(block, sid, size, expect):
+    assert expect in (GB.check_header(block, sid, size) or "")
+
+
+def test_a_checksum_with_a_decimal_digit_is_refused():
+    b = bytearray(hdr())
+    b[148:156] = b"0000008\0"
+    assert GB.check_header(bytes(b), "41113", 52063) == "bad number field"
+
+
+def test_the_location_is_compared_whole():
+    t = A.bulletin("41113", RUN)
+    assert GB.check_text(t, "4111", RUN[:8], RUN[8:]) == "another station's text"
+    assert GB.check_text(A.bulletin("411130", RUN), "41113", RUN[:8], RUN[8:]) == "another station's text"
+    assert GB.check_text(t, "41113", RUN[:8], RUN[8:]) is None
+
+
+@pytest.mark.parametrize("change", ["gap", "half", "size0", "four", "big"])
+def test_more_damaged_index_documents_are_refused(arch, change):
+    data, texts, doc, index = arch
+    doc = json.loads(json.dumps(doc))
+    m = doc["members"]
+    if change == "gap":                                  # aligned, but inside the previous member's 512-B header room
+        m[2][1] = ((m[1][1] + m[1][2] + 511) // 512) * 512
+    elif change == "half":
+        m[3][1] += 256
+    elif change == "size0":
+        m[0][2] = 0
+    elif change == "four":
+        m[0].append(1)
+    elif change == "big":
+        m[-1][2] = GB.MAX_SIZE + 1
+        doc["archive_bytes"] = m[-1][1] + m[-1][2]
+    with pytest.raises(ValueError):
+        GB.parse_index(doc)
+
+
+def test_an_unknown_station_is_counted_but_is_no_error():
+    """G36 B-3a: an id typed into the address must not replace the last real error."""
+    st = GB.Stats()
+    st.note("missing", "x")
+    st.note("unknown", "99999")
+    snap = st.snapshot()
+    assert snap["reads"]["unknown"] == 1 and snap["last_error"] == "missing: x"
+
+
+def test_the_probes_verdict_on_the_size_clears():
+    """G36 A P3-1: layout_suspect is the last probe's verdict; probe_layouts how many saw another size."""
+    st = GB.Stats()
+    st.probe_layout("archive 12 B")
+    assert st.snapshot()["layout_suspect"] == "archive 12 B" and st.snapshot()["probe_layouts"] == 1
+    st.probe_layout(None)
+    snap = st.snapshot()
+    assert snap["layout_suspect"] is None and snap["probe_layouts"] == 1 and snap["reads"]["layout"] == 0
+    st.probe_layout("again")
+    assert st.snapshot()["probe_layouts"] == 2
+
+
+def test_a_size_zero_member_is_refused_by_the_tool():
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tf:
+        ti = tarfile.TarInfo("./gfswave.51201.bull")
+        ti.size = 0
+        tf.addfile(ti, io.BytesIO(b""))
+    with pytest.raises(ValueError):
+        B.index_from_tar(io.BytesIO(buf.getvalue()), RUN, total=len(buf.getvalue()))
+
+
+def test_the_tool_records_one_size_and_stride_when_the_layout_has_them():
+    data, _ = A.make_archive(RUN, ["13130", "41113", "51201"])          # ids of one length: equal members
+    doc = A.index_doc(RUN, data)
+    m = doc["members"]
+    assert doc["member_size"] == m[0][2] and doc["stride"] == m[1][1] - m[0][1] == m[2][1] - m[1][1]
+    assert doc["stride"] == 1536 + ((m[0][2] + 511) // 512) * 512
+    data, _ = A.make_archive(RUN, IDS)                                  # NW-HFO: a byte longer, the same blocks
+    doc = A.index_doc(RUN, data)
+    assert doc["member_size"] is None and doc["stride"] == 1536 + ((doc["members"][0][2] + 511) // 512) * 512
+    long = A.bulletin("41113", RUN) + " " * 600                          # one more 512-B block: no one stride
+    data, _ = A.make_archive(RUN, ["13130", "41113", "51201"], texts={"41113": long})
+    doc = A.index_doc(RUN, data)
+    assert doc["member_size"] is None and doc["stride"] is None
+
+
+def _index_file(tmp_path, doc):
+    p = tmp_path / "index.json"
+    p.write_text(json.dumps(doc))
+    return str(p)
+
+
+def test_the_tools_check_passes_on_a_run_of_the_same_layout(arch, tmp_path, capsys):
+    data, texts, doc, index = arch
+    calls = []
+    B.check([RUN], _index_file(tmp_path, doc), head_length=lambda url: len(data), get_range=ranged(data, calls))
+    out = capsys.readouterr().out
+    assert f"{RUN}: 3 of 3 sampled members as indexed" in out and "= index" in out
+    assert [c[1] for c in calls] == [index[s][0] - 512 for s in (IDS[0], IDS[1], IDS[-1])]
+
+
+def test_the_tools_check_names_a_run_of_another_length(arch, tmp_path, capsys):
+    data, texts, doc, index = arch
+    with pytest.raises(SystemExit):
+        B.check([RUN], _index_file(tmp_path, doc), head_length=lambda url: len(data) + 512, get_range=ranged(data))
+    assert "DIFFERS" in capsys.readouterr().out
+
+
+def test_the_tools_check_says_which_run_nomads_has_not_written(arch, tmp_path, capsys):
+    """G36 A P3-5: one line naming the run and the HTTP status, then exit 1; no traceback."""
+    data, texts, doc, index = arch
+
+    def head(url):
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+    with pytest.raises(SystemExit) as got:
+        B.check(["2026102518", RUN], _index_file(tmp_path, doc), head_length=head, get_range=ranged(data))
+    out = capsys.readouterr().out
+    assert "2026102518: not readable on AWS (404)" in out and f"{RUN}: not readable on AWS (404)" in out
+    assert "2 problem(s)" in str(got.value)
+
+
+def test_the_tools_check_counts_a_member_it_cannot_read(arch, tmp_path, capsys):
+    data, texts, doc, index = arch
+
+    def get(url, a, b):
+        raise urllib.error.URLError("reset")
+    with pytest.raises(SystemExit):
+        B.check([RUN], _index_file(tmp_path, doc), head_length=lambda url: len(data), get_range=get)
+    assert f"{RUN}: 0 of 3 sampled members" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("argv,expect", [
+    (["2026102513"], "not YYYYMMDDHH"),
+    (["20261025"], "not YYYYMMDDHH"),
+    (["2026102512", "2026102506"], "build from one run"),
+])
+def test_the_tools_command_line_refuses_bad_runs(argv, expect, monkeypatch):
+    def network(*a, **k):
+        raise AssertionError("a refused run reached the network")
+    monkeypatch.setattr(B, "build", network)
+    monkeypatch.setattr(B, "check", network)
+    with pytest.raises(SystemExit) as got:
+        B.main(argv)
+    assert expect in str(got.value)
+
+
+def test_the_tools_command_line_checks_or_builds(monkeypatch):
+    seen = []
+    monkeypatch.setattr(B, "check", lambda runs, path: seen.append(("check", runs, path)))
+    monkeypatch.setattr(B, "build", lambda run, path: seen.append(("build", run, path)))
+    B.main(["--check", "2026102512", "2026102506"])
+    B.main(["2026102512", "--out", "x.json"])
+    assert seen == [("check", ["2026102512", "2026102506"], GB.INDEX_PATH), ("build", "2026102512", "x.json")]

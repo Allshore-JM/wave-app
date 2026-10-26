@@ -15,6 +15,7 @@ import functools
 from collections import OrderedDict
 import time
 import threading
+import http.client
 import xml.etree.ElementTree as ET
 import buoy_sources
 import point_forecast
@@ -466,10 +467,14 @@ def _live_stations_cdn_headers(partial: bool = False) -> dict:
     return {"CDN-Cache-Control": "no-store"}
 
 
-# Latest GFS-wave run detection cache (runs publish ~4x/day).
-_RUN_CACHE = {"ts": 0.0, "value": (None, None)}
+# Latest GFS-wave run detection cache (runs publish ~4x/day). "failed": the last probe found nothing, asked again after
+# _RUN_NEG_TTL; "good" / "good_ts": the last run a probe found, still served through failed probes for _RUN_KEEP
+# (G36 B-2: a NOAA outage keeps the last run's tables instead of "No recent run found").
+_RUN_CACHE = {"ts": 0.0, "value": (None, None), "failed": False, "good": None, "good_ts": 0.0}
 _RUN_CACHE_TTL = 30 * 60
 _RUN_NEG_TTL = 2 * 60  # bound probe cost during a NOAA outage (SWAN wind now probes too)
+_RUN_KEEP = 12 * 3600
+_RUN_PROBE_LOCK = threading.Lock()     # one probe at a time: the other callers wait for its answer (G36 B-2)
 
 # Parsed forecast cache: (station_id, tz_name, model) -> {"ts", "data", "ttl"}.
 # Shared by GFS (.bull) and SWAN (PacIOOS bulletin) parses.
@@ -531,11 +536,11 @@ def _points_root() -> str:
 _POINT_HTTP = requests.Session()      # no retry adapter: a point's objects are asked for once
 
 
-def _points_fetch(url: str, max_bytes: int, headers=None) -> bytes:
+def _points_fetch(url: str, max_bytes: int, headers=None, retry_dropped=False) -> bytes:
     """A whole 200 body of at most max_bytes within about _POINT_FETCH_MAX_S from the request, or an exception
     (point_forecast turns it into its message). `headers` go with the request (the wind feeds name the site in a
     User-Agent). See _capped_get."""
-    return _capped_get(url, max_bytes, headers, _POINT_FETCH_TIMEOUT, _POINT_FETCH_MAX_S)
+    return _capped_get(url, max_bytes, headers, _POINT_FETCH_TIMEOUT, _POINT_FETCH_MAX_S, retry_dropped=retry_dropped)
 
 
 class HTTPStatusError(IOError):
@@ -546,19 +551,61 @@ class HTTPStatusError(IOError):
         self.status = status
 
 
-def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float, session=None, byte_range=None) -> bytes:
+_DROPPED = (http.client.RemoteDisconnected, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
+
+
+def _dropped_connection(exc) -> bool:
+    """True when `exc` (or what it wraps) says the server closed the connection before answering: requests wraps it as
+    ConnectionError(ProtocolError('Connection aborted.', RemoteDisconnected(...))). Timeouts and refused connections are
+    not this."""
+    seen, todo = set(), [exc]
+    while todo and len(seen) < 20:
+        e = todo.pop()
+        if not isinstance(e, BaseException) or id(e) in seen:
+            continue
+        seen.add(id(e))
+        if isinstance(e, _DROPPED):
+            return True
+        todo.extend(a for a in e.args if isinstance(a, BaseException))
+        todo.extend((e.__cause__, e.__context__))
+    return False
+
+
+class _Dropped(Exception):
+    """One attempt of _capped_get met a connection the server had dropped before answering (G36 B-1)."""
+
+    def __init__(self, exc):
+        super().__init__(repr(exc))
+        self.exc = exc
+
+
+def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float, session=None, byte_range=None,
+                retry_dropped=False) -> bytes:
     """A whole 200 body of at most max_bytes within about max_s seconds from the request, or an exception. A body that
     trickles is cut by shutting its socket down: closing the response from another thread would wait for the reader's
     lock, i.e. for the whole body (G22 R-A2). A short body is urllib3's IncompleteRead. Headers that trickle are not
     cut. On Linux, where the service runs, the shutdown wakes a blocked read at once; on Windows such a read may last
     to the read timeout. With `byte_range` = (start, end) the request asks for those bytes (inclusive) and the answer
-    must be a 206 of exactly that length (a 200 = the server ignored the range: refused). Another status raises
-    HTTPStatusError. `session` defaults to the points' session (one attempt, no retry adapter)."""
+    must be a 206 of exactly that length, with that Content-Range (a 200 = the server ignored the range: refused).
+    Another status raises HTTPStatusError. `session` defaults to the points' session (one attempt, no retry adapter).
+    `retry_dropped`: a connection the server dropped before answering (NOAA's bucket closes an idle keep-alive one after
+    ~5.6 s) is asked once more on a new connection within the same max_s; never after a timeout, a refusal or once an
+    answer came (G36 B-1)."""
+    deadline = time.monotonic() + max_s
+    for attempt in (0, 1):
+        try:
+            return _capped_get_once(url, max_bytes, headers, timeout, deadline, session, byte_range)
+        except _Dropped as dropped:
+            if attempt or not retry_dropped or deadline - time.monotonic() < 1.0:
+                raise dropped.exc
+            logger.info("%s dropped the connection before answering; asked again", _host(url))
+
+
+def _capped_get_once(url, max_bytes, headers, timeout, deadline, session, byte_range) -> bytes:
     if byte_range is not None:
         start, end = byte_range
         headers = dict(headers or {}, Range=f"bytes={start}-{end}")
         max_bytes = end - start + 1
-    deadline = time.monotonic() + max_s
     held = {"sock": None, "late": False, "done": False}
     guard = threading.Lock()
 
@@ -574,12 +621,18 @@ def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float, sessio
             except OSError:
                 pass
 
-    killer = threading.Timer(max_s, cut)
+    killer = threading.Timer(max(0.0, deadline - time.monotonic()), cut)
     killer.daemon = True
     killer.start()
     try:
         extra = {"headers": dict(headers)} if headers else {}        # the point callers make the call as before
-        with (session or _POINT_HTTP).get(url, timeout=timeout, stream=True, **extra) as resp:
+        try:
+            answer = (session or _POINT_HTTP).get(url, timeout=timeout, stream=True, **extra)
+        except Exception as exc:
+            if _dropped_connection(exc):
+                raise _Dropped(exc) from exc
+            raise
+        with answer as resp:
             with guard:
                 held["sock"] = getattr(getattr(resp.raw, "_connection", None), "sock", None)
                 late = held["late"]
@@ -588,6 +641,10 @@ def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float, sessio
             try:
                 if resp.status_code != (200 if byte_range is None else 206):
                     raise HTTPStatusError(resp.status_code)
+                if byte_range is not None:
+                    got = (resp.headers.get("Content-Range") or "").strip()
+                    if not got.startswith(f"bytes {start}-{end}/"):  # another part of the object (G36 A P3-4)
+                        raise IOError(f"Content-Range {got[:60]!r} for bytes {start}-{end}")
                 body = bytearray()
                 for chunk in resp.iter_content(65536):
                     body += chunk
@@ -1441,79 +1498,113 @@ def sitemap_xml():
 
 # ----------------------------- NOAA run detection ------------------------------
 
+_PROBE_HTTP = requests.Session()       # the run probe: ONE attempt per HEAD (app.HTTP's retries: 31 s on a silent host)
+_PROBE_TIMEOUT = (3, 5)                # connect, read
+_RUN_MIN_AGE = 3 * 3600                # no cycle reaches NOAA's servers sooner (the bulletins come ~5.3 h after it)
+
+
+def _probe_head(url: str):
+    """(status, Content-Length) of one HEAD, or (None, the error's name) when the host did not answer. A connection the
+    server dropped before answering (NOAA's bucket closes idle keep-alive ones) is asked once more (G36 B-1)."""
+    for attempt in (0, 1):
+        try:
+            resp = _PROBE_HTTP.head(url, timeout=_PROBE_TIMEOUT)
+        except Exception as exc:
+            if not attempt and _dropped_connection(exc):
+                continue
+            logger.debug("run probe failed for %s: %r", url, exc)
+            return None, type(exc).__name__
+        try:
+            length = int(resp.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        return resp.status_code, length
+    return None, "dropped"
+
+
 def _detect_latest_run():
     """
-    Find the most recent available GFS wave run by probing 18/12/06/00 of today and yesterday: per cycle the run's
-    bulletin archive on AWS first (a HEAD; NOAA writes it whole or not at all), then NOMADS's bulletin of 51201.
-    An archive of another length than the committed index's still counts (the bulletins then come from NOMADS, and
-    /healthz says the layout looks changed). Wrapped by the cached get_latest_run() below.
+    Find the most recent available GFS wave run (G36 B-2): the run's bulletin archive on AWS is asked for each cycle,
+    newest first (18/12/06/00Z of today, then yesterday; a cycle younger than _RUN_MIN_AGE is not asked: nothing is
+    published that soon), until one is there; then NOMADS (51201's bulletin) only for the cycles NEWER than that
+    archive (NOMADS has a cycle a minute or two before AWS). Every HEAD is one attempt with a short timeout, and a host
+    that does not answer at all is not asked again in this probe: a silent NOMADS costs one timeout, not 31 s a cycle.
+    An archive of another length than the committed index's still counts: its members are still read and checked one
+    by one (a member whose header no longer matches comes from NOMADS), and /healthz says the layout looks changed.
+    Wrapped by the cached get_latest_run() below.
     """
     now = datetime.utcnow()
-    run_hours = [18, 12, 6, 0]
-    seen = {}                                     # host -> the last answer (a status or an error), for the log
-    use_archive = BULL_ARCHIVE and bool(gfs_bulletins.INDEX)
+    cycles = []
     for delta_day in [0, 1]:
-        check_date = now - timedelta(days=delta_day)
-        yyyymmdd = check_date.strftime("%Y%m%d")
-        for hour in run_hours:
-            run_str = f"{hour:02d}"
-            probes = []
-            if use_archive:
-                probes.append(("archive", gfs_bulletins.archive_url(yyyymmdd, run_str, NOAA_BUCKET)))
-            if not NOMADS_DISABLED:
-                probes.append(("nomads", f"{NOAA_BASE}/gfs.{yyyymmdd}/{run_str}/wave/station/bulls.t{run_str}z/"
-                                         "gfswave.51201.bull"))
-            for kind, test_file in probes:        # a run counts when either has it
-                try:
-                    resp = HTTP.head(test_file, timeout=10)
-                except Exception as exc:
-                    logger.debug("run probe failed for %s: %r", test_file, exc)
-                    seen[_host(test_file)] = type(exc).__name__
-                    continue
-                if resp.status_code != 200:
-                    seen[_host(test_file)] = f"HTTP {resp.status_code}"
-                    continue
-                if kind == "archive":
-                    try:
-                        length = int(resp.headers.get("Content-Length") or 0)
-                    except (TypeError, ValueError):
-                        length = 0
-                    if length != gfs_bulletins.ARCHIVE_BYTES:
-                        detail = (f"{yyyymmdd} {run_str}Z archive is {length} B, the index "
-                                  f"{gfs_bulletins.ARCHIVE_BYTES} B")
-                        gfs_bulletins.STATS.note("layout", detail)
-                        logger.warning("run probe: %s: the bulletins may come from NOMADS", detail)
-                return yyyymmdd, run_str
+        day = now - timedelta(days=delta_day)
+        for hour in [18, 12, 6, 0]:
+            if day.replace(hour=hour, minute=0, second=0, microsecond=0) <= now - timedelta(seconds=_RUN_MIN_AGE):
+                cycles.append((day.strftime("%Y%m%d"), f"{hour:02d}"))
+    seen = {}                                     # host -> the last answer (a status or an error), for the log
+    found = None                                  # the index in `cycles` of the newest archive
+    if BULL_ARCHIVE and gfs_bulletins.INDEX:
+        for i, (ymd, hh) in enumerate(cycles):
+            url = gfs_bulletins.archive_url(ymd, hh, NOAA_BUCKET)
+            status, info = _probe_head(url)
+            if status == 200:
+                found = i
+                if info != gfs_bulletins.ARCHIVE_BYTES:
+                    detail = f"{ymd} {hh}Z archive is {info} B, the index {gfs_bulletins.ARCHIVE_BYTES} B"
+                    gfs_bulletins.STATS.probe_layout(detail)
+                    logger.warning("run probe: %s: its bulletins are checked one by one", detail)
+                else:
+                    gfs_bulletins.STATS.probe_layout(None)
+                break
+            seen[_host(url)] = info if status is None else f"HTTP {status}"
+            if status is None:
+                break                             # the archive host does not answer: not asked again in this probe
+    if not NOMADS_DISABLED:
+        for ymd, hh in (cycles if found is None else cycles[:found]):
+            url = f"{NOAA_BASE}/gfs.{ymd}/{hh}/wave/station/bulls.t{hh}z/gfswave.51201.bull"
+            status, info = _probe_head(url)
+            if status == 200:
+                return ymd, hh
+            seen[_host(url)] = info if status is None else f"HTTP {status}"
+            if status is None:
+                break                             # NOMADS does not answer: not asked again in this probe
+    if found is not None:
+        return cycles[found]
     logger.warning("run probe: no GFS-wave run found (last answers: %s)",
                    ", ".join(f"{h} {a}" for h, a in seen.items()) or "none")
     return None, None
 
 
 def get_latest_run():
-    """Cached wrapper around _detect_latest_run() — probe at most once per TTL.
-
-    The previous code re-probed NOAA (up to 8 serial HEADs) on *every* page load,
-    which dominated cold-start latency. Runs only publish ~4x/day, so a 30-minute
-    cache is safe and removes that cost from nearly all requests.
-    """
-    with _CACHE_LOCK:
+    """Cached wrapper around _detect_latest_run() — probe at most once per TTL, one probe at a time (the callers that
+    come during a probe wait for its answer: G36 B-2). A failed probe is asked again after _RUN_NEG_TTL; meanwhile the
+    last run found (if younger than _RUN_KEEP) is still served."""
+    def fresh():
         cached = _RUN_CACHE["value"]
-        # Serve a fresh success for the full TTL; serve a fresh FAILURE only for
-        # the short negative TTL so an outage costs at most one probe (up to 8
-        # serial HEADs) per ~2 min per worker instead of one per request -- now
-        # that the SWAN wind path also calls this.
-        ttl = _RUN_CACHE_TTL if cached[0] else _RUN_NEG_TTL
-        if _RUN_CACHE["ts"] > 0 and _fresh(_RUN_CACHE["ts"], ttl):
-            return cached
-    result = _detect_latest_run()
+        ttl = _RUN_NEG_TTL if _RUN_CACHE["failed"] or not cached[0] else _RUN_CACHE_TTL
+        return cached if _RUN_CACHE["ts"] > 0 and _fresh(_RUN_CACHE["ts"], ttl) else None
+
     with _CACHE_LOCK:
-        _RUN_CACHE["ts"] = time.time()
-        if result and result[0]:
-            _RUN_CACHE["value"] = result
-        else:
-            _RUN_CACHE["value"] = (None, None)
-            logger.warning("get_latest_run: no recent GFS-wave run detected")
-    return _RUN_CACHE["value"]
+        cached = fresh()
+    if cached is not None:
+        return cached
+    with _RUN_PROBE_LOCK:
+        with _CACHE_LOCK:
+            cached = fresh()                      # a probe that finished while this caller waited
+        if cached is not None:
+            return cached
+        result = _detect_latest_run()
+        with _CACHE_LOCK:
+            now = time.time()
+            _RUN_CACHE["ts"] = now
+            if result and result[0]:
+                _RUN_CACHE.update(value=result, failed=False, good=result, good_ts=now)
+            else:
+                good = _RUN_CACHE["good"]
+                keep = good is not None and now - _RUN_CACHE["good_ts"] < _RUN_KEEP
+                _RUN_CACHE.update(value=good if keep else (None, None), failed=True)
+                logger.warning("get_latest_run: no recent GFS-wave run detected%s",
+                               f"; still serving {good[0]} {good[1]}Z" if keep else "")
+            return _RUN_CACHE["value"]
 
 
 # ---------------------- GFS station wind (.spec bulletins) ----------------------
@@ -1544,7 +1635,7 @@ GFSWINDS_PREFIX = "gfswave/winds/v1"
 _GFS_WINDS_STEPS = 385
 _GFS_WINDS_RECORD = _GFS_WINDS_STEPS * 4
 _GFS_WINDS_MAX = {"index": 512 * 1024, "winds": 8 * 1024 * 1024}
-_GFS_WINDS_KEEP_RUNS = 4               # the job keeps 4; the SWAN back-fill reads a run 6-12 h old
+_GFS_WINDS_KEEP_RUNS = 4               # held here: the newest run and the SWAN back-fill's (up to ~30 h older)
 _GFS_WINDS_MISS_TTL = 120              # a run the job has not published yet (404): asked again after this
 _GFS_WINDS_ERR_TTL = 60                # any other failure
 _GFS_WINDS_LOCK = threading.Lock()
@@ -1556,11 +1647,12 @@ _GFS_WINDS_STATS = {"r2": 0, "nomads": 0, "not_in_run": 0, "run_missing": 0, "er
 
 
 def _gfs_winds_note(key, detail=None, run=None):
+    """Count one outcome; `run` (an R2 read) moves last_run only forward: the newest run served (G36 B-3d)."""
     with _GFS_WINDS_LOCK:
         _GFS_WINDS_STATS[key] += 1
         if detail:
             _GFS_WINDS_STATS["last_error"] = detail
-        if run:
+        if run and (_GFS_WINDS_STATS["last_run"] or "") < run:
             _GFS_WINDS_STATS["last_run"] = run
 
 
@@ -1605,13 +1697,14 @@ def _gfs_winds_run(date_str: str, run_str: str):
                 return table
         try:
             index = json.loads(_points_fetch(f"{root}/{GFSWINDS_PREFIX}/{run}/index.json",
-                                             _GFS_WINDS_MAX["index"]).decode("utf-8"))
-            body = _points_fetch(f"{root}/{GFSWINDS_PREFIX}/{run}/winds.bin", _GFS_WINDS_MAX["winds"])
+                                             _GFS_WINDS_MAX["index"], retry_dropped=True).decode("utf-8"))
+            body = _points_fetch(f"{root}/{GFSWINDS_PREFIX}/{run}/winds.bin", _GFS_WINDS_MAX["winds"],
+                                 retry_dropped=True)
             bad = _gfs_winds_check(index, body, run)
             if bad:
                 raise ValueError(bad)
         except Exception as exc:
-            missing = getattr(exc, "status", None) in (403, 404)
+            missing = getattr(exc, "status", None) == 404      # not published yet; a 403 is an error (G36 B-3c)
             wait = _GFS_WINDS_MISS_TTL if missing else _GFS_WINDS_ERR_TTL
             with _GFS_WINDS_LOCK:
                 _GFS_WINDS_FAILED[run] = time.monotonic() + wait
@@ -1996,7 +2089,7 @@ _BULL_MAX_BYTES = gfs_bulletins.MAX_SIZE
 
 def _bull_range(url: str, start: int, end: int) -> bytes:
     return _capped_get(url, end - start + 1, None, _BULL_RANGE_TIMEOUT, _BULL_RANGE_MAX_S, session=_BULL_HTTP,
-                       byte_range=(start, end))
+                       byte_range=(start, end), retry_dropped=True)
 
 
 def _fetch_bulletin(date_str: str, run_str: str, station_id: str):
@@ -5238,9 +5331,10 @@ def _live_after_fork():
     global _LIVE_BG_LOCK, _LIVE_BUILD_LOCK, _TZ_FINDER_LOCK, _CACHE_LOCK, _LIVE_STOP, _LIVE_WAKE, _BUOY_PROVIDERS_LOCK
     global _TIDES_LOCK, _WINDS_LOCK, _WIND_BUILD_LOCK
     gfs_bulletins.STATS.lock = threading.Lock()   # the bulletin counters (plan section 53)
-    global _GFS_WINDS_LOCK
+    global _GFS_WINDS_LOCK, _RUN_PROBE_LOCK
     _GFS_WINDS_LOCK = threading.Lock()            # the GFS winds tables (plan section 53)
     _GFS_WINDS_INFLIGHT.clear()
+    _RUN_PROBE_LOCK = threading.Lock()            # the run probe's singleflight (G36 B-2)
     _TIDES_LOCK = threading.Lock()                # the tide service resets its own locks (tide_sources)
     _WINDS_LOCK = threading.Lock()                # the wind history service and providers reset their own
     _WIND_BUILD_LOCK = threading.Lock()

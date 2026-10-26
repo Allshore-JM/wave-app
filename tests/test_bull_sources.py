@@ -57,6 +57,7 @@ def _world(monkeypatch, runs=((DATE, RUN),), nomads_runs=None, **kw):
         monkeypatch.setattr(GB, "INDEX", GB.parse_index(doc))
         monkeypatch.setattr(GB, "ARCHIVE_BYTES", doc["archive_bytes"])
     monkeypatch.setattr(app.HTTP, "head", fake.head)
+    monkeypatch.setattr(app._PROBE_HTTP, "head", fake.head)
     monkeypatch.setattr(app.HTTP, "get", fake.get)
     monkeypatch.setattr(app._BULL_HTTP, "get", fake.get)
     monkeypatch.setattr(app, "get_station_wind", lambda *a, **k: {})
@@ -67,25 +68,24 @@ def _pin_run(monkeypatch):
     monkeypatch.setattr(app, "get_latest_run", lambda: (DATE, RUN))
 
 
-def _today(monkeypatch):
+def _today(monkeypatch, hour=17, minute=40):
     real = app.datetime
 
     class _D(real):
         @classmethod
         def utcnow(cls):
-            return real(2026, 10, 25, 17, 40)
+            return real(2026, 10, 25, hour, minute)
     monkeypatch.setattr(app, "datetime", _D)
 
 
 # ---------------- the run probe ----------------
 
 def test_the_run_probe_heads_the_archive_first(monkeypatch):
-    _today(monkeypatch)
+    _today(monkeypatch)                                                # 17:40: 18Z is still to come, 12Z the newest
     fake = _world(monkeypatch)
     assert app._detect_latest_run() == (DATE, RUN)
     heads = [(c[1], c[2]) for c in fake.calls if c[0] == "HEAD"]
-    assert heads[-1] == (S3, GB.archive_url(DATE, RUN, app.NOAA_BUCKET))
-    assert (S3, GB.archive_url(DATE, "18", app.NOAA_BUCKET)) == heads[0], "the newest cycle first"
+    assert heads == [(S3, GB.archive_url(DATE, RUN, app.NOAA_BUCKET))], "one HEAD: nothing newer for NOMADS to have"
     assert not [c for c in fake.calls if c[0] == "GET"]
     assert GB.STATS.snapshot()["layout_suspect"] is None
 
@@ -100,9 +100,14 @@ def test_the_run_probe_falls_back_to_nomads(monkeypatch):
 
 def test_an_archive_of_another_length_counts_but_is_flagged(monkeypatch):
     _today(monkeypatch)
-    _world(monkeypatch, archive_length=12345)
+    fake = _world(monkeypatch, nomads_runs=(), archive_length=12345)  # NOMADS has nothing: the archive alone decides
     assert app._detect_latest_run() == (DATE, RUN)
-    assert "12345" in GB.STATS.snapshot()["layout_suspect"]
+    snap = GB.STATS.snapshot()
+    assert "12345" in snap["layout_suspect"] and snap["probe_layouts"] == 1
+    assert snap["reads"]["layout"] == 0, "a probe is not a read"
+    fake.archive_length = None                                         # the next probe sees the index's size again
+    assert app._detect_latest_run() == (DATE, RUN)
+    assert GB.STATS.snapshot()["layout_suspect"] is None and GB.STATS.snapshot()["probe_layouts"] == 1
 
 
 @pytest.mark.parametrize("flag,hosts", [("BULL_ARCHIVE", {NOMADS}), ("NOMADS_DISABLED", {S3})])
@@ -248,5 +253,229 @@ def test_a_range_read_must_be_answered_with_206(monkeypatch):
     monkeypatch.setattr(app._BULL_HTTP, "get", get)
     with pytest.raises(app.HTTPStatusError):
         app._bull_range("https://noaa-gfs-bdp-pds.s3.amazonaws.com/x", 0, 99)
-    monkeypatch.setattr(app._BULL_HTTP, "get", lambda url, headers=None, **k: A.Resp(206, b"x" * 100))
+    monkeypatch.setattr(app._BULL_HTTP, "get", lambda url, headers=None, **k: A.Resp(
+        206, b"x" * 100, {"Content-Range": "bytes 0-99/1000"}))
     assert app._bull_range("https://noaa-gfs-bdp-pds.s3.amazonaws.com/x", 0, 99) == b"x" * 100
+
+
+# ---------------- G36 fixes (plan section 53, step 7) ----------------
+
+import http.client  # noqa: E402
+import threading  # noqa: E402
+
+import requests  # noqa: E402
+from urllib3.exceptions import ProtocolError  # noqa: E402
+
+
+def _dropped():
+    """What requests raises when the server closed an idle keep-alive connection before answering."""
+    return requests.exceptions.ConnectionError(
+        ProtocolError("Connection aborted.", http.client.RemoteDisconnected("Remote end closed connection without response")))
+
+
+class _Flaky:
+    """A session whose first `n` GETs raise `exc`, then answers like `fake`."""
+
+    def __init__(self, fake_get, exc, n=1):
+        self.fake_get, self.exc, self.n, self.calls = fake_get, exc, n, 0
+
+    def get(self, url, **k):
+        self.calls += 1
+        if self.calls <= self.n:
+            raise self.exc
+        return self.fake_get(url, **k)
+
+
+def test_a_dropped_keep_alive_is_asked_once_more_and_the_archive_serves(monkeypatch):
+    """G36 B-1: NOAA's bucket closes an idle keep-alive connection after ~5.6 s; the read meeting it is asked again."""
+    _pin_run(monkeypatch)
+    fake = _world(monkeypatch)
+    flaky = _Flaky(fake.get, _dropped())
+    monkeypatch.setattr(app._BULL_HTTP, "get", flaky.get)
+    _, _, _, rows, _, err = app._parse_bull_uncached("41113", None)
+    assert err is None and len(rows) == 385 and flaky.calls == 2
+    snap = GB.STATS.snapshot()
+    assert snap["reads"]["ok"] == 1 and snap["reads"]["transport"] == 0 and snap["nomads_fallbacks"] == 0
+    assert not fake.urls(NOMADS, "GET")
+
+
+@pytest.mark.parametrize("exc,calls", [
+    (_dropped(), 2),                                                    # dropped twice: given up after the retry
+    (requests.exceptions.ReadTimeout("slow"), 1),                       # a timeout is never repeated
+    (requests.exceptions.ConnectTimeout("silent"), 1),
+    (requests.exceptions.ConnectionError(ConnectionRefusedError("refused")), 1),
+    (ConnectionError("down"), 1),
+])
+def test_only_a_dropped_connection_is_asked_again(monkeypatch, exc, calls):
+    flaky = _Flaky(lambda url, **k: A.Resp(206, b"x" * 100, {"Content-Range": "bytes 0-99/1000"}), exc, n=2)
+    monkeypatch.setattr(app._BULL_HTTP, "get", flaky.get)
+    with pytest.raises(Exception) as got:
+        app._bull_range("https://noaa-gfs-bdp-pds.s3.amazonaws.com/x", 0, 99)
+    assert got.value is exc and flaky.calls == calls
+
+
+def test_no_retry_without_the_flag_or_without_time_left(monkeypatch):
+    ok = lambda url, **k: A.Resp(200, b"{}")                           # noqa: E731
+    flaky = _Flaky(ok, _dropped())
+    monkeypatch.setattr(app, "_POINT_HTTP", flaky)
+    with pytest.raises(requests.exceptions.ConnectionError):
+        app._capped_get("https://models.test/x", 100, None, (1, 1), 5)  # the forecast points' reads: as before
+    assert flaky.calls == 1
+    flaky = _Flaky(ok, _dropped())
+    monkeypatch.setattr(app, "_POINT_HTTP", flaky)
+    with pytest.raises(requests.exceptions.ConnectionError):
+        app._capped_get("https://models.test/x", 100, None, (1, 1), 0.5, retry_dropped=True)   # < 1 s left
+    assert flaky.calls == 1
+    flaky = _Flaky(ok, _dropped())
+    monkeypatch.setattr(app, "_POINT_HTTP", flaky)
+    assert app._capped_get("https://models.test/x", 100, None, (1, 1), 5, retry_dropped=True) == b"{}"
+    assert flaky.calls == 2
+
+
+@pytest.mark.parametrize("mode", ["other range", "no range header"])
+def test_a_range_answer_must_name_the_asked_bytes(monkeypatch, mode, caplog):
+    """G36 A P3-4: a 206 of the right length from another offset (or without Content-Range) is a transport failure,
+    not a layout change."""
+    _pin_run(monkeypatch)
+    fake = _world(monkeypatch, range_mode=mode)
+    with caplog.at_level(logging.WARNING, logger=app.logger.name):
+        assert app._parse_bull_uncached("41113", None)[-1] is None      # NOMADS serves
+    snap = GB.STATS.snapshot()
+    assert snap["reads"]["transport"] == 1 and snap["reads"]["layout"] == 0 and snap["last_layout_read"] is None
+    assert any("Content-Range" in r.getMessage() for r in caplog.records)
+    assert len(fake.urls(NOMADS, "GET")) == 1
+
+
+def test_nomads_is_asked_only_for_cycles_newer_than_the_archive(monkeypatch):
+    """G36 B-2: the archive is asked for every cycle first; NOMADS only for what is newer."""
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=((DATE, "06"),), nomads_runs=((DATE, "12"), (DATE, "06")))
+    assert app._detect_latest_run() == (DATE, "12")                    # NOMADS a cycle ahead of AWS
+    assert fake.urls(S3) == [GB.archive_url(DATE, "12", app.NOAA_BUCKET), GB.archive_url(DATE, "06", app.NOAA_BUCKET)]
+    assert [u.split("/")[-2] for u in fake.urls(NOMADS)] == ["bulls.t12z"], "never for 06Z: the archive has it"
+    fake.nomads.clear()
+    fake.calls.clear()
+    assert app._detect_latest_run() == (DATE, "06")
+    assert len(fake.urls(NOMADS)) == 1
+
+
+def test_a_silent_nomads_is_asked_once_per_probe(monkeypatch):
+    """G36 B-2: a NOMADS that never answers cost 31 s per cycle, ~124 s per probe."""
+    _today(monkeypatch, hour=2, minute=30)                             # no cycle of today is 3 h old: yesterday's only
+    fake = _world(monkeypatch, runs=(("20261024", "18"),), nomads_all=requests.exceptions.ReadTimeout("silent"))
+    assert app._detect_latest_run() == ("20261024", "18")
+    assert len(fake.urls(NOMADS)) == 0, "nothing newer than the archive is old enough to be on NOMADS"
+    _today(monkeypatch, hour=8, minute=30)                             # 00Z of today could be out: NOMADS asked once
+    fake.calls.clear()
+    assert app._detect_latest_run() == ("20261024", "18")
+    assert len(fake.urls(NOMADS)) == 1
+    _today(monkeypatch)                                                # 12Z, 06Z, 00Z newer than the archive: one ask
+    fake.calls.clear()
+    assert app._detect_latest_run() == ("20261024", "18")
+    assert len(fake.urls(NOMADS)) == 1 and len(fake.urls(S3)) == 4
+
+
+def test_a_silent_archive_is_asked_once_and_nomads_decides(monkeypatch):
+    _today(monkeypatch)
+    fake = _world(monkeypatch, s3=requests.exceptions.ConnectTimeout("silent"))
+    assert app._detect_latest_run() == (DATE, RUN)
+    assert len(fake.urls(S3)) == 1 and fake.urls(NOMADS)[-1].endswith("/bulls.t12z/gfswave.51201.bull")
+
+
+@pytest.mark.parametrize("hour,minute,first", [(17, 40, "12"), (15, 0, "12"), (14, 59, "06"), (2, 0, None)])
+def test_cycles_younger_than_three_hours_are_not_asked(monkeypatch, hour, minute, first):
+    _today(monkeypatch, hour=hour, minute=minute)
+    fake = _world(monkeypatch, runs=())
+    app._detect_latest_run()
+    heads = fake.urls(S3)
+    if first is None:
+        assert heads[0] == GB.archive_url("20261024", "18", app.NOAA_BUCKET)
+    else:
+        assert heads[0] == GB.archive_url(DATE, first, app.NOAA_BUCKET)
+
+
+def test_a_dropped_connection_on_a_probe_head_is_asked_again(monkeypatch):
+    _today(monkeypatch)
+    fake = _world(monkeypatch, nomads_runs=())                        # only the archive's answer can find the run
+    state = {"n": 0}
+
+    def head(url, **k):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise _dropped()
+        return fake.head(url, **k)
+    monkeypatch.setattr(app._PROBE_HTTP, "head", head)
+    assert app._detect_latest_run() == (DATE, RUN) and state["n"] == 2 and fake.urls(NOMADS) == []
+
+
+def test_the_probe_heads_are_one_attempt_with_a_short_timeout(monkeypatch):
+    _today(monkeypatch)
+    seen = []
+
+    def head(url, **k):
+        seen.append(k.get("timeout"))
+        return A.Resp(404)
+    monkeypatch.setattr(app._PROBE_HTTP, "head", head)
+    monkeypatch.setattr(app.HTTP, "head", lambda *a, **k: pytest.fail("the retrying session is not used"))
+    app._detect_latest_run()
+    assert seen and set(seen) == {app._PROBE_TIMEOUT} and max(app._PROBE_TIMEOUT) <= 5
+    assert app._PROBE_HTTP.get_adapter("https://x").max_retries.total == 0
+
+
+def test_one_probe_at_a_time(monkeypatch):
+    """Four visitors arriving while the cached run is stale: one probe, all four get its answer."""
+    go, started, calls = threading.Event(), threading.Event(), []
+
+    def probe():
+        calls.append(1)
+        started.set()
+        go.wait(5)
+        return (DATE, RUN)
+    monkeypatch.setattr(app, "_detect_latest_run", probe)
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(app.get_latest_run())) for _ in range(4)]
+    [t.start() for t in ts]
+    assert started.wait(5)
+    go.set()
+    [t.join(5) for t in ts]
+    assert out == [(DATE, RUN)] * 4 and len(calls) == 1
+
+
+def test_a_failed_probe_keeps_serving_the_last_run(monkeypatch):
+    answers = [(DATE, RUN), (None, None), (None, None), ("20261025", "18")]
+    monkeypatch.setattr(app, "_detect_latest_run", lambda: answers.pop(0))
+    assert app.get_latest_run() == (DATE, RUN)
+    with app._CACHE_LOCK:
+        app._RUN_CACHE["ts"] -= app._RUN_CACHE_TTL + 1
+    assert app.get_latest_run() == (DATE, RUN), "NOAA unreachable: the last run's tables stay"
+    assert app._RUN_CACHE["failed"] is True and len(answers) == 2
+    assert app.get_latest_run() == (DATE, RUN) and len(answers) == 2, "the failure is remembered for 2 minutes"
+    with app._CACHE_LOCK:
+        app._RUN_CACHE["ts"] -= app._RUN_NEG_TTL + 1
+        app._RUN_CACHE["good_ts"] -= app._RUN_KEEP                     # and the last run is now too old to keep
+    assert app.get_latest_run() == (None, None) and len(answers) == 1
+    with app._CACHE_LOCK:
+        app._RUN_CACHE["ts"] -= app._RUN_NEG_TTL + 1
+    assert app.get_latest_run() == ("20261025", "18") and app._RUN_CACHE["failed"] is False
+
+
+def test_a_forked_child_gets_a_fresh_probe_lock():
+    old = app._RUN_PROBE_LOCK
+    old.acquire()
+    try:
+        app._live_after_fork()
+        assert app._RUN_PROBE_LOCK is not old and app._RUN_PROBE_LOCK.acquire(blocking=False)
+        app._RUN_PROBE_LOCK.release()
+    finally:
+        old.release()
+
+
+def test_yesterdays_same_cycle_is_asked_too(monkeypatch):
+    """The probe walks today's cycles, then yesterday's: the archive of yesterday's 12Z (not today's) is found."""
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=(("20261024", "12"),), nomads_runs=())
+    assert app._detect_latest_run() == ("20261024", "12")
+    heads = fake.urls(S3)
+    assert heads[-1] == GB.archive_url("20261024", "12", app.NOAA_BUCKET) and len(heads) == 5
+    assert heads[3] == GB.archive_url("20261024", "18", app.NOAA_BUCKET)
+    assert [u.split("/gfs.")[1][:8] for u in fake.urls(NOMADS)] == ["20261025"] * 3 + ["20261024"]

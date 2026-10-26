@@ -15,6 +15,7 @@ import json
 import os
 import re
 import threading
+import time
 
 INDEX_FORMAT = "bull-index-v1"
 INDEX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gfs_bull_index.json")
@@ -118,7 +119,10 @@ def check_text(text: str, sid: str, date_str: str, run_str: str, min_rows: int =
 
 
 class Stats:
-    """What the archive reads did, for /healthz and the log. Its own lock (re-created after a fork by the site)."""
+    """What the archive reads did, for /healthz and the log. Its own lock (re-created after a fork by the site).
+    `counts` are member reads by outcome; the run probe's view of the archive's size is kept apart (G36 A P3-1):
+    `layout_suspect` is the last probe's verdict (None when the archive had the index's size), `probe_layouts` how
+    many probes saw another size, `last_layout_read` the last member refused by its header, with its UTC time."""
 
     def __init__(self):
         self.lock = threading.Lock()
@@ -130,16 +134,25 @@ class Stats:
         self.last_error = None
         self.last_run = None
         self.layout_suspect = None
+        self.probe_layouts = 0
+        self.last_layout_read = None
 
     def note(self, reason, detail=None, run=None):
         with self.lock:
             self.counts[reason] = self.counts.get(reason, 0) + 1
             if reason == "ok":
                 self.last_run = run
-            elif detail:
+            elif detail and reason != "unknown":                 # an id typed into the address is no error of ours
                 self.last_error = f"{reason}: {detail}"
             if reason == "layout":
-                self.layout_suspect = detail
+                self.last_layout_read = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {detail}"
+
+    def probe_layout(self, detail):
+        """The run probe saw the archive: `detail` names another size than the index's, None = the index's size."""
+        with self.lock:
+            self.layout_suspect = detail
+            if detail:
+                self.probe_layouts += 1
 
     def nomads_used(self):
         with self.lock:
@@ -148,7 +161,8 @@ class Stats:
     def snapshot(self):
         with self.lock:
             return {"reads": dict(self.counts), "nomads_fallbacks": self.nomads, "last_error": self.last_error,
-                    "last_run": self.last_run, "layout_suspect": self.layout_suspect}
+                    "last_run": self.last_run, "layout_suspect": self.layout_suspect,
+                    "probe_layouts": self.probe_layouts, "last_layout_read": self.last_layout_read}
 
 
 STATS = Stats()

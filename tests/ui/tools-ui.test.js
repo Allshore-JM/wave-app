@@ -27,6 +27,7 @@ function makeEnv(opts) {
   const unitSel = el('select', 'unit', doc.body); ['US', 'Metric'].forEach((v) => { const o = el('option', null, unitSel); o.value = v; o.textContent = v; }); unitSel.value = 'US';
   const outside = el('input', 'station-search', doc.body);
   const gear = el('button', 'settingsBtn', doc.body), gearPanel = el('div', 'settingsPanel', doc.body); gearPanel.hidden = true;
+  const legendKey = el('button', 'legendBtn', doc.body), legendPanel = el('div', 'legendPanel', doc.body); legendPanel.hidden = true;
   const mapEl = el('div', 'map', doc.body); mapEl.rect = { left: 0, top: 0, width: opts.mapW || 1000, height: opts.mapH || 700 };
   const handlers = {};
   let dbl = true;
@@ -105,7 +106,7 @@ function makeEnv(opts) {
   function pick(tool) { btn.dispatch('click'); menu.querySelector('[data-tool="' + tool + '"]').dispatch('click'); }
   async function settle() { for (let i = 0; i < 400 && api.state.busy; i++) await new Promise((r) => setTimeout(r, 5)); await new Promise((r) => setTimeout(r, 5)); }
   const fan = () => [...layers].find((l) => l.kind === 'fan');
-  return { win, doc, map, api, s: api.state, A: win.AllshoreTools, menu, btn, bar, q, body, unitSel, outside, gear, gearPanel, key, clickAt, pressOn, pick, settle, layouts, starts, fetches, view, mapEl, layers, fan, points };
+  return { win, doc, map, api, s: api.state, A: win.AllshoreTools, menu, btn, bar, q, body, unitSel, outside, gear, gearPanel, legendKey, legendPanel, key, clickAt, pressOn, pick, settle, layouts, starts, fetches, view, mapEl, layers, fan, points };
 }
 
 test('the menu starts a tool: bar shown and labelled, focus on its close button, double-click zoom off; closing restores it', () => {
@@ -259,6 +260,30 @@ test('keys: Escape clears first, then closes; owned from the close button, the t
   E.key('Escape', inCtl); assert.equal(E.s.pts.length, 1, 'another control keeps its keys');
   E.btn.dispatch('click');                                                   // the tools menu open: its own Escape
   E.key('Escape'); assert.equal(E.s.pts.length, 1);
+});
+
+test('the legend key, like the gear: with its panel closed a tool takes Escape there, with it open the key keeps it (G37 F4)', () => {
+  const E = makeEnv(); E.pick('distance');
+  const two = () => { E.clickAt(21.3, -157.9); E.clickAt(21.0, -157.0); };
+  two(); E.legendPanel.hidden = false; E.key('Escape', E.legendKey);
+  assert.equal(E.s.pts.length, 2, 'the key with its panel open keeps its Escape');
+  E.legendPanel.hidden = true; E.key('Escape', E.legendKey); assert.equal(E.s.pts.length, 0, 'the key with its panel closed');
+});
+
+test('one panel at a time: the menu says it opened, and closes when another panel opens; Escape on its button closes it (G37 F2, F4)', () => {
+  const E = makeEnv(); const heard = [];
+  E.doc.addEventListener('allshore:panelopen', (e) => heard.push(e.detail && e.detail.panel));
+  E.btn.dispatch('click');
+  assert.equal(E.menu.hidden, false); assert.ok(heard.length === 1 && heard[0] === E.menu, 'the menu says it opened');
+  E.doc.dispatchEvent(new CustomEvent('allshore:panelopen', { detail: { panel: E.menu } }));
+  assert.equal(E.menu.hidden, false, 'its own word leaves it open');
+  E.doc.dispatchEvent(new CustomEvent('allshore:panelopen', { detail: { panel: E.legendPanel } }));
+  assert.equal(E.menu.hidden, true, 'another panel opening closes it'); assert.equal(E.btn.getAttribute('aria-expanded'), 'false');
+  E.btn.dispatch('click'); assert.equal(E.menu.hidden, false);
+  const ev = E.btn.dispatch('keydown', { key: 'Escape' });
+  assert.equal(E.menu.hidden, true, 'Escape on the button closes the menu'); assert.ok(ev._stop, 'and goes no further');
+  const ev2 = E.btn.dispatch('keydown', { key: 'Escape' });
+  assert.ok(!ev2._stop, 'with the menu closed the button leaves Escape alone');
 });
 
 test('touch: a double-tap on the first point keeps the outline; a double-tap finish adds no point (16 px)', () => {

@@ -71,10 +71,14 @@ function boot(o) {
   const updates = [];
   const layersControl = { _update: function () { updates.push(1); noteEl.textContent = ''; return this; } };   // Leaflet empties the list's DOM
   const code = "let liveStationsData = [];\n" + NOTE + LOADER +
-    "\nreturn { get liveStationsData() { return liveStationsData; }, get liveNoteText() { return liveNoteText; }, paintLiveNote, addLiveBuoyLayer };";
-  const api = new Function('window', 'document', 'fetch', 'performance', 'console', 'earlyFetch', 'rebuildLiveBuoyMarkers', 'measureTopRight', 'layersControl', 'AbortController', code)(
-    w, document, fetch, performance, console, earlyFetch, rebuildLiveBuoyMarkers, measureTopRight, layersControl, AbortController);
-  return { w, api, noteEl, document, docListeners, fetchCalls, marks, warns, earlyCalls, rebuilds, measures, updates, stored, layersControl, legendDot, legendAttrs };
+    "\nreturn { get liveStationsData() { return liveStationsData; }, get liveNoteText() { return liveNoteText; }, paintLiveNote, addLiveBuoyLayer, syncLegendNote," +
+    " setTide(t) { tideNoteText = t; paintTideNote(); }, setWind(t) { windNoteText = t; paintWindNote(); } };";
+  // the map's live layer (G37 F3: the live note reaches the key only while the layer is on)
+  const liveBuoyLayer = {}; const layerState = { on: !o.liveOff };
+  const map = { hasLayer: (l) => l === liveBuoyLayer && layerState.on };
+  const api = new Function('window', 'document', 'fetch', 'performance', 'console', 'earlyFetch', 'rebuildLiveBuoyMarkers', 'measureTopRight', 'layersControl', 'AbortController', 'map', 'liveBuoyLayer', code)(
+    w, document, fetch, performance, console, earlyFetch, rebuildLiveBuoyMarkers, measureTopRight, layersControl, AbortController, map, liveBuoyLayer);
+  return { w, api, noteEl, document, docListeners, fetchCalls, marks, warns, earlyCalls, rebuilds, measures, updates, stored, layersControl, legendDot, legendAttrs, layerState };
 }
 
 test('the head request is taken once and nulled; no own request; markers rebuilt once; one performance mark', async () => {
@@ -299,4 +303,32 @@ test('the dot goes when the note goes', async () => {
   assert.equal(b.legendDot.hidden, true);
   assert.equal(b.legendAttrs['data-tip'], 'Legend');
   assert.equal(b.legendAttrs['aria-label'], 'Legend');
+});
+
+test('G37 F3/F6: the tide and wind notes reach the key; the live note only while the Live buoys layer is on', async () => {
+  const b = boot({ early: { live: new Promise(() => {}) } });
+  b.api.setTide('unavailable');
+  assert.equal(b.legendDot.hidden, false, 'a tide note: the dot');
+  assert.equal(b.legendAttrs['data-tip'], 'Legend · Tide stations: unavailable');
+  b.api.setWind('NWS feed stalled');
+  assert.equal(b.legendAttrs['data-tip'], 'Legend · Tide stations: unavailable; Wind stations: NWS feed stalled');
+  b.api.setTide(''); b.api.setWind('');
+  assert.equal(b.legendDot.hidden, true, 'both cleared: no dot');
+  await new Promise((r) => setTimeout(r, 350));
+  assert.equal(b.legendAttrs['data-tip'], 'Legend · Live buoys: loading…');
+  b.layerState.on = false; b.api.syncLegendNote();                          // the page's overlayremove of the live layer
+  assert.equal(b.legendDot.hidden, true, 'the live layer off: no dot for its note');
+  assert.equal(b.legendAttrs['data-tip'], 'Legend');
+  assert.equal(b.legendAttrs['aria-label'], 'Legend');
+  assert.equal(b.noteEl.textContent, 'loading…', 'the note itself stays under its (unticked) row');
+  b.layerState.on = true; b.api.syncLegendNote();
+  assert.equal(b.legendDot.hidden, false, 'ticked again: the dot back');
+});
+
+test('G37 F3: a viewer who turned Live buoys off sees no dot from a failing live list', async () => {
+  const b = boot({ liveOff: true, early: { live: new Promise(() => {}) } });
+  await new Promise((r) => setTimeout(r, 350));
+  assert.equal(b.noteEl.textContent, 'loading…');
+  assert.equal(b.legendDot.hidden, true);
+  assert.equal(b.legendAttrs['data-tip'], 'Legend');
 });

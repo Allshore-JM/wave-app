@@ -384,12 +384,35 @@ test('section 54: the legend opens under its key, closed on load, the same toggl
   assert.equal(panel.hidden, false, 'and opens its own');
   legendBtn.dispatch('pointerdown', ptr(1, 1)); legendBtn.dispatch('click');
   assert.equal(panel.hidden, true, 'one panel at a time'); assert.equal(legendPanel.hidden, false);
+  b.page.live.style.display = 'block';                                      // a live window behind: a stray Escape would close it
   legendPanel.dispatch('keydown', { key: 'Escape' });
   assert.equal(legendPanel.hidden, true, 'Escape closes it'); assert.ok(b.doc.activeElement === legendBtn, 'the focus back on the key');
-  assert.equal(b.app.window.mode, 'min', 'Escape in the legend does not reach the window');
+  assert.equal(b.closes.length, 0, 'Escape in the legend does not reach the window behind (G37 F6)');
   legendBtn.dispatch('click'); header.dispatch('pointerdown', ptr(1, 1));
   assert.equal(legendPanel.hidden, true, 'an outside press closes it');
   assert.ok(b.app.legend && typeof b.app.legend.isOpen === 'function');
+});
+
+test('G37 F2/F4: one panel at a time without a pointer (keyboard), with the map tools\' menu too; Escape on the key closes its panel only', async () => {
+  const b = boot({}); await settle();
+  const { legendBtn, legendPanel, gear, panel } = b.page;
+  const F = b.F._internals;
+  legendBtn.dispatch('click');                                               // Enter / Space on a button: a click, no pointerdown
+  gear.dispatch('click');
+  assert.equal(panel.hidden, false); assert.equal(legendPanel.hidden, true, 'opening the gear by keyboard closes the legend');
+  assert.equal(legendBtn.getAttribute('aria-expanded'), 'false');
+  legendBtn.dispatch('click');
+  assert.equal(legendPanel.hidden, false); assert.equal(panel.hidden, true, 'and the other way round');
+  const menu = b.doc.createElement('div');                                   // the map tools' menu says it opened (tools.js)
+  b.doc.dispatchEvent(new CustomEvent(F.PANEL_OPEN, { detail: { panel: menu } }));
+  assert.equal(legendPanel.hidden, true, 'the tools menu opening closes the legend');
+  legendBtn.dispatch('click'); b.page.live.style.display = 'block';
+  b.doc.activeElement = legendBtn;
+  const ev = legendBtn.dispatch('keydown', { key: 'Escape' });
+  assert.equal(legendPanel.hidden, true, 'Escape on the key closes the legend');
+  assert.equal(b.closes.length, 0, 'and nothing behind it'); assert.ok(ev._stop);
+  const ev2 = legendBtn.dispatch('keydown', { key: 'Escape' });
+  assert.ok(!ev2._stop, 'with the legend closed the key leaves Escape to the page');
 });
 
 test('init: saved settings apply on load and win over the server (but not over the URL); a saved tz missing from the list is added to the select', async () => {

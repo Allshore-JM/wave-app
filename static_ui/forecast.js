@@ -757,17 +757,24 @@
     });
   };
 
-  // ---- the settings panel (Time Zone, Units under the gear) ----
+  // ---- the settings panel (Time Zone, Units under the gear) and the legend's (plan section 54) ----
+  // One panel open at a time (G37 F2): opening one says so (PANEL_OPEN, which the map tools' menu sends and hears too),
+  // and the others close, so a keyboard opening (no outside press) closes them as well. Escape closes the panel from
+  // inside it or from its own button (G37 F4), never reaching a window behind it.
+  var PANEL_OPEN = 'allshore:panelopen';
   function createSettings(deps) {
     var btn = deps.button, panel = deps.panel, doc = deps.document, open = false;
     if (!btn || !panel) return { open: function () {}, close: function () {}, isOpen: function () { return false; } };
     function set(on) {
       open = on; panel.hidden = !on; btn.setAttribute('aria-expanded', on ? 'true' : 'false');
+      if (on) { try { doc.dispatchEvent(new CustomEvent(PANEL_OPEN, { detail: { panel: panel } })); } catch (e) { /* old browser */ } }
       if (on && deps.focusFirst) deps.focusFirst();
     }
     btn.addEventListener('click', function () { set(!open); });
     doc.addEventListener('pointerdown', function (e) { if (open && !panel.contains(e.target) && !btn.contains(e.target)) set(false); });
+    doc.addEventListener(PANEL_OPEN, function (e) { if (open && !(e && e.detail && e.detail.panel === panel)) set(false); });
     panel.addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.stopPropagation(); set(false); btn.focus(); } });
+    btn.addEventListener('keydown', function (e) { if (open && e.key === 'Escape') { e.stopPropagation(); set(false); } });
     return { open: function () { set(true); }, close: function () { set(false); }, isOpen: function () { return open; } };
   }
 
@@ -1152,7 +1159,7 @@
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
-      createLoader: createLoader, ttlOf: ttlOf, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings,
+      createLoader: createLoader, ttlOf: ttlOf, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
       createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,

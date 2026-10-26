@@ -78,3 +78,45 @@ console; sheet.py).
 Owner awareness: the dark label box is faint over the darkest ocean imagery (its white text reads); on phones an open
 legend covers part of the overlay selector at the top-left while it is open (a dropdown, like the gear's panel); the
 SVG key and ruler are drawn, the gear is a text glyph (unchanged).
+
+## Step 3: G37 (one fresh reviewer, Opus 5.5 HIGH)
+
+On `2ccfa41..43858b7` and the test site @ a5179c7 (report scratch `g37/r/g37-report.md`; probes `g37/h`). **0 P0, 0 P1, 2 P2,
+4 P3.** The author confirmed each by code reading and the reviewer's screenshots.
+
+- **F1 (P2)** The quick labels are cut off under a maximised forecast window (72 px; the label runs 70-89 px) and under any
+  window whose top is above ~92 px (the tablet's wind window): the labels belong to the top-right corner (z 1000) and the
+  windows lie above it. Worst for the key, whose label carries the note while the legend is closed.
+- **F2 (P2)** One panel at a time fails by keyboard: Enter on the key, Tab to Tools, Enter -> the legend and the tools menu
+  open together (the menu covers the list); Escape closes the menu only. Each toggle closes only on an outside pointerdown
+  (forecast.js createSettings, tools.js setMenu). The gear + tools pair had this before; the legend panel is the one that
+  lies under the others.
+- **F3 (P3)** The dot and the key's label report the Live buoys note while the Live buoys layer is unticked (tide and wind
+  clear theirs when their layers are off); a failing live list keeps the dot on every load for a viewer who turned the layer off.
+- **F4 (P3)** Escape on the key: (a) the legend open, focus on the key: Escape closes a window behind instead (createSettings
+  listens on the panel only; the gear has the same pattern since section 26); (b) a map tool running, focus on the key:
+  Escape does nothing (tools.js ownsKeys knows the tools button and the closed gear, not the key).
+- **F5 (P3)** The legend panel is always exactly its 180-px min-width (absolutely positioned in a 38/44-px host); the
+  comment's "as wide as the list" and the max-width do nothing. Nothing is cut off (notes wrap).
+- **F6 (P3, tests)** Survivors: createSettings' Escape `stopPropagation` removed (the "does not reach the window" assertion
+  cannot fail: the window boots minimised); the legend dropped from `panels`; syncLegendNote counting only the live note
+  (only the byte golden notices the last two).
+
+Held up: suites (pytest 1,553, Node 523); the `--ww-top` floor (mutants at 64-110 px fail the sweep; 112 is the threshold, 120
+ships); the sweep's new `minus()` can only under-report free space; C1 (the list rebuilds inside the panel, no Leaflet
+height or scrollbar), C3, C5 (no TDZ, every note path through a painter), C7 (places, graticule, tools, overlay), C8, C10.
+Not checked: real iOS/Android, real screen readers, real Windows High Contrast.
+
+### Fix round scope (step 4, UI 1.26.1)
+1. F1: raise the corner (z 2600) while a quick label shows: `:has(.icon-btn[data-tip]:hover)` under `(hover: hover)` and
+   `:has(.icon-btn[data-tip]:focus-visible)`; test-site check: maximised window + hover / keyboard focus on each button,
+   the label wholly visible.
+2. F2: one rule for the three toggles: when one opens, the other two close (createSettings gains a shared registry; the
+   page's tools menu joins it through an event tools.js dispatches when its menu opens, and closes on the others').
+3. F3: the live note counts for the dot and label only while the Live buoys layer is on; syncLegendNote re-run on the live
+   layer's overlayadd / overlayremove.
+4. F4: createSettings closes on Escape with the focus on its own button too (stopPropagation); tools.js ownsKeys gives the
+   key with its panel closed the tool's Escape, like the gear.
+5. F5: the comment corrected (a fixed 180-px panel; the notes wrap).
+6. F6: the window test expands the window before Escape in the panel; behaviour tests for the legend in the corner's raise
+   and for the tide and wind notes reaching the dot; mutants re-run.

@@ -442,3 +442,39 @@ occurred); the trickle case (K-1) and DNS stalls, which no read timeout bounds.
    docstring that its 403 = `missing` is a counter only (both outcomes fall back to NOMADS).
 Then the test site (MAX: the reviewer's fake-clock probe edge and stand-ins against the site's code, `/healthz`, the
 answers unchanged), then step 8 production and the job-only KEEP 8 push.
+
+## Fix round 3, 2026-10-26
+
+Opus 5.5, effort HIGH, on `feat/gfs-bulletins` @ 69a79bf (app.py, gfs_bulletins.py, tools/build_bull_index.py, README,
+two test files; no client file). Every item of the scope:
+
+- **F2** One rule for both retries: `_RETRY_MIN_LEFT_S` 1 s and `_time_left_to_retry(deadline)`. `_capped_get` uses it
+  where it had the literal 1.0; `_probe_head` now asks a dropped HEAD or a 429 / 500 / 502 / 503 / 504 once more only
+  while a second of the probe is left, so no HEAD starts past the budget.
+- **F1** Tests for what the fresh check's survivors changed: the second ask for each of 429 / 500 / 502 / 503 / 504;
+  an archive 301 / 400 / 410 / 501 stops the scan (nothing older asked, NOMADS off: the probe fails); NOMADS 301 / 410
+  and a 500 twice stop NOMADS; a late drop gives the retry the time left (`(3, 5)` then `(2.0, 2.0)`); a drop or a 503
+  with 0.5 s or less of the probe left is one HEAD, and through the probe a late 503 on the newest archive ends the
+  scan; a retry's body that trickles past the first `max_s` is cut ("too slow"); a `Content-Range` with the same start
+  and another end is refused; `/healthz` `gfs.run` after a good probe (each field from its own source), with the kept
+  run expired (`run` null, `good_run` set) and before any probe (all null, `failed` false); the clip's 0.1-s floor and
+  its cap.
+- **F3** README (the probe paragraph: the five statuses, the second of time left, "no HEAD is started after 15 s", the
+  12-hour waiters, the archive 403; the dropped-connections line; `gfs.run`: none past 12 hours, null before the first
+  probe), both probe docstrings, the comment on `_PROBE_RETRY_STATUS`; the tool prints each error through `_why()` (the
+  HTTP code, else the text with its line breaks folded), so a garbage status line is one line. Correction to "Fix round
+  2" above: its Content-Range test is a range from another start (15360 for 1536), not another end; the new test above
+  is the one with another end.
+- **F4** The probe's archive loop says why only a 404 is "not there" (NOAA's bucket lists publicly and answers 404 for a
+  missing key; a 403 more likely refuses the site's address); `archive_bulletin`'s docstring says its 403 = `missing` is
+  a counter only (the caller asks NOMADS after `missing` and `transport` alike).
+
+Tests: the two bulletin test files 155 passed; the full suite 1,552 passed. Mutants (scratch copies, never during a
+full run): the author's 13 (`g36/fix3/mut10.py`: the fresh check's nine kinds plus this round's own: a 5xx or a drop
+asked again without the time check, no minimum left, the tool's raw error) 13 killed; the reviewer's 55
+(`g36/fix3/rmut/scripts/mutants.py`, its anchors moved to this round's lines) 53 killed; the 2 left are the two the
+reviewer called equivalent (L5: `cycles[:None]` is every cycle; D9: the exception's args already carry every real
+drop). Its K1/K2 (the clip's 0.1-s floor) needed the new clip test, its T4 a new anchor (the tool's print line moved).
+
+Next: the test site (MAX: the reviewer's fake-clock probe edge and stand-ins against the site's code, `/healthz`, the
+answers unchanged), then step 8 production and the job-only KEEP 8 push.

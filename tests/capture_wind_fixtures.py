@@ -21,6 +21,7 @@ import io
 import json
 import os
 import sys
+import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -90,19 +91,28 @@ def main():
     page["@graph"] = keep
     page.pop("pagination", None)
     save("nws_stations.json", json.dumps(page, indent=1).encode())
-    save("madis_hi.html", madis_cut(get_slow(W.MADIS_HI_URL)))
+    save("madis_hi.html", madis_cut(get_slow(MADIS_NEWEST_URL)))
+    # plan section 55: the live poll (every record RECEIVED in the last hour) and one back-fill window (the records
+    # OBSERVED in the two hours before the last full hour); the window's end is in its file name's place in the tests
+    save("madis_live.html", madis_cut(get_slow(W.MADIS_HI_URL), MADIS_HIST_KEEP))
+    end = int(time.time()) // 3600 * 3600
+    save("madis_window.html", madis_cut(get_slow(W.madis_window_url(W.MADIS_HI_URL, end)), MADIS_HIST_KEEP))
+    print("madis_window.html: the window ending", W.iso_z(end))
 
 
 MADIS_KEEP = ("001HE", "016HE", "029HI", "PHNL", "PHJR")
+MADIS_HIST_KEEP = ("001HE", "016HE", "029HI", "011HI", "AU956", "PHNL")
+# madis_hi.html's query (section 52 D: the newest record of each station; the live poll asks every record since 55)
+MADIS_NEWEST_URL = W.MADIS_HI_URL.replace("&recwin=4&timefilter=1&", "&recwin=3&timefilter=0&")
 
 
-def madis_cut(raw):
+def madis_cut(raw, keep=MADIS_KEEP):
     """The MADIS viewer's answer (plan section 52 D) cut to the HTML around the table, its header and the lines of
-    MADIS_KEEP (the airports are listed twice: the newest record wins)."""
+    keep (the airports are listed twice: the newest record wins)."""
     out = []
     for line in raw.decode("latin-1").splitlines(keepends=True):
         cells = [c.strip() for c in line.replace("<h3><PRE>", "").split(",")]
-        if len(cells) < 3 or cells[0] == "STAID" or cells[0] in MADIS_KEEP:
+        if len(cells) < 3 or cells[0] == "STAID" or cells[0] in keep:
             out.append(line)
     return "".join(out).encode("latin-1")
 

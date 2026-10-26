@@ -1661,7 +1661,9 @@ naming the site as aviationweather.gov asks):
   stations' backup** (plan section 52, 2026-10-24: the NWS API's observations stopped updating nationwide on
   2026-10-22 13:20 UTC while MADIS, its upstream, kept the data; every NWS flag read "No recent reading"): one GET of
   MADIS's public surface viewer every 5 minutes (`WIND_MADIS_URL`, default the Hawaii query of
-  `madisXmlPublicDir`; the newest report of each of ~300 Hawaii stations in the last hour, CSV in an HTML page, 4-40 s,
+  `madisXmlPublicDir`; since plan section 55 every report of the ~300 Hawaii stations RECEIVED in the last hour
+  (`timefilter=1`, `recwin=4`: ~290 KB; MADIS's 15-60 minute latency is caught, polls 5 minutes apart miss nothing),
+  CSV in an HTML page, 4-40 s,
   its own fetch with a 45-s read timeout and 90 s for the whole answer), parsed by its header's column names (K to C, the altimeter in hPa, -99999
   missing, QC X / B dropped); the snapshot's NWS stations among them become relay entries (`alias_of: "nws:<id>"`), and
   the merged table takes the newer of a station's NWS API reading and its MADIS one (the gauges' NDBC-relay rule); a
@@ -1672,8 +1674,18 @@ naming the site as aviationweather.gov asks):
   API or MADIS) and the NWS feed itself has brought nothing for 3 h, the time in the stations' own zone, named ("Oct 22,
   3:20 AM HST"); after a restart during the outage the feed's newest time is unknown and the note reads "NWS feed: no
   recent readings". A reading that stands alone in the window's charts (one MADIS report) is drawn as a dot. A station's
-  window falls back on its latest MADIS report (one row, with temperature, dew point, humidity and pressure; "via
-  MADIS") when the NWS API has nothing newer. Every NWS-network station's window carries NOAA's accuracy disclaimer
+  window shows its MADIS readings of the last 24 hours (plan section 55, owner 2026-10-26: kept in the site server, no
+  job): every reading of the snapshot's NWS stations the live polls bring is kept 25 h in compact arrays
+  (`MadisSeries`, ~64 bytes a reading, a few MB in all); after a start the server asks the 24 hours it has not seen by
+  OBSERVATION time, twelve 2-hour windows (`time=YYYYMMDD_HH00&minbck=-119`: the records observed in (T - 2 h, T]),
+  newest first, one request a refresh, a refresh due 30 s after the last while windows remain (the live poll keeps its
+  5-minute turn), so the 24 hours fill in about 12-20 minutes; a window that fails 3 times is given up (its hours stay
+  missing); live polls more than 50 minutes apart (failures) queue the hours between them again. The window's rows are
+  the NWS API's and MADIS's, one per time, the NWS API's where both have one ("via" "madis" or "nws+madis"; the window
+  says "Readings from NOAA MADIS (the NWS API has none in the last 24 hours)." or "Readings from the NWS API and NOAA
+  MADIS."); while the back-fill runs the answer says `filling` (the window: "The earlier hours are still loading.") and
+  is cached a minute. `/healthz` shows MADIS's `hist_stations`, `hist_rows`, `hist_oldest_age_s` and `backfill`
+  ("n of 12", then "done"; `backfill_left`, `backfill_gave_up`). Every NWS-network station's window carries NOAA's accuracy disclaimer
   for mesonet observations (`disclaimer`; MADIS's restrictions page asks for one). MADIS asks users to notify NOAA before placing its data on web pages: the
   providers used here (APRSWXNET / CWOP, RAWS, HADS, MesoWest incl. HECO, U-HAWAII) are its public, full-distribution
   category. They ride on the live-buoy

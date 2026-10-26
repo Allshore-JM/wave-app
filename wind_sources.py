@@ -17,7 +17,7 @@ lists, keep-last on a failed fetch, the shared refresh runner and the fork reset
   METAR  one GET of aviationweather.gov's metars.cache.csv.gz (the last ~80 minutes of reports, whole knots)
   COOPS  one datagetter request per gauge (product=wind&date=latest, 6-minute readings), a few at a time, PACED
   NWS    one api.weather.gov request per station (its newest observations of the last 2 hours), PACED the same way
-  MADIS  one GET of NOAA MADIS's public surface viewer (the newest report of every Hawaii station in the last hour):
+  MADIS  one GET of NOAA MADIS's public surface viewer (every report of every Hawaii station received in the last hour):
          the NWS stations' BACKUP (plan section 52 D; the NWS API's ingest stalled nationwide on 2026-10-22 while MADIS,
          its upstream, kept the data). Its entries are relays (alias_of "nws:<id>"): the merged table takes the newer
          of a station's NWS reading and its MADIS one, as it takes a gauge's NDBC relay.
@@ -41,6 +41,8 @@ import threading
 import time
 import weakref
 import zlib
+from array import array
+from bisect import bisect_left
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
@@ -67,8 +69,8 @@ ATTRIBUTION = {"ndbc": "NOAA National Data Buoy Center (ndbc.noaa.gov)",
                       "other networks via MADIS",
                "madis": "NOAA MADIS (madis.ncep.noaa.gov): HECO / HELCO / MECO, University of Hawaii, RAWS, CWOP and "
                         "other networks",
-               "nws+madis": "NWS API observations (api.weather.gov) and, for the latest reading, NOAA MADIS "
-                            "(madis.ncep.noaa.gov): HECO / HELCO / MECO, University of Hawaii, RAWS, CWOP and other networks"}
+               "nws+madis": "NWS API observations (api.weather.gov) and NOAA MADIS (madis.ncep.noaa.gov): HECO / "
+                            "HELCO / MECO, University of Hawaii, RAWS, CWOP and other networks"}
 # NOAA's restrictions page for MADIS asks pages that show mesonet observations to carry an accuracy disclaimer: shown in
 # the window of every NWS-network station (HECO / UH / RAWS / CWOP ...), whichever feed brought the reading (G35).
 MESONET_DISCLAIMER = ("NOAA and its data providers disclaim liability of any kind whatsoever, including, without "
@@ -108,14 +110,31 @@ NDBC_KEEP_S = 6 * 3600                         # an NDBC reading kept this long 
 WIND_REFRESH_WORKERS = 2                       # the wind feeds' own refresh threads (never the live buoys' workers: A-5)
 NWS_QC_REJECTED = ("X", "B")                   # MADIS quality control: rejected / subjectively bad values are dropped
 # NOAA MADIS's public surface viewer (no account: the "public" categories, which hold every provider the NWS stations
-# come from): the newest record of each Hawaii station in the last 59 minutes, as CSV in an HTML <PRE>; ~53 KB, 4-40 s
+# come from): EVERY record of the Hawaii stations RECEIVED in the last 59 minutes (timefilter=1: receipt time; recwin=4:
+# all records, not the newest per station), as CSV in an HTML <PRE>; ~290 KB, 4-40 s. Receipt time catches MADIS's
+# 15-60 minute latency (the records reach ~2 h back in observation time), so polls 5 minutes apart miss nothing (55).
 MADIS_HI_URL = ("https://madis-data.ncep.noaa.gov/madisPublic1/cgi-bin/madisXmlPublicDir?rdr=&time=0&minbck=-59"
-                "&minfwd=0&recwin=3&timefilter=0&dfltrsel=2&state=HI&latll=0.0&lonll=0.0&latur=90.0&lonur=0.0&stanam="
+                "&minfwd=0&recwin=4&timefilter=1&dfltrsel=2&state=HI&latll=0.0&lonll=0.0&latur=90.0&lonur=0.0&stanam="
                 "&stasel=0&pvdrsel=0&varsel=2&qctype=0&qcsel=0&xml=5&csvmiss=0")
 MADIS_MAX = 2 * 1024 * 1024
-MADIS_TTL_S = 300                              # the viewer is asked every 5 minutes (one request)
+MADIS_TTL_S = 300                              # the live poll every 5 minutes (one request)
 MADIS_KEEP_S = 6 * 3600                        # a MADIS reading kept this long (a station missing from one answer keeps it)
 MADIS_MISSING = -99999.0
+# The 24-hour history (plan section 55): every reading of the snapshot's NWS stations the live polls and the back-fill
+# bring is kept MADIS_HIST_S (the window's 24 h and an hour's margin). After a start (and after a gap in the live polls
+# longer than MADIS_GAP_S) the hours the server has not seen are asked by OBSERVATION time, MADIS_WINDOW_S at a time
+# (time=YYYYMMDD_HH00&minbck=-119 returns the records observed in (T - 2 h, T]: two hourly files), newest window first,
+# ONE request a refresh, a refresh due MADIS_BACKFILL_TTL_S after the last while windows remain (the live poll keeps its
+# 5 minutes); a window that fails MADIS_BACKFILL_TRIES times is given up (its hours stay missing).
+MADIS_HIST_S = HISTORY_S + 3600
+MADIS_WINDOW_S = 2 * 3600
+MADIS_BACKFILL_WINDOWS = HISTORY_S // MADIS_WINDOW_S
+MADIS_BACKFILL_TTL_S = 30
+MADIS_BACKFILL_TRIES = 3
+MADIS_LIVE_EVERY_S = MADIS_TTL_S * 0.9         # the live poll's turn (the base class's refresh_at of its 5 minutes)
+MADIS_GAP_S = 50 * 60                          # live polls further apart than this: the hours between are asked again
+MADIS_HIST_FIELDS = ("s", "g", "d", "at", "dp", "rh", "p")   # a history row's values, in the store's order
+MADIS_HIST_INTS = ("d", "rh")
 NWS_UNITS = {"wmoUnit:km_h-1": 1 / 3.6, "wmoUnit:m_s-1": 1.0, "wmoUnit:[kn_i]": KT_MS, "wmoUnit:mi_h-1": 0.44704}
 NWS_TEMP_UNITS = {"wmoUnit:degC": (1.0, 0.0), "wmoUnit:degF": (5 / 9, -32 * 5 / 9), "wmoUnit:K": (1.0, -273.15)}
 NWS_PRESSURE_UNITS = {"wmoUnit:Pa": 0.01, "wmoUnit:hPa": 1.0, "wmoUnit:mbar": 1.0}
@@ -571,14 +590,14 @@ def _nws_temp(q):
 
 # ---------------------------------------------------------------------------------------------- the snapshot
 
-def parse_madis_csv(text, now=None, stats=None):
-    """MADIS's surface viewer answer (xml=5: CSV lines in an HTML <PRE>) -> {station id: reading with weather}. The
-    columns are found by the header line's names (STAID, OBDATE MM/DD/YYYY, OBTIME HH:MM UTC, then each variable
-    followed by its QC descriptor: TD dew point K, RH %, T air K, DD direction, FF / FFGUST m/s, ALTSE altimeter Pa);
-    -99999 is missing; a value whose QC is X or B (rejected) is dropped. A station listed twice keeps its newest record;
-    a record more than 10 minutes in the future is dropped. stats (a dict, optional) gets "rows": the station records
-    read (a valid time and id) and "wind": the stations with a wind reading. Raises ValueError when the answer holds no
-    header (an error page, a changed format)."""
+def parse_madis_rows(text, now=None, stats=None):
+    """MADIS's surface viewer answer (xml=5: CSV lines in an HTML <PRE>) -> {station id: [readings with weather,
+    ascending, one per observation time]}. The columns are found by the header line's names (STAID, OBDATE MM/DD/YYYY,
+    OBTIME HH:MM UTC, then each variable followed by its QC descriptor: TD dew point K, RH %, T air K, DD direction,
+    FF / FFGUST m/s, ALTSE altimeter Pa); -99999 is missing; a value whose QC is X or B (rejected) is dropped. A
+    station's two records of one time keep the later line; a record more than 10 minutes in the future is dropped.
+    stats (a dict, optional) gets "rows": the station records read (a valid time and id) and "wind": the stations
+    with a wind reading. Raises ValueError when the answer holds no header (an error page, a changed format)."""
     head, out, rows = None, {}, 0
     for raw in text.splitlines():
         line = re.sub(r"<[^>]*>", "", raw).strip()
@@ -623,13 +642,88 @@ def parse_madis_csv(text, now=None, stats=None):
         alt = val("ALTSE")
         at, dp = _temp(k(val("T"))), _temp(k(val("TD")))
         r = with_weather(r, at=at, dp=dp, rh=_pct(val("RH")), p=_hpa(alt / 100.0 if alt is not None else None))
-        if sid not in out or out[sid]["t"] < r["t"]:
-            out[sid] = r
+        out.setdefault(sid, {})[r["t"]] = r
     if head is None:
         raise ValueError("MADIS: no table in the answer")
     if stats is not None:
         stats.update(rows=rows, wind=len(out))
-    return out
+    return {sid: [by_t[t] for t in sorted(by_t)] for sid, by_t in out.items()}
+
+
+def parse_madis_csv(text, now=None, stats=None):
+    """parse_madis_rows' newest reading of each station: {station id: reading with weather}."""
+    return {sid: rows[-1] for sid, rows in parse_madis_rows(text, now, stats).items()}
+
+
+def madis_window_url(url, end):
+    """The viewer's url (any of its queries) asking for the records OBSERVED in (end - 2 h, end] (end: epoch seconds,
+    on the hour): time=YYYYMMDD_HH00, minbck=-119, minfwd=0, recwin=4 (all records), timefilter=0 (observation time).
+    Every other parameter of url is kept (the state, the variables, the CSV form)."""
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+    parts = urlsplit(url)
+    q = parse_qsl(parts.query, keep_blank_values=True)
+    want = {"time": time.strftime("%Y%m%d_%H%M", time.gmtime(end)), "minbck": "-119", "minfwd": "0",
+            "recwin": "4", "timefilter": "0"}
+    seen, out = set(), []
+    for k, v in q:
+        if k in want:
+            if k in seen:
+                continue
+            v = want[k]
+        seen.add(k)
+        out.append((k, v))
+    out += [(k, v) for k, v in want.items() if k not in seen]
+    return urlunsplit(parts._replace(query=urlencode(out, safe="_")))
+
+
+class MadisSeries:
+    """One station's readings in two arrays, ascending by time (t: epoch seconds as doubles; v: MADIS_HIST_FIELDS per
+    reading, NaN for a missing value): ~64 bytes a reading, so the 24 hours of ~300 stations stay a few MB."""
+    __slots__ = ("t", "v")
+    N = len(MADIS_HIST_FIELDS)
+
+    def __init__(self):
+        self.t = array("d")
+        self.v = array("d")
+
+    def __len__(self):
+        return len(self.t)
+
+    def add(self, r):
+        """A reading in its place; a reading of a time already held replaces it (a corrected report)."""
+        t = float(r["t"])
+        vals = array("d", [math.nan if r.get(k) is None else float(r[k]) for k in MADIS_HIST_FIELDS])
+        i = bisect_left(self.t, t)
+        n = self.N
+        if i < len(self.t) and self.t[i] == t:
+            self.v[i * n:(i + 1) * n] = vals
+            return False
+        self.t.insert(i, t)
+        self.v[i * n:i * n] = vals
+        return True
+
+    def prune(self, cut):
+        """Drops the readings older than cut; returns how many."""
+        i = bisect_left(self.t, float(cut))
+        if i:
+            del self.t[:i]
+            del self.v[:i * self.N]
+        return i
+
+    def rows(self, since):
+        """The readings at or after since, as reading dicts (the weather fields only where held)."""
+        out, n = [], self.N
+        for i in range(bisect_left(self.t, float(since)), len(self.t)):
+            r = {"t": int(self.t[i])}
+            for j, k in enumerate(MADIS_HIST_FIELDS):
+                x = self.v[i * n + j]
+                if math.isnan(x):
+                    if k in ("s", "g", "d"):
+                        r[k] = None
+                    continue
+                r[k] = int(x) if k in MADIS_HIST_INTS else x
+            out.append(r)
+        return out
 
 
 def load_stations(path):
@@ -923,30 +1017,59 @@ class NwsProvider(PacedProvider):
 
 
 class MadisProvider(WindProvider):
-    """The NWS stations' backup (plan section 52 D): one GET of NOAA MADIS's public surface viewer, the newest report
-    of every station of the state in the last hour; the snapshot's NWS stations among them become relay entries
-    (alias_of "nws:<id>"), so the merged table shows the newer of a station's NWS API reading and its MADIS one. Each
-    station keeps its last MADIS reading until a newer one comes or it is MADIS_KEEP_S old; the weather of the report
-    (air, dew point, humidity, altimeter) is kept for the station's window (row()). A failed or unreadable answer
-    raises (keep-last). fetch: a slower one than the other feeds' (the viewer takes 4-40 s to answer)."""
+    """The NWS stations' backup (plan section 52 D) and their 24 hours (plan section 55). The live poll (every 5 min):
+    one GET of NOAA MADIS's public surface viewer, every report of the state received in the last hour; the snapshot's
+    NWS stations among them become relay entries (alias_of "nws:<id>"), so the merged table shows the newer of a
+    station's NWS API reading and its MADIS one. Each station keeps its last MADIS reading until a newer one comes or it
+    is MADIS_KEEP_S old; the weather of the report (air, dew point, humidity, altimeter) is kept for the station's window
+    (row()). Every reading also goes into the station's history (hist()), kept MADIS_HIST_S. With backfill, the hours
+    not yet seen (24 h after a start; the hours between two live polls further apart than MADIS_GAP_S) are asked by
+    observation time, one 2-hour window a refresh (refresh_due: MADIS_BACKFILL_TTL_S after the last while windows
+    remain), newest first. A failed or unreadable LIVE answer raises (keep-last); a failed window is tried again,
+    MADIS_BACKFILL_TRIES times in all, then given up. fetch: a slower one than the other feeds' (the viewer takes 4-40 s
+    to answer; a window 35-55 s)."""
     source = "MADIS"
     source_name = "NOAA MADIS"
     source_url = "https://madis.ncep.noaa.gov"
     attribution_text = "Source: " + ATTRIBUTION["madis"]
     list_ttl_sec = MADIS_TTL_S
 
-    def __init__(self, stations, fetch, url=MADIS_HI_URL):
+    def __init__(self, stations, fetch, url=MADIS_HI_URL, backfill=False):
         super().__init__(stations, fetch)
         self.url = url
+        self.backfill = backfill
         self._kept = {}                         # local id -> the latest reading (with weather)
         self._newest_t = None                   # the newest reading MADIS ever brought (G35 F5: the stall rule, /healthz)
         self._last_rows = self._last_wind = None   # the last answer's station records / those with a wind reading
+        self._hist_lock = threading.Lock()      # the history is read by request threads (WindHistory) while a refresh writes
+        self._hist = {}                         # local id -> MadisSeries
+        self._bf = []                           # back-fill windows still to ask: [end epoch, tries], newest first
+        self._bf_queued = self._bf_done = self._bf_gave_up = 0
+        self._bf_next = 0.0                     # when the next window's refresh is due
+        self._live_tried = None                 # the last live poll asked (any outcome)
+        self._live_ok = None                    # the last live poll that answered
 
+    # -- the refresh (on the wind runner, under the base class's singleflight)
     def _fetch_stations(self):
         now = buoy_sources.time.time()
+        try:
+            if self.backfill and self._live_tried is None and not self._bf_queued:
+                self._queue(now - HISTORY_S, now)                 # the 24 hours before the first poll
+            if (not self.backfill or not self._bf or self._live_tried is None
+                    or now - self._live_tried >= MADIS_LIVE_EVERY_S):
+                self._live(now)
+            else:
+                self._window(now)
+        finally:
+            self._bf_next = now + MADIS_BACKFILL_TTL_S
+        self._prune(now)
+        return [self._entry(local, r, {"alias_of": "nws:" + local}) for local, r in sorted(self._kept.items())]
+
+    def _live(self, now):
+        self._live_tried = now
         body = self._fetch(self.url, MADIS_MAX, HEADERS)
         stats = {}
-        obs = parse_madis_csv(body.decode("latin-1"), now, stats)
+        obs = parse_madis_rows(body.decode("latin-1"), now, stats)
         self._last_rows, self._last_wind = stats.get("rows"), stats.get("wind")
         if not stats.get("rows"):
             # seen 2026-10-25 on the test site (re-check R1-2): the header and no station record at all; the kept
@@ -955,27 +1078,126 @@ class MadisProvider(WindProvider):
         elif not stats.get("wind"):
             # seen 2026-10-24 (G35 F5): an answer whose every wind field is -99999; the kept readings stay, but say so
             _log.warning("MADIS: %d station records and not one wind reading (the kept readings stay)", stats["rows"])
-        for local, r in obs.items():
-            old = self._kept.get(local)
-            if local in self.stations and (old is None or r["t"] > old["t"]):
-                self._kept[local] = r
-                if self._newest_t is None or r["t"] > self._newest_t:
-                    self._newest_t = r["t"]
+        self._take(obs, now)
+        if self.backfill and self._live_ok is not None and now - self._live_ok > MADIS_GAP_S:
+            # the live polls stopped for a while (failures, a stalled runner): the hours between are asked again
+            self._queue(self._live_ok - 3600, now)
+        self._live_ok = now
+
+    def _window(self, now):
+        end, tries = self._bf[0]
+        try:
+            body = self._fetch(madis_window_url(self.url, end), MADIS_MAX, HEADERS)
+            obs = parse_madis_rows(body.decode("latin-1"), now)
+        except Exception as e:
+            self._bf[0][1] = tries = tries + 1
+            if tries >= MADIS_BACKFILL_TRIES:
+                self._bf.pop(0)
+                self._bf_gave_up += 1
+                _log.warning("MADIS: the window ending %s given up after %d tries (%s: %s)", iso_z(end), tries,
+                             type(e).__name__, e)
+            else:
+                _log.info("MADIS: the window ending %s failed (%s: %s); asked again", iso_z(end), type(e).__name__, e)
+            return
+        self._bf.pop(0)
+        self._bf_done += 1
+        n = self._take(obs, now)
+        _log.info("MADIS: the window ending %s read (%d new readings; %d windows left)", iso_z(end), n, len(self._bf))
+
+    def _queue(self, start, end):
+        """The 2-hour windows covering (start, end], ends on the hour, newest first, MADIS_BACKFILL_WINDOWS at most,
+        merged into the queue (no window twice)."""
+        top = int(end) // 3600 * 3600
+        ends = []
+        e = top
+        while e > start and len(ends) < MADIS_BACKFILL_WINDOWS:
+            ends.append(e)
+            e -= MADIS_WINDOW_S
+        have = {w[0] for w in self._bf}
+        new = [[e, 0] for e in ends if e not in have]
+        self._bf = sorted(self._bf + new, key=lambda w: -w[0])
+        self._bf_queued += len(new)
+
+    def _take(self, obs, now):
+        """Readings of an answer into the latest view and the history (snapshot stations only); returns how many the
+        history did not hold yet."""
+        cut = now - MADIS_HIST_S
+        added = 0
+        with self._hist_lock:
+            for local, rows in obs.items():
+                if local not in self.stations:
+                    continue
+                for r in rows:
+                    if r["t"] < cut:
+                        continue
+                    ser = self._hist.get(local)
+                    if ser is None:
+                        ser = self._hist[local] = MadisSeries()
+                    added += ser.add(r)
+                r = rows[-1]
+                old = self._kept.get(local)
+                if old is None or r["t"] > old["t"]:
+                    self._kept[local] = r
+                    if self._newest_t is None or r["t"] > self._newest_t:
+                        self._newest_t = r["t"]
+        return added
+
+    def _prune(self, now):
         cut = now - MADIS_KEEP_S
         for local in [k for k, r in self._kept.items() if r["t"] < cut]:
             del self._kept[local]
-        return [self._entry(local, r, {"alias_of": "nws:" + local}) for local, r in sorted(self._kept.items())]
+        cut = now - MADIS_HIST_S
+        with self._hist_lock:
+            for local in list(self._hist):
+                ser = self._hist[local]
+                ser.prune(cut)
+                if not len(ser):
+                    del self._hist[local]
 
+    def refresh_due(self, now=None):
+        """The base class's rule (the live poll every 5 minutes, a retry after a failure) or, while back-fill windows
+        remain, MADIS_BACKFILL_TTL_S after the last refresh."""
+        if super().refresh_due(now):
+            return True
+        now = buoy_sources.time.time() if now is None else now
+        return bool(self._bf) and now >= self._bf_next
+
+    # -- readers
     def row(self, local):
         """The station's latest MADIS reading with its weather (a copy), or None."""
         r = self._kept.get(local)
         return dict(r) if r else None
 
+    def hist(self, local, since):
+        """The station's MADIS readings at or after since (new dicts, ascending), [] when none."""
+        with self._hist_lock:
+            ser = self._hist.get(local)
+            return ser.rows(since) if ser is not None else []
+
+    def filling(self):
+        """True while the hours before the first live poll (or a gap) are still being asked (the window says so)."""
+        if not self.backfill:
+            return False
+        return self._live_tried is None or bool(self._bf)
+
     def status(self, now=None):
         s = super().status(now)
         now = buoy_sources.time.time() if now is None else now
+        with self._hist_lock:
+            stations = len(self._hist)
+            rows = sum(len(x) for x in self._hist.values())
+            oldest = min((x.t[0] for x in self._hist.values() if len(x)), default=None)
+        if not self.backfill:
+            bf = None
+        elif not self._bf and self._bf_queued:
+            bf = "done"
+        else:
+            bf = "%d of %d" % (self._bf_done + self._bf_gave_up, self._bf_queued)
         s.update(readings=len(self._kept), last_rows=self._last_rows, last_wind=self._last_wind,
-                 newest_age_s=round(now - self._newest_t) if self._newest_t is not None else None)
+                 newest_age_s=round(now - self._newest_t) if self._newest_t is not None else None,
+                 hist_stations=stations, hist_rows=rows,
+                 hist_oldest_age_s=round(now - oldest) if oldest is not None else None,
+                 backfill=bf, backfill_left=len(self._bf), backfill_gave_up=self._bf_gave_up)
         return s
 
     def newest_t(self):
@@ -984,9 +1206,10 @@ class MadisProvider(WindProvider):
 
 
 def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER_REFRESH, nws_workers=2,
-                   nws_per_refresh=NWS_PER_REFRESH, madis_url=None, madis_fetch=None):
+                   nws_per_refresh=NWS_PER_REFRESH, madis_url=None, madis_fetch=None, madis_backfill=True):
     """The providers over the snapshot's stations, in warm order (cheap, quick feeds first); with madis_url the NWS
-    stations' MADIS backup too (its own fetch: the viewer is slow)."""
+    stations' MADIS backup too (its own fetch: the viewer is slow), which also back-fills their 24 hours (plan section
+    55) unless madis_backfill is False."""
     groups = by_source(stations)
     aliases = {st["alias"]: st for sid, st in stations.items() if st.get("alias") and sid.startswith("coops:")}
     out = [NdbcWindProvider(groups.get("ndbc", {}), fetch, aliases),
@@ -994,7 +1217,7 @@ def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER
            CoopsWindProvider(groups.get("coops", {}), fetch, coops_workers, coops_per_refresh),
            NwsProvider(groups.get("nws", {}), fetch, nws_workers, nws_per_refresh)]
     if madis_url:
-        out.append(MadisProvider(groups.get("nws", {}), madis_fetch or fetch, madis_url))
+        out.append(MadisProvider(groups.get("nws", {}), madis_fetch or fetch, madis_url, backfill=madis_backfill))
     return out
 
 
@@ -1096,6 +1319,8 @@ class WindHistory:
         self.ndbc_bucket = ndbc_bucket or TokenBucket(NDBC_HISTORY_PER_MIN)
         self._cap = cap
         self.madis = None                     # local id -> the station's latest MADIS reading or None (plan section 52 D)
+        self.madis_hist = None                # (local id, since) -> the station's MADIS readings since (plan section 55)
+        self.madis_filling = None             # () -> True while MADIS is still back-filling the earlier hours
         self._reset_locks()
         self._cache = OrderedDict()           # key -> (expires, status, payload)
         _SERVICES.add(self)
@@ -1306,7 +1531,7 @@ class WindHistory:
         now = self._now()
         since = int(now) - HISTORY_S
         src, _, local = sid.partition(":")
-        note, via, no_file, partial = None, None, False, False
+        note, via, no_file, partial, filling = None, None, False, False, False
         if src == "ndbc":
             try:
                 rows = self._ndbc(local, since)
@@ -1315,19 +1540,27 @@ class WindHistory:
         elif src == "metar":
             rows = self._metar(local, since)
         elif src == "nws":
+            # MADIS's readings of the station (its 24 hours and its latest; plan sections 52 D and 55), then the NWS
+            # API's (it stalled 2026-10-22): one row per time, the NWS API's where both have one
+            mrows = self.madis_hist(local, since) if self.madis_hist else []
+            m = self.madis(local) if self.madis else None
+            if m and m["t"] >= since and not any(r["t"] == m["t"] for r in mrows):
+                mrows.append(m)
             try:
                 rows = self._nws(local, since)
             except WindBusy:
                 raise
             except WindError:
-                if not (self.madis and self.madis(local)):
+                if not mrows:
                     raise
                 rows = []
-            m = self.madis(local) if self.madis else None
-            # the NWS API had nothing newer (its ingest stalled: 2026-10-22): MADIS's latest report of the station
-            if m and m["t"] >= since and (not rows or m["t"] > max(r["t"] for r in rows)):
+            nws_t = {r["t"] for r in rows}
+            extra = [r for r in mrows if r["t"] not in nws_t]
+            if extra:
                 via = "madis" if not rows else "nws+madis"
-                rows = rows + [m]
+                rows = rows + extra
+            if self.madis_filling and self.madis_filling():
+                partial, filling = True, True
         else:
             self._take(self.coops_bucket, "CO-OPS")                    # the wind rows; the products take theirs as they go
             try:
@@ -1358,11 +1591,13 @@ class WindHistory:
                "d": [r["d"] for r in rows], "source": ATTRIBUTION[via or src], "via": via, "note": note}
         if src == "nws":                                               # mesonet observations: NOAA's disclaimer
             out["disclaimer"] = MESONET_DISCLAIMER
+        if filling:                                                    # MADIS is still asking the earlier hours
+            out["filling"] = True
         for k in WX_FIELDS + WX_FLAGS:                                 # only the fields some row carries
             if any(r.get(k) is not None for r in rows):
                 out[k] = [r.get(k) for r in rows]
         out["conditions"] = conditions(rows)
-        if partial:                                                    # weather products missing: asked again in a minute
+        if partial:                                    # weather products missing / MADIS filling: asked again in a minute
             return "ok", out, self.error_ttl
         return "ok", out
 

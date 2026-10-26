@@ -445,7 +445,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.26.1"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.26.2"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -912,6 +912,9 @@ def _winds():
             _WINDS["svc"] = wind_sources.WindHistory(stations, _points_fetch, coops_bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
             madis = [p for p in _WINDS["providers"] if p.source == "MADIS"]
             _WINDS["svc"].madis = madis[0].row if madis else None
+            # the NWS stations' 24 hours from MADIS (plan section 55) and whether it is still filling them in
+            _WINDS["svc"].madis_hist = madis[0].hist if madis else None
+            _WINDS["svc"].madis_filling = madis[0].filling if madis else None
         return _WINDS
 
 

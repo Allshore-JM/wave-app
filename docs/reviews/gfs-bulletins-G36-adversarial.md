@@ -322,3 +322,76 @@ attempt's read timeout is 2.5 s, not 10).
 Next: the test site (MAX: a 503 stand-in for F-1, the budget and the held run against a slow local host, `/healthz`
 `gfs.run`, the answers = production), a short fresh check (MAX: the probe changed again), then step 8 production and the
 job-only KEEP 8 push.
+
+## Test-site verification of fix round 2, 2026-10-26
+
+`test` @ d5db21e (the cherry-pick of e34ded1; the README stays the test branch's own, the record is left off), live from
+05:09:59 UTC: the old instance answered until 05:09:49, 40 polls across the switch, none failed; the new `/healthz` key
+`gfs.run` shows the new code. The site files on `test` = `feat/gfs-bulletins` @ 536b4ea (app.py, gfs_bulletins.py, the
+index, the tool and the tests compared blob for blob). Scripts and logs: scratch `g36/v8`. The "before" columns below
+ran on the test branch at 254857d (the code after the first fix round), the same machine, minutes earlier.
+
+- **Answers**: the 65 of step 5 (30 GFS stations compact, 6 classic, 5 Metric, 5 UTC, the 12 SWAN stations, 3 Great
+  Lakes stations, 2 forecast points, 2 removed stations) on run 2026102518: production, the test site before and the test
+  site after are identical, 65 of 65. The first request on the new instance (its run probe included) took 2.5 s.
+  `/healthz` `gfs.run` then read `{run 2026102518, failed false, probe_age_s 59, good_run 2026102518, good_age_s 59}`.
+- **The test branch's suite**: 1,130 passed and the five failures it had before (the three logo goldens, the models-env
+  golden, the numpy import); the 22 new tests account for 1,108 -> 1,130.
+- **F-1 with real HTTP** (in-process; a local server stands in for both NOAA hosts; the probe's clock at 2026-10-26
+  04:30 UTC, so 26/00 is asked and not written (archive 404, NOMADS 403) and 25/18 and older are written; the cache holds
+  25/18 from an earlier probe unless "nothing held"):
+
+  | Case | Before | After |
+  |---|---|---|
+  | Baseline, NOMADS on | 18Z | 18Z |
+  | Archive 18Z 503 once, NOMADS off | 12Z, as a success | 18Z (asked again) |
+  | Archive 18Z 503 twice, NOMADS off | 12Z, as a success | 18Z kept, the probe failed; 12Z never asked |
+  | Archive 18Z 503 twice, NOMADS on | 18Z (from NOMADS) | 18Z (NOMADS: 00Z 403 = not there, 18Z 200) |
+  | Archive 18Z 503 twice, NOMADS 00Z 503 twice | 18Z (NOMADS 18Z) | 18Z kept, the probe failed |
+  | Archive 18Z 429 once, NOMADS off | 12Z, as a success | 18Z (asked again) |
+  | Archive 18Z 403, NOMADS off | 12Z, as a success | 18Z kept, the probe failed |
+  | Archive 00Z 503 twice, NOMADS off | 18Z | 18Z kept, the probe failed (18Z not asked) |
+  | Archive 18Z 503 twice, NOMADS off, nothing held | 12Z, as a success | no run; the probe failed (asked again after 2 min) |
+
+- **F-2 with real HTTP** (a local server holds the first try and then drops it unanswered, then holds the second try):
+  the archive read (cap 15 s; first try held 9 s) took 19.03 s before and 15.02 s after; the R2 read (cap 8 s; held 4 s)
+  10.03 s before and 8.01 s after; a probe HEAD with 6 s of probe left (held 4.5 s) ends after 6.02 s.
+- **F-3 with real HTTP** (a local server answering every HEAD after 4.8 s; four callers 50 ms apart; the probe's clock at
+  2026-10-26 23:30 UTC, 8 cycles to ask; "held" = the cache holds 26/12, 1 hour old, due for a new probe):
+
+  | Case | Before | After |
+  |---|---|---|
+  | Every HEAD slow, nothing held | 16 HEADs; every caller 76.8 s; no run | 4 HEADs; every caller 15.0 s; no run |
+  | Every HEAD slow, a run held | 16 HEADs; every caller 76.8 s | 4 HEADs; the probing caller 15.0 s, the other three the held run in 0.0 s |
+  | Every other connection dropped too, nothing held | 32 HEADs; 153.9 s | 4 HEADs; 15.0 s |
+  | The same, a run held | (not run) | the probing caller 15.0 s, the other three 0.0 s |
+
+  One HEAD whose header bytes trickle (six bytes 4 s apart) still takes 24.0 s, past the budget: a read timeout never
+  fires on a trickle (the residual the re-check named; callers holding a run do not wait for it).
+- **The probe on NOAA's real servers** (the new code): now 3 HEADs in 1.06 s (archive 00Z 404, 18Z 200; NOMADS 00Z 404);
+  with the clock at 2026-10-26 23:30 (the most HEADs a probe makes against the real hosts) 9 HEADs in 2.12 s, 18Z.
+  NOMADS answered 403 for the cycles it has not started and 404 for 00Z (its folder there, the file not yet).
+- **B-1 against NOAA's real bucket** (the new code with the clipped retry; archive range reads 5.55-5.95 s apart): with
+  `retry_dropped=False` 12 of 45 failed with `RemoteDisconnected`; the site's own read 45 of 45 ok, 13 asked again, the
+  slowest 1.40 s.
+- **B-1 on the test site**: 60 fresh forecast builds (stations not built since the deploy), paced so the server's own
+  connection to the bucket sat idle about 5-7 s between its archive reads: 60 answers ok, the archive reads went up
+  by 60 `ok`, 0 `transport`, 0 NOMADS fallbacks; a build took 1.17 s at the median, 1.86 s at most.
+- **F-5**: `tools/build_bull_index.py --check` against a local stand-in: a body cut short, a `Content-Length` of "abc" and
+  a reset connection each give one line ("not readable (...)") and the check ends "1 problem(s)", no traceback.
+- **Browser** (headless Chrome with its own profile, desktop 1280x800 and phone 375x812): 35 of 35 checks: 51201 and
+  46026 with 385 of 385 rows carrying a wind speed and direction, the run line "GFS · run 20261025 18 UTC", 51201 SWAN with
+  175 of 175 rows with wind, no sideways page scroll; no transport failure, NOMADS bulletin fallback or NOMADS wind read
+  during the smoke; console clean; no sign-in page, no account entry.
+- **Not done**: the 00Z run switch. A watcher sampled the test site every minute from 05:14 to 05:21 UTC (51201, 46026,
+  51201 SWAN, `/healthz` `gfs`): 2026102518 throughout, not failed, no transport failure or NOMADS fallback; NOAA's 00Z
+  archive, spectra and NOMADS copy were all still 404 at 05:21. The test site would switch when its run cache expires
+  (about 05:41); the owner prefers not to wait for run switches.
+- **Observation for the owner (V8-1)**: the last F-1 case: on a fresh start (a deploy or a restart: nothing held), the
+  newest archive answering a 5xx twice while NOMADS cannot confirm (off, refusing, silent) leaves the GFS tables on "No
+  recent run found." until the next probe 2 minutes later. Before this round the previous cycle's run was served instead,
+  as a success, for 30 minutes (that code never reached production); production's own code has no run at all whenever
+  NOMADS is unavailable. A small option, if wanted: a process with nothing held serves the older archive it finds while
+  the probe stays marked failed (asked again after 2 minutes).
+- **Cleanup**: the browser closed over DevTools, its profile removed; the test and production origins' storage emptied;
+  the local stand-ins ended with their scripts.

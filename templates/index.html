@@ -164,10 +164,10 @@
        when its own top does not show above one of them, 30 px wider than that window on the left (--ww-min-w), so it
        shows past it. The page measures these (syncWindWidth); on screens up to ~1280 px with such a window open, that
        can reach over the panel's right part. */
-    .fwin.wind-win { right: calc(18px + var(--ww-gap, 0px)); top: calc(var(--map-topright-h, 120px) + 8px); bottom: auto; height: auto;
+    .fwin.wind-win { right: calc(18px + var(--ww-gap, 0px)); top: calc(var(--ww-top, var(--map-topright-h, 120px)) + 8px); bottom: auto; height: auto;
                      --ww-w: min(calc(100vw - 44px), max(var(--ww-min-w, 0px), min(1030px, calc(100vw - 44px), calc(100vw - 26px - var(--map-topleft-r, 0px)))));
                      width: calc(var(--ww-w) - var(--ww-gap, 0px));
-                     max-height: calc(100vh - var(--map-topright-h, 120px) - 50px - var(--chips-h, 0px)); z-index: 2000; }
+                     max-height: calc(100vh - var(--ww-top, var(--map-topright-h, 120px)) - 50px - var(--chips-h, 0px)); z-index: 2000; }
     .wind-win .fw-body { padding: 8px 12px 12px; }
     #windCurrent { font-size: 13px; font-weight: 600; color: #1d2b4f; margin: 2px 0 6px; }
     /* the current conditions (air / water temperature, humidity, dew point, pressure, visibility, weather: only what the
@@ -439,6 +439,30 @@
     .leaflet-top.leaflet-right .leaflet-control-settings { z-index: 801; }
     .tools-host { position: relative; }
     html:not(.js) .tools-host { display: none; }
+    /* The legend (plan section 54): a key button first in the row; Leaflet's layer control lives in its panel, its own box
+       stripped (the panel is the box). The panel is as wide as the list, never wider than the screen. */
+    .legend-host { position: relative; }
+    html:not(.js) .legend-host { display: none; }
+    .settings-panel.legend-panel { width: auto; min-width: 180px; max-width: calc(100vw - 16px); padding: 6px 10px; }
+    .legend-panel .leaflet-control-layers { margin: 0; border: 0; padding: 0; box-shadow: none; background: none; border-radius: 0; float: none; }
+    .legend-panel .leaflet-control-layers-list { height: auto !important; overflow: visible !important; padding-right: 0; }   /* the panel scrolls, not the list */
+    /* a dot on the key while a legend note exists (its text in the button's label); not while the legend is open */
+    .legend-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: #fd7e14;
+                  box-shadow: 0 0 0 1.5px #fff; pointer-events: none; }
+    #legendBtn[aria-expanded="true"] .legend-dot { display: none; }
+    /* Quick labels (owner, plan section 54): the button's name at once on mouse hover and on keyboard focus, never on touch,
+       never while its own panel is open. Centred under the button; the last one (Settings) ends at the map's edge. */
+    .icon-btn[data-tip] { position: relative; }
+    .icon-btn[data-tip]::after {
+      content: attr(data-tip); display: none; position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+      width: max-content; max-width: 220px; padding: 3px 7px; border-radius: 4px; background: rgba(11, 37, 54, .92); color: #fff;
+      font: 12px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif; white-space: normal; text-align: center;
+      pointer-events: none; z-index: 2100;
+    }
+    #settingsBtn[data-tip]::after { left: auto; right: 0; transform: none; }
+    @media (hover: hover) { .icon-btn[data-tip]:hover::after { display: block; } }
+    .icon-btn[data-tip]:focus-visible::after { display: block; }
+    .icon-btn[data-tip][aria-expanded="true"]::after { display: none !important; }
     .icon-btn svg { display: block; margin: auto; }
     .tools-menu { width: 210px; display: flex; flex-direction: column; gap: 4px; }
     .tools-menu[hidden] { display: none; }
@@ -722,6 +746,9 @@
     @media (min-width: 1280px) and (min-height: 501px) {
       .forecast-win:not(.fw-min):not(.fw-max) {
         left: calc(var(--map-topleft-r, 360px) + 16px); right: calc(var(--map-topright-w, 170px) + 16px); top: 96px; width: auto; height: auto; }
+      /* the wind window starts no higher than 128 px here, so the forecast window's top (96 px) keeps a strip to click with
+         every window open (the top-right row alone is only ~50 px tall since plan section 54) */
+      .fwin.wind-win { --ww-top: max(var(--map-topright-h, 120px), 120px); }
       .live-chip .forecast-win:not(.fw-min):not(.fw-max), .tide-chip .forecast-win:not(.fw-min):not(.fw-max),
       .live-chip.tide-chip .forecast-win:not(.fw-min):not(.fw-max), body.wind-chip .fwin.forecast-win:not(.fw-min):not(.fw-max) { height: auto; }
     }
@@ -964,10 +991,16 @@
     <a id="brand" class="brand" href="/" aria-label="Allshore Surf home">
       <img class="brand-logo" src="/ui/logo.png?v={{ ui_asset_version }}" alt="Allshore Surf" width="194" height="60">
     </a>
+    <!-- The layer legend (plan section 54): a key button, first in the top-right row (Legend, Tools, Settings); the map script
+         moves Leaflet's layer control into its panel. Closed on every load; a dot on the key while a legend note exists. JS only. -->
+    <div id="legendHost" class="legend-host">
+      <button type="button" id="legendBtn" class="icon-btn" aria-label="Legend" aria-expanded="false" aria-controls="legendPanel" data-tip="Legend"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="7.5" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11.5 12H21M17.5 12v3.5M20.5 12v2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="legend-dot" hidden></span></button>
+      <div id="legendPanel" class="settings-panel legend-panel" hidden role="group" aria-label="Legend"></div>
+    </div>
     <!-- Map tools (plan sections 29, 31; static_ui/tools.js): forecast point, measure distance / area, swell exposure. JS only; the map
          script puts it beside the gear. -->
     <div id="toolsHost" class="tools-host">
-      <button type="button" id="toolsBtn" class="icon-btn" aria-label="Map tools" aria-expanded="false" aria-controls="toolsMenu"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3.5 16.5 16.5 3.5l4 4-13 13z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7.5 12.5l2 2M10.5 9.5l2 2M13.5 6.5l2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+      <button type="button" id="toolsBtn" class="icon-btn" aria-label="Map tools" aria-expanded="false" aria-controls="toolsMenu" data-tip="Tools"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3.5 16.5 16.5 3.5l4 4-13 13z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M7.5 12.5l2 2M10.5 9.5l2 2M13.5 6.5l2 2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
       <div id="toolsMenu" class="settings-panel tools-menu" hidden role="group" aria-label="Map tools">
         <button type="button" class="tool-item" data-tool="point" aria-pressed="false">Forecast point</button>
         <button type="button" class="tool-item" data-tool="distance" aria-pressed="false">Measure distance</button>
@@ -977,7 +1010,7 @@
     </div>
     <form id="controlForm" method="GET" action="/">
       <div id="settingsHost" class="settings-host">
-          <button type="button" id="settingsBtn" class="icon-btn" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel">&#9881;</button>
+          <button type="button" id="settingsBtn" class="icon-btn" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel" data-tip="Settings">&#9881;</button>
           <div id="settingsPanel" class="settings-panel" hidden role="group" aria-label="Settings">
             <label for="tz" class="form-label mb-0">Time Zone</label>
             <select class="form-select form-select-sm" id="tz" name="tz">
@@ -1518,6 +1551,7 @@
     // the control is added or removed by code, so the text is kept here and painted again after every rebuild.
     let liveNoteText = '';
     function paintLiveNote() {
+      syncLegendNote();
       const el = document.querySelector('.leaflet-control-layers [data-live-note]');
       if (el && el.textContent !== liveNoteText) {
         el.textContent = liveNoteText;
@@ -1527,6 +1561,7 @@
     // The tide layer's note the same way (the list's state: loading / unavailable; no zoom hints, owner 2026-10-10).
     let tideNoteText = '';
     function paintTideNote() {
+      syncLegendNote();
       const el = document.querySelector('.leaflet-control-layers [data-tide-note]');
       if (el && el.textContent !== tideNoteText) {
         el.textContent = tideNoteText;
@@ -1536,11 +1571,24 @@
     // The wind layer's note likewise (the list's and the feed's state; no zoom hints).
     let windNoteText = '';
     function paintWindNote() {
+      syncLegendNote();
       const el = document.querySelector('.leaflet-control-layers [data-wind-note]');
       if (el && el.textContent !== windNoteText) {
         el.textContent = windNoteText;
         measureTopRight();
       }
+    }
+    // The legend's key button (plan section 54): while any legend note exists, a dot on the key and the notes in its label
+    // ("Legend · Live buoys: loading…"), so a closed legend still says something is going on.
+    function syncLegendNote() {
+      const btn = document.getElementById('legendBtn');
+      if (!btn) return;
+      const notes = [['Live buoys', liveNoteText], ['Tide stations', tideNoteText], ['Wind stations', windNoteText]]
+        .filter(function (n) { return n[1]; }).map(function (n) { return n[0] + ': ' + n[1]; });
+      const tip = notes.length ? 'Legend · ' + notes.join('; ') : 'Legend';
+      if (btn.getAttribute('data-tip') !== tip) { btn.setAttribute('data-tip', tip); btn.setAttribute('aria-label', tip); }
+      const dot = btn.querySelector('.legend-dot');
+      if (dot) dot.hidden = !notes.length;
     }
     if (typeof layersControl._update === 'function') {
       const lcUpdate = layersControl._update;
@@ -1556,12 +1604,14 @@
     map.on('overlayadd overlayremove', function (e) { if (e.layer === forecastLayer || e.layer === pointLayer) rebuildWindMarkers(false); });
     map.on('overlayadd', function (e) { if (e.layer === liveBuoyLayer) rebuildLiveBuoyMarkers(true); });   // new elements: keys, Tab stops
 
-    // The settings gear under the layer legend (top-right); its panel (Time Zone, Units, gridlines) opens below it.
+    // One row at the top-right (plan section 54): the legend's key, the map tools, the settings gear; each opens its panel below.
     const SettingsControl = L.Control.extend({
       options: { position: 'topright' },
       onAdd: function () {
         const c = L.DomUtil.create('div', 'leaflet-control-settings');
+        const legend = document.getElementById('legendHost');
         const tools = document.getElementById('toolsHost'), host = document.getElementById('settingsHost');
+        if (legend) c.appendChild(legend);                                      // the legend first (owner: Legend, Tools, Settings)
         if (tools) c.appendChild(tools);                                        // the map tools button sits left of the gear (plan section 29)
         if (host) c.appendChild(host);
         L.DomEvent.disableClickPropagation(c);
@@ -1570,32 +1620,44 @@
       }
     });
     map.addControl(new SettingsControl());
+    // Leaflet's layer control moves into the legend's panel: Leaflet keeps its own references, so the list still rebuilds
+    // (and the notes are painted again) wherever it sits.
+    (function () {
+      const lp = document.getElementById('legendPanel'), lc = layersControl.getContainer && layersControl.getContainer();
+      if (lp && lc) lp.appendChild(lc);
+    })();
     // While the gear's panel is open the corner outranks the windows (CSS .settings-open); the module toggles the
     // panel's hidden attribute, so an observer follows it.
     (function () {
       const panel = document.getElementById('settingsPanel'), tmenu = document.getElementById('toolsMenu');
+      const legend = document.getElementById('legendPanel');
       if (!panel || typeof MutationObserver !== 'function') return;
-      // The open panel never runs past the map's bottom edge (the map clips it): on a short map (a phone turned sideways,
-      // the panel's overlay rows, plan section 46) it scrolls inside instead.
-      const fit = () => {
-        if (panel.hidden) { panel.style.maxHeight = ''; return; }
-        const room = map.getContainer().getBoundingClientRect().bottom - panel.getBoundingClientRect().top - 8;
-        panel.style.maxHeight = Math.max(120, Math.floor(room)) + 'px';
+      const panels = legend ? [panel, legend] : [panel];
+      // An open panel (the gear's or the legend's) never runs past the map's bottom edge (the map clips it): on a short map
+      // (a phone turned sideways, the panel's overlay rows, plan section 46) it scrolls inside instead.
+      const fit = () => panels.forEach(function (p) {
+        if (p.hidden) { p.style.maxHeight = ''; return; }
+        const room = map.getContainer().getBoundingClientRect().bottom - p.getBoundingClientRect().top - 8;
+        p.style.maxHeight = Math.max(120, Math.floor(room)) + 'px';
+      });
+      const sync = () => {
+        map.getContainer().classList.toggle('settings-open', panels.some(function (p) { return !p.hidden; }) || !!(tmenu && !tmenu.hidden));
+        fit();
       };
-      const sync = () => { map.getContainer().classList.toggle('settings-open', !panel.hidden || !!(tmenu && !tmenu.hidden)); fit(); };
       window.addEventListener('resize', fit);
-      new MutationObserver(sync).observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+      panels.forEach(function (p) { new MutationObserver(sync).observe(p, { attributes: true, attributeFilter: ['hidden'] }); });
       if (tmenu) new MutationObserver(sync).observe(tmenu, { attributes: true, attributeFilter: ['hidden'] });
       sync();
     })();
-    // The height of that corner (legend + gear): the maximised forecast window starts below it, so its header buttons
-    // never land under the legend (owner). Measured at load and on every resize (enforceSingleWorld).
-    // Its WIDTH (legend + gear; the map tools' result bar under them left out): the expanded forecast window's default box
-    // ends left of it on desktops (plan section 46). A ResizeObserver follows the corner (the legend's notes, a font change).
+    // The height of that corner (the row of buttons, and the map tools' bar while shown): the maximised forecast window
+    // starts below it, so its header buttons never land under the row (owner). Measured at load and on every resize
+    // (enforceSingleWorld). Its WIDTH: the expanded forecast window's default box ends left of it on desktops (plan section 46).
+    // Only the corner's own controls count: the layer control inside the legend's panel never does, so opening the legend
+    // moves no window (plan section 54). A ResizeObserver follows the corner (a font change, the tools bar).
     function measureTopRight() {
       const box = map.getContainer(), base = box.getBoundingClientRect();
       let h = 0, w = 0;
-      box.querySelectorAll('.leaflet-top.leaflet-right .leaflet-control').forEach(function (c) {
+      box.querySelectorAll('.leaflet-top.leaflet-right > .leaflet-control').forEach(function (c) {
         const r = c.getBoundingClientRect();
         if (r.height > 0) h = Math.max(h, r.bottom - base.top);
         if (r.width > 0) w = Math.max(w, base.right - r.left);   // the tools bar too while shown: the wide box narrows beside it (owner, G32 B-1)

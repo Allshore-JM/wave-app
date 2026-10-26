@@ -115,6 +115,10 @@ function buildPage(win) {
   };
   // the brand and the gear (adopted by map controls on the real page; here plain children of the body)
   const pageHead = el('div', 'pageHead', doc.body); el('a', 'brand', pageHead);
+  // the legend's key and its panel (plan section 54): first in the row on the real page; Leaflet's layer list inside
+  const legendHost = el('div', 'legendHost', pageHead);
+  const legendBtn = el('button', 'legendBtn', legendHost); const legendPanel = el('div', 'legendPanel', legendHost); legendPanel.hidden = true;
+  const legendBox = el('input', null, legendPanel); legendBox.setAttribute('type', 'checkbox');
   const host = el('div', 'settingsHost', pageHead);
   const gear = el('button', 'settingsBtn', host); const panel = el('div', 'settingsPanel', host); panel.hidden = true;
   const tz = el('select', 'tz', panel); [['', '(Buoy Local)'], ['Pacific/Honolulu', 'Honolulu'], ['UTC', 'UTC']].forEach(([v, t]) => { const o = el('option', null, tz); o.value = v; o.textContent = t; });
@@ -168,7 +172,7 @@ function buildPage(win) {
   const graphs = el('div', 'graphs', body); graphs.hidden = true;
   ['heightChart', 'periodChart', 'directionChart'].forEach((id) => { const box = el('div', null, graphs); box.classList.add('chart-box'); el('canvas', id, box); });
   const winEdges = edges(w); el('div', 'fwResize', w);
-  return { pageHead, sel, trigger, gear, panel, tz, unit, live, lwHeader, lwMin, lwClose, liveEdges, tide, twHeader, twMin, twClose, twBody, tideEdges,
+  return { pageHead, sel, trigger, gear, panel, legendBtn, legendPanel, legendBox, tz, unit, live, lwHeader, lwMin, lwClose, liveEdges, tide, twHeader, twMin, twClose, twBody, tideEdges,
            wind, wwHeader, wwMin, wwClose, wwBody, windEdges, w, winEdges, header, viewBar, modelBar, modeBar, rangeBar, body, table, summary, graphs };
 }
 

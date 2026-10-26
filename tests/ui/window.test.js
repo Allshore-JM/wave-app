@@ -369,6 +369,29 @@ test('init: a page-rendered forecast (render=full) is shown without a fetch; a s
   b2.page.gear.dispatch('click'); b2.page.header.dispatch('pointerdown', ptr(1, 1)); assert.equal(b2.page.panel.hidden, true, 'outside press closes it');
 });
 
+test('section 54: the legend opens under its key, closed on load, the same toggle as the gear; one panel at a time', async () => {
+  const b = boot({}); await settle();
+  const { legendBtn, legendPanel, legendBox, gear, panel, header } = b.page;
+  assert.equal(legendPanel.hidden, true, 'closed on every load');
+  assert.equal(legendBtn.getAttribute('aria-expanded'), null);
+  legendBtn.dispatch('click');
+  assert.equal(legendPanel.hidden, false); assert.equal(legendBtn.getAttribute('aria-expanded'), 'true');
+  assert.ok(b.doc.activeElement === legendBox, 'the focus to the first layer checkbox');
+  legendBox.dispatch('pointerdown', ptr(1, 1)); legendBox.dispatch('click');
+  assert.equal(legendPanel.hidden, false, 'ticking a layer keeps it open');
+  gear.dispatch('pointerdown', ptr(1, 1)); gear.dispatch('click');
+  assert.equal(legendPanel.hidden, true, 'another button closes it');
+  assert.equal(panel.hidden, false, 'and opens its own');
+  legendBtn.dispatch('pointerdown', ptr(1, 1)); legendBtn.dispatch('click');
+  assert.equal(panel.hidden, true, 'one panel at a time'); assert.equal(legendPanel.hidden, false);
+  legendPanel.dispatch('keydown', { key: 'Escape' });
+  assert.equal(legendPanel.hidden, true, 'Escape closes it'); assert.ok(b.doc.activeElement === legendBtn, 'the focus back on the key');
+  assert.equal(b.app.window.mode, 'min', 'Escape in the legend does not reach the window');
+  legendBtn.dispatch('click'); header.dispatch('pointerdown', ptr(1, 1));
+  assert.equal(legendPanel.hidden, true, 'an outside press closes it');
+  assert.ok(b.app.legend && typeof b.app.legend.isOpen === 'function');
+});
+
 test('init: saved settings apply on load and win over the server (but not over the URL); a saved tz missing from the list is added to the select', async () => {
   const b = boot({ local: { 'allshore.settings.v1': { tz: 'Australia/Lord_Howe', unit: 'Metric' } } });
   assert.deepEqual([b.app.state.tz, b.app.state.unit], ['Australia/Lord_Howe', 'Metric']);

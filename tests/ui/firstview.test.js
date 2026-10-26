@@ -286,7 +286,7 @@ test('measureTopRight counts the map tools\' bar while it shows (the wide box na
     const set = {};
     const controls = [{ r: rect(1110, 10, 1270, 100), cls: 'leaflet-control' }, { r: rect(1230, 110, 1270, 150), cls: 'leaflet-control' }, { r: barRect, cls: 'leaflet-control tools-bar' }]
       .map((c) => ({ getBoundingClientRect: () => c.r, classList: { contains: (x) => c.cls.split(' ').indexOf(x) >= 0 } }));
-    const map = { getContainer: () => ({ getBoundingClientRect: () => rect(0, 0, 1280, 800), querySelectorAll: (sel) => { assert.equal(sel, '.leaflet-top.leaflet-right .leaflet-control'); return controls; } }) };
+    const map = { getContainer: () => ({ getBoundingClientRect: () => rect(0, 0, 1280, 800), querySelectorAll: (sel) => { assert.equal(sel, '.leaflet-top.leaflet-right > .leaflet-control', "the corner's own controls only: never the layer control inside the legend's panel (plan section 54)"); return controls; } }) };
     new Function('map', 'document', SRC + '\nmeasureTopRight();')(map, { documentElement: { style: { setProperty: (k, v) => { set[k] = v; } } } });
     return set;
   };

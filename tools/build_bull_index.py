@@ -16,6 +16,7 @@ files named ./gfswave.<id>.bull of 1 B to 256 KB, and pax headers carrying anyth
 pax header would move the member away from its ustar header).
 """
 import argparse
+import http.client
 import json
 import os
 import sys
@@ -29,6 +30,7 @@ sys.path.insert(0, ROOT)
 import gfs_bulletins as GB  # noqa: E402
 
 UA = {"User-Agent": "allshoresurf.com bulletin index (https://allshoresurf.com)"}
+UNREADABLE = (urllib.error.URLError, OSError, http.client.HTTPException, ValueError)   # a cut body, a bad length
 PAX_OK = {"atime", "ctime", "mtime"}
 
 
@@ -126,7 +128,7 @@ def check(runs, path, head_length=_head_length, get_range=None):
         url = GB.archive_url(run[:8], run[8:])
         try:
             length = head_length(url)
-        except (urllib.error.URLError, OSError) as exc:             # a run NOAA has not written (yet): one line (G36 A P3-5)
+        except UNREADABLE as exc:                                   # a run NOAA has not written (yet): one line (G36 A P3-5)
             print(f"{run}: not readable on AWS ({getattr(exc, 'code', None) or exc})")
             bad += 1
             continue
@@ -135,7 +137,7 @@ def check(runs, path, head_length=_head_length, get_range=None):
             off, size = index[sid]
             try:
                 body = get_range(url, off - GB.HEADER, off + size - 1)
-            except (urllib.error.URLError, OSError) as exc:
+            except UNREADABLE as exc:
                 print(f"  {run} {sid}: not readable ({getattr(exc, 'code', None) or exc})")
                 continue
             problem = GB.check_header(body[:GB.HEADER], sid, size) or GB.check_text(

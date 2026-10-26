@@ -378,3 +378,44 @@ def test_a_forked_child_drops_a_run_read_in_flight(world):
         assert app._gfs_winds_run(DATE, RUN) is not None, "the child reads the run itself"
     finally:
         held.release()
+
+
+# ---------------- G36 re-check fixes (plan section 53, fix round 2) ----------------
+
+import http.client as _hc  # noqa: E402
+import requests as _rq  # noqa: E402
+from urllib3.exceptions import ProtocolError as _PE  # noqa: E402
+
+_REAL_POINTS_FETCH = app._points_fetch
+
+
+class _Body:
+    def __init__(self, status, body):
+        self.status_code, self.body, self.headers, self.raw = status, body, {}, None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def iter_content(self, n=65536):
+        return (self.body[i:i + n] for i in range(0, len(self.body), n))
+
+
+def test_the_tables_reads_are_asked_again_end_to_end(world, monkeypatch):
+    """Re-check F-4 (W5): through the real _points_fetch and _capped_get, a dropped connection on the index read is
+    asked once more and the table is served (the other tests replace _points_fetch itself)."""
+    b, nomads, _ = world
+    monkeypatch.setattr(app, "_points_fetch", _REAL_POINTS_FETCH)
+    calls = []
+
+    def get(url, **k):
+        calls.append(url)
+        if len(calls) == 1:
+            raise _rq.exceptions.ConnectionError(_PE("Connection aborted.", _hc.RemoteDisconnected("closed")))
+        key = url.split("models.test/", 1)[1]
+        return _Body(200, b.objects[key]) if key in b.objects else _Body(404, b"")
+    monkeypatch.setattr(app, "_POINT_HTTP", type("S", (), {"get": staticmethod(get)})())
+    assert app._gfs_winds_run(DATE, RUN) is not None and len(calls) == 3
+    assert app._gfs_winds_health()["errors"] == 0 and nomads == []

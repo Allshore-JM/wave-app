@@ -474,7 +474,7 @@ _RUN_CACHE = {"ts": 0.0, "value": (None, None), "failed": False, "good": None, "
 _RUN_CACHE_TTL = 30 * 60
 _RUN_NEG_TTL = 2 * 60  # bound probe cost during a NOAA outage (SWAN wind now probes too)
 _RUN_KEEP = 12 * 3600
-_RUN_PROBE_LOCK = threading.Lock()     # one probe at a time: the other callers wait for its answer (G36 B-2)
+_RUN_PROBE_LOCK = threading.Lock()     # one probe at a time (G36 B-2; the others take the run held, or wait)
 
 # Parsed forecast cache: (station_id, tz_name, model) -> {"ts", "data", "ttl"}.
 # Shared by GFS (.bull) and SWAN (PacIOOS bulletin) parses.
@@ -579,6 +579,14 @@ class _Dropped(Exception):
         self.exc = exc
 
 
+def _clip_timeout(timeout, left: float):
+    """`timeout` (a number or (connect, read)) with each part at most `left` seconds (at least 0.1)."""
+    left = max(0.1, left)
+    if isinstance(timeout, (tuple, list)):
+        return tuple(min(t, left) for t in timeout)
+    return min(timeout, left)
+
+
 def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float, session=None, byte_range=None,
                 retry_dropped=False) -> bytes:
     """A whole 200 body of at most max_bytes within about max_s seconds from the request, or an exception. A body that
@@ -589,12 +597,13 @@ def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float, sessio
     must be a 206 of exactly that length, with that Content-Range (a 200 = the server ignored the range: refused).
     Another status raises HTTPStatusError. `session` defaults to the points' session (one attempt, no retry adapter).
     `retry_dropped`: a connection the server dropped before answering (NOAA's bucket closes an idle keep-alive one after
-    ~5.6 s) is asked once more on a new connection within the same max_s; never after a timeout, a refusal or once an
-    answer came (G36 B-1)."""
+    ~5.6 s) is asked once more on a new connection, its connect and read timeouts clipped to the time left of the same
+    max_s; never after a timeout, a refusal or once an answer came (G36 B-1, re-check F-2)."""
     deadline = time.monotonic() + max_s
     for attempt in (0, 1):
+        t = timeout if not attempt else _clip_timeout(timeout, deadline - time.monotonic())
         try:
-            return _capped_get_once(url, max_bytes, headers, timeout, deadline, session, byte_range)
+            return _capped_get_once(url, max_bytes, headers, t, deadline, session, byte_range)
         except _Dropped as dropped:
             if attempt or not retry_dropped or deadline - time.monotonic() < 1.0:
                 raise dropped.exc
@@ -1498,28 +1507,33 @@ def sitemap_xml():
 
 # ----------------------------- NOAA run detection ------------------------------
 
-_PROBE_HTTP = requests.Session()       # the run probe: ONE attempt per HEAD (app.HTTP's retries: 31 s on a silent host)
+_PROBE_HTTP = requests.Session()       # the run probe: no retry adapter (app.HTTP's retries: 31 s on a silent host)
 _PROBE_TIMEOUT = (3, 5)                # connect, read
+_PROBE_BUDGET_S = 15                   # the whole probe; the real hosts answer it in 1-2 s (G36 re-check F-3)
+_PROBE_RETRY_STATUS = (429, 500, 502, 503, 504)   # asked once more, as app.HTTP's adapter did (re-check F-1)
 _RUN_MIN_AGE = 3 * 3600                # no cycle reaches NOAA's servers sooner (the bulletins come ~5.3 h after it)
 
 
-def _probe_head(url: str):
-    """(status, Content-Length) of one HEAD, or (None, the error's name) when the host did not answer. A connection the
-    server dropped before answering (NOAA's bucket closes idle keep-alive ones) is asked once more (G36 B-1)."""
+def _probe_head(url: str, deadline: float):
+    """(status, Content-Length) of a HEAD, or (None, the error's name) when the host did not answer. A connection the
+    server dropped before answering (NOAA's bucket closes idle keep-alive ones: G36 B-1) and a 429 / 5xx answer
+    (re-check F-1) are asked once more. Each attempt's timeouts are clipped to the probe's `deadline`."""
     for attempt in (0, 1):
+        timeout = _clip_timeout(_PROBE_TIMEOUT, deadline - time.monotonic())
         try:
-            resp = _PROBE_HTTP.head(url, timeout=_PROBE_TIMEOUT)
+            resp = _PROBE_HTTP.head(url, timeout=timeout)
         except Exception as exc:
             if not attempt and _dropped_connection(exc):
                 continue
             logger.debug("run probe failed for %s: %r", url, exc)
             return None, type(exc).__name__
+        if not attempt and resp.status_code in _PROBE_RETRY_STATUS:
+            continue
         try:
             length = int(resp.headers.get("Content-Length") or 0)
         except (TypeError, ValueError):
             length = 0
         return resp.status_code, length
-    return None, "dropped"
 
 
 def _detect_latest_run():
@@ -1527,10 +1541,13 @@ def _detect_latest_run():
     Find the most recent available GFS wave run (G36 B-2): the run's bulletin archive on AWS is asked for each cycle,
     newest first (18/12/06/00Z of today, then yesterday; a cycle younger than _RUN_MIN_AGE is not asked: nothing is
     published that soon), until one is there; then NOMADS (51201's bulletin) only for the cycles NEWER than that
-    archive (NOMADS has a cycle a minute or two before AWS). Every HEAD is one attempt with a short timeout, and a host
-    that does not answer at all is not asked again in this probe: a silent NOMADS costs one timeout, not 31 s a cycle.
-    An archive of another length than the committed index's still counts: its members are still read and checked one
-    by one (a member whose header no longer matches comes from NOMADS), and /healthz says the layout looks changed.
+    archive (NOMADS has a cycle a minute or two before AWS). Each HEAD has a short timeout (a dropped connection and a
+    429 / 5xx are asked once more), and the whole probe at most _PROBE_BUDGET_S. Only "not there" moves the scan on to
+    an older cycle: a 404 from the archive, a 403 or 404 from NOMADS (which answers 403 for a cycle it has not written).
+    Any other answer (no answer, a 5xx after its second ask) stops asking that host in this probe, so a hiccup on the
+    newest archive never makes an older run look like the newest (re-check F-1). An archive of another length than the
+    committed index's still counts: its members are still read and checked one by one (a member whose header no
+    longer matches comes from NOMADS), and /healthz says the layout looks changed.
     Wrapped by the cached get_latest_run() below.
     """
     now = datetime.utcnow()
@@ -1542,10 +1559,14 @@ def _detect_latest_run():
                 cycles.append((day.strftime("%Y%m%d"), f"{hour:02d}"))
     seen = {}                                     # host -> the last answer (a status or an error), for the log
     found = None                                  # the index in `cycles` of the newest archive
+    deadline = time.monotonic() + _PROBE_BUDGET_S
     if BULL_ARCHIVE and gfs_bulletins.INDEX:
         for i, (ymd, hh) in enumerate(cycles):
+            if time.monotonic() >= deadline:
+                seen["probe"] = "out of time"
+                break
             url = gfs_bulletins.archive_url(ymd, hh, NOAA_BUCKET)
-            status, info = _probe_head(url)
+            status, info = _probe_head(url, deadline)
             if status == 200:
                 found = i
                 if info != gfs_bulletins.ARCHIVE_BYTES:
@@ -1556,17 +1577,20 @@ def _detect_latest_run():
                     gfs_bulletins.STATS.probe_layout(None)
                 break
             seen[_host(url)] = info if status is None else f"HTTP {status}"
-            if status is None:
-                break                             # the archive host does not answer: not asked again in this probe
+            if status != 404:
+                break                             # no answer, a refusal, a 5xx: not asked again, never "an older one"
     if not NOMADS_DISABLED:
         for ymd, hh in (cycles if found is None else cycles[:found]):
+            if time.monotonic() >= deadline:
+                seen["probe"] = "out of time"
+                break
             url = f"{NOAA_BASE}/gfs.{ymd}/{hh}/wave/station/bulls.t{hh}z/gfswave.51201.bull"
-            status, info = _probe_head(url)
+            status, info = _probe_head(url, deadline)
             if status == 200:
                 return ymd, hh
             seen[_host(url)] = info if status is None else f"HTTP {status}"
-            if status is None:
-                break                             # NOMADS does not answer: not asked again in this probe
+            if status not in (403, 404):
+                break                             # no answer, a 5xx: NOMADS is not asked again in this probe
     if found is not None:
         return cycles[found]
     logger.warning("run probe: no GFS-wave run found (last answers: %s)",
@@ -1574,10 +1598,17 @@ def _detect_latest_run():
     return None, None
 
 
+def _held_run():
+    """The last run a probe found, while younger than _RUN_KEEP, else None. Under _CACHE_LOCK."""
+    good = _RUN_CACHE["good"]
+    return good if good is not None and time.time() - _RUN_CACHE["good_ts"] < _RUN_KEEP else None
+
+
 def get_latest_run():
-    """Cached wrapper around _detect_latest_run() — probe at most once per TTL, one probe at a time (the callers that
-    come during a probe wait for its answer: G36 B-2). A failed probe is asked again after _RUN_NEG_TTL; meanwhile the
-    last run found (if younger than _RUN_KEEP) is still served."""
+    """Cached wrapper around _detect_latest_run() — probe at most once per TTL, one probe at a time (G36 B-2). A
+    caller that finds a probe running gets the run already held (younger than _RUN_KEEP) at once; only a process with
+    no run waits for the probe (re-check F-3). A failed probe is asked again after _RUN_NEG_TTL; meanwhile the last
+    run found is still served."""
     def fresh():
         cached = _RUN_CACHE["value"]
         ttl = _RUN_NEG_TTL if _RUN_CACHE["failed"] or not cached[0] else _RUN_CACHE_TTL
@@ -1585,9 +1616,13 @@ def get_latest_run():
 
     with _CACHE_LOCK:
         cached = fresh()
+        held = _held_run()
     if cached is not None:
         return cached
-    with _RUN_PROBE_LOCK:
+    lock = _RUN_PROBE_LOCK
+    if not lock.acquire(blocking=held is None):
+        return held                               # a probe is running: the run held meanwhile
+    try:
         with _CACHE_LOCK:
             cached = fresh()                      # a probe that finished while this caller waited
         if cached is not None:
@@ -1605,6 +1640,20 @@ def get_latest_run():
                 logger.warning("get_latest_run: no recent GFS-wave run detected%s",
                                f"; still serving {good[0]} {good[1]}Z" if keep else "")
             return _RUN_CACHE["value"]
+    finally:
+        lock.release()
+
+
+def _run_health():
+    """The run probe for /healthz (re-check F-6): the run served, whether the last probe failed (the run then is the
+    one kept from the last good probe), and the ages of the last probe and of the last good one."""
+    with _CACHE_LOCK:
+        now = time.time()
+        value, good = _RUN_CACHE["value"], _RUN_CACHE["good"]
+        return {"run": "".join(value) if value and value[0] else None, "failed": _RUN_CACHE["failed"],
+                "probe_age_s": round(now - _RUN_CACHE["ts"]) if _RUN_CACHE["ts"] else None,
+                "good_run": "".join(good) if good else None,
+                "good_age_s": round(now - _RUN_CACHE["good_ts"]) if _RUN_CACHE["good_ts"] else None}
 
 
 # ---------------------- GFS station wind (.spec bulletins) ----------------------
@@ -5451,7 +5500,7 @@ def healthz():
                    "workers": getattr(runner, "workers", None)},
         "rss_kb": _rss_kb(),
         "time": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "gfs": {"bulletins": _bull_health(), "winds": _gfs_winds_health()},   # section 53: reported only
+        "gfs": {"bulletins": _bull_health(), "winds": _gfs_winds_health(), "run": _run_health()},   # section 53: reported only
         "wind": _wind_health(now),                # the wind feeds (section 39): reported, never part of `ok`
     }
     resp = jsonify(body)

@@ -1680,7 +1680,8 @@ naming the site as aviationweather.gov asks):
   OBSERVATION time, twelve 2-hour windows (`time=YYYYMMDD_HH00&minbck=-119`: the records observed in (T - 2 h, T]),
   newest first, one request a refresh, a refresh due 30 s after the last while windows remain (the live poll keeps its
   5-minute turn), so the 24 hours fill in about 12-20 minutes; a window that fails 3 times is given up (its hours stay
-  missing); live polls more than 50 minutes apart (failures) queue the hours between them again. The window's rows are
+  missing); live polls more than 50 minutes apart (failures, or answers with no wind at all, seen
+  2026-10-24 and 2026-10-26) queue the hours between them again. The window's rows are
   the NWS API's and MADIS's, one per time, the NWS API's where both have one ("via" "madis" or "nws+madis"; the window
   says "Readings from NOAA MADIS (the NWS API has none in the last 24 hours)." or "Readings from the NWS API and NOAA
   MADIS."); while the back-fill runs the answer says `filling` (the window: "The earlier hours are still loading.") and

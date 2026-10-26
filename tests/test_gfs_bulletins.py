@@ -416,3 +416,43 @@ def test_the_tools_command_line_checks_or_builds(monkeypatch):
     B.main(["--check", "2026102512", "2026102506"])
     B.main(["2026102512", "--out", "x.json"])
     assert seen == [("check", ["2026102512", "2026102506"], GB.INDEX_PATH), ("build", "2026102512", "x.json")]
+
+
+# ---------------- G36 re-check fixes (plan section 53, fix round 2) ----------------
+
+import http.client  # noqa: E402
+
+
+def test_a_content_refusal_is_no_layout_read():
+    st = GB.Stats()
+    st.note("content", "another station's text")
+    snap = st.snapshot()
+    assert snap["reads"]["content"] == 1 and snap["last_layout_read"] is None and snap["last_error"]
+
+
+def test_the_tools_check_survives_a_cut_body_and_a_bad_length(arch, tmp_path, capsys):
+    """Re-check F-5: http.client's IncompleteRead (a body cut short) and a ValueError (a Content-Length that is not a
+    number) are one printed line each, never a traceback."""
+    data, texts, doc, index = arch
+
+    def cut(url, a, b):
+        raise http.client.IncompleteRead(b"x" * 10, b - a - 9)
+    with pytest.raises(SystemExit):
+        B.check([RUN], _index_file(tmp_path, doc), head_length=lambda url: len(data), get_range=cut)
+    assert f"{RUN}: 0 of 3 sampled members" in capsys.readouterr().out
+
+    def bad_length(url):
+        raise ValueError("invalid literal for int() with base 10: 'abc'")
+    with pytest.raises(SystemExit) as got:
+        B.check([RUN], _index_file(tmp_path, doc), head_length=bad_length, get_range=ranged(data))
+    assert f"{RUN}: not readable on AWS" in capsys.readouterr().out and "1 problem(s)" in str(got.value)
+
+
+def test_the_tools_check_survives_a_timeout_at_a_member(arch, tmp_path, capsys):
+    data, texts, doc, index = arch
+
+    def slow(url, a, b):
+        raise TimeoutError("timed out")
+    with pytest.raises(SystemExit):
+        B.check([RUN], _index_file(tmp_path, doc), head_length=lambda url: len(data), get_range=slow)
+    assert "timed out" in capsys.readouterr().out

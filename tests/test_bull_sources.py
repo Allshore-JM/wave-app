@@ -479,3 +479,244 @@ def test_yesterdays_same_cycle_is_asked_too(monkeypatch):
     assert heads[-1] == GB.archive_url("20261024", "12", app.NOAA_BUCKET) and len(heads) == 5
     assert heads[3] == GB.archive_url("20261024", "18", app.NOAA_BUCKET)
     assert [u.split("/gfs.")[1][:8] for u in fake.urls(NOMADS)] == ["20261025"] * 3 + ["20261024"]
+
+
+# ---------------- G36 re-check fixes (plan section 53, fix round 2) ----------------
+
+import time  # noqa: E402
+
+from urllib3.exceptions import ConnectTimeoutError, MaxRetryError, ReadTimeoutError  # noqa: E402
+
+
+def _chain(*levels):
+    """An exception raised the way urllib3 / requests raise them: each level `raise ... from` the one below."""
+    exc = None
+    for make in levels:
+        try:
+            if exc is None:
+                raise make()
+            raise make() from exc
+        except BaseException as e:            # noqa: B902
+            exc = e
+    return exc
+
+
+def _real_read_timeout():
+    """requests' ReadTimeout > urllib3's ReadTimeoutError > TimeoutError, as the re-check saw them."""
+    inner = _chain(lambda: TimeoutError("timed out"),
+                   lambda: ReadTimeoutError(None, "https://x/y", "Read timed out. (read timeout=10)"))
+    return requests.exceptions.ReadTimeout(inner)
+
+
+def _real_connect_timeout():
+    """ConnectTimeout > MaxRetryError > ConnectTimeoutError > TimeoutError."""
+    inner = _chain(lambda: TimeoutError("timed out"),
+                   lambda: ConnectTimeoutError(None, "Connection to x timed out. (connect timeout=3)"))
+    return requests.exceptions.ConnectTimeout(_chain(lambda: inner, lambda: MaxRetryError(None, "https://x/y", inner)))
+
+
+def _ok_206(url, **k):
+    return A.Resp(206, b"x" * 100, {"Content-Range": "bytes 0-99/1000"})
+
+
+@pytest.mark.parametrize("inner", [ConnectionResetError(10054, "reset by peer"),
+                                   ConnectionAbortedError(10053, "aborted"), BrokenPipeError(32, "broken pipe")])
+def test_a_reset_an_abort_or_a_broken_pipe_is_asked_again(monkeypatch, inner):
+    flaky = _Flaky(_ok_206, requests.exceptions.ConnectionError(ProtocolError("Connection aborted.", inner)))
+    monkeypatch.setattr(app._BULL_HTTP, "get", flaky.get)
+    assert app._bull_range("https://noaa-gfs-bdp-pds.s3.amazonaws.com/x", 0, 99) == b"x" * 100 and flaky.calls == 2
+
+
+@pytest.mark.parametrize("make", [_real_read_timeout, _real_connect_timeout])
+def test_a_real_timeout_chain_is_never_asked_again(monkeypatch, make):
+    """The timeouts as urllib3 really raises them (TimeoutError at the bottom of the chain) are not repeated."""
+    exc = make()
+    assert not app._dropped_connection(exc)
+    flaky = _Flaky(_ok_206, exc, n=2)
+    monkeypatch.setattr(app._BULL_HTTP, "get", flaky.get)
+    with pytest.raises(type(exc)):
+        app._bull_range("https://noaa-gfs-bdp-pds.s3.amazonaws.com/x", 0, 99)
+    assert flaky.calls == 1
+
+
+def test_the_second_attempt_stays_inside_the_time_left(monkeypatch):
+    """Re-check F-2: the retry's connect and read timeouts are clipped to what is left of max_s."""
+    clock = {"t": 100.0}
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock["t"])
+    seen = []
+
+    def get(url, timeout=None, **k):
+        seen.append(timeout)
+        if len(seen) == 1:
+            clock["t"] += 5.5                            # the server held the request, then dropped it
+            raise _dropped()
+        return _ok_206(url)
+    session = type("S", (), {"get": staticmethod(get)})()
+    got = app._capped_get("https://x/y", 100, None, (3, 10), 8, session=session, byte_range=(0, 99), retry_dropped=True)
+    assert got == b"x" * 100 and seen == [(3, 10), (2.5, 2.5)]
+
+
+def test_a_range_answer_from_a_longer_offset_is_refused(monkeypatch):
+    """`bytes 15360-...` is not an answer to a request from 1536."""
+    monkeypatch.setattr(app._BULL_HTTP, "get", lambda url, **k: A.Resp(206, b"x" * 100,
+                                                                       {"Content-Range": "bytes 15360-15459/99999"}))
+    with pytest.raises(IOError):
+        app._bull_range("https://noaa-gfs-bdp-pds.s3.amazonaws.com/x", 1536, 1635)
+
+
+def _first_answers(monkeypatch, fake, answers):
+    """HEADs whose URL holds a key answer the listed statuses first, then as the fake NOAA does."""
+    def head(url, **k):
+        for key, seq in answers.items():
+            if key in url and seq:
+                fake.calls.append(("HEAD", url.split("/")[2], url, None))
+                return A.Resp(seq.pop(0), headers={"Content-Length": str(GB.ARCHIVE_BYTES)})
+        return fake.head(url, **k)
+    monkeypatch.setattr(app._PROBE_HTTP, "head", head)
+
+
+def test_a_transient_5xx_on_the_newest_archive_is_asked_again(monkeypatch):
+    """Re-check F-1: one 503 (S3 "SlowDown") on the newest archive's HEAD: asked once more, the newest run found."""
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=((DATE, "06"), (DATE, "12")), nomads_runs=())
+    _first_answers(monkeypatch, fake, {"/gfs.20261025/12/": [503]})
+    assert app._detect_latest_run() == (DATE, "12")
+    assert fake.urls(S3) == [GB.archive_url(DATE, "12", app.NOAA_BUCKET)] * 2
+
+
+def test_a_5xx_that_stays_never_makes_an_older_run_look_newest(monkeypatch):
+    """NOMADS off, the newest archive answers 503 twice: the probe fails and the run already found stays (it never
+    goes back to the older archive that is there)."""
+    monkeypatch.setattr(app, "NOMADS_DISABLED", True)
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=((DATE, "06"), (DATE, "12")))
+    assert app.get_latest_run() == (DATE, "12")
+    with app._CACHE_LOCK:
+        app._RUN_CACHE["ts"] -= app._RUN_CACHE_TTL + 1
+    fake.calls.clear()
+    _first_answers(monkeypatch, fake, {"/gfs.20261025/12/": [503, 503]})
+    assert app.get_latest_run() == (DATE, "12") and app._RUN_CACHE["failed"] is True
+    assert fake.urls(S3) == [GB.archive_url(DATE, "12", app.NOAA_BUCKET)] * 2, "06Z is never asked"
+
+
+def test_a_403_from_the_archive_stops_its_scan_and_nomads_decides(monkeypatch):
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=((DATE, "06"), (DATE, "12")))
+    _first_answers(monkeypatch, fake, {"/gfs.20261025/12/wave/station/gfswave": [403]})
+    assert app._detect_latest_run() == (DATE, "12")
+    assert len(fake.urls(S3)) == 1 and fake.urls(NOMADS)[0].endswith("/bulls.t12z/gfswave.51201.bull")
+
+
+def test_nomads_403_means_not_written_yet_and_its_5xx_stops_asking(monkeypatch):
+    """NOMADS answers 403 for a cycle it has not written: the probe goes on to the next newer cycle. A 5xx (asked
+    twice) stops asking NOMADS: the archive's run is served."""
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=((DATE, "00"),), nomads_runs=((DATE, "06"),))
+    _first_answers(monkeypatch, fake, {"/bulls.t12z/": [403]})
+    assert app._detect_latest_run() == (DATE, "06")
+    fake.calls.clear()
+    _first_answers(monkeypatch, fake, {"/bulls.t12z/": [503, 503]})
+    assert app._detect_latest_run() == (DATE, "00")
+    assert [u.split("/")[-2] for u in fake.urls(NOMADS)] == ["bulls.t12z", "bulls.t12z"], "06Z is not asked"
+
+
+def _clocked_heads(monkeypatch, fake, step):
+    """Each HEAD takes `step` seconds on a fake clock; returns the timeouts the HEADs were given."""
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock["t"])
+    seen = []
+
+    def head(url, **k):
+        seen.append(k.get("timeout"))
+        clock["t"] += step
+        return fake.head(url, **k)
+    monkeypatch.setattr(app._PROBE_HTTP, "head", head)
+    return seen
+
+
+def test_the_probe_stops_at_its_budget(monkeypatch):
+    """Re-check F-3: no HEAD is started past _PROBE_BUDGET_S, and each one's timeouts are clipped to what is left."""
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=())                          # every archive 404: the scan would go on
+    seen = _clocked_heads(monkeypatch, fake, 6)
+    assert app._detect_latest_run() == (None, None)
+    assert seen == [(3, 5), (3, 5), (3, 3)] and not fake.urls(NOMADS)
+
+
+def test_out_of_time_the_archive_found_is_served(monkeypatch):
+    _today(monkeypatch, hour=23, minute=50)                      # 18Z is old enough to ask
+    fake = _world(monkeypatch, runs=((DATE, "12"),), nomads_runs=((DATE, "18"),))
+    _clocked_heads(monkeypatch, fake, 8)
+    assert app._detect_latest_run() == (DATE, "12"), "NOMADS's 18Z is not asked once the budget is spent"
+    assert not fake.urls(NOMADS)
+
+
+def test_a_caller_that_finds_a_probe_running_gets_the_run_held(monkeypatch):
+    """Re-check F-3: while one request probes, the others take the run held instead of waiting."""
+    go, started = threading.Event(), threading.Event()
+
+    def probe():
+        started.set()
+        go.wait(5)
+        return (DATE, "18")
+    monkeypatch.setattr(app, "_detect_latest_run", probe)
+    with app._CACHE_LOCK:
+        app._RUN_CACHE.update(ts=time.time() - app._RUN_CACHE_TTL - 1, value=(DATE, RUN), good=(DATE, RUN),
+                              good_ts=time.time() - 3600, failed=False)
+    out = []
+    t = threading.Thread(target=lambda: out.append(app.get_latest_run()))
+    t.start()
+    assert started.wait(5)
+    t0 = time.time()
+    assert app.get_latest_run() == (DATE, RUN) and time.time() - t0 < 1, "served at once, not after the probe"
+    go.set()
+    t.join(5)
+    assert out == [(DATE, "18")] and app.get_latest_run() == (DATE, "18")
+
+
+@pytest.mark.parametrize("held", ["none", "too old"])
+def test_with_no_run_held_a_caller_waits_for_the_probe(monkeypatch, held):
+    """Nothing to serve (no run yet, or the last one older than _RUN_KEEP): the caller waits for the probe."""
+    if held == "too old":
+        with app._CACHE_LOCK:
+            app._RUN_CACHE.update(ts=time.time() - app._RUN_CACHE_TTL - 1, value=(DATE, RUN), good=(DATE, RUN),
+                                  good_ts=time.time() - app._RUN_KEEP - 1, failed=False)
+    go, started = threading.Event(), threading.Event()
+
+    def probe():
+        started.set()
+        go.wait(5)
+        return (DATE, "18")
+    monkeypatch.setattr(app, "_detect_latest_run", probe)
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(app.get_latest_run())) for _ in range(2)]
+    ts[0].start()
+    assert started.wait(5)
+    ts[1].start()
+    ts[1].join(0.3)
+    assert ts[1].is_alive(), "nothing to serve: it waits for the probe"
+    go.set()
+    [t.join(5) for t in ts]
+    assert out == [(DATE, "18")] * 2
+
+
+def test_healthz_reports_the_run_probe(monkeypatch):
+    with app._CACHE_LOCK:
+        now = time.time()
+        app._RUN_CACHE.update(ts=now - 30, value=(DATE, RUN), good=(DATE, RUN), good_ts=now - 7200, failed=True)
+    r = app._run_health()
+    assert r["run"] == DATE + RUN and r["failed"] is True and r["good_run"] == DATE + RUN
+    assert 29 <= r["probe_age_s"] <= 32 and 7199 <= r["good_age_s"] <= 7202
+    with app.app.test_client() as c:
+        assert c.get("/healthz").get_json()["gfs"]["run"]["run"] == DATE + RUN
+
+
+def test_a_forked_child_gets_a_fresh_stats_lock():
+    old = GB.STATS.lock
+    old.acquire()
+    try:
+        app._live_after_fork()
+        assert GB.STATS.lock is not old and GB.STATS.lock.acquire(blocking=False)
+        GB.STATS.lock.release()
+    finally:
+        old.release()

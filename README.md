@@ -965,14 +965,18 @@ the bulletins come from the run's bulletin archive:
 - **The order**: the archive first; NOMADS's per-station file second (at most 256 KB; the same station and run check)
   when the archive is missing, damaged or unreachable, or the station is not in the index. The error texts are unchanged
   ("Could not download .bull ..." when nothing answered, "No .bull file found ..." when a server answered without it).
-- **The run probe** (cached 30 min, failures 2 min, one probe at a time: the requests that come meanwhile wait for
-  its answer): the run's archive is asked (a HEAD) for each cycle, newest first (18/12/06/00Z today, then yesterday;
-  a cycle younger than 3 hours is skipped: nothing is published that soon), until one is there; then NOMADS's 51201
-  bulletin only for the cycles newer than that archive (NOMADS has a cycle a minute or two before AWS). Each HEAD is
-  one attempt with a 3 s connect / 5 s read timeout, and a host that does not answer is not asked again in that
-  probe, so a silent NOMADS costs one timeout. When a probe finds nothing, the last run found keeps being served (for
-  up to 12 hours) and the probe is asked again after 2 minutes. An archive of another length than the index's still
-  counts: its members are still read and checked one by one, and `/healthz` says so.
+- **The run probe** (cached 30 min, failures 2 min, one probe at a time: a request that comes meanwhile gets the run
+  already held at once, and only a process that holds no run yet waits for the probe): the run's archive is asked (a
+  HEAD) for each cycle, newest first (18/12/06/00Z today, then yesterday; a cycle younger than 3 hours is skipped:
+  nothing is published that soon), until one is there; then NOMADS's 51201 bulletin only for the cycles newer than
+  that archive (NOMADS has a cycle a minute or two before AWS). Each HEAD has a 3 s connect / 5 s read timeout and is
+  asked once more after a dropped connection or a 429 / 5xx answer; the whole probe stops after 15 s. Only "not
+  there" moves on to an older cycle: a 404 from the archive, a 403 or 404 from NOMADS (NOMADS answers 403 for a cycle
+  it has not written yet). Any other answer (none, a 5xx again) stops asking that host in that probe, so a silent
+  NOMADS costs one timeout and a hiccup on the newest archive never makes an older run look newest. When a probe finds
+  nothing, the last run found keeps being served (for up to 12 hours) and the probe is asked again after 2 minutes. An
+  archive of another length than the index's still counts: its members are still read and checked one by one, and
+  `/healthz` says so.
 - **When NOAA changes the archive**: a member that moved or changed is refused by its header check and served from
   NOMADS; a station NOAA appended is not in the index and comes from NOMADS too. `/healthz` -> `gfs.bulletins`:
   `layout_suspect` is the last probe's verdict on the archive's size (cleared by a probe that sees the index's size),
@@ -981,12 +985,15 @@ the bulletins come from the run's bulletin archive:
   commit.
 - **Dropped connections**: NOAA's bucket closes an idle keep-alive connection after about 5.6 s. A range read (or a
   probe HEAD, or a read of the winds table) that meets such a closed connection before any answer is asked once more on
-  a new one, within the same time limit; timeouts and refusals are not repeated. A range answer must name the asked
-  bytes in its `Content-Range`.
+  a new one, its connect and read timeouts clipped to what is left of the read's time limit; timeouts and refusals are
+  not repeated. A range answer must name the asked bytes in its `Content-Range`.
 - **`/healthz` -> `gfs.bulletins`**: whether the archive and NOMADS are used, the index (members, archive size, a load
   error), the archive reads by outcome (`ok`, `unknown`, `missing`, `layout`, `content`, `transport`), the NOMADS
   fallbacks, the last error (a station id that is not in the index is counted under `unknown` but is not an error)
   and the last run served from the archive, plus the layout keys above. Reported only, never part of `ok`.
+- **`/healthz` -> `gfs.run`**: the run served, whether the last probe failed (the run served is then the one kept
+  from the last good probe), `good_run`, and the ages of the last probe and of the last good one (`probe_age_s`,
+  `good_age_s`). Reported only.
 - **The Wind column** (and the SWAN tables' wind back-fill): the GFS station winds job's table in the frames bucket
   first (`gfswave/winds/v1/<RUN>/index.json` + `winds.bin`, see "GFS station winds" under Model overlays; the bucket's
   address is the forecast points', from `MODEL_FRAMES_BASE` or `POINTS_ROOT`), NOMADS's per-station `.spec` second.

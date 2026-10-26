@@ -207,3 +207,21 @@ Owner awareness:
 - `:has()` needs Chrome / Edge 105, Safari 15.4 or Firefox 121. An older browser keeps 1.26.0's behaviour (the label
   under a window).
 - The sheet is in scratch `legend/v4/legend_g37_fixes_test_site.jpg`.
+
+## Step 5: production (Opus 5.5 MEDIUM)
+
+2026-10-26: the rollback tag `prod-pre-legend` was pushed at 2ccfa41, and `Live-Buoy-Update` was fast-forwarded from
+2ccfa41 to 0a404bc (14 commits; UI 1.26.1, overlay unchanged at 2.22.5). The new code was served from 21:09:20 UTC; 10
+polls across the switch, none failed.
+
+Checks on the live site:
+- The served overlay and UI files equal the repo. The logo's bytes differ (Render's edge recompresses PNGs), but its
+  pixels are identical. The 1.25.9 asset URLs answer 404.
+- The three page probes equal the test site's pages apart from the test branch's three logo lines. The test-only logo
+  count is 0.
+- `/healthz` is ok, and CI on 0a404bc is green (tests and client-tests).
+- On allshoresurf.com, headless Chrome with trusted input: F1 (labels over the maximised window), F2, F3 and F4a pass.
+  On a phone, the row, the legend and the labels pass. The console on a fresh page is clean.
+- Both sites' storage was emptied and the browser stopped.
+
+Rollback: re-push `prod-pre-legend`. **Section 54 complete.**

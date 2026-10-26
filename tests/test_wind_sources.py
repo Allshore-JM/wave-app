@@ -1314,6 +1314,27 @@ def test_madis_gap_between_live_polls_is_asked_again(live_clock):
     assert p.filling()
 
 
+def test_madis_gap_from_two_real_live_polls(live_clock):
+    """The same without setting the state by hand: a live poll that answers, then (the windows done) polls that fail
+    for 3 hours, then one that answers: the hours since the first are queued."""
+    fetch = madis_hist_fetch()
+    p = W.MadisProvider(NWS_IDS, fetch, backfill=True)
+    p._fetch_stations()                                   # answers at LIVE_T
+    assert p._live_ok == LIVE_T
+    p._bf = []
+    fetch.table[W.MADIS_HI_URL] = IOError("down")
+    for k in range(1, 4):
+        live_clock.now = LIVE_T + 3600 * k
+        with pytest.raises(IOError):
+            p._fetch_stations()
+    assert p._bf == [] and p._live_ok == LIVE_T, "a failed poll moves nothing"
+    fetch.table[W.MADIS_HI_URL] = fx("madis_live.html")
+    live_clock.now = LIVE_T + 3 * 3600 + 300
+    p._fetch_stations()
+    top = (LIVE_T + 3 * 3600 + 300) // 3600 * 3600
+    assert [w[0] for w in p._bf] == [top, top - 7200] and p._live_ok == live_clock.now
+
+
 def test_madis_history_prunes_after_25_hours_and_keeps_only_snapshot_stations(live_clock):
     fetch = madis_hist_fetch()
     p = W.MadisProvider(NWS_IDS, fetch, backfill=True)

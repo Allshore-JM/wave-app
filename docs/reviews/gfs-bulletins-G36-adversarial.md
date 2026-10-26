@@ -190,3 +190,53 @@ copy: 44, 42 killed. One first survived and was a test gap: the dropped-HEAD ret
 through NOMADS; it now has no NOMADS copy), killed after the change. Two are equivalent: removing
 `RemoteDisconnected` from the dropped-connection list (it is itself a `ConnectionResetError`), and `len(m) < 3` in
 the index check (a four-field member still fails the unpacking with a ValueError).
+
+## Test-site verification of the fix round, 2026-10-26
+
+`test` @ 22def43 (the cherry-pick of c4a2ceb; the README stays the test branch's own, the record and the job's own test
+file are left off), live from 02:32:38 UTC, 42 polls across the switch, none failed; the new `/healthz` keys
+(`probe_layouts`, `last_layout_read`) show the new code. Then `test` @ 254857d with the comment fix below, live from
+02:48:36 UTC (42 polls, none failed; 51201, 46026 and 51201 SWAN then equal production's answers). The site files on `test` = `feat/gfs-bulletins` @ 4a425aa apart from the test branch's three logo
+lines. Scripts and logs: scratch `g36/v7`.
+
+- **Answers**: the 65 of step 5 (30 GFS stations compact, 6 classic, 5 Metric, 5 UTC, the 12 SWAN stations, 3 Great
+  Lakes stations, 2 forecast points, 2 removed stations) on run 2026102518: production, the test site before and the test
+  site after are identical, 65 of 65. The first request on the new instance (its run probe included) took 2.0 s.
+- **The test branch's suite**: 1,108 passed and the five failures it had before (the three logo goldens, the models-env
+  golden, the numpy import).
+- **B-1 against NOAA's real bucket** (in-process, the feature branch's code; two sessions at once, archive range reads
+  spaced 5.55-5.95 s, every body checked by its ustar header and its text): with `retry_dropped=False` (the reads before
+  the fix) 9 of 45 failed with `RemoteDisconnected`; the site's own read (`_bull_range`) 45 of 45 ok, 16 of them asked
+  again after a dropped connection. About half the reads at this spacing need a new connection either way (14 of 36 ok
+  reads without the retry took over 0.85 s, 28 of 45 with it); a retry costs one new TLS connection (at most 1.42 s).
+- **B-1 on the test site**: 80 fresh forecast builds (stations not built since the deploy), paced so the server's own
+  connection to the bucket sat idle about 5-7 s between its archive reads: 80 answers ok, the archive reads went up by 80
+  `ok`, 0 `transport`, 0 NOMADS fallbacks; a build took 1.10 s at the median, 2.10 s at most.
+- **B-2 against NOAA's real servers** (in-process; "silent" = a local host that accepts and never answers; "pretend
+  04:30" = the probe's clock at 2026-10-26 04:30 UTC, when 00Z is old enough to ask and its archive is not written yet):
+
+  | Case | HEADs | Time | Result |
+  |---|---|---|---|
+  | now (02:36 UTC) | 1 (the 18Z archive) | 0.68 s | 2026102518 |
+  | pretend 04:30 | 3 (archive 00Z 404, 18Z 200; NOMADS 00Z only, 404) | 1.10 s | 18Z |
+  | pretend 04:30, NOMADS silent | 3 (one 5-s read timeout) | 5.66 s | 18Z |
+  | pretend 04:30, the archive host silent | 3 (the archive asked once; NOMADS 00Z 404, 18Z 200) | 5.31 s | 18Z |
+  | a good probe, then both hosts silent | 2 after the good probe's 1 (archive, then NOMADS: one timeout each) | 10.0 s | still 18Z, `failed` set, "still serving 20261025 18Z" logged |
+  | pretend 04:30, NOMADS silent, 4 cold requests at once | 3, one probe | 5.98 s for each | 18Z for all four |
+
+  The same cases on production's code (c8c7057): NOMADS silent took 253 s for 16 HEADs (8 cycles, 31 s for each NOMADS
+  HEAD) and found no run ("No recent run found."); four cold requests ran four probes, 64 HEADs, 253 s for each caller,
+  no run for any. (Production's code reads AWS's per-station files, gone since 2026-10-22: with NOMADS silent it has no
+  GFS tables at all.)
+- **Browser** (headless Chrome with its own profile, desktop 1280x800 and phone 375x812): 51201 and 46026 with 385 of 385
+  rows carrying a wind speed and direction, the run line "GFS · run 20261025 18 UTC", 51201 SWAN with 175 of 175 rows
+  with wind, no sideways page scroll, no transport failure, NOMADS bulletin fallback or NOMADS wind read during the
+  smoke, console clean. (The script's two failures are its own expectation of 177 SWAN rows from step 5; since
+  PacIOOS's 23:04 UTC update the table has 175, the same as production's answer.) `/healthz` `gfs.winds.last_run` is
+  2026102518 with 2026102512 also held (before the deploy it read 2026102512 after a SWAN back-fill: B-3d).
+- **Found and fixed**: the archive session's comment still said "one attempt each"; it now names the dropped-connection
+  rule (4a425aa, comment only).
+- **Not done**: the next run switch (00Z) was not watched (owner: report without it); the winds job's KEEP 8 reaches
+  production with its own job-only push.
+- **Cleanup**: the browser closed over DevTools and its profile removed; the test and production origins' storage
+  emptied; the local silent host stopped.

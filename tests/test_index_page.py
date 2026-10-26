@@ -346,6 +346,8 @@ def test_legend_button_in_the_top_right_row(client):
     assert on_add.index("if (legend) c.appendChild(legend);") < on_add.index("if (tools) c.appendChild(tools);") < on_add.index("if (host) c.appendChild(host);")
     assert "lc = layersControl.getContainer && layersControl.getContainer();" in body and "if (lp && lc) lp.appendChild(lc);" in body
     assert "collapsed: false" in body                                        # the list itself is always expanded (in its panel)
+    # the row below the longitude labels at the map's top edge (owner): labels at 4 px, about 13 px tall; the row from 26 px
+    assert ".leaflet-top.leaflet-right .leaflet-control-settings { margin-top: 26px; }" in body
     # the corner: its own controls only (the layer control inside the open panel never counts)
     assert "box.querySelectorAll('.leaflet-top.leaflet-right > .leaflet-control')" in body
     assert "'.leaflet-top.leaflet-right .leaflet-control'" not in body
@@ -689,12 +691,12 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
                    "root.style.setProperty('--ww-gap', (open ? WW_GAP : 0) + 'px');",
                    "if (minW) root.style.setProperty('--ww-min-w', minW + 'px'); else root.style.removeProperty('--ww-min-w');"):
         assert needle in body, needle
-    # the corner: the row of buttons alone ~50 px (plan section 54); 180 px = the map tools' bar shown, or the old legend
+    # the corner: the row of buttons alone ~64 px (70 on phones; plan section 54); 180 px = the map tools' bar shown, or the old legend
     WIND_CONTENT_PX = 540
     def topleft_r(W):
         return 204 if W < 576 else 360
     # from 1280 px (the wide forecast box from 96 px down) the wind window's top is floored (--ww-top): with the row alone
-    # (~50 px, plan section 54) it would start above the forecast window and, with every window open, hide it whole
+    # (~64 px, plan section 54) it would start above the forecast window and, with every window open, hide it whole
     fl = re.search(r"\.fwin\.wind-win \{ --ww-top: max\(var\(--map-topright-h, 120px\), (\d+)px\); \}", body)
     assert fl, "the wind window's floor on wide screens"
     WW_FLOOR = int(fl.group(1))
@@ -740,7 +742,7 @@ def test_no_window_covers_another_whole_at_their_default_boxes(client):
     for W in (520, 600, 768, 820, 900, 956, 1024, 1180, 1280, 1366, 1440, 1536, 1600, 1920, 2560):
         for H in (501, 560, 600, 700, 768, 800, 864, 900, 1024, 1080, 1200, 1440):
           for TL, TR in (((360, 170),) if W < 1280 else ((204, 136), (360, 136), (204, 150), (360, 150), (204, 200), (360, 200))):
-           for CORNER in (50, 180):                       # the row alone (section 54), or the tools bar under it
+           for CORNER in (50, 64, 70, 180):               # the row alone (section 54: desktop 64, phone 70), or the tools bar under it
             b = {n: box(r, W, H) for n, r in rules.items()}
             if W >= 1280:
                 b["forecast"] = wide(W, H, TL, TR, 16)

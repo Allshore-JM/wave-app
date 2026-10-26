@@ -437,6 +437,9 @@
     .leaflet-control-settings { display: flex; gap: 6px; align-items: flex-start; }
     /* the gear's panel and the tools menu drop over the tool bar (a later control at Leaflet's z 800): G20 P0 */
     .leaflet-top.leaflet-right .leaflet-control-settings { z-index: 801; }
+    /* the row sits below the longitude labels along the map's top edge (owner, plan section 54: a label is never pushed
+       down around the buttons); the same place whether the gridlines are on or off, so toggling them moves nothing */
+    .leaflet-top.leaflet-right .leaflet-control-settings { margin-top: 26px; }
     .tools-host { position: relative; }
     html:not(.js) .tools-host { display: none; }
     /* The legend (plan section 54): a key button first in the row; Leaflet's layer control lives in its panel, its own box
@@ -747,7 +750,7 @@
       .forecast-win:not(.fw-min):not(.fw-max) {
         left: calc(var(--map-topleft-r, 360px) + 16px); right: calc(var(--map-topright-w, 170px) + 16px); top: 96px; width: auto; height: auto; }
       /* the wind window starts no higher than 128 px here, so the forecast window's top (96 px) keeps a strip to click with
-         every window open (the top-right row alone is only ~50 px tall since plan section 54) */
+         every window open (the top-right row alone is only ~64 px tall since plan section 54) */
       .fwin.wind-win { --ww-top: max(var(--map-topright-h, 120px), 120px); }
       .live-chip .forecast-win:not(.fw-min):not(.fw-max), .tide-chip .forecast-win:not(.fw-min):not(.fw-max),
       .live-chip.tide-chip .forecast-win:not(.fw-min):not(.fw-max), body.wind-chip .fwin.forecast-win:not(.fw-min):not(.fw-max) { height: auto; }

@@ -456,3 +456,19 @@ def test_the_tools_check_survives_a_timeout_at_a_member(arch, tmp_path, capsys):
     with pytest.raises(SystemExit):
         B.check([RUN], _index_file(tmp_path, doc), head_length=lambda url: len(data), get_range=slow)
     assert "timed out" in capsys.readouterr().out
+
+
+
+def test_the_tools_check_prints_a_garbage_status_line_on_one_line(arch, tmp_path, capsys):
+    """Fresh check F3: http.client's BadStatusLine carries the raw line with its CRLF; the tool folds it."""
+    data, texts, doc, index = arch
+
+    def garbage(url):
+        raise http.client.BadStatusLine("HELLO THERE\r\n")
+    with pytest.raises(SystemExit):
+        B.check([RUN], _index_file(tmp_path, doc), head_length=garbage, get_range=ranged(data))
+    out = capsys.readouterr().out
+    line = [ln for ln in out.splitlines() if "not readable on AWS" in ln]
+    assert line == [f"{RUN}: not readable on AWS (HELLO THERE)"]
+    assert B._why(urllib.error.HTTPError("https://x", 404, "Not Found", {}, None)) == "404"
+    assert B._why(OSError()) == "OSError"

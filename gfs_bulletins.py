@@ -171,8 +171,10 @@ STATS = Stats()
 def archive_bulletin(date_str, run_str, sid, get_range, index=None, stats=None, base=BUCKET):
     """(text, reason, detail): the bulletin from the run's archive, or (None, reason, detail) with reason one of
     unknown / missing / layout / content / transport. `get_range(url, start, end)` returns exactly the bytes
-    start..end inclusive or raises; an exception whose `status` is 404 (or 403: S3 for a key that is not there)
-    means the archive is not there."""
+    start..end inclusive or raises; an exception whose `status` is 404 (or 403, which S3 answers for a missing key
+    when the bucket does not list publicly; NOAA's answers 404) means the archive is not there: counted as `missing`.
+    The caller asks NOMADS after `missing` and `transport` alike, so that is a counter only; the run probe takes an
+    archive 403 as a refusal on purpose (app._detect_latest_run, fresh check F4)."""
     index = INDEX if index is None else index
     stats = STATS if stats is None else stats
     where = index.get(sid)

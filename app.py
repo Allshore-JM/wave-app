@@ -579,6 +579,13 @@ class _Dropped(Exception):
         self.exc = exc
 
 
+_RETRY_MIN_LEFT_S = 1.0               # a retry (a dropped connection, a probe's 429 / 5xx) only with this much time left
+
+
+def _time_left_to_retry(deadline: float) -> bool:
+    return deadline - time.monotonic() >= _RETRY_MIN_LEFT_S
+
+
 def _clip_timeout(timeout, left: float):
     """`timeout` (a number or (connect, read)) with each part at most `left` seconds (at least 0.1)."""
     left = max(0.1, left)
@@ -598,14 +605,15 @@ def _capped_get(url: str, max_bytes: int, headers, timeout, max_s: float, sessio
     Another status raises HTTPStatusError. `session` defaults to the points' session (one attempt, no retry adapter).
     `retry_dropped`: a connection the server dropped before answering (NOAA's bucket closes an idle keep-alive one after
     ~5.6 s) is asked once more on a new connection, its connect and read timeouts clipped to the time left of the same
-    max_s; never after a timeout, a refusal or once an answer came (G36 B-1, re-check F-2)."""
+    max_s (and only with _RETRY_MIN_LEFT_S of it left); never after a timeout, a refusal or once an answer came (G36 B-1,
+    re-check F-2)."""
     deadline = time.monotonic() + max_s
     for attempt in (0, 1):
         t = timeout if not attempt else _clip_timeout(timeout, deadline - time.monotonic())
         try:
             return _capped_get_once(url, max_bytes, headers, t, deadline, session, byte_range)
         except _Dropped as dropped:
-            if attempt or not retry_dropped or deadline - time.monotonic() < 1.0:
+            if attempt or not retry_dropped or not _time_left_to_retry(deadline):
                 raise dropped.exc
             logger.info("%s dropped the connection before answering; asked again", _host(url))
 
@@ -1510,24 +1518,25 @@ def sitemap_xml():
 _PROBE_HTTP = requests.Session()       # the run probe: no retry adapter (app.HTTP's retries: 31 s on a silent host)
 _PROBE_TIMEOUT = (3, 5)                # connect, read
 _PROBE_BUDGET_S = 15                   # the whole probe; the real hosts answer it in 1-2 s (G36 re-check F-3)
-_PROBE_RETRY_STATUS = (429, 500, 502, 503, 504)   # asked once more, as app.HTTP's adapter did (re-check F-1)
+_PROBE_RETRY_STATUS = (429, 500, 502, 503, 504)   # asked once more (re-check F-1; app.HTTP's adapter asks these twice more)
 _RUN_MIN_AGE = 3 * 3600                # no cycle reaches NOAA's servers sooner (the bulletins come ~5.3 h after it)
 
 
 def _probe_head(url: str, deadline: float):
     """(status, Content-Length) of a HEAD, or (None, the error's name) when the host did not answer. A connection the
-    server dropped before answering (NOAA's bucket closes idle keep-alive ones: G36 B-1) and a 429 / 5xx answer
-    (re-check F-1) are asked once more. Each attempt's timeouts are clipped to the probe's `deadline`."""
+    server dropped before answering (NOAA's bucket closes idle keep-alive ones: G36 B-1) and an answer in
+    _PROBE_RETRY_STATUS (re-check F-1) are asked once more, while _RETRY_MIN_LEFT_S of the probe is left (fresh check
+    F2). Each attempt's timeouts are clipped to the probe's `deadline`."""
     for attempt in (0, 1):
         timeout = _clip_timeout(_PROBE_TIMEOUT, deadline - time.monotonic())
         try:
             resp = _PROBE_HTTP.head(url, timeout=timeout)
         except Exception as exc:
-            if not attempt and _dropped_connection(exc):
+            if not attempt and _dropped_connection(exc) and _time_left_to_retry(deadline):
                 continue
             logger.debug("run probe failed for %s: %r", url, exc)
             return None, type(exc).__name__
-        if not attempt and resp.status_code in _PROBE_RETRY_STATUS:
+        if not attempt and resp.status_code in _PROBE_RETRY_STATUS and _time_left_to_retry(deadline):
             continue
         try:
             length = int(resp.headers.get("Content-Length") or 0)
@@ -1538,16 +1547,18 @@ def _probe_head(url: str, deadline: float):
 
 def _detect_latest_run():
     """
-    Find the most recent available GFS wave run (G36 B-2): the run's bulletin archive on AWS is asked for each cycle,
-    newest first (18/12/06/00Z of today, then yesterday; a cycle younger than _RUN_MIN_AGE is not asked: nothing is
-    published that soon), until one is there; then NOMADS (51201's bulletin) only for the cycles NEWER than that
-    archive (NOMADS has a cycle a minute or two before AWS). Each HEAD has a short timeout (a dropped connection and a
-    429 / 5xx are asked once more), and the whole probe at most _PROBE_BUDGET_S. Only "not there" moves the scan on to
-    an older cycle: a 404 from the archive, a 403 or 404 from NOMADS (which answers 403 for a cycle it has not written).
-    Any other answer (no answer, a 5xx after its second ask) stops asking that host in this probe, so a hiccup on the
-    newest archive never makes an older run look like the newest (re-check F-1). An archive of another length than the
-    committed index's still counts: its members are still read and checked one by one (a member whose header no
-    longer matches comes from NOMADS), and /healthz says the layout looks changed.
+    Find the most recent available GFS wave run (G36 B-2): the run's bulletin archive on AWS is asked for each
+    cycle, newest first (18/12/06/00Z of today, then yesterday; a cycle younger than _RUN_MIN_AGE is not asked:
+    nothing is published that soon), until one is there; then NOMADS (51201's bulletin) only for the cycles NEWER
+    than that archive (NOMADS has a cycle a minute or two before AWS). Each HEAD has a short timeout (a dropped
+    connection and a 429 / 500 / 502 / 503 / 504 are asked once more while time is left), and the whole probe at
+    most _PROBE_BUDGET_S (no HEAD is started past it, though one may end slightly after it). Only "not there"
+    moves the scan on to an older cycle: a 404 from the archive, a 403 or 404 from NOMADS (which answers 403 for a
+    cycle it has not written). Any other answer (no answer, a refusal, another status, a 5xx on its second ask)
+    stops asking that host in this probe, so a hiccup on the newest archive never makes an older run look like the
+    newest (re-check F-1). An archive of another length than the committed index's still counts: its members are
+    still read and checked one by one (a member whose header no longer matches comes from NOMADS), and /healthz says
+    the layout looks changed.
     Wrapped by the cached get_latest_run() below.
     """
     now = datetime.utcnow()
@@ -1577,6 +1588,9 @@ def _detect_latest_run():
                     gfs_bulletins.STATS.probe_layout(None)
                 break
             seen[_host(url)] = info if status is None else f"HTTP {status}"
+            # Only a 404 is "not there": NOAA's bucket lists publicly, so S3 answers 404 for a missing key (a 403 only
+            # without public listing); a 403 here more likely refuses the site's address. The bulletin reader counts a
+            # 403 as `missing`, a counter only: it asks NOMADS either way (fresh check F4).
             if status != 404:
                 break                             # no answer, a refusal, a 5xx: not asked again, never "an older one"
     if not NOMADS_DISABLED:

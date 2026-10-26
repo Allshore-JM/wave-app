@@ -720,3 +720,161 @@ def test_a_forked_child_gets_a_fresh_stats_lock():
         GB.STATS.lock.release()
     finally:
         old.release()
+
+
+# ---------------- fix round 3 (the fresh check of fix round 2) ----------------
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_each_retried_status_is_asked_once_more(monkeypatch, status):
+    """Fresh check F1: every status in _PROBE_RETRY_STATUS gets its second ask: the newest run is found."""
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=((DATE, "06"), (DATE, "12")), nomads_runs=())
+    _first_answers(monkeypatch, fake, {"/gfs.20261025/12/": [status]})
+    assert app._detect_latest_run() == (DATE, "12")
+    assert fake.urls(S3) == [GB.archive_url(DATE, "12", app.NOAA_BUCKET)] * 2
+
+
+@pytest.mark.parametrize("status", [301, 400, 410, 501])
+def test_any_other_archive_answer_stops_its_scan(monkeypatch, status):
+    """Fresh check F1: only a 404 means "not there"; a 3xx, another 4xx or a 501 is not asked again and never makes the
+    older archive the newest (NOMADS off: nothing confirmed, the probe fails)."""
+    monkeypatch.setattr(app, "NOMADS_DISABLED", True)
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=((DATE, "06"), (DATE, "12")))
+    _first_answers(monkeypatch, fake, {"/gfs.20261025/12/": [status, status]})
+    assert app._detect_latest_run() == (None, None)
+    assert fake.urls(S3) == [GB.archive_url(DATE, "12", app.NOAA_BUCKET)], "asked once, 06Z never"
+
+
+@pytest.mark.parametrize("answers,asked", [([301], 1), ([500, 500], 2), ([410], 1)])
+def test_any_other_nomads_answer_stops_asking_nomads(monkeypatch, answers, asked):
+    """Fresh check F1: from NOMADS only a 403 or 404 means "not written yet"; a 3xx, another 4xx or a 5xx asked twice
+    stops asking NOMADS and the archive's run is served."""
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=((DATE, "00"),), nomads_runs=((DATE, "06"),))
+    _first_answers(monkeypatch, fake, {"/bulls.t12z/": list(answers)})
+    assert app._detect_latest_run() == (DATE, "00")
+    assert [u.split("/")[-2] for u in fake.urls(NOMADS)] == ["bulls.t12z"] * asked, "06Z is not asked"
+
+
+def _clocked(monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(app.time, "monotonic", lambda: clock["t"])
+    return clock
+
+
+def test_a_late_drop_gives_the_retry_the_time_left(monkeypatch):
+    """Fresh check F1 (P5): the second HEAD's timeouts are clipped to what is left when it starts."""
+    clock = _clocked(monkeypatch)
+    seen = []
+
+    def head(url, timeout=None, **k):
+        seen.append(timeout)
+        if len(seen) == 1:
+            clock["t"] += 4.0                            # the HEAD was held, then dropped unanswered
+            raise _dropped()
+        return A.Resp(200, headers={"Content-Length": "7"})
+    monkeypatch.setattr(app._PROBE_HTTP, "head", head)
+    assert app._probe_head("https://x/y", 1006.0) == (200, 7)
+    assert seen == [(3, 5), (2.0, 2.0)]
+
+
+@pytest.mark.parametrize("first", ["drop", 503])
+@pytest.mark.parametrize("taken", [5.5, 7.0])
+def test_no_second_ask_without_a_second_of_the_probe_left(monkeypatch, first, taken):
+    """Fresh check F2: a drop or a 503 that comes with less than _RETRY_MIN_LEFT_S of the probe left (or after its
+    deadline) is not asked again: one HEAD, its own answer stands."""
+    clock = _clocked(monkeypatch)
+    calls = []
+
+    def head(url, timeout=None, **k):
+        calls.append(timeout)
+        clock["t"] += taken
+        if first == "drop":
+            raise _dropped()
+        return A.Resp(503, headers={"Content-Length": "0"})
+    monkeypatch.setattr(app._PROBE_HTTP, "head", head)
+    got = app._probe_head("https://x/y", 1006.0)
+    assert len(calls) == 1
+    assert got == ((None, "ConnectionError") if first == "drop" else (503, 0))
+
+
+def test_a_late_503_on_the_newest_archive_ends_the_scan(monkeypatch):
+    """Fresh check F2 through the probe: the newest archive's 503 comes 14.5 s into the budget: not asked again, the
+    scan stops, nothing older is asked."""
+    monkeypatch.setattr(app, "NOMADS_DISABLED", True)
+    _today(monkeypatch)
+    fake = _world(monkeypatch, runs=((DATE, "06"), (DATE, "12")))
+    clock = _clocked(monkeypatch)
+
+    def head(url, **k):
+        clock["t"] += 14.5
+        fake.calls.append(("HEAD", url.split("/")[2], url, None))
+        return A.Resp(503, headers={"Content-Length": "0"})
+    monkeypatch.setattr(app._PROBE_HTTP, "head", head)
+    assert app._detect_latest_run() == (None, None) and len(fake.urls(S3)) == 1
+
+
+def test_the_retry_reads_its_body_within_the_same_time_limit(monkeypatch):
+    """Fresh check F1 (C5): after a dropped first attempt the second one's body must still end within the first max_s;
+    a body that trickles past it is cut."""
+    clock = _clocked(monkeypatch)
+
+    class Trickle(A.Resp):
+        def iter_content(self, n=65536, **k):
+            for i in range(10):
+                clock["t"] += 1.0
+                yield b"x" * 10
+    calls = []
+
+    def get(url, timeout=None, **k):
+        calls.append(timeout)
+        if len(calls) == 1:
+            clock["t"] += 2.0
+            raise _dropped()
+        return Trickle(206, b"", {"Content-Range": "bytes 0-99/1000"})
+    session = type("S", (), {"get": staticmethod(get)})()
+    with pytest.raises(IOError, match="too slow"):
+        app._capped_get("https://x/y", 100, None, (3, 10), 8, session=session, byte_range=(0, 99), retry_dropped=True)
+    assert len(calls) == 2 and clock["t"] <= 1000.0 + 8 + 1.0
+
+
+def test_a_range_answer_with_another_end_is_refused(monkeypatch):
+    """Fresh check F1 (R5): the same start but another end is not the asked range."""
+    monkeypatch.setattr(app._BULL_HTTP, "get", lambda url, **k: A.Resp(206, b"x" * 100,
+                                                                       {"Content-Range": "bytes 1536-9999/99999"}))
+    with pytest.raises(IOError):
+        app._bull_range("https://noaa-gfs-bdp-pds.s3.amazonaws.com/x", 1536, 1635)
+
+
+def test_healthz_run_after_a_good_probe(monkeypatch):
+    """Fresh check F1 (H1-H5): each field from its own source."""
+    with app._CACHE_LOCK:
+        now = time.time()
+        app._RUN_CACHE.update(ts=now - 60, value=(DATE, "12"), good=(DATE, "06"), good_ts=now - 600, failed=False)
+    r = app._run_health()
+    assert r == {"run": DATE + "12", "failed": False, "probe_age_s": r["probe_age_s"], "good_run": DATE + "06",
+                 "good_age_s": r["good_age_s"]}
+    assert 59 <= r["probe_age_s"] <= 62 and 599 <= r["good_age_s"] <= 602
+
+
+def test_healthz_run_with_the_kept_run_expired_and_before_any_probe(monkeypatch):
+    with app._CACHE_LOCK:
+        now = time.time()
+        app._RUN_CACHE.update(ts=now - 10, value=(None, None), good=(DATE, RUN), good_ts=now - app._RUN_KEEP - 60,
+                              failed=True)
+    r = app._run_health()
+    assert r["run"] is None and r["failed"] is True and r["good_run"] == DATE + RUN
+    with app._CACHE_LOCK:
+        app._RUN_CACHE.update(ts=0.0, value=(None, None), good=None, good_ts=0.0, failed=False)
+    assert app._run_health() == {"run": None, "failed": False, "probe_age_s": None, "good_run": None,
+                                 "good_age_s": None}
+
+
+def test_a_clipped_timeout_keeps_a_tenth_of_a_second_at_least():
+    """Fresh check F1 (K1/K2): each part at most the time left, never under 0.1 s."""
+    assert app._clip_timeout((3, 5), 10) == (3, 5)
+    assert app._clip_timeout((3, 5), 0.5) == (0.5, 0.5)
+    assert app._clip_timeout((3, 5), -2.0) == (0.1, 0.1)
+    assert app._clip_timeout(10, 4) == 4

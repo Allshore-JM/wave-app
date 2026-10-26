@@ -444,10 +444,10 @@
     .tools-host { position: relative; }
     html:not(.js) .tools-host { display: none; }
     /* The legend (plan section 54): a key button first in the row; Leaflet's layer control lives in its panel, its own box
-       stripped (the panel is the box). The panel is as wide as the list, never wider than the screen. */
+       stripped (the panel is the box). The panel is 180 px wide (G37 F5); a long note wraps under its layer. */
     .legend-host { position: relative; }
     html:not(.js) .legend-host { display: none; }
-    .settings-panel.legend-panel { width: auto; min-width: 180px; max-width: calc(100vw - 16px); padding: 6px 10px; }
+    .settings-panel.legend-panel { width: 180px; padding: 6px 10px; }   /* fixed: positioned in a button-wide host; the notes wrap */
     .legend-panel .leaflet-control-layers { margin: 0; border: 0; padding: 0; box-shadow: none; background: none; border-radius: 0; float: none; }
     .legend-panel .leaflet-control-layers-list { height: auto !important; overflow: visible !important; padding-right: 0; }   /* the panel scrolls, not the list */
     /* a dot on the key while a legend note exists (its text in the button's label); not while the legend is open */
@@ -469,6 +469,10 @@
     @media (hover: hover) { .icon-btn[data-tip]:hover::after { display: block; } }
     .icon-btn[data-tip]:focus-visible::after { display: block; }
     .icon-btn[data-tip][aria-expanded="true"]::after { display: none !important; }
+    /* while a label shows, the corner lies above the windows (a maximised window starts just below the row and would hide
+       the label: G37 F1); the label takes no pointer, so nothing under it stops being clickable */
+    @media (hover: hover) { .leaflet-container .leaflet-top.leaflet-right:has(.icon-btn[data-tip]:hover) { z-index: 2600; } }
+    .leaflet-container .leaflet-top.leaflet-right:has(.icon-btn[data-tip]:focus-visible) { z-index: 2600; }
     .icon-btn svg { display: block; margin: auto; }
     .tools-menu { width: 210px; display: flex; flex-direction: column; gap: 4px; }
     .tools-menu[hidden] { display: none; }
@@ -1589,7 +1593,9 @@
     function syncLegendNote() {
       const btn = document.getElementById('legendBtn');
       if (!btn) return;
-      const notes = [['Live buoys', liveNoteText], ['Tide stations', tideNoteText], ['Wind stations', windNoteText]]
+      // the live note only while its layer is on (the tide and wind notes are cleared with theirs: G37 F3)
+      const live = map.hasLayer(liveBuoyLayer) ? liveNoteText : '';
+      const notes = [['Live buoys', live], ['Tide stations', tideNoteText], ['Wind stations', windNoteText]]
         .filter(function (n) { return n[1]; }).map(function (n) { return n[0] + ': ' + n[1]; });
       const tip = notes.length ? 'Legend · ' + notes.join('; ') : 'Legend';
       if (btn.getAttribute('data-tip') !== tip) { btn.setAttribute('data-tip', tip); btn.setAttribute('aria-label', tip); }
@@ -1609,6 +1615,7 @@
     // the rings depend on the forecast dots and My points shown beside them (G28 re-check R1-N3 / R2-4)
     map.on('overlayadd overlayremove', function (e) { if (e.layer === forecastLayer || e.layer === pointLayer) rebuildWindMarkers(false); });
     map.on('overlayadd', function (e) { if (e.layer === liveBuoyLayer) rebuildLiveBuoyMarkers(true); });   // new elements: keys, Tab stops
+    map.on('overlayadd overlayremove', function (e) { if (e.layer === liveBuoyLayer) syncLegendNote(); });   // its note on the key (G37 F3)
 
     // One row at the top-right (plan section 54): the legend's key, the map tools, the settings gear; each opens its panel below.
     const SettingsControl = L.Control.extend({

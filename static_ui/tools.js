@@ -1173,11 +1173,15 @@
     var open = false;
     function setMenu(on) {
       open = on; menu.hidden = !on; btn.setAttribute('aria-expanded', on ? 'true' : 'false');
+      // one panel open at a time with the gear's and the legend's (G37 F2: forecast.js PANEL_OPEN)
+      if (on) { try { doc.dispatchEvent(new (root.CustomEvent || CustomEvent)('allshore:panelopen', { detail: { panel: menu } })); } catch (e) { /* old browser */ } }
       if (on) { var first = Array.prototype.filter.call(menu.querySelectorAll('[data-tool]'), function (x) { return !x.hidden; })[0]; if (first && first.focus) try { first.focus(); } catch (e) { /* no focus */ } }   // Escape reaches the menu (G20 re-review)
     }
     btn.addEventListener('click', function () { setMenu(!open); });
     doc.addEventListener('pointerdown', function (e) { if (open && !menu.contains(e.target) && !btn.contains(e.target)) setMenu(false); });
     menu.addEventListener('keydown', function (e) { if (e.key === 'Escape') { e.stopPropagation(); setMenu(false); btn.focus(); } });
+    btn.addEventListener('keydown', function (e) { if (open && e.key === 'Escape') { e.stopPropagation(); setMenu(false); } });   // G37 F4
+    doc.addEventListener('allshore:panelopen', function (e) { if (open && !(e && e.detail && e.detail.panel === menu)) setMenu(false); });
     Array.prototype.forEach.call(menu.querySelectorAll('[data-tool]'), function (b) {
       b.addEventListener('click', function () { setMenu(false); start(b.getAttribute('data-tool')); });
     });
@@ -1674,8 +1678,8 @@
     root.addEventListener('orientationchange', onResize);
     if (typeof root.ResizeObserver === 'function') new root.ResizeObserver(onResize).observe(map.getContainer());
     // Escape and Backspace belong to the tool only while nothing else has focus: the body, the map and what is on it
-    // outside the controls (a marker), the tool bar, the tools button and the gear with its panel closed (G20
-    // re-review). The settings panel, the windows and the station search keep their own Escape (G20).
+    // outside the controls (a marker), the tool bar, the tools button, and the gear and the legend's key with their
+    // panels closed (G20 re-review, G37 F4). The settings panel, the windows and the station search keep their own Escape (G20).
     function ownsKeys() {
       var a = doc.activeElement, box = map.getContainer();
       if (!a || a === doc.body || a === doc.documentElement || a === box || barEl.contains(a) || a === btn) return true;
@@ -1683,6 +1687,8 @@
       if (a.closest && a.closest('.fwin.fw-min')) return !(list && !list.hidden);   // closes the list (G22 R-A7); else a minimised window's bar: Escape reaches the tool (G22 B-13)
       var gear = doc.getElementById('settingsBtn'), panel = doc.getElementById('settingsPanel');
       if (gear && a === gear) return !panel || panel.hidden;
+      var key = doc.getElementById('legendBtn'), legend = doc.getElementById('legendPanel');   // the legend's key likewise (G37 F4)
+      if (key && a === key) return !legend || legend.hidden;
       return box.contains(a) && !(a.closest && a.closest('.leaflet-control, .ov-sheet'));
     }
     doc.addEventListener('keydown', function (e) {

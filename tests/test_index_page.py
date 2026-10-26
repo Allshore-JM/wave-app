@@ -356,13 +356,20 @@ def test_legend_button_in_the_top_right_row(client):
     # the dot and the label from the three notes, painted with every note
     fn = body[body.index("    function syncLegendNote() {"):]
     fn = fn[:fn.index("\n    }\n") + 6]
-    for needle in ("[['Live buoys', liveNoteText], ['Tide stations', tideNoteText], ['Wind stations', windNoteText]]",
+    for needle in ("const live = map.hasLayer(liveBuoyLayer) ? liveNoteText : '';",   # only while its layer is on (G37 F3)
+                   "[['Live buoys', live], ['Tide stations', tideNoteText], ['Wind stations', windNoteText]]",
                    "btn.setAttribute('data-tip', tip); btn.setAttribute('aria-label', tip);", "if (dot) dot.hidden = !notes.length;"):
         assert needle in fn, needle
     assert body.count("      syncLegendNote();\n      const el = document.querySelector('.leaflet-control-layers [data-") == 3
-    # CSS: hidden without JS; the panel as wide as the list; the dot gone while open; quick labels
+    assert "map.on('overlayadd overlayremove', function (e) { if (e.layer === liveBuoyLayer) syncLegendNote(); });" in body
+    # both panels lift the corner over the windows and fit the map while open (G37 F6)
+    assert "const panels = legend ? [panel, legend] : [panel];" in body
+    # CSS: hidden without JS; the panel 180 px (G37 F5); the dot gone while open; quick labels
     for needle in ("html:not(.js) .legend-host { display: none; }",
-                   ".settings-panel.legend-panel { width: auto; min-width: 180px; max-width: calc(100vw - 16px); padding: 6px 10px; }",
+                   ".settings-panel.legend-panel { width: 180px; padding: 6px 10px; }",
+                   # a label shows over the windows: the corner lifted while a button is hovered or keyboard-focused (G37 F1)
+                   "@media (hover: hover) { .leaflet-container .leaflet-top.leaflet-right:has(.icon-btn[data-tip]:hover) { z-index: 2600; } }",
+                   ".leaflet-container .leaflet-top.leaflet-right:has(.icon-btn[data-tip]:focus-visible) { z-index: 2600; }",
                    '#legendBtn[aria-expanded="true"] .legend-dot { display: none; }',
                    '@media (forced-colors: active) { .legend-dot { forced-color-adjust: none; background: Highlight; box-shadow: 0 0 0 1.5px Canvas; } }',
                    "@media (hover: hover) { .icon-btn[data-tip]:hover::after { display: block; } }",

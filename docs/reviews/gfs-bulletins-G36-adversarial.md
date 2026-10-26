@@ -240,3 +240,40 @@ lines. Scripts and logs: scratch `g36/v7`.
   production with its own job-only push.
 - **Cleanup**: the browser closed over DevTools and its profile removed; the test and production origins' storage
   emptied; the local silent host stopped.
+
+## Re-check of the fix round, 2026-10-26
+
+One fresh reviewer (Opus 5.5, effort MAX), 03:07-04:40 UTC, on `c9677fb..4a425aa` in its own detached worktree and on
+the test site @ 254857d; report: scratch `g36/recheck/recheck-report.md`, its scripts and logs under
+`g36/recheck/work`. The 00Z run switch was left out at the owner's request (its watcher stopped by its pid at 04:33).
+**0 P0, 0 P1, 0 P2, 6 P3.**
+
+What held up (the reviewer's own evidence): the full suite (1,506 passed); B-1 against NOAA's real bucket (archive
+reads 5.45-6.05 s apart: 40 of 40 served with the retry, 34 of 40 without it; all 13 dropped connections
+`RemoteDisconnected`, 5-122 ms after the request, a retry back in at most 1.36 s) and on the test site (30 paced fresh
+builds, 0 transport failures, 0 NOMADS fallbacks); the probe on the real hosts (3 HEADs in 1.63 s now, 9 at most in
+1.85 s; NOMADS answers **403** for a cycle it has not written, taken as "not there"); one probe for four waiting callers,
+the kept run, the 3-hour rule; the failure-mode table on local servers (a close or a reset after the request and a
+reset in the TLS handshake asked again; read and connect timeouts, a refused connection, `BadStatusLine`,
+`SSLEOFError` and a body cut after the headers not); S3's real `Content-Range`; R2's 404 for a run not published;
+`unknown` leaving `last_error` alone, live; KEEP 8 against the SWAN back-fill's real first row; 54 of 54 of its own
+queries identical to production on the same runs.
+
+| # | Finding | Outcome |
+|---|---|---|
+| F-1 | New with the fix round. The probe's HEADs left `app.HTTP`, whose adapter also retried 429/5xx statuses. Now one transient 5xx on the newest archive's HEAD is taken as "not there": the probe finds the previous cycle, NOMADS is asked only for the newer one, and when NOMADS cannot confirm it (off, refusing, silent) the probe succeeds with the older run, cached 30 minutes. Reviewer: real HTTP on a local stand-in, 18Z -> 12Z (the code before the fix round asked again and stayed on 18Z). Author: reproduced in-process (probe 2 -> 2026102512, `failed` False). | FIX: a 429/5xx answer to a probe HEAD is asked once more; in the archive loop only a 404 means "not there, try the older cycle", any other answer stops the archive scan (NOMADS decides; with nothing confirmed the probe fails and the last run is kept); in the NOMADS loop 403 and 404 mean "not there", any other answer stops asking NOMADS. |
+| F-2 | The dropped-connection retry keeps the full connect and read timeouts, so a server that holds a request and then drops it takes the read past its cap (11.4 s for 8 s, 19.0 s for 15 s). Real S3 drops come 5-122 ms after the request. Author: reproduced (a 4-s cap took 5.24 s). | FIX: each attempt's connect and read timeouts clipped to the time left; the wording says what the cap covers. |
+| F-3 = K-4 | Nothing bounds the probe as a whole and the waiting callers wait without a bound: a local host answering every HEAD after 4.8 s kept the probe and all four callers 76.9 s (153.9 s with drops); a HEAD whose headers trickle has no bound. Neither NOAA host behaves so today. | FIX: a probe budget (15 s: no HEAD started past it, each HEAD's timeouts clipped to it; out of time = what was found so far, else a failed probe); a caller that finds a probe running and holds a run younger than `_RUN_KEEP` gets that run at once; only a process with no run waits. |
+| F-4 | Test gaps: 12 of the reviewer's 63 valid mutants survive and are not equivalent, five against the whole suite (D1 a reset no longer retried, D8 real timeouts retried, C6 the retry given a fresh full limit, P11 a 403 archive HEAD counted as found, W5 `_points_fetch` dropping `retry_dropped`); also D2/D3 (abort, broken pipe), R4 (`bytes 15360-` for a request from 1536), F3 (the stats lock after a fork), S3 (a `content` refusal setting `last_layout_read`), T2/T3 (the tool's `--check`). | FIX: a test for each, with the real exception chains urllib3 raises; the reviewer's survivors re-run. |
+| F-5 | `tools/build_bull_index.py --check` still lets `http.client.IncompleteRead` (a cut body) and `ValueError` (a bad `Content-Length`) escape as tracebacks. | FIX: both caught at the HEAD and at a member. |
+| F-6 | README: "each HEAD is one attempt" (a dropped HEAD is asked twice) and "within the same time limit" (F-2); `_probe_head`'s last `return` is unreachable; the record's "apart from the three logo lines" (`test` also differs in wsgi.py and the reef files: app.py, gfs_bulletins.py, the index and the tests are identical, so the measurements stand); `/healthz` does not say when the site serves a kept run. | FIX: the wording; the line removed; `/healthz` `gfs.run` (the run served, whether the last probe failed, the age of the last good probe). |
+
+### Fix round 2 scope
+1. F-1 with tests: a 503 archive HEAD once (the newest found) and twice (the run kept, NOMADS off); a 403 archive HEAD
+   (the scan stops); NOMADS's 403 (not there) and 5xx (stop asking).
+2. F-2 with a test: the second attempt's timeouts within the time left (fake clock).
+3. F-3 with tests: the budget (no HEAD after it, the timeouts clipped, what was found is served); a caller that finds a
+   probe running gets the held run at once; a process with no run waits for it.
+4. F-4's tests; the reviewer's 12 survivors and new mutants re-run (scratch copy, after pytest).
+5. F-5 and F-6.
+Then the test site (MAX) and a short fresh check (MAX: the probe changes again), then step 8.

@@ -2079,7 +2079,7 @@ def _forecast_singleflight(key, build, ttl=None):
                 _FORECAST_INFLIGHT.pop(key, None)
 
 
-_BULL_HTTP = requests.Session()        # the archive reads: one attempt each (NOMADS second, not a retry)
+_BULL_HTTP = requests.Session()        # the archive reads: no retry adapter (a dropped connection: G36 B-1)
 _BULL_RANGE_TIMEOUT = (3, 10)          # connect, read
 _BULL_RANGE_MAX_S = 15                 # whole read of one bulletin (52.6 KB)
 _BULL_NOMADS_TIMEOUT = (5, 15)

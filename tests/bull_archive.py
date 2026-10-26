@@ -69,8 +69,9 @@ class Resp:
 
 class FakeNoaa:
     """`archives[(date, run)]` = archive bytes on AWS; `nomads[(date, run, sid)]` = text on NOMADS. `s3` / `nomads_all`
-    override every answer of a host with a status or an exception; `range_mode` "ok" | "200" | "short" changes how
-    ranged GETs are answered; `archive_length` overrides a HEAD's Content-Length."""
+    override every answer of a host with a status or an exception; `range_mode` "ok" | "200" | "short" | "other range" |
+    "no range header" changes how ranged GETs are answered (a 206 carries the Content-Range S3 sends); `archive_length`
+    overrides a HEAD's Content-Length."""
 
     def __init__(self, archives=None, nomads=None, s3=None, nomads_all=None, range_mode="ok", archive_length=None):
         self.archives = dict(archives or {})
@@ -127,7 +128,11 @@ class FakeNoaa:
                 return Resp(200, data)
             if self.range_mode == "short":
                 part = part[:-10]
-            return Resp(206, part)
+            if self.range_mode == "no range header":
+                return Resp(206, part)
+            if self.range_mode == "other range":
+                a, b = a + 512, b + 512
+            return Resp(206, part, {"Content-Range": f"bytes {a}-{b}/{len(data)}"})
         text = self._nomads(url)
         return Resp(404) if text is None else Resp(200, text.encode("ascii"))
 

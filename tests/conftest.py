@@ -4,7 +4,8 @@
 * WIND_STATIONS=0: the wind feeds (plan section 39) are off; their tests install fake providers and switch
   app.WIND_ENABLED on themselves, so no test ever reaches NOAA or aviationweather.gov.
 * NOAA's GFS bulletin archive (plan section 53) is never reached: app._BULL_HTTP.get refuses (the archive read then
-  fails as a transport error and the bulletin comes from the test's own fake NOMADS, i.e. app.HTTP.get, as before).
+  fails as a transport error and the bulletin comes from the test's own fake NOMADS, i.e. app.HTTP.get, as before),
+  and the run probe's own session (app._PROBE_HTTP) refuses too. Every test starts with an empty run cache.
   The bulletin-source tests install their own fake archive on top. The GFS winds tables in the frames bucket are not
   read either (app.GFS_WINDS off); tests/test_gfs_winds_reader.py switches them on over a fake bucket.
 * The provider refresh runners (the live buoys' and the wind feeds') are INLINE for every test (a refresh scheduled by
@@ -50,6 +51,13 @@ def _no_bulletin_archive(monkeypatch):
         def refuse(url, **k):
             raise ConnectionError("tests do not reach NOAA's bulletin archive")
         monkeypatch.setattr(app._BULL_HTTP, "get", refuse)
+    if app is not None and hasattr(app, "_PROBE_HTTP"):           # nor is the run probe's own session (G36 B-2)
+        def refuse_head(url, **k):
+            raise ConnectionError("tests do not probe NOAA")
+        monkeypatch.setattr(app._PROBE_HTTP, "head", refuse_head)
+    if app is not None and hasattr(app, "_RUN_CACHE"):            # every test starts with no run found (G36 B-2)
+        with app._CACHE_LOCK:
+            app._RUN_CACHE.update(ts=0.0, value=(None, None), failed=False, good=None, good_ts=0.0)
     if app is not None and hasattr(app, "GFS_WINDS"):
         monkeypatch.setattr(app, "GFS_WINDS", False)          # the GFS winds tables (section 53): their tests switch on
         with app._GFS_WINDS_LOCK:

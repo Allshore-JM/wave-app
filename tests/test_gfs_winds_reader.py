@@ -46,11 +46,12 @@ def table(stations):
 
 class Bucket:
     def __init__(self):
-        self.objects, self.asked, self.delay = {}, [], 0
+        self.objects, self.asked, self.delay, self.retry = {}, [], 0, []
 
-    def fetch(self, url, max_bytes, headers=None):
+    def fetch(self, url, max_bytes, headers=None, retry_dropped=False):
         key = url.split("models.test/", 1)[1]
         self.asked.append(key)
+        self.retry.append(retry_dropped)
         if self.delay:
             import time as _t
             _t.sleep(self.delay)
@@ -305,3 +306,75 @@ def test_the_runs_held_are_the_last_used(world):
     app._gfs_winds_run(DATE, RUN)                                      # used again: the newest in the order
     app._gfs_winds_run(DATE, "18")                                     # a fifth run: the least recently used goes
     assert app._gfs_winds_health()["runs_held"] == ["2026102500", "2026102506", "2026102512", "2026102518"]
+
+
+# ---------------- G36 fixes (plan section 53, step 7) ----------------
+
+@pytest.mark.parametrize("damage", ["slot range", "slot bool", "long"])
+def test_more_damaged_tables_are_refused(world, damage):
+    b, nomads, _ = world
+    idx = json.loads(b.objects[f"{PRE}/index.json"])
+    body = b.objects[f"{PRE}/winds.bin"]
+    if damage == "slot range":
+        idx["stations"]["41113"] = 2
+    if damage == "slot bool":
+        idx["stations"]["41113"] = True
+    if damage == "long":                                   # a longer body with its own digest: the length decides
+        body = body + body[:1540]
+        idx["sha256"] = hashlib.sha256(body).hexdigest()
+    b.objects[f"{PRE}/index.json"], b.objects[f"{PRE}/winds.bin"] = json.dumps(idx).encode(), body
+    assert len(app.get_station_wind("51201", DATE, RUN)) == 385 and len(nomads) == 1
+    assert app._gfs_winds_health()["errors"] == 1
+
+
+def test_a_refused_read_is_an_error_not_a_run_still_to_come(world):
+    """G36 B-3c: the bucket answers 404 for a run not published yet; a 403 is a refusal, with its detail."""
+    b, nomads, clock = world
+    b.objects[f"{PRE}/index.json"] = app.HTTPStatusError(403)
+    assert len(app.get_station_wind("51201", DATE, RUN)) == 385 and len(nomads) == 1
+    h = app._gfs_winds_health()
+    assert h["errors"] == 1 and h["run_missing"] == 0 and "403" in h["last_error"]
+    asked = len(b.asked)
+    clock.t += app._GFS_WINDS_ERR_TTL + 1                 # asked again after a minute, not two
+    _fresh()
+    app.get_station_wind("51201", DATE, RUN)
+    assert len(b.asked) > asked
+
+
+def test_last_run_is_the_newest_run_served(world):
+    """G36 B-3d: a SWAN back-fill read of an older run does not move last_run back."""
+    b, _, _ = world
+    idx = json.loads(b.objects[f"{PRE}/index.json"])
+    b.objects[f"gfswave/winds/v1/{DATE}06/index.json"] = json.dumps(dict(idx, run=DATE + "06")).encode()
+    b.objects[f"gfswave/winds/v1/{DATE}06/winds.bin"] = b.objects[f"{PRE}/winds.bin"]
+    app.get_station_wind("51201", DATE, RUN)
+    app.get_station_wind("51201", DATE, "06", keep_s=app._WIND_PAST_RUN_TTL)
+    assert app._gfs_winds_health()["last_run"] == DATE + RUN and app._gfs_winds_health()["r2"] == 2
+
+
+def test_both_objects_are_asked_once_more_after_a_dropped_connection(world):
+    """G36 B-1: the reads of the table pass retry_dropped (the fetch asks once more on a dropped connection)."""
+    b, _, _ = world
+    app.get_station_wind("51201", DATE, RUN)
+    assert b.asked == [f"{PRE}/index.json", f"{PRE}/winds.bin"] and b.retry == [True, True]
+
+
+def test_nomads_is_counted_only_when_it_served_wind(world):
+    _, nomads, _ = world
+    assert app.get_station_wind("NOWHERE", DATE, RUN) == {} and len(nomads) == 1
+    h = app._gfs_winds_health()
+    assert h["nomads"] == 0 and h["not_in_run"] == 1
+
+
+def test_a_forked_child_drops_a_run_read_in_flight(world):
+    held = threading.Lock()
+    held.acquire()
+    with app._GFS_WINDS_LOCK:
+        app._GFS_WINDS_INFLIGHT[DATE + RUN] = held        # the parent's thread was reading this run at the fork
+    try:
+        app._live_after_fork()
+        assert app._GFS_WINDS_INFLIGHT == {} and app._GFS_WINDS_LOCK.acquire(blocking=False)
+        app._GFS_WINDS_LOCK.release()
+        assert app._gfs_winds_run(DATE, RUN) is not None, "the child reads the run itself"
+    finally:
+        held.release()

@@ -158,3 +158,35 @@ local instance behind its own CONNECT proxy for failure injection). Neither chan
 4. A P3-1 / B-3b, A P3-2, A P3-4, A P3-5, B-3a, B-3c, B-3d as above, with tests.
 5. A P3-3's tests; the reviewers' surviving mutants re-run.
 6. Then the test site (MAX), a short fresh re-check (the archive read and the probe change), and step 8.
+
+### Fix round (step 7), 2026-10-26
+
+Every item of the scope above, on `feat/gfs-bulletins` (commit below). No template, static or client change.
+
+| Finding | What changed |
+|---|---|
+| V5-1 | The GFS winds job keeps 8 runs (`tools/model_frames/gfs_winds.py` `KEEP`); the README's retention text and the site's comment on the 4 runs it holds say why (the SWAN back-fill reads the run of the SWAN table's first hour, up to about 30 h older than the newest). A test pins `KEEP >= 7` and the default prune. Job-only: it reaches production with its own push. |
+| B-1 | `_capped_get(..., retry_dropped=True)`: a connection the server dropped before any answer (`RemoteDisconnected`, a reset, an abort or a broken pipe anywhere in the exception's chain) is asked once more on a new connection, inside the same wall-clock cap and only with at least 1 s left; a timeout, a refusal or any answer is never repeated. Used by the archive's range read and the two R2 winds reads; the probe's HEAD asks a dropped connection once more too. |
+| B-2 | The probe asks the archive for each cycle, newest first, until one is there (a silent archive host is not asked again); NOMADS only for the cycles newer than that archive (all of them when no archive was found); a silent NOMADS is not asked again; a cycle younger than 3 h is not asked. Its HEADs go through their own session without the retry adapter, (3, 5) s. One probe at a time: the requests that arrive meanwhile wait for its answer. A failed probe keeps serving the last run found for up to 12 h and is asked again after 2 minutes. The fork reset re-creates the probe's lock. |
+| A P3-1 / B-3b | The probe's verdict on the archive's size is kept apart from the member reads: `layout_suspect` (cleared by a probe that sees the index's size) and `probe_layouts`; a member refused by its header counts under `reads.layout` with `last_layout_read` (its UTC time and what differed). |
+| A P3-2 | README and the probe's docstring: an archive of another length is still read member by member. |
+| A P3-4 | A byte range must come back with the asked `Content-Range` (`bytes start-end/`), else the read is a transport failure. |
+| A P3-5 | `tools/build_bull_index.py --check`: a run NOAA has not written prints one line with the run and the HTTP status; an unreadable member is printed and counted; exit 1 with the count. |
+| B-3a | An id not in the index is counted under `unknown` and no longer replaces `last_error`. |
+| B-3c | An R2 404 = not published yet (asked again after 2 minutes); any other failure, a 403 included, is an error with its detail (1 minute). |
+| B-3d | `gfs.winds.last_run` is the newest run served (a back-fill read of an older run does not move it back). |
+| A P3-3 | Tests for every listed gap (below). |
+
+Tests added or changed:
+- `tests/test_bull_sources.py`: a dropped keep-alive on the archive read asked once more and served (no NOMADS); only a dropped connection is repeated (timeouts, refusals, other errors once); no retry without the flag or with under 1 s left; a 206 from another offset or without `Content-Range` is a transport failure, not a layout one; NOMADS asked only for cycles newer than the archive (never for an older one); a silent NOMADS asked once per probe (also with three newer cycles); a silent archive asked once and NOMADS decides; the 3-hour rule at 17:40, 15:00 (the boundary), 14:59 and 02:00; yesterday's same cycle; a dropped probe HEAD asked again; the HEADs are one attempt with the short timeout on their own session; four concurrent cold requests = one probe; the last run kept through a failed probe, the 2-minute retry and the 12-hour bound; a forked child gets a fresh probe lock. The probe tests now count the exact HEADs.
+- `tests/test_gfs_bulletins.py`: a header as tarfile writes it passes; a ustar prefix, a name matching only by suffix (both ways), `../`, a larger and a smaller size, a 9, a `+` and a `0o` in the size field and an 8 in the checksum are refused; the Location is compared whole (both ways); index documents with a member inside the previous one's header room, a half-block offset, size 0, four fields or a size over the cap are refused; `unknown` keeps `last_error`; the probe's verdict clears and counts; the tool refuses a size-0 member, records the one member size and stride when there are such, checks a run of the same layout (the six-sample rule), names a run of another length, names a run NOAA has not written (one line, exit 1), counts an unreadable member; its command line refuses a bad hour, a short run and a build from two runs without touching the network, and passes `--check` / `--out` on.
+- `tests/test_gfs_winds_reader.py`: an out-of-range slot, a boolean slot and a longer body with its own digest are refused; a 403 is an error, not a run still to come; `last_run` stays on the newest; both objects are read with `retry_dropped`; NOMADS is counted only when it served wind; a forked child drops a run read in flight and reads it itself.
+- `tests/model_frames/test_gfs_winds.py`: the runs kept cover the SWAN back-fill.
+- `tests/conftest.py`: every test starts with an empty run cache and the probe's session refused (no test reaches NOAA).
+- `tests/test_point_forecast.py`: the socket timer's pin allows the remaining time (the cap now runs from one deadline across the two attempts).
+
+Results: full suite 1,504 passed (then the six touched files again, 281 passed). Mutants of the fix round on a scratch
+copy: 44, 42 killed. One first survived and was a test gap: the dropped-HEAD retry (the probe test also passed
+through NOMADS; it now has no NOMADS copy), killed after the change. Two are equivalent: removing
+`RemoteDisconnected` from the dropped-connection list (it is itself a `ConnectionResetError`), and `len(m) < 3` in
+the index check (a four-field member still fails the unpacking with a ValueError).

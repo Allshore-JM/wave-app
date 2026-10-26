@@ -7,8 +7,9 @@ request at the offset this index gives, and checks the member's own ustar header
   python tools/build_bull_index.py 2026102512            # stream that run's archive, write gfs_bull_index.json
   python tools/build_bull_index.py --check 2026102506 2026102500 ...
                                                          # read six sampled members of each run by range: same layout?
-When NOAA changes the archive (the site's /healthz then shows gfs.bulletins.layout_suspect and serves NOMADS's copies),
-build the index from a new run, check it against a few others, run the tests and commit the file.
+When NOAA changes the archive (the site's /healthz then shows gfs.bulletins.layout_suspect, or members refused by
+their header under reads.layout / last_layout_read, served from NOMADS's copies), build the index from a new run, check
+it against a few others, run the tests and commit the file.
 
 The build streams (tarfile mode "r|": no seeks, nothing kept but the index). It refuses members that are not regular
 files named ./gfswave.<id>.bull of 1 B to 256 KB, and pax headers carrying anything but times (a path or a size in a
@@ -20,6 +21,7 @@ import os
 import sys
 import tarfile
 import time
+import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -107,22 +109,35 @@ def _get_range(url, start, end):
     return body
 
 
-def check(runs, path):
+def _head_length(url):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=UA, method="HEAD"), timeout=30) as r:
+        return int(r.headers.get("Content-Length") or 0)
+
+
+def check(runs, path, head_length=_head_length, get_range=None):
     index, total, err = GB.load_index(path)
     if err:
         raise SystemExit(f"{path}: {err}")
+    get_range = get_range or _get_range
     sids = list(index)
     samples = [sids[i] for i in sorted({0, 1, 100, 400, 700, len(sids) - 1}) if i < len(sids)]
     bad = 0
     for run in runs:
         url = GB.archive_url(run[:8], run[8:])
-        head = urllib.request.Request(url, headers=UA, method="HEAD")
-        with urllib.request.urlopen(head, timeout=30) as r:
-            length = int(r.headers.get("Content-Length") or 0)
+        try:
+            length = head_length(url)
+        except (urllib.error.URLError, OSError) as exc:             # a run NOAA has not written (yet): one line (G36 A P3-5)
+            print(f"{run}: not readable on AWS ({getattr(exc, 'code', None) or exc})")
+            bad += 1
+            continue
         ok = 0
         for sid in samples:
             off, size = index[sid]
-            body = _get_range(url, off - GB.HEADER, off + size - 1)
+            try:
+                body = get_range(url, off - GB.HEADER, off + size - 1)
+            except (urllib.error.URLError, OSError) as exc:
+                print(f"  {run} {sid}: not readable ({getattr(exc, 'code', None) or exc})")
+                continue
             problem = GB.check_header(body[:GB.HEADER], sid, size) or GB.check_text(
                 body[GB.HEADER:].decode("ascii", "replace"), sid, run[:8], run[8:])
             if problem:

@@ -346,7 +346,7 @@ def test_prune_keeps_four_runs_and_only_its_prefix():
     st.put(f"{W.PREFIX}/2026102512/winds.bin", b"x", "x", P.IMMUTABLE)      # a later build still writing
     st.put("gfswave/0p25/v1/2026102400/x.png", b"x", "x", P.IMMUTABLE)
     st.put(P.latest_key(W.PREFIX), json.dumps({"run": "2026102506"}).encode(), "application/json", P.POINTER)
-    assert W.prune(st) == ["2026102400", "2026102406"]
+    assert W.prune(st, keep=4) == ["2026102400", "2026102406"]
     keys = set(st.client.objects)
     assert "gfswave/0p25/v1/2026102400/x.png" in keys and f"{W.PREFIX}/2026102512/winds.bin" in keys
     assert W.index_key("2026102412") in keys and W.index_key("2026102400") not in keys
@@ -537,7 +537,7 @@ def test_prune_protects_the_pointers_run_and_drops_old_records():
     st.put(P.failed_key("2026102200", W.PREFIX), b"{}", "application/json", P.POINTER)
     st.put(P.notready_key("2026102200", W.PREFIX), b"{}", "application/json", P.POINTER)
     st.put(P.failed_key("2026102500", W.PREFIX), b"{}", "application/json", P.POINTER)
-    assert W.prune(st) == ["2026102400"]
+    assert W.prune(st, keep=4) == ["2026102400"]
     keys = set(st.client.objects)
     assert W.index_key("2026102300") in keys, "the pointer's run is never deleted"
     assert P.failed_key("2026102200", W.PREFIX) not in keys and P.notready_key("2026102200", W.PREFIX) not in keys
@@ -566,3 +566,16 @@ def test_discovery_looks_back_four_cycles():
     fake = FakeNoaa({"2026102418": b"x" * 200})
     run_dt, _ = W.newest_complete(now_after(hours=1), head=lambda u: W.head_size(u, opener=fake))
     assert run_dt == RUN_DT - timedelta(hours=18) and len(fake.calls) == 4
+
+
+def test_the_runs_kept_cover_the_swan_backfill():
+    """G36 V5-1: the SWAN tables' wind back-fill reads the GFS run of the SWAN table's first hour (12Z of PacIOOS's
+    publish day) for as long as that table is shown, about a day: just before PacIOOS's next update that run is the 5th
+    or 6th newest (up to ~30 h older than the newest), one more when the update is late. The site reads it from here,
+    so the job keeps at least 7 runs."""
+    assert W.KEEP >= 7
+    st = store()
+    runs = [f"{datetime(2026, 10, 24, 12) + timedelta(hours=6 * i):%Y%m%d%H}" for i in range(W.KEEP + 1)]
+    for run in runs:
+        st.put(W.index_key(run), b"{}", "application/json", P.IMMUTABLE)
+    assert W.prune(st) == [runs[0]], "the default keeps KEEP runs"

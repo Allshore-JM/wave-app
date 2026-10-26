@@ -50,7 +50,8 @@ FORMAT = "gfswinds-v1"
 STEPS = 385                                  # hourly 0..384
 MISSING = 65535
 RECORD_BYTES = STEPS * 2 * 2
-KEEP = 4                                     # the SWAN back-fill reads a run 6-12 h old
+KEEP = 8                                     # the SWAN back-fill reads the run of its first hour: up to the 6th
+                                             # newest before PacIOOS's daily update (G36 V5-1), and a late update
 LOOKBACK_CYCLES = 4
 MIN_ARCHIVE_BYTES = 10 ** 9                  # the real archive is ~1.7 GB; anything far smaller is not a complete run
 MEMBER_MIN, MEMBER_MAX = 1, 32 * 1024 * 1024

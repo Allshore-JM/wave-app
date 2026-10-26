@@ -841,7 +841,9 @@ equal what the site read from NOMADS's `.spec`.
   (60 s without a byte) is a failure; only the build budget is an exit 3. While a newer run cannot be built (not
   served, over budget, waiting after failures) the job still raises the stale alarm once the live run is 18 h old.
 - **`--run RUN`** never moves the pointer back to an older run and never rewrites a published run.
-- **Retention**: 4 runs (the SWAN tables' wind back-fill reads a run 6 to 12 hours old).
+- **Retention**: 8 runs (two days). The SWAN tables' wind back-fill reads the GFS run of the SWAN table's first hour
+  (12Z of PacIOOS's publish day) for as long as that table is shown, about a day: just before PacIOOS's next update
+  that is the 5th or 6th newest run, up to about 30 hours older than the newest. 8 leaves room for a late update.
 - **Cost**: run 2026102512 on GitHub's runner took 67 s at a maximum RSS of 67 MB; it published 1,413,720 B for 918
   stations. Writes per run: 3.
 - **Local**: `python tools/model_frames/gfs_winds.py --dry-run [--run RUN] [--out DIR]` builds without publishing and
@@ -963,26 +965,40 @@ the bulletins come from the run's bulletin archive:
 - **The order**: the archive first; NOMADS's per-station file second (at most 256 KB; the same station and run check)
   when the archive is missing, damaged or unreachable, or the station is not in the index. The error texts are unchanged
   ("Could not download .bull ..." when nothing answered, "No .bull file found ..." when a server answered without it).
-- **The run probe** (cached 30 min, failures 2 min): per cycle, newest first (18/12/06/00Z today, then yesterday), a
-  HEAD of the run's archive, then NOMADS's 51201 bulletin. An archive of another length than the index's still counts
-  (the bulletins then come from NOMADS) and is reported.
-- **When NOAA changes the archive**: every read is refused by the header check and served from NOMADS; `/healthz` ->
-  `gfs.bulletins.layout_suspect` names the run and what differed. The repair: build the index from a new run, check it
-  against a few others, run the tests, commit.
+- **The run probe** (cached 30 min, failures 2 min, one probe at a time: the requests that come meanwhile wait for
+  its answer): the run's archive is asked (a HEAD) for each cycle, newest first (18/12/06/00Z today, then yesterday;
+  a cycle younger than 3 hours is skipped: nothing is published that soon), until one is there; then NOMADS's 51201
+  bulletin only for the cycles newer than that archive (NOMADS has a cycle a minute or two before AWS). Each HEAD is
+  one attempt with a 3 s connect / 5 s read timeout, and a host that does not answer is not asked again in that
+  probe, so a silent NOMADS costs one timeout. When a probe finds nothing, the last run found keeps being served (for
+  up to 12 hours) and the probe is asked again after 2 minutes. An archive of another length than the index's still
+  counts: its members are still read and checked one by one, and `/healthz` says so.
+- **When NOAA changes the archive**: a member that moved or changed is refused by its header check and served from
+  NOMADS; a station NOAA appended is not in the index and comes from NOMADS too. `/healthz` -> `gfs.bulletins`:
+  `layout_suspect` is the last probe's verdict on the archive's size (cleared by a probe that sees the index's size),
+  `probe_layouts` how many probes saw another size, `reads.layout` and `last_layout_read` (with its time) the members
+  refused by their header. The repair: build the index from a new run, check it against a few others, run the tests,
+  commit.
+- **Dropped connections**: NOAA's bucket closes an idle keep-alive connection after about 5.6 s. A range read (or a
+  probe HEAD, or a read of the winds table) that meets such a closed connection before any answer is asked once more on
+  a new one, within the same time limit; timeouts and refusals are not repeated. A range answer must name the asked
+  bytes in its `Content-Range`.
 - **`/healthz` -> `gfs.bulletins`**: whether the archive and NOMADS are used, the index (members, archive size, a load
   error), the archive reads by outcome (`ok`, `unknown`, `missing`, `layout`, `content`, `transport`), the NOMADS
-  fallbacks, the last error and the last run served from the archive. Reported only, never part of `ok`.
+  fallbacks, the last error (a station id that is not in the index is counted under `unknown` but is not an error)
+  and the last run served from the archive, plus the layout keys above. Reported only, never part of `ok`.
 - **The Wind column** (and the SWAN tables' wind back-fill): the GFS station winds job's table in the frames bucket
   first (`gfswave/winds/v1/<RUN>/index.json` + `winds.bin`, see "GFS station winds" under Model overlays; the bucket's
   address is the forecast points', from `MODEL_FRAMES_BASE` or `POINTS_ROOT`), NOMADS's per-station `.spec` second.
-  A run's table is read once per process (two objects, ~1.4 MB) and the last 4 runs are held; it must be whole (its
-  index's run, layout, slots and the sha256 of winds.bin), else NOMADS serves and the run is asked again after a
-  minute. A run the job has not published yet (about 10 to 20 minutes after the bulletin archive) is asked again after
-  two minutes; meanwhile NOMADS's `.spec` serves as before. The values are the `.spec`'s own, so the table and the
-  graphs are the same from either source.
+  A run's table is read once per process (two objects, ~1.4 MB) and the last 4 runs read are held (the newest and the
+  SWAN back-fill's); it must be whole (its index's run, layout, slots and the sha256 of winds.bin), else NOMADS serves
+  and the run is asked again after a minute (a 403 from the bucket counts as such an error). A run the job has not
+  published yet (HTTP 404; about 10 to 20 minutes after the bulletin archive) is asked again after two minutes;
+  meanwhile NOMADS's `.spec` serves as before. The values are the `.spec`'s own, so the table and the graphs are the
+  same from either source.
 - **`/healthz` -> `gfs.winds`**: whether the table is read, the runs held, and counts of stations served from it
-  (`r2`), from NOMADS (`nomads`), stations not in a run (`not_in_run`), runs not published yet (`run_missing`) and
-  errors (`last_error`). Reported only.
+  (`r2`), from NOMADS (`nomads`), stations not in a run (`not_in_run`), runs not published yet (`run_missing`),
+  errors (`errors`, `last_error`) and the newest run served from the table (`last_run`). Reported only.
 - **Diagnostics** (env): `BULL_ARCHIVE=0` reads NOMADS alone for the bulletins; `GFS_WINDS=0` reads NOMADS alone for
   the Wind column; `NOMADS_DISABLED=1` never asks NOMADS (the archive and the winds table only).
 

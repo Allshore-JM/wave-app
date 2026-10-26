@@ -478,3 +478,72 @@ drop). Its K1/K2 (the clip's 0.1-s floor) needed the new clip test, its T4 a new
 
 Next: the test site (MAX: the reviewer's fake-clock probe edge and stand-ins against the site's code, `/healthz`, the
 answers unchanged), then step 8 production and the job-only KEEP 8 push.
+
+## Test-site verification of fix round 3, 2026-10-26
+
+`test` @ 3054cb2 (the cherry-pick of 69a79bf; the README stays the test branch's own, the record is left off), live from
+16:28:36 UTC: the old instance answered until 16:28:25, 40 polls across the switch, none failed. The site files on
+`test` = `feat/gfs-bulletins` @ 2682693 (app.py, gfs_bulletins.py, the index, the tool and the tests compared blob for
+blob). Scripts and logs: scratch `g36/v9`. "Before" = the test branch at d5db21e (fix round 2), the same machine,
+minutes earlier.
+
+- **Answers**: the 65 of step 5 on run 2026102606: production, the test site before and the test site after are
+  identical, 65 of 65. The first request on the new instance (a cold start: its run probe, the first archive read, the
+  first winds table) took 7.1 s (2.5 s at fix round 2's deploy); the other 64 a median of 0.76 s (0.64 s before the
+  deploy; production 1.47 s). `/healthz` `gfs.run` then `{run 2026102606, failed false, probe_age_s 64, good_run
+  2026102606, good_age_s 64}`; the archive reads 35 `ok`, 0 `transport`, 0 NOMADS fallbacks; winds 54 from R2, 0 from
+  NOMADS.
+- **F2, the probe's retry** (the fresh check's fake-clock script, `g36/fix2check/work/scripts/probe_edge.py`, and the
+  author's `g36/fix2check/author/f2_tool.py`):
+
+  | Case | Before | After |
+  |---|---|---|
+  | A 503 that comes 1 s past the budget | a second HEAD at +1.0 s with (0.1, 0.1); its 200 taken | one HEAD; the 503 stands |
+  | A drop that comes 0.5 s past the budget | a second HEAD at +0.5 s | one HEAD; the drop stands |
+  | A 503 with 0.2 s of the budget left | a second HEAD with (0.2, 0.2) | one HEAD (less than a second left) |
+  | `_probe_head` called 1 s past its deadline, a 503 first | two HEADs, (200, ...) | one HEAD, (503, ...) |
+
+- **F3, the tool's line**: a garbage status line at the HEAD printed "not readable on AWS (HELLO THERE\r\n)" (two lines)
+  before, "not readable on AWS (HELLO THERE)" (one line) after.
+- **Regression, local real-HTTP stand-ins on the new code**: the same answers as at fix round 2.
+  - F1's nine cases (NOMADS off unless named):
+    - one 503 or 429 on the newest archive is asked once more and its run served;
+    - two 503s or a 403 on the newest archive, or two 503s on the newer cycle not yet written, fail the probe and serve
+      the held run;
+    - after two 503s on the archive, NOMADS confirms its run (NOMADS on); with NOMADS answering 503 twice too, the
+      probe fails and the held run is served;
+    - with nothing held, a failing probe serves nothing.
+  - F2: the archive read is cut at 15.02 s (cap 15), the R2 read at 8.00 s (cap 8), the probe HEAD at 6.01 s (6 s
+    left), each with a second connection after the drop.
+  - F3: a slow 404, and a drop that ends in a 404, take 4 HEADs and end at 15.0 s; with a run held, the three other
+    callers answer at once (0.0 s).
+  - The reviewer's `standin.py` (`g36/fix2check/work/scripts`) against the site's code: all 72 result lines as at fix
+    round 2, but for millisecond timings.
+- **The probe on NOAA's real servers**: 06Z both times.
+  - Now: 3 HEADs in 1.89 s (archive 12Z 404, 06Z 200; NOMADS 12Z 404).
+  - With the clock set to 2026-10-26 23:30 UTC: 5 HEADs in 1.41 s (archive 18Z 404, 12Z 404, 06Z 200; NOMADS 18Z 403,
+    12Z 404).
+- **B-1 against NOAA's real bucket** (the shared retry rule): 45 range reads through a plain session (no retry) and 45
+  through the site's `_bull_range`, side by side, with gaps past S3's idle drop.
+  - Plain session: 32 of 45 (13 `RemoteDisconnected`).
+  - The site's read: 45 of 45 (13 asked again, each with at least a second of its read left).
+- **B-1 on the test site**: 30 fresh builds of stations not yet cached, paced past the keep-alive gap.
+  - All 30 answered with wind; median 1.13 s, max 2.33 s.
+  - `/healthz`: archive reads +32 `ok`, 0 `transport`, 0 NOMADS fallbacks.
+- **Browser**: headless Chrome with its own profile, never signed in, at desktop 1280x800 and phone 375x812; 35 of 35
+  checks passed.
+  - 51201 and 46026 GFS: 385 rows, every one with wind; the run line names 06Z.
+  - 51201 SWAN: 175 rows, every one with wind.
+  - No sideways scroll.
+  - During the smoke: no transport failure, no NOMADS bulletin or wind read, 0 console problems.
+- **The test branch's suite**: 1,154 passed (fix round 2's 1,130 plus this round's 24 new tests), and the five failures
+  it had before (the three logo goldens, the models-env golden, the numpy import).
+- **Cleanup**: Chrome closed over DevTools (no process left; sign-in pages 0, account entries 0) and its profile
+  removed. The storage of the test and production origins emptied. The local stand-ins ended with their scripts.
+
+Findings: none. KEEP 8 (the job part of c4a2ceb) is in `feat/gfs-bulletins`, and production's head c8c7057 is an
+ancestor of it, so the step-8 fast-forward carries the job change: no separate job-only push is needed.
+
+Next: step 8, production, after the owner's go-ahead. Tag `prod-pre-bulls` @ c8c7057, then fast-forward
+`Live-Buoy-Update` to `feat/gfs-bulletins`. Check the page probes, the tables unchanged on the same run, `/healthz`
+`gfs`, CI, and the next winds publish keeping 8 runs. NOMADS stays enabled.

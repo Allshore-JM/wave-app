@@ -31,6 +31,12 @@ import gfs_bulletins as GB  # noqa: E402
 
 UA = {"User-Agent": "allshoresurf.com bulletin index (https://allshoresurf.com)"}
 UNREADABLE = (urllib.error.URLError, OSError, http.client.HTTPException, ValueError)   # a cut body, a bad length
+
+
+def _why(exc) -> str:
+    """One line for an unreadable run or member: the HTTP code, else the error's text with its line breaks folded (a
+    garbage status line keeps its CRLF; fresh check F3)."""
+    return str(getattr(exc, "code", None) or " ".join(str(exc).split()) or type(exc).__name__)
 PAX_OK = {"atime", "ctime", "mtime"}
 
 
@@ -129,7 +135,7 @@ def check(runs, path, head_length=_head_length, get_range=None):
         try:
             length = head_length(url)
         except UNREADABLE as exc:                                   # a run NOAA has not written (yet): one line (G36 A P3-5)
-            print(f"{run}: not readable on AWS ({getattr(exc, 'code', None) or exc})")
+            print(f"{run}: not readable on AWS ({_why(exc)})")
             bad += 1
             continue
         ok = 0
@@ -138,7 +144,7 @@ def check(runs, path, head_length=_head_length, get_range=None):
             try:
                 body = get_range(url, off - GB.HEADER, off + size - 1)
             except UNREADABLE as exc:
-                print(f"  {run} {sid}: not readable ({getattr(exc, 'code', None) or exc})")
+                print(f"  {run} {sid}: not readable ({_why(exc)})")
                 continue
             problem = GB.check_header(body[:GB.HEADER], sid, size) or GB.check_text(
                 body[GB.HEADER:].decode("ascii", "replace"), sid, run[:8], run[8:])

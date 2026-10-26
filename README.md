@@ -87,7 +87,8 @@ never remembered; the panel opens and closes like the gear's (an outside press, 
 the focus back on the key). While the legend is closed, a dot on the key says a legend note exists (the live list
 loading, a tide or wind list unavailable, the NWS feed stalled) and the key's label reads "Legend · <note>". Each button
 names itself at once on mouse hover and on keyboard focus (never on touch, never while its own panel is open). The
-corner's measured height and width (`--map-topright-h`, `--map-topright-w`) count only the corner's own controls (the
+row sits 26 px down, below the longitude labels along the map's top edge (owner: a label is never pushed down around
+the buttons), whether the gridlines are on or off. The corner's measured height and width (`--map-topright-h`, `--map-topright-w`) count only the corner's own controls (the
 row, and the map tools' bar while shown), so the legend inside its panel never moves a window.
 
 The page (2026-09-26, plan sections 25 and 26): the map is the page — the brand sits on it top-left above the

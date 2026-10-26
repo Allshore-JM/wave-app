@@ -1328,6 +1328,11 @@ def test_madis_gap_from_two_real_live_polls(live_clock):
         with pytest.raises(IOError):
             p._fetch_stations()
     assert p._bf == [] and p._live_ok == LIVE_T, "a failed poll moves nothing"
+    # an answer whose every wind field is missing (seen 2026-10-24 and 2026-10-26): no answer for the gap rule either
+    fetch.table[W.MADIS_HI_URL] = ("<PRE>" + MADIS_HEAD + madis_line("001HE", ff="-99999.0", ffq="Z") + "</PRE>").encode()
+    live_clock.now = LIVE_T + 3 * 3600 + 200
+    p._fetch_stations()
+    assert p._bf == [] and p._live_ok == LIVE_T
     fetch.table[W.MADIS_HI_URL] = fx("madis_live.html")
     live_clock.now = LIVE_T + 3 * 3600 + 300
     p._fetch_stations()

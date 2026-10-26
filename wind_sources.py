@@ -1079,8 +1079,11 @@ class MadisProvider(WindProvider):
             # seen 2026-10-24 (G35 F5): an answer whose every wind field is -99999; the kept readings stay, but say so
             _log.warning("MADIS: %d station records and not one wind reading (the kept readings stay)", stats["rows"])
         self._take(obs, now)
+        if not stats.get("wind"):
+            return                              # an answer with no wind counts as no answer for the gap rule (55)
         if self.backfill and self._live_ok is not None and now - self._live_ok > MADIS_GAP_S:
-            # the live polls stopped for a while (failures, a stalled runner): the hours between are asked again
+            # the live polls stopped for a while (failures, windless answers, a stalled runner): the hours between are
+            # asked again
             self._queue(self._live_ok - 3600, now)
         self._live_ok = now
 

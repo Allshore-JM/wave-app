@@ -120,3 +120,24 @@ Not checked: real iOS/Android, real screen readers, real Windows High Contrast.
 5. F5: the comment corrected (a fixed 180-px panel; the notes wrap).
 6. F6: the window test expands the window before Escape in the panel; behaviour tests for the legend in the corner's raise
    and for the tide and wind notes reaching the dot; mutants re-run.
+
+## Step 4: the fix round (Opus 5.5 HIGH)
+
+`feat/legend-button` @ f8648a6 (code) + 3526703 (golden), UI 1.26.1. Every item of the scope:
+- F1: `.leaflet-top.leaflet-right:has(.icon-btn[data-tip]:hover)` (under `(hover: hover)`) and `:has(...:focus-visible)` lift
+  the corner to z 2600 while a quick label shows; the label takes no pointer, so nothing under it stops being clickable.
+- F2: `createSettings` sends `allshore:panelopen` {panel} when it opens and closes on another panel's word; the tools
+  menu (tools.js `setMenu`) sends and hears the same event. A keyboard opening now closes the other two.
+- F3: `syncLegendNote` counts the live note only while `map.hasLayer(liveBuoyLayer)`; it runs again on the live layer's
+  `overlayadd` / `overlayremove`.
+- F4: Escape on an open panel's own button closes it and stops there (gear, legend, tools menu); tools.js `ownsKeys`
+  gives the map tool the key's Escape while the legend's panel is closed, as for the gear.
+- F5: the width comment corrected (`width: 180px`, the notes wrap).
+- F6: the window test opens a live window behind the legend before Escape (`closes` stays 0); new tests for the keyboard
+  path (two toggles, the tools menu's event, Escape on the key with the panel open and closed), the tools menu (its word,
+  another panel's word, its button's Escape, the key's Escape with a tool running), the notes (tide and wind notes reach
+  the key; the live note only with its layer on), and page pins for the panels list, the `:has` rules and the listener.
+
+Suites: pytest 1,553, Node 1,028 (UI 528). Targeted mutants on a scratch copy: 19 of 19 killed (both `stopPropagation`s,
+the button Escape and its open guard, the `panelopen` listener / its own-panel guard / the send, in both modules;
+`ownsKeys` dropping or always owning the key; the live filter; the listener; the panels list; both raise rules).

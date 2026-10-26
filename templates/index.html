@@ -451,6 +451,8 @@
     .legend-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: #fd7e14;
                   box-shadow: 0 0 0 1.5px #fff; pointer-events: none; }
     #legendBtn[aria-expanded="true"] .legend-dot { display: none; }
+    /* High Contrast / forced colours: the system's highlight colour (else it turns the button's own colour and vanishes) */
+    @media (forced-colors: active) { .legend-dot { forced-color-adjust: none; background: Highlight; box-shadow: 0 0 0 1.5px Canvas; } }
     /* Quick labels (owner, plan section 54): the button's name at once on mouse hover and on keyboard focus, never on touch,
        never while its own panel is open. Centred under the button; the last one (Settings) ends at the map's edge. */
     .icon-btn[data-tip] { position: relative; }

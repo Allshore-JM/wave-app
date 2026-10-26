@@ -364,6 +364,7 @@ def test_legend_button_in_the_top_right_row(client):
     for needle in ("html:not(.js) .legend-host { display: none; }",
                    ".settings-panel.legend-panel { width: auto; min-width: 180px; max-width: calc(100vw - 16px); padding: 6px 10px; }",
                    '#legendBtn[aria-expanded="true"] .legend-dot { display: none; }',
+                   '@media (forced-colors: active) { .legend-dot { forced-color-adjust: none; background: Highlight; box-shadow: 0 0 0 1.5px Canvas; } }',
                    "@media (hover: hover) { .icon-btn[data-tip]:hover::after { display: block; } }",
                    ".icon-btn[data-tip]:focus-visible::after { display: block; }",
                    '.icon-btn[data-tip][aria-expanded="true"]::after { display: none !important; }',

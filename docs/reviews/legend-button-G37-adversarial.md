@@ -141,3 +141,69 @@ Not checked: real iOS/Android, real screen readers, real Windows High Contrast.
 Suites: pytest 1,553, Node 1,028 (UI 528). Targeted mutants on a scratch copy: 19 of 19 killed (both `stopPropagation`s,
 the button Escape and its open guard, the `panelopen` listener / its own-panel guard / the send, in both modules;
 `ownsKeys` dropping or always owning the key; the live filter; the listener; the panels list; both raise rules).
+
+## Test-site check of the fix round (Opus 5.5 MAX)
+
+`test` @ 6016e5b (cherry-picks of f8648a6 and 3526703, both clean), UI 1.26.1. It was live from 20:53:03 UTC: 10 polls
+across the switch, none failed, the last 1.26.0 answer at 20:52:52. The nine UI files hash to the pin (597331ef…) and the
+1.26.0 URLs answer 404. The site files are the feature branch's apart from the test branch's three logo lines.
+
+Setup: headless Chrome 155 with the GPU, its own profile, never signed in, with trusted mouse, keys and touch. The scripts
+are scratch `legend/v4/g37.js` (parts f1, f2, f3, f4a, f4b, cost, cover) and the step-2 parts of `legend/v/v.js`. Each
+finding was reproduced on 1.26.0 first, then checked on 1.26.1.
+
+- **F1 (labels over windows).** The label takes no pointer, so the check reads its pixels from a screenshot.
+  - On 1.26.0 the band under each button was 100 % the window's white, by hover and by keyboard focus. That held over
+    the maximised forecast window at 1280 and 1920 (top 72 px), and over the wind window on the tablet by keyboard
+    focus. Only a 2-px navy sliver showed above the window's edge.
+  - On 1.26.1 the band is 64-70 % the label's navy and 22-26 % its white text, at all three sizes and for all three
+    buttons. The corner sits at z 2600 while a label shows and returns to 1000 when the pointer or the focus leaves.
+    The window's minimise button is on top again.
+- **F2 (one panel at a time by keyboard).** Enter, Tab and Shift+Tab only.
+  - On 1.26.0 the legend and the tools menu opened together, then all three panels did; five checks failed.
+  - On 1.26.1 one panel is open at every step: legend, tools, gear, tools, legend. Escape in the legend closes it with
+    the focus on the key. A click on Tools with the gear open by keyboard opens the menu only.
+- **F3 (the live note and its layer).** The live list was held by DevTools Fetch.
+  - On 1.26.0 the dot and "Legend · Live buoys: loading…" stayed with Live buoys unticked.
+  - On 1.26.1 there is no dot and the label and aria-label read "Legend". Ticked again, the note is back. Once the list
+    lands, the dot goes.
+- **F4a (Escape on an open panel's button).** A live window (51201) and the expanded forecast window were open behind.
+  The legend, the gear and the tools menu were each opened by a click, then Shift+Tab moved the focus to the panel's
+  button.
+  - On 1.26.0, Escape left the panel open and minimised the forecast window (the window in front).
+  - On 1.26.1 the panel closes, both windows stay, and the focus stays on the button.
+  - A second Escape, with the panel closed, follows the page's own rule (focus, then the window in front, then wind,
+    tide, live): the forecast window is minimised and the live window stays. My first run expected the live window to
+    close here, as in the 1.26.0 run. That was my error: on 1.26.0 the first Escape had already minimised the forecast
+    window.
+- **F4b (a map tool and the legend key).** The distance tool had two points.
+  - On 1.26.0, Escape with the focus on the closed key did nothing; four checks failed.
+  - On 1.26.1 the sequence is:
+    - with the key's panel closed, Escape clears the points;
+    - with the panel open, Escape closes the legend and keeps the points;
+    - with the panel closed again, Escape clears, then closes the tool.
+  - With the tool running, the tools menu open and the focus on Tools, Escape closes the menu and keeps the points. The
+    next Escape clears them. The tool's capture-phase handler stays out while the menu is open.
+- **Regression.** The step-2 checks all pass:
+  - row at 1280, on a phone and on a phone sideways;
+  - legend at 1280 and on a phone, including one panel at a time by taps;
+  - labels at 1280 and on a phone (never on touch);
+  - corner at 1280 and on a tablet;
+  - place names and the no-JS page: 92 pass, 0 fail.
+
+  The dot round (live list held, tide list refused, 31-s retry) passes 5 of 5; its one console error is the 503 the
+  script injected. The console on fresh pages at 1280 and on a phone is clean.
+- **Cost.** 30 sweeps over the row (90 hovers onto buttons) gave 360 style recalcs and 85 ms in all, under 1 ms a
+  hover. That includes the label's own show and hide, which 1.26.0 had too. Moves over the map gave 142 recalcs and
+  24 ms.
+- **Suites on the test branch.** Node 1,027; pytest 1,155 passed + the 5 failures the test branch always has (its logo lines vs the page golden x4, the numpy-import test).
+- **Cleanup.** The test and production origins' storage was emptied, Chrome closed by DevTools with no process left, and
+  its profile removed. The sign-in check found nothing.
+
+Owner awareness:
+- A window dragged under the row: hovering the part of a button that shows lifts the whole row over the window, then it
+  drops back when the pointer leaves. While hovered, the few pixels where a button overlaps the window's header belong to
+  the button.
+- `:has()` needs Chrome / Edge 105, Safari 15.4 or Firefox 121. An older browser keeps 1.26.0's behaviour (the label
+  under a window).
+- The sheet is in scratch `legend/v4/legend_g37_fixes_test_site.jpg`.

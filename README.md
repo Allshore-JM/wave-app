@@ -1803,9 +1803,28 @@ be read counts as "the tile exists". The station layers draw every station from 
 | `WIND_NWS_PER_REFRESH` | `25` | Stations the NWS API feed asks per minute, in turn (1-500); 25 of Hawaii's ~300 = every station about every 12 minutes. |
 | `WIND_MADIS_URL` | the Hawaii query of MADIS's public viewer | The NWS stations' MADIS backup (plan section 52); empty = off. |
 
-## The station windows' refresh button (plan section 56)
+## The station windows' refresh button (plan section 56, UI asset 1.26.3)
 
-The live-buoy, wind and tide windows ask again for their station's newest data when the refresh button in their header
+**The page.** Each of the three windows has a circular-arrow button before its minimise button (`#lwRefresh`,
+`#twRefresh`, `#wwRefresh`; `.fw-btn.fw-refresh`), hidden in a chip or phone bar. `createStationWindow`
+(`static_ui/forecast.js`) runs it: one refresh at a time (a click while one runs is ignored), `aria-busy` while it runs
+(the arrow turns; dimmed instead under `prefers-reduced-motion`), and after a failure the button is orange with the title
+"Could not refresh. Try again." (also said in a polite status line) until a load succeeds. The old data stays on screen
+while the new data loads and when a refresh fails; nothing else in the window moves:
+
+| Window | What a refresh asks | What it keeps |
+|---|---|---|
+| Live buoy | NDBC: the wave summary and the spectra; others: the latest reading and (AODN) the spectra, fetched before drawing | the body's scroll; the old spectra when only they fail |
+| Tide | the predictions revalidated (the same all day: a 304) and the water level asked again | the opened days, the strip's sideways scroll |
+| Wind | the station's 24 hours | the open Readings list, the scroll |
+
+A window still showing its spinner loads as usual; a window showing an error reloads (the Retry). A new station or a
+close drops a refresh still on its way (no verdict). The live and tide windows remember when their data last loaded: an
+open, expanded window whose data is 15 minutes old or more refreshes once when its tab is shown again or it is expanded
+from its chip (`STATION_STALE_MS`). The wind window already asks again every 5 minutes by itself (and when shown), so
+only its button is new.
+
+**The server.** The live-buoy, wind and tide windows ask again for their station's newest data when the refresh button in their header
 is pressed. The page asks the SAME URL with the request header `X-Allshore-Refresh: 1` (and `cache: 'reload'`, so the
 browser's copy is replaced). On the server (`app.py` `_refresh_s`, `REFRESH_MIN_AGE_S` 60) a per-station answer cached at
 least a minute ago counts as missing and is built again from the agency; a younger one is served, so a button pressed

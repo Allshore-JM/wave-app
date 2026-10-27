@@ -30,6 +30,10 @@
   var LIVE_WINDOW_KEY = 'allshore.liveWin.v1'; // the live-buoy window's (the same shape)
   var TIDE_WINDOW_KEY = 'allshore.tideWin.v1'; // the tide-station window's (plan section 38)
   var WIND_WINDOW_KEY = 'allshore.windWin.v1'; // the wind-station window's (plan section 39)
+  // The station windows' refresh button (plan section 56): an open, expanded window whose data is this old asks again
+  // once when its tab is shown again or it is expanded from its chip; the button's title after a failed refresh.
+  var STATION_STALE_MS = 15 * 60000;
+  var REFRESH_TITLE = 'Refresh', REFRESH_FAILED = 'Could not refresh. Try again.';
   var RANGE_KEY = 'chartRange';                // sessionStorage 'full' | '7' | '3' (unchanged from the old page)
   var POINTS_KEY = 'allshore.points.v1';       // localStorage [{id, lat, lon, name}]: the visitor's forecast points
   var POINTS_MAX = 50, POINT_NAME_MAX = 40;
@@ -783,20 +787,30 @@
   // state (owner: no gain); a new tab opens it as a window; minimised it is a chip at the bottom-right (a bar above
   // the forecast bar on phones) with the close button still there. Dispatches its event {open, mode} on every change
   // (the page sizes the map around the phone bars and stacks the chips).
-  // spec: ids {el, header, min, close, resize}, key (sessionStorage), event, label ("live buoy" in the buttons' names),
-  //       window, document, storage, onClose() (the map script's own close work, e.g. abandoning a fetch),
-  //       onResize() (the tide chart follows its window).
+  // spec: ids {el, header, min, close, resize, refresh, refreshStatus}, key (sessionStorage), event, label ("live buoy"
+  //       in the buttons' names), window, document, storage, onClose() (the map script's own close work, e.g. abandoning
+  //       a fetch), onResize() (the tide chart follows its window), onRefresh() -> a Promise of true (newer data shown),
+  //       false (failed: the old data stays) or null (no verdict: another station meanwhile), staleMs (0 = never by
+  //       itself; default STATION_STALE_MS), now() -> ms.
+  // The refresh button (plan section 56): one refresh at a time (a click while one runs is ignored), aria-busy while it
+  // runs, its title "Could not refresh. Try again." after a failure until a load succeeds; the page calls markLoaded()
+  // after every good load. A new station (open) or a close forgets the running refresh's verdict.
   function createStationWindow(spec) {
     spec = spec || {};
     var win = spec.window || window, doc = spec.document || win.document, ids = spec.ids || {};
     var $ = function (id) { return doc.getElementById(id); };
     var el = $(ids.el), header = $(ids.header), minBtn = $(ids.min), closeBtn = $(ids.close), label = spec.label || 'window';
     if (!el || !header) return null;
+    var refreshBtn = $(ids.refresh), refreshSay = $(ids.refreshStatus), nowMs = spec.now || function () { return Date.now(); };
+    var staleMs = typeof spec.staleMs === 'number' ? spec.staleMs : STATION_STALE_MS;
+    var rs = { busy: false, token: 0, loadedAt: 0 };
+    var fw = null;
     var storage = spec.storage || (function () { try { var st = win.sessionStorage; if (st && typeof st.getItem === 'function') return st; } catch (e) {} return { getItem: function () { return null; }, setItem: function () {} }; })();
-    var fw = new FloatingWindow({ el: el, header: header, handle: $(ids.resize), storage: storage, win: win, key: spec.key, defaultMode: 'normal', canMax: false,
+    fw = new FloatingWindow({ el: el, header: header, handle: $(ids.resize), storage: storage, win: win, key: spec.key, defaultMode: 'normal', canMax: false,
       onMode: function (m) {
         if (minBtn) { minBtn.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); minBtn.setAttribute('aria-label', (m === 'min' ? 'Expand ' : 'Minimise ') + label); minBtn.textContent = m === 'min' ? '▴' : '–'; }
         notify();
+        if (m !== 'min') refreshIfStale();                                   // expanded from its chip after a while
       },
       onResize: function () { if (spec.onResize) spec.onResize(); } });
     function notify() {
@@ -804,33 +818,69 @@
       try { doc.dispatchEvent(new CustomEvent(spec.event, { detail: { open: !el.hidden, mode: fw.mode } })); } catch (e) {}
     }
     function isOpen() { return !el.hidden; }
+    function refreshState(s) {                                               // 'idle' | 'busy' | 'failed'
+      if (!refreshBtn) return;
+      refreshBtn.setAttribute('aria-busy', s === 'busy' ? 'true' : 'false');
+      if (refreshBtn.classList) refreshBtn.classList.toggle('fw-refresh-failed', s === 'failed');
+      refreshBtn.setAttribute('title', s === 'failed' ? REFRESH_FAILED : REFRESH_TITLE);
+    }
+    function say(text) { if (refreshSay) refreshSay.textContent = text; }
+    function refresh() {
+      if (rs.busy || !spec.onRefresh || el.hidden) return Promise.resolve(null);
+      var token = ++rs.token;
+      rs.busy = true; refreshState('busy'); say('');
+      var p;
+      try { p = Promise.resolve(spec.onRefresh()); } catch (e) { p = Promise.resolve(false); }
+      return p.then(null, function () { return false; }).then(function (ok) {
+        if (token !== rs.token) return null;                                 // another station or a close meanwhile
+        rs.busy = false;
+        if (ok === true) { rs.loadedAt = nowMs(); refreshState('idle'); say('Refreshed.'); }
+        else if (ok === false) { refreshState('failed'); say(REFRESH_FAILED); }
+        else refreshState('idle');
+        return ok;
+      });
+    }
+    function markLoaded() { rs.loadedAt = nowMs(); if (!rs.busy) refreshState('idle'); }
+    function forgetRefresh() { rs.token++; rs.busy = false; rs.loadedAt = 0; refreshState('idle'); say(''); }
+    function refreshIfStale() {
+      if (!fw || staleMs <= 0 || el.hidden || fw.mode === 'min' || doc.hidden || !rs.loadedAt) return;
+      if (nowMs() - rs.loadedAt >= staleMs) refresh();
+    }
     function open() {                                                       // a pick: shown, expanded, on top
+      forgetRefresh();                                                       // the new station's load marks it loaded
       el.hidden = false;
       if (fw.mode === 'min') fw.expand();
       notify();
     }
-    function close() { el.hidden = true; if (spec.onClose) spec.onClose(); notify(); }
+    function close() { forgetRefresh(); el.hidden = true; if (spec.onClose) spec.onClose(); notify(); }
+    if (refreshBtn) { refreshState('idle'); refreshBtn.addEventListener('click', function () { refresh(); }); }
+    if (doc.addEventListener) doc.addEventListener('visibilitychange', function () { if (!doc.hidden) refreshIfStale(); });
     if (minBtn) minBtn.addEventListener('click', function () { if (fw.mode === 'min') { fw.expand(); if (header.focus) header.focus({ preventScroll: true }); } else fw.minimise(); });
     if (closeBtn) closeBtn.addEventListener('click', function () { close(); });
     header.addEventListener('click', function (e) {
       if (fw.mode === 'min' && !(e.target && e.target.closest && e.target.closest('button'))) { fw.expand(); }
     });
-    return { window: fw, open: open, close: close, isOpen: isOpen, el: el };
+    return { window: fw, open: open, close: close, isOpen: isOpen, el: el, refresh: refresh, markLoaded: markLoaded,
+             refreshing: function () { return rs.busy; } };
   }
   // the live-buoy window over #liveBuoyPanel (#lwHeader, #lwMin, #lwClose, #lwResize); opts: window, document, storage, onClose
   function createLiveWindow(opts) {
-    return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'liveBuoyPanel', header: 'lwHeader', min: 'lwMin', close: 'lwClose', resize: 'lwResize' },
+    return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'liveBuoyPanel', header: 'lwHeader', min: 'lwMin', close: 'lwClose', resize: 'lwResize',
+      refresh: 'lwRefresh', refreshStatus: 'lwRefreshStatus' },
       key: LIVE_WINDOW_KEY, event: 'allshore:livewin', label: 'live buoy' }));
   }
   // the tide-station window over #tideWin (#twHeader, #twMin, #twClose, #twResize); opts: window, document, storage, onClose, onResize
   function createTideWindow(opts) {
-    return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'tideWin', header: 'twHeader', min: 'twMin', close: 'twClose', resize: 'twResize' },
+    return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'tideWin', header: 'twHeader', min: 'twMin', close: 'twClose', resize: 'twResize',
+      refresh: 'twRefresh', refreshStatus: 'twRefreshStatus' },
       key: TIDE_WINDOW_KEY, event: 'allshore:tidewin', label: 'tide station' }));
   }
   // the wind-station window over #windWin (#wwHeader, #wwMin, #wwClose, #wwResize; plan section 39); opts as the tide window's
   function createWindWindow(opts) {
-    return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'windWin', header: 'wwHeader', min: 'wwMin', close: 'wwClose', resize: 'wwResize' },
-      key: WIND_WINDOW_KEY, event: 'allshore:windwin', label: 'wind station' }));
+    return createStationWindow(Object.assign({}, opts || {}, { ids: { el: 'windWin', header: 'wwHeader', min: 'wwMin', close: 'wwClose', resize: 'wwResize',
+      refresh: 'wwRefresh', refreshStatus: 'wwRefreshStatus' },
+      key: WIND_WINDOW_KEY, event: 'allshore:windwin', label: 'wind station',
+      staleMs: (opts && typeof opts.staleMs === 'number') ? opts.staleMs : 0 }));   // its view asks again every 5 minutes itself
   }
 
   // ---- init: wire everything to the page ----
@@ -1162,6 +1212,7 @@
       createLoader: createLoader, ttlOf: ttlOf, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
       createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
+      STATION_STALE_MS: STATION_STALE_MS, REFRESH_TITLE: REFRESH_TITLE, REFRESH_FAILED: REFRESH_FAILED,
       POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,
       app: function () { return app; }
     }

@@ -672,6 +672,16 @@
       width: 30px; height: 30px; border: 1px solid #ced4da; border-radius: 6px; background: #fff;
       line-height: 1; font-size: 1rem; color: #0b2536; cursor: pointer; flex: 0 0 auto;
     }
+    /* the station windows' refresh button (plan section 56): a circular arrow before minimise; it turns while a refresh
+       runs (dimmed instead when motion is reduced), and is orange after one failed (its title says so); not in a chip */
+    .fw-refresh { display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+    .fw-refresh-icon { display: block; }
+    .fw-refresh[aria-busy="true"] { cursor: progress; }
+    .fw-refresh[aria-busy="true"] .fw-refresh-icon { animation: fw-spin .9s linear infinite; }
+    .fw-refresh.fw-refresh-failed { border-color: #e8590c; color: #b54708; }
+    @keyframes fw-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .fw-refresh[aria-busy="true"] .fw-refresh-icon { animation: none; opacity: .4; } }
+    .fwin.fw-min .fw-refresh { display: none; }
     .fw-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #eee; flex-wrap: wrap; }
     .fw-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; -webkit-overflow-scrolling: touch; container-type: inline-size; container-name: fwbody; }
     /* The forecast window's body has no top or side padding: the frozen header and the sticky Date / Time columns sit
@@ -1149,6 +1159,8 @@
         <strong id="liveBuoyTitle">Live Buoy</strong>
         <span id="liveBuoySubtitle" class="fw-cycle"></span>
       </div>
+      <span id="lwRefreshStatus" class="visually-hidden" role="status" aria-live="polite"></span>
+      <button type="button" id="lwRefresh" class="fw-btn fw-refresh" aria-label="Refresh live buoy" title="Refresh"><svg class="fw-refresh-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M13.25 8a5.25 5.25 0 1 1-1.54-3.71" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12.2 1.9v2.75H9.45" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <button type="button" id="lwMin" class="fw-btn" aria-label="Minimise live buoy" aria-expanded="true">&#8211;</button>
       <button type="button" id="lwClose" class="fw-btn" aria-label="Close live buoy">&times;</button>
     </div>
@@ -1280,6 +1292,8 @@
         <strong id="tideTitle">Tide station</strong>
         <span id="tideSubtitle" class="fw-cycle"></span>
       </div>
+      <span id="twRefreshStatus" class="visually-hidden" role="status" aria-live="polite"></span>
+      <button type="button" id="twRefresh" class="fw-btn fw-refresh" aria-label="Refresh tide station" title="Refresh"><svg class="fw-refresh-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M13.25 8a5.25 5.25 0 1 1-1.54-3.71" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12.2 1.9v2.75H9.45" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <button type="button" id="twMin" class="fw-btn" aria-label="Minimise tide station" aria-expanded="true">&#8211;</button>
       <button type="button" id="twClose" class="fw-btn" aria-label="Close tide station">&times;</button>
     </div>
@@ -1303,6 +1317,8 @@
         <strong id="windTitle">Wind station</strong>
         <span id="windSubtitle" class="fw-cycle"></span>
       </div>
+      <span id="wwRefreshStatus" class="visually-hidden" role="status" aria-live="polite"></span>
+      <button type="button" id="wwRefresh" class="fw-btn fw-refresh" aria-label="Refresh wind station" title="Refresh"><svg class="fw-refresh-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M13.25 8a5.25 5.25 0 1 1-1.54-3.71" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12.2 1.9v2.75H9.45" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       <button type="button" id="wwMin" class="fw-btn" aria-label="Minimise wind station" aria-expanded="true">&#8211;</button>
       <button type="button" id="wwClose" class="fw-btn" aria-label="Close wind station">&times;</button>
     </div>
@@ -2678,19 +2694,33 @@
 
     // Dispatch on source: NDBC keeps the rich NOAA summary + spectral-partition panel;
     // every other source (CDIP / AODN / QLD / AusWaves) gets the adaptive bulk panel.
-    function loadLiveBuoyDetails(station) {
+    // opts.refresh (the window's refresh button, plan section 56): the same buoy asked again with the refresh header
+    // (the server asks the agency again when its copy is a minute old), drawn in place; while data is shown it stays
+    // until the new data is drawn and a failure keeps it (the loaders' Promise: true drawn / false failed / null
+    // superseded). A window still showing its spinner loads as usual.
+    function loadLiveBuoyDetails(station, opts) {
+      const refresh = !!(opts && opts.refresh);
       const seq = ++liveDetailSeq;
-      try { document.dispatchEvent(new CustomEvent('allshore:livepanel')); } catch (e) {}   // the panel opens for a buoy (every source): bring it forward
-      const src = (station.source || '').toUpperCase();
-      if (src === 'NDBC' || /^ndbc:/i.test(station.id || '')) {
-        return loadNdbcBuoyDetails(station, seq);
+      if (!refresh) {
+        try { document.dispatchEvent(new CustomEvent('allshore:livepanel')); } catch (e) {}   // the panel opens for a buoy (every source): bring it forward
       }
-      return loadGenericBuoyDetails(station, seq);
+      const src = (station.source || '').toUpperCase();
+      const done = function (ok) {
+        if (seq !== liveDetailSeq) return null;
+        if (ok && liveWin && liveWin.markLoaded) liveWin.markLoaded();                       // the refresh button's clock
+        return ok;
+      };
+      if (src === 'NDBC' || /^ndbc:/i.test(station.id || '')) {
+        return loadNdbcBuoyDetails(station, seq, refresh).then(done);
+      }
+      return loadGenericBuoyDetails(station, seq, refresh).then(done);
     }
 
-    async function loadNdbcBuoyDetails(station, seq) {
-      showLiveBuoyPanelLoading(station);
+    async function loadNdbcBuoyDetails(station, seq, refresh) {
+      const quiet = liveQuietRefresh(refresh);
+      if (!quiet) showLiveBuoyPanelLoading(station);
       const stale = () => seq !== liveDetailSeq;   // superseded or panel closed
+      const fo = liveFetchOptions(refresh), restoreScroll = keepLiveScroll(quiet);
 
       // Merged-feed ids are namespaced ("ndbc:46221"); the NDBC routes want the raw id.
       const rawId = (station.id || '').replace(/^ndbc:/i, '');
@@ -2698,15 +2728,15 @@
       // Both requests start together (they were sequential); the summary still decides what
       // is shown first. The noop catch keeps an unused/failed components request quiet --
       // the real failure handling happens where it is awaited below.
-      const summaryRequest = fetch('/api/ndbc/station/' + encodeURIComponent(rawId) + '/wave-summary');
-      const componentRequest = fetch('/api/ndbc/station/' + encodeURIComponent(rawId) + '/components');
+      const summaryRequest = fetch('/api/ndbc/station/' + encodeURIComponent(rawId) + '/wave-summary', fo);
+      const componentRequest = fetch('/api/ndbc/station/' + encodeURIComponent(rawId) + '/components', fo);
       componentRequest.catch(function () {});
 
       try {
         const summaryResponse = await summaryRequest;
 
         const summaryData = await summaryResponse.json();
-        if (stale()) return;
+        if (stale()) return null;
 
         if (!summaryResponse.ok || summaryData.error) {
           throw new Error(summaryData.error || 'Unable to load NOAA wave summary.');
@@ -2719,40 +2749,46 @@
           lastLiveComponentData = null;
           lastNoRecentStation = station;
           showLiveBuoyNoRecent(summaryData, station);
-          return;
+          return true;
         }
         lastNoRecentStation = null;
 
-        renderNoaaWaveSummary(summaryData);
-
+        // a refresh draws both parts together (the summary first, then the spectra, in one go: no half-new window)
+        let componentData = null;
         try {
           const componentResponse = await componentRequest;
 
-          const componentData = await componentResponse.json();
-          if (stale()) return;
+          const cd = await componentResponse.json();
+          if (stale()) return null;
 
           // The spectral files can lag the .spec summary; don't render a stale
           // snapshot next to fresh summary values.
-          if (componentResponse.ok && !componentData.error && !componentData.no_recent_reports) {
+          if (componentResponse.ok && !cd.error && !cd.no_recent_reports) {
             // Make sure Chart.js is present for the spectrum plot; if the load fails the
             // render throws exactly as it would have with the CDN down before.
             try { await loadChartJs(); } catch (chartErr) {}
-            if (stale()) return;
-            renderLiveBuoyDetails(componentData);
+            if (stale()) return null;
+            componentData = cd;
           }
         } catch (componentErr) {
           console.warn('Experimental spectral component load failed:', componentErr);
         }
-        if (stale()) return;
+        if (stale()) return null;
+
+        renderNoaaWaveSummary(summaryData);
+        if (componentData) renderLiveBuoyDetails(componentData);
 
         document.getElementById('liveBuoyLoading').style.display = 'none';
         document.getElementById('liveBuoyError').classList.add('d-none');
         document.getElementById('liveBuoyGeneric').classList.add('d-none');
         document.getElementById('liveBuoyContent').classList.remove('d-none');
+        restoreScroll();
+        return true;
 
       } catch (err) {
-        if (stale()) return;
-        showLiveBuoyError(err.message);
+        if (stale()) return null;
+        if (!quiet) showLiveBuoyError(err.message);
+        return false;
       }
     }
 
@@ -3035,10 +3071,26 @@
       el.classList.remove('d-none');
     }
 
-    async function loadGenericBuoyDetails(station, seq) {
-      showLiveBuoyPanelLoading(station);
+    // ---- the live window's refresh helpers (plan section 56; the NDBC loader above uses them too) ----
+    // a refresh while data (or an error) is shown: no spinner, the body's scroll kept, a failure keeps what is there
+    function liveQuietRefresh(refresh) {
+      const loading = document.getElementById('liveBuoyLoading');
+      return !!refresh && !!loading && loading.style.display === 'none';
+    }
+    function liveFetchOptions(refresh) {
+      return refresh ? { cache: 'reload', headers: { 'X-Allshore-Refresh': '1' } } : undefined;
+    }
+    function keepLiveScroll(quiet) {
+      const body = document.getElementById('lwBody'), top = body ? body.scrollTop : 0;
+      return function () { if (quiet && body && top) body.scrollTop = top; };
+    }
+    async function loadGenericBuoyDetails(station, seq, refresh) {
+      const quiet = liveQuietRefresh(refresh);
+      if (!quiet) showLiveBuoyPanelLoading(station);
       const stale = () => seq !== liveDetailSeq;   // superseded or panel closed
-      lastGenericSpectra = null;
+      const fo = liveFetchOptions(refresh), restoreScroll = keepLiveScroll(quiet);
+      const keepSpectra = quiet ? lastGenericSpectra : null;   // a refresh whose spectra fail keeps the old ones
+      if (!quiet) lastGenericSpectra = null;
       try {
         let resp, payload;
         // Right after the server starts, a buoy drawn from the remembered list may belong to an agency whose list is
@@ -3046,17 +3098,17 @@
         // Keep the spinner and ask again for up to ~2 minutes.
         let stillLoading = false;
         for (let tries = 0; ; tries++) {
-          resp = await fetch('/api/buoys/' + encodeURIComponent(station.id) + '/latest');
+          resp = await fetch('/api/buoys/' + encodeURIComponent(station.id) + '/latest', fo);
           // a proxy's error page (e.g. a gateway timeout) is HTML, not JSON: an ordinary failure, not a parse error
           payload = await resp.json().catch(function () { return {}; });
-          if (stale()) return;
+          if (stale()) return null;
           stillLoading = resp.status === 503 && !!(payload && payload.retry);
           if (!stillLoading || tries >= 24) break;
           document.getElementById('liveBuoyLoadingNote').textContent =
             'The server has just restarted and is still loading this buoy\u2019s network. Trying again\u2026';
           const wait = Math.min(30, Math.max(1, Number(resp.headers.get('Retry-After')) || 5));
           await new Promise(function (r) { setTimeout(r, wait * 1000); });
-          if (stale()) return;
+          if (stale()) return null;
         }
         if (stillLoading) {
           throw new Error('This buoy\u2019s data is not available yet. Please try again in a few minutes.');
@@ -3064,29 +3116,44 @@
         if (!resp.ok || !payload || payload.error) {
           throw new Error((payload && payload.error) || 'Unable to load buoy observation.');
         }
-        renderGenericBuoy(payload, station);
-
-        // Spectra-capable buoys (AODN): pull the directional spectrum -> NDBC-style
-        // partitions + spectral-density chart. Optional/lazy — never blocks the bulk view.
-        if (station.capabilities && station.capabilities.spectra) {
+        const spectra = station.capabilities && station.capabilities.spectra;
+        // a refresh asks for the spectra BEFORE it draws: renderGenericBuoy replaces the spectra's box, so drawing first
+        // would empty it until they land (the first load draws the bulk view at once: spectra never block it)
+        let cdata = null;
+        const askSpectra = async function () {
           try {
-            const cr = await fetch('/api/buoys/' + encodeURIComponent(station.id) + '/components');
+            const cr = await fetch('/api/buoys/' + encodeURIComponent(station.id) + '/components', fo);
             if (cr.ok) {
-              const cdata = await cr.json();
+              const cd = await cr.json();
               if (stale()) return;
-              if (!cdata.error) {
+              if (!cd.error) {
                 try { await loadChartJs(); } catch (chartErr) {}
                 if (stale()) return;
-                renderGenericSpectra(cdata, getSelectedUnit() === 'Metric', station.tz);
+                cdata = cd;
               }
             }
           } catch (specErr) {
             console.warn('Spectral partition load failed:', specErr);
           }
+        };
+        if (quiet && spectra) await askSpectra();
+        if (stale()) return null;
+        renderGenericBuoy(payload, station);
+
+        // Spectra-capable buoys (AODN): pull the directional spectrum -> NDBC-style
+        // partitions + spectral-density chart. Optional/lazy — never blocks the bulk view.
+        if (spectra) {
+          if (!quiet) await askSpectra();
+          if (stale()) return null;
+          const show = cdata || keepSpectra;
+          if (show) renderGenericSpectra(show, getSelectedUnit() === 'Metric', station.tz);
         }
+        restoreScroll();
+        return true;
       } catch (err) {
-        if (stale()) return;
-        showLiveBuoyError(err.message);
+        if (stale()) return null;
+        if (!quiet) showLiveBuoyError(err.message);
+        return false;
       }
     }
 
@@ -3479,6 +3546,7 @@
         visible: function () { return !!(tideWin && tideWin.isOpen() && tideWin.window.mode !== 'min'); },
         unit: getSelectedUnit(),
         zoneAbbr: function (ms, tz) { try { return tzAbbr(new Date(ms).toISOString(), tz); } catch (e) { return tz; } },
+        onLoaded: function () { if (tideWin) tideWin.markLoaded(); },   // the refresh button's clock (plan section 56)
         onRetried: function () {                      // G27 B-P3-3; never from where the visitor went meanwhile (fresh check F-4)
           const h = document.getElementById('twHeader'), a = document.activeElement, w = document.getElementById('tideWin');
           if (h && h.focus && (!a || a === document.body || (w && w.contains && w.contains(a)))) h.focus({ preventScroll: true });
@@ -4051,6 +4119,7 @@
         width: function () { const c = $('windChart'); return c ? c.clientWidth : 0; },
         unit: getSelectedUnit(),
         zoneAbbr: function (ms, tz) { try { return tzAbbr(new Date(ms).toISOString(), tz); } catch (e) { return tz; } },
+        onLoaded: function () { if (windWin) windWin.markLoaded(); },   // the refresh button's clock (plan section 56)
         onRetried: function () {                      // the focus back in the window, never from where the visitor went meanwhile
           const h = document.getElementById('wwHeader'), a = document.activeElement, w = document.getElementById('windWin');
           if (h && h.focus && (!a || a === document.body || (w && w.contains && w.contains(a)))) h.focus({ preventScroll: true });
@@ -5054,7 +5123,8 @@
         window.addEventListener('resize', syncForecastChip);
       })();
       if (window.AllshoreForecast && window.AllshoreForecast.createLiveWindow) {
-        liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; liveWindowClosed(); } });
+        liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; liveWindowClosed(); },
+          onRefresh: function () { return liveShownStation ? loadLiveBuoyDetails(liveShownStation, { refresh: true }) : null; } });
         document.addEventListener('allshore:livewin', function (e) {
           var d = e.detail || {};
           document.body.classList.toggle('live-chip', !!(d.open && d.mode === 'min'));   // the forecast window's default box rises above a parked chip
@@ -5065,7 +5135,8 @@
       // The tide-station window (plan section 38): opened by openTideStation; its chart follows its size; closed
       // from any mode (the x, Escape), which clears the graph and the marker's highlight.
       if (window.AllshoreForecast && window.AllshoreForecast.createTideWindow) {
-        tideWin = window.AllshoreForecast.createTideWindow({ onClose: tideWindowClosed, onResize: function () { if (tideView) tideView.resize(); } });
+        tideWin = window.AllshoreForecast.createTideWindow({ onClose: tideWindowClosed, onResize: function () { if (tideView) tideView.resize(); },
+          onRefresh: function () { return tideView ? tideView.refreshNow() : null; } });
         document.addEventListener('allshore:tidewin', function (e) {
           var d = e.detail || {};
           document.body.classList.toggle('tide-chip', !!(d.open && d.mode === 'min'));
@@ -5077,7 +5148,8 @@
       // The wind-station window (plan section 39): opened by openWindStation; its chart follows its size; closed from
       // any mode, which clears the chart and the flag's rim.
       if (window.AllshoreForecast && window.AllshoreForecast.createWindWindow) {
-        windWin = window.AllshoreForecast.createWindWindow({ onClose: windWindowClosed, onResize: function () { if (windView) windView.resize(); } });
+        windWin = window.AllshoreForecast.createWindWindow({ onClose: windWindowClosed, onResize: function () { if (windView) windView.resize(); },
+          onRefresh: function () { return windView ? windView.refreshNow() : null; } });
         document.addEventListener('allshore:windwin', function (e) {
           var d = e.detail || {};
           document.body.classList.toggle('wind-chip', !!(d.open && d.mode === 'min'));

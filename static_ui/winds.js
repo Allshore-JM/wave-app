@@ -61,6 +61,9 @@
   var TABLE_MAX = 48, READOUT_NEAR_S = 45 * 60, MIN_WIDTH = 280, DEFAULT_WIDTH = 640, RESIZE_PX = 8;
   var READOUT_NARROW = 420;               // px: a narrower chart (phones) gets the short readout (G28 B-6)
   var REFRESH_MS = 5 * MIN_MS, TICK_MS = MIN_MS;
+  // the window's refresh button asks the same URL with this header: the server asks the agency again when its copy is
+  // a minute old or more (plan section 56)
+  var REFRESH_HEADER = 'X-Allshore-Refresh';
   var RETRY_MAX = 24, RETRY_DEFAULT_S = 5, RETRY_MAX_S = 60, TOUCH_MOUSE_MS = 700;
   var COLORS = { speed: '#1d6fd6', gust: '#e8590c', grid: 'rgba(0,0,0,0.12)', midnight: 'rgba(0,0,0,0.38)', text: '#1d2b4f',
                  muted: '#5b6577', air: '#c2410c', water: '#0e7490' };
@@ -699,6 +702,7 @@
     function accept(b) {
       st.data = b; st.rows = historyRows(b); st.fetchedAt = now();
       joinFallback();
+      if (deps.onLoaded) try { deps.onLoaded(); } catch (e) {}           // the window's refresh clock (plan section 56)
     }
     // The flag's reading (the latest table) when it is newer than the history's last row: the history is cached for
     // minutes on the server, the table is not, and the window must not contradict the flag just clicked (G28 B-3).
@@ -723,6 +727,24 @@
         if (res.stale || seq !== st.seq) return;
         if (res.status === 200 && res.body && Array.isArray(res.body.t)) { accept(res.body); render(); }
       }, function () { /* the chart stands */ });
+    }
+    // The refresh button (plan section 56): the station's 24 hours from the agency again (the server keeps its own copy
+    // a minute at least), drawn in place: the chart, the open Readings list, the scroll and the readout stay. A Promise of
+    // true (drawn), false (failed: the readings stand) or null (no verdict: another station, or the window was not showing
+    // readings: an error is a Retry, a station still loading is left alone).
+    function refreshNow() {
+      var seq = st.seq;
+      if (!st.station) return Promise.resolve(null);
+      if (st.status === 'error') { retry(); return Promise.resolve(null); }
+      if (st.status !== 'ready') return Promise.resolve(null);
+      st.fetchedAt = now();                                               // the quiet turns count from here too
+      var headers = { Accept: 'application/json' };
+      headers[REFRESH_HEADER] = '1';
+      return ask(path(), seq, st.ac && st.ac.signal, { cache: 'reload', headers: headers }).then(function (res) {
+        if (res.stale || seq !== st.seq) return null;
+        if (res.status === 200 && res.body && Array.isArray(res.body.t)) { accept(res.body); render(); return true; }
+        return false;
+      }, function () { return seq === st.seq ? false : null; });
     }
     function attempt(seq) {
       st.tries++;
@@ -796,7 +818,7 @@
       if (!doc.hidden && st.data && st.status === 'ready' && deps.visible() && now() - st.fetchedAt >= REFRESH_MS) refresh();
     });
     return {
-      load: load, clear: clear, retry: retry,
+      load: load, clear: clear, retry: retry, refreshNow: refreshNow,
       setUnit: function (u) { st.unit = unitOf(u); if (st.data) render(); },
       setZone: function (z) { st.zone = z || null; if (st.data) render(); },
       show: function () {

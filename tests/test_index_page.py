@@ -1221,3 +1221,30 @@ def test_buoy_links_on_the_page(client):
     # the block sits outside every template cut the page harnesses use (after the tide block, before the wind block)
     a = body.index("    // ---- buoy links (plan section 52")
     assert body.index("    map.on('zoomend', clampMapLatitude);") < a < body.index("    // ---------------- Wind stations (plan section 39)")
+
+
+def test_station_window_refresh_buttons(client):
+    """Plan section 56: a refresh button before minimise in the live-buoy, tide and wind windows (a status line for
+    screen readers beside it), styled as the header buttons, turning while it runs (still under reduced motion),
+    hidden in a chip / phone bar; each window's onRefresh reaches its own view; the live loaders take a refresh."""
+    body = client.get("/?station=51201").get_data(as_text=True)
+    for pre, label in (("lw", "live buoy"), ("tw", "tide station"), ("ww", "wind station")):
+        btn = '<button type="button" id="%sRefresh" class="fw-btn fw-refresh" aria-label="Refresh %s" title="Refresh">' % (pre, label)
+        assert btn in body, pre
+        status = '<span id="%sRefreshStatus" class="visually-hidden" role="status" aria-live="polite"></span>' % pre
+        assert body.index(status) < body.index(btn) < body.index('id="%sMin"' % pre) < body.index('id="%sClose"' % pre)
+        assert body.index('id="%sHeader"' % pre) < body.index(btn)
+    assert body.count('class="fw-refresh-icon"') == 3
+    for css in ('.fwin.fw-min .fw-refresh { display: none; }',
+                '.fw-refresh[aria-busy="true"] .fw-refresh-icon { animation: fw-spin .9s linear infinite; }',
+                '@media (prefers-reduced-motion: reduce) { .fw-refresh[aria-busy="true"] .fw-refresh-icon { animation: none; opacity: .4; } }',
+                '.fw-refresh.fw-refresh-failed {'):
+        assert css in body, css
+    assert "onRefresh: function () { return liveShownStation ? loadLiveBuoyDetails(liveShownStation, { refresh: true }) : null; } });" in body
+    assert "onRefresh: function () { return tideView ? tideView.refreshNow() : null; } });" in body
+    assert "onRefresh: function () { return windView ? windView.refreshNow() : null; } });" in body
+    assert "onLoaded: function () { if (tideWin) tideWin.markLoaded(); }," in body
+    assert "onLoaded: function () { if (windWin) windWin.markLoaded(); }," in body
+    assert "return refresh ? { cache: 'reload', headers: { 'X-Allshore-Refresh': '1' } } : undefined;" in body
+    assert "X-Allshore-Refresh" in body and A.REFRESH_HEADER == "X-Allshore-Refresh"   # the page and the server agree
+

@@ -1236,3 +1236,85 @@ test('G32: the race\'s station is named at once (allshore:stationshown before it
   const late = boot({ search: '', early: { station: race } });               // an already-settled race: the same path
   await settle(); assert.equal(late.fs_.param(late.fs_.last(), 'station'), '46001');
 });
+
+
+// ------------------------------------------------------------------ the refresh button (plan section 56)
+function deferredP() { let res, rej; const p = new Promise((a, b) => { res = a; rej = b; }); return { p, res, rej }; }
+function refreshWin(make, opts) {
+  opts = opts || {};
+  const win = fakeWindow(), page = buildPage(win), F = load(win);
+  let t = 1000000;
+  const asks = [];
+  const sw = F[make](Object.assign({ window: win, now: () => t,
+    onRefresh: () => { const d = deferredP(); asks.push(d); return d.p; } }, opts));
+  return { win, page, F, sw, asks, doc: win.document, tick(ms) { t += ms; } };
+}
+
+test('section 56: the refresh button: busy while it runs, one at a time, a failure titled, a success clears it', async () => {
+  const r = refreshWin('createLiveWindow'), btn = r.page.lwRefresh, say = r.doc.getElementById('lwRefreshStatus');
+  assert.equal(btn.getAttribute('title'), 'Refresh'); assert.equal(btn.getAttribute('aria-busy'), 'false');
+  btn.dispatch('click'); assert.equal(r.asks.length, 0, 'a closed window asks nothing');
+  r.sw.open(); btn.dispatch('click');
+  assert.equal(r.asks.length, 1); assert.equal(btn.getAttribute('aria-busy'), 'true'); assert.equal(r.sw.refreshing(), true);
+  btn.dispatch('click'); assert.equal(r.asks.length, 1, 'a second click while one runs is ignored');
+  r.asks[0].res(false); await settle();
+  assert.equal(btn.getAttribute('aria-busy'), 'false'); assert.equal(btn.getAttribute('title'), 'Could not refresh. Try again.');
+  assert.ok(btn.classList.contains('fw-refresh-failed')); assert.equal(say.textContent, 'Could not refresh. Try again.');
+  btn.dispatch('click'); assert.equal(btn.getAttribute('aria-busy'), 'true', 'tried again: busy (the failure is gone while it runs)');
+  assert.ok(!btn.classList.contains('fw-refresh-failed'));
+  r.asks[1].res(true); await settle();
+  assert.equal(btn.getAttribute('title'), 'Refresh'); assert.ok(!btn.classList.contains('fw-refresh-failed'));
+  assert.equal(say.textContent, 'Refreshed.');
+  btn.dispatch('click'); r.asks[2].rej(new Error('x')); await settle();
+  assert.equal(btn.getAttribute('title'), 'Could not refresh. Try again.', 'a rejected refresh is a failure');
+  btn.dispatch('click'); r.asks[3].res(null); await settle();
+  assert.equal(btn.getAttribute('title'), 'Refresh', 'no verdict: the plain button'); assert.equal(btn.getAttribute('aria-busy'), 'false');
+});
+
+test('section 56: a new station or a close forgets the running refresh; markLoaded clears a failure', async () => {
+  const r = refreshWin('createTideWindow'), btn = r.page.twRefresh;
+  r.sw.open(); btn.dispatch('click');
+  r.sw.open();                                                               // another station picked meanwhile
+  assert.equal(btn.getAttribute('aria-busy'), 'false'); assert.equal(r.sw.refreshing(), false);
+  r.asks[0].res(false); await settle();
+  assert.equal(btn.getAttribute('title'), 'Refresh', 'the old verdict never lands on the new station');
+  btn.dispatch('click'); assert.equal(r.asks.length, 2, 'the new station can refresh at once');
+  r.asks[1].res(false); await settle(); assert.equal(btn.getAttribute('title'), 'Could not refresh. Try again.');
+  r.sw.markLoaded(); assert.equal(btn.getAttribute('title'), 'Refresh', 'a good load clears it');
+  btn.dispatch('click'); r.page.twClose.dispatch('click'); r.asks[2].res(false); await settle();
+  assert.equal(btn.getAttribute('title'), 'Refresh'); assert.equal(btn.getAttribute('aria-busy'), 'false');
+});
+
+test('section 56: an open window whose data is 15 minutes old refreshes once when its tab is shown or it is expanded', async () => {
+  const r = refreshWin('createLiveWindow'), F = r.F;
+  assert.equal(F._internals.STATION_STALE_MS, 15 * 60000);
+  r.sw.open(); r.sw.markLoaded();
+  r.tick(15 * 60000 - 1); r.doc.fire('visibilitychange'); assert.equal(r.asks.length, 0, 'not yet');
+  r.tick(1); r.doc.hidden = true; r.doc.fire('visibilitychange'); assert.equal(r.asks.length, 0, 'not while hidden');
+  r.doc.hidden = false; r.doc.fire('visibilitychange'); assert.equal(r.asks.length, 1, 'shown again: refreshed');
+  r.doc.fire('visibilitychange'); assert.equal(r.asks.length, 1, 'one at a time');
+  r.asks[0].res(true); await settle();
+  r.doc.fire('visibilitychange'); assert.equal(r.asks.length, 1, 'fresh again');
+  r.tick(15 * 60000); r.sw.window.minimise(); r.doc.fire('visibilitychange'); assert.equal(r.asks.length, 1, 'a chip does not ask');
+  r.page.lwMin.dispatch('click'); assert.equal(r.sw.window.mode, 'normal'); assert.equal(r.asks.length, 2, 'expanded after a while: refreshed');
+  r.asks[1].res(false); await settle();
+  r.sw.open(); r.tick(16 * 60000); r.doc.fire('visibilitychange'); assert.equal(r.asks.length, 2, 'a new station not loaded yet: nothing');
+  r.page.lwClose.dispatch('click'); r.doc.fire('visibilitychange'); assert.equal(r.asks.length, 2, 'a closed window: nothing');
+});
+
+test('section 56: the wind window never refreshes by itself (its view asks every 5 minutes); its button does', async () => {
+  const r = refreshWin('createWindWindow'), btn = r.page.wwRefresh;
+  r.sw.open(); r.sw.markLoaded(); r.tick(60 * 60000); r.doc.fire('visibilitychange');
+  assert.equal(r.asks.length, 0);
+  btn.dispatch('click'); assert.equal(r.asks.length, 1);
+  assert.equal(r.page.lwRefresh.getAttribute('aria-busy'), null, 'each window its own button (the live one is untouched)');
+  const r2 = refreshWin('createWindWindow', { staleMs: 1000 }); r2.sw.open(); r2.sw.markLoaded(); r2.tick(1000); r2.doc.fire('visibilitychange');
+  assert.equal(r2.asks.length, 1, 'the page can still set a clock');
+});
+
+test('section 56: a window without a refresh hook or button still works', () => {
+  const win = fakeWindow(), page = buildPage(win), F = load(win);
+  const lw = F.createLiveWindow({ window: win }); lw.open();
+  page.lwRefresh.dispatch('click'); assert.equal(page.lwRefresh.getAttribute('aria-busy'), 'false');
+  return lw.refresh().then((v) => assert.equal(v, null));
+});

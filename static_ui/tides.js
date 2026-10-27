@@ -30,6 +30,7 @@
   var RETRY_MAX = 24, RETRY_DEFAULT_S = 5, RETRY_MAX_S = 60;
   var TOUCH_MOUSE_MS = 700;               // mouse events this soon after a touch come from the touch
   var NOW_REDRAW_MS = 60000;
+  var REFRESH_HEADER = 'X-Allshore-Refresh';  // the refresh button: the server asks NOAA again when its copy is a minute old (plan section 56)
   var REFRESH_RETRY_MS = 10 * 60000;     // a midnight refresh that failed is tried again this often until it answers
   var CALLOUT_CHAR_W = 6;                // a callout's text width per character at 10.5 px (an estimate, a little wide)
   var SVG_NS = 'http://www.w3.org/2000/svg';
@@ -616,8 +617,48 @@
       }).then(function (b) {
         if (seq !== st.seq) return;
         if (!b || !Array.isArray(b.v) || b.final) { failed(); return; }
-        st.data = b; build(); writeMeta(); fetchObserved(seq);
+        st.data = b; build(); writeMeta(); fetchObserved(seq); loaded();
       }, failed);
+    }
+    function loaded() { if (deps.onLoaded) try { deps.onLoaded(); } catch (e) {} }   // the window's refresh clock (section 56)
+    // The refresh button (plan section 56): the predictions revalidated (the same all day: usually a 304) and the water
+    // level from NOAA again (the server keeps its copy a minute at least), drawn in place: the opened days, the strip's
+    // sideways scroll and the readout stay. A Promise of true (both answered), false (one failed: what arrived is drawn,
+    // the rest stands) or null (no verdict: another station, or the window was not showing the strip: an error is a
+    // Retry, a station still loading is left alone).
+    function refreshNow() {
+      var s = st.station, seq = st.seq;
+      if (!s) return Promise.resolve(null);
+      if (st.status === 'error') { retry(); return Promise.resolve(null); }
+      if (st.status !== 'ready' || !st.data) return Promise.resolve(null);
+      var id = encodeURIComponent(s.id), wantObs = !!st.data.obs, signal = st.ac && st.ac.signal;
+      var fc = deps.fetch('/api/tides/' + id, { signal: signal, cache: 'no-cache', headers: { Accept: 'application/json' } }).then(function (r) {
+        return seq === st.seq && r.status === 200 ? r.json() : null;
+      }).then(function (b) {
+        if (seq !== st.seq) return null;
+        if (!b || !Array.isArray(b.v) || b.final) return false;
+        st.data = b; st.refreshAt = 0;
+        return true;
+      }, function () { return seq === st.seq ? false : null; });
+      var ob = Promise.resolve(true);
+      if (wantObs) {
+        var headers = { Accept: 'application/json' };
+        headers[REFRESH_HEADER] = '1';
+        ob = deps.fetch('/api/tides/' + id + '/observed', { signal: signal, cache: 'reload', headers: headers }).then(function (r) {
+          return seq === st.seq && r.status === 200 ? r.json() : null;
+        }).then(function (b) {
+          if (seq !== st.seq) return null;
+          if (!b || !Array.isArray(b.t)) return false;
+          st.obs = b;
+          return true;
+        }, function () { return seq === st.seq ? false : null; });
+      }
+      return Promise.all([fc, ob]).then(function (res) {
+        if (seq !== st.seq || res[0] === null || res[1] === null) return null;
+        if (res[0] || res[1]) render();
+        if (res[0] && res[1]) { loaded(); return true; }
+        return false;
+      });
     }
     function fetchObserved(seq) {
       var s = st.station;
@@ -638,6 +679,7 @@
           setStatus('ready');
           render();
           fetchObserved(seq);
+          loaded();
           if (st.retried) { st.retried = false; if (deps.onRetried) try { deps.onRetried(); } catch (e) {} }   // focus back in the window
           return;
         }
@@ -704,7 +746,7 @@
     }
     if (els.retry) els.retry.addEventListener('click', retry);
     return {
-      load: load, clear: clear, retry: retry, toggleDay: toggleDay,
+      load: load, clear: clear, retry: retry, toggleDay: toggleDay, refreshNow: refreshNow,
       setUnit: function (u) { st.unit = unitOf(u); if (st.data) render(); },
       setZone: function (z) { st.zone = z || null; if (st.data) render(); },
       show: function () { if (st.data && (st.dirty || !st.built)) render(); return Promise.resolve(); },

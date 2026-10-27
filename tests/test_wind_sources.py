@@ -1618,7 +1618,7 @@ def test_history_merges_the_madis_hours_with_the_nws_api():
     status, p = madis_hist_svc(fetch, LIVE_T, latest, hist).history("nws:001HE")
     assert status == "ok" and p["via"] == "madis" and p["source"] == W.ATTRIBUTION["madis"] and p["note"] is None
     assert p["t"] == [r["t"] for r in hist["001HE"]] and len(p["t"]) == 17, "MADIS's 24 hours, the latest once"
-    assert p["at"][0] == w["001HE"][0]["at"] and "filling" not in p
+    assert p["at"][0] == w["001HE"][0]["at"] and "filling" not in p and "partial" not in p
     assert p["disclaimer"] == W.MESONET_DISCLAIMER
     # the NWS API's rows join: one row per time, the API's where both have one
     rows = W.parse_nws_observations(json.loads(fx("nws_history.json")))
@@ -1643,7 +1643,7 @@ def test_history_while_madis_is_filling_says_so_and_is_asked_again_in_a_minute()
     live = W.parse_madis_rows(fx("madis_live.html").decode("latin-1"))
     svc = madis_hist_svc(fetch, LIVE_T, {}, {"001HE": live["001HE"]}, filling=True)
     status, p = svc.history("nws:001HE")
-    assert status == "ok" and p["filling"] is True and p["via"] == "madis"
+    assert status == "ok" and p["filling"] is True and p["via"] == "madis" and p["partial"] is True
     assert svc._cache[("h", "nws:001HE")][0] == LIVE_T + svc.error_ttl, "cached a minute (then the hours MADIS added)"
     svc.madis_filling = lambda: False
     svc._cache.clear()

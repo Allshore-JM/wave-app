@@ -886,10 +886,10 @@ except (TypeError, ValueError, OverflowError):
 # NOAA MADIS's public surface viewer as the NWS stations' backup (plan section 52 D): env WIND_MADIS_URL, default
 # wind_sources.MADIS_HI_URL; "" = off. The viewer answers in 4-40 s: its own fetch (_madis_fetch), not the 8-s one.
 WIND_MADIS_URL = os.environ.get("WIND_MADIS_URL", wind_sources.MADIS_HI_URL).strip()
-WIND_MADIS_TIMEOUT = (10, 45)     # connect, read
+WIND_MADIS_TIMEOUT = (10, 75)     # connect, read (the live query by receipt time took 45 s once: G38 P3-6)
 WIND_MADIS_MAX_S = 90.0           # the whole answer (it takes 4-40 s)
 # the back-fill's 2-hour windows (plan section 55): MADIS sends nothing until its query is done (20-55 s seen; on the
-# test site two tries of one window were cut by the 45-s read timeout above), so their own, longer limits
+# test site two tries of one window were cut by the live fetch's read timeout, then 45 s), so their own, longer limits
 WIND_MADIS_WINDOW_TIMEOUT = (10, 100)
 WIND_MADIS_WINDOW_MAX_S = 120.0
 WIND_WARM_ORDER = ["NDBC", "METAR", "MADIS", "COOPS", "NWS"]   # single-request feeds first; CO-OPS and NWS ask every station

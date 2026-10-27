@@ -124,15 +124,18 @@ MADIS_MISSING = -99999.0
 # bring is kept MADIS_HIST_S (the window's 24 h and an hour's margin). After a start (and after a gap in the live polls
 # longer than MADIS_GAP_S) the hours the server has not seen are asked by OBSERVATION time, MADIS_WINDOW_S at a time
 # (time=YYYYMMDD_HH00&minbck=-119 returns the records observed in (T - 2 h, T]: two hourly files), newest window first,
-# ONE request a refresh, a refresh due MADIS_BACKFILL_TTL_S after the last while windows remain (the live poll keeps its
-# 5 minutes); a window that fails MADIS_BACKFILL_TRIES times is given up (its hours stay missing).
+# ONE request a refresh, a refresh due MADIS_BACKFILL_TTL_S after the last one ENDED while windows remain (the live
+# poll keeps its 5 minutes); a window that fails MADIS_BACKFILL_TRIES times is given up (its hours stay missing,
+# unless it was given up while the live poll failed too: then it is asked again once the live poll answers).
 MADIS_HIST_S = HISTORY_S + 3600
 MADIS_WINDOW_S = 2 * 3600
 MADIS_BACKFILL_WINDOWS = HISTORY_S // MADIS_WINDOW_S
-MADIS_BACKFILL_TTL_S = 30
+MADIS_BACKFILL_TTL_S = 15                      # the pause after a window, from its END (G38 P2-2)
+MADIS_BACKFILL_RETRY_S = 120                   # the pause after a FAILED window
 MADIS_BACKFILL_TRIES = 3
 MADIS_LIVE_EVERY_S = MADIS_TTL_S * 0.9         # the live poll's turn (the base class's refresh_at of its 5 minutes)
 MADIS_GAP_S = 50 * 60                          # live polls further apart than this: the hours between are asked again
+MADIS_GAP_MARGIN_S = 2 * 3600                  # ... from this long before the last good poll (reports arrive up to ~70 min late)
 MADIS_HIST_FIELDS = ("s", "g", "d", "at", "dp", "rh", "p")   # a history row's values, in the store's order
 MADIS_HIST_INTS = ("d", "rh")
 NWS_UNITS = {"wmoUnit:km_h-1": 1 / 3.6, "wmoUnit:m_s-1": 1.0, "wmoUnit:[kn_i]": KT_MS, "wmoUnit:mi_h-1": 0.44704}
@@ -1024,11 +1027,15 @@ class MadisProvider(WindProvider):
     is MADIS_KEEP_S old; the weather of the report (air, dew point, humidity, altimeter) is kept for the station's window
     (row()). Every reading also goes into the station's history (hist()), kept MADIS_HIST_S. With backfill, the hours
     not yet seen (24 h after a start; the hours between two live polls further apart than MADIS_GAP_S) are asked by
-    observation time, one 2-hour window a refresh (refresh_due: MADIS_BACKFILL_TTL_S after the last while windows
-    remain), newest first. A failed or unreadable LIVE answer raises (keep-last); a failed window is tried again,
-    MADIS_BACKFILL_TRIES times in all, then given up. fetch: a slower one than the other feeds' (the viewer takes 4-40 s
-    to answer); window_fetch (default fetch): slower still for the windows, which MADIS answers only when its query is
-    done (20-55 s seen; on the test site 2026-10-26 two tries were cut by the live fetch's 45-s read timeout)."""
+    observation time, one 2-hour window a refresh (refresh_due: MADIS_BACKFILL_TTL_S after the last refresh ENDED while
+    windows remain, MADIS_BACKFILL_RETRY_S after a failed window), newest first. A failed or unreadable LIVE answer
+    raises (keep-last); a window that fails (or answers with no station record or no wind reading, MADIS's known bad
+    answers) is tried again, MADIS_BACKFILL_TRIES times in all, then given up; a window given up while the live poll
+    was failing too is asked again once the live poll answers. A window's refresh is not the feed's refresh: it never
+    clears the live poll's error, never counts as a good fetch, and publishes a new list version only when the list
+    changed (G38 P3-1). fetch: a slower one than the other feeds' (the viewer takes 4-40 s to answer); window_fetch
+    (default fetch): slower still for the windows, which MADIS answers only when its query is done (20-55 s seen; on
+    the test site 2026-10-26 two tries were cut by the live fetch's 45-s read timeout)."""
     source = "MADIS"
     source_name = "NOAA MADIS"
     source_url = "https://madis.ncep.noaa.gov"
@@ -1048,27 +1055,72 @@ class MadisProvider(WindProvider):
         self._bf = []                           # back-fill windows still to ask: [end epoch, tries], newest first
         self._bf_queued = self._bf_done = self._bf_gave_up = 0
         self._bf_next = 0.0                     # when the next window's refresh is due
+        self._lost = set()                      # windows given up while the live poll failed too: asked again later
         self._live_tried = None                 # the last live poll asked (any outcome)
-        self._live_ok = None                    # the last live poll that answered
+        self._live_ok = None                    # the last live poll that answered with wind (or the start's queue)
+        self._live_bad = False                  # the last live poll failed or brought no wind
+        self._turn = None                       # "live" / "window" while _fetch_and_publish runs (None: decide)
+
+    def _reset_after_fork(self):
+        super()._reset_after_fork()
+        self._hist_lock = threading.Lock()      # a forked child has none of the parent's threads (G38 P3-4)
 
     # -- the refresh (on the wind runner, under the base class's singleflight)
+    def _live_turn(self, now):
+        """The live poll's turn: always without back-fill, before the first poll, with no window left, and when
+        MADIS_LIVE_EVERY_S passed since the last live poll was asked."""
+        return (not self.backfill or not self._bf or self._live_tried is None
+                or now - self._live_tried >= MADIS_LIVE_EVERY_S)
+
+    def _fetch_and_publish(self):
+        """The live poll's refresh is the base class's (an error, a good fetch, the retry rule). A window's refresh is
+        not (G38 P3-1): it keeps the live poll's error and good age as they are and publishes a new version only when
+        the list changed (a window reading can be a station's newest; a reading kept 6 h can expire)."""
+        if self._live_turn(buoy_sources.time.time()):
+            self._turn = "live"
+            try:
+                return super()._fetch_and_publish()
+            finally:
+                self._turn = None
+        self._turn = "window"
+        with self._lock:
+            self._refreshing = True
+            self._fetch_started_ts = buoy_sources.time.time()
+        try:
+            out, ok, _ = self._build_station_list()
+        finally:
+            self._turn = None
+            with self._lock:
+                self._refreshing = False
+        with self._lock:
+            if ok and self._list_cache is not None and out != self._list_cache:
+                self._list_cache = out
+                self._list_version += 1
+                self._pub_ts = buoy_sources.time.time()
+            return self._list_cache, self._list_version, self._list_ts
+
     def _fetch_stations(self):
         now = buoy_sources.time.time()
+        pause = MADIS_BACKFILL_TTL_S
         try:
             if self.backfill and self._live_tried is None and not self._bf_queued:
                 self._queue(now - HISTORY_S, now)                 # the 24 hours before the first poll
-            if (not self.backfill or not self._bf or self._live_tried is None
-                    or now - self._live_tried >= MADIS_LIVE_EVERY_S):
+                # the queue covers the hours up to now: a first live poll that fails or brings no wind leaves the gap
+                # rule measuring from here (G38 P2-3)
+                self._live_ok = now
+            if (self._turn or ("live" if self._live_turn(now) else "window")) == "live":
                 self._live(now)
-            else:
-                self._window(now)
+            elif not self._window(now):
+                pause = MADIS_BACKFILL_RETRY_S
         finally:
-            self._bf_next = now + MADIS_BACKFILL_TTL_S
+            # the pause runs from the END of this refresh: a window takes 20-55 s (G38 P2-2)
+            self._bf_next = buoy_sources.time.time() + pause
         self._prune(now)
         return [self._entry(local, r, {"alias_of": "nws:" + local}) for local, r in sorted(self._kept.items())]
 
     def _live(self, now):
         self._live_tried = now
+        self._live_bad = True                   # until this poll brings wind
         body = self._fetch(self.url, MADIS_MAX, HEADERS)
         stats = {}
         obs = parse_madis_rows(body.decode("latin-1"), now, stats)
@@ -1083,31 +1135,48 @@ class MadisProvider(WindProvider):
         self._take(obs, now)
         if not stats.get("wind"):
             return                              # an answer with no wind counts as no answer for the gap rule (55)
-        if self.backfill and self._live_ok is not None and now - self._live_ok > MADIS_GAP_S:
-            # the live polls stopped for a while (failures, windless answers, a stalled runner): the hours between are
-            # asked again
-            self._queue(self._live_ok - 3600, now)
+        self._live_bad = False
+        if self.backfill:
+            if self._lost:
+                # windows given up while the live poll failed too (MADIS down): asked again now that it answers
+                self._add([e for e in self._lost if e > now - HISTORY_S])
+                self._lost.clear()
+            if self._live_ok is not None and now - self._live_ok > MADIS_GAP_S:
+                # the live polls stopped for a while (failures, windless answers, a stalled runner): the hours between
+                # are asked again, from MADIS_GAP_MARGIN_S before the last good poll (MADIS reports arrive up to ~70 min
+                # late: G38 P3-3)
+                self._queue(self._live_ok - MADIS_GAP_MARGIN_S, now)
         self._live_ok = now
 
     def _window(self, now):
+        """The next window: True when it was read, False when it failed (tried again or given up)."""
         end, tries = self._bf[0]
         try:
             body = self._wfetch(madis_window_url(self.url, end), MADIS_MAX, HEADERS)
-            obs = parse_madis_rows(body.decode("latin-1"), now)
+            stats = {}
+            obs = parse_madis_rows(body.decode("latin-1"), now, stats)
+            # MADIS's known bad answers are no answer for a window either (G38 P2-1)
+            if not stats.get("rows"):
+                raise ValueError("an answer with no station records")
+            if not stats.get("wind"):
+                raise ValueError("%d station records and not one wind reading" % stats["rows"])
         except Exception as e:
             self._bf[0][1] = tries = tries + 1
             if tries >= MADIS_BACKFILL_TRIES:
                 self._bf.pop(0)
                 self._bf_gave_up += 1
-                _log.warning("MADIS: the window ending %s given up after %d tries (%s: %s)", iso_z(end), tries,
-                             type(e).__name__, e)
+                if self._live_bad:
+                    self._lost.add(end)
+                _log.warning("MADIS: the window ending %s given up after %d tries (%s: %s)%s", iso_z(end), tries,
+                             type(e).__name__, e, "; asked again once the live poll answers" if self._live_bad else "")
             else:
                 _log.info("MADIS: the window ending %s failed (%s: %s); asked again", iso_z(end), type(e).__name__, e)
-            return
+            return False
         self._bf.pop(0)
         self._bf_done += 1
         n = self._take(obs, now)
         _log.info("MADIS: the window ending %s read (%d new readings; %d windows left)", iso_z(end), n, len(self._bf))
+        return True
 
     def _queue(self, start, end):
         """The 2-hour windows covering (start, end], ends on the hour, newest first, MADIS_BACKFILL_WINDOWS at most,
@@ -1118,8 +1187,12 @@ class MadisProvider(WindProvider):
         while e > start and len(ends) < MADIS_BACKFILL_WINDOWS:
             ends.append(e)
             e -= MADIS_WINDOW_S
+        self._add(ends)
+
+    def _add(self, ends):
+        """Window ends into the queue (no window twice), newest first."""
         have = {w[0] for w in self._bf}
-        new = [[e, 0] for e in ends if e not in have]
+        new = [[e, 0] for e in sorted(set(ends), reverse=True) if e not in have]
         self._bf = sorted(self._bf + new, key=lambda w: -w[0])
         self._bf_queued += len(new)
 
@@ -1161,7 +1234,8 @@ class MadisProvider(WindProvider):
 
     def refresh_due(self, now=None):
         """The base class's rule (the live poll every 5 minutes, a retry after a failure) or, while back-fill windows
-        remain, MADIS_BACKFILL_TTL_S after the last refresh."""
+        remain, the pause after the last refresh ended (MADIS_BACKFILL_TTL_S; MADIS_BACKFILL_RETRY_S after a failed
+        window)."""
         if super().refresh_due(now):
             return True
         now = buoy_sources.time.time() if now is None else now
@@ -1202,7 +1276,8 @@ class MadisProvider(WindProvider):
                  newest_age_s=round(now - self._newest_t) if self._newest_t is not None else None,
                  hist_stations=stations, hist_rows=rows,
                  hist_oldest_age_s=round(now - oldest) if oldest is not None else None,
-                 backfill=bf, backfill_left=len(self._bf), backfill_gave_up=self._bf_gave_up)
+                 backfill=bf, backfill_left=len(self._bf), backfill_gave_up=self._bf_gave_up,
+                 backfill_lost=len(self._lost))
         return s
 
     def newest_t(self):
@@ -1556,7 +1631,9 @@ class WindHistory:
             try:
                 rows = self._nws(local, since)
             except WindBusy:
-                raise
+                if not mrows:
+                    raise
+                rows, partial = [], True                               # MADIS's readings now, the API's in a minute (G38 P3-2)
             except WindError:
                 if not mrows:
                     raise
@@ -1604,7 +1681,7 @@ class WindHistory:
             if any(r.get(k) is not None for r in rows):
                 out[k] = [r.get(k) for r in rows]
         out["conditions"] = conditions(rows)
-        if partial:                                    # weather products missing / MADIS filling: asked again in a minute
+        if partial:                       # weather products missing / MADIS filling / the NWS budget: asked again in a minute
             return "ok", out, self.error_ttl
         return "ok", out
 

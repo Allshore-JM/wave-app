@@ -1678,17 +1678,24 @@ naming the site as aviationweather.gov asks):
   job): every reading of the snapshot's NWS stations the live polls bring is kept 25 h in compact arrays
   (`MadisSeries`, ~64 bytes a reading, a few MB in all); after a start the server asks the 24 hours it has not seen by
   OBSERVATION time, twelve 2-hour windows (`time=YYYYMMDD_HH00&minbck=-119`: the records observed in (T - 2 h, T]),
-  newest first, one request a refresh, a refresh due 30 s after the last while windows remain (the live poll keeps its
-  5-minute turn), so the 24 hours fill in about 12-20 minutes; MADIS answers a window only when its query is done
-  (20-55 s), so the windows have their own fetch limits (`WIND_MADIS_WINDOW_TIMEOUT` 100 s a read, 120 s in all; the
-  live poll keeps 45 s and 90 s: on the test site 2026-10-26 windows were cut at 45 s and saved only by the retry); a
-  window that fails 3 times is given up (its hours stay missing); live polls more than 50 minutes apart (failures, or answers with no wind at all, seen
-  2026-10-24 and 2026-10-26) queue the hours between them again. The window's rows are
+  newest first, one request a refresh, the next window 15 s after the last refresh ENDED (2 minutes after a failed
+  window) while windows remain (the live poll keeps its 5-minute turn), so the 24 hours fill in about 12-15 minutes;
+  MADIS answers a window only when its query is done (20-55 s), so the windows have their own fetch limits
+  (`WIND_MADIS_WINDOW_TIMEOUT` 100 s a read, 120 s in all; on the test site 2026-10-26 windows were cut at the live
+  poll's 45 s and saved only by the retry); the live poll has 75 s a read and 90 s in all (its query by receipt time
+  took 45 s once). A window that fails, or answers with no station record or no wind reading (MADIS's known bad
+  answers), is tried again, 3 times in all, then given up (its hours stay missing); a window given up while the live
+  poll was failing too (MADIS down) is asked again once the live poll answers. A window's refresh is not the feed's
+  refresh: it never clears the live poll's error in `/healthz` and publishes a new list version only when the list
+  changed. Live polls more than 50 minutes apart (failures, or answers with no wind at all, seen 2026-10-24 and
+  2026-10-26; also from the start, when the first polls fail) queue the hours between them again, from 2 hours before
+  the last good poll (MADIS reports arrive up to ~70 minutes late). When the NWS API's request budget is used up, a
+  station's window shows MADIS's readings and is asked again a minute later. The window's rows are
   the NWS API's and MADIS's, one per time, the NWS API's where both have one ("via" "madis" or "nws+madis"; the window
   says "Readings from NOAA MADIS (the NWS API has none in the last 24 hours)." or "Readings from the NWS API and NOAA
   MADIS."); while the back-fill runs the answer says `filling` (the window: "The earlier hours are still loading.") and
   is cached a minute. `/healthz` shows MADIS's `hist_stations`, `hist_rows`, `hist_oldest_age_s` and `backfill`
-  ("n of 12", then "done"; `backfill_left`, `backfill_gave_up`). Every NWS-network station's window carries NOAA's accuracy disclaimer
+  ("n of 12", then "done"; `backfill_left`, `backfill_gave_up`, `backfill_lost`). Every NWS-network station's window carries NOAA's accuracy disclaimer
   for mesonet observations (`disclaimer`; MADIS's restrictions page asks for one). MADIS asks users to notify NOAA before placing its data on web pages: the
   providers used here (APRSWXNET / CWOP, RAWS, HADS, MesoWest incl. HECO, U-HAWAII) are its public, full-distribution
   category. They ride on the live-buoy

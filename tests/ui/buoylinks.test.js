@@ -358,7 +358,7 @@ test('the page wiring: the block between its markers, the two buttons, the canva
   assert.ok(TPL.includes("liveShownStation = station;\n      if (typeof syncBuoyLinks === 'function') syncBuoyLinks();"));
   assert.ok(TPL.includes("      if (typeof requestLiveTargets === 'function') requestLiveTargets();   // the live dots' pads after every round (plan section 52)"));
   assert.ok(TPL.includes("            rebuildForecastMarkers(true);\n            if (typeof syncBuoyLinks === 'function') syncBuoyLinks();"), 'B25: after the forecast list lands');
-  assert.ok(TPL.includes("        liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; liveWindowClosed(); } });"),
+  assert.ok(TPL.includes("        liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; liveWindowClosed(); },"),
     'the live window\'s close goes through the block (R1-3, F-4)');
   assert.ok(TPL.includes("    function openLiveBuoy(s) {                        // a click on its dot, or the forecast window's \"Live buoy\"\n      if (typeof forgetLiveBack === 'function') forgetLiveBack();"),
     'a dot\'s own open forgets the back link (R1-3)');

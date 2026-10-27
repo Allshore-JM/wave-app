@@ -164,13 +164,15 @@ function setup(opts = {}) {
   const els = { content: mk('div', 'tideContent'), loading: mk('div', 'tideLoading'), error: mk('div', 'tideError'),
     errorText: mk('span', 'tideErrorText'), retry: mk('button', 'tideRetry'), strip: mk('div', 'tideStrip'), meta: mk('div', 'tideMeta') };
   const calls = [], answers = [];
-  const fetch = (url, o) => { calls.push({ url, signal: o.signal, cache: o.cache }); const d = deferred(); answers.push(d); return d.p; };
+  const fetch = (url, o) => { calls.push({ url, signal: o.signal, cache: o.cache, headers: o.headers }); const d = deferred(); answers.push(d); return d.p; };
   const timers = fakeTimers();
   let visible = opts.visible !== false, nowMs = opts.now || NOW;
+  const loads = [];
   const view = T.createTideView({ els, document: doc, fetch, timers, now: () => nowMs, visible: () => visible, unit: opts.unit || 'US',
-    zoneAbbr: opts.zoneAbbr || ((ms, tz) => (tz === 'Pacific/Honolulu' ? 'HST' : tz)), wallClock: opts.wallClock, onRetried: opts.onRetried });
+    zoneAbbr: opts.zoneAbbr || ((ms, tz) => (tz === 'Pacific/Honolulu' ? 'HST' : tz)), wallClock: opts.wallClock, onRetried: opts.onRetried,
+    onLoaded: () => loads.push(1) });
   const q = (sel) => els.strip.querySelectorAll(sel);
-  lastSetup = { doc, els, calls, answers, timers, view, q, setVisible: (v) => { visible = v; }, setNow: (t) => { nowMs = t; } };
+  lastSetup = { doc, els, calls, answers, timers, view, q, loads, setVisible: (v) => { visible = v; }, setNow: (t) => { nowMs = t; } };
   return lastSetup;
 }
 // a row's label (its row header) in the setup's strip
@@ -887,4 +889,70 @@ test('fresh check C12: a midnight refresh of an older station that fails schedul
   await flush();
   s.setNow(Date.UTC(2026, 9, 9, 10, 15)); s.timers.fire(I.NOW_REDRAW_MS);
   assert.equal(s.calls.length, 3, 'no retry for Waimea Bay because of Honolulu\'s failure');
+});
+
+
+// ------------------------------------------------------------------ the refresh button (plan section 56)
+function observedBody(n) {
+  const t = [], v = [];
+  for (let k = 0; k < n; k++) { t.push(NOW / 1000 - (n - k) * 360); v.push(0.5 + k / 1000); }
+  return { id: '1612340', datum: 'MLLW', units: 'm', t, v };
+}
+async function readyTide() {
+  const s = setup();
+  s.view.load(HNL_ST, { unit: 'US' });
+  s.answers[0].res(response(200, payload()));
+  await flush();
+  s.answers[1].res(response(200, observedBody(100)));                        // the water level
+  await flush();
+  return s;
+}
+
+test('section 56: refreshNow revalidates the predictions, asks the water level again, keeps the opened days and the scroll', async () => {
+  const s = await readyTide();
+  assert.equal(s.loads.length, 1);
+  s.view.toggleDay(3);
+  s.view.state();
+  const scroller = s.els.strip.children[0]; scroller.scrollLeft = 420;
+  const p = s.view.refreshNow();
+  const fc = s.calls[2], ob = s.calls[3];
+  assert.equal(fc.url, '/api/tides/1612340'); assert.equal(fc.cache, 'no-cache');
+  assert.equal(fc.headers['X-Allshore-Refresh'], undefined, 'the predictions: revalidated only');
+  assert.equal(ob.url, '/api/tides/1612340/observed'); assert.equal(ob.cache, 'reload');
+  assert.equal(ob.headers['X-Allshore-Refresh'], '1');
+  assert.equal(s.view.state().status, 'ready');
+  s.answers[2].res(response(200, payload())); s.answers[3].res(response(200, observedBody(110)));
+  assert.equal(await p, true);
+  assert.deepEqual(s.view.state().open, [0, 3], 'the opened days stay');
+  assert.equal(s.els.strip.children[0].scrollLeft, 420, 'the sideways scroll stays');
+  assert.notEqual(s.els.strip.children[0], scroller, 'drawn again');
+  assert.equal(s.loads.length, 2);
+});
+
+test('section 56: a refresh with one answer failing draws what came and says false; a station without a gauge asks the predictions only', async () => {
+  const s = await readyTide();
+  const p = s.view.refreshNow();
+  s.answers[2].res(response(200, payload())); s.answers[3].res(response(503, { retry: true }));
+  assert.equal(await p, false); assert.equal(s.view.state().hasObs, true, 'the old water level stays');
+  const p2 = s.view.refreshNow(); s.answers[4].rej(new Error('net')); s.answers[5].res(response(200, observedBody(120)));
+  assert.equal(await p2, false);
+  const w = setup();
+  w.view.load(WAI_ST, { unit: 'US' }); w.answers[0].res(response(200, payload({ obs: false }))); await flush();
+  const p3 = w.view.refreshNow();
+  assert.equal(w.calls.length, 2, 'no water level asked'); w.answers[1].res(response(200, payload({ obs: false })));
+  assert.equal(await p3, true);
+});
+
+test('section 56: refreshNow while loading does nothing, after an error is a Retry, and a station switch drops its verdict', async () => {
+  const s = setup();
+  s.view.load(HNL_ST, { unit: 'US' });
+  assert.equal(await s.view.refreshNow(), null); assert.equal(s.calls.length, 1);
+  s.answers[0].res(response(500, {})); await flush();
+  assert.equal(s.view.state().status, 'error');
+  assert.equal(await s.view.refreshNow(), null); assert.equal(s.view.state().status, 'loading');
+  s.answers[1].res(response(200, payload())); await flush(); s.answers[2].res(response(200, observedBody(10))); await flush();
+  const p = s.view.refreshNow();
+  s.view.load(WAI_ST, { unit: 'US' });
+  s.answers[3].res(response(200, payload())); s.answers[4].res(response(200, observedBody(10)));
+  assert.equal(await p, null);
 });

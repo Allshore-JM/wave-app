@@ -127,6 +127,7 @@ function buildPage(win) {
   // the live-buoy window (plan section 26): a FloatingWindow like the forecast one, hidden until a buoy is picked
   const live = el('section', 'liveBuoyPanel', doc.body); live.hidden = true; live.rect = { left: 400, top: 200, width: 820, height: 600 };
   const lwHeader = el('div', 'lwHeader', live); el('strong', 'liveBuoyTitle', lwHeader); el('span', 'liveBuoySubtitle', lwHeader);
+  el('span', 'lwRefreshStatus', lwHeader); const lwRefresh = el('button', 'lwRefresh', lwHeader);   // plan section 56
   const lwMin = el('button', 'lwMin', lwHeader); const lwClose = el('button', 'lwClose', lwHeader);
   el('div', 'lwBody', live);
   const edges = (win) => ['n', 's', 'e', 'w', 'ne', 'nw', 'sw'].map((k) => { const e = el('div', null, win, { 'data-edge': k }); e.classList.add('fw-edge'); return e; });
@@ -134,6 +135,7 @@ function buildPage(win) {
   // the tide-station window (plan section 38): a third FloatingWindow, hidden until a tide station is picked
   const tide = el('section', 'tideWin', doc.body); tide.hidden = true; tide.rect = { left: 500, top: 250, width: 760, height: 520 };
   const twHeader = el('div', 'twHeader', tide); el('strong', 'tideTitle', twHeader); el('span', 'tideSubtitle', twHeader);
+  el('span', 'twRefreshStatus', twHeader); const twRefresh = el('button', 'twRefresh', twHeader);   // plan section 56
   const twMin = el('button', 'twMin', twHeader); const twClose = el('button', 'twClose', twHeader);
   const twBody = el('div', 'twBody', tide); twBody.clientHeight = 500;
   el('div', 'tideLoading', twBody); const tideError = el('div', 'tideError', twBody); el('span', 'tideErrorText', tideError); el('button', 'tideRetry', tideError);
@@ -142,6 +144,7 @@ function buildPage(win) {
   // the wind-station window (plan section 39): a fourth FloatingWindow, hidden until a wind station is picked
   const wind = el('section', 'windWin', doc.body); wind.hidden = true; wind.rect = { left: 520, top: 200, width: 700, height: 600 };
   const wwHeader = el('div', 'wwHeader', wind); el('strong', 'windTitle', wwHeader); el('span', 'windSubtitle', wwHeader);
+  el('span', 'wwRefreshStatus', wwHeader); const wwRefresh = el('button', 'wwRefresh', wwHeader);   // plan section 56
   const wwMin = el('button', 'wwMin', wwHeader); const wwClose = el('button', 'wwClose', wwHeader);
   const wwBody = el('div', 'wwBody', wind); wwBody.clientHeight = 560;
   el('div', 'windLoading', wwBody); const windError = el('div', 'windError', wwBody); el('span', 'windErrorText', windError); el('button', 'windRetry', windError);
@@ -173,7 +176,7 @@ function buildPage(win) {
   ['heightChart', 'periodChart', 'directionChart'].forEach((id) => { const box = el('div', null, graphs); box.classList.add('chart-box'); el('canvas', id, box); });
   const winEdges = edges(w); el('div', 'fwResize', w);
   return { pageHead, sel, trigger, gear, panel, legendBtn, legendPanel, legendBox, tz, unit, live, lwHeader, lwMin, lwClose, liveEdges, tide, twHeader, twMin, twClose, twBody, tideEdges,
-           wind, wwHeader, wwMin, wwClose, wwBody, windEdges, w, winEdges, header, viewBar, modelBar, modeBar, rangeBar, body, table, summary, graphs };
+           wind, wwHeader, wwMin, wwClose, wwBody, windEdges, lwRefresh, twRefresh, wwRefresh, w, winEdges, header, viewBar, modelBar, modeBar, rangeBar, body, table, summary, graphs };
 }
 
 // A canvas 2D context stand-in that records what the sky / now plugins draw.

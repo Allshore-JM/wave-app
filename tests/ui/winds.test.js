@@ -306,11 +306,12 @@ function viewSetup(opts = {}) {
   const calls = [], answers = [], timers = fakeTimers();
   let visible = opts.visible !== false, nowMs = opts.now || NOW, width = opts.width || 640;
   const retried = [];
+  const loads = [];
   const view = WD.createWindView({ els, document: doc, timers, now: () => nowMs, visible: () => visible, unit: opts.unit || 'US',
-    width: () => width, AbortController: FakeAbort, wallClock: opts.wallClock, onRetried: () => retried.push(1),
+    width: () => width, AbortController: FakeAbort, wallClock: opts.wallClock, onRetried: () => retried.push(1), onLoaded: () => loads.push(1),
     zoneAbbr: (ms, tz) => (tz === 'Pacific/Honolulu' ? 'HST' : tz),
     fetch: (url, o) => { calls.push({ url, o }); const dd = deferred(); answers.push(dd); return dd.p; } });
-  return { doc, els, view, calls, answers, timers, retried, q: (sel) => els.chart.querySelectorAll(sel),
+  return { doc, els, view, calls, answers, timers, retried, loads, q: (sel) => els.chart.querySelectorAll(sel),
            setVisible(v) { visible = v; }, setNow(t) { nowMs = t; }, setWidth(v) { width = v; } };
 }
 
@@ -725,4 +726,41 @@ test('G35 K-2: a reading that stands alone (one MADIS report) is drawn as a dot 
   assert.equal(t.q('.wind-dot').length, 0); assert.equal(t.els.meta.querySelectorAll('.wind-disclaimer').length, 0);
   const I2 = I.lonePoints([{ t: 0, s: 1 }, { t: 600, s: 2 }, { t: 600 + 3 * 3600, s: 3 }, { t: 9e9, s: null }], 's');
   assert.deepEqual(I2.map((r) => r.s), [3], 'a reading past the gap stands alone');
+});
+
+
+// ------------------------------------------------------------------ the refresh button (plan section 56)
+test('section 56: refreshNow asks again with the header, draws in place and keeps the state; false on failure; null when superseded', async () => {
+  const s = viewSetup();
+  s.view.load(HNL, { unit: 'US' });
+  s.answers[0].res(resp(200, history())); await flush();
+  assert.equal(s.loads.length, 1, 'a good load reports to the window');
+  const p1 = s.view.refreshNow();
+  const c = s.calls[1];
+  assert.equal(c.url, '/api/wind/coops%3A1612340/history'); assert.equal(c.o.cache, 'reload');
+  assert.deepEqual(c.o.headers, { Accept: 'application/json', 'X-Allshore-Refresh': '1' });
+  assert.equal(s.view.state().status, 'ready', 'no spinner: the readings stay while it loads');
+  assert.ok(s.els.loading.classList.contains('d-none') && !s.els.content.classList.contains('d-none'));
+  const newer = history(); newer.t.push(T0 + 360); newer.s.push(9); newer.g.push(11); newer.d.push(90);
+  s.answers[1].res(resp(200, newer)); assert.equal(await p1, true);
+  assert.equal(s.view.state().rows, 221); assert.equal(s.loads.length, 2);
+  const p2 = s.view.refreshNow(); s.answers[2].res(resp(503, { retry: true })); assert.equal(await p2, false);
+  assert.equal(s.view.state().rows, 221, 'a failure keeps the readings'); assert.equal(s.view.state().status, 'ready');
+  const p3 = s.view.refreshNow(); s.answers[3].rej(new Error('net')); assert.equal(await p3, false);
+  const p4 = s.view.refreshNow(); s.view.load(HNL, { unit: 'US' }); s.answers[4].res(resp(200, newer));
+  assert.equal(await p4, null, 'another load meanwhile: no verdict');
+});
+
+test('section 56: refreshNow while loading does nothing; after an error it is a Retry; it resets the 5-minute turn', async () => {
+  const s = viewSetup();
+  s.view.load(HNL, { unit: 'US' });
+  assert.equal(await s.view.refreshNow(), null); assert.equal(s.calls.length, 1, 'still loading: nothing asked');
+  s.answers[0].res(resp(500, {})); await flush();
+  assert.equal(s.view.state().status, 'error');
+  assert.equal(await s.view.refreshNow(), null);
+  assert.equal(s.calls.length, 2); assert.equal(s.view.state().status, 'loading', 'an error: the Retry');
+  s.answers[1].res(resp(200, history())); await flush();
+  s.setNow(NOW + 4 * 60000); s.view.refreshNow(); s.answers[2].res(resp(200, history())); await flush();
+  s.setNow(NOW + 6 * 60000); s.timers.fire(); await flush();
+  assert.equal(s.calls.length, 3, 'the quiet 5-minute turn counts from the button');
 });

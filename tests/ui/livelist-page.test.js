@@ -359,9 +359,9 @@ function livePage(answers) {
     'document', 'setTimeout', 'liveWin', 'CustomEvent', code.replace(/liveDetailSeq/g, 'ctx.seq'))(
     fetch,
     () => { log.push('spinner'); elem('liveBuoyLoading').style.display = 'block'; },
-    (p) => log.push('bulk:' + (p.latest && p.latest.hs_m)),
+    (p) => { log.push('bulk:' + (p.latest && p.latest.hs_m)); elem('lwBody').scrollTop = 0; },   // the real one rewrites the body
     (d) => log.push('spectra:' + d.tag),
-    (d) => log.push('summary:' + d.tag),
+    (d) => { log.push('summary:' + d.tag); elem('lwBody').scrollTop = 0; },
     (d) => log.push('components:' + d.tag),
     () => log.push('norecent'),
     (m) => log.push('error:' + m),

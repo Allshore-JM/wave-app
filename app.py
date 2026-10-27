@@ -513,6 +513,18 @@ _POINT_BUILDS = _REQUEST_BUILDS
 # server address; NOAA blocked the test server for a minute after a burst of 232: G28 A-1). The paced wind feed's own
 # 24 a minute come on top of it.
 _COOPS_BUDGET = wind_sources.TokenBucket(wind_sources.COOPS_ON_DEMAND_PER_MIN, burst=wind_sources.COOPS_ON_DEMAND_BURST)
+# A station window's refresh button (plan section 56) asks the same URL with this header: a per-station answer the
+# server cached at least REFRESH_MIN_AGE_S ago is built again from the agency; a younger one is served (a button pressed
+# again and again asks an agency at most once a minute per station). Budgets, caps, singleflight and keep-last hold.
+REFRESH_HEADER = "X-Allshore-Refresh"
+REFRESH_MIN_AGE_S = 60
+
+
+def _refresh_s():
+    """REFRESH_MIN_AGE_S when this request is a refresh (the header is "1"), else None."""
+    return REFRESH_MIN_AGE_S if request.headers.get(REFRESH_HEADER, "").strip() == "1" else None
+
+
 _POINT_BUILD_WAIT_S = 2.0         # the whole wait of one request: for the same point being built AND for a slot
 POINT_BUSY = "The server is busy right now; try again in a moment"   # any build may hold the shared cap (re-check R1-N1)
 POINT_NO_DATA = point_forecast.REFUSALS["nodata"]
@@ -853,7 +865,7 @@ def api_tide_observed(sid):
     svc, err = _tide_station(sid)
     if err is not None:
         return err
-    return _tide_answer(*svc.observed(sid), TIDE_OBS_MAX_AGE)
+    return _tide_answer(*svc.observed(sid, _refresh_s()), TIDE_OBS_MAX_AGE)
 
 
 # ---------------------- Wind stations (plan section 39) -----------------------
@@ -1137,7 +1149,7 @@ def api_wind_history(sid):
         return _wind_uncached({"error": WIND_OFF}, 503)
     if not wind_sources.valid_id(sid) or sid not in w["stations"]:
         return _wind_uncached({"id": sid, "error": "Unknown wind station"}, 404)
-    status, payload = w["svc"].history(sid)
+    status, payload = w["svc"].history(sid, _refresh_s())
     if status == "ok":
         return _json_cached(payload, max_age=WIND_HISTORY_MAX_AGE)
     if status == "final":
@@ -4508,10 +4520,14 @@ def _fetch_ndbc_optional_files(station_id: str) -> dict:
 def api_ndbc_station_components(station_id):
     station_id = station_id.strip().upper()
 
+    fresh_s = _refresh_s()
     with _CACHE_LOCK:
         cached = NDBC_COMPONENT_CACHE.get(station_id)
-    if cached and _cache_valid(cached["timestamp"], ttl=NDBC_COMPONENT_TTL_SECONDS):
-        return jsonify(cached["data"])
+        if cached and _cache_valid(cached["timestamp"], ttl=NDBC_COMPONENT_TTL_SECONDS):
+            asked = max(cached["timestamp"], cached.get("asked", 0.0))
+            if fresh_s is None or time.time() - asked < fresh_s:
+                return jsonify(cached["data"])
+            cached["asked"] = time.time()       # a refresh (plan section 56): NDBC asked again, at most once a minute
 
     station_meta = {
         s["id"]: s for s in get_live_ndbc_wave_stations()
@@ -5578,7 +5594,7 @@ def api_buoys_components(bid):
             spec = None
             if hasattr(p, "spectrum"):
                 try:
-                    spec = p.spectrum(local)
+                    spec = p.spectrum(local, fresh_s=_refresh_s())
                 except Exception:
                     spec = None
             if not spec or not spec.get("steps"):

@@ -387,7 +387,7 @@ class TideService:
         self._builds_n, self.wait_s = builds, wait_s
         self.bucket, self._cap = bucket, cap
         self._reset_locks()
-        self._cache = OrderedDict()           # key -> (expires, status, payload)
+        self._cache = OrderedDict()           # key -> (expires, status, payload, built, asked)
         _SERVICES.add(self)
 
     def _reset_locks(self):
@@ -396,13 +396,18 @@ class TideService:
         self._builds = self._cap if self._cap is not None else threading.BoundedSemaphore(self._builds_n)
 
     # -- cache
-    def _get(self, key):
+    def _get(self, key, fresh_s=None):
+        """The key's (status, payload), or None. fresh_s (a refresh, plan section 56): an entry built or last asked
+        for again at least fresh_s seconds ago counts as missing, so a station is asked again at most that often."""
         with self._lock:
             hit = self._cache.get(key)
             if hit is None:
                 return None
-            if hit[0] <= self._now():
+            now = self._now()
+            if hit[0] <= now:
                 del self._cache[key]
+                return None
+            if fresh_s is not None and now - max(hit[3], hit[4]) >= fresh_s:
                 return None
             self._cache.move_to_end(key)
             return hit[1], hit[2]
@@ -415,10 +420,22 @@ class TideService:
 
     def _put(self, key, status, payload, ttl):
         with self._lock:
-            self._cache[key] = (self._now() + ttl, status, payload)
+            now = self._now()
+            self._cache[key] = (now + ttl, status, payload, now, now)    # expires, status, payload, built, asked
             self._cache.move_to_end(key)
             while len(self._cache) > self.max_entries:
                 self._cache.popitem(last=False)
+
+    def _keep_after_refresh(self, key):
+        """A refresh whose build did not succeed: True when the key still holds a good answer, which then stays for
+        everyone (keep-last) with its 'asked' time set now (the per-station floor counts the failed attempt too)."""
+        with self._lock:
+            hit = self._cache.get(key)
+            now = self._now()
+            if hit is None or hit[0] <= now or hit[1] != "ok":
+                return False
+            self._cache[key] = hit[:4] + (now,)
+            return True
 
     def _key_lock(self, key):
         """The key's [lock, users] entry, counted: every caller must _drop_key it, whether it got the lock or not
@@ -448,9 +465,10 @@ class TideService:
         except ValueError:
             raise TideError("NOAA's answer is not JSON") from None
 
-    def _answer(self, key, build, ttl_ok):
-        """Cached answer for key, else one build at a time (others wait up to wait_s, then 'busy')."""
-        hit = self._get(key)
+    def _answer(self, key, build, ttl_ok, fresh_s=None):
+        """Cached answer for key, else one build at a time (others wait up to wait_s, then 'busy'). fresh_s: a refresh
+        (plan section 56): see _get; a refresh that fails leaves a good answer in place (_keep_after_refresh)."""
+        hit = self._get(key, fresh_s)
         if hit is not None:
             return hit
         stuck = getattr(self._builds, "stuck", None)                # a shared cap: every slot held too long -> at once
@@ -462,7 +480,7 @@ class TideService:
             if not e[0].acquire(timeout=self.wait_s):
                 return "busy", {"error": BUSY}
             try:
-                hit = self._get(key)
+                hit = self._get(key, fresh_s)                          # a refresh that just finished serves this one
                 if hit is not None:
                     return hit
                 if not self._builds.acquire(timeout=max(0.0, deadline - time.monotonic())):
@@ -480,7 +498,8 @@ class TideService:
                     ttl = res[2] if len(res) > 2 else ttl_ok
                 else:
                     ttl = self.final_ttl if status == "final" else self.error_ttl
-                self._put(key, status, payload, ttl)
+                if not (fresh_s is not None and status != "ok" and self._keep_after_refresh(key)):
+                    self._put(key, status, payload, ttl)
                 return status, payload
             finally:
                 e[0].release()
@@ -620,13 +639,14 @@ class TideService:
         return "ok", out
 
     # -- observations
-    def observed(self, sid):
+    def observed(self, sid, fresh_s=None):
+        """fresh_s: a refresh from the tide window (plan section 56): a water level at least that old is asked again."""
         st = self.stations.get(sid) if valid_id(sid) else None
         if st is None:
             return "final", {"id": sid, "error": "Unknown tide station"}
         if not st.get("obs"):
             return "final", {"id": sid, "t": [], "v": [], "note": "This station does not report its water level"}
-        return self._answer(("o", sid), lambda: self._build_observed(sid), self.obs_ttl)
+        return self._answer(("o", sid), lambda: self._build_observed(sid), self.obs_ttl, fresh_s)
 
     def _build_observed(self, sid):
         doc = self._json(url(sid, product="water_level", range=48))

@@ -12,6 +12,10 @@ check to the trust paths an environment actually uses: the site uses requests on
 runners the system list ("default") still trusted one of the compromised chains in October 2026, so jobs that
 download with curl pass it certifi's file.
 
+A real host that cannot be reached (a timeout or a refused connection, not a certificate answer) is asked once more
+after a pause and then reported as "unreachable": a network result, not a trust one, so it does not fail the check.
+The two test hosts must answer and be refused: unreachable there fails (nothing was proved).
+
 Exit 0 when every check passes, 1 otherwise. One line per check, then a summary line; nothing secret.
 """
 import argparse
@@ -74,6 +78,15 @@ def versions():
     return " ".join(out)
 
 
+def connect_retry(host, cafile, pause=5.0, sleep=None):
+    """connect(), asked once more after `pause` seconds when the first answer was a connection error."""
+    got = connect(host, cafile)
+    if got.startswith("error"):
+        (sleep or __import__("time").sleep)(pause)
+        got = connect(host, cafile)
+    return got
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--real", action="store_true", help="also check that the real hosts verify")
@@ -82,7 +95,7 @@ def main(argv=None):
     print(versions())
     found = contexts()
     want = [p for p in args.paths.split(",") if p] or list(found)
-    bad = 0
+    bad = unreachable = 0
     for name in want:
         if name not in found:
             bad += 1
@@ -91,17 +104,22 @@ def main(argv=None):
         cafile = found[name]
         print("trust path %s: %s" % (name, cafile or "system default"))
         for host in COMPROMISED:
-            got = connect(host, cafile)
+            got = connect_retry(host, cafile)
             good = got.startswith("refused")
             bad += not good
             print("  %-4s %-45s %s (must be refused)" % ("PASS" if good else "FAIL", host, got))
         if args.real:
             for host in REAL:
-                got = connect(host, cafile)
+                got = connect_retry(host, cafile)
+                if got.startswith("error"):
+                    unreachable += 1
+                    print("  %-4s %-45s %s (could not connect: no certificate result)" % ("NOTE", host, got))
+                    continue
                 good = got == "ok"
                 bad += not good
                 print("  %-4s %-45s %s" % ("PASS" if good else "FAIL", host, got))
-    print("tls_check: %s" % ("all passed" if not bad else "%d failed" % bad))
+    note = " (%d unreachable)" % unreachable if unreachable else ""
+    print("tls_check: %s%s" % ("all passed" if not bad else "%d failed" % bad, note))
     return 0 if not bad else 1
 
 

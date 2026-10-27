@@ -1863,14 +1863,17 @@ revocation, so the protection is the trust list itself:
   `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` / `SSL_CERT_FILE` set on the host (`env_override`); never part of `ok`.
 - **The publishers.** The six micromamba workflows pin `certifi` and `ca-certificates` (urllib's downloads use conda's
   OpenSSL list, the R2 uploads botocore's) and list both in the step summary. coast-build's pip jobs install certifi so
-  botocore uses it; its `curl` downloads pass certifi's file (`--cacert`): on 2026-10-27 the Ubuntu runners' own list
-  still trusted one of the two test hosts (the GeoNames file has no pinned digest). CI's Node 24 takes the newest
-  release (`check-latest`; 24.22.1 seen).
+  botocore uses it; its `curl` downloads pass certifi's file and an empty CA folder (`--cacert "$CA" --capath
+  "$NOCAPATH"`): on 2026-10-27 the Ubuntu runners' own list still trusted one of the two test hosts (the GeoNames file
+  has no pinned digest), and Ubuntu's curl keeps reading its CA folder `/etc/ssl/certs` when only `--cacert` is given
+  (the dry run saw `--cacert` alone accept that host). CI's Node 24 takes the newest release (`check-latest`; 24.22.1
+  seen).
 - **Checking it.** `python tools/tls_check.py [--real] [--paths ...]` connects to Render's two test hosts
   (`dv-g3b-emudhra.we-have-a-problem.com`, `dv-g3b-aaa-emudhra.we-have-a-problem.com`; both must be refused) through
   certifi, the system default and botocore's CA file (`--paths` names the ones an environment uses: the site uses
-  requests only, i.e. `certifi`); `--real` also checks that the hosts the site and the jobs read verify. Exit 1 on any
-  failure. The site itself makes no HTTPS request outside requests (no urllib / ssl use), so the system list of
+  requests only, i.e. `certifi`); `--real` also checks that the hosts the site and the jobs read verify. A real host
+  that cannot be reached (asked twice) is reported as unreachable, not failed: a network result. Exit 1 on any
+  certificate failure, or when a test host cannot be reached. The site itself makes no HTTPS request outside requests (no urllib / ssl use), so the system list of
   Render's image does not decide what it trusts.
 - A future CA incident: raise the floor in `requirements.txt` and the pins in the workflows together (the pin tests in
   `tests/model_frames/test_tls_pins.py` and `tests/test_swan_cert.py` name the release).

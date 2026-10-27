@@ -45,15 +45,18 @@ jobs:
         if: always()
         run: |
           CA="$(python -c 'import certifi; print(certifi.where())')"
+          NOCAPATH="$(mktemp -d)"
           rc=0
           for h in dv-g3b-emudhra.we-have-a-problem.com dv-g3b-aaa-emudhra.we-have-a-problem.com; do
+            e=0; curl -sS -o /dev/null --max-time 20 --cacert "$CA" --capath "$NOCAPATH" "https://$h/" || e=$?
+            if [ "$e" = 60 ]; then echo "::notice::PASS curl+certifi+empty capath $h refused (exit 60)"; else echo "::notice::FAIL curl+certifi+empty capath $h exit $e (60 = refused)"; rc=1; fi
             e=0; curl -sS -o /dev/null --max-time 20 --cacert "$CA" "https://$h/" || e=$?
-            if [ "$e" = 60 ]; then echo "::notice::PASS curl+certifi $h refused (exit 60)"; else echo "::notice::FAIL curl+certifi $h exit $e (60 = refused)"; rc=1; fi
+            echo "::notice::curl --cacert only (no --capath): $h exit $e (0 = trusted, 60 = refused)"
             e=0; curl -sS -o /dev/null --max-time 20 "https://$h/" || e=$?
             echo "::notice::the runner's own list: $h curl exit $e (0 = trusted, 60 = refused)"
           done
           for u in https://github.com/ https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/README.md https://download.geonames.org/export/dump/; do
-            if curl -sS -o /dev/null --max-time 30 --cacert "$CA" "$u"; then echo "::notice::PASS curl+certifi $u"; else echo "::notice::FAIL curl+certifi $u"; rc=1; fi
+            if curl -sS -o /dev/null --max-time 30 --cacert "$CA" --capath "$NOCAPATH" "$u"; then echo "::notice::PASS curl+certifi $u"; else echo "::notice::FAIL curl+certifi $u"; rc=1; fi
           done
           exit $rc
   site:

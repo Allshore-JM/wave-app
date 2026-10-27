@@ -38,11 +38,14 @@ def test_coast_build_installs_certifi_and_the_latest_node_24():
     assert re.search(r'node-version: "24"\n\s+check-latest: true', text)
     curls = re.findall(r"curl [^\n]+", text)
     # GitHub's Ubuntu list still trusted a compromised chain (2026-10-27): every download takes certifi's file
-    assert len(curls) == 3 and all("--cacert" in c for c in curls), curls
-    assert text.count("certifi.where()") == 2
+    assert len(curls) == 3 and all('--cacert "$CA" --capath "$NOCAPATH"' in c for c in curls), curls
+    # Ubuntu's curl keeps its own CA folder (/etc/ssl/certs) next to --cacert: the dry run saw it trust
+    # dv-g3b-emudhra with --cacert alone; an empty --capath leaves certifi's file as the only list
+    assert text.count("certifi.where()") == 2 and text.count('NOCAPATH="$(mktemp -d)"') == 2
 
 
 def test_the_check_tool_classifies_answers(monkeypatch):
+    monkeypatch.setattr(__import__("time"), "sleep", lambda s: None)          # connect_retry's pause
     calls = []
 
     def fake(host, cafile, timeout=15):
@@ -58,8 +61,33 @@ def test_the_check_tool_classifies_answers(monkeypatch):
     monkeypatch.setattr(tls_check, "connect", lambda h, c, timeout=15: "error: timeout")   # cannot tell = fail
     assert tls_check.main([]) == 1
     monkeypatch.setattr(tls_check, "connect",
-                        lambda h, c, timeout=15: "refused" if h in tls_check.COMPROMISED else "error: x")
-    assert tls_check.main([]) == 0 and tls_check.main(["--real"]) == 1
+                        lambda h, c, timeout=15: "refused" if h in tls_check.COMPROMISED else "refused")
+    assert tls_check.main([]) == 0 and tls_check.main(["--real"]) == 1      # a real host refused fails
+
+
+def test_unreachable_real_hosts_are_reported_not_failed(monkeypatch, capsys):
+    monkeypatch.setattr(tls_check, "contexts", lambda: {"certifi": "/c.pem"})
+    monkeypatch.setattr(__import__("time"), "sleep", lambda s: None)          # connect_retry's pause
+    asked = []
+
+    def fake(h, c, timeout=15):
+        asked.append(h)
+        if h in tls_check.COMPROMISED:
+            return "refused"
+        return "error: TimeoutError" if h == "www.pacioos.hawaii.edu" else "ok"
+
+    monkeypatch.setattr(tls_check, "connect", fake)
+    assert tls_check.main(["--real"]) == 0
+    assert asked.count("www.pacioos.hawaii.edu") == 2                       # asked once more before giving up
+    txt = capsys.readouterr().out
+    assert "NOTE www.pacioos.hawaii.edu" in txt and "all passed (1 unreachable)" in txt
+    # a test host that cannot be reached proves nothing: it fails
+    monkeypatch.setattr(tls_check, "connect", lambda h, c, timeout=15: "error: OSError")
+    assert tls_check.main([]) == 1
+    # a second answer after a connection error counts
+    answers = iter(["error: TimeoutError", "ok"])
+    monkeypatch.setattr(tls_check, "connect", lambda h, c, timeout=15: next(answers))
+    assert tls_check.connect_retry("x", None, sleep=lambda s: None) == "ok"
 
 
 def test_connect_reports_a_verification_failure_as_refused(monkeypatch):

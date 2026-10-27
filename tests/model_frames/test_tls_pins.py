@@ -36,6 +36,10 @@ def test_coast_build_installs_certifi_and_the_latest_node_24():
     pips = re.findall(r"pip install ([^\n]+)", text)
     assert len(pips) == 2 and all("certifi==" + PIN in p.split() for p in pips)
     assert re.search(r'node-version: "24"\n\s+check-latest: true', text)
+    curls = re.findall(r"curl [^\n]+", text)
+    # GitHub's Ubuntu list still trusted a compromised chain (2026-10-27): every download takes certifi's file
+    assert len(curls) == 3 and all("--cacert" in c for c in curls), curls
+    assert text.count("certifi.where()") == 2
 
 
 def test_the_check_tool_classifies_answers(monkeypatch):
@@ -79,3 +83,14 @@ def test_connect_reports_a_verification_failure_as_refused(monkeypatch):
                         lambda addr, timeout: (_ for _ in ()).throw(OSError("down")))
     assert tls_check.connect("x.example", None) == "error: OSError"
 
+
+def test_the_check_tool_limits_the_trust_paths(monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr(tls_check, "contexts", lambda: {"certifi": "/c.pem", "default": None, "botocore": "/b.pem"})
+    monkeypatch.setattr(tls_check, "connect", lambda h, c, timeout=15: seen.append(c) or "refused")
+    assert tls_check.main(["--paths", "certifi,botocore"]) == 0
+    assert set(seen) == {"/c.pem", "/b.pem"}                    # the system list was not asked
+    seen.clear()
+    assert tls_check.main([]) == 0 and None in seen              # without --paths: every path found
+    assert tls_check.main(["--paths", "certifi,nope"]) == 1      # a path the environment lacks fails
+    assert "trust path nope: FAIL" in capsys.readouterr().out

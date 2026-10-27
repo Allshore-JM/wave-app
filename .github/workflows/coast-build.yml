@@ -64,17 +64,18 @@ jobs:
       - name: Download GSHHG 2.3.7
         if: github.event.inputs.set != 'places'
         run: |
-          curl -sSfL -o gshhg-bin-2.3.7.zip https://github.com/GenericMappingTools/gshhg-gmt/releases/download/2.3.7/gshhg-bin-2.3.7.zip
+          curl -sSfL --cacert "$(python -c 'import certifi; print(certifi.where())')" -o gshhg-bin-2.3.7.zip https://github.com/GenericMappingTools/gshhg-gmt/releases/download/2.3.7/gshhg-bin-2.3.7.zip
           echo "28600e8f7a08645aab43079326df6504212ec5ccb2b4bcf3b5f4f12ed60e82bc  gshhg-bin-2.3.7.zip" | sha256sum -c -
       - name: Download Natural Earth (pinned) and GeoNames cities1000
         if: github.event.inputs.set == 'places'
         shell: bash
         run: |
           set -eo pipefail
+          CA="$(python -c 'import certifi; print(certifi.where())')"   # certifi's list, not the runner's (plan section 57)
           mkdir -p src/ne
           NE=https://raw.githubusercontent.com/nvkelso/natural-earth-vector/ca96624a56bd078437bca8184e78163e5039ad19/geojson
           for f in ne_10m_admin_0_boundary_lines_land ne_10m_admin_1_states_provinces_lines ne_10m_populated_places; do
-            curl -sSfL -o "src/ne/$f.geojson" "$NE/$f.geojson"
+            curl -sSfL --cacert "$CA" -o "src/ne/$f.geojson" "$NE/$f.geojson"
           done
           ( cd src/ne && sha256sum -c - <<'EOF'
           74d9c16229c095fde65943a9919e337682f044bcebccb120764f38edf3b70f4a  ne_10m_admin_0_boundary_lines_land.geojson
@@ -82,7 +83,7 @@ jobs:
           9b8e3de09048ef00dfc70357dbb9fa324493f214b5e0ae4daf1aa79a8d10116b  ne_10m_populated_places.geojson
           EOF
           )
-          curl -sSfL -o src/cities1000.zip https://download.geonames.org/export/dump/cities1000.zip
+          curl -sSfL --cacert "$CA" -o src/cities1000.zip https://download.geonames.org/export/dump/cities1000.zip
           sha256sum src/cities1000.zip
       - name: Build and check
         shell: bash

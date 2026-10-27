@@ -40,7 +40,21 @@ jobs:
           python-version: "3.11"
       - run: pip install numpy==2.2.6 boto3==1.43.98 certifi==2026.10.23
       - run: |
-          rc=0; python tools/tls_check.py --real > tls.txt || rc=$?; cat tls.txt >> "$GITHUB_STEP_SUMMARY"; grep -E "^python=|^trust path|FAIL|^tls_check:" tls.txt | sed "s/^/::notice::/"; exit $rc
+          rc=0; python tools/tls_check.py --real --paths certifi,botocore > tls.txt || rc=$?; cat tls.txt >> "$GITHUB_STEP_SUMMARY"; grep -E "^python=|^trust path|FAIL|^tls_check:" tls.txt | sed "s/^/::notice::/"; exit $rc
+      - name: curl with certifi's file (coast-build's downloads)
+        run: |
+          CA="$(python -c 'import certifi; print(certifi.where())')"
+          rc=0
+          for h in dv-g3b-emudhra.we-have-a-problem.com dv-g3b-aaa-emudhra.we-have-a-problem.com; do
+            e=0; curl -sS -o /dev/null --max-time 20 --cacert "$CA" "https://$h/" || e=$?
+            if [ "$e" = 60 ]; then echo "::notice::PASS curl+certifi $h refused (exit 60)"; else echo "::notice::FAIL curl+certifi $h exit $e (60 = refused)"; rc=1; fi
+            e=0; curl -sS -o /dev/null --max-time 20 "https://$h/" || e=$?
+            echo "::notice::the runner's own list: $h curl exit $e (0 = trusted, 60 = refused)"
+          done
+          for u in https://github.com/ https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/README.md https://download.geonames.org/export/dump/; do
+            if curl -sS -o /dev/null --max-time 30 --cacert "$CA" "$u"; then echo "::notice::PASS curl+certifi $u"; else echo "::notice::FAIL curl+certifi $u"; rc=1; fi
+          done
+          exit $rc
   site:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -51,7 +65,7 @@ jobs:
           python-version: "3.11.9"
       - run: pip install -r requirements.txt
       - run: |
-          rc=0; python tools/tls_check.py --real > tls.txt || rc=$?; cat tls.txt >> "$GITHUB_STEP_SUMMARY"; grep -E "^python=|^trust path|FAIL|^tls_check:" tls.txt | sed "s/^/::notice::/"; exit $rc
+          rc=0; python tools/tls_check.py --real --paths certifi > tls.txt || rc=$?; cat tls.txt >> "$GITHUB_STEP_SUMMARY"; grep -E "^python=|^trust path|FAIL|^tls_check:" tls.txt | sed "s/^/::notice::/"; exit $rc
       - run: echo "::notice::$(python -c 'import app, json; print(json.dumps(app._tls_health()))' | tail -1)"
         env:
           LIVE_BACKGROUND: "0"

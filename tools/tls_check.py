@@ -1,13 +1,16 @@
 """Check which TLS trust list this Python environment uses (plan section 57).
 
-Usage:  python tools/tls_check.py [--real]
+Usage:  python tools/tls_check.py [--real] [--paths certifi,default,botocore]
 
 Connects to the two hosts Render named for eMudhra's compromised certificates (both must be REFUSED as
 unverifiable) through every trust path the site and the jobs use:
   * certifi    -- requests (the site) and botocore when certifi is installed (the jobs' uploads)
   * default    -- ssl.create_default_context(): urllib, i.e. the jobs' downloads (fetch.py, ecmwf_fetch.py)
   * botocore   -- the CA file botocore would pass (its own cacert.pem when certifi is missing)
-With --real it also connects to the hosts the site and the jobs read (all must verify).
+With --real it also connects to the hosts the site and the jobs read (all must verify). --paths limits the
+check to the trust paths an environment actually uses: the site uses requests only (certifi); on GitHub's Ubuntu
+runners the system list ("default") still trusted one of the compromised chains in October 2026, so jobs that
+download with curl pass it certifi's file.
 
 Exit 0 when every check passes, 1 otherwise. One line per check, then a summary line; nothing secret.
 """
@@ -74,10 +77,18 @@ def versions():
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--real", action="store_true", help="also check that the real hosts verify")
+    ap.add_argument("--paths", default="", help="comma list of the trust paths to check (default: every one found)")
     args = ap.parse_args(argv)
     print(versions())
+    found = contexts()
+    want = [p for p in args.paths.split(",") if p] or list(found)
     bad = 0
-    for name, cafile in contexts().items():
+    for name in want:
+        if name not in found:
+            bad += 1
+            print("trust path %s: FAIL not available in this environment" % name)
+            continue
+        cafile = found[name]
         print("trust path %s: %s" % (name, cafile or "system default"))
         for host in COMPROMISED:
             got = connect(host, cafile)

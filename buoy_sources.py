@@ -839,6 +839,7 @@ class AODNProvider(BuoyProvider):
         self._latest_by_id = {}
         self._recent_by_id = {}
         self._spec_cache = {}                 # local_id -> (ts, spectrum dict)
+        self._spec_asked = {}                 # the same keys -> when a refresh last asked again (plan section 56)
 
     @classmethod
     def _spectra_code(cls, local_id):
@@ -1035,12 +1036,14 @@ class AODNProvider(BuoyProvider):
     def latest(self, local_id):
         return self.detail(local_id)["latest"]
 
-    def spectrum(self, local_id, count=25):
+    def spectrum(self, local_id, count=25, fresh_s=None):
         """Last `count` directional spectra (chronological) for a spectra-capable site,
         via THREDDS OPeNDAP. Returns {freqs:[39], steps:[{time_utc, energy[39],
         alpha1[39], alpha2[39], r1[39], r2[39]}]} or None. alpha1 = mean wave direction
         per bin in the NDBC 'from' convention (degrees clockwise from true north), converted from the files'
-        Fourier moments with NDBC's formulas (_ndbc_alpha1/_ndbc_alpha2). One batched request per variable."""
+        Fourier moments with NDBC's formulas (_ndbc_alpha1/_ndbc_alpha2). One batched request per variable.
+        fresh_s: a refresh from the live window (plan section 56): spectra fetched or asked for at least that long ago
+        are fetched again; a refresh that fails gives None and the kept spectra stay for everyone else."""
         code = self._spectra_code(local_id)
         if not code:
             return None
@@ -1048,7 +1051,9 @@ class AODNProvider(BuoyProvider):
         with self._lock:
             hit = self._spec_cache.get(ckey)
             if hit and (time.time() - hit[0]) < self.spectra_ttl_sec:
-                return hit[1]
+                if fresh_s is None or time.time() - max(hit[0], self._spec_asked.get(ckey, 0.0)) < fresh_s:
+                    return hit[1]
+                self._spec_asked[ckey] = time.time()
         now = datetime.utcnow()
         url = (self.THREDDS + code + "/%04d/IMOS_COASTAL-WAVE-BUOYS_%04d%02d01_%s_"
                "RT_WAVE-SPECTRA_monthly.nc" % (now.year, now.year, now.month, code))

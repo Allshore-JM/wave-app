@@ -1802,3 +1802,21 @@ be read counts as "the tile exists". The station layers draw every station from 
 | `WIND_REFRESH_WORKERS` | `2` | The wind feeds' own refresh threads (1-4), apart from the live buoys' `LIVE_REFRESH_WORKERS`. |
 | `WIND_NWS_PER_REFRESH` | `25` | Stations the NWS API feed asks per minute, in turn (1-500); 25 of Hawaii's ~300 = every station about every 12 minutes. |
 | `WIND_MADIS_URL` | the Hawaii query of MADIS's public viewer | The NWS stations' MADIS backup (plan section 52); empty = off. |
+
+## The station windows' refresh button (plan section 56)
+
+The live-buoy, wind and tide windows ask again for their station's newest data when the refresh button in their header
+is pressed. The page asks the SAME URL with the request header `X-Allshore-Refresh: 1` (and `cache: 'reload'`, so the
+browser's copy is replaced). On the server (`app.py` `_refresh_s`, `REFRESH_MIN_AGE_S` 60) a per-station answer cached at
+least a minute ago counts as missing and is built again from the agency; a younger one is served, so a button pressed
+again and again asks an agency at most once a minute per station. A refresh that fails (the agency down) leaves the good
+answer in place for everyone and counts toward the minute; a "busy" answer (a request budget used up, every build slot
+held) is not counted and replaces nothing. The singleflight per key, the shared build cap, every agency budget and the
+routes' cache headers are unchanged; without the header nothing changes. Where it applies:
+
+| Route | Cache it refreshes |
+|---|---|
+| `/api/wind/<id>/history` | `WindHistory` (10 min; an NWS station costs one NWS API request at most: MADIS's 24 hours are in memory) |
+| `/api/tides/<id>/observed` | `TideService.observed` (15 min); the tide predictions are the same all day and are only revalidated |
+| `/api/ndbc/station/<id>/components` | `NDBC_COMPONENT_CACHE` (30 min); `/wave-summary` reads NDBC on every request already |
+| `/api/buoys/<id>/components` | `AODNProvider.spectrum` (20 min); `/api/buoys/<id>/latest` stays the feed's copy (refreshed every 5-30 min) |

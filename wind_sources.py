@@ -1404,7 +1404,7 @@ class WindHistory:
         self.madis_hist = None                # (local id, since) -> the station's MADIS readings since (plan section 55)
         self.madis_filling = None             # () -> True while MADIS is still back-filling the earlier hours
         self._reset_locks()
-        self._cache = OrderedDict()           # key -> (expires, status, payload)
+        self._cache = OrderedDict()           # key -> (expires, status, payload, built, asked)
         _SERVICES.add(self)
 
     def _reset_locks(self):
@@ -1413,23 +1413,40 @@ class WindHistory:
         self._builds = self._cap if self._cap is not None else threading.BoundedSemaphore(self._builds_n)
 
     # -- cache
-    def _get(self, key):
+    def _get(self, key, fresh_s=None):
+        """The key's (status, payload), or None. fresh_s (a refresh, plan section 56): an entry built or last asked
+        for again at least fresh_s seconds ago counts as missing, so a station is asked again at most that often."""
         with self._lock:
             hit = self._cache.get(key)
             if hit is None:
                 return None
-            if hit[0] <= self._now():
+            now = self._now()
+            if hit[0] <= now:
                 del self._cache[key]
+                return None
+            if fresh_s is not None and now - max(hit[3], hit[4]) >= fresh_s:
                 return None
             self._cache.move_to_end(key)
             return hit[1], hit[2]
 
     def _put(self, key, status, payload, ttl):
         with self._lock:
-            self._cache[key] = (self._now() + ttl, status, payload)
+            now = self._now()
+            self._cache[key] = (now + ttl, status, payload, now, now)    # expires, status, payload, built, asked
             self._cache.move_to_end(key)
             while len(self._cache) > self.max_entries:
                 self._cache.popitem(last=False)
+
+    def _keep_after_refresh(self, key):
+        """A refresh whose build did not succeed: True when the key still holds a good answer, which then stays for
+        everyone (keep-last) with its 'asked' time set now (the per-station floor counts the failed attempt too)."""
+        with self._lock:
+            hit = self._cache.get(key)
+            now = self._now()
+            if hit is None or hit[0] <= now or hit[1] != "ok":
+                return False
+            self._cache[key] = hit[:4] + (now,)
+            return True
 
     def entries(self):
         with self._lock:
@@ -1449,9 +1466,10 @@ class WindHistory:
             if e[1] <= 0 and self._inflight.get(key) is e:
                 del self._inflight[key]
 
-    def _answer(self, key, build):
-        """Cached answer for key, else one build at a time (others wait up to wait_s, then 'busy')."""
-        hit = self._get(key)
+    def _answer(self, key, build, fresh_s=None):
+        """Cached answer for key, else one build at a time (others wait up to wait_s, then 'busy'). fresh_s: a refresh
+        (plan section 56): see _get; a refresh that fails leaves a good answer in place (_keep_after_refresh)."""
+        hit = self._get(key, fresh_s)
         if hit is not None:
             return hit
         stuck = getattr(self._builds, "stuck", None)                # a shared cap: every slot held too long -> at once
@@ -1463,7 +1481,7 @@ class WindHistory:
             if not e[0].acquire(timeout=self.wait_s):
                 return "busy", {"error": BUSY}
             try:
-                hit = self._get(key)
+                hit = self._get(key, fresh_s)                          # a refresh that just finished serves this one
                 if hit is not None:
                     return hit
                 if not self._builds.acquire(timeout=max(0.0, deadline - time.monotonic())):
@@ -1483,7 +1501,8 @@ class WindHistory:
                     self._builds.release()
                 if ttl is None:
                     ttl = self.ok_ttl if status == "ok" else self.error_ttl
-                self._put(key, status, payload, ttl)
+                if not (fresh_s is not None and status != "ok" and self._keep_after_refresh(key)):
+                    self._put(key, status, payload, ttl)
                 return status, payload
             finally:
                 e[0].release()
@@ -1603,11 +1622,12 @@ class WindHistory:
             raise WindError(str(exc) or "fetch failed") from None
         return [r for r in parse_nws_observations(doc) if r["t"] >= since]
 
-    def history(self, sid):
+    def history(self, sid, fresh_s=None):
+        """fresh_s: a refresh from the wind window (plan section 56): an answer at least that old is built again."""
         st = self.stations.get(sid) if valid_id(sid) else None
         if st is None:
             return "final", {"id": sid, "error": "Unknown wind station"}
-        return self._answer(("h", sid), lambda: self._build(sid, st))
+        return self._answer(("h", sid), lambda: self._build(sid, st), fresh_s)
 
     def _build(self, sid, st):
         now = self._now()

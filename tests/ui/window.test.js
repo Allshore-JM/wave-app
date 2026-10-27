@@ -1318,3 +1318,15 @@ test('section 56: a window without a refresh hook or button still works', () => 
   page.lwRefresh.dispatch('click'); assert.equal(page.lwRefresh.getAttribute('aria-busy'), 'false');
   return lw.refresh().then((v) => assert.equal(v, null));
 });
+
+test('G39-4 C2 / C4: the status line is emptied when a refresh starts, on a new station and on a close', async () => {
+  const r = refreshWin('createLiveWindow'), btn = r.page.lwRefresh, say = r.doc.getElementById('lwRefreshStatus');
+  r.sw.open(); btn.dispatch('click'); r.asks[0].res(true); await settle();
+  assert.equal(say.textContent, 'Refreshed.');
+  btn.dispatch('click');
+  assert.equal(say.textContent, '', 'emptied at the start: a second "Refreshed." is a change and is announced');
+  r.asks[1].res(true); await settle(); assert.equal(say.textContent, 'Refreshed.');
+  r.sw.open(); assert.equal(say.textContent, '', 'a new station: the old verdict gone');
+  btn.dispatch('click'); r.asks[2].res(false); await settle(); assert.equal(say.textContent, 'Could not refresh. Try again.');
+  r.sw.close(); assert.equal(say.textContent, '', 'a close: gone');
+});

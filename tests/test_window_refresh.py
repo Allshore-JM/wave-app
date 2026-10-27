@@ -133,6 +133,60 @@ def test_wind_an_error_answer_older_than_a_minute_is_asked_again_by_a_refresh():
     assert svc.history("ndbc:51003", FRESH)[0] == "ok"
 
 
+
+# ------------------------------------------------------------------ never older (G39 V3-2)
+
+def answers(svc, key, payloads, fresh, ttl=None):
+    """svc._answer with a build that returns the next payload (status "ok")."""
+    it = iter(payloads)
+    build = lambda: ("ok", next(it))
+    return svc._answer(key, build, fresh) if ttl is None else svc._answer(key, build, ttl, fresh)
+
+
+def check_never_older(svc, clock, ttl=None):
+    held = {"t": [100, 200, 300]}
+    assert answers(svc, "k", [held], None, ttl) == ("ok", held)
+    clock.t += FRESH
+    older = {"t": [100, 200]}                                   # e.g. NDBC's relay copy while CO-OPS is down
+    assert answers(svc, "k", [older], FRESH, ttl) == ("ok", held)                  # the refresh keeps the held answer
+    assert svc._get("k") == ("ok", held)                                            # for everyone
+    assert answers(svc, "k", [AssertionError], FRESH, ttl) == ("ok", held)         # the attempt counted: served
+    clock.t += FRESH
+    same = {"t": [100, 200, 300], "v": 1}
+    assert answers(svc, "k", [same], FRESH, ttl) == ("ok", same)                    # as new: the rebuild is taken
+    clock.t += FRESH
+    newer = {"t": [200, 300, 400]}
+    assert answers(svc, "k", [newer], FRESH, ttl) == ("ok", newer)
+    clock.t += FRESH
+    empty = {"t": []}
+    assert answers(svc, "k", [empty], FRESH, ttl) == ("ok", empty)                  # unknown: the rebuild is taken
+    clock.t += FRESH
+    assert answers(svc, "k", [{"t": [5]}], FRESH, ttl) == ("ok", {"t": [5]})       # nothing held to compare with
+    clock.t += FRESH
+    assert answers(svc, "k", [{"t": [1]}], None, ttl) == ("ok", {"t": [5]})        # no header: served from the cache
+
+
+def test_wind_a_refresh_never_makes_the_answer_older():
+    svc, _, clock = wind_service()
+    check_never_older(svc, clock)
+
+
+def test_tide_a_refresh_never_makes_the_water_level_older():
+    svc, _, clock = TT.service()
+    check_never_older(svc, clock, ttl=900)
+
+
+def test_the_held_answer_wins_only_when_newer_or_fuller():
+    for mod in (W, T):
+        f = mod._held_is_better
+        assert f({"t": [1, 9]}, {"t": [1, 8]}) is True
+        assert f({"t": [1, 8]}, {"t": [8]}) is False and f({"t": [7]}, {"t": [8]}) is False
+        assert f({"t": [8]}, {"t": [8], "partial": True}) is True                   # same time, the rebuild partial
+        assert f({"t": [8], "partial": True}, {"t": [8], "partial": True}) is False
+        assert f({"t": [8]}, {"t": [9], "partial": True}) is False                  # newer readings win even partial
+        for bad in ({}, {"t": []}, {"t": None}, {"t": [True]}, {"t": ["9"]}, None, []):
+            assert f(bad, {"t": [1]}) is False and f({"t": [9]}, bad if isinstance(bad, dict) else {"t": bad}) is False
+
 # ------------------------------------------------------------------ the tide water level
 
 def test_tide_refresh_asks_the_water_level_again_after_a_minute():
@@ -164,6 +218,17 @@ def test_tide_a_failed_refresh_keeps_the_water_level():
     status, p = svc.observed("1612340", FRESH)
     assert status == "ok" and p is not good[1] and len(noaa.calls) == 3
 
+
+
+def test_tide_an_error_answer_older_than_a_minute_is_asked_again_by_a_refresh():
+    svc, noaa, clock = TT.service(error_ttl=300)                    # kept longer than the floor: the refresh decides
+    noaa.fail = True
+    assert svc.observed("1612340")[0] == "error"
+    noaa.fail = False
+    clock.t += 30
+    assert svc.observed("1612340", FRESH)[0] == "error" and len(noaa.calls) == 1   # 30 s: the error stands
+    clock.t += 31
+    assert svc.observed("1612340", FRESH)[0] == "ok" and len(noaa.calls) == 2
 
 def test_tide_a_station_without_a_gauge_never_asks():
     svc, noaa, _ = TT.service()
@@ -305,3 +370,55 @@ def test_aodn_route_passes_the_header_on(monkeypatch):
     assert c.get("/api/buoys/aodn:X1/components", headers=HDR).status_code == 404
     assert c.get("/api/buoys/aodn:X1/components").status_code == 404
     assert seen == [("X1", 60), ("X1", None)]
+
+
+# ------------------------------------------------------------------ the spectra refresh cap (G39-1)
+
+def hold_cap():
+    """Takes the spectra refresh slot on another thread (as a refresh still building would) until the event is set."""
+    took, done = threading.Event(), threading.Event()
+
+    def run():
+        assert A._SPECTRA_REFRESH.acquire(False)
+        took.set()
+        done.wait(10)
+        A._SPECTRA_REFRESH.release()
+    t = threading.Thread(target=run)
+    t.start()
+    assert took.wait(5)
+    return done, t
+
+
+def test_an_aodn_refresh_while_another_builds_answers_busy_not_a_thread(ndbc, monkeypatch):
+    c, calls = ndbc
+    assert A._SPECTRA_REFRESH.n == 1
+    seen = []
+
+    class P:
+        source = "AODN"
+
+        def spectrum(self, local, fresh_s=None):
+            seen.append(fresh_s)
+            return None
+    monkeypatch.setattr(A, "get_buoy_providers", lambda: [P()])
+    done, t = hold_cap()
+    try:
+        r = c.get("/api/buoys/aodn:X1/components", headers=HDR)
+        assert r.status_code == 503 and r.get_json()["retry"] is True
+        assert r.headers["Retry-After"] == "5" and r.headers["Cache-Control"] == "no-store"
+        assert seen == []                                                   # nothing built: at once, no thread held
+        assert c.get("/api/buoys/aodn:X1/components").status_code == 404 and seen == [None]   # plain: unaffected
+        plant(FRESH + 5)                                                    # NDBC's spectra are not capped
+        assert c.get("/api/ndbc/station/51201/components", headers=HDR).status_code == 404 and len(calls) == 1
+    finally:
+        done.set()
+        t.join(5)
+    assert c.get("/api/buoys/aodn:X1/components", headers=HDR).status_code == 404 and seen == [None, 60]
+    assert A._SPECTRA_REFRESH.held() == 0                                  # the slot given back, also on a failure
+
+    class Boom(P):
+        def spectrum(self, local, fresh_s=None):
+            raise RuntimeError("THREDDS")
+    monkeypatch.setattr(A, "get_buoy_providers", lambda: [Boom()])
+    assert c.get("/api/buoys/aodn:X1/components", headers=HDR).status_code == 404
+    assert A._SPECTRA_REFRESH.held() == 0

@@ -445,7 +445,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.26.3"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.26.4"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -518,6 +518,21 @@ _COOPS_BUDGET = wind_sources.TokenBucket(wind_sources.COOPS_ON_DEMAND_PER_MIN, b
 # again and again asks an agency at most once a minute per station). Budgets, caps, singleflight and keep-last hold.
 REFRESH_HEADER = "X-Allshore-Refresh"
 REFRESH_MIN_AGE_S = 60
+# AODN's spectra (8 requests to its THREDDS server, 13-15 s a build) have no build cap of their own: a refresh rebuild
+# takes this one slot without waiting, else answers "busy, try again" (G39-1: refreshes of different buoys must not hold
+# every request thread; the button turns orange). NDBC's spectra are not capped: its summary route already asks NDBC on
+# every request. A forked child gets a fresh one (buoy_sources' fork hook).
+_SPECTRA_REFRESH = buoy_sources.SharedCap(1)
+SPECTRA_BUSY = "The server is busy right now; try again in a moment"
+
+
+def _spectra_busy(ident):
+    resp = jsonify({"id": ident, "error": SPECTRA_BUSY, "retry": True})
+    resp.status_code = 503
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["CDN-Cache-Control"] = "no-store"
+    resp.headers["Retry-After"] = "5"
+    return resp
 
 
 def _refresh_s():
@@ -5593,10 +5608,16 @@ def api_buoys_components(bid):
         if p.source.lower() == src:
             spec = None
             if hasattr(p, "spectrum"):
+                fresh_s = _refresh_s()
+                if fresh_s is not None and not _SPECTRA_REFRESH.acquire(False):
+                    return _spectra_busy(bid)
                 try:
-                    spec = p.spectrum(local, fresh_s=_refresh_s())
+                    spec = p.spectrum(local, fresh_s=fresh_s)
                 except Exception:
                     spec = None
+                finally:
+                    if fresh_s is not None:
+                        _SPECTRA_REFRESH.release()
             if not spec or not spec.get("steps"):
                 return jsonify({"id": bid, "error": "no spectra for this buoy"}), 404
             freqs = spec["freqs"]

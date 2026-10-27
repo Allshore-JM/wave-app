@@ -764,3 +764,17 @@ test('section 56: refreshNow while loading does nothing; after an error it is a 
   s.setNow(NOW + 6 * 60000); s.timers.fire(); await flush();
   assert.equal(s.calls.length, 3, 'the quiet 5-minute turn counts from the button, also when it failed');
 });
+
+test('G39 A3: the refresh button acting as Retry leaves the focus where it is; the Retry button moves it', async () => {
+  const s = viewSetup();
+  s.view.load(HNL, { unit: 'US' });
+  s.answers[0].res(resp(500, {})); await flush();
+  assert.equal(await s.view.refreshNow(), null);
+  s.answers[1].res(resp(200, history())); await flush();
+  assert.equal(s.view.state().status, 'ready'); assert.equal(s.retried.length, 0, 'no focus move from the refresh button');
+  s.view.load(HNL, { unit: 'US' });
+  s.answers[2].res(resp(500, {})); await flush();
+  s.view.retry();
+  s.answers[3].res(resp(200, history())); await flush();
+  assert.equal(s.retried.length, 1, 'the Retry button still moves the focus into the window');
+});

@@ -1803,7 +1803,7 @@ be read counts as "the tile exists". The station layers draw every station from 
 | `WIND_NWS_PER_REFRESH` | `25` | Stations the NWS API feed asks per minute, in turn (1-500); 25 of Hawaii's ~300 = every station about every 12 minutes. |
 | `WIND_MADIS_URL` | the Hawaii query of MADIS's public viewer | The NWS stations' MADIS backup (plan section 52); empty = off. |
 
-## The station windows' refresh button (plan section 56, UI asset 1.26.3)
+## The station windows' refresh button (plan section 56, UI asset 1.26.4)
 
 **The page.** Each of the three windows has a circular-arrow button before its minimise button (`#lwRefresh`,
 `#twRefresh`, `#wwRefresh`; `.fw-btn.fw-refresh`), hidden in a chip or phone bar. `createStationWindow`
@@ -1814,12 +1814,16 @@ while the new data loads and when a refresh fails; nothing else in the window mo
 
 | Window | What a refresh asks | What it keeps |
 |---|---|---|
-| Live buoy | NDBC: the wave summary and the spectra; others: the latest reading and (AODN) the spectra, fetched before drawing | the body's scroll; the old spectra when only they fail |
+| Live buoy | NDBC: the wave summary and the spectra; others: the latest reading and (AODN) the spectra, fetched before drawing | the body's scroll; the whole view when the spectra it shows cannot be refreshed (the button then says so) |
 | Tide | the predictions revalidated (the same all day: a 304) and the water level asked again | the opened days, the strip's sideways scroll |
 | Wind | the station's 24 hours | the open Readings list, the scroll |
 
-A window still showing its spinner loads as usual; a window showing an error reloads (the Retry). A new station or a
-close drops a refresh still on its way (no verdict). The live and tide windows remember when their data last loaded: an
+A window still showing its spinner loads as usual; a window showing an error reloads (the Retry; the focus stays on
+the button). A new station or a close drops a refresh still on its way (no verdict). A buoy refresh that brings back
+everything but the spectra the window shows keeps the whole view and reports a failure (G39 V3-1).
+The "15 minutes" is the data's age when the tab is shown again, not how long the tab was hidden. Most non-NDBC buoys
+(CDIP, QLD, AusWaves, the European feeds) are shown from their feed's own copy, refreshed every 5-30 minutes: for them
+the button only replaces the browser's copy; only NDBC buoys and AODN's spectra are asked of the agency again. The live and tide windows remember when their data last loaded: an
 open, expanded window whose data is 15 minutes old or more refreshes once when its tab is shown again or it is expanded
 from its chip (`STATION_STALE_MS`). The wind window already asks again every 5 minutes by itself (and when shown), so
 only its button is new.
@@ -1830,7 +1834,12 @@ browser's copy is replaced). On the server (`app.py` `_refresh_s`, `REFRESH_MIN_
 least a minute ago counts as missing and is built again from the agency; a younger one is served, so a button pressed
 again and again asks an agency at most once a minute per station. A refresh that fails (the agency down) leaves the good
 answer in place for everyone and counts toward the minute; a "busy" answer (a request budget used up, every build slot
-held) is not counted and replaces nothing. The singleflight per key, the shared build cap, every agency budget and the
+held) is not counted and replaces nothing. A refresh never makes an answer worse: a rebuilt wind history or water level
+whose newest reading is older than the one held (e.g. NDBC's relay of a CO-OPS gauge while CO-OPS is down), or as new
+but only partial (`"partial": true`: an agency budget used up, weather products missing), leaves the held answer in place
+(`_held_is_better`, G39 V3-2 / G39-3). An AODN spectra refresh (8 THREDDS requests, 13-15 s) takes the one slot of
+`_SPECTRA_REFRESH` without waiting, else answers 503 busy with `retry` (the button turns orange): refreshes of several
+buoys never hold every request thread (G39-1). The singleflight per key, the shared build cap, every agency budget and the
 routes' cache headers are unchanged; without the header nothing changes. Where it applies:
 
 | Route | Cache it refreshes |

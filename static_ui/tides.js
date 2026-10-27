@@ -629,7 +629,7 @@
     function refreshNow() {
       var s = st.station, seq = st.seq;
       if (!s) return Promise.resolve(null);
-      if (st.status === 'error') { retry(); return Promise.resolve(null); }
+      if (st.status === 'error') { retry(); st.retried = false; return Promise.resolve(null); }   // the focus stays on the button (G39 A3)
       if (st.status !== 'ready' || !st.data) return Promise.resolve(null);
       var id = encodeURIComponent(s.id), wantObs = !!st.data.obs, signal = st.ac && st.ac.signal;
       var fc = deps.fetch('/api/tides/' + id, { signal: signal, cache: 'no-cache', headers: { Accept: 'application/json' } }).then(function (r) {

@@ -2724,6 +2724,7 @@
       if (!quiet) showLiveBuoyPanelLoading(station);
       const stale = () => seq !== liveDetailSeq;   // superseded or panel closed
       const fo = liveFetchOptions(refresh), restoreScroll = keepLiveScroll(quiet);
+      const hadSpectra = quiet && !!lastLiveComponentData;   // a refresh that cannot bring them back keeps the view (G39 V3-1)
 
       // Merged-feed ids are namespaced ("ndbc:46221"); the NDBC routes want the raw id.
       const rawId = (station.id || '').replace(/^ndbc:/i, '');
@@ -2777,6 +2778,7 @@
           console.warn('Experimental spectral component load failed:', componentErr);
         }
         if (stale()) return null;
+        if (hadSpectra && !componentData) return false;     // the spectra shown could not be refreshed: nothing changes
 
         renderNoaaWaveSummary(summaryData);
         if (componentData) renderLiveBuoyDetails(componentData);
@@ -2784,6 +2786,7 @@
         document.getElementById('liveBuoyLoading').style.display = 'none';
         document.getElementById('liveBuoyError').classList.add('d-none');
         document.getElementById('liveBuoyGeneric').classList.add('d-none');
+        document.getElementById('liveBuoyNoRecent').classList.add('d-none');   // a refresh can bring a quiet buoy back (G39-2)
         document.getElementById('liveBuoyContent').classList.remove('d-none');
         restoreScroll();
         return true;
@@ -3071,6 +3074,7 @@
       document.getElementById('liveBuoyLoading').style.display = 'none';
       document.getElementById('liveBuoyError').classList.add('d-none');
       document.getElementById('liveBuoyContent').classList.add('d-none');
+      document.getElementById('liveBuoyNoRecent').classList.add('d-none');
       el.classList.remove('d-none');
     }
 
@@ -3141,6 +3145,7 @@
         };
         if (quiet && spectra) await askSpectra();
         if (stale()) return null;
+        if (spectra && keepSpectra && !cdata) return false;   // the spectra shown could not be refreshed: nothing changes (G39 V3-1)
         renderGenericBuoy(payload, station);
 
         // Spectra-capable buoys (AODN): pull the directional spectrum -> NDBC-style

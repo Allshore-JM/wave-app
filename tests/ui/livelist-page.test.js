@@ -341,8 +341,12 @@ const NDBC = cut('    async function loadNdbcBuoyDetails(station, seq, refresh) 
 function livePage(answers) {
   const ctx = { seq: 0 }, calls = [], log = [], marks = [];
   const els = {};
-  const elem = (id) => els[id] || (els[id] = { id, textContent: '', scrollTop: 0, style: { display: id === 'liveBuoyLoading' ? 'block' : '' },
-    classList: { add() {}, remove() {} } });
+  const elem = (id) => {
+    if (els[id]) return els[id];
+    const cls = new Set(/^liveBuoy(Content|Generic|NoRecent|Error)$/.test(id) ? ['d-none'] : []);   // as the page's markup
+    return (els[id] = { id, textContent: '', scrollTop: 0, style: { display: id === 'liveBuoyLoading' ? 'block' : '' },
+      classList: { add(c) { cls.add(c); }, remove(c) { cls.delete(c); }, contains(c) { return cls.has(c); } } });
+  };
   const document = { getElementById: elem, dispatchEvent: () => log.push('front') };
   const fetch = (u, opts) => {
     calls.push({ u, opts });
@@ -353,9 +357,11 @@ function livePage(answers) {
   const code = 'let lastGenericSpectra = null, lastNoaaWaveSummaryData = null, lastLiveComponentData = null, lastNoRecentStation = null;\n' +
     // the real renderGenericSpectra remembers what it drew (lastGenericSpectra): the stub does the same
     'function renderGenericSpectra(d, m, tz) { lastGenericSpectra = d; drawSpectra(d, m, tz); }\n' +
+    // ... and so does the real renderLiveBuoyDetails (lastLiveComponentData)
+    'function renderLiveBuoyDetails(d) { lastLiveComponentData = d; drawComponents(d); }\n' +
     DISPATCH + NDBC + GENERIC + '\nreturn loadLiveBuoyDetails;';
   const fn = new Function('fetch', 'showLiveBuoyPanelLoading', 'renderGenericBuoy', 'drawSpectra', 'renderNoaaWaveSummary',
-    'renderLiveBuoyDetails', 'showLiveBuoyNoRecent', 'showLiveBuoyError', 'loadChartJs', 'getSelectedUnit', 'console', 'ctx',
+    'drawComponents', 'showLiveBuoyNoRecent', 'showLiveBuoyError', 'loadChartJs', 'getSelectedUnit', 'console', 'ctx',
     'document', 'setTimeout', 'liveWin', 'CustomEvent', code.replace(/liveDetailSeq/g, 'ctx.seq'))(
     fetch,
     () => { log.push('spinner'); elem('liveBuoyLoading').style.display = 'block'; },
@@ -363,7 +369,7 @@ function livePage(answers) {
     (d) => log.push('spectra:' + d.tag),
     (d) => { log.push('summary:' + d.tag); elem('lwBody').scrollTop = 0; },
     (d) => log.push('components:' + d.tag),
-    () => log.push('norecent'),
+    () => { log.push('norecent'); elem('liveBuoyNoRecent').classList.remove('d-none'); elem('liveBuoyContent').classList.add('d-none'); },
     (m) => log.push('error:' + m),
     () => Promise.resolve(), () => 'US', { warn() {} }, ctx, document, (f) => Promise.resolve().then(f), liveWin,
     function (t) { this.type = t; });
@@ -392,13 +398,19 @@ test('section 56: a generic buoy refresh asks with the header, gets the spectra 
   assert.equal(pg.marks.length, 2);
 });
 
-test('section 56: a generic refresh that fails keeps what is shown; failed spectra keep the old ones', async () => {
+test('section 56: a generic refresh that fails keeps what is shown; failed spectra keep the whole view (G39 V3-1)', async () => {
   const answers = { [AL]: resp({ latest: { hs_m: 1 }, recent: [] }), [AC]: resp({ tag: 'v1' }) };
   const pg = livePage(answers); await pg.load(AODN); pg.shown(); pg.log.length = 0;
   answers[AC] = new Error('THREDDS down');
   answers[AL] = resp({ latest: { hs_m: 3 }, recent: [] });
+  assert.equal(await pg.load(AODN, { refresh: true }), false, 'the spectra shown could not be refreshed: a failure');
+  assert.deepEqual(pg.log, [], 'nothing replaced: the old bulk view and spectra stay');
+  answers[AC] = resp({ error: 'no spectra for this buoy' }, { status: 404 });
+  assert.equal(await pg.load(AODN, { refresh: true }), false);
+  assert.deepEqual(pg.log, []);
+  answers[AC] = resp({ tag: 'v3' });
   assert.equal(await pg.load(AODN, { refresh: true }), true);
-  assert.deepEqual(pg.log, ['bulk:3', 'spectra:v1'], 'the old spectra drawn again under the new bulk view');
+  assert.deepEqual(pg.log, ['bulk:3', 'spectra:v3']);
   pg.log.length = 0;
   answers[AL] = resp({ error: 'down' }, { status: 503 });
   assert.equal(await pg.load(AODN, { refresh: true }), false);
@@ -407,6 +419,14 @@ test('section 56: a generic refresh that fails keeps what is shown; failed spect
   assert.equal(await pg.load(AODN, { refresh: true }), false);
   assert.deepEqual(pg.log, []);
   assert.equal(pg.marks.length, 2, 'only good loads mark');
+});
+
+test('G39 V3-1: a buoy whose spectra never showed refreshes its bulk view when the spectra still fail', async () => {
+  const answers = { [AL]: resp({ latest: { hs_m: 1 }, recent: [] }), [AC]: resp({ error: 'none yet' }, { status: 404 }) };
+  const pg = livePage(answers); await pg.load(AODN); pg.shown(); pg.log.length = 0;
+  answers[AL] = resp({ latest: { hs_m: 4 }, recent: [] });
+  assert.equal(await pg.load(AODN, { refresh: true }), true);
+  assert.deepEqual(pg.log, ['bulk:4']);
 });
 
 test('section 56: a refresh while the spinner shows loads as usual; a refresh superseded by another buoy has no verdict', async () => {
@@ -438,9 +458,13 @@ test('section 56: an NDBC refresh asks both files with the header and draws the 
   assert.deepEqual(pg.calls.map((c) => c.opts), [REFRESH_OPTS, REFRESH_OPTS]);
   assert.deepEqual(pg.log, ['summary:s2', 'components:c2']); assert.equal(pg.els('lwBody').scrollTop, 120);
   pg.log.length = 0;
-  answers[NC] = resp({ error: 'NDBC file not available' }, { status: 404 });
-  assert.equal(await pg.load(NDBC_ST, { refresh: true }), true);
-  assert.deepEqual(pg.log, ['summary:s2'], 'the spectra failed: the old ones stay on the page');
+  answers[NS] = resp({ tag: 's3' }); answers[NC] = resp({ error: 'NDBC file not available' }, { status: 404 });
+  assert.equal(await pg.load(NDBC_ST, { refresh: true }), false, 'the spectra shown could not be refreshed: a failure (G39 V3-1)');
+  assert.deepEqual(pg.log, [], 'nothing replaced: the old summary and spectra stay together');
+  answers[NC] = new Error('offline');
+  assert.equal(await pg.load(NDBC_ST, { refresh: true }), false);
+  assert.deepEqual(pg.log, []);
+  answers[NS] = resp({ tag: 's2' });
   pg.log.length = 0;
   answers[NS] = resp({ error: 'NDBC down' }, { status: 502 });
   assert.equal(await pg.load(NDBC_ST, { refresh: true }), false);
@@ -448,4 +472,37 @@ test('section 56: an NDBC refresh asks both files with the header and draws the 
   answers[NS] = resp({ no_recent_reports: true });
   assert.equal(await pg.load(NDBC_ST, { refresh: true }), true);
   assert.deepEqual(pg.log, ['norecent']);
+});
+
+test('G39 V3-1: an NDBC buoy whose spectra never showed refreshes its summary when the spectra still fail', async () => {
+  const answers = { [NS]: resp({ tag: 's1' }), [NC]: resp({ error: 'no file' }, { status: 404 }) };
+  const pg = livePage(answers);
+  assert.equal(await pg.load(NDBC_ST), true);
+  assert.deepEqual(pg.log, ['front', 'spinner', 'summary:s1']);
+  pg.shown(); pg.log.length = 0;
+  answers[NS] = resp({ tag: 's2' });
+  assert.equal(await pg.load(NDBC_ST, { refresh: true }), true);
+  assert.deepEqual(pg.log, ['summary:s2']);
+});
+
+test('G39-2: a refresh that brings a quiet NDBC buoy back hides its "No Recent Reports" box', async () => {
+  const answers = { [NS]: resp({ no_recent_reports: true }), [NC]: resp({ tag: 'c1' }) };
+  const pg = livePage(answers);
+  assert.equal(await pg.load(NDBC_ST), true);
+  const shown = (id) => !pg.els(id).classList.contains('d-none');
+  assert.ok(shown('liveBuoyNoRecent') && !shown('liveBuoyContent'));
+  pg.shown(); pg.log.length = 0;
+  answers[NS] = resp({ tag: 's2' });
+  assert.equal(await pg.load(NDBC_ST, { refresh: true }), true);
+  assert.deepEqual(pg.log, ['summary:s2', 'components:c1']);
+  assert.ok(!shown('liveBuoyNoRecent') && shown('liveBuoyContent'), 'only the readings show');
+});
+
+test('G39-4 H3: a new buoy (a plain load) does not take the previous buoy\'s scroll', async () => {
+  const answers = { [AL]: resp({ latest: { hs_m: 1 }, recent: [] }), [AC]: resp({ tag: 'v1' }) };
+  const pg = livePage(answers);
+  assert.equal(await pg.load(AODN), true);
+  pg.shown(); pg.els('lwBody').scrollTop = 300;
+  assert.equal(await pg.load(AODN), true);                                   // a pick, not a refresh: the spinner path
+  assert.equal(pg.els('lwBody').scrollTop, 0, 'starts at the top');
 });

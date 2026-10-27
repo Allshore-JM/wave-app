@@ -367,6 +367,23 @@ def valid_id(sid):
 _SERVICES = weakref.WeakSet()
 
 
+def _held_is_better(held, rebuilt):
+    """A refresh's good rebuild against the answer held (G39 V3-2 / G39-3): True when the held answer's newest reading
+    (payload "t", epoch seconds, ascending) is later, or the same and the rebuild is only partial ("partial": an
+    agency's budget used up, weather products missing) while the held one is not. Unknown times -> False (the rebuild
+    is taken)."""
+    def newest(p):
+        t = p.get("t") if isinstance(p, dict) else None
+        if not isinstance(t, list) or not t:
+            return None
+        v = t[-1]
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    a, b = newest(held), newest(rebuilt)
+    if a is None or b is None:
+        return False
+    return a > b or (a == b and bool(rebuilt.get("partial")) and not held.get("partial"))
+
+
 class TideService:
     """Forecasts and observations per station, cached, one upstream request per key at a time.
 
@@ -426,16 +443,20 @@ class TideService:
             while len(self._cache) > self.max_entries:
                 self._cache.popitem(last=False)
 
-    def _keep_after_refresh(self, key):
-        """A refresh whose build did not succeed: True when the key still holds a good answer, which then stays for
-        everyone (keep-last) with its 'asked' time set now (the per-station floor counts the failed attempt too)."""
+    def _keep_after_refresh(self, key, rebuilt=None):
+        """A refresh whose build did not succeed (rebuilt None), or whose good rebuild is older or thinner than the answer
+        held (rebuilt = its payload: a refresh never makes an answer worse, G39 V3-2 / G39-3: _held_is_better): when the key still holds a
+        good answer it stays for everyone (keep-last) with its 'asked' time set now (the per-station floor counts the
+        attempt too) and is returned as (status, payload); else None."""
         with self._lock:
             hit = self._cache.get(key)
             now = self._now()
             if hit is None or hit[0] <= now or hit[1] != "ok":
-                return False
+                return None
+            if rebuilt is not None and not _held_is_better(hit[2], rebuilt):
+                return None
             self._cache[key] = hit[:4] + (now,)
-            return True
+            return hit[1], hit[2]
 
     def _key_lock(self, key):
         """The key's [lock, users] entry, counted: every caller must _drop_key it, whether it got the lock or not
@@ -498,8 +519,11 @@ class TideService:
                     ttl = res[2] if len(res) > 2 else ttl_ok
                 else:
                     ttl = self.final_ttl if status == "final" else self.error_ttl
-                if not (fresh_s is not None and status != "ok" and self._keep_after_refresh(key)):
-                    self._put(key, status, payload, ttl)
+                if fresh_s is not None:
+                    kept = self._keep_after_refresh(key, payload if status == "ok" else None)
+                    if kept is not None:
+                        return kept if status == "ok" else (status, payload)   # older data: the held answer; a failure: told
+                self._put(key, status, payload, ttl)
                 return status, payload
             finally:
                 e[0].release()

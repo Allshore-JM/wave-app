@@ -956,3 +956,51 @@ test('section 56: refreshNow while loading does nothing, after an error is a Ret
   s.answers[3].res(response(200, payload())); s.answers[4].res(response(200, observedBody(10)));
   assert.equal(await p, null);
 });
+
+test('G39-4 T4: a refresh whose predictions fail but whose water level arrives draws the new level', async () => {
+  const s = await readyTide();
+  const before = s.els.strip.children[0];
+  const p = s.view.refreshNow();
+  s.answers[2].rej(new Error('net')); s.answers[3].res(response(200, observedBody(130)));
+  assert.equal(await p, false, 'one part failed');
+  assert.notEqual(s.els.strip.children[0], before, 'drawn again with the new water level');
+  assert.equal(s.loads.length, 1, 'not counted as a good load');
+});
+
+test('G39-4 T2 / T3: a button refresh clears a pending midnight retry; a midnight refresh that answers resets the window clock', async () => {
+  const s = setup({ now: Date.UTC(2026, 9, 9, 9, 50) });
+  s.view.load(HNL_ST);
+  s.answers[0].res(response(200, payload({ obs: true }))); await flush();
+  s.answers[1].res(response(200, { t: [], v: [] })); await flush();
+  assert.equal(s.loads.length, 1);
+  s.setNow(Date.UTC(2026, 9, 9, 10, 1)); s.timers.fire(I.NOW_REDRAW_MS);   // a new day: the midnight refresh
+  s.answers[2].rej(new Error('down')); await flush();                      // fails: retry pending in 10 minutes
+  const p = s.view.refreshNow();                                             // the button
+  s.answers[3].res(response(200, payload({ obs: true }))); s.answers[4].res(response(200, observedBody(5)));
+  assert.equal(await p, true);
+  const n = s.calls.length;
+  s.setNow(Date.UTC(2026, 9, 9, 10, 12)); s.timers.fire(I.NOW_REDRAW_MS);
+  assert.equal(s.calls.length, n, 'the midnight retry was cleared by the button refresh');
+  // T3: a midnight refresh that answers marks the window loaded
+  const r = setup({ now: Date.UTC(2026, 9, 9, 9, 50) });
+  r.view.load(WAI_ST); r.answers[0].res(response(200, payload({ obs: false }))); await flush();
+  assert.equal(r.loads.length, 1);
+  r.setNow(Date.UTC(2026, 9, 9, 10, 1)); r.timers.fire(I.NOW_REDRAW_MS);
+  r.answers[1].res(response(200, payload({ obs: false }))); await flush();
+  assert.equal(r.loads.length, 2, 'the window refresh clock reset by the midnight refresh');
+});
+
+test('G39 A3: the refresh button acting as Retry leaves the focus where it is; the Retry button moves it', async () => {
+  let focused = 0;
+  const s = setup({ onRetried: () => { focused++; } });
+  s.view.load(HNL_ST, { unit: 'US' });
+  s.answers[0].res(response(500, {})); await flush();
+  assert.equal(await s.view.refreshNow(), null);
+  s.answers[1].res(response(200, payload())); await flush();
+  assert.equal(s.view.state().status, 'ready'); assert.equal(focused, 0, 'no focus move from the refresh button');
+  s.view.load(HNL_ST, { unit: 'US' });
+  s.answers[3].res(response(500, {})); await flush();
+  s.view.retry();
+  s.answers[4].res(response(200, payload())); await flush();
+  assert.equal(focused, 1, 'the Retry button still moves the focus into the window');
+});

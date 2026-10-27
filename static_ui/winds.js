@@ -735,7 +735,7 @@
     function refreshNow() {
       var seq = st.seq;
       if (!st.station) return Promise.resolve(null);
-      if (st.status === 'error') { retry(); return Promise.resolve(null); }
+      if (st.status === 'error') { retry(); st.retried = false; return Promise.resolve(null); }   // the focus stays on the button (G39 A3)
       if (st.status !== 'ready') return Promise.resolve(null);
       st.fetchedAt = now();                                               // the quiet turns count from here too
       var headers = { Accept: 'application/json' };

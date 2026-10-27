@@ -171,18 +171,22 @@ HTTP = _build_http_session()
 # The trust list (plan section 57). Every HTTPS request verifies against certifi's list (requests'
 # default); requirements.txt pins certifi >= 2026.10.23, the release after eMudhra's compromised
 # intermediates (October 2026) left Mozilla's list. Section 47's extra emSign root is gone: PacIOOS
-# now serves a Let's Encrypt chain. /healthz "tls" reports what this process actually uses.
+# now serves a Let's Encrypt chain. /healthz "tls" reports certifi's version and whether a request of this
+# process verifies against certifi's file once requests has applied the environment (REQUESTS_CA_BUNDLE or
+# CURL_CA_BUNDLE replace it; SSL_CERT_FILE does not touch requests and is listed for information).
 _CA_ENV_VARS = ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE")
 
 
 def _tls_health():
-    """certifi's version and file, requests' default bundle and any variable that overrides it."""
+    """certifi's version, whether requests' effective CA file is certifi's, and the CA variables set on the host."""
     out = {"certifi": None, "bundle_is_certifi": None,
            "env_override": sorted(k for k in _CA_ENV_VARS if os.environ.get(k))}
     try:
         import certifi
         out["certifi"] = getattr(certifi, "__version__", None)
-        out["bundle_is_certifi"] = (os.path.normcase(os.path.abspath(requests.certs.where()))
+        ca = requests.Session().merge_environment_settings("https://example.com/", {}, None, None, None)["verify"]
+        bundle = requests.certs.where() if ca is True else ca
+        out["bundle_is_certifi"] = (isinstance(bundle, str) and os.path.normcase(os.path.abspath(bundle))
                                     == os.path.normcase(os.path.abspath(certifi.where())))
     except Exception as exc:
         out["error"] = repr(exc)

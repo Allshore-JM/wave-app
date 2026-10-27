@@ -1873,7 +1873,8 @@ revocation, so the protection is the trust list itself:
   certifi, the system default and botocore's CA file (`--paths` names the ones an environment uses: the site uses
   requests only, i.e. `certifi`); `--real` also checks that the hosts the site and the jobs read verify. A real host
   that cannot be reached (asked twice) is reported as unreachable, not failed: a network result. Exit 1 on any
-  certificate failure, or when a test host cannot be reached. The site itself makes no HTTPS request outside requests (no urllib / ssl use), so the system list of
-  Render's image does not decide what it trusts.
+  certificate failure, or when a test host cannot be reached. The site itself makes no HTTPS request outside requests
+  (no urllib / ssl use), so the system list of Render's image does not decide what it trusts.
 - A future CA incident: raise the floor in `requirements.txt` and the pins in the workflows together (the pin tests in
-  `tests/model_frames/test_tls_pins.py` and `tests/test_swan_cert.py` name the release).
+  `tests/model_frames/test_tls_pins.py` and `tests/test_swan_cert.py` name the release; model-frames-tests runs them
+  when a workflow, the check tool or the tests change).

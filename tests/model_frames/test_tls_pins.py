@@ -122,3 +122,13 @@ def test_the_check_tool_limits_the_trust_paths(monkeypatch, capsys):
     assert tls_check.main([]) == 0 and None in seen              # without --paths: every path found
     assert tls_check.main(["--paths", "certifi,nope"]) == 1      # a path the environment lacks fails
     assert "trust path nope: FAIL" in capsys.readouterr().out
+
+
+def test_the_temporary_check_workflow_is_gone_and_the_pins_run_in_ci():
+    """The push-triggered dry run (step 1-2) is removed before the merge; the pin tests read coast-build.yml and the
+    check tool, so the job-tests workflow runs when either changes (push and pull request)."""
+    assert not os.path.exists(os.path.join(WF, "tls-dryrun.yml"))
+    tests = _read("model-frames-tests.yml")
+    push, pr = tests.split("pull_request:", 1)
+    for part in (push, pr.split("permissions:", 1)[0]):
+        assert '"tools/tls_check.py"' in part and '".github/workflows/coast-build.yml"' in part

@@ -64,3 +64,52 @@ new rules (the default window answer now carries one record with wind: an empty 
 tests (each finding, the boundaries, the fork lock, NWS down with history but no latest). The reviewer's four probes
 fail on the fix. Mutants of the fix: 20 of 20 killed. README section "Wind stations" (the 24 hours) updated.
 Fill time with the pauses: about 12-15 minutes after a start (was 10-12 back to back).
+
+### Test-site check of the fix round (Opus 5.5 MAX)
+
+`test` @ 1d5cc7e (cherry-pick of 6338712; README the test branch's own; the record left off). The test branch's suite:
+1,177 passed + the 5 failures it always has (its logo lines vs the page golden x 4, the numpy-import test). Scratch
+`g38/v`: `watch3.py` (every 2 s `/healthz`, every 10 s `/robots.txt`, every minute 016HE's history), `pacing.py` (every
+MADIS fetch rebuilt from `in_flight` / `in_flight_s`; a fetch is the live poll when `last_attempt_ts` moved to it, which
+after the fix only live polls do), `burst.py`, the step-2 checks `v55_data.py` / `v55_latest.py` / `v55_window.js`.
+
+- **Deploy** (pushed 00:40:21 UTC): 658 polls across the switch, 0 failed; the old instance answered until 00:41:48, the
+  new one (its MADIS status carries the new `backfill_lost` key) from 00:41:50.
+- **Pacing (P2-2), two fills**:
+
+| | deploy (00:41-00:57 UTC) | cold start after 20 idle minutes (01:30-01:46 UTC) |
+|---|---|---|
+| fill (start -> "done") | 930.6 s | 934.6 s (first `/healthz` 42.7 s, uptime 11 s: a fresh instance) |
+| fetches | 4 live polls + 12 windows, 0 given up | 4 live polls + 12 windows, 0 given up |
+| pause from a window's end to the next window | 21.0-37.5 s (median 31.9) | 28.3-36.3 s (median 30.8) |
+| MADIS query in flight | 54 % of the fill | 52 % of the fill |
+| window times | 25-84 s | 28-47 s |
+| live poll times | 15-33 s | 14-27 s |
+
+  The 15-s pause plus the scheduler's tick (30 s, or a wake by another feed) gives the 21-38 s seen. A live poll keeps its
+  own 5-minute turn and can start 12-14 s after a window (seen once). Step 2's fills (old code, windows back to back) took
+  9.6 and 11.6 minutes; the pauses make the fill about 15.5 minutes (owner awareness: one constant, MADIS_BACKFILL_TTL_S,
+  trades the pause for fill time).
+- **A window's refresh is not the feed's (P3-1)**: in both fills the good age kept growing through the windows and was reset
+  only by the live polls; the list version moved at the live polls and at the first windows that ADDED stations to the
+  latest list (deploy: 267 -> 283 -> 285 at windows 1-2; cold start: 263 -> 283 -> 284 -> 285 at windows 1-3) and never at
+  the other windows; `last_error` stayed None (no live poll failed during the check: the kept error rests on the tests).
+- **The live poll's 75-s read (P3-6)**: one live poll took 33 s (the old limit was 45 s); none timed out.
+- **Data**: 16 stations' 24 hours against NOAA MADIS read here (three 2-hour windows + the live answer, own CSV parser): 719
+  records, 0 mismatched, 0 missing, 0 extra; every station continuous at its own step over 22-23.6 h. One 20-minute step
+  (AX682 09:05 UTC) is missing in MADIS itself (its window ending 10:00 UTC asked directly). The latest table vs production
+  at the same moment: NWS stations 283 identical + 2 newer on test, 0 older; the other rows' same-time readings all equal.
+- **The NWS budget (P3-2)**: 40 different NWS stations' windows asked back to back (14.4 s): 40 x 200, 0 "busy". Answers
+  1-36 took 0.32-0.50 s (each with an NWS API request; the API still stalled since 2026-10-22 13:20 UTC), answers 37-39
+  0.14-0.16 s (the server's 30-a-minute budget used up: MADIS's rows alone, cached a minute), the 40th 0.33 s (a refilled
+  token). Before the fix those three answered 503 "busy".
+- **Windows** (headless Chrome, own profile, trusted clicks / taps): during the fill 016HE showed its newest 40 minutes and
+  "The earlier hours are still loading."; after it 016HE / 011HI / AU956 / HOFH1 (utility, mesonet, CWOP, RAWS) draw 22-23.6 h
+  with gusts, arrows and the air temperature, the MADIS note and NOAA's disclaimer, 48-row tables; phone 375x812 full
+  screen, no sideways scroll; no console problems. The cold start's 016HE answer went 0 -> 5 -> 49 -> 62 -> 98 -> 122 rows
+  ("filling") and 143 rows over 23.7 h after it.
+- **Memory**: deploy 99.6 -> 138.6 MB (a browser session during that fill), cold start 90.2 -> 118.7 MB: step 2's profile.
+- Cleanup: the test origin's storage emptied, Chrome stopped (profile removed, no process left).
+
+No findings. Not seen live (no occasion): a window answer with no records / no wind, a live poll failing during the fill,
+a start with MADIS down, a fork; those rest on the tests and mutants above.

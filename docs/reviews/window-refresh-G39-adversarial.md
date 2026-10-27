@@ -122,5 +122,63 @@ Honolulu tide gauge (1612340); the Honolulu wind gauge (coops:1612340).
     - a click covered by another window: the tide window's minimise button, under the wind window.
     Each was fixed and re-run.
 
-## Step 4: review and fixes
-(to follow)
+## Step 4: review and fixes (2026-10-27, Opus 5.5, effort HIGH)
+
+One fresh-context reviewer read `git diff 1b57425..7ab75d1` and checked the test site lightly (5 curl requests, no
+browser). Its report and scripts are in the session's scratch folder `g39/r` (g39-report.md, scripts/, mut-out*.txt).
+Result: **0 P0, 0 P1, 1 P2, 3 P3**, plus three owner-awareness notes. V3-1 and V3-2 (step 3) were known to it and not
+re-reported.
+
+### Findings
+- **G39-1 (P2): an AODN spectra refresh ran outside every cap.** Each build is 8 requests to AODN's THREDDS server
+  (13-15 s), and the site has 4 request threads. Refreshes of four different Australian buoys at once (or four automatic
+  15-minute refreshes) would hold every thread, `/healthz` too, for ~15 s; anyone can send the header. In-process: 8
+  refreshes of 8 buoys ran 8 builds at once.
+- **G39-2 (P3): a refresh that brings a quiet NDBC buoy back left "No Recent Reports" on screen** above the new readings
+  (the refresh path never hid that box; the page test's fake elements did not keep their classes, so nothing caught it).
+- **G39-3 (P3): for an NWS station, a refresh during a busy minute replaced a full answer with a thin one.** With the NWS
+  budget spent, the rebuild is "ok" from MADIS alone: 102 rows (newest 10 min old) became 19 rows (newest 60 min old) for
+  every viewer; the README said a busy answer replaces nothing. Same family as V3-2.
+- **G39-4 (P3, tests): 37 mutants, 24 killed, 13 survived, 8 of them real gaps**: T4 (a water level arriving without the
+  predictions never drawn), H6 (the content box), H3 (scroll restored on a plain load), C2 / C4 (the status line not
+  emptied: a second "Refreshed." not announced), S14 (tide error entry), T2 / T3 (the midnight-refresh lines).
+- Owner awareness:
+  - A1: most non-NDBC buoys (CDIP, QLD, AusWaves, the European feeds) show their feed's own copy, refreshed every 5-30
+    minutes; for them the button only replaces the browser's copy; only NDBC buoys and AODN's spectra are asked of the
+    agency again.
+  - A2: the 15-minute rule is "data 15+ minutes old when the tab is shown", not "hidden 15+ minutes".
+  - A3: a refresh on an error state acted as Retry and moved the keyboard focus to the window header.
+- Held up (the reviewer's checks): no path draws a stale answer under another station; the button cannot stay busy
+  forever; the server rule (exactly "1", the floor, one build under concurrency, busy caches nothing, keep-last only for
+  good answers); the NOAA budgets and the cache headers.
+
+### The fixes (UI 1.26.4; feat/window-refresh @ 482486a, golden 743575a, pin 9d27780)
+- **G39-1:** an AODN spectra refresh takes the single slot of `_SPECTRA_REFRESH` without waiting; when it is taken the
+  route answers 503 busy with `retry` and is not counted (the button turns orange). Plain requests are unaffected.
+  NDBC's spectra are not capped: its summary route already reads NDBC on every request (the reviewer's point), and a
+  slow AODN build must not block NDBC refreshes.
+- **V3-2 / G39-3:** a refresh never makes an answer worse (`_held_is_better`, wind and tide): a rebuilt history or water
+  level whose newest reading is older than the one held, or as new but partial, leaves the held answer for everyone (the
+  refreshing client gets it too). A partial wind history is now marked `"partial": true` in the answer.
+- **V3-1:** a buoy refresh that cannot bring back the spectra the window shows keeps the whole view and reports
+  "Could not refresh" (NDBC and generic buoys); a buoy whose spectra never showed still refreshes its readings.
+- **G39-2:** both success paths hide the "No Recent Reports" box.
+- **A3:** the refresh button acting as Retry leaves the focus on the button; the Retry button still moves it.
+- **A1 / A2:** written into the README.
+- **G39-4:** pins for T2, T3, T4, H3, H6 (through G39-2's test), C2 / C4, S14 (with an error time longer than the
+  floor, so the rule decides); the page test's fake elements keep their classes.
+- Suites: pytest 1,599 (after the golden's re-capture), Node 1,051. Mutants of the fix round: 15, 14 killed (W5 after a
+  pin); C3 is equivalent on the real page (a plain load clears the remembered spectra before that line).
+
+### Test-site check of the fixes (2026-10-27, test @ 31c2642)
+- Deployed 05:13:34 UTC; new assets served from 05:14:44; 107 polls, one /healthz poll timed out (20 s) during the
+  switch while /robots.txt answered. Served tides.js / winds.js = the commit; the 1.26.3 address answers 404.
+- V3-1 live: with only the spectra request refused, NDBC 51201 and AODN Wilsons Prom both say "Could not refresh. Try
+  again." (orange) and keep their whole view (step 3: "Refreshed.").
+- V3-2 in-process against the real agencies (relay_check.py): with CO-OPS refused, a refresh keeps the direct answer
+  (238 rows, newest 05:00 UTC) for everyone (step 3: swapped for the relay copy, 36 minutes older).
+- Regression on 1.26.4 (headless Chrome, trusted input): the flows desktop + phone, two presses, blocked refreshes,
+  AODN + CDIP buoys, the 15-minute rule (incl. the chip), a fresh tab with the three windows refreshed on desktop and
+  phone: all pass, console clean.
+- G39-1 is covered by the route tests (a live check would cost 16+ THREDDS requests and stall the shared test instance).
+

@@ -760,7 +760,7 @@ test('section 56: refreshNow while loading does nothing; after an error it is a 
   assert.equal(await s.view.refreshNow(), null);
   assert.equal(s.calls.length, 2); assert.equal(s.view.state().status, 'loading', 'an error: the Retry');
   s.answers[1].res(resp(200, history())); await flush();
-  s.setNow(NOW + 4 * 60000); s.view.refreshNow(); s.answers[2].res(resp(200, history())); await flush();
+  s.setNow(NOW + 4 * 60000); s.view.refreshNow(); s.answers[2].res(resp(503, { retry: true })); await flush();
   s.setNow(NOW + 6 * 60000); s.timers.fire(); await flush();
-  assert.equal(s.calls.length, 3, 'the quiet 5-minute turn counts from the button');
+  assert.equal(s.calls.length, 3, 'the quiet 5-minute turn counts from the button, also when it failed');
 });

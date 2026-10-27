@@ -1264,7 +1264,7 @@ test('section 56: the refresh button: busy while it runs, one at a time, a failu
   assert.ok(!btn.classList.contains('fw-refresh-failed'));
   r.asks[1].res(true); await settle();
   assert.equal(btn.getAttribute('title'), 'Refresh'); assert.ok(!btn.classList.contains('fw-refresh-failed'));
-  assert.equal(say.textContent, 'Refreshed.');
+  assert.equal(btn.getAttribute('aria-busy'), 'false', 'the arrow stops'); assert.equal(say.textContent, 'Refreshed.');
   btn.dispatch('click'); r.asks[2].rej(new Error('x')); await settle();
   assert.equal(btn.getAttribute('title'), 'Could not refresh. Try again.', 'a rejected refresh is a failure');
   btn.dispatch('click'); r.asks[3].res(null); await settle();

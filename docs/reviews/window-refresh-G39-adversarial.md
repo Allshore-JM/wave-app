@@ -182,3 +182,15 @@ re-reported.
   phone: all pass, console clean.
 - G39-1 is covered by the route tests (a live check would cost 16+ THREDDS requests and stall the shared test instance).
 
+## Step 5: production (2026-10-27, Opus 5.5, effort MEDIUM)
+- Rollback tag `prod-pre-refresh` @ 1b57425 pushed; `Live-Buoy-Update` fast-forwarded 1b57425..a58e14a (UI 1.26.4).
+  New assets served from 05:26:33 UTC; 127 polls of /robots.txt and /healthz across the switch, none failed.
+- forecast.js, tides.js and winds.js served = the commit. The 51201 and 51003 pages differ from the pre-merge capture
+  only by the section-56 markup, CSS and scripts and the asset version, and equal the test site's minus its 3 logo
+  lines (test-only logo count 0).
+- Live: a refresh of coops:1612340 rebuilt (0.70 s), a second within the minute was served from the copy (0.14 s, same
+  ETag); plain answers 200; /healthz ok. CI on a58e14a green (coast-build, model jobs).
+- Headless Chrome on allshoresurf.com: the refresh flows desktop + phone, two presses: all pass, console clean; storage
+  of both origins emptied.
+- Rollback: re-push `prod-pre-refresh`.
+

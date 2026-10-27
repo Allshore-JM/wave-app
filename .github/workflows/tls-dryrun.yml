@@ -42,6 +42,7 @@ jobs:
       - run: |
           rc=0; python tools/tls_check.py --real --paths certifi,botocore > tls.txt || rc=$?; cat tls.txt >> "$GITHUB_STEP_SUMMARY"; grep -E "^python=|^trust path|FAIL|^tls_check:" tls.txt | sed "s/^/::notice::/"; exit $rc
       - name: curl with certifi's file (coast-build's downloads)
+        if: always()
         run: |
           CA="$(python -c 'import certifi; print(certifi.where())')"
           rc=0

@@ -229,7 +229,7 @@ def test_g18b_pins(client):
     parked live chip (its resize corner stays reachable)."""
     body = client.get("/?station=51201").get_data(as_text=True)
     for needle in (
-        "liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; liveWindowClosed(); } });",
+        "liveWin = window.AllshoreForecast.createLiveWindow({ onClose: function () { liveDetailSeq++; liveWindowClosed(); },",
         "if (fwEl && fwEl.classList.contains('fw-min') && fwEl.offsetHeight > 0) phoneBarH = fwEl.offsetHeight;",
         "document.documentElement.style.setProperty('--fw-bar-h', phoneBarH + 'px');",
         "function open() { seen = new Map(); nextRank = 0; renderFavs(); place(); results.hidden = false;",
@@ -642,7 +642,7 @@ def test_tide_stations_on_the_page(client):
         ".live-win.fw-front, .tide-win.fw-front { z-index: 2100; }",
         "function front(which) { wins.forEach(function (w, i) { if (w) w.classList.toggle('fw-front', i === which); }); }",
         "document.addEventListener('allshore:tidepanel', function () { front(2); });",
-        "tideWin = window.AllshoreForecast.createTideWindow({ onClose: tideWindowClosed, onResize: function () { if (tideView) tideView.resize(); } });",
+        "tideWin = window.AllshoreForecast.createTideWindow({ onClose: tideWindowClosed, onResize: function () { if (tideView) tideView.resize(); },",
         "document.body.classList.toggle('tide-chip', !!(d.open && d.mode === 'min'));",
         "closeTidePanel: closeTideWindow,", "tideOpen: function () { return !!(tideWin && tideWin.isOpen() && tideWin.window.mode !== 'min'); },",
         "if (tideView) tideView.setUnit(getSelectedUnit());", "if (tideView) tideView.setZone(tzSel.value || '');",
@@ -963,7 +963,7 @@ def test_wind_stations_on_the_page(client):
         ".wind-win.fw-front { z-index: 2100; }", "html:not(.js) .wind-win { display: none !important; }",
         ".wind-win.fw-min .fw-titles .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }",
         "document.addEventListener('allshore:windpanel', function () { front(3); });",
-        "windWin = window.AllshoreForecast.createWindWindow({ onClose: windWindowClosed, onResize: function () { if (windView) windView.resize(); } });",
+        "windWin = window.AllshoreForecast.createWindWindow({ onClose: windWindowClosed, onResize: function () { if (windView) windView.resize(); },",
         "document.body.classList.toggle('wind-chip', !!(d.open && d.mode === 'min'));",
         "closeWindPanel: closeWindWindow,", "windOpen: function () { return !!(windWin && windWin.isOpen() && windWin.window.mode !== 'min'); },",
         "if (windView) windView.setUnit(getSelectedUnit());", "refreshWindFlags();", "if (windView) windView.setZone(tzSel.value || '');",

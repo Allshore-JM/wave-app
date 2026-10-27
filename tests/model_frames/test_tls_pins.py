@@ -63,6 +63,18 @@ def test_the_check_tool_classifies_answers(monkeypatch):
     monkeypatch.setattr(tls_check, "connect",
                         lambda h, c, timeout=15: "refused" if h in tls_check.COMPROMISED else "refused")
     assert tls_check.main([]) == 0 and tls_check.main(["--real"]) == 1      # a real host refused fails
+    for answer in ("bad certificate (code 10: certificate has expired)", "tls error: X"):
+        monkeypatch.setattr(tls_check, "connect", lambda h, c, timeout=15, a=answer: a)
+        assert tls_check.main([]) == 1, answer                              # a test host: proves nothing = fail
+        monkeypatch.setattr(tls_check, "connect",
+                            lambda h, c, timeout=15, a=answer: "refused" if h in tls_check.COMPROMISED else a)
+        assert tls_check.main(["--real"]) == 1, answer                      # a real host: not a network result
+
+
+def test_the_real_hosts_include_coast_builds_downloads():
+    for host in ("github.com", "release-assets.githubusercontent.com", "raw.githubusercontent.com",
+                 "download.geonames.org"):
+        assert host in tls_check.REAL
 
 
 def test_unreachable_real_hosts_are_reported_not_failed(monkeypatch, capsys):
@@ -99,14 +111,30 @@ def test_connect_reports_a_verification_failure_as_refused(monkeypatch):
             return False
 
     class Ctx:
+        code = 20
+
         def wrap_socket(self, sock, server_hostname):
+            if self.code is None:
+                err = ssl.SSLError("alert")
+                err.reason = "SSLV3_ALERT_HANDSHAKE_FAILURE"
+                raise err
             err = ssl.SSLCertVerificationError("bad")
-            err.verify_code = 20
+            err.verify_code, err.verify_message = self.code, "test"
             raise err
 
     monkeypatch.setattr(tls_check.socket, "create_connection", lambda addr, timeout: Sock())
     monkeypatch.setattr(tls_check.ssl, "create_default_context", lambda cafile=None: Ctx())
-    assert tls_check.connect("x.example", None) == "refused"
+    for code in (2, 19, 20, 21):                     # the issuer is not trusted: what the test hosts must show
+        Ctx.code = code
+        assert tls_check.connect("x.example", None) == "refused", code
+    # refused for another reason proves nothing about the trust list (G40 P3-1): both test certificates expire on
+    # 2027-05-03, after which a list that trusts the compromised chain would also answer "expired"
+    for code in (10, 62):
+        Ctx.code = code
+        got = tls_check.connect("x.example", None)
+        assert got.startswith("bad certificate (code %d" % code), got
+    Ctx.code = None                                  # a TLS answer that is no verified handshake (a handshake alert)
+    assert tls_check.connect("x.example", None) == "tls error: SSLV3_ALERT_HANDSHAKE_FAILURE"
     monkeypatch.setattr(tls_check.socket, "create_connection",
                         lambda addr, timeout: (_ for _ in ()).throw(OSError("down")))
     assert tls_check.connect("x.example", None) == "error: OSError"
@@ -132,3 +160,26 @@ def test_the_temporary_check_workflow_is_gone_and_the_pins_run_in_ci():
     push, pr = tests.split("pull_request:", 1)
     for part in (push, pr.split("permissions:", 1)[0]):
         assert '"tools/tls_check.py"' in part and '".github/workflows/coast-build.yml"' in part
+
+
+
+def test_no_workflow_downloads_or_installs_around_the_pins():
+    """Every workflow, not only coast-build (G40 P3-3): each curl takes certifi's file and an empty CA folder, nothing
+    uses wget, every certifi named anywhere is the pinned release, and no workflow sets a CA variable."""
+    names = sorted(f for f in os.listdir(WF) if f.endswith(".yml"))
+    assert "coast-build.yml" in names and len(names) >= 8
+    curls = 0
+    for n in names:
+        text = _read(n)
+        for line in re.findall(r"[^\n]*\bcurl\b[^\n]*", text):
+            line = line.split(" #", 1)[0]               # a trailing shell comment may mention curl
+            if not re.search(r"\bcurl\b", line) or line.strip().startswith("#"):
+                continue
+            curls += 1
+            assert '--cacert "$CA" --capath "$NOCAPATH"' in line, (n, line)
+        assert not re.search(r"(?m)^[^#\n]*\bwget\b", text), n
+        for pin in re.findall(r"certifi\s*(?:==|=|>=|<=|~=|>|<)\s*([0-9][0-9.]*)", text):
+            assert pin == PIN, (n, pin)
+        assert not re.search(r"(?m)^[^#\n]*\b(REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|SSL_CERT_FILE|SSL_CERT_DIR|AWS_CA_BUNDLE)\b",
+                             text), n
+    assert curls == 3                                # coast-build's three downloads; a new one must be looked at

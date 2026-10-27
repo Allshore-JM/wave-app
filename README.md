@@ -1859,8 +1859,10 @@ revocation, so the protection is the trust list itself:
   certificates out; 2026.10.23 keeps only "emSign Root CA - G1", which none of them chains to), so every Render build
   installs at least that release; requests verifies against it. Section 47's extra copy of that root for the SWAN
   download (`certs/`, `_ca_bundle()`) was removed: PacIOOS now serves a Let's Encrypt chain. `/healthz` -> `tls`
-  reports the installed `certifi`, whether requests' default bundle is certifi's file (`bundle_is_certifi`) and any of
-  `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` / `SSL_CERT_FILE` set on the host (`env_override`); never part of `ok`.
+  reports the installed `certifi`, whether a request verifies against certifi's file once requests has applied the
+  environment (`bundle_is_certifi`: false when `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE` points elsewhere) and which of
+  those two and `SSL_CERT_FILE` are set on the host (`env_override`; requests ignores `SSL_CERT_FILE`); never part of
+  `ok`.
 - **The publishers.** The six micromamba workflows pin `certifi` and `ca-certificates` (urllib's downloads use conda's
   OpenSSL list, the R2 uploads botocore's) and list both in the step summary. coast-build's pip jobs install certifi so
   botocore uses it; its `curl` downloads pass certifi's file and an empty CA folder (`--cacert "$CA" --capath
@@ -1871,10 +1873,21 @@ revocation, so the protection is the trust list itself:
 - **Checking it.** `python tools/tls_check.py [--real] [--paths ...]` connects to Render's two test hosts
   (`dv-g3b-emudhra.we-have-a-problem.com`, `dv-g3b-aaa-emudhra.we-have-a-problem.com`; both must be refused) through
   certifi, the system default and botocore's CA file (`--paths` names the ones an environment uses: the site uses
-  requests only, i.e. `certifi`); `--real` also checks that the hosts the site and the jobs read verify. A real host
-  that cannot be reached (asked twice) is reported as unreachable, not failed: a network result. Exit 1 on any
-  certificate failure, or when a test host cannot be reached. The site itself makes no HTTPS request outside requests
-  (no urllib / ssl use), so the system list of Render's image does not decide what it trusts.
+  requests only, i.e. `certifi`); `--real` also checks that the hosts the site and the jobs read (coast-build's
+  download hosts included) verify. A test host passes only when its issuer is not trusted (OpenSSL codes 2, 19, 20,
+  21): an expired or wrong-host certificate proves nothing (both test certificates expire on 2027-05-03) and fails.
+  Only `dv-g3b-emudhra` tells an old certifi from a new one; `dv-g3b-aaa-emudhra` (Comodo's "AAA Certificate
+  Services" cross-sign) is refused by older certifi releases too and matters for system lists. A real host that cannot
+  be reached at all (asked twice) is reported as unreachable, not failed: a network result; a TLS answer that is not a
+  verified handshake fails. The R2 upload host is not in the list (its name holds the account id): the first publish
+  after a change proves it. The site itself makes no HTTPS request outside requests (no urllib / ssl use), so the
+  system list of Render's image does not decide what it trusts.
+- **Known limitation: the installers.** pip (on Render and on GitHub's runners) trusts the machine's own list plus
+  the certifi copy bundled with pip, and micromamba most likely the runner's list: on 2026-10-27 both still trusted a
+  compromised chain, and no install is hash-pinned. Exploiting it needs the stolen keys and a position on the network
+  between Render or GitHub and the package servers; it existed before this change and is accepted for now (owner,
+  2026-10-27). The full fix is hash-locked installs (a section of its own if wanted).
 - A future CA incident: raise the floor in `requirements.txt` and the pins in the workflows together (the pin tests in
-  `tests/model_frames/test_tls_pins.py` and `tests/test_swan_cert.py` name the release; model-frames-tests runs them
-  when a workflow, the check tool or the tests change).
+  `tests/model_frames/test_tls_pins.py` and `tests/test_swan_cert.py` name the release). model-frames-tests runs
+  `test_tls_pins.py` when a workflow, the check tool or the tests change; `tests/test_swan_cert.py` (the site's floor,
+  no other trust list in any site module or start file, `/healthz`) runs with the site's suite, which no workflow runs.

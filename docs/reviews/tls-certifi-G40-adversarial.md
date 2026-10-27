@@ -74,3 +74,26 @@ tests when `tools/tls_check.py` or `coast-build.yml` changes.
   minutes and re-checked on demand). With no visitor for 2.5 hours it stayed on the 06Z run until one request. By
   design; noted because the comparison waited on it.
 - The laptop (owner's go-ahead, step 5) still has certifi 2025.04.26, which trusted `dv-g3b-emudhra` in the local check.
+
+## G40: the review (2026-10-27, one fresh reviewer at HIGH)
+
+Target: `a58e14a..2793eb2` and the test site. Report (scratch): `g40/g40-report.md`. **0 P0, 0 P1, 1 P2, 6 P3.**
+Held up: every HTTPS client of the site is a default requests session (no urllib / ssl / boto / curl / subprocess on
+the site, no `verify=False` or CA variable anywhere in the repo); `/healthz` -> `tls` cannot throw and leaks nothing;
+setup-micromamba puts `create-args` into the cache key, so the pins force a rebuilt environment; every curl carries
+`--cacert` and `--capath` and an empty `$CA` fails rather than falling back; certifi 2026.10.23 drops several roots
+(DigiCert Global Root CA, Entrust, GTS R2 ...) yet all 31 upstream hosts checked verify under it; both test hosts are
+refused with code 20. The author re-checked P2-1 (pip 25.2's `index_command.py`: truststore plus its vendored certifi),
+P3-1 (the code) and P3-2 (`requests.certs.where is certifi.where` -> True).
+
+| # | Finding | Outcome |
+|---|---|---|
+| P2-1 | pip (Render, runners) trusts the machine's list plus pip's own certifi copy, micromamba most likely the runner's list; both still trusted a compromised chain; no install is hash-pinned. Build-time, needs the stolen keys and a network position; existed before | OWNER (2026-10-27): document it. README "Known limitation: the installers"; hash-locked installs would be a section of their own |
+| P3-1 | `tls_check` counted any verification failure as "refused": an expired (code 10) or wrong-host (62) certificate passed, and both test certificates expire on 2027-05-03 | Fixed: only codes 2, 19, 20, 21 pass; anything else is "bad certificate (code N: ...)" and fails; tests for 10 and 62; README notes that only `dv-g3b-emudhra` separates old and new certifi |
+| P3-2 | `bundle_is_certifi` was always true (`requests.certs.where` is `certifi.where`) | Fixed: it compares the CA file a request really uses after requests applies the environment (`merge_environment_settings`); false when `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` points elsewhere; tests |
+| P3-3 | The pin tests missed 5 of 10 regressions (a session `.verify`, `verify=False` in another module, a CA variable in `start.sh`, a curl in another workflow, a later certifi downgrade) | Fixed: `tests/test_swan_cert.py` scans every site module for any way to change verification and the site's start files for a CA variable; `test_tls_pins.py` scans every workflow (each curl, no wget, every certifi named is the pin, no CA variable). The reviewer's 5 survivors and 4 mutants of the fixes: 9 of 9 killed |
+| P3-4 | The README said model-frames-tests runs `tests/test_swan_cert.py`; it runs `tests/model_frames` only | Fixed wording: the site pins run with the site's suite (no workflow runs it) |
+| P3-5 | `--real` lacked coast-build's download hosts and the R2 host; a non-certificate TLS failure on a real host was only a note | Fixed: github.com, release-assets.githubusercontent.com, raw.githubusercontent.com, download.geonames.org added; a TLS answer that is no verified handshake fails ("tls error"); only no answer at all is "unreachable"; R2 noted (its name holds the account id; the first publish proves it) |
+| P3-6 | Only the `frames` environment was solved with the pins before the merge; a rollback restores the old cache keys and so the old trusting environments | Noted in the plan: each publisher's first run after the merge is checked (versions in its summary); a rollback brings the old trust back with the old code (expected) |
+
+Local check of the fixed tool with certifi 2026.10.23: both test hosts refused, 26 real hosts verify (`--real`).

@@ -12,9 +12,17 @@ check to the trust paths an environment actually uses: the site uses requests on
 runners the system list ("default") still trusted one of the compromised chains in October 2026, so jobs that
 download with curl pass it certifi's file.
 
-A real host that cannot be reached (a timeout or a refused connection, not a certificate answer) is asked once more
+A test host passes only when the certificate is refused because its issuer is not trusted (OpenSSL verify codes 2,
+19, 20, 21). Any other verdict proves nothing about the trust list and fails: an expired leaf (code 10: both test
+certificates expire on 2027-05-03), a wrong host name (62), another TLS error. Of the two hosts, only
+dv-g3b-emudhra (chain to "emSign ECC Root CA - G3") tells an old certifi from a new one; dv-g3b-aaa-emudhra (Comodo's
+"AAA Certificate Services" cross-sign) is refused by old certifi releases too and matters for system lists.
+
+A real host that cannot be reached (a timeout or a refused connection: no TLS answer at all) is asked once more
 after a pause and then reported as "unreachable": a network result, not a trust one, so it does not fail the check.
-The two test hosts must answer and be refused: unreachable there fails (nothing was proved).
+A TLS answer that is not a verified handshake (a certificate error, a handshake alert) fails it. The two test hosts
+must answer and be refused: unreachable there fails (nothing was proved). Not checked: the R2 upload host (its name
+holds the account id); the first publish after a change proves it.
 
 Exit 0 when every check passes, 1 otherwise. One line per check, then a summary line; nothing secret.
 """
@@ -35,7 +43,10 @@ REAL = (
     "www.pacioos.hawaii.edu", "thredds.aodn.org.au", "erddap.cdip.ucsd.edu", "erddap.marine.ie",
     "wavenet-api.cefas.co.uk", "opendata-download-ocobs.smhi.se", "ddapi20-waterwebservices.rijkswaterstaat.nl",
     "apps.des.qld.gov.au", "auswaves.org", "models.allshoresurf.com", "allshoresurf.com",
+    # coast-build's downloads (curl with certifi's file): GSHHG's release (a redirect), Natural Earth, GeoNames
+    "github.com", "release-assets.githubusercontent.com", "raw.githubusercontent.com", "download.geonames.org",
 )
+UNTRUSTED_ISSUER = (2, 19, 20, 21)    # unable to get issuer / self-signed in chain / no local issuer / leaf unverifiable
 
 
 def contexts():
@@ -56,14 +67,19 @@ def contexts():
 
 
 def connect(host, cafile, timeout=15):
-    """'ok', 'refused' (certificate not trusted) or 'error: ...' (could not tell)."""
+    """'ok'; 'refused' (the issuer is not trusted); 'bad certificate (code N: ...)' (refused for another reason, e.g.
+    expired); 'tls error: ...' (a TLS answer that is no verified handshake); 'error: ...' (no TLS answer at all)."""
     ctx = ssl.create_default_context(cafile=cafile) if cafile else ssl.create_default_context()
     try:
         with socket.create_connection((host, 443), timeout=timeout) as sock:
             with ctx.wrap_socket(sock, server_hostname=host):
                 return "ok"
     except ssl.SSLCertVerificationError as exc:
-        return "refused" if exc.verify_code in (19, 20, 21, 2) else "refused (code %s)" % exc.verify_code
+        if exc.verify_code in UNTRUSTED_ISSUER:
+            return "refused"
+        return "bad certificate (code %s: %s)" % (exc.verify_code, exc.verify_message)
+    except ssl.SSLError as exc:
+        return "tls error: %s" % (getattr(exc, "reason", None) or type(exc).__name__)
     except Exception as exc:
         return "error: %s" % type(exc).__name__
 
@@ -105,7 +121,7 @@ def main(argv=None):
         print("trust path %s: %s" % (name, cafile or "system default"))
         for host in COMPROMISED:
             got = connect_retry(host, cafile)
-            good = got.startswith("refused")
+            good = got == "refused"
             bad += not good
             print("  %-4s %-45s %s (must be refused)" % ("PASS" if good else "FAIL", host, got))
         if args.real:

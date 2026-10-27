@@ -43,11 +43,13 @@ jobs:
             numpy=2.4.6
             pillow=12.3.0
             boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
           cache-environment: true
       - name: Record environment
         shell: bash -l {0}
         run: |
-          echo "env: $(micromamba list | awk '$1 ~ /^(python|eccodes|python-eccodes|numpy|pillow|boto3)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|eccodes|python-eccodes|numpy|pillow|boto3|certifi|ca-certificates)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "runner: $(nproc) cpus, $(free -g | awk '/^Mem:/ {print $2}') GB memory, $(df -BG --output=avail "$RUNNER_TEMP" | tail -1 | tr -d ' ') free in RUNNER_TEMP" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Publish points
         shell: bash -l {0}

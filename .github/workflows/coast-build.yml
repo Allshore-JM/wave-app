@@ -38,7 +38,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
         with:
           python-version: "3.11"
-      - run: pip install numpy==2.2.6 pytest==9.1.1
+      - run: pip install numpy==2.2.6 pytest==9.1.1 certifi==2026.10.23
       - run: python -m pytest -q tests/coast tests/places
   client-tests:
     runs-on: ubuntu-24.04
@@ -48,6 +48,7 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38   # v6.5.0
         with:
           node-version: "24"
+          check-latest: true                 # Node 24.22.1+ (security release 2026-10-21; plan section 57)
       - run: node --test --test-timeout=20000 tests/overlay/coast.test.js tests/overlay/playback.test.js tests/overlay/overlay.test.js tests/overlay/bootstrap.test.js tests/overlay/flow.test.js tests/overlay/panel.test.js tests/overlay/sst.test.js tests/overlay/sst_timers.test.js tests/overlay/isobars.test.js tests/overlay/lake.test.js tests/overlay/lakeoutlines.test.js tests/ui/forecast.test.js tests/ui/window.test.js tests/ui/mapclamp.test.js tests/ui/early.test.js tests/ui/firstview.test.js tests/ui/graticule.test.js tests/ui/tools.test.js tests/ui/tools-ui.test.js tests/ui/points.test.js tests/ui/mypoints.test.js tests/ui/forecast-view.test.js tests/ui/livelist.test.js tests/ui/livelist-page.test.js tests/ui/tides.test.js tests/ui/tides-page.test.js tests/ui/winds.test.js tests/ui/winds-page.test.js tests/ui/basemap.test.js tests/ui/places.test.js tests/ui/buoylinks.test.js tests/ui/nearest.test.js
   build:
     if: github.event_name == 'workflow_dispatch'
@@ -59,7 +60,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
         with:
           python-version: "3.11"
-      - run: pip install numpy==2.2.6 boto3==1.43.98
+      - run: pip install numpy==2.2.6 boto3==1.43.98 certifi==2026.10.23
       - name: Download GSHHG 2.3.7
         if: github.event.inputs.set != 'places'
         run: |

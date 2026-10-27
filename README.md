@@ -1848,3 +1848,25 @@ routes' cache headers are unchanged; without the header nothing changes. Where i
 | `/api/tides/<id>/observed` | `TideService.observed` (15 min); the tide predictions are the same all day and are only revalidated |
 | `/api/ndbc/station/<id>/components` | `NDBC_COMPONENT_CACHE` (30 min); `/wave-summary` reads NDBC on every request already |
 | `/api/buoys/<id>/components` | `AODNProvider.spectrum` (20 min); `/api/buoys/<id>/latest` stays the feed's copy (refreshed every 5-30 min) |
+
+## The TLS trust list (plan section 57)
+
+In October 2026 eMudhra disclosed that the keys of eight of its intermediate certificates (and their cross-signs) were
+stolen; a client that still trusts them accepts a forged certificate for any host. Python's TLS does not check
+revocation, so the protection is the trust list itself:
+
+- **The site.** `requirements.txt` pins `certifi>=2026.10.23` (certifi 2026.10.18 and later leave the compromised
+  certificates out; 2026.10.23 keeps only "emSign Root CA - G1", which none of them chains to), so every Render build
+  installs at least that release; requests verifies against it. Section 47's extra copy of that root for the SWAN
+  download (`certs/`, `_ca_bundle()`) was removed: PacIOOS now serves a Let's Encrypt chain. `/healthz` -> `tls`
+  reports the installed `certifi`, whether requests' default bundle is certifi's file (`bundle_is_certifi`) and any of
+  `REQUESTS_CA_BUNDLE` / `CURL_CA_BUNDLE` / `SSL_CERT_FILE` set on the host (`env_override`); never part of `ok`.
+- **The publishers.** The six micromamba workflows pin `certifi` and `ca-certificates` (urllib's downloads use conda's
+  OpenSSL list, the R2 uploads botocore's) and list both in the step summary. coast-build's pip jobs install certifi so
+  botocore uses it, and CI's Node 24 takes the newest release (`check-latest`).
+- **Checking it.** `python tools/tls_check.py [--real]` connects to Render's two test hosts
+  (`dv-g3b-emudhra.we-have-a-problem.com`, `dv-g3b-aaa-emudhra.we-have-a-problem.com`; both must be refused) through
+  certifi, the system default and botocore's CA file; `--real` also checks that the hosts the site and the jobs read
+  verify. Exit 1 on any failure.
+- A future CA incident: raise the floor in `requirements.txt` and the pins in the workflows together (the pin tests in
+  `tests/model_frames/test_tls_pins.py` and `tests/test_swan_cert.py` name the release).

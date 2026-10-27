@@ -1,5 +1,6 @@
 Flask
 requests
+certifi>=2026.10.23
 gunicorn
 pytz
 timezonefinder==6.5.9

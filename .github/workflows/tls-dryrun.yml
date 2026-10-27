@@ -1,0 +1,66 @@
+# TEMPORARY (plan section 57, step 1): runs tools/tls_check.py in the three environments the trust list
+# matters in, on the feature branch only, with no secrets. Removed before the merge (a test pins its absence).
+name: tls-dryrun
+on:
+  push:
+    branches: ["fix/tls-certifi"]
+permissions:
+  contents: read
+jobs:
+  publishers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+          cache-environment: true
+      - name: Check
+        shell: bash -l {0}
+        run: |
+          echo "::notice::$(micromamba list | awk '$1 ~ /^(certifi|ca-certificates|openssl|botocore)$/ {printf "%s=%s ", $1, $2}')"
+          rc=0; python tools/tls_check.py --real > tls.txt || rc=$?; cat tls.txt >> "$GITHUB_STEP_SUMMARY"; grep -E "^python=|^trust path|FAIL|^tls_check:" tls.txt | sed "s/^/::notice::/"; exit $rc
+  pip-jobs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: "3.11"
+      - run: pip install numpy==2.2.6 boto3==1.43.98 certifi==2026.10.23
+      - run: |
+          rc=0; python tools/tls_check.py --real > tls.txt || rc=$?; cat tls.txt >> "$GITHUB_STEP_SUMMARY"; grep -E "^python=|^trust path|FAIL|^tls_check:" tls.txt | sed "s/^/::notice::/"; exit $rc
+  site:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: "3.11.9"
+      - run: pip install -r requirements.txt
+      - run: |
+          rc=0; python tools/tls_check.py --real > tls.txt || rc=$?; cat tls.txt >> "$GITHUB_STEP_SUMMARY"; grep -E "^python=|^trust path|FAIL|^tls_check:" tls.txt | sed "s/^/::notice::/"; exit $rc
+      - run: echo "::notice::$(python -c 'import app, json; print(json.dumps(app._tls_health()))' | tail -1)"
+        env:
+          LIVE_BACKGROUND: "0"
+  node:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38   # v6.5.0
+        with:
+          node-version: "24"
+          check-latest: true
+      - run: echo "::notice::node $(node --version)"

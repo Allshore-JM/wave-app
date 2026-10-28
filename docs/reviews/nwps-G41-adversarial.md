@@ -164,3 +164,24 @@ Findings and outcomes (all fixed in the commit after c67f2a2):
 
 Suite: job suite 402. Not checked by the review: same-cycle reruns by NOAA (never republished by the job), whether NOMADS's
 limit is shared with the other publishers.
+
+## Step 4: the site reader (2026-10-28, Opus 5.5 at HIGH)
+
+Commits 1713a8e and the one after it (a tighter run-choice test). app.py only, no page change (step 5).
+
+- `parse_nwps` / `_parse_nwps_uncached`: the pointer `nwps/v1/latest.json` (format and every office entry checked;
+  cached 5 min; the last good one serves 6 h when it cannot be read), the station's office from `nwps_stations.json`,
+  the office's newest run when it lists the station, else its kept runs newest first; each station file checked
+  (format, office, run, station, at most 145 ascending hours, equal lengths, Hs 0-50 m, at most six partitions of
+  [0-50 m, 0-40 s, 0-359 deg], booleans refused); a file that fails is skipped like a missing one.
+- Rows in the GFS table's shape: heights in feet, Tp, FROM directions, the site's rank (`rank_rows`: height squared x
+  period); an hour without a spectrum left out; the station's zone (or the asked one).
+- Wind: `_gfs_wind_cover` (the GFS station winds of the latest run, plus the run whose cycle holds the first row
+  when the latest starts after it; the newest wins), now shared with the SWAN back-fill (its behaviour unchanged).
+- `resolve_model`: "NWPS" honoured only at the 112 stations; payload `nwps_available`; `/healthz` key `nwps`
+  (stations, pointer age, offices, last error; reported only); the pointer lock reset in a forked child.
+- Live, in-process against the bucket (run of 21:52 UTC): 51003, 46026, 44025, 41004, 52200: 145 rows each, the Wind
+  column complete, zones Honolulu / Los Angeles / New York / New York / Guam, 3.7 s for the first (cold), then 0.4-0.5 s.
+- Tests: `tests/test_parse_nwps.py` 23 (the real published file of 51003 as the fixture); pins updated (the model
+  list, three parsers through `rank_rows`, the payload keys). Mutants of the reader: 31 of 31 killed (two first
+  survived: the run-choice test compared lists exactly and dates both runs share; tightened). Whole suite 1,692.

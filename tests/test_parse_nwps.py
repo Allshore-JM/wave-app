@@ -149,11 +149,12 @@ def test_the_newest_run_listing_the_station_else_the_kept_runs(bucket):
     bucket.put("nwps/v1/latest.json", pointer(runs=(newer, RUN, older), stations=("51004",)))
     bucket.put(f"nwps/v1/hfo/{RUN}/51003.json", DOC)
     cycle = A._parse_nwps_uncached("51003")[0]
-    assert RUN[:8] in cycle and f"hfo/{newer}/51003.json" not in bucket.asked     # the newest does not list it
+    assert cycle == f"Cycle : NOAA NWPS {RUN[:8]} {RUN[8:]} UTC (NWS HFO)"          # newest first among the kept runs
+    assert not any(f"hfo/{newer}/" in k for k in bucket.asked)                    # the newest does not list it
     A._NWPS_PTR.update(ts=0.0, doc=None)
     bucket.put("nwps/v1/latest.json", pointer(runs=(RUN, older)))
     bucket.fail.add(f"nwps/v1/hfo/{RUN}/51003.json")                  # listed but unreadable: the run before
-    assert older[:8] in A._parse_nwps_uncached("51003")[0] or older[8:] in A._parse_nwps_uncached("51003")[0]
+    assert A._parse_nwps_uncached("51003")[0] == f"Cycle : NOAA NWPS {older[:8]} {older[8:]} UTC (NWS HFO)"
     bucket.objects.pop(f"nwps/v1/hfo/{older}/51003.json")
     err = A._parse_nwps_uncached("51003")[-1]
     assert err == "No NWPS forecast found for 51003"

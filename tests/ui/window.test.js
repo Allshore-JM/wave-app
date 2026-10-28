@@ -1330,3 +1330,43 @@ test('G39-4 C2 / C4: the status line is emptied when a refresh starts, on a new 
   btn.dispatch('click'); r.asks[2].res(false); await settle(); assert.equal(say.textContent, 'Could not refresh. Try again.');
   r.sw.close(); assert.equal(say.textContent, '', 'a close: gone');
 });
+
+
+// ---- the NWPS model (plan section 59) ----
+test('NWPS: modelOf, the loader never asks NWPS off its stations, the echo is authoritative, the header names the office', async () => {
+  const F = load(fakeWindow()), I = F._internals;
+  assert.deepEqual(['NWPS', 'nwps', ' Nwps ', 'SWAN', 'GLWU', 'x', null, undefined].map(I.modelOf), ['NWPS', 'NWPS', 'NWPS', 'SWAN', 'GFS', 'GFS', 'GFS', 'GFS']);
+  assert.equal(I.resolveInitialState('?station=51003&model=nwps', {}, {}).model, 'NWPS');
+  assert.equal(I.shortCycle('NWPS', { cycle: 'NOAA NWPS 20261028 06 UTC (NWS HFO)' }), 'NWPS · run 20261028 06 UTC (NWS HFO)');
+  const fs_ = fetchStub(), u = ui(), urls = [];
+  const st = { station: '51201', tz: '', unit: 'US', model: 'NWPS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => 1, replaceState: (x) => urls.push(x), swanStations: ['51201'], nwpsStations: ['51003'], ui: u.ui }, st);
+  L.load({});
+  assert.equal(fs_.param(fs_.last(), 'model'), 'GFS', 'NWPS off its stations is never asked');
+  fs_.last().release(payload({ station: '51201' })); await settle();
+  L.load({ station: '51003', model: 'NWPS' });
+  assert.equal(fs_.param(fs_.last(), 'model'), 'NWPS');
+  fs_.last().release(payload({ station: '51003', model: 'NWPS', swan_available: false, nwps_available: true })); await settle();
+  assert.equal(st.model, 'NWPS'); assert.equal(urls[urls.length - 1], '?station=51003&model=NWPS');
+  L.load({ station: '46001' });
+  assert.equal(fs_.param(fs_.last(), 'model'), 'GFS', 'the next station without NWPS goes back to GFS');
+});
+
+test('NWPS: the model bar shows GFS with the station\'s other model only; a click asks for it', async () => {
+  const b = boot({ initial: { station: '51003', swan_stations: ['51201'], nwps_stations: ['51003'] } });
+  const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);
+  await settle();
+  b.fs_.last().release(payload({ station: '51003', model: 'GFS', swan_available: false, nwps_available: true })); await settle();
+  assert.equal(bar.hidden, false); assert.equal(btn('NWPS').hidden, false); assert.equal(btn('SWAN').hidden, true); assert.equal(btn('GFS').hidden, false);
+  btn('NWPS').dispatch('click'); await settle();
+  assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'NWPS');
+  b.fs_.last().release(payload({ station: '51003', model: 'NWPS', swan_available: false, nwps_available: true, graph_header: { cycle: 'NOAA NWPS 20261028 06 UTC (NWS HFO)', location: '51003', tz: 'Pacific/Honolulu' } })); await settle();
+  assert.equal(btn('NWPS').getAttribute('aria-pressed'), 'true'); assert.equal(btn('GFS').getAttribute('aria-pressed'), 'false');
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'NWPS · run 20261028 06 UTC (NWS HFO)');
+  b.app.loader.load({ station: '51201' });
+  b.fs_.last().release(payload({ station: '51201', model: 'GFS', swan_available: true, nwps_available: false })); await settle();
+  assert.equal(btn('SWAN').hidden, false); assert.equal(btn('NWPS').hidden, true);
+  b.app.loader.load({ station: '46001' });
+  b.fs_.last().release(payload({ station: '46001', model: 'GFS', swan_available: false, nwps_available: false })); await settle();
+  assert.equal(bar.hidden, true);
+});

@@ -859,6 +859,34 @@ equal what the site read from NOMADS's `.spec`.
 - **Local**: `python tools/model_frames/gfs_winds.py --dry-run [--run RUN] [--out DIR]` builds without publishing and
   can write the two files to DIR; `--local DIR --run RUN` builds from a downloaded archive.
 
+### NWPS forecast tables (plan section 59)
+
+NOAA NWPS is the National Weather Service offices' nearshore SWAN model. Each office runs it 1-8 times a day (when
+its forecasters start a run) to +144 h and publishes hourly 2-D wave spectra at named points on NOMADS
+(`com/nwps/prod/<region>.<date>/<office>/<HH>/CG1/nwps.tHHz.spc2d_<id>_CG1.<office>.txt`). At 112 forecast
+stations (`nwps_stations.json`: the office's point within 25 km of NDBC's buoy, the nearest office when two publish
+it; built by `tools/build_nwps_stations.py`) the forecast window offers a model button **GFS | NWPS**; GFS-Wave opens
+first.
+
+- The job `tools/model_frames/nwps.py` (workflow `model-nwps.yml`, every 10 min, dispatched by the trigger Worker):
+  per office the newest run whose CG1 directory is complete (the grib present, the newest file 5 min old) and newer
+  than the live one; each station's spectrum read by `spc2d.py` and split into swells per hour by `partition2d.py`
+  (the watershed of Hanson and Phillips; small parts merged; Tp from a log-parabola on the per-Hz spectrum; the
+  energy-weighted mean FROM direction; ties after rounding each value's mantissa to 40 bits). Published to the frames
+  bucket: `nwps/v1/<office>/<run>/<sid>.json`, the run's `index.json`, then `nwps/v1/latest.json` last; 4 runs kept per
+  office. NOMADS is asked one request at a time; a throttle, a NOMADS that does not answer or the 20-min budget stops
+  the tick (exit 3); a failed office build is retried after an hour, six times; a stale alarm after 24 h without a new
+  run anywhere.
+- The site (`parse_nwps` in app.py) reads only the bucket: the pointer (5 min; the last good one serves 6 h), the
+  office's newest run listing the station, else its kept runs; each file checked. Rows in the GFS table's shape
+  (feet, FROM, the site's swell rank); the Wind column is the GFS station winds (section 53). `?model=NWPS` is honoured
+  only at the 112 stations; `/healthz` reports `nwps`.
+- Validation (2026-10-28, 30 stations, 4,350 hours): combined Hs vs NOAA's GFS bulletins |diff| 0.19 m; NOAA's swell
+  systems of 0.5 m or more matched within 2 s / 30 deg 88 %; hour 0 vs the buoys |Hs - WVHT| 0.22 m. Record:
+  `docs/reviews/nwps-G41-adversarial.md`.
+- Rollback: `prod-pre-nwps-job` (the job), `prod-pre-nwps` (the site). Disabling `model-nwps.yml` stops new runs; the
+  site keeps the last ones for the runs kept.
+
 ### Sea surface temperature tiles (plan section 44, the job)
 
 A daily observation layer beside the model overlays: `tools/model_frames/sst.py` (GitHub Actions `model-sst.yml`, its own

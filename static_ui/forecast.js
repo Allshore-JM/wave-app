@@ -54,6 +54,11 @@
   // The state a page starts from: the URL wins, then the viewer's default station (dflt, the blue star; station only),
   // then the viewer's saved settings (tz, unit only), then what the server rendered. tz '' means Buoy Local; an
   // explicit empty tz in the URL counts.
+  // The forecast models a station's table can be on: GFS-Wave everywhere, PacIOOS SWAN at its 12 Hawaii stations, NOAA
+  // NWPS at the 112 stations its offices publish (plan section 59); anything else reads as GFS (the server says GLWU
+  // for a Great Lakes station whatever is asked).
+  var MODELS = ['GFS', 'SWAN', 'NWPS'];
+  function modelOf(v) { var m = typeof v === 'string' ? v.trim().toUpperCase() : ''; return MODELS.indexOf(m) >= 0 ? m : 'GFS'; }
   function resolveInitialState(search, stored, server, dflt) {
     var p = new URLSearchParams(search || ''), st = stored || {}, sv = server || {};
     var unit = p.has('unit') ? p.get('unit') : (typeof st.unit === 'string' ? st.unit : sv.unit);
@@ -62,7 +67,7 @@
       station: (p.get('station') || '').trim() || ds || sv.station || '51201',   // a link with white space after the id (G22 A-17)
       tz: p.has('tz') ? p.get('tz') : (typeof st.tz === 'string' ? st.tz : (sv.tz || '')),
       unit: isUnit(unit) ? unit : 'US',
-      model: (p.get('model') || sv.model || 'GFS').toUpperCase() === 'SWAN' ? 'SWAN' : 'GFS',
+      model: modelOf(p.get('model') || sv.model || 'GFS'),
       view: (p.get('view') || sv.view) === 'Graph' ? 'Graph' : 'Table'
     };
   }
@@ -233,12 +238,14 @@
   }
 
   // "GFS · run 20260926 12 UTC" / "SWAN · updated 20260925 23 UTC" / "GLWU · run 20261021 19 UTC" (a Great Lakes station,
-  // plan section 50: the server's cycle reads "NOAA GLWU 20261021 19 UTC") for the window's header.
+  // plan section 50: the server's cycle reads "NOAA GLWU 20261021 19 UTC") / "NWPS · run 20261028 06 UTC (NWS HFO)" (plan
+  // section 59: "NOAA NWPS 20261028 06 UTC (NWS HFO)") for the window's header.
   function shortCycle(model, header) {
     var c = header && header.cycle ? String(header.cycle) : '';
     if (!c) return model || '';
     if (model === 'SWAN') { var m = /updated\s+(.*)$/i.exec(c); return 'SWAN · updated ' + (m ? m[1] : c); }
     if (model === 'GLWU') return 'GLWU · run ' + c.replace(/^NOAA GLWU\s+/, '');
+    if (model === 'NWPS') return 'NWPS · run ' + c.replace(/^NOAA NWPS\s+/, '');
     return (model || 'GFS') + ' · run ' + c;
   }
   // The graph's label strings -> Date (the old page's rule: "8/30/25 6:00 AM", else the browser's parser).
@@ -281,13 +288,15 @@
     var cache = new Map(), seq = 0, ctrl = null;
     var wait = deps.wait || function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
     function trim() { while (cache.size > CACHE_MAX) { var k = cache.keys().next().value; cache.delete(k); } }
-    function normalise(s) {                                                    // never a SWAN request off the SWAN stations
+    function normalise(s) {                                                    // never a SWAN / NWPS request off their stations
+      s.model = modelOf(s.model);
       if (s.model === 'SWAN' && deps.swanStations && deps.swanStations.indexOf(s.station) < 0) s.model = 'GFS';
+      if (s.model === 'NWPS' && deps.nwpsStations && deps.nwpsStations.indexOf(s.station) < 0) s.model = 'GFS';
       return s;
     }
     function sync() { if (deps.replaceState) deps.replaceState(urlFor(state, deps.saved ? deps.saved() : null)); }
     function apply(d) {
-      if (d && typeof d.model === 'string') state.model = d.model.toUpperCase() === 'SWAN' ? 'SWAN' : 'GFS';   // the server's echo is authoritative
+      if (d && typeof d.model === 'string') state.model = modelOf(d.model);   // the server's echo is authoritative
       sync();
       deps.ui.apply(d, state, function () { return load({}); });
     }
@@ -903,7 +912,7 @@
       return { getItem: function () { return null; }, setItem: function () {} };   // nothing remembered, nothing broken
     }
     var session = opts.storage || safeStorage('sessionStorage'), local = opts.settings || safeStorage('localStorage');
-    var initial = opts.initial || {}, swanStations = initial.swan_stations || [];
+    var initial = opts.initial || {}, swanStations = initial.swan_stations || [], nwpsStations = initial.nwps_stations || [];
     var search = (win.location && win.location.search) || '', dflt = readJson(local, DEFAULT_KEY);
     if (typeof dflt.id !== 'string' || !DEFAULT_ID.test(dflt.id.trim())) dflt = null;
     var state = resolveInitialState(search, readJson(local, SETTINGS_KEY), initial, dflt);
@@ -988,7 +997,7 @@
     var holdUrl = false;
     var loader = createLoader({ fetch: opts.fetch || function (u, o) { return win.fetch(u, o); }, takeEarly: takeEarly, now: function () { return Date.now(); },
       wait: opts.wait || function (ms) { return new Promise(function (res) { if (win.setTimeout) win.setTimeout(res, ms); else setTimeout(res, ms); }); },
-      replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false; try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations,
+      replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false; try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations, nwpsStations: nwpsStations,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
             clear: function () {                                              // a failed load leaves nothing of the last forecast (G22 B-7, R-A9, R-A10)
@@ -1000,8 +1009,14 @@
               note(null);
             },
             apply: function (d, st, retry) {
-              var avail = typeof d.swan_available === 'boolean' ? d.swan_available : swanStations.indexOf(st.station) >= 0;
-              if (els.modelBar) { els.modelBar.hidden = !avail; pressed(els.modelBar, 'data-model', st.model); }
+              var swan = typeof d.swan_available === 'boolean' ? d.swan_available : swanStations.indexOf(st.station) >= 0;
+              var nwps = typeof d.nwps_available === 'boolean' ? d.nwps_available : nwpsStations.indexOf(st.station) >= 0;
+              if (els.modelBar) {                                             // GFS plus the station's other model(s)
+                els.modelBar.hidden = !(swan || nwps); pressed(els.modelBar, 'data-model', st.model);
+                Array.prototype.forEach.call(els.modelBar.querySelectorAll('[data-model]'), function (b) {
+                  var m = b.getAttribute('data-model'); b.hidden = (m === 'SWAN' && !swan) || (m === 'NWPS' && !nwps);
+                });
+              }
               var label = opts.stationLabel ? opts.stationLabel(st.station) : st.station, cyc = shortCycle(d.model === 'GLWU' ? 'GLWU' : st.model, d.graph_header);
               var age = d.point && Number.isFinite(d.point.age_hours) ? d.point.age_hours : null;
               if (age !== null && age >= STALE_H) cyc += ' · ' + Math.round(age) + ' h old';   // a point's run NOAA stopped feeding (plan section 31)
@@ -1123,7 +1138,7 @@
       if (fw.mode === 'min' && !(e.target && e.target.closest && e.target.closest('button, .station-results'))) expand();
     });
     if (els.viewBar) els.viewBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-view]') : null; if (b) setView(b.getAttribute('data-view')); });
-    if (els.modelBar) els.modelBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-model]') : null; if (b) loader.load({ model: b.getAttribute('data-model') === 'SWAN' ? 'SWAN' : 'GFS' }); });
+    if (els.modelBar) els.modelBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-model]') : null; if (b) loader.load({ model: modelOf(b.getAttribute('data-model')) }); });
     if (els.modeBar) els.modeBar.addEventListener('click', function (e) { var b = e.target && e.target.closest ? e.target.closest('[data-mode]') : null; if (b) setTableMode(b.getAttribute('data-mode')); });
     function saveSettings() { writeJson(local, SETTINGS_KEY, { tz: state.tz, unit: state.unit }); }
     // the settings are saved BEFORE the load, so the address bar names nothing a reload would not assume anyway
@@ -1174,7 +1189,7 @@
     setView(state.view);
     if (initial.inline) {
       loader.seed({ table_html: initial.error ? null : (els.table.innerHTML.trim() || null), graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
-        error: initial.error || null, model: initial.model, swan_available: initial.swan_available, wind_complete: initial.wind_complete,
+        error: initial.error || null, model: initial.model, swan_available: initial.swan_available, nwps_available: initial.nwps_available, wind_complete: initial.wind_complete,
         point: initial.point || null, final: !!initial.final, reason: initial.reason || null, summary_html: initial.summary_html || null });
     } else if (deferred) {
       Promise.resolve(earlyStation).then(function (sid) { return typeof sid === 'string' && sid.trim() ? sid.trim() : '51201'; }, function () { return '51201'; })   // (G32 A-P3-4)
@@ -1207,7 +1222,7 @@
     _internals: {
       SETTINGS_KEY: SETTINGS_KEY, DEFAULT_KEY: DEFAULT_KEY, DEFAULT_ID: DEFAULT_ID, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
-      clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, parseLabel: parseLabel, rangeWindow: rangeWindow,
+      clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, modelOf: modelOf, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
       createLoader: createLoader, ttlOf: ttlOf, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,

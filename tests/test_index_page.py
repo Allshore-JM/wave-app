@@ -58,7 +58,7 @@ def test_model_bar_only_for_swan_stations_and_the_state_echoes_the_request(clien
     assert 'id="modelBar"' in b and not re.search(r'id="modelBar" hidden', b)
     assert re.search(r'data-model="SWAN" aria-pressed="true"', b) and re.search(r'data-view="Graph" aria-pressed="true"', b)
     assert re.search(r'id="forecastTable" hidden', b) and not re.search(r'id="graphs" hidden', b)
-    b2 = client.get("/?station=46001&model=SWAN").get_data(as_text=True)
+    b2 = client.get("/?station=13130&model=SWAN").get_data(as_text=True)
     st2 = initial(b2)
     assert st2["model"] == "GFS" and st2["swan_available"] is False, "SWAN off the SWAN stations resolves to GFS"
     assert re.search(r'id="modelBar" hidden', b2)
@@ -1248,3 +1248,29 @@ def test_station_window_refresh_buttons(client):
     assert "return refresh ? { cache: 'reload', headers: { 'X-Allshore-Refresh': '1' } } : undefined;" in body
     assert "X-Allshore-Refresh" in body and A.REFRESH_HEADER == "X-Allshore-Refresh"   # the page and the server agree
 
+
+
+def test_section_59_the_nwps_model_on_the_page(client):
+    """The model bar shows GFS and NWPS at an NWPS station (the SWAN button hidden), NWPS off its stations resolves to
+    GFS, the state carries the NWPS stations, the head's early request applies the same rule, the overlay names an NWPS
+    table's run."""
+    b = client.get("/?station=51003&model=NWPS").get_data(as_text=True)
+    st = initial(b)
+    assert st["model"] == "NWPS" and st["nwps_available"] is True and st["swan_available"] is False
+    assert "51003" in st["nwps_stations"] and len(st["nwps_stations"]) == 112 and "51201" not in st["nwps_stations"]
+    assert not re.search(r'id="modelBar" hidden', b)
+    assert re.search(r'data-model="NWPS" aria-pressed="true"', b) and re.search(r'data-model="GFS" aria-pressed="false"', b)
+    assert re.search(r'data-model="SWAN" aria-pressed="false" hidden', b)
+    assert re.search(r'<option value="NWPS" selected>NWPS</option>', b) and '<option value="SWAN"' not in b
+    b2 = client.get("/?station=51201&model=NWPS").get_data(as_text=True)
+    st2 = initial(b2)
+    assert st2["model"] == "GFS" and st2["nwps_available"] is False and st2["swan_available"] is True
+    assert re.search(r'data-model="NWPS" aria-pressed="false" hidden', b2) and '<option value="NWPS"' not in b2
+    b3 = client.get("/?station=46001").get_data(as_text=True)
+    assert re.search(r'id="modelBar" hidden', b3) is None and initial(b3)["nwps_available"] is True     # 46001 is an NWPS station
+    src = open(os.path.join(A.app.root_path, "templates", "index.html"), encoding="utf-8").read()
+    assert "var nwps = {{ initial_state.nwps_stations|tojson }};" in src
+    assert "if (/NWPS/.test(m[1])) return { model: 'NWPS' };" in src
+    assert src.index("if (/NWPS/.test(m[1]))") < src.index("if (/SWAN/.test(m[1]))"), "NWPS before SWAN: NOAA NWPS is a SWAN model too"
+    ov = open(os.path.join(A.app.root_path, "static_overlay", "overlay.js"), encoding="utf-8").read()
+    assert "pc.model === 'NWPS' ? ' — the forecast table is a NOAA NWPS (nearshore) run'" in ov

@@ -147,7 +147,7 @@ def partition(freqs, dirs, E, max_parts=MAX_PARTS):
                 elif b == p:
                     nb[a] = nb.get(a, 0) + n
             if nb:
-                keep = max(nb, key=lambda q: (nb[q], m0[q]))
+                keep = _merge_target(nb, m0)
                 lab[lab == p] = keep
                 merged = True
                 break
@@ -174,6 +174,11 @@ def partition(freqs, dirs, E, max_parts=MAX_PARTS):
     parts.sort(key=lambda p: -p["hs"])
     n = len(parts)
     return {"hs": hs_all, "n": n, "parts": parts[:max_parts]}
+
+
+def _merge_target(touching, m0):
+    """The neighbour a small partition joins: the one it shares the most boundary with, the bigger one on a tie."""
+    return max(touching, key=lambda q: (touching[q], m0[q]))
 
 
 def _parabolic_peak(f, e1, k):

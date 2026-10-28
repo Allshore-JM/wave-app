@@ -66,6 +66,7 @@ def test_reader_exception_value_and_refusals():
         (head.encode() + block.encode()[:-200], "short"),
         ((head + block + "20261028.000000  date and time\nNODATA\n").encode(), "times"),
         (head.replace("    37", "     3", 1).encode() + block.encode(), "counts"),
+        ((head + block.replace("    0    0    0    0    2    9    7", "    0    0    0    0    2    9    7    1", 1)).encode(), "a wide row"),
         (b"x" * (spc2d.MAX_BYTES + 1), "size"),
         (text.replace("0.0350", "0.0500", 1).encode(), "ascending"),
     ):
@@ -140,6 +141,7 @@ def test_empty_nan_and_negative_spectra():
     E[1, 1] = -1.0
     r = P.partition(FREQS, DIRS, E)
     assert r["n"] == 1 and r["parts"][0]["hs"] == pytest.approx(1.0, rel=0.02)
+    assert r["hs"] == pytest.approx(1.0, rel=0.02) and r["parts"][0]["share"] == pytest.approx(1.0)   # nan = nothing
     with pytest.raises(ValueError):
         P.partition(FREQS[:-1], DIRS, E)
 
@@ -163,6 +165,39 @@ def test_determinism_and_the_real_fixture():
     top = a["parts"][0]
     assert top["hs"] == pytest.approx(1.26, abs=0.05) and top["tp"] == pytest.approx(13.6, abs=0.5)
     assert abs(top["dir"] - 320) < 8
+
+
+def test_rotating_the_directions_rotates_the_answer():
+    """The smoothing and the watershed wrap in direction: a spectrum rolled by k bins gives the same partitions with the
+    directions moved by 10 k degrees, wherever the seam falls."""
+    E = gaussian(2.0, 14.0, 320.0) + gaussian(0.9, 8.0, 200.0) + gaussian(0.6, 11.0, 95.0)
+    base = P.partition(FREQS, DIRS, E)
+    for k in (1, 7, 18, 31):
+        rolled = P.partition(FREQS, DIRS, np.roll(E, k, axis=1))
+        assert rolled["n"] == base["n"] and rolled["hs"] == pytest.approx(base["hs"])
+        for a, b in zip(base["parts"], rolled["parts"]):
+            assert b["hs"] == pytest.approx(a["hs"]) and b["tp"] == pytest.approx(a["tp"])
+            assert abs(((b["dir"] - a["dir"] + 10 * k + 180) % 360) - 180) < 1e-6   # DIRS step down by 10 per bin
+
+
+def test_a_speck_joins_the_neighbour_it_touches_most():
+    E = gaussian(2.0, 14.0, 320.0) + gaussian(0.8, 7.0, 45.0)
+    base = P.partition(FREQS, DIRS, E)
+    k = int(np.argmin(np.abs(np.array(FREQS) - 1 / 7.0)))
+    j = DIRS.index(45)
+    E2 = E.copy()
+    E2[k + 3, j] += 3e-4                                      # a lone bin beside the small system only
+    r = P.partition(FREQS, DIRS, E2)
+    assert r["n"] == 2 and r["parts"][0]["m0"] == pytest.approx(base["parts"][0]["m0"])
+    assert r["parts"][1]["m0"] > base["parts"][1]["m0"]       # the speck's energy went to its neighbour, the small one
+    assert P._merge_target({1: 5, 2: 3}, {1: 0.1, 2: 9.0}) == 1   # the most shared boundary wins ...
+    assert P._merge_target({1: 4, 2: 4}, {1: 0.1, 2: 9.0}) == 2   # ... the bigger partition on a tie
+
+
+def test_a_small_but_real_system_is_listed():
+    r = P.partition(FREQS, DIRS, gaussian(2.0, 14.0, 320.0) + gaussian(0.3, 9.0, 120.0))
+    assert r["n"] == 2 and r["parts"][1]["hs"] == pytest.approx(0.3, rel=0.03)
+    assert P.MIN_HS == 0.05
 
 
 # ------------------------------------------------------------------------------------------ nwps_fetch, the file
@@ -198,13 +233,21 @@ def test_station_tool_rules():
     assert B.ndbc_positions(table) == {"51003": (19.196, -160.639)}
     heads = {"u1": "SWAN   1\n$\nTIME\n1\nLONLAT\n1\n  199.431000   19.289000\nAFREQ\n...\n20261028.000000 date and time\nFACTOR\n",
              "u2": "SWAN   1\n$\nTIME\n1\nLONLAT\n1\n  199.0   19.0\nAFREQ\n...\n20261028.000000 date and time\nFACTOR\n",
-             "u3": "SWAN   1\n$\nTIME\n1\nLONLAT\n1\n  238.093   36.626\nAFREQ\n...\n20261028.000000 date and time\nNODATA\n"}
-    found = {"51003": [("hfo", "pr", None, 0, "u1"), ("gum", "pr", None, 0, "u2")],
-             "46240": [("mtr", "wr", None, 0, "u3")], "99999": [("mtr", "wr", None, 0, "u1")]}
-    pos = {"51003": (19.196, -160.639), "46240": (36.62, -121.91)}
+             "u3": "SWAN   1\n$\nTIME\n1\nLONLAT\n1\n  238.093   36.626\nAFREQ\n...\n20261028.000000 date and time\nNODATA\n",
+             "u4": "SWAN   1\n$\nTIME\n1\nLONLAT\n1\n  199.431   19.000\nAFREQ\n...\n20261028.000000 date and time\nFACTOR\n",
+             "u5": "SWAN   1\n$\nTIME\n1\nLONLAT\n1\n  199.431   19.600\nAFREQ\n...\n20261028.000000 date and time\nFACTOR\n"}
+    found = {"51003": [("sju", "sr", None, 0, "u4"), ("gum", "pr", None, 0, "u2"), ("hfo", "pr", None, 0, "u1")],
+             "46240": [("mtr", "wr", None, 0, "u3")], "99999": [("mtr", "wr", None, 0, "u1")],
+             "46001": [("aer", "ar", None, 0, "u5")]}
+    pos = {"51003": (19.196, -160.639), "46240": (36.62, -121.91), "46001": (19.196, -160.639)}
     out, left = B.build(found, pos, read_head=lambda u: heads[u], log=lambda *a: None)
-    assert list(out) == ["51003"] and out["51003"]["office"] == "hfo" and out["51003"]["km"] == pytest.approx(12.7, abs=0.3)
+    assert list(out) == ["51003"] and out["51003"]["km"] == pytest.approx(12.7, abs=0.3)
+    assert out["51003"]["office"] == "hfo"                     # gum's point is far; sju's (u4) is in range (22 km) but farther
     assert left["46240"] == "mtr: nodata" and left["99999"] == "no NDBC position"
+    assert left["46001"].startswith("aer: far (")              # 45 km north of the buoy
+    found["51003"] = [("sju", "sr", None, 0, "u4")]
+    out, _ = B.build(found, pos, read_head=lambda u: heads[u], log=lambda *a: None)
+    assert out["51003"]["office"] == "sju" and 5 < out["51003"]["km"] < 25
     assert B.MAX_KM == 25.0 and B.km_between(0, 0, 0, 1) == pytest.approx(111.19, abs=0.1)
 
 

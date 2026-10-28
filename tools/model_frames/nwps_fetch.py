@@ -61,9 +61,7 @@ def parse_listing(text):
     """[(name, modified datetime UTC, size text)] from a NOMADS directory page (names without a path)."""
     out = []
     for name, when, size in _ENTRY_RE.findall(text):
-        name = html.unescape(name)
-        if name.startswith("/") or name.startswith("?"):
-            continue
+        name = html.unescape(name)          # the parent link carries no date, so it never matches
         out.append((name, datetime.strptime(when, "%d-%b-%Y %H:%M").replace(tzinfo=timezone.utc), size))
     return out
 

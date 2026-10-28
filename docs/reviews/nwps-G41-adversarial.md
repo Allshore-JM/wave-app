@@ -185,3 +185,21 @@ Commits 1713a8e and the one after it (a tighter run-choice test). app.py only, n
 - Tests: `tests/test_parse_nwps.py` 23 (the real published file of 51003 as the fixture); pins updated (the model
   list, three parsers through `rank_rows`, the payload keys). Mutants of the reader: 31 of 31 killed (two first
   survived: the run-choice test compared lists exactly and dates both runs share; tightened). Whole suite 1,692.
+
+## Step 5: the model button and the page (2026-10-28, Opus 5.5 at HIGH)
+
+Commits e9f2bc8 (code, UI 1.26.5, overlay 2.22.6) and e840aeb (the page snapshot, its own commit).
+
+- forecast.js: `modelOf` (GFS / SWAN / NWPS, anything else GFS); the loader never asks NWPS off the NWPS stations
+  (`nwpsStations` from the page's state); the server's echo is authoritative; the model bar shows GFS plus the
+  station's other model only (SWAN at the 12 PacIOOS stations, NWPS at the 112), hidden where there is neither; the
+  header reads "NWPS · run 20261028 06 UTC (NWS HFO)".
+- The page: the state carries `nwps_available` / `nwps_stations`; the NWPS button (hidden where not offered) and the
+  no-script option; the head's early request applies the loader's rule (pinned by early.test.js over the address /
+  settings cases, NWPS cases added); `pageCycle` names an NWPS table before testing for SWAN (NOAA NWPS is a SWAN model).
+- overlay.js: the run line says "the forecast table is a NOAA NWPS (nearshore) run" under an NWPS table.
+- The snapshot's diff: the versions, the NWPS button, the two station lists, the early rule; the 46001 page (an NWPS
+  station) now offers NWPS.
+- Tests: window +2, early cases +6, page +1 (the old SWAN-bar test moved to a station with neither model: 46001 is an
+  NWPS station). Mutants of the client: 9 of 10 killed (the survivor, `modelOf` again inside the loader's normalise, is
+  redundant: every caller passes the model through it). Whole suite green.

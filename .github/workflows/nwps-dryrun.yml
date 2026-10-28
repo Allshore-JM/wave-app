@@ -1,0 +1,63 @@
+# TEMPORARY (plan section 59, step 2): a dry run of the NWPS job on GitHub's runner. No secrets, nothing published: it
+# builds every office's newest settled run from NOMADS and reports time, memory, bytes and a digest per office through
+# ::notice:: annotations (readable from the public check-runs API). REMOVE before the job-only merge (a test pins that).
+name: nwps-dryrun
+on:
+  push:
+    branches: [feat/nwps-tables]
+    paths: [".github/workflows/nwps-dryrun.yml"]
+permissions:
+  contents: read
+jobs:
+  dryrun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+          cache-environment: true
+      - name: Dry run of every office
+        shell: bash -l {0}
+        run: |
+          set -o pipefail
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/nwps.py --dry-run --out out > log.txt 2>&1 || rc=$?
+          tail -n 60 log.txt
+          python - "$rc" <<'PY'
+          import hashlib, os, sys
+          rc = sys.argv[1]
+          t = open("time.txt").read().splitlines()
+          wall = next((l.split(": ", 1)[1] for l in t if "Elapsed" in l), "?")
+          rss = next((l.split(": ", 1)[1] for l in t if "Maximum resident" in l), "?")
+          rows, total, files = [], 0, 0
+          for office in sorted(os.listdir("out")) if os.path.isdir("out") else []:
+              for run in sorted(os.listdir(os.path.join("out", office))):
+                  d = os.path.join("out", office, run)
+                  h = hashlib.sha256()
+                  n = 0
+                  for name in sorted(os.listdir(d)):
+                      body = open(os.path.join(d, name), "rb").read()
+                      h.update(name.encode() + b"\0" + body)
+                      n += 1
+                      total += len(body)
+                  files += n
+                  rows.append(f"{office} {run} {n} {h.hexdigest()[:16]}")
+          print(f"::notice title=nwps dry run::rc {rc}, wall {wall}, max RSS {rss} KB, {len(rows)} office runs, {files} station files, {total} bytes")
+          for i in range(0, len(rows), 12):
+              print("::notice title=nwps digests " + str(i // 12 + 1) + "::" + " | ".join(rows[i:i + 12]))
+          tail = [l for l in open("log.txt").read().splitlines() if l.startswith(("tick:", "WARNING", "STALE"))]
+          if tail:
+              print("::notice title=nwps tick::" + " | ".join(tail[-5:]))
+          PY
+          exit 0

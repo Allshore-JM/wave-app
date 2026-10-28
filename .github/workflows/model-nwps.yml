@@ -1,0 +1,70 @@
+# Publishes the NWPS forecast tables to R2 under nwps/v1/ (plan section 59): the NWS offices' nearshore SWAN point spectra
+# on NOMADS (nwps/prod/<region>.<date>/<office>/<HH>/CG1/nwps.tHHz.spc2d_<id>_CG1.<office>.txt), split into swells per
+# hour and published per office and run for the stations in nwps_stations.json. Between runs a tick only lists the
+# offices' directories (paced, ~1-2 min). The same pinned environment as the other publishers (one cached env).
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: model-nwps
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      office:
+        description: "one office (e.g. hfo; blank = every office)"
+        default: ""
+      run:
+        description: "YYYYMMDDHH of that office's run (blank = its newest settled run)"
+        default: ""
+      dry_run:
+        description: "no uploads (true/false)"
+        default: "false"
+concurrency:
+  group: model-nwps
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30                    # the job's own budget stops at 20 min
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+          cache-environment: true
+      - name: Record environment
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|numpy|boto3|certifi|ca-certificates)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish NWPS tables
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          OFFICE: ${{ github.event.inputs.office }}
+          RUN: ${{ github.event.inputs.run }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          if [ -n "$OFFICE" ] && ! [[ "$OFFICE" =~ ^[a-z]{3}$ ]]; then echo "bad office input"; exit 2; fi
+          if [ -n "$RUN" ] && ! [[ "$RUN" =~ ^[0-9]{10}$ ]]; then echo "bad run input"; exit 2; fi
+          ARGS=()
+          [ -n "$OFFICE" ] && ARGS+=(--office "$OFFICE")
+          [ -n "$RUN" ] && ARGS+=(--run "$RUN")
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/nwps.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          if [ "$rc" -eq 3 ]; then echo "nothing new could be built this tick" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          exit "$rc"

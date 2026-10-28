@@ -4,7 +4,7 @@
 // whether a new model cycle is complete and short-circuits otherwise. GitHub's schedule stays on
 // as a fallback -- a duplicate run just short-circuits behind the concurrency group.
 // GH_WORKFLOW is one workflow file or a comma-separated list (the overlay frames, the forecast points, the ECMWF frames,
-// the Great Lakes frames and the GFS station winds); every one is dispatched on every tick, and one that fails never
+// the Great Lakes frames, the GFS station winds and the NWPS tables); every one is dispatched on every tick, and one that fails never
 // holds back the others.
 //
 // Cron-only: no fetch handler and no public URL (workers_dev = false in wrangler.jsonc).

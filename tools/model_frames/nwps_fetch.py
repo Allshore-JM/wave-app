@@ -7,7 +7,8 @@ Regions ar (Alaska), er (East), pr (Pacific), sr (South), wr (West); 36 offices 
 stations on 2026-10-28). Runs are
 started by the office's forecasters: one to eight a day, irregular hours, posted 1-8 h after the cycle they are named
 for; NOMADS keeps ~5 days. NOMADS only (no AWS copy, checked 2026-10-28), so every request goes through glwu_fetch's
-pacer (one at a time, PACE_S apart; 429 / 503 -> Throttled = NotReady).
+pacer (one at a time, PACE_S apart; 429 / 503 -> Throttled = NotReady). Every function takes `req` (default: that
+pacer's request) so the job's tests can serve NOMADS from a fake.
 """
 import html
 import re
@@ -66,24 +67,28 @@ def parse_listing(text):
     return out
 
 
-def listing(url):
-    _status, body = request(url + "/" if not url.endswith("/") else url)
+def listing(url, req=None):
+    _status, body = (req or request)(url + "/" if not url.endswith("/") else url)
     return parse_listing(body.decode("utf-8", "replace"))
 
 
-def cycles(region, day, office):
+def cycles(region, day, office, req=None):
     """The cycle hours an office has under one day's directory (an absent directory = none)."""
     try:
-        entries = listing(f"{day_dir(region, day)}/{office}/")
+        entries = listing(f"{day_dir(region, day)}/{office}/", req)
+    except Throttled:                       # a NotReady too, but it must stop the tick, not read as "no runs"
+        raise
     except NotReady:
         return []
     return sorted(int(n.rstrip("/")) for n, _, _ in entries if re.fullmatch(r"\d{2}/", n))
 
 
-def spectra_listing(region, day, office, hh):
+def spectra_listing(region, day, office, hh, req=None):
     """{station id: (modified, size)} of the CG1 spectra files of one cycle, plus the grib's time under "" (None = absent)."""
     try:
-        entries = listing(f"{cycle_dir(region, day, office, hh)}/CG1/")
+        entries = listing(f"{cycle_dir(region, day, office, hh)}/CG1/", req)
+    except Throttled:
+        raise
     except NotReady:
         return None
     out = {}
@@ -100,9 +105,9 @@ def recent_days(now, days):
     return [(now - timedelta(days=k)).date() for k in range(days)]
 
 
-def spectra_head(url, n=6000):
+def spectra_head(url, n=6000, req=None):
     """The first n bytes of a spectra file (its header and first time): the point's position and whether it has data."""
-    _status, body = request(url, rng=f"bytes=0-{n - 1}")
+    _status, body = (req or request)(url, rng=f"bytes=0-{n - 1}")
     return body.decode("ascii", "replace")
 
 

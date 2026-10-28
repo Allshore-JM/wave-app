@@ -502,7 +502,7 @@ def test_the_ecmwf_workflow_mirrors_the_frames_workflow():
     tests = open(os.path.join(wf, "model-frames-tests.yml"), encoding="utf-8").read()
     assert tests.count('".github/workflows/model-ecmwf.yml"') == 2
     cfg = open(os.path.join(ROOT, "tools", "model_frames", "trigger", "wrangler.jsonc"), encoding="utf-8").read()
-    assert '"GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml"' in cfg
+    assert '"GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-nwps.yml"' in cfg
 
 
 # ------------------------------- G30a fix round -----------------------------------

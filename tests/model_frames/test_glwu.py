@@ -590,7 +590,7 @@ def test_workflow_trigger_keepalive_and_tests_paths():
     tests = open(os.path.join(wf, "model-frames-tests.yml"), encoding="utf-8").read()
     assert tests.count('".github/workflows/model-glwu.yml"') == 2
     cfg = open(os.path.join(ROOT, "tools", "model_frames", "trigger", "wrangler.jsonc"), encoding="utf-8").read()
-    assert '"GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml"' in cfg
+    assert '"GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-nwps.yml"' in cfg
 
 
 def test_stations_are_valid_site_ids_inside_their_lakes():

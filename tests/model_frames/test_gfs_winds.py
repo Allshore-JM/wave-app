@@ -373,8 +373,8 @@ def test_workflow_trigger_keepalive_and_tests_paths():
     tests = open(os.path.join(wf, "model-frames-tests.yml"), encoding="utf-8").read()
     assert tests.count('".github/workflows/model-gfswinds.yml"') == 2 and tests.count('"tests/fixtures/gfswinds/**"') == 2
     cfg = open(os.path.join(ROOT, "tools", "model_frames", "trigger", "wrangler.jsonc"), encoding="utf-8").read()
-    assert ('"GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml"'
-            in cfg)
+    assert ('"GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,'
+            'model-nwps.yml"' in cfg)
     assert P.GFSWINDS_PREFIX == "gfswave/winds/v1" and W.PREFIX == P.GFSWINDS_PREFIX
 
 

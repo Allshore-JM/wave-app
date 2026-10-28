@@ -1,0 +1,1021 @@
+{
+ "built_utc": "2026-10-28T17:55:56Z",
+ "format": "nwps-stations-v1",
+ "left_out": {
+  "42023": "mfl: far (134 km from the buoy)",
+  "44018": "box: far (38 km from the buoy)",
+  "46085": "ajk: far (25 km from the buoy)",
+  "46240": "mtr: nodata"
+ },
+ "max_km": 25.0,
+ "stations": {
+  "41004": {
+   "km": 0.1,
+   "lat": 32.501,
+   "lon": -79.099,
+   "ndbc_lat": 32.502,
+   "ndbc_lon": -79.099,
+   "office": "chs",
+   "region": "er"
+  },
+  "41008": {
+   "km": 0.3,
+   "lat": 31.4,
+   "lon": -80.869,
+   "ndbc_lat": 31.4,
+   "ndbc_lon": -80.866,
+   "office": "chs",
+   "region": "er"
+  },
+  "41009": {
+   "km": 1.7,
+   "lat": 28.523,
+   "lon": -80.184,
+   "ndbc_lat": 28.508,
+   "ndbc_lon": -80.185,
+   "office": "mlb",
+   "region": "sr"
+  },
+  "41012": {
+   "km": 0.1,
+   "lat": 30.041,
+   "lon": -80.533,
+   "ndbc_lat": 30.042,
+   "ndbc_lon": -80.534,
+   "office": "jax",
+   "region": "sr"
+  },
+  "41013": {
+   "km": 1.9,
+   "lat": 33.436,
+   "lon": -77.743,
+   "ndbc_lat": 33.436,
+   "ndbc_lon": -77.764,
+   "office": "ilm",
+   "region": "er"
+  },
+  "41025": {
+   "km": 3.0,
+   "lat": 35.006,
+   "lon": -75.402,
+   "ndbc_lat": 35.026,
+   "ndbc_lon": -75.38,
+   "office": "mhx",
+   "region": "er"
+  },
+  "41029": {
+   "km": 1.0,
+   "lat": 32.81,
+   "lon": -79.63,
+   "ndbc_lat": 32.803,
+   "ndbc_lon": -79.624,
+   "office": "chs",
+   "region": "er"
+  },
+  "41033": {
+   "km": 0.4,
+   "lat": 32.28,
+   "lon": -80.41,
+   "ndbc_lat": 32.279,
+   "ndbc_lon": -80.406,
+   "office": "chs",
+   "region": "er"
+  },
+  "41036": {
+   "km": 0.0,
+   "lat": 34.207,
+   "lon": -76.949,
+   "ndbc_lat": 34.207,
+   "ndbc_lon": -76.949,
+   "office": "ilm",
+   "region": "er"
+  },
+  "41053": {
+   "km": 9.5,
+   "lat": 18.476,
+   "lon": -66.009,
+   "ndbc_lat": 18.474,
+   "ndbc_lon": -66.099,
+   "office": "sju",
+   "region": "sr"
+  },
+  "41112": {
+   "km": 1.0,
+   "lat": 30.718,
+   "lon": -81.293,
+   "ndbc_lat": 30.709,
+   "ndbc_lon": -81.292,
+   "office": "jax",
+   "region": "sr"
+  },
+  "41113": {
+   "km": 0.3,
+   "lat": 28.4,
+   "lon": -80.53,
+   "ndbc_lat": 28.4,
+   "ndbc_lon": -80.533,
+   "office": "mlb",
+   "region": "sr"
+  },
+  "41114": {
+   "km": 1.7,
+   "lat": 27.551,
+   "lon": -80.225,
+   "ndbc_lat": 27.564,
+   "ndbc_lon": -80.215,
+   "office": "mfl",
+   "region": "sr"
+  },
+  "41115": {
+   "km": 0.0,
+   "lat": 18.376,
+   "lon": -67.28,
+   "ndbc_lat": 18.376,
+   "ndbc_lon": -67.28,
+   "office": "sju",
+   "region": "sr"
+  },
+  "41159": {
+   "km": 0.4,
+   "lat": 34.21,
+   "lon": -76.948,
+   "ndbc_lat": 34.211,
+   "ndbc_lon": -76.944,
+   "office": "mhx",
+   "region": "er"
+  },
+  "42012": {
+   "km": 6.7,
+   "lat": 30.1,
+   "lon": -87.6,
+   "ndbc_lat": 30.061,
+   "ndbc_lon": -87.547,
+   "office": "mob",
+   "region": "sr"
+  },
+  "42013": {
+   "km": 0.5,
+   "lat": 27.169,
+   "lon": -82.926,
+   "ndbc_lat": 27.173,
+   "ndbc_lon": -82.924,
+   "office": "tbw",
+   "region": "sr"
+  },
+  "42019": {
+   "km": 1.1,
+   "lat": 27.913,
+   "lon": -95.353,
+   "ndbc_lat": 27.908,
+   "ndbc_lon": -95.343,
+   "office": "crp",
+   "region": "sr"
+  },
+  "42020": {
+   "km": 1.5,
+   "lat": 26.968,
+   "lon": -96.694,
+   "ndbc_lat": 26.97,
+   "ndbc_lon": -96.679,
+   "office": "bro",
+   "region": "sr"
+  },
+  "42021": {
+   "km": 0.0,
+   "lat": 28.311,
+   "lon": -83.306,
+   "ndbc_lat": 28.311,
+   "ndbc_lon": -83.306,
+   "office": "tbw",
+   "region": "sr"
+  },
+  "42035": {
+   "km": 0.4,
+   "lat": 29.232,
+   "lon": -94.413,
+   "ndbc_lat": 29.235,
+   "ndbc_lon": -94.41,
+   "office": "lch",
+   "region": "sr"
+  },
+  "42036": {
+   "km": 1.2,
+   "lat": 28.5,
+   "lon": -84.517,
+   "ndbc_lat": 28.5,
+   "ndbc_lon": -84.505,
+   "office": "tbw",
+   "region": "sr"
+  },
+  "42039": {
+   "km": 3.0,
+   "lat": 28.791,
+   "lon": -86.008,
+   "ndbc_lat": 28.768,
+   "ndbc_lon": -86.024,
+   "office": "tae",
+   "region": "sr"
+  },
+  "42040": {
+   "km": 3.0,
+   "lat": 29.212,
+   "lon": -88.207,
+   "ndbc_lat": 29.207,
+   "ndbc_lon": -88.237,
+   "office": "lix",
+   "region": "sr"
+  },
+  "42043": {
+   "km": 1.9,
+   "lat": 28.982,
+   "lon": -94.919,
+   "ndbc_lat": 28.982,
+   "ndbc_lon": -94.899,
+   "office": "hgx",
+   "region": "sr"
+  },
+  "42045": {
+   "km": 0.0,
+   "lat": 26.217,
+   "lon": -96.5,
+   "ndbc_lat": 26.217,
+   "ndbc_lon": -96.5,
+   "office": "bro",
+   "region": "sr"
+  },
+  "42085": {
+   "km": 1.8,
+   "lat": 17.86,
+   "lon": -66.524,
+   "ndbc_lat": 17.87,
+   "ndbc_lon": -66.537,
+   "office": "sju",
+   "region": "sr"
+  },
+  "44007": {
+   "km": 0.1,
+   "lat": 43.525,
+   "lon": -70.141,
+   "ndbc_lat": 43.525,
+   "ndbc_lon": -70.14,
+   "office": "gyx",
+   "region": "er"
+  },
+  "44009": {
+   "km": 1.0,
+   "lat": 38.461,
+   "lon": -74.703,
+   "ndbc_lat": 38.46,
+   "ndbc_lon": -74.692,
+   "office": "phi",
+   "region": "er"
+  },
+  "44013": {
+   "km": 0.0,
+   "lat": 42.346,
+   "lon": -70.651,
+   "ndbc_lat": 42.346,
+   "ndbc_lon": -70.651,
+   "office": "box",
+   "region": "er"
+  },
+  "44014": {
+   "km": 1.0,
+   "lat": 36.611,
+   "lon": -74.842,
+   "ndbc_lat": 36.603,
+   "ndbc_lon": -74.837,
+   "office": "akq",
+   "region": "er"
+  },
+  "44017": {
+   "km": 0.1,
+   "lat": 40.694,
+   "lon": -72.048,
+   "ndbc_lat": 40.693,
+   "ndbc_lon": -72.049,
+   "office": "box",
+   "region": "er"
+  },
+  "44020": {
+   "km": 10.1,
+   "lat": 41.443,
+   "lon": -70.186,
+   "ndbc_lat": 41.497,
+   "ndbc_lon": -70.283,
+   "office": "box",
+   "region": "er"
+  },
+  "44025": {
+   "km": 1.2,
+   "lat": 40.251,
+   "lon": -73.164,
+   "ndbc_lat": 40.258,
+   "ndbc_lon": -73.175,
+   "office": "okx",
+   "region": "er"
+  },
+  "44027": {
+   "km": 1.8,
+   "lat": 44.3,
+   "lon": -67.3,
+   "ndbc_lat": 44.284,
+   "ndbc_lon": -67.301,
+   "office": "car",
+   "region": "er"
+  },
+  "44029": {
+   "km": 0.0,
+   "lat": 42.523,
+   "lon": -70.566,
+   "ndbc_lat": 42.523,
+   "ndbc_lon": -70.566,
+   "office": "box",
+   "region": "er"
+  },
+  "44032": {
+   "km": 0.1,
+   "lat": 43.716,
+   "lon": -69.355,
+   "ndbc_lat": 43.715,
+   "ndbc_lon": -69.355,
+   "office": "gyx",
+   "region": "er"
+  },
+  "44033": {
+   "km": 0.6,
+   "lat": 44.06,
+   "lon": -69.0,
+   "ndbc_lat": 44.055,
+   "ndbc_lon": -68.996,
+   "office": "gyx",
+   "region": "er"
+  },
+  "44034": {
+   "km": 1.0,
+   "lat": 44.1,
+   "lon": -68.1,
+   "ndbc_lat": 44.103,
+   "ndbc_lon": -68.112,
+   "office": "car",
+   "region": "er"
+  },
+  "44056": {
+   "km": 0.0,
+   "lat": 36.2,
+   "lon": -75.714,
+   "ndbc_lat": 36.2,
+   "ndbc_lon": -75.714,
+   "office": "mhx",
+   "region": "er"
+  },
+  "44060": {
+   "km": 0.0,
+   "lat": 41.263,
+   "lon": -72.067,
+   "ndbc_lat": 41.263,
+   "ndbc_lon": -72.067,
+   "office": "okx",
+   "region": "er"
+  },
+  "44065": {
+   "km": 0.2,
+   "lat": 40.369,
+   "lon": -73.703,
+   "ndbc_lat": 40.368,
+   "ndbc_lon": -73.701,
+   "office": "okx",
+   "region": "er"
+  },
+  "44089": {
+   "km": 0.8,
+   "lat": 37.756,
+   "lon": -75.334,
+   "ndbc_lat": 37.756,
+   "ndbc_lon": -75.325,
+   "office": "akq",
+   "region": "er"
+  },
+  "44090": {
+   "km": 0.0,
+   "lat": 41.84,
+   "lon": -70.329,
+   "ndbc_lat": 41.84,
+   "ndbc_lon": -70.329,
+   "office": "box",
+   "region": "er"
+  },
+  "44091": {
+   "km": 0.3,
+   "lat": 39.769,
+   "lon": -73.77,
+   "ndbc_lat": 39.772,
+   "ndbc_lon": -73.769,
+   "office": "phi",
+   "region": "er"
+  },
+  "44093": {
+   "km": 0.0,
+   "lat": 36.872,
+   "lon": -75.492,
+   "ndbc_lat": 36.872,
+   "ndbc_lon": -75.492,
+   "office": "akq",
+   "region": "er"
+  },
+  "44094": {
+   "km": 0.0,
+   "lat": 40.585,
+   "lon": -73.106,
+   "ndbc_lat": 40.585,
+   "ndbc_lon": -73.106,
+   "office": "okx",
+   "region": "er"
+  },
+  "44095": {
+   "km": 0.0,
+   "lat": 35.75,
+   "lon": -75.33,
+   "ndbc_lat": 35.75,
+   "ndbc_lon": -75.33,
+   "office": "mhx",
+   "region": "er"
+  },
+  "44096": {
+   "km": 0.1,
+   "lat": 37.023,
+   "lon": -75.81,
+   "ndbc_lat": 37.023,
+   "ndbc_lon": -75.809,
+   "office": "akq",
+   "region": "er"
+  },
+  "44098": {
+   "km": 0.2,
+   "lat": 42.798,
+   "lon": -70.168,
+   "ndbc_lat": 42.8,
+   "ndbc_lon": -70.169,
+   "office": "box",
+   "region": "er"
+  },
+  "44099": {
+   "km": 0.2,
+   "lat": 36.915,
+   "lon": -75.72,
+   "ndbc_lat": 36.915,
+   "ndbc_lon": -75.722,
+   "office": "lwx",
+   "region": "er"
+  },
+  "44100": {
+   "km": 0.3,
+   "lat": 36.255,
+   "lon": -75.591,
+   "ndbc_lat": 36.257,
+   "ndbc_lon": -75.593,
+   "office": "mhx",
+   "region": "er"
+  },
+  "46001": {
+   "km": 6.7,
+   "lat": 56.304,
+   "lon": -147.92,
+   "ndbc_lat": 56.296,
+   "ndbc_lon": -148.027,
+   "office": "aer",
+   "region": "ar"
+  },
+  "46011": {
+   "km": 2.8,
+   "lat": 34.956,
+   "lon": -121.019,
+   "ndbc_lat": 34.937,
+   "ndbc_lon": -120.999,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46012": {
+   "km": 0.8,
+   "lat": 37.363,
+   "lon": -122.881,
+   "ndbc_lat": 37.356,
+   "ndbc_lon": -122.881,
+   "office": "mtr",
+   "region": "wr"
+  },
+  "46013": {
+   "km": 1.6,
+   "lat": 38.242,
+   "lon": -123.301,
+   "ndbc_lat": 38.235,
+   "ndbc_lon": -123.317,
+   "office": "mtr",
+   "region": "wr"
+  },
+  "46014": {
+   "km": 1.0,
+   "lat": 39.22,
+   "lon": -123.97,
+   "ndbc_lat": 39.225,
+   "ndbc_lon": -123.98,
+   "office": "eka",
+   "region": "wr"
+  },
+  "46015": {
+   "km": 1.3,
+   "lat": 42.764,
+   "lon": -124.832,
+   "ndbc_lat": 42.754,
+   "ndbc_lon": -124.839,
+   "office": "mfr",
+   "region": "wr"
+  },
+  "46025": {
+   "km": 2.8,
+   "lat": 33.749,
+   "lon": -119.053,
+   "ndbc_lat": 33.765,
+   "ndbc_lon": -119.077,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46026": {
+   "km": 0.6,
+   "lat": 37.755,
+   "lon": -122.839,
+   "ndbc_lat": 37.75,
+   "ndbc_lon": -122.838,
+   "office": "mtr",
+   "region": "wr"
+  },
+  "46027": {
+   "km": 1.1,
+   "lat": 41.85,
+   "lon": -124.381,
+   "ndbc_lat": 41.84,
+   "ndbc_lon": -124.382,
+   "office": "mfr",
+   "region": "wr"
+  },
+  "46028": {
+   "km": 2.8,
+   "lat": 35.741,
+   "lon": -121.884,
+   "ndbc_lat": 35.763,
+   "ndbc_lon": -121.9,
+   "office": "mtr",
+   "region": "wr"
+  },
+  "46029": {
+   "km": 1.3,
+   "lat": 46.159,
+   "lon": -124.514,
+   "ndbc_lat": 46.148,
+   "ndbc_lon": -124.508,
+   "office": "pqr",
+   "region": "wr"
+  },
+  "46041": {
+   "km": 0.8,
+   "lat": 47.353,
+   "lon": -124.731,
+   "ndbc_lat": 47.351,
+   "ndbc_lon": -124.741,
+   "office": "sew",
+   "region": "wr"
+  },
+  "46042": {
+   "km": 5.4,
+   "lat": 36.785,
+   "lon": -122.469,
+   "ndbc_lat": 36.787,
+   "ndbc_lon": -122.408,
+   "office": "mtr",
+   "region": "wr"
+  },
+  "46050": {
+   "km": 2.7,
+   "lat": 44.656,
+   "lon": -124.526,
+   "ndbc_lat": 44.679,
+   "ndbc_lon": -124.535,
+   "office": "pqr",
+   "region": "wr"
+  },
+  "46053": {
+   "km": 1.2,
+   "lat": 34.252,
+   "lon": -119.853,
+   "ndbc_lat": 34.246,
+   "ndbc_lon": -119.842,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46054": {
+   "km": 1.3,
+   "lat": 34.265,
+   "lon": -120.477,
+   "ndbc_lat": 34.274,
+   "ndbc_lon": -120.468,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46060": {
+   "km": 1.6,
+   "lat": 60.584,
+   "lon": -146.784,
+   "ndbc_lat": 60.571,
+   "ndbc_lon": -146.795,
+   "office": "aer",
+   "region": "ar"
+  },
+  "46061": {
+   "km": 0.6,
+   "lat": 60.227,
+   "lon": -146.834,
+   "ndbc_lat": 60.231,
+   "ndbc_lon": -146.84,
+   "office": "aer",
+   "region": "ar"
+  },
+  "46069": {
+   "km": 2.1,
+   "lat": 33.67,
+   "lon": -120.21,
+   "ndbc_lat": 33.657,
+   "ndbc_lon": -120.227,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46073": {
+   "km": 9.6,
+   "lat": 55.031,
+   "lon": -172.001,
+   "ndbc_lat": 54.985,
+   "ndbc_lon": -171.874,
+   "office": "alu",
+   "region": "ar"
+  },
+  "46075": {
+   "km": 3.5,
+   "lat": 53.911,
+   "lon": -160.806,
+   "ndbc_lat": 53.93,
+   "ndbc_lon": -160.763,
+   "office": "alu",
+   "region": "ar"
+  },
+  "46076": {
+   "km": 1.1,
+   "lat": 59.502,
+   "lon": -147.99,
+   "ndbc_lat": 59.508,
+   "ndbc_lon": -148.005,
+   "office": "aer",
+   "region": "ar"
+  },
+  "46077": {
+   "km": 5.4,
+   "lat": 57.892,
+   "lon": -154.291,
+   "ndbc_lat": 57.869,
+   "ndbc_lon": -154.211,
+   "office": "aer",
+   "region": "ar"
+  },
+  "46080": {
+   "km": 10.5,
+   "lat": 57.939,
+   "lon": -149.96,
+   "ndbc_lat": 57.91,
+   "ndbc_lon": -150.129,
+   "office": "aer",
+   "region": "ar"
+  },
+  "46082": {
+   "km": 2.2,
+   "lat": 59.668,
+   "lon": -143.392,
+   "ndbc_lat": 59.67,
+   "ndbc_lon": -143.353,
+   "office": "aer",
+   "region": "ar"
+  },
+  "46083": {
+   "km": 3.1,
+   "lat": 58.3,
+   "lon": -137.997,
+   "ndbc_lat": 58.276,
+   "ndbc_lon": -138.024,
+   "office": "ajk",
+   "region": "ar"
+  },
+  "46086": {
+   "km": 1.6,
+   "lat": 32.491,
+   "lon": -118.035,
+   "ndbc_lat": 32.504,
+   "ndbc_lon": -118.029,
+   "office": "sgx",
+   "region": "wr"
+  },
+  "46087": {
+   "km": 0.1,
+   "lat": 48.494,
+   "lon": -124.728,
+   "ndbc_lat": 48.493,
+   "ndbc_lon": -124.727,
+   "office": "sew",
+   "region": "wr"
+  },
+  "46108": {
+   "km": 1.1,
+   "lat": 59.59,
+   "lon": -151.817,
+   "ndbc_lat": 59.598,
+   "ndbc_lon": -151.828,
+   "office": "aer",
+   "region": "ar"
+  },
+  "46206": {
+   "km": 0.6,
+   "lat": 48.835,
+   "lon": -125.998,
+   "ndbc_lat": 48.84,
+   "ndbc_lon": -126.0,
+   "office": "sew",
+   "region": "wr"
+  },
+  "46211": {
+   "km": 0.1,
+   "lat": 46.858,
+   "lon": -124.244,
+   "ndbc_lat": 46.857,
+   "ndbc_lon": -124.243,
+   "office": "pqr",
+   "region": "wr"
+  },
+  "46212": {
+   "km": 0.4,
+   "lat": 40.75,
+   "lon": -124.31,
+   "ndbc_lat": 40.753,
+   "ndbc_lon": -124.313,
+   "office": "eka",
+   "region": "wr"
+  },
+  "46213": {
+   "km": 1.2,
+   "lat": 40.3,
+   "lon": -124.74,
+   "ndbc_lat": 40.291,
+   "ndbc_lon": -124.748,
+   "office": "eka",
+   "region": "wr"
+  },
+  "46214": {
+   "km": 0.3,
+   "lat": 37.946,
+   "lon": -123.469,
+   "ndbc_lat": 37.944,
+   "ndbc_lon": -123.466,
+   "office": "mtr",
+   "region": "wr"
+  },
+  "46218": {
+   "km": 0.3,
+   "lat": 34.454,
+   "lon": -120.782,
+   "ndbc_lat": 34.452,
+   "ndbc_lon": -120.78,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46219": {
+   "km": 1.2,
+   "lat": 33.22,
+   "lon": -119.88,
+   "ndbc_lat": 33.226,
+   "ndbc_lon": -119.891,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46221": {
+   "km": 1.0,
+   "lat": 33.86,
+   "lon": -118.63,
+   "ndbc_lat": 33.86,
+   "ndbc_lon": -118.641,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46222": {
+   "km": 0.5,
+   "lat": 33.618,
+   "lon": -118.317,
+   "ndbc_lat": 33.614,
+   "ndbc_lon": -118.314,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46223": {
+   "km": 1.6,
+   "lat": 33.458,
+   "lon": -117.784,
+   "ndbc_lat": 33.458,
+   "ndbc_lon": -117.767,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46224": {
+   "km": 0.1,
+   "lat": 33.179,
+   "lon": -117.471,
+   "ndbc_lat": 33.178,
+   "ndbc_lon": -117.472,
+   "office": "sgx",
+   "region": "wr"
+  },
+  "46225": {
+   "km": 0.3,
+   "lat": 32.93,
+   "lon": -117.392,
+   "ndbc_lat": 32.933,
+   "ndbc_lon": -117.391,
+   "office": "sgx",
+   "region": "wr"
+  },
+  "46229": {
+   "km": 0.6,
+   "lat": 43.767,
+   "lon": -124.549,
+   "ndbc_lat": 43.772,
+   "ndbc_lon": -124.549,
+   "office": "mfr",
+   "region": "wr"
+  },
+  "46231": {
+   "km": 0.0,
+   "lat": 32.747,
+   "lon": -117.37,
+   "ndbc_lat": 32.747,
+   "ndbc_lon": -117.37,
+   "office": "sgx",
+   "region": "wr"
+  },
+  "46232": {
+   "km": 1.6,
+   "lat": 32.53,
+   "lon": -117.431,
+   "ndbc_lat": 32.517,
+   "ndbc_lon": -117.425,
+   "office": "sgx",
+   "region": "wr"
+  },
+  "46236": {
+   "km": 0.3,
+   "lat": 36.761,
+   "lon": -121.947,
+   "ndbc_lat": 36.759,
+   "ndbc_lon": -121.95,
+   "office": "mtr",
+   "region": "wr"
+  },
+  "46237": {
+   "km": 0.2,
+   "lat": 37.786,
+   "lon": -122.634,
+   "ndbc_lat": 37.788,
+   "ndbc_lon": -122.634,
+   "office": "mtr",
+   "region": "wr"
+  },
+  "46239": {
+   "km": 0.7,
+   "lat": 36.342,
+   "lon": -122.102,
+   "ndbc_lat": 36.342,
+   "ndbc_lon": -122.11,
+   "office": "mtr",
+   "region": "wr"
+  },
+  "46242": {
+   "km": 0.0,
+   "lat": 33.22,
+   "lon": -117.439,
+   "ndbc_lat": 33.22,
+   "ndbc_lon": -117.439,
+   "office": "sgx",
+   "region": "wr"
+  },
+  "46243": {
+   "km": 0.0,
+   "lat": 46.215,
+   "lon": -124.129,
+   "ndbc_lat": 46.215,
+   "ndbc_lon": -124.129,
+   "office": "pqr",
+   "region": "wr"
+  },
+  "46248": {
+   "km": 0.4,
+   "lat": 46.133,
+   "lon": -124.645,
+   "ndbc_lat": 46.133,
+   "ndbc_lon": -124.64,
+   "office": "pqr",
+   "region": "wr"
+  },
+  "46253": {
+   "km": 0.3,
+   "lat": 33.578,
+   "lon": -118.184,
+   "ndbc_lat": 33.576,
+   "ndbc_lon": -118.182,
+   "office": "lox",
+   "region": "wr"
+  },
+  "46254": {
+   "km": 0.0,
+   "lat": 32.868,
+   "lon": -117.267,
+   "ndbc_lat": 32.868,
+   "ndbc_lon": -117.267,
+   "office": "sgx",
+   "region": "wr"
+  },
+  "46256": {
+   "km": 0.0,
+   "lat": 33.7,
+   "lon": -118.201,
+   "ndbc_lat": 33.7,
+   "ndbc_lon": -118.201,
+   "office": "lox",
+   "region": "wr"
+  },
+  "48012": {
+   "km": 0.0,
+   "lat": 70.025,
+   "lon": -166.071,
+   "ndbc_lat": 70.025,
+   "ndbc_lon": -166.071,
+   "office": "afg",
+   "region": "ar"
+  },
+  "48114": {
+   "km": 0.0,
+   "lat": 65.011,
+   "lon": -169.454,
+   "ndbc_lat": 65.011,
+   "ndbc_lon": -169.454,
+   "office": "afg",
+   "region": "ar"
+  },
+  "48212": {
+   "km": 0.0,
+   "lat": 70.874,
+   "lon": -150.279,
+   "ndbc_lat": 70.874,
+   "ndbc_lon": -150.279,
+   "office": "afg",
+   "region": "ar"
+  },
+  "51003": {
+   "km": 16.2,
+   "lat": 19.289,
+   "lon": -160.569,
+   "ndbc_lat": 19.151,
+   "ndbc_lon": -160.617,
+   "office": "hfo",
+   "region": "pr"
+  },
+  "52200": {
+   "km": 0.5,
+   "lat": 13.35,
+   "lon": 144.79,
+   "ndbc_lat": 13.354,
+   "ndbc_lon": 144.788,
+   "office": "gum",
+   "region": "pr"
+  },
+  "52202": {
+   "km": 0.0,
+   "lat": 13.682,
+   "lon": 144.811,
+   "ndbc_lat": 13.682,
+   "ndbc_lon": 144.811,
+   "office": "gum",
+   "region": "pr"
+  },
+  "52211": {
+   "km": 0.3,
+   "lat": 15.267,
+   "lon": 145.662,
+   "ndbc_lat": 15.269,
+   "ndbc_lon": 145.664,
+   "office": "gum",
+   "region": "pr"
+  }
+ }
+}

@@ -1,0 +1,92 @@
+SWAN   1                                Swan standard spectral file, version
+$   Data produced by SWAN version 40.81
+$   Project: SWAN-FTPPAT2-CG1;  run number: 2800
+TIME                                    time-dependent data
+     1                                  time coding option
+LONLAT                                  locations in spherical coordinates
+     1                                  number of locations
+  238.093002   36.625999
+AFREQ                                   absolute frequencies in Hz
+    37                                  number of frequencies
+    0.0350
+    0.0389
+    0.0431
+    0.0479
+    0.0531
+    0.0590
+    0.0655
+    0.0727
+    0.0807
+    0.0896
+    0.0994
+    0.1103
+    0.1225
+    0.1360
+    0.1509
+    0.1675
+    0.1860
+    0.2064
+    0.2291
+    0.2543
+    0.2823
+    0.3134
+    0.3479
+    0.3861
+    0.4286
+    0.4758
+    0.5281
+    0.5863
+    0.6508
+    0.7224
+    0.8018
+    0.8901
+    0.9880
+    1.0967
+    1.2174
+    1.3513
+    1.5000
+NDIR                                    spectral nautical directions in degr
+    36                                  number of directions
+  265.0000
+  255.0000
+  245.0000
+  235.0000
+  225.0000
+  215.0000
+  205.0000
+  195.0000
+  185.0000
+  175.0000
+  165.0000
+  155.0000
+  145.0000
+  135.0000
+  125.0000
+  115.0000
+  105.0000
+   95.0000
+   85.0000
+   75.0000
+   65.0000
+   55.0000
+   45.0000
+   35.0000
+   25.0000
+   15.0000
+    5.0000
+   -5.0000
+  -15.0000
+  -25.0000
+  -35.0000
+  -45.0000
+  -55.0000
+  -65.0000
+  -75.0000
+  -85.0000
+QUANT
+     1                                  number of quantities in table
+VaDens                                  variance densities in m2/Hz/degr
+m2/Hz/degr                              unit
+   -0.9900E+02                          exception value
+20261028.000000                         date and time
+NODATA

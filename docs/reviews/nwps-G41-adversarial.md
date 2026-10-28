@@ -115,3 +115,52 @@ absence.
 - Runner dry run (eccodes env, every office, nothing published): 35 office runs, 112 station files, 838,687 bytes,
   2 min 33-37 s, max RSS 60 MB. hfo 2026102800, mtr 2026102800 and lox 2026102806 built locally gave the same files as
   the runner (digest of every file without its build time: 22 stations, identical).
+
+## G41a: one fresh reviewer on the job (2026-10-28, Opus 5.5 at HIGH)
+
+Brief and report: scratch `g41a/` (brief.md, g41a-report.md, scripts/, data/). The reviewer wrote its own spectral
+reader and watershed, checked 2,030 real hours from 14 files of 10 offices, ran 65 mutants and a job harness with a
+virtual clock; 34 NOMADS requests. **0 P0, 0 P1, 2 P2, 9 P3.**
+
+Held up: the reader decodes exactly (2,030 spectra = an independent reader; 3,000 corrupted copies raised only
+ValueError); given the same smoothed field the independent watershed matches 2,028 of 2,030 hours; energy conserved to
+5e-15; Tp always within the peak bin's neighbours; NOMADS's listing times are UTC (the settle rule measures what it says);
+all 112 stations are GFS stations within 25 km of today's NDBC positions (max 16.2 km) at the stored points; 46028 (two
+offices) goes to the nearer, mtr; the workflow's pins equal the other publishers'; suite 381.
+
+Findings and outcomes (all fixed in the commit after c67f2a2):
+- P2-1 a silent NOMADS outran the budget: discovery was outside it and a listing that did not answer only moved on to the
+  next office (35 offices x 254 s = 148 min a tick, past the 30-min job limit). FIXED: the budget is checked before every
+  office and every listing; a NOMADS that does not answer stops the tick (exit 3).
+- P2-2 one station file failing with HTTP 500 threw the whole office build away every tick (no record, no back-off). FIXED:
+  that station is left out ("not served: ...") and the rest published; two failing in one office build = NOMADS is
+  failing: the tick stops. The test fake now raises what the real request raises (TransportError).
+- P3-1 ties were decided by float rounding (89 of 2,030 hours differed from an exact-integer reference; the direction
+  axis' orientation mattered). FIXED: the smoothed field and the frequency spectra are compared after rounding each value's
+  mantissa to 40 bits (`_quantize`), so equal integer sums compare equal and the documented rule applies (a plateau's
+  highest flat index; of two equal frequency peaks the lower frequency). Re-run of the reviewer's comparison: the
+  partition count now agrees in all 2,030 hours, everything in 2,025; the 5 left are equal-peak Tp ties of tiny wind-sea
+  parts (< 0.08 m) where the reference picks the other peak. The two real cases are fixtures (aer 46001: 0.966 / 0.554 m;
+  aer 46060: Tp 2.24 s, not 1.89 s). The step-1 validation numbers move by less than their rounding.
+- P3-2 the reader's memory was unbounded (ZERO steps): FIXED, at most 400 steps.
+- P3-3 the reader accepted nan / inf / 2.5 / 1_000 / negative values and any factor: FIXED, integer rows only (or the
+  exception value), a factor in 0..1e3.
+- P3-4 partitions under MIN_HS are not listed (85 in 2,030 hours, <= 0.08 % of the energy): documented (their energy
+  stays in the whole spectrum's Hs); the "merged, never dropped" wording corrected.
+- P3-5 directions were assumed evenly round the circle: FIXED, checked (ValueError otherwise); a peak due north reads 0.
+- P3-6 discovery listed the CG1 directory of cycles already live (~25k requests a day): FIXED, the live cycle and older
+  are never listed (`candidate(..., after=live run)` returns LIVE).
+- P3-7 test gaps (30 of 65 mutants survived): tests added for every real one (a pin of all six fixture hours, the small
+  rule's two conditions, the per-Hz Tp, ties, the reader's limits, the budget, a silent NOMADS, a failing / 404 station,
+  an empty build, exit 1 only with nothing waiting, the summary, stalest-first, office warnings, prune edges). The
+  reviewer's mutants (anchors moved by the fixes adjusted) + 13 new ones: **68 of 77 killed**; the 9 left are equivalent
+  on NOAA's files or redundant guards (end-bin width, 10-deg width, zero bins labelled, the parabola's vertex range, any
+  grib name, kept runs unsorted, hour 145, `run <= live` now also guarded by discovery) or a rare merge order (the
+  biggest small partition first).
+- P3-8 the tests workflow's paths: + `tools/build_nwps_stations.py`, `station_list.json`.
+- P3-9 wording: 35 offices hold stations; the pointer-following comment; a failure now shows in the summary even when
+  another office published; office warnings only for offices serving a station. CORRECTION to the step-2 section: no
+  test reached the budget then (the "budget break" mutant was caught for another reason); one does now.
+
+Suite: job suite 402. Not checked by the review: same-cycle reruns by NOAA (never republished by the job), whether NOMADS's
+limit is shared with the other publishers.

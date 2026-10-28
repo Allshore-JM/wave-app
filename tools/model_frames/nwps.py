@@ -54,6 +54,8 @@ MAX_HOURS = 145                             # 0..144
 BUILD_BUDGET_S = 20 * 60
 FAILED_RETRY_AFTER_S = 3600
 FAILED_MAX_ATTEMPTS = 6
+LIVE = "live"                               # candidate(): nothing newer than the live run
+STATION_TRANSPORT_MAX = 2                   # station files failing in one office build before the tick stops
 HEARTBEAT_S = 3600                          # the pointer's checked_utc is rewritten at least this often
 OFFICE_WARN_H = 48
 STALE_FAIL_H = 24
@@ -110,11 +112,20 @@ def load_stations(path=STATIONS_PATH):
 
 # ------------------------------------------------------------------------------------------------- discovery
 
-def candidate(office, region, now, request=None):
-    """(day, hh, {sid: (modified, size)}) of the office's newest settled CG1 run in the last LOOKBACK_DAYS, or None.
-    A newer cycle that is not settled yet is skipped (the next tick takes it)."""
+def candidate(office, region, now, request=None, after="", deadline=None):
+    """(day, hh, {sid: (modified, size)}) of the office's newest settled CG1 run in the last LOOKBACK_DAYS that is
+    newer than `after` (the live run); LIVE when the newest settled cycle is the live run or older; None when no settled
+    run was found. A newer cycle that is not settled yet is skipped (the next tick takes
+    it); the cycles at or before the live run are never listed (they cannot be published). BudgetExceeded when the
+    tick's deadline passes."""
     for day in N.recent_days(now, LOOKBACK_DAYS):
+        if deadline is not None and time.monotonic() > deadline:
+            raise BudgetExceeded(f"budget ran out listing {office}")
         for hh in sorted(N.cycles(region, day, office, request), reverse=True):
+            if after and run_name(day, hh) <= after:
+                return LIVE                   # this cycle and every older one is live already or older
+            if deadline is not None and time.monotonic() > deadline:
+                raise BudgetExceeded(f"budget ran out listing {office}")
             files = N.spectra_listing(region, day, office, hh, request)
             if not files or "" not in files:
                 continue                              # no CG1 grib yet: the run is still being written
@@ -165,6 +176,7 @@ def build_office(office, region, day, hh, files, stations, request, deadline):
     run_dt = datetime(day.year, day.month, day.day, hh, tzinfo=timezone.utc)
     built = stamp(now_utc())
     out, left = {}, {}
+    transport = 0
     for sid in sorted(stations):
         if time.monotonic() > deadline:
             raise BudgetExceeded(f"budget ran out at {office} {sid}")
@@ -177,6 +189,12 @@ def build_office(office, region, day, hh, files, stations, request, deadline):
             raise
         except N.NotReady:
             left[sid] = "not served"
+            continue
+        except N.TransportError as exc:
+            transport += 1
+            if transport >= STATION_TRANSPORT_MAX:
+                raise                                 # NOMADS itself is failing: the tick stops
+            left[sid] = f"not served: {exc}"        # one file that keeps failing never holds the office back
             continue
         try:
             doc = station_doc(body, office, region, run_dt, sid, built)
@@ -270,9 +288,11 @@ def _stale(store, pointer, situation):
     return R._stale_check(store, SRC, latest, situation)
 
 
-def _office_warnings(pointer, now):
+def _office_warnings(pointer, now, offices=None):
     out = []
     for office, o in sorted(pointer.get("offices", {}).items()):
+        if offices is not None and office not in offices:
+            continue                                  # an office no longer serving a station
         try:
             run_dt = datetime.strptime(o["run"], "%Y%m%d%H").replace(tzinfo=timezone.utc)
         except (KeyError, ValueError):
@@ -320,8 +340,12 @@ def main(argv=None, request=None, store=None, now=None, stations=None):
     now = now or now_utc()
     offices = [a.office] if a.office else sorted(by_office, key=lambda o: pointer["offices"].get(o, {}).get("run", ""))
     published, failures, waiting, built_any = [], [], [], False
-    throttled = budget = False
+    throttled = budget = unreachable = False
     for office in offices:
+        if time.monotonic() > deadline:
+            print(f"{office}: the budget ran out; the rest waits for the next tick")
+            budget = True
+            break
         region = N.OFFICES[office]
         live_run = pointer["offices"].get(office, {}).get("run", "")
         day = hh = None
@@ -335,7 +359,10 @@ def main(argv=None, request=None, store=None, now=None, stations=None):
                     waiting.append(office)
                     continue
             else:
-                cand = candidate(office, region, now, request)
+                cand = candidate(office, region, now, request, after=live_run if live else "", deadline=deadline)
+                if cand == LIVE:
+                    print(f"{office}: no settled run newer than the live {live_run}")
+                    continue
                 if cand is None:
                     print(f"{office}: no settled run in the last {LOOKBACK_DAYS} days")
                     waiting.append(office)
@@ -358,8 +385,12 @@ def main(argv=None, request=None, store=None, now=None, stations=None):
             print(f"{office}: {exc}; the rest waits for the next tick")
             budget = True
             break
-        except (N.TransportError, N.NotReady) as exc:
-            print(f"{office}: NOMADS did not answer ({exc})")
+        except N.TransportError as exc:              # a silent or failing NOMADS: every request would wait minutes
+            print(f"{office}: NOMADS did not answer ({exc}); the rest waits for the next tick")
+            unreachable = True
+            break
+        except N.NotReady as exc:
+            print(f"{office}: not on NOMADS ({exc})")
             waiting.append(office)
             continue
         except Exception as exc:                     # noqa: BLE001 - a layout change: recorded, retried later
@@ -387,7 +418,9 @@ def main(argv=None, request=None, store=None, now=None, stations=None):
     if not live:
         print("dry run: nothing published")
         return 0 if built_any else 3
-    for w in _office_warnings(pointer, now):
+    if failures:
+        _summary(f"FAILED: NWPS {', '.join(failures)}")
+    for w in _office_warnings(pointer, now, by_office):
         print(w)
         _summary(w)
     if not published:
@@ -405,10 +438,9 @@ def main(argv=None, request=None, store=None, now=None, stations=None):
     stale = _stale(store, pointer, "no NWPS office published a new run")
     if stale:
         return stale
-    if failures and not waiting and not throttled and not budget:
-        _summary(f"FAILED: NWPS {', '.join(failures)}")
+    if failures and not waiting and not throttled and not budget and not unreachable:
         return 1
-    return 3 if (throttled or budget or waiting or failures) else 0
+    return 3 if (throttled or budget or unreachable or waiting or failures) else 0
 
 
 if __name__ == "__main__":

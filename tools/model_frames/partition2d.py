@@ -1,7 +1,8 @@
 """Swell partitioning of a 2-D wave spectrum (plan section 59): the watershed of Hanson and Phillips (2001), as the
 wave models use it, in numpy.
 
-Input: freqs (Hz, ascending, log-spaced or not), dirs (degrees FROM, any order), E[nf, nd] in m2/Hz/degr (nan =
+Input: freqs (Hz, ascending, log-spaced or not), dirs (degrees FROM, evenly spaced round the full circle, in
+either sense: a ValueError otherwise), E[nf, nd] in m2/Hz/degr (nan =
 exception = treated as 0). The spectrum is smoothed (3x3, wrapping in direction), every bin follows its steepest-ascent
 neighbour to a local maximum (8 neighbours, wrap in direction, clamp in frequency) and the bins of one maximum form a
 partition. Two adjacent partitions can be merged when the pass between them is shallow (the highest boundary value at
@@ -9,7 +10,13 @@ least SADDLE x the lower of the two peaks; off by default, SADDLE = 1.0); a part
 is merged into the neighbour it touches most, so every joule stays in some partition. Per partition: Hs = 4 sqrt(m0),
 the peak period from a parabolic fit of the partition's frequency spectrum on log f, the direction = the energy-weighted
 circular mean of the FROM directions. The result lists the partitions by height, at most MAX_PARTS (the bulletins' six),
-with the count before the cap and the whole spectrum's Hs.
+with the count before the cap and the whole spectrum's Hs. Partitions under MIN_HS are not listed (and not counted);
+their energy stays in the whole spectrum's Hs.
+
+Ties: NOAA's spectra are integers x a factor, so equal values are common. The smoothed field and the frequency
+spectra are compared after rounding each value's mantissa to TIE_BITS bits, so sums equal but for float rounding are
+equal: a plateau's bins go to its highest flat index (one peak per plateau; which bin is
+arbitrary), and of two equal frequency peaks the lower frequency (the longer period) is the peak.
 """
 import math
 
@@ -21,6 +28,7 @@ SMALL_FRACTION = 0.02   # a partition under this share of the energy AND ...
 SMALL_HS = 0.15         # ... under this height (m) is merged into its biggest neighbour
 MAX_PARTS = 6
 MIN_HS = 0.05           # partitions under this height are left out of the list (they hold no wave to speak of)
+TIE_BITS = 40           # mantissa bits kept before comparing (see Ties above; a double has 52)
 
 
 def bin_widths(freqs):
@@ -46,6 +54,13 @@ def _smooth(E):
     return out / 9.0
 
 
+def _quantize(a):
+    """a with each value's binary mantissa rounded to TIE_BITS bits: values equal but for float rounding become equal
+    (bar the rare pair straddling a rounding boundary); small values keep their size, zeros stay zero."""
+    m, e = np.frexp(a)
+    return np.ldexp(np.round(m * 2.0 ** TIE_BITS) / 2.0 ** TIE_BITS, e)
+
+
 def _labels(S):
     """The watershed labels of S: each bin's peak (a flat index), -1 where S is 0."""
     nf, nd = S.shape
@@ -66,7 +81,7 @@ def _labels(S):
             best_idx = np.where(take, nidx, best_idx)
     up = best_idx.ravel()
     lab = up.copy()
-    for _ in range(nf * nd):                # pointer jumping: converges in O(log) rounds
+    for _ in range(nf * nd):                # follow the pointers, one step a round, until every bin sits on its peak
         nxt = up[lab]
         if np.array_equal(nxt, lab):
             break
@@ -99,6 +114,9 @@ def partition(freqs, dirs, E, max_parts=MAX_PARTS):
     nf, nd = E.shape
     if f.size != nf or d.size != nd:
         raise ValueError("shape mismatch")
+    step = np.diff(np.concatenate([d, d[:1]])) % 360.0
+    if not (np.allclose(step, 360.0 / nd, atol=1e-6) or np.allclose(step, 360.0 - 360.0 / nd, atol=1e-6)):
+        raise ValueError("directions must go evenly round the full circle")
     df = bin_widths(f)
     dd = 360.0 / nd
     W = E * df[:, None] * dd              # energy per bin (m2)
@@ -107,7 +125,7 @@ def partition(freqs, dirs, E, max_parts=MAX_PARTS):
     if total <= 0:
         return {"hs": 0.0, "n": 0, "parts": []}
 
-    S = _smooth(E)
+    S = _quantize(_smooth(E))
     lab = _labels(S)
     # merge shallow passes and small partitions until stable
     while True:
@@ -164,11 +182,13 @@ def partition(freqs, dirs, E, max_parts=MAX_PARTS):
             continue
         hs = 4.0 * math.sqrt(m0)
         e1 = Wp.sum(axis=1) / df           # the partition's frequency spectrum (m2/Hz)
-        k = int(np.argmax(e1))
+        k = int(np.argmax(_quantize(e1)))   # the first (lowest-frequency) of equal peaks
         fp = _parabolic_peak(f, e1, k)
         wx = float((Wp * np.cos(th)).sum())
         wy = float((Wp * np.sin(th)).sum())
         mdir = math.degrees(math.atan2(wy, wx)) % 360.0
+        if mdir >= 360.0:                    # -1e-15 % 360 is 360.0
+            mdir = 0.0
         parts.append({"hs": hs, "tp": 1.0 / fp, "dir": mdir, "m0": m0, "share": m0 / total})
     parts = [p for p in parts if p["hs"] >= MIN_HS]
     parts.sort(key=lambda p: -p["hs"])

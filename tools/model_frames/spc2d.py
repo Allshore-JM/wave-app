@@ -14,6 +14,9 @@ MAX_BYTES = 2 * 1024 * 1024
 MAX_LINE = 4096
 MAX_FREQS = 200
 MAX_DIRS = 180
+MAX_STEPS = 400                 # NWPS writes 145 hours; a longer file is not one of NOAA's
+MAX_FACTOR = 1e3                # NOAA's factors are ~1e-6..1e-3: anything near this is not a spectrum
+INT_RE = re.compile(r"^-?\d{1,9}$")
 TIME_RE = re.compile(r"^(\d{8})\.(\d{6})\s")
 
 
@@ -119,13 +122,17 @@ def read(text):
         if key == "NODATA":
             steps.append((when, None))
             i += 1
+            if len(steps) > MAX_STEPS:
+                raise ValueError(f"more than {MAX_STEPS} time steps")
         elif key == "ZERO":
             steps.append((when, [[0.0] * nd for _ in range(nf)]))
+            if len(steps) > MAX_STEPS:
+                raise ValueError(f"more than {MAX_STEPS} time steps")
             i += 1
         elif key == "FACTOR":
             i += 1
             factor = number()
-            if not factor >= 0:
+            if not 0 <= factor <= MAX_FACTOR:          # also refuses nan and inf
                 raise ValueError("bad factor")
             rows = []
             for _ in range(nf):
@@ -134,13 +141,16 @@ def read(text):
                 toks = lines[i].split()
                 if len(toks) != nd:
                     raise ValueError(f"expected {nd} values at line {i + 1}")
-                try:
-                    vals = [float(t) for t in toks]
-                except ValueError:
-                    raise ValueError(f"bad value at line {i + 1}") from None
+                if not all(INT_RE.match(t) for t in toks):
+                    raise ValueError(f"bad value at line {i + 1}")     # integers only (no nan, inf, 2.5, 1_000)
+                vals = [float(t) for t in toks]
+                if any(v < 0 and v != exception for v in vals):
+                    raise ValueError(f"negative value at line {i + 1}")
                 rows.append([float("nan") if v == exception else v * factor for v in vals])
                 i += 1
             steps.append((when, rows))
+            if len(steps) > MAX_STEPS:
+                raise ValueError(f"more than {MAX_STEPS} time steps")
         else:
             raise ValueError(f"expected FACTOR, NODATA or ZERO at line {i + 1}")
     if not steps:

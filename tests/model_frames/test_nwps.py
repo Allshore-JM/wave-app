@@ -69,6 +69,8 @@ def test_reader_exception_value_and_refusals():
         ((head + block.replace("    0    0    0    0    2    9    7", "    0    0    0    0    2    9    7    1", 1)).encode(), "a wide row"),
         (b"x" * (spc2d.MAX_BYTES + 1), "size"),
         (text.replace("0.0350", "0.0500", 1).encode(), "ascending"),
+        (b"", "empty"),
+        (head.encode(), "no steps"),
     ):
         with pytest.raises(ValueError):
             spc2d.read(bad)
@@ -118,7 +120,7 @@ def test_a_system_straddling_north_keeps_one_partition_and_its_mean():
     assert r["n"] == 1 and abs(((r["parts"][0]["dir"] - 357.0 + 180) % 360) - 180) < 1.0
 
 
-def test_a_weak_speck_is_merged_never_dropped():
+def test_a_weak_speck_is_merged_not_listed_alone():
     E = gaussian(2.0, 14.0, 320.0)
     E[30, 5] += 2e-5                                          # a lone high-frequency bin, far from the swell
     r = P.partition(FREQS, DIRS, E)
@@ -266,3 +268,122 @@ def test_the_station_file():
     assert "46240" not in st and "42023" not in st and "44018" not in st and "46085" not in st
     assert st["51003"]["office"] == "hfo" and st["46026"]["office"] == "mtr"
     assert "46240" in doc["left_out"] and "nodata" in doc["left_out"]["46240"]
+
+
+def test_reader_values_are_integers_and_factors_sane():
+    """G41a P3-3 / P3-2: only integers (or the exception value) in the rows, a finite factor, at most MAX_STEPS steps."""
+    text = fixture("51003.spc2d.txt").decode()
+    head, rest = text.split("20261028.000000", 1)
+    block = "20261028.000000" + rest.split("20261028.010000")[0]
+    row = "    0    0    0    0    2    9    7"
+    for tok in ("  2.5", "  nan", "  inf", "1e999", "1_000", "   -5"):
+        with pytest.raises(ValueError):
+            spc2d.read(head + block.replace(row, "    0    0    0    0    2    9" + tok, 1))
+    factor = block.split("FACTOR\n", 1)[1].split("\n", 1)[0]
+    for bad in ("  inf", "  nan", " 1E300", " -1E-5"):
+        with pytest.raises(ValueError):
+            spc2d.read(head + block.replace(factor, bad, 1))
+    zero = "".join(f"20261028.{h // 60:02d}{h % 60:02d}00  date and time\nZERO\n" for h in range(spc2d.MAX_STEPS + 1))
+    with pytest.raises(ValueError, match="time steps"):
+        spc2d.read(head + zero)
+    assert len(spc2d.read(head + "".join(zero.splitlines(True)[:2 * spc2d.MAX_STEPS])).steps) == spc2d.MAX_STEPS
+
+
+# pinned 2026-10-28 by the fixed partitioner (G41a): every hour of the fixture (hfo 51003, 00Z), whole-spectrum Hs, the
+# count, and each listed partition (Hs m, Tp s, FROM deg). Catches a change of the smoothing, the tie rule, the small-
+# partition rule, the shallow-pass switch, the per-Hz frequency spectrum behind Tp, the bin widths.
+GOLDEN = [
+    (2.096, 5, [(1.252, 14.07, 323.3), (1.153, 4.96, 92.7), (0.912, 8.74, 356.3), (0.799, 15.86, 187.6), (0.154, 10.03, 139.3)]),
+    (2.1, 5, [(1.259, 13.98, 323.5), (1.165, 4.91, 92.8), (0.896, 8.69, 356.9), (0.8, 15.72, 187.4), (0.153, 10.02, 139.3)]),
+    (2.09, 4, [(1.256, 13.89, 323.4), (1.165, 4.89, 94.4), (0.89, 8.69, 357.2), (0.801, 15.64, 187.3)]),
+    (2.089, 4, [(1.252, 13.8, 323.3), (1.175, 4.84, 96.0), (0.883, 8.68, 357.7), (0.798, 15.58, 187.2)]),
+    (2.094, 5, [(1.254, 13.71, 323.3), (1.025, 4.62, 95.1), (0.857, 8.65, 359.1), (0.792, 15.54, 187.0), (0.633, 7.26, 98.1)]),
+    (2.097, 5, [(1.248, 13.63, 323.3), (1.087, 4.61, 93.9), (0.855, 8.64, 359.6), (0.784, 15.49, 186.8), (0.558, 7.35, 98.5)]),
+]
+
+
+def test_the_real_fixture_every_hour_pinned():
+    sp = spc2d.read(fixture("51003.spc2d.txt"))
+    got = []
+    for _t, rows in sp.steps:
+        r = P.partition(sp.freqs, sp.dirs, np.array(rows))
+        got.append((round(r["hs"], 3), r["n"], [(round(p["hs"], 3), round(p["tp"], 2), round(p["dir"], 1))
+                                               for p in r["parts"]]))
+    assert got == GOLDEN
+
+
+def test_the_rules_constants():
+    assert (P.SADDLE, P.SMALL_FRACTION, P.SMALL_HS, P.MAX_PARTS, P.MIN_HS) == (1.0, 0.02, 0.15, 6, 0.05)
+
+
+def test_the_small_rule_needs_both_a_small_share_and_a_small_height():
+    """A system is merged only when it is under 2 % of the energy AND under 0.15 m: one condition alone keeps it."""
+    big = gaussian(3.0, 14.0, 320.0)
+    # 0.14 m on 3.0 m: 0.2 % of the energy and under 0.15 m -> merged into its neighbour
+    assert P.partition(FREQS, DIRS, big + gaussian(0.14, 6.0, 140.0))["n"] == 1
+    # 0.16 m on 3.0 m: 0.3 % but over 0.15 m -> kept
+    assert P.partition(FREQS, DIRS, big + gaussian(0.16, 6.0, 140.0))["n"] == 2
+    # 0.12 m on 0.6 m: under 0.15 m but 4 % of the energy -> kept
+    assert P.partition(FREQS, DIRS, gaussian(0.6, 14.0, 320.0) + gaussian(0.12, 6.0, 140.0))["n"] == 2
+
+
+def test_ties_are_rounding_proof_and_go_to_the_higher_index():
+    """G41a P3-1: two sums equal but for float rounding compare equal; a plateau's bins follow its highest flat index."""
+    a = np.array([0.1 + 0.2, 0.3])
+    assert a[0] != a[1] and P._quantize(a)[0] == P._quantize(a)[1]
+    assert P._quantize(np.array([0.0, 1e-300]))[0] == 0.0 and P._quantize(np.array([1e-300]))[0] > 0
+    S = np.zeros((5, 8))
+    S[2, 3] = S[2, 4] = 1.0                                  # a two-bin plateau
+    lab = P._labels(S)
+    assert lab[2, 3] == lab[2, 4] == 2 * 8 + 4
+
+
+def test_directions_must_go_evenly_round_the_circle():
+    E = gaussian(2.0, 14.0, 320.0)
+    rev = P.partition(FREQS, DIRS[::-1], E[:, ::-1])          # the other sense is fine
+    assert rev["n"] == 1 and rev["parts"][0]["dir"] == pytest.approx(320.0, abs=1.0)
+    shuffled = DIRS[:]
+    shuffled[3], shuffled[7] = shuffled[7], shuffled[3]
+    with pytest.raises(ValueError):
+        P.partition(FREQS, shuffled, E)
+    with pytest.raises(ValueError):
+        P.partition(FREQS, DIRS[:-1] + [DIRS[-1] + 5], E)
+
+
+def test_a_system_from_due_north_reads_0_not_360():
+    r = P.partition(FREQS, DIRS, gaussian(2.0, 14.0, 0.0))
+    assert 0.0 <= r["parts"][0]["dir"] < 360.0 and min(r["parts"][0]["dir"], 360 - r["parts"][0]["dir"]) < 0.5
+
+
+def test_tp_comes_from_the_per_hz_spectrum():
+    """On log-spaced bins a per-bin sum would move the peak to longer periods: the per-Hz spectrum keeps it."""
+    r = P.partition(FREQS, DIRS, gaussian(2.0, 6.0, 90.0, sf=0.15))
+    assert r["parts"][0]["tp"] == pytest.approx(6.0, rel=0.02)
+
+
+def test_real_ties_follow_the_rule_not_float_rounding():
+    """G41a P3-1, the two real cases: aer 46001 (a bin with two neighbours of the same integer sum) and aer 46060 (two
+    equal frequency peaks: the lower frequency, Tp 2.24 s, not 1.89 s). The values equal an exact-integer reference."""
+    def parts(name):
+        sp = spc2d.read(fixture(name))
+        r = P.partition(sp.freqs, sp.dirs, np.array(sp.steps[0][1]))
+        return [(round(p["hs"], 3), round(p["tp"], 2), round(p["dir"], 1)) for p in r["parts"]]
+    assert parts("aer_46001_tie.txt") == [(0.966, 8.53, 255.5), (0.737, 9.46, 169.6), (0.554, 6.12, 330.1),
+                                          (0.259, 18.09, 194.8)]
+    assert parts("aer_46060_tptie.txt") == [(0.429, 9.06, 178.4), (0.237, 2.19, 102.0), (0.18, 2.44, 193.0),
+                                            (0.108, 2.24, 338.3)]
+
+
+def test_reader_header_limits():
+    text = fixture("51003.spc2d.txt").decode()
+    head, rest = text.split("20261028.000000", 1)
+    block = "20261028.000000" + rest.split("20261028.010000")[0]
+    with pytest.raises(ValueError, match="over"):
+        spc2d.read((head + block).encode() + b"\n" * spc2d.MAX_BYTES)          # bytes over the cap
+    with pytest.raises(ValueError, match="line"):
+        spc2d.read(head.replace("$", "$" + "x" * spc2d.MAX_LINE, 1) + block)
+    freq = head.split("AFREQ", 1)[1].split("\n")[3]                           # the 2nd frequency
+    with pytest.raises(ValueError, match="ascending"):
+        spc2d.read(head.replace(freq, head.split("AFREQ", 1)[1].split("\n")[2], 1) + block)
+    with pytest.raises(ValueError, match="frequency count"):
+        spc2d.read(head.replace("    37", "     1", 1) + block)

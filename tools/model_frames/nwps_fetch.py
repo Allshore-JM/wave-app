@@ -3,7 +3,7 @@
   <BASE>/<region>.<YYYYMMDD>/<office>/<HH>/CG1/nwps.t<HH>z.spc2d_<id>_CG1.<office>.txt   a point's 2-D spectra,
                                                                                             hourly 0..144 h (~1 MB)
   <BASE>/<region>.<YYYYMMDD>/<office>/<HH>/CG1/<office>_nwps_CG1_<YYYYMMDD>_<HH>00.grib2    the office's wide grid
-Regions ar (Alaska), er (East), pr (Pacific), sr (South), wr (West); 36 offices publish NWPS (OFFICES; 34 held our
+Regions ar (Alaska), er (East), pr (Pacific), sr (South), wr (West); 36 offices publish NWPS (OFFICES; 35 held our
 stations on 2026-10-28). Runs are
 started by the office's forecasters: one to eight a day, irregular hours, posted 1-8 h after the cycle they are named
 for; NOMADS keeps ~5 days. NOMADS only (no AWS copy, checked 2026-10-28), so every request goes through glwu_fetch's

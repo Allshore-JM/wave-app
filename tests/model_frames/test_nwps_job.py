@@ -43,12 +43,15 @@ def page(entries):
 class FakeNoaa:
     """NOMADS for the job: runs {(office, YYYYMMDDHH): {"sids": [...], "posted": datetime, "grib": bool}}."""
 
-    def __init__(self, runs, broken=(), throttle=(), wrong_start=()):
+    def __init__(self, runs, broken=(), throttle=(), wrong_start=(), transport=(), missing=(), silent=False):
         self.runs, self.broken, self.throttle, self.wrong_start = runs, set(broken), set(throttle), set(wrong_start)
+        self.transport, self.missing, self.silent = set(transport), set(missing), silent
         self.calls = []
 
     def __call__(self, url, rng=None):
         self.calls.append(url)
+        if self.silent:
+            raise N.TransportError(f"{url}: timed out after 4 tries")
         for office in self.throttle:
             if f"/{office}/" in url:
                 raise N.Throttled(url)
@@ -75,6 +78,10 @@ class FakeNoaa:
         sid = re.search(r"spc2d_([A-Za-z0-9]+)_CG1", name)
         if not sid or sid.group(1) not in v["sids"]:
             raise N.NotReady(url)
+        if (office, sid.group(1)) in self.transport:
+            raise N.TransportError(f"{url}: HTTP 500 after 4 tries")    # what the real request() raises
+        if (office, sid.group(1)) in self.missing:
+            raise N.NotReady(url)                                      # listed, then 404
         if (office, sid.group(1)) in self.broken:
             raise RuntimeError("connection reset")
         start = datetime.strptime(run, "%Y%m%d%H")
@@ -90,6 +97,16 @@ def runs_basic():
 
 def store():
     return Pub.Store(FakeClient(), "bucket")
+
+
+def seeded(office="hfo", run="2026102700"):
+    """A store whose pointer says `office` published just now (no stale alarm in the way)."""
+    st = store()
+    fresh = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ptr = {"offices": {office: {"run": run, "region": N.OFFICES[office], "published_utc": fresh, "stations": [],
+                                "runs": [run]}}, "checked_utc": fresh}
+    st.put(Pub.latest_key(J.PREFIX), json.dumps(ptr).encode(), "application/json", Pub.POINTER)
+    return st
 
 
 def go(args, fake, st, now=NOW):
@@ -310,3 +327,120 @@ def test_the_real_station_file_loads_by_office():
 
 def test_the_temporary_dry_run_workflow_is_gone():
     assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "nwps-dryrun.yml"))
+
+
+def test_one_failing_station_file_is_left_out_two_stop_the_tick():
+    """G41a P2-2: one file that keeps failing never holds its office back; two in one office = NOMADS is failing."""
+    st = store()
+    assert go([], FakeNoaa(runs_basic(), transport={("mtr", "46012")}), st) == 0
+    idx = st.get_json(J.index_key("mtr", "2026102812"))
+    assert list(idx["stations"]) == ["46026"] and idx["left_out"]["46012"].startswith("not served: ")
+    st2 = seeded()
+    fake = FakeNoaa(runs_basic(), transport={("mtr", "46012"), ("mtr", "46026")})
+    assert go([], fake, st2) == 3                                     # the tick stops, nothing recorded as a failure
+    assert st2.get_json(Pub.latest_key(J.PREFIX))["offices"]["hfo"]["run"] == "2026102700"   # hfo (after mtr) not asked
+    assert not st2.get_json(J.index_key("mtr", "2026102812"))
+    assert not st2.get_json(Pub.failed_key("mtr-2026102812", J.PREFIX))
+
+
+def test_a_listed_station_answering_404_is_left_out():
+    st = store()
+    assert go([], FakeNoaa(runs_basic(), missing={("mtr", "46012")}), st) == 0
+    assert st.get_json(J.index_key("mtr", "2026102812"))["left_out"] == {"46012": "not served"}
+
+
+def test_an_office_with_nothing_built_publishes_nothing():
+    st = store()
+    runs = runs_basic()
+    assert go(["--office", "mtr"], FakeNoaa(runs, wrong_start={("mtr", "46012"), ("mtr", "46026")}), st) != 0
+    assert st.get_json(Pub.latest_key(J.PREFIX)) is None
+    assert not [k for k in st.client.objects if k.startswith(f"{J.PREFIX}/mtr/")]
+
+
+def test_a_silent_nomads_stops_the_tick_at_the_first_office():
+    """G41a P2-1: a listing that does not answer stops the tick (one wait, not one per office)."""
+    fake = FakeNoaa(runs_basic(), silent=True)
+    assert go([], fake, store()) == 1                                 # nothing ever live: the stale alarm
+    assert len(fake.calls) == 1
+
+
+def test_the_budget_stops_discovery_and_the_build(monkeypatch):
+    monkeypatch.setattr(J, "BUILD_BUDGET_S", -1)
+    fake = FakeNoaa(runs_basic())
+    st = store()
+    fresh = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ptr = {"offices": {"hfo": {"run": "2026102700", "region": "pr", "published_utc": fresh, "stations": [],
+                               "runs": ["2026102700"]}}, "checked_utc": fresh}
+    st.put(Pub.latest_key(J.PREFIX), json.dumps(ptr).encode(), "application/json", Pub.POINTER)
+    assert go([], fake, st) == 3 and fake.calls == []
+    with pytest.raises(J.BudgetExceeded):
+        J.candidate("hfo", "pr", NOW, fake, deadline=0)
+    with pytest.raises(J.BudgetExceeded):
+        J.build_office("hfo", "pr", NOW.date(), 0, {"51003": (NOW, 1)}, {"51003": {}}, fake, 0)
+
+
+def test_discovery_never_lists_a_live_cycle():
+    """G41a P3-6: the CG1 directory of the live run (or older) is never asked for."""
+    st = store()
+    fake = FakeNoaa(runs_basic())
+    assert go([], fake, st) == 0
+    n = len(fake.calls)
+    assert go([], fake, st) == 0
+    later = fake.calls[n:]
+    assert later and not any("/CG1/" in c for c in later)              # only the day directories
+    assert J.candidate("hfo", "pr", NOW, fake, after="2026102800") == J.LIVE
+    assert J.candidate("hfo", "pr", NOW, fake, after="2026102712")[:2] == (NOW.date(), 0)
+
+
+def test_exit_1_only_when_every_office_failed_and_none_waits():
+    st = seeded("mtr")
+    fake = FakeNoaa({("mtr", "2026102812"): runs_basic()[("mtr", "2026102812")]}, broken={("mtr", "46026")})
+    assert go([], fake, st) == 3                                      # hfo has no run (waiting), mtr failed
+
+
+def test_a_failure_shows_in_the_summary_even_when_another_office_published(monkeypatch, tmp_path):
+    path = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(path))
+    assert go([], FakeNoaa(runs_basic(), broken={("mtr", "46026")}), store()) == 0
+    assert "FAILED: NWPS mtr" in path.read_text()
+
+
+def test_offices_are_visited_stalest_first_and_warnings_only_for_serving_offices():
+    st = store()
+    fresh = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ptr = {"offices": {"hfo": {"run": "2026102800", "region": "pr", "published_utc": fresh, "stations": [],
+                               "runs": ["2026102800"]},
+                       "mtr": {"run": "2026102700", "region": "wr", "published_utc": fresh, "stations": [],
+                               "runs": ["2026102700"]}}, "checked_utc": fresh}
+    st.put(Pub.latest_key(J.PREFIX), json.dumps(ptr).encode(), "application/json", Pub.POINTER)
+    fake = FakeNoaa(runs_basic())
+    go([], fake, st)
+    assert "/mtr/" in fake.calls[0]                                   # mtr's run is older: it goes first
+    old = {"offices": {"xyz": {"run": "2026101000"}, "hfo": {"run": "2026101000"}}}
+    w = J._office_warnings(old, NOW, {"hfo": {}})
+    assert len(w) == 1 and "hfo" in w[0]
+
+
+def test_prune_leaves_newer_runs_foreign_names_and_the_kept_records():
+    st = store()
+    for run in ("2026102700", "2026102706", "2026102712", "2026102800", "2026102818"):
+        st.put(J.index_key("hfo", run), b"{}", "application/json", Pub.IMMUTABLE)
+    st.put(f"{J.PREFIX}/hfo/notes/readme.txt", b"x", "text/plain", Pub.IMMUTABLE)
+    st.put(f"{J.PREFIX}/hfo/202610270/x", b"x", "text/plain", Pub.IMMUTABLE)
+    st.put(Pub.failed_key("hfo-2026102706", J.PREFIX), b"{}", "application/json", Pub.POINTER)
+    st.put(Pub.failed_key("hfo-2026102700", J.PREFIX), b"{}", "application/json", Pub.POINTER)
+    assert J.prune_office(st, "hfo", {"2026102706", "2026102712", "2026102800"}) == ["2026102700"]
+    keys = set(st.client.objects)
+    assert J.index_key("hfo", "2026102818") in keys                   # newer than the kept runs: a run being written
+    assert f"{J.PREFIX}/hfo/notes/readme.txt" in keys and f"{J.PREFIX}/hfo/202610270/x" in keys
+    assert Pub.failed_key("hfo-2026102706", J.PREFIX) in keys          # the oldest kept run's record stays
+    assert Pub.failed_key("hfo-2026102700", J.PREFIX) not in keys
+
+
+def test_office_warning_after_48_hours_and_station_heights_to_the_centimetre():
+    w = J._office_warnings({"offices": {"hfo": {"run": (NOW - timedelta(hours=50)).strftime("%Y%m%d%H")}}}, NOW)
+    assert len(w) == 1
+    assert not J._office_warnings({"offices": {"hfo": {"run": (NOW - timedelta(hours=46)).strftime("%Y%m%d%H")}}}, NOW)
+    doc = J.station_doc(spectra_for(datetime(2026, 10, 28)), "hfo", "pr", datetime(2026, 10, 28, tzinfo=timezone.utc),
+                        "51003", "2026-10-28T00:00:00Z")
+    assert doc["hs"][:3] == [2.1, 2.1, 2.09] and doc["parts"][0][0] == [1.25, 14.1, 323]

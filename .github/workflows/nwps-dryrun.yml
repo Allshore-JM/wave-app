@@ -35,7 +35,7 @@ jobs:
           /usr/bin/time -v -o time.txt python tools/model_frames/nwps.py --dry-run --out out > log.txt 2>&1 || rc=$?
           tail -n 60 log.txt
           python - "$rc" <<'PY'
-          import hashlib, os, sys
+          import hashlib, json, os, sys
           rc = sys.argv[1]
           t = open("time.txt").read().splitlines()
           wall = next((l.split(": ", 1)[1] for l in t if "Elapsed" in l), "?")
@@ -48,7 +48,9 @@ jobs:
                   n = 0
                   for name in sorted(os.listdir(d)):
                       body = open(os.path.join(d, name), "rb").read()
-                      h.update(name.encode() + b"\0" + body)
+                      doc = json.loads(body)
+                      doc.pop("built_utc", None)                 # the build time differs per machine
+                      h.update(name.encode() + b"\0" + json.dumps(doc, sort_keys=True).encode())
                       n += 1
                       total += len(body)
                   files += n

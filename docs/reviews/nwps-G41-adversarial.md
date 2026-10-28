@@ -83,3 +83,35 @@ split differs by 0.6-0.9 m while the total agrees. Where the systems are apart (
 - A station's office is chosen once by the tool (the nearest point); the 14 stations two offices publish are served by
   one of them.
 - Tp from 37 log-spaced bins: the log-parabola is exact for a Gaussian peak; NOAA's own tables show |dTp| 0.3 s.
+
+## Step 2: the job (2026-10-28, Opus 5.5 at HIGH)
+
+Commit 6afc031 (the job), a temporary dry-run workflow (cc72330, a81a70d) removed afterwards with a test pinning its
+absence.
+
+### What was built
+
+- `tools/model_frames/nwps.py`: per office the newest settled CG1 run of the last two days (the CG1 grib present and the
+  directory's newest file at least 5 min old); the stations' spectra files fetched through the NOMADS pacer, split into
+  swells per hour and published as `nwps/v1/<office>/<run>/<sid>.json`, then the run's `index.json`, then
+  `nwps/v1/latest.json` last (per office: run, region, stations, the kept runs). A station file whose first time is not
+  the run, or that cannot be read, is left out and listed in the index. Four runs kept per office; records older than
+  the oldest kept run pruned. A failed office build is recorded and retried after an hour, at most six times. A throttle
+  or the 20-min budget stops the tick (exit 3; what was published stays). The pointer never moves back and is rewritten
+  once an hour as a heartbeat. No office updated in 24 h raises the stale alarm; an office without a run for 48 h is a
+  summary warning.
+- `nwps_fetch.py`: every request takes the injected request function (found while testing: discovery had reached the
+  real NOMADS from the tests); a throttle is never taken for "not ready".
+- `model-nwps.yml` (every 10 min, the publishers' pinned environment), the trigger Worker, the keepalive, the tests
+  workflow's paths, the TLS pins.
+
+### Checked
+
+- Tests: `tests/model_frames/test_nwps_job.py` 19 against a fake NOMADS and a fake R2 (no network: a fixture refuses any
+  real request). Job suite 380.
+- Mutation: 22 of 22 mutants of the job's rules killed (the settled rule, the grib check, newest-first, the start check,
+  keep 4 and its order, pointer last, prune kept / newer / records / foreign keys, the retry rule, the pointer never
+  back, throttle and budget stop, the heartbeat, the failure record, exit 1, no prune, an empty build).
+- Runner dry run (eccodes env, every office, nothing published): 35 office runs, 112 station files, 838,687 bytes,
+  2 min 33-37 s, max RSS 60 MB. hfo 2026102800, mtr 2026102800 and lox 2026102806 built locally gave the same files as
+  the runner (digest of every file without its build time: 22 stations, identical).

@@ -306,3 +306,7 @@ def test_workflow_trigger_keepalive_and_tests_paths():
 def test_the_real_station_file_loads_by_office():
     by = J.load_stations()
     assert sum(len(v) for v in by.values()) == 112 and list(by["hfo"]) == ["51003"]
+
+
+def test_the_temporary_dry_run_workflow_is_gone():
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "nwps-dryrun.yml"))

@@ -313,7 +313,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.22.5"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.22.6"           # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -432,7 +432,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.26.4"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.26.5"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -3761,6 +3761,7 @@ def index():
     # Model dropdown only exists for the stations with SWAN bulletins; a stale
     # ?model=SWAN on any other station silently resolves back to GFS.
     swan_available = selected_station in SWAN_STATIONS
+    nwps_available = selected_station in NWPS_STATIONS          # the model button's NWPS choice (plan section 59)
     selected_model = resolve_model(selected_station, selected_model)
 
     # If an active override (?tz=) isn't one of the curated majors, keep it in the
@@ -3784,6 +3785,7 @@ def index():
         "station": selected_station, "tz": selected_tz, "unit": selected_unit if selected_unit in unit_options else "US",
         "model": selected_model, "view": "Graph" if selected_view == "Graph" else "Table",
         "swan_available": swan_available, "swan_stations": sorted(SWAN_STATIONS),
+        "nwps_available": nwps_available, "nwps_stations": sorted(NWPS_STATIONS),
         "inline": bool(payload),
     }
     if payload:                                                # render=full: the window shows this without a fetch
@@ -3817,6 +3819,7 @@ def index():
         graph_header=(payload["graph_header"] if payload else None),
         defer_forecast=defer_forecast,
         swan_available=swan_available,
+        nwps_available=nwps_available,
         selected_model=selected_model,
         initial_state=initial_state,
         ui_asset_version=UI_ASSET_VERSION,

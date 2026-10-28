@@ -11,7 +11,9 @@ const html = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'inde
 const a = html.indexOf('// ---- early forecast'), b = html.indexOf('// ---- end early forecast ----');
 assert.ok(a > 0 && b > a, 'the early forecast block is marked in the template');
 const SWAN = ['51201', '51202'];
+const NWPS = ['51003', '46026'];
 const RAW = html.slice(html.indexOf('\n', a) + 1, b).replace('{{ initial_state.swan_stations|tojson }}', JSON.stringify(SWAN))
+  .replace('{{ initial_state.nwps_stations|tojson }}', JSON.stringify(NWPS))
   .replace('{{ retired_stations|tojson }}', JSON.stringify(['44062', '46088']));
 const block = (geo) => RAW.replace('{{ geo_base|tojson }}', JSON.stringify(geo || ''));
 const BLOCK = block('');
@@ -41,7 +43,7 @@ const settle = () => new Promise((r) => setImmediate(r)).then(() => new Promise(
 function server(search) {
   const p = new URLSearchParams(search);
   const station = (p.get('station') || '').trim() || '51201';
-  return { station, tz: p.get('tz') || '', unit: p.get('unit') === 'Metric' ? 'Metric' : 'US', model: (p.get('model') || '').toUpperCase() === 'SWAN' ? 'SWAN' : 'GFS', view: 'Table' };
+  return { station, tz: p.get('tz') || '', unit: p.get('unit') === 'Metric' ? 'Metric' : 'US', model: I.modelOf(p.get('model') || ''), view: 'Table' };
 }
 
 const CASES = [
@@ -52,6 +54,8 @@ const CASES = [
   ['?station=51201&tz=Pacific%2FHonolulu&unit=US', { tz: 'UTC', unit: 'Metric' }],
   ['?station=46001&model=SWAN', undefined], ['?station=51202&model=SWAN', { unit: 'Metric' }],
   ['?station=51201&unit=constructor', undefined], ['?station=51201', { unit: 'toString' }],
+  ['?station=51003&model=NWPS', undefined], ['?station=51003&model=nwps', { unit: 'Metric' }], ['?station=51201&model=NWPS', undefined],
+  ['?station=46026&model=NWPS&tz=UTC', undefined], ['?station=51003&model=SWAN', undefined], ['?station=51003&model=GLWU', undefined],
 ];
 
 test('the head asks for exactly the query of the module\'s first load, for every address / saved-settings combination', () => {
@@ -60,6 +64,7 @@ test('the head asks for exactly the query of the module\'s first load, for every
     let st = {}; try { st = typeof stored === 'string' ? JSON.parse(stored) : (stored || {}); } catch (e) { st = {}; }
     const s0 = I.resolveInitialState(search, st, server(search));
     if (s0.model === 'SWAN' && SWAN.indexOf(s0.station) < 0) s0.model = 'GFS';     // the loader's normalise()
+    if (s0.model === 'NWPS' && NWPS.indexOf(s0.station) < 0) s0.model = 'GFS';
     const want = I.queryFor(s0);
     assert.equal(h.early.q, want, search + ' / ' + JSON.stringify(stored));
     assert.deepEqual(h.urls, ['/api/forecast?' + want]);

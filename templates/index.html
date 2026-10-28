@@ -47,6 +47,7 @@
     (function () {
       try {
         var p = new URLSearchParams(location.search), st = {}, swan = {{ initial_state.swan_stations|tojson }};
+        var nwps = {{ initial_state.nwps_stations|tojson }};
         var GEO = {{ geo_base|tojson }};
         var RETIRED = {{ retired_stations|tojson }};                              // removed for a blank bulletin (section 52 C)
         if (p.get('render') === 'full') return;
@@ -57,12 +58,16 @@
         // and the map read it (the page says so once: G35 B-8)
         if (dflt && RETIRED.indexOf(dflt) >= 0) { try { localStorage.removeItem('allshore.defaultStation.v1'); } catch (e) {} window.__early.retired = dflt; dflt = ''; }
         var unit = p.has('unit') ? p.get('unit') : (typeof st.unit === 'string' ? st.unit : 'US');
+        function model(station) {
+          var m = (p.get('model') || 'GFS').trim().toUpperCase();
+          return m === 'SWAN' && swan.indexOf(station) >= 0 ? 'SWAN' : m === 'NWPS' && nwps.indexOf(station) >= 0 ? 'NWPS' : 'GFS';
+        }
         function start(station) {
           var q = new URLSearchParams({
             station: station,
             tz: p.has('tz') ? p.get('tz') : (typeof st.tz === 'string' ? st.tz : ''),
             unit: unit === 'Metric' ? 'Metric' : 'US',
-            model: (p.get('model') || 'GFS').toUpperCase() === 'SWAN' && swan.indexOf(station) >= 0 ? 'SWAN' : 'GFS',   // the loader's normalise()
+            model: model(station),                                       // the loader's normalise()
             compact: '1'
           }).toString();
           var f = fetch('/api/forecast?' + q);
@@ -1099,9 +1104,10 @@
           <button type="button" class="btn btn-outline-secondary{% if selected_view != 'Graph' %} active{% endif %}" data-view="Table" aria-pressed="{{ 'false' if selected_view == 'Graph' else 'true' }}">Table</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_view == 'Graph' %} active{% endif %}" data-view="Graph" aria-pressed="{{ 'true' if selected_view == 'Graph' else 'false' }}">Graph</button>
         </div>
-        <div class="btn-group btn-group-sm" role="group" aria-label="Model" id="modelBar"{% if not swan_available %} hidden{% endif %}>
-          <button type="button" class="btn btn-outline-secondary{% if selected_model != 'SWAN' %} active{% endif %}" data-model="GFS" aria-pressed="{{ 'false' if selected_model == 'SWAN' else 'true' }}">GFS</button>
-          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'SWAN' %} active{% endif %}" data-model="SWAN" aria-pressed="{{ 'true' if selected_model == 'SWAN' else 'false' }}">SWAN</button>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Model" id="modelBar"{% if not (swan_available or nwps_available) %} hidden{% endif %}>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'GFS' %} active{% endif %}" data-model="GFS" aria-pressed="{{ 'true' if selected_model == 'GFS' else 'false' }}">GFS</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'SWAN' %} active{% endif %}" data-model="SWAN" aria-pressed="{{ 'true' if selected_model == 'SWAN' else 'false' }}"{% if not swan_available %} hidden{% endif %}>SWAN</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'NWPS' %} active{% endif %}" data-model="NWPS" aria-pressed="{{ 'true' if selected_model == 'NWPS' else 'false' }}"{% if not nwps_available %} hidden{% endif %} title="NOAA NWPS: the National Weather Service's nearshore SWAN model">NWPS</button>
         </div>
         <div class="btn-group btn-group-sm" role="group" aria-label="Table mode" id="modeBar" hidden>
           <button type="button" class="btn btn-outline-secondary active" data-mode="detailed" aria-pressed="true">Detailed</button>
@@ -1118,10 +1124,11 @@
             <option value="Table" {% if selected_view != 'Graph' %}selected{% endif %}>Table</option>
             <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
           </select>
-          {% if swan_available %}
+          {% if swan_available or nwps_available %}
           <select class="form-select form-select-sm" name="model" form="controlForm" aria-label="Model">
-            <option value="GFS" {% if selected_model != 'SWAN' %}selected{% endif %}>GFS</option>
-            <option value="SWAN" {% if selected_model == 'SWAN' %}selected{% endif %}>SWAN</option>
+            <option value="GFS" {% if selected_model == 'GFS' %}selected{% endif %}>GFS</option>
+            {% if swan_available %}<option value="SWAN" {% if selected_model == 'SWAN' %}selected{% endif %}>SWAN</option>{% endif %}
+            {% if nwps_available %}<option value="NWPS" {% if selected_model == 'NWPS' %}selected{% endif %}>NWPS</option>{% endif %}
           </select>
           {% endif %}
         </noscript>
@@ -4837,6 +4844,7 @@
         for (var i = 0; i < els.length; i++) if (els[i]) txt += ' ' + (els[i].textContent || '');
         var m = /Cycle\s*:\s*([^|\n]*)/.exec(txt);
         if (!m) return null;
+        if (/NWPS/.test(m[1])) return { model: 'NWPS' };              // before SWAN: "NOAA NWPS" is a SWAN model too
         if (/SWAN/.test(m[1])) return { model: 'SWAN' };
         if (/GLWU/.test(m[1])) return { model: 'GLWU' };
         var r = /(\d{8})\s+(\d{2})\s+UTC/.exec(m[1]);

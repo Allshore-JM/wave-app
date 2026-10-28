@@ -5903,6 +5903,7 @@
     // the forecast table is always GFS-Wave (or SWAN): under another model its run is named with its model
     ui.runTail = pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run'
       : pc && pc.model === 'GLWU' ? ' — the forecast table is a NOAA GLWU (Great Lakes) run'
+      : pc && pc.model === 'NWPS' ? ' — the forecast table is a NOAA NWPS (nearshore) run'
       : pc && pc.run && this._def().table === 'model' ? ' — the forecast table is on GFS-Wave run ' + pc.run
       : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '';
     ui.runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z');

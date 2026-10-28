@@ -517,9 +517,9 @@ def test_rank_rows_is_the_one_rule_for_stations_swan_and_points():
     assert A.rank_rows(None) is None and A.rank_rows([]) == []
     again = A.rank_rows([list(rows[0])])
     assert again[0] == rows[0]                                                                # ranked rows stay as they are
-    # both bulletin parsers hand their rows through it (the points build theirs in rank order)
+    # the three bulletin parsers (GFS, SWAN, NWPS) hand their rows through it (the points build theirs in rank order)
     src = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
-    assert src.count("rank_rows(rows), effective_tz_name, None") == 2
+    assert src.count("rank_rows(rows), effective_tz_name, None") == 3
     rows = A._parse_swan_table_text(open(os.path.join(FIX, "swan_buoy_sample.table")).read(), "51201", "Pacific/Honolulu", None)[3]
     assert len(rows) > 5
     for r in rows:                                                                            # PacIOOS's rows, re-ranked
@@ -1269,7 +1269,7 @@ def test_station_forecasts_are_untouched(monkeypatch):
     rows = [["Thursday, October 1, 2026", "2:00 AM"] + [1.0, 10.0, 300] + [None] * 15 + [5.0, 60, 1.2]]
     monkeypatch.setattr(A, "parse_bull", lambda station, tz: ("Cycle : 20261001 12 UTC", "Location : 51201 (21.67N 158.12W)", None, rows, "Pacific/Honolulu", None))
     d = A.compute_forecast_payload("51201", None, "US")
-    assert sorted(d) == ["error", "graph_data", "graph_header", "lat", "lon", "model", "station", "summary_html", "swan_available", "table_html", "tz_label", "wind_complete"]
+    assert sorted(d) == ["error", "graph_data", "graph_header", "lat", "lon", "model", "nwps_available", "station", "summary_html", "swan_available", "table_html", "tz_label", "wind_complete"]
     assert d["graph_header"]["location"] == "51201 (21.67N 158.12W)"
 
 

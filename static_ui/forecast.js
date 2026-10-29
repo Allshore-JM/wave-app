@@ -905,7 +905,7 @@
     if (!doc || !doc.getElementById) return null;
     var $ = function (id) { return doc.getElementById(id); };
     // the title is the picker's own label (#stationCurrent: the favourites picker is the window's heading)
-    var els = { win: $('forecastWin'), header: $('fwHeader'), title: $('stationCurrent') || $('fwTitle'), cycle: $('fwCycle'), busy: $('fwBusy'), min: $('fwMin'), max: $('fwMax'),
+    var els = { win: $('forecastWin'), header: $('fwHeader'), title: $('stationCurrent') || $('fwTitle'), cycle: $('fwCycle'), old: $('fwOld'), busy: $('fwBusy'), min: $('fwMin'), max: $('fwMax'),
       viewBar: $('viewBar'), modelBar: $('modelBar'), rangeBar: $('rangeBar'), modeBar: $('modeBar'), body: $('fwBody'), error: $('fwError'), meta: $('forecastMeta'),
       table: $('forecastTable'), summary: $('forecastSummary'), graphs: $('graphs'), note: $('fwNote'), handle: $('fwResize'), tz: $('tz'), unit: $('unit'), station: $('station'), trigger: $('stationTrigger') };
     if (!els.win || !els.body || !els.table) return null;
@@ -961,11 +961,17 @@
       box.hidden = false;
     }
     // The model bar: GFS plus the station's other model(s), the one on screen pressed; hidden where there is none. With no
-    // answer (a failed load) the station lists decide, so the way back to GFS stays (G41 B-4).
+    // answer (a failed load) the server's last answer for the station decides, else the station lists, so the way back
+    // to GFS stays (G41 B-4) and a choice the server withdrew does not come back (G41 re-check F-4).
+    var lastAvail = null;
     function syncBar(d, st) {
       if (!els.modelBar) return;
-      var swan = d && typeof d.swan_available === 'boolean' ? d.swan_available : swanStations.indexOf(st.station) >= 0;
-      var nwps = d && typeof d.nwps_available === 'boolean' ? d.nwps_available : nwpsStations.indexOf(st.station) >= 0;
+      if (d && typeof d.swan_available === 'boolean' && typeof d.nwps_available === 'boolean') {
+        lastAvail = { station: st.station, swan: d.swan_available, nwps: d.nwps_available };
+      }
+      var known = !d && lastAvail && lastAvail.station === st.station ? lastAvail : null;
+      var swan = d && typeof d.swan_available === 'boolean' ? d.swan_available : known ? known.swan : swanStations.indexOf(st.station) >= 0;
+      var nwps = d && typeof d.nwps_available === 'boolean' ? d.nwps_available : known ? known.nwps : nwpsStations.indexOf(st.station) >= 0;
       els.modelBar.hidden = !(swan || nwps); pressed(els.modelBar, 'data-model', st.model);
       Array.prototype.forEach.call(els.modelBar.querySelectorAll('[data-model]'), function (b) {
         var m = b.getAttribute('data-model'); b.hidden = (m === 'SWAN' && !swan) || (m === 'NWPS' && !nwps);
@@ -1018,6 +1024,7 @@
               clearNode(els.table); setMeta(null); graphs.setData(null);
               if (els.summary) clearNode(els.summary); summaryAvail = false; applyPanels();
               text(els.cycle, ''); if (els.cycle) els.cycle.title = '';
+              if (els.old) { text(els.old, ''); els.old.hidden = true; }
               syncBar(null, state);                                           // GFS stays one press away (G41 B-4)
               note(null);
             },
@@ -1025,14 +1032,16 @@
               syncBar(d, st);
               var label = opts.stationLabel ? opts.stationLabel(st.station) : st.station, cyc = shortCycle(d.model === 'GLWU' ? 'GLWU' : st.model, d.graph_header);
               var age = d.point && Number.isFinite(d.point.age_hours) ? d.point.age_hours : null;
-              if (age !== null && age >= STALE_H) cyc += ' · ' + Math.round(age) + ' h old';   // a point's run NOAA stopped feeding (plan section 31)
+              var pointNote = age !== null && age >= STALE_H ? ' · ' + Math.round(age) + ' h old' : '';   // a point's run NOAA stopped feeding (plan section 31)
               var oldNote = d.model === 'NWPS' && typeof d.nwps_age_hours === 'number' && d.nwps_age_hours >= NWPS_STALE_H
                 ? ' · ' + Math.round(d.nwps_age_hours) + ' h old' : '';                      // an NWS office that stopped (G41 K-7)
-              cyc += oldNote;
+              // the note has its own span where the page has one: on phones the run text gives way first, the note not
+              var ageNote = pointNote + oldNote;
+              if (els.old) { text(els.old, ageNote.replace(/^ /, '')); els.old.hidden = !ageNote; } else cyc += ageNote;
               writeLabel(els.title, label); text(els.cycle, cyc);
               if (noteFor !== null && noteFor !== st.station) note(null);
               if (!landed) { landed = true; notePending.splice(0).forEach(function (m) { note(m, null); }); }   // the notes that waited for a forecast
-              if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = cyc;
+              if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = els.old ? cyc + ageNote : cyc;
               setMeta(d.graph_header, oldNote);
               if (d.table_html) els.table.innerHTML = d.table_html;           // the server's own table (build_html_table)
               else { clearNode(els.table); if (!d.error) { var p = doc.createElement('div'); p.className = 'text-muted'; p.textContent = 'No forecast available.'; els.table.appendChild(p); } }   // an error is said once, in its box (G22 K-5)
@@ -1199,7 +1208,7 @@
     setView(state.view);
     if (initial.inline) {
       loader.seed({ table_html: initial.error ? null : (els.table.innerHTML.trim() || null), graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
-        error: initial.error || null, model: initial.model, swan_available: initial.swan_available, nwps_available: initial.nwps_available, wind_complete: initial.wind_complete,
+        error: initial.error || null, model: initial.model, swan_available: initial.swan_available, nwps_available: initial.nwps_available, nwps_age_hours: initial.nwps_age_hours, wind_complete: initial.wind_complete,
         point: initial.point || null, final: !!initial.final, reason: initial.reason || null, summary_html: initial.summary_html || null });
     } else if (deferred) {
       Promise.resolve(earlyStation).then(function (sid) { return typeof sid === 'string' && sid.trim() ? sid.trim() : '51201'; }, function () { return '51201'; })   // (G32 A-P3-4)

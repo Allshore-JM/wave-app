@@ -883,14 +883,20 @@ first.
   only at the 112 stations; `/healthz` reports `nwps`.
 - Limits (G41, step 8): the pointer is read by one thread at a time (a request holding a good pointer is served it
   meanwhile; one holding nothing waits up to 10 s); a failed read with nothing held is asked again only after a minute;
-  every run name must be a real date; at most the newest 8 kept runs are tried, in 20 s in all, and none after the
-  bucket stops answering (a missing file still moves on to the next run). The Location line names the NWPS point the
-  numbers are for (the file's), not the GFS bulletin's point.
-- An office that stops (owner, G41): the window says "· N h old" (header and the line above the table) once the run is
-  over 36 h old (Honolulu's own runs reach ~32 h before the next lands). Past 72 h the station is served as one without
-  NWPS: no NWPS button, and a request for NWPS gets the GFS table, until the office publishes again. The GFS path judges
-  this from the pointer the server already holds (never a bucket read). A run over 48 h old has early hours older than
-  every GFS winds run kept, so its wind gaps there are final (the table kept the full 30 min; `wind_complete` true).
+  every run name must be a real date; at most the newest 8 kept runs are tried, in 20 s in all (a read starts only with
+  a whole read's time left), and none after the bucket stops answering (a missing or refused file, or one over its size
+  cap, still moves on to the next run). The Location line names the NWPS point the numbers are for (the file's), not
+  the GFS bulletin's point.
+- An office that stops (owner, G41): the window says "· N h old" (header, in its own span so phones keep it, and the
+  line above the table, also on the no-script page) once the run is over 36 h old (Honolulu's own runs reach ~32 h
+  before the next lands). Past 72 h the station is served as one without NWPS: no NWPS button, and a request for NWPS
+  gets the GFS table, until the office publishes again. The GFS path judges this from the pointer the server already
+  holds (never a bucket read on a request's path); the live scheduler's pass (every 30 s) re-reads a pointer past its
+  5-min TTL in a background thread, so the button follows the offices within about 6 minutes whether or not anyone opens
+  an NWPS table, and a pointer whose last good read is over 6 h old decides nothing (G41 re-check F-1). The NWPS table's
+  cache key carries the run the held pointer names, so a new run is served at once. One answer judges the model once.
+  A run over 48 h old has early hours older than every GFS winds run kept, so its wind gaps there are final (the table
+  kept the full 30 min; `wind_complete` true).
 - Validation (2026-10-28, 30 stations, 4,350 hours): combined Hs vs NOAA's GFS bulletins |diff| 0.19 m; NOAA's swell
   systems of 0.5 m or more matched within 2 s / 30 deg 88 %; hour 0 vs the buoys |Hs - WVHT| 0.22 m. Record:
   `docs/reviews/nwps-G41-adversarial.md`.

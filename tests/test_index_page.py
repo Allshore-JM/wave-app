@@ -1284,12 +1284,14 @@ def test_section_59_g41_fixes_on_the_page(client, monkeypatch):
             "var(--bs-btn-border-radius); border-bottom-right-radius: var(--bs-btn-border-radius); }") in src
     gl = client.get("/?station=45007").get_data(as_text=True)
     assert re.search(r'data-model="GFS" aria-pressed="true"', gl)                         # G41 A P3-7
+    assert 'class="btn btn-outline-secondary active" data-model="GFS"' in gl              # and looks pressed (re-check T01)
     from datetime import datetime, timedelta
     run = "2026102806"
     held = {"format": "nwps-pointer-v1", "offices": {"hfo": {"run": run, "runs": [run], "stations": ["51003"]}}}
     saved = dict(A._NWPS_PTR)
     try:
-        A._NWPS_PTR.update(doc=held, ts=0.0, good=0.0)
+        import time as _t
+        A._NWPS_PTR.update(doc=held, ts=0.0, good=_t.time())     # held: last read within the keep (G41 re-check F-1)
         monkeypatch.setattr(A, "_nwps_utcnow", lambda: datetime(2026, 10, 28, 6) + timedelta(hours=73))
         b = client.get("/?station=51003&model=NWPS").get_data(as_text=True)
         st = initial(b)

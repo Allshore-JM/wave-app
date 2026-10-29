@@ -438,3 +438,51 @@ Behaviour worth knowing:
   station can be hidden while its office still publishes for others.
 - The hide rule can take up to 5 minutes to act (the pointer's TTL) and up to 30 more for a table already built (the
   forecast cache).
+
+## Test-site verification of the G41 fixes (2026-10-29, Opus 5.5 at MAX)
+
+`test` @ deea18c: cherry-picks of the fix-round code, golden and pins (92f11e3, 86c8f81, ae81660, deea18c), README kept
+as test's own. Pushed 04:13:11 UTC; the new instance answered from 04:14:35 (42 polls across the switch, 0 failed).
+UI 1.26.6 served = the commit; the overlay asset unchanged (2.22.6). Test-branch suite: 1,250 passed + the 5 failures the
+test branch always has (its logo lines vs the page golden x4, the numpy-import test). Scratch `g41/v8`.
+
+Answers (same runs):
+- 65 non-NWPS answers (GFS, SWAN, Great Lakes, points, removed stations; Metric and UTC) before and after the deploy:
+  65 identical. Production vs test: 64 identical, plus one production SWAN answer (51202) that failed once
+  ("Could not download SWAN forecast", 46.65 s) and was identical when asked again.
+- All 112 NWPS tables (`nwps_check8.py`): every table = an independent rebuild from the bucket (145 rows), the Location
+  line = the file's NWPS point, `nwps_age_hours` = the run's age within 0.25 h, `wind_complete` true. 111 passed at once;
+  46206 (British Columbia) passed when the checker used tzdata 2026e, as Render does (the laptop's pytz 2025.2 lacks
+  BC's permanent UTC-7 from 2026-11-01).
+- Failure paths on real data (`fail_local8.py`, the site's code in-process, a stand-in bucket): 31 of 31, among them B-3,
+  P3-1/2/3/4, the 38-h note, the 74-h GFS answer (pointer held and cold), another office unaffected, and P3-5.
+
+Browser (headless Chrome 156, own profile, trusted clicks and taps; before = test @ 0773a42, after = deea18c):
+
+| Check | Before | After |
+|---|---|---|
+| B-1: pressing NWPS at 46083 / 44099 (desktop and phone) | the now row ABOVE the view (first row shown 6-7 h after now) | the now row in view, the same first row as the GFS table (the hour before now) |
+| B-1: pressing NWPS at 51003 / 46026 | first row shown 13 h / 7 h before now | the hour before now |
+| B-1: pressing SWAN at 51201 (test) | the now row BELOW the view (pre-existing, also on production) | in view; production still below |
+| B-2: SWAN button's corners at 51201 | right corners square | rounded, = production |
+| B-4: NWPS answering 503 / the network offline at 51003 | the bar hidden: only Retry or a reload | the bar kept; GFS pressed shows the GFS table from the page's cache, 0 requests |
+| P3-7: a Great Lakes station (45007) | hidden bar, no button pressed | hidden bar, GFS pressed |
+
+The 36 h / 72 h rule (the owner's decision), in the browser, against the fixed code served locally (`run_shifted.py`:
+the real bucket, the NWPS age clock moved forward):
+- Clock +15.5 h (Honolulu's 06Z run 38 h old): the header "NWPS · run 20261028 06 UTC (NWS HFO) · 38 h old" and the
+  line above the table end with "· 38 h old"; the Location line names the NWPS point (19.29N 160.57W); pressing GFS
+  drops the note; pressing NWPS again uses the page's cache (no new request). San Francisco (46026, 32 h old): no note.
+- Clock +51.5 h, a fresh server (Honolulu's run 74 h old):
+  - first `?station=51003&model=NWPS`: the page still offered NWPS (no pointer held yet), the head asked NWPS, the
+    server answered the GFS table; the page then hid the bar and the address dropped `model=NWPS`;
+  - next load: 51003 left out of the page's NWPS list (111 stations), the head asked GFS, one request, no NWPS button;
+  - 46026 (68 h old) still offered, with "· 68 h old".
+
+Smoke (desktop and phone): GFS / SWAN / NWPS round trips, a forecast point, the no-script NWPS page (145 rows, the NWPS
+point, 0 requests), no sideways scroll, no console problems. Test-origin storage emptied; browser stopped, profile
+removed; local servers stopped.
+
+No new findings. The P3 notes of the fix round stand: a station can be hidden while its office still publishes for
+others (judged by the older run that lists it), and the hide rule can take up to 5 min (the pointer) plus 30 min (a
+table already built).

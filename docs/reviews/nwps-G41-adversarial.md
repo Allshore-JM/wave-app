@@ -639,3 +639,72 @@ Could not check (the reviewer):
 
 Then: the test site at MAX, a short fresh re-check at MAX (the reader and the model rule change again), and step 9
 production.
+
+## Fix round 2 (2026-10-29, Opus 5.5 at HIGH)
+
+Commits on `feat/nwps-tables`: b357c67 (the fixes and their tests), c74938b (the golden, own commit), 150b8d8 and
+77147e5 (two pins). UI 1.26.7. Not on the test site yet.
+
+1. F-1 (P1), the pointer's freshness:
+   - (a) `_nwps_held_doc`: a held pointer counts only while its last good read is within `_NWPS_PTR_KEEP` (6 h). This
+     one rule now serves the reader's fast path, its re-check under the fetch lock, and `_nwps_held_run` /
+     `nwps_offered`.
+   - (b) `_nwps_tick`, called from every pass of the live scheduler (`_live_tick`, every 30 s): when the held pointer is
+     past its 5-min TTL (or nothing usable is held and the last failure is a minute old), it starts one background read
+     (`nwps-pointer`, a daemon thread, one at a time). It never runs on a request's path or holds up the scheduler, is
+     reset after a fork, and does nothing without a bucket or NWPS stations.
+   - (c) `parse_nwps`'s cache key carries the run the held pointer names for the station, so a new run (or an office
+     back after the hide) is built at once (K-1).
+2. F-3: `resolve_model(station, requested, nwps_ok)`. `compute_forecast_payload`, its error path and `index()` judge
+   `nwps_offered` once and pass that value in.
+3. F-2, the no-script page:
+   - `index()` takes the model and `nwps_available` from its inline answer.
+   - The page's NWPS list holds the station on screen exactly when its own judgement offers it (enforced
+     unconditionally).
+   - `nwps_age_hours` is carried in `initial_state` and the loader's seed.
+   - The server-rendered meta line gets " · N h old" (`_NWPS_NOTE_H`, rounded as the page rounds).
+4. F-4: `syncBar` remembers the last answer's SWAN / NWPS availability for its station and uses it after a failed
+   load before the page lists.
+5. F-5:
+   - A station file is read only with a whole read's time left (`_POINT_FETCH_MAX_S`), so the files take at most
+     `_NWPS_RUNS_BUDGET_S` in all; `_nwps_monotonic` is the clock tests set.
+   - `_capped_get` raises `BodyTooLarge` (an `IOError`) for a body over its cap, and `_nwps_doc` calls that a refused
+     file ("bad"), so the older run is tried.
+6. F-6: covered by item 1 (a). `M03`/P01 is now equivalent: the re-check under the lock applies the same negative rule.
+7. F-7: tests for every survivor:
+   - S01 / S05 / S08 / X01 / X02 (`test_the_edges_and_the_rounding`);
+   - S15 (`test_the_error_path_hides_a_station_past_72_h`);
+   - P01 / P02 / P11 (`test_an_expired_pointer_and_a_failing_bucket_one_read_a_minute`, sequential and 4 threads);
+   - R08 + the over-cap file (parametrised);
+   - R10 (`test_the_station_files_take_twenty_seconds_in_all`, a fake clock);
+   - C05 / F-4, C07 / C10 / the seeded age (window.test.js);
+   - T01 (the Great Lakes GFS `active` class).
+   Plus F-1's own tests: the quiet server with the scheduler pass driven by hand (offered past 78 h, 14 pointer reads,
+   no table built), the hide and the come-back after one pass, one read at a time, the keep, the cache key, and one
+   judgement.
+8. F-8: no code change; the cost recorded above (~15 MB).
+9. The age note on phones: the note now has its own span (`#fwOld`, `flex: 0 0 auto`), so the run text gives way and
+   the note does not. Applies to points' "· N h old" too; the cycle's tooltip still carries the whole text. To be seen
+   at phone size in the test-site step.
+
+Checked:
+- Mutants of the new code (scratch `g41\fix2\mut_fix2.py`, in a scratch worktree): 26 of 26 killed. J05 (the note
+  cleared on a failed load) survived at first and was pinned (77147e5).
+- The reviewer's own scripts against the fixed code (`RECHECK_WT`):
+  - `f1c_quiet`: 112 offered at every step, NWPS answered at +78 h (was 0 offered).
+  - `f1_hidden_forever`, without the scheduler: back within 6 h by rule (a) (was never). With the scheduler the
+    pointer is re-read every 5 min (F-1 test).
+  - `f3_toctou`: the model, `nwps_available` and the table agree whichever clock read crosses 72 h.
+  - `f2_render_full`: the 80-h page answers GFS with no NWPS button, option or list entry; the 40-h meta line ends
+    "· 40 h old" and the state carries the age.
+  - `r7r8_ptr`: the 6-h keep exact (no extra TTL); an expired pointer with a failing read: 1 read for 4 threads (was
+    4); 8 slow 404s: 15.0 s, 2 files (was 22.5 s, 3).
+  - `p01_not_equivalent`: M03 now 1 read like the code.
+  - `f5_oversize` still shows "Could not reach", because the stand-in bucket raises a plain `IOError("body too
+    large")`. The real fetch raises `BodyTooLarge` (pinned in test_bull_sources), and `_nwps_doc` moves on for that
+    type (pinned with the real type).
+- Suites: pytest 1,728; Node ui + overlay 1,059. The page golden changed only by the version, the `#fwOld` span and
+  its CSS.
+
+Next: the test site at MAX, including the phone note at 375x812 against the shifted-clock server; then a short fresh
+re-check at MAX; then step 9 production.

@@ -772,3 +772,94 @@ No new findings. Owner awareness: on a phone the run text yields completely, in 
 minimised bar, so the note's own "·" follows the station box ("· 38 h old").
 
 Next: a short fresh re-check at MAX; then step 9 production (tag `prod-pre-nwps` @ a01c039).
+
+## Short fresh check of fix round 2 (2026-10-29, Opus 5.5 at MAX; one fresh reviewer)
+
+One fresh reviewer looked at the code (`git diff 477a4b5..24cb004`) and at the test site @ 93fb224 (UI 1.26.7), with
+trusted input. Report: scratch `g41/fix2check/fix2check-report.md` (scripts `h/`, browser `b_local.js` / `b_site.js`,
+logs `out/`, shots `shots/`). **0 P0, 0 P1, 0 P2, 3 P3.**
+
+Held:
+- F-1 (P1) is fixed. Test: a real local server of 24cb004, live scheduler on, nobody pressing NWPS, a stand-in bucket.
+  - The pointer was re-read every 300.1-300.6 s.
+  - Honolulu came back 251 s after its office published, and its next NWPS request answered the new run.
+  - With all 35 offices hidden at once, they came back 301 s after publishing.
+  - The test site re-read its own pointer at uptime ~304 s with no NWPS request.
+- A 50-case model matrix found no disagreement in any case.
+  - Varied: run age 30 / 37 / 71 / 73 / 100 h; pointer held 1 min / 5 h / 6 h - 2 s / 6 h + 2 s / none; bucket
+    answering or failing.
+  - Compared: `nwps_offered`, `resolve_model`, the API answer, the page's state / list / bar / head rule, and
+    render=full (state, bar, no-script select, meta note).
+- F-2 .. F-7 are fixed (verdict table in the report):
+  - render=full;
+  - one judgement per answer;
+  - the bar after a failed load;
+  - the budget, with the real capped fetch: an over-cap newest file moves on to the older run; 404s after 3 s mean
+    4 files in 12 s;
+  - the negative rule.
+  All 14 non-equivalent survivors of the re-check are killed.
+- C1-C11 hold, with C9 and C10 only partly (see F2C-2, F2C-3). The other `_capped_get` callers catch broadly and use
+  `str(exc)` or `status`, so for them only log text changes.
+- Suites at 24cb004: pytest 1,728, Node 1,059.
+- Six non-NWPS answers are equal on production and the test site, apart from the `nwps_available` key. Three NWPS
+  tables equal the reviewer's own rebuild from the bucket.
+
+Findings (all reproduced by the author):
+- F2C-1 (P3): a station whose office comes back while a tab is open gets an NWPS button that does nothing.
+  - Cause: the loader's NWPS list is the page's own, fixed at page load (forecast.js `normalise`), but the bar follows
+    the answer's `nwps_available` (`syncBar`). Fix round 2 is what lets the come-back happen in a running process.
+  - Reproduced: the author re-ran the reviewer's `bar.test.js` against 24cb004. The come-back answer shows GFS*/NWPS,
+    and pressing NWPS asks for model GFS.
+  - Impact: the table stays on GFS and is labelled GFS (no wrong numbers); a reload fixes it.
+- F2C-2 (P3): on desktop widths the age note is the part that gets cut.
+  - Cause: outside the phone media query, `.fw-cycle` and `.fw-old` are both `flex: 0 0 auto` inside an
+    `overflow: hidden` box. The run text keeps its full width, so the note after it is clipped.
+  - A forecast window narrowed to 360 px shows 0 of the note's 56 px; the meta line below still carries it.
+  - The minimised chip on viewports under ~760 px wide (600x800: 0 of 56 px) shows the run text cut at "(NWS" and the
+    station name squeezed to nothing. The chip hides the meta line, so nothing on screen says the run is old.
+  - Phones are fine. Not a regression: the note was cut the same way when it was the tail of the run text.
+  - Checked in the reviewer's log, in `shots/note_chip_600.png` and in the CSS.
+- F2C-3 (P3): test gaps in fix round 2's own lines.
+  - 8 of the reviewer's 47 mutants survive every test file that reaches them:
+    - D01 and D04: `_nwps_refresh_due` after a failure.
+    - T05: the try/except around `_nwps_tick` in `_live_tick`. Without it, a raising NWPS pass stops the pass before
+      `ticks` is written, /healthz turns "stalled" after 180 s, and Render restarts the instance.
+    - T03: the thread's daemon flag.
+    - I02: the page's NWPS list following the inline answer.
+    - I03 and I04: the server note's 36.0-h edge and its rounding. The code itself is right at 35.94, 35.96, 36.0,
+      40.5, 40.6 and 71.96 h.
+    - B03: the budget's 8-s value.
+    - C05: a point's age note also written into the meta line.
+  - The site-wide outage test promised in fix round 2 is missing.
+  - The author confirmed T05 and the 36-h edge by reading the tests: they cover only a non-raising `_nwps_tick`, and
+    only 10 h and 40 h.
+
+Owner awareness (not counted):
+- During a pointer outage longer than 6 h, every NWPS station offers NWPS again, including those past 72 h. A press then
+  answers "Could not reach the NWPS forecast" with Retry. This is rule (a) as scoped (a pointer older than 6 h decides
+  nothing), but decision 7 ("hidden until its office publishes again") does not hold during that time.
+- On desktop viewports of 501-760 px, the minimised chip already squeezes the station name to nothing whenever the run
+  text is long. This follows section 26's rule that the run text never shrinks in the desktop chip, and is already on
+  production.
+- A server with a bucket but no NWPS product logs "NWPS pointer unreadable" once a minute (from the background reads).
+
+### Fix round 3 scope (proposed; UI 1.26.8)
+1. F2C-1: the loader's NWPS list follows the answers: an answer with `nwps_available` true adds its station, and false
+   removes it. This also fixes F-4 at its root. Add a test from the reviewer's case.
+2. F2C-2: while the age note shows, the run text gives way at every width:
+   `.fw-titles:has(.fw-old:not([hidden])) .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow:
+   ellipsis; }`.
+   This departs from section 26's "the run text never shrinks in the desktop chip", but only while a run is at least
+   36 h old (owner's call). Re-capture the golden in its own commit.
+3. F2C-3: a test per survivor:
+   - a tick after a failed read, with and without a usable pointer;
+   - `_live_tick` with a raising `_nwps_tick` still counting the pass;
+   - the daemon flag;
+   - render=full with the newest listed run's file missing and the older run past 72 h;
+   - the note at 35.9, 36.0 and 40.6 h;
+   - the budget with 4.5-s steps;
+   - a point's meta line with no age note;
+   - and the site-wide outage test.
+4. Optional: report `_NWPS_BG["started"]` in /healthz `nwps`.
+
+Then a short test-site check (MAX), then step 9 production.

@@ -486,3 +486,156 @@ removed; local servers stopped.
 No new findings. The P3 notes of the fix round stand: a station can be hidden while its office still publishes for
 others (judged by the older run that lists it), and the hide rule can take up to 5 min (the pointer) plus 30 min (a
 table already built).
+
+## Re-check of the fix round (2026-10-29, Opus 5.5 at MAX; one fresh reviewer)
+
+Target: `feat/nwps-tables` @ 754d7d2 (`git diff 3696578..754d7d2`) in the reviewer's own worktree, and the test site @
+deea18c (UI 1.26.6). Report: scratch `g41\recheck\recheck-report.md`; scripts `g41\recheck\h\`; browser `hl\rb.js`.
+
+**0 P0, 1 P1, 0 P2, 7 P3.**
+
+Held (the reviewer's own runs):
+- B-1: the NWPS table opens on its now row at 51003 and 46026 (trusted clicks).
+- B-2: the SWAN button at 51201 is rounded.
+- B-4: offline, the bar is kept and GFS comes from the page cache with 0 requests.
+- B-3, and B-5's values.
+- The pointer's run-date check: a trailing newline, fullwidth and Arabic-Indic digits, 2026139999 and 2026102824 are
+  all refused.
+- The 8-run cap, the Great Lakes GFS button and the CRLF-safe fixtures.
+- The model matrix with the run's age (30 / 37 / 71 / 73 / 100 h, pointer held or not): the server, the API, the page
+  state and the head agree in all 10 cases.
+- The GFS path never reads the bucket (448 requests, no further pointer read).
+- Pointer concurrency: 4 cold waiters, 1 read.
+- Reviewer A's mutant survivors are all killed now.
+- Production vs the test site: 13 of 14 answers identical (the 14th is the intended NWPS table).
+- Suites: pytest 1,715 + Node ui/overlay.
+
+### Findings, with the author's check
+The author re-ran the reviewer's scripts in-process against this worktree (754d7d2, via `RECHECK_WT`, tzdata 2026e)
+and read the code. Every finding reproduced.
+
+**F-1 (P1) The 72-h hide never lifts by itself, and on an always-on server it starts without any outage.**
+- Cause: `nwps_offered` judges by the pointer the server holds, whatever its age (app.py 2774-2794). The pointer is
+  re-read only by `_parse_nwps_uncached` (2907, the one caller of `_nwps_pointer`), so only when an NWPS table is
+  built. A hidden station never builds one, and GFS traffic never reads the pointer.
+- Author's run (`f1c_quiet.py`): every office publishing every 6 h, nobody pressing NWPS. Stations offered: 112 at
+  t0+42 h, 111 at +48 h (51003 hidden), 27 at +66 h, 0 at +72 h. At +78 h NWPS asked at 51003 / 46026 / 46025 answered
+  GFS. 1 pointer read in all.
+- `f1_hidden_forever.py`: two offices 80 h stale, then publishing again, are still hidden 0.1 / 1 / 6 / 24 / 72 h
+  later.
+- On production (one worker, no restarts between deploys), about 2 days without an NWPS table built hides 51003
+  (Honolulu's runs are the oldest), and about 3 days hides all 112, until a restart.
+- The step-8 browser checks could not show it: they started fresh servers, and the free test service restarts when
+  idle.
+- No wrong numbers: GFS is served.
+- Correction: the record's come-back of "up to 5 min plus 30 min" (K-1) is unbounded.
+
+**F-2 (P3) The no-script page (`render=full`).**
+- Cause: `index()` judges `nwps_available` and the model before its inline payload reads the pointer, and it carries
+  no `nwps_age_hours`.
+- Author's run (`f2_render_full.py`):
+  - A fresh server with Honolulu's run 80 h old shows the GFS table under an NWPS button `active aria-pressed="true"`,
+    with the no-script select on NWPS.
+  - A 40-h run: the meta line has no "· 40 h old".
+- With script:
+  - The seeded state never shows the note (`f4_client.test.js` F-2b).
+  - An NWPS button appears that only re-asks GFS (F-2a).
+
+**F-3 (P3) One answer judges the model twice** (app.py 3676 and 3697, and 3678).
+- Author's run (`f3_toctou.py`): with the clock crossing 72 h between the reads, the answer is `model "NWPS"` over
+  the GFS table. Crossing earlier, it is `model "NWPS"` with `nwps_available false`.
+- The window is microseconds, or another thread's pointer swap.
+
+**F-4 (P3) A failed load brings back an NWPS button the server withdrew.**
+- Cause: `syncBar(null)` uses the page's lists (forecast.js 965-973).
+- Author's run: the answer said `nwps_available false`; a failed load then showed GFS and NWPS again, and NWPS asked
+  again.
+
+**F-5 (P3) The run loop's budget and an over-cap file** (`r7r8_ptr.py`, `f5_oversize.py`, reproduced).
+- The 20-s budget is checked before each read, and each read has its own ~8-s cap. 8 runs of slow 404s took 22.5 s;
+  the bound is about 28 s.
+- A station file over 512 KB counts as "transport", so the loop stops instead of trying the older run.
+
+**F-6 (P3) The pointer's negative TTL with an expired pointer held.**
+- Cause: the re-check under the lock (2732) requires `doc is None`; the fast path (2723) does not.
+- With a pointer last good 7 h ago and a failing 2-s read, 4 concurrent requests made 4 reads in a row; the last
+  waited 7.85 s. With nothing held: 1 read.
+- The doc is still served up to one TTL past the 6-h keep (2730).
+- The step-8 record called mutant M03 equivalent. It is not: 5 asks gave 5 bucket reads, against 1
+  (`p01_not_equivalent.py`, reproduced).
+
+**F-7 (P3) 15 of the reviewer's 76 mutants survive the whole suites.**
+
+| Mutant | What the suite misses |
+|---|---|
+| S01 | the 48-h edge |
+| S05 | the fallback's 72-h edge |
+| S08 | the 1-dp age |
+| S15 | the error path's `nwps_available` |
+| X01 | the fallback's zone |
+| X02 | no age key on the fallback |
+| P01, P02, P11 | the states of F-6 |
+| R08 | a 403 counted as missing |
+| R10 | the 20-s value |
+| C05 | SWAN in `syncBar(null)` |
+| C07 | the 36-h edge |
+| C10 | the note's rounding |
+| T01 | the Great Lakes GFS `active` class |
+
+59 were killed and 2 are equivalent (P07, C02). Author's spot check: the tests assert ages 10.0 / 40.0 (the page
+35.9 / 40.4) and no 36.0 / 48.0 / 72.0 edge, so the survivors are real.
+
+**F-8 (P3) B-5 costs about 15 MB, not 5.6 MB.** That is +5.65 MB for 8 wind runs, plus up to +9.5 MB for 256
+per-station series at 74 KB each (`mem_wind.py`, reproduced).
+
+Not counted (nits):
+- The server's `_NWPS_NOTE_H` is unused.
+- The note shows from 35.95 h (rounding).
+- A future-dated run in a hostile bucket stays "fresh".
+- NOMADS still holds 3-day-old station spectra, so the 48-h "final" rule only delays a wind heal.
+
+Could not check (the reviewer):
+- F-1 live.
+- Memory on Render.
+- Safari's `:has()`.
+- The age note on phones: the header's run text gives way first there (seen in code only).
+
+### Fix round 2 scope (UI 1.26.7)
+1. F-1:
+   - (a) `nwps_offered` uses the held pointer only while its last good read is within `_NWPS_PTR_KEEP` (the reader's
+     own rule). An older one counts as nothing held: offered, and the reader decides.
+   - (b) The live scheduler's pass keeps the pointer fresh: once it is past its TTL, one background read. It runs in
+     a daemon thread, one at a time, never on a request's path; it is reset after a fork, and does nothing when NWPS
+     is off.
+   - (c) The NWPS table's cache key carries the run the held pointer names for the station, so a new run (or an
+     office coming back) is built at once instead of after up to 30 min (K-1).
+   - pytest cases for the quiet server, the come-back and the site-wide outage, with the scheduler pass driven by
+     hand.
+2. F-3: one judgement per answer. `resolve_model` takes the offered value; `compute_forecast_payload`, the error path
+   and `index()` pass the same one.
+3. F-2:
+   - `index()` takes the model and `nwps_available` from its inline payload, and builds the page's NWPS list after it.
+   - `nwps_age_hours` goes in `initial_state` and the loader's seed.
+   - The server-rendered meta line gets "· N h old" (`_NWPS_NOTE_H`).
+4. F-4: the page remembers the last answer's SWAN / NWPS availability for the station on screen, and uses it in
+   `syncBar(null)` before the page lists.
+5. F-5:
+   - A station-file read starts only with a whole read's time left (20 s in all, as the README says).
+   - A file over the cap is refused ("bad"), so the older run is tried.
+6. F-6: one rule for the pointer's fast path and its re-check under the lock. A pointer is held only while its last
+   good read is within the keep, and the negative TTL applies whenever nothing usable is held.
+7. F-7: a test per survivor, then the mutants re-run. The tests:
+   - the 36.0 / 48.0 / 72.0 h edges, and 40.66 h;
+   - the error path at a hidden station;
+   - the fallback with `tz=UTC` and without an age key;
+   - the failing bucket with an expired pointer, sequential and with 4 threads;
+   - a 403 file;
+   - the budget with a slow bucket;
+   - a failed load at 51201;
+   - the Great Lakes `active` class.
+8. F-8: no change (15 MB on a 512-MB service running at ~150-230 MB).
+9. The author's addition, the note on phones (the reviewer's could-not-check): check it at 375x812 against the
+   shifted-clock server. If the run text's ellipsis cuts it, the note gets its own span that does not give way.
+
+Then: the test site at MAX, a short fresh re-check at MAX (the reader and the model rule change again), and step 9
+production.

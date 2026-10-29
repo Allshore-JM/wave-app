@@ -894,3 +894,84 @@ rule while the age note shows. Commits 528f703 (code + tests) and 32e2aaf (golde
 
 Next: a short test-site check at MAX (the come-back in an open tab, the note at narrow desktop widths and in the chip,
 `/healthz`, a regression smoke); then step 9 production.
+
+## Test-site check of fix round 3 (2026-10-29, Opus 5.5 at MAX)
+
+Deploys:
+- `test` @ 72091ed: cherry-picks aed08ca (= 528f703) and 72091ed (= the golden 32e2aaf). Pushed 19:15:21 UTC; the new
+  instance answered from 19:16:57; 22 polls (robots, /healthz, the page every ~6 s) across the switch, none failed.
+  - The nine UI files at `?v=1.26.8` = the repo byte for byte, immutable; the `1.26.7` URL answers 404.
+  - The page differs from before only by the version strings and the new CSS rule.
+- After the correction below: `test` @ f23648b (cherry-picks eff58bb = 4b27fa2 and f23648b = the golden fceed65).
+  Pushed 19:29:13; the new instance from about 19:30:10 (uptime 20 s at 19:30:30); 11 polls, none failed.
+- Site files on `test` = `feat/nwps-tables` except the test branch's three logo lines.
+
+Answers (GFS run 2026102912):
+- 65 non-NWPS answers: the test site before = after (65 identical) and production = the test site after (65 identical).
+- All 112 NWPS tables = an independent rebuild from the bucket (`nwps_check8.py`, tzdata 2026e): 0 with problems,
+  median 0.53 s, max 1.14 s.
+
+F2C-1, the dead NWPS button. The flow: the page loads while 51003 is withdrawn, then the real answers offer NWPS again,
+then a trusted click on NWPS, then a withdrawal again.
+- On the deployed site, the page was loaded with DevTools rewriting its NWPS lists without 51003 and the first answer
+  with `nwps_available` false:
+  - 1.26.7: after the come-back answer the bar showed GFS / NWPS, the click sent no request, and the table stayed
+    "GFS · run 20261029 12 UTC".
+  - 1.26.8: the click asked `model=NWPS` and drew "NWPS · run 20261029 12 UTC (NWS HFO)", 145 rows.
+  - After a withdrawal the bar stayed hidden, also across a failed load (a query not in the page cache).
+  - The same on a 375x812 phone with touch taps.
+- End to end, without rewrites: a local server of the fixed code (live scheduler on, a stand-in bucket, the reviewer's
+  `app_srv.py` / `bucket_srv.py` / `b_local.js`):
+  - With Honolulu's run 80 h old, 51003 opened as GFS with no bar, and the page's list lacked it.
+  - Honolulu published at 19:17:08, and the server's own background read saw it at 19:21:47 (`reads_started` 1 -> 2).
+  - In the same tab: a unit change showed GFS / NWPS, and the click asked NWPS and showed "NWPS · run 20261029 18 UTC
+    (NWS HFO)".
+  - On 24cb004 the reviewer saw 0 requests at this step.
+
+FOUND AND FIXED, V3-1 (P3, in fix round 3's own rule):
+- The problem: on 1.26.8 as first deployed, `flex: 0 1000 auto` on the run text also let the station name win over it.
+  In the default 1280-px window the run text was cut to 86 px to show more of the name, although the run text and the
+  note both fitted (on 1.26.7: name 243 px, run text whole).
+- The approved change was only that the run text shortens so the note stays visible.
+- Fixed @ 4b27fa2 + golden fceed65, in the desktop query only:
+  - the station field gets shrink factor 1,000,000 while the note shows, so it gives way first (section 26);
+  - then the run text (factor 1, an ellipsis), never the note.
+- Phones keep their own order (the run text first).
+- A tiny factor on the run text instead of a huge one on the name would not work: CSS shrinks unfrozen items with
+  factors summing below one only partly, so the note would be cut again once the name was gone.
+
+The note, 38 h old, on the deployed site (DevTools setting `nwps_age_hours` 38.3), visible px of the station name / run
+text / note:
+
+| surface | 1.26.7 | 1.26.8 corrected |
+|---|---|---|
+| desktop 1280, default window | 243 / 249 / 56 | 243 / 249 / 56 |
+| a 360-px window | 0 / 249 cut by the box / 0 | 0 / 192 with "…" / 56 |
+| a 480-px window | 0 / 249 / 56 | 0 / 249 / 56 |
+| minimised bar, 600x800 | 0 / 249 cut by the box / 0 | 0 / 152 with "…" / 56 |
+| minimised bar, 1024x768 | 56 / 249 / 56 | 56 / 249 / 56 |
+| phone 375x812 full screen and bar | 203 / 0 / 56 | 203 / 0 / 56 |
+| 600x800 bar, run 10 h old (no note) | 0 / 249 / - | 0 / 249 / - |
+
+- The run text's tooltip holds the run and the age everywhere.
+- On the local server with Honolulu's run really 38-39 h old (no rewrites): the same numbers, plus the Graph view and
+  the Summary keep the note, a failed load clears it, and `?render=full` shows it with 0 forecast requests.
+- Picture: scratch `g41/fix3v/shots/fix3_note_before_after.png`.
+
+`/healthz` `nwps.reads_started` on the test site, polled every 30 s:
+- 1 at the start.
+- The pointer re-read at about 19:22 came from forecast requests (not counted).
+- At 19:27:39 a background read with no NWPS request (1 -> 2, 327 s after the previous read).
+- The corrected deploy started again at 1.
+
+Smoke and cleanup:
+- A fresh tab on the test site (desktop and phone: 51003 NWPS 145 rows, 51201 SWAN): no console problems.
+- Both origins' storage emptied. Headless Chrome 156 with its own profile, never signed in, stopped and removed.
+- The local servers stopped; the scratch worktree removed.
+- Test-branch suite: pytest 1,271 passed + the 5 failures the test branch always has (its logo lines against the page
+  golden x4, the numpy-import test).
+
+Owner awareness (as before): on narrow desktops the station box gives way first, whole, before the run text (section
+26), so the 360-px window and the 600-px bar show no station name, with or without a note.
+
+Next: step 9 production (tag `prod-pre-nwps` @ a01c039; fast-forward `Live-Buoy-Update` to `feat/nwps-tables`).

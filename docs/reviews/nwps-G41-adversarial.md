@@ -379,3 +379,62 @@ Fix round (step 8) scope:
     fixtures kept byte-exact on checkout (`.gitattributes`), the reader test made CRLF-safe too.
 12. P3-6: a test for every real survivor; the reviewer's mutants re-run.
 13. UI and overlay version bumps, the page golden in its own commit, README.
+
+## Fix round (step 8, 2026-10-29, Opus 5.5 at HIGH)
+
+Commits bf3a0fa (the fixes and their tests, UI 1.26.6), 4606d52 (the page golden, its own commit), 863e709 and d9ce4ef
+(two more test pins). Every scope item:
+
+1. **B-1** The now-row reveal is keyed by station + the model the server answered, so another model's table opens on
+   its own current row. A unit or zone change still keeps the place. When the server answers GFS for a request for
+   NWPS, the same GFS table does not move.
+2. **B-2** CSS: the last shown model button keeps its rounded end.
+3. **B-3** The Location line names the NWPS point: the file's `point`, else the station file's copy of NOAA's point
+   (51003: "19.29N 160.57W"). The map, the sky and the links keep the station's own position.
+4. **B-4** A failed load keeps the model bar, built from the station lists, so GFS stays one press away and loads from
+   the page's cache. A station with GFS only still has no bar. SWAN gets the same fix.
+5. **B-5** `_GFS_WINDS_KEEP_RUNS` 8 (was 4) and `_WIND_CACHE_MAX` 256 (was 128).
+6. **P3-1** Every pointer run, in `run` and in `runs`, must be a real date (`_nwps_run_ok`), else the whole pointer is
+   refused.
+7. **P3-2** At most the newest 8 kept runs are tried (`_NWPS_MAX_RUNS`).
+8. **P3-3** One pointer read at a time (`_NWPS_FETCH_LOCK`). While it runs, a request holding a good pointer is served
+   that pointer at once; a request holding nothing waits up to 10 s. A failed read with nothing held is remembered
+   for 60 s. The fork hook renews both locks.
+9. **P3-4** The station files: a missing file (404) moves on to the next run; a refused file moves on; a bucket that
+   does not answer stops the loop ("Could not reach the NWPS forecast", with Retry); all of it within 20 s.
+10. **K-7** (the owner's decision):
+    - NWPS answers carry `nwps_age_hours`. Past 36 h the header's run text and the line above the table add
+      "· N h old".
+    - `nwps_offered(station)` judges by the pointer the server holds, and never reads the bucket. It is false when the
+      newest run that can serve the station is over 72 h old.
+    - Where it is false, `resolve_model` answers GFS for NWPS, every payload's `nwps_available` is false, and the page's
+      NWPS list leaves the station out (so the head's early request asks GFS too).
+    - When the server holds no pointer, a read made while building the table finds the run too old: the answer is then
+      the GFS table, with `nwps_available` false.
+    - **P3-5:** a run over 48 h old has early hours older than every GFS winds run kept. Its wind gaps are final:
+      `wind_complete` is true and the table is kept the full 30 min.
+11. **P3-7**
+    - A Great Lakes page's hidden bar presses GFS again.
+    - `.gitattributes` keeps `tests/fixtures/nwps/**` byte for byte on checkout.
+    - The reader test is CRLF-safe.
+12. **P3-6** New tests for each surviving mutant:
+    - **Tests added:** S02, S06, S14, S15, S18, S20 (a 14Z run), S28, S38, S42, S46, C12, E02 and O02 (behaviour, not
+      text).
+    - **Pinned:** each fix above (a pointer's runs, the run cap and budget, the negative TTL, one read at a time, the
+      Location, the 36 h / 72 h rules, the read-time fallback, final wind gaps, the bar on a failed load, the model-change
+      reveal, the page's list, the CSS rule, the Great Lakes button).
+13. **UI 1.26.6.** The golden changes only by the CSS rule and the asset versions (checked line by line, five scenarios
+    alike). README "Limits" and "An office that stops". The overlay is untouched (asset 2.22.6).
+
+Mutants of the fix round (scratch `g41/fix/mut8.py`, a scratch worktree): 24 run, 23 killed. M18, the held-run rule
+ignoring the station lists, survived the first run and was pinned (863e709). M03 is equivalent: it removes the fast-path
+negative TTL check, whose rule is repeated under the lock. Reviewer A's S38 (the back-fill's first hour) is pinned by
+d9ce4ef, checked to fail on its mutant.
+
+Suites: pytest 1,716 passed; Node (ui + overlay) 1,057 passed.
+
+Behaviour worth knowing:
+- An office whose newest run does not list the station is judged by the older run that does list it, so such a
+  station can be hidden while its office still publishes for others.
+- The hide rule can take up to 5 minutes to act (the pointer's TTL) and up to 30 more for a table already built (the
+  forecast cache).

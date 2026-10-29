@@ -275,3 +275,107 @@ For the owner (none blocks G41):
   table name it. The model buttons are 31 px tall there (the SWAN bar's size since section 25).
 - My own slip: a `chrome.exe --version` call printed "Opening in existing browser session" (the section-50 lesson): it
   may have opened a blank window in the owner's Chrome. Nothing else touched it.
+
+## G41: two fresh reviewers on the site (2026-10-29, Opus 5.5 at MAX; reviewer A on Fable 5.1)
+
+Brief and reports: scratch `g41/` (brief.md, a/g41-a-report.md, b/g41-b-report.md; scripts and logs beside them).
+Reviewer A read the code and checked the data with its own tools (no browser); reviewer B used the test site @ 0773a42
+as a visitor would, with trusted clicks and taps in headless Chrome. **0 P0, 0 P1, 1 P2, 11 P3** (A 0/0/0/7, B 0/0/1/4).
+
+Held up:
+- **Tables = the job's files.** A rebuilt all 112 tables from the bucket with its own reader, run choice, rank and zone
+  labels: 112 of 112 identical, 16,240 rows, every cell of the compact table included; 40 more answers in other units
+  and zones identical. B did the same at tz=UTC: 112 of 112, 0 mismatches.
+- **Rank.** Every row re-ranked independently = the site's; equal-power pairs keep the source order.
+- **Wind.** A decoded the GFS winds tables of six runs itself: every wind cell of every table matched, the 61 back-filled
+  stations and the repeated hour on 1 November included. B: 15,878 station-hours equal the GFS table's, the 362 earlier
+  rows all carry wind.
+- **Model choice.** A ran 672 cases (14 station kinds x 12 spellings of `model` x 4 unit/zone settings): the server, the
+  payload, the parser called, the page's state, the head's early request and the loader's first request agree in all.
+  B: 21 links, one request each, the address cleaned where NWPS is not offered.
+- **Hostile bucket.** 71 station-file cases and 28 pointer cases refused or accepted as designed; the last good pointer
+  kept; one request per key at a time; the fork hook re-creates the lock.
+- **Nothing else changes.** Production vs test on the same GFS run: 45 answers (A) and 27 pairs (B) identical once
+  `nwps_available` is set aside; 6 pages differ only by the intended lines.
+- **Partitions through the site's output.** A's own reader and watershed at 5 stations: combined height equal to 2 dp in
+  25 of 25 hours, the main systems equal in 21 (in the other 4 the site keeps 1-2 small extra systems that A's coarser
+  merge folds in; energy consistent). B: over all 112 files the parts keep 0.93-1.04 of the energy; NWPS vs the buoys'
+  own observed height, median ratio 0.88-1.16 at nine buoys.
+- **Times.** NWPS answers median 0.44 s, worst 1.43 s (A); first request 0.40 s mean, repeats 0.17 s (B).
+- **Page.** Keyboard, the accessibility tree, no-script, stars and default, links and history, map dots, five window
+  sizes, late or out-of-order answers never landing, the overlay's run line, the Summary and Graph views, memory flat
+  over 40 switches.
+- **Suites.** pytest 1,692 + one failure (A P3-7: a CRLF checkout), Node 1,053. Mutants: A's 79 (+7 re-run or
+  re-crafted): 13 real test gaps survived (P3-6), 9 equivalent, every other one killed.
+
+Findings (the author's check in brackets):
+- **B-1 (P2)** Pressing NWPS keeps the GFS table's scroll in pixels, so the NWPS table opens on other hours. Example:
+  at 46083 / 44099 (00Z runs) the current row ends up above the view; at 51003 the view opens 13 h in the past. The
+  now-row reveal runs only when the station changes (forecast.js `apply`: `st.station !== revealedFor`). Production's
+  GFS -> SWAN at 51201 does the same; NWPS puts it on the main path to 112 tables. [Confirmed in code.]
+- **B-2 (P3)** At the 12 SWAN stations the SWAN button lost its rounded right corners: the hidden NWPS button is now the
+  group's last child, and Bootstrap squares every button that is not last. [Confirmed in the template, lines 1104-1107.]
+- **B-3 (P3)** The NWPS Location line names the GFS bulletin point (station_coords), not the NWPS point the numbers are
+  for. At 51003 they are 27 km apart; the plan's text named the NWPS point. [Confirmed: 19.22 N 160.82 W vs the file's
+  19.289 N 160.569 W.]
+- **B-4 (P3)** A failed NWPS load hides the whole model bar (`ui.clear`), so the GFS table the visitor just had is
+  reachable only by Retry or a reload. The same is true of SWAN today. [Confirmed, forecast.js line 1008.]
+- **B-5 (P3)** NWPS needs more GFS winds runs held: the latest, plus the back-fill runs of the 06Z, 12Z, 14Z and 18Z
+  offices, plus SWAN's back-fill. That is 5 once GFS 00Z is the latest, but the site holds 4 (`_GFS_WINDS_KEEP_RUNS`).
+  The cost is extra R2 reads of 1.4 MB on cold builds, not wrong data. [Confirmed: the cap is 4 and the per-station
+  cache is 128.]
+- **A P3-1** A 10-digit pointer run that is not a date gets past the check (a regex only), and the parser's
+  `strptime` then raises. The visitor sees the generic "temporarily unavailable" message, and the bad pointer is kept
+  for 5 min. Only a corrupted bucket can do this. [Confirmed.]
+- **A P3-2** No cap on the kept runs tried: 50 listed runs = 51 bucket requests for one visitor request (the job keeps 4).
+- **A P3-3** A failed pointer read at a cold start is asked again on every NWPS request, and several threads read it at
+  the TTL edge. This is the GLWU reader's shape too.
+- **A P3-4** One NWPS request can hold a thread up to ~40 s against a trickling bucket (8-s cap x 5 reads). NWPS builds
+  are outside the shared build cap; GLWU likewise.
+- **A P3-5 (the K-7 corollary)** On a stale run, the hours before the latest GFS winds run have no wind once the
+  back-fill cycle is older than the 8 runs the winds job keeps. The table is then gappy: the server keeps it 5 min, the
+  page 1 min. [Correction to the report: the page does not poll. A gappy table is kept 60 s in the page's cache instead
+  of 10 min, so the next visit after a minute asks again (forecast.js `ttlOf`; no timer).]
+- **A P3-6** Test gaps (mutants that survive): the back-fill cycle's rounding (a 14Z run), a sixth swell dropped, a bad
+  run inside `runs`, the after-TTL re-ask count, the fork lock, the error path's `nwps_available`, `init` passing the
+  NWPS list to the loader, the head's `trim`, the overlay's NWPS branch (only its text is pinned), and value-range edges.
+- **A P3-7** Notes. The rank is computed on feet rounded to 2 dp, so 42 of 16,240 near-tie rows differ from a rank in
+  metres; GFS does the same site-wide (no change). On a Great Lakes page the hidden model bar has no pressed button
+  (production pressed GFS). The job's reader test fails on a fresh Windows checkout with core.autocrlf=true: the
+  fixture becomes CRLF. An unknown `tz` gets its own cache key (pre-existing, no change). [CRLF confirmed: the repo's
+  .gitattributes names only image types.]
+
+K-7 and K-8 weighed:
+- **K-7 (no age limit on the NWPS run served).** A: P3 (offices run 2-3 times a day, so a multi-day silence means an
+  office outage). B: "P2 when it happens", worse on phones, where the header hides the run.
+  - When an office stops, its tables open on past days with no note, and once every row is past, no row is "now".
+  - Normal ages matter for the threshold. HFO posts its runs 8-14 h after their labels, so 51003's table is routinely
+    up to ~26-32 h old before the next run lands. A note must start above that.
+  - OWNER'S DECISION (2026-10-29, AskUserQuestion): "Note at 36 h, hide at 72 h". Past 36 h the run text says
+    "· N h old"; past 72 h the station does not offer NWPS (GFS only, the button hidden) until its office publishes
+    again.
+- **K-8 (the shared 64-entry forecast cache).** Performance only; a rebuild costs 0.44 s. Not raised: a cached answer
+  is 0.36 MB (NWPS) to 0.87 MB (GFS) of JSON, so 64 more entries could cost tens of MB on the 512-MB service.
+
+Fix round (step 8) scope:
+1. B-1: the now row revealed again when the model changes (`revealedFor` keyed by station + model; the scroll reset;
+   unit and zone changes still keep the place).
+2. B-2: the last visible model button keeps its rounded corners (a CSS rule on `#modelBar`).
+3. B-3: the NWPS Location line shows the NWPS point (the file's `point`).
+4. B-4: a failed load keeps the model bar with the station's models, so GFS stays one press away (shared by SWAN).
+5. B-5: `_GFS_WINDS_KEEP_RUNS` 4 -> 8 (+5.6 MB) and `_WIND_CACHE_MAX` 128 -> 256.
+6. P3-1: every pointer run date-checked (`strptime`) in `_nwps_pointer_ok` (the whole pointer refused).
+7. P3-2: at most the newest 8 kept runs tried.
+8. P3-3: a failed cold pointer read remembered 60 s (asked again after it, not on every request) and one pointer read
+   at a time.
+9. P3-4: the run loop stops at a transport failure (a 404 still moves on to the next run) and has a total time budget.
+10. K-7 / P3-5 (the owner's decision): the run's age carried in the NWPS payload; past 36 h the header's run text and
+    the line above the table add "· N h old" (as forecast points do); past 72 h the station is served as not offering
+    NWPS: `nwps_available` false and a request for NWPS answered with the GFS table (the server's model echo, as for any
+    station without NWPS), until a newer run is published. The GFS path never waits on R2 for this: it uses the held
+    pointer only. A table whose missing wind lies only before the oldest kept GFS winds run is kept the full time (no
+    1-minute re-ask).
+11. P3-7: the Great Lakes page's hidden bar presses GFS again (`selected_model not in ('SWAN', 'NWPS')`); the NWPS
+    fixtures kept byte-exact on checkout (`.gitattributes`), the reader test made CRLF-safe too.
+12. P3-6: a test for every real survivor; the reviewer's mutants re-run.
+13. UI and overlay version bumps, the page golden in its own commit, README.

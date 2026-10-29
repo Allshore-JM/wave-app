@@ -454,3 +454,18 @@ def test_the_age_is_the_run_that_can_serve_the_station(bucket):
     A._NWPS_PTR.update(doc=pointer(runs=(newer, RUN), stations=("51003",)))
     assert A._nwps_held_run("51003") == newer and A.nwps_offered("51003")
 
+
+def test_the_back_fill_follows_the_first_hour_with_a_spectrum(bucket):
+    """G41 A P3-6 (S38): hours without a spectrum at the start move the back-fill to the cycle of the first real row."""
+    d = doc_for(RUN)
+    for h in range(7):
+        d["hs"][h], d["parts"][h] = None, None
+    run_dt = datetime.strptime(RUN, "%Y%m%d%H")                       # 06Z; the first row is 13Z
+    bucket.put("nwps/v1/latest.json", pointer())
+    bucket.put(f"nwps/v1/hfo/{RUN}/51003.json", d)
+    bucket.winds[(None, None)] = gfs_winds(run_dt + timedelta(hours=12), 380, speed=7.0)
+    bucket.winds[(RUN[:8], "12")] = gfs_winds(run_dt + timedelta(hours=6), 380, speed=3.0)
+    bucket.winds[(RUN[:8], "06")] = gfs_winds(run_dt, 380, speed=9.0)
+    rows = A._parse_nwps_uncached("51003")[3]
+    assert [r[20] for r in rows[:6]] == [3.0] * 5 + [7.0]
+

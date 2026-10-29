@@ -1280,6 +1280,9 @@ def test_section_59_g41_fixes_on_the_page(client, monkeypatch):
     """G41 (plan section 59, step 8): the last shown model button keeps its rounded end, a Great Lakes page presses
     GFS in its hidden bar again, and a station whose NWPS office stopped (past 72 h) is served as one without NWPS."""
     src = open(os.path.join(A.app.root_path, "templates", "index.html"), encoding="utf-8").read()
+    # while the age note shows, the run text gives way at every width, the note stays whole (fix2check F2C-2)
+    assert (".fw-titles:has(.fw-old:not([hidden])) .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; "
+            "text-overflow: ellipsis; }") in src
     assert ("#modelBar > .btn:not([hidden]):not(:has(~ .btn:not([hidden]))) { border-top-right-radius: "
             "var(--bs-btn-border-radius); border-bottom-right-radius: var(--bs-btn-border-radius); }") in src
     gl = client.get("/?station=45007").get_data(as_text=True)

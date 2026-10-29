@@ -670,6 +670,9 @@
     .fw-titles .fw-cycle { color: #5a6b7a; font-size: .85rem; flex: 0 0 auto; }
     /* "· 40 h old": its own span so it never gives way with the run text (phones cut that first; G41 re-check) */
     .fw-titles .fw-old { color: #5a6b7a; font-size: .85rem; flex: 0 0 auto; margin-left: -6px; }
+    /* while it shows, the run text gives way first at every width (a narrow window, the desktop chip): the note stays
+       whole, the run text ends in an ellipsis, its tooltip holds both (G41 fix2check F2C-2, owner) */
+    .fw-titles:has(.fw-old:not([hidden])) .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     /* a label "name — coordinates": the name is cut when room runs out, never the coordinates (G22 B-4) */
     .lbl-split { display: flex; min-width: 0; }
     .lbl-split .lbl-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

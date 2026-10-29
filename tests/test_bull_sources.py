@@ -201,6 +201,7 @@ def test_a_nomads_body_over_the_cap_is_refused(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger=app.logger.name):
         assert app._parse_bull_uncached("41113", None)[-1] == "No .bull file found for 41113"   # the archive 404'd
     assert any("body too large" in r.getMessage() for r in caplog.records)
+    assert any("BodyTooLarge" in r.getMessage() for r in caplog.records)     # its own type (G41 re-check F-5)
 
 
 @pytest.mark.parametrize("s3,nomads,want", [

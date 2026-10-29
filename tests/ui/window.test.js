@@ -1443,6 +1443,9 @@ test('the age note: from 36.0 h, rounded to the hour; a render=full page carries
   b.app.loader.load({ unit: 'Metric' }); await settle();
   b.fs_.last().release(payload({ station: '51003', model: 'NWPS', nwps_available: true, nwps_age_hours: 40.6, graph_header: h })); await settle();
   assert.equal(b.doc.getElementById('fwOld').textContent, '· 41 h old', 'rounded, not cut');
+  b.app.loader.load({ unit: 'US', tz: 'UTC' }); await settle(); b.fs_.last().fail(); await settle();
+  assert.equal(b.doc.getElementById('fwOld').hidden, true, 'a failed load leaves no note behind');
+  assert.equal(b.doc.getElementById('fwOld').textContent, '');
   const c = boot({ initial: { inline: true, station: '51003', nwps_stations: ['51003'], nwps_available: true, model: 'NWPS',
     graph_data: payload().graph_data, graph_header: h, nwps_age_hours: 40.4 } });
   await settle();

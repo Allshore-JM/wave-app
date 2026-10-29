@@ -442,3 +442,15 @@ def test_the_error_path_says_where_nwps_is_offered(monkeypatch):
 
 def test_the_wind_caches_hold_the_nwps_back_fills():
     assert A._GFS_WINDS_KEEP_RUNS == 8 and A._WIND_CACHE_MAX == 256               # G41 B-5
+
+
+def test_the_age_is_the_run_that_can_serve_the_station(bucket):
+    """A newer run that does not list the station does not make it fresh: its kept run decides (mutant M18)."""
+    newer = (datetime.strptime(RUN, "%Y%m%d%H") + timedelta(hours=60)).strftime("%Y%m%d%H")
+    A._NWPS_PTR.update(doc=pointer(runs=(newer, RUN), stations=("51004",)))   # held; 51003 only in RUN
+    bucket.clock["now"] = ago(80)
+    assert A._nwps_held_run("51003") == RUN and not A.nwps_offered("51003")
+    assert A._nwps_held_run("51004") is None and A.nwps_offered("51004") is False    # not an NWPS station at all
+    A._NWPS_PTR.update(doc=pointer(runs=(newer, RUN), stations=("51003",)))
+    assert A._nwps_held_run("51003") == newer and A.nwps_offered("51003")
+

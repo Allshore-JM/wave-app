@@ -975,3 +975,21 @@ Owner awareness (as before): on narrow desktops the station box gives way first,
 26), so the 360-px window and the 600-px bar show no station name, with or without a note.
 
 Next: step 9 production (tag `prod-pre-nwps` @ a01c039; fast-forward `Live-Buoy-Update` to `feat/nwps-tables`).
+
+## Step 9: production (2026-10-29, Opus 5.5 at MEDIUM)
+
+The owner said "proceed with the production merge". Rollback tag `prod-pre-nwps` @ a01c039 pushed. `Live-Buoy-Update`
+was fast-forwarded a01c039..a4560b1 (27 commits) at 19:39:18 UTC.
+- The switch: the new instance answered from about 19:40:03, and none of 19 polls across it failed.
+- Files: overlay 2.22.6 (the six assets) and UI 1.26.8 (the nine files) = the repo; the old 2.22.5 / 1.26.4 URLs answer
+  404.
+- Pages: the three page probes (51201, 51201 graph, 51003) = the test site's pages except the test branch's three logo
+  lines; the test-only logo count is 0.
+- Answers: 65 production = 65 test site on the same run. All 112 NWPS tables = an independent rebuild from the bucket
+  (median 0.44 s).
+- `/healthz` ok, `nwps` {offices 35, stations 112, reads_started 1, no error}.
+- CI on a4560b1: coast-build, model-frames-tests and model-nwps green.
+- Fresh-tab smoke on allshoresurf.com, desktop and phone: 51003 NWPS 145 rows, 51201 SWAN, no console problems. Storage
+  emptied; headless Chrome with its own profile, never signed in, stopped and removed.
+
+Rollback: re-push `prod-pre-nwps`. **Section 59 complete.**

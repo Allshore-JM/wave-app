@@ -297,7 +297,17 @@
       return s;
     }
     function sync() { if (deps.replaceState) deps.replaceState(urlFor(state, deps.saved ? deps.saved() : null)); }
+    // The page's NWPS list follows the answers: an office back from a 72-h silence offers NWPS again while the tab is
+    // open, and one past it stops (the list was the page load's: G41 fix2check F2C-1). The bar reads the same array.
+    function follow(d) {
+      var list = deps.nwpsStations;
+      if (!list || !d || typeof d.nwps_available !== 'boolean') return;
+      var sid = typeof d.station === 'string' && d.station ? d.station : state.station, i = list.indexOf(sid);
+      if (d.nwps_available && i < 0) list.push(sid);
+      else if (!d.nwps_available && i >= 0) list.splice(i, 1);
+    }
     function apply(d) {
+      follow(d);
       if (d && typeof d.model === 'string') state.model = modelOf(d.model);   // the server's echo is authoritative
       sync();
       deps.ui.apply(d, state, function () { return load({}); });

@@ -432,7 +432,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.26.7"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.26.8"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -3017,7 +3017,8 @@ def _nwps_health():
         doc, good, err = _NWPS_PTR["doc"], _NWPS_PTR["good"], _NWPS_PTR["error"]
     return {"stations": len(NWPS_STATIONS),
             "pointer_age_s": round(time.time() - good) if doc is not None else None,
-            "offices": len(doc["offices"]) if doc else 0, "last_error": err}
+            "offices": len(doc["offices"]) if doc else 0, "last_error": err,
+            "reads_started": _NWPS_BG["started"]}   # background pointer reads since the start (fix2check)
 
 # --------------------------- PacIOOS SWAN parser --------------------------------
 

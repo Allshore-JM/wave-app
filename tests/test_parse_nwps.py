@@ -246,7 +246,7 @@ def test_the_payload_of_an_nwps_station(bucket):
 def test_healthz_reports_nwps(monkeypatch):
     with A.app.test_client() as c:
         body = c.get("/healthz").get_json()
-    assert set(body["nwps"]) == {"stations", "pointer_age_s", "offices", "last_error"}
+    assert set(body["nwps"]) == {"stations", "pointer_age_s", "offices", "last_error", "reads_started"}
 
 
 # ------------------------------------------------------------------------------- G41 fixes (plan section 59, step 8)
@@ -714,3 +714,115 @@ def test_the_no_script_page_follows_its_own_answer(bucket, monkeypatch):
             assert st["model"] == "NWPS" and st["nwps_available"] is True and "51003" in st["nwps_stations"]
             assert st["nwps_age_hours"] == 40.0
             assert f"NOAA NWPS {RUN[:8]} {RUN[8:]} UTC (NWS HFO) · 40 h old" in html
+
+
+# ------------------------------------------------------------------ fix round 2's fresh check (plan section 59)
+
+def test_the_background_read_paces_itself_after_a_failure():
+    """F2C-3 D01 / D04: with nothing usable held, a failed read is tried again only after _NWPS_PTR_NEG_TTL; with a
+    pointer held, a failed read (which stamps ts) waits the TTL, however old the last good read is."""
+    import time as _t
+    now = _t.time()
+    try:
+        A._NWPS_PTR.update(ts=0.0, good=0.0, doc=None, error="x", failed=now - 10)
+        assert not A._nwps_refresh_due(now)
+        A._NWPS_PTR["failed"] = now - A._NWPS_PTR_NEG_TTL - 1
+        assert A._nwps_refresh_due(now)
+        A._NWPS_PTR.update(doc=pointer(), good=now - 3600, ts=now - 10, failed=now - 10)   # held, read failed just now
+        assert not A._nwps_refresh_due(now)
+        A._NWPS_PTR["ts"] = now - A._NWPS_PTR_TTL
+        assert A._nwps_refresh_due(now)
+    finally:
+        A._NWPS_PTR.update(ts=0.0, good=0.0, doc=None, error=None, failed=0.0)
+
+
+def test_a_raising_nwps_pass_still_counts_the_scheduler_pass(monkeypatch):
+    """F2C-3 T05: an NWPS pass that raises never stops the live pass before it is counted (else /healthz says
+    "stalled" after 180 s and Render restarts the instance)."""
+    def boom():
+        raise RuntimeError("nwps pass")
+    monkeypatch.setattr(A, "_nwps_tick", boom)
+    before = A._LIVE_BG["ticks"]
+    A._live_tick([])
+    assert A._LIVE_BG["ticks"] == before + 1 and A._LIVE_BG["last_tick_ts"]
+
+
+def test_the_background_read_is_a_daemon_thread(bucket):
+    """F2C-3 T03: the read never keeps a stopping process alive."""
+    _publish(bucket, RUN)
+    before = A._NWPS_BG["started"]
+    assert A._nwps_tick()
+    t = A._NWPS_BG["thread"]
+    t.join(10)
+    assert t.daemon is True and t.name == "nwps-pointer"
+    with A.app.test_client() as c:                                                # counted for /healthz
+        assert c.get("/healthz").get_json()["nwps"]["reads_started"] == before + 1
+
+
+def test_every_office_back_after_a_site_wide_silence(bucket):
+    """F2C-3: every office past 72 h at once (all hidden), then all publish again: one pass offers all."""
+    t0 = datetime.strptime(RUN, "%Y%m%d%H")
+
+    def publish_all(run):
+        ptr = pointer(runs=(run,))
+        ptr["offices"]["mtr"] = dict(ptr["offices"]["hfo"], region="wr", stations=["46026"])
+        bucket.put("nwps/v1/latest.json", ptr)
+    publish_all(RUN)
+    assert _tick_and_wait() and A.nwps_offered("51003") and A.nwps_offered("46026")
+    bucket.clock["now"] = t0 + timedelta(hours=80)
+    assert not A.nwps_offered("51003") and not A.nwps_offered("46026")          # both offices silent > 72 h
+    publish_all((t0 + timedelta(hours=79)).strftime("%Y%m%d%H"))
+    _age_pointer(0.1)
+    assert _tick_and_wait() and A.nwps_offered("51003") and A.nwps_offered("46026")
+
+
+def test_the_no_script_list_follows_the_answer_not_the_held_pointer(bucket, monkeypatch):
+    """F2C-3 I02: the held pointer offers 51003 (its newest run 68 h old) but that run's file is missing and the older
+    run is 80 h old: the inline answer is GFS, and the page's NWPS list follows it."""
+    import re
+    newer = (datetime.strptime(RUN, "%Y%m%d%H") + timedelta(hours=12)).strftime("%Y%m%d%H")
+    _publish(bucket, RUN)
+    rows = A._parse_nwps_uncached("51003")[3]
+    monkeypatch.setattr(A, "parse_bull", fake_gfs(rows))
+    bucket.put("nwps/v1/latest.json", pointer(runs=(newer, RUN)))
+    import time as _t
+    A._NWPS_PTR.update(doc=pointer(runs=(newer, RUN)), good=_t.time(), ts=_t.time(), failed=0.0)
+    A._FORECAST_CACHE.clear()
+    bucket.clock["now"] = ago(80)
+    assert A.nwps_offered("51003")
+    with A.app.test_client() as c:
+        html = c.get("/?station=51003&model=NWPS&render=full").get_data(as_text=True)
+    st = json.loads(re.search(r"window\.__initial = (\{.*?\});", html).group(1))
+    assert st["model"] == "GFS" and st["nwps_available"] is False and "51003" not in st["nwps_stations"]
+
+
+@pytest.mark.parametrize("hours,note", [(35.9, None), (36.0, "36"), (40.6, "41")])
+def test_the_no_script_age_note_edge_and_rounding(bucket, monkeypatch, hours, note):
+    """F2C-3 I03 / I04: the server's note from 36.0 h, rounded half up (the page's Math.round)."""
+    _publish(bucket, RUN)
+    A._FORECAST_CACHE.clear()
+    bucket.clock["now"] = ago(hours)
+    with A.app.test_client() as c:
+        html = c.get("/?station=51003&model=NWPS&render=full").get_data(as_text=True)
+    meta = html.split('id="forecastMeta"')[1][:600]
+    if note is None:
+        assert "h old" not in meta
+    else:
+        assert f"UTC (NWS HFO) · {note} h old" in meta
+
+
+def test_a_read_starts_with_eight_seconds_left(bucket, monkeypatch):
+    """F2C-3 B03: 4.5-s reads in a 20-s budget: three files (a fourth would start with 6.5 s left)."""
+    start = datetime.strptime(RUN, "%Y%m%d%H")
+    runs = [(start - timedelta(hours=6 * i)).strftime("%Y%m%d%H") for i in range(8)]
+    bucket.put("nwps/v1/latest.json", pointer(runs=runs))
+    clock, real = {"t": 1000.0}, bucket.fetch
+    monkeypatch.setattr(A, "_nwps_monotonic", lambda: clock["t"])
+
+    def slow(url, max_bytes, **kw):
+        if url.endswith("/51003.json"):
+            clock["t"] += 4.5
+        return real(url, max_bytes, **kw)
+    monkeypatch.setattr(A, "_points_fetch", slow)
+    A._parse_nwps_uncached("51003")
+    assert len([k for k in bucket.asked if k.endswith("/51003.json")]) == 3

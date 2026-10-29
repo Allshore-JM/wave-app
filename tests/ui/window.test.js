@@ -914,6 +914,7 @@ test('a forecast point: its answer is announced with ok and point; an old run sa
   assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC', 'the run text alone');
   assert.equal(b.doc.getElementById('fwOld').textContent, '· 15 h old', 'a cycle was missed: the age shows, in its own span');
   assert.equal(b.doc.getElementById('fwOld').hidden, false);
+  assert.ok(!b.doc.getElementById('forecastMeta').textContent.includes('h old'), "a point's age is said once, not in the meta line (fix2check C05)");
   assert.equal(b.F._internals.STALE_H, 13);
   b.app.loader.load({ station: 'pt_39740N_104990W' }); await settle();
   b.fs_.last().release({ station: 'pt_39740N_104990W', error: 'No model data here: land, ice or outside coverage', table_html: null, graph_data: null, graph_header: null,
@@ -1431,7 +1432,27 @@ test('a failed load keeps the last word of the server on the bar: a withdrawn NW
   assert.equal(bar.hidden, false, 'SWAN stays after a failed load'); assert.equal(btn('SWAN').hidden, false);
   assert.equal(btn('NWPS').hidden, true);
   b.app.loader.load({ station: '51003', unit: 'Metric' }); await settle(); b.fs_.last().fail(); await settle();   // not in the page cache
-  assert.equal(btn('NWPS').hidden, false, 'another station answered last: the page lists decide again');
+  assert.equal(btn('NWPS').hidden, true, 'its last answer withdrew NWPS: the page list follows the answers (fix2check F2C-1)');
+});
+
+test('an office back while the page is open: the answer offers NWPS and a press asks for it (G41 fix2check F2C-1)', async () => {
+  const b = boot({ initial: { station: '51003', swan_stations: ['51201'], nwps_stations: [] } });   // the page loaded during the silence
+  const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);
+  await settle();
+  b.fs_.last().release(payload({ station: '51003', model: 'GFS', swan_available: false, nwps_available: false })); await settle();
+  assert.equal(bar.hidden, true);
+  b.app.loader.load({ unit: 'Metric' }); await settle();
+  b.fs_.last().release(payload({ station: '51003', model: 'GFS', swan_available: false, nwps_available: true })); await settle();
+  assert.equal(btn('NWPS').hidden, false, 'the office is back');
+  btn('NWPS').dispatch('click'); await settle();
+  assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'NWPS', 'the press asks for NWPS, not GFS again');
+  b.fs_.last().release(payload({ station: '51003', model: 'NWPS', swan_available: false, nwps_available: true, graph_header: { cycle: 'NOAA NWPS 20261029 12 UTC (NWS HFO)', location: '51003', tz: 'Pacific/Honolulu' } })); await settle();
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'NWPS · run 20261029 12 UTC (NWS HFO)');
+  b.app.loader.load({ tz: 'UTC', model: 'GFS' }); await settle();
+  b.fs_.last().release(payload({ station: '51003', model: 'GFS', swan_available: false, nwps_available: false })); await settle();
+  assert.equal(bar.hidden, true, 'withdrawn again');
+  b.app.loader.load({ model: 'NWPS' }); await settle();
+  assert.equal(b.fs_.calls.filter((c) => b.fs_.param(c, 'model') === 'NWPS').length, 1, 'withdrawn again: NWPS is not asked');
 });
 
 test('the age note: from 36.0 h, rounded to the hour; a render=full page carries it from the seed (G41 re-check C07, C10, F-2)', async () => {
